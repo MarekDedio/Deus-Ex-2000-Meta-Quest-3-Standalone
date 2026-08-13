@@ -32,3 +32,21 @@ read-only path for loading Unreal Engine 1 packages from user-supplied game data
 This is a long-term engine port. A smoke-test APK is not presented as a playable
 game build.
 
+## Build the current Quest smoke test
+
+The checked-in Android project references the pinned Meta OpenXR SDK checkout in
+`third_party/Meta-OpenXR-SDK`. On this workstation, the reproducible toolchain is
+installed at `D:\Android\Sdk` with Microsoft OpenJDK 17.
+
+```powershell
+.\tools\Build-QuestSmokeTest.ps1
+```
+
+With one Quest in developer mode connected and authorized over USB:
+
+```powershell
+.\tools\Install-QuestSmokeTest.ps1
+```
+
+The current APK proves native ARM64 packaging, OpenXR session creation, stereo
+rendering, head tracking, and controller input. It does not load the game yet.

@@ -1,0 +1,11 @@
+{
+  "metaOpenXrSdk": {
+    "url": "https://github.com/meta-quest/Meta-OpenXR-SDK.git",
+    "commit": "bbed2f20e38a5df7113630771c83cb8279e4fc26"
+  },
+  "surrealEngineEvaluationFork": {
+    "url": "https://github.com/dpjudas/SurrealEngine.git",
+    "commit": "677ee14c5b83486e6634687953779aafb7973ad6",
+    "note": "Keep AI-assisted changes in a private/local fork; do not submit upstream."
+  }
+}

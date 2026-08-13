@@ -1,0 +1,71 @@
+buildscript {
+    repositories {
+        google()
+        mavenCentral()
+    }
+    dependencies {
+        classpath "com.android.tools.build:gradle:8.1.4"
+    }
+}
+
+repositories {
+    google()
+    mavenCentral()
+}
+
+apply plugin: "com.android.application"
+
+android {
+    namespace "dev.deusex.questvr.smoketest"
+    compileSdk 32
+    ndkVersion "27.0.12077973"
+
+    defaultConfig {
+        applicationId "dev.deusex.questvr.smoketest"
+        minSdk 26
+        targetSdk 32
+        versionCode 1
+        versionName "0.1.0"
+
+        externalNativeBuild {
+            ndk {
+                abiFilters "arm64-v8a"
+            }
+            cmake {
+                targets "xrsamples_xrinput"
+            }
+        }
+    }
+
+    sourceSets {
+        main {
+            manifest.srcFile "AndroidManifest.xml"
+            java.srcDirs = ["../third_party/Meta-OpenXR-SDK/Samples/XrSamples/XrInput/java"]
+            assets.srcDirs = ["../third_party/Meta-OpenXR-SDK/Samples/XrSamples/XrInput/assets"]
+            res.srcDirs = ["../third_party/Meta-OpenXR-SDK/Samples/XrSamples/XrInput/res"]
+        }
+    }
+
+    buildTypes {
+        debug {
+            debuggable true
+        }
+        release {
+            debuggable false
+        }
+    }
+
+    externalNativeBuild {
+        cmake {
+            path file("../third_party/Meta-OpenXR-SDK/Samples/CMakeLists.txt")
+        }
+    }
+
+    buildFeatures {
+        prefab true
+    }
+}
+
+dependencies {
+    implementation "org.khronos.openxr:openxr_loader_for_android:1.1.53"
+}
