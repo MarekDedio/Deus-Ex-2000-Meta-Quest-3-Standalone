@@ -1,0 +1,26 @@
+# Build outputs
+.gradle/
+build/
+**/build/
+.cxx/
+
+# Local Android configuration
+local.properties
+
+# IDE files
+.idea/
+*.iml
+
+# Original commercial game data must never enter this source tree
+GameData/
+*.dx
+*.u
+*.utx
+*.uax
+*.umx
+*.dll
+*.exe
+
+# Third-party source checkouts are reproducible and kept out of this repo
+third_party/
+
