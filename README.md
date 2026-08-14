@@ -6,8 +6,10 @@ the original game.
 
 ## Current milestone
 
-Build and launch a native Android ARM64 OpenXR smoke-test APK, then establish a
-read-only path for loading Unreal Engine 1 packages from user-supplied game data.
+The native Android ARM64 app launches on Quest 3, reads user-supplied UE1
+packages through a portable SurrealEngine-derived runtime, generates the
+training BSP at player scale, and submits it stereoscopically through OpenXR.
+This is an engine-port milestone, not a complete gameplay build.
 
 ## Data boundary
 
@@ -48,5 +50,8 @@ With one Quest in developer mode connected and authorized over USB:
 .\tools\Install-QuestSmokeTest.ps1
 ```
 
-The current APK proves native ARM64 packaging, OpenXR session creation, stereo
-rendering, head tracking, and controller input. It does not load the game yet.
+The current APK loads the training map's package tables, actors, PlayerStart,
+and BSP geometry on-device. It provides stereo rendering, head tracking, Touch
+controller models, smooth locomotion, and snap turning. It does not yet provide
+collision, materials, actor gameplay, the UnrealScript VM, audio, UI, saves, or
+campaign progression.

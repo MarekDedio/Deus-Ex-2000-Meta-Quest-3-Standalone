@@ -79,6 +79,21 @@
   API/serialization behavior until the UObject/save writer graph is linked.
 - The process remained alive and the Android crash buffer was empty after this
   device-side package check.
+- A portable package-table layer now uses SurrealEngine's upstream
+  `PackageStream`, `NameString`, `NameTableEntry`, `ImportTableEntry`, and
+  `ExportTableEntry` types. It validates file/table bounds, object references,
+  export payload extents, ANSI names, and UTF-16 names without requiring the
+  desktop package manager.
+- On-device table loads for both `00_Training.dx` and `DeusEx.u` matched the
+  independent decoder exactly (3,744/3,347/181 and 12,872/21,422/3,336
+  names/exports/imports respectively). The data gate returned true, all three
+  BSP chunks loaded, OpenXR initialized, and the crash buffer remained empty.
+- A focused physical-Quest baseline captured the clean launch and idle training
+  scene in a 29,715,080-byte Perfetto trace. At idle the process used 172,354 KB
+  total PSS and 319,900 KB RSS, including 128,116 KB attributed to graphics.
+  OpenXR reached FOCUSED at 72 Hz. Android `gfxinfo` reported zero ordinary UI
+  frames because rendering is submitted directly through the VR compositor, so
+  it is not used as a headset frame-rate result.
 
 ## Not yet verified
 
@@ -91,6 +106,7 @@
 
 ## Next engineering gate
 
-Decode the training actor collection and PlayerStart transform, render the BSP
-at UE1 player scale, and add locomotion/collision. Then resolve surface texture
-objects and lightmaps before moving into actor meshes, the VM, and gameplay.
+Expand the portable table runtime into export object streams and tagged
+properties, then use it to resolve surface textures, actor classes, and actor
+state. Add BSP collision/grounding and lightmaps before actor meshes, the VM,
+and gameplay.

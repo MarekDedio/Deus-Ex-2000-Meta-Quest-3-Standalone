@@ -14,6 +14,7 @@ add_library(surreal_portable_core STATIC
     "${SURREAL_ENGINE_ROOT}/Utils/StrTools.cpp"
     "${SURREAL_ENGINE_ROOT}/Package/NameString.cpp"
     surreal_package_stream_reader.cpp
+    surreal_portable_package_tables.cpp
     surreal_android_exception.cpp
 )
 target_compile_features(surreal_portable_core PUBLIC cxx_std_20)

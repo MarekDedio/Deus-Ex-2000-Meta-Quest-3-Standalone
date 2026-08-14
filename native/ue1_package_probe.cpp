@@ -5,6 +5,7 @@
 #include "Package/NameString.h"
 #include "Package/PackageStream.h"
 #include "Utils/File.h"
+#include "surreal_portable_package_tables.h"
 
 #include <algorithm>
 #include <cmath>
@@ -901,19 +902,23 @@ Java_dev_deusex_questvr_MainActivity_probeGameData(
     try {
         const auto portableFile = File::open_existing(root + "/Maps/00_Training.dx");
         const NameString packageName("00_Training");
-        PackageStream packageStream(nullptr, portableFile);
-        const std::uint32_t portableSignature = packageStream.ReadUInt32();
-        const std::uint16_t portableVersion = packageStream.ReadUInt16();
-        if (portableSignature != kUe1PackageSignature || portableVersion != 68) {
-            throw std::runtime_error("Surreal PackageStream rejected training package header");
-        }
+        const PortablePackageTables portableTraining =
+            LoadPortablePackageTables(root + "/Maps/00_Training.dx");
+        const PortablePackageTables portableScripts =
+            LoadPortablePackageTables(root + "/System/DeusEx.u");
         __android_log_print(
             ANDROID_LOG_INFO,
             kLogTag,
-            "Surreal PackageStream opened %s (%lld bytes, version %u)",
+            "Surreal tables loaded %s (%lld bytes, version %u, names=%zu exports=%zu imports=%zu); DeusEx.u names=%zu exports=%zu imports=%zu",
             packageName.ToString().c_str(),
             static_cast<long long>(portableFile->size()),
-            portableVersion);
+            portableTraining.version,
+            portableTraining.names.size(),
+            portableTraining.exports.size(),
+            portableTraining.imports.size(),
+            portableScripts.names.size(),
+            portableScripts.exports.size(),
+            portableScripts.imports.size());
     } catch (const std::exception& error) {
         __android_log_print(
             ANDROID_LOG_ERROR, kLogTag, "Surreal portable core failed: %s", error.what());
@@ -924,9 +929,26 @@ Java_dev_deusex_questvr_MainActivity_probeGameData(
     PackageSummary gameScripts{};
     const bool trainingValid = ProbePackage(root + "/Maps/00_Training.dx", training);
     const bool scriptsValid = ProbePackage(root + "/System/DeusEx.u", gameScripts);
+    bool portableTablesMatch = false;
+    try {
+        const PortablePackageTables portableTraining =
+            LoadPortablePackageTables(root + "/Maps/00_Training.dx");
+        const PortablePackageTables portableScripts =
+            LoadPortablePackageTables(root + "/System/DeusEx.u");
+        portableTablesMatch =
+            portableTraining.names.size() == training.nameCount &&
+            portableTraining.exports.size() == training.exportCount &&
+            portableTraining.imports.size() == training.importCount &&
+            portableScripts.names.size() == gameScripts.nameCount &&
+            portableScripts.exports.size() == gameScripts.exportCount &&
+            portableScripts.imports.size() == gameScripts.importCount;
+    } catch (const std::exception& error) {
+        __android_log_print(ANDROID_LOG_ERROR, kLogTag,
+            "Surreal portable table comparison failed: %s", error.what());
+    }
     const bool meshValid = trainingValid &&
         WriteWorldMesh(root + "/quest-world.mesh", training);
-    const bool valid = trainingValid && scriptsValid && meshValid;
+    const bool valid = trainingValid && scriptsValid && portableTablesMatch && meshValid;
 
     const std::string resultPath = root + "/quest-package-probe.txt";
     if (std::FILE* result = std::fopen(resultPath.c_str(), "wb")) {
