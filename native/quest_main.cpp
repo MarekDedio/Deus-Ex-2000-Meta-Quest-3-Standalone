@@ -1,4 +1,5 @@
 #include <openxr/openxr.h>
+#include <GLES3/gl3.h>
 
 #include <algorithm>
 #include <cstdint>
@@ -23,18 +24,22 @@ class TexturedGeometryRenderer {
         static const char* vertexShader = R"glsl(
             attribute highp vec4 Position;
             attribute highp vec2 TexCoord;
+            attribute lowp vec4 VertexColor;
             varying lowp vec2 oTexCoord;
+            varying mediump float oLayer;
             void main() {
                 gl_Position = TransformVertex(Position);
                 oTexCoord = TexCoord;
+                oLayer = VertexColor.r * 255.0;
             }
         )glsl";
         static const char* fragmentShader = R"glsl(
             precision lowp float;
-            uniform sampler2D Texture0;
+            uniform highp sampler2DArray Texture0;
             varying lowp vec2 oTexCoord;
+            varying mediump float oLayer;
             void main() {
-                gl_FragColor = texture2D(Texture0, oTexCoord);
+                gl_FragColor = texture(Texture0, vec3(fract(oTexCoord), floor(oLayer + 0.5)));
             }
         )glsl";
         static OVRFW::ovrProgramParm uniformParms[] = {
@@ -396,11 +401,13 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                 descriptor.attribs.normal.emplace_back(vertex.nx, vertex.ny, vertex.nz);
                 descriptor.attribs.uv0.emplace_back(vertex.u, vertex.v);
                 const float shade = 0.25f + 0.55f * (vertex.nz * 0.5f + 0.5f);
-                descriptor.attribs.color.emplace_back(
-                    materialSlot == 0 ? 0.75f * shade : 0.15f * shade,
-                    materialSlot == 0 ? 0.3f * shade : 0.8f * shade,
-                    materialSlot == 0 ? 0.9f * shade : 0.55f * shade,
-                    1.0f);
+                if (materialSlot == 0) {
+                    descriptor.attribs.color.emplace_back(
+                        static_cast<float>(vertex.materialSlot) / 255.0f, 1.0f, 1.0f, 1.0f);
+                } else {
+                    descriptor.attribs.color.emplace_back(
+                        0.15f * shade, 0.8f * shade, 0.55f * shade, 1.0f);
+                }
                 descriptor.indices.push_back(static_cast<OVRFW::TriangleIndex>(index));
             }
             for (std::uint32_t index = 0; index + 2 < vertexCount; index += 6) {
@@ -445,30 +452,58 @@ class DeusExQuestApp final : public OVRFW::XrApp {
 
     bool LoadFirstTexture() {
         constexpr const char* path =
-            "/data/user/0/dev.deusex.questvr.smoketest/files/DeusEx/quest-first-texture.rgba";
+            "/data/user/0/dev.deusex.questvr.smoketest/files/DeusEx/quest-material-array.rgba";
         std::FILE* file = std::fopen(path, "rb");
         if (file == nullptr) return false;
-        std::uint32_t magic{}, version{}, width{}, height{};
+        std::uint32_t magic{}, version{}, width{}, height{}, layers{};
         bool ok = std::fread(&magic, sizeof(magic), 1, file) == 1 &&
             std::fread(&version, sizeof(version), 1, file) == 1 &&
             std::fread(&width, sizeof(width), 1, file) == 1 &&
             std::fread(&height, sizeof(height), 1, file) == 1 &&
-            magic == 0x54515844u && version == 1 && width > 0 && height > 0 &&
-            width <= 8192 && height <= 8192;
+            std::fread(&layers, sizeof(layers), 1, file) == 1 &&
+            magic == 0x41515844u && version == 1 && width > 0 && height > 0 &&
+            layers > 0 && layers <= 255 && width <= 2048 && height <= 2048;
         std::vector<std::uint8_t> rgba;
         if (ok) {
-            rgba.resize(static_cast<std::size_t>(width) * height * 4u);
+            rgba.resize(static_cast<std::size_t>(width) * height * layers * 4u);
             ok = std::fread(rgba.data(), 1, rgba.size(), file) == rgba.size();
         }
         std::fclose(file);
         if (!ok) return false;
-        firstTexture_ = OVRFW::LoadRGBATextureFromMemory(
-            rgba.data(), static_cast<int>(width), static_cast<int>(height), false);
-        if (!firstTexture_.IsValid()) return false;
-        OVRFW::MakeTextureRepeat(firstTexture_);
-        OVRFW::MakeTextureTrilinear(firstTexture_);
-        ALOG("DeusExQuest: uploaded first UE1 material texture at %ux%u", width, height);
-        return true;
+        GLuint texture{};
+        glGenTextures(1, &texture);
+        glBindTexture(GL_TEXTURE_2D_ARRAY, texture);
+        glTexImage3D(
+            GL_TEXTURE_2D_ARRAY,
+            0,
+            GL_RGBA8,
+            static_cast<GLsizei>(width),
+            static_cast<GLsizei>(height),
+            static_cast<GLsizei>(layers),
+            0,
+            GL_RGBA,
+            GL_UNSIGNED_BYTE,
+            rgba.data());
+        glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_S, GL_REPEAT);
+        glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_T, GL_REPEAT);
+        glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glGenerateMipmap(GL_TEXTURE_2D_ARRAY);
+        const GLenum error = glGetError();
+        glBindTexture(GL_TEXTURE_2D_ARRAY, 0);
+        if (error != GL_NO_ERROR) {
+            if (texture != 0) glDeleteTextures(1, &texture);
+            ALOG("DeusExQuest: texture-array upload failed with GL error 0x%x", error);
+            return false;
+        }
+        firstTexture_ = OVRFW::GlTexture(
+            texture, GL_TEXTURE_2D_ARRAY, static_cast<int>(width), static_cast<int>(height));
+        ALOG(
+            "DeusExQuest: uploaded UE1 material array: %u layers at %ux%u",
+            layers,
+            width,
+            height);
+        return firstTexture_.IsValid();
     }
 
     std::vector<OVRFW::GeometryRenderer> worldRenderers_;

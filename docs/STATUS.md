@@ -133,6 +133,16 @@
   is a procedural `UWaterTexture`; its empty serialized image is correctly
   classified and initialized from its `UClamp`/`VClamp` dimensions, matching
   SurrealEngine's `UFractalTexture` load behavior.
+- All 71 materials are resampled into a 71-layer 256x256 RGBA texture-array
+  cache (18,612,244 bytes). Native surface UV scale is retained per source
+  dimension, and each vertex selects its texture-array layer. On Quest the
+  complete BSP now renders through three textured chunks with no flat fallback;
+  the array upload, mip generation, OpenXR initialization, and crash check all
+  pass. Visual UV inspection remains an in-headset task.
+- A 15-second Simpleperf run of the full-material idle scene recorded 6,638
+  samples with zero loss, representing about 11.1% of one CPU core across the
+  debug app. Total PSS was 210,234 KB and graphics 159,300 KB; collision hotspot
+  proportions remained comparable to the pre-material build.
 
 ## Not yet verified
 

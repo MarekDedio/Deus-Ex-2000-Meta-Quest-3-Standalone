@@ -127,6 +127,8 @@ struct PackageSummary {
     std::vector<std::int32_t> surfaceMaterials;
     std::vector<BspSurfaceGeometry> bspSurfaces;
     std::vector<std::string> materialNames;
+    std::vector<std::uint32_t> materialWidths;
+    std::vector<std::uint32_t> materialHeights;
     std::vector<BspVertexGeometry> bspVertices;
     std::vector<std::int32_t> levelActorReferences;
     std::uint32_t actorCount{};
@@ -818,6 +820,32 @@ bool WriteTextureCache(
     return ok;
 }
 
+bool WriteMaterialArrayCache(
+    const std::string& path,
+    std::uint32_t layerWidth,
+    std::uint32_t layerHeight,
+    std::uint32_t layerCount,
+    const std::vector<std::uint8_t>& rgba) {
+    const std::uint64_t expected = static_cast<std::uint64_t>(layerWidth) *
+        layerHeight * layerCount * 4u;
+    if (layerWidth == 0 || layerHeight == 0 || layerCount == 0 || rgba.size() != expected) {
+        return false;
+    }
+    std::FILE* file = std::fopen(path.c_str(), "wb");
+    if (file == nullptr) return false;
+    const std::uint32_t magic = 0x41515844u; // DXQA
+    const std::uint32_t version = 1;
+    const bool ok =
+        std::fwrite(&magic, sizeof(magic), 1, file) == 1 &&
+        std::fwrite(&version, sizeof(version), 1, file) == 1 &&
+        std::fwrite(&layerWidth, sizeof(layerWidth), 1, file) == 1 &&
+        std::fwrite(&layerHeight, sizeof(layerHeight), 1, file) == 1 &&
+        std::fwrite(&layerCount, sizeof(layerCount), 1, file) == 1 &&
+        std::fwrite(rgba.data(), 1, rgba.size(), file) == rgba.size();
+    std::fclose(file);
+    return ok;
+}
+
 bool WriteWorldMesh(const std::string& path, const PackageSummary& summary) {
     std::FILE* file = std::fopen(path.c_str(), "wb");
     if (file == nullptr) return false;
@@ -857,8 +885,14 @@ bool WriteWorldMesh(const std::string& path, const PackageSummary& summary) {
             static_cast<std::uint32_t>(node.surface) >= summary.bspSurfaces.size()) continue;
         const BspSurfaceGeometry& surface = summary.bspSurfaces[node.surface];
         if ((surface.flags & 0x00000001u) != 0) continue;
-        const bool textured = !summary.materialNames.empty() &&
-            ResolveObjectPath(surface.material, summary) == summary.materialNames.front();
+        const std::string materialPath = ResolveObjectPath(surface.material, summary);
+        const auto materialFound = std::lower_bound(
+            summary.materialNames.begin(), summary.materialNames.end(), materialPath);
+        const bool textured = materialFound != summary.materialNames.end() &&
+            *materialFound == materialPath;
+        const std::size_t materialLayer = textured
+            ? static_cast<std::size_t>(materialFound - summary.materialNames.begin())
+            : 0u;
         const bool uvValid = surface.basePoint >= 0 && surface.textureU >= 0 &&
             surface.textureV >= 0 &&
             static_cast<std::size_t>(surface.basePoint) < summary.points.size() &&
@@ -894,12 +928,20 @@ bool WriteWorldMesh(const std::string& path, const PackageSummary& summary) {
                         sourcePolygon[vertex], summary.points[surface.basePoint]);
                     const Vec3& textureU = summary.vectors[surface.textureU];
                     const Vec3& textureV = summary.vectors[surface.textureV];
+                    if (materialLayer >= summary.materialWidths.size() ||
+                        materialLayer >= summary.materialHeights.size()) {
+                        return MeshVertex{};
+                    }
                     u = (relative.x * textureU.x + relative.y * textureU.y +
-                        relative.z * textureU.z + surface.panU) / 128.0f;
+                        relative.z * textureU.z + surface.panU) /
+                        static_cast<float>(summary.materialWidths[materialLayer]);
                     v = (relative.x * textureV.x + relative.y * textureV.y +
-                        relative.z * textureV.z + surface.panV) / 128.0f;
+                        relative.z * textureV.z + surface.panV) /
+                        static_cast<float>(summary.materialHeights[materialLayer]);
                 }
-                return MeshVertex{polygon[vertex], vertexNormal, u, v, textured ? 0 : -1};
+                return MeshVertex{
+                    polygon[vertex], vertexNormal, u, v,
+                    textured ? static_cast<std::int32_t>(materialLayer) : -1};
             };
             std::vector<MeshVertex>& target = textured ? texturedVertices : flatVertices;
             target.push_back(makeVertex(0, normal));
@@ -1078,6 +1120,13 @@ Java_dev_deusex_questvr_MainActivity_probeGameData(
         std::map<std::string, PortablePackageTables> texturePackages;
         std::size_t decodedMaterials{};
         std::size_t proceduralMaterials{};
+        constexpr std::uint32_t layerWidth = 256;
+        constexpr std::uint32_t layerHeight = 256;
+        std::vector<std::uint8_t> materialArrayRgba;
+        materialArrayRgba.reserve(
+            training.materialNames.size() * layerWidth * layerHeight * 4u);
+        training.materialWidths.clear();
+        training.materialHeights.clear();
         for (const std::string& qualified : training.materialNames) {
           try {
             const std::size_t separator = qualified.find('.');
@@ -1157,6 +1206,21 @@ Java_dev_deusex_questvr_MainActivity_probeGameData(
                     mipmaps.front().pixels.size(),
                     palette.size());
             }
+            training.materialWidths.push_back(topMip.width);
+            training.materialHeights.push_back(topMip.height);
+            for (std::uint32_t y = 0; y < layerHeight; ++y) {
+                const std::uint32_t sourceY = y * topMip.height / layerHeight;
+                for (std::uint32_t x = 0; x < layerWidth; ++x) {
+                    const std::uint32_t sourceX = x * topMip.width / layerWidth;
+                    const std::uint8_t paletteIndex =
+                        topMip.pixels[static_cast<std::size_t>(sourceY) * topMip.width + sourceX];
+                    const std::uint32_t color = palette[paletteIndex];
+                    materialArrayRgba.push_back(static_cast<std::uint8_t>(color));
+                    materialArrayRgba.push_back(static_cast<std::uint8_t>(color >> 8u));
+                    materialArrayRgba.push_back(static_cast<std::uint8_t>(color >> 16u));
+                    materialArrayRgba.push_back(255u);
+                }
+            }
             ++decodedMaterials;
           } catch (const std::exception& error) {
             __android_log_print(ANDROID_LOG_ERROR, kLogTag,
@@ -1166,6 +1230,14 @@ Java_dev_deusex_questvr_MainActivity_probeGameData(
         }
         firstTextureValid = firstTextureValid &&
             decodedMaterials == training.materialNames.size();
+        if (firstTextureValid) {
+            firstTextureValid = WriteMaterialArrayCache(
+                root + "/quest-material-array.rgba",
+                layerWidth,
+                layerHeight,
+                static_cast<std::uint32_t>(decodedMaterials),
+                materialArrayRgba);
+        }
         __android_log_print(
             firstTextureValid ? ANDROID_LOG_INFO : ANDROID_LOG_ERROR,
             kLogTag,
