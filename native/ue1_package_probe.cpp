@@ -1,6 +1,11 @@
 #include <jni.h>
 #include <android/log.h>
 
+#include "Utils/Array.h"
+#include "Package/NameString.h"
+#include "Package/PackageStream.h"
+#include "Utils/File.h"
+
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
@@ -892,6 +897,28 @@ Java_dev_deusex_questvr_MainActivity_probeGameData(
     }
     const std::string root(rootChars);
     env->ReleaseStringUTFChars(gameRoot, rootChars);
+
+    try {
+        const auto portableFile = File::open_existing(root + "/Maps/00_Training.dx");
+        const NameString packageName("00_Training");
+        PackageStream packageStream(nullptr, portableFile);
+        const std::uint32_t portableSignature = packageStream.ReadUInt32();
+        const std::uint16_t portableVersion = packageStream.ReadUInt16();
+        if (portableSignature != kUe1PackageSignature || portableVersion != 68) {
+            throw std::runtime_error("Surreal PackageStream rejected training package header");
+        }
+        __android_log_print(
+            ANDROID_LOG_INFO,
+            kLogTag,
+            "Surreal PackageStream opened %s (%lld bytes, version %u)",
+            packageName.ToString().c_str(),
+            static_cast<long long>(portableFile->size()),
+            portableVersion);
+    } catch (const std::exception& error) {
+        __android_log_print(
+            ANDROID_LOG_ERROR, kLogTag, "Surreal portable core failed: %s", error.what());
+        return JNI_FALSE;
+    }
 
     PackageSummary training{};
     PackageSummary gameScripts{};

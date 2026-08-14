@@ -70,6 +70,13 @@
 - Head-relative smooth locomotion is mapped to the left thumbstick at 2.2 m/s;
   the right thumbstick performs latched 30-degree snap turns. The rebuilt app
   launched, loaded all three geometry chunks, and remained crash-free.
+- A real pinned-SurrealEngine ARM64 target now builds its portable `File`,
+  `NameString`, `StrTools`, and `PackageStream` layers with an Android exception
+  shim. On-device execution opened the 4,431,551-byte training package and
+  independently validated UE1 version 68 through `PackageStream`.
+- The upstream package reader and writer share one desktop translation unit;
+  the Android build uses a tracked reader-only translation unit with matching
+  API/serialization behavior until the UObject/save writer graph is linked.
 - The process remained alive and the Android crash buffer was empty after this
   device-side package check.
 
@@ -77,6 +84,8 @@
 
 - Adding BSP collision/grounding and confirming player-scale framing and
   locomotion in-headset.
+- Expanding the Android Surreal runtime from package streams into Package,
+  UObject/reflection, property classes, and UnrealScript bytecode execution.
 - Training map rendering or gameplay.
 - Campaign compatibility.
 
