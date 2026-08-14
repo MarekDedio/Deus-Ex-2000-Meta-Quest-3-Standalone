@@ -1272,6 +1272,20 @@ Java_dev_deusex_questvr_MainActivity_probeGameData(
             firstProperties.bytesConsumed == training.firstExportPropertyBytes &&
             !firstProperties.properties.empty() &&
             firstProperties.properties.front().name.ToString() == training.firstExportProperty;
+        std::size_t decodedActors{};
+        std::size_t decodedActorProperties{};
+        for (std::int32_t reference : training.levelActorReferences) {
+            if (reference <= 0) continue;
+            if (static_cast<std::size_t>(reference) > portableTraining.exports.size()) {
+                throw std::runtime_error("Training actor reference is outside portable exports");
+            }
+            const PortablePropertyStream actorProperties =
+                LoadPortableExportProperties(
+                    portableTraining, static_cast<std::size_t>(reference - 1));
+            decodedActorProperties += actorProperties.properties.size();
+            ++decodedActors;
+        }
+        portableTablesMatch = portableTablesMatch && decodedActors > 0;
         __android_log_print(
             ANDROID_LOG_INFO,
             kLogTag,
@@ -1279,6 +1293,12 @@ Java_dev_deusex_questvr_MainActivity_probeGameData(
             firstProperties.properties.size(),
             training.firstExportName.c_str(),
             firstProperties.bytesConsumed);
+        __android_log_print(
+            ANDROID_LOG_INFO,
+            kLogTag,
+            "Surreal actor streams decoded %zu actors with %zu tagged properties",
+            decodedActors,
+            decodedActorProperties);
     } catch (const std::exception& error) {
         __android_log_print(ANDROID_LOG_ERROR, kLogTag,
             "Surreal portable table comparison failed: %s", error.what());
@@ -1298,8 +1318,28 @@ Java_dev_deusex_questvr_MainActivity_probeGameData(
             std::fclose(manifest);
         }
     }
+    bool actorManifestValid = false;
+    if (trainingValid) {
+        std::map<std::string, std::uint32_t> actorClasses;
+        for (std::int32_t reference : training.levelActorReferences) {
+            if (reference <= 0 || static_cast<std::size_t>(reference) > training.exports.size()) {
+                continue;
+            }
+            ++actorClasses[ResolveExportClass(training.exports[reference - 1], training)];
+        }
+        if (std::FILE* manifest = std::fopen((root + "/quest-actor-classes.txt").c_str(), "wb")) {
+            actorManifestValid = !actorClasses.empty();
+            for (const auto& entry : actorClasses) {
+                if (std::fprintf(manifest, "%s=%u\n", entry.first.c_str(), entry.second) < 0) {
+                    actorManifestValid = false;
+                    break;
+                }
+            }
+            std::fclose(manifest);
+        }
+    }
     const bool valid = trainingValid && scriptsValid && portableTablesMatch &&
-        firstTextureValid && meshValid && materialManifestValid;
+        firstTextureValid && meshValid && materialManifestValid && actorManifestValid;
 
     const std::string resultPath = root + "/quest-package-probe.txt";
     if (std::FILE* result = std::fopen(resultPath.c_str(), "wb")) {

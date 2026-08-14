@@ -143,6 +143,12 @@
   samples with zero loss, representing about 11.1% of one CPU core across the
   debug app. Total PSS was 210,234 KB and graphics 159,300 KB; collision hotspot
   proportions remained comparable to the pre-material build.
+- The portable export-property reader now validates every non-null serialized
+  actor referenced by the training `Level`: 1,308 actors and 16,285 tagged
+  properties decode successfully on Quest. An authoritative histogram contains
+  52 classes, led by 992 `Brush`, 80 `Spotlight`, 66 `Light`, 25
+  `DeusExMover`, 19 `AmbientSound`, 18 `DataLinkTrigger`, and the expected AI,
+  trigger, mover, inventory, camera, keypad, decoration, and NPC classes.
 
 ## Not yet verified
 
