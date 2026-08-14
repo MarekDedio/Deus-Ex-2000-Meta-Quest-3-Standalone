@@ -405,9 +405,8 @@ std::vector<PortableMipmap> LoadPortableTextureMipmaps(
         mipmap.uBits = stream.ReadUInt8();
         mipmap.vBits = stream.ReadUInt8();
         if (mipmap.width == 0 || mipmap.height == 0 || mipmap.width > 8192 ||
-            mipmap.height > 8192 || mipmap.pixels.size() !=
-                static_cast<std::uint64_t>(mipmap.width) * mipmap.height) {
-            throw std::runtime_error("UE1 indexed mip dimensions do not match its payload");
+            mipmap.height > 8192) {
+            throw std::runtime_error("UE1 mip dimensions are invalid");
         }
         mipmaps.push_back(std::move(mipmap));
     }

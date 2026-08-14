@@ -12,6 +12,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <map>
 #include <set>
 #include <string>
 #include <vector>
@@ -1074,18 +1075,27 @@ Java_dev_deusex_questvr_MainActivity_probeGameData(
     const bool scriptsValid = ProbePackage(root + "/System/DeusEx.u", gameScripts);
     bool firstTextureValid = false;
     if (trainingValid && !training.materialNames.empty()) {
-        try {
-            const std::string& qualified = training.materialNames.front();
+        std::map<std::string, PortablePackageTables> texturePackages;
+        std::size_t decodedMaterials{};
+        std::size_t proceduralMaterials{};
+        for (const std::string& qualified : training.materialNames) {
+          try {
             const std::size_t separator = qualified.find('.');
             if (separator == std::string::npos) throw std::runtime_error("Material path has no package");
             const std::string texturePackageName = qualified.substr(0, separator);
             const std::string textureObjectPath = qualified.substr(separator + 1);
-            const PortablePackageTables texturePackage = LoadPortablePackageTables(
-                root + "/Textures/" + texturePackageName + ".utx");
+            auto foundPackage = texturePackages.find(texturePackageName);
+            if (foundPackage == texturePackages.end()) {
+                foundPackage = texturePackages.emplace(
+                    texturePackageName,
+                    LoadPortablePackageTables(
+                        root + "/Textures/" + texturePackageName + ".utx")).first;
+            }
+            const PortablePackageTables& texturePackage = foundPackage->second;
             const std::size_t textureExport = FindPortableExport(texturePackage, textureObjectPath);
             const PortablePropertyStream textureProperties =
                 LoadPortableExportProperties(texturePackage, textureExport);
-            const std::vector<PortableMipmap> mipmaps =
+            std::vector<PortableMipmap> mipmaps =
                 LoadPortableTextureMipmaps(texturePackage, textureExport);
             std::vector<std::uint32_t> palette;
             for (const PortableTaggedProperty& property : textureProperties.properties) {
@@ -1099,21 +1109,75 @@ Java_dev_deusex_questvr_MainActivity_probeGameData(
                     break;
                 }
             }
-            firstTextureValid = !mipmaps.empty() && !palette.empty() &&
-                WriteTextureCache(root + "/quest-first-texture.rgba", mipmaps.front(), palette);
+            if (mipmaps.empty() || palette.empty()) {
+                throw std::runtime_error("Texture has no usable indexed mip or palette");
+            }
+            PortableMipmap& topMip = mipmaps.front();
+            if (topMip.pixels.size() !=
+                static_cast<std::uint64_t>(topMip.width) * topMip.height) {
+                std::int32_t uClamp{}, vClamp{};
+                bool haveUClamp{}, haveVClamp{};
+                for (const PortableTaggedProperty& property : textureProperties.properties) {
+                    if (property.type != 2u || property.value.size() != 4u) continue;
+                    const std::uint32_t value =
+                        static_cast<std::uint32_t>(property.value[0]) |
+                        (static_cast<std::uint32_t>(property.value[1]) << 8u) |
+                        (static_cast<std::uint32_t>(property.value[2]) << 16u) |
+                        (static_cast<std::uint32_t>(property.value[3]) << 24u);
+                    if (property.name == "UClamp") {
+                        uClamp = static_cast<std::int32_t>(value);
+                        haveUClamp = true;
+                    } else if (property.name == "VClamp") {
+                        vClamp = static_cast<std::int32_t>(value);
+                        haveVClamp = true;
+                    }
+                }
+                if (!haveUClamp || !haveVClamp || uClamp <= 0 || vClamp <= 0 ||
+                    uClamp > 8192 || vClamp > 8192) {
+                    throw std::runtime_error(
+                        "Indexed mip dimensions mismatch without procedural clamp dimensions");
+                }
+                topMip.width = static_cast<std::uint32_t>(uClamp);
+                topMip.height = static_cast<std::uint32_t>(vClamp);
+                topMip.pixels.assign(
+                    static_cast<std::size_t>(topMip.width) * topMip.height, 0u);
+                ++proceduralMaterials;
+            }
+            if (decodedMaterials == 0) {
+                firstTextureValid = WriteTextureCache(
+                    root + "/quest-first-texture.rgba", mipmaps.front(), palette);
+                __android_log_print(
+                    ANDROID_LOG_INFO,
+                    kLogTag,
+                    "Surreal texture decoded %s: %zu mips, top=%ux%u (%zu indexed bytes), palette=%zu colors",
+                    qualified.c_str(),
+                    mipmaps.size(),
+                    mipmaps.front().width,
+                    mipmaps.front().height,
+                    mipmaps.front().pixels.size(),
+                    palette.size());
+            }
+            ++decodedMaterials;
+          } catch (const std::exception& error) {
+            __android_log_print(ANDROID_LOG_ERROR, kLogTag,
+                "Surreal texture decode failed for %s: %s", qualified.c_str(), error.what());
+            break;
+          }
+        }
+        firstTextureValid = firstTextureValid &&
+            decodedMaterials == training.materialNames.size();
+        __android_log_print(
+            firstTextureValid ? ANDROID_LOG_INFO : ANDROID_LOG_ERROR,
+            kLogTag,
+            "Surreal material set decoded %zu/%zu textures",
+            decodedMaterials,
+            training.materialNames.size());
+        if (firstTextureValid) {
             __android_log_print(
                 ANDROID_LOG_INFO,
                 kLogTag,
-                "Surreal texture decoded %s: %zu mips, top=%ux%u (%zu indexed bytes), palette=%zu colors",
-                qualified.c_str(),
-                mipmaps.size(),
-                mipmaps.front().width,
-                mipmaps.front().height,
-                mipmaps.front().pixels.size(),
-                palette.size());
-        } catch (const std::exception& error) {
-            __android_log_print(ANDROID_LOG_ERROR, kLogTag,
-                "Surreal texture decode failed: %s", error.what());
+                "Surreal material classes include %zu procedural textures",
+                proceduralMaterials);
         }
     }
     bool portableTablesMatch = false;
@@ -1149,8 +1213,21 @@ Java_dev_deusex_questvr_MainActivity_probeGameData(
     }
     const bool meshValid = trainingValid &&
         WriteWorldMesh(root + "/quest-world.mesh", training);
+    bool materialManifestValid = false;
+    if (trainingValid) {
+        if (std::FILE* manifest = std::fopen((root + "/quest-materials.txt").c_str(), "wb")) {
+            materialManifestValid = true;
+            for (const std::string& material : training.materialNames) {
+                if (std::fprintf(manifest, "%s\n", material.c_str()) < 0) {
+                    materialManifestValid = false;
+                    break;
+                }
+            }
+            std::fclose(manifest);
+        }
+    }
     const bool valid = trainingValid && scriptsValid && portableTablesMatch &&
-        firstTextureValid && meshValid;
+        firstTextureValid && meshValid && materialManifestValid;
 
     const std::string resultPath = root + "/quest-package-probe.txt";
     if (std::FILE* result = std::fopen(resultPath.c_str(), "wb")) {

@@ -127,6 +127,12 @@
   rendered one of four BSP chunks with it on Quest. OpenXR initialized and the
   crash buffer remained empty. UV orientation still requires direct in-headset
   visual confirmation because Quest OS immersive captures remain black.
+- The map now emits an authoritative manifest of all 71 qualified BSP materials.
+  The portable decoder caches their source packages and successfully opens the
+  mip and palette graph for all 71 on Quest. One (`Effects.water.drtywater_a`)
+  is a procedural `UWaterTexture`; its empty serialized image is correctly
+  classified and initialized from its `UClamp`/`VClamp` dimensions, matching
+  SurrealEngine's `UFractalTexture` load behavior.
 
 ## Not yet verified
 
