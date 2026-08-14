@@ -23,7 +23,16 @@ struct PackageSummary {
     std::uint32_t importCount{};
     std::uint32_t importOffset{};
     std::uint32_t namesParsed{};
+    std::uint32_t importsParsed{};
+    std::uint32_t exportsParsed{};
     std::string firstName;
+    std::string firstExportName;
+    std::string firstExportClass;
+    std::int32_t firstExportSize{};
+    std::int32_t firstExportOffset{-1};
+    std::uint32_t firstExportHash{};
+    std::vector<std::string> names;
+    std::vector<std::string> importObjectNames;
 };
 
 bool ReadExact(std::FILE* file, void* output, std::size_t bytes) {
@@ -49,6 +58,15 @@ bool ReadU32(std::FILE* file, std::uint32_t& output) {
         (static_cast<std::uint32_t>(bytes[1]) << 8u) |
         (static_cast<std::uint32_t>(bytes[2]) << 16u) |
         (static_cast<std::uint32_t>(bytes[3]) << 24u);
+    return true;
+}
+
+bool ReadI32(std::FILE* file, std::int32_t& output) {
+    std::uint32_t bits{};
+    if (!ReadU32(file, bits)) {
+        return false;
+    }
+    output = static_cast<std::int32_t>(bits);
     return true;
 }
 
@@ -96,12 +114,109 @@ bool ReadNameTable(std::FILE* file, PackageSummary& summary) {
             bytes.back() != '\0' || !ReadU32(file, flags)) {
             return false;
         }
-        if (index == 0) {
-            summary.firstName.assign(bytes.data(), bytes.size() - 1);
-        }
+        summary.names.emplace_back(bytes.data(), bytes.size() - 1);
+        if (index == 0) summary.firstName = summary.names.back();
         ++summary.namesParsed;
     }
     return summary.namesParsed == summary.nameCount && !summary.firstName.empty();
+}
+
+bool IsNameIndexValid(std::int32_t value, const PackageSummary& summary) {
+    return value >= 0 && static_cast<std::uint32_t>(value) < summary.nameCount;
+}
+
+bool IsObjectReferenceValid(std::int32_t value, const PackageSummary& summary) {
+    return value == 0 ||
+        (value > 0 && static_cast<std::uint32_t>(value) <= summary.exportCount) ||
+        (value < 0 && static_cast<std::uint64_t>(-static_cast<std::int64_t>(value)) <=
+            summary.importCount);
+}
+
+bool ReadImportTable(std::FILE* file, PackageSummary& summary) {
+    if (std::fseek(file, static_cast<long>(summary.importOffset), SEEK_SET) != 0) {
+        return false;
+    }
+    for (std::uint32_t index = 0; index < summary.importCount; ++index) {
+        std::int32_t classPackage{}, className{}, objectOuter{}, objectName{};
+        if (!ReadCompactIndex(file, classPackage) ||
+            !ReadCompactIndex(file, className) ||
+            !ReadI32(file, objectOuter) ||
+            !ReadCompactIndex(file, objectName) ||
+            !IsNameIndexValid(classPackage, summary) ||
+            !IsNameIndexValid(className, summary) ||
+            !IsNameIndexValid(objectName, summary) ||
+            !IsObjectReferenceValid(objectOuter, summary)) {
+            return false;
+        }
+        summary.importObjectNames.push_back(summary.names[objectName]);
+        ++summary.importsParsed;
+    }
+    return summary.importsParsed == summary.importCount;
+}
+
+bool ReadExportTable(std::FILE* file, long fileLength, PackageSummary& summary) {
+    if (std::fseek(file, static_cast<long>(summary.exportOffset), SEEK_SET) != 0) {
+        return false;
+    }
+    for (std::uint32_t index = 0; index < summary.exportCount; ++index) {
+        std::int32_t objectClass{}, objectBase{}, objectOuter{}, objectName{};
+        std::int32_t objectFlags{}, objectSize{}, objectOffset{-1};
+        if (!ReadCompactIndex(file, objectClass) ||
+            !ReadCompactIndex(file, objectBase) ||
+            !ReadI32(file, objectOuter) ||
+            !ReadCompactIndex(file, objectName) ||
+            !ReadI32(file, objectFlags) ||
+            !ReadCompactIndex(file, objectSize) ||
+            (objectSize > 0 && !ReadCompactIndex(file, objectOffset)) ||
+            !IsObjectReferenceValid(objectClass, summary) ||
+            !IsObjectReferenceValid(objectBase, summary) ||
+            !IsObjectReferenceValid(objectOuter, summary) ||
+            !IsNameIndexValid(objectName, summary) || objectSize < 0 ||
+            (objectSize > 0 && (objectOffset < 0 ||
+                static_cast<std::uint64_t>(objectOffset) + objectSize >
+                    static_cast<std::uint64_t>(fileLength)))) {
+            return false;
+        }
+        if (index == 0) {
+            summary.firstExportName = summary.names[objectName];
+            summary.firstExportSize = objectSize;
+            summary.firstExportOffset = objectOffset;
+            if (objectClass < 0) {
+                const std::uint64_t importIndex =
+                    static_cast<std::uint64_t>(-static_cast<std::int64_t>(objectClass) - 1);
+                if (importIndex < summary.importObjectNames.size()) {
+                    summary.firstExportClass = summary.importObjectNames[importIndex];
+                }
+            }
+        }
+        ++summary.exportsParsed;
+    }
+    return summary.exportsParsed == summary.exportCount &&
+        !summary.firstExportName.empty();
+}
+
+bool HashFirstExport(std::FILE* file, PackageSummary& summary) {
+    if (summary.firstExportSize <= 0 || summary.firstExportOffset < 0 ||
+        std::fseek(file, summary.firstExportOffset, SEEK_SET) != 0) {
+        return false;
+    }
+
+    std::uint32_t hash = 2166136261u;
+    std::int32_t remaining = summary.firstExportSize;
+    std::uint8_t buffer[4096];
+    while (remaining > 0) {
+        const std::size_t chunk = static_cast<std::size_t>(
+            remaining < static_cast<std::int32_t>(sizeof(buffer)) ? remaining : sizeof(buffer));
+        if (!ReadExact(file, buffer, chunk)) {
+            return false;
+        }
+        for (std::size_t index = 0; index < chunk; ++index) {
+            hash = (hash ^ buffer[index]) * 16777619u;
+        }
+        remaining -= static_cast<std::int32_t>(chunk);
+    }
+    summary.firstExportHash = hash;
+    return true;
 }
 
 bool ProbePackage(const std::string& path, PackageSummary& summary) {
@@ -146,30 +261,38 @@ bool ProbePackage(const std::string& path, PackageSummary& summary) {
     }
 
     const bool namesValid = ReadNameTable(file, summary);
+    const bool importsValid = namesValid && ReadImportTable(file, summary);
+    const bool exportsValid = importsValid && ReadExportTable(file, length, summary);
+    const bool payloadValid = exportsValid && HashFirstExport(file, summary);
     std::fclose(file);
-    if (!namesValid) {
+    if (!namesValid || !importsValid || !exportsValid || !payloadValid) {
         __android_log_print(
             ANDROID_LOG_ERROR,
             kLogTag,
-            "Invalid UE1 name table: %s parsed=%u expected=%u first=%s",
+            "Invalid UE1 tables: %s names=%u/%u imports=%u/%u exports=%u/%u",
             path.c_str(),
             summary.namesParsed,
             summary.nameCount,
-            summary.firstName.c_str());
+            summary.importsParsed,
+            summary.importCount,
+            summary.exportsParsed,
+            summary.exportCount);
         return false;
     }
 
     __android_log_print(
         ANDROID_LOG_INFO,
         kLogTag,
-        "UE1 package OK: %s version=%u names=%u exports=%u imports=%u bytes=%ld first=%s",
+        "UE1 package OK: %s version=%u names=%u exports=%u imports=%u bytes=%ld firstExport=%s class=%s hash=%08x",
         path.c_str(),
         summary.version,
         summary.nameCount,
         summary.exportCount,
         summary.importCount,
         length,
-        summary.firstName.c_str());
+        summary.firstExportName.c_str(),
+        summary.firstExportClass.c_str(),
+        summary.firstExportHash);
     return true;
 }
 
@@ -202,21 +325,35 @@ Java_dev_deusex_questvr_MainActivity_probeGameData(
         std::fprintf(
             result,
             "result=%s\n"
-            "training.version=%u\ntraining.names=%u\ntraining.names_parsed=%u\ntraining.first_name=%s\ntraining.exports=%u\ntraining.imports=%u\n"
-            "scripts.version=%u\nscripts.names=%u\nscripts.names_parsed=%u\nscripts.first_name=%s\nscripts.exports=%u\nscripts.imports=%u\n",
+            "training.version=%u\ntraining.names=%u\ntraining.names_parsed=%u\ntraining.first_name=%s\ntraining.exports=%u\ntraining.exports_parsed=%u\ntraining.first_export=%s\ntraining.first_export_class=%s\ntraining.first_export_size=%d\ntraining.first_export_offset=%d\ntraining.first_export_fnv1a=%08x\ntraining.imports=%u\ntraining.imports_parsed=%u\n"
+            "scripts.version=%u\nscripts.names=%u\nscripts.names_parsed=%u\nscripts.first_name=%s\nscripts.exports=%u\nscripts.exports_parsed=%u\nscripts.first_export=%s\nscripts.first_export_class=%s\nscripts.first_export_size=%d\nscripts.first_export_offset=%d\nscripts.first_export_fnv1a=%08x\nscripts.imports=%u\nscripts.imports_parsed=%u\n",
             valid ? "ok" : "failed",
             training.version,
             training.nameCount,
             training.namesParsed,
             training.firstName.c_str(),
             training.exportCount,
+            training.exportsParsed,
+            training.firstExportName.c_str(),
+            training.firstExportClass.c_str(),
+            training.firstExportSize,
+            training.firstExportOffset,
+            training.firstExportHash,
             training.importCount,
+            training.importsParsed,
             gameScripts.version,
             gameScripts.nameCount,
             gameScripts.namesParsed,
             gameScripts.firstName.c_str(),
             gameScripts.exportCount,
-            gameScripts.importCount);
+            gameScripts.exportsParsed,
+            gameScripts.firstExportName.c_str(),
+            gameScripts.firstExportClass.c_str(),
+            gameScripts.firstExportSize,
+            gameScripts.firstExportOffset,
+            gameScripts.firstExportHash,
+            gameScripts.importCount,
+            gameScripts.importsParsed);
         std::fclose(result);
     } else {
         __android_log_print(

@@ -32,18 +32,24 @@
   their UE1 signature, version 68, and package-table offsets.
 - The training map reported 3,744 names, 3,347 exports, and 181 imports.
 - `DeusEx.u` reported 12,872 names, 21,422 exports, and 3,336 imports.
+- Complete name, import, and export tables were decoded on-device for both
+  packages, including compact indices and object-reference validation.
+- The training map's first export resolved to `LevelInfo0` of class `LevelInfo`.
+  Its 70-byte serialized payload was opened at offset 55,744 and fingerprinted
+  as FNV-1a `8a9c93bc`.
+- The first `DeusEx.u` export, `DeusExPlayer`, was opened as a 17,523-byte
+  serialized payload and fingerprinted as FNV-1a `039b4771`.
 - The process remained alive and the Android crash buffer was empty after this
   device-side package check.
 
 ## Not yet verified
 
-- Parsing the complete UE1 name, import, and export tables on-device.
+- Deserializing UE1 object properties and level/model structures on-device.
 - Training map rendering or gameplay.
 - Campaign compatibility.
 
 ## Next engineering gate
 
-Complete name/import/export table parsing on the Quest, then resolve and open
-the training map's first exported objects. In parallel, replace the visual
-smoke-test scene with the portable UE1 renderer and VM subset while preserving
-OpenXR tracking and controller input.
+Deserialize `LevelInfo0` properties and the training map's model/actor exports.
+Then replace the visual smoke-test scene with the portable UE1 renderer and VM
+subset while preserving OpenXR tracking and controller input.
