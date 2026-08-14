@@ -12,6 +12,15 @@ namespace {
 constexpr const char* kLogTag = "DeusExQuest";
 constexpr std::uint32_t kUe1PackageSignature = 0x9E2A83C1u;
 
+struct ExportRecord {
+    std::int32_t classReference{};
+    std::int32_t outerReference{};
+    std::int32_t nameIndex{};
+    std::int32_t size{};
+    std::int32_t offset{-1};
+    std::int32_t flags{};
+};
+
 struct PackageSummary {
     std::uint16_t version{};
     std::uint16_t licenseeMode{};
@@ -38,6 +47,25 @@ struct PackageSummary {
     std::string firstExportProperty;
     std::vector<std::string> names;
     std::vector<std::string> importObjectNames;
+    std::vector<ExportRecord> exports;
+    std::uint32_t levelExportCount{};
+    std::uint32_t modelExportCount{};
+    std::string levelName;
+    std::int32_t levelSize{};
+    std::int32_t levelOffset{-1};
+    std::string firstModelName;
+    std::int32_t firstModelSize{};
+    std::int32_t firstModelOffset{-1};
+    std::uint32_t rootModelCount{};
+    std::string rootModelName;
+    std::int32_t rootModelSize{};
+    std::int32_t rootModelOffset{-1};
+    std::uint32_t vectorCount{};
+    std::uint32_t pointCount{};
+    std::uint32_t bspNodeCount{};
+    std::uint32_t surfaceCount{};
+    std::uint32_t vertexCount{};
+    std::uint32_t zoneCount{};
 };
 
 bool ReadExact(std::FILE* file, void* output, std::size_t bytes) {
@@ -196,10 +224,63 @@ bool ReadExportTable(std::FILE* file, long fileLength, PackageSummary& summary) 
                 }
             }
         }
+        summary.exports.push_back(
+            {objectClass, objectOuter, objectName, objectSize, objectOffset, objectFlags});
         ++summary.exportsParsed;
     }
     return summary.exportsParsed == summary.exportCount &&
         !summary.firstExportName.empty();
+}
+
+std::string ResolveExportClass(const ExportRecord& record, const PackageSummary& summary) {
+    if (record.classReference < 0) {
+        const std::uint64_t index = static_cast<std::uint64_t>(
+            -static_cast<std::int64_t>(record.classReference) - 1);
+        if (index < summary.importObjectNames.size()) return summary.importObjectNames[index];
+    } else if (record.classReference > 0) {
+        const std::uint64_t index = static_cast<std::uint64_t>(record.classReference - 1);
+        if (index < summary.exports.size()) return summary.names[summary.exports[index].nameIndex];
+    }
+    return {};
+}
+
+void InventoryWorldExports(PackageSummary& summary) {
+    std::int32_t levelReference{};
+    for (std::size_t index = 0; index < summary.exports.size(); ++index) {
+        const ExportRecord& record = summary.exports[index];
+        const std::string className = ResolveExportClass(record, summary);
+        if (className == "Level") {
+            ++summary.levelExportCount;
+            if (summary.levelName.empty()) {
+                levelReference = static_cast<std::int32_t>(index + 1);
+                summary.levelName = summary.names[record.nameIndex];
+                summary.levelSize = record.size;
+                summary.levelOffset = record.offset;
+            }
+        }
+        if (className == "Model") {
+            ++summary.modelExportCount;
+            if (summary.firstModelName.empty()) {
+                summary.firstModelName = summary.names[record.nameIndex];
+                summary.firstModelSize = record.size;
+                summary.firstModelOffset = record.offset;
+            }
+        }
+    }
+
+    if (levelReference != 0) {
+        for (const ExportRecord& record : summary.exports) {
+            if (record.outerReference == levelReference &&
+                ResolveExportClass(record, summary) == "Model") {
+                ++summary.rootModelCount;
+                if (summary.rootModelName.empty()) {
+                    summary.rootModelName = summary.names[record.nameIndex];
+                    summary.rootModelSize = record.size;
+                    summary.rootModelOffset = record.offset;
+                }
+            }
+        }
+    }
 }
 
 bool HashFirstExport(std::FILE* file, PackageSummary& summary) {
@@ -299,6 +380,167 @@ bool ReadFirstExportProperties(std::FILE* file, PackageSummary& summary) {
     return false;
 }
 
+bool FindPropertyEnd(
+    std::FILE* file,
+    PackageSummary& summary,
+    const ExportRecord& record,
+    long& propertyEnd) {
+    const auto savedClassReference = summary.firstExportClassReference;
+    const auto savedFlags = summary.firstExportFlags;
+    const auto savedSize = summary.firstExportSize;
+    const auto savedOffset = summary.firstExportOffset;
+    const auto savedCount = summary.firstExportPropertyCount;
+    const auto savedBytes = summary.firstExportPropertyBytes;
+    const auto savedProperty = summary.firstExportProperty;
+
+    summary.firstExportClassReference = record.classReference;
+    summary.firstExportFlags = record.flags;
+    summary.firstExportSize = record.size;
+    summary.firstExportOffset = record.offset;
+    summary.firstExportPropertyCount = 0;
+    summary.firstExportPropertyBytes = 0;
+    summary.firstExportProperty.clear();
+    const bool valid = ReadFirstExportProperties(file, summary);
+    propertyEnd = valid ? std::ftell(file) : -1;
+
+    summary.firstExportClassReference = savedClassReference;
+    summary.firstExportFlags = savedFlags;
+    summary.firstExportSize = savedSize;
+    summary.firstExportOffset = savedOffset;
+    summary.firstExportPropertyCount = savedCount;
+    summary.firstExportPropertyBytes = savedBytes;
+    summary.firstExportProperty = savedProperty;
+    return valid && propertyEnd >= 0;
+}
+
+bool SkipSerializedString(std::FILE* file, long objectEnd) {
+    std::int32_t length{};
+    if (!ReadCompactIndex(file, length) || length < 0 || length > 65536) return false;
+    const long position = std::ftell(file);
+    return position >= 0 && length <= objectEnd - position &&
+        std::fseek(file, length, SEEK_CUR) == 0;
+}
+
+bool ReadRootLevelModel(std::FILE* file, PackageSummary& summary) {
+    const ExportRecord* level = nullptr;
+    for (const ExportRecord& record : summary.exports) {
+        if (ResolveExportClass(record, summary) == "Level") {
+            level = &record;
+            break;
+        }
+    }
+    if (level == nullptr || level->size <= 0 || level->offset < 0) return false;
+
+    long propertyEnd{};
+    if (!FindPropertyEnd(file, summary, *level, propertyEnd)) return false;
+    const long objectEnd = static_cast<long>(level->offset) + level->size;
+    std::int32_t actorCount{}, actorCapacity{};
+    if (!ReadI32(file, actorCount) || !ReadI32(file, actorCapacity) ||
+        actorCount < 0 || actorCount > 100000 || actorCapacity < actorCount) return false;
+    for (std::int32_t index = 0; index < actorCount; ++index) {
+        std::int32_t actorReference{};
+        if (!ReadCompactIndex(file, actorReference) ||
+            !IsObjectReferenceValid(actorReference, summary)) return false;
+    }
+    for (int index = 0; index < 4; ++index) {
+        if (!SkipSerializedString(file, objectEnd)) return false;
+    }
+    std::int32_t optionCount{};
+    if (!ReadCompactIndex(file, optionCount) || optionCount < 0 || optionCount > 1024) return false;
+    for (std::int32_t index = 0; index < optionCount; ++index) {
+        if (!SkipSerializedString(file, objectEnd)) return false;
+    }
+    std::int32_t port{}, unknown{};
+    std::int32_t modelReference{};
+    if (!ReadI32(file, port) || !ReadI32(file, unknown) ||
+        !ReadCompactIndex(file, modelReference) || modelReference <= 0) return false;
+    const std::uint64_t modelIndex = static_cast<std::uint64_t>(modelReference - 1);
+    if (modelIndex >= summary.exports.size()) return false;
+    const ExportRecord& model = summary.exports[modelIndex];
+    if (ResolveExportClass(model, summary) != "Model") return false;
+
+    summary.rootModelCount = 1;
+    summary.rootModelName = summary.names[model.nameIndex];
+    summary.rootModelSize = model.size;
+    summary.rootModelOffset = model.offset;
+    return std::ftell(file) <= objectEnd;
+}
+
+bool SkipBytes(std::FILE* file, long objectEnd, std::uint64_t bytes) {
+    const long position = std::ftell(file);
+    return position >= 0 && bytes <= static_cast<std::uint64_t>(objectEnd - position) &&
+        std::fseek(file, static_cast<long>(bytes), SEEK_CUR) == 0;
+}
+
+bool ReadArrayCount(std::FILE* file, std::uint32_t limit, std::uint32_t& output) {
+    std::int32_t count{};
+    if (!ReadCompactIndex(file, count) || count < 0 ||
+        static_cast<std::uint32_t>(count) > limit) return false;
+    output = static_cast<std::uint32_t>(count);
+    return true;
+}
+
+bool ReadRootModelGeometry(std::FILE* file, PackageSummary& summary) {
+    const ExportRecord* model = nullptr;
+    for (const ExportRecord& record : summary.exports) {
+        if (record.offset == summary.rootModelOffset &&
+            ResolveExportClass(record, summary) == "Model") {
+            model = &record;
+            break;
+        }
+    }
+    if (model == nullptr) return false;
+    long propertyEnd{};
+    if (!FindPropertyEnd(file, summary, *model, propertyEnd)) return false;
+    const long objectEnd = static_cast<long>(model->offset) + model->size;
+
+    // UPrimitive bounding box (24 bytes + validity) and bounding sphere (16 bytes).
+    if (!SkipBytes(file, objectEnd, 41) ||
+        !ReadArrayCount(file, 1000000, summary.vectorCount) ||
+        !SkipBytes(file, objectEnd, static_cast<std::uint64_t>(summary.vectorCount) * 12) ||
+        !ReadArrayCount(file, 1000000, summary.pointCount) ||
+        !SkipBytes(file, objectEnd, static_cast<std::uint64_t>(summary.pointCount) * 12) ||
+        !ReadArrayCount(file, 1000000, summary.bspNodeCount)) return false;
+
+    for (std::uint32_t index = 0; index < summary.bspNodeCount; ++index) {
+        if (!SkipBytes(file, objectEnd, 25)) return false; // plane, zone mask, flags
+        for (int field = 0; field < 9; ++field) {
+            std::int32_t value{};
+            if (!ReadCompactIndex(file, value)) return false;
+        }
+        if (!SkipBytes(file, objectEnd, 9)) return false; // vertex count and leaf ids
+    }
+
+    if (!ReadArrayCount(file, 1000000, summary.surfaceCount)) return false;
+    for (std::uint32_t index = 0; index < summary.surfaceCount; ++index) {
+        std::int32_t material{};
+        if (!ReadCompactIndex(file, material) ||
+            !IsObjectReferenceValid(material, summary) || !SkipBytes(file, objectEnd, 4)) return false;
+        for (int field = 0; field < 6; ++field) {
+            std::int32_t value{};
+            if (!ReadCompactIndex(file, value)) return false;
+        }
+        std::int32_t brushActor{};
+        if (!SkipBytes(file, objectEnd, 4) || !ReadCompactIndex(file, brushActor) ||
+            !IsObjectReferenceValid(brushActor, summary)) return false;
+    }
+
+    if (!ReadArrayCount(file, 2000000, summary.vertexCount)) return false;
+    for (std::uint32_t index = 0; index < summary.vertexCount; ++index) {
+        std::int32_t vertex{}, side{};
+        if (!ReadCompactIndex(file, vertex) || !ReadCompactIndex(file, side)) return false;
+    }
+    std::int32_t sharedSides{}, zones{};
+    if (!ReadI32(file, sharedSides) || !ReadI32(file, zones) || zones < 0 || zones > 64) return false;
+    summary.zoneCount = static_cast<std::uint32_t>(zones);
+    for (std::int32_t index = 0; index < zones; ++index) {
+        std::int32_t zoneActor{};
+        if (!ReadCompactIndex(file, zoneActor) || !IsObjectReferenceValid(zoneActor, summary) ||
+            !SkipBytes(file, objectEnd, 16)) return false;
+    }
+    return std::ftell(file) <= objectEnd;
+}
+
 bool ProbePackage(const std::string& path, PackageSummary& summary) {
     std::FILE* file = std::fopen(path.c_str(), "rb");
     if (file == nullptr) {
@@ -343,10 +585,16 @@ bool ProbePackage(const std::string& path, PackageSummary& summary) {
     const bool namesValid = ReadNameTable(file, summary);
     const bool importsValid = namesValid && ReadImportTable(file, summary);
     const bool exportsValid = importsValid && ReadExportTable(file, length, summary);
+    if (exportsValid) InventoryWorldExports(summary);
     const bool payloadValid = exportsValid && HashFirstExport(file, summary);
     const bool propertiesValid = payloadValid && ReadFirstExportProperties(file, summary);
+    const bool levelValid = propertiesValid &&
+        (summary.levelExportCount == 0 || ReadRootLevelModel(file, summary));
+    const bool geometryValid = levelValid &&
+        (summary.rootModelCount == 0 || ReadRootModelGeometry(file, summary));
     std::fclose(file);
-    if (!namesValid || !importsValid || !exportsValid || !payloadValid || !propertiesValid) {
+    if (!namesValid || !importsValid || !exportsValid || !payloadValid ||
+        !propertiesValid || !levelValid || !geometryValid) {
         __android_log_print(
             ANDROID_LOG_ERROR,
             kLogTag,
@@ -406,7 +654,7 @@ Java_dev_deusex_questvr_MainActivity_probeGameData(
         std::fprintf(
             result,
             "result=%s\n"
-            "training.version=%u\ntraining.names=%u\ntraining.names_parsed=%u\ntraining.first_name=%s\ntraining.exports=%u\ntraining.exports_parsed=%u\ntraining.first_export=%s\ntraining.first_export_class=%s\ntraining.first_export_size=%d\ntraining.first_export_offset=%d\ntraining.first_export_fnv1a=%08x\ntraining.first_export_properties=%u\ntraining.first_property=%s\ntraining.property_bytes=%u\ntraining.imports=%u\ntraining.imports_parsed=%u\n"
+            "training.version=%u\ntraining.names=%u\ntraining.names_parsed=%u\ntraining.first_name=%s\ntraining.exports=%u\ntraining.exports_parsed=%u\ntraining.level_exports=%u\ntraining.level_name=%s\ntraining.level_size=%d\ntraining.level_offset=%d\ntraining.model_exports=%u\ntraining.first_model=%s\ntraining.first_model_size=%d\ntraining.first_model_offset=%d\ntraining.root_models=%u\ntraining.root_model=%s\ntraining.root_model_size=%d\ntraining.root_model_offset=%d\ntraining.vectors=%u\ntraining.points=%u\ntraining.bsp_nodes=%u\ntraining.surfaces=%u\ntraining.vertices=%u\ntraining.zones=%u\ntraining.first_export=%s\ntraining.first_export_class=%s\ntraining.first_export_size=%d\ntraining.first_export_offset=%d\ntraining.first_export_fnv1a=%08x\ntraining.first_export_properties=%u\ntraining.first_property=%s\ntraining.property_bytes=%u\ntraining.imports=%u\ntraining.imports_parsed=%u\n"
             "scripts.version=%u\nscripts.names=%u\nscripts.names_parsed=%u\nscripts.first_name=%s\nscripts.exports=%u\nscripts.exports_parsed=%u\nscripts.first_export=%s\nscripts.first_export_class=%s\nscripts.first_export_size=%d\nscripts.first_export_offset=%d\nscripts.first_export_fnv1a=%08x\nscripts.first_export_properties=%u\nscripts.first_property=%s\nscripts.property_bytes=%u\nscripts.imports=%u\nscripts.imports_parsed=%u\n",
             valid ? "ok" : "failed",
             training.version,
@@ -415,6 +663,24 @@ Java_dev_deusex_questvr_MainActivity_probeGameData(
             training.firstName.c_str(),
             training.exportCount,
             training.exportsParsed,
+            training.levelExportCount,
+            training.levelName.c_str(),
+            training.levelSize,
+            training.levelOffset,
+            training.modelExportCount,
+            training.firstModelName.c_str(),
+            training.firstModelSize,
+            training.firstModelOffset,
+            training.rootModelCount,
+            training.rootModelName.c_str(),
+            training.rootModelSize,
+            training.rootModelOffset,
+            training.vectorCount,
+            training.pointCount,
+            training.bspNodeCount,
+            training.surfaceCount,
+            training.vertexCount,
+            training.zoneCount,
             training.firstExportName.c_str(),
             training.firstExportClass.c_str(),
             training.firstExportSize,

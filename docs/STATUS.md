@@ -45,18 +45,25 @@
   serialized payload and fingerprinted as FNV-1a `039b4771`.
 - Zero-class-reference exports such as `DeusExPlayer` are now distinguished as
   serialized `UClass`/`UStruct` definitions rather than instance properties.
+- The single training `Level` export was resolved as `MyLevel` (3,906 bytes),
+  whose serialized body references `Model36` as the root world model.
+- The 3,085,440-byte `Model36` payload was decoded on-device using UE1 version
+  68's embedded model layout: 601 vectors, 16,399 points, 9,524 BSP nodes,
+  5,333 surfaces, 142,494 vertex references, and 8 zones.
+- Geometry parsing validates compact indices, object references, array limits,
+  and object boundaries; the Quest process remained alive without a crash.
 - The process remained alive and the Android crash buffer was empty after this
   device-side package check.
 
 ## Not yet verified
 
-- Deserializing UE1 level/model geometry structures and actor collections.
+- Retaining decoded BSP records and producing renderable indexed geometry.
 - Training map rendering or gameplay.
 - Campaign compatibility.
 
 ## Next engineering gate
 
-Locate and deserialize the training map's `Level`, `Model`, BSP, surface,
-vertex, and actor exports. Then replace the visual smoke-test scene with the
-portable UE1 renderer and VM subset while preserving OpenXR tracking and
-controller input.
+Retain the decoded BSP nodes, surfaces, points, and vertex pool; triangulate
+visible surfaces into GPU buffers and display the first untextured training-map
+geometry through the existing OpenXR frame loop. Actor/object retention,
+materials, the VM, and gameplay follow that visual geometry gate.
