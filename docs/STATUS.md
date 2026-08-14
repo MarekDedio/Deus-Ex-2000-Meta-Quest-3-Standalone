@@ -110,6 +110,14 @@
   indexing increased total PSS from 172,354 KB to 178,017 KB while graphics
   remained 128,116 KB. Movement feel and doorway/step behavior still require
   direct in-headset confirmation.
+- Training BSP surface object references now resolve through complete import and
+  export outer chains into 71 unique qualified materials. The first is
+  `Cmd_tunnels.Metal.Ractivesign_1`.
+- The portable asset layer resolves that material into `Cmd_tunnels.utx`, finds
+  its grouped texture export, parses eight indexed mip levels (128x128 / 16,384
+  bytes at the top level), follows its tagged `Palette` object reference, and
+  decodes all 256 colors on Quest. The data gate, collision mesh, and OpenXR
+  runtime remain healthy after the asset load.
 
 ## Not yet verified
 

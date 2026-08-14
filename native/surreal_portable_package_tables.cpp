@@ -142,6 +142,14 @@ public:
         Require(count);
         position_ += count;
     }
+    std::vector<std::uint8_t> ReadBytes(std::size_t count) {
+        Require(count);
+        std::vector<std::uint8_t> result(
+            bytes_.begin() + static_cast<std::ptrdiff_t>(position_),
+            bytes_.begin() + static_cast<std::ptrdiff_t>(position_ + count));
+        position_ += count;
+        return result;
+    }
     std::uint32_t Tell() const { return static_cast<std::uint32_t>(position_); }
 
 private:
@@ -159,6 +167,32 @@ const NameString& ReadPayloadName(PayloadReader& reader, const PortablePackageTa
     const std::int32_t index = reader.ReadIndex();
     ValidateNameIndex(index, package.names.size());
     return package.names[static_cast<std::size_t>(index)].Name;
+}
+
+std::string ResolvePortableObjectPath(
+    std::int32_t reference,
+    const PortablePackageTables& package,
+    int depth = 0) {
+    if (reference == 0 || depth > 32) return {};
+    std::int32_t outer{};
+    std::int32_t nameIndex{-1};
+    if (reference > 0) {
+        const std::size_t index = static_cast<std::size_t>(reference - 1);
+        if (index >= package.exports.size()) return {};
+        const ExportTableEntry& entry = package.exports[index];
+        outer = entry.ObjOuter;
+        nameIndex = entry.ObjName;
+    } else {
+        const std::size_t index = static_cast<std::size_t>(-static_cast<std::int64_t>(reference) - 1);
+        if (index >= package.imports.size()) return {};
+        const ImportTableEntry& entry = package.imports[index];
+        outer = entry.ObjOuter;
+        nameIndex = entry.ObjName;
+    }
+    ValidateNameIndex(nameIndex, package.names.size());
+    const std::string prefix = ResolvePortableObjectPath(outer, package, depth + 1);
+    const std::string& name = package.names[static_cast<std::size_t>(nameIndex)].Name.ToString();
+    return prefix.empty() ? name : prefix + "." + name;
 }
 
 }  // namespace
@@ -316,7 +350,104 @@ PortablePropertyStream LoadPortableExportProperties(
         }
 
         property.valueOffset = reader.Tell();
-        if (property.type != 3u) reader.Skip(property.size);
+        if (property.type != 3u) property.value = reader.ReadBytes(property.size);
         result.properties.push_back(std::move(property));
     }
+}
+
+std::size_t FindPortableExport(
+    const PortablePackageTables& package,
+    const std::string& objectPath) {
+    for (std::size_t index = 0; index < package.exports.size(); ++index) {
+        if (ResolvePortableObjectPath(
+                static_cast<std::int32_t>(index + 1), package) == objectPath) {
+            return index;
+        }
+    }
+    throw std::runtime_error("UE1 export was not found: " + objectPath);
+}
+
+std::vector<PortableMipmap> LoadPortableTextureMipmaps(
+    const PortablePackageTables& package,
+    std::size_t exportIndex) {
+    if (exportIndex >= package.exports.size()) {
+        throw std::runtime_error("UE1 texture export index is outside the table");
+    }
+    const ExportTableEntry& entry = package.exports[exportIndex];
+    const PortablePropertyStream properties = LoadPortableExportProperties(package, exportIndex);
+    if (properties.bytesConsumed >= static_cast<std::uint32_t>(entry.ObjSize)) {
+        throw std::runtime_error("UE1 texture has no mipmap payload");
+    }
+
+    const std::shared_ptr<File> file = File::open_existing(package.sourcePath);
+    PackageStream stream(nullptr, file);
+    stream.Seek(static_cast<std::uint32_t>(entry.ObjOffset) + properties.bytesConsumed);
+    const std::uint8_t mipCount = stream.ReadUInt8();
+    if (mipCount == 0 || mipCount > 32) throw std::runtime_error("UE1 mip count is invalid");
+
+    std::vector<PortableMipmap> mipmaps;
+    mipmaps.reserve(mipCount);
+    const std::uint64_t objectEnd =
+        static_cast<std::uint64_t>(entry.ObjOffset) + static_cast<std::uint64_t>(entry.ObjSize);
+    for (std::uint8_t index = 0; index < mipCount; ++index) {
+        if (package.version >= 63) stream.ReadUInt32();
+        const std::int32_t byteCount = stream.ReadIndex();
+        if (byteCount < 0 || byteCount > 64 * 1024 * 1024 ||
+            static_cast<std::uint64_t>(stream.Tell()) + static_cast<std::uint64_t>(byteCount) + 10u >
+                objectEnd) {
+            throw std::runtime_error("UE1 mip payload is outside the texture export");
+        }
+        PortableMipmap mipmap;
+        mipmap.pixels.resize(static_cast<std::size_t>(byteCount));
+        stream.ReadBytes(mipmap.pixels.data(), static_cast<std::uint32_t>(mipmap.pixels.size()));
+        mipmap.width = stream.ReadUInt32();
+        mipmap.height = stream.ReadUInt32();
+        mipmap.uBits = stream.ReadUInt8();
+        mipmap.vBits = stream.ReadUInt8();
+        if (mipmap.width == 0 || mipmap.height == 0 || mipmap.width > 8192 ||
+            mipmap.height > 8192 || mipmap.pixels.size() !=
+                static_cast<std::uint64_t>(mipmap.width) * mipmap.height) {
+            throw std::runtime_error("UE1 indexed mip dimensions do not match its payload");
+        }
+        mipmaps.push_back(std::move(mipmap));
+    }
+    return mipmaps;
+}
+
+std::int32_t DecodePortableObjectReference(const PortableTaggedProperty& property) {
+    if (property.type != 5u || property.value.empty()) {
+        throw std::runtime_error("UE1 property is not an object reference");
+    }
+    PayloadReader reader(property.value);
+    const std::int32_t reference = reader.ReadIndex();
+    if (reader.Tell() != property.value.size()) {
+        throw std::runtime_error("UE1 object-reference property has trailing bytes");
+    }
+    return reference;
+}
+
+std::vector<std::uint32_t> LoadPortablePalette(
+    const PortablePackageTables& package,
+    std::size_t exportIndex) {
+    if (exportIndex >= package.exports.size()) {
+        throw std::runtime_error("UE1 palette export index is outside the table");
+    }
+    const ExportTableEntry& entry = package.exports[exportIndex];
+    const PortablePropertyStream properties = LoadPortableExportProperties(package, exportIndex);
+    const std::shared_ptr<File> file = File::open_existing(package.sourcePath);
+    PackageStream stream(nullptr, file);
+    stream.Seek(static_cast<std::uint32_t>(entry.ObjOffset) + properties.bytesConsumed);
+    const std::int32_t colorCount = stream.ReadIndex();
+    if (colorCount <= 0 || colorCount > 65'536 ||
+        static_cast<std::uint64_t>(stream.Tell()) +
+            static_cast<std::uint64_t>(colorCount) * sizeof(std::uint32_t) >
+            static_cast<std::uint64_t>(entry.ObjOffset) + static_cast<std::uint64_t>(entry.ObjSize)) {
+        throw std::runtime_error("UE1 palette payload is outside the export");
+    }
+    std::vector<std::uint32_t> colors(static_cast<std::size_t>(colorCount));
+    stream.ReadBytes(colors.data(), static_cast<std::uint32_t>(colors.size() * sizeof(colors[0])));
+    if (package.version < 66) {
+        for (std::uint32_t& color : colors) color |= 0xff000000u;
+    }
+    return colors;
 }

@@ -25,6 +25,7 @@ struct PortableTaggedProperty {
     std::uint32_t size{};
     std::uint32_t valueOffset{};
     bool boolValue{};
+    std::vector<std::uint8_t> value;
 };
 
 struct PortablePropertyStream {
@@ -32,7 +33,25 @@ struct PortablePropertyStream {
     std::uint32_t bytesConsumed{};
 };
 
+struct PortableMipmap {
+    std::vector<std::uint8_t> pixels;
+    std::uint32_t width{};
+    std::uint32_t height{};
+    std::uint8_t uBits{};
+    std::uint8_t vBits{};
+};
+
 PortablePackageTables LoadPortablePackageTables(const std::string& path);
 PortablePropertyStream LoadPortableExportProperties(
+    const PortablePackageTables& package,
+    std::size_t exportIndex);
+std::size_t FindPortableExport(
+    const PortablePackageTables& package,
+    const std::string& objectPath);
+std::vector<PortableMipmap> LoadPortableTextureMipmaps(
+    const PortablePackageTables& package,
+    std::size_t exportIndex);
+std::int32_t DecodePortableObjectReference(const PortableTaggedProperty& property);
+std::vector<std::uint32_t> LoadPortablePalette(
     const PortablePackageTables& package,
     std::size_t exportIndex);

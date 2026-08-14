@@ -12,6 +12,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -27,6 +28,13 @@ struct ExportRecord {
     std::int32_t size{};
     std::int32_t offset{-1};
     std::int32_t flags{};
+};
+
+struct ImportRecord {
+    std::int32_t classPackage{};
+    std::int32_t className{};
+    std::int32_t outerReference{};
+    std::int32_t nameIndex{};
 };
 
 struct Vec3 {
@@ -76,6 +84,7 @@ struct PackageSummary {
     std::string firstExportProperty;
     std::vector<std::string> names;
     std::vector<std::string> importObjectNames;
+    std::vector<ImportRecord> imports;
     std::vector<ExportRecord> exports;
     std::uint32_t levelExportCount{};
     std::uint32_t modelExportCount{};
@@ -100,6 +109,8 @@ struct PackageSummary {
     std::vector<Vec3> points;
     std::vector<BspNodeGeometry> bspNodes;
     std::vector<std::uint32_t> surfaceFlags;
+    std::vector<std::int32_t> surfaceMaterials;
+    std::vector<std::string> materialNames;
     std::vector<BspVertexGeometry> bspVertices;
     std::vector<std::int32_t> levelActorReferences;
     std::uint32_t actorCount{};
@@ -231,9 +242,33 @@ bool ReadImportTable(std::FILE* file, PackageSummary& summary) {
             return false;
         }
         summary.importObjectNames.push_back(summary.names[objectName]);
+        summary.imports.push_back({classPackage, className, objectOuter, objectName});
         ++summary.importsParsed;
     }
     return summary.importsParsed == summary.importCount;
+}
+
+std::string ResolveObjectPath(
+    std::int32_t reference,
+    const PackageSummary& summary,
+    int depth = 0) {
+    if (reference == 0 || depth > 32) return {};
+    std::int32_t outer{};
+    std::int32_t nameIndex{-1};
+    if (reference > 0) {
+        const std::size_t index = static_cast<std::size_t>(reference - 1);
+        if (index >= summary.exports.size()) return {};
+        outer = summary.exports[index].outerReference;
+        nameIndex = summary.exports[index].nameIndex;
+    } else {
+        const std::size_t index = static_cast<std::size_t>(-static_cast<std::int64_t>(reference) - 1);
+        if (index >= summary.imports.size()) return {};
+        outer = summary.imports[index].outerReference;
+        nameIndex = summary.imports[index].nameIndex;
+    }
+    if (!IsNameIndexValid(nameIndex, summary)) return {};
+    const std::string prefix = ResolveObjectPath(outer, summary, depth + 1);
+    return prefix.empty() ? summary.names[nameIndex] : prefix + "." + summary.names[nameIndex];
 }
 
 bool ReadExportTable(std::FILE* file, long fileLength, PackageSummary& summary) {
@@ -670,6 +705,16 @@ bool ReadRootModelGeometry(std::FILE* file, PackageSummary& summary) {
         if (!SkipBytes(file, objectEnd, 4) || !ReadCompactIndex(file, brushActor) ||
             !IsObjectReferenceValid(brushActor, summary)) return false;
         summary.surfaceFlags.push_back(polyFlags);
+        summary.surfaceMaterials.push_back(material);
+    }
+
+    {
+        std::set<std::string> uniqueMaterials;
+        for (std::int32_t material : summary.surfaceMaterials) {
+            const std::string path = ResolveObjectPath(material, summary);
+            if (!path.empty()) uniqueMaterials.insert(path);
+        }
+        summary.materialNames.assign(uniqueMaterials.begin(), uniqueMaterials.end());
     }
 
     if (!ReadArrayCount(file, 2000000, summary.vertexCount)) return false;
@@ -878,6 +923,14 @@ bool ProbePackage(const std::string& path, PackageSummary& summary) {
         summary.firstExportName.c_str(),
         summary.firstExportClass.c_str(),
         summary.firstExportHash);
+    if (!summary.materialNames.empty()) {
+        __android_log_print(
+            ANDROID_LOG_INFO,
+            kLogTag,
+            "UE1 world materials: %zu unique, first=%s",
+            summary.materialNames.size(),
+            summary.materialNames.front().c_str());
+    }
     return true;
 }
 
@@ -929,6 +982,49 @@ Java_dev_deusex_questvr_MainActivity_probeGameData(
     PackageSummary gameScripts{};
     const bool trainingValid = ProbePackage(root + "/Maps/00_Training.dx", training);
     const bool scriptsValid = ProbePackage(root + "/System/DeusEx.u", gameScripts);
+    bool firstTextureValid = false;
+    if (trainingValid && !training.materialNames.empty()) {
+        try {
+            const std::string& qualified = training.materialNames.front();
+            const std::size_t separator = qualified.find('.');
+            if (separator == std::string::npos) throw std::runtime_error("Material path has no package");
+            const std::string texturePackageName = qualified.substr(0, separator);
+            const std::string textureObjectPath = qualified.substr(separator + 1);
+            const PortablePackageTables texturePackage = LoadPortablePackageTables(
+                root + "/Textures/" + texturePackageName + ".utx");
+            const std::size_t textureExport = FindPortableExport(texturePackage, textureObjectPath);
+            const PortablePropertyStream textureProperties =
+                LoadPortableExportProperties(texturePackage, textureExport);
+            const std::vector<PortableMipmap> mipmaps =
+                LoadPortableTextureMipmaps(texturePackage, textureExport);
+            std::vector<std::uint32_t> palette;
+            for (const PortableTaggedProperty& property : textureProperties.properties) {
+                if (property.name == "Palette") {
+                    const std::int32_t paletteReference = DecodePortableObjectReference(property);
+                    if (paletteReference <= 0) {
+                        throw std::runtime_error("First texture palette is not a local export");
+                    }
+                    palette = LoadPortablePalette(
+                        texturePackage, static_cast<std::size_t>(paletteReference - 1));
+                    break;
+                }
+            }
+            firstTextureValid = !mipmaps.empty() && !palette.empty();
+            __android_log_print(
+                ANDROID_LOG_INFO,
+                kLogTag,
+                "Surreal texture decoded %s: %zu mips, top=%ux%u (%zu indexed bytes), palette=%zu colors",
+                qualified.c_str(),
+                mipmaps.size(),
+                mipmaps.front().width,
+                mipmaps.front().height,
+                mipmaps.front().pixels.size(),
+                palette.size());
+        } catch (const std::exception& error) {
+            __android_log_print(ANDROID_LOG_ERROR, kLogTag,
+                "Surreal texture decode failed: %s", error.what());
+        }
+    }
     bool portableTablesMatch = false;
     try {
         const PortablePackageTables portableTraining =
@@ -962,7 +1058,8 @@ Java_dev_deusex_questvr_MainActivity_probeGameData(
     }
     const bool meshValid = trainingValid &&
         WriteWorldMesh(root + "/quest-world.mesh", training);
-    const bool valid = trainingValid && scriptsValid && portableTablesMatch && meshValid;
+    const bool valid = trainingValid && scriptsValid && portableTablesMatch &&
+        firstTextureValid && meshValid;
 
     const std::string resultPath = root + "/quest-package-probe.txt";
     if (std::FILE* result = std::fopen(resultPath.c_str(), "wb")) {
@@ -970,6 +1067,7 @@ Java_dev_deusex_questvr_MainActivity_probeGameData(
             result,
             "result=%s\n"
             "training.version=%u\ntraining.names=%u\ntraining.names_parsed=%u\ntraining.first_name=%s\ntraining.exports=%u\ntraining.exports_parsed=%u\ntraining.level_exports=%u\ntraining.level_name=%s\ntraining.level_size=%d\ntraining.level_offset=%d\ntraining.actors=%u\ntraining.player_start=%s\ntraining.player_start_class=%s\ntraining.player_start_location=%.3f,%.3f,%.3f\ntraining.model_exports=%u\ntraining.first_model=%s\ntraining.first_model_size=%d\ntraining.first_model_offset=%d\ntraining.root_models=%u\ntraining.root_model=%s\ntraining.root_model_size=%d\ntraining.root_model_offset=%d\ntraining.vectors=%u\ntraining.points=%u\ntraining.bsp_nodes=%u\ntraining.surfaces=%u\ntraining.vertices=%u\ntraining.zones=%u\ntraining.first_export=%s\ntraining.first_export_class=%s\ntraining.first_export_size=%d\ntraining.first_export_offset=%d\ntraining.first_export_fnv1a=%08x\ntraining.first_export_properties=%u\ntraining.first_property=%s\ntraining.property_bytes=%u\ntraining.imports=%u\ntraining.imports_parsed=%u\n"
+            "training.materials=%zu\ntraining.first_material=%s\n"
             "scripts.version=%u\nscripts.names=%u\nscripts.names_parsed=%u\nscripts.first_name=%s\nscripts.exports=%u\nscripts.exports_parsed=%u\nscripts.first_export=%s\nscripts.first_export_class=%s\nscripts.first_export_size=%d\nscripts.first_export_offset=%d\nscripts.first_export_fnv1a=%08x\nscripts.first_export_properties=%u\nscripts.first_property=%s\nscripts.property_bytes=%u\nscripts.imports=%u\nscripts.imports_parsed=%u\n",
             valid ? "ok" : "failed",
             training.version,
@@ -1012,6 +1110,8 @@ Java_dev_deusex_questvr_MainActivity_probeGameData(
             training.firstExportPropertyBytes,
             training.importCount,
             training.importsParsed,
+            training.materialNames.size(),
+            training.materialNames.empty() ? "" : training.materialNames.front().c_str(),
             gameScripts.version,
             gameScripts.nameCount,
             gameScripts.namesParsed,
