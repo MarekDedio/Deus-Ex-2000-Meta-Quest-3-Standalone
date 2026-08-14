@@ -6,6 +6,7 @@
 #include <cmath>
 #include <cstring>
 #include <stdexcept>
+#include <set>
 #include <unordered_map>
 #include <utility>
 
@@ -28,6 +29,9 @@ public:
     std::unique_ptr<PortableClassDescriptor> classDescriptor;
     std::vector<PortableTaggedProperty> instanceProperties;
     std::unordered_map<std::string, std::string> objectPropertyPaths;
+    std::string sourcePath;
+    std::size_t exportIndex{};
+    std::unique_ptr<PortableLodMesh> lodMesh;
 
 protected:
     ~RuntimeObject() override {
@@ -313,6 +317,9 @@ PortableRuntimeSummary InitializePortableRuntime(
         for (PortableReflectionObject& reflection : slice.graph.objects) {
             reflection.objectPath = slice.name + "." + reflection.objectPath;
             RuntimeObject* object = GC::Alloc<RuntimeObject>(reflection, nullptr);
+            object->sourcePath = package.sourcePath;
+            object->exportIndex =
+                persistentRuntime->get()->exports.size() - slice.first;
             persistentRuntime->get()->exports.push_back(object);
             persistentQualifiedObjects[reflection.objectPath] = object;
         }
@@ -452,6 +459,8 @@ PortableMapRuntimeSummary LoadPortableRuntimeMap(
     for (PortableReflectionObject reflection : graph.objects) {
         reflection.objectPath = packageName + "." + reflection.objectPath;
         RuntimeObject* object = GC::Alloc<RuntimeObject>(reflection, nullptr);
+        object->sourcePath = package.sourcePath;
+        object->exportIndex = persistentRuntime->get()->exports.size() - first;
         persistentRuntime->get()->exports.push_back(object);
         persistentQualifiedObjects[reflection.objectPath] = object;
     }
@@ -562,6 +571,10 @@ std::vector<PortableActorSnapshot> GetPortableRuntimeMapActors() {
             return std::string();
         };
         snapshot.meshPath = resolveInheritedObjectProperty("Mesh");
+        const auto mesh = persistentQualifiedObjects.find(snapshot.meshPath);
+        if (mesh != persistentQualifiedObjects.end()) {
+            snapshot.meshClassPath = mesh->second->reflection.metaClass;
+        }
         snapshot.texturePath = resolveInheritedObjectProperty("Texture");
         for (const PortableTaggedProperty& property : object->instanceProperties) {
             if (property.name == "Location" && property.type == 10u &&
@@ -577,4 +590,42 @@ std::vector<PortableActorSnapshot> GetPortableRuntimeMapActors() {
         snapshots.push_back(std::move(snapshot));
     }
     return snapshots;
+}
+
+PortableActorMeshSummary DecodePortableRuntimeActorMeshes() {
+    PortableActorMeshSummary summary;
+    const std::vector<PortableActorSnapshot> actors = GetPortableRuntimeMapActors();
+    std::set<std::string> meshPaths;
+    for (const PortableActorSnapshot& actor : actors) {
+        if (!actor.meshPath.empty()) meshPaths.insert(actor.meshPath);
+    }
+    summary.referencedMeshes = meshPaths.size();
+    std::unordered_map<std::string, PortablePackageTables> packages;
+    for (const std::string& meshPath : meshPaths) {
+        const auto found = persistentQualifiedObjects.find(meshPath);
+        if (found == persistentQualifiedObjects.end()) continue;
+        RuntimeObject* meshObject = found->second;
+        auto package = packages.find(meshObject->sourcePath);
+        if (package == packages.end()) {
+            package = packages.emplace(
+                meshObject->sourcePath,
+                LoadPortablePackageTables(meshObject->sourcePath)).first;
+        }
+        meshObject->lodMesh = std::make_unique<PortableLodMesh>(
+            LoadPortableLodMesh(package->second, meshObject->exportIndex));
+        summary.triangleVertices += meshObject->lodMesh->triangles.size();
+        ++summary.decodedMeshes;
+    }
+    summary.passed = summary.referencedMeshes != 0 &&
+        summary.decodedMeshes == summary.referencedMeshes &&
+        summary.triangleVertices != 0;
+    return summary;
+}
+
+PortableLodMesh GetPortableRuntimeMesh(const std::string& meshPath) {
+    const auto found = persistentQualifiedObjects.find(meshPath);
+    if (found == persistentQualifiedObjects.end() || !found->second->lodMesh) {
+        throw std::runtime_error("Portable actor mesh is not decoded: " + meshPath);
+    }
+    return *found->second->lodMesh;
 }

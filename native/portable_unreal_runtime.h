@@ -31,6 +31,13 @@ struct PortableMapRuntimeSummary {
     std::size_t replacedExports{};
 };
 
+struct PortableActorMeshSummary {
+    bool passed{};
+    std::size_t referencedMeshes{};
+    std::size_t decodedMeshes{};
+    std::size_t triangleVertices{};
+};
+
 PortableRuntimeSummary BuildAndVerifyPortableRuntime(
     const PortablePackageTables& package);
 PortableRuntimeSummary InitializePortableRuntime(
@@ -70,6 +77,7 @@ struct PortableActorSnapshot {
     bool mover{};
     bool trigger{};
     std::string meshPath;
+    std::string meshClassPath;
     std::string texturePath;
 };
 
@@ -78,3 +86,5 @@ PortableMapRuntimeSummary LoadPortableRuntimeMap(
     const PortablePackageTables& package);
 std::size_t UnloadPortableRuntimeMap();
 std::vector<PortableActorSnapshot> GetPortableRuntimeMapActors();
+PortableActorMeshSummary DecodePortableRuntimeActorMeshes();
+PortableLodMesh GetPortableRuntimeMesh(const std::string& meshPath);

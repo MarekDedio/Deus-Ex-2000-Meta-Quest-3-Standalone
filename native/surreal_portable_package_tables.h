@@ -100,6 +100,28 @@ struct PortableClassDescriptor {
     std::size_t packageImportCount{};
 };
 
+struct PortableMeshVertex {
+    float x{};
+    float y{};
+    float z{};
+    float u{};
+    float v{};
+    std::uint16_t material{};
+};
+
+struct PortableLodMesh {
+    std::vector<PortableMeshVertex> triangles;
+    std::vector<std::int32_t> textures;
+    std::uint32_t frameVertices{};
+    std::uint32_t animationFrames{};
+    float scaleX{};
+    float scaleY{};
+    float scaleZ{};
+    float originX{};
+    float originY{};
+    float originZ{};
+};
+
 PortablePackageTables LoadPortablePackageTables(const std::string& path);
 PortablePropertyStream LoadPortableExportProperties(
     const PortablePackageTables& package,
@@ -129,5 +151,8 @@ PortablePropertyDescriptor LoadPortablePropertyDescriptor(
     const PortablePackageTables& package,
     std::size_t exportIndex);
 PortableClassDescriptor LoadPortableClassDescriptor(
+    const PortablePackageTables& package,
+    std::size_t exportIndex);
+PortableLodMesh LoadPortableLodMesh(
     const PortablePackageTables& package,
     std::size_t exportIndex);

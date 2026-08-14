@@ -4,6 +4,7 @@
 #include "Utils/File.h"
 
 #include <limits>
+#include <cstring>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -120,6 +121,13 @@ public:
     std::uint32_t ReadUInt32() {
         const std::uint32_t low = ReadUInt16();
         return low | (static_cast<std::uint32_t>(ReadUInt16()) << 16u);
+    }
+    std::int32_t ReadInt32() { return static_cast<std::int32_t>(ReadUInt32()); }
+    float ReadFloat() {
+        const std::uint32_t bits = ReadUInt32();
+        float value{};
+        std::memcpy(&value, &bits, sizeof(value));
+        return value;
     }
     std::int32_t ReadIndex() {
         std::uint8_t value = ReadUInt8();
@@ -913,6 +921,156 @@ PortableClassDescriptor LoadPortableClassDescriptor(
     }
     if (reader.Tell() != reader.Size()) {
         throw std::runtime_error("UE1 class payload has trailing bytes");
+    }
+    return result;
+}
+
+PortableLodMesh LoadPortableLodMesh(
+    const PortablePackageTables& package,
+    std::size_t exportIndex) {
+    if (exportIndex >= package.exports.size()) {
+        throw std::runtime_error("UE1 LodMesh export index is outside the table");
+    }
+    const ExportTableEntry& entry = package.exports[exportIndex];
+    std::string metaClass = ResolvePortableObjectPath(entry.ObjClass, package);
+    const std::size_t separator = metaClass.find_last_of('.');
+    if (separator != std::string::npos) metaClass.erase(0, separator + 1);
+    if (metaClass != "LodMesh" && metaClass != "SkeletalMesh") {
+        throw std::runtime_error("UE1 export is not a LodMesh");
+    }
+    std::vector<std::uint8_t> bytes(static_cast<std::size_t>(entry.ObjSize));
+    const std::shared_ptr<File> file = File::open_existing(package.sourcePath);
+    file->seek(entry.ObjOffset);
+    file->read(bytes.data(), bytes.size());
+    PayloadReader reader(std::move(bytes));
+    const PortablePropertyStream properties = LoadPortableExportProperties(package, exportIndex);
+    reader.Skip(properties.bytesConsumed);
+    reader.Skip(41); // UPrimitive bounds and sphere for package version 68.
+    const auto count = [&](const char* label) {
+        const std::int32_t value = reader.ReadIndex();
+        if (value < 0 || value > 20'000'000) {
+            throw std::runtime_error(std::string("UE1 LodMesh invalid ") + label + " count");
+        }
+        return static_cast<std::size_t>(value);
+    };
+    const auto objectReference = [&]() {
+        const std::int32_t value = reader.ReadIndex();
+        ValidateObjectReference(value, package.imports.size(), package.exports.size());
+        return value;
+    };
+
+    reader.ReadUInt32(); // vertex lazy-array end offset
+    const std::size_t vertexCount = count("vertex");
+    struct Vertex { float x, y, z; };
+    std::vector<Vertex> vertices;
+    vertices.reserve(vertexCount);
+    for (std::size_t index = 0; index < vertexCount; ++index) {
+        const std::int16_t x = static_cast<std::int16_t>(reader.ReadUInt16());
+        const std::int16_t y = static_cast<std::int16_t>(reader.ReadUInt16());
+        const std::int16_t z = static_cast<std::int16_t>(reader.ReadUInt16());
+        reader.ReadUInt16();
+        vertices.push_back({static_cast<float>(x), static_cast<float>(y), static_cast<float>(z)});
+    }
+
+    reader.ReadUInt32(); // legacy triangle lazy-array end offset
+    const std::size_t legacyTriangles = count("legacy triangle");
+    reader.Skip(legacyTriangles * 20u);
+    const std::size_t animationSequences = count("animation sequence");
+    for (std::size_t index = 0; index < animationSequences; ++index) {
+        const std::int32_t name = reader.ReadIndex();
+        const std::int32_t group = reader.ReadIndex();
+        ValidateNameIndex(name, package.names.size());
+        ValidateNameIndex(group, package.names.size());
+        reader.Skip(8);
+        const std::size_t notifications = count("animation notification");
+        for (std::size_t notify = 0; notify < notifications; ++notify) {
+            reader.ReadFloat();
+            const std::int32_t function = reader.ReadIndex();
+            ValidateNameIndex(function, package.names.size());
+        }
+        reader.ReadFloat();
+    }
+    reader.ReadUInt32();
+    reader.Skip(count("vertex connect") * 8u);
+    reader.Skip(25 + 16);
+    reader.ReadUInt32();
+    reader.Skip(count("vertex link") * 4u);
+
+    PortableLodMesh result;
+    const std::size_t textureCount = count("texture");
+    result.textures.reserve(textureCount);
+    for (std::size_t index = 0; index < textureCount; ++index) {
+        result.textures.push_back(objectReference());
+    }
+    reader.Skip(count("bounding box") * 25u);
+    reader.Skip(count("bounding sphere") * 16u);
+    result.frameVertices = reader.ReadUInt32();
+    result.animationFrames = reader.ReadUInt32();
+    reader.Skip(8);
+    result.scaleX = reader.ReadFloat();
+    result.scaleY = reader.ReadFloat();
+    result.scaleZ = reader.ReadFloat();
+    result.originX = reader.ReadFloat();
+    result.originY = reader.ReadFloat();
+    result.originZ = reader.ReadFloat();
+    reader.Skip(12 + 8);
+    const std::size_t textureLods = count("texture LOD");
+    reader.Skip(textureLods * 4u);
+
+    reader.Skip(count("collapse point") * 2u);
+    reader.Skip(count("face level") * 2u);
+    struct Face { std::uint16_t wedge[3]; std::uint16_t material; };
+    const std::size_t faceCount = count("face");
+    std::vector<Face> faces(faceCount);
+    for (Face& face : faces) {
+        face.wedge[0] = reader.ReadUInt16();
+        face.wedge[1] = reader.ReadUInt16();
+        face.wedge[2] = reader.ReadUInt16();
+        face.material = reader.ReadUInt16();
+    }
+    reader.Skip(count("collapse wedge") * 2u);
+    struct Wedge { std::uint16_t vertex; std::uint8_t u, v; };
+    const std::size_t wedgeCount = count("wedge");
+    std::vector<Wedge> wedges(wedgeCount);
+    for (Wedge& wedge : wedges) {
+        wedge.vertex = reader.ReadUInt16();
+        wedge.u = reader.ReadUInt8();
+        wedge.v = reader.ReadUInt8();
+    }
+    const std::size_t materialCount = count("material");
+    reader.Skip(materialCount * 8u);
+    reader.Skip(count("special face") * 8u);
+    reader.ReadUInt32(); // ModelVerts
+    const std::uint32_t specialVertices = reader.ReadUInt32();
+    reader.Skip(24);
+    reader.Skip(count("remapped animation vertex") * 2u);
+    reader.ReadUInt32(); // OldFrameVerts
+
+    result.triangles.reserve(faceCount * 3u);
+    for (const Face& face : faces) {
+        for (const std::uint16_t wedgeIndex : face.wedge) {
+            if (wedgeIndex >= wedges.size()) {
+                throw std::runtime_error("UE1 LodMesh face wedge is out of bounds");
+            }
+            const Wedge& wedge = wedges[wedgeIndex];
+            const std::uint64_t vertexIndex =
+                static_cast<std::uint64_t>(wedge.vertex) + specialVertices;
+            if (vertexIndex >= vertices.size()) {
+                throw std::runtime_error("UE1 LodMesh wedge vertex is out of bounds");
+            }
+            const Vertex& vertex = vertices[static_cast<std::size_t>(vertexIndex)];
+            result.triangles.push_back({
+                (vertex.x - result.originX) * result.scaleX,
+                (vertex.y - result.originY) * result.scaleY,
+                (vertex.z - result.originZ) * result.scaleZ,
+                wedge.u / 255.0f,
+                wedge.v / 255.0f,
+                face.material});
+        }
+    }
+    if (result.frameVertices == 0 || result.animationFrames == 0 ||
+        result.triangles.empty()) {
+        throw std::runtime_error("UE1 LodMesh has no renderable first frame");
     }
     return result;
 }

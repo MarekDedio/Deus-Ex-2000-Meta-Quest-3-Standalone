@@ -8,6 +8,8 @@
 #include <cstdio>
 #include <cstring>
 #include <limits>
+#include <map>
+#include <numeric>
 #include <unordered_map>
 #include <vector>
 
@@ -188,6 +190,17 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                 combatRuntime.actors,
                 finalRuntime.actors,
                 restoredTraining.actors);
+            const PortableActorMeshSummary actorMeshes =
+                DecodePortableRuntimeActorMeshes();
+            if (!actorMeshes.passed) {
+                ALOG("DeusExQuest: actor LodMesh decode validation failed");
+                return false;
+            }
+            ALOG(
+                "DeusExQuest: decoded %zu/%zu actor LodMeshes with %zu triangle vertices",
+                actorMeshes.decodedMeshes,
+                actorMeshes.referencedMeshes,
+                actorMeshes.triangleVertices);
             const PortableVmValue stomp =
                 ExecutePortableFunction("ScriptedPawn.WillTakeStompDamage");
             const PortableVmValue shield =
@@ -330,7 +343,9 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         constexpr float originY = 825.844f;
         constexpr float originZ = -65.103f;
         std::size_t visible{};
+        std::map<std::string, std::size_t> meshClasses;
         for (const PortableActorSnapshot& actor : actorSnapshots_) {
+            if (!actor.meshPath.empty()) ++meshClasses[actor.meshClassPath];
             if (!actor.hasLocation ||
                 !(actor.pawn || actor.inventory || actor.decoration ||
                   actor.mover || actor.trigger)) {
@@ -373,9 +388,19 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             worldRenderers_.back().AmbientLightColor = {0.45f, 0.45f, 0.45f};
         }
         ALOG(
-            "DeusExQuest: instantiated %zu targetable actor proxies from %zu live actors",
+            "DeusExQuest: instantiated %zu targetable actor proxies from %zu live actors (%zu mesh-bearing, %zu mesh formats)",
             visible,
-            actorSnapshots_.size());
+            actorSnapshots_.size(),
+            std::accumulate(
+                meshClasses.begin(), meshClasses.end(), std::size_t{},
+                [](std::size_t total, const auto& value) { return total + value.second; }),
+            meshClasses.size());
+        for (const auto& meshClass : meshClasses) {
+            ALOG(
+                "DeusExQuest: actor mesh format %s count=%zu",
+                meshClass.first.c_str(),
+                meshClass.second);
+        }
     }
 
     void UseTargetedActor(const OVR::Posef& pointerPose) {
