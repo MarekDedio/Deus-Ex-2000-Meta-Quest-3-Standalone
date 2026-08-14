@@ -101,6 +101,22 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                 runtime.functions,
                 runtime.properties,
                 runtime.normalizedBytecodeBytes);
+            const PortableVmValue stomp =
+                ExecutePortableFunction("ScriptedPawn.WillTakeStompDamage");
+            const PortableVmValue shield =
+                ExecutePortableFunction("ScriptedPawn.ShieldDamage");
+            const PortableVmValue cancel =
+                ExecutePortableFunction("MenuUIChoice.CancelSetting");
+            if (stomp.type != PortableVmValueType::Boolean || !stomp.boolean ||
+                shield.type != PortableVmValueType::Float ||
+                std::fabs(shield.floating - 1.0f) > 0.0001f ||
+                cancel.type != PortableVmValueType::Nothing) {
+                ALOG("DeusExQuest: portable Unreal VM result validation failed");
+                return false;
+            }
+            ALOG(
+                "DeusExQuest: executed real UnrealScript returns: WillTakeStompDamage=true, ShieldDamage=%.1f, CancelSetting=void",
+                shield.floating);
         } catch (const std::exception& error) {
             ALOG("DeusExQuest: persistent Unreal runtime failed: %s", error.what());
             return false;

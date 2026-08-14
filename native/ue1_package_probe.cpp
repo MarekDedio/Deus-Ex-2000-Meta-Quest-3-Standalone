@@ -1141,6 +1141,7 @@ Java_dev_deusex_questvr_MainActivity_probeGameData(
         std::size_t replicatedProperties = 0;
         std::size_t parameterProperties = 0;
         std::map<std::string, std::size_t> propertyTypes;
+        std::vector<std::string> compactFunctionSamples;
         for (std::size_t objectIndex = 0;
              objectIndex < reflection.objects.size();
              ++objectIndex) {
@@ -1158,6 +1159,17 @@ Java_dev_deusex_questvr_MainActivity_probeGameData(
                 rawScriptBytes += body.rawBytes.size();
                 if (body.logicalSize != 0) ++scriptedFunctions;
                 if ((body.functionFlags & 0x400u) != 0) ++nativeFunctions;
+                if (body.logicalSize > 0 && body.logicalSize <= 64 &&
+                    compactFunctionSamples.size() < 512) {
+                    static constexpr char digits[] = "0123456789abcdef";
+                    std::string line = body.objectPath + " flags=" +
+                        std::to_string(body.functionFlags) + " bytecode=";
+                    for (const std::uint8_t value : body.bytecode) {
+                        line.push_back(digits[value >> 4u]);
+                        line.push_back(digits[value & 0x0fu]);
+                    }
+                    compactFunctionSamples.push_back(std::move(line));
+                }
             } else if (object.metaClass.size() >= 8 &&
                 object.metaClass.compare(
                     object.metaClass.size() - 8, 8, "Property") == 0) {
@@ -1209,6 +1221,9 @@ Java_dev_deusex_questvr_MainActivity_probeGameData(
             for (const auto& type : propertyTypes) {
                 std::fprintf(
                     manifest, "property_type.%s=%zu\n", type.first.c_str(), type.second);
+            }
+            for (const std::string& sample : compactFunctionSamples) {
+                std::fprintf(manifest, "function.%s\n", sample.c_str());
             }
             for (const PortableReflectionObject& object : reflection.objects) {
                 if (object.metaClass == "Class") {

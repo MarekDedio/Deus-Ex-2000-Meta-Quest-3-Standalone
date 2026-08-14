@@ -3,6 +3,8 @@
 #include "surreal_portable_package_tables.h"
 
 #include <cstddef>
+#include <cstdint>
+#include <string>
 
 struct PortableRuntimeSummary {
     bool passed{};
@@ -22,3 +24,23 @@ PortableRuntimeSummary BuildAndVerifyPortableRuntime(
 PortableRuntimeSummary InitializePortableRuntime(
     const PortablePackageTables& package);
 void ShutdownPortableRuntime();
+
+enum class PortableVmValueType {
+    Nothing,
+    Integer,
+    Float,
+    Boolean,
+    String,
+    ObjectReference,
+    NameReference,
+};
+
+struct PortableVmValue {
+    PortableVmValueType type{PortableVmValueType::Nothing};
+    std::int32_t integer{};
+    float floating{};
+    bool boolean{};
+    std::string string;
+};
+
+PortableVmValue ExecutePortableFunction(const std::string& objectPath);

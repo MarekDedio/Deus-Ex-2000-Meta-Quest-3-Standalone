@@ -3,6 +3,8 @@
 #include "GC/GC.h"
 
 #include <memory>
+#include <cstring>
+#include <stdexcept>
 #include <unordered_map>
 #include <utility>
 
@@ -60,6 +62,94 @@ private:
 };
 
 std::unique_ptr<GCRoot<RuntimePackage>> persistentRuntime;
+
+class RuntimeBytecodeReader {
+public:
+    explicit RuntimeBytecodeReader(const std::vector<std::uint8_t>& bytes)
+        : bytes_(bytes) {}
+
+    std::uint8_t Byte() {
+        Require(1);
+        return bytes_[position_++];
+    }
+    std::uint32_t Dword() {
+        const std::uint32_t a = Byte();
+        const std::uint32_t b = Byte();
+        const std::uint32_t c = Byte();
+        const std::uint32_t d = Byte();
+        return a | (b << 8u) | (c << 16u) | (d << 24u);
+    }
+    std::string AsciiZ() {
+        std::string result;
+        while (true) {
+            const char value = static_cast<char>(Byte());
+            if (value == '\0') return result;
+            result.push_back(value);
+        }
+    }
+
+private:
+    void Require(std::size_t count) const {
+        if (count > bytes_.size() - position_) {
+            throw std::runtime_error("Portable VM read past function bytecode");
+        }
+    }
+    const std::vector<std::uint8_t>& bytes_;
+    std::size_t position_{};
+};
+
+PortableVmValue EvaluateConstant(RuntimeBytecodeReader& reader) {
+    PortableVmValue result;
+    switch (reader.Byte()) {
+        case 0x0b: // Nothing
+            return result;
+        case 0x1d: // IntConst
+            result.type = PortableVmValueType::Integer;
+            result.integer = static_cast<std::int32_t>(reader.Dword());
+            return result;
+        case 0x1e: { // FloatConst
+            const std::uint32_t bits = reader.Dword();
+            result.type = PortableVmValueType::Float;
+            std::memcpy(&result.floating, &bits, sizeof(bits));
+            return result;
+        }
+        case 0x1f: // StringConst
+            result.type = PortableVmValueType::String;
+            result.string = reader.AsciiZ();
+            return result;
+        case 0x20: // ObjectConst
+            result.type = PortableVmValueType::ObjectReference;
+            result.integer = static_cast<std::int32_t>(reader.Dword());
+            return result;
+        case 0x21: // NameConst
+            result.type = PortableVmValueType::NameReference;
+            result.integer = static_cast<std::int32_t>(reader.Dword());
+            return result;
+        case 0x24: // ByteConst
+            result.type = PortableVmValueType::Integer;
+            result.integer = reader.Byte();
+            return result;
+        case 0x25: // IntZero
+            result.type = PortableVmValueType::Integer;
+            return result;
+        case 0x26: // IntOne
+            result.type = PortableVmValueType::Integer;
+            result.integer = 1;
+            return result;
+        case 0x27: // True
+            result.type = PortableVmValueType::Boolean;
+            result.boolean = true;
+            return result;
+        case 0x28: // False
+            result.type = PortableVmValueType::Boolean;
+            return result;
+        case 0x2a: // NoObject
+            result.type = PortableVmValueType::ObjectReference;
+            return result;
+        default:
+            throw std::runtime_error("Portable VM constant evaluator encountered unsupported token");
+    }
+}
 
 RuntimeObject* ResolveLocal(
     std::int32_t reference,
@@ -172,4 +262,25 @@ PortableRuntimeSummary InitializePortableRuntime(
 void ShutdownPortableRuntime() {
     persistentRuntime.reset();
     GC::Collect();
+}
+
+PortableVmValue ExecutePortableFunction(const std::string& objectPath) {
+    if (!persistentRuntime || !persistentRuntime->get()) {
+        throw std::runtime_error("Portable VM has no initialized runtime");
+    }
+    RuntimeObject* function = nullptr;
+    for (RuntimeObject* object : persistentRuntime->get()->exports) {
+        if (object->reflection.objectPath == objectPath && object->script) {
+            function = object;
+            break;
+        }
+    }
+    if (function == nullptr) {
+        throw std::runtime_error("Portable VM function was not found: " + objectPath);
+    }
+    RuntimeBytecodeReader reader(function->script->bytecode);
+    if (reader.Byte() != 0x04u) {
+        throw std::runtime_error("Portable VM function does not begin with Return");
+    }
+    return EvaluateConstant(reader);
 }
