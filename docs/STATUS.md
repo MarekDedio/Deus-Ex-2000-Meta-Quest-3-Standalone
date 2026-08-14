@@ -88,6 +88,11 @@
   independent decoder exactly (3,744/3,347/181 and 12,872/21,422/3,336
   names/exports/imports respectively). The data gate returned true, all three
   BSP chunks loaded, OpenXR initialized, and the crash buffer remained empty.
+- The portable layer now opens a bounded export payload, decodes UE1's optional
+  execution-state frame, and parses canonical tagged-property headers including
+  type, serialized size, struct name, array index, boolean value, and payload
+  offset. On Quest, `LevelInfo0` independently decoded as nine properties
+  consuming exactly 70 bytes, matching the established decoder.
 - A focused physical-Quest baseline captured the clean launch and idle training
   scene in a 29,715,080-byte Perfetto trace. At idle the process used 172,354 KB
   total PSS and 319,900 KB RSS, including 128,116 KB attributed to graphics.

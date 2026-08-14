@@ -942,6 +942,20 @@ Java_dev_deusex_questvr_MainActivity_probeGameData(
             portableScripts.names.size() == gameScripts.nameCount &&
             portableScripts.exports.size() == gameScripts.exportCount &&
             portableScripts.imports.size() == gameScripts.importCount;
+        const PortablePropertyStream firstProperties =
+            LoadPortableExportProperties(portableTraining, 0);
+        portableTablesMatch = portableTablesMatch &&
+            firstProperties.properties.size() == training.firstExportPropertyCount &&
+            firstProperties.bytesConsumed == training.firstExportPropertyBytes &&
+            !firstProperties.properties.empty() &&
+            firstProperties.properties.front().name.ToString() == training.firstExportProperty;
+        __android_log_print(
+            ANDROID_LOG_INFO,
+            kLogTag,
+            "Surreal export stream decoded %zu properties from %s in %u bytes",
+            firstProperties.properties.size(),
+            training.firstExportName.c_str(),
+            firstProperties.bytesConsumed);
     } catch (const std::exception& error) {
         __android_log_print(ANDROID_LOG_ERROR, kLogTag,
             "Surreal portable table comparison failed: %s", error.what());

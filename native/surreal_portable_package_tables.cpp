@@ -105,12 +105,69 @@ void ValidateObjectReference(std::int32_t reference, std::size_t imports, std::s
     if (!valid) throw std::runtime_error("UE1 object reference is outside the package tables");
 }
 
+class PayloadReader {
+public:
+    explicit PayloadReader(std::vector<std::uint8_t> bytes) : bytes_(std::move(bytes)) {}
+
+    std::uint8_t ReadUInt8() {
+        Require(1);
+        return bytes_[position_++];
+    }
+    std::uint16_t ReadUInt16() {
+        const std::uint16_t low = ReadUInt8();
+        return static_cast<std::uint16_t>(low | (static_cast<std::uint16_t>(ReadUInt8()) << 8u));
+    }
+    std::uint32_t ReadUInt32() {
+        const std::uint32_t low = ReadUInt16();
+        return low | (static_cast<std::uint32_t>(ReadUInt16()) << 16u);
+    }
+    std::int32_t ReadIndex() {
+        std::uint8_t value = ReadUInt8();
+        const bool negative = (value & 0x80u) != 0;
+        bool more = (value & 0x40u) != 0;
+        std::uint32_t magnitude = value & 0x3fu;
+        unsigned shift = 6;
+        while (more && shift < 32) {
+            value = ReadUInt8();
+            magnitude |= static_cast<std::uint32_t>(value & 0x7fu) << shift;
+            more = (value & 0x80u) != 0;
+            shift += 7;
+        }
+        if (more || magnitude > static_cast<std::uint32_t>(std::numeric_limits<std::int32_t>::max())) {
+            throw std::runtime_error("UE1 compact index is invalid");
+        }
+        return negative ? -static_cast<std::int32_t>(magnitude) : static_cast<std::int32_t>(magnitude);
+    }
+    void Skip(std::size_t count) {
+        Require(count);
+        position_ += count;
+    }
+    std::uint32_t Tell() const { return static_cast<std::uint32_t>(position_); }
+
+private:
+    void Require(std::size_t count) const {
+        if (count > bytes_.size() - position_) {
+            throw std::runtime_error("UE1 export payload ended unexpectedly");
+        }
+    }
+
+    std::vector<std::uint8_t> bytes_;
+    std::size_t position_{};
+};
+
+const NameString& ReadPayloadName(PayloadReader& reader, const PortablePackageTables& package) {
+    const std::int32_t index = reader.ReadIndex();
+    ValidateNameIndex(index, package.names.size());
+    return package.names[static_cast<std::size_t>(index)].Name;
+}
+
 }  // namespace
 
 PortablePackageTables LoadPortablePackageTables(const std::string& path) {
     const std::shared_ptr<File> file = File::open_existing(path);
     PackageStream stream(nullptr, file);
     PortablePackageTables package;
+    package.sourcePath = path;
 
     if (stream.ReadUInt32() != kPackageSignature) {
         throw std::runtime_error("Not a UE1 package");
@@ -183,4 +240,83 @@ PortablePackageTables LoadPortablePackageTables(const std::string& path) {
         ValidateObjectReference(entry.ObjOuter, package.imports.size(), package.exports.size());
     }
     return package;
+}
+
+PortablePropertyStream LoadPortableExportProperties(
+    const PortablePackageTables& package,
+    std::size_t exportIndex) {
+    if (exportIndex >= package.exports.size()) {
+        throw std::runtime_error("UE1 export index is outside the export table");
+    }
+    const ExportTableEntry& entry = package.exports[exportIndex];
+    if (entry.ObjClass == 0) {
+        return {};
+    }
+    if (entry.ObjSize <= 0 || entry.ObjOffset < 0) {
+        throw std::runtime_error("UE1 object instance has no serialized payload");
+    }
+
+    std::vector<std::uint8_t> bytes(static_cast<std::size_t>(entry.ObjSize));
+    const std::shared_ptr<File> file = File::open_existing(package.sourcePath);
+    file->seek(entry.ObjOffset);
+    file->read(bytes.data(), bytes.size());
+    PayloadReader reader(std::move(bytes));
+
+    if (AnyFlags(entry.ObjFlags, ObjectFlags::HasStack)) {
+        const std::int32_t functionReference = reader.ReadIndex();
+        const std::int32_t stateReference = reader.ReadIndex();
+        ValidateObjectReference(functionReference, package.imports.size(), package.exports.size());
+        ValidateObjectReference(stateReference, package.imports.size(), package.exports.size());
+        reader.Skip(12);
+        if (functionReference != 0) reader.ReadIndex();
+    }
+
+    PortablePropertyStream result;
+    while (true) {
+        const NameString& name = ReadPayloadName(reader, package);
+        if (name == "None") {
+            result.bytesConsumed = reader.Tell();
+            return result;
+        }
+
+        const std::uint8_t info = reader.ReadUInt8();
+        PortableTaggedProperty property;
+        property.name = name;
+        property.type = info & 0x0fu;
+        if (property.type > 15u) throw std::runtime_error("UE1 property type is invalid");
+        if (property.type == 10u) property.structName = ReadPayloadName(reader, package);
+
+        switch ((info & 0x70u) >> 4u) {
+            case 0: property.size = 1; break;
+            case 1: property.size = 2; break;
+            case 2: property.size = 4; break;
+            case 3: property.size = 12; break;
+            case 4: property.size = 16; break;
+            case 5: property.size = reader.ReadUInt8(); break;
+            case 6: property.size = reader.ReadUInt16(); break;
+            case 7: property.size = reader.ReadUInt32(); break;
+        }
+
+        if (property.type == 3u) {
+            property.boolValue = (info & 0x80u) != 0;
+        } else if ((info & 0x80u) != 0) {
+            std::uint32_t first = reader.ReadUInt8();
+            if ((first & 0xc0u) == 0xc0u) {
+                first &= 0x3fu;
+                property.arrayIndex = (first << 24u) |
+                    (static_cast<std::uint32_t>(reader.ReadUInt8()) << 16u) |
+                    (static_cast<std::uint32_t>(reader.ReadUInt8()) << 8u) |
+                    reader.ReadUInt8();
+            } else if ((first & 0x80u) != 0) {
+                first &= 0x7fu;
+                property.arrayIndex = (first << 8u) | reader.ReadUInt8();
+            } else {
+                property.arrayIndex = first;
+            }
+        }
+
+        property.valueOffset = reader.Tell();
+        if (property.type != 3u) reader.Skip(property.size);
+        result.properties.push_back(std::move(property));
+    }
 }
