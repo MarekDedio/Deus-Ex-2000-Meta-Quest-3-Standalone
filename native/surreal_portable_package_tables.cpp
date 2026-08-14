@@ -483,3 +483,47 @@ PortableSound LoadPortableSound(
     stream.ReadBytes(sound.data.data(), static_cast<std::uint32_t>(sound.data.size()));
     return sound;
 }
+
+PortableReflectionGraph BuildPortableReflectionGraph(
+    const PortablePackageTables& package) {
+    PortableReflectionGraph graph;
+    graph.objects.reserve(package.exports.size());
+    for (std::size_t index = 0; index < package.exports.size(); ++index) {
+        const ExportTableEntry& entry = package.exports[index];
+        PortableReflectionObject object;
+        object.objectPath = ResolvePortableObjectPath(
+            static_cast<std::int32_t>(index + 1), package);
+        object.outerPath = ResolvePortableObjectPath(entry.ObjOuter, package);
+        object.basePath = ResolvePortableObjectPath(entry.ObjBase, package);
+        object.flags = static_cast<std::uint32_t>(entry.ObjFlags);
+        object.serializedSize = entry.ObjSize;
+        if (entry.ObjClass == 0) {
+            // UE1 serializes class objects with a null metaclass reference. Their
+            // superclass is carried by ObjBase in the export table.
+            object.metaClass = "Class";
+        } else {
+            object.metaClass = ResolvePortableObjectPath(entry.ObjClass, package);
+            const std::size_t separator = object.metaClass.find_last_of('.');
+            if (separator != std::string::npos) {
+                object.metaClass.erase(0, separator + 1);
+            }
+        }
+
+        if (object.metaClass == "Class") {
+            ++graph.classCount;
+        } else if (object.metaClass == "State") {
+            ++graph.stateCount;
+        } else if (object.metaClass == "Function") {
+            ++graph.functionCount;
+        } else if (object.metaClass == "Enum") {
+            ++graph.enumCount;
+        } else if (object.metaClass == "Struct") {
+            ++graph.structCount;
+        } else if (object.metaClass.size() >= 8 &&
+            object.metaClass.compare(object.metaClass.size() - 8, 8, "Property") == 0) {
+            ++graph.propertyCount;
+        }
+        graph.objects.push_back(std::move(object));
+    }
+    return graph;
+}

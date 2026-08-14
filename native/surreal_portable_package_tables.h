@@ -46,6 +46,25 @@ struct PortableSound {
     std::vector<std::uint8_t> data;
 };
 
+struct PortableReflectionObject {
+    std::string objectPath;
+    std::string metaClass;
+    std::string outerPath;
+    std::string basePath;
+    std::uint32_t flags{};
+    std::int32_t serializedSize{};
+};
+
+struct PortableReflectionGraph {
+    std::vector<PortableReflectionObject> objects;
+    std::size_t classCount{};
+    std::size_t stateCount{};
+    std::size_t functionCount{};
+    std::size_t propertyCount{};
+    std::size_t enumCount{};
+    std::size_t structCount{};
+};
+
 PortablePackageTables LoadPortablePackageTables(const std::string& path);
 PortablePropertyStream LoadPortableExportProperties(
     const PortablePackageTables& package,
@@ -66,3 +85,5 @@ std::string GetPortableObjectPath(
 PortableSound LoadPortableSound(
     const PortablePackageTables& package,
     std::size_t exportIndex);
+PortableReflectionGraph BuildPortableReflectionGraph(
+    const PortablePackageTables& package);

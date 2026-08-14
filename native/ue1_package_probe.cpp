@@ -1092,6 +1092,59 @@ Java_dev_deusex_questvr_MainActivity_probeGameData(
             LoadPortablePackageTables(root + "/Maps/00_Training.dx");
         const PortablePackageTables portableScripts =
             LoadPortablePackageTables(root + "/System/DeusEx.u");
+        const PortableReflectionGraph reflection =
+            BuildPortableReflectionGraph(portableScripts);
+        if (reflection.classCount == 0 || reflection.functionCount == 0 ||
+            reflection.propertyCount == 0) {
+            throw std::runtime_error("DeusEx.u reflection graph is incomplete");
+        }
+        bool playerClassFound = false;
+        std::size_t playerMembers = 0;
+        for (const PortableReflectionObject& object : reflection.objects) {
+            if (object.metaClass == "Class" &&
+                object.objectPath == "DeusExPlayer") {
+                playerClassFound = true;
+            }
+            if (object.outerPath == "DeusExPlayer") ++playerMembers;
+        }
+        if (!playerClassFound || playerMembers == 0) {
+            throw std::runtime_error("DeusExPlayer reflection topology is missing");
+        }
+        if (std::FILE* manifest =
+                std::fopen((root + "/quest-reflection.txt").c_str(), "wb")) {
+            std::fprintf(
+                manifest,
+                "classes=%zu\nstates=%zu\nfunctions=%zu\nproperties=%zu\n"
+                "structs=%zu\nenums=%zu\ndeusex_player_members=%zu\n",
+                reflection.classCount,
+                reflection.stateCount,
+                reflection.functionCount,
+                reflection.propertyCount,
+                reflection.structCount,
+                reflection.enumCount,
+                playerMembers);
+            for (const PortableReflectionObject& object : reflection.objects) {
+                if (object.metaClass == "Class") {
+                    std::fprintf(
+                        manifest,
+                        "class.%s.base=%s\n",
+                        object.objectPath.c_str(),
+                        object.basePath.c_str());
+                }
+            }
+            std::fclose(manifest);
+        }
+        __android_log_print(
+            ANDROID_LOG_INFO,
+            kLogTag,
+            "Surreal reflection graph: %zu classes, %zu states, %zu functions, %zu properties, %zu structs, %zu enums; DeusExPlayer members=%zu",
+            reflection.classCount,
+            reflection.stateCount,
+            reflection.functionCount,
+            reflection.propertyCount,
+            reflection.structCount,
+            reflection.enumCount,
+            playerMembers);
         __android_log_print(
             ANDROID_LOG_INFO,
             kLogTag,
