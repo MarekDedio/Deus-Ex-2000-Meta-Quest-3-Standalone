@@ -10,7 +10,8 @@
 - Meta OpenXR `XrInput` reference sample built successfully for ARM64.
 - Project smoke-test APK built successfully and signed with the debug key.
 - APK package is `dev.deusex.questvr.smoketest` and contains only ARM64 native
-  libraries (`libopenxr_loader.so` and `libxrsamples_xrinput.so`).
+  libraries, including the OpenXR loader, Meta sample runtime, and the custom
+  `libdeusex_data_probe.so` loader probe.
 - UE1 header inspection succeeds for `00_Training.dx`, `DeusEx.u`, and
   `CoreTexMetal.utx`; all report package version 68 with valid table offsets.
 
@@ -26,18 +27,23 @@
   cleanly when Guardian/system UI took focus.
 - 712 MB of user-owned game data was deployed into private app storage and the
   required training, script, texture, and music packages were verified there.
-- An ARM64-native UE1 header probe is built into the app. Device execution is
-  pending because the headset returned to its passcode lock screen.
+- The custom ARM64-native loader opened `Maps/00_Training.dx` and
+  `System/DeusEx.u` from private app storage on the Quest itself and validated
+  their UE1 signature, version 68, and package-table offsets.
+- The training map reported 3,744 names, 3,347 exports, and 181 imports.
+- `DeusEx.u` reported 12,872 names, 21,422 exports, and 3,336 imports.
+- The process remained alive and the Android crash buffer was empty after this
+  device-side package check.
 
 ## Not yet verified
 
-- Loading UE1 packages inside the Android process.
+- Parsing the complete UE1 name, import, and export tables on-device.
 - Training map rendering or gameplay.
 - Campaign compatibility.
 
 ## Next engineering gate
 
-Connect an authorized Quest 3 and validate OpenXR launch, tracking, controller
-input, suspend/resume, and thermal stability. In parallel, isolate the portable
-UE1 package/object/VM subset and compile it for Android ARM64, then load
-`00_Training.dx` from app-private storage without bundling commercial data.
+Complete name/import/export table parsing on the Quest, then resolve and open
+the training map's first exported objects. In parallel, replace the visual
+smoke-test scene with the portable UE1 renderer and VM subset while preserving
+OpenXR tracking and controller input.
