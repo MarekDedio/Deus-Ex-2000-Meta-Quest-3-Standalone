@@ -1,6 +1,7 @@
 #include <openxr/openxr.h>
 
 #include <cstdint>
+#include <cmath>
 #include <cstdio>
 #include <vector>
 
@@ -38,7 +39,37 @@ class DeusExQuestApp final : public OVRFW::XrApp {
     }
 
     void Update(const OVRFW::ovrApplFrameIn& frame) override {
-        for (auto& renderer : worldRenderers_) renderer.Update();
+        float headYaw{}, headPitch{}, headRoll{};
+        frame.HeadPose.Rotation.GetEulerAngles<OVR::Axis_Y, OVR::Axis_X, OVR::Axis_Z>(
+            &headYaw, &headPitch, &headRoll);
+        (void)headPitch;
+        (void)headRoll;
+        const float yaw = headYaw - sceneYaw_;
+        const float forwardX = std::sin(yaw);
+        const float forwardZ = -std::cos(yaw);
+        const float rightX = std::cos(yaw);
+        const float rightZ = std::sin(yaw);
+        constexpr float moveSpeed = 2.2f;
+        const float moveX = frame.LeftRemoteJoystick.x * rightX +
+            frame.LeftRemoteJoystick.y * forwardX;
+        const float moveZ = frame.LeftRemoteJoystick.x * rightZ +
+            frame.LeftRemoteJoystick.y * forwardZ;
+        worldPosition_.x -= moveX * moveSpeed * frame.DeltaSeconds;
+        worldPosition_.z -= moveZ * moveSpeed * frame.DeltaSeconds;
+
+        const bool turnPressed = std::fabs(frame.RightRemoteJoystick.x) > 0.7f;
+        if (turnPressed && !turnLatch_) {
+            constexpr float snapRadians = 3.14159265358979323846f / 6.0f;
+            sceneYaw_ -= std::copysign(snapRadians, frame.RightRemoteJoystick.x);
+        }
+        turnLatch_ = turnPressed;
+
+        const OVR::Posef worldPose(
+            OVR::Quatf(OVR::Vector3f(0.0f, 1.0f, 0.0f), sceneYaw_), worldPosition_);
+        for (auto& renderer : worldRenderers_) {
+            renderer.SetPose(worldPose);
+            renderer.Update();
+        }
         if (frame.LeftRemoteTracked) leftController_.Update(frame.LeftRemotePose);
         if (frame.RightRemoteTracked) rightController_.Update(frame.RightRemotePose);
     }
@@ -111,6 +142,9 @@ class DeusExQuestApp final : public OVRFW::XrApp {
     }
 
     std::vector<OVRFW::GeometryRenderer> worldRenderers_;
+    OVR::Vector3f worldPosition_{0.0f, 0.0f, 0.0f};
+    float sceneYaw_{};
+    bool turnLatch_{};
     OVRFW::ControllerRenderer leftController_;
     OVRFW::ControllerRenderer rightController_;
 };

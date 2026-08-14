@@ -95,6 +95,13 @@ struct PackageSummary {
     std::vector<BspNodeGeometry> bspNodes;
     std::vector<std::uint32_t> surfaceFlags;
     std::vector<BspVertexGeometry> bspVertices;
+    std::vector<std::int32_t> levelActorReferences;
+    std::uint32_t actorCount{};
+    std::string playerStartName;
+    std::string playerStartClass;
+    std::int32_t playerStartReference{};
+    Vec3 playerStartLocation;
+    bool playerStartLocationValid{};
 };
 
 bool ReadExact(std::FILE* file, void* output, std::size_t bytes) {
@@ -477,7 +484,9 @@ bool ReadRootLevelModel(std::FILE* file, PackageSummary& summary) {
         std::int32_t actorReference{};
         if (!ReadCompactIndex(file, actorReference) ||
             !IsObjectReferenceValid(actorReference, summary)) return false;
+        summary.levelActorReferences.push_back(actorReference);
     }
+    summary.actorCount = static_cast<std::uint32_t>(actorCount);
     for (int index = 0; index < 4; ++index) {
         if (!SkipSerializedString(file, objectEnd)) return false;
     }
@@ -500,6 +509,87 @@ bool ReadRootLevelModel(std::FILE* file, PackageSummary& summary) {
     summary.rootModelSize = model.size;
     summary.rootModelOffset = model.offset;
     return std::ftell(file) <= objectEnd;
+}
+
+bool ReadPlayerStartTransform(std::FILE* file, PackageSummary& summary, const ExportRecord& actor) {
+    if (actor.offset < 0 || actor.size <= 0 ||
+        std::fseek(file, actor.offset, SEEK_SET) != 0) return false;
+    const long objectEnd = static_cast<long>(actor.offset) + actor.size;
+    if ((static_cast<std::uint32_t>(actor.flags) & 0x02000000u) != 0) {
+        std::int32_t functionReference{}, stateReference{};
+        std::uint8_t frameData[12]{};
+        if (!ReadCompactIndex(file, functionReference) ||
+            !ReadCompactIndex(file, stateReference) ||
+            !ReadExact(file, frameData, sizeof(frameData))) return false;
+        if (functionReference != 0) {
+            std::int32_t codeOffset{};
+            if (!ReadCompactIndex(file, codeOffset)) return false;
+        }
+    }
+
+    while (std::ftell(file) >= 0 && std::ftell(file) < objectEnd) {
+        std::int32_t nameIndex{};
+        if (!ReadCompactIndex(file, nameIndex) || !IsNameIndexValid(nameIndex, summary)) return false;
+        const std::string& propertyName = summary.names[nameIndex];
+        if (propertyName == "None") return summary.playerStartLocationValid;
+        std::uint8_t info{};
+        if (!ReadExact(file, &info, 1)) return false;
+        const std::uint8_t type = info & 0x0fu;
+        if (type == 10) {
+            std::int32_t structName{};
+            if (!ReadCompactIndex(file, structName) || !IsNameIndexValid(structName, summary)) return false;
+        }
+        std::uint32_t size{};
+        switch ((info & 0x70u) >> 4u) {
+            case 0: size = 1; break;
+            case 1: size = 2; break;
+            case 2: size = 4; break;
+            case 3: size = 12; break;
+            case 4: size = 16; break;
+            case 5: { std::uint8_t v{}; if (!ReadExact(file, &v, 1)) return false; size = v; break; }
+            case 6: { std::uint16_t v{}; if (!ReadU16(file, v)) return false; size = v; break; }
+            case 7: if (!ReadU32(file, size)) return false; break;
+        }
+        if ((info & 0x80u) != 0 && type != 3) {
+            std::uint8_t byte1{};
+            if (!ReadExact(file, &byte1, 1)) return false;
+            if ((byte1 & 0xc0u) == 0xc0u) {
+                std::uint8_t extra[3]{};
+                if (!ReadExact(file, extra, sizeof(extra))) return false;
+            } else if ((byte1 & 0x80u) != 0) {
+                std::uint8_t extra{};
+                if (!ReadExact(file, &extra, 1)) return false;
+            }
+        }
+        const long valuePosition = std::ftell(file);
+        if (valuePosition < 0 || size > static_cast<std::uint64_t>(objectEnd - valuePosition)) return false;
+        if (propertyName == "Location" && type == 10 && size == 12) {
+            if (!ReadFloat(file, summary.playerStartLocation.x) ||
+                !ReadFloat(file, summary.playerStartLocation.y) ||
+                !ReadFloat(file, summary.playerStartLocation.z)) return false;
+            summary.playerStartLocationValid = true;
+        } else if (type != 3 && std::fseek(file, static_cast<long>(size), SEEK_CUR) != 0) {
+            return false;
+        }
+    }
+    return false;
+}
+
+bool FindPlayerStart(std::FILE* file, PackageSummary& summary) {
+    for (const std::int32_t reference : summary.levelActorReferences) {
+        if (reference <= 0 || static_cast<std::uint32_t>(reference) > summary.exports.size()) continue;
+        const ExportRecord& actor = summary.exports[reference - 1];
+        const std::string className = ResolveExportClass(actor, summary);
+        const std::string& objectName = summary.names[actor.nameIndex];
+        if (className.find("PlayerStart") != std::string::npos ||
+            objectName.find("PlayerStart") != std::string::npos) {
+            summary.playerStartReference = reference;
+            summary.playerStartName = objectName;
+            summary.playerStartClass = className;
+            return ReadPlayerStartTransform(file, summary, actor);
+        }
+    }
+    return false;
 }
 
 bool SkipBytes(std::FILE* file, long objectEnd, std::uint64_t bytes) {
@@ -633,12 +723,15 @@ bool WriteWorldMesh(const std::string& path, const PackageSummary& summary) {
         (summary.boundsMin.z + summary.boundsMax.z) * 0.5f};
     const Vec3 extent = Subtract(summary.boundsMax, summary.boundsMin);
     const float largestExtent = std::max(extent.x, std::max(extent.y, extent.z));
-    const float scale = largestExtent > 0.0f ? 3.0f / largestExtent : 0.001f;
+    const bool playerScale = summary.playerStartLocationValid;
+    const Vec3 origin = playerScale ? summary.playerStartLocation : center;
+    const float scale = playerScale ? (1.0f / 52.5f) :
+        (largestExtent > 0.0f ? 3.0f / largestExtent : 0.001f);
     auto transform = [&](const Vec3& point) {
         return Vec3{
-            (point.y - center.y) * scale,
-            (point.z - center.z) * scale + 1.4f,
-            -(point.x - center.x) * scale - 3.0f};
+            (point.y - origin.y) * scale,
+            (point.z - origin.z) * scale + (playerScale ? 1.0f : 1.4f),
+            -(point.x - origin.x) * scale - (playerScale ? 0.0f : 3.0f)};
     };
 
     std::vector<MeshVertex> chunk;
@@ -745,11 +838,13 @@ bool ProbePackage(const std::string& path, PackageSummary& summary) {
     const bool propertiesValid = payloadValid && ReadFirstExportProperties(file, summary);
     const bool levelValid = propertiesValid &&
         (summary.levelExportCount == 0 || ReadRootLevelModel(file, summary));
-    const bool geometryValid = levelValid &&
+    const bool playerStartValid = levelValid &&
+        (summary.levelExportCount == 0 || FindPlayerStart(file, summary));
+    const bool geometryValid = playerStartValid &&
         (summary.rootModelCount == 0 || ReadRootModelGeometry(file, summary));
     std::fclose(file);
     if (!namesValid || !importsValid || !exportsValid || !payloadValid ||
-        !propertiesValid || !levelValid || !geometryValid) {
+        !propertiesValid || !levelValid || !playerStartValid || !geometryValid) {
         __android_log_print(
             ANDROID_LOG_ERROR,
             kLogTag,
@@ -811,7 +906,7 @@ Java_dev_deusex_questvr_MainActivity_probeGameData(
         std::fprintf(
             result,
             "result=%s\n"
-            "training.version=%u\ntraining.names=%u\ntraining.names_parsed=%u\ntraining.first_name=%s\ntraining.exports=%u\ntraining.exports_parsed=%u\ntraining.level_exports=%u\ntraining.level_name=%s\ntraining.level_size=%d\ntraining.level_offset=%d\ntraining.model_exports=%u\ntraining.first_model=%s\ntraining.first_model_size=%d\ntraining.first_model_offset=%d\ntraining.root_models=%u\ntraining.root_model=%s\ntraining.root_model_size=%d\ntraining.root_model_offset=%d\ntraining.vectors=%u\ntraining.points=%u\ntraining.bsp_nodes=%u\ntraining.surfaces=%u\ntraining.vertices=%u\ntraining.zones=%u\ntraining.first_export=%s\ntraining.first_export_class=%s\ntraining.first_export_size=%d\ntraining.first_export_offset=%d\ntraining.first_export_fnv1a=%08x\ntraining.first_export_properties=%u\ntraining.first_property=%s\ntraining.property_bytes=%u\ntraining.imports=%u\ntraining.imports_parsed=%u\n"
+            "training.version=%u\ntraining.names=%u\ntraining.names_parsed=%u\ntraining.first_name=%s\ntraining.exports=%u\ntraining.exports_parsed=%u\ntraining.level_exports=%u\ntraining.level_name=%s\ntraining.level_size=%d\ntraining.level_offset=%d\ntraining.actors=%u\ntraining.player_start=%s\ntraining.player_start_class=%s\ntraining.player_start_location=%.3f,%.3f,%.3f\ntraining.model_exports=%u\ntraining.first_model=%s\ntraining.first_model_size=%d\ntraining.first_model_offset=%d\ntraining.root_models=%u\ntraining.root_model=%s\ntraining.root_model_size=%d\ntraining.root_model_offset=%d\ntraining.vectors=%u\ntraining.points=%u\ntraining.bsp_nodes=%u\ntraining.surfaces=%u\ntraining.vertices=%u\ntraining.zones=%u\ntraining.first_export=%s\ntraining.first_export_class=%s\ntraining.first_export_size=%d\ntraining.first_export_offset=%d\ntraining.first_export_fnv1a=%08x\ntraining.first_export_properties=%u\ntraining.first_property=%s\ntraining.property_bytes=%u\ntraining.imports=%u\ntraining.imports_parsed=%u\n"
             "scripts.version=%u\nscripts.names=%u\nscripts.names_parsed=%u\nscripts.first_name=%s\nscripts.exports=%u\nscripts.exports_parsed=%u\nscripts.first_export=%s\nscripts.first_export_class=%s\nscripts.first_export_size=%d\nscripts.first_export_offset=%d\nscripts.first_export_fnv1a=%08x\nscripts.first_export_properties=%u\nscripts.first_property=%s\nscripts.property_bytes=%u\nscripts.imports=%u\nscripts.imports_parsed=%u\n",
             valid ? "ok" : "failed",
             training.version,
@@ -824,6 +919,12 @@ Java_dev_deusex_questvr_MainActivity_probeGameData(
             training.levelName.c_str(),
             training.levelSize,
             training.levelOffset,
+            training.actorCount,
+            training.playerStartName.c_str(),
+            training.playerStartClass.c_str(),
+            training.playerStartLocation.x,
+            training.playerStartLocation.y,
+            training.playerStartLocation.z,
             training.modelExportCount,
             training.firstModelName.c_str(),
             training.firstModelSize,

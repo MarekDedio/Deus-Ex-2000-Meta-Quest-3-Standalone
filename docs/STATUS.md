@@ -62,13 +62,21 @@
 - Quest OS screenshot and screen-record APIs return black for this immersive
   compositor layer, so visual framing still requires in-headset confirmation;
   runtime logs verify active frame submission and GPU mesh initialization.
+- `MyLevel`'s actor array was decoded with 1,337 object references. The training
+  spawn resolves to `PlayerStart1` at UE coordinates
+  `(-1149.244, 825.844, -65.103)`.
+- Runtime mesh generation now uses UE1's 52.5-units-per-meter scale and places
+  the BSP around that PlayerStart instead of presenting it as a diorama.
+- Head-relative smooth locomotion is mapped to the left thumbstick at 2.2 m/s;
+  the right thumbstick performs latched 30-degree snap turns. The rebuilt app
+  launched, loaded all three geometry chunks, and remained crash-free.
 - The process remained alive and the Android crash buffer was empty after this
   device-side package check.
 
 ## Not yet verified
 
-- Confirming in-headset framing, then switching the diorama mesh to player-scale
-  geometry positioned at the training PlayerStart.
+- Adding BSP collision/grounding and confirming player-scale framing and
+  locomotion in-headset.
 - Training map rendering or gameplay.
 - Campaign compatibility.
 
