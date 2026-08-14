@@ -15,10 +15,9 @@ public final class MainActivity extends android.app.NativeActivity {
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
-        super.onCreate(savedInstanceState);
         File gameRoot = new File(getFilesDir(), "DeusEx");
         boolean valid = probeGameData(gameRoot.getAbsolutePath());
         Log.i(TAG, "UE1 on-device data probe result=" + valid + " root=" + gameRoot);
+        super.onCreate(savedInstanceState);
     }
 }
-

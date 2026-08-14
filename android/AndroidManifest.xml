@@ -21,7 +21,7 @@
             android:screenOrientation="landscape"
             android:configChanges="screenSize|screenLayout|orientation|keyboardHidden|keyboard|navigation|uiMode"
             android:exported="true">
-            <meta-data android:name="android.app.lib_name" android:value="xrsamples_xrinput" />
+            <meta-data android:name="android.app.lib_name" android:value="deusex_quest" />
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="org.khronos.openxr.intent.category.IMMERSIVE_HMD" />

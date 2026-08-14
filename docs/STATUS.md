@@ -52,18 +52,28 @@
   5,333 surfaces, 142,494 vertex references, and 8 zones.
 - Geometry parsing validates compact indices, object references, array limits,
   and object boundaries; the Quest process remained alive without a crash.
+- The Meta `XrInput` executable has been replaced by project-owned
+  `libdeusex_quest.so`, while retaining the validated OpenXR lifecycle and
+  tracked Touch controller rendering.
+- The loader triangulates the root BSP directly from user-owned data and writes
+  a private 3,393,240-byte runtime mesh cache. The OpenXR runtime loaded that
+  cache into three bounded 16-bit GPU geometry chunks and submitted more than
+  2,000 focused stereo frames without a native crash.
+- Quest OS screenshot and screen-record APIs return black for this immersive
+  compositor layer, so visual framing still requires in-headset confirmation;
+  runtime logs verify active frame submission and GPU mesh initialization.
 - The process remained alive and the Android crash buffer was empty after this
   device-side package check.
 
 ## Not yet verified
 
-- Retaining decoded BSP records and producing renderable indexed geometry.
+- Confirming in-headset framing, then switching the diorama mesh to player-scale
+  geometry positioned at the training PlayerStart.
 - Training map rendering or gameplay.
 - Campaign compatibility.
 
 ## Next engineering gate
 
-Retain the decoded BSP nodes, surfaces, points, and vertex pool; triangulate
-visible surfaces into GPU buffers and display the first untextured training-map
-geometry through the existing OpenXR frame loop. Actor/object retention,
-materials, the VM, and gameplay follow that visual geometry gate.
+Decode the training actor collection and PlayerStart transform, render the BSP
+at UE1 player scale, and add locomotion/collision. Then resolve surface texture
+objects and lightmaps before moving into actor meshes, the VM, and gameplay.

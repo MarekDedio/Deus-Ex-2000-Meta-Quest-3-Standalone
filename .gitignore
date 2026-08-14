@@ -3,6 +3,7 @@
 build/
 **/build/
 .cxx/
+artifacts/
 
 # Local Android configuration
 local.properties
@@ -23,4 +24,3 @@ GameData/
 
 # Third-party source checkouts are reproducible and kept out of this repo
 third_party/
-

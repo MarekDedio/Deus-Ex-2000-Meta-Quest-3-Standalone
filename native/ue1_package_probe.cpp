@@ -1,6 +1,8 @@
 #include <jni.h>
 #include <android/log.h>
 
+#include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -19,6 +21,27 @@ struct ExportRecord {
     std::int32_t size{};
     std::int32_t offset{-1};
     std::int32_t flags{};
+};
+
+struct Vec3 {
+    float x{};
+    float y{};
+    float z{};
+};
+
+struct BspNodeGeometry {
+    std::int32_t vertexPool{};
+    std::int32_t surface{};
+    std::uint8_t vertexCount{};
+};
+
+struct BspVertexGeometry {
+    std::int32_t point{};
+};
+
+struct MeshVertex {
+    Vec3 position;
+    Vec3 normal;
 };
 
 struct PackageSummary {
@@ -66,6 +89,12 @@ struct PackageSummary {
     std::uint32_t surfaceCount{};
     std::uint32_t vertexCount{};
     std::uint32_t zoneCount{};
+    Vec3 boundsMin;
+    Vec3 boundsMax;
+    std::vector<Vec3> points;
+    std::vector<BspNodeGeometry> bspNodes;
+    std::vector<std::uint32_t> surfaceFlags;
+    std::vector<BspVertexGeometry> bspVertices;
 };
 
 bool ReadExact(std::FILE* file, void* output, std::size_t bytes) {
@@ -100,6 +129,13 @@ bool ReadI32(std::FILE* file, std::int32_t& output) {
         return false;
     }
     output = static_cast<std::int32_t>(bits);
+    return true;
+}
+
+bool ReadFloat(std::FILE* file, float& output) {
+    std::uint32_t bits{};
+    if (!ReadU32(file, bits)) return false;
+    std::memcpy(&output, &bits, sizeof(output));
     return true;
 }
 
@@ -494,28 +530,42 @@ bool ReadRootModelGeometry(std::FILE* file, PackageSummary& summary) {
     if (!FindPropertyEnd(file, summary, *model, propertyEnd)) return false;
     const long objectEnd = static_cast<long>(model->offset) + model->size;
 
-    // UPrimitive bounding box (24 bytes + validity) and bounding sphere (16 bytes).
-    if (!SkipBytes(file, objectEnd, 41) ||
+    std::uint8_t boundsValid{};
+    if (!ReadFloat(file, summary.boundsMin.x) ||
+        !ReadFloat(file, summary.boundsMin.y) ||
+        !ReadFloat(file, summary.boundsMin.z) ||
+        !ReadFloat(file, summary.boundsMax.x) ||
+        !ReadFloat(file, summary.boundsMax.y) ||
+        !ReadFloat(file, summary.boundsMax.z) ||
+        !ReadExact(file, &boundsValid, 1) ||
+        !SkipBytes(file, objectEnd, 16) ||
         !ReadArrayCount(file, 1000000, summary.vectorCount) ||
         !SkipBytes(file, objectEnd, static_cast<std::uint64_t>(summary.vectorCount) * 12) ||
-        !ReadArrayCount(file, 1000000, summary.pointCount) ||
-        !SkipBytes(file, objectEnd, static_cast<std::uint64_t>(summary.pointCount) * 12) ||
+        !ReadArrayCount(file, 1000000, summary.pointCount)) return false;
+    (void)boundsValid;
+    summary.points.resize(summary.pointCount);
+    for (Vec3& point : summary.points) {
+        if (!ReadFloat(file, point.x) || !ReadFloat(file, point.y) ||
+            !ReadFloat(file, point.z)) return false;
+    }
+    if (
         !ReadArrayCount(file, 1000000, summary.bspNodeCount)) return false;
 
     for (std::uint32_t index = 0; index < summary.bspNodeCount; ++index) {
         if (!SkipBytes(file, objectEnd, 25)) return false; // plane, zone mask, flags
-        for (int field = 0; field < 9; ++field) {
-            std::int32_t value{};
-            if (!ReadCompactIndex(file, value)) return false;
-        }
-        if (!SkipBytes(file, objectEnd, 9)) return false; // vertex count and leaf ids
+        std::int32_t fields[9]{};
+        for (std::int32_t& value : fields) if (!ReadCompactIndex(file, value)) return false;
+        std::uint8_t vertexCount{};
+        if (!ReadExact(file, &vertexCount, 1) || !SkipBytes(file, objectEnd, 8)) return false;
+        summary.bspNodes.push_back({fields[0], fields[1], vertexCount});
     }
 
     if (!ReadArrayCount(file, 1000000, summary.surfaceCount)) return false;
     for (std::uint32_t index = 0; index < summary.surfaceCount; ++index) {
         std::int32_t material{};
+        std::uint32_t polyFlags{};
         if (!ReadCompactIndex(file, material) ||
-            !IsObjectReferenceValid(material, summary) || !SkipBytes(file, objectEnd, 4)) return false;
+            !IsObjectReferenceValid(material, summary) || !ReadU32(file, polyFlags)) return false;
         for (int field = 0; field < 6; ++field) {
             std::int32_t value{};
             if (!ReadCompactIndex(file, value)) return false;
@@ -523,12 +573,14 @@ bool ReadRootModelGeometry(std::FILE* file, PackageSummary& summary) {
         std::int32_t brushActor{};
         if (!SkipBytes(file, objectEnd, 4) || !ReadCompactIndex(file, brushActor) ||
             !IsObjectReferenceValid(brushActor, summary)) return false;
+        summary.surfaceFlags.push_back(polyFlags);
     }
 
     if (!ReadArrayCount(file, 2000000, summary.vertexCount)) return false;
     for (std::uint32_t index = 0; index < summary.vertexCount; ++index) {
         std::int32_t vertex{}, side{};
         if (!ReadCompactIndex(file, vertex) || !ReadCompactIndex(file, side)) return false;
+        summary.bspVertices.push_back({vertex});
     }
     std::int32_t sharedSides{}, zones{};
     if (!ReadI32(file, sharedSides) || !ReadI32(file, zones) || zones < 0 || zones > 64) return false;
@@ -539,6 +591,109 @@ bool ReadRootModelGeometry(std::FILE* file, PackageSummary& summary) {
             !SkipBytes(file, objectEnd, 16)) return false;
     }
     return std::ftell(file) <= objectEnd;
+}
+
+Vec3 Subtract(const Vec3& a, const Vec3& b) {
+    return {a.x - b.x, a.y - b.y, a.z - b.z};
+}
+
+Vec3 Cross(const Vec3& a, const Vec3& b) {
+    return {a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x};
+}
+
+bool Normalize(Vec3& value) {
+    const float lengthSquared = value.x * value.x + value.y * value.y + value.z * value.z;
+    if (lengthSquared < 1.0e-12f) return false;
+    const float inverseLength = 1.0f / std::sqrt(lengthSquared);
+    value.x *= inverseLength;
+    value.y *= inverseLength;
+    value.z *= inverseLength;
+    return true;
+}
+
+bool WriteMeshChunk(std::FILE* file, const std::vector<MeshVertex>& vertices) {
+    const std::uint32_t count = static_cast<std::uint32_t>(vertices.size());
+    return std::fwrite(&count, sizeof(count), 1, file) == 1 &&
+        std::fwrite(vertices.data(), sizeof(MeshVertex), vertices.size(), file) == vertices.size();
+}
+
+bool WriteWorldMesh(const std::string& path, const PackageSummary& summary) {
+    std::FILE* file = std::fopen(path.c_str(), "wb");
+    if (file == nullptr) return false;
+    const std::uint32_t magic = 0x4d515844u; // DXQM
+    const std::uint32_t version = 1;
+    std::uint32_t chunkCount{};
+    bool ok = std::fwrite(&magic, sizeof(magic), 1, file) == 1 &&
+        std::fwrite(&version, sizeof(version), 1, file) == 1 &&
+        std::fwrite(&chunkCount, sizeof(chunkCount), 1, file) == 1;
+
+    const Vec3 center{
+        (summary.boundsMin.x + summary.boundsMax.x) * 0.5f,
+        (summary.boundsMin.y + summary.boundsMax.y) * 0.5f,
+        (summary.boundsMin.z + summary.boundsMax.z) * 0.5f};
+    const Vec3 extent = Subtract(summary.boundsMax, summary.boundsMin);
+    const float largestExtent = std::max(extent.x, std::max(extent.y, extent.z));
+    const float scale = largestExtent > 0.0f ? 3.0f / largestExtent : 0.001f;
+    auto transform = [&](const Vec3& point) {
+        return Vec3{
+            (point.y - center.y) * scale,
+            (point.z - center.z) * scale + 1.4f,
+            -(point.x - center.x) * scale - 3.0f};
+    };
+
+    std::vector<MeshVertex> chunk;
+    chunk.reserve(60000);
+    auto flush = [&]() {
+        if (chunk.empty()) return true;
+        const bool written = WriteMeshChunk(file, chunk);
+        if (written) ++chunkCount;
+        chunk.clear();
+        return written;
+    };
+
+    for (const BspNodeGeometry& node : summary.bspNodes) {
+        if (node.vertexCount < 3 || node.vertexPool < 0 || node.surface < 0 ||
+            static_cast<std::uint64_t>(node.vertexPool) + node.vertexCount >
+                summary.bspVertices.size() ||
+            static_cast<std::uint32_t>(node.surface) >= summary.surfaceFlags.size() ||
+            (summary.surfaceFlags[node.surface] & 0x00000001u) != 0) continue;
+
+        std::vector<Vec3> polygon;
+        polygon.reserve(node.vertexCount);
+        bool polygonValid = true;
+        for (std::uint32_t index = 0; index < node.vertexCount; ++index) {
+            const std::int32_t point = summary.bspVertices[node.vertexPool + index].point;
+            if (point < 0 || static_cast<std::uint32_t>(point) >= summary.points.size()) {
+                polygonValid = false;
+                break;
+            }
+            polygon.push_back(transform(summary.points[point]));
+        }
+        if (!polygonValid) continue;
+
+        for (std::size_t index = 1; index + 1 < polygon.size(); ++index) {
+            Vec3 normal = Cross(Subtract(polygon[index], polygon[0]),
+                                Subtract(polygon[index + 1], polygon[0]));
+            if (!Normalize(normal)) continue;
+            if (chunk.size() + 6 > 60000 && !(ok = flush())) break;
+            const Vec3 reverse{-normal.x, -normal.y, -normal.z};
+            chunk.push_back({polygon[0], normal});
+            chunk.push_back({polygon[index], normal});
+            chunk.push_back({polygon[index + 1], normal});
+            chunk.push_back({polygon[0], reverse});
+            chunk.push_back({polygon[index + 1], reverse});
+            chunk.push_back({polygon[index], reverse});
+        }
+        if (!ok) break;
+    }
+    if (ok) ok = flush();
+    if (ok && std::fseek(file, 8, SEEK_SET) == 0) {
+        ok = std::fwrite(&chunkCount, sizeof(chunkCount), 1, file) == 1;
+    } else {
+        ok = false;
+    }
+    std::fclose(file);
+    return ok && chunkCount > 0;
 }
 
 bool ProbePackage(const std::string& path, PackageSummary& summary) {
@@ -647,7 +802,9 @@ Java_dev_deusex_questvr_MainActivity_probeGameData(
     PackageSummary gameScripts{};
     const bool trainingValid = ProbePackage(root + "/Maps/00_Training.dx", training);
     const bool scriptsValid = ProbePackage(root + "/System/DeusEx.u", gameScripts);
-    const bool valid = trainingValid && scriptsValid;
+    const bool meshValid = trainingValid &&
+        WriteWorldMesh(root + "/quest-world.mesh", training);
+    const bool valid = trainingValid && scriptsValid && meshValid;
 
     const std::string resultPath = root + "/quest-package-probe.txt";
     if (std::FILE* result = std::fopen(resultPath.c_str(), "wb")) {
