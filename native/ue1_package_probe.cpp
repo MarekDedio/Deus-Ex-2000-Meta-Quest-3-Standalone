@@ -6,6 +6,7 @@
 #include "Package/PackageStream.h"
 #include "Utils/File.h"
 #include "surreal_portable_package_tables.h"
+#include "surreal_gc_probe.h"
 
 #include <algorithm>
 #include <cmath>
@@ -1086,6 +1087,18 @@ Java_dev_deusex_questvr_MainActivity_probeGameData(
     env->ReleaseStringUTFChars(gameRoot, rootChars);
 
     try {
+        const PortableGcProbeResult gc = RunPortableGcProbe();
+        if (!gc.passed) {
+            throw std::runtime_error("Surreal GC root/mark/sweep probe failed");
+        }
+        __android_log_print(
+            ANDROID_LOG_INFO,
+            kLogTag,
+            "Surreal GC verified: baseline=%zu peak=%zu final=%zu destroyed=%zu",
+            gc.baselineObjects,
+            gc.peakObjects,
+            gc.finalObjects,
+            gc.destroyedObjects);
         const auto portableFile = File::open_existing(root + "/Maps/00_Training.dx");
         const NameString packageName("00_Training");
         const PortablePackageTables portableTraining =
@@ -1105,6 +1118,10 @@ Java_dev_deusex_questvr_MainActivity_probeGameData(
         std::size_t nativeFunctions = 0;
         std::size_t logicalScriptBytes = 0;
         std::size_t rawScriptBytes = 0;
+        std::size_t decodedPropertyDescriptors = 0;
+        std::size_t replicatedProperties = 0;
+        std::size_t parameterProperties = 0;
+        std::map<std::string, std::size_t> propertyTypes;
         for (std::size_t objectIndex = 0;
              objectIndex < reflection.objects.size();
              ++objectIndex) {
@@ -1122,6 +1139,15 @@ Java_dev_deusex_questvr_MainActivity_probeGameData(
                 rawScriptBytes += body.rawBytes.size();
                 if (body.logicalSize != 0) ++scriptedFunctions;
                 if ((body.functionFlags & 0x400u) != 0) ++nativeFunctions;
+            } else if (object.metaClass.size() >= 8 &&
+                object.metaClass.compare(
+                    object.metaClass.size() - 8, 8, "Property") == 0) {
+                const PortablePropertyDescriptor descriptor =
+                    LoadPortablePropertyDescriptor(portableScripts, objectIndex);
+                ++decodedPropertyDescriptors;
+                ++propertyTypes[descriptor.type];
+                if ((descriptor.flags & 0x20u) != 0) ++replicatedProperties;
+                if ((descriptor.flags & 0x80u) != 0) ++parameterProperties;
             }
         }
         if (!playerClassFound || playerMembers == 0) {
@@ -1130,6 +1156,9 @@ Java_dev_deusex_questvr_MainActivity_probeGameData(
         if (decodedFunctions != reflection.functionCount || scriptedFunctions == 0 ||
             logicalScriptBytes == 0 || rawScriptBytes == 0) {
             throw std::runtime_error("DeusEx.u function bytecode set is incomplete");
+        }
+        if (decodedPropertyDescriptors != reflection.propertyCount || propertyTypes.empty()) {
+            throw std::runtime_error("DeusEx.u property descriptor set is incomplete");
         }
         if (std::FILE* manifest =
                 std::fopen((root + "/quest-reflection.txt").c_str(), "wb")) {
@@ -1151,6 +1180,17 @@ Java_dev_deusex_questvr_MainActivity_probeGameData(
                 nativeFunctions,
                 logicalScriptBytes,
                 rawScriptBytes);
+            std::fprintf(
+                manifest,
+                "decoded_property_descriptors=%zu\nreplicated_properties=%zu\n"
+                "parameter_properties=%zu\n",
+                decodedPropertyDescriptors,
+                replicatedProperties,
+                parameterProperties);
+            for (const auto& type : propertyTypes) {
+                std::fprintf(
+                    manifest, "property_type.%s=%zu\n", type.first.c_str(), type.second);
+            }
             for (const PortableReflectionObject& object : reflection.objects) {
                 if (object.metaClass == "Class") {
                     std::fprintf(
@@ -1182,6 +1222,14 @@ Java_dev_deusex_questvr_MainActivity_probeGameData(
             nativeFunctions,
             logicalScriptBytes,
             rawScriptBytes);
+        __android_log_print(
+            ANDROID_LOG_INFO,
+            kLogTag,
+            "Surreal property schema decoded %zu descriptors (%zu replicated, %zu parameters, %zu types)",
+            decodedPropertyDescriptors,
+            replicatedProperties,
+            parameterProperties,
+            propertyTypes.size());
         __android_log_print(
             ANDROID_LOG_INFO,
             kLogTag,

@@ -69,10 +69,26 @@ struct PortableScriptBody {
     std::string objectPath;
     std::uint32_t logicalSize{};
     std::vector<std::uint8_t> rawBytes;
+    std::vector<std::uint8_t> bytecode;
     std::uint16_t nativeIndex{};
     std::uint8_t operatorPrecedence{};
     std::uint32_t functionFlags{};
     std::uint16_t replicationOffset{};
+};
+
+struct PortablePropertyDescriptor {
+    std::string objectPath;
+    std::string type;
+    std::string outerPath;
+    std::int32_t baseField{};
+    std::int32_t nextField{};
+    std::int32_t arrayDimension{};
+    std::uint32_t flags{};
+    NameString category;
+    std::uint16_t replicationOffset{};
+    std::int32_t referencedType{};
+    std::int32_t secondaryType{};
+    std::int32_t fixedCount{};
 };
 
 PortablePackageTables LoadPortablePackageTables(const std::string& path);
@@ -98,5 +114,8 @@ PortableSound LoadPortableSound(
 PortableReflectionGraph BuildPortableReflectionGraph(
     const PortablePackageTables& package);
 PortableScriptBody LoadPortableFunctionScript(
+    const PortablePackageTables& package,
+    std::size_t exportIndex);
+PortablePropertyDescriptor LoadPortablePropertyDescriptor(
     const PortablePackageTables& package,
     std::size_t exportIndex);

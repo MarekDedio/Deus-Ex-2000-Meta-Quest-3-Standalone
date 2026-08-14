@@ -187,25 +187,53 @@ std::uint8_t DecodeScriptToken(
     PayloadReader& reader,
     const PortablePackageTables& package,
     std::size_t& logicalSize,
+    std::vector<std::uint8_t>& bytecode,
     unsigned depth) {
     if (depth >= 64) throw std::runtime_error("UE1 bytecode nesting is too deep");
     const std::uint8_t token = reader.ReadUInt8();
+    bytecode.push_back(token);
     ++logicalSize;
+    const auto append16 = [&](std::uint16_t value) {
+        bytecode.push_back(static_cast<std::uint8_t>(value));
+        bytecode.push_back(static_cast<std::uint8_t>(value >> 8u));
+    };
+    const auto append32 = [&](std::uint32_t value) {
+        append16(static_cast<std::uint16_t>(value));
+        append16(static_cast<std::uint16_t>(value >> 16u));
+    };
+    const auto byte = [&]() {
+        const std::uint8_t value = reader.ReadUInt8();
+        bytecode.push_back(value);
+        ++logicalSize;
+        return value;
+    };
+    const auto word = [&]() {
+        const std::uint16_t value = reader.ReadUInt16();
+        append16(value);
+        logicalSize += 2;
+        return value;
+    };
+    const auto dword = [&]() {
+        const std::uint32_t value = reader.ReadUInt32();
+        append32(value);
+        logicalSize += 4;
+        return value;
+    };
     const auto compactIndex = [&]() {
         const std::int32_t value = reader.ReadIndex();
+        append32(static_cast<std::uint32_t>(value));
         logicalSize += 4;
         return value;
     };
     const auto child = [&]() {
-        return DecodeScriptToken(reader, package, logicalSize, depth + 1);
+        return DecodeScriptToken(reader, package, logicalSize, bytecode, depth + 1);
     };
     if (token >= 0x39u && token <= 0x60u) {
         child();
     } else if (token >= 0x70u) {
         while (child() != 0x16u) {}
     } else if (token >= 0x60u) {
-        reader.ReadUInt8();
-        ++logicalSize;
+        byte();
         while (child() != 0x16u) {}
     } else if (token == 0x1bu || token == 0x38u) {
         compactIndex();
@@ -217,14 +245,13 @@ std::uint8_t DecodeScriptToken(
         switch (token) {
             case 0x00: case 0x01: case 0x02: compactIndex(); break;
             case 0x04: if (package.version > 61) child(); break;
-            case 0x05: reader.ReadUInt8(); ++logicalSize; child(); break;
-            case 0x06: reader.ReadUInt16(); logicalSize += 2; break;
-            case 0x07: reader.ReadUInt16(); logicalSize += 2; child(); break;
+            case 0x05: byte(); child(); break;
+            case 0x06: word(); break;
+            case 0x07: word(); child(); break;
             case 0x08: break;
-            case 0x09: reader.ReadUInt16(); logicalSize += 2; child(); break;
+            case 0x09: word(); child(); break;
             case 0x0a: {
-                const std::uint16_t next = reader.ReadUInt16();
-                logicalSize += 2;
+                const std::uint16_t next = word();
                 if (next != 0xffffu) child();
                 break;
             }
@@ -233,8 +260,7 @@ std::uint8_t DecodeScriptToken(
                 while (true) {
                     const std::int32_t nameIndex = compactIndex();
                     ValidateNameIndex(nameIndex, package.names.size());
-                    reader.ReadUInt32();
-                    logicalSize += 4;
+                    dword();
                     if (package.names[static_cast<std::size_t>(nameIndex)].Name == "None") break;
                 }
                 break;
@@ -242,35 +268,36 @@ std::uint8_t DecodeScriptToken(
             case 0x0f: case 0x10: child(); child(); break;
             case 0x11: child(); child(); child(); child(); break;
             case 0x12: case 0x19:
-                child(); reader.ReadUInt16(); reader.ReadUInt8(); logicalSize += 3; child(); break;
+                child(); word(); byte(); child(); break;
             case 0x13: compactIndex(); child(); break;
             case 0x14: child(); child(); break;
             case 0x15: case 0x16: case 0x17: break;
-            case 0x18: reader.ReadUInt16(); logicalSize += 2; child(); break;
+            case 0x18: word(); child(); break;
             case 0x1a: child(); child(); break;
-            case 0x1d: case 0x1e: reader.ReadUInt32(); logicalSize += 4; break;
+            case 0x1d: case 0x1e: dword(); break;
             case 0x1f: {
                 const std::string value = reader.ReadAsciiZ();
+                bytecode.insert(bytecode.end(), value.begin(), value.end());
+                bytecode.push_back(0);
                 logicalSize += value.size() + 1;
                 break;
             }
             case 0x20: case 0x21: compactIndex(); break;
-            case 0x22: reader.Skip(12); logicalSize += 12; break;
-            case 0x23: reader.Skip(12); logicalSize += 12; break;
-            case 0x24: reader.ReadUInt8(); ++logicalSize; break;
+            case 0x22: dword(); dword(); dword(); break;
+            case 0x23: dword(); dword(); dword(); break;
+            case 0x24: byte(); break;
             case 0x25: case 0x26: case 0x27: case 0x28: break;
             case 0x29: compactIndex(); break;
             case 0x2a: break;
-            case 0x2b: reader.ReadUInt8(); ++logicalSize; child(); break;
-            case 0x2c: reader.ReadUInt8(); ++logicalSize; break;
+            case 0x2b: byte(); child(); break;
+            case 0x2c: byte(); break;
             case 0x2d: child(); break;
             case 0x2e: compactIndex(); child(); break;
-            case 0x2f: child(); reader.ReadUInt16(); logicalSize += 2; break;
+            case 0x2f: child(); word(); break;
             case 0x30: case 0x31: break;
             case 0x32: case 0x33: compactIndex(); child(); child(); break;
             case 0x34: {
-                const std::size_t units = reader.ReadUnicodeZUnits();
-                logicalSize += (units + 1) * 2;
+                while (word() != 0) {}
                 break;
             }
             case 0x36: compactIndex(); child(); break;
@@ -686,7 +713,7 @@ PortableScriptBody LoadPortableFunctionScript(
     const std::size_t rawStart = reader.Tell();
     std::size_t decodedLogical{};
     while (decodedLogical < result.logicalSize) {
-        DecodeScriptToken(reader, package, decodedLogical, 0);
+        DecodeScriptToken(reader, package, decodedLogical, result.bytecode, 0);
         if (decodedLogical > result.logicalSize) {
             throw std::runtime_error("UE1 bytecode exceeded declared logical size");
         }
@@ -694,6 +721,9 @@ PortableScriptBody LoadPortableFunctionScript(
     const std::size_t rawEnd = reader.Tell();
     result.rawBytes.assign(bytes.begin() + static_cast<std::ptrdiff_t>(rawStart),
         bytes.begin() + static_cast<std::ptrdiff_t>(rawEnd));
+    if (result.bytecode.size() != result.logicalSize) {
+        throw std::runtime_error("UE1 normalized bytecode size mismatch");
+    }
     result.nativeIndex = reader.ReadUInt16();
     result.operatorPrecedence = reader.ReadUInt8();
     result.functionFlags = reader.ReadUInt32();
@@ -702,6 +732,74 @@ PortableScriptBody LoadPortableFunctionScript(
     }
     if (reader.Tell() != reader.Size()) {
         throw std::runtime_error("UE1 function payload has trailing bytes");
+    }
+    return result;
+}
+
+PortablePropertyDescriptor LoadPortablePropertyDescriptor(
+    const PortablePackageTables& package,
+    std::size_t exportIndex) {
+    if (exportIndex >= package.exports.size()) {
+        throw std::runtime_error("UE1 property export index is outside the table");
+    }
+    const ExportTableEntry& entry = package.exports[exportIndex];
+    std::string metaClass = ResolvePortableObjectPath(entry.ObjClass, package);
+    const std::size_t separator = metaClass.find_last_of('.');
+    if (separator != std::string::npos) metaClass.erase(0, separator + 1);
+    if (metaClass.size() < 8 ||
+        metaClass.compare(metaClass.size() - 8, 8, "Property") != 0) {
+        throw std::runtime_error("UE1 export is not a Property");
+    }
+    if (entry.ObjSize <= 0 || entry.ObjOffset < 0) {
+        throw std::runtime_error("UE1 property has no payload");
+    }
+    std::vector<std::uint8_t> bytes(static_cast<std::size_t>(entry.ObjSize));
+    const std::shared_ptr<File> file = File::open_existing(package.sourcePath);
+    file->seek(entry.ObjOffset);
+    file->read(bytes.data(), bytes.size());
+    PayloadReader reader(std::move(bytes));
+    const PortablePropertyStream defaults = LoadPortableExportProperties(package, exportIndex);
+    reader.Skip(defaults.bytesConsumed);
+
+    PortablePropertyDescriptor result;
+    result.objectPath = ResolvePortableObjectPath(
+        static_cast<std::int32_t>(exportIndex + 1), package);
+    result.type = metaClass;
+    result.outerPath = ResolvePortableObjectPath(entry.ObjOuter, package);
+    result.baseField = reader.ReadIndex();
+    result.nextField = reader.ReadIndex();
+    ValidateObjectReference(result.baseField, package.imports.size(), package.exports.size());
+    ValidateObjectReference(result.nextField, package.imports.size(), package.exports.size());
+    result.arrayDimension = static_cast<std::int32_t>(reader.ReadUInt32());
+    result.flags = reader.ReadUInt32();
+    const std::int32_t categoryIndex = reader.ReadIndex();
+    ValidateNameIndex(categoryIndex, package.names.size());
+    result.category = package.names[static_cast<std::size_t>(categoryIndex)].Name;
+    if ((result.flags & 0x20u) != 0) result.replicationOffset = reader.ReadUInt16();
+
+    const auto reference = [&]() {
+        const std::int32_t value = reader.ReadIndex();
+        ValidateObjectReference(value, package.imports.size(), package.exports.size());
+        return value;
+    };
+    if (metaClass == "ByteProperty" || metaClass == "ObjectProperty" ||
+        metaClass == "StructProperty" || metaClass == "ArrayProperty") {
+        result.referencedType = reference();
+    } else if (metaClass == "ClassProperty") {
+        result.referencedType = reference();
+        result.secondaryType = reference();
+    } else if (metaClass == "MapProperty") {
+        result.referencedType = reference();
+        result.secondaryType = reference();
+    } else if (metaClass == "FixedArrayProperty") {
+        result.referencedType = reference();
+        result.fixedCount = static_cast<std::int32_t>(reader.ReadUInt32());
+    }
+    if (result.arrayDimension <= 0 || result.arrayDimension > 1'000'000) {
+        throw std::runtime_error("UE1 property array dimension is invalid");
+    }
+    if (reader.Tell() != reader.Size()) {
+        throw std::runtime_error("UE1 property payload has trailing bytes");
     }
     return result;
 }
