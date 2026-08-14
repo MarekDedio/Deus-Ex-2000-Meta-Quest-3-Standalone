@@ -53,9 +53,22 @@ struct BspVertexGeometry {
     std::int32_t point{};
 };
 
+struct BspSurfaceGeometry {
+    std::int32_t material{};
+    std::uint32_t flags{};
+    std::int32_t basePoint{};
+    std::int32_t textureU{};
+    std::int32_t textureV{};
+    std::int16_t panU{};
+    std::int16_t panV{};
+};
+
 struct MeshVertex {
     Vec3 position;
     Vec3 normal;
+    float u{};
+    float v{};
+    std::int32_t materialSlot{-1};
 };
 
 struct PackageSummary {
@@ -107,9 +120,11 @@ struct PackageSummary {
     Vec3 boundsMin;
     Vec3 boundsMax;
     std::vector<Vec3> points;
+    std::vector<Vec3> vectors;
     std::vector<BspNodeGeometry> bspNodes;
     std::vector<std::uint32_t> surfaceFlags;
     std::vector<std::int32_t> surfaceMaterials;
+    std::vector<BspSurfaceGeometry> bspSurfaces;
     std::vector<std::string> materialNames;
     std::vector<BspVertexGeometry> bspVertices;
     std::vector<std::int32_t> levelActorReferences;
@@ -153,6 +168,13 @@ bool ReadI32(std::FILE* file, std::int32_t& output) {
         return false;
     }
     output = static_cast<std::int32_t>(bits);
+    return true;
+}
+
+bool ReadI16(std::FILE* file, std::int16_t& output) {
+    std::uint16_t bits{};
+    if (!ReadU16(file, bits)) return false;
+    output = static_cast<std::int16_t>(bits);
     return true;
 }
 
@@ -670,10 +692,14 @@ bool ReadRootModelGeometry(std::FILE* file, PackageSummary& summary) {
         !ReadFloat(file, summary.boundsMax.z) ||
         !ReadExact(file, &boundsValid, 1) ||
         !SkipBytes(file, objectEnd, 16) ||
-        !ReadArrayCount(file, 1000000, summary.vectorCount) ||
-        !SkipBytes(file, objectEnd, static_cast<std::uint64_t>(summary.vectorCount) * 12) ||
-        !ReadArrayCount(file, 1000000, summary.pointCount)) return false;
+        !ReadArrayCount(file, 1000000, summary.vectorCount)) return false;
     (void)boundsValid;
+    summary.vectors.resize(summary.vectorCount);
+    for (Vec3& vector : summary.vectors) {
+        if (!ReadFloat(file, vector.x) || !ReadFloat(file, vector.y) ||
+            !ReadFloat(file, vector.z)) return false;
+    }
+    if (!ReadArrayCount(file, 1000000, summary.pointCount)) return false;
     summary.points.resize(summary.pointCount);
     for (Vec3& point : summary.points) {
         if (!ReadFloat(file, point.x) || !ReadFloat(file, point.y) ||
@@ -697,15 +723,17 @@ bool ReadRootModelGeometry(std::FILE* file, PackageSummary& summary) {
         std::uint32_t polyFlags{};
         if (!ReadCompactIndex(file, material) ||
             !IsObjectReferenceValid(material, summary) || !ReadU32(file, polyFlags)) return false;
-        for (int field = 0; field < 6; ++field) {
-            std::int32_t value{};
-            if (!ReadCompactIndex(file, value)) return false;
-        }
+        std::int32_t fields[6]{};
+        for (std::int32_t& value : fields) if (!ReadCompactIndex(file, value)) return false;
+        std::int16_t panU{}, panV{};
         std::int32_t brushActor{};
-        if (!SkipBytes(file, objectEnd, 4) || !ReadCompactIndex(file, brushActor) ||
+        if (!ReadI16(file, panU) || !ReadI16(file, panV) ||
+            !ReadCompactIndex(file, brushActor) ||
             !IsObjectReferenceValid(brushActor, summary)) return false;
         summary.surfaceFlags.push_back(polyFlags);
         summary.surfaceMaterials.push_back(material);
+        summary.bspSurfaces.push_back(
+            {material, polyFlags, fields[0], fields[2], fields[3], panU, panV});
     }
 
     {
@@ -752,17 +780,48 @@ bool Normalize(Vec3& value) {
     return true;
 }
 
-bool WriteMeshChunk(std::FILE* file, const std::vector<MeshVertex>& vertices) {
-    const std::uint32_t count = static_cast<std::uint32_t>(vertices.size());
-    return std::fwrite(&count, sizeof(count), 1, file) == 1 &&
-        std::fwrite(vertices.data(), sizeof(MeshVertex), vertices.size(), file) == vertices.size();
+bool WriteMeshChunk(
+    std::FILE* file,
+    std::int32_t materialSlot,
+    const MeshVertex* vertices,
+    std::uint32_t count) {
+    return std::fwrite(&materialSlot, sizeof(materialSlot), 1, file) == 1 &&
+        std::fwrite(&count, sizeof(count), 1, file) == 1 &&
+        std::fwrite(vertices, sizeof(MeshVertex), count, file) == count;
+}
+
+bool WriteTextureCache(
+    const std::string& path,
+    const PortableMipmap& mipmap,
+    const std::vector<std::uint32_t>& palette) {
+    if (palette.size() < 256 || mipmap.pixels.empty()) return false;
+    std::vector<std::uint8_t> rgba(mipmap.pixels.size() * 4u);
+    for (std::size_t index = 0; index < mipmap.pixels.size(); ++index) {
+        const std::uint32_t color = palette[mipmap.pixels[index]];
+        rgba[index * 4u + 0u] = static_cast<std::uint8_t>(color);
+        rgba[index * 4u + 1u] = static_cast<std::uint8_t>(color >> 8u);
+        rgba[index * 4u + 2u] = static_cast<std::uint8_t>(color >> 16u);
+        rgba[index * 4u + 3u] = 255u;
+    }
+    std::FILE* file = std::fopen(path.c_str(), "wb");
+    if (file == nullptr) return false;
+    const std::uint32_t magic = 0x54515844u; // DXQT
+    const std::uint32_t version = 1;
+    const bool ok =
+        std::fwrite(&magic, sizeof(magic), 1, file) == 1 &&
+        std::fwrite(&version, sizeof(version), 1, file) == 1 &&
+        std::fwrite(&mipmap.width, sizeof(mipmap.width), 1, file) == 1 &&
+        std::fwrite(&mipmap.height, sizeof(mipmap.height), 1, file) == 1 &&
+        std::fwrite(rgba.data(), 1, rgba.size(), file) == rgba.size();
+    std::fclose(file);
+    return ok;
 }
 
 bool WriteWorldMesh(const std::string& path, const PackageSummary& summary) {
     std::FILE* file = std::fopen(path.c_str(), "wb");
     if (file == nullptr) return false;
     const std::uint32_t magic = 0x4d515844u; // DXQM
-    const std::uint32_t version = 1;
+    const std::uint32_t version = 2;
     std::uint32_t chunkCount{};
     bool ok = std::fwrite(&magic, sizeof(magic), 1, file) == 1 &&
         std::fwrite(&version, sizeof(version), 1, file) == 1 &&
@@ -785,25 +844,31 @@ bool WriteWorldMesh(const std::string& path, const PackageSummary& summary) {
             -(point.x - origin.x) * scale - (playerScale ? 0.0f : 3.0f)};
     };
 
-    std::vector<MeshVertex> chunk;
-    chunk.reserve(60000);
-    auto flush = [&]() {
-        if (chunk.empty()) return true;
-        const bool written = WriteMeshChunk(file, chunk);
-        if (written) ++chunkCount;
-        chunk.clear();
-        return written;
-    };
+    std::vector<MeshVertex> flatVertices;
+    std::vector<MeshVertex> texturedVertices;
+    flatVertices.reserve(150000);
+    texturedVertices.reserve(30000);
 
     for (const BspNodeGeometry& node : summary.bspNodes) {
         if (node.vertexCount < 3 || node.vertexPool < 0 || node.surface < 0 ||
             static_cast<std::uint64_t>(node.vertexPool) + node.vertexCount >
                 summary.bspVertices.size() ||
-            static_cast<std::uint32_t>(node.surface) >= summary.surfaceFlags.size() ||
-            (summary.surfaceFlags[node.surface] & 0x00000001u) != 0) continue;
+            static_cast<std::uint32_t>(node.surface) >= summary.bspSurfaces.size()) continue;
+        const BspSurfaceGeometry& surface = summary.bspSurfaces[node.surface];
+        if ((surface.flags & 0x00000001u) != 0) continue;
+        const bool textured = !summary.materialNames.empty() &&
+            ResolveObjectPath(surface.material, summary) == summary.materialNames.front();
+        const bool uvValid = surface.basePoint >= 0 && surface.textureU >= 0 &&
+            surface.textureV >= 0 &&
+            static_cast<std::size_t>(surface.basePoint) < summary.points.size() &&
+            static_cast<std::size_t>(surface.textureU) < summary.vectors.size() &&
+            static_cast<std::size_t>(surface.textureV) < summary.vectors.size();
+        if (textured && !uvValid) continue;
 
         std::vector<Vec3> polygon;
+        std::vector<Vec3> sourcePolygon;
         polygon.reserve(node.vertexCount);
+        sourcePolygon.reserve(node.vertexCount);
         bool polygonValid = true;
         for (std::uint32_t index = 0; index < node.vertexCount; ++index) {
             const std::int32_t point = summary.bspVertices[node.vertexPool + index].point;
@@ -811,6 +876,7 @@ bool WriteWorldMesh(const std::string& path, const PackageSummary& summary) {
                 polygonValid = false;
                 break;
             }
+            sourcePolygon.push_back(summary.points[point]);
             polygon.push_back(transform(summary.points[point]));
         }
         if (!polygonValid) continue;
@@ -819,18 +885,42 @@ bool WriteWorldMesh(const std::string& path, const PackageSummary& summary) {
             Vec3 normal = Cross(Subtract(polygon[index], polygon[0]),
                                 Subtract(polygon[index + 1], polygon[0]));
             if (!Normalize(normal)) continue;
-            if (chunk.size() + 6 > 60000 && !(ok = flush())) break;
             const Vec3 reverse{-normal.x, -normal.y, -normal.z};
-            chunk.push_back({polygon[0], normal});
-            chunk.push_back({polygon[index], normal});
-            chunk.push_back({polygon[index + 1], normal});
-            chunk.push_back({polygon[0], reverse});
-            chunk.push_back({polygon[index + 1], reverse});
-            chunk.push_back({polygon[index], reverse});
+            auto makeVertex = [&](std::size_t vertex, const Vec3& vertexNormal) {
+                float u{}, v{};
+                if (textured) {
+                    const Vec3 relative = Subtract(
+                        sourcePolygon[vertex], summary.points[surface.basePoint]);
+                    const Vec3& textureU = summary.vectors[surface.textureU];
+                    const Vec3& textureV = summary.vectors[surface.textureV];
+                    u = (relative.x * textureU.x + relative.y * textureU.y +
+                        relative.z * textureU.z + surface.panU) / 128.0f;
+                    v = (relative.x * textureV.x + relative.y * textureV.y +
+                        relative.z * textureV.z + surface.panV) / 128.0f;
+                }
+                return MeshVertex{polygon[vertex], vertexNormal, u, v, textured ? 0 : -1};
+            };
+            std::vector<MeshVertex>& target = textured ? texturedVertices : flatVertices;
+            target.push_back(makeVertex(0, normal));
+            target.push_back(makeVertex(index, normal));
+            target.push_back(makeVertex(index + 1, normal));
+            target.push_back(makeVertex(0, reverse));
+            target.push_back(makeVertex(index + 1, reverse));
+            target.push_back(makeVertex(index, reverse));
         }
         if (!ok) break;
     }
-    if (ok) ok = flush();
+    auto writeMaterial = [&](const std::vector<MeshVertex>& vertices, std::int32_t slot) {
+        for (std::size_t offset = 0; offset < vertices.size(); offset += 60000) {
+            const std::uint32_t count = static_cast<std::uint32_t>(
+                std::min<std::size_t>(60000, vertices.size() - offset));
+            if (count == 0 || count % 3 != 0 ||
+                !WriteMeshChunk(file, slot, vertices.data() + offset, count)) return false;
+            ++chunkCount;
+        }
+        return true;
+    };
+    if (ok) ok = writeMaterial(flatVertices, -1) && writeMaterial(texturedVertices, 0);
     if (ok && std::fseek(file, 8, SEEK_SET) == 0) {
         ok = std::fwrite(&chunkCount, sizeof(chunkCount), 1, file) == 1;
     } else {
@@ -1009,7 +1099,8 @@ Java_dev_deusex_questvr_MainActivity_probeGameData(
                     break;
                 }
             }
-            firstTextureValid = !mipmaps.empty() && !palette.empty();
+            firstTextureValid = !mipmaps.empty() && !palette.empty() &&
+                WriteTextureCache(root + "/quest-first-texture.rgba", mipmaps.front(), palette);
             __android_log_print(
                 ANDROID_LOG_INFO,
                 kLogTag,

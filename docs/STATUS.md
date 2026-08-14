@@ -118,6 +118,15 @@
   bytes at the top level), follows its tagged `Palette` object reference, and
   decodes all 256 colors on Quest. The data gate, collision mesh, and OpenXR
   runtime remain healthy after the asset load.
+- The world cache format now preserves BSP surface texture vectors, pan values,
+  UV coordinates, and material slots. It separates the first real material into
+  its own GPU chunk while retaining flat diagnostic chunks for unresolved
+  materials; the cache is 5,242,364 bytes.
+- Indexed pixels and the 256-color palette are converted to a private 65,552-byte
+  RGBA cache. A project-owned UV/sampler shader uploaded the 128x128 texture and
+  rendered one of four BSP chunks with it on Quest. OpenXR initialized and the
+  crash buffer remained empty. UV orientation still requires direct in-headset
+  visual confirmation because Quest OS immersive captures remain black.
 
 ## Not yet verified
 

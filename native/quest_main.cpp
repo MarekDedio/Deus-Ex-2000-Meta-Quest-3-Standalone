@@ -11,7 +11,65 @@
 #include "Input/ControllerRenderer.h"
 #include "Render/GeometryBuilder.h"
 #include "Render/GeometryRenderer.h"
+#include "Render/GlTexture.h"
+#include "Render/SurfaceRender.h"
 #include "XrApp.h"
+
+class TexturedGeometryRenderer {
+   public:
+    void Init(
+        const OVRFW::GlGeometry::Descriptor& descriptor,
+        const OVRFW::GlTexture& texture) {
+        static const char* vertexShader = R"glsl(
+            attribute highp vec4 Position;
+            attribute highp vec2 TexCoord;
+            varying lowp vec2 oTexCoord;
+            void main() {
+                gl_Position = TransformVertex(Position);
+                oTexCoord = TexCoord;
+            }
+        )glsl";
+        static const char* fragmentShader = R"glsl(
+            precision lowp float;
+            uniform sampler2D Texture0;
+            varying lowp vec2 oTexCoord;
+            void main() {
+                gl_FragColor = texture2D(Texture0, oTexCoord);
+            }
+        )glsl";
+        static OVRFW::ovrProgramParm uniformParms[] = {
+            {.Name = "Texture0", .Type = OVRFW::ovrProgramParmType::TEXTURE_SAMPLED},
+        };
+        program_ = OVRFW::GlProgram::Build(
+            "", vertexShader, "", fragmentShader, uniformParms, 1);
+        surface_.geo = OVRFW::GlGeometry(descriptor.attribs, descriptor.indices);
+        OVRFW::ovrGraphicsCommand& command = surface_.graphicsCommand;
+        command.Program = program_;
+        command.Textures[0] = texture;
+        command.UniformData[0].Data = &command.Textures[0];
+        command.GpuState.depthEnable = command.GpuState.depthMaskEnable = true;
+        command.GpuState.blendEnable = OVRFW::ovrGpuState::BLEND_DISABLE;
+    }
+
+    void Shutdown() {
+        OVRFW::GlProgram::Free(program_);
+        surface_.geo.Free();
+    }
+    void SetPose(const OVR::Posef& pose) { pose_ = pose; }
+    void Update() {
+        pose_.Rotation.Normalize();
+        modelMatrix_ = OVR::Matrix4f(pose_);
+    }
+    void Render(std::vector<OVRFW::ovrDrawSurface>& surfaces) {
+        surfaces.emplace_back(modelMatrix_, &surface_);
+    }
+
+   private:
+    OVRFW::ovrSurfaceDef surface_;
+    OVRFW::GlProgram program_;
+    OVR::Posef pose_ = OVR::Posef::Identity();
+    OVR::Matrix4f modelMatrix_ = OVR::Matrix4f::Identity();
+};
 
 class DeusExQuestApp final : public OVRFW::XrApp {
    public:
@@ -83,6 +141,10 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             renderer.SetPose(worldPose);
             renderer.Update();
         }
+        for (auto& renderer : texturedRenderers_) {
+            renderer.SetPose(worldPose);
+            renderer.Update();
+        }
         if (frame.LeftRemoteTracked) leftController_.Update(frame.LeftRemotePose);
         if (frame.RightRemoteTracked) rightController_.Update(frame.RightRemotePose);
     }
@@ -91,6 +153,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         const OVRFW::ovrApplFrameIn& frame,
         OVRFW::ovrRendererOutput& output) override {
         for (auto& renderer : worldRenderers_) renderer.Render(output.Surfaces);
+        for (auto& renderer : texturedRenderers_) renderer.Render(output.Surfaces);
         if (frame.LeftRemoteTracked) leftController_.Render(output.Surfaces);
         if (frame.RightRemoteTracked) rightController_.Render(output.Surfaces);
     }
@@ -99,7 +162,13 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         leftController_.Shutdown();
         rightController_.Shutdown();
         for (auto& renderer : worldRenderers_) renderer.Shutdown();
+        for (auto& renderer : texturedRenderers_) renderer.Shutdown();
         worldRenderers_.clear();
+        texturedRenderers_.clear();
+        if (firstTexture_.IsValid()) {
+            OVRFW::FreeTexture(firstTexture_);
+            firstTexture_ = {};
+        }
         collisionTriangles_.clear();
         collisionGrid_.clear();
         oversizedCollisionTriangles_.clear();
@@ -109,6 +178,8 @@ class DeusExQuestApp final : public OVRFW::XrApp {
     struct MeshVertex {
         float px, py, pz;
         float nx, ny, nz;
+        float u, v;
+        std::int32_t materialSlot;
     };
 
     struct CollisionTriangle {
@@ -291,6 +362,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
     bool LoadWorldMesh() {
         constexpr const char* path =
             "/data/user/0/dev.deusex.questvr.smoketest/files/DeusEx/quest-world.mesh";
+        if (!LoadFirstTexture()) return false;
         std::FILE* file = std::fopen(path, "rb");
         if (file == nullptr) return false;
         collisionTriangles_.clear();
@@ -298,12 +370,15 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         bool ok = std::fread(&magic, sizeof(magic), 1, file) == 1 &&
             std::fread(&version, sizeof(version), 1, file) == 1 &&
             std::fread(&chunkCount, sizeof(chunkCount), 1, file) == 1 &&
-            magic == 0x4d515844u && version == 1 && chunkCount > 0 && chunkCount < 128;
-        if (ok) worldRenderers_.resize(chunkCount);
+            magic == 0x4d515844u && version == 2 && chunkCount > 0 && chunkCount < 128;
+        std::uint32_t texturedChunks{};
         for (std::uint32_t chunk = 0; ok && chunk < chunkCount; ++chunk) {
+            std::int32_t materialSlot{};
             std::uint32_t vertexCount{};
-            ok = std::fread(&vertexCount, sizeof(vertexCount), 1, file) == 1 &&
+            ok = std::fread(&materialSlot, sizeof(materialSlot), 1, file) == 1 &&
+                std::fread(&vertexCount, sizeof(vertexCount), 1, file) == 1 &&
                 vertexCount > 0 && vertexCount <= 60000 && vertexCount % 3 == 0;
+            if (materialSlot == 0) ++texturedChunks;
             std::vector<MeshVertex> vertices(vertexCount);
             if (ok) ok = std::fread(
                 vertices.data(), sizeof(MeshVertex), vertexCount, file) == vertexCount;
@@ -312,14 +387,20 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             OVRFW::GlGeometry::Descriptor descriptor;
             descriptor.attribs.position.reserve(vertexCount);
             descriptor.attribs.normal.reserve(vertexCount);
+            descriptor.attribs.uv0.reserve(vertexCount);
             descriptor.attribs.color.reserve(vertexCount);
             descriptor.indices.reserve(vertexCount);
             for (std::uint32_t index = 0; index < vertexCount; ++index) {
                 const MeshVertex& vertex = vertices[index];
                 descriptor.attribs.position.emplace_back(vertex.px, vertex.py, vertex.pz);
                 descriptor.attribs.normal.emplace_back(vertex.nx, vertex.ny, vertex.nz);
+                descriptor.attribs.uv0.emplace_back(vertex.u, vertex.v);
                 const float shade = 0.25f + 0.55f * (vertex.nz * 0.5f + 0.5f);
-                descriptor.attribs.color.emplace_back(0.15f * shade, 0.8f * shade, 0.55f * shade, 1.0f);
+                descriptor.attribs.color.emplace_back(
+                    materialSlot == 0 ? 0.75f * shade : 0.15f * shade,
+                    materialSlot == 0 ? 0.3f * shade : 0.8f * shade,
+                    materialSlot == 0 ? 0.9f * shade : 0.55f * shade,
+                    1.0f);
                 descriptor.indices.push_back(static_cast<OVRFW::TriangleIndex>(index));
             }
             for (std::uint32_t index = 0; index + 2 < vertexCount; index += 6) {
@@ -332,13 +413,21 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                     {vc.px, vc.py, vc.pz},
                     {va.nx, va.ny, va.nz}});
             }
-            worldRenderers_[chunk].Init(descriptor);
-            worldRenderers_[chunk].AmbientLightColor = {0.35f, 0.35f, 0.35f};
+            if (materialSlot == 0) {
+                texturedRenderers_.emplace_back();
+                texturedRenderers_.back().Init(descriptor, firstTexture_);
+            } else {
+                worldRenderers_.emplace_back();
+                worldRenderers_.back().Init(descriptor);
+                worldRenderers_.back().AmbientLightColor = {0.35f, 0.35f, 0.35f};
+            }
         }
         std::fclose(file);
         if (!ok) {
             for (auto& renderer : worldRenderers_) renderer.Shutdown();
             worldRenderers_.clear();
+            for (auto& renderer : texturedRenderers_) renderer.Shutdown();
+            texturedRenderers_.clear();
             collisionTriangles_.clear();
             collisionGrid_.clear();
             oversizedCollisionTriangles_.clear();
@@ -346,14 +435,45 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         }
         BuildCollisionGrid();
         ALOG(
-            "DeusExQuest: loaded training BSP mesh in %u GPU chunks with %zu collision triangles in %zu cells",
+            "DeusExQuest: loaded training BSP mesh in %u GPU chunks (%u textured) with %zu collision triangles in %zu cells",
             chunkCount,
+            texturedChunks,
             collisionTriangles_.size(),
             collisionGrid_.size());
         return true;
     }
 
+    bool LoadFirstTexture() {
+        constexpr const char* path =
+            "/data/user/0/dev.deusex.questvr.smoketest/files/DeusEx/quest-first-texture.rgba";
+        std::FILE* file = std::fopen(path, "rb");
+        if (file == nullptr) return false;
+        std::uint32_t magic{}, version{}, width{}, height{};
+        bool ok = std::fread(&magic, sizeof(magic), 1, file) == 1 &&
+            std::fread(&version, sizeof(version), 1, file) == 1 &&
+            std::fread(&width, sizeof(width), 1, file) == 1 &&
+            std::fread(&height, sizeof(height), 1, file) == 1 &&
+            magic == 0x54515844u && version == 1 && width > 0 && height > 0 &&
+            width <= 8192 && height <= 8192;
+        std::vector<std::uint8_t> rgba;
+        if (ok) {
+            rgba.resize(static_cast<std::size_t>(width) * height * 4u);
+            ok = std::fread(rgba.data(), 1, rgba.size(), file) == rgba.size();
+        }
+        std::fclose(file);
+        if (!ok) return false;
+        firstTexture_ = OVRFW::LoadRGBATextureFromMemory(
+            rgba.data(), static_cast<int>(width), static_cast<int>(height), false);
+        if (!firstTexture_.IsValid()) return false;
+        OVRFW::MakeTextureRepeat(firstTexture_);
+        OVRFW::MakeTextureTrilinear(firstTexture_);
+        ALOG("DeusExQuest: uploaded first UE1 material texture at %ux%u", width, height);
+        return true;
+    }
+
     std::vector<OVRFW::GeometryRenderer> worldRenderers_;
+    std::vector<TexturedGeometryRenderer> texturedRenderers_;
+    OVRFW::GlTexture firstTexture_;
     std::vector<CollisionTriangle> collisionTriangles_;
     std::unordered_map<std::int64_t, std::vector<std::uint32_t>> collisionGrid_;
     std::vector<std::uint32_t> oversizedCollisionTriangles_;
