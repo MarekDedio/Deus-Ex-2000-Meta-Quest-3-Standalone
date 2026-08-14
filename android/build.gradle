@@ -32,7 +32,7 @@ android {
                 abiFilters "arm64-v8a"
             }
             cmake {
-                targets "xrsamples_xrinput"
+                targets "xrsamples_xrinput", "deusex_data_probe"
             }
         }
     }
@@ -40,9 +40,10 @@ android {
     sourceSets {
         main {
             manifest.srcFile "AndroidManifest.xml"
-            java.srcDirs = ["../third_party/Meta-OpenXR-SDK/Samples/XrSamples/XrInput/java"]
+            java.srcDirs = ["java"]
             assets.srcDirs = ["../third_party/Meta-OpenXR-SDK/Samples/XrSamples/XrInput/assets"]
             res.srcDirs = ["../third_party/Meta-OpenXR-SDK/Samples/XrSamples/XrInput/res"]
+            jniLibs.srcDirs = ["../third_party/Meta-OpenXR-SDK/Samples/3rdParty/khronos/ktx/lib/android"]
         }
     }
 
@@ -57,7 +58,7 @@ android {
 
     externalNativeBuild {
         cmake {
-            path file("../third_party/Meta-OpenXR-SDK/Samples/CMakeLists.txt")
+            path file("../native/CMakeLists.txt")
         }
     }
 

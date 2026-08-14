@@ -14,7 +14,7 @@
         <meta-data android:name="com.oculus.supportedDevices" android:value="quest3" />
 
         <activity
-            android:name="com.oculus.xrsamples.xrinput.MainActivity"
+            android:name="dev.deusex.questvr.MainActivity"
             android:theme="@android:style/Theme.Black.NoTitleBar.Fullscreen"
             android:label="Deus Ex Quest Port - OpenXR Test"
             android:launchMode="singleTask"
@@ -30,4 +30,3 @@
         </activity>
     </application>
 </manifest>
-

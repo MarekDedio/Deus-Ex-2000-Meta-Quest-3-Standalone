@@ -25,4 +25,4 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 & $adb shell am force-stop dev.deusex.questvr.smoketest
-& $adb shell monkey -p dev.deusex.questvr.smoketest 1
+& $adb shell am start -n dev.deusex.questvr.smoketest/dev.deusex.questvr.MainActivity

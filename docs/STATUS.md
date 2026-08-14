@@ -14,9 +14,23 @@
 - UE1 header inspection succeeds for `00_Training.dx`, `DeusEx.u`, and
   `CoreTexMetal.utx`; all report package version 68 with valid table offsets.
 
+## Verified on Quest 3
+
+- Device `2G0YC5ZG620985` was detected as `model:Quest_3`, codename `eureka`.
+- APK installed with ABI `arm64-v8a`.
+- The first device launch exposed a missing `libktx.so`; packaging was corrected
+  to include the pinned SDK's ARM64 KTX libraries.
+- The corrected process remained alive and entered an OpenXR session.
+- The session reached `XR_SESSION_STATE_FOCUSED` and submitted 1,524 frames.
+- It transitioned through `VISIBLE`, `SYNCHRONIZED`, `STOPPING`, and `IDLE`
+  cleanly when Guardian/system UI took focus.
+- 712 MB of user-owned game data was deployed into private app storage and the
+  required training, script, texture, and music packages were verified there.
+- An ARM64-native UE1 header probe is built into the app. Device execution is
+  pending because the headset returned to its passcode lock screen.
+
 ## Not yet verified
 
-- Device installation or runtime launch: no authorized Quest was attached.
 - Loading UE1 packages inside the Android process.
 - Training map rendering or gameplay.
 - Campaign compatibility.
