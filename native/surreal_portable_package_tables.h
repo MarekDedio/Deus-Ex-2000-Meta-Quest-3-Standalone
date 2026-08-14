@@ -65,6 +65,16 @@ struct PortableReflectionGraph {
     std::size_t structCount{};
 };
 
+struct PortableScriptBody {
+    std::string objectPath;
+    std::uint32_t logicalSize{};
+    std::vector<std::uint8_t> rawBytes;
+    std::uint16_t nativeIndex{};
+    std::uint8_t operatorPrecedence{};
+    std::uint32_t functionFlags{};
+    std::uint16_t replicationOffset{};
+};
+
 PortablePackageTables LoadPortablePackageTables(const std::string& path);
 PortablePropertyStream LoadPortableExportProperties(
     const PortablePackageTables& package,
@@ -87,3 +97,6 @@ PortableSound LoadPortableSound(
     std::size_t exportIndex);
 PortableReflectionGraph BuildPortableReflectionGraph(
     const PortablePackageTables& package);
+PortableScriptBody LoadPortableFunctionScript(
+    const PortablePackageTables& package,
+    std::size_t exportIndex);

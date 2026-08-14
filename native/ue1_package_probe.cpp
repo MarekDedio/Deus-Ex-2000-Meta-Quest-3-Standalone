@@ -1100,29 +1100,57 @@ Java_dev_deusex_questvr_MainActivity_probeGameData(
         }
         bool playerClassFound = false;
         std::size_t playerMembers = 0;
-        for (const PortableReflectionObject& object : reflection.objects) {
+        std::size_t decodedFunctions = 0;
+        std::size_t scriptedFunctions = 0;
+        std::size_t nativeFunctions = 0;
+        std::size_t logicalScriptBytes = 0;
+        std::size_t rawScriptBytes = 0;
+        for (std::size_t objectIndex = 0;
+             objectIndex < reflection.objects.size();
+             ++objectIndex) {
+            const PortableReflectionObject& object = reflection.objects[objectIndex];
             if (object.metaClass == "Class" &&
                 object.objectPath == "DeusExPlayer") {
                 playerClassFound = true;
             }
             if (object.outerPath == "DeusExPlayer") ++playerMembers;
+            if (object.metaClass == "Function") {
+                const PortableScriptBody body =
+                    LoadPortableFunctionScript(portableScripts, objectIndex);
+                ++decodedFunctions;
+                logicalScriptBytes += body.logicalSize;
+                rawScriptBytes += body.rawBytes.size();
+                if (body.logicalSize != 0) ++scriptedFunctions;
+                if ((body.functionFlags & 0x400u) != 0) ++nativeFunctions;
+            }
         }
         if (!playerClassFound || playerMembers == 0) {
             throw std::runtime_error("DeusExPlayer reflection topology is missing");
+        }
+        if (decodedFunctions != reflection.functionCount || scriptedFunctions == 0 ||
+            logicalScriptBytes == 0 || rawScriptBytes == 0) {
+            throw std::runtime_error("DeusEx.u function bytecode set is incomplete");
         }
         if (std::FILE* manifest =
                 std::fopen((root + "/quest-reflection.txt").c_str(), "wb")) {
             std::fprintf(
                 manifest,
                 "classes=%zu\nstates=%zu\nfunctions=%zu\nproperties=%zu\n"
-                "structs=%zu\nenums=%zu\ndeusex_player_members=%zu\n",
+                "structs=%zu\nenums=%zu\ndeusex_player_members=%zu\n"
+                "decoded_functions=%zu\nscripted_functions=%zu\nnative_functions=%zu\n"
+                "logical_script_bytes=%zu\nraw_script_bytes=%zu\n",
                 reflection.classCount,
                 reflection.stateCount,
                 reflection.functionCount,
                 reflection.propertyCount,
                 reflection.structCount,
                 reflection.enumCount,
-                playerMembers);
+                playerMembers,
+                decodedFunctions,
+                scriptedFunctions,
+                nativeFunctions,
+                logicalScriptBytes,
+                rawScriptBytes);
             for (const PortableReflectionObject& object : reflection.objects) {
                 if (object.metaClass == "Class") {
                     std::fprintf(
@@ -1145,6 +1173,15 @@ Java_dev_deusex_questvr_MainActivity_probeGameData(
             reflection.structCount,
             reflection.enumCount,
             playerMembers);
+        __android_log_print(
+            ANDROID_LOG_INFO,
+            kLogTag,
+            "Surreal bytecode decoded %zu functions (%zu scripted, %zu native), %zu logical bytes from %zu serialized bytes",
+            decodedFunctions,
+            scriptedFunctions,
+            nativeFunctions,
+            logicalScriptBytes,
+            rawScriptBytes);
         __android_log_print(
             ANDROID_LOG_INFO,
             kLogTag,
