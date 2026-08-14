@@ -19,6 +19,15 @@ struct PortableRuntimeSummary {
     std::size_t destroyedObjects{};
 };
 
+struct PortableMapRuntimeSummary {
+    bool passed{};
+    std::size_t exports{};
+    std::size_t actors{};
+    std::size_t actorProperties{};
+    std::size_t resolvedClasses{};
+    std::size_t unresolvedClasses{};
+};
+
 PortableRuntimeSummary BuildAndVerifyPortableRuntime(
     const PortablePackageTables& package);
 PortableRuntimeSummary InitializePortableRuntime(
@@ -46,3 +55,5 @@ struct PortableVmValue {
 };
 
 PortableVmValue ExecutePortableFunction(const std::string& objectPath);
+PortableMapRuntimeSummary LoadPortableRuntimeMap(
+    const PortablePackageTables& package);

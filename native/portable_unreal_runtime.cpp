@@ -19,8 +19,12 @@ public:
 
     PortableReflectionObject reflection;
     std::vector<RuntimeObject*> references;
+    RuntimeObject* outer{};
+    RuntimeObject* base{};
+    RuntimeObject* cls{};
     std::unique_ptr<PortableScriptBody> script;
     std::unique_ptr<PortablePropertyDescriptor> property;
+    std::vector<PortableTaggedProperty> instanceProperties;
 
 protected:
     ~RuntimeObject() override {
@@ -62,6 +66,7 @@ private:
 };
 
 std::unique_ptr<GCRoot<RuntimePackage>> persistentRuntime;
+std::unordered_map<std::string, RuntimeObject*> persistentQualifiedObjects;
 
 class RuntimeBytecodeReader {
 public:
@@ -187,12 +192,15 @@ void PopulateRuntime(
         RuntimeObject* object = runtime->exports[index];
         const ExportTableEntry& entry = package.exports[index];
         if (RuntimeObject* outer = ResolveLocal(entry.ObjOuter, runtime->exports, summary)) {
+            object->outer = outer;
             object->references.push_back(outer);
         }
         if (RuntimeObject* base = ResolveLocal(entry.ObjBase, runtime->exports, summary)) {
+            object->base = base;
             object->references.push_back(base);
         }
         if (RuntimeObject* cls = ResolveLocal(entry.ObjClass, runtime->exports, summary)) {
+            object->cls = cls;
             object->references.push_back(cls);
         }
 
@@ -282,7 +290,7 @@ PortableRuntimeSummary InitializePortableRuntime(
         std::size_t first{};
     };
     std::vector<PackageSlice> slices;
-    std::unordered_map<std::string, RuntimeObject*> qualifiedObjects;
+    persistentQualifiedObjects.clear();
     for (const PortablePackageTables& package : packages) {
         PackageSlice slice;
         slice.package = &package;
@@ -293,7 +301,7 @@ PortableRuntimeSummary InitializePortableRuntime(
             reflection.objectPath = slice.name + "." + reflection.objectPath;
             RuntimeObject* object = GC::Alloc<RuntimeObject>(reflection, nullptr);
             persistentRuntime->get()->exports.push_back(object);
-            qualifiedObjects[reflection.objectPath] = object;
+            persistentQualifiedObjects[reflection.objectPath] = object;
         }
         slices.push_back(std::move(slice));
     }
@@ -307,8 +315,8 @@ PortableRuntimeSummary InitializePortableRuntime(
         } else {
             path = GetPortableObjectPath(*slice.package, reference);
         }
-        const auto found = qualifiedObjects.find(path);
-        if (found != qualifiedObjects.end()) {
+        const auto found = persistentQualifiedObjects.find(path);
+        if (found != persistentQualifiedObjects.end()) {
             ++summary.resolvedLinks;
             return found->second;
         }
@@ -323,12 +331,12 @@ PortableRuntimeSummary InitializePortableRuntime(
             const std::size_t globalIndex = slice.first + localIndex;
             RuntimeObject* object = persistentRuntime->get()->exports[globalIndex];
             const ExportTableEntry& entry = slice.package->exports[localIndex];
-            for (const std::int32_t reference :
-                 {entry.ObjOuter, entry.ObjBase, entry.ObjClass}) {
-                if (RuntimeObject* target = resolve(slice, reference)) {
-                    object->references.push_back(target);
-                }
-            }
+            object->outer = resolve(slice, entry.ObjOuter);
+            object->base = resolve(slice, entry.ObjBase);
+            object->cls = resolve(slice, entry.ObjClass);
+            if (object->outer) object->references.push_back(object->outer);
+            if (object->base) object->references.push_back(object->base);
+            if (object->cls) object->references.push_back(object->cls);
             if (object->reflection.metaClass == "Function") {
                 object->script = std::make_unique<PortableScriptBody>(
                     LoadPortableFunctionScript(*slice.package, localIndex));
@@ -363,6 +371,7 @@ PortableRuntimeSummary InitializePortableRuntime(
 
 void ShutdownPortableRuntime() {
     persistentRuntime.reset();
+    persistentQualifiedObjects.clear();
     GC::Collect();
 }
 
@@ -392,4 +401,69 @@ PortableVmValue ExecutePortableFunction(const std::string& objectPath) {
         throw std::runtime_error("Portable VM function does not begin with Return");
     }
     return EvaluateConstant(reader);
+}
+
+PortableMapRuntimeSummary LoadPortableRuntimeMap(
+    const PortablePackageTables& package) {
+    if (!persistentRuntime || !persistentRuntime->get()) {
+        throw std::runtime_error("Cannot load a map without an initialized runtime");
+    }
+    PortableMapRuntimeSummary summary;
+    const std::string packageName = PackageStem(package.sourcePath);
+    const PortableReflectionGraph graph = BuildPortableReflectionGraph(package);
+    const std::size_t first = persistentRuntime->get()->exports.size();
+    persistentRuntime->get()->exports.reserve(first + graph.objects.size());
+    for (PortableReflectionObject reflection : graph.objects) {
+        reflection.objectPath = packageName + "." + reflection.objectPath;
+        RuntimeObject* object = GC::Alloc<RuntimeObject>(reflection, nullptr);
+        persistentRuntime->get()->exports.push_back(object);
+        persistentQualifiedObjects[reflection.objectPath] = object;
+    }
+
+    const auto resolve = [&](std::int32_t reference) {
+        if (reference == 0) return static_cast<RuntimeObject*>(nullptr);
+        std::string path;
+        if (reference > 0) {
+            path = packageName + "." + GetPortableObjectPath(package, reference);
+        } else {
+            path = GetPortableObjectPath(package, reference);
+        }
+        const auto found = persistentQualifiedObjects.find(path);
+        return found == persistentQualifiedObjects.end() ? nullptr : found->second;
+    };
+    const auto isActorClass = [](RuntimeObject* cls) {
+        for (RuntimeObject* current = cls; current != nullptr; current = current->base) {
+            if (current->reflection.objectPath == "Engine.Actor") return true;
+        }
+        return false;
+    };
+
+    for (std::size_t localIndex = 0; localIndex < package.exports.size(); ++localIndex) {
+        RuntimeObject* object = persistentRuntime->get()->exports[first + localIndex];
+        const ExportTableEntry& entry = package.exports[localIndex];
+        object->outer = resolve(entry.ObjOuter);
+        object->base = resolve(entry.ObjBase);
+        object->cls = resolve(entry.ObjClass);
+        if (object->outer) object->references.push_back(object->outer);
+        if (object->base) object->references.push_back(object->base);
+        if (object->cls) {
+            object->references.push_back(object->cls);
+            ++summary.resolvedClasses;
+        } else if (entry.ObjClass != 0) {
+            ++summary.unresolvedClasses;
+        }
+        if (isActorClass(object->cls) && entry.ObjSize > 0) {
+            const PortablePropertyStream properties =
+                LoadPortableExportProperties(package, localIndex);
+            object->instanceProperties = properties.properties;
+            summary.actorProperties += object->instanceProperties.size();
+            ++summary.actors;
+        }
+    }
+    summary.exports = graph.objects.size();
+    GC::Collect();
+    summary.passed = summary.exports == package.exports.size() &&
+        summary.actors != 0 && summary.actorProperties != 0 &&
+        summary.resolvedClasses != 0;
+    return summary;
 }

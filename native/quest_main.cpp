@@ -148,6 +148,21 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                 runtime.normalizedBytecodeBytes,
                 runtime.resolvedLinks,
                 runtime.unresolvedExternalLinks);
+            const PortablePackageTables trainingMap = LoadPortablePackageTables(
+                "/data/user/0/dev.deusex.questvr.smoketest/files/DeusEx/Maps/00_Training.dx");
+            const PortableMapRuntimeSummary mapRuntime =
+                LoadPortableRuntimeMap(trainingMap);
+            if (!mapRuntime.passed) {
+                ALOG("DeusExQuest: live training actor runtime validation failed");
+                return false;
+            }
+            ALOG(
+                "DeusExQuest: live training map ready: %zu exports, %zu actors, %zu instance properties, %zu classes resolved/%zu unresolved",
+                mapRuntime.exports,
+                mapRuntime.actors,
+                mapRuntime.actorProperties,
+                mapRuntime.resolvedClasses,
+                mapRuntime.unresolvedClasses);
             const PortableVmValue stomp =
                 ExecutePortableFunction("ScriptedPawn.WillTakeStompDamage");
             const PortableVmValue shield =
