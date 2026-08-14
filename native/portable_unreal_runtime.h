@@ -23,6 +23,8 @@ PortableRuntimeSummary BuildAndVerifyPortableRuntime(
     const PortablePackageTables& package);
 PortableRuntimeSummary InitializePortableRuntime(
     const PortablePackageTables& package);
+PortableRuntimeSummary InitializePortableRuntime(
+    const std::vector<PortablePackageTables>& packages);
 void ShutdownPortableRuntime();
 
 enum class PortableVmValueType {

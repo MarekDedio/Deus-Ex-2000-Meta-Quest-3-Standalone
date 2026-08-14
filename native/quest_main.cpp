@@ -87,20 +87,67 @@ class DeusExQuestApp final : public OVRFW::XrApp {
 
     bool SessionInit() override {
         try {
-            const PortablePackageTables scripts = LoadPortablePackageTables(
-                "/data/user/0/dev.deusex.questvr.smoketest/files/DeusEx/System/DeusEx.u");
+            static constexpr const char* packageNames[] = {
+                "ConSys",
+                "Core",
+                "DeusEx",
+                "DeusExCharacters",
+                "DeusExConAudioAIBarks",
+                "DeusExConAudioEndGame",
+                "DeusExConAudioHK_Shared",
+                "DeusExConAudioIntro",
+                "DeusExConAudioMission00",
+                "DeusExConAudioMission01",
+                "DeusExConAudioMission02",
+                "DeusExConAudioMission03",
+                "DeusExConAudioMission04",
+                "DeusExConAudioMission05",
+                "DeusExConAudioMission08",
+                "DeusExConAudioMission09",
+                "DeusExConAudioMission10",
+                "DeusExConAudioMission11",
+                "DeusExConAudioMission12",
+                "DeusExConAudioMission14",
+                "DeusExConAudioMission15",
+                "DeusExConAudioNYShared",
+                "DeusExConText",
+                "DeusExConversations",
+                "DeusExDeco",
+                "DeusExItems",
+                "DeusExSounds",
+                "DeusExText",
+                "DeusExUI",
+                "Editor",
+                "Engine",
+                "Extension",
+                "Fire",
+                "IpDrv",
+                "IpServer",
+                "MPCharacters",
+                "UBrowser",
+                "UWindow"};
+            std::vector<PortablePackageTables> scripts;
+            scripts.reserve(sizeof(packageNames) / sizeof(packageNames[0]));
+            for (const char* packageName : packageNames) {
+                scripts.push_back(LoadPortablePackageTables(
+                    std::string(
+                        "/data/user/0/dev.deusex.questvr.smoketest/files/DeusEx/System/") +
+                    packageName + ".u"));
+            }
             const PortableRuntimeSummary runtime = InitializePortableRuntime(scripts);
             if (!runtime.passed) {
                 ALOG("DeusExQuest: persistent Unreal runtime validation failed");
                 return false;
             }
             ALOG(
-                "DeusExQuest: persistent Unreal runtime ready: %zu objects, %zu classes, %zu functions, %zu properties, %zu bytecode bytes",
+                "DeusExQuest: persistent Unreal runtime ready: %zu objects, %zu classes, %zu functions, %zu properties, %zu bytecode bytes, %zu links resolved/%zu external",
                 runtime.objects,
                 runtime.classes,
                 runtime.functions,
                 runtime.properties,
-                runtime.normalizedBytecodeBytes);
+                runtime.normalizedBytecodeBytes,
+                runtime.resolvedLinks,
+                runtime.unresolvedExternalLinks);
             const PortableVmValue stomp =
                 ExecutePortableFunction("ScriptedPawn.WillTakeStompDamage");
             const PortableVmValue shield =

@@ -163,6 +163,14 @@ RuntimeObject* ResolveLocal(
     return nullptr;
 }
 
+std::string PackageStem(const std::string& path) {
+    const std::size_t slash = path.find_last_of("/\\");
+    const std::size_t begin = slash == std::string::npos ? 0 : slash + 1;
+    const std::size_t dot = path.find_last_of('.');
+    const std::size_t end = dot == std::string::npos || dot < begin ? path.size() : dot;
+    return path.substr(begin, end - begin);
+}
+
 void PopulateRuntime(
     RuntimePackage* runtime,
     const PortablePackageTables& package,
@@ -259,6 +267,100 @@ PortableRuntimeSummary InitializePortableRuntime(
     return summary;
 }
 
+PortableRuntimeSummary InitializePortableRuntime(
+    const std::vector<PortablePackageTables>& packages) {
+    ShutdownPortableRuntime();
+    PortableRuntimeSummary summary;
+    const std::size_t baseline = GC::GetStats().numObjects;
+    persistentRuntime = std::make_unique<GCRoot<RuntimePackage>>(
+        GC::Alloc<RuntimePackage>(nullptr));
+
+    struct PackageSlice {
+        const PortablePackageTables* package{};
+        PortableReflectionGraph graph;
+        std::string name;
+        std::size_t first{};
+    };
+    std::vector<PackageSlice> slices;
+    std::unordered_map<std::string, RuntimeObject*> qualifiedObjects;
+    for (const PortablePackageTables& package : packages) {
+        PackageSlice slice;
+        slice.package = &package;
+        slice.graph = BuildPortableReflectionGraph(package);
+        slice.name = PackageStem(package.sourcePath);
+        slice.first = persistentRuntime->get()->exports.size();
+        for (PortableReflectionObject& reflection : slice.graph.objects) {
+            reflection.objectPath = slice.name + "." + reflection.objectPath;
+            RuntimeObject* object = GC::Alloc<RuntimeObject>(reflection, nullptr);
+            persistentRuntime->get()->exports.push_back(object);
+            qualifiedObjects[reflection.objectPath] = object;
+        }
+        slices.push_back(std::move(slice));
+    }
+
+    const auto resolve = [&](const PackageSlice& slice, std::int32_t reference) {
+        if (reference == 0) return static_cast<RuntimeObject*>(nullptr);
+        std::string path;
+        if (reference > 0) {
+            path = slice.name + "." +
+                GetPortableObjectPath(*slice.package, reference);
+        } else {
+            path = GetPortableObjectPath(*slice.package, reference);
+        }
+        const auto found = qualifiedObjects.find(path);
+        if (found != qualifiedObjects.end()) {
+            ++summary.resolvedLinks;
+            return found->second;
+        }
+        ++summary.unresolvedExternalLinks;
+        return static_cast<RuntimeObject*>(nullptr);
+    };
+
+    for (const PackageSlice& slice : slices) {
+        for (std::size_t localIndex = 0;
+             localIndex < slice.package->exports.size();
+             ++localIndex) {
+            const std::size_t globalIndex = slice.first + localIndex;
+            RuntimeObject* object = persistentRuntime->get()->exports[globalIndex];
+            const ExportTableEntry& entry = slice.package->exports[localIndex];
+            for (const std::int32_t reference :
+                 {entry.ObjOuter, entry.ObjBase, entry.ObjClass}) {
+                if (RuntimeObject* target = resolve(slice, reference)) {
+                    object->references.push_back(target);
+                }
+            }
+            if (object->reflection.metaClass == "Function") {
+                object->script = std::make_unique<PortableScriptBody>(
+                    LoadPortableFunctionScript(*slice.package, localIndex));
+                summary.normalizedBytecodeBytes += object->script->bytecode.size();
+                ++summary.functions;
+            } else if (object->reflection.metaClass.size() >= 8 &&
+                object->reflection.metaClass.compare(
+                    object->reflection.metaClass.size() - 8, 8, "Property") == 0) {
+                object->property = std::make_unique<PortablePropertyDescriptor>(
+                    LoadPortablePropertyDescriptor(*slice.package, localIndex));
+                for (const std::int32_t reference :
+                     {object->property->referencedType,
+                      object->property->secondaryType}) {
+                    if (RuntimeObject* target = resolve(slice, reference)) {
+                        object->references.push_back(target);
+                    }
+                }
+                ++summary.properties;
+            }
+            if (object->reflection.metaClass == "Class") ++summary.classes;
+        }
+    }
+    summary.objects = persistentRuntime->get()->exports.size();
+    summary.peakGcObjects = GC::GetStats().numObjects;
+    GC::Collect();
+    summary.passed = !packages.empty() && summary.objects != 0 &&
+        summary.classes != 0 && summary.functions != 0 &&
+        summary.normalizedBytecodeBytes != 0 &&
+        GC::GetStats().numObjects == baseline + summary.objects + 1;
+    return summary;
+}
+
 void ShutdownPortableRuntime() {
     persistentRuntime.reset();
     GC::Collect();
@@ -270,7 +372,14 @@ PortableVmValue ExecutePortableFunction(const std::string& objectPath) {
     }
     RuntimeObject* function = nullptr;
     for (RuntimeObject* object : persistentRuntime->get()->exports) {
-        if (object->reflection.objectPath == objectPath && object->script) {
+        if ((object->reflection.objectPath == objectPath ||
+             (object->reflection.objectPath.size() > objectPath.size() &&
+              object->reflection.objectPath.compare(
+                  object->reflection.objectPath.size() - objectPath.size(),
+                  objectPath.size(), objectPath) == 0 &&
+              object->reflection.objectPath[
+                  object->reflection.objectPath.size() - objectPath.size() - 1] == '.')) &&
+            object->script) {
             function = object;
             break;
         }
