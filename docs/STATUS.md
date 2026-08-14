@@ -99,6 +99,17 @@
   OpenXR reached FOCUSED at 72 Hz. Android `gfxinfo` reported zero ordinary UI
   frames because rendering is submitted directly through the VR compositor, so
   it is not used as a headset frame-rate result.
+- The OpenXR runtime now retains 24,270 unique training BSP triangles for
+  collision, indexed into 2,153 two-metre spatial cells. Locomotion follows
+  walkable floor triangles with bounded step/down ranges and rejects motion when
+  a 28 cm, three-sample player capsule reaches wall-like surfaces.
+- A 15-second physical-Quest Simpleperf run of the idle collision build recorded
+  6,363 samples with zero loss. The capture represented about 10.6% of one CPU
+  core across the whole debug app; the largest individual collision leaf
+  functions accounted for 3.33%, 2.40%, and 1.59% of sampled app CPU. Collision
+  indexing increased total PSS from 172,354 KB to 178,017 KB while graphics
+  remained 128,116 KB. Movement feel and doorway/step behavior still require
+  direct in-headset confirmation.
 
 ## Not yet verified
 
