@@ -140,12 +140,14 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                 return false;
             }
             ALOG(
-                "DeusExQuest: persistent Unreal runtime ready: %zu objects, %zu classes, %zu functions, %zu properties, %zu bytecode bytes, %zu links resolved/%zu external",
+                "DeusExQuest: persistent Unreal runtime ready: %zu objects, %zu classes, %zu functions, %zu properties, %zu bytecode bytes, %zu class defaults/%zu default properties, %zu links resolved/%zu external",
                 runtime.objects,
                 runtime.classes,
                 runtime.functions,
                 runtime.properties,
                 runtime.normalizedBytecodeBytes,
+                runtime.serializedClassDefaults,
+                runtime.classDefaultProperties,
                 runtime.resolvedLinks,
                 runtime.unresolvedExternalLinks);
             const PortablePackageTables trainingMap = LoadPortablePackageTables(
@@ -218,6 +220,8 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             worldRenderers_[0].Init(geometry.ToGeometryDescriptor());
             ALOG("DeusExQuest: world mesh unavailable; showing error cube");
         }
+        actorSnapshots_ = GetPortableRuntimeMapActors();
+        BuildActorMarkers();
 
         if (!leftController_.Init(true) || !rightController_.Init(false)) {
             ALOG("DeusExQuest: controller renderer initialization failed");
@@ -278,6 +282,9 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         }
         if (frame.LeftRemoteTracked) leftController_.Update(frame.LeftRemotePose);
         if (frame.RightRemoteTracked) rightController_.Update(frame.RightRemotePose);
+        if (frame.RightRemoteTracked && frame.Clicked(frame.kButtonA)) {
+            UseTargetedActor(frame.RightRemotePointPose);
+        }
     }
 
     void Render(
@@ -304,10 +311,104 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         collisionTriangles_.clear();
         collisionGrid_.clear();
         oversizedCollisionTriangles_.clear();
+        actorSnapshots_.clear();
+        interactiveActors_.clear();
         ShutdownPortableRuntime();
     }
 
    private:
+    struct InteractiveActor {
+        OVR::Vector3f localPosition;
+        std::string objectPath;
+        std::string classPath;
+    };
+
+    void BuildActorMarkers() {
+        OVRFW::GeometryBuilder geometry;
+        constexpr float unitsToMeters = 1.0f / 52.5f;
+        constexpr float originX = -1149.244f;
+        constexpr float originY = 825.844f;
+        constexpr float originZ = -65.103f;
+        std::size_t visible{};
+        for (const PortableActorSnapshot& actor : actorSnapshots_) {
+            if (!actor.hasLocation ||
+                !(actor.pawn || actor.inventory || actor.decoration ||
+                  actor.mover || actor.trigger)) {
+                continue;
+            }
+            const OVR::Vector3f position(
+                (actor.y - originY) * unitsToMeters,
+                (actor.z - originZ) * unitsToMeters + 1.0f,
+                -(actor.x - originX) * unitsToMeters);
+            OVR::Vector4f color;
+            OVR::Vector3f scale;
+            if (actor.pawn) {
+                color = {0.75f, 0.22f, 0.12f, 1.0f};
+                scale = {0.32f, 1.65f, 0.32f};
+            } else if (actor.inventory) {
+                color = {0.12f, 0.75f, 0.35f, 1.0f};
+                scale = {0.18f, 0.18f, 0.18f};
+            } else if (actor.mover) {
+                color = {0.25f, 0.4f, 0.8f, 1.0f};
+                scale = {0.12f, 0.12f, 0.12f};
+            } else if (actor.trigger) {
+                color = {0.85f, 0.75f, 0.12f, 1.0f};
+                scale = {0.09f, 0.09f, 0.09f};
+            } else {
+                color = {0.5f, 0.32f, 0.15f, 1.0f};
+                scale = {0.35f, 0.35f, 0.35f};
+            }
+            geometry.Add(
+                OVRFW::BuildUnitCubeDescriptor(),
+                OVRFW::GeometryBuilder::kInvalidIndex,
+                color,
+                OVR::Matrix4f::Translation(position) * OVR::Matrix4f::Scaling(scale));
+            interactiveActors_.push_back({position, actor.objectPath, actor.classPath});
+            ++visible;
+            if (visible >= 512) break;
+        }
+        if (visible != 0) {
+            worldRenderers_.emplace_back();
+            worldRenderers_.back().Init(geometry.ToGeometryDescriptor());
+            worldRenderers_.back().AmbientLightColor = {0.45f, 0.45f, 0.45f};
+        }
+        ALOG(
+            "DeusExQuest: instantiated %zu targetable actor proxies from %zu live actors",
+            visible,
+            actorSnapshots_.size());
+    }
+
+    void UseTargetedActor(const OVR::Posef& pointerPose) {
+        const OVR::Vector3f origin = pointerPose.Translation;
+        const OVR::Vector3f direction =
+            pointerPose.Rotation.Rotate(OVR::Vector3f(0.0f, 0.0f, -1.0f));
+        const OVR::Quatf worldRotation(
+            OVR::Vector3f(0.0f, 1.0f, 0.0f), sceneYaw_);
+        const InteractiveActor* best{};
+        float bestDistance = 3.0f;
+        for (const InteractiveActor& actor : interactiveActors_) {
+            const OVR::Vector3f position =
+                worldRotation.Rotate(actor.localPosition) + worldPosition_;
+            const OVR::Vector3f toActor = position - origin;
+            const float distance = toActor.Dot(direction);
+            if (distance <= 0.0f || distance >= bestDistance) continue;
+            const OVR::Vector3f closest = origin + direction * distance;
+            if ((position - closest).LengthSq() <= 0.35f * 0.35f) {
+                best = &actor;
+                bestDistance = distance;
+            }
+        }
+        if (best != nullptr) {
+            ALOG(
+                "DeusExQuest: VR use targeted %s (%s) at %.2fm",
+                best->objectPath.c_str(),
+                best->classPath.c_str(),
+                bestDistance);
+        } else {
+            ALOG("DeusExQuest: VR use found no actor within 3m ray");
+        }
+    }
+
     struct MeshVertex {
         float px, py, pz;
         float nx, ny, nz;
@@ -753,6 +854,8 @@ class DeusExQuestApp final : public OVRFW::XrApp {
 
     std::vector<OVRFW::GeometryRenderer> worldRenderers_;
     std::vector<TexturedGeometryRenderer> texturedRenderers_;
+    std::vector<PortableActorSnapshot> actorSnapshots_;
+    std::vector<InteractiveActor> interactiveActors_;
     OVRFW::GlTexture firstTexture_;
     AAudioStream* ambientStream_{};
     std::vector<std::int16_t> ambientSamples_;

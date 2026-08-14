@@ -3,6 +3,7 @@
 #include "GC/GC.h"
 
 #include <memory>
+#include <cmath>
 #include <cstring>
 #include <stdexcept>
 #include <unordered_map>
@@ -24,7 +25,9 @@ public:
     RuntimeObject* cls{};
     std::unique_ptr<PortableScriptBody> script;
     std::unique_ptr<PortablePropertyDescriptor> property;
+    std::unique_ptr<PortableClassDescriptor> classDescriptor;
     std::vector<PortableTaggedProperty> instanceProperties;
+    std::unordered_map<std::string, std::string> objectPropertyPaths;
 
 protected:
     ~RuntimeObject() override {
@@ -69,6 +72,13 @@ std::unique_ptr<GCRoot<RuntimePackage>> persistentRuntime;
 std::unordered_map<std::string, RuntimeObject*> persistentQualifiedObjects;
 std::size_t persistentScriptExportCount{};
 std::string persistentMapPackageName;
+
+bool IsDerivedFromPath(RuntimeObject* cls, const std::string& path) {
+    for (RuntimeObject* current = cls; current != nullptr; current = current->base) {
+        if (current->reflection.objectPath == path) return true;
+    }
+    return false;
+}
 
 class RuntimeBytecodeReader {
 public:
@@ -345,6 +355,25 @@ PortableRuntimeSummary InitializePortableRuntime(
                     LoadPortableFunctionScript(*slice.package, localIndex));
                 summary.normalizedBytecodeBytes += object->script->bytecode.size();
                 ++summary.functions;
+            } else if (object->reflection.metaClass == "Class" && entry.ObjSize > 0) {
+                object->classDescriptor = std::make_unique<PortableClassDescriptor>(
+                    LoadPortableClassDescriptor(*slice.package, localIndex));
+                ++summary.serializedClassDefaults;
+                summary.classDefaultProperties += object->classDescriptor->defaults.size();
+                for (const PortableTaggedProperty& property :
+                     object->classDescriptor->defaults) {
+                    if (property.type != 5u || property.value.empty()) continue;
+                    const std::int32_t reference = DecodePortableObjectReference(property);
+                    if (reference == 0) continue;
+                    const std::string path = reference > 0
+                        ? slice.name + "." +
+                            GetPortableObjectPath(*slice.package, reference)
+                        : GetPortableObjectPath(*slice.package, reference);
+                    object->objectPropertyPaths[property.name.ToString()] = path;
+                    if (RuntimeObject* target = resolve(slice, reference)) {
+                        object->references.push_back(target);
+                    }
+                }
             } else if (object->reflection.metaClass.size() >= 8 &&
                 object->reflection.metaClass.compare(
                     object->reflection.metaClass.size() - 8, 8, "Property") == 0) {
@@ -438,12 +467,6 @@ PortableMapRuntimeSummary LoadPortableRuntimeMap(
         const auto found = persistentQualifiedObjects.find(path);
         return found == persistentQualifiedObjects.end() ? nullptr : found->second;
     };
-    const auto isActorClass = [](RuntimeObject* cls) {
-        for (RuntimeObject* current = cls; current != nullptr; current = current->base) {
-            if (current->reflection.objectPath == "Engine.Actor") return true;
-        }
-        return false;
-    };
 
     for (std::size_t localIndex = 0; localIndex < package.exports.size(); ++localIndex) {
         RuntimeObject* object = persistentRuntime->get()->exports[first + localIndex];
@@ -459,10 +482,22 @@ PortableMapRuntimeSummary LoadPortableRuntimeMap(
         } else if (entry.ObjClass != 0) {
             ++summary.unresolvedClasses;
         }
-        if (isActorClass(object->cls) && entry.ObjSize > 0) {
+        if (IsDerivedFromPath(object->cls, "Engine.Actor") && entry.ObjSize > 0) {
             const PortablePropertyStream properties =
                 LoadPortableExportProperties(package, localIndex);
             object->instanceProperties = properties.properties;
+            for (const PortableTaggedProperty& property : object->instanceProperties) {
+                if (property.type != 5u || property.value.empty()) continue;
+                const std::int32_t reference = DecodePortableObjectReference(property);
+                if (reference == 0) continue;
+                const std::string path = reference > 0
+                    ? packageName + "." + GetPortableObjectPath(package, reference)
+                    : GetPortableObjectPath(package, reference);
+                object->objectPropertyPaths[property.name.ToString()] = path;
+                if (RuntimeObject* target = resolve(reference)) {
+                    object->references.push_back(target);
+                }
+            }
             summary.actorProperties += object->instanceProperties.size();
             ++summary.actors;
         }
@@ -499,4 +534,47 @@ std::size_t UnloadPortableRuntimeMap() {
     persistentMapPackageName.clear();
     GC::Collect();
     return removed;
+}
+
+std::vector<PortableActorSnapshot> GetPortableRuntimeMapActors() {
+    std::vector<PortableActorSnapshot> snapshots;
+    if (!persistentRuntime || !persistentRuntime->get()) return snapshots;
+    for (std::size_t index = persistentScriptExportCount;
+         index < persistentRuntime->get()->exports.size();
+         ++index) {
+        RuntimeObject* object = persistentRuntime->get()->exports[index];
+        if (!IsDerivedFromPath(object->cls, "Engine.Actor")) continue;
+        PortableActorSnapshot snapshot;
+        snapshot.objectPath = object->reflection.objectPath;
+        snapshot.classPath = object->cls ? object->cls->reflection.objectPath : std::string();
+        snapshot.pawn = IsDerivedFromPath(object->cls, "Engine.Pawn");
+        snapshot.inventory = IsDerivedFromPath(object->cls, "Engine.Inventory");
+        snapshot.decoration = IsDerivedFromPath(object->cls, "Engine.Decoration");
+        snapshot.mover = IsDerivedFromPath(object->cls, "Engine.Mover");
+        snapshot.trigger = IsDerivedFromPath(object->cls, "Engine.Triggers");
+        const auto resolveInheritedObjectProperty = [&](const std::string& name) {
+            const auto instance = object->objectPropertyPaths.find(name);
+            if (instance != object->objectPropertyPaths.end()) return instance->second;
+            for (RuntimeObject* cls = object->cls; cls != nullptr; cls = cls->base) {
+                const auto found = cls->objectPropertyPaths.find(name);
+                if (found != cls->objectPropertyPaths.end()) return found->second;
+            }
+            return std::string();
+        };
+        snapshot.meshPath = resolveInheritedObjectProperty("Mesh");
+        snapshot.texturePath = resolveInheritedObjectProperty("Texture");
+        for (const PortableTaggedProperty& property : object->instanceProperties) {
+            if (property.name == "Location" && property.type == 10u &&
+                property.value.size() == 12u) {
+                std::memcpy(&snapshot.x, property.value.data(), sizeof(float));
+                std::memcpy(&snapshot.y, property.value.data() + 4, sizeof(float));
+                std::memcpy(&snapshot.z, property.value.data() + 8, sizeof(float));
+                snapshot.hasLocation = std::isfinite(snapshot.x) &&
+                    std::isfinite(snapshot.y) && std::isfinite(snapshot.z);
+                break;
+            }
+        }
+        snapshots.push_back(std::move(snapshot));
+    }
+    return snapshots;
 }

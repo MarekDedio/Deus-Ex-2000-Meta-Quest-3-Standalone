@@ -15,6 +15,8 @@ struct PortableRuntimeSummary {
     std::size_t resolvedLinks{};
     std::size_t unresolvedExternalLinks{};
     std::size_t normalizedBytecodeBytes{};
+    std::size_t serializedClassDefaults{};
+    std::size_t classDefaultProperties{};
     std::size_t peakGcObjects{};
     std::size_t destroyedObjects{};
 };
@@ -55,7 +57,24 @@ struct PortableVmValue {
     std::string string;
 };
 
+struct PortableActorSnapshot {
+    std::string objectPath;
+    std::string classPath;
+    float x{};
+    float y{};
+    float z{};
+    bool hasLocation{};
+    bool pawn{};
+    bool inventory{};
+    bool decoration{};
+    bool mover{};
+    bool trigger{};
+    std::string meshPath;
+    std::string texturePath;
+};
+
 PortableVmValue ExecutePortableFunction(const std::string& objectPath);
 PortableMapRuntimeSummary LoadPortableRuntimeMap(
     const PortablePackageTables& package);
 std::size_t UnloadPortableRuntimeMap();
+std::vector<PortableActorSnapshot> GetPortableRuntimeMapActors();

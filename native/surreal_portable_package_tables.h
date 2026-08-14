@@ -91,6 +91,15 @@ struct PortablePropertyDescriptor {
     std::int32_t fixedCount{};
 };
 
+struct PortableClassDescriptor {
+    std::string objectPath;
+    std::uint32_t classFlags{};
+    std::vector<std::uint8_t> stateBytecode;
+    std::vector<PortableTaggedProperty> defaults;
+    std::size_t dependencyCount{};
+    std::size_t packageImportCount{};
+};
+
 PortablePackageTables LoadPortablePackageTables(const std::string& path);
 PortablePropertyStream LoadPortableExportProperties(
     const PortablePackageTables& package,
@@ -117,5 +126,8 @@ PortableScriptBody LoadPortableFunctionScript(
     const PortablePackageTables& package,
     std::size_t exportIndex);
 PortablePropertyDescriptor LoadPortablePropertyDescriptor(
+    const PortablePackageTables& package,
+    std::size_t exportIndex);
+PortableClassDescriptor LoadPortableClassDescriptor(
     const PortablePackageTables& package,
     std::size_t exportIndex);
