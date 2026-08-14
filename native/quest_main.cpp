@@ -1,10 +1,12 @@
 #include <openxr/openxr.h>
 #include <GLES3/gl3.h>
+#include <aaudio/AAudio.h>
 
 #include <algorithm>
 #include <cstdint>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <limits>
 #include <unordered_map>
 #include <vector>
@@ -100,6 +102,9 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             ALOG("DeusExQuest: controller renderer initialization failed");
             return false;
         }
+        if (!StartAmbientAudio()) {
+            ALOG("DeusExQuest: ambient AAudio initialization failed");
+        }
         ALOG("DeusExQuest: project-owned OpenXR runtime initialized");
         return true;
     }
@@ -164,6 +169,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
     }
 
     void SessionEnd() override {
+        StopAmbientAudio();
         leftController_.Shutdown();
         rightController_.Shutdown();
         for (auto& renderer : worldRenderers_) renderer.Shutdown();
@@ -193,6 +199,123 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         OVR::Vector3f c;
         OVR::Vector3f normal;
     };
+
+    static std::uint16_t ReadLe16(const std::uint8_t* bytes) {
+        return static_cast<std::uint16_t>(bytes[0]) |
+            (static_cast<std::uint16_t>(bytes[1]) << 8u);
+    }
+
+    static std::uint32_t ReadLe32(const std::uint8_t* bytes) {
+        return static_cast<std::uint32_t>(bytes[0]) |
+            (static_cast<std::uint32_t>(bytes[1]) << 8u) |
+            (static_cast<std::uint32_t>(bytes[2]) << 16u) |
+            (static_cast<std::uint32_t>(bytes[3]) << 24u);
+    }
+
+    static aaudio_data_callback_result_t AmbientAudioCallback(
+        AAudioStream*,
+        void* userData,
+        void* audioData,
+        std::int32_t numFrames) {
+        auto* app = static_cast<DeusExQuestApp*>(userData);
+        auto* output = static_cast<std::int16_t*>(audioData);
+        const std::size_t sampleCount = static_cast<std::size_t>(numFrames) * 2u;
+        if (app->ambientSamples_.empty()) {
+            std::fill(output, output + sampleCount, 0);
+            return AAUDIO_CALLBACK_RESULT_CONTINUE;
+        }
+        for (std::size_t index = 0; index < sampleCount; ++index) {
+            output[index] = static_cast<std::int16_t>(
+                app->ambientSamples_[app->ambientCursor_] / 4);
+            app->ambientCursor_ = (app->ambientCursor_ + 1u) % app->ambientSamples_.size();
+        }
+        return AAUDIO_CALLBACK_RESULT_CONTINUE;
+    }
+
+    bool StartAmbientAudio() {
+        constexpr const char* path =
+            "/data/user/0/dev.deusex.questvr.smoketest/files/DeusEx/quest-ambient.wav";
+        std::FILE* file = std::fopen(path, "rb");
+        if (file == nullptr) return false;
+        std::fseek(file, 0, SEEK_END);
+        const long fileSize = std::ftell(file);
+        std::fseek(file, 0, SEEK_SET);
+        std::vector<std::uint8_t> wav(fileSize > 0 ? static_cast<std::size_t>(fileSize) : 0u);
+        const bool read = !wav.empty() &&
+            std::fread(wav.data(), 1, wav.size(), file) == wav.size();
+        std::fclose(file);
+        if (!read || wav.size() < 12 || std::memcmp(wav.data(), "RIFF", 4) != 0 ||
+            std::memcmp(wav.data() + 8, "WAVE", 4) != 0) return false;
+
+        std::uint16_t format{}, channels{}, bits{};
+        std::uint32_t sampleRate{};
+        const std::uint8_t* pcm{};
+        std::size_t pcmBytes{};
+        for (std::size_t offset = 12; offset + 8 <= wav.size();) {
+            const std::uint32_t chunkSize = ReadLe32(wav.data() + offset + 4);
+            const std::size_t dataOffset = offset + 8;
+            if (dataOffset + chunkSize > wav.size()) return false;
+            if (std::memcmp(wav.data() + offset, "fmt ", 4) == 0 && chunkSize >= 16) {
+                format = ReadLe16(wav.data() + dataOffset);
+                channels = ReadLe16(wav.data() + dataOffset + 2);
+                sampleRate = ReadLe32(wav.data() + dataOffset + 4);
+                bits = ReadLe16(wav.data() + dataOffset + 14);
+            } else if (std::memcmp(wav.data() + offset, "data", 4) == 0) {
+                pcm = wav.data() + dataOffset;
+                pcmBytes = chunkSize;
+            }
+            offset = dataOffset + chunkSize + (chunkSize & 1u);
+        }
+        if (format != 1 || (channels != 1 && channels != 2) ||
+            (bits != 8 && bits != 16) || sampleRate < 8000 || sampleRate > 192000 ||
+            pcm == nullptr || pcmBytes == 0) return false;
+        const std::size_t bytesPerSample = bits / 8u;
+        const std::size_t frames = pcmBytes / (channels * bytesPerSample);
+        ambientSamples_.resize(frames * 2u);
+        for (std::size_t frame = 0; frame < frames; ++frame) {
+            for (std::size_t outputChannel = 0; outputChannel < 2; ++outputChannel) {
+                const std::size_t sourceChannel = channels == 1 ? 0 : outputChannel;
+                const std::size_t source = (frame * channels + sourceChannel) * bytesPerSample;
+                const std::int16_t sample = bits == 8
+                    ? static_cast<std::int16_t>(
+                          (static_cast<std::int32_t>(pcm[source]) - 128) << 8)
+                    : static_cast<std::int16_t>(ReadLe16(pcm + source));
+                ambientSamples_[frame * 2u + outputChannel] = sample;
+            }
+        }
+
+        AAudioStreamBuilder* builder{};
+        if (AAudio_createStreamBuilder(&builder) != AAUDIO_OK) return false;
+        AAudioStreamBuilder_setDirection(builder, AAUDIO_DIRECTION_OUTPUT);
+        AAudioStreamBuilder_setPerformanceMode(builder, AAUDIO_PERFORMANCE_MODE_LOW_LATENCY);
+        AAudioStreamBuilder_setSharingMode(builder, AAUDIO_SHARING_MODE_SHARED);
+        AAudioStreamBuilder_setFormat(builder, AAUDIO_FORMAT_PCM_I16);
+        AAudioStreamBuilder_setChannelCount(builder, 2);
+        AAudioStreamBuilder_setSampleRate(builder, static_cast<std::int32_t>(sampleRate));
+        AAudioStreamBuilder_setDataCallback(builder, AmbientAudioCallback, this);
+        const aaudio_result_t opened = AAudioStreamBuilder_openStream(builder, &ambientStream_);
+        AAudioStreamBuilder_delete(builder);
+        if (opened != AAUDIO_OK || ambientStream_ == nullptr ||
+            AAudioStream_requestStart(ambientStream_) != AAUDIO_OK) {
+            StopAmbientAudio();
+            return false;
+        }
+        ALOG(
+            "DeusExQuest: ambient AAudio started: %u Hz, %zu stereo frames",
+            sampleRate,
+            frames);
+        return true;
+    }
+
+    void StopAmbientAudio() {
+        if (ambientStream_ != nullptr) {
+            AAudioStream_requestStop(ambientStream_);
+            AAudioStream_close(ambientStream_);
+            ambientStream_ = nullptr;
+        }
+        ambientSamples_.clear();
+        ambientCursor_ = 0;
+    }
 
     static OVR::Vector3f Subtract(const OVR::Vector3f& a, const OVR::Vector3f& b) {
         return {a.x - b.x, a.y - b.y, a.z - b.z};
@@ -509,6 +632,9 @@ class DeusExQuestApp final : public OVRFW::XrApp {
     std::vector<OVRFW::GeometryRenderer> worldRenderers_;
     std::vector<TexturedGeometryRenderer> texturedRenderers_;
     OVRFW::GlTexture firstTexture_;
+    AAudioStream* ambientStream_{};
+    std::vector<std::int16_t> ambientSamples_;
+    std::size_t ambientCursor_{};
     std::vector<CollisionTriangle> collisionTriangles_;
     std::unordered_map<std::int64_t, std::vector<std::uint32_t>> collisionGrid_;
     std::vector<std::uint32_t> oversizedCollisionTriangles_;

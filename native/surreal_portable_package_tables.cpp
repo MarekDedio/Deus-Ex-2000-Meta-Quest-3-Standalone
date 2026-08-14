@@ -450,3 +450,36 @@ std::vector<std::uint32_t> LoadPortablePalette(
     }
     return colors;
 }
+
+std::string GetPortableObjectPath(
+    const PortablePackageTables& package,
+    std::int32_t reference) {
+    return ResolvePortableObjectPath(reference, package);
+}
+
+PortableSound LoadPortableSound(
+    const PortablePackageTables& package,
+    std::size_t exportIndex) {
+    if (exportIndex >= package.exports.size()) {
+        throw std::runtime_error("UE1 sound export index is outside the table");
+    }
+    const ExportTableEntry& entry = package.exports[exportIndex];
+    const PortablePropertyStream properties = LoadPortableExportProperties(package, exportIndex);
+    const std::shared_ptr<File> file = File::open_existing(package.sourcePath);
+    PackageStream stream(nullptr, file);
+    stream.Seek(static_cast<std::uint32_t>(entry.ObjOffset) + properties.bytesConsumed);
+    const std::int32_t formatIndex = stream.ReadIndex();
+    ValidateNameIndex(formatIndex, package.names.size());
+    PortableSound sound;
+    sound.format = package.names[static_cast<std::size_t>(formatIndex)].Name;
+    if (package.version >= 63) stream.ReadUInt32();
+    const std::int32_t byteCount = stream.ReadIndex();
+    if (byteCount <= 0 || byteCount > 64 * 1024 * 1024 ||
+        static_cast<std::uint64_t>(stream.Tell()) + static_cast<std::uint64_t>(byteCount) >
+            static_cast<std::uint64_t>(entry.ObjOffset) + static_cast<std::uint64_t>(entry.ObjSize)) {
+        throw std::runtime_error("UE1 sound payload is outside the export");
+    }
+    sound.data.resize(static_cast<std::size_t>(byteCount));
+    stream.ReadBytes(sound.data.data(), static_cast<std::uint32_t>(sound.data.size()));
+    return sound;
+}

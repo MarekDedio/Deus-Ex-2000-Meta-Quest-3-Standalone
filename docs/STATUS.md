@@ -149,6 +149,12 @@
   52 classes, led by 992 `Brush`, 80 `Spotlight`, 66 `Light`, 25
   `DeusExMover`, 19 `AmbientSound`, 18 `DataLinkTrigger`, and the expected AI,
   trigger, mover, inventory, camera, keypad, decoration, and NPC classes.
+- Actor `AmbientSound` object references resolve across `.uax` packages into
+  three unique UE1 sounds totaling 431,158 bytes. A 177,858-byte WAV is cached,
+  decoded by the native runtime into 88,832 stereo frames at 22,050 Hz, and
+  played through a low-latency AAudio stream on Quest. The stream reached
+  STARTED before OpenXR initialization and the crash buffer remained empty.
+  Per-emitter 3D attenuation and panning are not wired yet.
 
 ## Not yet verified
 

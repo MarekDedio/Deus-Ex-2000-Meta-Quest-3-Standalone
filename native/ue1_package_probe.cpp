@@ -1274,6 +1274,7 @@ Java_dev_deusex_questvr_MainActivity_probeGameData(
             firstProperties.properties.front().name.ToString() == training.firstExportProperty;
         std::size_t decodedActors{};
         std::size_t decodedActorProperties{};
+        std::set<std::string> ambientSoundPaths;
         for (std::int32_t reference : training.levelActorReferences) {
             if (reference <= 0) continue;
             if (static_cast<std::size_t>(reference) > portableTraining.exports.size()) {
@@ -1283,6 +1284,16 @@ Java_dev_deusex_questvr_MainActivity_probeGameData(
                 LoadPortableExportProperties(
                     portableTraining, static_cast<std::size_t>(reference - 1));
             decodedActorProperties += actorProperties.properties.size();
+            for (const PortableTaggedProperty& property : actorProperties.properties) {
+                if (property.name == "AmbientSound") {
+                    const std::int32_t soundReference = DecodePortableObjectReference(property);
+                    if (soundReference != 0) {
+                        const std::string soundPath =
+                            GetPortableObjectPath(portableTraining, soundReference);
+                        if (!soundPath.empty()) ambientSoundPaths.insert(soundPath);
+                    }
+                }
+            }
             ++decodedActors;
         }
         portableTablesMatch = portableTablesMatch && decodedActors > 0;
@@ -1299,6 +1310,48 @@ Java_dev_deusex_questvr_MainActivity_probeGameData(
             "Surreal actor streams decoded %zu actors with %zu tagged properties",
             decodedActors,
             decodedActorProperties);
+        std::map<std::string, PortablePackageTables> soundPackages;
+        std::size_t decodedSounds{};
+        std::size_t decodedSoundBytes{};
+        bool ambientCacheValid{};
+        for (const std::string& soundPath : ambientSoundPaths) {
+            const std::size_t separator = soundPath.find('.');
+            if (separator == std::string::npos) {
+                throw std::runtime_error("Ambient sound path has no package");
+            }
+            const std::string packageName = soundPath.substr(0, separator);
+            const std::string objectPath = soundPath.substr(separator + 1);
+            auto foundPackage = soundPackages.find(packageName);
+            if (foundPackage == soundPackages.end()) {
+                foundPackage = soundPackages.emplace(
+                    packageName,
+                    LoadPortablePackageTables(root + "/Sounds/" + packageName + ".uax")).first;
+            }
+            const std::size_t soundExport = FindPortableExport(foundPackage->second, objectPath);
+            const PortableSound sound = LoadPortableSound(foundPackage->second, soundExport);
+            if (sound.format != "wav" && sound.format != "mp2" && sound.format != "mp3") {
+                throw std::runtime_error("Ambient sound format is unsupported: " +
+                    sound.format.ToString());
+            }
+            decodedSoundBytes += sound.data.size();
+            if (decodedSounds == 0 && sound.format == "wav") {
+                if (std::FILE* cache =
+                        std::fopen((root + "/quest-ambient.wav").c_str(), "wb")) {
+                    ambientCacheValid = std::fwrite(
+                        sound.data.data(), 1, sound.data.size(), cache) == sound.data.size();
+                    std::fclose(cache);
+                }
+            }
+            ++decodedSounds;
+        }
+        portableTablesMatch = portableTablesMatch && !ambientSoundPaths.empty() &&
+            decodedSounds == ambientSoundPaths.size() && ambientCacheValid;
+        __android_log_print(
+            ANDROID_LOG_INFO,
+            kLogTag,
+            "Surreal ambient audio decoded %zu sounds (%zu bytes)",
+            decodedSounds,
+            decodedSoundBytes);
     } catch (const std::exception& error) {
         __android_log_print(ANDROID_LOG_ERROR, kLogTag,
             "Surreal portable table comparison failed: %s", error.what());

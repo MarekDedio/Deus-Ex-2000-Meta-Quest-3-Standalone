@@ -41,6 +41,11 @@ struct PortableMipmap {
     std::uint8_t vBits{};
 };
 
+struct PortableSound {
+    NameString format;
+    std::vector<std::uint8_t> data;
+};
+
 PortablePackageTables LoadPortablePackageTables(const std::string& path);
 PortablePropertyStream LoadPortableExportProperties(
     const PortablePackageTables& package,
@@ -53,5 +58,11 @@ std::vector<PortableMipmap> LoadPortableTextureMipmaps(
     std::size_t exportIndex);
 std::int32_t DecodePortableObjectReference(const PortableTaggedProperty& property);
 std::vector<std::uint32_t> LoadPortablePalette(
+    const PortablePackageTables& package,
+    std::size_t exportIndex);
+std::string GetPortableObjectPath(
+    const PortablePackageTables& package,
+    std::int32_t reference);
+PortableSound LoadPortableSound(
     const PortablePackageTables& package,
     std::size_t exportIndex);

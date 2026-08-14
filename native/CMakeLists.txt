@@ -36,6 +36,7 @@ target_include_directories(deusex_quest PRIVATE
 )
 target_link_libraries(deusex_quest PRIVATE
     android
+    aaudio
     EGL
     GLESv3
     log
