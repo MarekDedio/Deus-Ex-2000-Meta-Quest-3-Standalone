@@ -26,6 +26,7 @@ struct PortableMapRuntimeSummary {
     std::size_t actorProperties{};
     std::size_t resolvedClasses{};
     std::size_t unresolvedClasses{};
+    std::size_t replacedExports{};
 };
 
 PortableRuntimeSummary BuildAndVerifyPortableRuntime(
@@ -57,3 +58,4 @@ struct PortableVmValue {
 PortableVmValue ExecutePortableFunction(const std::string& objectPath);
 PortableMapRuntimeSummary LoadPortableRuntimeMap(
     const PortablePackageTables& package);
+std::size_t UnloadPortableRuntimeMap();

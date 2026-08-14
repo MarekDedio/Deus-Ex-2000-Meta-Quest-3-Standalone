@@ -67,6 +67,8 @@ private:
 
 std::unique_ptr<GCRoot<RuntimePackage>> persistentRuntime;
 std::unordered_map<std::string, RuntimeObject*> persistentQualifiedObjects;
+std::size_t persistentScriptExportCount{};
+std::string persistentMapPackageName;
 
 class RuntimeBytecodeReader {
 public:
@@ -265,6 +267,7 @@ PortableRuntimeSummary InitializePortableRuntime(
     persistentRuntime = std::make_unique<GCRoot<RuntimePackage>>(
         GC::Alloc<RuntimePackage>(nullptr));
     PopulateRuntime(persistentRuntime->get(), package, graph, summary, nullptr);
+    persistentScriptExportCount = persistentRuntime->get()->exports.size();
     GC::Collect();
     summary.passed = summary.objects == package.exports.size() &&
         summary.classes == graph.classCount &&
@@ -360,6 +363,7 @@ PortableRuntimeSummary InitializePortableRuntime(
         }
     }
     summary.objects = persistentRuntime->get()->exports.size();
+    persistentScriptExportCount = summary.objects;
     summary.peakGcObjects = GC::GetStats().numObjects;
     GC::Collect();
     summary.passed = !packages.empty() && summary.objects != 0 &&
@@ -372,6 +376,8 @@ PortableRuntimeSummary InitializePortableRuntime(
 void ShutdownPortableRuntime() {
     persistentRuntime.reset();
     persistentQualifiedObjects.clear();
+    persistentScriptExportCount = 0;
+    persistentMapPackageName.clear();
     GC::Collect();
 }
 
@@ -409,6 +415,7 @@ PortableMapRuntimeSummary LoadPortableRuntimeMap(
         throw std::runtime_error("Cannot load a map without an initialized runtime");
     }
     PortableMapRuntimeSummary summary;
+    summary.replacedExports = UnloadPortableRuntimeMap();
     const std::string packageName = PackageStem(package.sourcePath);
     const PortableReflectionGraph graph = BuildPortableReflectionGraph(package);
     const std::size_t first = persistentRuntime->get()->exports.size();
@@ -461,9 +468,35 @@ PortableMapRuntimeSummary LoadPortableRuntimeMap(
         }
     }
     summary.exports = graph.objects.size();
+    persistentMapPackageName = packageName;
     GC::Collect();
     summary.passed = summary.exports == package.exports.size() &&
         summary.actors != 0 && summary.actorProperties != 0 &&
         summary.resolvedClasses != 0;
     return summary;
+}
+
+std::size_t UnloadPortableRuntimeMap() {
+    if (!persistentRuntime || !persistentRuntime->get() ||
+        persistentRuntime->get()->exports.size() <= persistentScriptExportCount) {
+        persistentMapPackageName.clear();
+        return 0;
+    }
+    const std::size_t removed =
+        persistentRuntime->get()->exports.size() - persistentScriptExportCount;
+    if (!persistentMapPackageName.empty()) {
+        const std::string prefix = persistentMapPackageName + ".";
+        for (auto it = persistentQualifiedObjects.begin();
+             it != persistentQualifiedObjects.end();) {
+            if (it->first.compare(0, prefix.size(), prefix) == 0) {
+                it = persistentQualifiedObjects.erase(it);
+            } else {
+                ++it;
+            }
+        }
+    }
+    persistentRuntime->get()->exports.resize(persistentScriptExportCount);
+    persistentMapPackageName.clear();
+    GC::Collect();
+    return removed;
 }

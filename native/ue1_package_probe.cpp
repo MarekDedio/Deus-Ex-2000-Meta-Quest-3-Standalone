@@ -14,6 +14,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
 #include <map>
 #include <set>
 #include <string>
@@ -1425,6 +1426,7 @@ Java_dev_deusex_questvr_MainActivity_probeGameData(
         }
     }
     bool portableTablesMatch = false;
+    bool mapCatalogValid = false;
     try {
         const PortablePackageTables portableTraining =
             LoadPortablePackageTables(root + "/Maps/00_Training.dx");
@@ -1437,6 +1439,49 @@ Java_dev_deusex_questvr_MainActivity_probeGameData(
             portableScripts.names.size() == gameScripts.nameCount &&
             portableScripts.exports.size() == gameScripts.exportCount &&
             portableScripts.imports.size() == gameScripts.importCount;
+        std::vector<std::filesystem::path> mapPaths;
+        for (const std::filesystem::directory_entry& entry :
+             std::filesystem::directory_iterator(root + "/Maps")) {
+            if (entry.is_regular_file() && entry.path().extension() == ".dx") {
+                mapPaths.push_back(entry.path());
+            }
+        }
+        std::sort(mapPaths.begin(), mapPaths.end());
+        std::size_t mapExports{};
+        std::size_t mapNames{};
+        std::size_t mapImports{};
+        if (std::FILE* catalog =
+                std::fopen((root + "/quest-map-catalog.txt").c_str(), "wb")) {
+            mapCatalogValid = mapPaths.size() == 88;
+            for (const std::filesystem::path& mapPath : mapPaths) {
+                const PortablePackageTables map =
+                    LoadPortablePackageTables(mapPath.string());
+                mapCatalogValid = mapCatalogValid && map.version == 68 &&
+                    !map.names.empty() && !map.exports.empty();
+                mapExports += map.exports.size();
+                mapNames += map.names.size();
+                mapImports += map.imports.size();
+                if (std::fprintf(
+                        catalog,
+                        "%s names=%zu exports=%zu imports=%zu\n",
+                        mapPath.filename().string().c_str(),
+                        map.names.size(),
+                        map.exports.size(),
+                        map.imports.size()) < 0) {
+                    mapCatalogValid = false;
+                }
+            }
+            std::fclose(catalog);
+        }
+        portableTablesMatch = portableTablesMatch && mapCatalogValid;
+        __android_log_print(
+            mapCatalogValid ? ANDROID_LOG_INFO : ANDROID_LOG_ERROR,
+            kLogTag,
+            "Surreal campaign catalog validated %zu maps (%zu names, %zu exports, %zu imports)",
+            mapPaths.size(),
+            mapNames,
+            mapExports,
+            mapImports);
         const PortablePropertyStream firstProperties =
             LoadPortableExportProperties(portableTraining, 0);
         portableTablesMatch = portableTablesMatch &&
@@ -1563,7 +1608,7 @@ Java_dev_deusex_questvr_MainActivity_probeGameData(
             std::fclose(manifest);
         }
     }
-    const bool valid = trainingValid && scriptsValid && portableTablesMatch &&
+    const bool valid = trainingValid && scriptsValid && portableTablesMatch && mapCatalogValid &&
         firstTextureValid && meshValid && materialManifestValid && actorManifestValid;
 
     const std::string resultPath = root + "/quest-package-probe.txt";
