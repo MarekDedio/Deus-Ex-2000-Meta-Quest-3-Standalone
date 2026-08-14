@@ -16,6 +16,7 @@ add_library(surreal_portable_core STATIC
     "${SURREAL_ENGINE_ROOT}/GC/GC.cpp"
     surreal_package_stream_reader.cpp
     surreal_portable_package_tables.cpp
+    portable_unreal_runtime.cpp
     surreal_gc_probe.cpp
     surreal_android_exception.cpp
 )
@@ -44,5 +45,6 @@ target_link_libraries(deusex_quest PRIVATE
     log
     ktx
     samplexrframework
+    surreal_portable_core
 )
 set_target_properties(deusex_quest PROPERTIES LINK_FLAGS "-u ANativeActivity_onCreate")

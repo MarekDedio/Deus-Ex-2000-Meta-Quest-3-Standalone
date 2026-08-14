@@ -7,6 +7,7 @@
 #include "Utils/File.h"
 #include "surreal_portable_package_tables.h"
 #include "surreal_gc_probe.h"
+#include "portable_unreal_runtime.h"
 
 #include <algorithm>
 #include <cmath>
@@ -1107,6 +1108,24 @@ Java_dev_deusex_questvr_MainActivity_probeGameData(
             LoadPortablePackageTables(root + "/System/DeusEx.u");
         const PortableReflectionGraph reflection =
             BuildPortableReflectionGraph(portableScripts);
+        const PortableRuntimeSummary runtime =
+            BuildAndVerifyPortableRuntime(portableScripts);
+        if (!runtime.passed) {
+            throw std::runtime_error("DeusEx.u live runtime graph failed GC verification");
+        }
+        __android_log_print(
+            ANDROID_LOG_INFO,
+            kLogTag,
+            "Surreal live runtime: %zu objects (%zu classes, %zu functions, %zu properties), %zu links resolved/%zu external, %zu bytecode bytes, GC peak=%zu destroyed=%zu",
+            runtime.objects,
+            runtime.classes,
+            runtime.functions,
+            runtime.properties,
+            runtime.resolvedLinks,
+            runtime.unresolvedExternalLinks,
+            runtime.normalizedBytecodeBytes,
+            runtime.peakGcObjects,
+            runtime.destroyedObjects);
         if (reflection.classCount == 0 || reflection.functionCount == 0 ||
             reflection.propertyCount == 0) {
             throw std::runtime_error("DeusEx.u reflection graph is incomplete");

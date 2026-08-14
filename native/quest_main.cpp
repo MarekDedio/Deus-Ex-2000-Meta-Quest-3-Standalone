@@ -17,6 +17,7 @@
 #include "Render/GlTexture.h"
 #include "Render/SurfaceRender.h"
 #include "XrApp.h"
+#include "portable_unreal_runtime.h"
 
 class TexturedGeometryRenderer {
    public:
@@ -85,6 +86,25 @@ class DeusExQuestApp final : public OVRFW::XrApp {
     }
 
     bool SessionInit() override {
+        try {
+            const PortablePackageTables scripts = LoadPortablePackageTables(
+                "/data/user/0/dev.deusex.questvr.smoketest/files/DeusEx/System/DeusEx.u");
+            const PortableRuntimeSummary runtime = InitializePortableRuntime(scripts);
+            if (!runtime.passed) {
+                ALOG("DeusExQuest: persistent Unreal runtime validation failed");
+                return false;
+            }
+            ALOG(
+                "DeusExQuest: persistent Unreal runtime ready: %zu objects, %zu classes, %zu functions, %zu properties, %zu bytecode bytes",
+                runtime.objects,
+                runtime.classes,
+                runtime.functions,
+                runtime.properties,
+                runtime.normalizedBytecodeBytes);
+        } catch (const std::exception& error) {
+            ALOG("DeusExQuest: persistent Unreal runtime failed: %s", error.what());
+            return false;
+        }
         if (!LoadWorldMesh()) {
             OVRFW::GeometryBuilder geometry;
             geometry.Add(
@@ -183,6 +203,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         collisionTriangles_.clear();
         collisionGrid_.clear();
         oversizedCollisionTriangles_.clear();
+        ShutdownPortableRuntime();
     }
 
    private:
