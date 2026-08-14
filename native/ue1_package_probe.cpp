@@ -28,9 +28,14 @@ struct PackageSummary {
     std::string firstName;
     std::string firstExportName;
     std::string firstExportClass;
+    std::int32_t firstExportClassReference{};
+    std::int32_t firstExportFlags{};
     std::int32_t firstExportSize{};
     std::int32_t firstExportOffset{-1};
     std::uint32_t firstExportHash{};
+    std::uint32_t firstExportPropertyCount{};
+    std::uint32_t firstExportPropertyBytes{};
+    std::string firstExportProperty;
     std::vector<std::string> names;
     std::vector<std::string> importObjectNames;
 };
@@ -181,6 +186,8 @@ bool ReadExportTable(std::FILE* file, long fileLength, PackageSummary& summary) 
             summary.firstExportName = summary.names[objectName];
             summary.firstExportSize = objectSize;
             summary.firstExportOffset = objectOffset;
+            summary.firstExportClassReference = objectClass;
+            summary.firstExportFlags = objectFlags;
             if (objectClass < 0) {
                 const std::uint64_t importIndex =
                     static_cast<std::uint64_t>(-static_cast<std::int64_t>(objectClass) - 1);
@@ -217,6 +224,79 @@ bool HashFirstExport(std::FILE* file, PackageSummary& summary) {
     }
     summary.firstExportHash = hash;
     return true;
+}
+
+bool ReadFirstExportProperties(std::FILE* file, PackageSummary& summary) {
+    if (summary.firstExportSize <= 0 || summary.firstExportOffset < 0 ||
+        std::fseek(file, summary.firstExportOffset, SEEK_SET) != 0) return false;
+    const long objectEnd = static_cast<long>(summary.firstExportOffset) + summary.firstExportSize;
+
+    // A zero class reference denotes a serialized UClass/UStruct definition,
+    // whose body is not an instance property stream.
+    if (summary.firstExportClassReference == 0) return true;
+
+    if ((static_cast<std::uint32_t>(summary.firstExportFlags) & 0x02000000u) != 0) {
+        std::int32_t functionReference{}, stateReference{};
+        std::uint8_t frameData[12]{};
+        if (!ReadCompactIndex(file, functionReference) ||
+            !ReadCompactIndex(file, stateReference) ||
+            !ReadExact(file, frameData, sizeof(frameData))) return false;
+        if (functionReference != 0) {
+            std::int32_t codeOffset{};
+            if (!ReadCompactIndex(file, codeOffset)) return false;
+        }
+    }
+
+    while (std::ftell(file) >= 0 && std::ftell(file) < objectEnd) {
+        std::int32_t nameIndex{};
+        if (!ReadCompactIndex(file, nameIndex) || !IsNameIndexValid(nameIndex, summary)) return false;
+        const std::string& propertyName = summary.names[nameIndex];
+        if (propertyName == "None") {
+            summary.firstExportPropertyBytes = static_cast<std::uint32_t>(
+                std::ftell(file) - summary.firstExportOffset);
+            return true;
+        }
+
+        std::uint8_t info{};
+        if (!ReadExact(file, &info, 1)) return false;
+        const std::uint8_t type = info & 0x0fu;
+        if (type == 10) {
+            std::int32_t structName{};
+            if (!ReadCompactIndex(file, structName) || !IsNameIndexValid(structName, summary)) return false;
+        }
+
+        std::uint32_t size{};
+        switch ((info & 0x70u) >> 4u) {
+            case 0: size = 1; break;
+            case 1: size = 2; break;
+            case 2: size = 4; break;
+            case 3: size = 12; break;
+            case 4: size = 16; break;
+            case 5: { std::uint8_t v{}; if (!ReadExact(file, &v, 1)) return false; size = v; break; }
+            case 6: { std::uint16_t v{}; if (!ReadU16(file, v)) return false; size = v; break; }
+            case 7: if (!ReadU32(file, size)) return false; break;
+        }
+
+        if ((info & 0x80u) != 0 && type != 3) {
+            std::uint8_t byte1{};
+            if (!ReadExact(file, &byte1, 1)) return false;
+            if ((byte1 & 0xc0u) == 0xc0u) {
+                std::uint8_t extra[3]{};
+                if (!ReadExact(file, extra, sizeof(extra))) return false;
+            } else if ((byte1 & 0x80u) != 0) {
+                std::uint8_t extra{};
+                if (!ReadExact(file, &extra, 1)) return false;
+            }
+        }
+
+        if (summary.firstExportPropertyCount == 0) summary.firstExportProperty = propertyName;
+        ++summary.firstExportPropertyCount;
+        const long position = std::ftell(file);
+        if (position < 0 || (type != 3 &&
+            (size > static_cast<std::uint64_t>(objectEnd - position) ||
+             std::fseek(file, static_cast<long>(size), SEEK_CUR) != 0))) return false;
+    }
+    return false;
 }
 
 bool ProbePackage(const std::string& path, PackageSummary& summary) {
@@ -264,8 +344,9 @@ bool ProbePackage(const std::string& path, PackageSummary& summary) {
     const bool importsValid = namesValid && ReadImportTable(file, summary);
     const bool exportsValid = importsValid && ReadExportTable(file, length, summary);
     const bool payloadValid = exportsValid && HashFirstExport(file, summary);
+    const bool propertiesValid = payloadValid && ReadFirstExportProperties(file, summary);
     std::fclose(file);
-    if (!namesValid || !importsValid || !exportsValid || !payloadValid) {
+    if (!namesValid || !importsValid || !exportsValid || !payloadValid || !propertiesValid) {
         __android_log_print(
             ANDROID_LOG_ERROR,
             kLogTag,
@@ -325,8 +406,8 @@ Java_dev_deusex_questvr_MainActivity_probeGameData(
         std::fprintf(
             result,
             "result=%s\n"
-            "training.version=%u\ntraining.names=%u\ntraining.names_parsed=%u\ntraining.first_name=%s\ntraining.exports=%u\ntraining.exports_parsed=%u\ntraining.first_export=%s\ntraining.first_export_class=%s\ntraining.first_export_size=%d\ntraining.first_export_offset=%d\ntraining.first_export_fnv1a=%08x\ntraining.imports=%u\ntraining.imports_parsed=%u\n"
-            "scripts.version=%u\nscripts.names=%u\nscripts.names_parsed=%u\nscripts.first_name=%s\nscripts.exports=%u\nscripts.exports_parsed=%u\nscripts.first_export=%s\nscripts.first_export_class=%s\nscripts.first_export_size=%d\nscripts.first_export_offset=%d\nscripts.first_export_fnv1a=%08x\nscripts.imports=%u\nscripts.imports_parsed=%u\n",
+            "training.version=%u\ntraining.names=%u\ntraining.names_parsed=%u\ntraining.first_name=%s\ntraining.exports=%u\ntraining.exports_parsed=%u\ntraining.first_export=%s\ntraining.first_export_class=%s\ntraining.first_export_size=%d\ntraining.first_export_offset=%d\ntraining.first_export_fnv1a=%08x\ntraining.first_export_properties=%u\ntraining.first_property=%s\ntraining.property_bytes=%u\ntraining.imports=%u\ntraining.imports_parsed=%u\n"
+            "scripts.version=%u\nscripts.names=%u\nscripts.names_parsed=%u\nscripts.first_name=%s\nscripts.exports=%u\nscripts.exports_parsed=%u\nscripts.first_export=%s\nscripts.first_export_class=%s\nscripts.first_export_size=%d\nscripts.first_export_offset=%d\nscripts.first_export_fnv1a=%08x\nscripts.first_export_properties=%u\nscripts.first_property=%s\nscripts.property_bytes=%u\nscripts.imports=%u\nscripts.imports_parsed=%u\n",
             valid ? "ok" : "failed",
             training.version,
             training.nameCount,
@@ -339,6 +420,9 @@ Java_dev_deusex_questvr_MainActivity_probeGameData(
             training.firstExportSize,
             training.firstExportOffset,
             training.firstExportHash,
+            training.firstExportPropertyCount,
+            training.firstExportProperty.c_str(),
+            training.firstExportPropertyBytes,
             training.importCount,
             training.importsParsed,
             gameScripts.version,
@@ -352,6 +436,9 @@ Java_dev_deusex_questvr_MainActivity_probeGameData(
             gameScripts.firstExportSize,
             gameScripts.firstExportOffset,
             gameScripts.firstExportHash,
+            gameScripts.firstExportPropertyCount,
+            gameScripts.firstExportProperty.c_str(),
+            gameScripts.firstExportPropertyBytes,
             gameScripts.importCount,
             gameScripts.importsParsed);
         std::fclose(result);

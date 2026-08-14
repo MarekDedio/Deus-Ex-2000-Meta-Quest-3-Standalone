@@ -37,19 +37,26 @@
 - The training map's first export resolved to `LevelInfo0` of class `LevelInfo`.
   Its 70-byte serialized payload was opened at offset 55,744 and fingerprinted
   as FNV-1a `8a9c93bc`.
+- The UE1 object state-frame prefix and tagged-property stream were decoded for
+  `LevelInfo0`. Nine properties were found, beginning with `TimeSeconds`, and
+  the decoder consumed the complete 70-byte object through its `None`
+  terminator without overrun.
 - The first `DeusEx.u` export, `DeusExPlayer`, was opened as a 17,523-byte
   serialized payload and fingerprinted as FNV-1a `039b4771`.
+- Zero-class-reference exports such as `DeusExPlayer` are now distinguished as
+  serialized `UClass`/`UStruct` definitions rather than instance properties.
 - The process remained alive and the Android crash buffer was empty after this
   device-side package check.
 
 ## Not yet verified
 
-- Deserializing UE1 object properties and level/model structures on-device.
+- Deserializing UE1 level/model geometry structures and actor collections.
 - Training map rendering or gameplay.
 - Campaign compatibility.
 
 ## Next engineering gate
 
-Deserialize `LevelInfo0` properties and the training map's model/actor exports.
-Then replace the visual smoke-test scene with the portable UE1 renderer and VM
-subset while preserving OpenXR tracking and controller input.
+Locate and deserialize the training map's `Level`, `Model`, BSP, surface,
+vertex, and actor exports. Then replace the visual smoke-test scene with the
+portable UE1 renderer and VM subset while preserving OpenXR tracking and
+controller input.
