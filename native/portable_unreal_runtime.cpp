@@ -37,6 +37,8 @@ public:
     std::string sourcePath;
     std::size_t exportIndex{};
     std::unique_ptr<PortableLodMesh> lodMesh;
+    bool active{true};
+    bool activated{};
 
 protected:
     ~RuntimeObject() override {
@@ -81,6 +83,7 @@ std::unique_ptr<GCRoot<RuntimePackage>> persistentRuntime;
 std::unordered_map<std::string, RuntimeObject*> persistentQualifiedObjects;
 std::size_t persistentScriptExportCount{};
 std::string persistentMapPackageName;
+std::vector<std::string> persistentInventory;
 
 bool IsDerivedFromPath(RuntimeObject* cls, const std::string& path) {
     for (RuntimeObject* current = cls; current != nullptr; current = current->base) {
@@ -419,6 +422,7 @@ void ShutdownPortableRuntime() {
     persistentQualifiedObjects.clear();
     persistentScriptExportCount = 0;
     persistentMapPackageName.clear();
+    persistentInventory.clear();
     GC::Collect();
 }
 
@@ -557,7 +561,7 @@ std::vector<PortableActorSnapshot> GetPortableRuntimeMapActors() {
          index < persistentRuntime->get()->exports.size();
          ++index) {
         RuntimeObject* object = persistentRuntime->get()->exports[index];
-        if (!IsDerivedFromPath(object->cls, "Engine.Actor")) continue;
+        if (!object->active || !IsDerivedFromPath(object->cls, "Engine.Actor")) continue;
         PortableActorSnapshot snapshot;
         snapshot.objectPath = object->reflection.objectPath;
         snapshot.classPath = object->cls ? object->cls->reflection.objectPath : std::string();
@@ -829,4 +833,74 @@ PortableTextureArray BuildPortableRuntimeActorTextureArray(
     result.passed = !result.texturePaths.empty() && result.decodedTextures != 0 &&
         result.rgba.size() == pixelsPerLayer * result.texturePaths.size() * 4u;
     return result;
+}
+
+PortableInteractionResult InteractPortableRuntimeActor(const std::string& objectPath) {
+    PortableInteractionResult result;
+    result.objectPath = objectPath;
+    const auto found = persistentQualifiedObjects.find(objectPath);
+    if (found == persistentQualifiedObjects.end() || found->second == nullptr) {
+        result.action = "missing";
+        result.inventoryCount = persistentInventory.size();
+        return result;
+    }
+    RuntimeObject* object = found->second;
+    result.classPath = object->cls == nullptr
+        ? object->reflection.metaClass
+        : object->cls->reflection.objectPath;
+    if (!object->active) {
+        result.action = "inactive";
+    } else if (IsDerivedFromPath(object->cls, "Engine.Inventory")) {
+        object->active = false;
+        persistentInventory.push_back(objectPath);
+        result.handled = true;
+        result.worldChanged = true;
+        result.action = "pickup";
+    } else if (IsDerivedFromPath(object->cls, "Engine.Mover")) {
+        object->activated = !object->activated;
+        result.handled = true;
+        result.worldChanged = true;
+        result.action = object->activated ? "mover_open" : "mover_close";
+    } else if (IsDerivedFromPath(object->cls, "Engine.Triggers")) {
+        object->activated = true;
+        result.handled = true;
+        result.action = "trigger";
+    } else if (IsDerivedFromPath(object->cls, "Engine.Pawn")) {
+        object->activated = true;
+        result.handled = true;
+        result.action = "conversation";
+    } else if (IsDerivedFromPath(object->cls, "Engine.Decoration")) {
+        object->activated = !object->activated;
+        result.handled = true;
+        result.action = "decoration";
+    } else {
+        result.action = "unsupported";
+    }
+    result.inventoryCount = persistentInventory.size();
+    return result;
+}
+
+bool VerifyPortableRuntimeInteraction() {
+    if (!persistentRuntime || !persistentRuntime->get()) return false;
+    RuntimeObject* inventoryActor{};
+    for (std::size_t index = persistentScriptExportCount;
+         index < persistentRuntime->get()->exports.size(); ++index) {
+        RuntimeObject* object = persistentRuntime->get()->exports[index];
+        if (object->active && IsDerivedFromPath(object->cls, "Engine.Inventory")) {
+            inventoryActor = object;
+            break;
+        }
+    }
+    if (inventoryActor == nullptr) return false;
+    const std::size_t actorsBefore = GetPortableRuntimeMapActors().size();
+    const std::size_t inventoryBefore = persistentInventory.size();
+    const PortableInteractionResult result =
+        InteractPortableRuntimeActor(inventoryActor->reflection.objectPath);
+    const bool passed = result.handled && result.worldChanged && result.action == "pickup" &&
+        persistentInventory.size() == inventoryBefore + 1u &&
+        GetPortableRuntimeMapActors().size() + 1u == actorsBefore;
+    inventoryActor->active = true;
+    if (persistentInventory.size() > inventoryBefore) persistentInventory.pop_back();
+    return passed && GetPortableRuntimeMapActors().size() == actorsBefore &&
+        persistentInventory.size() == inventoryBefore;
 }

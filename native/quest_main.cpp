@@ -202,6 +202,11 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                 actorMeshes.decodedMeshes,
                 actorMeshes.referencedMeshes,
                 actorMeshes.triangleVertices);
+            if (!VerifyPortableRuntimeInteraction()) {
+                ALOG("DeusExQuest: live pickup/inventory mutation validation failed");
+                return false;
+            }
+            ALOG("DeusExQuest: live pickup/inventory mutation verified and restored");
             const PortableVmValue stomp =
                 ExecutePortableFunction("ScriptedPawn.WillTakeStompDamage");
             const PortableVmValue shield =
@@ -300,7 +305,11 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         if (frame.LeftRemoteTracked) leftController_.Update(frame.LeftRemotePose);
         if (frame.RightRemoteTracked) rightController_.Update(frame.RightRemotePose);
         if (frame.RightRemoteTracked && frame.Clicked(frame.kButtonA)) {
-            UseTargetedActor(frame.RightRemotePointPose);
+            if (UseTargetedActor(frame.RightRemotePointPose)) {
+                DestroyActorGeometry();
+                actorSnapshots_ = GetPortableRuntimeMapActors();
+                BuildActorMarkers();
+            }
         }
     }
 
@@ -389,6 +398,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
     }
 
     void BuildActorMarkers() {
+        interactiveActors_.clear();
         OVRFW::GeometryBuilder geometry;
         OVRFW::GeometryBuilder texturedGeometry;
         constexpr float unitsToMeters = 1.0f / 52.5f;
@@ -503,11 +513,13 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             if (visible >= 512) break;
         }
         if (!geometry.Nodes().empty()) {
+            actorWorldRendererIndex_ = worldRenderers_.size();
             worldRenderers_.emplace_back();
             worldRenderers_.back().Init(geometry.ToGeometryDescriptor());
             worldRenderers_.back().AmbientLightColor = {0.45f, 0.45f, 0.45f};
         }
         if (!texturedGeometry.Nodes().empty() && actorTexture_.IsValid()) {
+            actorTexturedRendererIndex_ = texturedRenderers_.size();
             texturedRenderers_.emplace_back();
             texturedRenderers_.back().Init(
                 texturedGeometry.ToGeometryDescriptor(), actorTexture_);
@@ -529,7 +541,23 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         }
     }
 
-    void UseTargetedActor(const OVR::Posef& pointerPose) {
+    void DestroyActorGeometry() {
+        if (actorTexturedRendererIndex_ != invalidRendererIndex_ &&
+            actorTexturedRendererIndex_ + 1 == texturedRenderers_.size()) {
+            texturedRenderers_.back().Shutdown();
+            texturedRenderers_.pop_back();
+        }
+        if (actorWorldRendererIndex_ != invalidRendererIndex_ &&
+            actorWorldRendererIndex_ + 1 == worldRenderers_.size()) {
+            worldRenderers_.back().Shutdown();
+            worldRenderers_.pop_back();
+        }
+        actorTexturedRendererIndex_ = invalidRendererIndex_;
+        actorWorldRendererIndex_ = invalidRendererIndex_;
+        interactiveActors_.clear();
+    }
+
+    bool UseTargetedActor(const OVR::Posef& pointerPose) {
         const OVR::Vector3f origin = pointerPose.Translation;
         const OVR::Vector3f direction =
             pointerPose.Rotation.Rotate(OVR::Vector3f(0.0f, 0.0f, -1.0f));
@@ -550,14 +578,20 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             }
         }
         if (best != nullptr) {
+            const PortableInteractionResult interaction =
+                InteractPortableRuntimeActor(best->objectPath);
             ALOG(
-                "DeusExQuest: VR use targeted %s (%s) at %.2fm",
+                "DeusExQuest: VR use %s on %s (%s) at %.2fm; inventory=%zu",
+                interaction.action.c_str(),
                 best->objectPath.c_str(),
                 best->classPath.c_str(),
-                bestDistance);
+                bestDistance,
+                interaction.inventoryCount);
+            return interaction.worldChanged;
         } else {
             ALOG("DeusExQuest: VR use found no actor within 3m ray");
         }
+        return false;
     }
 
     struct MeshVertex {
@@ -1059,6 +1093,10 @@ class DeusExQuestApp final : public OVRFW::XrApp {
     OVRFW::GlTexture firstTexture_;
     OVRFW::GlTexture actorTexture_;
     std::vector<std::string> actorTexturePaths_;
+    static constexpr std::size_t invalidRendererIndex_ =
+        std::numeric_limits<std::size_t>::max();
+    std::size_t actorWorldRendererIndex_{invalidRendererIndex_};
+    std::size_t actorTexturedRendererIndex_{invalidRendererIndex_};
     AAudioStream* ambientStream_{};
     std::vector<std::int16_t> ambientSamples_;
     std::size_t ambientCursor_{};

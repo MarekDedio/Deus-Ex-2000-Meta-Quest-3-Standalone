@@ -48,6 +48,15 @@ struct PortableTextureArray {
     std::vector<std::uint8_t> rgba;
 };
 
+struct PortableInteractionResult {
+    bool handled{};
+    bool worldChanged{};
+    std::string action;
+    std::string objectPath;
+    std::string classPath;
+    std::size_t inventoryCount{};
+};
+
 PortableRuntimeSummary BuildAndVerifyPortableRuntime(
     const PortablePackageTables& package);
 PortableRuntimeSummary InitializePortableRuntime(
@@ -108,3 +117,5 @@ PortableLodMesh GetPortableRuntimeMesh(const std::string& meshPath);
 PortableTextureArray BuildPortableRuntimeActorTextureArray(
     std::uint32_t width,
     std::uint32_t height);
+PortableInteractionResult InteractPortableRuntimeActor(const std::string& objectPath);
+bool VerifyPortableRuntimeInteraction();
