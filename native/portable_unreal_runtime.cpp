@@ -570,6 +570,38 @@ std::vector<PortableActorSnapshot> GetPortableRuntimeMapActors() {
             }
             return std::string();
         };
+        const auto inheritedProperty = [&](const std::string& name)
+            -> const PortableTaggedProperty* {
+            for (const PortableTaggedProperty& property : object->instanceProperties) {
+                if (property.name.ToString() == name) return &property;
+            }
+            for (RuntimeObject* cls = object->cls; cls != nullptr; cls = cls->base) {
+                if (!cls->classDescriptor) continue;
+                for (const PortableTaggedProperty& property : cls->classDescriptor->defaults) {
+                    if (property.name.ToString() == name) return &property;
+                }
+            }
+            return nullptr;
+        };
+        if (const PortableTaggedProperty* drawScale = inheritedProperty("DrawScale")) {
+            if (drawScale->value.size() == 4u) {
+                std::memcpy(&snapshot.drawScale, drawScale->value.data(), sizeof(float));
+            }
+        }
+        if (const PortableTaggedProperty* drawScale3D = inheritedProperty("DrawScale3D")) {
+            if (drawScale3D->value.size() == 12u) {
+                std::memcpy(&snapshot.drawScaleX, drawScale3D->value.data(), sizeof(float));
+                std::memcpy(&snapshot.drawScaleY, drawScale3D->value.data() + 4, sizeof(float));
+                std::memcpy(&snapshot.drawScaleZ, drawScale3D->value.data() + 8, sizeof(float));
+            }
+        }
+        if (const PortableTaggedProperty* rotation = inheritedProperty("Rotation")) {
+            if (rotation->value.size() == 12u) {
+                std::memcpy(&snapshot.pitch, rotation->value.data(), sizeof(std::int32_t));
+                std::memcpy(&snapshot.yaw, rotation->value.data() + 4, sizeof(std::int32_t));
+                std::memcpy(&snapshot.roll, rotation->value.data() + 8, sizeof(std::int32_t));
+            }
+        }
         snapshot.meshPath = resolveInheritedObjectProperty("Mesh");
         const auto mesh = persistentQualifiedObjects.find(snapshot.meshPath);
         if (mesh != persistentQualifiedObjects.end()) {

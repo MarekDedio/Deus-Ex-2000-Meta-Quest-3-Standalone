@@ -336,6 +336,47 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         std::string classPath;
     };
 
+    OVRFW::GlGeometry::Descriptor BuildLodMeshDescriptor(
+        const PortableLodMesh& mesh) const {
+        OVRFW::GlGeometry::Descriptor descriptor;
+        descriptor.attribs.position.reserve(mesh.triangles.size());
+        descriptor.attribs.normal.reserve(mesh.triangles.size());
+        descriptor.attribs.uv0.reserve(mesh.triangles.size());
+        descriptor.attribs.color.reserve(mesh.triangles.size());
+        descriptor.indices.reserve(mesh.triangles.size());
+        constexpr float unitsToMeters = 1.0f / 52.5f;
+        for (std::size_t triangle = 0;
+             triangle + 2 < mesh.triangles.size();
+             triangle += 3) {
+            OVR::Vector3f positions[3];
+            for (std::size_t corner = 0; corner < 3; ++corner) {
+                const PortableMeshVertex& vertex = mesh.triangles[triangle + corner];
+                positions[corner] = {
+                    vertex.y * unitsToMeters,
+                    vertex.z * unitsToMeters,
+                    -vertex.x * unitsToMeters};
+            }
+            const OVR::Vector3f a = positions[1] - positions[0];
+            const OVR::Vector3f b = positions[2] - positions[0];
+            OVR::Vector3f normal{
+                a.y * b.z - a.z * b.y,
+                a.z * b.x - a.x * b.z,
+                a.x * b.y - a.y * b.x};
+            const float length = std::sqrt(normal.LengthSq());
+            if (length > 0.000001f) normal *= 1.0f / length;
+            for (std::size_t corner = 0; corner < 3; ++corner) {
+                const PortableMeshVertex& vertex = mesh.triangles[triangle + corner];
+                descriptor.attribs.position.push_back(positions[corner]);
+                descriptor.attribs.normal.push_back(normal);
+                descriptor.attribs.uv0.emplace_back(vertex.u, vertex.v);
+                descriptor.attribs.color.emplace_back(1.0f, 1.0f, 1.0f, 1.0f);
+                descriptor.indices.push_back(static_cast<OVRFW::TriangleIndex>(
+                    descriptor.indices.size()));
+            }
+        }
+        return descriptor;
+    }
+
     void BuildActorMarkers() {
         OVRFW::GeometryBuilder geometry;
         constexpr float unitsToMeters = 1.0f / 52.5f;
@@ -343,7 +384,9 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         constexpr float originY = 825.844f;
         constexpr float originZ = -65.103f;
         std::size_t visible{};
+        std::size_t meshInstances{};
         std::map<std::string, std::size_t> meshClasses;
+        std::map<std::string, OVRFW::GlGeometry::Descriptor> meshDescriptors;
         for (const PortableActorSnapshot& actor : actorSnapshots_) {
             if (!actor.meshPath.empty()) ++meshClasses[actor.meshClassPath];
             if (!actor.hasLocation ||
@@ -373,11 +416,47 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                 color = {0.5f, 0.32f, 0.15f, 1.0f};
                 scale = {0.35f, 0.35f, 0.35f};
             }
-            geometry.Add(
-                OVRFW::BuildUnitCubeDescriptor(),
-                OVRFW::GeometryBuilder::kInvalidIndex,
-                color,
-                OVR::Matrix4f::Translation(position) * OVR::Matrix4f::Scaling(scale));
+            bool renderedMesh = false;
+            if (!actor.meshPath.empty()) {
+                try {
+                    auto descriptor = meshDescriptors.find(actor.meshPath);
+                    if (descriptor == meshDescriptors.end()) {
+                        descriptor = meshDescriptors.emplace(
+                            actor.meshPath,
+                            BuildLodMeshDescriptor(GetPortableRuntimeMesh(actor.meshPath))).first;
+                    }
+                    constexpr float unrealAngle =
+                        6.28318530717958647692f / 65536.0f;
+                    const float yaw = -static_cast<float>(actor.yaw) * unrealAngle;
+                    const OVR::Matrix4f transform =
+                        OVR::Matrix4f::Translation(position) *
+                        OVR::Matrix4f(OVR::Quatf(
+                            OVR::Vector3f(0.0f, 1.0f, 0.0f), yaw)) *
+                        OVR::Matrix4f::Scaling(
+                            actor.drawScale * actor.drawScaleY,
+                            actor.drawScale * actor.drawScaleZ,
+                            actor.drawScale * actor.drawScaleX);
+                    geometry.Add(
+                        descriptor->second,
+                        OVRFW::GeometryBuilder::kInvalidIndex,
+                        color,
+                        transform);
+                    renderedMesh = true;
+                    ++meshInstances;
+                } catch (const std::exception& error) {
+                    ALOG(
+                        "DeusExQuest: actor mesh render fallback for %s: %s",
+                        actor.meshPath.c_str(),
+                        error.what());
+                }
+            }
+            if (!renderedMesh) {
+                geometry.Add(
+                    OVRFW::BuildUnitCubeDescriptor(),
+                    OVRFW::GeometryBuilder::kInvalidIndex,
+                    color,
+                    OVR::Matrix4f::Translation(position) * OVR::Matrix4f::Scaling(scale));
+            }
             interactiveActors_.push_back({position, actor.objectPath, actor.classPath});
             ++visible;
             if (visible >= 512) break;
@@ -388,9 +467,10 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             worldRenderers_.back().AmbientLightColor = {0.45f, 0.45f, 0.45f};
         }
         ALOG(
-            "DeusExQuest: instantiated %zu targetable actor proxies from %zu live actors (%zu mesh-bearing, %zu mesh formats)",
+            "DeusExQuest: instantiated %zu targetable actors from %zu live actors (%zu real LodMesh instances, %zu mesh-bearing, %zu mesh formats)",
             visible,
             actorSnapshots_.size(),
+            meshInstances,
             std::accumulate(
                 meshClasses.begin(), meshClasses.end(), std::size_t{},
                 [](std::size_t total, const auto& value) { return total + value.second; }),

@@ -76,6 +76,13 @@ struct PortableActorSnapshot {
     bool decoration{};
     bool mover{};
     bool trigger{};
+    float drawScale{1.0f};
+    float drawScaleX{1.0f};
+    float drawScaleY{1.0f};
+    float drawScaleZ{1.0f};
+    std::int32_t pitch{};
+    std::int32_t yaw{};
+    std::int32_t roll{};
     std::string meshPath;
     std::string meshClassPath;
     std::string texturePath;
