@@ -15,6 +15,7 @@
 #include <vector>
 
 #include "Input/ControllerRenderer.h"
+#include "Input/TinyUI.h"
 #include "Render/GeometryBuilder.h"
 #include "Render/GeometryRenderer.h"
 #include "Render/GlTexture.h"
@@ -72,6 +73,8 @@ class TexturedGeometryRenderer {
         modelMatrix_ = OVR::Matrix4f(pose_);
     }
     void Render(std::vector<OVRFW::ovrDrawSurface>& surfaces) {
+        surface_.graphicsCommand.UniformData[0].Data =
+            &surface_.graphicsCommand.Textures[0];
         surfaces.emplace_back(modelMatrix_, &surface_);
     }
 
@@ -86,6 +89,30 @@ class DeusExQuestApp final : public OVRFW::XrApp {
    public:
     DeusExQuestApp() {
         BackgroundColor = OVR::Vector4f(0.005f, 0.01f, 0.008f, 1.0f);
+    }
+
+    bool AppInit(const xrJava* context) override {
+        if (!ui_.Init(
+                context,
+                GetFileSys(),
+                true,
+                16 * 1024,
+                "apk://localhost/assets/efigs.fnt")) {
+            ALOG("DeusExQuest: TinyUI initialization failed");
+            return false;
+        }
+        hudLabel_ = ui_.AddLabel(
+            "DEUS EX VR",
+            OVR::Vector3f(0.0f, 1.3f, -1.5f),
+            OVR::Vector2f(700.0f, 110.0f));
+        hudLabel_->SetTextLocalPosition({-0.32f, -0.025f, 0.0f});
+        return true;
+    }
+
+    void AppShutdown(const xrJava* context) override {
+        hudLabel_ = nullptr;
+        ui_.Shutdown();
+        OVRFW::XrApp::AppShutdown(context);
     }
 
     bool SessionInit() override {
@@ -350,6 +377,20 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         fireLatch_ = firePressed;
         if (frame.Clicked(frame.kButtonY)) SaveGameState();
         if (frame.Clicked(frame.kButtonX)) LoadGameState();
+        if (hudLabel_ != nullptr) {
+            OVR::Posef hudPose = frame.HeadPose;
+            hudPose.Translation += frame.HeadPose.Rotation.Rotate(
+                OVR::Vector3f(0.0f, -0.24f, -0.78f));
+            hudLabel_->SetLocalPose(hudPose);
+            const std::size_t inventoryCount = GetPortableRuntimeInventoryCount();
+            if (inventoryCount != displayedInventoryCount_) {
+                hudLabel_->SetText(
+                    "HEALTH 100   INVENTORY %zu\nA USE   TRIGGER FIRE   Y SAVE   X LOAD",
+                    inventoryCount);
+                displayedInventoryCount_ = inventoryCount;
+            }
+        }
+        ui_.Update(frame);
     }
 
     void Render(
@@ -357,6 +398,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         OVRFW::ovrRendererOutput& output) override {
         for (auto& renderer : worldRenderers_) renderer.Render(output.Surfaces);
         for (auto& renderer : texturedRenderers_) renderer.Render(output.Surfaces);
+        ui_.Render(frame, output);
         if (frame.LeftRemoteTracked) leftController_.Render(output.Surfaces);
         if (frame.RightRemoteTracked) rightController_.Render(output.Surfaces);
     }
@@ -1257,6 +1299,9 @@ class DeusExQuestApp final : public OVRFW::XrApp {
     std::size_t performanceFrames_{};
     float performanceSeconds_{};
     float performanceWorstDelta_{};
+    OVRFW::TinyUI ui_;
+    OVRFW::VRMenuObject* hudLabel_{};
+    std::size_t displayedInventoryCount_{invalidRendererIndex_};
     OVRFW::ControllerRenderer leftController_;
     OVRFW::ControllerRenderer rightController_;
 };

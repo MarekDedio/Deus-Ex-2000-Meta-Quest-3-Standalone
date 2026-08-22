@@ -133,3 +133,4 @@ PortableDamageResult DamagePortableRuntimeActor(
     const std::string& objectPath,
     float damage);
 bool VerifyPortableRuntimeDamage();
+std::size_t GetPortableRuntimeInventoryCount();

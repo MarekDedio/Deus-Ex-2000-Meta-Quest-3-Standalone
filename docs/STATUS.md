@@ -18,6 +18,9 @@
   Both pickup and damage/death paths have reversible on-device startup tests.
 - Y quick-saves and X quick-loads inventory, actor activity state, player
   position, and facing. The serialized runtime round trip is gated at startup.
+- A head-locked Meta TinyUI HUD presents health, inventory count, and controls.
+  Its local font atlas and texture bindings were validated with zero glyph or GL
+  errors on Quest.
 - A physical Quest 3 run held 72.0 fps in steady 10-second windows; worst
   steady-state frame delta was 13.89 ms with 24,270 collision triangles and 117
   interactive actors. No Android crash buffer entries were present.

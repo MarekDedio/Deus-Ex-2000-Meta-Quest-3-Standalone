@@ -41,8 +41,14 @@ android {
         main {
             manifest.srcFile "AndroidManifest.xml"
             java.srcDirs = ["java"]
-            assets.srcDirs = ["../third_party/Meta-OpenXR-SDK/Samples/XrSamples/XrInput/assets"]
-            res.srcDirs = ["../third_party/Meta-OpenXR-SDK/Samples/XrSamples/XrInput/res"]
+            assets.srcDirs = [
+                "../third_party/Meta-OpenXR-SDK/Samples/XrSamples/XrInput/assets",
+                "../third_party/Meta-OpenXR-SDK/Samples/SampleXrFramework/res/raw"
+            ]
+            res.srcDirs = [
+                "res",
+                "../third_party/Meta-OpenXR-SDK/Samples/XrSamples/XrInput/res"
+            ]
             jniLibs.srcDirs = ["../third_party/Meta-OpenXR-SDK/Samples/3rdParty/khronos/ktx/lib/android"]
         }
     }

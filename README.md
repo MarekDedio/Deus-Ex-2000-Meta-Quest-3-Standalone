@@ -63,6 +63,8 @@ meshes, actor textures, scripts, and ambient sound on-device. Controls are:
 - Y: quick-save world, inventory, position, and facing state;
 - X: quick-load and rebuild the live actor scene.
 
+A head-locked HUD displays health, inventory count, and the control summary.
+
 The training scene has been measured at a steady 72 fps on a physical Quest 3.
 The remaining major work is generic visual map-cache generation and transitions,
 broader UnrealScript/native execution, AI/conversations/missions, full UI and

@@ -950,6 +950,10 @@ bool VerifyPortableRuntimeDamage() {
     return passed;
 }
 
+std::size_t GetPortableRuntimeInventoryCount() {
+    return persistentInventory.size();
+}
+
 bool VerifyPortableRuntimeInteraction() {
     if (!persistentRuntime || !persistentRuntime->get()) return false;
     RuntimeObject* inventoryActor{};
