@@ -904,3 +904,87 @@ bool VerifyPortableRuntimeInteraction() {
     return passed && GetPortableRuntimeMapActors().size() == actorsBefore &&
         persistentInventory.size() == inventoryBefore;
 }
+
+bool SavePortableRuntimeState(const std::string& path) {
+    if (!persistentRuntime || !persistentRuntime->get()) return false;
+    std::vector<std::string> inactive;
+    std::vector<std::string> activated;
+    for (std::size_t index = persistentScriptExportCount;
+         index < persistentRuntime->get()->exports.size(); ++index) {
+        RuntimeObject* object = persistentRuntime->get()->exports[index];
+        if (!object->active) inactive.push_back(object->reflection.objectPath);
+        if (object->activated) activated.push_back(object->reflection.objectPath);
+    }
+    std::FILE* file = std::fopen(path.c_str(), "wb");
+    if (file == nullptr) return false;
+    const std::uint32_t magic = 0x53515844u;
+    const std::uint32_t version = 1u;
+    const auto write32 = [&](std::uint32_t value) {
+        return std::fwrite(&value, sizeof(value), 1, file) == 1;
+    };
+    const auto writeStrings = [&](const std::vector<std::string>& strings) {
+        if (!write32(static_cast<std::uint32_t>(strings.size()))) return false;
+        for (const std::string& value : strings) {
+            if (value.size() > 1'048'576u ||
+                !write32(static_cast<std::uint32_t>(value.size())) ||
+                std::fwrite(value.data(), 1, value.size(), file) != value.size()) {
+                return false;
+            }
+        }
+        return true;
+    };
+    const bool ok = write32(magic) && write32(version) &&
+        writeStrings(persistentInventory) && writeStrings(inactive) &&
+        writeStrings(activated);
+    std::fclose(file);
+    return ok;
+}
+
+bool LoadPortableRuntimeState(const std::string& path) {
+    if (!persistentRuntime || !persistentRuntime->get()) return false;
+    std::FILE* file = std::fopen(path.c_str(), "rb");
+    if (file == nullptr) return false;
+    const auto read32 = [&](std::uint32_t& value) {
+        return std::fread(&value, sizeof(value), 1, file) == 1;
+    };
+    const auto readStrings = [&](std::vector<std::string>& strings) {
+        std::uint32_t count{};
+        if (!read32(count) || count > 100'000u) return false;
+        strings.clear();
+        strings.reserve(count);
+        for (std::uint32_t index = 0; index < count; ++index) {
+            std::uint32_t length{};
+            if (!read32(length) || length > 1'048'576u) return false;
+            std::string value(length, '\0');
+            if (std::fread(value.data(), 1, length, file) != length) return false;
+            strings.push_back(std::move(value));
+        }
+        return true;
+    };
+    std::uint32_t magic{}, version{};
+    std::vector<std::string> inventory;
+    std::vector<std::string> inactive;
+    std::vector<std::string> activated;
+    bool ok = read32(magic) && read32(version) && magic == 0x53515844u && version == 1u &&
+        readStrings(inventory) && readStrings(inactive) && readStrings(activated);
+    const int trailing = ok ? std::fgetc(file) : 0;
+    ok = ok && trailing == EOF;
+    std::fclose(file);
+    if (!ok) return false;
+    for (std::size_t index = persistentScriptExportCount;
+         index < persistentRuntime->get()->exports.size(); ++index) {
+        RuntimeObject* object = persistentRuntime->get()->exports[index];
+        object->active = true;
+        object->activated = false;
+    }
+    persistentInventory = std::move(inventory);
+    for (const std::string& objectPath : inactive) {
+        const auto found = persistentQualifiedObjects.find(objectPath);
+        if (found != persistentQualifiedObjects.end()) found->second->active = false;
+    }
+    for (const std::string& objectPath : activated) {
+        const auto found = persistentQualifiedObjects.find(objectPath);
+        if (found != persistentQualifiedObjects.end()) found->second->activated = true;
+    }
+    return true;
+}

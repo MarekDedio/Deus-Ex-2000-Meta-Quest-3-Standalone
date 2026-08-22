@@ -119,3 +119,5 @@ PortableTextureArray BuildPortableRuntimeActorTextureArray(
     std::uint32_t height);
 PortableInteractionResult InteractPortableRuntimeActor(const std::string& objectPath);
 bool VerifyPortableRuntimeInteraction();
+bool SavePortableRuntimeState(const std::string& path);
+bool LoadPortableRuntimeState(const std::string& path);

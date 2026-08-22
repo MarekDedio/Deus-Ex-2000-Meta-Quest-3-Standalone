@@ -207,6 +207,14 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                 return false;
             }
             ALOG("DeusExQuest: live pickup/inventory mutation verified and restored");
+            constexpr const char* validationSave =
+                "/data/user/0/dev.deusex.questvr.smoketest/files/DeusEx/quest-runtime-validation.sav";
+            if (!SavePortableRuntimeState(validationSave) ||
+                !LoadPortableRuntimeState(validationSave)) {
+                ALOG("DeusExQuest: portable runtime save/load validation failed");
+                return false;
+            }
+            ALOG("DeusExQuest: portable runtime save/load round trip verified");
             const PortableVmValue stomp =
                 ExecutePortableFunction("ScriptedPawn.WillTakeStompDamage");
             const PortableVmValue shield =
@@ -311,6 +319,8 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                 BuildActorMarkers();
             }
         }
+        if (frame.Clicked(frame.kButtonY)) SaveGameState();
+        if (frame.Clicked(frame.kButtonX)) LoadGameState();
     }
 
     void Render(
@@ -592,6 +602,52 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             ALOG("DeusExQuest: VR use found no actor within 3m ray");
         }
         return false;
+    }
+
+    void SaveGameState() {
+        constexpr const char* metaPath =
+            "/data/user/0/dev.deusex.questvr.smoketest/files/DeusEx/quest-save-0.meta";
+        constexpr const char* runtimePath =
+            "/data/user/0/dev.deusex.questvr.smoketest/files/DeusEx/quest-save-0.runtime";
+        std::FILE* file = std::fopen(metaPath, "wb");
+        const std::uint32_t header[2] = {0x4d515844u, 1u};
+        const float pose[4] = {
+            worldPosition_.x, worldPosition_.y, worldPosition_.z, sceneYaw_};
+        const bool metaSaved = file != nullptr &&
+            std::fwrite(header, sizeof(header), 1, file) == 1 &&
+            std::fwrite(pose, sizeof(pose), 1, file) == 1;
+        if (file != nullptr) std::fclose(file);
+        const bool runtimeSaved = SavePortableRuntimeState(runtimePath);
+        ALOG(
+            "DeusExQuest: VR quick-save %s",
+            metaSaved && runtimeSaved ? "completed" : "failed");
+    }
+
+    void LoadGameState() {
+        constexpr const char* metaPath =
+            "/data/user/0/dev.deusex.questvr.smoketest/files/DeusEx/quest-save-0.meta";
+        constexpr const char* runtimePath =
+            "/data/user/0/dev.deusex.questvr.smoketest/files/DeusEx/quest-save-0.runtime";
+        std::FILE* file = std::fopen(metaPath, "rb");
+        std::uint32_t header[2]{};
+        float pose[4]{};
+        bool metaLoaded = file != nullptr &&
+            std::fread(header, sizeof(header), 1, file) == 1 &&
+            std::fread(pose, sizeof(pose), 1, file) == 1 &&
+            header[0] == 0x4d515844u && header[1] == 1u &&
+            std::isfinite(pose[0]) && std::isfinite(pose[1]) &&
+            std::isfinite(pose[2]) && std::isfinite(pose[3]);
+        if (file != nullptr) std::fclose(file);
+        if (!metaLoaded || !LoadPortableRuntimeState(runtimePath)) {
+            ALOG("DeusExQuest: VR quick-load failed");
+            return;
+        }
+        worldPosition_ = {pose[0], pose[1], pose[2]};
+        sceneYaw_ = pose[3];
+        DestroyActorGeometry();
+        actorSnapshots_ = GetPortableRuntimeMapActors();
+        BuildActorMarkers();
+        ALOG("DeusExQuest: VR quick-load completed");
     }
 
     struct MeshVertex {
