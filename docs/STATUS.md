@@ -1,5 +1,27 @@
 # Port status
 
+## Verified on 2026-08-22
+
+- The live Quest runtime retains 101,375 Unreal objects across 38 installed
+  script packages: 1,502 classes, 8,208 functions, 24,441 properties, and
+  1,028,925 normalized UnrealScript bytecode bytes.
+- All 28 LodMeshes referenced by the training map decode on-device. Sixty-four
+  placed actors render real mesh geometry; 43 of 44 referenced actor texture
+  layers decode to a Quest texture array, with one procedural fallback.
+- Runtime map replacement is verified across `00_Training`,
+  `00_TrainingCombat`, and `00_TrainingFinal`, including collection of the old
+  world. The visual BSP/material cache is still training-specific.
+- A-button controller rays execute typed interactions. Inventory pickups mutate
+  live object state, enter persistent inventory, and rebuild the GPU actor scene
+  without the collected object.
+- Right-index-trigger rays apply inherited pawn health and remove killed pawns.
+  Both pickup and damage/death paths have reversible on-device startup tests.
+- Y quick-saves and X quick-loads inventory, actor activity state, player
+  position, and facing. The serialized runtime round trip is gated at startup.
+- A physical Quest 3 run held 72.0 fps in steady 10-second windows; worst
+  steady-state frame delta was 13.89 ms with 24,270 collision triangles and 117
+  interactive actors. No Android crash buffer entries were present.
+
 ## Verified on 2026-08-14
 
 - Original Deus Ex installation left untouched.

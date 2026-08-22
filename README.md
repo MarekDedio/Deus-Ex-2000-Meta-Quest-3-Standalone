@@ -7,9 +7,12 @@ the original game.
 ## Current milestone
 
 The native Android ARM64 app launches on Quest 3, reads user-supplied UE1
-packages through a portable SurrealEngine-derived runtime, generates the
-training BSP at player scale, and submits it stereoscopically through OpenXR.
-This is an engine-port milestone, not a complete gameplay build.
+packages through a portable SurrealEngine-derived runtime, renders the textured
+training BSP and actors at player scale, and submits them stereoscopically
+through OpenXR. Locomotion, collision, controller interaction, pickups,
+inventory persistence, controller hitscan, pawn health/death, ambient audio,
+and quick-save/load are live. Campaign-wide gameplay compatibility remains in
+development.
 
 ## Data boundary
 
@@ -50,8 +53,17 @@ With one Quest in developer mode connected and authorized over USB:
 .\tools\Install-QuestSmokeTest.ps1
 ```
 
-The current APK loads the training map's package tables, actors, PlayerStart,
-and BSP geometry on-device. It provides stereo rendering, head tracking, Touch
-controller models, smooth locomotion, and snap turning. It does not yet provide
-collision, materials, actor gameplay, the UnrealScript VM, audio, UI, saves, or
-campaign progression.
+The current APK loads the training map's package tables, BSP, materials, actor
+meshes, actor textures, scripts, and ambient sound on-device. Controls are:
+
+- left stick: smooth movement with BSP ground following and wall collision;
+- right stick: 30-degree snap turning;
+- A: use the pointed actor, including pickups and typed actor interactions;
+- right index trigger: controller-aimed pawn damage;
+- Y: quick-save world, inventory, position, and facing state;
+- X: quick-load and rebuild the live actor scene.
+
+The training scene has been measured at a steady 72 fps on a physical Quest 3.
+The remaining major work is generic visual map-cache generation and transitions,
+broader UnrealScript/native execution, AI/conversations/missions, full UI and
+inventory presentation, animation, spatial audio, and campaign validation.

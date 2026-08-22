@@ -270,6 +270,21 @@ class DeusExQuestApp final : public OVRFW::XrApp {
     }
 
     void Update(const OVRFW::ovrApplFrameIn& frame) override {
+        ++performanceFrames_;
+        performanceSeconds_ += frame.DeltaSeconds;
+        performanceWorstDelta_ = std::max(performanceWorstDelta_, frame.DeltaSeconds);
+        if (performanceSeconds_ >= 10.0f) {
+            ALOG(
+                "DeusExQuest: Quest frame timing %.1f fps average, %.2f ms worst over %zu frames; actors=%zu collision=%zu",
+                static_cast<double>(performanceFrames_) / performanceSeconds_,
+                performanceWorstDelta_ * 1000.0f,
+                performanceFrames_,
+                interactiveActors_.size(),
+                collisionTriangles_.size());
+            performanceFrames_ = 0;
+            performanceSeconds_ = 0.0f;
+            performanceWorstDelta_ = 0.0f;
+        }
         float headYaw{}, headPitch{}, headRoll{};
         frame.HeadPose.Rotation.GetEulerAngles<OVR::Axis_Y, OVR::Axis_X, OVR::Axis_Z>(
             &headYaw, &headPitch, &headRoll);
@@ -1219,6 +1234,9 @@ class DeusExQuestApp final : public OVRFW::XrApp {
     float sceneYaw_{};
     bool turnLatch_{};
     bool fireLatch_{};
+    std::size_t performanceFrames_{};
+    float performanceSeconds_{};
+    float performanceWorstDelta_{};
     OVRFW::ControllerRenderer leftController_;
     OVRFW::ControllerRenderer rightController_;
 };
