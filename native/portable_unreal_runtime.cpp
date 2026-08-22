@@ -39,6 +39,8 @@ public:
     std::unique_ptr<PortableLodMesh> lodMesh;
     bool active{true};
     bool activated{};
+    bool healthInitialized{};
+    float health{100.0f};
 
 protected:
     ~RuntimeObject() override {
@@ -878,6 +880,74 @@ PortableInteractionResult InteractPortableRuntimeActor(const std::string& object
     }
     result.inventoryCount = persistentInventory.size();
     return result;
+}
+
+PortableDamageResult DamagePortableRuntimeActor(
+    const std::string& objectPath,
+    float damage) {
+    PortableDamageResult result;
+    result.objectPath = objectPath;
+    const auto found = persistentQualifiedObjects.find(objectPath);
+    if (found == persistentQualifiedObjects.end() || found->second == nullptr ||
+        !std::isfinite(damage) || damage <= 0.0f) {
+        return result;
+    }
+    RuntimeObject* object = found->second;
+    if (!object->active || !IsDerivedFromPath(object->cls, "Engine.Pawn")) return result;
+    if (!object->healthInitialized) {
+        const auto decodeHealth = [&](const std::vector<PortableTaggedProperty>& properties) {
+            for (const PortableTaggedProperty& property : properties) {
+                if (property.name == "Health" && property.type == 4u &&
+                    property.value.size() == sizeof(float)) {
+                    float value{};
+                    std::memcpy(&value, property.value.data(), sizeof(value));
+                    if (std::isfinite(value) && value > 0.0f) object->health = value;
+                    return true;
+                }
+            }
+            return false;
+        };
+        if (!decodeHealth(object->instanceProperties)) {
+            for (RuntimeObject* cls = object->cls; cls != nullptr; cls = cls->base) {
+                if (cls->classDescriptor && decodeHealth(cls->classDescriptor->defaults)) break;
+            }
+        }
+        object->healthInitialized = true;
+    }
+    object->health = std::max(0.0f, object->health - damage);
+    result.handled = true;
+    result.remainingHealth = object->health;
+    if (object->health <= 0.0f) {
+        object->active = false;
+        result.killed = true;
+        result.worldChanged = true;
+    }
+    return result;
+}
+
+bool VerifyPortableRuntimeDamage() {
+    if (!persistentRuntime || !persistentRuntime->get()) return false;
+    RuntimeObject* pawn{};
+    for (std::size_t index = persistentScriptExportCount;
+         index < persistentRuntime->get()->exports.size(); ++index) {
+        RuntimeObject* object = persistentRuntime->get()->exports[index];
+        if (object->active && IsDerivedFromPath(object->cls, "Engine.Pawn")) {
+            pawn = object;
+            break;
+        }
+    }
+    if (pawn == nullptr) return false;
+    const bool oldInitialized = pawn->healthInitialized;
+    const float oldHealth = pawn->health;
+    const bool oldActive = pawn->active;
+    PortableDamageResult result =
+        DamagePortableRuntimeActor(pawn->reflection.objectPath, 1'000'000.0f);
+    const bool passed = result.handled && result.killed && result.worldChanged &&
+        !pawn->active && result.remainingHealth == 0.0f;
+    pawn->healthInitialized = oldInitialized;
+    pawn->health = oldHealth;
+    pawn->active = oldActive;
+    return passed;
 }
 
 bool VerifyPortableRuntimeInteraction() {

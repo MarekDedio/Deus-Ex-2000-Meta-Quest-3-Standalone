@@ -207,6 +207,11 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                 return false;
             }
             ALOG("DeusExQuest: live pickup/inventory mutation verified and restored");
+            if (!VerifyPortableRuntimeDamage()) {
+                ALOG("DeusExQuest: live pawn damage mutation validation failed");
+                return false;
+            }
+            ALOG("DeusExQuest: live pawn damage/death mutation verified and restored");
             constexpr const char* validationSave =
                 "/data/user/0/dev.deusex.questvr.smoketest/files/DeusEx/quest-runtime-validation.sav";
             if (!SavePortableRuntimeState(validationSave) ||
@@ -319,6 +324,15 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                 BuildActorMarkers();
             }
         }
+        const bool firePressed = frame.RightRemoteIndexTrigger > 0.75f;
+        if (frame.RightRemoteTracked && firePressed && !fireLatch_) {
+            if (FireTargetedActor(frame.RightRemotePointPose)) {
+                DestroyActorGeometry();
+                actorSnapshots_ = GetPortableRuntimeMapActors();
+                BuildActorMarkers();
+            }
+        }
+        fireLatch_ = firePressed;
         if (frame.Clicked(frame.kButtonY)) SaveGameState();
         if (frame.Clicked(frame.kButtonX)) LoadGameState();
     }
@@ -602,6 +616,48 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             ALOG("DeusExQuest: VR use found no actor within 3m ray");
         }
         return false;
+    }
+
+    bool FireTargetedActor(const OVR::Posef& pointerPose) {
+        const OVR::Vector3f origin = pointerPose.Translation;
+        const OVR::Vector3f direction =
+            pointerPose.Rotation.Rotate(OVR::Vector3f(0.0f, 0.0f, -1.0f));
+        const OVR::Quatf worldRotation(
+            OVR::Vector3f(0.0f, 1.0f, 0.0f), sceneYaw_);
+        const InteractiveActor* best{};
+        float bestDistance = 30.0f;
+        for (const InteractiveActor& actor : interactiveActors_) {
+            const OVR::Vector3f position =
+                worldRotation.Rotate(actor.localPosition) + worldPosition_;
+            const OVR::Vector3f toActor = position - origin;
+            const float distance = toActor.Dot(direction);
+            if (distance <= 0.0f || distance >= bestDistance) continue;
+            const OVR::Vector3f closest = origin + direction * distance;
+            if ((position - closest).LengthSq() <= 0.5f * 0.5f) {
+                best = &actor;
+                bestDistance = distance;
+            }
+        }
+        if (best == nullptr) {
+            ALOG("DeusExQuest: VR fire hit no pawn");
+            return false;
+        }
+        const PortableDamageResult damage =
+            DamagePortableRuntimeActor(best->objectPath, 35.0f);
+        if (!damage.handled) {
+            ALOG(
+                "DeusExQuest: VR fire struck non-damageable %s at %.2fm",
+                best->objectPath.c_str(),
+                bestDistance);
+            return false;
+        }
+        ALOG(
+            "DeusExQuest: VR fire damaged %s at %.2fm; health=%.1f killed=%s",
+            best->objectPath.c_str(),
+            bestDistance,
+            damage.remainingHealth,
+            damage.killed ? "true" : "false");
+        return damage.worldChanged;
     }
 
     void SaveGameState() {
@@ -1162,6 +1218,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
     OVR::Vector3f worldPosition_{0.0f, 0.0f, 0.0f};
     float sceneYaw_{};
     bool turnLatch_{};
+    bool fireLatch_{};
     OVRFW::ControllerRenderer leftController_;
     OVRFW::ControllerRenderer rightController_;
 };

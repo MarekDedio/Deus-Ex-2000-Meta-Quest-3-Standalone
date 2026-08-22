@@ -57,6 +57,14 @@ struct PortableInteractionResult {
     std::size_t inventoryCount{};
 };
 
+struct PortableDamageResult {
+    bool handled{};
+    bool worldChanged{};
+    bool killed{};
+    float remainingHealth{};
+    std::string objectPath;
+};
+
 PortableRuntimeSummary BuildAndVerifyPortableRuntime(
     const PortablePackageTables& package);
 PortableRuntimeSummary InitializePortableRuntime(
@@ -121,3 +129,7 @@ PortableInteractionResult InteractPortableRuntimeActor(const std::string& object
 bool VerifyPortableRuntimeInteraction();
 bool SavePortableRuntimeState(const std::string& path);
 bool LoadPortableRuntimeState(const std::string& path);
+PortableDamageResult DamagePortableRuntimeActor(
+    const std::string& objectPath,
+    float damage);
+bool VerifyPortableRuntimeDamage();
