@@ -28,7 +28,7 @@ development.
 1. ARM64 Android/OpenXR application launches on Quest 3.
 2. Runtime discovers and validates user-supplied game data.
 3. UE1 packages, names, imports, exports, and properties can be read.
-4. `00_Training.dx` geometry and textures render stereoscopically.
+4. Active-map geometry and textures render stereoscopically from all 88 catalog entries.
 5. UnrealScript and Deus Ex native functions support the training campaign.
 6. Motion controls, interaction, weapons, inventory, HUD, conversations, and
    saves are usable in VR.
@@ -42,6 +42,8 @@ game build.
 The checked-in Android project references the pinned Meta OpenXR SDK checkout in
 `third_party/Meta-OpenXR-SDK`. On this workstation, the reproducible toolchain is
 installed at `D:\Android\Sdk` with Microsoft OpenJDK 17.
+The build helper idempotently applies the checked-in TinyUI font-path patch to
+the pinned SDK checkout before invoking Gradle.
 
 ```powershell
 .\tools\Build-QuestSmokeTest.ps1
@@ -60,12 +62,16 @@ meshes, actor textures, scripts, and ambient sound on-device. Controls are:
 - right stick: 30-degree snap turning;
 - A: use the pointed actor, including pickups and typed actor interactions;
 - right index trigger: controller-aimed pawn damage;
+- B: asynchronously cache and load the next catalog map;
 - Y: quick-save world, inventory, position, and facing state;
 - X: quick-load and rebuild the live actor scene.
 
 A head-locked HUD displays health, inventory count, and the control summary.
 
 The training scene has been measured at a steady 72 fps on a physical Quest 3.
-The remaining major work is generic visual map-cache generation and transitions,
+Generic visual map-cache generation and runtime/GPU transitions now work and
+have been physically verified for Training to TrainingCombat and back. The
+remaining major work is progression-driven (rather than debug-button) travel,
 broader UnrealScript/native execution, AI/conversations/missions, full UI and
-inventory presentation, animation, spatial audio, and campaign validation.
+inventory presentation, animation, spatial audio, transition comfort, and
+campaign validation.

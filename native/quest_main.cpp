@@ -5,8 +5,10 @@
 #include <algorithm>
 #include <cstdint>
 #include <cmath>
+#include <chrono>
 #include <cstdio>
 #include <cstring>
+#include <future>
 #include <limits>
 #include <map>
 #include <numeric>
@@ -22,6 +24,7 @@
 #include "Render/SurfaceRender.h"
 #include "XrApp.h"
 #include "portable_unreal_runtime.h"
+#include "quest_map_cache.h"
 
 class TexturedGeometryRenderer {
    public:
@@ -267,6 +270,11 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             ALOG("DeusExQuest: persistent Unreal runtime failed: %s", error.what());
             return false;
         }
+        LoadMapCatalog();
+        if (!BuildQuestMapCache(gameRoot_, currentMapName_.c_str())) {
+            ALOG("DeusExQuest: generic initial map cache build failed");
+            return false;
+        }
         if (!LoadWorldMesh()) {
             OVRFW::GeometryBuilder geometry;
             geometry.Add(
@@ -377,6 +385,13 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         fireLatch_ = firePressed;
         if (frame.Clicked(frame.kButtonY)) SaveGameState();
         if (frame.Clicked(frame.kButtonX)) LoadGameState();
+        if (frame.Clicked(frame.kButtonB)) LoadNextMap();
+        mapRequestPollSeconds_ += frame.DeltaSeconds;
+        if (mapRequestPollSeconds_ >= 0.5f) {
+            mapRequestPollSeconds_ = 0.0f;
+            PollMapTransitionRequest();
+        }
+        CompletePendingMapLoad();
         if (hudLabel_ != nullptr) {
             OVR::Posef hudPose = frame.HeadPose;
             hudPose.Translation += frame.HeadPose.Rotation.Rotate(
@@ -385,7 +400,8 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             const std::size_t inventoryCount = GetPortableRuntimeInventoryCount();
             if (inventoryCount != displayedInventoryCount_) {
                 hudLabel_->SetText(
-                    "HEALTH 100   INVENTORY %zu\nA USE   TRIGGER FIRE   Y SAVE   X LOAD",
+                    "%s   HEALTH 100   INVENTORY %zu\nA USE   TRIGGER FIRE   B NEXT MAP   Y SAVE   X LOAD",
+                    pendingMapName_.empty() ? currentMapName_.c_str() : "LOADING...",
                     inventoryCount);
                 displayedInventoryCount_ = inventoryCount;
             }
@@ -404,6 +420,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
     }
 
     void SessionEnd() override {
+        if (mapCacheFuture_.valid()) mapCacheFuture_.wait();
         StopAmbientAudio();
         leftController_.Shutdown();
         rightController_.Shutdown();
@@ -656,6 +673,148 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         actorTexturedRendererIndex_ = invalidRendererIndex_;
         actorWorldRendererIndex_ = invalidRendererIndex_;
         interactiveActors_.clear();
+    }
+
+    void DestroySceneGeometry() {
+        for (auto& renderer : worldRenderers_) renderer.Shutdown();
+        for (auto& renderer : texturedRenderers_) renderer.Shutdown();
+        worldRenderers_.clear();
+        texturedRenderers_.clear();
+        actorWorldRendererIndex_ = invalidRendererIndex_;
+        actorTexturedRendererIndex_ = invalidRendererIndex_;
+        interactiveActors_.clear();
+        actorSnapshots_.clear();
+        if (firstTexture_.IsValid()) {
+            OVRFW::FreeTexture(firstTexture_);
+            firstTexture_ = {};
+        }
+        if (actorTexture_.IsValid()) {
+            OVRFW::FreeTexture(actorTexture_);
+            actorTexture_ = {};
+        }
+        actorTexturePaths_.clear();
+        collisionTriangles_.clear();
+        collisionGrid_.clear();
+        oversizedCollisionTriangles_.clear();
+    }
+
+    void LoadMapCatalog() {
+        mapNames_.clear();
+        std::FILE* file = std::fopen(
+            "/data/user/0/dev.deusex.questvr.smoketest/files/DeusEx/quest-map-catalog.txt", "rb");
+        if (file != nullptr) {
+            char line[512];
+            while (std::fgets(line, sizeof(line), file) != nullptr) {
+                char fileName[256]{};
+                if (std::sscanf(line, "%255s", fileName) != 1) continue;
+                std::string map(fileName);
+                if (map.size() > 3 && map.substr(map.size() - 3) == ".dx") {
+                    map.resize(map.size() - 3);
+                    mapNames_.push_back(std::move(map));
+                }
+            }
+            std::fclose(file);
+        }
+        if (mapNames_.empty()) {
+            mapNames_ = {"00_Training", "00_TrainingCombat", "00_TrainingFinal"};
+        }
+        const auto current = std::find(mapNames_.begin(), mapNames_.end(), currentMapName_);
+        currentMapIndex_ = current == mapNames_.end()
+            ? 0u
+            : static_cast<std::size_t>(current - mapNames_.begin());
+        ALOG("DeusExQuest: visual map catalog ready with %zu levels", mapNames_.size());
+    }
+
+    bool FinishActiveMap(const std::string& mapName) {
+        try {
+            const PortablePackageTables map = LoadPortablePackageTables(
+                std::string(gameRoot_) + "/Maps/" + mapName + ".dx");
+            const PortableMapRuntimeSummary runtime = LoadPortableRuntimeMap(map);
+            if (!runtime.passed) {
+                ALOG("DeusExQuest: runtime transition failed for %s", mapName.c_str());
+                return false;
+            }
+            const PortableActorMeshSummary meshes = DecodePortableRuntimeActorMeshes();
+            if (!meshes.passed) {
+                ALOG("DeusExQuest: actor mesh transition failed for %s", mapName.c_str());
+                return false;
+            }
+            DestroySceneGeometry();
+            currentMapName_ = mapName;
+            worldPosition_ = {0.0f, 0.0f, 0.0f};
+            sceneYaw_ = 0.0f;
+            if (!LoadWorldMesh()) {
+                ALOG("DeusExQuest: GPU world transition failed for %s", mapName.c_str());
+                return false;
+            }
+            actorSnapshots_ = GetPortableRuntimeMapActors();
+            LoadActorTextures();
+            BuildActorMarkers();
+            displayedInventoryCount_ = invalidRendererIndex_;
+            ALOG(
+                "DeusExQuest: visual runtime transition complete: %s (%zu actors, %zu BSP collision triangles)",
+                mapName.c_str(),
+                actorSnapshots_.size(),
+                collisionTriangles_.size());
+            return true;
+        } catch (const std::exception& error) {
+            ALOG("DeusExQuest: map transition %s threw: %s", mapName.c_str(), error.what());
+            return false;
+        }
+    }
+
+    void LoadNextMap() {
+        if (mapNames_.empty() || !pendingMapName_.empty()) return;
+        const std::size_t next = (currentMapIndex_ + 1u) % mapNames_.size();
+        BeginMapLoad(mapNames_[next]);
+    }
+
+    void BeginMapLoad(const std::string& mapName) {
+        if (!pendingMapName_.empty() || mapName == currentMapName_) return;
+        pendingMapName_ = mapName;
+        displayedInventoryCount_ = invalidRendererIndex_;
+        mapCacheFuture_ = std::async(std::launch::async, [mapName]() {
+            return BuildQuestMapCache(gameRoot_, mapName.c_str());
+        });
+        ALOG("DeusExQuest: background visual cache started for %s", mapName.c_str());
+    }
+
+    void CompletePendingMapLoad() {
+        if (pendingMapName_.empty() || !mapCacheFuture_.valid() ||
+            mapCacheFuture_.wait_for(std::chrono::seconds(0)) != std::future_status::ready) {
+            return;
+        }
+        const std::string mapName = pendingMapName_;
+        pendingMapName_.clear();
+        if (!mapCacheFuture_.get()) {
+            ALOG("DeusExQuest: visual transition cache failed for %s", mapName.c_str());
+            displayedInventoryCount_ = invalidRendererIndex_;
+            return;
+        }
+        if (FinishActiveMap(mapName)) {
+            const auto found = std::find(mapNames_.begin(), mapNames_.end(), mapName);
+            if (found != mapNames_.end()) {
+                currentMapIndex_ = static_cast<std::size_t>(found - mapNames_.begin());
+            }
+        }
+    }
+
+    void PollMapTransitionRequest() {
+        constexpr const char* requestPath =
+            "/data/user/0/dev.deusex.questvr.smoketest/files/DeusEx/quest-map.request";
+        std::FILE* file = std::fopen(requestPath, "rb");
+        if (file == nullptr) return;
+        char requested[256]{};
+        const bool read = std::fscanf(file, "%255s", requested) == 1;
+        std::fclose(file);
+        std::remove(requestPath);
+        if (!read) return;
+        const auto found = std::find(mapNames_.begin(), mapNames_.end(), requested);
+        if (found == mapNames_.end()) {
+            ALOG("DeusExQuest: rejected unknown requested map %s", requested);
+            return;
+        }
+        BeginMapLoad(*found);
     }
 
     bool UseTargetedActor(const OVR::Posef& pointerPose) {
@@ -1162,7 +1321,8 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         }
         BuildCollisionGrid();
         ALOG(
-            "DeusExQuest: loaded training BSP mesh in %u GPU chunks (%u textured) with %zu collision triangles in %zu cells",
+            "DeusExQuest: loaded %s BSP mesh in %u GPU chunks (%u textured) with %zu collision triangles in %zu cells",
+            currentMapName_.c_str(),
             chunkCount,
             texturedChunks,
             collisionTriangles_.size(),
@@ -1302,6 +1462,14 @@ class DeusExQuestApp final : public OVRFW::XrApp {
     OVRFW::TinyUI ui_;
     OVRFW::VRMenuObject* hudLabel_{};
     std::size_t displayedInventoryCount_{invalidRendererIndex_};
+    static constexpr const char* gameRoot_ =
+        "/data/user/0/dev.deusex.questvr.smoketest/files/DeusEx";
+    std::vector<std::string> mapNames_;
+    std::string currentMapName_{"00_Training"};
+    std::size_t currentMapIndex_{};
+    float mapRequestPollSeconds_{};
+    std::string pendingMapName_;
+    std::future<bool> mapCacheFuture_;
     OVRFW::ControllerRenderer leftController_;
     OVRFW::ControllerRenderer rightController_;
 };

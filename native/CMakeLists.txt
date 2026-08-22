@@ -44,6 +44,7 @@ target_link_libraries(deusex_quest PRIVATE
     GLESv3
     log
     ktx
+    deusex_data_probe
     samplexrframework
     surreal_portable_core
 )

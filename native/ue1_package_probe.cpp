@@ -10,6 +10,7 @@
 #include "portable_unreal_runtime.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -1070,7 +1071,150 @@ bool ProbePackage(const std::string& path, PackageSummary& summary) {
     return true;
 }
 
+bool BuildMapCache(const std::string& root, const std::string& mapName) {
+    if (mapName.empty() || !std::all_of(
+            mapName.begin(), mapName.end(), [](unsigned char character) {
+                return std::isalnum(character) || character == '_' || character == '-';
+            })) {
+        __android_log_print(ANDROID_LOG_ERROR, kLogTag, "Invalid map cache name: %s", mapName.c_str());
+        return false;
+    }
+
+    PackageSummary map{};
+    const std::string mapPath = root + "/Maps/" + mapName + ".dx";
+    if (!ProbePackage(mapPath, map) || map.materialNames.empty()) return false;
+
+    std::map<std::string, PortablePackageTables> texturePackages;
+    std::size_t decodedMaterials{};
+    std::size_t proceduralMaterials{};
+    constexpr std::uint32_t layerWidth = 256;
+    constexpr std::uint32_t layerHeight = 256;
+    std::vector<std::uint8_t> materialArrayRgba;
+    materialArrayRgba.reserve(map.materialNames.size() * layerWidth * layerHeight * 4u);
+    map.materialWidths.clear();
+    map.materialHeights.clear();
+
+    try {
+        for (const std::string& qualified : map.materialNames) {
+            const std::size_t separator = qualified.find('.');
+            if (separator == std::string::npos) {
+                throw std::runtime_error("Material path has no package");
+            }
+            const std::string packageName = qualified.substr(0, separator);
+            const std::string objectPath = qualified.substr(separator + 1);
+            auto foundPackage = texturePackages.find(packageName);
+            if (foundPackage == texturePackages.end()) {
+                const std::string packagePath = packageName == mapName
+                    ? mapPath
+                    : root + "/Textures/" + packageName + ".utx";
+                foundPackage = texturePackages.emplace(
+                    packageName, LoadPortablePackageTables(packagePath)).first;
+            }
+            const PortablePackageTables& texturePackage = foundPackage->second;
+            const std::size_t textureExport = FindPortableExport(texturePackage, objectPath);
+            const PortablePropertyStream properties =
+                LoadPortableExportProperties(texturePackage, textureExport);
+            std::vector<PortableMipmap> mipmaps =
+                LoadPortableTextureMipmaps(texturePackage, textureExport);
+            std::vector<std::uint32_t> palette;
+            for (const PortableTaggedProperty& property : properties.properties) {
+                if (property.name == "Palette") {
+                    const std::int32_t reference = DecodePortableObjectReference(property);
+                    if (reference <= 0) throw std::runtime_error("Texture palette is not local");
+                    palette = LoadPortablePalette(
+                        texturePackage, static_cast<std::size_t>(reference - 1));
+                    break;
+                }
+            }
+            if (mipmaps.empty() || palette.size() < 256) {
+                throw std::runtime_error("Texture has no usable indexed mip or palette");
+            }
+            PortableMipmap& topMip = mipmaps.front();
+            if (topMip.pixels.size() !=
+                static_cast<std::uint64_t>(topMip.width) * topMip.height) {
+                std::int32_t uClamp{}, vClamp{};
+                bool haveUClamp{}, haveVClamp{};
+                for (const PortableTaggedProperty& property : properties.properties) {
+                    if (property.type != 2u || property.value.size() != 4u) continue;
+                    const std::uint32_t value =
+                        static_cast<std::uint32_t>(property.value[0]) |
+                        (static_cast<std::uint32_t>(property.value[1]) << 8u) |
+                        (static_cast<std::uint32_t>(property.value[2]) << 16u) |
+                        (static_cast<std::uint32_t>(property.value[3]) << 24u);
+                    if (property.name == "UClamp") {
+                        uClamp = static_cast<std::int32_t>(value);
+                        haveUClamp = true;
+                    } else if (property.name == "VClamp") {
+                        vClamp = static_cast<std::int32_t>(value);
+                        haveVClamp = true;
+                    }
+                }
+                if (!haveUClamp || !haveVClamp || uClamp <= 0 || vClamp <= 0 ||
+                    uClamp > 8192 || vClamp > 8192) {
+                    throw std::runtime_error("Procedural texture has invalid clamp dimensions");
+                }
+                topMip.width = static_cast<std::uint32_t>(uClamp);
+                topMip.height = static_cast<std::uint32_t>(vClamp);
+                topMip.pixels.assign(
+                    static_cast<std::size_t>(topMip.width) * topMip.height, 0u);
+                ++proceduralMaterials;
+            }
+            map.materialWidths.push_back(topMip.width);
+            map.materialHeights.push_back(topMip.height);
+            for (std::uint32_t y = 0; y < layerHeight; ++y) {
+                const std::uint32_t sourceY = y * topMip.height / layerHeight;
+                for (std::uint32_t x = 0; x < layerWidth; ++x) {
+                    const std::uint32_t sourceX = x * topMip.width / layerWidth;
+                    const std::uint8_t paletteIndex =
+                        topMip.pixels[static_cast<std::size_t>(sourceY) * topMip.width + sourceX];
+                    const std::uint32_t color = palette[paletteIndex];
+                    materialArrayRgba.push_back(static_cast<std::uint8_t>(color));
+                    materialArrayRgba.push_back(static_cast<std::uint8_t>(color >> 8u));
+                    materialArrayRgba.push_back(static_cast<std::uint8_t>(color >> 16u));
+                    materialArrayRgba.push_back(255u);
+                }
+            }
+            ++decodedMaterials;
+        }
+    } catch (const std::exception& error) {
+        __android_log_print(
+            ANDROID_LOG_ERROR, kLogTag, "Map cache %s failed: %s", mapName.c_str(), error.what());
+        return false;
+    }
+
+    const bool valid = decodedMaterials == map.materialNames.size() &&
+        decodedMaterials <= 255 &&
+        WriteMaterialArrayCache(
+            root + "/quest-material-array.rgba",
+            layerWidth,
+            layerHeight,
+            static_cast<std::uint32_t>(decodedMaterials),
+            materialArrayRgba) &&
+        WriteWorldMesh(root + "/quest-world.mesh", map);
+    __android_log_print(
+        valid ? ANDROID_LOG_INFO : ANDROID_LOG_ERROR,
+        kLogTag,
+        "Active map cache %s: %zu materials (%zu procedural), %zu BSP nodes, result=%s",
+        mapName.c_str(),
+        decodedMaterials,
+        proceduralMaterials,
+        map.bspNodes.size(),
+        valid ? "ready" : "failed");
+    return valid;
+}
+
 }  // namespace
+
+extern "C" bool BuildQuestMapCache(const char* gameRoot, const char* mapName) {
+    if (gameRoot == nullptr || mapName == nullptr) return false;
+    try {
+        return BuildMapCache(gameRoot, mapName);
+    } catch (const std::exception& error) {
+        __android_log_print(
+            ANDROID_LOG_ERROR, kLogTag, "Active map cache exception: %s", error.what());
+        return false;
+    }
+}
 
 extern "C" JNIEXPORT jboolean JNICALL
 Java_dev_deusex_questvr_MainActivity_probeGameData(

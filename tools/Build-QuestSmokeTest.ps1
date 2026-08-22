@@ -20,6 +20,11 @@ foreach ($path in $required) {
     }
 }
 
+& (Join-Path $PSScriptRoot 'Apply-ThirdPartyPatches.ps1')
+if ($LASTEXITCODE -ne 0) {
+    throw "Third-party patch preparation failed with exit code $LASTEXITCODE"
+}
+
 $env:JAVA_HOME = $jdkRoot
 $env:ANDROID_HOME = $sdkRoot
 $env:ANDROID_SDK_ROOT = $sdkRoot

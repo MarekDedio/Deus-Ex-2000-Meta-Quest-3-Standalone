@@ -196,3 +196,15 @@ Expand the portable table runtime into export object streams and tagged
 properties, then use it to resolve surface textures, actor classes, and actor
 state. Add BSP collision/grounding and lightmaps before actor meshes, the VM,
 and gameplay.
+## Generic visual level replacement
+
+- The on-device cache builder accepts any sanitized entry in the validated
+  88-map catalog and regenerates the active BSP mesh and 256x256 material array.
+- B advances to the next catalog map; a developer request file exercises the
+  identical path through ADB without synthetic controller input.
+- Cache generation runs in the background while the current world continues to
+  render and the HUD reports `LOADING...`.
+- Physical Quest validation completed Training -> TrainingCombat -> Training:
+  TrainingCombat loaded 37 materials, 875 actors, and 16,306 collision
+  triangles, then stabilized at 72 fps. The remaining main-thread runtime/GPU
+  swap measured a 1.22-second worst frame and still needs transition staging.

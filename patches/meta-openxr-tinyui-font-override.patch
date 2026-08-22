@@ -1,0 +1,36 @@
+diff --git a/Samples/SampleXrFramework/Src/Input/TinyUI.cpp b/Samples/SampleXrFramework/Src/Input/TinyUI.cpp
+index 9864ec4..2fe7480 100755
+--- a/Samples/SampleXrFramework/Src/Input/TinyUI.cpp
++++ b/Samples/SampleXrFramework/Src/Input/TinyUI.cpp
+@@ -152,7 +152,8 @@ bool TinyUI::Init(
+     const xrJava* context,
+     OVRFW::ovrFileSys* fileSys,
+     bool updateColors /* = true */,
+-    int fontVertexBufferSize /* = 0 */) {
++    int fontVertexBufferSize /* = 0 */,
++    const char* fontOverride /* = nullptr */) {
+     const xrJava* java = context;
+     UpdateColors = updateColors;
+ 
+@@ -177,6 +178,7 @@ bool TinyUI::Init(
+     }
+     std::string fontName;
+     GetLocale().GetLocalizedString("@string/font_name", "efigs.fnt", fontName);
++    if (fontOverride != nullptr && fontOverride[0] != '\0') fontName = fontOverride;
+ 
+     GuiSys = OvrGuiSys::Create(context);
+     if (nullptr == GuiSys) {
+diff --git a/Samples/SampleXrFramework/Src/Input/TinyUI.h b/Samples/SampleXrFramework/Src/Input/TinyUI.h
+index 67ee72e..c2de47f 100755
+--- a/Samples/SampleXrFramework/Src/Input/TinyUI.h
++++ b/Samples/SampleXrFramework/Src/Input/TinyUI.h
+@@ -58,7 +58,8 @@ class TinyUI {
+         OVRFW::ovrFileSys* FileSys,
+         bool updateColors = true,
+         // 0 means use default size (8KB at the time of writing this comment)
+-        int fontVertexBufferSize = 0);
++        int fontVertexBufferSize = 0,
++        const char* fontOverride = nullptr);
+     void Shutdown();
+     void Update(const OVRFW::ovrApplFrameIn& in);
+     void Render(const OVRFW::ovrApplFrameIn& in, OVRFW::ovrRendererOutput& out);
