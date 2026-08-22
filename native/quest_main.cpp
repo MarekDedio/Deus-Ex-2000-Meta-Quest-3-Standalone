@@ -441,9 +441,29 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         OVRFW::GeometryBuilder geometry;
         OVRFW::GeometryBuilder texturedGeometry;
         constexpr float unitsToMeters = 1.0f / 52.5f;
-        constexpr float originX = -1149.244f;
-        constexpr float originY = 825.844f;
-        constexpr float originZ = -65.103f;
+        float originX = -1149.244f;
+        float originY = 825.844f;
+        float originZ = -65.103f;
+        std::string playerStartPath = "fallback";
+        for (const PortableActorSnapshot& actor : actorSnapshots_) {
+            const std::size_t separator = actor.classPath.find_last_of('.');
+            const std::string leafClass = separator == std::string::npos
+                ? actor.classPath
+                : actor.classPath.substr(separator + 1);
+            if (actor.hasLocation && leafClass == "PlayerStart") {
+                originX = actor.x;
+                originY = actor.y;
+                originZ = actor.z;
+                playerStartPath = actor.objectPath;
+                break;
+            }
+        }
+        ALOG(
+            "DeusExQuest: actor coordinate origin %s at %.3f,%.3f,%.3f",
+            playerStartPath.c_str(),
+            originX,
+            originY,
+            originZ);
         std::size_t visible{};
         std::size_t meshInstances{};
         std::map<std::string, std::size_t> meshClasses;
