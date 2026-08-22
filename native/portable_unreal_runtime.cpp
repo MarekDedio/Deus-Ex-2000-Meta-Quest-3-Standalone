@@ -2,9 +2,14 @@
 
 #include "GC/GC.h"
 
+#include <android/log.h>
+
 #include <memory>
+#include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
+#include <limits>
 #include <stdexcept>
 #include <set>
 #include <unordered_map>
@@ -645,6 +650,14 @@ PortableActorMeshSummary DecodePortableRuntimeActorMeshes() {
         }
         meshObject->lodMesh = std::make_unique<PortableLodMesh>(
             LoadPortableLodMesh(package->second, meshObject->exportIndex));
+        meshObject->lodMesh->texturePaths.reserve(meshObject->lodMesh->textures.size());
+        for (const std::int32_t texture : meshObject->lodMesh->textures) {
+            std::string texturePath = GetPortableObjectPath(package->second, texture);
+            if (texture > 0 && !texturePath.empty()) {
+                texturePath = PackageStem(meshObject->sourcePath) + "." + texturePath;
+            }
+            meshObject->lodMesh->texturePaths.push_back(std::move(texturePath));
+        }
         summary.triangleVertices += meshObject->lodMesh->triangles.size();
         ++summary.decodedMeshes;
     }
@@ -660,4 +673,160 @@ PortableLodMesh GetPortableRuntimeMesh(const std::string& meshPath) {
         throw std::runtime_error("Portable actor mesh is not decoded: " + meshPath);
     }
     return *found->second->lodMesh;
+}
+
+PortableTextureArray BuildPortableRuntimeActorTextureArray(
+    std::uint32_t width,
+    std::uint32_t height) {
+    if (width == 0 || height == 0 || width > 2048 || height > 2048) {
+        throw std::runtime_error("Portable actor texture array dimensions are invalid");
+    }
+    std::set<std::string> paths;
+    for (const PortableActorSnapshot& actor : GetPortableRuntimeMapActors()) {
+        if (!actor.texturePath.empty()) paths.insert(actor.texturePath);
+        if (actor.meshPath.empty()) continue;
+        const auto mesh = persistentQualifiedObjects.find(actor.meshPath);
+        if (mesh == persistentQualifiedObjects.end() || !mesh->second->lodMesh) continue;
+        for (const std::string& texturePath : mesh->second->lodMesh->texturePaths) {
+            if (!texturePath.empty()) paths.insert(texturePath);
+        }
+    }
+    if (paths.size() > 255) {
+        throw std::runtime_error("Portable actor texture array exceeds shader layer limit");
+    }
+
+    PortableTextureArray result;
+    result.width = width;
+    result.height = height;
+    result.texturePaths.assign(paths.begin(), paths.end());
+    result.rgba.reserve(
+        static_cast<std::size_t>(width) * height * result.texturePaths.size() * 4u);
+    std::unordered_map<std::string, PortablePackageTables> packages;
+    std::string gameRoot;
+    if (persistentRuntime && !persistentRuntime->get()->exports.empty()) {
+        const std::string& source = persistentRuntime->get()->exports.front()->sourcePath;
+        const std::size_t systemSlash = source.find_last_of("/\\");
+        const std::size_t rootSlash = systemSlash == std::string::npos
+            ? std::string::npos
+            : source.find_last_of("/\\", systemSlash - 1);
+        if (rootSlash != std::string::npos) gameRoot = source.substr(0, rootSlash);
+    }
+    const std::size_t pixelsPerLayer = static_cast<std::size_t>(width) * height;
+    for (const std::string& qualified : result.texturePaths) {
+        try {
+            const std::size_t separator = qualified.find('.');
+            if (separator == std::string::npos || gameRoot.empty()) {
+                throw std::runtime_error("qualified texture path is invalid");
+            }
+            const std::string packageName = qualified.substr(0, separator);
+            const std::string objectPath = qualified.substr(separator + 1);
+            std::string packagePath = gameRoot + "/Textures/" + packageName + ".utx";
+            std::size_t textureExport = std::numeric_limits<std::size_t>::max();
+            const auto runtimeTexture = persistentQualifiedObjects.find(qualified);
+            if (runtimeTexture != persistentQualifiedObjects.end()) {
+                packagePath = runtimeTexture->second->sourcePath;
+                textureExport = runtimeTexture->second->exportIndex;
+            } else {
+                std::FILE* packageProbe = std::fopen(packagePath.c_str(), "rb");
+                if (packageProbe == nullptr) {
+                    __android_log_print(
+                        ANDROID_LOG_WARN,
+                        "quest_main",
+                        "DeusExQuest: actor texture package missing for %s (%s)",
+                        qualified.c_str(),
+                        packagePath.c_str());
+                    for (std::size_t pixel = 0; pixel < pixelsPerLayer; ++pixel) {
+                        const bool dark =
+                            ((pixel / width) / 8u + (pixel % width) / 8u) % 2u != 0;
+                        result.rgba.push_back(dark ? 40u : 255u);
+                        result.rgba.push_back(0u);
+                        result.rgba.push_back(dark ? 40u : 255u);
+                        result.rgba.push_back(255u);
+                    }
+                    ++result.failedTextures;
+                    continue;
+                }
+                std::fclose(packageProbe);
+            }
+            auto package = packages.find(packagePath);
+            if (package == packages.end()) {
+                package = packages.emplace(
+                    packagePath,
+                    LoadPortablePackageTables(packagePath)).first;
+            }
+            if (textureExport == std::numeric_limits<std::size_t>::max()) {
+                textureExport = FindPortableExport(package->second, objectPath);
+            }
+            const std::string textureClass = runtimeTexture == persistentQualifiedObjects.end()
+                ? GetPortableObjectPath(
+                    package->second,
+                    package->second.exports.at(textureExport).ObjClass)
+                : runtimeTexture->second->reflection.metaClass;
+            const std::size_t classSeparator = textureClass.find_last_of('.');
+            const std::string leafClass = classSeparator == std::string::npos
+                ? textureClass
+                : textureClass.substr(classSeparator + 1);
+            if (leafClass != "Texture") {
+                for (std::size_t pixel = 0; pixel < pixelsPerLayer; ++pixel) {
+                    const bool dark = ((pixel / width) / 8u + (pixel % width) / 8u) % 2u != 0;
+                    result.rgba.push_back(dark ? 40u : 255u);
+                    result.rgba.push_back(0u);
+                    result.rgba.push_back(dark ? 40u : 255u);
+                    result.rgba.push_back(255u);
+                }
+                ++result.failedTextures;
+                continue;
+            }
+            const PortablePropertyStream properties =
+                LoadPortableExportProperties(package->second, textureExport);
+            std::vector<PortableMipmap> mipmaps =
+                LoadPortableTextureMipmaps(package->second, textureExport);
+            std::vector<std::uint32_t> palette;
+            for (const PortableTaggedProperty& property : properties.properties) {
+                if (property.name == "Palette") {
+                    const std::int32_t paletteReference = DecodePortableObjectReference(property);
+                    if (paletteReference <= 0) {
+                        throw std::runtime_error("texture palette is not a local export");
+                    }
+                    palette = LoadPortablePalette(
+                        package->second, static_cast<std::size_t>(paletteReference - 1));
+                    break;
+                }
+            }
+            if (mipmaps.empty() || palette.empty()) {
+                throw std::runtime_error("texture has no indexed mip or palette");
+            }
+            const PortableMipmap& mip = mipmaps.front();
+            if (mip.width == 0 || mip.height == 0 ||
+                mip.pixels.size() != static_cast<std::size_t>(mip.width) * mip.height) {
+                throw std::runtime_error("texture top mip is malformed");
+            }
+            for (std::uint32_t y = 0; y < height; ++y) {
+                const std::uint32_t sourceY = y * mip.height / height;
+                for (std::uint32_t x = 0; x < width; ++x) {
+                    const std::uint32_t sourceX = x * mip.width / width;
+                    const std::uint8_t paletteIndex =
+                        mip.pixels[static_cast<std::size_t>(sourceY) * mip.width + sourceX];
+                    const std::uint32_t color = palette.at(paletteIndex);
+                    result.rgba.push_back(static_cast<std::uint8_t>(color));
+                    result.rgba.push_back(static_cast<std::uint8_t>(color >> 8u));
+                    result.rgba.push_back(static_cast<std::uint8_t>(color >> 16u));
+                    result.rgba.push_back(255u);
+                }
+            }
+            ++result.decodedTextures;
+        } catch (const std::exception&) {
+            for (std::size_t pixel = 0; pixel < pixelsPerLayer; ++pixel) {
+                const bool dark = ((pixel / width) / 8u + (pixel % width) / 8u) % 2u != 0;
+                result.rgba.push_back(dark ? 40u : 255u);
+                result.rgba.push_back(0u);
+                result.rgba.push_back(dark ? 40u : 255u);
+                result.rgba.push_back(255u);
+            }
+            ++result.failedTextures;
+        }
+    }
+    result.passed = !result.texturePaths.empty() && result.decodedTextures != 0 &&
+        result.rgba.size() == pixelsPerLayer * result.texturePaths.size() * 4u;
+    return result;
 }

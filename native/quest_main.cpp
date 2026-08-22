@@ -10,6 +10,7 @@
 #include <limits>
 #include <map>
 #include <numeric>
+#include <set>
 #include <unordered_map>
 #include <vector>
 
@@ -234,6 +235,9 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             ALOG("DeusExQuest: world mesh unavailable; showing error cube");
         }
         actorSnapshots_ = GetPortableRuntimeMapActors();
+        if (!LoadActorTextures()) {
+            ALOG("DeusExQuest: actor texture array unavailable; using marker fallback");
+        }
         BuildActorMarkers();
 
         if (!leftController_.Init(true) || !rightController_.Init(false)) {
@@ -321,6 +325,11 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             OVRFW::FreeTexture(firstTexture_);
             firstTexture_ = {};
         }
+        if (actorTexture_.IsValid()) {
+            OVRFW::FreeTexture(actorTexture_);
+            actorTexture_ = {};
+        }
+        actorTexturePaths_.clear();
         collisionTriangles_.clear();
         collisionGrid_.clear();
         oversizedCollisionTriangles_.clear();
@@ -337,7 +346,8 @@ class DeusExQuestApp final : public OVRFW::XrApp {
     };
 
     OVRFW::GlGeometry::Descriptor BuildLodMeshDescriptor(
-        const PortableLodMesh& mesh) const {
+        const PortableLodMesh& mesh,
+        std::uint16_t material) const {
         OVRFW::GlGeometry::Descriptor descriptor;
         descriptor.attribs.position.reserve(mesh.triangles.size());
         descriptor.attribs.normal.reserve(mesh.triangles.size());
@@ -348,6 +358,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         for (std::size_t triangle = 0;
              triangle + 2 < mesh.triangles.size();
              triangle += 3) {
+            if (mesh.triangles[triangle].material != material) continue;
             OVR::Vector3f positions[3];
             for (std::size_t corner = 0; corner < 3; ++corner) {
                 const PortableMeshVertex& vertex = mesh.triangles[triangle + corner];
@@ -379,6 +390,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
 
     void BuildActorMarkers() {
         OVRFW::GeometryBuilder geometry;
+        OVRFW::GeometryBuilder texturedGeometry;
         constexpr float unitsToMeters = 1.0f / 52.5f;
         constexpr float originX = -1149.244f;
         constexpr float originY = 825.844f;
@@ -387,6 +399,10 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         std::size_t meshInstances{};
         std::map<std::string, std::size_t> meshClasses;
         std::map<std::string, OVRFW::GlGeometry::Descriptor> meshDescriptors;
+        std::unordered_map<std::string, std::size_t> textureLayers;
+        for (std::size_t layer = 0; layer < actorTexturePaths_.size(); ++layer) {
+            textureLayers.emplace(actorTexturePaths_[layer], layer);
+        }
         for (const PortableActorSnapshot& actor : actorSnapshots_) {
             if (!actor.meshPath.empty()) ++meshClasses[actor.meshClassPath];
             if (!actor.hasLocation ||
@@ -419,30 +435,55 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             bool renderedMesh = false;
             if (!actor.meshPath.empty()) {
                 try {
-                    auto descriptor = meshDescriptors.find(actor.meshPath);
-                    if (descriptor == meshDescriptors.end()) {
-                        descriptor = meshDescriptors.emplace(
-                            actor.meshPath,
-                            BuildLodMeshDescriptor(GetPortableRuntimeMesh(actor.meshPath))).first;
-                    }
+                    const PortableLodMesh mesh = GetPortableRuntimeMesh(actor.meshPath);
                     constexpr float unrealAngle =
                         6.28318530717958647692f / 65536.0f;
                     const float yaw = -static_cast<float>(actor.yaw) * unrealAngle;
+                    const float pitch = -static_cast<float>(actor.pitch) * unrealAngle;
+                    const float roll = static_cast<float>(actor.roll) * unrealAngle;
                     const OVR::Matrix4f transform =
                         OVR::Matrix4f::Translation(position) *
                         OVR::Matrix4f(OVR::Quatf(
                             OVR::Vector3f(0.0f, 1.0f, 0.0f), yaw)) *
+                        OVR::Matrix4f(OVR::Quatf(
+                            OVR::Vector3f(1.0f, 0.0f, 0.0f), pitch)) *
+                        OVR::Matrix4f(OVR::Quatf(
+                            OVR::Vector3f(0.0f, 0.0f, 1.0f), roll)) *
                         OVR::Matrix4f::Scaling(
                             actor.drawScale * actor.drawScaleY,
                             actor.drawScale * actor.drawScaleZ,
                             actor.drawScale * actor.drawScaleX);
-                    geometry.Add(
-                        descriptor->second,
-                        OVRFW::GeometryBuilder::kInvalidIndex,
-                        color,
-                        transform);
-                    renderedMesh = true;
-                    ++meshInstances;
+                    std::set<std::uint16_t> materials;
+                    for (const PortableMeshVertex& vertex : mesh.triangles) {
+                        materials.insert(vertex.material);
+                    }
+                    for (const std::uint16_t material : materials) {
+                        std::string texturePath = actor.texturePath;
+                        if (texturePath.empty() && material < mesh.texturePaths.size()) {
+                            texturePath = mesh.texturePaths[material];
+                        }
+                        const auto layer = textureLayers.find(texturePath);
+                        if (layer == textureLayers.end()) continue;
+                        const std::string descriptorKey =
+                            actor.meshPath + "#" + std::to_string(material);
+                        auto descriptor = meshDescriptors.find(descriptorKey);
+                        if (descriptor == meshDescriptors.end()) {
+                            descriptor = meshDescriptors.emplace(
+                                descriptorKey,
+                                BuildLodMeshDescriptor(mesh, material)).first;
+                        }
+                        texturedGeometry.Add(
+                            descriptor->second,
+                            OVRFW::GeometryBuilder::kInvalidIndex,
+                            OVR::Vector4f(
+                                static_cast<float>(layer->second) / 255.0f,
+                                1.0f,
+                                1.0f,
+                                1.0f),
+                            transform);
+                        renderedMesh = true;
+                    }
+                    if (renderedMesh) ++meshInstances;
                 } catch (const std::exception& error) {
                     ALOG(
                         "DeusExQuest: actor mesh render fallback for %s: %s",
@@ -461,10 +502,15 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             ++visible;
             if (visible >= 512) break;
         }
-        if (visible != 0) {
+        if (!geometry.Nodes().empty()) {
             worldRenderers_.emplace_back();
             worldRenderers_.back().Init(geometry.ToGeometryDescriptor());
             worldRenderers_.back().AmbientLightColor = {0.45f, 0.45f, 0.45f};
+        }
+        if (!texturedGeometry.Nodes().empty() && actorTexture_.IsValid()) {
+            texturedRenderers_.emplace_back();
+            texturedRenderers_.back().Init(
+                texturedGeometry.ToGeometryDescriptor(), actorTexture_);
         }
         ALOG(
             "DeusExQuest: instantiated %zu targetable actors from %zu live actors (%zu real LodMesh instances, %zu mesh-bearing, %zu mesh formats)",
@@ -901,6 +947,55 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         return true;
     }
 
+    bool LoadActorTextures() {
+        PortableTextureArray array;
+        try {
+            array = BuildPortableRuntimeActorTextureArray(256, 256);
+        } catch (const std::exception& error) {
+            ALOG("DeusExQuest: actor texture decode failed: %s", error.what());
+            return false;
+        }
+        ALOG(
+            "DeusExQuest: decoded %zu/%zu actor textures (%zu fallback layers)",
+            array.decodedTextures,
+            array.texturePaths.size(),
+            array.failedTextures);
+        if (!array.passed) return false;
+        GLuint texture{};
+        glGenTextures(1, &texture);
+        glBindTexture(GL_TEXTURE_2D_ARRAY, texture);
+        glTexImage3D(
+            GL_TEXTURE_2D_ARRAY,
+            0,
+            GL_RGBA8,
+            static_cast<GLsizei>(array.width),
+            static_cast<GLsizei>(array.height),
+            static_cast<GLsizei>(array.texturePaths.size()),
+            0,
+            GL_RGBA,
+            GL_UNSIGNED_BYTE,
+            array.rgba.data());
+        glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_S, GL_REPEAT);
+        glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_T, GL_REPEAT);
+        glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glGenerateMipmap(GL_TEXTURE_2D_ARRAY);
+        const GLenum error = glGetError();
+        glBindTexture(GL_TEXTURE_2D_ARRAY, 0);
+        if (error != GL_NO_ERROR) {
+            if (texture != 0) glDeleteTextures(1, &texture);
+            ALOG("DeusExQuest: actor texture-array upload failed with GL error 0x%x", error);
+            return false;
+        }
+        actorTexture_ = OVRFW::GlTexture(
+            texture,
+            GL_TEXTURE_2D_ARRAY,
+            static_cast<int>(array.width),
+            static_cast<int>(array.height));
+        actorTexturePaths_ = std::move(array.texturePaths);
+        return actorTexture_.IsValid();
+    }
+
     bool LoadFirstTexture() {
         constexpr const char* path =
             "/data/user/0/dev.deusex.questvr.smoketest/files/DeusEx/quest-material-array.rgba";
@@ -962,6 +1057,8 @@ class DeusExQuestApp final : public OVRFW::XrApp {
     std::vector<PortableActorSnapshot> actorSnapshots_;
     std::vector<InteractiveActor> interactiveActors_;
     OVRFW::GlTexture firstTexture_;
+    OVRFW::GlTexture actorTexture_;
+    std::vector<std::string> actorTexturePaths_;
     AAudioStream* ambientStream_{};
     std::vector<std::int16_t> ambientSamples_;
     std::size_t ambientCursor_{};

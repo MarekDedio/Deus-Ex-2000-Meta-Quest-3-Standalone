@@ -38,6 +38,16 @@ struct PortableActorMeshSummary {
     std::size_t triangleVertices{};
 };
 
+struct PortableTextureArray {
+    bool passed{};
+    std::uint32_t width{};
+    std::uint32_t height{};
+    std::size_t decodedTextures{};
+    std::size_t failedTextures{};
+    std::vector<std::string> texturePaths;
+    std::vector<std::uint8_t> rgba;
+};
+
 PortableRuntimeSummary BuildAndVerifyPortableRuntime(
     const PortablePackageTables& package);
 PortableRuntimeSummary InitializePortableRuntime(
@@ -95,3 +105,6 @@ std::size_t UnloadPortableRuntimeMap();
 std::vector<PortableActorSnapshot> GetPortableRuntimeMapActors();
 PortableActorMeshSummary DecodePortableRuntimeActorMeshes();
 PortableLodMesh GetPortableRuntimeMesh(const std::string& meshPath);
+PortableTextureArray BuildPortableRuntimeActorTextureArray(
+    std::uint32_t width,
+    std::uint32_t height);

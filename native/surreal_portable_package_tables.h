@@ -112,6 +112,7 @@ struct PortableMeshVertex {
 struct PortableLodMesh {
     std::vector<PortableMeshVertex> triangles;
     std::vector<std::int32_t> textures;
+    std::vector<std::string> texturePaths;
     std::uint32_t frameVertices{};
     std::uint32_t animationFrames{};
     float scaleX{};
