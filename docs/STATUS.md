@@ -264,6 +264,10 @@ and gameplay.
   resolved speech 263 to the 5,460-byte AIBarks MP3, decoded 44.1 kHz mono to
   20,160 frames at 22.05 kHz, queued it successfully, and held 72 fps with a
   27.78 ms worst dialogue window.
+- Quick-save metadata v3 persists per-pawn dialogue cursors while still reading
+  v1/v2 saves. Physical validation played Training event 8844, saved, advanced
+  to 8845, loaded, and replayed 8845 rather than resetting to the first line;
+  both referenced MP3 clips resolved and queued.
 - `01_NYC_UNATCOIsland` physically validated generic non-training loading: 107
   materials, 3,658 actors, 34,140 collision triangles, and two decoded exits,
   followed by steady 72 fps.

@@ -1493,15 +1493,29 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         constexpr const char* runtimePath =
             "/data/user/0/dev.deusex.questvr.smoketest/files/DeusEx/quest-save-0.runtime";
         std::FILE* file = std::fopen(metaPath, "wb");
-        const std::uint32_t header[2] = {0x4d515844u, 2u};
+        const std::uint32_t header[2] = {0x4d515844u, 3u};
         const float pose[4] = {
             worldPosition_.x, worldPosition_.y, worldPosition_.z, sceneYaw_};
         const std::uint32_t mapNameBytes = static_cast<std::uint32_t>(currentMapName_.size());
-        const bool metaSaved = file != nullptr &&
+        bool metaSaved = file != nullptr &&
             std::fwrite(header, sizeof(header), 1, file) == 1 &&
             std::fwrite(pose, sizeof(pose), 1, file) == 1 &&
             std::fwrite(&mapNameBytes, sizeof(mapNameBytes), 1, file) == 1 &&
             std::fwrite(currentMapName_.data(), 1, mapNameBytes, file) == mapNameBytes;
+        const std::uint32_t dialogueCount =
+            static_cast<std::uint32_t>(dialogueOffsets_.size());
+        if (metaSaved) {
+            metaSaved = std::fwrite(&dialogueCount, sizeof(dialogueCount), 1, file) == 1;
+            for (const auto& entry : dialogueOffsets_) {
+                const std::uint32_t pathBytes = static_cast<std::uint32_t>(entry.first.size());
+                const std::uint64_t cursor = static_cast<std::uint64_t>(entry.second);
+                metaSaved = metaSaved && pathBytes > 0u && pathBytes <= 1024u &&
+                    std::fwrite(&pathBytes, sizeof(pathBytes), 1, file) == 1 &&
+                    std::fwrite(entry.first.data(), 1, pathBytes, file) == pathBytes &&
+                    std::fwrite(&cursor, sizeof(cursor), 1, file) == 1;
+                if (!metaSaved) break;
+            }
+        }
         if (file != nullptr) std::fclose(file);
         const bool runtimeSaved = SavePortableRuntimeState(runtimePath);
         ALOG(
@@ -1520,13 +1534,15 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         std::uint32_t header[2]{};
         float pose[4]{};
         std::string savedMapName;
+        std::unordered_map<std::string, std::size_t> savedDialogueOffsets;
         bool metaLoaded = file != nullptr &&
             std::fread(header, sizeof(header), 1, file) == 1 &&
             std::fread(pose, sizeof(pose), 1, file) == 1 &&
-            header[0] == 0x4d515844u && (header[1] == 1u || header[1] == 2u) &&
+            header[0] == 0x4d515844u &&
+            (header[1] == 1u || header[1] == 2u || header[1] == 3u) &&
             std::isfinite(pose[0]) && std::isfinite(pose[1]) &&
             std::isfinite(pose[2]) && std::isfinite(pose[3]);
-        if (metaLoaded && header[1] == 2u) {
+        if (metaLoaded && header[1] >= 2u) {
             std::uint32_t mapNameBytes{};
             metaLoaded = std::fread(&mapNameBytes, sizeof(mapNameBytes), 1, file) == 1 &&
                 mapNameBytes > 0u && mapNameBytes <= 255u;
@@ -1537,11 +1553,29 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         } else if (metaLoaded) {
             savedMapName = currentMapName_;
         }
+        if (metaLoaded && header[1] == 3u) {
+            std::uint32_t dialogueCount{};
+            metaLoaded = std::fread(&dialogueCount, sizeof(dialogueCount), 1, file) == 1 &&
+                dialogueCount <= 4096u;
+            for (std::uint32_t index = 0; metaLoaded && index < dialogueCount; ++index) {
+                std::uint32_t pathBytes{};
+                std::uint64_t cursor{};
+                metaLoaded = std::fread(&pathBytes, sizeof(pathBytes), 1, file) == 1 &&
+                    pathBytes > 0u && pathBytes <= 1024u;
+                std::string path(pathBytes, '\0');
+                metaLoaded = metaLoaded &&
+                    std::fread(path.data(), 1, pathBytes, file) == pathBytes &&
+                    std::fread(&cursor, sizeof(cursor), 1, file) == 1;
+                if (metaLoaded) savedDialogueOffsets.emplace(
+                    std::move(path), static_cast<std::size_t>(cursor));
+            }
+        }
         if (file != nullptr) std::fclose(file);
         if (!metaLoaded) {
             ALOG("DeusExQuest: VR quick-load failed");
             return;
         }
+        dialogueOffsets_ = std::move(savedDialogueOffsets);
         if (savedMapName != currentMapName_) {
             const auto found = std::find(mapNames_.begin(), mapNames_.end(), savedMapName);
             if (found == mapNames_.end()) {
