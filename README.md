@@ -56,6 +56,15 @@ With one Quest in developer mode connected and authorized over USB:
 .\tools\Install-QuestSmokeTest.ps1
 ```
 
+Quest OS capture can return black for immersive compositor layers. The app has
+an independent left-eye framebuffer capture path that includes the world,
+actors, controllers, and TinyUI HUD. With the app running, request and pull a
+BMP over ADB with:
+
+```powershell
+.\tools\Capture-QuestScreenshot.ps1
+```
+
 The current APK loads the training map's package tables, BSP, materials, actor
 meshes, actor textures, scripts, and ambient sound on-device. Controls are:
 

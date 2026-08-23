@@ -18,6 +18,7 @@
 #include <set>
 #include <unordered_map>
 #include <vector>
+#include <sys/stat.h>
 
 #include "Input/ControllerRenderer.h"
 #include "Input/TinyUI.h"
@@ -550,6 +551,27 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         ui_.Render(frame, output);
         if (frame.LeftRemoteTracked) leftController_.Render(output.Surfaces);
         if (frame.RightRemoteTracked) rightController_.Render(output.Surfaces);
+    }
+
+    void AppRenderFrame(
+        const OVRFW::ovrApplFrameIn& frame,
+        OVRFW::ovrRendererOutput& output) override {
+        Render(frame, output);
+        for (int eye = 0; eye < GetNumFramebuffers(); ++eye) {
+            ovrFramebuffer* frameBuffer = GetFrameBuffer(eye);
+            ovrFramebuffer_Acquire(frameBuffer);
+            ovrFramebuffer_SetCurrent(frameBuffer);
+            AppEyeGLStateSetup(frame, frameBuffer, eye);
+            OVRFW::XrApp::AppRenderEye(frame, output, eye);
+            ovrFramebuffer_Resolve(frameBuffer);
+            if (eye == 0 && captureScreenshotRequested_) {
+                captureScreenshotRequested_ = false;
+                ovrFramebuffer_SetNone();
+                CaptureResolvedEyeFramebuffer(*frameBuffer);
+            }
+            ovrFramebuffer_Release(frameBuffer);
+        }
+        ovrFramebuffer_SetNone();
     }
 
     void SessionEnd() override {
@@ -1314,6 +1336,13 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         std::fclose(file);
         std::remove(requestPath);
         if (!read) return;
+        if (std::strcmp(requested, "SCREENSHOT") == 0) {
+            captureScreenshotRequested_ = true;
+            interactionStatus_ = "CAPTURING SCREENSHOT...";
+            interactionStatusSeconds_ = 3.0f;
+            ALOG("DeusExQuest: in-app eye screenshot requested");
+            return;
+        }
         if (std::strcmp(requested, "SAVE") == 0) {
             SaveGameState();
             return;
@@ -1990,6 +2019,93 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             (static_cast<std::uint32_t>(bytes[1]) << 8u) |
             (static_cast<std::uint32_t>(bytes[2]) << 16u) |
             (static_cast<std::uint32_t>(bytes[3]) << 24u);
+    }
+
+    void CaptureResolvedEyeFramebuffer(const ovrFramebuffer& eyeFramebuffer) {
+        GLint previousReadFramebuffer{};
+        glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &previousReadFramebuffer);
+        const GLsizei width = eyeFramebuffer.Width;
+        const GLsizei height = eyeFramebuffer.Height;
+        if (width <= 0 || height <= 0 || eyeFramebuffer.ColorSwapChainImage == nullptr ||
+            eyeFramebuffer.TextureSwapChainIndex >= eyeFramebuffer.TextureSwapChainLength) {
+            ALOG("DeusExQuest: screenshot failed: invalid resolved eye texture");
+            return;
+        }
+        const GLuint eyeTexture = eyeFramebuffer.ColorSwapChainImage[
+            eyeFramebuffer.TextureSwapChainIndex].image;
+        glFinish();
+        GLuint captureFramebuffer{};
+        glGenFramebuffers(1, &captureFramebuffer);
+        glBindFramebuffer(GL_READ_FRAMEBUFFER, captureFramebuffer);
+        glFramebufferTexture2D(
+            GL_READ_FRAMEBUFFER,
+            GL_COLOR_ATTACHMENT0,
+            GL_TEXTURE_2D,
+            eyeTexture,
+            0);
+        bool ok = glCheckFramebufferStatus(GL_READ_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE;
+        std::vector<std::uint8_t> pixels;
+        if (ok) {
+            pixels.resize(static_cast<std::size_t>(width) * height * 4u);
+            glReadPixels(0, 0, width, height, GL_RGBA, GL_UNSIGNED_BYTE, pixels.data());
+            glFinish();
+            ok = glGetError() == GL_NO_ERROR;
+        }
+        glBindFramebuffer(
+            GL_READ_FRAMEBUFFER, static_cast<GLuint>(previousReadFramebuffer));
+        glDeleteFramebuffers(1, &captureFramebuffer);
+        if (!ok) {
+            ALOG("DeusExQuest: screenshot GPU readback failed");
+            return;
+        }
+
+        for (std::size_t offset = 0u; offset + 3u < pixels.size(); offset += 4u) {
+            std::swap(pixels[offset], pixels[offset + 2u]);
+            pixels[offset + 3u] = 255u;
+        }
+        constexpr const char* directory =
+            "/sdcard/Android/data/dev.deusex.questvr.smoketest/files";
+        mkdir(directory, 0700);
+        const std::string path = std::string(directory) + "/quest-screenshot.bmp";
+        std::uint8_t header[54]{};
+        const auto write16 = [&](std::size_t offset, std::uint16_t value) {
+            header[offset] = static_cast<std::uint8_t>(value);
+            header[offset + 1u] = static_cast<std::uint8_t>(value >> 8u);
+        };
+        const auto write32 = [&](std::size_t offset, std::uint32_t value) {
+            for (std::size_t byte = 0u; byte < 4u; ++byte) {
+                header[offset + byte] = static_cast<std::uint8_t>(value >> (byte * 8u));
+            }
+        };
+        header[0] = 'B';
+        header[1] = 'M';
+        write32(2u, static_cast<std::uint32_t>(sizeof(header) + pixels.size()));
+        write32(10u, sizeof(header));
+        write32(14u, 40u);
+        write32(18u, static_cast<std::uint32_t>(width));
+        write32(22u, static_cast<std::uint32_t>(height));
+        write16(26u, 1u);
+        write16(28u, 32u);
+        write32(34u, static_cast<std::uint32_t>(pixels.size()));
+        std::FILE* file = std::fopen(path.c_str(), "wb");
+        ok = file != nullptr &&
+            std::fwrite(header, 1u, sizeof(header), file) == sizeof(header) &&
+            std::fwrite(pixels.data(), 1u, pixels.size(), file) == pixels.size();
+        if (file != nullptr) std::fclose(file);
+        if (ok) {
+            interactionStatus_ = "SCREENSHOT SAVED";
+            interactionStatusSeconds_ = 3.0f;
+            ALOG(
+                "DeusExQuest: in-app eye screenshot saved: %s (%dx%d, %zu bytes)",
+                path.c_str(),
+                width,
+                height,
+                pixels.size() + sizeof(header));
+        } else {
+            interactionStatus_ = "SCREENSHOT FAILED";
+            interactionStatusSeconds_ = 3.0f;
+            ALOG("DeusExQuest: screenshot file write failed: %s", path.c_str());
+        }
     }
 
     struct DecodedMonoAudio {
@@ -3228,6 +3344,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
     std::string currentMapName_{"00_Training"};
     std::size_t currentMapIndex_{};
     float mapRequestPollSeconds_{};
+    bool captureScreenshotRequested_{};
     float mapTravelCooldown_{3.0f};
     bool restorePoseAfterTransition_{};
     OVR::Vector3f restoredWorldPosition_{};

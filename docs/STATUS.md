@@ -2,6 +2,13 @@
 
 ## Verified on 2026-08-23
 
+- Added compositor-independent visual capture for physical-headset debugging.
+  `Capture-QuestScreenshot.ps1` requests a post-resolve left-eye readback from
+  the running app and pulls the BMP over ADB. The first physical Quest 3 capture
+  succeeded at 1680x1760; OpenXR subsequently held 72.0 fps with a 13.89 ms
+  worst frame and no Android crash. The image confirms that the HUD is present,
+  while also exposing left-edge HUD clipping, one magenta fallback material,
+  and malformed character-mesh rendering for follow-up.
 - Corrected the right-stick snap-turn sign after physical play exposed reversed
   controls: stick-left now turns the view left and stick-right turns it right.
 - Ambient audio now follows every active map's serialized UE1 emitters instead
@@ -122,8 +129,11 @@
   cache into three bounded 16-bit GPU geometry chunks and submitted more than
   2,000 focused stereo frames without a native crash.
 - Quest OS screenshot and screen-record APIs return black for this immersive
-  compositor layer, so visual framing still requires in-headset confirmation;
-  runtime logs verify active frame submission and GPU mesh initialization.
+  compositor layer. A project-owned diagnostic command now reads the resolved
+  left-eye swapchain image after rendering, writes a 32-bit BMP in app-scoped
+  storage, and pulls it over ADB with `tools/Capture-QuestScreenshot.ps1`.
+  Physical Quest 3 validation captured a 1680x1760 frame containing the BSP,
+  actors, lighting, Touch controllers, and TinyUI HUD without stopping OpenXR.
 - `MyLevel`'s actor array was decoded with 1,337 object references. The training
   spawn resolves to `PlayerStart1` at UE coordinates
   `(-1149.244, 825.844, -65.103)`.
@@ -187,8 +197,8 @@
 - Indexed pixels and the 256-color palette are converted to a private 65,552-byte
   RGBA cache. A project-owned UV/sampler shader uploaded the 128x128 texture and
   rendered one of four BSP chunks with it on Quest. OpenXR initialized and the
-  crash buffer remained empty. UV orientation still requires direct in-headset
-  visual confirmation because Quest OS immersive captures remain black.
+  crash buffer remained empty. The later in-app eye capture path makes UV and
+  framing inspection available without relying on Quest OS compositor capture.
 - The map now emits an authoritative manifest of all 71 qualified BSP materials.
   The portable decoder caches their source packages and successfully opens the
   mip and palette graph for all 71 on Quest. One (`Effects.water.drtywater_a`)
