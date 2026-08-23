@@ -188,6 +188,30 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                 runtime.classDefaultProperties,
                 runtime.resolvedLinks,
                 runtime.unresolvedExternalLinks);
+            const PortableConversationSummary conversations =
+                GetPortableConversationSummary();
+            if (runtime.conversationObjects == 0u ||
+                runtime.conversationLoadFailures != 0u ||
+                conversations.conversations == 0u || conversations.events == 0u ||
+                conversations.speechLines == 0u) {
+                ALOG(
+                    "DeusExQuest: portable conversation-data validation failed: loaded=%zu failures=%zu conversations=%zu events=%zu speech=%zu",
+                    runtime.conversationObjects,
+                    runtime.conversationLoadFailures,
+                    conversations.conversations,
+                    conversations.events,
+                    conversations.speechLines);
+                return false;
+            }
+            ALOG(
+                "DeusExQuest: portable conversation data ready: %zu objects/%zu properties, %zu conversations, %zu events, %zu speech objects/%zu lines; sample=%s",
+                runtime.conversationObjects,
+                runtime.conversationProperties,
+                conversations.conversations,
+                conversations.events,
+                conversations.speechObjects,
+                conversations.speechLines,
+                conversations.sampleSpeech.c_str());
             const PortablePackageTables trainingMap = LoadPortablePackageTables(
                 "/data/user/0/dev.deusex.questvr.smoketest/files/DeusEx/Maps/00_Training.dx");
             const PortableMapRuntimeSummary mapRuntime =
@@ -1111,6 +1135,17 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                 SelectedWeaponHasAmmo(inventory) ? "ready" : "blocked");
             return;
         }
+        if (std::strcmp(requested, "DIALOGUE") == 0) {
+            bool found{};
+            for (const PortableActorSnapshot& actor : actorSnapshots_) {
+                if (actor.pawn && ShowDialogue(actor.objectPath)) {
+                    found = true;
+                    break;
+                }
+            }
+            ALOG("DeusExQuest: diagnostic dialogue result=%s", found ? "found" : "missing");
+            return;
+        }
         if (std::strcmp(requested, "PICKUP") == 0) {
             const auto foundInventory = std::find_if(
                 actorSnapshots_.begin(), actorSnapshots_.end(),
@@ -1169,6 +1204,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                 ? interaction.action + ": " + actorName
                 : "CANNOT USE: " + actorName;
             interactionStatusSeconds_ = 3.0f;
+            if (interaction.action == "conversation") ShowDialogue(best->objectPath);
             ALOG(
                 "DeusExQuest: VR use %s on %s (%s) at %.2fm; inventory=%zu",
                 interaction.action.c_str(),
@@ -1187,6 +1223,49 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             ALOG("DeusExQuest: VR use found no actor within 3m ray");
         }
         return false;
+    }
+
+    bool ShowDialogue(const std::string& actorPath) {
+        std::size_t& cursor = dialogueOffsets_[actorPath];
+        std::int32_t missionNumber{std::numeric_limits<std::int32_t>::min()};
+        const std::size_t separator = currentMapName_.find('_');
+        if (separator != std::string::npos && separator > 0u) {
+            try {
+                missionNumber = std::stoi(currentMapName_.substr(0u, separator));
+            } catch (const std::exception&) {
+                missionNumber = std::numeric_limits<std::int32_t>::min();
+            }
+        }
+        if (currentMapName_.rfind("00_Training", 0u) == 0u) missionNumber = -1;
+        const PortableDialogueResult dialogue =
+            GetPortableRuntimeDialogue(actorPath, cursor, missionNumber);
+        if (!dialogue.found) {
+            interactionStatus_ = "NO DIALOGUE DATA";
+            interactionStatusSeconds_ = 2.0f;
+            ALOG(
+                "DeusExQuest: no serialized dialogue matched %s bind=%s mission candidates=%s",
+                actorPath.c_str(),
+                dialogue.bindName.c_str(),
+                dialogue.missionCandidates.c_str());
+            return false;
+        }
+        ++cursor;
+        std::string subtitle = dialogue.speech;
+        std::replace(subtitle.begin(), subtitle.end(), '\n', ' ');
+        std::replace(subtitle.begin(), subtitle.end(), '\r', ' ');
+        if (subtitle.size() > 220u) subtitle.resize(220u);
+        interactionStatus_ = dialogue.bindName + ": " + subtitle;
+        interactionStatusSeconds_ = std::clamp(
+            static_cast<float>(subtitle.size()) * 0.055f, 4.0f, 12.0f);
+        ALOG(
+            "DeusExQuest: dialogue %s bind=%s line=%zu/%zu sound=%d text=%s",
+            dialogue.eventPath.c_str(),
+            dialogue.bindName.c_str(),
+            cursor,
+            dialogue.matchingLines,
+            dialogue.soundId,
+            subtitle.c_str());
+        return true;
     }
 
     bool RequestDestinationMap(std::string destination) {
@@ -2305,6 +2384,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
     std::string interactionStatus_;
     std::string displayedInteractionStatus_;
     float interactionStatusSeconds_{};
+    std::unordered_map<std::string, std::size_t> dialogueOffsets_;
     static constexpr const char* gameRoot_ =
         "/data/user/0/dev.deusex.questvr.smoketest/files/DeusEx";
     std::vector<std::string> mapNames_;

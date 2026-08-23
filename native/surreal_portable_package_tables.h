@@ -134,6 +134,7 @@ std::vector<PortableMipmap> LoadPortableTextureMipmaps(
     const PortablePackageTables& package,
     std::size_t exportIndex);
 std::int32_t DecodePortableObjectReference(const PortableTaggedProperty& property);
+std::string DecodePortableStringProperty(const PortableTaggedProperty& property);
 std::vector<std::uint32_t> LoadPortablePalette(
     const PortablePackageTables& package,
     std::size_t exportIndex);

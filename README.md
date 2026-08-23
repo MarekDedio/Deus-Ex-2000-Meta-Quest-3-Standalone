@@ -70,6 +70,9 @@ meshes, actor textures, scripts, and ambient sound on-device. Controls are:
 - X: quick-load and rebuild the live actor scene.
 
 A head-locked HUD displays health, inventory count, and the control summary.
+Pointing at a pawn and pressing A resolves its real `BindName` against the
+active mission's serialized conversation events and displays the shipped
+subtitle; Training uses the game's mission `-1` conversation bucket.
 Real `Engine.Teleporter` and `DeusEx.MapExit` actors decode their URL/DestMap
 properties and initiate catalog-validated travel when entered. Quick-saves now
 record the active map and can restore across a later level transition.

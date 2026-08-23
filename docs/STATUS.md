@@ -241,6 +241,17 @@ and gameplay.
   remains available for recovery and the HUD prompts `DEAD - PRESS X TO
   QUICK-LOAD`. Physical validation damaged 100 -> 0 and quick-loaded back to
   the saved 100-health state without terminating the OpenXR process.
+- The portable runtime now loads and validates 50,353 serialized conversation
+  objects with 183,152 tagged properties: 1,955 conversations, 25,789 events,
+  and 10,079 decoded speech lines. UE1 compact-length `StringProperty` values
+  are normalized for both dialogue and map destinations.
+- A mission/speaker index follows `ConversationList -> ConItem -> Conversation`
+  ownership and `ConEventSpeech -> ConSpeech` references. Pawn A-button use
+  resolves inherited `BindName`/`BarkBindName`, advances a per-pawn subtitle
+  cursor, and exposes the real sound ID. Physical validation matched Training's
+  Jaime Reyes to mission -1 speech 94 and Liberty Island's Paul Denton to
+  mission 1 speech 314. Indexing occurs before frame submission; lookups did
+  not disturb steady 72 fps/13.89 ms rendering.
 - `01_NYC_UNATCOIsland` physically validated generic non-training loading: 107
   materials, 3,658 actors, 34,140 collision triangles, and two decoded exits,
   followed by steady 72 fps.

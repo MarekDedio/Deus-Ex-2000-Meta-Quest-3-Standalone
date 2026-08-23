@@ -3,6 +3,7 @@
 #include "Package/PackageStream.h"
 #include "Utils/File.h"
 
+#include <algorithm>
 #include <limits>
 #include <cstring>
 #include <memory>
@@ -570,6 +571,30 @@ std::int32_t DecodePortableObjectReference(const PortableTaggedProperty& propert
         throw std::runtime_error("UE1 object-reference property has trailing bytes");
     }
     return reference;
+}
+
+std::string DecodePortableStringProperty(const PortableTaggedProperty& property) {
+    if (property.type != 13u || property.value.empty()) return {};
+    PayloadReader reader(property.value);
+    const std::int32_t length = reader.ReadIndex();
+    if (length == 0 || length == std::numeric_limits<std::int32_t>::min()) return {};
+    if (length > 0) {
+        const std::vector<std::uint8_t> bytes =
+            reader.ReadBytes(static_cast<std::size_t>(length));
+        const auto end = std::find(bytes.begin(), bytes.end(), std::uint8_t{});
+        return std::string(bytes.begin(), end);
+    }
+    const std::size_t characters = static_cast<std::size_t>(-length);
+    const std::vector<std::uint8_t> bytes = reader.ReadBytes(characters * 2u);
+    std::string result;
+    result.reserve(characters);
+    for (std::size_t index = 0; index + 1u < bytes.size(); index += 2u) {
+        const std::uint16_t character = static_cast<std::uint16_t>(bytes[index]) |
+            (static_cast<std::uint16_t>(bytes[index + 1u]) << 8u);
+        if (character == 0u) break;
+        result.push_back(character <= 0x7fu ? static_cast<char>(character) : '?');
+    }
+    return result;
 }
 
 std::vector<std::uint32_t> LoadPortablePalette(

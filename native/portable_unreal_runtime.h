@@ -17,8 +17,31 @@ struct PortableRuntimeSummary {
     std::size_t normalizedBytecodeBytes{};
     std::size_t serializedClassDefaults{};
     std::size_t classDefaultProperties{};
+    std::size_t conversationObjects{};
+    std::size_t conversationProperties{};
+    std::size_t conversationLoadFailures{};
     std::size_t peakGcObjects{};
     std::size_t destroyedObjects{};
+};
+
+struct PortableConversationSummary {
+    std::size_t objects{};
+    std::size_t conversations{};
+    std::size_t events{};
+    std::size_t speechObjects{};
+    std::size_t speechLines{};
+    std::string sampleSpeech;
+};
+
+struct PortableDialogueResult {
+    bool found{};
+    std::string actorPath;
+    std::string bindName;
+    std::string eventPath;
+    std::string speech;
+    std::string missionCandidates;
+    std::int32_t soundId{-1};
+    std::size_t matchingLines{};
 };
 
 struct PortableMapRuntimeSummary {
@@ -73,6 +96,11 @@ PortableRuntimeSummary InitializePortableRuntime(
 PortableRuntimeSummary InitializePortableRuntime(
     const std::vector<PortablePackageTables>& packages);
 void ShutdownPortableRuntime();
+PortableConversationSummary GetPortableConversationSummary();
+PortableDialogueResult GetPortableRuntimeDialogue(
+    const std::string& actorPath,
+    std::size_t ordinal,
+    std::int32_t missionNumber);
 
 enum class PortableVmValueType {
     Nothing,

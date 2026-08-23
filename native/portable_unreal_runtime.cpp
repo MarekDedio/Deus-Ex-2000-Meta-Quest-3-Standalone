@@ -6,6 +6,7 @@
 
 #include <memory>
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -88,11 +89,99 @@ std::string persistentMapPackageName;
 std::vector<std::string> persistentInventory;
 float persistentPlayerHealth{100.0f};
 
+struct IndexedDialogueLine {
+    std::string eventPath;
+    std::string text;
+    std::int32_t soundId{-1};
+};
+
+std::unordered_map<std::string, std::vector<IndexedDialogueLine>> persistentDialogueIndex;
+std::unordered_map<std::string, std::set<std::int32_t>> persistentSpeakerMissions;
+
+std::string LowerAscii(std::string value) {
+    std::transform(value.begin(), value.end(), value.begin(), [](unsigned char character) {
+        return static_cast<char>(std::tolower(character));
+    });
+    return value;
+}
+
+std::string DialogueKey(std::int32_t mission, const std::string& speaker) {
+    return std::to_string(mission) + "\n" + LowerAscii(speaker);
+}
+
 bool IsDerivedFromPath(RuntimeObject* cls, const std::string& path) {
     for (RuntimeObject* current = cls; current != nullptr; current = current->base) {
         if (current->reflection.objectPath == path) return true;
     }
     return false;
+}
+
+void BuildPersistentDialogueIndex() {
+    persistentDialogueIndex.clear();
+    persistentSpeakerMissions.clear();
+    if (!persistentRuntime || !persistentRuntime->get()) return;
+    const auto intProperty = [](RuntimeObject* object, const char* name, std::int32_t fallback) {
+        for (const PortableTaggedProperty& property : object->instanceProperties) {
+            if (property.name == name && property.value.size() == 4u) {
+                std::int32_t value{};
+                std::memcpy(&value, property.value.data(), sizeof(value));
+                return value;
+            }
+        }
+        return fallback;
+    };
+    std::unordered_map<std::string, std::int32_t> conversationMissions;
+    for (RuntimeObject* list : persistentRuntime->get()->exports) {
+        if (list == nullptr || !IsDerivedFromPath(list->cls, "ConSys.ConversationList")) continue;
+        const std::int32_t mission = intProperty(list, "missionNumber", -1);
+        const auto firstItem = list->objectPropertyPaths.find("conversations");
+        if (firstItem == list->objectPropertyPaths.end()) continue;
+        std::string itemPath = firstItem->second;
+        for (std::size_t guard = 0; !itemPath.empty() && guard < 4096u; ++guard) {
+            const auto itemFound = persistentQualifiedObjects.find(itemPath);
+            if (itemFound == persistentQualifiedObjects.end() || itemFound->second == nullptr) break;
+            RuntimeObject* item = itemFound->second;
+            const auto conversation = item->objectPropertyPaths.find("ConObject");
+            if (conversation != item->objectPropertyPaths.end()) {
+                conversationMissions[conversation->second] = mission;
+            }
+            const auto next = item->objectPropertyPaths.find("Next");
+            if (next == item->objectPropertyPaths.end() || next->second == itemPath) break;
+            itemPath = next->second;
+        }
+    }
+    for (RuntimeObject* event : persistentRuntime->get()->exports) {
+        if (event == nullptr || !IsDerivedFromPath(event->cls, "ConSys.ConEventSpeech")) continue;
+        const auto conversation = event->objectPropertyPaths.find("Conversation");
+        if (conversation == event->objectPropertyPaths.end()) continue;
+        const auto mission = conversationMissions.find(conversation->second);
+        if (mission == conversationMissions.end()) continue;
+        std::string speaker;
+        for (const PortableTaggedProperty& property : event->instanceProperties) {
+            if (property.name == "speakerName" && property.type == 13u) {
+                speaker = DecodePortableStringProperty(property);
+                break;
+            }
+        }
+        if (speaker.empty()) continue;
+        const auto speechPath = event->objectPropertyPaths.find("ConSpeech");
+        if (speechPath == event->objectPropertyPaths.end()) continue;
+        const auto speechFound = persistentQualifiedObjects.find(speechPath->second);
+        if (speechFound == persistentQualifiedObjects.end() || speechFound->second == nullptr) continue;
+        RuntimeObject* speech = speechFound->second;
+        IndexedDialogueLine line;
+        line.eventPath = event->reflection.objectPath;
+        for (const PortableTaggedProperty& property : speech->instanceProperties) {
+            if (property.name == "Speech" && property.type == 13u) {
+                line.text = DecodePortableStringProperty(property);
+            } else if (property.name == "soundID" && property.value.size() == 4u) {
+                std::memcpy(&line.soundId, property.value.data(), sizeof(line.soundId));
+            }
+        }
+        if (line.text.empty()) continue;
+        persistentDialogueIndex[DialogueKey(mission->second, speaker)].push_back(std::move(line));
+        persistentSpeakerMissions[LowerAscii(speaker)].insert(mission->second);
+    }
 }
 
 class RuntimeBytecodeReader {
@@ -409,6 +498,40 @@ PortableRuntimeSummary InitializePortableRuntime(
             if (object->reflection.metaClass == "Class") ++summary.classes;
         }
     }
+    for (const PackageSlice& slice : slices) {
+        for (std::size_t localIndex = 0;
+             localIndex < slice.package->exports.size();
+             ++localIndex) {
+            RuntimeObject* object =
+                persistentRuntime->get()->exports[slice.first + localIndex];
+            if (!IsDerivedFromPath(object->cls, "ConSys.ConObject") ||
+                slice.package->exports[localIndex].ObjSize <= 0) {
+                continue;
+            }
+            try {
+                object->instanceProperties =
+                    LoadPortableExportProperties(*slice.package, localIndex).properties;
+                ++summary.conversationObjects;
+                summary.conversationProperties += object->instanceProperties.size();
+                for (const PortableTaggedProperty& property : object->instanceProperties) {
+                    if (property.type != 5u || property.value.empty()) continue;
+                    const std::int32_t reference = DecodePortableObjectReference(property);
+                    if (reference == 0) continue;
+                    const std::string path = reference > 0
+                        ? slice.name + "." +
+                            GetPortableObjectPath(*slice.package, reference)
+                        : GetPortableObjectPath(*slice.package, reference);
+                    object->objectPropertyPaths[property.name.ToString()] = path;
+                    if (RuntimeObject* target = resolve(slice, reference)) {
+                        object->references.push_back(target);
+                    }
+                }
+            } catch (const std::exception&) {
+                ++summary.conversationLoadFailures;
+            }
+        }
+    }
+    BuildPersistentDialogueIndex();
     summary.objects = persistentRuntime->get()->exports.size();
     persistentScriptExportCount = summary.objects;
     summary.peakGcObjects = GC::GetStats().numObjects;
@@ -420,12 +543,109 @@ PortableRuntimeSummary InitializePortableRuntime(
     return summary;
 }
 
+PortableConversationSummary GetPortableConversationSummary() {
+    PortableConversationSummary summary;
+    if (!persistentRuntime || !persistentRuntime->get()) return summary;
+    for (RuntimeObject* object : persistentRuntime->get()->exports) {
+        if (object == nullptr || !IsDerivedFromPath(object->cls, "ConSys.ConObject")) continue;
+        ++summary.objects;
+        if (IsDerivedFromPath(object->cls, "ConSys.Conversation")) ++summary.conversations;
+        if (IsDerivedFromPath(object->cls, "ConSys.ConEvent")) ++summary.events;
+        if (!IsDerivedFromPath(object->cls, "ConSys.ConSpeech")) continue;
+        ++summary.speechObjects;
+        for (const PortableTaggedProperty& property : object->instanceProperties) {
+            if (property.name == "Speech" && property.type == 13u && !property.value.empty()) {
+                const std::string speech = DecodePortableStringProperty(property);
+                if (!speech.empty()) {
+                    ++summary.speechLines;
+                    if (summary.sampleSpeech.empty()) summary.sampleSpeech = speech;
+                }
+            }
+        }
+    }
+    return summary;
+}
+
+PortableDialogueResult GetPortableRuntimeDialogue(
+    const std::string& actorPath,
+    std::size_t ordinal,
+    std::int32_t missionNumber) {
+    PortableDialogueResult result;
+    result.actorPath = actorPath;
+    const auto actorFound = persistentQualifiedObjects.find(actorPath);
+    if (actorFound == persistentQualifiedObjects.end() || actorFound->second == nullptr) {
+        return result;
+    }
+    RuntimeObject* actor = actorFound->second;
+    const auto inheritedString = [&](const char* name) {
+        for (const PortableTaggedProperty& property : actor->instanceProperties) {
+            if (property.name == name && property.type == 13u) {
+                return DecodePortableStringProperty(property);
+            }
+        }
+        for (RuntimeObject* cls = actor->cls; cls != nullptr; cls = cls->base) {
+            if (!cls->classDescriptor) continue;
+            for (const PortableTaggedProperty& property : cls->classDescriptor->defaults) {
+                if (property.name == name && property.type == 13u) {
+                    return DecodePortableStringProperty(property);
+                }
+            }
+        }
+        return std::string();
+    };
+    const std::string bindName = inheritedString("BindName");
+    const std::string barkBindName = inheritedString("BarkBindName");
+    result.bindName = !bindName.empty() ? bindName : barkBindName;
+    if (result.bindName.empty()) return result;
+    const auto appendMissions = [&](const std::string& speaker) {
+        const auto found = persistentSpeakerMissions.find(LowerAscii(speaker));
+        if (found == persistentSpeakerMissions.end()) return;
+        for (std::int32_t mission : found->second) {
+            if (!result.missionCandidates.empty()) result.missionCandidates += ",";
+            result.missionCandidates += std::to_string(mission);
+        }
+    };
+    appendMissions(bindName);
+    if (!barkBindName.empty() && LowerAscii(barkBindName) != LowerAscii(bindName)) {
+        appendMissions(barkBindName);
+    }
+    const std::vector<IndexedDialogueLine>* lines{};
+    const auto findLines = [&](const std::string& speaker)
+        -> const std::vector<IndexedDialogueLine>* {
+        if (speaker.empty()) return static_cast<const std::vector<IndexedDialogueLine>*>(nullptr);
+        if (missionNumber != std::numeric_limits<std::int32_t>::min()) {
+            const auto found = persistentDialogueIndex.find(DialogueKey(missionNumber, speaker));
+            return found == persistentDialogueIndex.end() ? nullptr : &found->second;
+        }
+        const std::string suffix = "\n" + LowerAscii(speaker);
+        for (const auto& entry : persistentDialogueIndex) {
+            if (entry.first.size() >= suffix.size() &&
+                entry.first.compare(entry.first.size() - suffix.size(), suffix.size(), suffix) == 0) {
+                return &entry.second;
+            }
+        }
+        return static_cast<const std::vector<IndexedDialogueLine>*>(nullptr);
+    };
+    lines = findLines(bindName);
+    if (lines == nullptr) lines = findLines(barkBindName);
+    result.matchingLines = lines == nullptr ? 0u : lines->size();
+    if (lines == nullptr || lines->empty()) return result;
+    const IndexedDialogueLine& selected = (*lines)[ordinal % lines->size()];
+    result.found = true;
+    result.eventPath = selected.eventPath;
+    result.speech = selected.text;
+    result.soundId = selected.soundId;
+    return result;
+}
+
 void ShutdownPortableRuntime() {
     persistentRuntime.reset();
     persistentQualifiedObjects.clear();
     persistentScriptExportCount = 0;
     persistentMapPackageName.clear();
     persistentInventory.clear();
+    persistentDialogueIndex.clear();
+    persistentSpeakerMissions.clear();
     persistentPlayerHealth = 100.0f;
     GC::Collect();
 }
@@ -627,9 +847,7 @@ std::vector<PortableActorSnapshot> GetPortableRuntimeMapActors() {
         if (destination == nullptr) destination = inheritedProperty("URL");
         if (destination != nullptr) {
             if (destination->type == 13u && !destination->value.empty()) {
-                const auto end = std::find(
-                    destination->value.begin(), destination->value.end(), std::uint8_t{});
-                snapshot.destinationMap.assign(destination->value.begin(), end);
+                snapshot.destinationMap = DecodePortableStringProperty(*destination);
             }
         }
         for (const PortableTaggedProperty& property : object->instanceProperties) {
@@ -873,9 +1091,7 @@ PortableInteractionResult InteractPortableRuntimeActor(const std::string& object
             for (const PortableTaggedProperty& property : properties) {
                 if ((property.name == "DestMap" || property.name == "URL") &&
                     property.type == 13u && !property.value.empty()) {
-                    const auto end = std::find(
-                        property.value.begin(), property.value.end(), std::uint8_t{});
-                    result.destinationMap.assign(property.value.begin(), end);
+                    result.destinationMap = DecodePortableStringProperty(property);
                     return true;
                 }
             }
