@@ -62,6 +62,7 @@ meshes, actor textures, scripts, and ambient sound on-device. Controls are:
 - right stick: 30-degree snap turning;
 - A: use the pointed actor, including pickups and typed actor interactions;
 - right index trigger: controller-aimed pawn damage;
+- right grip: cycle the selected inventory item;
 - B: asynchronously cache and load the next catalog map;
 - Y: quick-save world, inventory, position, and facing state;
 - X: quick-load and rebuild the live actor scene.
@@ -72,6 +73,8 @@ properties and initiate catalog-validated travel when entered. Quick-saves now
 record the active map and can restore across a later level transition.
 Runtime-state v2 also persists live player health and partially damaged pawn
 health, while continuing to read older v1 runtime saves.
+The HUD names the selected inventory item. Trigger attacks require a selected
+weapon, use weapon-family damage, and constrain melee weapons to arm's reach.
 
 The training scene has been measured at a steady 72 fps on a physical Quest 3.
 Generic visual map-cache generation and runtime/GPU transitions now work and

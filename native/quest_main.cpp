@@ -382,13 +382,27 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         }
         const bool firePressed = frame.RightRemoteIndexTrigger > 0.75f;
         if (!mapLoading && frame.RightRemoteTracked && firePressed && !fireLatch_) {
-            if (FireTargetedActor(frame.RightRemotePointPose)) {
+            const std::vector<std::string> inventory = GetPortableRuntimeInventoryItems();
+            const float weaponDamage = SelectedWeaponDamage(inventory);
+            if (weaponDamage <= 0.0f) {
+                ALOG("DeusExQuest: VR fire ignored; selected inventory item is not a weapon");
+            } else if (FireTargetedActor(
+                           frame.RightRemotePointPose,
+                           weaponDamage,
+                           SelectedWeaponRange(inventory))) {
                 DestroyActorGeometry();
                 actorSnapshots_ = GetPortableRuntimeMapActors();
                 BuildActorMarkers();
             }
         }
         fireLatch_ = firePressed;
+        const bool gripPressed = frame.RightRemoteGripTrigger > 0.75f;
+        if (!mapLoading && gripPressed && !inventoryCycleLatch_) {
+            const std::size_t count = GetPortableRuntimeInventoryCount();
+            if (count != 0u) selectedInventoryIndex_ = (selectedInventoryIndex_ + 1u) % count;
+            displayedInventoryCount_ = invalidRendererIndex_;
+        }
+        inventoryCycleLatch_ = gripPressed;
         if (!mapLoading && frame.Clicked(frame.kButtonY)) SaveGameState();
         if (!mapLoading && frame.Clicked(frame.kButtonX)) LoadGameState();
         if (frame.Clicked(frame.kButtonB)) LoadNextMap();
@@ -410,17 +424,24 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             const float playerHealth = mapLoading
                 ? displayedPlayerHealth_
                 : GetPortableRuntimePlayerHealth();
+            const std::vector<std::string> inventory = mapLoading
+                ? std::vector<std::string>{}
+                : GetPortableRuntimeInventoryItems();
+            const std::string selectedItem = SelectedInventoryLabel(inventory);
             if (inventoryCount != displayedInventoryCount_ ||
-                std::fabs(playerHealth - displayedPlayerHealth_) > 0.01f) {
+                std::fabs(playerHealth - displayedPlayerHealth_) > 0.01f ||
+                selectedItem != displayedSelectedInventory_) {
                 hudLabel_->SetText(
-                    "%s   HEALTH %.0f   INVENTORY %zu\nA USE   TRIGGER FIRE   B NEXT MAP   Y SAVE   X LOAD",
+                    "%s   HEALTH %.0f   INVENTORY %zu   ITEM %s\nA USE   TRIGGER FIRE   GRIP CYCLE   B NEXT MAP   Y SAVE   X LOAD",
                     pendingMapName_.empty() && transitionMapName_.empty()
                         ? currentMapName_.c_str()
                         : "LOADING...",
                     playerHealth,
-                    inventoryCount);
+                    inventoryCount,
+                    selectedItem.c_str());
                 displayedInventoryCount_ = inventoryCount;
                 displayedPlayerHealth_ = playerHealth;
+                displayedSelectedInventory_ = selectedItem;
             }
         }
         ui_.Update(frame);
@@ -927,6 +948,25 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                 DamagePortableRuntimePlayer(10.0f));
             return;
         }
+        if (std::strcmp(requested, "PICKUP") == 0) {
+            const auto foundInventory = std::find_if(
+                actorSnapshots_.begin(), actorSnapshots_.end(),
+                [](const PortableActorSnapshot& actor) { return actor.inventory; });
+            if (foundInventory != actorSnapshots_.end()) {
+                const PortableInteractionResult result =
+                    InteractPortableRuntimeActor(foundInventory->objectPath);
+                DestroyActorGeometry();
+                actorSnapshots_ = GetPortableRuntimeMapActors();
+                BuildActorMarkers();
+                displayedInventoryCount_ = invalidRendererIndex_;
+                ALOG(
+                    "DeusExQuest: diagnostic pickup %s inventory=%zu selected=%s",
+                    result.objectPath.c_str(),
+                    result.inventoryCount,
+                    SelectedInventoryLabel(GetPortableRuntimeInventoryItems()).c_str());
+            }
+            return;
+        }
         const auto found = std::find(mapNames_.begin(), mapNames_.end(), requested);
         if (found == mapNames_.end()) {
             ALOG("DeusExQuest: rejected unknown requested map %s", requested);
@@ -1023,14 +1063,46 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         }
     }
 
-    bool FireTargetedActor(const OVR::Posef& pointerPose) {
+    static std::string SelectedInventoryLabel(const std::vector<std::string>& inventory) {
+        if (inventory.empty()) return "NONE";
+        const std::string& path = inventory[selectedInventoryIndex_ % inventory.size()];
+        const std::size_t separator = path.find_last_of('.');
+        return separator == std::string::npos ? path : path.substr(separator + 1u);
+    }
+
+    static float SelectedWeaponDamage(const std::vector<std::string>& inventory) {
+        const std::string item = SelectedInventoryLabel(inventory);
+        if (item.find("Weapon") == std::string::npos) return 0.0f;
+        if (item.find("GEP") != std::string::npos || item.find("LAW") != std::string::npos) return 80.0f;
+        if (item.find("Sniper") != std::string::npos) return 40.0f;
+        if (item.find("Shotgun") != std::string::npos) return 32.0f;
+        if (item.find("Pistol") != std::string::npos) return 20.0f;
+        if (item.find("Crowbar") != std::string::npos || item.find("Baton") != std::string::npos) return 12.0f;
+        return 18.0f;
+    }
+
+    static float SelectedWeaponRange(const std::vector<std::string>& inventory) {
+        const std::string item = SelectedInventoryLabel(inventory);
+        if (item.find("Crowbar") != std::string::npos ||
+            item.find("Baton") != std::string::npos ||
+            item.find("Knife") != std::string::npos ||
+            item.find("Sword") != std::string::npos) {
+            return 2.0f;
+        }
+        return 30.0f;
+    }
+
+    bool FireTargetedActor(
+        const OVR::Posef& pointerPose,
+        float weaponDamage,
+        float weaponRange) {
         const OVR::Vector3f origin = pointerPose.Translation;
         const OVR::Vector3f direction =
             pointerPose.Rotation.Rotate(OVR::Vector3f(0.0f, 0.0f, -1.0f));
         const OVR::Quatf worldRotation(
             OVR::Vector3f(0.0f, 1.0f, 0.0f), sceneYaw_);
         const InteractiveActor* best{};
-        float bestDistance = 30.0f;
+        float bestDistance = weaponRange;
         for (const InteractiveActor& actor : interactiveActors_) {
             const OVR::Vector3f position =
                 worldRotation.Rotate(actor.localPosition) + worldPosition_;
@@ -1048,7 +1120,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             return false;
         }
         const PortableDamageResult damage =
-            DamagePortableRuntimeActor(best->objectPath, 35.0f);
+            DamagePortableRuntimeActor(best->objectPath, weaponDamage);
         if (!damage.handled) {
             ALOG(
                 "DeusExQuest: VR fire struck non-damageable %s at %.2fm",
@@ -1665,6 +1737,8 @@ class DeusExQuestApp final : public OVRFW::XrApp {
     float sceneYaw_{};
     bool turnLatch_{};
     bool fireLatch_{};
+    bool inventoryCycleLatch_{};
+    inline static std::size_t selectedInventoryIndex_{};
     std::size_t performanceFrames_{};
     float performanceSeconds_{};
     float performanceWorstDelta_{};
@@ -1672,6 +1746,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
     OVRFW::VRMenuObject* hudLabel_{};
     std::size_t displayedInventoryCount_{invalidRendererIndex_};
     float displayedPlayerHealth_{-1.0f};
+    std::string displayedSelectedInventory_;
     static constexpr const char* gameRoot_ =
         "/data/user/0/dev.deusex.questvr.smoketest/files/DeusEx";
     std::vector<std::string> mapNames_;

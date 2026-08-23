@@ -218,3 +218,6 @@ and gameplay.
 - Runtime-state v2 preserves player health and partial pawn damage in addition
   to inventory, inactive/dead actors, and activated movers/triggers. A physical
   100 -> 90 save -> 80 -> load test restored 90, and the HUD uses the live value.
+- Right grip cycles persistent inventory and the HUD shows the selected object.
+  Physical pickup validation selected `00_Training.Multitool0`; non-weapons no
+  longer provide free hitscan, while weapon families set damage and range.

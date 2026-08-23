@@ -988,6 +988,10 @@ std::size_t GetPortableRuntimeInventoryCount() {
     return persistentInventory.size();
 }
 
+std::vector<std::string> GetPortableRuntimeInventoryItems() {
+    return persistentInventory;
+}
+
 float GetPortableRuntimePlayerHealth() {
     return persistentPlayerHealth;
 }
