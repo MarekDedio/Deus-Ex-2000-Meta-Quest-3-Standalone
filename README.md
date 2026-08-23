@@ -75,11 +75,17 @@ meshes, actor textures, scripts, and ambient sound on-device. Controls are:
 - right index trigger: controller-aimed pawn damage when the selected firearm
   has a compatible ammo pickup (melee weapons need no ammo);
 - right grip: cycle the selected inventory item;
+- left Menu button: open or close the paused VR inventory panel;
 - B: asynchronously cache and load the next catalog map;
 - Y: quick-save world, inventory, position, and facing state;
 - X: quick-load and rebuild the live actor scene.
 
-A head-locked HUD displays health, inventory count, and the control summary.
+A head-locked HUD displays health, inventory count, and the control summary. The
+Menu button opens a head-locked inventory panel showing the live map, health,
+and up to nine items at once. The right stick selects an item, A equips weapons
+or consumes healing items, and B or Menu returns to play. Movement, turning,
+combat, interaction, and map exits pause while this panel is open; quick-save
+and quick-load remain available.
 Pointing at a pawn and pressing A resolves its real `BindName` against the
 active mission's serialized conversation events and displays the shipped
 subtitle while decoding and mixing its referenced MP3 speech over ambient audio;

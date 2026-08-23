@@ -131,10 +131,19 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             OVR::Vector3f(0.0f, 1.3f, -1.5f),
             OVR::Vector2f(720.0f, 180.0f));
         hudLabel_->SetTextLocalPosition({0.0f, -0.025f, 0.0f});
+        hudLabel_->SetTextColor(OVR::Vector4f(0.82f, 0.68f, 0.25f, 1.0f));
+        inventoryLabel_ = ui_.AddLabel(
+            "INVENTORY",
+            OVR::Vector3f(0.0f, 1.3f, -1.5f),
+            OVR::Vector2f(900.0f, 520.0f));
+        inventoryLabel_->SetTextColor(OVR::Vector4f(0.9f, 0.74f, 0.28f, 1.0f));
+        inventoryLabel_->SetSurfaceColor(0, OVR::Vector4f(0.08f, 0.16f, 0.14f, 0.98f));
+        inventoryLabel_->SetVisible(false);
         return true;
     }
 
     void AppShutdown(const xrJava* context) override {
+        inventoryLabel_ = nullptr;
         hudLabel_ = nullptr;
         ui_.Shutdown();
         OVRFW::XrApp::AppShutdown(context);
@@ -383,6 +392,16 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         (void)headPitch;
         (void)headRoll;
         const bool playerAlive = GetPortableRuntimePlayerHealth() > 0.0f;
+        const bool mapLoading = !pendingMapName_.empty() || !transitionMapName_.empty();
+        if (!mapLoading && frame.Clicked(frame.kButtonMenu)) {
+            SetInventoryMenuOpen(!inventoryMenuOpen_);
+        }
+        bool dismissedMenuWithB{};
+        if (inventoryMenuOpen_ && frame.Clicked(frame.kButtonB)) {
+            SetInventoryMenuOpen(false);
+            dismissedMenuWithB = true;
+        }
+        const bool gameplayActive = playerAlive && !mapLoading && !inventoryMenuOpen_;
         const float yaw = headYaw - sceneYaw_;
         const float forwardX = std::sin(yaw);
         const float forwardZ = -std::cos(yaw);
@@ -391,10 +410,10 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         UpdateSpatialAudioGains(
             StageToLocal(currentHeadStage_, worldPosition_), rightX, rightZ);
         constexpr float moveSpeed = 2.2f;
-        const float moveX = playerAlive
+        const float moveX = gameplayActive
             ? frame.LeftRemoteJoystick.x * rightX + frame.LeftRemoteJoystick.y * forwardX
             : 0.0f;
-        const float moveZ = playerAlive
+        const float moveZ = gameplayActive
             ? frame.LeftRemoteJoystick.x * rightZ + frame.LeftRemoteJoystick.y * forwardZ
             : 0.0f;
         OVR::Vector3f candidate = worldPosition_;
@@ -402,13 +421,26 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         candidate.z -= moveZ * moveSpeed * frame.DeltaSeconds;
 
         const bool turnPressed = std::fabs(frame.RightRemoteJoystick.x) > 0.7f;
-        if (playerAlive && turnPressed && !turnLatch_) {
+        if (gameplayActive && turnPressed && !turnLatch_) {
             constexpr float snapRadians = 3.14159265358979323846f / 6.0f;
             sceneYaw_ += std::copysign(snapRadians, frame.RightRemoteJoystick.x);
         }
         turnLatch_ = turnPressed;
         const bool choiceCyclePressed = std::fabs(frame.RightRemoteJoystick.y) > 0.7f;
-        if (!pendingChoices_.empty() && choiceCyclePressed && !choiceCycleLatch_) {
+        if (inventoryMenuOpen_ && choiceCyclePressed && !choiceCycleLatch_) {
+            const std::size_t count = GetPortableRuntimeInventoryCount();
+            if (count != 0u) {
+                if (frame.RightRemoteJoystick.y > 0.0f) {
+                    selectedInventoryIndex_ = selectedInventoryIndex_ == 0u
+                        ? count - 1u
+                        : selectedInventoryIndex_ - 1u;
+                } else {
+                    selectedInventoryIndex_ = (selectedInventoryIndex_ + 1u) % count;
+                }
+                inventoryMenuDirty_ = true;
+                displayedInventoryCount_ = invalidRendererIndex_;
+            }
+        } else if (!pendingChoices_.empty() && choiceCyclePressed && !choiceCycleLatch_) {
             if (frame.RightRemoteJoystick.y > 0.0f) {
                 pendingChoiceIndex_ = pendingChoiceIndex_ == 0u
                     ? pendingChoices_.size() - 1u
@@ -441,9 +473,8 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         }
         if (frame.LeftRemoteTracked) leftController_.Update(frame.LeftRemotePose);
         if (frame.RightRemoteTracked) rightController_.Update(frame.RightRemotePose);
-        const bool mapLoading = !pendingMapName_.empty() || !transitionMapName_.empty();
         mapTravelCooldown_ = std::max(0.0f, mapTravelCooldown_ - frame.DeltaSeconds);
-        if (playerAlive && !mapLoading && mapTravelCooldown_ <= 0.0f) {
+        if (gameplayActive && mapTravelCooldown_ <= 0.0f) {
             CheckTravelTriggers(frame.HeadPose.Translation);
         }
         if (!mapLoading && actorSnapshots_.size() > 1000u) {
@@ -455,7 +486,19 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                 BuildActorMarkers();
             }
         }
-        if (playerAlive && !mapLoading && frame.RightRemoteTracked && frame.Clicked(frame.kButtonA)) {
+        if (inventoryMenuOpen_ && frame.Clicked(frame.kButtonA)) {
+            const std::vector<std::string> inventory = GetPortableRuntimeInventoryItems();
+            if (inventory.empty()) {
+                inventoryMenuDirty_ = true;
+            } else if (!UseSelectedConsumable()) {
+                interactionStatus_ = "EQUIPPED " +
+                    SelectedInventoryLabel(inventory);
+                interactionStatusSeconds_ = 2.0f;
+                SetInventoryMenuOpen(false);
+            } else {
+                inventoryMenuDirty_ = true;
+            }
+        } else if (gameplayActive && frame.RightRemoteTracked && frame.Clicked(frame.kButtonA)) {
             if (!pendingChoices_.empty()) {
                 ConfirmPendingChoice();
             } else if (UseTargetedActor(frame.RightRemotePointPose)) {
@@ -465,7 +508,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             }
         }
         const bool firePressed = frame.RightRemoteIndexTrigger > 0.75f;
-        if (playerAlive && !mapLoading && frame.RightRemoteTracked && firePressed && !fireLatch_) {
+        if (gameplayActive && frame.RightRemoteTracked && firePressed && !fireLatch_) {
             const std::vector<std::string> inventory = GetPortableRuntimeInventoryItems();
             const float weaponDamage = SelectedWeaponDamage(inventory);
             if (weaponDamage <= 0.0f) {
@@ -487,13 +530,13 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         }
         fireLatch_ = firePressed;
         const bool gripPressed = frame.RightRemoteGripTrigger > 0.75f;
-        if (playerAlive && !mapLoading && gripPressed && !inventoryCycleLatch_) {
+        if (gameplayActive && gripPressed && !inventoryCycleLatch_) {
             const std::size_t count = GetPortableRuntimeInventoryCount();
             if (count != 0u) selectedInventoryIndex_ = (selectedInventoryIndex_ + 1u) % count;
             displayedInventoryCount_ = invalidRendererIndex_;
         }
         inventoryCycleLatch_ = gripPressed;
-        if (playerAlive && !mapLoading && frame.Clicked(frame.kButtonY)) {
+        if ((gameplayActive || inventoryMenuOpen_) && frame.Clicked(frame.kButtonY)) {
             if (pendingChoices_.empty()) {
                 SaveGameState();
             } else {
@@ -502,7 +545,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             }
         }
         if (!mapLoading && frame.Clicked(frame.kButtonX)) LoadGameState();
-        if (playerAlive && frame.Clicked(frame.kButtonB)) LoadNextMap();
+        if (gameplayActive && !dismissedMenuWithB && frame.Clicked(frame.kButtonB)) LoadNextMap();
         mapRequestPollSeconds_ += frame.DeltaSeconds;
         if (mapRequestPollSeconds_ >= 0.5f) {
             mapRequestPollSeconds_ = 0.0f;
@@ -530,7 +573,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                 selectedItem != displayedSelectedInventory_ ||
                 interactionStatus_ != displayedInteractionStatus_) {
                 hudLabel_->SetText(
-                    "%s   HEALTH %.0f   INVENTORY %zu\nITEM %s\n%s\nA USE   TRIGGER FIRE   GRIP CYCLE\nB NEXT MAP   Y SAVE   X LOAD",
+                    "%s   HEALTH %.0f   INVENTORY %zu\nITEM %s\n%s\nA USE   TRIGGER FIRE   GRIP CYCLE\nMENU INVENTORY   B NEXT MAP   Y SAVE   X LOAD",
                     pendingMapName_.empty() && transitionMapName_.empty()
                         ? currentMapName_.c_str()
                         : "LOADING...",
@@ -546,6 +589,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                 displayedInteractionStatus_ = interactionStatus_;
             }
         }
+        UpdateInventoryMenu(frame, mapLoading);
         ui_.Update(frame);
     }
 
@@ -1479,6 +1523,13 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             ALOG("DeusExQuest: in-app eye screenshot requested");
             return;
         }
+        if (std::strcmp(requested, "MENU") == 0) {
+            SetInventoryMenuOpen(!inventoryMenuOpen_);
+            ALOG(
+                "DeusExQuest: diagnostic inventory menu %s",
+                inventoryMenuOpen_ ? "opened" : "closed");
+            return;
+        }
         if (std::strcmp(requested, "SAVE") == 0) {
             SaveGameState();
             return;
@@ -1889,11 +1940,79 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         }
     }
 
+    static std::string InventoryItemLabel(const std::string& path) {
+        const std::size_t separator = path.find_last_of('.');
+        return separator == std::string::npos ? path : path.substr(separator + 1u);
+    }
+
     static std::string SelectedInventoryLabel(const std::vector<std::string>& inventory) {
         if (inventory.empty()) return "NONE";
         const std::string& path = inventory[selectedInventoryIndex_ % inventory.size()];
-        const std::size_t separator = path.find_last_of('.');
-        return separator == std::string::npos ? path : path.substr(separator + 1u);
+        return InventoryItemLabel(path);
+    }
+
+    void SetInventoryMenuOpen(const bool open) {
+        inventoryMenuOpen_ = open;
+        inventoryMenuDirty_ = true;
+        choiceCycleLatch_ = true;
+        if (hudLabel_ != nullptr) hudLabel_->SetVisible(!open);
+        if (inventoryLabel_ != nullptr) inventoryLabel_->SetVisible(open);
+        ALOG("DeusExQuest: VR inventory menu %s", open ? "opened" : "closed");
+    }
+
+    void UpdateInventoryMenu(
+        const OVRFW::ovrApplFrameIn& frame,
+        const bool mapLoading) {
+        if (mapLoading && inventoryMenuOpen_) SetInventoryMenuOpen(false);
+        if (!inventoryMenuOpen_ || inventoryLabel_ == nullptr) return;
+
+        OVR::Posef menuPose = frame.HeadPose;
+        menuPose.Translation += frame.HeadPose.Rotation.Rotate(
+            OVR::Vector3f(0.0f, -0.02f, -1.05f));
+        inventoryLabel_->SetLocalPose(menuPose);
+        const std::vector<std::string> inventory = GetPortableRuntimeInventoryItems();
+        if (!inventory.empty()) selectedInventoryIndex_ %= inventory.size();
+        const float health = GetPortableRuntimePlayerHealth();
+        if (!inventoryMenuDirty_ && inventory.size() == inventoryMenuDisplayedCount_ &&
+            std::fabs(health - inventoryMenuDisplayedHealth_) <= 0.01f &&
+            selectedInventoryIndex_ == inventoryMenuDisplayedSelection_) {
+            return;
+        }
+
+        std::string text = "DEUS EX VR  //  INVENTORY\n";
+        text += "MAP " + currentMapName_ + "\n";
+        text += "HEALTH " + std::to_string(static_cast<int>(health)) +
+            "     ITEMS " + std::to_string(inventory.size()) + "\n";
+        text += "----------------------------------------\n";
+        if (inventory.empty()) {
+            text += "\n             INVENTORY EMPTY\n";
+        } else {
+            constexpr std::size_t visibleItems = 9u;
+            const std::size_t first = inventory.size() <= visibleItems
+                ? 0u
+                : std::min(
+                    selectedInventoryIndex_ > visibleItems / 2u
+                        ? selectedInventoryIndex_ - visibleItems / 2u
+                        : 0u,
+                    inventory.size() - visibleItems);
+            const std::size_t end = std::min(first + visibleItems, inventory.size());
+            if (first != 0u) text += "                 ...\n";
+            for (std::size_t index = first; index < end; ++index) {
+                text += index == selectedInventoryIndex_ ? "  >  " : "     ";
+                text += InventoryItemLabel(inventory[index]);
+                text += "\n";
+            }
+            if (end != inventory.size()) text += "                 ...\n";
+        }
+        text += "----------------------------------------\n";
+        text += "RIGHT STICK  SELECT    A  EQUIP / USE\n";
+        text += "B OR MENU  RETURN TO GAME\n";
+        text += "Y  QUICK-SAVE           X  QUICK-LOAD";
+        inventoryLabel_->SetText("%s", text.c_str());
+        inventoryMenuDisplayedCount_ = inventory.size();
+        inventoryMenuDisplayedHealth_ = health;
+        inventoryMenuDisplayedSelection_ = selectedInventoryIndex_;
+        inventoryMenuDirty_ = false;
     }
 
     bool UseSelectedConsumable() {
@@ -3485,6 +3604,12 @@ class DeusExQuestApp final : public OVRFW::XrApp {
     float performanceWorstDelta_{};
     OVRFW::TinyUI ui_;
     OVRFW::VRMenuObject* hudLabel_{};
+    OVRFW::VRMenuObject* inventoryLabel_{};
+    bool inventoryMenuOpen_{};
+    bool inventoryMenuDirty_{true};
+    std::size_t inventoryMenuDisplayedCount_{invalidRendererIndex_};
+    std::size_t inventoryMenuDisplayedSelection_{invalidRendererIndex_};
+    float inventoryMenuDisplayedHealth_{-1.0f};
     std::size_t displayedInventoryCount_{invalidRendererIndex_};
     float displayedPlayerHealth_{-1.0f};
     std::string displayedSelectedInventory_;
