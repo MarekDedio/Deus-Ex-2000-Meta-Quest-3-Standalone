@@ -884,6 +884,33 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         return descriptor;
     }
 
+    OVRFW::GlGeometry::Descriptor BuildCrossedSpriteDescriptor() const {
+        OVRFW::GlGeometry::Descriptor descriptor;
+        constexpr OVR::Vector3f positions[] = {
+            {-0.5f, -0.5f, 0.0f}, {0.5f, -0.5f, 0.0f}, {0.5f, 0.5f, 0.0f},
+            {-0.5f, -0.5f, 0.0f}, {0.5f, 0.5f, 0.0f}, {-0.5f, 0.5f, 0.0f},
+            {0.0f, -0.5f, -0.5f}, {0.0f, -0.5f, 0.5f}, {0.0f, 0.5f, 0.5f},
+            {0.0f, -0.5f, -0.5f}, {0.0f, 0.5f, 0.5f}, {0.0f, 0.5f, -0.5f},
+        };
+        constexpr OVR::Vector2f uv[] = {
+            {0.0f, 1.0f}, {1.0f, 1.0f}, {1.0f, 0.0f},
+            {0.0f, 1.0f}, {1.0f, 0.0f}, {0.0f, 0.0f},
+            {0.0f, 1.0f}, {1.0f, 1.0f}, {1.0f, 0.0f},
+            {0.0f, 1.0f}, {1.0f, 0.0f}, {0.0f, 0.0f},
+        };
+        descriptor.attribs.position.assign(std::begin(positions), std::end(positions));
+        descriptor.attribs.uv0.assign(std::begin(uv), std::end(uv));
+        descriptor.attribs.normal.assign(
+            descriptor.attribs.position.size(), OVR::Vector3f(0.0f, 0.0f, 1.0f));
+        descriptor.attribs.color.assign(
+            descriptor.attribs.position.size(), OVR::Vector4f(1.0f, 1.0f, 1.0f, 1.0f));
+        descriptor.indices.reserve(descriptor.attribs.position.size());
+        for (std::size_t index = 0; index < descriptor.attribs.position.size(); ++index) {
+            descriptor.indices.push_back(static_cast<OVRFW::TriangleIndex>(index));
+        }
+        return descriptor;
+    }
+
     void BuildActorMarkers() {
         interactiveActors_.clear();
         OVRFW::GeometryBuilder geometry;
@@ -914,10 +941,16 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             originZ);
         std::size_t visible{};
         std::size_t meshInstances{};
+        std::size_t spriteInstances{};
+        std::size_t cubePlaceholders{};
+        std::size_t hiddenActors{};
         const OVR::Vector3f playerLocal = StageToLocal(currentHeadStage_, worldPosition_);
         actorStreamingCenter_ = playerLocal;
         std::map<std::string, std::size_t> meshClasses;
+        std::map<std::string, std::size_t> cubeClasses;
         std::map<std::string, OVRFW::GlGeometry::Descriptor> meshDescriptors;
+        const OVRFW::GlGeometry::Descriptor spriteDescriptor =
+            BuildCrossedSpriteDescriptor();
         std::unordered_map<std::string, std::size_t> textureLayers;
         for (std::size_t layer = 0; layer < actorTexturePaths_.size(); ++layer) {
             textureLayers.emplace(actorTexturePaths_[layer], layer);
@@ -937,7 +970,10 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                 const float dz = position.z - playerLocal.z;
                 if (dx * dx + dz * dz > 25.0f * 25.0f) continue;
             }
+            const OVR::Vector3f actorLighting = CalculateMapLighting(
+                position, OVR::Vector3f(0.0f, 1.0f, 0.0f));
             if (!actor.meshPath.empty()) ++meshClasses[actor.meshClassPath];
+            if (actor.hidden) ++hiddenActors;
             OVR::Vector4f color;
             OVR::Vector3f scale;
             if (actor.pawn) {
@@ -960,7 +996,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                 scale = {0.35f, 0.35f, 0.35f};
             }
             bool renderedMesh = false;
-            if (!actor.meshPath.empty()) {
+            if (!actor.hidden && !actor.meshPath.empty()) {
                 try {
                     const PortableLodMesh mesh = GetPortableRuntimeMesh(actor.meshPath);
                     constexpr float unrealAngle =
@@ -1009,9 +1045,9 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                             OVRFW::GeometryBuilder::kInvalidIndex,
                             OVR::Vector4f(
                                 static_cast<float>(layer->second) / 255.0f,
-                                1.0f,
-                                1.0f,
-                                1.0f),
+                                actorLighting.x,
+                                actorLighting.y,
+                                actorLighting.z),
                             transform);
                         renderedMesh = true;
                     }
@@ -1023,15 +1059,48 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                         error.what());
                 }
             }
+            constexpr std::uint8_t spriteDrawType = 1u;
+            constexpr std::uint8_t ropeSpriteDrawType = 4u;
+            constexpr std::uint8_t verticalSpriteDrawType = 5u;
+            constexpr std::uint8_t spriteOnceDrawType = 7u;
+            const bool spriteActor = actor.drawType == spriteDrawType ||
+                actor.drawType == ropeSpriteDrawType ||
+                actor.drawType == verticalSpriteDrawType ||
+                actor.drawType == spriteOnceDrawType;
+            if (!renderedMesh && !actor.hidden && spriteActor &&
+                !actor.texturePath.empty()) {
+                const auto layer = textureLayers.find(actor.texturePath);
+                if (layer != textureLayers.end()) {
+                    const float spriteScale = actor.inventory ? 0.35f : 0.65f;
+                    texturedGeometry.Add(
+                        spriteDescriptor,
+                        OVRFW::GeometryBuilder::kInvalidIndex,
+                        OVR::Vector4f(
+                            static_cast<float>(layer->second) / 255.0f,
+                            actorLighting.x,
+                            actorLighting.y,
+                            actorLighting.z),
+                        OVR::Matrix4f::Translation(position) *
+                            OVR::Matrix4f::Scaling(
+                                spriteScale * actor.drawScale,
+                                spriteScale * actor.drawScale,
+                                spriteScale * actor.drawScale));
+                    renderedMesh = true;
+                    ++spriteInstances;
+                }
+            }
             // Trigger, travel, and mover locations are gameplay metadata, not
             // visible cube-shaped objects. Keep a conservative placeholder only
             // for physical actors whose source mesh is not yet renderable.
-            if (!renderedMesh && (actor.pawn || actor.inventory || actor.decoration)) {
+            if (!renderedMesh && !actor.hidden &&
+                (actor.pawn || actor.inventory || actor.decoration)) {
                 geometry.Add(
                     OVRFW::BuildUnitCubeDescriptor(),
                     OVRFW::GeometryBuilder::kInvalidIndex,
                     color,
                     OVR::Matrix4f::Translation(position) * OVR::Matrix4f::Scaling(scale));
+                ++cubePlaceholders;
+                ++cubeClasses[actor.classPath];
             }
             interactiveActors_.push_back({
                 position,
@@ -1055,10 +1124,13 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                 texturedGeometry.ToGeometryDescriptor(), actorTexture_, false);
         }
         ALOG(
-            "DeusExQuest: instantiated %zu targetable actors from %zu live actors (%zu real LodMesh instances, %zu mesh-bearing, %zu mesh formats, %zu map exits)",
+            "DeusExQuest: instantiated %zu targetable actors from %zu live actors (%zu LodMesh, %zu sprites, %zu cube placeholders, %zu hidden, %zu mesh-bearing, %zu mesh formats, %zu map exits)",
             visible,
             actorSnapshots_.size(),
             meshInstances,
+            spriteInstances,
+            cubePlaceholders,
+            hiddenActors,
             std::accumulate(
                 meshClasses.begin(), meshClasses.end(), std::size_t{},
                 [](std::size_t total, const auto& value) { return total + value.second; }),
@@ -1073,6 +1145,12 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                 "DeusExQuest: actor mesh format %s count=%zu",
                 meshClass.first.c_str(),
                 meshClass.second);
+        }
+        for (const auto& cubeClass : cubeClasses) {
+            ALOG(
+                "DeusExQuest: cube placeholder class %s count=%zu",
+                cubeClass.first.c_str(),
+                cubeClass.second);
         }
     }
 

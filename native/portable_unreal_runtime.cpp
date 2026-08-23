@@ -1410,6 +1410,10 @@ std::vector<PortableActorSnapshot> GetPortableRuntimeMapActors() {
                 : fallback;
         };
         snapshot.soundRadius = readInheritedByte("SoundRadius", snapshot.soundRadius);
+        snapshot.drawType = readInheritedByte("DrawType", snapshot.drawType);
+        if (const PortableTaggedProperty* hidden = inheritedProperty("bHidden")) {
+            if (hidden->type == 3u) snapshot.hidden = hidden->boolValue;
+        }
         snapshot.soundVolume = readInheritedByte("SoundVolume", snapshot.soundVolume);
         snapshot.soundPitch = readInheritedByte("SoundPitch", snapshot.soundPitch);
         snapshot.lightBrightness = readInheritedByte(
@@ -1621,9 +1625,16 @@ PortableTextureArray BuildPortableRuntimeActorTextureArray(
                     const std::uint8_t paletteIndex =
                         mip.pixels[static_cast<std::size_t>(sourceY) * mip.width + sourceX];
                     const std::uint32_t color = palette.at(paletteIndex);
-                    result.rgba.push_back(static_cast<std::uint8_t>(color));
-                    result.rgba.push_back(static_cast<std::uint8_t>(color >> 8u));
-                    result.rgba.push_back(static_cast<std::uint8_t>(color >> 16u));
+                    // UE1 masked textures conventionally reserve palette index
+                    // zero for transparency. Clear its RGB channels as well as
+                    // alpha so bilinear sampling cannot bleed the palette's
+                    // often-bright key color into otherwise clean cutout edges.
+                    result.rgba.push_back(
+                        paletteIndex == 0u ? 0u : static_cast<std::uint8_t>(color));
+                    result.rgba.push_back(
+                        paletteIndex == 0u ? 0u : static_cast<std::uint8_t>(color >> 8u));
+                    result.rgba.push_back(
+                        paletteIndex == 0u ? 0u : static_cast<std::uint8_t>(color >> 16u));
                     result.rgba.push_back(paletteIndex == 0u ? 0u : 255u);
                 }
             }

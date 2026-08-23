@@ -183,6 +183,8 @@ struct PortableActorSnapshot {
     bool trigger{};
     bool travel{};
     bool light{};
+    bool hidden{};
+    std::uint8_t drawType{};
     std::string destinationMap;
     float drawScale{1.0f};
     float drawScaleX{1.0f};

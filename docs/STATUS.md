@@ -1,5 +1,20 @@
 # Port status
 
+## Built, awaiting physical Quest verification
+
+- Actor snapshots now preserve inherited `DrawType` and `bHidden`. Hidden
+  gameplay actors no longer produce visible stand-in geometry, and UE1 sprite,
+  vertical-sprite, rope-sprite, and one-shot-sprite actors render as masked
+  crossed billboards when their authored texture is available.
+- Actor meshes and sprites now receive the active map's local authored-light
+  result instead of rendering full-bright. Transparent palette pixels have
+  zeroed RGB as well as alpha to prevent bilinear magenta-key leakage along
+  masked texture edges.
+- Runtime diagnostics report sprite, hidden-actor, and cube-placeholder counts,
+  plus each remaining placeholder class, so the next physical capture pass can
+  identify unsupported geometry precisely. The ARM64 debug APK builds
+  successfully; the headset was not present in Windows/ADB for visual testing.
+
 ## Verified on 2026-08-23
 
 - Added compositor-independent visual capture for physical-headset debugging.
