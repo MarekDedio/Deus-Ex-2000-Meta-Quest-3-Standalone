@@ -1405,7 +1405,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         } catch (const std::exception& error) {
             ALOG("DeusExQuest: dialogue audio resolution failed: %s", error.what());
         }
-        const bool audioQueued = QueueDialogueAudio(dialogueSound);
+        const bool audioQueued = QueueDialogueAudio(dialogueSound, actorPath);
         const PortableDialogueEffectResult effects = ApplyPortableDialogueEffects(dialogue);
         if (effects.applied != 0u && !effects.status.empty()) {
             interactionStatus_ += "\n" + effects.status;
@@ -1468,7 +1468,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         spokenChoice.audioPackageName = pendingChoiceAudioPackage_;
         bool audioQueued{};
         try {
-            audioQueued = QueueDialogueAudio(LoadPortableRuntimeDialogueSound(spokenChoice));
+            audioQueued = QueueDialogueAudio(LoadPortableRuntimeDialogueSound(spokenChoice), {});
         } catch (const std::exception& error) {
             ALOG("DeusExQuest: choice audio resolution failed: %s", error.what());
         }
@@ -2017,6 +2017,28 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             emitter.leftGain = gain * std::sqrt(0.5f * (1.0f - pan));
             emitter.rightGain = gain * std::sqrt(0.5f * (1.0f + pan));
         }
+        if (dialogueSpatialized_) {
+            const float dx = dialogueLocalPosition_.x - listener.x;
+            const float dz = dialogueLocalPosition_.z - listener.z;
+            const float horizontal = std::sqrt(dx * dx + dz * dz);
+            const float pan = horizontal > 0.001f
+                ? std::clamp(
+                      (dx * listenerRightX + dz * listenerRightZ) / horizontal,
+                      -1.0f,
+                      1.0f)
+                : 0.0f;
+            const float distance = std::sqrt(
+                dx * dx +
+                (dialogueLocalPosition_.y - listener.y) *
+                    (dialogueLocalPosition_.y - listener.y) +
+                dz * dz);
+            const float gain = 1.0f / (1.0f + 0.08f * distance * distance);
+            dialogueLeftGain_ = gain * std::sqrt(1.0f - pan);
+            dialogueRightGain_ = gain * std::sqrt(1.0f + pan);
+        } else {
+            dialogueLeftGain_ = 1.0f;
+            dialogueRightGain_ = 1.0f;
+        }
     }
 
     static aaudio_data_callback_result_t AmbientAudioCallback(
@@ -2055,8 +2077,12 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         }
         for (std::size_t index = 0; index < sampleCount; ++index) {
             if (app->dialogueCursor_ >= app->dialogueSamples_.size()) break;
+            const float dialogueGain = (index & 1u) == 0u
+                ? app->dialogueLeftGain_
+                : app->dialogueRightGain_;
             const std::int32_t mixed = static_cast<std::int32_t>(output[index]) +
-                app->dialogueSamples_[app->dialogueCursor_++];
+                static_cast<std::int32_t>(
+                    app->dialogueSamples_[app->dialogueCursor_++] * dialogueGain);
             output[index] = static_cast<std::int16_t>(
                 std::clamp(mixed, -32768, 32767));
         }
@@ -2113,13 +2139,59 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         return result;
     }
 
-    bool QueueDialogueAudio(const PortableSound& sound) {
+    bool FindActorLocalPosition(
+        const std::string& actorPath,
+        OVR::Vector3f& localPosition) const {
+        const auto found = std::find_if(
+            interactiveActors_.begin(), interactiveActors_.end(),
+            [&](const InteractiveActor& actor) { return actor.objectPath == actorPath; });
+        if (found != interactiveActors_.end()) {
+            localPosition = found->localPosition;
+            return true;
+        }
+        const auto snapshot = std::find_if(
+            actorSnapshots_.begin(), actorSnapshots_.end(),
+            [&](const PortableActorSnapshot& actor) {
+                return actor.objectPath == actorPath && actor.hasLocation;
+            });
+        if (snapshot == actorSnapshots_.end()) return false;
+        float originX = -1149.244f;
+        float originY = 825.844f;
+        float originZ = -65.103f;
+        for (const PortableActorSnapshot& actor : actorSnapshots_) {
+            const std::size_t separator = actor.classPath.find_last_of('.');
+            const std::string leafClass = separator == std::string::npos
+                ? actor.classPath
+                : actor.classPath.substr(separator + 1u);
+            if (actor.hasLocation && leafClass == "PlayerStart") {
+                originX = actor.x;
+                originY = actor.y;
+                originZ = actor.z;
+                break;
+            }
+        }
+        constexpr float unitsToMeters = 1.0f / 52.5f;
+        localPosition = {
+            (snapshot->y - originY) * unitsToMeters,
+            (snapshot->z - originZ) * unitsToMeters + 1.0f,
+            -(snapshot->x - originX) * unitsToMeters};
+        return true;
+    }
+
+    bool QueueDialogueAudio(
+        const PortableSound& sound,
+        const std::string& sourceActorPath) {
         if (sound.format.ToString() != "mp3" || sound.data.empty() || audioSampleRate_ == 0u ||
             (dialogueDecodeFuture_.valid() && dialogueDecodeFuture_.wait_for(
                 std::chrono::seconds(0)) != std::future_status::ready)) {
             return false;
         }
         if (dialogueDecodeFuture_.valid()) PollDialogueAudioDecode();
+        pendingDialogueSpatialized_ = FindActorLocalPosition(
+            sourceActorPath, pendingDialogueLocalPosition_);
+        pendingDialogueActorPath_ = pendingDialogueSpatialized_
+            ? sourceActorPath
+            : std::string();
         const std::uint32_t targetRate = audioSampleRate_;
         dialogueDecodeFuture_ = std::async(
             std::launch::async,
@@ -2139,13 +2211,17 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             std::lock_guard<std::mutex> lock(audioMutex_);
             dialogueSamples_ = std::move(decoded.stereo);
             dialogueCursor_ = 0u;
+            dialogueSpatialized_ = pendingDialogueSpatialized_;
+            dialogueLocalPosition_ = pendingDialogueLocalPosition_;
         }
         ALOG(
-            "DeusExQuest: queued dialogue MP3: %u Hz/%u channels -> %u Hz, %zu frames",
+            "DeusExQuest: queued dialogue MP3: %u Hz/%u channels -> %u Hz, %zu frames, spatial=%s actor=%s",
             decoded.sourceRate,
             decoded.channels,
             decoded.targetRate,
-            outputFrames);
+            outputFrames,
+            dialogueSpatialized_ ? "true" : "false",
+            pendingDialogueActorPath_.c_str());
     }
 
     bool StartAmbientAudio() {
@@ -2235,6 +2311,9 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         spatialAudioEmitters_.clear();
         dialogueSamples_.clear();
         dialogueCursor_ = 0;
+        dialogueSpatialized_ = false;
+        pendingDialogueSpatialized_ = false;
+        pendingDialogueActorPath_.clear();
         audioSampleRate_ = 0u;
     }
 
@@ -2928,6 +3007,13 @@ class DeusExQuestApp final : public OVRFW::XrApp {
     std::uint32_t audioSampleRate_{};
     std::vector<std::int16_t> dialogueSamples_;
     std::size_t dialogueCursor_{};
+    OVR::Vector3f dialogueLocalPosition_{};
+    OVR::Vector3f pendingDialogueLocalPosition_{};
+    float dialogueLeftGain_{1.0f};
+    float dialogueRightGain_{1.0f};
+    bool dialogueSpatialized_{};
+    bool pendingDialogueSpatialized_{};
+    std::string pendingDialogueActorPath_;
     std::future<DecodedDialogueAudio> dialogueDecodeFuture_;
     std::vector<CollisionTriangle> collisionTriangles_;
     std::unordered_map<std::int64_t, std::vector<std::uint32_t>> collisionGrid_;

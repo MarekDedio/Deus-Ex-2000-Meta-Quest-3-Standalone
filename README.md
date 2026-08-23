@@ -86,6 +86,8 @@ The training scene has been measured at a steady 72 fps on a physical Quest 3.
 Serialized ambient emitters now follow their real map positions, radius,
 volume, and pitch with head-relative stereo panning and distance attenuation;
 they are replaced in the background with each map transition.
+NPC dialogue is likewise positioned at its serialized speaker while JC's
+spoken conversation choices remain head-centered for comfort and clarity.
 The first campaign map, `01_NYC_UNATCOIsland`, also stabilizes at 72 fps with
 proximity-streamed actors, incremental BSP/texture uploads, and an eight-meter
 collision grid. Its measured worst transition frame is 41.66 ms, down from the
@@ -94,5 +96,5 @@ Generic visual map-cache generation and runtime/GPU transitions now work and
 have been physically verified for Training to TrainingCombat and back. The
 runtime also follows decoded teleporter/map-exit destinations. The remaining
 major work is broader UnrealScript/native execution, AI/conversations/missions,
-full UI and inventory presentation, animation, dialogue spatialization, further transition
+full UI and inventory presentation, animation, weapon and interaction audio, further transition
 comfort, and end-to-end campaign validation.

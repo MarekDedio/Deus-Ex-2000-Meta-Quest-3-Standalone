@@ -16,6 +16,14 @@
   two emitters from one clip, completed without a crash, and returned to a
   steady 72.0 fps with a 13.89 ms worst frame over the following ten seconds.
   The Android crash buffer remained empty.
+- NPC speech now remains associated with its serialized map actor through the
+  asynchronous MP3 decoder and is spatialized from that actor every frame;
+  position lookup works even when the speaker is outside the visual actor
+  streaming radius. Player response audio remains intentionally head-centered.
+  Physical validation queued Jaime Reyes' Training line as spatial audio,
+  spatialized Paul Denton's 298,944-frame Mission 1 line, then centered JC's
+  selected rifle response. The following window averaged 71.9 fps with a
+  27.78 ms worst frame and an empty crash buffer.
 
 ## Verified on 2026-08-22
 
