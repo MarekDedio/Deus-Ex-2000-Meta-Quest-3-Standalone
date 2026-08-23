@@ -51,6 +51,13 @@
   Fourteen hidden actors remained suppressed and cube placeholders remained at
   zero. Its 1680x1760 capture showed clean corridor, trim, sign, floor, light,
   and HUD rendering, and the process remained alive after the transition.
+- World-material array layers now use 192x192 texels instead of 96x96, providing
+  four times the source samples per material. Physical Liberty Island validation
+  uploaded 107 layers, rendered 202,458 locally lit BSP vertices, nine streamed
+  actor meshes, three hidden actors, one map exit, and zero cube placeholders.
+  The 3,658-actor map used 419,207 KB total PSS and settled at 72.0 fps with a
+  13.89 ms worst frame across repeated 720-frame windows after transition and
+  screenshot work completed.
 - Added compositor-independent visual capture for physical-headset debugging.
   `Capture-QuestScreenshot.ps1` requests a post-resolve left-eye readback from
   the running app and pulls the BMP over ADB. The first physical Quest 3 capture
