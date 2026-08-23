@@ -24,6 +24,16 @@
   spatialized Paul Denton's 298,944-frame Mission 1 line, then centered JC's
   selected rifle response. The following window averaged 71.9 fps with a
   27.78 ms worst frame and an empty crash buffer.
+- BSP rendering now uses each active map's serialized `Engine.Light` actors
+  instead of one uniform shader value. Light position, radius, brightness, hue,
+  saturation, surface direction, and spotlight rotation/cone are converted to
+  Quest-space vertex lighting while preserving the texture-array layer channel.
+  Training baked 150 lights (80 spotlights) across 145,620 textured vertices
+  with luminance ranging from 0.075 to 1.346. Training Combat rebuilt a distinct
+  set of 120 lights (31 spotlights) over 97,836 vertices with a 0.076-1.316
+  range. Both maps returned to 72.0 fps/13.89 ms steady state and the crash
+  buffer remained empty. This is a direct-light approximation; original UE1
+  lightmap textures, BSP occlusion, and dynamic shadows remain future work.
 
 ## Verified on 2026-08-22
 

@@ -8,7 +8,8 @@ the original game.
 
 The native Android ARM64 app launches on Quest 3, reads user-supplied UE1
 packages through a portable SurrealEngine-derived runtime, renders the textured
-training BSP and actors at player scale, and submits them stereoscopically
+training BSP and actors at player scale with per-map colored point and spotlight
+illumination, and submits them stereoscopically
 through OpenXR. Locomotion, collision, controller interaction, pickups,
 inventory persistence, controller hitscan, pawn health/death, spatial ambient audio,
 and quick-save/load are live. Campaign-wide gameplay compatibility remains in
@@ -88,6 +89,9 @@ volume, and pitch with head-relative stereo panning and distance attenuation;
 they are replaced in the background with each map transition.
 NPC dialogue is likewise positioned at its serialized speaker while JC's
 spoken conversation choices remain head-centered for comfort and clarity.
+The BSP shader now bakes each active map's serialized light actors into vertex
+illumination, including brightness, radius, color, and spotlight cones. UE1
+lightmap textures and shadow/occlusion fidelity are still under development.
 The first campaign map, `01_NYC_UNATCOIsland`, also stabilizes at 72 fps with
 proximity-streamed actors, incremental BSP/texture uploads, and an eight-meter
 collision grid. Its measured worst transition frame is 41.66 ms, down from the

@@ -43,10 +43,12 @@ class TexturedGeometryRenderer {
             attribute lowp vec4 VertexColor;
             varying lowp vec2 oTexCoord;
             varying mediump float oLayer;
+            varying lowp vec3 oLight;
             void main() {
                 gl_Position = TransformVertex(Position);
                 oTexCoord = TexCoord;
                 oLayer = VertexColor.r * 255.0;
+                oLight = VertexColor.gba;
             }
         )glsl";
         static const char* fragmentShader = R"glsl(
@@ -54,8 +56,11 @@ class TexturedGeometryRenderer {
             uniform highp sampler2DArray Texture0;
             varying lowp vec2 oTexCoord;
             varying mediump float oLayer;
+            varying lowp vec3 oLight;
             void main() {
-                gl_FragColor = texture(Texture0, vec3(fract(oTexCoord), floor(oLayer + 0.5)));
+                lowp vec4 texel = texture(
+                    Texture0, vec3(fract(oTexCoord), floor(oLayer + 0.5)));
+                gl_FragColor = vec4(texel.rgb * oLight, texel.a);
             }
         )glsl";
         static OVRFW::ovrProgramParm uniformParms[] = {
@@ -309,6 +314,8 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             ALOG("DeusExQuest: generic initial map cache build failed");
             return false;
         }
+        actorSnapshots_ = GetPortableRuntimeMapActors();
+        activeMapLights_ = BuildMapLights(actorSnapshots_);
         if (!LoadWorldMesh()) {
             OVRFW::GeometryBuilder geometry;
             geometry.Add(
@@ -321,7 +328,6 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             worldRenderers_[0].Init(geometry.ToGeometryDescriptor());
             ALOG("DeusExQuest: world mesh unavailable; showing error cube");
         }
-        actorSnapshots_ = GetPortableRuntimeMapActors();
         if (!LoadActorTextures()) {
             ALOG("DeusExQuest: actor texture array unavailable; using marker fallback");
         }
@@ -635,6 +641,15 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         float rightGain{};
     };
 
+    struct MapLight {
+        OVR::Vector3f localPosition;
+        OVR::Vector3f color;
+        OVR::Vector3f direction;
+        float radiusMeters{};
+        float intensity{};
+        float coneCosine{-1.0f};
+    };
+
     struct MapPreparation {
         bool passed{};
         std::string error;
@@ -643,6 +658,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         WorldTexturePreparation worldTexture;
         WorldMeshPreparation worldMesh;
         std::vector<SpatialAudioEmitter> spatialAudioEmitters;
+        std::vector<MapLight> lights;
     };
 
     struct InteractiveActor {
@@ -652,6 +668,146 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         bool travel{};
         std::string destinationMap;
     };
+
+    static std::vector<MapLight> BuildMapLights(
+        const std::vector<PortableActorSnapshot>& actors) {
+        float originX = -1149.244f;
+        float originY = 825.844f;
+        float originZ = -65.103f;
+        for (const PortableActorSnapshot& actor : actors) {
+            const std::size_t separator = actor.classPath.find_last_of('.');
+            const std::string leafClass = separator == std::string::npos
+                ? actor.classPath
+                : actor.classPath.substr(separator + 1u);
+            if (actor.hasLocation && leafClass == "PlayerStart") {
+                originX = actor.x;
+                originY = actor.y;
+                originZ = actor.z;
+                break;
+            }
+        }
+        const auto hsvColor = [](std::uint8_t hue, std::uint8_t unrealSaturation) {
+            const float h = static_cast<float>(hue) * 6.0f / 256.0f;
+            const float saturation = 1.0f -
+                static_cast<float>(unrealSaturation) / 255.0f;
+            const float chroma = saturation;
+            const float x = chroma * (1.0f - std::fabs(
+                std::fmod(h, 2.0f) - 1.0f));
+            OVR::Vector3f rgb;
+            if (h < 1.0f) rgb = {chroma, x, 0.0f};
+            else if (h < 2.0f) rgb = {x, chroma, 0.0f};
+            else if (h < 3.0f) rgb = {0.0f, chroma, x};
+            else if (h < 4.0f) rgb = {0.0f, x, chroma};
+            else if (h < 5.0f) rgb = {x, 0.0f, chroma};
+            else rgb = {chroma, 0.0f, x};
+            const float white = 1.0f - chroma;
+            return OVR::Vector3f(rgb.x + white, rgb.y + white, rgb.z + white);
+        };
+        std::vector<MapLight> lights;
+        constexpr float unitsToMeters = 1.0f / 52.5f;
+        constexpr float unrealAngle = 6.28318530717958647692f / 65536.0f;
+        std::size_t spotlights{};
+        std::size_t colored{};
+        for (const PortableActorSnapshot& actor : actors) {
+            if (!actor.light || !actor.hasLocation || actor.lightBrightness == 0u ||
+                actor.lightRadius == 0u) continue;
+            MapLight light;
+            light.localPosition = {
+                (actor.y - originY) * unitsToMeters,
+                (actor.z - originZ) * unitsToMeters + 1.0f,
+                -(actor.x - originX) * unitsToMeters};
+            light.color = hsvColor(actor.lightHue, actor.lightSaturation);
+            light.radiusMeters = std::max(
+                1.0f, static_cast<float>(actor.lightRadius) * 25.0f * unitsToMeters);
+            light.intensity = std::clamp(
+                static_cast<float>(actor.lightBrightness) / 64.0f, 0.05f, 4.0f);
+            const bool spotlight = actor.classPath.find("Spotlight") != std::string::npos;
+            if (spotlight) {
+                const float yaw = static_cast<float>(actor.yaw) * unrealAngle;
+                const float pitch = static_cast<float>(actor.pitch) * unrealAngle;
+                const float cosinePitch = std::cos(pitch);
+                light.direction = {
+                    cosinePitch * std::sin(yaw),
+                    std::sin(pitch),
+                    -cosinePitch * std::cos(yaw)};
+                const float coneRadians = std::clamp(
+                    static_cast<float>(actor.lightCone) *
+                        3.14159265358979323846f / 256.0f,
+                    0.0872665f,
+                    1.553343f);
+                light.coneCosine = std::cos(coneRadians);
+                ++spotlights;
+            }
+            if (actor.lightSaturation < 224u) ++colored;
+            lights.push_back(light);
+        }
+        ALOG(
+            "DeusExQuest: prepared %zu map lights (%zu spotlights, %zu colored)",
+            lights.size(),
+            spotlights,
+            colored);
+        return lights;
+    }
+
+    OVR::Vector3f CalculateMapLighting(
+        const OVR::Vector3f& position,
+        const OVR::Vector3f& normal) const {
+        OVR::Vector3f result{0.075f, 0.075f, 0.075f};
+        for (const MapLight& light : activeMapLights_) {
+            const OVR::Vector3f offset = light.localPosition - position;
+            const float distanceSquared = offset.LengthSq();
+            if (distanceSquared <= 0.000001f ||
+                distanceSquared >= light.radiusMeters * light.radiusMeters) continue;
+            const float distance = std::sqrt(distanceSquared);
+            const OVR::Vector3f direction = offset * (1.0f / distance);
+            float cone = 1.0f;
+            if (light.coneCosine >= 0.0f) {
+                const float alignment = (direction * -1.0f).Dot(light.direction);
+                if (alignment <= light.coneCosine) continue;
+                cone = std::clamp(
+                    (alignment - light.coneCosine) / (1.0f - light.coneCosine),
+                    0.0f,
+                    1.0f);
+            }
+            const float distanceFade = 1.0f - distance / light.radiusMeters;
+            const float diffuse = std::max(0.04f, normal.Dot(direction));
+            const float contribution = light.intensity * distanceFade * distanceFade *
+                diffuse * cone;
+            result.x += light.color.x * contribution;
+            result.y += light.color.y * contribution;
+            result.z += light.color.z * contribution;
+        }
+        result.x = std::clamp(result.x, 0.04f, 1.35f);
+        result.y = std::clamp(result.y, 0.04f, 1.35f);
+        result.z = std::clamp(result.z, 0.04f, 1.35f);
+        return result;
+    }
+
+    void ResetLightingStats() {
+        lightingMinimum_ = std::numeric_limits<float>::infinity();
+        lightingMaximum_ = 0.0f;
+        lightingSum_ = 0.0;
+        lightingSamples_ = 0u;
+    }
+
+    void RecordLighting(const OVR::Vector3f& lighting) {
+        const float luminance =
+            0.2126f * lighting.x + 0.7152f * lighting.y + 0.0722f * lighting.z;
+        lightingMinimum_ = std::min(lightingMinimum_, luminance);
+        lightingMaximum_ = std::max(lightingMaximum_, luminance);
+        lightingSum_ += luminance;
+        ++lightingSamples_;
+    }
+
+    void LogLightingStats() const {
+        ALOG(
+            "DeusExQuest: baked map lighting %zu lights over %zu vertices, luminance min=%.3f avg=%.3f max=%.3f",
+            activeMapLights_.size(),
+            lightingSamples_,
+            lightingSamples_ == 0u ? 0.0f : lightingMinimum_,
+            lightingSamples_ == 0u ? 0.0 : lightingSum_ / lightingSamples_,
+            lightingSamples_ == 0u ? 0.0f : lightingMaximum_);
+    }
 
     OVRFW::GlGeometry::Descriptor BuildLodMeshDescriptor(
         const PortableLodMesh& mesh,
@@ -953,6 +1109,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             if (transitionPhase_ == MapTransitionPhase::WorldTextureAllocate) {
                 DestroySceneGeometry();
                 currentMapName_ = transitionMapName_;
+                activeMapLights_ = std::move(preparedMapLights_);
                 if (restorePoseAfterTransition_) {
                     worldPosition_ = restoredWorldPosition_;
                     sceneYaw_ = restoredSceneYaw_;
@@ -983,6 +1140,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                 }
                 if (pendingWorldMeshChunk_ == pendingWorldMesh_.chunks.size()) {
                     pendingWorldMesh_.chunks.clear();
+                    LogLightingStats();
                     transitionPhase_ = MapTransitionPhase::CollisionGrid;
                 }
             } else if (transitionPhase_ == MapTransitionPhase::CollisionGrid) {
@@ -1049,6 +1207,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             pendingWorldMesh_.chunks.clear();
             preparedActorSnapshots_.clear();
             preparedSpatialAudioEmitters_.clear();
+            preparedMapLights_.clear();
             displayedInventoryCount_ = invalidRendererIndex_;
             return false;
         }
@@ -1107,6 +1266,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                 preparation.actorTextures = BuildPortableRuntimeActorTextureArray(96, 96);
                 preparation.spatialAudioEmitters = PrepareSpatialAudioEmitters(
                     preparation.actors, targetAudioRate);
+                preparation.lights = BuildMapLights(preparation.actors);
                 preparation.passed = preparation.actorTextures.passed;
                 if (!preparation.passed) preparation.error = "actor texture preparation failed";
             } catch (const std::exception& error) {
@@ -1139,6 +1299,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         preparedWorldTexture_ = std::move(preparation.worldTexture);
         preparedWorldMesh_ = std::move(preparation.worldMesh);
         preparedSpatialAudioEmitters_ = std::move(preparation.spatialAudioEmitters);
+        preparedMapLights_ = std::move(preparation.lights);
         transitionMapName_ = mapName;
         transitionPhase_ = MapTransitionPhase::WorldTextureAllocate;
     }
@@ -2551,8 +2712,15 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             descriptor.attribs.uv0.emplace_back(vertex.u, vertex.v);
             const float shade = 0.25f + 0.55f * (vertex.nz * 0.5f + 0.5f);
             if (chunk.materialSlot == 0) {
+                const OVR::Vector3f lighting = CalculateMapLighting(
+                    {vertex.px, vertex.py, vertex.pz},
+                    {vertex.nx, vertex.ny, vertex.nz});
+                RecordLighting(lighting);
                 descriptor.attribs.color.emplace_back(
-                    static_cast<float>(vertex.materialSlot) / 255.0f, 1.0f, 1.0f, 1.0f);
+                    static_cast<float>(vertex.materialSlot) / 255.0f,
+                    lighting.x,
+                    lighting.y,
+                    lighting.z);
             } else {
                 descriptor.attribs.color.emplace_back(
                     0.15f * shade, 0.8f * shade, 0.55f * shade, 1.0f);
@@ -2586,6 +2754,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         collisionTriangles_.clear();
         collisionGrid_.clear();
         oversizedCollisionTriangles_.clear();
+        ResetLightingStats();
         pendingWorldMesh_ = std::move(preparation);
         pendingWorldMeshChunk_ = 0u;
         return true;
@@ -2606,6 +2775,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         std::FILE* file = std::fopen(path, "rb");
         if (file == nullptr) return false;
         collisionTriangles_.clear();
+        ResetLightingStats();
         std::uint32_t magic{}, version{}, chunkCount{};
         bool ok = std::fread(&magic, sizeof(magic), 1, file) == 1 &&
             std::fread(&version, sizeof(version), 1, file) == 1 &&
@@ -2637,8 +2807,15 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                 descriptor.attribs.uv0.emplace_back(vertex.u, vertex.v);
                 const float shade = 0.25f + 0.55f * (vertex.nz * 0.5f + 0.5f);
                 if (materialSlot == 0) {
+                    const OVR::Vector3f lighting = CalculateMapLighting(
+                        {vertex.px, vertex.py, vertex.pz},
+                        {vertex.nx, vertex.ny, vertex.nz});
+                    RecordLighting(lighting);
                     descriptor.attribs.color.emplace_back(
-                        static_cast<float>(vertex.materialSlot) / 255.0f, 1.0f, 1.0f, 1.0f);
+                        static_cast<float>(vertex.materialSlot) / 255.0f,
+                        lighting.x,
+                        lighting.y,
+                        lighting.z);
                 } else {
                     descriptor.attribs.color.emplace_back(
                         0.15f * shade, 0.8f * shade, 0.55f * shade, 1.0f);
@@ -2676,6 +2853,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             return false;
         }
         if (buildCollisionGrid) BuildCollisionGrid();
+        LogLightingStats();
         ALOG(
             "DeusExQuest: loaded %s BSP mesh in %u GPU chunks (%u textured) with %zu collision triangles in %zu cells",
             currentMapName_.c_str(),
@@ -2991,6 +3169,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
     std::vector<OVRFW::GeometryRenderer> worldRenderers_;
     std::vector<TexturedGeometryRenderer> texturedRenderers_;
     std::vector<PortableActorSnapshot> actorSnapshots_;
+    std::vector<MapLight> activeMapLights_;
     std::vector<InteractiveActor> interactiveActors_;
     OVRFW::GlTexture firstTexture_;
     OVRFW::GlTexture actorTexture_;
@@ -3059,11 +3238,16 @@ class DeusExQuestApp final : public OVRFW::XrApp {
     MapTransitionPhase transitionPhase_{MapTransitionPhase::Idle};
     std::vector<PortableActorSnapshot> preparedActorSnapshots_;
     std::vector<SpatialAudioEmitter> preparedSpatialAudioEmitters_;
+    std::vector<MapLight> preparedMapLights_;
     PortableTextureArray preparedActorTextures_;
     WorldTexturePreparation preparedWorldTexture_;
     WorldMeshPreparation preparedWorldMesh_;
     WorldMeshPreparation pendingWorldMesh_;
     std::size_t pendingWorldMeshChunk_{};
+    float lightingMinimum_{std::numeric_limits<float>::infinity()};
+    float lightingMaximum_{};
+    double lightingSum_{};
+    std::size_t lightingSamples_{};
     GLuint pendingWorldTextureId_{};
     std::uint32_t pendingWorldTextureWidth_{};
     std::uint32_t pendingWorldTextureHeight_{};

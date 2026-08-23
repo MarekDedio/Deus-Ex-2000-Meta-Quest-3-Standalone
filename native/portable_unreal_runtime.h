@@ -182,6 +182,7 @@ struct PortableActorSnapshot {
     bool mover{};
     bool trigger{};
     bool travel{};
+    bool light{};
     std::string destinationMap;
     float drawScale{1.0f};
     float drawScaleX{1.0f};
@@ -197,6 +198,11 @@ struct PortableActorSnapshot {
     std::uint8_t soundRadius{64u};
     std::uint8_t soundVolume{255u};
     std::uint8_t soundPitch{64u};
+    std::uint8_t lightBrightness{64u};
+    std::uint8_t lightHue{};
+    std::uint8_t lightSaturation{255u};
+    std::uint8_t lightRadius{64u};
+    std::uint8_t lightCone{128u};
 };
 
 PortableVmValue ExecutePortableFunction(const std::string& objectPath);

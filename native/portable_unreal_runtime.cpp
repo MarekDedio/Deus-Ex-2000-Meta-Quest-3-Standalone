@@ -1354,6 +1354,7 @@ std::vector<PortableActorSnapshot> GetPortableRuntimeMapActors() {
         snapshot.trigger = IsDerivedFromPath(object->cls, "Engine.Triggers");
         snapshot.travel = IsDerivedFromPath(object->cls, "DeusEx.MapExit") ||
             IsDerivedFromPath(object->cls, "Engine.Teleporter");
+        snapshot.light = IsDerivedFromPath(object->cls, "Engine.Light");
         const auto resolveInheritedObjectProperty = [&](const std::string& name) {
             const auto instance = object->objectPropertyPaths.find(name);
             if (instance != object->objectPropertyPaths.end()) return instance->second;
@@ -1411,6 +1412,13 @@ std::vector<PortableActorSnapshot> GetPortableRuntimeMapActors() {
         snapshot.soundRadius = readInheritedByte("SoundRadius", snapshot.soundRadius);
         snapshot.soundVolume = readInheritedByte("SoundVolume", snapshot.soundVolume);
         snapshot.soundPitch = readInheritedByte("SoundPitch", snapshot.soundPitch);
+        snapshot.lightBrightness = readInheritedByte(
+            "LightBrightness", snapshot.lightBrightness);
+        snapshot.lightHue = readInheritedByte("LightHue", snapshot.lightHue);
+        snapshot.lightSaturation = readInheritedByte(
+            "LightSaturation", snapshot.lightSaturation);
+        snapshot.lightRadius = readInheritedByte("LightRadius", snapshot.lightRadius);
+        snapshot.lightCone = readInheritedByte("LightCone", snapshot.lightCone);
         const PortableTaggedProperty* destination = inheritedProperty("DestMap");
         if (destination == nullptr) destination = inheritedProperty("URL");
         if (destination != nullptr) {
