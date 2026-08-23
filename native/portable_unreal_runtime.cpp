@@ -1622,6 +1622,12 @@ PortableTextureArray BuildPortableRuntimeActorTextureArray(
                 ? textureClass
                 : textureClass.substr(classSeparator + 1);
             if (leafClass != "Texture") {
+                __android_log_print(
+                    ANDROID_LOG_WARN,
+                    "quest_main",
+                    "DeusExQuest: actor texture fallback for %s: unsupported class %s",
+                    qualified.c_str(),
+                    leafClass.c_str());
                 for (std::size_t pixel = 0; pixel < pixelsPerLayer; ++pixel) {
                     const bool dark = ((pixel / width) / 8u + (pixel % width) / 8u) % 2u != 0;
                     result.rgba.push_back(dark ? 70u : 125u);
@@ -1656,6 +1662,51 @@ PortableTextureArray BuildPortableRuntimeActorTextureArray(
                 mip.pixels.size() != static_cast<std::size_t>(mip.width) * mip.height) {
                 throw std::runtime_error("texture top mip is malformed");
             }
+            std::uint8_t chromaKey{};
+            std::size_t borderSamples{};
+            std::size_t borderCounts[256]{};
+            const auto countBorderPixel = [&](std::uint32_t x, std::uint32_t y) {
+                ++borderCounts[mip.pixels[static_cast<std::size_t>(y) * mip.width + x]];
+                ++borderSamples;
+            };
+            for (std::uint32_t x = 0; x < mip.width; ++x) {
+                countBorderPixel(x, 0u);
+                if (mip.height > 1u) countBorderPixel(x, mip.height - 1u);
+            }
+            for (std::uint32_t y = 1u; y + 1u < mip.height; ++y) {
+                countBorderPixel(0u, y);
+                if (mip.width > 1u) countBorderPixel(mip.width - 1u, y);
+            }
+            const auto dominantBorder = std::max_element(
+                borderCounts, borderCounts + 256u);
+            const std::uint8_t cornerCandidate = mip.pixels.front();
+            const bool matchingCorners =
+                mip.pixels[mip.width - 1u] == cornerCandidate &&
+                mip.pixels[(static_cast<std::size_t>(mip.height) - 1u) * mip.width] ==
+                    cornerCandidate &&
+                mip.pixels.back() == cornerCandidate;
+            std::uint8_t candidate{};
+            if (matchingCorners) {
+                candidate = cornerCandidate;
+            } else if (dominantBorder != borderCounts + 256u && borderSamples != 0u &&
+                       *dominantBorder * 5u >= borderSamples * 3u) {
+                candidate = static_cast<std::uint8_t>(dominantBorder - borderCounts);
+            }
+            if (candidate != 0u) {
+                const std::uint32_t candidateColor = palette.at(candidate);
+                const std::uint8_t red = static_cast<std::uint8_t>(candidateColor);
+                const std::uint8_t green = static_cast<std::uint8_t>(candidateColor >> 8u);
+                const std::uint8_t blue = static_cast<std::uint8_t>(candidateColor >> 16u);
+                if (red >= 220u && green <= 48u && blue >= 220u) {
+                    chromaKey = candidate;
+                    __android_log_print(
+                        ANDROID_LOG_INFO,
+                        "quest_main",
+                        "DeusExQuest: actor texture %s uses magenta border key %u",
+                        qualified.c_str(),
+                        static_cast<unsigned>(chromaKey));
+                }
+            }
             for (std::uint32_t y = 0; y < height; ++y) {
                 const std::uint32_t sourceY = y * mip.height / height;
                 for (std::uint32_t x = 0; x < width; ++x) {
@@ -1663,17 +1714,19 @@ PortableTextureArray BuildPortableRuntimeActorTextureArray(
                     const std::uint8_t paletteIndex =
                         mip.pixels[static_cast<std::size_t>(sourceY) * mip.width + sourceX];
                     const std::uint32_t color = palette.at(paletteIndex);
+                    const bool transparent = paletteIndex == 0u ||
+                        (chromaKey != 0u && paletteIndex == chromaKey);
                     // UE1 masked textures conventionally reserve palette index
                     // zero for transparency. Clear its RGB channels as well as
                     // alpha so bilinear sampling cannot bleed the palette's
                     // often-bright key color into otherwise clean cutout edges.
                     result.rgba.push_back(
-                        paletteIndex == 0u ? 0u : static_cast<std::uint8_t>(color));
+                        transparent ? 0u : static_cast<std::uint8_t>(color));
                     result.rgba.push_back(
-                        paletteIndex == 0u ? 0u : static_cast<std::uint8_t>(color >> 8u));
+                        transparent ? 0u : static_cast<std::uint8_t>(color >> 8u));
                     result.rgba.push_back(
-                        paletteIndex == 0u ? 0u : static_cast<std::uint8_t>(color >> 16u));
-                    result.rgba.push_back(paletteIndex == 0u ? 0u : 255u);
+                        transparent ? 0u : static_cast<std::uint8_t>(color >> 16u));
+                    result.rgba.push_back(transparent ? 0u : 255u);
                 }
             }
             ++result.decodedTextures;

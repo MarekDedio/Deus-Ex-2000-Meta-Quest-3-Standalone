@@ -1275,7 +1275,8 @@ PortableLodMesh LoadPortableBrushMesh(
     for (const Node& node : nodes) {
         if (node.vertexCount < 3u || node.vertexPool < 0 || node.surface < 0 ||
             static_cast<std::size_t>(node.surface) >= surfaceFlags.size() ||
-            (surfaceFlags[static_cast<std::size_t>(node.surface)] & 0x00000001u) != 0u ||
+            (surfaceFlags[static_cast<std::size_t>(node.surface)] &
+                (0x00000001u | 0x04000000u)) != 0u ||
             static_cast<std::uint64_t>(node.vertexPool) + node.vertexCount > vertices.size()) {
             continue;
         }

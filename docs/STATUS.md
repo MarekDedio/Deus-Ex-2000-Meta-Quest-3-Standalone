@@ -1,6 +1,6 @@
 # Port status
 
-## Built, awaiting physical Quest verification
+## Implemented; broader campaign verification pending
 
 - Actor snapshots now preserve inherited `DrawType` and `bHidden`. Hidden
   gameplay actors no longer produce visible stand-in geometry, and UE1 sprite,
@@ -11,9 +11,8 @@
   zeroed RGB as well as alpha to prevent bilinear magenta-key leakage along
   masked texture edges.
 - Runtime diagnostics report sprite, hidden-actor, and cube-placeholder counts,
-  plus each remaining placeholder class, so the next physical capture pass can
-  identify unsupported geometry precisely. The ARM64 debug APK builds
-  successfully; the headset was not present in Windows/ADB for visual testing.
+  plus each remaining placeholder class, so campaign capture passes can identify
+  unsupported geometry precisely.
 - The portable vertex-mesh loader now decodes classic UE1 `Mesh` triangle and
   UV streams in addition to `LodMesh` and `SkeletalMesh`, removing another
   format-level reason for physical actors to fall back to cubes.
@@ -29,6 +28,29 @@
 
 ## Verified on 2026-08-23
 
+- The current ARM64 APK was installed on the physical Quest 3 and entered a
+  focused OpenXR session. Training instantiated nine authored vertex meshes and
+  four decoded mover brushes, suppressed two hidden actors, and reported zero
+  cube placeholders. A 1680x1760 framebuffer capture confirmed the centered HUD,
+  varied map lighting, masked plants, and clean actor silhouettes; the process
+  remained alive at 354,561 KB total PSS with an empty fatal-error filter.
+- World-material conversion now recognizes the classic UE1 convention where a
+  shared vivid-magenta palette entry occupies all four texture corners. Physical
+  logs identified index zero for `Cmd_tunnels.Metal.Ractivesign_1` and
+  `UNATCO.Misc.UNATCOseal_A`; the next capture showed the radiation emblem and
+  wall seal without their former opaque magenta rectangles. RGB is zeroed with
+  alpha to prevent bilinear key-color leakage.
+- The diagnostic mover request opened the real serialized
+  `00_Training.DeusExMover30`, rebuilt actor geometry with no cube fallbacks, and
+  left the OpenXR process alive. Invisible and zone-portal BSP polygons are now
+  excluded from both static-world and mover-brush triangulation; Training's
+  submitted BSP vertex count fell from 145,620 to 145,374 without changing its
+  visible room surfaces.
+- A physical transition to `00_TrainingFinal` rebuilt 65 world materials, 155
+  authored lights, 11 vertex meshes, three mover brushes, and one real sprite.
+  Fourteen hidden actors remained suppressed and cube placeholders remained at
+  zero. Its 1680x1760 capture showed clean corridor, trim, sign, floor, light,
+  and HUD rendering, and the process remained alive after the transition.
 - Added compositor-independent visual capture for physical-headset debugging.
   `Capture-QuestScreenshot.ps1` requests a post-resolve left-eye readback from
   the running app and pulls the BMP over ADB. The first physical Quest 3 capture

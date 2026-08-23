@@ -802,6 +802,33 @@ bool Normalize(Vec3& value) {
     return true;
 }
 
+std::int32_t DetectWorldChromaKey(
+    const PortableMipmap& mipmap,
+    const std::vector<std::uint32_t>& palette,
+    const std::string& qualified) {
+    if (mipmap.width == 0u || mipmap.height == 0u || mipmap.pixels.empty() ||
+        palette.size() < 256u) return -1;
+    const std::uint8_t candidate = mipmap.pixels.front();
+    const bool matchingCorners =
+        mipmap.pixels[mipmap.width - 1u] == candidate &&
+        mipmap.pixels[(static_cast<std::size_t>(mipmap.height) - 1u) * mipmap.width] ==
+            candidate &&
+        mipmap.pixels.back() == candidate;
+    if (!matchingCorners) return -1;
+    const std::uint32_t color = palette[candidate];
+    const std::uint8_t red = static_cast<std::uint8_t>(color);
+    const std::uint8_t green = static_cast<std::uint8_t>(color >> 8u);
+    const std::uint8_t blue = static_cast<std::uint8_t>(color >> 16u);
+    if (red < 180u || green > 96u || blue < 180u) return -1;
+    __android_log_print(
+        ANDROID_LOG_INFO,
+        kLogTag,
+        "UE1 world material %s uses magenta corner key %u",
+        qualified.c_str(),
+        static_cast<unsigned>(candidate));
+    return candidate;
+}
+
 bool WriteMeshChunk(
     std::FILE* file,
     std::int32_t materialSlot,
@@ -903,7 +930,8 @@ bool WriteWorldMesh(const std::string& path, const PackageSummary& summary) {
                 summary.bspVertices.size() ||
             static_cast<std::uint32_t>(node.surface) >= summary.bspSurfaces.size()) continue;
         const BspSurfaceGeometry& surface = summary.bspSurfaces[node.surface];
-        if ((surface.flags & 0x00000001u) != 0) continue;
+        constexpr std::uint32_t invisibleOrPortal = 0x00000001u | 0x04000000u;
+        if ((surface.flags & invisibleOrPortal) != 0u) continue;
         const std::string materialPath = ResolveObjectPath(surface.material, summary);
         const auto materialFound = std::lower_bound(
             summary.materialNames.begin(), summary.materialNames.end(), materialPath);
@@ -1176,6 +1204,8 @@ bool BuildMapCache(const std::string& root, const std::string& mapName) {
             }
             map.materialWidths.push_back(topMip.width);
             map.materialHeights.push_back(topMip.height);
+            const std::int32_t chromaKey = DetectWorldChromaKey(
+                topMip, palette, qualified);
             for (std::uint32_t y = 0; y < layerHeight; ++y) {
                 const std::uint32_t sourceY = y * topMip.height / layerHeight;
                 for (std::uint32_t x = 0; x < layerWidth; ++x) {
@@ -1183,10 +1213,14 @@ bool BuildMapCache(const std::string& root, const std::string& mapName) {
                     const std::uint8_t paletteIndex =
                         topMip.pixels[static_cast<std::size_t>(sourceY) * topMip.width + sourceX];
                     const std::uint32_t color = palette[paletteIndex];
-                    materialArrayRgba.push_back(static_cast<std::uint8_t>(color));
-                    materialArrayRgba.push_back(static_cast<std::uint8_t>(color >> 8u));
-                    materialArrayRgba.push_back(static_cast<std::uint8_t>(color >> 16u));
-                    materialArrayRgba.push_back(255u);
+                    const bool transparent = chromaKey >= 0 && paletteIndex == chromaKey;
+                    materialArrayRgba.push_back(
+                        transparent ? 0u : static_cast<std::uint8_t>(color));
+                    materialArrayRgba.push_back(
+                        transparent ? 0u : static_cast<std::uint8_t>(color >> 8u));
+                    materialArrayRgba.push_back(
+                        transparent ? 0u : static_cast<std::uint8_t>(color >> 16u));
+                    materialArrayRgba.push_back(transparent ? 0u : 255u);
                 }
             }
             ++decodedMaterials;
@@ -1540,6 +1574,8 @@ Java_dev_deusex_questvr_MainActivity_probeGameData(
             }
             training.materialWidths.push_back(topMip.width);
             training.materialHeights.push_back(topMip.height);
+            const std::int32_t chromaKey = DetectWorldChromaKey(
+                topMip, palette, qualified);
             for (std::uint32_t y = 0; y < layerHeight; ++y) {
                 const std::uint32_t sourceY = y * topMip.height / layerHeight;
                 for (std::uint32_t x = 0; x < layerWidth; ++x) {
@@ -1547,10 +1583,14 @@ Java_dev_deusex_questvr_MainActivity_probeGameData(
                     const std::uint8_t paletteIndex =
                         topMip.pixels[static_cast<std::size_t>(sourceY) * topMip.width + sourceX];
                     const std::uint32_t color = palette[paletteIndex];
-                    materialArrayRgba.push_back(static_cast<std::uint8_t>(color));
-                    materialArrayRgba.push_back(static_cast<std::uint8_t>(color >> 8u));
-                    materialArrayRgba.push_back(static_cast<std::uint8_t>(color >> 16u));
-                    materialArrayRgba.push_back(255u);
+                    const bool transparent = chromaKey >= 0 && paletteIndex == chromaKey;
+                    materialArrayRgba.push_back(
+                        transparent ? 0u : static_cast<std::uint8_t>(color));
+                    materialArrayRgba.push_back(
+                        transparent ? 0u : static_cast<std::uint8_t>(color >> 8u));
+                    materialArrayRgba.push_back(
+                        transparent ? 0u : static_cast<std::uint8_t>(color >> 16u));
+                    materialArrayRgba.push_back(transparent ? 0u : 255u);
                 }
             }
             ++decodedMaterials;
