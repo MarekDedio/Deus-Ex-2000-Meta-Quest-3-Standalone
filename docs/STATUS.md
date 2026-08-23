@@ -1,5 +1,22 @@
 # Port status
 
+## Verified on 2026-08-23
+
+- Ambient audio now follows every active map's serialized UE1 emitters instead
+  of looping one training clip globally. Actor `AmbientSound`, `SoundRadius`,
+  `SoundVolume`, `SoundPitch`, and location properties drive distance
+  attenuation, equal-power stereo panning, pitch-aware resampling, and looping
+  in the low-latency AAudio callback.
+- Sound resolution accepts both conventional `Sounds/*.uax` packages and audio
+  exports embedded in `System/*.u`, including this installation's
+  `DeusExSounds.u`. WAV, MP2, and MP3 sources decode to shared mono clips so
+  actors using the same sound do not duplicate PCM storage.
+- On physical Quest 3, Training prepared 26 positioned emitters from eight
+  decoded clips. A background transition replaced them with Training Combat's
+  two emitters from one clip, completed without a crash, and returned to a
+  steady 72.0 fps with a 13.89 ms worst frame over the following ten seconds.
+  The Android crash buffer remained empty.
+
 ## Verified on 2026-08-22
 
 - The live Quest runtime retains 101,375 Unreal objects across 38 installed
@@ -179,7 +196,8 @@
   decoded by the native runtime into 88,832 stereo frames at 22,050 Hz, and
   played through a low-latency AAudio stream on Quest. The stream reached
   STARTED before OpenXR initialization and the crash buffer remained empty.
-  Per-emitter 3D attenuation and panning are not wired yet.
+  This initial cache was superseded by the live per-map spatial emitter mixer
+  verified on 2026-08-23.
 
 ## Not yet verified
 

@@ -10,7 +10,7 @@ The native Android ARM64 app launches on Quest 3, reads user-supplied UE1
 packages through a portable SurrealEngine-derived runtime, renders the textured
 training BSP and actors at player scale, and submits them stereoscopically
 through OpenXR. Locomotion, collision, controller interaction, pickups,
-inventory persistence, controller hitscan, pawn health/death, ambient audio,
+inventory persistence, controller hitscan, pawn health/death, spatial ambient audio,
 and quick-save/load are live. Campaign-wide gameplay compatibility remains in
 development.
 
@@ -31,7 +31,7 @@ development.
 4. Active-map geometry and textures render stereoscopically from all 88 catalog entries.
 5. UnrealScript and Deus Ex native functions support the training campaign.
 6. Motion controls, interaction, weapons, inventory, HUD, conversations, and
-   saves are usable in VR.
+   saves and spatial audio are usable in VR.
 7. All campaign maps pass progression, performance, and comfort testing.
 
 This is a long-term engine port. A smoke-test APK is not presented as a playable
@@ -83,6 +83,9 @@ The HUD names the selected inventory item. Trigger attacks require a selected
 weapon, use weapon-family damage, and constrain melee weapons to arm's reach.
 
 The training scene has been measured at a steady 72 fps on a physical Quest 3.
+Serialized ambient emitters now follow their real map positions, radius,
+volume, and pitch with head-relative stereo panning and distance attenuation;
+they are replaced in the background with each map transition.
 The first campaign map, `01_NYC_UNATCOIsland`, also stabilizes at 72 fps with
 proximity-streamed actors, incremental BSP/texture uploads, and an eight-meter
 collision grid. Its measured worst transition frame is 41.66 ms, down from the
@@ -91,5 +94,5 @@ Generic visual map-cache generation and runtime/GPU transitions now work and
 have been physically verified for Training to TrainingCombat and back. The
 runtime also follows decoded teleporter/map-exit destinations. The remaining
 major work is broader UnrealScript/native execution, AI/conversations/missions,
-full UI and inventory presentation, animation, spatial audio, further transition
+full UI and inventory presentation, animation, dialogue spatialization, further transition
 comfort, and end-to-end campaign validation.

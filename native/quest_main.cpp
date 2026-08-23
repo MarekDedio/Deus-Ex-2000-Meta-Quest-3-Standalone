@@ -333,6 +333,9 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         }
         if (!StartAmbientAudio()) {
             ALOG("DeusExQuest: ambient AAudio initialization failed");
+        } else {
+            ReplaceSpatialAudioEmitters(
+                PrepareSpatialAudioEmitters(actorSnapshots_, audioSampleRate_));
         }
         ALOG("DeusExQuest: project-owned OpenXR runtime initialized");
         return true;
@@ -372,6 +375,8 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         const float forwardZ = -std::cos(yaw);
         const float rightX = std::cos(yaw);
         const float rightZ = std::sin(yaw);
+        UpdateSpatialAudioGains(
+            StageToLocal(currentHeadStage_, worldPosition_), rightX, rightZ);
         constexpr float moveSpeed = 2.2f;
         const float moveX = playerAlive
             ? frame.LeftRemoteJoystick.x * rightX + frame.LeftRemoteJoystick.y * forwardX
@@ -619,6 +624,17 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         std::vector<std::uint8_t> rgba;
     };
 
+    struct SpatialAudioEmitter {
+        OVR::Vector3f localPosition;
+        std::string soundPath;
+        std::shared_ptr<const std::vector<std::int16_t>> monoSamples;
+        std::size_t cursor{};
+        float radiusMeters{30.0f};
+        float volume{1.0f};
+        float leftGain{};
+        float rightGain{};
+    };
+
     struct MapPreparation {
         bool passed{};
         std::string error;
@@ -626,6 +642,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         PortableTextureArray actorTextures;
         WorldTexturePreparation worldTexture;
         WorldMeshPreparation worldMesh;
+        std::vector<SpatialAudioEmitter> spatialAudioEmitters;
     };
 
     struct InteractiveActor {
@@ -977,6 +994,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             } else if (transitionPhase_ == MapTransitionPhase::ActorTextureAllocate) {
                 actorSnapshots_ = preparedActorSnapshots_;
                 preparedActorSnapshots_.clear();
+                ReplaceSpatialAudioEmitters(std::move(preparedSpatialAudioEmitters_));
                 if (!BeginActorTextureUpload(std::move(preparedActorTextures_))) {
                     throw std::runtime_error("GPU actor texture allocation failed");
                 }
@@ -1030,6 +1048,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             pendingActorTexturePaths_.clear();
             pendingWorldMesh_.chunks.clear();
             preparedActorSnapshots_.clear();
+            preparedSpatialAudioEmitters_.clear();
             displayedInventoryCount_ = invalidRendererIndex_;
             return false;
         }
@@ -1053,7 +1072,8 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         pendingChoiceIndex_ = 0u;
         pendingMapName_ = mapName;
         displayedInventoryCount_ = invalidRendererIndex_;
-        mapCacheFuture_ = std::async(std::launch::async, [mapName, restoreRuntimePath]() {
+        const std::uint32_t targetAudioRate = audioSampleRate_;
+        mapCacheFuture_ = std::async(std::launch::async, [mapName, restoreRuntimePath, targetAudioRate]() {
             MapPreparation preparation;
             try {
                 if (!BuildQuestMapCache(gameRoot_, mapName.c_str())) {
@@ -1085,6 +1105,8 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                 }
                 preparation.actors = GetPortableRuntimeMapActors();
                 preparation.actorTextures = BuildPortableRuntimeActorTextureArray(96, 96);
+                preparation.spatialAudioEmitters = PrepareSpatialAudioEmitters(
+                    preparation.actors, targetAudioRate);
                 preparation.passed = preparation.actorTextures.passed;
                 if (!preparation.passed) preparation.error = "actor texture preparation failed";
             } catch (const std::exception& error) {
@@ -1116,6 +1138,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         preparedActorTextures_ = std::move(preparation.actorTextures);
         preparedWorldTexture_ = std::move(preparation.worldTexture);
         preparedWorldMesh_ = std::move(preparation.worldMesh);
+        preparedSpatialAudioEmitters_ = std::move(preparation.spatialAudioEmitters);
         transitionMapName_ = mapName;
         transitionPhase_ = MapTransitionPhase::WorldTextureAllocate;
     }
@@ -1808,6 +1831,194 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             (static_cast<std::uint32_t>(bytes[3]) << 24u);
     }
 
+    struct DecodedMonoAudio {
+        std::vector<std::int16_t> samples;
+        std::uint32_t sourceRate{};
+        std::uint32_t channels{};
+    };
+
+    static DecodedMonoAudio DecodeSpatialSound(
+        PortableSound sound,
+        std::uint32_t targetRate,
+        std::uint8_t pitch) {
+        DecodedMonoAudio result;
+        if (sound.data.empty() || targetRate == 0u) return result;
+        std::vector<std::int16_t> source;
+        const std::string format = sound.format.ToString();
+        if (format == "wav") {
+            if (sound.data.size() < 12u || std::memcmp(sound.data.data(), "RIFF", 4) != 0 ||
+                std::memcmp(sound.data.data() + 8u, "WAVE", 4) != 0) return result;
+            std::uint16_t encoding{}, channels{}, bits{};
+            std::uint32_t sampleRate{};
+            const std::uint8_t* pcm{};
+            std::size_t pcmBytes{};
+            for (std::size_t offset = 12u; offset + 8u <= sound.data.size();) {
+                const std::uint32_t chunkSize = ReadLe32(sound.data.data() + offset + 4u);
+                const std::size_t dataOffset = offset + 8u;
+                if (dataOffset + chunkSize > sound.data.size()) return result;
+                if (std::memcmp(sound.data.data() + offset, "fmt ", 4) == 0 &&
+                    chunkSize >= 16u) {
+                    encoding = ReadLe16(sound.data.data() + dataOffset);
+                    channels = ReadLe16(sound.data.data() + dataOffset + 2u);
+                    sampleRate = ReadLe32(sound.data.data() + dataOffset + 4u);
+                    bits = ReadLe16(sound.data.data() + dataOffset + 14u);
+                } else if (std::memcmp(sound.data.data() + offset, "data", 4) == 0) {
+                    pcm = sound.data.data() + dataOffset;
+                    pcmBytes = chunkSize;
+                }
+                offset = dataOffset + chunkSize + (chunkSize & 1u);
+            }
+            if (encoding != 1u || (channels != 1u && channels != 2u) ||
+                (bits != 8u && bits != 16u) || sampleRate == 0u || pcm == nullptr) return result;
+            const std::size_t bytesPerSample = bits / 8u;
+            const std::size_t count = pcmBytes / bytesPerSample;
+            source.resize(count);
+            for (std::size_t index = 0u; index < count; ++index) {
+                source[index] = bits == 8u
+                    ? static_cast<std::int16_t>(
+                          (static_cast<std::int32_t>(pcm[index]) - 128) << 8)
+                    : static_cast<std::int16_t>(ReadLe16(pcm + index * 2u));
+            }
+            result.sourceRate = sampleRate;
+            result.channels = channels;
+        } else if (format == "mp2" || format == "mp3") {
+            mp3dec_ex_t decoder{};
+            if (mp3dec_ex_open_buf(
+                    &decoder, sound.data.data(), sound.data.size(), MP3D_SEEK_TO_SAMPLE) != 0) {
+                return result;
+            }
+            result.sourceRate = static_cast<std::uint32_t>(decoder.info.hz);
+            result.channels = static_cast<std::uint32_t>(decoder.info.channels);
+            source.resize(static_cast<std::size_t>(decoder.samples));
+            source.resize(mp3dec_ex_read(&decoder, source.data(), source.size()));
+            mp3dec_ex_close(&decoder);
+        }
+        if (source.empty() || result.sourceRate == 0u ||
+            (result.channels != 1u && result.channels != 2u)) return {};
+        const std::size_t sourceFrames = source.size() / result.channels;
+        const double pitchScale = std::clamp(
+            static_cast<double>(pitch == 0u ? 64u : pitch) / 64.0, 0.25, 4.0);
+        const std::size_t outputFrames = static_cast<std::size_t>(
+            sourceFrames * static_cast<double>(targetRate) /
+            (static_cast<double>(result.sourceRate) * pitchScale));
+        result.samples.resize(outputFrames);
+        for (std::size_t frame = 0u; frame < outputFrames; ++frame) {
+            const double sourcePosition = frame * static_cast<double>(result.sourceRate) *
+                pitchScale / targetRate;
+            const std::size_t first = std::min(
+                static_cast<std::size_t>(sourcePosition), sourceFrames - 1u);
+            const std::size_t second = std::min(first + 1u, sourceFrames - 1u);
+            const float fraction = static_cast<float>(sourcePosition - first);
+            const auto monoAt = [&](std::size_t sourceFrame) {
+                if (result.channels == 1u) return static_cast<float>(source[sourceFrame]);
+                return 0.5f * (source[sourceFrame * 2u] + source[sourceFrame * 2u + 1u]);
+            };
+            result.samples[frame] = static_cast<std::int16_t>(
+                monoAt(first) + (monoAt(second) - monoAt(first)) * fraction);
+        }
+        return result;
+    }
+
+    static std::vector<SpatialAudioEmitter> PrepareSpatialAudioEmitters(
+        const std::vector<PortableActorSnapshot>& actors,
+        std::uint32_t targetRate) {
+        std::vector<SpatialAudioEmitter> emitters;
+        if (targetRate == 0u) return emitters;
+        float originX = -1149.244f;
+        float originY = 825.844f;
+        float originZ = -65.103f;
+        for (const PortableActorSnapshot& actor : actors) {
+            const std::size_t separator = actor.classPath.find_last_of('.');
+            const std::string leafClass = separator == std::string::npos
+                ? actor.classPath
+                : actor.classPath.substr(separator + 1u);
+            if (actor.hasLocation && leafClass == "PlayerStart") {
+                originX = actor.x;
+                originY = actor.y;
+                originZ = actor.z;
+                break;
+            }
+        }
+        std::unordered_map<std::string, std::shared_ptr<const std::vector<std::int16_t>>> decoded;
+        std::set<std::string> rejected;
+        constexpr float unitsToMeters = 1.0f / 52.5f;
+        for (const PortableActorSnapshot& actor : actors) {
+            if (!actor.hasLocation || actor.ambientSoundPath.empty()) continue;
+            const std::string cacheKey = actor.ambientSoundPath + "#" +
+                std::to_string(actor.soundPitch);
+            if (rejected.find(cacheKey) != rejected.end()) continue;
+            auto found = decoded.find(cacheKey);
+            if (found == decoded.end()) {
+                try {
+                    DecodedMonoAudio sound = DecodeSpatialSound(
+                        LoadPortableRuntimeSound(actor.ambientSoundPath),
+                        targetRate,
+                        actor.soundPitch);
+                    if (sound.samples.empty()) continue;
+                    found = decoded.emplace(
+                        cacheKey,
+                        std::make_shared<const std::vector<std::int16_t>>(
+                            std::move(sound.samples))).first;
+                } catch (const std::exception& error) {
+                    ALOG(
+                        "DeusExQuest: ambient emitter decode failed for %s: %s",
+                        actor.ambientSoundPath.c_str(),
+                        error.what());
+                    rejected.insert(cacheKey);
+                    continue;
+                }
+            }
+            SpatialAudioEmitter emitter;
+            emitter.localPosition = {
+                (actor.y - originY) * unitsToMeters,
+                (actor.z - originZ) * unitsToMeters + 1.0f,
+                -(actor.x - originX) * unitsToMeters};
+            emitter.soundPath = actor.ambientSoundPath;
+            emitter.monoSamples = found->second;
+            emitter.radiusMeters = std::max(
+                2.0f, static_cast<float>(actor.soundRadius) * 25.0f * unitsToMeters);
+            emitter.volume = static_cast<float>(actor.soundVolume) / 255.0f;
+            emitters.push_back(std::move(emitter));
+        }
+        ALOG(
+            "DeusExQuest: prepared %zu spatial ambient emitters from %zu decoded clips",
+            emitters.size(),
+            decoded.size());
+        return emitters;
+    }
+
+    void ReplaceSpatialAudioEmitters(std::vector<SpatialAudioEmitter> emitters) {
+        std::lock_guard<std::mutex> lock(audioMutex_);
+        spatialAudioEmitters_ = std::move(emitters);
+        ambientSamples_.clear();
+        ambientCursor_ = 0u;
+    }
+
+    void UpdateSpatialAudioGains(
+        const OVR::Vector3f& listener,
+        float listenerRightX,
+        float listenerRightZ) {
+        std::lock_guard<std::mutex> lock(audioMutex_);
+        for (SpatialAudioEmitter& emitter : spatialAudioEmitters_) {
+            const float dx = emitter.localPosition.x - listener.x;
+            const float dy = emitter.localPosition.y - listener.y;
+            const float dz = emitter.localPosition.z - listener.z;
+            const float distance = std::sqrt(dx * dx + dy * dy + dz * dz);
+            const float attenuation = std::clamp(
+                1.0f - distance / emitter.radiusMeters, 0.0f, 1.0f);
+            const float horizontal = std::sqrt(dx * dx + dz * dz);
+            const float pan = horizontal > 0.001f
+                ? std::clamp(
+                      (dx * listenerRightX + dz * listenerRightZ) / horizontal,
+                      -1.0f,
+                      1.0f)
+                : 0.0f;
+            const float gain = 0.35f * emitter.volume * attenuation;
+            emitter.leftGain = gain * std::sqrt(0.5f * (1.0f - pan));
+            emitter.rightGain = gain * std::sqrt(0.5f * (1.0f + pan));
+        }
+    }
+
     static aaudio_data_callback_result_t AmbientAudioCallback(
         AAudioStream*,
         void* userData,
@@ -1817,7 +2028,23 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         auto* output = static_cast<std::int16_t*>(audioData);
         const std::size_t sampleCount = static_cast<std::size_t>(numFrames) * 2u;
         std::lock_guard<std::mutex> lock(app->audioMutex_);
-        if (app->ambientSamples_.empty()) {
+        if (!app->spatialAudioEmitters_.empty()) {
+            for (std::int32_t frame = 0; frame < numFrames; ++frame) {
+                float left{};
+                float right{};
+                for (SpatialAudioEmitter& emitter : app->spatialAudioEmitters_) {
+                    if (!emitter.monoSamples || emitter.monoSamples->empty()) continue;
+                    const std::int16_t sample = (*emitter.monoSamples)[emitter.cursor];
+                    emitter.cursor = (emitter.cursor + 1u) % emitter.monoSamples->size();
+                    left += sample * emitter.leftGain;
+                    right += sample * emitter.rightGain;
+                }
+                output[static_cast<std::size_t>(frame) * 2u] =
+                    static_cast<std::int16_t>(std::clamp(left, -32768.0f, 32767.0f));
+                output[static_cast<std::size_t>(frame) * 2u + 1u] =
+                    static_cast<std::int16_t>(std::clamp(right, -32768.0f, 32767.0f));
+            }
+        } else if (app->ambientSamples_.empty()) {
             std::fill(output, output + sampleCount, 0);
         } else {
             for (std::size_t index = 0; index < sampleCount; ++index) {
@@ -2005,6 +2232,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         }
         ambientSamples_.clear();
         ambientCursor_ = 0;
+        spatialAudioEmitters_.clear();
         dialogueSamples_.clear();
         dialogueCursor_ = 0;
         audioSampleRate_ = 0u;
@@ -2696,6 +2924,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
     std::mutex audioMutex_;
     std::vector<std::int16_t> ambientSamples_;
     std::size_t ambientCursor_{};
+    std::vector<SpatialAudioEmitter> spatialAudioEmitters_;
     std::uint32_t audioSampleRate_{};
     std::vector<std::int16_t> dialogueSamples_;
     std::size_t dialogueCursor_{};
@@ -2743,6 +2972,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
     std::string transitionMapName_;
     MapTransitionPhase transitionPhase_{MapTransitionPhase::Idle};
     std::vector<PortableActorSnapshot> preparedActorSnapshots_;
+    std::vector<SpatialAudioEmitter> preparedSpatialAudioEmitters_;
     PortableTextureArray preparedActorTextures_;
     WorldTexturePreparation preparedWorldTexture_;
     WorldMeshPreparation preparedWorldMesh_;

@@ -10,6 +10,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
 #include <limits>
 #include <stdexcept>
 #include <set>
@@ -1145,6 +1146,38 @@ PortableSound LoadPortableRuntimeDialogueSound(const PortableDialogueResult& dia
     return {};
 }
 
+PortableSound LoadPortableRuntimeSound(const std::string& objectPath) {
+    if (objectPath.empty() || !persistentRuntime || !persistentRuntime->get()) return {};
+    const std::size_t separator = objectPath.find('.');
+    if (separator == std::string::npos || separator + 1u >= objectPath.size()) return {};
+    const std::string packageName = objectPath.substr(0u, separator);
+    const std::string exportPath = objectPath.substr(separator + 1u);
+    std::string gameRoot;
+    for (std::size_t index = persistentScriptExportCount;
+         index < persistentRuntime->get()->exports.size();
+         ++index) {
+        RuntimeObject* object = persistentRuntime->get()->exports[index];
+        if (object == nullptr || object->sourcePath.empty()) continue;
+        gameRoot = std::filesystem::path(object->sourcePath).parent_path().parent_path().string();
+        break;
+    }
+    if (gameRoot.empty()) return {};
+    std::string packagePath;
+    for (const std::string& candidate : {
+             gameRoot + "/Sounds/" + packageName + ".uax",
+             gameRoot + "/System/" + packageName + ".u"}) {
+        if (std::filesystem::is_regular_file(candidate)) {
+            packagePath = candidate;
+            break;
+        }
+    }
+    if (packagePath.empty()) {
+        throw std::runtime_error("Could not resolve ambient sound package " + packageName);
+    }
+    const PortablePackageTables package = LoadPortablePackageTables(packagePath);
+    return LoadPortableSound(package, FindPortableExport(package, exportPath));
+}
+
 void ShutdownPortableRuntime() {
     persistentRuntime.reset();
     persistentQualifiedObjects.clear();
@@ -1368,6 +1401,16 @@ std::vector<PortableActorSnapshot> GetPortableRuntimeMapActors() {
             snapshot.meshClassPath = mesh->second->reflection.metaClass;
         }
         snapshot.texturePath = resolveInheritedObjectProperty("Texture");
+        snapshot.ambientSoundPath = resolveInheritedObjectProperty("AmbientSound");
+        const auto readInheritedByte = [&](const char* name, std::uint8_t fallback) {
+            const PortableTaggedProperty* property = inheritedProperty(name);
+            return property != nullptr && !property->value.empty()
+                ? property->value.front()
+                : fallback;
+        };
+        snapshot.soundRadius = readInheritedByte("SoundRadius", snapshot.soundRadius);
+        snapshot.soundVolume = readInheritedByte("SoundVolume", snapshot.soundVolume);
+        snapshot.soundPitch = readInheritedByte("SoundPitch", snapshot.soundPitch);
         const PortableTaggedProperty* destination = inheritedProperty("DestMap");
         if (destination == nullptr) destination = inheritedProperty("URL");
         if (destination != nullptr) {

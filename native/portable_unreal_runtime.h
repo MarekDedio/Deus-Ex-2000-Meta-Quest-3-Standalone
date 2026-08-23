@@ -147,6 +147,7 @@ PortableDialogueResult GetPortableRuntimeDialogue(
     std::size_t ordinal,
     std::int32_t missionNumber);
 PortableSound LoadPortableRuntimeDialogueSound(const PortableDialogueResult& dialogue);
+PortableSound LoadPortableRuntimeSound(const std::string& objectPath);
 PortableDialogueEffectResult ApplyPortableDialogueEffects(
     const PortableDialogueResult& dialogue);
 
@@ -192,6 +193,10 @@ struct PortableActorSnapshot {
     std::string meshPath;
     std::string meshClassPath;
     std::string texturePath;
+    std::string ambientSoundPath;
+    std::uint8_t soundRadius{64u};
+    std::uint8_t soundVolume{255u};
+    std::uint8_t soundPitch{64u};
 };
 
 PortableVmValue ExecutePortableFunction(const std::string& objectPath);
