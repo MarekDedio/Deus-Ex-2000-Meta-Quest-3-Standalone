@@ -130,7 +130,7 @@ void BuildPersistentDialogueIndex() {
         }
         return fallback;
     };
-    std::unordered_map<std::string, std::int32_t> conversationMissions;
+    std::vector<std::pair<std::string, std::int32_t>> conversationOrder;
     for (RuntimeObject* list : persistentRuntime->get()->exports) {
         if (list == nullptr || !IsDerivedFromPath(list->cls, "ConSys.ConversationList")) continue;
         const std::int32_t mission = intProperty(list, "missionNumber", -1);
@@ -143,44 +143,64 @@ void BuildPersistentDialogueIndex() {
             RuntimeObject* item = itemFound->second;
             const auto conversation = item->objectPropertyPaths.find("ConObject");
             if (conversation != item->objectPropertyPaths.end()) {
-                conversationMissions[conversation->second] = mission;
+                conversationOrder.emplace_back(conversation->second, mission);
             }
             const auto next = item->objectPropertyPaths.find("Next");
             if (next == item->objectPropertyPaths.end() || next->second == itemPath) break;
             itemPath = next->second;
         }
     }
-    for (RuntimeObject* event : persistentRuntime->get()->exports) {
-        if (event == nullptr || !IsDerivedFromPath(event->cls, "ConSys.ConEventSpeech")) continue;
-        const auto conversation = event->objectPropertyPaths.find("Conversation");
-        if (conversation == event->objectPropertyPaths.end()) continue;
-        const auto mission = conversationMissions.find(conversation->second);
-        if (mission == conversationMissions.end()) continue;
-        std::string speaker;
-        for (const PortableTaggedProperty& property : event->instanceProperties) {
-            if (property.name == "speakerName" && property.type == 13u) {
-                speaker = DecodePortableStringProperty(property);
+    for (const auto& conversationEntry : conversationOrder) {
+        const auto conversationFound = persistentQualifiedObjects.find(conversationEntry.first);
+        if (conversationFound == persistentQualifiedObjects.end() ||
+            conversationFound->second == nullptr) continue;
+        RuntimeObject* conversation = conversationFound->second;
+        const auto firstEvent = conversation->objectPropertyPaths.find("eventList");
+        if (firstEvent == conversation->objectPropertyPaths.end()) continue;
+        std::string eventPath = firstEvent->second;
+        for (std::size_t guard = 0; !eventPath.empty() && guard < 8192u; ++guard) {
+            const auto eventFound = persistentQualifiedObjects.find(eventPath);
+            if (eventFound == persistentQualifiedObjects.end() || eventFound->second == nullptr) {
                 break;
             }
-        }
-        if (speaker.empty()) continue;
-        const auto speechPath = event->objectPropertyPaths.find("ConSpeech");
-        if (speechPath == event->objectPropertyPaths.end()) continue;
-        const auto speechFound = persistentQualifiedObjects.find(speechPath->second);
-        if (speechFound == persistentQualifiedObjects.end() || speechFound->second == nullptr) continue;
-        RuntimeObject* speech = speechFound->second;
-        IndexedDialogueLine line;
-        line.eventPath = event->reflection.objectPath;
-        for (const PortableTaggedProperty& property : speech->instanceProperties) {
-            if (property.name == "Speech" && property.type == 13u) {
-                line.text = DecodePortableStringProperty(property);
-            } else if (property.name == "soundID" && property.value.size() == 4u) {
-                std::memcpy(&line.soundId, property.value.data(), sizeof(line.soundId));
+            RuntimeObject* event = eventFound->second;
+            if (IsDerivedFromPath(event->cls, "ConSys.ConEventSpeech")) {
+                std::string speaker;
+                for (const PortableTaggedProperty& property : event->instanceProperties) {
+                    if (property.name == "speakerName" && property.type == 13u) {
+                        speaker = DecodePortableStringProperty(property);
+                        break;
+                    }
+                }
+                const auto speechPath = event->objectPropertyPaths.find("ConSpeech");
+                if (!speaker.empty() && speechPath != event->objectPropertyPaths.end()) {
+                    const auto speechFound = persistentQualifiedObjects.find(speechPath->second);
+                    if (speechFound != persistentQualifiedObjects.end() &&
+                        speechFound->second != nullptr) {
+                        RuntimeObject* speech = speechFound->second;
+                        IndexedDialogueLine line;
+                        line.eventPath = event->reflection.objectPath;
+                        for (const PortableTaggedProperty& property : speech->instanceProperties) {
+                            if (property.name == "Speech" && property.type == 13u) {
+                                line.text = DecodePortableStringProperty(property);
+                            } else if (property.name == "soundID" && property.value.size() == 4u) {
+                                std::memcpy(&line.soundId, property.value.data(), sizeof(line.soundId));
+                            }
+                        }
+                        if (!line.text.empty()) {
+                            persistentDialogueIndex[
+                                DialogueKey(conversationEntry.second, speaker)].push_back(
+                                    std::move(line));
+                            persistentSpeakerMissions[LowerAscii(speaker)].insert(
+                                conversationEntry.second);
+                        }
+                    }
+                }
             }
+            const auto next = event->objectPropertyPaths.find("nextEvent");
+            if (next == event->objectPropertyPaths.end() || next->second == eventPath) break;
+            eventPath = next->second;
         }
-        if (line.text.empty()) continue;
-        persistentDialogueIndex[DialogueKey(mission->second, speaker)].push_back(std::move(line));
-        persistentSpeakerMissions[LowerAscii(speaker)].insert(mission->second);
     }
 }
 

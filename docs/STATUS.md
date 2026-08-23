@@ -252,6 +252,11 @@ and gameplay.
   Jaime Reyes to mission -1 speech 94 and Liberty Island's Paul Denton to
   mission 1 speech 314. Indexing occurs before frame submission; lookups did
   not disturb steady 72 fps/13.89 ms rendering.
+- Dialogue indexing now traverses each conversation's real `eventList` and
+  `nextEvent` chain rather than export-table order. Two consecutive physical
+  Training requests advanced through adjacent `ConEventSpeech8844/8845` and
+  sound IDs 263/264 while maintaining 72 fps; the index is built once before
+  OpenXR frame submission and queried without rescanning conversation objects.
 - `01_NYC_UNATCOIsland` physically validated generic non-training loading: 107
   materials, 3,658 actors, 34,140 collision triangles, and two decoded exits,
   followed by steady 72 fps.
