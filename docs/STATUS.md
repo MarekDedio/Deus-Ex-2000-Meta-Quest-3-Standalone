@@ -127,8 +127,10 @@
 - Y quick-saves and X quick-loads inventory, actor activity state, player
   position, and facing. The serialized runtime round trip is gated at startup.
 - A head-locked Meta TinyUI HUD presents health, inventory count, and controls.
-  The left Menu button opens a paused teal/gold VR inventory panel backed by the
-  live runtime inventory. Right-stick selection, A equip/use, B/Menu close, and
+  The left Menu button opens a paused Persona-style VR inventory screen backed
+  by the live runtime inventory. Its deep-teal/amber tab rail, 3x4 slot grid,
+  item-data column, dividers, and action rail follow the visual conventions
+  embedded in the shipped `DeusExUI.u`. Right-stick selection, A equip/use, B/Menu close, and
   quick-save/load are wired. Its local font atlas and texture bindings were
   validated with zero glyph or GL errors on Quest.
 - A physical Quest 3 run held 72.0 fps in steady 10-second windows; worst
@@ -156,6 +158,9 @@
 - The inventory panel was physically captured from the app's 1680x1760 eye
   buffer with the real `Multitool0` pickup visible, the gameplay HUD hidden,
   map/health/count correct, and the app steady at 72 fps after startup.
+- A second physical capture verified the Persona restyle without overlapping
+  panels, clipped text, or stereo-placement defects. The selected `{TOOL}` slot,
+  `Multitool0` item data, navigation rail, and action prompts were all readable.
 - APK installed with ABI `arm64-v8a`.
 - The first device launch exposed a missing `libktx.so`; packaging was corrected
   to include the pinned SDK's ARM64 KTX libraries.

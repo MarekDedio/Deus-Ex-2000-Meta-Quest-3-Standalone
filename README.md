@@ -81,8 +81,9 @@ meshes, actor textures, scripts, and ambient sound on-device. Controls are:
 - X: quick-load and rebuild the live actor scene.
 
 A head-locked HUD displays health, inventory count, and the control summary. The
-Menu button opens a head-locked inventory panel showing the live map, health,
-and up to nine items at once. The right stick selects an item, A equips weapons
+Menu button opens a head-locked Persona-style screen using the original game's
+deep teal, amber, tab-rail, slot-grid, and item-data visual language. It shows
+the live map, health, and up to twelve items at once. The right stick selects an item, A equips weapons
 or consumes healing items, and B or Menu returns to play. Movement, turning,
 combat, interaction, and map exits pause while this panel is open; quick-save
 and quick-load remain available.

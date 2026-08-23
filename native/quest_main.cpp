@@ -133,11 +133,11 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         hudLabel_->SetTextLocalPosition({0.0f, -0.025f, 0.0f});
         hudLabel_->SetTextColor(OVR::Vector4f(0.82f, 0.68f, 0.25f, 1.0f));
         inventoryLabel_ = ui_.AddLabel(
-            "INVENTORY",
+            "INVENTORY GRID",
             OVR::Vector3f(0.0f, 1.3f, -1.5f),
-            OVR::Vector2f(900.0f, 520.0f));
+            OVR::Vector2f(950.0f, 600.0f));
         inventoryLabel_->SetTextColor(OVR::Vector4f(0.9f, 0.74f, 0.28f, 1.0f));
-        inventoryLabel_->SetSurfaceColor(0, OVR::Vector4f(0.08f, 0.16f, 0.14f, 0.98f));
+        inventoryLabel_->SetSurfaceColor(0, OVR::Vector4f(0.018f, 0.055f, 0.05f, 0.98f));
         inventoryLabel_->SetVisible(false);
         return true;
     }
@@ -1945,6 +1945,46 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         return separator == std::string::npos ? path : path.substr(separator + 1u);
     }
 
+    static std::string InventoryItemCode(const std::string& path) {
+        std::string label = InventoryItemLabel(path);
+        if (label.find("Multitool") != std::string::npos) return "TOOL";
+        if (label.find("Lockpick") != std::string::npos) return "PICK";
+        if (label.find("MedKit") != std::string::npos) return "MED ";
+        if (label.find("WeaponPistol") != std::string::npos) return "PSTL";
+        if (label.find("WeaponRifle") != std::string::npos) return "RIFL";
+        if (label.find("Weapon") != std::string::npos) return "ARMS";
+        if (label.find("Ammo") != std::string::npos) return "AMMO";
+        if (label.find("BioelectricCell") != std::string::npos) return "BIOC";
+        if (label.find("SoyFood") != std::string::npos) return "SOY ";
+        if (label.find("Candybar") != std::string::npos) return "FOOD";
+        if (label.find("SodaCan") != std::string::npos) return "SODA";
+        if (label.find("NanoKey") != std::string::npos) return "KEY ";
+        std::string code;
+        for (const char value : label) {
+            if (std::isalnum(static_cast<unsigned char>(value))) {
+                code.push_back(static_cast<char>(std::toupper(static_cast<unsigned char>(value))));
+                if (code.size() == 4u) break;
+            }
+        }
+        while (code.size() < 4u) code.push_back(' ');
+        return code;
+    }
+
+    static std::string InventoryItemType(const std::string& path) {
+        const std::string label = InventoryItemLabel(path);
+        if (label.find("Weapon") != std::string::npos) return "WEAPON";
+        if (label.find("Ammo") != std::string::npos) return "AMMUNITION";
+        if (label.find("MedKit") != std::string::npos ||
+            label.find("Food") != std::string::npos ||
+            label.find("Candybar") != std::string::npos ||
+            label.find("Soda") != std::string::npos ||
+            label.find("Liquor") != std::string::npos ||
+            label.find("Wine") != std::string::npos) return "CONSUMABLE";
+        if (label.find("Multitool") != std::string::npos ||
+            label.find("Lockpick") != std::string::npos) return "TOOL";
+        return "INVENTORY ITEM";
+    }
+
     static std::string SelectedInventoryLabel(const std::vector<std::string>& inventory) {
         if (inventory.empty()) return "NONE";
         const std::string& path = inventory[selectedInventoryIndex_ % inventory.size()];
@@ -1968,7 +2008,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
 
         OVR::Posef menuPose = frame.HeadPose;
         menuPose.Translation += frame.HeadPose.Rotation.Rotate(
-            OVR::Vector3f(0.0f, -0.02f, -1.05f));
+            OVR::Vector3f(0.0f, -0.015f, -1.05f));
         inventoryLabel_->SetLocalPose(menuPose);
         const std::vector<std::string> inventory = GetPortableRuntimeInventoryItems();
         if (!inventory.empty()) selectedInventoryIndex_ %= inventory.size();
@@ -1979,35 +2019,54 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             return;
         }
 
-        std::string text = "DEUS EX VR  //  INVENTORY\n";
-        text += "MAP " + currentMapName_ + "\n";
-        text += "HEALTH " + std::to_string(static_cast<int>(health)) +
-            "     ITEMS " + std::to_string(inventory.size()) + "\n";
-        text += "----------------------------------------\n";
-        if (inventory.empty()) {
-            text += "\n             INVENTORY EMPTY\n";
-        } else {
-            constexpr std::size_t visibleItems = 9u;
-            const std::size_t first = inventory.size() <= visibleItems
-                ? 0u
-                : std::min(
-                    selectedInventoryIndex_ > visibleItems / 2u
-                        ? selectedInventoryIndex_ - visibleItems / 2u
-                        : 0u,
-                    inventory.size() - visibleItems);
-            const std::size_t end = std::min(first + visibleItems, inventory.size());
-            if (first != 0u) text += "                 ...\n";
-            for (std::size_t index = first; index < end; ++index) {
-                text += index == selectedInventoryIndex_ ? "  >  " : "     ";
-                text += InventoryItemLabel(inventory[index]);
-                text += "\n";
+        constexpr std::size_t visibleItems = 12u;
+        const std::size_t first = inventory.size() <= visibleItems
+            ? 0u
+            : std::min(
+                selectedInventoryIndex_ > visibleItems / 2u
+                    ? selectedInventoryIndex_ - visibleItems / 2u
+                    : 0u,
+                inventory.size() - visibleItems);
+        std::vector<std::string> gridRows(4u, "  ");
+        for (std::size_t slot = 0u; slot < visibleItems; ++slot) {
+            const std::size_t index = first + slot;
+            if (index < inventory.size()) {
+                gridRows[slot / 3u] += index == selectedInventoryIndex_ ? "{" : "[";
+                gridRows[slot / 3u] += InventoryItemCode(inventory[index]);
+                gridRows[slot / 3u] += index == selectedInventoryIndex_ ? "}" : "]";
+            } else {
+                gridRows[slot / 3u] += "[----]";
             }
-            if (end != inventory.size()) text += "                 ...\n";
+            if (slot % 3u != 2u) gridRows[slot / 3u] += " ";
         }
-        text += "----------------------------------------\n";
-        text += "RIGHT STICK  SELECT    A  EQUIP / USE\n";
-        text += "B OR MENU  RETURN TO GAME\n";
-        text += "Y  QUICK-SAVE           X  QUICK-LOAD";
+
+        std::string item = "NO ITEM SELECTED";
+        std::string type = "INVENTORY EMPTY";
+        if (!inventory.empty()) {
+            item = InventoryItemLabel(inventory[selectedInventoryIndex_]);
+            if (item.size() > 20u) item.resize(20u);
+            type = InventoryItemType(inventory[selectedInventoryIndex_]);
+        }
+        const std::vector<std::string> details = {
+            "ITEM  " + item,
+            "TYPE  " + type,
+            "STATE READY",
+            "A  EQUIP / USE"};
+        std::string text = "D E U S  E X   // P E R S O N A        HEALTH " +
+            std::to_string(static_cast<int>(health)) + "\n";
+        text += currentMapName_ + "\n";
+        text += "==============================================================\n";
+        text += "[ INVENTORY ]  HEALTH  AUGS  SKILLS  GOALS/NOTES  IMAGES  LOGS\n";
+        text += "--------------------------------------------------------------\n";
+        text += "// INVENTORY GRID                  // ITEM DATA\n\n";
+        for (std::size_t row = 0u; row < gridRows.size(); ++row) {
+            while (gridRows[row].size() < 34u) gridRows[row].push_back(' ');
+            text += gridRows[row] + details[row] + "\n";
+        }
+        text += "\nSLOT " + std::to_string(inventory.empty() ? 0u : selectedInventoryIndex_ + 1u) +
+            " / " + std::to_string(inventory.size()) + "\n";
+        text += "--------------------------------------------------------------\n";
+        text += "STICK SELECT   A USE   Y SAVE   X LOAD   B / MENU CLOSE";
         inventoryLabel_->SetText("%s", text.c_str());
         inventoryMenuDisplayedCount_ = inventory.size();
         inventoryMenuDisplayedHealth_ = health;
