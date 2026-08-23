@@ -336,22 +336,25 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             &headYaw, &headPitch, &headRoll);
         (void)headPitch;
         (void)headRoll;
+        const bool playerAlive = GetPortableRuntimePlayerHealth() > 0.0f;
         const float yaw = headYaw - sceneYaw_;
         const float forwardX = std::sin(yaw);
         const float forwardZ = -std::cos(yaw);
         const float rightX = std::cos(yaw);
         const float rightZ = std::sin(yaw);
         constexpr float moveSpeed = 2.2f;
-        const float moveX = frame.LeftRemoteJoystick.x * rightX +
-            frame.LeftRemoteJoystick.y * forwardX;
-        const float moveZ = frame.LeftRemoteJoystick.x * rightZ +
-            frame.LeftRemoteJoystick.y * forwardZ;
+        const float moveX = playerAlive
+            ? frame.LeftRemoteJoystick.x * rightX + frame.LeftRemoteJoystick.y * forwardX
+            : 0.0f;
+        const float moveZ = playerAlive
+            ? frame.LeftRemoteJoystick.x * rightZ + frame.LeftRemoteJoystick.y * forwardZ
+            : 0.0f;
         OVR::Vector3f candidate = worldPosition_;
         candidate.x -= moveX * moveSpeed * frame.DeltaSeconds;
         candidate.z -= moveZ * moveSpeed * frame.DeltaSeconds;
 
         const bool turnPressed = std::fabs(frame.RightRemoteJoystick.x) > 0.7f;
-        if (turnPressed && !turnLatch_) {
+        if (playerAlive && turnPressed && !turnLatch_) {
             constexpr float snapRadians = 3.14159265358979323846f / 6.0f;
             sceneYaw_ -= std::copysign(snapRadians, frame.RightRemoteJoystick.x);
         }
@@ -380,7 +383,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         if (frame.RightRemoteTracked) rightController_.Update(frame.RightRemotePose);
         const bool mapLoading = !pendingMapName_.empty() || !transitionMapName_.empty();
         mapTravelCooldown_ = std::max(0.0f, mapTravelCooldown_ - frame.DeltaSeconds);
-        if (!mapLoading && mapTravelCooldown_ <= 0.0f) {
+        if (playerAlive && !mapLoading && mapTravelCooldown_ <= 0.0f) {
             CheckTravelTriggers(frame.HeadPose.Translation);
         }
         if (!mapLoading && actorSnapshots_.size() > 1000u) {
@@ -392,7 +395,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                 BuildActorMarkers();
             }
         }
-        if (!mapLoading && frame.RightRemoteTracked && frame.Clicked(frame.kButtonA)) {
+        if (playerAlive && !mapLoading && frame.RightRemoteTracked && frame.Clicked(frame.kButtonA)) {
             if (UseTargetedActor(frame.RightRemotePointPose)) {
                 DestroyActorGeometry();
                 actorSnapshots_ = GetPortableRuntimeMapActors();
@@ -400,7 +403,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             }
         }
         const bool firePressed = frame.RightRemoteIndexTrigger > 0.75f;
-        if (!mapLoading && frame.RightRemoteTracked && firePressed && !fireLatch_) {
+        if (playerAlive && !mapLoading && frame.RightRemoteTracked && firePressed && !fireLatch_) {
             const std::vector<std::string> inventory = GetPortableRuntimeInventoryItems();
             const float weaponDamage = SelectedWeaponDamage(inventory);
             if (weaponDamage <= 0.0f) {
@@ -422,15 +425,15 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         }
         fireLatch_ = firePressed;
         const bool gripPressed = frame.RightRemoteGripTrigger > 0.75f;
-        if (!mapLoading && gripPressed && !inventoryCycleLatch_) {
+        if (playerAlive && !mapLoading && gripPressed && !inventoryCycleLatch_) {
             const std::size_t count = GetPortableRuntimeInventoryCount();
             if (count != 0u) selectedInventoryIndex_ = (selectedInventoryIndex_ + 1u) % count;
             displayedInventoryCount_ = invalidRendererIndex_;
         }
         inventoryCycleLatch_ = gripPressed;
-        if (!mapLoading && frame.Clicked(frame.kButtonY)) SaveGameState();
+        if (playerAlive && !mapLoading && frame.Clicked(frame.kButtonY)) SaveGameState();
         if (!mapLoading && frame.Clicked(frame.kButtonX)) LoadGameState();
-        if (frame.Clicked(frame.kButtonB)) LoadNextMap();
+        if (playerAlive && frame.Clicked(frame.kButtonB)) LoadNextMap();
         mapRequestPollSeconds_ += frame.DeltaSeconds;
         if (mapRequestPollSeconds_ >= 0.5f) {
             mapRequestPollSeconds_ = 0.0f;
@@ -465,7 +468,9 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                     playerHealth,
                     inventoryCount,
                     selectedItem.c_str(),
-                    interactionStatus_.empty() ? "READY" : interactionStatus_.c_str());
+                    playerHealth <= 0.0f
+                        ? "DEAD - PRESS X TO QUICK-LOAD"
+                        : (interactionStatus_.empty() ? "READY" : interactionStatus_.c_str()));
                 displayedInventoryCount_ = inventoryCount;
                 displayedPlayerHealth_ = playerHealth;
                 displayedSelectedInventory_ = selectedItem;
