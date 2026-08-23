@@ -388,6 +388,18 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             sceneYaw_ -= std::copysign(snapRadians, frame.RightRemoteJoystick.x);
         }
         turnLatch_ = turnPressed;
+        const bool choiceCyclePressed = std::fabs(frame.RightRemoteJoystick.y) > 0.7f;
+        if (!pendingChoices_.empty() && choiceCyclePressed && !choiceCycleLatch_) {
+            if (frame.RightRemoteJoystick.y > 0.0f) {
+                pendingChoiceIndex_ = pendingChoiceIndex_ == 0u
+                    ? pendingChoices_.size() - 1u
+                    : pendingChoiceIndex_ - 1u;
+            } else {
+                pendingChoiceIndex_ = (pendingChoiceIndex_ + 1u) % pendingChoices_.size();
+            }
+            RefreshChoiceStatus();
+        }
+        choiceCycleLatch_ = choiceCyclePressed;
 
         FollowGround(frame.HeadPose.Translation, candidate);
         if (!CapsuleTouchesWall(frame.HeadPose.Translation, candidate)) {
@@ -425,7 +437,9 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             }
         }
         if (playerAlive && !mapLoading && frame.RightRemoteTracked && frame.Clicked(frame.kButtonA)) {
-            if (UseTargetedActor(frame.RightRemotePointPose)) {
+            if (!pendingChoices_.empty()) {
+                ConfirmPendingChoice();
+            } else if (UseTargetedActor(frame.RightRemotePointPose)) {
                 DestroyActorGeometry();
                 actorSnapshots_ = GetPortableRuntimeMapActors();
                 BuildActorMarkers();
@@ -460,7 +474,14 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             displayedInventoryCount_ = invalidRendererIndex_;
         }
         inventoryCycleLatch_ = gripPressed;
-        if (playerAlive && !mapLoading && frame.Clicked(frame.kButtonY)) SaveGameState();
+        if (playerAlive && !mapLoading && frame.Clicked(frame.kButtonY)) {
+            if (pendingChoices_.empty()) {
+                SaveGameState();
+            } else {
+                interactionStatus_ = "FINISH RESPONSE BEFORE SAVING";
+                interactionStatusSeconds_ = 3.0f;
+            }
+        }
         if (!mapLoading && frame.Clicked(frame.kButtonX)) LoadGameState();
         if (playerAlive && frame.Clicked(frame.kButtonB)) LoadNextMap();
         mapRequestPollSeconds_ += frame.DeltaSeconds;
@@ -1024,6 +1045,10 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         if (!pendingMapName_.empty() || !transitionMapName_.empty() || mapName == currentMapName_) {
             return;
         }
+        pendingChoices_.clear();
+        pendingChoiceActor_.clear();
+        pendingChoiceAudioPackage_.clear();
+        pendingChoiceIndex_ = 0u;
         pendingMapName_ = mapName;
         displayedInventoryCount_ = invalidRendererIndex_;
         mapCacheFuture_ = std::async(std::launch::async, [mapName, restoreRuntimePath]() {
@@ -1149,6 +1174,47 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                 }
             }
             ALOG("DeusExQuest: diagnostic dialogue result=%s", found ? "found" : "missing");
+            return;
+        }
+        if (std::strcmp(requested, "CONFIRM") == 0) {
+            const bool available = !pendingChoices_.empty();
+            if (available) ConfirmPendingChoice();
+            ALOG("DeusExQuest: diagnostic choice confirm result=%s", available ? "selected" : "missing");
+            return;
+        }
+        if (std::strcmp(requested, "CHOICE") == 0) {
+            std::int32_t missionNumber{std::numeric_limits<std::int32_t>::min()};
+            const std::size_t separator = currentMapName_.find('_');
+            if (separator != std::string::npos && separator > 0u) {
+                try {
+                    missionNumber = std::stoi(currentMapName_.substr(0u, separator));
+                } catch (const std::exception&) {
+                    missionNumber = std::numeric_limits<std::int32_t>::min();
+                }
+            }
+            if (currentMapName_.rfind("00_Training", 0u) == 0u) missionNumber = -1;
+            bool found{};
+            for (const PortableActorSnapshot& actor : actorSnapshots_) {
+                if (!actor.pawn) continue;
+                const PortableDialogueResult first =
+                    GetPortableRuntimeDialogue(actor.objectPath, 0u, missionNumber);
+                for (std::size_t ordinal = 0u; ordinal < first.matchingLines; ++ordinal) {
+                    const PortableDialogueResult candidate =
+                        GetPortableRuntimeDialogue(actor.objectPath, ordinal, missionNumber);
+                    const bool selectable = std::any_of(
+                        candidate.choices.begin(), candidate.choices.end(),
+                        [](const PortableDialogueResult::Choice& choice) {
+                            return !choice.conditional;
+                        });
+                    if (selectable) {
+                        dialogueOffsets_[actor.objectPath] = ordinal;
+                        found = ShowDialogue(actor.objectPath);
+                        break;
+                    }
+                }
+                if (found) break;
+            }
+            ALOG("DeusExQuest: diagnostic dialogue choice result=%s", found ? "found" : "missing");
             return;
         }
         if (std::strcmp(requested, "EFFECT") == 0 ||
@@ -1320,6 +1386,16 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             interactionStatus_ += "\n" + effects.status;
             interactionStatusSeconds_ = std::max(interactionStatusSeconds_, 5.0f);
         }
+        pendingChoices_.clear();
+        for (const PortableDialogueResult::Choice& choice : dialogue.choices) {
+            if (!choice.conditional) pendingChoices_.push_back(choice);
+        }
+        if (!pendingChoices_.empty()) {
+            pendingChoiceActor_ = actorPath;
+            pendingChoiceAudioPackage_ = dialogue.audioPackageName;
+            pendingChoiceIndex_ = 0u;
+            RefreshChoiceStatus();
+        }
         ALOG(
             "DeusExQuest: dialogue %s bind=%s line=%zu/%zu sound=%d package=%s audio=%s/%zu bytes queued=%s effects=%zu credits=%d skill=%d goals=%zu notes=%zu inventory=%zu text=%s",
             dialogue.eventPath.c_str(),
@@ -1339,6 +1415,57 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             effects.inventoryCount,
             subtitle.c_str());
         return true;
+    }
+
+    void RefreshChoiceStatus() {
+        if (pendingChoices_.empty()) return;
+        const PortableDialogueResult::Choice& choice =
+            pendingChoices_[pendingChoiceIndex_];
+        std::string text = choice.text;
+        std::replace(text.begin(), text.end(), '\n', ' ');
+        std::replace(text.begin(), text.end(), '\r', ' ');
+        if (text.size() > 170u) text.resize(170u);
+        interactionStatus_ = "RESPONSE " + std::to_string(pendingChoiceIndex_ + 1u) +
+            "/" + std::to_string(pendingChoices_.size()) + ": " + text +
+            "\nRIGHT STICK SELECT   A CONFIRM";
+        interactionStatusSeconds_ = 60.0f;
+    }
+
+    void ConfirmPendingChoice() {
+        if (pendingChoices_.empty()) return;
+        const PortableDialogueResult::Choice choice = pendingChoices_[pendingChoiceIndex_];
+        if (choice.targetOrdinal != static_cast<std::size_t>(-1)) {
+            dialogueOffsets_[pendingChoiceActor_] = choice.targetOrdinal;
+        }
+        PortableDialogueResult spokenChoice;
+        spokenChoice.found = choice.soundId >= 0;
+        spokenChoice.soundId = choice.soundId;
+        spokenChoice.audioPackageName = pendingChoiceAudioPackage_;
+        bool audioQueued{};
+        try {
+            audioQueued = QueueDialogueAudio(LoadPortableRuntimeDialogueSound(spokenChoice));
+        } catch (const std::exception& error) {
+            ALOG("DeusExQuest: choice audio resolution failed: %s", error.what());
+        }
+        std::string text = choice.text;
+        std::replace(text.begin(), text.end(), '\n', ' ');
+        std::replace(text.begin(), text.end(), '\r', ' ');
+        if (text.size() > 210u) text.resize(210u);
+        interactionStatus_ = "JC DENTON: " + text;
+        interactionStatusSeconds_ = std::clamp(
+            static_cast<float>(text.size()) * 0.055f, 4.0f, 12.0f);
+        ALOG(
+            "DeusExQuest: VR choice selected label=%s target=%zu event=%s sound=%d queued=%s text=%s",
+            choice.label.c_str(),
+            choice.targetOrdinal,
+            choice.targetEventPath.c_str(),
+            choice.soundId,
+            audioQueued ? "true" : "false",
+            text.c_str());
+        pendingChoices_.clear();
+        pendingChoiceActor_.clear();
+        pendingChoiceAudioPackage_.clear();
+        pendingChoiceIndex_ = 0u;
     }
 
     bool RequestDestinationMap(std::string destination) {
@@ -2541,6 +2668,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
     OVR::Vector3f actorStreamingCenter_{};
     float sceneYaw_{};
     bool turnLatch_{};
+    bool choiceCycleLatch_{};
     bool fireLatch_{};
     bool inventoryCycleLatch_{};
     inline static std::size_t selectedInventoryIndex_{};
@@ -2556,6 +2684,10 @@ class DeusExQuestApp final : public OVRFW::XrApp {
     std::string displayedInteractionStatus_;
     float interactionStatusSeconds_{};
     std::unordered_map<std::string, std::size_t> dialogueOffsets_;
+    std::vector<PortableDialogueResult::Choice> pendingChoices_;
+    std::string pendingChoiceActor_;
+    std::string pendingChoiceAudioPackage_;
+    std::size_t pendingChoiceIndex_{};
     static constexpr const char* gameRoot_ =
         "/data/user/0/dev.deusex.questvr.smoketest/files/DeusEx";
     std::vector<std::string> mapNames_;

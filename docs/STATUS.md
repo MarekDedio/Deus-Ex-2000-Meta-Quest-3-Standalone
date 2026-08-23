@@ -298,6 +298,15 @@ and gameplay.
   `05_NYC_UNATCOMJ12lab` physically loaded 101 materials, 3,043 actors, and
   37,099 collision triangles and stabilized at 72 fps. Its first uncached
   transition still peaked at 166.66 ms and needs further staging work.
+- The portable conversation index resolves 109 authored response choices,
+  including choice text, label, voice sound ID, display mode, skill/flag
+  constraints, and the invoking NPC's next branch speech. An open choice pauses
+  normal A-button use; the right stick selects an unconditional response and A
+  confirms it, plays the shipped JC voice clip, and redirects that NPC's cursor
+  to the selected label. Saving is refused while a response is open so a quick
+  save cannot serialize a half-finished branch. Physical Mission 1 validation
+  presented Paul's weapon response, selected "I'll take the rifle," queued
+  sound 295, and resolved `ChoiceSpeechLabel_0` to Paul target ordinal 42.
 - `01_NYC_UNATCOIsland` physically validated generic non-training loading: 107
   materials, 3,658 actors, 34,140 collision triangles, and two decoded exits,
   followed by steady 72 fps.

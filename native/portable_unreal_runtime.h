@@ -59,7 +59,19 @@ struct PortableDialogueResult {
         bool completed{};
         bool primary{};
     };
+    struct Choice {
+        std::string objectPath;
+        std::string text;
+        std::string label;
+        std::string targetEventPath;
+        std::int32_t soundId{-1};
+        std::int32_t skillLevelNeeded{};
+        std::size_t targetOrdinal{static_cast<std::size_t>(-1)};
+        bool displayAsSpeech{};
+        bool conditional{};
+    };
     std::vector<Effect> effects;
+    std::vector<Choice> choices;
 };
 
 struct PortableDialogueEffectResult {

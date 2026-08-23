@@ -99,10 +99,12 @@ std::unordered_set<std::string> persistentAppliedDialogueEffects;
 
 struct IndexedDialogueLine {
     std::string eventPath;
+    std::string entryLabel;
     std::string text;
     std::int32_t soundId{-1};
     std::string audioPackageName;
     std::vector<PortableDialogueResult::Effect> effects;
+    std::vector<PortableDialogueResult::Choice> choices;
 };
 
 std::unordered_map<std::string, std::vector<IndexedDialogueLine>> persistentDialogueIndex;
@@ -174,6 +176,7 @@ void BuildPersistentDialogueIndex() {
         }
     }
     std::unordered_map<std::string, std::vector<PortableDialogueResult::Effect>> indexedEffects;
+    std::unordered_map<std::string, std::vector<PortableDialogueResult::Choice>> indexedChoices;
     std::size_t transferEvents{};
     std::size_t playerTransferEvents{};
     std::string sampleTransfer;
@@ -193,12 +196,20 @@ void BuildPersistentDialogueIndex() {
         if (firstEvent == conversation->objectPropertyPaths.end()) continue;
         std::string eventPath = firstEvent->second;
         std::string precedingSpeech;
+        std::string precedingSpeaker;
+        std::string branchLabel;
         for (std::size_t guard = 0; !eventPath.empty() && guard < 8192u; ++guard) {
             const auto eventFound = persistentQualifiedObjects.find(eventPath);
             if (eventFound == persistentQualifiedObjects.end() || eventFound->second == nullptr) {
                 break;
             }
             RuntimeObject* event = eventFound->second;
+            for (const PortableTaggedProperty& property : event->instanceProperties) {
+                if (property.name == "Label" && property.type == 13u) {
+                    const std::string label = DecodePortableStringProperty(property);
+                    if (!label.empty()) branchLabel = label;
+                }
+            }
             if (IsDerivedFromPath(event->cls, "ConSys.ConEventSpeech")) {
                 std::string speaker;
                 for (const PortableTaggedProperty& property : event->instanceProperties) {
@@ -215,6 +226,7 @@ void BuildPersistentDialogueIndex() {
                         RuntimeObject* speech = speechFound->second;
                         IndexedDialogueLine line;
                         line.eventPath = event->reflection.objectPath;
+                        line.entryLabel = branchLabel;
                         line.audioPackageName = audioPackageName;
                         for (const PortableTaggedProperty& property : speech->instanceProperties) {
                             if (property.name == "Speech" && property.type == 13u) {
@@ -225,6 +237,7 @@ void BuildPersistentDialogueIndex() {
                         }
                         if (!line.text.empty()) {
                             precedingSpeech = line.eventPath;
+                            precedingSpeaker = speaker;
                             persistentDialogueIndex[
                                 DialogueKey(conversationEntry.second, speaker)].push_back(
                                     std::move(line));
@@ -255,7 +268,101 @@ void BuildPersistentDialogueIndex() {
                     }
                     return false;
                 };
-                if (IsDerivedFromPath(event->cls, "ConSys.ConEventSetFlag")) {
+                if (IsDerivedFromPath(event->cls, "ConSys.ConEventChoice")) {
+                    const auto firstChoice = event->objectPropertyPaths.find("ChoiceList");
+                    if (firstChoice != event->objectPropertyPaths.end() &&
+                        !precedingSpeech.empty()) {
+                        std::string choicePath = firstChoice->second;
+                        for (std::size_t choiceGuard = 0u;
+                             !choicePath.empty() && choiceGuard < 64u;
+                             ++choiceGuard) {
+                            const auto choiceFound = persistentQualifiedObjects.find(choicePath);
+                            if (choiceFound == persistentQualifiedObjects.end() ||
+                                choiceFound->second == nullptr) break;
+                            RuntimeObject* choiceObject = choiceFound->second;
+                            PortableDialogueResult::Choice choice;
+                            choice.objectPath = choicePath;
+                            for (const PortableTaggedProperty& property :
+                                 choiceObject->instanceProperties) {
+                                if (property.name == "choiceText" && property.type == 13u) {
+                                    choice.text = DecodePortableStringProperty(property);
+                                } else if (property.name == "choiceLabel" &&
+                                           property.type == 13u) {
+                                    choice.label = DecodePortableStringProperty(property);
+                                } else if (property.name == "soundID" &&
+                                           property.value.size() == 4u) {
+                                    std::memcpy(
+                                        &choice.soundId,
+                                        property.value.data(),
+                                        sizeof(choice.soundId));
+                                } else if (property.name == "skillLevelNeeded" &&
+                                           property.value.size() == 4u) {
+                                    std::memcpy(
+                                        &choice.skillLevelNeeded,
+                                        property.value.data(),
+                                        sizeof(choice.skillLevelNeeded));
+                                } else if (property.name == "bDisplayAsSpeech" &&
+                                           property.type == 3u) {
+                                    choice.displayAsSpeech = property.boolValue;
+                                }
+                            }
+                            choice.conditional =
+                                choiceObject->objectPropertyPaths.find("flagRef") !=
+                                    choiceObject->objectPropertyPaths.end() ||
+                                choiceObject->objectPropertyPaths.find("skillNeeded") !=
+                                    choiceObject->objectPropertyPaths.end();
+                            if (!choice.text.empty() && !choice.label.empty()) {
+                                std::string scanPath = firstEvent->second;
+                                bool reachedLabel{};
+                                for (std::size_t scanGuard = 0u;
+                                     !scanPath.empty() && scanGuard < 8192u;
+                                     ++scanGuard) {
+                                    const auto scanFound = persistentQualifiedObjects.find(scanPath);
+                                    if (scanFound == persistentQualifiedObjects.end() ||
+                                        scanFound->second == nullptr) break;
+                                    RuntimeObject* scanEvent = scanFound->second;
+                                    for (const PortableTaggedProperty& property :
+                                         scanEvent->instanceProperties) {
+                                        if (property.name == "Label" && property.type == 13u &&
+                                            LowerAscii(DecodePortableStringProperty(property)) ==
+                                                LowerAscii(choice.label)) {
+                                            reachedLabel = true;
+                                        }
+                                    }
+                                    if (reachedLabel && IsDerivedFromPath(
+                                            scanEvent->cls, "ConSys.ConEventSpeech")) {
+                                        std::string scanSpeaker;
+                                        for (const PortableTaggedProperty& property :
+                                             scanEvent->instanceProperties) {
+                                            if (property.name == "speakerName" &&
+                                                property.type == 13u) {
+                                                scanSpeaker = DecodePortableStringProperty(property);
+                                            }
+                                        }
+                                        if (LowerAscii(scanSpeaker) ==
+                                            LowerAscii(precedingSpeaker)) {
+                                            choice.targetEventPath = scanPath;
+                                            break;
+                                        }
+                                    }
+                                    const auto scanNext =
+                                        scanEvent->objectPropertyPaths.find("nextEvent");
+                                    if (scanNext == scanEvent->objectPropertyPaths.end() ||
+                                        scanNext->second == scanPath) break;
+                                    scanPath = scanNext->second;
+                                }
+                                indexedChoices[precedingSpeech].push_back(std::move(choice));
+                            }
+                            const auto nextChoice =
+                                choiceObject->objectPropertyPaths.find("nextChoice");
+                            if (nextChoice == choiceObject->objectPropertyPaths.end() ||
+                                nextChoice->second == choicePath) break;
+                            choicePath = nextChoice->second;
+                        }
+                    }
+                    precedingSpeech.clear();
+                    precedingSpeaker.clear();
+                } else if (IsDerivedFromPath(event->cls, "ConSys.ConEventSetFlag")) {
                     effect.type = PortableDialogueResult::Effect::Type::SetFlag;
                     const auto flag = event->objectPropertyPaths.find("flagRef");
                     if (flag != event->objectPropertyPaths.end()) {
@@ -337,19 +444,22 @@ void BuildPersistentDialogueIndex() {
                         sampleTransfer = effect.source + "->" + effect.target + ":" + effect.key;
                     }
                     clearFollowingEffect = true;
-                } else if (IsDerivedFromPath(event->cls, "ConSys.ConEventChoice") ||
-                           IsDerivedFromPath(event->cls, "ConSys.ConEventCheckFlag") ||
+                } else if (IsDerivedFromPath(event->cls, "ConSys.ConEventCheckFlag") ||
                            IsDerivedFromPath(event->cls, "ConSys.ConEventCheckObject") ||
                            IsDerivedFromPath(event->cls, "ConSys.ConEventCheckPersona") ||
                            IsDerivedFromPath(event->cls, "ConSys.ConEventJump") ||
                            IsDerivedFromPath(event->cls, "ConSys.ConEventRandomLabel") ||
                            IsDerivedFromPath(event->cls, "ConSys.ConEventTrade")) {
                     precedingSpeech.clear();
+                    precedingSpeaker.clear();
                 }
                 if (isEffect && !precedingSpeech.empty()) {
                     indexedEffects[precedingSpeech].push_back(std::move(effect));
                 }
-                if (clearFollowingEffect) precedingSpeech.clear();
+                if (clearFollowingEffect) {
+                    precedingSpeech.clear();
+                    precedingSpeaker.clear();
+                }
             }
             const auto next = event->objectPropertyPaths.find("nextEvent");
             if (next == event->objectPropertyPaths.end() || next->second == eventPath) break;
@@ -358,6 +468,7 @@ void BuildPersistentDialogueIndex() {
     }
     std::size_t indexedLines{};
     std::size_t indexedEffectCount{};
+    std::size_t indexedChoiceCount{};
     for (auto& entry : persistentDialogueIndex) {
         for (IndexedDialogueLine& line : entry.second) {
             ++indexedLines;
@@ -366,13 +477,19 @@ void BuildPersistentDialogueIndex() {
                 line.effects = effects->second;
                 indexedEffectCount += line.effects.size();
             }
+            const auto choices = indexedChoices.find(line.eventPath);
+            if (choices != indexedChoices.end()) {
+                line.choices = choices->second;
+                indexedChoiceCount += line.choices.size();
+            }
         }
     }
     __android_log_print(
         ANDROID_LOG_INFO,
         "DeusExQuest",
-        "DeusExQuest: indexed %zu dialogue lines with %zu safe linear effects across %zu speaker missions; transfers=%zu player=%zu sample=%s",
+        "DeusExQuest: indexed %zu dialogue lines with %zu choices and %zu safe linear effects across %zu speaker missions; transfers=%zu player=%zu sample=%s",
         indexedLines,
+        indexedChoiceCount,
         indexedEffectCount,
         persistentDialogueIndex.size(),
         transferEvents,
@@ -855,6 +972,19 @@ PortableDialogueResult GetPortableRuntimeDialogue(
     result.soundId = selected.soundId;
     result.audioPackageName = selected.audioPackageName;
     result.effects = selected.effects;
+    result.choices = selected.choices;
+    for (PortableDialogueResult::Choice& choice : result.choices) {
+        const std::string wanted = LowerAscii(choice.label);
+        for (std::size_t index = 0u; index < lines->size(); ++index) {
+            if ((!choice.targetEventPath.empty() &&
+                 (*lines)[index].eventPath == choice.targetEventPath) ||
+                (choice.targetEventPath.empty() && !wanted.empty() &&
+                 LowerAscii((*lines)[index].entryLabel) == wanted)) {
+                choice.targetOrdinal = index;
+                break;
+            }
+        }
+    }
     return result;
 }
 
