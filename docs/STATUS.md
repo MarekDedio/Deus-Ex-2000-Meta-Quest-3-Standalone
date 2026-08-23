@@ -307,6 +307,11 @@ and gameplay.
   save cannot serialize a half-finished branch. Physical Mission 1 validation
   presented Paul's weapon response, selected "I'll take the rifle," queued
   sound 295, and resolved `ChoiceSpeechLabel_0` to Paul target ordinal 42.
+- Choice availability now evaluates each serialized flag name and required
+  boolean against the case-normalized, save-persisted conversation flag table.
+  Skill-gated responses remain locked until real per-skill player levels are
+  implemented. A physical Mission 1 regression still exposed Paul's valid
+  weapon menu and held the dialogue window to 27.78 ms.
 - Dialogue MP3 decoding and resampling now run in a worker; the frame thread
   only performs a ready check and a short mutex-protected PCM swap. Shutdown
   waits for any in-flight clip. Repeating Paul's 80,964-byte Mission 1 line on

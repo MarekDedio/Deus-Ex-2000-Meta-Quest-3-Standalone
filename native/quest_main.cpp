@@ -1206,7 +1206,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                     const bool selectable = std::any_of(
                         candidate.choices.begin(), candidate.choices.end(),
                         [](const PortableDialogueResult::Choice& choice) {
-                            return !choice.conditional;
+                            return choice.available;
                         });
                     if (selectable) {
                         dialogueOffsets_[actor.objectPath] = ordinal;
@@ -1390,7 +1390,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         }
         pendingChoices_.clear();
         for (const PortableDialogueResult::Choice& choice : dialogue.choices) {
-            if (!choice.conditional) pendingChoices_.push_back(choice);
+            if (choice.available) pendingChoices_.push_back(choice);
         }
         if (!pendingChoices_.empty()) {
             pendingChoiceActor_ = actorPath;

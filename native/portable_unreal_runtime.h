@@ -64,11 +64,15 @@ struct PortableDialogueResult {
         std::string text;
         std::string label;
         std::string targetEventPath;
+        std::string flagName;
+        std::string skillClassPath;
         std::int32_t soundId{-1};
         std::int32_t skillLevelNeeded{};
         std::size_t targetOrdinal{static_cast<std::size_t>(-1)};
         bool displayAsSpeech{};
         bool conditional{};
+        bool requiredFlagValue{};
+        bool available{true};
     };
     std::vector<Effect> effects;
     std::vector<Choice> choices;

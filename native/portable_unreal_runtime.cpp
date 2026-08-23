@@ -311,6 +311,27 @@ void BuildPersistentDialogueIndex() {
                                     choiceObject->objectPropertyPaths.end() ||
                                 choiceObject->objectPropertyPaths.find("skillNeeded") !=
                                     choiceObject->objectPropertyPaths.end();
+                            const auto choiceFlag =
+                                choiceObject->objectPropertyPaths.find("flagRef");
+                            if (choiceFlag != choiceObject->objectPropertyPaths.end()) {
+                                const auto flagFound =
+                                    persistentQualifiedObjects.find(choiceFlag->second);
+                                if (flagFound != persistentQualifiedObjects.end() &&
+                                    flagFound->second != nullptr) {
+                                    choice.flagName = nameProperty(flagFound->second, "FlagName");
+                                    for (const PortableTaggedProperty& property :
+                                         flagFound->second->instanceProperties) {
+                                        if (property.name == "Value" && property.type == 3u) {
+                                            choice.requiredFlagValue = property.boolValue;
+                                        }
+                                    }
+                                }
+                            }
+                            const auto skill =
+                                choiceObject->objectPropertyPaths.find("skillNeeded");
+                            if (skill != choiceObject->objectPropertyPaths.end()) {
+                                choice.skillClassPath = skill->second;
+                            }
                             if (!choice.text.empty() && !choice.label.empty()) {
                                 std::string scanPath = firstEvent->second;
                                 bool reachedLabel{};
@@ -974,6 +995,17 @@ PortableDialogueResult GetPortableRuntimeDialogue(
     result.effects = selected.effects;
     result.choices = selected.choices;
     for (PortableDialogueResult::Choice& choice : result.choices) {
+        choice.available = true;
+        if (!choice.flagName.empty()) {
+            const auto flag = persistentConversationFlags.find(LowerAscii(choice.flagName));
+            const bool current = flag == persistentConversationFlags.end()
+                ? false
+                : flag->second;
+            choice.available = current == choice.requiredFlagValue;
+        }
+        if (!choice.skillClassPath.empty() && choice.skillLevelNeeded > 0) {
+            choice.available = false;
+        }
         const std::string wanted = LowerAscii(choice.label);
         for (std::size_t index = 0u; index < lines->size(); ++index) {
             if ((!choice.targetEventPath.empty() &&
@@ -995,7 +1027,7 @@ PortableDialogueEffectResult ApplyPortableDialogueEffects(
         if (!persistentAppliedDialogueEffects.insert(effect.eventPath).second) continue;
         switch (effect.type) {
         case PortableDialogueResult::Effect::Type::SetFlag:
-            persistentConversationFlags[effect.key] = effect.value;
+            persistentConversationFlags[LowerAscii(effect.key)] = effect.value;
             result.status = effect.value ? "FLAG SET" : "FLAG CLEARED";
             break;
         case PortableDialogueResult::Effect::Type::AddGoal:
@@ -1876,7 +1908,8 @@ bool LoadPortableRuntimeState(const std::string& path) {
     for (const std::string& flag : flags) {
         const std::size_t separator = flag.rfind('\n');
         if (separator != std::string::npos && separator + 2u == flag.size()) {
-            persistentConversationFlags[flag.substr(0u, separator)] = flag.back() == '1';
+            persistentConversationFlags[LowerAscii(flag.substr(0u, separator))] =
+                flag.back() == '1';
         }
     }
     persistentGoals = std::move(goals);
