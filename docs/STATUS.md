@@ -167,6 +167,11 @@
   row), composed them into their original 640x512 surface, and installed that
   texture directly on the VR menu. A captured frame verified the original black
   field and metallic edge rails without a GL error or process failure.
+- A dedicated depth-safe Persona renderer now updates that surface with a 3x4
+  selection grid and lazily decoded original `LargeIcon*` item artwork. A fresh
+  physical-headset capture verified the real 32x64 multitool icon, selected-slot
+  highlight, live item data, tabs, and action prompts together inside the
+  original panel rather than as disconnected or occluded layers.
 - APK installed with ABI `arm64-v8a`.
 - The first device launch exposed a missing `libktx.so`; packaging was corrected
   to include the pinned SDK's ARM64 KTX libraries.

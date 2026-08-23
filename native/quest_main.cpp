@@ -24,6 +24,7 @@
 #include "Input/TinyUI.h"
 #include "Render/GeometryBuilder.h"
 #include "Render/GeometryRenderer.h"
+#include "Render/GlGeometry.h"
 #include "Render/GlTexture.h"
 #include "Render/SurfaceRender.h"
 #include "XrApp.h"
@@ -108,6 +109,62 @@ class TexturedGeometryRenderer {
     inline static OVRFW::GlProgram sharedProgram_;
     OVR::Posef pose_ = OVR::Posef::Identity();
     OVR::Matrix4f modelMatrix_ = OVR::Matrix4f::Identity();
+};
+
+class PersonaUiRenderer {
+   public:
+    void Init(const OVRFW::GlTexture& texture) {
+        static const char* vertexShader = R"glsl(
+            attribute highp vec4 Position;
+            attribute highp vec2 TexCoord;
+            varying lowp vec2 oTexCoord;
+            void main() {
+                gl_Position = TransformVertex(Position);
+                oTexCoord = TexCoord;
+            }
+        )glsl";
+        static const char* fragmentShader = R"glsl(
+            precision lowp float;
+            uniform sampler2D Texture0;
+            varying lowp vec2 oTexCoord;
+            void main() {
+                gl_FragColor = texture2D(Texture0, oTexCoord);
+            }
+        )glsl";
+        static OVRFW::ovrProgramParm parms[] = {
+            {.Name = "Texture0", .Type = OVRFW::ovrProgramParmType::TEXTURE_SAMPLED},
+        };
+        program_ = OVRFW::GlProgram::Build(
+            "", vertexShader, "", fragmentShader, parms, 1);
+        surface_.geo = OVRFW::BuildTesselatedQuad(1, 1, true);
+        auto& command = surface_.graphicsCommand;
+        command.Program = program_;
+        command.Textures[0] = texture;
+        command.UniformData[0].Data = &command.Textures[0];
+        command.GpuState.depthEnable = command.GpuState.depthMaskEnable = false;
+        command.GpuState.blendEnable = OVRFW::ovrGpuState::BLEND_DISABLE;
+        initialized_ = true;
+    }
+    void Shutdown() {
+        if (!initialized_) return;
+        surface_.geo.Free();
+        if (program_.IsValid()) OVRFW::GlProgram::Free(program_);
+        initialized_ = false;
+    }
+    void SetPose(const OVR::Posef& pose) {
+        modelMatrix_ = OVR::Matrix4f(pose) *
+            OVR::Matrix4f::Scaling(0.60f, 0.38f, 1.0f);
+    }
+    void Render(std::vector<OVRFW::ovrDrawSurface>& surfaces) {
+        if (initialized_) surfaces.emplace_back(modelMatrix_, &surface_);
+    }
+    bool IsInitialized() const { return initialized_; }
+
+   private:
+    OVRFW::ovrSurfaceDef surface_;
+    OVRFW::GlProgram program_;
+    OVR::Matrix4f modelMatrix_ = OVR::Matrix4f::Identity();
+    bool initialized_{};
 };
 
 class DeusExQuestApp final : public OVRFW::XrApp {
@@ -599,6 +656,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         OVRFW::ovrRendererOutput& output) override {
         for (auto& renderer : worldRenderers_) renderer.Render(output.Surfaces);
         for (auto& renderer : texturedRenderers_) renderer.Render(output.Surfaces);
+        if (inventoryMenuOpen_) personaRenderer_.Render(output.Surfaces);
         ui_.Render(frame, output);
         if (frame.LeftRemoteTracked) leftController_.Render(output.Surfaces);
         if (frame.RightRemoteTracked) rightController_.Render(output.Surfaces);
@@ -651,6 +709,11 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         for (auto& renderer : texturedRenderers_) renderer.Shutdown();
         worldRenderers_.clear();
         texturedRenderers_.clear();
+        personaRenderer_.Shutdown();
+        if (personaTextureId_ != 0u) {
+            glDeleteTextures(1, &personaTextureId_);
+            personaTextureId_ = 0u;
+        }
         TexturedGeometryRenderer::ShutdownSharedProgram();
         if (firstTexture_.IsValid()) {
             OVRFW::FreeTexture(firstTexture_);
@@ -2054,10 +2117,14 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                 if (texture != 0u) glDeleteTextures(1, &texture);
                 throw std::runtime_error("Persona texture GPU upload failed");
             }
-            inventoryLabel_->SetSurfaceTextureTakeOwnership(
-                0, 0, OVRFW::SURFACE_TEXTURE_DIFFUSE, texture,
-                static_cast<int>(width), static_cast<int>(height));
-            inventoryLabel_->SetSurfaceColor(0, OVR::Vector4f(1.0f));
+            personaRenderer_.Init(OVRFW::GlTexture(
+                texture, GL_TEXTURE_2D, static_cast<int>(width), static_cast<int>(height)));
+            inventoryLabel_->SetSurfaceVisible(0, false);
+            personaUiPackage_ = uiPackage;
+            personaBaseRgba_ = std::move(rgba);
+            personaTextureId_ = texture;
+            personaTextureWidth_ = width;
+            personaTextureHeight_ = height;
             ALOG(
                 "DeusExQuest: original Persona inventory background active at %ux%u",
                 width, height);
@@ -2068,29 +2135,137 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         }
     }
 
-    static std::string InventoryItemCode(const std::string& path) {
-        std::string label = InventoryItemLabel(path);
-        if (label.find("Multitool") != std::string::npos) return "TOOL";
-        if (label.find("Lockpick") != std::string::npos) return "PICK";
-        if (label.find("MedKit") != std::string::npos) return "MED ";
-        if (label.find("WeaponPistol") != std::string::npos) return "PSTL";
-        if (label.find("WeaponRifle") != std::string::npos) return "RIFL";
-        if (label.find("Weapon") != std::string::npos) return "ARMS";
-        if (label.find("Ammo") != std::string::npos) return "AMMO";
-        if (label.find("BioelectricCell") != std::string::npos) return "BIOC";
-        if (label.find("SoyFood") != std::string::npos) return "SOY ";
-        if (label.find("Candybar") != std::string::npos) return "FOOD";
-        if (label.find("SodaCan") != std::string::npos) return "SODA";
-        if (label.find("NanoKey") != std::string::npos) return "KEY ";
-        std::string code;
-        for (const char value : label) {
-            if (std::isalnum(static_cast<unsigned char>(value))) {
-                code.push_back(static_cast<char>(std::toupper(static_cast<unsigned char>(value))));
-                if (code.size() == 4u) break;
+    static std::string InventoryIconName(const std::string& path) {
+        const std::string label = InventoryItemLabel(path);
+        if (label.find("Multitool") != std::string::npos) return "LargeIconMultitool";
+        if (label.find("Lockpick") != std::string::npos) return "LargeIconLockPick";
+        if (label.find("MedKit") != std::string::npos) return "LargeIconMedKit";
+        if (label.find("WeaponPistol") != std::string::npos) return "LargeIconPistol";
+        if (label.find("WeaponRifle") != std::string::npos) return "LargeIconRifle";
+        if (label.find("WeaponAssaultGun") != std::string::npos) return "LargeIconAssaultGun";
+        if (label.find("WeaponAssaultShotgun") != std::string::npos) return "LargeIconAssaultShotgun";
+        if (label.find("WeaponSawedOffShotgun") != std::string::npos) return "LargeIconShotgun";
+        if (label.find("WeaponCombatKnife") != std::string::npos) return "LargeIconCombatKnife";
+        if (label.find("WeaponBaton") != std::string::npos) return "LargeIconBaton";
+        if (label.find("WeaponCrowbar") != std::string::npos) return "LargeIconCrowbar";
+        if (label.find("WeaponProd") != std::string::npos) return "LargeIconProd";
+        if (label.find("Ammo10mm") != std::string::npos) return "LargeIconAmmo10mm";
+        if (label.find("Ammo") != std::string::npos) return "LargeIconAmmo7mm";
+        if (label.find("BioelectricCell") != std::string::npos) return "LargeIconBioCell";
+        if (label.find("SoyFood") != std::string::npos) return "LargeIconSoyFood";
+        if (label.find("Candybar") != std::string::npos) return "LargeIconCandyBar";
+        if (label.find("SodaCan") != std::string::npos) return "LargeIconSodaCan";
+        if (label.find("Liquor") != std::string::npos) return "LargeIconLiquorBottle";
+        if (label.find("Wine") != std::string::npos) return "LargeIconWineBottle";
+        if (label.find("NanoKey") != std::string::npos) return "LargeIconNanoKeyRing";
+        return {};
+    }
+
+    const PortableTextureImage* GetPersonaIcon(const std::string& path) {
+        const std::string name = InventoryIconName(path);
+        if (name.empty() || personaUiPackage_.exports.empty()) return nullptr;
+        const auto cached = personaIconCache_.find(name);
+        if (cached != personaIconCache_.end()) return &cached->second;
+        try {
+            PortableTextureImage image;
+            try {
+                image = DecodePortableIndexedTexture(
+                    personaUiPackage_, "Icons." + name, true);
+            } catch (const std::exception&) {
+                image = DecodePortableIndexedTexture(personaUiPackage_, name, true);
+            }
+            ALOG(
+                "DeusExQuest: decoded original inventory icon %s at %ux%u",
+                name.c_str(), image.width, image.height);
+            return &personaIconCache_.emplace(name, std::move(image)).first->second;
+        } catch (const std::exception& error) {
+            ALOG("DeusExQuest: inventory icon %s unavailable: %s", name.c_str(), error.what());
+            personaIconCache_.emplace(name, PortableTextureImage{});
+            return nullptr;
+        }
+    }
+
+    void RefreshPersonaInventoryArtwork(const std::vector<std::string>& inventory) {
+        if (personaTextureId_ == 0u || personaBaseRgba_.empty()) return;
+        std::vector<std::uint8_t> rgba = personaBaseRgba_;
+        const auto setPixel = [&](std::uint32_t x, std::uint32_t y,
+                                  std::uint8_t red, std::uint8_t green,
+                                  std::uint8_t blue, std::uint8_t alpha = 255u) {
+            if (x >= personaTextureWidth_ || y >= personaTextureHeight_) return;
+            const std::size_t pixel =
+                (static_cast<std::size_t>(y) * personaTextureWidth_ + x) * 4u;
+            rgba[pixel] = red;
+            rgba[pixel + 1u] = green;
+            rgba[pixel + 2u] = blue;
+            rgba[pixel + 3u] = alpha;
+        };
+        constexpr std::uint32_t gridX = 50u;
+        constexpr std::uint32_t gridY = 75u;
+        constexpr std::uint32_t cell = 54u;
+        constexpr std::uint32_t gap = 5u;
+        constexpr std::size_t visibleItems = 12u;
+        const std::size_t first = inventory.size() <= visibleItems
+            ? 0u
+            : std::min(
+                selectedInventoryIndex_ > visibleItems / 2u
+                    ? selectedInventoryIndex_ - visibleItems / 2u
+                    : 0u,
+                inventory.size() - visibleItems);
+        for (std::size_t slot = 0u; slot < visibleItems; ++slot) {
+            const std::uint32_t x = gridX + static_cast<std::uint32_t>(slot % 3u) * (cell + gap);
+            const std::uint32_t y = gridY + static_cast<std::uint32_t>(slot / 3u) * (cell + gap);
+            const std::size_t inventoryIndex = first + slot;
+            const bool selected = inventoryIndex < inventory.size() &&
+                inventoryIndex == selectedInventoryIndex_;
+            for (std::uint32_t row = 0u; row < cell; ++row) {
+                for (std::uint32_t column = 0u; column < cell; ++column) {
+                    const bool edge = row < 2u || column < 2u ||
+                        row + 2u >= cell || column + 2u >= cell;
+                    if (edge) {
+                        setPixel(x + column, y + row,
+                            selected ? 235u : 116u,
+                            selected ? 190u : 102u,
+                            selected ? 55u : 54u);
+                    } else {
+                        setPixel(x + column, y + row, 4u, 18u, 18u);
+                    }
+                }
+            }
+            if (inventoryIndex >= inventory.size()) continue;
+            const PortableTextureImage* icon = GetPersonaIcon(inventory[inventoryIndex]);
+            if (icon == nullptr || icon->width == 0u || icon->height == 0u) continue;
+            constexpr std::uint32_t iconSize = 46u;
+            for (std::uint32_t row = 0u; row < iconSize; ++row) {
+                const std::uint32_t sourceY = row * icon->height / iconSize;
+                for (std::uint32_t column = 0u; column < iconSize; ++column) {
+                    const std::uint32_t sourceX = column * icon->width / iconSize;
+                    const std::size_t source =
+                        (static_cast<std::size_t>(sourceY) * icon->width + sourceX) * 4u;
+                    if (icon->rgba[source + 3u] == 0u) continue;
+                    setPixel(
+                        x + 4u + column, y + 4u + row,
+                        icon->rgba[source], icon->rgba[source + 1u],
+                        icon->rgba[source + 2u], icon->rgba[source + 3u]);
+                }
             }
         }
-        while (code.size() < 4u) code.push_back(' ');
-        return code;
+        glBindTexture(GL_TEXTURE_2D, personaTextureId_);
+        glTexSubImage2D(
+            GL_TEXTURE_2D, 0, 0, 0,
+            static_cast<GLsizei>(personaTextureWidth_),
+            static_cast<GLsizei>(personaTextureHeight_),
+            GL_RGBA, GL_UNSIGNED_BYTE, rgba.data());
+        const GLenum updateError = glGetError();
+        glBindTexture(GL_TEXTURE_2D, 0);
+        const std::size_t diagnosticPixel =
+            (static_cast<std::size_t>(gridY) * personaTextureWidth_ + gridX) * 4u;
+        ALOG(
+            "DeusExQuest: Persona grid upload GL=0x%x pixel=%u,%u,%u iconCache=%zu",
+            updateError,
+            static_cast<unsigned>(rgba[diagnosticPixel]),
+            static_cast<unsigned>(rgba[diagnosticPixel + 1u]),
+            static_cast<unsigned>(rgba[diagnosticPixel + 2u]),
+            personaIconCache_.size());
     }
 
     static std::string InventoryItemType(const std::string& path) {
@@ -2131,8 +2306,12 @@ class DeusExQuestApp final : public OVRFW::XrApp {
 
         OVR::Posef menuPose = frame.HeadPose;
         menuPose.Translation += frame.HeadPose.Rotation.Rotate(
-            OVR::Vector3f(0.0f, -0.015f, -1.05f));
+            OVR::Vector3f(-0.45f, -0.95f, -1.05f));
         inventoryLabel_->SetLocalPose(menuPose);
+        OVR::Posef artworkPose = frame.HeadPose;
+        artworkPose.Translation += frame.HeadPose.Rotation.Rotate(
+            OVR::Vector3f(0.0f, -0.015f, -1.055f));
+        personaRenderer_.SetPose(artworkPose);
         const std::vector<std::string> inventory = GetPortableRuntimeInventoryItems();
         if (!inventory.empty()) selectedInventoryIndex_ %= inventory.size();
         const float health = GetPortableRuntimePlayerHealth();
@@ -2142,26 +2321,8 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             return;
         }
 
-        constexpr std::size_t visibleItems = 12u;
-        const std::size_t first = inventory.size() <= visibleItems
-            ? 0u
-            : std::min(
-                selectedInventoryIndex_ > visibleItems / 2u
-                    ? selectedInventoryIndex_ - visibleItems / 2u
-                    : 0u,
-                inventory.size() - visibleItems);
-        std::vector<std::string> gridRows(4u, "  ");
-        for (std::size_t slot = 0u; slot < visibleItems; ++slot) {
-            const std::size_t index = first + slot;
-            if (index < inventory.size()) {
-                gridRows[slot / 3u] += index == selectedInventoryIndex_ ? "{" : "[";
-                gridRows[slot / 3u] += InventoryItemCode(inventory[index]);
-                gridRows[slot / 3u] += index == selectedInventoryIndex_ ? "}" : "]";
-            } else {
-                gridRows[slot / 3u] += "[----]";
-            }
-            if (slot % 3u != 2u) gridRows[slot / 3u] += " ";
-        }
+        RefreshPersonaInventoryArtwork(inventory);
+        std::vector<std::string> gridRows(4u);
 
         std::string item = "NO ITEM SELECTED";
         std::string type = "INVENTORY EMPTY";
@@ -3787,6 +3948,13 @@ class DeusExQuestApp final : public OVRFW::XrApp {
     OVRFW::TinyUI ui_;
     OVRFW::VRMenuObject* hudLabel_{};
     OVRFW::VRMenuObject* inventoryLabel_{};
+    PersonaUiRenderer personaRenderer_;
+    PortablePackageTables personaUiPackage_;
+    std::vector<std::uint8_t> personaBaseRgba_;
+    std::unordered_map<std::string, PortableTextureImage> personaIconCache_;
+    GLuint personaTextureId_{};
+    std::uint32_t personaTextureWidth_{};
+    std::uint32_t personaTextureHeight_{};
     bool inventoryMenuOpen_{};
     bool inventoryMenuDirty_{true};
     std::size_t inventoryMenuDisplayedCount_{invalidRendererIndex_};
