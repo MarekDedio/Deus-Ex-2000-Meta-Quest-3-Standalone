@@ -307,6 +307,13 @@ and gameplay.
   save cannot serialize a half-finished branch. Physical Mission 1 validation
   presented Paul's weapon response, selected "I'll take the rifle," queued
   sound 295, and resolved `ChoiceSpeechLabel_0` to Paul target ordinal 42.
+- Dialogue MP3 decoding and resampling now run in a worker; the frame thread
+  only performs a ready check and a short mutex-protected PCM swap. Shutdown
+  waits for any in-flight clip. Repeating Paul's 80,964-byte Mission 1 line on
+  Quest reduced its measured dialogue window from 250 ms to 27.78 ms; its
+  298,944 stereo output frames became ready asynchronously. The selected rifle
+  response then resolved to `ConEventSpeech392`, queued sound 295, and the next
+  10-second window held 72.0 fps with a 13.89 ms worst frame.
 - `01_NYC_UNATCOIsland` physically validated generic non-training loading: 107
   materials, 3,658 actors, 34,140 collision triangles, and two decoded exits,
   followed by steady 72 fps.
