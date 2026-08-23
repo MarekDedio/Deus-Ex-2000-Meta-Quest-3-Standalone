@@ -22,6 +22,10 @@
   lifts, and other movers render at their actor transform with local map
   lighting instead of being omitted as metadata. Unsupported mover brushes
   remain non-fatal and are named in the Android diagnostics.
+- Mover activation is included in actor snapshots. Until authored keyframe
+  interpolation is implemented, opening a mover removes its closed brush and
+  closing it restores the brush, matching the existing binary interaction and
+  save/load state without leaving an apparently closed doorway passable.
 
 ## Verified on 2026-08-23
 

@@ -1356,6 +1356,7 @@ std::vector<PortableActorSnapshot> GetPortableRuntimeMapActors() {
         snapshot.travel = IsDerivedFromPath(object->cls, "DeusEx.MapExit") ||
             IsDerivedFromPath(object->cls, "Engine.Teleporter");
         snapshot.light = IsDerivedFromPath(object->cls, "Engine.Light");
+        snapshot.activated = object->activated;
         const auto resolveInheritedObjectProperty = [&](const std::string& name) {
             const auto instance = object->objectPropertyPaths.find(name);
             if (instance != object->objectPropertyPaths.end()) return instance->second;

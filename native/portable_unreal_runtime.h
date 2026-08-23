@@ -187,6 +187,7 @@ struct PortableActorSnapshot {
     bool travel{};
     bool light{};
     bool hidden{};
+    bool activated{};
     std::uint8_t drawType{};
     std::string destinationMap;
     float drawScale{1.0f};

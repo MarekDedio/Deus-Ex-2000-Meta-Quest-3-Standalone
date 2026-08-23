@@ -998,7 +998,8 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                 scale = {0.35f, 0.35f, 0.35f};
             }
             bool renderedMesh = false;
-            if (!actor.hidden && actor.mover && !actor.brushPath.empty()) {
+            if (!actor.hidden && !actor.activated && actor.mover &&
+                !actor.brushPath.empty()) {
                 try {
                     auto descriptor = brushDescriptors.find(actor.brushPath);
                     if (descriptor == brushDescriptors.end()) {
@@ -1629,6 +1630,28 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                     result.objectPath.c_str(),
                     result.inventoryCount,
                     SelectedInventoryLabel(GetPortableRuntimeInventoryItems()).c_str());
+            }
+            return;
+        }
+        if (std::strcmp(requested, "MOVER") == 0) {
+            const auto foundMover = std::find_if(
+                actorSnapshots_.begin(), actorSnapshots_.end(),
+                [](const PortableActorSnapshot& actor) {
+                    return actor.mover && !actor.brushPath.empty();
+                });
+            if (foundMover != actorSnapshots_.end()) {
+                const std::string moverPath = foundMover->objectPath;
+                const PortableInteractionResult result =
+                    InteractPortableRuntimeActor(moverPath);
+                DestroyActorGeometry();
+                actorSnapshots_ = GetPortableRuntimeMapActors();
+                BuildActorMarkers();
+                ALOG(
+                    "DeusExQuest: diagnostic mover %s result=%s",
+                    moverPath.c_str(),
+                    result.action.c_str());
+            } else {
+                ALOG("DeusExQuest: diagnostic mover result=missing");
             }
             return;
         }
