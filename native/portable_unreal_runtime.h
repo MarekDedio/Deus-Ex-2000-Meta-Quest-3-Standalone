@@ -43,6 +43,7 @@ struct PortableDialogueResult {
     std::string missionCandidates;
     std::int32_t soundId{-1};
     std::size_t matchingLines{};
+    bool invokeFrob{};
     struct Effect {
         enum class Type : std::uint8_t {
             SetFlag, AddGoal, AddNote, AddSkillPoints, AddCredits, Trigger,

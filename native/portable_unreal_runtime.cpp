@@ -105,6 +105,7 @@ struct IndexedDialogueLine {
     std::string audioPackageName;
     std::vector<PortableDialogueResult::Effect> effects;
     std::vector<PortableDialogueResult::Choice> choices;
+    bool invokeFrob{};
 };
 
 std::unordered_map<std::string, std::vector<IndexedDialogueLine>> persistentDialogueIndex;
@@ -186,10 +187,12 @@ void BuildPersistentDialogueIndex() {
             conversationFound->second == nullptr) continue;
         RuntimeObject* conversation = conversationFound->second;
         std::string audioPackageName;
+        bool invokeFrob{};
         for (const PortableTaggedProperty& property : conversation->instanceProperties) {
             if (property.name == "audioPackageName" && property.type == 13u) {
                 audioPackageName = DecodePortableStringProperty(property);
-                break;
+            } else if (property.name == "bInvokeFrob" && property.type == 3u) {
+                invokeFrob = property.boolValue;
             }
         }
         const auto firstEvent = conversation->objectPropertyPaths.find("eventList");
@@ -228,6 +231,7 @@ void BuildPersistentDialogueIndex() {
                         line.eventPath = event->reflection.objectPath;
                         line.entryLabel = branchLabel;
                         line.audioPackageName = audioPackageName;
+                        line.invokeFrob = invokeFrob;
                         for (const PortableTaggedProperty& property : speech->instanceProperties) {
                             if (property.name == "Speech" && property.type == 13u) {
                                 line.text = DecodePortableStringProperty(property);
@@ -490,9 +494,11 @@ void BuildPersistentDialogueIndex() {
     std::size_t indexedLines{};
     std::size_t indexedEffectCount{};
     std::size_t indexedChoiceCount{};
+    std::size_t frobLineCount{};
     for (auto& entry : persistentDialogueIndex) {
         for (IndexedDialogueLine& line : entry.second) {
             ++indexedLines;
+            if (line.invokeFrob) ++frobLineCount;
             const auto effects = indexedEffects.find(line.eventPath);
             if (effects != indexedEffects.end()) {
                 line.effects = effects->second;
@@ -508,8 +514,9 @@ void BuildPersistentDialogueIndex() {
     __android_log_print(
         ANDROID_LOG_INFO,
         "DeusExQuest",
-        "DeusExQuest: indexed %zu dialogue lines with %zu choices and %zu safe linear effects across %zu speaker missions; transfers=%zu player=%zu sample=%s",
+        "DeusExQuest: indexed %zu dialogue lines (%zu frob) with %zu choices and %zu safe linear effects across %zu speaker missions; transfers=%zu player=%zu sample=%s",
         indexedLines,
+        frobLineCount,
         indexedChoiceCount,
         indexedEffectCount,
         persistentDialogueIndex.size(),
@@ -984,14 +991,25 @@ PortableDialogueResult GetPortableRuntimeDialogue(
     };
     lines = findLines(bindName);
     if (lines == nullptr) lines = findLines(barkBindName);
-    result.matchingLines = lines == nullptr ? 0u : lines->size();
     if (lines == nullptr || lines->empty()) return result;
-    const IndexedDialogueLine& selected = (*lines)[ordinal % lines->size()];
+    const bool hasFrob = std::any_of(
+        lines->begin(), lines->end(), [](const IndexedDialogueLine& line) {
+            return line.invokeFrob;
+        });
+    std::vector<const IndexedDialogueLine*> eligible;
+    eligible.reserve(lines->size());
+    for (const IndexedDialogueLine& line : *lines) {
+        if (!hasFrob || line.invokeFrob) eligible.push_back(&line);
+    }
+    result.matchingLines = eligible.size();
+    if (eligible.empty()) return result;
+    const IndexedDialogueLine& selected = *eligible[ordinal % eligible.size()];
     result.found = true;
     result.eventPath = selected.eventPath;
     result.speech = selected.text;
     result.soundId = selected.soundId;
     result.audioPackageName = selected.audioPackageName;
+    result.invokeFrob = selected.invokeFrob;
     result.effects = selected.effects;
     result.choices = selected.choices;
     for (PortableDialogueResult::Choice& choice : result.choices) {
@@ -1007,11 +1025,11 @@ PortableDialogueResult GetPortableRuntimeDialogue(
             choice.available = false;
         }
         const std::string wanted = LowerAscii(choice.label);
-        for (std::size_t index = 0u; index < lines->size(); ++index) {
+        for (std::size_t index = 0u; index < eligible.size(); ++index) {
             if ((!choice.targetEventPath.empty() &&
-                 (*lines)[index].eventPath == choice.targetEventPath) ||
+                 eligible[index]->eventPath == choice.targetEventPath) ||
                 (choice.targetEventPath.empty() && !wanted.empty() &&
-                 LowerAscii((*lines)[index].entryLabel) == wanted)) {
+                 LowerAscii(eligible[index]->entryLabel) == wanted)) {
                 choice.targetOrdinal = index;
                 break;
             }

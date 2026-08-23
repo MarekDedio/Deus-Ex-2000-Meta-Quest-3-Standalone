@@ -312,6 +312,11 @@ and gameplay.
   Skill-gated responses remain locked until real per-skill player levels are
   implemented. A physical Mission 1 regression still exposed Paul's valid
   weapon menu and held the dialogue window to 27.78 ms.
+- Dialogue lines retain their conversation invocation mode. Of 34,071 shipped
+  indexed lines, 12,123 belong to conversations explicitly marked
+  `bInvokeFrob`; A-button NPC use prioritizes those and falls back to all lines
+  only when that mission/speaker has no frob dialogue. Training's fallback
+  Jaime Reyes line still resolved and played at a steady 72 fps.
 - Dialogue MP3 decoding and resampling now run in a worker; the frame thread
   only performs a ready check and a short mutex-protected PCM swap. Shutdown
   waits for any in-flight clip. Repeating Paul's 80,964-byte Mission 1 line on
