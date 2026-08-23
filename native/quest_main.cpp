@@ -397,7 +397,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         const bool turnPressed = std::fabs(frame.RightRemoteJoystick.x) > 0.7f;
         if (playerAlive && turnPressed && !turnLatch_) {
             constexpr float snapRadians = 3.14159265358979323846f / 6.0f;
-            sceneYaw_ -= std::copysign(snapRadians, frame.RightRemoteJoystick.x);
+            sceneYaw_ += std::copysign(snapRadians, frame.RightRemoteJoystick.x);
         }
         turnLatch_ = turnPressed;
         const bool choiceCyclePressed = std::fabs(frame.RightRemoteJoystick.y) > 0.7f;

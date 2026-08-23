@@ -2,6 +2,8 @@
 
 ## Verified on 2026-08-23
 
+- Corrected the right-stick snap-turn sign after physical play exposed reversed
+  controls: stick-left now turns the view left and stick-right turns it right.
 - Ambient audio now follows every active map's serialized UE1 emitters instead
   of looping one training clip globally. Actor `AmbientSound`, `SoundRadius`,
   `SoundVolume`, `SoundPitch`, and location properties drive distance
