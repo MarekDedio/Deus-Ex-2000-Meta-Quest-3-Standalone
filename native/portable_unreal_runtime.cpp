@@ -572,6 +572,8 @@ std::vector<PortableActorSnapshot> GetPortableRuntimeMapActors() {
         snapshot.decoration = IsDerivedFromPath(object->cls, "Engine.Decoration");
         snapshot.mover = IsDerivedFromPath(object->cls, "Engine.Mover");
         snapshot.trigger = IsDerivedFromPath(object->cls, "Engine.Triggers");
+        snapshot.travel = IsDerivedFromPath(object->cls, "DeusEx.MapExit") ||
+            IsDerivedFromPath(object->cls, "Engine.Teleporter");
         const auto resolveInheritedObjectProperty = [&](const std::string& name) {
             const auto instance = object->objectPropertyPaths.find(name);
             if (instance != object->objectPropertyPaths.end()) return instance->second;
@@ -619,6 +621,15 @@ std::vector<PortableActorSnapshot> GetPortableRuntimeMapActors() {
             snapshot.meshClassPath = mesh->second->reflection.metaClass;
         }
         snapshot.texturePath = resolveInheritedObjectProperty("Texture");
+        const PortableTaggedProperty* destination = inheritedProperty("DestMap");
+        if (destination == nullptr) destination = inheritedProperty("URL");
+        if (destination != nullptr) {
+            if (destination->type == 13u && !destination->value.empty()) {
+                const auto end = std::find(
+                    destination->value.begin(), destination->value.end(), std::uint8_t{});
+                snapshot.destinationMap.assign(destination->value.begin(), end);
+            }
+        }
         for (const PortableTaggedProperty& property : object->instanceProperties) {
             if (property.name == "Location" && property.type == 10u &&
                 property.value.size() == 12u) {
@@ -852,6 +863,27 @@ PortableInteractionResult InteractPortableRuntimeActor(const std::string& object
         : object->cls->reflection.objectPath;
     if (!object->active) {
         result.action = "inactive";
+    } else if (IsDerivedFromPath(object->cls, "DeusEx.MapExit") ||
+               IsDerivedFromPath(object->cls, "Engine.Teleporter")) {
+        result.handled = true;
+        result.action = "map_exit";
+        const auto decodeDestination = [&](const std::vector<PortableTaggedProperty>& properties) {
+            for (const PortableTaggedProperty& property : properties) {
+                if ((property.name == "DestMap" || property.name == "URL") &&
+                    property.type == 13u && !property.value.empty()) {
+                    const auto end = std::find(
+                        property.value.begin(), property.value.end(), std::uint8_t{});
+                    result.destinationMap.assign(property.value.begin(), end);
+                    return true;
+                }
+            }
+            return false;
+        };
+        if (!decodeDestination(object->instanceProperties)) {
+            for (RuntimeObject* cls = object->cls; cls != nullptr; cls = cls->base) {
+                if (cls->classDescriptor && decodeDestination(cls->classDescriptor->defaults)) break;
+            }
+        }
     } else if (IsDerivedFromPath(object->cls, "Engine.Inventory")) {
         object->active = false;
         persistentInventory.push_back(objectPath);

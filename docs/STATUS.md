@@ -209,3 +209,9 @@ and gameplay.
   triangles, then stabilized at 72 fps. Background runtime/texture preparation
   plus staged GPU replacement reduced the measured worst transition frame from
   1.22 seconds to 222 ms; further incremental uploads are still needed.
+- Training decodes one outbound teleporter destination and TrainingCombat
+  decodes two. Player proximity requests their real URL/DestMap destination;
+  manual B cycling remains as a developer fallback.
+- Version-2 quick-saves include the active map. Physical validation completed
+  Training save -> TrainingCombat -> quick-load -> Training, restoring the map
+  runtime and player transform after the asynchronous transition.

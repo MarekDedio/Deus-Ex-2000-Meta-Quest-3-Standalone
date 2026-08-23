@@ -54,6 +54,7 @@ struct PortableInteractionResult {
     std::string action;
     std::string objectPath;
     std::string classPath;
+    std::string destinationMap;
     std::size_t inventoryCount{};
 };
 
@@ -103,6 +104,8 @@ struct PortableActorSnapshot {
     bool decoration{};
     bool mover{};
     bool trigger{};
+    bool travel{};
+    std::string destinationMap;
     float drawScale{1.0f};
     float drawScaleX{1.0f};
     float drawScaleY{1.0f};

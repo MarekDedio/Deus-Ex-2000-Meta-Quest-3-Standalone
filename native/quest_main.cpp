@@ -3,6 +3,7 @@
 #include <aaudio/AAudio.h>
 
 #include <algorithm>
+#include <cctype>
 #include <cstdint>
 #include <cmath>
 #include <chrono>
@@ -368,6 +369,10 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         if (frame.LeftRemoteTracked) leftController_.Update(frame.LeftRemotePose);
         if (frame.RightRemoteTracked) rightController_.Update(frame.RightRemotePose);
         const bool mapLoading = !pendingMapName_.empty() || !transitionMapName_.empty();
+        mapTravelCooldown_ = std::max(0.0f, mapTravelCooldown_ - frame.DeltaSeconds);
+        if (!mapLoading && mapTravelCooldown_ <= 0.0f) {
+            CheckTravelTriggers(frame.HeadPose.Translation);
+        }
         if (!mapLoading && frame.RightRemoteTracked && frame.Clicked(frame.kButtonA)) {
             if (UseTargetedActor(frame.RightRemotePointPose)) {
                 DestroyActorGeometry();
@@ -471,6 +476,8 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         OVR::Vector3f localPosition;
         std::string objectPath;
         std::string classPath;
+        bool travel{};
+        std::string destinationMap;
     };
 
     OVRFW::GlGeometry::Descriptor BuildLodMeshDescriptor(
@@ -556,7 +563,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             if (!actor.meshPath.empty()) ++meshClasses[actor.meshClassPath];
             if (!actor.hasLocation ||
                 !(actor.pawn || actor.inventory || actor.decoration ||
-                  actor.mover || actor.trigger)) {
+                  actor.mover || actor.trigger || actor.travel)) {
                 continue;
             }
             const OVR::Vector3f position(
@@ -571,6 +578,9 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             } else if (actor.inventory) {
                 color = {0.12f, 0.75f, 0.35f, 1.0f};
                 scale = {0.18f, 0.18f, 0.18f};
+            } else if (actor.travel) {
+                color = {0.2f, 0.75f, 0.9f, 1.0f};
+                scale = {0.2f, 0.2f, 0.2f};
             } else if (actor.mover) {
                 color = {0.25f, 0.4f, 0.8f, 1.0f};
                 scale = {0.12f, 0.12f, 0.12f};
@@ -647,7 +657,12 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                     color,
                     OVR::Matrix4f::Translation(position) * OVR::Matrix4f::Scaling(scale));
             }
-            interactiveActors_.push_back({position, actor.objectPath, actor.classPath});
+            interactiveActors_.push_back({
+                position,
+                actor.objectPath,
+                actor.classPath,
+                actor.travel,
+                actor.destinationMap});
             ++visible;
             if (visible >= 512) break;
         }
@@ -664,14 +679,19 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                 texturedGeometry.ToGeometryDescriptor(), actorTexture_);
         }
         ALOG(
-            "DeusExQuest: instantiated %zu targetable actors from %zu live actors (%zu real LodMesh instances, %zu mesh-bearing, %zu mesh formats)",
+            "DeusExQuest: instantiated %zu targetable actors from %zu live actors (%zu real LodMesh instances, %zu mesh-bearing, %zu mesh formats, %zu map exits)",
             visible,
             actorSnapshots_.size(),
             meshInstances,
             std::accumulate(
                 meshClasses.begin(), meshClasses.end(), std::size_t{},
                 [](std::size_t total, const auto& value) { return total + value.second; }),
-            meshClasses.size());
+            meshClasses.size(),
+            static_cast<std::size_t>(std::count_if(
+                interactiveActors_.begin(), interactiveActors_.end(),
+                [](const InteractiveActor& actor) {
+                    return actor.travel && !actor.destinationMap.empty();
+                })));
         for (const auto& meshClass : meshClasses) {
             ALOG(
                 "DeusExQuest: actor mesh format %s count=%zu",
@@ -753,8 +773,14 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             if (transitionPhase_ == MapTransitionPhase::WorldTexture) {
                 DestroySceneGeometry();
                 currentMapName_ = transitionMapName_;
-                worldPosition_ = {0.0f, 0.0f, 0.0f};
-                sceneYaw_ = 0.0f;
+                if (restorePoseAfterTransition_) {
+                    worldPosition_ = restoredWorldPosition_;
+                    sceneYaw_ = restoredSceneYaw_;
+                    restorePoseAfterTransition_ = false;
+                } else {
+                    worldPosition_ = {0.0f, 0.0f, 0.0f};
+                    sceneYaw_ = 0.0f;
+                }
                 if (!LoadFirstTexture()) {
                     throw std::runtime_error("GPU world texture replacement failed");
                 }
@@ -782,6 +808,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                 transitionMapName_.clear();
                 transitionPhase_ = MapTransitionPhase::Idle;
                 displayedInventoryCount_ = invalidRendererIndex_;
+                mapTravelCooldown_ = 3.0f;
             }
             const float milliseconds = std::chrono::duration<float, std::milli>(
                 std::chrono::steady_clock::now() - started).count();
@@ -806,13 +833,15 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         BeginMapLoad(mapNames_[next]);
     }
 
-    void BeginMapLoad(const std::string& mapName) {
+    void BeginMapLoad(
+        const std::string& mapName,
+        const std::string& restoreRuntimePath = {}) {
         if (!pendingMapName_.empty() || !transitionMapName_.empty() || mapName == currentMapName_) {
             return;
         }
         pendingMapName_ = mapName;
         displayedInventoryCount_ = invalidRendererIndex_;
-        mapCacheFuture_ = std::async(std::launch::async, [mapName]() {
+        mapCacheFuture_ = std::async(std::launch::async, [mapName, restoreRuntimePath]() {
             MapPreparation preparation;
             try {
                 if (!BuildQuestMapCache(gameRoot_, mapName.c_str())) {
@@ -822,6 +851,11 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                 const PortablePackageTables map = LoadPortablePackageTables(
                     std::string(gameRoot_) + "/Maps/" + mapName + ".dx");
                 const PortableMapRuntimeSummary runtime = LoadPortableRuntimeMap(map);
+                if (!restoreRuntimePath.empty() &&
+                    !LoadPortableRuntimeState(restoreRuntimePath)) {
+                    preparation.error = "saved runtime restoration failed";
+                    return preparation;
+                }
                 const PortableActorMeshSummary meshes = DecodePortableRuntimeActorMeshes();
                 if (!runtime.passed || !meshes.passed) {
                     preparation.error = "runtime or actor mesh replacement failed";
@@ -852,6 +886,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                 "DeusExQuest: background transition preparation failed for %s: %s",
                 mapName.c_str(),
                 preparation.error.c_str());
+            restorePoseAfterTransition_ = false;
             displayedInventoryCount_ = invalidRendererIndex_;
             return;
         }
@@ -871,6 +906,14 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         std::fclose(file);
         std::remove(requestPath);
         if (!read) return;
+        if (std::strcmp(requested, "SAVE") == 0) {
+            SaveGameState();
+            return;
+        }
+        if (std::strcmp(requested, "LOAD") == 0) {
+            LoadGameState();
+            return;
+        }
         const auto found = std::find(mapNames_.begin(), mapNames_.end(), requested);
         if (found == mapNames_.end()) {
             ALOG("DeusExQuest: rejected unknown requested map %s", requested);
@@ -909,11 +952,62 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                 best->classPath.c_str(),
                 bestDistance,
                 interaction.inventoryCount);
+            if (!interaction.destinationMap.empty()) {
+                RequestDestinationMap(interaction.destinationMap);
+            }
             return interaction.worldChanged;
         } else {
             ALOG("DeusExQuest: VR use found no actor within 3m ray");
         }
         return false;
+    }
+
+    bool RequestDestinationMap(std::string destination) {
+        const std::size_t option = destination.find_first_of("?#");
+        if (option != std::string::npos) destination.resize(option);
+        const std::size_t slash = destination.find_last_of("/\\");
+        if (slash != std::string::npos) destination.erase(0, slash + 1u);
+        if (destination.size() > 3u) {
+            std::string extension = destination.substr(destination.size() - 3u);
+            std::transform(extension.begin(), extension.end(), extension.begin(), [](unsigned char c) {
+                return static_cast<char>(std::tolower(c));
+            });
+            if (extension == ".dx") destination.resize(destination.size() - 3u);
+        }
+        const auto found = std::find_if(
+            mapNames_.begin(), mapNames_.end(), [&](const std::string& candidate) {
+                return candidate.size() == destination.size() && std::equal(
+                    candidate.begin(), candidate.end(), destination.begin(),
+                    [](unsigned char left, unsigned char right) {
+                        return std::tolower(left) == std::tolower(right);
+                    });
+            });
+        if (found == mapNames_.end()) {
+            ALOG("DeusExQuest: map exit destination is not in catalog: %s", destination.c_str());
+            return false;
+        }
+        BeginMapLoad(*found);
+        return !pendingMapName_.empty();
+    }
+
+    void CheckTravelTriggers(const OVR::Vector3f& headPosition) {
+        const OVR::Quatf worldRotation(
+            OVR::Vector3f(0.0f, 1.0f, 0.0f), sceneYaw_);
+        for (const InteractiveActor& actor : interactiveActors_) {
+            if (!actor.travel || actor.destinationMap.empty()) continue;
+            const OVR::Vector3f position =
+                worldRotation.Rotate(actor.localPosition) + worldPosition_;
+            const OVR::Vector3f delta = position - headPosition;
+            if (delta.x * delta.x + delta.z * delta.z <= 0.75f * 0.75f &&
+                std::fabs(delta.y) <= 1.6f && RequestDestinationMap(actor.destinationMap)) {
+                ALOG(
+                    "DeusExQuest: player entered map exit %s -> %s",
+                    actor.objectPath.c_str(),
+                    actor.destinationMap.c_str());
+                mapTravelCooldown_ = 3.0f;
+                return;
+            }
+        }
     }
 
     bool FireTargetedActor(const OVR::Posef& pointerPose) {
@@ -964,12 +1058,15 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         constexpr const char* runtimePath =
             "/data/user/0/dev.deusex.questvr.smoketest/files/DeusEx/quest-save-0.runtime";
         std::FILE* file = std::fopen(metaPath, "wb");
-        const std::uint32_t header[2] = {0x4d515844u, 1u};
+        const std::uint32_t header[2] = {0x4d515844u, 2u};
         const float pose[4] = {
             worldPosition_.x, worldPosition_.y, worldPosition_.z, sceneYaw_};
+        const std::uint32_t mapNameBytes = static_cast<std::uint32_t>(currentMapName_.size());
         const bool metaSaved = file != nullptr &&
             std::fwrite(header, sizeof(header), 1, file) == 1 &&
-            std::fwrite(pose, sizeof(pose), 1, file) == 1;
+            std::fwrite(pose, sizeof(pose), 1, file) == 1 &&
+            std::fwrite(&mapNameBytes, sizeof(mapNameBytes), 1, file) == 1 &&
+            std::fwrite(currentMapName_.data(), 1, mapNameBytes, file) == mapNameBytes;
         if (file != nullptr) std::fclose(file);
         const bool runtimeSaved = SavePortableRuntimeState(runtimePath);
         ALOG(
@@ -985,15 +1082,44 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         std::FILE* file = std::fopen(metaPath, "rb");
         std::uint32_t header[2]{};
         float pose[4]{};
+        std::string savedMapName;
         bool metaLoaded = file != nullptr &&
             std::fread(header, sizeof(header), 1, file) == 1 &&
             std::fread(pose, sizeof(pose), 1, file) == 1 &&
-            header[0] == 0x4d515844u && header[1] == 1u &&
+            header[0] == 0x4d515844u && (header[1] == 1u || header[1] == 2u) &&
             std::isfinite(pose[0]) && std::isfinite(pose[1]) &&
             std::isfinite(pose[2]) && std::isfinite(pose[3]);
+        if (metaLoaded && header[1] == 2u) {
+            std::uint32_t mapNameBytes{};
+            metaLoaded = std::fread(&mapNameBytes, sizeof(mapNameBytes), 1, file) == 1 &&
+                mapNameBytes > 0u && mapNameBytes <= 255u;
+            if (metaLoaded) {
+                savedMapName.resize(mapNameBytes);
+                metaLoaded = std::fread(savedMapName.data(), 1, mapNameBytes, file) == mapNameBytes;
+            }
+        } else if (metaLoaded) {
+            savedMapName = currentMapName_;
+        }
         if (file != nullptr) std::fclose(file);
-        if (!metaLoaded || !LoadPortableRuntimeState(runtimePath)) {
+        if (!metaLoaded) {
             ALOG("DeusExQuest: VR quick-load failed");
+            return;
+        }
+        if (savedMapName != currentMapName_) {
+            const auto found = std::find(mapNames_.begin(), mapNames_.end(), savedMapName);
+            if (found == mapNames_.end()) {
+                ALOG("DeusExQuest: VR quick-load map is unavailable: %s", savedMapName.c_str());
+                return;
+            }
+            restoredWorldPosition_ = {pose[0], pose[1], pose[2]};
+            restoredSceneYaw_ = pose[3];
+            restorePoseAfterTransition_ = true;
+            BeginMapLoad(*found, runtimePath);
+            ALOG("DeusExQuest: VR quick-load restoring map %s", savedMapName.c_str());
+            return;
+        }
+        if (!LoadPortableRuntimeState(runtimePath)) {
+            ALOG("DeusExQuest: VR quick-load runtime failed");
             return;
         }
         worldPosition_ = {pose[0], pose[1], pose[2]};
@@ -1534,6 +1660,10 @@ class DeusExQuestApp final : public OVRFW::XrApp {
     std::string currentMapName_{"00_Training"};
     std::size_t currentMapIndex_{};
     float mapRequestPollSeconds_{};
+    float mapTravelCooldown_{3.0f};
+    bool restorePoseAfterTransition_{};
+    OVR::Vector3f restoredWorldPosition_{};
+    float restoredSceneYaw_{};
     std::string pendingMapName_;
     std::future<MapPreparation> mapCacheFuture_;
     std::string transitionMapName_;
