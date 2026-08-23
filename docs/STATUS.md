@@ -206,5 +206,6 @@ and gameplay.
   render and the HUD reports `LOADING...`.
 - Physical Quest validation completed Training -> TrainingCombat -> Training:
   TrainingCombat loaded 37 materials, 875 actors, and 16,306 collision
-  triangles, then stabilized at 72 fps. The remaining main-thread runtime/GPU
-  swap measured a 1.22-second worst frame and still needs transition staging.
+  triangles, then stabilized at 72 fps. Background runtime/texture preparation
+  plus staged GPU replacement reduced the measured worst transition frame from
+  1.22 seconds to 222 ms; further incremental uploads are still needed.
