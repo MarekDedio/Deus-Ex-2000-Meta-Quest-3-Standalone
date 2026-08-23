@@ -1077,6 +1077,20 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                 DamagePortableRuntimePlayer(10.0f));
             return;
         }
+        if (std::strcmp(requested, "CYCLE") == 0) {
+            const std::size_t count = GetPortableRuntimeInventoryCount();
+            if (count != 0u) selectedInventoryIndex_ = (selectedInventoryIndex_ + 1u) % count;
+            displayedInventoryCount_ = invalidRendererIndex_;
+            ALOG(
+                "DeusExQuest: diagnostic inventory cycle selected=%s",
+                SelectedInventoryLabel(GetPortableRuntimeInventoryItems()).c_str());
+            return;
+        }
+        if (std::strcmp(requested, "CONSUME") == 0) {
+            const bool used = UseSelectedConsumable();
+            ALOG("DeusExQuest: diagnostic consume result=%s", used ? "used" : "not_consumable");
+            return;
+        }
         if (std::strcmp(requested, "PICKUP") == 0) {
             const auto foundInventory = std::find_if(
                 actorSnapshots_.begin(), actorSnapshots_.end(),
@@ -1147,6 +1161,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             }
             return interaction.worldChanged;
         } else {
+            if (UseSelectedConsumable()) return false;
             interactionStatus_ = "NO USABLE TARGET";
             interactionStatusSeconds_ = 2.0f;
             ALOG("DeusExQuest: VR use found no actor within 3m ray");
@@ -1207,6 +1222,48 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         const std::string& path = inventory[selectedInventoryIndex_ % inventory.size()];
         const std::size_t separator = path.find_last_of('.');
         return separator == std::string::npos ? path : path.substr(separator + 1u);
+    }
+
+    bool UseSelectedConsumable() {
+        const std::vector<std::string> inventory = GetPortableRuntimeInventoryItems();
+        if (inventory.empty()) return false;
+        const std::size_t selected = selectedInventoryIndex_ % inventory.size();
+        const std::string& path = inventory[selected];
+        const std::string label = SelectedInventoryLabel(inventory);
+        float healing{};
+        if (label.find("MedKit") != std::string::npos) {
+            healing = 25.0f;
+        } else if (label.find("SoyFood") != std::string::npos ||
+                   label.find("Candybar") != std::string::npos) {
+            healing = 5.0f;
+        } else if (label.find("SodaCan") != std::string::npos ||
+                   label.find("Liquor") != std::string::npos ||
+                   label.find("WineBottle") != std::string::npos) {
+            healing = 2.0f;
+        } else {
+            return false;
+        }
+        const float before = GetPortableRuntimePlayerHealth();
+        if (before >= 100.0f || !ConsumePortableRuntimeInventoryItem(path)) {
+            interactionStatus_ = before >= 100.0f
+                ? "HEALTH ALREADY FULL"
+                : "ITEM UNAVAILABLE";
+            interactionStatusSeconds_ = 2.0f;
+            return true;
+        }
+        const float after = HealPortableRuntimePlayer(healing);
+        const std::size_t remaining = GetPortableRuntimeInventoryCount();
+        if (remaining != 0u) selectedInventoryIndex_ %= remaining;
+        interactionStatus_ = "USED " + label + "  HEALTH " +
+            std::to_string(static_cast<int>(after));
+        interactionStatusSeconds_ = 3.0f;
+        ALOG(
+            "DeusExQuest: VR consumed %s; health %.1f -> %.1f inventory=%zu",
+            path.c_str(),
+            before,
+            after,
+            remaining);
+        return true;
     }
 
     static float SelectedWeaponDamage(const std::vector<std::string>& inventory) {

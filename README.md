@@ -60,7 +60,8 @@ meshes, actor textures, scripts, and ambient sound on-device. Controls are:
 
 - left stick: smooth movement with BSP ground following and wall collision;
 - right stick: 30-degree snap turning;
-- A: use the pointed actor, including pickups and typed actor interactions;
+- A: use the pointed actor, or consume the selected healing item when no actor
+  is targeted;
 - right index trigger: controller-aimed pawn damage;
 - right grip: cycle the selected inventory item;
 - B: asynchronously cache and load the next catalog map;

@@ -226,6 +226,11 @@ and gameplay.
   including pickups, mover open/close, triggers, conversations, exits,
   unsupported actors, and missed rays; interaction results are no longer
   available only through ADB logs.
+- A with no usable target consumes a selected medkit, food, or drink and applies
+  item-specific healing. Physical validation picked up Training's real
+  `Candybar0`, damaged health 100 -> 90, cycled to it, consumed it to reach 95,
+  and reduced inventory from nine items to eight. Save -> damage to 85 -> load
+  restored the post-consumption 95 health state.
 - `01_NYC_UNATCOIsland` physically validated generic non-training loading: 107
   materials, 3,658 actors, 34,140 collision triangles, and two decoded exits,
   followed by steady 72 fps.

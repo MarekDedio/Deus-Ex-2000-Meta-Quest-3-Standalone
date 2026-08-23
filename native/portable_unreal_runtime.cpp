@@ -992,6 +992,14 @@ std::vector<std::string> GetPortableRuntimeInventoryItems() {
     return persistentInventory;
 }
 
+bool ConsumePortableRuntimeInventoryItem(const std::string& objectPath) {
+    const auto found = std::find(
+        persistentInventory.begin(), persistentInventory.end(), objectPath);
+    if (found == persistentInventory.end()) return false;
+    persistentInventory.erase(found);
+    return true;
+}
+
 float GetPortableRuntimePlayerHealth() {
     return persistentPlayerHealth;
 }
@@ -999,6 +1007,13 @@ float GetPortableRuntimePlayerHealth() {
 float DamagePortableRuntimePlayer(float damage) {
     if (std::isfinite(damage) && damage > 0.0f) {
         persistentPlayerHealth = std::max(0.0f, persistentPlayerHealth - damage);
+    }
+    return persistentPlayerHealth;
+}
+
+float HealPortableRuntimePlayer(float amount) {
+    if (std::isfinite(amount) && amount > 0.0f) {
+        persistentPlayerHealth = std::min(100.0f, persistentPlayerHealth + amount);
     }
     return persistentPlayerHealth;
 }
