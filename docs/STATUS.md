@@ -17,6 +17,11 @@
 - The portable vertex-mesh loader now decodes classic UE1 `Mesh` triangle and
   UV streams in addition to `LodMesh` and `SkeletalMesh`, removing another
   format-level reason for physical actors to fall back to cubes.
+- Mover actors now resolve their serialized `Brush` model. The portable model
+  decoder triangulates the authored UE1 BSP polygons, and available doors,
+  lifts, and other movers render at their actor transform with local map
+  lighting instead of being omitted as metadata. Unsupported mover brushes
+  remain non-fatal and are named in the Android diagnostics.
 
 ## Verified on 2026-08-23
 

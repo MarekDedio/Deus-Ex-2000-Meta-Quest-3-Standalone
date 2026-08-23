@@ -941,6 +941,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             originZ);
         std::size_t visible{};
         std::size_t meshInstances{};
+        std::size_t brushInstances{};
         std::size_t spriteInstances{};
         std::size_t cubePlaceholders{};
         std::size_t hiddenActors{};
@@ -949,6 +950,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         std::map<std::string, std::size_t> meshClasses;
         std::map<std::string, std::size_t> cubeClasses;
         std::map<std::string, OVRFW::GlGeometry::Descriptor> meshDescriptors;
+        std::map<std::string, OVRFW::GlGeometry::Descriptor> brushDescriptors;
         const OVRFW::GlGeometry::Descriptor spriteDescriptor =
             BuildCrossedSpriteDescriptor();
         std::unordered_map<std::string, std::size_t> textureLayers;
@@ -996,7 +998,44 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                 scale = {0.35f, 0.35f, 0.35f};
             }
             bool renderedMesh = false;
-            if (!actor.hidden && !actor.meshPath.empty()) {
+            if (!actor.hidden && actor.mover && !actor.brushPath.empty()) {
+                try {
+                    auto descriptor = brushDescriptors.find(actor.brushPath);
+                    if (descriptor == brushDescriptors.end()) {
+                        const PortableLodMesh brush = GetPortableRuntimeBrush(actor.brushPath);
+                        descriptor = brushDescriptors.emplace(
+                            actor.brushPath, BuildLodMeshDescriptor(brush, 0u)).first;
+                    }
+                    constexpr float unrealAngle =
+                        6.28318530717958647692f / 65536.0f;
+                    const float yaw = -static_cast<float>(actor.yaw) * unrealAngle;
+                    const float pitch = -static_cast<float>(actor.pitch) * unrealAngle;
+                    const float roll = static_cast<float>(actor.roll) * unrealAngle;
+                    geometry.Add(
+                        descriptor->second,
+                        OVRFW::GeometryBuilder::kInvalidIndex,
+                        OVR::Vector4f(
+                            std::clamp(actorLighting.x, 0.18f, 1.0f),
+                            std::clamp(actorLighting.y, 0.18f, 1.0f),
+                            std::clamp(actorLighting.z, 0.18f, 1.0f),
+                            1.0f),
+                        OVR::Matrix4f::Translation(position) *
+                            OVR::Matrix4f(OVR::Quatf(
+                                OVR::Vector3f(0.0f, 1.0f, 0.0f), yaw)) *
+                            OVR::Matrix4f(OVR::Quatf(
+                                OVR::Vector3f(1.0f, 0.0f, 0.0f), pitch)) *
+                            OVR::Matrix4f(OVR::Quatf(
+                                OVR::Vector3f(0.0f, 0.0f, 1.0f), roll)));
+                    renderedMesh = true;
+                    ++brushInstances;
+                } catch (const std::exception& error) {
+                    ALOG(
+                        "DeusExQuest: mover brush render fallback for %s: %s",
+                        actor.brushPath.c_str(),
+                        error.what());
+                }
+            }
+            if (!renderedMesh && !actor.hidden && !actor.meshPath.empty()) {
                 try {
                     const PortableLodMesh mesh = GetPortableRuntimeMesh(actor.meshPath);
                     constexpr float unrealAngle =
@@ -1124,10 +1163,11 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                 texturedGeometry.ToGeometryDescriptor(), actorTexture_, false);
         }
         ALOG(
-            "DeusExQuest: instantiated %zu targetable actors from %zu live actors (%zu vertex meshes, %zu sprites, %zu cube placeholders, %zu hidden, %zu mesh-bearing, %zu mesh formats, %zu map exits)",
+            "DeusExQuest: instantiated %zu targetable actors from %zu live actors (%zu vertex meshes, %zu mover brushes, %zu sprites, %zu cube placeholders, %zu hidden, %zu mesh-bearing, %zu mesh formats, %zu map exits)",
             visible,
             actorSnapshots_.size(),
             meshInstances,
+            brushInstances,
             spriteInstances,
             cubePlaceholders,
             hiddenActors,

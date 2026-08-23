@@ -104,6 +104,9 @@ struct PortableActorMeshSummary {
     std::size_t referencedMeshes{};
     std::size_t decodedMeshes{};
     std::size_t triangleVertices{};
+    std::size_t referencedBrushes{};
+    std::size_t decodedBrushes{};
+    std::size_t brushTriangleVertices{};
 };
 
 struct PortableTextureArray {
@@ -195,6 +198,7 @@ struct PortableActorSnapshot {
     std::int32_t roll{};
     std::string meshPath;
     std::string meshClassPath;
+    std::string brushPath;
     std::string texturePath;
     std::string ambientSoundPath;
     std::uint8_t soundRadius{64u};
@@ -214,6 +218,7 @@ std::size_t UnloadPortableRuntimeMap();
 std::vector<PortableActorSnapshot> GetPortableRuntimeMapActors();
 PortableActorMeshSummary DecodePortableRuntimeActorMeshes();
 PortableLodMesh GetPortableRuntimeMesh(const std::string& meshPath);
+PortableLodMesh GetPortableRuntimeBrush(const std::string& brushPath);
 PortableTextureArray BuildPortableRuntimeActorTextureArray(
     std::uint32_t width,
     std::uint32_t height);

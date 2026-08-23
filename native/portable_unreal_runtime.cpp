@@ -40,6 +40,7 @@ public:
     std::string sourcePath;
     std::size_t exportIndex{};
     std::unique_ptr<PortableLodMesh> lodMesh;
+    std::unique_ptr<PortableLodMesh> brushMesh;
     bool active{true};
     bool activated{};
     bool healthInitialized{};
@@ -1402,6 +1403,7 @@ std::vector<PortableActorSnapshot> GetPortableRuntimeMapActors() {
             snapshot.meshClassPath = mesh->second->reflection.metaClass;
         }
         snapshot.texturePath = resolveInheritedObjectProperty("Texture");
+        snapshot.brushPath = resolveInheritedObjectProperty("Brush");
         snapshot.ambientSoundPath = resolveInheritedObjectProperty("AmbientSound");
         const auto readInheritedByte = [&](const char* name, std::uint8_t fallback) {
             const PortableTaggedProperty* property = inheritedProperty(name);
@@ -1450,10 +1452,13 @@ PortableActorMeshSummary DecodePortableRuntimeActorMeshes() {
     PortableActorMeshSummary summary;
     const std::vector<PortableActorSnapshot> actors = GetPortableRuntimeMapActors();
     std::set<std::string> meshPaths;
+    std::set<std::string> brushPaths;
     for (const PortableActorSnapshot& actor : actors) {
         if (!actor.meshPath.empty()) meshPaths.insert(actor.meshPath);
+        if (actor.mover && !actor.brushPath.empty()) brushPaths.insert(actor.brushPath);
     }
     summary.referencedMeshes = meshPaths.size();
+    summary.referencedBrushes = brushPaths.size();
     std::unordered_map<std::string, PortablePackageTables> packages;
     for (const std::string& meshPath : meshPaths) {
         const auto found = persistentQualifiedObjects.find(meshPath);
@@ -1478,6 +1483,30 @@ PortableActorMeshSummary DecodePortableRuntimeActorMeshes() {
         summary.triangleVertices += meshObject->lodMesh->triangles.size();
         ++summary.decodedMeshes;
     }
+    for (const std::string& brushPath : brushPaths) {
+        const auto found = persistentQualifiedObjects.find(brushPath);
+        if (found == persistentQualifiedObjects.end()) continue;
+        RuntimeObject* brushObject = found->second;
+        auto package = packages.find(brushObject->sourcePath);
+        if (package == packages.end()) {
+            package = packages.emplace(
+                brushObject->sourcePath,
+                LoadPortablePackageTables(brushObject->sourcePath)).first;
+        }
+        try {
+            brushObject->brushMesh = std::make_unique<PortableLodMesh>(
+                LoadPortableBrushMesh(package->second, brushObject->exportIndex));
+            summary.brushTriangleVertices += brushObject->brushMesh->triangles.size();
+            ++summary.decodedBrushes;
+        } catch (const std::exception& error) {
+            __android_log_print(
+                ANDROID_LOG_WARN,
+                "quest_main",
+                "DeusExQuest: mover brush fallback for %s: %s",
+                brushPath.c_str(),
+                error.what());
+        }
+    }
     summary.passed = summary.referencedMeshes != 0 &&
         summary.decodedMeshes == summary.referencedMeshes &&
         summary.triangleVertices != 0;
@@ -1490,6 +1519,14 @@ PortableLodMesh GetPortableRuntimeMesh(const std::string& meshPath) {
         throw std::runtime_error("Portable actor mesh is not decoded: " + meshPath);
     }
     return *found->second->lodMesh;
+}
+
+PortableLodMesh GetPortableRuntimeBrush(const std::string& brushPath) {
+    const auto found = persistentQualifiedObjects.find(brushPath);
+    if (found == persistentQualifiedObjects.end() || !found->second->brushMesh) {
+        throw std::runtime_error("Portable actor brush is not decoded: " + brushPath);
+    }
+    return *found->second->brushMesh;
 }
 
 PortableTextureArray BuildPortableRuntimeActorTextureArray(

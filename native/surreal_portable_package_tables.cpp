@@ -1190,3 +1190,119 @@ PortableLodMesh LoadPortableLodMesh(
     }
     return result;
 }
+
+PortableLodMesh LoadPortableBrushMesh(
+    const PortablePackageTables& package,
+    std::size_t exportIndex) {
+    if (exportIndex >= package.exports.size()) {
+        throw std::runtime_error("UE1 brush Model export index is outside the table");
+    }
+    const ExportTableEntry& entry = package.exports[exportIndex];
+    std::string metaClass = ResolvePortableObjectPath(entry.ObjClass, package);
+    const std::size_t separator = metaClass.find_last_of('.');
+    if (separator != std::string::npos) metaClass.erase(0, separator + 1u);
+    if (metaClass != "Model") {
+        throw std::runtime_error("UE1 brush export is not a Model");
+    }
+
+    std::vector<std::uint8_t> bytes(static_cast<std::size_t>(entry.ObjSize));
+    const std::shared_ptr<File> file = File::open_existing(package.sourcePath);
+    file->seek(entry.ObjOffset);
+    file->read(bytes.data(), bytes.size());
+    PayloadReader reader(std::move(bytes));
+    const PortablePropertyStream properties = LoadPortableExportProperties(package, exportIndex);
+    reader.Skip(properties.bytesConsumed);
+    reader.Skip(41u); // UPrimitive bounds and sphere for package version 68.
+
+    const auto count = [&](const char* label, std::size_t limit) {
+        const std::int32_t value = reader.ReadIndex();
+        if (value < 0 || static_cast<std::size_t>(value) > limit) {
+            throw std::runtime_error(std::string("UE1 brush invalid ") + label + " count");
+        }
+        return static_cast<std::size_t>(value);
+    };
+    struct Vector { float x, y, z; };
+    const std::size_t vectorCount = count("vector", 1'000'000u);
+    std::vector<Vector> vectors(vectorCount);
+    for (Vector& vector : vectors) {
+        vector = {reader.ReadFloat(), reader.ReadFloat(), reader.ReadFloat()};
+    }
+    const std::size_t pointCount = count("point", 1'000'000u);
+    std::vector<Vector> points(pointCount);
+    for (Vector& point : points) {
+        point = {reader.ReadFloat(), reader.ReadFloat(), reader.ReadFloat()};
+    }
+    struct Node {
+        std::int32_t vertexPool{};
+        std::int32_t surface{};
+        std::uint8_t vertexCount{};
+    };
+    const std::size_t nodeCount = count("node", 1'000'000u);
+    std::vector<Node> nodes;
+    nodes.reserve(nodeCount);
+    for (std::size_t index = 0; index < nodeCount; ++index) {
+        reader.Skip(25u); // Plane, zone mask, and node flags.
+        std::int32_t fields[9]{};
+        for (std::int32_t& field : fields) field = reader.ReadIndex();
+        const std::uint8_t vertexCount = reader.ReadUInt8();
+        reader.Skip(8u);
+        nodes.push_back({fields[0], fields[1], vertexCount});
+    }
+    const std::size_t surfaceCount = count("surface", 1'000'000u);
+    std::vector<std::uint32_t> surfaceFlags;
+    surfaceFlags.reserve(surfaceCount);
+    for (std::size_t index = 0; index < surfaceCount; ++index) {
+        const std::int32_t material = reader.ReadIndex();
+        ValidateObjectReference(material, package.imports.size(), package.exports.size());
+        surfaceFlags.push_back(reader.ReadUInt32());
+        for (std::size_t field = 0; field < 6u; ++field) reader.ReadIndex();
+        reader.ReadUInt16(); // PanU
+        reader.ReadUInt16(); // PanV
+        const std::int32_t brushActor = reader.ReadIndex();
+        ValidateObjectReference(brushActor, package.imports.size(), package.exports.size());
+    }
+    struct BspVertex { std::int32_t point{}; };
+    const std::size_t vertexCount = count("BSP vertex", 2'000'000u);
+    std::vector<BspVertex> vertices;
+    vertices.reserve(vertexCount);
+    for (std::size_t index = 0; index < vertexCount; ++index) {
+        const std::int32_t point = reader.ReadIndex();
+        reader.ReadIndex(); // Shared-side index.
+        vertices.push_back({point});
+    }
+
+    PortableLodMesh result;
+    for (const Node& node : nodes) {
+        if (node.vertexCount < 3u || node.vertexPool < 0 || node.surface < 0 ||
+            static_cast<std::size_t>(node.surface) >= surfaceFlags.size() ||
+            (surfaceFlags[static_cast<std::size_t>(node.surface)] & 0x00000001u) != 0u ||
+            static_cast<std::uint64_t>(node.vertexPool) + node.vertexCount > vertices.size()) {
+            continue;
+        }
+        std::vector<const Vector*> polygon;
+        polygon.reserve(node.vertexCount);
+        for (std::size_t corner = 0; corner < node.vertexCount; ++corner) {
+            const std::int32_t point = vertices[
+                static_cast<std::size_t>(node.vertexPool) + corner].point;
+            if (point < 0 || static_cast<std::size_t>(point) >= points.size()) {
+                polygon.clear();
+                break;
+            }
+            polygon.push_back(&points[static_cast<std::size_t>(point)]);
+        }
+        if (polygon.size() < 3u) continue;
+        for (std::size_t corner = 1u; corner + 1u < polygon.size(); ++corner) {
+            const std::size_t order[] = {0u, corner, corner + 1u, 0u, corner + 1u, corner};
+            for (const std::size_t polygonIndex : order) {
+                const Vector& point = *polygon[polygonIndex];
+                result.triangles.push_back({point.x, point.y, point.z, 0.0f, 0.0f, 0u});
+            }
+        }
+    }
+    if (result.triangles.empty()) {
+        throw std::runtime_error("UE1 brush Model has no renderable polygons");
+    }
+    result.frameVertices = static_cast<std::uint32_t>(result.triangles.size());
+    result.animationFrames = 1u;
+    return result;
+}

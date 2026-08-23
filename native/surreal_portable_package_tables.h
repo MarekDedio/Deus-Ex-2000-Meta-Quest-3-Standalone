@@ -165,3 +165,6 @@ PortableClassDescriptor LoadPortableClassDescriptor(
 PortableLodMesh LoadPortableLodMesh(
     const PortablePackageTables& package,
     std::size_t exportIndex);
+PortableLodMesh LoadPortableBrushMesh(
+    const PortablePackageTables& package,
+    std::size_t exportIndex);
