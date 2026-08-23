@@ -222,6 +222,10 @@ and gameplay.
 - Right grip cycles persistent inventory and the HUD shows the selected object.
   Physical pickup validation selected `00_Training.Multitool0`; non-weapons no
   longer provide free hitscan, while weapon families set damage and range.
+- The head-locked HUD now reports each A-button interaction for three seconds,
+  including pickups, mover open/close, triggers, conversations, exits,
+  unsupported actors, and missed rays; interaction results are no longer
+  available only through ADB logs.
 - `01_NYC_UNATCOIsland` physically validated generic non-training loading: 107
   materials, 3,658 actors, 34,140 collision triangles, and two decoded exits,
   followed by steady 72 fps.

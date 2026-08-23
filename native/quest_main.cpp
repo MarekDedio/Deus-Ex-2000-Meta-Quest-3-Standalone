@@ -310,6 +310,11 @@ class DeusExQuestApp final : public OVRFW::XrApp {
     }
 
     void Update(const OVRFW::ovrApplFrameIn& frame) override {
+        if (interactionStatusSeconds_ > 0.0f) {
+            interactionStatusSeconds_ = std::max(
+                0.0f, interactionStatusSeconds_ - frame.DeltaSeconds);
+            if (interactionStatusSeconds_ == 0.0f) interactionStatus_.clear();
+        }
         ++performanceFrames_;
         performanceSeconds_ += frame.DeltaSeconds;
         performanceWorstDelta_ = std::max(performanceWorstDelta_, frame.DeltaSeconds);
@@ -444,18 +449,21 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             const std::string selectedItem = SelectedInventoryLabel(inventory);
             if (inventoryCount != displayedInventoryCount_ ||
                 std::fabs(playerHealth - displayedPlayerHealth_) > 0.01f ||
-                selectedItem != displayedSelectedInventory_) {
+                selectedItem != displayedSelectedInventory_ ||
+                interactionStatus_ != displayedInteractionStatus_) {
                 hudLabel_->SetText(
-                    "%s   HEALTH %.0f   INVENTORY %zu   ITEM %s\nA USE   TRIGGER FIRE   GRIP CYCLE   B NEXT MAP   Y SAVE   X LOAD",
+                    "%s   HEALTH %.0f   INVENTORY %zu   ITEM %s\n%s\nA USE   TRIGGER FIRE   GRIP CYCLE   B NEXT MAP   Y SAVE   X LOAD",
                     pendingMapName_.empty() && transitionMapName_.empty()
                         ? currentMapName_.c_str()
                         : "LOADING...",
                     playerHealth,
                     inventoryCount,
-                    selectedItem.c_str());
+                    selectedItem.c_str(),
+                    interactionStatus_.empty() ? "READY" : interactionStatus_.c_str());
                 displayedInventoryCount_ = inventoryCount;
                 displayedPlayerHealth_ = playerHealth;
                 displayedSelectedInventory_ = selectedItem;
+                displayedInteractionStatus_ = interactionStatus_;
             }
         }
         ui_.Update(frame);
@@ -1119,6 +1127,14 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         if (best != nullptr) {
             const PortableInteractionResult interaction =
                 InteractPortableRuntimeActor(best->objectPath);
+            const std::size_t separator = best->objectPath.find_last_of('.');
+            const std::string actorName = separator == std::string::npos
+                ? best->objectPath
+                : best->objectPath.substr(separator + 1u);
+            interactionStatus_ = interaction.handled
+                ? interaction.action + ": " + actorName
+                : "CANNOT USE: " + actorName;
+            interactionStatusSeconds_ = 3.0f;
             ALOG(
                 "DeusExQuest: VR use %s on %s (%s) at %.2fm; inventory=%zu",
                 interaction.action.c_str(),
@@ -1131,6 +1147,8 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             }
             return interaction.worldChanged;
         } else {
+            interactionStatus_ = "NO USABLE TARGET";
+            interactionStatusSeconds_ = 2.0f;
             ALOG("DeusExQuest: VR use found no actor within 3m ray");
         }
         return false;
@@ -2168,6 +2186,9 @@ class DeusExQuestApp final : public OVRFW::XrApp {
     std::size_t displayedInventoryCount_{invalidRendererIndex_};
     float displayedPlayerHealth_{-1.0f};
     std::string displayedSelectedInventory_;
+    std::string interactionStatus_;
+    std::string displayedInteractionStatus_;
+    float interactionStatusSeconds_{};
     static constexpr const char* gameRoot_ =
         "/data/user/0/dev.deusex.questvr.smoketest/files/DeusEx";
     std::vector<std::string> mapNames_;
