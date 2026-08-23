@@ -77,6 +77,8 @@ The HUD names the selected inventory item. Trigger attacks require a selected
 weapon, use weapon-family damage, and constrain melee weapons to arm's reach.
 
 The training scene has been measured at a steady 72 fps on a physical Quest 3.
+The first campaign map, `01_NYC_UNATCOIsland`, also stabilizes at 72 fps with
+proximity-streamed actors and an eight-meter collision grid.
 Generic visual map-cache generation and runtime/GPU transitions now work and
 have been physically verified for Training to TrainingCombat and back. The
 remaining major work is progression-driven (rather than debug-button) travel,

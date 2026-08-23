@@ -56,11 +56,13 @@ class TexturedGeometryRenderer {
         static OVRFW::ovrProgramParm uniformParms[] = {
             {.Name = "Texture0", .Type = OVRFW::ovrProgramParmType::TEXTURE_SAMPLED},
         };
-        program_ = OVRFW::GlProgram::Build(
-            "", vertexShader, "", fragmentShader, uniformParms, 1);
+        if (!sharedProgram_.IsValid()) {
+            sharedProgram_ = OVRFW::GlProgram::Build(
+                "", vertexShader, "", fragmentShader, uniformParms, 1);
+        }
         surface_.geo = OVRFW::GlGeometry(descriptor.attribs, descriptor.indices);
         OVRFW::ovrGraphicsCommand& command = surface_.graphicsCommand;
-        command.Program = program_;
+        command.Program = sharedProgram_;
         command.Textures[0] = texture;
         command.UniformData[0].Data = &command.Textures[0];
         command.GpuState.depthEnable = command.GpuState.depthMaskEnable = true;
@@ -68,8 +70,10 @@ class TexturedGeometryRenderer {
     }
 
     void Shutdown() {
-        OVRFW::GlProgram::Free(program_);
         surface_.geo.Free();
+    }
+    static void ShutdownSharedProgram() {
+        if (sharedProgram_.IsValid()) OVRFW::GlProgram::Free(sharedProgram_);
     }
     void SetPose(const OVR::Posef& pose) { pose_ = pose; }
     void Update() {
@@ -84,7 +88,7 @@ class TexturedGeometryRenderer {
 
    private:
     OVRFW::ovrSurfaceDef surface_;
-    OVRFW::GlProgram program_;
+    inline static OVRFW::GlProgram sharedProgram_;
     OVR::Posef pose_ = OVR::Posef::Identity();
     OVR::Matrix4f modelMatrix_ = OVR::Matrix4f::Identity();
 };
@@ -322,6 +326,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             performanceWorstDelta_ = 0.0f;
         }
         float headYaw{}, headPitch{}, headRoll{};
+        currentHeadStage_ = frame.HeadPose.Translation;
         frame.HeadPose.Rotation.GetEulerAngles<OVR::Axis_Y, OVR::Axis_X, OVR::Axis_Z>(
             &headYaw, &headPitch, &headRoll);
         (void)headPitch;
@@ -372,6 +377,15 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         mapTravelCooldown_ = std::max(0.0f, mapTravelCooldown_ - frame.DeltaSeconds);
         if (!mapLoading && mapTravelCooldown_ <= 0.0f) {
             CheckTravelTriggers(frame.HeadPose.Translation);
+        }
+        if (!mapLoading && actorSnapshots_.size() > 2000u) {
+            const OVR::Vector3f playerLocal = StageToLocal(currentHeadStage_, worldPosition_);
+            const float dx = playerLocal.x - actorStreamingCenter_.x;
+            const float dz = playerLocal.z - actorStreamingCenter_.z;
+            if (dx * dx + dz * dz > 20.0f * 20.0f) {
+                DestroyActorGeometry();
+                BuildActorMarkers();
+            }
         }
         if (!mapLoading && frame.RightRemoteTracked && frame.Clicked(frame.kButtonA)) {
             if (UseTargetedActor(frame.RightRemotePointPose)) {
@@ -459,6 +473,11 @@ class DeusExQuestApp final : public OVRFW::XrApp {
 
     void SessionEnd() override {
         if (mapCacheFuture_.valid()) mapCacheFuture_.wait();
+        if (pendingWorldTextureId_ != 0u) {
+            glDeleteTextures(1, &pendingWorldTextureId_);
+            pendingWorldTextureId_ = 0u;
+        }
+        pendingWorldTextureRgba_.clear();
         StopAmbientAudio();
         leftController_.Shutdown();
         rightController_.Shutdown();
@@ -466,6 +485,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         for (auto& renderer : texturedRenderers_) renderer.Shutdown();
         worldRenderers_.clear();
         texturedRenderers_.clear();
+        TexturedGeometryRenderer::ShutdownSharedProgram();
         if (firstTexture_.IsValid()) {
             OVRFW::FreeTexture(firstTexture_);
             firstTexture_ = {};
@@ -486,10 +506,19 @@ class DeusExQuestApp final : public OVRFW::XrApp {
    private:
     enum class MapTransitionPhase {
         Idle,
-        WorldTexture,
+        WorldTextureAllocate,
+        WorldTextureUpload,
         WorldGeometry,
         ActorTextures,
         ActorGeometry
+    };
+
+    struct WorldTexturePreparation {
+        bool passed{};
+        std::uint32_t width{};
+        std::uint32_t height{};
+        std::uint32_t layers{};
+        std::vector<std::uint8_t> rgba;
     };
 
     struct MapPreparation {
@@ -497,6 +526,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         std::string error;
         std::vector<PortableActorSnapshot> actors;
         PortableTextureArray actorTextures;
+        WorldTexturePreparation worldTexture;
     };
 
     struct InteractiveActor {
@@ -580,6 +610,8 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             originZ);
         std::size_t visible{};
         std::size_t meshInstances{};
+        const OVR::Vector3f playerLocal = StageToLocal(currentHeadStage_, worldPosition_);
+        actorStreamingCenter_ = playerLocal;
         std::map<std::string, std::size_t> meshClasses;
         std::map<std::string, OVRFW::GlGeometry::Descriptor> meshDescriptors;
         std::unordered_map<std::string, std::size_t> textureLayers;
@@ -587,7 +619,6 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             textureLayers.emplace(actorTexturePaths_[layer], layer);
         }
         for (const PortableActorSnapshot& actor : actorSnapshots_) {
-            if (!actor.meshPath.empty()) ++meshClasses[actor.meshClassPath];
             if (!actor.hasLocation ||
                 !(actor.pawn || actor.inventory || actor.decoration ||
                   actor.mover || actor.trigger || actor.travel)) {
@@ -597,6 +628,12 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                 (actor.y - originY) * unitsToMeters,
                 (actor.z - originZ) * unitsToMeters + 1.0f,
                 -(actor.x - originX) * unitsToMeters);
+            if (actorSnapshots_.size() > 2000u) {
+                const float dx = position.x - playerLocal.x;
+                const float dz = position.z - playerLocal.z;
+                if (dx * dx + dz * dz > 45.0f * 45.0f) continue;
+            }
+            if (!actor.meshPath.empty()) ++meshClasses[actor.meshClassPath];
             OVR::Vector4f color;
             OVR::Vector3f scale;
             if (actor.pawn) {
@@ -797,7 +834,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         if (transitionPhase_ == MapTransitionPhase::Idle) return true;
         const auto started = std::chrono::steady_clock::now();
         try {
-            if (transitionPhase_ == MapTransitionPhase::WorldTexture) {
+            if (transitionPhase_ == MapTransitionPhase::WorldTextureAllocate) {
                 DestroySceneGeometry();
                 currentMapName_ = transitionMapName_;
                 if (restorePoseAfterTransition_) {
@@ -808,10 +845,17 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                     worldPosition_ = {0.0f, 0.0f, 0.0f};
                     sceneYaw_ = 0.0f;
                 }
-                if (!LoadFirstTexture()) {
-                    throw std::runtime_error("GPU world texture replacement failed");
+                if (!BeginWorldTextureUpload(std::move(preparedWorldTexture_))) {
+                    throw std::runtime_error("GPU world texture allocation failed");
                 }
-                transitionPhase_ = MapTransitionPhase::WorldGeometry;
+                transitionPhase_ = MapTransitionPhase::WorldTextureUpload;
+            } else if (transitionPhase_ == MapTransitionPhase::WorldTextureUpload) {
+                if (!UploadWorldTextureLayers(4u)) {
+                    throw std::runtime_error("GPU world texture upload failed");
+                }
+                if (pendingWorldTextureLayersUploaded_ == pendingWorldTextureLayers_) {
+                    transitionPhase_ = MapTransitionPhase::WorldGeometry;
+                }
             } else if (transitionPhase_ == MapTransitionPhase::WorldGeometry) {
                 if (!LoadWorldMesh(false)) throw std::runtime_error("GPU world replacement failed");
                 transitionPhase_ = MapTransitionPhase::ActorTextures;
@@ -849,6 +893,11 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                 error.what());
             transitionMapName_.clear();
             transitionPhase_ = MapTransitionPhase::Idle;
+            if (pendingWorldTextureId_ != 0u) {
+                glDeleteTextures(1, &pendingWorldTextureId_);
+                pendingWorldTextureId_ = 0u;
+            }
+            pendingWorldTextureRgba_.clear();
             preparedActorSnapshots_.clear();
             displayedInventoryCount_ = invalidRendererIndex_;
             return false;
@@ -874,6 +923,11 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             try {
                 if (!BuildQuestMapCache(gameRoot_, mapName.c_str())) {
                     preparation.error = "visual cache generation failed";
+                    return preparation;
+                }
+                preparation.worldTexture = LoadWorldTextureCacheCpu();
+                if (!preparation.worldTexture.passed) {
+                    preparation.error = "world texture cache read failed";
                     return preparation;
                 }
                 const PortablePackageTables map = LoadPortablePackageTables(
@@ -920,8 +974,9 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         }
         preparedActorSnapshots_ = std::move(preparation.actors);
         preparedActorTextures_ = std::move(preparation.actorTextures);
+        preparedWorldTexture_ = std::move(preparation.worldTexture);
         transitionMapName_ = mapName;
-        transitionPhase_ = MapTransitionPhase::WorldTexture;
+        transitionPhase_ = MapTransitionPhase::WorldTextureAllocate;
     }
 
     void PollMapTransitionRequest() {
@@ -1376,7 +1431,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
     }
 
     static int CollisionCell(float coordinate) {
-        constexpr float cellSize = 2.0f;
+        constexpr float cellSize = 8.0f;
         return static_cast<int>(std::floor(coordinate / cellSize));
     }
 
@@ -1641,9 +1696,8 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             array.rgba.data());
         glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_S, GL_REPEAT);
         glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_T, GL_REPEAT);
-        glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
         glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-        glGenerateMipmap(GL_TEXTURE_2D_ARRAY);
         const GLenum error = glGetError();
         glBindTexture(GL_TEXTURE_2D_ARRAY, 0);
         if (error != GL_NO_ERROR) {
@@ -1658,6 +1712,112 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             static_cast<int>(array.height));
         actorTexturePaths_ = std::move(array.texturePaths);
         return actorTexture_.IsValid();
+    }
+
+    static WorldTexturePreparation LoadWorldTextureCacheCpu() {
+        constexpr const char* path =
+            "/data/user/0/dev.deusex.questvr.smoketest/files/DeusEx/quest-material-array.rgba";
+        WorldTexturePreparation result;
+        std::FILE* file = std::fopen(path, "rb");
+        if (file == nullptr) return result;
+        std::uint32_t magic{}, version{};
+        result.passed = std::fread(&magic, sizeof(magic), 1, file) == 1 &&
+            std::fread(&version, sizeof(version), 1, file) == 1 &&
+            std::fread(&result.width, sizeof(result.width), 1, file) == 1 &&
+            std::fread(&result.height, sizeof(result.height), 1, file) == 1 &&
+            std::fread(&result.layers, sizeof(result.layers), 1, file) == 1 &&
+            magic == 0x41515844u && version == 1u &&
+            result.width > 0u && result.height > 0u && result.layers > 0u &&
+            result.layers <= 255u && result.width <= 2048u && result.height <= 2048u;
+        if (result.passed) {
+            result.rgba.resize(
+                static_cast<std::size_t>(result.width) * result.height * result.layers * 4u);
+            result.passed =
+                std::fread(result.rgba.data(), 1, result.rgba.size(), file) == result.rgba.size();
+        }
+        std::fclose(file);
+        if (!result.passed) result.rgba.clear();
+        return result;
+    }
+
+    bool BeginWorldTextureUpload(WorldTexturePreparation preparation) {
+        if (!preparation.passed || preparation.rgba.empty()) return false;
+        GLuint texture{};
+        glGenTextures(1, &texture);
+        glBindTexture(GL_TEXTURE_2D_ARRAY, texture);
+        glTexImage3D(
+            GL_TEXTURE_2D_ARRAY,
+            0,
+            GL_RGBA8,
+            static_cast<GLsizei>(preparation.width),
+            static_cast<GLsizei>(preparation.height),
+            static_cast<GLsizei>(preparation.layers),
+            0,
+            GL_RGBA,
+            GL_UNSIGNED_BYTE,
+            nullptr);
+        glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_S, GL_REPEAT);
+        glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_T, GL_REPEAT);
+        glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        const GLenum error = glGetError();
+        glBindTexture(GL_TEXTURE_2D_ARRAY, 0);
+        if (error != GL_NO_ERROR) {
+            if (texture != 0u) glDeleteTextures(1, &texture);
+            return false;
+        }
+        pendingWorldTextureId_ = texture;
+        pendingWorldTextureWidth_ = preparation.width;
+        pendingWorldTextureHeight_ = preparation.height;
+        pendingWorldTextureLayers_ = preparation.layers;
+        pendingWorldTextureLayersUploaded_ = 0u;
+        pendingWorldTextureRgba_ = std::move(preparation.rgba);
+        return true;
+    }
+
+    bool UploadWorldTextureLayers(std::uint32_t maximumLayers) {
+        if (pendingWorldTextureId_ == 0u || maximumLayers == 0u ||
+            pendingWorldTextureLayersUploaded_ >= pendingWorldTextureLayers_) {
+            return false;
+        }
+        const std::uint32_t layers = std::min(
+            maximumLayers,
+            pendingWorldTextureLayers_ - pendingWorldTextureLayersUploaded_);
+        const std::size_t bytesPerLayer = static_cast<std::size_t>(
+            pendingWorldTextureWidth_) * pendingWorldTextureHeight_ * 4u;
+        glBindTexture(GL_TEXTURE_2D_ARRAY, pendingWorldTextureId_);
+        glTexSubImage3D(
+            GL_TEXTURE_2D_ARRAY,
+            0,
+            0,
+            0,
+            static_cast<GLint>(pendingWorldTextureLayersUploaded_),
+            static_cast<GLsizei>(pendingWorldTextureWidth_),
+            static_cast<GLsizei>(pendingWorldTextureHeight_),
+            static_cast<GLsizei>(layers),
+            GL_RGBA,
+            GL_UNSIGNED_BYTE,
+            pendingWorldTextureRgba_.data() +
+                bytesPerLayer * pendingWorldTextureLayersUploaded_);
+        const GLenum error = glGetError();
+        glBindTexture(GL_TEXTURE_2D_ARRAY, 0);
+        if (error != GL_NO_ERROR) return false;
+        pendingWorldTextureLayersUploaded_ += layers;
+        if (pendingWorldTextureLayersUploaded_ == pendingWorldTextureLayers_) {
+            firstTexture_ = OVRFW::GlTexture(
+                pendingWorldTextureId_,
+                GL_TEXTURE_2D_ARRAY,
+                static_cast<int>(pendingWorldTextureWidth_),
+                static_cast<int>(pendingWorldTextureHeight_));
+            pendingWorldTextureId_ = 0u;
+            pendingWorldTextureRgba_.clear();
+            ALOG(
+                "DeusExQuest: staged UE1 material array upload complete: %u layers at %ux%u",
+                pendingWorldTextureLayers_,
+                pendingWorldTextureWidth_,
+                pendingWorldTextureHeight_);
+        }
+        return true;
     }
 
     bool LoadFirstTexture() {
@@ -1696,9 +1856,8 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             rgba.data());
         glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_S, GL_REPEAT);
         glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_T, GL_REPEAT);
-        glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
         glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-        glGenerateMipmap(GL_TEXTURE_2D_ARRAY);
         const GLenum error = glGetError();
         glBindTexture(GL_TEXTURE_2D_ARRAY, 0);
         if (error != GL_NO_ERROR) {
@@ -1734,6 +1893,8 @@ class DeusExQuestApp final : public OVRFW::XrApp {
     std::unordered_map<std::int64_t, std::vector<std::uint32_t>> collisionGrid_;
     std::vector<std::uint32_t> oversizedCollisionTriangles_;
     OVR::Vector3f worldPosition_{0.0f, 0.0f, 0.0f};
+    OVR::Vector3f currentHeadStage_{};
+    OVR::Vector3f actorStreamingCenter_{};
     float sceneYaw_{};
     bool turnLatch_{};
     bool fireLatch_{};
@@ -1763,6 +1924,13 @@ class DeusExQuestApp final : public OVRFW::XrApp {
     MapTransitionPhase transitionPhase_{MapTransitionPhase::Idle};
     std::vector<PortableActorSnapshot> preparedActorSnapshots_;
     PortableTextureArray preparedActorTextures_;
+    WorldTexturePreparation preparedWorldTexture_;
+    GLuint pendingWorldTextureId_{};
+    std::uint32_t pendingWorldTextureWidth_{};
+    std::uint32_t pendingWorldTextureHeight_{};
+    std::uint32_t pendingWorldTextureLayers_{};
+    std::uint32_t pendingWorldTextureLayersUploaded_{};
+    std::vector<std::uint8_t> pendingWorldTextureRgba_;
     OVRFW::ControllerRenderer leftController_;
     OVRFW::ControllerRenderer rightController_;
 };

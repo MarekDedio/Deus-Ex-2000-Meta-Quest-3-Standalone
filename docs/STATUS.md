@@ -221,3 +221,13 @@ and gameplay.
 - Right grip cycles persistent inventory and the HUD shows the selected object.
   Physical pickup validation selected `00_Training.Multitool0`; non-weapons no
   longer provide free hitscan, while weapon families set damage and range.
+- `01_NYC_UNATCOIsland` physically validated generic non-training loading: 107
+  materials, 3,658 actors, 34,140 collision triangles, and two decoded exits,
+  followed by steady 72 fps.
+- Large maps stream actors within 45 m and refresh after 20 m of movement;
+  UNATCO Island initially instantiates 15 targetable actors instead of 359,
+  reducing its actor stage from 1.13 seconds to 16 ms.
+- World materials upload four array layers per frame and textured renderers share
+  one retained shader program. Eight-meter collision cells reduced the island
+  grid from 59,600 cells to 3,792 and its BSP stage from 1.04 seconds to 471 ms.
+  Incremental BSP buffer creation remains the next transition-comfort task.
