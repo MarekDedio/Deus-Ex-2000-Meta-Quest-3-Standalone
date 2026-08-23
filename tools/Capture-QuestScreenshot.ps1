@@ -33,41 +33,61 @@ if (-not (Test-Path -LiteralPath $destinationDirectory)) {
     New-Item -ItemType Directory -Path $destinationDirectory | Out-Null
 }
 
-& $adb shell rm -f $devicePath
-if ($LASTEXITCODE -ne 0) {
-    throw 'Could not clear the previous app screenshot.'
-}
-& $adb shell "run-as $package sh -c 'echo SCREENSHOT > $requestPath'"
-if ($LASTEXITCODE -ne 0) {
-    throw 'Could not request an in-app screenshot.'
-}
-
-$deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
-$ready = $false
-while ([DateTime]::UtcNow -lt $deadline) {
-    $result = @(& $adb shell "if [ -s '$devicePath' ]; then echo ready; fi")
-    if (($result -join '').Trim() -eq 'ready') {
-        $ready = $true
-        break
+$validCapture = $false
+for ($attempt = 1; $attempt -le 3 -and -not $validCapture; $attempt++) {
+    & $adb shell rm -f $devicePath
+    if ($LASTEXITCODE -ne 0) {
+        throw 'Could not clear the previous app screenshot.'
     }
-    Start-Sleep -Milliseconds 250
-}
-if (-not $ready) {
-    throw "Screenshot was not produced within $TimeoutSeconds seconds."
-}
+    & $adb shell "run-as $package sh -c 'echo SCREENSHOT > $requestPath'"
+    if ($LASTEXITCODE -ne 0) {
+        throw 'Could not request an in-app screenshot.'
+    }
 
-& $adb pull $devicePath $destination
-if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $destination)) {
-    throw 'ADB could not pull the in-app screenshot.'
-}
-$stream = [System.IO.File]::OpenRead($destination)
-try {
-    if ($stream.Length -lt 54 -or $stream.ReadByte() -ne [char]'B' -or
-        $stream.ReadByte() -ne [char]'M') {
+    $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
+    $ready = $false
+    while ([DateTime]::UtcNow -lt $deadline) {
+        $result = @(& $adb shell "if [ -s '$devicePath' ]; then echo ready; fi")
+        if (($result -join '').Trim() -eq 'ready') {
+            $ready = $true
+            break
+        }
+        Start-Sleep -Milliseconds 250
+    }
+    if (-not $ready) {
+        throw "Screenshot was not produced within $TimeoutSeconds seconds."
+    }
+
+    & $adb pull $devicePath $destination
+    if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $destination)) {
+        throw 'ADB could not pull the in-app screenshot.'
+    }
+    $bytes = [System.IO.File]::ReadAllBytes($destination)
+    if ($bytes.Length -lt 54 -or $bytes[0] -ne [char]'B' -or $bytes[1] -ne [char]'M') {
         throw 'The captured file is not a valid BMP image.'
     }
-} finally {
-    $stream.Dispose()
+    $sampledColors = [System.Collections.Generic.HashSet[uint32]]::new()
+    # BMP rows are bottom-up. Sampling only the lower half prevents HUD glyphs
+    # from making an otherwise uniform compositor/readback failure look valid.
+    $sampleLimit = 54 + [int][Math]::Floor(($bytes.Length - 54) / 2)
+    $sampleStride = [Math]::Max(4, [int][Math]::Floor(($sampleLimit - 54) / 4096 / 4) * 4)
+    for ($offset = 54; $offset + 3 -lt $sampleLimit; $offset += $sampleStride) {
+        $color = [uint32]$bytes[$offset] -bor
+            ([uint32]$bytes[$offset + 1] -shl 8) -bor
+            ([uint32]$bytes[$offset + 2] -shl 16)
+        [void]$sampledColors.Add($color)
+        if ($sampledColors.Count -ge 8) {
+            $validCapture = $true
+            break
+        }
+    }
+    if (-not $validCapture) {
+        Write-Warning "Capture attempt $attempt was nearly uniform; retrying."
+        Start-Sleep -Milliseconds 750
+    }
+}
+if (-not $validCapture) {
+    throw 'Quest returned three nearly uniform in-app frames.'
 }
 
 Get-Item -LiteralPath $destination | Select-Object FullName, Length, LastWriteTime

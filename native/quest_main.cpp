@@ -37,7 +37,8 @@ class TexturedGeometryRenderer {
    public:
     void Init(
         const OVRFW::GlGeometry::Descriptor& descriptor,
-        const OVRFW::GlTexture& texture) {
+        const OVRFW::GlTexture& texture,
+        bool cullEnable = true) {
         static const char* vertexShader = R"glsl(
             attribute highp vec4 Position;
             attribute highp vec2 TexCoord;
@@ -61,6 +62,10 @@ class TexturedGeometryRenderer {
             void main() {
                 lowp vec4 texel = texture(
                     Texture0, vec3(fract(oTexCoord), floor(oLayer + 0.5)));
+                // Palette index zero carries transparent alpha in actor layers.
+                // Discarding it is safe for opaque meshes and required for UE1
+                // masked decorations such as plants and grilles.
+                if (texel.a < 0.5) discard;
                 gl_FragColor = vec4(texel.rgb * oLight, texel.a);
             }
         )glsl";
@@ -78,6 +83,7 @@ class TexturedGeometryRenderer {
         command.UniformData[0].Data = &command.Textures[0];
         command.GpuState.depthEnable = command.GpuState.depthMaskEnable = true;
         command.GpuState.blendEnable = OVRFW::ovrGpuState::BLEND_DISABLE;
+        command.GpuState.cullEnable = cullEnable;
     }
 
     void Shutdown() {
@@ -123,8 +129,8 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         hudLabel_ = ui_.AddLabel(
             "DEUS EX VR",
             OVR::Vector3f(0.0f, 1.3f, -1.5f),
-            OVR::Vector2f(700.0f, 110.0f));
-        hudLabel_->SetTextLocalPosition({-0.32f, -0.025f, 0.0f});
+            OVR::Vector2f(720.0f, 180.0f));
+        hudLabel_->SetTextLocalPosition({0.0f, -0.025f, 0.0f});
         return true;
     }
 
@@ -524,7 +530,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                 selectedItem != displayedSelectedInventory_ ||
                 interactionStatus_ != displayedInteractionStatus_) {
                 hudLabel_->SetText(
-                    "%s   HEALTH %.0f   INVENTORY %zu   ITEM %s\n%s\nA USE   TRIGGER FIRE   GRIP CYCLE   B NEXT MAP   Y SAVE   X LOAD",
+                    "%s   HEALTH %.0f   INVENTORY %zu\nITEM %s\n%s\nA USE   TRIGGER FIRE   GRIP CYCLE\nB NEXT MAP   Y SAVE   X LOAD",
                     pendingMapName_.empty() && transitionMapName_.empty()
                         ? currentMapName_.c_str()
                         : "LOADING...",
@@ -565,9 +571,13 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             OVRFW::XrApp::AppRenderEye(frame, output, eye);
             ovrFramebuffer_Resolve(frameBuffer);
             if (eye == 0 && captureScreenshotRequested_) {
-                captureScreenshotRequested_ = false;
-                ovrFramebuffer_SetNone();
-                CaptureResolvedEyeFramebuffer(*frameBuffer);
+                if (captureScreenshotDelayFrames_ == 0u) {
+                    captureScreenshotRequested_ = false;
+                    ovrFramebuffer_SetNone();
+                    CaptureResolvedEyeFramebuffer(*frameBuffer);
+                } else {
+                    --captureScreenshotDelayFrames_;
+                }
             }
             ovrFramebuffer_Release(frameBuffer);
         }
@@ -976,8 +986,13 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                     }
                     for (const std::uint16_t material : materials) {
                         std::string texturePath = actor.texturePath;
-                        if (texturePath.empty() && material < mesh.texturePaths.size()) {
-                            texturePath = mesh.texturePaths[material];
+                        std::int32_t textureIndex = static_cast<std::int32_t>(material);
+                        if (material < mesh.materialTextureIndices.size()) {
+                            textureIndex = mesh.materialTextureIndices[material];
+                        }
+                        if (texturePath.empty() && textureIndex >= 0 &&
+                            static_cast<std::size_t>(textureIndex) < mesh.texturePaths.size()) {
+                            texturePath = mesh.texturePaths[static_cast<std::size_t>(textureIndex)];
                         }
                         const auto layer = textureLayers.find(texturePath);
                         if (layer == textureLayers.end()) continue;
@@ -1008,7 +1023,10 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                         error.what());
                 }
             }
-            if (!renderedMesh) {
+            // Trigger, travel, and mover locations are gameplay metadata, not
+            // visible cube-shaped objects. Keep a conservative placeholder only
+            // for physical actors whose source mesh is not yet renderable.
+            if (!renderedMesh && (actor.pawn || actor.inventory || actor.decoration)) {
                 geometry.Add(
                     OVRFW::BuildUnitCubeDescriptor(),
                     OVRFW::GeometryBuilder::kInvalidIndex,
@@ -1034,7 +1052,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             actorTexturedRendererIndex_ = texturedRenderers_.size();
             texturedRenderers_.emplace_back();
             texturedRenderers_.back().Init(
-                texturedGeometry.ToGeometryDescriptor(), actorTexture_);
+                texturedGeometry.ToGeometryDescriptor(), actorTexture_, false);
         }
         ALOG(
             "DeusExQuest: instantiated %zu targetable actors from %zu live actors (%zu real LodMesh instances, %zu mesh-bearing, %zu mesh formats, %zu map exits)",
@@ -1338,8 +1356,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         if (!read) return;
         if (std::strcmp(requested, "SCREENSHOT") == 0) {
             captureScreenshotRequested_ = true;
-            interactionStatus_ = "CAPTURING SCREENSHOT...";
-            interactionStatusSeconds_ = 3.0f;
+            captureScreenshotDelayFrames_ = 2u;
             ALOG("DeusExQuest: in-app eye screenshot requested");
             return;
         }
@@ -3345,6 +3362,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
     std::size_t currentMapIndex_{};
     float mapRequestPollSeconds_{};
     bool captureScreenshotRequested_{};
+    std::uint32_t captureScreenshotDelayFrames_{};
     float mapTravelCooldown_{3.0f};
     bool restorePoseAfterTransition_{};
     OVR::Vector3f restoredWorldPosition_{};

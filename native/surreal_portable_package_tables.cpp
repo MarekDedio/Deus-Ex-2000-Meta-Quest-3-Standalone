@@ -1104,7 +1104,12 @@ PortableLodMesh LoadPortableLodMesh(
         wedge.v = reader.ReadUInt8();
     }
     const std::size_t materialCount = count("material");
-    reader.Skip(materialCount * 8u);
+    result.materialTextureIndices.reserve(materialCount);
+    for (std::size_t index = 0; index < materialCount; ++index) {
+        reader.ReadUInt32(); // PolyFlags
+        result.materialTextureIndices.push_back(
+            static_cast<std::int32_t>(reader.ReadUInt32()));
+    }
     reader.Skip(count("special face") * 8u);
     reader.ReadUInt32(); // ModelVerts
     const std::uint32_t specialVertices = reader.ReadUInt32();

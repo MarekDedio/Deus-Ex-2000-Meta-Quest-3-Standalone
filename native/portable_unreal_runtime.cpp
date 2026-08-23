@@ -1551,9 +1551,9 @@ PortableTextureArray BuildPortableRuntimeActorTextureArray(
                     for (std::size_t pixel = 0; pixel < pixelsPerLayer; ++pixel) {
                         const bool dark =
                             ((pixel / width) / 8u + (pixel % width) / 8u) % 2u != 0;
-                        result.rgba.push_back(dark ? 40u : 255u);
-                        result.rgba.push_back(0u);
-                        result.rgba.push_back(dark ? 40u : 255u);
+                        result.rgba.push_back(dark ? 70u : 125u);
+                        result.rgba.push_back(dark ? 74u : 130u);
+                        result.rgba.push_back(dark ? 78u : 135u);
                         result.rgba.push_back(255u);
                     }
                     ++result.failedTextures;
@@ -1582,9 +1582,9 @@ PortableTextureArray BuildPortableRuntimeActorTextureArray(
             if (leafClass != "Texture") {
                 for (std::size_t pixel = 0; pixel < pixelsPerLayer; ++pixel) {
                     const bool dark = ((pixel / width) / 8u + (pixel % width) / 8u) % 2u != 0;
-                    result.rgba.push_back(dark ? 40u : 255u);
-                    result.rgba.push_back(0u);
-                    result.rgba.push_back(dark ? 40u : 255u);
+                    result.rgba.push_back(dark ? 70u : 125u);
+                    result.rgba.push_back(dark ? 74u : 130u);
+                    result.rgba.push_back(dark ? 78u : 135u);
                     result.rgba.push_back(255u);
                 }
                 ++result.failedTextures;
@@ -1624,16 +1624,22 @@ PortableTextureArray BuildPortableRuntimeActorTextureArray(
                     result.rgba.push_back(static_cast<std::uint8_t>(color));
                     result.rgba.push_back(static_cast<std::uint8_t>(color >> 8u));
                     result.rgba.push_back(static_cast<std::uint8_t>(color >> 16u));
-                    result.rgba.push_back(255u);
+                    result.rgba.push_back(paletteIndex == 0u ? 0u : 255u);
                 }
             }
             ++result.decodedTextures;
-        } catch (const std::exception&) {
+        } catch (const std::exception& error) {
+            __android_log_print(
+                ANDROID_LOG_WARN,
+                "quest_main",
+                "DeusExQuest: actor texture fallback for %s: %s",
+                qualified.c_str(),
+                error.what());
             for (std::size_t pixel = 0; pixel < pixelsPerLayer; ++pixel) {
                 const bool dark = ((pixel / width) / 8u + (pixel % width) / 8u) % 2u != 0;
-                result.rgba.push_back(dark ? 40u : 255u);
-                result.rgba.push_back(0u);
-                result.rgba.push_back(dark ? 40u : 255u);
+                result.rgba.push_back(dark ? 70u : 125u);
+                result.rgba.push_back(dark ? 74u : 130u);
+                result.rgba.push_back(dark ? 78u : 135u);
                 result.rgba.push_back(255u);
             }
             ++result.failedTextures;

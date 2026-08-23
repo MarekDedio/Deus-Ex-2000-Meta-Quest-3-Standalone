@@ -6,9 +6,17 @@
   `Capture-QuestScreenshot.ps1` requests a post-resolve left-eye readback from
   the running app and pulls the BMP over ADB. The first physical Quest 3 capture
   succeeded at 1680x1760; OpenXR subsequently held 72.0 fps with a 13.89 ms
-  worst frame and no Android crash. The image confirms that the HUD is present,
-  while also exposing left-edge HUD clipping, one magenta fallback material,
-  and malformed character-mesh rendering for follow-up.
+  worst frame and no Android crash. Capture validation now retries nearly
+  uniform lower-half readbacks and waits for a settled rendered frame.
+- Quest-frame inspection fixed the first visible defect set. The head-locked HUD
+  is centered and split into five bounded lines instead of clipping beyond the
+  left eye. UE1 actor texture palette index zero now remains transparent and is
+  discarded in the actor shader, removing the magenta/black rectangles around
+  masked plant leaves. LodMesh faces now resolve through the serialized material
+  table's texture index instead of treating material IDs as texture slots.
+  Invisible trigger/travel/mover metadata no longer renders debug cubes.
+  Clean 1680x1760 captures verified Training and Training Final after a physical
+  map transition; the following windows held 72.0 fps/13.89 ms without a crash.
 - Corrected the right-stick snap-turn sign after physical play exposed reversed
   controls: stick-left now turns the view left and stick-right turns it right.
 - Ambient audio now follows every active map's serialized UE1 emitters instead
