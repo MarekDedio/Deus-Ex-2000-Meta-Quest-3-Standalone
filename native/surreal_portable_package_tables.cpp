@@ -503,6 +503,34 @@ PortablePropertyStream LoadPortableExportProperties(
     }
 }
 
+std::vector<std::int32_t> LoadPortableObjectReferenceArrayTail(
+    const PortablePackageTables& package,
+    std::size_t exportIndex) {
+    if (exportIndex >= package.exports.size()) {
+        throw std::runtime_error("UE1 tail export index is out of range");
+    }
+    const ExportTableEntry& entry = package.exports[exportIndex];
+    const PortablePropertyStream properties = LoadPortableExportProperties(package, exportIndex);
+    std::vector<std::uint8_t> bytes(static_cast<std::size_t>(entry.ObjSize));
+    const std::shared_ptr<File> file = File::open_existing(package.sourcePath);
+    file->seek(entry.ObjOffset);
+    file->read(bytes.data(), bytes.size());
+    PayloadReader reader(std::move(bytes));
+    reader.Skip(properties.bytesConsumed);
+    const std::int32_t count = reader.ReadIndex();
+    if (count < 0 || count > 1'000'000) {
+        throw std::runtime_error("UE1 object-reference tail count is invalid");
+    }
+    std::vector<std::int32_t> references;
+    references.reserve(static_cast<std::size_t>(count));
+    for (std::int32_t index = 0; index < count; ++index) {
+        const std::int32_t reference = reader.ReadIndex();
+        ValidateObjectReference(reference, package.imports.size(), package.exports.size());
+        references.push_back(reference);
+    }
+    return references;
+}
+
 std::size_t FindPortableExport(
     const PortablePackageTables& package,
     const std::string& objectPath) {

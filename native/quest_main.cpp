@@ -12,6 +12,8 @@
 #include <future>
 #include <limits>
 #include <map>
+#include <memory>
+#include <mutex>
 #include <numeric>
 #include <set>
 #include <unordered_map>
@@ -26,6 +28,9 @@
 #include "XrApp.h"
 #include "portable_unreal_runtime.h"
 #include "quest_map_cache.h"
+
+#define MINIMP3_IMPLEMENTATION
+#include "minimp3_ex.h"
 
 class TexturedGeometryRenderer {
    public:
@@ -1257,13 +1262,24 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         interactionStatus_ = dialogue.bindName + ": " + subtitle;
         interactionStatusSeconds_ = std::clamp(
             static_cast<float>(subtitle.size()) * 0.055f, 4.0f, 12.0f);
+        PortableSound dialogueSound;
+        try {
+            dialogueSound = LoadPortableRuntimeDialogueSound(dialogue);
+        } catch (const std::exception& error) {
+            ALOG("DeusExQuest: dialogue audio resolution failed: %s", error.what());
+        }
+        const bool audioQueued = QueueDialogueAudio(dialogueSound);
         ALOG(
-            "DeusExQuest: dialogue %s bind=%s line=%zu/%zu sound=%d text=%s",
+            "DeusExQuest: dialogue %s bind=%s line=%zu/%zu sound=%d package=%s audio=%s/%zu bytes queued=%s text=%s",
             dialogue.eventPath.c_str(),
             dialogue.bindName.c_str(),
             cursor,
             dialogue.matchingLines,
             dialogue.soundId,
+            dialogue.audioPackageName.c_str(),
+            dialogueSound.format.ToString().c_str(),
+            dialogueSound.data.size(),
+            audioQueued ? "true" : "false",
             subtitle.c_str());
         return true;
     }
@@ -1580,16 +1596,72 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         auto* app = static_cast<DeusExQuestApp*>(userData);
         auto* output = static_cast<std::int16_t*>(audioData);
         const std::size_t sampleCount = static_cast<std::size_t>(numFrames) * 2u;
+        std::lock_guard<std::mutex> lock(app->audioMutex_);
         if (app->ambientSamples_.empty()) {
             std::fill(output, output + sampleCount, 0);
-            return AAUDIO_CALLBACK_RESULT_CONTINUE;
+        } else {
+            for (std::size_t index = 0; index < sampleCount; ++index) {
+                output[index] = static_cast<std::int16_t>(
+                    app->ambientSamples_[app->ambientCursor_] / 4);
+                app->ambientCursor_ = (app->ambientCursor_ + 1u) % app->ambientSamples_.size();
+            }
         }
         for (std::size_t index = 0; index < sampleCount; ++index) {
+            if (app->dialogueCursor_ >= app->dialogueSamples_.size()) break;
+            const std::int32_t mixed = static_cast<std::int32_t>(output[index]) +
+                app->dialogueSamples_[app->dialogueCursor_++];
             output[index] = static_cast<std::int16_t>(
-                app->ambientSamples_[app->ambientCursor_] / 4);
-            app->ambientCursor_ = (app->ambientCursor_ + 1u) % app->ambientSamples_.size();
+                std::clamp(mixed, -32768, 32767));
         }
         return AAUDIO_CALLBACK_RESULT_CONTINUE;
+    }
+
+    bool QueueDialogueAudio(const PortableSound& sound) {
+        if (sound.format.ToString() != "mp3" || sound.data.empty() || audioSampleRate_ == 0u) {
+            return false;
+        }
+        mp3dec_ex_t decoder{};
+        if (mp3dec_ex_open_buf(
+                &decoder, sound.data.data(), sound.data.size(), MP3D_SEEK_TO_SAMPLE) != 0) {
+            return false;
+        }
+        const std::uint32_t sourceRate = static_cast<std::uint32_t>(decoder.info.hz);
+        const std::uint32_t channels = static_cast<std::uint32_t>(decoder.info.channels);
+        std::vector<mp3d_sample_t> decoded(static_cast<std::size_t>(decoder.samples));
+        const std::size_t samples = mp3dec_ex_read(
+            &decoder, decoded.data(), decoded.size());
+        mp3dec_ex_close(&decoder);
+        if (samples == 0u || sourceRate == 0u || (channels != 1u && channels != 2u)) return false;
+        const std::size_t sourceFrames = samples / channels;
+        const std::size_t outputFrames = static_cast<std::size_t>(
+            static_cast<std::uint64_t>(sourceFrames) * audioSampleRate_ / sourceRate);
+        std::vector<std::int16_t> stereo(outputFrames * 2u);
+        for (std::size_t frame = 0; frame < outputFrames; ++frame) {
+            const double sourcePosition = static_cast<double>(frame) * sourceRate / audioSampleRate_;
+            const std::size_t first = std::min(
+                static_cast<std::size_t>(sourcePosition), sourceFrames - 1u);
+            const std::size_t second = std::min(first + 1u, sourceFrames - 1u);
+            const float fraction = static_cast<float>(sourcePosition - first);
+            for (std::size_t channel = 0; channel < 2u; ++channel) {
+                const std::size_t sourceChannel = channels == 1u ? 0u : channel;
+                const float a = decoded[first * channels + sourceChannel];
+                const float b = decoded[second * channels + sourceChannel];
+                stereo[frame * 2u + channel] = static_cast<std::int16_t>(
+                    a + (b - a) * fraction);
+            }
+        }
+        {
+            std::lock_guard<std::mutex> lock(audioMutex_);
+            dialogueSamples_ = std::move(stereo);
+            dialogueCursor_ = 0u;
+        }
+        ALOG(
+            "DeusExQuest: queued dialogue MP3: %u Hz/%u channels -> %u Hz, %zu frames",
+            sourceRate,
+            channels,
+            audioSampleRate_,
+            outputFrames);
+        return true;
     }
 
     bool StartAmbientAudio() {
@@ -1643,6 +1715,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                 ambientSamples_[frame * 2u + outputChannel] = sample;
             }
         }
+        audioSampleRate_ = sampleRate;
 
         AAudioStreamBuilder* builder{};
         if (AAudio_createStreamBuilder(&builder) != AAUDIO_OK) return false;
@@ -1675,6 +1748,9 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         }
         ambientSamples_.clear();
         ambientCursor_ = 0;
+        dialogueSamples_.clear();
+        dialogueCursor_ = 0;
+        audioSampleRate_ = 0u;
     }
 
     static OVR::Vector3f Subtract(const OVR::Vector3f& a, const OVR::Vector3f& b) {
@@ -2360,8 +2436,12 @@ class DeusExQuestApp final : public OVRFW::XrApp {
     std::size_t actorWorldRendererIndex_{invalidRendererIndex_};
     std::size_t actorTexturedRendererIndex_{invalidRendererIndex_};
     AAudioStream* ambientStream_{};
+    std::mutex audioMutex_;
     std::vector<std::int16_t> ambientSamples_;
     std::size_t ambientCursor_{};
+    std::uint32_t audioSampleRate_{};
+    std::vector<std::int16_t> dialogueSamples_;
+    std::size_t dialogueCursor_{};
     std::vector<CollisionTriangle> collisionTriangles_;
     std::unordered_map<std::int64_t, std::vector<std::uint32_t>> collisionGrid_;
     std::vector<std::uint32_t> oversizedCollisionTriangles_;

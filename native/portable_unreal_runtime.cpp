@@ -93,6 +93,7 @@ struct IndexedDialogueLine {
     std::string eventPath;
     std::string text;
     std::int32_t soundId{-1};
+    std::string audioPackageName;
 };
 
 std::unordered_map<std::string, std::vector<IndexedDialogueLine>> persistentDialogueIndex;
@@ -155,6 +156,13 @@ void BuildPersistentDialogueIndex() {
         if (conversationFound == persistentQualifiedObjects.end() ||
             conversationFound->second == nullptr) continue;
         RuntimeObject* conversation = conversationFound->second;
+        std::string audioPackageName;
+        for (const PortableTaggedProperty& property : conversation->instanceProperties) {
+            if (property.name == "audioPackageName" && property.type == 13u) {
+                audioPackageName = DecodePortableStringProperty(property);
+                break;
+            }
+        }
         const auto firstEvent = conversation->objectPropertyPaths.find("eventList");
         if (firstEvent == conversation->objectPropertyPaths.end()) continue;
         std::string eventPath = firstEvent->second;
@@ -180,6 +188,7 @@ void BuildPersistentDialogueIndex() {
                         RuntimeObject* speech = speechFound->second;
                         IndexedDialogueLine line;
                         line.eventPath = event->reflection.objectPath;
+                        line.audioPackageName = audioPackageName;
                         for (const PortableTaggedProperty& property : speech->instanceProperties) {
                             if (property.name == "Speech" && property.type == 13u) {
                                 line.text = DecodePortableStringProperty(property);
@@ -655,7 +664,27 @@ PortableDialogueResult GetPortableRuntimeDialogue(
     result.eventPath = selected.eventPath;
     result.speech = selected.text;
     result.soundId = selected.soundId;
+    result.audioPackageName = selected.audioPackageName;
     return result;
+}
+
+PortableSound LoadPortableRuntimeDialogueSound(const PortableDialogueResult& dialogue) {
+    if (!dialogue.found || dialogue.soundId < 0 || dialogue.audioPackageName.empty()) return {};
+    const std::string packageName = "DeusExConAudio" + dialogue.audioPackageName;
+    for (RuntimeObject* object : persistentRuntime->get()->exports) {
+        if (object == nullptr || !IsDerivedFromPath(object->cls, "ConSys.ConAudioList") ||
+            PackageStem(object->sourcePath) != packageName) {
+            continue;
+        }
+        const PortablePackageTables package = LoadPortablePackageTables(object->sourcePath);
+        const std::vector<std::int32_t> sounds =
+            LoadPortableObjectReferenceArrayTail(package, object->exportIndex);
+        if (static_cast<std::size_t>(dialogue.soundId) >= sounds.size()) return {};
+        const std::int32_t reference = sounds[static_cast<std::size_t>(dialogue.soundId)];
+        if (reference <= 0 || static_cast<std::size_t>(reference) > package.exports.size()) return {};
+        return LoadPortableSound(package, static_cast<std::size_t>(reference - 1));
+    }
+    return {};
 }
 
 void ShutdownPortableRuntime() {

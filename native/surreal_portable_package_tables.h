@@ -127,6 +127,9 @@ PortablePackageTables LoadPortablePackageTables(const std::string& path);
 PortablePropertyStream LoadPortableExportProperties(
     const PortablePackageTables& package,
     std::size_t exportIndex);
+std::vector<std::int32_t> LoadPortableObjectReferenceArrayTail(
+    const PortablePackageTables& package,
+    std::size_t exportIndex);
 std::size_t FindPortableExport(
     const PortablePackageTables& package,
     const std::string& objectPath);

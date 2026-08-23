@@ -39,6 +39,7 @@ struct PortableDialogueResult {
     std::string bindName;
     std::string eventPath;
     std::string speech;
+    std::string audioPackageName;
     std::string missionCandidates;
     std::int32_t soundId{-1};
     std::size_t matchingLines{};
@@ -101,6 +102,7 @@ PortableDialogueResult GetPortableRuntimeDialogue(
     const std::string& actorPath,
     std::size_t ordinal,
     std::int32_t missionNumber);
+PortableSound LoadPortableRuntimeDialogueSound(const PortableDialogueResult& dialogue);
 
 enum class PortableVmValueType {
     Nothing,

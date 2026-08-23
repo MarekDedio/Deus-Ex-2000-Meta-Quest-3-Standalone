@@ -36,6 +36,7 @@ target_compile_options(deusex_quest PRIVATE -Wall -Wextra -Werror)
 target_include_directories(deusex_quest PRIVATE
     "${CMAKE_CURRENT_LIST_DIR}/../third_party/Meta-OpenXR-SDK/Samples/SampleXrFramework/Src"
     "${ANDROID_NDK}/sources/android/native_app_glue"
+    "${CMAKE_CURRENT_LIST_DIR}/../third_party/SurrealEngine/Thirdparty"
 )
 target_link_libraries(deusex_quest PRIVATE
     android
