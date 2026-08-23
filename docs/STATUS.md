@@ -269,9 +269,10 @@ and gameplay.
   to 8845, loaded, and replayed 8845 rather than resetting to the first line;
   both referenced MP3 clips resolved and queued.
 - Conversation indexing now attaches unconditional `SetFlag`, `AddGoal`,
-  `AddNote`, `AddSkillPoints`, `AddCredits`, and `Trigger` events to the preceding authored
+  `AddNote`, `AddSkillPoints`, `AddCredits`, `Trigger`, and player-facing
+  `TransferObject` events to the preceding authored
   speech while stopping at every choice, condition, random/jump, trade, or
-  transfer boundary. The shipped corpus exposes 1,443 such safe effects across
+  transfer boundary. The shipped corpus exposes 1,546 such safe effects across
   34,071 indexed dialogue lines and 1,256 speaker/mission keys. Effects are
   idempotent and runtime-state v3 persists flags, goals, notes, skill points,
   credits, and applied-event IDs. Physical Quest validation applied the flag
@@ -284,6 +285,19 @@ and gameplay.
   executed the trigger after Paul's `ConEventSpeech448`; the indexed version
   reduced that dialogue window from 125 ms to 55.55 ms and returned to a steady
   72 fps/13.89 ms.
+- Object and class properties now share validated compact-reference decoding.
+  Of 244 serialized transfers, 243 resolve a player endpoint and their item
+  class through `giveObject` or the authored `ObjectName`. A failed Training
+  equipment removal applied nothing with empty inventory. In Mission 5,
+  Miguel's `ConEventSpeech3684` granted its serialized item (inventory 0 -> 1),
+  replay granted nothing, and quick-save/load preserved both the item and the
+  applied-event ID.
+- Material package lookup now searches the deployed UE1 package catalog rather
+  than assuming every texture lives in `Textures/*.utx`. This fixed Mission 5's
+  `DeusExDeco` import, which is actually `System/DeusExDeco.u` in this install.
+  `05_NYC_UNATCOMJ12lab` physically loaded 101 materials, 3,043 actors, and
+  37,099 collision triangles and stabilized at 72 fps. Its first uncached
+  transition still peaked at 166.66 ms and needs further staging work.
 - `01_NYC_UNATCOIsland` physically validated generic non-training loading: 107
   materials, 3,658 actors, 34,140 collision triangles, and two decoded exits,
   followed by steady 72 fps.

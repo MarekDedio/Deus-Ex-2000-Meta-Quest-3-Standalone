@@ -590,8 +590,8 @@ std::vector<PortableMipmap> LoadPortableTextureMipmaps(
 }
 
 std::int32_t DecodePortableObjectReference(const PortableTaggedProperty& property) {
-    if (property.type != 5u || property.value.empty()) {
-        throw std::runtime_error("UE1 property is not an object reference");
+    if ((property.type != 5u && property.type != 8u) || property.value.empty()) {
+        throw std::runtime_error("UE1 property is not an object or class reference");
     }
     PayloadReader reader(property.value);
     const std::int32_t reference = reader.ReadIndex();

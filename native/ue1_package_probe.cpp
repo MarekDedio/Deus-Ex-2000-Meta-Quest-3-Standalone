@@ -18,6 +18,7 @@
 #include <filesystem>
 #include <map>
 #include <set>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -25,6 +26,20 @@ namespace {
 
 constexpr const char* kLogTag = "DeusExQuest";
 constexpr std::uint32_t kUe1PackageSignature = 0x9E2A83C1u;
+
+std::string ResolveDataPackagePath(const std::string& root, const std::string& packageName) {
+    static constexpr const char* directories[] = {
+        "Textures", "System", "Sounds", "Music", "Maps"};
+    static constexpr const char* extensions[] = {"utx", "u", "uax", "umx", "dx"};
+    for (const char* directory : directories) {
+        for (const char* extension : extensions) {
+            const std::string candidate = root + "/" + directory + "/" +
+                packageName + "." + extension;
+            if (std::filesystem::exists(candidate)) return candidate;
+        }
+    }
+    throw std::runtime_error("Could not resolve deployed package " + packageName);
+}
 
 struct ExportRecord {
     std::int32_t classReference{};
@@ -1106,7 +1121,7 @@ bool BuildMapCache(const std::string& root, const std::string& mapName) {
             if (foundPackage == texturePackages.end()) {
                 const std::string packagePath = packageName == mapName
                     ? mapPath
-                    : root + "/Textures/" + packageName + ".utx";
+                    : ResolveDataPackagePath(root, packageName);
                 foundPackage = texturePackages.emplace(
                     packageName, LoadPortablePackageTables(packagePath)).first;
             }
@@ -1455,7 +1470,7 @@ Java_dev_deusex_questvr_MainActivity_probeGameData(
                 foundPackage = texturePackages.emplace(
                     texturePackageName,
                     LoadPortablePackageTables(
-                        root + "/Textures/" + texturePackageName + ".utx")).first;
+                        ResolveDataPackagePath(root, texturePackageName))).first;
             }
             const PortablePackageTables& texturePackage = foundPackage->second;
             const std::size_t textureExport = FindPortableExport(texturePackage, textureObjectPath);

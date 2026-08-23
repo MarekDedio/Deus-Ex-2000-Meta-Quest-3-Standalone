@@ -174,6 +174,9 @@ void BuildPersistentDialogueIndex() {
         }
     }
     std::unordered_map<std::string, std::vector<PortableDialogueResult::Effect>> indexedEffects;
+    std::size_t transferEvents{};
+    std::size_t playerTransferEvents{};
+    std::string sampleTransfer;
     for (const auto& conversationEntry : conversationOrder) {
         const auto conversationFound = persistentQualifiedObjects.find(conversationEntry.first);
         if (conversationFound == persistentQualifiedObjects.end() ||
@@ -234,6 +237,7 @@ void BuildPersistentDialogueIndex() {
                 PortableDialogueResult::Effect effect;
                 effect.eventPath = event->reflection.objectPath;
                 bool isEffect{};
+                bool clearFollowingEffect{};
                 const auto stringProperty = [&](const char* name) {
                     for (const PortableTaggedProperty& property : event->instanceProperties) {
                         if (property.name == name && property.type == 13u) {
@@ -297,19 +301,55 @@ void BuildPersistentDialogueIndex() {
                     effect.type = PortableDialogueResult::Effect::Type::Trigger;
                     effect.key = nameProperty(event, "triggerTag");
                     isEffect = !effect.key.empty() && LowerAscii(effect.key) != "none";
+                } else if (IsDerivedFromPath(event->cls, "ConSys.ConEventTransferObject")) {
+                    ++transferEvents;
+                    effect.type = PortableDialogueResult::Effect::Type::TransferObject;
+                    effect.source = stringProperty("fromName");
+                    effect.target = stringProperty("toName");
+                    effect.amount = std::max(1, integerProperty("transferCount"));
+                    const auto objectClass = event->objectPropertyPaths.find("giveObject");
+                    if (objectClass != event->objectPropertyPaths.end()) {
+                        effect.key = objectClass->second;
+                    }
+                    if (effect.key.empty()) {
+                        const std::string objectName = stringProperty("ObjectName");
+                        const std::string suffix = "." + LowerAscii(objectName);
+                        for (const auto& candidate : persistentQualifiedObjects) {
+                            if (candidate.second == nullptr ||
+                                candidate.second->reflection.metaClass != "Class") continue;
+                            const std::string path = LowerAscii(candidate.first);
+                            if (!objectName.empty() && path.size() >= suffix.size() &&
+                                path.compare(path.size() - suffix.size(), suffix.size(), suffix) == 0) {
+                                effect.key = candidate.first;
+                                break;
+                            }
+                        }
+                    }
+                    const auto playerName = [](const std::string& value) {
+                        const std::string lowered = LowerAscii(value);
+                        return lowered == "jcdenton" || lowered == "jc denton" ||
+                            lowered == "player" || lowered == "playername";
+                    };
+                    isEffect = !effect.key.empty() &&
+                        (playerName(effect.source) || playerName(effect.target));
+                    if (isEffect) ++playerTransferEvents;
+                    if (sampleTransfer.empty()) {
+                        sampleTransfer = effect.source + "->" + effect.target + ":" + effect.key;
+                    }
+                    clearFollowingEffect = true;
                 } else if (IsDerivedFromPath(event->cls, "ConSys.ConEventChoice") ||
                            IsDerivedFromPath(event->cls, "ConSys.ConEventCheckFlag") ||
                            IsDerivedFromPath(event->cls, "ConSys.ConEventCheckObject") ||
                            IsDerivedFromPath(event->cls, "ConSys.ConEventCheckPersona") ||
                            IsDerivedFromPath(event->cls, "ConSys.ConEventJump") ||
                            IsDerivedFromPath(event->cls, "ConSys.ConEventRandomLabel") ||
-                           IsDerivedFromPath(event->cls, "ConSys.ConEventTrade") ||
-                           IsDerivedFromPath(event->cls, "ConSys.ConEventTransferObject")) {
+                           IsDerivedFromPath(event->cls, "ConSys.ConEventTrade")) {
                     precedingSpeech.clear();
                 }
                 if (isEffect && !precedingSpeech.empty()) {
                     indexedEffects[precedingSpeech].push_back(std::move(effect));
                 }
+                if (clearFollowingEffect) precedingSpeech.clear();
             }
             const auto next = event->objectPropertyPaths.find("nextEvent");
             if (next == event->objectPropertyPaths.end() || next->second == eventPath) break;
@@ -331,10 +371,13 @@ void BuildPersistentDialogueIndex() {
     __android_log_print(
         ANDROID_LOG_INFO,
         "DeusExQuest",
-        "DeusExQuest: indexed %zu dialogue lines with %zu safe linear effects across %zu speaker missions",
+        "DeusExQuest: indexed %zu dialogue lines with %zu safe linear effects across %zu speaker missions; transfers=%zu player=%zu sample=%s",
         indexedLines,
         indexedEffectCount,
-        persistentDialogueIndex.size());
+        persistentDialogueIndex.size(),
+        transferEvents,
+        playerTransferEvents,
+        sampleTransfer.c_str());
 }
 
 class RuntimeBytecodeReader {
@@ -443,6 +486,26 @@ std::string PackageStem(const std::string& path) {
     const std::size_t dot = path.find_last_of('.');
     const std::size_t end = dot == std::string::npos || dot < begin ? path.size() : dot;
     return path.substr(begin, end - begin);
+}
+
+std::string ResolveRuntimePackagePath(
+    const std::string& gameRoot,
+    const std::string& packageName) {
+    static constexpr const char* directories[] = {
+        "Textures", "System", "Sounds", "Music", "Maps"};
+    static constexpr const char* extensions[] = {"utx", "u", "uax", "umx", "dx"};
+    for (const char* directory : directories) {
+        for (const char* extension : extensions) {
+            const std::string candidate = gameRoot + "/" + directory + "/" +
+                packageName + "." + extension;
+            std::FILE* file = std::fopen(candidate.c_str(), "rb");
+            if (file != nullptr) {
+                std::fclose(file);
+                return candidate;
+            }
+        }
+    }
+    return {};
 }
 
 void PopulateRuntime(
@@ -622,7 +685,8 @@ PortableRuntimeSummary InitializePortableRuntime(
                 summary.classDefaultProperties += object->classDescriptor->defaults.size();
                 for (const PortableTaggedProperty& property :
                      object->classDescriptor->defaults) {
-                    if (property.type != 5u || property.value.empty()) continue;
+                    if ((property.type != 5u && property.type != 8u) ||
+                        property.value.empty()) continue;
                     const std::int32_t reference = DecodePortableObjectReference(property);
                     if (reference == 0) continue;
                     const std::string path = reference > 0
@@ -667,7 +731,8 @@ PortableRuntimeSummary InitializePortableRuntime(
                 ++summary.conversationObjects;
                 summary.conversationProperties += object->instanceProperties.size();
                 for (const PortableTaggedProperty& property : object->instanceProperties) {
-                    if (property.type != 5u || property.value.empty()) continue;
+                    if ((property.type != 5u && property.type != 8u) ||
+                        property.value.empty()) continue;
                     const std::int32_t reference = DecodePortableObjectReference(property);
                     if (reference == 0) continue;
                     const std::string path = reference > 0
@@ -828,6 +893,48 @@ PortableDialogueEffectResult ApplyPortableDialogueEffects(
             result.status = "TRIGGERED " + effect.key;
             break;
         }
+        case PortableDialogueResult::Effect::Type::TransferObject: {
+            const auto playerName = [](const std::string& value) {
+                const std::string lowered = LowerAscii(value);
+                return lowered == "jcdenton" || lowered == "jc denton" ||
+                    lowered == "player" || lowered == "playername";
+            };
+            bool transferred{};
+            if (playerName(effect.target)) {
+                for (std::int32_t count = 0; count < effect.amount; ++count) {
+                    persistentInventory.push_back(
+                        effect.key + "@" + effect.eventPath + ":" + std::to_string(count));
+                }
+                transferred = true;
+            } else if (playerName(effect.source)) {
+                std::vector<std::size_t> matches;
+                for (std::size_t index = 0; index < persistentInventory.size(); ++index) {
+                    const std::string& itemPath = persistentInventory[index];
+                    const auto object = persistentQualifiedObjects.find(itemPath);
+                    const bool matchesClass = object != persistentQualifiedObjects.end() &&
+                        object->second != nullptr &&
+                        IsDerivedFromPath(object->second->cls, effect.key);
+                    if (matchesClass || itemPath.rfind(effect.key + "@", 0u) == 0u) {
+                        matches.push_back(index);
+                    }
+                }
+                if (matches.size() >= static_cast<std::size_t>(effect.amount)) {
+                    for (std::int32_t count = effect.amount - 1; count >= 0; --count) {
+                        persistentInventory.erase(
+                            persistentInventory.begin() +
+                            static_cast<std::ptrdiff_t>(matches[static_cast<std::size_t>(count)]));
+                    }
+                    transferred = true;
+                }
+            }
+            if (!transferred) {
+                persistentAppliedDialogueEffects.erase(effect.eventPath);
+                result.status = "TRANSFER FAILED";
+                continue;
+            }
+            result.status = playerName(effect.target) ? "ITEM RECEIVED" : "ITEM TRANSFERRED";
+            break;
+        }
         }
         ++result.applied;
     }
@@ -835,6 +942,7 @@ PortableDialogueEffectResult ApplyPortableDialogueEffects(
     result.skillPoints = persistentSkillPoints;
     result.goals = persistentGoals.size();
     result.notes = persistentNotes.size();
+    result.inventoryCount = persistentInventory.size();
     return result;
 }
 
@@ -963,7 +1071,8 @@ PortableMapRuntimeSummary LoadPortableRuntimeMap(
                         persistentMapTagIndex[tag].push_back(object);
                     }
                 }
-                if (property.type != 5u || property.value.empty()) continue;
+                if ((property.type != 5u && property.type != 8u) ||
+                    property.value.empty()) continue;
                 const std::int32_t reference = DecodePortableObjectReference(property);
                 if (reference == 0) continue;
                 const std::string path = reference > 0
@@ -1193,7 +1302,7 @@ PortableTextureArray BuildPortableRuntimeActorTextureArray(
             }
             const std::string packageName = qualified.substr(0, separator);
             const std::string objectPath = qualified.substr(separator + 1);
-            std::string packagePath = gameRoot + "/Textures/" + packageName + ".utx";
+            std::string packagePath = ResolveRuntimePackagePath(gameRoot, packageName);
             std::size_t textureExport = std::numeric_limits<std::size_t>::max();
             const auto runtimeTexture = persistentQualifiedObjects.find(qualified);
             if (runtimeTexture != persistentQualifiedObjects.end()) {

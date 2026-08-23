@@ -45,12 +45,15 @@ struct PortableDialogueResult {
     std::size_t matchingLines{};
     struct Effect {
         enum class Type : std::uint8_t {
-            SetFlag, AddGoal, AddNote, AddSkillPoints, AddCredits, Trigger
+            SetFlag, AddGoal, AddNote, AddSkillPoints, AddCredits, Trigger,
+            TransferObject
         };
         Type type{Type::SetFlag};
         std::string eventPath;
         std::string key;
         std::string text;
+        std::string source;
+        std::string target;
         std::int32_t amount{};
         bool value{};
         bool completed{};
@@ -65,6 +68,7 @@ struct PortableDialogueEffectResult {
     std::int32_t skillPoints{};
     std::size_t goals{};
     std::size_t notes{};
+    std::size_t inventoryCount{};
     std::string status;
 };
 
