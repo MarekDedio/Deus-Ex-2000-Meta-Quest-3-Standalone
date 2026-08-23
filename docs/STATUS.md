@@ -269,14 +269,21 @@ and gameplay.
   to 8845, loaded, and replayed 8845 rather than resetting to the first line;
   both referenced MP3 clips resolved and queued.
 - Conversation indexing now attaches unconditional `SetFlag`, `AddGoal`,
-  `AddNote`, `AddSkillPoints`, and `AddCredits` events to the preceding authored
+  `AddNote`, `AddSkillPoints`, `AddCredits`, and `Trigger` events to the preceding authored
   speech while stopping at every choice, condition, random/jump, trade, or
-  transfer boundary. The shipped corpus exposes 1,139 such safe effects across
+  transfer boundary. The shipped corpus exposes 1,443 such safe effects across
   34,071 indexed dialogue lines and 1,256 speaker/mission keys. Effects are
   idempotent and runtime-state v3 persists flags, goals, notes, skill points,
   credits, and applied-event IDs. Physical Quest validation applied the flag
   following `ConEventSpeech9950` once, rejected a replay, quick-saved/loaded,
   and still rejected the replay while maintaining 72 fps steady state.
+- Portable `NameProperty` decoding resolves real conversation flag, goal, and
+  trigger names. Map actors are indexed by tag during background preparation,
+  so a conversation trigger performs a direct lookup instead of rescanning and
+  reopening the active map on the render thread. Physical Mission 1 validation
+  executed the trigger after Paul's `ConEventSpeech448`; the indexed version
+  reduced that dialogue window from 125 ms to 55.55 ms and returned to a steady
+  72 fps/13.89 ms.
 - `01_NYC_UNATCOIsland` physically validated generic non-training loading: 107
   materials, 3,658 actors, 34,140 collision triangles, and two decoded exits,
   followed by steady 72 fps.

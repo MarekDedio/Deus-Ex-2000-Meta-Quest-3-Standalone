@@ -85,6 +85,7 @@ private:
 
 std::unique_ptr<GCRoot<RuntimePackage>> persistentRuntime;
 std::unordered_map<std::string, RuntimeObject*> persistentQualifiedObjects;
+std::unordered_map<std::string, std::vector<RuntimeObject*>> persistentMapTagIndex;
 std::size_t persistentScriptExportCount{};
 std::string persistentMapPackageName;
 std::vector<std::string> persistentInventory;
@@ -138,6 +139,19 @@ void BuildPersistentDialogueIndex() {
             }
         }
         return fallback;
+    };
+    std::unordered_map<std::string, PortablePackageTables> namePackages;
+    const auto nameProperty = [&](RuntimeObject* object, const char* name) {
+        for (const PortableTaggedProperty& property : object->instanceProperties) {
+            if (property.name != name || property.type != 6u) continue;
+            auto package = namePackages.find(object->sourcePath);
+            if (package == namePackages.end()) {
+                package = namePackages.emplace(
+                    object->sourcePath, LoadPortablePackageTables(object->sourcePath)).first;
+            }
+            return DecodePortableNameProperty(package->second, property);
+        }
+        return std::string();
     };
     std::vector<std::pair<std::string, std::int32_t>> conversationOrder;
     for (RuntimeObject* list : persistentRuntime->get()->exports) {
@@ -244,6 +258,8 @@ void BuildPersistentDialogueIndex() {
                         effect.key = flag->second;
                         const auto flagObject = persistentQualifiedObjects.find(flag->second);
                         if (flagObject != persistentQualifiedObjects.end() && flagObject->second) {
+                            const std::string flagName = nameProperty(flagObject->second, "FlagName");
+                            if (!flagName.empty()) effect.key = flagName;
                             for (const PortableTaggedProperty& property :
                                  flagObject->second->instanceProperties) {
                                 if (property.name == "Value" && property.type == 3u) {
@@ -255,7 +271,8 @@ void BuildPersistentDialogueIndex() {
                     }
                 } else if (IsDerivedFromPath(event->cls, "ConSys.ConEventAddGoal")) {
                     effect.type = PortableDialogueResult::Effect::Type::AddGoal;
-                    effect.key = event->reflection.objectPath;
+                    effect.key = nameProperty(event, "goalName");
+                    if (effect.key.empty()) effect.key = event->reflection.objectPath;
                     effect.text = stringProperty("goalText");
                     effect.completed = boolProperty("bGoalCompleted");
                     effect.primary = boolProperty("bPrimaryGoal");
@@ -276,6 +293,10 @@ void BuildPersistentDialogueIndex() {
                     effect.key = event->reflection.objectPath;
                     effect.amount = integerProperty("creditsToAdd");
                     isEffect = effect.amount != 0;
+                } else if (IsDerivedFromPath(event->cls, "ConSys.ConEventTrigger")) {
+                    effect.type = PortableDialogueResult::Effect::Type::Trigger;
+                    effect.key = nameProperty(event, "triggerTag");
+                    isEffect = !effect.key.empty() && LowerAscii(effect.key) != "none";
                 } else if (IsDerivedFromPath(event->cls, "ConSys.ConEventChoice") ||
                            IsDerivedFromPath(event->cls, "ConSys.ConEventCheckFlag") ||
                            IsDerivedFromPath(event->cls, "ConSys.ConEventCheckObject") ||
@@ -798,6 +819,15 @@ PortableDialogueEffectResult ApplyPortableDialogueEffects(
             persistentCredits += effect.amount;
             result.status = "+" + std::to_string(effect.amount) + " CREDITS";
             break;
+        case PortableDialogueResult::Effect::Type::Trigger: {
+            const std::string wanted = LowerAscii(effect.key);
+            const auto tagged = persistentMapTagIndex.find(wanted);
+            if (tagged != persistentMapTagIndex.end()) {
+                for (RuntimeObject* object : tagged->second) object->activated = true;
+            }
+            result.status = "TRIGGERED " + effect.key;
+            break;
+        }
         }
         ++result.applied;
     }
@@ -830,6 +860,7 @@ PortableSound LoadPortableRuntimeDialogueSound(const PortableDialogueResult& dia
 void ShutdownPortableRuntime() {
     persistentRuntime.reset();
     persistentQualifiedObjects.clear();
+    persistentMapTagIndex.clear();
     persistentScriptExportCount = 0;
     persistentMapPackageName.clear();
     persistentInventory.clear();
@@ -880,6 +911,7 @@ PortableMapRuntimeSummary LoadPortableRuntimeMap(
     }
     PortableMapRuntimeSummary summary;
     summary.replacedExports = UnloadPortableRuntimeMap();
+    persistentMapTagIndex.clear();
     const std::string packageName = PackageStem(package.sourcePath);
     const PortableReflectionGraph graph = BuildPortableReflectionGraph(package);
     const std::size_t first = persistentRuntime->get()->exports.size();
@@ -924,6 +956,13 @@ PortableMapRuntimeSummary LoadPortableRuntimeMap(
                 LoadPortableExportProperties(package, localIndex);
             object->instanceProperties = properties.properties;
             for (const PortableTaggedProperty& property : object->instanceProperties) {
+                if (property.name == "Tag" && property.type == 6u) {
+                    const std::string tag = LowerAscii(
+                        DecodePortableNameProperty(package, property));
+                    if (!tag.empty() && tag != "none") {
+                        persistentMapTagIndex[tag].push_back(object);
+                    }
+                }
                 if (property.type != 5u || property.value.empty()) continue;
                 const std::int32_t reference = DecodePortableObjectReference(property);
                 if (reference == 0) continue;
@@ -952,6 +991,7 @@ std::size_t UnloadPortableRuntimeMap() {
     if (!persistentRuntime || !persistentRuntime->get() ||
         persistentRuntime->get()->exports.size() <= persistentScriptExportCount) {
         persistentMapPackageName.clear();
+        persistentMapTagIndex.clear();
         return 0;
     }
     const std::size_t removed =
@@ -969,6 +1009,7 @@ std::size_t UnloadPortableRuntimeMap() {
     }
     persistentRuntime->get()->exports.resize(persistentScriptExportCount);
     persistentMapPackageName.clear();
+    persistentMapTagIndex.clear();
     GC::Collect();
     return removed;
 }

@@ -601,6 +601,19 @@ std::int32_t DecodePortableObjectReference(const PortableTaggedProperty& propert
     return reference;
 }
 
+std::string DecodePortableNameProperty(
+    const PortablePackageTables& package,
+    const PortableTaggedProperty& property) {
+    if (property.type != 6u || property.value.empty()) return {};
+    PayloadReader reader(property.value);
+    const std::int32_t index = reader.ReadIndex();
+    if (reader.Tell() != property.value.size() || index < 0 ||
+        static_cast<std::size_t>(index) >= package.names.size()) {
+        throw std::runtime_error("UE1 name property has an invalid name-table index");
+    }
+    return package.names[static_cast<std::size_t>(index)].Name.ToString();
+}
+
 std::string DecodePortableStringProperty(const PortableTaggedProperty& property) {
     if (property.type != 13u || property.value.empty()) return {};
     PayloadReader reader(property.value);

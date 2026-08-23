@@ -44,7 +44,9 @@ struct PortableDialogueResult {
     std::int32_t soundId{-1};
     std::size_t matchingLines{};
     struct Effect {
-        enum class Type : std::uint8_t { SetFlag, AddGoal, AddNote, AddSkillPoints, AddCredits };
+        enum class Type : std::uint8_t {
+            SetFlag, AddGoal, AddNote, AddSkillPoints, AddCredits, Trigger
+        };
         Type type{Type::SetFlag};
         std::string eventPath;
         std::string key;

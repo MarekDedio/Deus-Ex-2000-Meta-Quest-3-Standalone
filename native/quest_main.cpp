@@ -1151,7 +1151,9 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             ALOG("DeusExQuest: diagnostic dialogue result=%s", found ? "found" : "missing");
             return;
         }
-        if (std::strcmp(requested, "EFFECT") == 0) {
+        if (std::strcmp(requested, "EFFECT") == 0 ||
+            std::strcmp(requested, "TRIGGER") == 0) {
+            const bool requireTrigger = std::strcmp(requested, "TRIGGER") == 0;
             std::int32_t missionNumber{std::numeric_limits<std::int32_t>::min()};
             const std::size_t separator = currentMapName_.find('_');
             if (separator != std::string::npos && separator > 0u) {
@@ -1170,7 +1172,13 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                 for (std::size_t ordinal = 0u; ordinal < first.matchingLines; ++ordinal) {
                     const PortableDialogueResult candidate =
                         GetPortableRuntimeDialogue(actor.objectPath, ordinal, missionNumber);
-                    if (!candidate.effects.empty()) {
+                    const bool matchingEffect = std::any_of(
+                        candidate.effects.begin(), candidate.effects.end(),
+                        [&](const PortableDialogueResult::Effect& effect) {
+                            return !requireTrigger || effect.type ==
+                                PortableDialogueResult::Effect::Type::Trigger;
+                        });
+                    if (matchingEffect) {
                         dialogueOffsets_[actor.objectPath] = ordinal;
                         found = ShowDialogue(actor.objectPath);
                         break;
@@ -1178,7 +1186,10 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                 }
                 if (found) break;
             }
-            ALOG("DeusExQuest: diagnostic dialogue effect result=%s", found ? "found" : "missing");
+            ALOG(
+                "DeusExQuest: diagnostic dialogue %s result=%s",
+                requireTrigger ? "trigger" : "effect",
+                found ? "found" : "missing");
             return;
         }
         if (std::strcmp(requested, "PICKUP") == 0) {
