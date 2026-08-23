@@ -43,6 +43,27 @@ struct PortableDialogueResult {
     std::string missionCandidates;
     std::int32_t soundId{-1};
     std::size_t matchingLines{};
+    struct Effect {
+        enum class Type : std::uint8_t { SetFlag, AddGoal, AddNote, AddSkillPoints, AddCredits };
+        Type type{Type::SetFlag};
+        std::string eventPath;
+        std::string key;
+        std::string text;
+        std::int32_t amount{};
+        bool value{};
+        bool completed{};
+        bool primary{};
+    };
+    std::vector<Effect> effects;
+};
+
+struct PortableDialogueEffectResult {
+    std::size_t applied{};
+    std::int32_t credits{};
+    std::int32_t skillPoints{};
+    std::size_t goals{};
+    std::size_t notes{};
+    std::string status;
 };
 
 struct PortableMapRuntimeSummary {
@@ -103,6 +124,8 @@ PortableDialogueResult GetPortableRuntimeDialogue(
     std::size_t ordinal,
     std::int32_t missionNumber);
 PortableSound LoadPortableRuntimeDialogueSound(const PortableDialogueResult& dialogue);
+PortableDialogueEffectResult ApplyPortableDialogueEffects(
+    const PortableDialogueResult& dialogue);
 
 enum class PortableVmValueType {
     Nothing,

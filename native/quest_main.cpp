@@ -1151,6 +1151,36 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             ALOG("DeusExQuest: diagnostic dialogue result=%s", found ? "found" : "missing");
             return;
         }
+        if (std::strcmp(requested, "EFFECT") == 0) {
+            std::int32_t missionNumber{std::numeric_limits<std::int32_t>::min()};
+            const std::size_t separator = currentMapName_.find('_');
+            if (separator != std::string::npos && separator > 0u) {
+                try {
+                    missionNumber = std::stoi(currentMapName_.substr(0u, separator));
+                } catch (const std::exception&) {
+                    missionNumber = std::numeric_limits<std::int32_t>::min();
+                }
+            }
+            if (currentMapName_.rfind("00_Training", 0u) == 0u) missionNumber = -1;
+            bool found{};
+            for (const PortableActorSnapshot& actor : actorSnapshots_) {
+                if (!actor.pawn) continue;
+                const PortableDialogueResult first =
+                    GetPortableRuntimeDialogue(actor.objectPath, 0u, missionNumber);
+                for (std::size_t ordinal = 0u; ordinal < first.matchingLines; ++ordinal) {
+                    const PortableDialogueResult candidate =
+                        GetPortableRuntimeDialogue(actor.objectPath, ordinal, missionNumber);
+                    if (!candidate.effects.empty()) {
+                        dialogueOffsets_[actor.objectPath] = ordinal;
+                        found = ShowDialogue(actor.objectPath);
+                        break;
+                    }
+                }
+                if (found) break;
+            }
+            ALOG("DeusExQuest: diagnostic dialogue effect result=%s", found ? "found" : "missing");
+            return;
+        }
         if (std::strcmp(requested, "PICKUP") == 0) {
             const auto foundInventory = std::find_if(
                 actorSnapshots_.begin(), actorSnapshots_.end(),
@@ -1269,8 +1299,13 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             ALOG("DeusExQuest: dialogue audio resolution failed: %s", error.what());
         }
         const bool audioQueued = QueueDialogueAudio(dialogueSound);
+        const PortableDialogueEffectResult effects = ApplyPortableDialogueEffects(dialogue);
+        if (effects.applied != 0u && !effects.status.empty()) {
+            interactionStatus_ += "\n" + effects.status;
+            interactionStatusSeconds_ = std::max(interactionStatusSeconds_, 5.0f);
+        }
         ALOG(
-            "DeusExQuest: dialogue %s bind=%s line=%zu/%zu sound=%d package=%s audio=%s/%zu bytes queued=%s text=%s",
+            "DeusExQuest: dialogue %s bind=%s line=%zu/%zu sound=%d package=%s audio=%s/%zu bytes queued=%s effects=%zu credits=%d skill=%d goals=%zu notes=%zu text=%s",
             dialogue.eventPath.c_str(),
             dialogue.bindName.c_str(),
             cursor,
@@ -1280,6 +1315,11 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             dialogueSound.format.ToString().c_str(),
             dialogueSound.data.size(),
             audioQueued ? "true" : "false",
+            effects.applied,
+            effects.credits,
+            effects.skillPoints,
+            effects.goals,
+            effects.notes,
             subtitle.c_str());
         return true;
     }

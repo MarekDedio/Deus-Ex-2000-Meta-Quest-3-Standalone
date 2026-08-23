@@ -268,6 +268,15 @@ and gameplay.
   v1/v2 saves. Physical validation played Training event 8844, saved, advanced
   to 8845, loaded, and replayed 8845 rather than resetting to the first line;
   both referenced MP3 clips resolved and queued.
+- Conversation indexing now attaches unconditional `SetFlag`, `AddGoal`,
+  `AddNote`, `AddSkillPoints`, and `AddCredits` events to the preceding authored
+  speech while stopping at every choice, condition, random/jump, trade, or
+  transfer boundary. The shipped corpus exposes 1,139 such safe effects across
+  34,071 indexed dialogue lines and 1,256 speaker/mission keys. Effects are
+  idempotent and runtime-state v3 persists flags, goals, notes, skill points,
+  credits, and applied-event IDs. Physical Quest validation applied the flag
+  following `ConEventSpeech9950` once, rejected a replay, quick-saved/loaded,
+  and still rejected the replay while maintaining 72 fps steady state.
 - `01_NYC_UNATCOIsland` physically validated generic non-training loading: 107
   materials, 3,658 actors, 34,140 collision triangles, and two decoded exits,
   followed by steady 72 fps.

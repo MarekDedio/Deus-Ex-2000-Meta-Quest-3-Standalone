@@ -14,6 +14,7 @@
 #include <stdexcept>
 #include <set>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 
 namespace {
@@ -88,12 +89,19 @@ std::size_t persistentScriptExportCount{};
 std::string persistentMapPackageName;
 std::vector<std::string> persistentInventory;
 float persistentPlayerHealth{100.0f};
+std::int32_t persistentCredits{};
+std::int32_t persistentSkillPoints{};
+std::unordered_map<std::string, bool> persistentConversationFlags;
+std::vector<std::string> persistentGoals;
+std::vector<std::string> persistentNotes;
+std::unordered_set<std::string> persistentAppliedDialogueEffects;
 
 struct IndexedDialogueLine {
     std::string eventPath;
     std::string text;
     std::int32_t soundId{-1};
     std::string audioPackageName;
+    std::vector<PortableDialogueResult::Effect> effects;
 };
 
 std::unordered_map<std::string, std::vector<IndexedDialogueLine>> persistentDialogueIndex;
@@ -151,6 +159,7 @@ void BuildPersistentDialogueIndex() {
             itemPath = next->second;
         }
     }
+    std::unordered_map<std::string, std::vector<PortableDialogueResult::Effect>> indexedEffects;
     for (const auto& conversationEntry : conversationOrder) {
         const auto conversationFound = persistentQualifiedObjects.find(conversationEntry.first);
         if (conversationFound == persistentQualifiedObjects.end() ||
@@ -166,6 +175,7 @@ void BuildPersistentDialogueIndex() {
         const auto firstEvent = conversation->objectPropertyPaths.find("eventList");
         if (firstEvent == conversation->objectPropertyPaths.end()) continue;
         std::string eventPath = firstEvent->second;
+        std::string precedingSpeech;
         for (std::size_t guard = 0; !eventPath.empty() && guard < 8192u; ++guard) {
             const auto eventFound = persistentQualifiedObjects.find(eventPath);
             if (eventFound == persistentQualifiedObjects.end() || eventFound->second == nullptr) {
@@ -197,6 +207,7 @@ void BuildPersistentDialogueIndex() {
                             }
                         }
                         if (!line.text.empty()) {
+                            precedingSpeech = line.eventPath;
                             persistentDialogueIndex[
                                 DialogueKey(conversationEntry.second, speaker)].push_back(
                                     std::move(line));
@@ -205,12 +216,104 @@ void BuildPersistentDialogueIndex() {
                         }
                     }
                 }
+            } else {
+                PortableDialogueResult::Effect effect;
+                effect.eventPath = event->reflection.objectPath;
+                bool isEffect{};
+                const auto stringProperty = [&](const char* name) {
+                    for (const PortableTaggedProperty& property : event->instanceProperties) {
+                        if (property.name == name && property.type == 13u) {
+                            return DecodePortableStringProperty(property);
+                        }
+                    }
+                    return std::string();
+                };
+                const auto integerProperty = [&](const char* name) {
+                    return intProperty(event, name, 0);
+                };
+                const auto boolProperty = [&](const char* name) {
+                    for (const PortableTaggedProperty& property : event->instanceProperties) {
+                        if (property.name == name && property.type == 3u) return property.boolValue;
+                    }
+                    return false;
+                };
+                if (IsDerivedFromPath(event->cls, "ConSys.ConEventSetFlag")) {
+                    effect.type = PortableDialogueResult::Effect::Type::SetFlag;
+                    const auto flag = event->objectPropertyPaths.find("flagRef");
+                    if (flag != event->objectPropertyPaths.end()) {
+                        effect.key = flag->second;
+                        const auto flagObject = persistentQualifiedObjects.find(flag->second);
+                        if (flagObject != persistentQualifiedObjects.end() && flagObject->second) {
+                            for (const PortableTaggedProperty& property :
+                                 flagObject->second->instanceProperties) {
+                                if (property.name == "Value" && property.type == 3u) {
+                                    effect.value = property.boolValue;
+                                }
+                            }
+                        }
+                        isEffect = true;
+                    }
+                } else if (IsDerivedFromPath(event->cls, "ConSys.ConEventAddGoal")) {
+                    effect.type = PortableDialogueResult::Effect::Type::AddGoal;
+                    effect.key = event->reflection.objectPath;
+                    effect.text = stringProperty("goalText");
+                    effect.completed = boolProperty("bGoalCompleted");
+                    effect.primary = boolProperty("bPrimaryGoal");
+                    isEffect = !effect.text.empty();
+                } else if (IsDerivedFromPath(event->cls, "ConSys.ConEventAddNote")) {
+                    effect.type = PortableDialogueResult::Effect::Type::AddNote;
+                    effect.key = event->reflection.objectPath;
+                    effect.text = stringProperty("noteText");
+                    isEffect = !effect.text.empty();
+                } else if (IsDerivedFromPath(event->cls, "ConSys.ConEventAddSkillPoints")) {
+                    effect.type = PortableDialogueResult::Effect::Type::AddSkillPoints;
+                    effect.key = event->reflection.objectPath;
+                    effect.text = stringProperty("awardMessage");
+                    effect.amount = integerProperty("pointsToAdd");
+                    isEffect = effect.amount != 0;
+                } else if (IsDerivedFromPath(event->cls, "ConSys.ConEventAddCredits")) {
+                    effect.type = PortableDialogueResult::Effect::Type::AddCredits;
+                    effect.key = event->reflection.objectPath;
+                    effect.amount = integerProperty("creditsToAdd");
+                    isEffect = effect.amount != 0;
+                } else if (IsDerivedFromPath(event->cls, "ConSys.ConEventChoice") ||
+                           IsDerivedFromPath(event->cls, "ConSys.ConEventCheckFlag") ||
+                           IsDerivedFromPath(event->cls, "ConSys.ConEventCheckObject") ||
+                           IsDerivedFromPath(event->cls, "ConSys.ConEventCheckPersona") ||
+                           IsDerivedFromPath(event->cls, "ConSys.ConEventJump") ||
+                           IsDerivedFromPath(event->cls, "ConSys.ConEventRandomLabel") ||
+                           IsDerivedFromPath(event->cls, "ConSys.ConEventTrade") ||
+                           IsDerivedFromPath(event->cls, "ConSys.ConEventTransferObject")) {
+                    precedingSpeech.clear();
+                }
+                if (isEffect && !precedingSpeech.empty()) {
+                    indexedEffects[precedingSpeech].push_back(std::move(effect));
+                }
             }
             const auto next = event->objectPropertyPaths.find("nextEvent");
             if (next == event->objectPropertyPaths.end() || next->second == eventPath) break;
             eventPath = next->second;
         }
     }
+    std::size_t indexedLines{};
+    std::size_t indexedEffectCount{};
+    for (auto& entry : persistentDialogueIndex) {
+        for (IndexedDialogueLine& line : entry.second) {
+            ++indexedLines;
+            const auto effects = indexedEffects.find(line.eventPath);
+            if (effects != indexedEffects.end()) {
+                line.effects = effects->second;
+                indexedEffectCount += line.effects.size();
+            }
+        }
+    }
+    __android_log_print(
+        ANDROID_LOG_INFO,
+        "DeusExQuest",
+        "DeusExQuest: indexed %zu dialogue lines with %zu safe linear effects across %zu speaker missions",
+        indexedLines,
+        indexedEffectCount,
+        persistentDialogueIndex.size());
 }
 
 class RuntimeBytecodeReader {
@@ -665,6 +768,43 @@ PortableDialogueResult GetPortableRuntimeDialogue(
     result.speech = selected.text;
     result.soundId = selected.soundId;
     result.audioPackageName = selected.audioPackageName;
+    result.effects = selected.effects;
+    return result;
+}
+
+PortableDialogueEffectResult ApplyPortableDialogueEffects(
+    const PortableDialogueResult& dialogue) {
+    PortableDialogueEffectResult result;
+    for (const PortableDialogueResult::Effect& effect : dialogue.effects) {
+        if (!persistentAppliedDialogueEffects.insert(effect.eventPath).second) continue;
+        switch (effect.type) {
+        case PortableDialogueResult::Effect::Type::SetFlag:
+            persistentConversationFlags[effect.key] = effect.value;
+            result.status = effect.value ? "FLAG SET" : "FLAG CLEARED";
+            break;
+        case PortableDialogueResult::Effect::Type::AddGoal:
+            persistentGoals.push_back(effect.text);
+            result.status = effect.completed ? "GOAL COMPLETED" : "GOAL ADDED";
+            break;
+        case PortableDialogueResult::Effect::Type::AddNote:
+            persistentNotes.push_back(effect.text);
+            result.status = "NOTE ADDED";
+            break;
+        case PortableDialogueResult::Effect::Type::AddSkillPoints:
+            persistentSkillPoints += effect.amount;
+            result.status = "+" + std::to_string(effect.amount) + " SKILL POINTS";
+            break;
+        case PortableDialogueResult::Effect::Type::AddCredits:
+            persistentCredits += effect.amount;
+            result.status = "+" + std::to_string(effect.amount) + " CREDITS";
+            break;
+        }
+        ++result.applied;
+    }
+    result.credits = persistentCredits;
+    result.skillPoints = persistentSkillPoints;
+    result.goals = persistentGoals.size();
+    result.notes = persistentNotes.size();
     return result;
 }
 
@@ -693,6 +833,12 @@ void ShutdownPortableRuntime() {
     persistentScriptExportCount = 0;
     persistentMapPackageName.clear();
     persistentInventory.clear();
+    persistentCredits = 0;
+    persistentSkillPoints = 0;
+    persistentConversationFlags.clear();
+    persistentGoals.clear();
+    persistentNotes.clear();
+    persistentAppliedDialogueEffects.clear();
     persistentDialogueIndex.clear();
     persistentSpeakerMissions.clear();
     persistentPlayerHealth = 100.0f;
@@ -1325,7 +1471,7 @@ bool SavePortableRuntimeState(const std::string& path) {
     std::FILE* file = std::fopen(path.c_str(), "wb");
     if (file == nullptr) return false;
     const std::uint32_t magic = 0x53515844u;
-    const std::uint32_t version = 2u;
+    const std::uint32_t version = 3u;
     const auto write32 = [&](std::uint32_t value) {
         return std::fwrite(&value, sizeof(value), 1, file) == 1;
     };
@@ -1352,11 +1498,22 @@ bool SavePortableRuntimeState(const std::string& path) {
         }
         return true;
     };
+    std::vector<std::string> flags;
+    flags.reserve(persistentConversationFlags.size());
+    for (const auto& entry : persistentConversationFlags) {
+        flags.push_back(entry.first + (entry.second ? "\n1" : "\n0"));
+    }
+    const std::vector<std::string> applied(
+        persistentAppliedDialogueEffects.begin(), persistentAppliedDialogueEffects.end());
     const bool ok = write32(magic) && write32(version) &&
         writeStrings(persistentInventory) && writeStrings(inactive) &&
         writeStrings(activated) &&
         std::fwrite(&persistentPlayerHealth, sizeof(persistentPlayerHealth), 1, file) == 1 &&
-        writeDamaged();
+        writeDamaged() &&
+        std::fwrite(&persistentCredits, sizeof(persistentCredits), 1, file) == 1 &&
+        std::fwrite(&persistentSkillPoints, sizeof(persistentSkillPoints), 1, file) == 1 &&
+        writeStrings(flags) && writeStrings(persistentGoals) && writeStrings(persistentNotes) &&
+        writeStrings(applied);
     std::fclose(file);
     return ok;
 }
@@ -1389,9 +1546,9 @@ bool LoadPortableRuntimeState(const std::string& path) {
     float playerHealth = 100.0f;
     std::vector<std::pair<std::string, float>> damaged;
     bool ok = read32(magic) && read32(version) && magic == 0x53515844u &&
-        (version == 1u || version == 2u) &&
+        (version == 1u || version == 2u || version == 3u) &&
         readStrings(inventory) && readStrings(inactive) && readStrings(activated);
-    if (ok && version == 2u) {
+    if (ok && version >= 2u) {
         std::uint32_t damagedCount{};
         ok = std::fread(&playerHealth, sizeof(playerHealth), 1, file) == 1 &&
             std::isfinite(playerHealth) && playerHealth >= 0.0f && playerHealth <= 100.0f &&
@@ -1407,6 +1564,18 @@ bool LoadPortableRuntimeState(const std::string& path) {
             if (ok) damaged.emplace_back(std::move(path), health);
         }
     }
+    std::int32_t credits{};
+    std::int32_t skillPoints{};
+    std::vector<std::string> flags;
+    std::vector<std::string> goals;
+    std::vector<std::string> notes;
+    std::vector<std::string> applied;
+    if (ok && version >= 3u) {
+        ok = std::fread(&credits, sizeof(credits), 1, file) == 1 &&
+            std::fread(&skillPoints, sizeof(skillPoints), 1, file) == 1 &&
+            credits >= 0 && skillPoints >= 0 && readStrings(flags) &&
+            readStrings(goals) && readStrings(notes) && readStrings(applied);
+    }
     const int trailing = ok ? std::fgetc(file) : 0;
     ok = ok && trailing == EOF;
     std::fclose(file);
@@ -1421,6 +1590,19 @@ bool LoadPortableRuntimeState(const std::string& path) {
     }
     persistentInventory = std::move(inventory);
     persistentPlayerHealth = playerHealth;
+    persistentCredits = credits;
+    persistentSkillPoints = skillPoints;
+    persistentConversationFlags.clear();
+    for (const std::string& flag : flags) {
+        const std::size_t separator = flag.rfind('\n');
+        if (separator != std::string::npos && separator + 2u == flag.size()) {
+            persistentConversationFlags[flag.substr(0u, separator)] = flag.back() == '1';
+        }
+    }
+    persistentGoals = std::move(goals);
+    persistentNotes = std::move(notes);
+    persistentAppliedDialogueEffects = std::unordered_set<std::string>(
+        applied.begin(), applied.end());
     for (const std::string& objectPath : inactive) {
         const auto found = persistentQualifiedObjects.find(objectPath);
         if (found != persistentQualifiedObjects.end()) found->second->active = false;
