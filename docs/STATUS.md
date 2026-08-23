@@ -14,6 +14,9 @@
   plus each remaining placeholder class, so the next physical capture pass can
   identify unsupported geometry precisely. The ARM64 debug APK builds
   successfully; the headset was not present in Windows/ADB for visual testing.
+- The portable vertex-mesh loader now decodes classic UE1 `Mesh` triangle and
+  UV streams in addition to `LodMesh` and `SkeletalMesh`, removing another
+  format-level reason for physical actors to fall back to cubes.
 
 ## Verified on 2026-08-23
 

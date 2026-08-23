@@ -1001,8 +1001,8 @@ PortableLodMesh LoadPortableLodMesh(
     std::string metaClass = ResolvePortableObjectPath(entry.ObjClass, package);
     const std::size_t separator = metaClass.find_last_of('.');
     if (separator != std::string::npos) metaClass.erase(0, separator + 1);
-    if (metaClass != "LodMesh" && metaClass != "SkeletalMesh") {
-        throw std::runtime_error("UE1 export is not a LodMesh");
+    if (metaClass != "Mesh" && metaClass != "LodMesh" && metaClass != "SkeletalMesh") {
+        throw std::runtime_error("UE1 export is not a supported vertex mesh");
     }
     std::vector<std::uint8_t> bytes(static_cast<std::size_t>(entry.ObjSize));
     const std::shared_ptr<File> file = File::open_existing(package.sourcePath);
@@ -1040,7 +1040,24 @@ PortableLodMesh LoadPortableLodMesh(
 
     reader.ReadUInt32(); // legacy triangle lazy-array end offset
     const std::size_t legacyTriangles = count("legacy triangle");
-    reader.Skip(legacyTriangles * 20u);
+    struct LegacyTriangle {
+        std::uint16_t vertex[3];
+        std::uint8_t u[3];
+        std::uint8_t v[3];
+        std::int32_t textureIndex;
+    };
+    std::vector<LegacyTriangle> legacyFaces(legacyTriangles);
+    for (LegacyTriangle& triangle : legacyFaces) {
+        triangle.vertex[0] = reader.ReadUInt16();
+        triangle.vertex[1] = reader.ReadUInt16();
+        triangle.vertex[2] = reader.ReadUInt16();
+        for (std::size_t corner = 0; corner < 3u; ++corner) {
+            triangle.u[corner] = reader.ReadUInt8();
+            triangle.v[corner] = reader.ReadUInt8();
+        }
+        reader.ReadUInt32(); // PolyFlags
+        triangle.textureIndex = static_cast<std::int32_t>(reader.ReadUInt32());
+    }
     const std::size_t animationSequences = count("animation sequence");
     for (std::size_t index = 0; index < animationSequences; ++index) {
         const std::int32_t name = reader.ReadIndex();
@@ -1082,6 +1099,34 @@ PortableLodMesh LoadPortableLodMesh(
     reader.Skip(12 + 8);
     const std::size_t textureLods = count("texture LOD");
     reader.Skip(textureLods * 4u);
+
+    if (metaClass == "Mesh") {
+        result.triangles.reserve(legacyFaces.size() * 3u);
+        for (const LegacyTriangle& face : legacyFaces) {
+            if (face.textureIndex < 0 || face.textureIndex > 65535) {
+                throw std::runtime_error("UE1 Mesh triangle texture index is invalid");
+            }
+            for (std::size_t corner = 0; corner < 3u; ++corner) {
+                const std::uint16_t vertexIndex = face.vertex[corner];
+                if (vertexIndex >= result.frameVertices || vertexIndex >= vertices.size()) {
+                    throw std::runtime_error("UE1 Mesh triangle vertex is out of bounds");
+                }
+                const Vertex& vertex = vertices[vertexIndex];
+                result.triangles.push_back({
+                    (vertex.x - result.originX) * result.scaleX,
+                    (vertex.y - result.originY) * result.scaleY,
+                    (vertex.z - result.originZ) * result.scaleZ,
+                    face.u[corner] / 255.0f,
+                    face.v[corner] / 255.0f,
+                    static_cast<std::uint16_t>(face.textureIndex)});
+            }
+        }
+        if (result.frameVertices == 0u || result.animationFrames == 0u ||
+            result.triangles.empty()) {
+            throw std::runtime_error("UE1 Mesh has no renderable first frame");
+        }
+        return result;
+    }
 
     reader.Skip(count("collapse point") * 2u);
     reader.Skip(count("face level") * 2u);

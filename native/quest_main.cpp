@@ -1124,7 +1124,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                 texturedGeometry.ToGeometryDescriptor(), actorTexture_, false);
         }
         ALOG(
-            "DeusExQuest: instantiated %zu targetable actors from %zu live actors (%zu LodMesh, %zu sprites, %zu cube placeholders, %zu hidden, %zu mesh-bearing, %zu mesh formats, %zu map exits)",
+            "DeusExQuest: instantiated %zu targetable actors from %zu live actors (%zu vertex meshes, %zu sprites, %zu cube placeholders, %zu hidden, %zu mesh-bearing, %zu mesh formats, %zu map exits)",
             visible,
             actorSnapshots_.size(),
             meshInstances,
