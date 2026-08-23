@@ -215,3 +215,6 @@ and gameplay.
 - Version-2 quick-saves include the active map. Physical validation completed
   Training save -> TrainingCombat -> quick-load -> Training, restoring the map
   runtime and player transform after the asynchronous transition.
+- Runtime-state v2 preserves player health and partial pawn damage in addition
+  to inventory, inactive/dead actors, and activated movers/triggers. A physical
+  100 -> 90 save -> 80 -> load test restored 90, and the HUD uses the live value.

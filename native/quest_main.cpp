@@ -407,14 +407,20 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             const std::size_t inventoryCount = mapLoading
                 ? displayedInventoryCount_
                 : GetPortableRuntimeInventoryCount();
-            if (inventoryCount != displayedInventoryCount_) {
+            const float playerHealth = mapLoading
+                ? displayedPlayerHealth_
+                : GetPortableRuntimePlayerHealth();
+            if (inventoryCount != displayedInventoryCount_ ||
+                std::fabs(playerHealth - displayedPlayerHealth_) > 0.01f) {
                 hudLabel_->SetText(
-                    "%s   HEALTH 100   INVENTORY %zu\nA USE   TRIGGER FIRE   B NEXT MAP   Y SAVE   X LOAD",
+                    "%s   HEALTH %.0f   INVENTORY %zu\nA USE   TRIGGER FIRE   B NEXT MAP   Y SAVE   X LOAD",
                     pendingMapName_.empty() && transitionMapName_.empty()
                         ? currentMapName_.c_str()
                         : "LOADING...",
+                    playerHealth,
                     inventoryCount);
                 displayedInventoryCount_ = inventoryCount;
+                displayedPlayerHealth_ = playerHealth;
             }
         }
         ui_.Update(frame);
@@ -801,10 +807,11 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                     currentMapIndex_ = static_cast<std::size_t>(found - mapNames_.begin());
                 }
                 ALOG(
-                    "DeusExQuest: staged visual runtime transition complete: %s (%zu actors, %zu BSP collision triangles)",
+                    "DeusExQuest: staged visual runtime transition complete: %s (%zu actors, %zu BSP collision triangles, health %.1f)",
                     transitionMapName_.c_str(),
                     actorSnapshots_.size(),
-                    collisionTriangles_.size());
+                    collisionTriangles_.size(),
+                    GetPortableRuntimePlayerHealth());
                 transitionMapName_.clear();
                 transitionPhase_ = MapTransitionPhase::Idle;
                 displayedInventoryCount_ = invalidRendererIndex_;
@@ -912,6 +919,12 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         }
         if (std::strcmp(requested, "LOAD") == 0) {
             LoadGameState();
+            return;
+        }
+        if (std::strcmp(requested, "DAMAGE") == 0) {
+            ALOG(
+                "DeusExQuest: diagnostic player damage, health=%.1f",
+                DamagePortableRuntimePlayer(10.0f));
             return;
         }
         const auto found = std::find(mapNames_.begin(), mapNames_.end(), requested);
@@ -1070,8 +1083,10 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         if (file != nullptr) std::fclose(file);
         const bool runtimeSaved = SavePortableRuntimeState(runtimePath);
         ALOG(
-            "DeusExQuest: VR quick-save %s",
-            metaSaved && runtimeSaved ? "completed" : "failed");
+            "DeusExQuest: VR quick-save %s map=%s health=%.1f",
+            metaSaved && runtimeSaved ? "completed" : "failed",
+            currentMapName_.c_str(),
+            GetPortableRuntimePlayerHealth());
     }
 
     void LoadGameState() {
@@ -1127,7 +1142,9 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         DestroyActorGeometry();
         actorSnapshots_ = GetPortableRuntimeMapActors();
         BuildActorMarkers();
-        ALOG("DeusExQuest: VR quick-load completed");
+        ALOG(
+            "DeusExQuest: VR quick-load completed health=%.1f",
+            GetPortableRuntimePlayerHealth());
     }
 
     struct MeshVertex {
@@ -1654,6 +1671,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
     OVRFW::TinyUI ui_;
     OVRFW::VRMenuObject* hudLabel_{};
     std::size_t displayedInventoryCount_{invalidRendererIndex_};
+    float displayedPlayerHealth_{-1.0f};
     static constexpr const char* gameRoot_ =
         "/data/user/0/dev.deusex.questvr.smoketest/files/DeusEx";
     std::vector<std::string> mapNames_;

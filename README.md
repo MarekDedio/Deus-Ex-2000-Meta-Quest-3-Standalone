@@ -70,6 +70,8 @@ A head-locked HUD displays health, inventory count, and the control summary.
 Real `Engine.Teleporter` and `DeusEx.MapExit` actors decode their URL/DestMap
 properties and initiate catalog-validated travel when entered. Quick-saves now
 record the active map and can restore across a later level transition.
+Runtime-state v2 also persists live player health and partially damaged pawn
+health, while continuing to read older v1 runtime saves.
 
 The training scene has been measured at a steady 72 fps on a physical Quest 3.
 Generic visual map-cache generation and runtime/GPU transitions now work and

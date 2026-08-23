@@ -86,6 +86,7 @@ std::unordered_map<std::string, RuntimeObject*> persistentQualifiedObjects;
 std::size_t persistentScriptExportCount{};
 std::string persistentMapPackageName;
 std::vector<std::string> persistentInventory;
+float persistentPlayerHealth{100.0f};
 
 bool IsDerivedFromPath(RuntimeObject* cls, const std::string& path) {
     for (RuntimeObject* current = cls; current != nullptr; current = current->base) {
@@ -425,6 +426,7 @@ void ShutdownPortableRuntime() {
     persistentScriptExportCount = 0;
     persistentMapPackageName.clear();
     persistentInventory.clear();
+    persistentPlayerHealth = 100.0f;
     GC::Collect();
 }
 
@@ -986,6 +988,17 @@ std::size_t GetPortableRuntimeInventoryCount() {
     return persistentInventory.size();
 }
 
+float GetPortableRuntimePlayerHealth() {
+    return persistentPlayerHealth;
+}
+
+float DamagePortableRuntimePlayer(float damage) {
+    if (std::isfinite(damage) && damage > 0.0f) {
+        persistentPlayerHealth = std::max(0.0f, persistentPlayerHealth - damage);
+    }
+    return persistentPlayerHealth;
+}
+
 bool VerifyPortableRuntimeInteraction() {
     if (!persistentRuntime || !persistentRuntime->get()) return false;
     RuntimeObject* inventoryActor{};
@@ -1015,16 +1028,20 @@ bool SavePortableRuntimeState(const std::string& path) {
     if (!persistentRuntime || !persistentRuntime->get()) return false;
     std::vector<std::string> inactive;
     std::vector<std::string> activated;
+    std::vector<std::pair<std::string, float>> damaged;
     for (std::size_t index = persistentScriptExportCount;
          index < persistentRuntime->get()->exports.size(); ++index) {
         RuntimeObject* object = persistentRuntime->get()->exports[index];
         if (!object->active) inactive.push_back(object->reflection.objectPath);
         if (object->activated) activated.push_back(object->reflection.objectPath);
+        if (object->healthInitialized) {
+            damaged.emplace_back(object->reflection.objectPath, object->health);
+        }
     }
     std::FILE* file = std::fopen(path.c_str(), "wb");
     if (file == nullptr) return false;
     const std::uint32_t magic = 0x53515844u;
-    const std::uint32_t version = 1u;
+    const std::uint32_t version = 2u;
     const auto write32 = [&](std::uint32_t value) {
         return std::fwrite(&value, sizeof(value), 1, file) == 1;
     };
@@ -1039,9 +1056,23 @@ bool SavePortableRuntimeState(const std::string& path) {
         }
         return true;
     };
+    const auto writeDamaged = [&]() {
+        if (!write32(static_cast<std::uint32_t>(damaged.size()))) return false;
+        for (const auto& entry : damaged) {
+            if (entry.first.size() > 1'048'576u ||
+                !write32(static_cast<std::uint32_t>(entry.first.size())) ||
+                std::fwrite(entry.first.data(), 1, entry.first.size(), file) != entry.first.size() ||
+                std::fwrite(&entry.second, sizeof(entry.second), 1, file) != 1) {
+                return false;
+            }
+        }
+        return true;
+    };
     const bool ok = write32(magic) && write32(version) &&
         writeStrings(persistentInventory) && writeStrings(inactive) &&
-        writeStrings(activated);
+        writeStrings(activated) &&
+        std::fwrite(&persistentPlayerHealth, sizeof(persistentPlayerHealth), 1, file) == 1 &&
+        writeDamaged();
     std::fclose(file);
     return ok;
 }
@@ -1071,8 +1102,27 @@ bool LoadPortableRuntimeState(const std::string& path) {
     std::vector<std::string> inventory;
     std::vector<std::string> inactive;
     std::vector<std::string> activated;
-    bool ok = read32(magic) && read32(version) && magic == 0x53515844u && version == 1u &&
+    float playerHealth = 100.0f;
+    std::vector<std::pair<std::string, float>> damaged;
+    bool ok = read32(magic) && read32(version) && magic == 0x53515844u &&
+        (version == 1u || version == 2u) &&
         readStrings(inventory) && readStrings(inactive) && readStrings(activated);
+    if (ok && version == 2u) {
+        std::uint32_t damagedCount{};
+        ok = std::fread(&playerHealth, sizeof(playerHealth), 1, file) == 1 &&
+            std::isfinite(playerHealth) && playerHealth >= 0.0f && playerHealth <= 100.0f &&
+            read32(damagedCount) && damagedCount <= 100'000u;
+        for (std::uint32_t index = 0; ok && index < damagedCount; ++index) {
+            std::uint32_t length{};
+            ok = read32(length) && length <= 1'048'576u;
+            std::string path(length, '\0');
+            float health{};
+            ok = ok && std::fread(path.data(), 1, length, file) == length &&
+                std::fread(&health, sizeof(health), 1, file) == 1 &&
+                std::isfinite(health) && health >= 0.0f;
+            if (ok) damaged.emplace_back(std::move(path), health);
+        }
+    }
     const int trailing = ok ? std::fgetc(file) : 0;
     ok = ok && trailing == EOF;
     std::fclose(file);
@@ -1082,8 +1132,11 @@ bool LoadPortableRuntimeState(const std::string& path) {
         RuntimeObject* object = persistentRuntime->get()->exports[index];
         object->active = true;
         object->activated = false;
+        object->healthInitialized = false;
+        object->health = 100.0f;
     }
     persistentInventory = std::move(inventory);
+    persistentPlayerHealth = playerHealth;
     for (const std::string& objectPath : inactive) {
         const auto found = persistentQualifiedObjects.find(objectPath);
         if (found != persistentQualifiedObjects.end()) found->second->active = false;
@@ -1091,6 +1144,13 @@ bool LoadPortableRuntimeState(const std::string& path) {
     for (const std::string& objectPath : activated) {
         const auto found = persistentQualifiedObjects.find(objectPath);
         if (found != persistentQualifiedObjects.end()) found->second->activated = true;
+    }
+    for (const auto& entry : damaged) {
+        const auto found = persistentQualifiedObjects.find(entry.first);
+        if (found != persistentQualifiedObjects.end()) {
+            found->second->healthInitialized = true;
+            found->second->health = entry.second;
+        }
     }
     return true;
 }

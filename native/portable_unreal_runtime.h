@@ -137,3 +137,5 @@ PortableDamageResult DamagePortableRuntimeActor(
     float damage);
 bool VerifyPortableRuntimeDamage();
 std::size_t GetPortableRuntimeInventoryCount();
+float GetPortableRuntimePlayerHealth();
+float DamagePortableRuntimePlayer(float damage);
