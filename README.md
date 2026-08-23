@@ -62,7 +62,8 @@ meshes, actor textures, scripts, and ambient sound on-device. Controls are:
 - right stick: 30-degree snap turning;
 - A: use the pointed actor, or consume the selected healing item when no actor
   is targeted;
-- right index trigger: controller-aimed pawn damage;
+- right index trigger: controller-aimed pawn damage when the selected firearm
+  has a compatible ammo pickup (melee weapons need no ammo);
 - right grip: cycle the selected inventory item;
 - B: asynchronously cache and load the next catalog map;
 - Y: quick-save world, inventory, position, and facing state;

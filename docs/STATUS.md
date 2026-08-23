@@ -231,6 +231,11 @@ and gameplay.
   `Candybar0`, damaged health 100 -> 90, cycled to it, consumed it to reach 95,
   and reduced inventory from nine items to eight. Save -> damage to 85 -> load
   restored the post-consumption 95 health state.
+- Firearms now require a compatible owned ammo class (10 mm, shells, .30-06,
+  rockets, plasma, napalm, darts, or batteries); melee weapons remain ready
+  without ammo. The HUD reports missing weapon/ammo, misses, invalid targets,
+  hits, remaining target health, and kills. Physical Training validation blocked
+  a selected multitool and accepted `WeaponCrowbar1` at 12 damage without ammo.
 - `01_NYC_UNATCOIsland` physically validated generic non-training loading: 107
   materials, 3,658 actors, 34,140 collision triangles, and two decoded exits,
   followed by steady 72 fps.

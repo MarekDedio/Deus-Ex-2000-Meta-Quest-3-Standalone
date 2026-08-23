@@ -404,7 +404,13 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             const std::vector<std::string> inventory = GetPortableRuntimeInventoryItems();
             const float weaponDamage = SelectedWeaponDamage(inventory);
             if (weaponDamage <= 0.0f) {
+                interactionStatus_ = "SELECT A WEAPON";
+                interactionStatusSeconds_ = 2.0f;
                 ALOG("DeusExQuest: VR fire ignored; selected inventory item is not a weapon");
+            } else if (!SelectedWeaponHasAmmo(inventory)) {
+                interactionStatus_ = "NO COMPATIBLE AMMO";
+                interactionStatusSeconds_ = 2.0f;
+                ALOG("DeusExQuest: VR fire ignored; selected weapon has no compatible ammo");
             } else if (FireTargetedActor(
                            frame.RightRemotePointPose,
                            weaponDamage,
@@ -1091,6 +1097,15 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             ALOG("DeusExQuest: diagnostic consume result=%s", used ? "used" : "not_consumable");
             return;
         }
+        if (std::strcmp(requested, "READY") == 0) {
+            const std::vector<std::string> inventory = GetPortableRuntimeInventoryItems();
+            ALOG(
+                "DeusExQuest: diagnostic weapon ready selected=%s damage=%.1f ammo=%s",
+                SelectedInventoryLabel(inventory).c_str(),
+                SelectedWeaponDamage(inventory),
+                SelectedWeaponHasAmmo(inventory) ? "ready" : "blocked");
+            return;
+        }
         if (std::strcmp(requested, "PICKUP") == 0) {
             const auto foundInventory = std::find_if(
                 actorSnapshots_.begin(), actorSnapshots_.end(),
@@ -1277,6 +1292,37 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         return 18.0f;
     }
 
+    static bool SelectedWeaponHasAmmo(const std::vector<std::string>& inventory) {
+        const std::string weapon = SelectedInventoryLabel(inventory);
+        if (weapon.find("Weapon") == std::string::npos) return false;
+        if (weapon.find("Crowbar") != std::string::npos ||
+            weapon.find("Baton") != std::string::npos ||
+            weapon.find("CombatKnife") != std::string::npos ||
+            weapon.find("Sword") != std::string::npos) {
+            return true;
+        }
+        const auto owns = [&](const char* className) {
+            return std::any_of(inventory.begin(), inventory.end(), [&](const std::string& item) {
+                const std::size_t separator = item.find_last_of('.');
+                const std::string label = separator == std::string::npos
+                    ? item
+                    : item.substr(separator + 1u);
+                return label.find(className) != std::string::npos;
+            });
+        };
+        if (weapon.find("Shotgun") != std::string::npos) return owns("AmmoShell");
+        if (weapon.find("Sniper") != std::string::npos) return owns("Ammo3006");
+        if (weapon.find("GEP") != std::string::npos ||
+            weapon.find("LAW") != std::string::npos) return owns("AmmoRocket");
+        if (weapon.find("Plasma") != std::string::npos) return owns("AmmoPlasma");
+        if (weapon.find("Flamethrower") != std::string::npos) return owns("AmmoNapalm");
+        if (weapon.find("Crossbow") != std::string::npos) return owns("AmmoDart");
+        if (weapon.find("Prod") != std::string::npos) return owns("AmmoBattery");
+        if (weapon.find("Pistol") != std::string::npos ||
+            weapon.find("AssaultGun") != std::string::npos) return owns("Ammo10mm");
+        return true;
+    }
+
     static float SelectedWeaponRange(const std::vector<std::string>& inventory) {
         const std::string item = SelectedInventoryLabel(inventory);
         if (item.find("Crowbar") != std::string::npos ||
@@ -1312,18 +1358,26 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             }
         }
         if (best == nullptr) {
+            interactionStatus_ = "SHOT MISSED";
+            interactionStatusSeconds_ = 1.5f;
             ALOG("DeusExQuest: VR fire hit no pawn");
             return false;
         }
         const PortableDamageResult damage =
             DamagePortableRuntimeActor(best->objectPath, weaponDamage);
         if (!damage.handled) {
+            interactionStatus_ = "TARGET NOT DAMAGEABLE";
+            interactionStatusSeconds_ = 2.0f;
             ALOG(
                 "DeusExQuest: VR fire struck non-damageable %s at %.2fm",
                 best->objectPath.c_str(),
                 bestDistance);
             return false;
         }
+        interactionStatus_ = damage.killed
+            ? "TARGET DOWN"
+            : "HIT  HEALTH " + std::to_string(static_cast<int>(damage.remainingHealth));
+        interactionStatusSeconds_ = 2.0f;
         ALOG(
             "DeusExQuest: VR fire damaged %s at %.2fm; health=%.1f killed=%s",
             best->objectPath.c_str(),
