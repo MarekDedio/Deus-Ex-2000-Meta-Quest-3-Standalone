@@ -1087,8 +1087,8 @@ bool BuildMapCache(const std::string& root, const std::string& mapName) {
     std::map<std::string, PortablePackageTables> texturePackages;
     std::size_t decodedMaterials{};
     std::size_t proceduralMaterials{};
-    constexpr std::uint32_t layerWidth = 256;
-    constexpr std::uint32_t layerHeight = 256;
+    constexpr std::uint32_t layerWidth = 96;
+    constexpr std::uint32_t layerHeight = 96;
     std::vector<std::uint8_t> materialArrayRgba;
     materialArrayRgba.reserve(map.materialNames.size() * layerWidth * layerHeight * 4u);
     map.materialWidths.clear();
@@ -1437,8 +1437,8 @@ Java_dev_deusex_questvr_MainActivity_probeGameData(
         std::map<std::string, PortablePackageTables> texturePackages;
         std::size_t decodedMaterials{};
         std::size_t proceduralMaterials{};
-        constexpr std::uint32_t layerWidth = 256;
-        constexpr std::uint32_t layerHeight = 256;
+        constexpr std::uint32_t layerWidth = 96;
+        constexpr std::uint32_t layerHeight = 96;
         std::vector<std::uint8_t> materialArrayRgba;
         materialArrayRgba.reserve(
             training.materialNames.size() * layerWidth * layerHeight * 4u);

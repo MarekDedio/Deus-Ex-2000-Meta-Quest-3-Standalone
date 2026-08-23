@@ -78,10 +78,12 @@ weapon, use weapon-family damage, and constrain melee weapons to arm's reach.
 
 The training scene has been measured at a steady 72 fps on a physical Quest 3.
 The first campaign map, `01_NYC_UNATCOIsland`, also stabilizes at 72 fps with
-proximity-streamed actors and an eight-meter collision grid.
+proximity-streamed actors, incremental BSP/texture uploads, and an eight-meter
+collision grid. Its measured worst transition frame is 41.66 ms, down from the
+original 1.22 seconds; steady-state worst frame time is 13.89 ms.
 Generic visual map-cache generation and runtime/GPU transitions now work and
 have been physically verified for Training to TrainingCombat and back. The
-remaining major work is progression-driven (rather than debug-button) travel,
-broader UnrealScript/native execution, AI/conversations/missions, full UI and
-inventory presentation, animation, spatial audio, transition comfort, and
-campaign validation.
+runtime also follows decoded teleporter/map-exit destinations. The remaining
+major work is broader UnrealScript/native execution, AI/conversations/missions,
+full UI and inventory presentation, animation, spatial audio, further transition
+comfort, and end-to-end campaign validation.

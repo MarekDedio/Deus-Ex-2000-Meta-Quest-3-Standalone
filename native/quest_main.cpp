@@ -378,11 +378,11 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         if (!mapLoading && mapTravelCooldown_ <= 0.0f) {
             CheckTravelTriggers(frame.HeadPose.Translation);
         }
-        if (!mapLoading && actorSnapshots_.size() > 2000u) {
+        if (!mapLoading && actorSnapshots_.size() > 1000u) {
             const OVR::Vector3f playerLocal = StageToLocal(currentHeadStage_, worldPosition_);
             const float dx = playerLocal.x - actorStreamingCenter_.x;
             const float dz = playerLocal.z - actorStreamingCenter_.z;
-            if (dx * dx + dz * dz > 20.0f * 20.0f) {
+            if (dx * dx + dz * dz > 10.0f * 10.0f) {
                 DestroyActorGeometry();
                 BuildActorMarkers();
             }
@@ -478,6 +478,13 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             pendingWorldTextureId_ = 0u;
         }
         pendingWorldTextureRgba_.clear();
+        if (pendingActorTextureId_ != 0u) {
+            glDeleteTextures(1, &pendingActorTextureId_);
+            pendingActorTextureId_ = 0u;
+        }
+        pendingActorTextureRgba_.clear();
+        pendingActorTexturePaths_.clear();
+        pendingWorldMesh_.chunks.clear();
         StopAmbientAudio();
         leftController_.Shutdown();
         rightController_.Shutdown();
@@ -509,8 +516,28 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         WorldTextureAllocate,
         WorldTextureUpload,
         WorldGeometry,
-        ActorTextures,
+        WorldGeometryUpload,
+        CollisionGrid,
+        ActorTextureAllocate,
+        ActorTextureUpload,
         ActorGeometry
+    };
+
+    struct MeshVertex {
+        float px, py, pz;
+        float nx, ny, nz;
+        float u, v;
+        std::int32_t materialSlot;
+    };
+
+    struct WorldMeshChunkPreparation {
+        std::int32_t materialSlot{};
+        std::vector<MeshVertex> vertices;
+    };
+
+    struct WorldMeshPreparation {
+        bool passed{};
+        std::vector<WorldMeshChunkPreparation> chunks;
     };
 
     struct WorldTexturePreparation {
@@ -527,6 +554,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         std::vector<PortableActorSnapshot> actors;
         PortableTextureArray actorTextures;
         WorldTexturePreparation worldTexture;
+        WorldMeshPreparation worldMesh;
     };
 
     struct InteractiveActor {
@@ -628,10 +656,10 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                 (actor.y - originY) * unitsToMeters,
                 (actor.z - originZ) * unitsToMeters + 1.0f,
                 -(actor.x - originX) * unitsToMeters);
-            if (actorSnapshots_.size() > 2000u) {
+            if (actorSnapshots_.size() > 1000u) {
                 const float dx = position.x - playerLocal.x;
                 const float dz = position.z - playerLocal.z;
-                if (dx * dx + dz * dz > 45.0f * 45.0f) continue;
+                if (dx * dx + dz * dz > 25.0f * 25.0f) continue;
             }
             if (!actor.meshPath.empty()) ++meshClasses[actor.meshClassPath];
             OVR::Vector4f color;
@@ -850,20 +878,45 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                 }
                 transitionPhase_ = MapTransitionPhase::WorldTextureUpload;
             } else if (transitionPhase_ == MapTransitionPhase::WorldTextureUpload) {
-                if (!UploadWorldTextureLayers(4u)) {
+                if (!UploadWorldTextureLayers(2u)) {
                     throw std::runtime_error("GPU world texture upload failed");
                 }
                 if (pendingWorldTextureLayersUploaded_ == pendingWorldTextureLayers_) {
                     transitionPhase_ = MapTransitionPhase::WorldGeometry;
                 }
             } else if (transitionPhase_ == MapTransitionPhase::WorldGeometry) {
-                if (!LoadWorldMesh(false)) throw std::runtime_error("GPU world replacement failed");
-                transitionPhase_ = MapTransitionPhase::ActorTextures;
-            } else if (transitionPhase_ == MapTransitionPhase::ActorTextures) {
+                if (!BeginWorldMeshUpload(std::move(preparedWorldMesh_))) {
+                    throw std::runtime_error("world mesh preparation failed");
+                }
+                transitionPhase_ = MapTransitionPhase::WorldGeometryUpload;
+            } else if (transitionPhase_ == MapTransitionPhase::WorldGeometryUpload) {
+                if (!UploadNextWorldMeshChunk()) {
+                    throw std::runtime_error("GPU world chunk upload failed");
+                }
+                if (pendingWorldMeshChunk_ == pendingWorldMesh_.chunks.size()) {
+                    pendingWorldMesh_.chunks.clear();
+                    transitionPhase_ = MapTransitionPhase::CollisionGrid;
+                }
+            } else if (transitionPhase_ == MapTransitionPhase::CollisionGrid) {
+                ALOG(
+                    "DeusExQuest: incrementally indexed %zu collision triangles in %zu cells",
+                    collisionTriangles_.size(),
+                    collisionGrid_.size());
+                transitionPhase_ = MapTransitionPhase::ActorTextureAllocate;
+            } else if (transitionPhase_ == MapTransitionPhase::ActorTextureAllocate) {
                 actorSnapshots_ = preparedActorSnapshots_;
                 preparedActorSnapshots_.clear();
-                UploadActorTextures(std::move(preparedActorTextures_));
-                transitionPhase_ = MapTransitionPhase::ActorGeometry;
+                if (!BeginActorTextureUpload(std::move(preparedActorTextures_))) {
+                    throw std::runtime_error("GPU actor texture allocation failed");
+                }
+                transitionPhase_ = MapTransitionPhase::ActorTextureUpload;
+            } else if (transitionPhase_ == MapTransitionPhase::ActorTextureUpload) {
+                if (!UploadActorTextureLayers(2u)) {
+                    throw std::runtime_error("GPU actor texture upload failed");
+                }
+                if (pendingActorTextureLayersUploaded_ == pendingActorTextureLayers_) {
+                    transitionPhase_ = MapTransitionPhase::ActorGeometry;
+                }
             } else if (transitionPhase_ == MapTransitionPhase::ActorGeometry) {
                 BuildActorMarkers();
                 const auto found =
@@ -898,6 +951,13 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                 pendingWorldTextureId_ = 0u;
             }
             pendingWorldTextureRgba_.clear();
+            if (pendingActorTextureId_ != 0u) {
+                glDeleteTextures(1, &pendingActorTextureId_);
+                pendingActorTextureId_ = 0u;
+            }
+            pendingActorTextureRgba_.clear();
+            pendingActorTexturePaths_.clear();
+            pendingWorldMesh_.chunks.clear();
             preparedActorSnapshots_.clear();
             displayedInventoryCount_ = invalidRendererIndex_;
             return false;
@@ -925,6 +985,11 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                     preparation.error = "visual cache generation failed";
                     return preparation;
                 }
+                preparation.worldMesh = LoadWorldMeshCacheCpu();
+                if (!preparation.worldMesh.passed) {
+                    preparation.error = "world mesh cache read failed";
+                    return preparation;
+                }
                 preparation.worldTexture = LoadWorldTextureCacheCpu();
                 if (!preparation.worldTexture.passed) {
                     preparation.error = "world texture cache read failed";
@@ -944,7 +1009,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                     return preparation;
                 }
                 preparation.actors = GetPortableRuntimeMapActors();
-                preparation.actorTextures = BuildPortableRuntimeActorTextureArray(256, 256);
+                preparation.actorTextures = BuildPortableRuntimeActorTextureArray(96, 96);
                 preparation.passed = preparation.actorTextures.passed;
                 if (!preparation.passed) preparation.error = "actor texture preparation failed";
             } catch (const std::exception& error) {
@@ -975,6 +1040,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         preparedActorSnapshots_ = std::move(preparation.actors);
         preparedActorTextures_ = std::move(preparation.actorTextures);
         preparedWorldTexture_ = std::move(preparation.worldTexture);
+        preparedWorldMesh_ = std::move(preparation.worldMesh);
         transitionMapName_ = mapName;
         transitionPhase_ = MapTransitionPhase::WorldTextureAllocate;
     }
@@ -1274,13 +1340,6 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             GetPortableRuntimePlayerHealth());
     }
 
-    struct MeshVertex {
-        float px, py, pz;
-        float nx, ny, nz;
-        float u, v;
-        std::int32_t materialSlot;
-    };
-
     struct CollisionTriangle {
         OVR::Vector3f a;
         OVR::Vector3f b;
@@ -1438,7 +1497,11 @@ class DeusExQuestApp final : public OVRFW::XrApp {
     void BuildCollisionGrid() {
         collisionGrid_.clear();
         oversizedCollisionTriangles_.clear();
-        for (std::uint32_t index = 0; index < collisionTriangles_.size(); ++index) {
+        AddCollisionGridRange(0u);
+    }
+
+    void AddCollisionGridRange(std::uint32_t firstIndex) {
+        for (std::uint32_t index = firstIndex; index < collisionTriangles_.size(); ++index) {
             const CollisionTriangle& triangle = collisionTriangles_[index];
             const int minX = CollisionCell(std::min({triangle.a.x, triangle.b.x, triangle.c.x}));
             const int maxX = CollisionCell(std::max({triangle.a.x, triangle.b.x, triangle.c.x}));
@@ -1575,7 +1638,115 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         return touching;
     }
 
-    bool LoadWorldMesh(bool loadTexture = true) {
+    static WorldMeshPreparation LoadWorldMeshCacheCpu() {
+        constexpr const char* path =
+            "/data/user/0/dev.deusex.questvr.smoketest/files/DeusEx/quest-world.mesh";
+        WorldMeshPreparation result;
+        std::FILE* file = std::fopen(path, "rb");
+        if (file == nullptr) return result;
+        std::uint32_t magic{}, version{}, chunkCount{};
+        result.passed = std::fread(&magic, sizeof(magic), 1, file) == 1 &&
+            std::fread(&version, sizeof(version), 1, file) == 1 &&
+            std::fread(&chunkCount, sizeof(chunkCount), 1, file) == 1 &&
+            magic == 0x4d515844u && version == 2u && chunkCount > 0u && chunkCount < 128u;
+        result.chunks.reserve(chunkCount);
+        for (std::uint32_t chunk = 0; result.passed && chunk < chunkCount; ++chunk) {
+            WorldMeshChunkPreparation prepared;
+            std::uint32_t vertexCount{};
+            result.passed =
+                std::fread(&prepared.materialSlot, sizeof(prepared.materialSlot), 1, file) == 1 &&
+                std::fread(&vertexCount, sizeof(vertexCount), 1, file) == 1 &&
+                vertexCount > 0u && vertexCount <= 60000u && vertexCount % 3u == 0u;
+            if (!result.passed) break;
+            prepared.vertices.resize(vertexCount);
+            result.passed = std::fread(
+                prepared.vertices.data(), sizeof(MeshVertex), vertexCount, file) == vertexCount;
+            if (result.passed) {
+                constexpr std::size_t verticesPerGpuBatch = 4800u;
+                for (std::size_t offset = 0; offset < prepared.vertices.size();
+                     offset += verticesPerGpuBatch) {
+                    WorldMeshChunkPreparation batch;
+                    batch.materialSlot = prepared.materialSlot;
+                    const std::size_t end = std::min(
+                        offset + verticesPerGpuBatch, prepared.vertices.size());
+                    batch.vertices.assign(
+                        prepared.vertices.begin() + static_cast<std::ptrdiff_t>(offset),
+                        prepared.vertices.begin() + static_cast<std::ptrdiff_t>(end));
+                    result.chunks.emplace_back(std::move(batch));
+                }
+            }
+        }
+        std::fclose(file);
+        if (!result.passed) result.chunks.clear();
+        return result;
+    }
+
+    bool UploadWorldMeshChunk(WorldMeshChunkPreparation& chunk) {
+        const std::uint32_t firstCollisionTriangle =
+            static_cast<std::uint32_t>(collisionTriangles_.size());
+        const std::uint32_t vertexCount = static_cast<std::uint32_t>(chunk.vertices.size());
+        OVRFW::GlGeometry::Descriptor descriptor;
+        descriptor.attribs.position.reserve(vertexCount);
+        descriptor.attribs.normal.reserve(vertexCount);
+        descriptor.attribs.uv0.reserve(vertexCount);
+        descriptor.attribs.color.reserve(vertexCount);
+        descriptor.indices.reserve(vertexCount);
+        for (std::uint32_t index = 0; index < vertexCount; ++index) {
+            const MeshVertex& vertex = chunk.vertices[index];
+            descriptor.attribs.position.emplace_back(vertex.px, vertex.py, vertex.pz);
+            descriptor.attribs.normal.emplace_back(vertex.nx, vertex.ny, vertex.nz);
+            descriptor.attribs.uv0.emplace_back(vertex.u, vertex.v);
+            const float shade = 0.25f + 0.55f * (vertex.nz * 0.5f + 0.5f);
+            if (chunk.materialSlot == 0) {
+                descriptor.attribs.color.emplace_back(
+                    static_cast<float>(vertex.materialSlot) / 255.0f, 1.0f, 1.0f, 1.0f);
+            } else {
+                descriptor.attribs.color.emplace_back(
+                    0.15f * shade, 0.8f * shade, 0.55f * shade, 1.0f);
+            }
+            descriptor.indices.push_back(static_cast<OVRFW::TriangleIndex>(index));
+        }
+        for (std::uint32_t index = 0; index + 2 < vertexCount; index += 6) {
+            const MeshVertex& va = chunk.vertices[index];
+            const MeshVertex& vb = chunk.vertices[index + 1];
+            const MeshVertex& vc = chunk.vertices[index + 2];
+            collisionTriangles_.push_back({
+                {va.px, va.py, va.pz},
+                {vb.px, vb.py, vb.pz},
+                {vc.px, vc.py, vc.pz},
+                {va.nx, va.ny, va.nz}});
+        }
+        AddCollisionGridRange(firstCollisionTriangle);
+        if (chunk.materialSlot == 0) {
+            texturedRenderers_.emplace_back();
+            texturedRenderers_.back().Init(descriptor, firstTexture_);
+        } else {
+            worldRenderers_.emplace_back();
+            worldRenderers_.back().Init(descriptor);
+            worldRenderers_.back().AmbientLightColor = {0.35f, 0.35f, 0.35f};
+        }
+        return glGetError() == GL_NO_ERROR;
+    }
+
+    bool BeginWorldMeshUpload(WorldMeshPreparation preparation) {
+        if (!preparation.passed || preparation.chunks.empty()) return false;
+        collisionTriangles_.clear();
+        collisionGrid_.clear();
+        oversizedCollisionTriangles_.clear();
+        pendingWorldMesh_ = std::move(preparation);
+        pendingWorldMeshChunk_ = 0u;
+        return true;
+    }
+
+    bool UploadNextWorldMeshChunk() {
+        if (pendingWorldMeshChunk_ >= pendingWorldMesh_.chunks.size()) return false;
+        if (!UploadWorldMeshChunk(pendingWorldMesh_.chunks[pendingWorldMeshChunk_])) return false;
+        pendingWorldMesh_.chunks[pendingWorldMeshChunk_].vertices.clear();
+        ++pendingWorldMeshChunk_;
+        return true;
+    }
+
+    bool LoadWorldMesh(bool loadTexture = true, bool buildCollisionGrid = true) {
         constexpr const char* path =
             "/data/user/0/dev.deusex.questvr.smoketest/files/DeusEx/quest-world.mesh";
         if (loadTexture && !LoadFirstTexture()) return false;
@@ -1651,7 +1822,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             oversizedCollisionTriangles_.clear();
             return false;
         }
-        BuildCollisionGrid();
+        if (buildCollisionGrid) BuildCollisionGrid();
         ALOG(
             "DeusExQuest: loaded %s BSP mesh in %u GPU chunks (%u textured) with %zu collision triangles in %zu cells",
             currentMapName_.c_str(),
@@ -1665,7 +1836,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
     bool LoadActorTextures() {
         PortableTextureArray array;
         try {
-            array = BuildPortableRuntimeActorTextureArray(256, 256);
+            array = BuildPortableRuntimeActorTextureArray(96, 96);
         } catch (const std::exception& error) {
             ALOG("DeusExQuest: actor texture decode failed: %s", error.what());
             return false;
@@ -1712,6 +1883,94 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             static_cast<int>(array.height));
         actorTexturePaths_ = std::move(array.texturePaths);
         return actorTexture_.IsValid();
+    }
+
+    bool BeginActorTextureUpload(PortableTextureArray array) {
+        ALOG(
+            "DeusExQuest: decoded %zu/%zu actor textures (%zu fallback layers)",
+            array.decodedTextures,
+            array.texturePaths.size(),
+            array.failedTextures);
+        if (!array.passed || array.rgba.empty() || array.texturePaths.empty()) return false;
+        GLuint texture{};
+        glGenTextures(1, &texture);
+        glBindTexture(GL_TEXTURE_2D_ARRAY, texture);
+        glTexImage3D(
+            GL_TEXTURE_2D_ARRAY,
+            0,
+            GL_RGBA8,
+            static_cast<GLsizei>(array.width),
+            static_cast<GLsizei>(array.height),
+            static_cast<GLsizei>(array.texturePaths.size()),
+            0,
+            GL_RGBA,
+            GL_UNSIGNED_BYTE,
+            nullptr);
+        glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_S, GL_REPEAT);
+        glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_T, GL_REPEAT);
+        glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        const GLenum error = glGetError();
+        glBindTexture(GL_TEXTURE_2D_ARRAY, 0);
+        if (error != GL_NO_ERROR) {
+            if (texture != 0u) glDeleteTextures(1, &texture);
+            return false;
+        }
+        pendingActorTextureId_ = texture;
+        pendingActorTextureWidth_ = array.width;
+        pendingActorTextureHeight_ = array.height;
+        pendingActorTextureLayers_ = static_cast<std::uint32_t>(array.texturePaths.size());
+        pendingActorTextureLayersUploaded_ = 0u;
+        pendingActorTextureRgba_ = std::move(array.rgba);
+        pendingActorTexturePaths_ = std::move(array.texturePaths);
+        return true;
+    }
+
+    bool UploadActorTextureLayers(std::uint32_t maximumLayers) {
+        if (pendingActorTextureId_ == 0u || maximumLayers == 0u ||
+            pendingActorTextureLayersUploaded_ >= pendingActorTextureLayers_) {
+            return false;
+        }
+        const std::uint32_t layers = std::min(
+            maximumLayers,
+            pendingActorTextureLayers_ - pendingActorTextureLayersUploaded_);
+        const std::size_t bytesPerLayer = static_cast<std::size_t>(
+            pendingActorTextureWidth_) * pendingActorTextureHeight_ * 4u;
+        glBindTexture(GL_TEXTURE_2D_ARRAY, pendingActorTextureId_);
+        glTexSubImage3D(
+            GL_TEXTURE_2D_ARRAY,
+            0,
+            0,
+            0,
+            static_cast<GLint>(pendingActorTextureLayersUploaded_),
+            static_cast<GLsizei>(pendingActorTextureWidth_),
+            static_cast<GLsizei>(pendingActorTextureHeight_),
+            static_cast<GLsizei>(layers),
+            GL_RGBA,
+            GL_UNSIGNED_BYTE,
+            pendingActorTextureRgba_.data() +
+                bytesPerLayer * pendingActorTextureLayersUploaded_);
+        glFinish();
+        const GLenum error = glGetError();
+        glBindTexture(GL_TEXTURE_2D_ARRAY, 0);
+        if (error != GL_NO_ERROR) return false;
+        pendingActorTextureLayersUploaded_ += layers;
+        if (pendingActorTextureLayersUploaded_ == pendingActorTextureLayers_) {
+            actorTexture_ = OVRFW::GlTexture(
+                pendingActorTextureId_,
+                GL_TEXTURE_2D_ARRAY,
+                static_cast<int>(pendingActorTextureWidth_),
+                static_cast<int>(pendingActorTextureHeight_));
+            pendingActorTextureId_ = 0u;
+            pendingActorTextureRgba_.clear();
+            actorTexturePaths_ = std::move(pendingActorTexturePaths_);
+            ALOG(
+                "DeusExQuest: staged actor texture upload complete: %u layers at %ux%u",
+                pendingActorTextureLayers_,
+                pendingActorTextureWidth_,
+                pendingActorTextureHeight_);
+        }
+        return true;
     }
 
     static WorldTexturePreparation LoadWorldTextureCacheCpu() {
@@ -1799,6 +2058,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             GL_UNSIGNED_BYTE,
             pendingWorldTextureRgba_.data() +
                 bytesPerLayer * pendingWorldTextureLayersUploaded_);
+        glFinish();
         const GLenum error = glGetError();
         glBindTexture(GL_TEXTURE_2D_ARRAY, 0);
         if (error != GL_NO_ERROR) return false;
@@ -1925,12 +2185,22 @@ class DeusExQuestApp final : public OVRFW::XrApp {
     std::vector<PortableActorSnapshot> preparedActorSnapshots_;
     PortableTextureArray preparedActorTextures_;
     WorldTexturePreparation preparedWorldTexture_;
+    WorldMeshPreparation preparedWorldMesh_;
+    WorldMeshPreparation pendingWorldMesh_;
+    std::size_t pendingWorldMeshChunk_{};
     GLuint pendingWorldTextureId_{};
     std::uint32_t pendingWorldTextureWidth_{};
     std::uint32_t pendingWorldTextureHeight_{};
     std::uint32_t pendingWorldTextureLayers_{};
     std::uint32_t pendingWorldTextureLayersUploaded_{};
     std::vector<std::uint8_t> pendingWorldTextureRgba_;
+    GLuint pendingActorTextureId_{};
+    std::uint32_t pendingActorTextureWidth_{};
+    std::uint32_t pendingActorTextureHeight_{};
+    std::uint32_t pendingActorTextureLayers_{};
+    std::uint32_t pendingActorTextureLayersUploaded_{};
+    std::vector<std::uint8_t> pendingActorTextureRgba_;
+    std::vector<std::string> pendingActorTexturePaths_;
     OVRFW::ControllerRenderer leftController_;
     OVRFW::ControllerRenderer rightController_;
 };

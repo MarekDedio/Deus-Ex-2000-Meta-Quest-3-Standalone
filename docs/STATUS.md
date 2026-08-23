@@ -199,7 +199,8 @@ and gameplay.
 ## Generic visual level replacement
 
 - The on-device cache builder accepts any sanitized entry in the validated
-  88-map catalog and regenerates the active BSP mesh and 256x256 material array.
+  88-map catalog and regenerates the active BSP mesh and a Quest-budgeted 96x96
+  material array.
 - B advances to the next catalog map; a developer request file exercises the
   identical path through ADB without synthetic controller input.
 - Cache generation runs in the background while the current world continues to
@@ -224,10 +225,15 @@ and gameplay.
 - `01_NYC_UNATCOIsland` physically validated generic non-training loading: 107
   materials, 3,658 actors, 34,140 collision triangles, and two decoded exits,
   followed by steady 72 fps.
-- Large maps stream actors within 45 m and refresh after 20 m of movement;
-  UNATCO Island initially instantiates 15 targetable actors instead of 359,
-  reducing its actor stage from 1.13 seconds to 16 ms.
-- World materials upload four array layers per frame and textured renderers share
-  one retained shader program. Eight-meter collision cells reduced the island
-  grid from 59,600 cells to 3,792 and its BSP stage from 1.04 seconds to 471 ms.
-  Incremental BSP buffer creation remains the next transition-comfort task.
+- Maps with more than 1,000 actors stream them within 25 m and refresh after
+  10 m of movement. UNATCO Island initially instantiates 12 targetable actors;
+  Training now instantiates 14 instead of rebuilding 119 meshes in one frame.
+- World BSP buffers upload in triangle-aligned 4,800-vertex batches. Collision
+  cells are indexed alongside each batch, and both world and actor texture arrays
+  upload two layers per frame with explicit driver completion. Textured renderers
+  share one retained shader program.
+- On physical Quest 3, the largest measured island transition frame fell from
+  1.22 seconds originally, to 471 ms after coarse collision optimization, and
+  finally to 41.66 ms. It then holds 72 fps with a 13.89 ms worst steady-state
+  frame. Island -> Training peaks at 27.78 ms instead of the previous 292 ms
+  actor rebuild. Island save -> Training -> quick-load -> Island remains valid.
