@@ -664,6 +664,49 @@ std::vector<std::uint32_t> LoadPortablePalette(
     return colors;
 }
 
+PortableTextureImage DecodePortableIndexedTexture(
+    const PortablePackageTables& package,
+    const std::string& objectPath,
+    const bool transparentIndexZero) {
+    const std::size_t textureExport = FindPortableExport(package, objectPath);
+    const std::vector<PortableMipmap> mipmaps =
+        LoadPortableTextureMipmaps(package, textureExport);
+    if (mipmaps.empty()) throw std::runtime_error("UE1 texture has no mipmaps");
+    const PortableMipmap& mip = mipmaps.front();
+    if (mip.width == 0u || mip.height == 0u ||
+        mip.pixels.size() != static_cast<std::size_t>(mip.width) * mip.height) {
+        throw std::runtime_error("UE1 texture top mip is malformed");
+    }
+    const PortablePropertyStream properties =
+        LoadPortableExportProperties(package, textureExport);
+    std::vector<std::uint32_t> palette;
+    for (const PortableTaggedProperty& property : properties.properties) {
+        if (property.name != "Palette") continue;
+        const std::int32_t paletteReference = DecodePortableObjectReference(property);
+        if (paletteReference <= 0) {
+            throw std::runtime_error("UE1 texture palette is not a local export");
+        }
+        palette = LoadPortablePalette(package, static_cast<std::size_t>(paletteReference - 1));
+        break;
+    }
+    if (palette.empty()) throw std::runtime_error("UE1 texture has no palette");
+
+    PortableTextureImage result;
+    result.width = mip.width;
+    result.height = mip.height;
+    result.rgba.reserve(mip.pixels.size() * 4u);
+    for (const std::uint8_t index : mip.pixels) {
+        if (index >= palette.size()) throw std::runtime_error("UE1 texture palette index overflow");
+        const std::uint32_t color = palette[index];
+        const bool transparent = transparentIndexZero && index == 0u;
+        result.rgba.push_back(transparent ? 0u : static_cast<std::uint8_t>(color));
+        result.rgba.push_back(transparent ? 0u : static_cast<std::uint8_t>(color >> 8u));
+        result.rgba.push_back(transparent ? 0u : static_cast<std::uint8_t>(color >> 16u));
+        result.rgba.push_back(transparent ? 0u : 255u);
+    }
+    return result;
+}
+
 std::string GetPortableObjectPath(
     const PortablePackageTables& package,
     std::int32_t reference) {

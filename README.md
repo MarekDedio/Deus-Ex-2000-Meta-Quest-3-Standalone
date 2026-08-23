@@ -87,6 +87,10 @@ the live map, health, and up to twelve items at once. The right stick selects an
 or consumes healing items, and B or Menu returns to play. Movement, turning,
 combat, interaction, and map exits pause while this panel is open; quick-save
 and quick-load remain available.
+The panel background and border are not recreated substitutes: the app decodes
+and stitches the twelve shipped `InventoryBackground_*` and `InventoryBorder_*`
+textures directly from the user's `System/DeusExUI.u` on Quest. A teal fallback
+remains available if those private game assets cannot be decoded.
 Pointing at a pawn and pressing A resolves its real `BindName` against the
 active mission's serialized conversation events and displays the shipped
 subtitle while decoding and mixing its referenced MP3 speech over ambient audio;

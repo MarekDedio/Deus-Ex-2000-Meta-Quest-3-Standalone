@@ -359,6 +359,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             ReplaceSpatialAudioEmitters(
                 PrepareSpatialAudioEmitters(actorSnapshots_, audioSampleRate_));
         }
+        LoadOriginalPersonaBackground();
         ALOG("DeusExQuest: project-owned OpenXR runtime initialized");
         return true;
     }
@@ -1943,6 +1944,128 @@ class DeusExQuestApp final : public OVRFW::XrApp {
     static std::string InventoryItemLabel(const std::string& path) {
         const std::size_t separator = path.find_last_of('.');
         return separator == std::string::npos ? path : path.substr(separator + 1u);
+    }
+
+    void LoadOriginalPersonaBackground() {
+        if (inventoryLabel_ == nullptr) return;
+        try {
+            const PortablePackageTables uiPackage = LoadPortablePackageTables(
+                std::string(gameRoot_) + "/System/DeusExUI.u");
+            std::vector<PortableTextureImage> pieces;
+            std::vector<PortableTextureImage> borders;
+            pieces.reserve(6u);
+            borders.reserve(6u);
+            for (std::size_t index = 1u; index <= 6u; ++index) {
+                const std::string name = "InventoryBackground_" + std::to_string(index);
+                try {
+                    pieces.push_back(DecodePortableIndexedTexture(
+                        uiPackage, "UserInterface." + name));
+                } catch (const std::exception&) {
+                    pieces.push_back(DecodePortableIndexedTexture(uiPackage, name));
+                }
+                ALOG(
+                    "DeusExQuest: decoded original Persona texture %s at %ux%u",
+                    name.c_str(), pieces.back().width, pieces.back().height);
+                const std::string borderName = "InventoryBorder_" + std::to_string(index);
+                try {
+                    borders.push_back(DecodePortableIndexedTexture(
+                        uiPackage, "UserInterface." + borderName, true));
+                } catch (const std::exception&) {
+                    borders.push_back(DecodePortableIndexedTexture(
+                        uiPackage, borderName, true));
+                }
+                ALOG(
+                    "DeusExQuest: decoded original Persona texture %s at %ux%u",
+                    borderName.c_str(), borders.back().width, borders.back().height);
+            }
+            const std::uint32_t topHeight = std::max({
+                pieces[0].height, pieces[1].height, pieces[2].height});
+            const std::uint32_t bottomHeight = std::max({
+                pieces[3].height, pieces[4].height, pieces[5].height});
+            const std::uint32_t topWidth =
+                pieces[0].width + pieces[1].width + pieces[2].width;
+            const std::uint32_t bottomWidth =
+                pieces[3].width + pieces[4].width + pieces[5].width;
+            const std::uint32_t width = std::max(topWidth, bottomWidth);
+            const std::uint32_t height = topHeight + bottomHeight;
+            if (width == 0u || height == 0u || width > 2048u || height > 2048u) {
+                throw std::runtime_error("stitched Persona texture dimensions are invalid");
+            }
+            std::vector<std::uint8_t> rgba(
+                static_cast<std::size_t>(width) * height * 4u, 0u);
+            const auto copyPiece = [&](const PortableTextureImage& piece, std::uint32_t x,
+                                       std::uint32_t y, const bool overlay) {
+                if (x + piece.width > width || y + piece.height > height) {
+                    throw std::runtime_error("Persona texture piece exceeds stitched canvas");
+                }
+                for (std::uint32_t row = 0u; row < piece.height; ++row) {
+                    const std::size_t source = static_cast<std::size_t>(row) * piece.width * 4u;
+                    const std::size_t destination =
+                        (static_cast<std::size_t>(y + row) * width + x) * 4u;
+                    if (!overlay) {
+                        std::copy_n(
+                            piece.rgba.data() + source,
+                            static_cast<std::size_t>(piece.width) * 4u,
+                            rgba.data() + destination);
+                    } else {
+                        for (std::uint32_t column = 0u; column < piece.width; ++column) {
+                            const std::size_t sourcePixel = source + column * 4u;
+                            if (piece.rgba[sourcePixel + 3u] == 0u) continue;
+                            const std::size_t destinationPixel = destination + column * 4u;
+                            std::copy_n(
+                                piece.rgba.data() + sourcePixel, 4u,
+                                rgba.data() + destinationPixel);
+                        }
+                    }
+                }
+            };
+            for (std::size_t row = 0u; row < 2u; ++row) {
+                std::uint32_t x{};
+                const std::uint32_t y = row == 0u ? 0u : topHeight;
+                for (std::size_t column = 0u; column < 3u; ++column) {
+                    const PortableTextureImage& piece = pieces[row * 3u + column];
+                    copyPiece(piece, x, y, false);
+                    x += piece.width;
+                }
+            }
+            for (std::size_t row = 0u; row < 2u; ++row) {
+                std::uint32_t x{};
+                const std::uint32_t y = row == 0u ? 0u : topHeight;
+                for (std::size_t column = 0u; column < 3u; ++column) {
+                    const std::size_t index = row * 3u + column;
+                    copyPiece(borders[index], x, y, true);
+                    x += pieces[index].width;
+                }
+            }
+            GLuint texture{};
+            glGenTextures(1, &texture);
+            glBindTexture(GL_TEXTURE_2D, texture);
+            glTexImage2D(
+                GL_TEXTURE_2D, 0, GL_RGBA8,
+                static_cast<GLsizei>(width), static_cast<GLsizei>(height), 0,
+                GL_RGBA, GL_UNSIGNED_BYTE, rgba.data());
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+            const GLenum error = glGetError();
+            glBindTexture(GL_TEXTURE_2D, 0);
+            if (error != GL_NO_ERROR) {
+                if (texture != 0u) glDeleteTextures(1, &texture);
+                throw std::runtime_error("Persona texture GPU upload failed");
+            }
+            inventoryLabel_->SetSurfaceTextureTakeOwnership(
+                0, 0, OVRFW::SURFACE_TEXTURE_DIFFUSE, texture,
+                static_cast<int>(width), static_cast<int>(height));
+            inventoryLabel_->SetSurfaceColor(0, OVR::Vector4f(1.0f));
+            ALOG(
+                "DeusExQuest: original Persona inventory background active at %ux%u",
+                width, height);
+        } catch (const std::exception& error) {
+            ALOG(
+                "DeusExQuest: original Persona background unavailable; using teal fallback: %s",
+                error.what());
+        }
     }
 
     static std::string InventoryItemCode(const std::string& path) {

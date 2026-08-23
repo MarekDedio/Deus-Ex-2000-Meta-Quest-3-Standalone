@@ -161,6 +161,12 @@
 - A second physical capture verified the Persona restyle without overlapping
   panels, clipped text, or stereo-placement defects. The selected `{TOOL}` slot,
   `Multitool0` item data, navigation rail, and action prompts were all readable.
+- The portable UE1 decoder now exposes arbitrary indexed texture images. On the
+  physical Quest it decoded the six original `InventoryBackground_*` and six
+  `InventoryBorder_*` assets from `DeusExUI.u` (256/256/128 by 256 pixels per
+  row), composed them into their original 640x512 surface, and installed that
+  texture directly on the VR menu. A captured frame verified the original black
+  field and metallic edge rails without a GL error or process failure.
 - APK installed with ABI `arm64-v8a`.
 - The first device launch exposed a missing `libktx.so`; packaging was corrected
   to include the pinned SDK's ARM64 KTX libraries.
