@@ -20,7 +20,6 @@
 #include <vector>
 #include <sys/stat.h>
 
-#include "Input/ControllerRenderer.h"
 #include "Input/TinyUI.h"
 #include "Render/GeometryBuilder.h"
 #include "Render/GeometryRenderer.h"
@@ -416,10 +415,6 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         }
         BuildActorMarkers();
 
-        if (!leftController_.Init(true) || !rightController_.Init(false)) {
-            ALOG("DeusExQuest: controller renderer initialization failed");
-            return false;
-        }
         if (!StartAmbientAudio()) {
             ALOG("DeusExQuest: ambient AAudio initialization failed");
         } else {
@@ -455,6 +450,10 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         }
         float headYaw{}, headPitch{}, headRoll{};
         currentHeadStage_ = frame.HeadPose.Translation;
+        if (!hasPreviousHeadStage_) {
+            previousHeadStage_ = currentHeadStage_;
+            hasPreviousHeadStage_ = true;
+        }
         frame.HeadPose.Rotation.GetEulerAngles<OVR::Axis_Y, OVR::Axis_X, OVR::Axis_Z>(
             &headYaw, &headPitch, &headRoll);
         (void)headPitch;
@@ -491,7 +490,9 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         const bool turnPressed = std::fabs(frame.RightRemoteJoystick.x) > 0.7f;
         if (gameplayActive && turnPressed && !turnLatch_) {
             constexpr float snapRadians = 3.14159265358979323846f / 6.0f;
-            sceneYaw_ += std::copysign(snapRadians, frame.RightRemoteJoystick.x);
+            SnapTurnAroundHead(
+                std::copysign(snapRadians, frame.RightRemoteJoystick.x),
+                frame.HeadPose.Translation);
         } else if (inventoryMenuOpen_ && turnPressed && !turnLatch_) {
             const std::size_t pageCount = static_cast<std::size_t>(PersonaPage::Count);
             std::size_t page = static_cast<std::size_t>(personaPage_);
@@ -533,10 +534,19 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         if (!CapsuleTouchesWall(frame.HeadPose.Translation, candidate)) {
             worldPosition_ = candidate;
         } else {
-            OVR::Vector3f grounded = worldPosition_;
-            FollowGround(frame.HeadPose.Translation, grounded);
-            worldPosition_.y = grounded.y;
+            OVR::Vector3f compensated = worldPosition_;
+            compensated.x += currentHeadStage_.x - previousHeadStage_.x;
+            compensated.z += currentHeadStage_.z - previousHeadStage_.z;
+            FollowGround(frame.HeadPose.Translation, compensated);
+            if (!CapsuleTouchesWall(frame.HeadPose.Translation, compensated)) {
+                worldPosition_ = compensated;
+            } else {
+                OVR::Vector3f grounded = worldPosition_;
+                FollowGround(frame.HeadPose.Translation, grounded);
+                worldPosition_.y = grounded.y;
+            }
         }
+        previousHeadStage_ = currentHeadStage_;
 
         const OVR::Posef worldPose(
             OVR::Quatf(OVR::Vector3f(0.0f, 1.0f, 0.0f), sceneYaw_), worldPosition_);
@@ -548,8 +558,6 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             renderer.SetPose(worldPose);
             renderer.Update();
         }
-        if (frame.LeftRemoteTracked) leftController_.Update(frame.LeftRemotePose);
-        if (frame.RightRemoteTracked) rightController_.Update(frame.RightRemotePose);
         mapTravelCooldown_ = std::max(0.0f, mapTravelCooldown_ - frame.DeltaSeconds);
         if (gameplayActive && mapTravelCooldown_ <= 0.0f) {
             CheckTravelTriggers(frame.HeadPose.Translation);
@@ -678,8 +686,6 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         for (auto& renderer : texturedRenderers_) renderer.Render(output.Surfaces);
         if (inventoryMenuOpen_) personaRenderer_.Render(output.Surfaces);
         ui_.Render(frame, output);
-        if (frame.LeftRemoteTracked) leftController_.Render(output.Surfaces);
-        if (frame.RightRemoteTracked) rightController_.Render(output.Surfaces);
     }
 
     void AppRenderFrame(
@@ -723,8 +729,6 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         pendingActorTexturePaths_.clear();
         pendingWorldMesh_.chunks.clear();
         StopAmbientAudio();
-        leftController_.Shutdown();
-        rightController_.Shutdown();
         for (auto& renderer : worldRenderers_) renderer.Shutdown();
         for (auto& renderer : texturedRenderers_) renderer.Shutdown();
         worldRenderers_.clear();
@@ -1612,6 +1616,17 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             ALOG(
                 "DeusExQuest: diagnostic inventory menu %s",
                 inventoryMenuOpen_ ? "opened" : "closed");
+            return;
+        }
+        if (std::strcmp(requested, "TURNLEFT") == 0 ||
+            std::strcmp(requested, "TURNRIGHT") == 0) {
+            constexpr float snapRadians = 3.14159265358979323846f / 6.0f;
+            const float direction =
+                std::strcmp(requested, "TURNLEFT") == 0 ? -1.0f : 1.0f;
+            SnapTurnAroundHead(direction * snapRadians, currentHeadStage_);
+            ALOG(
+                "DeusExQuest: diagnostic snap turn %s around head",
+                direction < 0.0f ? "left" : "right");
             return;
         }
         if (std::strcmp(requested, "PAGE") == 0) {
@@ -3546,6 +3561,17 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             sine * dx + cosine * dz};
     }
 
+    void SnapTurnAroundHead(float deltaYaw, const OVR::Vector3f& headStage) {
+        const OVR::Vector3f pivotLocal = StageToLocal(headStage, worldPosition_);
+        sceneYaw_ += deltaYaw;
+        const float cosine = std::cos(sceneYaw_);
+        const float sine = std::sin(sceneYaw_);
+        worldPosition_.x = headStage.x -
+            (cosine * pivotLocal.x + sine * pivotLocal.z);
+        worldPosition_.z = headStage.z -
+            (-sine * pivotLocal.x + cosine * pivotLocal.z);
+    }
+
     void FollowGround(const OVR::Vector3f& head, OVR::Vector3f& worldPosition) const {
         const OVR::Vector3f feetStage{head.x, 0.0f, head.z};
         const OVR::Vector3f feetLocal = StageToLocal(feetStage, worldPosition);
@@ -4138,6 +4164,8 @@ class DeusExQuestApp final : public OVRFW::XrApp {
     std::vector<std::uint32_t> oversizedCollisionTriangles_;
     OVR::Vector3f worldPosition_{0.0f, 0.0f, 0.0f};
     OVR::Vector3f currentHeadStage_{};
+    OVR::Vector3f previousHeadStage_{};
+    bool hasPreviousHeadStage_{};
     OVR::Vector3f actorStreamingCenter_{};
     float sceneYaw_{};
     bool turnLatch_{};
@@ -4217,8 +4245,6 @@ class DeusExQuestApp final : public OVRFW::XrApp {
     std::uint32_t pendingActorTextureLayersUploaded_{};
     std::vector<std::uint8_t> pendingActorTextureRgba_;
     std::vector<std::string> pendingActorTexturePaths_;
-    OVRFW::ControllerRenderer leftController_;
-    OVRFW::ControllerRenderer rightController_;
 };
 
 ENTRY_POINT(DeusExQuestApp)

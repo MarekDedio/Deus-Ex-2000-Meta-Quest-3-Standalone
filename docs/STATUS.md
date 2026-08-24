@@ -2,6 +2,15 @@
 
 ## Implemented; broader campaign verification pending
 
+- Physical Quest recordings exposed and now cover two headset-motion failures:
+  snap turns preserve the headset's map-space pivot instead of rotating the
+  world around its origin, and room-scale head motion is compensated when the
+  tracked head capsule would cross one-sided BSP walls. Four diagnostic 30-degree
+  turns remained inside the Training BSP without the previous black void frames.
+- Removed the Meta sample controller capsules/rings from the scene. Controller
+  poses still drive aiming and interaction, but the bright green/yellow fallback
+  geometry no longer obscures the authored game world while real hand/weapon
+  presentation is unfinished.
 - Actor snapshots now preserve inherited `DrawType` and `bHidden`. Hidden
   gameplay actors no longer produce visible stand-in geometry, and UE1 sprite,
   vertical-sprite, rope-sprite, and one-shot-sprite actors render as masked
