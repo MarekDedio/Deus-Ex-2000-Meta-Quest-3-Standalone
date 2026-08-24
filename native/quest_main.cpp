@@ -171,6 +171,7 @@ enum class PersonaPage : std::uint8_t {
     Inventory,
     Health,
     GoalsNotes,
+    Logs,
     Count,
 };
 
@@ -1889,6 +1890,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         std::replace(subtitle.begin(), subtitle.end(), '\r', ' ');
         if (subtitle.size() > 220u) subtitle.resize(220u);
         interactionStatus_ = dialogue.bindName + ": " + subtitle;
+        AppendPersonaLog(interactionStatus_);
         interactionStatusSeconds_ = std::clamp(
             static_cast<float>(subtitle.size()) * 0.055f, 4.0f, 12.0f);
         PortableSound dialogueSound;
@@ -1969,6 +1971,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         std::replace(text.begin(), text.end(), '\r', ' ');
         if (text.size() > 210u) text.resize(210u);
         interactionStatus_ = "JC DENTON: " + text;
+        AppendPersonaLog(interactionStatus_);
         interactionStatusSeconds_ = std::clamp(
             static_cast<float>(text.size()) * 0.055f, 4.0f, 12.0f);
         ALOG(
@@ -1983,6 +1986,21 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         pendingChoiceActor_.clear();
         pendingChoiceAudioPackage_.clear();
         pendingChoiceIndex_ = 0u;
+    }
+
+    void AppendPersonaLog(std::string entry) {
+        std::replace(entry.begin(), entry.end(), '\n', ' ');
+        std::replace(entry.begin(), entry.end(), '\r', ' ');
+        if (entry.size() > 96u) entry.resize(96u);
+        if (entry.empty()) return;
+        personaLogEntries_.push_back(std::move(entry));
+        constexpr std::size_t retainedEntries = 12u;
+        if (personaLogEntries_.size() > retainedEntries) {
+            personaLogEntries_.erase(
+                personaLogEntries_.begin(),
+                personaLogEntries_.begin() +
+                    static_cast<std::ptrdiff_t>(personaLogEntries_.size() - retainedEntries));
+        }
     }
 
     bool RequestDestinationMap(std::string destination) {
@@ -2423,6 +2441,9 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             case PersonaPage::GoalsNotes:
                 tabs = "INVENTORY  HEALTH  AUGS  SKILLS  [ GOALS/NOTES ]  IMAGES  LOGS";
                 break;
+            case PersonaPage::Logs:
+                tabs = "INVENTORY  HEALTH  AUGS  SKILLS  GOALS/NOTES  IMAGES  [ LOGS ]";
+                break;
             case PersonaPage::Count:
                 break;
         }
@@ -2459,7 +2480,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             text += "CREDITS         " + std::to_string(progress.credits) + "\n";
             text += "SKILL POINTS    " + std::to_string(progress.skillPoints) + "\n";
             text += "INVENTORY ITEMS " + std::to_string(inventory.size()) + "\n\n";
-        } else {
+        } else if (personaPage_ == PersonaPage::GoalsNotes) {
             const auto cleanEntry = [](std::string value) {
                 std::replace(value.begin(), value.end(), '\n', ' ');
                 std::replace(value.begin(), value.end(), '\r', ' ');
@@ -2483,6 +2504,23 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             }
             if (lines == 0u) text += "NO GOALS OR NOTES RECORDED\n";
             while (lines++ < 5u) text += "\n";
+        } else {
+            text += "// CONVERSATION LOG\n\n";
+            if (personaLogEntries_.empty()) {
+                text += "NO CONVERSATIONS RECORDED\n\n\n\n\n";
+            } else {
+                const std::size_t first = personaLogEntries_.size() > 5u
+                    ? personaLogEntries_.size() - 5u
+                    : 0u;
+                std::size_t lines{};
+                for (std::size_t index = first; index < personaLogEntries_.size(); ++index) {
+                    std::string entry = personaLogEntries_[index];
+                    if (entry.size() > 52u) entry.resize(52u);
+                    text += entry + "\n";
+                    ++lines;
+                }
+                while (lines++ < 5u) text += "\n";
+            }
         }
         text += "--------------------------------------------------------------\n";
         text += personaPage_ == PersonaPage::Inventory
@@ -2649,7 +2687,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         constexpr const char* runtimePath =
             "/data/user/0/dev.deusex.questvr.smoketest/files/DeusEx/quest-save-0.runtime";
         std::FILE* file = std::fopen(metaPath, "wb");
-        const std::uint32_t header[2] = {0x4d515844u, 3u};
+        const std::uint32_t header[2] = {0x4d515844u, 4u};
         const float pose[4] = {
             worldPosition_.x, worldPosition_.y, worldPosition_.z, sceneYaw_};
         const std::uint32_t mapNameBytes = static_cast<std::uint32_t>(currentMapName_.size());
@@ -2672,6 +2710,18 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                 if (!metaSaved) break;
             }
         }
+        const std::uint32_t logCount =
+            static_cast<std::uint32_t>(personaLogEntries_.size());
+        if (metaSaved) {
+            metaSaved = std::fwrite(&logCount, sizeof(logCount), 1, file) == 1;
+            for (const std::string& entry : personaLogEntries_) {
+                const std::uint32_t bytes = static_cast<std::uint32_t>(entry.size());
+                metaSaved = metaSaved && bytes > 0u && bytes <= 256u &&
+                    std::fwrite(&bytes, sizeof(bytes), 1, file) == 1 &&
+                    std::fwrite(entry.data(), 1, bytes, file) == bytes;
+                if (!metaSaved) break;
+            }
+        }
         if (file != nullptr) std::fclose(file);
         const bool runtimeSaved = SavePortableRuntimeState(runtimePath);
         ALOG(
@@ -2691,11 +2741,12 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         float pose[4]{};
         std::string savedMapName;
         std::unordered_map<std::string, std::size_t> savedDialogueOffsets;
+        std::vector<std::string> savedPersonaLogs;
         bool metaLoaded = file != nullptr &&
             std::fread(header, sizeof(header), 1, file) == 1 &&
             std::fread(pose, sizeof(pose), 1, file) == 1 &&
             header[0] == 0x4d515844u &&
-            (header[1] == 1u || header[1] == 2u || header[1] == 3u) &&
+            header[1] >= 1u && header[1] <= 4u &&
             std::isfinite(pose[0]) && std::isfinite(pose[1]) &&
             std::isfinite(pose[2]) && std::isfinite(pose[3]);
         if (metaLoaded && header[1] >= 2u) {
@@ -2709,7 +2760,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         } else if (metaLoaded) {
             savedMapName = currentMapName_;
         }
-        if (metaLoaded && header[1] == 3u) {
+        if (metaLoaded && header[1] >= 3u) {
             std::uint32_t dialogueCount{};
             metaLoaded = std::fread(&dialogueCount, sizeof(dialogueCount), 1, file) == 1 &&
                 dialogueCount <= 4096u;
@@ -2726,12 +2777,27 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                     std::move(path), static_cast<std::size_t>(cursor));
             }
         }
+        if (metaLoaded && header[1] >= 4u) {
+            std::uint32_t logCount{};
+            metaLoaded = std::fread(&logCount, sizeof(logCount), 1, file) == 1 &&
+                logCount <= 12u;
+            for (std::uint32_t index = 0u; metaLoaded && index < logCount; ++index) {
+                std::uint32_t bytes{};
+                metaLoaded = std::fread(&bytes, sizeof(bytes), 1, file) == 1 &&
+                    bytes > 0u && bytes <= 256u;
+                std::string entry(bytes, '\0');
+                metaLoaded = metaLoaded &&
+                    std::fread(entry.data(), 1, bytes, file) == bytes;
+                if (metaLoaded) savedPersonaLogs.push_back(std::move(entry));
+            }
+        }
         if (file != nullptr) std::fclose(file);
         if (!metaLoaded) {
             ALOG("DeusExQuest: VR quick-load failed");
             return;
         }
         dialogueOffsets_ = std::move(savedDialogueOffsets);
+        personaLogEntries_ = std::move(savedPersonaLogs);
         if (savedMapName != currentMapName_) {
             const auto found = std::find(mapNames_.begin(), mapNames_.end(), savedMapName);
             if (found == mapNames_.end()) {
@@ -4105,6 +4171,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
     std::string displayedInteractionStatus_;
     float interactionStatusSeconds_{};
     std::unordered_map<std::string, std::size_t> dialogueOffsets_;
+    std::vector<std::string> personaLogEntries_;
     std::vector<PortableDialogueResult::Choice> pendingChoices_;
     std::string pendingChoiceActor_;
     std::string pendingChoiceAudioPackage_;

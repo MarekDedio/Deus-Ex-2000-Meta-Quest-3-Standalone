@@ -186,6 +186,11 @@
   inventory count; Goals/Notes reads save-persisted dialogue progress. Four
   physical captures verified all three pages, cleared stale slots outside
   Inventory, and restored the grid and icon after cycling back.
+- Logs is now a fourth functional Persona page. Resolved NPC speech and confirmed
+  JC responses feed a bounded conversation history, and quick-save metadata v4
+  persists that history while retaining readers for metadata v1-v3. Physical
+  validation recorded Jaime Reyes, saved, force-stopped and restarted the app,
+  loaded, and captured the restored line under the active `[ LOGS ]` tab.
 - APK installed with ABI `arm64-v8a`.
 - The first device launch exposed a missing `libktx.so`; packaging was corrected
   to include the pinned SDK's ARM64 KTX libraries.
