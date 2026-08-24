@@ -127,7 +127,12 @@ class PersonaUiRenderer {
             uniform sampler2D Texture0;
             varying lowp vec2 oTexCoord;
             void main() {
-                gl_FragColor = texture2D(Texture0, oTexCoord);
+                lowp vec4 texel = texture2D(Texture0, oTexCoord);
+                if (texel.a < 0.01) discard;
+                // DeusExUI stores neutral grayscale masks that the original
+                // window renderer modulated with its dark blue-gray theme.
+                gl_FragColor = vec4(
+                    texel.rgb * vec3(0.42, 0.50, 0.52), texel.a);
             }
         )glsl";
         static OVRFW::ovrProgramParm parms[] = {
@@ -141,7 +146,7 @@ class PersonaUiRenderer {
         command.Textures[0] = texture;
         command.UniformData[0].Data = &command.Textures[0];
         command.GpuState.depthEnable = command.GpuState.depthMaskEnable = false;
-        command.GpuState.blendEnable = OVRFW::ovrGpuState::BLEND_DISABLE;
+        command.GpuState.blendEnable = OVRFW::ovrGpuState::BLEND_ENABLE;
         initialized_ = true;
     }
     void Shutdown() {
@@ -152,7 +157,8 @@ class PersonaUiRenderer {
     }
     void SetPose(const OVR::Posef& pose) {
         modelMatrix_ = OVR::Matrix4f(pose) *
-            OVR::Matrix4f::Scaling(0.60f, 0.38f, 1.0f);
+            // The six original 640x512 Persona tiles form a 5:4 canvas.
+            OVR::Matrix4f::Scaling(0.60f, 0.48f, 1.0f);
     }
     void Render(std::vector<OVRFW::ovrDrawSurface>& surfaces) {
         if (initialized_) surfaces.emplace_back(modelMatrix_, &surface_);
@@ -199,11 +205,15 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         inventoryLabel_ = ui_.AddLabel(
             "INVENTORY GRID",
             OVR::Vector3f(0.0f, 0.0f, 0.0f),
-            OVR::Vector2f(950.0f, 600.0f));
+            OVR::Vector2f(950.0f, 760.0f));
         inventoryLabel_->SetTextColor(OVR::Vector4f(0.9f, 0.74f, 0.28f, 1.0f));
         inventoryLabel_->SetSurfaceColor(0, OVR::Vector4f(0.018f, 0.055f, 0.05f, 0.98f));
-        inventoryLabel_->SetTextLocalPosition({0.145f, 0.134f, 0.0f});
-        inventoryLabel_->SetTextLocalScale({0.412f, 0.412f, 1.0f});
+        OVRFW::VRMenuFontParms personaFont = inventoryLabel_->GetFontParms();
+        personaFont.AlignHoriz = OVRFW::HORIZONTAL_LEFT;
+        personaFont.AlignVert = OVRFW::VERTICAL_TOP;
+        inventoryLabel_->SetFontParms(personaFont);
+        inventoryLabel_->SetTextLocalPosition({-0.40f, -0.02f, 0.0f});
+        inventoryLabel_->SetTextLocalScale({0.55f, 0.55f, 1.0f});
         inventoryLabel_->SetVisible(false);
         return true;
     }

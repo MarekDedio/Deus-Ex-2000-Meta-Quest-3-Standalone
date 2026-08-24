@@ -11,6 +11,12 @@
   poses still drive aiming and interaction, but the bright green/yellow fallback
   geometry no longer obscures the authored game world while real hand/weapon
   presentation is unfinished.
+- Corrected the original Persona artwork compositor: transparent source pixels
+  now blend instead of becoming opaque black cutouts, the neutral DeusExUI masks
+  receive the original dark blue-gray theme tint, and the stitched 640x512 canvas
+  keeps its native 5:4 aspect ratio. Persona text is now readable, left/top
+  aligned, and contained by the Inventory and Health frames in Quest eye-buffer
+  captures instead of being centered and crushed across the panel dividers.
 - Actor snapshots now preserve inherited `DrawType` and `bHidden`. Hidden
   gameplay actors no longer produce visible stand-in geometry, and UE1 sprite,
   vertical-sprite, rope-sprite, and one-shot-sprite actors render as masked
