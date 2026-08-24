@@ -191,10 +191,12 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         hudLabel_->SetTextColor(OVR::Vector4f(0.82f, 0.68f, 0.25f, 1.0f));
         inventoryLabel_ = ui_.AddLabel(
             "INVENTORY GRID",
-            OVR::Vector3f(0.0f, 1.3f, -1.5f),
+            OVR::Vector3f(0.0f, 0.0f, 0.0f),
             OVR::Vector2f(950.0f, 600.0f));
         inventoryLabel_->SetTextColor(OVR::Vector4f(0.9f, 0.74f, 0.28f, 1.0f));
         inventoryLabel_->SetSurfaceColor(0, OVR::Vector4f(0.018f, 0.055f, 0.05f, 0.98f));
+        inventoryLabel_->SetTextLocalPosition({0.145f, 0.134f, 0.0f});
+        inventoryLabel_->SetTextLocalScale({0.412f, 0.412f, 1.0f});
         inventoryLabel_->SetVisible(false);
         return true;
     }
@@ -2140,21 +2142,70 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         if (label.find("Multitool") != std::string::npos) return "LargeIconMultitool";
         if (label.find("Lockpick") != std::string::npos) return "LargeIconLockPick";
         if (label.find("MedKit") != std::string::npos) return "LargeIconMedKit";
+        if (label.find("WeaponStealthPistol") != std::string::npos) return "LargeIconStealthPistol";
         if (label.find("WeaponPistol") != std::string::npos) return "LargeIconPistol";
+        if (label.find("WeaponPlasmaRifle") != std::string::npos) return "LargeIconPlasmaRifle";
         if (label.find("WeaponRifle") != std::string::npos) return "LargeIconRifle";
         if (label.find("WeaponAssaultGun") != std::string::npos) return "LargeIconAssaultGun";
         if (label.find("WeaponAssaultShotgun") != std::string::npos) return "LargeIconAssaultShotgun";
         if (label.find("WeaponSawedOffShotgun") != std::string::npos) return "LargeIconShotgun";
+        if (label.find("WeaponMiniCrossbow") != std::string::npos) return "LargeIconCrossbow";
+        if (label.find("WeaponFlamethrower") != std::string::npos) return "LargeIconFlamethrower";
+        if (label.find("WeaponGEPGun") != std::string::npos) return "LargeIconGEPGun";
+        if (label.find("WeaponPepperGun") != std::string::npos) return "LargeIconPepperGun";
+        if (label.find("WeaponLAW") != std::string::npos) return "LargeIconLAW";
+        if (label.find("WeaponNanoSword") != std::string::npos) return "LargeIconDragonsTooth";
+        if (label.find("WeaponSword") != std::string::npos) return "LargeIconSword";
+        if (label.find("WeaponShuriken") != std::string::npos) return "LargeIconShuriken";
+        if (label.find("WeaponEMPGrenade") != std::string::npos) return "LargeIconEMPGrenade";
+        if (label.find("WeaponGasGrenade") != std::string::npos) return "LargeIconGasGrenade";
+        if (label.find("WeaponLAM") != std::string::npos) return "LargeIconLAM";
         if (label.find("WeaponCombatKnife") != std::string::npos) return "LargeIconCombatKnife";
         if (label.find("WeaponBaton") != std::string::npos) return "LargeIconBaton";
         if (label.find("WeaponCrowbar") != std::string::npos) return "LargeIconCrowbar";
         if (label.find("WeaponProd") != std::string::npos) return "LargeIconProd";
+        if (label.find("AmmoDartPoison") != std::string::npos) return "LargeIconAmmoDartsPoison";
+        if (label.find("AmmoDartFlare") != std::string::npos) return "LargeIconAmmoDartsFlare";
+        if (label.find("AmmoDart") != std::string::npos) return "LargeIconAmmoDartsNormal";
+        if (label.find("Ammo20mm") != std::string::npos) return "LargeIconAmmo20mm";
         if (label.find("Ammo10mm") != std::string::npos) return "LargeIconAmmo10mm";
+        if (label.find("Ammo3006") != std::string::npos) return "LargeIconAmmo30rd";
+        if (label.find("AmmoNapalm") != std::string::npos) return "LargeIconAmmoNapalm";
+        if (label.find("AmmoPepper") != std::string::npos) return "LargeIconAmmoPepperSpray";
+        if (label.find("AmmoPlasma") != std::string::npos) return "LargeIconAmmoPlasmaRifle";
+        if (label.find("AmmoProd") != std::string::npos) return "LargeIconAmmoProd";
+        if (label.find("AmmoRocketWP") != std::string::npos) return "LargeIconAmmoWPRockets";
+        if (label.find("AmmoRocket") != std::string::npos) return "LargeIconAmmoRockets";
+        if (label.find("AmmoSabot") != std::string::npos) return "LargeIconAmmoSabot";
+        if (label.find("AmmoShell") != std::string::npos) return "LargeIconAmmoShells";
         if (label.find("Ammo") != std::string::npos) return "LargeIconAmmo7mm";
         if (label.find("BioelectricCell") != std::string::npos) return "LargeIconBioCell";
+        if (label.find("AdaptiveArmor") != std::string::npos) return "LargeIconArmorAdaptive";
+        if (label.find("BallisticArmor") != std::string::npos) return "LargeIconArmorBallistic";
+        if (label.find("HazMatSuit") != std::string::npos) return "LargeIconHazMatSuit";
+        if (label.find("Rebreather") != std::string::npos) return "LargeIconRebreather";
+        if (label.find("TechGoggles") != std::string::npos) return "LargeIconTechGoggles";
+        if (label.find("Binoculars") != std::string::npos) return "LargeIconBinoculars";
+        if (label.find("FireExtinguisher") != std::string::npos) return "LargeIconFireExtinguisher";
+        if (label.find("Flare") != std::string::npos) return "LargeIconFlare";
+        if (label.find("AugmentationCannister") != std::string::npos) return "LargeIconAugmentationCannister";
+        if (label.find("AugmentationUpgrade") != std::string::npos) return "LargeIconAugmentationUpgrade";
+        if (label.find("WeaponModAccuracy") != std::string::npos) return "LargeIconWeaponModAccuracy";
+        if (label.find("WeaponModClip") != std::string::npos) return "LargeIconWeaponModClip";
+        if (label.find("WeaponModLaser") != std::string::npos) return "LargeIconWeaponModLaser";
+        if (label.find("WeaponModRange") != std::string::npos) return "LargeIconWeaponModRange";
+        if (label.find("WeaponModRecoil") != std::string::npos) return "LargeIconWeaponModRecoil";
+        if (label.find("WeaponModReload") != std::string::npos) return "LargeIconWeaponModReload";
+        if (label.find("WeaponModScope") != std::string::npos) return "LargeIconWeaponModScope";
+        if (label.find("WeaponModSilencer") != std::string::npos) return "LargeIconWeaponModSilencer";
+        if (label.find("Ambrosia") != std::string::npos) return "LargeIconAmbrosiaVial";
+        if (label.find("VialCrack") != std::string::npos ||
+            label.find("CrackVial") != std::string::npos) return "LargeIconCrackVial";
         if (label.find("SoyFood") != std::string::npos) return "LargeIconSoyFood";
         if (label.find("Candybar") != std::string::npos) return "LargeIconCandyBar";
         if (label.find("SodaCan") != std::string::npos) return "LargeIconSodaCan";
+        if (label.find("Beer") != std::string::npos) return "LargeIconBeerBottle";
+        if (label.find("Cigarette") != std::string::npos) return "LargeIconCigarettes";
         if (label.find("Liquor") != std::string::npos) return "LargeIconLiquorBottle";
         if (label.find("Wine") != std::string::npos) return "LargeIconWineBottle";
         if (label.find("NanoKey") != std::string::npos) return "LargeIconNanoKeyRing";
@@ -2234,16 +2285,25 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             if (inventoryIndex >= inventory.size()) continue;
             const PortableTextureImage* icon = GetPersonaIcon(inventory[inventoryIndex]);
             if (icon == nullptr || icon->width == 0u || icon->height == 0u) continue;
-            constexpr std::uint32_t iconSize = 46u;
-            for (std::uint32_t row = 0u; row < iconSize; ++row) {
-                const std::uint32_t sourceY = row * icon->height / iconSize;
-                for (std::uint32_t column = 0u; column < iconSize; ++column) {
-                    const std::uint32_t sourceX = column * icon->width / iconSize;
+            constexpr std::uint32_t iconLimit = 46u;
+            std::uint32_t iconWidth = iconLimit;
+            std::uint32_t iconHeight = iconLimit;
+            if (icon->width > icon->height) {
+                iconHeight = std::max(1u, iconLimit * icon->height / icon->width);
+            } else {
+                iconWidth = std::max(1u, iconLimit * icon->width / icon->height);
+            }
+            const std::uint32_t iconX = x + (cell - iconWidth) / 2u;
+            const std::uint32_t iconY = y + (cell - iconHeight) / 2u;
+            for (std::uint32_t row = 0u; row < iconHeight; ++row) {
+                const std::uint32_t sourceY = row * icon->height / iconHeight;
+                for (std::uint32_t column = 0u; column < iconWidth; ++column) {
+                    const std::uint32_t sourceX = column * icon->width / iconWidth;
                     const std::size_t source =
                         (static_cast<std::size_t>(sourceY) * icon->width + sourceX) * 4u;
                     if (icon->rgba[source + 3u] == 0u) continue;
                     setPixel(
-                        x + 4u + column, y + 4u + row,
+                        iconX + column, iconY + row,
                         icon->rgba[source], icon->rgba[source + 1u],
                         icon->rgba[source + 2u], icon->rgba[source + 3u]);
                 }
@@ -2306,7 +2366,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
 
         OVR::Posef menuPose = frame.HeadPose;
         menuPose.Translation += frame.HeadPose.Rotation.Rotate(
-            OVR::Vector3f(-0.45f, -0.95f, -1.05f));
+            OVR::Vector3f(0.0f, -0.015f, -1.05f));
         inventoryLabel_->SetLocalPose(menuPose);
         OVR::Posef artworkPose = frame.HeadPose;
         artworkPose.Translation += frame.HeadPose.Rotation.Rotate(

@@ -172,6 +172,14 @@
   physical-headset capture verified the real 32x64 multitool icon, selected-slot
   highlight, live item data, tabs, and action prompts together inside the
   original panel rather than as disconnected or occluded layers.
+- Inventory icon fitting preserves each source texture's aspect ratio, and the
+  resolver covers 69 verified shipped icons across weapons, ammunition, armor,
+  augmentation items, weapon mods, tools, and consumables. The Quest capture
+  confirmed the 32x64 multitool is centered without the former square stretch.
+- The TinyUI glyph object and native artwork renderer now share one head-relative
+  transform and differ only by local in-panel placement. A steep upward-head-pose
+  capture verified that the header, item data, prompts, grid, and original frame
+  remain rigidly registered instead of separating under pitch.
 - APK installed with ABI `arm64-v8a`.
 - The first device launch exposed a missing `libktx.so`; packaging was corrected
   to include the pinned SDK's ARM64 KTX libraries.
