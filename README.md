@@ -83,8 +83,12 @@ meshes, actor textures, scripts, and ambient sound on-device. Controls are:
 A head-locked HUD displays health, inventory count, and the control summary. The
 Menu button opens a head-locked Persona-style screen using the original game's
 deep teal, amber, tab-rail, slot-grid, and item-data visual language. It shows
-the live map, health, and up to twelve items at once. The right stick selects an item, A equips weapons
-or consumes healing items, and B or Menu returns to play. Movement, turning,
+the live map, health, and up to twelve items at once. Right-stick up/down
+selects inventory items; left/right switches between the
+functional Inventory, Health, and Goals/Notes pages. Health shows live health,
+credits, skill points, and inventory count. Goals/Notes reads the same
+conversation progress persisted by quick-save/load. A equips weapons or
+consumes healing items, and B or Menu returns to play. Movement, turning,
 combat, interaction, and map exits pause while this panel is open; quick-save
 and quick-load remain available.
 The panel background and border are not recreated substitutes: the app decodes

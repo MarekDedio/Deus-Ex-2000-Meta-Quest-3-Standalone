@@ -167,6 +167,13 @@ class PersonaUiRenderer {
     bool initialized_{};
 };
 
+enum class PersonaPage : std::uint8_t {
+    Inventory,
+    Health,
+    GoalsNotes,
+    Count,
+};
+
 class DeusExQuestApp final : public OVRFW::XrApp {
    public:
     DeusExQuestApp() {
@@ -484,10 +491,19 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         if (gameplayActive && turnPressed && !turnLatch_) {
             constexpr float snapRadians = 3.14159265358979323846f / 6.0f;
             sceneYaw_ += std::copysign(snapRadians, frame.RightRemoteJoystick.x);
+        } else if (inventoryMenuOpen_ && turnPressed && !turnLatch_) {
+            const std::size_t pageCount = static_cast<std::size_t>(PersonaPage::Count);
+            std::size_t page = static_cast<std::size_t>(personaPage_);
+            page = frame.RightRemoteJoystick.x > 0.0f
+                ? (page + 1u) % pageCount
+                : (page + pageCount - 1u) % pageCount;
+            personaPage_ = static_cast<PersonaPage>(page);
+            inventoryMenuDirty_ = true;
         }
         turnLatch_ = turnPressed;
         const bool choiceCyclePressed = std::fabs(frame.RightRemoteJoystick.y) > 0.7f;
-        if (inventoryMenuOpen_ && choiceCyclePressed && !choiceCycleLatch_) {
+        if (inventoryMenuOpen_ && personaPage_ == PersonaPage::Inventory &&
+            choiceCyclePressed && !choiceCycleLatch_) {
             const std::size_t count = GetPortableRuntimeInventoryCount();
             if (count != 0u) {
                 if (frame.RightRemoteJoystick.y > 0.0f) {
@@ -546,7 +562,8 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                 BuildActorMarkers();
             }
         }
-        if (inventoryMenuOpen_ && frame.Clicked(frame.kButtonA)) {
+        if (inventoryMenuOpen_ && personaPage_ == PersonaPage::Inventory &&
+            frame.Clicked(frame.kButtonA)) {
             const std::vector<std::string> inventory = GetPortableRuntimeInventoryItems();
             if (inventory.empty()) {
                 inventoryMenuDirty_ = true;
@@ -1596,6 +1613,16 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                 inventoryMenuOpen_ ? "opened" : "closed");
             return;
         }
+        if (std::strcmp(requested, "PAGE") == 0) {
+            const std::size_t pageCount = static_cast<std::size_t>(PersonaPage::Count);
+            personaPage_ = static_cast<PersonaPage>(
+                (static_cast<std::size_t>(personaPage_) + 1u) % pageCount);
+            inventoryMenuDirty_ = true;
+            ALOG(
+                "DeusExQuest: diagnostic Persona page %zu",
+                static_cast<std::size_t>(personaPage_));
+            return;
+        }
         if (std::strcmp(requested, "SAVE") == 0) {
             SaveGameState();
             return;
@@ -2255,14 +2282,15 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         constexpr std::uint32_t cell = 54u;
         constexpr std::uint32_t gap = 5u;
         constexpr std::size_t visibleItems = 12u;
-        const std::size_t first = inventory.size() <= visibleItems
-            ? 0u
-            : std::min(
-                selectedInventoryIndex_ > visibleItems / 2u
-                    ? selectedInventoryIndex_ - visibleItems / 2u
-                    : 0u,
-                inventory.size() - visibleItems);
-        for (std::size_t slot = 0u; slot < visibleItems; ++slot) {
+        if (personaPage_ == PersonaPage::Inventory) {
+            const std::size_t first = inventory.size() <= visibleItems
+                ? 0u
+                : std::min(
+                    selectedInventoryIndex_ > visibleItems / 2u
+                        ? selectedInventoryIndex_ - visibleItems / 2u
+                        : 0u,
+                    inventory.size() - visibleItems);
+            for (std::size_t slot = 0u; slot < visibleItems; ++slot) {
             const std::uint32_t x = gridX + static_cast<std::uint32_t>(slot % 3u) * (cell + gap);
             const std::uint32_t y = gridY + static_cast<std::uint32_t>(slot / 3u) * (cell + gap);
             const std::size_t inventoryIndex = first + slot;
@@ -2307,6 +2335,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                         icon->rgba[source], icon->rgba[source + 1u],
                         icon->rgba[source + 2u], icon->rgba[source + 3u]);
                 }
+            }
             }
         }
         glBindTexture(GL_TEXTURE_2D, personaTextureId_);
@@ -2382,35 +2411,83 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         }
 
         RefreshPersonaInventoryArtwork(inventory);
-        std::vector<std::string> gridRows(4u);
-
-        std::string item = "NO ITEM SELECTED";
-        std::string type = "INVENTORY EMPTY";
-        if (!inventory.empty()) {
-            item = InventoryItemLabel(inventory[selectedInventoryIndex_]);
-            if (item.size() > 20u) item.resize(20u);
-            type = InventoryItemType(inventory[selectedInventoryIndex_]);
+        const PortablePlayerProgress progress = GetPortableRuntimePlayerProgress();
+        std::string tabs;
+        switch (personaPage_) {
+            case PersonaPage::Inventory:
+                tabs = "[ INVENTORY ]  HEALTH  AUGS  SKILLS  GOALS/NOTES  IMAGES  LOGS";
+                break;
+            case PersonaPage::Health:
+                tabs = "INVENTORY  [ HEALTH ]  AUGS  SKILLS  GOALS/NOTES  IMAGES  LOGS";
+                break;
+            case PersonaPage::GoalsNotes:
+                tabs = "INVENTORY  HEALTH  AUGS  SKILLS  [ GOALS/NOTES ]  IMAGES  LOGS";
+                break;
+            case PersonaPage::Count:
+                break;
         }
-        const std::vector<std::string> details = {
-            "ITEM  " + item,
-            "TYPE  " + type,
-            "STATE READY",
-            "A  EQUIP / USE"};
         std::string text = "D E U S  E X   // P E R S O N A        HEALTH " +
             std::to_string(static_cast<int>(health)) + "\n";
         text += currentMapName_ + "\n";
         text += "==============================================================\n";
-        text += "[ INVENTORY ]  HEALTH  AUGS  SKILLS  GOALS/NOTES  IMAGES  LOGS\n";
+        text += tabs + "\n";
         text += "--------------------------------------------------------------\n";
-        text += "// INVENTORY GRID                  // ITEM DATA\n\n";
-        for (std::size_t row = 0u; row < gridRows.size(); ++row) {
-            while (gridRows[row].size() < 34u) gridRows[row].push_back(' ');
-            text += gridRows[row] + details[row] + "\n";
+        if (personaPage_ == PersonaPage::Inventory) {
+            std::string item = "NO ITEM SELECTED";
+            std::string type = "INVENTORY EMPTY";
+            if (!inventory.empty()) {
+                item = InventoryItemLabel(inventory[selectedInventoryIndex_]);
+                if (item.size() > 20u) item.resize(20u);
+                type = InventoryItemType(inventory[selectedInventoryIndex_]);
+            }
+            const std::vector<std::string> details = {
+                "ITEM  " + item,
+                "TYPE  " + type,
+                "STATE READY",
+                "A  EQUIP / USE"};
+            text += "// INVENTORY GRID                  // ITEM DATA\n\n";
+            for (const std::string& detail : details) {
+                text += std::string(34u, ' ') + detail + "\n";
+            }
+            text += "\nSLOT " +
+                std::to_string(inventory.empty() ? 0u : selectedInventoryIndex_ + 1u) +
+                " / " + std::to_string(inventory.size()) + "\n";
+        } else if (personaPage_ == PersonaPage::Health) {
+            text += "// HEALTH STATUS                   // PLAYER DATA\n\n";
+            text += "CURRENT HEALTH  " + std::to_string(static_cast<int>(health)) + " / 100\n";
+            text += "CONDITION       " + std::string(health > 50.0f ? "NOMINAL" : "INJURED") + "\n";
+            text += "CREDITS         " + std::to_string(progress.credits) + "\n";
+            text += "SKILL POINTS    " + std::to_string(progress.skillPoints) + "\n";
+            text += "INVENTORY ITEMS " + std::to_string(inventory.size()) + "\n\n";
+        } else {
+            const auto cleanEntry = [](std::string value) {
+                std::replace(value.begin(), value.end(), '\n', ' ');
+                std::replace(value.begin(), value.end(), '\r', ' ');
+                if (value.empty()) value = "UNNAMED ENTRY";
+                if (value.size() > 48u) value.resize(48u);
+                return value;
+            };
+            text += "// GOALS / NOTES\n\n";
+            text += "ACTIVE GOALS  " + std::to_string(progress.goals.size()) +
+                "     NOTES  " + std::to_string(progress.notes.size()) + "\n";
+            std::size_t lines{};
+            for (std::size_t index = 0u; index < progress.goals.size() && lines < 3u;
+                 ++index, ++lines) {
+                text += "G" + std::to_string(index + 1u) + "  " +
+                    cleanEntry(progress.goals[index]) + "\n";
+            }
+            for (std::size_t index = 0u; index < progress.notes.size() && lines < 5u;
+                 ++index, ++lines) {
+                text += "N" + std::to_string(index + 1u) + "  " +
+                    cleanEntry(progress.notes[index]) + "\n";
+            }
+            if (lines == 0u) text += "NO GOALS OR NOTES RECORDED\n";
+            while (lines++ < 5u) text += "\n";
         }
-        text += "\nSLOT " + std::to_string(inventory.empty() ? 0u : selectedInventoryIndex_ + 1u) +
-            " / " + std::to_string(inventory.size()) + "\n";
         text += "--------------------------------------------------------------\n";
-        text += "STICK SELECT   A USE   Y SAVE   X LOAD   B / MENU CLOSE";
+        text += personaPage_ == PersonaPage::Inventory
+            ? "R-STICK L/R PAGE  U/D SELECT  A USE  B / MENU CLOSE"
+            : "R-STICK L/R PAGE   Y SAVE   X LOAD   B / MENU CLOSE";
         inventoryLabel_->SetText("%s", text.c_str());
         inventoryMenuDisplayedCount_ = inventory.size();
         inventoryMenuDisplayedHealth_ = health;
@@ -4016,6 +4093,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
     std::uint32_t personaTextureWidth_{};
     std::uint32_t personaTextureHeight_{};
     bool inventoryMenuOpen_{};
+    PersonaPage personaPage_{PersonaPage::Inventory};
     bool inventoryMenuDirty_{true};
     std::size_t inventoryMenuDisplayedCount_{invalidRendererIndex_};
     std::size_t inventoryMenuDisplayedSelection_{invalidRendererIndex_};

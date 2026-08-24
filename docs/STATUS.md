@@ -180,6 +180,12 @@
   transform and differ only by local in-panel placement. A steep upward-head-pose
   capture verified that the header, item data, prompts, grid, and original frame
   remain rigidly registered instead of separating under pitch.
+- The Persona rail now has functional Inventory, Health, and Goals/Notes pages.
+  Right-stick left/right changes pages while inventory up/down selection remains
+  isolated to Inventory. Health reads live health, credits, skill points, and
+  inventory count; Goals/Notes reads save-persisted dialogue progress. Four
+  physical captures verified all three pages, cleared stale slots outside
+  Inventory, and restored the grid and icon after cycling back.
 - APK installed with ABI `arm64-v8a`.
 - The first device launch exposed a missing `libktx.so`; packaging was corrected
   to include the pinned SDK's ARM64 KTX libraries.

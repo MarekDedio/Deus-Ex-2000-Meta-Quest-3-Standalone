@@ -89,6 +89,13 @@ struct PortableDialogueEffectResult {
     std::string status;
 };
 
+struct PortablePlayerProgress {
+    std::int32_t credits{};
+    std::int32_t skillPoints{};
+    std::vector<std::string> goals;
+    std::vector<std::string> notes;
+};
+
 struct PortableMapRuntimeSummary {
     bool passed{};
     std::size_t exports{};
@@ -234,6 +241,7 @@ bool VerifyPortableRuntimeDamage();
 std::size_t GetPortableRuntimeInventoryCount();
 std::vector<std::string> GetPortableRuntimeInventoryItems();
 bool ConsumePortableRuntimeInventoryItem(const std::string& objectPath);
+PortablePlayerProgress GetPortableRuntimePlayerProgress();
 float GetPortableRuntimePlayerHealth();
 float DamagePortableRuntimePlayer(float damage);
 float HealPortableRuntimePlayer(float amount);

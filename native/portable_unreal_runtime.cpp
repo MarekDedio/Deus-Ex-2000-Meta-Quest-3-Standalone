@@ -1892,6 +1892,15 @@ std::vector<std::string> GetPortableRuntimeInventoryItems() {
     return persistentInventory;
 }
 
+PortablePlayerProgress GetPortableRuntimePlayerProgress() {
+    PortablePlayerProgress result;
+    result.credits = persistentCredits;
+    result.skillPoints = persistentSkillPoints;
+    result.goals = persistentGoals;
+    result.notes = persistentNotes;
+    return result;
+}
+
 bool ConsumePortableRuntimeInventoryItem(const std::string& objectPath) {
     const auto found = std::find(
         persistentInventory.begin(), persistentInventory.end(), objectPath);
