@@ -44,11 +44,37 @@ The checked-in Android project references the pinned Meta OpenXR SDK checkout in
 `third_party/Meta-OpenXR-SDK`. On this workstation, the reproducible toolchain is
 installed at `D:\Android\Sdk` with Microsoft OpenJDK 17.
 The build helper idempotently applies the checked-in TinyUI font-path patch to
-the pinned SDK checkout before invoking Gradle.
+the pinned SDK checkout before invoking Gradle. It now restores the exact source
+dependencies from `third-party-lock.json` on a fresh checkout, preserving any
+existing dependency edits. See [build dependencies](docs/BUILD-DEPENDENCIES.md)
+for toolchain paths and validation-only checks.
 
 ```powershell
 .\tools\Build-QuestSmokeTest.ps1
 ```
+
+## Visual tests without a headset
+
+The desktop capture tool decodes the original packages with the same portable
+map-cache code as Quest and renders their BSP and material albedo to BMP files.
+It also runs deterministic depth, clipping, transparency, texture-coordinate,
+image-baseline, and shared VR-transform regression checks. It does not require
+ADB, a connected headset, or redistribution of the game's data.
+
+```powershell
+.\tools\Initialize-ThirdParty.ps1
+.\tools\Test-DesktopVisuals.ps1 -GameRoot 'D:\Steam\steamapps\common\Deus Ex'
+.\tools\Test-DesktopCampaign.ps1 -GameRoot 'D:\Steam\steamapps\common\Deus Ex' -SkipBuild
+```
+
+These captures do not yet contain actor meshes, authored illumination, skyboxes,
+Persona UI, or the live Quest renderer. They cannot verify gameplay, stereo,
+OpenXR tracking, controller input, or Quest performance. Black skies or absent
+actors in this limited renderer are not evidence of the same defect in the APK.
+See [desktop visual testing](docs/DESKTOP-VISUAL-TESTING.md) for camera controls,
+baseline comparisons, reports, and the validation boundary.
+
+## Testing on Quest
 
 With one Quest in developer mode connected and authorized over USB:
 
@@ -82,8 +108,10 @@ meshes, actor textures, scripts, and ambient sound on-device. Controls are:
 
 A head-locked HUD displays health, inventory count, and the control summary. The
 Menu button opens a head-locked Persona-style screen using the original game's
-deep teal, amber, tab-rail, slot-grid, and item-data visual language. It shows
-the live map, health, and up to twelve items at once. Right-stick up/down
+shipped artwork, default grayscale theme, tab rail, slot grid, and item-data
+panes. Its client/border offsets and 640x480 layout follow the serialized
+original UI defaults. It shows the live map, health, and up to thirty items
+in the original five-by-six grid. Right-stick up/down
 selects inventory items; left/right switches between the
 functional Inventory, Health, Goals/Notes, and Logs pages. Health shows live health,
 credits, skill points, and inventory count. Goals/Notes reads the same
@@ -94,8 +122,9 @@ combat, interaction, and map exits pause while this panel is open; quick-save
 and quick-load remain available.
 The panel background and border are not recreated substitutes: the app decodes
 and stitches the twelve shipped `InventoryBackground_*` and `InventoryBorder_*`
-textures directly from the user's `System/DeusExUI.u` on Quest. A teal fallback
-remains available if those private game assets cannot be decoded.
+textures directly from the user's `System/DeusExUI.u` on Quest. A text-only fallback remains available
+if those private game assets cannot be decoded. Only the four implemented pages
+are shown; augmentations, skills, and images are not presented as functional tabs.
 Pointing at a pawn and pressing A resolves its real `BindName` against the
 active mission's serialized conversation events and displays the shipped
 subtitle while decoding and mixing its referenced MP3 speech over ambient audio;

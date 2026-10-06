@@ -3,6 +3,7 @@
 #include <aaudio/AAudio.h>
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <cstdint>
 #include <cmath>
@@ -29,6 +30,7 @@
 #include "XrApp.h"
 #include "portable_unreal_runtime.h"
 #include "quest_map_cache.h"
+#include "vr_world_transform.h"
 
 #define MINIMP3_IMPLEMENTATION
 #include "minimp3_ex.h"
@@ -129,10 +131,9 @@ class PersonaUiRenderer {
             void main() {
                 lowp vec4 texel = texture2D(Texture0, oTexCoord);
                 if (texel.a < 0.01) discard;
-                // DeusExUI stores neutral grayscale masks that the original
-                // window renderer modulated with its dark blue-gray theme.
-                gl_FragColor = vec4(
-                    texel.rgb * vec3(0.42, 0.50, 0.52), texel.a);
+                // Theme modulation belongs to the neutral background/border
+                // layers, not to the original full-color inventory icons.
+                gl_FragColor = texel;
             }
         )glsl";
         static OVRFW::ovrProgramParm parms[] = {
@@ -147,6 +148,8 @@ class PersonaUiRenderer {
         command.UniformData[0].Data = &command.Textures[0];
         command.GpuState.depthEnable = command.GpuState.depthMaskEnable = false;
         command.GpuState.blendEnable = OVRFW::ovrGpuState::BLEND_ENABLE;
+        command.GpuState.blendSrc = GL_SRC_ALPHA;
+        command.GpuState.blendDst = GL_ONE_MINUS_SRC_ALPHA;
         initialized_ = true;
     }
     void Shutdown() {
@@ -157,8 +160,9 @@ class PersonaUiRenderer {
     }
     void SetPose(const OVR::Posef& pose) {
         modelMatrix_ = OVR::Matrix4f(pose) *
-            // The six original 640x512 Persona tiles form a 5:4 canvas.
-            OVR::Matrix4f::Scaling(0.60f, 0.48f, 1.0f);
+            // Original PersonaScreenBaseWindow is 640x480. The stored
+            // power-of-two tiles include padding outside that window.
+            OVR::Matrix4f::Scaling(0.60f, 0.45f, 1.0f);
     }
     void Render(std::vector<OVRFW::ovrDrawSurface>& surfaces) {
         if (initialized_) surfaces.emplace_back(modelMatrix_, &surface_);
@@ -203,29 +207,45 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         hudLabel_->SetTextLocalPosition({0.0f, -0.025f, 0.0f});
         hudLabel_->SetTextColor(OVR::Vector4f(0.82f, 0.68f, 0.25f, 1.0f));
         inventoryLabel_ = ui_.AddLabel(
-            "INVENTORY GRID",
+            "Inventory",
             OVR::Vector3f(0.0f, 0.0f, 0.0f),
-            OVR::Vector2f(950.0f, 760.0f));
-        inventoryLabel_->SetTextColor(OVR::Vector4f(0.9f, 0.74f, 0.28f, 1.0f));
-        inventoryLabel_->SetSurfaceColor(0, OVR::Vector4f(0.018f, 0.055f, 0.05f, 0.98f));
-        OVRFW::VRMenuFontParms personaFont = inventoryLabel_->GetFontParms();
-        personaFont.AlignHoriz = OVRFW::HORIZONTAL_LEFT;
-        personaFont.AlignVert = OVRFW::VERTICAL_TOP;
-        inventoryLabel_->SetFontParms(personaFont);
-        inventoryLabel_->SetTextLocalPosition({-0.40f, -0.02f, 0.0f});
-        inventoryLabel_->SetTextLocalScale({0.55f, 0.55f, 1.0f});
-        inventoryLabel_->SetVisible(false);
+            OVR::Vector2f(266.0f, 319.0f));
+        personaTabsLabel_ = ui_.AddLabel("", {}, {622.0f, 25.0f});
+        personaDetailsLabel_ = ui_.AddLabel("", {}, {238.0f, 218.0f});
+        personaFooterLabel_ = ui_.AddLabel("", {}, {575.0f, 52.0f});
+        for (OVRFW::VRMenuObject* label : PersonaLabels()) {
+            if (label == nullptr) return false;
+            // ColorThemeHUD_Default: normal text 200, header text 255.
+            label->SetTextColor({200.0f / 255.0f, 200.0f / 255.0f,
+                                 200.0f / 255.0f, 1.0f});
+            label->SetSurfaceVisible(0, false);
+            OVRFW::VRMenuFontParms font = label->GetFontParms();
+            font.AlignHoriz = OVRFW::HORIZONTAL_LEFT;
+            // SDK TOP anchors the bottom of a multiline block. BASELINE
+            // keeps the first line fixed when the page's line count changes.
+            font.AlignVert = OVRFW::VERTICAL_BASELINE;
+            font.MaxLines = 16;
+            font.WrapWidth = -1.0f;
+            label->SetFontParms(font);
+            label->SetVisible(false);
+        }
+        personaTabsLabel_->SetTextColor({1.0f, 1.0f, 1.0f, 1.0f});
         return true;
     }
 
     void AppShutdown(const xrJava* context) override {
-        inventoryLabel_ = nullptr;
+        inventoryLabel_ = personaTabsLabel_ = personaDetailsLabel_ = personaFooterLabel_ = nullptr;
         hudLabel_ = nullptr;
         ui_.Shutdown();
         OVRFW::XrApp::AppShutdown(context);
     }
 
     bool SessionInit() override {
+        hasPreviousHeadStage_ = false;
+        headTrackingReported_ = false;
+        needsTrackingRebase_ = false;
+        pendingReferenceChanges_.clear();
+        hasTransitionHeadAnchor_ = false;
         try {
             static constexpr const char* packageNames[] = {
                 "ConSys",
@@ -436,6 +456,70 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         return true;
     }
 
+    void SyncActionSets(OVRFW::ovrApplFrameIn& frame) override {
+        OVRFW::XrApp::SyncActionSets(frame);
+        const bool previouslyValid = headTrackingValid_;
+        XrSpaceLocation location{};
+        location.type = XR_TYPE_SPACE_LOCATION;
+        const XrResult result = xrLocateSpace(
+            HeadSpace, CurrentSpace,
+            static_cast<XrTime>(frame.PredictedDisplayTime * 1e9), &location);
+        constexpr XrSpaceLocationFlags required =
+            XR_SPACE_LOCATION_POSITION_VALID_BIT | XR_SPACE_LOCATION_ORIENTATION_VALID_BIT;
+        headTrackingValid_ = XR_SUCCEEDED(result) &&
+            (location.locationFlags & required) == required;
+        if (!headTrackingReported_ || previouslyValid != headTrackingValid_) {
+            ALOG("DeusExQuest: head tracking %s xrLocateSpace=%d flags=0x%llx",
+                headTrackingValid_ ? "valid" : "unavailable",
+                static_cast<int>(result),
+                static_cast<unsigned long long>(location.locationFlags));
+            headTrackingReported_ = true;
+        }
+        if (headTrackingValid_) frame.HeadPose = FromXrPosef(location.pose);
+    }
+
+    void AppHandleEvent(XrEventDataBaseHeader* event) override {
+        if (event->type != XR_TYPE_EVENT_DATA_REFERENCE_SPACE_CHANGE_PENDING) return;
+        const auto& change = *reinterpret_cast<XrEventDataReferenceSpaceChangePending*>(event);
+        const XrReferenceSpaceType activeType = CurrentSpace == StageSpace &&
+            StageSpace != XR_NULL_HANDLE ? XR_REFERENCE_SPACE_TYPE_STAGE : XR_REFERENCE_SPACE_TYPE_LOCAL;
+        if (change.session != Session || change.referenceSpaceType != activeType) return;
+        pendingReferenceChanges_.push_back(change);
+        std::stable_sort(pendingReferenceChanges_.begin(), pendingReferenceChanges_.end(),
+            [](const auto& left, const auto& right) { return left.changeTime < right.changeTime; });
+    }
+
+    void ApplyReferenceSpaceChanges(XrTime displayTime) {
+        while (!pendingReferenceChanges_.empty() &&
+               pendingReferenceChanges_.front().changeTime <= displayTime) {
+            const auto change = pendingReferenceChanges_.front();
+            pendingReferenceChanges_.erase(pendingReferenceChanges_.begin());
+            if (!hasPreviousHeadStage_ && !needsTrackingRebase_) continue;
+            const OVR::Posef origin = FromXrPosef(change.poseInPreviousSpace);
+            const OVR::Vector3f up = origin.Rotation.Rotate(OVR::Vector3f(0.0f, 1.0f, 0.0f));
+            if (change.poseValid && std::fabs(up.x) < 0.001f &&
+                std::fabs(up.z) < 0.001f && up.y > 0.999f) {
+                const OVR::Vector3f right = origin.Rotation.Rotate(OVR::Vector3f(1.0f, 0.0f, 0.0f));
+                const float originYaw = std::atan2(-right.z, right.x);
+                QuestVr::RebaseReferenceSpace(origin.Translation, originYaw,
+                    worldPosition_, sceneYaw_, previousHeadStage_);
+                if (restorePoseAfterTransition_) {
+                    OVR::Vector3f unusedHead{};
+                    QuestVr::RebaseReferenceSpace(origin.Translation, originYaw,
+                        restoredWorldPosition_, restoredSceneYaw_, unusedHead);
+                }
+                ALOG("DeusExQuest: preserved map pose across OpenXR recenter");
+            } else {
+                if (hasPreviousHeadStage_) {
+                    trackingResumeLocalHead_ = StageToLocal(previousHeadStage_, worldPosition_);
+                }
+                needsTrackingRebase_ = true;
+                hasPreviousHeadStage_ = false;
+                ALOG("DeusExQuest: OpenXR reference discontinuity; rebasing on valid tracking");
+            }
+        }
+    }
+
     void Update(const OVRFW::ovrApplFrameIn& frame) override {
         PollDialogueAudioDecode();
         if (interactionStatusSeconds_ > 0.0f) {
@@ -448,26 +532,45 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         performanceWorstDelta_ = std::max(performanceWorstDelta_, frame.DeltaSeconds);
         if (performanceSeconds_ >= 10.0f) {
             ALOG(
-                "DeusExQuest: Quest frame timing %.1f fps average, %.2f ms worst over %zu frames; actors=%zu collision=%zu",
+                "DeusExQuest: Quest frame timing %.1f fps average, %.2f ms worst over %zu frames; actors=%zu collision=%zu tracking=%s",
                 static_cast<double>(performanceFrames_) / performanceSeconds_,
                 performanceWorstDelta_ * 1000.0f,
                 performanceFrames_,
                 interactiveActors_.size(),
-                collisionTriangles_.size());
+                collisionTriangles_.size(),
+                headTrackingValid_ ? "valid" : "unavailable");
             performanceFrames_ = 0;
             performanceSeconds_ = 0.0f;
             performanceWorstDelta_ = 0.0f;
         }
-        float headYaw{}, headPitch{}, headRoll{};
+        ApplyReferenceSpaceChanges(static_cast<XrTime>(frame.PredictedDisplayTime * 1e9));
+        if (!headTrackingValid_) {
+            if (hasPreviousHeadStage_) {
+                trackingResumeLocalHead_ = StageToLocal(previousHeadStage_, worldPosition_);
+                needsTrackingRebase_ = true;
+                hasPreviousHeadStage_ = false;
+            }
+            return;
+        }
         currentHeadStage_ = frame.HeadPose.Translation;
         if (!hasPreviousHeadStage_) {
+            if (needsTrackingRebase_) {
+                worldPosition_ = QuestVr::RestoreHorizontalHeadPosition(
+                    worldPosition_, currentHeadStage_, trackingResumeLocalHead_, sceneYaw_);
+                needsTrackingRebase_ = false;
+            } else {
+                QuestVr::AnchorSpawnToHead(currentHeadStage_, worldPosition_);
+            }
             previousHeadStage_ = currentHeadStage_;
             hasPreviousHeadStage_ = true;
         }
-        frame.HeadPose.Rotation.GetEulerAngles<OVR::Axis_Y, OVR::Axis_X, OVR::Axis_Z>(
-            &headYaw, &headPitch, &headRoll);
-        (void)headPitch;
-        (void)headRoll;
+        if (hasTransitionHeadAnchor_) {
+            worldPosition_ = QuestVr::RestoreHorizontalHeadPosition(
+                worldPosition_, currentHeadStage_, transitionHeadLocal_, sceneYaw_);
+            previousHeadStage_ = currentHeadStage_;
+        }
+        const OVR::Vector3f safeLocalHead =
+            StageToLocal(previousHeadStage_, worldPosition_);
         const bool playerAlive = GetPortableRuntimePlayerHealth() > 0.0f;
         const bool mapLoading = !pendingMapName_.empty() || !transitionMapName_.empty();
         if (!mapLoading && frame.Clicked(frame.kButtonMenu)) {
@@ -479,24 +582,6 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             dismissedMenuWithB = true;
         }
         const bool gameplayActive = playerAlive && !mapLoading && !inventoryMenuOpen_;
-        const float yaw = headYaw - sceneYaw_;
-        const float forwardX = std::sin(yaw);
-        const float forwardZ = -std::cos(yaw);
-        const float rightX = std::cos(yaw);
-        const float rightZ = std::sin(yaw);
-        UpdateSpatialAudioGains(
-            StageToLocal(currentHeadStage_, worldPosition_), rightX, rightZ);
-        constexpr float moveSpeed = 2.2f;
-        const float moveX = gameplayActive
-            ? frame.LeftRemoteJoystick.x * rightX + frame.LeftRemoteJoystick.y * forwardX
-            : 0.0f;
-        const float moveZ = gameplayActive
-            ? frame.LeftRemoteJoystick.x * rightZ + frame.LeftRemoteJoystick.y * forwardZ
-            : 0.0f;
-        OVR::Vector3f candidate = worldPosition_;
-        candidate.x -= moveX * moveSpeed * frame.DeltaSeconds;
-        candidate.z -= moveZ * moveSpeed * frame.DeltaSeconds;
-
         const bool turnPressed = std::fabs(frame.RightRemoteJoystick.x) > 0.7f;
         if (gameplayActive && turnPressed && !turnLatch_) {
             constexpr float snapRadians = 3.14159265358979323846f / 6.0f;
@@ -513,6 +598,18 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             inventoryMenuDirty_ = true;
         }
         turnLatch_ = turnPressed;
+        const OVR::Vector3f stageRight = QuestVr::HorizontalHeadRight(
+            frame.HeadPose.Rotation.Rotate(OVR::Vector3f(0.0f, 0.0f, -1.0f)),
+            frame.HeadPose.Rotation.Rotate(OVR::Vector3f(1.0f, 0.0f, 0.0f)));
+        const OVR::Vector3f localRight =
+            QuestVr::StageDirectionToLocal(stageRight, sceneYaw_);
+        // Construct the movement candidate after turning so accepting it cannot
+        // overwrite the head-pivot translation computed by the snap turn.
+        OVR::Vector3f candidate = QuestVr::LocomotionCandidate(
+            worldPosition_, stageRight,
+            gameplayActive ? frame.LeftRemoteJoystick.x : 0.0f,
+            gameplayActive ? frame.LeftRemoteJoystick.y : 0.0f,
+            2.2f, frame.DeltaSeconds);
         const bool choiceCyclePressed = std::fabs(frame.RightRemoteJoystick.y) > 0.7f;
         if (inventoryMenuOpen_ && personaPage_ == PersonaPage::Inventory &&
             choiceCyclePressed && !choiceCycleLatch_) {
@@ -541,12 +638,18 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         choiceCycleLatch_ = choiceCyclePressed;
 
         FollowGround(frame.HeadPose.Translation, candidate);
-        if (!CapsuleTouchesWall(frame.HeadPose.Translation, candidate)) {
+        const bool movementBlocked = QuestVr::HorizontalMotionBlocked(
+            safeLocalHead, StageToLocal(currentHeadStage_, candidate),
+            [&](const OVR::Vector3f& sampleLocalHead) {
+                const OVR::Vector3f sampleWorldPosition = QuestVr::RestoreHorizontalHeadPosition(
+                    candidate, currentHeadStage_, sampleLocalHead, sceneYaw_);
+                return CapsuleTouchesWall(currentHeadStage_, sampleWorldPosition);
+            });
+        if (!movementBlocked) {
             worldPosition_ = candidate;
         } else {
-            OVR::Vector3f compensated = worldPosition_;
-            compensated.x += currentHeadStage_.x - previousHeadStage_.x;
-            compensated.z += currentHeadStage_.z - previousHeadStage_.z;
+            OVR::Vector3f compensated = QuestVr::RestoreHorizontalHeadPosition(
+                worldPosition_, currentHeadStage_, safeLocalHead, sceneYaw_);
             FollowGround(frame.HeadPose.Translation, compensated);
             if (!CapsuleTouchesWall(frame.HeadPose.Translation, compensated)) {
                 worldPosition_ = compensated;
@@ -557,6 +660,8 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             }
         }
         previousHeadStage_ = currentHeadStage_;
+        UpdateSpatialAudioGains(
+            StageToLocal(currentHeadStage_, worldPosition_), localRight.x, localRight.z);
 
         const OVR::Posef worldPose(
             OVR::Quatf(OVR::Vector3f(0.0f, 1.0f, 0.0f), sceneYaw_), worldPosition_);
@@ -692,6 +797,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
     void Render(
         const OVRFW::ovrApplFrameIn& frame,
         OVRFW::ovrRendererOutput& output) override {
+        if (!headTrackingValid_) return;
         for (auto& renderer : worldRenderers_) renderer.Render(output.Surfaces);
         for (auto& renderer : texturedRenderers_) renderer.Render(output.Surfaces);
         if (inventoryMenuOpen_) personaRenderer_.Render(output.Surfaces);
@@ -1417,8 +1523,11 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                     restorePoseAfterTransition_ = false;
                 } else {
                     worldPosition_ = {0.0f, 0.0f, 0.0f};
+                    QuestVr::AnchorSpawnToHead(currentHeadStage_, worldPosition_);
                     sceneYaw_ = 0.0f;
                 }
+                transitionHeadLocal_ = StageToLocal(currentHeadStage_, worldPosition_);
+                hasTransitionHeadAnchor_ = true;
                 if (!BeginWorldTextureUpload(std::move(preparedWorldTexture_))) {
                     throw std::runtime_error("GPU world texture allocation failed");
                 }
@@ -1480,6 +1589,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                     GetPortableRuntimePlayerHealth());
                 transitionMapName_.clear();
                 transitionPhase_ = MapTransitionPhase::Idle;
+                hasTransitionHeadAnchor_ = false;
                 displayedInventoryCount_ = invalidRendererIndex_;
                 mapTravelCooldown_ = 3.0f;
             }
@@ -1494,6 +1604,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                 error.what());
             transitionMapName_.clear();
             transitionPhase_ = MapTransitionPhase::Idle;
+            hasTransitionHeadAnchor_ = false;
             if (pendingWorldTextureId_ != 0u) {
                 glDeleteTextures(1, &pendingWorldTextureId_);
                 pendingWorldTextureId_ = 0u;
@@ -2094,9 +2205,9 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                 const std::string name = "InventoryBackground_" + std::to_string(index);
                 try {
                     pieces.push_back(DecodePortableIndexedTexture(
-                        uiPackage, "UserInterface." + name));
+                        uiPackage, "UserInterface." + name, true));
                 } catch (const std::exception&) {
-                    pieces.push_back(DecodePortableIndexedTexture(uiPackage, name));
+                    pieces.push_back(DecodePortableIndexedTexture(uiPackage, name, true));
                 }
                 ALOG(
                     "DeusExQuest: decoded original Persona texture %s at %ux%u",
@@ -2115,42 +2226,39 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             }
             const std::uint32_t topHeight = std::max({
                 pieces[0].height, pieces[1].height, pieces[2].height});
-            const std::uint32_t bottomHeight = std::max({
-                pieces[3].height, pieces[4].height, pieces[5].height});
-            const std::uint32_t topWidth =
-                pieces[0].width + pieces[1].width + pieces[2].width;
-            const std::uint32_t bottomWidth =
-                pieces[3].width + pieces[4].width + pieces[5].width;
-            const std::uint32_t width = std::max(topWidth, bottomWidth);
-            const std::uint32_t height = topHeight + bottomHeight;
-            if (width == 0u || height == 0u || width > 2048u || height > 2048u) {
-                throw std::runtime_error("stitched Persona texture dimensions are invalid");
-            }
+            // Defaults serialized in the original PersonaScreenInventory:
+            // screen 640x480; border (0,33),640x450; client (33,43),585x361.
+            // The background and border are distinct clipped child windows,
+            // not coincident layers of a 640x512 image.
+            constexpr std::uint32_t width = 640u;
+            constexpr std::uint32_t height = 480u;
             std::vector<std::uint8_t> rgba(
                 static_cast<std::size_t>(width) * height * 4u, 0u);
-            const auto copyPiece = [&](const PortableTextureImage& piece, std::uint32_t x,
-                                       std::uint32_t y, const bool overlay) {
-                if (x + piece.width > width || y + piece.height > height) {
-                    throw std::runtime_error("Persona texture piece exceeds stitched canvas");
+            const auto copyPiece = [&](const PortableTextureImage& piece,
+                                       std::uint32_t tileX, std::uint32_t tileY,
+                                       std::uint32_t windowX, std::uint32_t windowY,
+                                       std::uint32_t clipWidth, std::uint32_t clipHeight,
+                                       std::uint32_t tint) {
+                if (piece.rgba.size() !=
+                    static_cast<std::size_t>(piece.width) * piece.height * 4u) {
+                    throw std::runtime_error("Persona texture pixel count is invalid");
                 }
                 for (std::uint32_t row = 0u; row < piece.height; ++row) {
-                    const std::size_t source = static_cast<std::size_t>(row) * piece.width * 4u;
-                    const std::size_t destination =
-                        (static_cast<std::size_t>(y + row) * width + x) * 4u;
-                    if (!overlay) {
-                        std::copy_n(
-                            piece.rgba.data() + source,
-                            static_cast<std::size_t>(piece.width) * 4u,
-                            rgba.data() + destination);
-                    } else {
-                        for (std::uint32_t column = 0u; column < piece.width; ++column) {
-                            const std::size_t sourcePixel = source + column * 4u;
-                            if (piece.rgba[sourcePixel + 3u] == 0u) continue;
-                            const std::size_t destinationPixel = destination + column * 4u;
-                            std::copy_n(
-                                piece.rgba.data() + sourcePixel, 4u,
-                                rgba.data() + destinationPixel);
+                    const std::uint32_t y = tileY + row;
+                    if (y >= clipHeight || windowY + y >= height) break;
+                    for (std::uint32_t column = 0u; column < piece.width; ++column) {
+                        const std::uint32_t x = tileX + column;
+                        if (x >= clipWidth || windowX + x >= width) break;
+                        const std::size_t source =
+                            (static_cast<std::size_t>(row) * piece.width + column) * 4u;
+                        if (piece.rgba[source + 3u] == 0u) continue;
+                        const std::size_t destination =
+                            (static_cast<std::size_t>(windowY + y) * width + windowX + x) * 4u;
+                        for (std::size_t channel = 0u; channel < 3u; ++channel) {
+                            rgba[destination + channel] = static_cast<std::uint8_t>(
+                                (piece.rgba[source + channel] * tint + 127u) / 255u);
                         }
+                        rgba[destination + 3u] = piece.rgba[source + 3u];
                     }
                 }
             };
@@ -2159,7 +2267,8 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                 const std::uint32_t y = row == 0u ? 0u : topHeight;
                 for (std::size_t column = 0u; column < 3u; ++column) {
                     const PortableTextureImage& piece = pieces[row * 3u + column];
-                    copyPiece(piece, x, y, false);
+                    // Original HUD default background RGB(127,127,127).
+                    copyPiece(piece, x, y, 33u, 43u, 585u, 361u, 127u);
                     x += piece.width;
                 }
             }
@@ -2168,8 +2277,9 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                 const std::uint32_t y = row == 0u ? 0u : topHeight;
                 for (std::size_t column = 0u; column < 3u; ++column) {
                     const std::size_t index = row * 3u + column;
-                    copyPiece(borders[index], x, y, true);
-                    x += pieces[index].width;
+                    // Border tint is white; do not modulate colored icons.
+                    copyPiece(borders[index], x, y, 0u, 33u, 640u, 450u, 255u);
+                    x += borders[index].width;
                 }
             }
             GLuint texture{};
@@ -2202,7 +2312,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                 width, height);
         } catch (const std::exception& error) {
             ALOG(
-                "DeusExQuest: original Persona background unavailable; using teal fallback: %s",
+                "DeusExQuest: original Persona background unavailable; using text-only fallback: %s",
                 error.what());
         }
     }
@@ -2320,11 +2430,12 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             rgba[pixel + 2u] = blue;
             rgba[pixel + 3u] = alpha;
         };
-        constexpr std::uint32_t gridX = 50u;
-        constexpr std::uint32_t gridY = 75u;
+        // Original client offset (33,43) + winItems position (9,19).
+        constexpr std::uint32_t gridX = 42u;
+        constexpr std::uint32_t gridY = 62u;
         constexpr std::uint32_t cell = 54u;
-        constexpr std::uint32_t gap = 5u;
-        constexpr std::size_t visibleItems = 12u;
+        constexpr std::uint32_t step = 53u;
+        constexpr std::size_t visibleItems = 30u;
         if (personaPage_ == PersonaPage::Inventory) {
             const std::size_t first = inventory.size() <= visibleItems
                 ? 0u
@@ -2334,8 +2445,8 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                         : 0u,
                     inventory.size() - visibleItems);
             for (std::size_t slot = 0u; slot < visibleItems; ++slot) {
-            const std::uint32_t x = gridX + static_cast<std::uint32_t>(slot % 3u) * (cell + gap);
-            const std::uint32_t y = gridY + static_cast<std::uint32_t>(slot / 3u) * (cell + gap);
+            const std::uint32_t x = gridX + static_cast<std::uint32_t>(slot % 5u) * step;
+            const std::uint32_t y = gridY + static_cast<std::uint32_t>(slot / 5u) * step;
             const std::size_t inventoryIndex = first + slot;
             const bool selected = inventoryIndex < inventory.size() &&
                 inventoryIndex == selectedInventoryIndex_;
@@ -2345,11 +2456,11 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                         row + 2u >= cell || column + 2u >= cell;
                     if (edge) {
                         setPixel(x + column, y + row,
-                            selected ? 235u : 116u,
-                            selected ? 190u : 102u,
-                            selected ? 55u : 54u);
+                            selected ? 255u : 100u,
+                            selected ? 255u : 100u,
+                            selected ? 255u : 100u);
                     } else {
-                        setPixel(x + column, y + row, 4u, 18u, 18u);
+                        setPixel(x + column, y + row, 18u, 18u, 18u);
                     }
                 }
             }
@@ -2421,12 +2532,79 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         return InventoryItemLabel(path);
     }
 
+    std::array<OVRFW::VRMenuObject*, 4> PersonaLabels() const {
+        return {inventoryLabel_, personaTabsLabel_, personaDetailsLabel_, personaFooterLabel_};
+    }
+
+    static std::string WrapPersonaEntry(std::string value, const std::size_t maxLines = 2u) {
+        for (char& character : value) {
+            if (character == '\n' || character == '\r' || character == '\t') character = ' ';
+        }
+        if (value.empty()) value = "UNNAMED ENTRY";
+        constexpr std::size_t columns = 32u;
+        std::string result;
+        for (std::size_t line = 0u; line < maxLines && !value.empty(); ++line) {
+            if (!result.empty()) result += '\n';
+            if (value.size() <= columns) {
+                result += value;
+                break;
+            }
+            if (line + 1u == maxLines) {
+                result += value.substr(0u, columns - 3u) + "...";
+                break;
+            }
+            std::size_t split = value.find_last_of(' ', columns);
+            if (split == std::string::npos || split == 0u) split = columns;
+            result += value.substr(0u, split);
+            value.erase(0u, split);
+            const std::size_t first = value.find_first_not_of(' ');
+            value.erase(0u, first == std::string::npos ? value.size() : first);
+        }
+        return result;
+    }
+
+    void SetPersonaPanelText(
+        OVRFW::VRMenuObject* label, const std::string& text,
+        const float x, const float y, const float width, const float height,
+        const float nominalScale = 0.55f) {
+        if (label == nullptr) return;
+        label->SetText("%s", text.c_str());
+        const OVRFW::BitmapFont& font = ui_.GetGuiSys().GetDefaultFont();
+        std::size_t length{};
+        float measuredWidth{}, measuredHeight{}, ascent{}, descent{}, fontHeight{};
+        float lineWidths[16]{};
+        int lines{};
+        font.CalcTextMetrics(
+            text.c_str(), length, measuredWidth, measuredHeight, ascent,
+            descent, fontHeight, lineWidths, 16, lines);
+        constexpr float pixelScale = 1.2f / 640.0f;
+        const float fontScale = label->GetFontParms().Scale * label->GetLocalScale().x;
+        float scale = nominalScale;
+        if (measuredWidth * fontScale * scale > width * pixelScale) {
+            scale = width * pixelScale / (measuredWidth * fontScale);
+        }
+        if (measuredHeight * fontScale * scale > height * pixelScale) {
+            scale = height * pixelScale / (measuredHeight * fontScale);
+        }
+        label->SetTextLocalScale({scale, scale, 1.0f});
+        // Specify the top of the first glyph, then convert to its baseline.
+        // Ascent does not depend on how many following lines the page has.
+        label->SetTextLocalPosition({
+            -0.60f + x * pixelScale,
+            0.45f - y * pixelScale - ascent * fontScale * scale,
+            0.0f});
+        ALOG("DeusExQuest: Persona text pane %.0f,%.0f %.0fx%.0f lines=%d scale=%.3f",
+             x, y, width, height, lines, scale);
+    }
+
     void SetInventoryMenuOpen(const bool open) {
         inventoryMenuOpen_ = open;
         inventoryMenuDirty_ = true;
         choiceCycleLatch_ = true;
         if (hudLabel_ != nullptr) hudLabel_->SetVisible(!open);
-        if (inventoryLabel_ != nullptr) inventoryLabel_->SetVisible(open);
+        for (OVRFW::VRMenuObject* label : PersonaLabels()) {
+            if (label != nullptr) label->SetVisible(open);
+        }
         ALOG("DeusExQuest: VR inventory menu %s", open ? "opened" : "closed");
     }
 
@@ -2439,7 +2617,9 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         OVR::Posef menuPose = frame.HeadPose;
         menuPose.Translation += frame.HeadPose.Rotation.Rotate(
             OVR::Vector3f(0.0f, -0.015f, -1.05f));
-        inventoryLabel_->SetLocalPose(menuPose);
+        for (OVRFW::VRMenuObject* label : PersonaLabels()) {
+            if (label != nullptr) label->SetLocalPose(menuPose);
+        }
         OVR::Posef artworkPose = frame.HeadPose;
         artworkPose.Translation += frame.HeadPose.Rotation.Rotate(
             OVR::Vector3f(0.0f, -0.015f, -1.055f));
@@ -2458,100 +2638,79 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         std::string tabs;
         switch (personaPage_) {
             case PersonaPage::Inventory:
-                tabs = "[ INVENTORY ]  HEALTH  AUGS  SKILLS  GOALS/NOTES  IMAGES  LOGS";
+                tabs = "[ INVENTORY ]   HEALTH   GOALS / NOTES   LOGS";
                 break;
             case PersonaPage::Health:
-                tabs = "INVENTORY  [ HEALTH ]  AUGS  SKILLS  GOALS/NOTES  IMAGES  LOGS";
+                tabs = "INVENTORY   [ HEALTH ]   GOALS / NOTES   LOGS";
                 break;
             case PersonaPage::GoalsNotes:
-                tabs = "INVENTORY  HEALTH  AUGS  SKILLS  [ GOALS/NOTES ]  IMAGES  LOGS";
+                tabs = "INVENTORY   HEALTH   [ GOALS / NOTES ]   LOGS";
                 break;
             case PersonaPage::Logs:
-                tabs = "INVENTORY  HEALTH  AUGS  SKILLS  GOALS/NOTES  IMAGES  [ LOGS ]";
+                tabs = "INVENTORY   HEALTH   GOALS / NOTES   [ LOGS ]";
                 break;
             case PersonaPage::Count:
                 break;
         }
-        std::string text = "D E U S  E X   // P E R S O N A        HEALTH " +
-            std::to_string(static_cast<int>(health)) + "\n";
-        text += currentMapName_ + "\n";
-        text += "==============================================================\n";
-        text += tabs + "\n";
-        text += "--------------------------------------------------------------\n";
+        SetPersonaPanelText(personaTabsLabel_, tabs, 9.0f, 7.0f, 622.0f, 20.0f);
+        std::string left;
+        std::string right;
         if (personaPage_ == PersonaPage::Inventory) {
             std::string item = "NO ITEM SELECTED";
             std::string type = "INVENTORY EMPTY";
             if (!inventory.empty()) {
                 item = InventoryItemLabel(inventory[selectedInventoryIndex_]);
-                if (item.size() > 20u) item.resize(20u);
                 type = InventoryItemType(inventory[selectedInventoryIndex_]);
             }
-            const std::vector<std::string> details = {
-                "ITEM  " + item,
-                "TYPE  " + type,
-                "STATE READY",
-                "A  EQUIP / USE"};
-            text += "// INVENTORY GRID                  // ITEM DATA\n\n";
-            for (const std::string& detail : details) {
-                text += std::string(34u, ' ') + detail + "\n";
-            }
-            text += "\nSLOT " +
-                std::to_string(inventory.empty() ? 0u : selectedInventoryIndex_ + 1u) +
-                " / " + std::to_string(inventory.size()) + "\n";
+            left = "Inventory";
+            right = "ITEM DATA\n\n" + WrapPersonaEntry(item) + "\n\n" +
+                WrapPersonaEntry(type) + "\n\nSTATE READY\nA: EQUIP / USE";
         } else if (personaPage_ == PersonaPage::Health) {
-            text += "// HEALTH STATUS                   // PLAYER DATA\n\n";
-            text += "CURRENT HEALTH  " + std::to_string(static_cast<int>(health)) + " / 100\n";
-            text += "CONDITION       " + std::string(health > 50.0f ? "NOMINAL" : "INJURED") + "\n";
-            text += "CREDITS         " + std::to_string(progress.credits) + "\n";
-            text += "SKILL POINTS    " + std::to_string(progress.skillPoints) + "\n";
-            text += "INVENTORY ITEMS " + std::to_string(inventory.size()) + "\n\n";
+            left = "HEALTH STATUS\n\nCURRENT HEALTH\n" +
+                std::to_string(static_cast<int>(health)) + " / 100\n\nCONDITION\n" +
+                (health > 50.0f ? "NOMINAL" : "INJURED");
+            right = "PLAYER DATA\n\nCREDITS\n" + std::to_string(progress.credits) +
+                "\n\nSKILL POINTS\n" + std::to_string(progress.skillPoints) +
+                "\n\nINVENTORY ITEMS\n" + std::to_string(inventory.size());
         } else if (personaPage_ == PersonaPage::GoalsNotes) {
-            const auto cleanEntry = [](std::string value) {
-                std::replace(value.begin(), value.end(), '\n', ' ');
-                std::replace(value.begin(), value.end(), '\r', ' ');
-                if (value.empty()) value = "UNNAMED ENTRY";
-                if (value.size() > 48u) value.resize(48u);
-                return value;
-            };
-            text += "// GOALS / NOTES\n\n";
-            text += "ACTIVE GOALS  " + std::to_string(progress.goals.size()) +
-                "     NOTES  " + std::to_string(progress.notes.size()) + "\n";
-            std::size_t lines{};
-            for (std::size_t index = 0u; index < progress.goals.size() && lines < 3u;
-                 ++index, ++lines) {
-                text += "G" + std::to_string(index + 1u) + "  " +
-                    cleanEntry(progress.goals[index]) + "\n";
+            left = "ACTIVE GOALS: " + std::to_string(progress.goals.size()) + "\n\n";
+            for (std::size_t index = 0u; index < progress.goals.size() && index < 3u; ++index) {
+                left += WrapPersonaEntry("G" + std::to_string(index + 1u) + " " +
+                                         progress.goals[index]) + "\n\n";
             }
-            for (std::size_t index = 0u; index < progress.notes.size() && lines < 5u;
-                 ++index, ++lines) {
-                text += "N" + std::to_string(index + 1u) + "  " +
-                    cleanEntry(progress.notes[index]) + "\n";
+            if (progress.goals.empty()) left += "NO GOALS RECORDED";
+            right = "NOTES: " + std::to_string(progress.notes.size()) + "\n\n";
+            for (std::size_t index = 0u; index < progress.notes.size() && index < 5u; ++index) {
+                right += WrapPersonaEntry("N" + std::to_string(index + 1u) + " " +
+                                          progress.notes[index]) + "\n";
             }
-            if (lines == 0u) text += "NO GOALS OR NOTES RECORDED\n";
-            while (lines++ < 5u) text += "\n";
+            if (progress.notes.empty()) right += "NO NOTES RECORDED";
         } else {
-            text += "// CONVERSATION LOG\n\n";
+            left = "CONVERSATION LOG\n\n";
+            right = "RECENT ENTRIES\n\n";
             if (personaLogEntries_.empty()) {
-                text += "NO CONVERSATIONS RECORDED\n\n\n\n\n";
+                left += "NO CONVERSATIONS RECORDED";
             } else {
                 const std::size_t first = personaLogEntries_.size() > 5u
                     ? personaLogEntries_.size() - 5u
                     : 0u;
-                std::size_t lines{};
                 for (std::size_t index = first; index < personaLogEntries_.size(); ++index) {
-                    std::string entry = personaLogEntries_[index];
-                    if (entry.size() > 52u) entry.resize(52u);
-                    text += entry + "\n";
-                    ++lines;
+                    std::string& pane = index - first < 3u ? left : right;
+                    pane += WrapPersonaEntry(personaLogEntries_[index]) + "\n\n";
                 }
-                while (lines++ < 5u) text += "\n";
             }
         }
-        text += "--------------------------------------------------------------\n";
-        text += personaPage_ == PersonaPage::Inventory
-            ? "R-STICK L/R PAGE  U/D SELECT  A USE  B / MENU CLOSE"
-            : "R-STICK L/R PAGE   Y SAVE   X LOAD   B / MENU CLOSE";
-        inventoryLabel_->SetText("%s", text.c_str());
+        // Positions are relative to the original client (33,43), with title
+        // (9,5), items (9,19), and information window (337,17),238x218.
+        SetPersonaPanelText(inventoryLabel_, left, 42.0f, 48.0f, 266.0f,
+                            personaPage_ == PersonaPage::Inventory ? 12.0f : 319.0f);
+        SetPersonaPanelText(personaDetailsLabel_, right, 370.0f, 60.0f, 238.0f, 218.0f);
+        std::string footer = personaPage_ == PersonaPage::Inventory
+            ? "SLOT " + std::to_string(inventory.empty() ? 0u : selectedInventoryIndex_ + 1u) +
+                " / " + std::to_string(inventory.size()) + "   UP / DOWN: SELECT   A: EQUIP / USE\n"
+            : "Y: SAVE   X: LOAD\n";
+        footer += "LEFT / RIGHT: PAGE   B / MENU: CLOSE\n" + currentMapName_;
+        SetPersonaPanelText(personaFooterLabel_, footer, 42.0f, 391.0f, 575.0f, 70.0f);
         inventoryMenuDisplayedCount_ = inventory.size();
         inventoryMenuDisplayedHealth_ = health;
         inventoryMenuDisplayedSelection_ = selectedInventoryIndex_;
@@ -3561,25 +3720,11 @@ class DeusExQuestApp final : public OVRFW::XrApp {
     OVR::Vector3f StageToLocal(
         const OVR::Vector3f& stage,
         const OVR::Vector3f& worldPosition) const {
-        const float cosine = std::cos(sceneYaw_);
-        const float sine = std::sin(sceneYaw_);
-        const float dx = stage.x - worldPosition.x;
-        const float dz = stage.z - worldPosition.z;
-        return {
-            cosine * dx - sine * dz,
-            stage.y - worldPosition.y,
-            sine * dx + cosine * dz};
+        return QuestVr::StageToLocal(stage, worldPosition, sceneYaw_);
     }
 
     void SnapTurnAroundHead(float deltaYaw, const OVR::Vector3f& headStage) {
-        const OVR::Vector3f pivotLocal = StageToLocal(headStage, worldPosition_);
-        sceneYaw_ += deltaYaw;
-        const float cosine = std::cos(sceneYaw_);
-        const float sine = std::sin(sceneYaw_);
-        worldPosition_.x = headStage.x -
-            (cosine * pivotLocal.x + sine * pivotLocal.z);
-        worldPosition_.z = headStage.z -
-            (-sine * pivotLocal.x + cosine * pivotLocal.z);
+        QuestVr::SnapTurnAroundHead(deltaYaw, headStage, worldPosition_, sceneYaw_);
     }
 
     void FollowGround(const OVR::Vector3f& head, OVR::Vector3f& worldPosition) const {
@@ -4176,6 +4321,13 @@ class DeusExQuestApp final : public OVRFW::XrApp {
     OVR::Vector3f currentHeadStage_{};
     OVR::Vector3f previousHeadStage_{};
     bool hasPreviousHeadStage_{};
+    bool headTrackingValid_{};
+    bool headTrackingReported_{};
+    bool needsTrackingRebase_{};
+    OVR::Vector3f trackingResumeLocalHead_{};
+    std::vector<XrEventDataReferenceSpaceChangePending> pendingReferenceChanges_;
+    bool hasTransitionHeadAnchor_{};
+    OVR::Vector3f transitionHeadLocal_{};
     OVR::Vector3f actorStreamingCenter_{};
     float sceneYaw_{};
     bool turnLatch_{};
@@ -4189,6 +4341,9 @@ class DeusExQuestApp final : public OVRFW::XrApp {
     OVRFW::TinyUI ui_;
     OVRFW::VRMenuObject* hudLabel_{};
     OVRFW::VRMenuObject* inventoryLabel_{};
+    OVRFW::VRMenuObject* personaTabsLabel_{};
+    OVRFW::VRMenuObject* personaDetailsLabel_{};
+    OVRFW::VRMenuObject* personaFooterLabel_{};
     PersonaUiRenderer personaRenderer_;
     PortablePackageTables personaUiPackage_;
     std::vector<std::uint8_t> personaBaseRgba_;

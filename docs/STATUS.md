@@ -1,5 +1,53 @@
 # Port status
 
+## Desktop validation and follow-up fixes (2026-10-07)
+
+- Restored the source checkout and exact pinned dependencies, with repeatable
+  build-tool discovery and non-destructive dependency validation. Original data
+  is now read from the user's Steam installation outside the source tree.
+- Added no-headset captures from real UE1 packages using the same portable map
+  cache decoder as Quest. The first audit decoded 73 of 88 installed maps;
+  fourteen failures selected a Palette instead of the identically named Texture
+  export, and one rejected a case-only object-path difference. Both defects are
+  fixed in shared code, including actor and UI texture lookup. The final audit
+  decoded all 88 maps and saved 352 world-albedo images with zero map failures.
+  The black utility maps `DX`, `DXOnly`, and `Entry` remain explicitly flagged
+  as uniform frames, not presented as visually meaningful tests.
+  This is not a campaign playthrough: actors,
+  authored lights, skyboxes, UI, audio, scripts, and Quest GPU/XR behavior are
+  excluded from the software captures.
+- Added ten shared transform regression groups. They cover renderer-math
+  agreement, nonzero tracking origins, 1,201 repeated off-origin snap turns,
+  simultaneous turning/movement, direction/audio basis, room-scale rollback,
+  diagonal/hitch bounds, thin-wall path checks, reference-space continuity,
+  tracking reacquisition, and loading-position anchoring.
+- Fixed an update-order defect that could overwrite the pivot translation after
+  a snap turn. Reconstructed room-scale collision rollback against the new yaw
+  and sampled the movement path rather than checking only its endpoint.
+- Added valid-tracking gating, reference-space rebasing, and a stable map-local
+  headset anchor while uploads are incomplete. Unknown/tilted reference changes
+  preserve horizontal position through a fallback; heading continuity in that
+  fallback remains unverified.
+- Set explicit source-alpha blending factors for the Persona artwork. Enabling
+  blending alone retained the SDK's opaque ONE/ZERO defaults.
+- Original Persona script/default-property inspection identified separate
+  masked client/background and border windows, not a coincident 640x512
+  composite. The new 640x480 compositor uses their original offsets, clips,
+  grayscale default tints, five-by-six grid, and 30 visible slots. Colored icons
+  are no longer theme-tinted. Four measured, baseline-anchored text panes replace
+  proportional-font space columns and overflowing separator strings.
+- The motion/blending APK was rebuilt, installed on the connected physical Quest
+  3, and captured at 1680x1760. Training and diagnostic left/right turns rendered
+  world geometry and HUD; settled windows held 72 fps / 13.89 ms worst frame.
+  Synchronous screenshot readback caused separate 264-292 ms hitches, so those
+  captures are diagnostic operations, not a comfort/performance pass. The process
+  remained alive at 371,071 KB total PSS. Persona captures exposed further layer
+  and text-layout defects being corrected against the original UI scripts.
+  Controller-driven simultaneous room-scale motion, tracking loss/recenter,
+  broader maps, and the latest texture/UI fixes still need hardware validation.
+  Earlier hardware observations below apply to their recorded builds, not
+  automatically to this new build or to all campaign maps.
+
 ## Implemented; broader campaign verification pending
 
 - Physical Quest recordings exposed and now cover two headset-motion failures:
@@ -11,12 +59,10 @@
   poses still drive aiming and interaction, but the bright green/yellow fallback
   geometry no longer obscures the authored game world while real hand/weapon
   presentation is unfinished.
-- Corrected the original Persona artwork compositor: transparent source pixels
-  now blend instead of becoming opaque black cutouts, the neutral DeusExUI masks
-  receive the original dark blue-gray theme tint, and the stitched 640x512 canvas
-  keeps its native 5:4 aspect ratio. Persona text is now readable, left/top
-  aligned, and contained by the Inventory and Health frames in Quest eye-buffer
-  captures instead of being centered and crushed across the panel dividers.
+- Persona artwork comes from the original DeusExUI background/border exports.
+  The 2026-10-07 work above supersedes the earlier approximate 640x512 layered
+  layout and guessed theme tint after new framebuffer inspection exposed their
+  remaining padding, alignment, and text-boundary defects.
 - Actor snapshots now preserve inherited `DrawType` and `bHidden`. Hidden
   gameplay actors no longer produce visible stand-in geometry, and UE1 sprite,
   vertical-sprite, rope-sprite, and one-shot-sprite actors render as masked
