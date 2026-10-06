@@ -29,6 +29,7 @@
 #include "Render/SurfaceRender.h"
 #include "XrApp.h"
 #include "portable_unreal_runtime.h"
+#include "persona_ui_canvas.h"
 #include "quest_map_cache.h"
 #include "vr_world_transform.h"
 
@@ -801,7 +802,23 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         for (auto& renderer : worldRenderers_) renderer.Render(output.Surfaces);
         for (auto& renderer : texturedRenderers_) renderer.Render(output.Surfaces);
         if (inventoryMenuOpen_) personaRenderer_.Render(output.Surfaces);
+        const std::size_t firstUiSurface = output.Surfaces.size();
         ui_.Render(frame, output);
+        // TinyUI's batched font surface always enables depth, independently of
+        // the menu object's NO_DEPTH flag. These labels are all head-locked
+        // overlays: nearby BSP must not hide their text while the artwork stays
+        // visible. Copy only the submitted definitions, retaining SDK-owned
+        // geometry/uniforms; never mutate the SDK's const surface definitions.
+        headLockedUiSurfaces_.clear();
+        headLockedUiSurfaces_.reserve(output.Surfaces.size() - firstUiSurface);
+        for (std::size_t index = firstUiSurface; index < output.Surfaces.size(); ++index) {
+            if (output.Surfaces[index].surface == nullptr) continue;
+            headLockedUiSurfaces_.push_back(*output.Surfaces[index].surface);
+            auto& definition = headLockedUiSurfaces_.back();
+            definition.graphicsCommand.GpuState.depthEnable = false;
+            definition.graphicsCommand.GpuState.depthMaskEnable = false;
+            output.Surfaces[index].surface = &definition;
+        }
     }
 
     void AppRenderFrame(
@@ -2197,91 +2214,51 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         try {
             const PortablePackageTables uiPackage = LoadPortablePackageTables(
                 std::string(gameRoot_) + "/System/DeusExUI.u");
-            std::vector<PortableTextureImage> pieces;
-            std::vector<PortableTextureImage> borders;
-            pieces.reserve(6u);
-            borders.reserve(6u);
-            for (std::size_t index = 1u; index <= 6u; ++index) {
-                const std::string name = "InventoryBackground_" + std::to_string(index);
+            const auto decode = [&](const std::string& name) {
                 try {
-                    pieces.push_back(DecodePortableIndexedTexture(
-                        uiPackage, "UserInterface." + name, true));
+                    return DecodePortableIndexedTexture(uiPackage, "UserInterface." + name, true);
                 } catch (const std::exception&) {
-                    pieces.push_back(DecodePortableIndexedTexture(uiPackage, name, true));
-                }
-                ALOG(
-                    "DeusExQuest: decoded original Persona texture %s at %ux%u",
-                    name.c_str(), pieces.back().width, pieces.back().height);
-                const std::string borderName = "InventoryBorder_" + std::to_string(index);
-                try {
-                    borders.push_back(DecodePortableIndexedTexture(
-                        uiPackage, "UserInterface." + borderName, true));
-                } catch (const std::exception&) {
-                    borders.push_back(DecodePortableIndexedTexture(
-                        uiPackage, borderName, true));
-                }
-                ALOG(
-                    "DeusExQuest: decoded original Persona texture %s at %ux%u",
-                    borderName.c_str(), borders.back().width, borders.back().height);
-            }
-            const std::uint32_t topHeight = std::max({
-                pieces[0].height, pieces[1].height, pieces[2].height});
-            // Defaults serialized in the original PersonaScreenInventory:
-            // screen 640x480; border (0,33),640x450; client (33,43),585x361.
-            // The background and border are distinct clipped child windows,
-            // not coincident layers of a 640x512 image.
-            constexpr std::uint32_t width = 640u;
-            constexpr std::uint32_t height = 480u;
-            std::vector<std::uint8_t> rgba(
-                static_cast<std::size_t>(width) * height * 4u, 0u);
-            const auto copyPiece = [&](const PortableTextureImage& piece,
-                                       std::uint32_t tileX, std::uint32_t tileY,
-                                       std::uint32_t windowX, std::uint32_t windowY,
-                                       std::uint32_t clipWidth, std::uint32_t clipHeight,
-                                       std::uint32_t tint) {
-                if (piece.rgba.size() !=
-                    static_cast<std::size_t>(piece.width) * piece.height * 4u) {
-                    throw std::runtime_error("Persona texture pixel count is invalid");
-                }
-                for (std::uint32_t row = 0u; row < piece.height; ++row) {
-                    const std::uint32_t y = tileY + row;
-                    if (y >= clipHeight || windowY + y >= height) break;
-                    for (std::uint32_t column = 0u; column < piece.width; ++column) {
-                        const std::uint32_t x = tileX + column;
-                        if (x >= clipWidth || windowX + x >= width) break;
-                        const std::size_t source =
-                            (static_cast<std::size_t>(row) * piece.width + column) * 4u;
-                        if (piece.rgba[source + 3u] == 0u) continue;
-                        const std::size_t destination =
-                            (static_cast<std::size_t>(windowY + y) * width + windowX + x) * 4u;
-                        for (std::size_t channel = 0u; channel < 3u; ++channel) {
-                            rgba[destination + channel] = static_cast<std::uint8_t>(
-                                (piece.rgba[source + channel] * tint + 127u) / 255u);
-                        }
-                        rgba[destination + 3u] = piece.rgba[source + 3u];
-                    }
+                    return DecodePortableIndexedTexture(uiPackage, name, true);
                 }
             };
-            for (std::size_t row = 0u; row < 2u; ++row) {
-                std::uint32_t x{};
-                const std::uint32_t y = row == 0u ? 0u : topHeight;
-                for (std::size_t column = 0u; column < 3u; ++column) {
-                    const PortableTextureImage& piece = pieces[row * 3u + column];
-                    // Original HUD default background RGB(127,127,127).
-                    copyPiece(piece, x, y, 33u, 43u, 585u, 361u, 127u);
-                    x += piece.width;
+            static_assert(static_cast<std::size_t>(PersonaPage::Count) ==
+                          QuestVr::kPersonaPageLayouts.size());
+            for (std::size_t page = 0u; page < QuestVr::kPersonaPageLayouts.size(); ++page) {
+                try {
+                    const auto& layout = QuestVr::kPersonaPageLayouts[page];
+                    std::array<PortableTextureImage, 6> pieces;
+                    std::array<PortableTextureImage, 6> borders;
+                    for (std::size_t index = 0u; index < layout.backgroundCount; ++index) {
+                        pieces[index] = decode(std::string(layout.backgroundPrefix) +
+                                               std::to_string(index + 1u));
+                    }
+                    for (std::size_t index = 0u; index < borders.size(); ++index) {
+                        borders[index] = decode(std::string(layout.borderPrefix) +
+                                                std::to_string(index + 1u));
+                    }
+                    QuestVr::PersonaUiImage canvas = QuestVr::BuildPersonaUiCanvas(
+                        pieces, borders, layout);
+                    if (page == static_cast<std::size_t>(PersonaPage::Health)) {
+                        const std::array<PortableTextureImage, 2> body{{
+                            decode("HealthBody_1"), decode("HealthBody_2")}};
+                        const std::array<PortableTextureImage, 2> overlays{{
+                            decode("HealthOverlays_1"), decode("HealthOverlays_2")}};
+                        QuestVr::AddPersonaHealthBody(canvas, body, overlays);
+                    }
+                    personaPageBaseRgba_[page] = std::move(canvas.rgba);
+                    ALOG("DeusExQuest: original Persona page %zu artwork ready at 640x480", page);
+                } catch (const std::exception& error) {
+                    if (page == static_cast<std::size_t>(PersonaPage::Inventory)) throw;
+                    // Never reuse inventory artwork for an unrelated page.
+                    personaPageBaseRgba_[page].assign(
+                        QuestVr::kPersonaCanvasWidth * QuestVr::kPersonaCanvasHeight * 4u, 0u);
+                    ALOG("DeusExQuest: Persona page %zu artwork unavailable; text-only: %s",
+                         page, error.what());
                 }
             }
-            for (std::size_t row = 0u; row < 2u; ++row) {
-                std::uint32_t x{};
-                const std::uint32_t y = row == 0u ? 0u : topHeight;
-                for (std::size_t column = 0u; column < 3u; ++column) {
-                    const std::size_t index = row * 3u + column;
-                    // Border tint is white; do not modulate colored icons.
-                    copyPiece(borders[index], x, y, 0u, 33u, 640u, 450u, 255u);
-                    x += borders[index].width;
-                }
-            }
+            const std::uint32_t width = QuestVr::kPersonaCanvasWidth;
+            const std::uint32_t height = QuestVr::kPersonaCanvasHeight;
+            const auto& rgba = personaPageBaseRgba_[static_cast<std::size_t>(PersonaPage::Inventory)];
             GLuint texture{};
             glGenTextures(1, &texture);
             glBindTexture(GL_TEXTURE_2D, texture);
@@ -2303,7 +2280,6 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                 texture, GL_TEXTURE_2D, static_cast<int>(width), static_cast<int>(height)));
             inventoryLabel_->SetSurfaceVisible(0, false);
             personaUiPackage_ = uiPackage;
-            personaBaseRgba_ = std::move(rgba);
             personaTextureId_ = texture;
             personaTextureWidth_ = width;
             personaTextureHeight_ = height;
@@ -2417,97 +2393,32 @@ class DeusExQuestApp final : public OVRFW::XrApp {
     }
 
     void RefreshPersonaInventoryArtwork(const std::vector<std::string>& inventory) {
-        if (personaTextureId_ == 0u || personaBaseRgba_.empty()) return;
-        std::vector<std::uint8_t> rgba = personaBaseRgba_;
-        const auto setPixel = [&](std::uint32_t x, std::uint32_t y,
-                                  std::uint8_t red, std::uint8_t green,
-                                  std::uint8_t blue, std::uint8_t alpha = 255u) {
-            if (x >= personaTextureWidth_ || y >= personaTextureHeight_) return;
-            const std::size_t pixel =
-                (static_cast<std::size_t>(y) * personaTextureWidth_ + x) * 4u;
-            rgba[pixel] = red;
-            rgba[pixel + 1u] = green;
-            rgba[pixel + 2u] = blue;
-            rgba[pixel + 3u] = alpha;
-        };
-        // Original client offset (33,43) + winItems position (9,19).
-        constexpr std::uint32_t gridX = 42u;
-        constexpr std::uint32_t gridY = 62u;
-        constexpr std::uint32_t cell = 54u;
-        constexpr std::uint32_t step = 53u;
-        constexpr std::size_t visibleItems = 30u;
+        const auto& base = personaPageBaseRgba_[static_cast<std::size_t>(personaPage_)];
+        if (personaTextureId_ == 0u || base.empty()) return;
+        QuestVr::PersonaUiImage canvas{
+            personaTextureWidth_, personaTextureHeight_, base};
         if (personaPage_ == PersonaPage::Inventory) {
-            const std::size_t first = inventory.size() <= visibleItems
-                ? 0u
-                : std::min(
-                    selectedInventoryIndex_ > visibleItems / 2u
-                        ? selectedInventoryIndex_ - visibleItems / 2u
-                        : 0u,
-                    inventory.size() - visibleItems);
-            for (std::size_t slot = 0u; slot < visibleItems; ++slot) {
-            const std::uint32_t x = gridX + static_cast<std::uint32_t>(slot % 5u) * step;
-            const std::uint32_t y = gridY + static_cast<std::uint32_t>(slot / 5u) * step;
-            const std::size_t inventoryIndex = first + slot;
-            const bool selected = inventoryIndex < inventory.size() &&
-                inventoryIndex == selectedInventoryIndex_;
-            for (std::uint32_t row = 0u; row < cell; ++row) {
-                for (std::uint32_t column = 0u; column < cell; ++column) {
-                    const bool edge = row < 2u || column < 2u ||
-                        row + 2u >= cell || column + 2u >= cell;
-                    if (edge) {
-                        setPixel(x + column, y + row,
-                            selected ? 255u : 100u,
-                            selected ? 255u : 100u,
-                            selected ? 255u : 100u);
-                    } else {
-                        setPixel(x + column, y + row, 18u, 18u, 18u);
-                    }
-                }
-            }
-            if (inventoryIndex >= inventory.size()) continue;
-            const PortableTextureImage* icon = GetPersonaIcon(inventory[inventoryIndex]);
-            if (icon == nullptr || icon->width == 0u || icon->height == 0u) continue;
-            constexpr std::uint32_t iconLimit = 46u;
-            std::uint32_t iconWidth = iconLimit;
-            std::uint32_t iconHeight = iconLimit;
-            if (icon->width > icon->height) {
-                iconHeight = std::max(1u, iconLimit * icon->height / icon->width);
-            } else {
-                iconWidth = std::max(1u, iconLimit * icon->width / icon->height);
-            }
-            const std::uint32_t iconX = x + (cell - iconWidth) / 2u;
-            const std::uint32_t iconY = y + (cell - iconHeight) / 2u;
-            for (std::uint32_t row = 0u; row < iconHeight; ++row) {
-                const std::uint32_t sourceY = row * icon->height / iconHeight;
-                for (std::uint32_t column = 0u; column < iconWidth; ++column) {
-                    const std::uint32_t sourceX = column * icon->width / iconWidth;
-                    const std::size_t source =
-                        (static_cast<std::size_t>(sourceY) * icon->width + sourceX) * 4u;
-                    if (icon->rgba[source + 3u] == 0u) continue;
-                    setPixel(
-                        iconX + column, iconY + row,
-                        icon->rgba[source], icon->rgba[source + 1u],
-                        icon->rgba[source + 2u], icon->rgba[source + 3u]);
-                }
-            }
-            }
+            QuestVr::DrawPersonaInventoryGrid(
+                canvas, inventory.size(), selectedInventoryIndex_,
+                [&](std::size_t index) { return GetPersonaIcon(inventory[index]); });
         }
         glBindTexture(GL_TEXTURE_2D, personaTextureId_);
         glTexSubImage2D(
             GL_TEXTURE_2D, 0, 0, 0,
             static_cast<GLsizei>(personaTextureWidth_),
             static_cast<GLsizei>(personaTextureHeight_),
-            GL_RGBA, GL_UNSIGNED_BYTE, rgba.data());
+            GL_RGBA, GL_UNSIGNED_BYTE, canvas.rgba.data());
         const GLenum updateError = glGetError();
         glBindTexture(GL_TEXTURE_2D, 0);
         const std::size_t diagnosticPixel =
-            (static_cast<std::size_t>(gridY) * personaTextureWidth_ + gridX) * 4u;
+            (static_cast<std::size_t>(QuestVr::kPersonaGridY) * personaTextureWidth_ +
+             QuestVr::kPersonaGridX) * 4u;
         ALOG(
             "DeusExQuest: Persona grid upload GL=0x%x pixel=%u,%u,%u iconCache=%zu",
             updateError,
-            static_cast<unsigned>(rgba[diagnosticPixel]),
-            static_cast<unsigned>(rgba[diagnosticPixel + 1u]),
-            static_cast<unsigned>(rgba[diagnosticPixel + 2u]),
+            static_cast<unsigned>(canvas.rgba[diagnosticPixel]),
+            static_cast<unsigned>(canvas.rgba[diagnosticPixel + 1u]),
+            static_cast<unsigned>(canvas.rgba[diagnosticPixel + 2u]),
             personaIconCache_.size());
     }
 
@@ -2536,12 +2447,12 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         return {inventoryLabel_, personaTabsLabel_, personaDetailsLabel_, personaFooterLabel_};
     }
 
-    static std::string WrapPersonaEntry(std::string value, const std::size_t maxLines = 2u) {
+    static std::string WrapPersonaEntry(std::string value, const std::size_t maxLines = 2u,
+                                       const std::size_t columns = 32u) {
         for (char& character : value) {
             if (character == '\n' || character == '\r' || character == '\t') character = ' ';
         }
         if (value.empty()) value = "UNNAMED ENTRY";
-        constexpr std::size_t columns = 32u;
         std::string result;
         for (std::size_t line = 0u; line < maxLines && !value.empty(); ++line) {
             if (!result.empty()) result += '\n';
@@ -2666,10 +2577,10 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             right = "ITEM DATA\n\n" + WrapPersonaEntry(item) + "\n\n" +
                 WrapPersonaEntry(type) + "\n\nSTATE READY\nA: EQUIP / USE";
         } else if (personaPage_ == PersonaPage::Health) {
-            left = "HEALTH STATUS\n\nCURRENT HEALTH\n" +
-                std::to_string(static_cast<int>(health)) + " / 100\n\nCONDITION\n" +
-                (health > 50.0f ? "NOMINAL" : "INJURED");
-            right = "PLAYER DATA\n\nCREDITS\n" + std::to_string(progress.credits) +
+            left = "Health";
+            right = "CURRENT HEALTH\n" + std::to_string(static_cast<int>(health)) +
+                " / 100\n\nCONDITION\n" + (health > 50.0f ? "NOMINAL" : "INJURED") +
+                "\n\nCREDITS\n" + std::to_string(progress.credits) +
                 "\n\nSKILL POINTS\n" + std::to_string(progress.skillPoints) +
                 "\n\nINVENTORY ITEMS\n" + std::to_string(inventory.size());
         } else if (personaPage_ == PersonaPage::GoalsNotes) {
@@ -2687,7 +2598,6 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             if (progress.notes.empty()) right += "NO NOTES RECORDED";
         } else {
             left = "CONVERSATION LOG\n\n";
-            right = "RECENT ENTRIES\n\n";
             if (personaLogEntries_.empty()) {
                 left += "NO CONVERSATIONS RECORDED";
             } else {
@@ -2695,22 +2605,48 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                     ? personaLogEntries_.size() - 5u
                     : 0u;
                 for (std::size_t index = first; index < personaLogEntries_.size(); ++index) {
-                    std::string& pane = index - first < 3u ? left : right;
-                    pane += WrapPersonaEntry(personaLogEntries_[index]) + "\n\n";
+                    left += WrapPersonaEntry(personaLogEntries_[index], 2u, 48u) + "\n";
                 }
             }
         }
-        // Positions are relative to the original client (33,43), with title
-        // (9,5), items (9,19), and information window (337,17),238x218.
-        SetPersonaPanelText(inventoryLabel_, left, 42.0f, 48.0f, 266.0f,
-                            personaPage_ == PersonaPage::Inventory ? 12.0f : 319.0f);
-        SetPersonaPanelText(personaDetailsLabel_, right, 370.0f, 60.0f, 238.0f, 218.0f);
+        // Canvas coordinates from each original page's client/window defaults.
+        // Keep health text clear of the original body graphic; Goals and Notes
+        // are stacked panes, while Logs has one central scrolling column.
+        switch (personaPage_) {
+            case PersonaPage::Inventory:
+                SetPersonaPanelText(inventoryLabel_, left, 42.0f,48.0f,266.0f,12.0f);
+                SetPersonaPanelText(personaDetailsLabel_, right, 370.0f,60.0f,238.0f,218.0f);
+                break;
+            case PersonaPage::Health:
+                SetPersonaPanelText(inventoryLabel_, left, 34.0f,42.0f,266.0f,12.0f);
+                SetPersonaPanelText(personaDetailsLabel_, right, 373.0f,59.0f,238.0f,239.0f);
+                break;
+            case PersonaPage::GoalsNotes:
+                SetPersonaPanelText(inventoryLabel_, left, 31.0f,60.0f,574.0f,154.0f);
+                SetPersonaPanelText(personaDetailsLabel_, right, 31.0f,265.0f,574.0f,182.0f);
+                break;
+            case PersonaPage::Logs:
+                SetPersonaPanelText(inventoryLabel_, left, 121.0f,68.0f,394.0f,361.0f);
+                SetPersonaPanelText(personaDetailsLabel_, "", 121.0f,68.0f,394.0f,361.0f);
+                break;
+            case PersonaPage::Count:
+                break;
+        }
         std::string footer = personaPage_ == PersonaPage::Inventory
             ? "SLOT " + std::to_string(inventory.empty() ? 0u : selectedInventoryIndex_ + 1u) +
                 " / " + std::to_string(inventory.size()) + "   UP / DOWN: SELECT   A: EQUIP / USE\n"
             : "Y: SAVE   X: LOAD\n";
-        footer += "LEFT / RIGHT: PAGE   B / MENU: CLOSE\n" + currentMapName_;
-        SetPersonaPanelText(personaFooterLabel_, footer, 42.0f, 391.0f, 575.0f, 70.0f);
+        footer += "LEFT / RIGHT: PAGE   B / MENU: CLOSE";
+        if (personaPage_ == PersonaPage::Inventory) {
+            footer += "\n" + currentMapName_;
+            SetPersonaPanelText(personaFooterLabel_, footer, 42.0f,391.0f,575.0f,70.0f);
+        } else if (personaPage_ == PersonaPage::Health) {
+            SetPersonaPanelText(personaFooterLabel_, footer, 38.0f,444.0f,572.0f,34.0f);
+        } else if (personaPage_ == PersonaPage::GoalsNotes) {
+            SetPersonaPanelText(personaFooterLabel_, footer, 25.0f,450.0f,590.0f,28.0f);
+        } else {
+            SetPersonaPanelText(personaFooterLabel_, footer, 115.0f,432.0f,395.0f,44.0f);
+        }
         inventoryMenuDisplayedCount_ = inventory.size();
         inventoryMenuDisplayedHealth_ = health;
         inventoryMenuDisplayedSelection_ = selectedInventoryIndex_;
@@ -4339,6 +4275,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
     float performanceSeconds_{};
     float performanceWorstDelta_{};
     OVRFW::TinyUI ui_;
+    std::vector<OVRFW::ovrSurfaceDef> headLockedUiSurfaces_;
     OVRFW::VRMenuObject* hudLabel_{};
     OVRFW::VRMenuObject* inventoryLabel_{};
     OVRFW::VRMenuObject* personaTabsLabel_{};
@@ -4346,7 +4283,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
     OVRFW::VRMenuObject* personaFooterLabel_{};
     PersonaUiRenderer personaRenderer_;
     PortablePackageTables personaUiPackage_;
-    std::vector<std::uint8_t> personaBaseRgba_;
+    std::array<std::vector<std::uint8_t>, 4> personaPageBaseRgba_;
     std::unordered_map<std::string, PortableTextureImage> personaIconCache_;
     GLuint personaTextureId_{};
     std::uint32_t personaTextureWidth_{};

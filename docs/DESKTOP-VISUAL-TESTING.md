@@ -6,12 +6,16 @@ by the Quest app. A software rasterizer renders that cache into deterministic
 BMP images. Original commercial packages stay in the user's game installation;
 generated caches, screenshots, and reports stay under ignored `artifacts/`.
 
-This is a world geometry/material inspection tool, not a playable desktop port
+The world-capture mode is a geometry/material inspection tool, not a playable desktop port
 or an OpenXR emulator. It does not render actor meshes, authored lighting,
 skyboxes, HUD/Persona UI, or controller models. It does not execute campaign
 progression or validate audio, saves, level transitions, stereo comfort, native
 Quest GPU shaders, or device frame times. Reports explicitly set
 `campaignPlayabilityVerified` to `false`.
+
+A separate `--persona-preview` mode runs the same CPU artwork compositor used
+by the APK. It decodes the original page backgrounds, borders, and icons; it
+does not simulate the Quest font renderer, tabs, live inventory, or input.
 
 On 2026-10-07 the full installed catalog passed decoding and capture: 88 maps,
 352 images, and zero map failures. This includes 80 numbered maps plus
@@ -114,6 +118,36 @@ configured views, continues after individual failures, and saves a consolidated
 counts and from campaign progression; multiplayer and utility maps may also be
 present in the installation. A pass means only the stated decoder/capture gates
 passed, not that the campaign is fully playable.
+
+## Original Persona artwork previews
+
+```powershell
+.\tools\Test-DesktopPersona.ps1 -GameRoot 'D:\Steam\steamapps\common\Deus Ex' -Page Inventory -SkipBuild
+.\tools\Test-DesktopPersona.ps1 -GameRoot 'D:\Steam\steamapps\common\Deus Ex' -Page Health -SkipBuild
+.\tools\Test-DesktopPersona.ps1 -GameRoot 'D:\Steam\steamapps\common\Deus Ex' -Page GoalsNotes -SkipBuild
+.\tools\Test-DesktopPersona.ps1 -GameRoot 'D:\Steam\steamapps\common\Deus Ex' -Page Logs -SkipBuild
+```
+
+Omit `-SkipBuild` to build and run all three CTests first. Each preview is
+640x480 and places the original masked artwork over a checkerboard to expose
+transparent margins. JSON records exact texture provenance, page rectangles,
+alpha counts, and a composed RGBA hash. Inventory contains a clearly identified
+icon asset fixture, not a saved player's items; the other pages have no grid.
+Health uses its original neutral body and overlay assets, not simulated limb
+damage. Logs uses four background tiles and six Conversations border tiles.
+
+`-BaselinePath` and `-MaxMeanError` provide the same image gate as world
+captures. Original package, cache, and baseline aliases are rejected before
+output writes. On 2026-10-07 all four original page previews were inspected;
+Inventory remained pixel-identical after extracting the shared compositor.
+CTest covers each page's origin/clipping, two-column Logs tiles, palette-index
+zero masks, opaque black pixels, tints, transparent padding, grid selection,
+icon aspect ratio, and the Health body's 219x357 crop.
+
+These checks deliberately set `fontsAndTextVerified` to `false`. Only actual
+Quest eye-buffer captures can validate text occlusion, font placement, and
+stereo presentation. Readable UI on one map is not proof that nearby world
+geometry cannot hide it on another.
 
 ## Hardware validation still required
 

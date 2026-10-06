@@ -30,7 +30,7 @@ if(WIN32)
     target_link_libraries(quest_portable_host PUBLIC shlwapi shell32)
 endif()
 
-add_executable(deusex_desktop_visual main.cpp visual_renderer.cpp)
+add_executable(deusex_desktop_visual main.cpp visual_renderer.cpp persona_preview.cpp)
 target_compile_features(deusex_desktop_visual PRIVATE cxx_std_20)
 target_link_libraries(deusex_desktop_visual PRIVATE quest_portable_host)
 if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
@@ -41,6 +41,7 @@ endif()
 enable_testing()
 add_test(NAME synthetic_visual COMMAND deusex_desktop_visual --self-test
     --width 640 --height 360 --output "${CMAKE_CURRENT_BINARY_DIR}/self-test/capture.bmp")
+add_test(NAME persona_canvas COMMAND deusex_desktop_visual --test-persona-canvas)
 
 if(EXISTS "${CMAKE_CURRENT_LIST_DIR}/vr_world_transform_test.cpp")
     add_executable(vr_world_transform_test vr_world_transform_test.cpp)

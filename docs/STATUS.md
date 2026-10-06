@@ -41,12 +41,61 @@
   world geometry and HUD; settled windows held 72 fps / 13.89 ms worst frame.
   Synchronous screenshot readback caused separate 264-292 ms hitches, so those
   captures are diagnostic operations, not a comfort/performance pass. The process
-  remained alive at 371,071 KB total PSS. Persona captures exposed further layer
-  and text-layout defects being corrected against the original UI scripts.
+  remained alive at 371,071 KB total PSS. Subsequent Training captures confirmed
+  the corrected Inventory layout, selected original Multitool icon, and
+  contained item-data text. The old Health page still used inventory artwork;
+  that defect is addressed by the page-specific compositor below.
   Controller-driven simultaneous room-scale motion, tracking loss/recenter,
   broader maps, and the latest texture/UI fixes still need hardware validation.
   Earlier hardware observations below apply to their recorded builds, not
   automatically to this new build or to all campaign maps.
+
+## Shared page artwork and near-geometry text fix (2026-10-07)
+
+- Extracted the CPU Persona compositor into a dependency-free shared header;
+  both Quest and the desktop preview execute its mask, clipping, tint, grid,
+  selection/scroll-window, and original-color icon copy routines. Inventory's
+  output remained pixel-identical (exact baseline error zero).
+- Read the shipped Health, Goals, and Logs class defaults and embedded UI
+  scripts. Each implemented page now uses its own original background/border
+  tiles and client rectangles. Health includes the neutral original body and
+  overlays; Goals/Notes uses stacked text panes; Logs uses four background tiles
+  and six Conversations border tiles with a single central text column. These
+  assets are decoded from the user's package, never checked into this repo.
+- All four real artwork previews were inspected. Three host CTests pass,
+  including page origins/clips, transparent padding, two-column Logs tile
+  placement, Health body crop, inventory selection, icon color/aspect, and
+  existing software-world and VR-transform regressions. The previews do not
+  verify fonts, live menus, GL rendering, or body-part damage simulation.
+- The previously failing Hong Kong MJ12 lab physically loaded 2,308 actors and
+  29,823 BSP collision triangles. Its initial actor stage still caused a 250 ms
+  transition window; settled tracking-valid windows returned to 72 fps/13.89 ms.
+  The first eye-buffer view looked into close geometry, so it is not a broad
+  visual approval of that map. It exposed a concrete UI occlusion defect:
+  Persona artwork appeared but every font label disappeared. The SDK batched
+  font surface enables depth independently of menu-object flags. Submitted
+  head-locked UI definitions now disable depth test/write without modifying the
+  SDK-owned definitions. Follow-up physical Inventory, Health, and HUD captures
+  in the lab show text visible against close geometry, confirming this GPU
+  regression fix at the tested viewpoints.
+- The updated APK builds and is installed. All four artwork pages decoded on
+  device. After the wearer restored tracking, original-art Health, Goals/Notes,
+  and Logs were captured in Training and inspected; each uses its own artwork
+  and contained text. A later lab snapshot measured 415,914 KB total PSS. The
+  screenshots exposed remaining tab/footer contrast problems over bright world
+  textures: original tab/action-button artwork and fonts are still missing.
+  No tracking or proximity safety setting was bypassed.
+- Diagnostic requests now wait for the one-slot mailbox and use noclobber rather
+  than replacing pending menu/map actions. Request consumption is explicitly
+  distinct from map-upload or screenshot completion. Screenshot ADB failures
+  fail closed. All 24 mock-ADB regressions pass under PowerShell 7 and Windows
+  PowerShell 5.1, exercising the actual helpers without a Quest.
+
+Remaining fidelity includes original fonts and complete menu behavior,
+body-part health, augmentations/skills/images, and broader campaign interactions.
+The campaign, stereo comfort, physical recenter, and controller-driven
+simultaneous movement remain unverified; these UI/decoder gates are not full
+campaign completion evidence.
 
 ## Implemented; broader campaign verification pending
 

@@ -1,6 +1,8 @@
 #include "visual_renderer.h"
 #include "surreal_gc_probe.h"
 #include "surreal_portable_package_tables.h"
+#include "persona_preview.h"
+#include "persona_ui_canvas.h"
 
 #include <algorithm>
 #include <cctype>
@@ -23,12 +25,16 @@ namespace {
 using namespace questvisual;
 struct Options {
     bool selfTest{};
+    bool personaPreview{};
     std::filesystem::path gameRoot, cacheRoot, mesh, materials, output, report, baseline;
     std::string map;
     Camera camera;
     std::uint32_t width{1280}, height{720};
     double maxMeanError{0.0};
     std::optional<double> minimumCoverage;
+    std::vector<std::string> personaIcons;
+    std::size_t personaSelected{};
+    QuestVr::PersonaUiPage personaPage{QuestVr::PersonaUiPage::Inventory};
 };
 std::string CanonicalPathKey(const std::filesystem::path& path) {
     std::string result = std::filesystem::weakly_canonical(std::filesystem::absolute(path)).generic_string();
@@ -93,7 +99,8 @@ void ProtectCaptureInputs(const Options& options) {
     if (SameFile(options.baseline,options.mesh) || SameFile(options.baseline,options.materials))
         throw std::runtime_error("Baseline must not alias source/generated cache files");
     if (!options.gameRoot.empty() && (Within(options.output,options.gameRoot) ||
-        Within(options.report,options.gameRoot) || Within(options.cacheRoot,options.gameRoot)))
+        Within(options.report,options.gameRoot) ||
+        (!options.cacheRoot.empty() && Within(options.cacheRoot,options.gameRoot))))
         throw std::runtime_error("Generated captures, reports and caches must be outside GameRoot");
 }
 std::string Quote(const std::string& value) {
@@ -135,6 +142,10 @@ void Help() {
         "  --baseline PATH.bmp --max-mean-error FRACTION\n"
         "  --min-coverage FRACTION             Optional viewpoint-specific empty-frame gate\n"
         "  --inspect-textures PACKAGE FILTER  List matching export/class/properties for diagnosis\n"
+        "  --persona-preview --game-root PATH Original shared Persona artwork/icons on checkerboard\n"
+        "  --persona-icon NAME                Repeat for each original icon asset (preview fixture)\n"
+        "  --persona-selected INDEX           Select an icon in the fixture inventory grid\n"
+        "  --persona-page PAGE                Inventory, Health, GoalsNotes or Logs\n"
         "Camera uses Quest-cache meters; default (0,1.65,0) looks -Z. Positive yaw turns right.\n"
         "Captures show world BSP and material albedo. Actors, baked map lights, UI,\n"
         "OpenXR tracking, stereo, campaign scripts, and Quest GPU performance are not covered.\n";
@@ -148,6 +159,24 @@ Options Parse(int argc, char** argv) {
             return argv[i];
         };
         if (argument == "--self-test") options.selfTest = true;
+        else if (argument == "--persona-preview") options.personaPreview = true;
+        else if (argument == "--persona-icon") options.personaIcons.push_back(next());
+        else if (argument == "--persona-page") {
+            const auto page = Lower(next());
+            if (page == "inventory") options.personaPage = QuestVr::PersonaUiPage::Inventory;
+            else if (page == "health") options.personaPage = QuestVr::PersonaUiPage::Health;
+            else if (page == "goalsnotes") options.personaPage = QuestVr::PersonaUiPage::GoalsNotes;
+            else if (page == "logs") options.personaPage = QuestVr::PersonaUiPage::Logs;
+            else throw std::runtime_error("Unknown Persona page: " + page);
+        }
+        else if (argument == "--persona-selected") {
+            const auto text = next();
+            std::size_t consumed{};
+            const auto value = std::stoul(text,&consumed);
+            if (consumed != text.size() || value > 100000u)
+                throw std::runtime_error("Invalid Persona selection index");
+            options.personaSelected = value;
+        }
         else if (argument == "--game-root") options.gameRoot = next();
         else if (argument == "--cache-root") options.cacheRoot = next();
         else if (argument == "--mesh") options.mesh = next();
@@ -179,6 +208,22 @@ Options Parse(int argc, char** argv) {
         throw std::runtime_error("Image error and coverage fractions must be 0..1");
     const bool hasCache = !options.mesh.empty() || !options.materials.empty();
     const bool hasGame = !options.gameRoot.empty();
+    if (options.personaPreview) {
+        if (!hasGame || hasCache || options.selfTest || !options.cacheRoot.empty() || options.minimumCoverage)
+            throw std::runtime_error("--persona-preview requires --game-root and cannot use map/cache/coverage modes");
+        if (options.personaPage == QuestVr::PersonaUiPage::Inventory) {
+            if (options.personaIcons.empty()) options.personaIcons = {"LargeIconPistol","LargeIconMedKit",
+                "LargeIconMultitool","LargeIconLockPick","LargeIconBioCell","LargeIconRifle","LargeIconLAM"};
+            if (options.personaSelected >= options.personaIcons.size())
+                throw std::runtime_error("Persona selection is outside the icon fixture");
+        } else if (!options.personaIcons.empty() || options.personaSelected != 0u) {
+            throw std::runtime_error("Persona icon fixtures/selection apply only to Inventory");
+        }
+        return options;
+    }
+    if (!options.personaIcons.empty() || options.personaSelected != 0u ||
+        options.personaPage != QuestVr::PersonaUiPage::Inventory)
+        throw std::runtime_error("Persona icon options require --persona-preview");
     if (static_cast<int>(options.selfTest)+static_cast<int>(hasCache)+static_cast<int>(hasGame) != 1)
         throw std::runtime_error("Choose exactly one of --self-test, cache files, or --game-root/--map");
     if (hasCache && (options.mesh.empty() || options.materials.empty()))
@@ -340,6 +385,75 @@ void Report(const Options& options, const Scene& scene, const RenderResult& resu
     file << "\n}\n";
     if (!file) throw std::runtime_error("Failed writing visual report");
 }
+int CapturePersona(Options options) {
+    options.mesh = options.gameRoot/"System"/"DeusExUI.u";
+    ProtectCaptureInputs(options);
+    const std::optional<Image> baseline = options.baseline.empty() ? std::nullopt :
+        std::optional<Image>{ReadBmp(options.baseline)};
+    const auto preview = BuildDesktopPersonaPreview(options.mesh,options.personaIcons,
+        options.personaSelected,options.personaPage);
+    const auto& layout = QuestVr::GetPersonaUiLayout(options.personaPage);
+    const bool inventory = options.personaPage == QuestVr::PersonaUiPage::Inventory;
+    std::optional<double> difference;
+    if (baseline) difference = MeanAbsoluteImageError(preview.image,*baseline);
+    const bool passed = !difference || *difference <= options.maxMeanError;
+    WriteBmp(options.output,preview.image);
+    if (!options.report.parent_path().empty()) std::filesystem::create_directories(options.report.parent_path());
+    std::ofstream report(options.report);
+    if (!report) throw std::runtime_error("Cannot write Persona preview report");
+    report << "{\n  \"passed\": " << (passed ? "true" : "false")
+        << ",\n  \"source\": \"original-DeusExUI-package\""
+        << ",\n  \"scope\": \"Shared Quest CPU Persona page background/border composition; Health includes original neutral body/overlays, Inventory includes grid and icon asset fixture rather than saved inventory. Checkerboard reveals transparency. Text, fonts, tabs, live menus, VR geometry and interaction unverified.\""
+        << ",\n  \"campaignPlayabilityVerified\": false"
+        << ",\n  \"fontsAndTextVerified\": false"
+        << ",\n  \"package\": " << Quote(std::filesystem::absolute(options.mesh).generic_string())
+        << ",\n  \"capture\": " << Quote(std::filesystem::absolute(options.output).generic_string())
+        << ",\n  \"width\": 640,\n  \"height\": 480"
+        << ",\n  \"page\": " << Quote(DesktopPersonaPageName(options.personaPage))
+        << ",\n  \"backgroundTileCount\": " << layout.backgroundCount
+        << ",\n  \"backgroundColumns\": " << layout.backgroundColumns
+        << ",\n  \"clientRect\": [" << layout.client.x << ", " << layout.client.y << ", "
+        << layout.client.width << ", " << layout.client.height << "]"
+        << ",\n  \"borderRect\": [" << layout.border.x << ", " << layout.border.y << ", "
+        << layout.border.width << ", " << layout.border.height << "]"
+        << ",\n  \"gridRect\": " << (inventory ? "[42, 62, 266, 319]" : "null")
+        << ",\n  \"gridColumns\": " << (inventory ? 5 : 0)
+        << ",\n  \"gridRows\": " << (inventory ? 6 : 0)
+        << ",\n  \"healthBodyRect\": " << (options.personaPage == QuestVr::PersonaUiPage::Health ?
+            "[49, 73, 219, 357]" : "null")
+        << ",\n  \"selectedFixtureIndex\": ";
+    if (inventory) report << options.personaSelected; else report << "null";
+    report
+        << ",\n  \"transparentPixels\": " << preview.transparentPixels
+        << ",\n  \"opaquePixels\": " << preview.opaquePixels
+        << ",\n  \"partialAlphaPixels\": " << preview.partialAlphaPixels
+        << ",\n  \"visibleBoundsInclusive\": [" << preview.visibleMinX << ", " << preview.visibleMinY
+        << ", " << preview.visibleMaxX << ", " << preview.visibleMaxY << "]"
+        << ",\n  \"rgbaFnv1a64\": \"" << std::hex << preview.rgbaHash << "\""
+        << ",\n  \"flattenedFnv1a64\": \"" << preview.flattenedHash << "\"" << std::dec
+        << ",\n  \"artworkPaths\": [";
+    for (std::size_t i = 0; i < preview.artworkPaths.size(); ++i) {
+        if (i != 0u) report << ", ";
+        report << Quote(preview.artworkPaths[i]);
+    }
+    report << "],\n  \"iconPaths\": [";
+    for (std::size_t i = 0; i < preview.iconPaths.size(); ++i) {
+        if (i != 0u) report << ", ";
+        report << Quote(preview.iconPaths[i]);
+    }
+    report << "],\n  \"baseline\": " << Quote(options.baseline.generic_string())
+        << ",\n  \"maxMeanError\": " << options.maxMeanError
+        << ",\n  \"baselineMeanAbsoluteError\": ";
+    if (difference) report << *difference; else report << "null";
+    report << "\n}\n";
+    if (!report) throw std::runtime_error("Failed writing Persona preview report");
+    std::cout << "Original Persona artwork preview: " << std::filesystem::absolute(options.output).string()
+        << "\n" << DesktopPersonaPageName(options.personaPage) << ": "
+        << preview.artworkPaths.size() << " original page artwork assets; " << preview.iconPaths.size()
+        << " icon fixture assets; " << preview.transparentPixels << " transparent pixels.\n"
+        << "Fonts, text and live VR interaction are unverified.\n";
+    return passed ? 0 : 2;
+}
 } // namespace
 
 int main(int argc, char** argv) {
@@ -348,7 +462,13 @@ int main(int argc, char** argv) {
         if (argc == 4 && std::string(argv[1]) == "--inspect-textures") {
             InspectTextures(argv[2],argv[3]); return 0;
         }
+        if (argc == 2 && std::string(argv[1]) == "--test-persona-canvas") {
+            VerifySharedPersonaCanvas();
+            std::cout << "PASS: shared Persona masks, clipping, tints, padding, grid and icon aspect checks.\n";
+            return 0;
+        }
         Options options = Parse(argc,argv);
+        if (options.personaPreview) return CapturePersona(std::move(options));
         std::filesystem::path fixture;
         if (options.selfTest) {
             fixture = options.output.parent_path()/"synthetic-cache";

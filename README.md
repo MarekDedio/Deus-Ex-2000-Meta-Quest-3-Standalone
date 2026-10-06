@@ -65,10 +65,13 @@ ADB, a connected headset, or redistribution of the game's data.
 .\tools\Initialize-ThirdParty.ps1
 .\tools\Test-DesktopVisuals.ps1 -GameRoot 'D:\Steam\steamapps\common\Deus Ex'
 .\tools\Test-DesktopCampaign.ps1 -GameRoot 'D:\Steam\steamapps\common\Deus Ex' -SkipBuild
+.\tools\Test-DesktopPersona.ps1 -GameRoot 'D:\Steam\steamapps\common\Deus Ex' -Page Health -SkipBuild
 ```
 
-These captures do not yet contain actor meshes, authored illumination, skyboxes,
-Persona UI, or the live Quest renderer. They cannot verify gameplay, stereo,
+World captures do not yet contain actor meshes, authored illumination, skyboxes,
+Persona UI, or the live Quest renderer. A separate Persona preview shares the
+Quest CPU artwork compositor and renders the original Inventory, Health,
+Goals/Notes, and Logs assets, without fonts or live interaction. Neither mode verifies gameplay, stereo,
 OpenXR tracking, controller input, or Quest performance. Black skies or absent
 actors in this limited renderer are not evidence of the same defect in the APK.
 See [desktop visual testing](docs/DESKTOP-VISUAL-TESTING.md) for camera controls,
@@ -120,11 +123,16 @@ NPC lines and JC responses across quick-save/load. A equips weapons or
 consumes healing items, and B or Menu returns to play. Movement, turning,
 combat, interaction, and map exits pause while this panel is open; quick-save
 and quick-load remain available.
-The panel background and border are not recreated substitutes: the app decodes
-and stitches the twelve shipped `InventoryBackground_*` and `InventoryBorder_*`
-textures directly from the user's `System/DeusExUI.u` on Quest. A text-only fallback remains available
+The page backgrounds and borders are not recreated substitutes: the app decodes
+the shipped Inventory, Health, Goals, Logs, and Conversations border textures
+directly from the user's `System/DeusExUI.u` on Quest. Each page uses its original
+client/border offsets; Health includes the original neutral body illustration,
+Goals/Notes has stacked panes, and Logs has one centered text column. A text-only fallback remains available
 if those private game assets cannot be decoded. Only the four implemented pages
 are shown; augmentations, skills, and images are not presented as functional tabs.
+Body-part health, the original font, and full original menu behavior are still
+unfinished; the body illustration does not imply body-part damage simulation.
+See [Quest diagnostics](docs/QUEST-DIAGNOSTICS.md) for safe screenshot/map requests.
 Pointing at a pawn and pressing A resolves its real `BindName` against the
 active mission's serialized conversation events and displays the shipped
 subtitle while decoding and mixing its referenced MP3 speech over ambient audio;
