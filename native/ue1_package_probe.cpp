@@ -1,5 +1,7 @@
+#if defined(__ANDROID__)
 #include <jni.h>
-#include <android/log.h>
+#endif
+#include "portable_log.h"
 
 #include "Utils/Array.h"
 #include "Package/NameString.h"
@@ -1114,7 +1116,8 @@ bool ProbePackage(const std::string& path, PackageSummary& summary) {
     return true;
 }
 
-bool BuildMapCache(const std::string& root, const std::string& mapName) {
+bool BuildMapCache(
+    const std::string& root, const std::string& mapName, const std::string& outputRoot) {
     if (mapName.empty() || !std::all_of(
             mapName.begin(), mapName.end(), [](unsigned char character) {
                 return std::isalnum(character) || character == '_' || character == '-';
@@ -1136,9 +1139,11 @@ bool BuildMapCache(const std::string& root, const std::string& mapName) {
     materialArrayRgba.reserve(map.materialNames.size() * layerWidth * layerHeight * 4u);
     map.materialWidths.clear();
     map.materialHeights.clear();
+    std::string activeMaterial;
 
     try {
         for (const std::string& qualified : map.materialNames) {
+            activeMaterial = qualified;
             const std::size_t separator = qualified.find('.');
             if (separator == std::string::npos) {
                 throw std::runtime_error("Material path has no package");
@@ -1154,9 +1159,16 @@ bool BuildMapCache(const std::string& root, const std::string& mapName) {
                     packageName, LoadPortablePackageTables(packagePath)).first;
             }
             const PortablePackageTables& texturePackage = foundPackage->second;
-            const std::size_t textureExport = FindPortableExport(texturePackage, objectPath);
+            const std::size_t textureExport = FindPortableTextureExport(texturePackage, objectPath);
             const PortablePropertyStream properties =
                 LoadPortableExportProperties(texturePackage, textureExport);
+            const std::string textureClass = GetPortableObjectPath(
+                texturePackage, texturePackage.exports[textureExport].ObjClass);
+            const NameString proceduralClass(textureClass);
+            const bool generatedSurface = proceduralClass == "Fire.FireTexture" ||
+                proceduralClass == "Fire.WaterTexture" || proceduralClass == "Fire.WaveTexture" ||
+                proceduralClass == "Fire.WetTexture" || proceduralClass == "Fire.IceTexture" ||
+                proceduralClass == "Fire.FractalTexture" || proceduralClass == "Engine.ScriptedTexture";
             std::vector<PortableMipmap> mipmaps =
                 LoadPortableTextureMipmaps(texturePackage, textureExport);
             std::vector<std::uint32_t> palette;
@@ -1169,12 +1181,15 @@ bool BuildMapCache(const std::string& root, const std::string& mapName) {
                     break;
                 }
             }
-            if (mipmaps.empty() || palette.size() < 256) {
+            if (palette.size() < 256 || (mipmaps.empty() && !generatedSurface)) {
                 throw std::runtime_error("Texture has no usable indexed mip or palette");
             }
+            if (mipmaps.empty()) mipmaps.emplace_back();
             PortableMipmap& topMip = mipmaps.front();
-            if (topMip.pixels.size() !=
+            if (topMip.width == 0u || topMip.height == 0u || topMip.pixels.size() !=
                 static_cast<std::uint64_t>(topMip.width) * topMip.height) {
+                if (!generatedSurface)
+                    throw std::runtime_error("Non-procedural texture has an invalid indexed mip");
                 std::int32_t uClamp{}, vClamp{};
                 bool haveUClamp{}, haveVClamp{};
                 for (const PortableTaggedProperty& property : properties.properties) {
@@ -1201,6 +1216,9 @@ bool BuildMapCache(const std::string& root, const std::string& mapName) {
                 topMip.pixels.assign(
                     static_cast<std::size_t>(topMip.width) * topMip.height, 0u);
                 ++proceduralMaterials;
+                __android_log_print(ANDROID_LOG_INFO, kLogTag,
+                    "UE1 procedural material %s (%s) initialized %ux%u; animation pending",
+                    qualified.c_str(), textureClass.c_str(), topMip.width, topMip.height);
             }
             map.materialWidths.push_back(topMip.width);
             map.materialHeights.push_back(topMip.height);
@@ -1227,19 +1245,20 @@ bool BuildMapCache(const std::string& root, const std::string& mapName) {
         }
     } catch (const std::exception& error) {
         __android_log_print(
-            ANDROID_LOG_ERROR, kLogTag, "Map cache %s failed: %s", mapName.c_str(), error.what());
+            ANDROID_LOG_ERROR, kLogTag, "Map cache %s material %s failed: %s",
+            mapName.c_str(), activeMaterial.c_str(), error.what());
         return false;
     }
 
     const bool valid = decodedMaterials == map.materialNames.size() &&
         decodedMaterials <= 255 &&
         WriteMaterialArrayCache(
-            root + "/quest-material-array.rgba",
+            outputRoot + "/quest-material-array.rgba",
             layerWidth,
             layerHeight,
             static_cast<std::uint32_t>(decodedMaterials),
             materialArrayRgba) &&
-        WriteWorldMesh(root + "/quest-world.mesh", map);
+        WriteWorldMesh(outputRoot + "/quest-world.mesh", map);
     __android_log_print(
         valid ? ANDROID_LOG_INFO : ANDROID_LOG_ERROR,
         kLogTag,
@@ -1257,7 +1276,7 @@ bool BuildMapCache(const std::string& root, const std::string& mapName) {
 extern "C" bool BuildQuestMapCache(const char* gameRoot, const char* mapName) {
     if (gameRoot == nullptr || mapName == nullptr) return false;
     try {
-        return BuildMapCache(gameRoot, mapName);
+        return BuildMapCache(gameRoot, mapName, gameRoot);
     } catch (const std::exception& error) {
         __android_log_print(
             ANDROID_LOG_ERROR, kLogTag, "Active map cache exception: %s", error.what());
@@ -1265,6 +1284,21 @@ extern "C" bool BuildQuestMapCache(const char* gameRoot, const char* mapName) {
     }
 }
 
+// Host captures write derived data outside the user's original installation.
+extern "C" bool BuildQuestMapCacheToDirectory(
+    const char* gameRoot, const char* mapName, const char* outputRoot) {
+    if (gameRoot == nullptr || mapName == nullptr || outputRoot == nullptr) return false;
+    try {
+        std::filesystem::create_directories(outputRoot);
+        return BuildMapCache(gameRoot, mapName, outputRoot);
+    } catch (const std::exception& error) {
+        __android_log_print(
+            ANDROID_LOG_ERROR, kLogTag, "Host map cache exception: %s", error.what());
+        return false;
+    }
+}
+
+#if defined(__ANDROID__)
 extern "C" JNIEXPORT jboolean JNICALL
 Java_dev_deusex_questvr_MainActivity_probeGameData(
     JNIEnv* env,
@@ -1507,7 +1541,7 @@ Java_dev_deusex_questvr_MainActivity_probeGameData(
                         ResolveDataPackagePath(root, texturePackageName))).first;
             }
             const PortablePackageTables& texturePackage = foundPackage->second;
-            const std::size_t textureExport = FindPortableExport(texturePackage, textureObjectPath);
+            const std::size_t textureExport = FindPortableTextureExport(texturePackage, textureObjectPath);
             const PortablePropertyStream textureProperties =
                 LoadPortableExportProperties(texturePackage, textureExport);
             std::vector<PortableMipmap> mipmaps =
@@ -1885,3 +1919,4 @@ Java_dev_deusex_questvr_MainActivity_probeGameData(
 
     return valid ? JNI_TRUE : JNI_FALSE;
 }
+#endif

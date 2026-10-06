@@ -534,13 +534,37 @@ std::vector<std::int32_t> LoadPortableObjectReferenceArrayTail(
 std::size_t FindPortableExport(
     const PortablePackageTables& package,
     const std::string& objectPath) {
+    const NameString requested(objectPath);
     for (std::size_t index = 0; index < package.exports.size(); ++index) {
-        if (ResolvePortableObjectPath(
-                static_cast<std::int32_t>(index + 1), package) == objectPath) {
+        if (NameString(ResolvePortableObjectPath(
+                static_cast<std::int32_t>(index + 1), package)) == requested) {
             return index;
         }
     }
     throw std::runtime_error("UE1 export was not found: " + objectPath);
+}
+
+std::size_t FindPortableTextureExport(
+    const PortablePackageTables& package,
+    const std::string& objectPath) {
+    const NameString requested(objectPath);
+    std::size_t match = std::numeric_limits<std::size_t>::max();
+    for (std::size_t index = 0; index < package.exports.size(); ++index) {
+        if (NameString(ResolvePortableObjectPath(
+                static_cast<std::int32_t>(index + 1), package)) != requested) continue;
+        const NameString cls(ResolvePortableObjectPath(package.exports[index].ObjClass,package));
+        const bool texture = cls == "Engine.Texture" || cls == "Engine.ScriptedTexture" ||
+            cls == "Fire.FractalTexture" || cls == "Fire.FireTexture" ||
+            cls == "Fire.WaterTexture" || cls == "Fire.WaveTexture" ||
+            cls == "Fire.WetTexture" || cls == "Fire.IceTexture";
+        if (!texture) continue;
+        if (match != std::numeric_limits<std::size_t>::max())
+            throw std::runtime_error("UE1 texture path is ambiguous: " + objectPath);
+        match = index;
+    }
+    if (match == std::numeric_limits<std::size_t>::max())
+        throw std::runtime_error("UE1 texture export was not found: " + objectPath);
+    return match;
 }
 
 std::vector<PortableMipmap> LoadPortableTextureMipmaps(
@@ -559,7 +583,9 @@ std::vector<PortableMipmap> LoadPortableTextureMipmaps(
     PackageStream stream(nullptr, file);
     stream.Seek(static_cast<std::uint32_t>(entry.ObjOffset) + properties.bytesConsumed);
     const std::uint8_t mipCount = stream.ReadUInt8();
-    if (mipCount == 0 || mipCount > 32) throw std::runtime_error("UE1 mip count is invalid");
+    // UTexture permits an empty stored mip list. Its procedural subclasses
+    // create their working surface from UClamp/VClamp after loading this list.
+    if (mipCount > 32) throw std::runtime_error("UE1 mip count is invalid");
 
     std::vector<PortableMipmap> mipmaps;
     mipmaps.reserve(mipCount);
@@ -668,7 +694,7 @@ PortableTextureImage DecodePortableIndexedTexture(
     const PortablePackageTables& package,
     const std::string& objectPath,
     const bool transparentIndexZero) {
-    const std::size_t textureExport = FindPortableExport(package, objectPath);
+    const std::size_t textureExport = FindPortableTextureExport(package, objectPath);
     const std::vector<PortableMipmap> mipmaps =
         LoadPortableTextureMipmaps(package, textureExport);
     if (mipmaps.empty()) throw std::runtime_error("UE1 texture has no mipmaps");

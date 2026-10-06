@@ -1,9 +1,10 @@
 #pragma once
 
+#include <cstdint>
+
 #include "Utils/Array.h"
 #include "Package/PackageTables.h"
 
-#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -138,6 +139,10 @@ std::vector<std::int32_t> LoadPortableObjectReferenceArrayTail(
     const PortablePackageTables& package,
     std::size_t exportIndex);
 std::size_t FindPortableExport(
+    const PortablePackageTables& package,
+    const std::string& objectPath);
+// Texture and Palette exports may share an identical UE1 object path.
+std::size_t FindPortableTextureExport(
     const PortablePackageTables& package,
     const std::string& objectPath);
 std::vector<PortableMipmap> LoadPortableTextureMipmaps(

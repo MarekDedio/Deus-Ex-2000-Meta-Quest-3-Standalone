@@ -2,7 +2,7 @@
 
 #include "GC/GC.h"
 
-#include <android/log.h>
+#include "portable_log.h"
 
 #include <memory>
 #include <algorithm>
@@ -1610,7 +1610,7 @@ PortableTextureArray BuildPortableRuntimeActorTextureArray(
                     LoadPortablePackageTables(packagePath)).first;
             }
             if (textureExport == std::numeric_limits<std::size_t>::max()) {
-                textureExport = FindPortableExport(package->second, objectPath);
+                textureExport = FindPortableTextureExport(package->second, objectPath);
             }
             const std::string textureClass = runtimeTexture == persistentQualifiedObjects.end()
                 ? GetPortableObjectPath(
