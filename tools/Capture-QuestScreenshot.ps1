@@ -1,23 +1,31 @@
 [CmdletBinding()]
 param(
     [string]$OutputPath = 'artifacts\quest-screenshot.bmp',
-    [int]$TimeoutSeconds = 20
+    [int]$TimeoutSeconds = 20,
+    [string]$AdbPath = 'D:\Android\Sdk\platform-tools\adb.exe'
 )
 
 $ErrorActionPreference = 'Stop'
+if (Test-Path variable:PSNativeCommandUseErrorActionPreference) {
+    $PSNativeCommandUseErrorActionPreference = $false
+}
 $projectRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
-$adb = 'D:\Android\Sdk\platform-tools\adb.exe'
+$adb = $AdbPath
 $package = 'dev.deusex.questvr.smoketest'
-$requestPath = 'files/DeusEx/quest-map.request'
 $devicePath = "/sdcard/Android/data/$package/files/quest-screenshot.bmp"
+$requestHelper = Join-Path $PSScriptRoot 'Send-QuestDiagnostic.ps1'
 
 if (-not (Test-Path -LiteralPath $adb)) {
     throw "ADB not found: $adb"
 }
+if (-not (Test-Path -LiteralPath $requestHelper -PathType Leaf)) {
+    throw "Diagnostic request helper not found: $requestHelper"
+}
 if ($TimeoutSeconds -lt 1 -or $TimeoutSeconds -gt 120) {
     throw 'TimeoutSeconds must be between 1 and 120.'
 }
-$devices = & $adb devices
+$devices = @(& $adb devices)
+if ($LASTEXITCODE -ne 0) { throw 'Could not list ADB devices.' }
 $authorizedDevices = @($devices | Select-Object -Skip 1 | Where-Object { $_ -match '\sdevice$' })
 if ($authorizedDevices.Count -ne 1) {
     throw "Expected exactly one authorized Quest device; found $($authorizedDevices.Count)."
@@ -39,15 +47,13 @@ for ($attempt = 1; $attempt -le 3 -and -not $validCapture; $attempt++) {
     if ($LASTEXITCODE -ne 0) {
         throw 'Could not clear the previous app screenshot.'
     }
-    & $adb shell "run-as $package sh -c 'echo SCREENSHOT > $requestPath'"
-    if ($LASTEXITCODE -ne 0) {
-        throw 'Could not request an in-app screenshot.'
-    }
+    & $requestHelper -Command SCREENSHOT -TimeoutSeconds $TimeoutSeconds -AdbPath $adb | Out-Null
 
     $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
     $ready = $false
     while ([DateTime]::UtcNow -lt $deadline) {
         $result = @(& $adb shell "if [ -s '$devicePath' ]; then echo ready; fi")
+        if ($LASTEXITCODE -ne 0) { throw 'Could not inspect the app screenshot readiness.' }
         if (($result -join '').Trim() -eq 'ready') {
             $ready = $true
             break
