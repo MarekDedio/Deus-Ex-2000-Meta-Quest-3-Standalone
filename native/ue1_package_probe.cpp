@@ -10,6 +10,7 @@
 #include "surreal_portable_package_tables.h"
 #include "surreal_gc_probe.h"
 #include "portable_unreal_runtime.h"
+#include "quest_world_surface_stream.h"
 
 #include <algorithm>
 #include <cctype>
@@ -69,6 +70,7 @@ struct BspNodeGeometry {
     std::int32_t vertexPool{};
     std::int32_t surface{};
     std::uint8_t vertexCount{};
+    std::int32_t zone0{}, zone1{};
 };
 
 struct BspVertexGeometry {
@@ -738,7 +740,8 @@ bool ReadRootModelGeometry(std::FILE* file, PackageSummary& summary) {
         for (std::int32_t& value : fields) if (!ReadCompactIndex(file, value)) return false;
         std::uint8_t vertexCount{};
         if (!ReadExact(file, &vertexCount, 1) || !SkipBytes(file, objectEnd, 8)) return false;
-        summary.bspNodes.push_back({fields[0], fields[1], vertexCount});
+        if (fields[7] < 0 || fields[7] > 63 || fields[8] < 0 || fields[8] > 63) return false;
+        summary.bspNodes.push_back({fields[0], fields[1], vertexCount, fields[7], fields[8]});
     }
 
     if (!ReadArrayCount(file, 1000000, summary.surfaceCount)) return false;
@@ -923,6 +926,7 @@ bool WriteWorldMesh(const std::string& path, const PackageSummary& summary) {
 
     std::vector<MeshVertex> flatVertices;
     std::vector<MeshVertex> texturedVertices;
+    std::vector<QuestVr::WorldSurfaceRecord> flatSurfaces, texturedSurfaces;
     flatVertices.reserve(150000);
     texturedVertices.reserve(30000);
 
@@ -999,26 +1003,47 @@ bool WriteWorldMesh(const std::string& path, const PackageSummary& summary) {
             target.push_back(makeVertex(0, reverse));
             target.push_back(makeVertex(index + 1, reverse));
             target.push_back(makeVertex(index, reverse));
+            // Cache duplicates each polygon with reverse winding. The map's
+            // original winding is the BSP front side (VisibleNode::Front).
+            auto& records = textured ? texturedSurfaces : flatSurfaces;
+            for (unsigned corner = 0; corner < 3u; ++corner)
+                records.push_back({node.surface, node.zone1});
+            for (unsigned corner = 0; corner < 3u; ++corner)
+                records.push_back({node.surface, node.zone0});
         }
         if (!ok) break;
     }
-    auto writeMaterial = [&](const std::vector<MeshVertex>& vertices, std::int32_t slot) {
+    std::vector<QuestVr::WorldSurfaceChunk> surfaceChunks;
+    auto writeMaterial = [&](const std::vector<MeshVertex>& vertices,
+                             const std::vector<QuestVr::WorldSurfaceRecord>& records,
+                             std::int32_t slot) {
+        if (vertices.size() != records.size()) return false;
         for (std::size_t offset = 0; offset < vertices.size(); offset += 60000) {
             const std::uint32_t count = static_cast<std::uint32_t>(
                 std::min<std::size_t>(60000, vertices.size() - offset));
             if (count == 0 || count % 3 != 0 ||
                 !WriteMeshChunk(file, slot, vertices.data() + offset, count)) return false;
             ++chunkCount;
+            surfaceChunks.push_back({slot, {records.begin() + static_cast<std::ptrdiff_t>(offset),
+                records.begin() + static_cast<std::ptrdiff_t>(offset + count)}});
         }
         return true;
     };
-    if (ok) ok = writeMaterial(flatVertices, -1) && writeMaterial(texturedVertices, 0);
+    if (ok) ok = writeMaterial(flatVertices, flatSurfaces, -1) &&
+        writeMaterial(texturedVertices, texturedSurfaces, 0);
     if (ok && std::fseek(file, 8, SEEK_SET) == 0) {
         ok = std::fwrite(&chunkCount, sizeof(chunkCount), 1, file) == 1;
     } else {
         ok = false;
     }
     std::fclose(file);
+    if (ok && chunkCount > 0u) {
+        try { QuestVr::WriteWorldSurfaceStream(path + ".surfaces", surfaceChunks); }
+        catch (const std::exception& error) {
+            __android_log_print(ANDROID_LOG_ERROR, kLogTag, "Surface cache: %s", error.what());
+            return false;
+        }
+    }
     return ok && chunkCount > 0;
 }
 

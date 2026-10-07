@@ -17,6 +17,16 @@ struct Vertex {
 };
 static_assert(sizeof(Vertex) == 36, "DXQM v2 vertex layout changed");
 struct Chunk { std::int32_t materialSlot{}; std::vector<Vertex> vertices; };
+// Optional baked lightmap stream stays outside DXQM v2's immutable layout.
+// page=-1 falls back to vertexLighting. Unlit bypasses both lighting sources.
+inline constexpr std::uint32_t kLightmapUnlit = 1u;
+struct LightmapVertex {
+    float u{}, v{};
+    std::int32_t page{-1};
+    std::uint32_t flags{};
+    float minU{}, minV{}, maxU{1.0f}, maxV{1.0f};
+};
+static_assert(sizeof(LightmapVertex) == 32, "Lightmap vertex layout changed");
 struct Scene {
     std::vector<Chunk> chunks;
     std::uint32_t textureWidth{}, textureHeight{}, textureLayers{};
@@ -24,6 +34,10 @@ struct Scene {
     // Optional direct-light RGB gains parallel to each chunk's vertex array.
     // Kept outside Vertex so DXQM v2's on-disk layout remains unchanged.
     std::vector<std::vector<Vec3>> vertexLighting;
+    std::uint32_t lightmapWidth{}, lightmapHeight{}, lightmapLayers{};
+    float lightmapGainScale{1.0f}; // Recover HDR gain from normalized atlas RGB.
+    std::vector<std::uint8_t> lightmapRgba;
+    std::vector<std::vector<LightmapVertex>> lightmapVertices;
 };
 struct Camera {
     Vec3 position{0.0f, 1.65f, 0.0f};

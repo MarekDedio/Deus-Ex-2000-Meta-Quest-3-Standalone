@@ -1,5 +1,28 @@
 # Port status
 
+## Original static shadow-lightmap implementation (2026-10-07)
+
+- Added a bounded, complete v68 UModel decoder; all 88 installed root models
+  passed the actual authored-data audit. Ordered per-light masks, zone ambient,
+  surface normals and Unlit flags now drive the shared static BSP baker.
+- Preserved DXQM v2 geometry and added a bounded parallel DXQS surface/zone
+  stream. Exact original fan/winding/zone/position matching rejects mismatched
+  caches, including wrong coplanar surfaces. Runtime-first PlayerStart ordering
+  differed in Area51; actors, lighting and ambient sound now use the verified
+  serialized cache origin.
+- Implemented guttered HDR-scaled lightmap atlas sampling on desktop and a
+  separate Quest world shader, with per-fragment tile clamp and original UV
+  equations. Map-worker baking and frame-sliced initial/transition uploads
+  preserve existing runtime rollback and original asset retention.
+- Sixteen host tests pass, with the opt-in original-state test explicitly
+  skipped. Training albedo regression is exact across four views. Real static
+  Training/Island/Hong Kong/Area51 captures are separate from earlier 352-image
+  albedo audits; no new full-campaign lighting audit is claimed.
+- The updated APK builds offline. Dynamic lights, skyboxes, actors' original
+  lighting, complete campaign scripting and physical GL/stereo/performance
+  verification remain unfinished. No headset access was attempted.
+  See [STATIC-LIGHTMAPS.md](STATIC-LIGHTMAPS.md) for bounds and evidence scope.
+
 ## Desktop validation and follow-up fixes (2026-10-07)
 
 - Restored the source checkout and exact pinned dependencies, with repeatable

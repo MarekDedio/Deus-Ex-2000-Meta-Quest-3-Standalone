@@ -36,6 +36,7 @@
 #include "frame_work_budget.h"
 #include "map_transition_transaction.h"
 #include "quest_map_lighting.h"
+#include "quest_static_lightmap_cache.h"
 #include "quest_save_metadata.h"
 #include "quest_save_bundle.h"
 #include "async_result_epoch.h"
@@ -118,6 +119,107 @@ class TexturedGeometryRenderer {
    private:
     OVRFW::ovrSurfaceDef surface_;
     inline static OVRFW::GlProgram sharedProgram_;
+    OVR::Posef pose_ = OVR::Posef::Identity();
+    OVR::Matrix4f modelMatrix_ = OVR::Matrix4f::Identity();
+};
+
+// BSP lightmaps use their own program; actor vertex lighting and texture
+// arrays are intentionally unchanged. Deque ownership preserves uniform
+// pointers while incremental world/actor chunks are appended.
+class BakedWorldGeometryRenderer {
+   public:
+    void Init(const OVRFW::GlGeometry::Descriptor& descriptor,
+              const OVRFW::GlTexture& materials, const OVRFW::GlTexture& lightmaps,
+              float gainScale) {
+        if (!materials.IsValid() || !lightmaps.IsValid() ||
+            !std::isfinite(gainScale) || gainScale <= 0.0f)
+            throw std::runtime_error("baked BSP texture/gain is invalid");
+        static const char* vertexShader = R"glsl(
+            attribute highp vec4 Position;
+            attribute highp vec2 TexCoord;
+            attribute highp vec2 TexCoord1;
+            attribute highp vec3 Tangent;
+            attribute highp vec4 JointWeights;
+            attribute lowp vec4 VertexColor;
+            varying highp vec2 oTexCoord;
+            varying highp vec2 oLightmapUv;
+            varying highp vec4 oLightmapRect;
+            varying mediump float oLayer;
+            varying mediump vec2 oLightmapMode;
+            varying lowp vec3 oFallbackLight;
+            void main() {
+                gl_Position = TransformVertex(Position);
+                oTexCoord = TexCoord;
+                oLightmapUv = TexCoord1;
+                oLightmapRect = JointWeights;
+                oLayer = VertexColor.r * 255.0;
+                oLightmapMode = Tangent.xy;
+                oFallbackLight = VertexColor.gba;
+            }
+        )glsl";
+        static const char* fragmentShader = R"glsl(
+            precision highp float;
+            uniform highp sampler2DArray Texture0;
+            uniform highp sampler2DArray Texture1;
+            uniform highp float AtlasGainScale;
+            varying highp vec2 oTexCoord;
+            varying highp vec2 oLightmapUv;
+            varying highp vec4 oLightmapRect;
+            varying mediump float oLayer;
+            varying mediump vec2 oLightmapMode;
+            varying lowp vec3 oFallbackLight;
+            void main() {
+                vec4 texel = texture(Texture0, vec3(fract(oTexCoord), floor(oLayer + 0.5)));
+                if (texel.a < 0.5) discard;
+                vec3 gain = oFallbackLight;
+                if (oLightmapMode.y > 0.5) {
+                    gain = vec3(1.0); // Authored PF_Unlit, not artificial ambient.
+                } else if (oLightmapMode.x >= 0.0) {
+                    vec2 uv = clamp(oLightmapUv, oLightmapRect.xy, oLightmapRect.zw);
+                    gain = texture(Texture1, vec3(uv, floor(oLightmapMode.x + 0.5))).rgb * AtlasGainScale;
+                }
+                gl_FragColor = vec4(texel.rgb * gain, texel.a);
+            }
+        )glsl";
+        static OVRFW::ovrProgramParm parms[] = {
+            {.Name = "Texture0", .Type = OVRFW::ovrProgramParmType::TEXTURE_SAMPLED},
+            {.Name = "Texture1", .Type = OVRFW::ovrProgramParmType::TEXTURE_SAMPLED},
+            {.Name = "AtlasGainScale", .Type = OVRFW::ovrProgramParmType::FLOAT},
+        };
+        if (!sharedProgram_.IsValid())
+            sharedProgram_ = OVRFW::GlProgram::Build("",vertexShader,"",fragmentShader,parms,3);
+        if (!sharedProgram_.IsValid())
+            throw std::runtime_error("baked BSP shader creation failed");
+        surface_.geo = OVRFW::GlGeometry(descriptor.attribs,descriptor.indices);
+        gainScale_ = gainScale;
+        auto& command = surface_.graphicsCommand;
+        command.Program = sharedProgram_;
+        command.Textures[0] = materials;
+        command.Textures[1] = lightmaps;
+        command.UniformData[0].Data = &command.Textures[0];
+        command.UniformData[1].Data = &command.Textures[1];
+        command.UniformData[2].Data = &gainScale_;
+        command.GpuState.depthEnable = command.GpuState.depthMaskEnable = true;
+        command.GpuState.blendEnable = OVRFW::ovrGpuState::BLEND_DISABLE;
+        command.GpuState.cullEnable = true;
+    }
+    void Shutdown() { surface_.geo.Free(); }
+    static void ShutdownSharedProgram() {
+        if (sharedProgram_.IsValid()) OVRFW::GlProgram::Free(sharedProgram_);
+    }
+    void SetPose(const OVR::Posef& pose) { pose_ = pose; }
+    void Update() { pose_.Rotation.Normalize(); modelMatrix_ = OVR::Matrix4f(pose_); }
+    void Render(std::vector<OVRFW::ovrDrawSurface>& surfaces) {
+        auto& command = surface_.graphicsCommand;
+        command.UniformData[0].Data = &command.Textures[0];
+        command.UniformData[1].Data = &command.Textures[1];
+        command.UniformData[2].Data = &gainScale_;
+        surfaces.emplace_back(modelMatrix_,&surface_);
+    }
+   private:
+    OVRFW::ovrSurfaceDef surface_;
+    inline static OVRFW::GlProgram sharedProgram_;
+    float gainScale_{1.0f};
     OVR::Posef pose_ = OVR::Posef::Identity();
     OVR::Matrix4f modelMatrix_ = OVR::Matrix4f::Identity();
 };
@@ -247,6 +349,9 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         inventoryLabel_ = personaTabsLabel_ = personaDetailsLabel_ = personaFooterLabel_ = nullptr;
         hudLabel_ = nullptr;
         ui_.Shutdown();
+        ClearPendingStaticLightmapUpload();
+        DestroySceneGeometry();
+        BakedWorldGeometryRenderer::ShutdownSharedProgram();
         OVRFW::XrApp::AppShutdown(context);
     }
 
@@ -460,34 +565,45 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         ALOG("DeusExQuest: new XR session starts with matching Training runtime/map/pose; quicksave resume remains available via X");
         runtimeAvailable_ = true;
         LoadMapCatalog();
-        if (!BuildQuestMapCache(gameRoot_, currentMapName_.c_str())) {
-            ALOG("DeusExQuest: generic initial map cache build failed");
+        try {
+            if (!BuildQuestMapCache(gameRoot_, currentMapName_.c_str()))
+                throw std::runtime_error("generic initial map cache build failed");
+            const auto trainingMap = LoadPortablePackageTables(
+                std::string(gameRoot_) + "/Maps/" + currentMapName_ + ".dx");
+            preparedActorSnapshots_ = GetPortableRuntimeMapActors();
+            preparedWorldMesh_ = LoadWorldMeshCacheCpu();
+            if (!preparedWorldMesh_.passed)
+                throw std::runtime_error("initial DXQM/DXQS mesh cache read failed");
+            PrepareWorldStaticLightmaps(trainingMap,preparedActorSnapshots_,preparedWorldMesh_);
+            preparedMapLights_ = BuildMapLights(preparedActorSnapshots_,preparedWorldMesh_.lightmap.unrealOrigin);
+            preparedWorldTexture_ = LoadWorldTextureCacheCpu();
+            preparedActorTextures_ = BuildPortableRuntimeActorTextureArray(96,96);
+            if (!preparedWorldTexture_.passed || !preparedActorTextures_.passed)
+                throw std::runtime_error("initial material/actor texture preparation failed");
+            if (!StartAmbientAudio()) {
+                ALOG("DeusExQuest: ambient AAudio initialization failed");
+            } else {
+                preparedSpatialAudioEmitters_ = PrepareSpatialAudioEmitters(
+                    preparedActorSnapshots_,audioSampleRate_,preparedWorldMesh_.lightmap.unrealOrigin);
+            }
+            // Reuse the same staged GPU path as level transitions. Initial
+            // SessionInit does not perform an unbounded full-world upload.
+            transitionMapName_ = currentMapName_;
+            transitionPhase_ = MapTransitionPhase::WorldTextureAllocate;
+        } catch (const std::exception& error) {
+            ALOG("DeusExQuest: initial static world preparation failed: %s",error.what());
+            preparedWorldMesh_ = {};
+            preparedWorldTexture_ = {};
+            preparedActorTextures_ = {};
+            preparedActorSnapshots_.clear();
+            preparedMapLights_.clear();
+            preparedSpatialAudioEmitters_.clear();
+            ClearPendingStaticLightmapUpload();
+            DestroySceneGeometry();
+            StopAmbientAudio();
+            runtimeAvailable_ = false;
+            ShutdownPortableRuntime();
             return false;
-        }
-        actorSnapshots_ = GetPortableRuntimeMapActors();
-        activeMapLights_ = BuildMapLights(actorSnapshots_);
-        if (!LoadWorldMesh()) {
-            OVRFW::GeometryBuilder geometry;
-            geometry.Add(
-                OVRFW::BuildUnitCubeDescriptor(),
-                OVRFW::GeometryBuilder::kInvalidIndex,
-                OVR::Vector4f(0.8f, 0.1f, 0.1f, 1.0f),
-                OVR::Matrix4f::Translation(0.0f, 1.35f, -2.0f) *
-                    OVR::Matrix4f::Scaling(0.35f, 0.35f, 0.35f));
-            worldRenderers_.resize(1);
-            worldRenderers_[0].Init(geometry.ToGeometryDescriptor());
-            ALOG("DeusExQuest: world mesh unavailable; showing error cube");
-        }
-        if (!LoadActorTextures()) {
-            ALOG("DeusExQuest: actor texture array unavailable; using marker fallback");
-        }
-        BuildActorMarkers();
-
-        if (!StartAmbientAudio()) {
-            ALOG("DeusExQuest: ambient AAudio initialization failed");
-        } else {
-            ReplaceSpatialAudioEmitters(
-                PrepareSpatialAudioEmitters(actorSnapshots_, audioSampleRate_));
         }
         LoadOriginalPersonaBackground();
         ALOG("DeusExQuest: project-owned OpenXR runtime initialized");
@@ -715,6 +831,10 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             renderer.SetPose(worldPose);
             renderer.Update();
         }
+        for (auto& renderer : bakedWorldRenderers_) {
+            renderer.SetPose(worldPose);
+            renderer.Update();
+        }
         mapTravelCooldown_ = std::max(0.0f, mapTravelCooldown_ - frame.DeltaSeconds);
         if (!mapLoading && actorSnapshots_.size() > 1000u) {
             const OVR::Vector3f playerLocal = StageToLocal(currentHeadStage_, worldPosition_);
@@ -867,6 +987,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         if (!headTrackingValid_) return;
         for (auto& renderer : worldRenderers_) renderer.Render(output.Surfaces);
         for (auto& renderer : texturedRenderers_) renderer.Render(output.Surfaces);
+        for (auto& renderer : bakedWorldRenderers_) renderer.Render(output.Surfaces);
         if (inventoryMenuOpen_) personaRenderer_.Render(output.Surfaces);
         const std::size_t firstUiSurface = output.Surfaces.size();
         ui_.Render(frame, output);
@@ -934,6 +1055,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         preparedActorTextures_ = {};
         preparedWorldTexture_ = {};
         preparedWorldMesh_ = {};
+        ClearPendingStaticLightmapUpload();
         if (pendingWorldTextureId_ != 0u) {
             glDeleteTextures(1, &pendingWorldTextureId_);
             pendingWorldTextureId_ = 0u;
@@ -949,8 +1071,10 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         StopAmbientAudio();
         for (auto& renderer : worldRenderers_) renderer.Shutdown();
         for (auto& renderer : texturedRenderers_) renderer.Shutdown();
+        for (auto& renderer : bakedWorldRenderers_) renderer.Shutdown();
         worldRenderers_.clear();
         texturedRenderers_.clear();
+        bakedWorldRenderers_.clear();
         actorWorldRendererIndex_ = invalidRendererIndex_;
         actorTexturedRendererIndex_ = invalidRendererIndex_;
         personaRenderer_.Shutdown();
@@ -959,6 +1083,11 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             personaTextureId_ = 0u;
         }
         TexturedGeometryRenderer::ShutdownSharedProgram();
+        BakedWorldGeometryRenderer::ShutdownSharedProgram();
+        if (staticLightmapTexture_.IsValid()) {
+            OVRFW::FreeTexture(staticLightmapTexture_);
+            staticLightmapTexture_ = {};
+        }
         if (firstTexture_.IsValid()) {
             OVRFW::FreeTexture(firstTexture_);
             firstTexture_ = {};
@@ -981,6 +1110,8 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         Idle,
         WorldTextureAllocate,
         WorldTextureUpload,
+        StaticLightmapAllocate,
+        StaticLightmapUpload,
         WorldGeometry,
         WorldGeometryUpload,
         CollisionGrid,
@@ -1039,15 +1170,19 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         float u, v;
         std::int32_t materialSlot;
     };
+    static_assert(sizeof(MeshVertex) == 36u,"DXQM version 2 vertex ABI changed");
 
     struct WorldMeshChunkPreparation {
         std::int32_t materialSlot{};
         std::vector<MeshVertex> vertices;
+        std::vector<QuestVr::WorldSurfaceRecord> surfaces;
+        std::vector<QuestVr::StaticLightmapVertex> lightmapVertices;
     };
 
     struct WorldMeshPreparation {
         bool passed{};
         std::vector<WorldMeshChunkPreparation> chunks;
+        QuestVr::StaticLightmapCache lightmap;
     };
 
     struct WorldTexturePreparation {
@@ -1093,9 +1228,10 @@ class DeusExQuestApp final : public OVRFW::XrApp {
     };
 
     static std::vector<MapLight> BuildMapLights(
-        const std::vector<PortableActorSnapshot>& actors) {
+        const std::vector<PortableActorSnapshot>& actors, const QuestVr::LightmapVec3& origin) {
         QuestVr::MapLightBuildStats stats;
-        std::vector<MapLight> lights = QuestVr::BuildMapLights(actors, &stats);
+        const OVR::Vector3f verifiedOrigin{origin.x,origin.y,origin.z};
+        std::vector<MapLight> lights = QuestVr::BuildMapLights(actors, &stats, &verifiedOrigin);
         ALOG(
             "DeusExQuest: prepared %zu map lights (%zu spotlights, %zu colored)",
             stats.total,
@@ -1218,20 +1354,8 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         float& originX = build.originX;
         float& originY = build.originY;
         float& originZ = build.originZ;
-        std::string playerStartPath = "fallback";
-        for (const PortableActorSnapshot& actor : actorSnapshots_) {
-            const std::size_t separator = actor.classPath.find_last_of('.');
-            const std::string leafClass = separator == std::string::npos
-                ? actor.classPath
-                : actor.classPath.substr(separator + 1);
-            if (actor.hasLocation && leafClass == "PlayerStart") {
-                originX = actor.x;
-                originY = actor.y;
-                originZ = actor.z;
-                playerStartPath = actor.objectPath;
-                break;
-            }
-        }
+        originX = activeMapUnrealOrigin_.x; originY = activeMapUnrealOrigin_.y; originZ = activeMapUnrealOrigin_.z;
+        const auto& playerStartPath = activeMapPlayerStartPath_;
         ALOG(
             "DeusExQuest: actor coordinate origin %s at %.3f,%.3f,%.3f",
             playerStartPath.c_str(),
@@ -1706,8 +1830,10 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         CancelActorGeometryBuild();
         for (auto& renderer : worldRenderers_) renderer.Shutdown();
         for (auto& renderer : texturedRenderers_) renderer.Shutdown();
+        for (auto& renderer : bakedWorldRenderers_) renderer.Shutdown();
         worldRenderers_.clear();
         texturedRenderers_.clear();
+        bakedWorldRenderers_.clear();
         actorWorldRendererIndex_ = invalidRendererIndex_;
         actorTexturedRendererIndex_ = invalidRendererIndex_;
         interactiveActors_.clear();
@@ -1715,6 +1841,10 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         if (firstTexture_.IsValid()) {
             OVRFW::FreeTexture(firstTexture_);
             firstTexture_ = {};
+        }
+        if (staticLightmapTexture_.IsValid()) {
+            OVRFW::FreeTexture(staticLightmapTexture_);
+            staticLightmapTexture_ = {};
         }
         if (actorTexture_.IsValid()) {
             OVRFW::FreeTexture(actorTexture_);
@@ -1761,6 +1891,8 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                 DestroySceneGeometry();
                 currentMapName_ = transitionMapName_;
                 activeMapLights_ = std::move(preparedMapLights_);
+                activeMapUnrealOrigin_ = preparedWorldMesh_.lightmap.unrealOrigin;
+                activeMapPlayerStartPath_ = preparedWorldMesh_.lightmap.playerStartPath;
                 if (restorePoseAfterTransition_) {
                     if (restoredMapLocalPose_) {
                         QuestVr::RestoreSavedMapPose(restoredMapLocalFeet_, restoredMapLocalHeadYaw_,
@@ -1786,8 +1918,17 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                     throw std::runtime_error("GPU world texture upload failed");
                 }
                 if (pendingWorldTextureLayersUploaded_ == pendingWorldTextureLayers_) {
-                    transitionPhase_ = MapTransitionPhase::WorldGeometry;
+                    transitionPhase_ = MapTransitionPhase::StaticLightmapAllocate;
                 }
+            } else if (transitionPhase_ == MapTransitionPhase::StaticLightmapAllocate) {
+                if (!BeginStaticLightmapUpload(std::move(preparedWorldMesh_.lightmap)))
+                    throw std::runtime_error("GPU static lightmap atlas allocation failed");
+                transitionPhase_ = MapTransitionPhase::StaticLightmapUpload;
+            } else if (transitionPhase_ == MapTransitionPhase::StaticLightmapUpload) {
+                if (!UploadStaticLightmapRows())
+                    throw std::runtime_error("GPU static lightmap atlas row upload failed");
+                if (pendingStaticLightmapLayer_ == pendingStaticLightmapLayers_)
+                    transitionPhase_ = MapTransitionPhase::WorldGeometry;
             } else if (transitionPhase_ == MapTransitionPhase::WorldGeometry) {
                 if (!BeginWorldMeshUpload(std::move(preparedWorldMesh_))) {
                     throw std::runtime_error("world mesh preparation failed");
@@ -1799,7 +1940,8 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                 }
                 if (pendingWorldMeshChunk_ == pendingWorldMesh_.chunks.size()) {
                     pendingWorldMesh_.chunks.clear();
-                    LogLightingStats();
+                    ALOG("DeusExQuest: original shadow-lightmapped BSP geometry upload complete (%zu batches)",
+                         pendingWorldMeshChunk_);
                     transitionPhase_ = MapTransitionPhase::CollisionGrid;
                 }
             } else if (transitionPhase_ == MapTransitionPhase::CollisionGrid) {
@@ -1870,6 +2012,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                 pendingWorldTextureId_ = 0u;
             }
             pendingWorldTextureRgba_.clear();
+            ClearPendingStaticLightmapUpload();
             if (pendingActorTextureId_ != 0u) {
                 glDeleteTextures(1, &pendingActorTextureId_);
                 pendingActorTextureId_ = 0u;
@@ -1880,6 +2023,9 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             preparedActorSnapshots_.clear();
             preparedSpatialAudioEmitters_.clear();
             preparedMapLights_.clear();
+            preparedWorldMesh_ = {};
+            preparedWorldTexture_ = {};
+            preparedActorTextures_ = {};
             DestroySceneGeometry();
             runtimeAvailable_ = false;
             interactionStatus_ = "VISUAL MAP LOAD FAILED - PRESS B TO RETRY NEXT MAP";
@@ -1956,14 +2102,18 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                 preparation.actorTextures = BuildPortableRuntimeActorTextureArray(96, 96);
                 if (!preparation.actorTextures.passed)
                     throw std::runtime_error("actor texture preparation failed");
+                // Restore can hide an authored light/pawn/pickup. Build masks
+                // against the complete authored actor list and preserve every
+                // duplicate/inactive static-list ordinal before restoration.
+                PrepareWorldStaticLightmaps(map,GetPortableRuntimeMapActors(),preparation.worldMesh);
                 if (!restoreRuntimePath.empty() &&
                     !LoadPortableRuntimeState(restoreRuntimePath)) {
                     throw std::runtime_error("saved runtime restoration failed");
                 }
                 preparation.actors = GetPortableRuntimeMapActors();
                 preparation.spatialAudioEmitters = PrepareSpatialAudioEmitters(
-                    preparation.actors, targetAudioRate);
-                preparation.lights = BuildMapLights(preparation.actors);
+                    preparation.actors, targetAudioRate,preparation.worldMesh.lightmap.unrealOrigin);
+                preparation.lights = BuildMapLights(preparation.actors,preparation.worldMesh.lightmap.unrealOrigin);
                 return true;
                 }, [&] {
                     const PortablePackageTables previousMap = LoadPortablePackageTables(
@@ -3546,24 +3696,10 @@ class DeusExQuestApp final : public OVRFW::XrApp {
 
     static std::vector<SpatialAudioEmitter> PrepareSpatialAudioEmitters(
         const std::vector<PortableActorSnapshot>& actors,
-        std::uint32_t targetRate) {
+        std::uint32_t targetRate, const QuestVr::LightmapVec3& origin) {
         std::vector<SpatialAudioEmitter> emitters;
         if (targetRate == 0u) return emitters;
-        float originX = -1149.244f;
-        float originY = 825.844f;
-        float originZ = -65.103f;
-        for (const PortableActorSnapshot& actor : actors) {
-            const std::size_t separator = actor.classPath.find_last_of('.');
-            const std::string leafClass = separator == std::string::npos
-                ? actor.classPath
-                : actor.classPath.substr(separator + 1u);
-            if (actor.hasLocation && leafClass == "PlayerStart") {
-                originX = actor.x;
-                originY = actor.y;
-                originZ = actor.z;
-                break;
-            }
-        }
+        const float originX = origin.x, originY = origin.y, originZ = origin.z;
         std::unordered_map<std::string, std::shared_ptr<const std::vector<std::int16_t>>> decoded;
         std::set<std::string> rejected;
         constexpr float unitsToMeters = 1.0f / 52.5f;
@@ -4109,46 +4245,123 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         constexpr const char* path =
             "/data/user/0/dev.deusex.questvr.smoketest/files/DeusEx/quest-world.mesh";
         WorldMeshPreparation result;
-        std::FILE* file = std::fopen(path, "rb");
-        if (file == nullptr) return result;
-        std::uint32_t magic{}, version{}, chunkCount{};
-        result.passed = std::fread(&magic, sizeof(magic), 1, file) == 1 &&
-            std::fread(&version, sizeof(version), 1, file) == 1 &&
-            std::fread(&chunkCount, sizeof(chunkCount), 1, file) == 1 &&
-            magic == 0x4d515844u && version == 2u && chunkCount > 0u && chunkCount < 128u;
-        result.chunks.reserve(chunkCount);
-        for (std::uint32_t chunk = 0; result.passed && chunk < chunkCount; ++chunk) {
-            WorldMeshChunkPreparation prepared;
-            std::uint32_t vertexCount{};
-            result.passed =
-                std::fread(&prepared.materialSlot, sizeof(prepared.materialSlot), 1, file) == 1 &&
-                std::fread(&vertexCount, sizeof(vertexCount), 1, file) == 1 &&
-                vertexCount > 0u && vertexCount <= 60000u && vertexCount % 3u == 0u;
-            if (!result.passed) break;
-            prepared.vertices.resize(vertexCount);
-            result.passed = std::fread(
-                prepared.vertices.data(), sizeof(MeshVertex), vertexCount, file) == vertexCount;
-            if (result.passed) {
-                constexpr std::size_t verticesPerGpuBatch = 4800u;
-                for (std::size_t offset = 0; offset < prepared.vertices.size();
-                     offset += verticesPerGpuBatch) {
-                    WorldMeshChunkPreparation batch;
-                    batch.materialSlot = prepared.materialSlot;
-                    const std::size_t end = std::min(
-                        offset + verticesPerGpuBatch, prepared.vertices.size());
-                    batch.vertices.assign(
-                        prepared.vertices.begin() + static_cast<std::ptrdiff_t>(offset),
-                        prepared.vertices.begin() + static_cast<std::ptrdiff_t>(end));
-                    result.chunks.emplace_back(std::move(batch));
-                }
+        std::unique_ptr<std::FILE, int(*)(std::FILE*)> file(std::fopen(path,"rb"),std::fclose);
+        if (!file) return result;
+        try {
+            const auto sidecar = QuestVr::ReadWorldSurfaceStream(std::string(path)+".surfaces");
+            std::uint32_t magic{}, version{}, chunkCount{};
+            if (std::fread(&magic,sizeof(magic),1,file.get()) != 1 ||
+                std::fread(&version,sizeof(version),1,file.get()) != 1 ||
+                std::fread(&chunkCount,sizeof(chunkCount),1,file.get()) != 1 ||
+                magic != 0x4d515844u || version != 2u || chunkCount == 0u ||
+                chunkCount > QuestVr::kMaximumWorldSurfaceChunks || chunkCount != sidecar.size())
+                throw std::runtime_error("DXQM/DXQS header or chunk count mismatch");
+            result.chunks.reserve(chunkCount);
+            std::size_t totalVertices{};
+            for (std::uint32_t index=0; index<chunkCount; ++index) {
+                WorldMeshChunkPreparation chunk;
+                std::uint32_t vertexCount{};
+                if (std::fread(&chunk.materialSlot,sizeof(chunk.materialSlot),1,file.get()) != 1 ||
+                    std::fread(&vertexCount,sizeof(vertexCount),1,file.get()) != 1 ||
+                    (chunk.materialSlot != 0 && chunk.materialSlot != -1) ||
+                    vertexCount == 0u || vertexCount > QuestVr::kMaximumWorldSurfaceChunkVertices ||
+                    vertexCount%3u != 0u || vertexCount != sidecar[index].records.size() ||
+                    chunk.materialSlot != sidecar[index].materialSlot ||
+                    vertexCount > QuestVr::kMaximumWorldSurfaceVertices-totalVertices)
+                    throw std::runtime_error("DXQM/DXQS raw chunk material/count mismatch");
+                chunk.vertices.resize(vertexCount);
+                if (std::fread(chunk.vertices.data(),sizeof(MeshVertex),vertexCount,file.get()) != vertexCount)
+                    throw std::runtime_error("DXQM raw vertex stream is truncated");
+                for (const auto& vertex:chunk.vertices)
+                    if (!std::isfinite(vertex.px) || !std::isfinite(vertex.py) || !std::isfinite(vertex.pz) ||
+                        !std::isfinite(vertex.nx) || !std::isfinite(vertex.ny) || !std::isfinite(vertex.nz) ||
+                        !std::isfinite(vertex.u) || !std::isfinite(vertex.v) ||
+                        (chunk.materialSlot == 0 && (vertex.materialSlot < 0 || vertex.materialSlot >= 255)))
+                        throw std::runtime_error("DXQM raw vertex has invalid values");
+                chunk.surfaces = sidecar[index].records;
+                totalVertices += vertexCount;
+                result.chunks.emplace_back(std::move(chunk));
             }
+            if (std::fgetc(file.get()) != EOF || std::ferror(file.get()))
+                throw std::runtime_error("DXQM has trailing bytes or a read error");
+            result.passed = true;
+        } catch (const std::exception& error) {
+            ALOG("DeusExQuest: world mesh CPU validation failed: %s",error.what());
+            result = {};
         }
-        std::fclose(file);
-        if (!result.passed) result.chunks.clear();
         return result;
     }
 
+    static void PrepareWorldStaticLightmaps(const PortablePackageTables& package,
+        const std::vector<PortableActorSnapshot>& authoredActors, WorldMeshPreparation& mesh) {
+        if (!mesh.passed || mesh.chunks.empty())
+            throw std::runtime_error("world mesh unavailable for static lightmap preparation");
+        std::vector<QuestVr::StaticLightmapMeshChunk> rawChunks;
+        rawChunks.reserve(mesh.chunks.size());
+        for (const auto& chunk:mesh.chunks) {
+            QuestVr::StaticLightmapMeshChunk raw;
+            raw.materialSlot = chunk.materialSlot;
+            raw.surfaces = chunk.surfaces;
+            raw.localPositions.reserve(chunk.vertices.size());
+            for (const auto& vertex:chunk.vertices)
+                raw.localPositions.push_back({vertex.px,vertex.py,vertex.pz});
+            rawChunks.emplace_back(std::move(raw));
+        }
+        auto lightmap = QuestVr::BuildQuestStaticLightmapCache(package,authoredActors,rawChunks);
+        if (lightmap.vertices.size() != mesh.chunks.size())
+            throw std::runtime_error("baked lightmap raw chunk count mismatch");
+        std::vector<WorldMeshChunkPreparation> gpuChunks;
+        constexpr std::size_t verticesPerGpuBatch=4800u;
+        for (std::size_t index=0; index<mesh.chunks.size(); ++index) {
+            const auto& raw=mesh.chunks[index];
+            const auto& baked=lightmap.vertices[index];
+            if (baked.size() != raw.vertices.size() || raw.surfaces.size() != raw.vertices.size())
+                throw std::runtime_error("baked lightmap raw vertex count mismatch");
+            for (std::size_t offset=0; offset<raw.vertices.size(); offset+=verticesPerGpuBatch) {
+                const auto end=std::min(offset+verticesPerGpuBatch,raw.vertices.size());
+                WorldMeshChunkPreparation chunk;
+                chunk.materialSlot=raw.materialSlot;
+                chunk.vertices.assign(raw.vertices.begin()+static_cast<std::ptrdiff_t>(offset),
+                                      raw.vertices.begin()+static_cast<std::ptrdiff_t>(end));
+                chunk.surfaces.assign(raw.surfaces.begin()+static_cast<std::ptrdiff_t>(offset),
+                                      raw.surfaces.begin()+static_cast<std::ptrdiff_t>(end));
+                chunk.lightmapVertices.assign(baked.begin()+static_cast<std::ptrdiff_t>(offset),
+                                             baked.begin()+static_cast<std::ptrdiff_t>(end));
+                gpuChunks.emplace_back(std::move(chunk));
+            }
+        }
+        ALOG("DeusExQuest: static lightmap CPU bake: %zu surfaces/%zu pixels, %zu listed/%zu added/%zu disabled lights, "
+             "%zu shadowed/%zu visible mask bits; %zu unlit/%zu no-lightmap vertices; atlas=%ux%ux%u gain=%.2f quantization=%.6f",
+             lightmap.bakedSurfaces,lightmap.pixelSamples,lightmap.bakeStats.listedLights,
+             lightmap.bakeStats.addedLights,lightmap.bakeStats.disabledLights,
+             lightmap.shadowedMaskSamples,lightmap.visibleMaskSamples,
+             lightmap.unlitVertices,lightmap.noLightmapVertices,lightmap.width,lightmap.height,lightmap.layers,
+             lightmap.gainScale,lightmap.maximumQuantizationError);
+        if (lightmap.bakeStats.unsupportedTypes || lightmap.bakeStats.unsupportedEffects) {
+            ALOG("DeusExQuest: static bake incomplete dynamic components: %zu unsupported types/%zu effects; "
+                 "these are diagnosed, not fabricated steady illumination",
+                 lightmap.bakeStats.unsupportedTypes,lightmap.bakeStats.unsupportedEffects);
+            for (std::size_t type=0; type<lightmap.bakeStats.unsupportedTypeCounts.size(); ++type)
+                if (lightmap.bakeStats.unsupportedTypeCounts[type])
+                    ALOG("DeusExQuest: unsupported static light type %zu: %zu surface-list entries",
+                         type,lightmap.bakeStats.unsupportedTypeCounts[type]);
+            for (std::size_t effect=0; effect<lightmap.bakeStats.unsupportedEffectCounts.size(); ++effect)
+                if (lightmap.bakeStats.unsupportedEffectCounts[effect])
+                    ALOG("DeusExQuest: unsupported static light effect %zu: %zu surface-list entries",
+                         effect,lightmap.bakeStats.unsupportedEffectCounts[effect]);
+        }
+        // Drop duplicate CPU streams after matching/splitting. Atlas RGBA is
+        // transferred into its independently staged upload; chunk streams keep
+        // only the vertex metadata needed by the shared BSP shader.
+        lightmap.vertices.clear();
+        mesh.chunks=std::move(gpuChunks);
+        mesh.lightmap=std::move(lightmap);
+    }
+
     bool UploadWorldMeshChunk(WorldMeshChunkPreparation& chunk) {
+        if (chunk.vertices.empty() || chunk.vertices.size() > 4800u ||
+            chunk.vertices.size()%3u != 0u || chunk.surfaces.size() != chunk.vertices.size() ||
+            chunk.lightmapVertices.size() != chunk.vertices.size()) return false;
         const std::uint32_t firstCollisionTriangle =
             static_cast<std::uint32_t>(collisionTriangles_.size());
         const std::uint32_t vertexCount = static_cast<std::uint32_t>(chunk.vertices.size());
@@ -4156,6 +4369,9 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         descriptor.attribs.position.reserve(vertexCount);
         descriptor.attribs.normal.reserve(vertexCount);
         descriptor.attribs.uv0.reserve(vertexCount);
+        descriptor.attribs.uv1.reserve(vertexCount);
+        descriptor.attribs.tangent.reserve(vertexCount);
+        descriptor.attribs.jointWeights.reserve(vertexCount);
         descriptor.attribs.color.reserve(vertexCount);
         descriptor.indices.reserve(vertexCount);
         for (std::uint32_t index = 0; index < vertexCount; ++index) {
@@ -4163,17 +4379,25 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             descriptor.attribs.position.emplace_back(vertex.px, vertex.py, vertex.pz);
             descriptor.attribs.normal.emplace_back(vertex.nx, vertex.ny, vertex.nz);
             descriptor.attribs.uv0.emplace_back(vertex.u, vertex.v);
+            const auto& lightmap = chunk.lightmapVertices[index];
+            if (!std::isfinite(lightmap.u) || !std::isfinite(lightmap.v) ||
+                !std::isfinite(lightmap.minU) || !std::isfinite(lightmap.minV) ||
+                !std::isfinite(lightmap.maxU) || !std::isfinite(lightmap.maxV) ||
+                lightmap.minU > lightmap.maxU || lightmap.minV > lightmap.maxV ||
+                lightmap.minU < 0.0f || lightmap.minV < 0.0f || lightmap.maxU > 1.0f || lightmap.maxV > 1.0f ||
+                (lightmap.flags & ~1u) != 0u ||
+                lightmap.page < -1 || (lightmap.page >= 0 &&
+                    static_cast<std::uint32_t>(lightmap.page) >= staticLightmapLayers_)) return false;
+            descriptor.attribs.uv1.emplace_back(lightmap.u,lightmap.v);
+            descriptor.attribs.tangent.emplace_back(static_cast<float>(lightmap.page),
+                static_cast<float>(lightmap.flags),0.0f);
+            descriptor.attribs.jointWeights.emplace_back(
+                lightmap.minU,lightmap.minV,lightmap.maxU,lightmap.maxV);
             const float shade = 0.25f + 0.55f * (vertex.nz * 0.5f + 0.5f);
             if (chunk.materialSlot == 0) {
-                const OVR::Vector3f lighting = CalculateMapLighting(
-                    {vertex.px, vertex.py, vertex.pz},
-                    {vertex.nx, vertex.ny, vertex.nz});
-                RecordLighting(lighting);
                 descriptor.attribs.color.emplace_back(
                     static_cast<float>(vertex.materialSlot) / 255.0f,
-                    lighting.x,
-                    lighting.y,
-                    lighting.z);
+                    1.0f,1.0f,1.0f);
             } else {
                 descriptor.attribs.color.emplace_back(
                     0.15f * shade, 0.8f * shade, 0.55f * shade, 1.0f);
@@ -4192,8 +4416,9 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         }
         AddCollisionGridRange(firstCollisionTriangle);
         if (chunk.materialSlot == 0) {
-            texturedRenderers_.emplace_back();
-            texturedRenderers_.back().Init(descriptor, firstTexture_);
+            bakedWorldRenderers_.emplace_back();
+            bakedWorldRenderers_.back().Init(
+                descriptor,firstTexture_,staticLightmapTexture_,staticLightmapGainScale_);
         } else {
             worldRenderers_.emplace_back();
             worldRenderers_.back().Init(descriptor);
@@ -4217,105 +4442,12 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         if (pendingWorldMeshChunk_ >= pendingWorldMesh_.chunks.size()) return false;
         if (!UploadWorldMeshChunk(pendingWorldMesh_.chunks[pendingWorldMeshChunk_])) return false;
         pendingWorldMesh_.chunks[pendingWorldMeshChunk_].vertices.clear();
+        pendingWorldMesh_.chunks[pendingWorldMeshChunk_].surfaces.clear();
+        pendingWorldMesh_.chunks[pendingWorldMeshChunk_].lightmapVertices.clear();
         ++pendingWorldMeshChunk_;
         return true;
     }
 
-    bool LoadWorldMesh(bool loadTexture = true, bool buildCollisionGrid = true) {
-        constexpr const char* path =
-            "/data/user/0/dev.deusex.questvr.smoketest/files/DeusEx/quest-world.mesh";
-        if (loadTexture && !LoadFirstTexture()) return false;
-        std::FILE* file = std::fopen(path, "rb");
-        if (file == nullptr) return false;
-        collisionTriangles_.clear();
-        ResetLightingStats();
-        std::uint32_t magic{}, version{}, chunkCount{};
-        bool ok = std::fread(&magic, sizeof(magic), 1, file) == 1 &&
-            std::fread(&version, sizeof(version), 1, file) == 1 &&
-            std::fread(&chunkCount, sizeof(chunkCount), 1, file) == 1 &&
-            magic == 0x4d515844u && version == 2 && chunkCount > 0 && chunkCount < 128;
-        std::uint32_t texturedChunks{};
-        for (std::uint32_t chunk = 0; ok && chunk < chunkCount; ++chunk) {
-            std::int32_t materialSlot{};
-            std::uint32_t vertexCount{};
-            ok = std::fread(&materialSlot, sizeof(materialSlot), 1, file) == 1 &&
-                std::fread(&vertexCount, sizeof(vertexCount), 1, file) == 1 &&
-                vertexCount > 0 && vertexCount <= 60000 && vertexCount % 3 == 0;
-            if (materialSlot == 0) ++texturedChunks;
-            std::vector<MeshVertex> vertices(vertexCount);
-            if (ok) ok = std::fread(
-                vertices.data(), sizeof(MeshVertex), vertexCount, file) == vertexCount;
-            if (!ok) break;
-
-            OVRFW::GlGeometry::Descriptor descriptor;
-            descriptor.attribs.position.reserve(vertexCount);
-            descriptor.attribs.normal.reserve(vertexCount);
-            descriptor.attribs.uv0.reserve(vertexCount);
-            descriptor.attribs.color.reserve(vertexCount);
-            descriptor.indices.reserve(vertexCount);
-            for (std::uint32_t index = 0; index < vertexCount; ++index) {
-                const MeshVertex& vertex = vertices[index];
-                descriptor.attribs.position.emplace_back(vertex.px, vertex.py, vertex.pz);
-                descriptor.attribs.normal.emplace_back(vertex.nx, vertex.ny, vertex.nz);
-                descriptor.attribs.uv0.emplace_back(vertex.u, vertex.v);
-                const float shade = 0.25f + 0.55f * (vertex.nz * 0.5f + 0.5f);
-                if (materialSlot == 0) {
-                    const OVR::Vector3f lighting = CalculateMapLighting(
-                        {vertex.px, vertex.py, vertex.pz},
-                        {vertex.nx, vertex.ny, vertex.nz});
-                    RecordLighting(lighting);
-                    descriptor.attribs.color.emplace_back(
-                        static_cast<float>(vertex.materialSlot) / 255.0f,
-                        lighting.x,
-                        lighting.y,
-                        lighting.z);
-                } else {
-                    descriptor.attribs.color.emplace_back(
-                        0.15f * shade, 0.8f * shade, 0.55f * shade, 1.0f);
-                }
-                descriptor.indices.push_back(static_cast<OVRFW::TriangleIndex>(index));
-            }
-            for (std::uint32_t index = 0; index + 2 < vertexCount; index += 6) {
-                const MeshVertex& va = vertices[index];
-                const MeshVertex& vb = vertices[index + 1];
-                const MeshVertex& vc = vertices[index + 2];
-                collisionTriangles_.push_back({
-                    {va.px, va.py, va.pz},
-                    {vb.px, vb.py, vb.pz},
-                    {vc.px, vc.py, vc.pz},
-                    {va.nx, va.ny, va.nz}});
-            }
-            if (materialSlot == 0) {
-                texturedRenderers_.emplace_back();
-                texturedRenderers_.back().Init(descriptor, firstTexture_);
-            } else {
-                worldRenderers_.emplace_back();
-                worldRenderers_.back().Init(descriptor);
-                worldRenderers_.back().AmbientLightColor = {0.35f, 0.35f, 0.35f};
-            }
-        }
-        std::fclose(file);
-        if (!ok) {
-            for (auto& renderer : worldRenderers_) renderer.Shutdown();
-            worldRenderers_.clear();
-            for (auto& renderer : texturedRenderers_) renderer.Shutdown();
-            texturedRenderers_.clear();
-            collisionTriangles_.clear();
-            collisionGrid_.clear();
-            oversizedCollisionTriangles_.clear();
-            return false;
-        }
-        if (buildCollisionGrid) BuildCollisionGrid();
-        LogLightingStats();
-        ALOG(
-            "DeusExQuest: loaded %s BSP mesh in %u GPU chunks (%u textured) with %zu collision triangles in %zu cells",
-            currentMapName_.c_str(),
-            chunkCount,
-            texturedChunks,
-            collisionTriangles_.size(),
-            collisionGrid_.size());
-        return true;
-    }
 
     bool LoadActorTextures() {
         PortableTextureArray array;
@@ -4483,6 +4615,82 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         return result;
     }
 
+    void ClearPendingStaticLightmapUpload() {
+        if (pendingStaticLightmapId_ != 0u) glDeleteTextures(1,&pendingStaticLightmapId_);
+        pendingStaticLightmapId_ = 0u;
+        pendingStaticLightmapRgba_.clear();
+        pendingStaticLightmapLayer_ = pendingStaticLightmapRow_ = 0u;
+        pendingStaticLightmapLayers_ = pendingStaticLightmapWidth_ = pendingStaticLightmapHeight_ = 0u;
+    }
+
+    bool BeginStaticLightmapUpload(QuestVr::StaticLightmapCache cache) {
+        ClearPendingStaticLightmapUpload();
+        const auto bytes = static_cast<std::uint64_t>(cache.width)*cache.height*cache.layers*4u;
+        GLint maxSize{}, maxLayers{};
+        glGetIntegerv(GL_MAX_TEXTURE_SIZE,&maxSize);
+        glGetIntegerv(GL_MAX_ARRAY_TEXTURE_LAYERS,&maxLayers);
+        if (cache.width == 0u || cache.height == 0u || cache.layers == 0u ||
+            cache.width > 1024u || cache.height > 1024u || cache.layers > 16u ||
+            maxSize <= 0 || maxLayers <= 0 || cache.width > static_cast<std::uint32_t>(maxSize) ||
+            cache.height > static_cast<std::uint32_t>(maxSize) || cache.layers > static_cast<std::uint32_t>(maxLayers) ||
+            bytes != cache.rgba.size() || bytes > 64u*1024u*1024u ||
+            !std::isfinite(cache.gainScale) || cache.gainScale <= 0.0f || cache.gainScale > 16.0f ||
+            glGetError() != GL_NO_ERROR) return false;
+        GLuint texture{};
+        glGenTextures(1,&texture);
+        glBindTexture(GL_TEXTURE_2D_ARRAY,texture);
+        glTexStorage3D(GL_TEXTURE_2D_ARRAY,1,GL_RGBA8,
+            static_cast<GLsizei>(cache.width),static_cast<GLsizei>(cache.height),static_cast<GLsizei>(cache.layers));
+        glTexParameteri(GL_TEXTURE_2D_ARRAY,GL_TEXTURE_WRAP_S,GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D_ARRAY,GL_TEXTURE_WRAP_T,GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D_ARRAY,GL_TEXTURE_MIN_FILTER,GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D_ARRAY,GL_TEXTURE_MAG_FILTER,GL_LINEAR);
+        const GLenum error = glGetError();
+        glBindTexture(GL_TEXTURE_2D_ARRAY,0);
+        if (!texture || error != GL_NO_ERROR) {
+            if (texture) glDeleteTextures(1,&texture);
+            return false;
+        }
+        pendingStaticLightmapId_ = texture;
+        pendingStaticLightmapWidth_ = cache.width; pendingStaticLightmapHeight_ = cache.height;
+        pendingStaticLightmapLayers_ = cache.layers; pendingStaticLightmapGainScale_ = cache.gainScale;
+        pendingStaticLightmapRgba_ = std::move(cache.rgba);
+        return true;
+    }
+
+    bool UploadStaticLightmapRows() {
+        if (!pendingStaticLightmapId_ || pendingStaticLightmapLayer_ >= pendingStaticLightmapLayers_) return false;
+        constexpr std::size_t bytesPerFrame = 128u*1024u;
+        const std::size_t bytesPerRow = static_cast<std::size_t>(pendingStaticLightmapWidth_)*4u;
+        const auto rows = static_cast<std::uint32_t>(std::min<std::size_t>(bytesPerFrame/bytesPerRow,
+            pendingStaticLightmapHeight_-pendingStaticLightmapRow_));
+        if (rows == 0u) return false;
+        const std::size_t offset = (static_cast<std::size_t>(pendingStaticLightmapLayer_)*pendingStaticLightmapHeight_+
+            pendingStaticLightmapRow_)*bytesPerRow;
+        glBindTexture(GL_TEXTURE_2D_ARRAY,pendingStaticLightmapId_);
+        glTexSubImage3D(GL_TEXTURE_2D_ARRAY,0,0,static_cast<GLint>(pendingStaticLightmapRow_),
+            static_cast<GLint>(pendingStaticLightmapLayer_),static_cast<GLsizei>(pendingStaticLightmapWidth_),
+            static_cast<GLsizei>(rows),1,GL_RGBA,GL_UNSIGNED_BYTE,pendingStaticLightmapRgba_.data()+offset);
+        const GLenum error = glGetError();
+        glBindTexture(GL_TEXTURE_2D_ARRAY,0);
+        if (error != GL_NO_ERROR) return false;
+        pendingStaticLightmapRow_ += rows;
+        if (pendingStaticLightmapRow_ == pendingStaticLightmapHeight_) {
+            pendingStaticLightmapRow_ = 0u; ++pendingStaticLightmapLayer_;
+        }
+        if (pendingStaticLightmapLayer_ == pendingStaticLightmapLayers_) {
+            staticLightmapTexture_ = OVRFW::GlTexture(pendingStaticLightmapId_,GL_TEXTURE_2D_ARRAY,
+                static_cast<int>(pendingStaticLightmapWidth_),static_cast<int>(pendingStaticLightmapHeight_));
+            staticLightmapGainScale_ = pendingStaticLightmapGainScale_;
+            staticLightmapLayers_ = pendingStaticLightmapLayers_;
+            pendingStaticLightmapId_ = 0u;
+            pendingStaticLightmapRgba_.clear();
+            ALOG("DeusExQuest: original static lightmap atlas uploaded in <=128KiB row slices: %ux%ux%u gain=%.2f",
+                pendingStaticLightmapWidth_,pendingStaticLightmapHeight_,pendingStaticLightmapLayers_,staticLightmapGainScale_);
+        }
+        return true;
+    }
+
     bool BeginWorldTextureUpload(WorldTexturePreparation preparation) {
         if (!preparation.passed || preparation.rgba.empty()) return false;
         GLuint texture{};
@@ -4564,66 +4772,13 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         return true;
     }
 
-    bool LoadFirstTexture() {
-        constexpr const char* path =
-            "/data/user/0/dev.deusex.questvr.smoketest/files/DeusEx/quest-material-array.rgba";
-        std::FILE* file = std::fopen(path, "rb");
-        if (file == nullptr) return false;
-        std::uint32_t magic{}, version{}, width{}, height{}, layers{};
-        bool ok = std::fread(&magic, sizeof(magic), 1, file) == 1 &&
-            std::fread(&version, sizeof(version), 1, file) == 1 &&
-            std::fread(&width, sizeof(width), 1, file) == 1 &&
-            std::fread(&height, sizeof(height), 1, file) == 1 &&
-            std::fread(&layers, sizeof(layers), 1, file) == 1 &&
-            magic == 0x41515844u && version == 1 && width > 0 && height > 0 &&
-            layers > 0 && layers <= 255 && width <= 2048 && height <= 2048;
-        std::vector<std::uint8_t> rgba;
-        if (ok) {
-            rgba.resize(static_cast<std::size_t>(width) * height * layers * 4u);
-            ok = std::fread(rgba.data(), 1, rgba.size(), file) == rgba.size();
-        }
-        std::fclose(file);
-        if (!ok) return false;
-        GLuint texture{};
-        glGenTextures(1, &texture);
-        glBindTexture(GL_TEXTURE_2D_ARRAY, texture);
-        glTexImage3D(
-            GL_TEXTURE_2D_ARRAY,
-            0,
-            GL_RGBA8,
-            static_cast<GLsizei>(width),
-            static_cast<GLsizei>(height),
-            static_cast<GLsizei>(layers),
-            0,
-            GL_RGBA,
-            GL_UNSIGNED_BYTE,
-            rgba.data());
-        glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_S, GL_REPEAT);
-        glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_T, GL_REPEAT);
-        glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-        const GLenum error = glGetError();
-        glBindTexture(GL_TEXTURE_2D_ARRAY, 0);
-        if (error != GL_NO_ERROR) {
-            if (texture != 0) glDeleteTextures(1, &texture);
-            ALOG("DeusExQuest: texture-array upload failed with GL error 0x%x", error);
-            return false;
-        }
-        firstTexture_ = OVRFW::GlTexture(
-            texture, GL_TEXTURE_2D_ARRAY, static_cast<int>(width), static_cast<int>(height));
-        ALOG(
-            "DeusExQuest: uploaded UE1 material array: %u layers at %ux%u",
-            layers,
-            width,
-            height);
-        return firstTexture_.IsValid();
-    }
 
     // SDK graphics commands keep pointers into their owning renderer (uniforms
     // and textures). Deque growth preserves those addresses when world/actor
     // chunks are appended; vector relocation left stale uniform pointers.
     std::deque<OVRFW::GeometryRenderer> worldRenderers_;
     std::deque<TexturedGeometryRenderer> texturedRenderers_;
+    std::deque<BakedWorldGeometryRenderer> bakedWorldRenderers_;
     std::unique_ptr<ActorGeometryBuild> actorGeometryBuild_;
     bool actorGeometryComplete_{};
     std::vector<PortableActorSnapshot> actorSnapshots_;
@@ -4757,6 +4912,15 @@ class DeusExQuestApp final : public OVRFW::XrApp {
     std::uint32_t pendingWorldTextureLayers_{};
     std::uint32_t pendingWorldTextureLayersUploaded_{};
     std::vector<std::uint8_t> pendingWorldTextureRgba_;
+    GLuint pendingStaticLightmapId_{};
+    std::uint32_t pendingStaticLightmapWidth_{}, pendingStaticLightmapHeight_{}, pendingStaticLightmapLayers_{};
+    std::uint32_t pendingStaticLightmapLayer_{}, pendingStaticLightmapRow_{};
+    float pendingStaticLightmapGainScale_{1.0f}, staticLightmapGainScale_{1.0f};
+    std::vector<std::uint8_t> pendingStaticLightmapRgba_;
+    OVRFW::GlTexture staticLightmapTexture_;
+    std::uint32_t staticLightmapLayers_{};
+    QuestVr::LightmapVec3 activeMapUnrealOrigin_;
+    std::string activeMapPlayerStartPath_;
     GLuint pendingActorTextureId_{};
     std::uint32_t pendingActorTextureWidth_{};
     std::uint32_t pendingActorTextureHeight_{};

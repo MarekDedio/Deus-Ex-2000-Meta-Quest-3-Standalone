@@ -9,6 +9,7 @@ add_subdirectory(
 set(SURREAL_ENGINE_ROOT
     "${CMAKE_CURRENT_LIST_DIR}/../third_party/SurrealEngine/SurrealEngine")
 add_library(surreal_portable_core STATIC
+    quest_static_lightmap_cache.cpp
     "${SURREAL_ENGINE_ROOT}/Precomp.cpp"
     "${SURREAL_ENGINE_ROOT}/Utils/File.cpp"
     "${SURREAL_ENGINE_ROOT}/Utils/StrTools.cpp"
@@ -50,3 +51,6 @@ target_link_libraries(deusex_quest PRIVATE
     surreal_portable_core
 )
 set_target_properties(deusex_quest PROPERTIES LINK_FLAGS "-u ANativeActivity_onCreate")
+
+# Preserve authored shadow/model records without changing DXQM v2 cache layout.
+target_sources(surreal_portable_core PRIVATE portable_model_geometry.cpp portable_lightmap_math.cpp)

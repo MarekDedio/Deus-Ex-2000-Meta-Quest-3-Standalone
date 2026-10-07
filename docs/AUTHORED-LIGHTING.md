@@ -1,8 +1,13 @@
 # Authored lighting: current implementation and fidelity work
 
-The Quest renderer and optional desktop `--authored-lighting` preview share
+Quest world BSP now uses original static shadow-lightmaps; see
+[STATIC-LIGHTMAPS.md](STATIC-LIGHTMAPS.md) for the implementation, evidence and
+remaining fidelity limits. `--baked-lighting` selects that shared CPU path on
+desktop. Default desktop captures remain albedo-only.
+
+The actor renderer and optional desktop `--authored-lighting` preview share
 `native/quest_map_lighting.h`. They load actual map actors and inherited class
-defaults from the user's installed packages, but currently evaluate an
+defaults from the user's installed packages, but that interim path evaluates an
 unoccluded, static, direct-vertex approximation. This is not original UE1
 lightmap reproduction, a campaign visual approval, or a Quest performance pass.
 The default desktop mode remains world/material albedo only.
@@ -57,7 +62,7 @@ approximation, not original photometric accuracy. Each report explicitly leaves
 UE1 lightmaps, BSP shadow occlusion, GPU numerical equivalence, stereo, actors,
 live gameplay, and Quest performance unverified.
 
-## Remaining concrete differences
+## Remaining differences in the actor/interim vertex-light path
 
 - The global ambient RGB is `0.075`, not the surface's ZoneInfo/LevelInfo ambient.
 - Brightness uses the port's `brightness/64` gain; the original HSB brightness
@@ -79,7 +84,11 @@ live gameplay, and Quest performance unverified.
   guard against cache/runtime ordering differences, but the eventual versioned
   cache should carry its exact transform rather than requiring a second guess.
 
-## Next implementation toward original lightmaps
+## Historical lightmap implementation route
+
+The static decoder, masks, zone ambient, UV/atlas sampling, Unlit handling and
+host tests below are now implemented in the shared static path. Dynamic light
+invalidation, complete rendering fidelity and physical Quest checks remain.
 
 1. Extend the bounded Model decoder in `native/ue1_package_probe.cpp` beyond
    the zones where it currently stops. Preserve each surface's `vNormal`,

@@ -3,6 +3,7 @@
 #include "visual_renderer.h"
 #include "portable_unreal_runtime.h"
 #include "quest_map_lighting.h"
+#include "quest_static_lightmap_cache.h"
 
 #include <algorithm>
 #include <array>
@@ -25,6 +26,8 @@ struct AuthoredLightingPreview {
     std::size_t runtimeActors{}, unresolvedMapClasses{}, texturedVertices{};
     QuestVr::MapLightBuildStats lightStats;
     double minimumLuminance{}, maximumLuminance{}, meanLuminance{};
+    bool baked{};
+    QuestVr::StaticLightmapCache staticLightmaps;
 };
 
 namespace lightingdetail {
@@ -177,7 +180,8 @@ inline AuthoredLightingPreview BuildSyntheticLightingPreview(Scene& scene) {
 }
 
 inline AuthoredLightingPreview BuildAuthoredLightingPreview(Scene& scene,
-    const std::filesystem::path& gameRoot, const std::string& map) {
+    const std::filesystem::path& gameRoot, const std::string& map,
+    const std::filesystem::path& meshPath = {}, bool baked = false) {
     AuthoredLightingPreview metadata;
     metadata.enabled = true;
     // Same package set as Quest startup, so inherited Light/Spotlight defaults
@@ -209,11 +213,40 @@ inline AuthoredLightingPreview BuildAuthoredLightingPreview(Scene& scene,
     metadata.unresolvedMapClasses = mapRuntime.unresolvedClasses;
     const auto actors = GetPortableRuntimeMapActors();
     metadata.runtimeActors = actors.size();
-    metadata.playerStartPath = lightingdetail::VerifyMapLightingOrigin(package,actors);
+    const auto verified = QuestVr::VerifyQuestMapOrigin(package,actors,metadata.playerStartPath);
     metadata.originVerified = true;
-    const auto lights = QuestVr::BuildMapLights(actors,&metadata.lightStats);
+    const OVR::Vector3f verifiedOrigin{verified.x,verified.y,verified.z};
+    const auto lights = QuestVr::BuildMapLights(actors,&metadata.lightStats,&verifiedOrigin);
     metadata.emitterTalliesFromAuthoredSnapshots = true;
-    lightingdetail::ApplyVertexLighting(scene,lights,metadata);
+    if (!baked) lightingdetail::ApplyVertexLighting(scene,lights,metadata);
+    else {
+        const auto surfaceChunks = QuestVr::ReadWorldSurfaceStream(meshPath.string()+".surfaces");
+        if (surfaceChunks.size() != scene.chunks.size())
+            throw std::runtime_error("Desktop world and surface chunk counts disagree");
+        std::vector<QuestVr::StaticLightmapMeshChunk> chunks(scene.chunks.size());
+        for (std::size_t c = 0; c < chunks.size(); ++c) {
+            const auto& source = scene.chunks[c]; auto& target = chunks[c];
+            target.materialSlot = source.materialSlot;
+            target.surfaces = surfaceChunks[c].records;
+            if (surfaceChunks[c].materialSlot != source.materialSlot || target.surfaces.size() != source.vertices.size())
+                throw std::runtime_error("Desktop world and surface vertices disagree");
+            target.localPositions.reserve(source.vertices.size());
+            for (const auto& vertex : source.vertices)
+                target.localPositions.push_back({vertex.position.x,vertex.position.y,vertex.position.z});
+        }
+        metadata.staticLightmaps = QuestVr::BuildQuestStaticLightmapCache(package,actors,chunks);
+        auto& cache = metadata.staticLightmaps;
+        scene.lightmapWidth = cache.width; scene.lightmapHeight = cache.height;
+        scene.lightmapLayers = cache.layers; scene.lightmapGainScale = cache.gainScale;
+        scene.lightmapRgba = std::move(cache.rgba);
+        scene.lightmapVertices.resize(cache.vertices.size());
+        for (std::size_t c = 0; c < cache.vertices.size(); ++c)
+            for (const auto& vertex : cache.vertices[c])
+                scene.lightmapVertices[c].push_back({vertex.u,vertex.v,vertex.page,vertex.flags,
+                    vertex.minU,vertex.minV,vertex.maxU,vertex.maxV});
+        cache.vertices.clear();
+        metadata.baked = true;
+    }
     return metadata;
 }
 

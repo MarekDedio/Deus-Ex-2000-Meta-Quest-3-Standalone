@@ -7,11 +7,19 @@ BMP images. Original commercial packages stay in the user's game installation;
 generated caches, screenshots, and reports stay under ignored `artifacts/`.
 
 The world-capture mode is a geometry/material inspection tool, not a playable desktop port
-or an OpenXR emulator. It does not render actor meshes, authored lighting,
+or an OpenXR emulator. Default albedo captures do not render actor meshes, authored lighting,
 skyboxes, HUD/Persona UI, or controller models. It does not execute campaign
 progression or validate audio, saves, level transitions, stereo comfort, native
 Quest GPU shaders, or device frame times. Reports explicitly set
 `campaignPlayabilityVerified` to `false`.
+
+`-BakedLighting` (CLI `--baked-lighting`) additionally evaluates original static
+light lists, authored per-light shadow bit planes, ZoneInfo/LevelInfo ambient
+and `PF_Unlit`, using the same bounded CPU baker as Quest. It requires original
+GameRoot/map data and verifies exact world/sidecar triangle and origin matches.
+Animated light components remain explicitly omitted; skyboxes, actors, native
+GPU precision, display gamma, stereo and gameplay are still unverified. See
+[STATIC-LIGHTMAPS.md](STATIC-LIGHTMAPS.md).
 
 A separate `--persona-preview` mode runs the same CPU artwork compositor used
 by the APK. It decodes the original page backgrounds, borders, icons, bitmap

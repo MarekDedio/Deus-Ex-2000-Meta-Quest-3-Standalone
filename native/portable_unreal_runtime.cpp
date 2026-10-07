@@ -1432,6 +1432,9 @@ std::vector<PortableActorSnapshot> GetPortableRuntimeMapActors() {
             "LightSaturation", snapshot.lightSaturation);
         snapshot.lightRadius = readInheritedByte("LightRadius", snapshot.lightRadius);
         snapshot.lightCone = readInheritedByte("LightCone", snapshot.lightCone);
+        snapshot.ambientHue = readInheritedByte("AmbientHue", snapshot.ambientHue);
+        snapshot.ambientSaturation = readInheritedByte("AmbientSaturation", snapshot.ambientSaturation);
+        snapshot.ambientBrightness = readInheritedByte("AmbientBrightness", snapshot.ambientBrightness);
         const PortableTaggedProperty* destination = inheritedProperty("DestMap");
         if (destination == nullptr) destination = inheritedProperty("URL");
         if (destination != nullptr) {

@@ -8,6 +8,7 @@ endif()
 
 set(PORT_NATIVE "${CMAKE_CURRENT_LIST_DIR}/../native")
 add_library(quest_portable_host STATIC
+    "${PORT_NATIVE}/quest_static_lightmap_cache.cpp"
     "${SURREAL_ENGINE_ROOT}/Precomp.cpp"
     "${SURREAL_ENGINE_ROOT}/Utils/File.cpp"
     "${SURREAL_ENGINE_ROOT}/Utils/StrTools.cpp"
@@ -143,3 +144,51 @@ if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
     target_link_options(async_result_epoch_test PRIVATE -static -static-libgcc -static-libstdc++)
 endif()
 add_test(NAME async_result_epoch COMMAND async_result_epoch_test)
+
+# Bounded authored UModel data is independent of the existing DXQM v2 cache.
+target_sources(quest_portable_host PRIVATE "${PORT_NATIVE}/portable_model_geometry.cpp")
+add_executable(portable_model_geometry_test portable_model_geometry_test.cpp)
+target_compile_features(portable_model_geometry_test PRIVATE cxx_std_20)
+target_link_libraries(portable_model_geometry_test PRIVATE quest_portable_host)
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+    target_compile_options(portable_model_geometry_test PRIVATE -Wall -Wextra -Werror)
+    target_link_options(portable_model_geometry_test PRIVATE -static -static-libgcc -static-libstdc++)
+endif()
+add_test(NAME portable_model_geometry COMMAND portable_model_geometry_test)
+
+add_executable(portable_lightmap_renderer_test portable_lightmap_renderer_test.cpp visual_renderer.cpp)
+target_compile_features(portable_lightmap_renderer_test PRIVATE cxx_std_17)
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+    target_compile_options(portable_lightmap_renderer_test PRIVATE -Wall -Wextra -Werror)
+    target_link_options(portable_lightmap_renderer_test PRIVATE -static -static-libgcc -static-libstdc++)
+endif()
+add_test(NAME portable_lightmap_renderer COMMAND portable_lightmap_renderer_test)
+
+target_sources(quest_portable_host PRIVATE "${PORT_NATIVE}/portable_lightmap_math.cpp")
+add_executable(portable_lightmap_math_test portable_lightmap_math_test.cpp
+    "${SURREAL_ENGINE_ROOT}/Math/hsb.cpp")
+target_compile_features(portable_lightmap_math_test PRIVATE cxx_std_20)
+target_link_libraries(portable_lightmap_math_test PRIVATE quest_portable_host)
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+    target_compile_options(portable_lightmap_math_test PRIVATE -Wall -Wextra -Werror)
+    target_link_options(portable_lightmap_math_test PRIVATE -static -static-libgcc -static-libstdc++)
+endif()
+add_test(NAME portable_lightmap_math COMMAND portable_lightmap_math_test)
+
+add_executable(quest_world_surface_stream_test quest_world_surface_stream_test.cpp)
+target_compile_features(quest_world_surface_stream_test PRIVATE cxx_std_17)
+target_include_directories(quest_world_surface_stream_test PRIVATE "${PORT_NATIVE}")
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+    target_compile_options(quest_world_surface_stream_test PRIVATE -Wall -Wextra -Werror)
+    target_link_options(quest_world_surface_stream_test PRIVATE -static -static-libgcc -static-libstdc++)
+endif()
+add_test(NAME quest_world_surface_stream COMMAND quest_world_surface_stream_test)
+
+add_executable(quest_static_lightmap_cache_test quest_static_lightmap_cache_test.cpp)
+target_compile_features(quest_static_lightmap_cache_test PRIVATE cxx_std_20)
+target_link_libraries(quest_static_lightmap_cache_test PRIVATE quest_portable_host)
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+    target_compile_options(quest_static_lightmap_cache_test PRIVATE -Wall -Wextra -Werror)
+    target_link_options(quest_static_lightmap_cache_test PRIVATE -static -static-libgcc -static-libstdc++)
+endif()
+add_test(NAME quest_static_lightmap_cache COMMAND quest_static_lightmap_cache_test)

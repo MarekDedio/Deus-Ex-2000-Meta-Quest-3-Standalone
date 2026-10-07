@@ -219,6 +219,8 @@ struct PortableActorSnapshot {
     std::uint8_t lightSaturation{255u};
     std::uint8_t lightRadius{64u};
     std::uint8_t lightCone{128u};
+    // ZoneInfo defaults are inherited too; an absent zone uses LevelInfo.
+    std::uint8_t ambientHue{}, ambientSaturation{255u}, ambientBrightness{};
 };
 
 PortableVmValue ExecutePortableFunction(const std::string& objectPath);

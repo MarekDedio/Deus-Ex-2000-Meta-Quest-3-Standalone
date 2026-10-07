@@ -28,6 +28,7 @@ struct Options {
     bool selfTest{};
     bool personaPreview{};
     bool authoredLighting{};
+    bool bakedLighting{};
     std::filesystem::path gameRoot, cacheRoot, mesh, materials, output, report, baseline;
     std::string map;
     Camera camera;
@@ -94,11 +95,13 @@ void InspectTextures(const std::filesystem::path& path, const std::string& filte
 void ProtectCaptureInputs(const Options& options) {
     if (SameFile(options.output,options.report))
         throw std::runtime_error("Capture output and report must be different files");
-    for (const auto& input : {options.baseline,options.mesh,options.materials}) {
+    const auto surfaces = options.mesh.empty() ? std::filesystem::path{} :
+        std::filesystem::path(options.mesh.string()+".surfaces");
+    for (const auto& input : {options.baseline,options.mesh,options.materials,surfaces}) {
         if (SameFile(options.output,input) || SameFile(options.report,input))
             throw std::runtime_error("Output/report must not alias baseline or source cache files");
     }
-    if (SameFile(options.baseline,options.mesh) || SameFile(options.baseline,options.materials))
+    if (SameFile(options.baseline,options.mesh) || SameFile(options.baseline,options.materials) || SameFile(options.baseline,surfaces))
         throw std::runtime_error("Baseline must not alias source/generated cache files");
     if (!options.gameRoot.empty() && (Within(options.output,options.gameRoot) ||
         Within(options.report,options.gameRoot) ||
@@ -144,6 +147,7 @@ void Help() {
         "  --baseline PATH.bmp --max-mean-error FRACTION\n"
         "  --min-coverage FRACTION             Optional viewpoint-specific empty-frame gate\n"
         "  --authored-lighting (--lit-preview) Optional shared Quest direct vertex lighting\n"
+        "  --baked-lighting          Original static BSP lightmaps/shadow masks and zone ambient\n"
         "                                    Requires original game/map; self-test uses fixture lights\n"
         "  --inspect-textures PACKAGE FILTER  List matching export/class/properties for diagnosis\n"
         "  --persona-preview --game-root PATH Original Persona artwork, fonts and fixture text\n"
@@ -165,6 +169,7 @@ Options Parse(int argc, char** argv) {
         };
         if (argument == "--self-test") options.selfTest = true;
         else if (argument == "--authored-lighting" || argument == "--lit-preview") options.authoredLighting = true;
+        else if (argument == "--baked-lighting") { options.authoredLighting = true; options.bakedLighting = true; }
         else if (argument == "--persona-preview") options.personaPreview = true;
         else if (argument == "--persona-icon") options.personaIcons.push_back(next());
         else if (argument == "--persona-page") {
@@ -238,6 +243,8 @@ Options Parse(int argc, char** argv) {
         throw std::runtime_error("Both --game-root and --map are required");
     if (options.authoredLighting && !hasGame && !options.selfTest)
         throw std::runtime_error("Authored lighting requires original --game-root/--map, not an unverified external cache");
+    if (options.bakedLighting && !hasGame)
+        throw std::runtime_error("Baked lighting requires original game packages, not synthetic fixtures");
     if (options.authoredLighting && hasGame && (options.map.size()>128u ||
         std::any_of(options.map.begin(),options.map.end(),[](unsigned char character) {
             return !std::isalnum(character) && character != '_' && character != '-';
@@ -426,14 +433,17 @@ void Report(const Options& options, const Scene& scene, const RenderResult& resu
             (packageCapture ? "original-game-packages" : "external-quest-cache"))
         << ",\n  \"realMapsDecoded\": " << (packageCapture ? 1 : 0)
         << ",\n  \"campaignPlayabilityVerified\": false"
-        << ",\n  \"scope\": " << Quote(lighting.enabled ?
+        << ",\n  \"scope\": " << Quote(lighting.baked ?
+            "software BSP/material textures with original static light lists, baked shadow masks, zone ambient and Unlit; dynamic lighting, actors, UI, OpenXR, stereo and Quest performance not verified" : lighting.enabled ?
             "software world BSP/material textures with shared Quest direct vertex lighting approximation; no UE1 lightmaps/BSP shadow occlusion, actor meshes, UI, OpenXR, stereo or Quest performance" :
             "software world BSP/material albedo; no actor meshes, map lighting, UI, OpenXR, stereo or Quest performance")
-        << ",\n  \"lightingMode\": " << Quote(!lighting.enabled ? "albedo-only" :
+        << ",\n  \"lightingMode\": " << Quote(lighting.baked ? "original-static-shadow-lightmaps" : !lighting.enabled ? "albedo-only" :
             (lighting.synthetic ? "synthetic-direct-vertex-fixture" : "original-map-direct-vertex-approximation"))
         << ",\n  \"authoredLightingPropertiesLoaded\": " << (lighting.enabled && !lighting.synthetic ? "true" : "false")
         << ",\n  \"ue1LightmapsVerified\": false"
         << ",\n  \"bspShadowOcclusionVerified\": false"
+        << ",\n  \"ue1StaticLightmapsDecoded\": " << (lighting.baked ? "true" : "false")
+        << ",\n  \"authoredShadowMasksApplied\": " << (lighting.baked ? "true" : "false")
         << ",\n  \"gpuLightingNumericalEquivalenceVerified\": false"
         << ",\n  \"lighting\": {\"enabled\": " << (lighting.enabled ? "true" : "false")
         << ", \"synthetic\": " << (lighting.synthetic ? "true" : "false")
@@ -473,13 +483,34 @@ void Report(const Options& options, const Scene& scene, const RenderResult& resu
         << ", \"minimumVertexLightLuminance\": " << lighting.minimumLuminance
         << ", \"meanVertexLightLuminance\": " << lighting.meanLuminance
         << ", \"maximumVertexLightLuminance\": " << lighting.maximumLuminance
-        << ", \"defaultAmbientRgb\": [0.075, 0.075, 0.075]"
-        << ", \"interpolation\": \"Perspective-correct smooth RGB gains; native shader semantic, not GPU precision verification\""
-        << ", \"gainModel\": " << Quote(!lighting.enabled ? "Not applied" :
+        << ", \"defaultAmbientRgb\": " << (lighting.baked ? "null" : "[0.075, 0.075, 0.075]")
+        << ", \"interpolation\": " << Quote(lighting.baked ?
+            "Perspective-correct raw UV; per-fragment tile clamp and bilinear sampling of guttered atlas; RGBA8 quantized, not GPU numerical equivalence" :
+            "Perspective-correct smooth RGB gains; native shader semantic, not GPU precision verification")
+        << ", \"gainModel\": " << Quote(lighting.baked ?
+            "Pinned HSB brightness table, zone ambient, ordered static lights, authored padded per-light shadow masks and static light effects; unsupported dynamic sources explicitly omitted" : !lighting.enabled ? "Not applied" :
             (lighting.synthetic ? "Explicit white fixture light and shared direct gain evaluator" :
                 "Shared normalized authored HSB hue/saturation and brightness/64 direct-intensity approximation"))
-        << ", \"normalInput\": \"Unchanged DXQM surface normals; no per-pixel normal lighting\""
+        << ", \"normalInput\": " << Quote(lighting.baked ?
+            "Original UModel surface normal and authored Unreal-unit texel world positions" :
+            "Unchanged DXQM surface normals; no per-pixel normal lighting")
         << ", \"dynamicLightEffectsSimulated\": false"
+        << ", \"staticLightmapBake\": {\"enabled\": " << (lighting.baked ? "true" : "false")
+        << ", \"sourceLightmaps\": " << lighting.staticLightmaps.modelLightMaps
+        << ", \"sourceShadowBytes\": " << lighting.staticLightmaps.shadowBytes
+        << ", \"bakedSurfaceAmbientTiles\": " << lighting.staticLightmaps.bakedSurfaces
+        << ", \"pixelSamples\": " << lighting.staticLightmaps.pixelSamples
+        << ", \"visibleMaskSamples\": " << lighting.staticLightmaps.visibleMaskSamples
+        << ", \"shadowedMaskSamples\": " << lighting.staticLightmaps.shadowedMaskSamples
+        << ", \"unlitVertices\": " << lighting.staticLightmaps.unlitVertices
+        << ", \"noLightmapVertices\": " << lighting.staticLightmaps.noLightmapVertices
+        << ", \"atlasPages\": " << lighting.staticLightmaps.layers
+        << ", \"hdrGainScale\": " << lighting.staticLightmaps.gainScale
+        << ", \"maximumGain\": " << lighting.staticLightmaps.maximumGain
+        << ", \"maximumRgba8QuantizationError\": " << lighting.staticLightmaps.maximumQuantizationError
+        << ", \"addedLightReferences\": " << lighting.staticLightmaps.bakeStats.addedLights
+        << ", \"unsupportedDynamicTypeReferences\": " << lighting.staticLightmaps.bakeStats.unsupportedTypes
+        << ", \"unsupportedDynamicEffectReferences\": " << lighting.staticLightmaps.bakeStats.unsupportedEffects << '}'
         << ", \"flatDiagnosticChunksAuthoredLit\": false, \"packagePaths\": [";
     for (std::size_t index = 0u; index < lighting.packagePaths.size(); ++index) {
         if (index != 0u) file << ", ";
@@ -664,7 +695,7 @@ int main(int argc, char** argv) {
         auto scene = ReadQuestCache(options.mesh,options.materials);
         AuthoredLightingPreview lighting;
         if (options.authoredLighting) lighting = options.selfTest ? BuildSyntheticLightingPreview(scene) :
-            BuildAuthoredLightingPreview(scene,options.gameRoot,options.map);
+            BuildAuthoredLightingPreview(scene,options.gameRoot,options.map,options.mesh,options.bakedLighting);
         const auto result = Render(scene,options.camera,options.width,options.height);
         WriteBmp(options.output,result.image);
         if (options.selfTest) VerifySyntheticPipeline(scene,options,result);
@@ -681,7 +712,15 @@ int main(int argc, char** argv) {
             << ", hash: " << std::hex << result.frameHash << std::dec << '\n'
             << "Capture: " << std::filesystem::absolute(options.output).string() << '\n'
             << "Report: " << std::filesystem::absolute(options.report).string() << '\n';
-        if (lighting.enabled) std::cout << (lighting.synthetic ? "Synthetic" : "Original authored")
+        if (lighting.baked) std::cout << "Original static lightmap preview: "
+            << lighting.staticLightmaps.bakedSurfaces << " surface/ambient tiles, "
+            << lighting.staticLightmaps.pixelSamples << " texels, "
+            << lighting.staticLightmaps.shadowedMaskSamples << " authored shadowed samples, "
+            << lighting.staticLightmaps.unlitVertices << " unlit vertices; "
+            << lighting.staticLightmaps.bakeStats.unsupportedTypes << " dynamic type references and "
+            << lighting.staticLightmaps.bakeStats.unsupportedEffects << " dynamic effect references omitted. "
+            << "No Quest GPU, campaign playability or original-renderer image equivalence verification.\n";
+        else if (lighting.enabled) std::cout << (lighting.synthetic ? "Synthetic" : "Original authored")
             << " light preview: " << lighting.lightStats.total << " lights ("
             << lighting.lightStats.spotlights << " spot, " << lighting.lightStats.colored << " colored), "
             << lighting.texturedVertices << " textured vertices, gain luminance min/mean/max "

@@ -21,6 +21,10 @@ GameData/
 *.umx
 *.dll
 *.exe
+# Derived commercial map/texture caches are local validation artifacts too.
+quest-world.mesh*
+quest-material-array.rgba
+quest-lightmap*
 
 # Third-party source checkouts are reproducible and kept out of this repo
 third_party/

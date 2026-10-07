@@ -32,13 +32,14 @@ float Edge(float ax, float ay, float bx, float by, float px, float py) {
 Vec3 Subtract(Vec3 a, Vec3 b) { return {a.x - b.x, a.y - b.y, a.z - b.z}; }
 float Dot(Vec3 a, Vec3 b) { return a.x*b.x + a.y*b.y + a.z*b.z; }
 
-struct ViewVertex { float x{}, y{}, z{}, u{}, v{}; Vec3 lighting{1.0f,1.0f,1.0f}; };
+struct ViewVertex { float x{}, y{}, z{}, u{}, v{}; Vec3 lighting{1.0f,1.0f,1.0f}; float lightU{}, lightV{}; };
 ViewVertex Mix(const ViewVertex& a, const ViewVertex& b, float t) {
     return {a.x+(b.x-a.x)*t, a.y+(b.y-a.y)*t, a.z+(b.z-a.z)*t,
             a.u+(b.u-a.u)*t, a.v+(b.v-a.v)*t,
             {a.lighting.x+(b.lighting.x-a.lighting.x)*t,
              a.lighting.y+(b.lighting.y-a.lighting.y)*t,
-             a.lighting.z+(b.lighting.z-a.lighting.z)*t}};
+             a.lighting.z+(b.lighting.z-a.lighting.z)*t},
+            a.lightU+(b.lightU-a.lightU)*t, a.lightV+(b.lightV-a.lightV)*t};
 }
 std::vector<ViewVertex> ClipNear(const std::array<ViewVertex, 3>& triangle, float nearPlane) {
     std::vector<ViewVertex> polygon;
@@ -86,11 +87,38 @@ std::array<float, 4> Sample(const Scene& scene, std::int32_t layer, float u, flo
     }
     return rgba;
 }
+std::array<float, 3> SampleLightmap(const Scene& scene, std::int32_t page, float u, float v,
+    float minU, float minV, float maxU, float maxV) {
+    if (!std::isfinite(u) || !std::isfinite(v))
+        throw std::runtime_error("Lightmap interpolation exceeds finite numeric range");
+    // GL_CLAMP_TO_EDGE with GL_LINEAR. Clamp normalized coordinates before
+    // conversion so even large finite UVs never overflow integer indices.
+    // Each packed tile owns its first/last texel centers. Clamp only AFTER
+    // perspective interpolation: clamping endpoints distorts interior UVs.
+    const float tx = std::clamp(u, minU, maxU)*scene.lightmapWidth - 0.5f;
+    const float ty = std::clamp(v, minV, maxV)*scene.lightmapHeight - 0.5f;
+    const int x0 = static_cast<int>(std::floor(tx)), y0 = static_cast<int>(std::floor(ty));
+    const float fx = tx-x0, fy = ty-y0;
+    std::array<float, 3> gain{};
+    for (int dy = 0; dy < 2; ++dy) {
+        for (int dx = 0; dx < 2; ++dx) {
+            const auto x = std::clamp(x0+dx, 0, static_cast<int>(scene.lightmapWidth)-1);
+            const auto y = std::clamp(y0+dy, 0, static_cast<int>(scene.lightmapHeight)-1);
+            const auto offset = ((static_cast<std::size_t>(page)*scene.lightmapHeight+y)*scene.lightmapWidth+x)*4u;
+            const float weight = (dx == 0 ? 1.0f-fx : fx)*(dy == 0 ? 1.0f-fy : fy)*scene.lightmapGainScale/255.0f;
+            for (std::size_t channel = 0; channel < 3; ++channel)
+                gain[channel] += scene.lightmapRgba[offset+channel]*weight;
+        }
+    }
+    return gain;
+}
 void Rasterize(RenderResult& result, const Scene& scene,
                const std::array<ViewVertex, 3>& triangle, std::int32_t layer,
-               bool textured, float focalLength) {
+               bool textured, float focalLength, std::int32_t lightmapPage = -1,
+               bool unlit = false, float minU = 0.0f, float minV = 0.0f,
+               float maxU = 1.0f, float maxV = 1.0f) {
     const auto width = result.image.width, height = result.image.height;
-    struct Projected { float x, y, inverseDepth, u, v; Vec3 lighting; };
+    struct Projected { float x, y, inverseDepth, u, v; Vec3 lighting; float lightU, lightV; };
     std::array<Projected, 3> points{};
     for (std::size_t i = 0; i < 3; ++i) {
         const auto& vertex = triangle[i];
@@ -98,11 +126,13 @@ void Rasterize(RenderResult& result, const Scene& scene,
         points[i] = {width*0.5f + vertex.x*inverse*focalLength,
                      height*0.5f - vertex.y*inverse*focalLength, inverse,
                      vertex.u*inverse, vertex.v*inverse,
-                     {vertex.lighting.x*inverse,vertex.lighting.y*inverse,vertex.lighting.z*inverse}};
+                     {vertex.lighting.x*inverse,vertex.lighting.y*inverse,vertex.lighting.z*inverse},
+                     vertex.lightU*inverse, vertex.lightV*inverse};
         if (!std::isfinite(points[i].x) || !std::isfinite(points[i].y) ||
             !std::isfinite(points[i].inverseDepth) || !std::isfinite(points[i].u) ||
             !std::isfinite(points[i].v) || !std::isfinite(points[i].lighting.x) ||
-            !std::isfinite(points[i].lighting.y) || !std::isfinite(points[i].lighting.z))
+            !std::isfinite(points[i].lighting.y) || !std::isfinite(points[i].lighting.z) ||
+            !std::isfinite(points[i].lightU) || !std::isfinite(points[i].lightV))
             throw std::runtime_error("Projected geometry/UV exceeds finite numeric range");
     }
     const float area = Edge(points[0].x, points[0].y, points[1].x, points[1].y,
@@ -142,7 +172,11 @@ void Rasterize(RenderResult& result, const Scene& scene,
             if (texel[3] < 127.5f) { ++result.transparentSamples; continue; }
             result.depth[pixel] = depth;
             std::array<float,3> gain{1.0f,1.0f,1.0f};
-            if (!scene.vertexLighting.empty()) {
+            if (!unlit && lightmapPage >= 0) {
+                const float lightU = (a*points[0].lightU+b*points[1].lightU+c*points[2].lightU)/inverse;
+                const float lightV = (a*points[0].lightV+b*points[1].lightV+c*points[2].lightV)/inverse;
+                gain = SampleLightmap(scene, lightmapPage, lightU, lightV, minU, minV, maxU, maxV);
+            } else if (!unlit && !scene.vertexLighting.empty()) {
                 gain = {(a*points[0].lighting.x+b*points[1].lighting.x+c*points[2].lighting.x)/inverse,
                         (a*points[0].lighting.y+b*points[1].lighting.y+c*points[2].lighting.y)/inverse,
                         (a*points[0].lighting.z+b*points[1].lighting.z+c*points[2].lighting.z)/inverse};
@@ -246,6 +280,44 @@ RenderResult Render(const Scene& scene, const Camera& camera,
             }
         }
     }
+    const bool hasLightmapAtlas = scene.lightmapWidth != 0u || scene.lightmapHeight != 0u ||
+        scene.lightmapLayers != 0u || !scene.lightmapRgba.empty();
+    if (!std::isfinite(scene.lightmapGainScale) || scene.lightmapGainScale <= 0.0f || scene.lightmapGainScale > 16.0f)
+        throw std::runtime_error("Lightmap gain scale is nonfinite, nonpositive or oversized");
+    if (hasLightmapAtlas) {
+        const auto bytes = static_cast<std::uint64_t>(scene.lightmapWidth)*scene.lightmapHeight*scene.lightmapLayers*4u;
+        if (scene.lightmapWidth == 0u || scene.lightmapHeight == 0u || scene.lightmapLayers == 0u ||
+            scene.lightmapWidth > 4096u || scene.lightmapHeight > 4096u || scene.lightmapLayers > 255u ||
+            bytes > 256u*1024u*1024u || bytes != scene.lightmapRgba.size() || scene.lightmapVertices.empty())
+            throw std::runtime_error("Lightmap atlas is invalid, oversized or missing its UV stream");
+    }
+    if (!scene.lightmapVertices.empty()) {
+        if (scene.lightmapVertices.size() != scene.chunks.size())
+            throw std::runtime_error("Lightmap stream chunk count does not match world geometry");
+        for (std::size_t chunkIndex = 0; chunkIndex < scene.chunks.size(); ++chunkIndex) {
+            const auto& maps = scene.lightmapVertices[chunkIndex];
+            if (maps.size() != scene.chunks[chunkIndex].vertices.size())
+                throw std::runtime_error("Lightmap stream vertex count does not match world geometry");
+            for (const auto& map : maps) {
+                if (!std::isfinite(map.u) || !std::isfinite(map.v) || (map.flags & ~kLightmapUnlit) != 0u ||
+                    !std::isfinite(map.minU) || !std::isfinite(map.minV) ||
+                    !std::isfinite(map.maxU) || !std::isfinite(map.maxV) ||
+                    map.minU < 0.0f || map.minV < 0.0f || map.maxU > 1.0f || map.maxV > 1.0f ||
+                    map.minU > map.maxU || map.minV > map.maxV ||
+                    map.page < -1 || (map.page >= 0 && (!hasLightmapAtlas ||
+                    static_cast<std::uint32_t>(map.page) >= scene.lightmapLayers)))
+                    throw std::runtime_error("Lightmap vertex UV, flags or page is invalid");
+            }
+            for (std::size_t i = 0; i+2u < maps.size(); i += 3u)
+                if (maps[i].page != maps[i+1u].page || maps[i].page != maps[i+2u].page ||
+                    maps[i].flags != maps[i+1u].flags || maps[i].flags != maps[i+2u].flags ||
+                    maps[i].minU != maps[i+1u].minU || maps[i].minU != maps[i+2u].minU ||
+                    maps[i].minV != maps[i+1u].minV || maps[i].minV != maps[i+2u].minV ||
+                    maps[i].maxU != maps[i+1u].maxU || maps[i].maxU != maps[i+2u].maxU ||
+                    maps[i].maxV != maps[i+1u].maxV || maps[i].maxV != maps[i+2u].maxV)
+                    throw std::runtime_error("Lightmap triangle mixes pages, lighting flags or tile bounds");
+        }
+    }
     RenderResult result;
     result.image = {width,height,std::vector<std::uint8_t>(static_cast<std::size_t>(width)*height*3u)};
     result.depth.assign(static_cast<std::size_t>(width)*height, std::numeric_limits<float>::infinity());
@@ -263,12 +335,20 @@ RenderResult Render(const Scene& scene, const Camera& camera,
             ++result.inputTriangles;
             if (chunk.materialSlot != 0) ++result.flatTriangles;
             std::array<ViewVertex,3> triangle{};
+            const auto lightmapPage = scene.lightmapVertices.empty() ? -1 : scene.lightmapVertices[chunkIndex][offset].page;
+            const bool unlit = !scene.lightmapVertices.empty() &&
+                (scene.lightmapVertices[chunkIndex][offset].flags & kLightmapUnlit) != 0u;
+            const auto bounds = scene.lightmapVertices.empty() ? LightmapVertex{} : scene.lightmapVertices[chunkIndex][offset];
             bool crossesNear = false;
             for (std::size_t i = 0; i < 3; ++i) {
                 const auto& vertex = chunk.vertices[offset+i];
                 const Vec3 relative = Subtract(vertex.position, camera.position);
                 triangle[i] = {Dot(relative,right),Dot(relative,up),Dot(relative,forward),vertex.u,vertex.v};
                 if (!scene.vertexLighting.empty()) triangle[i].lighting = scene.vertexLighting[chunkIndex][offset+i];
+                if (!scene.lightmapVertices.empty()) {
+                    triangle[i].lightU = scene.lightmapVertices[chunkIndex][offset+i].u;
+                    triangle[i].lightV = scene.lightmapVertices[chunkIndex][offset+i].v;
+                }
                 if (!std::isfinite(triangle[i].x) || !std::isfinite(triangle[i].y) ||
                     !std::isfinite(triangle[i].z))
                     throw std::runtime_error("Camera/geometry exceeds finite numeric range");
@@ -278,7 +358,8 @@ RenderResult Render(const Scene& scene, const Camera& camera,
             if (crossesNear && !clipped.empty()) ++result.clippedTriangles;
             for (std::size_t i = 1; i+1u < clipped.size(); ++i)
                 Rasterize(result, scene, {clipped[0],clipped[i],clipped[i+1u]},
-                    chunk.vertices[offset].materialLayer, chunk.materialSlot == 0, focal);
+                    chunk.vertices[offset].materialLayer, chunk.materialSlot == 0, focal, lightmapPage, unlit,
+                    bounds.minU, bounds.minV, bounds.maxU, bounds.maxV);
         }
     }
     double luminanceSum{}, squaredSum{};

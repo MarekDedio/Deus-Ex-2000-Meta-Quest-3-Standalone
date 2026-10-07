@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <string>
 #include <vector>
+#include <stdexcept>
 
 namespace QuestVr {
 
@@ -121,9 +122,15 @@ inline float UnrealMapLightConeCosine(const std::uint8_t cone) noexcept {
 // need only the snapshot's lighting/location/class fields.
 template <class ActorSnapshot>
 inline std::vector<MapLight> BuildMapLights(
-    const std::vector<ActorSnapshot>& actors, MapLightBuildStats* stats = nullptr) {
+    const std::vector<ActorSnapshot>& actors, MapLightBuildStats* stats = nullptr,
+    const OVR::Vector3f* verifiedOrigin = nullptr) {
     MapLightBuildStats resultStats;
+    if (verifiedOrigin) {
+        if (!FiniteMapLightVector(*verifiedOrigin)) throw std::invalid_argument("Non-finite verified map origin");
+        resultStats.unrealOrigin = *verifiedOrigin;
+    }
     for (const auto& actor : actors) {
+        if (verifiedOrigin) break;
         const std::size_t separator = actor.classPath.find_last_of('.');
         const std::string leafClass = separator == std::string::npos
             ? actor.classPath : actor.classPath.substr(separator + 1u);

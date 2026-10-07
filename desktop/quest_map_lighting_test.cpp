@@ -398,6 +398,25 @@ void LegacyDifferentialFixtures() {
     }
 }
 
+void VerifiedOriginOverridesSnapshotOrder() {
+    Actor firstStart;
+    firstStart.classPath = "Engine.PlayerStart"; firstStart.hasLocation = true;
+    firstStart.x = -900.0f; firstStart.y = 700.0f; firstStart.z = 800.0f;
+    Actor emitter;
+    emitter.classPath = "Engine.Light"; emitter.hasLocation = emitter.light = true;
+    emitter.x = 152.5f; emitter.y = 252.5f; emitter.z = 352.5f;
+    const Vector verified{100,200,300};
+    QuestVr::MapLightBuildStats stats;
+    const auto lights = QuestVr::BuildMapLights(std::vector<Actor>{firstStart,emitter},&stats,&verified);
+    Require(lights.size() == 1u,"Verified-origin light fixture lost emitter");
+    Near(stats.unrealOrigin,verified,"Snapshot-first PlayerStart overrode verified serialized origin");
+    Near(lights[0].localPosition,{1,2,-1},"Emitter used a different axis/origin than world cache");
+    Vector invalid = verified; invalid.x = std::numeric_limits<float>::infinity();
+    bool rejected = false;
+    try { (void)QuestVr::BuildMapLights(std::vector<Actor>{emitter},nullptr,&invalid); }
+    catch (const std::invalid_argument&) { rejected = true; }
+    Require(rejected,"Non-finite explicit map origin accepted");
+}
 } // namespace
 
 int main() {
@@ -414,7 +433,8 @@ int main() {
         AuthoredRadiusAndNonLightEmitters();
         InvalidLightingInputs();
         LegacyDifferentialFixtures();
-        std::cout << "Quest map lighting: 12 regression groups passed "
+        VerifiedOriginOverridesSnapshotOrder();
+        std::cout << "Quest map lighting: 13 regression groups passed "
             "(341760 pinned HSB checks, 256 authored-radius checks, 4096 legacy comparisons)\n";
         return 0;
     } catch (const std::exception& error) {
