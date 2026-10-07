@@ -59,13 +59,20 @@ if ($BaselinePath) {
 & $captureExe @arguments
 if ($LASTEXITCODE -ne 0) { throw "Persona preview failed with exit code $LASTEXITCODE" }
 $report = Get-Content -LiteralPath $reportPath -Raw | ConvertFrom-Json
-$expectedArtworkCount = switch ($Page) { 'Health' { 16 } 'Logs' { 10 } default { 12 } }
+$expectedArtworkCount = switch ($Page) { 'Health' { 26 } 'Logs' { 20 } default { 22 } }
 if (-not $report.passed -or $report.width -ne 640 -or $report.height -ne 480 -or
     $report.transparentPixels -le 0 -or $report.artworkPaths.Count -ne $expectedArtworkCount -or
-    $report.page -ne $Page) {
-    throw 'Persona preview lacks original artwork, transparency or expected canvas dimensions.'
+    $report.page -ne $Page -or -not $report.fontsAndTextVerified -or $report.fonts.Count -ne 2 -or
+    $report.liveRuntimeStateVerified -or $report.glRenderingVerified -or
+    $report.openXrVerified -or $report.controllerInteractionVerified -or
+    $report.fonts[0].objectPath -ne 'FontMenuHeaders' -or
+    $report.fonts[1].objectPath -ne 'FontMenuSmall' -or
+    $report.fonts[0].glyphCount -ne 256 -or $report.fonts[1].glyphCount -ne 256 -or
+    $report.fonts[0].lineHeight -ne 10 -or $report.fonts[1].lineHeight -ne 10) {
+    throw 'Persona preview lacks original artwork/font provenance, transparency, CPU-only scope or expected dimensions.'
 }
 Write-Host "Persona artwork preview: $capturePath"
 Write-Host "Persona composition report: $reportPath"
-Write-Host 'Preview uses original assets and the shared Quest compositor; text, fonts and live interaction are unverified.'
+Write-Host 'Preview uses original artwork/fonts and the shared Quest CPU compositor with sample text.'
+Write-Host 'GL blending, OpenXR, live runtime state and controller interaction are unverified.'
 if ($Page -eq 'Inventory') { Write-Host 'Inventory icons are an asset fixture, not a saved inventory.' }

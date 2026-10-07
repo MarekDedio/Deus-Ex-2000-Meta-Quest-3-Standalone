@@ -142,7 +142,7 @@ void Help() {
         "  --baseline PATH.bmp --max-mean-error FRACTION\n"
         "  --min-coverage FRACTION             Optional viewpoint-specific empty-frame gate\n"
         "  --inspect-textures PACKAGE FILTER  List matching export/class/properties for diagnosis\n"
-        "  --persona-preview --game-root PATH Original shared Persona artwork/icons on checkerboard\n"
+        "  --persona-preview --game-root PATH Original Persona artwork, fonts and fixture text\n"
         "  --persona-icon NAME                Repeat for each original icon asset (preview fixture)\n"
         "  --persona-selected INDEX           Select an icon in the fixture inventory grid\n"
         "  --persona-page PAGE                Inventory, Health, GoalsNotes or Logs\n"
@@ -403,9 +403,18 @@ int CapturePersona(Options options) {
     if (!report) throw std::runtime_error("Cannot write Persona preview report");
     report << "{\n  \"passed\": " << (passed ? "true" : "false")
         << ",\n  \"source\": \"original-DeusExUI-package\""
-        << ",\n  \"scope\": \"Shared Quest CPU Persona page background/border composition; Health includes original neutral body/overlays, Inventory includes grid and icon asset fixture rather than saved inventory. Checkerboard reveals transparency. Text, fonts, tabs, live menus, VR geometry and interaction unverified.\""
+        << ",\n  \"scope\": \"Shared Quest CPU Persona page artwork, navigation/button chrome and original bitmap-font composition. Text and inventory are explicit preview fixtures, not live campaign state. Health uses neutral original body/overlays. Checkerboard reveals transparency. GL blending, OpenXR, live menus and controller interaction are not verified.\""
         << ",\n  \"campaignPlayabilityVerified\": false"
-        << ",\n  \"fontsAndTextVerified\": false"
+        << ",\n  \"fontsAndTextVerified\": true"
+        << ",\n  \"fontsAndTextVerificationScope\": \"Original atlas decoding and shared CPU fixture composition only\""
+        << ",\n  \"liveRuntimeStateVerified\": false"
+        << ",\n  \"glRenderingVerified\": false"
+        << ",\n  \"openXrVerified\": false"
+        << ",\n  \"controllerInteractionVerified\": false"
+        << ",\n  \"originalTextEncoding\": \"Single-byte UE1 character indices; Unicode/localized text not verified\""
+        << ",\n  \"navigationAvailableTabs\": [\"Inventory\", \"Health\", \"Goals/Notes\", \"Logs\"]"
+        << ",\n  \"navigationDisabledTabs\": [\"Augs\", \"Skills\", \"Conversations\", \"Images\"]"
+        << ",\n  \"actionCaptionScope\": \"VR binding labels on original button artwork, not every original desktop action\""
         << ",\n  \"package\": " << Quote(std::filesystem::absolute(options.mesh).generic_string())
         << ",\n  \"capture\": " << Quote(std::filesystem::absolute(options.output).generic_string())
         << ",\n  \"width\": 640,\n  \"height\": 480"
@@ -441,7 +450,29 @@ int CapturePersona(Options options) {
         if (i != 0u) report << ", ";
         report << Quote(preview.iconPaths[i]);
     }
-    report << "],\n  \"baseline\": " << Quote(options.baseline.generic_string())
+    report << "],\n  \"fonts\": [";
+    for (std::size_t index = 0u; index < preview.fonts.size(); ++index) {
+        if (index != 0u) report << ", ";
+        const auto& font = preview.fonts[index];
+        report << "{\"objectPath\": " << Quote(font.objectPath)
+            << ", \"glyphCount\": " << font.glyphCount
+            << ", \"charactersPerPage\": " << font.charactersPerPage
+            << ", \"lineHeight\": " << font.lineHeight
+            << ", \"atlasPaths\": [";
+        for (std::size_t atlas = 0u; atlas < font.atlasPaths.size(); ++atlas) {
+            if (atlas != 0u) report << ", ";
+            report << Quote(font.atlasPaths[atlas]);
+        }
+        report << "], \"atlasDimensions\": [";
+        for (std::size_t atlas = 0u; atlas < font.atlasDimensions.size(); ++atlas) {
+            if (atlas != 0u) report << ", ";
+            report << '[' << font.atlasDimensions[atlas][0] << ", " << font.atlasDimensions[atlas][1] << ']';
+        }
+        report << "]}";
+    }
+    report << "],\n  \"fixtureText\": {\"left\": " << Quote(preview.fixtureLeftText)
+        << ", \"right\": " << Quote(preview.fixtureRightText) << "}"
+        << ",\n  \"baseline\": " << Quote(options.baseline.generic_string())
         << ",\n  \"maxMeanError\": " << options.maxMeanError
         << ",\n  \"baselineMeanAbsoluteError\": ";
     if (difference) report << *difference; else report << "null";
@@ -451,7 +482,7 @@ int CapturePersona(Options options) {
         << "\n" << DesktopPersonaPageName(options.personaPage) << ": "
         << preview.artworkPaths.size() << " original page artwork assets; " << preview.iconPaths.size()
         << " icon fixture assets; " << preview.transparentPixels << " transparent pixels.\n"
-        << "Fonts, text and live VR interaction are unverified.\n";
+        << "Original bitmap fonts and text are CPU fixture renders. GL, OpenXR and live interaction remain unverified.\n";
     return passed ? 0 : 2;
 }
 } // namespace
@@ -464,7 +495,7 @@ int main(int argc, char** argv) {
         }
         if (argc == 2 && std::string(argv[1]) == "--test-persona-canvas") {
             VerifySharedPersonaCanvas();
-            std::cout << "PASS: shared Persona masks, clipping, tints, padding, grid and icon aspect checks.\n";
+            std::cout << "PASS: shared Persona masks, clipping, tints, padding, grid, icon aspect, bitmap text, button strips and disabled-tab checks.\n";
             return 0;
         }
         Options options = Parse(argc,argv);

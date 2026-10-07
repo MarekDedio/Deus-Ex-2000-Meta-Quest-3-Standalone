@@ -91,8 +91,75 @@
   fail closed. All 24 mock-ADB regressions pass under PowerShell 7 and Windows
   PowerShell 5.1, exercising the actual helpers without a Quest.
 
-Remaining fidelity includes original fonts and complete menu behavior,
-body-part health, augmentations/skills/images, and broader campaign interactions.
+## Headset-free font, loading, and recovery work (2026-10-07)
+
+- Added the original UE1 bitmap-font decoder, including bounded font/atlas/
+  palette payloads, class-aware object references, exact glyph rectangles and
+  advances, masking, lowercase fallback, and 32 malformed-input rejection
+  controls. Both real `FontMenuHeaders` and `FontMenuSmall` decode from the
+  user's `DeusExUI.u`: 256x128 atlases, 256 glyphs, and 10-pixel line height.
+- Quest and desktop now share original-font text composition and the original
+  navigation/action-button artwork. All four CPU previews were rendered and
+  inspected. That inspection caught cropped Goals/Notes button captions and
+  help text crossing panel borders; both were corrected and recaptured.
+  The original eight-tab order is retained, with unsupported pages dimmed.
+  Actions are adapted VR binding labels, not every original desktop action.
+  Reports explicitly separate fixture composition from GL/XR/live interaction.
+  Reviewed baseline rerenders match exactly on all four pages; changing the
+  selected inventory fixture correctly fails a zero-error comparison.
+- The latest full BSP/albedo audit also passed all 88 maps / 352 images with
+  zero map failures. All 352 frame hashes match the earlier audit, including
+  after compact-index overflow hardening. The twelve uniform utility-map views
+  and static procedural-texture limitations remain explicit warnings. This
+  still does not validate campaign progression or the new actor GPU staging.
+- Replaced the monolithic actor geometry build with cooperative preparation:
+  3 ms / eight operations / 6,144 scanned vertices between-operation limits,
+  triangle-aligned chunks, and at most one GPU chunk per frame. Targeting data
+  remains immediate. Cancellation/cleanup covers streaming, interaction,
+  quick-load, map replacement, and session shutdown. Stable renderer containers
+  also prevent SDK self-uniform pointers from becoming stale after relocation.
+  Initial metadata, individual mesh copies/material scans, GPU calls, and
+  resource deletion remain nonpreemptible; actual Quest timing is pending.
+- Guarded main-thread runtime reads/actions while the map worker replaces it.
+  A distinct private worker-side transition checkpoint is required before
+  replacing a usable runtime. Preparation failure restores the prior map/state;
+  failed rollback or GPU staging clears mismatched visuals and suspends unsafe
+  gameplay, retaining a next-map retry. Existing user quicksaves are not replaced
+  by these checkpoints.
+- Fixed the session-restart map mismatch: startup's fresh Training runtime now
+  resets the retained map name/pose and stale menu/dialogue state consistently.
+  Automatic cross-session resume is not implemented; X still loads the user's
+  existing quicksave. The XR session lifecycle needs physical validation.
+- Discarded prior-session speech futures and removed audio-worker access to
+  global UE1 name storage, which a concurrent map load could reallocate. Failed
+  quick-loads no longer cancel unfinished actor staging or replace menu history;
+  cross-map history is applied only after successful transition completion.
+  Corrupt metadata string lengths are checked before allocation.
+- Extracted the actual dialogue MP3 decoder into a byte-only shared helper,
+  with bounded input/PCM allocations and decoder cleanup on all paths. Host
+  tests cover malformed/truncated input, forged Xing sample counts, output
+  limits, mono duplication, distinct stereo tones, and exact resampling at five
+  rates. The original Mission01 `ConAudioMission01_289` voice also decoded and
+  matched the previous interpolation sample-for-sample (48 kHz: 95,294 stereo
+  frames). This is CPU decoding evidence, not audible Quest playback/mixing.
+- Seven automatic host CTests pass, including nine budget/triangle groups, six
+  transaction failure/recovery groups, text/chrome compositor checks, fonts,
+  world rendering, MP3 decoding, and transform math. The real-data state entry is
+  explicitly skipped without opt-in. Its separate original-data run passed:
+  101,375 runtime objects and 1,308 Training actors, Training -> Combat ->
+  Training, with exact restored actor snapshots, inventory, player/pawn health,
+  credits/skill points/goals/notes/flags, and effect deduplication. Missing or
+  truncated checkpoint loads preserve live state. Seeded progress effects are
+  test fixtures, not evidence of full campaign execution. Temporary test files
+  are isolated; original packages and user saves remain untouched.
+- All 24 mock-ADB diagnostic tests still pass under PowerShell 7 and Windows
+  PowerShell 5.1 without a device. These latest changes build for Android ARM64
+  but are not installed or tested on Quest
+  during this headset-free development batch. The earlier physical observations
+  above apply to their recorded builds only.
+
+Remaining fidelity includes complete menu behavior, body-part health,
+augmentations/skills/images, localized text, and broader campaign interactions.
 The campaign, stereo comfort, physical recenter, and controller-driven
 simultaneous movement remain unverified; these UI/decoder gates are not full
 campaign completion evidence.

@@ -70,8 +70,9 @@ ADB, a connected headset, or redistribution of the game's data.
 
 World captures do not yet contain actor meshes, authored illumination, skyboxes,
 Persona UI, or the live Quest renderer. A separate Persona preview shares the
-Quest CPU artwork compositor and renders the original Inventory, Health,
-Goals/Notes, and Logs assets, without fonts or live interaction. Neither mode verifies gameplay, stereo,
+Quest CPU compositor and renders the original Inventory, Health,
+Goals/Notes, and Logs artwork, bitmap fonts, and button chrome with explicit
+sample text. It does not verify live interaction. Neither mode verifies gameplay, stereo,
 OpenXR tracking, controller input, or Quest performance. Black skies or absent
 actors in this limited renderer are not evidence of the same defect in the APK.
 See [desktop visual testing](docs/DESKTOP-VISUAL-TESTING.md) for camera controls,
@@ -112,7 +113,9 @@ meshes, actor textures, scripts, and ambient sound on-device. Controls are:
 A head-locked HUD displays health, inventory count, and the control summary. The
 Menu button opens a head-locked Persona-style screen using the original game's
 shipped artwork, default grayscale theme, tab rail, slot grid, and item-data
-panes. Its client/border offsets and 640x480 layout follow the serialized
+panes. Original `FontMenuHeaders` and `FontMenuSmall` glyphs are composed into
+the panel texture with the shipped navigation and action-button artwork.
+Its client/border offsets and 640x480 layout follow the serialized
 original UI defaults. It shows the live map, health, and up to thirty items
 in the original five-by-six grid. Right-stick up/down
 selects inventory items; left/right switches between the
@@ -128,10 +131,15 @@ the shipped Inventory, Health, Goals, Logs, and Conversations border textures
 directly from the user's `System/DeusExUI.u` on Quest. Each page uses its original
 client/border offsets; Health includes the original neutral body illustration,
 Goals/Notes has stacked panes, and Logs has one centered text column. A text-only fallback remains available
-if those private game assets cannot be decoded. Only the four implemented pages
-are shown; augmentations, skills, and images are not presented as functional tabs.
-Body-part health, the original font, and full original menu behavior are still
+if those private game assets cannot be decoded. The original eight-tab rail is
+visible, but only Inventory, Health, Goals/Notes, and Logs are functional;
+augmentations, skills, conversations, and images are visibly dimmed.
+Action captions are adapted to VR bindings, not a claim that every original
+desktop action or pointer-clickable control is implemented.
+Body-part health and full original menu behavior are still
 unfinished; the body illustration does not imply body-part damage simulation.
+The new font/chrome integration has desktop CPU visual checks and an Android
+build gate; its readability and behavior on Quest still require hardware testing.
 See [Quest diagnostics](docs/QUEST-DIAGNOSTICS.md) for safe screenshot/map requests.
 Pointing at a pawn and pressing A resolves its real `BindName` against the
 active mission's serialized conversation events and displays the shipped

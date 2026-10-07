@@ -12,6 +12,12 @@ namespace {
 void Require(bool condition, const char* message) {
     if (!condition) throw std::runtime_error(std::string("Persona compositor regression: ")+message);
 }
+template<class Action>
+void RequireRejected(Action&& action, const char* message) {
+    bool rejected{};
+    try { action(); } catch (const std::runtime_error&) { rejected = true; }
+    Require(rejected,message);
+}
 PortableTextureImage DecodeArtwork(const PortablePackageTables& package,
                                   const std::string& group, const std::string& name,
                                   std::string& actualPath) {
@@ -37,6 +43,20 @@ QuestVr::PersonaUiImage Solid(std::uint32_t width, std::uint32_t height,
         std::copy(color.begin(),color.end(),image.rgba.begin()+offset);
     return image;
 }
+QuestVr::PersonaUiImage UiImage(PortableTextureImage image) {
+    return {image.width,image.height,std::move(image.rgba)};
+}
+DesktopPersonaFontProvenance FontProvenance(const PortableBitmapFont& font) {
+    DesktopPersonaFontProvenance result;
+    result.objectPath = font.objectPath;
+    result.atlasPaths = font.texturePaths;
+    result.glyphCount = font.glyphs.size();
+    result.charactersPerPage = font.charactersPerPage;
+    result.lineHeight = font.lineHeight;
+    for (const auto& atlas : font.pages)
+        result.atlasDimensions.push_back({atlas.width,atlas.height});
+    return result;
+}
 } // namespace
 
 DesktopPersonaPreview BuildDesktopPersonaPreview(
@@ -61,6 +81,25 @@ DesktopPersonaPreview BuildDesktopPersonaPreview(
         result.artworkPaths.push_back(path);
     }
     auto canvas = QuestVr::BuildPersonaUiCanvas(backgrounds,borders,layout);
+    QuestVr::PersonaUiChrome chrome;
+    const auto chromeImage = [&](const std::string& name) {
+        std::string path;
+        auto image = DecodeArtwork(package,"UserInterface",name,path);
+        result.artworkPaths.push_back(path);
+        return UiImage(std::move(image));
+    };
+    for (std::size_t index = 0; index < chrome.navigationBackgrounds.size(); ++index) {
+        chrome.navigationBackgrounds[index] = chromeImage("PersonaNavBarBackground_"+std::to_string(index+1u));
+        chrome.navigationBorders[index] = chromeImage("PersonaNavBarBorder_"+std::to_string(index+1u));
+    }
+    constexpr std::array<const char*,3> buttonNames{{
+        "PersonaActionButtonNormal_Left","PersonaActionButtonNormal_Center","PersonaActionButtonNormal_Right"}};
+    for (std::size_t index = 0; index < buttonNames.size(); ++index)
+        chrome.normalButton[index] = chromeImage(buttonNames[index]);
+    chrome.filler = chromeImage("PersonaButtonFiller");
+    const auto headers = DecodePortableBitmapFont(package,"FontMenuHeaders");
+    const auto bodyFont = DecodePortableBitmapFont(package,"FontMenuSmall");
+    result.fonts = {{FontProvenance(headers),FontProvenance(bodyFont)}};
     if (page == QuestVr::PersonaUiPage::Health) {
         std::array<PortableTextureImage,2> body, overlays;
         for (std::size_t i = 0; i < body.size(); ++i) {
@@ -92,6 +131,33 @@ DesktopPersonaPreview BuildDesktopPersonaPreview(
     } else if (!requestedIcons.empty()) {
         throw std::runtime_error("Icon fixtures apply only to Inventory previews");
     }
+    // Deliberately explicit sample strings: this is the same CPU text composer
+    // as Quest, but it does not substitute for live inventory/mission evidence.
+    switch (page) {
+        case QuestVr::PersonaUiPage::Inventory:
+            result.fixtureLeftText = "Inventory (asset fixture)";
+            result.fixtureRightText = "PISTOL\n\n10mm ammunition\n\nA compact semi-automatic handgun.\n\nThis item description is preview text, not a saved inventory.";
+            break;
+        case QuestVr::PersonaUiPage::Health:
+            result.fixtureLeftText = "Health";
+            result.fixtureRightText = "JC DENTON\n\nHealth: 100 / 100\n\nEnergy: 100 / 100\n\nNeutral body artwork shown. Limb damage is not simulated by this preview.";
+            break;
+        case QuestVr::PersonaUiPage::GoalsNotes:
+            result.fixtureLeftText = "Primary objective\n\nProceed through the training course.\n\nFixture text for checking original glyphs and wrapping. This is not a live campaign objective.";
+            result.fixtureRightText = "Training notes\n\nExplore the environment and use your equipment.\n\nThe original bitmap fonts and panel artwork are rendered by the shared Quest CPU composer.";
+            break;
+        case QuestVr::PersonaUiPage::Logs:
+            result.fixtureLeftText = "TRAINING LOG\n\nUNATCO transmission\n\nWelcome to the training facility.\n\nThis conversation is illustrative fixture text.\n\nIt verifies original glyph positions, line spacing and window clipping, not in-game conversation execution.";
+            break;
+        case QuestVr::PersonaUiPage::Count:
+            throw std::runtime_error("Invalid Persona fixture page");
+    }
+    const auto headerGlyph = [&](std::uint32_t code) { return GetPortableBitmapGlyph(headers,code); };
+    const auto bodyGlyph = [&](std::uint32_t code) { return GetPortableBitmapGlyph(bodyFont,code); };
+    QuestVr::DrawPersonaNavigation(canvas,chrome,headers,page,headerGlyph);
+    QuestVr::DrawPersonaVrActions(canvas,chrome,headers,page,headerGlyph);
+    QuestVr::DrawPersonaPageText(canvas,headers,bodyFont,page,
+        result.fixtureLeftText,result.fixtureRightText,headerGlyph,bodyGlyph);
     result.image = {canvas.width,canvas.height,
         std::vector<std::uint8_t>(static_cast<std::size_t>(canvas.width)*canvas.height*3u)};
     result.visibleMinX = result.visibleMinY = std::numeric_limits<std::uint32_t>::max();
@@ -204,4 +270,128 @@ void VerifySharedPersonaCanvas() {
     Require(at(267,73,0) == 255u && at(268,73,3) == 0u,"health body exceeded 219-pixel window width");
     Require(at(49,328,0) == 255u && at(49,329,1) == 255u,"health lower body tile offset changed");
     Require(at(49,429,1) == 255u && at(49,430,3) == 0u,"health body exceeded 357-pixel window height");
+
+    // Synthetic atlas: one exact-advance 3x2 glyph (first texel masked), plus
+    // a 2-pixel spacing glyph. This tests the production font compositor rather
+    // than a separate drawing implementation or an approximate system font.
+    PortableBitmapFont font;
+    font.objectPath = "SyntheticFont";
+    const auto white = Solid(3u,2u,{255u,255u,255u,255u});
+    font.pages.push_back({white.width,white.height,white.rgba});
+    font.pages[0].rgba[3u] = 0u;
+    font.glyphs.assign(256u,{0u,0u,0u,3u,2u});
+    font.glyphs[static_cast<std::size_t>(' ')] = {0u,0u,0u,2u,0u};
+    font.lineHeight = 3u;
+    font.charactersPerPage = 256u;
+    const auto glyph = [&](std::uint32_t code) { return GetPortableBitmapGlyph(font,code); };
+    canvas = Solid(640u,480u,{12u,34u,56u,255u});
+    QuestVr::DrawPersonaUiText(canvas,font,"AA",{10u,10u,8u,2u},200u,glyph);
+    Require(at(10u,10u,0) == 12u && at(11u,10u,0) == 200u,
+            "font mask did not preserve destination or text tint changed");
+    Require(at(13u,10u,0) == 12u && at(14u,10u,0) == 200u && at(16u,10u,0) == 12u,
+            "font advance added spacing or stretched glyphs");
+    Require(QuestVr::PersonaUiTextWidth(font,"AA A",glyph) == 11u,
+            "caption measurement did not use original glyph widths");
+    canvas = Solid(640u,480u,{12u,34u,56u,255u});
+    QuestVr::DrawPersonaUiText(canvas,font,"A\nA",{10u,10u,4u,5u},255u,glyph);
+    Require(at(11u,10u,0) == 255u && at(11u,13u,0) == 255u && at(11u,14u,0) == 255u &&
+            at(11u,15u,0) == 12u,"font newline height or vertical clipping changed");
+    canvas = Solid(640u,480u,{12u,34u,56u,255u});
+    QuestVr::DrawPersonaUiText(canvas,font,"A A",{10u,10u,5u,5u},255u,glyph);
+    Require(at(11u,13u,0) == 255u && at(14u,10u,0) == 12u,
+            "word wrapping painted in spacing or failed to start the next line");
+    canvas = Solid(640u,480u,{12u,34u,56u,255u});
+    QuestVr::DrawPersonaUiText(canvas,font,"AAA",{10u,10u,4u,8u},255u,glyph);
+    Require(at(11u,10u,0) == 255u && at(11u,13u,0) == 255u && at(11u,16u,0) == 255u &&
+            at(14u,10u,0) == 12u,"oversized word hard-wrapping escaped text window");
+    canvas = Solid(640u,480u,{12u,34u,56u,255u});
+    QuestVr::DrawPersonaUiText(canvas,font,"A",{10u,10u,2u,1u},255u,glyph);
+    Require(at(11u,10u,0) == 255u && at(9u,10u,0) == 12u &&
+            at(12u,10u,0) == 12u && at(11u,11u,0) == 12u,
+            "oversized first glyph was skipped or escaped its narrow text clip");
+    RequireRejected([&] { QuestVr::DrawPersonaUiText(canvas,font,"A",{639u,0u,2u,1u},255u,glyph); },
+                    "out-of-canvas text rectangle accepted");
+    RequireRejected([&] { QuestVr::DrawPersonaUiText(canvas,font,"A",{0xffffffffu,0u,2u,1u},255u,glyph); },
+                    "overflowing text rectangle accepted");
+    RequireRejected([&] { QuestVr::DrawPersonaUiText(canvas,font,"A",{0u,0u,4u,4u},256u,glyph); },
+                    "out-of-byte font tint accepted");
+    font.glyphs[static_cast<std::size_t>('A')].pageIndex = 1u;
+    RequireRejected([&] { QuestVr::DrawPersonaUiText(canvas,font,"A",{0u,0u,4u,4u},255u,glyph); },
+                    "invalid glyph atlas page accepted");
+    font.glyphs[static_cast<std::size_t>('A')].pageIndex = 0u;
+    font.glyphs[static_cast<std::size_t>('A')].x = 1u;
+    RequireRejected([&] { QuestVr::DrawPersonaUiText(canvas,font,"A",{0u,0u,4u,4u},255u,glyph); },
+                    "glyph extending beyond atlas accepted");
+    font.glyphs[static_cast<std::size_t>('A')].x = 0u;
+    font.pages[0].rgba.pop_back();
+    RequireRejected([&] { QuestVr::DrawPersonaUiText(canvas,font,"A",{0u,0u,4u,4u},255u,glyph); },
+                    "truncated font atlas accepted");
+    font.pages[0].rgba = white.rgba;
+    font.lineHeight = 0u;
+    RequireRejected([&] { QuestVr::DrawPersonaUiText(canvas,font,"A",{0u,0u,4u,4u},255u,glyph); },
+                    "zero font line height accepted");
+    font.lineHeight = 3u;
+
+    QuestVr::PersonaUiChrome chrome;
+    for (auto& image : chrome.navigationBackgrounds) image = Solid(256u,21u,{255u,255u,255u,255u});
+    chrome.navigationBackgrounds[2] = Solid(128u,21u,{255u,255u,255u,255u});
+    for (auto& image : chrome.navigationBorders) image = Solid(256u,64u,{0u,0u,0u,0u});
+    chrome.navigationBorders[2] = Solid(128u,64u,{0u,0u,0u,0u});
+    chrome.normalButton[0] = Solid(4u,16u,{255u,0u,0u,255u});
+    chrome.normalButton[1] = Solid(2u,16u,{0u,255u,0u,255u});
+    chrome.normalButton[1].rgba[3u] = 0u;
+    chrome.normalButton[2] = Solid(8u,16u,{0u,0u,255u,255u});
+    chrome.filler = Solid(2u,2u,{255u,255u,255u,255u});
+    canvas = Solid(640u,480u,{12u,34u,56u,255u});
+    QuestVr::DrawPersonaButtonArtwork(canvas,chrome,{10u,10u,31u,16u});
+    Require(at(10u,10u,0) == 127u && at(14u,10u,0) == 127u && at(14u,10u,1) == 127u &&
+            at(15u,10u,1) == 127u && at(15u,10u,0) == 0u && at(33u,10u,2) == 127u,
+            "button caps, center repetition, filler masking or face tint changed");
+    Require(at(9u,10u,0) == 12u && at(41u,10u,0) == 12u && at(10u,26u,0) == 12u,
+            "button repeated strips escaped original window");
+    RequireRejected([&] { QuestVr::DrawPersonaButtonArtwork(canvas,chrome,{639u,0u,31u,16u}); },
+                    "out-of-canvas button rectangle accepted");
+    RequireRejected([&] { QuestVr::DrawPersonaButtonArtwork(canvas,chrome,{0xffffffffu,0u,31u,16u}); },
+                    "overflowing button rectangle accepted");
+    RequireRejected([&] { QuestVr::DrawPersonaButtonArtwork(canvas,chrome,{0u,0u,11u,16u}); },
+                    "button narrower than original caps accepted");
+    auto invalidChrome = chrome;
+    invalidChrome.normalButton[0] = Solid(5u,16u,{0u,0u,0u,0u});
+    RequireRejected([&] { QuestVr::DrawPersonaButtonArtwork(canvas,invalidChrome,{0u,0u,31u,16u}); },
+                    "malformed original button cap dimensions accepted");
+    canvas = Solid(640u,480u,{12u,34u,56u,255u});
+    QuestVr::AddPersonaNavigationArtwork(canvas,chrome);
+    Require(at(17u,6u,0) == 127u && at(625u,26u,0) == 127u && at(16u,6u,0) == 12u &&
+            at(626u,6u,0) == 12u && at(17u,27u,0) == 12u,
+            "navigation background escaped original 609x21 client rectangle");
+    QuestVr::DrawPersonaNavigation(canvas,chrome,font,QuestVr::PersonaUiPage::Inventory,glyph);
+    constexpr std::array<const char*,8> tabNames{{
+        "Inventory","Health","Augs","Skills","Goals/Notes","Conversations","Images","Logs"}};
+    std::array<std::uint32_t,8> widths{};
+    std::uint32_t total{};
+    for (std::size_t index = 0u; index < widths.size(); ++index) {
+        widths[index] = std::max(20u,QuestVr::PersonaUiTextWidth(font,tabNames[index],glyph)+18u);
+        total += widths[index];
+    }
+    const auto padding = (534u-total)/8u;
+    std::uint32_t tabX = 23u;
+    for (std::size_t index = 0u; index < widths.size(); ++index) {
+        const auto expected = index == 0u ? 255u :
+            (index == 2u || index == 3u || index == 5u || index == 6u ? 64u : 200u);
+        Require(at(tabX+11u,11u,0) == expected && at(tabX+11u,11u,1) == expected,
+                "current, available or unsupported tab text tint changed");
+        tabX += widths[index]+padding;
+    }
+    Require(at(584u,11u,0) == 200u,"original Exit caption was not drawn in its button");
+    for (const auto page : {QuestVr::PersonaUiPage::Inventory,QuestVr::PersonaUiPage::Health,
+                           QuestVr::PersonaUiPage::GoalsNotes,QuestVr::PersonaUiPage::Logs}) {
+        canvas = Solid(640u,480u,{12u,34u,56u,255u});
+        QuestVr::DrawPersonaVrActions(canvas,chrome,font,page,glyph);
+        const auto position = page == QuestVr::PersonaUiPage::Inventory ? std::array<std::uint32_t,2>{42u,382u} :
+            page == QuestVr::PersonaUiPage::Health ? std::array<std::uint32_t,2>{38u,444u} :
+            page == QuestVr::PersonaUiPage::GoalsNotes ? std::array<std::uint32_t,2>{25u,450u} :
+            std::array<std::uint32_t,2>{115u,432u};
+        Require(at(position[0],position[1],0) == 127u && at(position[0]+11u,position[1]+3u,0) == 200u,
+                "VR action button artwork or original font escaped its original action bar");
+    }
 }

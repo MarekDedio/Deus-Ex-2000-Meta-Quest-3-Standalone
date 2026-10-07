@@ -14,8 +14,9 @@ Quest GPU shaders, or device frame times. Reports explicitly set
 `campaignPlayabilityVerified` to `false`.
 
 A separate `--persona-preview` mode runs the same CPU artwork compositor used
-by the APK. It decodes the original page backgrounds, borders, and icons; it
-does not simulate the Quest font renderer, tabs, live inventory, or input.
+by the APK. It decodes the original page backgrounds, borders, icons, bitmap
+fonts, and navigation/action-button artwork. Its sample text and inventory
+are fixtures; it does not simulate GL rendering, live state, or input.
 
 On 2026-10-07 the full installed catalog passed decoding and capture: 88 maps,
 352 images, and zero map failures. This includes 80 numbered maps plus
@@ -128,10 +129,13 @@ passed, not that the campaign is fully playable.
 .\tools\Test-DesktopPersona.ps1 -GameRoot 'D:\Steam\steamapps\common\Deus Ex' -Page Logs -SkipBuild
 ```
 
-Omit `-SkipBuild` to build and run all three CTests first. Each preview is
+Omit `-SkipBuild` to build and run the host CTests first. Each preview is
 640x480 and places the original masked artwork over a checkerboard to expose
 transparent margins. JSON records exact texture provenance, page rectangles,
-alpha counts, and a composed RGBA hash. Inventory contains a clearly identified
+alpha counts, font atlas/glyph provenance, sample text, and a composed RGBA hash.
+Original `FontMenuHeaders` and `FontMenuSmall` use their exact single-byte UE1
+glyph rectangles and advances, with masked atlas pixels and window-clipped
+wrapping. Inventory contains a clearly identified
 icon asset fixture, not a saved player's items; the other pages have no grid.
 Health uses its original neutral body and overlay assets, not simulated limb
 damage. Logs uses four background tiles and six Conversations border tiles.
@@ -142,12 +146,61 @@ output writes. On 2026-10-07 all four original page previews were inspected;
 Inventory remained pixel-identical after extracting the shared compositor.
 CTest covers each page's origin/clipping, two-column Logs tiles, palette-index
 zero masks, opaque black pixels, tints, transparent padding, grid selection,
-icon aspect ratio, and the Health body's 219x357 crop.
+icon aspect ratio, and the Health body's 219x357 crop. Additional tests cover
+font masks/tints/advances, word and hard wrapping, malformed glyphs and windows,
+original button caps/repeated strips, and current/available/disabled tab tints.
+The four unimplemented original tabs are dimmed; drawn buttons are not
+pointer-clickable controls. The VR action captions intentionally differ from
+the complete original desktop menu.
 
-These checks deliberately set `fontsAndTextVerified` to `false`. Only actual
-Quest eye-buffer captures can validate text occlusion, font placement, and
-stereo presentation. Readable UI on one map is not proof that nearby world
-geometry cannot hide it on another.
+New reports set `fontsAndTextVerified` to `true` with an explicit
+`fontsAndTextVerificationScope` of original atlas decoding and shared CPU
+fixture composition only. `glRenderingVerified`, `openXrVerified`,
+`liveRuntimeStateVerified`, and `controllerInteractionVerified` remain false.
+Only actual Quest eye-buffer captures can validate the new font texture's
+stereo readability, blending, and occlusion against world geometry.
+Unicode/localized text rendering is not verified by these single-byte fonts.
+
+## Frame budgets and map-state recovery
+
+Host tests cover the cooperative actor-work budget and the map-replacement
+transaction's checkpoint/rollback/fail-closed decisions. A cooperative budget
+cannot preempt a slow mesh copy, allocation, or driver call. Desktop timings
+are not Quest performance evidence.
+
+The real-data state test is opt-in; its default CTest entry reports skipped,
+not passed, without a game installation. After building, run:
+
+```powershell
+.\desktop\build\portable_runtime_state_test.exe --game-root 'D:\Steam\steamapps\common\Deus Ex'
+```
+
+This loads real Training and TrainingCombat map packages and tests isolated
+temporary save/load checkpoints. Seeded progress effects are explicit test
+inputs, not a campaign/script playthrough. Original packages and user saves
+are not modified. This verifies portable runtime recovery primitives, not
+the complete asynchronous Quest/GL transition or on-device failure recovery.
+
+## Shared dialogue audio tests
+
+`portable_mp3_audio` tests the same byte-only MP3 decoding and stereo resampling
+helper used by Quest. Generated source fixtures exercise malformed/truncated
+data, size/rate limits, forged Xing sample counts, and deterministic mono/stereo
+conversion. Allocation budgets are 64 MiB compressed input, 32 MiB decoded PCM,
+and 32 MiB output PCM. The helper does not access UE1 global name storage or
+the live game runtime from an audio worker.
+
+To test an original owned voice export, opt in explicitly:
+
+```powershell
+.\desktop\build\portable_mp3_audio_test.exe --package 'D:\Steam\steamapps\common\Deus Ex\System\DeusExConAudioMission01.u'
+```
+
+The test selects the first original MP3 Sound export and compares shared
+resampling sample-for-sample with the previous algorithm at five output rates.
+Optional `--mp3 <generated-fixture.mp3>` can test nonzero channel fixtures.
+Neither mode validates AAudio output, spatial mixing, audible playback, or Quest
+device behavior. No original audio is embedded in the repository.
 
 ## Hardware validation still required
 

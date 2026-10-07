@@ -134,11 +134,11 @@ public:
         std::uint8_t value = ReadUInt8();
         const bool negative = (value & 0x80u) != 0;
         bool more = (value & 0x40u) != 0;
-        std::uint32_t magnitude = value & 0x3fu;
+        std::uint64_t magnitude = value & 0x3fu;
         unsigned shift = 6;
         while (more && shift < 32) {
             value = ReadUInt8();
-            magnitude |= static_cast<std::uint32_t>(value & 0x7fu) << shift;
+            magnitude |= static_cast<std::uint64_t>(value & 0x7fu) << shift;
             more = (value & 0x80u) != 0;
             shift += 7;
         }
@@ -731,6 +731,161 @@ PortableTextureImage DecodePortableIndexedTexture(
         result.rgba.push_back(transparent ? 0u : 255u);
     }
     return result;
+}
+
+const PortableBitmapFontGlyph* GetPortableBitmapGlyph(
+    const PortableBitmapFont& font,
+    const std::uint32_t character) {
+    const auto find = [&](const std::uint32_t code) -> const PortableBitmapFontGlyph* {
+        return code < font.glyphs.size() ? &font.glyphs[code] : nullptr;
+    };
+    const PortableBitmapFontGlyph* glyph = find(character);
+    if (!glyph || glyph->width == 0u) {
+        if (character >= 'a' && character <= 'z') glyph = find(character + 'A' - 'a');
+        if (!glyph || glyph->width == 0u) glyph = find(32u);
+    }
+    return glyph;
+}
+
+PortableBitmapTextMetrics MeasurePortableBitmapText(
+    const PortableBitmapFont& font,
+    const std::string& text) {
+    PortableBitmapTextMetrics result;
+    for (const unsigned char character : text) {
+        const PortableBitmapFontGlyph* glyph = GetPortableBitmapGlyph(font, character);
+        if (!glyph) continue;
+        result.width += glyph->width;
+        result.height = std::max(result.height, glyph->height);
+    }
+    return result;
+}
+
+PortableBitmapFont LoadPortableBitmapFont(
+    const PortablePackageTables& package,
+    const std::size_t exportIndex) {
+    // Authority: upstream Engine/Resources/UFont.cpp v64+ branch loads UObject
+    // properties, compact page count, object reference and compact glyph count,
+    // four signed int32 atlas fields per glyph, then uint32 charactersPerPage.
+    if (package.version <= 63u)
+        throw std::runtime_error("UE1 legacy texture-derived bitmap fonts are unsupported");
+    if (exportIndex >= package.exports.size())
+        throw std::runtime_error("UE1 font export index is outside the table");
+    const auto& entry = package.exports[exportIndex];
+    if (NameString(ResolvePortableObjectPath(entry.ObjClass, package)) != "Engine.Font")
+        throw std::runtime_error("UE1 bitmap font export is not Engine.Font");
+    constexpr std::uint32_t maxFontPayload = 16u * 1024u * 1024u;
+    const std::shared_ptr<File> file = File::open_existing(package.sourcePath);
+    const auto validatePayload = [&](const ExportTableEntry& object) {
+        if (object.ObjSize <= 0 || object.ObjOffset < 0 ||
+            static_cast<std::uint64_t>(object.ObjOffset) +
+                static_cast<std::uint64_t>(object.ObjSize) > static_cast<std::uint64_t>(file->size()))
+            throw std::runtime_error("UE1 font or atlas export payload is outside the file");
+        // Property readers copy the entire export before parsing it. Bound
+        // font, atlas and palette payloads before any of those allocations,
+        // rather than relying only on the later decoded-pixel budget.
+        if (static_cast<std::uint32_t>(object.ObjSize) > maxFontPayload)
+            throw std::runtime_error("UE1 bitmap font or atlas payload is too large");
+    };
+    validatePayload(entry);
+    const auto properties = LoadPortableExportProperties(package, exportIndex);
+    std::vector<std::uint8_t> bytes(static_cast<std::size_t>(entry.ObjSize));
+    file->seek(entry.ObjOffset);
+    file->read(bytes.data(), bytes.size());
+    PayloadReader reader(std::move(bytes));
+    reader.Skip(properties.bytesConsumed);
+    const auto pageCount = reader.ReadIndex();
+    if (pageCount <= 0 || pageCount > 256)
+        throw std::runtime_error("UE1 bitmap font page count is invalid");
+    PortableBitmapFont result;
+    result.objectPath = ResolvePortableObjectPath(static_cast<std::int32_t>(exportIndex + 1u), package);
+    result.pages.reserve(static_cast<std::size_t>(pageCount));
+    result.texturePaths.reserve(static_cast<std::size_t>(pageCount));
+    result.textureReferences.reserve(static_cast<std::size_t>(pageCount));
+    std::vector<std::uint32_t> pageGlyphCounts;
+    std::uint64_t atlasPixels{};
+    for (std::int32_t pageIndex = 0; pageIndex < pageCount; ++pageIndex) {
+        const auto textureReference = reader.ReadIndex();
+        ValidateObjectReference(textureReference, package.imports.size(), package.exports.size());
+        if (textureReference <= 0)
+            throw std::runtime_error("UE1 bitmap font atlas must be a local texture export");
+        const auto textureExport = static_cast<std::size_t>(textureReference - 1);
+        const auto texturePath = ResolvePortableObjectPath(textureReference, package);
+        const auto glyphCount = reader.ReadIndex();
+        if (glyphCount < 0 || glyphCount > 65'536 ||
+            static_cast<std::size_t>(glyphCount) > (reader.Size() - reader.Tell()) / 16u ||
+            result.glyphs.size() + static_cast<std::size_t>(glyphCount) > 65'536u)
+            throw std::runtime_error("UE1 bitmap font glyph count is invalid or truncated");
+        if (FindPortableTextureExport(package, texturePath) != textureExport)
+            throw std::runtime_error("UE1 bitmap font atlas reference is not a texture");
+        validatePayload(package.exports[textureExport]);
+        // Keep font atlas palette validation class-aware too; a same-path
+        // Texture/Palette pair must not cause the palette to be read as pixels.
+        for (const auto& property : LoadPortableExportProperties(package, textureExport).properties) {
+            if (property.name != "Palette") continue;
+            const auto paletteReference = DecodePortableObjectReference(property);
+            ValidateObjectReference(paletteReference, package.imports.size(), package.exports.size());
+            if (paletteReference <= 0 ||
+                NameString(ResolvePortableObjectPath(
+                    package.exports[static_cast<std::size_t>(paletteReference - 1)].ObjClass, package)) !=
+                    "Engine.Palette")
+                throw std::runtime_error("UE1 bitmap font atlas palette is not a local Palette export");
+            validatePayload(package.exports[static_cast<std::size_t>(paletteReference - 1)]);
+        }
+        {
+            const auto mipmaps = LoadPortableTextureMipmaps(package, textureExport);
+            if (mipmaps.empty()) throw std::runtime_error("UE1 bitmap font atlas has no mipmaps");
+            atlasPixels += static_cast<std::uint64_t>(mipmaps.front().width) * mipmaps.front().height;
+            if (atlasPixels > 16u * 1024u * 1024u)
+                throw std::runtime_error("UE1 bitmap font atlas memory limit exceeded");
+        }
+        auto image = DecodePortableIndexedTexture(package, texturePath, true);
+        pageGlyphCounts.push_back(static_cast<std::uint32_t>(glyphCount));
+        for (std::int32_t glyphIndex = 0; glyphIndex < glyphCount; ++glyphIndex) {
+            const auto x = reader.ReadInt32(), y = reader.ReadInt32();
+            const auto width = reader.ReadInt32(), height = reader.ReadInt32();
+            if (x < 0 || y < 0 || width < 0 || height < 0 ||
+                static_cast<std::uint32_t>(x) > image.width ||
+                static_cast<std::uint32_t>(y) > image.height ||
+                static_cast<std::uint32_t>(width) > image.width - static_cast<std::uint32_t>(x) ||
+                static_cast<std::uint32_t>(height) > image.height - static_cast<std::uint32_t>(y))
+                throw std::runtime_error("UE1 bitmap font glyph rectangle is outside its atlas");
+            result.glyphs.push_back({static_cast<std::uint32_t>(pageIndex),
+                static_cast<std::uint32_t>(x), static_cast<std::uint32_t>(y),
+                static_cast<std::uint32_t>(width), static_cast<std::uint32_t>(height)});
+        }
+        result.texturePaths.push_back(texturePath);
+        result.textureReferences.push_back(textureReference);
+        result.pages.push_back(std::move(image));
+    }
+    result.charactersPerPage = reader.ReadUInt32();
+    if (result.charactersPerPage == 0u || result.charactersPerPage > 65'536u ||
+        std::any_of(pageGlyphCounts.begin(), pageGlyphCounts.end(), [&](const auto count) {
+            return count > result.charactersPerPage;
+        }))
+        throw std::runtime_error("UE1 bitmap font characters-per-page is invalid");
+    if (reader.Tell() != reader.Size())
+        throw std::runtime_error("UE1 bitmap font payload has trailing bytes");
+    if (const auto* xGlyph = GetPortableBitmapGlyph(result, 'X')) result.lineHeight = xGlyph->height;
+    return result;
+}
+
+PortableBitmapFont DecodePortableBitmapFont(
+    const PortablePackageTables& package,
+    const std::string& objectPath) {
+    const NameString requested(objectPath);
+    std::size_t match = std::numeric_limits<std::size_t>::max();
+    for (std::size_t index = 0; index < package.exports.size(); ++index) {
+        if (NameString(ResolvePortableObjectPath(static_cast<std::int32_t>(index + 1u), package)) !=
+                requested ||
+            NameString(ResolvePortableObjectPath(package.exports[index].ObjClass, package)) !=
+                "Engine.Font") continue;
+        if (match != std::numeric_limits<std::size_t>::max())
+            throw std::runtime_error("UE1 bitmap font path is ambiguous: " + objectPath);
+        match = index;
+    }
+    if (match == std::numeric_limits<std::size_t>::max())
+        throw std::runtime_error("UE1 bitmap font export was not found: " + objectPath);
+    return LoadPortableBitmapFont(package, match);
 }
 
 std::string GetPortableObjectPath(

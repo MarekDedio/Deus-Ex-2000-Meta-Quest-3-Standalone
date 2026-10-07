@@ -48,6 +48,32 @@ struct PortableTextureImage {
     std::vector<std::uint8_t> rgba;
 };
 
+// Original UE1 bitmap font atlas rectangles. Width is also the exact advance;
+// UGC does not add spacing between glyphs. Indices follow UFont::FindGlyph's
+// concatenation of each page's character array, not Unicode or an SDF font.
+struct PortableBitmapFontGlyph {
+    std::uint32_t pageIndex{};
+    std::uint32_t x{};
+    std::uint32_t y{};
+    std::uint32_t width{};
+    std::uint32_t height{};
+};
+
+struct PortableBitmapFont {
+    std::string objectPath;
+    std::vector<PortableTextureImage> pages;
+    std::vector<std::string> texturePaths;
+    std::vector<std::int32_t> textureReferences;
+    std::vector<PortableBitmapFontGlyph> glyphs;
+    std::uint32_t charactersPerPage{};
+    std::uint32_t lineHeight{};
+};
+
+struct PortableBitmapTextMetrics {
+    std::uint64_t width{};
+    std::uint32_t height{};
+};
+
 struct PortableSound {
     NameString format;
     std::vector<std::uint8_t> data;
@@ -160,6 +186,22 @@ PortableTextureImage DecodePortableIndexedTexture(
     const PortablePackageTables& package,
     const std::string& objectPath,
     bool transparentIndexZero = false);
+// v64+ fonts reference atlas textures. Legacy v60-63 texture-derived fonts and
+// imported/external atlas references are deliberately rejected, not guessed.
+PortableBitmapFont LoadPortableBitmapFont(
+    const PortablePackageTables& package,
+    std::size_t exportIndex);
+PortableBitmapFont DecodePortableBitmapFont(
+    const PortablePackageTables& package,
+    const std::string& objectPath);
+const PortableBitmapFontGlyph* GetPortableBitmapGlyph(
+    const PortableBitmapFont& font,
+    std::uint32_t character);
+// Measures a single raw UE1 byte string exactly as UGC::GetTextSize; wrapping,
+// markup and localization are the caller's responsibility.
+PortableBitmapTextMetrics MeasurePortableBitmapText(
+    const PortableBitmapFont& font,
+    const std::string& text);
 std::string GetPortableObjectPath(
     const PortablePackageTables& package,
     std::int32_t reference);
