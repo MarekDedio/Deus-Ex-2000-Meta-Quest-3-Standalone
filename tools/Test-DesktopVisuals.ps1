@@ -6,6 +6,8 @@ param(
     [string]$MaterialArrayPath,
     [switch]$AuthoredLighting,
     [switch]$BakedLighting,
+    [switch]$Actors,
+    [string]$IsolatedActor,
     [string]$OutputDirectory,
     [string]$BaselineDirectory,
     [double]$MaxMeanError = 0.0,
@@ -47,6 +49,9 @@ if ($AuthoredLighting -and $MeshPath) {
 }
 if ($BakedLighting -and (-not $GameRoot -or $MeshPath)) {
     throw 'BakedLighting requires original GameRoot/map packages.'
+}
+if (($Actors -or $IsolatedActor) -and (-not $GameRoot -or $MeshPath)) {
+    throw 'Actor captures require original GameRoot/map packages.'
 }
 
 function Find-Tool {
@@ -155,6 +160,8 @@ if ($GameRoot) {
 }
 if ($AuthoredLighting) { $sourceArguments += '--authored-lighting' }
 if ($BakedLighting) { $sourceArguments += '--baked-lighting' }
+if ($Actors) { $sourceArguments += '--actors' }
+if ($IsolatedActor) { $sourceArguments += @('--actor-isolate', $IsolatedActor) }
 $reports = @()
 for ($index = 0; $index -lt $YawDegrees.Count; $index++) {
     $fileName = 'view-{0:D2}.bmp' -f $index
@@ -172,7 +179,7 @@ for ($index = 0; $index -lt $YawDegrees.Count; $index++) {
     Invoke-Checked $captureTool $arguments
     $reports += Get-Content -LiteralPath $reportPath -Raw | ConvertFrom-Json
     # Decode each real map once; remaining views consume the exact derived cache.
-    if ($GameRoot -and $index -eq 0 -and -not $AuthoredLighting -and -not $BakedLighting) {
+    if ($GameRoot -and $index -eq 0 -and -not $AuthoredLighting -and -not $BakedLighting -and -not $Actors -and -not $IsolatedActor) {
         $sourceArguments = @('--map', $MapName, '--mesh', (Join-Path $OutputDirectory "decoded-cache\$MapName\quest-world.mesh"),
             '--materials', (Join-Path $OutputDirectory "decoded-cache\$MapName\quest-material-array.rgba"))
     }
@@ -183,7 +190,11 @@ $summary = [ordered]@{
     mode = $mode
     realMapsDecoded = $(if ($GameRoot) { 1 } else { 0 })
     campaignPlayabilityVerified = $false
-    scope = $(if ($BakedLighting) {
+    scope = $(if ($IsolatedActor) {
+        'Software close-up of an original actor without world BSP; shared Quest CPU transforms/material selection, static first frame; animation, actor shadowing, environment mapping and Quest GPU remain unverified.'
+    } elseif ($Actors) {
+        'Original mesh actors and mover brushes using shared Quest CPU transforms/material selection, optional world lighting; no sprites/animation/actor shadowing/environment mapping, live campaign, UI or Quest GPU verification.'
+    } elseif ($BakedLighting) {
         'Software world BSP/materials using original static shadow masks, ordered light lists, zone ambient and Unlit; unsupported dynamic lights omitted; no actors, UI, OpenXR, stereo or Quest performance.'
     } elseif ($AuthoredLighting) {
         'Software world BSP/material textures with shared Quest direct vertex lighting approximation; no UE1 lightmaps/shadows, actor meshes, UI, OpenXR, stereo or Quest performance.'

@@ -140,6 +140,8 @@ struct PortableMeshVertex {
     float u{};
     float v{};
     std::uint16_t material{};
+    float nx{}, ny{}, nz{};
+    std::uint32_t polyFlags{};
 };
 
 struct PortableLodMesh {
@@ -147,6 +149,7 @@ struct PortableLodMesh {
     std::vector<std::int32_t> textures;
     std::vector<std::string> texturePaths;
     std::vector<std::int32_t> materialTextureIndices;
+    std::vector<std::uint32_t> materialPolyFlags;
     std::uint32_t frameVertices{};
     std::uint32_t animationFrames{};
     float scaleX{};
@@ -155,6 +158,7 @@ struct PortableLodMesh {
     float originX{};
     float originY{};
     float originZ{};
+    std::int32_t rotationOriginPitch{}, rotationOriginYaw{}, rotationOriginRoll{};
 };
 
 PortablePackageTables LoadPortablePackageTables(const std::string& path);

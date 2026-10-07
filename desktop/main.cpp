@@ -29,8 +29,10 @@ struct Options {
     bool personaPreview{};
     bool authoredLighting{};
     bool bakedLighting{};
+    bool actors{};
     std::filesystem::path gameRoot, cacheRoot, mesh, materials, output, report, baseline;
     std::string map;
+    std::string isolatedActor;
     Camera camera;
     std::uint32_t width{1280}, height{720};
     double maxMeanError{0.0};
@@ -148,6 +150,8 @@ void Help() {
         "  --min-coverage FRACTION             Optional viewpoint-specific empty-frame gate\n"
         "  --authored-lighting (--lit-preview) Optional shared Quest direct vertex lighting\n"
         "  --baked-lighting          Original static BSP lightmaps/shadow masks and zone ambient\n"
+        "  --actors                  Original actor meshes, skin overrides and mover brushes\n"
+        "  --actor-isolate PATH      Close-up of one original actor, without world BSP\n"
         "                                    Requires original game/map; self-test uses fixture lights\n"
         "  --inspect-textures PACKAGE FILTER  List matching export/class/properties for diagnosis\n"
         "  --persona-preview --game-root PATH Original Persona artwork, fonts and fixture text\n"
@@ -155,9 +159,9 @@ void Help() {
         "  --persona-selected INDEX           Select an icon in the fixture inventory grid\n"
         "  --persona-page PAGE                Inventory, Health, GoalsNotes or Logs\n"
         "Camera uses Quest-cache meters; default (0,1.65,0) looks -Z. Positive yaw turns right.\n"
-        "Default captures show world BSP/material albedo; optional lighting is approximate\n"
-        "direct vertex light only, without UE1 lightmaps or BSP shadow occlusion. Actors, UI,\n"
-        "OpenXR tracking, stereo, campaign scripts, and Quest GPU performance are not covered.\n";
+        "Default captures show world BSP albedo. --baked-lighting includes static lightmaps.\n"
+        "--actors includes static first-frame assets, not animation or actor shadowing.\n"
+        "OpenXR, live UI, campaign scripts, and Quest GPU performance are not verified.\n";
 }
 Options Parse(int argc, char** argv) {
     Options options;
@@ -170,6 +174,8 @@ Options Parse(int argc, char** argv) {
         if (argument == "--self-test") options.selfTest = true;
         else if (argument == "--authored-lighting" || argument == "--lit-preview") options.authoredLighting = true;
         else if (argument == "--baked-lighting") { options.authoredLighting = true; options.bakedLighting = true; }
+        else if (argument == "--actors") options.actors = true;
+        else if (argument == "--actor-isolate") { options.actors = true; options.isolatedActor = next(); }
         else if (argument == "--persona-preview") options.personaPreview = true;
         else if (argument == "--persona-icon") options.personaIcons.push_back(next());
         else if (argument == "--persona-page") {
@@ -220,7 +226,7 @@ Options Parse(int argc, char** argv) {
     const bool hasCache = !options.mesh.empty() || !options.materials.empty();
     const bool hasGame = !options.gameRoot.empty();
     if (options.personaPreview) {
-        if (!hasGame || hasCache || options.selfTest || !options.cacheRoot.empty() || options.minimumCoverage || options.authoredLighting)
+        if (!hasGame || hasCache || options.selfTest || !options.cacheRoot.empty() || options.minimumCoverage || options.authoredLighting || options.actors)
             throw std::runtime_error("--persona-preview requires --game-root and cannot use map/cache/coverage modes");
         if (options.personaPage == QuestVr::PersonaUiPage::Inventory) {
             if (options.personaIcons.empty()) options.personaIcons = {"LargeIconPistol","LargeIconMedKit",
@@ -245,7 +251,9 @@ Options Parse(int argc, char** argv) {
         throw std::runtime_error("Authored lighting requires original --game-root/--map, not an unverified external cache");
     if (options.bakedLighting && !hasGame)
         throw std::runtime_error("Baked lighting requires original game packages, not synthetic fixtures");
-    if (options.authoredLighting && hasGame && (options.map.size()>128u ||
+    if (options.actors && !hasGame)
+        throw std::runtime_error("--actors requires the original game packages, not a synthetic/external cache");
+    if ((options.authoredLighting || options.actors) && hasGame && (options.map.size()>128u ||
         std::any_of(options.map.begin(),options.map.end(),[](unsigned char character) {
             return !std::isalnum(character) && character != '_' && character != '-';
         }))) throw std::runtime_error("Authored lighting requires a safe original map basename without extension");
@@ -433,7 +441,10 @@ void Report(const Options& options, const Scene& scene, const RenderResult& resu
             (packageCapture ? "original-game-packages" : "external-quest-cache"))
         << ",\n  \"realMapsDecoded\": " << (packageCapture ? 1 : 0)
         << ",\n  \"campaignPlayabilityVerified\": false"
-        << ",\n  \"scope\": " << Quote(lighting.baked ?
+        << ",\n  \"isolatedActor\": " << Quote(options.isolatedActor)
+        << ",\n  \"scope\": " << Quote(!options.isolatedActor.empty() ?
+            "Original actor close-up without world BSP; automatic bounds framing; same shared CPU transforms and material selection as Quest, static first frame, not live animation/lighting or Quest GPU evidence" : lighting.actors.enabled ?
+            "software original static actor meshes/skin overrides and mover brushes with shared Quest CPU transforms; optional BSP lightmaps; sprites, animation, actor shadowing, environment mapping, UI, OpenXR and Quest GPU unverified" : lighting.baked ?
             "software BSP/material textures with original static light lists, baked shadow masks, zone ambient and Unlit; dynamic lighting, actors, UI, OpenXR, stereo and Quest performance not verified" : lighting.enabled ?
             "software world BSP/material textures with shared Quest direct vertex lighting approximation; no UE1 lightmaps/BSP shadow occlusion, actor meshes, UI, OpenXR, stereo or Quest performance" :
             "software world BSP/material albedo; no actor meshes, map lighting, UI, OpenXR, stereo or Quest performance")
@@ -515,6 +526,36 @@ void Report(const Options& options, const Scene& scene, const RenderResult& resu
     for (std::size_t index = 0u; index < lighting.packagePaths.size(); ++index) {
         if (index != 0u) file << ", ";
         file << Quote(lighting.packagePaths[index]);
+    }
+    file << "]}";
+    const auto& actors = lighting.actors;
+    file << ",\n  \"actors\": {\"enabled\": " << (actors.enabled ? "true" : "false")
+        << ", \"meshInstances\": " << actors.meshInstances << ", \"brushInstances\": " << actors.brushInstances
+        << ", \"hiddenActors\": " << actors.hiddenActors << ", \"unsupportedActors\": " << actors.unsupportedActors
+        << ", \"overriddenMaterials\": " << actors.overriddenMaterials << ", \"missingMaterials\": " << actors.missingMaterials
+        << ", \"decodedTextures\": " << actors.decodedTextures << ", \"fallbackTextures\": " << actors.fallbackTextures
+        << ", \"maskedTextureVariants\": " << actors.maskedTextureVariants
+        << ", \"vertices\": " << actors.vertices << ", \"environmentMappedTrianglesUnverified\": " << actors.environmentMappedTriangles
+        << ", \"spriteActorsOmitted\": " << actors.spriteActorsOmitted
+        << ", \"cubePlaceholdersRendered\": 0, \"animationVerified\": false, \"actorShadowingVerified\": false"
+        << ", \"texturePaths\": [";
+    for (std::size_t i = 0u; i < actors.texturePaths.size(); ++i) {
+        if (i) file << ", ";
+        file << Quote(actors.texturePaths[i]);
+    }
+    file << "], \"records\": [";
+    for (std::size_t i = 0u; i < actors.records.size(); ++i) {
+        const auto& actor = actors.records[i];
+        if (i) file << ", ";
+        file << "{\"path\": " << Quote(actor.path) << ", \"classPath\": " << Quote(actor.classPath)
+            << ", \"assetPath\": " << Quote(actor.assetPath) << ", \"error\": " << Quote(actor.error)
+            << ", \"position\": [" << actor.position.x << ',' << actor.position.y << ',' << actor.position.z << ']'
+            << ", \"bounds\": [[" << actor.minimum.x << ',' << actor.minimum.y << ',' << actor.minimum.z
+            << "],[" << actor.maximum.x << ',' << actor.maximum.y << ',' << actor.maximum.z << "]]"
+            << ", \"triangles\": " << actor.triangles << ", \"overriddenMaterials\": " << actor.overriddenMaterials
+            << ", \"missingMaterials\": " << actor.missingMaterials
+            << ", \"brush\": " << (actor.brush ? "true" : "false")
+            << ", \"hidden\": " << (actor.hidden ? "true" : "false") << '}';
     }
     file << "]}"
         << ",\n  \"map\": " << Quote(options.map)
@@ -694,8 +735,36 @@ int main(int argc, char** argv) {
         }
         auto scene = ReadQuestCache(options.mesh,options.materials);
         AuthoredLightingPreview lighting;
-        if (options.authoredLighting) lighting = options.selfTest ? BuildSyntheticLightingPreview(scene) :
-            BuildAuthoredLightingPreview(scene,options.gameRoot,options.map,options.mesh,options.bakedLighting);
+        if (options.authoredLighting || options.actors) lighting = options.selfTest ? BuildSyntheticLightingPreview(scene) :
+            BuildAuthoredLightingPreview(scene,options.gameRoot,options.map,options.mesh,options.bakedLighting,
+                options.actors,options.authoredLighting);
+        if (!options.isolatedActor.empty()) {
+            const auto& records = lighting.actors.records;
+            const auto actor = std::find_if(records.begin(),records.end(),[&](const auto& record) {
+                return record.path == options.isolatedActor;
+            });
+            if (actor == records.end() || actor->triangles == 0u || actor->chunkCount == 0u)
+                throw std::runtime_error("Isolated actor must name a rendered full original object path");
+            Scene isolated;
+            isolated.actorTextureWidth = scene.actorTextureWidth;
+            isolated.actorTextureHeight = scene.actorTextureHeight;
+            isolated.actorTextureLayers = scene.actorTextureLayers;
+            isolated.actorTextures = std::move(scene.actorTextures);
+            for (std::size_t c = actor->firstChunk; c < actor->firstChunk+actor->chunkCount; ++c) {
+                isolated.chunks.push_back(std::move(scene.chunks[c]));
+                isolated.vertexLighting.push_back(std::move(scene.vertexLighting[c]));
+            }
+            scene = std::move(isolated);
+            const Vec3 center{(actor->minimum.x+actor->maximum.x)*0.5f,
+                (actor->minimum.y+actor->maximum.y)*0.5f,(actor->minimum.z+actor->maximum.z)*0.5f};
+            const float extent = std::max({actor->maximum.x-actor->minimum.x,
+                actor->maximum.y-actor->minimum.y,actor->maximum.z-actor->minimum.z});
+            const float radians = options.camera.yawDegrees*3.14159265358979323846f/180.0f;
+            const float distance = std::max(0.1f,extent*1.5f);
+            options.camera.position = {center.x-std::sin(radians)*distance,center.y,center.z+std::cos(radians)*distance};
+            options.camera.pitchDegrees = 0.0f;
+            options.camera.verticalFovDegrees = 60.0f;
+        }
         const auto result = Render(scene,options.camera,options.width,options.height);
         WriteBmp(options.output,result.image);
         if (options.selfTest) VerifySyntheticPipeline(scene,options,result);

@@ -37,6 +37,7 @@
 #include "map_transition_transaction.h"
 #include "quest_map_lighting.h"
 #include "quest_static_lightmap_cache.h"
+#include "quest_actor_geometry.h"
 #include "quest_save_metadata.h"
 #include "quest_save_bundle.h"
 #include "async_result_epoch.h"
@@ -49,12 +50,12 @@ class TexturedGeometryRenderer {
     void Init(
         const OVRFW::GlGeometry::Descriptor& descriptor,
         const OVRFW::GlTexture& texture,
-        bool cullEnable = true) {
+        bool cullEnable = true, std::uint32_t polyFlags = 0u) {
         static const char* vertexShader = R"glsl(
             attribute highp vec4 Position;
             attribute highp vec2 TexCoord;
             attribute lowp vec4 VertexColor;
-            varying lowp vec2 oTexCoord;
+            varying highp vec2 oTexCoord;
             varying mediump float oLayer;
             varying lowp vec3 oLight;
             void main() {
@@ -67,25 +68,25 @@ class TexturedGeometryRenderer {
         static const char* fragmentShader = R"glsl(
             precision lowp float;
             uniform highp sampler2DArray Texture0;
-            varying lowp vec2 oTexCoord;
+            uniform highp float Masked;
+            varying highp vec2 oTexCoord;
             varying mediump float oLayer;
             varying lowp vec3 oLight;
             void main() {
                 lowp vec4 texel = texture(
                     Texture0, vec3(fract(oTexCoord), floor(oLayer + 0.5)));
-                // Palette index zero carries transparent alpha in actor layers.
-                // Discarding it is safe for opaque meshes and required for UE1
-                // masked decorations such as plants and grilles.
-                if (texel.a < 0.5) discard;
-                gl_FragColor = vec4(texel.rgb * oLight, texel.a);
+                // Only authored masked materials discard palette index zero.
+                if (Masked > 0.5 && texel.a < 0.5) discard;
+                gl_FragColor = vec4(texel.rgb * oLight, Masked < -0.5 ? texel.a : 1.0);
             }
         )glsl";
         static OVRFW::ovrProgramParm uniformParms[] = {
             {.Name = "Texture0", .Type = OVRFW::ovrProgramParmType::TEXTURE_SAMPLED},
+            {.Name = "Masked", .Type = OVRFW::ovrProgramParmType::FLOAT},
         };
         if (!sharedProgram_.IsValid()) {
             sharedProgram_ = OVRFW::GlProgram::Build(
-                "", vertexShader, "", fragmentShader, uniformParms, 1);
+                "", vertexShader, "", fragmentShader, uniformParms, 2);
         }
         if (!sharedProgram_.IsValid())
             throw std::runtime_error("textured geometry shader creation failed");
@@ -94,9 +95,28 @@ class TexturedGeometryRenderer {
         command.Program = sharedProgram_;
         command.Textures[0] = texture;
         command.UniformData[0].Data = &command.Textures[0];
+        if ((polyFlags & 4u) != 0u) polyFlags &= ~2u;
+        masked_ = (polyFlags & 2u) != 0u ? 1.0f : 0.0f;
+        if ((polyFlags & 0x10000000u) != 0u && (polyFlags & (4u|64u)) == 0u) masked_ = -1.0f;
+        command.UniformData[1].Data = &masked_;
         command.GpuState.depthEnable = command.GpuState.depthMaskEnable = true;
         command.GpuState.blendEnable = OVRFW::ovrGpuState::BLEND_DISABLE;
         command.GpuState.cullEnable = cullEnable;
+        blended_ = (polyFlags & (4u|64u|0x10000000u)) != 0u;
+        localCenter_ = {};
+        for (const auto& position : descriptor.attribs.position) localCenter_ += position;
+        if (!descriptor.attribs.position.empty()) localCenter_ *= 1.0f/descriptor.attribs.position.size();
+        if ((polyFlags & (4u|64u)) != 0u) {
+            command.GpuState.depthMaskEnable = (polyFlags & 0x80000000u) != 0u;
+            command.GpuState.blendEnable = OVRFW::ovrGpuState::BLEND_ENABLE;
+            command.GpuState.blendSrc = (polyFlags & 4u) != 0u ? GL_ONE : GL_DST_COLOR;
+            command.GpuState.blendDst = (polyFlags & 4u) != 0u ? GL_ONE_MINUS_SRC_COLOR : GL_SRC_COLOR;
+        }
+        else if ((polyFlags & 0x10000000u) != 0u) {
+            command.GpuState.blendEnable = OVRFW::ovrGpuState::BLEND_ENABLE;
+            command.GpuState.blendSrc = GL_ONE;
+            command.GpuState.blendDst = GL_ONE_MINUS_SRC_ALPHA;
+        }
     }
 
     void Shutdown() {
@@ -106,6 +126,10 @@ class TexturedGeometryRenderer {
         if (sharedProgram_.IsValid()) OVRFW::GlProgram::Free(sharedProgram_);
     }
     void SetPose(const OVR::Posef& pose) { pose_ = pose; }
+    bool IsBlended() const { return blended_; }
+    float DepthAlong(const OVR::Vector3f& eye, const OVR::Vector3f& forward) const {
+        return (modelMatrix_.Transform(localCenter_)-eye).Dot(forward);
+    }
     void Update() {
         pose_.Rotation.Normalize();
         modelMatrix_ = OVR::Matrix4f(pose_);
@@ -113,12 +137,16 @@ class TexturedGeometryRenderer {
     void Render(std::vector<OVRFW::ovrDrawSurface>& surfaces) {
         surface_.graphicsCommand.UniformData[0].Data =
             &surface_.graphicsCommand.Textures[0];
+        surface_.graphicsCommand.UniformData[1].Data = &masked_;
         surfaces.emplace_back(modelMatrix_, &surface_);
     }
 
    private:
     OVRFW::ovrSurfaceDef surface_;
     inline static OVRFW::GlProgram sharedProgram_;
+    float masked_{};
+    bool blended_{};
+    OVR::Vector3f localCenter_;
     OVR::Posef pose_ = OVR::Posef::Identity();
     OVR::Matrix4f modelMatrix_ = OVR::Matrix4f::Identity();
 };
@@ -986,8 +1014,18 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         OVRFW::ovrRendererOutput& output) override {
         if (!headTrackingValid_) return;
         for (auto& renderer : worldRenderers_) renderer.Render(output.Surfaces);
-        for (auto& renderer : texturedRenderers_) renderer.Render(output.Surfaces);
         for (auto& renderer : bakedWorldRenderers_) renderer.Render(output.Surfaces);
+        std::vector<TexturedGeometryRenderer*> blendedActors;
+        for (auto& renderer : texturedRenderers_) {
+            if (renderer.IsBlended()) blendedActors.push_back(&renderer);
+            else renderer.Render(output.Surfaces);
+        }
+        const auto eye = frame.HeadPose.Translation;
+        const auto forward = frame.HeadPose.Rotation.Rotate(OVR::Vector3f(0,0,-1));
+        std::stable_sort(blendedActors.begin(),blendedActors.end(),[&](const auto* a,const auto* b) {
+            return a->DepthAlong(eye,forward) > b->DepthAlong(eye,forward);
+        });
+        for (auto* renderer : blendedActors) renderer->Render(output.Surfaces);
         if (inventoryMenuOpen_) personaRenderer_.Render(output.Surfaces);
         const std::size_t firstUiSurface = output.Surfaces.size();
         ui_.Render(frame, output);
@@ -1135,6 +1173,9 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         bool textured{};
         bool sequential{};
         std::uint16_t material{};
+        QuestVr::ActorTransform actorTransform;
+        std::uint32_t polyFlags{};
+        std::uint32_t sourcePolyFlags{};
     };
 
     struct ActorGeometryBuild {
@@ -1161,6 +1202,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         OVRFW::GlGeometry::Descriptor cubeDescriptor;
         OVRFW::GlGeometry::Descriptor markerChunk;
         OVRFW::GlGeometry::Descriptor texturedChunk;
+        std::uint32_t texturedChunkPolyFlags{};
         std::deque<ActorGeometryPart> parts;
     };
 
@@ -1373,6 +1415,8 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         // delayed visual chunks. Preserve the exact previous ordering/filter.
         for (std::size_t index = 0u; index < actorSnapshots_.size(); ++index) {
             const PortableActorSnapshot& actor = actorSnapshots_[index];
+            // Serialized editor cameras are not gameplay characters or targets.
+            if (actor.classPath == "Engine.Camera") continue;
             if (!actor.hasLocation ||
                 !(actor.pawn || actor.inventory || actor.decoration ||
                   actor.mover || actor.trigger || actor.travel)) {
@@ -1414,200 +1458,98 @@ class DeusExQuestApp final : public OVRFW::XrApp {
     }
 
     void QueueActorMeshPart(
-        const PortableLodMesh& mesh, const std::uint16_t material, const bool textured,
-        const OVR::Vector4f& color, const OVR::Matrix4f& transform) {
+        const PortableLodMesh& mesh, const std::uint16_t material,
+        const OVR::Vector4f& color, const QuestVr::ActorTransform& transform,
+        const std::uint32_t polyFlags) {
         if (mesh.triangles.empty()) return;
         if (mesh.triangles.size() % 3u != 0u)
             throw std::runtime_error("actor mesh is not a triangle list");
-        const OVR::Matrix3f normalTransform(transform);
-        if (!std::isfinite(normalTransform.Determinant()) ||
-            std::fabs(normalTransform.Determinant()) < 0.00000001f)
-            throw std::runtime_error("actor mesh transform is singular or non-finite");
-        actorGeometryBuild_->parts.push_back({nullptr, &mesh, transform,
-            normalTransform.Inverse().Transposed(), color, 0u, textured, true, material});
+        ActorGeometryPart part;
+        part.mesh = &mesh; part.color = color; part.textured = true;
+        part.sequential = true; part.material = material;
+        part.actorTransform = transform; part.polyFlags = polyFlags;
+        actorGeometryBuild_->parts.push_back(std::move(part));
     }
 
     void PrepareNextActorGeometry() {
         ActorGeometryBuild& build = *actorGeometryBuild_;
         const std::size_t ordinal = build.nextActor++;
-        const PortableActorSnapshot& actor = actorSnapshots_[build.actorIndices[ordinal]];
+        const auto& actor = actorSnapshots_[build.actorIndices[ordinal]];
         const OVR::Vector3f position = interactiveActors_[ordinal].localPosition;
-        const auto& spriteDescriptor = build.spriteDescriptor;
-        const auto& textureLayers = build.textureLayers;
-        auto& meshClasses = build.meshClasses;
-        auto& cubeClasses = build.cubeClasses;
-        auto& meshInstances = build.meshInstances;
-        auto& brushInstances = build.brushInstances;
-        auto& spriteInstances = build.spriteInstances;
-        auto& cubePlaceholders = build.cubePlaceholders;
-        auto& hiddenActors = build.hiddenActors;
-            const OVR::Vector3f actorLighting = CalculateMapLighting(
-                position, OVR::Vector3f(0.0f, 1.0f, 0.0f));
-            if (!actor.meshPath.empty()) ++meshClasses[actor.meshClassPath];
-            if (actor.hidden) ++hiddenActors;
-            OVR::Vector4f color;
-            OVR::Vector3f scale;
-            if (actor.pawn) {
-                color = {0.75f, 0.22f, 0.12f, 1.0f};
-                scale = {0.32f, 1.65f, 0.32f};
-            } else if (actor.inventory) {
-                color = {0.12f, 0.75f, 0.35f, 1.0f};
-                scale = {0.18f, 0.18f, 0.18f};
-            } else if (actor.travel) {
-                color = {0.2f, 0.75f, 0.9f, 1.0f};
-                scale = {0.2f, 0.2f, 0.2f};
-            } else if (actor.mover) {
-                color = {0.25f, 0.4f, 0.8f, 1.0f};
-                scale = {0.12f, 0.12f, 0.12f};
-            } else if (actor.trigger) {
-                color = {0.85f, 0.75f, 0.12f, 1.0f};
-                scale = {0.09f, 0.09f, 0.09f};
-            } else {
-                color = {0.5f, 0.32f, 0.15f, 1.0f};
-                scale = {0.35f, 0.35f, 0.35f};
-            }
-            bool renderedMesh = false;
-            if (!actor.hidden && !actor.activated && actor.mover &&
-                !actor.brushPath.empty()) {
-                try {
-                    auto brush = build.brushes.find(actor.brushPath);
-                    if (brush == build.brushes.end()) {
-                        brush = build.brushes.emplace(
-                            actor.brushPath, GetPortableRuntimeBrush(actor.brushPath)).first;
-                    }
-                    constexpr float unrealAngle =
-                        6.28318530717958647692f / 65536.0f;
-                    const float yaw = -static_cast<float>(actor.yaw) * unrealAngle;
-                    const float pitch = -static_cast<float>(actor.pitch) * unrealAngle;
-                    const float roll = static_cast<float>(actor.roll) * unrealAngle;
-                    QueueActorMeshPart(
-                        brush->second, 0u, false,
-                        OVR::Vector4f(
-                            std::clamp(actorLighting.x, 0.18f, 1.0f),
-                            std::clamp(actorLighting.y, 0.18f, 1.0f),
-                            std::clamp(actorLighting.z, 0.18f, 1.0f),
-                            1.0f),
-                        OVR::Matrix4f::Translation(position) *
-                            OVR::Matrix4f(OVR::Quatf(
-                                OVR::Vector3f(0.0f, 1.0f, 0.0f), yaw)) *
-                            OVR::Matrix4f(OVR::Quatf(
-                                OVR::Vector3f(1.0f, 0.0f, 0.0f), pitch)) *
-                            OVR::Matrix4f(OVR::Quatf(
-                                OVR::Vector3f(0.0f, 0.0f, 1.0f), roll)));
-                    renderedMesh = true;
-                    ++brushInstances;
-                } catch (const std::exception& error) {
-                    ALOG(
-                        "DeusExQuest: mover brush render fallback for %s: %s",
-                        actor.brushPath.c_str(),
-                        error.what());
+        if (!actor.meshPath.empty()) ++build.meshClasses[actor.meshClassPath];
+        if (actor.hidden || actor.drawType == 0u) { ++build.hiddenActors; return; }
+        if (!actor.mover && (actor.drawScale == 0.0f || actor.drawScaleX == 0.0f ||
+            actor.drawScaleY == 0.0f || actor.drawScaleZ == 0.0f)) return;
+        const auto light = actor.unlit ? OVR::Vector3f(1.0f) :
+            CalculateMapLighting(position,{0.0f,1.0f,0.0f});
+        bool rendered = false;
+        const bool brushActor = actor.mover && !actor.activated && !actor.brushPath.empty();
+        const std::string assetPath = brushActor ? actor.brushPath : actor.meshPath;
+        if (!assetPath.empty()) {
+            try {
+                auto& cache = brushActor ? build.brushes : build.meshes;
+                auto found = cache.find(assetPath);
+                if (found == cache.end()) found = cache.emplace(assetPath,brushActor ?
+                    GetPortableRuntimeBrush(assetPath) : GetPortableRuntimeMesh(assetPath)).first;
+                const auto& mesh = found->second;
+                const auto transform = QuestVr::BuildSnapshotActorTransform(actor,
+                    {build.originX,build.originY,build.originZ},brushActor);
+                std::set<std::pair<std::uint16_t,std::uint32_t>> materials;
+                for (const auto& vertex : mesh.triangles) materials.emplace(vertex.material,vertex.polyFlags);
+                for (const auto& [material,sourceFlags] : materials) {
+                    const auto selected = QuestVr::ResolveActorMeshMaterial(actor.materialOverrides,
+                        mesh.texturePaths,mesh.materialTextureIndices,material);
+                    const auto layer = build.textureLayers.find(selected.texturePath);
+                    if (layer == build.textureLayers.end()) continue;
+                    const auto textureFlags = layer->second < actorTexturePolyFlags_.size() ?
+                        actorTexturePolyFlags_[layer->second] : 0u;
+                    const auto flags = sourceFlags | QuestVr::ActorMaterialPolyFlags(actor.style,
+                        actor.unlit,actor.noSmooth,actor.meshEnvironmentMap) | (textureFlags & 2u);
+                    const auto maskedLayer = layer->second < actorMaskedTextureLayers_.size() ?
+                        actorMaskedTextureLayers_[layer->second] : -1;
+                    const auto drawLayer = (flags & 2u) != 0u && maskedLayer >= 0 ?
+                        static_cast<std::size_t>(maskedLayer) : layer->second;
+                    if ((flags & 1u) != 0u) continue;
+                    const auto gain = (flags & (0x00400000u|64u)) != 0u ? OVR::Vector3f(1.0f) : light;
+                    QueueActorMeshPart(mesh,material,
+                        {static_cast<float>(drawLayer)/255.0f,gain.x,gain.y,gain.z},
+                        transform,flags);
+                    // Store source flags separately: texture/style bits are shared
+                    // across this material but do not identify its source faces.
+                    build.parts.back().sourcePolyFlags = sourceFlags;
+                    rendered = true;
                 }
+                if (rendered) { if (brushActor) ++build.brushInstances; else ++build.meshInstances; }
+            } catch (const std::exception& error) {
+                ALOG("DeusExQuest: actor asset %s failed: %s",assetPath.c_str(),error.what());
             }
-            if (!renderedMesh && !actor.hidden && !actor.meshPath.empty()) {
-                try {
-                    auto cachedMesh = build.meshes.find(actor.meshPath);
-                    if (cachedMesh == build.meshes.end()) {
-                        cachedMesh = build.meshes.emplace(
-                            actor.meshPath, GetPortableRuntimeMesh(actor.meshPath)).first;
-                    }
-                    const PortableLodMesh& mesh = cachedMesh->second;
-                    constexpr float unrealAngle =
-                        6.28318530717958647692f / 65536.0f;
-                    const float yaw = -static_cast<float>(actor.yaw) * unrealAngle;
-                    const float pitch = -static_cast<float>(actor.pitch) * unrealAngle;
-                    const float roll = static_cast<float>(actor.roll) * unrealAngle;
-                    const OVR::Matrix4f transform =
-                        OVR::Matrix4f::Translation(position) *
-                        OVR::Matrix4f(OVR::Quatf(
-                            OVR::Vector3f(0.0f, 1.0f, 0.0f), yaw)) *
-                        OVR::Matrix4f(OVR::Quatf(
-                            OVR::Vector3f(1.0f, 0.0f, 0.0f), pitch)) *
-                        OVR::Matrix4f(OVR::Quatf(
-                            OVR::Vector3f(0.0f, 0.0f, 1.0f), roll)) *
-                        OVR::Matrix4f::Scaling(
-                            actor.drawScale * actor.drawScaleY,
-                            actor.drawScale * actor.drawScaleZ,
-                            actor.drawScale * actor.drawScaleX);
-                    auto cachedMaterials = build.meshMaterials.find(actor.meshPath);
-                    if (cachedMaterials == build.meshMaterials.end()) {
-                        std::set<std::uint16_t> materials;
-                        for (const PortableMeshVertex& vertex : mesh.triangles) {
-                            materials.insert(vertex.material);
-                        }
-                        cachedMaterials = build.meshMaterials.emplace(
-                            actor.meshPath, std::move(materials)).first;
-                    }
-                    for (const std::uint16_t material : cachedMaterials->second) {
-                        std::string texturePath = actor.texturePath;
-                        std::int32_t textureIndex = static_cast<std::int32_t>(material);
-                        if (material < mesh.materialTextureIndices.size()) {
-                            textureIndex = mesh.materialTextureIndices[material];
-                        }
-                        if (texturePath.empty() && textureIndex >= 0 &&
-                            static_cast<std::size_t>(textureIndex) < mesh.texturePaths.size()) {
-                            texturePath = mesh.texturePaths[static_cast<std::size_t>(textureIndex)];
-                        }
-                        const auto layer = textureLayers.find(texturePath);
-                        if (layer == textureLayers.end()) continue;
-                        QueueActorMeshPart(
-                            mesh, material, true,
-                            OVR::Vector4f(
-                                static_cast<float>(layer->second) / 255.0f,
-                                actorLighting.x,
-                                actorLighting.y,
-                                actorLighting.z),
-                            transform);
-                        renderedMesh = true;
-                    }
-                    if (renderedMesh) ++meshInstances;
-                } catch (const std::exception& error) {
-                    ALOG(
-                        "DeusExQuest: actor mesh render fallback for %s: %s",
-                        actor.meshPath.c_str(),
-                        error.what());
-                }
+        }
+        const bool sprite = actor.drawType == 1u || actor.drawType == 4u ||
+            actor.drawType == 5u || actor.drawType == 7u;
+        if (!rendered && sprite && !actor.texturePath.empty()) {
+            const auto layer = build.textureLayers.find(actor.texturePath);
+            if (layer != build.textureLayers.end()) {
+                const float scale = (actor.inventory ? 0.35f : 0.65f)*actor.drawScale;
+                const auto textureFlags = layer->second < actorTexturePolyFlags_.size() ? actorTexturePolyFlags_[layer->second] : 0u;
+                const auto maskedLayer = layer->second < actorMaskedTextureLayers_.size() ? actorMaskedTextureLayers_[layer->second] : -1;
+                const auto drawLayer = ((textureFlags & 2u) != 0u || actor.style == 2u) && maskedLayer >= 0 ?
+                    static_cast<std::size_t>(maskedLayer) : layer->second;
+                QueueActorGeometryPart(build.spriteDescriptor,true,
+                    {static_cast<float>(drawLayer)/255.0f,light.x,light.y,light.z},
+                    OVR::Matrix4f::Translation(position)*OVR::Matrix4f::Scaling(scale,scale,scale));
+                build.parts.back().polyFlags = QuestVr::ActorMaterialPolyFlags(actor.style,
+                    actor.unlit,actor.noSmooth,actor.meshEnvironmentMap) | 0x100u |
+                    (layer->second < actorTexturePolyFlags_.size() ? actorTexturePolyFlags_[layer->second]&2u : 0u);
+                rendered = true; ++build.spriteInstances;
             }
-            constexpr std::uint8_t spriteDrawType = 1u;
-            constexpr std::uint8_t ropeSpriteDrawType = 4u;
-            constexpr std::uint8_t verticalSpriteDrawType = 5u;
-            constexpr std::uint8_t spriteOnceDrawType = 7u;
-            const bool spriteActor = actor.drawType == spriteDrawType ||
-                actor.drawType == ropeSpriteDrawType ||
-                actor.drawType == verticalSpriteDrawType ||
-                actor.drawType == spriteOnceDrawType;
-            if (!renderedMesh && !actor.hidden && spriteActor &&
-                !actor.texturePath.empty()) {
-                const auto layer = textureLayers.find(actor.texturePath);
-                if (layer != textureLayers.end()) {
-                    const float spriteScale = actor.inventory ? 0.35f : 0.65f;
-                    QueueActorGeometryPart(
-                        spriteDescriptor, true,
-                        OVR::Vector4f(
-                            static_cast<float>(layer->second) / 255.0f,
-                            actorLighting.x,
-                            actorLighting.y,
-                            actorLighting.z),
-                        OVR::Matrix4f::Translation(position) *
-                            OVR::Matrix4f::Scaling(
-                                spriteScale * actor.drawScale,
-                                spriteScale * actor.drawScale,
-                                spriteScale * actor.drawScale));
-                    renderedMesh = true;
-                    ++spriteInstances;
-                }
-            }
-            // Trigger, travel, and mover locations are gameplay metadata, not
-            // visible cube-shaped objects. Keep a conservative placeholder only
-            // for physical actors whose source mesh is not yet renderable.
-            if (!renderedMesh && !actor.hidden &&
-                (actor.pawn || actor.inventory || actor.decoration)) {
-                QueueActorGeometryPart(
-                    build.cubeDescriptor, false,
-                    color,
-                    OVR::Matrix4f::Translation(position) * OVR::Matrix4f::Scaling(scale));
-                ++cubePlaceholders;
-                ++cubeClasses[actor.classPath];
-            }
+        }
+        if (!rendered && (actor.pawn || actor.inventory || actor.decoration)) {
+            const OVR::Vector3f scale = actor.pawn ? OVR::Vector3f{0.32f,1.65f,0.32f} :
+                actor.inventory ? OVR::Vector3f{0.18f,0.18f,0.18f} : OVR::Vector3f{0.35f,0.35f,0.35f};
+            QueueActorGeometryPart(build.cubeDescriptor,false,{0.5f,0.32f,0.15f,1.0f},
+                OVR::Matrix4f::Translation(position)*OVR::Matrix4f::Scaling(scale));
+            ++build.cubePlaceholders; ++build.cubeClasses[actor.classPath];
+        }
     }
 
     void LogActorGeometryBuild() const {
@@ -1662,23 +1604,15 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         };
         const std::size_t end = part.nextIndex + count;
         if (part.mesh != nullptr) {
-            constexpr float unitsToMeters = 1.0f / 52.5f;
             for (std::size_t triangle = part.nextIndex; triangle < end; triangle += 3u) {
-                if (part.mesh->triangles[triangle].material != part.material) continue;
-                OVR::Vector3f positions[3];
-                for (std::size_t corner = 0u; corner < 3u; ++corner) {
-                    const auto& vertex = part.mesh->triangles[triangle + corner];
-                    positions[corner] = {vertex.y * unitsToMeters,
-                        vertex.z * unitsToMeters, -vertex.x * unitsToMeters};
-                }
-                const OVR::Vector3f a = positions[1] - positions[0];
-                const OVR::Vector3f b = positions[2] - positions[0];
-                OVR::Vector3f normal{a.y * b.z - a.z * b.y,
-                    a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x};
-                if (normal.LengthSq() > 0.000001f) normal.Normalize();
-                for (std::size_t corner = 0u; corner < 3u; ++corner) {
-                    const auto& vertex = part.mesh->triangles[triangle + corner];
-                    appendVertex(positions[corner], normal, {vertex.u, vertex.v});
+                const auto& source = part.mesh->triangles[triangle];
+                if (source.material != part.material || source.polyFlags != part.sourcePolyFlags) continue;
+                for (const auto& vertex : QuestVr::BuildActorTriangle(*part.mesh,triangle,part.actorTransform)) {
+                    chunk.attribs.position.emplace_back(vertex.position.x,vertex.position.y,vertex.position.z);
+                    chunk.attribs.normal.emplace_back(vertex.normal.x,vertex.normal.y,vertex.normal.z);
+                    chunk.attribs.uv0.emplace_back(vertex.u,vertex.v);
+                    chunk.attribs.color.push_back(part.color);
+                    chunk.indices.push_back(static_cast<OVRFW::TriangleIndex>(chunk.indices.size()));
                 }
             }
         } else {
@@ -1708,7 +1642,8 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             if (actorTexturedRendererIndex_ == invalidRendererIndex_)
                 actorTexturedRendererIndex_ = texturedRenderers_.size();
             texturedRenderers_.emplace_back();
-            texturedRenderers_.back().Init(chunk, actorTexture_, false);
+            texturedRenderers_.back().Init(chunk, actorTexture_,
+                (build.texturedChunkPolyFlags & 0x100u) == 0u,build.texturedChunkPolyFlags);
             texturedRenderers_.back().SetPose(pose);
             texturedRenderers_.back().Update();
         } else {
@@ -1746,7 +1681,9 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         const bool uploadMarker = build.markerChunk.indices.size() >= actorGeometryChunkVertices_ ||
             (allPrepared && !build.markerChunk.indices.empty());
         const bool uploadTextured = build.texturedChunk.indices.size() >= actorGeometryChunkVertices_ ||
-            (allPrepared && !build.texturedChunk.indices.empty());
+            (allPrepared && !build.texturedChunk.indices.empty()) ||
+            (!build.texturedChunk.indices.empty() && !build.parts.empty() &&
+                build.parts.front().textured && build.parts.front().polyFlags != build.texturedChunkPolyFlags);
         // Keep driver allocation/upload separate from preparation; never issue
         // more than one bounded 6144-vertex GPU upload in a frame.
         if (uploadMarker || uploadTextured) {
@@ -1760,6 +1697,10 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                         : (part.sequential ? part.descriptor->attribs.position.size()
                                            : part.descriptor->indices.size());
                     auto& chunk = part.textured ? build.texturedChunk : build.markerChunk;
+                    if (part.textured) {
+                        if (!chunk.indices.empty() && build.texturedChunkPolyFlags != part.polyFlags) break;
+                        build.texturedChunkPolyFlags = part.polyFlags;
+                    }
                     if (part.nextIndex > total || total % 3u != 0u ||
                         part.nextIndex % 3u != 0u ||
                         chunk.indices.size() > actorGeometryChunkVertices_)
@@ -4498,6 +4439,8 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             static_cast<int>(array.width),
             static_cast<int>(array.height));
         actorTexturePaths_ = std::move(array.texturePaths);
+        actorTexturePolyFlags_ = std::move(array.texturePolyFlags);
+        actorMaskedTextureLayers_ = std::move(array.maskedTextureLayers);
         return actorTexture_.IsValid();
     }
 
@@ -4539,6 +4482,8 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         pendingActorTextureLayersUploaded_ = 0u;
         pendingActorTextureRgba_ = std::move(array.rgba);
         pendingActorTexturePaths_ = std::move(array.texturePaths);
+        pendingActorTexturePolyFlags_ = std::move(array.texturePolyFlags);
+        pendingActorMaskedTextureLayers_ = std::move(array.maskedTextureLayers);
         return true;
     }
 
@@ -4580,6 +4525,8 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             pendingActorTextureId_ = 0u;
             pendingActorTextureRgba_.clear();
             actorTexturePaths_ = std::move(pendingActorTexturePaths_);
+            actorTexturePolyFlags_ = std::move(pendingActorTexturePolyFlags_);
+            actorMaskedTextureLayers_ = std::move(pendingActorMaskedTextureLayers_);
             ALOG(
                 "DeusExQuest: staged actor texture upload complete: %u layers at %ux%u",
                 pendingActorTextureLayers_,
@@ -4787,6 +4734,8 @@ class DeusExQuestApp final : public OVRFW::XrApp {
     OVRFW::GlTexture firstTexture_;
     OVRFW::GlTexture actorTexture_;
     std::vector<std::string> actorTexturePaths_;
+    std::vector<std::uint32_t> actorTexturePolyFlags_;
+    std::vector<std::int32_t> actorMaskedTextureLayers_;
     static constexpr std::size_t invalidRendererIndex_ =
         std::numeric_limits<std::size_t>::max();
     std::size_t actorWorldRendererIndex_{invalidRendererIndex_};
@@ -4928,6 +4877,8 @@ class DeusExQuestApp final : public OVRFW::XrApp {
     std::uint32_t pendingActorTextureLayersUploaded_{};
     std::vector<std::uint8_t> pendingActorTextureRgba_;
     std::vector<std::string> pendingActorTexturePaths_;
+    std::vector<std::uint32_t> pendingActorTexturePolyFlags_;
+    std::vector<std::int32_t> pendingActorMaskedTextureLayers_;
 };
 
 ENTRY_POINT(DeusExQuestApp)

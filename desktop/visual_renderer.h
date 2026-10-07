@@ -16,7 +16,26 @@ struct Vertex {
     std::int32_t materialLayer{-1};
 };
 static_assert(sizeof(Vertex) == 36, "DXQM v2 vertex layout changed");
-struct Chunk { std::int32_t materialSlot{}; std::vector<Vertex> vertices; };
+// Actor meshes keep their own material indices: World layer 0 and Actor layer 0
+// are unrelated. The bank is runtime-only and is never written into DXQM v2.
+enum class TextureBank : std::uint8_t { World, Actor };
+inline constexpr std::uint32_t kPolyInvisible = 0x00000001u;
+inline constexpr std::uint32_t kPolyMasked = 0x00000002u;
+inline constexpr std::uint32_t kPolyTranslucent = 0x00000004u;
+inline constexpr std::uint32_t kPolyModulated = 0x00000040u;
+inline constexpr std::uint32_t kPolyTwoSided = 0x00000100u;
+inline constexpr std::uint32_t kPolyUnlit = 0x00400000u;
+inline constexpr std::uint32_t kPolyHighlighted = 0x10000000u;
+inline constexpr std::uint32_t kPolyOcclude = 0x80000000u;
+struct Chunk {
+    std::int32_t materialSlot{};
+    std::vector<Vertex> vertices;
+    TextureBank textureBank{TextureBank::World};
+    // Authored actor face/material flags. Actor flags=0 means opaque; World
+    // flags=0 retains the existing DXQM renderer's legacy alpha-cutoff behavior.
+    // Flags, like the bank, are not part of the immutable DXQM vertex/cache.
+    std::uint32_t polyFlags{};
+};
 // Optional baked lightmap stream stays outside DXQM v2's immutable layout.
 // page=-1 falls back to vertexLighting. Unlit bypasses both lighting sources.
 inline constexpr std::uint32_t kLightmapUnlit = 1u;
@@ -38,6 +57,10 @@ struct Scene {
     float lightmapGainScale{1.0f}; // Recover HDR gain from normalized atlas RGB.
     std::vector<std::uint8_t> lightmapRgba;
     std::vector<std::vector<LightmapVertex>> lightmapVertices;
+    // Optional independently indexed RGBA8 actor texture array. Separate banks
+    // avoid renumbering world materials or sharing its 255-layer limit.
+    std::uint32_t actorTextureWidth{}, actorTextureHeight{}, actorTextureLayers{};
+    std::vector<std::uint8_t> actorTextures;
 };
 struct Camera {
     Vec3 position{0.0f, 1.65f, 0.0f};

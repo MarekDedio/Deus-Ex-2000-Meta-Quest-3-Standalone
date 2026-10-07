@@ -1,5 +1,29 @@
 # Port status
 
+## Original actor rendering and offline close-ups (2026-10-07)
+
+- Corrected original indexed skin inheritance/material precedence, serialized
+  mesh RotOrigin, actor pitch/roll, pivots/MainScale, normals and reflected
+  winding in shared Quest/desktop CPU helpers. Authored mover Polys now retain
+  textures and UV mapping rather than rendering as gray brush geometry.
+- Added independently indexed actor-bank software rendering and original actor
+  isolation. Actual close-ups revealed texture `bMasked` and magenta filtering
+  defects; separate opaque/masked P8 layers now preserve the correct semantics.
+  Selected-material packing retains inactive original actors for quickload.
+- The original transform audit decoded 437 meshes (228 nonzero RotOrigin).
+  Four-map material/inactive-retention checks covered 10,354 authored actors;
+  the broader numbered-map material audit is in progress. Twenty ordinary host
+  tests pass; the separately opted-in original-state test also passed, including
+  paired-save recovery and retained picked-up mesh/material resources. Albedo and Persona
+  image regressions remain exact.
+- CPU scenes submitted 64 Training and 280 Island mesh instances plus 25/19
+  textured movers, with no missing mesh materials. This does not prove that
+  every submitted object was individually visually inspected. Procedural
+  textures, animation/poses, actor lighting/shadows, sprites, skyboxes, complete
+  campaign execution and Quest GPU/stereo/performance remain incomplete.
+- The revised APK builds offline. No headset/ADB access was attempted.
+  See [ACTOR-VISUAL-TESTING.md](ACTOR-VISUAL-TESTING.md).
+
 ## Original static shadow-lightmap implementation (2026-10-07)
 
 - Added a bounded, complete v68 UModel decoder; all 88 installed root models

@@ -21,6 +21,12 @@ Animated light components remain explicitly omitted; skyboxes, actors, native
 GPU precision, display gamma, stereo and gameplay are still unverified. See
 [STATIC-LIGHTMAPS.md](STATIC-LIGHTMAPS.md).
 
+`-Actors` / `--actors` additionally loads original mesh actors and textured
+movers, with shared Quest CPU placement/material selection. `-IsolatedActor`
+/ `--actor-isolate` gives an automatically framed original-object close-up.
+These are static first-frame previews, not live animation or campaign play.
+See [ACTOR-VISUAL-TESTING.md](ACTOR-VISUAL-TESTING.md) for commands and omissions.
+
 A separate `--persona-preview` mode runs the same CPU artwork compositor used
 by the APK. It decodes the original page backgrounds, borders, icons, bitmap
 fonts, and navigation/action-button artwork. Its sample text and inventory

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "surreal_portable_package_tables.h"
+#include "quest_actor_materials.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -123,6 +124,9 @@ struct PortableTextureArray {
     std::size_t decodedTextures{};
     std::size_t failedTextures{};
     std::vector<std::string> texturePaths;
+    std::vector<std::uint32_t> texturePolyFlags; // Same layer order as texturePaths.
+    std::vector<std::int32_t> maskedTextureLayers; // -1 or separately premultiplied P8 masked variant.
+    std::size_t maskedTextureVariants{};
     std::vector<std::uint8_t> rgba;
 };
 
@@ -196,11 +200,17 @@ struct PortableActorSnapshot {
     bool hidden{};
     bool activated{};
     std::uint8_t drawType{};
+    std::uint8_t style{1u};
+    bool unlit{};
+    bool noSmooth{};
+    bool meshEnvironmentMap{};
     std::string destinationMap;
     float drawScale{1.0f};
     float drawScaleX{1.0f};
     float drawScaleY{1.0f};
     float drawScaleZ{1.0f};
+    float prePivotX{}, prePivotY{}, prePivotZ{};
+    float mainScaleX{1.0f}, mainScaleY{1.0f}, mainScaleZ{1.0f};
     std::int32_t pitch{};
     std::int32_t yaw{};
     std::int32_t roll{};
@@ -208,6 +218,7 @@ struct PortableActorSnapshot {
     std::string meshClassPath;
     std::string brushPath;
     std::string texturePath;
+    QuestVr::ActorTextureOverrides materialOverrides;
     std::string ambientSoundPath;
     std::uint8_t soundRadius{64u};
     std::uint8_t soundVolume{255u};
@@ -227,7 +238,9 @@ PortableVmValue ExecutePortableFunction(const std::string& objectPath);
 PortableMapRuntimeSummary LoadPortableRuntimeMap(
     const PortablePackageTables& package);
 std::size_t UnloadPortableRuntimeMap();
-std::vector<PortableActorSnapshot> GetPortableRuntimeMapActors();
+// Renderer lists normally exclude picked-up/destroyed actors. Asset preparation
+// includes them so a later quickload can reactivate their original materials.
+std::vector<PortableActorSnapshot> GetPortableRuntimeMapActors(bool includeInactive = false);
 PortableActorMeshSummary DecodePortableRuntimeActorMeshes();
 PortableLodMesh GetPortableRuntimeMesh(const std::string& meshPath);
 PortableLodMesh GetPortableRuntimeBrush(const std::string& brushPath);

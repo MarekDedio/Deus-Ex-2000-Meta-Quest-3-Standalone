@@ -29,6 +29,11 @@ void EndOfFile(std::ifstream& stream) {
 float Edge(float ax, float ay, float bx, float by, float px, float py) {
     return (bx - ax) * (py - ay) - (by - ay) * (px - ax);
 }
+bool InclusiveEdge(float ax, float ay, float bx, float by, float area) {
+    if (area > 0.0f) { std::swap(ax,bx); std::swap(ay,by); }
+    const float dx = bx-ax, dy = by-ay;
+    return dy > 0.0f || (dy == 0.0f && dx < 0.0f);
+}
 Vec3 Subtract(Vec3 a, Vec3 b) { return {a.x - b.x, a.y - b.y, a.z - b.z}; }
 float Dot(Vec3 a, Vec3 b) { return a.x*b.x + a.y*b.y + a.z*b.z; }
 
@@ -57,16 +62,37 @@ std::vector<ViewVertex> ClipNear(const std::array<ViewVertex, 3>& triangle, floa
     }
     return polygon;
 }
-std::array<float, 4> Sample(const Scene& scene, std::int32_t layer, float u, float v) {
+struct MaterialBankView {
+    std::uint32_t width{}, height{}, layers{};
+    const std::vector<std::uint8_t>* rgba{};
+};
+MaterialBankView MaterialBank(const Scene& scene, TextureBank bank) {
+    if (bank == TextureBank::Actor)
+        return {scene.actorTextureWidth,scene.actorTextureHeight,scene.actorTextureLayers,&scene.actorTextures};
+    return {scene.textureWidth,scene.textureHeight,scene.textureLayers,&scene.textures};
+}
+std::uint32_t EffectivePolyFlags(const Chunk& chunk) {
+    auto flags = chunk.polyFlags;
+    if (chunk.textureBank == TextureBank::World && flags == 0u) flags = kPolyMasked;
+    // Pinned UModel.h ApplyPrecedenceRules: opaque/masked writes depth;
+    // translucent wins over modulated and removes masking, without adding depth.
+    if ((flags & (kPolyTranslucent|kPolyModulated)) == 0u) flags |= kPolyOcclude;
+    else if ((flags & kPolyTranslucent) != 0u) flags &= ~kPolyMasked;
+    return flags;
+}
+bool Blended(std::uint32_t flags) {
+    return (flags & (kPolyTranslucent|kPolyModulated|kPolyHighlighted)) != 0u;
+}
+std::array<float, 4> Sample(const MaterialBankView& bank, std::int32_t layer, float u, float v) {
     if (!std::isfinite(u) || !std::isfinite(v))
         throw std::runtime_error("Texture interpolation exceeds finite numeric range");
-    if (layer < 0 || static_cast<std::uint32_t>(layer) >= scene.textureLayers)
+    if (layer < 0 || static_cast<std::uint32_t>(layer) >= bank.layers)
         return {255.0f, 0.0f, 255.0f, 255.0f};
     // GL_REPEAT with GL_LINEAR. Texel centers match normalized OpenGL coordinates.
     u -= std::floor(u);
     v -= std::floor(v);
-    const float tx = u*scene.textureWidth - 0.5f;
-    const float ty = v*scene.textureHeight - 0.5f;
+    const float tx = u*bank.width - 0.5f;
+    const float ty = v*bank.height - 0.5f;
     const int x0 = static_cast<int>(std::floor(tx));
     const int y0 = static_cast<int>(std::floor(ty));
     const float fx = tx - x0, fy = ty - y0;
@@ -77,12 +103,11 @@ std::array<float, 4> Sample(const Scene& scene, std::int32_t layer, float u, flo
     std::array<float, 4> rgba{};
     for (int dy = 0; dy < 2; ++dy) {
         for (int dx = 0; dx < 2; ++dx) {
-            const auto x = wrap(x0 + dx, scene.textureWidth);
-            const auto y = wrap(y0 + dy, scene.textureHeight);
-            const std::size_t offset = ((static_cast<std::size_t>(layer)*scene.textureHeight+y)*
-                scene.textureWidth+x)*4u;
+            const auto x = wrap(x0 + dx, bank.width);
+            const auto y = wrap(y0 + dy, bank.height);
+            const std::size_t offset = ((static_cast<std::size_t>(layer)*bank.height+y)*bank.width+x)*4u;
             const float weight = (dx == 0 ? 1.0f-fx : fx)*(dy == 0 ? 1.0f-fy : fy);
-            for (std::size_t c = 0; c < 4; ++c) rgba[c] += scene.textures[offset+c]*weight;
+            for (std::size_t c = 0; c < 4; ++c) rgba[c] += (*bank.rgba)[offset+c]*weight;
         }
     }
     return rgba;
@@ -114,10 +139,12 @@ std::array<float, 3> SampleLightmap(const Scene& scene, std::int32_t page, float
 }
 void Rasterize(RenderResult& result, const Scene& scene,
                const std::array<ViewVertex, 3>& triangle, std::int32_t layer,
-               bool textured, float focalLength, std::int32_t lightmapPage = -1,
+               bool textured, TextureBank textureBank, std::uint32_t polyFlags,
+               float focalLength, std::int32_t lightmapPage = -1,
                bool unlit = false, float minU = 0.0f, float minV = 0.0f,
                float maxU = 1.0f, float maxV = 1.0f) {
     const auto width = result.image.width, height = result.image.height;
+    const auto materialBank = MaterialBank(scene,textureBank);
     struct Projected { float x, y, inverseDepth, u, v; Vec3 lighting; float lightU, lightV; };
     std::array<Projected, 3> points{};
     for (std::size_t i = 0; i < 3; ++i) {
@@ -139,7 +166,7 @@ void Rasterize(RenderResult& result, const Scene& scene,
                             points[2].x, points[2].y);
     // Quest enables GL backface culling. BMP's downward Y reverses screen winding.
     if (!std::isfinite(area)) throw std::runtime_error("Projected triangle exceeds finite numeric range");
-    if (area >= -1.0e-6f) return;
+    if (std::abs(area) <= 1.0e-6f || (area > 0.0f && (polyFlags & kPolyTwoSided) == 0u)) return;
     const float lowX = std::min({points[0].x, points[1].x, points[2].x});
     const float highX = std::max({points[0].x, points[1].x, points[2].x});
     const float lowY = std::min({points[0].y, points[1].y, points[2].y});
@@ -157,6 +184,14 @@ void Rasterize(RenderResult& result, const Scene& scene,
             const float b = Edge(points[2].x, points[2].y, points[0].x, points[0].y, px, py)/area;
             const float c = 1.0f-a-b;
             if (a < -1.0e-6f || b < -1.0e-6f || c < -1.0e-6f) continue;
+            // Non-depth-writing triangles must not blend the same shared edge
+            // twice. Keep the legacy opaque rule byte-exact, but use a half-open
+            // raster edge rule for blend passes (matching GPU triangle coverage).
+            if (Blended(polyFlags) &&
+                ((std::abs(a) <= 1.0e-6f && !InclusiveEdge(points[1].x,points[1].y,points[2].x,points[2].y,area)) ||
+                 (std::abs(b) <= 1.0e-6f && !InclusiveEdge(points[2].x,points[2].y,points[0].x,points[0].y,area)) ||
+                 (std::abs(c) <= 1.0e-6f && !InclusiveEdge(points[0].x,points[0].y,points[1].x,points[1].y,area))))
+                continue;
             const float inverse = a*points[0].inverseDepth+b*points[1].inverseDepth+
                 c*points[2].inverseDepth;
             const float depth = 1.0f/inverse;
@@ -166,24 +201,41 @@ void Rasterize(RenderResult& result, const Scene& scene,
             if (depth >= result.depth[pixel]) continue;
             const float u = (a*points[0].u+b*points[1].u+c*points[2].u)/inverse;
             const float v = (a*points[0].v+b*points[1].v+c*points[2].v)/inverse;
-            const auto texel = textured ? Sample(scene, layer, u, v) :
+            const auto texel = textured ? Sample(materialBank, layer, u, v) :
                 std::array<float, 4>{38.0f, 204.0f, 140.0f, 255.0f};
             // Match the Quest world material's alpha cutoff (no opaque chroma-key holes).
-            if (texel[3] < 127.5f) { ++result.transparentSamples; continue; }
-            result.depth[pixel] = depth;
+            if ((polyFlags & kPolyMasked) != 0u && texel[3] < 127.5f) {
+                ++result.transparentSamples; continue;
+            }
+            if ((polyFlags & kPolyOcclude) != 0u) result.depth[pixel] = depth;
+            if ((polyFlags & kPolyInvisible) != 0u) continue;
             std::array<float,3> gain{1.0f,1.0f,1.0f};
-            if (!unlit && lightmapPage >= 0) {
+            if (!unlit && (polyFlags & kPolyModulated) == 0u && lightmapPage >= 0) {
                 const float lightU = (a*points[0].lightU+b*points[1].lightU+c*points[2].lightU)/inverse;
                 const float lightV = (a*points[0].lightV+b*points[1].lightV+c*points[2].lightV)/inverse;
                 gain = SampleLightmap(scene, lightmapPage, lightU, lightV, minU, minV, maxU, maxV);
-            } else if (!unlit && !scene.vertexLighting.empty()) {
+            } else if (!unlit && (polyFlags & kPolyModulated) == 0u && !scene.vertexLighting.empty()) {
                 gain = {(a*points[0].lighting.x+b*points[1].lighting.x+c*points[2].lighting.x)/inverse,
                         (a*points[0].lighting.y+b*points[1].lighting.y+c*points[2].lighting.y)/inverse,
                         (a*points[0].lighting.z+b*points[1].lighting.z+c*points[2].lighting.z)/inverse};
             }
-            for (std::size_t channel = 0; channel < 3; ++channel)
+            for (std::size_t channel = 0; channel < 3; ++channel) {
+                const float source = std::clamp(texel[channel]*gain[channel],0.0f,255.0f);
+                const float destination = result.image.rgb[pixel*3u+channel];
+                float color = source;
+                // Pinned GLRenderDevice scene blends, in byte-domain RGB:
+                // ONE, ONE_MINUS_SRC_COLOR; DST_COLOR, SRC_COLOR; or
+                // highlighted ONE, ONE_MINUS_SRC_ALPHA. Texture alpha does
+                // not decide whether an opaque actor texel is visible.
+                if ((polyFlags & kPolyTranslucent) != 0u)
+                    color = source+destination*(1.0f-source/255.0f);
+                else if ((polyFlags & kPolyModulated) != 0u)
+                    color = 2.0f*source*destination/255.0f;
+                else if ((polyFlags & kPolyHighlighted) != 0u)
+                    color = source+destination*(1.0f-texel[3]/255.0f);
                 result.image.rgb[pixel*3u+channel] = static_cast<std::uint8_t>(
-                    std::clamp(std::round(texel[channel]*gain[channel]), 0.0f, 255.0f));
+                    std::clamp(std::round(color),0.0f,255.0f));
+            }
         }
     }
 }
@@ -265,6 +317,49 @@ RenderResult Render(const Scene& scene, const Camera& camera,
         camera.verticalFovDegrees < 10.0f || camera.verticalFovDegrees > 150.0f ||
         !std::isfinite(camera.nearPlane) || camera.nearPlane <= 0.0f)
         throw std::runtime_error("Invalid camera/image dimensions");
+    // A scene may contain only flat diagnostics, but every populated material
+    // bank must be complete. Bounds are checked before multiplication, sampling
+    // or framebuffer allocation, including arrays supplied directly by callers.
+    const auto validateBank = [](const MaterialBankView& bank) -> std::uint64_t {
+        if (!bank.width && !bank.height && !bank.layers && bank.rgba->empty()) return 0u;
+        if (!bank.width || !bank.height || !bank.layers || bank.width > 2048u ||
+            bank.height > 2048u || bank.layers > 255u)
+            throw std::runtime_error("Material bank has invalid or oversized dimensions");
+        const auto bytes = static_cast<std::uint64_t>(bank.width)*bank.height*bank.layers*4u;
+        if (bytes > 512u*1024u*1024u || bytes != bank.rgba->size())
+            throw std::runtime_error("Material bank has invalid or oversized RGBA byte count");
+        return bytes;
+    };
+    const auto worldBytes = validateBank(MaterialBank(scene,TextureBank::World));
+    const auto actorBytes = validateBank(MaterialBank(scene,TextureBank::Actor));
+    if (worldBytes+actorBytes > 512u*1024u*1024u)
+        throw std::runtime_error("Combined world/actor material banks exceed the scene budget");
+    if (scene.chunks.size() > 4096u)
+        throw std::runtime_error("Scene geometry exceeds the chunk budget");
+    std::size_t totalVertices{};
+    for (const auto& chunk : scene.chunks) {
+        if (chunk.textureBank != TextureBank::World && chunk.textureBank != TextureBank::Actor)
+            throw std::runtime_error("Unknown material texture bank");
+        if ((chunk.materialSlot != 0 && chunk.materialSlot != -1) || chunk.vertices.size()%3u != 0u ||
+            chunk.vertices.size() > 8u*1024u*1024u-totalVertices)
+            throw std::runtime_error("Scene geometry has invalid material slot, triangle count or vertex budget");
+        totalVertices += chunk.vertices.size();
+        const auto bank = MaterialBank(scene,chunk.textureBank);
+        for (const auto& vertex : chunk.vertices) {
+            if (!std::isfinite(vertex.position.x) || !std::isfinite(vertex.position.y) ||
+                !std::isfinite(vertex.position.z) || !std::isfinite(vertex.normal.x) ||
+                !std::isfinite(vertex.normal.y) || !std::isfinite(vertex.normal.z) ||
+                !std::isfinite(vertex.u) || !std::isfinite(vertex.v))
+                throw std::runtime_error("Scene geometry contains non-finite position, normal or UV");
+            if (chunk.materialSlot == 0 && (vertex.materialLayer < 0 ||
+                static_cast<std::uint32_t>(vertex.materialLayer) >= bank.layers))
+                throw std::runtime_error("Scene geometry references a missing material bank layer");
+        }
+        for (std::size_t i = 0; i < chunk.vertices.size(); i += 3u)
+            if (chunk.vertices[i].materialLayer != chunk.vertices[i+1u].materialLayer ||
+                chunk.vertices[i].materialLayer != chunk.vertices[i+2u].materialLayer)
+                throw std::runtime_error("Scene triangle mixes material bank layers");
+    }
     if (!scene.vertexLighting.empty()) {
         if (scene.vertexLighting.size() != scene.chunks.size())
             throw std::runtime_error("Lighting stream chunk count does not match world geometry");
@@ -329,15 +424,16 @@ RenderResult Render(const Scene& scene, const Camera& camera,
     const Vec3 forward{std::sin(yaw)*std::cos(pitch),std::sin(pitch),-std::cos(yaw)*std::cos(pitch)};
     const Vec3 up{-std::sin(yaw)*std::sin(pitch),std::cos(pitch),std::cos(yaw)*std::sin(pitch)};
     const float focal = height*0.5f/std::tan(camera.verticalFovDegrees*pi/360.0f);
-    for (std::size_t chunkIndex = 0u; chunkIndex < scene.chunks.size(); ++chunkIndex) {
-        const auto& chunk = scene.chunks[chunkIndex];
-        for (std::size_t offset = 0; offset+2u < chunk.vertices.size(); offset += 3u) {
+    const auto drawTriangle = [&](std::size_t chunkIndex, std::size_t offset) {
+            const auto& chunk = scene.chunks[chunkIndex];
+            const auto polyFlags = EffectivePolyFlags(chunk);
             ++result.inputTriangles;
             if (chunk.materialSlot != 0) ++result.flatTriangles;
             std::array<ViewVertex,3> triangle{};
             const auto lightmapPage = scene.lightmapVertices.empty() ? -1 : scene.lightmapVertices[chunkIndex][offset].page;
             const bool unlit = !scene.lightmapVertices.empty() &&
                 (scene.lightmapVertices[chunkIndex][offset].flags & kLightmapUnlit) != 0u;
+            const bool materialUnlit = unlit || (polyFlags & kPolyUnlit) != 0u;
             const auto bounds = scene.lightmapVertices.empty() ? LightmapVertex{} : scene.lightmapVertices[chunkIndex][offset];
             bool crossesNear = false;
             for (std::size_t i = 0; i < 3; ++i) {
@@ -358,10 +454,32 @@ RenderResult Render(const Scene& scene, const Camera& camera,
             if (crossesNear && !clipped.empty()) ++result.clippedTriangles;
             for (std::size_t i = 1; i+1u < clipped.size(); ++i)
                 Rasterize(result, scene, {clipped[0],clipped[i],clipped[i+1u]},
-                    chunk.vertices[offset].materialLayer, chunk.materialSlot == 0, focal, lightmapPage, unlit,
+                    chunk.vertices[offset].materialLayer, chunk.materialSlot == 0, chunk.textureBank, polyFlags,
+                    focal, lightmapPage, materialUnlit,
                     bounds.minU, bounds.minV, bounds.maxU, bounds.maxV);
+    };
+    struct BlendTriangle { std::size_t chunk{}, offset{}; float sortDepth{}; };
+    std::vector<BlendTriangle> blendTriangles;
+    // Opaque/legacy world submission order is unchanged. Actors using UE1
+    // blend flags render after opaque depth, back-to-front by triangle center.
+    // This is not a BSP polygon splitter: intersecting translucent triangles
+    // still require the original engine's visibility ordering for exact parity.
+    for (std::size_t chunkIndex = 0u; chunkIndex < scene.chunks.size(); ++chunkIndex) {
+        const auto& chunk = scene.chunks[chunkIndex];
+        const auto flags = EffectivePolyFlags(chunk);
+        for (std::size_t offset = 0; offset+2u < chunk.vertices.size(); offset += 3u) {
+            if (!Blended(flags)) { drawTriangle(chunkIndex,offset); continue; }
+            float sortDepth{};
+            for (std::size_t i = 0; i < 3u; ++i)
+                sortDepth += Dot(Subtract(chunk.vertices[offset+i].position,camera.position),forward)/3.0f;
+            if (!std::isfinite(sortDepth))
+                throw std::runtime_error("Blended geometry sort depth exceeds finite numeric range");
+            blendTriangles.push_back({chunkIndex,offset,sortDepth});
         }
     }
+    std::stable_sort(blendTriangles.begin(),blendTriangles.end(),
+        [](const BlendTriangle& a,const BlendTriangle& b) { return a.sortDepth > b.sortDepth; });
+    for (const auto& triangle : blendTriangles) drawTriangle(triangle.chunk,triangle.offset);
     double luminanceSum{}, squaredSum{};
     result.frameHash = 14695981039346656037ull;
     for (std::size_t i = 0; i < result.depth.size(); ++i) {
@@ -469,6 +587,9 @@ Scene MakeSyntheticScene() {
 }
 
 void WriteSyntheticCache(const std::filesystem::path& directory, const Scene& scene) {
+    for (const auto& chunk : scene.chunks)
+        if (chunk.textureBank != TextureBank::World)
+            throw std::runtime_error("Actor material bank geometry cannot be serialized as DXQM v2");
     std::filesystem::create_directories(directory);
     std::ofstream mesh(directory/"quest-world.mesh",std::ios::binary);
     Write(mesh,std::uint32_t{0x4d515844u}); Write(mesh,std::uint32_t{2u});

@@ -1,9 +1,13 @@
 #include "surreal_portable_package_tables.h"
+#include "quest_actor_transform.h"
+#include "portable_model_geometry.h"
 
 #include "Package/PackageStream.h"
 #include "Utils/File.h"
 
 #include <algorithm>
+#include <filesystem>
+#include <map>
 #include <limits>
 #include <cstring>
 #include <memory>
@@ -1221,7 +1225,13 @@ PortableLodMesh LoadPortableLodMesh(
     if (exportIndex >= package.exports.size()) {
         throw std::runtime_error("UE1 LodMesh export index is outside the table");
     }
+    if (package.version != 68u || package.licenseeMode != 0u) {
+        throw std::runtime_error("UE1 vertex mesh decoder requires Deus Ex version 68/licensee 0");
+    }
     const ExportTableEntry& entry = package.exports[exportIndex];
+    if (entry.ObjSize <= 0 || entry.ObjSize > 256*1024*1024 || entry.ObjOffset < 0) {
+        throw std::runtime_error("UE1 vertex mesh payload size or offset is invalid");
+    }
     std::string metaClass = ResolvePortableObjectPath(entry.ObjClass, package);
     const std::size_t separator = metaClass.find_last_of('.');
     if (separator != std::string::npos) metaClass.erase(0, separator + 1);
@@ -1236,12 +1246,18 @@ PortableLodMesh LoadPortableLodMesh(
     const PortablePropertyStream properties = LoadPortableExportProperties(package, exportIndex);
     reader.Skip(properties.bytesConsumed);
     reader.Skip(41); // UPrimitive bounds and sphere for package version 68.
-    const auto count = [&](const char* label) {
+    const auto count = [&](const char* label, const std::size_t stride = 1u) {
         const std::int32_t value = reader.ReadIndex();
-        if (value < 0 || value > 20'000'000) {
+        if (value < 0 || value > 20'000'000 ||
+            static_cast<std::size_t>(value) > (reader.Size()-reader.Tell())/stride) {
             throw std::runtime_error(std::string("UE1 LodMesh invalid ") + label + " count");
         }
         return static_cast<std::size_t>(value);
+    };
+    const auto lazyArrayEnd = [&](const std::uint32_t expected, const char* label) {
+        if (static_cast<std::uint64_t>(entry.ObjOffset)+reader.Tell() != expected) {
+            throw std::runtime_error(std::string("UE1 vertex mesh inconsistent ") + label + " lazy-array offset");
+        }
     };
     const auto objectReference = [&]() {
         const std::int32_t value = reader.ReadIndex();
@@ -1249,8 +1265,8 @@ PortableLodMesh LoadPortableLodMesh(
         return value;
     };
 
-    reader.ReadUInt32(); // vertex lazy-array end offset
-    const std::size_t vertexCount = count("vertex");
+    const std::uint32_t verticesEnd = reader.ReadUInt32();
+    const std::size_t vertexCount = count("vertex", 8u);
     struct Vertex { float x, y, z; };
     std::vector<Vertex> vertices;
     vertices.reserve(vertexCount);
@@ -1261,13 +1277,15 @@ PortableLodMesh LoadPortableLodMesh(
         reader.ReadUInt16();
         vertices.push_back({static_cast<float>(x), static_cast<float>(y), static_cast<float>(z)});
     }
+    lazyArrayEnd(verticesEnd, "vertex");
 
-    reader.ReadUInt32(); // legacy triangle lazy-array end offset
-    const std::size_t legacyTriangles = count("legacy triangle");
+    const std::uint32_t trianglesEnd = reader.ReadUInt32();
+    const std::size_t legacyTriangles = count("legacy triangle", 20u);
     struct LegacyTriangle {
         std::uint16_t vertex[3];
         std::uint8_t u[3];
         std::uint8_t v[3];
+        std::uint32_t polyFlags;
         std::int32_t textureIndex;
     };
     std::vector<LegacyTriangle> legacyFaces(legacyTriangles);
@@ -1279,9 +1297,10 @@ PortableLodMesh LoadPortableLodMesh(
             triangle.u[corner] = reader.ReadUInt8();
             triangle.v[corner] = reader.ReadUInt8();
         }
-        reader.ReadUInt32(); // PolyFlags
+        triangle.polyFlags = reader.ReadUInt32();
         triangle.textureIndex = static_cast<std::int32_t>(reader.ReadUInt32());
     }
+    lazyArrayEnd(trianglesEnd, "triangle");
     const std::size_t animationSequences = count("animation sequence");
     for (std::size_t index = 0; index < animationSequences; ++index) {
         const std::int32_t name = reader.ReadIndex();
@@ -1297,11 +1316,13 @@ PortableLodMesh LoadPortableLodMesh(
         }
         reader.ReadFloat();
     }
-    reader.ReadUInt32();
-    reader.Skip(count("vertex connect") * 8u);
+    const std::uint32_t connectsEnd = reader.ReadUInt32();
+    reader.Skip(count("vertex connect", 8u) * 8u);
+    lazyArrayEnd(connectsEnd, "vertex connect");
     reader.Skip(25 + 16);
-    reader.ReadUInt32();
-    reader.Skip(count("vertex link") * 4u);
+    const std::uint32_t linksEnd = reader.ReadUInt32();
+    reader.Skip(count("vertex link", 4u) * 4u);
+    lazyArrayEnd(linksEnd, "vertex link");
 
     PortableLodMesh result;
     const std::size_t textureCount = count("texture");
@@ -1309,8 +1330,8 @@ PortableLodMesh LoadPortableLodMesh(
     for (std::size_t index = 0; index < textureCount; ++index) {
         result.textures.push_back(objectReference());
     }
-    reader.Skip(count("bounding box") * 25u);
-    reader.Skip(count("bounding sphere") * 16u);
+    reader.Skip(count("bounding box", 25u) * 25u);
+    reader.Skip(count("bounding sphere", 16u) * 16u);
     result.frameVertices = reader.ReadUInt32();
     result.animationFrames = reader.ReadUInt32();
     reader.Skip(8);
@@ -1320,11 +1341,56 @@ PortableLodMesh LoadPortableLodMesh(
     result.originX = reader.ReadFloat();
     result.originY = reader.ReadFloat();
     result.originZ = reader.ReadFloat();
-    reader.Skip(12 + 8);
+    result.rotationOriginPitch = reader.ReadInt32();
+    result.rotationOriginYaw = reader.ReadInt32();
+    result.rotationOriginRoll = reader.ReadInt32();
+    reader.Skip(8);
     const std::size_t textureLods = count("texture LOD");
     reader.Skip(textureLods * 4u);
+    if (result.frameVertices == 0u || result.animationFrames == 0u ||
+        static_cast<std::uint64_t>(result.frameVertices)*result.animationFrames > vertices.size() ||
+        !QuestVr::IsFiniteActorVector({result.originX, result.originY, result.originZ})) {
+        throw std::runtime_error("UE1 mesh animation dimensions or origin are invalid");
+    }
+    const QuestVr::ActorMatrix3 meshToObject = QuestVr::UnrealActorRotation(
+        result.rotationOriginPitch, result.rotationOriginYaw, result.rotationOriginRoll) *
+        QuestVr::ActorScaleMatrix({result.scaleX, result.scaleY, result.scaleZ});
+    const QuestVr::ActorMatrix3 meshNormalToObject = meshToObject.NormalMatrix();
+    // UMesh/ULodMesh smooth unit face normals by serialized vertex identity,
+    // not by coincident positions (UV seams need not share a vertex).
+    std::vector<QuestVr::ActorVec3> normals(vertices.size());
+    const auto addFaceNormal = [&](const std::size_t a, const std::size_t b, const std::size_t c) {
+        if (a >= result.frameVertices || b >= result.frameVertices || c >= result.frameVertices)
+            throw std::runtime_error("UE1 mesh first-frame normal vertex is out of bounds");
+        const Vertex& v0 = vertices[a]; const Vertex& v1 = vertices[b]; const Vertex& v2 = vertices[c];
+        const QuestVr::ActorVec3 u{v1.x-v0.x, v1.y-v0.y, v1.z-v0.z};
+        const QuestVr::ActorVec3 v{v2.x-v0.x, v2.y-v0.y, v2.z-v0.z};
+        const auto normal = QuestVr::NormalizeActorVector(
+            {u.y*v.z-u.z*v.y, u.z*v.x-u.x*v.z, u.x*v.y-u.y*v.x});
+        for (const auto index : {a, b, c}) {
+            normals[index].x += normal.x; normals[index].y += normal.y; normals[index].z += normal.z;
+        }
+    };
+    const auto makeVertex = [&](const std::size_t index, const float u, const float v,
+                                const std::uint16_t material, const std::uint32_t flags) {
+        if (index >= result.frameVertices || index >= vertices.size())
+            throw std::runtime_error("UE1 mesh first-frame vertex is out of bounds");
+        const Vertex& vertex = vertices[index];
+        const auto position = meshToObject.Transform(
+            {vertex.x-result.originX, vertex.y-result.originY, vertex.z-result.originZ});
+        if (!QuestVr::IsFiniteActorVector(position))
+            throw std::runtime_error("UE1 mesh transformed vertex is non-finite");
+        const auto normal = QuestVr::NormalizeActorVector(meshNormalToObject.Transform(normals[index]));
+        return PortableMeshVertex{position.x, position.y, position.z, u, v, material,
+                                  normal.x, normal.y, normal.z, flags};
+    };
 
     if (metaClass == "Mesh") {
+        if (reader.Tell() != reader.Size()) throw std::runtime_error("UE1 Mesh payload has trailing bytes");
+        result.materialPolyFlags.assign(textureCount, 0u);
+        for (const LegacyTriangle& face : legacyFaces) {
+            addFaceNormal(face.vertex[0], face.vertex[1], face.vertex[2]);
+        }
         result.triangles.reserve(legacyFaces.size() * 3u);
         for (const LegacyTriangle& face : legacyFaces) {
             if (face.textureIndex < 0 || face.textureIndex > 65535) {
@@ -1335,14 +1401,8 @@ PortableLodMesh LoadPortableLodMesh(
                 if (vertexIndex >= result.frameVertices || vertexIndex >= vertices.size()) {
                     throw std::runtime_error("UE1 Mesh triangle vertex is out of bounds");
                 }
-                const Vertex& vertex = vertices[vertexIndex];
-                result.triangles.push_back({
-                    (vertex.x - result.originX) * result.scaleX,
-                    (vertex.y - result.originY) * result.scaleY,
-                    (vertex.z - result.originZ) * result.scaleZ,
-                    face.u[corner] / 255.0f,
-                    face.v[corner] / 255.0f,
-                    static_cast<std::uint16_t>(face.textureIndex)});
+                result.triangles.push_back(makeVertex(vertexIndex, face.u[corner]/255.0f,
+                    face.v[corner]/255.0f, static_cast<std::uint16_t>(face.textureIndex), face.polyFlags));
             }
         }
         if (result.frameVertices == 0u || result.animationFrames == 0u ||
@@ -1352,10 +1412,10 @@ PortableLodMesh LoadPortableLodMesh(
         return result;
     }
 
-    reader.Skip(count("collapse point") * 2u);
-    reader.Skip(count("face level") * 2u);
+    reader.Skip(count("collapse point", 2u) * 2u);
+    reader.Skip(count("face level", 2u) * 2u);
     struct Face { std::uint16_t wedge[3]; std::uint16_t material; };
-    const std::size_t faceCount = count("face");
+    const std::size_t faceCount = count("face", 8u);
     std::vector<Face> faces(faceCount);
     for (Face& face : faces) {
         face.wedge[0] = reader.ReadUInt16();
@@ -1363,28 +1423,48 @@ PortableLodMesh LoadPortableLodMesh(
         face.wedge[2] = reader.ReadUInt16();
         face.material = reader.ReadUInt16();
     }
-    reader.Skip(count("collapse wedge") * 2u);
+    reader.Skip(count("collapse wedge", 2u) * 2u);
     struct Wedge { std::uint16_t vertex; std::uint8_t u, v; };
-    const std::size_t wedgeCount = count("wedge");
+    const std::size_t wedgeCount = count("wedge", 4u);
     std::vector<Wedge> wedges(wedgeCount);
     for (Wedge& wedge : wedges) {
         wedge.vertex = reader.ReadUInt16();
         wedge.u = reader.ReadUInt8();
         wedge.v = reader.ReadUInt8();
     }
-    const std::size_t materialCount = count("material");
+    const std::size_t materialCount = count("material", 8u);
     result.materialTextureIndices.reserve(materialCount);
+    result.materialPolyFlags.reserve(materialCount);
     for (std::size_t index = 0; index < materialCount; ++index) {
-        reader.ReadUInt32(); // PolyFlags
+        result.materialPolyFlags.push_back(reader.ReadUInt32());
         result.materialTextureIndices.push_back(
             static_cast<std::int32_t>(reader.ReadUInt32()));
     }
-    reader.Skip(count("special face") * 8u);
+    reader.Skip(count("special face", 8u) * 8u);
     reader.ReadUInt32(); // ModelVerts
     const std::uint32_t specialVertices = reader.ReadUInt32();
     reader.Skip(24);
-    reader.Skip(count("remapped animation vertex") * 2u);
+    const std::size_t remapCount = count("remapped animation vertex", 2u);
+    std::vector<std::uint16_t> remappedVertices;
+    remappedVertices.reserve(remapCount);
+    for (std::size_t index = 0u; index < remapCount; ++index)
+        remappedVertices.push_back(reader.ReadUInt16());
     reader.ReadUInt32(); // OldFrameVerts
+    if (metaClass == "LodMesh" && reader.Tell() != reader.Size())
+        throw std::runtime_error("UE1 LodMesh payload has trailing bytes");
+
+    for (const Face& face : faces) {
+        std::size_t source[3]{};
+        if (face.material >= materialCount) throw std::runtime_error("UE1 LodMesh material index is out of bounds");
+        for (std::size_t corner = 0u; corner < 3u; ++corner) {
+            if (face.wedge[corner] >= wedges.size())
+                throw std::runtime_error("UE1 LodMesh normal wedge is out of bounds");
+            source[corner] = static_cast<std::size_t>(wedges[face.wedge[corner]].vertex)+specialVertices;
+        }
+        // Match ULodMesh::Load smoothing: normals are built from the direct
+        // wedge+SpecialVerts indices; DrawLodMesh then applies ReMapAnimVerts.
+        addFaceNormal(source[0], source[1], source[2]);
+    }
 
     result.triangles.reserve(faceCount * 3u);
     for (const Face& face : faces) {
@@ -1393,19 +1473,18 @@ PortableLodMesh LoadPortableLodMesh(
                 throw std::runtime_error("UE1 LodMesh face wedge is out of bounds");
             }
             const Wedge& wedge = wedges[wedgeIndex];
-            const std::uint64_t vertexIndex =
+            std::uint64_t vertexIndex =
                 static_cast<std::uint64_t>(wedge.vertex) + specialVertices;
+            if (!remappedVertices.empty()) {
+                if (vertexIndex >= remappedVertices.size())
+                    throw std::runtime_error("UE1 LodMesh animation remap index is out of bounds");
+                vertexIndex = remappedVertices[static_cast<std::size_t>(vertexIndex)];
+            }
             if (vertexIndex >= vertices.size()) {
                 throw std::runtime_error("UE1 LodMesh wedge vertex is out of bounds");
             }
-            const Vertex& vertex = vertices[static_cast<std::size_t>(vertexIndex)];
-            result.triangles.push_back({
-                (vertex.x - result.originX) * result.scaleX,
-                (vertex.y - result.originY) * result.scaleY,
-                (vertex.z - result.originZ) * result.scaleZ,
-                wedge.u / 255.0f,
-                wedge.v / 255.0f,
-                face.material});
+            result.triangles.push_back(makeVertex(static_cast<std::size_t>(vertexIndex),
+                wedge.u/255.0f, wedge.v/255.0f, face.material, result.materialPolyFlags[face.material]));
         }
     }
     if (result.frameVertices == 0 || result.animationFrames == 0 ||
@@ -1416,117 +1495,108 @@ PortableLodMesh LoadPortableLodMesh(
 }
 
 PortableLodMesh LoadPortableBrushMesh(
-    const PortablePackageTables& package,
-    std::size_t exportIndex) {
-    if (exportIndex >= package.exports.size()) {
-        throw std::runtime_error("UE1 brush Model export index is outside the table");
-    }
-    const ExportTableEntry& entry = package.exports[exportIndex];
-    std::string metaClass = ResolvePortableObjectPath(entry.ObjClass, package);
-    const std::size_t separator = metaClass.find_last_of('.');
-    if (separator != std::string::npos) metaClass.erase(0, separator + 1u);
-    if (metaClass != "Model") {
-        throw std::runtime_error("UE1 brush export is not a Model");
-    }
-
+    const PortablePackageTables& package, std::size_t exportIndex) {
+    const auto model = LoadPortableModel68(package,exportIndex);
+    if (model.polysReference <= 0) throw std::runtime_error("Mover Model has no local authored Polys");
+    const auto polyIndex = static_cast<std::size_t>(model.polysReference-1);
+    const auto& entry = package.exports.at(polyIndex);
+    if (GetPortableObjectPath(package,entry.ObjClass) != "Engine.Polys" ||
+        entry.ObjOffset < 0 || entry.ObjSize <= 0 || entry.ObjSize > 32*1024*1024)
+        throw std::runtime_error("Mover Polys export is invalid");
+    const auto properties = LoadPortableExportProperties(package,polyIndex);
     std::vector<std::uint8_t> bytes(static_cast<std::size_t>(entry.ObjSize));
-    const std::shared_ptr<File> file = File::open_existing(package.sourcePath);
-    file->seek(entry.ObjOffset);
-    file->read(bytes.data(), bytes.size());
+    const auto file = File::open_existing(package.sourcePath);
+    file->seek(entry.ObjOffset); file->read(bytes.data(),bytes.size());
     PayloadReader reader(std::move(bytes));
-    const PortablePropertyStream properties = LoadPortableExportProperties(package, exportIndex);
     reader.Skip(properties.bytesConsumed);
-    reader.Skip(41u); // UPrimitive bounds and sphere for package version 68.
-
-    const auto count = [&](const char* label, std::size_t limit) {
-        const std::int32_t value = reader.ReadIndex();
-        if (value < 0 || static_cast<std::size_t>(value) > limit) {
-            throw std::runtime_error(std::string("UE1 brush invalid ") + label + " count");
-        }
-        return static_cast<std::size_t>(value);
+    const auto count = reader.ReadInt32(), capacity = reader.ReadInt32();
+    if (count < 0 || count > 100000 || capacity < count)
+        throw std::runtime_error("Mover Polys count is invalid");
+    const auto vector = [&]() {
+        QuestVr::ActorVec3 value{reader.ReadFloat(),reader.ReadFloat(),reader.ReadFloat()};
+        if (!QuestVr::IsFiniteActorVector(value)) throw std::runtime_error("Mover polygon vector is non-finite");
+        return value;
     };
-    struct Vector { float x, y, z; };
-    const std::size_t vectorCount = count("vector", 1'000'000u);
-    std::vector<Vector> vectors(vectorCount);
-    for (Vector& vector : vectors) {
-        vector = {reader.ReadFloat(), reader.ReadFloat(), reader.ReadFloat()};
-    }
-    const std::size_t pointCount = count("point", 1'000'000u);
-    std::vector<Vector> points(pointCount);
-    for (Vector& point : points) {
-        point = {reader.ReadFloat(), reader.ReadFloat(), reader.ReadFloat()};
-    }
-    struct Node {
-        std::int32_t vertexPool{};
-        std::int32_t surface{};
-        std::uint8_t vertexCount{};
+    const auto dot = [](const QuestVr::ActorVec3& a,const QuestVr::ActorVec3& b) {
+        return a.x*b.x+a.y*b.y+a.z*b.z;
     };
-    const std::size_t nodeCount = count("node", 1'000'000u);
-    std::vector<Node> nodes;
-    nodes.reserve(nodeCount);
-    for (std::size_t index = 0; index < nodeCount; ++index) {
-        reader.Skip(25u); // Plane, zone mask, and node flags.
-        std::int32_t fields[9]{};
-        for (std::int32_t& field : fields) field = reader.ReadIndex();
-        const std::uint8_t vertexCount = reader.ReadUInt8();
-        reader.Skip(8u);
-        nodes.push_back({fields[0], fields[1], vertexCount});
-    }
-    const std::size_t surfaceCount = count("surface", 1'000'000u);
-    std::vector<std::uint32_t> surfaceFlags;
-    surfaceFlags.reserve(surfaceCount);
-    for (std::size_t index = 0; index < surfaceCount; ++index) {
-        const std::int32_t material = reader.ReadIndex();
-        ValidateObjectReference(material, package.imports.size(), package.exports.size());
-        surfaceFlags.push_back(reader.ReadUInt32());
-        for (std::size_t field = 0; field < 6u; ++field) reader.ReadIndex();
-        reader.ReadUInt16(); // PanU
-        reader.ReadUInt16(); // PanV
-        const std::int32_t brushActor = reader.ReadIndex();
-        ValidateObjectReference(brushActor, package.imports.size(), package.exports.size());
-    }
-    struct BspVertex { std::int32_t point{}; };
-    const std::size_t vertexCount = count("BSP vertex", 2'000'000u);
-    std::vector<BspVertex> vertices;
-    vertices.reserve(vertexCount);
-    for (std::size_t index = 0; index < vertexCount; ++index) {
-        const std::int32_t point = reader.ReadIndex();
-        reader.ReadIndex(); // Shared-side index.
-        vertices.push_back({point});
-    }
-
+    const auto root = std::filesystem::path(package.sourcePath).parent_path().parent_path();
+    std::map<std::string,PortablePackageTables> texturePackages;
+    std::map<std::int32_t,std::pair<std::uint16_t,std::array<float,2>>> materials;
     PortableLodMesh result;
-    for (const Node& node : nodes) {
-        if (node.vertexCount < 3u || node.vertexPool < 0 || node.surface < 0 ||
-            static_cast<std::size_t>(node.surface) >= surfaceFlags.size() ||
-            (surfaceFlags[static_cast<std::size_t>(node.surface)] &
-                (0x00000001u | 0x04000000u)) != 0u ||
-            static_cast<std::uint64_t>(node.vertexPool) + node.vertexCount > vertices.size()) {
-            continue;
-        }
-        std::vector<const Vector*> polygon;
-        polygon.reserve(node.vertexCount);
-        for (std::size_t corner = 0; corner < node.vertexCount; ++corner) {
-            const std::int32_t point = vertices[
-                static_cast<std::size_t>(node.vertexPool) + corner].point;
-            if (point < 0 || static_cast<std::size_t>(point) >= points.size()) {
-                polygon.clear();
-                break;
+    for (std::int32_t poly = 0; poly < count; ++poly) {
+        const auto vertices = reader.ReadIndex();
+        if (vertices < 3 || vertices > 65536) throw std::runtime_error("Mover polygon vertex count is invalid");
+        const auto base = vector(), normal = vector(), u = vector(), v = vector();
+        std::vector<QuestVr::ActorVec3> points;
+        points.reserve(static_cast<std::size_t>(vertices));
+        for (std::int32_t corner = 0; corner < vertices; ++corner) points.push_back(vector());
+        const auto flags = reader.ReadUInt32();
+        const auto actor = reader.ReadIndex(), texture = reader.ReadIndex();
+        ValidateObjectReference(actor,package.imports.size(),package.exports.size());
+        ValidateObjectReference(texture,package.imports.size(),package.exports.size());
+        ReadPayloadName(reader,package); reader.ReadIndex(); reader.ReadIndex();
+        const auto panU = static_cast<std::int16_t>(reader.ReadUInt16());
+        const auto panV = static_cast<std::int16_t>(reader.ReadUInt16());
+        if ((flags & 1u) != 0u) continue;
+        auto material = materials.find(texture);
+        if (material == materials.end()) {
+            if (materials.size() >= 65536u) throw std::runtime_error("Mover material count exceeds uint16");
+            const auto slot = static_cast<std::uint16_t>(materials.size());
+            std::string path = GetPortableObjectPath(package,texture);
+            if (texture > 0) path = std::filesystem::path(package.sourcePath).stem().string()+"."+path;
+            std::array<float,2> dimensions{1.0f,1.0f};
+            if (texture != 0) {
+                const auto separator = path.find('.');
+                if (separator == std::string::npos) throw std::runtime_error("Mover texture is not qualified");
+                const auto name = path.substr(0,separator);
+                const PortablePackageTables* texturePackage = &package;
+                if (name != std::filesystem::path(package.sourcePath).stem().string()) {
+                    auto found = texturePackages.find(name);
+                    if (found == texturePackages.end()) {
+                        std::filesystem::path source;
+                        for (const auto& candidate : {root/"System"/(name+".u"),root/"Textures"/(name+".utx"),root/"Maps"/(name+".dx")})
+                            if (std::filesystem::is_regular_file(candidate)) { source = candidate; break; }
+                        if (source.empty()) throw std::runtime_error("Mover texture package is missing: "+name);
+                        found = texturePackages.emplace(name,LoadPortablePackageTables(source.string())).first;
+                    }
+                    texturePackage = &found->second;
+                }
+                const auto texExport = texture > 0 ? static_cast<std::size_t>(texture-1) :
+                    FindPortableTextureExport(*texturePackage,path.substr(separator+1u));
+                const auto texProperties = LoadPortableExportProperties(*texturePackage,texExport);
+                float scale = 1.0f;
+                for (const auto& property : texProperties.properties) {
+                    if ((property.name == "USize" || property.name == "VSize") && property.type == 2u && property.value.size() == 4u) {
+                        std::int32_t extent{}; std::memcpy(&extent,property.value.data(),4u);
+                        if (extent <= 0 || extent > 16384) throw std::runtime_error("Mover texture extent is invalid");
+                        dimensions[property.name == "USize" ? 0u : 1u] = static_cast<float>(extent);
+                    } else if (property.name == "DrawScale" && property.type == 4u && property.value.size() == 4u)
+                        std::memcpy(&scale,property.value.data(),4u);
+                }
+                if (!std::isfinite(scale) || scale <= 0.0f) throw std::runtime_error("Mover texture DrawScale is invalid");
+                dimensions[0] *= scale; dimensions[1] *= scale;
             }
-            polygon.push_back(&points[static_cast<std::size_t>(point)]);
+            result.textures.push_back(texture); result.texturePaths.push_back(path);
+            result.materialTextureIndices.push_back(slot); result.materialPolyFlags.push_back(flags);
+            material = materials.emplace(texture,std::make_pair(slot,dimensions)).first;
         }
-        if (polygon.size() < 3u) continue;
-        for (std::size_t corner = 1u; corner + 1u < polygon.size(); ++corner) {
-            const std::size_t order[] = {0u, corner, corner + 1u, 0u, corner + 1u, corner};
-            for (const std::size_t polygonIndex : order) {
-                const Vector& point = *polygon[polygonIndex];
-                result.triangles.push_back({point.x, point.y, point.z, 0.0f, 0.0f, 0u});
+        const auto outward = QuestVr::NormalizeActorVector(normal);
+        for (std::size_t corner = 1u; corner+1u < points.size(); ++corner) {
+            const std::size_t order[3]{0u,corner,corner+1u};
+            for (auto index : order) {
+                const auto& p = points[index];
+                const QuestVr::ActorVec3 delta{p.x-base.x,p.y-base.y,p.z-base.z};
+                result.triangles.push_back({p.x,p.y,p.z,
+                    (dot(delta,u)+panU)/material->second.second[0],
+                    (dot(delta,v)+panV)/material->second.second[1],material->second.first,
+                    outward.x,outward.y,outward.z,flags});
             }
+            if (result.triangles.size() > 2'000'000u) throw std::runtime_error("Mover triangle budget exceeded");
         }
     }
-    if (result.triangles.empty()) {
-        throw std::runtime_error("UE1 brush Model has no renderable polygons");
-    }
+    if (reader.Tell() != reader.Size()) throw std::runtime_error("Mover Polys has trailing bytes");
+    if (result.triangles.empty()) throw std::runtime_error("Mover Polys has no visible geometry");
     result.frameVertices = static_cast<std::uint32_t>(result.triangles.size());
     result.animationFrames = 1u;
     return result;

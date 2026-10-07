@@ -37,6 +37,7 @@ public:
     std::unique_ptr<PortableClassDescriptor> classDescriptor;
     std::vector<PortableTaggedProperty> instanceProperties;
     std::unordered_map<std::string, std::string> objectPropertyPaths;
+    QuestVr::ActorTextureOverrides textureOverrides;
     std::string sourcePath;
     std::size_t exportIndex{};
     std::unique_ptr<PortableLodMesh> lodMesh;
@@ -835,11 +836,13 @@ PortableRuntimeSummary InitializePortableRuntime(
                     if ((property.type != 5u && property.type != 8u) ||
                         property.value.empty()) continue;
                     const std::int32_t reference = DecodePortableObjectReference(property);
-                    if (reference == 0) continue;
-                    const std::string path = reference > 0
+                    const std::string path = reference == 0 ? std::string() : reference > 0
                         ? slice.name + "." +
                             GetPortableObjectPath(*slice.package, reference)
                         : GetPortableObjectPath(*slice.package, reference);
+                    if (property.type == 5u) QuestVr::SetActorTextureOverride(
+                        object->textureOverrides, property.name.ToString(), property.arrayIndex, path);
+                    if (reference == 0) continue;
                     object->objectPropertyPaths[property.name.ToString()] = path;
                     if (RuntimeObject* target = resolve(slice, reference)) {
                         object->references.push_back(target);
@@ -1288,10 +1291,12 @@ PortableMapRuntimeSummary LoadPortableRuntimeMap(
                 if ((property.type != 5u && property.type != 8u) ||
                     property.value.empty()) continue;
                 const std::int32_t reference = DecodePortableObjectReference(property);
-                if (reference == 0) continue;
-                const std::string path = reference > 0
+                const std::string path = reference == 0 ? std::string() : reference > 0
                     ? packageName + "." + GetPortableObjectPath(package, reference)
                     : GetPortableObjectPath(package, reference);
+                if (property.type == 5u) QuestVr::SetActorTextureOverride(
+                    object->textureOverrides, property.name.ToString(), property.arrayIndex, path);
+                if (reference == 0) continue;
                 object->objectPropertyPaths[property.name.ToString()] = path;
                 if (RuntimeObject* target = resolve(reference)) {
                     object->references.push_back(target);
@@ -1337,14 +1342,15 @@ std::size_t UnloadPortableRuntimeMap() {
     return removed;
 }
 
-std::vector<PortableActorSnapshot> GetPortableRuntimeMapActors() {
+std::vector<PortableActorSnapshot> GetPortableRuntimeMapActors(bool includeInactive) {
     std::vector<PortableActorSnapshot> snapshots;
     if (!persistentRuntime || !persistentRuntime->get()) return snapshots;
     for (std::size_t index = persistentScriptExportCount;
          index < persistentRuntime->get()->exports.size();
          ++index) {
         RuntimeObject* object = persistentRuntime->get()->exports[index];
-        if (!object->active || !IsDerivedFromPath(object->cls, "Engine.Actor")) continue;
+        if ((!includeInactive && !object->active) ||
+            !IsDerivedFromPath(object->cls, "Engine.Actor")) continue;
         PortableActorSnapshot snapshot;
         snapshot.objectPath = object->reflection.objectPath;
         snapshot.classPath = object->cls ? object->cls->reflection.objectPath : std::string();
@@ -1391,6 +1397,23 @@ std::vector<PortableActorSnapshot> GetPortableRuntimeMapActors() {
                 std::memcpy(&snapshot.drawScaleZ, drawScale3D->value.data() + 8, sizeof(float));
             }
         }
+        if (const auto* prePivot = inheritedProperty("PrePivot")) {
+            if (prePivot->type == 10u && prePivot->value.size() == 12u) {
+                std::memcpy(&snapshot.prePivotX, prePivot->value.data(), sizeof(float));
+                std::memcpy(&snapshot.prePivotY, prePivot->value.data() + 4u, sizeof(float));
+                std::memcpy(&snapshot.prePivotZ, prePivot->value.data() + 8u, sizeof(float));
+            }
+        }
+        // FScale begins with its three float Scale vector components. Its
+        // remaining SheerRate/SheerAxis fields are not applied by pinned BSP
+        // brush rendering either; malformed/truncated data keeps identity.
+        if (const auto* mainScale = inheritedProperty("MainScale")) {
+            if (mainScale->type == 10u && mainScale->value.size() >= 12u) {
+                std::memcpy(&snapshot.mainScaleX, mainScale->value.data(), sizeof(float));
+                std::memcpy(&snapshot.mainScaleY, mainScale->value.data() + 4u, sizeof(float));
+                std::memcpy(&snapshot.mainScaleZ, mainScale->value.data() + 8u, sizeof(float));
+            }
+        }
         if (const PortableTaggedProperty* rotation = inheritedProperty("Rotation")) {
             if (rotation->value.size() == 12u) {
                 std::memcpy(&snapshot.pitch, rotation->value.data(), sizeof(std::int32_t));
@@ -1403,7 +1426,10 @@ std::vector<PortableActorSnapshot> GetPortableRuntimeMapActors() {
         if (mesh != persistentQualifiedObjects.end()) {
             snapshot.meshClassPath = mesh->second->reflection.metaClass;
         }
-        snapshot.texturePath = resolveInheritedObjectProperty("Texture");
+        snapshot.materialOverrides = object->textureOverrides;
+        for (RuntimeObject* cls = object->cls; cls != nullptr; cls = cls->base)
+            QuestVr::InheritActorTextureOverrides(snapshot.materialOverrides, cls->textureOverrides);
+        snapshot.texturePath = snapshot.materialOverrides.texture.path;
         snapshot.brushPath = resolveInheritedObjectProperty("Brush");
         snapshot.ambientSoundPath = resolveInheritedObjectProperty("AmbientSound");
         const auto readInheritedByte = [&](const char* name, std::uint8_t fallback) {
@@ -1414,9 +1440,17 @@ std::vector<PortableActorSnapshot> GetPortableRuntimeMapActors() {
         };
         snapshot.soundRadius = readInheritedByte("SoundRadius", snapshot.soundRadius);
         snapshot.drawType = readInheritedByte("DrawType", snapshot.drawType);
+        snapshot.style = readInheritedByte("Style", snapshot.style);
         if (const PortableTaggedProperty* hidden = inheritedProperty("bHidden")) {
             if (hidden->type == 3u) snapshot.hidden = hidden->boolValue;
         }
+        const auto readInheritedBool = [&](const char* name) {
+            const PortableTaggedProperty* property = inheritedProperty(name);
+            return property != nullptr && property->type == 3u && property->boolValue;
+        };
+        snapshot.unlit = readInheritedBool("bUnlit");
+        snapshot.noSmooth = readInheritedBool("bNoSmooth");
+        snapshot.meshEnvironmentMap = readInheritedBool("bMeshEnviroMap");
         snapshot.soundVolume = readInheritedByte("SoundVolume", snapshot.soundVolume);
         snapshot.soundPitch = readInheritedByte("SoundPitch", snapshot.soundPitch);
         snapshot.lightType = readInheritedByte("LightType", snapshot.lightType);
@@ -1460,7 +1494,7 @@ std::vector<PortableActorSnapshot> GetPortableRuntimeMapActors() {
 
 PortableActorMeshSummary DecodePortableRuntimeActorMeshes() {
     PortableActorMeshSummary summary;
-    const std::vector<PortableActorSnapshot> actors = GetPortableRuntimeMapActors();
+    const std::vector<PortableActorSnapshot> actors = GetPortableRuntimeMapActors(true);
     std::set<std::string> meshPaths;
     std::set<std::string> brushPaths;
     for (const PortableActorSnapshot& actor : actors) {
@@ -1546,14 +1580,44 @@ PortableTextureArray BuildPortableRuntimeActorTextureArray(
         throw std::runtime_error("Portable actor texture array dimensions are invalid");
     }
     std::set<std::string> paths;
-    for (const PortableActorSnapshot& actor : GetPortableRuntimeMapActors()) {
-        if (!actor.texturePath.empty()) paths.insert(actor.texturePath);
-        if (actor.meshPath.empty()) continue;
-        const auto mesh = persistentQualifiedObjects.find(actor.meshPath);
-        if (mesh == persistentQualifiedObjects.end() || !mesh->second->lodMesh) continue;
-        for (const std::string& texturePath : mesh->second->lodMesh->texturePaths) {
-            if (!texturePath.empty()) paths.insert(texturePath);
-        }
+    std::set<std::string> maskedPaths;
+    for (const PortableActorSnapshot& actor : GetPortableRuntimeMapActors(true)) {
+        const bool sprite = actor.drawType == 1u || actor.drawType == 4u || actor.drawType == 5u || actor.drawType == 7u;
+        if (sprite && !actor.texturePath.empty()) paths.insert(actor.texturePath);
+        const auto collectMesh = [&](const std::string& path, bool brush) {
+            if (path.empty()) return;
+            const auto found = persistentQualifiedObjects.find(path);
+            if (found == persistentQualifiedObjects.end()) return;
+            const auto* geometry = brush ? found->second->brushMesh.get() : found->second->lodMesh.get();
+            if (geometry == nullptr) return;
+            // Pack materials actually selected by each original actor, rather
+            // than every unused mesh default/override. Inactive actors remain
+            // included so pickup/quickload cannot renumber retained materials.
+            std::set<std::uint16_t> materials;
+            for (const auto& vertex : geometry->triangles) materials.insert(vertex.material);
+            for (const auto material : materials) {
+                const auto choice = QuestVr::ResolveActorMeshMaterial(actor.materialOverrides,
+                    geometry->texturePaths,geometry->materialTextureIndices,material);
+                if (!choice.texturePath.empty()) paths.insert(choice.texturePath);
+            }
+        };
+        collectMesh(actor.meshPath, false);
+        if (actor.mover) collectMesh(actor.brushPath, true);
+        const auto collectMasked = [&](const std::string& path, bool brush) {
+            const auto found = persistentQualifiedObjects.find(path);
+            if (found == persistentQualifiedObjects.end()) return;
+            const auto* mesh = brush ? found->second->brushMesh.get() : found->second->lodMesh.get();
+            if (mesh == nullptr) return;
+            for (const auto& vertex : mesh->triangles) {
+                if ((vertex.polyFlags & 2u) == 0u && actor.style != 2u) continue;
+                const auto choice = QuestVr::ResolveActorMeshMaterial(actor.materialOverrides,
+                    mesh->texturePaths,mesh->materialTextureIndices,vertex.material);
+                if (!choice.texturePath.empty()) maskedPaths.insert(choice.texturePath);
+            }
+        };
+        collectMasked(actor.meshPath,false);
+        if (actor.mover) collectMasked(actor.brushPath,true);
+        if (actor.style == 2u && !actor.texturePath.empty()) maskedPaths.insert(actor.texturePath);
     }
     if (paths.size() > 255) {
         throw std::runtime_error("Portable actor texture array exceeds shader layer limit");
@@ -1563,8 +1627,11 @@ PortableTextureArray BuildPortableRuntimeActorTextureArray(
     result.width = width;
     result.height = height;
     result.texturePaths.assign(paths.begin(), paths.end());
-    result.rgba.reserve(
-        static_cast<std::size_t>(width) * height * result.texturePaths.size() * 4u);
+    result.texturePolyFlags.assign(result.texturePaths.size(), 0u);
+    constexpr std::size_t maximumMaterialBytes = 256u*1024u*1024u;
+    const auto initialBytes = static_cast<std::size_t>(width)*height*result.texturePaths.size()*4u;
+    if (initialBytes > maximumMaterialBytes) throw std::runtime_error("Actor material array exceeds byte budget");
+    result.rgba.reserve(initialBytes);
     std::unordered_map<std::string, PortablePackageTables> packages;
     std::string gameRoot;
     if (persistentRuntime && !persistentRuntime->get()->exports.empty()) {
@@ -1649,6 +1716,20 @@ PortableTextureArray BuildPortableRuntimeActorTextureArray(
             }
             const PortablePropertyStream properties =
                 LoadPortableExportProperties(package->second, textureExport);
+            for (const auto& property : properties.properties) {
+                // Original UTexture's native PolyFlags are script bitfields.
+                const std::size_t selectedLayer = static_cast<std::size_t>(&qualified-result.texturePaths.data());
+                if (property.name == "bMasked" && property.type == 3u && property.arrayIndex == 0u) {
+                    if (property.boolValue) result.texturePolyFlags[selectedLayer] |= 2u;
+                    else result.texturePolyFlags[selectedLayer] &= ~2u;
+                }
+                if (property.name == "PolyFlags" && property.type == 2u &&
+                    property.arrayIndex == 0u && property.value.size() == 4u) {
+                    const std::size_t layer = static_cast<std::size_t>(
+                        &qualified - result.texturePaths.data());
+                    std::memcpy(&result.texturePolyFlags[layer], property.value.data(), sizeof(std::uint32_t));
+                }
+            }
             std::vector<PortableMipmap> mipmaps =
                 LoadPortableTextureMipmaps(package->second, textureExport);
             std::vector<std::uint32_t> palette;
@@ -1671,51 +1752,8 @@ PortableTextureArray BuildPortableRuntimeActorTextureArray(
                 mip.pixels.size() != static_cast<std::size_t>(mip.width) * mip.height) {
                 throw std::runtime_error("texture top mip is malformed");
             }
-            std::uint8_t chromaKey{};
-            std::size_t borderSamples{};
-            std::size_t borderCounts[256]{};
-            const auto countBorderPixel = [&](std::uint32_t x, std::uint32_t y) {
-                ++borderCounts[mip.pixels[static_cast<std::size_t>(y) * mip.width + x]];
-                ++borderSamples;
-            };
-            for (std::uint32_t x = 0; x < mip.width; ++x) {
-                countBorderPixel(x, 0u);
-                if (mip.height > 1u) countBorderPixel(x, mip.height - 1u);
-            }
-            for (std::uint32_t y = 1u; y + 1u < mip.height; ++y) {
-                countBorderPixel(0u, y);
-                if (mip.width > 1u) countBorderPixel(mip.width - 1u, y);
-            }
-            const auto dominantBorder = std::max_element(
-                borderCounts, borderCounts + 256u);
-            const std::uint8_t cornerCandidate = mip.pixels.front();
-            const bool matchingCorners =
-                mip.pixels[mip.width - 1u] == cornerCandidate &&
-                mip.pixels[(static_cast<std::size_t>(mip.height) - 1u) * mip.width] ==
-                    cornerCandidate &&
-                mip.pixels.back() == cornerCandidate;
-            std::uint8_t candidate{};
-            if (matchingCorners) {
-                candidate = cornerCandidate;
-            } else if (dominantBorder != borderCounts + 256u && borderSamples != 0u &&
-                       *dominantBorder * 5u >= borderSamples * 3u) {
-                candidate = static_cast<std::uint8_t>(dominantBorder - borderCounts);
-            }
-            if (candidate != 0u) {
-                const std::uint32_t candidateColor = palette.at(candidate);
-                const std::uint8_t red = static_cast<std::uint8_t>(candidateColor);
-                const std::uint8_t green = static_cast<std::uint8_t>(candidateColor >> 8u);
-                const std::uint8_t blue = static_cast<std::uint8_t>(candidateColor >> 16u);
-                if (red >= 220u && green <= 48u && blue >= 220u) {
-                    chromaKey = candidate;
-                    __android_log_print(
-                        ANDROID_LOG_INFO,
-                        "quest_main",
-                        "DeusExQuest: actor texture %s uses magenta border key %u",
-                        qualified.c_str(),
-                        static_cast<unsigned>(chromaKey));
-                }
-            }
+            if (*std::max_element(mip.pixels.begin(), mip.pixels.end()) >= palette.size())
+                throw std::runtime_error("texture top mip refers outside its palette");
             for (std::uint32_t y = 0; y < height; ++y) {
                 const std::uint32_t sourceY = y * mip.height / height;
                 for (std::uint32_t x = 0; x < width; ++x) {
@@ -1723,19 +1761,8 @@ PortableTextureArray BuildPortableRuntimeActorTextureArray(
                     const std::uint8_t paletteIndex =
                         mip.pixels[static_cast<std::size_t>(sourceY) * mip.width + sourceX];
                     const std::uint32_t color = palette.at(paletteIndex);
-                    const bool transparent = paletteIndex == 0u ||
-                        (chromaKey != 0u && paletteIndex == chromaKey);
-                    // UE1 masked textures conventionally reserve palette index
-                    // zero for transparency. Clear its RGB channels as well as
-                    // alpha so bilinear sampling cannot bleed the palette's
-                    // often-bright key color into otherwise clean cutout edges.
-                    result.rgba.push_back(
-                        transparent ? 0u : static_cast<std::uint8_t>(color));
-                    result.rgba.push_back(
-                        transparent ? 0u : static_cast<std::uint8_t>(color >> 8u));
-                    result.rgba.push_back(
-                        transparent ? 0u : static_cast<std::uint8_t>(color >> 16u));
-                    result.rgba.push_back(transparent ? 0u : 255u);
+                    const auto texel = QuestVr::ActorPaletteTexel(color, paletteIndex);
+                    result.rgba.insert(result.rgba.end(), texel.begin(), texel.end());
                 }
             }
             ++result.decodedTextures;
@@ -1755,6 +1782,26 @@ PortableTextureArray BuildPortableRuntimeActorTextureArray(
             }
             ++result.failedTextures;
         }
+    }
+    const std::size_t baseLayers = result.texturePaths.size();
+    result.maskedTextureLayers.assign(baseLayers,-1);
+    for (std::size_t layer = 0u; layer < baseLayers; ++layer) {
+        if ((result.texturePolyFlags[layer] & 2u) == 0u && maskedPaths.count(result.texturePaths[layer]) == 0u) continue;
+        if (result.texturePaths.size() >= 255u) throw std::runtime_error("Masked actor variants exceed shader layer limit");
+        if (pixelsPerLayer*4u > maximumMaterialBytes-result.rgba.size())
+            throw std::runtime_error("Masked actor variants exceed byte budget");
+        const auto start = result.rgba.begin()+static_cast<std::ptrdiff_t>(layer*pixelsPerLayer*4u);
+        std::vector<std::uint8_t> masked(start,start+static_cast<std::ptrdiff_t>(pixelsPerLayer*4u));
+        // Pinned GL texture manager keeps opaque and masked P8 uploads apart.
+        // Black RGB at the transparent key prevents magenta bilinear fringes.
+        for (std::size_t pixel = 0u; pixel < pixelsPerLayer; ++pixel)
+            if (masked[pixel*4u+3u] == 0u) masked[pixel*4u] = masked[pixel*4u+1u] = masked[pixel*4u+2u] = 0u;
+        result.maskedTextureLayers[layer] = static_cast<std::int32_t>(result.texturePaths.size());
+        result.texturePaths.push_back(result.texturePaths[layer]+"#masked");
+        result.texturePolyFlags.push_back(result.texturePolyFlags[layer]|2u);
+        result.maskedTextureLayers.push_back(-1);
+        result.rgba.insert(result.rgba.end(),masked.begin(),masked.end());
+        ++result.maskedTextureVariants;
     }
     result.passed = !result.texturePaths.empty() && result.decodedTextures != 0 &&
         result.rgba.size() == pixelsPerLayer * result.texturePaths.size() * 4u;

@@ -6,14 +6,14 @@ the original game.
 
 ## Current milestone
 
-The native Android ARM64 app launches on Quest 3, reads user-supplied UE1
-packages through a portable SurrealEngine-derived runtime, renders the textured
-training BSP and actors at player scale with per-map colored point and spotlight
-illumination, and submits them stereoscopically
-through OpenXR. Locomotion, collision, controller interaction, pickups,
-inventory persistence, controller hitscan, pawn health/death, spatial ambient audio,
-and quick-save/load are live. Campaign-wide gameplay compatibility remains in
-development.
+The Android ARM64/OpenXR app has been exercised on Quest 3 with textured
+training geometry, VR locomotion/interaction, UI, audio and save/load features.
+The latest offline work adds original static BSP shadow lightmaps and fixes
+actor skin selection, placement, masking and mover textures, with repeatable
+software close-ups. These latest GPU changes still require headset validation.
+The full campaign is not yet verified playable: animation, complete gameplay
+scripting, visual fidelity and device performance remain in development.
+See [current evidence and limitations](docs/STATUS.md).
 
 ## Data boundary
 
@@ -29,8 +29,8 @@ development.
 1. ARM64 Android/OpenXR application launches on Quest 3.
 2. Runtime discovers and validates user-supplied game data.
 3. UE1 packages, names, imports, exports, and properties can be read.
-4. Active-map geometry and textures render stereoscopically from all 88 catalog entries.
-5. UnrealScript and Deus Ex native functions support the training campaign.
+4. All 88 catalog maps decode in desktop world-cache audits; campaign-wide stereo rendering remains to verify on Quest.
+5. Training interactions are implemented; original mission/campaign scripting remains incomplete.
 6. Motion controls, interaction, weapons, inventory, HUD, conversations, and
    saves and spatial audio are usable in VR.
 7. All campaign maps pass progression, performance, and comfort testing.

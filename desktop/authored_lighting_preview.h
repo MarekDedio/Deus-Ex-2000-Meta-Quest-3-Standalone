@@ -4,6 +4,7 @@
 #include "portable_unreal_runtime.h"
 #include "quest_map_lighting.h"
 #include "quest_static_lightmap_cache.h"
+#include "actor_scene_preview.h"
 
 #include <algorithm>
 #include <array>
@@ -28,6 +29,7 @@ struct AuthoredLightingPreview {
     double minimumLuminance{}, maximumLuminance{}, meanLuminance{};
     bool baked{};
     QuestVr::StaticLightmapCache staticLightmaps;
+    ActorScenePreview actors;
 };
 
 namespace lightingdetail {
@@ -181,9 +183,10 @@ inline AuthoredLightingPreview BuildSyntheticLightingPreview(Scene& scene) {
 
 inline AuthoredLightingPreview BuildAuthoredLightingPreview(Scene& scene,
     const std::filesystem::path& gameRoot, const std::string& map,
-    const std::filesystem::path& meshPath = {}, bool baked = false) {
+    const std::filesystem::path& meshPath = {}, bool baked = false,
+    bool includeActors = false, bool applyLighting = true) {
     AuthoredLightingPreview metadata;
-    metadata.enabled = true;
+    metadata.enabled = applyLighting;
     // Same package set as Quest startup, so inherited Light/Spotlight defaults
     // and derived actor classes are resolved through the production runtime.
     constexpr std::array<const char*,38> packages{{
@@ -218,8 +221,8 @@ inline AuthoredLightingPreview BuildAuthoredLightingPreview(Scene& scene,
     const OVR::Vector3f verifiedOrigin{verified.x,verified.y,verified.z};
     const auto lights = QuestVr::BuildMapLights(actors,&metadata.lightStats,&verifiedOrigin);
     metadata.emitterTalliesFromAuthoredSnapshots = true;
-    if (!baked) lightingdetail::ApplyVertexLighting(scene,lights,metadata);
-    else {
+    if (applyLighting && !baked) lightingdetail::ApplyVertexLighting(scene,lights,metadata);
+    else if (applyLighting) {
         const auto surfaceChunks = QuestVr::ReadWorldSurfaceStream(meshPath.string()+".surfaces");
         if (surfaceChunks.size() != scene.chunks.size())
             throw std::runtime_error("Desktop world and surface chunk counts disagree");
@@ -247,6 +250,8 @@ inline AuthoredLightingPreview BuildAuthoredLightingPreview(Scene& scene,
         cache.vertices.clear();
         metadata.baked = true;
     }
+    if (includeActors) metadata.actors = AppendActorScenePreview(scene,actors,
+        {verified.x,verified.y,verified.z},lights,applyLighting);
     return metadata;
 }
 
