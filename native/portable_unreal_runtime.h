@@ -192,7 +192,7 @@ struct PortableActorSnapshot {
     bool mover{};
     bool trigger{};
     bool travel{};
-    bool light{};
+    bool light{}; // Engine.Light-derived or any actor with non-LT_None LightType.
     bool hidden{};
     bool activated{};
     std::uint8_t drawType{};
@@ -212,6 +212,8 @@ struct PortableActorSnapshot {
     std::uint8_t soundRadius{64u};
     std::uint8_t soundVolume{255u};
     std::uint8_t soundPitch{64u};
+    std::uint8_t lightType{}; // UE1 LT_None=0, LT_Steady=1.
+    std::uint8_t lightEffect{}; // UE1 LE_StaticSpot=8, LE_Spotlight=12.
     std::uint8_t lightBrightness{64u};
     std::uint8_t lightHue{};
     std::uint8_t lightSaturation{255u};
@@ -233,6 +235,7 @@ PortableTextureArray BuildPortableRuntimeActorTextureArray(
 PortableInteractionResult InteractPortableRuntimeActor(const std::string& objectPath);
 bool VerifyPortableRuntimeInteraction();
 bool SavePortableRuntimeState(const std::string& path);
+bool ValidatePortableRuntimeState(const std::string& path);
 bool LoadPortableRuntimeState(const std::string& path);
 PortableDamageResult DamagePortableRuntimeActor(
     const std::string& objectPath,

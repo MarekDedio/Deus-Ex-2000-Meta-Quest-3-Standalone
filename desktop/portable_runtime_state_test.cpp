@@ -1,4 +1,6 @@
 #include "portable_unreal_runtime.h"
+#include "quest_save_bundle.h"
+#include "quest_save_metadata.h"
 
 #include <algorithm>
 #include <chrono>
@@ -116,7 +118,8 @@ auto ActorFields(const PortableActorSnapshot& actor) {
         actor.drawScaleY, actor.drawScaleZ, actor.pitch, actor.yaw, actor.roll,
         actor.meshPath, actor.meshClassPath, actor.brushPath, actor.texturePath,
         actor.ambientSoundPath, actor.soundRadius, actor.soundVolume, actor.soundPitch,
-        actor.lightBrightness, actor.lightHue, actor.lightSaturation, actor.lightRadius,
+        actor.lightType, actor.lightEffect, actor.lightBrightness, actor.lightHue,
+        actor.lightSaturation, actor.lightRadius,
         actor.lightCone);
 }
 
@@ -236,6 +239,18 @@ void TestOriginalRollback(const std::filesystem::path& suppliedGameRoot) {
     Require(!SavePortableRuntimeState(directory.path.string()), "Directory accepted as checkpoint output");
     Require(!LoadPortableRuntimeState((directory.path / "missing.sav").string()), "Missing checkpoint accepted");
     RequireSameLiveState(expected);
+    std::vector<std::uint8_t> forgedDamagedPath;
+    const auto append32 = [&](const std::uint32_t value) {
+        for (unsigned shift = 0; shift < 32u; shift += 8u)
+            forgedDamagedPath.push_back(static_cast<std::uint8_t>(value >> shift));
+    };
+    for (const auto value : {0x53515844u, 2u, 0u, 0u, 0u, 0x42c80000u, 1u, 0xffffffffu}) append32(value);
+    const auto forgedCheckpoint = directory.path / "forged-damaged-path.runtime.tmp";
+    Require(QuestVr::WriteDurableSaveFile(forgedCheckpoint.string(), forgedDamagedPath) &&
+            !ValidatePortableRuntimeState(forgedCheckpoint.string()) &&
+            !LoadPortableRuntimeState(forgedCheckpoint.string()),
+            "Forged damaged-path length was allocated or accepted");
+    RequireSameLiveState(expected);
 
     Require(ConsumePortableRuntimeInventoryItem(item), "Inventory mutation fixture failed");
     Require(InteractPortableRuntimeActor(mover).action == "mover_close", "Mover mutation fixture failed");
@@ -246,6 +261,8 @@ void TestOriginalRollback(const std::filesystem::path& suppliedGameRoot) {
     const auto mutated = CaptureLiveState();
     Require(mutated.inventory.empty() && mutated.progress.credits == 173 &&
             mutated.progress.goals.size() == 2, "Mutation did not differ from saved checkpoint");
+    Require(ValidatePortableRuntimeState(checkpoint.string()), "Valid runtime preflight failed");
+    RequireSameLiveState(mutated);
     const auto truncated = directory.path / "truncated.sav";
     std::filesystem::copy_file(checkpoint, truncated);
     std::filesystem::resize_file(truncated, std::filesystem::file_size(truncated) - 1);
@@ -270,6 +287,184 @@ void TestOriginalRollback(const std::filesystem::path& suppliedGameRoot) {
             "Restored pawn health did not match checkpoint");
     Require(LoadPortableRuntimeState(checkpoint.string()), "Final fixture reset failed");
     RequireSameLiveState(expected);
+
+    // Exercise the actual runtime serializer through paired storage, including
+    // cross-map generation identity and recovery from a corrupt latest slot.
+    const auto bundlePaths = QuestVr::MakeSaveBundlePaths((directory.path / "quest-save-paired").string());
+    const auto captureSecond = directory.path / "paired-capture-second.runtime.tmp";
+    const auto loadStage = directory.path / "paired-load.runtime.tmp";
+    const QuestVr::QuestSaveMetadata uiFirst{{1.0f, 2.0f, 3.0f, 4.0f}, "00_Training",
+        {{item, 1u}}, {"Synthetic paired generation 1 UI log"}, true};
+    std::vector<std::uint8_t> firstMetadata, firstRuntime;
+    Require(QuestVr::EncodeQuestSaveMetadata(uiFirst, firstMetadata) &&
+            QuestVr::ReadBoundedSaveFile(checkpoint.string(), QuestVr::kMaximumSaveRuntimeBytes, firstRuntime),
+            "First paired UI/runtime capture failed");
+    const auto firstPublish = QuestVr::PublishSaveBundle(bundlePaths, firstMetadata, firstRuntime);
+    Require(firstPublish.saved && firstPublish.generation == 1u, "First actual runtime bundle publish failed");
+    Require(LoadPortableRuntimeMap(combat).passed, "Second paired generation map load failed");
+    Require(DamagePortableRuntimePlayer(5.0f) == 68.0f && ConsumePortableRuntimeInventoryItem(item) &&
+            ApplyPortableDialogueEffects(EffectFixture("paired_second", 7, false)).applied == 5u,
+            "Second paired generation live mutation failed");
+    const auto expectedSecond = CaptureLiveState();
+    const QuestVr::QuestSaveMetadata uiSecond{{9.0f, 8.0f, 7.0f, 6.0f}, "00_TrainingCombat",
+        {{"SyntheticCombatDialogueCursor", 2u}}, {"Synthetic paired generation 2 UI log"}};
+    std::vector<std::uint8_t> secondMetadata, secondRuntime;
+    Require(QuestVr::EncodeQuestSaveMetadata(uiSecond, secondMetadata) &&
+            SavePortableRuntimeState(captureSecond.string()) &&
+            QuestVr::ReadBoundedSaveFile(captureSecond.string(), QuestVr::kMaximumSaveRuntimeBytes, secondRuntime),
+            "Second paired UI/runtime capture failed");
+    const auto secondPublish = QuestVr::PublishSaveBundle(bundlePaths, secondMetadata, secondRuntime);
+    Require(secondPublish.saved && secondPublish.generation == 2u, "Second actual runtime bundle publish failed");
+    auto pairs = QuestVr::LoadSaveBundleCandidates(bundlePaths);
+    Require(pairs.size() == 2u && pairs[0].generation == 2u && pairs[1].generation == 1u &&
+            pairs[0].metadata == secondMetadata && pairs[0].runtime == secondRuntime &&
+            pairs[1].metadata == firstMetadata && pairs[1].runtime == firstRuntime,
+            "Actual runtime bundle candidates mixed UI/runtime generations");
+    const auto verifyMetadata = [](const QuestVr::QuestSaveMetadata& wanted, const QuestVr::SaveBundleData& pair) {
+        QuestVr::QuestSaveMetadata ui;
+        Require(QuestVr::DecodeQuestSaveMetadata(pair.metadata, "", ui) && ui.pose == wanted.pose &&
+                ui.mapName == wanted.mapName && ui.dialogueOffsets == wanted.dialogueOffsets &&
+                ui.personaLogs == wanted.personaLogs && ui.mapLocalPose == wanted.mapLocalPose,
+                "Paired UI metadata identity was not restored");
+    };
+    verifyMetadata(uiSecond, pairs.front());
+    Require(QuestVr::WriteDurableSaveFile(loadStage.string(), pairs.front().runtime) &&
+            LoadPortableRuntimeMap(combat).passed && LoadPortableRuntimeState(loadStage.string()),
+            "Actual second-generation paired runtime restoration failed");
+    RequireSameLiveState(expectedSecond);
+    // Even a CRC-valid newest bundle can hold semantically invalid runtime
+    // bytes. Preflight before launching a cross-map worker must reject it and
+    // permit the prior candidate without mutating the current Combat runtime.
+    const auto preflightPaths = QuestVr::MakeSaveBundlePaths((directory.path / "quest-save-preflight").string());
+    Require(QuestVr::PublishSaveBundle(preflightPaths, firstMetadata, firstRuntime).saved &&
+            QuestVr::PublishSaveBundle(preflightPaths, secondMetadata, forgedDamagedPath).saved,
+            "CRC-valid malformed-runtime bundle fixture failed");
+    const auto preflightPairs = QuestVr::LoadSaveBundleCandidates(preflightPaths);
+    Require(preflightPairs.size() == 2u, "Malformed-runtime fixture did not pass structural bundle validation");
+    std::uint64_t selectedGeneration{};
+    for (const auto& pair : preflightPairs) {
+        Require(QuestVr::WriteDurableSaveFile(loadStage.string(), pair.runtime), "Runtime preflight staging failed");
+        if (ValidatePortableRuntimeState(loadStage.string())) {
+            selectedGeneration = pair.generation;
+            break;
+        }
+        RequireSameLiveState(expectedSecond);
+    }
+    Require(selectedGeneration == 1u, "Runtime preflight did not reject CRC-valid malformed latest save");
+    RequireSameLiveState(expectedSecond);
+    const auto& newestSlot = pairs.front().slotIndex == 0u ? bundlePaths.slot0 : bundlePaths.slot1;
+    std::vector<std::uint8_t> corruptLatest;
+    Require(QuestVr::ReadBoundedSaveFile(newestSlot, QuestVr::kMaximumSaveBundleBytes, corruptLatest) &&
+            corruptLatest.size() > QuestVr::kSaveBundleHeaderBytes, "Latest bundle corruption fixture capture failed");
+    corruptLatest.pop_back();
+    Require(QuestVr::WriteDurableSaveFile(newestSlot, corruptLatest), "Latest bundle corruption fixture failed");
+    pairs = QuestVr::LoadSaveBundleCandidates(bundlePaths);
+    Require(pairs.size() == 1u && pairs.front().generation == 1u, "Paired save did not recover prior complete generation");
+    verifyMetadata(uiFirst, pairs.front());
+    Require(QuestVr::WriteDurableSaveFile(loadStage.string(), pairs.front().runtime) &&
+            LoadPortableRuntimeMap(training).passed && LoadPortableRuntimeState(loadStage.string()),
+            "Corrupt-latest fallback did not restore the original runtime map/state");
+    RequireSameLiveState(expected);
+    Require(SavePortableRuntimeState(afterRollback.string()) && ReadGeneratedCheckpoint(afterRollback) == saved,
+            "Paired fallback changed hidden runtime flag/actor health state");
+    std::cout << "Actual runtime paired-save generation 1 Training / generation 2 Combat matched UI pose/map/cursors/logs "
+              << "and runtime payloads; corrupt latest recovered generation 1 and original live/hidden state.\n";
+
+    // Model the Quest worker's asset-before-inactivity ordering with original
+    // actors and materials. Checkpoints stay in this test's isolated directory.
+    {
+        Require(LoadPortableRuntimeMap(training).passed, "Asset-retention full Training map load failed");
+        const auto completeActors = GetPortableRuntimeMapActors();
+        const auto eligible = [](const PortableActorSnapshot& actor) {
+            return actor.inventory && !actor.hidden && !actor.meshPath.empty();
+        };
+        const auto meshUsers = [&](const std::string& meshPath) {
+            return std::count_if(completeActors.begin(), completeActors.end(),
+                [&](const auto& actor) { return actor.meshPath == meshPath; });
+        };
+        // Prefer a unique mesh so this fixture exercises a resource that no
+        // other visible actor could incidentally keep in the texture array.
+        auto chosen = std::find_if(completeActors.begin(), completeActors.end(),
+            [&](const auto& actor) { return eligible(actor) && meshUsers(actor.meshPath) == 1; });
+        if (chosen == completeActors.end())
+            chosen = std::find_if(completeActors.begin(), completeActors.end(), eligible);
+        Require(chosen != completeActors.end(), "Training has no visible inventory mesh for asset-retention test");
+        const PortableActorSnapshot retainedItem = *chosen;
+        Require(DecodePortableRuntimeActorMeshes().passed, "Asset-retention initial full mesh decode failed");
+        const auto completeTextures = BuildPortableRuntimeActorTextureArray(32u, 32u);
+        Require(completeTextures.passed, "Asset-retention initial full texture array failed");
+        const auto completeMesh = GetPortableRuntimeMesh(retainedItem.meshPath);
+        Require(!completeMesh.triangles.empty(), "Asset-retention item mesh has no geometry");
+        std::vector<std::string> materialPaths;
+        for (const auto& vertex : completeMesh.triangles) {
+            std::string texture = retainedItem.texturePath;
+            std::int32_t index = static_cast<std::int32_t>(vertex.material);
+            if (vertex.material < completeMesh.materialTextureIndices.size())
+                index = completeMesh.materialTextureIndices[vertex.material];
+            if (texture.empty() && index >= 0 && static_cast<std::size_t>(index) < completeMesh.texturePaths.size())
+                texture = completeMesh.texturePaths[static_cast<std::size_t>(index)];
+            if (!texture.empty()) materialPaths.push_back(std::move(texture));
+        }
+        std::sort(materialPaths.begin(), materialPaths.end());
+        materialPaths.erase(std::unique(materialPaths.begin(), materialPaths.end()), materialPaths.end());
+        Require(!materialPaths.empty(), "Asset-retention item has no resolved material path");
+        const auto coversMaterials = [&](const PortableTextureArray& textures) {
+            return std::all_of(materialPaths.begin(), materialPaths.end(), [&](const auto& material) {
+                return std::find(textures.texturePaths.begin(), textures.texturePaths.end(), material) !=
+                    textures.texturePaths.end();
+            });
+        };
+        Require(coversMaterials(completeTextures), "Initial full texture array lacks item materials");
+        const auto visibleCheckpoint = directory.path / "asset-retention-visible.runtime.tmp";
+        const auto hiddenCheckpoint = directory.path / "asset-retention-hidden.runtime.tmp";
+        Require(SavePortableRuntimeState(visibleCheckpoint.string()), "Asset-retention visible checkpoint failed");
+        const auto pickup = InteractPortableRuntimeActor(retainedItem.objectPath);
+        Require(pickup.handled && pickup.worldChanged && pickup.action == "pickup" &&
+                SavePortableRuntimeState(hiddenCheckpoint.string()), "Asset-retention pickup/hidden checkpoint failed");
+        Require(LoadPortableRuntimeMap(combat).passed && LoadPortableRuntimeMap(training).passed,
+                "Asset-retention Combat -> Training replacement failed");
+        Require(DecodePortableRuntimeActorMeshes().passed, "Asset-retention replacement full mesh decode failed");
+        const auto retainedTextures = BuildPortableRuntimeActorTextureArray(32u, 32u);
+        Require(retainedTextures.passed && coversMaterials(retainedTextures),
+                "Replacement full texture array lacks item materials before inactivity restoration");
+        Require(retainedTextures.texturePaths == completeTextures.texturePaths &&
+                retainedTextures.rgba.size() == retainedTextures.texturePaths.size() * 32u * 32u * 4u,
+                "Asset-retention replacement changed complete authored texture coverage");
+        Require(LoadPortableRuntimeState(hiddenCheckpoint.string()), "Asset-retention hidden restoration failed");
+        const auto hiddenActors = GetPortableRuntimeMapActors();
+        Require(std::none_of(hiddenActors.begin(), hiddenActors.end(), [&](const auto& actor) {
+                    return actor.objectPath == retainedItem.objectPath;
+                }), "Saved inactive item remained visible after hidden restoration");
+        Require(GetPortableRuntimeMesh(retainedItem.meshPath).triangles.size() == completeMesh.triangles.size(),
+                "Saved inactivity discarded the retained item geometry");
+        // No map-wide mesh decode or texture rebuild occurs during this older
+        // same-map restore: the already-prepared resources must be sufficient.
+        Require(LoadPortableRuntimeState(visibleCheckpoint.string()), "Asset-retention older visible restoration failed");
+        const auto visibleActors = GetPortableRuntimeMapActors();
+        const auto restoredItem = std::find_if(visibleActors.begin(), visibleActors.end(), [&](const auto& actor) {
+            return actor.objectPath == retainedItem.objectPath;
+        });
+        Require(restoredItem != visibleActors.end() && ActorFields(*restoredItem) == ActorFields(retainedItem),
+                "Older same-map save did not reactivate the original item identity/properties");
+        const auto restoredMesh = GetPortableRuntimeMesh(retainedItem.meshPath);
+        Require(restoredMesh.triangles.size() == completeMesh.triangles.size() &&
+                restoredMesh.texturePaths == completeMesh.texturePaths &&
+                restoredMesh.materialTextureIndices == completeMesh.materialTextureIndices && coversMaterials(retainedTextures),
+                "Reactivated item lost retained geometry or material-layer coverage");
+        std::cout << "Original actor asset retention passed: " << retainedItem.objectPath
+                  << ", mesh users=" << meshUsers(retainedItem.meshPath)
+                  << ", vertices=" << restoredMesh.triangles.size()
+                  << ", used materials=" << materialPaths.size()
+                  << ", complete texture layers=" << retainedTextures.texturePaths.size()
+                  << " (decoded=" << retainedTextures.decodedTextures
+                  << ", fallbacks=" << retainedTextures.failedTextures
+                  << "); hidden saved-map -> older same-map visible restore used retained resources.\n";
+        Require(LoadPortableRuntimeState(checkpoint.string()), "Asset-retention final original checkpoint reset failed");
+        RequireSameLiveState(expected);
+        Require(SavePortableRuntimeState(afterRollback.string()) && ReadGeneratedCheckpoint(afterRollback) == saved,
+                "Asset-retention fixture failed to restore original hidden state/progress");
+    }
+
     std::cout << "Original-package rollback primitives passed: " << runtime.objects << " runtime objects; "
               << actors.size() << " Training actors; Training -> Combat -> Training; inactive pickup, "
               << "activated mover, pawn/player health, ordered inventory, credits/skill points/goals/notes/flag, "

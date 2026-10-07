@@ -158,7 +158,55 @@
   during this headset-free development batch. The earlier physical observations
   above apply to their recorded builds only.
 
-Remaining fidelity includes complete menu behavior, body-part health,
+## Paired saves and authored-light previews (2026-10-07)
+
+- Quicksaves now publish paired metadata/runtime bundles into two alternating
+  generations after durable staging and checksum verification. The previous
+  complete generation survives partial writes, publication failures, and corrupt
+  latest slots. Legacy two-file saves remain read-only fallback inputs. New
+  metadata v5 saves map-local floor position and head heading; shared transform
+  tests reconstruct both after a physical-origin/heading change without forcing
+  a saved eye height. Old v1-v4 poses retain their original interpretation.
+- Runtime preflight uses the same parser as application and occurs before a
+  cross-map worker starts. CRC-valid but semantically invalid newer runtime data
+  can fall back before changing the map. Invalid damaged-path lengths now reject
+  before allocation; flags/effect containers are prepared before live-state
+  mutation. Same-map restores clear abandoned response choices and speech;
+  epoch invalidation discards stale audio results without waiting for a worker.
+- Map restore workers prepare all authored actor geometry/material resources
+  before applying saved inactivity. This prevents a later older-save reactivation
+  from losing a unique item's resources. See [save recovery](SAVE-RECOVERY.md)
+  for the modeled state, durability behavior, and pending hardware checks.
+- Extracted the shared direct vertex-light evaluator for real-package desktop
+  previews. Corrected UE1 hue/saturation, spotlight cone/effect interpretation,
+  active light-type filtering, `(LightRadius+1)*25`, and non-Light-class emitters
+  against pinned engine source. Tests include 341,760 HSB differential checks,
+  all 256 radius bytes, disabled lights and non-Light fixture emitters.
+- Original Training and Hong Kong MJ12 lab captures were generated and inspected
+  without a headset. Training has 154 accepted lights/75 spotlights, with vertex
+  luminance gains 0.075-1.346; the lab has 212/35, with gains 0.085-1.350. Both
+  verify cache/actor PlayerStart alignment and report actual light type/effect
+  counts. Training's four albedo-only baseline frames and the original Inventory
+  fixture still match exactly (mean absolute error zero).
+  The lab remains visibly overlit in places: no authored shadow bits, zone
+  ambient, or UE1 lightmaps are applied. This is evidence of remaining fidelity
+  work, not a visual approval. See [lighting fidelity](AUTHORED-LIGHTING.md).
+- Eleven automatic CTests pass; the twelfth real-data entry is explicitly skipped
+  unless opted in. Separate original-data runs verify Training/Combat paired
+  generation identity, corrupt-latest recovery, v5 metadata, and read-only
+  malformed-runtime preflight. These are CPU/filesystem checks, not full
+  controller/XR/GPU save/restore verification. The updated ARM64 APK builds but
+  was not installed or physically tested during this headset-free batch.
+- The original-data asset-retention test passed with Training's unique
+  `HazMatSuit2` mesh (471 triangle vertices), including hidden saved-map loading
+  and older same-map reactivation without a geometry/texture rebuild. The
+  retained array covers 44 material layers: 43 decode, while the procedural
+  `Effects.Electricity.BioCell_SFX` FireTexture still uses an explicit fallback.
+  This validates the restore-resource fix, not all actor visuals or procedural
+  animation. Original packages and user quicksaves were never modified.
+
+Remaining fidelity includes original baked map lighting/shadows, complete
+campaign script/runtime state and progression, complete menu behavior, body-part health,
 augmentations/skills/images, localized text, and broader campaign interactions.
 The campaign, stereo comfort, physical recenter, and controller-driven
 simultaneous movement remain unverified; these UI/decoder gates are not full

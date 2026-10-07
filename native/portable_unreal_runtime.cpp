@@ -1419,6 +1419,12 @@ std::vector<PortableActorSnapshot> GetPortableRuntimeMapActors() {
         }
         snapshot.soundVolume = readInheritedByte("SoundVolume", snapshot.soundVolume);
         snapshot.soundPitch = readInheritedByte("SoundPitch", snapshot.soundPitch);
+        snapshot.lightType = readInheritedByte("LightType", snapshot.lightType);
+        snapshot.lightEffect = readInheritedByte("LightEffect", snapshot.lightEffect);
+        // Engine.Light is a convenient authoring class, not an emission
+        // requirement: inherited light properties also make decorations and
+        // other actor classes emit, as in pinned LightSystem::BeginFrame.
+        snapshot.light = snapshot.light || snapshot.lightType != 0u;
         snapshot.lightBrightness = readInheritedByte(
             "LightBrightness", snapshot.lightBrightness);
         snapshot.lightHue = readInheritedByte("LightHue", snapshot.lightHue);
@@ -2012,11 +2018,11 @@ bool SavePortableRuntimeState(const std::string& path) {
         std::fwrite(&persistentSkillPoints, sizeof(persistentSkillPoints), 1, file) == 1 &&
         writeStrings(flags) && writeStrings(persistentGoals) && writeStrings(persistentNotes) &&
         writeStrings(applied);
-    std::fclose(file);
-    return ok;
+    const bool closed = std::fclose(file) == 0;
+    return ok && closed;
 }
 
-bool LoadPortableRuntimeState(const std::string& path) {
+static bool ReadPortableRuntimeState(const std::string& path, const bool apply) {
     if (!persistentRuntime || !persistentRuntime->get()) return false;
     std::FILE* file = std::fopen(path.c_str(), "rb");
     if (file == nullptr) return false;
@@ -2054,6 +2060,7 @@ bool LoadPortableRuntimeState(const std::string& path) {
         for (std::uint32_t index = 0; ok && index < damagedCount; ++index) {
             std::uint32_t length{};
             ok = read32(length) && length <= 1'048'576u;
+            if (!ok) break;
             std::string path(length, '\0');
             float health{};
             ok = ok && std::fread(path.data(), 1, length, file) == length &&
@@ -2075,9 +2082,21 @@ bool LoadPortableRuntimeState(const std::string& path) {
             readStrings(goals) && readStrings(notes) && readStrings(applied);
     }
     const int trailing = ok ? std::fgetc(file) : 0;
-    ok = ok && trailing == EOF;
+    ok = ok && trailing == EOF && std::ferror(file) == 0;
     std::fclose(file);
     if (!ok) return false;
+    // Prepare allocating containers before replacing any live state. An
+    // allocation failure must not leave half-restored inventory/progress.
+    std::unordered_map<std::string, bool> restoredFlags;
+    for (const std::string& flag : flags) {
+        const std::size_t separator = flag.rfind('\n');
+        if (separator == std::string::npos || separator == 0u ||
+            separator + 2u != flag.size() || (flag.back() != '0' && flag.back() != '1') ||
+            !restoredFlags.emplace(LowerAscii(flag.substr(0u, separator)), flag.back() == '1').second)
+            return false;
+    }
+    std::unordered_set<std::string> restoredApplied(applied.begin(), applied.end());
+    if (!apply) return true;
     for (std::size_t index = persistentScriptExportCount;
          index < persistentRuntime->get()->exports.size(); ++index) {
         RuntimeObject* object = persistentRuntime->get()->exports[index];
@@ -2090,18 +2109,10 @@ bool LoadPortableRuntimeState(const std::string& path) {
     persistentPlayerHealth = playerHealth;
     persistentCredits = credits;
     persistentSkillPoints = skillPoints;
-    persistentConversationFlags.clear();
-    for (const std::string& flag : flags) {
-        const std::size_t separator = flag.rfind('\n');
-        if (separator != std::string::npos && separator + 2u == flag.size()) {
-            persistentConversationFlags[LowerAscii(flag.substr(0u, separator))] =
-                flag.back() == '1';
-        }
-    }
+    persistentConversationFlags = std::move(restoredFlags);
     persistentGoals = std::move(goals);
     persistentNotes = std::move(notes);
-    persistentAppliedDialogueEffects = std::unordered_set<std::string>(
-        applied.begin(), applied.end());
+    persistentAppliedDialogueEffects = std::move(restoredApplied);
     for (const std::string& objectPath : inactive) {
         const auto found = persistentQualifiedObjects.find(objectPath);
         if (found != persistentQualifiedObjects.end()) found->second->active = false;
@@ -2118,4 +2129,12 @@ bool LoadPortableRuntimeState(const std::string& path) {
         }
     }
     return true;
+}
+
+bool ValidatePortableRuntimeState(const std::string& path) {
+    return ReadPortableRuntimeState(path, false);
+}
+
+bool LoadPortableRuntimeState(const std::string& path) {
+    return ReadPortableRuntimeState(path, true);
 }

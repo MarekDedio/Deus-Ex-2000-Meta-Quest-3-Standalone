@@ -57,9 +57,18 @@ for toolchain paths and validation-only checks.
 
 The desktop capture tool decodes the original packages with the same portable
 map-cache code as Quest and renders their BSP and material albedo to BMP files.
+Optional `-AuthoredLighting` previews use the shared Quest light evaluator with
+real map actors; these are direct vertex-light approximations, not original
+lightmaps or shadow reproduction.
 It also runs deterministic depth, clipping, transparency, texture-coordinate,
 image-baseline, and shared VR-transform regression checks. It does not require
 ADB, a connected headset, or redistribution of the game's data.
+
+Quicksaves now use paired, alternating generations with corruption recovery,
+and new saves retain map-local position/heading across tracking-origin changes.
+See [save recovery](docs/SAVE-RECOVERY.md) for the modeled state and remaining
+on-device checks, and [authored lighting](docs/AUTHORED-LIGHTING.md) for fidelity
+limits. Neither feature establishes full campaign compatibility.
 
 ```powershell
 .\tools\Initialize-ThirdParty.ps1

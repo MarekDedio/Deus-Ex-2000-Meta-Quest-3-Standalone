@@ -94,6 +94,20 @@ void RebaseReferenceSpace(const Vector& newOriginInPreviousSpace, float newOrigi
     worldYaw = std::remainder(worldYaw - newOriginYaw, 2.0f * Pi);
 }
 
+template <typename Vector>
+void RestoreSavedMapPose(const Vector& localFeet, float savedLocalHeadYaw,
+                         const Vector& currentHeadStage, float currentHeadYaw,
+                         Vector& worldPosition, float& worldYaw) {
+    // The saved player position/heading belongs to the map, not the room.
+    // Reconstruct from the wearer's current origin, yaw and standing height;
+    // restoring the old tracking translation would move the player after a
+    // room-scale walk, recenter, or new XR session.
+    worldYaw = std::remainder(currentHeadYaw - savedLocalHeadYaw, 2.0f * Pi);
+    const Vector floorOffset{0.0f, -localFeet.y, 0.0f};
+    worldPosition = RestoreHorizontalHeadPosition(
+        floorOffset, currentHeadStage, localFeet, worldYaw);
+}
+
 template <typename Vector, typename TouchesWall>
 bool HorizontalMotionBlocked(const Vector& safeHead, const Vector& candidateHead,
                              TouchesWall touchesWall) {

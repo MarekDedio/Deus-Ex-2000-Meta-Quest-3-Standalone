@@ -3,6 +3,7 @@
 #include "surreal_portable_package_tables.h"
 #include "persona_preview.h"
 #include "persona_ui_canvas.h"
+#include "authored_lighting_preview.h"
 
 #include <algorithm>
 #include <cctype>
@@ -26,6 +27,7 @@ using namespace questvisual;
 struct Options {
     bool selfTest{};
     bool personaPreview{};
+    bool authoredLighting{};
     std::filesystem::path gameRoot, cacheRoot, mesh, materials, output, report, baseline;
     std::string map;
     Camera camera;
@@ -141,13 +143,16 @@ void Help() {
         "  --width PIXELS --height PIXELS --near METERS\n"
         "  --baseline PATH.bmp --max-mean-error FRACTION\n"
         "  --min-coverage FRACTION             Optional viewpoint-specific empty-frame gate\n"
+        "  --authored-lighting (--lit-preview) Optional shared Quest direct vertex lighting\n"
+        "                                    Requires original game/map; self-test uses fixture lights\n"
         "  --inspect-textures PACKAGE FILTER  List matching export/class/properties for diagnosis\n"
         "  --persona-preview --game-root PATH Original Persona artwork, fonts and fixture text\n"
         "  --persona-icon NAME                Repeat for each original icon asset (preview fixture)\n"
         "  --persona-selected INDEX           Select an icon in the fixture inventory grid\n"
         "  --persona-page PAGE                Inventory, Health, GoalsNotes or Logs\n"
         "Camera uses Quest-cache meters; default (0,1.65,0) looks -Z. Positive yaw turns right.\n"
-        "Captures show world BSP and material albedo. Actors, baked map lights, UI,\n"
+        "Default captures show world BSP/material albedo; optional lighting is approximate\n"
+        "direct vertex light only, without UE1 lightmaps or BSP shadow occlusion. Actors, UI,\n"
         "OpenXR tracking, stereo, campaign scripts, and Quest GPU performance are not covered.\n";
 }
 Options Parse(int argc, char** argv) {
@@ -159,6 +164,7 @@ Options Parse(int argc, char** argv) {
             return argv[i];
         };
         if (argument == "--self-test") options.selfTest = true;
+        else if (argument == "--authored-lighting" || argument == "--lit-preview") options.authoredLighting = true;
         else if (argument == "--persona-preview") options.personaPreview = true;
         else if (argument == "--persona-icon") options.personaIcons.push_back(next());
         else if (argument == "--persona-page") {
@@ -209,7 +215,7 @@ Options Parse(int argc, char** argv) {
     const bool hasCache = !options.mesh.empty() || !options.materials.empty();
     const bool hasGame = !options.gameRoot.empty();
     if (options.personaPreview) {
-        if (!hasGame || hasCache || options.selfTest || !options.cacheRoot.empty() || options.minimumCoverage)
+        if (!hasGame || hasCache || options.selfTest || !options.cacheRoot.empty() || options.minimumCoverage || options.authoredLighting)
             throw std::runtime_error("--persona-preview requires --game-root and cannot use map/cache/coverage modes");
         if (options.personaPage == QuestVr::PersonaUiPage::Inventory) {
             if (options.personaIcons.empty()) options.personaIcons = {"LargeIconPistol","LargeIconMedKit",
@@ -230,10 +236,80 @@ Options Parse(int argc, char** argv) {
         throw std::runtime_error("Both --mesh and --materials are required");
     if (hasGame && (options.gameRoot.empty() || options.map.empty()))
         throw std::runtime_error("Both --game-root and --map are required");
+    if (options.authoredLighting && !hasGame && !options.selfTest)
+        throw std::runtime_error("Authored lighting requires original --game-root/--map, not an unverified external cache");
+    if (options.authoredLighting && hasGame && (options.map.size()>128u ||
+        std::any_of(options.map.begin(),options.map.end(),[](unsigned char character) {
+            return !std::isalnum(character) && character != '_' && character != '-';
+        }))) throw std::runtime_error("Authored lighting requires a safe original map basename without extension");
     return options;
 }
 void Require(bool condition, const char* message) {
     if (!condition) throw std::runtime_error(std::string("Synthetic pipeline regression: ")+message);
+}
+void VerifyLightingRenderer() {
+    const Camera camera;
+    auto fixture = MakeSyntheticScene();
+    const auto albedo = Render(fixture,camera,256u,256u);
+    fixture.vertexLighting.resize(fixture.chunks.size());
+    for (std::size_t chunk = 0u; chunk < fixture.chunks.size(); ++chunk)
+        fixture.vertexLighting[chunk].assign(fixture.chunks[chunk].vertices.size(),{1.0f,1.0f,1.0f});
+    Require(Render(fixture,camera,256u,256u).image.rgb == albedo.image.rgb,
+            "unit lighting altered default albedo pixels");
+    const auto metadata = BuildSyntheticLightingPreview(fixture);
+    const auto lit = Render(fixture,camera,256u,256u);
+    Require(metadata.synthetic && metadata.enabled && !metadata.originVerified &&
+            metadata.lightStats.total == 1u && metadata.texturedVertices > 0u,
+            "synthetic lighting fixture was mislabeled as original map evidence");
+    Require(lit.frameHash != albedo.frameHash && lit.coveredPixels == albedo.coveredPixels &&
+            lit.clippedTriangles == albedo.clippedTriangles && lit.depth == albedo.depth,
+            "optional direct lighting did not preserve world geometry/depth/near clipping");
+    Require(metadata.maximumLuminance > metadata.minimumLuminance &&
+            metadata.meanLuminance >= metadata.minimumLuminance &&
+            metadata.meanLuminance <= metadata.maximumLuminance,
+            "shared-light fixture statistics are invalid or spatially uniform");
+
+    // Same oblique geometry as the UV regression, now with RGB gains as varyings.
+    // A vertex-light affine interpolation would put substantially more red at
+    // the center; the native shader's perspective-correct result is about 43.
+    Scene gradient;
+    gradient.textureWidth = gradient.textureHeight = gradient.textureLayers = 1u;
+    gradient.textures = {255u,255u,255u,255u};
+    gradient.chunks.push_back({0, {
+        {{-1,-1,-1},{0,0,1},0,0,0},
+        {{3,-3,-3},{0,0,1},0,0,0},
+        {{0,3,-3},{0,0,1},0,0,0}}});
+    gradient.vertexLighting = {{{0,1,.5f},{1,1,.5f},{0,1,.5f}}};
+    Camera origin; origin.position = {};
+    const auto colored = Render(gradient,origin,256u,256u);
+    const auto center = (128u*256u+128u)*3u;
+    Require(colored.image.rgb[center] >= 41u && colored.image.rgb[center] <= 45u &&
+            colored.image.rgb[center+1u] == 255u && colored.image.rgb[center+2u] >= 127u &&
+            colored.image.rgb[center+2u] <= 128u,
+            "vertex light RGB interpolation is not perspective correct or tint is wrong");
+    gradient.textures[3u] = 0u;
+    const auto transparent = Render(gradient,origin,256u,256u);
+    Require(transparent.coveredPixels == 0u && transparent.transparentSamples > 0u,
+            "lit masked geometry wrote opaque pixels or depth");
+    const auto reject = [&](const Scene& invalid) {
+        bool rejected{};
+        try { (void)Render(invalid,origin,256u,256u); }
+        catch (const std::runtime_error&) { rejected = true; }
+        return rejected;
+    };
+    auto invalid = gradient;
+    invalid.vertexLighting.push_back({});
+    Require(reject(invalid),"lighting stream with extra chunk accepted");
+    invalid = gradient;
+    invalid.vertexLighting[0u].pop_back();
+    Require(reject(invalid),"lighting stream with missing vertex accepted");
+    invalid = gradient;
+    invalid.vertexLighting[0u][0u].x = std::numeric_limits<float>::quiet_NaN();
+    Require(reject(invalid),"non-finite lighting gain accepted");
+    invalid.vertexLighting[0u][0u].x = -1.0f;
+    Require(reject(invalid),"negative lighting gain accepted");
+    invalid.vertexLighting[0u][0u].x = 17.0f;
+    Require(reject(invalid),"oversized lighting gain accepted");
 }
 void VerifySyntheticPipeline(const Scene& scene, const Options& options,
                              const RenderResult& capture) {
@@ -324,9 +400,11 @@ void VerifySyntheticPipeline(const Scene& scene, const Options& options,
     Require(rejectedMipCount,"corrupt stored mip count was accepted");
     const auto gc = RunPortableGcProbe();
     Require(gc.passed,"the shared Surreal GC probe failed on the host");
+    VerifyLightingRenderer();
 }
 void Report(const Options& options, const Scene& scene, const RenderResult& result,
-            const std::optional<double>& difference, bool passed) {
+            const std::optional<double>& difference, bool passed,
+            const AuthoredLightingPreview& lighting) {
     if (!options.report.parent_path().empty()) std::filesystem::create_directories(options.report.parent_path());
     std::ofstream file(options.report);
     if (!file) throw std::runtime_error("Cannot write visual capture report");
@@ -348,7 +426,66 @@ void Report(const Options& options, const Scene& scene, const RenderResult& resu
             (packageCapture ? "original-game-packages" : "external-quest-cache"))
         << ",\n  \"realMapsDecoded\": " << (packageCapture ? 1 : 0)
         << ",\n  \"campaignPlayabilityVerified\": false"
-        << ",\n  \"scope\": \"software world BSP/material albedo; no actor meshes, map lighting, UI, OpenXR, stereo or Quest performance\""
+        << ",\n  \"scope\": " << Quote(lighting.enabled ?
+            "software world BSP/material textures with shared Quest direct vertex lighting approximation; no UE1 lightmaps/BSP shadow occlusion, actor meshes, UI, OpenXR, stereo or Quest performance" :
+            "software world BSP/material albedo; no actor meshes, map lighting, UI, OpenXR, stereo or Quest performance")
+        << ",\n  \"lightingMode\": " << Quote(!lighting.enabled ? "albedo-only" :
+            (lighting.synthetic ? "synthetic-direct-vertex-fixture" : "original-map-direct-vertex-approximation"))
+        << ",\n  \"authoredLightingPropertiesLoaded\": " << (lighting.enabled && !lighting.synthetic ? "true" : "false")
+        << ",\n  \"ue1LightmapsVerified\": false"
+        << ",\n  \"bspShadowOcclusionVerified\": false"
+        << ",\n  \"gpuLightingNumericalEquivalenceVerified\": false"
+        << ",\n  \"lighting\": {\"enabled\": " << (lighting.enabled ? "true" : "false")
+        << ", \"synthetic\": " << (lighting.synthetic ? "true" : "false")
+        << ", \"worldOriginVerified\": " << (lighting.originVerified ? "true" : "false")
+        << ", \"playerStartPath\": " << Quote(lighting.playerStartPath)
+        << ", \"unrealOrigin\": ";
+    if (lighting.originVerified) file << '[' << lighting.lightStats.unrealOrigin.x << ", "
+        << lighting.lightStats.unrealOrigin.y << ", " << lighting.lightStats.unrealOrigin.z << ']';
+    else file << "null";
+    const auto writeLightByteCounts = [&](const std::array<std::size_t,256>& counts) {
+        file << '{';
+        bool comma = false;
+        for (std::size_t value = 0u; value < counts.size(); ++value) {
+            if (counts[value] == 0u) continue;
+            if (comma) file << ", ";
+            file << Quote(std::to_string(value)) << ": " << counts[value];
+            comma = true;
+        }
+        file << '}';
+    };
+    file << ", \"emitterTalliesFromAuthoredSnapshots\": "
+        << (lighting.emitterTalliesFromAuthoredSnapshots ? "true" : "false")
+        << ", \"lightTypeCounts\": ";
+    writeLightByteCounts(lighting.lightStats.lightTypeCounts);
+    file << ", \"lightEffectCounts\": ";
+    writeLightByteCounts(lighting.lightStats.lightEffectCounts);
+    file << ", \"lightCountScope\": \"Accepted located, finite, active, nonzero-brightness emitters; type/effect counts are authored byte values, not simulated animations\""
+        << ", \"authoredRadiusModel\": \"(LightRadius + 1) * 25 Unreal units; 52.5 Unreal units per meter\"";
+    file << ", \"runtimePackages\": " << lighting.packagePaths.size()
+        << ", \"runtimeActors\": " << lighting.runtimeActors
+        << ", \"unresolvedMapClasses\": " << lighting.unresolvedMapClasses
+        << ", \"lightCount\": " << lighting.lightStats.total
+        << ", \"spotlightCount\": " << lighting.lightStats.spotlights
+        << ", \"coloredLightCount\": " << lighting.lightStats.colored
+        << ", \"invalidLightLocations\": " << lighting.lightStats.invalidLocations
+        << ", \"texturedVertices\": " << lighting.texturedVertices
+        << ", \"minimumVertexLightLuminance\": " << lighting.minimumLuminance
+        << ", \"meanVertexLightLuminance\": " << lighting.meanLuminance
+        << ", \"maximumVertexLightLuminance\": " << lighting.maximumLuminance
+        << ", \"defaultAmbientRgb\": [0.075, 0.075, 0.075]"
+        << ", \"interpolation\": \"Perspective-correct smooth RGB gains; native shader semantic, not GPU precision verification\""
+        << ", \"gainModel\": " << Quote(!lighting.enabled ? "Not applied" :
+            (lighting.synthetic ? "Explicit white fixture light and shared direct gain evaluator" :
+                "Shared normalized authored HSB hue/saturation and brightness/64 direct-intensity approximation"))
+        << ", \"normalInput\": \"Unchanged DXQM surface normals; no per-pixel normal lighting\""
+        << ", \"dynamicLightEffectsSimulated\": false"
+        << ", \"flatDiagnosticChunksAuthoredLit\": false, \"packagePaths\": [";
+    for (std::size_t index = 0u; index < lighting.packagePaths.size(); ++index) {
+        if (index != 0u) file << ", ";
+        file << Quote(lighting.packagePaths[index]);
+    }
+    file << "]}"
         << ",\n  \"map\": " << Quote(options.map)
         << ",\n  \"capture\": " << Quote(std::filesystem::absolute(options.output).generic_string())
         << ",\n  \"mesh\": " << Quote(options.mesh.generic_string())
@@ -524,7 +661,10 @@ int main(int argc, char** argv) {
             if (!BuildQuestMapCacheToDirectory(game.string().c_str(),options.map.c_str(),cache.string().c_str()))
                 throw std::runtime_error("The shared Quest decoder could not build this map; see package error above");
         }
-        const auto scene = ReadQuestCache(options.mesh,options.materials);
+        auto scene = ReadQuestCache(options.mesh,options.materials);
+        AuthoredLightingPreview lighting;
+        if (options.authoredLighting) lighting = options.selfTest ? BuildSyntheticLightingPreview(scene) :
+            BuildAuthoredLightingPreview(scene,options.gameRoot,options.map);
         const auto result = Render(scene,options.camera,options.width,options.height);
         WriteBmp(options.output,result.image);
         if (options.selfTest) VerifySyntheticPipeline(scene,options,result);
@@ -533,7 +673,7 @@ int main(int argc, char** argv) {
         const double coverage = static_cast<double>(result.coveredPixels)/result.depth.size();
         const bool passed = (!difference || *difference <= options.maxMeanError) &&
             (!options.minimumCoverage || coverage >= *options.minimumCoverage);
-        Report(options,scene,result,difference,passed);
+        Report(options,scene,result,difference,passed,lighting);
         std::cout << (options.selfTest ? "Synthetic renderer checks passed; no real maps tested.\n" :
             "World cache capture complete; campaign playability is unverified.\n")
             << "Triangles: " << result.inputTriangles << ", material layers: " << scene.textureLayers
@@ -541,6 +681,12 @@ int main(int argc, char** argv) {
             << ", hash: " << std::hex << result.frameHash << std::dec << '\n'
             << "Capture: " << std::filesystem::absolute(options.output).string() << '\n'
             << "Report: " << std::filesystem::absolute(options.report).string() << '\n';
+        if (lighting.enabled) std::cout << (lighting.synthetic ? "Synthetic" : "Original authored")
+            << " light preview: " << lighting.lightStats.total << " lights ("
+            << lighting.lightStats.spotlights << " spot, " << lighting.lightStats.colored << " colored), "
+            << lighting.texturedVertices << " textured vertices, gain luminance min/mean/max "
+            << lighting.minimumLuminance << "/" << lighting.meanLuminance << "/" << lighting.maximumLuminance
+            << ". No lightmaps, BSP shadow occlusion or Quest performance verification.\n";
         if (!passed) { std::cerr << "Configured baseline/coverage gate failed.\n"; return 2; }
         return 0;
     } catch (const std::exception& error) {

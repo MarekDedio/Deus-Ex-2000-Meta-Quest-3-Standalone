@@ -202,6 +202,36 @@ Optional `--mp3 <generated-fixture.mp3>` can test nonzero channel fixtures.
 Neither mode validates AAudio output, spatial mixing, audible playback, or Quest
 device behavior. No original audio is embedded in the repository.
 
+## Optional original-map lighting previews
+
+The default albedo path is unchanged. To inspect actual authored light actors
+with the same CPU evaluator used for Quest vertex colors:
+
+```powershell
+.\tools\Test-DesktopVisuals.ps1 -GameRoot 'D:\Steam\steamapps\common\Deus Ex' -MapName 00_Training -AuthoredLighting -YawDegrees @(0) -Width 960 -Height 540 -SkipBuild -OutputDirectory artifacts\training-lighting
+```
+
+The opt-in mode reads the same 38 production System packages and validates that
+the map-cache and actor light positions use the same authored PlayerStart.
+Unsupported bounds-fallback origins fail closed. JSON records package paths,
+light counts, source types/effects, and vertex-light ranges. Without GameRoot,
+the switch uses explicitly labeled synthetic lights, not campaign evidence.
+External caches alone cannot prove original light positions and are rejected.
+Each real-map view currently reinitializes the runtime; use one yaw for a quick
+check. This is slower than the albedo-only cached multi-view workflow.
+
+The software renderer interpolates RGB light gains perspective-correctly, as
+the native shader does semantically, while retaining masks, clipping and depth.
+This is not a GPU numerical-equivalence check. UE1 baked lightmaps, per-surface
+shadow bits, zones, dynamic light effects and actor rendering remain excluded.
+See [authored-lighting limits](AUTHORED-LIGHTING.md).
+
+The save metadata, paired-bundle and asynchronous epoch CTests exercise shared
+production helpers using isolated files/fixtures. The opt-in real-data runtime
+test also verifies paired Training/Combat generation identity and fallback from
+corrupt or semantically invalid runtime bytes. They do not exercise the whole
+controller-to-GL asynchronous restore; see [save recovery](SAVE-RECOVERY.md).
+
 ## Hardware validation still required
 
 The latest shared movement fixes cover nonzero tracking origins, off-origin

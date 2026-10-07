@@ -35,6 +35,10 @@
 #include "vr_world_transform.h"
 #include "frame_work_budget.h"
 #include "map_transition_transaction.h"
+#include "quest_map_lighting.h"
+#include "quest_save_metadata.h"
+#include "quest_save_bundle.h"
+#include "async_result_epoch.h"
 
 #define MINIMP3_IMPLEMENTATION
 #include "portable_mp3_audio.h"
@@ -439,10 +443,8 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         selectedInventoryIndex_ = 0u;
         personaPage_ = PersonaPage::Inventory;
         SetInventoryMenuOpen(false);
-        pendingChoices_.clear();
-        pendingChoiceActor_.clear();
-        pendingChoiceAudioPackage_.clear();
-        pendingChoiceIndex_ = 0u;
+        ClearPendingConversation();
+        InvalidateDialogueAudio();
         personaLogEntries_.clear();
         dialogueOffsets_.clear();
         ClearPendingPersonaRestore();
@@ -539,7 +541,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                 const float originYaw = std::atan2(-right.z, right.x);
                 QuestVr::RebaseReferenceSpace(origin.Translation, originYaw,
                     worldPosition_, sceneYaw_, previousHeadStage_);
-                if (restorePoseAfterTransition_) {
+                if (restorePoseAfterTransition_ && !restoredMapLocalPose_) {
                     OVR::Vector3f unusedHead{};
                     QuestVr::RebaseReferenceSpace(origin.Translation, originYaw,
                         restoredWorldPosition_, restoredSceneYaw_, unusedHead);
@@ -589,6 +591,9 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             return;
         }
         currentHeadStage_ = frame.HeadPose.Translation;
+        const OVR::Vector3f saveHeadForward = frame.HeadPose.Rotation.Rotate({0.0f, 0.0f, -1.0f});
+        if (std::hypot(saveHeadForward.x, saveHeadForward.z) > 0.0001f)
+            currentHeadStageYaw_ = std::atan2(-saveHeadForward.x, -saveHeadForward.z);
         if (!hasPreviousHeadStage_) {
             if (needsTrackingRebase_) {
                 worldPosition_ = QuestVr::RestoreHorizontalHeadPosition(
@@ -909,6 +914,8 @@ class DeusExQuestApp final : public OVRFW::XrApp {
 
     void SessionEnd() override {
         CancelActorGeometryBuild();
+        ClearPendingConversation();
+        InvalidateDialogueAudio();
         if (dialogueDecodeFuture_.valid()) dialogueDecodeFuture_.wait();
         // A waited future is still valid. Discard its prior-session result so
         // the next Training session cannot play an old map's queued speech.
@@ -1062,14 +1069,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         float rightGain{};
     };
 
-    struct MapLight {
-        OVR::Vector3f localPosition;
-        OVR::Vector3f color;
-        OVR::Vector3f direction;
-        float radiusMeters{};
-        float intensity{};
-        float coneCosine{-1.0f};
-    };
+    using MapLight = QuestVr::MapLight;
 
     struct MapPreparation {
         bool passed{};
@@ -1094,116 +1094,24 @@ class DeusExQuestApp final : public OVRFW::XrApp {
 
     static std::vector<MapLight> BuildMapLights(
         const std::vector<PortableActorSnapshot>& actors) {
-        float originX = -1149.244f;
-        float originY = 825.844f;
-        float originZ = -65.103f;
-        for (const PortableActorSnapshot& actor : actors) {
-            const std::size_t separator = actor.classPath.find_last_of('.');
-            const std::string leafClass = separator == std::string::npos
-                ? actor.classPath
-                : actor.classPath.substr(separator + 1u);
-            if (actor.hasLocation && leafClass == "PlayerStart") {
-                originX = actor.x;
-                originY = actor.y;
-                originZ = actor.z;
-                break;
-            }
-        }
-        const auto hsvColor = [](std::uint8_t hue, std::uint8_t unrealSaturation) {
-            const float h = static_cast<float>(hue) * 6.0f / 256.0f;
-            const float saturation = 1.0f -
-                static_cast<float>(unrealSaturation) / 255.0f;
-            const float chroma = saturation;
-            const float x = chroma * (1.0f - std::fabs(
-                std::fmod(h, 2.0f) - 1.0f));
-            OVR::Vector3f rgb;
-            if (h < 1.0f) rgb = {chroma, x, 0.0f};
-            else if (h < 2.0f) rgb = {x, chroma, 0.0f};
-            else if (h < 3.0f) rgb = {0.0f, chroma, x};
-            else if (h < 4.0f) rgb = {0.0f, x, chroma};
-            else if (h < 5.0f) rgb = {x, 0.0f, chroma};
-            else rgb = {chroma, 0.0f, x};
-            const float white = 1.0f - chroma;
-            return OVR::Vector3f(rgb.x + white, rgb.y + white, rgb.z + white);
-        };
-        std::vector<MapLight> lights;
-        constexpr float unitsToMeters = 1.0f / 52.5f;
-        constexpr float unrealAngle = 6.28318530717958647692f / 65536.0f;
-        std::size_t spotlights{};
-        std::size_t colored{};
-        for (const PortableActorSnapshot& actor : actors) {
-            if (!actor.light || !actor.hasLocation || actor.lightBrightness == 0u ||
-                actor.lightRadius == 0u) continue;
-            MapLight light;
-            light.localPosition = {
-                (actor.y - originY) * unitsToMeters,
-                (actor.z - originZ) * unitsToMeters + 1.0f,
-                -(actor.x - originX) * unitsToMeters};
-            light.color = hsvColor(actor.lightHue, actor.lightSaturation);
-            light.radiusMeters = std::max(
-                1.0f, static_cast<float>(actor.lightRadius) * 25.0f * unitsToMeters);
-            light.intensity = std::clamp(
-                static_cast<float>(actor.lightBrightness) / 64.0f, 0.05f, 4.0f);
-            const bool spotlight = actor.classPath.find("Spotlight") != std::string::npos;
-            if (spotlight) {
-                const float yaw = static_cast<float>(actor.yaw) * unrealAngle;
-                const float pitch = static_cast<float>(actor.pitch) * unrealAngle;
-                const float cosinePitch = std::cos(pitch);
-                light.direction = {
-                    cosinePitch * std::sin(yaw),
-                    std::sin(pitch),
-                    -cosinePitch * std::cos(yaw)};
-                const float coneRadians = std::clamp(
-                    static_cast<float>(actor.lightCone) *
-                        3.14159265358979323846f / 256.0f,
-                    0.0872665f,
-                    1.553343f);
-                light.coneCosine = std::cos(coneRadians);
-                ++spotlights;
-            }
-            if (actor.lightSaturation < 224u) ++colored;
-            lights.push_back(light);
-        }
+        QuestVr::MapLightBuildStats stats;
+        std::vector<MapLight> lights = QuestVr::BuildMapLights(actors, &stats);
         ALOG(
             "DeusExQuest: prepared %zu map lights (%zu spotlights, %zu colored)",
-            lights.size(),
-            spotlights,
-            colored);
+            stats.total,
+            stats.spotlights,
+            stats.colored);
+        if (stats.invalidLocations != 0u) {
+            ALOG("DeusExQuest: skipped %zu map lights with non-finite locations",
+                 stats.invalidLocations);
+        }
         return lights;
     }
 
     OVR::Vector3f CalculateMapLighting(
         const OVR::Vector3f& position,
         const OVR::Vector3f& normal) const {
-        OVR::Vector3f result{0.075f, 0.075f, 0.075f};
-        for (const MapLight& light : activeMapLights_) {
-            const OVR::Vector3f offset = light.localPosition - position;
-            const float distanceSquared = offset.LengthSq();
-            if (distanceSquared <= 0.000001f ||
-                distanceSquared >= light.radiusMeters * light.radiusMeters) continue;
-            const float distance = std::sqrt(distanceSquared);
-            const OVR::Vector3f direction = offset * (1.0f / distance);
-            float cone = 1.0f;
-            if (light.coneCosine >= 0.0f) {
-                const float alignment = (direction * -1.0f).Dot(light.direction);
-                if (alignment <= light.coneCosine) continue;
-                cone = std::clamp(
-                    (alignment - light.coneCosine) / (1.0f - light.coneCosine),
-                    0.0f,
-                    1.0f);
-            }
-            const float distanceFade = 1.0f - distance / light.radiusMeters;
-            const float diffuse = std::max(0.04f, normal.Dot(direction));
-            const float contribution = light.intensity * distanceFade * distanceFade *
-                diffuse * cone;
-            result.x += light.color.x * contribution;
-            result.y += light.color.y * contribution;
-            result.z += light.color.z * contribution;
-        }
-        result.x = std::clamp(result.x, 0.04f, 1.35f);
-        result.y = std::clamp(result.y, 0.04f, 1.35f);
-        result.z = std::clamp(result.z, 0.04f, 1.35f);
-        return result;
+        return QuestVr::CalculateMapLighting(activeMapLights_, position, normal);
     }
 
     void ResetLightingStats() {
@@ -1854,8 +1762,13 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                 currentMapName_ = transitionMapName_;
                 activeMapLights_ = std::move(preparedMapLights_);
                 if (restorePoseAfterTransition_) {
-                    worldPosition_ = restoredWorldPosition_;
-                    sceneYaw_ = restoredSceneYaw_;
+                    if (restoredMapLocalPose_) {
+                        QuestVr::RestoreSavedMapPose(restoredMapLocalFeet_, restoredMapLocalHeadYaw_,
+                            currentHeadStage_, currentHeadStageYaw_, worldPosition_, sceneYaw_);
+                    } else {
+                        worldPosition_ = restoredWorldPosition_;
+                        sceneYaw_ = restoredSceneYaw_;
+                    }
                     restorePoseAfterTransition_ = false;
                 } else {
                     worldPosition_ = {0.0f, 0.0f, 0.0f};
@@ -1995,10 +1908,8 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         // old-map renderer chunks may remain visible during background loading.
         CancelActorGeometryBuild();
         ClearPendingPersonaRestore();
-        pendingChoices_.clear();
-        pendingChoiceActor_.clear();
-        pendingChoiceAudioPackage_.clear();
-        pendingChoiceIndex_ = 0u;
+        ClearPendingConversation();
+        InvalidateDialogueAudio();
         pendingMapName_ = mapName;
         displayedInventoryCount_ = invalidRendererIndex_;
         const std::uint32_t targetAudioRate = audioSampleRate_;
@@ -2035,31 +1946,34 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                     std::string(gameRoot_) + "/Maps/" + mapName + ".dx");
                 mutationStarted = true;
                 const PortableMapRuntimeSummary runtime = LoadPortableRuntimeMap(map);
-                if (!restoreRuntimePath.empty() &&
-                    !LoadPortableRuntimeState(restoreRuntimePath)) {
-                    throw std::runtime_error("saved runtime restoration failed");
-                }
+                // Prepare assets from the complete authored population before
+                // saved inactivity hides pickups/pawns. An older same-map save
+                // can reactivate them without another map-wide texture upload.
                 const PortableActorMeshSummary meshes = DecodePortableRuntimeActorMeshes();
                 if (!runtime.passed || !meshes.passed) {
                     throw std::runtime_error("runtime or actor mesh replacement failed");
                 }
-                preparation.actors = GetPortableRuntimeMapActors();
                 preparation.actorTextures = BuildPortableRuntimeActorTextureArray(96, 96);
+                if (!preparation.actorTextures.passed)
+                    throw std::runtime_error("actor texture preparation failed");
+                if (!restoreRuntimePath.empty() &&
+                    !LoadPortableRuntimeState(restoreRuntimePath)) {
+                    throw std::runtime_error("saved runtime restoration failed");
+                }
+                preparation.actors = GetPortableRuntimeMapActors();
                 preparation.spatialAudioEmitters = PrepareSpatialAudioEmitters(
                     preparation.actors, targetAudioRate);
                 preparation.lights = BuildMapLights(preparation.actors);
-                if (!preparation.actorTextures.passed)
-                    throw std::runtime_error("actor texture preparation failed");
                 return true;
                 }, [&] {
                     const PortablePackageTables previousMap = LoadPortablePackageTables(
                         std::string(gameRoot_) + "/Maps/" + priorMapName + ".dx");
                     const bool loaded = LoadPortableRuntimeMap(previousMap).passed;
-                    const bool restored = loaded && LoadPortableRuntimeState(checkpointPath);
-                    const bool meshes = restored && DecodePortableRuntimeActorMeshes().passed;
+                    const bool meshes = loaded && DecodePortableRuntimeActorMeshes().passed;
+                    const bool restored = meshes && LoadPortableRuntimeState(checkpointPath);
                     ALOG("DeusExQuest: prior-map rollback %s for %s",
-                         meshes ? "restored" : "failed", priorMapName.c_str());
-                    return meshes;
+                         restored ? "restored" : "failed", priorMapName.c_str());
+                    return restored;
                 });
             preparation.passed = status.prepared;
             preparation.runtimeAvailable = status.runtimeAvailable;
@@ -2514,6 +2428,13 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         interactionStatusSeconds_ = 60.0f;
     }
 
+    void ClearPendingConversation() {
+        pendingChoices_.clear();
+        pendingChoiceActor_.clear();
+        pendingChoiceAudioPackage_.clear();
+        pendingChoiceIndex_ = 0u;
+    }
+
     void ConfirmPendingChoice() {
         if (pendingChoices_.empty()) return;
         const PortableDialogueResult::Choice choice = pendingChoices_[pendingChoiceIndex_];
@@ -2546,10 +2467,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             choice.soundId,
             audioQueued ? "true" : "false",
             text.c_str());
-        pendingChoices_.clear();
-        pendingChoiceActor_.clear();
-        pendingChoiceAudioPackage_.clear();
-        pendingChoiceIndex_ = 0u;
+        ClearPendingConversation();
     }
 
     void AppendPersonaLog(std::string entry) {
@@ -3274,53 +3192,44 @@ class DeusExQuestApp final : public OVRFW::XrApp {
     }
 
     void SaveGameState() {
-        constexpr const char* metaPath =
-            "/data/user/0/dev.deusex.questvr.smoketest/files/DeusEx/quest-save-0.meta";
-        constexpr const char* runtimePath =
-            "/data/user/0/dev.deusex.questvr.smoketest/files/DeusEx/quest-save-0.runtime";
-        std::FILE* file = std::fopen(metaPath, "wb");
-        const std::uint32_t header[2] = {0x4d515844u, 4u};
-        const float pose[4] = {
-            worldPosition_.x, worldPosition_.y, worldPosition_.z, sceneYaw_};
-        const std::uint32_t mapNameBytes = static_cast<std::uint32_t>(currentMapName_.size());
-        bool metaSaved = file != nullptr &&
-            std::fwrite(header, sizeof(header), 1, file) == 1 &&
-            std::fwrite(pose, sizeof(pose), 1, file) == 1 &&
-            std::fwrite(&mapNameBytes, sizeof(mapNameBytes), 1, file) == 1 &&
-            std::fwrite(currentMapName_.data(), 1, mapNameBytes, file) == mapNameBytes;
-        const std::uint32_t dialogueCount =
-            static_cast<std::uint32_t>(dialogueOffsets_.size());
-        if (metaSaved) {
-            metaSaved = std::fwrite(&dialogueCount, sizeof(dialogueCount), 1, file) == 1;
-            for (const auto& entry : dialogueOffsets_) {
-                const std::uint32_t pathBytes = static_cast<std::uint32_t>(entry.first.size());
-                const std::uint64_t cursor = static_cast<std::uint64_t>(entry.second);
-                metaSaved = metaSaved && pathBytes > 0u && pathBytes <= 1024u &&
-                    std::fwrite(&pathBytes, sizeof(pathBytes), 1, file) == 1 &&
-                    std::fwrite(entry.first.data(), 1, pathBytes, file) == pathBytes &&
-                    std::fwrite(&cursor, sizeof(cursor), 1, file) == 1;
-                if (!metaSaved) break;
+        if (!runtimeAvailable_ || !headTrackingValid_ || !pendingChoices_.empty() ||
+            !pendingMapName_.empty() || !transitionMapName_.empty()) return;
+        bool saved = false;
+        std::uint64_t generation{};
+        try {
+            const OVR::Vector3f localFeet = StageToLocal(
+                {currentHeadStage_.x, 0.0f, currentHeadStage_.z}, worldPosition_);
+            const QuestVr::QuestSaveMetadata metadata{
+                {localFeet.x, localFeet.y, localFeet.z,
+                    std::remainder(currentHeadStageYaw_ - sceneYaw_, 2.0f * QuestVr::Pi)},
+                currentMapName_, dialogueOffsets_, personaLogEntries_, true};
+            std::vector<std::uint8_t> encodedMetadata, runtime;
+            const std::string prefix = QuickSavePrefix();
+            const std::string capturePath = prefix + ".capture.runtime.tmp";
+            // Only a scratch file is replaced while collecting state. Neither
+            // committed slot nor the legacy two-file save is ever truncated.
+            if (QuestVr::EncodeQuestSaveMetadata(metadata, encodedMetadata) &&
+                QuestVr::WriteDurableSaveFile(capturePath, {0u}) &&
+                SavePortableRuntimeState(capturePath) &&
+                QuestVr::ReadBoundedSaveFile(capturePath,
+                    QuestVr::kMaximumSaveRuntimeBytes, runtime)) {
+                const auto published = QuestVr::PublishSaveBundle(
+                    QuestVr::MakeSaveBundlePaths(prefix), encodedMetadata, runtime);
+                saved = published.saved;
+                generation = published.generation;
             }
+        } catch (const std::exception& error) {
+            ALOG("DeusExQuest: quick-save exception: %s", error.what());
         }
-        const std::uint32_t logCount =
-            static_cast<std::uint32_t>(personaLogEntries_.size());
-        if (metaSaved) {
-            metaSaved = std::fwrite(&logCount, sizeof(logCount), 1, file) == 1;
-            for (const std::string& entry : personaLogEntries_) {
-                const std::uint32_t bytes = static_cast<std::uint32_t>(entry.size());
-                metaSaved = metaSaved && bytes > 0u && bytes <= 256u &&
-                    std::fwrite(&bytes, sizeof(bytes), 1, file) == 1 &&
-                    std::fwrite(entry.data(), 1, bytes, file) == bytes;
-                if (!metaSaved) break;
-            }
-        }
-        if (file != nullptr) std::fclose(file);
-        const bool runtimeSaved = SavePortableRuntimeState(runtimePath);
-        ALOG(
-            "DeusExQuest: VR quick-save %s map=%s health=%.1f",
-            metaSaved && runtimeSaved ? "completed" : "failed",
-            currentMapName_.c_str(),
-            GetPortableRuntimePlayerHealth());
+        interactionStatus_ = saved ? "QUICK-SAVE COMPLETE" : "QUICK-SAVE FAILED - PRIOR SAVE KEPT";
+        interactionStatusSeconds_ = 4.0f;
+        ALOG("DeusExQuest: VR quick-save %s generation=%llu map=%s health=%.1f",
+            saved ? "completed" : "failed", static_cast<unsigned long long>(generation),
+            currentMapName_.c_str(), GetPortableRuntimePlayerHealth());
+    }
+
+    static std::string QuickSavePrefix() {
+        return "/data/user/0/dev.deusex.questvr.smoketest/files/DeusEx/quest-save-0";
     }
 
     void ClearPendingPersonaRestore() {
@@ -3330,108 +3239,115 @@ class DeusExQuestApp final : public OVRFW::XrApp {
     }
 
     void LoadGameState() {
-        if (!runtimeAvailable_ || !pendingMapName_.empty() || !transitionMapName_.empty()) return;
-        constexpr const char* metaPath =
-            "/data/user/0/dev.deusex.questvr.smoketest/files/DeusEx/quest-save-0.meta";
-        constexpr const char* runtimePath =
-            "/data/user/0/dev.deusex.questvr.smoketest/files/DeusEx/quest-save-0.runtime";
-        std::FILE* file = std::fopen(metaPath, "rb");
-        std::uint32_t header[2]{};
-        float pose[4]{};
-        std::string savedMapName;
-        std::unordered_map<std::string, std::size_t> savedDialogueOffsets;
-        std::vector<std::string> savedPersonaLogs;
-        bool metaLoaded = file != nullptr &&
-            std::fread(header, sizeof(header), 1, file) == 1 &&
-            std::fread(pose, sizeof(pose), 1, file) == 1 &&
-            header[0] == 0x4d515844u &&
-            header[1] >= 1u && header[1] <= 4u &&
-            std::isfinite(pose[0]) && std::isfinite(pose[1]) &&
-            std::isfinite(pose[2]) && std::isfinite(pose[3]);
-        if (metaLoaded && header[1] >= 2u) {
-            std::uint32_t mapNameBytes{};
-            metaLoaded = std::fread(&mapNameBytes, sizeof(mapNameBytes), 1, file) == 1 &&
-                mapNameBytes > 0u && mapNameBytes <= 255u;
-            if (metaLoaded) {
-                savedMapName.resize(mapNameBytes);
-                metaLoaded = std::fread(savedMapName.data(), 1, mapNameBytes, file) == mapNameBytes;
+        if (!runtimeAvailable_ || !headTrackingValid_ ||
+            !pendingMapName_.empty() || !transitionMapName_.empty()) return;
+        try {
+            const std::string prefix = QuickSavePrefix();
+            const std::string restorePath = prefix + ".load.runtime.tmp";
+            const auto candidates = QuestVr::LoadSaveBundleCandidates(
+                QuestVr::MakeSaveBundlePaths(prefix));
+            for (const auto& candidate : candidates) {
+                QuestVr::QuestSaveMetadata metadata;
+                if (QuestVr::DecodeQuestSaveMetadata(candidate.metadata, currentMapName_, metadata) &&
+                    SaveMapAvailable(metadata.mapName) &&
+                    QuestVr::WriteDurableSaveFile(restorePath, candidate.runtime) &&
+                    ValidatePortableRuntimeState(restorePath) &&
+                    RestoreGameState(std::move(metadata), restorePath)) {
+                    ALOG("DeusExQuest: quick-load accepted bundle generation=%llu slot=%u",
+                        static_cast<unsigned long long>(candidate.generation), candidate.slotIndex);
+                    return;
+                }
+                ALOG("DeusExQuest: quick-load rejected bundle generation=%llu",
+                    static_cast<unsigned long long>(candidate.generation));
             }
-        } else if (metaLoaded) {
-            savedMapName = currentMapName_;
-        }
-        if (metaLoaded && header[1] >= 3u) {
-            std::uint32_t dialogueCount{};
-            metaLoaded = std::fread(&dialogueCount, sizeof(dialogueCount), 1, file) == 1 &&
-                dialogueCount <= 4096u;
-            for (std::uint32_t index = 0; metaLoaded && index < dialogueCount; ++index) {
-                std::uint32_t pathBytes{};
-                std::uint64_t cursor{};
-                metaLoaded = std::fread(&pathBytes, sizeof(pathBytes), 1, file) == 1 &&
-                    pathBytes > 0u && pathBytes <= 1024u;
-                if (!metaLoaded) break;
-                std::string path(pathBytes, '\0');
-                metaLoaded = metaLoaded &&
-                    std::fread(path.data(), 1, pathBytes, file) == pathBytes &&
-                    std::fread(&cursor, sizeof(cursor), 1, file) == 1;
-                if (metaLoaded) savedDialogueOffsets.emplace(
-                    std::move(path), static_cast<std::size_t>(cursor));
-            }
-        }
-        if (metaLoaded && header[1] >= 4u) {
-            std::uint32_t logCount{};
-            metaLoaded = std::fread(&logCount, sizeof(logCount), 1, file) == 1 &&
-                logCount <= 12u;
-            for (std::uint32_t index = 0u; metaLoaded && index < logCount; ++index) {
-                std::uint32_t bytes{};
-                metaLoaded = std::fread(&bytes, sizeof(bytes), 1, file) == 1 &&
-                    bytes > 0u && bytes <= 256u;
-                if (!metaLoaded) break;
-                std::string entry(bytes, '\0');
-                metaLoaded = metaLoaded &&
-                    std::fread(entry.data(), 1, bytes, file) == bytes;
-                if (metaLoaded) savedPersonaLogs.push_back(std::move(entry));
-            }
-        }
-        if (file != nullptr) std::fclose(file);
-        if (!metaLoaded) {
-            ALOG("DeusExQuest: VR quick-load failed");
-            return;
-        }
-        if (savedMapName != currentMapName_) {
-            const auto found = std::find(mapNames_.begin(), mapNames_.end(), savedMapName);
-            if (found == mapNames_.end()) {
-                ALOG("DeusExQuest: VR quick-load map is unavailable: %s", savedMapName.c_str());
+            // Read-only migration: retain the old files as a last-resort save.
+            // New publications never change them, even if bundle recovery fails.
+            std::vector<std::uint8_t> oldMetadata, runtime;
+            QuestVr::QuestSaveMetadata metadata;
+            if (QuestVr::ReadBoundedSaveFile(prefix + ".meta",
+                    QuestVr::kQuestSaveMetadataLimit, oldMetadata) &&
+                QuestVr::DecodeQuestSaveMetadata(oldMetadata, currentMapName_, metadata) &&
+                SaveMapAvailable(metadata.mapName) &&
+                QuestVr::ReadBoundedSaveFile(prefix + ".runtime",
+                    QuestVr::kMaximumSaveRuntimeBytes, runtime) &&
+                QuestVr::WriteDurableSaveFile(restorePath, runtime) &&
+                ValidatePortableRuntimeState(restorePath) &&
+                RestoreGameState(std::move(metadata), restorePath)) {
+                ALOG("DeusExQuest: quick-load accepted legacy save (files kept unchanged)");
                 return;
             }
+        } catch (const std::exception& error) {
+            ALOG("DeusExQuest: quick-load exception: %s", error.what());
+        }
+        interactionStatus_ = "QUICK-LOAD FAILED - CURRENT STATE KEPT";
+        interactionStatusSeconds_ = 4.0f;
+        ALOG("DeusExQuest: VR quick-load failed without replacing current state");
+    }
+
+    bool SaveMapAvailable(const std::string& mapName) const {
+        return mapName == currentMapName_ ||
+            std::find(mapNames_.begin(), mapNames_.end(), mapName) != mapNames_.end();
+    }
+
+    bool RestoreGameState(QuestVr::QuestSaveMetadata metadata, const std::string& runtimePath) {
+        const auto& pose = metadata.pose;
+        if (metadata.mapName != currentMapName_) {
+            restoredMapLocalPose_ = metadata.mapLocalPose;
+            restoredMapLocalFeet_ = {pose[0], pose[1], pose[2]};
+            restoredMapLocalHeadYaw_ = pose[3];
             restoredWorldPosition_ = {pose[0], pose[1], pose[2]};
             restoredSceneYaw_ = pose[3];
             restorePoseAfterTransition_ = true;
-            BeginMapLoad(*found, runtimePath);
-            if (pendingMapName_ == savedMapName) {
-                pendingPersonaRestore_ = true;
-                restoredDialogueOffsets_ = std::move(savedDialogueOffsets);
-                restoredPersonaLogs_ = std::move(savedPersonaLogs);
-            }
-            ALOG("DeusExQuest: VR quick-load restoring map %s", savedMapName.c_str());
-            return;
+            BeginMapLoad(metadata.mapName, runtimePath);
+            if (pendingMapName_ != metadata.mapName) return false;
+            pendingPersonaRestore_ = true;
+            restoredDialogueOffsets_ = std::move(metadata.dialogueOffsets);
+            restoredPersonaLogs_ = std::move(metadata.personaLogs);
+            interactionStatus_ = "QUICK-LOAD RESTORING MAP";
+            interactionStatusSeconds_ = 4.0f;
+            ALOG("DeusExQuest: VR quick-load restoring map %s", metadata.mapName.c_str());
+            return true;
         }
         if (!LoadPortableRuntimeState(runtimePath)) {
             ALOG("DeusExQuest: VR quick-load runtime failed");
-            return;
+            return false;
         }
+        ClearPendingConversation();
+        InvalidateDialogueAudio();
         // Restore only after the runtime parser succeeds. Failed quick-loads
         // must keep UI history and any in-progress actor chunks unchanged.
-        dialogueOffsets_ = std::move(savedDialogueOffsets);
-        personaLogEntries_ = std::move(savedPersonaLogs);
+        dialogueOffsets_ = std::move(metadata.dialogueOffsets);
+        personaLogEntries_ = std::move(metadata.personaLogs);
         inventoryMenuDirty_ = true;
-        worldPosition_ = {pose[0], pose[1], pose[2]};
-        sceneYaw_ = pose[3];
-        DestroyActorGeometry();
-        actorSnapshots_ = GetPortableRuntimeMapActors();
-        BuildActorMarkers();
+        if (metadata.mapLocalPose) {
+            QuestVr::RestoreSavedMapPose(OVR::Vector3f{pose[0], pose[1], pose[2]}, pose[3],
+                currentHeadStage_, currentHeadStageYaw_, worldPosition_, sceneYaw_);
+        } else {
+            worldPosition_ = {pose[0], pose[1], pose[2]};
+            sceneYaw_ = pose[3];
+        }
+        previousHeadStage_ = currentHeadStage_;
+        try {
+            DestroyActorGeometry();
+            actorSnapshots_ = GetPortableRuntimeMapActors();
+            BuildActorMarkers();
+        } catch (const std::exception& error) {
+            // State restoration already succeeded; do not claim it was kept
+            // unchanged or try an older candidate after a visual allocation
+            // failure. Suspend gameplay rather than retain mismatched actors.
+            DestroySceneGeometry();
+            runtimeAvailable_ = false;
+            interactionStatus_ = "QUICK-LOAD VISUAL REBUILD FAILED - RESTART SESSION";
+            interactionStatusSeconds_ = 10.0f;
+            ALOG("DeusExQuest: restored state but visual rebuild failed: %s", error.what());
+            return true;
+        }
+        interactionStatus_ = "QUICK-LOAD COMPLETE";
+        interactionStatusSeconds_ = 4.0f;
         ALOG(
             "DeusExQuest: VR quick-load completed health=%.1f",
             GetPortableRuntimePlayerHealth());
+        return true;
     }
 
     struct CollisionTriangle {
@@ -3800,6 +3716,22 @@ class DeusExQuestApp final : public OVRFW::XrApp {
 
     using DecodedDialogueAudio = QuestVr::DecodedMp3Audio;
 
+    void InvalidateDialogueAudio() {
+        // Main-thread epochs invalidate a pending decoder without destroying
+        // its std::async future (which would wait on the render thread). The
+        // decoder owns only compressed bytes and can finish independently.
+        dialogueAudioEpoch_.Invalidate(dialogueDecodeEpoch_, dialogueDecodeFuture_.valid());
+        pendingDialogueSpatialized_ = false;
+        pendingDialogueActorPath_.clear();
+        pendingDialogueLocalPosition_ = {};
+        std::lock_guard<std::mutex> lock(audioMutex_);
+        dialogueSamples_.clear();
+        dialogueCursor_ = 0u;
+        dialogueSpatialized_ = false;
+        dialogueLocalPosition_ = {};
+        dialogueLeftGain_ = dialogueRightGain_ = 1.0f;
+    }
+
     static DecodedDialogueAudio DecodeDialogueAudio(
         const std::vector<std::uint8_t>& bytes,
         std::uint32_t targetRate) {
@@ -3861,6 +3793,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             : std::string();
         const std::uint32_t targetRate = audioSampleRate_;
         try {
+            dialogueDecodeEpoch_ = dialogueAudioEpoch_.Capture();
             dialogueDecodeFuture_ = std::async(
                 std::launch::async,
                 [bytes = sound.data, targetRate]() {
@@ -3883,6 +3816,10 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             decoded = dialogueDecodeFuture_.get();
         } catch (const std::exception& error) {
             ALOG("DeusExQuest: dialogue decode failed without stopping gameplay: %s", error.what());
+            return;
+        }
+        if (!dialogueAudioEpoch_.IsCurrent(dialogueDecodeEpoch_)) {
+            ALOG("DeusExQuest: discarded dialogue decoded for an abandoned map/save state");
             return;
         }
         if (decoded.stereo.empty()) return;
@@ -4715,6 +4652,9 @@ class DeusExQuestApp final : public OVRFW::XrApp {
     bool pendingDialogueSpatialized_{};
     std::string pendingDialogueActorPath_;
     std::future<DecodedDialogueAudio> dialogueDecodeFuture_;
+    // Both values are main-thread only; the decoder never reads app state.
+    QuestVr::AsyncResultEpoch dialogueAudioEpoch_;
+    std::uint64_t dialogueDecodeEpoch_{};
     std::vector<CollisionTriangle> collisionTriangles_;
     std::unordered_map<std::int64_t, std::vector<std::uint32_t>> collisionGrid_;
     std::vector<std::uint32_t> oversizedCollisionTriangles_;
@@ -4723,6 +4663,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
     OVR::Vector3f previousHeadStage_{};
     bool hasPreviousHeadStage_{};
     bool headTrackingValid_{};
+    float currentHeadStageYaw_{};
     bool headTrackingReported_{};
     bool needsTrackingRebase_{};
     OVR::Vector3f trackingResumeLocalHead_{};
@@ -4789,6 +4730,9 @@ class DeusExQuestApp final : public OVRFW::XrApp {
     float mapTravelCooldown_{3.0f};
     bool restorePoseAfterTransition_{};
     OVR::Vector3f restoredWorldPosition_{};
+    bool restoredMapLocalPose_{};
+    OVR::Vector3f restoredMapLocalFeet_{};
+    float restoredMapLocalHeadYaw_{};
     float restoredSceneYaw_{};
     std::string pendingMapName_;
     bool runtimeAvailable_{true};

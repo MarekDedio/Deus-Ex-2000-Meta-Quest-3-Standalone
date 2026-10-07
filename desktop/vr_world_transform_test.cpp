@@ -183,6 +183,27 @@ void ReferenceSpaceContinuity() {
                     "tracking reacquisition or loading movement displaced the saved local head");
     }
 }
+
+void MapLocalSaveRestoration() {
+    const Vector savedFeet{8.0f, 2.5f, -12.0f};
+    for (float savedHeading : {-2.4f, 0.0f, 1.1f}) {
+        for (float newHeading : {-1.5f, 0.0f, 2.0f}) {
+            for (const Vector newHead : {Vector{0.0f, 1.65f, 0.0f}, Vector{15.0f, 1.9f, -21.0f}}) {
+                Vector world{};
+                float yaw{};
+                QuestVr::RestoreSavedMapPose(savedFeet, savedHeading, newHead, newHeading, world, yaw);
+                const Vector localFeet = QuestVr::StageToLocal(Vector{newHead.x, 0.0f, newHead.z}, world, yaw);
+                RequireNear(localFeet, savedFeet, "save changed map position after physical walk/recenter");
+                const Vector forward = Yaw(newHeading).Rotate(Vector{0.0f, 0.0f, -1.0f});
+                RequireNear(QuestVr::StageDirectionToLocal(forward, yaw),
+                    Yaw(savedHeading).Rotate(Vector{0.0f, 0.0f, -1.0f}),
+                    "save changed map heading after physical turn/recenter");
+                Require(std::fabs(QuestVr::StageToLocal(newHead, world, yaw).y -
+                    savedFeet.y - newHead.y) < 0.0001f, "save forced the old wearer's eye height");
+            }
+        }
+    }
+}
 } // namespace
 
 int main() {
@@ -197,7 +218,8 @@ int main() {
         BoundedMovementAndVerticalGaze();
         SweepAcrossThinWall();
         ReferenceSpaceContinuity();
-        std::cout << "PASS: 10 shared Quest transform regression groups; "
+        MapLocalSaveRestoration();
+        std::cout << "PASS: 11 shared Quest transform regression groups; "
                      "481 renderer rotations, 1201 off-origin turns, 15 simultaneous "
                      "turn/move cases. No headset or game data required.\n";
         return 0;

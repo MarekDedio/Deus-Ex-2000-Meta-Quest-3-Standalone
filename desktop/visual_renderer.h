@@ -21,6 +21,9 @@ struct Scene {
     std::vector<Chunk> chunks;
     std::uint32_t textureWidth{}, textureHeight{}, textureLayers{};
     std::vector<std::uint8_t> textures;
+    // Optional direct-light RGB gains parallel to each chunk's vertex array.
+    // Kept outside Vertex so DXQM v2's on-disk layout remains unchanged.
+    std::vector<std::vector<Vec3>> vertexLighting;
 };
 struct Camera {
     Vec3 position{0.0f, 1.65f, 0.0f};

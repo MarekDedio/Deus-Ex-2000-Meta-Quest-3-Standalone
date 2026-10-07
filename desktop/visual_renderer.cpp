@@ -32,10 +32,13 @@ float Edge(float ax, float ay, float bx, float by, float px, float py) {
 Vec3 Subtract(Vec3 a, Vec3 b) { return {a.x - b.x, a.y - b.y, a.z - b.z}; }
 float Dot(Vec3 a, Vec3 b) { return a.x*b.x + a.y*b.y + a.z*b.z; }
 
-struct ViewVertex { float x{}, y{}, z{}, u{}, v{}; };
+struct ViewVertex { float x{}, y{}, z{}, u{}, v{}; Vec3 lighting{1.0f,1.0f,1.0f}; };
 ViewVertex Mix(const ViewVertex& a, const ViewVertex& b, float t) {
     return {a.x+(b.x-a.x)*t, a.y+(b.y-a.y)*t, a.z+(b.z-a.z)*t,
-            a.u+(b.u-a.u)*t, a.v+(b.v-a.v)*t};
+            a.u+(b.u-a.u)*t, a.v+(b.v-a.v)*t,
+            {a.lighting.x+(b.lighting.x-a.lighting.x)*t,
+             a.lighting.y+(b.lighting.y-a.lighting.y)*t,
+             a.lighting.z+(b.lighting.z-a.lighting.z)*t}};
 }
 std::vector<ViewVertex> ClipNear(const std::array<ViewVertex, 3>& triangle, float nearPlane) {
     std::vector<ViewVertex> polygon;
@@ -87,17 +90,19 @@ void Rasterize(RenderResult& result, const Scene& scene,
                const std::array<ViewVertex, 3>& triangle, std::int32_t layer,
                bool textured, float focalLength) {
     const auto width = result.image.width, height = result.image.height;
-    struct Projected { float x, y, inverseDepth, u, v; };
+    struct Projected { float x, y, inverseDepth, u, v; Vec3 lighting; };
     std::array<Projected, 3> points{};
     for (std::size_t i = 0; i < 3; ++i) {
         const auto& vertex = triangle[i];
         const float inverse = 1.0f/vertex.z;
         points[i] = {width*0.5f + vertex.x*inverse*focalLength,
                      height*0.5f - vertex.y*inverse*focalLength, inverse,
-                     vertex.u*inverse, vertex.v*inverse};
+                     vertex.u*inverse, vertex.v*inverse,
+                     {vertex.lighting.x*inverse,vertex.lighting.y*inverse,vertex.lighting.z*inverse}};
         if (!std::isfinite(points[i].x) || !std::isfinite(points[i].y) ||
             !std::isfinite(points[i].inverseDepth) || !std::isfinite(points[i].u) ||
-            !std::isfinite(points[i].v))
+            !std::isfinite(points[i].v) || !std::isfinite(points[i].lighting.x) ||
+            !std::isfinite(points[i].lighting.y) || !std::isfinite(points[i].lighting.z))
             throw std::runtime_error("Projected geometry/UV exceeds finite numeric range");
     }
     const float area = Edge(points[0].x, points[0].y, points[1].x, points[1].y,
@@ -136,9 +141,15 @@ void Rasterize(RenderResult& result, const Scene& scene,
             // Match the Quest world material's alpha cutoff (no opaque chroma-key holes).
             if (texel[3] < 127.5f) { ++result.transparentSamples; continue; }
             result.depth[pixel] = depth;
+            std::array<float,3> gain{1.0f,1.0f,1.0f};
+            if (!scene.vertexLighting.empty()) {
+                gain = {(a*points[0].lighting.x+b*points[1].lighting.x+c*points[2].lighting.x)/inverse,
+                        (a*points[0].lighting.y+b*points[1].lighting.y+c*points[2].lighting.y)/inverse,
+                        (a*points[0].lighting.z+b*points[1].lighting.z+c*points[2].lighting.z)/inverse};
+            }
             for (std::size_t channel = 0; channel < 3; ++channel)
                 result.image.rgb[pixel*3u+channel] = static_cast<std::uint8_t>(
-                    std::clamp(std::round(texel[channel]), 0.0f, 255.0f));
+                    std::clamp(std::round(texel[channel]*gain[channel]), 0.0f, 255.0f));
         }
     }
 }
@@ -220,6 +231,21 @@ RenderResult Render(const Scene& scene, const Camera& camera,
         camera.verticalFovDegrees < 10.0f || camera.verticalFovDegrees > 150.0f ||
         !std::isfinite(camera.nearPlane) || camera.nearPlane <= 0.0f)
         throw std::runtime_error("Invalid camera/image dimensions");
+    if (!scene.vertexLighting.empty()) {
+        if (scene.vertexLighting.size() != scene.chunks.size())
+            throw std::runtime_error("Lighting stream chunk count does not match world geometry");
+        for (std::size_t chunkIndex = 0u; chunkIndex < scene.chunks.size(); ++chunkIndex) {
+            const auto& gains = scene.vertexLighting[chunkIndex];
+            if (gains.size() != scene.chunks[chunkIndex].vertices.size())
+                throw std::runtime_error("Lighting stream vertex count does not match world geometry");
+            for (const auto& gain : gains) {
+                if (!std::isfinite(gain.x) || !std::isfinite(gain.y) || !std::isfinite(gain.z) ||
+                    gain.x < 0.0f || gain.y < 0.0f || gain.z < 0.0f ||
+                    gain.x > 16.0f || gain.y > 16.0f || gain.z > 16.0f)
+                    throw std::runtime_error("Lighting gain is invalid or oversized");
+            }
+        }
+    }
     RenderResult result;
     result.image = {width,height,std::vector<std::uint8_t>(static_cast<std::size_t>(width)*height*3u)};
     result.depth.assign(static_cast<std::size_t>(width)*height, std::numeric_limits<float>::infinity());
@@ -231,7 +257,8 @@ RenderResult Render(const Scene& scene, const Camera& camera,
     const Vec3 forward{std::sin(yaw)*std::cos(pitch),std::sin(pitch),-std::cos(yaw)*std::cos(pitch)};
     const Vec3 up{-std::sin(yaw)*std::sin(pitch),std::cos(pitch),std::cos(yaw)*std::sin(pitch)};
     const float focal = height*0.5f/std::tan(camera.verticalFovDegrees*pi/360.0f);
-    for (const auto& chunk : scene.chunks) {
+    for (std::size_t chunkIndex = 0u; chunkIndex < scene.chunks.size(); ++chunkIndex) {
+        const auto& chunk = scene.chunks[chunkIndex];
         for (std::size_t offset = 0; offset+2u < chunk.vertices.size(); offset += 3u) {
             ++result.inputTriangles;
             if (chunk.materialSlot != 0) ++result.flatTriangles;
@@ -241,6 +268,7 @@ RenderResult Render(const Scene& scene, const Camera& camera,
                 const auto& vertex = chunk.vertices[offset+i];
                 const Vec3 relative = Subtract(vertex.position, camera.position);
                 triangle[i] = {Dot(relative,right),Dot(relative,up),Dot(relative,forward),vertex.u,vertex.v};
+                if (!scene.vertexLighting.empty()) triangle[i].lighting = scene.vertexLighting[chunkIndex][offset+i];
                 if (!std::isfinite(triangle[i].x) || !std::isfinite(triangle[i].y) ||
                     !std::isfinite(triangle[i].z))
                     throw std::runtime_error("Camera/geometry exceeds finite numeric range");

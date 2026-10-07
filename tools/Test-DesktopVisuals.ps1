@@ -4,6 +4,7 @@ param(
     [string]$MapName = '00_Training',
     [string]$MeshPath,
     [string]$MaterialArrayPath,
+    [switch]$AuthoredLighting,
     [string]$OutputDirectory,
     [string]$BaselineDirectory,
     [double]$MaxMeanError = 0.0,
@@ -40,6 +41,9 @@ if (($MeshPath -and -not $MaterialArrayPath) -or ($MaterialArrayPath -and -not $
     throw 'Pass both MeshPath and MaterialArrayPath.'
 }
 if ($GameRoot -and $MeshPath) { throw 'Pass either GameRoot or existing cache paths.' }
+if ($AuthoredLighting -and $MeshPath) {
+    throw 'AuthoredLighting requires original GameRoot/map data, not unverified external caches.'
+}
 
 function Find-Tool {
     param([string]$Requested, [string]$CommandName, [string[]]$Candidates)
@@ -145,6 +149,7 @@ if ($GameRoot) {
     $sourceArguments = @('--mesh', $MeshPath, '--materials', $MaterialArrayPath)
     if ($PSBoundParameters.ContainsKey('MapName')) { $sourceArguments += @('--map', $MapName) }
 }
+if ($AuthoredLighting) { $sourceArguments += '--authored-lighting' }
 $reports = @()
 for ($index = 0; $index -lt $YawDegrees.Count; $index++) {
     $fileName = 'view-{0:D2}.bmp' -f $index
@@ -162,7 +167,7 @@ for ($index = 0; $index -lt $YawDegrees.Count; $index++) {
     Invoke-Checked $captureTool $arguments
     $reports += Get-Content -LiteralPath $reportPath -Raw | ConvertFrom-Json
     # Decode each real map once; remaining views consume the exact derived cache.
-    if ($GameRoot -and $index -eq 0) {
+    if ($GameRoot -and $index -eq 0 -and -not $AuthoredLighting) {
         $sourceArguments = @('--map', $MapName, '--mesh', (Join-Path $OutputDirectory "decoded-cache\$MapName\quest-world.mesh"),
             '--materials', (Join-Path $OutputDirectory "decoded-cache\$MapName\quest-material-array.rgba"))
     }
@@ -173,7 +178,14 @@ $summary = [ordered]@{
     mode = $mode
     realMapsDecoded = $(if ($GameRoot) { 1 } else { 0 })
     campaignPlayabilityVerified = $false
-    scope = 'Software world BSP/material albedo only; no actor meshes, map lights, UI, OpenXR, stereo or Quest performance.'
+    scope = $(if ($AuthoredLighting) {
+        'Software world BSP/material textures with shared Quest direct vertex lighting approximation; no UE1 lightmaps/shadows, actor meshes, UI, OpenXR, stereo or Quest performance.'
+    } else {
+        'Software world BSP/material albedo only; no actor meshes, map lights, UI, OpenXR, stereo or Quest performance.'
+    })
+    lightingMode = $(if (-not $AuthoredLighting) { 'albedo-only' }
+        elseif ($GameRoot) { 'original-map-direct-vertex-approximation' }
+        else { 'synthetic-direct-vertex-fixture' })
     map = $(if ($GameRoot) { $MapName } else { $null })
     captures = @($reports)
 }
