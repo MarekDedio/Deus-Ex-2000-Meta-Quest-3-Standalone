@@ -64,6 +64,60 @@ bool Same(const PortableActorSnapshot& a, const PortableActorSnapshot& b) {
     }
     return true;
 }
+bool SameStack(const std::optional<PortableObjectStack>& a,
+               const std::optional<PortableObjectStack>& b) {
+    return a.has_value() == b.has_value() && (!a ||
+        std::tie(a->functionReference, a->stateReference, a->probeMask,
+                 a->latentAction, a->logicalOffset) ==
+        std::tie(b->functionReference, b->stateReference, b->probeMask,
+                 b->latentAction, b->logicalOffset));
+}
+void VerifyAuthoredStack(const std::filesystem::path& root, const std::string& actor) {
+    const auto dot = actor.find('.');
+    Require(dot != std::string::npos, "Original actor fixture lacks source map identity");
+    const auto source = LoadPortablePackageTables((root / "Maps" /
+        (actor.substr(0, dot) + ".dx")).string());
+    const auto expected = LoadPortableExportProperties(source,
+        FindPortableExport(source, actor.substr(dot + 1))).stack;
+    Require(expected && SameStack(expected, ReadPortableActorSerializedStack(actor)),
+        "Runtime discarded or reinterpreted authored HasStack metadata: " + actor);
+    Require(expected->logicalOffset && *expected->logicalOffset == -1,
+        "Original dormant class-backed fixture is not a stopped record");
+    std::string folded = actor;
+    for (char& c : folded) if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
+    Require(SameStack(expected, ReadPortableActorSerializedStack(folded)),
+        "Runtime authored stack lookup lost UE case-insensitive identity");
+    std::cout << "ORIGINAL AUTHORED STACK " << actor << " retained without state execution\n";
+}
+void VerifyAuthoredStateMetadata(const std::filesystem::path& root) {
+    for (const auto& fixture : {std::pair{"Engine", "Actor"},
+            std::pair{"DeusEx", "ScriptedPawn.Standing"}}) {
+        const auto source = LoadPortablePackageTables((root / "System" /
+            (std::string(fixture.first) + ".u")).string());
+        const auto index = FindPortableExport(source, fixture.second);
+        const auto expected = source.exports[index].ObjClass == 0 ?
+            LoadPortableClassDescriptor(source, index).state : LoadPortableStateDescriptor(source, index);
+        const auto actual = ReadPortableRuntimeAuthoredStateDescriptor(
+            std::string(fixture.first) + '.' + fixture.second);
+        Require(std::tie(expected.objectPath, expected.baseField, expected.nextField,
+                expected.scriptText, expected.children, expected.friendlyName, expected.line,
+                expected.textPos, expected.logicalSize, expected.rawBytes, expected.bytecode,
+                expected.probeMask, expected.ignoreMask, expected.labelTableOffset, expected.stateFlags) ==
+            std::tie(actual.objectPath, actual.baseField, actual.nextField,
+                actual.scriptText, actual.children, actual.friendlyName, actual.line,
+                actual.textPos, actual.logicalSize, actual.rawBytes, actual.bytecode,
+                actual.probeMask, actual.ignoreMask, actual.labelTableOffset, actual.stateFlags),
+            "Runtime lost authored State/Class dispatch metadata");
+    }
+    bool wrongDescriptor{}, wrongActor{};
+    try { ReadPortableRuntimeAuthoredStateDescriptor("Engine.Actor.BeginPlay"); }
+    catch (const std::exception&) { wrongDescriptor = true; }
+    try { ReadPortableActorSerializedStack("Engine.Actor.BeginPlay"); }
+    catch (const std::exception&) { wrongActor = true; }
+    Require(wrongDescriptor && wrongActor && !GetPortableRuntimeScriptStatePresent(),
+        "Metadata inspection accepted wrong identities or created live script state");
+    std::cout << "ORIGINAL STATE/CLASS METADATA retained; readonly identity controls passed\n";
+}
 std::uint32_t Word(const std::vector<std::uint8_t>& bytes,const std::size_t offset) {
     Require(offset <= bytes.size() && bytes.size()-offset >= 4,"Generated checkpoint word truncated");
     std::uint32_t value{};for (unsigned i=0;i<4;++i) value|=std::uint32_t(bytes[offset+i])<<(i*8u);return value;
@@ -288,7 +342,10 @@ void TestOriginal(const std::filesystem::path& root) {
     for (const auto* package : packages)
         tables.push_back(LoadPortablePackageTables((root / "System" / (std::string(package) + ".u")).string()));
     struct Shutdown { ~Shutdown() { ShutdownPortableRuntime(); } } shutdown;
-    Require(InitializePortableRuntime(tables).passed, "Original script runtime initialization failed");
+    const auto runtime = InitializePortableRuntime(tables);
+    Require(runtime.passed && runtime.states != 0 && runtime.normalizedStateBytecodeBytes != 0,
+        "Original script runtime initialization/state metadata failed");
+    VerifyAuthoredStateMetadata(root);
     TemporaryCheckpoint temporary(root);
     const auto checkpoint = (temporary.directory / "original-authored.sav").string();
     std::size_t humanTests{}, robotTests{}, birdTests{};
@@ -304,6 +361,8 @@ void TestOriginal(const std::filesystem::path& root) {
             if (humanTests != 0u && robotTests != 0u && birdTests != 0u) break;
             if (!actor.pawn || actor.meshPath.empty() || !IsA(actor, "ScriptedPawn")) continue;
             if (humanTests == 0u && !IsA(actor, "Robot") && !IsA(actor, "Animal")) {
+                VerifyAuthoredStack(root, actor.objectPath);
+                const auto authoredStack = ReadPortableActorSerializedStack(actor.objectPath);
                 const auto region = ReadPortableActorScriptProperty(actor.objectPath, "Region");
                 Require(region.kind == Kind::Struct && !region.fields.at("zone").text.empty(),
                     "Original BSP Region did not resolve a real ZoneInfo/LevelInfo");
@@ -407,11 +466,17 @@ void TestOriginal(const std::filesystem::path& root) {
                     "Readonly checkpoint validation changed committed VM state");
                 Require(LoadPortableRuntimeState(checkpoint) && !GetPortableRuntimeUnsavedScriptState(),
                     "Valid legacy checkpoint did not restore authored VM state");
+                Require(SameStack(authoredStack, ReadPortableActorSerializedStack(actor.objectPath)),
+                    "Legacy save restoration lost retained authored stack identity");
                 // Preflight may resolve the saved original map schema while a
                 // different map is loaded; applying v4 still requires that map
                 // to be current, with no cross-map mutation as a side effect.
                 Require(LoadPortableRuntimeMap(LoadPortablePackageTables((root/"Maps"/"00_TrainingCombat.dx").string())).passed,
                     "Different-map v4 preflight fixture failed");
+                bool retiredActorMissing{};
+                try { ReadPortableActorSerializedStack(actor.objectPath); }
+                catch (const std::exception&) { retiredActorMissing = true; }
+                Require(retiredActorMissing, "Map replacement retained retired actor stack metadata");
                 const auto otherBefore=GetPortableRuntimeMapActors();
                 Require(ValidatePortableRuntimeState(scriptCheckpoint.string()) && !LoadPortableRuntimeState(scriptCheckpoint.string()),
                     "v4 cross-map schema preflight failed or wrong-current-map application succeeded");
@@ -426,11 +491,14 @@ void TestOriginal(const std::filesystem::path& root) {
                 const auto beforeStartup = Snapshot(actor.objectPath);
                 const auto startup = ExecutePortableActorFunction(actor.objectPath, "SetInitialState");
                 Require(startup.status == Status::Unsupported && Same(beforeStartup, Snapshot(actor.objectPath)) &&
-                    !GetPortableRuntimeUnsavedScriptState(), "Unsupported original state startup was faked or leaked changes");
+                    !GetPortableRuntimeUnsavedScriptState() &&
+                    SameStack(authoredStack, ReadPortableActorSerializedStack(actor.objectPath)),
+                    "Unsupported original state startup was faked or leaked changes/stack metadata");
                 ++humanTests;
                 std::cout << "ORIGINAL HUMAN " << actor.objectPath << " PlayWaiting/Standing.AnimEnd/Play/Loop/Tween/rollback/save passed\n";
             }
             if (robotTests == 0u && IsA(actor, "Robot")) {
+                VerifyAuthoredStack(root, actor.objectPath);
                 Call(actor.objectPath, "PlayWaiting");
                 const auto robot = Snapshot(actor.objectPath);
                 Require(!robot.animation.sequence.empty() && robot.animation.frame < 0.0f,
@@ -439,6 +507,7 @@ void TestOriginal(const std::filesystem::path& root) {
                 std::cout << "ORIGINAL ROBOT " << actor.objectPath << " PlayWaiting passed\n";
             }
             if (birdTests == 0u && IsA(actor, "Bird")) {
+                VerifyAuthoredStack(root, actor.objectPath);
                 const auto wait = ReadPortableActorScriptProperty(actor.objectPath, "WaitAnim");
                 Call(actor.objectPath, "PlayWaiting");
                 const auto bird = Snapshot(actor.objectPath);

@@ -138,8 +138,25 @@ struct PortablePropertyDescriptor {
     std::int32_t fixedCount{};
 };
 
+// Exact serialized UField/UStruct/UState metadata. Retention is not state
+// execution or evidence that a HasStack actor is a live state continuation.
+struct PortableStateDescriptor {
+    std::string objectPath;
+    std::int32_t baseField{}, nextField{}, scriptText{}, children{};
+    NameString friendlyName;
+    std::uint32_t line{}, textPos{}, logicalSize{};
+    std::vector<std::uint8_t> rawBytes;
+    std::vector<std::uint8_t> bytecode;
+    std::uint64_t probeMask{}, ignoreMask{};
+    // Preserve the authored uint16 verbatim, including the 0xffff sentinel.
+    // This decoder does not invent label/statement execution semantics.
+    std::uint16_t labelTableOffset{};
+    std::uint32_t stateFlags{};
+};
+
 struct PortableClassDescriptor {
     std::string objectPath;
+    PortableStateDescriptor state;
     std::uint32_t classFlags{};
     std::vector<std::uint8_t> stateBytecode;
     std::vector<PortableTaggedProperty> defaults;
@@ -236,6 +253,11 @@ PortablePropertyDescriptor LoadPortablePropertyDescriptor(
     const PortablePackageTables& package,
     std::size_t exportIndex);
 PortableClassDescriptor LoadPortableClassDescriptor(
+    const PortablePackageTables& package,
+    std::size_t exportIndex);
+// Only actual Core.State metaclass exports are accepted; Class metadata is
+// retained separately by LoadPortableClassDescriptor via the same header.
+PortableStateDescriptor LoadPortableStateDescriptor(
     const PortablePackageTables& package,
     std::size_t exportIndex);
 PortableLodMesh LoadPortableLodMesh(

@@ -23,6 +23,10 @@ See [current evidence and limitations](docs/STATUS.md).
 See [original script execution](docs/PORTABLE-SCRIPT-EXECUTION.md) for the
 supported interpreter path and tests, and [script-state saves](docs/SCRIPT_STATE_SAVE.md)
 for the scoped persistence boundary and remaining map-archive requirements.
+The [installed Quest test build](docs/QUEST-TEST-BUILD.md) remains frozen while
+the user tests it. Subsequent offline source work retains
+[authored state metadata](docs/AUTHORED-STATE-FOUNDATION.md); it does not enable
+automatic AI or replace that installed APK.
 
 ## Data boundary
 

@@ -1,5 +1,44 @@
 # Port status
 
+## Offline authored-state foundation (2026-10-08; not deployed)
+
+- Retained exact UField/UStruct/UState metadata for script State/Class exports:
+  original references/names/source positions, raw and normalized bytecode,
+  compiled masks, uint16 label offsets (including `0xffff`) and unknown flags.
+  Existing class bytecode/default decoding remains compatible. Map actors now
+  retain their exact HasStack headers, without treating dormant class-backed
+  records or nonzero latent numbers as ready-to-run AI.
+- State/Class payloads are file-checked before allocation and bounded to
+  64 MiB; logical expansion, references, names, recursion, outer-chain identity
+  and exact termination are checked. The new descriptor test passed 365 checks,
+  including 97 rejection controls. A read-only audit passed all 38 original
+  System packages: 261 States and 1,502 serialized Classes, 23,037 raw script
+  bytes and 30,167 normalized bytes. All 88 original maps have zero Class/State
+  exports; modified map-local script definitions remain unsupported.
+- The host suite now has 29 entries: 27 ordinary tests pass, two original-data
+  integrations explicitly skip without the separately supplied game root.
+  Separate original runtime/save/map-transition regression passed, including
+  v3/v4 paired-save recovery and retained original assets. The separate original
+  actor integration also passed exact State/Class metadata, Doctor1/RepairBot0/
+  Pigeon0 raw stacks, case-insensitive lookup, wrong-identity rejection,
+  preservation through legacy reset and rejected startup, and retired-map
+  lookup rejection, alongside existing bytecode/native-clock/v4 save checks.
+- Read-only runtime metadata queries use the game's indexed vector-package
+  initialization path, return detached copies and do not dispatch events,
+  create live script state, alter clocks or change save/travel guards. The
+  single-package lifecycle helper remains outside that query path.
+- Documented the pinned level-wide startup, event masks, state lookup,
+  synchronous EndState/BeginState and state-PC contracts. Reached startup
+  dependencies still include pawn lists, real spawn/collision/destroy,
+  conversation binding and unavailable AI callback behavior; pinned AI stubs
+  cannot establish faithful NPC reactions. Full startup/state/latent execution
+  and its persistence remain unfinished. See
+  [AUTHORED-STATE-FOUNDATION.md](AUTHORED-STATE-FOUNDATION.md).
+- This source batch was host-built only. No Android rebuild, headset command
+  or deployment was performed. The installed/frozen `25e38b3` test APK remains
+  the user-test build; its local SHA-256 is unchanged. Game data and saves were
+  not modified. Logs are in ignored `artifacts/state-metadata-20261008/`.
+
 ## Quest launch responsiveness and headset handoff (2026-10-08)
 
 - Installing commit `9e4779f` preserved the user's data, but PID 8666 then

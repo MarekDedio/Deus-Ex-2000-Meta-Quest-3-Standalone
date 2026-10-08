@@ -90,6 +90,12 @@ event masks, RNG, attachment rendering and dynamic GPU pose updates remain
 unfinished. Virtual calls currently resolve class hierarchy only because no
 script state can become active. Unknown required behavior fails explicitly.
 
+State/Class headers, raw and normalized state bytecode, masks, labels and flags
+are now retained as read-only authored metadata, along with map Actor HasStack
+records. They are not active frames or permission to run events. See
+[authored state foundation](AUTHORED-STATE-FOUNDATION.md) for validation commands,
+query scope and the remaining startup/dispatch/persistence contracts.
+
 Version-4 runtime saves preserve supported actor overlays and the complete
 native clocks, including captured tween histories. Untouched runtimes still
 write version 3. Read-only validation checks original map/class/property schemas

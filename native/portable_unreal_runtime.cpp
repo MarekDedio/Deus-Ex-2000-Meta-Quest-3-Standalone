@@ -39,6 +39,10 @@ public:
     std::unique_ptr<PortableScriptBody> script;
     std::unique_ptr<PortablePropertyDescriptor> property;
     std::unique_ptr<PortableClassDescriptor> classDescriptor;
+    std::unique_ptr<PortableStateDescriptor> stateDescriptor;
+    // Keep the exact loaded record; class-backed offset -1 records are not
+    // named-state continuations. No execution state is inferred from this.
+    std::optional<PortableObjectStack> serializedStack;
     std::vector<PortableTaggedProperty> instanceProperties;
     std::unordered_map<std::string, std::string> objectPropertyPaths;
     // Name indices are package-local. Decode them while their actual package
@@ -814,6 +818,17 @@ void PopulateRuntime(
                 LoadPortableFunctionScript(package, index));
             summary.normalizedBytecodeBytes += object->script->bytecode.size();
             ++summary.functions;
+        } else if (object->reflection.metaClass == "State") {
+            object->stateDescriptor = std::make_unique<PortableStateDescriptor>(
+                LoadPortableStateDescriptor(package, index));
+            ++summary.states;
+            summary.normalizedStateBytecodeBytes += object->stateDescriptor->bytecode.size();
+            for (const auto reference : {object->stateDescriptor->baseField,
+                    object->stateDescriptor->nextField, object->stateDescriptor->scriptText,
+                    object->stateDescriptor->children}) {
+                if (auto* target = ResolveLocal(reference, runtime->exports, summary))
+                    object->references.push_back(target);
+            }
         } else if (object->reflection.metaClass.size() >= 8 &&
             object->reflection.metaClass.compare(
                 object->reflection.metaClass.size() - 8, 8, "Property") == 0) {
@@ -1595,6 +1610,7 @@ PortableRuntimeSummary BuildAndVerifyPortableRuntime(
     summary.passed = summary.objects == package.exports.size() &&
         summary.classes == graph.classCount &&
         summary.functions == graph.functionCount &&
+        summary.states == graph.stateCount &&
         summary.properties == graph.propertyCount &&
         summary.normalizedBytecodeBytes != 0 &&
         summary.destroyedObjects == summary.objects &&
@@ -1616,6 +1632,7 @@ PortableRuntimeSummary InitializePortableRuntime(
     summary.passed = summary.objects == package.exports.size() &&
         summary.classes == graph.classCount &&
         summary.functions == graph.functionCount &&
+        summary.states == graph.stateCount &&
         summary.properties == graph.propertyCount &&
         summary.normalizedBytecodeBytes != 0 &&
         GC::GetStats().numObjects == baseline + summary.objects + 1;
@@ -1694,6 +1711,16 @@ PortableRuntimeSummary InitializePortableRuntime(
                     LoadPortableFunctionScript(*slice.package, localIndex));
                 summary.normalizedBytecodeBytes += object->script->bytecode.size();
                 ++summary.functions;
+            } else if (object->reflection.metaClass == "State") {
+                object->stateDescriptor = std::make_unique<PortableStateDescriptor>(
+                    LoadPortableStateDescriptor(*slice.package, localIndex));
+                ++summary.states;
+                summary.normalizedStateBytecodeBytes += object->stateDescriptor->bytecode.size();
+                for (const auto reference : {object->stateDescriptor->baseField,
+                        object->stateDescriptor->nextField, object->stateDescriptor->scriptText,
+                        object->stateDescriptor->children}) {
+                    if (auto* target = resolve(slice, reference)) object->references.push_back(target);
+                }
             } else if (object->reflection.metaClass == "Class" && entry.ObjSize > 0) {
                 object->classDescriptor = std::make_unique<PortableClassDescriptor>(
                     LoadPortableClassDescriptor(*slice.package, localIndex));
@@ -2130,6 +2157,22 @@ QuestVr::Vm::Value ReadPortableActorScriptProperty(const std::string& actorPath,
     return host.Read(actor, property, arrayIndex);
 }
 
+std::optional<PortableObjectStack> ReadPortableActorSerializedStack(const std::string& actorPath) {
+    PortableActorVmHost host;
+    const auto* actor = host.Object(actorPath);
+    if (!IsDerivedFromPath(actor->cls, "Engine.Actor"))
+        throw std::runtime_error("Authored stack receiver is not Engine.Actor");
+    return actor->serializedStack;
+}
+
+PortableStateDescriptor ReadPortableRuntimeAuthoredStateDescriptor(const std::string& objectPath) {
+    PortableActorVmHost host;
+    const auto* object = host.Object(objectPath);
+    if (object->stateDescriptor) return *object->stateDescriptor;
+    if (object->classDescriptor) return object->classDescriptor->state;
+    throw std::runtime_error("Runtime object has no serialized State/Class metadata: " + objectPath);
+}
+
 bool GetPortableRuntimeScriptStatePresent() {
     if (!persistentRuntime || !persistentRuntime->get()) return false;
     for (const auto* object : persistentRuntime->get()->exports)
@@ -2198,6 +2241,14 @@ PortableMapRuntimeSummary LoadPortableRuntimeMap(
             const PortablePropertyStream properties =
                 LoadPortableExportProperties(package, localIndex);
             object->instanceProperties = properties.properties;
+            object->serializedStack = properties.stack;
+            if (properties.stack) {
+                ++summary.serializedActorStacks;
+                for (const auto reference : {properties.stack->functionReference,
+                                             properties.stack->stateReference}) {
+                    if (auto* target = resolve(reference)) object->references.push_back(target);
+                }
+            }
             CacheRuntimeNameProperties(object, package, object->instanceProperties);
             for (const PortableTaggedProperty& property : object->instanceProperties) {
                 if (property.name == "Tag" && property.type == 6u) {

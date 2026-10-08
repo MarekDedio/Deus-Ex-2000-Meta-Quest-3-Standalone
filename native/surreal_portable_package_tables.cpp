@@ -127,6 +127,10 @@ public:
         const std::uint32_t low = ReadUInt16();
         return low | (static_cast<std::uint32_t>(ReadUInt16()) << 16u);
     }
+    std::uint64_t ReadUInt64() {
+        const std::uint64_t low = ReadUInt32();
+        return low | (static_cast<std::uint64_t>(ReadUInt32()) << 32u);
+    }
     std::int32_t ReadInt32() { return static_cast<std::int32_t>(ReadUInt32()); }
     float ReadFloat() {
         const std::uint32_t bits = ReadUInt32();
@@ -201,11 +205,18 @@ std::uint8_t DecodeScriptToken(
     const PortablePackageTables& package,
     std::size_t& logicalSize,
     std::vector<std::uint8_t>& bytecode,
-    unsigned depth) {
+    unsigned depth,
+    bool validateOperands = false,
+    std::size_t logicalLimit = std::numeric_limits<std::size_t>::max()) {
     if (depth >= 64) throw std::runtime_error("UE1 bytecode nesting is too deep");
+    const auto logical = [&](const std::size_t amount) {
+        if (logicalSize > logicalLimit || amount > logicalLimit - logicalSize)
+            throw std::runtime_error("UE1 bytecode exceeded declared logical size");
+        logicalSize += amount;
+    };
     const std::uint8_t token = reader.ReadUInt8();
+    logical(1u);
     bytecode.push_back(token);
-    ++logicalSize;
     const auto append16 = [&](std::uint16_t value) {
         bytecode.push_back(static_cast<std::uint8_t>(value));
         bytecode.push_back(static_cast<std::uint8_t>(value >> 8u));
@@ -216,30 +227,35 @@ std::uint8_t DecodeScriptToken(
     };
     const auto byte = [&]() {
         const std::uint8_t value = reader.ReadUInt8();
+        logical(1u);
         bytecode.push_back(value);
-        ++logicalSize;
         return value;
     };
     const auto word = [&]() {
         const std::uint16_t value = reader.ReadUInt16();
+        logical(2u);
         append16(value);
-        logicalSize += 2;
         return value;
     };
     const auto dword = [&]() {
         const std::uint32_t value = reader.ReadUInt32();
+        logical(4u);
         append32(value);
-        logicalSize += 4;
         return value;
     };
-    const auto compactIndex = [&]() {
+    const auto compactIndex = [&](const bool name = false) {
         const std::int32_t value = reader.ReadIndex();
+        if (validateOperands) {
+            if (name) ValidateNameIndex(value, package.names.size());
+            else ValidateObjectReference(value, package.imports.size(), package.exports.size());
+        }
+        logical(4u);
         append32(static_cast<std::uint32_t>(value));
-        logicalSize += 4;
         return value;
     };
     const auto child = [&]() {
-        return DecodeScriptToken(reader, package, logicalSize, bytecode, depth + 1);
+        return DecodeScriptToken(reader, package, logicalSize, bytecode, depth + 1,
+            validateOperands, logicalLimit);
     };
     if (token >= 0x39u && token < 0x60u) {
         child();
@@ -249,7 +265,7 @@ std::uint8_t DecodeScriptToken(
         byte();
         while (child() != 0x16u) {}
     } else if (token == 0x1bu || token == 0x38u) {
-        compactIndex();
+        compactIndex(true);
         while (child() != 0x16u) {}
     } else if (token == 0x1cu) {
         compactIndex();
@@ -271,7 +287,7 @@ std::uint8_t DecodeScriptToken(
             case 0x0b: break;
             case 0x0c:
                 while (true) {
-                    const std::int32_t nameIndex = compactIndex();
+                    const std::int32_t nameIndex = compactIndex(true);
                     ValidateNameIndex(nameIndex, package.names.size());
                     dword();
                     if (package.names[static_cast<std::size_t>(nameIndex)].Name == "None") break;
@@ -290,12 +306,13 @@ std::uint8_t DecodeScriptToken(
             case 0x1d: case 0x1e: dword(); break;
             case 0x1f: {
                 const std::string value = reader.ReadAsciiZ();
+                logical(value.size() + 1u);
                 bytecode.insert(bytecode.end(), value.begin(), value.end());
                 bytecode.push_back(0);
-                logicalSize += value.size() + 1;
                 break;
             }
-            case 0x20: case 0x21: compactIndex(); break;
+            case 0x20: compactIndex(); break;
+            case 0x21: compactIndex(true); break;
             case 0x22: dword(); dword(); dword(); break;
             case 0x23: dword(); dword(); dword(); break;
             case 0x24: byte(); break;
@@ -345,6 +362,105 @@ std::string ResolvePortableObjectPath(
     const std::string prefix = ResolvePortableObjectPath(outer, package, depth + 1);
     const std::string& name = package.names[static_cast<std::size_t>(nameIndex)].Name.ToString();
     return prefix.empty() ? name : prefix + "." + name;
+}
+
+// Descriptor identity must not use the permissive rendering lookup's empty
+// result or depth truncation for a malformed outer/reference chain.
+std::string ResolveDescriptorObjectPath(std::int32_t reference,
+    const PortablePackageTables& package) {
+    std::vector<std::int32_t> visited;
+    std::string result;
+    while (reference != 0) {
+        ValidateObjectReference(reference, package.imports.size(), package.exports.size());
+        if (visited.size() >= 32u ||
+            std::find(visited.begin(), visited.end(), reference) != visited.end())
+            throw std::runtime_error("UE1 descriptor object identity has a cyclic/deep outer chain");
+        visited.push_back(reference);
+        std::int32_t nameIndex{}, outer{};
+        if (reference > 0) {
+            const auto& entry = package.exports[static_cast<std::size_t>(reference - 1)];
+            nameIndex = entry.ObjName;
+            outer = entry.ObjOuter;
+        } else {
+            const auto& entry = package.imports[static_cast<std::size_t>(
+                -static_cast<std::int64_t>(reference) - 1)];
+            nameIndex = entry.ObjName;
+            outer = entry.ObjOuter;
+        }
+        ValidateNameIndex(nameIndex, package.names.size());
+        const auto& name = package.names[static_cast<std::size_t>(nameIndex)].Name;
+        if (name.IsNone()) throw std::runtime_error("UE1 descriptor object identity has a None name");
+        const auto& spelling = name.ToString();
+        constexpr std::size_t maxIdentityBytes = 64u * 1024u;
+        const std::size_t separatorBytes = result.empty() ? 0u : 1u;
+        if (spelling.size() > maxIdentityBytes ||
+            separatorBytes > maxIdentityBytes - spelling.size() ||
+            result.size() > maxIdentityBytes - spelling.size() - separatorBytes)
+            throw std::runtime_error("UE1 descriptor object identity exceeds 64 KiB");
+        result = result.empty() ? spelling : spelling + '.' + result;
+        reference = outer;
+    }
+    return result;
+}
+
+std::vector<std::uint8_t> ReadDescriptorPayload(const PortablePackageTables& package,
+    const std::size_t exportIndex) {
+    if (exportIndex >= package.exports.size())
+        throw std::runtime_error("UE1 state/class export index is outside the table");
+    const auto& entry = package.exports[exportIndex];
+    constexpr std::int32_t maxPayload = 64 * 1024 * 1024;
+    if (entry.ObjSize <= 0 || entry.ObjSize > maxPayload || entry.ObjOffset < 0)
+        throw std::runtime_error("UE1 state/class payload size or offset is invalid");
+    ResolveDescriptorObjectPath(static_cast<std::int32_t>(exportIndex + 1u), package);
+    ResolveDescriptorObjectPath(entry.ObjBase, package);
+    const auto file = File::open_existing(package.sourcePath);
+    const auto fileSize = file->size();
+    if (fileSize < 0 || static_cast<std::int64_t>(entry.ObjOffset) > fileSize ||
+        static_cast<std::int64_t>(entry.ObjSize) > fileSize - entry.ObjOffset)
+        throw std::runtime_error("UE1 state/class payload is outside its source file");
+    std::vector<std::uint8_t> bytes(static_cast<std::size_t>(entry.ObjSize));
+    file->seek(entry.ObjOffset);
+    file->read(bytes.data(), bytes.size());
+    return bytes;
+}
+
+PortableStateDescriptor ReadStateHeader(PayloadReader& reader,
+    const std::vector<std::uint8_t>& bytes, const PortablePackageTables& package,
+    const std::size_t exportIndex) {
+    PortableStateDescriptor result;
+    result.objectPath = ResolveDescriptorObjectPath(static_cast<std::int32_t>(exportIndex + 1u), package);
+    const auto reference = [&] {
+        const auto value = reader.ReadIndex();
+        ResolveDescriptorObjectPath(value, package);
+        return value;
+    };
+    result.baseField = reference();
+    result.nextField = reference();
+    result.scriptText = reference();
+    result.children = reference();
+    result.friendlyName = ReadPayloadName(reader, package);
+    if (result.friendlyName.IsNone())
+        throw std::runtime_error("UE1 state/class FriendlyName must not be None");
+    result.line = reader.ReadUInt32();
+    result.textPos = reader.ReadUInt32();
+    result.logicalSize = reader.ReadUInt32();
+    if (result.logicalSize > 64u * 1024u * 1024u)
+        throw std::runtime_error("UE1 state/class logical script size is unreasonable");
+    const auto rawStart = reader.Tell();
+    std::size_t logicalSize{};
+    while (logicalSize < result.logicalSize)
+        DecodeScriptToken(reader, package, logicalSize, result.bytecode, 0u, true, result.logicalSize);
+    if (result.bytecode.size() != result.logicalSize)
+        throw std::runtime_error("UE1 state/class normalized bytecode size mismatch");
+    result.rawBytes.assign(bytes.begin() + static_cast<std::ptrdiff_t>(rawStart),
+        bytes.begin() + static_cast<std::ptrdiff_t>(reader.Tell()));
+    result.probeMask = reader.ReadUInt64();
+    result.ignoreMask = reader.ReadUInt64();
+    result.labelTableOffset = reader.ReadUInt16();
+    result.stateFlags = reader.ReadUInt32();
+    // Pinned UState::Load stores these exact bits. In particular 0xffff is not
+    // a bytecode address to clamp/reject, and unknown flags are not invented AI.
+    return result;
 }
 
 }  // namespace
@@ -1113,6 +1229,28 @@ PortablePropertyDescriptor LoadPortablePropertyDescriptor(
     return result;
 }
 
+PortableStateDescriptor LoadPortableStateDescriptor(
+    const PortablePackageTables& package,
+    std::size_t exportIndex) {
+    if (exportIndex >= package.exports.size())
+        throw std::runtime_error("UE1 state export index is outside the table");
+    const auto& entry = package.exports[exportIndex];
+    std::string metaClass = ResolveDescriptorObjectPath(entry.ObjClass, package);
+    if (entry.ObjClass > 0)
+        metaClass = std::filesystem::path(package.sourcePath).stem().string() + '.' + metaClass;
+    if (NameString(metaClass) != "Core.State")
+        throw std::runtime_error("UE1 export is not an actual Core.State");
+    const auto bytes = ReadDescriptorPayload(package, exportIndex);
+    PayloadReader reader(bytes);
+    // Unlike UClass, a UState serializes UObject's tagged properties (and its
+    // optional exact HasStack prefix). This does not execute that dormant data.
+    reader.Skip(LoadPortableExportProperties(package, exportIndex).bytesConsumed);
+    auto result = ReadStateHeader(reader, bytes, package, exportIndex);
+    if (reader.Tell() != reader.Size())
+        throw std::runtime_error("UE1 state payload has trailing bytes");
+    return result;
+}
+
 PortableClassDescriptor LoadPortableClassDescriptor(
     const PortablePackageTables& package,
     std::size_t exportIndex) {
@@ -1123,38 +1261,26 @@ PortableClassDescriptor LoadPortableClassDescriptor(
     if (entry.ObjClass != 0 || entry.ObjSize <= 0 || entry.ObjOffset < 0) {
         throw std::runtime_error("UE1 export is not a serialized Class");
     }
-    std::vector<std::uint8_t> bytes(static_cast<std::size_t>(entry.ObjSize));
-    const std::shared_ptr<File> file = File::open_existing(package.sourcePath);
-    file->seek(entry.ObjOffset);
-    file->read(bytes.data(), bytes.size());
-    PayloadReader reader(std::move(bytes));
+    const auto bytes = ReadDescriptorPayload(package, exportIndex);
+    PayloadReader reader(bytes);
     const auto objectReference = [&]() {
         const std::int32_t value = reader.ReadIndex();
         ValidateObjectReference(value, package.imports.size(), package.exports.size());
         return value;
     };
-    objectReference(); // UField::BaseField
-    objectReference(); // UField::Next
-    objectReference(); // UStruct::ScriptText
-    objectReference(); // UStruct::Children
-    const std::int32_t friendlyName = reader.ReadIndex();
-    ValidateNameIndex(friendlyName, package.names.size());
-    reader.Skip(8); // Line, TextPos
-
     PortableClassDescriptor result;
-    result.objectPath = ResolvePortableObjectPath(
-        static_cast<std::int32_t>(exportIndex + 1), package);
-    const std::uint32_t logicalScriptSize = reader.ReadUInt32();
-    std::size_t decodedLogical{};
-    while (decodedLogical < logicalScriptSize) {
-        DecodeScriptToken(
-            reader, package, decodedLogical, result.stateBytecode, 0);
-        if (decodedLogical > logicalScriptSize) {
-            throw std::runtime_error("UE1 class state bytecode exceeded declared size");
-        }
+    // UObject omits tagged class properties, but its HasStack prefix (if
+    // present) still precedes UField according to the pinned UObject loader.
+    if (AnyFlags(entry.ObjFlags, ObjectFlags::HasStack)) {
+        const auto function = objectReference();
+        objectReference();
+        reader.ReadUInt64();
+        reader.ReadUInt32();
+        if (function != 0) reader.ReadIndex();
     }
-    reader.Skip(8 + 8 + 2); // UState probe/ignore masks and label offset
-    reader.ReadUInt32(); // UState flags
+    result.state = ReadStateHeader(reader, bytes, package, exportIndex);
+    result.objectPath = result.state.objectPath;
+    result.stateBytecode = result.state.bytecode;
     if (package.version <= 61) reader.ReadUInt32();
     result.classFlags = reader.ReadUInt32();
     reader.Skip(16); // class GUID

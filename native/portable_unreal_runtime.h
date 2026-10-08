@@ -14,6 +14,8 @@ struct PortableRuntimeSummary {
     std::size_t objects{};
     std::size_t classes{};
     std::size_t functions{};
+    std::size_t states{};
+    std::size_t normalizedStateBytecodeBytes{};
     std::size_t properties{};
     std::size_t resolvedLinks{};
     std::size_t unresolvedExternalLinks{};
@@ -104,6 +106,7 @@ struct PortableMapRuntimeSummary {
     std::size_t exports{};
     std::size_t actors{};
     std::size_t actorProperties{};
+    std::size_t serializedActorStacks{};
     std::size_t resolvedClasses{};
     std::size_t unresolvedClasses{};
     std::size_t replacedExports{};
@@ -287,6 +290,16 @@ QuestVr::Vm::Result ExecutePortableActorFunction(
 QuestVr::Vm::Value ReadPortableActorScriptProperty(
     const std::string& actorPath, const std::string& propertyName,
     std::uint32_t arrayIndex = 0u);
+// Read-only authored metadata, not an active AI frame or a resumable state.
+// Requires the indexed vector-package initialization path used by the game,
+// not the single-package lifecycle-verification helper. Descriptors are loaded
+// from script packages; map loading retains Actor stack records only.
+// Stack references retain their actor source package's original table indices;
+// descriptor references likewise belong to the descriptor's source package.
+std::optional<PortableObjectStack> ReadPortableActorSerializedStack(
+    const std::string& actorPath);
+PortableStateDescriptor ReadPortableRuntimeAuthoredStateDescriptor(
+    const std::string& objectPath);
 // v4 preserves supported actor overlays and native animation clocks. This
 // predicate means state is present, not that a successful save has cleared it.
 // Map replacement/unload still require a per-map archive and are guarded while
