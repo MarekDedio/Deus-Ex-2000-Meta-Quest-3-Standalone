@@ -5,11 +5,19 @@
 #include "quest_map_lighting.h"
 
 #include <map>
+#include <optional>
 #include <set>
 #include <string>
 #include <vector>
 
 namespace questvisual {
+
+struct ActorPosePreviewOptions {
+    std::string actorPath;
+    std::optional<std::string> sequence;
+    std::optional<float> frame;
+    std::optional<std::uint8_t> fatness;
+};
 
 struct ActorPreviewRecord {
     std::string path, classPath, assetPath, error;
@@ -17,6 +25,14 @@ struct ActorPreviewRecord {
     std::size_t triangles{}, overriddenMaterials{}, missingMaterials{};
     std::size_t firstChunk{}, chunkCount{};
     bool brush{}, hidden{}, placeholder{};
+    bool poseSampled{}, sequenceFallback{}, poseFixture{};
+    bool selectedOriginalSpanInvalid{};
+    std::string requestedSequence, resolvedSequence, animationSource;
+    float animationFrame{};
+    std::uint8_t fatness{128u};
+    std::size_t sampledFrames{}, normalTriangleSamples{}, animationBytes{};
+    std::vector<std::string> availableSequences;
+    std::vector<std::string> invalidOriginalSpanSequences;
 };
 struct ActorScenePreview {
     bool enabled{};
@@ -24,13 +40,15 @@ struct ActorScenePreview {
     std::size_t overriddenMaterials{}, missingMaterials{}, decodedTextures{}, fallbackTextures{};
     std::size_t vertices{}, environmentMappedTriangles{}, spriteActorsOmitted{};
     std::size_t maskedTextureVariants{};
+    std::size_t sampledPoses{}, poseOmissions{};
     std::vector<std::string> texturePaths;
     std::vector<ActorPreviewRecord> records;
 };
 
 inline ActorScenePreview AppendActorScenePreview(Scene& scene,
     const std::vector<PortableActorSnapshot>& actors, const QuestVr::ActorVec3& origin,
-    const std::vector<QuestVr::MapLight>& lights, bool actorLighting) {
+    const std::vector<QuestVr::MapLight>& lights, bool actorLighting,
+    const ActorPosePreviewOptions& poseOptions = {}) {
     ActorScenePreview metadata;
     metadata.enabled = true;
     const auto summary = DecodePortableRuntimeActorMeshes();
@@ -73,12 +91,52 @@ inline ActorScenePreview AppendActorScenePreview(Scene& scene,
             record.error = "No decoded mesh/brush; sprites and cube placeholders are intentionally not rendered in this preview";
             metadata.records.push_back(record); continue;
         }
+        const auto priorVertices = metadata.vertices;
+        const auto priorOverrides = metadata.overriddenMaterials;
+        const auto priorMissing = metadata.missingMaterials;
+        const auto priorEnvironmentTriangles = metadata.environmentMappedTriangles;
+        const auto priorChunks = scene.chunks.size();
+        const auto priorLightingChunks = scene.vertexLighting.size();
+        const auto priorLightmapChunks = scene.lightmapVertices.size();
         try {
             auto& cache = record.brush ? brushes : meshes;
             auto found = cache.find(record.assetPath);
             if (found == cache.end()) found = cache.emplace(record.assetPath,record.brush ?
                 GetPortableRuntimeBrush(record.assetPath) : GetPortableRuntimeMesh(record.assetPath)).first;
             const auto& mesh = found->second;
+            std::optional<QuestVr::MeshPose> pose;
+            if (!record.brush && mesh.animation) {
+                auto state = QuestVr::BuildSnapshotMeshAnimationState(actor);
+                record.animationSource = actor.animationSourcePath;
+                if (actor.objectPath == poseOptions.actorPath) {
+                    record.poseFixture = poseOptions.sequence || poseOptions.frame || poseOptions.fatness;
+                    if (poseOptions.sequence) state.main.sequence = *poseOptions.sequence;
+                    if (poseOptions.frame) state.main.normalizedFrame = *poseOptions.frame;
+                    if (poseOptions.fatness) state.fatness = *poseOptions.fatness;
+                    for (const auto& sequence : mesh.animation->sequences) {
+                        record.availableSequences.push_back(sequence.name);
+                        if (sequence.invalidOriginalSpan) record.invalidOriginalSpanSequences.push_back(sequence.name);
+                    }
+                }
+                record.requestedSequence = state.main.sequence;
+                record.animationFrame = state.main.normalizedFrame;
+                record.fatness = state.fatness;
+                pose = QuestVr::PrepareMeshPose(mesh,state);
+                record.resolvedSequence = pose->resolvedSequence;
+                record.sequenceFallback = pose->fallbackUsed;
+                record.selectedOriginalSpanInvalid = pose->selectedOriginalSpanInvalid;
+                if (!pose->drawable) {
+                    ++metadata.poseOmissions;
+                    record.error = pose->error.empty() ? "Mesh has no authored animation sequences; omitted as in pinned renderer" : pose->error;
+                    metadata.records.push_back(std::move(record));
+                    continue;
+                }
+                record.poseSampled = true;
+                record.sampledFrames = pose->sampledFrames;
+                record.normalTriangleSamples = pose->normalTriangleSamples;
+                record.animationBytes = pose->retainedBytes;
+                ++metadata.sampledPoses;
+            }
             const auto transform = QuestVr::BuildSnapshotActorTransform(actor,origin,record.brush);
             const auto lighting = actorLighting && !actor.unlit ? QuestVr::CalculateMapLighting(lights,
                 {record.position.x,record.position.y,record.position.z},{0,1,0}) : OVR::Vector3f{1,1,1};
@@ -109,7 +167,7 @@ inline ActorScenePreview AppendActorScenePreview(Scene& scene,
                 if ((flags & 0x00000010u) != 0u) ++metadata.environmentMappedTriangles;
                 auto& chunk = chunks[{drawLayer,flags}];
                 chunk.materialSlot = 0; chunk.textureBank = TextureBank::Actor; chunk.polyFlags = flags;
-                for (const auto& vertex : QuestVr::BuildActorTriangle(mesh,first,transform)) {
+                for (const auto& vertex : QuestVr::BuildActorTriangle(mesh,first,transform,pose ? &*pose : nullptr)) {
                     const Vec3 p{vertex.position.x,vertex.position.y,vertex.position.z};
                     chunk.vertices.push_back({p,{vertex.normal.x,vertex.normal.y,vertex.normal.z},
                         vertex.u,vertex.v,static_cast<std::int32_t>(drawLayer)});
@@ -135,6 +193,18 @@ inline ActorScenePreview AppendActorScenePreview(Scene& scene,
                 if (record.brush) ++metadata.brushInstances; else ++metadata.meshInstances;
             } else { ++metadata.unsupportedActors; record.error = "No available materials for this mesh"; }
         } catch (const std::exception& error) {
+            // An actor is a transaction: local/partially committed chunks must
+            // not inflate submitted triangle counts or consume future budget.
+            scene.chunks.resize(priorChunks);
+            scene.vertexLighting.resize(priorLightingChunks);
+            scene.lightmapVertices.resize(priorLightmapChunks);
+            metadata.vertices = priorVertices;
+            metadata.overriddenMaterials = priorOverrides;
+            metadata.missingMaterials = priorMissing;
+            metadata.environmentMappedTriangles = priorEnvironmentTriangles;
+            record.triangles = record.overriddenMaterials = record.missingMaterials = 0u;
+            record.firstChunk = record.chunkCount = 0u;
+            record.minimum = record.maximum = {};
             ++metadata.unsupportedActors; record.error = error.what();
         }
         metadata.records.push_back(std::move(record));

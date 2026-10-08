@@ -1,5 +1,42 @@
 # Port status
 
+## Authored animation poses and offline validation (2026-10-07)
+
+- Retained shared compressed vertex animations, authored sequences/notifies,
+  direct normal topology, remapped draw identities and attachment vertices.
+  The shared CPU sampler handles interpolation, native-history tweens, raw-space
+  Fatness and four additive Deus Ex blends without inventing idle names.
+  Package-correct inherited snapshots preserve indexed channels, explicit None,
+  and immediate-owner animation while keeping the rendered actor's Fatness.
+- Quest initial actor geometry uses one background pose worker, including
+  retired work across cancellation. Immutable captures and epoch/ordinal checks
+  prevent stale map/save results from entering a new build. Cancellation never
+  destroys an unfinished async future; waiting cannot falsely complete a build.
+  This design is compiled and reviewed, not on-device timing verification.
+- The independent original-asset audit passed 437 meshes (97 animated),
+  2,499,176 packed vertices, 2,485 sequences and 359 notifies. It compared
+  411,058 source-vertex samples with the pinned DX formulas/matrices, including
+  remapped normals, across 3,392 pose calls and 6,930,339 checks. Shared retained
+  data totals 17,508,019 bytes for all audited assets; largest asset 899,113 bytes.
+- Two original sword exports have six dangling sequence spans. These are
+  retained and labelled, not silently clamped, fabricated or rejected as whole
+  static/material assets. Missing required frame accesses produce explicit pose
+  omissions, as the pinned renderer's bounds checks do.
+- Authored snapshots independently passed Training/Island (4,966 actors,
+  90 inherited name sources), with five original nonzero corpse frames.
+  Visual inspection confirmed a lying corpse without an override, plus separate
+  explicit Jaime BreatheLight/Run pose fixtures. The latter are not live NPC
+  startup/idle animation or proof that scripted transitions work.
+- The host suite has 23 entries: 22 ordinary tests passed and the optional
+  original-state test skips by default. Its explicit original-data run also
+  passed save/rollback, paired-save recovery and retained pickup resources.
+  Four albedo frames and the Persona fixture remained pixel-exact (MAE 0).
+  The updated ARM64 APK builds offline; no headset/ADB access was attempted.
+- Live animation commands/clocks, notifies/AnimEnd, script states, dynamic tween
+  saves and attachment rendering remain unfinished. Full campaign playability,
+  visual fidelity and Quest GPU/performance verification are not achieved.
+  See [ANIMATION-POSES.md](ANIMATION-POSES.md).
+
 ## Original actor rendering and offline close-ups (2026-10-07)
 
 - Corrected original indexed skin inheritance/material precedence, serialized
@@ -11,15 +48,18 @@
   defects; separate opaque/masked P8 layers now preserve the correct semantics.
   Selected-material packing retains inactive original actors for quickload.
 - The original transform audit decoded 437 meshes (228 nonzero RotOrigin).
-  Four-map material/inactive-retention checks covered 10,354 authored actors;
-  the broader numbered-map material audit is in progress. Twenty ordinary host
+  The completed material audit covers all 80 numbered maps and 124,199 authored
+  actors: 10,482 non-null indexed skin slots, 10,292 selected actor overrides,
+  and pickup/restore retention checks on 78 maps with eligible inventory. No
+  selected mesh material was missing; procedural texture fallbacks remain.
+  Twenty ordinary host
   tests pass; the separately opted-in original-state test also passed, including
   paired-save recovery and retained picked-up mesh/material resources. Albedo and Persona
   image regressions remain exact.
 - CPU scenes submitted 64 Training and 280 Island mesh instances plus 25/19
   textured movers, with no missing mesh materials. This does not prove that
   every submitted object was individually visually inspected. Procedural
-  textures, animation/poses, actor lighting/shadows, sprites, skyboxes, complete
+  textures, live animation, actor lighting/shadows, sprites, skyboxes, complete
   campaign execution and Quest GPU/stereo/performance remain incomplete.
 - The revised APK builds offline. No headset/ADB access was attempted.
   See [ACTOR-VISUAL-TESTING.md](ACTOR-VISUAL-TESTING.md).

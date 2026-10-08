@@ -2,6 +2,7 @@
 
 #include "portable_unreal_runtime.h"
 #include "quest_actor_transform.h"
+#include "quest_mesh_animation.h"
 
 #include <array>
 #include <stdexcept>
@@ -15,6 +16,21 @@ struct ActorTriangleVertex {
     float u{}, v{};
 };
 
+// Snapshot values are authored defaults/instance properties, not a substitute
+// for PlayAnim/LoopAnim or state-machine events. Tween history is deliberately
+// absent until the portable runtime implements those native transitions.
+inline MeshAnimationState BuildSnapshotMeshAnimationState(const PortableActorSnapshot& actor) {
+    MeshAnimationState state;
+    state.main.sequence = actor.animation.sequence;
+    state.main.normalizedFrame = actor.animation.frame;
+    state.fatness = actor.fatness;
+    for (std::size_t i = 0u; i < state.blends.size(); ++i) {
+        state.blends[i].sequence = actor.animation.blends[i].sequence;
+        state.blends[i].normalizedFrame = actor.animation.blends[i].frame;
+    }
+    return state;
+}
+
 inline ActorTransform BuildSnapshotActorTransform(const PortableActorSnapshot& actor,
     const ActorVec3& origin, bool brush = false) {
     const ActorVec3 location{actor.x,actor.y,actor.z};
@@ -26,7 +42,7 @@ inline ActorTransform BuildSnapshotActorTransform(const PortableActorSnapshot& a
 }
 
 inline std::array<ActorTriangleVertex,3> BuildActorTriangle(const PortableLodMesh& mesh,
-    std::size_t first, const ActorTransform& transform) {
+    std::size_t first, const ActorTransform& transform, const MeshPose* pose = nullptr) {
     if (first % 3u != 0u || first+3u > mesh.triangles.size())
         throw std::runtime_error("Actor triangle cursor is outside the decoded mesh");
     const auto& a = mesh.triangles[first];
@@ -35,7 +51,21 @@ inline std::array<ActorTriangleVertex,3> BuildActorTriangle(const PortableLodMes
     if (a.material != b.material || a.material != c.material ||
         a.polyFlags != b.polyFlags || a.polyFlags != c.polyFlags)
         throw std::runtime_error("Actor triangle has mixed materials or polygon flags");
-    const ActorVec3 ab{b.x-a.x,b.y-a.y,b.z-a.z}, ac{c.x-a.x,c.y-a.y,c.z-a.z};
+    const auto positionAt = [&](std::size_t corner) -> ActorVec3 {
+        if (!pose) {
+            const auto& vertex = mesh.triangles[first+corner];
+            return {vertex.x,vertex.y,vertex.z};
+        }
+        if (!pose->drawable || !mesh.animation ||
+            mesh.animation->triangleSourceVertexIndices.size() != mesh.triangles.size())
+            throw std::runtime_error("Actor animation pose/topology is not drawable");
+        const auto index = mesh.animation->triangleSourceVertexIndices[first+corner];
+        if (index >= pose->objectPositions.size() || index >= pose->objectNormals.size())
+            throw std::runtime_error("Actor animation source index is outside the sampled pose");
+        return pose->objectPositions[index];
+    };
+    const auto pa = positionAt(0), pb = positionAt(1), pc = positionAt(2);
+    const ActorVec3 ab{pb.x-pa.x,pb.y-pa.y,pb.z-pa.z}, ac{pc.x-pa.x,pc.y-pa.y,pc.z-pa.z};
     const ActorVec3 face = NormalizeActorVector({ab.y*ac.z-ab.z*ac.y,
         ab.z*ac.x-ab.x*ac.z,ab.x*ac.y-ab.y*ac.x});
     std::array<ActorTriangleVertex,3> result;
@@ -43,11 +73,15 @@ inline std::array<ActorTriangleVertex,3> BuildActorTriangle(const PortableLodMes
     const std::size_t order[3]{0u,reversed ? 2u : 1u,reversed ? 1u : 2u};
     for (std::size_t corner = 0u; corner < 3u; ++corner) {
         const auto& source = mesh.triangles[first+order[corner]];
+        const auto position = positionAt(order[corner]);
+        const auto sourceNormal = pose ? pose->objectNormals[
+            mesh.animation->triangleSourceVertexIndices[first+order[corner]]] :
+            ActorVec3{source.nx,source.ny,source.nz};
         if (!std::isfinite(source.u) || !std::isfinite(source.v) ||
-            !IsFiniteActorVector({source.x,source.y,source.z}))
+            !IsFiniteActorVector(position))
             throw std::runtime_error("Actor vertex is non-finite");
-        const ActorVec3 normal = NormalizeActorVector({source.nx,source.ny,source.nz});
-        result[corner] = {transform.TransformPoint({source.x,source.y,source.z}),
+        const ActorVec3 normal = NormalizeActorVector(sourceNormal);
+        result[corner] = {transform.TransformPoint(position),
             transform.TransformNormal(normal.x == 0.0f && normal.y == 0.0f && normal.z == 0.0f ? face : normal),
             source.u,source.v};
         if (!IsFiniteActorVector(result[corner].position))

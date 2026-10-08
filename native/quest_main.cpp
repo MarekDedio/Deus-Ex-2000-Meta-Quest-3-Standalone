@@ -1176,6 +1176,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         QuestVr::ActorTransform actorTransform;
         std::uint32_t polyFlags{};
         std::uint32_t sourcePolyFlags{};
+        std::shared_ptr<const QuestVr::MeshPose> meshPose;
     };
 
     struct ActorGeometryBuild {
@@ -1189,6 +1190,8 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         std::size_t spriteInstances{};
         std::size_t cubePlaceholders{};
         std::size_t hiddenActors{};
+        std::size_t sampledActorPoses{}, animationOmissions{};
+        bool pendingMeshPose{};
         std::size_t frames{};
         std::size_t uploadedChunks{};
         double maximumSliceMilliseconds{};
@@ -1460,7 +1463,8 @@ class DeusExQuestApp final : public OVRFW::XrApp {
     void QueueActorMeshPart(
         const PortableLodMesh& mesh, const std::uint16_t material,
         const OVR::Vector4f& color, const QuestVr::ActorTransform& transform,
-        const std::uint32_t polyFlags) {
+        const std::uint32_t polyFlags,
+        std::shared_ptr<const QuestVr::MeshPose> meshPose = {}) {
         if (mesh.triangles.empty()) return;
         if (mesh.triangles.size() % 3u != 0u)
             throw std::runtime_error("actor mesh is not a triangle list");
@@ -1468,18 +1472,80 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         part.mesh = &mesh; part.color = color; part.textured = true;
         part.sequential = true; part.material = material;
         part.actorTransform = transform; part.polyFlags = polyFlags;
+        part.meshPose = std::move(meshPose);
         actorGeometryBuild_->parts.push_back(std::move(part));
     }
 
-    void PrepareNextActorGeometry() {
+    void ReapRetiredActorPose() {
+        if (!actorPoseFuture_.valid()) return;
+        // The sole outstanding worker can belong to the current build or to a
+        // cancelled one. Never consume a current result before its actor does.
+        if (actorGeometryBuild_ && actorGeometryBuild_->pendingMeshPose &&
+            actorPoseEpoch_.IsCurrent(actorPoseJobEpoch_) &&
+            actorPoseActorOrdinal_ == actorGeometryBuild_->nextActor) return;
+        if (actorPoseFuture_.wait_for(std::chrono::seconds(0)) != std::future_status::ready) return;
+        try {
+            actorPoseFuture_.get();
+            ALOG("DeusExQuest: discarded actor pose prepared for an abandoned map/save/geometry build");
+        } catch (const std::exception& error) {
+            ALOG("DeusExQuest: retired actor pose worker failed: %s",error.what());
+        }
+    }
+
+    bool PrepareActorMeshPose(
+        const std::shared_ptr<const PortableMeshAnimationData>& animation,
+        const QuestVr::MeshAnimationState& state,
+        std::shared_ptr<const QuestVr::MeshPose>& meshPose) {
         ActorGeometryBuild& build = *actorGeometryBuild_;
-        const std::size_t ordinal = build.nextActor++;
+        if (build.pendingMeshPose) {
+            if (!actorPoseFuture_.valid() || !actorPoseEpoch_.IsCurrent(actorPoseJobEpoch_) ||
+                actorPoseActorOrdinal_ != build.nextActor)
+                throw std::runtime_error("Actor pose worker no longer belongs to its geometry build");
+            if (actorPoseFuture_.wait_for(std::chrono::seconds(0)) != std::future_status::ready) return false;
+            build.pendingMeshPose = false;
+            try {
+                meshPose = actorPoseFuture_.get();
+            } catch (const std::exception& error) {
+                auto failed = std::make_shared<QuestVr::MeshPose>();
+                failed->error = error.what();
+                meshPose = std::move(failed);
+            }
+            return true;
+        }
+        ReapRetiredActorPose();
+        // A cancelled worker owns immutable asset data until it finishes. Keep
+        // its future alive rather than blocking in std::async's destructor or
+        // starting unbounded workers during repeated interaction/quickloads.
+        if (actorPoseFuture_.valid()) return false;
+        actorPoseJobEpoch_ = actorPoseEpoch_.Capture();
+        actorPoseActorOrdinal_ = build.nextActor;
+        try {
+            actorPoseFuture_ = std::async(std::launch::async,
+                [animation, state]() -> std::shared_ptr<const QuestVr::MeshPose> {
+                    // No app, portable runtime, NameString global storage or GL
+                    // access. Full animation arrays are shared, never copied.
+                    return std::make_shared<QuestVr::MeshPose>(QuestVr::PrepareMeshPose(*animation,state));
+                });
+            build.pendingMeshPose = true;
+            return false;
+        } catch (const std::exception& error) {
+            auto failed = std::make_shared<QuestVr::MeshPose>();
+            failed->error = std::string("Could not start actor pose worker: ")+error.what();
+            meshPose = std::move(failed);
+            return true;
+        }
+    }
+
+    // False means the same actor is still waiting for its one background pose;
+    // the caller must yield this frame without advancing the actor cursor.
+    bool PrepareNextActorGeometry() {
+        ActorGeometryBuild& build = *actorGeometryBuild_;
+        const std::size_t ordinal = build.nextActor;
         const auto& actor = actorSnapshots_[build.actorIndices[ordinal]];
         const OVR::Vector3f position = interactiveActors_[ordinal].localPosition;
-        if (!actor.meshPath.empty()) ++build.meshClasses[actor.meshClassPath];
-        if (actor.hidden || actor.drawType == 0u) { ++build.hiddenActors; return; }
+        if (actor.hidden || actor.drawType == 0u) { ++build.hiddenActors; return true; }
         if (!actor.mover && (actor.drawScale == 0.0f || actor.drawScaleX == 0.0f ||
-            actor.drawScaleY == 0.0f || actor.drawScaleZ == 0.0f)) return;
+            actor.drawScaleY == 0.0f || actor.drawScaleZ == 0.0f)) return true;
         const auto light = actor.unlit ? OVR::Vector3f(1.0f) :
             CalculateMapLighting(position,{0.0f,1.0f,0.0f});
         bool rendered = false;
@@ -1492,6 +1558,19 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                 if (found == cache.end()) found = cache.emplace(assetPath,brushActor ?
                     GetPortableRuntimeBrush(assetPath) : GetPortableRuntimeMesh(assetPath)).first;
                 const auto& mesh = found->second;
+                std::shared_ptr<const QuestVr::MeshPose> meshPose;
+                if (!brushActor && mesh.animation) {
+                    if (!PrepareActorMeshPose(mesh.animation,
+                        QuestVr::BuildSnapshotMeshAnimationState(actor),meshPose)) return false;
+                    if (!meshPose || !meshPose->drawable) {
+                        ++build.animationOmissions;
+                        ALOG("DeusExQuest: actor pose omitted %s sequence=%s frame=%.6f: %s",
+                            actor.objectPath.c_str(),actor.animation.sequence.c_str(),
+                            actor.animation.frame,meshPose ? meshPose->error.c_str() : "Worker returned no pose");
+                        return true; // An omitted/invalid pose must not turn into a cube.
+                    }
+                    ++build.sampledActorPoses;
+                }
                 const auto transform = QuestVr::BuildSnapshotActorTransform(actor,
                     {build.originX,build.originY,build.originZ},brushActor);
                 std::set<std::pair<std::uint16_t,std::uint32_t>> materials;
@@ -1513,7 +1592,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                     const auto gain = (flags & (0x00400000u|64u)) != 0u ? OVR::Vector3f(1.0f) : light;
                     QueueActorMeshPart(mesh,material,
                         {static_cast<float>(drawLayer)/255.0f,gain.x,gain.y,gain.z},
-                        transform,flags);
+                        transform,flags,meshPose);
                     // Store source flags separately: texture/style bits are shared
                     // across this material but do not identify its source faces.
                     build.parts.back().sourcePolyFlags = sourceFlags;
@@ -1521,6 +1600,13 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                 }
                 if (rendered) { if (brushActor) ++build.brushInstances; else ++build.meshInstances; }
             } catch (const std::exception& error) {
+                if (build.pendingMeshPose) {
+                    // Defensive recovery: an asset-preparation failure must not
+                    // advance past an actor while leaving its pending flag set.
+                    actorPoseEpoch_.Invalidate(actorPoseJobEpoch_,actorPoseFuture_.valid());
+                    build.pendingMeshPose = false;
+                    ReapRetiredActorPose();
+                }
                 ALOG("DeusExQuest: actor asset %s failed: %s",assetPath.c_str(),error.what());
             }
         }
@@ -1550,6 +1636,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                 OVR::Matrix4f::Translation(position)*OVR::Matrix4f::Scaling(scale));
             ++build.cubePlaceholders; ++build.cubeClasses[actor.classPath];
         }
+        return true;
     }
 
     void LogActorGeometryBuild() const {
@@ -1586,6 +1673,8 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         }
         ALOG("DeusExQuest: incremental actor geometry complete over %zu frames, %zu GPU chunks; worst slice %.2f ms",
              build.frames, build.uploadedChunks, build.maximumSliceMilliseconds);
+        ALOG("DeusExQuest: sampled %zu authored actor poses; %zu omitted poses; native animation clock/state events not implemented",
+             build.sampledActorPoses,build.animationOmissions);
     }
 
     void AppendActorGeometryPart(ActorGeometryPart& part, const std::size_t count) {
@@ -1607,7 +1696,8 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             for (std::size_t triangle = part.nextIndex; triangle < end; triangle += 3u) {
                 const auto& source = part.mesh->triangles[triangle];
                 if (source.material != part.material || source.polyFlags != part.sourcePolyFlags) continue;
-                for (const auto& vertex : QuestVr::BuildActorTriangle(*part.mesh,triangle,part.actorTransform)) {
+                for (const auto& vertex : QuestVr::BuildActorTriangle(*part.mesh,triangle,
+                    part.actorTransform,part.meshPose.get())) {
                     chunk.attribs.position.emplace_back(vertex.position.x,vertex.position.y,vertex.position.z);
                     chunk.attribs.normal.emplace_back(vertex.normal.x,vertex.normal.y,vertex.normal.z);
                     chunk.attribs.uv0.emplace_back(vertex.u,vertex.v);
@@ -1668,16 +1758,17 @@ class DeusExQuestApp final : public OVRFW::XrApp {
     }
 
     bool AdvanceActorGeometry() {
+        const auto started = std::chrono::steady_clock::now();
+        ReapRetiredActorPose();
         if (!actorGeometryBuild_) return actorGeometryComplete_;
         ActorGeometryBuild& build = *actorGeometryBuild_;
-        const auto started = std::chrono::steady_clock::now();
         const auto elapsed = [&] {
             return std::chrono::duration<double, std::milli>(
                 std::chrono::steady_clock::now() - started).count();
         };
         QuestVr::FrameWorkBudget budget(actorGeometryOperationsPerFrame_,
             actorGeometryChunkVertices_, actorGeometryMillisecondsPerFrame_);
-        const bool allPrepared = build.nextActor == build.actorIndices.size() && build.parts.empty();
+        const bool allPrepared = build.nextActor == build.actorIndices.size() && build.parts.empty() && !build.pendingMeshPose;
         const bool uploadMarker = build.markerChunk.indices.size() >= actorGeometryChunkVertices_ ||
             (allPrepared && !build.markerChunk.indices.empty());
         const bool uploadTextured = build.texturedChunk.indices.size() >= actorGeometryChunkVertices_ ||
@@ -1715,7 +1806,10 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                     if (chunk.indices.size() >= actorGeometryChunkVertices_) break;
                 } else if (build.nextActor < build.actorIndices.size()) {
                     if (!budget.CanStart(0u, elapsed())) break;
-                    PrepareNextActorGeometry();
+                    if (!PrepareNextActorGeometry()) break;
+                    const auto& actor = actorSnapshots_[build.actorIndices[build.nextActor]];
+                    if (!actor.meshPath.empty()) ++build.meshClasses[actor.meshClassPath];
+                    ++build.nextActor;
                     budget.Consume(0u);
                 } else {
                     break;
@@ -1728,7 +1822,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         ALOG("DeusExQuest: actor geometry slice %.2f ms actors=%zu/%zu ops=%zu scannedVertices=%zu chunks=%zu",
              milliseconds, build.nextActor, build.actorIndices.size(), budget.Operations(),
              budget.Vertices(), build.uploadedChunks);
-        if (build.nextActor == build.actorIndices.size() && build.parts.empty() &&
+        if (build.nextActor == build.actorIndices.size() && build.parts.empty() && !build.pendingMeshPose &&
             build.markerChunk.indices.empty() && build.texturedChunk.indices.empty()) {
             LogActorGeometryBuild();
             actorGeometryBuild_.reset();
@@ -1741,7 +1835,11 @@ class DeusExQuestApp final : public OVRFW::XrApp {
     void CancelActorGeometryBuild() {
         const auto started = std::chrono::steady_clock::now();
         const bool hadWork = static_cast<bool>(actorGeometryBuild_);
+        // Invalidate without destroying the single outstanding future. Its
+        // immutable-data-only worker may finish after this map/runtime is gone.
+        actorPoseEpoch_.Invalidate(actorPoseJobEpoch_,actorPoseFuture_.valid());
         actorGeometryBuild_.reset();
+        ReapRetiredActorPose();
         actorGeometryComplete_ = false;
         if (hadWork) {
             ALOG("DeusExQuest: cancelled pending actor geometry in %.2f ms",
@@ -4727,6 +4825,13 @@ class DeusExQuestApp final : public OVRFW::XrApp {
     std::deque<TexturedGeometryRenderer> texturedRenderers_;
     std::deque<BakedWorldGeometryRenderer> bakedWorldRenderers_;
     std::unique_ptr<ActorGeometryBuild> actorGeometryBuild_;
+    // App-owned, so cancelling/destroying ActorGeometryBuild never blocks on an
+    // unfinished std::async future. There is exactly one live pose job globally,
+    // including retired jobs; final app destruction joins it after XR shutdown.
+    std::future<std::shared_ptr<const QuestVr::MeshPose>> actorPoseFuture_;
+    QuestVr::AsyncResultEpoch actorPoseEpoch_;
+    std::uint64_t actorPoseJobEpoch_{};
+    std::size_t actorPoseActorOrdinal_{};
     bool actorGeometryComplete_{};
     std::vector<PortableActorSnapshot> actorSnapshots_;
     std::vector<MapLight> activeMapLights_;

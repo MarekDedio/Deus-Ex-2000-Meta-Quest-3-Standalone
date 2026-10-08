@@ -184,7 +184,8 @@ inline AuthoredLightingPreview BuildSyntheticLightingPreview(Scene& scene) {
 inline AuthoredLightingPreview BuildAuthoredLightingPreview(Scene& scene,
     const std::filesystem::path& gameRoot, const std::string& map,
     const std::filesystem::path& meshPath = {}, bool baked = false,
-    bool includeActors = false, bool applyLighting = true) {
+    bool includeActors = false, bool applyLighting = true,
+    const ActorPosePreviewOptions& poseOptions = {}) {
     AuthoredLightingPreview metadata;
     metadata.enabled = applyLighting;
     // Same package set as Quest startup, so inherited Light/Spotlight defaults
@@ -251,7 +252,7 @@ inline AuthoredLightingPreview BuildAuthoredLightingPreview(Scene& scene,
         metadata.baked = true;
     }
     if (includeActors) metadata.actors = AppendActorScenePreview(scene,actors,
-        {verified.x,verified.y,verified.z},lights,applyLighting);
+        {verified.x,verified.y,verified.z},lights,applyLighting,poseOptions);
     return metadata;
 }
 

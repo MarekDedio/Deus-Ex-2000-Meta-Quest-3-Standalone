@@ -229,3 +229,23 @@ if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
     target_link_options(quest_actor_geometry_test PRIVATE -static -static-libgcc -static-libstdc++)
 endif()
 add_test(NAME quest_actor_geometry COMMAND quest_actor_geometry_test)
+
+# Serialized animation differential uses the actual pinned Coords/matrix math.
+add_executable(quest_mesh_animation_test quest_mesh_animation_test.cpp
+    "${SURREAL_ENGINE_ROOT}/Math/mat.cpp")
+target_compile_features(quest_mesh_animation_test PRIVATE cxx_std_20)
+target_link_libraries(quest_mesh_animation_test PRIVATE quest_portable_host)
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+    target_compile_options(quest_mesh_animation_test PRIVATE -Wall -Wextra -Werror)
+    target_link_options(quest_mesh_animation_test PRIVATE -static -static-libgcc -static-libstdc++)
+endif()
+add_test(NAME quest_mesh_animation COMMAND quest_mesh_animation_test)
+
+add_executable(quest_actor_animation_snapshot_test quest_actor_animation_snapshot_test.cpp)
+target_compile_features(quest_actor_animation_snapshot_test PRIVATE cxx_std_20)
+target_link_libraries(quest_actor_animation_snapshot_test PRIVATE quest_portable_host)
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+    target_compile_options(quest_actor_animation_snapshot_test PRIVATE -Wall -Wextra -Werror)
+    target_link_options(quest_actor_animation_snapshot_test PRIVATE -static -static-libgcc -static-libstdc++)
+endif()
+add_test(NAME quest_actor_animation_snapshot COMMAND quest_actor_animation_snapshot_test)

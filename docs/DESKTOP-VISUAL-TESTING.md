@@ -24,7 +24,9 @@ GPU precision, display gamma, stereo and gameplay are still unverified. See
 `-Actors` / `--actors` additionally loads original mesh actors and textured
 movers, with shared Quest CPU placement/material selection. `-IsolatedActor`
 / `--actor-isolate` gives an automatically framed original-object close-up.
-These are static first-frame previews, not live animation or campaign play.
+These sample inherited authored mesh poses, not a runtime animation clock or
+campaign play. Explicit isolated sequence/frame overrides are diagnostic
+fixtures; JSON records separate them from authored state.
 See [ACTOR-VISUAL-TESTING.md](ACTOR-VISUAL-TESTING.md) for commands and omissions.
 
 A separate `--persona-preview` mode runs the same CPU artwork compositor used

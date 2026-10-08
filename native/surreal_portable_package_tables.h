@@ -7,6 +7,7 @@
 
 #include <string>
 #include <vector>
+#include "quest_mesh_animation.h"
 
 struct PortablePackageTables {
     std::string sourcePath;
@@ -159,6 +160,7 @@ struct PortableLodMesh {
     float originY{};
     float originZ{};
     std::int32_t rotationOriginPitch{}, rotationOriginYaw{}, rotationOriginRoll{};
+    std::shared_ptr<const PortableMeshAnimationData> animation;
 };
 
 PortablePackageTables LoadPortablePackageTables(const std::string& path);

@@ -33,6 +33,7 @@ struct Options {
     std::filesystem::path gameRoot, cacheRoot, mesh, materials, output, report, baseline;
     std::string map;
     std::string isolatedActor;
+    ActorPosePreviewOptions posePreview;
     Camera camera;
     std::uint32_t width{1280}, height{720};
     double maxMeanError{0.0};
@@ -152,6 +153,9 @@ void Help() {
         "  --baked-lighting          Original static BSP lightmaps/shadow masks and zone ambient\n"
         "  --actors                  Original actor meshes, skin overrides and mover brushes\n"
         "  --actor-isolate PATH      Close-up of one original actor, without world BSP\n"
+        "  --actor-animation-sequence NAME  Explicit isolated pose fixture (not an idle heuristic)\n"
+        "  --actor-animation-frame FRACTION Normalized isolated fixture frame in [0,1)\n"
+        "  --actor-fatness BYTE      Isolated fixture fatness, neutral 128\n"
         "                                    Requires original game/map; self-test uses fixture lights\n"
         "  --inspect-textures PACKAGE FILTER  List matching export/class/properties for diagnosis\n"
         "  --persona-preview --game-root PATH Original Persona artwork, fonts and fixture text\n"
@@ -160,7 +164,7 @@ void Help() {
         "  --persona-page PAGE                Inventory, Health, GoalsNotes or Logs\n"
         "Camera uses Quest-cache meters; default (0,1.65,0) looks -Z. Positive yaw turns right.\n"
         "Default captures show world BSP albedo. --baked-lighting includes static lightmaps.\n"
-        "--actors includes static first-frame assets, not animation or actor shadowing.\n"
+        "--actors samples authored animation poses; no runtime animation clock or actor shadowing.\n"
         "OpenXR, live UI, campaign scripts, and Quest GPU performance are not verified.\n";
 }
 Options Parse(int argc, char** argv) {
@@ -176,6 +180,19 @@ Options Parse(int argc, char** argv) {
         else if (argument == "--baked-lighting") { options.authoredLighting = true; options.bakedLighting = true; }
         else if (argument == "--actors") options.actors = true;
         else if (argument == "--actor-isolate") { options.actors = true; options.isolatedActor = next(); }
+        else if (argument == "--actor-animation-sequence") options.posePreview.sequence = next();
+        else if (argument == "--actor-animation-frame") {
+            const auto frame = Float(next());
+            if (frame < 0.0f || frame >= 1.0f) throw std::runtime_error("Pose fixture frame must be in [0,1)");
+            options.posePreview.frame = frame;
+        }
+        else if (argument == "--actor-fatness") {
+            const auto value = next();
+            std::size_t consumed{};
+            const auto number = std::stoul(value,&consumed);
+            if (consumed != value.size() || number > 255u) throw std::runtime_error("Fatness must be an integer byte 0..255");
+            options.posePreview.fatness = static_cast<std::uint8_t>(number);
+        }
         else if (argument == "--persona-preview") options.personaPreview = true;
         else if (argument == "--persona-icon") options.personaIcons.push_back(next());
         else if (argument == "--persona-page") {
@@ -223,6 +240,9 @@ Options Parse(int argc, char** argv) {
     if (options.maxMeanError < 0.0 || options.maxMeanError > 1.0 ||
         (options.minimumCoverage && (*options.minimumCoverage < 0.0 || *options.minimumCoverage > 1.0)))
         throw std::runtime_error("Image error and coverage fractions must be 0..1");
+    if ((options.posePreview.sequence || options.posePreview.frame || options.posePreview.fatness) && options.isolatedActor.empty())
+        throw std::runtime_error("Explicit pose fixtures require --actor-isolate PATH");
+    options.posePreview.actorPath = options.isolatedActor;
     const bool hasCache = !options.mesh.empty() || !options.materials.empty();
     const bool hasGame = !options.gameRoot.empty();
     if (options.personaPreview) {
@@ -443,8 +463,8 @@ void Report(const Options& options, const Scene& scene, const RenderResult& resu
         << ",\n  \"campaignPlayabilityVerified\": false"
         << ",\n  \"isolatedActor\": " << Quote(options.isolatedActor)
         << ",\n  \"scope\": " << Quote(!options.isolatedActor.empty() ?
-            "Original actor close-up without world BSP; automatic bounds framing; same shared CPU transforms and material selection as Quest, static first frame, not live animation/lighting or Quest GPU evidence" : lighting.actors.enabled ?
-            "software original static actor meshes/skin overrides and mover brushes with shared Quest CPU transforms; optional BSP lightmaps; sprites, animation, actor shadowing, environment mapping, UI, OpenXR and Quest GPU unverified" : lighting.baked ?
+            "Original actor close-up without world BSP; automatic bounds framing; shared Quest CPU animation pose sampling, transforms and material selection; explicit overrides are fixtures, not runtime animation or Quest GPU evidence" : lighting.actors.enabled ?
+            "software original actor meshes/authored pose sampling/skin overrides and mover brushes with shared Quest CPU paths; optional BSP lightmaps; native animation clock, sprites, actor shadowing, environment mapping, UI, OpenXR and Quest GPU unverified" : lighting.baked ?
             "software BSP/material textures with original static light lists, baked shadow masks, zone ambient and Unlit; dynamic lighting, actors, UI, OpenXR, stereo and Quest performance not verified" : lighting.enabled ?
             "software world BSP/material textures with shared Quest direct vertex lighting approximation; no UE1 lightmaps/BSP shadow occlusion, actor meshes, UI, OpenXR, stereo or Quest performance" :
             "software world BSP/material albedo; no actor meshes, map lighting, UI, OpenXR, stereo or Quest performance")
@@ -537,7 +557,9 @@ void Report(const Options& options, const Scene& scene, const RenderResult& resu
         << ", \"maskedTextureVariants\": " << actors.maskedTextureVariants
         << ", \"vertices\": " << actors.vertices << ", \"environmentMappedTrianglesUnverified\": " << actors.environmentMappedTriangles
         << ", \"spriteActorsOmitted\": " << actors.spriteActorsOmitted
-        << ", \"cubePlaceholdersRendered\": 0, \"animationVerified\": false, \"actorShadowingVerified\": false"
+        << ", \"sampledPoses\": " << actors.sampledPoses << ", \"poseOmissions\": " << actors.poseOmissions
+        << ", \"cubePlaceholdersRendered\": 0, \"authoredPoseSampling\": " << (actors.enabled ? "true" : "false")
+        << ", \"nativeAnimationClockImplemented\": false, \"animationVerified\": false, \"actorShadowingVerified\": false"
         << ", \"texturePaths\": [";
     for (std::size_t i = 0u; i < actors.texturePaths.size(); ++i) {
         if (i) file << ", ";
@@ -555,7 +577,29 @@ void Report(const Options& options, const Scene& scene, const RenderResult& resu
             << ", \"triangles\": " << actor.triangles << ", \"overriddenMaterials\": " << actor.overriddenMaterials
             << ", \"missingMaterials\": " << actor.missingMaterials
             << ", \"brush\": " << (actor.brush ? "true" : "false")
-            << ", \"hidden\": " << (actor.hidden ? "true" : "false") << '}';
+            << ", \"hidden\": " << (actor.hidden ? "true" : "false")
+            << ", \"poseSampled\": " << (actor.poseSampled ? "true" : "false")
+            << ", \"poseFixture\": " << (actor.poseFixture ? "true" : "false")
+            << ", \"animationSource\": " << Quote(actor.animationSource)
+            << ", \"requestedSequence\": " << Quote(actor.requestedSequence)
+            << ", \"resolvedSequence\": " << Quote(actor.resolvedSequence)
+            << ", \"sequenceFallback\": " << (actor.sequenceFallback ? "true" : "false")
+            << ", \"selectedOriginalSpanInvalid\": " << (actor.selectedOriginalSpanInvalid ? "true" : "false")
+            << ", \"animationFrame\": " << actor.animationFrame << ", \"fatness\": " << unsigned(actor.fatness)
+            << ", \"sampledFrames\": " << actor.sampledFrames
+            << ", \"normalTriangleSamples\": " << actor.normalTriangleSamples
+            << ", \"retainedAnimationBytes\": " << actor.animationBytes
+            << ", \"availableSequences\": [";
+        for (std::size_t s = 0u; s < actor.availableSequences.size(); ++s) {
+            if (s) file << ", ";
+            file << Quote(actor.availableSequences[s]);
+        }
+        file << "], \"invalidOriginalSpanSequences\": [";
+        for (std::size_t s = 0u; s < actor.invalidOriginalSpanSequences.size(); ++s) {
+            if (s) file << ", ";
+            file << Quote(actor.invalidOriginalSpanSequences[s]);
+        }
+        file << "]}";
     }
     file << "]}"
         << ",\n  \"map\": " << Quote(options.map)
@@ -737,7 +781,7 @@ int main(int argc, char** argv) {
         AuthoredLightingPreview lighting;
         if (options.authoredLighting || options.actors) lighting = options.selfTest ? BuildSyntheticLightingPreview(scene) :
             BuildAuthoredLightingPreview(scene,options.gameRoot,options.map,options.mesh,options.bakedLighting,
-                options.actors,options.authoredLighting);
+                options.actors,options.authoredLighting,options.posePreview);
         if (!options.isolatedActor.empty()) {
             const auto& records = lighting.actors.records;
             const auto actor = std::find_if(records.begin(),records.end(),[&](const auto& record) {

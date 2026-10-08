@@ -5,6 +5,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <array>
 #include <string>
 
 struct PortableRuntimeSummary {
@@ -183,6 +184,37 @@ struct PortableVmValue {
     std::string string;
 };
 
+// These are authored/current property snapshots, not a guessed idle state or
+// a replacement for UnrealScript startup, animation notifies, or state ticks.
+// A negative frame requires runtime tween history that original map properties
+// do not provide; callers must diagnose that state instead of inventing it.
+struct PortableActorBlendAnimationSnapshot {
+    std::string sequence;
+    float frame{};
+    float rate{};
+    float last{};
+    float minRate{};
+    float tweenRate{};
+    float oldRate{};
+    // Engine.Actor has no serialized blend-loop flag. Keep this unavailable
+    // state false; a future actual native animation command can supply it.
+    bool loop{};
+};
+
+struct PortableActorAnimationSnapshot {
+    std::string sequence;
+    float frame{};
+    float rate{};
+    float last{};
+    float minRate{};
+    float tweenRate{};
+    float oldRate{};
+    bool loop{};
+    bool notify{};
+    bool finished{};
+    std::array<PortableActorBlendAnimationSnapshot, 4u> blends;
+};
+
 struct PortableActorSnapshot {
     std::string objectPath;
     std::string classPath;
@@ -216,6 +248,13 @@ struct PortableActorSnapshot {
     std::int32_t roll{};
     std::string meshPath;
     std::string meshClassPath;
+    PortableActorAnimationSnapshot animation;
+    bool animByOwner{};
+    std::string ownerPath;
+    std::string animationSourcePath;
+    // Actor.Fatness applies to the rendered actor even when its animation
+    // properties come from its owner. The UE1 neutral default is 128.
+    std::uint8_t fatness{128u};
     std::string brushPath;
     std::string texturePath;
     QuestVr::ActorTextureOverrides materialOverrides;

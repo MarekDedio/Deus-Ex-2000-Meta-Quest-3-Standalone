@@ -37,6 +37,11 @@ public:
     std::unique_ptr<PortableClassDescriptor> classDescriptor;
     std::vector<PortableTaggedProperty> instanceProperties;
     std::unordered_map<std::string, std::string> objectPropertyPaths;
+    // Name indices are package-local. Decode them while their actual package
+    // is available, rather than accidentally using a map's name table for an
+    // inherited Engine/DeusEx class default. Array slots inherit separately.
+    std::unordered_map<std::string,
+        std::unordered_map<std::uint32_t, std::string>> namePropertyValues;
     QuestVr::ActorTextureOverrides textureOverrides;
     std::string sourcePath;
     std::size_t exportIndex{};
@@ -130,6 +135,90 @@ bool IsDerivedFromPath(RuntimeObject* cls, const std::string& path) {
         if (current->reflection.objectPath == path) return true;
     }
     return false;
+}
+
+void CacheRuntimeNameProperties(RuntimeObject* object,
+    const PortablePackageTables& package,
+    const std::vector<PortableTaggedProperty>& properties) {
+    for (const auto& property : properties) {
+        if (property.type == 6u) {
+            object->namePropertyValues[LowerAscii(property.name.ToString())][property.arrayIndex] =
+                DecodePortableNameProperty(package, property);
+        }
+    }
+}
+
+const PortableTaggedProperty* FindInheritedRuntimeProperty(
+    RuntimeObject* object, const char* name, const std::uint32_t arrayIndex = 0u) {
+    if (object == nullptr) return nullptr;
+    for (auto property = object->instanceProperties.rbegin();
+         property != object->instanceProperties.rend(); ++property) {
+        if (property->name == name && property->arrayIndex == arrayIndex) return &*property;
+    }
+    for (RuntimeObject* cls = object->cls; cls != nullptr; cls = cls->base) {
+        if (!cls->classDescriptor) continue;
+        for (auto property = cls->classDescriptor->defaults.rbegin();
+             property != cls->classDescriptor->defaults.rend(); ++property) {
+            if (property->name == name && property->arrayIndex == arrayIndex) return &*property;
+        }
+    }
+    return nullptr;
+}
+
+std::string ReadInheritedRuntimeName(
+    RuntimeObject* object, const char* name, const std::uint32_t arrayIndex = 0u) {
+    const auto lookup = [&](RuntimeObject* source) -> const std::string* {
+        const auto named = source->namePropertyValues.find(LowerAscii(name));
+        if (named == source->namePropertyValues.end()) return nullptr;
+        const auto slot = named->second.find(arrayIndex);
+        return slot == named->second.end() ? nullptr : &slot->second;
+    };
+    if (const auto* value = lookup(object)) return *value;
+    for (RuntimeObject* cls = object->cls; cls != nullptr; cls = cls->base) {
+        if (const auto* value = lookup(cls)) return *value;
+    }
+    return {};
+}
+
+float ReadInheritedRuntimeFloat(
+    RuntimeObject* object, const char* name, const std::uint32_t arrayIndex = 0u) {
+    const auto* property = FindInheritedRuntimeProperty(object, name, arrayIndex);
+    float value{};
+    if (property != nullptr && property->type == 4u && property->value.size() == 4u)
+        std::memcpy(&value, property->value.data(), sizeof(value));
+    // Retain non-finite authored values too. The bounded mesh sampler owns
+    // validation and its explicit diagnostic; replacing them here hides bugs.
+    return value;
+}
+
+bool ReadInheritedRuntimeBool(RuntimeObject* object, const char* name) {
+    const auto* property = FindInheritedRuntimeProperty(object, name);
+    return property != nullptr && property->type == 3u && property->boolValue;
+}
+
+PortableActorAnimationSnapshot ReadRuntimeAnimationSnapshot(RuntimeObject* object) {
+    PortableActorAnimationSnapshot animation;
+    animation.sequence = ReadInheritedRuntimeName(object, "AnimSequence");
+    animation.frame = ReadInheritedRuntimeFloat(object, "AnimFrame");
+    animation.rate = ReadInheritedRuntimeFloat(object, "AnimRate");
+    animation.last = ReadInheritedRuntimeFloat(object, "AnimLast");
+    animation.minRate = ReadInheritedRuntimeFloat(object, "AnimMinRate");
+    animation.tweenRate = ReadInheritedRuntimeFloat(object, "TweenRate");
+    animation.oldRate = ReadInheritedRuntimeFloat(object, "OldAnimRate");
+    animation.loop = ReadInheritedRuntimeBool(object, "bAnimLoop");
+    animation.notify = ReadInheritedRuntimeBool(object, "bAnimNotify");
+    animation.finished = ReadInheritedRuntimeBool(object, "bAnimFinished");
+    for (std::uint32_t slot = 0u; slot < animation.blends.size(); ++slot) {
+        auto& blend = animation.blends[slot];
+        blend.sequence = ReadInheritedRuntimeName(object, "BlendAnimSequence", slot);
+        blend.frame = ReadInheritedRuntimeFloat(object, "BlendAnimFrame", slot);
+        blend.rate = ReadInheritedRuntimeFloat(object, "BlendAnimRate", slot);
+        blend.last = ReadInheritedRuntimeFloat(object, "BlendAnimLast", slot);
+        blend.minRate = ReadInheritedRuntimeFloat(object, "BlendAnimMinRate", slot);
+        blend.tweenRate = ReadInheritedRuntimeFloat(object, "BlendTweenRate", slot);
+        blend.oldRate = ReadInheritedRuntimeFloat(object, "OldBlendAnimRate", slot);
+    }
+    return animation;
 }
 
 void BuildPersistentDialogueIndex() {
@@ -831,6 +920,8 @@ PortableRuntimeSummary InitializePortableRuntime(
                     LoadPortableClassDescriptor(*slice.package, localIndex));
                 ++summary.serializedClassDefaults;
                 summary.classDefaultProperties += object->classDescriptor->defaults.size();
+                CacheRuntimeNameProperties(object, *slice.package,
+                    object->classDescriptor->defaults);
                 for (const PortableTaggedProperty& property :
                      object->classDescriptor->defaults) {
                     if ((property.type != 5u && property.type != 8u) ||
@@ -842,8 +933,8 @@ PortableRuntimeSummary InitializePortableRuntime(
                         : GetPortableObjectPath(*slice.package, reference);
                     if (property.type == 5u) QuestVr::SetActorTextureOverride(
                         object->textureOverrides, property.name.ToString(), property.arrayIndex, path);
-                    if (reference == 0) continue;
                     object->objectPropertyPaths[property.name.ToString()] = path;
+                    if (reference == 0) continue;
                     if (RuntimeObject* target = resolve(slice, reference)) {
                         object->references.push_back(target);
                     }
@@ -1280,6 +1371,7 @@ PortableMapRuntimeSummary LoadPortableRuntimeMap(
             const PortablePropertyStream properties =
                 LoadPortableExportProperties(package, localIndex);
             object->instanceProperties = properties.properties;
+            CacheRuntimeNameProperties(object, package, object->instanceProperties);
             for (const PortableTaggedProperty& property : object->instanceProperties) {
                 if (property.name == "Tag" && property.type == 6u) {
                     const std::string tag = LowerAscii(
@@ -1296,8 +1388,8 @@ PortableMapRuntimeSummary LoadPortableRuntimeMap(
                     : GetPortableObjectPath(package, reference);
                 if (property.type == 5u) QuestVr::SetActorTextureOverride(
                     object->textureOverrides, property.name.ToString(), property.arrayIndex, path);
-                if (reference == 0) continue;
                 object->objectPropertyPaths[property.name.ToString()] = path;
+                if (reference == 0) continue;
                 if (RuntimeObject* target = resolve(reference)) {
                     object->references.push_back(target);
                 }
@@ -1374,16 +1466,7 @@ std::vector<PortableActorSnapshot> GetPortableRuntimeMapActors(bool includeInact
         };
         const auto inheritedProperty = [&](const std::string& name)
             -> const PortableTaggedProperty* {
-            for (const PortableTaggedProperty& property : object->instanceProperties) {
-                if (property.name.ToString() == name) return &property;
-            }
-            for (RuntimeObject* cls = object->cls; cls != nullptr; cls = cls->base) {
-                if (!cls->classDescriptor) continue;
-                for (const PortableTaggedProperty& property : cls->classDescriptor->defaults) {
-                    if (property.name.ToString() == name) return &property;
-                }
-            }
-            return nullptr;
+            return FindInheritedRuntimeProperty(object, name.c_str());
         };
         if (const PortableTaggedProperty* drawScale = inheritedProperty("DrawScale")) {
             if (drawScale->value.size() == 4u) {
@@ -1426,6 +1509,20 @@ std::vector<PortableActorSnapshot> GetPortableRuntimeMapActors(bool includeInact
         if (mesh != persistentQualifiedObjects.end()) {
             snapshot.meshClassPath = mesh->second->reflection.metaClass;
         }
+        snapshot.animByOwner = ReadInheritedRuntimeBool(object, "bAnimByOwner");
+        snapshot.ownerPath = resolveInheritedObjectProperty("Owner");
+        RuntimeObject* animationSource = object;
+        if (snapshot.animByOwner && !snapshot.ownerPath.empty()) {
+            const auto owner = persistentQualifiedObjects.find(snapshot.ownerPath);
+            // Pinned VisibleMesh chooses the immediate owner only, not the
+            // owner's own animation source. A destroyed/missing owner cannot
+            // provide a live animation snapshot.
+            if (owner != persistentQualifiedObjects.end() && owner->second != nullptr &&
+                owner->second->active && IsDerivedFromPath(owner->second->cls, "Engine.Actor"))
+                animationSource = owner->second;
+        }
+        snapshot.animationSourcePath = animationSource->reflection.objectPath;
+        snapshot.animation = ReadRuntimeAnimationSnapshot(animationSource);
         snapshot.materialOverrides = object->textureOverrides;
         for (RuntimeObject* cls = object->cls; cls != nullptr; cls = cls->base)
             QuestVr::InheritActorTextureOverrides(snapshot.materialOverrides, cls->textureOverrides);
@@ -1439,6 +1536,7 @@ std::vector<PortableActorSnapshot> GetPortableRuntimeMapActors(bool includeInact
                 : fallback;
         };
         snapshot.soundRadius = readInheritedByte("SoundRadius", snapshot.soundRadius);
+        snapshot.fatness = readInheritedByte("Fatness", snapshot.fatness);
         snapshot.drawType = readInheritedByte("DrawType", snapshot.drawType);
         snapshot.style = readInheritedByte("Style", snapshot.style);
         if (const PortableTaggedProperty* hidden = inheritedProperty("bHidden")) {

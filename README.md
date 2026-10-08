@@ -10,7 +10,10 @@ The Android ARM64/OpenXR app has been exercised on Quest 3 with textured
 training geometry, VR locomotion/interaction, UI, audio and save/load features.
 The latest offline work adds original static BSP shadow lightmaps and fixes
 actor skin selection, placement, masking and mover textures, with repeatable
-software close-ups. These latest GPU changes still require headset validation.
+software close-ups. Original vertex-animation data now drives shared initial
+pose sampling, including authored corpse frames; native animation ticking and
+scripted pose selection are still unfinished. These latest GPU changes still
+require headset validation.
 The full campaign is not yet verified playable: animation, complete gameplay
 scripting, visual fidelity and device performance remain in development.
 See [current evidence and limitations](docs/STATUS.md).

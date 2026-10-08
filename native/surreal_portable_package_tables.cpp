@@ -1265,17 +1265,27 @@ PortableLodMesh LoadPortableLodMesh(
         return value;
     };
 
+    const QuestVr::MeshAnimationLimits animationLimits;
+    auto animation = std::make_shared<PortableMeshAnimationData>();
+    std::uint64_t retainedBytes = sizeof(PortableMeshAnimationData);
+    const auto retain = [&](const std::uint64_t amount) {
+        if (amount > animationLimits.maxRetainedBytes ||
+            retainedBytes > animationLimits.maxRetainedBytes-amount)
+            throw std::runtime_error("UE1 mesh animation retained-data budget exceeded");
+        retainedBytes += amount;
+    };
     const std::uint32_t verticesEnd = reader.ReadUInt32();
     const std::size_t vertexCount = count("vertex", 8u);
     struct Vertex { float x, y, z; };
-    std::vector<Vertex> vertices;
-    vertices.reserve(vertexCount);
+    retain(static_cast<std::uint64_t>(vertexCount)*sizeof(PortablePackedMeshVertex));
+    animation->frameVerticesPacked.reserve(vertexCount);
+    const auto& vertices = animation->frameVerticesPacked;
     for (std::size_t index = 0; index < vertexCount; ++index) {
         const std::int16_t x = static_cast<std::int16_t>(reader.ReadUInt16());
         const std::int16_t y = static_cast<std::int16_t>(reader.ReadUInt16());
         const std::int16_t z = static_cast<std::int16_t>(reader.ReadUInt16());
         reader.ReadUInt16();
-        vertices.push_back({static_cast<float>(x), static_cast<float>(y), static_cast<float>(z)});
+        animation->frameVerticesPacked.push_back({x, y, z});
     }
     lazyArrayEnd(verticesEnd, "vertex");
 
@@ -1302,19 +1312,45 @@ PortableLodMesh LoadPortableLodMesh(
     }
     lazyArrayEnd(trianglesEnd, "triangle");
     const std::size_t animationSequences = count("animation sequence");
+    if (animationSequences > animationLimits.maxSequences)
+        throw std::runtime_error("UE1 mesh animation sequence budget exceeded");
+    retain(static_cast<std::uint64_t>(animationSequences)*sizeof(PortableMeshAnimationSequence));
+    animation->sequences.reserve(animationSequences);
+    std::size_t totalNotifies = 0u;
     for (std::size_t index = 0; index < animationSequences; ++index) {
         const std::int32_t name = reader.ReadIndex();
         const std::int32_t group = reader.ReadIndex();
         ValidateNameIndex(name, package.names.size());
         ValidateNameIndex(group, package.names.size());
-        reader.Skip(8);
+        PortableMeshAnimationSequence sequence;
+        sequence.name = package.names[static_cast<std::size_t>(name)].Name.ToString();
+        sequence.group = package.names[static_cast<std::size_t>(group)].Name.ToString();
+        retain(sequence.name.capacity()+sequence.group.capacity()+2u);
+        sequence.startFrame = reader.ReadInt32();
+        sequence.numFrames = reader.ReadInt32();
         const std::size_t notifications = count("animation notification");
+        if (notifications > animationLimits.maxNotifies-totalNotifies)
+            throw std::runtime_error("UE1 mesh animation notification budget exceeded");
+        totalNotifies += notifications;
+        retain(static_cast<std::uint64_t>(notifications)*sizeof(PortableMeshAnimationNotify));
+        sequence.notifies.reserve(notifications);
         for (std::size_t notify = 0; notify < notifications; ++notify) {
-            reader.ReadFloat();
+            PortableMeshAnimationNotify notification;
+            notification.time = reader.ReadFloat();
+            if (!std::isfinite(notification.time))
+                throw std::runtime_error("UE1 mesh animation notification time is non-finite");
             const std::int32_t function = reader.ReadIndex();
             ValidateNameIndex(function, package.names.size());
+            notification.function = package.names[static_cast<std::size_t>(function)].Name.ToString();
+            retain(notification.function.capacity()+1u);
+            sequence.notifies.push_back(std::move(notification));
         }
-        reader.ReadFloat();
+        sequence.rate = reader.ReadFloat();
+        if (!std::isfinite(sequence.rate))
+            throw std::runtime_error("UE1 mesh animation sequence rate is non-finite");
+        std::stable_sort(sequence.notifies.begin(), sequence.notifies.end(),
+            [](const auto& a, const auto& b) { return a.time < b.time; });
+        animation->sequences.push_back(std::move(sequence));
     }
     const std::uint32_t connectsEnd = reader.ReadUInt32();
     reader.Skip(count("vertex connect", 8u) * 8u);
@@ -1352,17 +1388,30 @@ PortableLodMesh LoadPortableLodMesh(
         !QuestVr::IsFiniteActorVector({result.originX, result.originY, result.originZ})) {
         throw std::runtime_error("UE1 mesh animation dimensions or origin are invalid");
     }
+    animation->frameVertices = result.frameVertices;
+    animation->animationFrames = result.animationFrames;
+    animation->scale = {result.scaleX, result.scaleY, result.scaleZ};
+    animation->origin = {result.originX, result.originY, result.originZ};
+    animation->rotationOriginPitch = result.rotationOriginPitch;
+    animation->rotationOriginYaw = result.rotationOriginYaw;
+    animation->rotationOriginRoll = result.rotationOriginRoll;
+    animation->lodMesh = metaClass != "Mesh";
+    for (auto& sequence : animation->sequences)
+        sequence.invalidOriginalSpan = !QuestVr::HasUsableMeshAnimationSpan(*animation,sequence);
+    QuestVr::ValidateMeshAnimationData(*animation, animationLimits);
     const QuestVr::ActorMatrix3 meshToObject = QuestVr::UnrealActorRotation(
         result.rotationOriginPitch, result.rotationOriginYaw, result.rotationOriginRoll) *
         QuestVr::ActorScaleMatrix({result.scaleX, result.scaleY, result.scaleZ});
     const QuestVr::ActorMatrix3 meshNormalToObject = meshToObject.NormalMatrix();
     // UMesh/ULodMesh smooth unit face normals by serialized vertex identity,
     // not by coincident positions (UV seams need not share a vertex).
-    std::vector<QuestVr::ActorVec3> normals(vertices.size());
+    std::vector<QuestVr::ActorVec3> normals(result.frameVertices);
     const auto addFaceNormal = [&](const std::size_t a, const std::size_t b, const std::size_t c) {
         if (a >= result.frameVertices || b >= result.frameVertices || c >= result.frameVertices)
             throw std::runtime_error("UE1 mesh first-frame normal vertex is out of bounds");
-        const Vertex& v0 = vertices[a]; const Vertex& v1 = vertices[b]; const Vertex& v2 = vertices[c];
+        const Vertex v0{static_cast<float>(vertices[a].x), static_cast<float>(vertices[a].y), static_cast<float>(vertices[a].z)};
+        const Vertex v1{static_cast<float>(vertices[b].x), static_cast<float>(vertices[b].y), static_cast<float>(vertices[b].z)};
+        const Vertex v2{static_cast<float>(vertices[c].x), static_cast<float>(vertices[c].y), static_cast<float>(vertices[c].z)};
         const QuestVr::ActorVec3 u{v1.x-v0.x, v1.y-v0.y, v1.z-v0.z};
         const QuestVr::ActorVec3 v{v2.x-v0.x, v2.y-v0.y, v2.z-v0.z};
         const auto normal = QuestVr::NormalizeActorVector(
@@ -1375,7 +1424,7 @@ PortableLodMesh LoadPortableLodMesh(
                                 const std::uint16_t material, const std::uint32_t flags) {
         if (index >= result.frameVertices || index >= vertices.size())
             throw std::runtime_error("UE1 mesh first-frame vertex is out of bounds");
-        const Vertex& vertex = vertices[index];
+        const auto& vertex = vertices[index];
         const auto position = meshToObject.Transform(
             {vertex.x-result.originX, vertex.y-result.originY, vertex.z-result.originZ});
         if (!QuestVr::IsFiniteActorVector(position))
@@ -1388,8 +1437,12 @@ PortableLodMesh LoadPortableLodMesh(
     if (metaClass == "Mesh") {
         if (reader.Tell() != reader.Size()) throw std::runtime_error("UE1 Mesh payload has trailing bytes");
         result.materialPolyFlags.assign(textureCount, 0u);
+        retain(static_cast<std::uint64_t>(legacyFaces.size())*3u*sizeof(std::uint32_t)*2u);
+        animation->normalTopology.reserve(legacyFaces.size());
+        animation->triangleSourceVertexIndices.reserve(legacyFaces.size()*3u);
         for (const LegacyTriangle& face : legacyFaces) {
             addFaceNormal(face.vertex[0], face.vertex[1], face.vertex[2]);
+            animation->normalTopology.push_back({face.vertex[0], face.vertex[1], face.vertex[2]});
         }
         result.triangles.reserve(legacyFaces.size() * 3u);
         for (const LegacyTriangle& face : legacyFaces) {
@@ -1403,12 +1456,15 @@ PortableLodMesh LoadPortableLodMesh(
                 }
                 result.triangles.push_back(makeVertex(vertexIndex, face.u[corner]/255.0f,
                     face.v[corner]/255.0f, static_cast<std::uint16_t>(face.textureIndex), face.polyFlags));
+                animation->triangleSourceVertexIndices.push_back(vertexIndex);
             }
         }
         if (result.frameVertices == 0u || result.animationFrames == 0u ||
             result.triangles.empty()) {
             throw std::runtime_error("UE1 Mesh has no renderable first frame");
         }
+        QuestVr::ValidateMeshAnimationData(*animation, animationLimits);
+        result.animation = std::move(animation);
         return result;
     }
 
@@ -1440,7 +1496,14 @@ PortableLodMesh LoadPortableLodMesh(
         result.materialTextureIndices.push_back(
             static_cast<std::int32_t>(reader.ReadUInt32()));
     }
-    reader.Skip(count("special face", 8u) * 8u);
+    const std::size_t specialFaceCount = count("special face", 8u);
+    retain(static_cast<std::uint64_t>(specialFaceCount)*3u*sizeof(std::uint32_t));
+    std::vector<std::array<std::uint16_t, 3>> specialFaces;
+    specialFaces.reserve(specialFaceCount);
+    for (std::size_t index = 0u; index < specialFaceCount; ++index) {
+        specialFaces.push_back({reader.ReadUInt16(), reader.ReadUInt16(), reader.ReadUInt16()});
+        reader.ReadUInt16(); // Attachment MaterialIndex is not used by FindAttachmentPoints.
+    }
     reader.ReadUInt32(); // ModelVerts
     const std::uint32_t specialVertices = reader.ReadUInt32();
     reader.Skip(24);
@@ -1453,6 +1516,9 @@ PortableLodMesh LoadPortableLodMesh(
     if (metaClass == "LodMesh" && reader.Tell() != reader.Size())
         throw std::runtime_error("UE1 LodMesh payload has trailing bytes");
 
+    retain(static_cast<std::uint64_t>(faces.size())*3u*sizeof(std::uint32_t)*2u);
+    animation->normalTopology.reserve(faces.size());
+    animation->triangleSourceVertexIndices.reserve(faces.size()*3u);
     for (const Face& face : faces) {
         std::size_t source[3]{};
         if (face.material >= materialCount) throw std::runtime_error("UE1 LodMesh material index is out of bounds");
@@ -1464,6 +1530,8 @@ PortableLodMesh LoadPortableLodMesh(
         // Match ULodMesh::Load smoothing: normals are built from the direct
         // wedge+SpecialVerts indices; DrawLodMesh then applies ReMapAnimVerts.
         addFaceNormal(source[0], source[1], source[2]);
+        animation->normalTopology.push_back({static_cast<std::uint32_t>(source[0]),
+            static_cast<std::uint32_t>(source[1]), static_cast<std::uint32_t>(source[2])});
     }
 
     result.triangles.reserve(faceCount * 3u);
@@ -1485,12 +1553,27 @@ PortableLodMesh LoadPortableLodMesh(
             }
             result.triangles.push_back(makeVertex(static_cast<std::size_t>(vertexIndex),
                 wedge.u/255.0f, wedge.v/255.0f, face.material, result.materialPolyFlags[face.material]));
+            animation->triangleSourceVertexIndices.push_back(static_cast<std::uint32_t>(vertexIndex));
         }
     }
     if (result.frameVertices == 0 || result.animationFrames == 0 ||
         result.triangles.empty()) {
         throw std::runtime_error("UE1 LodMesh has no renderable first frame");
     }
+    animation->specialFaceVertexIndices.reserve(specialFaceCount*3u);
+    for (const auto& face : specialFaces) {
+        for (const auto directIndex : face) {
+            std::uint32_t vertexIndex = directIndex;
+            if (!remappedVertices.empty()) {
+                if (vertexIndex >= remappedVertices.size())
+                    throw std::runtime_error("UE1 LodMesh attachment animation remap index is out of bounds");
+                vertexIndex = remappedVertices[vertexIndex];
+            }
+            animation->specialFaceVertexIndices.push_back(vertexIndex);
+        }
+    }
+    QuestVr::ValidateMeshAnimationData(*animation, animationLimits);
+    result.animation = std::move(animation);
     return result;
 }
 

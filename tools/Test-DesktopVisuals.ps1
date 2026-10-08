@@ -8,6 +8,9 @@ param(
     [switch]$BakedLighting,
     [switch]$Actors,
     [string]$IsolatedActor,
+    [string]$ActorAnimationSequence,
+    [Nullable[single]]$ActorAnimationFrame,
+    [Nullable[byte]]$ActorFatness,
     [string]$OutputDirectory,
     [string]$BaselineDirectory,
     [double]$MaxMeanError = 0.0,
@@ -52,6 +55,13 @@ if ($BakedLighting -and (-not $GameRoot -or $MeshPath)) {
 }
 if (($Actors -or $IsolatedActor) -and (-not $GameRoot -or $MeshPath)) {
     throw 'Actor captures require original GameRoot/map packages.'
+}
+if (($ActorAnimationSequence -or $null -ne $ActorAnimationFrame -or $null -ne $ActorFatness) -and -not $IsolatedActor) {
+    throw 'Explicit pose fixtures require IsolatedActor.'
+}
+if ($null -ne $ActorAnimationFrame -and ([single]::IsNaN($ActorAnimationFrame) -or
+    [single]::IsInfinity($ActorAnimationFrame) -or $ActorAnimationFrame -lt 0.0 -or $ActorAnimationFrame -ge 1.0)) {
+    throw 'ActorAnimationFrame must be a normalized fraction in [0,1).'
 }
 
 function Find-Tool {
@@ -162,6 +172,9 @@ if ($AuthoredLighting) { $sourceArguments += '--authored-lighting' }
 if ($BakedLighting) { $sourceArguments += '--baked-lighting' }
 if ($Actors) { $sourceArguments += '--actors' }
 if ($IsolatedActor) { $sourceArguments += @('--actor-isolate', $IsolatedActor) }
+if ($ActorAnimationSequence) { $sourceArguments += @('--actor-animation-sequence', $ActorAnimationSequence) }
+if ($null -ne $ActorAnimationFrame) { $sourceArguments += @('--actor-animation-frame', (Invariant-Number $ActorAnimationFrame)) }
+if ($null -ne $ActorFatness) { $sourceArguments += @('--actor-fatness', [string]$ActorFatness) }
 $reports = @()
 for ($index = 0; $index -lt $YawDegrees.Count; $index++) {
     $fileName = 'view-{0:D2}.bmp' -f $index
@@ -191,9 +204,9 @@ $summary = [ordered]@{
     realMapsDecoded = $(if ($GameRoot) { 1 } else { 0 })
     campaignPlayabilityVerified = $false
     scope = $(if ($IsolatedActor) {
-        'Software close-up of an original actor without world BSP; shared Quest CPU transforms/material selection, static first frame; animation, actor shadowing, environment mapping and Quest GPU remain unverified.'
+        'Software close-up of an original actor without world BSP; shared Quest CPU pose sampling/transforms/material selection; explicit pose overrides are fixtures, not native animation clock, actor shadowing, environment mapping or Quest GPU evidence.'
     } elseif ($Actors) {
-        'Original mesh actors and mover brushes using shared Quest CPU transforms/material selection, optional world lighting; no sprites/animation/actor shadowing/environment mapping, live campaign, UI or Quest GPU verification.'
+        'Original mesh actors and mover brushes using shared Quest CPU authored pose sampling/transforms/material selection, optional world lighting; no native animation clock/sprites/actor shadowing/environment mapping, live campaign, UI or Quest GPU verification.'
     } elseif ($BakedLighting) {
         'Software world BSP/materials using original static shadow masks, ordered light lists, zone ambient and Unlit; unsupported dynamic lights omitted; no actors, UI, OpenXR, stereo or Quest performance.'
     } elseif ($AuthoredLighting) {

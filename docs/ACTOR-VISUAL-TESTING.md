@@ -3,7 +3,10 @@
 The desktop capture can now include original mesh actors and movers with
 `--actors`, or frame one original object without the BSP with
 `--actor-isolate <full-map-object-path>`. This is a static asset inspection
-tool, not a playable desktop game or a substitute for Quest testing.
+tool, not a playable desktop game or a substitute for Quest testing. Mesh
+captures now sample inherited authored animation properties through the same
+CPU pose sampler used by Quest's initial actor geometry. That is not a native
+animation clock or an implementation of scripted startup/idle selection.
 
 ## Shared fixes
 
@@ -59,6 +62,15 @@ capture does not mean every actor is supported: inspect its reported omissions.
 Original files are read-only. Commercial derived textures, meshes, captures
 and reports stay under ignored `artifacts/`, never in Git.
 
+For an explicitly selected original sequence, add
+`--actor-animation-sequence <name> --actor-animation-frame <fraction>` to an
+isolated capture. The fraction must be in `[0,1)`. Use the isolated JSON
+record's `availableSequences` list; do not assume every mesh has the same
+idle names. These overrides are labelled `poseFixture`, not current campaign
+state. `--actor-fatness <0..255>` exercises authored expansion (neutral 128).
+The PowerShell wrapper exposes `-ActorAnimationSequence`,
+`-ActorAnimationFrame` and `-ActorFatness` with `-IsolatedActor`.
+
 ## Evidence and remaining work
 
 On 2026-10-07 the owned-package transform audit decoded 437 mesh exports,
@@ -66,8 +78,11 @@ including 228 nonzero RotOrigin records, with 18,084 differential checks and
 17 malformed controls. Material inheritance and inactive-actor retention passed
 on Training, Liberty Island, Hong Kong MJ12 lab and Area51: 10,354 actors,
 1,229 non-null indexed skin slots and 1,186 selected actor overrides. The
-campaign-wide option expands this audit beyond those four maps; its current
-result is recorded in STATUS rather than inferred from the four-map check.
+campaign-wide option subsequently passed all 80 numbered maps: 124,199 actors,
+10,482 non-null indexed skin slots and 10,292 selected actor overrides. The
+78 maps with eligible pickup inventory also passed inactive-asset retention.
+Every numbered map's selected material references resolved; procedural
+fallbacks and an invisible-only mover brush remain explicitly reported.
 
 Training and Island software scenes loaded 64/280 mesh instances and 25/19
 movers respectively with no missing mesh material selections. Jaime and plant
@@ -79,7 +94,7 @@ from desktop previews; Quest retains a physical-asset failure placeholder and
 its existing sprite approximation. Editor cameras and zero-scale mesh actors
 do not become visible Quest cubes.
 
-The host suite has 21 entries: 20 ordinary tests pass; the original-runtime
+The host suite has 23 entries: 22 ordinary tests pass; the original-runtime
 state test skips unless explicitly opted in. Synthetic tests cover material
 precedence/inheritance, texture flags/palette semantics, separate banks,
 near clipping, perspective sampling, alpha/depth/blending, shared geometry,
@@ -92,7 +107,9 @@ objects and 1,308 Training actors, including Training/Combat rollback, paired
 save recovery, and retained HazMatSuit mesh/materials after pickup and restore.
 Its conversation/progression inputs are explicit fixtures, not a campaign run.
 
-Animation (including normal campaign poses), Fatness, attachments, procedural
+Shared authored pose sampling, raw-space Fatness and additive channels now pass
+the independent 437-mesh original-data audit; see [ANIMATION-POSES.md](ANIMATION-POSES.md).
+Live animation (including normal scripted campaign poses), attachment rendering, procedural
 texture animation, faithful actor/zone lighting and shadows, sprite behavior,
 skyboxes, complete campaign scripting, and on-device performance/stereo
 verification remain required for the full playable standalone port.
