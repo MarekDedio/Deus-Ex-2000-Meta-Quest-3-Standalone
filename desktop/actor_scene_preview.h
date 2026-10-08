@@ -17,6 +17,8 @@ struct ActorPosePreviewOptions {
     std::optional<std::string> sequence;
     std::optional<float> frame;
     std::optional<std::uint8_t> fatness;
+    std::string scriptFunction;
+    std::vector<QuestVr::Vm::Evaluation> scriptArguments;
 };
 
 struct ActorPreviewRecord {

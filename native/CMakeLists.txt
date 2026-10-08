@@ -9,6 +9,7 @@ add_subdirectory(
 set(SURREAL_ENGINE_ROOT
     "${CMAKE_CURRENT_LIST_DIR}/../third_party/SurrealEngine/SurrealEngine")
 add_library(surreal_portable_core STATIC
+    quest_portable_vm.cpp
     quest_static_lightmap_cache.cpp
     "${SURREAL_ENGINE_ROOT}/Precomp.cpp"
     "${SURREAL_ENGINE_ROOT}/Utils/File.cpp"

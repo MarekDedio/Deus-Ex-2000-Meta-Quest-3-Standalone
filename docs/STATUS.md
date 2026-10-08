@@ -1,5 +1,50 @@
 # Port status
 
+## Bounded original script execution (2026-10-08)
+
+- Added a typed, bounded interpreter for normalized original UE1 bytecode:
+  locals/parameters/out aliases, assignments, fixed arrays/struct members,
+  branches, nested calls, lazy boolean operators, object context and selected
+  numeric/vector operators/conversions. References use the executing function's
+  package; ordered parameters retain the original Children/Next chain.
+  Corrected token 0x60 decoding at the conversion/extended-native boundary.
+- Each root invocation is transactional. Unsupported execution or exhausted
+  budgets undo nested properties, out aliases and native commands. Native
+  returns are detached values; escaped argument guards fail safely. Synthetic
+  serialization/execution tests pass 241 checks and 32 rejection controls.
+- Actor execution stages actual original PlayAnim/LoopAnim/TweenAnim commands,
+  writable properties and captured history. Region.Zone uses original BSP
+  traversal, not a dry-room guess. One persistent case-insensitive object index
+  avoids rebuilding roughly 101,000 lookup entries for every script call.
+- The dependency-free native main/blend clock passes 187 command/timing controls,
+  including synchronous replacement callbacks, residual budgets, invalid data,
+  native history capture and explicitly labelled pinned behavior/corrections.
+  Automatic event eligibility, callbacks and renderer ticking are unhooked.
+- A desktop fixture can execute one compiled helper before isolation/capture.
+  Doctor1 LoopAnimPivot selected BreatheLight through real bytecode: 37
+  instructions, three writes, 603 rendered triangles and no pose omissions.
+  Visual inspection found correct lab-coat/skin geometry; no manual frame or
+  sequence override was used. This is not a live animation or campaign test.
+- The host suite has 26 entries: 24 ordinary tests pass; the two original-data
+  integration tests explicitly skip without their separately supplied root.
+- Separate real-data execution passed Doctor1's PlayWaiting, explicit
+  Standing.AnimEnd and Play/Loop/TweenAnimPivot helpers; RepairBot0's inherited
+  PlayWaiting; and 00_Intro.Pigeon0's native-default PlayWaiting. Exact original
+  state-startup and FRand calls still fail explicitly, with transaction rollback.
+  Tests also confirmed PrePivot snapshot propagation and save/travel/unload
+  refusal without losing state. The existing original-data runtime regression
+  passed Training/Combat restoration, paired-save recovery and retained assets.
+- The ARM64 APK builds offline. No headset installation, ADB probe, physical
+  controller test, OpenXR session or device performance check was attempted.
+  Four world-albedo image regressions remain pixel-exact (MAE 0).
+- Committed script/native clock state is currently memory-only: version-3
+  save, map replacement and unload refuse rather than discard it or truncate
+  an existing save. Validated authored checkpoint restoration resets overlays.
+  No automatic gameplay path invokes this scoped interpreter yet. Full startup,
+  AI/state/latent execution, remaining natives, dynamic saves, live GPU updates,
+  campaign progression and headset validation remain unfinished.
+  See [PORTABLE-SCRIPT-EXECUTION.md](PORTABLE-SCRIPT-EXECUTION.md).
+
 ## Authored animation poses and offline validation (2026-10-07)
 
 - Retained shared compressed vertex animations, authored sequences/notifies,

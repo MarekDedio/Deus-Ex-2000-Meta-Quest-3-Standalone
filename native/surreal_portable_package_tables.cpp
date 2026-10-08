@@ -241,7 +241,7 @@ std::uint8_t DecodeScriptToken(
     const auto child = [&]() {
         return DecodeScriptToken(reader, package, logicalSize, bytecode, depth + 1);
     };
-    if (token >= 0x39u && token <= 0x60u) {
+    if (token >= 0x39u && token < 0x60u) {
         child();
     } else if (token >= 0x70u) {
         while (child() != 0x16u) {}
@@ -1006,6 +1006,9 @@ PortableScriptBody LoadPortableFunctionScript(
     reader.Skip(8);
 
     PortableScriptBody result;
+    result.baseField = baseField;
+    result.nextField = nextField;
+    result.children = children;
     result.objectPath = ResolvePortableObjectPath(
         static_cast<std::int32_t>(exportIndex + 1), package);
     result.logicalSize = reader.ReadUInt32();

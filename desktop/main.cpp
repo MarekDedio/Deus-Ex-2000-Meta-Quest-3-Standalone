@@ -156,6 +156,8 @@ void Help() {
         "  --actor-animation-sequence NAME  Explicit isolated pose fixture (not an idle heuristic)\n"
         "  --actor-animation-frame FRACTION Normalized isolated fixture frame in [0,1)\n"
         "  --actor-fatness BYTE      Isolated fixture fatness, neutral 128\n"
+        "  --actor-script-function NAME  Execute one original compiled helper before isolated capture\n"
+        "  --actor-script-name NAME / --actor-script-float N  Append a typed helper argument\n"
         "                                    Requires original game/map; self-test uses fixture lights\n"
         "  --inspect-textures PACKAGE FILTER  List matching export/class/properties for diagnosis\n"
         "  --persona-preview --game-root PATH Original Persona artwork, fonts and fixture text\n"
@@ -164,7 +166,7 @@ void Help() {
         "  --persona-page PAGE                Inventory, Health, GoalsNotes or Logs\n"
         "Camera uses Quest-cache meters; default (0,1.65,0) looks -Z. Positive yaw turns right.\n"
         "Default captures show world BSP albedo. --baked-lighting includes static lightmaps.\n"
-        "--actors samples authored animation poses; no runtime animation clock or actor shadowing.\n"
+        "--actors samples authored poses; isolated helpers may change a pose, but no live ticking or actor shadowing.\n"
         "OpenXR, live UI, campaign scripts, and Quest GPU performance are not verified.\n";
 }
 Options Parse(int argc, char** argv) {
@@ -193,6 +195,11 @@ Options Parse(int argc, char** argv) {
             if (consumed != value.size() || number > 255u) throw std::runtime_error("Fatness must be an integer byte 0..255");
             options.posePreview.fatness = static_cast<std::uint8_t>(number);
         }
+        else if (argument == "--actor-script-function") options.posePreview.scriptFunction = next();
+        else if (argument == "--actor-script-name") options.posePreview.scriptArguments.push_back(
+            {QuestVr::Vm::Value::Text(QuestVr::Vm::Kind::Name,next()),{}});
+        else if (argument == "--actor-script-float") options.posePreview.scriptArguments.push_back(
+            {QuestVr::Vm::Value::Float(Float(next())),{}});
         else if (argument == "--persona-preview") options.personaPreview = true;
         else if (argument == "--persona-icon") options.personaIcons.push_back(next());
         else if (argument == "--persona-page") {
@@ -243,6 +250,13 @@ Options Parse(int argc, char** argv) {
     if ((options.posePreview.sequence || options.posePreview.frame || options.posePreview.fatness) && options.isolatedActor.empty())
         throw std::runtime_error("Explicit pose fixtures require --actor-isolate PATH");
     options.posePreview.actorPath = options.isolatedActor;
+    if (!options.posePreview.scriptArguments.empty() && options.posePreview.scriptFunction.empty())
+        throw std::runtime_error("Script arguments require --actor-script-function");
+    if (!options.posePreview.scriptFunction.empty() && (options.isolatedActor.empty() ||
+        options.posePreview.sequence || options.posePreview.frame || options.posePreview.fatness))
+        throw std::runtime_error("Compiled helper captures require --actor-isolate and cannot mix with manual pose overrides");
+    if (options.posePreview.scriptArguments.size() > 16u)
+        throw std::runtime_error("Isolated helper capture argument limit exceeded");
     const bool hasCache = !options.mesh.empty() || !options.materials.empty();
     const bool hasGame = !options.gameRoot.empty();
     if (options.personaPreview) {
@@ -463,7 +477,7 @@ void Report(const Options& options, const Scene& scene, const RenderResult& resu
         << ",\n  \"campaignPlayabilityVerified\": false"
         << ",\n  \"isolatedActor\": " << Quote(options.isolatedActor)
         << ",\n  \"scope\": " << Quote(!options.isolatedActor.empty() ?
-            "Original actor close-up without world BSP; automatic bounds framing; shared Quest CPU animation pose sampling, transforms and material selection; explicit overrides are fixtures, not runtime animation or Quest GPU evidence" : lighting.actors.enabled ?
+            "Original actor close-up without world BSP; automatic bounds framing; shared Quest CPU poses/transforms/materials. Manual overrides and explicitly invoked compiled helpers are isolated fixtures, not startup, live ticking, campaign playability or Quest GPU evidence" : lighting.actors.enabled ?
             "software original actor meshes/authored pose sampling/skin overrides and mover brushes with shared Quest CPU paths; optional BSP lightmaps; native animation clock, sprites, actor shadowing, environment mapping, UI, OpenXR and Quest GPU unverified" : lighting.baked ?
             "software BSP/material textures with original static light lists, baked shadow masks, zone ambient and Unlit; dynamic lighting, actors, UI, OpenXR, stereo and Quest performance not verified" : lighting.enabled ?
             "software world BSP/material textures with shared Quest direct vertex lighting approximation; no UE1 lightmaps/BSP shadow occlusion, actor meshes, UI, OpenXR, stereo or Quest performance" :
@@ -559,7 +573,11 @@ void Report(const Options& options, const Scene& scene, const RenderResult& resu
         << ", \"spriteActorsOmitted\": " << actors.spriteActorsOmitted
         << ", \"sampledPoses\": " << actors.sampledPoses << ", \"poseOmissions\": " << actors.poseOmissions
         << ", \"cubePlaceholdersRendered\": 0, \"authoredPoseSampling\": " << (actors.enabled ? "true" : "false")
-        << ", \"nativeAnimationClockImplemented\": false, \"animationVerified\": false, \"actorShadowingVerified\": false"
+        << ", \"nativeAnimationClockImplemented\": true, \"liveClockTicked\": false, \"animationVerified\": false, \"actorShadowingVerified\": false"
+        << ", \"isolatedCompiledHelperExecuted\": " << (!lighting.scriptFunction.empty() ? "true" : "false")
+        << ", \"compiledHelperFunction\": " << Quote(lighting.scriptFunction)
+        << ", \"compiledHelperInstructions\": " << lighting.scriptInstructions
+        << ", \"compiledHelperWrites\": " << lighting.scriptWrites
         << ", \"texturePaths\": [";
     for (std::size_t i = 0u; i < actors.texturePaths.size(); ++i) {
         if (i) file << ", ";

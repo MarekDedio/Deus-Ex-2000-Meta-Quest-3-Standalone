@@ -8,6 +8,7 @@ endif()
 
 set(PORT_NATIVE "${CMAKE_CURRENT_LIST_DIR}/../native")
 add_library(quest_portable_host STATIC
+    "${PORT_NATIVE}/quest_portable_vm.cpp"
     "${PORT_NATIVE}/quest_static_lightmap_cache.cpp"
     "${SURREAL_ENGINE_ROOT}/Precomp.cpp"
     "${SURREAL_ENGINE_ROOT}/Utils/File.cpp"
@@ -249,3 +250,32 @@ if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
     target_link_options(quest_actor_animation_snapshot_test PRIVATE -static -static-libgcc -static-libstdc++)
 endif()
 add_test(NAME quest_actor_animation_snapshot COMMAND quest_actor_animation_snapshot_test)
+
+add_executable(script_bytecode_inspect script_bytecode_inspect.cpp)
+target_compile_features(script_bytecode_inspect PRIVATE cxx_std_20)
+target_link_libraries(script_bytecode_inspect PRIVATE quest_portable_host)
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+    target_compile_options(script_bytecode_inspect PRIVATE -Wall -Wextra -Werror)
+    target_link_options(script_bytecode_inspect PRIVATE -static -static-libgcc -static-libstdc++)
+endif()
+
+foreach(test_target IN ITEMS quest_actor_animation_clock_test quest_portable_vm_test)
+    add_executable(${test_target} ${test_target}.cpp)
+    target_compile_features(${test_target} PRIVATE cxx_std_20)
+    target_link_libraries(${test_target} PRIVATE quest_portable_host)
+    if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+        target_compile_options(${test_target} PRIVATE -Wall -Wextra -Werror)
+        target_link_options(${test_target} PRIVATE -static -static-libgcc -static-libstdc++)
+    endif()
+    add_test(NAME ${test_target} COMMAND ${test_target})
+endforeach()
+
+add_executable(portable_actor_script_test portable_actor_script_test.cpp)
+target_compile_features(portable_actor_script_test PRIVATE cxx_std_20)
+target_link_libraries(portable_actor_script_test PRIVATE quest_portable_host)
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+    target_compile_options(portable_actor_script_test PRIVATE -Wall -Wextra -Werror)
+    target_link_options(portable_actor_script_test PRIVATE -static -static-libgcc -static-libstdc++)
+endif()
+add_test(NAME portable_actor_script COMMAND portable_actor_script_test)
+set_tests_properties(portable_actor_script PROPERTIES SKIP_RETURN_CODE 77)

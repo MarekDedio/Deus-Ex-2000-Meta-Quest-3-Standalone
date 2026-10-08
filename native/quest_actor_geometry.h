@@ -17,16 +17,18 @@ struct ActorTriangleVertex {
 };
 
 // Snapshot values are authored defaults/instance properties, not a substitute
-// for PlayAnim/LoopAnim or state-machine events. Tween history is deliberately
-// absent until the portable runtime implements those native transitions.
+// for state-machine events. Authored maps have no retained tween history;
+// explicitly executed native transitions supply it through the snapshot.
 inline MeshAnimationState BuildSnapshotMeshAnimationState(const PortableActorSnapshot& actor) {
     MeshAnimationState state;
     state.main.sequence = actor.animation.sequence;
     state.main.normalizedFrame = actor.animation.frame;
+    state.main.previous = actor.animation.previous;
     state.fatness = actor.fatness;
     for (std::size_t i = 0u; i < state.blends.size(); ++i) {
         state.blends[i].sequence = actor.animation.blends[i].sequence;
         state.blends[i].normalizedFrame = actor.animation.blends[i].frame;
+        state.blends[i].previous = actor.animation.blends[i].previous;
     }
     return state;
 }

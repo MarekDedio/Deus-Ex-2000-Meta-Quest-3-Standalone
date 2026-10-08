@@ -30,6 +30,8 @@ struct AuthoredLightingPreview {
     bool baked{};
     QuestVr::StaticLightmapCache staticLightmaps;
     ActorScenePreview actors;
+    std::string scriptFunction;
+    std::size_t scriptInstructions{}, scriptWrites{};
 };
 
 namespace lightingdetail {
@@ -215,6 +217,15 @@ inline AuthoredLightingPreview BuildAuthoredLightingPreview(Scene& scene,
     const auto mapRuntime = LoadPortableRuntimeMap(package);
     if (!mapRuntime.passed) throw std::runtime_error("Original map runtime failed for authored lighting");
     metadata.unresolvedMapClasses = mapRuntime.unresolvedClasses;
+    if (!poseOptions.scriptFunction.empty()) {
+        const auto result = ExecutePortableActorFunction(poseOptions.actorPath,
+            poseOptions.scriptFunction, poseOptions.scriptArguments);
+        if (!result.passed()) throw std::runtime_error("Isolated compiled helper failed: " +
+            result.error + " at " + result.function + ':' + std::to_string(result.offset));
+        metadata.scriptFunction = result.function;
+        metadata.scriptInstructions = result.instructions;
+        metadata.scriptWrites = result.writes;
+    }
     const auto actors = GetPortableRuntimeMapActors();
     metadata.runtimeActors = actors.size();
     const auto verified = QuestVr::VerifyQuestMapOrigin(package,actors,metadata.playerStartPath);

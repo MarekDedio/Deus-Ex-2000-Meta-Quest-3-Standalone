@@ -72,11 +72,15 @@ not proof of bit-exact behavior of the original closed-source Deus Ex DLL.
 
 ## Still required
 
-The portable VM currently handles only a small constant-return subset. Original
-ScriptedPawn initialization, states, PlayWaiting/PlayAnim/LoopAnim, ticking,
-notify/AnimEnd dispatch, and transitions must execute before NPCs can animate
-and behave normally. The native blend clock, attachment rendering, and save
-format for runtime animation/tween/state history are also unfinished. Existing
-saves preserve supported gameplay fixtures, not these missing dynamic fields.
+The bounded portable interpreter can execute isolated original PlayWaiting and
+Play/Loop/TweenAnimPivot helpers, including their actual native commands and
+captured tween history. This is not automatically started NPC behavior.
+Original ScriptedPawn initialization, states, ticking, event eligibility,
+notify/AnimEnd dispatch and transitions still need integration before NPCs
+animate and behave normally. A pure native main/blend clock has offline tests,
+but live renderer updates, attachment rendering and dynamic script/animation
+saves remain unfinished. Existing saves preserve supported gameplay fixtures;
+saves/travel refuse committed scoped script state they cannot retain.
+See [PORTABLE-SCRIPT-EXECUTION.md](PORTABLE-SCRIPT-EXECUTION.md).
 Quest currently samples the initial authored pose but does not animate it over
 time. Desktop explicit pose overrides are fixtures, not simulated startup.

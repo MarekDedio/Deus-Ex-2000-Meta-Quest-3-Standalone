@@ -11,12 +11,16 @@ training geometry, VR locomotion/interaction, UI, audio and save/load features.
 The latest offline work adds original static BSP shadow lightmaps and fixes
 actor skin selection, placement, masking and mover textures, with repeatable
 software close-ups. Original vertex-animation data now drives shared initial
-pose sampling, including authored corpse frames; native animation ticking and
-scripted pose selection are still unfinished. These latest GPU changes still
+pose sampling, including authored corpse frames. A bounded original-bytecode
+interpreter now executes isolated animation helpers and stages their native
+commands transactionally; automatic startup, state execution and live ticking
+are still unfinished. These latest GPU changes still
 require headset validation.
 The full campaign is not yet verified playable: animation, complete gameplay
 scripting, visual fidelity and device performance remain in development.
 See [current evidence and limitations](docs/STATUS.md).
+See [original script execution](docs/PORTABLE-SCRIPT-EXECUTION.md) for the
+supported interpreter path, tests and the memory-only script-state boundary.
 
 ## Data boundary
 

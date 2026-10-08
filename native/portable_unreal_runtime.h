@@ -2,6 +2,7 @@
 
 #include "surreal_portable_package_tables.h"
 #include "quest_actor_materials.h"
+#include "quest_portable_vm.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -199,6 +200,7 @@ struct PortableActorBlendAnimationSnapshot {
     // Engine.Actor has no serialized blend-loop flag. Keep this unavailable
     // state false; a future actual native animation command can supply it.
     bool loop{};
+    QuestVr::MeshTweenHistory previous;
 };
 
 struct PortableActorAnimationSnapshot {
@@ -212,6 +214,7 @@ struct PortableActorAnimationSnapshot {
     bool loop{};
     bool notify{};
     bool finished{};
+    QuestVr::MeshTweenHistory previous;
     std::array<PortableActorBlendAnimationSnapshot, 4u> blends;
 };
 
@@ -274,6 +277,22 @@ struct PortableActorSnapshot {
 };
 
 PortableVmValue ExecutePortableFunction(const std::string& objectPath);
+// Executes actual compiled member bytecode on an explicit live actor. No
+// automatic BeginPlay/AI/idle invocation occurs. Unsupported operations roll
+// back every property and native-animation change in the nested call tree.
+QuestVr::Vm::Result ExecutePortableActorFunction(
+    const std::string& actorPath, const std::string& functionName,
+    const std::vector<QuestVr::Vm::Evaluation>& arguments = {},
+    const QuestVr::Vm::Limits& limits = {});
+QuestVr::Vm::Value ReadPortableActorScriptProperty(
+    const std::string& actorPath, const std::string& propertyName,
+    std::uint32_t arrayIndex = 0u);
+// Legacy runtime saves (v1-v3) cannot preserve script overlays or native tween
+// history. Saving is explicitly rejected while committed script state exists.
+// Map replacement returns passed=false and unload throws in the same case.
+// A validated LoadPortableRuntimeState explicitly restores authored properties;
+// ShutdownPortableRuntime explicitly discards this runtime's object lifetime.
+bool GetPortableRuntimeUnsavedScriptState();
 PortableMapRuntimeSummary LoadPortableRuntimeMap(
     const PortablePackageTables& package);
 std::size_t UnloadPortableRuntimeMap();

@@ -101,6 +101,7 @@ struct PortableReflectionGraph {
 
 struct PortableScriptBody {
     std::string objectPath;
+    std::int32_t baseField{}, nextField{}, children{};
     std::uint32_t logicalSize{};
     std::vector<std::uint8_t> rawBytes;
     std::vector<std::uint8_t> bytecode;

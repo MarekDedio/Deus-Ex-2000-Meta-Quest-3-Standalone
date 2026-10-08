@@ -3,6 +3,8 @@
 #include "GC/GC.h"
 
 #include "portable_log.h"
+#include "portable_model_geometry.h"
+#include "quest_actor_animation_clock.h"
 
 #include <memory>
 #include <algorithm>
@@ -47,6 +49,10 @@ public:
     std::size_t exportIndex{};
     std::unique_ptr<PortableLodMesh> lodMesh;
     std::unique_ptr<PortableLodMesh> brushMesh;
+    std::unordered_map<std::string,
+        std::unordered_map<std::uint32_t, QuestVr::Vm::Value>> scriptValues;
+    std::optional<QuestVr::ActorAnimationClock> animationClock;
+    bool committedScriptState{};
     bool active{true};
     bool activated{};
     bool healthInitialized{};
@@ -93,6 +99,10 @@ private:
 
 std::unique_ptr<GCRoot<RuntimePackage>> persistentRuntime;
 std::unordered_map<std::string, RuntimeObject*> persistentQualifiedObjects;
+// UE names are case-insensitive. Keep the VM lookup alongside the owning
+// runtime index, rather than copying/lowercasing every export for every call.
+// These aliases are not additional GC roots and are removed before collection.
+std::unordered_map<std::string, RuntimeObject*> persistentVmObjects;
 std::unordered_map<std::string, std::vector<RuntimeObject*>> persistentMapTagIndex;
 std::size_t persistentScriptExportCount{};
 std::string persistentMapPackageName;
@@ -137,6 +147,15 @@ bool IsDerivedFromPath(RuntimeObject* cls, const std::string& path) {
     return false;
 }
 
+const QuestVr::Vm::Value* FindScriptOverlay(
+    RuntimeObject* object, const char* name, const std::uint32_t index = 0u) {
+    if (object == nullptr) return nullptr;
+    const auto found = object->scriptValues.find(LowerAscii(name));
+    if (found == object->scriptValues.end()) return nullptr;
+    const auto slot = found->second.find(index);
+    return slot == found->second.end() ? nullptr : &slot->second;
+}
+
 void CacheRuntimeNameProperties(RuntimeObject* object,
     const PortablePackageTables& package,
     const std::vector<PortableTaggedProperty>& properties) {
@@ -167,6 +186,7 @@ const PortableTaggedProperty* FindInheritedRuntimeProperty(
 
 std::string ReadInheritedRuntimeName(
     RuntimeObject* object, const char* name, const std::uint32_t arrayIndex = 0u) {
+    if (const auto* value = FindScriptOverlay(object, name, arrayIndex)) return value->text;
     const auto lookup = [&](RuntimeObject* source) -> const std::string* {
         const auto named = source->namePropertyValues.find(LowerAscii(name));
         if (named == source->namePropertyValues.end()) return nullptr;
@@ -182,6 +202,7 @@ std::string ReadInheritedRuntimeName(
 
 float ReadInheritedRuntimeFloat(
     RuntimeObject* object, const char* name, const std::uint32_t arrayIndex = 0u) {
+    if (const auto* value = FindScriptOverlay(object, name, arrayIndex)) return QuestVr::Vm::ToFloat(*value);
     const auto* property = FindInheritedRuntimeProperty(object, name, arrayIndex);
     float value{};
     if (property != nullptr && property->type == 4u && property->value.size() == 4u)
@@ -191,7 +212,15 @@ float ReadInheritedRuntimeFloat(
     return value;
 }
 
+void IndexRuntimeVmObject(const std::string& path, RuntimeObject* object) {
+    // The legacy runtime may load a larger graph for non-VM inspection, but
+    // the manual VM API rejects it. Bound this additional index accordingly.
+    if (persistentVmObjects.size() < 1'000'000u)
+        persistentVmObjects[LowerAscii(path)] = object;
+}
+
 bool ReadInheritedRuntimeBool(RuntimeObject* object, const char* name) {
+    if (const auto* value = FindScriptOverlay(object, name)) return QuestVr::Vm::ToBool(*value);
     const auto* property = FindInheritedRuntimeProperty(object, name);
     return property != nullptr && property->type == 3u && property->boolValue;
 }
@@ -217,6 +246,11 @@ PortableActorAnimationSnapshot ReadRuntimeAnimationSnapshot(RuntimeObject* objec
         blend.minRate = ReadInheritedRuntimeFloat(object, "BlendAnimMinRate", slot);
         blend.tweenRate = ReadInheritedRuntimeFloat(object, "BlendTweenRate", slot);
         blend.oldRate = ReadInheritedRuntimeFloat(object, "OldBlendAnimRate", slot);
+    }
+    if (object->animationClock) {
+        animation.previous = object->animationClock->pose.main.previous;
+        for (std::size_t slot = 0u; slot < animation.blends.size(); ++slot)
+            animation.blends[slot].previous = object->animationClock->pose.blends[slot].previous;
     }
     return animation;
 }
@@ -799,6 +833,419 @@ void PopulateRuntime(
     summary.peakGcObjects = GC::GetStats().numObjects;
 }
 
+// Scoped host for the actual normalized UE1 interpreter. It does not dispatch
+// startup/state ticks or silently emulate missing natives. A complete nested
+// invocation is one transaction, including native animation/tween history.
+class PortableActorVmHost final : public QuestVr::Vm::Host {
+    using Value = QuestVr::Vm::Value;
+    using Kind = QuestVr::Vm::Kind;
+    using Property = QuestVr::Vm::Property;
+    using Function = QuestVr::Vm::Function;
+    using Evaluation = QuestVr::Vm::Evaluation;
+    using Reference = QuestVr::Vm::Reference;
+public:
+    PortableActorVmHost() {
+        if (!persistentRuntime || !persistentRuntime->get())
+            throw std::runtime_error("Portable actor VM has no initialized runtime");
+        if (persistentQualifiedObjects.size() > 1'000'000u)
+            throw std::runtime_error("Portable actor VM object lookup budget exceeded");
+    }
+    RuntimeObject* Object(const std::string& path) const {
+        const auto found = persistentVmObjects.find(LowerAscii(path));
+        if (found == persistentVmObjects.end() || found->second == nullptr)
+            throw std::runtime_error("Portable actor VM object is unavailable: " + path);
+        return found->second;
+    }
+    std::shared_ptr<const Function> Member(RuntimeObject* receiver, const std::string& name) {
+        if (name.find('.') != std::string::npos) return FunctionFor(Object(name));
+        for (RuntimeObject* cls = receiver->cls; cls != nullptr; cls = cls->base) {
+            const auto found = persistentVmObjects.find(LowerAscii(cls->reflection.objectPath + '.' + name));
+            if (found != persistentVmObjects.end() && found->second->script && found->second->outer == cls)
+                return FunctionFor(found->second);
+        }
+        throw std::runtime_error("Portable actor VM member function unavailable: " + name);
+    }
+    void Begin() override {
+        if (transaction_) throw std::runtime_error("Portable actor VM nested host transaction");
+        transaction_ = true;
+    }
+    void Commit() override { saved_.clear(); transaction_ = false; }
+    void Rollback() noexcept override {
+        for (auto& entry : saved_) {
+            entry.first->scriptValues.swap(entry.second.values);
+            entry.first->animationClock.swap(entry.second.clock);
+            entry.first->committedScriptState = entry.second.committed;
+        }
+        saved_.clear(); transaction_ = false;
+    }
+    Property ResolveProperty(const Function& function, const std::int32_t reference) override {
+        RuntimeObject* object = Object(ResolveObject(function, reference));
+        if (!object->property) throw std::runtime_error("VM reference is not a property");
+        return Describe(object);
+    }
+    std::string ResolveName(const Function& function, const std::int32_t index) override {
+        const auto& table = Table(function.source);
+        if (index < 0 || static_cast<std::size_t>(index) >= table.names.size())
+            throw std::runtime_error("VM function-local name index is out of range");
+        return table.names[static_cast<std::size_t>(index)].Name.ToString();
+    }
+    std::string ResolveObject(const Function& function, const std::int32_t reference) override {
+        if (reference == 0) return {};
+        const auto& table = Table(function.source);
+        const auto path = GetPortableObjectPath(table, reference);
+        if (path.empty()) throw std::runtime_error("VM function-local object reference is out of range");
+        return reference > 0 ? PackageStem(table.sourcePath) + '.' + path : path;
+    }
+    std::shared_ptr<const Function> ResolveFunction(const Function& caller,
+        const std::string& receiver, const QuestVr::Vm::Invocation& invocation) override {
+        if (invocation.kind == QuestVr::Vm::CallKind::Final)
+            return FunctionFor(Object(ResolveObject(caller, invocation.reference)));
+        // A current script state has not been started by this host. Do not
+        // infer it from Orders/InitialState or redirect a state call silently.
+        return Member(Object(receiver), invocation.name);
+    }
+    std::shared_ptr<Reference> Variable(const std::string& receiver,
+        const Property& property, const QuestVr::Vm::Scope scope) override {
+        RuntimeObject* object = Object(receiver);
+        if (!object->active) throw std::runtime_error("VM receiver is inactive");
+        const bool defaults = scope == QuestVr::Vm::Scope::Default;
+        auto result = ReferenceFor(object, property, 0u, defaults);
+        result->dimension = property.arrayDimension;
+        result->element = [this, object, property, defaults](const std::size_t slot) {
+            if (slot >= property.arrayDimension || slot > std::numeric_limits<std::uint32_t>::max())
+                throw std::runtime_error("VM property fixed-array index is out of range");
+            return ReferenceFor(object, property, static_cast<std::uint32_t>(slot), defaults);
+        };
+        return result;
+    }
+    Evaluation Native(const std::uint16_t index, const std::string& receiver,
+        const std::vector<Evaluation>& arguments, const Function* declaration) override {
+        RuntimeObject* object = Object(receiver);
+        if (!object->active) throw std::runtime_error("VM native receiver is inactive");
+        const auto argumentCount = [&](const std::size_t required, const std::size_t maximum) {
+            if (arguments.size() < required || arguments.size() > maximum)
+                throw std::runtime_error("VM native argument count is invalid for " + std::to_string(index));
+        };
+        const auto argument = [&](const std::size_t slot) {
+            return slot < arguments.size() ? arguments[slot].Load() : Value{};
+        };
+        const auto optionalFloat = [&](const std::size_t slot, const float fallback) {
+            const auto value = argument(slot);
+            return value.kind == Kind::Nothing ? fallback : QuestVr::Vm::ToFloat(value);
+        };
+        const auto sequence = [&]() {
+            const auto value = argument(0u);
+            if (value.kind != Kind::Name) throw std::runtime_error("Animation native requires a Name argument");
+            return value.text;
+        };
+        if (index == 303u) { // Core.Object.IsA
+            argumentCount(1u, 1u);
+            const auto value = argument(0u);
+            if (value.kind != Kind::Name) throw std::runtime_error("IsA requires a Name argument");
+            bool found{};
+            for (RuntimeObject* cls = object->cls; cls != nullptr; cls = cls->base) {
+                const auto dot = cls->reflection.objectPath.find_last_of('.');
+                if (LowerAscii(cls->reflection.objectPath.substr(dot + 1u)) == LowerAscii(value.text)) {
+                    found = true; break;
+                }
+            }
+            return {Value::Bool(found), {}};
+        }
+        if (index != 259u && index != 260u && index != 294u && index != 263u && index != 293u && index != 282u)
+            throw std::runtime_error("Unsupported runtime native " + std::to_string(index) +
+                (declaration ? " (" + declaration->path + ")" : std::string()));
+        if (!IsDerivedFromPath(object->cls, "Engine.Actor"))
+            throw std::runtime_error("Animation native receiver is not Engine.Actor");
+        argumentCount(index == 282u ? 0u : index == 294u ? 2u : 1u,
+            index == 260u ? 4u : index == 259u ? 3u : index == 294u ? 2u : index == 282u ? 0u : 1u);
+        if (index == 282u) return {Value::Bool(ReadInheritedRuntimeFloat(object, "AnimRate") != 0.0f), {}};
+        const auto* mesh = AnimationMesh(object);
+        if (index == 263u) return {Value::Bool(QuestVr::ActorClockHasAnim(mesh, sequence())), {}};
+        if (index == 293u) return {Value::Text(Kind::Name, QuestVr::ActorClockGetAnimGroup(mesh, sequence())), {}};
+        QuestVr::ActorAnimationClock next = object->animationClock ? *object->animationClock : AuthoredClock(object);
+        QuestVr::ActorAnimationCommand command;
+        command.sequence = sequence();
+        command.kind = index == 259u ? QuestVr::ActorAnimationCommandKind::PlayAnim : index == 260u ?
+            QuestVr::ActorAnimationCommandKind::LoopAnim : QuestVr::ActorAnimationCommandKind::TweenAnim;
+        command.rate = optionalFloat(1u, 1.0f);
+        command.tweenTime = optionalFloat(index == 294u ? 1u : 2u, 0.0f);
+        command.minRate = optionalFloat(3u, 0.0f);
+        const auto applied = QuestVr::ApplyActorAnimationCommand(mesh, next, command);
+        if (!applied.error.empty()) throw std::runtime_error(applied.error);
+        if (applied.applied) {
+            Touch(object); object->animationClock = std::move(next);
+            SynchronizeClock(object); object->committedScriptState = true;
+        }
+        return {};
+    }
+    Value Read(RuntimeObject* object, const Property& property, const std::uint32_t index,
+        const bool defaults = false) {
+        if (!defaults) {
+            if (const auto* value = FindScriptOverlay(object, property.name.c_str(), index)) return *value;
+            if (LowerAscii(property.name) == "region" && property.zero.kind == Kind::Struct)
+                return Region(object, property.zero);
+        }
+        RuntimeObject* source = defaults ? object->cls : object;
+        while (source != nullptr) {
+            const auto& properties = source->classDescriptor ? source->classDescriptor->defaults : source->instanceProperties;
+            for (auto tag = properties.rbegin(); tag != properties.rend(); ++tag) {
+                if (tag->name != property.name || tag->arrayIndex != index) continue;
+                return Decode(*source, *tag, property.zero);
+            }
+            source = source == object ? object->cls : source->base;
+        }
+        return property.zero;
+    }
+    Property PropertyNamed(RuntimeObject* object, const std::string& name) {
+        for (RuntimeObject* cls = object->cls; cls != nullptr; cls = cls->base) {
+            const auto found = persistentVmObjects.find(LowerAscii(cls->reflection.objectPath + '.' + name));
+            if (found != persistentVmObjects.end() && found->second->property) return Describe(found->second);
+        }
+        throw std::runtime_error("Runtime property metadata unavailable: " + name);
+    }
+private:
+    struct Before {
+        decltype(RuntimeObject::scriptValues) values;
+        std::optional<QuestVr::ActorAnimationClock> clock;
+        bool committed{};
+    };
+    std::unordered_map<std::string, PortablePackageTables> tables_;
+    std::unordered_map<std::string, std::shared_ptr<const Function>> functions_;
+    std::unordered_map<RuntimeObject*, Before> saved_;
+    std::optional<PortableModelGeometry> rootModel_;
+    bool transaction_{};
+    const PortablePackageTables& Table(const std::string& source) {
+        auto found = tables_.find(source);
+        if (found == tables_.end()) {
+            if (tables_.size() >= 64u || std::filesystem::file_size(source) > 512u * 1024u * 1024u)
+                throw std::runtime_error("VM source package table budget exceeded");
+            found = tables_.emplace(source, LoadPortablePackageTables(source)).first;
+        }
+        return found->second;
+    }
+    std::string Qualified(const PortablePackageTables& table, const std::int32_t reference) {
+        if (reference == 0) return {};
+        const auto path = GetPortableObjectPath(table, reference);
+        if (path.empty()) throw std::runtime_error("Runtime property object reference unavailable");
+        return reference > 0 ? PackageStem(table.sourcePath) + '.' + path : path;
+    }
+    Value Zero(RuntimeObject* property) {
+        const auto& descriptor = *property->property;
+        const auto& type = descriptor.type;
+        if (type == "ByteProperty") return Value::Byte(0u);
+        if (type == "IntProperty") return Value::Integer(0);
+        if (type == "BoolProperty") return Value::Bool(false);
+        if (type == "FloatProperty") return Value::Float(0.0f);
+        if (type == "NameProperty") return Value::Text(Kind::Name, "None");
+        if (type == "StrProperty" || type == "StringProperty") return Value::Text(Kind::String, {});
+        if (type == "ObjectProperty" || type == "ClassProperty") return Value::Text(Kind::Object, {});
+        if (type == "StructProperty") {
+            const auto structPath = Qualified(Table(property->sourcePath), descriptor.referencedType);
+            if (structPath == "Core.Object.Vector") return Value::Vector({0.0f, 0.0f, 0.0f});
+            if (structPath == "Core.Object.Rotator") return Value::Rotator({0, 0, 0});
+            if (structPath == "Engine.Actor.PointRegion") {
+                Value zero; zero.kind = Kind::Struct;
+                zero.fields.emplace("zone", Value::Text(Kind::Object, {}));
+                zero.fields.emplace("ileaf", Value::Integer(0));
+                zero.fields.emplace("zonenumber", Value::Byte(0u));
+                return zero;
+            }
+            throw std::runtime_error("Unsupported runtime struct type " + structPath);
+        }
+        throw std::runtime_error("Unsupported runtime property type " + type);
+    }
+    Property Describe(RuntimeObject* property) {
+        if (!property->property) throw std::runtime_error("VM object has no property descriptor");
+        const auto& descriptor = *property->property;
+        const auto dot = property->reflection.objectPath.find_last_of('.');
+        return {property->reflection.objectPath, property->reflection.objectPath.substr(dot + 1u),
+            Zero(property), descriptor.flags, static_cast<std::size_t>(descriptor.arrayDimension)};
+    }
+    std::shared_ptr<const Function> FunctionFor(RuntimeObject* object) {
+        if (!object->script) throw std::runtime_error("VM object is not a compiled function");
+        const auto cached = functions_.find(object->reflection.objectPath);
+        if (cached != functions_.end()) return cached->second;
+        auto function = std::make_shared<Function>();
+        function->path = object->reflection.objectPath; function->source = object->sourcePath;
+        function->bytecode = object->script->bytecode;
+        function->nativeIndex = object->script->nativeIndex; function->flags = object->script->functionFlags;
+        const auto& table = Table(object->sourcePath);
+        std::set<std::int32_t> visited;
+        auto child = object->script->children;
+        while (child != 0) {
+            if (visited.size() >= 4096u || !visited.insert(child).second)
+                throw std::runtime_error("VM function property chain cycles or exceeds budget");
+            RuntimeObject* field = Object(Qualified(table, child));
+            if (!field->property) throw std::runtime_error("Unsupported non-property function local metadata");
+            function->variables.push_back(Describe(field)); child = field->property->nextField;
+        }
+        functions_.emplace(function->path, function); return function;
+    }
+    Value Decode(RuntimeObject& source, const PortableTaggedProperty& tag, const Value& zero) {
+        switch (zero.kind) {
+            case Kind::Bool:
+                if (tag.type == 3u) return Value::Bool(tag.boolValue);
+                break;
+            case Kind::Byte:
+                if (tag.type == 1u && tag.value.size() == 1u) return Value::Byte(tag.value.front());
+                break;
+            case Kind::Int:
+                if (tag.type == 2u && tag.value.size() == 4u) {
+                    std::int32_t value{}; std::memcpy(&value, tag.value.data(), 4u); return Value::Integer(value);
+                } break;
+            case Kind::Float:
+                if (tag.type == 4u && tag.value.size() == 4u) {
+                    float value{}; std::memcpy(&value, tag.value.data(), 4u); return Value::Float(value);
+                } break;
+            case Kind::Name:
+                if (tag.type == 6u) return Value::Text(Kind::Name, DecodePortableNameProperty(Table(source.sourcePath), tag));
+                break;
+            case Kind::Object:
+                if (tag.type == 5u || tag.type == 8u) return Value::Text(Kind::Object,
+                    Qualified(Table(source.sourcePath), DecodePortableObjectReference(tag)));
+                break;
+            case Kind::String:
+                if (tag.type == 13u) return Value::Text(Kind::String, DecodePortableStringProperty(tag));
+                break;
+            case Kind::Vector:
+                if (tag.type == 10u && tag.value.size() == 12u) {
+                    std::array<float, 3> value{}; std::memcpy(value.data(), tag.value.data(), 12u); return Value::Vector(value);
+                } break;
+            case Kind::Rotator:
+                if (tag.type == 10u && tag.value.size() == 12u) {
+                    std::array<std::int32_t, 3> value{}; std::memcpy(value.data(), tag.value.data(), 12u); return Value::Rotator(value);
+                } break;
+            default: break;
+        }
+        throw std::runtime_error("Unsupported/malformed authored property " + tag.name.ToString());
+    }
+    std::shared_ptr<Reference> ReferenceFor(RuntimeObject* object, const Property& property,
+        const std::uint32_t index, const bool defaults) {
+        auto result = std::make_shared<Reference>(); result->zero = property.zero;
+        result->read = [this, object, property, index, defaults]() { return Read(object, property, index, defaults); };
+        result->write = [this, object, property, index, defaults](const Value& value) {
+            if (defaults) throw std::runtime_error("Class-default mutation is not supported by actor VM host");
+            Touch(object);
+            object->scriptValues[LowerAscii(property.name)][index] = QuestVr::Vm::Coerce(value, property.zero);
+            object->committedScriptState = true;
+            UpdateClockProperty(object, property.name, index);
+        };
+        return result;
+    }
+    void Touch(RuntimeObject* object) {
+        if (!transaction_) throw std::runtime_error("VM mutation outside a transaction");
+        if (saved_.find(object) == saved_.end()) {
+            if (saved_.size() >= 4096u) throw std::runtime_error("VM touched actor budget exceeded");
+            saved_.emplace(object, Before{object->scriptValues, object->animationClock, object->committedScriptState});
+        }
+    }
+    std::string ObjectProperty(RuntimeObject* object, const char* name) {
+        if (const auto* value = FindScriptOverlay(object, name)) return value->text;
+        const auto own = object->objectPropertyPaths.find(name);
+        if (own != object->objectPropertyPaths.end()) return own->second;
+        for (RuntimeObject* cls = object->cls; cls != nullptr; cls = cls->base) {
+            const auto found = cls->objectPropertyPaths.find(name);
+            if (found != cls->objectPropertyPaths.end()) return found->second;
+        }
+        return {};
+    }
+    const PortableMeshAnimationData* AnimationMesh(RuntimeObject* object) {
+        const auto path = ObjectProperty(object, "Mesh");
+        if (path.empty()) return nullptr;
+        RuntimeObject* mesh = Object(path);
+        if (!mesh->lodMesh) {
+            // Decode immutable authored assets lazily. They are not actor state
+            // and may remain cached after a failed script transaction.
+            mesh->lodMesh = std::make_unique<PortableLodMesh>(LoadPortableLodMesh(Table(mesh->sourcePath), mesh->exportIndex));
+        }
+        return mesh->lodMesh->animation.get();
+    }
+    QuestVr::ActorAnimationClock AuthoredClock(RuntimeObject* object) {
+        const auto authored = ReadRuntimeAnimationSnapshot(object);
+        QuestVr::ActorAnimationClock clock;
+        clock.pose.main.sequence = authored.sequence; clock.pose.main.normalizedFrame = authored.frame;
+        clock.main.rate = authored.rate; clock.main.last = authored.last; clock.main.minRate = authored.minRate;
+        clock.main.tweenRate = authored.tweenRate; clock.main.oldRate = authored.oldRate;
+        clock.main.loop = authored.loop; clock.main.notify = authored.notify; clock.main.finished = authored.finished;
+        for (std::size_t slot = 0u; slot < clock.blends.size(); ++slot) {
+            const auto& source = authored.blends[slot];
+            clock.pose.blends[slot].sequence = source.sequence; clock.pose.blends[slot].normalizedFrame = source.frame;
+            clock.blends[slot].rate = source.rate; clock.blends[slot].last = source.last;
+            clock.blends[slot].minRate = source.minRate; clock.blends[slot].tweenRate = source.tweenRate;
+            clock.blends[slot].oldRate = source.oldRate;
+        }
+        return clock;
+    }
+    void Put(RuntimeObject* object, const char* name, const Value& value, const std::uint32_t index = 0u) {
+        object->scriptValues[LowerAscii(name)][index] = value;
+    }
+    void SynchronizeClock(RuntimeObject* object) {
+        const auto& clock = *object->animationClock;
+        Put(object, "AnimSequence", Value::Text(Kind::Name, clock.pose.main.sequence));
+        Put(object, "AnimFrame", Value::Float(clock.pose.main.normalizedFrame));
+        Put(object, "AnimRate", Value::Float(clock.main.rate)); Put(object, "AnimLast", Value::Float(clock.main.last));
+        Put(object, "AnimMinRate", Value::Float(clock.main.minRate)); Put(object, "TweenRate", Value::Float(clock.main.tweenRate));
+        Put(object, "OldAnimRate", Value::Float(clock.main.oldRate)); Put(object, "bAnimLoop", Value::Bool(clock.main.loop));
+        Put(object, "bAnimNotify", Value::Bool(clock.main.notify)); Put(object, "bAnimFinished", Value::Bool(clock.main.finished));
+    }
+    void UpdateClockProperty(RuntimeObject* object, const std::string& name, const std::uint32_t index) {
+        if (!object->animationClock) return;
+        // Preserve captured tween offsets while explicit script assignments
+        // update animation properties. Blend commands are not dispatched yet.
+        const auto previous = object->animationClock->pose;
+        const auto updated = AuthoredClock(object);
+        object->animationClock->main = updated.main;
+        object->animationClock->blends = updated.blends;
+        object->animationClock->pose = updated.pose;
+        object->animationClock->pose.main.previous = previous.main.previous;
+        for (std::size_t slot = 0u; slot < previous.blends.size(); ++slot)
+            object->animationClock->pose.blends[slot].previous = previous.blends[slot].previous;
+        (void)name; (void)index;
+    }
+    Value Region(RuntimeObject* object, const Value& zero) {
+        if (object->sourcePath.empty() || PackageStem(object->sourcePath) != persistentMapPackageName)
+            throw std::runtime_error("Actor.Region unavailable outside the current authored map");
+        if (!rootModel_) rootModel_ = LoadPortableRootModel68(Table(object->sourcePath));
+        const auto location = Read(object, PropertyNamed(object, "Location"), 0u);
+        if (location.kind != Kind::Vector || !std::isfinite(location.vector[0]) ||
+            !std::isfinite(location.vector[1]) || !std::isfinite(location.vector[2]))
+            throw std::runtime_error("Actor.Region has an invalid location");
+        std::uint32_t zone{}; std::int32_t leaf{};
+        if (!rootModel_->nodes.empty()) {
+            std::int32_t current{}; bool terminal{};
+            for (std::size_t steps = 0u; steps <= rootModel_->nodes.size(); ++steps) {
+                if (current < 0 || static_cast<std::size_t>(current) >= rootModel_->nodes.size())
+                    throw std::runtime_error("Actor.Region BSP reference out of range");
+                const auto& node = rootModel_->nodes[static_cast<std::size_t>(current)];
+                const float side = location.vector[0]*node.planeX + location.vector[1]*node.planeY +
+                    location.vector[2]*node.planeZ - node.planeW;
+                if (node.front >= 0 && side >= 0.0f) current = node.front;
+                else if (node.back >= 0 && side <= 0.0f) current = node.back;
+                else {
+                    zone = static_cast<std::uint32_t>(side >= 0.0f ? node.zone1 : node.zone0);
+                    leaf = side >= 0.0f ? node.leaf0 : node.leaf1; terminal = true; break;
+                }
+            }
+            if (!terminal) throw std::runtime_error("Actor.Region BSP traversal budget exceeded");
+        }
+        if (zone >= 64u) throw std::runtime_error("Actor.Region zone number out of range");
+        RuntimeObject* zoneObject{};
+        if (zone < rootModel_->zones.size() && rootModel_->zones[zone].actorReference != 0)
+            zoneObject = Object(Qualified(Table(object->sourcePath), rootModel_->zones[zone].actorReference));
+        if (zoneObject == nullptr) {
+            for (std::size_t index = persistentScriptExportCount; index < persistentRuntime->get()->exports.size(); ++index) {
+                auto* candidate = persistentRuntime->get()->exports[index];
+                if (IsDerivedFromPath(candidate->cls, "Engine.LevelInfo")) { zoneObject = candidate; break; }
+            }
+        }
+        if (zoneObject == nullptr) throw std::runtime_error("Actor.Region has no LevelInfo fallback");
+        Value result = zero;
+        result.fields["zone"] = Value::Text(Kind::Object, zoneObject->reflection.objectPath);
+        result.fields["ileaf"] = Value::Integer(leaf); result.fields["zonenumber"] = Value::Byte(static_cast<std::uint8_t>(zone));
+        return result;
+    }
+};
+
 }  // namespace
 
 PortableRuntimeSummary BuildAndVerifyPortableRuntime(
@@ -861,6 +1308,7 @@ PortableRuntimeSummary InitializePortableRuntime(
     };
     std::vector<PackageSlice> slices;
     persistentQualifiedObjects.clear();
+    persistentVmObjects.clear();
     for (const PortablePackageTables& package : packages) {
         PackageSlice slice;
         slice.package = &package;
@@ -875,6 +1323,7 @@ PortableRuntimeSummary InitializePortableRuntime(
                 persistentRuntime->get()->exports.size() - slice.first;
             persistentRuntime->get()->exports.push_back(object);
             persistentQualifiedObjects[reflection.objectPath] = object;
+            IndexRuntimeVmObject(reflection.objectPath, object);
         }
         slices.push_back(std::move(slice));
     }
@@ -1274,6 +1723,7 @@ PortableSound LoadPortableRuntimeSound(const std::string& objectPath) {
 }
 
 void ShutdownPortableRuntime() {
+    persistentVmObjects.clear();
     persistentRuntime.reset();
     persistentQualifiedObjects.clear();
     persistentMapTagIndex.clear();
@@ -1320,12 +1770,54 @@ PortableVmValue ExecutePortableFunction(const std::string& objectPath) {
     return EvaluateConstant(reader);
 }
 
+QuestVr::Vm::Result ExecutePortableActorFunction(const std::string& actorPath,
+    const std::string& functionName, const std::vector<QuestVr::Vm::Evaluation>& arguments,
+    const QuestVr::Vm::Limits& limits) {
+    try {
+        PortableActorVmHost host;
+        RuntimeObject* actor = host.Object(actorPath);
+        if (!actor->active || !IsDerivedFromPath(actor->cls, "Engine.Actor"))
+            throw std::runtime_error("Explicit VM receiver is not a live Engine.Actor");
+        const auto function = host.Member(actor, functionName);
+        return QuestVr::Vm::Execute(host, *function, actor->reflection.objectPath, arguments, limits);
+    } catch (const std::exception& error) {
+        QuestVr::Vm::Result result;
+        result.status = QuestVr::Vm::Status::Unsupported;
+        result.function = functionName; result.error = error.what();
+        return result;
+    }
+}
+
+QuestVr::Vm::Value ReadPortableActorScriptProperty(const std::string& actorPath,
+    const std::string& propertyName, const std::uint32_t arrayIndex) {
+    PortableActorVmHost host;
+    RuntimeObject* actor = host.Object(actorPath);
+    if (!actor->active || !IsDerivedFromPath(actor->cls, "Engine.Actor"))
+        throw std::runtime_error("Explicit VM receiver is not a live Engine.Actor");
+    const auto property = host.PropertyNamed(actor, propertyName);
+    if (arrayIndex >= property.arrayDimension)
+        throw std::runtime_error("VM property fixed-array index is out of range");
+    return host.Read(actor, property, arrayIndex);
+}
+
+bool GetPortableRuntimeUnsavedScriptState() {
+    if (!persistentRuntime || !persistentRuntime->get()) return false;
+    for (const auto* object : persistentRuntime->get()->exports)
+        if (object->committedScriptState) return true;
+    return false;
+}
+
 PortableMapRuntimeSummary LoadPortableRuntimeMap(
     const PortablePackageTables& package) {
     if (!persistentRuntime || !persistentRuntime->get()) {
         throw std::runtime_error("Cannot load a map without an initialized runtime");
     }
     PortableMapRuntimeSummary summary;
+    if (GetPortableRuntimeUnsavedScriptState()) {
+        __android_log_print(ANDROID_LOG_WARN, "quest_main",
+            "DeusExQuest: map replacement refused: committed script/animation state is not persisted");
+        return summary;
+    }
     summary.replacedExports = UnloadPortableRuntimeMap();
     persistentMapTagIndex.clear();
     const std::string packageName = PackageStem(package.sourcePath);
@@ -1339,6 +1831,7 @@ PortableMapRuntimeSummary LoadPortableRuntimeMap(
         object->exportIndex = persistentRuntime->get()->exports.size() - first;
         persistentRuntime->get()->exports.push_back(object);
         persistentQualifiedObjects[reflection.objectPath] = object;
+        IndexRuntimeVmObject(reflection.objectPath, object);
     }
 
     const auto resolve = [&](std::int32_t reference) {
@@ -1408,6 +1901,8 @@ PortableMapRuntimeSummary LoadPortableRuntimeMap(
 }
 
 std::size_t UnloadPortableRuntimeMap() {
+    if (GetPortableRuntimeUnsavedScriptState())
+        throw std::runtime_error("Map unload refused: committed script/animation state is not persisted");
     if (!persistentRuntime || !persistentRuntime->get() ||
         persistentRuntime->get()->exports.size() <= persistentScriptExportCount) {
         persistentMapPackageName.clear();
@@ -1421,6 +1916,7 @@ std::size_t UnloadPortableRuntimeMap() {
         for (auto it = persistentQualifiedObjects.begin();
              it != persistentQualifiedObjects.end();) {
             if (it->first.compare(0, prefix.size(), prefix) == 0) {
+                persistentVmObjects.erase(LowerAscii(it->first));
                 it = persistentQualifiedObjects.erase(it);
             } else {
                 ++it;
@@ -1456,6 +1952,7 @@ std::vector<PortableActorSnapshot> GetPortableRuntimeMapActors(bool includeInact
         snapshot.light = IsDerivedFromPath(object->cls, "Engine.Light");
         snapshot.activated = object->activated;
         const auto resolveInheritedObjectProperty = [&](const std::string& name) {
+            if (const auto* value = FindScriptOverlay(object, name.c_str())) return value->text;
             const auto instance = object->objectPropertyPaths.find(name);
             if (instance != object->objectPropertyPaths.end()) return instance->second;
             for (RuntimeObject* cls = object->cls; cls != nullptr; cls = cls->base) {
@@ -1530,6 +2027,8 @@ std::vector<PortableActorSnapshot> GetPortableRuntimeMapActors(bool includeInact
         snapshot.brushPath = resolveInheritedObjectProperty("Brush");
         snapshot.ambientSoundPath = resolveInheritedObjectProperty("AmbientSound");
         const auto readInheritedByte = [&](const char* name, std::uint8_t fallback) {
+            if (const auto* value = FindScriptOverlay(object, name))
+                return static_cast<std::uint8_t>(QuestVr::Vm::ToInt(*value));
             const PortableTaggedProperty* property = inheritedProperty(name);
             return property != nullptr && !property->value.empty()
                 ? property->value.front()
@@ -1543,8 +2042,7 @@ std::vector<PortableActorSnapshot> GetPortableRuntimeMapActors(bool includeInact
             if (hidden->type == 3u) snapshot.hidden = hidden->boolValue;
         }
         const auto readInheritedBool = [&](const char* name) {
-            const PortableTaggedProperty* property = inheritedProperty(name);
-            return property != nullptr && property->type == 3u && property->boolValue;
+            return ReadInheritedRuntimeBool(object, name);
         };
         snapshot.unlit = readInheritedBool("bUnlit");
         snapshot.noSmooth = readInheritedBool("bNoSmooth");
@@ -1584,6 +2082,28 @@ std::vector<PortableActorSnapshot> GetPortableRuntimeMapActors(bool includeInact
                     std::isfinite(snapshot.y) && std::isfinite(snapshot.z);
                 break;
             }
+        }
+        // VM assignments live in an explicit per-actor overlay. Geometry must
+        // consume these same values, not continue displaying authored tags.
+        if (const auto* value = FindScriptOverlay(object, "DrawScale"))
+            snapshot.drawScale = QuestVr::Vm::ToFloat(*value);
+        if (const auto* value = FindScriptOverlay(object, "DrawScale3D")) {
+            snapshot.drawScaleX = value->vector[0]; snapshot.drawScaleY = value->vector[1];
+            snapshot.drawScaleZ = value->vector[2];
+        }
+        if (const auto* value = FindScriptOverlay(object, "PrePivot")) {
+            snapshot.prePivotX = value->vector[0]; snapshot.prePivotY = value->vector[1];
+            snapshot.prePivotZ = value->vector[2];
+        }
+        if (const auto* value = FindScriptOverlay(object, "Rotation")) {
+            snapshot.pitch = value->rotation[0]; snapshot.yaw = value->rotation[1];
+            snapshot.roll = value->rotation[2];
+        }
+        if (const auto* value = FindScriptOverlay(object, "bHidden"))
+            snapshot.hidden = QuestVr::Vm::ToBool(*value);
+        if (const auto* value = FindScriptOverlay(object, "Location")) {
+            snapshot.x = value->vector[0]; snapshot.y = value->vector[1]; snapshot.z = value->vector[2];
+            snapshot.hasLocation = std::isfinite(snapshot.x) && std::isfinite(snapshot.y) && std::isfinite(snapshot.z);
         }
         snapshots.push_back(std::move(snapshot));
     }
@@ -2108,6 +2628,13 @@ bool VerifyPortableRuntimeInteraction() {
 
 bool SavePortableRuntimeState(const std::string& path) {
     if (!persistentRuntime || !persistentRuntime->get()) return false;
+    // Do not truncate a save that cannot represent committed VM properties or
+    // native tween history. v1-v3 persist only the existing gameplay facade.
+    if (GetPortableRuntimeUnsavedScriptState()) {
+        __android_log_print(ANDROID_LOG_WARN, "quest_main",
+            "DeusExQuest: save refused: v3 cannot preserve committed script/animation state");
+        return false;
+    }
     std::vector<std::string> inactive;
     std::vector<std::string> activated;
     std::vector<std::pair<std::string, float>> damaged;
@@ -2245,6 +2772,12 @@ static bool ReadPortableRuntimeState(const std::string& path, const bool apply) 
     }
     std::unordered_set<std::string> restoredApplied(applied.begin(), applied.end());
     if (!apply) return true;
+    // A valid legacy checkpoint restores authored actor properties. Clearing
+    // happens only after complete validation, never during save inspection.
+    for (RuntimeObject* object : persistentRuntime->get()->exports) {
+        object->scriptValues.clear(); object->animationClock.reset();
+        object->committedScriptState = false;
+    }
     for (std::size_t index = persistentScriptExportCount;
          index < persistentRuntime->get()->exports.size(); ++index) {
         RuntimeObject* object = persistentRuntime->get()->exports[index];
