@@ -1,5 +1,44 @@
 # Port status
 
+## Quest launch responsiveness and headset handoff (2026-10-08)
+
+- Installing commit `9e4779f` preserved the user's data, but PID 8666 then
+  exited with Android reason 6 (ANR): MainActivity had no focused window while
+  synchronous session startup prepared Training. The launch intent being
+  accepted did not prove a working game. This build supersedes that test APK.
+- Session initialization now launches one owned CPU preparation worker and
+  returns to Android/OpenXR event processing immediately. The worker prepares
+  the original runtime, cache, static lighting, actor materials, Persona artwork
+  and PCM audio into a private result. While it owns runtime/GC/name tables,
+  gameplay, map retries and diagnostic commands stay disabled.
+- The frame thread polls readiness without waiting, commits the result only
+  after `future.get()` transfers ownership, opens AAudio/Persona graphics on the
+  main thread and reuses the existing staged world/actor GPU uploads. Loading
+  and startup failure have distinct HUD messages instead of appearing dead.
+- Session/application teardown joins an unfinished worker before runtime/GC
+  destruction. This prevents detached work or stale data, but teardown during
+  expensive preparation can still wait; cooperative cancellation is unfinished.
+- Replacement ARM64 APK installed successfully with `adb install -r` on Quest
+  serial `2G0YC5ZG620985`; no uninstall or data clearing. PID 10891 returned from
+  session initialization at 08:12:50.789 and reported valid head tracking at
+  08:12:50.893. The original Training lightmap bake completed on-device: 5,032
+  surfaces, 1,156,691 pixels and 2,764,021 shadowed mask samples. Its staged
+  visual transition completed at 08:13:30.083 with 1,308 runtime actors and
+  24,229 BSP collision triangles; the nearby stream contained nine vertex
+  meshes, four mover brushes, zero cube placeholders and zero omitted poses.
+- Inspected actual 1680x1760 Quest eye captures of Training/HUD and all four
+  enabled Persona pages: Inventory, Health, Goals/Notes and Logs. Original art
+  and bitmap text render. These are real empty-start runtime pages, not
+  populated inventory/progression fixtures or proof of controller interaction.
+- The process remained alive through menu/capture testing; exit history still
+  showed the earlier PID 8666 ANR, not a new exit for PID 10891. Idle windows
+  report 72.0 fps / 13.89 ms worst. Initial staged preparation peaked at 83.33 ms;
+  diagnostic screenshot readback windows peaked at 291.65 ms and need later
+  performance work. The 26 ordinary host tests still pass; two optional
+  original-data tests skip by default. APK signature scheme v2 verifies.
+- Full campaign completion is not claimed by this handoff. See
+  [QUEST-TEST-BUILD.md](QUEST-TEST-BUILD.md) for testing controls and boundaries.
+
 ## Scoped script saves and current test build (2026-10-08)
 
 - Runtime v4 preserves supported original actor property overlays and complete
@@ -32,8 +71,8 @@
   form. HDR range checks remain strict, with surface/RGB diagnostics. The
   fix passes 196,608 near-radius controls and an explicit negative FMA fixture;
   the final ARM64 APK builds successfully and the final host suite is green.
-  The headset disconnected before the diagnostic/final build could be rechecked;
-  do not treat this correction as confirmed on-device until launch is verified.
+  Its first final-APK installation subsequently exposed the independent Android
+  startup ANR above, before a completed lighting result could be observed.
 - Full authored startup, AI/state/latent execution, timers/spawned actors,
   campaign archiving/progression, live GPU animation and performance remain
   unfinished. This is an installable test build, not full campaign completion.

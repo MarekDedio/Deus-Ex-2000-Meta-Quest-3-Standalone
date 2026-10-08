@@ -325,6 +325,10 @@ enum class PersonaPage : std::uint8_t {
 };
 
 class DeusExQuestApp final : public OVRFW::XrApp {
+    struct InitialPreparation;
+    struct PersonaPreparation;
+    struct AmbientPreparation;
+
    public:
     DeusExQuestApp() {
         BackgroundColor = OVR::Vector4f(0.005f, 0.01f, 0.008f, 1.0f);
@@ -374,6 +378,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
     }
 
     void AppShutdown(const xrJava* context) override {
+        DiscardInitialPreparation();
         inventoryLabel_ = personaTabsLabel_ = personaDetailsLabel_ = personaFooterLabel_ = nullptr;
         hudLabel_ = nullptr;
         ui_.Shutdown();
@@ -383,12 +388,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         OVRFW::XrApp::AppShutdown(context);
     }
 
-    bool SessionInit() override {
-        hasPreviousHeadStage_ = false;
-        headTrackingReported_ = false;
-        needsTrackingRebase_ = false;
-        pendingReferenceChanges_.clear();
-        hasTransitionHeadAnchor_ = false;
+    static bool ValidateInitialRuntime() {
         try {
             static constexpr const char* packageNames[] = {
                 "ConSys",
@@ -564,10 +564,23 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             ALOG("DeusExQuest: persistent Unreal runtime failed: %s", error.what());
             return false;
         }
-        // Bootstrap above deliberately leaves a fresh Training runtime. A new
-        // XR session must not retain a previous map name/pose and build that
-        // map's BSP against Training actors. User quicksaves remain untouched;
-        // automatic cross-session runtime resume is not implemented here.
+        return true;
+    }
+
+    bool SessionInit() override {
+        // No prior-session worker may retain ownership of the global portable
+        // runtime/name tables when this session starts another bootstrap.
+        DiscardInitialPreparation();
+        hasPreviousHeadStage_ = false;
+        headTrackingValid_ = false;
+        headTrackingReported_ = false;
+        needsTrackingRebase_ = false;
+        pendingReferenceChanges_.clear();
+        hasTransitionHeadAnchor_ = false;
+        // The worker will leave a fresh Training runtime. Reset the matching
+        // map/pose now rather than retaining a previous session's destination.
+        // User quicksaves remain untouched; automatic cross-session runtime
+        // resume is not implemented here.
         currentMapName_ = "00_Training";
         currentMapIndex_ = 0u;
         worldPosition_ = {};
@@ -575,6 +588,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         sceneYaw_ = 0.0f;
         selectedInventoryIndex_ = 0u;
         personaPage_ = PersonaPage::Inventory;
+        personaOriginalTextReady_ = false;
         SetInventoryMenuOpen(false);
         ClearPendingConversation();
         InvalidateDialogueAudio();
@@ -590,51 +604,28 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         restorePoseAfterTransition_ = false;
         mapTravelCooldown_ = 3.0f;
         turnLatch_ = fireLatch_ = inventoryCycleLatch_ = false;
-        ALOG("DeusExQuest: new XR session starts with matching Training runtime/map/pose; quicksave resume remains available via X");
-        runtimeAvailable_ = true;
-        LoadMapCatalog();
+        runtimeAvailable_ = false;
+        initialPreparationPending_ = true;
+        initialPreparationFailed_ = false;
+        pendingMapName_.clear();
+        transitionMapName_.clear();
+        transitionPhase_ = MapTransitionPhase::Idle;
+        mapNames_.clear();
+        if (hudLabel_ != nullptr) hudLabel_->SetText("DEUS EX VR\nSTARTING... PREPARING GAME DATA");
         try {
-            if (!BuildQuestMapCache(gameRoot_, currentMapName_.c_str()))
-                throw std::runtime_error("generic initial map cache build failed");
-            const auto trainingMap = LoadPortablePackageTables(
-                std::string(gameRoot_) + "/Maps/" + currentMapName_ + ".dx");
-            preparedActorSnapshots_ = GetPortableRuntimeMapActors();
-            preparedWorldMesh_ = LoadWorldMeshCacheCpu();
-            if (!preparedWorldMesh_.passed)
-                throw std::runtime_error("initial DXQM/DXQS mesh cache read failed");
-            PrepareWorldStaticLightmaps(trainingMap,preparedActorSnapshots_,preparedWorldMesh_);
-            preparedMapLights_ = BuildMapLights(preparedActorSnapshots_,preparedWorldMesh_.lightmap.unrealOrigin);
-            preparedWorldTexture_ = LoadWorldTextureCacheCpu();
-            preparedActorTextures_ = BuildPortableRuntimeActorTextureArray(96,96);
-            if (!preparedWorldTexture_.passed || !preparedActorTextures_.passed)
-                throw std::runtime_error("initial material/actor texture preparation failed");
-            if (!StartAmbientAudio()) {
-                ALOG("DeusExQuest: ambient AAudio initialization failed");
-            } else {
-                preparedSpatialAudioEmitters_ = PrepareSpatialAudioEmitters(
-                    preparedActorSnapshots_,audioSampleRate_,preparedWorldMesh_.lightmap.unrealOrigin);
-            }
-            // Reuse the same staged GPU path as level transitions. Initial
-            // SessionInit does not perform an unbounded full-world upload.
-            transitionMapName_ = currentMapName_;
-            transitionPhase_ = MapTransitionPhase::WorldTextureAllocate;
+            initialPreparationFuture_ = std::async(std::launch::async, [] {
+                return PrepareInitialRuntime();
+            });
         } catch (const std::exception& error) {
-            ALOG("DeusExQuest: initial static world preparation failed: %s",error.what());
-            preparedWorldMesh_ = {};
-            preparedWorldTexture_ = {};
-            preparedActorTextures_ = {};
-            preparedActorSnapshots_.clear();
-            preparedMapLights_.clear();
-            preparedSpatialAudioEmitters_.clear();
-            ClearPendingStaticLightmapUpload();
-            DestroySceneGeometry();
-            StopAmbientAudio();
-            runtimeAvailable_ = false;
-            ShutdownPortableRuntime();
-            return false;
+            initialPreparationPending_ = false;
+            initialPreparationFailed_ = true;
+            interactionStatus_ = error.what();
+            if (hudLabel_ != nullptr) hudLabel_->SetText("DEUS EX VR\nSTARTUP FAILED\n%s", error.what());
+            ALOG("DeusExQuest: initial worker could not start: %s", error.what());
         }
-        LoadOriginalPersonaBackground();
-        ALOG("DeusExQuest: project-owned OpenXR runtime initialized");
+        // Meta's main loop cannot pump Android window/resume/input or OpenXR
+        // events until this returns. The worker owns all CPU/runtime work.
+        ALOG("DeusExQuest: XR session startup returned; game data preparation pending");
         return true;
     }
 
@@ -703,6 +694,18 @@ class DeusExQuestApp final : public OVRFW::XrApp {
     }
 
     void Update(const OVRFW::ovrApplFrameIn& frame) override {
+        CompleteInitialPreparation();
+        if (initialPreparationPending_ || initialPreparationFailed_) {
+            // The bootstrap is the sole owner of portable runtime and NameString
+            // storage. No map retry, mailbox diagnostic or gameplay query is safe.
+            if (headTrackingValid_ && hudLabel_ != nullptr) {
+                OVR::Posef pose = frame.HeadPose;
+                pose.Translation += frame.HeadPose.Rotation.Rotate({0.0f, -0.24f, -0.78f});
+                hudLabel_->SetLocalPose(pose);
+                ui_.Update(frame);
+            }
+            return;
+        }
         PollDialogueAudioDecode();
         if (interactionStatusSeconds_ > 0.0f) {
             interactionStatusSeconds_ = std::max(
@@ -996,7 +999,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                     playerHealth,
                     inventoryCount,
                     selectedItem.c_str(),
-                    playerHealth <= 0.0f
+                    mapLoadingNow ? "PREPARING WORLD..." : playerHealth <= 0.0f
                         ? "DEAD - PRESS X TO QUICK-LOAD"
                         : (interactionStatus_.empty() ? "READY" : interactionStatus_.c_str()));
                 displayedInventoryCount_ = inventoryCount;
@@ -1072,6 +1075,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
     }
 
     void SessionEnd() override {
+        DiscardInitialPreparation();
         CancelActorGeometryBuild();
         ClearPendingConversation();
         InvalidateDialogueAudio();
@@ -1263,6 +1267,128 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         std::vector<SpatialAudioEmitter> spatialAudioEmitters;
         std::vector<MapLight> lights;
     };
+
+    struct AmbientPreparation {
+        bool passed{};
+        std::uint32_t sampleRate{};
+        std::vector<std::int16_t> samples;
+    };
+
+    struct PersonaPreparation {
+        bool passed{};
+        bool originalTextReady{};
+        PortablePackageTables uiPackage;
+        QuestVr::PersonaUiChrome chrome;
+        PortableBitmapFont headerFont;
+        PortableBitmapFont bodyFont;
+        std::array<std::vector<std::uint8_t>, 4> pageBaseRgba;
+    };
+
+    struct InitialPreparation {
+        bool passed{};
+        std::string error;
+        MapPreparation map;
+        std::vector<std::string> mapNames;
+        AmbientPreparation ambient;
+        PersonaPreparation persona;
+    };
+
+    static InitialPreparation PrepareInitialRuntime() {
+        InitialPreparation preparation;
+        try {
+            if (!ValidateInitialRuntime())
+                throw std::runtime_error("initial portable runtime validation failed; see quest_main log");
+            preparation.mapNames = ReadMapCatalog();
+            if (!BuildQuestMapCache(gameRoot_, "00_Training"))
+                throw std::runtime_error("generic initial map cache build failed");
+            const auto trainingMap = LoadPortablePackageTables(
+                std::string(gameRoot_) + "/Maps/00_Training.dx");
+            auto& map = preparation.map;
+            map.actors = GetPortableRuntimeMapActors();
+            map.worldMesh = LoadWorldMeshCacheCpu();
+            if (!map.worldMesh.passed)
+                throw std::runtime_error("initial DXQM/DXQS mesh cache read failed");
+            PrepareWorldStaticLightmaps(trainingMap, map.actors, map.worldMesh);
+            map.lights = BuildMapLights(map.actors, map.worldMesh.lightmap.unrealOrigin);
+            map.worldTexture = LoadWorldTextureCacheCpu();
+            map.actorTextures = BuildPortableRuntimeActorTextureArray(96, 96);
+            if (!map.worldTexture.passed || !map.actorTextures.passed)
+                throw std::runtime_error("initial material/actor texture preparation failed");
+            preparation.ambient = PrepareAmbientAudio();
+            map.spatialAudioEmitters = PrepareSpatialAudioEmitters(
+                map.actors, preparation.ambient.sampleRate, map.worldMesh.lightmap.unrealOrigin);
+            preparation.persona = PrepareOriginalPersonaBackground();
+            map.passed = map.runtimeAvailable = true;
+            preparation.passed = true;
+        } catch (const std::exception& error) {
+            preparation.error = error.what();
+            ALOG("DeusExQuest: initial CPU preparation failed: %s", error.what());
+            // The startup worker is still the exclusive runtime/GC owner.
+            ShutdownPortableRuntime();
+        }
+        return preparation;
+    }
+
+    void CompleteInitialPreparation() {
+        if (!initialPreparationPending_ || !initialPreparationFuture_.valid() ||
+            initialPreparationFuture_.wait_for(std::chrono::seconds(0)) != std::future_status::ready)
+            return;
+        InitialPreparation preparation;
+        try {
+            preparation = initialPreparationFuture_.get();
+        } catch (const std::exception& error) {
+            preparation.error = error.what();
+            ShutdownPortableRuntime();
+        }
+        initialPreparationPending_ = false;
+        if (!preparation.passed) {
+            initialPreparationFailed_ = true;
+            runtimeAvailable_ = false;
+            interactionStatus_ = preparation.error;
+            if (hudLabel_ != nullptr) hudLabel_->SetText(
+                "DEUS EX VR\nSTARTUP FAILED\n%s", preparation.error.c_str());
+            ALOG("DeusExQuest: startup failed; runtime controls remain disabled: %s",
+                 preparation.error.c_str());
+            return;
+        }
+        // get() is the ownership barrier: only now may the frame thread read
+        // runtime/name tables or publish worker-owned data to audio/UI/GL.
+        mapNames_ = std::move(preparation.mapNames);
+        const auto current = std::find(mapNames_.begin(), mapNames_.end(), currentMapName_);
+        currentMapIndex_ = current == mapNames_.end() ? 0u :
+            static_cast<std::size_t>(current - mapNames_.begin());
+        if (!StartAmbientAudio(std::move(preparation.ambient))) {
+            preparation.map.spatialAudioEmitters.clear();
+            ALOG("DeusExQuest: ambient AAudio initialization failed");
+        }
+        CommitOriginalPersonaBackground(std::move(preparation.persona));
+        preparedActorSnapshots_ = std::move(preparation.map.actors);
+        preparedActorTextures_ = std::move(preparation.map.actorTextures);
+        preparedWorldTexture_ = std::move(preparation.map.worldTexture);
+        preparedWorldMesh_ = std::move(preparation.map.worldMesh);
+        preparedSpatialAudioEmitters_ = std::move(preparation.map.spatialAudioEmitters);
+        preparedMapLights_ = std::move(preparation.map.lights);
+        runtimeAvailable_ = true;
+        transitionMapName_ = currentMapName_;
+        transitionPhase_ = MapTransitionPhase::WorldTextureAllocate;
+        displayedInventoryCount_ = invalidRendererIndex_;
+        ALOG("DeusExQuest: initial CPU preparation committed; staged Training GPU upload pending");
+    }
+
+    void DiscardInitialPreparation() {
+        if (initialPreparationFuture_.valid()) {
+            // Shutdown cannot tear down global runtime/GC/name state while the
+            // worker is still constructing it. Never overwrite a live future.
+            try {
+                initialPreparationFuture_.get();
+            } catch (const std::exception& error) {
+                ALOG("DeusExQuest: discarded startup worker failed: %s", error.what());
+            }
+            ShutdownPortableRuntime();
+        }
+        initialPreparationPending_ = false;
+        initialPreparationFailed_ = false;
+    }
 
     struct InteractiveActor {
         OVR::Vector3f localPosition;
@@ -1895,8 +2021,8 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         oversizedCollisionTriangles_.clear();
     }
 
-    void LoadMapCatalog() {
-        mapNames_.clear();
+    static std::vector<std::string> ReadMapCatalog() {
+        std::vector<std::string> mapNames;
         std::FILE* file = std::fopen(
             "/data/user/0/dev.deusex.questvr.smoketest/files/DeusEx/quest-map-catalog.txt", "rb");
         if (file != nullptr) {
@@ -1907,19 +2033,16 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                 std::string map(fileName);
                 if (map.size() > 3 && map.substr(map.size() - 3) == ".dx") {
                     map.resize(map.size() - 3);
-                    mapNames_.push_back(std::move(map));
+                    mapNames.push_back(std::move(map));
                 }
             }
             std::fclose(file);
         }
-        if (mapNames_.empty()) {
-            mapNames_ = {"00_Training", "00_TrainingCombat", "00_TrainingFinal"};
+        if (mapNames.empty()) {
+            mapNames = {"00_Training", "00_TrainingCombat", "00_TrainingFinal"};
         }
-        const auto current = std::find(mapNames_.begin(), mapNames_.end(), currentMapName_);
-        currentMapIndex_ = current == mapNames_.end()
-            ? 0u
-            : static_cast<std::size_t>(current - mapNames_.begin());
-        ALOG("DeusExQuest: visual map catalog ready with %zu levels", mapNames_.size());
+        ALOG("DeusExQuest: visual map catalog ready with %zu levels", mapNames.size());
+        return mapNames;
     }
 
     bool AdvanceMapTransition() {
@@ -2736,9 +2859,8 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         return separator == std::string::npos ? path : path.substr(separator + 1u);
     }
 
-    void LoadOriginalPersonaBackground() {
-        if (inventoryLabel_ == nullptr) return;
-        personaOriginalTextReady_ = false;
+    static PersonaPreparation PrepareOriginalPersonaBackground() {
+        PersonaPreparation preparation;
         try {
             const PortablePackageTables uiPackage = LoadPortablePackageTables(
                 std::string(gameRoot_) + "/System/DeusExUI.u");
@@ -2773,12 +2895,12 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                             decode("HealthOverlays_1"), decode("HealthOverlays_2")}};
                         QuestVr::AddPersonaHealthBody(canvas, body, overlays);
                     }
-                    personaPageBaseRgba_[page] = std::move(canvas.rgba);
+                    preparation.pageBaseRgba[page] = std::move(canvas.rgba);
                     ALOG("DeusExQuest: original Persona page %zu artwork ready at 640x480", page);
                 } catch (const std::exception& error) {
                     if (page == static_cast<std::size_t>(PersonaPage::Inventory)) throw;
                     // Never reuse inventory artwork for an unrelated page.
-                    personaPageBaseRgba_[page].assign(
+                    preparation.pageBaseRgba[page].assign(
                         QuestVr::kPersonaCanvasWidth * QuestVr::kPersonaCanvasHeight * 4u, 0u);
                     ALOG("DeusExQuest: Persona page %zu artwork unavailable; text-only: %s",
                          page, error.what());
@@ -2791,37 +2913,55 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                         image.width, image.height, std::move(image.rgba)};
                 };
                 for (std::size_t index = 0u; index < 3u; ++index) {
-                    personaChrome_.navigationBackgrounds[index] = uiImage(
+                    preparation.chrome.navigationBackgrounds[index] = uiImage(
                         "PersonaNavBarBackground_" + std::to_string(index + 1u));
-                    personaChrome_.navigationBorders[index] = uiImage(
+                    preparation.chrome.navigationBorders[index] = uiImage(
                         "PersonaNavBarBorder_" + std::to_string(index + 1u));
                 }
-                personaChrome_.normalButton = {{
+                preparation.chrome.normalButton = {{
                     uiImage("PersonaActionButtonNormal_Left"),
                     uiImage("PersonaActionButtonNormal_Center"),
                     uiImage("PersonaActionButtonNormal_Right")}};
-                personaChrome_.filler = uiImage("PersonaButtonFiller");
-                personaHeaderFont_ = DecodePortableBitmapFont(uiPackage, "FontMenuHeaders");
-                personaBodyFont_ = DecodePortableBitmapFont(uiPackage, "FontMenuSmall");
+                preparation.chrome.filler = uiImage("PersonaButtonFiller");
+                preparation.headerFont = DecodePortableBitmapFont(uiPackage, "FontMenuHeaders");
+                preparation.bodyFont = DecodePortableBitmapFont(uiPackage, "FontMenuSmall");
                 // Validate all chrome and captions before hiding fallback text.
                 QuestVr::PersonaUiImage validation{
                     QuestVr::kPersonaCanvasWidth, QuestVr::kPersonaCanvasHeight,
-                    personaPageBaseRgba_[0]};
+                    preparation.pageBaseRgba[0]};
                 const auto glyph = [&](const std::uint32_t character) {
-                    return GetPortableBitmapGlyph(personaHeaderFont_, character);
+                    return GetPortableBitmapGlyph(preparation.headerFont, character);
                 };
-                QuestVr::DrawPersonaNavigation(validation, personaChrome_, personaHeaderFont_,
+                QuestVr::DrawPersonaNavigation(validation, preparation.chrome, preparation.headerFont,
                     QuestVr::PersonaUiPage::Inventory, glyph);
-                QuestVr::DrawPersonaVrActions(validation, personaChrome_, personaHeaderFont_,
+                QuestVr::DrawPersonaVrActions(validation, preparation.chrome, preparation.headerFont,
                     QuestVr::PersonaUiPage::Inventory, glyph);
-                personaOriginalTextReady_ = true;
+                preparation.originalTextReady = true;
                 ALOG("DeusExQuest: original Persona bitmap fonts and button chrome ready; headers=%zu body=%zu glyphs",
-                    personaHeaderFont_.glyphs.size(), personaBodyFont_.glyphs.size());
+                    preparation.headerFont.glyphs.size(), preparation.bodyFont.glyphs.size());
             } catch (const std::exception& error) {
-                personaOriginalTextReady_ = false;
+                preparation.originalTextReady = false;
                 ALOG("DeusExQuest: original Persona font/chrome unavailable; SDK text fallback: %s",
                     error.what());
             }
+            preparation.uiPackage = uiPackage;
+            preparation.passed = true;
+        } catch (const std::exception& error) {
+            ALOG("DeusExQuest: original Persona CPU preparation unavailable; text-only fallback: %s",
+                 error.what());
+        }
+        return preparation;
+    }
+
+    void CommitOriginalPersonaBackground(PersonaPreparation preparation) {
+        if (inventoryLabel_ == nullptr || !preparation.passed) return;
+        personaOriginalTextReady_ = preparation.originalTextReady;
+        personaPageBaseRgba_ = std::move(preparation.pageBaseRgba);
+        personaChrome_ = std::move(preparation.chrome);
+        personaHeaderFont_ = std::move(preparation.headerFont);
+        personaBodyFont_ = std::move(preparation.bodyFont);
+        personaUiPackage_ = std::move(preparation.uiPackage);
+        try {
             const std::uint32_t width = QuestVr::kPersonaCanvasWidth;
             const std::uint32_t height = QuestVr::kPersonaCanvasHeight;
             const auto& rgba = personaPageBaseRgba_[static_cast<std::size_t>(PersonaPage::Inventory)];
@@ -2845,7 +2985,6 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             personaRenderer_.Init(OVRFW::GlTexture(
                 texture, GL_TEXTURE_2D, static_cast<int>(width), static_cast<int>(height)));
             inventoryLabel_->SetSurfaceVisible(0, false);
-            personaUiPackage_ = uiPackage;
             personaTextureId_ = texture;
             personaTextureWidth_ = width;
             personaTextureHeight_ = height;
@@ -4029,11 +4168,12 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             pendingDialogueActorPath_.c_str());
     }
 
-    bool StartAmbientAudio() {
+    static AmbientPreparation PrepareAmbientAudio() {
+        AmbientPreparation preparation;
         constexpr const char* path =
             "/data/user/0/dev.deusex.questvr.smoketest/files/DeusEx/quest-ambient.wav";
         std::FILE* file = std::fopen(path, "rb");
-        if (file == nullptr) return false;
+        if (file == nullptr) return {};
         std::fseek(file, 0, SEEK_END);
         const long fileSize = std::ftell(file);
         std::fseek(file, 0, SEEK_SET);
@@ -4042,7 +4182,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             std::fread(wav.data(), 1, wav.size(), file) == wav.size();
         std::fclose(file);
         if (!read || wav.size() < 12 || std::memcmp(wav.data(), "RIFF", 4) != 0 ||
-            std::memcmp(wav.data() + 8, "WAVE", 4) != 0) return false;
+            std::memcmp(wav.data() + 8, "WAVE", 4) != 0) return {};
 
         std::uint16_t format{}, channels{}, bits{};
         std::uint32_t sampleRate{};
@@ -4051,7 +4191,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         for (std::size_t offset = 12; offset + 8 <= wav.size();) {
             const std::uint32_t chunkSize = ReadLe32(wav.data() + offset + 4);
             const std::size_t dataOffset = offset + 8;
-            if (dataOffset + chunkSize > wav.size()) return false;
+            if (dataOffset + chunkSize > wav.size()) return {};
             if (std::memcmp(wav.data() + offset, "fmt ", 4) == 0 && chunkSize >= 16) {
                 format = ReadLe16(wav.data() + dataOffset);
                 channels = ReadLe16(wav.data() + dataOffset + 2);
@@ -4065,10 +4205,10 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         }
         if (format != 1 || (channels != 1 && channels != 2) ||
             (bits != 8 && bits != 16) || sampleRate < 8000 || sampleRate > 192000 ||
-            pcm == nullptr || pcmBytes == 0) return false;
+            pcm == nullptr || pcmBytes == 0) return {};
         const std::size_t bytesPerSample = bits / 8u;
         const std::size_t frames = pcmBytes / (channels * bytesPerSample);
-        ambientSamples_.resize(frames * 2u);
+        preparation.samples.resize(frames * 2u);
         for (std::size_t frame = 0; frame < frames; ++frame) {
             for (std::size_t outputChannel = 0; outputChannel < 2; ++outputChannel) {
                 const std::size_t sourceChannel = channels == 1 ? 0 : outputChannel;
@@ -4077,10 +4217,21 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                     ? static_cast<std::int16_t>(
                           (static_cast<std::int32_t>(pcm[source]) - 128) << 8)
                     : static_cast<std::int16_t>(ReadLe16(pcm + source));
-                ambientSamples_[frame * 2u + outputChannel] = sample;
+                preparation.samples[frame * 2u + outputChannel] = sample;
             }
         }
-        audioSampleRate_ = sampleRate;
+        preparation.sampleRate = sampleRate;
+        preparation.passed = true;
+
+        return preparation;
+    }
+
+    bool StartAmbientAudio(AmbientPreparation preparation) {
+        if (!preparation.passed) return false;
+        ambientSamples_ = std::move(preparation.samples);
+        audioSampleRate_ = preparation.sampleRate;
+        const std::uint32_t sampleRate = audioSampleRate_;
+        const std::size_t frames = ambientSamples_.size() / 2u;
 
         AAudioStreamBuilder* builder{};
         if (AAudio_createStreamBuilder(&builder) != AAUDIO_OK) return false;
@@ -4957,7 +5108,10 @@ class DeusExQuestApp final : public OVRFW::XrApp {
     float restoredMapLocalHeadYaw_{};
     float restoredSceneYaw_{};
     std::string pendingMapName_;
-    bool runtimeAvailable_{true};
+    bool runtimeAvailable_{};
+    bool initialPreparationPending_{};
+    bool initialPreparationFailed_{};
+    std::future<InitialPreparation> initialPreparationFuture_;
     std::future<MapPreparation> mapCacheFuture_;
     std::string transitionMapName_;
     MapTransitionPhase transitionPhase_{MapTransitionPhase::Idle};
