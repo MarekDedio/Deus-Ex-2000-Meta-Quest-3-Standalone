@@ -293,6 +293,11 @@ QuestVr::Vm::Result ExecutePortableActorFunction(
 QuestVr::Vm::Value ReadPortableActorScriptProperty(
     const std::string& actorPath, const std::string& propertyName,
     std::uint32_t arrayIndex = 0u);
+// Read-only contiguous fixed-array slots using one property resolution. Count
+// must be 1..1024, and the complete range must fit the actual declaration.
+std::vector<QuestVr::Vm::Value> ReadPortableActorScriptPropertySlots(
+    const std::string& actorPath, const std::string& propertyName,
+    std::uint32_t firstIndex, std::uint32_t count);
 // Read-only authored metadata, not an active AI frame or a resumable state.
 // Requires the indexed vector-package initialization path used by the game,
 // not the single-package lifecycle-verification helper. Descriptors are loaded

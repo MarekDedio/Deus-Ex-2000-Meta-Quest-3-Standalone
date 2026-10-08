@@ -130,6 +130,9 @@ read-only wrong-map rejection, legacy reset and guarded travel. Its legacy
 gameplay prefix retains unordered collection order and is not byte-canonical.
 
 The separate final-source original actor integration also completed exit 0.
+The following results describe the state-execution batch before
+[authored struct support](AUTHORED-STRUCTS.md); its InventoryItem refusal is a
+historical boundary, not the newer struct decoder's verification result.
 It checks all 1,502 Classes/261 States and terminal labels, existing helpers and
 reference/Level gates, Physics-only v4/legacy restoration, state-only and selected
 v5 frame roundtrips, twelve malformed-state controls, stopped/end-ordinal and

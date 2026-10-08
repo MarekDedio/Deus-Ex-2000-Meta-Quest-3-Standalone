@@ -8,6 +8,7 @@
 #include <string>
 #include <vector>
 #include <optional>
+#include <functional>
 #include "quest_mesh_animation.h"
 
 struct PortablePackageTables {
@@ -154,6 +155,18 @@ struct PortableStateDescriptor {
     std::uint32_t stateFlags{};
 };
 
+// Exact serialized UField/UStruct metadata of an actual Core.Struct export.
+// Raw compact-index bytes and normalized bytecode are retained separately.
+// This describes authored schema; it does not execute script or lay out values.
+struct PortableStructDescriptor {
+    std::string objectPath;
+    std::int32_t baseField{}, nextField{}, scriptText{}, children{};
+    NameString friendlyName;
+    std::uint32_t line{}, textPos{}, logicalSize{};
+    std::vector<std::uint8_t> rawBytes;
+    std::vector<std::uint8_t> bytecode;
+};
+
 // Common UField prefix of Struct/Enum/Const siblings needed to traverse authored
 // Children/Next dispatch chains. This does not decode their remaining schema.
 struct PortableFieldLinks {
@@ -249,6 +262,18 @@ PortableBitmapTextMetrics MeasurePortableBitmapText(
 std::string GetPortableObjectPath(
     const PortablePackageTables& package,
     std::int32_t reference);
+// Value-reference identity, unlike the display helper above, rejects malformed
+// outer chains and non-object root-package imports. For imports the callback
+// must match ClassName against the resolved object's unqualified class ancestry
+// (the pin special-cases Class and does not constrain matching by ClassPackage).
+// Literal dotted import name/group segments are unsupported: flattening them
+// would alias a different authored object path. Export names are not restricted.
+// Bounds: 32 outer records and 64 KiB per path/import class name. The callback
+// owns its separate object/class hierarchy bounds; exports do not invoke it.
+std::string ResolvePortableValueObjectReference(
+    const PortablePackageTables& package,
+    std::int32_t reference,
+    const std::function<bool(const std::string&, const std::string&)>& importedClassMatches = {});
 PortableSound LoadPortableSound(
     const PortablePackageTables& package,
     std::size_t exportIndex);
@@ -268,6 +293,14 @@ PortableClassDescriptor LoadPortableClassDescriptor(
 PortableStateDescriptor LoadPortableStateDescriptor(
     const PortablePackageTables& package,
     std::size_t exportIndex);
+// Only actual Core.Struct exports are accepted. File/payload/identity bounds,
+// compact operands and exact logical/serialized termination are validated.
+PortableStructDescriptor LoadPortableStructDescriptor(
+    const PortablePackageTables& package,
+    std::size_t exportIndex,
+    std::size_t retainedByteBudget = 64u * 1024u * 1024u);
+// Conservative retained descriptor charge, including vector capacity and names.
+std::size_t PortableStructRetainedBytes(const PortableStructDescriptor& descriptor);
 PortableLodMesh LoadPortableLodMesh(
     const PortablePackageTables& package,
     std::size_t exportIndex);

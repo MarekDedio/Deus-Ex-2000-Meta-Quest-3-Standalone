@@ -847,6 +847,20 @@ private:
         case 156: return binaryInt([](auto x, auto y) { return x & y; });
         case 157: return binaryInt([](auto x, auto y) { return x ^ y; });
         case 158: return binaryInt([](auto x, auto y) { return x | y; });
+        case 163: case 164: case 165: case 166: {
+            count(1);
+            const auto& reference = args[0].reference;
+            if (!reference || !reference->write || reference->zero.kind != Kind::Int)
+                Fail(Status::Invalid, "VM integer increment/decrement needs a writable Int reference");
+            const auto previous = a(0);
+            if (previous.kind != Kind::Int)
+                Fail(Status::Invalid, "VM integer increment/decrement reference has the wrong concrete kind");
+            const auto bits = static_cast<std::uint32_t>(previous.integer);
+            const auto next = Value::Integer(std::bit_cast<std::int32_t>(
+                index == 163 || index == 165 ? bits + 1u : bits - 1u));
+            Write(reference, next);
+            return {index == 163 || index == 164 ? next : previous, {}};
+        }
         case 169: count(1); return {Value::Float(-ToFloat(a(0))), {}};
         case 170: return binaryFloat([](auto x, auto y) { return std::pow(x, y); });
         case 171: return binaryFloat([](auto x, auto y) { return x * y; });

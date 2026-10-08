@@ -200,6 +200,9 @@ const NameString& ReadPayloadName(PayloadReader& reader, const PortablePackageTa
     return package.names[static_cast<std::size_t>(index)].Name;
 }
 
+std::string ResolveDescriptorObjectPath(std::int32_t reference,
+    const PortablePackageTables& package);
+
 std::uint8_t DecodeScriptToken(
     PayloadReader& reader,
     const PortablePackageTables& package,
@@ -207,7 +210,8 @@ std::uint8_t DecodeScriptToken(
     std::vector<std::uint8_t>& bytecode,
     unsigned depth,
     bool validateOperands = false,
-    std::size_t logicalLimit = std::numeric_limits<std::size_t>::max()) {
+    std::size_t logicalLimit = std::numeric_limits<std::size_t>::max(),
+    bool validateOperandPaths = false) {
     if (depth >= 64) throw std::runtime_error("UE1 bytecode nesting is too deep");
     const auto logical = [&](const std::size_t amount) {
         if (logicalSize > logicalLimit || amount > logicalLimit - logicalSize)
@@ -247,6 +251,7 @@ std::uint8_t DecodeScriptToken(
         const std::int32_t value = reader.ReadIndex();
         if (validateOperands) {
             if (name) ValidateNameIndex(value, package.names.size());
+            else if (validateOperandPaths) ResolveDescriptorObjectPath(value, package);
             else ValidateObjectReference(value, package.imports.size(), package.exports.size());
         }
         logical(4u);
@@ -255,7 +260,7 @@ std::uint8_t DecodeScriptToken(
     };
     const auto child = [&]() {
         return DecodeScriptToken(reader, package, logicalSize, bytecode, depth + 1,
-            validateOperands, logicalLimit);
+            validateOperands, logicalLimit, validateOperandPaths);
     };
     if (token >= 0x39u && token < 0x60u) {
         child();
@@ -404,13 +409,16 @@ std::string ResolveDescriptorObjectPath(std::int32_t reference,
 }
 
 std::vector<std::uint8_t> ReadDescriptorPayload(const PortablePackageTables& package,
-    const std::size_t exportIndex) {
+    const std::size_t exportIndex,
+    const std::size_t inputByteBudget = 64u * 1024u * 1024u) {
     if (exportIndex >= package.exports.size())
         throw std::runtime_error("UE1 state/class export index is outside the table");
     const auto& entry = package.exports[exportIndex];
     constexpr std::int32_t maxPayload = 64 * 1024 * 1024;
     if (entry.ObjSize <= 0 || entry.ObjSize > maxPayload || entry.ObjOffset < 0)
         throw std::runtime_error("UE1 state/class payload size or offset is invalid");
+    if (static_cast<std::size_t>(entry.ObjSize) > inputByteBudget)
+        throw std::runtime_error("UE1 descriptor payload exceeds caller byte budget");
     ResolveDescriptorObjectPath(static_cast<std::int32_t>(exportIndex + 1u), package);
     ResolveDescriptorObjectPath(entry.ObjBase, package);
     const auto file = File::open_existing(package.sourcePath);
@@ -424,10 +432,12 @@ std::vector<std::uint8_t> ReadDescriptorPayload(const PortablePackageTables& pac
     return bytes;
 }
 
-PortableStateDescriptor ReadStateHeader(PayloadReader& reader,
+template<class Descriptor>
+Descriptor ReadStructHeader(PayloadReader& reader,
     const std::vector<std::uint8_t>& bytes, const PortablePackageTables& package,
-    const std::size_t exportIndex) {
-    PortableStateDescriptor result;
+    const std::size_t exportIndex, const bool validateOperandPaths = false,
+    const std::size_t retainedByteBudget = std::numeric_limits<std::size_t>::max()) {
+    Descriptor result;
     result.objectPath = ResolveDescriptorObjectPath(static_cast<std::int32_t>(exportIndex + 1u), package);
     const auto reference = [&] {
         const auto value = reader.ReadIndex();
@@ -447,13 +457,32 @@ PortableStateDescriptor ReadStateHeader(PayloadReader& reader,
     if (result.logicalSize > 64u * 1024u * 1024u)
         throw std::runtime_error("UE1 state/class logical script size is unreasonable");
     const auto rawStart = reader.Tell();
+    if (retainedByteBudget != std::numeric_limits<std::size_t>::max()) {
+        // A Core.Struct ends immediately after its script. Charge both copies
+        // and identities before decoding/allocating normalized script storage.
+        const auto fixed = sizeof(Descriptor) + result.objectPath.capacity() +
+            result.friendlyName.ToString().size();
+        const auto rawSize = bytes.size() - rawStart;
+        if (fixed > retainedByteBudget || rawSize > retainedByteBudget - fixed ||
+            result.logicalSize > retainedByteBudget - fixed - rawSize)
+            throw std::runtime_error("UE1 struct raw/normalized descriptor exceeds caller byte budget");
+        result.bytecode.reserve(result.logicalSize);
+    }
     std::size_t logicalSize{};
     while (logicalSize < result.logicalSize)
-        DecodeScriptToken(reader, package, logicalSize, result.bytecode, 0u, true, result.logicalSize);
+        DecodeScriptToken(reader, package, logicalSize, result.bytecode, 0u, true,
+            result.logicalSize, validateOperandPaths);
     if (result.bytecode.size() != result.logicalSize)
         throw std::runtime_error("UE1 state/class normalized bytecode size mismatch");
     result.rawBytes.assign(bytes.begin() + static_cast<std::ptrdiff_t>(rawStart),
         bytes.begin() + static_cast<std::ptrdiff_t>(reader.Tell()));
+    return result;
+}
+
+PortableStateDescriptor ReadStateHeader(PayloadReader& reader,
+    const std::vector<std::uint8_t>& bytes, const PortablePackageTables& package,
+    const std::size_t exportIndex) {
+    auto result = ReadStructHeader<PortableStateDescriptor>(reader, bytes, package, exportIndex);
     result.probeMask = reader.ReadUInt64();
     result.ignoreMask = reader.ReadUInt64();
     result.labelTableOffset = reader.ReadUInt16();
@@ -461,6 +490,44 @@ PortableStateDescriptor ReadStateHeader(PayloadReader& reader,
     // Pinned UState::Load stores these exact bits. In particular 0xffff is not
     // a bytecode address to clamp/reject, and unknown flags are not invented AI.
     return result;
+}
+
+// Metadata descriptors need only the end of UObject's prefix, not a retained
+// vector for every tagged default. Walk the already bounded payload directly so
+// even a malicious sequence of tiny Boolean tags cannot amplify allocations.
+void SkipStructObjectPrefix(PayloadReader& reader, const PortablePackageTables& package,
+    const ExportTableEntry& entry) {
+    if (AnyFlags(entry.ObjFlags, ObjectFlags::HasStack)) {
+        const auto function = reader.ReadIndex();
+        const auto state = reader.ReadIndex();
+        ResolveDescriptorObjectPath(function, package);
+        ResolveDescriptorObjectPath(state, package);
+        reader.ReadUInt64();
+        reader.ReadUInt32();
+        if (function != 0) reader.ReadIndex();
+    }
+    while (!ReadPayloadName(reader, package).IsNone()) {
+        const auto info = reader.ReadUInt8();
+        const auto type = info & 0x0fu;
+        if (type == 10u) ReadPayloadName(reader, package);
+        std::uint32_t size{};
+        switch ((info & 0x70u) >> 4u) {
+            case 0: size = 1u; break;
+            case 1: size = 2u; break;
+            case 2: size = 4u; break;
+            case 3: size = 12u; break;
+            case 4: size = 16u; break;
+            case 5: size = reader.ReadUInt8(); break;
+            case 6: size = reader.ReadUInt16(); break;
+            case 7: size = reader.ReadUInt32(); break;
+        }
+        if (type != 3u && (info & 0x80u) != 0u) {
+            const auto first = reader.ReadUInt8();
+            if ((first & 0xc0u) == 0xc0u) reader.Skip(3u);
+            else if ((first & 0x80u) != 0u) reader.Skip(1u);
+        }
+        if (type != 3u) reader.Skip(size);
+    }
 }
 
 }  // namespace
@@ -1018,6 +1085,58 @@ std::string GetPortableObjectPath(
     return ResolvePortableObjectPath(reference, package);
 }
 
+std::string ResolvePortableValueObjectReference(
+    const PortablePackageTables& package,
+    const std::int32_t reference,
+    const std::function<bool(const std::string&, const std::string&)>& importedClassMatches) {
+    if (reference == 0) return {};
+    ValidateObjectReference(reference, package.imports.size(), package.exports.size());
+    std::string importedClass;
+    if (reference < 0) {
+        const auto& entry = package.imports[static_cast<std::size_t>(
+            -static_cast<std::int64_t>(reference) - 1)];
+        // Package::GetUObject resolves import outers as imports, never exports;
+        // a root package entry is not an UObject value in the pinned runtime.
+        if (entry.ObjOuter == 0)
+            throw std::runtime_error("UE1 value reference names a root package, not an object");
+        std::vector<std::int32_t> visited;
+        for (auto current = reference; current != 0;) {
+            if (current > 0 || visited.size() >= 32u ||
+                std::find(visited.begin(), visited.end(), current) != visited.end())
+                throw std::runtime_error("UE1 value import has an invalid/cyclic/deep outer chain");
+            ValidateObjectReference(current, package.imports.size(), package.exports.size());
+            visited.push_back(current);
+            const auto& outerEntry = package.imports[static_cast<std::size_t>(
+                -static_cast<std::int64_t>(current) - 1)];
+            ValidateNameIndex(outerEntry.ObjName, package.names.size());
+            const auto& segment = package.names[static_cast<std::size_t>(outerEntry.ObjName)].Name.ToString();
+            if (segment.find('.') != std::string::npos || segment.find('\0') != std::string::npos)
+                throw std::runtime_error("UE1 value import has an unsupported dotted/NUL path segment");
+            current = outerEntry.ObjOuter;
+        }
+        ValidateNameIndex(entry.ClassName, package.names.size());
+        const auto& name = package.names[static_cast<std::size_t>(entry.ClassName)].Name;
+        const auto& spelling = name.ToString();
+        if (name.IsNone() || spelling.empty() || spelling.size() > 64u * 1024u ||
+            spelling.find('\0') != std::string::npos)
+            throw std::runtime_error("UE1 value import class name is invalid or exceeds budget");
+        importedClass = spelling;
+    }
+    auto path = ResolveDescriptorObjectPath(reference, package);
+    if (reference > 0) {
+        const auto stem = std::filesystem::path(package.sourcePath).stem().string();
+        constexpr std::size_t maxIdentityBytes = 64u * 1024u;
+        if (stem.empty() || stem.size() >= maxIdentityBytes || path.size() > maxIdentityBytes - stem.size() - 1u)
+            throw std::runtime_error("UE1 value export identity is invalid or exceeds budget");
+        path = stem + '.' + path;
+    }
+    if (path.find('\0') != std::string::npos)
+        throw std::runtime_error("UE1 value object identity contains an embedded NUL");
+    if (reference < 0 && (!importedClassMatches || !importedClassMatches(path, importedClass)))
+        throw std::runtime_error("UE1 value import violates its declared class provenance");
+    return path;
+}
+
 PortableSound LoadPortableSound(
     const PortablePackageTables& package,
     std::size_t exportIndex) {
@@ -1267,6 +1386,41 @@ PortableStateDescriptor LoadPortableStateDescriptor(
     if (reader.Tell() != reader.Size())
         throw std::runtime_error("UE1 state payload has trailing bytes");
     return result;
+}
+
+PortableStructDescriptor LoadPortableStructDescriptor(
+    const PortablePackageTables& package,
+    const std::size_t exportIndex,
+    const std::size_t retainedByteBudget) {
+    if (exportIndex >= package.exports.size())
+        throw std::runtime_error("UE1 struct export index is outside the table");
+    const auto& entry = package.exports[exportIndex];
+    auto metaClass = ResolveDescriptorObjectPath(entry.ObjClass, package);
+    if (entry.ObjClass > 0)
+        metaClass = std::filesystem::path(package.sourcePath).stem().string() + '.' + metaClass;
+    if (NameString(metaClass) != "Core.Struct")
+        throw std::runtime_error("UE1 export is not an actual Core.Struct");
+    const auto bytes = ReadDescriptorPayload(package, exportIndex, retainedByteBudget);
+    PayloadReader reader(bytes);
+    SkipStructObjectPrefix(reader, package, entry);
+    auto result = ReadStructHeader<PortableStructDescriptor>(reader, bytes, package, exportIndex, true,
+        retainedByteBudget);
+    if (reader.Tell() != reader.Size())
+        throw std::runtime_error("UE1 struct payload has trailing bytes");
+    if (PortableStructRetainedBytes(result) > retainedByteBudget)
+        throw std::runtime_error("UE1 struct descriptor capacity exceeds caller byte budget");
+    return result;
+}
+
+std::size_t PortableStructRetainedBytes(const PortableStructDescriptor& descriptor) {
+    std::size_t bytes = sizeof(PortableStructDescriptor);
+    for (const auto part : {descriptor.objectPath.capacity(), descriptor.friendlyName.ToString().size(),
+                           descriptor.rawBytes.capacity(), descriptor.bytecode.capacity()}) {
+        if (part > std::numeric_limits<std::size_t>::max() - bytes)
+            throw std::runtime_error("UE1 retained struct descriptor byte charge overflow");
+        bytes += part;
+    }
+    return bytes;
 }
 
 PortableClassDescriptor LoadPortableClassDescriptor(

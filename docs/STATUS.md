@@ -1,6 +1,77 @@
 # Port status
 
+## Offline authored struct support (2026-10-08; verified, not deployed)
+
+- Added exact Core.Struct descriptors and bounded declaration-order scalar/nested
+  value decoding. Runtime zero values and current-map save validation now use
+  original struct fields, including InventoryItem's class<Engine.Inventory>
+  member and eight independently inherited/overridden InitialInventory slots.
+  Reflected member writes recursively check class/object constraints.
+- Added pinned pre/post integer increment/decrement natives 163--166. The actual
+  AddInitialInventory search requires postincrement165, which earlier runs
+  exposed as missing. Returns are detached snapshots; aliases, write budgets
+  and whole-call rollback are retained.
+- Reviewed final host build and CTest pass: 32 ordinary tests pass, with the two optional
+  original-root integrations skipped by that invocation. Value controls pass
+  437 checks/121 rejections, descriptor controls 500/137 plus 33/24 source-import
+  provenance controls, and extended VM
+  controls 354/75. Separate original InventoryItem/Vector/PointRegion metadata
+  audit passes. The separate final reviewed-source original runtime integration also
+  completed exit 0: gameplay, asset retention, paired-save recovery, v3/v4/v5
+  composition, canonical script blobs, legacy reset and travel guards pass.
+- Review corrected export Name versus FriendlyName tag matching, combined
+  raw/normalized descriptor and schema/reference identity memory charging,
+  source import ClassName provenance and ambiguous import path segments.
+  All-eight-slot batched readback avoids repeated per-slot metadata loads,
+  retains the same independent raw-data comparisons, and bounds the total
+  returned values. A collision fixture now proves both writer and reader
+  rejection, rather than aborting during generation of invalid saved data.
+- The full final-source original actor suite completed with its terminal PASS.
+  All eight slots of 117 original ScriptedPawns (936 slots total) matched
+  independent original data across Training, Liberty Island and Intro, including
+  123 map and 86 inherited nonempty entries. All 1,502 Class/261 State dispatch,
+  2,820-statement/355-label/159-table layout and existing human/robot/bird,
+  reference/Level, animation/save, SetPhysics and state regressions passed.
+  Earlier runs
+  are not counted as passes: the first selected NPC has no eligible empty slot,
+  and its real search reached missing native165. The corrected test retains
+  that original false-return path, then explicitly identifies generated empty
+  slots for positive transaction controls. Those generated fixtures are not
+  new game defaults or inventory spawning. The current run has now passed
+  actual helper member writes, v4/v5 inventory composition, 18 malformed-schema
+  rejections and exact InitializeInventory MetaCast13 PC123 refusal with full
+  StartUp rollback. Ordinary StartUp now stops atomically at unsupported
+  conversion57 in InitializeHomeBase PC35; begun-play BeginState still refuses
+  required AIEndEvent715 in SetDistress PC46. These are not successful startup.
+- Visually inspected fresh Inventory and Health CPU previews using the reviewed
+  binary and original artwork/fonts. No obvious missing tiles, panel overlap
+  or text clipping was seen. The long rifle icon is small within its fixture
+  grid cell, and Health callouts are artwork without live limb statistics.
+  Preview text is small at640x480; Quest readability/input/stereo/live state
+  remain unverified. Generated BMP/JSON stay in ignored artifacts, not Git.
+- No Android build or replacement deployment was performed. After the user's
+  tracking-ready reply, ADB confirmed the Quest connection and launched only
+  the unchanged installed 25e38b3 app. OpenXR was focused, but reported no valid
+  head pose; Training CPU preparation completed while GPU upload was pending.
+  A later scoped check found the display awake/ON, but VR power reported
+  HEADSET_UNMOUNTED and tracking focus None. The system denied HEAD_TRACKER
+  access to the actual game PID. This points to a system mount/focus/sensor
+  access gate; it does not prove that the user was physically not wearing it
+  or identify a missing manifest permission. No permission/security settings
+  were changed. One ordinary ADB system screenshot succeeded but was entirely
+  black; it cannot establish what the user sees through compositor/protected
+  layers. No menu/gameplay/app screenshot mailbox commands or saves were changed
+  by the verification commands. This is not a successful visual/tracking test.
+  Full campaign startup, casts, dynamic Spawn,
+  inventory lifecycle, AI, latent behavior and live scheduling remain unfinished.
+  See [AUTHORED-STRUCTS.md](AUTHORED-STRUCTS.md). Local evidence is in ignored
+  `artifacts/authored-struct-20261008/`. Only authored source/tests/docs are
+  published; commercial data and generated visual/log artifacts remain outside Git.
+
 ## Offline persistent actor-state execution (2026-10-08; not deployed)
+
+The following state-execution counts and InventoryItem refusal describe the
+previous verified batch; newer authored-struct verification is recorded above.
 
 - Added explicit bounded state slices, transactional GotoState/Enable/Disable
   and synchronous BeginState/EndState within the caller's transaction. State

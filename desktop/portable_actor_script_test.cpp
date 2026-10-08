@@ -7,11 +7,13 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <functional>
 #include <iostream>
 #include <limits>
+#include <map>
 #include <stdexcept>
 #include <string>
 #include <tuple>
@@ -245,6 +247,154 @@ std::vector<std::uint8_t> ScriptBlob(const std::vector<std::uint8_t>& bytes) {
     return {bytes.begin()+static_cast<std::ptrdiff_t>(offset+4),bytes.end()};
 }
 using PropertyValues=std::vector<std::pair<std::string,Value>>;
+using InventorySlots=std::array<Value,8u>;
+Value InventoryItem(const std::string& inventory={},const std::int32_t count=0) {
+    Value value;value.kind=Kind::Struct;
+    value.fields.emplace("inventory",Value::Text(Kind::Object,inventory));
+    value.fields.emplace("count",Value::Integer(count));return value;
+}
+InventorySlots InventoryProperties(const std::string& actor) {
+    InventorySlots values;
+    const auto slots=ReadPortableActorScriptPropertySlots(actor,"InitialInventory",0u,
+        static_cast<std::uint32_t>(values.size()));
+    Require(slots.size()==values.size(),"Original InitialInventory batch omitted fixed slots");
+    for(std::uint32_t i=0;i<values.size();++i) {
+        values[i]=slots[i];
+        Require(values[i].kind==Kind::Struct && values[i].fields.size()==2u &&
+            values[i].fields.at("inventory").kind==Kind::Object &&
+            values[i].fields.at("count").kind==Kind::Int,
+            "Original InitialInventory slot lost authored InventoryItem member kinds");
+    }
+    return values;
+}
+void SameInventoryProperties(const std::string& actor,const InventorySlots& expected,const std::string& context) {
+    const auto actual=InventoryProperties(actor);
+    for(std::size_t i=0;i<actual.size();++i)
+        Require(QuestVr::Vm::Equal(actual[i],expected[i]),context+" InitialInventory["+std::to_string(i)+']');
+}
+std::string QualifiedReference(const PortablePackageTables& package,const std::int32_t reference) {
+    const auto path=GetPortableObjectPath(package,reference);
+    return reference>0 ? std::filesystem::path(package.sourcePath).stem().string()+'.'+path : path;
+}
+// Independent reader of the original InventoryItem value wire. The production
+// struct decoder is deliberately not used to calculate these expected values:
+// Inventory is one package-local compact class reference; Count is signed LE32.
+Value RawInventoryItem(const PortablePackageTables& package,const PortableTaggedProperty& property) {
+    Require(property.type==10u && property.structName=="InventoryItem" && property.value.size()>=5u,
+        "Original InventoryItem tag/type/size changed");
+    std::size_t cursor{};
+    const auto byte=[&]() {
+        Require(cursor<property.value.size(),"Original InventoryItem compact class reference truncated");
+        return property.value[cursor++];
+    };
+    auto next=byte();const bool negative=(next&0x80u)!=0u;
+    std::uint32_t magnitude=next&0x3fu;bool more=(next&0x40u)!=0u;unsigned shift=6u;
+    while(more) {
+        Require(shift<32u,"Original InventoryItem compact class reference exceeds int32");
+        next=byte();const auto part=static_cast<std::uint32_t>(next&0x7fu);
+        Require(part<=(std::numeric_limits<std::uint32_t>::max()>>shift),
+            "Original InventoryItem compact class reference overflowed");
+        magnitude|=part<<shift;more=(next&0x80u)!=0u;shift+=7u;
+    }
+    Require(magnitude<=static_cast<std::uint32_t>(std::numeric_limits<std::int32_t>::max()) &&
+        cursor<=property.value.size() && property.value.size()-cursor==4u,
+        "Original InventoryItem class reference/Count wire was not exact");
+    const auto reference=negative ? -static_cast<std::int32_t>(magnitude) : static_cast<std::int32_t>(magnitude);
+    Require((reference>=0 && static_cast<std::size_t>(reference)<=package.exports.size()) ||
+        (reference<0 && -static_cast<std::int64_t>(reference)<=static_cast<std::int64_t>(package.imports.size())),
+        "Original InventoryItem class reference escaped original tables");
+    if(reference>0) Require(package.exports[static_cast<std::size_t>(reference-1)].ObjClass==0,
+        "Original InventoryItem positive reference is not an actual class export");
+    const auto bits=Word(property.value,cursor);std::int32_t count{};std::memcpy(&count,&bits,sizeof(count));
+    return InventoryItem(QualifiedReference(package,reference),count);
+}
+struct InventorySourceCoverage {
+    std::size_t actors{},slots{},mapEntries{},inheritedEntries{},negativeEntries{};
+};
+void VerifyOriginalInventorySources(const std::vector<PortablePackageTables>& packages,
+    const PortablePackageTables& map,InventorySourceCoverage& coverage) {
+    std::map<std::string,PortableClassDescriptor> classes;
+    bool batchBoundsChecked{};
+    const auto sourceFor=[&](const std::string& path)->const PortablePackageTables& {
+        const auto dot=path.find('.');Require(dot!=std::string::npos,"Original class reference lacks package identity");
+        const auto name=path.substr(0,dot);
+        if(QuestVr::ScriptDispatch::FoldName(name)==QuestVr::ScriptDispatch::FoldName(
+            std::filesystem::path(map.sourcePath).stem().string())) return map;
+        const auto found=std::find_if(packages.begin(),packages.end(),[&](const auto& package) {
+            return QuestVr::ScriptDispatch::FoldName(std::filesystem::path(package.sourcePath).stem().string())==
+                QuestVr::ScriptDispatch::FoldName(name);
+        });
+        Require(found!=packages.end(),"Original inventory class uses an unavailable package: "+path);return *found;
+    };
+    const auto classFor=[&](const std::string& path)->const PortableClassDescriptor& {
+        auto found=classes.find(path);
+        if(found==classes.end()) {
+            const auto& source=sourceFor(path);
+            const auto index=FindPortableExport(source,path.substr(path.find('.')+1u));
+            Require(source.exports[index].ObjClass==0,"Original actor class reference is not a class");
+            found=classes.emplace(path,LoadPortableClassDescriptor(source,index)).first;
+        }
+        return found->second;
+    };
+    for(const auto& actor:GetPortableRuntimeMapActors()) {
+        if(!actor.pawn || !IsA(actor,"ScriptedPawn")) continue;
+        InventorySlots expected;for(auto& slot:expected) slot=InventoryItem();
+        std::array<bool,8u> assigned{};
+        const auto apply=[&](const PortablePackageTables& source,
+            const std::vector<PortableTaggedProperty>& properties,const bool instance) {
+            for(auto property=properties.rbegin();property!=properties.rend();++property) {
+                if(property->name!="InitialInventory") continue;
+                Require(property->arrayIndex<expected.size(),"Original InitialInventory tag escaped 8-slot declaration");
+                const auto index=property->arrayIndex;if(assigned[index]) continue;
+                expected[index]=RawInventoryItem(source,*property);assigned[index]=true;
+                if(!expected[index].fields.at("inventory").text.empty() && expected[index].fields.at("count").integer!=0) {
+                    if(instance) ++coverage.mapEntries;else ++coverage.inheritedEntries;
+                    if(expected[index].fields.at("count").integer<0) ++coverage.negativeEntries;
+                }
+            }
+        };
+        const auto actorIndex=FindPortableExport(map,actor.objectPath.substr(actor.objectPath.find('.')+1u));
+        apply(map,LoadPortableExportProperties(map,actorIndex).properties,true);
+        std::string current=actor.classPath;std::size_t depth{};
+        while(!current.empty()) {
+            Require(++depth<=256u,"Original inventory class chain cycled/exceeded depth");
+            const auto& source=sourceFor(current);const auto& descriptor=classFor(current);
+            apply(source,descriptor.defaults,false);
+            const auto index=FindPortableExport(source,current.substr(current.find('.')+1u));
+            current=QualifiedReference(source,source.exports[index].ObjBase);
+        }
+        SameInventoryProperties(actor.objectPath,expected,"Raw map/inherited compact-classref + signed Count mismatch");
+        Require(QuestVr::Vm::Equal(ReadPortableActorScriptProperty(actor.objectPath,"iNiTiAlInVeNtOrY",7u),expected[7]),
+            "Original fixed struct property lost case-insensitive property lookup");
+        bool rejected{};try {ReadPortableActorScriptProperty(actor.objectPath,"InitialInventory",8u);}
+        catch(const std::exception&) {rejected=true;}
+        Require(rejected && !GetPortableRuntimeScriptStatePresent(),
+            "Readonly InitialInventory inspection accepted an out-of-range slot or created state");
+        if(!batchBoundsChecked) {
+            const std::array<std::pair<std::uint32_t,std::uint32_t>,7u> invalidRanges{{
+                {8u,1u},{7u,2u},{0u,9u},
+                {std::numeric_limits<std::uint32_t>::max(),2u},
+                {7u,std::numeric_limits<std::uint32_t>::max()},
+                {0u,0u},{0u,1025u}}};
+            for(const auto& range:invalidRanges) {
+                bool batchRejected{};
+                try {ReadPortableActorScriptPropertySlots(actor.objectPath,"InitialInventory",range.first,range.second);}
+                catch(const std::exception&) {batchRejected=true;}
+                Require(batchRejected && !GetPortableRuntimeScriptStatePresent(),
+                    "Readonly InitialInventory batch accepted invalid first/count/overflow or created state");
+            }
+            SameInventoryProperties(actor.objectPath,expected,"Rejected readonly inventory batch changed authored slots");
+            Require(!GetPortableRuntimeScriptStatePresent(),"Readonly inventory batch verification created script state");
+            batchBoundsChecked=true;
+        }
+        ++coverage.actors;coverage.slots+=expected.size();
+    }
+    Require(batchBoundsChecked,"Original map has no ScriptedPawn for readonly inventory batch bounds control");
+    std::cout<<"ORIGINAL INVENTORY SOURCE "<<std::filesystem::path(map.sourcePath).stem().string()<<
+        " actors="<<coverage.actors<<" slots="<<coverage.slots<<" mapEntries="<<coverage.mapEntries<<
+        " inheritedEntries="<<coverage.inheritedEntries<<" negativeEntries="<<coverage.negativeEntries<<
+        "; independent original classref/int32 values, not spawned inventory\n";
+}
 PropertyValues ActorProperties(const std::string& actor) {
     PropertyValues values;
     for(const auto* name:{"PrePivot","DesiredPrePivot","PrePivotTime","AnimSequence","AnimFrame","AnimRate",
@@ -482,6 +632,211 @@ struct TemporaryCheckpoint {
     }
 };
 
+void VerifyOriginalInventoryTransactions(const std::string& actor,const std::filesystem::path& legacy,
+    const std::filesystem::path& directory) {
+    Require(LoadPortableRuntimeState(legacy.string()) && !GetPortableRuntimeScriptStatePresent(),
+        "Inventory transactions did not start from authored legacy state");
+    const auto originalAuthored=InventoryProperties(actor);
+    auto authored=originalAuthored;
+    const auto firstEmpty=[&](const InventorySlots& slots) {
+        return static_cast<std::size_t>(std::find_if(slots.begin(),slots.end(),[](const auto& value) {
+            return value.fields.at("inventory").text.empty() && value.fields.at("count").integer<=0;
+        })-slots.begin());
+    };
+    const auto savedV4=directory/"inventory-members-v4.sav";
+    const auto savedV5=directory/"inventory-members-v5.sav";
+    const auto generated=directory/"inventory-generated.sav";
+    const auto inspect=directory/"inventory-unchanged.sav";
+    const auto unchanged=[&](const std::vector<std::uint8_t>& bytes,const std::string& description) {
+        Require(SavePortableRuntimeState(inspect.string()) && CheckpointBytes(inspect)==bytes,
+            description+" changed complete gameplay/property/clock/state saved payload");
+    };
+    const auto originalLegacyBytes=CheckpointBytes(legacy);
+    auto initial=originalLegacyBytes;
+    const auto itemClass=Value::Text(Kind::Object,"DeusEx.WeaponPistol");
+    const auto available=static_cast<std::size_t>(std::count_if(authored.begin(),authored.end(),[](const auto& value) {
+        return value.fields.at("inventory").text.empty() && value.fields.at("count").integer<=0;
+    }));
+    if (available<2u) {
+        if (available==0u) {
+            const auto full=Call(actor,"AddInitialInventory",{{itemClass,{}},{Value::Integer(-7),{}}});
+            Require(full.value.kind==Kind::Bool && !full.value.boolean,
+                "Original helper fabricated an available slot in authored inventory");
+            SameInventoryProperties(actor,originalAuthored,"Authored full inventory helper changed entries");
+            unchanged(originalLegacyBytes,"Authored full inventory helper");
+        }
+        // The original selected NPC has no two slots satisfying the compiled
+        // helper's Inventory==None && Count<=0 predicate. Keep that real
+        // refusal above. Use an explicitly generated, isolated v4 overlay for
+        // positive member-write controls; this is not a changed game default.
+        for (auto& value:authored) value=InventoryItem();
+        QuestVr::ScriptSavedState fixture;
+        fixture.mapName=actor.substr(0u,actor.find('.'));
+        QuestVr::ScriptSavedObject object;
+        object.path=actor; object.classPath=Snapshot(actor).classPath;
+        for(std::uint32_t i=0;i<authored.size();++i)
+            object.properties.push_back({"DeusEx.ScriptedPawn.InitialInventory","InitialInventory",i,authored[i]});
+        fixture.objects.push_back(std::move(object));
+        const auto blob=QuestVr::EncodeScriptSavedState(fixture);
+        auto fixtureBytes=originalLegacyBytes;PutWord(fixtureBytes,4u,4u);
+        const auto lengthOffset=fixtureBytes.size();fixtureBytes.resize(lengthOffset+4u);
+        PutWord(fixtureBytes,lengthOffset,static_cast<std::uint32_t>(blob.size()));
+        fixtureBytes.insert(fixtureBytes.end(),blob.begin(),blob.end());
+        Require(QuestVr::WriteDurableSaveFile(generated.string(),fixtureBytes) && LoadPortableRuntimeState(generated.string()),
+            "Explicit empty-slot v4 transaction fixture could not load");
+        SameInventoryProperties(actor,authored,"Generated empty-slot control lost independently typed slots");
+        Require(SavePortableRuntimeState(inspect.string()),"Could not capture canonical generated inventory baseline");
+        initial=CheckpointBytes(inspect);
+        std::cout<<"ORIGINAL INVENTORY TRANSACTION "<<actor<<" authored available="<<available<<
+            "; positive writes use isolated generated empty-slot v4 fixture, not authored defaults\n";
+    }
+    const auto slot=firstEmpty(authored);Require(slot<authored.size(),"Inventory write fixture has no available slot");
+    QuestVr::Vm::Limits limits;limits.writes=slot+2u; // i=0, each loop increment, then Inventory member.
+    const auto failed=ExecutePortableActorFunction(actor,"AddInitialInventory",{{itemClass,{}},{Value::Integer(-7),{}}},limits);
+    Require(failed.status==Status::Budget && failed.writes==limits.writes && failed.offset==130u,
+        "Original member-write rollback did not fail after Inventory but before Count: "+failed.error+
+        " at "+failed.function+':'+std::to_string(failed.offset));
+    SameInventoryProperties(actor,authored,"Budget after actual Inventory member write leaked struct mutation");
+    unchanged(initial,"Failed original member-writing helper");
+    for(const auto& invalid:{Value::Text(Kind::Object,"Engine.Actor"),Value::Text(Kind::Object,actor),
+            Value::Text(Kind::Object,"DeusEx.NoSuchInventoryClass")}) {
+        const auto rejected=ExecutePortableActorFunction(actor,"AddInitialInventory",{{invalid,{}},{Value::Integer(3),{}}});
+        Require(!rejected.passed(),"Live class<Inventory> assignment accepted an unrelated class, instance or missing identity");
+        SameInventoryProperties(actor,authored,"Rejected live class constraint changed InventoryItem");
+        unchanged(initial,"Rejected live Inventory class identity");
+    }
+    const auto add=Call(actor,"AddInitialInventory",{{itemClass,{}},{Value::Integer(-7),{}}});
+    Require(add.value.kind==Kind::Bool && add.value.boolean,"Original member-writing helper did not return true");
+    auto negative=authored;negative[slot]=InventoryItem(itemClass.text,-7);
+    SameInventoryProperties(actor,negative,"Original helper coerced negative Count or flattened fixed struct slots");
+    Require(SavePortableRuntimeState(savedV4.string()),"Inventory member overlay could not save without fabricated state/clock");
+    const auto v4=CheckpointBytes(savedV4);Require(Word(v4,4u)==4u,"Property-only InventoryItem changed v4 envelope");
+    const auto findActor=[&](QuestVr::ScriptSavedState& state)->QuestVr::ScriptSavedObject& {
+        const auto found=std::find_if(state.objects.begin(),state.objects.end(),[&](const auto& value) {return value.path==actor;});
+        Require(found!=state.objects.end(),"Generated InventoryItem fixture omitted original actor");return *found;
+    };
+    const auto findItem=[&](QuestVr::ScriptSavedState& state)->QuestVr::ScriptSavedProperty& {
+        auto& object=findActor(state);
+        const auto found=std::find_if(object.properties.begin(),object.properties.end(),[&](const auto& value) {
+            return value.key=="DeusEx.ScriptedPawn.InitialInventory" && value.index==slot;
+        });
+        Require(found!=object.properties.end(),"Original struct member write did not retain its qualified fixed-slot property");
+        return *found;
+    };
+    auto original=QuestVr::DecodeScriptSavedState(ScriptBlob(v4));
+    Require(!findActor(original).state && !findActor(original).clock &&
+        QuestVr::Vm::Equal(findItem(original).value,negative[slot]),
+        "Property-only InventoryItem save fabricated state/clock or lost negative Count");
+    // A second legitimate class verifies inherited Engine.Inventory constraints,
+    // while optional zero newCount is executed by the authored helper, not C++.
+    const auto second=firstEmpty(negative);Require(second<negative.size(),"Inventory fixture needs a second empty authored slot");
+    Call(actor,"AddInitialInventory",{{Value::Text(Kind::Object,"Engine.Inventory"),{}},{Value::Integer(0),{}}});
+    Require(ReadPortableActorScriptProperty(actor,"InitialInventory",static_cast<std::uint32_t>(second)).fields.at("count").integer==1,
+        "Original optional-zero Count behavior was not executed");
+    Require(LoadPortableRuntimeState(savedV4.string()),"Original struct members could not restore from v4");
+    SameInventoryProperties(actor,negative,"v4 InitialInventory restore changed slot/class/negative Count");
+    unchanged(v4,"v4 struct canonical roundtrip");
+    Call(actor,"Disable",{Name("Quest_Inventory_Probe")});
+    Require(SavePortableRuntimeState(savedV5.string()),"InventoryItem and independent authored-state disabled sets could not compose");
+    const auto v5=CheckpointBytes(savedV5);Require(Word(v5,4u)==5u,"State + InventoryItem composition lost v5 envelope");
+    auto composed=QuestVr::DecodeScriptSavedState(ScriptBlob(v5));
+    Require(findActor(composed).state && !findActor(composed).clock &&
+        QuestVr::Vm::Equal(findItem(composed).value,negative[slot]),
+        "InventoryItem composition replaced state-only metadata or fabricated a native clock");
+    Call(actor,"Enable",{Name("Quest_Inventory_Probe")});
+    Require(LoadPortableRuntimeState(savedV5.string()) &&
+        ReadPortableActorDispatchContext(actor).disabledNames.count("quest_inventory_probe")==1u,
+        "v5 composition did not restore independent disabled-event state");
+    SameInventoryProperties(actor,negative,"v5 struct/state composition changed InventoryItem");
+    unchanged(v5,"v5 struct/state canonical roundtrip");
+    std::size_t rejections{};
+    for(const auto& baseline:{v4,v5}) {
+        const auto baselinePath=Word(baseline,4u)==4u ? savedV4 : savedV5;
+        Require(LoadPortableRuntimeState(baselinePath.string()),"Could not reset InventoryItem schema fixture");
+        const auto state=QuestVr::DecodeScriptSavedState(ScriptBlob(baseline));
+        const auto rejectBlob=[&](const std::vector<std::uint8_t>& blob,const std::string& description) {
+            Require(QuestVr::WriteDurableSaveFile(generated.string(),ReplaceScriptBlob(baseline,blob)) &&
+                !ValidatePortableRuntimeState(generated.string()) && !LoadPortableRuntimeState(generated.string()),
+                description+" InventoryItem was accepted");
+            SameInventoryProperties(actor,negative,description+" rejection changed live fixed structs");
+            unchanged(baseline,description+" rejection");++rejections;
+        };
+        const auto reject=[&](const std::function<void(Value&)>& mutate,const std::string& description) {
+            auto invalid=state;mutate(findItem(invalid).value);
+            rejectBlob(QuestVr::EncodeScriptSavedState(invalid),description);
+        };
+        reject([](auto& value) {value.fields.erase("count");},"Missing Count field");
+        reject([](auto& value) {value.fields.erase("inventory");},"Missing Inventory field");
+        reject([](auto& value) {value.fields["extra"]=Value::Integer(0);},"Extra authored struct field");
+        auto collision=state;auto& collisionFields=findItem(collision).value.fields;
+        collisionFields["Inventory"]=collisionFields.at("inventory");
+        bool encodeRejected{};
+        try {QuestVr::EncodeScriptSavedState(collision);} catch(const std::runtime_error&) {encodeRejected=true;}
+        Require(encodeRejected,"Codec writer accepted canonical case-colliding struct fields");
+        // Encode a unique same-length non-colliding marker, then patch its
+        // precisely identified field-name bytes to exercise read-side guards.
+        collisionFields.erase("Inventory");
+        const std::string marker="InventorZ";
+        collisionFields[marker]=collisionFields.at("inventory");
+        auto collisionBlob=QuestVr::EncodeScriptSavedState(collision);
+        std::vector<std::uint8_t> prefix(4u);
+        PutWord(prefix,0u,static_cast<std::uint32_t>(marker.size()));
+        prefix.insert(prefix.end(),marker.begin(),marker.end());prefix.push_back(6u); // Stable codec Object tag.
+        const auto found=std::search(collisionBlob.begin(),collisionBlob.end(),prefix.begin(),prefix.end());
+        Require(found!=collisionBlob.end() && std::search(found+1,collisionBlob.end(),prefix.begin(),prefix.end())==collisionBlob.end(),
+            "Generated colliding struct field wire identity is not unique");
+        collisionBlob[static_cast<std::size_t>(found-collisionBlob.begin())+4u+marker.size()-1u]='y';
+        rejectBlob(collisionBlob,"Case-colliding struct field");
+        reject([](auto& value) {value.fields["count"]=Value::Bool(true);},"Incorrect Count value kind");
+        reject([](auto& value) {value.fields["inventory"]=Value::Text(Kind::String,"DeusEx.WeaponPistol");},"Incorrect Inventory value kind");
+        reject([](auto& value) {value.fields["inventory"]=Value::Text(Kind::Object,"DeusEx.NoSuchInventoryClass");},"Missing class identity");
+        reject([](auto& value) {value.fields["inventory"]=Value::Text(Kind::Object,"Engine.Actor");},"Class outside Engine.Inventory ancestry");
+        reject([&](auto& value) {value.fields["inventory"]=Value::Text(Kind::Object,actor);},"Instance used as inventory class");
+        auto mixed=state;auto& fields=findItem(mixed).value.fields;
+        const auto inventory=fields.at("inventory"),count=fields.at("count");fields.clear();
+        fields.emplace("Inventory",inventory);fields.emplace("COUNT",count);
+        Require(QuestVr::WriteDurableSaveFile(generated.string(),ReplaceScriptBlob(baseline,
+            QuestVr::EncodeScriptSavedState(mixed))) && ValidatePortableRuntimeState(generated.string()) &&
+            LoadPortableRuntimeState(generated.string()),"Valid mixed-case authored member names were rejected");
+        SameInventoryProperties(actor,negative,"Mixed-case restored struct fields were not normalized");
+        unchanged(baseline,"Mixed-case canonical restore");
+    }
+    // This generated v4 overlay is a test fixture, not spawned gameplay. It
+    // makes the original InitializeInventory branch reach the exact next
+    // required opcode after real InventoryItem reads and Count comparison.
+    auto initialized=original;auto& properties=findActor(initialized).properties;
+    properties.erase(std::remove_if(properties.begin(),properties.end(),[](const auto& property) {
+        return property.key=="DeusEx.ScriptedPawn.InitialInventory";
+    }),properties.end());
+    InventorySlots positive;for(auto& value:positive) value=InventoryItem();positive[0]=InventoryItem(itemClass.text,1);
+    for(std::uint32_t i=0;i<positive.size();++i)
+        properties.push_back({"DeusEx.ScriptedPawn.InitialInventory","InitialInventory",i,positive[i]});
+    const auto initializedBytes=ReplaceScriptBlob(v4,QuestVr::EncodeScriptSavedState(initialized));
+    Require(QuestVr::WriteDurableSaveFile(generated.string(),initializedBytes) && LoadPortableRuntimeState(generated.string()),
+        "Positive original Inventory class/count initialization fixture could not load");
+    SameInventoryProperties(actor,positive,"Initialization fixture did not retain all8 independently typed slots");
+    const auto initialize=ExecutePortableActorFunction(actor,"InitializeInventory");
+    Require(initialize.status==Status::Unsupported && initialize.function=="DeusEx.ScriptedPawn.InitializeInventory" &&
+        initialize.offset==123u && initialize.opcode==0x13u,
+        "Original initialization stopped before InventoryItem read or fabricated required MetaCast/Spawn: "+initialize.error+
+        " at "+initialize.function+':'+std::to_string(initialize.offset));
+    unchanged(initializedBytes,"Original InitializeInventory MetaCast refusal");
+    Call(actor,"SetInitialState");
+    Require(SavePortableRuntimeState(inspect.string()),"Actual StartUp + inventory continuation could not checkpoint");
+    const auto startup=CheckpointBytes(inspect);
+    const auto slice=ResumePortableActorState(actor);
+    Require(slice.status==Status::Unsupported && slice.function=="DeusEx.ScriptedPawn.InitializeInventory" &&
+        slice.offset==123u && slice.opcode==0x13u,
+        "Actual StartUp did not reach next required inventory MetaCast or fabricated campaign startup: "+slice.error);
+    unchanged(startup,"Actual StartUp inventory dependency rollback");
+    Require(LoadPortableRuntimeState(legacy.string()) && !GetPortableRuntimeScriptStatePresent(),
+        "Legacy restore retained InventoryItem overlay or composed state");
+    SameInventoryProperties(actor,originalAuthored,"Legacy restore failed to recover all8 authored/inherited inventory slots");
+    unchanged(originalLegacyBytes,"Legacy inventory/state reset");
+    std::cout<<"ORIGINAL INVENTORY MEMBER writes/negative Count/optional zero/default class constraint, v4/v5 composition; rejections="<<
+        rejections<<"; exact InitializeInventory MetaCast13 PC123 refusal + full StartUp rollback; no inventory spawned\n";
+}
+
 void VerifyOriginalStateExecution(const std::string& actor, const std::filesystem::path& legacy,
     const std::filesystem::path& directory) {
     const auto saved = directory / "original-state-v5.sav";
@@ -660,7 +1015,7 @@ void VerifyOriginalStateExecution(const std::string& actor, const std::filesyste
         "; atomic slice/callback failure; no world startup/tick implied\n";
 }
 
-void TestOriginal(const std::filesystem::path& root) {
+void TestOriginal(const std::filesystem::path& root, const bool inventoryOnly = false) {
     static constexpr const char* packages[] = {
         "ConSys", "Core", "DeusEx", "DeusExCharacters", "DeusExConAudioAIBarks",
         "DeusExConAudioEndGame", "DeusExConAudioHK_Shared", "DeusExConAudioIntro",
@@ -676,15 +1031,22 @@ void TestOriginal(const std::filesystem::path& root) {
     for (const auto* package : packages)
         tables.push_back(LoadPortablePackageTables((root / "System" / (std::string(package) + ".u")).string()));
     struct Shutdown { ~Shutdown() { ShutdownPortableRuntime(); } } shutdown;
+    std::cout << "ORIGINAL RUNTIME initializing " << tables.size() << " script packages\n";
     const auto runtime = InitializePortableRuntime(tables);
     Require(runtime.passed && runtime.states != 0 && runtime.normalizedStateBytecodeBytes != 0,
         "Original script runtime initialization/state metadata failed");
-    VerifyAuthoredStateMetadata(root);
-    VerifyOriginalDispatchPrograms(tables,runtime);
+    std::cout << "ORIGINAL RUNTIME indexed objects=" << runtime.objects << " classes=" << runtime.classes <<
+        " states=" << runtime.states << '\n';
+    if (!inventoryOnly) {
+        VerifyAuthoredStateMetadata(root);
+        VerifyOriginalDispatchPrograms(tables,runtime);
+    }
     TemporaryCheckpoint temporary(root);
     const auto checkpoint = (temporary.directory / "original-authored.sav").string();
     std::size_t humanTests{}, robotTests{}, birdTests{};
+    InventorySourceCoverage inventoryCoverage;
     for (const auto* map : {"00_Training", "01_NYC_UNATCOIsland", "00_Intro"}) {
+        std::cout << "ORIGINAL MAP loading " << map << '\n';
         Require(LoadPortableRuntimeMap(LoadPortablePackageTables((root / "Maps" /
             (std::string(map) + ".dx")).string())).passed, "Original map load failed");
         Require(!GetPortableRuntimeUnsavedScriptState(), "Map replacement retained retired VM state");
@@ -692,10 +1054,14 @@ void TestOriginal(const std::filesystem::path& root) {
         const auto checkpointBytes = std::filesystem::file_size(checkpoint);
         Require(Word(CheckpointBytes(checkpoint),4)==3u,"Untouched runtime unexpectedly changed legacy v3 save format");
         const auto actors = GetPortableRuntimeMapActors();
+        VerifyOriginalInventorySources(tables, LoadPortablePackageTables((root / "Maps" /
+            (std::string(map) + ".dx")).string()), inventoryCoverage);
         for (const auto& actor : actors) {
             if (humanTests != 0u && robotTests != 0u && birdTests != 0u) break;
             if (!actor.pawn || actor.meshPath.empty() || !IsA(actor, "ScriptedPawn")) continue;
             if (humanTests == 0u && !IsA(actor, "Robot") && !IsA(actor, "Animal")) {
+                VerifyOriginalInventoryTransactions(actor.objectPath, checkpoint, temporary.directory);
+                if (inventoryOnly) { ++humanTests; continue; }
                 VerifyAuthoredStack(root, actor.objectPath);
                 VerifyStoppedDispatch(actor.objectPath);
                 Require(ResolvePortableActorState(actor.objectPath,"Auto")=="DeusEx.ScriptedPawn.StartUp" &&
@@ -839,6 +1205,7 @@ void TestOriginal(const std::filesystem::path& root) {
                 ++humanTests;
                 std::cout << "ORIGINAL HUMAN " << actor.objectPath << " PlayWaiting/Standing.AnimEnd/Play/Loop/Tween/rollback/save passed\n";
             }
+            if (inventoryOnly) continue;
             if (robotTests == 0u && IsA(actor, "Robot")) {
                 VerifyAuthoredStack(root, actor.objectPath);
                 VerifyStoppedDispatch(actor.objectPath);
@@ -879,8 +1246,11 @@ void TestOriginal(const std::filesystem::path& root) {
             }
         }
     }
-    Require(humanTests == 1u && robotTests == 1u && birdTests == 1u,
+    Require(humanTests == 1u && (inventoryOnly || (robotTests == 1u && birdTests == 1u)),
         "Original maps did not cover required human, robot and bird execution fixtures");
+    Require(inventoryCoverage.actors != 0u && inventoryCoverage.mapEntries != 0u &&
+        inventoryCoverage.inheritedEntries != 0u && inventoryCoverage.slots == inventoryCoverage.actors * 8u,
+        "Original inventory inspection did not cover real map overrides and inherited defaults in all fixed slots");
     UnloadPortableRuntimeMap();
     Require(!GetPortableRuntimeUnsavedScriptState(), "Map unload leaked actor VM overlays");
 }
@@ -889,12 +1259,15 @@ void TestOriginal(const std::filesystem::path& root) {
 int main(int argc, char** argv) {
     std::cout.setf(std::ios::unitbuf);
     try {
-        if (argc != 2) {
+        if (argc == 1) {
             std::cout << "SKIP: supply readonly original Deus Ex installation for real actor script integration\n";
             return 77;
         }
-        TestOriginal(std::filesystem::path(argv[1]));
-        std::cout << "PASS original actor bytecode/natives/BSP Region, transactional failure, and current-map v4 script/clock persistence\n";
+        Require(argc == 2 || (argc == 3 && std::string(argv[2]) == "--inventory-only"),
+            "Usage: portable_actor_script_test GAME_ROOT [--inventory-only]");
+        TestOriginal(std::filesystem::path(argv[1]), argc == 3);
+        std::cout << "PASS original actor authored struct inspection, member writes, typed references, v4/v5 composition and rollback"
+            << (argc == 2 ? "; full actor bytecode/natives/BSP Region/state/clock suite" : "; focused inventory suite") << '\n';
         return 0;
     } catch (const std::exception& error) {
         std::cerr << "FAIL: " << error.what() << '\n';

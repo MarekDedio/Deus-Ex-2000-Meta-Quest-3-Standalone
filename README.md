@@ -33,6 +33,10 @@ The subsequent [script-dispatch foundation](docs/SCRIPT-DISPATCH.md) adds
 read-only state/function selection, label analysis and eligibility suppression,
 not automatic startup. [Explicit state execution](docs/STATE-EXECUTION.md) adds
 transactional state control and persistence, still without a live AI scheduler.
+[Original authored struct support](docs/AUTHORED-STRUCTS.md) connects declaration
+order and package-local member values to typed runtime writes and saves,
+including the eight original InitialInventory slots. Inventory spawning and
+campaign startup remain unfinished; this source update is not a new installed APK.
 
 ## Data boundary
 

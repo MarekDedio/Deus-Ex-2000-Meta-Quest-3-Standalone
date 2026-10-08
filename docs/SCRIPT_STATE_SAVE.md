@@ -12,6 +12,9 @@ This document updates the earlier memory-only/save-refusal description in
 [ANIMATION-POSES.md](ANIMATION-POSES.md) for current-map checkpoint storage.
 Map replacement and unload still refuse committed scoped script state because
 there is no per-map archive yet. Saving it does not remove that travel guard.
+Ordinary nested structs now use their original declarations for shape and
+object/class constraints, including InventoryItem; see
+[AUTHORED-STRUCTS.md](AUTHORED-STRUCTS.md). This does not spawn saved inventory.
 
 ## Runtime envelope
 

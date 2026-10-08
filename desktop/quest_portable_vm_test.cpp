@@ -3,6 +3,7 @@
 #include "quest_portable_vm.h"
 
 #include <chrono>
+#include <bit>
 #include <cmath>
 #include <cstring>
 #include <filesystem>
@@ -616,9 +617,74 @@ void BudgetAndNestedRollback() {
         Require(first.integer==1 && second.integer==2,"Late copy-out failure left externally-owned first out parameter modified");
     }
 }
+void IntegerIncrementContracts() {
+    for (const std::uint16_t opcode : {163u,164u,165u,166u}) {
+        for (const auto seed : {41,std::numeric_limits<std::int32_t>::max(),std::numeric_limits<std::int32_t>::min()}) {
+            TestHost host; auto f=Function("IntegerIncrement",Return(Native(opcode,{Ref(0x01,1)})));
+            const auto property=host.Property(f,1,"Counter",Value::Integer(0));
+            host.Store("Self",property,{Value::Integer(seed)});
+            const auto bits=static_cast<std::uint32_t>(seed);
+            const auto next=std::bit_cast<std::int32_t>(opcode==163u || opcode==165u ? bits+1u : bits-1u);
+            const auto expected=opcode==163u || opcode==164u ? next : seed;
+            const auto result=Vm::Execute(host,f,"Self");Returned(result,"Pinned pre/post integer increment/decrement");
+            Require(result.value.kind==Vm::Kind::Int && result.value.integer==expected && result.writes==1u &&
+                host.Load("Self",property).integer==next,"Pre/post return snapshot, signed wrapping or one-write contract changed");
+        }
+    }
+    {
+        TestHost host; auto f=Function("IncrementSnapshots",Return(Native(146,
+            {Native(165,{Ref(0x01,1)}),Native(165,{Ref(0x01,1)})})));
+        const auto property=host.Property(f,1,"Counter",Value::Integer(0));
+        host.Store("Self",property,{Value::Integer(0)});
+        const auto result=Vm::Execute(host,f,"Self");Returned(result,"Postincrement result snapshots");
+        Require(result.value.integer==1 && host.Load("Self",property).integer==2 && result.writes==2u,
+            "Postincrement result aliased a later update instead of retaining its old value");
+    }
+    {
+        TestHost host;auto f=Function("IncrementArray",Return(Native(165,{Element(Native(1001),Ref(0x01,1))})));
+        const auto property=host.Property(f,1,"Counters",Value::Integer(0),0u,2u);
+        host.Store("Self",property,{Value::Integer(11),Value::Integer(22)});
+        const auto result=Vm::Execute(host,f,"Self");Returned(result,"Array-member integer increment");
+        Require(result.value.integer==11 && host.Load("Self",property,0u).integer==12 &&
+            host.Load("Self",property,1u).integer==22 &&
+            std::count(host.observations.begin(),host.observations.end(),"lhs")==1,
+            "Integer increment reevaluated its index or wrote another fixed slot");
+    }
+    {
+        TestHost host;auto f=Function("IncrementStruct",Return(Native(163,{Member(2,Ref(0x01,1))})));
+        Value zero;zero.kind=Vm::Kind::Struct;zero.fields["count"]=Value::Integer(0);
+        const auto property=host.Property(f,1,"Record",zero);
+        host.Property(f,2,"Count",Value::Integer(0));host.Store("Self",property,{zero});
+        const auto result=Vm::Execute(host,f,"Self");Returned(result,"Nested-member integer increment");
+        Require(result.value.integer==1 && host.Load("Self",property).fields.at("count").integer==1 && result.writes==1u,
+            "Integer increment lost the nested property's writable root alias");
+    }
+    for (const auto kind : {Vm::Kind::Byte,Vm::Kind::Float,Vm::Kind::Bool}) {
+        TestHost host;auto f=Function("BadIncrementReference",Return(Native(165,{Ref(0x01,1)})));
+        Value zero;zero.kind=kind;host.Property(f,1,"WrongKind",zero);
+        Failed(Vm::Execute(host,f,"Self"),Vm::Status::Invalid,host,"Non-Int increment reference");
+    }
+    for (const auto& expression : {Native(165),Native(165,{Int(1)}),Native(165,{Int(1),Int(2)})}) {
+        TestHost host;auto f=Function("BadIncrementArguments",Return(expression));
+        Failed(Vm::Execute(host,f,"Self"),Vm::Status::Invalid,host,"Wrong increment arity or non-reference argument");
+    }
+    {
+        TestHost host;auto f=Function("IncrementRollback",Join({Native(165,{Ref(0x01,1)}),Native(4095),Return({0x0b})}));
+        const auto property=host.Property(f,1,"Counter",Value::Integer(0));host.Store("Self",property,{Value::Integer(7)});
+        const auto result=Vm::Execute(host,f,"Self");Failed(result,Vm::Status::Unsupported,host,"Failure after integer increment");
+        Require(result.writes==1u && host.Load("Self",property).integer==7,"Failed call leaked a completed postincrement");
+    }
+    for (const std::size_t writes : {0u,1u}) {
+        TestHost host;auto f=Function("IncrementBudget",Join({Native(165,{Ref(0x01,1)}),Native(163,{Ref(0x01,1)}),Return({0x0b})}));
+        const auto property=host.Property(f,1,"Counter",Value::Integer(0));host.Store("Self",property,{Value::Integer(7)});
+        Vm::Limits limits;limits.writes=writes;
+        const auto result=Vm::Execute(host,f,"Self",{},limits);Failed(result,Vm::Status::Budget,host,"Integer increment write budget");
+        Require(result.writes==writes && host.Load("Self",property).integer==7,"Integer increment ignored the shared write budget or rollback");
+    }
+}
 void ExecutionContracts() {
     ScalarAndLocalContracts();ParametersAndReturns();AssignmentArraysAndStructs();LazyAndContextContracts();
-    OptionalAndReferenceTables();ControlAndFailureContracts();BudgetAndNestedRollback();
+    OptionalAndReferenceTables();ControlAndFailureContracts();BudgetAndNestedRollback();IntegerIncrementContracts();
 }
 void ProgramAndEligibilityContracts() {
     TestHost host;

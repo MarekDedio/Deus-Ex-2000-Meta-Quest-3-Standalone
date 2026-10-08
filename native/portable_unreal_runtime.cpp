@@ -7,6 +7,7 @@
 #include "quest_save_bundle.h"
 #include "portable_model_geometry.h"
 #include "quest_actor_animation_clock.h"
+#include "quest_authored_struct_value.h"
 
 #include <memory>
 #include <algorithm>
@@ -40,6 +41,7 @@ public:
     std::unique_ptr<PortablePropertyDescriptor> property;
     std::unique_ptr<PortableClassDescriptor> classDescriptor;
     std::unique_ptr<PortableStateDescriptor> stateDescriptor;
+    std::unique_ptr<PortableStructDescriptor> structDescriptor;
     // Keep the exact loaded record; class-backed offset -1 records are not
     // named-state continuations. No execution state is inferred from this.
     std::optional<PortableObjectStack> serializedStack;
@@ -93,6 +95,7 @@ public:
         : destroyedPackage_(destroyedPackage) {}
 
     std::vector<RuntimeObject*> exports;
+    std::size_t structDescriptorBytes{};
 
 protected:
     ~RuntimePackage() override {
@@ -1387,7 +1390,7 @@ public:
             const auto& properties = source->classDescriptor ? source->classDescriptor->defaults : source->instanceProperties;
             for (auto tag = properties.rbegin(); tag != properties.rend(); ++tag) {
                 if (tag->name != property.name || tag->arrayIndex != index) continue;
-                return Decode(*source, *tag, property.zero);
+                return Decode(*source, *tag, property);
             }
             source = source == object ? object->cls : source->base;
         }
@@ -1403,6 +1406,13 @@ public:
         }
         throw std::runtime_error("Runtime property metadata unavailable: " + name);
     }
+    Property DescribeProperty(const std::string& key) { return Describe(Object(key)); }
+    std::shared_ptr<const QuestVr::AuthoredStructSchema> StructPropertySchema(const std::string& key) {
+        auto* property = Object(key);
+        if (!property->property || property->property->type != "StructProperty")
+            throw std::runtime_error("Runtime property is not an authored StructProperty");
+        return StructSchema(Object(Qualified(Table(property->sourcePath), property->property->referencedType)));
+    }
 private:
     struct Before {
         decltype(RuntimeObject::scriptValues) values;
@@ -1413,6 +1423,11 @@ private:
     };
     std::unordered_map<std::string, PortablePackageTables> tables_;
     std::unordered_map<std::string, std::shared_ptr<const Function>> functions_;
+    std::unordered_map<std::string, std::shared_ptr<const QuestVr::AuthoredStructSchema>> structSchemas_;
+    std::set<RuntimeObject*> buildingStructs_;
+    std::set<RuntimeObject*> chargedStructDescriptors_;
+    std::size_t structFields_{};
+    std::size_t structSchemaBytes_{};
     std::unordered_map<RuntimeObject*, Before> saved_;
     std::optional<PortableModelGeometry> rootModel_;
     bool transaction_{};
@@ -1427,9 +1442,130 @@ private:
     }
     std::string Qualified(const PortablePackageTables& table, const std::int32_t reference) {
         if (reference == 0) return {};
+        // GetPortableObjectPath is a display helper. Validate the complete
+        // authored outer chain before using its result as a schema/value key.
+        std::set<std::int32_t> visited;
+        for (auto current = reference; current != 0;) {
+            if (visited.size() >= 32u || !visited.insert(current).second)
+                throw std::runtime_error("Runtime property object outer chain cycles or exceeds budget");
+            std::int32_t name{}, outer{};
+            if (current > 0) {
+                if (static_cast<std::size_t>(current) > table.exports.size())
+                    throw std::runtime_error("Runtime property export reference is out of range");
+                const auto& entry = table.exports[static_cast<std::size_t>(current - 1)];
+                name = entry.ObjName; outer = entry.ObjOuter;
+            } else {
+                const auto index = static_cast<std::uint64_t>(-static_cast<std::int64_t>(current) - 1);
+                if (index >= table.imports.size())
+                    throw std::runtime_error("Runtime property import reference is out of range");
+                const auto& entry = table.imports[static_cast<std::size_t>(index)];
+                name = entry.ObjName; outer = entry.ObjOuter;
+            }
+            if (name < 0 || static_cast<std::size_t>(name) >= table.names.size() ||
+                table.names[static_cast<std::size_t>(name)].Name.IsNone())
+                throw std::runtime_error("Runtime property object name is invalid");
+            current = outer;
+        }
         const auto path = GetPortableObjectPath(table, reference);
         if (path.empty()) throw std::runtime_error("Runtime property object reference unavailable");
         return reference > 0 ? PackageStem(table.sourcePath) + '.' + path : path;
+    }
+    const PortableStructDescriptor& StructDescriptor(RuntimeObject* object) {
+        if (object->reflection.metaClass != "Struct")
+            throw std::runtime_error("Runtime struct schema reference is not Core.Struct");
+        constexpr std::size_t maxBytes = 64u * 1024u * 1024u;
+        auto& runtimeBytes = persistentRuntime->get()->structDescriptorBytes;
+        if (!object->structDescriptor) {
+            if (runtimeBytes > maxBytes || structSchemaBytes_ > maxBytes)
+                throw std::runtime_error("Runtime retained struct descriptor budget exceeded");
+            auto descriptor = LoadPortableStructDescriptor(Table(object->sourcePath), object->exportIndex,
+                std::min(maxBytes - runtimeBytes, maxBytes - structSchemaBytes_));
+            const auto bytes = PortableStructRetainedBytes(descriptor);
+            auto retained = std::make_unique<PortableStructDescriptor>(std::move(descriptor));
+            object->structDescriptor = std::move(retained);
+            runtimeBytes += bytes;
+        }
+        if (chargedStructDescriptors_.find(object) == chargedStructDescriptors_.end()) {
+            const auto bytes = PortableStructRetainedBytes(*object->structDescriptor);
+            if (bytes > maxBytes || structSchemaBytes_ > maxBytes - bytes)
+                throw std::runtime_error("Runtime aggregate struct schema/descriptor byte budget exceeded");
+            chargedStructDescriptors_.insert(object);
+            structSchemaBytes_ += bytes;
+        }
+        return *object->structDescriptor;
+    }
+    std::shared_ptr<const QuestVr::AuthoredStructSchema> StructSchema(RuntimeObject* object) {
+        if (buildingStructs_.find(object) != buildingStructs_.end())
+            throw std::runtime_error("Runtime authored struct schema is recursive");
+        const auto key = LowerAscii(object->reflection.objectPath);
+        const auto found = structSchemas_.find(key);
+        if (found != structSchemas_.end()) return found->second;
+        if (buildingStructs_.size() >= 32u || structSchemas_.size() >= 4096u)
+            throw std::runtime_error("Runtime authored struct schema depth/count budget exceeded");
+        buildingStructs_.insert(object);
+        struct Guard {
+            std::set<RuntimeObject*>& active; RuntimeObject* object;
+            ~Guard() { active.erase(object); }
+        } guard{buildingStructs_, object};
+        auto schema = std::make_shared<QuestVr::AuthoredStructSchema>();
+        schema->path = object->reflection.objectPath;
+        const auto& declaration = Table(object->sourcePath);
+        const auto nameIndex = declaration.exports.at(object->exportIndex).ObjName;
+        if (nameIndex < 0 || static_cast<std::size_t>(nameIndex) >= declaration.names.size())
+            throw std::runtime_error("Runtime struct declaration Name is out of range");
+        schema->name = declaration.names[static_cast<std::size_t>(nameIndex)].Name.ToString();
+        if (key == "core.object.vector") schema->kind = Kind::Vector;
+        else if (key == "core.object.rotator") schema->kind = Kind::Rotator;
+        const auto& descriptor = StructDescriptor(object);
+        if (descriptor.baseField)
+            schema->fields = StructSchema(Object(Qualified(Table(object->sourcePath), descriptor.baseField)))->fields;
+        std::set<std::string> names;
+        for (const auto& field : schema->fields) names.insert(LowerAscii(field.name));
+        std::set<RuntimeObject*> visited;
+        auto child = descriptor.children;
+        while (child) {
+            auto* field = Object(Qualified(Table(object->sourcePath), child));
+            if (visited.size() >= 8192u || !visited.insert(field).second || field->outer != object)
+                throw std::runtime_error("Runtime struct Children/Next ownership/cycle budget failed");
+            if (field->property) {
+                const auto& member = *field->property;
+                if (member.arrayDimension != 1 || member.type == "StringProperty")
+                    throw std::runtime_error("Unsupported authored struct array/string member " + field->reflection.objectPath);
+                if (structFields_ >= 32768u) throw std::runtime_error("Runtime struct field budget exceeded");
+                ++structFields_;
+                const auto dot = field->reflection.objectPath.find_last_of('.');
+                QuestVr::AuthoredStructField value;
+                value.key = field->reflection.objectPath;
+                value.name = value.key.substr(dot + 1u);
+                if (!names.insert(LowerAscii(value.name)).second)
+                    throw std::runtime_error("Runtime struct has duplicate canonical field names");
+                if (member.type == "StructProperty") {
+                    value.nested = StructSchema(Object(Qualified(Table(field->sourcePath), member.referencedType)));
+                    value.zero.kind = value.nested->kind;
+                } else value.zero = Zero(field);
+                if (member.type == "ObjectProperty" || member.type == "ClassProperty") {
+                    value.classReference = member.type == "ClassProperty";
+                    value.referenceClassPath = Qualified(Table(field->sourcePath), value.classReference ?
+                        member.secondaryType : member.referencedType);
+                }
+                schema->fields.push_back(std::move(value)); child = member.nextField;
+            } else if (field->script) child = field->script->nextField;
+            else {
+                if (!field->commonFieldLinks)
+                    field->commonFieldLinks = LoadPortableFieldLinks(Table(field->sourcePath), field->exportIndex);
+                child = field->commonFieldLinks->nextField;
+            }
+        }
+        // Validate aggregate shape/budget before any runtime value construction.
+        QuestVr::AuthoredStructLimits limits;
+        QuestVr::AuthoredStructDetail::Budget measured{limits};
+        std::vector<const QuestVr::AuthoredStructSchema*> stack;
+        QuestVr::AuthoredStructDetail::Validate(*schema, measured, 0u, stack);
+        constexpr std::size_t maxSchemaBytes = 64u * 1024u * 1024u;
+        if (measured.retained > maxSchemaBytes || structSchemaBytes_ > maxSchemaBytes - measured.retained)
+            throw std::runtime_error("Runtime aggregate struct schema byte budget exceeded");
+        structSchemaBytes_ += measured.retained;
+        structSchemas_.emplace(key, schema); return schema;
     }
     Value Zero(RuntimeObject* property) {
         const auto& descriptor = *property->property;
@@ -1442,17 +1578,7 @@ private:
         if (type == "StrProperty" || type == "StringProperty") return Value::Text(Kind::String, {});
         if (type == "ObjectProperty" || type == "ClassProperty") return Value::Text(Kind::Object, {});
         if (type == "StructProperty") {
-            const auto structPath = Qualified(Table(property->sourcePath), descriptor.referencedType);
-            if (structPath == "Core.Object.Vector") return Value::Vector({0.0f, 0.0f, 0.0f});
-            if (structPath == "Core.Object.Rotator") return Value::Rotator({0, 0, 0});
-            if (structPath == "Engine.Actor.PointRegion") {
-                Value zero; zero.kind = Kind::Struct;
-                zero.fields.emplace("zone", Value::Text(Kind::Object, {}));
-                zero.fields.emplace("ileaf", Value::Integer(0));
-                zero.fields.emplace("zonenumber", Value::Byte(0u));
-                return zero;
-            }
-            throw std::runtime_error("Unsupported runtime struct type " + structPath);
+            return QuestVr::MakeAuthoredStructZero(*StructPropertySchema(property->reflection.objectPath));
         }
         throw std::runtime_error("Unsupported runtime property type " + type);
     }
@@ -1492,7 +1618,69 @@ private:
         }
         functions_.emplace(function->path, function); return function;
     }
-    Value Decode(RuntimeObject& source, const PortableTaggedProperty& tag, const Value& zero) {
+    Value Decode(RuntimeObject& source, const PortableTaggedProperty& tag, const Property& property) {
+        const auto& zero = property.zero;
+        if (zero.kind == Kind::Struct || zero.kind == Kind::Vector || zero.kind == Kind::Rotator) {
+            const auto schema = StructPropertySchema(property.key);
+            if (tag.type != 10u)
+                throw std::runtime_error("Authored struct tag does not match its declared type");
+            QuestVr::ValidateAuthoredStructTag(*schema, tag.structName.ToString());
+            const auto& table = Table(source.sourcePath);
+            QuestVr::AuthoredStructResolvers resolvers;
+            resolvers.resolveName = [&table](const std::int32_t index) {
+                if (index < 0 || static_cast<std::size_t>(index) >= table.names.size())
+                    throw std::runtime_error("Authored struct name reference is out of range");
+                return table.names[static_cast<std::size_t>(index)].Name.ToString();
+            };
+            resolvers.resolveObject = [this, &table](const std::int32_t index, const QuestVr::AuthoredStructField& field) {
+                const auto path = ResolvePortableValueObjectReference(table, index,
+                    [this](const std::string& resolved, const std::string& importedClass) {
+                        auto* object = Object(resolved);
+                        auto actual = object->cls ? object->cls->reflection.objectPath :
+                            object->reflection.metaClass == "Class" ? std::string("Core.Class") :
+                            Qualified(Table(object->sourcePath), Table(object->sourcePath).exports.at(object->exportIndex).ObjClass);
+                        const auto wanted = LowerAscii(importedClass);
+                        const auto shortName = [](const std::string& name) {
+                            return LowerAscii(name.substr(name.find_last_of('.') + 1u));
+                        };
+                        // The pin's Class lookup requires an actual class
+                        // metaclass, not any descendant of Core.Class. Other
+                        // imports match an unqualified name anywhere in ancestry.
+                        if (wanted == "class") return shortName(actual) == "class";
+                        std::set<std::string> visited;
+                        for (std::size_t depth = 0u; depth < 128u && !actual.empty(); ++depth) {
+                            const auto key = LowerAscii(actual);
+                            if (!visited.insert(key).second)
+                                throw std::runtime_error("Runtime imported value class hierarchy cycles");
+                            if (shortName(actual) == wanted) return true;
+                            const auto found = persistentVmObjects.find(key);
+                            if (found != persistentVmObjects.end() && found->second->reflection.metaClass == "Class") {
+                                auto* cls = found->second;
+                                actual = cls->base ? cls->base->reflection.objectPath :
+                                    Qualified(Table(cls->sourcePath), Table(cls->sourcePath).exports.at(cls->exportIndex).ObjBase);
+                            } else {
+                                // Same exact native registrations as ClassDerives.
+                                static constexpr std::pair<const char*, const char*> parents[] = {
+                                    {"engine.lodmesh", "Engine.Mesh"}, {"engine.mesh", "Engine.Primitive"},
+                                    {"engine.model", "Engine.Primitive"}, {"engine.primitive", "Core.Object"},
+                                    {"engine.texture", "Engine.Bitmap"}, {"engine.bitmap", "Core.Object"},
+                                    {"core.class", "Core.State"}, {"core.state", "Core.Struct"},
+                                    {"core.struct", "Core.Field"}, {"core.field", "Core.Object"}
+                                };
+                                const auto parent = std::find_if(std::begin(parents), std::end(parents),
+                                    [&](const auto& item) { return key == item.first; });
+                                if (parent == std::end(parents)) return false;
+                                actual = parent->second;
+                            }
+                        }
+                        if (!actual.empty()) throw std::runtime_error("Runtime imported value class hierarchy exceeds budget");
+                        return false;
+                    });
+                ValidateObjectValue(Value::Text(Kind::Object, path), field.referenceClassPath, field.classReference);
+                return path;
+            };
+            return QuestVr::DecodeAuthoredStructValue(*schema, tag.value, table.version, resolvers);
+        }
         switch (zero.kind) {
             case Kind::Bool:
                 if (tag.type == 3u) return Value::Bool(tag.boolValue);
@@ -1518,17 +1706,67 @@ private:
             case Kind::String:
                 if (tag.type == 13u) return Value::Text(Kind::String, DecodePortableStringProperty(tag));
                 break;
-            case Kind::Vector:
-                if (tag.type == 10u && tag.value.size() == 12u) {
-                    std::array<float, 3> value{}; std::memcpy(value.data(), tag.value.data(), 12u); return Value::Vector(value);
-                } break;
-            case Kind::Rotator:
-                if (tag.type == 10u && tag.value.size() == 12u) {
-                    std::array<std::int32_t, 3> value{}; std::memcpy(value.data(), tag.value.data(), 12u); return Value::Rotator(value);
-                } break;
             default: break;
         }
         throw std::runtime_error("Unsupported/malformed authored property " + tag.name.ToString());
+    }
+    bool ClassDerives(std::string actual, const std::string& expected) {
+        const auto target = LowerAscii(expected);
+        std::set<std::string> visited;
+        for (std::size_t depth = 0u; depth < 128u && !actual.empty(); ++depth) {
+            const auto key = LowerAscii(actual);
+            if (key == target) return true;
+            if (!visited.insert(key).second) throw std::runtime_error("Runtime value class hierarchy cycles");
+            const auto found = persistentVmObjects.find(key);
+            if (found != persistentVmObjects.end() && found->second->reflection.metaClass == "Class") {
+                auto* cls = found->second;
+                actual = cls->base ? cls->base->reflection.objectPath :
+                    Qualified(Table(cls->sourcePath), Table(cls->sourcePath).exports.at(cls->exportIndex).ObjBase);
+            } else {
+                // Exact pinned PackageManager registrations for native classes
+                // absent from serialized UClass exports (same save constraints).
+                static constexpr std::pair<const char*, const char*> parents[] = {
+                    {"engine.lodmesh", "Engine.Mesh"}, {"engine.mesh", "Engine.Primitive"},
+                    {"engine.model", "Engine.Primitive"}, {"engine.primitive", "Core.Object"},
+                    {"engine.texture", "Engine.Bitmap"}, {"engine.bitmap", "Core.Object"},
+                    {"core.class", "Core.State"}, {"core.state", "Core.Struct"},
+                    {"core.struct", "Core.Field"}, {"core.field", "Core.Object"}
+                };
+                const auto parent = std::find_if(std::begin(parents), std::end(parents),
+                    [&](const auto& item) { return key == item.first; });
+                if (parent == std::end(parents)) return false;
+                actual = parent->second;
+            }
+        }
+        return false;
+    }
+    void ValidateObjectValue(const Value& value, const std::string& expected, const bool classValue) {
+        if (value.text.empty()) return;
+        auto* object = Object(value.text);
+        if (!object->active) throw std::runtime_error("Runtime object reference is inactive");
+        const auto actual = object->cls ? object->cls->reflection.objectPath :
+            object->reflection.metaClass == "Class" ? "Core.Class" :
+            Qualified(Table(object->sourcePath), Table(object->sourcePath).exports.at(object->exportIndex).ObjClass);
+        if (classValue) {
+            if (LowerAscii(actual) != "core.class" || (!expected.empty() && !ClassDerives(value.text, expected)))
+                throw std::runtime_error("Runtime Class property violates its class constraint");
+        } else if (!expected.empty() && !ClassDerives(actual, expected))
+            throw std::runtime_error("Runtime Object property violates its class constraint");
+    }
+    Value TypedLiveValue(const Property& property, const Value& value) {
+        auto normalized = QuestVr::Vm::Coerce(value, property.zero);
+        auto* metadata = Object(property.key);
+        const auto& descriptor = *metadata->property;
+        if (descriptor.type == "ObjectProperty" || descriptor.type == "ClassProperty") {
+            const auto expected = Qualified(Table(metadata->sourcePath), descriptor.type == "ClassProperty" ?
+                descriptor.secondaryType : descriptor.referencedType);
+            ValidateObjectValue(normalized, expected, descriptor.type == "ClassProperty");
+        } else if (normalized.kind == Kind::Struct) {
+            for (const auto& field : StructPropertySchema(property.key)->fields)
+                normalized.fields.at(LowerAscii(field.name)) =
+                    TypedLiveValue(DescribeProperty(field.key), normalized.fields.at(LowerAscii(field.name)));
+        }
+        return normalized;
     }
     std::shared_ptr<Reference> ReferenceFor(RuntimeObject* object, const Property& property,
         const std::uint32_t index, const bool defaults) {
@@ -1536,8 +1774,9 @@ private:
         result->read = [this, object, property, index, defaults]() { return Read(object, property, index, defaults); };
         result->write = [this, object, property, index, defaults](const Value& value) {
             if (defaults) throw std::runtime_error("Class-default mutation is not supported by actor VM host");
+            auto normalized = TypedLiveValue(property, value);
             Touch(object);
-            object->scriptValues[LowerAscii(property.name)][index] = QuestVr::Vm::Coerce(value, property.zero);
+            object->scriptValues[LowerAscii(property.name)][index] = std::move(normalized);
             object->committedScriptState = true;
             UpdateClockProperty(object, property.name, index);
         };
@@ -1598,7 +1837,8 @@ private:
         auto reference = std::make_shared<Reference>(); reference->zero = property.zero;
         reference->dimension = property.arrayDimension; reference->read = [access]() { return access(); };
         reference->write = [this, object, property, access](const Value& value) {
-            Touch(object); access() = QuestVr::Vm::Coerce(value, property.zero); object->committedScriptState = true;
+            auto normalized = TypedLiveValue(property, value);
+            Touch(object); access() = std::move(normalized); object->committedScriptState = true;
             ValidateStateBudget();
         };
         reference->element = [this, object, property, revision](const std::size_t slot) {
@@ -2024,9 +2264,9 @@ private:
                 descriptor.secondaryType : descriptor.referencedType);
             ObjectValue(value, expected, descriptor.type == "ClassProperty");
         } else if (value.kind == QuestVr::Vm::Kind::Struct) {
-            // Only the host's exact PointRegion schema is implemented; its Zone
-            // field is more restrictive than a generic Object reference.
-            ObjectValue(value.fields.at("zone"), "Engine.ZoneInfo", false);
+            for (const auto& field : host_.StructPropertySchema(property.key)->fields)
+                value.fields.at(LowerAscii(field.name)) =
+                    TypedValue(host_.DescribeProperty(field.key), value.fields.at(LowerAscii(field.name)));
         }
         return value;
     }
@@ -2727,6 +2967,30 @@ QuestVr::Vm::Value ReadPortableActorScriptProperty(const std::string& actorPath,
     if (arrayIndex >= property.arrayDimension)
         throw std::runtime_error("VM property fixed-array index is out of range");
     return host.Read(actor, property, arrayIndex);
+}
+
+std::vector<QuestVr::Vm::Value> ReadPortableActorScriptPropertySlots(const std::string& actorPath,
+    const std::string& propertyName, const std::uint32_t firstIndex, const std::uint32_t count) {
+    if (count == 0u || count > 1024u)
+        throw std::runtime_error("VM property fixed-array read count is outside 1..1024");
+    PortableActorVmHost host;
+    RuntimeObject* actor = host.Object(actorPath);
+    if (!actor->active || !IsDerivedFromPath(actor->cls, "Engine.Actor"))
+        throw std::runtime_error("Explicit VM receiver is not a live Engine.Actor");
+    const auto property = host.PropertyNamed(actor, propertyName);
+    if (firstIndex >= property.arrayDimension || count > property.arrayDimension - firstIndex)
+        throw std::runtime_error("VM property fixed-array read range is out of range");
+    std::vector<QuestVr::Vm::Value> values;
+    values.reserve(count);
+    QuestVr::AuthoredStructLimits limits;
+    QuestVr::AuthoredStructDetail::Budget retained{limits};
+    retained.Retain(values.capacity() * sizeof(QuestVr::Vm::Value));
+    for (std::uint32_t offset = 0u; offset < count; ++offset) {
+        auto value = host.Read(actor, property, firstIndex + offset);
+        QuestVr::AuthoredStructDetail::RetainedValue(value, retained);
+        values.push_back(std::move(value));
+    }
+    return values;
 }
 
 std::optional<PortableObjectStack> ReadPortableActorSerializedStack(const std::string& actorPath) {
