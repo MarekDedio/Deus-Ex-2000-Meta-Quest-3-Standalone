@@ -1,9 +1,11 @@
 # Authored state metadata foundation
 
-This is a metadata-retention step, not automatic actor startup or working AI.
+This document records the metadata-retention step, not automatic actor startup
+or working AI. Subsequent [script selection and eligibility](SCRIPT-DISPATCH.md)
+now interprets supported stopped headers for read-only lookup and suppression.
 The portable runtime now retains named-state descriptors, the state header of
 serialized classes, and the exact loaded HasStack header of map actors. None
-of these fields is interpreted as a live state frame, enabled callback,
+of these fields is interpreted as a live state frame, automatic callback,
 resumable latent call, or completed lifecycle phase.
 
 The fidelity reference is the locally pinned SurrealEngine commit
@@ -25,8 +27,9 @@ execution semantics. The legacy class `stateBytecode` view remains available.
 Map actors retain `PortableObjectStack`: function reference, state reference,
 uint64 mask, uint32 latent action and an offset only when the function reference
 is nonzero. References remain indices into the original source package. The
-runtime adds resolved metadata links for GC; it does not create a state frame
-or apply the serialized mask to event eligibility.
+runtime adds resolved metadata links for GC; it does not create a state frame.
+The subsequent dispatch layer interprets supported dormant headers and restores
+their disabled probe names for read-only eligibility, without entering a state.
 
 The read-only queries are `ReadPortableRuntimeAuthoredStateDescriptor` and
 `ReadPortableActorSerializedStack`. They return copies and use case-insensitive
@@ -40,8 +43,10 @@ all 88 original maps; modified maps containing them are outside this scope.
 State/Class decoding checks export offsets against the source before allocation,
 limits each payload and logical script to 64 MiB, rejects token nesting at depth
 64, and bounds identity outer chains to 32 nodes and 64 KiB before concatenation.
-Names/references and exact payload termination are validated. Typed graph
-relations, label execution and active-state validation remain separate work.
+Names/references and exact payload termination are validated. Subsequent typed
+graph selection and terminal label analysis are described in
+[SCRIPT-DISPATCH.md](SCRIPT-DISPATCH.md); label execution and live-state
+validation remain separate work.
 
 Primary implementation references:
 
@@ -72,7 +77,9 @@ justified by the pinned code.
 The header's field called `probeMask` is also distinct from compiled
 `UState.ProbeMask`: pinned loading restores its set bits through `DisableEvent`.
 Pinned package saving writes the currently selected state's dynamic disabled
-probe bits into this field. The portable foundation only retains those bytes.
+probe bits into this field. The original foundation only retained those bytes;
+the subsequent stopped-context query interprets them as disabled probe names,
+not permission to run events.
 
 Primary references under `third_party/SurrealEngine/SurrealEngine/`:
 
@@ -236,10 +243,11 @@ Primary references:
 
 ## Priorities before automatic gameplay
 
-1. Add a persistent state-frame model and exact event eligibility/resolution.
+1. Add a persistent state-frame model and mutable event eligibility.
    Preserve code identity, next logical statement offset, latent status,
    owned local storage and state-keyed disabled names. Retaining metadata is
-   necessary but does not provide these runtime semantics.
+   necessary but does not provide these runtime semantics. Read-only authored
+   eligibility/resolution now exists, without state entry or ticking.
 2. Add VM-internal synchronous EndState/BeginState dispatch within the current
    transaction. Public Execute cannot simply be called recursively from a host
    native: it owns Begin/Commit/Rollback, and the actor host rejects nested host
@@ -262,8 +270,9 @@ Primary references:
 
 Current blockers remain concrete: the VM executes immutable synchronous
 Function frames, rejects latent declarations, treats state Stop as an
-unsupported continuation, and does not retain label entries as an executable
-state program. Authored state flags do not remove these limitations. The v4
+unsupported continuation, and exposes label entries only as read-only structural
+analysis, not an executable state program. Authored state flags do not remove
+these limitations. The v4
 save codec stores properties/clocks only; legacy restoration resets supported
 live overlays/clocks while authored metadata remains immutable. Map travel
 still requires a per-map archive when committed script state exists.
@@ -308,8 +317,9 @@ metadata and raw actor stacks, case-insensitive lookup, wrong identity
 rejection, legacy restore preservation, rejected startup preservation and
 retired-map lookup. The descriptor tests exercise malformed payloads as well
 as authored metadata. The separate original runtime/map/save regression also
-passed; see [status](STATUS.md). None of those checks establishes callback
-eligibility, NPC movement,
+passed; see [status](STATUS.md). Those original retention checks do not by
+themselves establish callback eligibility; the separate later dispatch controls
+are documented in [SCRIPT-DISPATCH.md](SCRIPT-DISPATCH.md). Neither establishes NPC movement,
 automatic startup, headset rendering or full campaign completion.
 
 This is subsequent offline source work, not a replacement for the installed

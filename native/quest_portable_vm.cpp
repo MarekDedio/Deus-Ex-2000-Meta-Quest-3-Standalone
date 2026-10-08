@@ -124,6 +124,7 @@ struct Node {
     std::uint16_t target{}, native{};
     Value constant;
     std::vector<Node> children;
+    std::vector<StateLabel> labels;
 };
 struct Program {
     std::vector<Node> statements;
@@ -132,11 +133,13 @@ struct Program {
 class Parser {
 public:
     Parser(Host& host, const Function& fn, const Limits& limits, std::size_t& totalNodes,
-        Result& result) : host_(host), fn_(fn), limits_(limits), totalNodes_(totalNodes), result_(result) {}
+        Result& result, bool analysis = false) : host_(host), fn_(fn), limits_(limits),
+            totalNodes_(totalNodes), result_(result), analysis_(analysis) {}
     Program Parse() {
         if (fn_.bytecode.size() > limits_.sourceBytes) Fail(Status::Budget, "VM bytecode byte limit");
         Program p;
         while (cursor_ < fn_.bytecode.size()) {
+            Retain(2u * sizeof(std::pair<std::size_t, std::size_t>) + 2u * sizeof(std::size_t));
             p.boundaries.emplace(cursor_, p.statements.size());
             p.statements.push_back(Read(0));
         }
@@ -152,7 +155,25 @@ private:
     std::size_t& totalNodes_;
     Result& result_;
     std::size_t cursor_{};
+    bool analysis_{};
+    std::size_t retainedBytes_{}, labels_{};
     [[noreturn]] void Fail(Status status, const std::string& text) { throw Failure(status, text); }
+    void Retain(const std::size_t bytes) {
+        if (!analysis_) return;
+        if (bytes > limits_.retainedBytes || retainedBytes_ > limits_.retainedBytes - bytes)
+            Fail(Status::Budget, "VM program layout retained byte limit");
+        retainedBytes_ += bytes;
+    }
+    std::string Resolve(const std::int32_t reference, const bool name) {
+        std::string spelling;
+        try {
+            spelling = name ? host_.ResolveName(fn_, reference) : host_.ResolveObject(fn_, reference);
+        } catch (const std::exception& error) {
+            Fail(Status::Invalid, std::string("Invalid VM program reference: ") + error.what());
+        }
+        if (spelling.size() > limits_.stringBytes) Fail(Status::Budget, "VM program identity/name byte limit");
+        return spelling;
+    }
     std::uint8_t Byte() {
         if (cursor_ >= fn_.bytecode.size()) Fail(Status::Invalid, "Truncated VM expression");
         return fn_.bytecode[cursor_++];
@@ -177,6 +198,9 @@ private:
     Node Read(std::size_t depth) {
         if (depth >= limits_.expressionDepth || ++totalNodes_ > limits_.nodes)
             Fail(Status::Budget, "VM expression/node limit");
+        // Conservatively cover internal node-vector capacity. Analysis also
+        // accounts for its detached offset/label result while the tree lives.
+        Retain(2u * sizeof(Node));
         Node n; n.offset = cursor_; n.op = Byte();
         result_.function = fn_.path; result_.offset = n.offset; result_.opcode = n.op;
         const auto child = [&] { n.children.push_back(Read(depth + 1)); };
@@ -199,8 +223,17 @@ private:
             case 0x0a: n.target = Word(); if (n.target != 0xffff) child(); break;
             case 0x0c:
                 while (true) {
-                    const auto name = std::bit_cast<std::int32_t>(Dword()); Dword();
-                    if (Lower(host_.ResolveName(fn_, name)) == "none") break;
+                    const auto name = std::bit_cast<std::int32_t>(Dword());
+                    const auto target = Dword();
+                    if (analysis_) {
+                        if (labels_ >= limits_.nodes) Fail(Status::Budget, "VM program label entry limit");
+                        ++labels_;
+                        auto spelling = Resolve(name, true);
+                        if (NameKey(spelling) == "none") break;
+                        Retain(3u * sizeof(StateLabel));
+                        Retain(spelling.size()); Retain(spelling.size());
+                        n.labels.push_back({std::move(spelling), target});
+                    } else if (Lower(host_.ResolveName(fn_, name)) == "none") break;
                 }
                 break;
             case 0x0d: case 0x0e: case 0x2d: child(); break;
@@ -219,6 +252,7 @@ private:
                     if (text.size() >= limits_.stringBytes) Fail(Status::Budget, "VM string limit");
                     text.push_back(static_cast<char>(c));
                 }
+                Retain(text.size()); Retain(text.size());
                 n.constant = Value::Text(Kind::String, std::move(text)); break;
             }
             case 0x22: {
@@ -243,6 +277,17 @@ private:
                     if (count >= limits_.stringBytes / 2) Fail(Status::Budget, "VM Unicode string limit");
                 break;
             default: Fail(Status::Invalid, "Unknown VM opcode " + std::to_string(n.op));
+            }
+        }
+        if (analysis_) {
+            switch (n.op) {
+            case 0x21: case 0x1b: case 0x38: Resolve(n.reference, true); break;
+            case 0x00: case 0x01: case 0x02: case 0x20: case 0x29:
+            case 0x13: case 0x2e: case 0x36: case 0x32: case 0x33: case 0x1c:
+                // Structural identities only. Property typed zeros and callable
+                // functions need separate host support/graph binding, not here.
+                Resolve(n.reference, false); break;
+            default: break;
             }
         }
         return n;
@@ -303,10 +348,10 @@ public:
     }
     void Accept() { accepted_ = true; }
     Value Run(const Function& fn, const std::string& self, const std::vector<Evaluation>& incoming) {
+        if (self.empty() || !host_.CanCall(fn, self)) return {};
         if (result_.callStack.size() >= limits_.callDepth) Fail(Status::Budget, "VM call depth limit");
         result_.callStack.push_back(fn.path);
         result_.function = fn.path; result_.offset = 0; result_.opcode = 0;
-        if (self.empty()) { result_.callStack.pop_back(); return {}; }
         if (fn.flags & 0x8) Fail(Status::Unsupported, "Latent VM function requires a continuation engine");
         if (incoming.size() > limits_.arguments) Fail(Status::Budget, "VM argument limit");
         for (const auto& argument : incoming) {
@@ -726,6 +771,23 @@ private:
     }
 };
 } // namespace
+
+ProgramLayout AnalyzeProgram(Host& host, const Function& function, const Limits& limits) {
+    Result diagnostics;
+    std::size_t nodes{};
+    auto program = Parser(host, function, limits, nodes, diagnostics, true).Parse();
+    ProgramLayout layout;
+    layout.statementOffsets.reserve(program.statements.size());
+    for (const auto& statement : program.statements) layout.statementOffsets.push_back(statement.offset);
+    if (!program.statements.empty() && program.statements.back().op == 0x0cu) {
+        layout.terminalLabelTable = true;
+        layout.labels = std::move(program.statements.back().labels);
+        for (const auto& label : layout.labels)
+            if (!program.boundaries.count(label.offset))
+                throw std::runtime_error("VM state label is not a top-level statement boundary");
+    }
+    return layout;
+}
 
 Result Execute(Host& host, const Function& function, const std::string& self,
     const std::vector<Evaluation>& arguments, const Limits& limits) {

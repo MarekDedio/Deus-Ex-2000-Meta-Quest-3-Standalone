@@ -1,5 +1,45 @@
 # Port status
 
+## Offline script selection and eligibility (2026-10-08; not deployed)
+
+- Added a bounded, lazy Class/State/Function graph from original Children/Next
+  chains, including the UField prefixes of Struct/Enum/Const siblings. Named
+  state and virtual lookup are derived-first; globals skip states; Auto uses
+  actual global NameString CompareIndex, not alphabetical order. These are
+  read-only selections, not state entry.
+- Authored stopped HasStack contexts now supply code/class masks and disabled
+  probe names with pinned polarity: IgnoreMask zero denies, compiled class/code
+  ProbeMask permits, and serialized stack-mask set bits disable. Class-backed
+  stopped records retain their class name. GetStateName/IsInState read this
+  context; runnable saved continuations remain unsupported.
+- Eligibility now suppresses calls before callee locals, arguments, native work
+  and parsing. Fully qualified Standing.AnimEnd selection cannot bypass it;
+  this corrects the earlier execution-only fixture's callback interpretation.
+  Explicit event dispatch additionally requires begun play and deletion gates.
+  No automatic animation/event scheduler or mutable state transition is enabled.
+- Read-only bytecode analysis preserves terminal top-level label order and
+  duplicates, validates original identities and top-level targets, and never
+  invokes variables/natives/transactions. Serialized LabelTableOffset is retained
+  without assuming that it points to the opcode; pinned lookup uses the terminal
+  statement instead. State label execution remains unfinished.
+- The host suite has 30 entries: 28 ordinary tests pass and two original-data
+  integrations explicitly skip without their separate game root. VM controls
+  pass 285 checks/66 rejections, dispatch 899/20 and descriptor controls 386/101.
+  Both separate original-data integrations passed. Graph coverage: 1,502 Classes,
+  261 States, 7,511 class functions, 697 state functions and 357 common fields.
+  Layout coverage: 2,820 statements, 355 labels and 159 terminal tables, with
+  independent table-entry/source-name/target comparison. Doctor/RepairBot/Pigeon
+  stopped-context controls, exact receiver-Level null/begun/deleted gates,
+  existing helpers, 15 malformed-save controls and save/travel guards passed.
+  Inventory/Health original-art CPU previews were visually checked with sample
+  data; no new GL/stereo/controller verification is claimed.
+- No Android build, ADB command or headset deployment was performed. The user's
+  frozen `25e38b3` test APK remains unchanged. Full startup, state/latent/AI
+  execution, dynamic disabled sets, scheduling and persistence remain incomplete.
+  See [SCRIPT-DISPATCH.md](SCRIPT-DISPATCH.md), including the future identity-only
+  callee-stub requirement before argument expressions can change eligibility.
+  Logs are in ignored `artifacts/state-dispatch-20261008/`.
+
 ## Offline authored-state foundation (2026-10-08; not deployed)
 
 - Retained exact UField/UStruct/UState metadata for script State/Class exports:

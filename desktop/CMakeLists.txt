@@ -9,6 +9,7 @@ endif()
 set(PORT_NATIVE "${CMAKE_CURRENT_LIST_DIR}/../native")
 add_library(quest_portable_host STATIC
     "${PORT_NATIVE}/quest_portable_vm.cpp"
+    "${PORT_NATIVE}/quest_script_dispatch.cpp"
     "${PORT_NATIVE}/quest_static_lightmap_cache.cpp"
     "${SURREAL_ENGINE_ROOT}/Precomp.cpp"
     "${SURREAL_ENGINE_ROOT}/Utils/File.cpp"
@@ -289,3 +290,12 @@ if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
     target_link_options(portable_state_descriptor_test PRIVATE -static -static-libgcc -static-libstdc++)
 endif()
 add_test(NAME portable_state_descriptor COMMAND portable_state_descriptor_test)
+
+add_executable(quest_script_dispatch_test quest_script_dispatch_test.cpp)
+target_compile_features(quest_script_dispatch_test PRIVATE cxx_std_20)
+target_link_libraries(quest_script_dispatch_test PRIVATE quest_portable_host)
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+    target_compile_options(quest_script_dispatch_test PRIVATE -Wall -Wextra -Werror)
+    target_link_options(quest_script_dispatch_test PRIVATE -static -static-libgcc -static-libstdc++)
+endif()
+add_test(NAME quest_script_dispatch COMMAND quest_script_dispatch_test)

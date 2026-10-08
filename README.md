@@ -27,6 +27,9 @@ The [installed Quest test build](docs/QUEST-TEST-BUILD.md) remains frozen while
 the user tests it. Subsequent offline source work retains
 [authored state metadata](docs/AUTHORED-STATE-FOUNDATION.md); it does not enable
 automatic AI or replace that installed APK.
+The subsequent [script-dispatch foundation](docs/SCRIPT-DISPATCH.md) adds
+read-only state/function selection, label analysis and eligibility suppression,
+not startup or live state execution.
 
 ## Data boundary
 

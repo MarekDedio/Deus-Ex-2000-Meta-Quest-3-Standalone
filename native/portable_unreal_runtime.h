@@ -3,11 +3,13 @@
 #include "surreal_portable_package_tables.h"
 #include "quest_actor_materials.h"
 #include "quest_portable_vm.h"
+#include "quest_script_dispatch.h"
 
 #include <cstddef>
 #include <cstdint>
 #include <array>
 #include <string>
+#include <set>
 
 struct PortableRuntimeSummary {
     bool passed{};
@@ -300,6 +302,31 @@ std::optional<PortableObjectStack> ReadPortableActorSerializedStack(
     const std::string& actorPath);
 PortableStateDescriptor ReadPortableRuntimeAuthoredStateDescriptor(
     const std::string& objectPath);
+// Authored stopped-frame context, not state entry/ticking. Runnable serialized
+// continuations fail explicitly until supported. No automatic callback caller.
+struct PortableActorDispatchContext {
+    std::string codePath, stateName{"None"};
+    std::uint64_t classProbeMask{};
+    std::optional<QuestVr::ScriptDispatch::CodeMasks> codeMasks;
+    std::set<std::string> disabledNames;
+};
+struct PortableScriptDispatchSummary {
+    std::size_t classes{}, states{}, classFunctions{}, stateFunctions{}, commonFields{};
+};
+PortableScriptDispatchSummary ReadPortableRuntimeDispatchSummary();
+PortableActorDispatchContext ReadPortableActorDispatchContext(const std::string& actorPath);
+std::optional<std::string> ResolvePortableActorState(const std::string& actorPath,
+    const std::string& stateName);
+std::optional<std::string> ResolvePortableActorFunction(const std::string& actorPath,
+    const std::string& stateName, const std::string& functionName,
+    QuestVr::ScriptDispatch::LookupKind kind = QuestVr::ScriptDispatch::LookupKind::Virtual);
+QuestVr::Vm::ProgramLayout ReadPortableRuntimeStateProgram(const std::string& objectPath,
+    const QuestVr::Vm::Limits& limits = {});
+// Only explicit enum dispatch grants Destroyed's bDeleteMe exception.
+QuestVr::Vm::Result ExecutePortableActorEvent(const std::string& actorPath,
+    const std::string& eventName, bool enumDispatch = false,
+    const std::vector<QuestVr::Vm::Evaluation>& arguments = {},
+    const QuestVr::Vm::Limits& limits = {});
 // v4 preserves supported actor overlays and native animation clocks. This
 // predicate means state is present, not that a successful save has cleared it.
 // Map replacement/unload still require a per-map archive and are guarded while

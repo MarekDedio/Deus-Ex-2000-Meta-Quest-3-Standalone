@@ -118,6 +118,95 @@ void VerifyAuthoredStateMetadata(const std::filesystem::path& root) {
         "Metadata inspection accepted wrong identities or created live script state");
     std::cout << "ORIGINAL STATE/CLASS METADATA retained; readonly identity controls passed\n";
 }
+void VerifyOriginalDispatchPrograms(const std::vector<PortablePackageTables>& tables,
+    const PortableRuntimeSummary& runtime) {
+    const auto graph = ReadPortableRuntimeDispatchSummary();
+    Require(graph.classes == runtime.classes && graph.states == runtime.states &&
+        graph.classFunctions + graph.stateFunctions == runtime.functions,
+        "Original Children/Next dispatch graph lost class/state/functions");
+    std::size_t states{}, classes{}, labels{}, terminalTables{}, statements{};
+    for (const auto& package : tables) {
+        const auto reflection = BuildPortableReflectionGraph(package);
+        for (std::size_t index=0;index<reflection.objects.size();++index) {
+            const auto& object=reflection.objects[index];
+            if (object.metaClass != "State" && object.metaClass != "Class") continue;
+            const auto path=std::filesystem::path(package.sourcePath).stem().string()+'.'+object.objectPath;
+            const auto layout=ReadPortableRuntimeStateProgram(path);
+            statements += layout.statementOffsets.size(); labels += layout.labels.size();
+            terminalTables += layout.terminalLabelTable;
+            if (object.metaClass == "State") ++states; else ++classes;
+            const auto descriptor=ReadPortableRuntimeAuthoredStateDescriptor(path);
+            Require(std::is_sorted(layout.statementOffsets.begin(),layout.statementOffsets.end()),
+                "Original normalized program lost statement order");
+            // The pinned FindLabelIndex inspects the final parsed statement,
+            // not the serialized header offset. Independently walk fixed-width
+            // normalized table entries and compare their actual source names.
+            if (layout.terminalLabelTable) {
+                Require(!layout.statementOffsets.empty(), "Original terminal table has no statement");
+                std::size_t cursor=layout.statementOffsets.back();
+                Require(cursor<descriptor.bytecode.size() && descriptor.bytecode[cursor++]==0x0cu,
+                    "Original terminal statement is not a LabelTable: "+path);
+                const auto word=[&]() {
+                    Require(cursor<=descriptor.bytecode.size() && descriptor.bytecode.size()-cursor>=4u,
+                        "Original terminal label entry truncated: "+path);
+                    std::uint32_t value{};
+                    for (unsigned i=0;i<4u;++i) value|=std::uint32_t(descriptor.bytecode[cursor++])<<(8u*i);
+                    return value;
+                };
+                std::size_t entry{};
+                while (true) {
+                    const auto name=word(); const auto offset=word();
+                    Require(name<package.names.size(), "Original terminal label name invalid: "+path);
+                    const auto spelling=package.names[name].Name.ToString();
+                    if (QuestVr::ScriptDispatch::FoldName(spelling)=="none") break;
+                    Require(entry<layout.labels.size() && layout.labels[entry].name==spelling &&
+                        layout.labels[entry].offset==offset &&
+                        std::binary_search(layout.statementOffsets.begin(),layout.statementOffsets.end(),offset),
+                        "Original terminal label spelling/order/target diverged: "+path);
+                    ++entry;
+                }
+                Require(entry==layout.labels.size() && cursor==descriptor.bytecode.size(),
+                    "Original terminal label count/end diverged: "+path);
+            } else {
+                Require(layout.labels.empty(), "Nonterminal label table contributed labels: "+path);
+            }
+        }
+    }
+    Require(states==runtime.states && classes==runtime.classes && labels!=0u && !GetPortableRuntimeScriptStatePresent(),
+        "Original program inspection lost coverage or created execution state");
+    std::cout << "ORIGINAL DISPATCH GRAPH classes="<<graph.classes<<" states="<<graph.states<<
+        " classFunctions="<<graph.classFunctions<<" stateFunctions="<<graph.stateFunctions<<" commonFields="<<graph.commonFields<<'\n';
+    std::cout << "ORIGINAL PROGRAM LAYOUT states="<<states<<" classes="<<classes<<" statements="<<statements<<
+        " labels="<<labels<<" terminalTables="<<terminalTables<<"; inspection only\n";
+}
+void VerifyStoppedDispatch(const std::string& actor) {
+    const auto context=ReadPortableActorDispatchContext(actor);
+    const auto before=Snapshot(actor);
+    Require(!context.codePath.empty() && context.codeMasks && context.disabledNames.size()==64u,
+        "Original dormant frame context lost class code or serialized disabled bits");
+    Require(context.stateName==context.codePath.substr(context.codePath.find_last_of('.')+1u),
+        "Stopped class-backed GetStateName was incorrectly normalized to None");
+    const auto stateName=Call(actor,"GetStateName");
+    Require(stateName.value.kind==Kind::Name && stateName.value.text==context.stateName,
+        "Original GetStateName did not return stopped code identity");
+    const auto inState=Call(actor,"IsInState",{Name(context.stateName)});
+    Require(inState.value.kind==Kind::Bool && inState.value.boolean && Same(before,Snapshot(actor)) &&
+        !GetPortableRuntimeScriptStatePresent(), "Readonly state query altered NPC state");
+    const auto level=ReadPortableActorScriptProperty(actor,"Level");
+    Require(level.kind==Kind::Object && !level.text.empty() &&
+        QuestVr::Vm::ToBool(Call(level.text,"IsA",{Name("LevelInfo")}).value),
+        "Original event receiver lost its authored Level reference");
+    Require(!QuestVr::Vm::ToBool(ReadPortableActorScriptProperty(level.text,"bBegunPlay")),
+        "Readonly map loading incorrectly began world startup");
+    const auto disabled=ExecutePortableActorEvent(actor,"AnimEnd",true);
+    Require(disabled.passed() && disabled.value.kind==Kind::Nothing && disabled.instructions==0u &&
+        Same(before,Snapshot(actor)), "Disabled authored AnimEnd executed");
+    const auto absent=ExecutePortableActorEvent(actor,"NoSuchAuthoredEvent");
+    Require(absent.passed() && absent.value.kind==Kind::Nothing && absent.instructions==0u &&
+        !GetPortableRuntimeScriptStatePresent(), "Missing or before-begun-play event was treated as execution/failure");
+    std::cout << "ORIGINAL STOPPED DISPATCH "<<actor<<" code="<<context.codePath<<" stateName="<<context.stateName<<
+        " disabledProbes="<<context.disabledNames.size()<<"; no startup or ticking\n";
+}
 std::uint32_t Word(const std::vector<std::uint8_t>& bytes,const std::size_t offset) {
     Require(offset <= bytes.size() && bytes.size()-offset >= 4,"Generated checkpoint word truncated");
     std::uint32_t value{};for (unsigned i=0;i<4;++i) value|=std::uint32_t(bytes[offset+i])<<(i*8u);return value;
@@ -236,6 +325,73 @@ void ScriptSchemaPositiveReferences(const std::vector<std::uint8_t>& serialized,
     std::cout<<"ORIGINAL v4 positive authored reference controls="<<references.size()
         <<" (Mesh/Owner/PointRegion"<<(textureFound ? "/Texture" : "")<<"); complete roundtrip remained stable\n";
 }
+void VerifyEventLevelBindings(const std::vector<std::uint8_t>& serialized,const PortableActorSnapshot& expected,
+    const std::filesystem::path& originalCheckpoint,const std::filesystem::path& directory) {
+    const auto baseline=QuestVr::DecodeScriptSavedState(ScriptBlob(serialized));
+    const auto authoredLevel=ReadPortableActorScriptProperty(expected.objectPath,"Level");
+    Require(authoredLevel.kind==Kind::Object && !authoredLevel.text.empty(),"Event fixture has no authored Level");
+    const auto levelSnapshot=Snapshot(authoredLevel.text);
+    const auto set=[](QuestVr::ScriptSavedObject& object,QuestVr::ScriptSavedProperty property) {
+        const auto found=std::find_if(object.properties.begin(),object.properties.end(),[&](const auto& item) {
+            return item.key==property.key && item.index==property.index;
+        });
+        if (found==object.properties.end()) object.properties.push_back(std::move(property));
+        else *found=std::move(property);
+    };
+    const auto fixture=directory/"event-level-binding-v4.sav";
+    const auto inspection=directory/"event-level-binding-unchanged-v4.sav";
+    const auto apply=[&](const bool nullLevel,const bool begun,const bool deleted) {
+        auto state=baseline;
+        auto actor=std::find_if(state.objects.begin(),state.objects.end(),[&](const auto& object) {
+            return object.path==expected.objectPath;
+        });
+        Require(actor!=state.objects.end(),"Event fixture lost its existing actor");
+        set(*actor,{"Engine.Actor.Level","Level",0u,nullLevel ? Value::Text(Kind::Object,{}) : authoredLevel});
+        set(*actor,{"Engine.Actor.bDeleteMe","bDeleteMe",0u,Value::Bool(deleted)});
+        auto level=std::find_if(state.objects.begin(),state.objects.end(),[&](const auto& object) {
+            return object.path==levelSnapshot.objectPath;
+        });
+        if (level==state.objects.end()) {
+            state.objects.push_back({levelSnapshot.objectPath,levelSnapshot.classPath,{},{}});
+            level=state.objects.end()-1;
+        }
+        set(*level,{"Engine.LevelInfo.bBegunPlay","bBegunPlay",0u,Value::Bool(begun)});
+        Require(QuestVr::WriteDurableSaveFile(fixture.string(),ReplaceScriptBlob(serialized,QuestVr::EncodeScriptSavedState(state))) &&
+            ValidatePortableRuntimeState(fixture.string()) && LoadPortableRuntimeState(fixture.string()),
+            "Valid typed Level/lifecycle overlay fixture was rejected");
+        Require(Same(expected,Snapshot(expected.objectPath)),"Event fixture altered actor native clock");
+    };
+    const auto unchanged=[&]() {
+        Require(SavePortableRuntimeState(inspection.string()) && CheckpointBytes(inspection)==CheckpointBytes(fixture),
+            "Readonly event dispatch changed full saved state");
+    };
+    apply(true,true,false);
+    const auto disabled=ExecutePortableActorEvent(expected.objectPath,"AnimEnd",true);
+    Require(disabled.passed() && disabled.value.kind==Kind::Nothing && disabled.instructions==0u,
+        "Disabled event incorrectly dereferenced a null Level binding");
+    const auto unbound=ExecutePortableActorEvent(expected.objectPath,"GetStateName");
+    Require(!unbound.passed() && unbound.error.find("Level binding")!=std::string::npos && unbound.instructions==0u,
+        "Eligible event replaced null receiver Level with the first map LevelInfo");
+    unchanged();
+    apply(false,false,false);
+    const auto beforeStartup=ExecutePortableActorEvent(expected.objectPath,"GetStateName");
+    Require(beforeStartup.passed() && beforeStartup.value.kind==Kind::Nothing && beforeStartup.instructions==0u,
+        "Event ignored its bound LevelInfo's before-startup gate");
+    unchanged();
+    apply(false,true,false);
+    const auto begun=ExecutePortableActorEvent(expected.objectPath,"GetStateName");
+    Require(begun.passed() && begun.value.kind==Kind::Name && begun.value.text==ReadPortableActorDispatchContext(expected.objectPath).stateName,
+        "Eligible name event failed to honor bound LevelInfo's begun-play overlay");
+    unchanged();
+    apply(false,true,true);
+    const auto deleted=ExecutePortableActorEvent(expected.objectPath,"GetStateName");
+    Require(deleted.passed() && deleted.value.kind==Kind::Nothing && deleted.instructions==0u,
+        "Name event ignored receiver bDeleteMe overlay");
+    unchanged();
+    Require(LoadPortableRuntimeState(originalCheckpoint.string()) && SavePortableRuntimeState(inspection.string()) &&
+        CheckpointBytes(inspection)==serialized,"Could not restore complete original state after event gate controls");
+    std::cout<<"ORIGINAL EVENT LEVEL GATES null-reference rejection / disabled short-circuit / begun-play / deleted; readonly state stable\n";
+}
 void ScriptSchemaRejections(const std::vector<std::uint8_t>& serialized,const PortableActorSnapshot& expected,
     const PropertyValues& properties,const std::filesystem::path& directory) {
     const auto state=QuestVr::DecodeScriptSavedState(ScriptBlob(serialized));
@@ -346,6 +502,7 @@ void TestOriginal(const std::filesystem::path& root) {
     Require(runtime.passed && runtime.states != 0 && runtime.normalizedStateBytecodeBytes != 0,
         "Original script runtime initialization/state metadata failed");
     VerifyAuthoredStateMetadata(root);
+    VerifyOriginalDispatchPrograms(tables,runtime);
     TemporaryCheckpoint temporary(root);
     const auto checkpoint = (temporary.directory / "original-authored.sav").string();
     std::size_t humanTests{}, robotTests{}, birdTests{};
@@ -362,6 +519,12 @@ void TestOriginal(const std::filesystem::path& root) {
             if (!actor.pawn || actor.meshPath.empty() || !IsA(actor, "ScriptedPawn")) continue;
             if (humanTests == 0u && !IsA(actor, "Robot") && !IsA(actor, "Animal")) {
                 VerifyAuthoredStack(root, actor.objectPath);
+                VerifyStoppedDispatch(actor.objectPath);
+                Require(ResolvePortableActorState(actor.objectPath,"Auto")=="DeusEx.ScriptedPawn.StartUp" &&
+                    ResolvePortableActorState(actor.objectPath,"Standing")=="DeusEx.ScriptedPawn.Standing" &&
+                    ResolvePortableActorFunction(actor.objectPath,"Standing","AnimEnd")=="DeusEx.ScriptedPawn.Standing.AnimEnd" &&
+                    ResolvePortableActorFunction(actor.objectPath,"Standing","AnimEnd",QuestVr::ScriptDispatch::LookupKind::Global)=="Engine.Actor.AnimEnd",
+                    "Original Auto/named state or Virtual/Global function selection diverged");
                 const auto authoredStack = ReadPortableActorSerializedStack(actor.objectPath);
                 const auto region = ReadPortableActorScriptProperty(actor.objectPath, "Region");
                 Require(region.kind == Kind::Struct && !region.fields.at("zone").text.empty(),
@@ -371,7 +534,10 @@ void TestOriginal(const std::filesystem::path& root) {
                 Call(actor.objectPath, "PlayWaiting");
                 Require(Snapshot(actor.objectPath).animation.sequence != "None",
                     "Original PlayWaiting failed to select the original script sequence");
-                Call(actor.objectPath, "DeusEx.ScriptedPawn.Standing.AnimEnd");
+                const auto beforeDisabled=Snapshot(actor.objectPath);
+                const auto disabled=Call(actor.objectPath, "DeusEx.ScriptedPawn.Standing.AnimEnd");
+                Require(disabled.value.kind==Kind::Nothing && disabled.instructions==0u && Same(beforeDisabled,Snapshot(actor.objectPath)),
+                    "Fully-qualified probe function bypassed original callback eligibility");
                 const auto mesh = GetPortableRuntimeMesh(actor.meshPath);
                 Require(mesh.animation && !mesh.animation->sequences.empty(), "Original animation mesh unavailable");
                 const auto usable = std::find_if(mesh.animation->sequences.begin(), mesh.animation->sequences.end(), [&](const auto& s) {
@@ -455,6 +621,7 @@ void TestOriginal(const std::filesystem::path& root) {
                     QuestVr::EncodeScriptSavedState(savedState)==QuestVr::EncodeScriptSavedState(restoredState),
                     "Saved/restored full native tween clock produced a different continuation");
                 ScriptSchemaPositiveReferences(serialized,pose,savedProperties,scriptCheckpoint,temporary.directory);
+                VerifyEventLevelBindings(serialized,pose,scriptCheckpoint,temporary.directory);
                 auto truncated=serialized;truncated.pop_back();
                 const auto broken=temporary.directory/"truncated-script-v4.sav";
                 Require(QuestVr::WriteDurableSaveFile(broken.string(),truncated) &&
@@ -499,6 +666,7 @@ void TestOriginal(const std::filesystem::path& root) {
             }
             if (robotTests == 0u && IsA(actor, "Robot")) {
                 VerifyAuthoredStack(root, actor.objectPath);
+                VerifyStoppedDispatch(actor.objectPath);
                 Call(actor.objectPath, "PlayWaiting");
                 const auto robot = Snapshot(actor.objectPath);
                 Require(!robot.animation.sequence.empty() && robot.animation.frame < 0.0f,
@@ -508,6 +676,7 @@ void TestOriginal(const std::filesystem::path& root) {
             }
             if (birdTests == 0u && IsA(actor, "Bird")) {
                 VerifyAuthoredStack(root, actor.objectPath);
+                VerifyStoppedDispatch(actor.objectPath);
                 const auto wait = ReadPortableActorScriptProperty(actor.objectPath, "WaitAnim");
                 Call(actor.objectPath, "PlayWaiting");
                 const auto bird = Snapshot(actor.objectPath);

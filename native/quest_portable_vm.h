@@ -82,6 +82,17 @@ struct Limits {
     std::size_t arguments{256};
     std::size_t retainedBytes{32u << 20u};
 };
+struct StateLabel {
+    std::string name;
+    std::uint32_t offset{};
+};
+struct ProgramLayout {
+    std::vector<std::size_t> statementOffsets;
+    // Authored order and duplicates are retained. The None terminator is
+    // consumed but omitted, matching pinned FindLabelIndex's label vector.
+    std::vector<StateLabel> labels;
+    bool terminalLabelTable{};
+};
 class Host {
 public:
     virtual ~Host() = default;
@@ -90,6 +101,9 @@ public:
     virtual void Begin() = 0;
     virtual void Commit() = 0;
     virtual void Rollback() noexcept = 0;
+    // Read-only event/function eligibility, before any callee argument/local/
+    // native work. The permissive default preserves existing host behavior.
+    virtual bool CanCall(const Function&, const std::string&) { return true; }
     virtual Property ResolveProperty(const Function&, std::int32_t reference) = 0;
     virtual std::string ResolveName(const Function&, std::int32_t index) = 0;
     virtual std::string ResolveObject(const Function&, std::int32_t reference) = 0;
@@ -104,6 +118,11 @@ public:
     virtual Evaluation Native(std::uint16_t index, const std::string& receiver,
         const std::vector<Evaluation>& arguments, const Function* declaration) = 0;
 };
+// Structural, read-only inspection of normalized bytecode, not execution
+// feasibility or a state continuation. Only a terminal top-level LabelTable
+// contributes labels; targets must be top-level statement boundaries.
+// May call ResolveName/ResolveObject, never transaction/effect/function lookup.
+ProgramLayout AnalyzeProgram(Host& host, const Function& function, const Limits& limits = {});
 enum class Status { Returned, Stopped, Unsupported, Invalid, Budget };
 struct Result {
     Status status{Status::Invalid};

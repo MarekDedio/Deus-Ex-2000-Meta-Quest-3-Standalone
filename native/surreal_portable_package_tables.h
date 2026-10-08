@@ -154,6 +154,14 @@ struct PortableStateDescriptor {
     std::uint32_t stateFlags{};
 };
 
+// Common UField prefix of Struct/Enum/Const siblings needed to traverse authored
+// Children/Next dispatch chains. This does not decode their remaining schema.
+struct PortableFieldLinks {
+    std::int32_t baseField{}, nextField{};
+};
+PortableFieldLinks LoadPortableFieldLinks(const PortablePackageTables& package,
+    std::size_t exportIndex);
+
 struct PortableClassDescriptor {
     std::string objectPath;
     PortableStateDescriptor state;

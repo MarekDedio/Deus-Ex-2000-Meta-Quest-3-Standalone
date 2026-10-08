@@ -17,6 +17,12 @@ Native boolean AND/OR are lazy; call arguments evaluate on caller Self before
 invocation on the Context receiver. Native omitted arguments retain Nothing,
 while script optional arguments initialize typed-zero locals.
 
+The subsequent [script-dispatch foundation](SCRIPT-DISPATCH.md) resolves
+authored same-named states before class functions for virtual calls, keeps
+global calls class-only and applies stopped-context eligibility before callee
+locals/native work. It also exposes read-only state selection and terminal
+label analysis. This does not enter states or enable automatic callbacks.
+
 The actor host stages actual PlayAnim (259), LoopAnim (260), TweenAnim (294),
 animation queries and IsA. Actor properties and captured tween history are
 visible in snapshots and the shared mesh sampler. Region.Zone is calculated
@@ -42,6 +48,8 @@ Notifies and AnimEnd must dispatch synchronously at each boundary, followed by
 a fresh mesh/state/speed read before advancing residual time. Function existence
 alone is insufficient: disabled events, state probe/ignore masks, level startup
 and actor deletion gates remain necessary before enabling automatic callbacks.
+Those gates now have isolated authored dispatch support and tests; live
+animation scheduling and mutable state transitions remain unconnected.
 
 Two deliberate corrections are labelled in clock results: pinned blend ticking
 shares/mutates elapsed time and can starve later slots, and past-end main frames
@@ -61,12 +69,13 @@ that implementation, not verification of the closed-source original DLL.
 
 ```powershell
 .\desktop\build\quest_portable_vm_test.exe
+.\desktop\build\quest_script_dispatch_test.exe
 .\desktop\build\quest_actor_animation_clock_test.exe
 .\desktop\build\portable_actor_script_test.exe 'D:\Steam\steamapps\common\Deus Ex'
 .\desktop\build\script_bytecode_inspect.exe 'D:\Steam\steamapps\common\Deus Ex' DeusEx.ScriptedPawn.PlayWaiting
 ```
 
-The first two tests need no commercial assets. The original integration test
+The first three tests need no commercial assets. The original integration test
 requires read-only data from a user-owned installation; without that argument
 it explicitly skips. It exercises isolated original functions, not a campaign
 playthrough. Test-generated checkpoints are outside the original installation.
@@ -86,15 +95,21 @@ sequence/frame/fatness overrides cannot be mixed with helper execution.
 
 State startup/continuations, GotoState, latent calls, iterators, switches,
 dynamic arrays, class-default object identity, remaining structs/natives,
-event masks, RNG, attachment rendering and dynamic GPU pose updates remain
-unfinished. Virtual calls currently resolve class hierarchy only because no
-script state can become active. Unknown required behavior fails explicitly.
+mutable disabled-event sets, RNG, attachment rendering and dynamic GPU pose
+updates remain unfinished. Virtual lookup now respects the supported authored
+stopped context; no persistent script state can be entered or ticked. Unknown
+required behavior fails explicitly.
 
 State/Class headers, raw and normalized state bytecode, masks, labels and flags
 are now retained as read-only authored metadata, along with map Actor HasStack
-records. They are not active frames or permission to run events. See
+records. They are not active frames or permission to run events. Supported
+stopped records now inform readonly eligibility and GetStateName/IsInState;
+runnable serialized continuations still fail explicitly. See
 [authored state foundation](AUTHORED-STATE-FOUNDATION.md) for validation commands,
 query scope and the remaining startup/dispatch/persistence contracts.
+See also [script selection and eligibility](SCRIPT-DISPATCH.md), including the
+future callee-preparation requirement before argument expressions can alter
+eligibility through Enable/Disable or GotoState.
 
 Version-4 runtime saves preserve supported actor overlays and the complete
 native clocks, including captured tween histories. Untouched runtimes still

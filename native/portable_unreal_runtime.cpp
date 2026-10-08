@@ -43,6 +43,9 @@ public:
     // Keep the exact loaded record; class-backed offset -1 records are not
     // named-state continuations. No execution state is inferred from this.
     std::optional<PortableObjectStack> serializedStack;
+    RuntimeObject* serializedStateCode{}; // Outward GC-linked authored identity only.
+    RuntimeObject* serializedFunctionCode{};
+    std::optional<PortableFieldLinks> commonFieldLinks;
     std::vector<PortableTaggedProperty> instanceProperties;
     std::unordered_map<std::string, std::string> objectPropertyPaths;
     // Name indices are package-local. Decode them while their actual package
@@ -109,6 +112,8 @@ std::unordered_map<std::string, RuntimeObject*> persistentQualifiedObjects;
 // runtime index, rather than copying/lowercasing every export for every call.
 // These aliases are not additional GC roots and are removed before collection.
 std::unordered_map<std::string, RuntimeObject*> persistentVmObjects;
+std::unique_ptr<QuestVr::ScriptDispatch::Graph> persistentDispatchGraph;
+PortableScriptDispatchSummary persistentDispatchSummary;
 std::unordered_map<std::string, std::vector<RuntimeObject*>> persistentMapTagIndex;
 std::size_t persistentScriptExportCount{};
 std::string persistentMapPackageName;
@@ -850,6 +855,125 @@ void PopulateRuntime(
     summary.peakGcObjects = GC::GetStats().numObjects;
 }
 
+const PortableStateDescriptor* StateMetadata(const RuntimeObject* object) {
+    if (object->stateDescriptor) return object->stateDescriptor.get();
+    return object->classDescriptor ? &object->classDescriptor->state : nullptr;
+}
+
+// Follow actual Children/Next chains, including non-callback Enum/Struct
+// siblings. Outer-name coincidence alone never creates a callable member.
+const QuestVr::ScriptDispatch::Graph& DispatchGraph() {
+    if (persistentDispatchGraph) return *persistentDispatchGraph;
+    if (!persistentRuntime || persistentVmObjects.empty())
+        throw std::runtime_error("Script dispatch has no indexed runtime");
+    std::unordered_map<std::string, PortablePackageTables> tables;
+    const auto table = [&](const std::string& source) -> const PortablePackageTables& {
+        auto found = tables.find(source);
+        if (found == tables.end()) {
+            if (tables.size() >= 64u || std::filesystem::file_size(source) > 512u * 1024u * 1024u)
+                throw std::runtime_error("Dispatch table budget exceeded");
+            found = tables.emplace(source, LoadPortablePackageTables(source)).first;
+        }
+        return found->second;
+    };
+    const auto referenced = [&](RuntimeObject* source, const std::int32_t reference) -> RuntimeObject* {
+        if (!reference) return nullptr;
+        const auto& package = table(source->sourcePath);
+        auto path = GetPortableObjectPath(package, reference);
+        if (reference > 0) path = PackageStem(source->sourcePath) + '.' + path;
+        const auto found = persistentVmObjects.find(LowerAscii(path));
+        if (found == persistentVmObjects.end()) throw std::runtime_error("Dispatch field reference is unavailable: " + path);
+        return found->second;
+    };
+    PortableScriptDispatchSummary summary;
+    const auto children = [&](RuntimeObject* owner, const std::int32_t first) {
+        std::vector<RuntimeObject*> fields;
+        std::unordered_set<RuntimeObject*> visited;
+        RuntimeObject* field = referenced(owner, first);
+        while (field) {
+            if (visited.size() >= 8192u || !visited.insert(field).second || field->outer != owner)
+                throw std::runtime_error("Dispatch Children/Next ownership/cycle budget failed: " + owner->reflection.objectPath);
+            fields.push_back(field);
+            std::int32_t next{};
+            if (field->script) next = field->script->nextField;
+            else if (field->property) next = field->property->nextField;
+            else if (const auto* state = StateMetadata(field)) next = state->nextField;
+            else {
+                if (!field->commonFieldLinks) {
+                    field->commonFieldLinks = LoadPortableFieldLinks(table(field->sourcePath), field->exportIndex);
+                }
+                ++summary.commonFields;
+                next = field->commonFieldLinks->nextField;
+            }
+            field = referenced(field, next);
+        }
+        return fields;
+    };
+    std::vector<QuestVr::ScriptDispatch::Class> classes;
+    for (std::size_t index = 0; index < persistentScriptExportCount; ++index) {
+        auto* object = persistentRuntime->get()->exports[index];
+        if (!object->classDescriptor) continue;
+        QuestVr::ScriptDispatch::Class cls;
+        cls.path = object->reflection.objectPath;
+        cls.parentPath = object->base ? object->base->reflection.objectPath : std::string{};
+        if (object->classDescriptor->state.baseField && !object->base)
+            throw std::runtime_error("Dispatch class base is unresolved: " + cls.path);
+        cls.probeMask = object->classDescriptor->state.probeMask;
+        for (auto* field : children(object, object->classDescriptor->state.children)) {
+            const auto& package = table(field->sourcePath);
+            const auto name = package.names.at(static_cast<std::size_t>(package.exports[field->exportIndex].ObjName)).Name;
+            if (field->script) {
+                cls.functions.emplace(name.ToString(), field->reflection.objectPath); ++summary.classFunctions;
+            } else if (field->stateDescriptor) {
+                QuestVr::ScriptDispatch::State state;
+                state.path = field->reflection.objectPath; state.name = name.ToString();
+                state.compareIndex = static_cast<std::uint32_t>(name.GetCompareIndex());
+                state.flags = field->stateDescriptor->stateFlags;
+                for (auto* member : children(field, field->stateDescriptor->children)) {
+                    if (!member->script) continue;
+                    const auto& memberPackage = table(member->sourcePath);
+                    const auto functionName = memberPackage.names.at(static_cast<std::size_t>(memberPackage.exports[member->exportIndex].ObjName)).Name;
+                    state.functions.emplace(functionName.ToString(), member->reflection.objectPath);
+                    ++summary.stateFunctions;
+                }
+                cls.states.emplace(state.name, std::move(state)); ++summary.states;
+            }
+        }
+        classes.push_back(std::move(cls)); ++summary.classes;
+    }
+    auto graph = std::make_unique<QuestVr::ScriptDispatch::Graph>(std::move(classes));
+    persistentDispatchSummary = summary;
+    persistentDispatchGraph = std::move(graph);
+    return *persistentDispatchGraph;
+}
+
+PortableActorDispatchContext AuthoredDispatchContext(RuntimeObject* actor) {
+    if (!actor->cls || !actor->cls->classDescriptor)
+        throw std::runtime_error("Authored dispatch receiver has no serialized Class masks");
+    PortableActorDispatchContext result;
+    result.classProbeMask = actor->cls->classDescriptor->state.probeMask;
+    if (!actor->serializedStack) return result;
+    const auto& stack = *actor->serializedStack;
+    if (stack.functionReference && stack.stateReference) {
+        if (!actor->serializedFunctionCode || !(actor->serializedFunctionCode->script ||
+            StateMetadata(actor->serializedFunctionCode) || actor->serializedFunctionCode->reflection.metaClass == "Struct"))
+            throw std::runtime_error("Serialized frame function is not a UStruct identity");
+        if (!stack.logicalOffset || *stack.logicalOffset != -1)
+            throw std::runtime_error("Runnable serialized state continuation is not implemented");
+        const auto* code = actor->serializedStateCode;
+        if (!code || !StateMetadata(code))
+            throw std::runtime_error("Serialized stopped frame is not a State/Class identity");
+        result.codePath = code->reflection.objectPath;
+        const auto* state = StateMetadata(code);
+        result.codeMasks = QuestVr::ScriptDispatch::CodeMasks{state->probeMask, state->ignoreMask};
+        result.stateName = result.codePath.substr(result.codePath.find_last_of('.') + 1u);
+    }
+    for (std::uint8_t index = 0; index < 64u; ++index)
+        if (stack.probeMask & (std::uint64_t{1} << index))
+            result.disabledNames.insert(QuestVr::ScriptDispatch::ProbeEventName(index));
+    return result;
+}
+
 // Scoped host for the actual normalized UE1 interpreter. It does not dispatch
 // startup/state ticks or silently emulate missing natives. A complete nested
 // invocation is one transaction, including native animation/tween history.
@@ -874,13 +998,17 @@ public:
         return found->second;
     }
     std::shared_ptr<const Function> Member(RuntimeObject* receiver, const std::string& name) {
-        if (name.find('.') != std::string::npos) return FunctionFor(Object(name));
-        for (RuntimeObject* cls = receiver->cls; cls != nullptr; cls = cls->base) {
-            const auto found = persistentVmObjects.find(LowerAscii(cls->reflection.objectPath + '.' + name));
-            if (found != persistentVmObjects.end() && found->second->script && found->second->outer == cls)
-                return FunctionFor(found->second);
-        }
+        if (name.find('.') != std::string::npos) return FunctionFor(Object(name), receiver);
+        const auto context = AuthoredDispatchContext(receiver);
+        const auto selected = QuestVr::ScriptDispatch::ResolveFunction(DispatchGraph(),
+            receiver->cls->reflection.objectPath, context.stateName, name);
+        if (selected) return FunctionFor(Object(*selected), receiver);
         throw std::runtime_error("Portable actor VM member function unavailable: " + name);
+    }
+    bool CanCall(const Function& function, const std::string& receiver) override {
+        const auto context = AuthoredDispatchContext(Object(receiver));
+        const auto name = function.path.substr(function.path.find_last_of('.') + 1u);
+        return QuestVr::ScriptDispatch::IsEnabled(name, context.classProbeMask, context.codeMasks, context.disabledNames);
     }
     void Begin() override {
         if (transaction_) throw std::runtime_error("Portable actor VM nested host transaction");
@@ -916,9 +1044,14 @@ public:
     std::shared_ptr<const Function> ResolveFunction(const Function& caller,
         const std::string& receiver, const QuestVr::Vm::Invocation& invocation) override {
         if (invocation.kind == QuestVr::Vm::CallKind::Final)
-            return FunctionFor(Object(ResolveObject(caller, invocation.reference)));
-        // A current script state has not been started by this host. Do not
-        // infer it from Orders/InitialState or redirect a state call silently.
+            return FunctionFor(Object(ResolveObject(caller, invocation.reference)), Object(receiver));
+        if (invocation.kind == QuestVr::Vm::CallKind::Global) {
+            auto* object = Object(receiver);
+            const auto selected = QuestVr::ScriptDispatch::ResolveFunction(DispatchGraph(),
+                object->cls->reflection.objectPath, "None", invocation.name, QuestVr::ScriptDispatch::LookupKind::Global);
+            if (!selected) throw std::runtime_error("Portable global function is unavailable: " + invocation.name);
+            return FunctionFor(Object(*selected), object);
+        }
         return Member(Object(receiver), invocation.name);
     }
     std::shared_ptr<Reference> Variable(const std::string& receiver,
@@ -955,6 +1088,15 @@ public:
             if (value.kind != Kind::Name) throw std::runtime_error("Animation native requires a Name argument");
             return value.text;
         };
+        if (index == 284u || index == 281u) {
+            argumentCount(index == 284u ? 0u : 1u, index == 284u ? 0u : 1u);
+            const auto context = AuthoredDispatchContext(object);
+            if (index == 284u) return {Value::Text(Kind::Name, context.stateName), {}};
+            const auto testState = argument(0u);
+            if (testState.kind != Kind::Name) throw std::runtime_error("IsInState requires a Name");
+            return {Value::Bool(QuestVr::ScriptDispatch::FoldName(testState.text) ==
+                QuestVr::ScriptDispatch::FoldName(context.stateName)), {}};
+        }
         if (index == 303u) { // Core.Object.IsA
             argumentCount(1u, 1u);
             const auto value = argument(0u);
@@ -1081,8 +1223,15 @@ private:
         return {property->reflection.objectPath, property->reflection.objectPath.substr(dot + 1u),
             Zero(property), descriptor.flags, static_cast<std::size_t>(descriptor.arrayDimension)};
     }
-    std::shared_ptr<const Function> FunctionFor(RuntimeObject* object) {
+    std::shared_ptr<const Function> FunctionFor(RuntimeObject* object, RuntimeObject* receiver = nullptr) {
         if (!object->script) throw std::runtime_error("VM object is not a compiled function");
+        // Eligibility precedes callee local schema/parameter setup, just as
+        // Frame::Call. A suppressed function needs identity, not typed locals.
+        if (receiver) {
+            auto identity = std::make_shared<Function>();
+            identity->path = object->reflection.objectPath; identity->source = object->sourcePath;
+            if (!CanCall(*identity, receiver->reflection.objectPath)) return identity;
+        }
         const auto cached = functions_.find(object->reflection.objectPath);
         if (cached != functions_.end()) return cached->second;
         auto function = std::make_shared<Function>();
@@ -2080,6 +2229,8 @@ PortableSound LoadPortableRuntimeSound(const std::string& objectPath) {
 }
 
 void ShutdownPortableRuntime() {
+    persistentDispatchGraph.reset();
+    persistentDispatchSummary = {};
     persistentVmObjects.clear();
     persistentRuntime.reset();
     persistentQualifiedObjects.clear();
@@ -2173,6 +2324,78 @@ PortableStateDescriptor ReadPortableRuntimeAuthoredStateDescriptor(const std::st
     throw std::runtime_error("Runtime object has no serialized State/Class metadata: " + objectPath);
 }
 
+PortableScriptDispatchSummary ReadPortableRuntimeDispatchSummary() {
+    DispatchGraph(); return persistentDispatchSummary;
+}
+
+PortableActorDispatchContext ReadPortableActorDispatchContext(const std::string& actorPath) {
+    PortableActorVmHost host;
+    auto* actor = host.Object(actorPath);
+    if (!IsDerivedFromPath(actor->cls, "Engine.Actor"))
+        throw std::runtime_error("Dispatch receiver is not Engine.Actor");
+    return AuthoredDispatchContext(actor);
+}
+
+std::optional<std::string> ResolvePortableActorState(const std::string& actorPath, const std::string& stateName) {
+    PortableActorVmHost host;
+    auto* actor = host.Object(actorPath);
+    if (!IsDerivedFromPath(actor->cls, "Engine.Actor")) throw std::runtime_error("State receiver is not Engine.Actor");
+    return QuestVr::ScriptDispatch::ResolveState(DispatchGraph(), actor->cls->reflection.objectPath, stateName);
+}
+
+std::optional<std::string> ResolvePortableActorFunction(const std::string& actorPath, const std::string& stateName,
+    const std::string& functionName, const QuestVr::ScriptDispatch::LookupKind kind) {
+    PortableActorVmHost host;
+    auto* actor = host.Object(actorPath);
+    if (!IsDerivedFromPath(actor->cls, "Engine.Actor")) throw std::runtime_error("Callback receiver is not Engine.Actor");
+    return QuestVr::ScriptDispatch::ResolveFunction(DispatchGraph(), actor->cls->reflection.objectPath, stateName, functionName, kind);
+}
+
+QuestVr::Vm::ProgramLayout ReadPortableRuntimeStateProgram(const std::string& objectPath, const QuestVr::Vm::Limits& limits) {
+    PortableActorVmHost host;
+    auto* object = host.Object(objectPath);
+    const auto* metadata = StateMetadata(object);
+    if (!metadata) throw std::runtime_error("Program receiver is not a serialized State/Class");
+    QuestVr::Vm::Function program;
+    program.path = object->reflection.objectPath; program.source = object->sourcePath; program.bytecode = metadata->bytecode;
+    return QuestVr::Vm::AnalyzeProgram(host, program, limits);
+}
+
+QuestVr::Vm::Result ExecutePortableActorEvent(const std::string& actorPath, const std::string& eventName,
+    const bool enumDispatch, const std::vector<QuestVr::Vm::Evaluation>& arguments, const QuestVr::Vm::Limits& limits) {
+    try {
+        PortableActorVmHost host;
+        auto* actor = host.Object(actorPath);
+        if (!IsDerivedFromPath(actor->cls, "Engine.Actor")) throw std::runtime_error("Event receiver is not Engine.Actor");
+        const auto context = AuthoredDispatchContext(actor);
+        const auto enabled = QuestVr::ScriptDispatch::IsEnabled(eventName, context.classProbeMask, context.codeMasks, context.disabledNames);
+        QuestVr::Vm::Result none;
+        none.status = QuestVr::Vm::Status::Returned;
+        none.function = eventName;
+        // Pinned CallEvent checks eligibility before touching Actor.Level.
+        // Level is an authored reflected reference, not the first LevelInfo
+        // export and not a native map-load rebinding. Read includes overlays.
+        if (!enabled) return none;
+        const auto levelValue = host.Read(actor, host.PropertyNamed(actor, "Level"), 0u);
+        if (levelValue.kind != QuestVr::Vm::Kind::Object || levelValue.text.empty())
+            throw std::runtime_error("Event receiver has no authored Level binding");
+        auto* level = host.Object(levelValue.text);
+        if (!IsDerivedFromPath(level->cls, "Engine.LevelInfo"))
+            throw std::runtime_error("Event receiver Level is not Engine.LevelInfo");
+        const auto begun = QuestVr::Vm::ToBool(host.Read(level, host.PropertyNamed(level, "bBegunPlay"), 0u));
+        if (!QuestVr::ScriptDispatch::MayCallEvent(eventName, enabled, begun, ReadInheritedRuntimeBool(actor, "bDeleteMe"), enumDispatch))
+            return none;
+        const auto selected = QuestVr::ScriptDispatch::ResolveFunction(DispatchGraph(),
+            actor->cls->reflection.objectPath, context.stateName, eventName);
+        if (!selected) return none;
+        return QuestVr::Vm::Execute(host, *host.Member(actor, *selected), actor->reflection.objectPath, arguments, limits);
+    } catch (const std::exception& error) {
+        QuestVr::Vm::Result result;
+        result.status = QuestVr::Vm::Status::Unsupported;
+        result.function = eventName; result.error = error.what(); return result;
+    }
+}
+
 bool GetPortableRuntimeScriptStatePresent() {
     if (!persistentRuntime || !persistentRuntime->get()) return false;
     for (const auto* object : persistentRuntime->get()->exports)
@@ -2243,6 +2466,8 @@ PortableMapRuntimeSummary LoadPortableRuntimeMap(
             object->instanceProperties = properties.properties;
             object->serializedStack = properties.stack;
             if (properties.stack) {
+                object->serializedStateCode = resolve(properties.stack->stateReference);
+                object->serializedFunctionCode = resolve(properties.stack->functionReference);
                 ++summary.serializedActorStacks;
                 for (const auto reference : {properties.stack->functionReference,
                                              properties.stack->stateReference}) {

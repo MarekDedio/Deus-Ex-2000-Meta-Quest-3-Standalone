@@ -11,6 +11,7 @@
 #include <iostream>
 #include <limits>
 #include <map>
+#include <set>
 #include <stdexcept>
 #include <tuple>
 
@@ -171,6 +172,10 @@ struct TestHost final:Vm::Host {
     std::size_t beginCount{},commitCount{},rollbackCount{},effects{},savedEffects{};
     std::uint32_t rng{12345},savedRng{};
     bool active{};
+    std::set<std::string> disabledFunctions;
+    bool CanCall(const Vm::Function& fn, const std::string&) override {
+        return !disabledFunctions.contains(fn.path);
+    }
     void Begin() override {
         if(active) throw std::runtime_error("Nested host transaction");
         active=true;saved=storage;savedEffects=effects;savedRng=rng;++beginCount;
@@ -615,12 +620,70 @@ void ExecutionContracts() {
     ScalarAndLocalContracts();ParametersAndReturns();AssignmentArraysAndStructs();LazyAndContextContracts();
     OptionalAndReferenceTables();ControlAndFailureContracts();BudgetAndNestedRollback();
 }
+void ProgramAndEligibilityContracts() {
+    TestHost host;
+    host.names[{"Fixture",0}] = "None";
+    host.names[{"Fixture",1}] = "Begin";
+    host.names[{"Fixture",2}] = "BEGIN";
+    auto labels = Bytes{0x0c}; U32(labels,1u); U32(labels,0u); U32(labels,2u); U32(labels,1u);
+    U32(labels,0u); U32(labels,0xffffffffu);
+    auto f = Function("StateBlock", Join({{0x0b,0x08}, labels}));
+    const auto layout = Vm::AnalyzeProgram(host,f);
+    Require(layout.statementOffsets == std::vector<std::size_t>{0u,1u,2u} && layout.terminalLabelTable &&
+        layout.labels.size() == 2u && layout.labels[0].name == "Begin" && layout.labels[1].name == "BEGIN" &&
+        layout.labels[1].offset == 1u, "State layout lost terminal labels/order/duplicate spellings");
+    Require(!host.beginCount && !host.commitCount && !host.rollbackCount && host.observations.empty() &&
+        host.nativeArguments.empty(), "Read-only program inspection performed effects/transactions");
+    const auto earlier = Vm::AnalyzeProgram(host,Function("Earlier",Join({labels,{0x08}})));
+    Require(!earlier.terminalLabelTable && earlier.labels.empty(), "Nonterminal table supplied executable labels");
+    const auto nested = Vm::AnalyzeProgram(host,Function("Nested",Join({{0x04},labels})));
+    Require(!nested.terminalLabelTable && nested.labels.empty(), "Nested table supplied state labels");
+    const auto reject = [&](const Vm::Function& fn, const Vm::Limits& limits = {}) {
+        bool rejected{};
+        try { Vm::AnalyzeProgram(host,fn,limits); } catch (const std::exception&) { rejected = true; }
+        Require(rejected, "Malformed/unbounded state layout accepted"); ++rejections;
+    };
+    auto bad = f; bad.bytecode[7u] = 3u; reject(bad); // Operand inside table, not a statement.
+    bad = f; for (std::size_t i=0;i<4u;++i) bad.bytecode[7u+i] = 0xffu; reject(bad);
+    bad = f; bad.bytecode[3u] = 99u; reject(bad);
+    for (std::size_t size=3u;size<f.bytecode.size();++size) { bad=f; bad.bytecode.resize(size); reject(bad); }
+    reject(Function("BadObject",Ref(0x20,99)));
+    reject(Function("BadOpcode",{0x03}));
+    auto deep=Bytes(64u,0x2d); deep.push_back(0x0b); reject(Function("Deep",deep));
+    for (const unsigned budget : {0u,1u,2u,3u}) {
+        auto limits=Vm::Limits{};
+        if (budget==0u) limits.sourceBytes=1u;
+        if (budget==1u) limits.nodes=1u;
+        if (budget==2u) limits.retainedBytes=1u;
+        if (budget==3u) limits.stringBytes=1u;
+        reject(f,limits);
+    }
+    auto blocked = Function("Disabled", {0x03}); blocked.flags = 0x8u;
+    host.disabledFunctions.insert(blocked.path);
+    Value external=Value::Integer(3);
+    auto alias=std::make_shared<Vm::Reference>(); alias->zero=Value::Integer(0);
+    alias->read=[]() -> Value { throw std::runtime_error("Disabled argument was read"); };
+    alias->write=[&](const Value& value) { external=value; };
+    auto result=Vm::Execute(host,blocked,"Self",{{{},alias}});
+    Returned(result,"Disabled function returns Nothing before latent/argument/parse work");
+    Require(result.value.kind==Vm::Kind::Nothing && result.instructions==0u && result.writes==0u && external.integer==3,
+        "Disabled function touched arguments/out aliases or executed");
+    blocked.flags=0x400u; blocked.nativeIndex=1000u;
+    result=Vm::Execute(host,blocked,"Self",{{{},alias}}); Returned(result,"Disabled native declaration");
+    Require(host.effects==0u && host.nativeArguments.empty(), "Ineligible native declaration executed");
+    host.named[{"Self",Vm::CallKind::Virtual,"Blocked"}]=std::make_shared<Vm::Function>(blocked);
+    host.names[{"Fixture",3}]= "Blocked";
+    result=Vm::Execute(host,Function("NestedCall",Return(Call(0x1b,3))),"Self");
+    Returned(result,"Nested ineligible callee");
+    Require(result.value.kind==Vm::Kind::Nothing && host.effects==0u, "Nested callback bypassed CanCall");
+}
 }
 
 int main() {
     try {
         NormalizedSerializedContracts();
         ExecutionContracts();
+        ProgramAndEligibilityContracts();
         std::cout<<"Normalized original-style serialization and bounded script execution: "<<checks<<" checks and "<<rejections<<" rejection controls passed.\n";
         return 0;
     }catch(const std::exception& error) {std::cerr<<error.what()<<"\n";return 1;}

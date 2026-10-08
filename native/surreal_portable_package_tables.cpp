@@ -1229,6 +1229,24 @@ PortablePropertyDescriptor LoadPortablePropertyDescriptor(
     return result;
 }
 
+PortableFieldLinks LoadPortableFieldLinks(const PortablePackageTables& package,
+    const std::size_t exportIndex) {
+    const auto bytes = ReadDescriptorPayload(package, exportIndex);
+    const auto& entry = package.exports[exportIndex];
+    auto metaClass = ResolveDescriptorObjectPath(entry.ObjClass, package);
+    if (entry.ObjClass > 0)
+        metaClass = std::filesystem::path(package.sourcePath).stem().string() + '.' + metaClass;
+    if (NameString(metaClass) != "Core.Struct" && NameString(metaClass) != "Core.Enum" && NameString(metaClass) != "Core.Const")
+        throw std::runtime_error("UE1 field-link export is not Core.Struct/Enum/Const: " +
+            ResolveDescriptorObjectPath(static_cast<std::int32_t>(exportIndex + 1u), package) + " (" + metaClass + ")");
+    PayloadReader reader(bytes);
+    reader.Skip(LoadPortableExportProperties(package, exportIndex).bytesConsumed);
+    PortableFieldLinks result{reader.ReadIndex(), reader.ReadIndex()};
+    ResolveDescriptorObjectPath(result.baseField, package);
+    ResolveDescriptorObjectPath(result.nextField, package);
+    return result;
+}
+
 PortableStateDescriptor LoadPortableStateDescriptor(
     const PortablePackageTables& package,
     std::size_t exportIndex) {
