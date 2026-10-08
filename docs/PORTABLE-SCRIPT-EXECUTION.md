@@ -90,13 +90,19 @@ event masks, RNG, attachment rendering and dynamic GPU pose updates remain
 unfinished. Virtual calls currently resolve class hierarchy only because no
 script state can become active. Unknown required behavior fails explicitly.
 
-Committed script/clock state is currently memory-only. Version-3 saves cannot
-preserve it: save, map replacement and map unload refuse before losing it or
-truncating an existing checkpoint. Read-only checkpoint validation leaves it
-untouched. Loading a fully validated original-state checkpoint clears overlays
-and clocks; runtime shutdown also discards them. This restriction is not a new
-dynamic campaign save format and automatic gameplay does not yet invoke these
-scoped execution APIs.
+Version-4 runtime saves preserve supported actor overlays and the complete
+native clocks, including captured tween histories. Untouched runtimes still
+write version 3. Read-only validation checks original map/class/property schemas
+and leaves live state untouched; v4 application requires its authored map.
+Loading a validated legacy v1-v3 checkpoint explicitly clears overlays/clocks.
+See [script-state saves](SCRIPT_STATE_SAVE.md) for the format and limits.
+
+Map replacement and unload still refuse while script state exists, even after
+successful saving: a per-map archive is required to retain the abandoned map and
+make rollback safe. Quest checks this before cancelling UI/audio/geometry work.
+Runtime shutdown explicitly discards state. These scoped saves do not serialize
+latent continuations, spawned actors, timers, active script states or arbitrary
+campaign systems; automatic gameplay does not yet invoke these execution APIs.
 
 Full campaign progression, live animation/AI, Quest stereo rendering, physical
 controllers and device performance still require implementation and verification.

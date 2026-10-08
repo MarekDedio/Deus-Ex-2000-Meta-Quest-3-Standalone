@@ -3,6 +3,8 @@
 #include "GC/GC.h"
 
 #include "portable_log.h"
+#include "quest_script_state.h"
+#include "quest_save_bundle.h"
 #include "portable_model_geometry.h"
 #include "quest_actor_animation_clock.h"
 
@@ -997,7 +999,10 @@ public:
         return property.zero;
     }
     Property PropertyNamed(RuntimeObject* object, const std::string& name) {
-        for (RuntimeObject* cls = object->cls; cls != nullptr; cls = cls->base) {
+        return ClassProperty(object->cls, name);
+    }
+    Property ClassProperty(RuntimeObject* actorClass, const std::string& name) {
+        for (RuntimeObject* cls = actorClass; cls != nullptr; cls = cls->base) {
             const auto found = persistentVmObjects.find(LowerAscii(cls->reflection.objectPath + '.' + name));
             if (found != persistentVmObjects.end() && found->second->property) return Describe(found->second);
         }
@@ -1163,6 +1168,8 @@ private:
     QuestVr::ActorAnimationClock AuthoredClock(RuntimeObject* object) {
         const auto authored = ReadRuntimeAnimationSnapshot(object);
         QuestVr::ActorAnimationClock clock;
+        clock.pose.fatness = static_cast<std::uint8_t>(QuestVr::Vm::ToInt(Read(object, PropertyNamed(object, "Fatness"), 0u)));
+        clock.remoteRole = static_cast<std::uint8_t>(QuestVr::Vm::ToInt(Read(object, PropertyNamed(object, "RemoteRole"), 0u)));
         clock.pose.main.sequence = authored.sequence; clock.pose.main.normalizedFrame = authored.frame;
         clock.main.rate = authored.rate; clock.main.last = authored.last; clock.main.minRate = authored.minRate;
         clock.main.tweenRate = authored.tweenRate; clock.main.oldRate = authored.oldRate;
@@ -1193,13 +1200,19 @@ private:
         // Preserve captured tween offsets while explicit script assignments
         // update animation properties. Blend commands are not dispatched yet.
         const auto previous = object->animationClock->pose;
+        const auto priorBlends = object->animationClock->blends;
+        const bool finishWaiting = object->animationClock->main.finishAnimWaiting;
         const auto updated = AuthoredClock(object);
         object->animationClock->main = updated.main;
         object->animationClock->blends = updated.blends;
         object->animationClock->pose = updated.pose;
+        object->animationClock->remoteRole = updated.remoteRole;
+        object->animationClock->main.finishAnimWaiting = finishWaiting;
         object->animationClock->pose.main.previous = previous.main.previous;
-        for (std::size_t slot = 0u; slot < previous.blends.size(); ++slot)
+        for (std::size_t slot = 0u; slot < previous.blends.size(); ++slot) {
             object->animationClock->pose.blends[slot].previous = previous.blends[slot].previous;
+            object->animationClock->blends[slot].simulated = priorBlends[slot].simulated;
+        }
         (void)name; (void)index;
     }
     Value Region(RuntimeObject* object, const Value& zero) {
@@ -1245,6 +1258,323 @@ private:
         return result;
     }
 };
+
+// Runtime saves carry stable authored identities, never process pointers or
+// package-local references. Prepare every schema/value before touching actors.
+struct PreparedScriptObject {
+    RuntimeObject* target{};
+    decltype(RuntimeObject::scriptValues) values;
+    std::optional<QuestVr::ActorAnimationClock> clock;
+};
+
+std::vector<QuestVr::ScriptSavedProperty> ClockProperties(
+    const QuestVr::ActorAnimationClock& clock) {
+    using V = QuestVr::Vm::Value;
+    using K = QuestVr::Vm::Kind;
+    std::vector<QuestVr::ScriptSavedProperty> values;
+    const auto add = [&](const char* name, V value, const std::uint32_t index = 0u) {
+        values.push_back({{}, name, index, std::move(value)});
+    };
+    add("AnimSequence", V::Text(K::Name, clock.pose.main.sequence));
+    add("AnimFrame", V::Float(clock.pose.main.normalizedFrame));
+    add("AnimRate", V::Float(clock.main.rate)); add("AnimLast", V::Float(clock.main.last));
+    add("AnimMinRate", V::Float(clock.main.minRate)); add("TweenRate", V::Float(clock.main.tweenRate));
+    add("OldAnimRate", V::Float(clock.main.oldRate)); add("bAnimLoop", V::Bool(clock.main.loop));
+    add("bAnimNotify", V::Bool(clock.main.notify)); add("bAnimFinished", V::Bool(clock.main.finished));
+    add("Fatness", V::Byte(clock.pose.fatness)); add("RemoteRole", V::Byte(clock.remoteRole));
+    for (std::uint32_t slot = 0u; slot < clock.blends.size(); ++slot) {
+        const auto& rates = clock.blends[slot];
+        add("BlendAnimSequence", V::Text(K::Name, clock.pose.blends[slot].sequence), slot);
+        add("BlendAnimFrame", V::Float(clock.pose.blends[slot].normalizedFrame), slot);
+        add("BlendAnimRate", V::Float(rates.rate), slot); add("BlendAnimLast", V::Float(rates.last), slot);
+        add("BlendAnimMinRate", V::Float(rates.minRate), slot); add("BlendTweenRate", V::Float(rates.tweenRate), slot);
+        add("OldBlendAnimRate", V::Float(rates.oldRate), slot);
+    }
+    return values;
+}
+
+QuestVr::ScriptSavedState CollectScriptSavedState() {
+    QuestVr::ScriptSavedState saved;
+    saved.mapName = persistentMapPackageName;
+    PortableActorVmHost host;
+    // Bound the additional snapshot before copying nested live values. The
+    // codec independently measures the actual encoded/retained representation.
+    QuestVr::ScriptStateLimits limits;
+    limits.maxBytes = QuestVr::kMaximumSaveRuntimeBytes;
+    QuestVr::ScriptStateDetail::Budget capture{limits};
+    const auto measure = [&](const auto& self, const QuestVr::Vm::Value& value, const std::size_t depth) -> void {
+        capture.Node(depth); capture.Retain(sizeof(value));
+        if (value.text.size() > limits.maxStringBytes)
+            throw std::runtime_error("Script save live string budget exceeded");
+        capture.Retain(value.text.size() + 1u);
+        // Count all stored fields, including inactive Value members, before a
+        // copy. The codec only emits the payload selected by the concrete kind.
+        for (const auto& [name, member] : value.fields) {
+            if (name.size() > limits.maxStringBytes)
+                throw std::runtime_error("Script save live field budget exceeded");
+            capture.Retain(sizeof(std::string) + 5u * sizeof(void*) + name.size() + 1u);
+            self(self, member, depth + 1u);
+        }
+    };
+    for (auto* object : persistentRuntime->get()->exports) {
+        if (!object->committedScriptState) continue;
+        if (saved.objects.size() >= 4096u || object->cls == nullptr)
+            throw std::runtime_error("Script save object budget or class is invalid");
+        QuestVr::ScriptSavedObject record;
+        capture.Retain(sizeof(record) + object->reflection.objectPath.size() + object->cls->reflection.objectPath.size() + 2u);
+        record.path = object->reflection.objectPath;
+        record.classPath = object->cls->reflection.objectPath;
+        record.clock = object->animationClock;
+        for (const auto& [name, slots] : object->scriptValues) {
+            const auto property = host.PropertyNamed(object, name);
+            for (const auto& [index, value] : slots) {
+                if (record.properties.size() >= 65'536u)
+                    throw std::runtime_error("Script save property budget exceeded");
+                capture.Properties(1u);
+                capture.Retain(sizeof(QuestVr::ScriptSavedProperty) + property.key.size() + property.name.size() + 2u);
+                measure(measure, value, 0u);
+                record.properties.push_back({property.key, property.name, index, value});
+            }
+        }
+        // Clock and reflected fields are two views of the same native state.
+        // Carry untouched channels too, so restore never silently substitutes
+        // current class defaults for a saved clock. Transient tween history is
+        // retained solely in the clock, not fabricated as an Unreal property.
+        if (record.clock) {
+            for (auto value : ClockProperties(*record.clock)) {
+                const auto property = host.PropertyNamed(object, value.name);
+                value.key = property.key; value.name = property.name;
+                const auto found = std::find_if(record.properties.begin(), record.properties.end(),
+                    [&](const auto& prior) { return LowerAscii(prior.name) == LowerAscii(value.name) && prior.index == value.index; });
+                if (found == record.properties.end()) {
+                    capture.Properties(1u);
+                    capture.Retain(sizeof(value) + value.key.size() + value.name.size() + 2u);
+                    measure(measure, value.value, 0u);
+                    record.properties.push_back(std::move(value));
+                }
+                else if (!QuestVr::Vm::Equal(found->value, value.value))
+                    throw std::runtime_error("Script save clock and property disagree");
+            }
+        }
+        saved.objects.push_back(std::move(record));
+    }
+    return saved;
+}
+
+class ScriptSaveSchema {
+public:
+    explicit ScriptSaveSchema(const std::string& mapName) : mapName_(mapName) {
+        SafePackage(mapName_);
+        auto* actor = host_.Object("Engine.Actor");
+        gameRoot_ = std::filesystem::path(actor->sourcePath).parent_path().parent_path().string();
+        const auto path = ResolveRuntimePackagePath(gameRoot_, mapName_);
+        if (path.empty() || LowerAscii(std::filesystem::path(path).extension().string()) != ".dx")
+            throw std::runtime_error("Script save map is unavailable");
+        const auto& map = Table(path);
+        if (map.exports.size() > 1'000'000u) throw std::runtime_error("Script save map export budget exceeded");
+        for (std::size_t i = 0u; i < map.exports.size(); ++i) {
+            const auto objectPath = Qualified(map, static_cast<std::int32_t>(i + 1u));
+            const auto classPath = Qualified(map, map.exports[i].ObjClass);
+            Retain(objectPath.size() + classPath.size() + 2u * sizeof(std::string) + 5u * sizeof(void*));
+            if (!mapClasses_.emplace(LowerAscii(objectPath), classPath).second)
+                throw std::runtime_error("Script save map contains ambiguous identities");
+        }
+    }
+    RuntimeObject* SavedClass(const QuestVr::ScriptSavedObject& record) {
+        const auto actual = ObjectClass(record.path, false);
+        if (LowerAscii(actual) != LowerAscii(record.classPath))
+            throw std::runtime_error("Script save actor class does not match authored object");
+        auto* cls = host_.Object(actual);
+        if (!IsDerivedFromPath(cls, "Engine.Actor"))
+            throw std::runtime_error("Script save target is not an actor");
+        return cls;
+    }
+    QuestVr::Vm::Value PropertyValue(RuntimeObject* cls, const QuestVr::ScriptSavedProperty& saved) {
+        const auto property = host_.ClassProperty(cls, saved.name);
+        if (LowerAscii(property.key) != LowerAscii(saved.key) ||
+            LowerAscii(property.name) != LowerAscii(saved.name) || saved.index >= property.arrayDimension)
+            throw std::runtime_error("Script save property identity or fixed array index is invalid");
+        auto* metadata = host_.Object(property.key);
+        const auto& descriptor = *metadata->property;
+        auto value = Shape(saved.value, property.zero);
+        if (descriptor.type == "ObjectProperty" || descriptor.type == "ClassProperty") {
+            const auto& table = Table(metadata->sourcePath);
+            const auto expected = Qualified(table, descriptor.type == "ClassProperty" ?
+                descriptor.secondaryType : descriptor.referencedType);
+            ObjectValue(value, expected, descriptor.type == "ClassProperty");
+        } else if (value.kind == QuestVr::Vm::Kind::Struct) {
+            // Only the host's exact PointRegion schema is implemented; its Zone
+            // field is more restrictive than a generic Object reference.
+            ObjectValue(value.fields.at("zone"), "Engine.ZoneInfo", false);
+        }
+        return value;
+    }
+    PortableActorVmHost& Host() { return host_; }
+private:
+    PortableActorVmHost host_;
+    std::string mapName_, gameRoot_;
+    std::unordered_map<std::string, PortablePackageTables> tables_;
+    std::unordered_map<std::string, std::string> mapClasses_;
+    std::size_t retainedMetadata_{};
+    void Retain(const std::size_t bytes) {
+        constexpr std::size_t cap = 64u * 1024u * 1024u;
+        if (bytes > cap || retainedMetadata_ > cap - bytes)
+            throw std::runtime_error("Script save schema aggregate metadata budget exceeded");
+        retainedMetadata_ += bytes;
+    }
+    static void SafePackage(const std::string& value) {
+        if (value.empty() || value.size() > 128u || !std::all_of(value.begin(), value.end(), [](unsigned char c) {
+            return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_' || c == '-';
+        })) throw std::runtime_error("Script save package name is invalid");
+    }
+    const PortablePackageTables& Table(const std::string& path) {
+        auto found = tables_.find(path);
+        if (found == tables_.end()) {
+            if (tables_.size() >= 64u || std::filesystem::file_size(path) > 512u * 1024u * 1024u)
+                throw std::runtime_error("Script save schema package budget exceeded");
+            auto table = LoadPortablePackageTables(path);
+            Retain(table.names.size() * sizeof(table.names.front()) +
+                table.imports.size() * sizeof(table.imports.front()) + table.exports.size() * sizeof(table.exports.front()));
+            for (const auto& name : table.names) Retain(name.Name.ToString().size() + 1u);
+            found = tables_.emplace(path, std::move(table)).first;
+        }
+        return found->second;
+    }
+    static std::string Qualified(const PortablePackageTables& table, const std::int32_t reference) {
+        if (reference == 0) return {};
+        const auto path = GetPortableObjectPath(table, reference);
+        if (path.empty()) throw std::runtime_error("Script save reference is invalid");
+        return reference > 0 ? PackageStem(table.sourcePath) + '.' + path : path;
+    }
+    std::string ObjectClass(const std::string& path, const bool assetAllowed) {
+        const auto key = LowerAscii(path);
+        const auto mapped = mapClasses_.find(key);
+        if (mapped != mapClasses_.end()) return mapped->second;
+        const auto found = persistentVmObjects.find(key);
+        if (found != persistentVmObjects.end() && found->second &&
+            LowerAscii(std::filesystem::path(found->second->sourcePath).extension().string()) != ".dx") {
+            auto* object = found->second;
+            if (object->cls) return object->cls->reflection.objectPath;
+            if (object->reflection.metaClass == "Class") return "Core.Class";
+            const auto& table = Table(object->sourcePath);
+            // Native asset metaclasses may be imported without a serialized
+            // UClass export in Engine.u. The authored export still identifies
+            // its exact class; absence of a script wrapper is not Core.Class.
+            return Qualified(table, table.exports.at(object->exportIndex).ObjClass);
+        }
+        if (!assetAllowed) throw std::runtime_error("Script save object is unavailable in its map");
+        const auto dot = path.find('.');
+        if (dot == std::string::npos) throw std::runtime_error("Script save asset identity is invalid");
+        const auto package = path.substr(0u, dot); SafePackage(package);
+        const auto source = ResolveRuntimePackagePath(gameRoot_, package);
+        // A reference into any other level is not a persistent campaign object.
+        if (source.empty() || LowerAscii(std::filesystem::path(source).extension().string()) == ".dx")
+            throw std::runtime_error("Script save reference is unavailable or belongs to another map");
+        const auto& table = Table(source);
+        const auto index = FindPortableExport(table, path.substr(dot + 1u));
+        const auto reference = table.exports[index].ObjClass;
+        return reference == 0 ? "Core.Class" : Qualified(table, reference);
+    }
+    bool ClassDerives(std::string actual, const std::string& expected) {
+        const auto target = LowerAscii(expected);
+        std::unordered_set<std::string> visited;
+        for (std::size_t depth = 0u; depth < 128u && !actual.empty(); ++depth) {
+            const auto key = LowerAscii(actual);
+            if (key == target) return true;
+            if (!visited.emplace(key).second) throw std::runtime_error("Script save class hierarchy cycles");
+            const auto found = persistentVmObjects.find(key);
+            if (found != persistentVmObjects.end() && found->second->reflection.metaClass == "Class") {
+                const auto* cls = found->second;
+                if (cls->base) actual = cls->base->reflection.objectPath;
+                else {
+                    const auto& table = Table(cls->sourcePath);
+                    actual = Qualified(table, table.exports.at(cls->exportIndex).ObjBase);
+                }
+            } else {
+                // Exact pinned PackageManager native registrations. Package
+                // synthesizes these missing UClasses; our disk-only reflection
+                // does not. Preserve intermediate Primitive/Bitmap/State/etc.
+                // so an absent wrapper neither rejects a valid native asset
+                // nor authorizes an unrelated typed property reference.
+                static constexpr std::pair<const char*, const char*> parents[] = {
+                    {"engine.lodmesh", "Engine.Mesh"}, {"engine.mesh", "Engine.Primitive"},
+                    {"engine.model", "Engine.Primitive"}, {"engine.primitive", "Core.Object"},
+                    {"engine.texture", "Engine.Bitmap"}, {"engine.bitmap", "Core.Object"},
+                    {"core.class", "Core.State"}, {"core.state", "Core.Struct"},
+                    {"core.struct", "Core.Field"}, {"core.field", "Core.Object"}
+                };
+                const auto parent = std::find_if(std::begin(parents), std::end(parents),
+                    [&](const auto& item) { return key == item.first; });
+                if (parent == std::end(parents)) return false; // Unknown native roots fail closed.
+                actual = parent->second;
+            }
+        }
+        return false;
+    }
+    void ObjectValue(const QuestVr::Vm::Value& value, const std::string& expected, const bool classValue) {
+        if (value.text.empty()) return;
+        const auto actual = ObjectClass(value.text, true);
+        if (classValue) {
+            if (LowerAscii(actual) != "core.class" ||
+                (!expected.empty() && !ClassDerives(value.text, expected)))
+                throw std::runtime_error("Script save Class property violates its class constraint");
+        } else if (!expected.empty() && !ClassDerives(actual, expected)) {
+            throw std::runtime_error("Script save Object property violates its class constraint");
+        }
+    }
+    static QuestVr::Vm::Value Shape(const QuestVr::Vm::Value& value, const QuestVr::Vm::Value& zero) {
+        if (value.kind != zero.kind) throw std::runtime_error("Script save value has the wrong concrete property kind");
+        auto normalized = value;
+        if (value.kind == QuestVr::Vm::Kind::Struct) {
+            if (value.fields.size() != zero.fields.size()) throw std::runtime_error("Script save struct shape is invalid");
+            normalized.fields.clear();
+            for (const auto& [name, member] : value.fields) {
+                const auto canonical = LowerAscii(name);
+                const auto found = zero.fields.find(canonical);
+                if (found == zero.fields.end() || !normalized.fields.emplace(canonical, Shape(member, found->second)).second)
+                    throw std::runtime_error("Script save struct member is invalid");
+            }
+        }
+        return normalized;
+    }
+};
+
+std::vector<PreparedScriptObject> PrepareScriptSavedState(
+    const QuestVr::ScriptSavedState& saved, const bool apply) {
+    if (apply && LowerAscii(saved.mapName) != LowerAscii(persistentMapPackageName))
+        throw std::runtime_error("Script save can only restore into its authored map");
+    ScriptSaveSchema schema(saved.mapName);
+    std::vector<PreparedScriptObject> prepared;
+    prepared.reserve(saved.objects.size());
+    std::unordered_set<std::string> seen;
+    for (const auto& record : saved.objects) {
+        if (!seen.emplace(LowerAscii(record.path)).second)
+            throw std::runtime_error("Duplicate script save actor");
+        auto* cls = schema.SavedClass(record);
+        PreparedScriptObject next;
+        if (apply) {
+            next.target = schema.Host().Object(record.path);
+            if (next.target->cls != cls) throw std::runtime_error("Script save live actor class mismatch");
+        }
+        for (const auto& property : record.properties) {
+            auto value = schema.PropertyValue(cls, property);
+            if (!next.values[LowerAscii(property.name)].emplace(property.index, std::move(value)).second)
+                throw std::runtime_error("Duplicate script save property alias/index");
+        }
+        if (record.clock) {
+            for (const auto& property : ClockProperties(*record.clock)) {
+                const auto values = next.values.find(LowerAscii(property.name));
+                if (values == next.values.end()) throw std::runtime_error("Script save clock property is missing");
+                const auto slot = values->second.find(property.index);
+                if (slot == values->second.end() || !QuestVr::Vm::Equal(slot->second, property.value))
+                    throw std::runtime_error("Script save clock and reflected property disagree");
+            }
+        }
+        next.clock = record.clock;
+        prepared.push_back(std::move(next));
+    }
+    return prepared;
+}
 
 }  // namespace
 
@@ -1800,11 +2130,15 @@ QuestVr::Vm::Value ReadPortableActorScriptProperty(const std::string& actorPath,
     return host.Read(actor, property, arrayIndex);
 }
 
-bool GetPortableRuntimeUnsavedScriptState() {
+bool GetPortableRuntimeScriptStatePresent() {
     if (!persistentRuntime || !persistentRuntime->get()) return false;
     for (const auto* object : persistentRuntime->get()->exports)
         if (object->committedScriptState) return true;
     return false;
+}
+
+bool GetPortableRuntimeUnsavedScriptState() {
+    return GetPortableRuntimeScriptStatePresent();
 }
 
 PortableMapRuntimeSummary LoadPortableRuntimeMap(
@@ -1815,7 +2149,7 @@ PortableMapRuntimeSummary LoadPortableRuntimeMap(
     PortableMapRuntimeSummary summary;
     if (GetPortableRuntimeUnsavedScriptState()) {
         __android_log_print(ANDROID_LOG_WARN, "quest_main",
-            "DeusExQuest: map replacement refused: committed script/animation state is not persisted");
+            "DeusExQuest: map replacement refused: script state requires a per-map archive");
         return summary;
     }
     summary.replacedExports = UnloadPortableRuntimeMap();
@@ -1902,7 +2236,7 @@ PortableMapRuntimeSummary LoadPortableRuntimeMap(
 
 std::size_t UnloadPortableRuntimeMap() {
     if (GetPortableRuntimeUnsavedScriptState())
-        throw std::runtime_error("Map unload refused: committed script/animation state is not persisted");
+        throw std::runtime_error("Map unload refused: script state requires a per-map archive");
     if (!persistentRuntime || !persistentRuntime->get() ||
         persistentRuntime->get()->exports.size() <= persistentScriptExportCount) {
         persistentMapPackageName.clear();
@@ -2628,194 +2962,227 @@ bool VerifyPortableRuntimeInteraction() {
 
 bool SavePortableRuntimeState(const std::string& path) {
     if (!persistentRuntime || !persistentRuntime->get()) return false;
-    // Do not truncate a save that cannot represent committed VM properties or
-    // native tween history. v1-v3 persist only the existing gameplay facade.
-    if (GetPortableRuntimeUnsavedScriptState()) {
-        __android_log_print(ANDROID_LOG_WARN, "quest_main",
-            "DeusExQuest: save refused: v3 cannot preserve committed script/animation state");
-        return false;
-    }
-    std::vector<std::string> inactive;
-    std::vector<std::string> activated;
-    std::vector<std::pair<std::string, float>> damaged;
-    for (std::size_t index = persistentScriptExportCount;
-         index < persistentRuntime->get()->exports.size(); ++index) {
-        RuntimeObject* object = persistentRuntime->get()->exports[index];
-        if (!object->active) inactive.push_back(object->reflection.objectPath);
-        if (object->activated) activated.push_back(object->reflection.objectPath);
-        if (object->healthInitialized) {
-            damaged.emplace_back(object->reflection.objectPath, object->health);
+    try {
+        // Collect and schema-check all script state before opening the output.
+        // A rejected/over-budget capture must not truncate an existing save.
+        const auto scriptState = CollectScriptSavedState();
+        const bool hasScript = !scriptState.objects.empty();
+        if (hasScript) static_cast<void>(PrepareScriptSavedState(scriptState, false));
+        std::vector<std::string> inactive;
+        std::vector<std::string> activated;
+        std::vector<std::pair<std::string, float>> damaged;
+        for (std::size_t index = persistentScriptExportCount;
+             index < persistentRuntime->get()->exports.size(); ++index) {
+            RuntimeObject* object = persistentRuntime->get()->exports[index];
+            if (!object->active) inactive.push_back(object->reflection.objectPath);
+            if (object->activated) activated.push_back(object->reflection.objectPath);
+            if (object->healthInitialized) damaged.emplace_back(object->reflection.objectPath, object->health);
         }
-    }
-    std::FILE* file = std::fopen(path.c_str(), "wb");
-    if (file == nullptr) return false;
-    const std::uint32_t magic = 0x53515844u;
-    const std::uint32_t version = 3u;
-    const auto write32 = [&](std::uint32_t value) {
-        return std::fwrite(&value, sizeof(value), 1, file) == 1;
-    };
-    const auto writeStrings = [&](const std::vector<std::string>& strings) {
-        if (!write32(static_cast<std::uint32_t>(strings.size()))) return false;
-        for (const std::string& value : strings) {
-            if (value.size() > 1'048'576u ||
-                !write32(static_cast<std::uint32_t>(value.size())) ||
-                std::fwrite(value.data(), 1, value.size(), file) != value.size()) {
-                return false;
-            }
-        }
-        return true;
-    };
-    const auto writeDamaged = [&]() {
-        if (!write32(static_cast<std::uint32_t>(damaged.size()))) return false;
+        std::vector<std::uint8_t> bytes;
+        const auto requireBytes = [&](const std::size_t count) {
+            if (count > QuestVr::kMaximumSaveRuntimeBytes || bytes.size() > QuestVr::kMaximumSaveRuntimeBytes - count)
+                throw std::runtime_error("Runtime checkpoint exceeds whole-file byte budget");
+        };
+        const auto write32 = [&](const std::uint32_t value) {
+            requireBytes(4u);
+            for (unsigned i = 0; i < 4u; ++i) bytes.push_back(static_cast<std::uint8_t>(value >> (i * 8u)));
+        };
+        const auto writeString = [&](const std::string& value) {
+            if (value.size() > 1'048'576u) throw std::runtime_error("Runtime checkpoint string exceeds byte budget");
+            write32(static_cast<std::uint32_t>(value.size())); requireBytes(value.size());
+            bytes.insert(bytes.end(), value.begin(), value.end());
+        };
+        const auto writeStrings = [&](const std::vector<std::string>& strings) {
+            if (strings.size() > 100'000u) throw std::runtime_error("Runtime checkpoint list exceeds count budget");
+            write32(static_cast<std::uint32_t>(strings.size()));
+            for (const auto& value : strings) writeString(value);
+        };
+        const auto writeFloat = [&](const float value) {
+            if (!std::isfinite(value)) throw std::runtime_error("Runtime checkpoint contains a non-finite health value");
+            std::uint32_t bits{}; std::memcpy(&bits, &value, sizeof(bits)); write32(bits);
+        };
+        std::vector<std::string> flags;
+        flags.reserve(persistentConversationFlags.size());
+        for (const auto& entry : persistentConversationFlags)
+            flags.push_back(entry.first + (entry.second ? "\n1" : "\n0"));
+        const std::vector<std::string> applied(persistentAppliedDialogueEffects.begin(), persistentAppliedDialogueEffects.end());
+        if (persistentPlayerHealth < 0.0f || persistentPlayerHealth > 100.0f ||
+            persistentCredits < 0 || persistentSkillPoints < 0 || damaged.size() > 100'000u)
+            throw std::runtime_error("Runtime checkpoint gameplay values are outside their valid ranges");
+        // This is exactly the v3 prefix, including list order and field widths.
+        // Only the version word and appended trailer differ for a v4 capture.
+        write32(0x53515844u); write32(hasScript ? 4u : 3u);
+        writeStrings(persistentInventory); writeStrings(inactive); writeStrings(activated); writeFloat(persistentPlayerHealth);
+        write32(static_cast<std::uint32_t>(damaged.size()));
         for (const auto& entry : damaged) {
-            if (entry.first.size() > 1'048'576u ||
-                !write32(static_cast<std::uint32_t>(entry.first.size())) ||
-                std::fwrite(entry.first.data(), 1, entry.first.size(), file) != entry.first.size() ||
-                std::fwrite(&entry.second, sizeof(entry.second), 1, file) != 1) {
-                return false;
+            if (entry.second < 0.0f) throw std::runtime_error("Runtime checkpoint actor health is negative");
+            writeString(entry.first); writeFloat(entry.second);
+        }
+        write32(static_cast<std::uint32_t>(persistentCredits)); write32(static_cast<std::uint32_t>(persistentSkillPoints));
+        writeStrings(flags); writeStrings(persistentGoals); writeStrings(persistentNotes); writeStrings(applied);
+        if (hasScript) {
+            requireBytes(4u);
+            QuestVr::ScriptStateLimits limits;
+            limits.maxBytes = QuestVr::kMaximumSaveRuntimeBytes - bytes.size() - 4u;
+            const auto blob = QuestVr::EncodeScriptSavedState(scriptState, limits);
+            write32(static_cast<std::uint32_t>(blob.size())); requireBytes(blob.size());
+            bytes.insert(bytes.end(), blob.begin(), blob.end());
+        }
+        if (!QuestVr::WriteDurableSaveFile(path, bytes)) {
+            __android_log_print(ANDROID_LOG_WARN, "quest_main", "DeusExQuest: runtime checkpoint write failed");
+            return false;
+        }
+        return true;
+    } catch (const std::exception& error) {
+        __android_log_print(ANDROID_LOG_WARN, "quest_main", "DeusExQuest: runtime checkpoint capture rejected: %.512s", error.what());
+    } catch (...) {
+        __android_log_print(ANDROID_LOG_WARN, "quest_main", "DeusExQuest: runtime checkpoint capture rejected: unknown failure");
+    }
+    return false;
+}
+
+static bool ReadPortableRuntimeState(const std::string& path, const bool apply, const std::string& expectedMapName) {
+    if (!persistentRuntime || !persistentRuntime->get()) return false;
+    try {
+        std::vector<std::uint8_t> bytes;
+        if (!QuestVr::ReadBoundedSaveFile(path, QuestVr::kMaximumSaveRuntimeBytes, bytes)) return false;
+        std::size_t cursor{};
+        const auto requireBytes = [&](const std::size_t count) {
+            if (cursor > bytes.size() || count > bytes.size() - cursor)
+                throw std::runtime_error("Runtime checkpoint payload is truncated");
+        };
+        const auto read32 = [&]() {
+            requireBytes(4u); std::uint32_t value{};
+            for (unsigned i = 0; i < 4u; ++i) value |= std::uint32_t(bytes[cursor++]) << (i * 8u);
+            return value;
+        };
+        const auto readString = [&]() {
+            const auto length = read32();
+            if (length > 1'048'576u) throw std::runtime_error("Runtime checkpoint string exceeds byte budget");
+            requireBytes(length);
+            std::string value(reinterpret_cast<const char*>(bytes.data() + cursor), length); cursor += length;
+            return value;
+        };
+        const auto readStrings = [&]() {
+            const auto count = read32();
+            if (count > 100'000u || count > (bytes.size() - cursor) / 4u)
+                throw std::runtime_error("Runtime checkpoint list exceeds count budget or encoded payload");
+            std::vector<std::string> values; values.reserve(count);
+            for (std::uint32_t i = 0; i < count; ++i) values.push_back(readString());
+            return values;
+        };
+        const auto readFloat = [&]() {
+            const auto bits = read32(); float value{}; std::memcpy(&value, &bits, sizeof(value));
+            if (!std::isfinite(value)) throw std::runtime_error("Runtime checkpoint contains a non-finite health value");
+            return value;
+        };
+        if (read32() != 0x53515844u) throw std::runtime_error("Runtime checkpoint magic is invalid");
+        const auto version = read32();
+        if (version < 1u || version > 4u) throw std::runtime_error("Runtime checkpoint version is unsupported");
+        auto inventory = readStrings(); auto inactive = readStrings(); auto activated = readStrings();
+        float playerHealth = 100.0f;
+        std::vector<std::pair<std::string, float>> damaged;
+        if (version >= 2u) {
+            playerHealth = readFloat();
+            if (playerHealth < 0.0f || playerHealth > 100.0f)
+                throw std::runtime_error("Runtime checkpoint player health is outside 0..100");
+            const auto count = read32();
+            if (count > 100'000u || count > (bytes.size() - cursor) / 8u)
+                throw std::runtime_error("Runtime checkpoint damaged-actor count exceeds budget or encoded payload");
+            damaged.reserve(count);
+            for (std::uint32_t i = 0; i < count; ++i) {
+                auto actor = readString(); const auto health = readFloat();
+                if (health < 0.0f) throw std::runtime_error("Runtime checkpoint actor health is negative");
+                damaged.emplace_back(std::move(actor), health);
             }
         }
-        return true;
-    };
-    std::vector<std::string> flags;
-    flags.reserve(persistentConversationFlags.size());
-    for (const auto& entry : persistentConversationFlags) {
-        flags.push_back(entry.first + (entry.second ? "\n1" : "\n0"));
-    }
-    const std::vector<std::string> applied(
-        persistentAppliedDialogueEffects.begin(), persistentAppliedDialogueEffects.end());
-    const bool ok = write32(magic) && write32(version) &&
-        writeStrings(persistentInventory) && writeStrings(inactive) &&
-        writeStrings(activated) &&
-        std::fwrite(&persistentPlayerHealth, sizeof(persistentPlayerHealth), 1, file) == 1 &&
-        writeDamaged() &&
-        std::fwrite(&persistentCredits, sizeof(persistentCredits), 1, file) == 1 &&
-        std::fwrite(&persistentSkillPoints, sizeof(persistentSkillPoints), 1, file) == 1 &&
-        writeStrings(flags) && writeStrings(persistentGoals) && writeStrings(persistentNotes) &&
-        writeStrings(applied);
-    const bool closed = std::fclose(file) == 0;
-    return ok && closed;
-}
-
-static bool ReadPortableRuntimeState(const std::string& path, const bool apply) {
-    if (!persistentRuntime || !persistentRuntime->get()) return false;
-    std::FILE* file = std::fopen(path.c_str(), "rb");
-    if (file == nullptr) return false;
-    const auto read32 = [&](std::uint32_t& value) {
-        return std::fread(&value, sizeof(value), 1, file) == 1;
-    };
-    const auto readStrings = [&](std::vector<std::string>& strings) {
-        std::uint32_t count{};
-        if (!read32(count) || count > 100'000u) return false;
-        strings.clear();
-        strings.reserve(count);
-        for (std::uint32_t index = 0; index < count; ++index) {
-            std::uint32_t length{};
-            if (!read32(length) || length > 1'048'576u) return false;
-            std::string value(length, '\0');
-            if (std::fread(value.data(), 1, length, file) != length) return false;
-            strings.push_back(std::move(value));
+        std::int32_t credits{}, skillPoints{};
+        std::vector<std::string> flags, goals, notes, applied;
+        if (version >= 3u) {
+            const auto savedCredits = read32(), savedSkills = read32();
+            if (savedCredits > static_cast<std::uint32_t>(std::numeric_limits<std::int32_t>::max()) ||
+                savedSkills > static_cast<std::uint32_t>(std::numeric_limits<std::int32_t>::max()))
+                throw std::runtime_error("Runtime checkpoint credits or skill points are negative/out of range");
+            credits = static_cast<std::int32_t>(savedCredits); skillPoints = static_cast<std::int32_t>(savedSkills);
+            flags = readStrings(); goals = readStrings(); notes = readStrings(); applied = readStrings();
+        }
+        std::vector<PreparedScriptObject> prepared;
+        if (version == 4u) {
+            const auto prefixBytes = cursor;
+            const auto length = read32();
+            if (length == 0u || length != bytes.size() - cursor)
+                throw std::runtime_error("Runtime checkpoint script trailer length is invalid");
+            QuestVr::ScriptStateLimits limits;
+            limits.maxBytes = QuestVr::kMaximumSaveRuntimeBytes - prefixBytes - 4u;
+            const std::vector<std::uint8_t> blob(bytes.begin() + static_cast<std::ptrdiff_t>(cursor), bytes.end());
+            const auto scriptState = QuestVr::DecodeScriptSavedState(blob, limits);
+            if (!expectedMapName.empty() && LowerAscii(expectedMapName) != LowerAscii(scriptState.mapName))
+                throw std::runtime_error("Runtime checkpoint script map does not match save metadata");
+            prepared = PrepareScriptSavedState(scriptState, apply);
+            cursor += length;
+        }
+        if (cursor != bytes.size()) throw std::runtime_error("Runtime checkpoint has trailing bytes");
+        // Prepare EVERY allocating container and resolve all mutation targets
+        // before clearing live script/gameplay state. Legacy paths retain their
+        // existing tolerant behavior for actors from previously visited maps.
+        std::unordered_map<std::string, bool> restoredFlags;
+        for (const auto& flag : flags) {
+            const auto separator = flag.rfind('\n');
+            if (separator == std::string::npos || separator == 0u || separator + 2u != flag.size() ||
+                (flag.back() != '0' && flag.back() != '1') ||
+                !restoredFlags.emplace(LowerAscii(flag.substr(0u, separator)), flag.back() == '1').second)
+                throw std::runtime_error("Runtime checkpoint conversation flag is invalid or duplicated");
+        }
+        std::unordered_set<std::string> restoredApplied(applied.begin(), applied.end());
+        std::vector<RuntimeObject*> inactiveTargets, activatedTargets;
+        std::vector<std::pair<RuntimeObject*, float>> damagedTargets;
+        inactiveTargets.reserve(inactive.size()); activatedTargets.reserve(activated.size()); damagedTargets.reserve(damaged.size());
+        for (const auto& objectPath : inactive) {
+            const auto found = persistentQualifiedObjects.find(objectPath);
+            if (found != persistentQualifiedObjects.end()) inactiveTargets.push_back(found->second);
+        }
+        for (const auto& objectPath : activated) {
+            const auto found = persistentQualifiedObjects.find(objectPath);
+            if (found != persistentQualifiedObjects.end()) activatedTargets.push_back(found->second);
+        }
+        for (const auto& entry : damaged) {
+            const auto found = persistentQualifiedObjects.find(entry.first);
+            if (found != persistentQualifiedObjects.end()) damagedTargets.emplace_back(found->second, entry.second);
+        }
+        if (!apply) return true;
+        for (RuntimeObject* object : persistentRuntime->get()->exports) {
+            object->scriptValues.clear(); object->animationClock.reset(); object->committedScriptState = false;
+        }
+        for (std::size_t index = persistentScriptExportCount; index < persistentRuntime->get()->exports.size(); ++index) {
+            RuntimeObject* object = persistentRuntime->get()->exports[index];
+            object->active = true; object->activated = false; object->healthInitialized = false; object->health = 100.0f;
+        }
+        persistentInventory.swap(inventory); persistentPlayerHealth = playerHealth;
+        persistentCredits = credits; persistentSkillPoints = skillPoints;
+        persistentConversationFlags.swap(restoredFlags); persistentGoals.swap(goals); persistentNotes.swap(notes);
+        persistentAppliedDialogueEffects.swap(restoredApplied);
+        for (auto* object : inactiveTargets) object->active = false;
+        for (auto* object : activatedTargets) object->activated = true;
+        for (const auto& entry : damagedTargets) {entry.first->healthInitialized = true; entry.first->health = entry.second;}
+        for (auto& object : prepared) {
+            object.target->scriptValues.swap(object.values); object.target->animationClock.swap(object.clock);
+            object.target->committedScriptState = true;
         }
         return true;
-    };
-    std::uint32_t magic{}, version{};
-    std::vector<std::string> inventory;
-    std::vector<std::string> inactive;
-    std::vector<std::string> activated;
-    float playerHealth = 100.0f;
-    std::vector<std::pair<std::string, float>> damaged;
-    bool ok = read32(magic) && read32(version) && magic == 0x53515844u &&
-        (version == 1u || version == 2u || version == 3u) &&
-        readStrings(inventory) && readStrings(inactive) && readStrings(activated);
-    if (ok && version >= 2u) {
-        std::uint32_t damagedCount{};
-        ok = std::fread(&playerHealth, sizeof(playerHealth), 1, file) == 1 &&
-            std::isfinite(playerHealth) && playerHealth >= 0.0f && playerHealth <= 100.0f &&
-            read32(damagedCount) && damagedCount <= 100'000u;
-        for (std::uint32_t index = 0; ok && index < damagedCount; ++index) {
-            std::uint32_t length{};
-            ok = read32(length) && length <= 1'048'576u;
-            if (!ok) break;
-            std::string path(length, '\0');
-            float health{};
-            ok = ok && std::fread(path.data(), 1, length, file) == length &&
-                std::fread(&health, sizeof(health), 1, file) == 1 &&
-                std::isfinite(health) && health >= 0.0f;
-            if (ok) damaged.emplace_back(std::move(path), health);
-        }
+    } catch (const std::exception& error) {
+        __android_log_print(ANDROID_LOG_WARN, "quest_main", "DeusExQuest: runtime checkpoint %s rejected: %.512s",
+            apply ? "load" : "validation", error.what());
+    } catch (...) {
+        __android_log_print(ANDROID_LOG_WARN, "quest_main", "DeusExQuest: runtime checkpoint %s rejected: unknown failure",
+            apply ? "load" : "validation");
     }
-    std::int32_t credits{};
-    std::int32_t skillPoints{};
-    std::vector<std::string> flags;
-    std::vector<std::string> goals;
-    std::vector<std::string> notes;
-    std::vector<std::string> applied;
-    if (ok && version >= 3u) {
-        ok = std::fread(&credits, sizeof(credits), 1, file) == 1 &&
-            std::fread(&skillPoints, sizeof(skillPoints), 1, file) == 1 &&
-            credits >= 0 && skillPoints >= 0 && readStrings(flags) &&
-            readStrings(goals) && readStrings(notes) && readStrings(applied);
-    }
-    const int trailing = ok ? std::fgetc(file) : 0;
-    ok = ok && trailing == EOF && std::ferror(file) == 0;
-    std::fclose(file);
-    if (!ok) return false;
-    // Prepare allocating containers before replacing any live state. An
-    // allocation failure must not leave half-restored inventory/progress.
-    std::unordered_map<std::string, bool> restoredFlags;
-    for (const std::string& flag : flags) {
-        const std::size_t separator = flag.rfind('\n');
-        if (separator == std::string::npos || separator == 0u ||
-            separator + 2u != flag.size() || (flag.back() != '0' && flag.back() != '1') ||
-            !restoredFlags.emplace(LowerAscii(flag.substr(0u, separator)), flag.back() == '1').second)
-            return false;
-    }
-    std::unordered_set<std::string> restoredApplied(applied.begin(), applied.end());
-    if (!apply) return true;
-    // A valid legacy checkpoint restores authored actor properties. Clearing
-    // happens only after complete validation, never during save inspection.
-    for (RuntimeObject* object : persistentRuntime->get()->exports) {
-        object->scriptValues.clear(); object->animationClock.reset();
-        object->committedScriptState = false;
-    }
-    for (std::size_t index = persistentScriptExportCount;
-         index < persistentRuntime->get()->exports.size(); ++index) {
-        RuntimeObject* object = persistentRuntime->get()->exports[index];
-        object->active = true;
-        object->activated = false;
-        object->healthInitialized = false;
-        object->health = 100.0f;
-    }
-    persistentInventory = std::move(inventory);
-    persistentPlayerHealth = playerHealth;
-    persistentCredits = credits;
-    persistentSkillPoints = skillPoints;
-    persistentConversationFlags = std::move(restoredFlags);
-    persistentGoals = std::move(goals);
-    persistentNotes = std::move(notes);
-    persistentAppliedDialogueEffects = std::move(restoredApplied);
-    for (const std::string& objectPath : inactive) {
-        const auto found = persistentQualifiedObjects.find(objectPath);
-        if (found != persistentQualifiedObjects.end()) found->second->active = false;
-    }
-    for (const std::string& objectPath : activated) {
-        const auto found = persistentQualifiedObjects.find(objectPath);
-        if (found != persistentQualifiedObjects.end()) found->second->activated = true;
-    }
-    for (const auto& entry : damaged) {
-        const auto found = persistentQualifiedObjects.find(entry.first);
-        if (found != persistentQualifiedObjects.end()) {
-            found->second->healthInitialized = true;
-            found->second->health = entry.second;
-        }
-    }
-    return true;
+    return false;
 }
 
-bool ValidatePortableRuntimeState(const std::string& path) {
-    return ReadPortableRuntimeState(path, false);
+bool ValidatePortableRuntimeState(const std::string& path, const std::string& expectedMapName) {
+    return ReadPortableRuntimeState(path, false, expectedMapName);
 }
 
 bool LoadPortableRuntimeState(const std::string& path) {
-    return ReadPortableRuntimeState(path, true);
+    return ReadPortableRuntimeState(path, true, {});
 }

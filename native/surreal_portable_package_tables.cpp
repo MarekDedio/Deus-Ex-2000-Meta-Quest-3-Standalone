@@ -448,16 +448,20 @@ PortablePropertyStream LoadPortableExportProperties(
     file->read(bytes.data(), bytes.size());
     PayloadReader reader(std::move(bytes));
 
-    if (AnyFlags(entry.ObjFlags, ObjectFlags::HasStack)) {
-        const std::int32_t functionReference = reader.ReadIndex();
-        const std::int32_t stateReference = reader.ReadIndex();
-        ValidateObjectReference(functionReference, package.imports.size(), package.exports.size());
-        ValidateObjectReference(stateReference, package.imports.size(), package.exports.size());
-        reader.Skip(12);
-        if (functionReference != 0) reader.ReadIndex();
-    }
-
     PortablePropertyStream result;
+    if (AnyFlags(entry.ObjFlags, ObjectFlags::HasStack)) {
+        PortableObjectStack stack;
+        stack.functionReference = reader.ReadIndex();
+        stack.stateReference = reader.ReadIndex();
+        ValidateObjectReference(stack.functionReference, package.imports.size(), package.exports.size());
+        ValidateObjectReference(stack.stateReference, package.imports.size(), package.exports.size());
+        const std::uint32_t maskLow = reader.ReadUInt32();
+        stack.probeMask = static_cast<std::uint64_t>(maskLow) |
+            (static_cast<std::uint64_t>(reader.ReadUInt32()) << 32u);
+        stack.latentAction = reader.ReadUInt32();
+        if (stack.functionReference != 0) stack.logicalOffset = reader.ReadIndex();
+        result.stack = stack;
+    }
     while (true) {
         const NameString& name = ReadPayloadName(reader, package);
         if (name == "None") {

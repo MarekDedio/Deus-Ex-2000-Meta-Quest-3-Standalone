@@ -1,5 +1,43 @@
 # Port status
 
+## Scoped script saves and current test build (2026-10-08)
+
+- Runtime v4 preserves supported original actor property overlays and complete
+  main/four-blend clocks, native tween histories, rates/flags, simulation time,
+  RemoteRole and Fatness. Untouched runtimes still write v3; v1-v3 readers remain.
+  Capture validates before writing; restoration validates original identities,
+  exact typed property schemas, object/class constraints and clock agreement
+  before changing live state. Whole runtime payloads stay within 16 MiB.
+- The structural codec passed 1,415 checks (1,355 rejection controls). Original
+  actor integration passed four positive authored Mesh/Owner/PointRegion/Texture
+  reference controls and 15 malformed schema controls, exact full-clock resave,
+  native clock continuation, read-only different-map preflight, metadata binding
+  and legacy reset. Original gameplay/progress and paired v3/v4 saves also pass.
+- Native Mesh/Texture UClass wrappers can be absent from disk exports. Save
+  validation now follows exact authored/native hierarchies rather than falsely
+  requiring such wrappers or treating unknown asset classes as Core.Class.
+- The host suite has 28 entries: 26 pass without assets, two explicitly skip
+  by default and passed separate original-data runs. Four world albedo captures,
+  the original helper close-up and inventory artwork remain pixel-exact.
+- Retained serialized HasStack headers pass 247 synthetic controls (71
+  rejections); all 88 original maps contain 135,479 class-backed records, zero
+  named-state continuations and 66,964 nonzero latent fields. These dormant
+  class records are retained, not misinterpreted as ready-to-run AI states.
+- Map travel/unload still require per-map archiving when script state exists.
+  Quest checks this before cancelling UI/audio/geometry or starting replacement.
+  Saving does not clear that guard. See [SCRIPT_STATE_SAVE.md](SCRIPT_STATE_SAVE.md).
+- A USB install/launch exposed an ARM static-lightmap startup failure. The
+  expanded cubic radius falloff can become slightly negative under fused
+  floating-point evaluation; it now uses the algebraically identical factored
+  form. HDR range checks remain strict, with surface/RGB diagnostics. The
+  fix passes 196,608 near-radius controls and an explicit negative FMA fixture;
+  the final ARM64 APK builds successfully and the final host suite is green.
+  The headset disconnected before the diagnostic/final build could be rechecked;
+  do not treat this correction as confirmed on-device until launch is verified.
+- Full authored startup, AI/state/latent execution, timers/spawned actors,
+  campaign archiving/progression, live GPU animation and performance remain
+  unfinished. This is an installable test build, not full campaign completion.
+
 ## Bounded original script execution (2026-10-08)
 
 - Added a typed, bounded interpreter for normalized original UE1 bytecode:

@@ -78,9 +78,10 @@ captured tween history. This is not automatically started NPC behavior.
 Original ScriptedPawn initialization, states, ticking, event eligibility,
 notify/AnimEnd dispatch and transitions still need integration before NPCs
 animate and behave normally. A pure native main/blend clock has offline tests,
-but live renderer updates, attachment rendering and dynamic script/animation
-saves remain unfinished. Existing saves preserve supported gameplay fixtures;
-saves/travel refuse committed scoped script state they cannot retain.
+but live renderer updates, attachment rendering and general dynamic campaign
+saves remain unfinished. Version-4 saves now preserve supported actor overlays
+and complete clocks/tween histories; travel/unload still require a per-map
+archive before they can discard scoped state. See [script-state saves](SCRIPT_STATE_SAVE.md).
 See [PORTABLE-SCRIPT-EXECUTION.md](PORTABLE-SCRIPT-EXECUTION.md).
 Quest currently samples the initial authored pose but does not animate it over
 time. Desktop explicit pose overrides are fixtures, not simulated startup.

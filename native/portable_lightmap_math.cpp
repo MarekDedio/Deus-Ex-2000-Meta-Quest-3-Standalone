@@ -63,8 +63,12 @@ bool StaticEffect(std::uint8_t effect) noexcept {
 
 float DistanceFalloff(float distanceSquared) noexcept {
     const float v = std::sqrt(distanceSquared + .0001f);
-    const float v2 = v*v, v3 = v2*v;
-    return std::min((1.0f + 2.0f*v3 - 3.0f*v2) / v, 1.0f);
+    // Same polynomial as pinned 1+2*v^3-3*v^2, factored to avoid
+    // catastrophic cancellation at the radius edge. ARM fused operations can
+    // turn the expanded expression slightly negative and invalidate an entire
+    // black-ambient atlas. This keeps +.0001, the radius cutoff and max1 intact.
+    const float edge = 1.0f-v;
+    return std::min((edge*edge*(1.0f+2.0f*v)) / v, 1.0f);
 }
 
 } // namespace

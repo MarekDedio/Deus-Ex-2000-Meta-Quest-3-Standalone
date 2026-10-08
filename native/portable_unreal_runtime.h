@@ -287,11 +287,13 @@ QuestVr::Vm::Result ExecutePortableActorFunction(
 QuestVr::Vm::Value ReadPortableActorScriptProperty(
     const std::string& actorPath, const std::string& propertyName,
     std::uint32_t arrayIndex = 0u);
-// Legacy runtime saves (v1-v3) cannot preserve script overlays or native tween
-// history. Saving is explicitly rejected while committed script state exists.
-// Map replacement returns passed=false and unload throws in the same case.
-// A validated LoadPortableRuntimeState explicitly restores authored properties;
-// ShutdownPortableRuntime explicitly discards this runtime's object lifetime.
+// v4 preserves supported actor overlays and native animation clocks. This
+// predicate means state is present, not that a successful save has cleared it.
+// Map replacement/unload still require a per-map archive and are guarded while
+// state exists. Legacy v1-v3 load explicitly restores authored properties;
+// ShutdownPortableRuntime explicitly discards the runtime's object lifetime.
+bool GetPortableRuntimeScriptStatePresent();
+// Compatibility name for callers written before v4 persistence.
 bool GetPortableRuntimeUnsavedScriptState();
 PortableMapRuntimeSummary LoadPortableRuntimeMap(
     const PortablePackageTables& package);
@@ -308,7 +310,9 @@ PortableTextureArray BuildPortableRuntimeActorTextureArray(
 PortableInteractionResult InteractPortableRuntimeActor(const std::string& objectPath);
 bool VerifyPortableRuntimeInteraction();
 bool SavePortableRuntimeState(const std::string& path);
-bool ValidatePortableRuntimeState(const std::string& path);
+// Optional binding protects paired metadata from referring to another v4 map.
+// Legacy v1-v3 have no embedded map identity and retain their existing behavior.
+bool ValidatePortableRuntimeState(const std::string& path, const std::string& expectedMapName = {});
 bool LoadPortableRuntimeState(const std::string& path);
 PortableDamageResult DamagePortableRuntimeActor(
     const std::string& objectPath,

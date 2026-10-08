@@ -7,6 +7,7 @@
 
 #include <string>
 #include <vector>
+#include <optional>
 #include "quest_mesh_animation.h"
 
 struct PortablePackageTables {
@@ -30,9 +31,20 @@ struct PortableTaggedProperty {
     std::vector<std::uint8_t> value;
 };
 
+// Exact serialized UObject HasStack header. Class-backed dormant records and
+// genuine state continuations must remain distinguishable by their actual
+// referenced metadata; retaining these bytes does not start/interpret a state.
+struct PortableObjectStack {
+    std::int32_t functionReference{}, stateReference{};
+    std::uint64_t probeMask{};
+    std::uint32_t latentAction{};
+    std::optional<std::int32_t> logicalOffset;
+};
+
 struct PortablePropertyStream {
     std::vector<PortableTaggedProperty> properties;
     std::uint32_t bytesConsumed{};
+    std::optional<PortableObjectStack> stack;
 };
 
 struct PortableMipmap {

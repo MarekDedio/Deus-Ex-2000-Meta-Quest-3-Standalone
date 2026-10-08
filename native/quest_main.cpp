@@ -2088,6 +2088,15 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             (runtimeAvailable_ && mapName == currentMapName_)) {
             return;
         }
+        // A successful v4 save does not authorize discarding the current map's
+        // actor state. Check before cancelling UI/audio/geometry or starting a
+        // replacement transaction, whose rollback needs the same archive.
+        if (runtimeAvailable_ && GetPortableRuntimeScriptStatePresent()) {
+            interactionStatus_ = "MAP CHANGE NEEDS SCRIPT STATE ARCHIVE";
+            interactionStatusSeconds_ = 5.0f;
+            ALOG("DeusExQuest: map change to %s kept current script state", mapName.c_str());
+            return;
+        }
         // Queued parts hold references to build-owned mesh copies. Cancel their
         // preparation before the worker mutates the source runtime; completed
         // old-map renderer chunks may remain visible during background loading.
@@ -3440,7 +3449,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                 if (QuestVr::DecodeQuestSaveMetadata(candidate.metadata, currentMapName_, metadata) &&
                     SaveMapAvailable(metadata.mapName) &&
                     QuestVr::WriteDurableSaveFile(restorePath, candidate.runtime) &&
-                    ValidatePortableRuntimeState(restorePath) &&
+                    ValidatePortableRuntimeState(restorePath, metadata.mapName) &&
                     RestoreGameState(std::move(metadata), restorePath)) {
                     ALOG("DeusExQuest: quick-load accepted bundle generation=%llu slot=%u",
                         static_cast<unsigned long long>(candidate.generation), candidate.slotIndex);
@@ -3460,7 +3469,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                 QuestVr::ReadBoundedSaveFile(prefix + ".runtime",
                     QuestVr::kMaximumSaveRuntimeBytes, runtime) &&
                 QuestVr::WriteDurableSaveFile(restorePath, runtime) &&
-                ValidatePortableRuntimeState(restorePath) &&
+                ValidatePortableRuntimeState(restorePath, metadata.mapName) &&
                 RestoreGameState(std::move(metadata), restorePath)) {
                 ALOG("DeusExQuest: quick-load accepted legacy save (files kept unchanged)");
                 return;
@@ -3481,6 +3490,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
     bool RestoreGameState(QuestVr::QuestSaveMetadata metadata, const std::string& runtimePath) {
         const auto& pose = metadata.pose;
         if (metadata.mapName != currentMapName_) {
+            if (GetPortableRuntimeScriptStatePresent()) return false;
             restoredMapLocalPose_ = metadata.mapLocalPose;
             restoredMapLocalFeet_ = {pose[0], pose[1], pose[2]};
             restoredMapLocalHeadYaw_ = pose[3];
@@ -3488,7 +3498,10 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             restoredSceneYaw_ = pose[3];
             restorePoseAfterTransition_ = true;
             BeginMapLoad(metadata.mapName, runtimePath);
-            if (pendingMapName_ != metadata.mapName) return false;
+            if (pendingMapName_ != metadata.mapName) {
+                restorePoseAfterTransition_ = false;
+                return false;
+            }
             pendingPersonaRestore_ = true;
             restoredDialogueOffsets_ = std::move(metadata.dialogueOffsets);
             restoredPersonaLogs_ = std::move(metadata.personaLogs);

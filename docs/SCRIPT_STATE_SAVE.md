@@ -1,0 +1,234 @@
+# Scoped script-state saves
+
+Runtime checkpoint version 4 adds persistence for properties committed by the
+bounded actor interpreter and its native animation clocks. It does not add
+automatic NPC startup, AI, live animation, or a general UnrealScript savegame.
+Only the current map's supported, authored actor objects are restored.
+
+This document updates the earlier memory-only/save-refusal description in
+[PORTABLE-SCRIPT-EXECUTION.md](PORTABLE-SCRIPT-EXECUTION.md) and
+[ANIMATION-POSES.md](ANIMATION-POSES.md) for current-map checkpoint storage.
+Map replacement and unload still refuse committed scoped script state because
+there is no per-map archive yet. Saving it does not remove that travel guard.
+
+## Runtime envelope
+
+The runtime checkpoint still starts with magic `0x53515844`. A checkpoint
+without committed script objects is written as version 3, with no new trailer.
+A checkpoint with them uses version 4: the version word changes, the existing
+version-3 fields retain their order and widths, and one trailer is appended.
+
+```text
+u32 magic, u32 version=4
+version-3 fields:
+  inventory[], inactive actors[], activated actors[]
+  f32 player health, damaged actors[(path,f32 health)]
+  u32 credits, u32 skill points
+  conversation flags[], goals[], notes[], applied-effect identities[]
+u32 script blob length
+script blob[exactly that many bytes]
+```
+
+All integers and floating-point bit patterns are explicitly little-endian.
+Strings are `u32 byte length` followed by bytes, without a terminator; lists
+begin with a `u32` count. The trailer must be nonempty and cover the exact
+remaining runtime payload. Truncation, oversized lengths and trailing bytes
+are errors. Versions 1, 2 and 3 remain readable through their existing field
+sets; they cannot contain a version-4 script trailer.
+
+This version number is distinct from the Persona/UI metadata version and from
+the paired `.qsv` bundle format. The alternating-slot, checksum and durable
+publication workflow described in [SAVE-RECOVERY.md](SAVE-RECOVERY.md) remains
+the outer recovery mechanism. A runtime trailer is not authentication, and
+the codec does not implement file I/O.
+
+## Script blob schema
+
+`native/quest_script_state.h` exposes `EncodeScriptSavedState` and
+`DecodeScriptSavedState`. Its internal format starts with eight magic/version
+bytes: `44 58 51 56 4d 53 01 00` (`DXQVMS`, version 1, reserved zero).
+
+```text
+mapName
+u32 object count
+objects[]:
+  authored object path, authored class path
+  u32 property count
+  properties[]:
+    fully-qualified property key, property name, u32 fixed-array index
+    u8 value tag, typed value payload
+  u8 hasClock (0 or 1)
+  optional complete animation clock
+```
+
+Value tags are stable wire identifiers, independent of `Vm::Kind` enum
+ordinals and C++ structure layout:
+
+| Tag | Value payload |
+| --- | --- |
+| 0 | Nothing; no payload |
+| 1 | Byte; one byte |
+| 2 | Int; signed 32-bit bit pattern |
+| 3 | Bool; one byte, exactly 0 or 1 |
+| 4 | Float; IEEE binary32 |
+| 5 | Name; bounded byte string |
+| 6 | Object; stable path string, not a pointer/package-local index |
+| 7 | String; bounded byte string |
+| 8 | Vector; three binary32 components |
+| 9 | Rotator; three signed 32-bit components |
+| 10 | Struct; counted `(field name, typed value)` members |
+
+The codec preserves signed zero, concrete value kinds, string bytes and
+original spelling. Empty/`None` names and empty object references are retained
+as supplied; it does not guess missing references. Value strings preserve
+original UE1 code-page bytes as well as UTF-8 bytes, rather than imposing a
+new text conversion. Embedded NULs and non-finite numeric values are rejected.
+Identity paths, keys, names, sequence names and struct fields are bounded
+printable ASCII.
+
+Objects sort by case-insensitive path. Properties sort by case-insensitive
+fully-qualified key and array index; struct fields sort by case-insensitive
+name. Duplicate identities and case collisions are rejected, not overwritten.
+Separate fixed-array slots may share the same exact property key/name.
+Decode also requires canonical order. Equivalent object/property iteration
+orders therefore produce identical blob bytes; this is not a claim that the
+legacy gameplay prefix's unordered collections are canonical.
+
+## Budgets and allocation boundary
+
+Generic codec defaults are:
+
+| Limit | Default |
+| --- | --- |
+| Encoded bytes and estimated aggregate retained state | 32 MiB each |
+| Objects | 4,096 total |
+| Properties | 65,536 total, across all objects |
+| Typed value nodes | 262,144 total |
+| String bytes | 8,192 per string |
+| Map name | 128 bytes, also within the string limit |
+| Value depth | 32 levels, root at depth zero |
+
+Retained estimates include object/property arrays, nested map nodes, strings
+and bounded sorting pointers. Encoding validates/counts the complete tree
+before reserving the output. Decoding first uses a non-materializing pass with
+string views; restored object/property/field containers are allocated only
+after the complete payload passes limits and canonical uniqueness checks.
+
+Runtime saves further limit the entire runtime payload to 16 MiB. The codec's
+byte allowance is reduced to `16 MiB - legacy prefix bytes - 4`, so the blob
+cannot evade the whole-file cap. Snapshot capture also checks live nested
+values before copying them. Runtime schema inspection has its own metadata
+budget of 64 MiB for cached table metadata and expanded paths, separate from
+the serialized-value quota. Unsupported map-local classes in a different,
+unloaded custom map fail closed; imported original campaign classes use the
+initialized script reflection graph.
+
+## Complete animation clock
+
+Each optional clock retains all five channels: main plus four Deus Ex blends.
+Each channel stores its sequence, normalized frame and previous native tween
+history: vertex offsets 0/1 and interpolation fraction. This is necessary;
+`AnimSequence` and `AnimFrame` alone cannot reconstruct an interrupted tween.
+
+Main state stores rate, last frame, minimum rate, tween rate and old rate;
+loop, notify and finished flags; and the FinishAnim waiting flag. Each blend
+stores those five rates and all four `SimBlendAnim` components. The clock also
+stores binary64 simulation time, byte RemoteRole and byte Fatness.
+
+Clock numbers must be finite. Simulation time is nonnegative, last frames are
+in `[0,1)`, tween rates are nonnegative, and channel frames cannot exceed one.
+Negative tween frames and the transient native notify boundary at frame one
+are preserved. Previous history fractions and offsets are not clamped or
+validated against invented mesh data: the pinned native can capture wrapped
+offsets with `fraction=NumFrames` at frame one, and original assets can have
+dangling sequence declarations. Such finite metadata survives a save exactly;
+the real mesh sampler still diagnoses invalid history or missing frame accesses
+when drawing it. Persistence does not make an unusable pose drawable.
+
+## Validation and application
+
+Structural decoding is only the first gate. The runtime checks the blob's map
+against supplied quicksave metadata, where available, then validates saved
+identities against the user's read-only authored map/package tables. Checks
+include actual actor class, fully-qualified property identity/name, fixed-array
+index, exact concrete value kind, supported struct shape and object/class
+reference constraints. Reflected animation properties must agree with their
+saved clock. A structurally valid blob is not permission to write an arbitrary
+actor, property or object reference.
+
+Native asset UClasses such as Mesh and Texture can be synthesized by the pinned
+engine and absent from disk script exports. Validation compares the authored
+qualified class identity, follows available authored `ObjBase` links, and uses
+only the exact pinned native Mesh/Primitive, Texture/Bitmap and Core class
+hierarchies for these absent wrappers. It neither treats every missing class as
+`Core.Class` nor accepts an unrelated actor in a Mesh property. Unknown native
+hierarchies fail closed.
+
+`ValidatePortableRuntimeState` is a read-only preflight for live gameplay,
+property overlays and clocks. It can inspect the saved map's authored schema
+while a different map is loaded; it does not replace the map or apply that
+timeline. Schema caches may be populated during inspection. Actual version-4
+application requires the matching authored map to be loaded and resolves all
+targets and prepares all allocating containers before clearing live state.
+
+A rejected/truncated/mismatched checkpoint leaves the current gameplay state,
+property overlays and clocks intact. Capture collects and schema-validates its
+state before writing, so validation/budget failure must not truncate an existing
+checkpoint. After successful application, saved script state replaces the
+current scoped overlays/clocks rather than merging abandoned timelines.
+
+A fully validated legacy version-1/2/3 load has no script blob and intentionally
+clears scoped overlays, clocks and committed flags, returning those fields to
+authored inheritance. Read-only legacy validation does not clear them.
+Cross-map script references and arbitrary dynamic objects are not synthesized.
+
+## Evidence and commands
+
+The standalone structural codec was compiled with g++17, optimization and
+`-Wall -Wextra -Wpedantic`, without compiler diagnostics. It passed 1,415 checks,
+including 1,355 rejection controls: all value kinds, nested structs, every
+clock field, bit-preserving round trips, deterministic order, every truncated
+prefix, malformed tags/bools/counts, non-finite values, case collisions and
+aggregate/depth/retained-byte budgets. Logs are in
+`artifacts/headless-20261007/actor-visuals/script-state-codec-build.log` and
+`script-state-codec-test.log`.
+
+The separate original-data integration runs passed full roundtrips, read-only
+different-map validation, wrong-map application refusal, legacy reset, four
+positive authored reference controls (Mesh/Owner/PointRegion/Texture), and 15
+malformed schema/trailer controls with byte-identical preserved live state.
+The gameplay/progress regression also passed composed paired v3/v4 saves.
+Logs are `script-save-reference-original-actors.log` and
+`script-save-reference-original-runtime.log` in the same artifact directory.
+To repeat after rebuilding the host targets, run:
+
+```powershell
+.\desktop\build\quest_script_state_test.exe
+.\desktop\build\portable_actor_script_test.exe 'D:\Steam\steamapps\common\Deus Ex'
+.\desktop\build\portable_runtime_state_test.exe --game-root 'D:\Steam\steamapps\common\Deus Ex'
+```
+
+The original-data tests use a user-owned installation read-only and temporary
+checkpoints outside it. Without the explicit root, their original-data coverage
+skips; a synthetic test pass is not an original-map restore pass. These
+integration checks include unchanged version-3 saves, version-4 round trips,
+full clock continuation comparisons, read-only validation, wrong-current-map
+application refusal, malformed schema/trailer preservation and legacy reset.
+Never fault-inject corruption into the user's only save.
+
+## Remaining scope
+
+This is scoped current-map persistence, not a per-map campaign archive. Travel
+and unload still refuse committed scoped state; shutdown is not a substitute
+for saving. There is no serialization of VM call stacks, locals, active states,
+latent instruction continuations, timers, RNG, dynamically spawned actors or
+event/animation residual elapsed debt. The stored FinishAnim flag does not
+implement a latent VM resumption engine.
+
+Automatic authored startup, state/AI execution, event eligibility and
+synchronous notify/AnimEnd dispatch remain unfinished. The pure clock is not
+hooked to live per-frame mesh uploads; original asset decoding and saved clock
+fields do not prove NPC movement or animation. Quest stereo rendering,
+controller/XR behavior, save/restore frame time and full campaign progression
+still require implementation and physical verification. No headset access or
+device test is part of the standalone codec evidence above.

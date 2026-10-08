@@ -1,4 +1,5 @@
 #include "portable_unreal_runtime.h"
+#include "quest_mesh_animation.h"
 #include "quest_save_bundle.h"
 #include "quest_save_metadata.h"
 
@@ -115,12 +116,21 @@ auto ActorFields(const PortableActorSnapshot& actor) {
         actor.hasLocation, actor.pawn, actor.inventory, actor.decoration, actor.mover,
         actor.trigger, actor.travel, actor.light, actor.hidden, actor.activated,
         actor.drawType, actor.destinationMap, actor.drawScale, actor.drawScaleX,
-        actor.drawScaleY, actor.drawScaleZ, actor.pitch, actor.yaw, actor.roll,
+        actor.drawScaleY, actor.drawScaleZ, actor.prePivotX,actor.prePivotY,actor.prePivotZ,
+        actor.fatness,actor.animByOwner,actor.ownerPath,actor.animationSourcePath,actor.pitch, actor.yaw, actor.roll,
         actor.meshPath, actor.meshClassPath, actor.brushPath, actor.texturePath,
         actor.ambientSoundPath, actor.soundRadius, actor.soundVolume, actor.soundPitch,
         actor.lightType, actor.lightEffect, actor.lightBrightness, actor.lightHue,
         actor.lightSaturation, actor.lightRadius,
         actor.lightCone);
+}
+auto AnimationFields(const PortableActorAnimationSnapshot& value) {
+    return std::tie(value.sequence,value.frame,value.rate,value.last,value.minRate,value.tweenRate,value.oldRate,
+        value.loop,value.notify,value.finished,value.previous.vertexOffset0,value.previous.vertexOffset1,value.previous.fraction);
+}
+auto BlendFields(const PortableActorBlendAnimationSnapshot& value) {
+    return std::tie(value.sequence,value.frame,value.rate,value.last,value.minRate,value.tweenRate,value.oldRate,
+        value.loop,value.previous.vertexOffset0,value.previous.vertexOffset1,value.previous.fraction);
 }
 
 struct LiveState {
@@ -147,9 +157,15 @@ void RequireSameLiveState(const LiveState& expected) {
             current.progress.notes == expected.progress.notes,
             "Rollback did not restore credits, skill points, goals or notes");
     Require(current.actors.size() == expected.actors.size(), "Rollback did not restore active actor count");
-    for (std::size_t i = 0; i < current.actors.size(); ++i)
+    for (std::size_t i = 0; i < current.actors.size(); ++i) {
         Require(ActorFields(current.actors[i]) == ActorFields(expected.actors[i]),
                 "Rollback did not restore actor identity, activation or original properties");
+        Require(AnimationFields(current.actors[i].animation)==AnimationFields(expected.actors[i].animation),
+            "Rollback did not restore main animation sequence/rates/flags/tween history");
+        for(std::size_t slot=0;slot<4;++slot)
+            Require(BlendFields(current.actors[i].animation.blends[slot])==BlendFields(expected.actors[i].animation.blends[slot]),
+                "Rollback did not restore all four blend animation channels");
+    }
 }
 
 PortableDialogueResult EffectFixture(const std::string& prefix, const std::int32_t amount, const bool flag) {
@@ -463,6 +479,64 @@ void TestOriginalRollback(const std::filesystem::path& suppliedGameRoot) {
         RequireSameLiveState(expected);
         Require(SavePortableRuntimeState(afterRollback.string()) && ReadGeneratedCheckpoint(afterRollback) == saved,
                 "Asset-retention fixture failed to restore original hidden state/progress");
+    }
+
+    // Compose a real native animation command with the existing gameplay save
+    // prefix and paired UI/runtime generations. This is explicitly current-map
+    // state persistence, not latent continuations or a global map-state archive.
+    {
+        std::string animatedActor,sequence;
+        for(const auto& actor:GetPortableRuntimeMapActors()) {
+            if(!actor.pawn || actor.meshPath.empty()) continue;
+            const auto mesh=GetPortableRuntimeMesh(actor.meshPath);
+            if(!mesh.animation) continue;
+            const auto found=std::find_if(mesh.animation->sequences.begin(),mesh.animation->sequences.end(),[&](const auto& candidate) {
+                return candidate.numFrames>1 && QuestVr::HasUsableMeshAnimationSpan(*mesh.animation,candidate);
+            });
+            if(found!=mesh.animation->sequences.end()) {animatedActor=actor.objectPath;sequence=found->name;break;}
+        }
+        Require(!animatedActor.empty(),"Training has no multi-frame pawn for v4 composed save fixture");
+        const auto command=ExecutePortableActorFunction(animatedActor,"TweenAnim",{
+            {QuestVr::Vm::Value::Text(QuestVr::Vm::Kind::Name,sequence),{}},{QuestVr::Vm::Value::Float(0.4f),{}}});
+        Require(command.passed() && GetPortableRuntimeUnsavedScriptState(),"Native TweenAnim did not commit real script clock state");
+        const auto withScript=CaptureLiveState();
+        const auto scriptCheckpoint=directory.path/"script-composed-v4.runtime.tmp";
+        std::vector<std::uint8_t> scriptRuntime;
+        Require(SavePortableRuntimeState(scriptCheckpoint.string()) &&
+            QuestVr::ReadBoundedSaveFile(scriptCheckpoint.string(),QuestVr::kMaximumSaveRuntimeBytes,scriptRuntime) &&
+            scriptRuntime.size()>8 && scriptRuntime[4]==4 && scriptRuntime[5]==0 && scriptRuntime[6]==0 && scriptRuntime[7]==0,
+            "Committed script state did not produce runtime v4");
+        const auto scriptPairs=QuestVr::MakeSaveBundlePaths((directory.path/"quest-save-script-state").string());
+        Require(QuestVr::PublishSaveBundle(scriptPairs,firstMetadata,firstRuntime).saved &&
+            QuestVr::PublishSaveBundle(scriptPairs,firstMetadata,scriptRuntime).saved,
+            "Paired v3/v4 generation composition failed");
+        Require(DamagePortableRuntimePlayer(5.0f)==expected.health-5.0f &&
+            ApplyPortableDialogueEffects(EffectFixture("script_after_save",4,false)).applied==5,
+            "Combined gameplay/script save mutation failed");
+        const auto changed=ExecutePortableActorFunction(animatedActor,"PlayAnim",{
+            {QuestVr::Vm::Value::Text(QuestVr::Vm::Kind::Name,sequence),{}},{QuestVr::Vm::Value::Float(3.0f),{}},
+            {QuestVr::Vm::Value::Float(0.2f),{}}});
+        Require(changed.passed(),"Native animation mutation after v4 save failed");
+        const auto mutatedScript=CaptureLiveState();
+        Require(ValidatePortableRuntimeState(scriptCheckpoint.string()),"Valid composed v4 checkpoint preflight failed");
+        RequireSameLiveState(mutatedScript);
+        const auto candidates=QuestVr::LoadSaveBundleCandidates(scriptPairs);
+        Require(candidates.size()==2 && candidates[0].generation==2 && candidates[0].runtime==scriptRuntime,
+            "Paired v4 generation was not selected intact");
+        Require(QuestVr::WriteDurableSaveFile(loadStage.string(),candidates[0].runtime) &&
+            LoadPortableRuntimeState(loadStage.string()),"Paired current-map v4 restore failed");
+        RequireSameLiveState(withScript);
+        Require(GetPortableRuntimeUnsavedScriptState() && !LoadPortableRuntimeMap(combat).passed,
+            "Restored v4 current-map state permitted silent cross-map discard");
+        RequireSameLiveState(withScript);
+        Require(QuestVr::WriteDurableSaveFile(loadStage.string(),candidates[1].runtime) &&
+            LoadPortableRuntimeState(loadStage.string()) && !GetPortableRuntimeUnsavedScriptState(),
+            "Legacy paired v3 load did not explicitly clear current-map VM overlay");
+        RequireSameLiveState(expected);
+        Require(SavePortableRuntimeState(afterRollback.string()) && ReadGeneratedCheckpoint(afterRollback)==saved,
+            "Legacy reset after v4 persistence changed existing gameplay/progress save prefix");
+        std::cout<<"Current-map v4 script/native tween state composed with gameplay/progress and paired v3/v4 saves; "
+            "readonly validation, full restore, and legacy authored reset passed.\n";
     }
 
     std::cout << "Original-package rollback primitives passed: " << runtime.objects << " runtime objects; "

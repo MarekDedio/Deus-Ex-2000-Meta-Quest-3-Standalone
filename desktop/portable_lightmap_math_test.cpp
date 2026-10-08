@@ -219,6 +219,38 @@ void StaticEffects() {
     Require(!EvaluatePortableStaticLight(light,{0,0,0},{0,0,1},1,result,coincident),"non-finite light accepted");
 }
 
+void NonnegativeRadiusEdge() {
+    constexpr std::uint32_t sampleBits = 0x41c7f29du;
+    float sample{}; std::memcpy(&sample, &sampleBits, sizeof(sample));
+    const float d = sample*sample*((1.0f/25.0f)*(1.0f/25.0f));
+    const float v = std::sqrt(d+.0001f), v2 = v*v, v3 = v2*v;
+    const float contracted = std::fma(-3.0f, v2, std::fma(2.0f, v3, 1.0f))/v;
+    Require(contracted < 0.0f, "FMA cancellation regression fixture no longer exercises a negative expanded polynomial");
+    std::size_t samples{};
+    for (std::uint32_t bits = sampleBits-32768u; bits < sampleBits+32768u; ++bits) {
+        float z{}; std::memcpy(&z, &bits, sizeof(z));
+        for (const std::uint8_t effect : {0u,8u,12u}) {
+            PortableStaticLight light; light.position={0,0,z}; light.radius=0;
+            light.effect=effect; light.cone=128; light.pitch=-16384;
+            float actual{}; bool coincident{};
+            Require(EvaluatePortableStaticLight(light,{0,0,0},{0,0,1},1.0f,actual,coincident),
+                    "Radius edge illumination fixture rejected");
+            Require(std::isfinite(actual) && actual>=0.0f && actual<=1.0f,
+                    "Radius edge illumination became negative, nonfinite or exceeded one");
+            if (effect==0u) {
+                const float distance=z*z*((1.0f/25.0f)*(1.0f/25.0f));
+                const double root=std::sqrt(static_cast<double>(distance+.0001f));
+                const double edge=1.0-root;
+                const float expected=distance>=1.0f ? 0.0f :
+                    static_cast<float>(std::min(edge*edge*(1.0+2.0*root)/root,1.0));
+                Near(actual,expected,"Factored falloff differs from double analytic oracle",.00000001f);
+            }
+            ++samples;
+        }
+    }
+    std::cout << "nonnegative radius-edge controls=" << samples << " (expanded FMA fixture negative)\n";
+}
+
 void SpotlightRotationDifferential() {
     std::mt19937 random(0x53504f54u);
     for (std::size_t i=0;i<4096;++i) {
@@ -295,8 +327,8 @@ void BakeOrdinalAndAmbient() {
 int main() {
     try {
         ColorDifferential();ShadowMaskCases();WorldLocationsAndUv();StaticEffects();
-        SpotlightRotationDifferential();BakeOrdinalAndAmbient();
-        std::cout << "portable_lightmap_math: 6 groups passed (pinned HSB/rotation, padded masks, "
+        NonnegativeRadiusEdge();SpotlightRotationDifferential();BakeOrdinalAndAmbient();
+        std::cout << "portable_lightmap_math: 7 groups passed (pinned HSB/rotation, padded masks, "
                      "blur edges, analytic world/UV, static effects, ordered bake/rejection)\n";
         return 0;
     } catch (const std::exception& failure) {

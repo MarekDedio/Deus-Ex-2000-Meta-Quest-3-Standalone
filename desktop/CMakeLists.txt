@@ -259,7 +259,8 @@ if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
     target_link_options(script_bytecode_inspect PRIVATE -static -static-libgcc -static-libstdc++)
 endif()
 
-foreach(test_target IN ITEMS quest_actor_animation_clock_test quest_portable_vm_test)
+foreach(test_target IN ITEMS quest_actor_animation_clock_test quest_portable_vm_test
+    quest_script_state_test portable_object_stack_test)
     add_executable(${test_target} ${test_target}.cpp)
     target_compile_features(${test_target} PRIVATE cxx_std_20)
     target_link_libraries(${test_target} PRIVATE quest_portable_host)

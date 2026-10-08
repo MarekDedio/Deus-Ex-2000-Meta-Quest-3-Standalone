@@ -14,13 +14,15 @@ software close-ups. Original vertex-animation data now drives shared initial
 pose sampling, including authored corpse frames. A bounded original-bytecode
 interpreter now executes isolated animation helpers and stages their native
 commands transactionally; automatic startup, state execution and live ticking
-are still unfinished. These latest GPU changes still
+are still unfinished. Version-4 runtime saves now preserve these supported
+actor properties and complete native animation clocks. These latest GPU changes still
 require headset validation.
 The full campaign is not yet verified playable: animation, complete gameplay
 scripting, visual fidelity and device performance remain in development.
 See [current evidence and limitations](docs/STATUS.md).
 See [original script execution](docs/PORTABLE-SCRIPT-EXECUTION.md) for the
-supported interpreter path, tests and the memory-only script-state boundary.
+supported interpreter path and tests, and [script-state saves](docs/SCRIPT_STATE_SAVE.md)
+for the scoped persistence boundary and remaining map-archive requirements.
 
 ## Data boundary
 

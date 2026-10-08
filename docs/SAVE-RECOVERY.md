@@ -54,10 +54,18 @@ is consumed when ready and discarded if it belongs to an abandoned state. The
 worker owns compressed bytes and does not consult mutable runtime objects.
 Session teardown still joins outstanding workers before releasing session data.
 
-The runtime snapshot currently models inventory, inactive/activated actor state,
+The runtime snapshot models inventory, inactive/activated actor state,
 actor/player health, credits, skill points, goals, notes, conversation flags and
-applied-effect deduplication. It is not a serialization of arbitrary UnrealScript
-locals, stacks, timers, or every campaign-system property.
+applied-effect deduplication. Version 4 additionally preserves supported scoped
+actor-script properties and complete native animation clocks. Its embedded map
+is checked against paired UI metadata before restoration; same-map application
+is transactional. Legacy v1-v3 checkpoints remain readable and explicitly reset
+scoped script state. See [script-state saves](SCRIPT_STATE_SAVE.md).
+
+It is not a serialization of arbitrary UnrealScript locals, latent stacks,
+timers, spawned actors, or every campaign-system property. Cross-map changes
+remain guarded when script state is present until per-map archiving is available;
+saving that state does not silently authorize discarding it.
 
 ## Remaining on-device checks
 
@@ -65,7 +73,7 @@ Host tests can check the codecs, durable journal operations, runtime restoration
 primitives, map-pose transform math, and asynchronous result token invalidation.
 The original-data asset-retention test exercised Training's unique HazMatSuit2
 mesh (471 vertices) through hidden saved-map loading and older same-map
-reactivation. Its retained material array has 43 decoded layers and one explicit
+reactivation. Its retained material array has 100 layers, 74 decoded layers and one explicit
 procedural FireTexture fallback. This is not proof of all actor visual fidelity.
 They do not establish OpenXR/GPU/audio behavior. When the headset is available:
 

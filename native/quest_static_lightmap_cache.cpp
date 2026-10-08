@@ -3,6 +3,7 @@
 #include "portable_unreal_runtime.h"
 #include "surreal_portable_package_tables.h"
 #include <algorithm>
+#include <cstdio>
 #include <array>
 #include <cmath>
 #include <cstring>
@@ -199,8 +200,14 @@ StaticLightmapCache BuildQuestStaticLightmapCache(const PortablePackageTables& p
                     throw std::runtime_error("Authored lightmap exceeds bounded atlas page");
                 for (const auto& p : tile.bake.pixels) {
                     const float peak = std::max({p.x,p.y,p.z});
-                    if (!std::isfinite(peak) || std::min({p.x,p.y,p.z}) < 0.0f || peak > 16.0f)
-                        throw std::runtime_error("Static lightmap gain exceeds supported finite HDR range");
+                    if (!std::isfinite(p.x) || !std::isfinite(p.y) || !std::isfinite(p.z) ||
+                        std::min({p.x,p.y,p.z}) < 0.0f || peak > 16.0f) {
+                        char diagnostic[256];
+                        std::snprintf(diagnostic, sizeof(diagnostic),
+                            "Static lightmap gain exceeds supported finite HDR range: surface=%zu rgb=(%.9g,%.9g,%.9g)",
+                            key.first, static_cast<double>(p.x), static_cast<double>(p.y), static_cast<double>(p.z));
+                        throw std::runtime_error(diagnostic);
+                    }
                     output.maximumGain = std::max(output.maximumGain,peak);
                 }
                 output.pixelSamples += pixels; AddStats(output.bakeStats,tile.bake.stats);
