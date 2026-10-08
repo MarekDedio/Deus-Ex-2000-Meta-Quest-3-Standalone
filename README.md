@@ -13,10 +13,12 @@ actor skin selection, placement, masking and mover textures, with repeatable
 software close-ups. Original vertex-animation data now drives shared initial
 pose sampling, including authored corpse frames. A bounded original-bytecode
 interpreter now executes isolated animation helpers and stages their native
-commands transactionally; automatic startup, state execution and live ticking
-are still unfinished. Version-4 runtime saves now preserve these supported
-actor properties and complete native animation clocks. These latest GPU changes still
-require headset validation.
+commands transactionally. Explicit persistent state slices now support bounded
+GotoState, state locals, synchronous entry/exit callbacks and Enable/Disable;
+automatic startup, latent/AI behavior and live ticking are still unfinished.
+Version-4 runtime saves preserve supported actor properties/native clocks;
+version 5 additionally retains the portable state-frame model. These isolated
+source checks do not establish live gameplay or device performance.
 The full campaign is not yet verified playable: animation, complete gameplay
 scripting, visual fidelity and device performance remain in development.
 See [current evidence and limitations](docs/STATUS.md).
@@ -29,7 +31,8 @@ the user tests it. Subsequent offline source work retains
 automatic AI or replace that installed APK.
 The subsequent [script-dispatch foundation](docs/SCRIPT-DISPATCH.md) adds
 read-only state/function selection, label analysis and eligibility suppression,
-not startup or live state execution.
+not automatic startup. [Explicit state execution](docs/STATE-EXECUTION.md) adds
+transactional state control and persistence, still without a live AI scheduler.
 
 ## Data boundary
 

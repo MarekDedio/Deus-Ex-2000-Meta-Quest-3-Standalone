@@ -8,8 +8,11 @@
 #include <map>
 #include <memory>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <vector>
+
+namespace QuestVr { struct StateObject; }
 
 namespace QuestVr::Vm {
 enum class Kind { Nothing, Byte, Int, Bool, Float, Name, Object, String, Vector, Rotator, Struct };
@@ -93,6 +96,14 @@ struct ProgramLayout {
     std::vector<StateLabel> labels;
     bool terminalLabelTable{};
 };
+class Execution {
+public:
+    virtual ~Execution() = default;
+    // Synchronous callbacks reuse the caller's interpreter, budgets and host
+    // transaction. Never enter public Execute from a host native callback.
+    virtual Value CallEvent(const std::string& receiver, const std::string& eventName,
+        bool enumDispatch, const std::vector<Evaluation>& arguments = {}) = 0;
+};
 class Host {
 public:
     virtual ~Host() = default;
@@ -104,6 +115,12 @@ public:
     // Read-only event/function eligibility, before any callee argument/local/
     // native work. The permissive default preserves existing host behavior.
     virtual bool CanCall(const Function&, const std::string&) { return true; }
+    // Callable resolution may return only path/source identity. Preparation
+    // follows argument evaluation and the fresh eligibility check.
+    virtual std::shared_ptr<const Function> PrepareFunction(const Function& identity,
+        const std::string&) { return std::make_shared<Function>(identity); }
+    virtual std::shared_ptr<const Function> ResolveEvent(const std::string&,
+        const std::string&, bool) { throw std::runtime_error("VM event dispatch unavailable"); }
     virtual Property ResolveProperty(const Function&, std::int32_t reference) = 0;
     virtual std::string ResolveName(const Function&, std::int32_t index) = 0;
     virtual std::string ResolveObject(const Function&, std::int32_t reference) = 0;
@@ -117,6 +134,28 @@ public:
     // Native execution is synchronous; do not retain references for later work.
     virtual Evaluation Native(std::uint16_t index, const std::string& receiver,
         const std::vector<Evaluation>& arguments, const Function* declaration) = 0;
+    virtual Evaluation NativeWithExecution(std::uint16_t index, const std::string& receiver,
+        const std::vector<Evaluation>& arguments, const Function* declaration, Execution&) {
+        return Native(index, receiver, arguments, declaration);
+    }
+    virtual const QuestVr::StateObject* ReadState(const std::string&) { return nullptr; }
+    // Storage identity only, not a transition-generation abort guard. Hosts
+    // increment this whenever state locals are recreated, including A->B->A.
+    virtual std::uint64_t StateLocalRevision(const std::string&) { return 0; }
+    virtual QuestVr::StateObject* MutableState(const std::string&) {
+        throw std::runtime_error("VM mutable state unavailable");
+    }
+    virtual std::shared_ptr<const Function> StateProgram(const std::string&, const std::string&) {
+        throw std::runtime_error("VM state program unavailable");
+    }
+    virtual std::shared_ptr<Reference> StateVariable(const std::string&, const Property&) {
+        throw std::runtime_error("VM state local storage unavailable");
+    }
+    // transition=false means an authored in-code goto: missing labels throw.
+    // transition=true is GotoState positioning: None means Begin, miss stops.
+    virtual void GotoStateLabel(const std::string&, const std::string&, bool) {
+        throw std::runtime_error("VM state label control unavailable");
+    }
 };
 // Structural, read-only inspection of normalized bytecode, not execution
 // feasibility or a state continuation. Only a terminal top-level LabelTable
@@ -133,8 +172,12 @@ struct Result {
     std::uint8_t opcode{};
     std::vector<std::string> callStack;
     std::string error;
-    bool passed() const { return status == Status::Returned; }
+    bool committed{};
+    bool passed() const { return status == Status::Returned || (status == Status::Stopped && committed); }
 };
 Result Execute(Host& host, const Function& function, const std::string& self,
     const std::vector<Evaluation>& arguments = {}, const Limits& limits = {});
+// Executes one persistent state slice. Unsupported waits fail explicitly; no
+// actor tick, elapsed-time advance or world startup is implied by this call.
+Result ResumeState(Host& host, const std::string& self, const Limits& limits = {});
 } // namespace QuestVr::Vm

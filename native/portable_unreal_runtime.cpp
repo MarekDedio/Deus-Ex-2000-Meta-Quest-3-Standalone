@@ -61,6 +61,10 @@ public:
     std::unordered_map<std::string,
         std::unordered_map<std::uint32_t, QuestVr::Vm::Value>> scriptValues;
     std::optional<QuestVr::ActorAnimationClock> animationClock;
+    std::optional<QuestVr::StateObject> stateObject;
+    // Nonserialized local-storage identity. References held by an executing
+    // expression cannot silently address replacement state locals.
+    std::uint64_t stateLocalsRevision{};
     bool committedScriptState{};
     bool active{true};
     bool activated{};
@@ -974,6 +978,30 @@ PortableActorDispatchContext AuthoredDispatchContext(RuntimeObject* actor) {
     return result;
 }
 
+PortableActorDispatchContext CurrentDispatchContext(RuntimeObject* actor) {
+    auto result = AuthoredDispatchContext(actor);
+    if (!actor->stateObject) return result;
+    const auto& live = *actor->stateObject;
+    if (live.frameOverride) {
+        result.codePath.clear(); result.stateName = "None"; result.codeMasks.reset();
+        if (live.frame && !live.frame->codePath.empty()) {
+            const auto found = persistentVmObjects.find(LowerAscii(live.frame->codePath));
+            if (found == persistentVmObjects.end() || !found->second->stateDescriptor)
+                throw std::runtime_error("Portable frame code is not an authored State");
+            const auto* code = found->second;
+            result.codePath = code->reflection.objectPath;
+            result.stateName = result.codePath.substr(result.codePath.find_last_of('.') + 1u);
+            result.codeMasks = QuestVr::ScriptDispatch::CodeMasks{
+                code->stateDescriptor->probeMask, code->stateDescriptor->ignoreMask};
+        }
+    }
+    result.disabledNames.clear();
+    const auto key = QuestVr::ScriptDispatch::FoldName(result.stateName);
+    for (const auto& [state, names] : live.disabled)
+        if (QuestVr::ScriptDispatch::FoldName(state) == key) { result.disabledNames = names; break; }
+    return result;
+}
+
 // Scoped host for the actual normalized UE1 interpreter. It does not dispatch
 // startup/state ticks or silently emulate missing natives. A complete nested
 // invocation is one transaction, including native animation/tween history.
@@ -998,27 +1026,146 @@ public:
         return found->second;
     }
     std::shared_ptr<const Function> Member(RuntimeObject* receiver, const std::string& name) {
-        if (name.find('.') != std::string::npos) return FunctionFor(Object(name), receiver);
-        const auto context = AuthoredDispatchContext(receiver);
+        if (name.find('.') != std::string::npos) return FunctionIdentity(Object(name));
+        const auto context = CurrentDispatchContext(receiver);
         const auto selected = QuestVr::ScriptDispatch::ResolveFunction(DispatchGraph(),
             receiver->cls->reflection.objectPath, context.stateName, name);
-        if (selected) return FunctionFor(Object(*selected), receiver);
+        if (selected) return FunctionIdentity(Object(*selected));
         throw std::runtime_error("Portable actor VM member function unavailable: " + name);
     }
     bool CanCall(const Function& function, const std::string& receiver) override {
-        const auto context = AuthoredDispatchContext(Object(receiver));
+        const auto context = CurrentDispatchContext(Object(receiver));
         const auto name = function.path.substr(function.path.find_last_of('.') + 1u);
         return QuestVr::ScriptDispatch::IsEnabled(name, context.classProbeMask, context.codeMasks, context.disabledNames);
     }
+    std::shared_ptr<const Function> PrepareFunction(const Function& identity, const std::string&) override {
+        return FunctionFor(Object(identity.path));
+    }
+    std::shared_ptr<const Function> ResolveEvent(const std::string& receiver, const std::string& name,
+        const bool enumDispatch) override {
+        RuntimeObject* actor = Object(receiver);
+        if (!IsDerivedFromPath(actor->cls, "Engine.Actor")) throw std::runtime_error("Event receiver is not Engine.Actor");
+        const auto context = CurrentDispatchContext(actor);
+        const bool enabled = QuestVr::ScriptDispatch::IsEnabled(name, context.classProbeMask, context.codeMasks, context.disabledNames);
+        if (!enabled) return {};
+        const auto value = Read(actor, PropertyNamed(actor, "Level"), 0u);
+        if (value.kind != Kind::Object || value.text.empty()) throw std::runtime_error("Event receiver has no authored Level binding");
+        auto* level = Object(value.text);
+        if (!IsDerivedFromPath(level->cls, "Engine.LevelInfo")) throw std::runtime_error("Event receiver Level is not Engine.LevelInfo");
+        const auto begun = QuestVr::Vm::ToBool(Read(level, PropertyNamed(level, "bBegunPlay"), 0u));
+        if (!QuestVr::ScriptDispatch::MayCallEvent(name, enabled, begun, ReadInheritedRuntimeBool(actor, "bDeleteMe"), enumDispatch)) return {};
+        const auto path = QuestVr::ScriptDispatch::ResolveFunction(DispatchGraph(), actor->cls->reflection.objectPath, context.stateName, name);
+        return path ? FunctionIdentity(Object(*path)) : nullptr;
+    }
+    const QuestVr::StateObject* ReadState(const std::string& receiver) override {
+        auto* actor = Object(receiver);
+        if (!IsDerivedFromPath(actor->cls, "Engine.Actor")) throw std::runtime_error("State receiver is not Engine.Actor");
+        static_cast<void>(CurrentDispatchContext(actor)); // Reject unsupported raw continuations.
+        return actor->stateObject ? &*actor->stateObject : nullptr;
+    }
+    QuestVr::StateObject* MutableState(const std::string& receiver) override {
+        auto* actor = Object(receiver);
+        if (!actor->stateObject) return nullptr;
+        Touch(actor); actor->committedScriptState = true;
+        return &*actor->stateObject;
+    }
+    std::shared_ptr<const Function> StateProgram(const std::string&, const std::string& path) override {
+        return StateProgram(Object(path));
+    }
+    std::shared_ptr<const Function> StateProgram(RuntimeObject* object) {
+        if (!object->stateDescriptor || LowerAscii(std::filesystem::path(object->sourcePath).extension().string()) == ".dx")
+            throw std::runtime_error("Executable state is not an original script State");
+        const auto cached = functions_.find(object->reflection.objectPath);
+        if (cached != functions_.end()) return cached->second;
+        auto program = std::make_shared<Function>();
+        program->path = object->reflection.objectPath; program->source = object->sourcePath;
+        program->bytecode = object->stateDescriptor->bytecode;
+        std::vector<RuntimeObject*> ancestry;
+        std::set<RuntimeObject*> visited;
+        for (auto* state = object; state;) {
+            if (!state->stateDescriptor || visited.size() >= 256u || !visited.insert(state).second)
+                throw std::runtime_error("State local inheritance is invalid/cyclic/deep");
+            ancestry.push_back(state);
+            const auto base = state->stateDescriptor->baseField;
+            state = base ? Object(Qualified(Table(state->sourcePath), base)) : nullptr;
+        }
+        std::set<std::string> properties;
+        std::size_t elements{};
+        for (auto it = ancestry.rbegin(); it != ancestry.rend(); ++it) {
+            auto* owner = *it;
+            std::set<RuntimeObject*> fields;
+            auto child = owner->stateDescriptor->children;
+            while (child) {
+                auto* field = Object(Qualified(Table(owner->sourcePath), child));
+                if (fields.size() >= 8192u || !fields.insert(field).second || field->outer != owner)
+                    throw std::runtime_error("State local Children/Next ownership/cycle budget failed");
+                if (field->property) {
+                    auto property = Describe(field);
+                    if (!properties.insert(LowerAscii(property.key)).second || property.arrayDimension == 0u ||
+                        property.arrayDimension > 16384u || elements > 16384u - property.arrayDimension)
+                        throw std::runtime_error("State local schema identity/element budget failed");
+                    elements += property.arrayDimension;
+                    program->variables.push_back(std::move(property)); child = field->property->nextField;
+                } else if (field->script) child = field->script->nextField;
+                else if (const auto* metadata = StateMetadata(field)) child = metadata->nextField;
+                else {
+                    if (!field->commonFieldLinks) field->commonFieldLinks = LoadPortableFieldLinks(Table(field->sourcePath), field->exportIndex);
+                    child = field->commonFieldLinks->nextField;
+                }
+            }
+        }
+        functions_.emplace(program->path, program); return program;
+    }
+    std::shared_ptr<Reference> StateVariable(const std::string& receiver, const Property& property) override {
+        return StateReference(Object(receiver), property, 0u);
+    }
+    std::uint64_t StateLocalRevision(const std::string& receiver) override {
+        return Object(receiver)->stateLocalsRevision;
+    }
+    void GotoStateLabel(const std::string& receiver, const std::string& label, const bool transition) override {
+        auto* actor = Object(receiver);
+        auto& state = EnsureStateObject(actor);
+        if (!state.frameOverride || !state.frame || state.frame->codePath.empty())
+            throw std::runtime_error("State label has no running code");
+        const auto originalPath = state.frame->codePath;
+        const auto stateName = originalPath.substr(originalPath.find_last_of('.') + 1u);
+        const auto target = transition && QuestVr::ScriptDispatch::FoldName(label) == "none" ? "Begin" : label;
+        const auto position = [&](RuntimeObject* code) {
+            const auto program = StateProgram(code);
+            const auto layout = QuestVr::Vm::AnalyzeProgram(*this, *program);
+            const auto found = std::find_if(layout.labels.begin(), layout.labels.end(), [&](const auto& value) {
+                return QuestVr::ScriptDispatch::FoldName(value.name) == QuestVr::ScriptDispatch::FoldName(target);
+            });
+            if (found == layout.labels.end()) return false;
+            const auto statement = std::lower_bound(layout.statementOffsets.begin(), layout.statementOffsets.end(), found->offset);
+            state.frame->codePath = code->reflection.objectPath;
+            state.frame->statementIndex = static_cast<std::uint32_t>(statement - layout.statementOffsets.begin());
+            // Only transition positioning clears a latent action. In-code goto
+            // preserves a latent action reached while evaluating its label.
+            if (transition) state.frame->latent = QuestVr::StateLatent::Continue;
+            return true;
+        };
+        if (!transition && position(Object(originalPath))) return;
+        for (auto* cls = actor->cls; cls; cls = cls->base) {
+            const auto* graphClass = DispatchGraph().FindClass(cls->reflection.objectPath);
+            const auto found = graphClass->states.find(QuestVr::ScriptDispatch::FoldName(stateName));
+            if (found != graphClass->states.end() && position(Object(found->second.path))) return;
+        }
+        if (!transition) throw std::runtime_error("Could not find state label: " + target);
+        state.frame->latent = QuestVr::StateLatent::Stop;
+    }
     void Begin() override {
         if (transaction_) throw std::runtime_error("Portable actor VM nested host transaction");
+        ValidateStateBudget();
         transaction_ = true;
     }
-    void Commit() override { saved_.clear(); transaction_ = false; }
+    void Commit() override { ValidateStateBudget(); saved_.clear(); transaction_ = false; }
     void Rollback() noexcept override {
         for (auto& entry : saved_) {
             entry.first->scriptValues.swap(entry.second.values);
             entry.first->animationClock.swap(entry.second.clock);
+            entry.first->stateObject.swap(entry.second.state);
+            entry.first->stateLocalsRevision = entry.second.revision;
             entry.first->committedScriptState = entry.second.committed;
         }
         saved_.clear(); transaction_ = false;
@@ -1044,13 +1191,13 @@ public:
     std::shared_ptr<const Function> ResolveFunction(const Function& caller,
         const std::string& receiver, const QuestVr::Vm::Invocation& invocation) override {
         if (invocation.kind == QuestVr::Vm::CallKind::Final)
-            return FunctionFor(Object(ResolveObject(caller, invocation.reference)), Object(receiver));
+            return FunctionIdentity(Object(ResolveObject(caller, invocation.reference)));
         if (invocation.kind == QuestVr::Vm::CallKind::Global) {
             auto* object = Object(receiver);
             const auto selected = QuestVr::ScriptDispatch::ResolveFunction(DispatchGraph(),
                 object->cls->reflection.objectPath, "None", invocation.name, QuestVr::ScriptDispatch::LookupKind::Global);
             if (!selected) throw std::runtime_error("Portable global function is unavailable: " + invocation.name);
-            return FunctionFor(Object(*selected), object);
+            return FunctionIdentity(Object(*selected));
         }
         return Member(Object(receiver), invocation.name);
     }
@@ -1088,9 +1235,27 @@ public:
             if (value.kind != Kind::Name) throw std::runtime_error("Animation native requires a Name argument");
             return value.text;
         };
+        if (index == 3970u) { // Actor.SetPhysics, pinned UActor_Phys.cpp.
+            argumentCount(1u, 2u);
+            if (!IsDerivedFromPath(object->cls, "Engine.Actor"))
+                throw std::runtime_error("SetPhysics receiver is not Engine.Actor");
+            const auto physics = argument(0u);
+            if (physics.kind != Kind::Byte && physics.kind != Kind::Int && physics.kind != Kind::Float)
+                throw std::runtime_error("SetPhysics requires a numeric physics byte");
+            const auto floor = argument(1u);
+            if (floor.kind != Kind::Nothing && floor.kind != Kind::Object)
+                throw std::runtime_error("SetPhysics optional floor requires an Object");
+            // Pinned SetPhysics_Deus leaves the optional floor unused/TODO.
+            // Do not invent SetBase, velocity reset or a physics simulation.
+            const auto property = PropertyNamed(object, "Physics");
+            if (property.zero.kind != Kind::Byte || property.arrayDimension != 1u)
+                throw std::runtime_error("SetPhysics authored Physics schema is not a scalar byte");
+            ReferenceFor(object, property, 0u, false)->write(QuestVr::Vm::Coerce(physics, property.zero));
+            return {};
+        }
         if (index == 284u || index == 281u) {
             argumentCount(index == 284u ? 0u : 1u, index == 284u ? 0u : 1u);
-            const auto context = AuthoredDispatchContext(object);
+            const auto context = CurrentDispatchContext(object);
             if (index == 284u) return {Value::Text(Kind::Name, context.stateName), {}};
             const auto testState = argument(0u);
             if (testState.kind != Kind::Name) throw std::runtime_error("IsInState requires a Name");
@@ -1137,6 +1302,79 @@ public:
         }
         return {};
     }
+    Evaluation NativeWithExecution(const std::uint16_t index, const std::string& receiver,
+        const std::vector<Evaluation>& arguments, const Function* declaration, QuestVr::Vm::Execution& execution) override {
+        if (index != 113u && index != 117u && index != 118u) return Native(index, receiver, arguments, declaration);
+        auto* actor = Object(receiver);
+        if (!actor->active || !IsDerivedFromPath(actor->cls, "Engine.Actor"))
+            throw std::runtime_error("State native receiver is not an active Engine.Actor");
+        const auto name = [&](const std::size_t slot, const std::string& fallback) {
+            if (slot >= arguments.size()) return fallback;
+            const auto value = arguments[slot].Load();
+            if (value.kind == Kind::Nothing) return fallback;
+            if (value.kind != Kind::Name || value.text.size() > 8192u || value.text.find('\0') != std::string::npos)
+                throw std::runtime_error("State native requires a bounded Name");
+            for (const unsigned char character : value.text)
+                if (character < 32u || character > 126u)
+                    throw std::runtime_error("State native Name is outside supported ASCII identities");
+            return value.text;
+        };
+        if (index == 117u || index == 118u) {
+            if (arguments.size() != 1u || arguments[0].Load().kind != Kind::Name)
+                throw std::runtime_error("Enable/Disable requires one Name");
+            const auto event = QuestVr::ScriptDispatch::FoldName(name(0u, "None"));
+            const auto current = CurrentDispatchContext(actor);
+            auto& state = EnsureStateObject(actor);
+            const auto key = QuestVr::ScriptDispatch::FoldName(current.stateName);
+            auto& disabled = state.disabled[key];
+            if (index == 118u) {
+                if (disabled.size() >= 4096u && !disabled.count(event)) throw std::runtime_error("Dynamic disabled-event budget exceeded");
+                disabled.insert(event);
+            } else disabled.erase(event);
+            ValidateStateBudget();
+            return {};
+        }
+        if (arguments.size() > 2u) throw std::runtime_error("GotoState argument count is invalid");
+        const auto old = CurrentDispatchContext(actor);
+        const auto requested = name(0u, old.stateName);
+        const auto label = name(1u, "None");
+        const auto selected = QuestVr::ScriptDispatch::ResolveState(DispatchGraph(), actor->cls->reflection.objectPath, requested);
+        const std::string selectedPath = selected.value_or(std::string{});
+        auto& state = EnsureStateObject(actor);
+        if (!old.codePath.empty() && old.codePath != selectedPath)
+            static_cast<void>(execution.CallEvent(receiver, "EndState", true, {}));
+        if (!state.frameOverride) {
+            QuestVr::StateFrame frame;
+            // The immutable authored class-backed frame is stopped with PC 0.
+            // Its unsupported native class locals are never fabricated; changed
+            // state entry below replaces them before executable state code.
+            frame.latent = old.codePath.empty() ? QuestVr::StateLatent::Continue : QuestVr::StateLatent::Stop;
+            if (!old.codePath.empty() && old.codePath == selectedPath) {
+                frame.codePath = old.codePath; frame.localsCodePath = old.codePath;
+                for (const auto& property : StateProgram(Object(old.codePath))->variables)
+                    frame.locals.push_back({property.key, std::vector<Value>(property.arrayDimension, property.zero)});
+            }
+            state.frame = std::move(frame); state.frameOverride = true;
+        } else if (!state.frame) state.frame.emplace();
+        if (old.codePath != selectedPath) {
+            if (actor->stateLocalsRevision == std::numeric_limits<std::uint64_t>::max())
+                throw std::runtime_error("State local revision budget exceeded");
+            ++actor->stateLocalsRevision;
+            state.frame->codePath = selectedPath; state.frame->localsCodePath = selectedPath;
+            state.frame->locals.clear();
+            if (selected) {
+                for (const auto& property : StateProgram(Object(*selected))->variables)
+                    state.frame->locals.push_back({property.key, std::vector<Value>(property.arrayDimension, property.zero)});
+            }
+        }
+        if (selected) {
+            state.hasStack = true;
+            GotoStateLabel(receiver, label, true);
+        }
+        ValidateStateBudget();
+        if (selected && old.codePath != selectedPath) static_cast<void>(execution.CallEvent(receiver, "BeginState", true, {}));
+        return {};
+    }
     Value Read(RuntimeObject* object, const Property& property, const std::uint32_t index,
         const bool defaults = false) {
         if (!defaults) {
@@ -1169,6 +1407,8 @@ private:
     struct Before {
         decltype(RuntimeObject::scriptValues) values;
         std::optional<QuestVr::ActorAnimationClock> clock;
+        std::optional<QuestVr::StateObject> state;
+        std::uint64_t revision{};
         bool committed{};
     };
     std::unordered_map<std::string, PortablePackageTables> tables_;
@@ -1223,15 +1463,17 @@ private:
         return {property->reflection.objectPath, property->reflection.objectPath.substr(dot + 1u),
             Zero(property), descriptor.flags, static_cast<std::size_t>(descriptor.arrayDimension)};
     }
-    std::shared_ptr<const Function> FunctionFor(RuntimeObject* object, RuntimeObject* receiver = nullptr) {
+    std::shared_ptr<const Function> FunctionIdentity(RuntimeObject* object) {
         if (!object->script) throw std::runtime_error("VM object is not a compiled function");
-        // Eligibility precedes callee local schema/parameter setup, just as
-        // Frame::Call. A suppressed function needs identity, not typed locals.
-        if (receiver) {
-            auto identity = std::make_shared<Function>();
-            identity->path = object->reflection.objectPath; identity->source = object->sourcePath;
-            if (!CanCall(*identity, receiver->reflection.objectPath)) return identity;
-        }
+        auto identity = std::make_shared<Function>();
+        identity->path = object->reflection.objectPath; identity->source = object->sourcePath;
+        // Lazy native &&/|| argument handling is decided before Frame.Call;
+        // identity resolution must retain these immutable declaration flags.
+        identity->nativeIndex = object->script->nativeIndex; identity->flags = object->script->functionFlags;
+        return identity;
+    }
+    std::shared_ptr<const Function> FunctionFor(RuntimeObject* object) {
+        if (!object->script) throw std::runtime_error("VM object is not a compiled function");
         const auto cached = functions_.find(object->reflection.objectPath);
         if (cached != functions_.end()) return cached->second;
         auto function = std::make_shared<Function>();
@@ -1305,8 +1547,66 @@ private:
         if (!transaction_) throw std::runtime_error("VM mutation outside a transaction");
         if (saved_.find(object) == saved_.end()) {
             if (saved_.size() >= 4096u) throw std::runtime_error("VM touched actor budget exceeded");
-            saved_.emplace(object, Before{object->scriptValues, object->animationClock, object->committedScriptState});
+            saved_.emplace(object, Before{object->scriptValues, object->animationClock, object->stateObject,
+                object->stateLocalsRevision, object->committedScriptState});
         }
+    }
+    void ValidateStateBudget() const {
+        // Bound persistent state across independent calls, not just one VM's
+        // temporary allocations. Measure without copying live values/sets.
+        // This is a state-only cap; the save path additionally applies its
+        // combined gameplay/property/clock/state capture and envelope budgets.
+        QuestVr::ScriptStateLimits limits;
+        limits.maxBytes = QuestVr::kMaximumSaveRuntimeBytes;
+        QuestVr::ScriptStateDetail::Writer measured(limits, nullptr);
+        std::size_t objects{};
+        for (const auto* object : persistentRuntime->get()->exports) {
+            if (!object->stateObject) continue;
+            if (++objects > limits.maxObjects) throw std::runtime_error("Persistent state object budget exceeded");
+            measured.MeasureStateObject(*object->stateObject);
+        }
+    }
+    QuestVr::StateObject& EnsureStateObject(RuntimeObject* object) {
+        Touch(object);
+        if (!object->stateObject) {
+            const auto authored = AuthoredDispatchContext(object);
+            QuestVr::StateObject state;
+            state.hasStack = AnyFlags(static_cast<ObjectFlags>(object->reflection.flags), ObjectFlags::HasStack);
+            auto& disabled = state.disabled[QuestVr::ScriptDispatch::FoldName(authored.stateName)];
+            for (const auto& event : authored.disabledNames) disabled.insert(QuestVr::ScriptDispatch::FoldName(event));
+            object->stateObject = std::move(state);
+        }
+        object->committedScriptState = true;
+        return *object->stateObject;
+    }
+    std::shared_ptr<Reference> StateReference(RuntimeObject* object, const Property& property, const std::size_t index) {
+        if (!object->stateObject || !object->stateObject->frameOverride || !object->stateObject->frame)
+            throw std::runtime_error("State local has no portable frame");
+        const auto revision = object->stateLocalsRevision;
+        const auto access = [object, property, index, revision]() -> Value& {
+            if (object->stateLocalsRevision != revision || !object->stateObject || !object->stateObject->frame)
+                throw std::runtime_error("State local reference outlived its storage");
+            auto& locals = object->stateObject->frame->locals;
+            const auto found = std::find_if(locals.begin(), locals.end(), [&](const auto& local) {
+                return LowerAscii(local.key) == LowerAscii(property.key);
+            });
+            if (found == locals.end() || found->values.size() != property.arrayDimension || index >= found->values.size())
+                throw std::runtime_error("State local storage/schema is unavailable");
+            return found->values[index];
+        };
+        static_cast<void>(access());
+        auto reference = std::make_shared<Reference>(); reference->zero = property.zero;
+        reference->dimension = property.arrayDimension; reference->read = [access]() { return access(); };
+        reference->write = [this, object, property, access](const Value& value) {
+            Touch(object); access() = QuestVr::Vm::Coerce(value, property.zero); object->committedScriptState = true;
+            ValidateStateBudget();
+        };
+        reference->element = [this, object, property, revision](const std::size_t slot) {
+            if (object->stateLocalsRevision != revision || slot >= property.arrayDimension)
+                throw std::runtime_error("State local array reference outlived its storage or bounds");
+            return StateReference(object, property, slot);
+        };
+        return reference;
     }
     std::string ObjectProperty(RuntimeObject* object, const char* name) {
         if (const auto* value = FindScriptOverlay(object, name)) return value->text;
@@ -1429,6 +1729,7 @@ struct PreparedScriptObject {
     RuntimeObject* target{};
     decltype(RuntimeObject::scriptValues) values;
     std::optional<QuestVr::ActorAnimationClock> clock;
+    std::optional<QuestVr::StateObject> state;
 };
 
 std::vector<QuestVr::ScriptSavedProperty> ClockProperties(
@@ -1489,6 +1790,36 @@ QuestVr::ScriptSavedState CollectScriptSavedState() {
         record.path = object->reflection.objectPath;
         record.classPath = object->cls->reflection.objectPath;
         record.clock = object->animationClock;
+        if (object->stateObject) {
+            const auto& state = *object->stateObject;
+            capture.Retain(sizeof(state));
+            const auto retainIdentity = [&](const std::string& value, const bool empty = false) {
+                QuestVr::ScriptStateDetail::Text(value, limits, true, empty);
+                capture.Retain(value.size() + 1u);
+            };
+            if (state.frame) {
+                const auto& frame = *state.frame;
+                capture.Retain(sizeof(frame));
+                retainIdentity(frame.codePath, true); retainIdentity(frame.localsCodePath, true);
+                capture.StateLocals(frame.locals.size());
+                capture.Array(frame.locals.size(), sizeof(QuestVr::StateLocal));
+                for (const auto& local : frame.locals) {
+                    retainIdentity(local.key);
+                    capture.LocalElements(local.values.size());
+                    capture.Array(local.values.size(), sizeof(QuestVr::Vm::Value));
+                    for (const auto& value : local.values) measure(measure, value, 0u);
+                }
+            }
+            capture.DisabledStates(state.disabled.size());
+            capture.Array(state.disabled.size(), sizeof(decltype(state.disabled)::value_type) + 5u * sizeof(void*));
+            for (const auto& [stateName, names] : state.disabled) {
+                retainIdentity(stateName);
+                capture.DisabledNames(names.size());
+                capture.Array(names.size(), sizeof(std::string) + 5u * sizeof(void*));
+                for (const auto& name : names) retainIdentity(name);
+            }
+            record.state = state;
+        }
         for (const auto& [name, slots] : object->scriptValues) {
             const auto property = host.PropertyNamed(object, name);
             for (const auto& [index, value] : slots) {
@@ -1534,14 +1865,16 @@ public:
         const auto path = ResolveRuntimePackagePath(gameRoot_, mapName_);
         if (path.empty() || LowerAscii(std::filesystem::path(path).extension().string()) != ".dx")
             throw std::runtime_error("Script save map is unavailable");
+        mapPath_ = path;
         const auto& map = Table(path);
         if (map.exports.size() > 1'000'000u) throw std::runtime_error("Script save map export budget exceeded");
         for (std::size_t i = 0u; i < map.exports.size(); ++i) {
             const auto objectPath = Qualified(map, static_cast<std::int32_t>(i + 1u));
             const auto classPath = Qualified(map, map.exports[i].ObjClass);
-            Retain(objectPath.size() + classPath.size() + 2u * sizeof(std::string) + 5u * sizeof(void*));
+            Retain(2u * objectPath.size() + classPath.size() + 3u * sizeof(std::string) + sizeof(std::size_t) + 10u * sizeof(void*));
             if (!mapClasses_.emplace(LowerAscii(objectPath), classPath).second)
                 throw std::runtime_error("Script save map contains ambiguous identities");
+            mapExports_.emplace(LowerAscii(objectPath), i);
         }
     }
     RuntimeObject* SavedClass(const QuestVr::ScriptSavedObject& record) {
@@ -1558,27 +1891,88 @@ public:
         if (LowerAscii(property.key) != LowerAscii(saved.key) ||
             LowerAscii(property.name) != LowerAscii(saved.name) || saved.index >= property.arrayDimension)
             throw std::runtime_error("Script save property identity or fixed array index is invalid");
-        auto* metadata = host_.Object(property.key);
-        const auto& descriptor = *metadata->property;
-        auto value = Shape(saved.value, property.zero);
-        if (descriptor.type == "ObjectProperty" || descriptor.type == "ClassProperty") {
-            const auto& table = Table(metadata->sourcePath);
-            const auto expected = Qualified(table, descriptor.type == "ClassProperty" ?
-                descriptor.secondaryType : descriptor.referencedType);
-            ObjectValue(value, expected, descriptor.type == "ClassProperty");
-        } else if (value.kind == QuestVr::Vm::Kind::Struct) {
-            // Only the host's exact PointRegion schema is implemented; its Zone
-            // field is more restrictive than a generic Object reference.
-            ObjectValue(value.fields.at("zone"), "Engine.ZoneInfo", false);
+        return TypedValue(property, saved.value);
+    }
+    QuestVr::StateObject StateValue(RuntimeObject* cls, const QuestVr::ScriptSavedObject& saved) {
+        const auto& state = *saved.state;
+        const auto exported = mapExports_.find(LowerAscii(saved.path));
+        if (exported == mapExports_.end()) throw std::runtime_error("Script save state actor is unavailable in its map");
+        const bool authoredHasStack = AnyFlags(Table(mapPath_).exports.at(exported->second).ObjFlags, ObjectFlags::HasStack);
+        // HasStack is established by authored load or an actual GotoState. A
+        // portable override must not erase an existing object's stack flag.
+        if (authoredHasStack && !state.hasStack)
+            throw std::runtime_error("Script save state clears an authored HasStack flag");
+        if (!state.frameOverride && (state.frame || state.hasStack != authoredHasStack))
+            throw std::runtime_error("Script save dormant state context does not match its authored stack");
+        QuestVr::StateObject normalized = state;
+        normalized.disabled.clear();
+        // Eligibility accepts authored Name spellings, whereas the mutable
+        // Enable/Disable sets use folded keys. Normalize before EVERY return,
+        // including dormant and cleared frames, so restoring mixed-case names
+        // cannot leave an event in an unreachable second disabled set.
+        for (const auto& [stateName, names] : state.disabled) {
+            const auto inserted = normalized.disabled.emplace(QuestVr::ScriptDispatch::FoldName(stateName), std::set<std::string>{});
+            if (!inserted.second) throw std::runtime_error("Script save disabled-state identity is duplicated");
+            for (const auto& name : names)
+                if (!inserted.first->second.emplace(QuestVr::ScriptDispatch::FoldName(name)).second)
+                    throw std::runtime_error("Script save disabled-event identity is duplicated");
         }
-        return value;
+        if (!state.frame) return normalized;
+        const auto& frame = *state.frame;
+        if (frame.latent != QuestVr::StateLatent::Continue && frame.latent != QuestVr::StateLatent::Stop)
+            throw std::runtime_error("Script save state latent action is not implemented by this runtime");
+        if (frame.codePath.empty()) {
+            if (!frame.localsCodePath.empty() || !frame.locals.empty())
+                throw std::runtime_error("Script save cleared state frame retains local storage");
+            // Pinned SetState(null) preserves the old PC and latent state.
+            return normalized;
+        }
+        if (!state.hasStack || frame.localsCodePath.empty())
+            throw std::runtime_error("Script save executable state has no HasStack flag or local schema");
+        auto* code = StateDefinition(cls, frame.codePath);
+        auto* localsCode = StateDefinition(cls, frame.localsCodePath);
+        const auto leaf = [](const std::string& path) { return LowerAscii(path.substr(path.find_last_of('.') + 1u)); };
+        if (leaf(code->reflection.objectPath) != leaf(localsCode->reflection.objectPath))
+            throw std::runtime_error("Script save executable/local state names disagree");
+        const auto program = host_.StateProgram(code);
+        const auto localProgram = host_.StateProgram(localsCode);
+        const auto layout = QuestVr::Vm::AnalyzeProgram(host_, *program);
+        if (frame.latent == QuestVr::StateLatent::Continue && frame.statementIndex > layout.statementOffsets.size())
+            throw std::runtime_error("Script save running state PC exceeds the program's terminal ordinal");
+        // A committed Return can leave the next PC at the end ordinal. Retain
+        // it exactly; a subsequent resume still diagnoses the missing next
+        // statement rather than rewriting the PC or inventing a Stop action.
+        // Stop deliberately permits a stale position: missing-label Stop and
+        // SetState preserve the PC rather than substituting a fabricated zero.
+        if (frame.locals.size() != localProgram->variables.size())
+            throw std::runtime_error("Script save state local schema is incomplete");
+        std::unordered_map<std::string, const QuestVr::Vm::Property*> properties;
+        properties.reserve(localProgram->variables.size());
+        for (const auto& property : localProgram->variables) {
+            if (!properties.emplace(LowerAscii(property.key), &property).second)
+                throw std::runtime_error("Script save state local metadata has duplicate identities");
+        }
+        std::unordered_set<std::string> seen;
+        for (auto& local : normalized.frame->locals) {
+            const auto key = LowerAscii(local.key);
+            const auto property = properties.find(key);
+            if (property == properties.end() || !seen.emplace(key).second ||
+                local.values.size() != property->second->arrayDimension)
+                throw std::runtime_error("Script save state local identity or fixed-array dimension is invalid");
+            local.key = property->second->key;
+            for (auto& value : local.values) value = TypedValue(*property->second, value);
+        }
+        normalized.frame->codePath = code->reflection.objectPath;
+        normalized.frame->localsCodePath = localsCode->reflection.objectPath;
+        return normalized;
     }
     PortableActorVmHost& Host() { return host_; }
 private:
     PortableActorVmHost host_;
-    std::string mapName_, gameRoot_;
+    std::string mapName_, gameRoot_, mapPath_;
     std::unordered_map<std::string, PortablePackageTables> tables_;
     std::unordered_map<std::string, std::string> mapClasses_;
+    std::unordered_map<std::string, std::size_t> mapExports_;
     std::size_t retainedMetadata_{};
     void Retain(const std::size_t bytes) {
         constexpr std::size_t cap = 64u * 1024u * 1024u;
@@ -1609,6 +2003,32 @@ private:
         const auto path = GetPortableObjectPath(table, reference);
         if (path.empty()) throw std::runtime_error("Script save reference is invalid");
         return reference > 0 ? PackageStem(table.sourcePath) + '.' + path : path;
+    }
+    RuntimeObject* StateDefinition(RuntimeObject* cls, const std::string& path) {
+        auto* code = host_.Object(path);
+        if (!code->stateDescriptor || code->reflection.metaClass != "State" ||
+            LowerAscii(std::filesystem::path(code->sourcePath).extension().string()) == ".dx" ||
+            !code->outer || !code->outer->classDescriptor || code->outer->reflection.metaClass != "Class" ||
+            !ClassDerives(cls->reflection.objectPath, code->outer->reflection.objectPath))
+            throw std::runtime_error("Script save state definition is not owned by the receiver's authored class hierarchy");
+        return code;
+    }
+    QuestVr::Vm::Value TypedValue(const QuestVr::Vm::Property& property, const QuestVr::Vm::Value& saved) {
+        auto* metadata = host_.Object(property.key);
+        if (!metadata->property) throw std::runtime_error("Script save property metadata is unavailable");
+        const auto& descriptor = *metadata->property;
+        auto value = Shape(saved, property.zero);
+        if (descriptor.type == "ObjectProperty" || descriptor.type == "ClassProperty") {
+            const auto& table = Table(metadata->sourcePath);
+            const auto expected = Qualified(table, descriptor.type == "ClassProperty" ?
+                descriptor.secondaryType : descriptor.referencedType);
+            ObjectValue(value, expected, descriptor.type == "ClassProperty");
+        } else if (value.kind == QuestVr::Vm::Kind::Struct) {
+            // Only the host's exact PointRegion schema is implemented; its Zone
+            // field is more restrictive than a generic Object reference.
+            ObjectValue(value.fields.at("zone"), "Engine.ZoneInfo", false);
+        }
+        return value;
     }
     std::string ObjectClass(const std::string& path, const bool assetAllowed) {
         const auto key = LowerAscii(path);
@@ -1735,6 +2155,7 @@ std::vector<PreparedScriptObject> PrepareScriptSavedState(
             }
         }
         next.clock = record.clock;
+        if (record.state) next.state = schema.StateValue(cls, record);
         prepared.push_back(std::move(next));
     }
     return prepared;
@@ -2333,7 +2754,24 @@ PortableActorDispatchContext ReadPortableActorDispatchContext(const std::string&
     auto* actor = host.Object(actorPath);
     if (!IsDerivedFromPath(actor->cls, "Engine.Actor"))
         throw std::runtime_error("Dispatch receiver is not Engine.Actor");
-    return AuthoredDispatchContext(actor);
+    return CurrentDispatchContext(actor);
+}
+
+std::optional<QuestVr::StateObject> ReadPortableActorStateObject(const std::string& actorPath) {
+    PortableActorVmHost host;
+    auto* actor = host.Object(actorPath);
+    if (!IsDerivedFromPath(actor->cls, "Engine.Actor")) throw std::runtime_error("State receiver is not Engine.Actor");
+    return actor->stateObject;
+}
+
+QuestVr::Vm::Result ResumePortableActorState(const std::string& actorPath, const QuestVr::Vm::Limits& limits) {
+    try {
+        PortableActorVmHost host;
+        return QuestVr::Vm::ResumeState(host, actorPath, limits);
+    } catch (const std::exception& error) {
+        QuestVr::Vm::Result result;
+        result.status = QuestVr::Vm::Status::Unsupported; result.function = actorPath; result.error = error.what(); return result;
+    }
 }
 
 std::optional<std::string> ResolvePortableActorState(const std::string& actorPath, const std::string& stateName) {
@@ -2365,30 +2803,12 @@ QuestVr::Vm::Result ExecutePortableActorEvent(const std::string& actorPath, cons
     const bool enumDispatch, const std::vector<QuestVr::Vm::Evaluation>& arguments, const QuestVr::Vm::Limits& limits) {
     try {
         PortableActorVmHost host;
-        auto* actor = host.Object(actorPath);
-        if (!IsDerivedFromPath(actor->cls, "Engine.Actor")) throw std::runtime_error("Event receiver is not Engine.Actor");
-        const auto context = AuthoredDispatchContext(actor);
-        const auto enabled = QuestVr::ScriptDispatch::IsEnabled(eventName, context.classProbeMask, context.codeMasks, context.disabledNames);
         QuestVr::Vm::Result none;
         none.status = QuestVr::Vm::Status::Returned;
         none.function = eventName;
-        // Pinned CallEvent checks eligibility before touching Actor.Level.
-        // Level is an authored reflected reference, not the first LevelInfo
-        // export and not a native map-load rebinding. Read includes overlays.
-        if (!enabled) return none;
-        const auto levelValue = host.Read(actor, host.PropertyNamed(actor, "Level"), 0u);
-        if (levelValue.kind != QuestVr::Vm::Kind::Object || levelValue.text.empty())
-            throw std::runtime_error("Event receiver has no authored Level binding");
-        auto* level = host.Object(levelValue.text);
-        if (!IsDerivedFromPath(level->cls, "Engine.LevelInfo"))
-            throw std::runtime_error("Event receiver Level is not Engine.LevelInfo");
-        const auto begun = QuestVr::Vm::ToBool(host.Read(level, host.PropertyNamed(level, "bBegunPlay"), 0u));
-        if (!QuestVr::ScriptDispatch::MayCallEvent(eventName, enabled, begun, ReadInheritedRuntimeBool(actor, "bDeleteMe"), enumDispatch))
-            return none;
-        const auto selected = QuestVr::ScriptDispatch::ResolveFunction(DispatchGraph(),
-            actor->cls->reflection.objectPath, context.stateName, eventName);
+        const auto selected = host.ResolveEvent(actorPath, eventName, enumDispatch);
         if (!selected) return none;
-        return QuestVr::Vm::Execute(host, *host.Member(actor, *selected), actor->reflection.objectPath, arguments, limits);
+        return QuestVr::Vm::Execute(host, *selected, actorPath, arguments, limits);
     } catch (const std::exception& error) {
         QuestVr::Vm::Result result;
         result.status = QuestVr::Vm::Status::Unsupported;
@@ -3243,6 +3663,8 @@ bool SavePortableRuntimeState(const std::string& path) {
         // A rejected/over-budget capture must not truncate an existing save.
         const auto scriptState = CollectScriptSavedState();
         const bool hasScript = !scriptState.objects.empty();
+        const bool hasState = std::any_of(scriptState.objects.begin(), scriptState.objects.end(),
+            [](const auto& object) { return object.state.has_value(); });
         if (hasScript) static_cast<void>(PrepareScriptSavedState(scriptState, false));
         std::vector<std::string> inactive;
         std::vector<std::string> activated;
@@ -3286,8 +3708,9 @@ bool SavePortableRuntimeState(const std::string& path) {
             persistentCredits < 0 || persistentSkillPoints < 0 || damaged.size() > 100'000u)
             throw std::runtime_error("Runtime checkpoint gameplay values are outside their valid ranges");
         // This is exactly the v3 prefix, including list order and field widths.
-        // Only the version word and appended trailer differ for a v4 capture.
-        write32(0x53515844u); write32(hasScript ? 4u : 3u);
+        // Only the version word and appended trailer differ for v4/v5. Pure
+        // property/clock captures retain the byte-exact original v4 format.
+        write32(0x53515844u); write32(hasState ? 5u : hasScript ? 4u : 3u);
         writeStrings(persistentInventory); writeStrings(inactive); writeStrings(activated); writeFloat(persistentPlayerHealth);
         write32(static_cast<std::uint32_t>(damaged.size()));
         for (const auto& entry : damaged) {
@@ -3354,7 +3777,7 @@ static bool ReadPortableRuntimeState(const std::string& path, const bool apply, 
         };
         if (read32() != 0x53515844u) throw std::runtime_error("Runtime checkpoint magic is invalid");
         const auto version = read32();
-        if (version < 1u || version > 4u) throw std::runtime_error("Runtime checkpoint version is unsupported");
+        if (version < 1u || version > 5u) throw std::runtime_error("Runtime checkpoint version is unsupported");
         auto inventory = readStrings(); auto inactive = readStrings(); auto activated = readStrings();
         float playerHealth = 100.0f;
         std::vector<std::pair<std::string, float>> damaged;
@@ -3383,7 +3806,7 @@ static bool ReadPortableRuntimeState(const std::string& path, const bool apply, 
             flags = readStrings(); goals = readStrings(); notes = readStrings(); applied = readStrings();
         }
         std::vector<PreparedScriptObject> prepared;
-        if (version == 4u) {
+        if (version >= 4u) {
             const auto prefixBytes = cursor;
             const auto length = read32();
             if (length == 0u || length != bytes.size() - cursor)
@@ -3392,6 +3815,11 @@ static bool ReadPortableRuntimeState(const std::string& path, const bool apply, 
             limits.maxBytes = QuestVr::kMaximumSaveRuntimeBytes - prefixBytes - 4u;
             const std::vector<std::uint8_t> blob(bytes.begin() + static_cast<std::ptrdiff_t>(cursor), bytes.end());
             const auto scriptState = QuestVr::DecodeScriptSavedState(blob, limits);
+            const bool hasState = std::any_of(scriptState.objects.begin(), scriptState.objects.end(),
+                [](const auto& object) { return object.state.has_value(); });
+            if ((version == 4u && (blob.at(6u) != QuestVr::ScriptStateDetail::Magic[6u] || hasState)) ||
+                (version == 5u && (blob.at(6u) != QuestVr::ScriptStateDetail::StateFrameVersion || !hasState)))
+                throw std::runtime_error("Runtime checkpoint state trailer does not match its envelope version");
             if (!expectedMapName.empty() && LowerAscii(expectedMapName) != LowerAscii(scriptState.mapName))
                 throw std::runtime_error("Runtime checkpoint script map does not match save metadata");
             prepared = PrepareScriptSavedState(scriptState, apply);
@@ -3427,7 +3855,7 @@ static bool ReadPortableRuntimeState(const std::string& path, const bool apply, 
         }
         if (!apply) return true;
         for (RuntimeObject* object : persistentRuntime->get()->exports) {
-            object->scriptValues.clear(); object->animationClock.reset(); object->committedScriptState = false;
+            object->scriptValues.clear(); object->animationClock.reset(); object->stateObject.reset(); object->committedScriptState = false;
         }
         for (std::size_t index = persistentScriptExportCount; index < persistentRuntime->get()->exports.size(); ++index) {
             RuntimeObject* object = persistentRuntime->get()->exports[index];
@@ -3442,6 +3870,7 @@ static bool ReadPortableRuntimeState(const std::string& path, const bool apply, 
         for (const auto& entry : damagedTargets) {entry.first->healthInitialized = true; entry.first->health = entry.second;}
         for (auto& object : prepared) {
             object.target->scriptValues.swap(object.values); object.target->animationClock.swap(object.clock);
+            object.target->stateObject.swap(object.state);
             object.target->committedScriptState = true;
         }
         return true;

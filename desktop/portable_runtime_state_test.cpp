@@ -2,6 +2,7 @@
 #include "quest_mesh_animation.h"
 #include "quest_save_bundle.h"
 #include "quest_save_metadata.h"
+#include "quest_script_state.h"
 
 #include <algorithm>
 #include <chrono>
@@ -63,7 +64,7 @@ struct SavedState {
     bool operator==(const SavedState&) const = default;
 };
 
-SavedState ReadGeneratedCheckpoint(const std::filesystem::path& path) {
+SavedState ReadGeneratedCheckpoint(const std::filesystem::path& path, const std::uint32_t expectedVersion = 3u) {
     Require(std::filesystem::file_size(path) <= 16u * 1024u * 1024u,
             "Generated checkpoint unexpectedly exceeds test read budget");
     std::ifstream stream(path, std::ios::binary);
@@ -89,7 +90,8 @@ SavedState ReadGeneratedCheckpoint(const std::filesystem::path& path) {
     };
     std::uint32_t magic{}, version{};
     read(magic); read(version);
-    Require(magic == 0x53515844u && version == 3u, "Generated checkpoint is not runtime format v3");
+    Require((expectedVersion == 3u || expectedVersion == 5u) && magic == 0x53515844u && version == expectedVersion,
+        "Generated checkpoint does not match its explicitly requested runtime format");
     SavedState state;
     readStrings(state.inventory); readStrings(state.inactive); readStrings(state.activated);
     read(state.health);
@@ -104,6 +106,15 @@ SavedState ReadGeneratedCheckpoint(const std::filesystem::path& path) {
     }
     read(state.credits); read(state.skillPoints);
     readStrings(state.flags); readStrings(state.goals); readStrings(state.notes); readStrings(state.applied);
+    if (version == 5u) {
+        std::uint32_t size{}; read(size);
+        Require(size >= QuestVr::ScriptStateDetail::Magic.size() && size <= QuestVr::kMaximumSaveRuntimeBytes,
+            "Generated v5 script trailer exceeds its test read budget");
+        std::vector<std::uint8_t> blob(size);
+        stream.read(reinterpret_cast<char*>(blob.data()), static_cast<std::streamsize>(size));
+        Require(static_cast<bool>(stream) && blob[6u] == QuestVr::ScriptStateDetail::StateFrameVersion,
+            "Generated v5 script trailer was truncated or has the wrong independent codec version");
+    }
     Require(stream.peek() == std::char_traits<char>::eof(), "Generated checkpoint has trailing bytes");
     for (auto* unordered : {&state.inactive, &state.activated, &state.flags, &state.applied})
         std::sort(unordered->begin(), unordered->end());
@@ -539,6 +550,162 @@ void TestOriginalRollback(const std::filesystem::path& suppliedGameRoot) {
             "readonly validation, full restore, and legacy authored reset passed.\n";
     }
 
+    // A separately verified v5 control changes only the actual actor's disabled Name set.
+    // Keep the v3/v4 controls above strict: a state-only mutation must not be
+    // mistaken for a property overlay, native clock, or fabricated live frame.
+    {
+        constexpr const char* eventName = "QuestSaveStateProbe";
+        const auto contextFields = [](const PortableActorDispatchContext& context) {
+            const auto masks = context.codeMasks.value_or(QuestVr::ScriptDispatch::CodeMasks{});
+            return std::make_tuple(context.codePath, context.stateName, context.classProbeMask,
+                context.codeMasks.has_value(), masks.probeMask, masks.ignoreMask, context.disabledNames);
+        };
+        const auto enabled = [&](const PortableActorDispatchContext& context) {
+            return QuestVr::ScriptDispatch::IsEnabled(eventName, context.classProbeMask,
+                context.codeMasks, context.disabledNames);
+        };
+        const auto authoredContext = ReadPortableActorDispatchContext(pawn);
+        Require(enabled(authoredContext) && !ReadPortableActorStateObject(pawn),
+            "Training pawn does not have an untouched enabled Name for the state-only control");
+        const auto disabled = ExecutePortableActorFunction(pawn, "Disable", {
+            {QuestVr::Vm::Value::Text(QuestVr::Vm::Kind::Name, eventName), {}}});
+        const auto savedContext = ReadPortableActorDispatchContext(pawn);
+        const auto savedObjectState = ReadPortableActorStateObject(pawn);
+        Require(disabled.passed() && GetPortableRuntimeScriptStatePresent() && !enabled(savedContext) &&
+            savedObjectState && !savedObjectState->frameOverride && !savedObjectState->frame,
+            "Actual Disable did not commit a state-only dormant actor context");
+        RequireSameLiveState(expected);
+        const auto stateCheckpoint = directory.path / "state-only-composed-v5.runtime.tmp";
+        const auto stateInspection = directory.path / "state-only-roundtrip-v5.runtime.tmp";
+        std::vector<std::uint8_t> stateRuntime;
+        Require(SavePortableRuntimeState(stateCheckpoint.string()) &&
+            QuestVr::ReadBoundedSaveFile(stateCheckpoint.string(), QuestVr::kMaximumSaveRuntimeBytes, stateRuntime),
+            "State-only actor context could not be saved");
+
+        // Read this generated v5 prefix independently of runtime getters. The
+        // trailer must follow every unchanged v3 field and consume the tail.
+        const auto stateBlobFrom = [](const std::vector<std::uint8_t>& bytes) {
+            std::size_t cursor{};
+            const auto advance = [&](const std::size_t count) {
+                Require(cursor <= bytes.size() && count <= bytes.size() - cursor,
+                    "Generated v5 prefix was truncated");
+                cursor += count;
+            };
+            const auto word = [&]() {
+                const auto start = cursor; advance(4u);
+                std::uint32_t value{};
+                for (unsigned i = 0u; i < 4u; ++i) value |= std::uint32_t(bytes[start + i]) << (i * 8u);
+                return value;
+            };
+            const auto skipString = [&]() {
+                const auto size = word();
+                Require(size <= 1'048'576u, "Generated v5 prefix string exceeded its test budget");
+                advance(size);
+            };
+            const auto skipStrings = [&]() {
+                const auto count = word();
+                Require(count <= 100'000u && count <= (bytes.size() - cursor) / 4u,
+                    "Generated v5 prefix list exceeded its test budget");
+                for (std::uint32_t i = 0u; i < count; ++i) skipString();
+            };
+            Require(word() == 0x53515844u && word() == 5u, "State-only checkpoint did not select runtime v5");
+            skipStrings(); skipStrings(); skipStrings(); advance(4u);
+            const auto damageCount = word();
+            Require(damageCount <= 100'000u, "Generated v5 damaged-actor count exceeded its test budget");
+            for (std::uint32_t i = 0u; i < damageCount; ++i) { skipString(); advance(4u); }
+            advance(8u); skipStrings(); skipStrings(); skipStrings(); skipStrings();
+            const auto blobSize = word();
+            Require(blobSize > 0u && blobSize == bytes.size() - cursor,
+                "Generated v5 state trailer did not cover the exact prefix tail");
+            return std::make_pair(cursor,
+                std::vector<std::uint8_t>(bytes.begin() + static_cast<std::ptrdiff_t>(cursor), bytes.end()));
+        };
+        const auto [sourceBlobOffset, stateBlob] = stateBlobFrom(stateRuntime);
+        Require(ReadGeneratedCheckpoint(stateCheckpoint, 5u) == saved,
+            "State-only v5 capture changed the existing gameplay/progress prefix semantics");
+        const auto encodedState = QuestVr::DecodeScriptSavedState(stateBlob);
+        Require(stateBlob.at(6u) == QuestVr::ScriptStateDetail::StateFrameVersion &&
+            encodedState.mapName == "00_Training" && encodedState.objects.size() == 1u &&
+            encodedState.objects[0].path == pawn && encodedState.objects[0].properties.empty() &&
+            !encodedState.objects[0].clock && encodedState.objects[0].state &&
+            !encodedState.objects[0].state->frameOverride && !encodedState.objects[0].state->frame &&
+            encodedState.objects[0].state->hasStack == savedObjectState->hasStack &&
+            encodedState.objects[0].state->disabled == savedObjectState->disabled,
+            "State-only v5 capture fabricated or omitted actor properties, clock, frame, or disabled Names");
+        const auto statePairs = QuestVr::MakeSaveBundlePaths((directory.path / "quest-save-state-only").string());
+        const auto firstStatePublish = QuestVr::PublishSaveBundle(statePairs, firstMetadata, firstRuntime);
+        const auto nextStatePublish = QuestVr::PublishSaveBundle(statePairs, firstMetadata, stateRuntime);
+        Require(firstStatePublish.saved && firstStatePublish.generation == 1u &&
+            nextStatePublish.saved && nextStatePublish.generation == 2u,
+            "Paired v3/v5 state-only generation publication failed");
+        const auto changed = ExecutePortableActorFunction(pawn, "Enable", {
+            {QuestVr::Vm::Value::Text(QuestVr::Vm::Kind::Name, eventName), {}}});
+        Require(changed.passed() && enabled(ReadPortableActorDispatchContext(pawn)) &&
+            DamagePortableRuntimePlayer(5.0f) == expected.health - 5.0f &&
+            ApplyPortableDialogueEffects(EffectFixture("state_after_save", 4, false)).applied == 5u,
+            "Composed gameplay and state-only Enable mutation failed");
+        const auto mutatedContext = ReadPortableActorDispatchContext(pawn);
+        const auto mutatedGameplay = CaptureLiveState();
+        const auto candidates = QuestVr::LoadSaveBundleCandidates(statePairs);
+        Require(candidates.size() == 2u && candidates[0].generation == 2u &&
+            candidates[0].runtime == stateRuntime && candidates[0].metadata == firstMetadata &&
+            candidates[1].runtime == firstRuntime,
+            "Paired v5 recovery did not preserve exact state-only runtime and matching metadata");
+        QuestVr::QuestSaveMetadata metadata;
+        Require(QuestVr::DecodeQuestSaveMetadata(candidates[0].metadata, "00_Training", metadata) &&
+            metadata.mapName == encodedState.mapName && metadata.mapLocalPose &&
+            QuestVr::WriteDurableSaveFile(loadStage.string(), candidates[0].runtime) &&
+            ValidatePortableRuntimeState(loadStage.string(), metadata.mapName) &&
+            !ValidatePortableRuntimeState(loadStage.string(), "00_TrainingCombat"),
+            "Paired v5 runtime did not honor its independent metadata map binding");
+        RequireSameLiveState(mutatedGameplay);
+        Require(contextFields(ReadPortableActorDispatchContext(pawn)) == contextFields(mutatedContext),
+            "Readonly v5 map validation changed live dispatch state");
+        Require(LoadPortableRuntimeState(loadStage.string()), "Paired current-map v5 state-only restore failed");
+        RequireSameLiveState(expected);
+        const auto restoredObjectState = ReadPortableActorStateObject(pawn);
+        Require(contextFields(ReadPortableActorDispatchContext(pawn)) == contextFields(savedContext) &&
+            restoredObjectState && restoredObjectState->hasStack == savedObjectState->hasStack &&
+            !restoredObjectState->frameOverride && !restoredObjectState->frame &&
+            restoredObjectState->disabled == savedObjectState->disabled && GetPortableRuntimeScriptStatePresent(),
+            "Paired v5 restore lost dormant actor dispatch or state-specific disabled Names");
+        std::vector<std::uint8_t> restoredRuntime;
+        Require(SavePortableRuntimeState(stateInspection.string()) &&
+            QuestVr::ReadBoundedSaveFile(stateInspection.string(), QuestVr::kMaximumSaveRuntimeBytes, restoredRuntime),
+            "State-only v5 restored context could not be recaptured");
+        const auto [restoredBlobOffset, restoredBlob] = stateBlobFrom(restoredRuntime);
+        if (restoredRuntime != stateRuntime) {
+            std::size_t firstDifference{};
+            while (firstDifference < std::min(stateRuntime.size(), restoredRuntime.size()) &&
+                stateRuntime[firstDifference] == restoredRuntime[firstDifference]) ++firstDifference;
+            std::cout << "V5 composed roundtrip first differing byte=" << firstDifference <<
+                " span=" << (firstDifference < sourceBlobOffset - 4u ? "gameplay-prefix" : "script-trailer") <<
+                " source/restored blob offsets=" << sourceBlobOffset << '/' << restoredBlobOffset <<
+                " exact canonical blob=" << (restoredBlob == stateBlob ? "yes" : "no") << '\n';
+        }
+        // Legacy gameplay unordered collections are intentionally not made
+        // canonical by v5. Compare their independently parsed sorted semantics,
+        // while requiring every byte of the new canonical state blob to match.
+        Require(ReadGeneratedCheckpoint(stateInspection, 5u) == saved && restoredBlob == stateBlob,
+            "State-only v5 roundtrip changed gameplay prefix semantics or canonical state trailer bytes");
+        Require(!LoadPortableRuntimeMap(combat).passed,
+            "Restored state-only v5 actor context permitted silent cross-map discard");
+        Require(QuestVr::WriteDurableSaveFile(loadStage.string(), candidates[1].runtime) &&
+            LoadPortableRuntimeState(loadStage.string()) && !GetPortableRuntimeScriptStatePresent() &&
+            !ReadPortableActorStateObject(pawn) &&
+            contextFields(ReadPortableActorDispatchContext(pawn)) == contextFields(authoredContext),
+            "Legacy paired v3 restore did not clear the entire portable actor state override");
+        RequireSameLiveState(expected);
+        Require(LoadPortableRuntimeMap(combat).passed && LoadPortableRuntimeMap(training).passed &&
+            DecodePortableRuntimeActorMeshes().passed && LoadPortableRuntimeState(checkpoint.string()),
+            "Legacy state reset did not re-enable authored map replacement and restoration");
+        RequireSameLiveState(expected);
+        Require(SavePortableRuntimeState(afterRollback.string()) && ReadGeneratedCheckpoint(afterRollback) == saved,
+            "Legacy reset after v5 changed the existing v3 gameplay/progress checkpoint");
+        std::cout << "State-only Enable/Disable v5 context composed with gameplay/progress and paired v3/v5 saves; "
+            "map-bound readonly validation, exact roundtrip, legacy reset, and guarded travel passed.\n";
+    }
+
     std::cout << "Original-package rollback primitives passed: " << runtime.objects << " runtime objects; "
               << actors.size() << " Training actors; Training -> Combat -> Training; inactive pickup, "
               << "activated mover, pawn/player health, ordered inventory, credits/skill points/goals/notes/flag, "
@@ -549,6 +716,7 @@ void TestOriginalRollback(const std::filesystem::path& suppliedGameRoot) {
 } // namespace
 
 int main(int argc, char** argv) {
+    std::cout.setf(std::ios::unitbuf);
     if (argc == 1) {
         std::cout << "SKIPPED real-data rollback verification: opt in with --game-root <owned Deus Ex folder>.\n";
         return 77;

@@ -2,6 +2,7 @@
 
 #include "quest_actor_animation_clock.h"
 #include "quest_portable_vm.h"
+#include "quest_state_frame.h"
 
 #include <algorithm>
 #include <cmath>
@@ -25,6 +26,7 @@ struct ScriptSavedObject {
     std::string path, classPath;
     std::vector<ScriptSavedProperty> properties;
     std::optional<ActorAnimationClock> clock;
+    std::optional<StateObject> state{};
 };
 struct ScriptSavedState {
     std::string mapName;
@@ -34,6 +36,8 @@ struct ScriptStateLimits {
     std::size_t maxBytes{32u << 20u};
     std::size_t maxObjects{4096u}, maxProperties{65'536u};
     std::size_t totalValueNodes{262'144u}, maxStringBytes{8192u}, maxDepth{32u};
+    std::size_t maxStateLocals{65'536u}, maxLocalElements{262'144u};
+    std::size_t maxDisabledStates{65'536u}, maxDisabledNames{262'144u};
 };
 
 namespace ScriptStateDetail {
@@ -41,6 +45,7 @@ static_assert(sizeof(float)==4u && sizeof(double)==8u &&
     std::numeric_limits<float>::is_iec559 && std::numeric_limits<double>::is_iec559,
     "Script state codec requires IEEE binary32/binary64 floats");
 inline constexpr std::array<std::uint8_t, 8> Magic{{'D','X','Q','V','M','S',1,0}};
+inline constexpr std::uint8_t StateFrameVersion=2u;
 // Stable serialized tags deliberately do not depend on Vm::Kind ordinals.
 enum class Tag : std::uint8_t {
     Nothing=0, Byte=1, Int=2, Bool=3, Float=4, Name=5, Object=6,
@@ -101,7 +106,7 @@ inline void Clock(const ActorAnimationClock& clock, const ScriptStateLimits& lim
 
 struct Budget {
     const ScriptStateLimits& limits;
-    std::size_t retained{}, properties{}, nodes{};
+    std::size_t retained{}, properties{}, nodes{}, stateLocals{}, localElements{}, disabledStates{}, disabledNames{};
     void Retain(std::size_t bytes) {
         if (bytes>limits.maxBytes || retained>limits.maxBytes-bytes)
             Fail("aggregate retained-state budget exceeded");
@@ -121,6 +126,15 @@ struct Budget {
             Fail("value depth or aggregate node budget exceeded");
         ++nodes;
     }
+    void StateLocals(std::size_t count) { Aggregate(count,limits.maxStateLocals,stateLocals,"aggregate state-local count exceeds the budget"); }
+    void LocalElements(std::size_t count) { Aggregate(count,limits.maxLocalElements,localElements,"aggregate state-local element count exceeds the budget"); }
+    void DisabledStates(std::size_t count) { Aggregate(count,limits.maxDisabledStates,disabledStates,"aggregate disabled-state count exceeds the budget"); }
+    void DisabledNames(std::size_t count) { Aggregate(count,limits.maxDisabledNames,disabledNames,"aggregate disabled-name count exceeds the budget"); }
+private:
+    static void Aggregate(std::size_t count,std::size_t cap,std::size_t& current,const char* message) {
+        if (count>cap || current>cap-count) Fail(message);
+        current+=count;
+    }
 };
 
 template<typename Item,typename Name>
@@ -138,9 +152,19 @@ public:
     Writer(const ScriptStateLimits& limits, std::vector<std::uint8_t>* output)
         : limits_(limits),budget_{limits},output_(output) {}
     std::size_t size() const { return size_; }
+    // Cumulative, non-copy validation of standalone live StateObjects. Runtime
+    // transactions can preflight persistent state with the exact codec rules
+    // before committing, without creating a saved-object snapshot or blob.
+    // This method is deliberately unavailable on an emitting writer.
+    void MeasureStateObject(const StateObject& state) {
+        if (output_) Fail("state-only measurement requires a non-emitting writer");
+        budget_.Retain(sizeof(StateObject));
+        ObjectState(state);
+    }
     void State(const ScriptSavedState& state) {
         budget_.Retain(sizeof(ScriptSavedState));
-        for (const auto byte : Magic) Byte(byte);
+        const bool withFrames=std::any_of(state.objects.begin(),state.objects.end(),[](const auto& object) { return object.state.has_value(); });
+        for (std::size_t i=0; i<Magic.size(); ++i) Byte(i==6u && withFrames ? StateFrameVersion : Magic[i]);
         String(state.mapName,true,false,128u);
         if (state.objects.size()>limits_.maxObjects) Fail("object count exceeds the budget");
         budget_.Array(state.objects.size(),sizeof(ScriptSavedObject)+sizeof(void*));
@@ -177,6 +201,10 @@ public:
             }
             Byte(object.clock ? 1u : 0u);
             if (object.clock) Animation(*object.clock);
+            if (withFrames) {
+                Byte(object.state ? 1u : 0u);
+                if (object.state) ObjectState(*object.state);
+            }
         }
     }
 private:
@@ -258,6 +286,53 @@ private:
         std::uint64_t bits; std::memcpy(&bits,&clock.simulationTime,8u); U64(bits);
         Byte(clock.remoteRole); Byte(clock.pose.fatness);
     }
+    void ObjectState(const StateObject& state) {
+        if (state.frame && !state.frameOverride) Fail("state frame requires a portable frame override");
+        Byte(state.hasStack ? 1u : 0u); Byte(state.frameOverride ? 1u : 0u); Byte(state.frame ? 1u : 0u);
+        if (state.frame) {
+            const auto& frame=*state.frame;
+            String(frame.codePath,true,true); String(frame.localsCodePath,true,true);
+            U32(frame.statementIndex);
+            if (static_cast<std::uint8_t>(frame.latent)>static_cast<std::uint8_t>(StateLatent::WaitForLanding))
+                Fail("unrecognized state latent action");
+            Byte(static_cast<std::uint8_t>(frame.latent));
+            budget_.StateLocals(frame.locals.size());
+            budget_.Array(frame.locals.size(),sizeof(StateLocal)+sizeof(void*));
+            Count(frame.locals.size());
+            for (const auto& local : frame.locals) Text(local.key,limits_,true);
+            const auto locals=Sorted(frame.locals,[](const StateLocal& local) -> const std::string& { return local.key; });
+            for (std::size_t i=0; i<locals.size(); ++i) {
+                const auto& local=*locals[i];
+                if (i!=0 && Compare(locals[i-1]->key,local.key)==0) Fail("duplicate or case-colliding state-local identity");
+                String(local.key,true);
+                budget_.LocalElements(local.values.size());
+                budget_.Array(local.values.size(),sizeof(Vm::Value));
+                Count(local.values.size());
+                for (const auto& value : local.values) Value(value,0u);
+            }
+        }
+        budget_.DisabledStates(state.disabled.size());
+        using Disabled=std::pair<const std::string,std::set<std::string>>;
+        budget_.Array(state.disabled.size(),sizeof(Disabled)+5u*sizeof(void*));
+        Count(state.disabled.size());
+        std::vector<const Disabled*> states; states.reserve(state.disabled.size());
+        for (const auto& item : state.disabled) { Text(item.first,limits_,true); states.push_back(&item); }
+        std::sort(states.begin(),states.end(),[](const auto* a,const auto* b) { return Compare(a->first,b->first)<0; });
+        for (std::size_t i=0; i<states.size(); ++i) {
+            if (i!=0 && Compare(states[i-1]->first,states[i]->first)==0) Fail("duplicate or case-colliding disabled-state identity");
+            String(states[i]->first,true); const auto& names=states[i]->second;
+            budget_.DisabledNames(names.size());
+            budget_.Array(names.size(),sizeof(std::string)+5u*sizeof(void*));
+            Count(names.size());
+            std::vector<const std::string*> sorted; sorted.reserve(names.size());
+            for (const auto& name : names) { Text(name,limits_,true); sorted.push_back(&name); }
+            std::sort(sorted.begin(),sorted.end(),[](const auto* a,const auto* b) { return Compare(*a,*b)<0; });
+            for (std::size_t j=0; j<sorted.size(); ++j) {
+                if (j!=0 && Compare(*sorted[j-1],*sorted[j])==0) Fail("duplicate or case-colliding disabled-name identity");
+                String(*sorted[j],true);
+            }
+        }
+    }
 };
 
 template<bool Materialize>
@@ -269,7 +344,14 @@ public:
     }
     ScriptSavedState State() {
         ScriptSavedState state; budget_.Retain(sizeof(ScriptSavedState));
-        for (const auto magic : Magic) if (Byte()!=magic) Fail("bad magic or unsupported codec version");
+        std::uint8_t version{};
+        for (std::size_t i=0; i<Magic.size(); ++i) {
+            const auto byte=Byte();
+            if (i==6u) {
+                version=byte;
+                if (version!=Magic[i] && version!=StateFrameVersion) Fail("bad magic or unsupported codec version");
+            } else if (byte!=Magic[i]) Fail("bad magic or unsupported codec version");
+        }
         const auto map=String(true,false,128u); if constexpr(Materialize) state.mapName=map;
         const auto count=U32();
         if (count>limits_.maxObjects || count>Remaining()/13u) Fail("object count exceeds budget or encoded payload");
@@ -303,6 +385,9 @@ public:
                 }
             }
             if (Boolean()) { auto clock=Animation(); if constexpr(Materialize) object.clock=std::move(clock); }
+            if (version==StateFrameVersion && Boolean()) {
+                auto saved=ObjectState(); if constexpr(Materialize) object.state=std::move(saved);
+            }
             if constexpr(Materialize) state.objects.push_back(std::move(object));
         }
         if (Remaining()!=0u) Fail("trailing encoded-state bytes");
@@ -380,6 +465,58 @@ private:
         }
         const auto bits=U64(); std::memcpy(&clock.simulationTime,&bits,8u);
         clock.remoteRole=Byte(); clock.pose.fatness=Byte(); Clock(clock,limits_); return clock;
+    }
+    StateObject ObjectState() {
+        StateObject state; state.hasStack=Boolean();
+        state.frameOverride=Boolean();
+        if (Boolean()) {
+            if (!state.frameOverride) Fail("state frame requires a portable frame override");
+            StateFrame frame;
+            const auto code=String(true,true),localsCode=String(true,true);
+            if constexpr(Materialize) { frame.codePath=code; frame.localsCodePath=localsCode; }
+            frame.statementIndex=U32(); const auto latent=Byte();
+            if (latent>static_cast<std::uint8_t>(StateLatent::WaitForLanding)) Fail("unrecognized state latent action");
+            frame.latent=static_cast<StateLatent>(latent);
+            const auto count=U32(); budget_.StateLocals(count);
+            if (count>Remaining()/9u) Fail("state-local count exceeds encoded payload");
+            budget_.Array(count,sizeof(StateLocal)+sizeof(void*));
+            if constexpr(Materialize) frame.locals.reserve(count);
+            std::string_view previous;
+            for (std::uint32_t i=0; i<count; ++i) {
+                StateLocal local; const auto key=String(true);
+                if (i!=0 && Compare(previous,key)>=0) Fail("state-local identities are not canonical and unique");
+                previous=key; const auto elements=U32(); budget_.LocalElements(elements);
+                if (elements>Remaining()) Fail("state-local element count exceeds encoded payload");
+                budget_.Array(elements,sizeof(Vm::Value));
+                if constexpr(Materialize) { local.key=key; local.values.reserve(elements); }
+                for (std::uint32_t j=0; j<elements; ++j) {
+                    auto value=Value(0u); if constexpr(Materialize) local.values.push_back(std::move(value));
+                }
+                if constexpr(Materialize) frame.locals.push_back(std::move(local));
+            }
+            if constexpr(Materialize) state.frame=std::move(frame);
+        }
+        const auto count=U32(); budget_.DisabledStates(count);
+        if (count>Remaining()/9u) Fail("disabled-state count exceeds encoded payload");
+        using Disabled=std::pair<const std::string,std::set<std::string>>;
+        budget_.Array(count,sizeof(Disabled)+5u*sizeof(void*));
+        std::string_view previous;
+        for (std::uint32_t i=0; i<count; ++i) {
+            const auto name=String(true);
+            if (i!=0 && Compare(previous,name)>=0) Fail("disabled-state identities are not canonical and unique");
+            previous=name; const auto names=U32(); budget_.DisabledNames(names);
+            if (names>Remaining()/5u) Fail("disabled-name count exceeds encoded payload");
+            budget_.Array(names,sizeof(std::string)+5u*sizeof(void*));
+            std::set<std::string> disabled; std::string_view previousName;
+            for (std::uint32_t j=0; j<names; ++j) {
+                const auto item=String(true);
+                if (j!=0 && Compare(previousName,item)>=0) Fail("disabled-name identities are not canonical and unique");
+                previousName=item;
+                if constexpr(Materialize) disabled.emplace(item);
+            }
+            if constexpr(Materialize) state.disabled.emplace(std::string(name),std::move(disabled));
+        }
+        return state;
     }
 };
 } // namespace ScriptStateDetail

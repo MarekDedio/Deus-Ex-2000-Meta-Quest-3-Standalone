@@ -6,6 +6,10 @@ interpreter. It does not enter states, run startup, tick AI or connect animation
 callbacks to the live game. The installed `25e38b3` Quest test APK is unchanged;
 this batch has no Android build or device deployment.
 
+The subsequent [explicit state-execution layer](STATE-EXECUTION.md) now adds
+bounded transitions, mutable disabled sets, state slices and runtime-v5 saves.
+The selection/layout layer itself remains read-only; no live AI tick is implied.
+
 The fidelity reference is the locally pinned SurrealEngine commit
 `677ee14c5b83486e6634687953779aafb7973ad6`, not the closed-source original DLL
 or a later Unreal Engine version. The earlier
@@ -108,20 +112,20 @@ returns Nothing with no callee instructions or writes. It is not reported as an
 unsupported latent/native/local-schema operation that the pinned engine would
 never reach.
 
-The actor host also avoids eagerly constructing unsupported typed locals for an
-ineligible function. It returns a temporary identity-only function descriptor
-instead; this stub is not cached as the executable function. A public root
+The actor host avoids eagerly constructing unsupported typed locals during
+resolution. It always returns a temporary identity-only descriptor, retaining
+native flags/index needed for lazy argument operators. `PrepareFunction` loads
+the executable descriptor only after fresh eligibility; the stub is never cached.
+A public root
 execution still owns its normal Begin/Commit transaction even when suppressed.
 
 Caller argument expressions retain the pinned evaluation order: they execute
 on caller Self before Frame.Call, and any effects already performed by them
 are not retroactively cancelled just because the callee is suppressed. The
-current actor context is immutable during argument evaluation because
-Enable/Disable and GotoState are not implemented. Before adding such
-eligibility-changing argument expressions, the identity-only preparation path
-must be revisited: eligibility can become true after early target resolution,
-so fresh gating and full callee preparation must occur after those expressions.
-The present tests do not establish that future dynamic transition behavior.
+actor context can now change during argument evaluation through Enable/Disable
+or GotoState. Fresh gating and full callee preparation therefore occur after
+those expressions. Synthetic state-execution controls cover disable/enable
+arguments, including a target becoming eligible after early identity resolution.
 
 `ExecutePortableActorEvent` is an explicit event wrapper, not an automatic
 scheduler. In addition to eligibility it requires the receiver actor's Level
@@ -165,9 +169,10 @@ inspects the last top-level statement instead and does not consult that header.
 This distinction corrected an unproven original-corpus test assumption; it is
 not permission to weaken reference or target-boundary validation.
 
-The result is not an executable state program, a current PC or a persistent
-continuation. GotoLabel/GotoState, label inheritance during execution, state
-Stop, synchronous EndState/BeginState and latent resumption remain work ahead.
+The analysis result itself is not a current PC or persistent continuation.
+The separate state layer consumes validated labels for GotoLabel/GotoState,
+inherited label control, committed Stop and synchronous EndState/BeginState.
+Latent resumption handlers remain unfinished.
 Primary pinned references: `VM/Bytecode.h/.cpp`, `VM/Frame.cpp`.
 
 ## Limits, lifetime and evidence
@@ -235,10 +240,10 @@ Only the last two commands require the user's commercial game data. The tests
 read that installation; generated fixtures/checkpoints are isolated elsewhere.
 No original assets are committed or bundled in the APK.
 
-Full startup, active state frames, mutable state-keyed disabled sets, latent
-continuations, AI natives, spawned actors, timers and live animation/event
-scheduling remain unfinished. Version-4 saves still cover supported actor
-properties and native animation clocks, not this future dynamic state model.
+Full startup, latent continuations, AI natives, spawned actors, timers and live
+animation/event scheduling remain unfinished. Version-4 saves still cover
+supported properties/clocks; the subsequent v5 model retains explicit portable
+state frames, locals and state-keyed disabled sets.
 Read-only selection/suppression does not change save/travel guards or establish
 campaign playability, Quest controller behavior, stereo rendering or performance.
 See [bounded execution](PORTABLE-SCRIPT-EXECUTION.md) and

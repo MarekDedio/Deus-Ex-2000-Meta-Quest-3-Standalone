@@ -1,6 +1,57 @@
 # Port status
 
+## Offline persistent actor-state execution (2026-10-08; not deployed)
+
+- Added explicit bounded state slices, transactional GotoState/Enable/Disable
+  and synchronous BeginState/EndState within the caller's transaction. State
+  code and local declaration ownership are distinct; inherited labels, old
+  statement control after reentry, stopped stale PC and local-storage revision
+  checks follow the pinned contract. Unsupported required behavior rolls back
+  the entire slice. No automatic actor/world startup or live state tick runs.
+- Calls retain identity first, evaluate caller arguments, then check fresh
+  eligibility and prepare the full callee. Enable/Disable and transitions in
+  arguments can therefore affect the call without a cached suppressed stub.
+- Runtime v5/codec v2 store current-map state frames, typed locals and independent
+  state-keyed disabled sets. State-only records do not fabricate native class
+  locals. Original schema/ancestry/HasStack/PC/latent checks precede application;
+  legacy saves clear portable overrides. Property/clock-only v4/codec v1 and
+  untouched v3 representations remain. Persistent state has aggregate bounded
+  noncopying measurement; combined saves retain the 16 MiB envelope cap.
+- SetPhysics (3970) now performs the pinned reflected Physics-byte assignment,
+  without inventing optional-floor, Base, Velocity or movement behavior.
+- Host build completed successfully. The suite has 32 entries: 30 ordinary
+  tests pass and two original-data tests explicitly skip without their separate
+  root. New state controls pass 75 checks/16 rejection controls; the new state
+  codec passes 1,251/621. Existing VM, dispatch and legacy codec controls pass.
+  Separate final-source original-runtime/save/map integration passed v3/v4/v5
+  composition and paired-save recovery, including state-only records, exact
+  canonical script blobs, restored gameplay semantics and legacy reset. The
+  legacy gameplay prefix is not byte-canonical. The separate original actor
+  integration also completed exit 0: all 1,502 Classes/261 States and terminal
+  labels, existing helpers/reference/Level gates, SetPhysics/v4/legacy controls,
+  v5 state-only/Auto/Begin/None/Stop/disabled-set roundtrips, 12 new state-schema
+  rejections and full-payload rollback passed. Actual StartUp slicing still
+  refuses InventoryItem in InitializeInventory at PC 42; actual begun-play
+  BeginState still refuses required AIEndEvent715 in SetDistress at PC 46.
+  Those atomic refusals are not successful startup. Interrupted runs were not
+  counted as passes.
+- Visually inspected a 512x512 CPU Doctor1 close-up after the actual compiled
+  pre-begun-play SetInitialState: original mesh/materials render, no cube fallback.
+  It retains a static All pose; this is not live idle animation, lighting or
+  Quest GL/stereo/controller verification. A read-only original DLL audit also
+  established deferred AI-event processing and authored manager initialization,
+  without enabling AI natives. See [AI-NATIVE-AUDIT.md](AI-NATIVE-AUDIT.md).
+- No Android build, ADB command or replacement deployment was performed.
+  The frozen installed `25e38b3` APK remains the user-test build. Full startup,
+  AI, latent handlers, physics simulation, live animation scheduling, per-map
+  archives and campaign progression are unfinished. See
+  [STATE-EXECUTION.md](STATE-EXECUTION.md). Logs are in ignored
+  `artifacts/state-execution-20261008/`.
+
 ## Offline script selection and eligibility (2026-10-08; not deployed)
+
+This previous batch's execution limits and test counts are historical; the
+state-execution layer above supersedes its mutable-state restrictions.
 
 - Added a bounded, lazy Class/State/Function graph from original Children/Next
   chains, including the UField prefixes of Struct/Enum/Const siblings. Named

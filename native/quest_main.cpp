@@ -2211,7 +2211,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             (runtimeAvailable_ && mapName == currentMapName_)) {
             return;
         }
-        // A successful v4 save does not authorize discarding the current map's
+        // A successful v4/v5 save does not authorize discarding the current map's
         // actor state. Check before cancelling UI/audio/geometry or starting a
         // replacement transaction, whose rollback needs the same archive.
         if (runtimeAvailable_ && GetPortableRuntimeScriptStatePresent()) {

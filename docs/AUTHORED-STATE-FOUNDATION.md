@@ -8,6 +8,11 @@ serialized classes, and the exact loaded HasStack header of map actors. None
 of these fields is interpreted as a live state frame, automatic callback,
 resumable latent call, or completed lifecycle phase.
 
+The subsequent [explicit state-execution layer](STATE-EXECUTION.md) now creates
+separate portable overrides through bounded API calls and saves them as runtime
+v5. It does not reinterpret retained raw runnable continuations or automatically
+start the world. The authored metadata described here remains immutable.
+
 The fidelity reference is the locally pinned SurrealEngine commit
 `677ee14c5b83486e6634687953779aafb7973ad6`. The contracts below describe that
 implementation, not a verification of the original closed-source engine DLL
@@ -255,7 +260,8 @@ Primary references:
    also change authored behavior.
 3. Extend transactional journals, state-presence guards and persistence before
    committing state-only mutations. Current journals/save records cover actor
-   overlays and animation clocks, not state frames or disabled-event sets.
+   overlays and animation clocks. The subsequent v5 implementation now adds
+   state frames and disabled-event sets; full world startup remains separate.
    Validation must bind code/state identities and offsets to original schemas,
    and restoration must not rerun startup for an already-started level.
 4. Stage genuine level startup only after GameInfo/player/spawn identities,
@@ -268,13 +274,13 @@ Primary references:
    timers, RNG, spawned actors and per-map campaign archiving as required by
    reached behavior, without treating unavailable natives as successful no-ops.
 
-Current blockers remain concrete: the VM executes immutable synchronous
-Function frames, rejects latent declarations, treats state Stop as an
-unsupported continuation, and exposes label entries only as read-only structural
-analysis, not an executable state program. Authored state flags do not remove
-these limitations. The v4
-save codec stores properties/clocks only; legacy restoration resets supported
-live overlays/clocks while authored metadata remains immutable. Map travel
+The subsequent implementation adds explicit persistent state slices, committed
+state Stop, label control and synchronous entry/exit callbacks. Current blockers
+remain concrete: latent declarations/handlers, reached AI/physics natives,
+iterators and full level-wide startup are unsupported. Authored flags do not
+remove these limitations. The v4 codec stores properties/clocks; v5 adds portable
+frames, typed locals and disabled sets. Legacy restoration resets these overrides
+while authored metadata remains immutable. Map travel
 still requires a per-map archive when committed script state exists.
 
 Primary portable references: `native/quest_portable_vm.cpp`, Machine.Run,

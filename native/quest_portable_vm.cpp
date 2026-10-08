@@ -1,4 +1,5 @@
 #include "quest_portable_vm.h"
+#include "quest_state_frame.h"
 
 #include <algorithm>
 #include <bit>
@@ -9,6 +10,7 @@
 #include <cstdlib>
 #include <limits>
 #include <stdexcept>
+#include <tuple>
 #include <utility>
 
 namespace QuestVr::Vm {
@@ -334,7 +336,7 @@ void SetMember(Value& v, const std::string& name, const Value& member) {
     else throw std::runtime_error("VM struct member write unavailable: " + name);
 }
 
-class Machine {
+class Machine final : public Execution {
 public:
     Machine(Host& host, const Limits& limits, Result& result) : host_(host), limits_(limits), result_(result) {}
     ~Machine() {
@@ -347,9 +349,20 @@ public:
         }
     }
     void Accept() { accepted_ = true; }
-    Value Run(const Function& fn, const std::string& self, const std::vector<Evaluation>& incoming) {
-        if (self.empty() || !host_.CanCall(fn, self)) return {};
+    Value CallEvent(const std::string& receiver, const std::string& eventName,
+        const bool enumDispatch, const std::vector<Evaluation>& arguments) override {
+        if (eventName.size() > limits_.stringBytes || receiver.size() > limits_.stringBytes)
+            Fail(Status::Budget, "VM callback identity/name limit");
+        const auto identity = host_.ResolveEvent(receiver, eventName, enumDispatch);
+        return identity ? Run(*identity, receiver, arguments) : Value{};
+    }
+    Value Run(const Function& identity, const std::string& self, const std::vector<Evaluation>& incoming) {
+        if (self.empty() || !host_.CanCall(identity, self)) return {};
         if (result_.callStack.size() >= limits_.callDepth) Fail(Status::Budget, "VM call depth limit");
+        const auto prepared = host_.PrepareFunction(identity, self);
+        if (!prepared || prepared->path != identity.path || prepared->source != identity.source)
+            Fail(Status::Invalid, "Prepared VM function changed callable identity");
+        const Function& fn = *prepared;
         result_.callStack.push_back(fn.path);
         result_.function = fn.path; result_.offset = 0; result_.opcode = 0;
         if (fn.flags & 0x8) Fail(Status::Unsupported, "Latent VM function requires a continuation engine");
@@ -433,7 +446,127 @@ public:
         for (const auto& p : fn.variables) localElements_ -= p.arrayDimension;
         result_.callStack.pop_back(); return value;
     }
+    Value Resume(const std::string& self) {
+        if (self.size() > limits_.stringBytes) Fail(Status::Budget, "VM state receiver identity limit");
+        bool active{};
+        const auto finish = [&](Value value = {}) {
+            if (active) result_.callStack.pop_back();
+            return value;
+        };
+        for (;;) {
+            const auto* object = host_.ReadState(self);
+            if (!object || !object->frameOverride || !object->frame || object->frame->codePath.empty()) return finish();
+            const auto code = object->frame->codePath;
+            const auto localOwner = object->frame->localsCodePath;
+            const auto statementIndex = object->frame->statementIndex;
+            const auto latent = object->frame->latent;
+            if (latent == StateLatent::Stop) { result_.status = Status::Stopped; return finish(); }
+            if (latent != StateLatent::Continue)
+                Fail(Status::Unsupported, "State latent action requires its runtime handler");
+            if (!active) {
+                if (result_.callStack.size() >= limits_.callDepth) Fail(Status::Budget, "VM state call depth limit");
+                result_.callStack.push_back(code); active = true;
+            } else result_.callStack.back() = code;
+            auto& view = StateView(self, code, localOwner);
+            if (statementIndex >= view.program.statements.size())
+                Fail(Status::Invalid, "Unexpected end of state code statements");
+            const Node& statement = view.program.statements[statementIndex];
+            Step(view.function, statement.offset, statement.op);
+            auto* writable = host_.MutableState(self);
+            if (!writable || !writable->frameOverride || !writable->frame ||
+                writable->frame->codePath != code ||
+                writable->frame->statementIndex != statementIndex)
+                Fail(Status::Invalid, "State frame changed while advancing its instruction");
+            if (statementIndex == std::numeric_limits<std::uint32_t>::max())
+                Fail(Status::Invalid, "State statement ordinal overflow");
+            writable->frame->statementIndex = statementIndex + 1u;
+            // Hold the old statement/view alive while nested calls replace the
+            // persistent frame. Its result applies to the new code afterward.
+            Value value;
+            bool jump{};
+            if (statement.op == 0x04) value = Eval(view.frame, statement.children.at(0), self).Load();
+            else if (statement.op == 0x06) jump = true;
+            else if (statement.op == 0x07) jump = !ToBool(Eval(view.frame, statement.children.at(0), self).Load());
+            else if (statement.op == 0x09) {
+                if (!ToBool(Eval(view.frame, statement.children.at(0), self).Load()))
+                    Fail(Status::Invalid, "Script assert failed at line " + std::to_string(statement.target));
+            } else if (statement.op == 0x0d) {
+                value = Eval(view.frame, statement.children.at(0), self).Load();
+                if (value.kind != Kind::Name && value.kind != Kind::Nothing) TypeError();
+            } else if (statement.op != 0x08 && statement.op != 0x15) Eval(view.frame, statement, self);
+            Locate(view.function, statement.offset, statement.op);
+            object = host_.ReadState(self);
+            if (!object || !object->frameOverride || !object->frame || object->frame->codePath.empty()) return finish(value);
+            if (jump) {
+                const auto& current = *object->frame;
+                auto& currentView = StateView(self, current.codePath, current.localsCodePath);
+                const auto target = currentView.program.boundaries.find(statement.target);
+                if (target == currentView.program.boundaries.end())
+                    Fail(Status::Invalid, "State jump is not a current-code statement boundary");
+                auto* changed = host_.MutableState(self);
+                changed->frame->statementIndex = static_cast<std::uint32_t>(target->second);
+            } else if (statement.op == 0x0d) host_.GotoStateLabel(self, value.text, false);
+            else if (statement.op == 0x08 || statement.op == 0x15) {
+                host_.MutableState(self)->frame->latent = StateLatent::Stop;
+                result_.status = Status::Stopped; return finish();
+            } else if (statement.op == 0x04) {
+                ValidateValue(value, 0); return finish(value);
+            }
+            object = host_.ReadState(self);
+            if (!object || !object->frameOverride || !object->frame || object->frame->codePath.empty()) return finish();
+            if (object->frame->latent != StateLatent::Continue) {
+                if (object->frame->latent == StateLatent::Stop) { result_.status = Status::Stopped; return finish(); }
+                Fail(Status::Unsupported, "State latent action requires its runtime handler");
+            }
+        }
+    }
 private:
+    struct StateExecutionView {
+        std::shared_ptr<const Function> owner;
+        const Function& function;
+        Program program;
+        Frame frame;
+        StateExecutionView(std::shared_ptr<const Function> f, Program p, std::string self)
+            : owner(std::move(f)), function(*owner), program(std::move(p)), frame{function, std::move(self), {}} {}
+    };
+    std::map<std::tuple<std::string, std::string, std::string, std::uint64_t>, std::unique_ptr<StateExecutionView>> stateViews_;
+    StateExecutionView& StateView(const std::string& self, const std::string& code, const std::string& localOwner) {
+        if (code.size() > limits_.stringBytes || localOwner.size() > limits_.stringBytes)
+            Fail(Status::Budget, "VM state code identity limit");
+        const auto key = std::make_tuple(self, code, localOwner, host_.StateLocalRevision(self));
+        const auto found = stateViews_.find(key);
+        if (found != stateViews_.end()) return *found->second;
+        auto function = host_.StateProgram(self, code);
+        if (!function || function->path != code || function->source.empty() || (function->flags & 0x400u))
+            Fail(Status::Invalid, "State program changed code identity or is native");
+        const auto locals = localOwner == code ? function : host_.StateProgram(self, localOwner);
+        if (!locals || locals->path != localOwner || locals->source.empty() || (locals->flags & 0x400u))
+            Fail(Status::Invalid, "State locals owner changed identity or is native");
+        Retain(sizeof(StateExecutionView) + self.size() + code.size() + localOwner.size() + function->bytecode.size());
+        auto view = std::make_unique<StateExecutionView>(function,
+            Parser(host_, *function, limits_, nodes_, result_).Parse(), self);
+        for (const auto& property : locals->variables) {
+            if (property.arrayDimension == 0 || property.arrayDimension > limits_.localElements ||
+                localElements_ > limits_.localElements - property.arrayDimension)
+                Fail(Status::Budget, "VM state local element limit");
+            ValidateValue(property.zero, 0);
+            auto reference = host_.StateVariable(self, property);
+            if (!reference || !reference->read || !reference->write || reference->dimension != property.arrayDimension)
+                Fail(Status::Invalid, "State local storage/schema mismatch");
+            localElements_ += property.arrayDimension;
+            Retain(sizeof(Reference) + property.key.size());
+            for (std::size_t index = 0; index < property.arrayDimension; ++index) {
+                const auto element = index ? (reference->element ? reference->element(index) : nullptr) : reference;
+                if (!element || !element->read) Fail(Status::Invalid, "State array local storage unavailable");
+                const auto stored = element->read(); ValidateValue(stored, 0);
+                if (!Equal(Coerce(stored, property.zero), stored)) Fail(Status::Invalid, "State local has incorrect stored type");
+                Retain(ValueBytes(stored));
+            }
+            if (!view->frame.locals.emplace(property.key, std::move(reference)).second)
+                Fail(Status::Invalid, "Duplicate state local identity");
+        }
+        auto* result = view.get(); stateViews_.emplace(key, std::move(view)); return *result;
+    }
     Host& host_;
     const Limits& limits_;
     Result& result_;
@@ -762,7 +895,7 @@ private:
             // No implicit success for missing campaign behavior or latent calls.
             auto guarded = args;
             for (auto& argument : guarded) argument.reference = GuardReference(argument.reference);
-            const auto value = host_.Native(index, self, guarded, declaration).Load();
+            const auto value = host_.NativeWithExecution(index, self, guarded, declaration, *this).Load();
             // Native return slots are values in the pinned VM, never aliases
             // to an out argument or to a guard owned by this Machine.
             ValidateValue(value, 0); return {value, {}};
@@ -799,6 +932,7 @@ Result Execute(Host& host, const Function& function, const std::string& self,
         result.value = machine.Run(function, self, arguments);
         host.Commit(); begun = false;
         machine.Accept();
+        result.committed = true;
         result.status = Status::Returned;
         result.function = function.path;
     } catch (const Failure& error) {
@@ -807,6 +941,28 @@ Result Execute(Host& host, const Function& function, const std::string& self,
         result.status = Status::Unsupported; result.error = error.what();
     } catch (...) {
         result.status = Status::Invalid; result.error = "Unknown VM execution failure";
+    }
+    if (begun) host.Rollback();
+    if (!result.passed()) result.value = {};
+    return result;
+}
+
+Result ResumeState(Host& host, const std::string& self, const Limits& limits) {
+    Result result;
+    bool begun{};
+    try {
+        host.Begin(); begun = true;
+        Machine machine(host, limits, result);
+        result.value = machine.Resume(self);
+        host.Commit(); begun = false;
+        machine.Accept(); result.committed = true;
+        if (result.status != Status::Stopped) result.status = Status::Returned;
+    } catch (const Failure& error) {
+        result.status = error.status; result.error = error.what();
+    } catch (const std::exception& error) {
+        result.status = Status::Unsupported; result.error = error.what();
+    } catch (...) {
+        result.status = Status::Invalid; result.error = "Unknown state execution failure";
     }
     if (begun) host.Rollback();
     if (!result.passed()) result.value = {};

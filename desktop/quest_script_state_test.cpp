@@ -158,7 +158,7 @@ void MalformedStreams() {
     }
     auto broken=bytes;broken.push_back(0);Reject([&] { DecodeScriptSavedState(broken); },"Trailing save bytes accepted");
     broken=bytes;broken[0]^=1;Reject([&] { DecodeScriptSavedState(broken); },"Bad save magic accepted");
-    broken=bytes;broken[6]=2;Reject([&] { DecodeScriptSavedState(broken); },"Unsupported codec version accepted");
+    broken=bytes;broken[6]=3;Reject([&] { DecodeScriptSavedState(broken); },"Unsupported codec version accepted");
     for(const Bytes& value : {Bytes{255},Bytes{3,2},Bytes{4,0,0,0xc0,0x7f},Bytes{4,0,0,0x80,0x7f},
         Bytes{8,0,0,0x80,0x7f,0,0,0,0,0,0,0,0}}) {
         broken=OneValue(value);Reject([&] { DecodeScriptSavedState(broken); },"Bad value tag/bool/non-finite payload accepted");

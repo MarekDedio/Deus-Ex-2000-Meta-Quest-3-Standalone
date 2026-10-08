@@ -1,7 +1,9 @@
 # Scoped script-state saves
 
 Runtime checkpoint version 4 adds persistence for properties committed by the
-bounded actor interpreter and its native animation clocks. It does not add
+bounded actor interpreter and its native animation clocks. Version 5 additionally
+stores explicit portable state frames, typed locals and state-keyed disabled sets.
+Neither version adds
 automatic NPC startup, AI, live animation, or a general UnrealScript savegame.
 Only the current map's supported, authored actor objects are restored.
 
@@ -15,11 +17,12 @@ there is no per-map archive yet. Saving it does not remove that travel guard.
 
 The runtime checkpoint still starts with magic `0x53515844`. A checkpoint
 without committed script objects is written as version 3, with no new trailer.
-A checkpoint with them uses version 4: the version word changes, the existing
+A checkpoint containing only properties/clocks uses version 4; one with any
+portable state object uses version 5. The version word changes, the existing
 version-3 fields retain their order and widths, and one trailer is appended.
 
 ```text
-u32 magic, u32 version=4
+u32 magic, u32 version=4 or 5
 version-3 fields:
   inventory[], inactive actors[], activated actors[]
   f32 player health, damaged actors[(path,f32 health)]
@@ -34,7 +37,8 @@ Strings are `u32 byte length` followed by bytes, without a terminator; lists
 begin with a `u32` count. The trailer must be nonempty and cover the exact
 remaining runtime payload. Truncation, oversized lengths and trailing bytes
 are errors. Versions 1, 2 and 3 remain readable through their existing field
-sets; they cannot contain a version-4 script trailer.
+sets; they cannot contain a script trailer. A v4 envelope must contain codec v1
+without state records; a v5 envelope must contain codec v2 with a state record.
 
 This version number is distinct from the Persona/UI metadata version and from
 the paired `.qsv` bundle format. The alternating-slot, checksum and durable
@@ -47,6 +51,8 @@ the codec does not implement file I/O.
 `native/quest_script_state.h` exposes `EncodeScriptSavedState` and
 `DecodeScriptSavedState`. Its internal format starts with eight magic/version
 bytes: `44 58 51 56 4d 53 01 00` (`DXQVMS`, version 1, reserved zero).
+If any object has portable state, byte 6 is 2 instead of 1. Without such state,
+the exact legacy v1 representation is retained.
 
 ```text
 mapName
@@ -59,7 +65,25 @@ objects[]:
     u8 value tag, typed value payload
   u8 hasClock (0 or 1)
   optional complete animation clock
+  codec v2 only: u8 hasState, optional portable state object
 ```
+
+The v2 state object contains three booleans (HasStack, portable-frame override,
+hasFrame), optional qualified running/local-owner paths, u32 next-statement ordinal,
+u8 latent ordinal, counted typed fixed-array locals, and counted state-keyed
+disabled-name sets. It stores no native pointers or package-local property indices.
+The running code may differ from the same-named local declaration owner after an
+inherited label jump. A false override preserves immutable raw dormant context
+without fabricating native class locals; it requires no portable frame.
+
+Structural codec validation represents all twelve pinned latent ordinals, retains
+null/stopped stale PC, checks canonical case-insensitive ordering and duplicate
+identity rejection, and bounds every count/value/tree before materialization.
+Runtime preparation adds actual authored schema/ancestry/HasStack/typed-local and
+PC checks; only Continue/Stop have supported restore behavior today. Continue
+allows the exact end ordinal produced by a committed Return; next resume rejects
+the absent statement. Disabled identities are folded on preparation so subsequent
+Enable mutates the restored set. See [state execution](STATE-EXECUTION.md).
 
 Value tags are stable wire identifiers, independent of `Vm::Kind` enum
 ordinals and C++ structure layout:
@@ -107,6 +131,10 @@ Generic codec defaults are:
 | String bytes | 8,192 per string |
 | Map name | 128 bytes, also within the string limit |
 | Value depth | 32 levels, root at depth zero |
+| State local declarations | 65,536 across objects |
+| State local array elements | 262,144 across objects |
+| Disabled-state sets | 65,536 across objects |
+| Disabled-event names | 262,144 across objects |
 
 Retained estimates include object/property arrays, nested map nodes, strings
 and bounded sorting pointers. Encoding validates/counts the complete tree
@@ -122,6 +150,13 @@ budget of 64 MiB for cached table metadata and expanded paths, separate from
 the serialized-value quota. Unsupported map-local classes in a different,
 unloaded custom map fail closed; imported original campaign classes use the
 initialized script reflection graph.
+
+Persistent portable state is measured cumulatively without copying before a
+transaction and after allocating state mutations/at commit. This uses conservative
+codec accounting with the 16 MiB runtime cap and aggregate state counts, so
+independent calls cannot grow unbounded sets/locals. The combined save capture
+still accounts for gameplay prefix, object identities, properties and clocks;
+its quota can reject a capture even within this state-only bound.
 
 ## Complete animation clock
 
@@ -165,24 +200,47 @@ hierarchies for these absent wrappers. It neither treats every missing class as
 hierarchies fail closed.
 
 `ValidatePortableRuntimeState` is a read-only preflight for live gameplay,
-property overlays and clocks. It can inspect the saved map's authored schema
+property overlays, clocks and portable state. It can inspect the saved map's authored schema
 while a different map is loaded; it does not replace the map or apply that
-timeline. Schema caches may be populated during inspection. Actual version-4
+timeline. Schema caches may be populated during inspection. Actual version-4/5
 application requires the matching authored map to be loaded and resolves all
 targets and prepares all allocating containers before clearing live state.
 
 A rejected/truncated/mismatched checkpoint leaves the current gameplay state,
-property overlays and clocks intact. Capture collects and schema-validates its
+property overlays, clocks and portable state intact. Capture collects and schema-validates its
 state before writing, so validation/budget failure must not truncate an existing
 checkpoint. After successful application, saved script state replaces the
-current scoped overlays/clocks rather than merging abandoned timelines.
+current scoped overlays/clocks/state rather than merging abandoned timelines.
 
 A fully validated legacy version-1/2/3 load has no script blob and intentionally
-clears scoped overlays, clocks and committed flags, returning those fields to
+clears scoped overlays, clocks, portable state objects and committed flags, returning those fields to
 authored inheritance. Read-only legacy validation does not clear them.
 Cross-map script references and arbitrary dynamic objects are not synthesized.
 
 ## Evidence and commands
+
+The subsequent state-frame codec adds 1,251 checks, including 621 rejection
+controls, for all twelve structural latent ordinals, code/local-owner identities,
+fixed-array locals, disabled sets, malformed input and cumulative retained/count
+budgets. The final-source host suite passes 30 ordinary tests with two separate
+original-data tests skipped by default (32 entries total).
+
+The separate original-runtime test with the explicit game root also passes the
+new state-only v5 composition and paired v3/v5 save generations. It independently
+walks the gameplay prefix and verifies exact canonical script-blob bytes, restored
+gameplay semantics, read-only wrong-map rejection, legacy reset and guarded travel.
+The unordered legacy gameplay prefix is not claimed to be byte-canonical. These
+results are in ignored `artifacts/state-execution-20261008/ctest.log`,
+`state-codec-test.log` and `original-runtime.log` (terminal exit code 0).
+
+The final-source original actor integration also completed exit 0 in
+`original-actors.log`: state-only/selected-frame/None/Stop/disabled-set roundtrips,
+twelve new schema rejections, end-ordinal and mixed-case controls, and complete
+payload rollback at unsupported original InventoryItem/AI behavior. Physics-only
+v4 restoration and legacy clearing also pass. These fixtures do not run a full
+NPC initialization or campaign.
+
+The earlier property/clock-only evidence below remains a regression baseline.
 
 The standalone structural codec was compiled with g++17, optimization and
 `-Wall -Wextra -Wpedantic`, without compiler diagnostics. It passed 1,415 checks,
@@ -204,6 +262,7 @@ To repeat after rebuilding the host targets, run:
 
 ```powershell
 .\desktop\build\quest_script_state_test.exe
+.\desktop\build\quest_state_frame_codec_test.exe
 .\desktop\build\portable_actor_script_test.exe 'D:\Steam\steamapps\common\Deus Ex'
 .\desktop\build\portable_runtime_state_test.exe --game-root 'D:\Steam\steamapps\common\Deus Ex'
 ```
@@ -220,13 +279,14 @@ Never fault-inject corruption into the user's only save.
 
 This is scoped current-map persistence, not a per-map campaign archive. Travel
 and unload still refuse committed scoped state; shutdown is not a substitute
-for saving. There is no serialization of VM call stacks, locals, active states,
-latent instruction continuations, timers, RNG, dynamically spawned actors or
+for saving. Version 5 stores supported persistent state locals/code/PC/disabled
+sets, but not VM call stacks, latent call continuations, timers, RNG, dynamically spawned actors or
 event/animation residual elapsed debt. The stored FinishAnim flag does not
 implement a latent VM resumption engine.
 
-Automatic authored startup, state/AI execution, event eligibility and
-synchronous notify/AnimEnd dispatch remain unfinished. The pure clock is not
+Automatic authored startup, complete AI/physics/latent behavior and live
+notify/AnimEnd scheduling remain unfinished. Explicit state control and event
+eligibility are supported within bounded transactional APIs. The pure clock is not
 hooked to live per-frame mesh uploads; original asset decoding and saved clock
 fields do not prove NPC movement or animation. Quest stereo rendering,
 controller/XR behavior, save/restore frame time and full campaign progression

@@ -221,10 +221,10 @@ std::vector<std::uint8_t> CheckpointBytes(const std::filesystem::path& path) {
     return bytes;
 }
 // Independent exact v3 prefix walk. No guessed search for blob signatures or
-// trailer bytes: v4 must append one bounded length + codec payload after every
+// trailer bytes: v4/v5 append one bounded length + codec payload after every
 // existing gameplay/progress field, preserving the old layout verbatim.
 std::size_t ScriptTailOffset(const std::vector<std::uint8_t>& bytes) {
-    Require(Word(bytes,0)==0x53515844u && Word(bytes,4)==4u,"Script checkpoint is not runtime v4");
+    Require(Word(bytes,0)==0x53515844u && (Word(bytes,4)==4u || Word(bytes,4)==5u),"Script checkpoint is not runtime v4/v5");
     std::size_t cursor=8;
     const auto skip=[&](const std::size_t count) {
         Require(cursor<=bytes.size() && count<=bytes.size()-cursor,"Generated checkpoint prefix truncated");cursor+=count;
@@ -237,7 +237,7 @@ std::size_t ScriptTailOffset(const std::vector<std::uint8_t>& bytes) {
     for(std::uint32_t i=0;i<damaged;++i) {string();skip(4);}
     skip(8);list();list();list();list(); // credits, skills, flags, goals, notes, applied effects.
     const auto size=Word(bytes,cursor);
-    Require(size>0 && cursor+4<=bytes.size() && size==bytes.size()-cursor-4,"Script blob length does not cover exact v4 tail");
+    Require(size>0 && cursor+4<=bytes.size() && size==bytes.size()-cursor-4,"Script blob length does not cover exact script tail");
     return cursor;
 }
 std::vector<std::uint8_t> ScriptBlob(const std::vector<std::uint8_t>& bytes) {
@@ -482,6 +482,184 @@ struct TemporaryCheckpoint {
     }
 };
 
+void VerifyOriginalStateExecution(const std::string& actor, const std::filesystem::path& legacy,
+    const std::filesystem::path& directory) {
+    const auto saved = directory / "original-state-v5.sav";
+    const auto inspect = directory / "state-unchanged-v5.sav";
+    const auto generated = directory / "generated-state-v5.sav";
+    const auto unchanged = [&](const std::vector<std::uint8_t>& expected, const std::string& description) {
+        Require(SavePortableRuntimeState(inspect.string()) && CheckpointBytes(inspect)==expected,
+            description+" changed complete live gameplay/script/clock/state payload");
+    };
+    Require(LoadPortableRuntimeState(legacy.string()) && !ReadPortableActorStateObject(actor),
+        "Legacy restore did not clear the portable state override");
+    const auto authored = ReadPortableActorDispatchContext(actor);
+    const auto authoredPhysics=ReadPortableActorScriptProperty(actor,"Physics");
+    const auto authoredVelocity=ReadPortableActorScriptProperty(actor,"Velocity");
+    const auto authoredBase=ReadPortableActorScriptProperty(actor,"Base");
+    Require(authoredPhysics.kind==Kind::Byte,"Original Actor.Physics is not a byte");
+    Call(actor,"SetPhysics",{{Value::Byte(3u),{}}});
+    Require(ReadPortableActorScriptProperty(actor,"Physics").integer==3 &&
+        QuestVr::Vm::Equal(ReadPortableActorScriptProperty(actor,"Velocity"),authoredVelocity) &&
+        QuestVr::Vm::Equal(ReadPortableActorScriptProperty(actor,"Base"),authoredBase) && !ReadPortableActorStateObject(actor),
+        "Pinned SetPhysics assignment reset velocity/base or fabricated a state frame");
+    Call(actor,"SetPhysics",{{Value::Integer(257),{}},{Value::Text(Kind::Object,actor),{}}});
+    Require(ReadPortableActorScriptProperty(actor,"Physics").integer==1 &&
+        QuestVr::Vm::Equal(ReadPortableActorScriptProperty(actor,"Base"),authoredBase) && SavePortableRuntimeState(saved.string()),
+        "SetPhysics byte conversion or pinned optional-floor behavior diverged");
+    const auto physicsBytes=CheckpointBytes(saved);
+    Require(Word(physicsBytes,4)==4u,"Physics-only property change fabricated state/clock storage");
+    const auto badPhysics=ExecutePortableActorFunction(actor,"SetPhysics",{Name("InvalidPhysics")});
+    const auto badFloor=ExecutePortableActorFunction(actor,"SetPhysics",{{Value::Byte(2u),{}},Name("InvalidFloor")});
+    Require(!badPhysics.passed() && !badFloor.passed(),"Malformed SetPhysics arguments were accepted");
+    unchanged(physicsBytes,"Malformed SetPhysics native argument rollback");
+    Call(actor,"SetPhysics",{{Value::Byte(0u),{}}});
+    Require(LoadPortableRuntimeState(saved.string()) && ReadPortableActorScriptProperty(actor,"Physics").integer==1,
+        "Physics byte overlay did not restore from v4");
+    unchanged(physicsBytes,"Physics-only v4 roundtrip");
+    Require(LoadPortableRuntimeState(legacy.string()) &&
+        QuestVr::Vm::Equal(ReadPortableActorScriptProperty(actor,"Physics"),authoredPhysics) && !GetPortableRuntimeScriptStatePresent(),
+        "Legacy restore did not clear the Physics byte overlay");
+    std::cout<<"ORIGINAL SETPHYSICS byte assignment/conversion/optional-floor/native argument rollback/v4/legacy passed; no simulation implied\n";
+    Call(actor,"Disable",{Name("Quest_Test_Event")});
+    auto dynamic = ReadPortableActorStateObject(actor);
+    Require(dynamic && !dynamic->frameOverride && !dynamic->frame && dynamic->hasStack &&
+        ReadPortableActorDispatchContext(actor).disabledNames.count("quest_test_event")==1u &&
+        SavePortableRuntimeState(saved.string()), "Disable did not preserve dormant raw context in a state-only record");
+    const auto dormant = CheckpointBytes(saved);
+    Require(Word(dormant,4)==5u && ScriptBlob(dormant).at(6)==2u,
+        "State-only capture did not select runtime v5 / script codec v2");
+    Call(actor,"Enable",{Name("QUEST_TEST_EVENT")});
+    Require(ReadPortableActorDispatchContext(actor).disabledNames.count("quest_test_event")==0u &&
+        LoadPortableRuntimeState(saved.string()), "Enable folding or dormant disabled-set restore failed");
+    unchanged(dormant,"Dormant disabled-set roundtrip");
+    Call(actor,"SetInitialState");
+    const auto startup = ReadPortableActorStateObject(actor);
+    const auto context = ReadPortableActorDispatchContext(actor);
+    const auto layout = ReadPortableRuntimeStateProgram("DeusEx.ScriptedPawn.StartUp");
+    const auto begin = std::find_if(layout.labels.begin(),layout.labels.end(),[](const auto& label) {
+        return QuestVr::ScriptDispatch::FoldName(label.name)=="begin";
+    });
+    Require(begin!=layout.labels.end(),"Original StartUp fixture lacks authored Begin label");
+    const auto ordinal = std::lower_bound(layout.statementOffsets.begin(),layout.statementOffsets.end(),begin->offset)-layout.statementOffsets.begin();
+    Require(startup && startup->frameOverride && startup->frame && startup->hasStack &&
+        startup->frame->codePath=="DeusEx.ScriptedPawn.StartUp" &&
+        startup->frame->localsCodePath==startup->frame->codePath &&
+        startup->frame->latent==QuestVr::StateLatent::Continue && startup->frame->statementIndex==ordinal &&
+        context.stateName=="StartUp" && context.disabledNames.empty(),
+        "Pre-begun-play SetInitialState did not select actual Auto/Begin code with independent disabled sets");
+    Call(actor,"Disable",{Name("Quest_Test_Event")});
+    Require(SavePortableRuntimeState(saved.string()),"Actual selected state frame could not be saved");
+    const auto selected = CheckpointBytes(saved);
+    const auto slice = ResumePortableActorState(actor);
+    Require(!slice.passed() && !slice.error.empty(),"Original StartUp slice was silently treated as fully implemented");
+    unchanged(selected,"Unsupported original state slice rollback");
+    std::cout<<"ORIGINAL STATE SLICE explicit refusal: "<<slice.error<<" at "<<slice.function<<':'<<slice.offset<<'\n';
+    Call(actor,"GotoState",{Name("None")});
+    const auto cleared = ReadPortableActorStateObject(actor);
+    Require(cleared && cleared->frame && cleared->frame->codePath.empty() && cleared->frame->locals.empty() &&
+        cleared->frame->localsCodePath.empty() && cleared->frame->statementIndex==startup->frame->statementIndex &&
+        cleared->frame->latent==startup->frame->latent &&
+        Call(actor,"GetStateName").value.text=="None", "GotoState(None) fabricated a PC/latent reset or retained code locals");
+    Call(actor,"GotoState",{Name(authored.stateName)}); // Named class is not a State, so remains None.
+    Require(Call(actor,"GetStateName").value.text=="None","Class-backed raw state identity was accepted as an executable named State");
+    Require(LoadPortableRuntimeState(saved.string()),"Selected StartUp continuation did not restore");
+    unchanged(selected,"Selected frame roundtrip");
+    Call(actor,"GotoState",{Name("StartUp"),Name("Quest_No_Such_Label")});
+    const auto stopped = ReadPortableActorStateObject(actor);
+    Require(stopped && stopped->frame && stopped->frame->latent==QuestVr::StateLatent::Stop &&
+        stopped->frame->statementIndex==startup->frame->statementIndex,
+        "Same-state missing transition label did not stop while preserving PC");
+    Require(SavePortableRuntimeState(inspect.string()),"Stopped selected state could not save");
+    const auto stoppedBytes=CheckpointBytes(inspect);
+    const auto stopSlice=ResumePortableActorState(actor);
+    Require(stopSlice.passed() && stopSlice.committed && stopSlice.status==Status::Stopped && stopSlice.instructions==0u,
+        "Stopped portable frame did not commit a no-op state slice");
+    unchanged(stoppedBytes,"Stopped slice");
+    Require(LoadPortableRuntimeState(saved.string()),"Could not reset selected frame before schema controls");
+    const auto baseline=QuestVr::DecodeScriptSavedState(ScriptBlob(selected));
+    const auto index=static_cast<std::size_t>(std::find_if(baseline.objects.begin(),baseline.objects.end(),[&](const auto& object) {
+        return object.path==actor;
+    })-baseline.objects.begin());
+    Require(index<baseline.objects.size() && baseline.objects[index].state && baseline.objects[index].state->frame,
+        "Original v5 fixture did not contain its complete state record");
+    std::size_t rejected{};
+    const auto rejectBytes=[&](const std::vector<std::uint8_t>& bytes,const std::string& description) {
+        Require(QuestVr::WriteDurableSaveFile(generated.string(),bytes) &&
+            !ValidatePortableRuntimeState(generated.string()) && !LoadPortableRuntimeState(generated.string()),
+            description+" checkpoint was accepted");
+        unchanged(selected,description+" rejection");++rejected;
+    };
+    const auto reject=[&](const std::function<void(QuestVr::StateObject&)>& mutate,const std::string& description) {
+        auto invalid=baseline;mutate(*invalid.objects[index].state);
+        rejectBytes(ReplaceScriptBlob(selected,QuestVr::EncodeScriptSavedState(invalid)),description);
+    };
+    reject([](auto& value) {value.hasStack=false;},"Cleared authored HasStack");
+    reject([](auto& value) {value.frame->codePath="Engine.Actor";},"Class as state code");
+    reject([](auto& value) {value.frame->codePath="DeusEx.ScriptedPawn.NoSuchState";},"Unknown state code");
+    reject([](auto& value) {value.frame->codePath="DeusEx.ScriptedPawn.Standing";},"Different running/local state name");
+    reject([](auto& value) {value.frame->localsCodePath="DeusEx.Robot.Standing";},"Local owner outside receiver ancestry");
+    reject([](auto& value) {value.frame->statementIndex=0xffffffffu;},"Running PC out of code");
+    reject([](auto& value) {value.frame->latent=QuestVr::StateLatent::Sleep;},"Unhandled saved latent action");
+    reject([](auto& value) {value.frame->locals.push_back({"Engine.Actor.NoSuchLocal",{Value::Integer(0)}});},"Incomplete/mismatched local schema");
+    auto wrongEnvelope=selected;PutWord(wrongEnvelope,4,4u);rejectBytes(wrongEnvelope,"State codec in v4 envelope");
+    auto absent=baseline;absent.objects[index].state.reset();
+    rejectBytes(ReplaceScriptBlob(selected,QuestVr::EncodeScriptSavedState(absent)),"Legacy codec in v5 envelope");
+    auto truncated=selected;truncated.pop_back();rejectBytes(truncated,"Truncated v5 tail");
+    auto extra=selected;extra.push_back(0);rejectBytes(extra,"Trailing v5 byte");
+    // Positive stale Stop ordinal, exact dormant-state sets, and a cleared code
+    // frame are valid pinned representations, not fabricated reset positions.
+    auto stale=baseline;stale.objects[index].state->frame->latent=QuestVr::StateLatent::Stop;
+    stale.objects[index].state->frame->statementIndex=0xffffffffu;
+    Require(QuestVr::WriteDurableSaveFile(generated.string(),ReplaceScriptBlob(selected,QuestVr::EncodeScriptSavedState(stale))) &&
+        ValidatePortableRuntimeState(generated.string()) && LoadPortableRuntimeState(generated.string()) &&
+        ReadPortableActorStateObject(actor)->frame->statementIndex==0xffffffffu,
+        "Valid stopped stale PC was rejected or reset");
+    Require(LoadPortableRuntimeState(saved.string()),"Could not reset state after stale stopped PC control");
+    auto terminal=baseline;terminal.objects[index].state->frame->statementIndex=static_cast<std::uint32_t>(layout.statementOffsets.size());
+    Require(QuestVr::WriteDurableSaveFile(generated.string(),ReplaceScriptBlob(selected,QuestVr::EncodeScriptSavedState(terminal))) &&
+        ValidatePortableRuntimeState(generated.string()) && LoadPortableRuntimeState(generated.string()),
+        "Legitimately advanced end-of-code Continue ordinal could not restore");
+    Require(SavePortableRuntimeState(inspect.string()),"End-of-code Continue frame became unsaveable");
+    const auto endBytes=CheckpointBytes(inspect);
+    const auto endSlice=ResumePortableActorState(actor);
+    Require(!endSlice.passed() && endSlice.error.find("Unexpected end")!=std::string::npos,
+        "End-of-code Continue fabricated a successful next slice");
+    unchanged(endBytes,"End-of-code resume failure rollback");
+    auto folded=baseline;
+    auto& sets=folded.objects[index].state->disabled;
+    const auto current=sets.find("startup");Require(current!=sets.end(),"Selected state fixture lacks its disabled set");
+    const auto names=current->second;sets.erase(current);sets["StArTuP"]=names;
+    sets["StArTuP"].erase("quest_test_event");sets["StArTuP"].insert("QuEsT_TeSt_EvEnT");
+    Require(QuestVr::WriteDurableSaveFile(generated.string(),ReplaceScriptBlob(selected,QuestVr::EncodeScriptSavedState(folded))) &&
+        LoadPortableRuntimeState(generated.string()) && ReadPortableActorDispatchContext(actor).disabledNames.count("quest_test_event")==1u,
+        "Mixed-case state/event disabled identities did not restore canonically");
+    Call(actor,"Enable",{Name("QUEST_TEST_EVENT")});
+    Require(ReadPortableActorDispatchContext(actor).disabledNames.count("quest_test_event")==0u,
+        "Enable failed to remove a restored mixed-case disabled event");
+    Require(LoadPortableRuntimeState(saved.string()),"Could not reset selected state after terminal/mixed-case controls");
+    // Generate only a typed bBegunPlay overlay. This does not claim world startup
+    // occurred; it exposes the actual BeginState chain's next missing native.
+    auto begun=baseline;
+    const auto levelValue=ReadPortableActorScriptProperty(actor,"Level");
+    const auto levelSnapshot=Snapshot(levelValue.text);
+    begun.objects.push_back({levelSnapshot.objectPath,levelSnapshot.classPath,
+        {{"Engine.LevelInfo.bBegunPlay","bBegunPlay",0u,Value::Bool(true)}},{}});
+    begun.objects[index].state.reset();
+    auto begunBytes=ReplaceScriptBlob(selected,QuestVr::EncodeScriptSavedState(begun));PutWord(begunBytes,4,4u);
+    Require(QuestVr::WriteDurableSaveFile(generated.string(),begunBytes) && LoadPortableRuntimeState(generated.string()),
+        "Actual BeginState begun-play fixture was rejected");
+    const auto entry=ExecutePortableActorFunction(actor,"SetInitialState");
+    Require(!entry.passed() && !entry.error.empty() && !ReadPortableActorStateObject(actor),
+        "Original BeginState missing native was faked or leaked its new state");
+    unchanged(begunBytes,"Original synchronous BeginState failure rollback");
+    std::cout<<"ORIGINAL BEGINSTATE explicit refusal: "<<entry.error<<" at "<<entry.function<<':'<<entry.offset<<'\n';
+    Require(LoadPortableRuntimeState(legacy.string()) && !ReadPortableActorStateObject(actor) &&
+        !GetPortableRuntimeUnsavedScriptState(),"Legacy restore failed to clear complete portable state override");
+    std::cout<<"ORIGINAL v5 state-only/Auto/Begin/None/Stop/disabled-set roundtrip; schema rejections="<<rejected<<
+        "; atomic slice/callback failure; no world startup/tick implied\n";
+}
+
 void TestOriginal(const std::filesystem::path& root) {
     static constexpr const char* packages[] = {
         "ConSys", "Core", "DeusEx", "DeusExCharacters", "DeusExConAudioAIBarks",
@@ -655,12 +833,9 @@ void TestOriginal(const std::filesystem::path& root) {
                         "Rejected wrong-current-map v4 load changed current actors");
                 Require(LoadPortableRuntimeMap(LoadPortablePackageTables((root/"Maps"/(std::string(map)+".dx")).string())).passed &&
                     LoadPortableRuntimeState(checkpoint),"Could not reset original map after readonly cross-map preflight");
-                const auto beforeStartup = Snapshot(actor.objectPath);
-                const auto startup = ExecutePortableActorFunction(actor.objectPath, "SetInitialState");
-                Require(startup.status == Status::Unsupported && Same(beforeStartup, Snapshot(actor.objectPath)) &&
-                    !GetPortableRuntimeUnsavedScriptState() &&
-                    SameStack(authoredStack, ReadPortableActorSerializedStack(actor.objectPath)),
-                    "Unsupported original state startup was faked or leaked changes/stack metadata");
+                VerifyOriginalStateExecution(actor.objectPath,checkpoint,temporary.directory);
+                Require(SameStack(authoredStack, ReadPortableActorSerializedStack(actor.objectPath)),
+                    "Portable state execution changed immutable authored stack metadata");
                 ++humanTests;
                 std::cout << "ORIGINAL HUMAN " << actor.objectPath << " PlayWaiting/Standing.AnimEnd/Play/Loop/Tween/rollback/save passed\n";
             }
@@ -712,6 +887,7 @@ void TestOriginal(const std::filesystem::path& root) {
 } // namespace
 
 int main(int argc, char** argv) {
+    std::cout.setf(std::ios::unitbuf);
     try {
         if (argc != 2) {
             std::cout << "SKIP: supply readonly original Deus Ex installation for real actor script integration\n";

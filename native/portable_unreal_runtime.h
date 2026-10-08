@@ -4,6 +4,7 @@
 #include "quest_actor_materials.h"
 #include "quest_portable_vm.h"
 #include "quest_script_dispatch.h"
+#include "quest_state_frame.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -302,8 +303,8 @@ std::optional<PortableObjectStack> ReadPortableActorSerializedStack(
     const std::string& actorPath);
 PortableStateDescriptor ReadPortableRuntimeAuthoredStateDescriptor(
     const std::string& objectPath);
-// Authored stopped-frame context, not state entry/ticking. Runnable serialized
-// continuations fail explicitly until supported. No automatic callback caller.
+// Effective authored-dormant or explicit portable state context. Runnable raw
+// HasStack continuations remain unsupported; no automatic callback caller.
 struct PortableActorDispatchContext {
     std::string codePath, stateName{"None"};
     std::uint64_t classProbeMask{};
@@ -315,6 +316,10 @@ struct PortableScriptDispatchSummary {
 };
 PortableScriptDispatchSummary ReadPortableRuntimeDispatchSummary();
 PortableActorDispatchContext ReadPortableActorDispatchContext(const std::string& actorPath);
+std::optional<QuestVr::StateObject> ReadPortableActorStateObject(const std::string& actorPath);
+// Explicit bounded state slice, not a world tick or automatic startup phase.
+QuestVr::Vm::Result ResumePortableActorState(const std::string& actorPath,
+    const QuestVr::Vm::Limits& limits = {});
 std::optional<std::string> ResolvePortableActorState(const std::string& actorPath,
     const std::string& stateName);
 std::optional<std::string> ResolvePortableActorFunction(const std::string& actorPath,
@@ -327,7 +332,8 @@ QuestVr::Vm::Result ExecutePortableActorEvent(const std::string& actorPath,
     const std::string& eventName, bool enumDispatch = false,
     const std::vector<QuestVr::Vm::Evaluation>& arguments = {},
     const QuestVr::Vm::Limits& limits = {});
-// v4 preserves supported actor overlays and native animation clocks. This
+// v4 preserves supported actor overlays/clocks; v5 adds portable state frames,
+// local storage and state-keyed disabled sets. This
 // predicate means state is present, not that a successful save has cleared it.
 // Map replacement/unload still require a per-map archive and are guarded while
 // state exists. Legacy v1-v3 load explicitly restores authored properties;
@@ -350,7 +356,7 @@ PortableTextureArray BuildPortableRuntimeActorTextureArray(
 PortableInteractionResult InteractPortableRuntimeActor(const std::string& objectPath);
 bool VerifyPortableRuntimeInteraction();
 bool SavePortableRuntimeState(const std::string& path);
-// Optional binding protects paired metadata from referring to another v4 map.
+// Optional binding protects paired metadata from referring to another v4/v5 map.
 // Legacy v1-v3 have no embedded map identity and retain their existing behavior.
 bool ValidatePortableRuntimeState(const std::string& path, const std::string& expectedMapName = {});
 bool LoadPortableRuntimeState(const std::string& path);
