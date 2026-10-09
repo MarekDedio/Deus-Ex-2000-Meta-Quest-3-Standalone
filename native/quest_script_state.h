@@ -5,6 +5,7 @@
 #include "quest_state_frame.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstring>
 #include <limits>
@@ -13,8 +14,9 @@
 
 // A structural, versioned codec, not file I/O or a script-state scheduler.
 // The runtime must validate map/class/property identities and typed class
-// schemas transactionally before applying decoded state. No packaged game
-// assets, VM bytecode, guessed actor startup, or frame-clock debt are stored.
+// schemas and native actor-link identities transactionally before applying
+// decoded state. No packaged game assets, VM bytecode, guessed actor startup,
+// or frame-clock debt are stored.
 namespace QuestVr {
 
 struct ScriptSavedProperty {
@@ -22,11 +24,20 @@ struct ScriptSavedProperty {
     std::uint32_t index{};
     Vm::Value value;
 };
+struct ScriptSavedActorLifecycle {
+    // Native lists are ordered, and reentrant callbacks may leave repeated
+    // entries. Do not sort, deduplicate, or infer them from reflected links.
+    std::vector<std::string> children;
+    std::vector<std::string> basedActors;
+    std::array<bool,4> touchEventSent{};
+    bool worldRemoved{};
+};
 struct ScriptSavedObject {
     std::string path, classPath;
     std::vector<ScriptSavedProperty> properties;
     std::optional<ActorAnimationClock> clock;
     std::optional<StateObject> state{};
+    std::optional<ScriptSavedActorLifecycle> lifecycle{};
 };
 struct ScriptSavedClassDefaults {
     std::string classPath;
@@ -43,6 +54,7 @@ struct ScriptStateLimits {
     std::size_t totalValueNodes{262'144u}, maxStringBytes{8192u}, maxDepth{32u};
     std::size_t maxStateLocals{65'536u}, maxLocalElements{262'144u};
     std::size_t maxDisabledStates{65'536u}, maxDisabledNames{262'144u};
+    std::size_t maxActorLinks{65'536u};
 };
 
 namespace ScriptStateDetail {
@@ -52,6 +64,7 @@ static_assert(sizeof(float)==4u && sizeof(double)==8u &&
 inline constexpr std::array<std::uint8_t, 8> Magic{{'D','X','Q','V','M','S',1,0}};
 inline constexpr std::uint8_t StateFrameVersion=2u;
 inline constexpr std::uint8_t ClassDefaultsVersion=3u;
+inline constexpr std::uint8_t ActorLifecycleVersion=4u;
 // Stable serialized tags deliberately do not depend on Vm::Kind ordinals.
 enum class Tag : std::uint8_t {
     Nothing=0, Byte=1, Int=2, Bool=3, Float=4, Name=5, Object=6,
@@ -112,7 +125,7 @@ inline void Clock(const ActorAnimationClock& clock, const ScriptStateLimits& lim
 
 struct Budget {
     const ScriptStateLimits& limits;
-    std::size_t retained{}, properties{}, nodes{}, stateLocals{}, localElements{}, disabledStates{}, disabledNames{};
+    std::size_t retained{}, properties{}, nodes{}, stateLocals{}, localElements{}, disabledStates{}, disabledNames{}, actorLinks{};
     void Retain(std::size_t bytes) {
         if (bytes>limits.maxBytes || retained>limits.maxBytes-bytes)
             Fail("aggregate retained-state budget exceeded");
@@ -136,6 +149,7 @@ struct Budget {
     void LocalElements(std::size_t count) { Aggregate(count,limits.maxLocalElements,localElements,"aggregate state-local element count exceeds the budget"); }
     void DisabledStates(std::size_t count) { Aggregate(count,limits.maxDisabledStates,disabledStates,"aggregate disabled-state count exceeds the budget"); }
     void DisabledNames(std::size_t count) { Aggregate(count,limits.maxDisabledNames,disabledNames,"aggregate disabled-name count exceeds the budget"); }
+    void ActorLinks(std::size_t count) { Aggregate(count,limits.maxActorLinks,actorLinks,"aggregate native actor-link count exceeds the budget"); }
 private:
     static void Aggregate(std::size_t count,std::size_t cap,std::size_t& current,const char* message) {
         if (count>cap || current>cap-count) Fail(message);
@@ -179,11 +193,17 @@ public:
         budget_.Retain(sizeof(StateObject));
         ObjectState(state);
     }
+    void MeasureActorLifecycle(const ScriptSavedActorLifecycle& lifecycle) {
+        if (output_) Fail("actor-lifecycle measurement requires a non-emitting writer");
+        budget_.Retain(sizeof(ScriptSavedActorLifecycle));
+        ActorLifecycle(lifecycle);
+    }
     void State(const ScriptSavedState& state) {
         budget_.Retain(sizeof(ScriptSavedState));
         const bool withFrames=std::any_of(state.objects.begin(),state.objects.end(),[](const auto& object) { return object.state.has_value(); });
         const bool withDefaults=!state.classDefaults.empty();
-        const auto version=withDefaults ? ClassDefaultsVersion : withFrames ? StateFrameVersion : Magic[6u];
+        const bool withLifecycle=std::any_of(state.objects.begin(),state.objects.end(),[](const auto& object) { return object.lifecycle.has_value(); });
+        const auto version=withLifecycle ? ActorLifecycleVersion : withDefaults ? ClassDefaultsVersion : withFrames ? StateFrameVersion : Magic[6u];
         for (std::size_t i=0; i<Magic.size(); ++i) Byte(i==6u ? version : Magic[i]);
         String(state.mapName,true,false,128u);
         if (state.objects.size()>limits_.maxObjects || state.classDefaults.size()>limits_.maxObjects-state.objects.size())
@@ -201,12 +221,16 @@ public:
             Properties(object.properties,false);
             Byte(object.clock ? 1u : 0u);
             if (object.clock) Animation(*object.clock);
-            if (withFrames || withDefaults) {
+            if (withFrames || withDefaults || withLifecycle) {
                 Byte(object.state ? 1u : 0u);
                 if (object.state) ObjectState(*object.state);
             }
+            if (withLifecycle) {
+                Byte(object.lifecycle ? 1u : 0u);
+                if (object.lifecycle) ActorLifecycle(*object.lifecycle);
+            }
         }
-        if (withDefaults) {
+        if (withDefaults || withLifecycle) {
             budget_.Array(state.classDefaults.size(),sizeof(ScriptSavedClassDefaults)+sizeof(void*));
             Count(state.classDefaults.size());
             for (const auto& defaults : state.classDefaults) Text(defaults.classPath,limits_,true);
@@ -239,6 +263,17 @@ private:
     void String(const std::string& value,bool identity,bool empty=false,std::size_t cap=0) {
         Text(value,limits_,identity,empty,cap); budget_.Retain(value.size()+1u);
         Count(value.size()); for (const unsigned char c : value) Byte(c);
+    }
+    void ActorLifecycle(const ScriptSavedActorLifecycle& lifecycle) {
+        Byte(lifecycle.worldRemoved ? 1u : 0u);
+        for (const bool sent : lifecycle.touchEventSent) Byte(sent ? 1u : 0u);
+        const auto links=[&](const std::vector<std::string>& values) {
+            budget_.ActorLinks(values.size());
+            budget_.Array(values.size(),sizeof(std::string));
+            Count(values.size());
+            for (const auto& path : values) String(path,true);
+        };
+        links(lifecycle.children); links(lifecycle.basedActors);
     }
     void Properties(const std::vector<ScriptSavedProperty>& values,const bool defaults) {
         budget_.Properties(values.size());
@@ -388,7 +423,7 @@ public:
             const auto byte=Byte();
             if (i==6u) {
                 version=byte;
-                if (version!=Magic[i] && version!=StateFrameVersion && version!=ClassDefaultsVersion)
+                if (version!=Magic[i] && version!=StateFrameVersion && version!=ClassDefaultsVersion && version!=ActorLifecycleVersion)
                     Fail("bad magic or unsupported codec version");
             } else if (byte!=Magic[i]) Fail("bad magic or unsupported codec version");
         }
@@ -398,6 +433,7 @@ public:
         budget_.Array(count,sizeof(ScriptSavedObject)+sizeof(void*));
         if constexpr(Materialize) state.objects.reserve(count);
         std::string_view previous;
+        bool hasLifecycle{};
         for (std::uint32_t i=0; i<count; ++i) {
             ScriptSavedObject object;
             const auto path=String(true),cls=String(true);
@@ -409,11 +445,17 @@ public:
             if (version>=StateFrameVersion && Boolean()) {
                 auto saved=ObjectState(); if constexpr(Materialize) object.state=std::move(saved);
             }
+            if (version==ActorLifecycleVersion && Boolean()) {
+                hasLifecycle=true;
+                auto saved=ActorLifecycle(); if constexpr(Materialize) object.lifecycle=std::move(saved);
+            }
             if constexpr(Materialize) state.objects.push_back(std::move(object));
         }
-        if (version==ClassDefaultsVersion) {
+        if (version==ActorLifecycleVersion && !hasLifecycle)
+            Fail("actor-lifecycle codec has no native lifecycle record");
+        if (version==ClassDefaultsVersion || version==ActorLifecycleVersion) {
             const auto classes=U32();
-            if (classes==0u || classes>limits_.maxObjects-count || classes>Remaining()/9u)
+            if ((version==ClassDefaultsVersion && classes==0u) || classes>limits_.maxObjects-count || classes>Remaining()/9u)
                 Fail("class-default count is empty or exceeds aggregate budget/payload");
             budget_.Array(classes,sizeof(ScriptSavedClassDefaults)+sizeof(void*));
             if constexpr(Materialize) state.classDefaults.reserve(classes);
@@ -447,6 +489,23 @@ private:
         const std::string_view value(reinterpret_cast<const char*>(bytes_.data()+cursor_),size);
         Text(value,limits_,identity,empty,cap); budget_.Retain(static_cast<std::size_t>(size)+1u);
         cursor_+=size; return value;
+    }
+    ScriptSavedActorLifecycle ActorLifecycle() {
+        ScriptSavedActorLifecycle lifecycle;
+        lifecycle.worldRemoved=Boolean();
+        for (auto& sent : lifecycle.touchEventSent) sent=Boolean();
+        const auto links=[&](std::vector<std::string>& values) {
+            const auto count=U32(); budget_.ActorLinks(count);
+            if (count>Remaining()/5u) Fail("native actor-link count exceeds encoded payload");
+            budget_.Array(count,sizeof(std::string));
+            if constexpr(Materialize) values.reserve(count);
+            for (std::uint32_t i=0u; i<count; ++i) {
+                const auto path=String(true);
+                if constexpr(Materialize) values.emplace_back(path);
+            }
+        };
+        links(lifecycle.children); links(lifecycle.basedActors);
+        return lifecycle;
     }
     void Properties(std::vector<ScriptSavedProperty>& values,const bool defaults) {
         const auto count=U32(); budget_.Properties(count);

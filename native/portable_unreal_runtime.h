@@ -283,13 +283,17 @@ struct PortableActorSnapshot {
 };
 
 PortableVmValue ExecutePortableFunction(const std::string& objectPath);
-// Executes actual compiled member bytecode on an explicit live actor. No
+// Executes actual compiled member bytecode on an explicit indexed actor. A
+// Destroyed actor retains its UObject identity until map teardown. No
 // automatic BeginPlay/AI/idle invocation occurs. Unsupported operations roll
 // back every property and native-animation change in the nested call tree.
 QuestVr::Vm::Result ExecutePortableActorFunction(
     const std::string& actorPath, const std::string& functionName,
     const std::vector<QuestVr::Vm::Evaluation>& arguments = {},
     const QuestVr::Vm::Limits& limits = {});
+// Changes only after committed actor writes/map replacement/checkpoint load,
+// never for a rolled-back callback. Consumers must not read during map workers.
+std::uint64_t GetPortableRuntimeWorldRevision();
 QuestVr::Vm::Value ReadPortableActorScriptProperty(
     const std::string& actorPath, const std::string& propertyName,
     std::uint32_t arrayIndex = 0u);

@@ -158,7 +158,7 @@ void MalformedStreams() {
     }
     auto broken=bytes;broken.push_back(0);Reject([&] { DecodeScriptSavedState(broken); },"Trailing save bytes accepted");
     broken=bytes;broken[0]^=1;Reject([&] { DecodeScriptSavedState(broken); },"Bad save magic accepted");
-    broken=bytes;broken[6]=4;Reject([&] { DecodeScriptSavedState(broken); },"Unsupported codec version accepted");
+    broken=bytes;broken[6]=5;Reject([&] { DecodeScriptSavedState(broken); },"Unsupported codec version accepted");
     for(const Bytes& value : {Bytes{255},Bytes{3,2},Bytes{4,0,0,0xc0,0x7f},Bytes{4,0,0,0x80,0x7f},
         Bytes{8,0,0,0x80,0x7f,0,0,0,0,0,0,0,0}}) {
         broken=OneValue(value);Reject([&] { DecodeScriptSavedState(broken); },"Bad value tag/bool/non-finite payload accepted");
@@ -446,13 +446,189 @@ void InvalidDefaultsAndBudgets() {
     Reject([&] { EncodeScriptSavedState(lean,one); },"CDO nested encode depth is off by one");
     Reject([&] { DecodeScriptSavedState(deepBytes,one); },"CDO nested decode depth is off by one");
 }
+Bytes LifecyclePrefix() {
+    auto bytes=Prefix(1u);bytes[6]=ScriptStateDetail::ActorLifecycleVersion;
+    Object(bytes,"Map.A",0u);bytes.insert(bytes.end(),{0u,0u,1u});
+    return bytes;
+}
+void Links(Bytes& bytes,const std::vector<std::string>& paths) {
+    U32(bytes,static_cast<std::uint32_t>(paths.size()));
+    for (const auto& path : paths) String(bytes,path);
+}
+Bytes LifecycleLiteral(const std::vector<std::string>& children={},const std::vector<std::string>& based={}) {
+    auto bytes=LifecyclePrefix();bytes.insert(bytes.end(),{1u,1u,0u,1u,0u});
+    Links(bytes,children);Links(bytes,based);U32(bytes,0u);return bytes;
+}
+ScriptSavedActorLifecycle Lifecycle() {
+    return {{"FixtureMap.ActorZ","FixtureMap.ActorA","FixtureMap.ActorZ","FixtureMap.ActorA"},
+        {"FixtureMap.ActorA","FixtureMap.ActorZ","FixtureMap.ActorA"},{true,false,true,false},true};
+}
+void SameLifecycle(const ScriptSavedActorLifecycle& a,const ScriptSavedActorLifecycle& b) {
+    Require(a.children==b.children && a.basedActors==b.basedActors,"Native actor lists were sorted, deduplicated or changed");
+    Require(a.touchEventSent==b.touchEventSent && a.worldRemoved==b.worldRemoved,"Native actor lifecycle flags changed");
+}
+void LifecycleRoundtripAndLegacy() {
+    auto saved=DefaultsState();saved.objects[0].lifecycle=Lifecycle();
+    const auto bytes=EncodeScriptSavedState(saved);const auto restored=DecodeScriptSavedState(bytes);
+    Require(bytes[6]==4u && restored.classDefaults.size()==2u && restored.objects.size()==2u,
+        "Native lifecycle did not select codec4 or changed existing record counts");
+    Require(restored.objects[1].lifecycle.has_value() && !restored.objects[0].lifecycle,
+        "Codec4 lost native lifecycle optionality");
+    SameLifecycle(*saved.objects[0].lifecycle,*restored.objects[1].lifecycle);
+    SameClock(*saved.objects[0].clock,*restored.objects[1].clock);
+    Require(restored.objects[1].state && restored.objects[1].state->frame &&
+        restored.objects[1].state->frame->statementIndex==73u &&
+        restored.objects[1].state->frame->locals[0].values[0].text=="FixtureMap.ActorA",
+        "Codec4 changed existing state frame/local storage");
+    Require(EncodeScriptSavedState(restored)==bytes,"Codec4 decode/reencode is not byte deterministic");
+    auto reordered=saved;std::reverse(reordered.objects.begin(),reordered.objects.end());
+    std::reverse(reordered.classDefaults.begin(),reordered.classDefaults.end());
+    for (auto& object : reordered.objects) std::reverse(object.properties.begin(),object.properties.end());
+    for (auto& item : reordered.classDefaults) std::reverse(item.properties.begin(),item.properties.end());
+    Require(EncodeScriptSavedState(reordered)==bytes,"Codec4 canonical record/property ordering changed");
+    reordered=saved;std::reverse(reordered.objects[0].lifecycle->children.begin(),reordered.objects[0].lifecycle->children.end());
+    Require(EncodeScriptSavedState(reordered)!=bytes,"Codec4 discarded native list order/repeated occurrences");
+    auto independent=restored;independent.objects[1].lifecycle->children[0]="FixtureMap.Other";
+    Require(EncodeScriptSavedState(restored)==bytes,"Copied native lifecycle links alias restored storage");
+    const std::vector<std::string> children{"Map.B","Map.A","Map.B"},based{"Map.C","Map.C"};
+    const auto literal=LifecycleLiteral(children,based);const auto parsed=DecodeScriptSavedState(literal);
+    Require(parsed.objects.size()==1u && parsed.objects[0].lifecycle && parsed.classDefaults.empty() &&
+        !parsed.objects[0].clock && !parsed.objects[0].state,"Literal codec4 fabricated clocks, states or class defaults");
+    SameLifecycle(*parsed.objects[0].lifecycle,{children,based,{true,false,true,false},true});
+    Require(EncodeScriptSavedState(parsed)==literal,"Literal codec4 byte layout changed");
+    auto empty=ScriptSavedState{"Map",{{"Map.A","Fixture.Actor",{},{},{},ScriptSavedActorLifecycle{}}}};
+    const auto emptyBytes=EncodeScriptSavedState(empty);const auto emptyParsed=DecodeScriptSavedState(emptyBytes);
+    Require(emptyBytes[6]==4u && emptyParsed.objects[0].lifecycle && emptyParsed.objects[0].lifecycle->children.empty() &&
+        emptyParsed.objects[0].lifecycle->basedActors.empty() && !emptyParsed.objects[0].lifecycle->worldRemoved,
+        "Empty but present native lifecycle record was discarded");
+    for (std::size_t flags=0u;flags<32u;++flags) {
+        auto& life=*empty.objects[0].lifecycle;life.worldRemoved=(flags&16u)!=0u;
+        for (std::size_t slot=0u;slot<4u;++slot) life.touchEventSent[slot]=(flags&(1u<<slot))!=0u;
+        SameLifecycle(life,*DecodeScriptSavedState(EncodeScriptSavedState(empty)).objects[0].lifecycle);
+    }
+    // The optional native record must not add flags or an empty defaults
+    // section to ANY legacy encoding once the final lifecycle is removed.
+    for (std::size_t mode=0u;mode<3u;++mode) {
+        auto old=mode==2u ? DefaultsState() : State();
+        if (mode==1u) old.objects[0].state=saved.objects[0].state;
+        const auto prior=EncodeScriptSavedState(old);
+        Require(prior[6]==mode+1u,"Legacy fixture selected the wrong codec version");
+        old.objects[0].lifecycle=ScriptSavedActorLifecycle{};
+        Require(EncodeScriptSavedState(old)[6]==4u,"Lifecycle failed to override legacy codec selection");
+        old.objects[0].lifecycle.reset();
+        Require(EncodeScriptSavedState(old)==prior,"Removing native lifecycle changed legacy codec bytes");
+        for (const auto& actor : DecodeScriptSavedState(prior).objects)
+            Require(!actor.lifecycle,"Legacy codec invented native lifecycle storage");
+    }
+    const auto v1=OneValue({2u,0x78u,0x56u,0x34u,0x12u});
+    Require(EncodeScriptSavedState(DecodeScriptSavedState(v1))==v1,"Native lifecycle extension changed literal codec1");
+    auto v2=Prefix(1u);v2[6]=2u;Object(v2,"Map.A",0u);
+    v2.insert(v2.end(),{0u,1u,0u,0u,0u});U32(v2,0u);
+    Require(EncodeScriptSavedState(DecodeScriptSavedState(v2))==v2,"Native lifecycle extension changed literal codec2");
+    const auto v3=DefaultsValue({2u,0x78u,0x56u,0x34u,0x12u});
+    Require(EncodeScriptSavedState(DecodeScriptSavedState(v3))==v3,"Native lifecycle extension changed literal codec3");
+}
+void MalformedLifecycle() {
+    const auto bytes=LifecycleLiteral({"Map.B","Map.B"},{"Map.C"});
+    for (std::size_t length=0u;length<bytes.size();++length) {
+        const Bytes truncated(bytes.begin(),bytes.begin()+length);
+        Reject([&] { DecodeScriptSavedState(truncated); },"Truncated codec4 lifecycle accepted");
+    }
+    auto broken=bytes;broken.push_back(0u);Reject([&] { DecodeScriptSavedState(broken); },"Trailing codec4 bytes accepted");
+    const auto prefix=LifecyclePrefix();
+    for (std::size_t flag=0u;flag<6u;++flag) {
+        broken=bytes;broken[prefix.size()-1u+flag]=2u;
+        Reject([&] { DecodeScriptSavedState(broken); },"Invalid native lifecycle optional/world/touch boolean accepted");
+    }
+    for (const std::uint8_t version : {0u,1u,2u,3u,5u,255u}) {
+        broken=bytes;broken[6]=version;
+        Reject([&] { DecodeScriptSavedState(broken); },"Native lifecycle payload accepted with incompatible codec version");
+    }
+    broken=Prefix(0u);broken[6]=4u;U32(broken,0u);
+    Reject([&] { DecodeScriptSavedState(broken); },"Codec4 accepted without actors/lifecycle");
+    broken=Prefix(1u);broken[6]=4u;Object(broken,"Map.A",0u);broken.insert(broken.end(),{0u,0u,0u});U32(broken,0u);
+    Reject([&] { DecodeScriptSavedState(broken); },"Codec4 accepted with no native lifecycle record");
+    for (std::size_t list=0u;list<2u;++list) {
+        for (const std::uint32_t count : {1u,0xffffffffu}) {
+            broken=prefix;broken.insert(broken.end(),{0u,0u,0u,0u,0u});
+            if (list==1u) U32(broken,0u);
+            U32(broken,count);
+            Reject([&] { DecodeScriptSavedState(broken); },"Unbounded/truncated native link list count accepted");
+        }
+        for (const auto& path : {std::string(""),std::string("Bad\nPath"),std::string("Bad\0Path",8u),std::string(1u,'\xff')}) {
+            broken=prefix;broken.insert(broken.end(),{0u,0u,0u,0u,0u});
+            if (list==1u) U32(broken,0u);
+            Links(broken,{path});if (list==0u) U32(broken,0u);U32(broken,0u);
+            Reject([&] { DecodeScriptSavedState(broken); },"Malformed native actor-link identity accepted");
+        }
+    }
+    broken=LifecycleLiteral();
+    broken.resize(broken.size()-4u);U32(broken,0xffffffffu);
+    Reject([&] { DecodeScriptSavedState(broken); },"Codec4 unbounded class-default count accepted");
+    broken=LifecycleLiteral();broken.resize(broken.size()-4u);U32(broken,1u);Defaults(broken,"Fixture.Actor",0u);
+    Reject([&] { DecodeScriptSavedState(broken); },"Codec4 accepted an empty class-default record");
+}
+void InvalidLifecycleAndBudgets() {
+    auto saved=ScriptSavedState{"Map",{{"Map.A","Fixture.Actor",{},{},{},ScriptSavedActorLifecycle{}}}};
+    for (std::size_t list=0u;list<2u;++list) {
+        for (const auto& path : {std::string(""),std::string("Bad\nPath"),std::string("Bad\0Path",8u),std::string(1u,'\xff'),std::string(8193u,'A')}) {
+            auto broken=saved;auto& life=*broken.objects[0].lifecycle;
+            (list==0u ? life.children : life.basedActors).push_back(path);
+            Reject([&] { EncodeScriptSavedState(broken); },"Malformed input native actor-link identity accepted");
+        }
+    }
+    auto& life=*saved.objects[0].lifecycle;life.children={"Map.B","Map.B"};life.basedActors={"Map.C","Map.A"};
+    const auto bytes=EncodeScriptSavedState(saved);
+    ScriptStateLimits exact;exact.maxActorLinks=4u;
+    Require(EncodeScriptSavedState(saved,exact)==bytes && EncodeScriptSavedState(DecodeScriptSavedState(bytes,exact),exact)==bytes,
+        "Exact actor-link budget rejects ordered duplicates");
+    for (std::size_t cap=0u;cap<4u;++cap) {
+        ScriptStateLimits limits;limits.maxActorLinks=cap;
+        Reject([&] { EncodeScriptSavedState(saved,limits); },"Combined child/based link encode budget not enforced");
+        Reject([&] { DecodeScriptSavedState(bytes,limits); },"Combined child/based link decode budget not enforced");
+    }
+    auto two=saved;two.objects.push_back({"Map.Z","Fixture.Actor",{},{},{},ScriptSavedActorLifecycle{{"Map.A"},{},{},false}});
+    const auto twoBytes=EncodeScriptSavedState(two);
+    Reject([&] { EncodeScriptSavedState(two,exact); },"Native link encode budget was only per actor");
+    Reject([&] { DecodeScriptSavedState(twoBytes,exact); },"Native link decode budget was only per actor");
+    for (std::size_t mode=0u;mode<4u;++mode) {
+        ScriptStateLimits limits;
+        if (mode==0u) limits.maxObjects=0u;
+        if (mode==1u) limits.maxStringBytes=4u;
+        if (mode==2u) limits.maxBytes=bytes.size()-1u;
+        if (mode==3u) {
+            ScriptStateDetail::Writer measured(limits,nullptr);measured.State(saved);
+            limits.maxBytes=measured.measuredBudget().retained-1u;
+        }
+        Reject([&] { EncodeScriptSavedState(saved,limits); },"Native lifecycle global encode budget not enforced");
+        Reject([&] { DecodeScriptSavedState(bytes,limits); },"Native lifecycle global decode budget not enforced");
+    }
+    auto empty=saved;empty.objects[0].lifecycle=ScriptSavedActorLifecycle{};
+    ScriptStateLimits none;none.maxActorLinks=0u;
+    const auto emptyBytes=EncodeScriptSavedState(empty,none);
+    Require(EncodeScriptSavedState(DecodeScriptSavedState(emptyBytes,none),none)==emptyBytes,
+        "Empty lifecycle failed with zero native actor-link budget");
+    ScriptStateDetail::Writer measured(exact,nullptr);measured.MeasureActorLifecycle(life);
+    Require(measured.measuredBudget().actorLinks==4u && measured.measuredBudget().retained>=sizeof(ScriptSavedActorLifecycle),
+        "Non-copy lifecycle measurement did not retain native topology/strings");
+    Reject([&] { measured.MeasureActorLifecycle(life); },"Non-copy lifecycle measurement did not accumulate actor-link budget");
+    Bytes output;ScriptStateDetail::Writer emitted(exact,&output);
+    Reject([&] { emitted.MeasureActorLifecycle(life); },"Emitting writer accepted non-copy lifecycle measurement");
+    Require(output.empty(),"Rejected non-copy lifecycle measurement changed output bytes");
+    // All native links are identity strings, never value nodes. The independent
+    // maxActorLinks cap still applies when no script property nodes are allowed.
+    ScriptStateLimits noValues;noValues.totalValueNodes=0u;
+    Require(EncodeScriptSavedState(saved,noValues)==bytes && DecodeScriptSavedState(bytes,noValues).objects[0].lifecycle,
+        "Native lifecycle invented script value nodes");
+}
 }
 
 int main() {
     try {
         RoundtripAndDeterminism();MalformedStreams();InvalidStateAndBudgets();
         DefaultsRoundtripAndLegacy();MalformedDefaults();InvalidDefaultsAndBudgets();
+        LifecycleRoundtripAndLegacy();MalformedLifecycle();InvalidLifecycleAndBudgets();
         std::cout<<"PASS script-state codec controls="<<checks<<" rejection controls="<<rejections
-            <<"; codec1/2 legacy identity and codec3 shared defaults, structural codec only\n";return 0;
+            <<"; codecs1/2/3 legacy bytes and codec4 native actor lifecycle, structural codec only\n";return 0;
     }catch(const std::exception& error) {std::cerr<<"FAIL script-state codec: "<<error.what()<<" after "<<checks<<" controls\n";return 1;}
 }

@@ -1,5 +1,36 @@
 # Port status
 
+## Actor ownership, attachment and deletion (2026-10-09)
+
+- Original SetOwner272/SetBase298/Destroy279 now run real synchronous callbacks
+  within the caller's VM transaction. Native ordered lists, touch-event flags
+  and world removal are journalled separately from property writes. Deleted
+  actors remain directly callable/readable but are excluded from both world
+  snapshot modes. Original serialized Level actor order drives initial bases.
+- Checkpoint v7 / codec v4 preserve exact native topology, including reentrant
+  duplicates. Read-only validation and atomic replacement pass. Legacy v1-v6
+  resets restore the original map baseline; no callbacks are replayed.
+- Committed world revisions refresh Quest actor geometry/targeting/lighting
+  inputs and ambient membership. Restored map clips are reused without XR-thread
+  decoding. Static BSP/lightmap atlases and actor collision physics are not
+  rebuilt by this path. Android compilation passes; the new backend APK is
+  frozen locally, not installed over the accepted seated-player build.
+- Final host suite: 45 passes and three optional original-data skips (48 entries).
+  Separate original actor/runtime integrations pass. Generated lifecycle tests
+  pass 1,243 checks / 14 rejections; codec tests pass 4,209 / 3,948. Original
+  defaults/lifecycle integration passes 996 checks on 101,375 script objects:
+  natural AssaultGun destruction followed by its actual CDO write, v7 saves,
+  GC/direct-call lifetime and nested rollback; explicit enabled/begun callback
+  adds exactly the original Weapon/Inventory Destroyed's 21 instructions.
+- A second physical cold start calibrated seated eye height automatically at
+  1.650 m; the user confirmed correct height and legs without left-stick input.
+  The installed accepted player build remains unchanged.
+- Actual Spawn278 allocation/frozen birth defaults/manifests, automatic startup,
+  authored player inventory, AI/timers/latent actions, campaign archives/travel,
+  full physics and campaign playability remain unfinished. This supersedes
+  earlier Destroy-refusal notes below, not the full-game completion criteria.
+  See [ACTOR-LIFECYCLE.md](ACTOR-LIFECYCLE.md).
+
 ## Concrete class-default startup dependency (2026-10-09)
 
 - Original `DefaultVariable` writes now mutate the concrete loaded Actor
@@ -22,9 +53,9 @@
   generated singleplayer/listen-server relevance preconditions: original height
   adjustment, concrete default ammo count, existing-instance/base/sibling
   isolation, v6 restoration and nested rollback. This is a scoped callback
-  test, not automatic world startup; the unmodified dormant map callback still
-  refuses `Destroy279` at `Engine.Actor.PreBeginPlay:199` with full rollback.
-- Real actor births/Destroy/lifecycle publication, persistent birth manifests,
+  test, not automatic world startup. The subsequent lifecycle batch above
+  additionally supports the unmodified dormant map's Destroy279 continuation.
+- Real actor births, persistent birth manifests,
   automatic startup, AI/timers/latent actions, authored player inventory and
   complete campaign progression remain unfinished. This is not a full-game
   release or a newly verified on-device gameplay change.

@@ -1,6 +1,19 @@
 # Current Quest test-build handoff (2026-10-09)
 
-A newer **backend-only, not installed** class-default build is available at
+The latest **backend-only, not installed** lifecycle APK is
+`artifacts/release-actor-lifecycle-20261009/DeusExQuestVR-actor-lifecycle-20261009.apk`:
+18,621,265 bytes, SHA-256
+`AFA77AAFD9CAA1AE3C24562F2BF95CF48C7C2FDA2FBF5D96BD5A60D323742E4F`.
+Android ARM64 compilation and signature scheme v2 verification pass; no original
+commercial game packages are embedded. It adds native ownership/attachment/
+deletion callbacks, checkpoint-v7 topology and committed geometry/ambient
+publication. These backend operations are host/original-data tested, not newly
+accepted on-device gameplay. Full Spawn/startup/campaign remain unfinished.
+See [ACTOR-LIFECYCLE.md](ACTOR-LIFECYCLE.md). The installed player-controls APK
+below remains unchanged and has a second user-confirmed automatic seated-height
+acceptance recorded in [PLAYER-VR.md](PLAYER-VR.md).
+
+The preceding **backend-only, not installed** class-default build is available at
 `artifacts/release-class-defaults-20261009/DeusExQuestVR-class-defaults-20261009.apk`.
 Its SHA-256 is `DE69AC761B7D6A6D01FDEE9C024348E244191D59D5213F1498BCF7BBAE5F9BB2`
 and size is 18,600,785 bytes. Android compilation and APK Signature Scheme v2

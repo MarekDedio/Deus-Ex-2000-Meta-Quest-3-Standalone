@@ -87,6 +87,13 @@ public:
     // expression cannot silently address replacement state locals.
     std::uint64_t stateLocalsRevision{};
     bool committedScriptState{};
+    // Native ordered relationships are not inferred from arbitrary Owner/Base
+    // assignments. Destroy removes the world slot, not the UObject lifetime.
+    std::vector<RuntimeObject*> childActors, basedActors, initialBasedActors;
+    std::array<bool, 4u> touchEventSent{};
+    std::optional<std::uint8_t> initialStandingCount;
+    bool committedLifecycle{}, worldRemoved{};
+    std::int32_t worldActorIndex{-1};
     bool active{true};
     bool activated{};
     bool healthInitialized{};
@@ -101,6 +108,8 @@ protected:
         for (RuntimeObject* reference : references) {
             marklist = GC::MarkObject(marklist, reference);
         }
+        for (auto* actor : childActors) marklist = GC::MarkObject(marklist, actor);
+        for (auto* actor : basedActors) marklist = GC::MarkObject(marklist, actor);
         return marklist;
     }
 
@@ -143,6 +152,7 @@ PortableScriptDispatchSummary persistentDispatchSummary;
 std::unordered_map<std::string, std::vector<RuntimeObject*>> persistentMapTagIndex;
 std::size_t persistentScriptExportCount{};
 std::string persistentMapPackageName;
+std::uint64_t persistentWorldRevision{};
 std::vector<std::string> persistentInventory;
 float persistentPlayerHealth{100.0f};
 std::int32_t persistentCredits{};
@@ -1092,7 +1102,8 @@ PortableActorDispatchContext CurrentDispatchContext(RuntimeObject* actor) {
 
 // Scoped host for the actual normalized UE1 interpreter. It does not dispatch
 // startup/state ticks or silently emulate missing natives. A complete nested
-// invocation is one transaction, including native animation/tween history.
+// invocation is one transaction, including native actor topology/deletion and
+// animation/tween history. Deleted actors keep their UObject identity.
 class PortableActorVmHost final : public QuestVr::Vm::Host {
     using Value = QuestVr::Vm::Value;
     using Kind = QuestVr::Vm::Kind;
@@ -1245,9 +1256,19 @@ public:
     void Begin() override {
         if (transaction_) throw std::runtime_error("Portable actor VM nested host transaction");
         ValidateStateBudget();
+        lifecycleOperations_ = 0u;
         transaction_ = true;
     }
-    void Commit() override { ValidateStateBudget(); saved_.clear(); transaction_ = false; }
+    void Commit() override {
+        ValidateStateBudget();
+        const bool worldChanged = std::any_of(saved_.begin(), saved_.end(), [](const auto& entry) {
+            return !entry.first->classDescriptor && IsDerivedFromPath(entry.first->cls, "Engine.Actor");
+        });
+        if (worldChanged && persistentWorldRevision == std::numeric_limits<std::uint64_t>::max())
+            throw std::runtime_error("Portable world revision budget exceeded");
+        if (worldChanged) ++persistentWorldRevision;
+        saved_.clear(); transaction_ = false;
+    }
     void Rollback() noexcept override {
         for (auto& entry : saved_) {
             entry.first->scriptValues.swap(entry.second.values);
@@ -1256,6 +1277,11 @@ public:
             entry.first->stateObject.swap(entry.second.state);
             entry.first->stateLocalsRevision = entry.second.revision;
             entry.first->committedScriptState = entry.second.committed;
+            entry.first->childActors.swap(entry.second.children);
+            entry.first->basedActors.swap(entry.second.based);
+            entry.first->touchEventSent = entry.second.touchSent;
+            entry.first->committedLifecycle = entry.second.lifecycle;
+            entry.first->worldRemoved = entry.second.removed;
         }
         saved_.clear(); transaction_ = false;
     }
@@ -1302,7 +1328,7 @@ public:
     std::shared_ptr<Reference> Variable(const std::string& receiver,
         const Property& property, const QuestVr::Vm::Scope scope) override {
         RuntimeObject* object = Object(receiver);
-        if (!object->active) throw std::runtime_error("VM receiver is inactive");
+        if (!object->active && !object->worldRemoved) throw std::runtime_error("VM receiver is inactive");
         const bool defaults = scope == QuestVr::Vm::Scope::Default;
         auto result = ReferenceFor(object, property, 0u, defaults);
         result->dimension = property.arrayDimension;
@@ -1316,7 +1342,7 @@ public:
     Evaluation Native(const std::uint16_t index, const std::string& receiver,
         const std::vector<Evaluation>& arguments, const Function* declaration) override {
         RuntimeObject* object = Object(receiver);
-        if (!object->active) throw std::runtime_error("VM native receiver is inactive");
+        if (!object->active && !object->worldRemoved) throw std::runtime_error("VM native receiver is inactive");
         const auto argumentCount = [&](const std::size_t required, const std::size_t maximum) {
             if (arguments.size() < required || arguments.size() > maximum)
                 throw std::runtime_error("VM native argument count is invalid for " + std::to_string(index));
@@ -1428,9 +1454,11 @@ public:
     }
     Evaluation NativeWithExecution(const std::uint16_t index, const std::string& receiver,
         const std::vector<Evaluation>& arguments, const Function* declaration, QuestVr::Vm::Execution& execution) override {
+        if (index == 272u || index == 298u || index == 279u)
+            return LifecycleNative(index, receiver, arguments, execution);
         if (index != 113u && index != 117u && index != 118u) return Native(index, receiver, arguments, declaration);
         auto* actor = Object(receiver);
-        if (!actor->active || !IsDerivedFromPath(actor->cls, "Engine.Actor"))
+        if ((!actor->active && !actor->worldRemoved) || !IsDerivedFromPath(actor->cls, "Engine.Actor"))
             throw std::runtime_error("State native receiver is not an active Engine.Actor");
         const auto name = [&](const std::size_t slot, const std::string& fallback) {
             if (slot >= arguments.size()) return fallback;
@@ -1511,6 +1539,8 @@ public:
             }
         } else {
             if (const auto* value = FindScriptOverlay(object, property.name.c_str(), index)) return *value;
+            if (LowerAscii(property.name) == "standingcount" && index == 0u && object->initialStandingCount)
+                return Value::Byte(*object->initialStandingCount);
             if (LowerAscii(property.name) == "region" && property.zero.kind == Kind::Struct)
                 return Region(object, property.zero);
         }
@@ -1551,6 +1581,162 @@ public:
         return StructSchema(Object(Qualified(Table(property->sourcePath), property->property->referencedType)));
     }
 private:
+    void LifecycleStep() {
+        if (++lifecycleOperations_ > 65'536u)
+            throw std::runtime_error("Native actor lifecycle work budget exceeded");
+    }
+    void RequireMapActor(RuntimeObject* actor) {
+        if (!actor || !IsDerivedFromPath(actor->cls, "Engine.Actor") ||
+            LowerAscii(std::filesystem::path(actor->sourcePath).extension().string()) != ".dx" ||
+            PackageStem(actor->sourcePath) != persistentMapPackageName)
+            throw std::runtime_error("Native lifecycle identity is not an actor in the current map");
+    }
+    RuntimeObject* ActorLink(RuntimeObject* actor, const char* name, const std::uint32_t slot = 0u) {
+        const auto property = PropertyNamed(actor, name);
+        if (property.zero.kind != Kind::Object || slot >= property.arrayDimension)
+            throw std::runtime_error("Actor relationship property schema is invalid");
+        const auto value = Read(actor, property, slot);
+        if (value.kind != Kind::Object) throw std::runtime_error("Actor relationship value is not an Object");
+        if (value.text.empty()) return nullptr;
+        auto* target = Object(value.text); RequireMapActor(target); return target;
+    }
+    void WriteActorLink(RuntimeObject* actor, const char* name, RuntimeObject* target,
+        const std::uint32_t slot = 0u) {
+        ReferenceFor(actor, PropertyNamed(actor, name), slot, false)->write(
+            Value::Text(Kind::Object, target ? target->reflection.objectPath : std::string{}));
+    }
+    void TouchLifecycle(RuntimeObject* actor) {
+        Touch(actor); actor->committedLifecycle = true; actor->committedScriptState = true;
+    }
+    void RemoveFirst(std::vector<RuntimeObject*>& actors, RuntimeObject* actor) {
+        LifecycleStep();
+        const auto found = std::find(actors.begin(), actors.end(), actor);
+        if (found != actors.end()) actors.erase(found);
+    }
+    void StandingCount(RuntimeObject* base) {
+        const auto property = PropertyNamed(base, "StandingCount");
+        if (property.zero.kind != Kind::Byte || property.arrayDimension != 1u)
+            throw std::runtime_error("StandingCount is not an authored scalar byte");
+        ReferenceFor(base, property, 0u, false)->write(
+            Value::Byte(static_cast<std::uint8_t>(std::min<std::size_t>(base->basedActors.size(), 255u))));
+    }
+    void RelationshipEvent(QuestVr::Vm::Execution& execution, RuntimeObject* target,
+        const char* name, RuntimeObject* actor) {
+        LifecycleStep();
+        static_cast<void>(execution.CallEvent(target->reflection.objectPath, name, true,
+            {{Value::Text(Kind::Object, actor->reflection.objectPath), {}}}));
+    }
+    void SetOwner(RuntimeObject* actor, RuntimeObject* newOwner, QuestVr::Vm::Execution& execution) {
+        LifecycleStep(); RequireMapActor(actor);
+        if (newOwner) RequireMapActor(newOwner);
+        if (auto* owner = ActorLink(actor, "Owner")) {
+            RelationshipEvent(execution, owner, "LostChild", actor);
+            // The original native deliberately rereads Owner after script.
+            // A callback that nulls it would dereference null in the pin. Fail
+            // the complete transaction instead of inventing snapshot semantics.
+            owner = ActorLink(actor, "Owner");
+            if (!owner) throw std::runtime_error("LostChild cleared Owner during native SetOwner");
+            TouchLifecycle(owner); RemoveFirst(owner->childActors, actor);
+        }
+        WriteActorLink(actor, "Owner", newOwner);
+        if (auto* owner = ActorLink(actor, "Owner")) {
+            RelationshipEvent(execution, owner, "GainedChild", actor);
+            owner = ActorLink(actor, "Owner");
+            if (!owner) throw std::runtime_error("GainedChild cleared Owner during native SetOwner");
+            TouchLifecycle(owner);
+            if (owner->childActors.size() >= 65'536u) throw std::runtime_error("Native child count budget exceeded");
+            owner->childActors.push_back(actor);
+        }
+    }
+    void SetBase(RuntimeObject* actor, RuntimeObject* newBase, const bool sendEvent,
+        QuestVr::Vm::Execution& execution) {
+        LifecycleStep(); RequireMapActor(actor);
+        if (newBase) RequireMapActor(newBase);
+        if (ActorLink(actor, "Base") == newBase) return;
+        std::unordered_set<RuntimeObject*> visited;
+        for (auto* current = newBase; current; current = ActorLink(current, "Base")) {
+            LifecycleStep();
+            if (current == actor) return; // Pinned cycle refusal has no callbacks/writes.
+            if (visited.size() >= 4096u || !visited.insert(current).second)
+                throw std::runtime_error("Prospective Base hierarchy is cyclic or too deep");
+        }
+        auto* level = ActorLink(actor, "Level");
+        if (!level || !IsDerivedFromPath(level->cls, "Engine.LevelInfo"))
+            throw std::runtime_error("SetBase has no authored LevelInfo binding");
+        if (auto* base = ActorLink(actor, "Base"); base && base != level) {
+            TouchLifecycle(base); RemoveFirst(base->basedActors, actor); StandingCount(base);
+            RelationshipEvent(execution, base, "Detach", actor);
+        }
+        WriteActorLink(actor, "Base", newBase);
+        if (auto* base = ActorLink(actor, "Base"); base && base != level) {
+            TouchLifecycle(base);
+            if (base->basedActors.size() >= 65'536u) throw std::runtime_error("Native based actor count budget exceeded");
+            base->basedActors.push_back(actor); StandingCount(base);
+            RelationshipEvent(execution, base, "Attach", actor);
+        }
+        if (sendEvent) {
+            LifecycleStep(); static_cast<void>(execution.CallEvent(actor->reflection.objectPath, "BaseChange", true, {}));
+        }
+    }
+    void UnTouch(RuntimeObject* actor, RuntimeObject* other, QuestVr::Vm::Execution& execution) {
+        RequireMapActor(other);
+        const auto unlink = [&](RuntimeObject* side, RuntimeObject* peer) {
+            if (QuestVr::Vm::ToBool(Read(side, PropertyNamed(side, "bDeleteMe"), 0u))) return;
+            const auto property = PropertyNamed(side, "Touching");
+            if (property.arrayDimension != 4u || property.zero.kind != Kind::Object)
+                throw std::runtime_error("GOTY Touching is not an authored four-slot actor array");
+            for (std::uint32_t slot = 0u; slot < 4u; ++slot) {
+                LifecycleStep();
+                if (ActorLink(side, "Touching", slot) != peer) continue;
+                WriteActorLink(side, "Touching", nullptr, slot);
+                if (side->touchEventSent[slot]) {
+                    TouchLifecycle(side); side->touchEventSent[slot] = false;
+                    RelationshipEvent(execution, side, "UnTouch", peer);
+                }
+            }
+        };
+        unlink(actor, other); unlink(other, actor);
+    }
+    Evaluation LifecycleNative(const std::uint16_t index, const std::string& receiver,
+        const std::vector<Evaluation>& arguments, QuestVr::Vm::Execution& execution) {
+        auto* actor = Object(receiver); RequireMapActor(actor); LifecycleStep();
+        if (!actor->active && !actor->worldRemoved) throw std::runtime_error("Native lifecycle receiver is inactive");
+        if (index != 279u) {
+            if (arguments.size() != 1u) throw std::runtime_error("SetOwner/SetBase requires one Actor or None");
+            const auto value = arguments[0].Load();
+            if (value.kind != Kind::Object) throw std::runtime_error("SetOwner/SetBase argument is not an Object");
+            auto* target = value.text.empty() ? nullptr : Object(value.text);
+            if (target) RequireMapActor(target);
+            if (index == 272u) SetOwner(actor, target, execution);
+            else SetBase(actor, target, true, execution);
+            return {};
+        }
+        if (!arguments.empty()) throw std::runtime_error("Destroy takes no arguments");
+        const auto flag = [&](const char* name) { return QuestVr::Vm::ToBool(Read(actor, PropertyNamed(actor, name), 0u)); };
+        if (flag("bStatic") || flag("bNoDelete")) return {Value::Bool(false), {}};
+        if (flag("bDeleteMe")) return {Value::Bool(true), {}};
+        ReferenceFor(actor, PropertyNamed(actor, "bDeleteMe"), 0u, false)->write(Value::Bool(true));
+        SetBase(actor, nullptr, true, execution);
+        // The portable world currently has no UE actor collision hash/BSP node
+        // memberships. Its actual GPU/ambient publication follows committed
+        // world revisions; a failed callback must publish none of these changes.
+        static_cast<void>(execution.CallEvent(receiver, "Destroyed", true, {}));
+        const auto touching = PropertyNamed(actor, "Touching");
+        if (touching.arrayDimension != 4u || touching.zero.kind != Kind::Object)
+            throw std::runtime_error("GOTY Touching is not an authored four-slot actor array");
+        for (std::uint32_t slot = 0u; slot < 4u; ++slot)
+            if (auto* other = ActorLink(actor, "Touching", slot)) UnTouch(actor, other, execution);
+        SetOwner(actor, nullptr, execution);
+        while (!actor->childActors.empty()) {
+            LifecycleStep(); SetOwner(actor->childActors.back(), nullptr, execution);
+        }
+        while (!actor->basedActors.empty()) {
+            LifecycleStep(); SetBase(actor->basedActors.back(), nullptr, true, execution);
+        }
+        if (actor->worldActorIndex < 0) throw std::runtime_error("Actor index was never set");
+        TouchLifecycle(actor); actor->worldRemoved = true;
+        return {Value::Bool(true), {}};
+    }
     struct Before {
         decltype(RuntimeObject::scriptValues) values;
         decltype(RuntimeObject::classDefaultValues) defaults;
@@ -1558,6 +1744,9 @@ private:
         std::optional<QuestVr::StateObject> state;
         std::uint64_t revision{};
         bool committed{};
+        std::vector<RuntimeObject*> children, based;
+        std::array<bool, 4u> touchSent{};
+        bool lifecycle{}, removed{};
     };
     std::unordered_map<std::string, PortablePackageTables> tables_;
     std::unordered_map<std::string, std::shared_ptr<const Function>> functions_;
@@ -1567,6 +1756,7 @@ private:
     std::size_t structFields_{};
     std::size_t structSchemaBytes_{};
     std::unordered_map<RuntimeObject*, Before> saved_;
+    std::size_t lifecycleOperations_{};
     std::optional<PortableModelGeometry> rootModel_;
     bool transaction_{};
     const PortablePackageTables& Table(const std::string& source) {
@@ -1992,7 +2182,7 @@ private:
     void ValidateObjectValue(const Value& value, const std::string& expected, const bool classValue) {
         if (value.text.empty()) return;
         auto* object = Object(value.text);
-        if (!object->active) throw std::runtime_error("Runtime object reference is inactive");
+        if (!object->active && !object->worldRemoved) throw std::runtime_error("Runtime object reference is inactive");
         const auto actual = object->cls ? object->cls->reflection.objectPath :
             object->reflection.metaClass == "Class" ? "Core.Class" :
             Qualified(Table(object->sourcePath), Table(object->sourcePath).exports.at(object->exportIndex).ObjClass);
@@ -2043,7 +2233,8 @@ private:
         if (saved_.find(object) == saved_.end()) {
             if (saved_.size() >= 4096u) throw std::runtime_error("VM touched actor budget exceeded");
             saved_.emplace(object, Before{object->scriptValues, object->classDefaultValues, object->animationClock, object->stateObject,
-                object->stateLocalsRevision, object->committedScriptState});
+                object->stateLocalsRevision, object->committedScriptState, object->childActors, object->basedActors,
+                object->touchEventSent, object->committedLifecycle, object->worldRemoved});
         }
     }
     void ValidateStateBudget() const {
@@ -2071,8 +2262,38 @@ private:
                 self(self, member, depth + 1u);
             }
         };
-        std::size_t objects{};
+        std::size_t objects{}, totalNativeLinks{};
         for (const auto* object : persistentRuntime->get()->exports) {
+            const auto nativeCount = object->childActors.size() + object->basedActors.size();
+            if (nativeCount > limits.maxActorLinks || totalNativeLinks > limits.maxActorLinks - nativeCount)
+                throw std::runtime_error("Persistent total native actor link budget exceeded");
+            totalNativeLinks += nativeCount;
+            if ((object->committedScriptState || object->stateObject || object->committedLifecycle) &&
+                ++objects > limits.maxObjects)
+                throw std::runtime_error("Persistent script/lifecycle actor count budget exceeded");
+            if (object->committedLifecycle) {
+                const auto count = object->childActors.size() + object->basedActors.size();
+                defaults.ActorLinks(count);
+                defaults.Retain(sizeof(QuestVr::ScriptSavedActorLifecycle));
+                const auto links = [&](const std::vector<RuntimeObject*>& values) {
+                    for (const auto* link : values) {
+                        if (!link || !IsDerivedFromPath(link->cls, "Engine.Actor") ||
+                            PackageStem(link->sourcePath) != persistentMapPackageName)
+                            throw std::runtime_error("Persistent native link is not a current map actor");
+                        QuestVr::ScriptStateDetail::Text(link->reflection.objectPath, limits, true);
+                        defaults.Retain(sizeof(std::string) + link->reflection.objectPath.size() + 1u);
+                    }
+                };
+                links(object->childActors); links(object->basedActors);
+            }
+            if (object->committedScriptState)
+                for (const auto& [name, slots] : object->scriptValues) {
+                    QuestVr::ScriptStateDetail::Text(name, limits, true);
+                    defaults.Properties(slots.size());
+                    defaults.Retain(sizeof(std::string) + 5u * sizeof(void*) + name.size() + 1u);
+                    defaults.Array(slots.size(), sizeof(QuestVr::ScriptSavedProperty) + 5u * sizeof(void*));
+                    for (const auto& [index, value] : slots) { static_cast<void>(index); valueBudget(valueBudget, value, 0u); }
+                }
             if (!object->classDefaultValues.empty()) {
                 if (++objects > limits.maxObjects) throw std::runtime_error("Persistent default/state object budget exceeded");
                 defaults.Retain(sizeof(QuestVr::ScriptSavedClassDefaults) + object->reflection.objectPath.size() + 1u);
@@ -2085,7 +2306,6 @@ private:
                 }
             }
             if (!object->stateObject) continue;
-            if (++objects > limits.maxObjects) throw std::runtime_error("Persistent state object budget exceeded");
             measured.MeasureStateObject(*object->stateObject);
         }
         if (measured.measuredBudget().retained > limits.maxBytes - defaults.retained)
@@ -2259,6 +2479,9 @@ struct PreparedScriptObject {
     decltype(RuntimeObject::scriptValues) values;
     std::optional<QuestVr::ActorAnimationClock> clock;
     std::optional<QuestVr::StateObject> state;
+    std::vector<RuntimeObject*> children, based;
+    std::array<bool, 4u> touchSent{};
+    bool lifecycle{}, removed{};
 };
 struct PreparedClassDefaults {
     RuntimeObject* target{};
@@ -2346,6 +2569,23 @@ QuestVr::ScriptSavedState CollectScriptSavedState() {
         record.path = object->reflection.objectPath;
         record.classPath = object->cls->reflection.objectPath;
         record.clock = object->animationClock;
+        if (object->committedLifecycle) {
+            record.lifecycle.emplace();
+            auto& lifecycle = *record.lifecycle;
+            lifecycle.worldRemoved = object->worldRemoved;
+            lifecycle.touchEventSent = object->touchEventSent;
+            capture.Retain(sizeof(lifecycle));
+            capture.ActorLinks(object->childActors.size() + object->basedActors.size());
+            const auto links = [&](const std::vector<RuntimeObject*>& source, std::vector<std::string>& target) {
+                capture.Array(source.size(), sizeof(std::string));
+                for (const auto* actor : source) {
+                    QuestVr::ScriptStateDetail::Text(actor->reflection.objectPath, limits, true);
+                    capture.Retain(actor->reflection.objectPath.size() + 1u);
+                    target.push_back(actor->reflection.objectPath);
+                }
+            };
+            links(object->childActors, lifecycle.children); links(object->basedActors, lifecycle.basedActors);
+        }
         if (object->stateObject) {
             const auto& state = *object->stateObject;
             capture.Retain(sizeof(state));
@@ -2447,6 +2687,27 @@ public:
         if (host_.DefaultClass(object) != object)
             throw std::runtime_error("Script save default target is not an actual script Actor UClass");
         return object;
+    }
+    void ValidateLifecycle(const QuestVr::ScriptSavedObject& record) {
+        if (!record.lifecycle) return;
+        if (!mapClasses_.count(LowerAscii(record.path)))
+            throw std::runtime_error("Script save lifecycle target is not a map actor");
+        const auto link = [&](const std::string& path) {
+            const auto found = mapClasses_.find(LowerAscii(path));
+            if (found == mapClasses_.end() || !ClassDerives(found->second, "Engine.Actor"))
+                throw std::runtime_error("Script save native link is not an actor in its authored map");
+        };
+        for (const auto& path : record.lifecycle->children) link(path);
+        for (const auto& path : record.lifecycle->basedActors) link(path);
+        const auto touching = host_.ClassProperty(SavedClass(record), "Touching");
+        const auto* metadata = host_.Object(touching.key);
+        if (touching.arrayDimension != 4u || touching.zero.kind != QuestVr::Vm::Kind::Object ||
+            !metadata->property || metadata->property->type != "ObjectProperty" ||
+            LowerAscii(Qualified(Table(metadata->sourcePath), metadata->property->referencedType)) != "engine.actor")
+            throw std::runtime_error("Script save native touching schema is not GOTY Actor.Touching[4]");
+        // Ordered lists may legitimately contain duplicates after reentrant
+        // callbacks. Script may directly overwrite Owner/Base/Touching/delete
+        // flags; do not replace the pin with an invented normalized tree.
     }
     QuestVr::Vm::Value PropertyValue(RuntimeObject* cls, const QuestVr::ScriptSavedProperty& saved) {
         const auto property = host_.ClassProperty(cls, saved.name);
@@ -2712,6 +2973,7 @@ PreparedScriptState PrepareScriptSavedState(
         if (!seen.emplace(LowerAscii(record.path)).second)
             throw std::runtime_error("Duplicate script save actor");
         auto* cls = schema.SavedClass(record);
+        schema.ValidateLifecycle(record);
         PreparedScriptObject next;
         if (apply) {
             next.target = schema.Host().Object(record.path);
@@ -2733,7 +2995,32 @@ PreparedScriptState PrepareScriptSavedState(
         }
         next.clock = record.clock;
         if (record.state) next.state = schema.StateValue(cls, record);
+        if (record.lifecycle) {
+            next.lifecycle = true; next.removed = record.lifecycle->worldRemoved;
+            next.touchSent = record.lifecycle->touchEventSent;
+            if (apply) {
+                next.children.reserve(record.lifecycle->children.size());
+                next.based.reserve(record.lifecycle->basedActors.size());
+                for (const auto& path : record.lifecycle->children) next.children.push_back(schema.Host().Object(path));
+                for (const auto& path : record.lifecycle->basedActors) next.based.push_back(schema.Host().Object(path));
+            }
+        }
         prepared.objects.push_back(std::move(next));
+    }
+    if (LowerAscii(saved.mapName) == LowerAscii(persistentMapPackageName)) {
+        std::unordered_map<std::string, std::size_t> replacements;
+        for (const auto& object : saved.objects)
+            if (object.lifecycle) replacements.emplace(LowerAscii(object.path),
+                object.lifecycle->children.size() + object.lifecycle->basedActors.size());
+        std::size_t links{};
+        for (std::size_t index = persistentScriptExportCount; index < persistentRuntime->get()->exports.size(); ++index) {
+            const auto* actor = persistentRuntime->get()->exports[index];
+            const auto found = replacements.find(LowerAscii(actor->reflection.objectPath));
+            const auto count = found == replacements.end() ? actor->initialBasedActors.size() : found->second;
+            if (count > 65'536u || links > 65'536u - count)
+                throw std::runtime_error("Restored total native actor link budget exceeded");
+            links += count;
+        }
     }
     return prepared;
 }
@@ -3283,7 +3570,7 @@ QuestVr::Vm::Result ExecutePortableActorFunction(const std::string& actorPath,
     try {
         PortableActorVmHost host;
         RuntimeObject* actor = host.Object(actorPath);
-        if (!actor->active || !IsDerivedFromPath(actor->cls, "Engine.Actor"))
+        if ((!actor->active && !actor->worldRemoved) || !IsDerivedFromPath(actor->cls, "Engine.Actor"))
             throw std::runtime_error("Explicit VM receiver is not a live Engine.Actor");
         const auto function = host.Member(actor, functionName);
         return QuestVr::Vm::Execute(host, *function, actor->reflection.objectPath, arguments, limits);
@@ -3299,7 +3586,7 @@ QuestVr::Vm::Value ReadPortableActorScriptProperty(const std::string& actorPath,
     const std::string& propertyName, const std::uint32_t arrayIndex) {
     PortableActorVmHost host;
     RuntimeObject* actor = host.Object(actorPath);
-    if (!actor->active || !IsDerivedFromPath(actor->cls, "Engine.Actor"))
+    if ((!actor->active && !actor->worldRemoved) || !IsDerivedFromPath(actor->cls, "Engine.Actor"))
         throw std::runtime_error("Explicit VM receiver is not a live Engine.Actor");
     const auto property = host.PropertyNamed(actor, propertyName);
     if (arrayIndex >= property.arrayDimension)
@@ -3325,7 +3612,7 @@ std::vector<QuestVr::Vm::Value> ReadPortableActorScriptPropertySlots(const std::
         throw std::runtime_error("VM property fixed-array read count is outside 1..1024");
     PortableActorVmHost host;
     RuntimeObject* actor = host.Object(actorPath);
-    if (!actor->active || !IsDerivedFromPath(actor->cls, "Engine.Actor"))
+    if ((!actor->active && !actor->worldRemoved) || !IsDerivedFromPath(actor->cls, "Engine.Actor"))
         throw std::runtime_error("Explicit VM receiver is not a live Engine.Actor");
     const auto property = host.PropertyNamed(actor, propertyName);
     if (firstIndex >= property.arrayDimension || count > property.arrayDimension - firstIndex)
@@ -3452,6 +3739,79 @@ bool GetPortableRuntimeUnsavedScriptState() {
     return GetPortableRuntimeScriptStatePresent();
 }
 
+std::uint64_t GetPortableRuntimeWorldRevision() { return persistentWorldRevision; }
+
+static void RelinkAuthoredActorBases(const PortablePackageTables& package, const std::size_t first) {
+    PortableActorVmHost host;
+    const auto property = [](RuntimeObject* actor, const char* name) -> RuntimeObject* {
+        for (auto* cls = actor->cls; cls; cls = cls->base) {
+            const auto found = persistentVmObjects.find(LowerAscii(cls->reflection.objectPath + '.' + name));
+            if (found != persistentVmObjects.end() && found->second->property) return found->second;
+        }
+        return nullptr;
+    };
+    std::vector<RuntimeObject*> actorOrder;
+    const bool hasLevel = std::any_of(package.exports.begin(), package.exports.end(), [&](const auto& entry) {
+        const auto path = LowerAscii(GetPortableObjectPath(package, entry.ObjClass));
+        const auto dot = path.find_last_of('.');
+        return path.substr(dot == std::string::npos ? 0u : dot + 1u) == "level";
+    });
+    if (hasLevel) {
+        const auto order = ReadPortableLevel68ActorOrder(package);
+        actorOrder.reserve(order.size());
+        for (std::size_t slot = 0u; slot < order.size(); ++slot) {
+            const auto reference = order[slot];
+            if (reference == 0) continue;
+            if (reference < 0 || static_cast<std::size_t>(reference) > package.exports.size())
+                throw std::runtime_error("Level actor slot is not a local map export");
+            auto* actor = persistentRuntime->get()->exports.at(first + static_cast<std::size_t>(reference - 1));
+            if (!IsDerivedFromPath(actor->cls, "Engine.Actor")) {
+                // Existing reflection retains unresolved external types. A
+                // missing wrapper must not fabricate actor native behavior.
+                if (!actor->cls) continue;
+                throw std::runtime_error("Level actor slot is not an Actor");
+            }
+            if (actor->worldActorIndex >= 0) throw std::runtime_error("Level contains a duplicate actor slot");
+            actor->worldActorIndex = static_cast<std::int32_t>(slot);
+            actorOrder.push_back(actor);
+        }
+    } else {
+        // Generated metadata-only maps deliberately omit serialized ULevel.
+        // Only that explicit fixture shape uses export-order membership.
+        for (std::size_t index = first; index < persistentRuntime->get()->exports.size(); ++index) {
+            auto* actor = persistentRuntime->get()->exports[index];
+            if (!IsDerivedFromPath(actor->cls, "Engine.Actor")) continue;
+            actor->worldActorIndex = static_cast<std::int32_t>(actorOrder.size());
+            actorOrder.push_back(actor);
+        }
+    }
+    std::size_t links{};
+    for (auto* actor : actorOrder) {
+        if (!IsDerivedFromPath(actor->cls, "Engine.Actor")) continue;
+        // Minimal read-only fixtures need not contain the entire Actor schema.
+        // Real authored Base bindings are relinked in serialized Level order,
+        // as Engine::LinkActorsToLevel does, without replaying Attach callbacks.
+        auto* metadata = property(actor, "Base");
+        if (!metadata) continue;
+        const auto baseValue = host.Read(actor, host.DescribeProperty(metadata->reflection.objectPath), 0u);
+        if (baseValue.kind != QuestVr::Vm::Kind::Object) throw std::runtime_error("Authored Base is not an Object");
+        if (baseValue.text.empty()) continue;
+        auto* base = host.Object(baseValue.text);
+        if (!IsDerivedFromPath(base->cls, "Engine.Actor") || base->sourcePath != actor->sourcePath)
+            throw std::runtime_error("Authored Base is not an actor in this map");
+        auto* levelProperty = property(actor, "Level");
+        if (!levelProperty) throw std::runtime_error("Authored based actor has no Level property");
+        const auto level = host.Read(actor, host.DescribeProperty(levelProperty->reflection.objectPath), 0u);
+        if (LowerAscii(baseValue.text) == LowerAscii(level.text)) continue;
+        if (++links > 65'536u) throw std::runtime_error("Authored based actor link budget exceeded");
+        base->basedActors.push_back(actor); base->initialBasedActors.push_back(actor);
+        auto* count = property(base, "StandingCount");
+        if (!count || host.DescribeProperty(count->reflection.objectPath).zero.kind != QuestVr::Vm::Kind::Byte)
+            throw std::runtime_error("Authored base has no byte StandingCount");
+        base->initialStandingCount = static_cast<std::uint8_t>(std::min<std::size_t>(base->basedActors.size(), 255u));
+    }
+}
+
 PortableMapRuntimeSummary LoadPortableRuntimeMap(
     const PortablePackageTables& package) {
     if (!persistentRuntime || !persistentRuntime->get()) {
@@ -3549,6 +3909,8 @@ PortableMapRuntimeSummary LoadPortableRuntimeMap(
     }
     summary.exports = graph.objects.size();
     persistentMapPackageName = packageName;
+    RelinkAuthoredActorBases(package, first);
+    ++persistentWorldRevision;
     GC::Collect();
     summary.passed = summary.exports == package.exports.size() &&
         summary.actors != 0 && summary.actorProperties != 0 &&
@@ -3580,6 +3942,7 @@ std::size_t UnloadPortableRuntimeMap() {
         }
     }
     persistentRuntime->get()->exports.resize(persistentScriptExportCount);
+    ++persistentWorldRevision;
     persistentMapPackageName.clear();
     persistentMapTagIndex.clear();
     GC::Collect();
@@ -3593,7 +3956,7 @@ std::vector<PortableActorSnapshot> GetPortableRuntimeMapActors(bool includeInact
          index < persistentRuntime->get()->exports.size();
          ++index) {
         RuntimeObject* object = persistentRuntime->get()->exports[index];
-        if ((!includeInactive && !object->active) ||
+        if (object->worldActorIndex < 0 || object->worldRemoved || (!includeInactive && !object->active) ||
             !IsDerivedFromPath(object->cls, "Engine.Actor")) continue;
         PortableActorSnapshot snapshot;
         snapshot.objectPath = object->reflection.objectPath;
@@ -4095,7 +4458,7 @@ PortableInteractionResult InteractPortableRuntimeActor(const std::string& object
     result.classPath = object->cls == nullptr
         ? object->reflection.metaClass
         : object->cls->reflection.objectPath;
-    if (!object->active) {
+    if (!object->active || object->worldRemoved) {
         result.action = "inactive";
     } else if (IsDerivedFromPath(object->cls, "DeusEx.MapExit") ||
                IsDerivedFromPath(object->cls, "Engine.Teleporter")) {
@@ -4157,7 +4520,7 @@ PortableDamageResult DamagePortableRuntimeActor(
         return result;
     }
     RuntimeObject* object = found->second;
-    if (!object->active || !IsDerivedFromPath(object->cls, "Engine.Pawn")) return result;
+    if (!object->active || object->worldRemoved || !IsDerivedFromPath(object->cls, "Engine.Pawn")) return result;
     if (!object->healthInitialized) {
         const auto decodeHealth = [&](const std::vector<PortableTaggedProperty>& properties) {
             for (const PortableTaggedProperty& property : properties) {
@@ -4473,7 +4836,7 @@ bool VerifyPortableRuntimeInteraction() {
     for (std::size_t index = persistentScriptExportCount;
          index < persistentRuntime->get()->exports.size(); ++index) {
         RuntimeObject* object = persistentRuntime->get()->exports[index];
-        if (object->active && IsDerivedFromPath(object->cls, "Engine.Inventory")) {
+        if (object->active && !object->worldRemoved && IsDerivedFromPath(object->cls, "Engine.Inventory")) {
             inventoryActor = object;
             break;
         }
@@ -4502,6 +4865,8 @@ bool SavePortableRuntimeState(const std::string& path) {
         const bool hasScript = !scriptState.objects.empty() || hasDefaults;
         const bool hasState = std::any_of(scriptState.objects.begin(), scriptState.objects.end(),
             [](const auto& object) { return object.state.has_value(); });
+        const bool hasLifecycle = std::any_of(scriptState.objects.begin(), scriptState.objects.end(),
+            [](const auto& object) { return object.lifecycle.has_value(); });
         if (hasScript) static_cast<void>(PrepareScriptSavedState(scriptState, false));
         std::vector<std::string> inactive;
         std::vector<std::string> activated;
@@ -4545,9 +4910,9 @@ bool SavePortableRuntimeState(const std::string& path) {
             persistentCredits < 0 || persistentSkillPoints < 0 || damaged.size() > 100'000u)
             throw std::runtime_error("Runtime checkpoint gameplay values are outside their valid ranges");
         // This is exactly the v3 prefix, including list order and field widths.
-        // Only the version word and appended trailer differ for v4/v5/v6. Pure
+        // Only the version word and appended trailer differ for v4-v7. Pure
         // property/clock captures retain the byte-exact original v4 format.
-        write32(0x53515844u); write32(hasDefaults ? 6u : hasState ? 5u : hasScript ? 4u : 3u);
+        write32(0x53515844u); write32(hasLifecycle ? 7u : hasDefaults ? 6u : hasState ? 5u : hasScript ? 4u : 3u);
         writeStrings(persistentInventory); writeStrings(inactive); writeStrings(activated); writeFloat(persistentPlayerHealth);
         write32(static_cast<std::uint32_t>(damaged.size()));
         for (const auto& entry : damaged) {
@@ -4614,7 +4979,7 @@ static bool ReadPortableRuntimeState(const std::string& path, const bool apply, 
         };
         if (read32() != 0x53515844u) throw std::runtime_error("Runtime checkpoint magic is invalid");
         const auto version = read32();
-        if (version < 1u || version > 6u) throw std::runtime_error("Runtime checkpoint version is unsupported");
+        if (version < 1u || version > 7u) throw std::runtime_error("Runtime checkpoint version is unsupported");
         auto inventory = readStrings(); auto inactive = readStrings(); auto activated = readStrings();
         float playerHealth = 100.0f;
         std::vector<std::pair<std::string, float>> damaged;
@@ -4655,9 +5020,12 @@ static bool ReadPortableRuntimeState(const std::string& path, const bool apply, 
             const bool hasState = std::any_of(scriptState.objects.begin(), scriptState.objects.end(),
                 [](const auto& object) { return object.state.has_value(); });
             const bool hasDefaults = !scriptState.classDefaults.empty();
+            const bool hasLifecycle = std::any_of(scriptState.objects.begin(), scriptState.objects.end(),
+                [](const auto& object) { return object.lifecycle.has_value(); });
             if ((version == 4u && (blob.at(6u) != QuestVr::ScriptStateDetail::Magic[6u] || hasState)) ||
                 (version == 5u && (blob.at(6u) != QuestVr::ScriptStateDetail::StateFrameVersion || !hasState)) ||
-                (version == 6u && (blob.at(6u) != QuestVr::ScriptStateDetail::ClassDefaultsVersion || !hasDefaults)))
+                (version == 6u && (blob.at(6u) != QuestVr::ScriptStateDetail::ClassDefaultsVersion || !hasDefaults)) ||
+                (version == 7u && (blob.at(6u) != QuestVr::ScriptStateDetail::ActorLifecycleVersion || !hasLifecycle)))
                 throw std::runtime_error("Runtime checkpoint state trailer does not match its envelope version");
             if (!expectedMapName.empty() && LowerAscii(expectedMapName) != LowerAscii(scriptState.mapName))
                 throw std::runtime_error("Runtime checkpoint script map does not match save metadata");
@@ -4693,10 +5061,21 @@ static bool ReadPortableRuntimeState(const std::string& path, const bool apply, 
             if (found != persistentQualifiedObjects.end()) damagedTargets.emplace_back(found->second, entry.second);
         }
         if (!apply) return true;
+        // Allocate the legacy/native reset before touching live state. All
+        // versions replace native topology; absence is not a merge with the
+        // current session. Initial Base relinks are the map-load baseline.
+        std::vector<std::pair<RuntimeObject*, std::vector<RuntimeObject*>>> initialBases;
+        for (auto* object : persistentRuntime->get()->exports)
+            if (!object->initialBasedActors.empty()) initialBases.emplace_back(object, object->initialBasedActors);
+        if (persistentWorldRevision == std::numeric_limits<std::uint64_t>::max())
+            throw std::runtime_error("Portable world revision budget exceeded");
         for (RuntimeObject* object : persistentRuntime->get()->exports) {
             object->scriptValues.clear(); object->classDefaultValues.clear();
             object->animationClock.reset(); object->stateObject.reset(); object->committedScriptState = false;
+            object->childActors.clear(); object->basedActors.clear(); object->touchEventSent = {};
+            object->committedLifecycle = false; object->worldRemoved = false;
         }
+        for (auto& [target, based] : initialBases) target->basedActors.swap(based);
         for (std::size_t index = persistentScriptExportCount; index < persistentRuntime->get()->exports.size(); ++index) {
             RuntimeObject* object = persistentRuntime->get()->exports[index];
             object->active = true; object->activated = false; object->healthInitialized = false; object->health = 100.0f;
@@ -4713,7 +5092,13 @@ static bool ReadPortableRuntimeState(const std::string& path, const bool apply, 
             object.target->scriptValues.swap(object.values); object.target->animationClock.swap(object.clock);
             object.target->stateObject.swap(object.state);
             object.target->committedScriptState = true;
+            if (object.lifecycle) {
+                object.target->childActors.swap(object.children); object.target->basedActors.swap(object.based);
+                object.target->touchEventSent = object.touchSent; object.target->worldRemoved = object.removed;
+                object.target->committedLifecycle = true;
+            }
         }
+        ++persistentWorldRevision;
         return true;
     } catch (const std::exception& error) {
         __android_log_print(ANDROID_LOG_WARN, "quest_main", "DeusExQuest: runtime checkpoint %s rejected: %.512s",

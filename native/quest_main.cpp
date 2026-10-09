@@ -650,6 +650,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         mapTravelCooldown_ = 3.0f;
         turnLatch_ = fireLatch_ = inventoryCycleLatch_ = false;
         runtimeAvailable_ = false;
+        hasPublishedRuntimeWorldRevision_ = false;
         initialPreparationPending_ = true;
         initialPreparationFailed_ = false;
         pendingMapName_.clear();
@@ -1015,9 +1016,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                 ConfirmPendingChoice();
             } else if (UseTargetedActor(frame.RightRemotePointPose) &&
                        pendingMapName_.empty() && transitionMapName_.empty()) {
-                DestroyActorGeometry();
-                actorSnapshots_ = GetPortableRuntimeMapActors();
-                BuildActorMarkers();
+                if (!TryRebuildRuntimeActorPublication()) return;
             }
         }
         const bool firePressed = frame.RightRemoteIndexTrigger > 0.75f;
@@ -1037,9 +1036,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                            frame.RightRemotePointPose,
                            weaponDamage,
                            SelectedWeaponRange(inventory))) {
-                DestroyActorGeometry();
-                actorSnapshots_ = GetPortableRuntimeMapActors();
-                BuildActorMarkers();
+                if (!TryRebuildRuntimeActorPublication()) return;
             }
         }
         fireLatch_ = firePressed;
@@ -1079,14 +1076,16 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         // The map-preparation worker replaces the portable runtime. Never read
         // actor meshes from it until that worker has finished and the staged
         // transition owns the new snapshots/textures.
+        PollRuntimeActorPublication();
         if (runtimeAvailable_ && pendingMapName_.empty() && transitionPhase_ == MapTransitionPhase::Idle &&
             actorGeometryBuild_) {
             try {
                 AdvanceActorGeometry();
             } catch (const std::exception& error) {
                 ALOG("DeusExQuest: incremental actor geometry failed: %s", error.what());
-                // Discard all partial actor uploads, not the map's BSP renderers.
-                DestroyActorGeometry();
+                // A queued revision is not a successful GPU publication. Keep
+                // no partial targets or stale audio and require map recovery.
+                SuspendRuntimeActorPublication("ACTOR GEOMETRY FAILED - RESTART SESSION");
             }
         }
         AdvanceMapTransition();
@@ -1250,6 +1249,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         transitionMapName_.clear();
         transitionPhase_ = MapTransitionPhase::Idle;
         runtimeAvailable_ = false;
+        hasPublishedRuntimeWorldRevision_ = false;
         hasTransitionHeadAnchor_ = false;
         ClearPendingPersonaRestore();
         preparedActorSnapshots_.clear();
@@ -1406,7 +1406,9 @@ class DeusExQuestApp final : public OVRFW::XrApp {
 
     struct SpatialAudioEmitter {
         OVR::Vector3f localPosition;
+        std::string actorPath;
         std::string soundPath;
+        std::uint8_t soundPitch{};
         std::shared_ptr<const std::vector<std::int16_t>> monoSamples;
         std::size_t cursor{};
         float radiusMeters{30.0f};
@@ -1837,6 +1839,73 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         ALOG("DeusExQuest: queued incremental geometry for %zu targetable actors; budget %.1f ms/%zu operations/%zu vertices",
              build.actorIndices.size(), actorGeometryMillisecondsPerFrame_,
              actorGeometryOperationsPerFrame_, actorGeometryChunkVertices_);
+    }
+
+    void RebuildRuntimeActorPublication() {
+        // The caller owns the loaded runtime. A background map worker or staged
+        // transition must never race this snapshot/revision read.
+        if (!runtimeAvailable_ || !pendingMapName_.empty() || !transitionMapName_.empty() ||
+            transitionPhase_ != MapTransitionPhase::Idle)
+            throw std::runtime_error("Actor publication requested while the map runtime is unavailable");
+        const auto revision = GetPortableRuntimeWorldRevision();
+        auto snapshots = GetPortableRuntimeMapActors();
+        auto lights = BuildMapLights(snapshots, activeMapUnrealOrigin_);
+        // Retire old mesh-pose jobs before replacing the snapshot ordinal list.
+        // BuildActorMarkers invalidates their epoch and uploads only fresh actor
+        // chunks incrementally; the existing BSP and static atlas stay intact.
+        DestroyActorGeometry();
+        actorSnapshots_ = std::move(snapshots);
+        activeMapLights_ = std::move(lights);
+        // Refresh the actor-lighting input only. Static BSP lightmaps still
+        // describe their map-preparation bake, not a dynamic lighting solver.
+        ReconcileSpatialAudioEmitters(actorSnapshots_);
+        BuildActorMarkers();
+        publishedRuntimeWorldRevision_ = revision;
+        hasPublishedRuntimeWorldRevision_ = true;
+        inventoryMenuDirty_ = true;
+        displayedInventoryCount_ = invalidRendererIndex_;
+    }
+
+    void SuspendRuntimeActorPublication(const char* status) {
+        // The VM commit/save restoration already succeeded. A render failure
+        // cannot roll it back. Invalidate the queued revision and all active
+        // actor consumers, retaining immutable map clips for later recovery.
+        runtimeAvailable_ = false;
+        hasPublishedRuntimeWorldRevision_ = false;
+        restorePoseAfterTransition_ = false;
+        DestroyActorGeometry();
+        {
+            std::lock_guard<std::mutex> lock(audioMutex_);
+            spatialAudioEmitters_.clear();
+            ambientSamples_.clear();
+            ambientCursor_ = 0u;
+        }
+        interactionStatus_ = status;
+        interactionStatusSeconds_ = 10.0f;
+    }
+
+    bool TryRebuildRuntimeActorPublication() {
+        try {
+            RebuildRuntimeActorPublication();
+            return true;
+        } catch (const std::exception& error) {
+            // A committed VM transaction cannot be undone by a renderer error.
+            // Do not keep stale/deleted actor chunks or report a successful
+            // publication. Suspend unsafe runtime input until map recovery.
+            SuspendRuntimeActorPublication("ACTOR VISUAL PUBLICATION FAILED - RESTART SESSION");
+            ALOG("DeusExQuest: committed actor revision publication failed: %s", error.what());
+            return false;
+        }
+    }
+
+    void PollRuntimeActorPublication() {
+        if (!runtimeAvailable_ || !pendingMapName_.empty() || !transitionMapName_.empty() ||
+            transitionPhase_ != MapTransitionPhase::Idle) return;
+        const auto revision = GetPortableRuntimeWorldRevision();
+        if (hasPublishedRuntimeWorldRevision_ && revision == publishedRuntimeWorldRevision_) return;
+        if (TryRebuildRuntimeActorPublication())
+            ALOG("DeusExQuest: committed runtime actor revision %llu queued; %zu live actors; incremental GPU rebuild, static BSP/lightmap unchanged",
+                static_cast<unsigned long long>(revision), actorSnapshots_.size());
     }
 
     void QueueActorGeometryPart(
@@ -2386,6 +2455,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                 actorSnapshots_ = preparedActorSnapshots_;
                 preparedActorSnapshots_.clear();
                 ReplaceSpatialAudioEmitters(std::move(preparedSpatialAudioEmitters_));
+                ReconcileSpatialAudioEmitters(actorSnapshots_);
                 if (!BeginActorTextureUpload(std::move(preparedActorTextures_))) {
                     throw std::runtime_error("GPU actor texture allocation failed");
                 }
@@ -2421,6 +2491,8 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                     GetPortableRuntimePlayerHealth());
                 transitionMapName_.clear();
                 transitionPhase_ = MapTransitionPhase::Idle;
+                publishedRuntimeWorldRevision_ = GetPortableRuntimeWorldRevision();
+                hasPublishedRuntimeWorldRevision_ = true;
                 hasTransitionHeadAnchor_ = false;
                 displayedInventoryCount_ = invalidRendererIndex_;
                 mapTravelCooldown_ = 3.0f;
@@ -2546,14 +2618,19 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                 // Restore can hide an authored light/pawn/pickup. Build masks
                 // against the complete authored actor list and preserve every
                 // duplicate/inactive static-list ordinal before restoration.
-                PrepareWorldStaticLightmaps(map,GetPortableRuntimeMapActors(),preparation.worldMesh);
+                const auto authoredActors = GetPortableRuntimeMapActors();
+                PrepareWorldStaticLightmaps(map,authoredActors,preparation.worldMesh);
+                // Retain decoded clips for the complete authored population,
+                // so a same-map checkpoint can revive an emitter without any
+                // synchronous sound decoding on the XR thread. Active emitters
+                // are selected from the restored snapshots during publication.
+                preparation.spatialAudioEmitters = PrepareSpatialAudioEmitters(
+                    authoredActors, targetAudioRate,preparation.worldMesh.lightmap.unrealOrigin);
                 if (!restoreRuntimePath.empty() &&
                     !LoadPortableRuntimeState(restoreRuntimePath)) {
                     throw std::runtime_error("saved runtime restoration failed");
                 }
                 preparation.actors = GetPortableRuntimeMapActors();
-                preparation.spatialAudioEmitters = PrepareSpatialAudioEmitters(
-                    preparation.actors, targetAudioRate,preparation.worldMesh.lightmap.unrealOrigin);
                 preparation.lights = BuildMapLights(preparation.actors,preparation.worldMesh.lightmap.unrealOrigin);
                 return true;
                 }, [&] {
@@ -2613,8 +2690,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                 mapName.c_str(),
                 preparation.error.c_str());
             if (runtimeAvailable_) {
-                actorSnapshots_ = GetPortableRuntimeMapActors();
-                BuildActorMarkers();
+                if (!TryRebuildRuntimeActorPublication()) return;
                 interactionStatus_ = preparation.rollbackAttempted
                     ? "MAP LOAD FAILED - PRIOR MAP RESTORED" : "MAP LOAD CANCELLED";
             } else {
@@ -2843,9 +2919,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             if (foundInventory != actorSnapshots_.end()) {
                 const PortableInteractionResult result =
                     InteractPortableRuntimeActor(foundInventory->objectPath);
-                DestroyActorGeometry();
-                actorSnapshots_ = GetPortableRuntimeMapActors();
-                BuildActorMarkers();
+                if (!TryRebuildRuntimeActorPublication()) return;
                 displayedInventoryCount_ = invalidRendererIndex_;
                 ALOG(
                     "DeusExQuest: diagnostic pickup %s inventory=%zu selected=%s",
@@ -2865,9 +2939,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                 const std::string moverPath = foundMover->objectPath;
                 const PortableInteractionResult result =
                     InteractPortableRuntimeActor(moverPath);
-                DestroyActorGeometry();
-                actorSnapshots_ = GetPortableRuntimeMapActors();
-                BuildActorMarkers();
+                if (!TryRebuildRuntimeActorPublication()) return;
                 ALOG(
                     "DeusExQuest: diagnostic mover %s result=%s",
                     moverPath.c_str(),
@@ -3989,17 +4061,13 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         }
         previousHeadStage_ = currentHeadStage_;
         try {
-            DestroyActorGeometry();
-            actorSnapshots_ = GetPortableRuntimeMapActors();
-            BuildActorMarkers();
+            RebuildRuntimeActorPublication();
         } catch (const std::exception& error) {
             // State restoration already succeeded; do not claim it was kept
             // unchanged or try an older candidate after a visual allocation
             // failure. Suspend gameplay rather than retain mismatched actors.
             DestroySceneGeometry();
-            runtimeAvailable_ = false;
-            interactionStatus_ = "QUICK-LOAD VISUAL REBUILD FAILED - RESTART SESSION";
-            interactionStatusSeconds_ = 10.0f;
+            SuspendRuntimeActorPublication("QUICK-LOAD VISUAL REBUILD FAILED - RESTART SESSION");
             ALOG("DeusExQuest: restored state but visual rebuild failed: %s", error.what());
             return true;
         }
@@ -4241,11 +4309,13 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                 }
             }
             SpatialAudioEmitter emitter;
+            emitter.actorPath = actor.objectPath;
             emitter.localPosition = {
                 (actor.y - originY) * unitsToMeters,
                 (actor.z - originZ) * unitsToMeters + 1.0f,
                 -(actor.x - originX) * unitsToMeters};
             emitter.soundPath = actor.ambientSoundPath;
+            emitter.soundPitch = actor.soundPitch;
             emitter.monoSamples = found->second;
             emitter.radiusMeters = std::max(
                 2.0f, static_cast<float>(actor.soundRadius) * 25.0f * unitsToMeters);
@@ -4260,10 +4330,73 @@ class DeusExQuestApp final : public OVRFW::XrApp {
     }
 
     void ReplaceSpatialAudioEmitters(std::vector<SpatialAudioEmitter> emitters) {
+        // Prepare the shared-clip catalogue copy before acquiring the callback
+        // mutex. It owns no runtime/mesh pointers and survives emitter deletion.
+        auto catalog = emitters;
         std::lock_guard<std::mutex> lock(audioMutex_);
         spatialAudioEmitters_ = std::move(emitters);
+        spatialAudioEmitterCatalog_ = std::move(catalog);
         ambientSamples_.clear();
         ambientCursor_ = 0u;
+    }
+
+    void ReconcileSpatialAudioEmitters(const std::vector<PortableActorSnapshot>& actors) {
+        // Snapshot identities are read only by the XR owner. The audio callback
+        // only borrows the committed emitter collection under audioMutex_.
+        std::unordered_map<std::string, const PortableActorSnapshot*> live;
+        live.reserve(actors.size());
+        for (const auto& actor : actors) live.emplace(actor.objectPath, &actor);
+        constexpr float unitsToMeters = 1.0f / 52.5f;
+        const auto sameIdentity = [](const std::string& left, const std::string& right) {
+            return left.size() == right.size() && std::equal(left.begin(), left.end(), right.begin(),
+                [](unsigned char a, unsigned char b) {
+                    if (a >= 'A' && a <= 'Z') a = static_cast<unsigned char>(a + ('a' - 'A'));
+                    if (b >= 'A' && b <= 'Z') b = static_cast<unsigned char>(b + ('a' - 'A'));
+                    return a == b;
+                });
+        };
+        const auto compatible = [&](const SpatialAudioEmitter& emitter) {
+            const auto found = live.find(emitter.actorPath);
+            return found != live.end() && found->second->hasLocation &&
+                std::isfinite(found->second->x) && std::isfinite(found->second->y) && std::isfinite(found->second->z) &&
+                sameIdentity(found->second->ambientSoundPath, emitter.soundPath) &&
+                found->second->soundPitch == emitter.soundPitch;
+        };
+        const auto refresh = [&](SpatialAudioEmitter& emitter) {
+            const auto& actor = *live.at(emitter.actorPath);
+            emitter.localPosition = {
+                (actor.y - activeMapUnrealOrigin_.y) * unitsToMeters,
+                (actor.z - activeMapUnrealOrigin_.z) * unitsToMeters + 1.0f,
+                -(actor.x - activeMapUnrealOrigin_.x) * unitsToMeters};
+            emitter.radiusMeters = std::max(2.0f,
+                static_cast<float>(actor.soundRadius) * 25.0f * unitsToMeters);
+            emitter.volume = static_cast<float>(actor.soundVolume) / 255.0f;
+        };
+        std::size_t removed{}, restored{}, unavailable{};
+        {
+            std::lock_guard<std::mutex> lock(audioMutex_);
+            const auto previous = spatialAudioEmitters_.size();
+            spatialAudioEmitters_.erase(std::remove_if(spatialAudioEmitters_.begin(), spatialAudioEmitters_.end(),
+                [&](const auto& emitter) { return !compatible(emitter); }), spatialAudioEmitters_.end());
+            removed = previous - spatialAudioEmitters_.size();
+            std::set<std::string> audible;
+            for (auto& emitter : spatialAudioEmitters_) {
+                refresh(emitter);
+                audible.insert(emitter.actorPath);
+            }
+            for (const auto& emitter : spatialAudioEmitterCatalog_) {
+                if (!compatible(emitter) || audible.count(emitter.actorPath)) continue;
+                spatialAudioEmitters_.push_back(emitter);
+                refresh(spatialAudioEmitters_.back());
+                audible.insert(emitter.actorPath);
+                ++restored;
+            }
+            for (const auto& actor : actors)
+                if (actor.hasLocation && !actor.ambientSoundPath.empty() && !audible.count(actor.objectPath)) ++unavailable;
+        }
+        if (removed || restored || unavailable)
+            ALOG("DeusExQuest: committed ambient actor publication removed=%zu restored-from-map-clips=%zu unavailable-clips=%zu; no XR-thread decode",
+                removed, restored, unavailable);
     }
 
     void UpdateSpatialAudioGains(
@@ -4585,6 +4718,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         ambientSamples_.clear();
         ambientCursor_ = 0;
         spatialAudioEmitters_.clear();
+        spatialAudioEmitterCatalog_.clear();
         dialogueSamples_.clear();
         dialogueCursor_ = 0;
         dialogueSpatialized_ = false;
@@ -5310,6 +5444,8 @@ class DeusExQuestApp final : public OVRFW::XrApp {
     std::size_t actorPoseActorOrdinal_{};
     bool actorGeometryComplete_{};
     std::vector<PortableActorSnapshot> actorSnapshots_;
+    std::uint64_t publishedRuntimeWorldRevision_{};
+    bool hasPublishedRuntimeWorldRevision_{};
     std::vector<MapLight> activeMapLights_;
     std::vector<InteractiveActor> interactiveActors_;
     OVRFW::GlTexture firstTexture_;
@@ -5326,6 +5462,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
     std::vector<std::int16_t> ambientSamples_;
     std::size_t ambientCursor_{};
     std::vector<SpatialAudioEmitter> spatialAudioEmitters_;
+    std::vector<SpatialAudioEmitter> spatialAudioEmitterCatalog_;
     std::uint32_t audioSampleRate_{};
     std::vector<std::int16_t> dialogueSamples_;
     std::size_t dialogueCursor_{};

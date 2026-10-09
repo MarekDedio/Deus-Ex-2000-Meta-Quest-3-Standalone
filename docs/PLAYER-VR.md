@@ -168,3 +168,14 @@ surfaces, feet exactly on the -0.198 m Training floor, and 1.501 m actual eye
 height after real head lowering. Both original textured hands and the coat/
 trousers/boots render. This is one successful physical cold-start acceptance,
 not certification of every runtime/recenter case or an animated full body.
+
+Second cold-start acceptance at 08:14:32: automatic seated calibration used
+physical head height 0.928 m and virtual floor -0.722 m, reaching 1.650 m with
+no manual calibration command. The user confirmed "Height and legs look
+correct" without pressing the left stick. The 08:15:05 capture reports both
+tracked grips, two submitted lower-body surfaces, feet and the actual floor
+at -0.198 m. Its later physical head height is 1.088 m (actual eye height
+1.810 m), consistent with real movement after the one-time calibration. This
+frame faces forward and therefore does not independently show the boots.
+Two idle timing windows reached 72 fps; screenshot readback caused a frame
+spike and is not a performance certification.

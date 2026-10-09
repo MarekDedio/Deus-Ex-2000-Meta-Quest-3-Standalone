@@ -93,8 +93,12 @@ schema-validated `bGameRelevant=true` and `Level.NetMode=0` (singleplayer) or `2
 `mpPickupAmmoCount` changes 0 to 30 while the existing instance, base and sibling
 defaults remain unchanged. The exact inherited property identity, codec-v3/v6
 roundtrip, legacy restoration and instruction-budget failure after the original
-nested CDO write are checked. The unmodified dormant map state still refuses
-`Destroy279` at `Engine.Actor.PreBeginPlay:199`, with full rollback.
+nested CDO write are checked. Subsequent [actor-lifecycle support](ACTOR-LIFECYCLE.md)
+also completes the unmodified dormant map's Destroy279 branch and the caller's
+later CDO write on the deleted Self. The expanded original test passes 996
+controls, including v7 native removal, GC/direct-call lifetime, rollback and
+an explicitly enabled/begun original Destroyed callback. It does not bypass
+disabled authored probes or prove automatic world startup.
 
 Final-source original actor and runtime regressions also pass. Ignored evidence
 is under `artifacts/prerequisites-20261009/`: `class-defaults-final-ctest.log`,
@@ -111,6 +115,6 @@ To repeat after building the desktop targets:
 .\artifacts\prerequisites-20261009\build\portable_original_defaults_test.exe 'D:\Steam\steamapps\common\Deus Ex'
 ```
 
-`Spawn`/`Destroy`, lifecycle publication, automatic world startup, AI, actor
+`Spawn`, automatic world startup, AI, actor
 physics and full campaign progression remain unfinished. Passing these checks
 does not prove campaign playability or on-headset gameplay acceptance.
