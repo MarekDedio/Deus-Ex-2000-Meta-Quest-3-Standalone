@@ -20,6 +20,9 @@ struct DesktopPersonaPreview {
     questvisual::Image image;
     std::vector<std::string> artworkPaths;
     std::vector<std::string> iconPaths;
+    bool originalInventoryFootprints{};
+    std::vector<std::string> inventoryClassPaths, inventoryMetadataSources;
+    QuestVr::PersonaInventoryLayout inventoryLayout;
     std::size_t transparentPixels{}, opaquePixels{}, partialAlphaPixels{};
     std::uint32_t visibleMinX{}, visibleMinY{}, visibleMaxX{}, visibleMaxY{};
     std::uint64_t rgbaHash{}, flattenedHash{};

@@ -5,7 +5,10 @@
 
 #include <algorithm>
 #include <array>
+#include <cstring>
 #include <limits>
+#include <map>
+#include <set>
 #include <stdexcept>
 
 namespace {
@@ -57,6 +60,93 @@ DesktopPersonaFontProvenance FontProvenance(const PortableBitmapFont& font) {
         result.atlasDimensions.push_back({atlas.width,atlas.height});
     return result;
 }
+
+// Explicit asset fixtures, not guesses about a runtime actor's class. Sizes are
+// read from these actual authored classes and inherited Engine.Inventory defaults.
+const char* InventoryFixtureClass(const std::string& icon) {
+    static const std::map<std::string,const char*> classes{
+        {"Icons.LargeIconPistol","DeusEx.WeaponPistol"},
+        {"Icons.LargeIconMedKit","DeusEx.MedKit"},
+        {"Icons.LargeIconMultitool","DeusEx.Multitool"},
+        {"Icons.LargeIconLockPick","DeusEx.Lockpick"},
+        {"Icons.LargeIconBioCell","DeusEx.BioelectricCell"},
+        {"Icons.LargeIconRifle","DeusEx.WeaponRifle"},
+        {"Icons.LargeIconLAM","DeusEx.WeaponLAM"},
+        {"Icons.LargeIconAssaultGun","DeusEx.WeaponAssaultGun"},
+        {"Icons.LargeIconGEPGun","DeusEx.WeaponGEPGun"}};
+    const auto found = classes.find(icon);
+    return found == classes.end() ? nullptr : found->second;
+}
+
+std::vector<QuestVr::PersonaInventoryItem> ReadInventoryFixtureDefaults(
+    const std::filesystem::path& systemRoot, const std::vector<std::string>& icons,
+    DesktopPersonaPreview& result) {
+    if (icons.size() > 256u) throw std::runtime_error("Inventory preview fixture exceeds bounded count");
+    for (const auto& icon : icons) if (InventoryFixtureClass(icon) == nullptr) return {};
+    std::map<std::string,PortablePackageTables> tables;
+    for (const std::string name : {"Core","Engine","DeusEx"})
+        tables.emplace(name,LoadPortablePackageTables((systemRoot/(name+".u")).string()));
+    const auto resolve = [](const PortablePackageTables& table,std::int32_t reference) {
+        auto path = GetPortableObjectPath(table,reference);
+        if (reference > 0) path = std::filesystem::path(table.sourcePath).stem().string()+"."+path;
+        return path;
+    };
+    const std::set<std::string> fields{
+        "invSlotsX","invSlotsY","invPosX","invPosY","largeIconWidth","largeIconHeight","largeIcon","bDisplayableInv"};
+    struct Value { PortableTaggedProperty property; std::string classPath,sourcePath; const PortablePackageTables* package; };
+    std::map<std::string,std::map<std::string,Value>> classDefaults;
+    std::vector<QuestVr::PersonaInventoryItem> items;
+    items.reserve(icons.size());
+    for (const auto& icon : icons) {
+        const std::string classPath(InventoryFixtureClass(icon));
+        auto& values = classDefaults[classPath];
+        std::set<std::string> visited;
+        std::string current = values.empty() ? classPath : std::string{};
+        while (!current.empty()) {
+            if (visited.size() >= 128u || !visited.insert(current).second)
+                throw std::runtime_error("Inventory fixture class hierarchy exceeds bound or contains a cycle");
+            const auto dot = current.find('.');
+            if (dot == std::string::npos) throw std::runtime_error("Inventory fixture class identity is not qualified");
+            const auto& table = tables.at(current.substr(0u,dot));
+            const auto index = FindPortableExport(table,current.substr(dot+1u));
+            if (table.exports.at(index).ObjClass != 0)
+                throw std::runtime_error("Inventory fixture metadata target is not an authored class");
+            const auto descriptor = LoadPortableClassDescriptor(table,index);
+            for (const auto& property : descriptor.defaults) {
+                const auto name = property.name.ToString();
+                if (fields.count(name) != 0u && values.count(name) == 0u)
+                    values.emplace(name,Value{property,current,table.sourcePath,&table});
+            }
+            current = resolve(table,table.exports.at(index).ObjBase);
+        }
+        const auto integer = [&](const char* name) {
+            const auto& value = values.at(name);
+            if (value.property.type != 2u || value.property.value.size() != 4u)
+                throw std::runtime_error("Inventory fixture default has the wrong integer type/size");
+            std::int32_t number{}; std::memcpy(&number,value.property.value.data(),4u);
+            return number;
+        };
+        const auto& displayable = values.at("bDisplayableInv").property;
+        const auto& largeIcon = values.at("largeIcon");
+        if (displayable.type != 3u || largeIcon.property.type != 5u)
+            throw std::runtime_error("Inventory fixture default has the wrong bool/object type");
+        if (resolve(*largeIcon.package,DecodePortableObjectReference(largeIcon.property)) != "DeusExUI."+icon)
+            throw std::runtime_error("Inventory fixture asset does not match its actual class default icon");
+        QuestVr::PersonaInventoryItem item;
+        item.slotsX = static_cast<std::uint32_t>(integer("invSlotsX"));
+        item.slotsY = static_cast<std::uint32_t>(integer("invSlotsY"));
+        item.positionX = integer("invPosX"); item.positionY = integer("invPosY");
+        item.iconWidth = static_cast<std::uint32_t>(integer("largeIconWidth"));
+        item.iconHeight = static_cast<std::uint32_t>(integer("largeIconHeight"));
+        item.displayable = displayable.boolValue;
+        items.push_back(item);
+        result.inventoryClassPaths.push_back(classPath);
+        for (const auto& [name,value] : values)
+            result.inventoryMetadataSources.push_back(classPath+"."+name+" <- "+value.classPath+" @ "+value.sourcePath);
+    }
+    result.originalInventoryFootprints = true;
+    return items;
+}
 } // namespace
 
 DesktopPersonaPreview BuildDesktopPersonaPreview(
@@ -97,6 +187,14 @@ DesktopPersonaPreview BuildDesktopPersonaPreview(
     for (std::size_t index = 0; index < buttonNames.size(); ++index)
         chrome.normalButton[index] = chromeImage(buttonNames[index]);
     chrome.filler = chromeImage("PersonaButtonFiller");
+    if (page == QuestVr::PersonaUiPage::Inventory) {
+        constexpr std::array<const char*,9> selectionNames{{
+            "PersonaItemHighlight_TL","PersonaItemHighlight_TR","PersonaItemHighlight_BL","PersonaItemHighlight_BR",
+            "PersonaItemHighlight_Left","PersonaItemHighlight_Right","PersonaItemHighlight_Top",
+            "PersonaItemHighlight_Bottom","PersonaItemHighlight_Center"}};
+        for (std::size_t index = 0u; index < selectionNames.size(); ++index)
+            chrome.inventorySelection[index] = chromeImage(selectionNames[index]);
+    }
     const auto headers = DecodePortableBitmapFont(package,"FontMenuHeaders");
     const auto bodyFont = DecodePortableBitmapFont(package,"FontMenuSmall");
     result.fonts = {{FontProvenance(headers),FontProvenance(bodyFont)}};
@@ -124,10 +222,14 @@ DesktopPersonaPreview BuildDesktopPersonaPreview(
         result.iconPaths.push_back(path);
     }
     if (page == QuestVr::PersonaUiPage::Inventory) {
-        QuestVr::DrawPersonaInventoryGrid(canvas,icons.size(),selectedIndex,
-            [&](std::size_t index) -> const PortableTextureImage* {
-                return index < icons.size() ? &icons[index] : nullptr;
-            });
+        const auto items = ReadInventoryFixtureDefaults(uiPackage.parent_path(),result.iconPaths,result);
+        const auto lookup = [&](std::size_t index) -> const PortableTextureImage* {
+            return index < icons.size() ? &icons[index] : nullptr;
+        };
+        if (result.originalInventoryFootprints)
+            result.inventoryLayout = QuestVr::DrawPersonaInventoryGrid(
+                canvas,items,selectedIndex,lookup,&chrome.inventorySelection);
+        else QuestVr::DrawPersonaInventoryGrid(canvas,icons.size(),selectedIndex,lookup);
     } else if (!requestedIcons.empty()) {
         throw std::runtime_error("Icon fixtures apply only to Inventory previews");
     }
@@ -135,8 +237,16 @@ DesktopPersonaPreview BuildDesktopPersonaPreview(
     // as Quest, but it does not substitute for live inventory/mission evidence.
     switch (page) {
         case QuestVr::PersonaUiPage::Inventory:
-            result.fixtureLeftText = "Inventory (asset fixture)";
-            result.fixtureRightText = "PISTOL\n\n10mm ammunition\n\nA compact semi-automatic handgun.\n\nThis item description is preview text, not a saved inventory.";
+            result.fixtureLeftText = result.originalInventoryFootprints ?
+                "Inventory (class-default fixture)" : "Inventory (one-cell asset fixture)";
+            if (selectedIndex < result.iconPaths.size()) {
+                const auto& title = result.originalInventoryFootprints
+                    ? result.inventoryClassPaths.at(selectedIndex) : result.iconPaths[selectedIndex];
+                result.fixtureRightText = title + "\n\nIcon fixture: " + result.iconPaths[selectedIndex] +
+                    "\n\nSelected artwork/class fixture, not a live item description or saved inventory.";
+            } else {
+                result.fixtureRightText = "NO FIXTURE SELECTED\n\nThis preview is not a live inventory.";
+            }
             break;
         case QuestVr::PersonaUiPage::Health:
             result.fixtureLeftText = "Health";
@@ -233,6 +343,121 @@ void VerifySharedPersonaCanvas() {
     Require(at(46,89,0) == 255u && at(46,89,1) == 20u,
             "original icon colors/aspect positioning changed");
     Require(at(46,66,0) == 18u,"wide icon stretched instead of preserving aspect ratio");
+
+    // Exact original footprint facts: rifle 4x1, pistol 1x1, assault gun 2x2,
+    // GEP gun 4x2. These are geometry controls, not simulated inventory actors.
+    std::vector<QuestVr::PersonaInventoryItem> footprints{
+        {4u,1u,-1,-1,159u,47u}, {1u,1u,-1,-1,46u,28u},
+        {2u,2u,-1,-1,94u,65u}, {4u,2u,-1,-1,203u,77u}};
+    const auto originalFootprints = footprints;
+    const auto packed = QuestVr::BuildPersonaInventoryLayout(footprints);
+    Require(packed.placements.size() == 4u && packed.occupiedCells == 17u &&
+            packed.generatedPositions == 4u && packed.unplaced.empty(),"multi-cell inventory was reduced to item count");
+    const auto& rifle = packed.placements[0].rect;
+    Require(rifle.x == 42u && rifle.y == 62u && rifle.width == 213u && rifle.height == 54u,
+            "original rifle footprint or 53-step/+1 border formula changed");
+    Require(packed.placements[1].rect.x == 254u && packed.placements[1].rect.y == 62u &&
+            packed.placements[2].rect.x == 42u && packed.placements[2].rect.y == 115u &&
+            packed.placements[3].rect.x == 42u && packed.placements[3].rect.y == 221u,
+            "display-only row-major packing overlaps, rotates, or reorders item footprints");
+    for (std::size_t index = 0u; index < footprints.size(); ++index)
+        Require(footprints[index].positionX == originalFootprints[index].positionX &&
+                footprints[index].positionY == originalFootprints[index].positionY,
+                "preview packing wrote generated positions into item metadata");
+    footprints = {{1u,1u,-1,-1,46u,28u},{4u,1u,0,0,159u,47u}};
+    const auto assigned = QuestVr::BuildPersonaInventoryLayout(footprints);
+    Require(assigned.placements[0].rect.x == 254u && assigned.placements[0].generatedPosition &&
+            assigned.placements[1].rect.x == 42u && !assigned.placements[1].generatedPosition,
+            "unassigned display fallback displaced an effective original inventory position");
+    std::vector<QuestVr::PersonaInventoryItem> largeItems(9u,{4u,2u,-1,-1,203u,77u});
+    const auto limited = QuestVr::BuildPersonaInventoryLayout(largeItems);
+    Require(limited.placements.size() == 3u && limited.unplaced.size() == 6u &&
+            limited.occupiedCells == 24u,"multi-cell capacity overflow was paginated or squeezed into empty cells");
+    footprints = {{1u,1u,-1,-1,46u,28u}};
+    footprints[0].available = false;
+    Require(QuestVr::BuildPersonaInventoryLayout(footprints).unavailable == std::vector<std::size_t>{0u},
+            "unavailable object metadata acquired a guessed one-cell footprint");
+    footprints[0].available = true; footprints[0].displayable = false;
+    Require(QuestVr::BuildPersonaInventoryLayout(footprints).placements.empty(),"non-displayable inventory used grid space");
+    for (const auto malformed : {QuestVr::PersonaInventoryItem{0u,1u,-1,-1,46u,28u},
+                                QuestVr::PersonaInventoryItem{6u,1u,-1,-1,46u,28u},
+                                QuestVr::PersonaInventoryItem{1u,7u,-1,-1,46u,28u},
+                                QuestVr::PersonaInventoryItem{1u,1u,-1,0,46u,28u},
+                                QuestVr::PersonaInventoryItem{4u,1u,2,0,159u,47u},
+                                QuestVr::PersonaInventoryItem{1u,1u,-1,-1,0u,28u}})
+        RequireRejected([&] { (void)QuestVr::BuildPersonaInventoryLayout({malformed}); },
+                        "invalid original footprint/position/icon dimensions accepted");
+    RequireRejected([&] { (void)QuestVr::BuildPersonaInventoryLayout({
+        {4u,1u,0,0,159u,47u},{1u,1u,3,0,46u,28u}}); },"overlapping effective inventory positions accepted");
+    RequireRejected([&] { (void)QuestVr::BuildPersonaInventoryLayout(
+        std::vector<QuestVr::PersonaInventoryItem>(4097u)); },"inventory metadata count bound was ignored");
+
+    auto paddedRifle = Solid(256u,64u,{255u,0u,255u,255u});
+    for (std::uint32_t y = 0u; y < 47u; ++y)
+        for (std::uint32_t x = 0u; x < 159u; ++x) {
+            const auto offset = (static_cast<std::size_t>(y)*paddedRifle.width+x)*4u;
+            paddedRifle.rgba[offset] = static_cast<std::uint8_t>(31u+x%100u);
+            paddedRifle.rgba[offset+1u] = static_cast<std::uint8_t>(80u+y);
+            paddedRifle.rgba[offset+2u] = 20u;
+        }
+    paddedRifle.rgba[3u] = 0u;
+    canvas = Solid(640u,480u,{7u,8u,9u,255u});
+    const auto drawn = QuestVr::DrawPersonaInventoryGrid(canvas,
+        std::vector<QuestVr::PersonaInventoryItem>{{4u,1u,-1,-1,159u,47u}},0u,
+        [&](std::size_t) -> const QuestVr::PersonaUiImage* { return &paddedRifle; });
+    Require(drawn.placements.size() == 1u && at(42u,62u,0u) == 255u && at(254u,62u,0u) == 255u,
+            "selection did not span the rifle's entire 213x54 button");
+    Require(at(95u,70u,0u) != 100u && at(201u,62u,0u) == 255u,
+            "internal cell frames were drawn through a multi-cell item");
+    const auto iconX = rifle.x+rifle.width/2u-159u/2u;
+    const auto iconY = rifle.y+rifle.height/2u-47u/2u;
+    Require(at(iconX,iconY,0u) == 18u && at(iconX+1u,iconY,0u) == 32u &&
+            at(iconX+158u,iconY+46u,0u) == 89u && at(iconX+158u,iconY+46u,1u) == 126u,
+            "logical source window was resized, texture padding sampled, or mask lost");
+    Require(at(iconX+159u,iconY+10u,0u) == 18u && at(iconX+10u,iconY+47u,0u) == 18u &&
+            at(255u,70u,0u) == 7u,"rifle icon padding or footprint escaped original rectangle");
+    auto tooSmall = Solid(128u,64u,{1u,2u,3u,255u});
+    const auto beforeRejectedIcon = canvas.rgba;
+    RequireRejected([&] { (void)QuestVr::DrawPersonaInventoryGrid(canvas,
+        std::vector<QuestVr::PersonaInventoryItem>{{4u,1u,-1,-1,159u,47u}},0u,
+        [&](std::size_t) -> const QuestVr::PersonaUiImage* { return &tooSmall; }); },
+        "logical source window exceeded decoded texture");
+    Require(canvas.rgba == beforeRejectedIcon,"failed icon preflight partially painted destination");
+    std::array<QuestVr::PersonaUiImage,9> selection;
+    for (std::size_t index = 0u; index < selection.size(); ++index)
+        selection[index] = Solid(2u,2u,{static_cast<std::uint8_t>(100u+index),30u,40u,255u});
+    selection[8] = Solid(2u,2u,{0u,0u,0u,0u});
+    canvas = Solid(640u,480u,{7u,8u,9u,255u});
+    QuestVr::DrawPersonaInventorySelection(canvas,selection,{42u,62u,213u,54u});
+    Require(at(42u,62u,0u) == 100u && at(254u,62u,0u) == 101u &&
+            at(42u,115u,0u) == 102u && at(254u,115u,0u) == 103u &&
+            at(100u,62u,0u) == 106u && at(42u,80u,0u) == 104u &&
+            at(100u,80u,0u) == 7u,"original nine-piece selection border order/extent/mask changed");
+    selection[0].width = 1u;
+    RequireRejected([&] { QuestVr::DrawPersonaInventorySelection(canvas,selection,{42u,62u,213u,54u}); },
+                    "malformed selection artwork accepted");
+    selection[0] = Solid(3u,2u,{100u,0u,0u,255u});
+    selection[1] = Solid(4u,3u,{101u,0u,0u,255u});
+    selection[2] = Solid(5u,4u,{102u,0u,0u,255u});
+    selection[3] = Solid(6u,5u,{103u,0u,0u,255u});
+    selection[4] = Solid(2u,1u,{104u,0u,0u,255u});
+    selection[5] = Solid(1u,1u,{105u,0u,0u,255u});
+    selection[6] = Solid(1u,2u,{106u,0u,0u,255u});
+    selection[7] = Solid(1u,3u,{107u,0u,0u,255u});
+    selection[8] = Solid(2u,2u,{10u,0u,0u,255u});
+    selection[8].rgba[4u] = 20u;
+    selection[8].rgba[8u] = 30u;
+    selection[8].rgba[12u] = 40u;
+    canvas = Solid(640u,480u,{7u,8u,9u,255u});
+    QuestVr::DrawPersonaInventorySelection(canvas,selection,{42u,62u,213u,54u});
+    Require(at(47u,65u,0u) == 10u && at(248u,110u,0u) == 40u &&
+            at(45u,113u,0u) == 107u && at(246u,113u,0u) == 107u &&
+            at(247u,113u,0u) == 7u,
+            "nine-slice center stretch/inset or pinned TL-origin bottom-edge rule changed");
+    const auto beforeRejectedSelection = canvas.rgba;
+    RequireRejected([&] { QuestVr::DrawPersonaInventorySelection(canvas,selection,{42u,62u,267u,54u}); },
+                    "selection work escaped bounded inventory width");
+    Require(canvas.rgba == beforeRejectedSelection,"failed selection preflight partially painted destination");
 
     for (const auto& layout : QuestVr::kPersonaPageLayouts) {
         for (auto& image : backgrounds) image = {};

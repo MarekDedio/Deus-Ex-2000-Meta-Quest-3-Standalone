@@ -17,6 +17,12 @@ Native boolean AND/OR are lazy; call arguments evaluate on caller Self before
 invocation on the Context receiver. Native omitted arguments retain Nothing,
 while script optional arguments initialize typed-zero locals.
 
+Rotator-to-Vector `0x39` uses the exact pinned Coords forward axis, retains
+16-bit wrapping and returns a detached Vector. Nothing means zero rotation;
+other typed values, including arbitrary generic Struct storage, refuse.
+See [ROTATOR-DIRECTION.md](ROTATOR-DIRECTION.md) for verification and remaining
+startup boundaries.
+
 The subsequent [script-dispatch foundation](SCRIPT-DISPATCH.md) resolves
 authored same-named states before class functions for virtual calls, keeps
 global calls class-only and applies stopped-context eligibility before callee

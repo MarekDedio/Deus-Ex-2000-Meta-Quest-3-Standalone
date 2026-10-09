@@ -60,8 +60,16 @@ and float-range boundaries are covered. The ordinary CMake test registers the
 same controls; the isolated CMake build and all 36 ordinary tests pass, with
 two optional original-root integrations explicitly skipped.
 
-These are authored fixtures, not original-map collision equivalence or Quest
-performance tests. Real Spawn still needs bounded identities, deep class-default
+These controls use authored fixtures. A separate
+[compiled-pin original-map differential](SPAWN-ORIGINAL-TEST.md) now also passes
+on sampled Training, Liberty Island and Intro root models, including all 27
+candidate hull results at every sample. It covers 1,092 original placements
+with 866 found, 226 exhausted and 137 shifted outcomes. The pin's hull query is
+compiled verbatim; the candidate loop remains an audited harness, not linked
+CheckLocation/UObject gameplay. Test-oracle recursion and repeated hull/DAG
+work are preflight-bounded; malformed input never reaches the unsafe pin.
+This is sampled local-engine-pin geometry equivalence, not exhaustive original
+game collision or Quest performance. Real Spawn still needs bounded identities, deep class-default
 copies, ownership and lifecycle callbacks, complete birth/deletion rollback, GC
 roots, checkpoint manifests, world-change publication and original inventory
 continuation through GiveTo and SetBase. No installed APK is replaced by this

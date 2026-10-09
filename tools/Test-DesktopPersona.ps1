@@ -59,7 +59,7 @@ if ($BaselinePath) {
 & $captureExe @arguments
 if ($LASTEXITCODE -ne 0) { throw "Persona preview failed with exit code $LASTEXITCODE" }
 $report = Get-Content -LiteralPath $reportPath -Raw | ConvertFrom-Json
-$expectedArtworkCount = switch ($Page) { 'Health' { 26 } 'Logs' { 20 } default { 22 } }
+$expectedArtworkCount = switch ($Page) { 'Inventory' { 31 } 'Health' { 26 } 'Logs' { 20 } default { 22 } }
 if (-not $report.passed -or $report.width -ne 640 -or $report.height -ne 480 -or
     $report.transparentPixels -le 0 -or $report.artworkPaths.Count -ne $expectedArtworkCount -or
     $report.page -ne $Page -or -not $report.fontsAndTextVerified -or $report.fonts.Count -ne 2 -or
@@ -71,8 +71,22 @@ if (-not $report.passed -or $report.width -ne 640 -or $report.height -ne 480 -or
     $report.fonts[0].lineHeight -ne 10 -or $report.fonts[1].lineHeight -ne 10) {
     throw 'Persona preview lacks original artwork/font provenance, transparency, CPU-only scope or expected dimensions.'
 }
+if ($Page -eq 'Inventory' -and $report.originalInventoryFootprints -and
+    ($report.inventoryClassPaths.Count -ne $report.iconPaths.Count -or
+     $report.inventoryMetadataSources.Count -lt $report.iconPaths.Count -or
+     $report.inventoryOccupiedCells -gt 30 -or
+     $report.inventoryPlacements.Count -gt 30 -or
+     $report.inventoryDisplayOnlyPacked -ne $report.inventoryPlacements.Count)) {
+    throw 'Class-default inventory fixture lacks bounded metadata/placement provenance.'
+}
 Write-Host "Persona artwork preview: $capturePath"
 Write-Host "Persona composition report: $reportPath"
 Write-Host 'Preview uses original artwork/fonts and the shared Quest CPU compositor with sample text.'
 Write-Host 'GL blending, OpenXR, live runtime state and controller interaction are unverified.'
-if ($Page -eq 'Inventory') { Write-Host 'Inventory icons are an asset fixture, not a saved inventory.' }
+if ($Page -eq 'Inventory') {
+    if ($report.originalInventoryFootprints) {
+        Write-Host 'Inventory footprints use actual original class defaults; positions are detached display-only packing, not a saved inventory.'
+    } else {
+        Write-Host 'Unrecognized icon fixtures use the legacy one-cell asset-only fallback, not original item footprints or a saved inventory.'
+    }
+}

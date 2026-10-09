@@ -699,6 +699,13 @@ int CapturePersona(Options options) {
         << ",\n  \"gridRect\": " << (inventory ? "[42, 62, 266, 319]" : "null")
         << ",\n  \"gridColumns\": " << (inventory ? 5 : 0)
         << ",\n  \"gridRows\": " << (inventory ? 6 : 0)
+        << ",\n  \"originalInventoryFootprints\": " << (preview.originalInventoryFootprints ? "true" : "false")
+        << ",\n  \"inventoryPlacementScope\": " << Quote(!inventory ? "No inventory fixture on this page" : preview.originalInventoryFootprints ?
+            "Actual original class-default sizes and logical icon windows; detached row-major display packing, not saved/live invPos or executed pickup lifecycle" :
+            "Legacy one-cell asset-only fixture; no original item footprint metadata")
+        << ",\n  \"inventoryOccupiedCells\": " << preview.inventoryLayout.occupiedCells
+        << ",\n  \"inventoryDisplayOnlyPacked\": " << preview.inventoryLayout.generatedPositions
+        << ",\n  \"inventoryUnplacedCount\": " << preview.inventoryLayout.unplaced.size()
         << ",\n  \"healthBodyRect\": " << (options.personaPage == QuestVr::PersonaUiPage::Health ?
             "[49, 73, 219, 357]" : "null")
         << ",\n  \"selectedFixtureIndex\": ";
@@ -720,6 +727,24 @@ int CapturePersona(Options options) {
     for (std::size_t i = 0; i < preview.iconPaths.size(); ++i) {
         if (i != 0u) report << ", ";
         report << Quote(preview.iconPaths[i]);
+    }
+    report << "],\n  \"inventoryClassPaths\": [";
+    for (std::size_t index = 0u; index < preview.inventoryClassPaths.size(); ++index) {
+        if (index != 0u) report << ", ";
+        report << Quote(preview.inventoryClassPaths[index]);
+    }
+    report << "],\n  \"inventoryMetadataSources\": [";
+    for (std::size_t index = 0u; index < preview.inventoryMetadataSources.size(); ++index) {
+        if (index != 0u) report << ", ";
+        report << Quote(preview.inventoryMetadataSources[index]);
+    }
+    report << "],\n  \"inventoryPlacements\": [";
+    for (std::size_t index = 0u; index < preview.inventoryLayout.placements.size(); ++index) {
+        if (index != 0u) report << ", ";
+        const auto& placed = preview.inventoryLayout.placements[index];
+        report << "{\"fixtureIndex\": " << placed.inventoryIndex << ", \"displayOnlyPacked\": "
+            << (placed.generatedPosition ? "true" : "false") << ", \"rect\": ["
+            << placed.rect.x << ", " << placed.rect.y << ", " << placed.rect.width << ", " << placed.rect.height << "]}";
     }
     report << "],\n  \"fonts\": [";
     for (std::size_t index = 0u; index < preview.fonts.size(); ++index) {

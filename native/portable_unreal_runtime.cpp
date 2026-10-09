@@ -19,12 +19,20 @@
 #include <filesystem>
 #include <limits>
 #include <stdexcept>
+#include <string_view>
 #include <set>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
 
 namespace {
+
+class RuntimeObject;
+struct InventoryIconClassConstraint {
+    RuntimeObject* indexedClass{}; // Non-owning immutable metadata, not a new GC root.
+    std::uint8_t nativeClass{};
+    bool valid{};
+};
 
 class RuntimeObject : public GCObject {
 public:
@@ -49,6 +57,12 @@ public:
     RuntimeObject* serializedStateCode{}; // Outward GC-linked authored identity only.
     RuntimeObject* serializedFunctionCode{};
     std::optional<PortableFieldLinks> commonFieldLinks;
+    // Exact immutable table identities, captured only at load while its source
+    // table is already available. A read-only inventory query must not reopen
+    // packages or treat reflection's package-stripped metaclass as an IsA proof.
+    bool inventoryTableMetadata{}, inventorySerializedClass{}, inventoryClassReferenceValid{}, inventoryBaseReferenceValid{};
+    std::uint8_t inventoryNativeClass{}, inventoryNativeBase{};
+    std::unique_ptr<InventoryIconClassConstraint> inventoryIconClassConstraint;
     std::vector<PortableTaggedProperty> instanceProperties;
     std::unordered_map<std::string, std::string> objectPropertyPaths;
     // Name indices are package-local. Decode them while their actual package
@@ -133,6 +147,71 @@ std::unordered_map<std::string, bool> persistentConversationFlags;
 std::vector<std::string> persistentGoals;
 std::vector<std::string> persistentNotes;
 std::unordered_set<std::string> persistentAppliedDialogueEffects;
+
+bool SameInventoryIdentity(const std::string_view left, const std::string_view right) {
+    if (left.size() != right.size()) return false;
+    const auto fold = [](unsigned char c) { return c >= 'A' && c <= 'Z' ? c + ('a' - 'A') : c; };
+    for (std::size_t i = 0u; i < left.size(); ++i)
+        if (fold(static_cast<unsigned char>(left[i])) != fold(static_cast<unsigned char>(right[i]))) return false;
+    return true;
+}
+const char* InventoryNativeClassPath(const std::uint8_t id) {
+    // The exact Texture native registrations/bases from NativeCastClass below;
+    // no bare metaclass/suffix or package-name guess supplies a class identity.
+    static constexpr const char* paths[] = {"", "Core.Object", "Engine.Bitmap", "Engine.Texture", "Engine.FractalTexture",
+        "Engine.FireTexture", "Engine.IceTexture", "Engine.WaterTexture", "Engine.WaveTexture", "Engine.WetTexture", "Engine.ScriptedTexture"};
+    return id < std::size(paths) ? paths[id] : "";
+}
+std::uint8_t InventoryNativeClassId(const std::string_view path) {
+    for (std::uint8_t id = 1u; id <= 10u; ++id) if (SameInventoryIdentity(path, InventoryNativeClassPath(id))) return id;
+    return 0u;
+}
+std::uint8_t InventoryNativeClassBase(const std::uint8_t id) {
+    static constexpr std::uint8_t bases[] = {0u, 0u, 1u, 2u, 3u, 4u, 4u, 4u, 7u, 7u, 3u};
+    return id < std::size(bases) ? bases[id] : 0u;
+}
+void CacheInventoryTableMetadata(RuntimeObject* object, const PortablePackageTables& table, const ExportTableEntry& entry) {
+    object->inventoryTableMetadata = true; object->inventorySerializedClass = entry.ObjClass == 0;
+    const auto classReference = [&](const std::int32_t reference, bool& valid) {
+        valid = false;
+        try {
+            if (reference == 0 || (reference > 0 &&
+                table.exports.at(static_cast<std::size_t>(reference - 1)).ObjClass != 0)) return std::string{};
+            auto path = ResolvePortableValueObjectReference(table, reference,
+                [](const std::string&, const std::string& importedClass) { return SameInventoryIdentity(importedClass, "Class"); });
+            // The value resolver already qualifies same-package exports.
+            // Prefixing again would turn Engine.Texture into Engine.Engine.Texture.
+            valid = !path.empty() && path.size() <= 8192u && path.find('\0') == std::string::npos;
+            return valid ? path : std::string{};
+        } catch (const std::exception&) { return std::string{}; }
+    };
+    if (object->inventorySerializedClass) {
+        object->inventoryClassReferenceValid = true;
+        if (entry.ObjBase == 0) object->inventoryBaseReferenceValid = true;
+        else {
+            const auto path = classReference(entry.ObjBase, object->inventoryBaseReferenceValid);
+            if (!object->base) object->inventoryNativeBase = InventoryNativeClassId(path);
+            if (!object->base && object->inventoryNativeBase == 0u) object->inventoryBaseReferenceValid = false;
+        }
+    } else {
+        const auto path = classReference(entry.ObjClass, object->inventoryClassReferenceValid);
+        if (!object->cls) object->inventoryNativeClass = InventoryNativeClassId(path);
+        if (!object->cls && object->inventoryNativeClass == 0u) object->inventoryClassReferenceValid = false;
+    }
+    if (!object->property || object->property->type != "ObjectProperty") return;
+    const auto dot = object->reflection.objectPath.find_last_of('.');
+    const std::string_view name(object->reflection.objectPath.data() + (dot == std::string::npos ? 0u : dot + 1u),
+        object->reflection.objectPath.size() - (dot == std::string::npos ? 0u : dot + 1u));
+    if (!SameInventoryIdentity(name, "largeIcon") && !SameInventoryIdentity(name, "Icon")) return;
+    object->inventoryIconClassConstraint = std::make_unique<InventoryIconClassConstraint>();
+    auto& constraint = *object->inventoryIconClassConstraint;
+    const auto path = classReference(object->property->referencedType, constraint.valid);
+    const auto target = object->sourcePath.empty() ? persistentVmObjects.end() :
+        persistentVmObjects.find(QuestVr::ObjectCastDetail::Fold(path));
+    if (target != persistentVmObjects.end()) constraint.indexedClass = target->second;
+    else constraint.nativeClass = InventoryNativeClassId(path);
+    if (!constraint.indexedClass && constraint.nativeClass == 0u) constraint.valid = false;
+}
 
 struct IndexedDialogueLine {
     std::string eventPath;
@@ -857,6 +936,7 @@ void PopulateRuntime(
             }
             ++summary.properties;
         }
+        CacheInventoryTableMetadata(object, package, entry);
         if (object->reflection.metaClass == "Class") ++summary.classes;
     }
     summary.objects = runtime->exports.size();
@@ -2084,6 +2164,7 @@ private:
     }
 };
 
+
 // Runtime saves carry stable authored identities, never process pointers or
 // package-local references. Prepare every schema/value before touching actors.
 struct PreparedScriptObject {
@@ -2690,6 +2771,7 @@ PortableRuntimeSummary InitializePortableRuntime(
                 }
                 ++summary.properties;
             }
+            CacheInventoryTableMetadata(object, *slice.package, entry);
             if (object->reflection.metaClass == "Class") ++summary.classes;
         }
     }
@@ -3316,6 +3398,7 @@ PortableMapRuntimeSummary LoadPortableRuntimeMap(
             summary.actorProperties += object->instanceProperties.size();
             ++summary.actors;
         }
+        CacheInventoryTableMetadata(object, package, entry);
     }
     summary.exports = graph.objects.size();
     persistentMapPackageName = packageName;
@@ -3990,6 +4073,216 @@ std::size_t GetPortableRuntimeInventoryCount() {
 
 std::vector<std::string> GetPortableRuntimeInventoryItems() {
     return persistentInventory;
+}
+
+std::vector<PortableInventoryDescriptor> ReadPortableRuntimeInventoryDescriptors(
+    const std::vector<std::string>& actorPaths, const PortableInventoryDescriptorLimits& limits) {
+    using Status = PortableInventoryDescriptorStatus;
+    using Origin = PortableInventoryValueOrigin;
+    using Kind = QuestVr::Vm::Kind;
+    if (limits.count == 0u || limits.count > 1024u || actorPaths.size() > limits.count ||
+        limits.retainedBytes == 0u || limits.retainedBytes > 8u * 1024u * 1024u ||
+        limits.stringBytes == 0u || limits.stringBytes > 8192u || limits.hierarchy == 0u || limits.hierarchy > 128u)
+        throw std::runtime_error("Inventory descriptor request limits are invalid/exceeded");
+    if (actorPaths.empty()) return {};
+    std::size_t retained{};
+    const auto charge = [&](const std::size_t bytes) {
+        if (bytes > limits.retainedBytes || retained > limits.retainedBytes - bytes)
+            throw std::runtime_error("Inventory descriptor aggregate retained/scratch byte budget exceeded");
+        retained += bytes;
+    };
+    // Bound fixed result capacity and transient lookup/row/hierarchy storage,
+    // excluding the already-owned runtime graph and borrowed tagged values.
+    charge(2u * actorPaths.size() * sizeof(PortableInventoryDescriptor));
+    charge(8u * (limits.stringBytes + 64u) + sizeof(PortableInventoryDescriptor) + 256u * sizeof(RuntimeObject*));
+    std::vector<PortableInventoryDescriptor> results; results.reserve(actorPaths.size());
+    if (results.capacity() > 2u * actorPaths.size())
+        throw std::runtime_error("Inventory descriptor result capacity exceeds charged bound");
+    const auto validText = [&](const std::string& text, const bool empty = false) {
+        return (empty || !text.empty()) && text.size() <= limits.stringBytes && text.find('\0') == std::string::npos;
+    };
+    const auto copy = [&](std::string& target, const std::string& source, const bool empty = false) {
+        if (!validText(source, empty)) return false;
+        // Charge conservatively before allocation, then reject an unusual
+        // implementation capacity rather than silently bypassing the bound.
+        const auto allowance = 2u * (source.size() + 1u) + 32u;
+        charge(allowance); target = source;
+        if (target.capacity() + 1u > allowance)
+            throw std::runtime_error("Inventory descriptor string capacity exceeds charged bound");
+        return true;
+    };
+    const auto folded = [](const std::string& text) { return QuestVr::ObjectCastDetail::Fold(text); };
+    const auto same = [](const std::string& left, const char* right) { return SameInventoryIdentity(left, right); };
+    const auto classDerives = [&](RuntimeObject* cls, std::uint8_t native, RuntimeObject* target, const std::uint8_t targetNative) {
+        std::array<RuntimeObject*, 128u> seen{}; std::size_t depth{}, indexedDepth{}; std::uint16_t nativeSeen{};
+        const std::string_view wanted = target ? std::string_view(target->reflection.objectPath) : InventoryNativeClassPath(targetNative);
+        if (wanted.empty() || wanted.size() > limits.stringBytes || wanted.find('\0') != std::string_view::npos) return false;
+        while (cls || native != 0u) {
+            if (depth++ == limits.hierarchy) return false;
+            if (!cls) {
+                const auto bit = static_cast<std::uint16_t>(1u << native);
+                if ((nativeSeen & bit) != 0u) return false;
+                nativeSeen |= bit;
+                const auto path = InventoryNativeClassPath(native);
+                const auto found = persistentVmObjects.find(folded(path));
+                if (found != persistentVmObjects.end()) cls = found->second;
+                else {
+                    if (SameInventoryIdentity(path, wanted)) return true;
+                    native = InventoryNativeClassBase(native); continue;
+                }
+            }
+            if (!cls || !cls->inventoryTableMetadata || !cls->inventorySerializedClass || !cls->inventoryBaseReferenceValid ||
+                cls->reflection.metaClass != "Class" || !validText(cls->reflection.objectPath) ||
+                std::find(seen.begin(), seen.begin() + indexedDepth, cls) != seen.begin() + indexedDepth) return false;
+            seen[indexedDepth++] = cls;
+            if (SameInventoryIdentity(cls->reflection.objectPath, wanted)) return true;
+            native = cls->base ? 0u : cls->inventoryNativeBase;
+            // An actual zero-base non-Object UClass has Core.Object as its
+            // pinned implicit base; a nonzero unresolved reference is invalid.
+            if (!cls->base && native == 0u && !SameInventoryIdentity(cls->reflection.objectPath, "Core.Object")) native = 1u;
+            cls = cls->base;
+        }
+        return false;
+    };
+    const auto iconClassValid = [&](const std::string& path, const InventoryIconClassConstraint* constraint) {
+        if (!constraint || !constraint->valid || (!constraint->indexedClass && constraint->nativeClass == 0u)) return Status::MalformedProperty;
+        if (constraint->indexedClass && (!constraint->indexedClass->inventoryTableMetadata || !constraint->indexedClass->inventorySerializedClass)) return Status::MalformedProperty;
+        if (!classDerives(constraint->indexedClass, constraint->nativeClass, nullptr, 3u)) return Status::MalformedProperty;
+        if (path.empty()) return Status::Available;
+        const auto found = persistentVmObjects.find(folded(path));
+        if (found == persistentVmObjects.end() || !found->second) return Status::MissingIconMetadata;
+        const auto* asset = found->second;
+        if (!asset->inventoryTableMetadata || asset->inventorySerializedClass || !asset->inventoryClassReferenceValid) return Status::MalformedProperty;
+        if (!asset->cls && asset->inventoryNativeClass == 0u) return Status::MissingIconMetadata;
+        if (!classDerives(asset->cls, asset->inventoryNativeClass, nullptr, 3u) ||
+            !classDerives(asset->cls, asset->inventoryNativeClass, constraint->indexedClass, constraint->nativeClass)) return Status::MalformedProperty;
+        return Status::Available;
+    };
+    for (const auto& requested : actorPaths) {
+        PortableInventoryDescriptor item;
+        if (!validText(requested)) { item.status = Status::InvalidIdentity; results.push_back(std::move(item)); continue; }
+        copy(item.requestedPath, requested);
+        if (!persistentRuntime || !persistentRuntime->get()) { results.push_back(std::move(item)); continue; }
+        const auto found = persistentVmObjects.find(folded(requested));
+        if (found == persistentVmObjects.end() || !found->second) {
+            item.status = Status::UnindexedIdentity; results.push_back(std::move(item)); continue;
+        }
+        auto* actor = found->second;
+        item.active = actor->active;
+        std::array<RuntimeObject*, 128u> ancestry{};
+        std::size_t depth{}; bool inventory{}, engineActor{}, malformed{};
+        for (auto* cls = actor->cls; cls; cls = cls->base) {
+            if (depth == limits.hierarchy || std::find(ancestry.begin(), ancestry.begin() + depth, cls) != ancestry.begin() + depth ||
+                cls->reflection.metaClass != "Class" || !cls->inventoryTableMetadata || !cls->inventorySerializedClass ||
+                !cls->inventoryBaseReferenceValid || !validText(cls->reflection.objectPath)) { malformed = true; break; }
+            ancestry[depth++] = cls;
+            inventory = inventory || same(cls->reflection.objectPath, "Engine.Inventory");
+            engineActor = engineActor || same(cls->reflection.objectPath, "Engine.Actor");
+        }
+        if (malformed) { item.status = Status::MalformedProperty; results.push_back(std::move(item)); continue; }
+        if (!inventory || !engineActor || actor->inventorySerializedClass || !actor->cls) {
+            item.status = Status::NotInventoryActor; results.push_back(std::move(item)); continue;
+        }
+        if (!actor->inventoryTableMetadata || !actor->inventoryClassReferenceValid) {
+            item.status = Status::MalformedProperty; results.push_back(std::move(item)); continue;
+        }
+        if (!copy(item.actorPath, actor->reflection.objectPath) || !copy(item.classPath, actor->cls->reflection.objectPath) ||
+            !copy(item.actorSourcePath, actor->sourcePath) || !copy(item.classSourcePath, actor->cls->sourcePath)) {
+            item.status = Status::MalformedProperty; results.push_back(std::move(item)); continue;
+        }
+        item.status = Status::Available;
+        const auto read = [&](const char* name, const Kind kind, std::int32_t* integer, bool* boolean,
+            std::string* objectPath, PortableInventoryIconProvenance* provenance) {
+            RuntimeObject* declaration{};
+            for (std::size_t index = 0u; index < depth; ++index) {
+                const auto key = folded(ancestry[index]->reflection.objectPath + '.' + name);
+                const auto field = persistentVmObjects.find(key);
+                if (field != persistentVmObjects.end() && field->second && field->second->property &&
+                    field->second->outer == ancestry[index]) {
+                    declaration = field->second; break;
+                }
+            }
+            if (!declaration) { item.status = Status::MissingPropertyMetadata; return false; }
+            const auto& metadata = *declaration->property;
+            const char* type = kind == Kind::Int ? "IntProperty" : kind == Kind::Bool ? "BoolProperty" : "ObjectProperty";
+            if (metadata.type != type || metadata.arrayDimension != 1) { item.status = Status::MalformedProperty; return false; }
+            if (provenance && (!copy(provenance->declarationPath, declaration->reflection.objectPath) ||
+                !copy(provenance->declarationSourcePath, declaration->sourcePath))) { item.status = Status::MalformedProperty; return false; }
+            RuntimeObject* owner{}; const PortableTaggedProperty* tag{};
+            const auto* overlay = FindScriptOverlay(actor, name);
+            if (overlay) {
+                if (overlay->kind != kind) { item.status = Status::MalformedProperty; return false; }
+                if (integer) *integer = overlay->integer;
+                if (boolean) *boolean = overlay->boolean;
+                if (objectPath && !copy(*objectPath, overlay->text, true)) { item.status = Status::MalformedProperty; return false; }
+                owner = actor; if (provenance) provenance->origin = Origin::Overlay;
+            } else {
+                for (std::size_t index = 0u; index <= depth && !tag; ++index) {
+                    auto* source = index == 0u ? actor : ancestry[index - 1u];
+                    const auto& properties = index == 0u ? source->instanceProperties :
+                        source->classDescriptor ? source->classDescriptor->defaults : source->instanceProperties;
+                    for (auto entry = properties.rbegin(); entry != properties.rend(); ++entry) {
+                        if (!same(entry->name.ToString(), name)) continue;
+                        if (entry->arrayIndex != 0u) { item.status = Status::MalformedProperty; return false; }
+                        if (!tag) { tag = &*entry; owner = source; }
+                    }
+                }
+                if (tag) {
+                    if (integer) {
+                        if (tag->type != 2u || tag->value.size() != 4u) { item.status = Status::MalformedProperty; return false; }
+                        std::memcpy(integer, tag->value.data(), 4u);
+                    } else if (boolean) {
+                        if (tag->type != 3u || !tag->value.empty()) { item.status = Status::MalformedProperty; return false; }
+                        *boolean = tag->boolValue;
+                    } else {
+                        if (tag->type != 5u) { item.status = Status::MalformedProperty; return false; }
+                        std::int32_t reference{};
+                        try { reference = DecodePortableObjectReference(*tag); }
+                        catch (const std::exception&) { item.status = Status::MalformedProperty; return false; }
+                        if (reference != 0) {
+                            const auto cached = owner->objectPropertyPaths.find(tag->name.ToString());
+                            if (cached == owner->objectPropertyPaths.end() || !copy(*objectPath, cached->second)) {
+                                item.status = Status::MalformedProperty; return false;
+                            }
+                        }
+                    }
+                    if (provenance) provenance->origin = owner == actor ? Origin::Instance : Origin::ClassDefault;
+                }
+            }
+            if (objectPath) {
+                const auto status = iconClassValid(*objectPath, declaration->inventoryIconClassConstraint.get());
+                if (status != Status::Available) { item.status = status; return false; }
+            }
+            if (provenance && owner && (!copy(provenance->ownerPath, owner->reflection.objectPath) ||
+                !copy(provenance->ownerSourcePath, owner->sourcePath))) { item.status = Status::MalformedProperty; return false; }
+            return true;
+        };
+        const auto ints = [&](const char* name, std::int32_t& value) { return read(name, Kind::Int, &value, nullptr, nullptr, nullptr); };
+        if (!(ints("invSlotsX", item.invSlotsX) && ints("invSlotsY", item.invSlotsY) && ints("invPosX", item.invPosX) &&
+            ints("invPosY", item.invPosY) && read("bDisplayableInv", Kind::Bool, nullptr, &item.bDisplayableInv, nullptr, nullptr) &&
+            read("largeIcon", Kind::Object, nullptr, nullptr, &item.largeIconPath, &item.largeIconProvenance) &&
+            ints("largeIconWidth", item.largeIconWidth) && ints("largeIconHeight", item.largeIconHeight) &&
+            read("Icon", Kind::Object, nullptr, nullptr, &item.fallbackIconPath, &item.fallbackIconProvenance))) {
+            results.push_back(std::move(item)); continue;
+        }
+        if (item.bDisplayableInv) {
+            const bool slots = item.invSlotsX > 0 && item.invSlotsX <= 5 && item.invSlotsY > 0 && item.invSlotsY <= 6;
+            const bool unassigned = item.invPosX == -1 && item.invPosY == -1;
+            item.positionAssigned = !unassigned && slots && item.invPosX >= 0 && item.invPosY >= 0 &&
+                item.invPosX <= 5 - item.invSlotsX && item.invPosY <= 6 - item.invSlotsY;
+            if (!slots || (!unassigned && !item.positionAssigned)) item.status = Status::InvalidLayout;
+        }
+        if (!item.largeIconPath.empty()) {
+            item.usesLargeIcon = true; copy(item.iconPath, item.largeIconPath);
+            item.displayWidth = item.largeIconWidth; item.displayHeight = item.largeIconHeight;
+            if (item.displayWidth <= 0 || item.displayWidth > 4096 || item.displayHeight <= 0 || item.displayHeight > 4096)
+                item.status = Status::InvalidIconDimensions;
+        } else if (!item.fallbackIconPath.empty()) {
+            copy(item.iconPath, item.fallbackIconPath); item.displayWidth = 40; item.displayHeight = 35;
+        }
+        results.push_back(std::move(item));
+    }
+    return results;
 }
 
 PortablePlayerProgress GetPortableRuntimePlayerProgress() {

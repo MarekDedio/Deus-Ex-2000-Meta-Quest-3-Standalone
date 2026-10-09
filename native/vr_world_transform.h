@@ -8,6 +8,34 @@
 namespace QuestVr {
 
 constexpr float Pi = 3.14159265358979323846f;
+constexpr float DebugHudDistance = 1.05f;
+
+inline constexpr float WorldYAfterVirtualFloorChange(
+    float previousWorldY, float previousFloorY, float nextFloorY) {
+    // Preserve map feet (virtualFloorY - worldY). A standing floor remains
+    // zero after a vertical reference change; a calibrated seated floor moves
+    // with that change. Callers validate the bounded floor values first.
+    return previousWorldY + (nextFloorY - previousFloorY);
+}
+
+template <typename Pose>
+Pose HeadLockedHudPose(Pose head) {
+    using Vector = decltype(head.Translation);
+    head.Translation += head.Rotation.Rotate(Vector{0.0f, 0.0f, -DebugHudDistance});
+    return head;
+}
+
+template <typename Pose>
+Pose OriginalHandGripPose(Pose grip) {
+    using Vector = decltype(grip.Translation);
+    using Rotation = decltype(grip.Rotation);
+    // The extracted upright Glock grasp runs little-finger to thumb along
+    // source-hand +Y. OpenXR grip defines that ray as -Z, not the aim ray.
+    // Rotate in hand-local space; the grasp centroid remains at grip origin.
+    // This X rotation commutes with the left hand's X reflection.
+    grip.Rotation = grip.Rotation * Rotation(Vector{1.0f,0.0f,0.0f},-Pi*0.5f);
+    return grip;
+}
 
 template <typename Vector>
 Vector StageDirectionToLocal(const Vector& stage, float worldYaw) {
@@ -95,15 +123,27 @@ void RebaseReferenceSpace(const Vector& newOriginInPreviousSpace, float newOrigi
 }
 
 template <typename Vector>
+void RecenterReferenceSpace(const Vector& newOriginInPreviousSpace, float newOriginYaw,
+                            Vector& worldPosition, float worldYaw, Vector& previousHead) {
+    // Keep the player's map position, but honor the new physical forward.
+    // Compensating worldYaw too would cancel the system recenter. Room-locked
+    // STAGE changes continue to use RebaseReferenceSpace instead.
+    const Vector mapHead = StageToLocal(previousHead, worldPosition, worldYaw);
+    previousHead = StageToLocal(previousHead, newOriginInPreviousSpace, newOriginYaw);
+    const Vector rebasedWorld = StageToLocal(worldPosition, newOriginInPreviousSpace, newOriginYaw);
+    worldPosition = RestoreHorizontalHeadPosition(rebasedWorld, previousHead, mapHead, worldYaw);
+}
+
+template <typename Vector>
 void RestoreSavedMapPose(const Vector& localFeet, float savedLocalHeadYaw,
                          const Vector& currentHeadStage, float currentHeadYaw,
-                         Vector& worldPosition, float& worldYaw) {
+                         Vector& worldPosition, float& worldYaw, float virtualFloorY = 0.0f) {
     // The saved player position/heading belongs to the map, not the room.
     // Reconstruct from the wearer's current origin, yaw and standing height;
     // restoring the old tracking translation would move the player after a
     // room-scale walk, recenter, or new XR session.
     worldYaw = std::remainder(currentHeadYaw - savedLocalHeadYaw, 2.0f * Pi);
-    const Vector floorOffset{0.0f, -localFeet.y, 0.0f};
+    const Vector floorOffset{0.0f, virtualFloorY-localFeet.y, 0.0f};
     worldPosition = RestoreHorizontalHeadPosition(
         floorOffset, currentHeadStage, localFeet, worldYaw);
 }

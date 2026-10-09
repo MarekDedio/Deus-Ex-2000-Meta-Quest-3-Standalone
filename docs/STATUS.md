@@ -1,5 +1,42 @@
 # Port status
 
+## Quest player/body, input and original UI increment (2026-10-09)
+
+- Original JC trousers/shoes/lower coat and original weapon-viewmodel hand
+  surfaces load from the user's packages. Hands follow tracked controller grips;
+  the left is a documented mirrored derivative. Own-body back-face culling is
+  disabled for the overhead self-view. No full-body IK, arm/finger animation,
+  animated walking/crouching, held weapon model or authored player pawn exists.
+- Debug HUD menu and SDK auto-layout parent offsets are removed. Actual Quest
+  submitted center is head-local `(0,0,-1.05)` and matches projected head forward.
+  Left grip hides/shows it. LOCAL_FLOOR reference tracking is used when supported;
+  the user confirmed physical Meta-button recenter works. Stick deadzone and
+  navigation/turn hysteresis have bounded host regressions.
+- Explicit seated calibration targets a 1.65 m comfort eye height while retaining
+  real head/controller motion. The app remembers mode separately from saves.
+  Reference changes and posture switches preserve map-local feet, including
+  standing vertical-origin changes. Collision cannot use partially uploaded
+  meshes. The first seated device result was rejected (too low / missing legs);
+  corrective culling/floor build plus explicit recalibration was accepted by the
+  user (height and legs correct). The final cold start automatically calibrated
+  at 1.650 m after loading, with no manual command; its downward capture shows
+  hands/lower body and feet on the actual Training floor. This is one device
+  acceptance, not complete body animation or all reference-runtime cases.
+- Inventory retains the original 5x6 grid, original multi-cell icon dimensions
+  and whole-footprint highlights. Read-only bounded authored item descriptors
+  and exact qualified texture references supply artwork; no placeholder icons
+  or mutation of authored inventory coordinates is used.
+- Rotator-to-Vector uses the pinned original Coords semantics with rollback.
+  Full ordinary host suite passes 43 tests; two optional original-root entries
+  skip in that invocation. Separate original-data runtime, actor/descriptor,
+  player-assets and spawn-placement differential checks passed. Original spawn
+  placement compares 167,997 controls against the pinned hull oracle, but is
+  still not connected to actor allocation/lifecycle. InitializeInventory still
+  stops at unsupported Spawn278 PC253 and begun-play needs AIEndEvent715.
+- Prior offline status sections below are historical. Current Android/device
+  build evidence and remaining acceptance limitations are in
+  [QUEST-TEST-BUILD.md](QUEST-TEST-BUILD.md) and [PLAYER-VR.md](PLAYER-VR.md).
+
 ## Offline bounded table reader and spawn-placement prerequisite (2026-10-09)
 
 - Selected a 64 KiB read-only adapter only for package tables, retaining logical

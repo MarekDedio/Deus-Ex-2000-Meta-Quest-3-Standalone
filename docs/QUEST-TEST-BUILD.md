@@ -1,13 +1,13 @@
-# Current Quest test-build handoff (2026-10-08)
+# Current Quest test-build handoff (2026-10-09)
 
-The asynchronous-startup APK replaces commit `9e4779f`'s launch-blocked build.
-It is installed on the user's Quest 3 and launch/render verified, not a finished
-full-campaign release. Original commercial game data remains in the existing
+This player-controls APK replaces the frozen asynchronous-startup build
+`25e38b3`. It is installed on the user's Quest 3, not a finished full-campaign
+release. Original commercial game data remains in the existing
 private app directory; updating did not uninstall or clear game data or saves.
 
 Package: `dev.deusex.questvr.smoketest` (Android ARM64 debug build).
-APK size: 18,384,249 bytes.
-SHA-256: `FD7B2FB9CB06E4FF6BA12A0A62E8D6336AB6FE4AD364E12AE5C0F28DB93A237B`.
+APK size: 18,600,785 bytes.
+SHA-256: `5B1B253765F3F31B80EA5575AD3865472232DBA57AD2837F47F429D0C4AFF403`.
 APK Signature Scheme v2 verifies. The APK contains port/SDK libraries and SDK
 UI assets, not original `.dx`, `.u`, `.utx`, `.uax` or `.umx` game packages.
 
@@ -21,16 +21,35 @@ UI assets, not original `.dx`, `.u`, `.utx`, `.uax` or `.umx` game packages.
 - Idle measurement windows reach 72 fps. Initial staged uploads and diagnostic
   screenshot readbacks still have frame spikes; this is not a general
   performance certification or a full-map visual audit.
-- 26 ordinary host tests pass. Two optional original-data integrations skip
+- 43 ordinary host tests pass. Two optional original-data integrations skip
   unless supplied the game root; their separate full original-data checks passed
-  before this startup-only change. The new startup ownership path was source
+  separately with the final runtime source. The startup ownership path was source
   reviewed, ARM-compiled and exercised on the headset, not host-unit-tested.
+- The player increment loads actual JC lower-body and original weapon-viewmodel
+  hands, with corrected grip-local orientation and native-size original textures.
+  Quest captures from the preceding grip-only build show the textured hands.
+  User-confirmed Meta-button recenter works. Captured submitted HUD center is
+  exactly head-local `(0,0,-1.05)` with matching head-forward eye projection.
+  Latest seated-height acceptance is recorded in [PLAYER-VR.md](PLAYER-VR.md).
+- The corrective body/floor APK disables back-face culling only for the wearer's
+  lower body, preserves map feet through vertical standing recenter changes,
+  and blocks collision probing during partial map upload. Original-texture CPU
+  comparisons reproduce/fix the self-view culling defect; 15 transform groups
+  and 103 ground-probe controls pass. The user confirmed height/legs correct
+  after explicit seated calibration. The final build additionally delays
+  automatic calibration until focused tracking/collision/reference state settles
+  (1,856 posture controls). Final physical cold start calibrated at 1.650 m
+  without a manual command; a downward capture shows both hands/lower body,
+  two submitted body surfaces and feet on the actual Training floor. Subsequent
+  real head lowering produced 1.501 m eye height, as intended.
 
 ## Test controls
 
 | Input | Action |
 | --- | --- |
 | Left stick | Move |
+| Left stick click | Switch seated/standing height; sit upright when calibrating |
+| Left grip | Show/hide developer HUD outside Persona |
 | Right stick left/right | 30-degree snap turn |
 | A | Use pointed actor; equip/use selected item when menu is open |
 | Right trigger | Fire/use damage action when selected weapon and ammo permit |
@@ -49,6 +68,15 @@ pressing Y deliberately replaces the quick-save, so avoid overwriting a save
 you want to keep. Report the map/actor and whether a bug follows launch, menu
 use, pickup, save/load or travel.
 
+Seated mode keeps a 1.65 m calibrated virtual eye height while retaining real
+head/controller motion, ground-aligned avatar feet and the same floor in collision
+and saved-position mathematics. The mode is remembered separately from saves
+and recalibrates after each session's Training load and a short stable-tracking
+window. Sit upright while loading; later leaning/crouching remains real motion.
+Standing mode keeps physical floor height.
+Long-press right Meta for system recenter; the app no longer cancels its forward
+reset. The Meta button is not intercepted by game input.
+
 ## Known boundaries
 
 Inventory starts empty until pickups or a quick-load. Goals/Notes and Logs
@@ -64,7 +92,12 @@ lighting types/effects are unfinished. Worker teardown joins before global
 runtime destruction and can wait if preparation is still running. See
 [STATUS.md](STATUS.md) and [SCRIPT_STATE_SAVE.md](SCRIPT_STATE_SAVE.md).
 
-The local `artifacts/release-<commit>/` folder holds the frozen APK, checksum,
+Player visuals are static legs/lower coat and rigid controller-attached hands,
+not full-body IK, arm/finger animation, walking/crouching animation or held
+weapons. Black/missing-looking Training column sides remain visible in captures;
+this player-controls batch does not fix or certify all map rendering.
+
+The local `artifacts/release-player-controls-20261009/` folder holds the frozen APK, checksum,
 device captures and handoff notes. These generated files are intentionally
 ignored by Git. Source and build instructions are committed; no new feature
 batch should replace this build before the user's headset test.

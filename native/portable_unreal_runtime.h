@@ -376,6 +376,49 @@ PortableDamageResult DamagePortableRuntimeActor(
 bool VerifyPortableRuntimeDamage();
 std::size_t GetPortableRuntimeInventoryCount();
 std::vector<std::string> GetPortableRuntimeInventoryItems();
+enum class PortableInventoryDescriptorStatus : std::uint8_t {
+    Available, InvalidIdentity, RuntimeUnavailable, UnindexedIdentity,
+    NotInventoryActor, MissingPropertyMetadata, MalformedProperty, InvalidLayout,
+    InvalidIconDimensions, MissingIconMetadata
+};
+enum class PortableInventoryValueOrigin : std::uint8_t { Zero, ClassDefault, Instance, Overlay };
+struct PortableInventoryIconProvenance {
+    PortableInventoryValueOrigin origin{PortableInventoryValueOrigin::Zero};
+    std::string declarationPath, declarationSourcePath, ownerPath, ownerSourcePath;
+};
+struct PortableInventoryDescriptor {
+    PortableInventoryDescriptorStatus status{PortableInventoryDescriptorStatus::RuntimeUnavailable};
+    std::string requestedPath, actorPath, classPath, actorSourcePath, classSourcePath;
+    bool active{};
+    std::int32_t invSlotsX{}, invSlotsY{}, invPosX{}, invPosY{};
+    bool bDisplayableInv{}, positionAssigned{};
+    std::string largeIconPath, fallbackIconPath, iconPath;
+    std::int32_t largeIconWidth{}, largeIconHeight{}, displayWidth{}, displayHeight{};
+    bool usesLargeIcon{};
+    PortableInventoryIconProvenance largeIconProvenance, fallbackIconProvenance;
+};
+struct PortableInventoryDescriptorLimits {
+    std::size_t count{1024u}, retainedBytes{4u * 1024u * 1024u}, stringBytes{4096u}, hierarchy{128u};
+};
+// One detached, ordered descriptor per explicit input identity, including
+// inactive/picked-up indexed Engine.Inventory instances. No class@event string
+// interpretation, actor allocation, bytecode, asset/file reads, state/clock/index
+// writes or GC collection. The generic live-actor property API stays unchanged.
+// Effective values use typed indexed declarations, actor overlay, instance tag,
+// then actual class defaults/typed zero; unavailable rows do not hide valid rows.
+// For displayable items, slot/assigned-position validation is against the actual
+// original 5x6 grid. Values are retained even when layout validation fails.
+// A non-null largeIcon uses its exact authored logical window dimensions; only
+// absent largeIcon permits Icon fallback, with original UI constants 40x35.
+// Icon ownerSourcePath describes its indexed owner, not a dynamic write trace.
+// Non-null icons require an indexed actual object and validated Texture class
+// metadata; missing asset metadata is unavailable, never a guessed Texture.
+// Narrow immutable class-reference metadata is cached at package/map load.
+// Count/aggregate limits reject the whole request before returning any results;
+// oversized/invalid individual identities are marked without retaining them.
+std::vector<PortableInventoryDescriptor> ReadPortableRuntimeInventoryDescriptors(
+    const std::vector<std::string>& actorPaths,
+    const PortableInventoryDescriptorLimits& limits = {});
 bool ConsumePortableRuntimeInventoryItem(const std::string& objectPath);
 PortablePlayerProgress GetPortableRuntimePlayerProgress();
 float GetPortableRuntimePlayerHealth();

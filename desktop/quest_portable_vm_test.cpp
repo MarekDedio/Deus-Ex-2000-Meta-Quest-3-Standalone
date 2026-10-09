@@ -1,6 +1,7 @@
 #include "Precomp.h"
 #include "surreal_portable_package_tables.h"
 #include "quest_portable_vm.h"
+#include "Math/coords.h"
 
 #include <algorithm>
 #include <chrono>
@@ -302,6 +303,103 @@ void Failed(const Vm::Result& r,Vm::Status status,const TestHost& host,const std
     Require(r.status==status && !r.error.empty(),context+": wrong failure status or no diagnostic");
     Require(host.beginCount==1 && host.commitCount==0 && host.rollbackCount==1 && !host.active,
         context+": whole-call-tree transaction did not roll back exactly once");++rejections;
+}
+Bytes Rotation(const std::array<std::int32_t, 3>& rotation) {
+    Bytes bytes{0x22};
+    for (const auto component : rotation) U32(bytes, std::bit_cast<std::uint32_t>(component));
+    return bytes;
+}
+void RotatorDirectionContracts() {
+    TestHost host;
+    const auto convert = [&](const std::array<std::int32_t, 3>& rotation) {
+        const auto result = Vm::Execute(host,
+            Function("RotatorDirection", Return(Join({{0x39}, Rotation(rotation)}))), "Self");
+        Returned(result, "Pinned RotatorToVector");
+        Require(result.value.kind == Vm::Kind::Vector, "RotatorToVector lost detached Vector type");
+        const auto expected = Coords::Rotation(Rotator(rotation[0], rotation[1], rotation[2])).XAxis;
+        const std::array<float, 3> values{expected.x, expected.y, expected.z};
+        for (std::size_t axis = 0; axis < values.size(); ++axis)
+            Require(std::bit_cast<std::uint32_t>(result.value.vector[axis]) ==
+                std::bit_cast<std::uint32_t>(values[axis]),
+                "RotatorToVector changed pinned float math/sign/wrapping");
+        return result.value;
+    };
+    for (std::int32_t angle = 0; angle < 65536; ++angle) {
+        (void)convert({17371, angle, -3421});
+        (void)convert({angle, -12743, 21897});
+    }
+    for (const auto angle : {std::numeric_limits<std::int32_t>::min(),
+        std::numeric_limits<std::int32_t>::max(), -65537, -65536, -49152, -32768,
+        -16384, -1, 0, 1, 16384, 32768, 49152, 65535, 65536, 65537})
+        (void)convert({angle, angle, angle});
+    std::uint32_t random = 0x294315c7u;
+    for (std::size_t i = 0; i < 4096; ++i) {
+        std::array<std::int32_t, 3> rotation{};
+        for (auto& component : rotation) {
+            random = random * 1664525u + 1013904223u;
+            component = std::bit_cast<std::int32_t>(random);
+        }
+        (void)convert(rotation);
+    }
+    const auto close = [](float actual, float expected) { return std::fabs(actual - expected) < 1.0e-6f; };
+    for (const auto& cardinal : std::vector<std::pair<std::array<std::int32_t, 3>, std::array<float, 3>>>{
+        {{0,0,0},{1,0,0}}, {{0,16384,0},{0,1,0}}, {{0,32768,0},{-1,0,0}},
+        {{0,49152,0},{0,-1,0}}, {{16384,0,0},{0,0,1}}, {{49152,0,0},{0,0,-1}},
+        {{0,0,16384},{1,0,0}}}) {
+        const auto value = convert(cardinal.first);
+        for (std::size_t axis = 0; axis < 3u; ++axis)
+            Require(close(value.vector[axis], cardinal.second[axis]),
+                "RotatorToVector violated independent cardinal direction");
+    }
+    {
+        TestHost nullable;
+        const auto result = Vm::Execute(nullable, Function("NothingDirection", Return({0x39,0x0b})), "Self");
+        Returned(result, "Nothing RotatorToVector");
+        Require(result.value.kind == Vm::Kind::Vector && result.value.vector == std::array<float,3>{1,0,0},
+            "Nothing RotatorToVector is not pinned zero-rotation forward");
+    }
+    {
+        TestHost once;
+        const auto function = Function("DirectionChildOnce", Return(Join({{0x39},
+            Native(1003, {Rotation({1283,-2467,13}), Native(1000)})})));
+        const auto result = Vm::Execute(once, function, "Self");
+        Returned(result, "RotatorToVector child effects");
+        Require(result.value.kind == Vm::Kind::Vector && once.effects == 1u &&
+            once.nativeArguments.size() == 2u && once.beginCount == 1u && once.commitCount == 1u,
+            "RotatorToVector duplicated child execution or transaction");
+    }
+    {
+        TestHost alias;
+        auto function = Function("DirectionAlias", Return(Join({{0x39},
+            Native(1007, {Ref(0x01,1)})})));
+        const auto property = alias.Property(function,1,"Rotation",Value::Rotator({0,0,0}));
+        alias.Store("Self",property,{Value::Rotator({13,29,47})});
+        const auto result = Vm::Execute(alias,function,"Self");
+        Returned(result,"RotatorToVector source alias");
+        Require(result.value.kind == Vm::Kind::Vector && alias.Load("Self",property).rotation ==
+            std::array<std::int32_t,3>{13,29,47}, "RotatorToVector mutated source alias");
+        alias.Store("Self",property,{Value::Rotator({1000,2000,3000})});
+        const auto expected = Coords::Rotation(Rotator(13,29,47)).XAxis;
+        Require(result.value.vector == std::array<float,3>{expected.x,expected.y,expected.z},
+            "RotatorToVector retained source alias instead of detached snapshot");
+    }
+    for (const auto& wrong : std::vector<Bytes>{Int(0),Real(0),String("0,0,0"),{0x27},{0x2a},
+        Native(1005),Native(1000),Bytes{0x23,0,0,0,0,0,0,0,0,0,0,0,0}}) {
+        TestHost invalid;
+        const auto function = Function("WrongDirectionType",Join({Native(1000),Return(Join({{0x39},wrong}))}));
+        const auto result = Vm::Execute(invalid,function,"Self");
+        Failed(result,Vm::Status::Unsupported,invalid,"RotatorToVector type refusal");
+        Require(result.function == function.path && result.opcode == 0x39 &&
+            invalid.effects == 0u && invalid.rng == 12345u,
+            "RotatorToVector type failure lost trace or retained child/prior effects");
+    }
+    {
+        TestHost invalid;
+        auto function = Function("DirectionIsNotLvalue",Return(Let(
+            Join({{0x39},Rotation({0,0,0})}), Bytes{0x23,0,0,0,0,0,0,0,0,0,0,0,0})));
+        const auto result = Vm::Execute(invalid,function,"Self");
+        Failed(result,Vm::Status::Invalid,invalid,"RotatorToVector detached result assignment");
+    }
 }
 void ScalarAndLocalContracts() {
     TestHost host;
@@ -961,7 +1059,7 @@ void CastContracts() {
     }
 }
 void ExecutionContracts() {
-    ScalarAndLocalContracts();ParametersAndReturns();AssignmentArraysAndStructs();LazyAndContextContracts();
+    RotatorDirectionContracts();ScalarAndLocalContracts();ParametersAndReturns();AssignmentArraysAndStructs();LazyAndContextContracts();
     OptionalAndReferenceTables();ControlAndFailureContracts();BudgetAndNestedRollback();IntegerIncrementContracts();CastContracts();
 }
 void ProgramAndEligibilityContracts() {

@@ -38,6 +38,85 @@ inline constexpr std::uint32_t kPersonaGridColumns = 5u;
 inline constexpr std::uint32_t kPersonaGridRows = 6u;
 inline constexpr std::size_t kPersonaVisibleItems = 30u;
 
+// Read-only display metadata. Dimensions are actual Inventory properties, not
+// decoded power-of-two texture dimensions or an alpha-content bounding box.
+struct PersonaInventoryItem {
+    std::uint32_t slotsX{1u}, slotsY{1u};
+    std::int32_t positionX{-1}, positionY{-1};
+    std::uint32_t iconWidth{40u}, iconHeight{35u};
+    bool displayable{true};
+    bool available{true};
+};
+struct PersonaInventoryPlacement {
+    std::size_t inventoryIndex{};
+    PersonaUiRect rect{};
+    bool generatedPosition{};
+};
+struct PersonaInventoryLayout {
+    std::vector<PersonaInventoryPlacement> placements;
+    std::vector<std::size_t> unavailable, unplaced;
+    std::size_t occupiedCells{}, generatedPositions{};
+};
+
+inline PersonaInventoryLayout BuildPersonaInventoryLayout(
+    const std::vector<PersonaInventoryItem>& items) {
+    if (items.size() > 4096u) throw std::runtime_error("Persona inventory metadata exceeds bounded item count");
+    std::array<bool,kPersonaVisibleItems> occupied{};
+    PersonaInventoryLayout result;
+    // Reserve before publishing any drawing. At most 30 non-overlapping items
+    // can occupy this grid; unavailable/unplaced metadata stays bounded too.
+    result.placements.reserve(std::min(items.size(),kPersonaVisibleItems));
+    const auto fits = [&](const PersonaInventoryItem& item, std::uint32_t x, std::uint32_t y) {
+        if (x > kPersonaGridColumns - item.slotsX || y > kPersonaGridRows - item.slotsY) return false;
+        for (std::uint32_t row = 0u; row < item.slotsY; ++row)
+            for (std::uint32_t column = 0u; column < item.slotsX; ++column)
+                if (occupied[(y+row)*kPersonaGridColumns+x+column]) return false;
+        return true;
+    };
+    const auto place = [&](std::size_t index, std::uint32_t x, std::uint32_t y, bool generated) {
+        const auto& item = items[index];
+        for (std::uint32_t row = 0u; row < item.slotsY; ++row)
+            for (std::uint32_t column = 0u; column < item.slotsX; ++column)
+                occupied[(y+row)*kPersonaGridColumns+x+column] = true;
+        result.occupiedCells += item.slotsX * item.slotsY;
+        result.generatedPositions += generated ? 1u : 0u;
+        result.placements.push_back({index,
+            {kPersonaGridX+x*kPersonaGridStep,kPersonaGridY+y*kPersonaGridStep,
+             item.slotsX*kPersonaGridStep+1u,item.slotsY*kPersonaGridStep+1u},generated});
+    };
+    // Honor all effective positions before packing unassigned items. This is a
+    // display-only fallback, never SetInvSlots/FindInventorySlot execution or a
+    // claim that generated coordinates were written to the save/game actor.
+    for (std::size_t index = 0u; index < items.size(); ++index) {
+        const auto& item = items[index];
+        if (!item.available) { result.unavailable.push_back(index); continue; }
+        if (!item.displayable) continue;
+        if (item.slotsX == 0u || item.slotsX > kPersonaGridColumns ||
+            item.slotsY == 0u || item.slotsY > kPersonaGridRows ||
+            item.iconWidth == 0u || item.iconWidth > 8192u ||
+            item.iconHeight == 0u || item.iconHeight > 8192u)
+            throw std::runtime_error("Persona inventory footprint/icon dimensions are invalid");
+        if (item.positionX == -1 && item.positionY == -1) continue;
+        if (item.positionX < 0 || item.positionY < 0 ||
+            !fits(item,static_cast<std::uint32_t>(item.positionX),static_cast<std::uint32_t>(item.positionY)))
+            throw std::runtime_error("Persona inventory effective positions overlap or exceed the grid");
+        place(index,static_cast<std::uint32_t>(item.positionX),static_cast<std::uint32_t>(item.positionY),false);
+    }
+    for (std::size_t index = 0u; index < items.size(); ++index) {
+        const auto& item = items[index];
+        if (!item.available || !item.displayable || item.positionX != -1 || item.positionY != -1) continue;
+        bool placed{};
+        for (std::uint32_t y = 0u; y < kPersonaGridRows && !placed; ++y)
+            for (std::uint32_t x = 0u; x < kPersonaGridColumns && !placed; ++x)
+                if (fits(item,x,y)) { place(index,x,y,true); placed = true; }
+        if (!placed) result.unplaced.push_back(index);
+    }
+    // Child/source inventory order remains stable for drawing and selection.
+    std::sort(result.placements.begin(),result.placements.end(),
+        [](const auto& a,const auto& b) { return a.inventoryIndex < b.inventoryIndex; });
+    return result;
+}
+
 enum class PersonaUiPage : std::uint8_t { Inventory, Health, GoalsNotes, Logs, Count };
 struct PersonaUiLayout {
     const char* backgroundPrefix;
@@ -235,7 +314,126 @@ struct PersonaUiChrome {
     std::array<PersonaUiImage, 3> navigationBorders;
     std::array<PersonaUiImage, 3> normalButton;
     PersonaUiImage filler;
+    // Original PersonaItemButton.texBorders order: TL,TR,BL,BR,L,R,T,B,C.
+    std::array<PersonaUiImage,9> inventorySelection;
 };
+
+inline void ValidatePersonaInventorySelection(const PersonaUiImage& canvas,
+    const std::array<PersonaUiImage,9>& pieces, const PersonaUiRect& rect) {
+    ValidatePersonaUiImage(canvas);
+    for (const auto& image : pieces) ValidatePersonaUiImage(image);
+    if (rect.width == 0u || rect.width > kPersonaGridColumns*kPersonaGridStep+1u ||
+        rect.height == 0u || rect.height > kPersonaGridRows*kPersonaGridStep+1u ||
+        static_cast<std::uint64_t>(rect.x)+rect.width > canvas.width ||
+        static_cast<std::uint64_t>(rect.y)+rect.height > canvas.height)
+        throw std::runtime_error("Persona selection window exceeds bounded inventory grid/canvas");
+    const auto left = std::max({pieces[0].width,pieces[2].width,pieces[4].width});
+    const auto right = std::max({pieces[1].width,pieces[3].width,pieces[5].width});
+    const auto top = std::max({pieces[0].height,pieces[1].height,pieces[6].height});
+    const auto bottom = std::max({pieces[2].height,pieces[3].height,pieces[7].height});
+    if (static_cast<std::uint64_t>(left)+right > rect.width ||
+        static_cast<std::uint64_t>(top)+bottom > rect.height)
+        throw std::runtime_error("Persona selection border exceeds inventory footprint");
+}
+
+inline void DrawPersonaInventorySelection(PersonaUiImage& canvas,
+    const std::array<PersonaUiImage,9>& pieces, const PersonaUiRect& rect) {
+    ValidatePersonaInventorySelection(canvas,pieces,rect);
+    const auto draw = [&](std::size_t index,std::uint32_t x,std::uint32_t y,
+                          std::uint32_t width,std::uint32_t height) {
+        const auto& source = pieces[index];
+        for (std::uint32_t row = 0u; row < height; ++row)
+            for (std::uint32_t column = 0u; column < width; ++column) {
+                if (x+column < rect.x || y+row < rect.y ||
+                    x+column >= rect.x+rect.width || y+row >= rect.y+rect.height) continue;
+                const auto offset = (static_cast<std::size_t>(row*source.height/height)*source.width+
+                    column*source.width/width)*4u;
+                if (source.rgba[offset+3u] != 0u)
+                    SetPersonaUiPixel(canvas,x+column,y+row,source.rgba[offset],
+                        source.rgba[offset+1u],source.rgba[offset+2u],source.rgba[offset+3u]);
+            }
+    };
+    const auto left = std::max({pieces[0].width,pieces[2].width,pieces[4].width});
+    const auto right = std::max({pieces[1].width,pieces[3].width,pieces[5].width});
+    const auto top = std::max({pieces[0].height,pieces[1].height,pieces[6].height});
+    const auto bottom = std::max({pieces[2].height,pieces[3].height,pieces[7].height});
+    // Matches pinned UGC::DrawBorders' zero-margin, omitted-stretch branch.
+    draw(8u,rect.x+left,rect.y+top,rect.width-left-right,rect.height-top-bottom);
+    draw(0u,rect.x,rect.y,pieces[0].width,pieces[0].height);
+    draw(1u,rect.x+rect.width-pieces[1].width,rect.y,pieces[1].width,pieces[1].height);
+    draw(2u,rect.x,rect.y+rect.height-pieces[2].height,pieces[2].width,pieces[2].height);
+    draw(3u,rect.x+rect.width-pieces[3].width,rect.y+rect.height-pieces[3].height,pieces[3].width,pieces[3].height);
+    draw(4u,rect.x,rect.y+pieces[0].height,pieces[4].width,rect.height-pieces[0].height-pieces[2].height);
+    draw(5u,rect.x+rect.width-pieces[5].width,rect.y+pieces[1].height,pieces[5].width,rect.height-pieces[1].height-pieces[3].height);
+    draw(6u,rect.x+pieces[0].width,rect.y,rect.width-pieces[0].width-pieces[1].width,pieces[6].height);
+    draw(7u,rect.x+pieces[0].width,rect.y+rect.height-pieces[7].height,rect.width-pieces[2].width-pieces[3].width,pieces[7].height);
+}
+
+template<class IconLookup>
+inline PersonaInventoryLayout DrawPersonaInventoryGrid(PersonaUiImage& canvas,
+    const std::vector<PersonaInventoryItem>& items, std::size_t selectedIndex,
+    IconLookup&& lookupIcon, const std::array<PersonaUiImage,9>* selection = nullptr) {
+    ValidatePersonaUiImage(canvas);
+    const auto layout = BuildPersonaInventoryLayout(items);
+    // Validate every published source window before modifying the destination.
+    // The detached lookup result is bounded to the at-most-30 visible items.
+    using IconPointer = decltype(lookupIcon(std::size_t{}));
+    std::vector<IconPointer> icons;
+    icons.reserve(layout.placements.size());
+    for (const auto& placed : layout.placements) {
+        const auto& rect = placed.rect;
+        if (rect.x > canvas.width || rect.y > canvas.height ||
+            rect.width > canvas.width-rect.x || rect.height > canvas.height-rect.y)
+            throw std::runtime_error("Persona inventory footprint exceeds canvas");
+        const auto* icon = lookupIcon(placed.inventoryIndex);
+        if (icon != nullptr && icon->width != 0u && icon->height != 0u) {
+            ValidatePersonaUiImage(*icon);
+            const auto& item = items[placed.inventoryIndex];
+            if (item.iconWidth > icon->width || item.iconHeight > icon->height)
+                throw std::runtime_error("Persona logical icon source window exceeds decoded texture");
+        }
+        if (placed.inventoryIndex == selectedIndex && selection != nullptr)
+            ValidatePersonaInventorySelection(canvas,*selection,rect);
+        icons.push_back(icon);
+    }
+    for (std::size_t placementIndex = 0u; placementIndex < layout.placements.size(); ++placementIndex) {
+        const auto& placed = layout.placements[placementIndex];
+        const auto& rect = placed.rect;
+        const bool selected = placed.inventoryIndex == selectedIndex;
+        for (std::uint32_t row = 0u; row < rect.height; ++row)
+            for (std::uint32_t column = 0u; column < rect.width; ++column) {
+                const bool edge = row < 2u || column < 2u || row+2u >= rect.height || column+2u >= rect.width;
+                const auto shade = static_cast<std::uint8_t>(edge ? (selected ? 255u : 100u) : 18u);
+                SetPersonaUiPixel(canvas,rect.x+column,rect.y+row,shade,shade,shade);
+            }
+        const auto* icon = icons[placementIndex];
+        if (icon != nullptr && icon->width != 0u && icon->height != 0u) {
+            const auto& item = items[placed.inventoryIndex];
+            // DrawTexture uses a source window equal to its destination width/
+            // height. Crop texture padding; do NOT rescale the entire texture.
+            const std::int64_t iconX = static_cast<std::int64_t>(rect.x)+rect.width/2u-item.iconWidth/2u;
+            const std::int64_t iconY = static_cast<std::int64_t>(rect.y)+rect.height/2u-item.iconHeight/2u;
+            const auto firstColumn = static_cast<std::uint32_t>(std::max<std::int64_t>(0,static_cast<std::int64_t>(rect.x)-iconX));
+            const auto firstRow = static_cast<std::uint32_t>(std::max<std::int64_t>(0,static_cast<std::int64_t>(rect.y)-iconY));
+            const auto endColumn = static_cast<std::uint32_t>(std::min<std::int64_t>(item.iconWidth,static_cast<std::int64_t>(rect.x+rect.width)-iconX));
+            const auto endRow = static_cast<std::uint32_t>(std::min<std::int64_t>(item.iconHeight,static_cast<std::int64_t>(rect.y+rect.height)-iconY));
+            // Iterate the child-clipped source span, not an arbitrarily large
+            // declared icon. Work is bounded by the 266x319 grid window.
+            for (std::uint32_t row = firstRow; row < endRow; ++row)
+                for (std::uint32_t column = firstColumn; column < endColumn; ++column) {
+                    const auto x = iconX+column, y = iconY+row;
+                    if (x < rect.x || y < rect.y || x >= static_cast<std::int64_t>(rect.x+rect.width) ||
+                        y >= static_cast<std::int64_t>(rect.y+rect.height)) continue;
+                    const auto source = (static_cast<std::size_t>(row)*icon->width+column)*4u;
+                    if (icon->rgba[source+3u] != 0u)
+                        SetPersonaUiPixel(canvas,static_cast<std::uint32_t>(x),static_cast<std::uint32_t>(y),
+                            icon->rgba[source],icon->rgba[source+1u],icon->rgba[source+2u],icon->rgba[source+3u]);
+                }
+        }
+        if (selected && selection != nullptr) DrawPersonaInventorySelection(canvas,*selection,rect);
+    }
+    return layout;
+}
 
 inline void AddPersonaNavigationArtwork(PersonaUiImage& canvas, const PersonaUiChrome& chrome) {
     for (std::size_t index = 0u; index < 3u; ++index) {

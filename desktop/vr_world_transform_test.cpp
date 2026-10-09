@@ -1,4 +1,5 @@
 #include "vr_world_transform.h"
+#include "quest_player_posture.h"
 #include "OVR_Math.h"
 
 #include <cmath>
@@ -184,6 +185,71 @@ void ReferenceSpaceContinuity() {
     }
 }
 
+void UserRecenterAndHud() {
+    const Vector oldHead{3.2f, 1.7f, -5.5f};
+    for (const Vector origin : {Vector{3.2f,0.0f,-5.5f},Vector{-4.1f,0.2f,8.7f}}) {
+    for (float oldYaw : {-2.4f, 0.0f, 1.7f}) {
+        for (float originYaw : {-2.0f, 0.0f, 0.9f}) {
+            Vector world{-4.2f, -0.2f, 7.1f};
+            Vector head = oldHead;
+            const Vector mapHead = QuestVr::StageToLocal(head, world, oldYaw);
+            const Vector mapForward = QuestVr::StageDirectionToLocal(
+                Yaw(originYaw).Rotate(Vector{0,0,-1}), oldYaw);
+            QuestVr::RecenterReferenceSpace(origin, originYaw, world, oldYaw, head);
+            RequireNear(head, Yaw(originYaw).Inverted().Rotate(oldHead-origin),
+                "user recenter did not transform the previous tracking head");
+            RequireNear(QuestVr::StageToLocal(head,world,oldYaw),mapHead,
+                "user recenter teleported the player in the map");
+            const Vector afterForward = QuestVr::StageDirectionToLocal(Vector{0,0,-1},oldYaw);
+            if (std::fabs(originYaw) > 0.01f)
+                Require((mapForward-afterForward).Length() > 0.1f,
+                    "map compensation canceled user recenter orientation");
+        }
+    }
+    }
+    for (float yaw : {-2.4f,0.0f,1.7f}) {
+        for (float pitch : {-0.8f,0.0f,0.7f}) {
+            const OVR::Posef head(Yaw(yaw)*OVR::Quatf(Vector{1,0,0},pitch),oldHead);
+            const OVR::Posef hud = QuestVr::HeadLockedHudPose(head);
+            RequireNear(head.Rotation.Inverted().Rotate(hud.Translation-head.Translation),
+                Vector{0,0,-QuestVr::DebugHudDistance},
+                "debug HUD moved away from the view center at an off-origin head pose");
+            RequireNear(hud.Rotation.Rotate(Vector{0,0,-1}),head.Rotation.Rotate(Vector{0,0,-1}),
+                "debug HUD orientation disagrees with head orientation");
+        }
+    }
+}
+
+void OriginalHandGripBasis() {
+    for (float yaw : {-2.7f,0.0f,1.6f}) {
+        for (float pitch : {-1.1f,0.0f,0.8f}) {
+            for (float roll : {-2.0f,0.0f,2.4f}) {
+                const auto rotation = Yaw(yaw) * OVR::Quatf(Vector{1,0,0},pitch) *
+                    OVR::Quatf(Vector{0,0,1},roll);
+                for (const Vector origin : {Vector{0,0,0},Vector{6.2f,1.4f,-3.8f}}) {
+                    const OVR::Posef grip{rotation,origin};
+                    const auto hand = QuestVr::OriginalHandGripPose(grip);
+                    RequireNear(hand.Translation,origin,"Source hand basis moved the grip centroid");
+                    RequireNear(hand.Rotation.Rotate(Vector{1,0,0}),rotation.Rotate(Vector{1,0,0}),
+                        "Source palm normal disagrees with OpenXR grip X");
+                    RequireNear(hand.Rotation.Rotate(Vector{0,1,0}),rotation.Rotate(Vector{0,0,-1}),
+                        "Source thumbward grasp tube disagrees with OpenXR grip -Z");
+                    RequireNear(hand.Rotation.Rotate(Vector{0,0,-1}),rotation.Rotate(Vector{0,-1,0}),
+                        "Source weapon forward disagrees with grip-local -Y");
+                    const Vector point{0.04f,0.03f,-0.08f};
+                    const auto rightLocal = OVR::Quatf(Vector{1,0,0},-QuestVr::Pi*0.5f).Rotate(point);
+                    const auto mirroredLocal = OVR::Quatf(Vector{1,0,0},-QuestVr::Pi*0.5f).Rotate(
+                        Vector{-point.x,point.y,point.z});
+                    RequireNear(mirroredLocal,Vector{-rightLocal.x,rightLocal.y,rightLocal.z},
+                        "Grip basis fails to commute with original left-hand reflection");
+                    RequireNear(hand.Transform(point),grip.Transform(rightLocal),
+                        "Hand basis was applied in tracking rather than controller-local space");
+                }
+            }
+        }
+    }
+}
+
 void MapLocalSaveRestoration() {
     const Vector savedFeet{8.0f, 2.5f, -12.0f};
     for (float savedHeading : {-2.4f, 0.0f, 1.1f}) {
@@ -204,6 +270,100 @@ void MapLocalSaveRestoration() {
         }
     }
 }
+
+void SeatedFloorSaveAndRecenter() {
+    for (float floor : {-1.1f,-0.73f,0.0f}) {
+        for (float headYaw : {-2.0f,0.0f,1.4f}) {
+            const Vector head{6.2f,floor+1.65f,-3.8f};
+            const Vector savedFeet{4.1f,2.3f,-8.7f};
+            Vector world{};
+            float yaw{};
+            QuestVr::RestoreSavedMapPose(savedFeet,0.7f,head,headYaw,world,yaw,floor);
+            RequireNear(QuestVr::StageToLocal(Vector{head.x,floor,head.z},world,yaw),savedFeet,
+                "Seated restore placed feet under the map floor");
+            Require(std::fabs(QuestVr::StageToLocal(head,world,yaw).y-savedFeet.y-1.65f)<0.0001f,
+                "Seated restore lost calibrated eye height");
+            for (float originY : {-0.2f,0.0f,0.3f}) {
+                const Vector origin{1.2f,originY,-0.9f};
+                Vector newWorld=world,newHead=head;
+                QuestVr::RecenterReferenceSpace(origin,0.4f,newWorld,yaw,newHead);
+                Require(std::fabs((newHead.y-(floor-originY))-1.65f)<0.0001f,
+                    "Reference change lost seated eye-height calibration");
+                Require(std::fabs((floor-originY)-newWorld.y-savedFeet.y)<0.0001f,
+                    "Reference change moved seated feet through map floor");
+            }
+            // Explicit seated/standing switch translates the world by the
+            // same floor delta, keeping the prior map-local feet unchanged.
+            const float newFloor=floor-0.6f;
+            Vector changedWorld=world;
+            changedWorld.y=QuestVr::WorldYAfterVirtualFloorChange(world.y,floor,newFloor);
+            RequireNear(QuestVr::StageToLocal(Vector{head.x,newFloor,head.z},changedWorld,yaw),savedFeet,
+                "Posture switch moved existing map feet before ground probing");
+        }
+    }
+}
+
+void VirtualFloorReferenceHeightContinuity() {
+    constexpr float mapFloorY = -0.198029f;
+    for (bool seated : {false,true}) {
+        for (bool rebase : {false,true}) {
+            for (float oldYaw : {-2.1f,0.0f,1.4f}) {
+                for (float originYaw : {-0.8f,0.0f,1.7f}) {
+                    for (float originY : {-0.689f,0.0f,0.3f}) {
+                        const Vector oldHead{3.4f,seated ? 1.014f : 1.7f,-2.9f};
+                        QuestVr::SeatedPosture posture;
+                        Require(posture.SetSeated(seated,oldHead.y),"Reference fixture posture rejected");
+                        const float previousFloorY=posture.virtualFloorY;
+                        const Vector oldWorld{-0.6f,previousFloorY-mapFloorY,2.5f};
+                        const Vector oldFeet=QuestVr::StageToLocal(
+                            Vector{oldHead.x,previousFloorY,oldHead.z},oldWorld,oldYaw);
+                        const Vector origin{1.2f,originY,-0.9f};
+                        Vector world=oldWorld,head=oldHead;
+                        float yaw=oldYaw;
+                        Require(posture.ApplyRecenter(originY),"Bounded reference fixture rejected");
+                        if (rebase) QuestVr::RebaseReferenceSpace(origin,originYaw,world,yaw,head);
+                        else QuestVr::RecenterReferenceSpace(origin,originYaw,world,yaw,head);
+                        const float genericWorldY=world.y;
+                        if (!seated && originY == -0.689f) {
+                            const float genericFeetY=posture.virtualFloorY-genericWorldY;
+                            Require(std::fabs(genericFeetY-(-0.887029f))<0.0001f &&
+                                mapFloorY-genericFeetY>0.45f,
+                                "Standing regression no longer reproduces below-floor step-up lockout");
+                        }
+                        world.y=QuestVr::WorldYAfterVirtualFloorChange(
+                            oldWorld.y,previousFloorY,posture.virtualFloorY);
+                        RequireNear(head,Yaw(originYaw).Inverted().Rotate(oldHead-origin),
+                            "Floor correction modified the raw rebased tracking pose");
+                        RequireNear(QuestVr::StageToLocal(
+                            Vector{head.x,posture.virtualFloorY,head.z},world,yaw),oldFeet,
+                            "Vertical reference change moved map feet through the floor");
+                        const float physicalEyeHeight=head.y-posture.virtualFloorY;
+                        Require(std::fabs(QuestVr::StageToLocal(head,world,yaw).y-
+                            mapFloorY-physicalEyeHeight)<0.0001f,
+                            "Reference correction disconnected real head height from map floor");
+                        if (seated) {
+                            Require(std::fabs(world.y-genericWorldY)<0.0001f,
+                                "Virtual floor correction changed calibrated seated reference behavior");
+                            Require(std::fabs(physicalEyeHeight-QuestVr::SeatedTargetEyeHeight)<0.0001f,
+                                "Seated reference correction lost calibrated eye height");
+                        } else {
+                            Require(std::fabs(world.y-oldWorld.y)<0.0001f && posture.virtualFloorY==0.0f,
+                                "Standing reference correction moved the real floor");
+                            Require(std::fabs(physicalEyeHeight-(oldHead.y-originY))<0.0001f,
+                                "Standing reference correction forced a prior eye height");
+                        }
+                        constexpr float pendingWorldY=1.3f;
+                        const float pendingFeetY=previousFloorY-pendingWorldY;
+                        const float correctedPendingY=QuestVr::WorldYAfterVirtualFloorChange(
+                            pendingWorldY,previousFloorY,posture.virtualFloorY);
+                        Require(std::fabs(posture.virtualFloorY-correctedPendingY-pendingFeetY)<0.0001f,
+                            "Reference correction moved pending legacy save feet");
+                    }
+                }
+            }
+        }
+    }
+}
 } // namespace
 
 int main() {
@@ -218,8 +378,12 @@ int main() {
         BoundedMovementAndVerticalGaze();
         SweepAcrossThinWall();
         ReferenceSpaceContinuity();
+        UserRecenterAndHud();
+        OriginalHandGripBasis();
         MapLocalSaveRestoration();
-        std::cout << "PASS: 11 shared Quest transform regression groups; "
+        SeatedFloorSaveAndRecenter();
+        VirtualFloorReferenceHeightContinuity();
+        std::cout << "PASS: 15 shared Quest transform regression groups; "
                      "481 renderer rotations, 1201 off-origin turns, 15 simultaneous "
                      "turn/move cases. No headset or game data required.\n";
         return 0;

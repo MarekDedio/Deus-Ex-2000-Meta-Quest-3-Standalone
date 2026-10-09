@@ -1,7 +1,7 @@
 [CmdletBinding(DefaultParameterSetName = 'Command')]
 param(
     [Parameter(Mandatory = $true, ParameterSetName = 'Command')]
-    [ValidateSet('MENU', 'PAGE', 'TURNLEFT', 'TURNRIGHT', 'PICKUP', 'SCREENSHOT')]
+    [ValidateSet('MENU', 'PAGE', 'HUD', 'SEATED', 'STANDING', 'TURNLEFT', 'TURNRIGHT', 'PICKUP', 'SCREENSHOT')]
     [string]$Command,
     [Parameter(Mandatory = $true, ParameterSetName = 'Map')]
     [ValidatePattern('^[A-Za-z0-9_-]+$')]

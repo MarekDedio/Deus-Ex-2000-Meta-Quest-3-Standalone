@@ -13,6 +13,8 @@
 #include <tuple>
 #include <utility>
 
+#include "Math/coords.h"
+
 namespace QuestVr::Vm {
 namespace {
 std::string Lower(std::string text) {
@@ -711,6 +713,18 @@ private:
             const auto v = child(0).Load();
             Locate(frame.function, n.offset, n.op);
             switch (n.op) {
+            case 0x39: {
+                // Pinned ExpressionEvaluator::RotatorToVector uses exactly
+                // Coords::Rotation(...).XAxis, with Nothing as rot(0,0,0).
+                // Never reinterpret an arbitrary generic Struct as a Rotator.
+                if (v.kind != Kind::Rotator && v.kind != Kind::Nothing) TypeError();
+                const auto rotation = v.kind == Kind::Nothing
+                    ? std::array<std::int32_t, 3>{} : v.rotation;
+                const auto direction = Coords::Rotation(
+                    Rotator(rotation[0], rotation[1], rotation[2])).XAxis;
+                result.value = Value::Vector({direction.x, direction.y, direction.z});
+                break;
+            }
             case 0x3a: result.value = Value::Integer(static_cast<std::uint8_t>(ToInt(v))); break;
             case 0x3b: result.value = Value::Bool(static_cast<std::uint8_t>(ToInt(v)) != 0); break;
             case 0x3c: result.value = Value::Float(static_cast<std::uint8_t>(ToInt(v))); break;
