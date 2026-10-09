@@ -1,6 +1,18 @@
 # Current Quest test-build handoff (2026-10-09)
 
-The latest **backend-only, not installed** lifecycle APK is
+The latest **backend-only, not installed** actor-spawn APK is
+`artifacts/release-actor-spawn-20261009/DeusExQuestVR-actor-spawn-20261009.apk`:
+18,681,209 bytes, SHA-256
+`7B24F692B5F8D10FC33D10DF38944898A2D0ADAB0B36FA1CD48701599252ED67`.
+Android ARM64 compilation and APK Signature Scheme v2 verification pass;
+its 16 ZIP entries contain no original commercial game packages. It adds real
+transactional actor births, checkpoint-v8 cold graphs, collision registration
+and staged replacement actor materials. The material path and performance
+are not yet device-verified; automatic authored player/world startup remains
+unfinished. See [ACTOR-SPAWN.md](ACTOR-SPAWN.md). The accepted installed
+player-controls APK below remains unchanged.
+
+The preceding **backend-only, not installed** lifecycle APK is
 `artifacts/release-actor-lifecycle-20261009/DeusExQuestVR-actor-lifecycle-20261009.apk`:
 18,621,265 bytes, SHA-256
 `AFA77AAFD9CAA1AE3C24562F2BF95CF48C7C2FDA2FBF5D96BD5A60D323742E4F`.

@@ -157,7 +157,9 @@ void Help() {
         "  --actor-animation-frame FRACTION Normalized isolated fixture frame in [0,1)\n"
         "  --actor-fatness BYTE      Isolated fixture fatness, neutral 128\n"
         "  --actor-script-function NAME  Execute one original compiled helper before isolated capture\n"
-        "  --actor-script-name NAME / --actor-script-float N  Append a typed helper argument\n"
+        "  --actor-script-name NAME / --actor-script-float N / --actor-script-object PATH\n"
+        "                                    Append a typed Name, Float or original Object/class identity\n"
+        "  --actor-script-use-result         Isolate a nonnull Actor Object returned by the helper/native\n"
         "                                    Requires original game/map; self-test uses fixture lights\n"
         "  --inspect-textures PACKAGE FILTER  List matching export/class/properties for diagnosis\n"
         "  --persona-preview --game-root PATH Original Persona artwork, fonts and fixture text\n"
@@ -200,6 +202,14 @@ Options Parse(int argc, char** argv) {
             {QuestVr::Vm::Value::Text(QuestVr::Vm::Kind::Name,next()),{}});
         else if (argument == "--actor-script-float") options.posePreview.scriptArguments.push_back(
             {QuestVr::Vm::Value::Float(Float(next())),{}});
+        else if (argument == "--actor-script-object") {
+            const auto path = next();
+            if (path.size() > 8192u || std::any_of(path.begin(),path.end(),[](unsigned char character) {
+                return character < 32u || character > 126u;
+            })) throw std::runtime_error("Script Object argument must be a bounded printable original object identity");
+            options.posePreview.scriptArguments.push_back({QuestVr::Vm::Value::Text(QuestVr::Vm::Kind::Object,path),{}});
+        }
+        else if (argument == "--actor-script-use-result") options.posePreview.scriptUseResultActor = true;
         else if (argument == "--persona-preview") options.personaPreview = true;
         else if (argument == "--persona-icon") options.personaIcons.push_back(next());
         else if (argument == "--persona-page") {
@@ -252,6 +262,8 @@ Options Parse(int argc, char** argv) {
     options.posePreview.actorPath = options.isolatedActor;
     if (!options.posePreview.scriptArguments.empty() && options.posePreview.scriptFunction.empty())
         throw std::runtime_error("Script arguments require --actor-script-function");
+    if (options.posePreview.scriptUseResultActor && options.posePreview.scriptFunction.empty())
+        throw std::runtime_error("--actor-script-use-result requires --actor-script-function");
     if (!options.posePreview.scriptFunction.empty() && (options.isolatedActor.empty() ||
         options.posePreview.sequence || options.posePreview.frame || options.posePreview.fatness))
         throw std::runtime_error("Compiled helper captures require --actor-isolate and cannot mix with manual pose overrides");
@@ -296,7 +308,47 @@ Options Parse(int argc, char** argv) {
 void Require(bool condition, const char* message) {
     if (!condition) throw std::runtime_error(std::string("Synthetic pipeline regression: ")+message);
 }
+Camera FrameIsolatedActor(Camera camera, const Vec3 minimum, const Vec3 maximum) {
+    const Vec3 center{(minimum.x+maximum.x)*0.5f,
+        (minimum.y+maximum.y)*0.5f,(minimum.z+maximum.z)*0.5f};
+    const float extent = std::max({maximum.x-minimum.x,maximum.y-minimum.y,maximum.z-minimum.z});
+    const float distance = std::max(0.1f,extent*1.5f);
+    const float yaw = std::remainder(camera.yawDegrees,360.0f)*3.14159265358979323846f/180.0f;
+    const float pitch = std::remainder(camera.pitchDegrees,360.0f)*3.14159265358979323846f/180.0f;
+    // Orbit opposite the renderer's forward vector, including requested pitch.
+    // Flat pickup meshes need an elevated view; silently forcing pitch=0 made
+    // their edge-on silhouette appear to be missing model geometry.
+    camera.position = {center.x-std::sin(yaw)*std::cos(pitch)*distance,
+        center.y-std::sin(pitch)*distance,center.z+std::cos(yaw)*std::cos(pitch)*distance};
+    camera.verticalFovDegrees = 60.0f;
+    return camera;
+}
+void VerifyIsolatedActorCamera() {
+    const Vec3 minimum{-1.0f,2.0f,-5.0f},maximum{3.0f,4.0f,-3.0f},center{1.0f,3.0f,-4.0f};
+    for (const float yaw : {0.0f,45.0f,90.0f,180.0f,-90.0f})
+        for (const float pitch : {0.0f,-45.0f,45.0f,-90.0f}) {
+            Camera request;request.yawDegrees=yaw;request.pitchDegrees=pitch;
+            const auto framed=FrameIsolatedActor(request,minimum,maximum);
+            const float yr=yaw*3.14159265358979323846f/180.0f,pr=pitch*3.14159265358979323846f/180.0f;
+            const Vec3 right{std::cos(yr),0.0f,std::sin(yr)};
+            const Vec3 up{-std::sin(yr)*std::sin(pr),std::cos(pr),std::cos(yr)*std::sin(pr)};
+            const Vec3 delta{center.x-framed.position.x,center.y-framed.position.y,center.z-framed.position.z};
+            Require(std::fabs(delta.x*right.x+delta.y*right.y+delta.z*right.z)<0.00001f &&
+                std::fabs(delta.x*up.x+delta.y*up.y+delta.z*up.z)<0.00001f,
+                "isolated camera orbit lost the selected actor's center");
+            Require(framed.pitchDegrees==pitch && framed.yawDegrees==yaw &&
+                std::fabs(delta.x*delta.x+delta.y*delta.y+delta.z*delta.z-36.0f)<0.0001f,
+                "isolated camera discarded pitch/yaw or changed framing distance");
+        }
+    Camera huge;huge.yawDegrees=std::numeric_limits<float>::max();huge.pitchDegrees=-std::numeric_limits<float>::max();
+    const auto framed=FrameIsolatedActor(huge,minimum,maximum);
+    huge.yawDegrees=std::remainder(huge.yawDegrees,360.0f);huge.pitchDegrees=std::remainder(huge.pitchDegrees,360.0f);
+    const auto reduced=FrameIsolatedActor(huge,minimum,maximum);
+    Require(framed.position.x==reduced.position.x && framed.position.y==reduced.position.y &&
+        framed.position.z==reduced.position.z,"isolated camera overflowed large finite angles");
+}
 void VerifyLightingRenderer() {
+    VerifyIsolatedActorCamera();
     const Camera camera;
     auto fixture = MakeSyntheticScene();
     const auto albedo = Render(fixture,camera,256u,256u);
@@ -477,7 +529,7 @@ void Report(const Options& options, const Scene& scene, const RenderResult& resu
         << ",\n  \"campaignPlayabilityVerified\": false"
         << ",\n  \"isolatedActor\": " << Quote(options.isolatedActor)
         << ",\n  \"scope\": " << Quote(!options.isolatedActor.empty() ?
-            "Original actor close-up without world BSP; automatic bounds framing; shared Quest CPU poses/transforms/materials. Manual overrides and explicitly invoked compiled helpers are isolated fixtures, not startup, live ticking, campaign playability or Quest GPU evidence" : lighting.actors.enabled ?
+            "Original-asset actor close-up without world BSP; automatic bounds framing; shared Quest CPU poses/transforms/materials. Manual overrides and explicitly invoked original helpers/natives or returned actors are isolated fixtures, not startup, live ticking, campaign playability or Quest GPU evidence" : lighting.actors.enabled ?
             "software original actor meshes/authored pose sampling/skin overrides and mover brushes with shared Quest CPU paths; optional BSP lightmaps; native animation clock, sprites, actor shadowing, environment mapping, UI, OpenXR and Quest GPU unverified" : lighting.baked ?
             "software BSP/material textures with original static light lists, baked shadow masks, zone ambient and Unlit; dynamic lighting, actors, UI, OpenXR, stereo and Quest performance not verified" : lighting.enabled ?
             "software world BSP/material textures with shared Quest direct vertex lighting approximation; no UE1 lightmaps/BSP shadow occlusion, actor meshes, UI, OpenXR, stereo or Quest performance" :
@@ -576,9 +628,22 @@ void Report(const Options& options, const Scene& scene, const RenderResult& resu
         << ", \"nativeAnimationClockImplemented\": true, \"liveClockTicked\": false, \"animationVerified\": false, \"actorShadowingVerified\": false"
         << ", \"isolatedCompiledHelperExecuted\": " << (!lighting.scriptFunction.empty() ? "true" : "false")
         << ", \"compiledHelperFunction\": " << Quote(lighting.scriptFunction)
+        << ", \"compiledHelperReceiver\": " << Quote(options.posePreview.actorPath)
+        << ", \"compiledHelperUseResultActor\": " << (options.posePreview.scriptUseResultActor ? "true" : "false")
+        << ", \"compiledHelperResultActor\": " << Quote(lighting.scriptResultActor)
         << ", \"compiledHelperInstructions\": " << lighting.scriptInstructions
         << ", \"compiledHelperWrites\": " << lighting.scriptWrites
-        << ", \"texturePaths\": [";
+        << ", \"compiledHelperArguments\": [";
+    for (std::size_t i = 0u; i < options.posePreview.scriptArguments.size(); ++i) {
+        if (i) file << ", ";
+        const auto value = options.posePreview.scriptArguments[i].Load();
+        file << "{\"kind\": " << Quote(value.kind == QuestVr::Vm::Kind::Object ? "Object" :
+            value.kind == QuestVr::Vm::Kind::Name ? "Name" : "Float") << ", \"value\": ";
+        if (value.kind == QuestVr::Vm::Kind::Float) file << value.floating;
+        else file << Quote(value.text);
+        file << '}';
+    }
+    file << "], \"texturePaths\": [";
     for (std::size_t i = 0u; i < actors.texturePaths.size(); ++i) {
         if (i) file << ", ";
         file << Quote(actors.texturePaths[i]);
@@ -825,10 +890,15 @@ int main(int argc, char** argv) {
         if (options.authoredLighting || options.actors) lighting = options.selfTest ? BuildSyntheticLightingPreview(scene) :
             BuildAuthoredLightingPreview(scene,options.gameRoot,options.map,options.mesh,options.bakedLighting,
                 options.actors,options.authoredLighting,options.posePreview);
+        if (options.posePreview.scriptUseResultActor) {
+            if (lighting.scriptResultActor.empty())
+                throw std::runtime_error("Compiled helper did not return an eligible nonnull map Actor Object");
+            options.isolatedActor = lighting.scriptResultActor;
+        }
         if (!options.isolatedActor.empty()) {
             const auto& records = lighting.actors.records;
             const auto actor = std::find_if(records.begin(),records.end(),[&](const auto& record) {
-                return record.path == options.isolatedActor;
+                return Lower(record.path) == Lower(options.isolatedActor);
             });
             if (actor == records.end() || actor->triangles == 0u || actor->chunkCount == 0u)
                 throw std::runtime_error("Isolated actor must name a rendered full original object path");
@@ -842,15 +912,7 @@ int main(int argc, char** argv) {
                 isolated.vertexLighting.push_back(std::move(scene.vertexLighting[c]));
             }
             scene = std::move(isolated);
-            const Vec3 center{(actor->minimum.x+actor->maximum.x)*0.5f,
-                (actor->minimum.y+actor->maximum.y)*0.5f,(actor->minimum.z+actor->maximum.z)*0.5f};
-            const float extent = std::max({actor->maximum.x-actor->minimum.x,
-                actor->maximum.y-actor->minimum.y,actor->maximum.z-actor->minimum.z});
-            const float radians = options.camera.yawDegrees*3.14159265358979323846f/180.0f;
-            const float distance = std::max(0.1f,extent*1.5f);
-            options.camera.position = {center.x-std::sin(radians)*distance,center.y,center.z+std::cos(radians)*distance};
-            options.camera.pitchDegrees = 0.0f;
-            options.camera.verticalFovDegrees = 60.0f;
+            options.camera = FrameIsolatedActor(options.camera,actor->minimum,actor->maximum);
         }
         const auto result = Render(scene,options.camera,options.width,options.height);
         WriteBmp(options.output,result.image);

@@ -71,6 +71,32 @@ state. `--actor-fatness <0..255>` exercises authored expansion (neutral 128).
 The PowerShell wrapper exposes `-ActorAnimationSequence`,
 `-ActorAnimationFrame` and `-ActorFatness` with `-IsolatedActor`.
 
+For a native/helper that returns a newly born Actor, the direct executable
+accepts typed `--actor-script-object PATH` arguments and
+`--actor-script-use-result`. For example:
+
+```powershell
+.\artifacts\prerequisites-20261009\build\deusex_desktop_visual.exe --game-root $ownedGame `
+    --map 00_Training --actor-isolate 00_Training.Doctor1 `
+    --actor-script-function Engine.Actor.Spawn --actor-script-object DeusEx.WeaponPistol `
+    --actor-script-object 00_Training.Doctor1 --actor-script-use-result `
+    --yaw 45 --pitch -60 --width 960 --height 720 --min-coverage 0.01 `
+    --output artifacts\actors\born-pistol.bmp --report artifacts\actors\born-pistol.json
+```
+
+The selected class is an actual loaded UClass, not a string placeholder. The
+report retains the receiver, typed arguments and returned object separately.
+This dormant-map fixture does not initialize the campaign. On 2026-10-09,
+initial yaw0/yaw90 captures decoded the real GlockPickup's 83 triangles and
+resolved all selected materials, but failed the chosen coverage gate and
+showed an incomplete-looking pistol silhouette. Investigation found the flat
+pickup was viewed edge-on and isolation silently discarded requested pitch.
+The corrected camera orbits with yaw and pitch; 41 synthetic orbit controls
+pass. The inspected yaw45/pitch-60 frame shows barrel, trigger and grip and
+passes the unchanged 1% gate at 2.0434% coverage, hash `8f382586b76073a`.
+Failing edge-on artifacts remain retained. This one CPU fixture is not
+original-renderer pixel equivalence, live gameplay or headset GPU evidence.
+
 ## Evidence and remaining work
 
 On 2026-10-07 the owned-package transform audit decoded 437 mesh exports,

@@ -9,6 +9,8 @@
 #include "quest_actor_animation_clock.h"
 #include "quest_authored_struct_value.h"
 #include "quest_object_cast.h"
+#include "quest_spawn_placement.h"
+#include "quest_actor_overlap.h"
 
 #include <memory>
 #include <algorithm>
@@ -17,6 +19,7 @@
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
+#include <functional>
 #include <limits>
 #include <stdexcept>
 #include <string_view>
@@ -24,6 +27,8 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
+#include "Math/coords.h"
+#include "Math/bbox.h"
 
 namespace {
 
@@ -46,6 +51,7 @@ public:
     RuntimeObject* outer{};
     RuntimeObject* base{};
     RuntimeObject* cls{};
+    RuntimeObject* nativeXLevel{}; // Immutable LinkActorsToLevel baseline, not a script write.
     std::unique_ptr<PortableScriptBody> script;
     std::unique_ptr<PortablePropertyDescriptor> property;
     std::unique_ptr<PortableClassDescriptor> classDescriptor;
@@ -81,6 +87,12 @@ public:
     // Existing instances/derived classes keep their immutable authored copy;
     // they must never fall through to later mutations on this or a base CDO.
     decltype(scriptValues) classDefaultValues;
+    // A runtime birth shares only immutable authored class metadata. Copy the
+    // concrete CDO's complete mutable patch block once; later CDO writes never
+    // affect this instance. Births have no serialized map export index.
+    decltype(scriptValues) frozenBirthDefaults;
+    bool runtimeBirth{};
+    std::string birthVmKey;
     std::optional<QuestVr::ActorAnimationClock> animationClock;
     std::optional<QuestVr::StateObject> stateObject;
     // Nonserialized local-storage identity. References held by an executing
@@ -153,6 +165,18 @@ std::unordered_map<std::string, std::vector<RuntimeObject*>> persistentMapTagInd
 std::size_t persistentScriptExportCount{};
 std::string persistentMapPackageName;
 std::uint64_t persistentWorldRevision{};
+std::vector<RuntimeObject*> persistentWorldActors;
+std::size_t persistentAuthoredWorldSlots{};
+std::string persistentMapSourcePath;
+QuestVr::ActorCollisionRegistry persistentActorCollision;
+bool pendingBirthGarbage{};
+// Collect only after the outer host/restore staging roots have been destroyed.
+// Collecting from a nested native callback could reclaim an in-flight actor.
+struct CollectBirthGarbageAtBoundary {
+    ~CollectBirthGarbageAtBoundary() {
+        if (pendingBirthGarbage) { pendingBirthGarbage = false; GC::Collect(); }
+    }
+};
 std::vector<std::string> persistentInventory;
 float persistentPlayerHealth{100.0f};
 std::int32_t persistentCredits{};
@@ -161,6 +185,7 @@ std::unordered_map<std::string, bool> persistentConversationFlags;
 std::vector<std::string> persistentGoals;
 std::vector<std::string> persistentNotes;
 std::unordered_set<std::string> persistentAppliedDialogueEffects;
+PortableActorMeshSummary DecodeRuntimeActorAssets(const std::vector<PortableActorSnapshot>& actors);
 
 bool SameInventoryIdentity(const std::string_view left, const std::string_view right) {
     if (left.size() != right.size()) return false;
@@ -262,10 +287,14 @@ bool IsDerivedFromPath(RuntimeObject* cls, const std::string& path) {
 const QuestVr::Vm::Value* FindScriptOverlay(
     RuntimeObject* object, const char* name, const std::uint32_t index = 0u) {
     if (object == nullptr) return nullptr;
-    const auto found = object->scriptValues.find(LowerAscii(name));
-    if (found == object->scriptValues.end()) return nullptr;
-    const auto slot = found->second.find(index);
-    return slot == found->second.end() ? nullptr : &slot->second;
+    const auto key = LowerAscii(name);
+    for (const auto* values : {&object->scriptValues, &object->frozenBirthDefaults}) {
+        const auto found = values->find(key);
+        if (found == values->end()) continue;
+        const auto slot = found->second.find(index);
+        if (slot != found->second.end()) return &slot->second;
+    }
+    return nullptr;
 }
 
 void CacheRuntimeNameProperties(RuntimeObject* object,
@@ -1257,19 +1286,39 @@ public:
         if (transaction_) throw std::runtime_error("Portable actor VM nested host transaction");
         ValidateStateBudget();
         lifecycleOperations_ = 0u;
+        beforeExportCount_ = persistentRuntime->get()->exports.size();
+        beforeWorldSlots_ = persistentWorldActors.size();
         transaction_ = true;
     }
     void Commit() override {
         ValidateStateBudget();
-        const bool worldChanged = std::any_of(saved_.begin(), saved_.end(), [](const auto& entry) {
+        const bool worldChanged = persistentRuntime->get()->exports.size() != beforeExportCount_ ||
+            std::any_of(saved_.begin(), saved_.end(), [](const auto& entry) {
             return !entry.first->classDescriptor && IsDerivedFromPath(entry.first->cls, "Engine.Actor");
         });
         if (worldChanged && persistentWorldRevision == std::numeric_limits<std::uint64_t>::max())
             throw std::runtime_error("Portable world revision budget exceeded");
+        // A birth or live Mesh write can introduce assets absent from the map's
+        // original actors. Prepare missing immutable CPU geometry before the
+        // revision reaches Quest consumers; do not publish a fabricated cube.
+        // Previously decoded resources are retained (no XR-thread redecoding).
+        if (worldChanged) static_cast<void>(DecodePortableRuntimeActorMeshes());
+        decltype(persistentMapTagIndex) tags;
+        if (worldChanged) {
+            for (auto* actor : persistentWorldActors) {
+                if (!actor || actor->worldRemoved) continue;
+                const auto tag = LowerAscii(ReadInheritedRuntimeName(actor,"Tag"));
+                if (!tag.empty() && tag != "none") tags[tag].push_back(actor);
+            }
+        }
+        if (worldChanged) persistentMapTagIndex.swap(tags);
         if (worldChanged) ++persistentWorldRevision;
+        beforeCollision_.reset();
         saved_.clear(); transaction_ = false;
     }
     void Rollback() noexcept override {
+        if (!transaction_) return;
+        if (beforeCollision_) persistentActorCollision.Swap(*beforeCollision_);
         for (auto& entry : saved_) {
             entry.first->scriptValues.swap(entry.second.values);
             entry.first->classDefaultValues.swap(entry.second.defaults);
@@ -1283,7 +1332,17 @@ public:
             entry.first->committedLifecycle = entry.second.lifecycle;
             entry.first->worldRemoved = entry.second.removed;
         }
-        saved_.clear(); transaction_ = false;
+        // Rooted births are appended during the call so nested bytecode can
+        // address them. Remove every provisional identity after restoring old
+        // references; no allocating work or callbacks occur during rollback.
+        for (std::size_t i = beforeExportCount_; i < persistentRuntime->get()->exports.size(); ++i) {
+            auto* object = persistentRuntime->get()->exports[i];
+            persistentQualifiedObjects.erase(object->reflection.objectPath);
+            persistentVmObjects.erase(object->birthVmKey);
+        }
+        persistentRuntime->get()->exports.resize(beforeExportCount_);
+        persistentWorldActors.resize(beforeWorldSlots_);
+        beforeCollision_.reset(); saved_.clear(); transaction_ = false;
     }
     Property ResolveProperty(const Function& function, const std::int32_t reference) override {
         RuntimeObject* object = Object(ResolveObject(function, reference));
@@ -1359,6 +1418,21 @@ public:
             if (value.kind != Kind::Name) throw std::runtime_error("Animation native requires a Name argument");
             return value.text;
         };
+        if (index == 262u) { // Actor.SetCollision, optional arguments preserve current flags.
+            argumentCount(0u, 3u); RequireMapActor(object);
+            std::array<Value,3u> flags;
+            const std::array<const char*,3u> names{"bCollideActors","bBlockActors","bBlockPlayers"};
+            for (std::size_t i=0u;i<flags.size();++i) {
+                flags[i]=argument(i);
+                if (flags[i].kind==Kind::Nothing) flags[i]=Read(object,PropertyNamed(object,names[i]),0u);
+                if (flags[i].kind!=Kind::Bool) throw std::runtime_error("SetCollision argument is not Bool");
+            }
+            TouchCollision(); persistentActorCollision.Remove(reinterpret_cast<std::uintptr_t>(object));
+            for (std::size_t i=0u;i<flags.size();++i)
+                ReferenceFor(object,PropertyNamed(object,names[i]),0u,false)->write(flags[i]);
+            RegisterCollisionActor(object,persistentActorCollision);
+            return {};
+        }
         if (index == 283u) { // Actor.SetCollisionSize, pinned UActor_Phys.cpp.
             argumentCount(2u, 2u);
             if (!IsDerivedFromPath(object->cls, "Engine.Actor"))
@@ -1379,10 +1453,12 @@ public:
                 throw std::runtime_error("SetCollisionSize authored bounds are not scalar floats");
             // The pin's room-fit refusal is TODO: it assigns both fields and
             // returns true. Preserve that rather than inventing a placement
-            // test or clamp. This portable host publishes reflected bounds;
-            // it does not yet simulate the pin's actor collision hash/physics.
+            // test or clamp. Remove using the cached box before publishing the
+            // new fields, then register their actual current bounds.
+            TouchCollision(); persistentActorCollision.Remove(reinterpret_cast<std::uintptr_t>(object));
             ReferenceFor(object, radiusProperty, 0u, false)->write(Value::Float(radius));
             ReferenceFor(object, heightProperty, 0u, false)->write(Value::Float(height));
+            RegisterCollisionActor(object,persistentActorCollision);
             return {Value::Bool(true), {}};
         }
         if (index == 3970u) { // Actor.SetPhysics, pinned UActor_Phys.cpp.
@@ -1454,6 +1530,7 @@ public:
     }
     Evaluation NativeWithExecution(const std::uint16_t index, const std::string& receiver,
         const std::vector<Evaluation>& arguments, const Function* declaration, QuestVr::Vm::Execution& execution) override {
+        if (index == 278u) return SpawnNative(receiver, arguments, execution);
         if (index == 272u || index == 298u || index == 279u)
             return LifecycleNative(index, receiver, arguments, execution);
         if (index != 113u && index != 117u && index != 118u) return Native(index, receiver, arguments, declaration);
@@ -1528,7 +1605,7 @@ public:
         return {};
     }
     Value Read(RuntimeObject* object, const Property& property, const std::uint32_t index,
-        const bool defaults = false) {
+        const bool defaults = false, const bool immutable = false) {
         const bool classDefaults = defaults || object->classDescriptor != nullptr;
         RuntimeObject* source = classDefaults ? DefaultClass(object) : object;
         if (classDefaults) {
@@ -1538,7 +1615,17 @@ public:
                 if (slot != values->second.end()) return slot->second;
             }
         } else {
-            if (const auto* value = FindScriptOverlay(object, property.name.c_str(), index)) return *value;
+            if (!immutable) {
+                if (const auto* value = FindScriptOverlay(object, property.name.c_str(), index)) return *value;
+            } else {
+                const auto values=object->frozenBirthDefaults.find(LowerAscii(property.name));
+                if (values!=object->frozenBirthDefaults.end()) {
+                    const auto slot=values->second.find(index);
+                    if (slot!=values->second.end()) return slot->second;
+                }
+            }
+            if (LowerAscii(property.name) == "xlevel" && index == 0u && object->nativeXLevel)
+                return Value::Text(Kind::Object, object->nativeXLevel->reflection.objectPath);
             if (LowerAscii(property.name) == "standingcount" && index == 0u && object->initialStandingCount)
                 return Value::Byte(*object->initialStandingCount);
             if (LowerAscii(property.name) == "region" && property.zero.kind == Kind::Struct)
@@ -1574,6 +1661,57 @@ public:
             throw std::runtime_error("Class-default receiver is not a loaded script Actor UClass");
         return cls;
     }
+    bool HasPropertyNamed(RuntimeObject* actor, const char* name) const {
+        for (auto* cls=actor->cls;cls;cls=cls->base) {
+            const auto found=persistentVmObjects.find(LowerAscii(cls->reflection.objectPath+'.'+name));
+            if (found!=persistentVmObjects.end() && found->second->property) return true;
+        }
+        return false; // Explicit metadata-only fixtures lack native Actor fields.
+    }
+    bool HasCollisionSchema(RuntimeObject* actor) const { return HasPropertyNamed(actor,"bCollideActors"); }
+    QuestVr::ActorOverlapRecord CollisionRecord(RuntimeObject* actor,
+        const std::function<Value(const Property&)>& restored = {}) {
+        const auto get=[&](const char* name) {
+            const auto property=PropertyNamed(actor,name);
+            return restored ? restored(property) : Read(actor,property,0u);
+        };
+        const auto location=get("Location");
+        if (location.kind!=Kind::Vector) throw std::runtime_error("Actor collision Location is not Vector");
+        return {reinterpret_cast<std::uintptr_t>(actor),
+            {location.vector[0],location.vector[1],location.vector[2]},
+            QuestVr::Vm::ToFloat(get("CollisionRadius")),QuestVr::Vm::ToFloat(get("CollisionHeight")),
+            !get("Brush").text.empty(),QuestVr::Vm::ToBool(get("bCollideActors"))};
+    }
+    void RegisterCollisionActor(RuntimeObject* actor, QuestVr::ActorCollisionRegistry& registry,
+        const std::function<Value(const Property&)>& restored = {}) {
+        if (!HasCollisionSchema(actor)) return;
+        const auto record=CollisionRecord(actor,restored);
+        std::optional<QuestVr::ActorCollisionBox> bounds;
+        if (record.collideActors && record.brush && IsDerivedFromPath(actor->cls,"Engine.Mover")) {
+            const auto get=[&](const char* name) {
+                const auto property=PropertyNamed(actor,name);
+                return restored ? restored(property) : Read(actor,property,0u);
+            };
+            auto* brush=Object(get("Brush").text);
+            if (brush->runtimeBirth) throw std::runtime_error("Mover Brush is not a serialized Model");
+            const auto model=LoadPortableModel68(Table(brush->sourcePath),brush->exportIndex);
+            const auto rotation=get("Rotation"), pivot=get("PrePivot"), scale=get("MainScale");
+            if (rotation.kind!=Kind::Rotator || pivot.kind!=Kind::Vector || scale.kind!=Kind::Struct ||
+                scale.fields.at("scale").kind!=Kind::Vector)
+                throw std::runtime_error("Mover collision transform has invalid concrete fields");
+            const auto& axes=scale.fields.at("scale").vector;
+            const auto transform=mat4::translate(record.location.x,record.location.y,record.location.z) *
+                Coords::Rotation(Rotator(rotation.rotation[0],rotation.rotation[1],rotation.rotation[2])).ToMatrix() *
+                mat4::scale(axes[0],axes[1],axes[2]) *
+                mat4::translate(-pivot.vector[0],-pivot.vector[1],-pivot.vector[2]);
+            const auto box=BBox({model.bounds.minimum.x,model.bounds.minimum.y,model.bounds.minimum.z},
+                {model.bounds.maximum.x,model.bounds.maximum.y,model.bounds.maximum.z}).transform(transform);
+            const auto center=box.center();
+            const auto extents=box.extents()+vec3(0.1f);
+            bounds=QuestVr::ActorCollisionBox{{center.x,center.y,center.z},{extents.x,extents.y,extents.z}};
+        }
+        static_cast<void>(registry.Add(record,bounds));
+    }
     std::shared_ptr<const QuestVr::AuthoredStructSchema> StructPropertySchema(const std::string& key) {
         auto* property = Object(key);
         if (!property->property || property->property->type != "StructProperty")
@@ -1581,6 +1719,187 @@ public:
         return StructSchema(Object(Qualified(Table(property->sourcePath), property->property->referencedType)));
     }
 private:
+    void SpawnZone(RuntimeObject* actor, QuestVr::Vm::Execution& execution) {
+        const auto regionProperty = PropertyNamed(actor, "Region");
+        auto region = Region(actor, regionProperty.zero);
+        ReferenceFor(actor, regionProperty, 0u, false)->write(region);
+        auto* zone = Object(region.fields.at("zone").text);
+        if (QuestVr::Vm::ToBool(Read(zone, PropertyNamed(zone, "bWaterZone"), 0u)) &&
+            !IsDerivedFromPath(actor->cls, "Engine.Projectile")) {
+            ReferenceFor(actor, PropertyNamed(actor, "Physics"), 0u, false)->write(Value::Byte(4u));
+            SetBase(actor, nullptr, true, execution);
+        }
+        if (IsDerivedFromPath(actor->cls, "Engine.Pawn")) {
+            const auto height = Read(actor, PropertyNamed(actor, "CollisionHeight"), 0u);
+            const auto eyes = Read(actor, PropertyNamed(actor, "EyeHeight"), 0u);
+            for (const auto& [name, offset] : {std::pair{"FootRegion", -QuestVr::Vm::ToFloat(height)},
+                                               std::pair{"HeadRegion", QuestVr::Vm::ToFloat(eyes)}}) {
+                const auto property = PropertyNamed(actor, name);
+                ReferenceFor(actor, property, 0u, false)->write(Region(actor, property.zero, offset));
+            }
+            const auto pri = Read(actor, PropertyNamed(actor, "PlayerReplicationInfo"), 0u);
+            if (!pri.text.empty()) {
+                auto* target = Object(pri.text);
+                ReferenceFor(target, PropertyNamed(target, "PlayerZone"), 0u, false)->write(region.fields.at("zone"));
+            }
+        }
+    }
+    void SpawnBase(RuntimeObject* actor, QuestVr::Vm::Execution& execution) {
+        const auto attachTag = Read(actor, PropertyNamed(actor, "AttachTag"), 0u).text;
+        if (!attachTag.empty() && LowerAscii(attachTag) != "none") {
+            // Do not cache tags: earlier callbacks can change them. Iterate
+            // actual Level slot order, including newly appended actor slots.
+            for (std::size_t i = 0u; i < persistentWorldActors.size(); ++i) {
+                LifecycleStep();
+                auto* candidate = persistentWorldActors[i];
+                if (candidate && !candidate->worldRemoved &&
+                    LowerAscii(Read(candidate, PropertyNamed(candidate, "Tag"), 0u).text) == LowerAscii(attachTag))
+                    SetBase(candidate, actor, false, execution);
+            }
+            return;
+        }
+        const bool physical = IsDerivedFromPath(actor->cls, "Engine.Decoration") ||
+            IsDerivedFromPath(actor->cls, "Engine.Inventory") || IsDerivedFromPath(actor->cls, "Engine.Pawn");
+        const auto physics = QuestVr::Vm::ToInt(Read(actor, PropertyNamed(actor, "Physics"), 0u));
+        if (physical && !ActorLink(actor, "Base") &&
+            QuestVr::Vm::ToBool(Read(actor, PropertyNamed(actor, "bCollideWorld"), 0u)) &&
+            (physics == 0 || physics == 5)) {
+            const auto record=CollisionRecord(actor);
+            const auto overlap=persistentActorCollision.Query(record.location,record.height,record.radius);
+            std::vector<RuntimeObject*> hits;
+            for (const auto identity : overlap.actors) hits.push_back(reinterpret_cast<RuntimeObject*>(identity));
+            std::stable_sort(hits.begin(),hits.end(),std::less<RuntimeObject*>{});
+            if (!hits.empty()) SetBase(actor,hits.front(),true,execution);
+        }
+    }
+    Evaluation SpawnNative(const std::string& receiver, const std::vector<Evaluation>& arguments,
+        QuestVr::Vm::Execution& execution) {
+        LifecycleStep();
+        auto* spawner = Object(receiver); RequireMapActor(spawner);
+        std::vector<Value> values;
+        values.reserve(arguments.size());
+        for (const auto& argument : arguments) values.push_back(argument.Load());
+        if ((!spawner->active && !spawner->worldRemoved) || arguments.empty() || arguments.size() > 5u ||
+            values[0].kind != Kind::Object)
+            throw std::runtime_error("Spawn receiver/class/argument count is invalid");
+        const auto none = [] { return Evaluation{Value::Text(Kind::Object, {}), {}}; };
+        if (values[0].text.empty()) return none();
+        auto* cls = Object(values[0].text);
+        if (!cls->classDescriptor) throw std::runtime_error("Spawn Class is not an actual UClass");
+        cls = DefaultClass(cls);
+        if (!cls->classDescriptor || (cls->classDescriptor->classFlags & 1u)) return none();
+        auto* owner = values.size() > 1u && values[1].kind != Kind::Nothing &&
+            !values[1].text.empty() ? Object(values[1].text) : nullptr;
+        if (values.size() > 1u && values[1].kind != Kind::Nothing && values[1].kind != Kind::Object)
+            throw std::runtime_error("Spawn Owner is not an Object");
+        if (owner) RequireMapActor(owner);
+        auto tag = cls->reflection.objectPath.substr(cls->reflection.objectPath.find_last_of('.') + 1u);
+        if (values.size() > 2u && values[2].kind != Kind::Nothing) {
+            if (values[2].kind != Kind::Name) throw std::runtime_error("Spawn Tag is not a Name");
+            if (!values[2].text.empty() && LowerAscii(values[2].text) != "none") tag = values[2].text;
+        }
+        auto location = values.size() > 3u && values[3].kind != Kind::Nothing ?
+            values[3] : Read(spawner, PropertyNamed(spawner, "Location"), 0u);
+        auto rotation = values.size() > 4u && values[4].kind != Kind::Nothing ?
+            values[4] : Read(spawner, PropertyNamed(spawner, "Rotation"), 0u);
+        if (location.kind != Kind::Vector || rotation.kind != Kind::Rotator)
+            throw std::runtime_error("Spawn Location/Rotation have invalid concrete kinds");
+        for (const auto component : location.vector)
+            if (!std::isfinite(component)) throw std::runtime_error("Spawn location is not finite");
+        const auto flag = [&](const char* name) { return QuestVr::Vm::ToBool(Read(cls, ClassProperty(cls, name), 0u)); };
+        if (flag("bCollideWorld") || flag("bCollideWhenPlacing")) {
+            if (!rootModel_) rootModel_ = LoadPortableRootModel68(Table(persistentMapSourcePath));
+            const auto placed = QuestVr::FindSpawnPlacement(*rootModel_,
+                {location.vector[0],location.vector[1],location.vector[2]},
+                QuestVr::Vm::ToFloat(Read(cls, ClassProperty(cls,"CollisionRadius"),0u)),
+                QuestVr::Vm::ToFloat(Read(cls, ClassProperty(cls,"CollisionHeight"),0u)), true, false);
+            if (!placed.found) return none();
+            location = Value::Vector({placed.location.x, placed.location.y, placed.location.z});
+        }
+        auto* level = ActorLink(spawner, "Level");
+        if (!level || !IsDerivedFromPath(level->cls,"Engine.LevelInfo")) throw std::runtime_error("Spawn has no LevelInfo");
+        const auto xlevelValue = Read(spawner, PropertyNamed(spawner,"XLevel"),0u);
+        if (xlevelValue.kind != Kind::Object || xlevelValue.text.empty()) throw std::runtime_error("Spawn has no XLevel");
+        auto* xlevel = Object(xlevelValue.text);
+        if (xlevel->runtimeBirth || xlevel->sourcePath != persistentMapSourcePath ||
+            LowerAscii(CastObjectIdentity(xlevelValue.text).classPath) != "engine.level")
+            throw std::runtime_error("Spawn XLevel is not the current serialized Level");
+        if (persistentWorldActors.size() >= 1'000'000u) throw std::runtime_error("Spawn world slot budget exceeded");
+        const auto className = cls->reflection.objectPath.substr(cls->reflection.objectPath.find_last_of('.') + 1u);
+        std::string path;
+        for (std::size_t suffix = 0u; suffix <= 1'000'000u; ++suffix) {
+            LifecycleStep(); path = persistentMapPackageName + '.' + className + std::to_string(suffix);
+            if (!persistentVmObjects.count(LowerAscii(path))) break;
+            if (suffix == 1'000'000u) throw std::runtime_error("Spawn name budget exceeded");
+        }
+        pendingBirthGarbage = true;
+        GCRoot<RuntimeObject> rooted(GC::Alloc<RuntimeObject>(PortableReflectionObject{
+            path, className, xlevel->outer ? xlevel->outer->reflection.objectPath : std::string{}, {}, 0x4000u, 0}, nullptr));
+        auto* actor = rooted.get(); actor->runtimeBirth = true; actor->birthVmKey = LowerAscii(path);
+        actor->sourcePath = persistentMapSourcePath; actor->exportIndex = std::numeric_limits<std::size_t>::max();
+        actor->cls = cls; actor->outer = xlevel->outer; actor->nativeXLevel = xlevel;
+        actor->inventoryTableMetadata = true; actor->inventoryClassReferenceValid = true;
+        actor->references.push_back(cls); if (actor->outer) actor->references.push_back(actor->outer);
+        actor->frozenBirthDefaults = cls->classDefaultValues;
+        actor->worldActorIndex = static_cast<std::int32_t>(persistentWorldActors.size());
+        persistentRuntime->get()->exports.push_back(actor);
+        if (!persistentQualifiedObjects.emplace(path,actor).second || !persistentVmObjects.emplace(actor->birthVmKey,actor).second)
+            throw std::runtime_error("Spawn identity collision");
+        persistentWorldActors.push_back(actor);
+        const auto set = [&](const char* name, const Value& value) { ReferenceFor(actor,PropertyNamed(actor,name),0u,false)->write(value); };
+        set("Class",Value::Text(Kind::Object,cls->reflection.objectPath));
+        set("Name",Value::Text(Kind::Name,path.substr(path.find_last_of('.') + 1u)));
+        set("ObjectFlags",Value::Integer(0x4000));
+        set("Outer",Value::Text(Kind::Object,actor->reflection.outerPath));
+        set("XLevel",xlevelValue); set("Level",Value::Text(Kind::Object,level->reflection.objectPath));
+        set("Tag",Value::Text(Kind::Name,tag)); set("bTicked",Read(spawner,PropertyNamed(spawner,"bTicked"),0u));
+        set("Instigator",Read(spawner,PropertyNamed(spawner,"Instigator"),0u));
+        set("Brush",Value::Text(Kind::Object,{})); set("Location",location); set("OldLocation",location); set("Rotation",rotation);
+        auto region = Read(actor,PropertyNamed(actor,"Region"),0u,true);
+        region.fields.at("zone") = Value::Text(Kind::Object,level->reflection.objectPath); set("Region",region);
+        TouchCollision(); RegisterCollisionActor(actor,persistentActorCollision);
+        SetOwner(actor,owner,execution);
+        if (!QuestVr::Vm::ToBool(Read(level,PropertyNamed(level,"bBegunPlay"),0u))) return {Value::Text(Kind::Object,path),{}};
+        for (const auto* event : {"Spawned","PreBeginPlay","BeginPlay"})
+            static_cast<void>(execution.CallEvent(path,event,true,{}));
+        if (QuestVr::Vm::ToBool(Read(actor,PropertyNamed(actor,"bDeleteMe"),0u))) return none();
+        SpawnZone(actor,execution);
+        for (const auto* event : {"PostBeginPlay","SetInitialState"}) static_cast<void>(execution.CallEvent(path,event,true,{}));
+        static_cast<void>(execution.CallEvent(path,"PostPostBeginPlay",false,{}));
+        SpawnBase(actor,execution);
+        if (!spawnNotificationLocked_) {
+            struct Unlock { bool& flag; ~Unlock() { flag = false; } } unlock{spawnNotificationLocked_};
+            spawnNotificationLocked_ = true;
+            auto* notify = ActorLink(level,"SpawnNotify"); std::unordered_set<RuntimeObject*> visited;
+            while (notify) {
+                LifecycleStep();
+                if (!IsDerivedFromPath(notify->cls,"Engine.SpawnNotify") || !visited.insert(notify).second)
+                    throw std::runtime_error("SpawnNotify chain has invalid identity or a cycle");
+                const auto matching = Read(notify,PropertyNamed(notify,"ActorClass"),0u);
+                if (!matching.text.empty()) {
+                    if (!actor) throw std::runtime_error("SpawnNotify continues after a null replacement");
+                    auto* matchingClass = Object(matching.text);
+                    if (!matchingClass->classDescriptor) throw std::runtime_error("SpawnNotify ActorClass is not an actual UClass");
+                    DefaultClass(matchingClass);
+                    const auto shortName = matchingClass->reflection.objectPath.substr(matchingClass->reflection.objectPath.find_last_of('.')+1u);
+                    bool isA{};
+                    for (auto* candidate=actor->cls;candidate;candidate=candidate->base)
+                        if (LowerAscii(candidate->reflection.objectPath.substr(candidate->reflection.objectPath.find_last_of('.')+1u))==LowerAscii(shortName)) isA=true;
+                    if (isA) {
+                        const auto replacement = execution.CallEvent(notify->reflection.objectPath,"SpawnNotification",true,
+                            {{Value::Text(Kind::Object,actor->reflection.objectPath),{}}});
+                        if (replacement.kind != Kind::Object && replacement.kind != Kind::Nothing)
+                            throw std::runtime_error("SpawnNotification return is not an Object");
+                        actor = replacement.text.empty() ? nullptr : Object(replacement.text);
+                        if (actor && !IsDerivedFromPath(actor->cls,"Engine.GameInfo"))
+                            throw std::runtime_error("Pinned SpawnNotification replacement is not GameInfo");
+                    }
+                }
+                notify=ActorLink(notify,"Next");
+            }
+        }
+        return {Value::Text(Kind::Object,actor ? actor->reflection.objectPath : std::string{}),{}};
+    }
     void LifecycleStep() {
         if (++lifecycleOperations_ > 65'536u)
             throw std::runtime_error("Native actor lifecycle work budget exceeded");
@@ -1717,9 +2036,7 @@ private:
         if (flag("bDeleteMe")) return {Value::Bool(true), {}};
         ReferenceFor(actor, PropertyNamed(actor, "bDeleteMe"), 0u, false)->write(Value::Bool(true));
         SetBase(actor, nullptr, true, execution);
-        // The portable world currently has no UE actor collision hash/BSP node
-        // memberships. Its actual GPU/ambient publication follows committed
-        // world revisions; a failed callback must publish none of these changes.
+        TouchCollision(); persistentActorCollision.Remove(reinterpret_cast<std::uintptr_t>(actor));
         static_cast<void>(execution.CallEvent(receiver, "Destroyed", true, {}));
         const auto touching = PropertyNamed(actor, "Touching");
         if (touching.arrayDimension != 4u || touching.zero.kind != Kind::Object)
@@ -1756,7 +2073,10 @@ private:
     std::size_t structFields_{};
     std::size_t structSchemaBytes_{};
     std::unordered_map<RuntimeObject*, Before> saved_;
+    std::optional<QuestVr::ActorCollisionRegistry> beforeCollision_;
     std::size_t lifecycleOperations_{};
+    std::size_t beforeExportCount_{}, beforeWorldSlots_{};
+    bool spawnNotificationLocked_{};
     std::optional<PortableModelGeometry> rootModel_;
     bool transaction_{};
     const PortablePackageTables& Table(const std::string& source) {
@@ -2146,6 +2466,7 @@ private:
             throw std::runtime_error("VM cast class identity unavailable: " + path);
         }
         auto* object = found->second;
+        if (object->runtimeBirth) throw std::runtime_error("Runtime birth is not a UClass");
         const auto& table = Table(object->sourcePath);
         const auto& entry = table.exports.at(object->exportIndex);
         if (entry.ObjClass != 0 || object->reflection.metaClass != "Class")
@@ -2172,6 +2493,11 @@ private:
             throw std::runtime_error("VM cast object identity unavailable: " + path);
         }
         auto* object = found->second;
+        if (object->runtimeBirth) {
+            if (!object->cls || !object->cls->classDescriptor)
+                throw std::runtime_error("Runtime birth has no original class identity");
+            return {object->reflection.objectPath, object->cls->reflection.objectPath, false};
+        }
         const auto& table = Table(object->sourcePath);
         const auto& entry = table.exports.at(object->exportIndex);
         const bool classObject = entry.ObjClass == 0;
@@ -2224,6 +2550,11 @@ private:
                 target->scriptValues[LowerAscii(property.name)][index] = std::move(normalized);
                 target->committedScriptState = true;
                 UpdateClockProperty(target, property.name, index);
+                const auto name=LowerAscii(property.name);
+                if (index==0u && (name=="location" || name=="collisionradius" || name=="collisionheight" ||
+                    name=="brush" || name=="bcollideactors") && HasCollisionSchema(target)) {
+                    TouchCollision(); persistentActorCollision.UpdateLive(CollisionRecord(target));
+                }
             }
         };
         return result;
@@ -2236,6 +2567,10 @@ private:
                 object->stateLocalsRevision, object->committedScriptState, object->childActors, object->basedActors,
                 object->touchEventSent, object->committedLifecycle, object->worldRemoved});
         }
+    }
+    void TouchCollision() {
+        if (!transaction_) throw std::runtime_error("Actor collision mutation outside a VM transaction");
+        if (!beforeCollision_) beforeCollision_.emplace(persistentActorCollision);
     }
     void ValidateStateBudget() const {
         // Bound persistent state across independent calls, not just one VM's
@@ -2268,9 +2603,11 @@ private:
             if (nativeCount > limits.maxActorLinks || totalNativeLinks > limits.maxActorLinks - nativeCount)
                 throw std::runtime_error("Persistent total native actor link budget exceeded");
             totalNativeLinks += nativeCount;
-            if ((object->committedScriptState || object->stateObject || object->committedLifecycle) &&
+            if ((object->runtimeBirth || object->committedScriptState || object->stateObject || object->committedLifecycle) &&
                 ++objects > limits.maxObjects)
                 throw std::runtime_error("Persistent script/lifecycle actor count budget exceeded");
+            if (object->runtimeBirth) defaults.Retain(sizeof(QuestVr::ScriptSavedBirth) +
+                object->reflection.objectPath.size() + object->cls->reflection.objectPath.size() + 2u);
             if (object->committedLifecycle) {
                 const auto count = object->childActors.size() + object->basedActors.size();
                 defaults.ActorLinks(count);
@@ -2286,8 +2623,8 @@ private:
                 };
                 links(object->childActors); links(object->basedActors);
             }
-            if (object->committedScriptState)
-                for (const auto& [name, slots] : object->scriptValues) {
+            for (const auto* values : {&object->scriptValues, &object->frozenBirthDefaults})
+                for (const auto& [name, slots] : *values) {
                     QuestVr::ScriptStateDetail::Text(name, limits, true);
                     defaults.Properties(slots.size());
                     defaults.Retain(sizeof(std::string) + 5u * sizeof(void*) + name.size() + 1u);
@@ -2427,11 +2764,12 @@ private:
         }
         (void)name; (void)index;
     }
-    Value Region(RuntimeObject* object, const Value& zero) {
+    Value Region(RuntimeObject* object, const Value& zero, const float verticalOffset = 0.0f) {
         if (object->sourcePath.empty() || PackageStem(object->sourcePath) != persistentMapPackageName)
             throw std::runtime_error("Actor.Region unavailable outside the current authored map");
         if (!rootModel_) rootModel_ = LoadPortableRootModel68(Table(object->sourcePath));
-        const auto location = Read(object, PropertyNamed(object, "Location"), 0u);
+        auto location = Read(object, PropertyNamed(object, "Location"), 0u);
+        location.vector[2] += verticalOffset;
         if (location.kind != Kind::Vector || !std::isfinite(location.vector[0]) ||
             !std::isfinite(location.vector[1]) || !std::isfinite(location.vector[2]))
             throw std::runtime_error("Actor.Region has an invalid location");
@@ -2490,7 +2828,37 @@ struct PreparedClassDefaults {
 struct PreparedScriptState {
     std::vector<PreparedScriptObject> objects;
     std::vector<PreparedClassDefaults> classDefaults;
+    std::vector<GCRoot<RuntimeObject>> births;
+    std::vector<RuntimeObject*> exports, worldActors;
+    decltype(persistentQualifiedObjects) qualified;
+    decltype(persistentVmObjects) vm;
+    decltype(persistentMapTagIndex) tags;
+    QuestVr::ActorCollisionRegistry collision;
+    bool replaceBirths{};
 };
+
+void StageRuntimeBirthReplacement(PreparedScriptState& prepared) {
+    prepared.replaceBirths = true;
+    prepared.qualified = persistentQualifiedObjects; prepared.vm = persistentVmObjects;
+    for (auto* object : persistentRuntime->get()->exports) {
+        if (object->runtimeBirth) {
+            pendingBirthGarbage = true;
+            prepared.qualified.erase(object->reflection.objectPath); prepared.vm.erase(object->birthVmKey);
+        } else prepared.exports.push_back(object);
+    }
+    prepared.worldActors.assign(persistentWorldActors.begin(),
+        persistentWorldActors.begin()+static_cast<std::ptrdiff_t>(persistentAuthoredWorldSlots));
+    prepared.worldActors.resize(persistentAuthoredWorldSlots+prepared.births.size(),nullptr);
+    std::vector<RuntimeObject*> ordered;
+    for (const auto& root : prepared.births) ordered.push_back(root.get());
+    std::sort(ordered.begin(),ordered.end(),[](const auto* a,const auto* b) {return a->worldActorIndex<b->worldActorIndex;});
+    for (auto* actor : ordered) {
+        if (!prepared.qualified.emplace(actor->reflection.objectPath,actor).second ||
+            !prepared.vm.emplace(actor->birthVmKey,actor).second)
+            throw std::runtime_error("Restored birth identity publication collision");
+        prepared.exports.push_back(actor); prepared.worldActors.at(static_cast<std::size_t>(actor->worldActorIndex))=actor;
+    }
+}
 
 std::vector<QuestVr::ScriptSavedProperty> ClockProperties(
     const QuestVr::ActorAnimationClock& clock) {
@@ -2560,6 +2928,22 @@ QuestVr::ScriptSavedState CollectScriptSavedState() {
                 }
             }
             saved.classDefaults.push_back(std::move(record));
+        }
+        if (object->runtimeBirth) {
+            QuestVr::ScriptSavedBirth birth;
+            birth.path = object->reflection.objectPath; birth.classPath = object->cls->reflection.objectPath;
+            birth.worldActorIndex = static_cast<std::uint32_t>(object->worldActorIndex);
+            capture.Retain(sizeof(birth) + birth.path.size() + birth.classPath.size() + 2u);
+            for (const auto& [name, slots] : object->frozenBirthDefaults) {
+                const auto property = host.PropertyNamed(object, name);
+                for (const auto& [index, value] : slots) {
+                    capture.Properties(1u);
+                    capture.Retain(sizeof(QuestVr::ScriptSavedProperty) + property.key.size() + property.name.size() + 2u);
+                    measure(measure, value, 0u);
+                    birth.frozenDefaults.push_back({property.key,property.name,index,value});
+                }
+            }
+            saved.births.push_back(std::move(birth));
         }
         if (!object->committedScriptState) continue;
         if (saved.objects.size() + saved.classDefaults.size() >= limits.maxObjects || object->cls == nullptr)
@@ -2673,6 +3057,35 @@ public:
             mapExports_.emplace(LowerAscii(objectPath), i);
         }
     }
+    const std::string& MapSource() const { return mapPath_; }
+    void RegisterBirths(const std::vector<QuestVr::ScriptSavedBirth>& births) {
+        const auto& map = Table(mapPath_);
+        const bool realLevel = std::any_of(map.exports.begin(),map.exports.end(),[&](const auto& entry) {
+            return LowerAscii(Qualified(map,entry.ObjClass)) == "engine.level";
+        });
+        std::size_t baseline{};
+        if (realLevel) baseline = ReadPortableLevel68ActorOrder(map).size();
+        else for (const auto& entry : map.exports) {
+            const auto found = persistentVmObjects.find(LowerAscii(Qualified(map,entry.ObjClass)));
+            if (found != persistentVmObjects.end() && IsDerivedFromPath(found->second,"Engine.Actor")) ++baseline;
+        }
+        std::set<std::uint32_t> indices;
+        for (const auto& birth : births) {
+            auto* cls = DefaultClass(birth.classPath);
+            if ((cls->classDescriptor->classFlags & 1u) ||
+                birth.worldActorIndex < baseline || birth.worldActorIndex - baseline >= births.size() ||
+                !indices.emplace(birth.worldActorIndex).second)
+                throw std::runtime_error("Script save birth class or appended Level slot is invalid");
+            const auto key = LowerAscii(birth.path);
+            Retain(2u * key.size() + cls->reflection.objectPath.size() +
+                3u * sizeof(std::string) + sizeof(RuntimeObject*) + 10u * sizeof(void*));
+            if (key.compare(0u,mapName_.size()+1u,LowerAscii(mapName_)+'.') != 0 ||
+                !mapClasses_.emplace(key,cls->reflection.objectPath).second)
+                throw std::runtime_error("Script save birth collides with authored or other actor identity");
+            birthClasses_.emplace(key,cls);
+        }
+    }
+    bool IsBirth(const std::string& path) const { return birthClasses_.count(LowerAscii(path)) != 0u; }
     RuntimeObject* SavedClass(const QuestVr::ScriptSavedObject& record) {
         const auto actual = ObjectClass(record.path, false);
         if (LowerAscii(actual) != LowerAscii(record.classPath))
@@ -2719,8 +3132,9 @@ public:
     QuestVr::StateObject StateValue(RuntimeObject* cls, const QuestVr::ScriptSavedObject& saved) {
         const auto& state = *saved.state;
         const auto exported = mapExports_.find(LowerAscii(saved.path));
-        if (exported == mapExports_.end()) throw std::runtime_error("Script save state actor is unavailable in its map");
-        const bool authoredHasStack = AnyFlags(Table(mapPath_).exports.at(exported->second).ObjFlags, ObjectFlags::HasStack);
+        if (exported == mapExports_.end() && !IsBirth(saved.path)) throw std::runtime_error("Script save state actor is unavailable in its map");
+        const bool authoredHasStack = exported != mapExports_.end() &&
+            AnyFlags(Table(mapPath_).exports.at(exported->second).ObjFlags, ObjectFlags::HasStack);
         // HasStack is established by authored load or an actual GotoState. A
         // portable override must not erase an existing object's stack flag.
         if (authoredHasStack && !state.hasStack)
@@ -2796,6 +3210,7 @@ private:
     std::unordered_map<std::string, PortablePackageTables> tables_;
     std::unordered_map<std::string, std::string> mapClasses_;
     std::unordered_map<std::string, std::size_t> mapExports_;
+    std::unordered_map<std::string, RuntimeObject*> birthClasses_;
     std::size_t retainedMetadata_{};
     void Retain(const std::size_t bytes) {
         constexpr std::size_t cap = 64u * 1024u * 1024u;
@@ -2951,9 +3366,38 @@ PreparedScriptState PrepareScriptSavedState(
     if (apply && LowerAscii(saved.mapName) != LowerAscii(persistentMapPackageName))
         throw std::runtime_error("Script save can only restore into its authored map");
     ScriptSaveSchema schema(saved.mapName);
+    // Register the entire symbolic graph before validating a single property:
+    // valid references can point to births not present in the running session.
+    schema.RegisterBirths(saved.births);
     PreparedScriptState prepared;
     prepared.objects.reserve(saved.objects.size());
     prepared.classDefaults.reserve(saved.classDefaults.size());
+    std::unordered_map<std::string, RuntimeObject*> birthTargets;
+    for (const auto& birth : saved.births) {
+        auto* cls = schema.DefaultClass(birth.classPath);
+        decltype(RuntimeObject::frozenBirthDefaults) frozen;
+        for (const auto& property : birth.frozenDefaults) {
+            auto value = schema.PropertyValue(cls,property);
+            if (!frozen[LowerAscii(property.name)].emplace(property.index,std::move(value)).second)
+                throw std::runtime_error("Duplicate frozen birth property alias/index");
+        }
+        if (!apply) continue;
+        pendingBirthGarbage = true;
+        prepared.births.emplace_back(GC::Alloc<RuntimeObject>(PortableReflectionObject{
+            birth.path, cls->reflection.objectPath.substr(cls->reflection.objectPath.find_last_of('.') + 1u),
+            {}, {}, 0x4000u, 0},nullptr));
+        auto* actor = prepared.births.back().get(); actor->runtimeBirth = true;
+        actor->birthVmKey = LowerAscii(birth.path); actor->sourcePath = schema.MapSource();
+        actor->exportIndex = std::numeric_limits<std::size_t>::max(); actor->cls = cls;
+        actor->references.push_back(cls); actor->frozenBirthDefaults.swap(frozen);
+        actor->worldActorIndex = static_cast<std::int32_t>(birth.worldActorIndex);
+        actor->inventoryTableMetadata = true; actor->inventoryClassReferenceValid = true;
+        birthTargets.emplace(actor->birthVmKey,actor);
+    }
+    const auto target = [&](const std::string& path) {
+        const auto born = birthTargets.find(LowerAscii(path));
+        return born != birthTargets.end() ? born->second : schema.Host().Object(path);
+    };
     std::unordered_set<std::string> defaultClasses;
     for (const auto& record : saved.classDefaults) {
         if (record.properties.empty() || !defaultClasses.emplace(LowerAscii(record.classPath)).second)
@@ -2976,7 +3420,7 @@ PreparedScriptState PrepareScriptSavedState(
         schema.ValidateLifecycle(record);
         PreparedScriptObject next;
         if (apply) {
-            next.target = schema.Host().Object(record.path);
+            next.target = target(record.path);
             if (next.target->cls != cls) throw std::runtime_error("Script save live actor class mismatch");
         }
         for (const auto& property : record.properties) {
@@ -3001,11 +3445,33 @@ PreparedScriptState PrepareScriptSavedState(
             if (apply) {
                 next.children.reserve(record.lifecycle->children.size());
                 next.based.reserve(record.lifecycle->basedActors.size());
-                for (const auto& path : record.lifecycle->children) next.children.push_back(schema.Host().Object(path));
-                for (const auto& path : record.lifecycle->basedActors) next.based.push_back(schema.Host().Object(path));
+                for (const auto& path : record.lifecycle->children) next.children.push_back(target(path));
+                for (const auto& path : record.lifecycle->basedActors) next.based.push_back(target(path));
             }
         }
         prepared.objects.push_back(std::move(next));
+    }
+    for (const auto& birth : saved.births) {
+        const auto encoded = std::find_if(saved.objects.begin(),saved.objects.end(),[&](const auto& object) {
+            return LowerAscii(object.path) == LowerAscii(birth.path);
+        });
+        if (encoded == saved.objects.end()) throw std::runtime_error("Saved birth has no initialized instance record");
+        for (const auto* name : {"Class","Name","ObjectFlags","Outer","XLevel","Level","Tag","bTicked",
+                                 "Instigator","Brush","Location","OldLocation","Rotation","Region","Owner"})
+            if (std::none_of(encoded->properties.begin(),encoded->properties.end(),[&](const auto& property) {
+                return LowerAscii(property.name) == LowerAscii(name) && property.index == 0u;
+            })) throw std::runtime_error("Saved birth is missing a native initialization field");
+        if (apply) {
+            auto* actor = target(birth.path);
+            const auto record = std::find_if(prepared.objects.begin(),prepared.objects.end(),
+                [&](const auto& object) { return object.target == actor; });
+            const auto& outer = record->values.at("outer").at(0u);
+            actor->outer = outer.text.empty() ? nullptr : target(outer.text);
+            actor->reflection.outerPath = outer.text;
+            if (actor->outer) actor->references.push_back(actor->outer);
+            const auto& xlevel = record->values.at("xlevel").at(0u);
+            actor->nativeXLevel = xlevel.text.empty() ? nullptr : target(xlevel.text);
+        }
     }
     if (LowerAscii(saved.mapName) == LowerAscii(persistentMapPackageName)) {
         std::unordered_map<std::string, std::size_t> replacements;
@@ -3015,12 +3481,22 @@ PreparedScriptState PrepareScriptSavedState(
         std::size_t links{};
         for (std::size_t index = persistentScriptExportCount; index < persistentRuntime->get()->exports.size(); ++index) {
             const auto* actor = persistentRuntime->get()->exports[index];
+            if (actor->runtimeBirth) continue;
             const auto found = replacements.find(LowerAscii(actor->reflection.objectPath));
             const auto count = found == replacements.end() ? actor->initialBasedActors.size() : found->second;
             if (count > 65'536u || links > 65'536u - count)
                 throw std::runtime_error("Restored total native actor link budget exceeded");
             links += count;
         }
+        for (const auto& birth : saved.births) {
+            const auto found = replacements.find(LowerAscii(birth.path));
+            const auto count = found == replacements.end() ? 0u : found->second;
+            if (count > 65'536u || links > 65'536u-count) throw std::runtime_error("Restored native birth link budget exceeded");
+            links += count;
+        }
+    }
+    if (apply) {
+        StageRuntimeBirthReplacement(prepared);
     }
     return prepared;
 }
@@ -3272,8 +3748,8 @@ PortableDialogueResult GetPortableRuntimeDialogue(
     std::int32_t missionNumber) {
     PortableDialogueResult result;
     result.actorPath = actorPath;
-    const auto actorFound = persistentQualifiedObjects.find(actorPath);
-    if (actorFound == persistentQualifiedObjects.end() || actorFound->second == nullptr) {
+    const auto actorFound = persistentVmObjects.find(LowerAscii(actorPath));
+    if (actorFound == persistentVmObjects.end() || actorFound->second == nullptr) {
         return result;
     }
     RuntimeObject* actor = actorFound->second;
@@ -3427,8 +3903,8 @@ PortableDialogueEffectResult ApplyPortableDialogueEffects(
                 std::vector<std::size_t> matches;
                 for (std::size_t index = 0; index < persistentInventory.size(); ++index) {
                     const std::string& itemPath = persistentInventory[index];
-                    const auto object = persistentQualifiedObjects.find(itemPath);
-                    const bool matchesClass = object != persistentQualifiedObjects.end() &&
+                    const auto object = persistentVmObjects.find(LowerAscii(itemPath));
+                    const bool matchesClass = object != persistentVmObjects.end() &&
                         object->second != nullptr &&
                         IsDerivedFromPath(object->second->cls, effect.key);
                     if (matchesClass || itemPath.rfind(effect.key + "@", 0u) == 0u) {
@@ -3523,6 +3999,8 @@ void ShutdownPortableRuntime() {
     persistentMapTagIndex.clear();
     persistentScriptExportCount = 0;
     persistentMapPackageName.clear();
+    persistentWorldActors.clear(); persistentAuthoredWorldSlots = 0u; persistentMapSourcePath.clear();
+    persistentActorCollision.Clear();
     persistentInventory.clear();
     persistentCredits = 0;
     persistentSkillPoints = 0;
@@ -3567,6 +4045,7 @@ PortableVmValue ExecutePortableFunction(const std::string& objectPath) {
 QuestVr::Vm::Result ExecutePortableActorFunction(const std::string& actorPath,
     const std::string& functionName, const std::vector<QuestVr::Vm::Evaluation>& arguments,
     const QuestVr::Vm::Limits& limits) {
+    CollectBirthGarbageAtBoundary collect;
     try {
         PortableActorVmHost host;
         RuntimeObject* actor = host.Object(actorPath);
@@ -3677,6 +4156,7 @@ std::optional<QuestVr::StateObject> ReadPortableActorStateObject(const std::stri
 }
 
 QuestVr::Vm::Result ResumePortableActorState(const std::string& actorPath, const QuestVr::Vm::Limits& limits) {
+    CollectBirthGarbageAtBoundary collect;
     try {
         PortableActorVmHost host;
         return QuestVr::Vm::ResumeState(host, actorPath, limits);
@@ -3713,6 +4193,7 @@ QuestVr::Vm::ProgramLayout ReadPortableRuntimeStateProgram(const std::string& ob
 
 QuestVr::Vm::Result ExecutePortableActorEvent(const std::string& actorPath, const std::string& eventName,
     const bool enumDispatch, const std::vector<QuestVr::Vm::Evaluation>& arguments, const QuestVr::Vm::Limits& limits) {
+    CollectBirthGarbageAtBoundary collect;
     try {
         PortableActorVmHost host;
         QuestVr::Vm::Result none;
@@ -3757,7 +4238,15 @@ static void RelinkAuthoredActorBases(const PortablePackageTables& package, const
         return path.substr(dot == std::string::npos ? 0u : dot + 1u) == "level";
     });
     if (hasLevel) {
+        RuntimeObject* xlevel{};
+        for (std::size_t i = 0u; i < package.exports.size(); ++i)
+            if (LowerAscii(GetPortableObjectPath(package,package.exports[i].ObjClass)) == "engine.level") {
+                if (xlevel) throw std::runtime_error("Map has more than one serialized Level");
+                xlevel = persistentRuntime->get()->exports.at(first+i);
+            }
+        if (!xlevel) throw std::runtime_error("Map has no linked serialized Level");
         const auto order = ReadPortableLevel68ActorOrder(package);
+        persistentWorldActors.assign(order.size(), nullptr);
         actorOrder.reserve(order.size());
         for (std::size_t slot = 0u; slot < order.size(); ++slot) {
             const auto reference = order[slot];
@@ -3773,9 +4262,12 @@ static void RelinkAuthoredActorBases(const PortablePackageTables& package, const
             }
             if (actor->worldActorIndex >= 0) throw std::runtime_error("Level contains a duplicate actor slot");
             actor->worldActorIndex = static_cast<std::int32_t>(slot);
+            actor->nativeXLevel = xlevel;
+            persistentWorldActors[slot] = actor;
             actorOrder.push_back(actor);
         }
     } else {
+        persistentWorldActors.clear();
         // Generated metadata-only maps deliberately omit serialized ULevel.
         // Only that explicit fixture shape uses export-order membership.
         for (std::size_t index = first; index < persistentRuntime->get()->exports.size(); ++index) {
@@ -3783,8 +4275,13 @@ static void RelinkAuthoredActorBases(const PortablePackageTables& package, const
             if (!IsDerivedFromPath(actor->cls, "Engine.Actor")) continue;
             actor->worldActorIndex = static_cast<std::int32_t>(actorOrder.size());
             actorOrder.push_back(actor);
+            persistentWorldActors.push_back(actor);
         }
     }
+    persistentAuthoredWorldSlots = persistentWorldActors.size();
+    QuestVr::ActorCollisionRegistry collision;
+    for (auto* actor : actorOrder) host.RegisterCollisionActor(actor,collision);
+    persistentActorCollision.Swap(collision);
     std::size_t links{};
     for (auto* actor : actorOrder) {
         if (!IsDerivedFromPath(actor->cls, "Engine.Actor")) continue;
@@ -3909,6 +4406,7 @@ PortableMapRuntimeSummary LoadPortableRuntimeMap(
     }
     summary.exports = graph.objects.size();
     persistentMapPackageName = packageName;
+    persistentMapSourcePath = package.sourcePath;
     RelinkAuthoredActorBases(package, first);
     ++persistentWorldRevision;
     GC::Collect();
@@ -3945,6 +4443,8 @@ std::size_t UnloadPortableRuntimeMap() {
     ++persistentWorldRevision;
     persistentMapPackageName.clear();
     persistentMapTagIndex.clear();
+    persistentWorldActors.clear(); persistentAuthoredWorldSlots = 0u; persistentMapSourcePath.clear();
+    persistentActorCollision.Clear();
     GC::Collect();
     return removed;
 }
@@ -4021,25 +4521,29 @@ std::vector<PortableActorSnapshot> GetPortableRuntimeMapActors(bool includeInact
             }
         }
         snapshot.meshPath = resolveInheritedObjectProperty("Mesh");
-        const auto mesh = persistentQualifiedObjects.find(snapshot.meshPath);
-        if (mesh != persistentQualifiedObjects.end()) {
+        const auto mesh = persistentVmObjects.find(LowerAscii(snapshot.meshPath));
+        if (mesh != persistentVmObjects.end()) {
             snapshot.meshClassPath = mesh->second->reflection.metaClass;
         }
         snapshot.animByOwner = ReadInheritedRuntimeBool(object, "bAnimByOwner");
         snapshot.ownerPath = resolveInheritedObjectProperty("Owner");
         RuntimeObject* animationSource = object;
         if (snapshot.animByOwner && !snapshot.ownerPath.empty()) {
-            const auto owner = persistentQualifiedObjects.find(snapshot.ownerPath);
+            const auto owner = persistentVmObjects.find(LowerAscii(snapshot.ownerPath));
             // Pinned VisibleMesh chooses the immediate owner only, not the
             // owner's own animation source. A destroyed/missing owner cannot
             // provide a live animation snapshot.
-            if (owner != persistentQualifiedObjects.end() && owner->second != nullptr &&
+            if (owner != persistentVmObjects.end() && owner->second != nullptr &&
                 owner->second->active && IsDerivedFromPath(owner->second->cls, "Engine.Actor"))
                 animationSource = owner->second;
         }
         snapshot.animationSourcePath = animationSource->reflection.objectPath;
         snapshot.animation = ReadRuntimeAnimationSnapshot(animationSource);
         snapshot.materialOverrides = object->textureOverrides;
+        for (const auto* name : {"Skin","Texture","MultiSkins"})
+            for (std::uint32_t slot=0u;slot<(std::string_view(name)=="MultiSkins" ? 8u : 1u);++slot)
+                if (const auto* value=FindScriptOverlay(object,name,slot))
+                    QuestVr::SetActorTextureOverride(snapshot.materialOverrides,name,slot,value->text);
         for (RuntimeObject* cls = object->cls; cls != nullptr; cls = cls->base)
             QuestVr::InheritActorTextureOverrides(snapshot.materialOverrides, cls->textureOverrides);
         snapshot.texturePath = snapshot.materialOverrides.texture.path;
@@ -4091,6 +4595,8 @@ std::vector<PortableActorSnapshot> GetPortableRuntimeMapActors(bool includeInact
                 snapshot.destinationMap = DecodePortableStringProperty(*destination);
             }
         }
+        for (const auto* name : {"DestMap","URL"})
+            if (const auto* value=FindScriptOverlay(object,name)) {snapshot.destinationMap=value->text;break;}
         for (const PortableTaggedProperty& property : object->instanceProperties) {
             if (property.name == "Location" && property.type == 10u &&
                 property.value.size() == 12u) {
@@ -4114,6 +4620,12 @@ std::vector<PortableActorSnapshot> GetPortableRuntimeMapActors(bool includeInact
             snapshot.prePivotX = value->vector[0]; snapshot.prePivotY = value->vector[1];
             snapshot.prePivotZ = value->vector[2];
         }
+        if (const auto* value = FindScriptOverlay(object,"MainScale")) {
+            const auto scale=value->fields.find("scale");
+            if (scale!=value->fields.end() && scale->second.kind==QuestVr::Vm::Kind::Vector) {
+                snapshot.mainScaleX=scale->second.vector[0];snapshot.mainScaleY=scale->second.vector[1];snapshot.mainScaleZ=scale->second.vector[2];
+            }
+        }
         if (const auto* value = FindScriptOverlay(object, "Rotation")) {
             snapshot.pitch = value->rotation[0]; snapshot.yaw = value->rotation[1];
             snapshot.roll = value->rotation[2];
@@ -4129,9 +4641,9 @@ std::vector<PortableActorSnapshot> GetPortableRuntimeMapActors(bool includeInact
     return snapshots;
 }
 
-PortableActorMeshSummary DecodePortableRuntimeActorMeshes() {
+namespace {
+PortableActorMeshSummary DecodeRuntimeActorAssets(const std::vector<PortableActorSnapshot>& actors) {
     PortableActorMeshSummary summary;
-    const std::vector<PortableActorSnapshot> actors = GetPortableRuntimeMapActors(true);
     std::set<std::string> meshPaths;
     std::set<std::string> brushPaths;
     for (const PortableActorSnapshot& actor : actors) {
@@ -4142,9 +4654,13 @@ PortableActorMeshSummary DecodePortableRuntimeActorMeshes() {
     summary.referencedBrushes = brushPaths.size();
     std::unordered_map<std::string, PortablePackageTables> packages;
     for (const std::string& meshPath : meshPaths) {
-        const auto found = persistentQualifiedObjects.find(meshPath);
-        if (found == persistentQualifiedObjects.end()) continue;
+        const auto found = persistentVmObjects.find(LowerAscii(meshPath));
+        if (found == persistentVmObjects.end()) continue;
         RuntimeObject* meshObject = found->second;
+        if (meshObject->lodMesh) {
+            summary.triangleVertices+=meshObject->lodMesh->triangles.size();
+            ++summary.decodedMeshes; continue;
+        }
         auto package = packages.find(meshObject->sourcePath);
         if (package == packages.end()) {
             package = packages.emplace(
@@ -4165,9 +4681,13 @@ PortableActorMeshSummary DecodePortableRuntimeActorMeshes() {
         ++summary.decodedMeshes;
     }
     for (const std::string& brushPath : brushPaths) {
-        const auto found = persistentQualifiedObjects.find(brushPath);
-        if (found == persistentQualifiedObjects.end()) continue;
+        const auto found = persistentVmObjects.find(LowerAscii(brushPath));
+        if (found == persistentVmObjects.end()) continue;
         RuntimeObject* brushObject = found->second;
+        if (brushObject->brushMesh) {
+            summary.brushTriangleVertices+=brushObject->brushMesh->triangles.size();
+            ++summary.decodedBrushes; continue;
+        }
         auto package = packages.find(brushObject->sourcePath);
         if (package == packages.end()) {
             package = packages.emplace(
@@ -4193,18 +4713,23 @@ PortableActorMeshSummary DecodePortableRuntimeActorMeshes() {
         summary.triangleVertices != 0;
     return summary;
 }
+} // namespace
+
+PortableActorMeshSummary DecodePortableRuntimeActorMeshes() {
+    return DecodeRuntimeActorAssets(GetPortableRuntimeMapActors(true));
+}
 
 PortableLodMesh GetPortableRuntimeMesh(const std::string& meshPath) {
-    const auto found = persistentQualifiedObjects.find(meshPath);
-    if (found == persistentQualifiedObjects.end() || !found->second->lodMesh) {
+    const auto found = persistentVmObjects.find(LowerAscii(meshPath));
+    if (found == persistentVmObjects.end() || !found->second->lodMesh) {
         throw std::runtime_error("Portable actor mesh is not decoded: " + meshPath);
     }
     return *found->second->lodMesh;
 }
 
 PortableLodMesh GetPortableRuntimeBrush(const std::string& brushPath) {
-    const auto found = persistentQualifiedObjects.find(brushPath);
-    if (found == persistentQualifiedObjects.end() || !found->second->brushMesh) {
+    const auto found = persistentVmObjects.find(LowerAscii(brushPath));
+    if (found == persistentVmObjects.end() || !found->second->brushMesh) {
         throw std::runtime_error("Portable actor brush is not decoded: " + brushPath);
     }
     return *found->second->brushMesh;
@@ -4223,8 +4748,8 @@ PortableTextureArray BuildPortableRuntimeActorTextureArray(
         if (sprite && !actor.texturePath.empty()) paths.insert(actor.texturePath);
         const auto collectMesh = [&](const std::string& path, bool brush) {
             if (path.empty()) return;
-            const auto found = persistentQualifiedObjects.find(path);
-            if (found == persistentQualifiedObjects.end()) return;
+            const auto found = persistentVmObjects.find(LowerAscii(path));
+            if (found == persistentVmObjects.end()) return;
             const auto* geometry = brush ? found->second->brushMesh.get() : found->second->lodMesh.get();
             if (geometry == nullptr) return;
             // Pack materials actually selected by each original actor, rather
@@ -4241,8 +4766,8 @@ PortableTextureArray BuildPortableRuntimeActorTextureArray(
         collectMesh(actor.meshPath, false);
         if (actor.mover) collectMesh(actor.brushPath, true);
         const auto collectMasked = [&](const std::string& path, bool brush) {
-            const auto found = persistentQualifiedObjects.find(path);
-            if (found == persistentQualifiedObjects.end()) return;
+            const auto found = persistentVmObjects.find(LowerAscii(path));
+            if (found == persistentVmObjects.end()) return;
             const auto* mesh = brush ? found->second->brushMesh.get() : found->second->lodMesh.get();
             if (mesh == nullptr) return;
             for (const auto& vertex : mesh->triangles) {
@@ -4290,8 +4815,8 @@ PortableTextureArray BuildPortableRuntimeActorTextureArray(
             const std::string objectPath = qualified.substr(separator + 1);
             std::string packagePath = ResolveRuntimePackagePath(gameRoot, packageName);
             std::size_t textureExport = std::numeric_limits<std::size_t>::max();
-            const auto runtimeTexture = persistentQualifiedObjects.find(qualified);
-            if (runtimeTexture != persistentQualifiedObjects.end()) {
+            const auto runtimeTexture = persistentVmObjects.find(LowerAscii(qualified));
+            if (runtimeTexture != persistentVmObjects.end()) {
                 packagePath = runtimeTexture->second->sourcePath;
                 textureExport = runtimeTexture->second->exportIndex;
             } else {
@@ -4325,7 +4850,7 @@ PortableTextureArray BuildPortableRuntimeActorTextureArray(
             if (textureExport == std::numeric_limits<std::size_t>::max()) {
                 textureExport = FindPortableTextureExport(package->second, objectPath);
             }
-            const std::string textureClass = runtimeTexture == persistentQualifiedObjects.end()
+            const std::string textureClass = runtimeTexture == persistentVmObjects.end()
                 ? GetPortableObjectPath(
                     package->second,
                     package->second.exports.at(textureExport).ObjClass)
@@ -4448,8 +4973,8 @@ PortableTextureArray BuildPortableRuntimeActorTextureArray(
 PortableInteractionResult InteractPortableRuntimeActor(const std::string& objectPath) {
     PortableInteractionResult result;
     result.objectPath = objectPath;
-    const auto found = persistentQualifiedObjects.find(objectPath);
-    if (found == persistentQualifiedObjects.end() || found->second == nullptr) {
+    const auto found = persistentVmObjects.find(LowerAscii(objectPath));
+    if (found == persistentVmObjects.end() || found->second == nullptr) {
         result.action = "missing";
         result.inventoryCount = persistentInventory.size();
         return result;
@@ -4474,7 +4999,10 @@ PortableInteractionResult InteractPortableRuntimeActor(const std::string& object
             }
             return false;
         };
-        if (!decodeDestination(object->instanceProperties)) {
+        const auto* copied=FindScriptOverlay(object,"DestMap");
+        if (!copied) copied=FindScriptOverlay(object,"URL");
+        if (copied) result.destinationMap=copied->text;
+        else if (!decodeDestination(object->instanceProperties)) {
             for (RuntimeObject* cls = object->cls; cls != nullptr; cls = cls->base) {
                 if (cls->classDescriptor && decodeDestination(cls->classDescriptor->defaults)) break;
             }
@@ -4514,8 +5042,8 @@ PortableDamageResult DamagePortableRuntimeActor(
     float damage) {
     PortableDamageResult result;
     result.objectPath = objectPath;
-    const auto found = persistentQualifiedObjects.find(objectPath);
-    if (found == persistentQualifiedObjects.end() || found->second == nullptr ||
+    const auto found = persistentVmObjects.find(LowerAscii(objectPath));
+    if (found == persistentVmObjects.end() || found->second == nullptr ||
         !std::isfinite(damage) || damage <= 0.0f) {
         return result;
     }
@@ -4534,7 +5062,8 @@ PortableDamageResult DamagePortableRuntimeActor(
             }
             return false;
         };
-        if (!decodeHealth(object->instanceProperties)) {
+        if (const auto* copied=FindScriptOverlay(object,"Health")) object->health=QuestVr::Vm::ToFloat(*copied);
+        else if (!decodeHealth(object->instanceProperties)) {
             for (RuntimeObject* cls = object->cls; cls != nullptr; cls = cls->base) {
                 if (cls->classDescriptor && decodeHealth(cls->classDescriptor->defaults)) break;
             }
@@ -4862,7 +5391,8 @@ bool SavePortableRuntimeState(const std::string& path) {
         // A rejected/over-budget capture must not truncate an existing save.
         const auto scriptState = CollectScriptSavedState();
         const bool hasDefaults = !scriptState.classDefaults.empty();
-        const bool hasScript = !scriptState.objects.empty() || hasDefaults;
+        const bool hasBirths = !scriptState.births.empty();
+        const bool hasScript = !scriptState.objects.empty() || hasDefaults || hasBirths;
         const bool hasState = std::any_of(scriptState.objects.begin(), scriptState.objects.end(),
             [](const auto& object) { return object.state.has_value(); });
         const bool hasLifecycle = std::any_of(scriptState.objects.begin(), scriptState.objects.end(),
@@ -4912,7 +5442,7 @@ bool SavePortableRuntimeState(const std::string& path) {
         // This is exactly the v3 prefix, including list order and field widths.
         // Only the version word and appended trailer differ for v4-v7. Pure
         // property/clock captures retain the byte-exact original v4 format.
-        write32(0x53515844u); write32(hasLifecycle ? 7u : hasDefaults ? 6u : hasState ? 5u : hasScript ? 4u : 3u);
+        write32(0x53515844u); write32(hasBirths ? 8u : hasLifecycle ? 7u : hasDefaults ? 6u : hasState ? 5u : hasScript ? 4u : 3u);
         writeStrings(persistentInventory); writeStrings(inactive); writeStrings(activated); writeFloat(persistentPlayerHealth);
         write32(static_cast<std::uint32_t>(damaged.size()));
         for (const auto& entry : damaged) {
@@ -4979,7 +5509,7 @@ static bool ReadPortableRuntimeState(const std::string& path, const bool apply, 
         };
         if (read32() != 0x53515844u) throw std::runtime_error("Runtime checkpoint magic is invalid");
         const auto version = read32();
-        if (version < 1u || version > 7u) throw std::runtime_error("Runtime checkpoint version is unsupported");
+        if (version < 1u || version > 8u) throw std::runtime_error("Runtime checkpoint version is unsupported");
         auto inventory = readStrings(); auto inactive = readStrings(); auto activated = readStrings();
         float playerHealth = 100.0f;
         std::vector<std::pair<std::string, float>> damaged;
@@ -5008,6 +5538,7 @@ static bool ReadPortableRuntimeState(const std::string& path, const bool apply, 
             flags = readStrings(); goals = readStrings(); notes = readStrings(); applied = readStrings();
         }
         PreparedScriptState prepared;
+        std::unordered_set<std::string> savedBirthKeys;
         if (version >= 4u) {
             const auto prefixBytes = cursor;
             const auto length = read32();
@@ -5020,12 +5551,15 @@ static bool ReadPortableRuntimeState(const std::string& path, const bool apply, 
             const bool hasState = std::any_of(scriptState.objects.begin(), scriptState.objects.end(),
                 [](const auto& object) { return object.state.has_value(); });
             const bool hasDefaults = !scriptState.classDefaults.empty();
+            const bool hasBirths = !scriptState.births.empty();
+            for (const auto& birth : scriptState.births) savedBirthKeys.emplace(LowerAscii(birth.path));
             const bool hasLifecycle = std::any_of(scriptState.objects.begin(), scriptState.objects.end(),
                 [](const auto& object) { return object.lifecycle.has_value(); });
             if ((version == 4u && (blob.at(6u) != QuestVr::ScriptStateDetail::Magic[6u] || hasState)) ||
                 (version == 5u && (blob.at(6u) != QuestVr::ScriptStateDetail::StateFrameVersion || !hasState)) ||
                 (version == 6u && (blob.at(6u) != QuestVr::ScriptStateDetail::ClassDefaultsVersion || !hasDefaults)) ||
-                (version == 7u && (blob.at(6u) != QuestVr::ScriptStateDetail::ActorLifecycleVersion || !hasLifecycle)))
+                (version == 7u && (blob.at(6u) != QuestVr::ScriptStateDetail::ActorLifecycleVersion || !hasLifecycle)) ||
+                (version == 8u && (blob.at(6u) != QuestVr::ScriptStateDetail::BirthManifestVersion || !hasBirths)))
                 throw std::runtime_error("Runtime checkpoint state trailer does not match its envelope version");
             if (!expectedMapName.empty() && LowerAscii(expectedMapName) != LowerAscii(scriptState.mapName))
                 throw std::runtime_error("Runtime checkpoint script map does not match save metadata");
@@ -5033,6 +5567,17 @@ static bool ReadPortableRuntimeState(const std::string& path, const bool apply, 
             cursor += length;
         }
         if (cursor != bytes.size()) throw std::runtime_error("Runtime checkpoint has trailing bytes");
+        if (apply && !prepared.replaceBirths) StageRuntimeBirthReplacement(prepared);
+        const auto& restoredObjects = apply ? prepared.vm : persistentVmObjects;
+        const auto prefixTarget = [&](const std::string& path) -> RuntimeObject* {
+            const auto old = persistentVmObjects.find(LowerAscii(path));
+            if (old != persistentVmObjects.end() && old->second->runtimeBirth &&
+                !savedBirthKeys.count(old->second->birthVmKey))
+                throw std::runtime_error("Checkpoint gameplay prefix references an omitted live birth");
+            const auto found = restoredObjects.find(LowerAscii(path));
+            return found == restoredObjects.end() ? nullptr : found->second;
+        };
+        for (const auto& path : inventory) static_cast<void>(prefixTarget(path));
         // Prepare EVERY allocating container and resolve all mutation targets
         // before clearing live script/gameplay state. Legacy paths retain their
         // existing tolerant behavior for actors from previously visited maps.
@@ -5049,16 +5594,13 @@ static bool ReadPortableRuntimeState(const std::string& path, const bool apply, 
         std::vector<std::pair<RuntimeObject*, float>> damagedTargets;
         inactiveTargets.reserve(inactive.size()); activatedTargets.reserve(activated.size()); damagedTargets.reserve(damaged.size());
         for (const auto& objectPath : inactive) {
-            const auto found = persistentQualifiedObjects.find(objectPath);
-            if (found != persistentQualifiedObjects.end()) inactiveTargets.push_back(found->second);
+            if (auto* object = prefixTarget(objectPath)) inactiveTargets.push_back(object);
         }
         for (const auto& objectPath : activated) {
-            const auto found = persistentQualifiedObjects.find(objectPath);
-            if (found != persistentQualifiedObjects.end()) activatedTargets.push_back(found->second);
+            if (auto* object = prefixTarget(objectPath)) activatedTargets.push_back(object);
         }
         for (const auto& entry : damaged) {
-            const auto found = persistentQualifiedObjects.find(entry.first);
-            if (found != persistentQualifiedObjects.end()) damagedTargets.emplace_back(found->second, entry.second);
+            if (auto* object = prefixTarget(entry.first)) damagedTargets.emplace_back(object, entry.second);
         }
         if (!apply) return true;
         // Allocate the legacy/native reset before touching live state. All
@@ -5066,9 +5608,53 @@ static bool ReadPortableRuntimeState(const std::string& path, const bool apply, 
         // current session. Initial Base relinks are the map-load baseline.
         std::vector<std::pair<RuntimeObject*, std::vector<RuntimeObject*>>> initialBases;
         for (auto* object : persistentRuntime->get()->exports)
-            if (!object->initialBasedActors.empty()) initialBases.emplace_back(object, object->initialBasedActors);
+            if (!object->runtimeBirth && !object->initialBasedActors.empty()) initialBases.emplace_back(object, object->initialBasedActors);
+        // Build the replacement tag index before publishing any registry or
+        // field. Omitted overlays use immutable authored names, not live tags.
+        PortableActorVmHost collisionHost;
+        std::vector<PortableActorSnapshot> visualAssets;
+        for (auto* actor : prepared.worldActors) {
+            if (!actor) continue;
+            const auto saved = std::find_if(prepared.objects.begin(),prepared.objects.end(),[&](const auto& object) {return object.target==actor;});
+            if (saved != prepared.objects.end() && saved->removed) continue;
+            const auto restoredValue=[&](const QuestVr::Vm::Property& property) {
+                if (saved!=prepared.objects.end()) {
+                    const auto values=saved->values.find(LowerAscii(property.name));
+                    if (values!=saved->values.end() && values->second.count(0u)) return values->second.at(0u);
+                }
+                return collisionHost.Read(actor,property,0u,false,true);
+            };
+            collisionHost.RegisterCollisionActor(actor,prepared.collision,restoredValue);
+            PortableActorSnapshot assets;
+            if (collisionHost.HasPropertyNamed(actor,"Mesh"))
+                assets.meshPath=restoredValue(collisionHost.PropertyNamed(actor,"Mesh")).text;
+            assets.mover=IsDerivedFromPath(actor->cls,"Engine.Mover");
+            if (assets.mover && collisionHost.HasPropertyNamed(actor,"Brush"))
+                assets.brushPath=restoredValue(collisionHost.PropertyNamed(actor,"Brush")).text;
+            if (!assets.meshPath.empty() || !assets.brushPath.empty()) visualAssets.push_back(std::move(assets));
+            std::string tag;
+            bool hasTag{};
+            if (saved != prepared.objects.end()) {
+                const auto values=saved->values.find("tag");
+                if (values!=saved->values.end() && values->second.count(0u)) { tag=values->second.at(0u).text; hasTag=true; }
+            }
+            if (!hasTag) for (auto* source=actor;source;source=source==actor ? actor->cls : source->base) {
+                const auto values=source->namePropertyValues.find("tag");
+                if (values!=source->namePropertyValues.end() && values->second.count(0u)) {tag=values->second.at(0u);break;}
+            }
+            tag=LowerAscii(tag);
+            if (!tag.empty() && tag!="none") prepared.tags[tag].push_back(actor);
+        }
         if (persistentWorldRevision == std::numeric_limits<std::uint64_t>::max())
             throw std::runtime_error("Portable world revision budget exceeded");
+        // Cold manifests can reference geometry absent from the live world.
+        // Decode it while every allocating restore container is still staged.
+        static_cast<void>(DecodeRuntimeActorAssets(visualAssets));
+        persistentRuntime->get()->exports.swap(prepared.exports);
+        persistentWorldActors.swap(prepared.worldActors);
+        persistentQualifiedObjects.swap(prepared.qualified); persistentVmObjects.swap(prepared.vm);
+        persistentMapTagIndex.swap(prepared.tags);
+        persistentActorCollision.Swap(prepared.collision);
         for (RuntimeObject* object : persistentRuntime->get()->exports) {
             object->scriptValues.clear(); object->classDefaultValues.clear();
             object->animationClock.reset(); object->stateObject.reset(); object->committedScriptState = false;
@@ -5115,5 +5701,6 @@ bool ValidatePortableRuntimeState(const std::string& path, const std::string& ex
 }
 
 bool LoadPortableRuntimeState(const std::string& path) {
+    CollectBirthGarbageAtBoundary collect;
     return ReadPortableRuntimeState(path, true, {});
 }

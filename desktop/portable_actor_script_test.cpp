@@ -1,4 +1,5 @@
 #include "Precomp.h"
+#include "GC/GC.h"
 #include "portable_unreal_runtime.h"
 #include "quest_mesh_animation.h"
 #include "quest_save_bundle.h"
@@ -223,10 +224,10 @@ std::vector<std::uint8_t> CheckpointBytes(const std::filesystem::path& path) {
     return bytes;
 }
 // Independent exact v3 prefix walk. No guessed search for blob signatures or
-// trailer bytes: v4/v5 append one bounded length + codec payload after every
+// trailer bytes: v4-v8 append one bounded length + codec payload after every
 // existing gameplay/progress field, preserving the old layout verbatim.
 std::size_t ScriptTailOffset(const std::vector<std::uint8_t>& bytes) {
-    Require(Word(bytes,0)==0x53515844u && (Word(bytes,4)==4u || Word(bytes,4)==5u),"Script checkpoint is not runtime v4/v5");
+    Require(Word(bytes,0)==0x53515844u && Word(bytes,4)>=4u && Word(bytes,4)<=8u,"Script checkpoint is not runtime v4-v8");
     std::size_t cursor=8;
     const auto skip=[&](const std::size_t count) {
         Require(cursor<=bytes.size() && count<=bytes.size()-cursor,"Generated checkpoint prefix truncated");cursor+=count;
@@ -632,6 +633,127 @@ struct TemporaryCheckpoint {
     }
 };
 
+void VerifyOriginalDormantSpawn(const std::filesystem::path& root,const std::string& actor,
+    const std::filesystem::path& legacy,const std::filesystem::path& directory) {
+    Require(LoadPortableRuntimeState(legacy.string()) && !GetPortableRuntimeScriptStatePresent(),
+        "Original dormant Spawn did not begin from untouched authored state");
+    const auto originalBytes=CheckpointBytes(legacy);
+    const auto originalActors=GetPortableRuntimeMapActors(true);
+    const auto initialGc=GC::GetStats();
+    const auto level=ReadPortableActorScriptProperty(actor,"Level");
+    const auto xLevel=ReadPortableActorScriptProperty(actor,"XLevel");
+    Require(level.kind==Kind::Object && !level.text.empty() && xLevel.kind==Kind::Object && !xLevel.text.empty() &&
+        !QuestVr::Vm::ToBool(ReadPortableActorScriptProperty(level.text,"bBegunPlay")),
+        "Original dormant Spawn lacks actual native Level/XLevel or incorrectly began the campaign");
+    const auto mapName=actor.substr(0u,actor.find('.'));
+    const auto map=LoadPortablePackageTables((root/"Maps"/(mapName+".dx")).string());
+    Require(xLevel.text.rfind(mapName+'.',0u)==0u,"Original XLevel binding is not an actual current-map object");
+    const auto levelIndex=FindPortableExport(map,xLevel.text.substr(mapName.size()+1u));
+    Require(GetPortableObjectPath(map,map.exports.at(levelIndex).ObjClass)=="Engine.Level",
+        "Original native XLevel binding is not the serialized ULevel");
+    const auto expectedOuter=QualifiedReference(map,map.exports.at(levelIndex).ObjOuter);
+    const auto spawnerLocation=ReadPortableActorScriptProperty(actor,"Location");
+    const auto spawnerRotation=ReadPortableActorScriptProperty(actor,"Rotation");
+    const auto beforeRevision=GetPortableRuntimeWorldRevision();
+    const std::string weaponClass="DeusEx.WeaponPistol";
+    const auto result=Call(actor,"Engine.Actor.Spawn",{
+        {Value::Text(Kind::Object,weaponClass),{}},{Value::Text(Kind::Object,actor),{}}});
+    Require(result.committed && result.value.kind==Kind::Object && !result.value.text.empty() &&
+        result.value.text.rfind(mapName+".WeaponPistol",0u)==0u,
+        "Original native Spawn did not allocate/commit an actual map-qualified WeaponPistol identity");
+    const auto born=result.value.text;
+    const auto spawned=Snapshot(born);
+    Require(GetPortableRuntimeMapActors(true).size()==originalActors.size()+1u &&
+        GetPortableRuntimeWorldRevision()==beforeRevision+1u && GC::GetStats().numObjects==initialGc.numObjects+1u,
+        "Original Spawn did not publish/root exactly one born actor and one world revision");
+    Require(spawned.classPath==weaponClass && spawned.inventory && !spawned.meshPath.empty() &&
+        spawned.ownerPath==actor && spawned.hasLocation,
+        "Original spawned weapon lost its real class, inventory ancestry, mesh, explicit owner or transform");
+    const auto equalProperty=[&](const std::string& name,const Value& expected) {
+        Require(QuestVr::Vm::Equal(ReadPortableActorScriptProperty(born,name),expected),
+            "Original spawned weapon initialization differs at "+name);
+    };
+    equalProperty("Class",Value::Text(Kind::Object,weaponClass));
+    equalProperty("Name",Value::Text(Kind::Name,born.substr(born.find_last_of('.')+1u)));
+    equalProperty("ObjectFlags",Value::Integer(0x4000));
+    equalProperty("Owner",Value::Text(Kind::Object,actor));
+    equalProperty("Level",level);equalProperty("XLevel",xLevel);
+    equalProperty("Outer",Value::Text(Kind::Object,expectedOuter));
+    equalProperty("Tag",Value::Text(Kind::Name,"WeaponPistol"));
+    equalProperty("bTicked",ReadPortableActorScriptProperty(actor,"bTicked"));
+    equalProperty("Instigator",ReadPortableActorScriptProperty(actor,"Instigator"));
+    equalProperty("Brush",Value::Text(Kind::Object,{}));
+    equalProperty("Location",spawnerLocation);equalProperty("OldLocation",spawnerLocation);
+    equalProperty("Rotation",spawnerRotation);
+    const auto region=ReadPortableActorScriptProperty(born,"Region");
+    Require(region.kind==Kind::Struct && QuestVr::Vm::Equal(region.fields.at("zone"),level),
+        "Original before-begun Spawn prematurely replaced initial Level Region.Zone");
+    for(const auto* property:{"CollisionRadius","CollisionHeight","PickupAmmoCount","InitialState","Mesh"})
+        equalProperty(property,ReadPortableClassDefault(weaponClass,property));
+    Require(!ReadPortableActorStateObject(born) &&
+        spawned.meshPath==ReadPortableClassDefault(weaponClass,"Mesh").text &&
+        spawned.drawScale==QuestVr::Vm::ToFloat(ReadPortableClassDefault(weaponClass,"DrawScale")),
+        "Original dormant Spawn ran startup/state callbacks or lost the concrete original mesh/scale defaults");
+    const auto mesh=GetPortableRuntimeMesh(spawned.meshPath);
+    Require(!mesh.triangles.empty() && !mesh.texturePaths.empty(),
+        "Original spawned weapon mesh has no decoded original geometry/materials");
+    const auto skin=ReadPortableClassDefault(weaponClass,"Skin");
+    const auto texture=ReadPortableClassDefault(weaponClass,"Texture");
+    equalProperty("Skin",skin);equalProperty("Texture",texture);
+    Require(spawned.materialOverrides.skin.path==skin.text && spawned.materialOverrides.texture.path==texture.text &&
+        spawned.texturePath==texture.text && (skin.text.empty() || spawned.materialOverrides.skin.specified) &&
+        (texture.text.empty() || spawned.materialOverrides.texture.specified),
+        "Original born snapshot discarded original Skin/Texture defaults");
+    for(std::uint32_t index=0u;index<spawned.materialOverrides.multiSkins.size();++index) {
+        const auto expected=ReadPortableClassDefault(weaponClass,"MultiSkins",index);
+        Require(QuestVr::Vm::Equal(ReadPortableActorScriptProperty(born,"MultiSkins",index),expected) &&
+            spawned.materialOverrides.multiSkins[index].path==expected.text &&
+            (expected.text.empty() || spawned.materialOverrides.multiSkins[index].specified),
+            "Original born snapshot discarded independently inherited fixed MultiSkins slot");
+    }
+    for(const auto& vertex:mesh.triangles) {
+        const auto material=QuestVr::ResolveActorMeshMaterial(spawned.materialOverrides,
+            mesh.texturePaths,mesh.materialTextureIndices,vertex.material);
+        Require(material.validMaterial && !material.texturePath.empty(),
+            "Original spawned weapon has an unresolved original mesh material");
+    }
+    const auto saved=directory/"original-dormant-birth-v8.sav";
+    const auto inspect=directory/"original-dormant-birth-inspect.sav";
+    Require(SavePortableRuntimeState(saved.string()),"Original born weapon could not save");
+    const auto bytes=CheckpointBytes(saved);
+    const auto state=QuestVr::DecodeScriptSavedState(ScriptBlob(bytes));
+    Require(Word(bytes,4u)==8u && state.births.size()==1u &&
+        state.births.front().path==born && state.births.front().classPath==weaponClass &&
+        state.births.front().frozenDefaults.empty(),
+        "Original dormant birth did not retain codec5/envelope8 with immutable original CDO baseline");
+    Require(ValidatePortableRuntimeState(saved.string(),mapName) &&
+        SavePortableRuntimeState(inspect.string()) && CheckpointBytes(inspect)==bytes,
+        "Read-only original born-actor validation changed its committed graph");
+    GC::Collect();
+    Require(SavePortableRuntimeState(inspect.string()) && CheckpointBytes(inspect)==bytes,
+        "Original born weapon or native owner references were not rooted across GC");
+    Require(LoadPortableRuntimeState(legacy.string()) && GetPortableRuntimeMapActors(true).size()==originalActors.size() &&
+        GC::GetStats().numObjects==initialGc.numObjects && GC::GetStats().memoryUsage==initialGc.memoryUsage,
+        "Original legacy restore retained born UObject allocations or publication");
+    bool removed{};try {ReadPortableActorScriptProperty(born,"Owner");} catch(const std::exception&) {removed=true;}
+    Require(removed,"Original legacy restore retained a retired born VM identity");
+    Require(ValidatePortableRuntimeState(saved.string(),mapName) && LoadPortableRuntimeState(saved.string()) &&
+        SavePortableRuntimeState(inspect.string()) && CheckpointBytes(inspect)==bytes && Snapshot(born).meshPath==spawned.meshPath,
+        "Original unknown birth could not cold-restore exact native bindings/defaults/mesh/owner graph");
+    const auto stableGc=GC::GetStats();
+    for(unsigned iteration=0u;iteration<3u;++iteration) {
+        Require(LoadPortableRuntimeState(saved.string()),"Original v8 birth replacement failed");
+        const auto currentGc=GC::GetStats();
+        Require(currentGc.numObjects==stableGc.numObjects && currentGc.memoryUsage==stableGc.memoryUsage,
+            "Repeated original v8 birth replacement retained unrooted retired allocations");
+    }
+    Require(LoadPortableRuntimeState(legacy.string()) && !GetPortableRuntimeScriptStatePresent() &&
+        SavePortableRuntimeState(inspect.string()) && CheckpointBytes(inspect)==originalBytes,
+        "Original dormant Spawn control did not completely restore authored legacy state");
+    std::cout<<"ORIGINAL DORMANT SPAWN "<<born<<" original WeaponPistol CDO/mesh/materials/owner/native Level/XLevel, "<<
+        "codec5/v8 cold replacement/GC/legacy reset; actual Level before-begun, no campaign startup claim\n";
+}
+
 void VerifyOriginalInventoryTransactions(const std::string& actor,const std::filesystem::path& legacy,
     const std::filesystem::path& directory) {
     Require(LoadPortableRuntimeState(legacy.string()) && !GetPortableRuntimeScriptStatePresent(),
@@ -801,9 +923,9 @@ void VerifyOriginalInventoryTransactions(const std::string& actor,const std::fil
         SameInventoryProperties(actor,negative,"Mixed-case restored struct fields were not normalized");
         unchanged(baseline,"Mixed-case canonical restore");
     }
-    // This generated v4 overlay is a test fixture, not spawned gameplay. It
-    // makes the original InitializeInventory branch reach the exact next
-    // required opcode after real InventoryItem reads and Count comparison.
+    // Only the fixed InitialInventory input is generated. Actor creation,
+    // GiveTo/Pawn.AddInventory, ammo linkage and base/state changes must all
+    // come from the unchanged original InitializeInventory bytecode.
     auto initialized=original;auto& properties=findActor(initialized).properties;
     properties.erase(std::remove_if(properties.begin(),properties.end(),[](const auto& property) {
         return property.key=="DeusEx.ScriptedPawn.InitialInventory";
@@ -815,26 +937,119 @@ void VerifyOriginalInventoryTransactions(const std::string& actor,const std::fil
     Require(QuestVr::WriteDurableSaveFile(generated.string(),initializedBytes) && LoadPortableRuntimeState(generated.string()),
         "Positive original Inventory class/count initialization fixture could not load");
     SameInventoryProperties(actor,positive,"Initialization fixture did not retain all8 independently typed slots");
+    const auto inventoryBefore=ReadPortableActorScriptProperty(actor,"Inventory");
+    Require(inventoryBefore.kind==Kind::Object && inventoryBefore.text.empty(),
+        "Positive original inventory creation control requires the selected pawn's actual empty linked inventory");
+    const auto actorsBeforeInitialization=GetPortableRuntimeMapActors(true).size();
+    const auto gcBeforeInitialization=GC::GetStats();
+    const auto revisionBeforeInitialization=GetPortableRuntimeWorldRevision();
+    const auto ammoClass=ReadPortableClassDefault(itemClass.text,"AmmoName");
+    Require(ammoClass.kind==Kind::Object && !ammoClass.text.empty() && ammoClass.text!="DeusEx.AmmoNone",
+        "Actual original WeaponPistol no longer supplies its required ammunition class");
     const auto initialize=ExecutePortableActorFunction(actor,"InitializeInventory");
-    Require(initialize.status==Status::Unsupported && initialize.function=="DeusEx.ScriptedPawn.InitializeInventory" &&
-        initialize.offset==253u && initialize.opcode==0x61u && initialize.error.find("native 278")!=std::string::npos,
-        "Original initialization stopped before its actual class cast or fabricated required Spawn: "+initialize.error+
+    Require(initialize.passed() && initialize.committed && initialize.function=="DeusEx.ScriptedPawn.InitializeInventory" &&
+        initialize.offset==770u && initialize.opcode==0x0bu && initialize.value.kind==Kind::Nothing &&
+        initialize.instructions!=0u && initialize.writes!=0u,
+        "Original InitializeInventory did not execute through its actual final Return: "+initialize.error+
         " at "+initialize.function+':'+std::to_string(initialize.offset));
-    unchanged(initializedBytes,"Original InitializeInventory Spawn refusal after actual class cast");
+    Require(GetPortableRuntimeMapActors(true).size()==actorsBeforeInitialization+2u &&
+        GetPortableRuntimeWorldRevision()==revisionBeforeInitialization+1u &&
+        GC::GetStats().numObjects==gcBeforeInitialization.numObjects+2u,
+        "Original Count=1 inventory initialization did not publish/root exactly one weapon and one ammo in one transaction");
+    SameInventoryProperties(actor,positive,"Original InitializeInventory changed its fixed class/count inputs");
+    const auto inventorySaved=directory/"original-initialized-inventory-v8.sav";
+    Require(SavePortableRuntimeState(inventorySaved.string()),"Original weapon/ammo inventory graph could not save");
+    const auto inventoryBytes=CheckpointBytes(inventorySaved);
+    const auto inventoryState=QuestVr::DecodeScriptSavedState(ScriptBlob(inventoryBytes));
+    Require(Word(inventoryBytes,4u)==8u && inventoryState.births.size()==2u,
+        "Original initialized weapon/ammo inventory omitted its codec5/v8 birth graph");
+    const auto weaponBirth=std::find_if(inventoryState.births.begin(),inventoryState.births.end(),[&](const auto& birth) {
+        return birth.classPath==itemClass.text;
+    });
+    const auto ammoBirth=std::find_if(inventoryState.births.begin(),inventoryState.births.end(),[&](const auto& birth) {
+        return birth.classPath==ammoClass.text;
+    });
+    Require(weaponBirth!=inventoryState.births.end() && ammoBirth!=inventoryState.births.end() && weaponBirth->path!=ammoBirth->path,
+        "Original inventory creation substituted unrelated or placeholder born classes");
+    const auto weapon=weaponBirth->path,ammo=ammoBirth->path;
+    const auto verifyInventoryGraph=[&]() {
+        const auto equal=[&](const std::string& target,const std::string& property,const Value& expected) {
+            Require(QuestVr::Vm::Equal(ReadPortableActorScriptProperty(target,property),expected),
+                "Original initialized inventory graph differs at "+target+'.'+property);
+        };
+        equal(actor,"Inventory",Value::Text(Kind::Object,ammo));
+        equal(ammo,"Inventory",Value::Text(Kind::Object,weapon));
+        equal(weapon,"Inventory",inventoryBefore);
+        equal(weapon,"AmmoType",Value::Text(Kind::Object,ammo));
+        equal(weapon,"AmmoName",ammoClass);
+        equal(ammo,"AmmoAmount",ReadPortableClassDefault(ammoClass.text,"AmmoAmount"));
+        equal(weapon,"PickupAmmoCount",ReadPortableClassDefault(itemClass.text,"PickupAmmoCount"));
+        equal(weapon,"ClipCount",ReadPortableClassDefault(itemClass.text,"ClipCount"));
+        for(const auto& born:{weapon,ammo}) {
+            equal(born,"Owner",Value::Text(Kind::Object,actor));
+            equal(born,"Instigator",Value::Text(Kind::Object,actor));
+            equal(born,"Base",Value::Text(Kind::Object,actor));
+            equal(born,"InitialState",Value::Text(Kind::Name,"Idle2"));
+            equal(born,"Physics",Value::Byte(0u));
+            for(const auto* flag:{"bHidden","bOnlyOwnerSee","bCarriedItem"}) equal(born,flag,Value::Bool(true));
+            for(const auto* flag:{"bCollideActors","bBlockActors","bBlockPlayers"}) equal(born,flag,Value::Bool(false));
+            Require(ReadPortableActorDispatchContext(born).stateName=="Idle2",
+                "Original GiveTo did not execute its real Idle2 state transition");
+        }
+        Require(Snapshot(weapon).meshPath==ReadPortableClassDefault(itemClass.text,"PlayerViewMesh").text &&
+            Snapshot(weapon).hidden && Snapshot(ammo).hidden,
+            "Original BecomeItem did not select the real PlayerViewMesh and hidden carried-item snapshots");
+    };
+    verifyInventoryGraph();
+    const auto pawnRecord=std::find_if(inventoryState.objects.begin(),inventoryState.objects.end(),[&](const auto& object) {
+        return object.path==actor;
+    });
+    Require(pawnRecord!=inventoryState.objects.end() && pawnRecord->lifecycle &&
+        pawnRecord->lifecycle->children==std::vector<std::string>{weapon,ammo} &&
+        pawnRecord->lifecycle->basedActors==std::vector<std::string>{weapon,ammo},
+        "Original inventory owner/base operations did not retain their actual ordered native reverse lists");
+    Require(ValidatePortableRuntimeState(inventorySaved.string()),"Original initialized inventory v8 graph failed read-only validation");
+    unchanged(inventoryBytes,"Original initialized inventory read-only validation");
+    GC::Collect();verifyInventoryGraph();unchanged(inventoryBytes,"Original initialized inventory GC rooting");
+    Require(LoadPortableRuntimeState(generated.string()) &&
+        GetPortableRuntimeMapActors(true).size()==actorsBeforeInitialization &&
+        GC::GetStats().numObjects==gcBeforeInitialization.numObjects,
+        "Pre-initialization restore retained retired weapon/ammo UObject allocations");
+    unchanged(initializedBytes,"Original initialized inventory removal");
+    Require(ValidatePortableRuntimeState(inventorySaved.string()) && LoadPortableRuntimeState(inventorySaved.string()),
+        "Original unknown weapon/ammo inventory graph could not cold-restore");
+    verifyInventoryGraph();unchanged(inventoryBytes,"Original initialized inventory cold v8 restore");
+    // StartUp must begin from the same input rather than a graph that was
+    // already initialized. Its next unsupported dependency remains a separate
+    // evidence gate; successful inventory creation is not campaign startup.
+    Require(LoadPortableRuntimeState(generated.string()),"Could not reset actual StartUp inventory fixture");
+    unchanged(initializedBytes,"Original StartUp pre-initialization baseline");
     Call(actor,"SetInitialState");
     Require(SavePortableRuntimeState(inspect.string()),"Actual StartUp + inventory continuation could not checkpoint");
     const auto startup=CheckpointBytes(inspect);
+    const auto startupActors=GetPortableRuntimeMapActors(true).size();
+    const auto startupRevision=GetPortableRuntimeWorldRevision();
+    const auto startupGc=GC::GetStats();
     const auto slice=ResumePortableActorState(actor);
-    Require(slice.status==Status::Unsupported && slice.function=="DeusEx.ScriptedPawn.InitializeInventory" &&
-        slice.offset==253u && slice.opcode==0x61u && slice.error.find("native 278")!=std::string::npos,
-        "Actual StartUp did not reach next required inventory Spawn or fabricated campaign startup: "+slice.error);
+    std::cout<<"ORIGINAL STARTUP NEXT DEPENDENCY status="<<static_cast<int>(slice.status)<<
+        " committed="<<slice.committed<<" error="<<slice.error<<" at "<<slice.function<<':'<<slice.offset<<
+        " opcode="<<static_cast<unsigned>(slice.opcode)<<'\n';
+    Require(slice.status==Status::Unsupported && !slice.committed &&
+        slice.function=="DeusEx.ScriptedPawn.FindTaggedActor" && slice.offset==61u &&
+        slice.opcode==0x62u && slice.error=="Unsupported runtime native 720",
+        "Actual StartUp did not reach the next required GetPlayerPawn binding or fabricated campaign startup: "+slice.error);
+    Require(GetPortableRuntimeMapActors(true).size()==startupActors &&
+        GetPortableRuntimeWorldRevision()==startupRevision &&
+        GC::GetStats().numObjects==startupGc.numObjects &&
+        GC::GetStats().memoryUsage==startupGc.memoryUsage,
+        "Rejected actual StartUp retained provisional inventory births, roots or world publication");
     unchanged(startup,"Actual StartUp inventory dependency rollback");
     Require(LoadPortableRuntimeState(legacy.string()) && !GetPortableRuntimeScriptStatePresent(),
         "Legacy restore retained InventoryItem overlay or composed state");
     SameInventoryProperties(actor,originalAuthored,"Legacy restore failed to recover all8 authored/inherited inventory slots");
     unchanged(originalLegacyBytes,"Legacy inventory/state reset");
     std::cout<<"ORIGINAL INVENTORY MEMBER writes/negative Count/optional zero/default class constraint, v4/v5 composition; rejections="<<
-        rejections<<"; actual class cast then exact InitializeInventory Spawn278 PC253 refusal + full StartUp rollback; no inventory spawned\n";
+        rejections<<"; actual InitializeInventory Return PC770, original owned WeaponPistol/ammo/GiveTo/base/Idle2/native links/v8 cold GC graph; StartUp remains a separate dependency gate\n";
 }
 
 void VerifyOriginalStateExecution(const std::string& actor, const std::filesystem::path& legacy,
@@ -1060,6 +1275,7 @@ void TestOriginal(const std::filesystem::path& root, const bool inventoryOnly = 
             if (humanTests != 0u && robotTests != 0u && birdTests != 0u) break;
             if (!actor.pawn || actor.meshPath.empty() || !IsA(actor, "ScriptedPawn")) continue;
             if (humanTests == 0u && !IsA(actor, "Robot") && !IsA(actor, "Animal")) {
+                VerifyOriginalDormantSpawn(root,actor.objectPath,checkpoint,temporary.directory);
                 VerifyOriginalInventoryTransactions(actor.objectPath, checkpoint, temporary.directory);
                 if (inventoryOnly) { ++humanTests; continue; }
                 VerifyAuthoredStack(root, actor.objectPath);

@@ -25,6 +25,14 @@ See [current evidence and limitations](docs/STATUS.md).
 See [original script execution](docs/PORTABLE-SCRIPT-EXECUTION.md) for the
 supported interpreter path and tests, and [script-state saves](docs/SCRIPT_STATE_SAVE.md)
 for the scoped persistence boundary and remaining map-archive requirements.
+The [runtime actor birth foundation](docs/ACTOR-SPAWN.md) now executes native
+Spawn with original callbacks, bounded collision registration and transactional
+rollback. Codec v5 / checkpoint v8 cold-restore real born identities and frozen
+defaults. The original InitializeInventory helper creates and links a real
+weapon/ammo graph in isolated host tests; automatic StartUp next requires the
+actual player-pawn binding. This is not full campaign startup or newly accepted
+Quest gameplay. Runtime actor texture replacement is ARM-compiled but still
+requires device performance and visual verification.
 The [installed Quest test build](docs/QUEST-TEST-BUILD.md) remains frozen while
 the user tests it. Subsequent offline source work retains
 [authored state metadata](docs/AUTHORED-STATE-FOUNDATION.md); it does not enable
@@ -35,8 +43,9 @@ not automatic startup. [Explicit state execution](docs/STATE-EXECUTION.md) adds
 transactional state control and persistence, still without a live AI scheduler.
 [Original authored struct support](docs/AUTHORED-STRUCTS.md) connects declaration
 order and package-local member values to typed runtime writes and saves,
-including the eight original InitialInventory slots. Inventory spawning and
-campaign startup remain unfinished; this source update is not a new installed APK.
+including the eight original InitialInventory slots. Complete authored player
+inventory and campaign startup remain unfinished; this source update is not a
+new installed APK.
 [Original object/class casts](docs/OBJECT-CASTS.md) now have distinct identity
 and declaration-name rules; final original-data verification is in progress.
 

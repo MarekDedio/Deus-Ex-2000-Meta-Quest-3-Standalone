@@ -18,6 +18,7 @@
 #include <mutex>
 #include <numeric>
 #include <set>
+#include <string_view>
 #include <unordered_map>
 #include <vector>
 #include <sys/stat.h>
@@ -651,6 +652,9 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         turnLatch_ = fireLatch_ = inventoryCycleLatch_ = false;
         runtimeAvailable_ = false;
         hasPublishedRuntimeWorldRevision_ = false;
+        runtimeActorTextureUploadPending_ = false;
+        actorMaterialMetadata_.clear();
+        actorMaterialProbeFallbackLogs_ = 0u;
         initialPreparationPending_ = true;
         initialPreparationFailed_ = false;
         pendingMapName_.clear();
@@ -869,7 +873,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         }
         const OVR::Vector3f safeLocalHead =
             StageToLocal(previousHeadStage_, worldPosition_);
-        const bool mapLoading = !runtimeAvailable_ ||
+        const bool mapLoading = !runtimeAvailable_ || runtimeActorTextureUploadPending_ ||
             !pendingMapName_.empty() || !transitionMapName_.empty();
         const bool playerAlive = !mapLoading && GetPortableRuntimePlayerHealth() > 0.0f;
         if (!mapLoading && frame.Clicked(frame.kButtonMenu)) {
@@ -1020,7 +1024,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             }
         }
         const bool firePressed = frame.RightRemoteIndexTrigger > 0.75f;
-        if (gameplayActive && pendingMapName_.empty() && transitionMapName_.empty() &&
+        if (gameplayActive && !runtimeActorTextureUploadPending_ && pendingMapName_.empty() && transitionMapName_.empty() &&
             frame.RightRemoteTracked && firePressed && !fireLatch_) {
             const std::vector<std::string> inventory = GetPortableRuntimeInventoryItems();
             const float weaponDamage = SelectedWeaponDamage(inventory);
@@ -1041,7 +1045,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         }
         fireLatch_ = firePressed;
         const bool gripPressed = frame.RightRemoteGripTrigger > 0.75f;
-        if (gameplayActive && pendingMapName_.empty() && transitionMapName_.empty() &&
+        if (gameplayActive && !runtimeActorTextureUploadPending_ && pendingMapName_.empty() && transitionMapName_.empty() &&
             gripPressed && !inventoryCycleLatch_) {
             const std::size_t count = GetPortableRuntimeInventoryCount();
             if (count != 0u) selectedInventoryIndex_ = (selectedInventoryIndex_ + 1u) % count;
@@ -1064,7 +1068,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             !dismissedMenuWithB && frame.Clicked(frame.kButtonB)) LoadNextMap();
         // Travel can start the worker. Run it after this frame's other portable
         // runtime actions so stale gameplayActive cannot write during loading.
-        if (gameplayActive && mapTravelCooldown_ <= 0.0f &&
+        if (gameplayActive && !runtimeActorTextureUploadPending_ && mapTravelCooldown_ <= 0.0f &&
             pendingMapName_.empty() && transitionMapName_.empty()) {
             CheckTravelTriggers(frame.HeadPose.Translation);
         }
@@ -1077,8 +1081,9 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         // actor meshes from it until that worker has finished and the staged
         // transition owns the new snapshots/textures.
         PollRuntimeActorPublication();
+        AdvanceRuntimeActorTexturePublication();
         if (runtimeAvailable_ && pendingMapName_.empty() && transitionPhase_ == MapTransitionPhase::Idle &&
-            actorGeometryBuild_) {
+            !runtimeActorTextureUploadPending_ && actorGeometryBuild_) {
             try {
                 AdvanceActorGeometry();
             } catch (const std::exception& error) {
@@ -1090,7 +1095,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         }
         AdvanceMapTransition();
         CompletePendingMapLoad();
-        const bool mapLoadingNow = !runtimeAvailable_ ||
+        const bool mapLoadingNow = !runtimeAvailable_ || runtimeActorTextureUploadPending_ ||
             !pendingMapName_.empty() || !transitionMapName_.empty();
         if (hudLabel_ != nullptr) {
             hudLabel_->SetLocalPose(QuestVr::HeadLockedHudPose(frame.HeadPose));
@@ -1265,12 +1270,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             pendingWorldTextureId_ = 0u;
         }
         pendingWorldTextureRgba_.clear();
-        if (pendingActorTextureId_ != 0u) {
-            glDeleteTextures(1, &pendingActorTextureId_);
-            pendingActorTextureId_ = 0u;
-        }
-        pendingActorTextureRgba_.clear();
-        pendingActorTexturePaths_.clear();
+        ClearPendingActorTextureUpload();
         pendingWorldMesh_.chunks.clear();
         StopAmbientAudio();
         for (auto& renderer : worldRenderers_) renderer.Shutdown();
@@ -1301,6 +1301,10 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             actorTexture_ = {};
         }
         actorTexturePaths_.clear();
+        actorTexturePolyFlags_.clear();
+        actorMaskedTextureLayers_.clear();
+        actorMaterialMetadata_.clear();
+        actorMaterialProbeFallbackLogs_ = 0u;
         collisionTriangles_.clear();
         collisionGrid_.clear();
         oversizedCollisionTriangles_.clear();
@@ -1373,6 +1377,12 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         OVRFW::GlGeometry::Descriptor texturedChunk;
         std::uint32_t texturedChunkPolyFlags{};
         std::deque<ActorGeometryPart> parts;
+    };
+
+    struct ActorMaterialMetadata {
+        std::vector<std::string> texturePaths;
+        std::vector<std::int32_t> materialTextureIndices;
+        std::vector<std::pair<std::uint16_t, std::uint32_t>> materials;
     };
 
     struct MeshVertex {
@@ -1809,7 +1819,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         build.spriteDescriptor = BuildCrossedSpriteDescriptor();
         build.cubeDescriptor = OVRFW::BuildUnitCubeDescriptor();
         for (std::size_t layer = 0; layer < actorTexturePaths_.size(); ++layer) {
-            build.textureLayers.emplace(actorTexturePaths_[layer], layer);
+            build.textureLayers.emplace(FoldActorAssetPath(actorTexturePaths_[layer]), layer);
         }
         // Targeting/travel metadata is available immediately, independently of
         // delayed visual chunks. Preserve the exact previous ordering/filter.
@@ -1841,15 +1851,128 @@ class DeusExQuestApp final : public OVRFW::XrApp {
              actorGeometryOperationsPerFrame_, actorGeometryChunkVertices_);
     }
 
+    static std::string FoldActorAssetPath(std::string path) {
+        for (auto& character : path)
+            if (character >= 'A' && character <= 'Z') character += 'a' - 'A';
+        return path;
+    }
+
+    void NormalizeActorMaskedTextureAliases() {
+        // Saved references can spell the same UObject differently. The CPU
+        // atlas may retain both spellings while only one requested masking;
+        // pair every alias with the same actual masked layer before geometry.
+        std::unordered_map<std::string, std::size_t> layers;
+        for (std::size_t index = 0u; index < actorTexturePaths_.size(); ++index)
+            layers.emplace(FoldActorAssetPath(actorTexturePaths_[index]), index);
+        for (std::size_t index = 0u; index < actorMaskedTextureLayers_.size(); ++index) {
+            if (actorMaskedTextureLayers_[index] >= 0) continue;
+            const auto masked = layers.find(FoldActorAssetPath(actorTexturePaths_[index]) + "#masked");
+            if (masked != layers.end()) actorMaskedTextureLayers_[index] = static_cast<std::int32_t>(masked->second);
+        }
+    }
+
+    const ActorMaterialMetadata* ActorAssetMaterialMetadata(
+        const std::string& path, const bool brush) {
+        const auto key = std::string(brush ? "brush:" : "mesh:") + FoldActorAssetPath(path);
+        const auto found = actorMaterialMetadata_.find(key);
+        if (found != actorMaterialMetadata_.end()) return &found->second;
+        if (actorMaterialMetadata_.size() >= 4096u)
+            throw std::runtime_error("Actor material metadata cache exceeds its map budget");
+        // Copies the already-decoded asset once, not on every actor revision.
+        // This runs only on the current portable-runtime owner, never a worker.
+        PortableLodMesh mesh;
+        try {
+            mesh = brush ? GetPortableRuntimeBrush(path) : GetPortableRuntimeMesh(path);
+        } catch (const std::runtime_error& error) {
+            // These getters' precise unavailable-asset contract is also handled
+            // by PrepareNextActorGeometry's per-asset fallback. Do not turn an
+            // unsupported authored brush into a whole-world suspension merely
+            // while probing its materials. No successful metadata is cached,
+            // so later asset preparation can make the same identity usable.
+            const std::string_view reason(error.what());
+            const std::string_view unavailable = brush ? "Portable actor brush is not decoded: " :
+                "Portable actor mesh is not decoded: ";
+            if (reason.substr(0u, unavailable.size()) != unavailable ||
+                reason.substr(unavailable.size()) != path) throw;
+            if (actorMaterialProbeFallbackLogs_ < 8u) {
+                ++actorMaterialProbeFallbackLogs_;
+                ALOG("DeusExQuest: actor material probe retains per-asset fallback for %.256s: %.384s",
+                    path.c_str(), error.what());
+            }
+            return nullptr;
+        }
+        ActorMaterialMetadata metadata;
+        metadata.texturePaths = std::move(mesh.texturePaths);
+        metadata.materialTextureIndices = std::move(mesh.materialTextureIndices);
+        std::set<std::pair<std::uint16_t, std::uint32_t>> materials;
+        for (const auto& vertex : mesh.triangles) materials.emplace(vertex.material, vertex.polyFlags);
+        metadata.materials.assign(materials.begin(), materials.end());
+        return &actorMaterialMetadata_.emplace(key, std::move(metadata)).first->second;
+    }
+
+    bool ActorTextureResourcesMissing(const std::vector<PortableActorSnapshot>& actors) {
+        std::unordered_map<std::string, std::size_t> available;
+        for (std::size_t index = 0u; index < actorTexturePaths_.size(); ++index)
+            available.emplace(FoldActorAssetPath(actorTexturePaths_[index]), index);
+        const auto missing = [&](const std::string& path, const bool masked) {
+            if (path.empty()) return false;
+            const auto found = available.find(FoldActorAssetPath(path));
+            if (!actorTexture_.IsValid() || found == available.end()) return true;
+            const auto index = found->second;
+            const bool needsMask = masked ||
+                (index < actorTexturePolyFlags_.size() && (actorTexturePolyFlags_[index] & 2u) != 0u);
+            if (!needsMask) return false;
+            if (index >= actorMaskedTextureLayers_.size()) return true;
+            const auto maskedIndex = actorMaskedTextureLayers_[index];
+            return maskedIndex < 0 || static_cast<std::size_t>(maskedIndex) >= actorTexturePaths_.size() ||
+                FoldActorAssetPath(actorTexturePaths_[static_cast<std::size_t>(maskedIndex)]) !=
+                    FoldActorAssetPath(path) + "#masked";
+        };
+        for (const auto& actor : actors) {
+            const bool sprite = actor.drawType == 1u || actor.drawType == 4u ||
+                actor.drawType == 5u || actor.drawType == 7u;
+            if (sprite && missing(actor.texturePath, actor.style == 2u)) return true;
+            const auto meshMissing = [&](const std::string& path, const bool brush) {
+                if (path.empty()) return false;
+                const auto* metadata = ActorAssetMaterialMetadata(path, brush);
+                if (!metadata) return false;
+                for (const auto& [material, sourceFlags] : metadata->materials) {
+                    const auto selected = QuestVr::ResolveActorMeshMaterial(actor.materialOverrides,
+                        metadata->texturePaths, metadata->materialTextureIndices, material);
+                    if (missing(selected.texturePath, (sourceFlags & 2u) != 0u || actor.style == 2u))
+                        return true;
+                }
+                return false;
+            };
+            if (meshMissing(actor.meshPath, false) ||
+                (actor.mover && meshMissing(actor.brushPath, true))) return true;
+        }
+        return false;
+    }
+
     void RebuildRuntimeActorPublication() {
         // The caller owns the loaded runtime. A background map worker or staged
         // transition must never race this snapshot/revision read.
-        if (!runtimeAvailable_ || !pendingMapName_.empty() || !transitionMapName_.empty() ||
+        if (!runtimeAvailable_ || runtimeActorTextureUploadPending_ || !pendingMapName_.empty() || !transitionMapName_.empty() ||
             transitionPhase_ != MapTransitionPhase::Idle)
             throw std::runtime_error("Actor publication requested while the map runtime is unavailable");
         const auto revision = GetPortableRuntimeWorldRevision();
         auto snapshots = GetPortableRuntimeMapActors();
         auto lights = BuildMapLights(snapshots, activeMapUnrealOrigin_);
+        PortableTextureArray replacementTextures;
+        // Include inactive actors, as map preparation does: quick-load/pickup
+        // revival must not depend on the currently visible subset. A new Skin,
+        // sprite, mesh material or masked variant needs fresh layer ordinals.
+        const bool replaceTextures = ActorTextureResourcesMissing(GetPortableRuntimeMapActors(true));
+        if (replaceTextures) {
+            const auto started = std::chrono::steady_clock::now();
+            replacementTextures = BuildPortableRuntimeActorTextureArray(96u, 96u);
+            if (!replacementTextures.passed)
+                throw std::runtime_error("Runtime actor material preparation failed");
+            ALOG("DeusExQuest: missing runtime actor materials prepared on runtime owner in %.2f ms; %zu layers; headset frame cost unverified",
+                std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count(),
+                replacementTextures.texturePaths.size());
+        }
         // Retire old mesh-pose jobs before replacing the snapshot ordinal list.
         // BuildActorMarkers invalidates their epoch and uploads only fresh actor
         // chunks incrementally; the existing BSP and static atlas stay intact.
@@ -1859,7 +1982,13 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         // Refresh the actor-lighting input only. Static BSP lightmaps still
         // describe their map-preparation bake, not a dynamic lighting solver.
         ReconcileSpatialAudioEmitters(actorSnapshots_);
-        BuildActorMarkers();
+        if (replaceTextures) {
+            if (!BeginActorTextureUpload(std::move(replacementTextures)))
+                throw std::runtime_error("Runtime actor material GPU allocation failed");
+            runtimeActorTextureUploadPending_ = true;
+            interactionStatus_ = "UPDATING ACTOR MATERIALS...";
+            interactionStatusSeconds_ = 3.0f;
+        } else BuildActorMarkers();
         publishedRuntimeWorldRevision_ = revision;
         hasPublishedRuntimeWorldRevision_ = true;
         inventoryMenuDirty_ = true;
@@ -1874,6 +2003,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         hasPublishedRuntimeWorldRevision_ = false;
         restorePoseAfterTransition_ = false;
         DestroyActorGeometry();
+        ClearPendingActorTextureUpload();
         {
             std::lock_guard<std::mutex> lock(audioMutex_);
             spatialAudioEmitters_.clear();
@@ -1899,13 +2029,34 @@ class DeusExQuestApp final : public OVRFW::XrApp {
     }
 
     void PollRuntimeActorPublication() {
-        if (!runtimeAvailable_ || !pendingMapName_.empty() || !transitionMapName_.empty() ||
+        if (!runtimeAvailable_ || runtimeActorTextureUploadPending_ || !pendingMapName_.empty() || !transitionMapName_.empty() ||
             transitionPhase_ != MapTransitionPhase::Idle) return;
         const auto revision = GetPortableRuntimeWorldRevision();
         if (hasPublishedRuntimeWorldRevision_ && revision == publishedRuntimeWorldRevision_) return;
         if (TryRebuildRuntimeActorPublication())
             ALOG("DeusExQuest: committed runtime actor revision %llu queued; %zu live actors; incremental GPU rebuild, static BSP/lightmap unchanged",
                 static_cast<unsigned long long>(revision), actorSnapshots_.size());
+    }
+
+    void AdvanceRuntimeActorTexturePublication() {
+        if (!runtimeActorTextureUploadPending_) return;
+        try {
+            if (!runtimeAvailable_ || !pendingMapName_.empty() || !transitionMapName_.empty() ||
+                transitionPhase_ != MapTransitionPhase::Idle)
+                throw std::runtime_error("Runtime actor atlas upload lost exclusive publication ownership");
+            if (!UploadActorTextureLayers(2u))
+                throw std::runtime_error("Runtime actor atlas layer upload failed");
+            if (pendingActorTextureLayersUploaded_ == pendingActorTextureLayers_) {
+                runtimeActorTextureUploadPending_ = false;
+                // Every actor chunk was retired before atlas allocation. Build
+                // only against the completed replacement's current ordinals.
+                BuildActorMarkers();
+                ALOG("DeusExQuest: runtime actor material publication complete; geometry queued, BSP/static atlas retained");
+            }
+        } catch (const std::exception& error) {
+            ALOG("DeusExQuest: runtime actor material publication failed: %s", error.what());
+            SuspendRuntimeActorPublication("ACTOR MATERIAL UPLOAD FAILED - RESTART SESSION");
+        }
     }
 
     void QueueActorGeometryPart(
@@ -2042,7 +2193,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                 for (const auto& [material,sourceFlags] : materials) {
                     const auto selected = QuestVr::ResolveActorMeshMaterial(actor.materialOverrides,
                         mesh.texturePaths,mesh.materialTextureIndices,material);
-                    const auto layer = build.textureLayers.find(selected.texturePath);
+                    const auto layer = build.textureLayers.find(FoldActorAssetPath(selected.texturePath));
                     if (layer == build.textureLayers.end()) continue;
                     const auto textureFlags = layer->second < actorTexturePolyFlags_.size() ?
                         actorTexturePolyFlags_[layer->second] : 0u;
@@ -2077,7 +2228,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         const bool sprite = actor.drawType == 1u || actor.drawType == 4u ||
             actor.drawType == 5u || actor.drawType == 7u;
         if (!rendered && sprite && !actor.texturePath.empty()) {
-            const auto layer = build.textureLayers.find(actor.texturePath);
+            const auto layer = build.textureLayers.find(FoldActorAssetPath(actor.texturePath));
             if (layer != build.textureLayers.end()) {
                 const float scale = (actor.inventory ? 0.35f : 0.65f)*actor.drawScale;
                 const auto textureFlags = layer->second < actorTexturePolyFlags_.size() ? actorTexturePolyFlags_[layer->second] : 0u;
@@ -2331,6 +2482,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
 
     void DestroySceneGeometry() {
         CancelActorGeometryBuild();
+        ClearPendingActorTextureUpload();
         for (auto& renderer : worldRenderers_) renderer.Shutdown();
         for (auto& renderer : texturedRenderers_) renderer.Shutdown();
         for (auto& renderer : bakedWorldRenderers_) renderer.Shutdown();
@@ -2354,6 +2506,10 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             actorTexture_ = {};
         }
         actorTexturePaths_.clear();
+        actorTexturePolyFlags_.clear();
+        actorMaskedTextureLayers_.clear();
+        actorMaterialMetadata_.clear();
+        actorMaterialProbeFallbackLogs_ = 0u;
         collisionTriangles_.clear();
         collisionGrid_.clear();
         oversizedCollisionTriangles_.clear();
@@ -2517,12 +2673,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             }
             pendingWorldTextureRgba_.clear();
             ClearPendingStaticLightmapUpload();
-            if (pendingActorTextureId_ != 0u) {
-                glDeleteTextures(1, &pendingActorTextureId_);
-                pendingActorTextureId_ = 0u;
-            }
-            pendingActorTextureRgba_.clear();
-            pendingActorTexturePaths_.clear();
+            ClearPendingActorTextureUpload();
             pendingWorldMesh_.chunks.clear();
             preparedActorSnapshots_.clear();
             preparedSpatialAudioEmitters_.clear();
@@ -2549,7 +2700,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
     void BeginMapLoad(
         const std::string& mapName,
         const std::string& restoreRuntimePath = {}) {
-        if (!pendingMapName_.empty() || !transitionMapName_.empty() ||
+        if (runtimeActorTextureUploadPending_ || !pendingMapName_.empty() || !transitionMapName_.empty() ||
             (runtimeAvailable_ && mapName == currentMapName_)) {
             return;
         }
@@ -2612,9 +2763,6 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                 if (!runtime.passed || !meshes.passed) {
                     throw std::runtime_error("runtime or actor mesh replacement failed");
                 }
-                preparation.actorTextures = BuildPortableRuntimeActorTextureArray(96, 96);
-                if (!preparation.actorTextures.passed)
-                    throw std::runtime_error("actor texture preparation failed");
                 // Restore can hide an authored light/pawn/pickup. Build masks
                 // against the complete authored actor list and preserve every
                 // duplicate/inactive static-list ordinal before restoration.
@@ -2630,6 +2778,12 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                     !LoadPortableRuntimeState(restoreRuntimePath)) {
                     throw std::runtime_error("saved runtime restoration failed");
                 }
+                // Save restoration can introduce born meshes or changed Skin
+                // materials. The worker still exclusively owns the runtime;
+                // prepare the atlas from the complete RESTORED population.
+                preparation.actorTextures = BuildPortableRuntimeActorTextureArray(96, 96);
+                if (!preparation.actorTextures.passed)
+                    throw std::runtime_error("restored actor texture preparation failed");
                 preparation.actors = GetPortableRuntimeMapActors();
                 preparation.lights = BuildMapLights(preparation.actors,preparation.worldMesh.lightmap.unrealOrigin);
                 return true;
@@ -2719,7 +2873,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         // Leave the single-slot request intact while a worker replaces the
         // runtime or a staged upload still owns it. Consumption must not make
         // gameplay diagnostics race with a transition.
-        if (!pendingMapName_.empty() || !transitionMapName_.empty()) return;
+        if (runtimeActorTextureUploadPending_ || !pendingMapName_.empty() || !transitionMapName_.empty()) return;
         constexpr const char* requestPath =
             "/data/user/0/dev.deusex.questvr.smoketest/files/DeusEx/quest-map.request";
         std::FILE* file = std::fopen(requestPath, "rb");
@@ -3919,7 +4073,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
     }
 
     void SaveGameState() {
-        if (!runtimeAvailable_ || !headTrackingValid_ || !pendingChoices_.empty() ||
+        if (!runtimeAvailable_ || runtimeActorTextureUploadPending_ || !headTrackingValid_ || !pendingChoices_.empty() ||
             !pendingMapName_.empty() || !transitionMapName_.empty()) return;
         bool saved = false;
         std::uint64_t generation{};
@@ -3966,7 +4120,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
     }
 
     void LoadGameState() {
-        if (!runtimeAvailable_ || !headTrackingValid_ ||
+        if (!runtimeAvailable_ || runtimeActorTextureUploadPending_ || !headTrackingValid_ ||
             !pendingMapName_.empty() || !transitionMapName_.empty()) return;
         try {
             const std::string prefix = QuickSavePrefix();
@@ -5147,6 +5301,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         actorTexturePaths_ = std::move(array.texturePaths);
         actorTexturePolyFlags_ = std::move(array.texturePolyFlags);
         actorMaskedTextureLayers_ = std::move(array.maskedTextureLayers);
+        NormalizeActorMaskedTextureAliases();
         return actorTexture_.IsValid();
     }
 
@@ -5156,7 +5311,16 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             array.decodedTextures,
             array.texturePaths.size(),
             array.failedTextures);
-        if (!array.passed || array.rgba.empty() || array.texturePaths.empty()) return false;
+        if (!array.passed || array.rgba.empty() || array.texturePaths.empty() ||
+            pendingActorTextureId_ != 0u || array.width == 0u || array.height == 0u ||
+            array.width > 2048u || array.height > 2048u || array.texturePaths.size() > 256u ||
+            array.texturePolyFlags.size() != array.texturePaths.size() ||
+            array.maskedTextureLayers.size() != array.texturePaths.size() ||
+            array.rgba.size() != static_cast<std::size_t>(array.width) * array.height *
+                array.texturePaths.size() * 4u) return false;
+        if (std::any_of(array.maskedTextureLayers.begin(), array.maskedTextureLayers.end(),
+            [&](const auto index) { return index < -1 || (index >= 0 &&
+                static_cast<std::size_t>(index) >= array.texturePaths.size()); })) return false;
         GLuint texture{};
         glGenTextures(1, &texture);
         glBindTexture(GL_TEXTURE_2D_ARRAY, texture);
@@ -5193,6 +5357,18 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         return true;
     }
 
+    void ClearPendingActorTextureUpload() {
+        if (pendingActorTextureId_ != 0u) glDeleteTextures(1, &pendingActorTextureId_);
+        pendingActorTextureId_ = 0u;
+        pendingActorTextureWidth_ = pendingActorTextureHeight_ = 0u;
+        pendingActorTextureLayers_ = pendingActorTextureLayersUploaded_ = 0u;
+        pendingActorTextureRgba_.clear();
+        pendingActorTexturePaths_.clear();
+        pendingActorTexturePolyFlags_.clear();
+        pendingActorMaskedTextureLayers_.clear();
+        runtimeActorTextureUploadPending_ = false;
+    }
+
     bool UploadActorTextureLayers(std::uint32_t maximumLayers) {
         if (pendingActorTextureId_ == 0u || maximumLayers == 0u ||
             pendingActorTextureLayersUploaded_ >= pendingActorTextureLayers_) {
@@ -5223,6 +5399,10 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         if (error != GL_NO_ERROR) return false;
         pendingActorTextureLayersUploaded_ += layers;
         if (pendingActorTextureLayersUploaded_ == pendingActorTextureLayers_) {
+            // Renderer commands copy texture handles. Never retire the prior
+            // atlas while any actor chunk can still address its old layers.
+            if (actorTexturedRendererIndex_ != invalidRendererIndex_) return false;
+            if (actorTexture_.IsValid()) OVRFW::FreeTexture(actorTexture_);
             actorTexture_ = OVRFW::GlTexture(
                 pendingActorTextureId_,
                 GL_TEXTURE_2D_ARRAY,
@@ -5233,6 +5413,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             actorTexturePaths_ = std::move(pendingActorTexturePaths_);
             actorTexturePolyFlags_ = std::move(pendingActorTexturePolyFlags_);
             actorMaskedTextureLayers_ = std::move(pendingActorMaskedTextureLayers_);
+            NormalizeActorMaskedTextureAliases();
             ALOG(
                 "DeusExQuest: staged actor texture upload complete: %u layers at %ux%u",
                 pendingActorTextureLayers_,
@@ -5453,6 +5634,9 @@ class DeusExQuestApp final : public OVRFW::XrApp {
     std::vector<std::string> actorTexturePaths_;
     std::vector<std::uint32_t> actorTexturePolyFlags_;
     std::vector<std::int32_t> actorMaskedTextureLayers_;
+    std::unordered_map<std::string, ActorMaterialMetadata> actorMaterialMetadata_;
+    std::size_t actorMaterialProbeFallbackLogs_{};
+    bool runtimeActorTextureUploadPending_{};
     static constexpr std::size_t invalidRendererIndex_ =
         std::numeric_limits<std::size_t>::max();
     std::size_t actorWorldRendererIndex_{invalidRendererIndex_};

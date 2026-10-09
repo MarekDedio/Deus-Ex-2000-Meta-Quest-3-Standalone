@@ -1,5 +1,44 @@
 # Port status
 
+## Real actor births, collision registration and cold graphs (2026-10-09)
+
+- Native Spawn278 creates actual loaded Actor classes with frozen birth
+  defaults, original callback/zone/base/notification order and transactional
+  rollback. Cached actor collision registration now supports SetCollision262,
+  SetCollisionSize283 and Spawn's InitBase overlap path; it is not general
+  movement physics, Touch/encroachment or a complete startup scheduler.
+- Codec5 / checkpoint8 preserve real born identities, exact appended Level
+  slots, frozen typed defaults, instance/state/clock overlays and native links.
+  Cold graph replacement and legacy birth-tail clearing are atomic and tested;
+  provisional and retired birth allocations are collected at API boundaries.
+- Commit/load prepare newly referenced CPU geometry. Quest retires actor chunks
+  before staged replacement texture upload; cold-map load prepares materials
+  after save restoration. Case-folded aliases retain masked bindings, and
+  unavailable assets preserve per-object fallback. ARM64 compilation passes;
+  replacement-GPU correctness and owner-thread atlas frame cost remain untested
+  on the headset. The accepted player/body APK remains installed unchanged.
+- Final host suite: 47 passes / three optional original-data skips (50 entries).
+  Separate full original actor, runtime and class-default integrations pass on
+  the owned installation (101,375 script objects; 996 defaults/lifecycle checks).
+  Generated actual-VM Spawn controls pass 1,416 checks / 37 refusals; cached
+  overlap controls pass 6,078 / 18; structural codec controls pass 4,480 / 4,133.
+- Unchanged original InitializeInventory reaches its real Return at PC770,
+  creating WeaponPistol + Ammo10mm and their owned/base/Idle2/native-link graph.
+  Cold v8 restoration and GC pass. Actual StartUp next stops at native720
+  GetPlayerPawn in ScriptedPawn.FindTaggedActor PC61/opcode0x62 with full rollback,
+  not fabricated startup success. Inputs for this positive inventory test are
+  explicitly generated; a complete authored player pawn is still required.
+- Returned-actor visual diagnostics exposed the close-up camera discarding
+  pitch. Corrected yaw/pitch orbit passes 41 controls. The inspected elevated
+  GlockPickup frame shows textured barrel/trigger/grip and passes the unchanged
+  1% coverage gate at 2.0434%; initial edge-on failures remain retained. This
+  single CPU fixture is not Quest GPU or original-renderer equivalence. See
+  [ACTOR-SPAWN.md](ACTOR-SPAWN.md) and [ACTOR-VISUAL-TESTING.md](ACTOR-VISUAL-TESTING.md).
+- This supersedes earlier Spawn/reflected-collision limitations below, not
+  completion criteria. Automatic authored player/world startup, AI/timers/latent
+  behavior, campaign travel archives, general physics, live GPU animation,
+  campaign progression and device performance remain unfinished.
+
 ## Actor ownership, attachment and deletion (2026-10-09)
 
 - Original SetOwner272/SetBase298/Destroy279 now run real synchronous callbacks

@@ -5,6 +5,7 @@
 #include "quest_map_lighting.h"
 #include "quest_static_lightmap_cache.h"
 #include "actor_scene_preview.h"
+#include "quest_script_dispatch.h"
 
 #include <algorithm>
 #include <array>
@@ -31,6 +32,7 @@ struct AuthoredLightingPreview {
     QuestVr::StaticLightmapCache staticLightmaps;
     ActorScenePreview actors;
     std::string scriptFunction;
+    std::string scriptResultActor;
     std::size_t scriptInstructions{}, scriptWrites{};
 };
 
@@ -217,6 +219,9 @@ inline AuthoredLightingPreview BuildAuthoredLightingPreview(Scene& scene,
     const auto mapRuntime = LoadPortableRuntimeMap(package);
     if (!mapRuntime.passed) throw std::runtime_error("Original map runtime failed for authored lighting");
     metadata.unresolvedMapClasses = mapRuntime.unresolvedClasses;
+    auto effectivePoseOptions=poseOptions;
+    if (poseOptions.scriptUseResultActor && poseOptions.scriptFunction.empty())
+        throw std::runtime_error("Returned-actor isolation requires an original compiled function");
     if (!poseOptions.scriptFunction.empty()) {
         const auto result = ExecutePortableActorFunction(poseOptions.actorPath,
             poseOptions.scriptFunction, poseOptions.scriptArguments);
@@ -225,6 +230,18 @@ inline AuthoredLightingPreview BuildAuthoredLightingPreview(Scene& scene,
         metadata.scriptFunction = result.function;
         metadata.scriptInstructions = result.instructions;
         metadata.scriptWrites = result.writes;
+        if (poseOptions.scriptUseResultActor) {
+            if (result.value.kind!=QuestVr::Vm::Kind::Object || result.value.text.empty())
+                throw std::runtime_error("Original helper did not return a nonnull Actor Object");
+            const auto candidates=GetPortableRuntimeMapActors();
+            const auto found=std::find_if(candidates.begin(),candidates.end(),[&](const auto& actor) {
+                return QuestVr::ScriptDispatch::FoldName(actor.objectPath)==
+                    QuestVr::ScriptDispatch::FoldName(result.value.text);
+            });
+            if (found==candidates.end()) throw std::runtime_error("Original helper result is not a published current-map Actor");
+            metadata.scriptResultActor=found->objectPath;
+            effectivePoseOptions.actorPath=found->objectPath;
+        }
     }
     const auto actors = GetPortableRuntimeMapActors();
     metadata.runtimeActors = actors.size();
@@ -263,7 +280,7 @@ inline AuthoredLightingPreview BuildAuthoredLightingPreview(Scene& scene,
         metadata.baked = true;
     }
     if (includeActors) metadata.actors = AppendActorScenePreview(scene,actors,
-        {verified.x,verified.y,verified.z},lights,applyLighting,poseOptions);
+        {verified.x,verified.y,verified.z},lights,applyLighting,effectivePoseOptions);
     return metadata;
 }
 

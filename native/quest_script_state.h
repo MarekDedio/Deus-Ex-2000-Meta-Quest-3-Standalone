@@ -43,13 +43,24 @@ struct ScriptSavedClassDefaults {
     std::string classPath;
     std::vector<ScriptSavedProperty> properties;
 };
+struct ScriptSavedBirth {
+    std::string path, classPath;
+    std::uint32_t worldActorIndex{};
+    // Freeze the concrete CDO's mutable patch block at birth. Unchanged slots
+    // retain the immutable authored baseline, never later mutable CDO patches.
+    // Empty snapshots are valid; instance overlays are separate copied values.
+    std::vector<ScriptSavedProperty> frozenDefaults;
+};
 struct ScriptSavedState {
     std::string mapName;
     std::vector<ScriptSavedObject> objects;
     std::vector<ScriptSavedClassDefaults> classDefaults{};
+    std::vector<ScriptSavedBirth> births{};
 };
 struct ScriptStateLimits {
     std::size_t maxBytes{32u << 20u};
+    // Births and their optional overlays share one actor identity. Concrete
+    // mutable class-default records consume additional identities as before.
     std::size_t maxObjects{4096u}, maxProperties{65'536u};
     std::size_t totalValueNodes{262'144u}, maxStringBytes{8192u}, maxDepth{32u};
     std::size_t maxStateLocals{65'536u}, maxLocalElements{262'144u};
@@ -65,6 +76,8 @@ inline constexpr std::array<std::uint8_t, 8> Magic{{'D','X','Q','V','M','S',1,0}
 inline constexpr std::uint8_t StateFrameVersion=2u;
 inline constexpr std::uint8_t ClassDefaultsVersion=3u;
 inline constexpr std::uint8_t ActorLifecycleVersion=4u;
+inline constexpr std::uint8_t BirthManifestVersion=5u;
+inline constexpr std::uint32_t MaximumWorldActorSlots=1'000'000u;
 // Stable serialized tags deliberately do not depend on Vm::Kind ordinals.
 enum class Tag : std::uint8_t {
     Nothing=0, Byte=1, Int=2, Bool=3, Float=4, Name=5, Object=6,
@@ -95,6 +108,45 @@ inline void Text(const std::string_view value, const ScriptStateLimits& limits,
     }
     // Value strings are bounded byte strings. Original UE1 strings may contain
     // code-page text rather than UTF-8; this codec preserves those bytes exactly.
+}
+inline void BirthPath(const std::string_view path,const std::string_view map) {
+    if (path.size()<=map.size()+1u || path[map.size()]!='.' || Compare(path.substr(0u,map.size()),map)!=0)
+        Fail("birth identity is not qualified by its saved map");
+    bool component{};
+    for (const unsigned char c : path.substr(map.size()+1u)) {
+        if (c=='.') {
+            if (!component) Fail("birth identity contains an empty component");
+            component=false;
+        } else {
+            if (c<=32u || c>126u || c=='/' || c=='\\') Fail("birth identity component is invalid");
+            component=true;
+        }
+    }
+    if (!component) Fail("birth identity contains an empty component");
+}
+inline void BirthIndices(std::vector<std::uint32_t>& indices) {
+    for (const auto index : indices) if (index>=MaximumWorldActorSlots) Fail("birth world actor index exceeds the fixed slot cap");
+    std::sort(indices.begin(),indices.end());
+    if (std::adjacent_find(indices.begin(),indices.end())!=indices.end()) Fail("duplicate birth world actor index");
+}
+struct SavedObjectIdentity { std::string_view path, classPath; };
+template<typename Object,typename Path,typename Class>
+inline bool BirthOverlay(const std::string_view path,const std::string_view cls,
+    const std::vector<Object>& objects,Path objectPath,Class objectClass) {
+    const auto found=std::lower_bound(objects.begin(),objects.end(),path,[&](const auto& object,const auto& value) {
+        return Compare(objectPath(object),value)<0;
+    });
+    if (found==objects.end() || Compare(objectPath(*found),path)!=0) return false;
+    if (Compare(objectClass(*found),cls)!=0) Fail("birth and actor overlay class identities disagree");
+    return true;
+}
+template<typename Class,typename Path>
+inline void BirthClassAlias(const std::string_view path,const std::vector<Class>& classes,Path classPath) {
+    const auto found=std::lower_bound(classes.begin(),classes.end(),path,[&](const auto& cls,const auto& value) {
+        return Compare(classPath(cls),value)<0;
+    });
+    if (found!=classes.end() && Compare(classPath(*found),path)==0)
+        Fail("birth identity aliases a class-default identity");
 }
 inline void Finite(const float value) { if (!std::isfinite(value)) Fail("non-finite float"); }
 inline void Clock(const ActorAnimationClock& clock, const ScriptStateLimits& limits) {
@@ -203,12 +255,15 @@ public:
         const bool withFrames=std::any_of(state.objects.begin(),state.objects.end(),[](const auto& object) { return object.state.has_value(); });
         const bool withDefaults=!state.classDefaults.empty();
         const bool withLifecycle=std::any_of(state.objects.begin(),state.objects.end(),[](const auto& object) { return object.lifecycle.has_value(); });
-        const auto version=withLifecycle ? ActorLifecycleVersion : withDefaults ? ClassDefaultsVersion : withFrames ? StateFrameVersion : Magic[6u];
+        const bool withBirths=!state.births.empty();
+        const auto version=withBirths ? BirthManifestVersion : withLifecycle ? ActorLifecycleVersion : withDefaults ? ClassDefaultsVersion : withFrames ? StateFrameVersion : Magic[6u];
         for (std::size_t i=0; i<Magic.size(); ++i) Byte(i==6u ? version : Magic[i]);
         String(state.mapName,true,false,128u);
-        if (state.objects.size()>limits_.maxObjects || state.classDefaults.size()>limits_.maxObjects-state.objects.size())
+        if (state.objects.size()>limits_.maxObjects || state.classDefaults.size()>limits_.maxObjects-state.objects.size() ||
+            state.births.size()>limits_.maxObjects)
             Fail("aggregate object/class-default count exceeds the budget");
         budget_.Array(state.objects.size(),sizeof(ScriptSavedObject)+sizeof(void*));
+        if (withBirths) budget_.Array(state.objects.size(),sizeof(SavedObjectIdentity));
         Count(state.objects.size());
         for (const auto& object : state.objects) {
             Text(object.path,limits_,true); Text(object.classPath,limits_,true);
@@ -221,26 +276,51 @@ public:
             Properties(object.properties,false);
             Byte(object.clock ? 1u : 0u);
             if (object.clock) Animation(*object.clock);
-            if (withFrames || withDefaults || withLifecycle) {
+            if (withFrames || withDefaults || withLifecycle || withBirths) {
                 Byte(object.state ? 1u : 0u);
                 if (object.state) ObjectState(*object.state);
             }
-            if (withLifecycle) {
+            if (withLifecycle || withBirths) {
                 Byte(object.lifecycle ? 1u : 0u);
                 if (object.lifecycle) ActorLifecycle(*object.lifecycle);
             }
         }
-        if (withDefaults || withLifecycle) {
-            budget_.Array(state.classDefaults.size(),sizeof(ScriptSavedClassDefaults)+sizeof(void*));
+        budget_.Array(state.classDefaults.size(),sizeof(ScriptSavedClassDefaults)+sizeof(void*));
+        if (withBirths) budget_.Array(state.classDefaults.size(),sizeof(std::string_view));
+        const auto classes=Sorted(state.classDefaults,[](const auto& defaults) -> const std::string& { return defaults.classPath; });
+        if (withDefaults || withLifecycle || withBirths) {
             Count(state.classDefaults.size());
             for (const auto& defaults : state.classDefaults) Text(defaults.classPath,limits_,true);
-            const auto classes=Sorted(state.classDefaults,[](const auto& defaults) -> const std::string& { return defaults.classPath; });
             for (std::size_t i=0; i<classes.size(); ++i) {
                 const auto& defaults=*classes[i];
                 if (i!=0 && Compare(classes[i-1u]->classPath,defaults.classPath)==0)
                     Fail("duplicate or case-colliding class-default identity");
                 if (defaults.properties.empty()) Fail("empty class-default record");
                 String(defaults.classPath,true); Properties(defaults.properties,true);
+            }
+        }
+        if (withBirths) {
+            budget_.Array(state.births.size(),sizeof(ScriptSavedBirth)+sizeof(void*));
+            budget_.Array(state.births.size(),sizeof(std::uint32_t));
+            std::vector<std::uint32_t> indices; indices.reserve(state.births.size());
+            Count(state.births.size());
+            for (const auto& birth : state.births) {
+                Text(birth.path,limits_,true); Text(birth.classPath,limits_,true); BirthPath(birth.path,state.mapName);
+                indices.push_back(birth.worldActorIndex);
+            }
+            BirthIndices(indices);
+            const auto births=Sorted(state.births,[](const auto& birth) -> const std::string& { return birth.path; });
+            auto identities=state.objects.size()+state.classDefaults.size();
+            for (std::size_t i=0u; i<births.size(); ++i) {
+                const auto& birth=*births[i];
+                if (i!=0u && Compare(births[i-1u]->path,birth.path)==0)
+                    Fail("duplicate or case-colliding birth identity");
+                BirthClassAlias(birth.path,classes,[](const auto* cls) -> const std::string& { return cls->classPath; });
+                if (!BirthOverlay(birth.path,birth.classPath,objects,
+                    [](const auto* object) -> const std::string& { return object->path; },
+                    [](const auto* object) -> const std::string& { return object->classPath; }) && ++identities>limits_.maxObjects)
+                    Fail("aggregate authored actor/birth/class-default identity budget exceeded");
+                String(birth.path,true); String(birth.classPath,true); U32(birth.worldActorIndex); Properties(birth.frozenDefaults,true);
             }
         }
     }
@@ -423,7 +503,8 @@ public:
             const auto byte=Byte();
             if (i==6u) {
                 version=byte;
-                if (version!=Magic[i] && version!=StateFrameVersion && version!=ClassDefaultsVersion && version!=ActorLifecycleVersion)
+                if (version!=Magic[i] && version!=StateFrameVersion && version!=ClassDefaultsVersion &&
+                    version!=ActorLifecycleVersion && version!=BirthManifestVersion)
                     Fail("bad magic or unsupported codec version");
             } else if (byte!=Magic[i]) Fail("bad magic or unsupported codec version");
         }
@@ -432,6 +513,11 @@ public:
         if (count>limits_.maxObjects || count>Remaining()/13u) Fail("object count exceeds budget or encoded payload");
         budget_.Array(count,sizeof(ScriptSavedObject)+sizeof(void*));
         if constexpr(Materialize) state.objects.reserve(count);
+        std::vector<SavedObjectIdentity> objectIdentities;
+        std::vector<std::string_view> classIdentities;
+        if (version==BirthManifestVersion) {
+            budget_.Array(count,sizeof(SavedObjectIdentity)); objectIdentities.reserve(count);
+        }
         std::string_view previous;
         bool hasLifecycle{};
         for (std::uint32_t i=0; i<count; ++i) {
@@ -439,13 +525,14 @@ public:
             const auto path=String(true),cls=String(true);
             if (i!=0 && Compare(previous,path)>=0) Fail("object paths are not canonical and unique");
             previous=path;
+            if (version==BirthManifestVersion) objectIdentities.push_back({path,cls});
             if constexpr(Materialize) { object.path=path; object.classPath=cls; }
             Properties(object.properties,false);
             if (Boolean()) { auto clock=Animation(); if constexpr(Materialize) object.clock=std::move(clock); }
             if (version>=StateFrameVersion && Boolean()) {
                 auto saved=ObjectState(); if constexpr(Materialize) object.state=std::move(saved);
             }
-            if (version==ActorLifecycleVersion && Boolean()) {
+            if (version>=ActorLifecycleVersion && Boolean()) {
                 hasLifecycle=true;
                 auto saved=ActorLifecycle(); if constexpr(Materialize) object.lifecycle=std::move(saved);
             }
@@ -453,21 +540,51 @@ public:
         }
         if (version==ActorLifecycleVersion && !hasLifecycle)
             Fail("actor-lifecycle codec has no native lifecycle record");
-        if (version==ClassDefaultsVersion || version==ActorLifecycleVersion) {
-            const auto classes=U32();
+        std::uint32_t classes{};
+        if (version>=ClassDefaultsVersion) {
+            classes=U32();
             if ((version==ClassDefaultsVersion && classes==0u) || classes>limits_.maxObjects-count || classes>Remaining()/9u)
                 Fail("class-default count is empty or exceeds aggregate budget/payload");
             budget_.Array(classes,sizeof(ScriptSavedClassDefaults)+sizeof(void*));
             if constexpr(Materialize) state.classDefaults.reserve(classes);
+            if (version==BirthManifestVersion) {
+                budget_.Array(classes,sizeof(std::string_view)); classIdentities.reserve(classes);
+            }
             previous={};
             for (std::uint32_t i=0; i<classes; ++i) {
                 ScriptSavedClassDefaults defaults; const auto cls=String(true);
                 if (i!=0 && Compare(previous,cls)>=0) Fail("class-default identities are not canonical and unique");
                 previous=cls;
+                if (version==BirthManifestVersion) classIdentities.push_back(cls);
                 if constexpr(Materialize) defaults.classPath=cls;
                 Properties(defaults.properties,true);
                 if constexpr(Materialize) state.classDefaults.push_back(std::move(defaults));
             }
+        }
+        if (version==BirthManifestVersion) {
+            const auto births=U32();
+            if (births==0u || births>limits_.maxObjects || births>Remaining()/18u)
+                Fail("birth count is empty or exceeds budget/payload");
+            budget_.Array(births,sizeof(ScriptSavedBirth)+sizeof(void*));
+            budget_.Array(births,sizeof(std::uint32_t));
+            std::vector<std::uint32_t> indices; indices.reserve(births);
+            if constexpr(Materialize) state.births.reserve(births);
+            previous={}; std::size_t identities=static_cast<std::size_t>(count)+classes;
+            for (std::uint32_t i=0u; i<births; ++i) {
+                ScriptSavedBirth birth; const auto path=String(true),cls=String(true); BirthPath(path,map);
+                const auto worldActorIndex=U32(); indices.push_back(worldActorIndex);
+                if (i!=0u && Compare(previous,path)>=0) Fail("birth identities are not canonical and unique");
+                previous=path;
+                BirthClassAlias(path,classIdentities,[](const auto value) { return value; });
+                if (!BirthOverlay(path,cls,objectIdentities,
+                    [](const auto& object) { return object.path; },[](const auto& object) { return object.classPath; }) &&
+                    ++identities>limits_.maxObjects)
+                    Fail("aggregate authored actor/birth/class-default identity budget exceeded");
+                if constexpr(Materialize) { birth.path=path; birth.classPath=cls; birth.worldActorIndex=worldActorIndex; }
+                Properties(birth.frozenDefaults,true,true);
+                if constexpr(Materialize) state.births.push_back(std::move(birth));
+            }
+            BirthIndices(indices);
         }
         if (Remaining()!=0u) Fail("trailing encoded-state bytes");
         return state;
@@ -507,9 +624,9 @@ private:
         links(lifecycle.children); links(lifecycle.basedActors);
         return lifecycle;
     }
-    void Properties(std::vector<ScriptSavedProperty>& values,const bool defaults) {
+    void Properties(std::vector<ScriptSavedProperty>& values,const bool defaults,const bool allowEmpty=false) {
         const auto count=U32(); budget_.Properties(count);
-        if (defaults && count==0u) Fail("empty class-default record");
+        if (defaults && !allowEmpty && count==0u) Fail("empty class-default record");
         if (count>Remaining()/13u) Fail("property count exceeds encoded payload");
         budget_.Array(count,sizeof(ScriptSavedProperty)+sizeof(void*));
         if constexpr(Materialize) values.reserve(count);
@@ -656,8 +773,8 @@ inline ScriptSavedState DecodeScriptSavedState(
     const std::vector<std::uint8_t>& bytes,const ScriptStateLimits& limits={}) {
     // First pass is non-materializing: strings are views into the input, and no
     // decoded object/property/field trees are allocated until aggregate budgets
-    // and canonical uniqueness are checked. CDO alias validation uses only
-    // budgeted views into the input, not retained values or identity copies.
+    // and canonical uniqueness are checked. CDO/birth alias validation uses
+    // budgeted input views and slot-index arrays, never retained value copies.
     ScriptStateDetail::Reader<false> verified(bytes,limits); verified.State();
     ScriptStateDetail::Reader<true> materialized(bytes,limits); return materialized.State();
 }

@@ -6,9 +6,11 @@ stores explicit portable state frames, typed locals and state-keyed disabled set
 Version 6 additionally retains mutations of concrete, loaded Actor class-default
 blocks, separately from actor instances. Version 7 retains native ordered
 child/base lists, four touch-event flags and removal from the world registry.
+Version 8 additionally preserves runtime-born actors, their actual loaded
+classes, appended Level slots and frozen typed birth defaults.
 None of these versions adds
 automatic NPC startup, AI, live animation, or a general UnrealScript savegame.
-Only the current map's supported, authored actor objects are restored.
+Only the current map's supported authored and runtime-born actors are restored.
 
 This document updates the earlier memory-only/save-refusal description in
 [PORTABLE-SCRIPT-EXECUTION.md](PORTABLE-SCRIPT-EXECUTION.md) and
@@ -17,7 +19,8 @@ Map replacement and unload still refuse committed scoped script state because
 there is no per-map archive yet. Saving it does not remove that travel guard.
 Ordinary nested structs now use their original declarations for shape and
 object/class constraints, including InventoryItem; see
-[AUTHORED-STRUCTS.md](AUTHORED-STRUCTS.md). This does not spawn saved inventory.
+[AUTHORED-STRUCTS.md](AUTHORED-STRUCTS.md). Version 8 can cold-restore a supported
+born weapon/ammo graph; it does not establish a complete authored player inventory.
 
 ## Runtime envelope
 
@@ -26,11 +29,11 @@ without committed script objects or class defaults is written as version 3, with
 A checkpoint containing only properties/clocks uses version 4; one with any
 portable state object uses version 5. A checkpoint with class-default mutations
 uses version 6, including when it has no actor records. Any native lifecycle
-record selects version 7. The version word changes, the existing
+record selects version 7; a nonempty birth manifest selects version 8. The version word changes, the existing
 version-3 fields retain their order and widths, and one trailer is appended.
 
 ```text
-u32 magic, u32 version=4, 5, 6 or 7
+u32 magic, u32 version=4, 5, 6, 7 or 8
 version-3 fields:
   inventory[], inactive actors[], activated actors[]
   f32 player health, damaged actors[(path,f32 health)]
@@ -49,6 +52,7 @@ sets; they cannot contain a script trailer. A v4 envelope must contain codec v1
 without state records; a v5 envelope must contain codec v2 with a state record.
 A v6 envelope must contain codec v3 and a nonempty class-default section.
 A v7 envelope must contain codec v4 and at least one native lifecycle record.
+A v8 envelope must contain codec v5 and a nonempty birth manifest.
 
 This version number is distinct from the Persona/UI metadata version and from
 the paired `.qsv` bundle format. The alternating-slot, checksum and durable
@@ -65,31 +69,54 @@ If any object has portable state, byte 6 is 2 instead of 1. Without such state,
 the exact legacy v1 representation is retained. Class-default mutations select
 byte 6 = 3; without them the v1/v2 representation remains unchanged. Native
 lifecycle records select byte 6 = 4; otherwise v1-v3 bytes remain unchanged.
+Births select byte 6 = 5; without births the v1-v4 representation is unchanged.
 
 ```text
 mapName
 u32 object count
 objects[]:
-  authored object path, authored class path
+  actor object path, actual class path
   u32 property count
   properties[]:
     fully-qualified property key, property name, u32 fixed-array index
     u8 value tag, typed value payload
   u8 hasClock (0 or 1)
   optional complete animation clock
-  codec v2/v3/v4: u8 hasState, optional portable state object
-  codec v4: u8 hasLifecycle, optional native lifecycle:
+  codec v2-v5: u8 hasState, optional portable state object
+  codec v4/v5: u8 hasLifecycle, optional native lifecycle:
     u8 worldRemoved (0 or 1)
     u8 touchEventSent[4] (each 0 or 1)
     u32 child count, child actor paths[] in native order
     u32 based count, based actor paths[] in native order
-codec v3/v4:
-  u32 concrete class-default count (nonzero in v3; may be zero in v4)
+codec v3-v5:
+  u32 concrete class-default count (nonzero in v3; may be zero in v4/v5)
   class defaults[]:
     loaded script Actor class path
     u32 property count (nonzero)
     properties[]: same property key/name/index/value layout as above
+codec v5:
+  u32 birth count (nonzero)
+  births[]:
+    map-qualified object path, loaded concrete Actor class path
+    u32 appended Level actor slot
+    u32 frozen-default property count (may be zero)
+    frozen defaults[]: same typed property layout as above
 ```
+
+Born actors have no fabricated map export. Restore first registers the whole
+symbolic birth graph, then validates actual class ancestry, reflected fields,
+typed references and native links, including references between cold births.
+Manifest slots must form the exact contiguous tail after the authored Level
+slots, retaining original null holes. Abstract/nonactor classes, authored name
+collisions, duplicate slots and missing initialized instance records fail.
+
+Frozen defaults copy the concrete class's mutable patch at birth and share
+immutable authored defaults. They are independent of later CDO mutations.
+Instance overlays remain separate. Prepared actors are temporarily GC-rooted;
+replacement registries and geometry are prepared before nonallocating
+publication. Loads replay no startup/lifecycle callbacks. Versions 1-7 clear
+the abandoned birth tail instead of merging it with the old timeline.
+See [actor births](ACTOR-SPAWN.md) for allocation, rollback and GC controls.
 
 Class-default records contain no animation clock or state frame. They are
 canonical by case-insensitive class path and share the actor section's object,
@@ -165,8 +192,8 @@ Generic codec defaults are:
 | Limit | Default |
 | --- | --- |
 | Encoded bytes and estimated aggregate retained state | 32 MiB each |
-| Objects and class-default records | 4,096 combined |
-| Properties | 65,536 total, across actors and class defaults |
+| Actor identities and class-default records | 4,096 combined; birth plus overlay counts once |
+| Properties | 65,536 total, including overlays, class and frozen birth defaults |
 | Typed value nodes | 262,144 total |
 | String bytes | 8,192 per string |
 | Map name | 128 bytes, also within the string limit |
@@ -176,6 +203,7 @@ Generic codec defaults are:
 | Disabled-state sets | 65,536 across objects |
 | Disabled-event names | 262,144 across objects |
 | Native actor links | 65,536 across child and based lists |
+| Level actor slot index | Below 1,000,000 |
 
 Retained estimates include object/property arrays, nested map nodes, strings
 and bounded sorting pointers. Encoding validates/counts the complete tree
@@ -192,7 +220,7 @@ the serialized-value quota. Unsupported map-local classes in a different,
 unloaded custom map fail closed; imported original campaign classes use the
 initialized script reflection graph.
 
-Persistent property/state/class-default/native-link storage is measured cumulatively without copying before a
+Persistent property/state/class-default/birth/native-link storage is measured cumulatively without copying before a
 transaction and after allocating state mutations/at commit. This uses conservative
 codec accounting with the 16 MiB runtime cap and aggregate state counts, so
 independent calls cannot grow unbounded sets/locals/default values. Combined
@@ -245,7 +273,8 @@ hierarchies fail closed.
 `ValidatePortableRuntimeState` is a read-only preflight for live gameplay,
 property overlays, clocks and portable state. It can inspect the saved map's authored schema
 while a different map is loaded; it does not replace the map or apply that
-timeline. Schema caches may be populated during inspection. Actual version-4/5/6/7
+timeline. Schema caches may be populated during inspection. Born identities are
+validated symbolically without allocating UObjects. Actual version-4 through version-8
 application requires the matching authored map to be loaded and resolves all
 targets and prepares all allocating containers before clearing live state.
 
@@ -254,6 +283,12 @@ property overlays, clocks and portable state intact. Capture collects and schema
 state before writing, so validation/budget failure must not truncate an existing
 checkpoint. After successful application, saved script state replaces the
 current scoped overlays/clocks/state/class defaults/native lifecycle rather than merging abandoned timelines.
+Version 8 also replaces births. Native collision membership is rebuilt from the
+restored fields and Level order, as in the pinned saved-game LinkActorsToLevel;
+cached/stale hash buckets are not serialized. This is not a physics save.
+Read-only validation does not currently preflight collision resource work:
+extreme typed geometry can pass schema validation but fail actual load
+atomically, leaving the live timeline intact.
 Every validated version-1 through version-5 load clears all mutable class
 defaults, including omitted classes. Read-only validation never clears them.
 Every successful version-1 through version-6 load clears the abandoned native
@@ -270,7 +305,16 @@ Cross-map script references and arbitrary dynamic objects are not synthesized.
 
 ## Evidence and commands
 
-The subsequent state-frame codec adds 1,251 checks, including 621 rejection
+The actor-birth update passes 4,480 structural codec controls, including 4,133
+rejections; legacy codec1-4 byte fixtures remain unchanged. Generated actual-VM
+Spawn tests pass 1,416 checks / 37 refusals, including cold symbolic graphs,
+frozen defaults, legacy birth removal and GC at rollback/replacement boundaries.
+The 50-entry host suite passes 47 ordinary tests; three original-data entries
+skip by default and must be run separately with the user's installation.
+Original runtime save/load and 996 original class-default/lifecycle checks
+pass with this source. These are host results, not Quest GPU or campaign proof.
+
+The earlier state-frame codec adds 1,251 checks, including 621 rejection
 controls, for all twelve structural latent ordinals, code/local-owner identities,
 fixed-array locals, disabled sets, malformed input and cumulative retained/count
 budgets. The final-source host suite passes 30 ordinary tests with two separate
@@ -331,8 +375,9 @@ Never fault-inject corruption into the user's only save.
 This is scoped current-map persistence, not a per-map campaign archive. Travel
 and unload still refuse committed scoped state; shutdown is not a substitute
 for saving. Version 5 stores supported persistent state locals/code/PC/disabled
-sets, but not VM call stacks, latent call continuations, timers, RNG, dynamically spawned actors or
-event/animation residual elapsed debt. The stored FinishAnim flag does not
+sets, but not VM call stacks, latent call continuations, timers, RNG or
+event/animation residual elapsed debt. Version 8 adds the supported born-actor
+graph; it does not serialize every possible native subsystem. The stored FinishAnim flag does not
 implement a latent VM resumption engine.
 
 Automatic authored startup, complete AI/physics/latent behavior and live

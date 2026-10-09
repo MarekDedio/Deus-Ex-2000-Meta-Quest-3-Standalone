@@ -158,7 +158,7 @@ void MalformedStreams() {
     }
     auto broken=bytes;broken.push_back(0);Reject([&] { DecodeScriptSavedState(broken); },"Trailing save bytes accepted");
     broken=bytes;broken[0]^=1;Reject([&] { DecodeScriptSavedState(broken); },"Bad save magic accepted");
-    broken=bytes;broken[6]=5;Reject([&] { DecodeScriptSavedState(broken); },"Unsupported codec version accepted");
+    broken=bytes;broken[6]=6;Reject([&] { DecodeScriptSavedState(broken); },"Unsupported codec version accepted");
     for(const Bytes& value : {Bytes{255},Bytes{3,2},Bytes{4,0,0,0xc0,0x7f},Bytes{4,0,0,0x80,0x7f},
         Bytes{8,0,0,0x80,0x7f,0,0,0,0,0,0,0,0}}) {
         broken=OneValue(value);Reject([&] { DecodeScriptSavedState(broken); },"Bad value tag/bool/non-finite payload accepted");
@@ -621,6 +621,210 @@ void InvalidLifecycleAndBudgets() {
     Require(EncodeScriptSavedState(saved,noValues)==bytes && DecodeScriptSavedState(bytes,noValues).objects[0].lifecycle,
         "Native lifecycle invented script value nodes");
 }
+void Birth(Bytes& bytes,const std::string& path,const std::string& cls,std::uint32_t properties,std::uint32_t worldActorIndex=0u) {
+    String(bytes,path);String(bytes,cls);U32(bytes,worldActorIndex);U32(bytes,properties);
+}
+Bytes BirthPrefix(std::uint32_t births=1u) {
+    auto bytes=Prefix(0u);bytes[6]=ScriptStateDetail::BirthManifestVersion;U32(bytes,0u);U32(bytes,births);return bytes;
+}
+Bytes BirthLiteral(const Bytes& value={}) {
+    auto bytes=BirthPrefix();Birth(bytes,"Map.Born","Fixture.Actor",value.empty() ? 0u : 1u);
+    if (!value.empty()) { Property(bytes,"Fixture.Actor.Value","Value",0u);bytes.insert(bytes.end(),value.begin(),value.end()); }
+    return bytes;
+}
+ScriptSavedState BirthState() {
+    auto saved=DefaultsState();saved.objects[0].lifecycle=Lifecycle();
+    saved.births.push_back({"FixtureMap.BornZ","Fixture.Pawn",101u,saved.objects[0].properties});
+    saved.births.push_back({"FixtureMap.BornA","Fixture.Actor",102u,{
+        {"Fixture.Actor.Owner","Owner",0u,Text(Vm::Kind::Object,"FixtureMap.BornZ")},
+        {"Fixture.Actor.Label","Label",0u,Text(Vm::Kind::String,"Frozen at allocation")}}});
+    saved.objects.push_back({"FixtureMap.BornZ","Fixture.Pawn",{
+        {"Fixture.Pawn.Health","Health",0u,Integer(41)},
+        {"Fixture.Pawn.Other","Other",0u,Text(Vm::Kind::Object,"FixtureMap.BornA")}},Clock(),{},ScriptSavedActorLifecycle{}});
+    return saved;
+}
+void BirthRoundtripAndLegacy() {
+    const auto saved=BirthState();const auto bytes=EncodeScriptSavedState(saved);const auto restored=DecodeScriptSavedState(bytes);
+    Require(bytes[6]==5u && restored.births.size()==2u && restored.objects.size()==3u && restored.classDefaults.size()==2u,
+        "Birth manifest did not select codec5 or changed old record counts");
+    Require(restored.births[0].path=="FixtureMap.BornA" && restored.births[1].path=="FixtureMap.BornZ",
+        "Birth manifest identities are not canonical");
+    for (const auto& original : saved.births) {
+        const auto found=std::find_if(restored.births.begin(),restored.births.end(),[&](const auto& item) { return item.path==original.path; });
+        Require(found!=restored.births.end() && found->classPath==original.classPath && found->worldActorIndex==original.worldActorIndex &&
+            found->frozenDefaults.size()==original.frozenDefaults.size(),
+            "Birth identity/class/frozen property count changed");
+        for (const auto& property : original.frozenDefaults) {
+            const auto item=std::find_if(found->frozenDefaults.begin(),found->frozenDefaults.end(),[&](const auto& value) {
+                return value.key==property.key && value.index==property.index;
+            });
+            Require(item!=found->frozenDefaults.end() && item->name==property.name && SameValue(item->value,property.value),
+                "Frozen birth concrete value changed: "+property.name);
+        }
+    }
+    const auto& born=restored.objects[2];
+    Require(born.path=="FixtureMap.BornZ" && born.classPath=="Fixture.Pawn" && born.lifecycle && born.clock && !born.state &&
+        born.properties[0].value.integer==41,"Birth overlay optional/native/clock storage changed");
+    SameClock(*born.clock,*saved.objects[2].clock);
+    SameLifecycle(*restored.objects[1].lifecycle,*saved.objects[0].lifecycle);
+    Require(restored.objects[1].state && restored.objects[1].state->frame && restored.objects[1].state->frame->statementIndex==73u,
+        "Birth extension changed old authored actor state");
+    Require(EncodeScriptSavedState(restored)==bytes,"Codec5 decode/reencode is not byte deterministic");
+    Require(restored.births[0].worldActorIndex==102u && restored.births[1].worldActorIndex==101u,
+        "Canonical birth path sorting rewrote original actor tail indices");
+    auto reordered=saved;std::reverse(reordered.births.begin(),reordered.births.end());
+    std::reverse(reordered.objects.begin(),reordered.objects.end());std::reverse(reordered.classDefaults.begin(),reordered.classDefaults.end());
+    for (auto& birth : reordered.births) std::reverse(birth.frozenDefaults.begin(),birth.frozenDefaults.end());
+    Require(EncodeScriptSavedState(reordered)==bytes,"Birth/frozen property input ordering changes canonical bytes");
+    auto independent=restored;independent.births[1].frozenDefaults.back().value=Integer(-99);
+    Require(EncodeScriptSavedState(restored)==bytes,"Frozen birth copies alias restored defaults");
+    const auto literal=BirthLiteral({2u,0x78u,0x56u,0x34u,0x12u});const auto parsed=DecodeScriptSavedState(literal);
+    Require(parsed.objects.empty() && parsed.classDefaults.empty() && parsed.births.size()==1u &&
+        parsed.births[0].frozenDefaults[0].value.integer==0x12345678,"Literal birth-only concrete Int changed");
+    Require(EncodeScriptSavedState(parsed)==literal,"Literal codec5 birth-only wire bytes changed");
+    const auto empty=BirthLiteral();const auto emptyParsed=DecodeScriptSavedState(empty);
+    Require(emptyParsed.births.size()==1u && emptyParsed.births[0].frozenDefaults.empty() && EncodeScriptSavedState(emptyParsed)==empty,
+        "Structurally empty birth frozen-default list failed roundtrip");
+    auto overlap=ScriptSavedState{"Map",{{"map.born","fixture.actor",{},{}}},{},{{"Map.Born","Fixture.Actor",0u,{}}}};
+    ScriptStateLimits one;one.maxObjects=1u;
+    const auto overlapBytes=EncodeScriptSavedState(overlap,one);
+    Require(DecodeScriptSavedState(overlapBytes,one).objects.size()==1u &&
+        EncodeScriptSavedState(DecodeScriptSavedState(overlapBytes,one),one)==overlapBytes,
+        "Birth identity and same-class overlay were double-counted or normalized");
+    for (std::size_t mode=0u;mode<4u;++mode) {
+        auto old=mode==2u ? DefaultsState() : State();
+        if (mode==1u) old.objects[0].state=saved.objects[0].state;
+        if (mode==3u) old.objects[0].lifecycle=Lifecycle();
+        const auto prior=EncodeScriptSavedState(old);Require(prior[6]==mode+1u,"Birth legacy fixture selected wrong codec");
+        old.births.push_back({"FixtureMap.Born","Fixture.Actor",0u,{}});
+        Require(EncodeScriptSavedState(old)[6]==5u,"Birth did not override old codec selection");
+        old.births.clear();Require(EncodeScriptSavedState(old)==prior,"Removing births changed legacy codec1–4 bytes");
+        Require(DecodeScriptSavedState(prior).births.empty(),"Old codec invented a birth manifest");
+    }
+    const auto v4=LifecycleLiteral({"Map.B","Map.B"},{"Map.C"});
+    Require(EncodeScriptSavedState(DecodeScriptSavedState(v4))==v4,"Birth extension changed literal codec4 bytes");
+}
+void MalformedBirths() {
+    const auto bytes=BirthLiteral({2u,0x78u,0x56u,0x34u,0x12u});
+    for (std::size_t length=0u;length<bytes.size();++length) {
+        const Bytes truncated(bytes.begin(),bytes.begin()+length);
+        Reject([&] { DecodeScriptSavedState(truncated); },"Truncated codec5 birth accepted");
+    }
+    auto broken=bytes;broken.push_back(0u);Reject([&] { DecodeScriptSavedState(broken); },"Trailing codec5 bytes accepted");
+    for (const std::uint8_t version : {0u,1u,2u,3u,4u,6u,255u}) {
+        broken=bytes;broken[6]=version;Reject([&] { DecodeScriptSavedState(broken); },"Birth payload accepted with wrong codec version");
+    }
+    for (const auto count : {0u,0xffffffffu}) {
+        broken=BirthPrefix(count);Reject([&] { DecodeScriptSavedState(broken); },"Empty/unbounded birth manifest accepted");
+    }
+    for (const auto& paths : {std::array<std::string,2>{"Map.A","Map.A"},
+        std::array<std::string,2>{"Map.A","map.a"},std::array<std::string,2>{"Map.Z","Map.A"}}) {
+        broken=BirthPrefix(2u);std::uint32_t slot{};for (const auto& path : paths) Birth(broken,path,"Fixture.Actor",0u,slot++);
+        Reject([&] { DecodeScriptSavedState(broken); },"Duplicate/colliding/noncanonical birth identities accepted");
+    }
+    for (const auto& path : {std::string(""),std::string("Map"),std::string("Map."),std::string("Other.A"),
+        std::string("Map..A"),std::string("Map.A."),std::string("Map.A/B"),std::string("Map.A\\B"),std::string("Map.A B"),
+        std::string("Map.Bad\nPath"),std::string("Map.Bad\0Path",12u),std::string("Map.")+std::string(1u,'\xff')}) {
+        broken=BirthPrefix();Birth(broken,path,"Fixture.Actor",0u);
+        Reject([&] { DecodeScriptSavedState(broken); },"Malformed/nonmap birth identity accepted");
+    }
+    for (const auto& cls : {std::string(""),std::string("Bad\nClass"),std::string("Bad\0Class",9u),std::string(1u,'\xff')}) {
+        broken=BirthPrefix();Birth(broken,"Map.Born",cls,0u);
+        Reject([&] { DecodeScriptSavedState(broken); },"Malformed birth class identity accepted");
+    }
+    broken=BirthPrefix(2u);Birth(broken,"Map.A","Fixture.Actor",0u,12u);Birth(broken,"Map.B","Fixture.Actor",0u,12u);
+    Reject([&] { DecodeScriptSavedState(broken); },"Duplicate world actor indices accepted");
+    for (const auto slot : {1'000'000u,0xffffffffu}) {
+        broken=BirthPrefix();Birth(broken,"Map.A","Fixture.Actor",0u,slot);
+        Reject([&] { DecodeScriptSavedState(broken); },"Birth actor index beyond fixed slot cap accepted");
+    }
+    for (std::size_t flag=0u;flag<3u;++flag) {
+        broken=Prefix(1u);broken[6]=5u;Object(broken,"Map.A",0u);
+        for (std::size_t slot=0u;slot<3u;++slot) broken.push_back(slot==flag ? 2u : 0u);
+        U32(broken,0u);U32(broken,1u);Birth(broken,"Map.Born","Fixture.Actor",0u);
+        Reject([&] { DecodeScriptSavedState(broken); },"Codec5 invalid optional clock/state/lifecycle boolean accepted");
+    }
+    for (std::size_t mode=0u;mode<3u;++mode) {
+        broken=Prefix(mode==2u ? 0u : 1u);broken[6]=5u;
+        if (mode!=2u) { Object(broken,mode==0u ? "Map.Born" : "map.born",0u);broken.insert(broken.end(),{0u,0u,0u}); }
+        U32(broken,mode==2u ? 1u : 0u);
+        if (mode==2u) { Defaults(broken,"map.born",1u);Property(broken,"Fixture.Value","Value",0u);broken.push_back(0u); }
+        U32(broken,1u);Birth(broken,"Map.Born","Fixture.Other",0u);
+        Reject([&] { DecodeScriptSavedState(broken); },"Birth overlay class mismatch/class-default identity alias accepted");
+    }
+    broken=BirthPrefix();Birth(broken,"Map.Born","Fixture.Actor",0xffffffffu);
+    Reject([&] { DecodeScriptSavedState(broken); },"Unbounded frozen-default property count accepted");
+    for (std::size_t mode=0u;mode<7u;++mode) {
+        broken=BirthPrefix();Birth(broken,"Map.Born","Fixture.Actor",2u);
+        Property(broken,mode==3u ? "Fixture.Z" : "Fixture.Value","Value",mode==5u ? 1u : 0u);broken.push_back(0u);
+        const auto key=mode==1u ? "fixture.value" : mode==2u ? "Fixture.Value2" : mode==3u ? "Fixture.A" : mode==6u ? "Fixture.Z" : "Fixture.Value";
+        Property(broken,key,mode==4u ? "Other" : mode==6u ? "value" : "Value",mode==1u || mode==4u ? 1u : 0u);broken.push_back(0u);
+        Reject([&] { DecodeScriptSavedState(broken); },"Frozen property duplicate/key/alias/index/order collision accepted");
+    }
+    for (const Bytes& value : {Bytes{255u},Bytes{3u,2u},Bytes{4u,0u,0u,0xc0u,0x7fu},Bytes{10u,255u,255u,255u,255u}}) {
+        broken=BirthLiteral(value);Reject([&] { DecodeScriptSavedState(broken); },"Malformed frozen-default concrete value accepted");
+    }
+}
+void InvalidBirthsAndBudgets() {
+    const auto saved=BirthState();const auto bytes=EncodeScriptSavedState(saved);
+    for (std::size_t mode=0u;mode<10u;++mode) {
+        auto broken=saved;
+        if (mode==0u) broken.births.push_back(broken.births[0]);
+        if (mode==1u) broken.births[1].path="fixturemap.bornz";
+        if (mode==2u) broken.births[0].path="OtherMap.Born";
+        if (mode==3u) broken.births[0].classPath="Bad\nClass";
+        if (mode==4u) broken.objects[2].classPath="Fixture.Other";
+        if (mode==5u) broken.classDefaults[0].classPath="fixturemap.bornz";
+        if (mode==6u) broken.births[0].frozenDefaults.push_back(broken.births[0].frozenDefaults[0]);
+        if (mode==7u) { auto alias=broken.births[0].frozenDefaults[0];alias.key+="Alias";broken.births[0].frozenDefaults.push_back(std::move(alias)); }
+        if (mode==8u) broken.births[1].worldActorIndex=broken.births[0].worldActorIndex;
+        if (mode==9u) broken.births[0].worldActorIndex=1'000'000u;
+        Reject([&] { EncodeScriptSavedState(broken); },"Invalid input birth identity/class/property collision accepted");
+    }
+    // Three object records include the BornZ overlay. BornA adds one identity;
+    // two mutable CDO records add two. Frozen manifest does not count BornZ twice.
+    ScriptStateLimits six;six.maxObjects=6u;
+    Require(EncodeScriptSavedState(saved,six)==bytes && EncodeScriptSavedState(DecodeScriptSavedState(bytes,six),six)==bytes,
+        "Union actor/birth plus class-default budget double-counted a birth overlay");
+    ScriptStateLimits five;five.maxObjects=5u;
+    Reject([&] { EncodeScriptSavedState(saved,five); },"Authored actor/birth/CDO union encode budget not enforced");
+    Reject([&] { DecodeScriptSavedState(bytes,five); },"Authored actor/birth/CDO union decode budget not enforced");
+    auto only=ScriptSavedState{"Map",{}, {},{{"Map.A","Fixture.Actor",0u,{}},{"Map.B","Fixture.Actor",1u,{}}}};
+    ScriptStateLimits one;one.maxObjects=1u;const auto onlyBytes=EncodeScriptSavedState(only);
+    Reject([&] { EncodeScriptSavedState(only,one); },"Birth-only identity count encode budget not enforced");
+    Reject([&] { DecodeScriptSavedState(onlyBytes,one); },"Birth-only identity count decode budget not enforced");
+    std::size_t properties{};for (const auto& object : saved.objects) properties+=object.properties.size();
+    for (const auto& cls : saved.classDefaults) properties+=cls.properties.size();
+    for (std::size_t mode=0u;mode<7u;++mode) {
+        ScriptStateLimits limits;
+        if (mode==0u) limits.maxProperties=properties;
+        if (mode==1u) limits.totalValueNodes=40u;
+        if (mode==2u) limits.maxStringBytes=8u;
+        if (mode==3u) limits.maxDepth=2u;
+        if (mode==4u) limits.maxActorLinks=0u;
+        if (mode==5u) limits.maxBytes=bytes.size()-1u;
+        if (mode==6u) { ScriptStateDetail::Writer measured(limits,nullptr);measured.State(saved);limits.maxBytes=measured.measuredBudget().retained-1u; }
+        Reject([&] { EncodeScriptSavedState(saved,limits); },"Shared birth/property/state/lifecycle encode budget not enforced");
+        Reject([&] { DecodeScriptSavedState(bytes,limits); },"Shared birth/property/state/lifecycle decode budget not enforced");
+    }
+    auto lean=ScriptSavedState{"Map",{}, {},{{"Map.Born","Fixture.Actor",0u,{{"Fixture.Actor.Value","Value",0u,Integer(1)}}}}};
+    const auto leanBytes=EncodeScriptSavedState(lean);one=ScriptStateLimits{};one.maxBytes=leanBytes.size()+1u;
+    Reject([&] { EncodeScriptSavedState(lean,one); },"Small birth-only payload bypassed retained encode budget");
+    Reject([&] { DecodeScriptSavedState(leanBytes,one); },"Small birth-only payload bypassed retained decode budget");
+    auto empty=ScriptSavedState{"Map",{}, {},{{"Map.Born","Fixture.Actor",999'999u,{}}}};
+    one=ScriptStateLimits{};one.totalValueNodes=0u;one.maxProperties=0u;one.maxObjects=1u;
+    Require(DecodeScriptSavedState(EncodeScriptSavedState(empty,one),one).births.size()==1u &&
+        DecodeScriptSavedState(EncodeScriptSavedState(empty,one),one).births[0].worldActorIndex==999'999u,
+        "Empty frozen birth structural record invented property/value nodes");
+    ScriptSavedState copied;copied.mapName="Map";
+    copied.objects.push_back({"Map.Born","Fixture.Actor",{{"Fixture.Actor.Value","Value",0u,Integer(2)}},{},{},{}});
+    copied.births.push_back({"Map.Born","Fixture.Actor",0u,{{"Fixture.Actor.Value","Value",0u,Integer(1)}}});
+    const auto copiedBytes=EncodeScriptSavedState(copied);const auto copiedParsed=DecodeScriptSavedState(copiedBytes);
+    copied.objects[0].properties[0].value=Integer(3);
+    Require(copied.births[0].frozenDefaults[0].value.integer==1 && copiedParsed.objects[0].properties[0].value.integer==2 &&
+        copiedParsed.births[0].frozenDefaults[0].value.integer==1,
+        "Mutable born actor overlay aliased immutable birth CDO snapshot");
+}
 }
 
 int main() {
@@ -628,7 +832,8 @@ int main() {
         RoundtripAndDeterminism();MalformedStreams();InvalidStateAndBudgets();
         DefaultsRoundtripAndLegacy();MalformedDefaults();InvalidDefaultsAndBudgets();
         LifecycleRoundtripAndLegacy();MalformedLifecycle();InvalidLifecycleAndBudgets();
+        BirthRoundtripAndLegacy();MalformedBirths();InvalidBirthsAndBudgets();
         std::cout<<"PASS script-state codec controls="<<checks<<" rejection controls="<<rejections
-            <<"; codecs1/2/3 legacy bytes and codec4 native actor lifecycle, structural codec only\n";return 0;
+            <<"; codecs1–4 legacy bytes and codec5 frozen actor births, structural codec only\n";return 0;
     }catch(const std::exception& error) {std::cerr<<"FAIL script-state codec: "<<error.what()<<" after "<<checks<<" controls\n";return 1;}
 }
