@@ -1,6 +1,36 @@
 # Port status
 
-## Offline original object/class casts (2026-10-09; verification in progress)
+## Offline bounded table reader and spawn-placement prerequisite (2026-10-09)
+
+- Selected a 64 KiB read-only adapter only for package tables, retaining logical
+  cursor/EOF/fault behavior and keeping the raw source private. Pinned vendor
+  files and other payload readers are unchanged. All 37 ordinary tests pass;
+  two optional original-root entries explicitly skip in CTest.
+- A separately linked frozen raw reader and buffered reader agree on every
+  individual metadata digest for all 38 System packages and three original
+  maps. Measured complete loader-call sums were 22.930990 s versus 0.384153 s
+  on this PC under uncontrolled OS-cache/concurrent-load conditions. This is
+  not Quest performance or full startup timing.
+- Both buffered original-data integrations completed exit 0: actor bytecode,
+  Class/State layout/dispatch, all 936 inventory slots, references/Region,
+  animation/state/clock, paired saves, rollback, asset retention and guarded
+  travel pass. InitializeInventory reaches unsupported Spawn278 PC253 with
+  full rollback, not successful inventory creation or campaign startup.
+- Added isolated world-only spawn placement with original BSP hull semantics,
+  bounded graph/work validation and 27 candidate order. Synthetic controls
+  pass 9,482 checks/99 refusals; no runtime allocation/lifecycle hookup exists.
+  Original-map differential verification is pending.
+- Current buffering/UI source is not yet Android-verified or deployed. The
+  installed APK remains frozen. See [BUFFERED-READER.md](BUFFERED-READER.md)
+  and [SPAWN-PLACEMENT.md](SPAWN-PLACEMENT.md).
+- Fresh buffered Training/static-lightmap/actor, Inventory and Health CPU
+  captures pass with zero mean pixel difference from frozen raw-reader previews.
+  Visually inspected frames retain varied lighting/textured geometry and
+  original UI artwork/fonts. This is not original-renderer or Quest GPU
+  equivalence. Inventory's single-cell shrinking of large icons is a confirmed
+  fidelity defect now under separate development; its original grid is 5x6.
+
+## Offline original object/class casts (2026-10-09; host verified, not deployed)
 
 - Added MetaCast/DynamicCast execution, source-local typed target resolution,
   detached Object results and shared transaction/budget accounting. Actual
@@ -14,14 +44,15 @@
   hierarchy controls pass 111/54 and the production adapter passes 381/59 across
   164 generated metadata exports. The separate original-data runtime test
   completed with exit 0: paired-save recovery, retained assets, v4/v5 script
-  composition and guarded travel pass. The original-data actor check is still
-  running; its updated startup assertion is not yet a pass. The real initializer test
+  composition and guarded travel pass. The separate buffered original-data
+  actor check also completed exit 0, including the updated initializer assertion;
+  the frozen raw-reader reference is still running. The real initializer test
   requires Spawn278 PC253 after its class cast; spawning remains unimplemented.
 - Quest USB is no longer available on the latest check. No APK replacement,
   permission changes or save modifications were performed. Original-data
-  actor verification remains pending; the passes above do not imply startup.
+  raw-reader reference verification remains pending; the passes above do not imply startup.
   See [OBJECT-CASTS.md](OBJECT-CASTS.md).
-- The current source compiles for Android ARM64. Signature v2 verifies, both
+- The cast-only source batch compiles for Android ARM64. Signature v2 verifies, both
   packaged port libraries match the built stripped outputs, and the APK has
   no original commercial packages. This is not an on-device startup test;
   the user's installed build remains frozen. Fresh Inventory/Health CPU

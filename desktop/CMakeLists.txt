@@ -45,6 +45,18 @@ if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
 endif()
 
 enable_testing()
+if(WIN32)
+    # Windows system SHA-256 keeps audit output to bounded metadata digests,
+    # never commercial package contents. The ordinary test uses synthetic input.
+    add_executable(portable_table_reader_audit portable_table_reader_audit.cpp)
+    target_compile_features(portable_table_reader_audit PRIVATE cxx_std_20)
+    target_link_libraries(portable_table_reader_audit PRIVATE quest_portable_host bcrypt)
+    if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+        target_compile_options(portable_table_reader_audit PRIVATE -Wall -Wextra -Werror)
+        target_link_options(portable_table_reader_audit PRIVATE -static -static-libgcc -static-libstdc++)
+    endif()
+    add_test(NAME portable_table_reader_audit_self_test COMMAND portable_table_reader_audit --self-test)
+endif()
 add_test(NAME synthetic_visual COMMAND deusex_desktop_visual --self-test
     --width 640 --height 360 --output "${CMAKE_CURRENT_BINARY_DIR}/self-test/capture.bmp")
 add_test(NAME persona_canvas COMMAND deusex_desktop_visual --test-persona-canvas)
@@ -262,7 +274,8 @@ endif()
 
 foreach(test_target IN ITEMS quest_actor_animation_clock_test quest_portable_vm_test
     quest_script_state_test portable_object_stack_test quest_state_frame_codec_test quest_state_execution_test
-    quest_authored_struct_value_test portable_struct_descriptor_test quest_object_cast_test portable_object_cast_test)
+    quest_authored_struct_value_test portable_struct_descriptor_test quest_object_cast_test portable_object_cast_test
+    portable_buffered_file_test quest_spawn_placement_test)
     add_executable(${test_target} ${test_target}.cpp)
     target_compile_features(${test_target} PRIVATE cxx_std_20)
     target_link_libraries(${test_target} PRIVATE quest_portable_host)

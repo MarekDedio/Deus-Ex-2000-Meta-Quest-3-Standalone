@@ -69,10 +69,15 @@ original-root tests explicitly skipped in that invocation. VM controls pass
 generated-package production adapter passes 381/59 across 164 exports.
 The separate original-data runtime integration completed with exit 0: paired
 save recovery, retained original assets, v4/v5 script-state composition and
-guarded map travel pass. The original-data actor integration is still running;
-its updated startup assertion is not yet counted as a pass.
+guarded map travel pass. The original-data actor integration completed exit 0
+in the separate buffered-reader build. All Class/State dispatch/layout controls,
+936 authored inventory slots, member writes, human/robot/bird animation,
+reference/Level/BSP Region, native physics, state/clock/save and rollback pass.
+The unchanged raw-reader reference is still running; it is not counted as an
+additional completed run. See [BUFFERED-READER.md](BUFFERED-READER.md).
 
-The Android ARM64 build also completes successfully. APK Signature Scheme v2
+The cast-only Android ARM64 build also completes successfully, before the later
+buffering/UI work. APK Signature Scheme v2
 verifies; both packaged port libraries match the current stripped outputs,
 and no original commercial package files are present. This compile/package
 check is not an installation or on-device cast/startup test. The frozen
@@ -94,8 +99,9 @@ their general runtime-startup success flag remains false.
 The original-data actor test retains all previous source/save/state controls.
 Its positive WeaponPistol fixture now requires the real Ammo class cast to
 return null and the compiled InitializeInventory to reach required Spawn278 at
-PC253, with full rollback. That updated assertion has not yet passed a current
-original-data run. Returning None from Spawn would not satisfy the port goal.
+PC253, with full rollback. That assertion passes in the buffered original-data
+run; no inventory actor is spawned. Returning None from Spawn would not satisfy
+the port goal.
 
 ```powershell
 cmake -S desktop -B desktop/build

@@ -1,6 +1,7 @@
 #include "surreal_portable_package_tables.h"
 #include "quest_actor_transform.h"
 #include "portable_model_geometry.h"
+#include "portable_buffered_file.h"
 
 #include "Package/PackageStream.h"
 #include "Utils/File.h"
@@ -533,7 +534,11 @@ void SkipStructObjectPrefix(PayloadReader& reader, const PortablePackageTables& 
 }  // namespace
 
 PortablePackageTables LoadPortablePackageTables(const std::string& path) {
-    const std::shared_ptr<File> file = File::open_existing(path);
+    // Package data is immutable throughout this call. The raw File has no
+    // external cursor owner: both this function and PackageStream share only
+    // the wrapper, whose public cursor excludes read-only prefetch.
+    const std::shared_ptr<File> file =
+        std::make_shared<QuestVr::PortableBufferedFile>(File::open_existing(path));
     PackageStream stream(nullptr, file);
     PortablePackageTables package;
     package.sourcePath = path;
