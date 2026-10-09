@@ -215,9 +215,12 @@ Original-data tests now execute dormant WeaponPistol allocation and the entire
 unchanged InitializeInventory helper through Return PC770. A generated one-item
 input creates actual WeaponPistol and Ammo10mm actors, executes GiveTo/base/Idle2
 changes and preserves their typed/native graph through cold v8 restoration.
-It does not fabricate a player inventory. The next observed StartUp dependency
-is native720 GetPlayerPawn in ScriptedPawn.FindTaggedActor at PC61/opcode0x62;
-the caller rolls back rather than substituting an NPC or PlayerStart.
+It does not fabricate a player inventory. The subsequent
+[actor-lookup batch](ACTOR-LOOKUP.md) implements the current-Level GetPlayerPawn
+fallback, synchronous AllActors and the original tagged/home helpers. The next
+observed StartUp dependency is native711 AIClearEventCallback in
+ScriptedPawn.UpdateReactionCallbacks at PC41/opcode0x62; required AI behavior is
+not replaced with a successful no-op.
 
 The returned born-pistol desktop frames initially failed the chosen 1% coverage
 gate with an incomplete-looking silhouette. The asset lies flat, and isolation

@@ -1,6 +1,7 @@
 #include "Precomp.h"
 #include "GC/GC.h"
 #include "portable_unreal_runtime.h"
+#include "portable_model_geometry.h"
 #include "quest_mesh_animation.h"
 #include "quest_save_bundle.h"
 #include "quest_script_state.h"
@@ -754,6 +755,79 @@ void VerifyOriginalDormantSpawn(const std::filesystem::path& root,const std::str
         "codec5/v8 cold replacement/GC/legacy reset; actual Level before-begun, no campaign startup claim\n";
 }
 
+void VerifyOriginalActorLookup(const std::filesystem::path& root,const std::string& actor,
+    const std::filesystem::path& legacy,const std::filesystem::path& directory) {
+    Require(LoadPortableRuntimeState(legacy.string()),"Could not reset original actor lookup baseline");
+    const auto before=CheckpointBytes(legacy);
+    const auto revision=GetPortableRuntimeWorldRevision();
+    const auto gc=GC::GetStats();
+    const auto none=Value::Text(Kind::Object,{});
+    Require(QuestVr::Vm::Equal(Call(actor,"GetPlayerPawn").value,none) &&
+        QuestVr::Vm::Equal(Call(actor,"FindTaggedActor",{Name("None")}).value,none),
+        "Dormant original Level fabricated a player binding or substituted a PlayerStart/NPC");
+    // Independent oracle: original serialized Level order, live Tag and
+    // Location values. No production tag index or iterator enumeration is used.
+    const auto mapName=actor.substr(0u,actor.find('.'));
+    const auto source=LoadPortablePackageTables((root/"Maps"/(mapName+".dx")).string());
+    const auto snapshots=GetPortableRuntimeMapActors(true);
+    std::map<std::string,std::vector<std::pair<std::string,Value>>> groups;
+    for (const auto reference:ReadPortableLevel68ActorOrder(source)) {
+        if (reference==0) continue;
+        Require(reference>0,"Original lookup oracle requires local serialized Level slots");
+        const auto path=mapName+'.'+GetPortableObjectPath(source,reference);
+        if (path==actor || std::none_of(snapshots.begin(),snapshots.end(),[&](const auto& candidate) {
+            return candidate.objectPath==path;
+        })) continue;
+        auto tag=ReadPortableActorScriptProperty(path,"Tag");
+        auto location=ReadPortableActorScriptProperty(path,"Location");
+        Require(tag.kind==Kind::Name && location.kind==Kind::Vector,"Original lookup oracle lost typed Tag/Location");
+        if (tag.text.empty() || QuestVr::Vm::Equal(tag,Name("None").value)) continue;
+        for (auto& character:tag.text) if (character>='A' && character<='Z') character+= 'a'-'A';
+        groups[tag.text].push_back({path,std::move(location)});
+    }
+    const auto group=std::find_if(groups.begin(),groups.end(),[](const auto& entry) {return entry.second.size()>=2u;});
+    Require(group!=groups.end(),"Original lookup oracle found no repeated authored Tag");
+    const auto location=ReadPortableActorScriptProperty(actor,"Location");
+    std::string nearest;float best=1000000.0f;
+    for (const auto& [path,candidate]:group->second) {
+        const float x=candidate.vector[0u]-location.vector[0u];
+        const float y=candidate.vector[1u]-location.vector[1u];
+        const float z=candidate.vector[2u]-location.vector[2u];
+        const float distance=std::sqrt(x*x+y*y+z*z);
+        if (nearest.empty() || distance<best) { nearest=path;best=distance; }
+    }
+    const auto nearestValue=Value::Text(Kind::Object,nearest);
+    Require(QuestVr::Vm::Equal(Call(actor,"FindTaggedActor",{Name(group->first)}).value,nearestValue),
+        "Original tagged lookup differs from independent Level-order nearest-actor oracle");
+    std::string mixedTag=group->first;
+    for (std::size_t i=0u;i<mixedTag.size();i+=2u)
+        if (mixedTag[i]>='a' && mixedTag[i]<='z') mixedTag[i]-= 'a'-'A';
+    Require(QuestVr::Vm::Equal(Call(actor,"FindTaggedActor",{Name(mixedTag),{Value::Bool(false),{}},
+        {Value::Text(Kind::Object,"Engine.Actor"),{}}}).value,nearestValue),
+        "Original explicit Class/tag case-alias lookup changed its result");
+    Require(!groups.count("questvr_missing_lookup_tag"),"Original missing-Tag fixture collides with real source data");
+    Require(QuestVr::Vm::Equal(Call(actor,"FindTaggedActor",{Name("QuestVR_Missing_Lookup_Tag")}).value,none) &&
+        QuestVr::Vm::Equal(Call(actor,"FindTaggedActor",{Name(group->first),{Value::Bool(false),{}},
+            {Value::Text(Kind::Object,"Engine.PlayerPawn"),{}}}).value,none),
+        "Original empty/class-filtered iterator fabricated an actor result");
+    const auto inspect=directory/"original-readonly-actor-lookup.sav";
+    Require(SavePortableRuntimeState(inspect.string()) && CheckpointBytes(inspect)==before &&
+        GetPortableRuntimeWorldRevision()==revision && GC::GetStats().numObjects==gc.numObjects &&
+        GC::GetStats().memoryUsage==gc.memoryUsage,
+        "Original read-only lookup changed actor state, save bytes, GC roots or world revision");
+    const auto initialized=Call(actor,"InitializeHomeBase");
+    Require(initialized.function=="DeusEx.ScriptedPawn.InitializeHomeBase" && initialized.offset==186u &&
+        initialized.opcode==0x0bu,"Original InitializeHomeBase did not complete its actual compiled Return");
+    const auto homeRot=ReadPortableActorScriptProperty(actor,"HomeRot");
+    Require(homeRot.kind==Kind::Vector && std::fabs(std::sqrt(homeRot.vector[0u]*homeRot.vector[0u]+
+        homeRot.vector[1u]*homeRot.vector[1u]+homeRot.vector[2u]*homeRot.vector[2u])-100.0f)<0.001f,
+        "Original HomeRot multiplication assignment did not retain its 100-unit forward vector");
+    Require(LoadPortableRuntimeState(legacy.string()) && SavePortableRuntimeState(inspect.string()) &&
+        CheckpointBytes(inspect)==before,"Original HomeBase helper failed complete legacy reset");
+    std::cout<<"ORIGINAL ACTOR LOOKUP native720 absent-player None; actual FindTaggedActor native304/225 nearest oracle Tag="<<
+        group->first<<" candidates="<<group->second.size()<<" result="<<nearest<<
+        "; case/class/empty controls, byte-identical readonly state/GC; InitializeHomeBase Return PC186/native221 verified\n";
+}
 void VerifyOriginalInventoryTransactions(const std::string& actor,const std::filesystem::path& legacy,
     const std::filesystem::path& directory) {
     Require(LoadPortableRuntimeState(legacy.string()) && !GetPortableRuntimeScriptStatePresent(),
@@ -1035,9 +1109,9 @@ void VerifyOriginalInventoryTransactions(const std::string& actor,const std::fil
         " committed="<<slice.committed<<" error="<<slice.error<<" at "<<slice.function<<':'<<slice.offset<<
         " opcode="<<static_cast<unsigned>(slice.opcode)<<'\n';
     Require(slice.status==Status::Unsupported && !slice.committed &&
-        slice.function=="DeusEx.ScriptedPawn.FindTaggedActor" && slice.offset==61u &&
-        slice.opcode==0x62u && slice.error=="Unsupported runtime native 720",
-        "Actual StartUp did not reach the next required GetPlayerPawn binding or fabricated campaign startup: "+slice.error);
+        slice.function=="DeusEx.ScriptedPawn.UpdateReactionCallbacks" && slice.offset==41u &&
+        slice.opcode==0x62u && slice.error=="Unsupported runtime native 711",
+        "Actual StartUp did not reach the next required reaction-event binding or fabricated campaign startup: "+slice.error);
     Require(GetPortableRuntimeMapActors(true).size()==startupActors &&
         GetPortableRuntimeWorldRevision()==startupRevision &&
         GC::GetStats().numObjects==startupGc.numObjects &&
@@ -1276,6 +1350,7 @@ void TestOriginal(const std::filesystem::path& root, const bool inventoryOnly = 
             if (!actor.pawn || actor.meshPath.empty() || !IsA(actor, "ScriptedPawn")) continue;
             if (humanTests == 0u && !IsA(actor, "Robot") && !IsA(actor, "Animal")) {
                 VerifyOriginalDormantSpawn(root,actor.objectPath,checkpoint,temporary.directory);
+                VerifyOriginalActorLookup(root,actor.objectPath,checkpoint,temporary.directory);
                 VerifyOriginalInventoryTransactions(actor.objectPath, checkpoint, temporary.directory);
                 if (inventoryOnly) { ++humanTests; continue; }
                 VerifyAuthoredStack(root, actor.objectPath);

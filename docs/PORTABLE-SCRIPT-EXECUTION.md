@@ -17,6 +17,13 @@ Native boolean AND/OR are lazy; call arguments evaluate on caller Self before
 invocation on the Context receiver. Native omitted arguments retain Nothing,
 while script optional arguments initialize typed-zero locals.
 
+Synchronous Iterator/IteratorNext/IteratorPop execution and native AllActors304
+now use live Level order and guarded OUT bindings. Native221 Vector-times-Float
+assignment and native225 VSize support original actor-search helpers.
+GetPlayerPawn720 supplies the current-Level linked-PlayerPawn fallback, not
+viewport ownership or Possess. See [actor lookup](ACTOR-LOOKUP.md) for membership,
+budgets, original-data controls and the persistent-iterator boundary.
+
 Rotator-to-Vector `0x39` uses the exact pinned Coords forward axis, retains
 16-bit wrapping and returns a detached Vector. Nothing means zero rotation;
 other typed values, including arbitrary generic Struct storage, refuse.
@@ -114,7 +121,7 @@ sequence/frame/fatness overrides cannot be mixed with helper execution.
 
 ## Remaining requirements and persistence boundary
 
-Automatic level startup, latent calls/handlers, iterators, switches,
+Automatic level startup, latent calls/handlers, persistent/remaining iterators, switches,
 dynamic arrays, class-default object identity, remaining structs/natives,
 RNG, attachment rendering and dynamic GPU pose
 updates remain unfinished. Virtual lookup now respects the supported authored
@@ -145,8 +152,10 @@ Map replacement and unload still refuse while script state exists, even after
 successful saving: a per-map archive is required to retain the abandoned map and
 make rollback safe. Quest checks this before cancelling UI/audio/geometry work.
 Runtime shutdown explicitly discards state. These scoped saves do not serialize
-latent call continuations, spawned actors, timers or arbitrary
+latent call continuations, live iterator cursors, timers or arbitrary
 campaign systems; automatic gameplay does not yet invoke these execution APIs.
+Born actors now have codec5/checkpoint8 manifests and cold restoration; see
+[actor spawning](ACTOR-SPAWN.md).
 
 Full campaign progression, live animation/AI, Quest stereo rendering, physical
 controllers and device performance still require implementation and verification.

@@ -1,6 +1,20 @@
 # Current Quest test-build handoff (2026-10-09)
 
-The latest **backend-only, not installed** actor-spawn APK is
+The latest **backend-only, not installed** actor-lookup APK is
+`artifacts/release-actor-lookup-20261009/DeusExQuestVR-actor-lookup-20261009.apk`:
+18,681,209 bytes, SHA-256
+`F812793EA19300A794EE8901623068C9BA69370C6FAC1302A7EED1EA92637DD7`.
+Android ARM64 compilation and APK Signature Scheme v2 verification pass;
+its 16 ZIP entries contain no original commercial game packages. Packaged port
+native-library hashes differ from the preceding spawn build. It adds bounded
+synchronous foreach/AllActors304, linked-PlayerPawn fallback720, vector221/225
+and valid inactive-reference assignments. All 47 ordinary host tests and all
+three separate original-data integrations pass. Persistent iterator/AI/player
+possession/world-startup work remains unfinished. This backend batch has not
+been device-verified or installed over the accepted seated-player APK below.
+See [ACTOR-LOOKUP.md](ACTOR-LOOKUP.md).
+
+The preceding **backend-only, not installed** actor-spawn APK is
 `artifacts/release-actor-spawn-20261009/DeusExQuestVR-actor-spawn-20261009.apk`:
 18,681,209 bytes, SHA-256
 `7B24F692B5F8D10FC33D10DF38944898A2D0ADAB0B36FA1CD48701599252ED67`.

@@ -206,10 +206,12 @@ private:
     std::uint16_t Word() { const auto a = Byte(); const auto b = Byte(); return a | (b << 8u); }
     std::uint32_t Dword() { const auto a = Word(); const auto b = Word(); return a | (std::uint32_t(b) << 16u); }
     void ValidateJump(const Node& n, const Program& p) {
-        if ((n.op == 0x06 || n.op == 0x07) && !p.boundaries.count(n.target)) {
+        if ((n.op == 0x06 || n.op == 0x07 || n.op == 0x2f) && !p.boundaries.count(n.target)) {
             result_.offset = n.offset; result_.opcode = n.op;
             Fail(Status::Invalid, "VM jump is not a top-level statement boundary");
         }
+        if (n.op == 0x2f && p.statements.at(p.boundaries.at(n.target)).op != 0x30)
+            Fail(Status::Invalid, "VM iterator end is not an IteratorPop statement");
         for (const auto& child : n.children) ValidateJump(child, p);
     }
     void Arguments(Node& n, std::size_t depth) {
@@ -442,9 +444,11 @@ public:
         }
         Value value;
         bool returned = false;
+        IteratorStack iterators;
         for (std::size_t pc = 0; pc < program.statements.size();) {
             const Node& n = program.statements[pc];
             Step(fn, n.offset, n.op);
+            if (AdvanceIterator(frame, n, program, pc, iterators)) continue;
             if (n.op == 0x04) { value = Eval(frame, n.children.at(0), self).Load(); returned = true; break; }
             if (n.op == 0x08 || n.op == 0x15) Fail(Status::Stopped, "State stop requires a continuation engine");
             if (n.op == 0x06) { pc = program.boundaries.at(n.target); continue; }
@@ -476,7 +480,10 @@ public:
     Value Resume(const std::string& self) {
         if (self.size() > limits_.stringBytes) Fail(Status::Budget, "VM state receiver identity limit");
         bool active{};
+        IteratorStack iterators;
         const auto finish = [&](Value value = {}) {
+            if (!iterators.empty())
+                Fail(Status::Unsupported, "State continuation with live iterators requires persistent iterator storage");
             if (active) result_.callStack.pop_back();
             return value;
         };
@@ -487,6 +494,7 @@ public:
             const auto localOwner = object->frame->localsCodePath;
             const auto statementIndex = object->frame->statementIndex;
             const auto latent = object->frame->latent;
+            const auto localRevision = host_.StateLocalRevision(self);
             if (latent == StateLatent::Stop) { result_.status = Status::Stopped; return finish(); }
             if (latent != StateLatent::Continue)
                 Fail(Status::Unsupported, "State latent action requires its runtime handler");
@@ -511,7 +519,11 @@ public:
             // persistent frame. Its result applies to the new code afterward.
             Value value;
             bool jump{};
-            if (statement.op == 0x04) value = Eval(view.frame, statement.children.at(0), self).Load();
+            std::size_t iteratorPosition = statementIndex;
+            const bool iteratorControl = AdvanceIterator(view.frame, statement, view.program,
+                iteratorPosition, iterators);
+            if (iteratorControl) {}
+            else if (statement.op == 0x04) value = Eval(view.frame, statement.children.at(0), self).Load();
             else if (statement.op == 0x06) jump = true;
             else if (statement.op == 0x07) jump = !ToBool(Eval(view.frame, statement.children.at(0), self).Load());
             else if (statement.op == 0x09) {
@@ -524,7 +536,14 @@ public:
             Locate(view.function, statement.offset, statement.op);
             object = host_.ReadState(self);
             if (!object || !object->frameOverride || !object->frame || object->frame->codePath.empty()) return finish(value);
-            if (jump) {
+            if (!iterators.empty() && (object->frame->codePath != code ||
+                object->frame->localsCodePath != localOwner || host_.StateLocalRevision(self) != localRevision))
+                Fail(Status::Unsupported, "State code or locals changed with live iterators");
+            if (iteratorControl) {
+                if (iteratorPosition > std::numeric_limits<std::uint32_t>::max())
+                    Fail(Status::Invalid, "State iterator statement ordinal overflow");
+                host_.MutableState(self)->frame->statementIndex = static_cast<std::uint32_t>(iteratorPosition);
+            } else if (jump) {
                 const auto& current = *object->frame;
                 auto& currentView = StateView(self, current.codePath, current.localsCodePath);
                 const auto target = currentView.program.boundaries.find(statement.target);
@@ -548,6 +567,103 @@ public:
         }
     }
 private:
+    struct ActiveIterator {
+        std::unique_ptr<Iterator> iterator;
+        std::size_t start{}, end{}, retained{};
+    };
+    using IteratorStack = std::vector<ActiveIterator>;
+    void CheckIteratorStorage(ActiveIterator& iterator) {
+        const auto bytes = iterator.iterator->RetainedBytes();
+        if (bytes > iterator.retained) {
+            Retain(bytes - iterator.retained);
+            iterator.retained = bytes;
+        }
+    }
+    bool AdvanceIterator(Frame& frame, const Node& statement, const Program& program,
+        std::size_t& pc, IteratorStack& iterators) {
+        if (statement.op == 0x30) {
+            if (iterators.empty()) Fail(Status::Invalid, "VM IteratorPop without an iterator");
+            iterators.pop_back(); ++pc; return true;
+        }
+        if (statement.op != 0x2f && statement.op != 0x31) return false;
+        if (statement.op == 0x2f) {
+            if (iterators.size() >= limits_.expressionDepth)
+                Fail(Status::Budget, "VM iterator stack limit");
+            auto iterator = IteratorFactory(frame, statement.children.at(0), frame.self);
+            Locate(frame.function, statement.offset, statement.op);
+            if (!iterator) Fail(Status::Invalid, "VM Iterator statement without an iterator");
+            Retain(2u * sizeof(ActiveIterator));
+            iterators.push_back({std::move(iterator), pc + 1u, program.boundaries.at(statement.target), 0u});
+            CheckIteratorStorage(iterators.back());
+        } else if (iterators.empty()) Fail(Status::Invalid, "VM IteratorNext without an iterator");
+        auto& iterator = iterators.back();
+        const bool next = iterator.iterator->Next();
+        CheckIteratorStorage(iterator);
+        pc = next ? iterator.start : iterator.end;
+        return true;
+    }
+    std::unique_ptr<Iterator> IteratorFactory(Frame& frame, const Node& expression,
+        const std::string& context) {
+        Step(frame.function, expression.offset, expression.op);
+        if (expression.op == 0x19) {
+            const auto object = Eval(frame, expression.children.at(0), context).Load();
+            Locate(frame.function, expression.offset, expression.op);
+            if (object.kind != Kind::Object && object.kind != Kind::Nothing) TypeError();
+            return object.text.empty() ? nullptr : IteratorFactory(frame, expression.children.at(1), object.text);
+        }
+        if (expression.op < 0x60 && expression.op != 0x1b &&
+            expression.op != 0x1c && expression.op != 0x38)
+            Fail(Status::Unsupported, "VM iterator factory is not a native function call");
+        std::uint16_t index = expression.native;
+        std::shared_ptr<const Function> identity;
+        if (expression.op < 0x60) {
+            Invocation call;
+            call.kind = expression.op == 0x1c ? CallKind::Final :
+                expression.op == 0x38 ? CallKind::Global : CallKind::Virtual;
+            call.reference = expression.reference;
+            if (expression.op != 0x1c) call.name = host_.ResolveName(frame.function, expression.reference);
+            identity = host_.ResolveFunction(frame.function, context, call);
+            if (!identity) Fail(Status::Unsupported, "Unresolved VM iterator function call " + call.name);
+        }
+        std::vector<Evaluation> arguments;
+        for (const auto& argument : expression.children)
+            arguments.push_back(Eval(frame, argument, frame.self));
+        Locate(frame.function, expression.offset, expression.op);
+        std::shared_ptr<const Function> declaration;
+        if (identity) {
+            if (context.empty() || !host_.CanCall(*identity, context)) return {};
+            if (result_.callStack.size() >= limits_.callDepth) Fail(Status::Budget, "VM iterator call depth limit");
+            declaration = host_.PrepareFunction(*identity, context);
+            if (!declaration || declaration->path != identity->path || declaration->source != identity->source)
+                Fail(Status::Invalid, "Prepared VM iterator function changed callable identity");
+            if ((declaration->flags & 0x404u) != 0x404u || (declaration->flags & 0x8u) != 0u)
+                Fail(Status::Unsupported, "VM iterator factory is not a synchronous native iterator");
+            index = declaration->nativeIndex;
+            std::size_t count{};
+            for (const auto& property : declaration->variables) {
+                if (!(property.flags & 0x80u) || (property.flags & 0x400u)) continue;
+                if (count == arguments.size()) {
+                    if (!(property.flags & 0x10u)) Fail(Status::Invalid, "Missing required VM iterator parameter " + property.name);
+                    arguments.push_back({});
+                }
+                ++count;
+            }
+            if (arguments.size() > count && !declaration->variables.empty())
+                Fail(Status::Invalid, "Excess VM iterator arguments");
+        }
+        for (auto& argument : arguments) {
+            const auto value = argument.Load(); ValidateValue(value, 0); Retain(ValueBytes(value));
+            if (argument.reference) Retain(sizeof(Reference) * 2u);
+            argument.reference = GuardReference(argument.reference);
+        }
+        if (declaration) {
+            result_.callStack.push_back(declaration->path);
+            Step(*declaration, 0u, 0u);
+        }
+        auto iterator = host_.CreateIterator(index, context, arguments, declaration.get());
+        if (declaration) result_.callStack.pop_back();
+        return iterator;
+    }
     struct StateExecutionView {
         std::shared_ptr<const Function> owner;
         const Function& function;
@@ -944,6 +1060,22 @@ private:
         case 220: {
             count(2); const auto x = vector(0); const auto y = vector(1);
             return {Value::Vector({x[1]*y[2]-x[2]*y[1], x[2]*y[0]-x[0]*y[2], x[0]*y[1]-x[1]*y[0]}), {}};
+        }
+        case 221: {
+            count(2);
+            const auto& reference = args[0].reference;
+            if (!reference || !reference->write || reference->zero.kind != Kind::Vector ||
+                a(0).kind != Kind::Vector)
+                Fail(Status::Invalid, "VM vector multiplication assignment needs a writable Vector reference");
+            const auto value = Native(212u, self, args, nullptr).Load();
+            Write(reference, value);
+            return {args[0].Load(), {}};
+        }
+        case 225: {
+            count(1); const auto v = vector(0u);
+            // NObject::VSize uses the pinned binary32 dot/length operations,
+            // not a double hypot that would silently change overflow behavior.
+            return {Value::Float(length(vec3(v[0], v[1], v[2]))), {}};
         }
         case 112: {
             count(2); Value zero = Value::Text(Kind::String, {});

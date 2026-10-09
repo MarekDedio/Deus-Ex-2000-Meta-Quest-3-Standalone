@@ -104,6 +104,14 @@ public:
     virtual Value CallEvent(const std::string& receiver, const std::string& eventName,
         bool enumDispatch, const std::vector<Evaluation>& arguments = {}) = 0;
 };
+class Iterator {
+public:
+    virtual ~Iterator() = default;
+    // Next writes its guarded OUT binding, including Object None on exhaustion.
+    // It must bound its own native scan work; no asynchronous work is permitted.
+    virtual bool Next() = 0;
+    virtual std::size_t RetainedBytes() const = 0;
+};
 class Host {
 public:
     virtual ~Host() = default;
@@ -150,6 +158,13 @@ public:
     virtual Evaluation NativeWithExecution(std::uint16_t index, const std::string& receiver,
         const std::vector<Evaluation>& arguments, const Function* declaration, Execution&) {
         return Native(index, receiver, arguments, declaration);
+    }
+    // Iterator factories may retain these guarded aliases only within the
+    // enclosing synchronous VM frame. Their lifetime never crosses Execute /
+    // ResumeState or a commit, and all Next writes share the caller's journal.
+    virtual std::unique_ptr<Iterator> CreateIterator(std::uint16_t, const std::string&,
+        const std::vector<Evaluation>&, const Function*) {
+        throw std::runtime_error("VM native iterator unavailable");
     }
     virtual const QuestVr::StateObject* ReadState(const std::string&) { return nullptr; }
     // Storage identity only, not a transition-generation abort guard. Hosts

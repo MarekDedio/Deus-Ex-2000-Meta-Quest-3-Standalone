@@ -1,5 +1,40 @@
 # Port status
 
+## Original actor lookup and synchronous foreach (2026-10-09)
+
+- VM Iterator/Next/Pop now execute real native foreach loops with independent
+  nested cursors, guarded OUT aliases, transaction rollback and bounded work/
+  storage. State loops can complete in one synchronous slice; persistent
+  cursors and latent/code/local replacement with live cursors explicitly refuse.
+- AllActors304 scans actual live Level slots, including holes, appended births,
+  live Tags and Destroy callback timing. GetPlayerPawn720 implements the linked
+  current-Level PlayerPawn fallback, not an owned viewport or full Possess.
+  Native221 Vector*=Float and native225 VSize support the original helpers.
+- Generated inactive-member controls exposed a pre-existing reference-value
+  rejection. Valid inactive UObject references can now be assigned and saved;
+  identity/class constraints and direct inactive receiver guards are retained.
+  Scalar/array/struct/typed OUT, cold restore, GC and rejection controls pass.
+  Inactive Context dereferencing and function-local object ancestry enforcement
+  remain explicit limitations. See [ACTOR-LOOKUP.md](ACTOR-LOOKUP.md).
+- Final host suite: 47 passes / three optional original-data skips (50 entries).
+  All three separate final-source original actor/runtime/defaults integrations
+  pass. Generated Spawn/lookup integration passes 2,384 checks / 60 rejection
+  controls; VM controls pass 676,927 / 184. Original FindTaggedActor matches an
+  independently serialized-order nearest-distance oracle (19 AmbientSound
+  candidates, result AmbientSound26), and InitializeHomeBase reaches Return
+  PC186 with its actual 100-unit HomeRot. Read-only saved bytes/revision/GC stay
+  unchanged. Oracle membership uses recognized runtime snapshots; generated
+  fixtures independently cover native slot publication.
+- Actual StartUp now refuses native711 AIClearEventCallback in
+  ScriptedPawn.UpdateReactionCallbacks PC41/opcode0x62. Full saved payload,
+  provisional inventory births, roots and world publication roll back. The
+  native AI manager must be implemented, not replaced with pin-stub no-ops.
+- Final ARM64 APK builds and verifies with signature scheme v2; 16 ZIP entries
+  contain no original commercial packages. It is archived locally, not installed
+  over the physically accepted seated-player build. Full original player/world
+  startup, AI/latent/timers, campaign archives, physics and device validation
+  remain unfinished. See [QUEST-TEST-BUILD.md](QUEST-TEST-BUILD.md).
+
 ## Real actor births, collision registration and cold graphs (2026-10-09)
 
 - Native Spawn278 creates actual loaded Actor classes with frozen birth

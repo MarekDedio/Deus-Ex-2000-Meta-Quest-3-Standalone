@@ -1,6 +1,7 @@
 #include "Precomp.h"
 #include "surreal_portable_package_tables.h"
 #include "quest_portable_vm.h"
+#include "quest_state_frame.h"
 #include "Math/coords.h"
 
 #include <algorithm>
@@ -151,7 +152,7 @@ Bytes Call(std::uint8_t opcode,std::int32_t index,std::initializer_list<Bytes> a
     auto b=Ref(opcode,index);for(const auto& arg:args) {b.insert(b.end(),arg.begin(),arg.end());}
     b.push_back(0x16);return b;
 }
-Bytes Return(const Bytes& value) {return Join({{0x04},value});}
+Bytes Return(const Bytes& value={0x0b}) {return Join({{0x04},value});}
 Bytes Let(const Bytes& lhs,const Bytes& rhs,std::uint8_t opcode=0x0f) {return Join({{opcode},lhs,rhs});}
 Bytes Skip(const Bytes& value) {Bytes b{0x18};U16(b,static_cast<std::uint16_t>(value.size()));return Join({b,value});}
 Bytes Context(const Bytes& object,const Bytes& child) {
@@ -188,16 +189,58 @@ struct TestHost final:Vm::Host {
     std::size_t beginCount{},commitCount{},rollbackCount{},effects{},savedEffects{};
     std::uint32_t rng{12345},savedRng{};
     bool active{};
+    std::vector<Value> iteratorValues{Value::Integer(1),Value::Integer(2),Value::Integer(3)};
+    std::size_t iteratorCreates{},iteratorDestroys{},iteratorNextCalls{},iteratorBytes{128u};
+    std::optional<QuestVr::StateObject> state,savedState;
+    std::map<std::string,Vm::Function> statePrograms;
+    std::uint64_t stateRevision{},savedStateRevision{};
     std::set<std::string> disabledFunctions;
     bool CanCall(const Vm::Function& fn, const std::string&) override {
         return !disabledFunctions.contains(fn.path);
     }
     void Begin() override {
         if(active) throw std::runtime_error("Nested host transaction");
-        active=true;saved=storage;savedEffects=effects;savedRng=rng;++beginCount;
+        active=true;saved=storage;savedEffects=effects;savedRng=rng;
+        savedState=state;savedStateRevision=stateRevision;++beginCount;
     }
     void Commit() override {if(!active) throw std::runtime_error("Commit outside transaction");active=false;++commitCount;}
-    void Rollback() noexcept override {storage.swap(saved);effects=savedEffects;rng=savedRng;active=false;++rollbackCount;}
+    void Rollback() noexcept override {
+        storage.swap(saved);effects=savedEffects;rng=savedRng;
+        state.swap(savedState);stateRevision=savedStateRevision;active=false;++rollbackCount;
+    }
+    const QuestVr::StateObject* ReadState(const std::string&) override {return state ? &*state : nullptr;}
+    QuestVr::StateObject* MutableState(const std::string&) override {return state ? &*state : nullptr;}
+    std::uint64_t StateLocalRevision(const std::string&) override {return stateRevision;}
+    std::shared_ptr<const Vm::Function> StateProgram(const std::string&,const std::string& path) override {
+        return std::make_shared<Vm::Function>(statePrograms.at(path));
+    }
+    std::unique_ptr<Vm::Iterator> CreateIterator(const std::uint16_t index,const std::string& receiver,
+        const std::vector<Vm::Evaluation>& arguments,const Vm::Function* declaration) override {
+        if(index!=1040u || arguments.empty() || !arguments[0].reference)
+            throw std::runtime_error("Fixture invalid iterator factory/out binding");
+        ++iteratorCreates;observations.push_back("factory:"+receiver);
+        std::vector<Value> values;for(const auto& arg:arguments) values.push_back(arg.Load());
+        nativeArguments.push_back(values);nativeReceivers.push_back(receiver);
+        nativeDeclarations.push_back(declaration ? declaration->path : "");
+        retainedNativeReference=arguments[0].reference;
+        struct Cursor final:Vm::Iterator {
+            TestHost& owner;
+            std::shared_ptr<Vm::Reference> output;
+            std::vector<Value> values;
+            std::size_t cursor{};
+            Cursor(TestHost& host,std::shared_ptr<Vm::Reference> target,std::vector<Value> items)
+                :owner(host),output(std::move(target)),values(std::move(items)) {}
+            ~Cursor() override {++owner.iteratorDestroys;}
+            bool Next() override {
+                ++owner.iteratorNextCalls;
+                const bool available=cursor<values.size();
+                output->write(available ? values[cursor++] : output->zero);
+                return available;
+            }
+            std::size_t RetainedBytes() const override {return owner.iteratorBytes+values.size()*sizeof(Value);}
+        };
+        return std::make_unique<Cursor>(*this,arguments[0].reference,iteratorValues);
+    }
     Vm::Property ResolveProperty(const Vm::Function& f,std::int32_t index) override {return properties.at({f.source,index});}
     std::string ResolveName(const Vm::Function& f,std::int32_t index) override {return names.at({f.source,index});}
     std::string ResolveObject(const Vm::Function& f,std::int32_t index) override {return objects.at({f.source,index});}
@@ -287,6 +330,14 @@ struct TestHost final:Vm::Host {
             if(retainedNativeReference->element) retainedNativeElement=retainedNativeReference->element(0);
             return arguments.front();
         }
+        if(index==1043u) {
+            if(!state || !state->frame) throw std::runtime_error("Fixture lacks a state frame");
+            if(values.empty()) ++stateRevision;
+            else if(values[0].integer==1) state->frame->codePath="Fixture.OtherState";
+            else if(values[0].integer==2) state->frame->latent=QuestVr::StateLatent::Stop;
+            else state->frame->codePath.clear();
+            return {};
+        }
         if(index==0 && declaration) {
             return {Value::Integer(values.empty() ? -1 : static_cast<std::int32_t>(values.front().kind)),{}};
         }
@@ -303,6 +354,215 @@ void Failed(const Vm::Result& r,Vm::Status status,const TestHost& host,const std
     Require(r.status==status && !r.error.empty(),context+": wrong failure status or no diagnostic");
     Require(host.beginCount==1 && host.commitCount==0 && host.rollbackCount==1 && !host.active,
         context+": whole-call-tree transaction did not roll back exactly once");++rejections;
+}
+void Append(Bytes& destination,const Bytes& source) {destination.insert(destination.end(),source.begin(),source.end());}
+std::size_t BeginIterator(Bytes& code,const Bytes& factory) {
+    code.push_back(0x2f);Append(code,factory);const auto target=code.size();U16(code,0u);return target;
+}
+void EndIterator(Bytes& code,const std::size_t target) {
+    code.push_back(0x31);PatchU16(code,target,code.size());code.push_back(0x30);
+}
+Bytes Vector(const std::array<float,3>& value) {
+    Bytes result{0x23};for(const auto component:value) Float(result,component);return result;
+}
+Bytes Rotation(const std::array<std::int32_t,3>& rotation);
+void VectorNativeContracts() {
+    for(const std::array<float,3> components : {std::array<float,3>{0.0f,-0.0f,0.0f},
+        std::array<float,3>{3.0f,4.0f,-12.0f},std::array<float,3>{-0.125f,73.5f,1.0e-18f}}) {
+        for(const float scale : {-7.5f,-0.0f,0.0f,0.125f,100.0f}) {
+            TestHost host;const auto function=Function("VectorAssign",Return(Native(221u,{Ref(0x01,1),Real(scale)})));
+            const auto property=host.Property(function,1,"Vector",Value::Vector({}));
+            host.Store("Self",property,{Value::Vector(components)});
+            const auto result=Vm::Execute(host,function,"Self");Returned(result,"Pinned Vector *= Float");
+            vec3 expected(components[0],components[1],components[2]);expected*=scale;
+            const std::array<float,3> values{expected.x,expected.y,expected.z};
+            Require(result.value.kind==Vm::Kind::Vector && result.writes==1u &&
+                Vm::Equal(host.Load("Self",property),result.value),"Vector assignment return/write differs");
+            for(std::size_t i=0;i<3u;++i)
+                Require(std::bit_cast<std::uint32_t>(result.value.vector[i])==std::bit_cast<std::uint32_t>(values[i]),
+                    "Vector assignment changed pinned component multiplication");
+        }
+        TestHost host;const auto result=Vm::Execute(host,Function("VSize",Return(Native(225u,{Vector(components)}))),"Self");
+        Returned(result,"Pinned VSize");
+        Require(result.value.kind==Vm::Kind::Float && std::bit_cast<std::uint32_t>(result.value.floating)==
+            std::bit_cast<std::uint32_t>(length(vec3(components[0],components[1],components[2]))),
+            "VSize changed pinned binary32 dot/sqrt evaluation");
+    }
+    {
+        TestHost host;const auto result=Vm::Execute(host,Function("NothingVSize",Return(Native(225u,{{0x0b}}))),"Self");
+        Returned(result,"VSize Nothing zero");Require(result.value.floating==0.0f,"VSize Nothing did not become zero");
+    }
+    for(const Bytes& argument : {Int(3),String("vector"),Rotation({1,2,3})}) {
+        TestHost host;const auto result=Vm::Execute(host,Function("WrongVSize",Return(Native(225u,{argument}))),"Self");
+        Failed(result,Vm::Status::Unsupported,host,"VSize wrong concrete type");
+    }
+    for(const bool overflow : {false,true}) {
+        TestHost host;auto function=Function("InvalidVectorAssign",{});
+        const auto property=host.Property(function,1,"Vector",Value::Vector({}));
+        const auto before=Value::Vector({std::numeric_limits<float>::max(),1.0f,2.0f});host.Store("Self",property,{before});
+        function.bytecode=Return(Native(221u,{overflow ? Ref(0x01,1) : Vector({1,2,3}),Real(2.0f)}));
+        const auto result=Vm::Execute(host,function,"Self");Failed(result,Vm::Status::Invalid,host,"Unsafe vector assignment");
+        Require(Vm::Equal(host.Load("Self",property),before),"Invalid vector assignment altered its target");
+    }
+    {
+        TestHost host;const auto result=Vm::Execute(host,Function("OverflowVSize",Return(Native(225u,
+            {Vector({std::numeric_limits<float>::max(),0,0})}))),"Self");
+        Failed(result,Vm::Status::Invalid,host,"VSize binary32 overflow is refused");
+    }
+    {
+        TestHost host;auto function=Function("VectorRollback",{});
+        const auto property=host.Property(function,1,"Vector",Value::Vector({}));
+        const auto before=Value::Vector({1,2,3});host.Store("Self",property,{before});
+        function.bytecode=Join({Native(221u,{Ref(0x01,1),Real(100.0f)}),Native(4095u),Return()});
+        const auto result=Vm::Execute(host,function,"Self");Failed(result,Vm::Status::Unsupported,host,"Vector assignment nested rollback");
+        Require(Vm::Equal(host.Load("Self",property),before),"Vector assignment survived later failure");
+    }
+}
+void IteratorContracts() {
+    const auto configure=[](TestHost& host,const Vm::Function& function) {
+        const auto output=host.Property(function,1,"Output",Value::Integer(0));
+        const auto sum=host.Property(function,2,"Sum",Value::Integer(0));
+        host.Store("Self",output,{Value::Integer(99)});host.Store("Self",sum,{Value::Integer(0)});
+        return std::pair{output,sum};
+    };
+    const auto summing=[](const Bytes& factory) {
+        Bytes code;const auto target=BeginIterator(code,factory);
+        Append(code,Let(Ref(0x01,2),Native(146u,{Ref(0x01,2),Ref(0x01,1)})));
+        EndIterator(code,target);Append(code,Return(Ref(0x01,2)));return code;
+    };
+    for(const bool empty : {false,true}) {
+        TestHost host;if(empty) host.iteratorValues.clear();
+        const auto function=Function("Foreach",summing(Native(1040u,{Ref(0x01,1)})));
+        const auto [output,sum]=configure(host,function);
+        const auto result=Vm::Execute(host,function,"Self");Returned(result,"Native iterator exhaustion/pop");
+        Require(result.value.integer==(empty ? 0 : 6) && host.Load("Self",output).integer==0 &&
+            host.Load("Self",sum).integer==result.value.integer,"Iterator output/exhaustion/body differs");
+        Require(host.iteratorCreates==1u && host.iteratorDestroys==1u && host.iteratorNextCalls==(empty ? 1u : 4u),
+            "Iterator push/first Next/exhaustion/Pop lifetime differs");
+        bool expired{};try {host.retainedNativeReference->read();}catch(const std::runtime_error&) {expired=true;}
+        Require(expired,"Iterator alias escaped its Machine lifetime");
+    }
+    {
+        TestHost host;Bytes code;const auto outer=BeginIterator(code,Native(1040u,{Ref(0x01,1)}));
+        const auto inner=BeginIterator(code,Native(1040u,{Ref(0x01,3)}));
+        Append(code,Native(165u,{Ref(0x01,2)}));EndIterator(code,inner);EndIterator(code,outer);Append(code,Return(Ref(0x01,2)));
+        const auto function=Function("NestedForeach",code);configure(host,function);
+        const auto innerOutput=host.Property(function,3,"InnerOutput",Value::Integer(0));host.Store("Self",innerOutput,{Value::Integer(0)});
+        const auto result=Vm::Execute(host,function,"Self");Returned(result,"Nested iterator LIFO stacks");
+        Require(result.value.integer==9 && host.iteratorCreates==4u && host.iteratorDestroys==4u &&
+            host.iteratorNextCalls==16u,"Nested iterator cursor or cleanup interfered with its parent");
+    }
+    for(const std::uint8_t invocation : {std::uint8_t{0x1b},std::uint8_t{0x1c},std::uint8_t{0x38}}) {
+        TestHost host;auto declaration=Function("NativeIterator",{},"NativeSource");declaration.flags=0x405u;declaration.nativeIndex=1040u;
+        declaration.variables={{"Native.Out","Out",Value::Integer(0),0x180u,1u},
+            {"Native.Optional","Optional",Value::Text(Vm::Kind::Name,"None"),0x90u,1u}};
+        const auto function=Function("DeclaredForeach",summing(Call(invocation,10,{Ref(0x01,1)})));
+        configure(host,function);host.names[{function.source,10}]="Iterator";
+        host.finals[{function.source,10}]=std::make_shared<Vm::Function>(declaration);
+        host.named[{"Self",invocation==0x38 ? Vm::CallKind::Global : Vm::CallKind::Virtual,"Iterator"}]=
+            std::make_shared<Vm::Function>(declaration);
+        const auto result=Vm::Execute(host,function,"Self");Returned(result,"Declared native iterator invocation");
+        Require(result.value.integer==6 && host.nativeDeclarations.front()==declaration.path &&
+            host.nativeArguments.front().size()==2u && host.nativeArguments.front()[1].kind==Vm::Kind::Nothing,
+            "Iterator declaration/omitted optional argument handling differs");
+    }
+    {
+        TestHost host;const auto function=Function("ContextForeach",summing(Context(Ref(0x20,10),Native(1040u,{Ref(0x01,1)}))));
+        const auto [output,sum]=configure(host,function);(void)sum;host.objects[{function.source,10}]="Other";
+        const auto result=Vm::Execute(host,function,"Self");Returned(result,"Context iterator keeps Self argument evaluation");
+        Require(result.value.integer==6 && host.nativeReceivers.front()=="Other" && host.Load("Self",output).integer==0 &&
+            !host.storage.contains({"Other",Vm::Scope::Instance,output.key}),"Iterator Context redirected argument variables");
+    }
+    {
+        TestHost host;Bytes code;const auto target=BeginIterator(code,Native(1040u,{Ref(0x01,1)}));
+        Append(code,Return(Ref(0x01,1)));EndIterator(code,target);Append(code,Return());
+        const auto function=Function("ReturnInsideForeach",code);const auto [output,sum]=configure(host,function);(void)sum;
+        const auto result=Vm::Execute(host,function,"Self");Returned(result,"Function Return owns remaining iterators");
+        Require(result.value.integer==1 && host.Load("Self",output).integer==1 && host.iteratorDestroys==1u &&
+            host.iteratorNextCalls==1u,"Function Return cleared output or leaked its iterator");
+    }
+    for(const auto opcode : {std::uint8_t{0x30},std::uint8_t{0x31}}) {
+        TestHost host;const auto result=Vm::Execute(host,Function("UnmatchedIterator",Join({Native(1000u),{opcode},Return()})),"Self");
+        Failed(result,Vm::Status::Invalid,host,"Unmatched iterator control");Require(host.effects==0u,"Unmatched iterator escaped rollback");
+    }
+    for(const bool operand : {false,true}) {
+        TestHost host;auto code=summing(Native(1040u,{Ref(0x01,1)}));
+        const auto target=1u+Native(1040u,{Ref(0x01,1)}).size();
+        PatchU16(code,target,operand ? 2u : code.size()-6u);
+        const auto function=Function("MalformedIteratorEnd",code);configure(host,function);
+        const auto result=Vm::Execute(host,function,"Self");Failed(result,Vm::Status::Invalid,host,"Iterator target requires top-level Pop");
+        Require(host.iteratorCreates==0u,"Malformed iterator target ran a factory before rejection");
+    }
+    for(const bool outside : {false,true}) {
+        TestHost host;Bytes code;
+        if(outside) code=Join({Native(1040u,{Ref(0x01,1)}),Return()});
+        else {const auto target=BeginIterator(code,Native(1040u,{Ref(0x01,1)}));Append(code,Native(4095u));EndIterator(code,target);Append(code,Return());}
+        const auto function=Function("IteratorFailure",code);const auto [output,sum]=configure(host,function);(void)sum;
+        const auto result=Vm::Execute(host,function,"Self");Failed(result,Vm::Status::Unsupported,host,"Iterator factory/Next cannot escape failure");
+        Require(host.Load("Self",output).integer==99 && host.iteratorCreates==(outside ? 0u : 1u) &&
+            host.iteratorDestroys==host.iteratorCreates,"Iterator failure lost rollback or leaked its cursor");
+    }
+    for(const bool storage : {false,true}) {
+        TestHost host;const auto function=Function("IteratorBudget",summing(Native(1040u,{Ref(0x01,1)})));
+        const auto [output,sum]=configure(host,function);(void)sum;Vm::Limits limits;
+        if(storage) host.iteratorBytes=limits.retainedBytes+1u;else limits.writes=2u;
+        const auto result=Vm::Execute(host,function,"Self",{},limits);Failed(result,Vm::Status::Budget,host,"Iterator shared storage/write budget");
+        Require(host.Load("Self",output).integer==99 && host.iteratorDestroys==1u,"Iterator budget failed rollback/cleanup");
+    }
+    {
+        TestHost host;const auto function=Function("NullContextForeach",summing(Context({0x2a},Native(1040u,{Ref(0x01,1)}))));
+        configure(host,function);const auto result=Vm::Execute(host,function,"Self");
+        Failed(result,Vm::Status::Invalid,host,"Accessed None iterator has no factory");
+        Require(host.iteratorCreates==0u,"Null Context iterator evaluated its call");
+    }
+    {
+        TestHost host;Bytes code;std::vector<std::size_t> targets;
+        for(std::size_t depth=0;depth<5u;++depth) targets.push_back(BeginIterator(code,Native(1040u,{Ref(0x01,1)})));
+        Append(code,Native(1000u));
+        for(auto target=targets.rbegin();target!=targets.rend();++target) EndIterator(code,*target);
+        Append(code,Return());const auto function=Function("IteratorStackBudget",code);configure(host,function);
+        Vm::Limits limits;limits.expressionDepth=4u;
+        const auto result=Vm::Execute(host,function,"Self",{},limits);Failed(result,Vm::Status::Budget,host,"Iterator stack shares bounded depth");
+        Require(host.iteratorCreates==4u && host.iteratorDestroys==4u && host.effects==0u,"Iterator stack budget leaked active cursors or ran body");
+    }
+    {
+        TestHost host;const auto function=Function("IteratorInstructionBudget",summing(Native(1040u,{Ref(0x01,1)})));
+        const auto [output,sum]=configure(host,function);(void)sum;Vm::Limits limits;limits.instructions=12u;
+        const auto result=Vm::Execute(host,function,"Self",{},limits);Failed(result,Vm::Status::Budget,host,"Iterator instructions share execution budget");
+        Require(host.Load("Self",output).integer==99 && host.iteratorDestroys==1u,"Iterator instruction budget leaked output/cursor");
+    }
+    {
+        TestHost host;auto declaration=Function("NotAnIterator",{});declaration.flags=0x400u;declaration.nativeIndex=1040u;
+        const auto function=Function("NonIteratorDeclaration",summing(Call(0x1c,10,{Ref(0x01,1)})));configure(host,function);
+        host.finals[{function.source,10}]=std::make_shared<Vm::Function>(declaration);
+        const auto result=Vm::Execute(host,function,"Self");Failed(result,Vm::Status::Unsupported,host,"Factory requires iterator declaration flag");
+        Require(host.iteratorCreates==0u,"Noniterator declaration reached native iterator factory");
+    }
+    for(const int transition : {-1,0,1,2,3,4,5}) {
+        TestHost host;Bytes code;const auto target=BeginIterator(code,Native(1040u,{Ref(0x01,1)}));
+        if(transition>=0 && transition<4) {
+            const auto helper=Function("ReplaceState",Join({transition==0 ? Native(1043u) : Native(1043u,{Int(transition)}),Return()}));
+            host.finals[{"Fixture",10}]=std::make_shared<Vm::Function>(helper);Append(code,Call(0x1c,10));
+        } else if(transition==4) code.push_back(0x08);
+        else if(transition==5) Append(code,Return());
+        else Append(code,Native(165u,{Ref(0x01,2)}));
+        EndIterator(code,target);code.push_back(0x08);
+        const auto function=Function("StateForeach",code);const auto [output,sum]=configure(host,function);
+        QuestVr::StateFrame frame;frame.codePath=frame.localsCodePath=function.path;
+        host.state=QuestVr::StateObject{true,true,frame,{}};host.statePrograms[function.path]=function;
+        host.statePrograms["Fixture.OtherState"]=Function("OtherState",{0x08});
+        const auto result=Vm::ResumeState(host,"Self");
+        if(transition<0) {
+            Require(result.passed() && result.status==Vm::Status::Stopped && result.committed &&
+                host.Load("Self",sum).integer==3 && host.Load("Self",output).integer==0 && host.iteratorDestroys==1u,
+                "Synchronous state iterator failed to complete and Pop before Stop");
+        } else {
+            Failed(result,Vm::Status::Unsupported,host,"State iterator continuation/code/local replacement is explicit");
+            Require(host.state->frame->statementIndex==0u && host.state->frame->codePath==function.path &&
+                host.stateRevision==0u && host.Load("Self",output).integer==99 && host.iteratorDestroys==1u,
+                "Unsupported state iterator continuation was partly committed or leaked");
+        }
+    }
 }
 Bytes Rotation(const std::array<std::int32_t, 3>& rotation) {
     Bytes bytes{0x22};
@@ -1126,6 +1386,8 @@ int main() {
         NormalizedSerializedContracts();
         ExecutionContracts();
         ProgramAndEligibilityContracts();
+        VectorNativeContracts();
+        IteratorContracts();
         std::cout<<"Normalized original-style serialization and bounded script execution: "<<checks<<" checks and "<<rejections<<" rejection controls passed.\n";
         return 0;
     }catch(const std::exception& error) {std::cerr<<error.what()<<"\n";return 1;}

@@ -15,6 +15,7 @@
 #include <map>
 #include <stdexcept>
 #include <string>
+#include <tuple>
 #include <vector>
 
 // Genuine generated UE1 packages, serialized ULevel and UModel, compiled
@@ -77,6 +78,31 @@ Code Context(Code target, Code expression) {
 }
 Code Array(std::int32_t property, std::int32_t slot, bool defaults = false) { return Join({Token(0x1au), Int(slot), Ref(defaults ? 0x02u : 0x01u, property)}); }
 Code StructMember(std::int32_t field, std::int32_t property, bool defaults = false) { return Join({Ref(0x36u, field), Ref(defaults ? 0x02u : 0x01u, property)}); }
+Code Final(std::int32_t function, std::initializer_list<Code> arguments = {}) {
+    Code code = Ref(0x1cu, function);
+    for (const auto& argument : arguments) { Append(code.raw, argument.raw); code.logical += argument.logical; }
+    return Join({code, Token(0x16u)});
+}
+struct Flow {
+    Code code;
+    struct Patch { std::size_t raw; std::string label; };
+    std::vector<Patch> patches;
+    std::map<std::string, std::size_t> labels;
+    void Add(Code part) { Append(code.raw, part.raw); code.logical += part.logical; }
+    void Label(const std::string& name) { Require(labels.emplace(name, code.logical).second, "Duplicate generated flow label"); }
+    void Target(const std::string& label) { patches.push_back({code.raw.size(), label}); U16(code.raw, 0u); code.logical += 2u; }
+    void IfNot(Code condition, const std::string& label) { Add(Token(0x07u)); Target(label); Add(std::move(condition)); }
+    void Iterator(Code factory, const std::string& end) { Add(Token(0x2fu)); Add(std::move(factory)); Target(end); }
+    Code Finish() {
+        for (const auto& patch : patches) {
+            const auto found = labels.find(patch.label);
+            Require(found != labels.end() && found->second <= 65535u, "Generated flow target outside logical bytecode");
+            code.raw.at(patch.raw) = static_cast<std::uint8_t>(found->second);
+            code.raw.at(patch.raw + 1u) = static_cast<std::uint8_t>(found->second >> 8u);
+        }
+        return std::move(code);
+    }
+};
 
 struct Package {
     std::string stem;
@@ -135,13 +161,13 @@ struct Package {
             return body;
         }; return reference;
     }
-    std::int32_t Function(const std::string& name, std::int32_t owner, std::int32_t core, Code code = {}, std::uint16_t native = 0u) {
-        const auto reference = Export(name, Import("Function", core), 0, owner, true); FunctionCode(reference, std::move(code), native); return reference;
+    std::int32_t Function(const std::string& name, std::int32_t owner, std::int32_t core, Code code = {}, std::uint16_t native = 0u, std::uint32_t flags = 0u) {
+        const auto reference = Export(name, Import("Function", core), 0, owner, true); FunctionCode(reference, std::move(code), native, flags); return reference;
     }
-    void FunctionCode(std::int32_t reference, Code code, std::uint16_t native = 0u) {
-        builders.at(static_cast<std::size_t>(reference - 1)) = [this, reference, native, code = std::move(code)](std::int32_t next, std::int32_t first) {
+    void FunctionCode(std::int32_t reference, Code code, std::uint16_t native = 0u, std::uint32_t flags = 0u) {
+        builders.at(static_cast<std::size_t>(reference - 1)) = [this, reference, native, flags, code = std::move(code)](std::int32_t next, std::int32_t first) {
             Bytes body{0u}; Index(body, 0); Index(body, next); Index(body, 0); Index(body, first); Index(body, exports.at(static_cast<std::size_t>(reference - 1)).ObjName);
-            U32(body, 0); U32(body, 0); U32(body, static_cast<std::uint32_t>(code.logical)); Append(body, code.raw); U16(body, native); body.push_back(0u); U32(body, native ? 0x402u : 2u); return body;
+            U32(body, 0); U32(body, 0); U32(body, static_cast<std::uint32_t>(code.logical)); Append(body, code.raw); U16(body, native); body.push_back(0u); U32(body, flags ? flags : native ? 0x402u : 2u); return body;
         };
     }
     void Body(std::int32_t reference, Bytes body) { builders.at(static_cast<std::size_t>(reference - 1)) = [body = std::move(body)](std::int32_t, std::int32_t) { return body; }; }
@@ -318,6 +344,8 @@ Tables Build(Fixture& fixture) {
     const auto importedVector = engine.Import("Vector", importedObject, "Struct"), importedRotator = engine.Import("Rotator", importedObject, "Struct");
     const auto actor = engine.Export("Actor", 0, importedObject), zone = engine.Export("ZoneInfo", 0, actor), levelInfo = engine.Export("LevelInfo", 0, zone);
     const auto level = engine.Export("Level", 0, importedObject), model = engine.Export("Model", 0, importedObject), brush = engine.Export("Brush", 0, actor), pawn = engine.Export("Pawn", 0, actor);
+    const auto player = engine.Export("Player", 0, importedObject), viewport = engine.Export("Viewport", 0, player);
+    const auto playerPawn = engine.Export("PlayerPawn", 0, pawn);
     const auto decoration = engine.Export("Decoration", 0, actor);
     const auto notify = engine.Export("SpawnNotify", 0, actor), pointRegion = engine.Export("PointRegion", engine.Import("Struct", engineCore), 0, actor);
     engine.Property("Zone", "ObjectProperty", pointRegion, engineCore, 1u, zone); engine.Property("iLeaf", "IntProperty", pointRegion, engineCore); engine.Property("ZoneNumber", "ByteProperty", pointRegion, engineCore);
@@ -328,11 +356,29 @@ Tables Build(Fixture& fixture) {
     for (const auto& name : {"Location", "OldLocation"}) engine.Property(name, "StructProperty", actor, engineCore, 1u, importedVector);
     engine.Property("Rotation", "StructProperty", actor, engineCore, 1u, importedRotator); engine.Property("Region", "StructProperty", actor, engineCore, 1u, pointRegion);
     for (const auto& name : {"Tag", "AttachTag"}) engine.Property(name, "NameProperty", actor, engineCore);
-    for (const auto& name : {"bTicked", "bCollideActors", "bBlockActors", "bBlockPlayers", "bCollideWorld", "bCollideWhenPlacing", "bStatic", "bNoDelete", "bDeleteMe", "bAnimByOwner"}) engine.Property(name, "BoolProperty", actor, engineCore);
+    std::int32_t deleteFlag{};
+    for (const auto& name : {"bTicked", "bCollideActors", "bBlockActors", "bBlockPlayers", "bCollideWorld", "bCollideWhenPlacing", "bStatic", "bNoDelete", "bDeleteMe", "bAnimByOwner"}) {
+        const auto field = engine.Property(name, "BoolProperty", actor, engineCore);
+        if (std::string(name) == "bDeleteMe") deleteFlag = field;
+    }
     for (const auto& name : {"CollisionRadius", "CollisionHeight"}) engine.Property(name, "FloatProperty", actor, engineCore);
     engine.Property("Physics", "ByteProperty", actor, engineCore); engine.Property("StandingCount", "ByteProperty", actor, engineCore); engine.Property("Touching", "ObjectProperty", actor, engineCore, 4u, actor);
     engine.Property("bWaterZone", "BoolProperty", zone, engineCore); engine.Property("bBegunPlay", "BoolProperty", levelInfo, engineCore);
     engine.Property("SpawnNotify", "ObjectProperty", levelInfo, engineCore, 1u, notify);
+    for (const auto& name : {"FootRegion", "HeadRegion"}) engine.Property(name, "StructProperty", pawn, engineCore, 1u, pointRegion);
+    engine.Property("EyeHeight", "FloatProperty", pawn, engineCore);
+    const auto isPlayer = engine.Property("bIsPlayer", "BoolProperty", pawn, engineCore);
+    engine.Property("PlayerReplicationInfo", "ObjectProperty", pawn, engineCore, 1u, actor);
+    const auto hiddenFlag = engine.Property("bHidden", "BoolProperty", actor, engineCore);
+    const auto boundPlayer = engine.Property("Player", "ObjectProperty", playerPawn, engineCore, 1u, player);
+    const auto bindPlayer = engine.Function("BindPlayer", playerPawn, engineCore);
+    const auto playerInput = engine.Property("Input", "ObjectProperty", bindPlayer, engineCore, 1u, player, 0x80u);
+    engine.FunctionCode(bindPlayer, Join({Assign(Ref(0x01u, boundPlayer), Ref(0x00u, playerInput)), Return()}));
+    const auto playerFlags = engine.Function("SetPlayerFlags", playerPawn, engineCore);
+    const auto deleteInput = engine.Property("Deleted", "BoolProperty", playerFlags, engineCore, 1u, 0, 0x80u);
+    const auto isPlayerInput = engine.Property("IsPlayer", "BoolProperty", playerFlags, engineCore, 1u, 0, 0x80u);
+    engine.FunctionCode(playerFlags, Join({Assign(Ref(0x01u, deleteFlag), Ref(0x00u, deleteInput)),
+        Assign(Ref(0x01u, isPlayer), Ref(0x00u, isPlayerInput)), Return()}));
     engine.Property("Next", "ObjectProperty", notify, engineCore, 1u, notify); engine.Property("ActorClass", "ClassProperty", notify, engineCore, 1u, importedClass, 0u, actor);
     const auto spawnFunction = engine.Function("Spawn", actor, engineCore, {}, 278u);
     engine.Property("SpawnClass", "ClassProperty", spawnFunction, engineCore, 1u, importedClass, 0x80u, actor);
@@ -344,8 +390,21 @@ Tables Build(Fixture& fixture) {
     const auto setSize = engine.Function("SetCollisionSize", actor, engineCore, {}, 283u);
     for (const auto& name : {"NewRadius", "NewHeight"}) engine.Property(name, "FloatProperty", setSize, engineCore, 1u, 0, 0x80u);
     engine.Property("ReturnValue", "BoolProperty", setSize, engineCore, 1u, 0, 0x480u);
+    const auto getPlayer = engine.Function("GetPlayerPawn", actor, engineCore, {}, 720u);
+    engine.Property("ReturnValue", "ObjectProperty", getPlayer, engineCore, 1u, playerPawn, 0x480u);
+    const auto destroy = engine.Function("Destroy", actor, engineCore, {}, 279u);
+    engine.Property("ReturnValue", "BoolProperty", destroy, engineCore, 1u, 0, 0x480u);
+    const auto allActors = engine.Function("AllActors", actor, engineCore, {}, 304u, 0x404u);
+    engine.Property("BaseClass", "ClassProperty", allActors, engineCore, 1u, importedClass, 0x80u, actor);
+    engine.Property("Actor", "ObjectProperty", allActors, engineCore, 1u, actor, 0x180u);
+    engine.Property("MatchTag", "NameProperty", allActors, engineCore, 1u, 0, 0x90u);
+    const auto actorFlags = engine.Function("SetIterationFlags", actor, engineCore);
+    const auto hiddenInput = engine.Property("Hidden", "BoolProperty", actorFlags, engineCore, 1u, 0, 0x80u);
+    const auto deletedInput = engine.Property("Deleted", "BoolProperty", actorFlags, engineCore, 1u, 0, 0x80u);
+    engine.FunctionCode(actorFlags, Join({Assign(Ref(0x01u, hiddenFlag), Ref(0x00u, hiddenInput)),
+        Assign(Ref(0x01u, deleteFlag), Ref(0x00u, deletedInput)), Return()}));
     Bytes actorDefaults; engine.FloatTag(actorDefaults, "CollisionRadius", 12.0f); engine.FloatTag(actorDefaults, "CollisionHeight", 20.0f); engine.ClassBody(actor, actorDefaults);
-    for (auto cls : {zone, levelInfo, level, model, brush, pawn, notify, decoration}) engine.ClassBody(cls);
+    for (auto cls : {zone, levelInfo, level, model, brush, pawn, player, viewport, playerPawn, notify, decoration}) engine.ClassBody(cls);
     const auto engineTable = fixture.Write(engine);
 
     Package classes; classes.stem = "SpawnClasses"; const auto classesCore = classes.ImportPackage("Core"), classesEngine = classes.ImportPackage("Engine");
@@ -355,14 +414,96 @@ Tables Build(Fixture& fixture) {
     const auto probe = classes.Export("Probe", 0, importedActor), leaf = classes.Export("Leaf", 0, probe), abstract = classes.Export("Abstract", 0, probe);
     const auto fail = classes.Export("FailPost", 0, probe), nested = classes.Export("Nested", 0, probe), recursive = classes.Export("Recursive", 0, probe), selfDelete = classes.Export("SelfDelete", 0, probe);
     const auto pointBase = classes.Export("PointBase", 0, classes.Import("Decoration", classesEngine)), support = classes.Export("Support", 0, probe);
+    const auto importedPawn = classes.Import("Pawn", classesEngine), importedPlayer = classes.Import("Player", classesEngine);
+    const auto importedPlayerPawn = classes.Import("PlayerPawn", classesEngine);
+    const auto importedAllActors = classes.Import("AllActors", importedActor, "Function");
+    const auto importedTag = classes.Import("Tag", importedActor, "NameProperty");
+    const auto fauxPlayer = classes.Export("FauxPlayer", 0, importedPawn);
+    const auto pawnAlias = classes.Export("Pawn", 0, classesObject); // Non-Actor UClass, same NameString leaf as Engine.Pawn.
+    const auto loopActor = classes.Export("LoopActor", 0, probe), loopBirth = classes.Export("LoopBirth", 0, loopActor);
+    const auto loopDelete = classes.Export("LoopDelete", 0, probe);
+    const auto fauxPlayerField = classes.Property("Player", "ObjectProperty", fauxPlayer, classesCore, 1u, importedPlayer);
+    const auto bindFauxPlayer = classes.Function("BindPlayer", fauxPlayer, classesCore);
+    const auto fauxPlayerInput = classes.Property("Input", "ObjectProperty", bindFauxPlayer, classesCore, 1u, importedPlayer, 0x80u);
+    classes.FunctionCode(bindFauxPlayer, Join({Assign(Ref(0x01u, fauxPlayerField), Ref(0x00u, fauxPlayerInput)), Return()}));
     std::map<std::string, std::int32_t> properties;
     for (const auto& name : {"Counter", "Trace", "Seen", "ChildEvents"}) properties.emplace(name, classes.Property(name, "IntProperty", probe, classesCore));
     for (const auto& name : {"Link", "NestedActor"}) properties.emplace(name, classes.Property(name, "ObjectProperty", probe, classesCore, 1u, importedActor));
     const auto slots = classes.Property("Slots", "IntProperty", probe, classesCore, 3u), payload = classes.Property("Payload", "StructProperty", probe, classesCore, 1u, classesRecord);
+    const auto matches = classes.Property("Matches", "ObjectProperty", probe, classesCore, 32u, importedActor);
+    const auto cursor = classes.Property("Cursor", "ObjectProperty", probe, classesCore, 1u, importedActor);
+    const auto pawnCursor = classes.Property("PawnCursor", "ObjectProperty", probe, classesCore, 1u, importedPawn);
+    const auto innerCursor = classes.Property("InnerCursor", "ObjectProperty", probe, classesCore, 1u, importedActor);
+    const auto matchCount = classes.Property("MatchCount", "IntProperty", probe, classesCore);
+    const auto innerCount = classes.Property("InnerCount", "IntProperty", probe, classesCore);
     const auto importedLevel = classes.Import("Level", importedActor, "ObjectProperty"), importedLevelInfo = classes.Import("LevelInfo", classesEngine);
     const auto importedLocation = classes.Import("Location", importedActor, "StructProperty"), importedRotation = classes.Import("Rotation", importedActor, "StructProperty");
     const auto begun = classes.Import("bBegunPlay", importedLevelInfo, "BoolProperty");
     const auto prop = [&](const std::string& name) { return Ref(0x01u, properties.at(name)); };
+    const auto count = [&] { return Ref(0x01u, matchCount); };
+    const auto output = [&] { return Ref(0x01u, cursor); };
+    const auto increment = [](Code value) { return Assign(value, Native(146u, {value, Int(1)})); };
+    const auto recordMatch = [&](Code value) {
+        return Join({Assign(Join({Token(0x1au), count(), Ref(0x01u, matches)}), std::move(value)), increment(count())});
+    };
+    for (const auto& name : {"ScanActors", "ScanLocal", "ScanArray", "ScanStruct", "ScanContext", "ScanDeclared", "ScanEarlyReturn", "ScanTypedPawn", "ScanBadOutput", "ScanBadTag", "ScanTooManyArguments", "ScanThenFail"}) {
+        const auto function = classes.Function(name, probe, classesCore);
+        const auto cls = classes.Property("InputClass", "ClassProperty", function, classesCore, 1u, classesClass, 0x80u, classesObject);
+        const auto tag = classes.Property("InputTag", "NameProperty", function, classesCore, 1u, 0, 0x90u);
+        Code destination = output();
+        if (std::string(name) == "ScanLocal") destination = Ref(0x00u, classes.Property("LocalActor", "ObjectProperty", function, classesCore, 1u, importedActor));
+        else if (std::string(name) == "ScanTypedPawn") destination = Ref(0x01u, pawnCursor);
+        else if (std::string(name) == "ScanArray") destination = Array(matches, 31);
+        else if (std::string(name) == "ScanStruct") destination = StructMember(importedTarget, payload);
+        else if (std::string(name) == "ScanContext") destination = Context(prop("Link"), output());
+        else if (std::string(name) == "ScanBadOutput") destination = Token(0x17u);
+        Code factory = std::string(name) == "ScanDeclared" ?
+            Final(importedAllActors, {Ref(0x00u, cls), destination, Ref(0x00u, tag)}) :
+            Native(304u, {Ref(0x00u, cls), destination, std::string(name) == "ScanBadTag" ? Int(7) : Ref(0x00u, tag)});
+        if (std::string(name) == "ScanTooManyArguments") factory = Native(304u, {Ref(0x00u, cls), destination, Ref(0x00u, tag), Int(0)});
+        Flow flow; flow.Add(Assign(count(), Int(0))); flow.Iterator(factory, "done"); flow.Add(recordMatch(destination));
+        if (std::string(name) == "ScanEarlyReturn") flow.Add(Return(destination));
+        flow.Add(Token(0x31u)); flow.Label("done"); flow.Add(Token(0x30u));
+        if (std::string(name) == "ScanThenFail") flow.Add(Native(999u));
+        flow.Add(Return(destination)); classes.FunctionCode(function, flow.Finish());
+    }
+    classes.Function("AllActorsOutsideIterator", probe, classesCore,
+        Join({Native(304u, {Ref(0x20u, importedActor), output()}), Return()}));
+    for (const auto& name : {"AppendDuringScan", "AppendForeverScan", "RemoveFutureDuringScan", "RemoveSelfDuringScan", "TagDuringScan", "NestedScan"}) {
+        const auto function = classes.Function(name, probe, classesCore);
+        const bool targetParameter = std::string(name) == "RemoveFutureDuringScan" || std::string(name) == "TagDuringScan";
+        const auto target = targetParameter ? classes.Property("Target", "ObjectProperty", function, classesCore, 1u, importedActor, 0x80u) : 0;
+        const auto tag = std::string(name) == "TagDuringScan" ? Ref(0x21u, classes.Name("Live")) : Token(0x0bu);
+        Flow flow; flow.Add(Assign(count(), Int(0))); flow.Add(Assign(Ref(0x01u, innerCount), Int(0)));
+        flow.Iterator(Native(304u, {Ref(0x20u, loopActor), output(), tag}), "done"); flow.Add(recordMatch(output()));
+        if (std::string(name) == "AppendDuringScan") {
+            flow.IfNot(Native(154u, {count(), Int(1)}), "skipBirth");
+            flow.Add(Assign(prop("NestedActor"), Native(278u, {Ref(0x20u, loopBirth)}))); flow.Label("skipBirth");
+        } else if (std::string(name) == "AppendForeverScan") {
+            flow.Add(Assign(prop("NestedActor"), Native(278u, {Ref(0x20u, loopActor)})));
+        } else if (std::string(name) == "RemoveFutureDuringScan") flow.Add(Context(Ref(0x00u, target), Native(279u)));
+        else if (std::string(name) == "RemoveSelfDuringScan") flow.Add(Context(output(), Native(279u)));
+        else if (std::string(name) == "TagDuringScan") flow.Add(Assign(Context(Ref(0x00u, target), Ref(0x01u, importedTag)), Ref(0x21u, classes.Name("lIvE"))));
+        else {
+            flow.Iterator(Native(304u, {Ref(0x20u, loopActor), Ref(0x01u, innerCursor)}), "innerDone");
+            flow.Add(increment(Ref(0x01u, innerCount))); flow.Add(Token(0x31u)); flow.Label("innerDone"); flow.Add(Token(0x30u));
+        }
+        flow.Add(Token(0x31u)); flow.Label("done"); flow.Add(Token(0x30u)); flow.Add(Return()); classes.FunctionCode(function, flow.Finish());
+    }
+    for (const auto& [cls, event, baseClass] : std::vector<std::tuple<std::int32_t, std::string, std::int32_t>>{
+        {loopBirth, "PostBeginPlay", loopActor}, {loopDelete, "Destroyed", loopDelete}}) {
+        Flow flow; flow.Add(Assign(count(), Int(0))); flow.Iterator(Native(304u, {Ref(0x20u, baseClass), output()}), "done");
+        flow.Add(recordMatch(output())); flow.Add(Token(0x31u)); flow.Label("done"); flow.Add(Token(0x30u)); flow.Add(Return());
+        classes.Function(event, cls, classesCore, flow.Finish());
+    }
+    classes.Function("FindPlayer", probe, classesCore, Return(Native(720u)));
+    classes.Function("FindPlayerWithArgument", probe, classesCore, Return(Native(720u, {Int(0)})));
+    const auto failBoundPlayer = classes.Function("MakeBoundPlayerThenFail", probe, classesCore);
+    const auto failPlayerInput = classes.Property("Input", "ObjectProperty", failBoundPlayer, classesCore, 1u, importedPlayer, 0x80u);
+    const auto importedPlayerField = classes.Import("Player", importedPlayerPawn, "ObjectProperty");
+    classes.FunctionCode(failBoundPlayer, Join({Assign(prop("Link"), Native(278u, {Ref(0x20u, importedPlayerPawn)})),
+        Assign(Context(prop("Link"), Ref(0x01u, importedPlayerField)), Ref(0x00u, failPlayerInput)),
+        Assign(prop("Link"), Native(720u)), Native(999u), Return()}));
     const auto callbackTrace = [&](int digit) { return Assign(prop("Trace"), Native(146u, {Native(144u, {prop("Trace"), Int(10)}), Int(digit)})); };
     for (const auto& [name, digit] : std::vector<std::pair<std::string, int>>{{"Spawned", 1}, {"PreBeginPlay", 2}, {"BeginPlay", 3}, {"PostBeginPlay", 4}, {"SetInitialState", 5}, {"PostPostBeginPlay", 6}})
         classes.Function(name, probe, classesCore, Join({callbackTrace(digit), Return()}));
@@ -384,6 +525,13 @@ Tables Build(Fixture& fixture) {
     classes.Function("ChangeOwnValues", probe, classesCore, Join({Assign(prop("Counter"), Int(123)), Assign(Array(slots, 1), Int(88)), Assign(StructMember(importedCount, payload), Int(44)), Return()}));
     const auto link = classes.Function("KeepReference", probe, classesCore), linkInput = classes.Property("Input", "ObjectProperty", link, classesCore, 1u, importedActor, 0x80u);
     classes.FunctionCode(link, Join({Assign(prop("Link"), Ref(0x00u, linkInput)), Return(Context(prop("Link"), prop("Counter")))}));
+    for (const auto& name : {"StoreReference", "StoreArrayReference", "StoreStructReference"}) {
+        const auto function = classes.Function(name, probe, classesCore);
+        const auto input = classes.Property("Input", "ObjectProperty", function, classesCore, 1u, importedActor, 0x80u);
+        const auto destination = std::string(name) == "StoreReference" ? prop("Link") :
+            std::string(name) == "StoreArrayReference" ? Array(matches, 31) : StructMember(importedTarget, payload);
+        classes.FunctionCode(function, Join({Assign(destination, Ref(0x00u, input)), Return(destination)}));
+    }
     const auto setBegun = classes.Function("SetBegun", probe, classesCore), begunInput = classes.Property("Input", "BoolProperty", setBegun, classesCore, 1u, 0, 0x80u);
     classes.FunctionCode(setBegun, Join({Assign(Context(Ref(0x01u, importedLevel), Ref(0x01u, begun)), Ref(0x00u, begunInput)), Return()}));
     classes.Function("Die", probe, classesCore, Return(Native(279u))); classes.Function("ReadCounter", probe, classesCore, Return(prop("Counter")));
@@ -411,6 +559,7 @@ Tables Build(Fixture& fixture) {
     Bytes pointDefaults; classes.FloatTag(pointDefaults, "CollisionRadius", 0.0f); classes.FloatTag(pointDefaults, "CollisionHeight", 0.0f);
     classes.BoolTag(pointDefaults, "bCollideWorld", true); classes.BoolTag(pointDefaults, "bCollideActors", false); classes.ClassBody(pointBase, pointDefaults);
     classes.ClassBody(support);
+    for (auto cls : {fauxPlayer, pawnAlias, loopActor, loopBirth, loopDelete}) classes.ClassBody(cls);
     const auto classesTable = fixture.Write(classes);
     Require(GetPortableObjectPath(coreTable, recordCount) == "Object.Record.Count" && GetPortableObjectPath(coreTable, recordTarget) == "Object.Record.Target", "Generated frozen-struct metadata identity is wrong");
 
@@ -419,6 +568,9 @@ Tables Build(Fixture& fixture) {
     const auto levelActor = map.Export("Level0", map.Import("LevelInfo", mapEngine)), driver = map.Export("Driver", map.Import("Probe", mapClasses));
     const auto owner = map.Export("Owner", map.Import("Support", mapClasses)), instigator = map.Export("Pawn0", map.Import("Pawn", mapEngine));
     const auto collision = map.Export("Leaf0", map.Import("Probe", mapClasses)); // Deliberate authored birth-name collision.
+    const auto playerObject = map.Export("BindingPlayer", map.Import("Player", mapEngine));
+    const auto viewportObject = map.Export("BindingViewport", map.Import("Viewport", mapEngine));
+    map.ActorBody(playerObject, {}); map.ActorBody(viewportObject, {}); // Real UObjects, deliberately not Level actors.
     for (const auto reference : {levelActor, driver, owner, instigator, collision}) {
         Bytes properties; map.ObjectTag(properties, "Level", levelActor); map.ObjectTag(properties, "XLevel", world);
         if (reference == levelActor) map.BoolTag(properties, "bBegunPlay", true);
@@ -719,18 +871,237 @@ void AliasAndBoundaryGcTests(Fixture& fixture) {
     Require(fixture.Snapshot("BoundaryGcCanonical") == canonical, "Repeated load/Spawn refusals mutated committed birth graph");
     fixture.Reset();
 }
+void GetPlayerPawnTests(Fixture& fixture) {
+    fixture.Reset();
+    const auto none = Object("").value;
+    const auto boolean = [](bool value) { return Evaluation{Value::Bool(value), {}}; };
+    const auto lookup = [&](const std::string& expected) {
+        const auto before = fixture.Snapshot("BeforePlayerLookup");
+        const auto revision = GetPortableRuntimeWorldRevision();
+        Same(Call("Driver", "FindPlayer").value, Object(expected).value, "Compiled native720 selected the wrong bound PlayerPawn");
+        Same(Call("Driver", "GetPlayerPawn").value, Object(expected).value, "Direct native720 disagrees with compiled lookup");
+        Require(GetPortableRuntimeWorldRevision() == revision && fixture.Snapshot("AfterPlayerLookup") == before,
+            "Read-only native720 mutated the player/world/save timeline");
+    };
+    lookup("");
+    RefusedCall(fixture, "FindPlayerWithArgument");
+    RefusedCall(fixture, "GetPlayerPawn", {Object("BindingPlayer")});
+    const auto faux = Spawn("Make", {Class("FauxPlayer")});
+    Call(faux, "BindPlayer", {Object("BindingPlayer")});
+    Require(Read(faux, "Player").text == Path("BindingPlayer"), "Faux Pawn lacks its real typed same-name Player field");
+    lookup("");
+    const auto ordinary = Spawn("Make", {Class("Engine.Pawn")});
+    Require(Published(ordinary), "Ordinary Pawn fixture did not create a real Level slot");
+    lookup("");
+    const auto first = Spawn("Make", {Class("Engine.PlayerPawn")});
+    Same(Read(first, "Player"), none, "New PlayerPawn fabricated a Player binding");
+    lookup("");
+    const auto second = Spawn("Make", {Class("Engine.PlayerPawn")});
+    Call(second, "BindPlayer", {Object("BindingViewport")});
+    Same(Read(second, "Player"), Object("BindingViewport").value, "Typed Player field rejected actual Viewport ancestry");
+    lookup(second);
+    Call(first, "BindPlayer", {Object("BindingPlayer")});
+    Require(!QuestVr::Vm::ToBool(Read(first, "bIsPlayer")), "PlayerPawn fixture requires bIsPlayer=false to test exact lookup policy");
+    lookup(first); // First actual Level slot, not most recently linked binding.
+    RefusedCall(fixture, "BindPlayer", {Object("Driver")}, {}, first);
+    lookup(first);
+    Call(first, "SetPlayerFlags", {boolean(true), boolean(false)});
+    Require(QuestVr::Vm::ToBool(Read(first, "bDeleteMe")) && Published(first), "Direct delete-flag fixture accidentally destroyed the Level slot");
+    lookup(first); // The pin checks neither bDeleteMe nor bIsPlayer here.
+    Call(first, "SetPlayerFlags", {boolean(false), boolean(true)});
+    lookup(first);
+    Call(first, "SetPlayerFlags", {boolean(false), boolean(false)});
+
+    const auto active = fixture.Snapshot("BoundPlayerPawns");
+    auto state = Decode(active);
+    Require(Birth(state, first).worldActorIndex == 9u && Birth(state, second).worldActorIndex == 10u,
+        "PlayerPawn test changed the original seven-slot authored baseline/order");
+    const auto inactivePath = fixture.directory / "InactiveBoundPlayerPawn.sav";
+    WriteBytes(inactivePath, InactivePrefix(active, first));
+    Require(ValidatePortableRuntimeState(inactivePath.string(), "SpawnFixture") && LoadPortableRuntimeState(inactivePath.string()),
+        "Inactive bound PlayerPawn prefix could not be restored");
+    Require(!HasPath(ActorPaths(false), first) && HasPath(ActorPaths(true), first),
+        "Inactive PlayerPawn fixture did not distinguish UI inactivity from Level membership");
+    lookup(first); // Portable UI inactivity is not the engine's Player predicate.
+    Require(LoadPortableRuntimeState((fixture.directory / "BoundPlayerPawns.sav").string()), "Cannot restore active player lookup fixture");
+    lookup(first);
+    const auto stable = GC::GetStats();
+    RefusedCall(fixture, "MakeBoundPlayerThenFail", {Object("BindingPlayer")});
+    Require(GC::GetStats().numObjects == stable.numObjects && GC::GetStats().memoryUsage == stable.memoryUsage,
+        "Failed nested player binding retained a provisional PlayerPawn/root");
+    lookup(first);
+
+    Same(Call(first, "Destroy").value, Value::Bool(true), "Bound PlayerPawn Destroy failed");
+    Require(!Published(first) && Read(first, "Player").text == Path("BindingPlayer"),
+        "Destroy lost UObject binding or kept its world slot");
+    lookup(second);
+    const auto removed = fixture.Snapshot("RemovedBoundPlayerPawn");
+    Call(second, "BindPlayer", {Object("")}); lookup("");
+    fixture.Reset(); lookup("");
+    Require(ValidatePortableRuntimeState((fixture.directory / "RemovedBoundPlayerPawn.sav").string(), "SpawnFixture"),
+        "Cold PlayerPawn graph failed read-only typed preflight");
+    lookup("");
+    Require(LoadPortableRuntimeState((fixture.directory / "RemovedBoundPlayerPawn.sav").string()) &&
+        fixture.Snapshot("ColdBoundPlayerPawnRestore") == removed,
+        "Cold born PlayerPawn graph did not preserve binding/removal fields and Level order");
+    Require(!Published(first) && Read(first, "Player").text == Path("BindingPlayer") &&
+        Read(second, "Player").text == Path("BindingViewport"), "Cold player bindings lost native object/class identity");
+    lookup(second);
+    GC::Collect(); lookup(second);
+    RefusedCall(fixture, "MakeBoundPlayerThenFail", {Object("BindingViewport")});
+    lookup(second);
+    Same(Call(second, "Destroy").value, Value::Bool(true), "Second bound PlayerPawn Destroy failed");
+    lookup(""); fixture.Reset();
+}
+void AllActorsTests(Fixture& fixture) {
+    fixture.Reset();
+    const std::vector<std::string> baseline{Path("Level0"), Path("Driver"), Path("Owner"), Path("Pawn0"), Path("Leaf0")};
+    const auto assertMatches = [&](const std::vector<std::string>& expected, const std::string& actor = "Driver") {
+        Require(Integer(actor, "MatchCount") == static_cast<std::int32_t>(expected.size()), "AllActors produced the wrong match count");
+        for (std::size_t i = 0u; i < expected.size(); ++i)
+            Same(Read(actor, "Matches", static_cast<std::uint32_t>(i)), Object(expected[i]).value, "AllActors changed live Level slot order or OUT identity");
+    };
+    const auto scan = [&](const std::vector<std::string>& expected, const std::string& cls = "Engine.Actor",
+        const std::string& tag = "None", const std::string& function = "ScanActors") {
+        Same(Call("Driver", function, {Class(cls), Name(tag)}).value, Object("").value,
+            "Exhausted AllActors did not write Object None to its OUT binding");
+        assertMatches(expected);
+    };
+    scan(baseline); // Genuine seven-slot Level includes holes, receiver and five actors.
+    scan(baseline, "eNgInE.aCtOr"); scan(baseline, "Core.Object");
+    scan({Path("Driver"), Path("Owner"), Path("Leaf0")}, "Probe");
+    scan({Path("Pawn0")}, "Engine.Pawn"); scan({Path("Pawn0")}, "Pawn");
+    scan({}, "Engine.Player"); // Non-Actor class is valid, but no actor has this ancestry leaf.
+    scan(baseline, "Engine.Actor", ""); scan(baseline, "Engine.Actor", "nOnE");
+    scan(baseline, "Engine.Actor", "None", "ScanDeclared");
+    Require(Call("Driver", "ScanEarlyReturn", {Class("Engine.Actor")}).value.text == baseline.front(),
+        "Function Return cleared the current foreach OUT value");
+    assertMatches({baseline.front()});
+    scan(baseline, "Engine.Actor", "None", "ScanLocal");
+    Same(Read("Driver", "Cursor"), Object(baseline.front()).value, "Local iterator alias overwrote unrelated persistent OUT storage");
+    scan(baseline, "Engine.Actor", "None", "ScanArray");
+    Same(Read("Driver", "Matches", 31u), Object("").value, "Array element OUT alias was not exhausted independently");
+    scan(baseline, "Engine.Actor", "None", "ScanStruct");
+    Same(Read("Driver", "Payload").fields.at("target"), Object("").value, "Struct member OUT alias retained last actor after exhaustion");
+    Call("Driver", "KeepReference", {Object("Owner")});
+    scan(baseline, "Engine.Actor", "None", "ScanContext");
+    Same(Read("Owner", "Cursor"), Object("").value, "Context OUT alias failed to publish into its actual receiver");
+    scan({Path("Pawn0")}, "Engine.Pawn", "None", "ScanTypedPawn");
+    RefusedCall(fixture, "ScanTypedPawn", {Class("Engine.Actor")});
+    RefusedCall(fixture, "ScanActors", {Class("")});
+    RefusedCall(fixture, "ScanActors", {Object("Driver")});
+    RefusedCall(fixture, "ScanActors", {Class("Missing")});
+    RefusedCall(fixture, "ScanBadOutput", {Class("Engine.Actor")});
+    RefusedCall(fixture, "ScanBadTag", {Class("Engine.Actor")});
+    RefusedCall(fixture, "ScanTooManyArguments", {Class("Engine.Actor")});
+    RefusedCall(fixture, "AllActorsOutsideIterator");
+    RefusedCall(fixture, "ScanThenFail", {Class("Engine.Actor")});
+    QuestVr::Vm::Limits limits; limits.writes = 4u;
+    RefusedCall(fixture, "ScanActors", {Class("Engine.Actor")}, limits);
+    limits = {}; limits.instructions = 15u;
+    RefusedCall(fixture, "ScanActors", {Class("Engine.Actor")}, limits);
+    limits = {}; limits.retainedBytes = 1u;
+    RefusedCall(fixture, "ScanActors", {Class("Engine.Actor")}, limits);
+    const Evaluation yes{Value::Bool(true), {}}, no{Value::Bool(false), {}};
+    Call("Pawn0", "SetIterationFlags", {yes, yes});
+    scan(baseline); // Hidden/bDeleteMe are not substitutes for a cleared native Level slot.
+    const auto active = fixture.Snapshot("ActiveIteratorFlags");
+    const auto inactivePath = fixture.directory / "InactiveIteratorPawn.sav";
+    WriteBytes(inactivePath, InactivePrefix(active, Path("Pawn0")));
+    Require(LoadPortableRuntimeState(inactivePath.string()) && !HasPath(ActorPaths(false), Path("Pawn0")) && HasPath(ActorPaths(true), Path("Pawn0")),
+        "Iterator inactive fixture did not retain actual native Level membership");
+    scan(baseline);
+    scan({Path("Pawn0")}, "Engine.Pawn", "None", "ScanTypedPawn");
+    for (const auto& function : {"StoreReference", "StoreArrayReference", "StoreStructReference"})
+        Same(Call("Driver", function, {Object("Pawn0")}).value, Object("Pawn0").value,
+            "Presentation inactivity incorrectly invalidated an assigned UObject reference");
+    const auto assertInactiveReferences = [&] {
+        Same(Read("Driver", "Link"), Object("Pawn0").value, "Persistent field lost its inactive UObject identity");
+        Same(Read("Driver", "Matches", 31u), Object("Pawn0").value, "Persistent array lost its inactive UObject identity");
+        Same(Read("Driver", "Payload").fields.at("target"), Object("Pawn0").value, "Persistent struct lost its inactive UObject identity");
+    };
+    assertInactiveReferences();
+    RefusedCall(fixture, "StoreReference", {Object("BindingPlayer")});
+    RefusedCall(fixture, "StoreReference", {Object("MissingActor")});
+    RefusedCall(fixture, "SetIterationFlags", {no, no}, {}, "Pawn0");
+    bool inactiveReadRefused{};
+    try { static_cast<void>(Read("Pawn0", "Tag")); } catch (const std::exception&) { inactiveReadRefused = true; }
+    Require(inactiveReadRefused, "Accepting inactive reference values widened the explicit inactive receiver read guard");
+    const auto inactiveReferences = fixture.Snapshot("StoredInactiveObjectReferences"); fixture.Reset();
+    Require(ValidatePortableRuntimeState((fixture.directory / "StoredInactiveObjectReferences.sav").string(), "SpawnFixture") &&
+        LoadPortableRuntimeState((fixture.directory / "StoredInactiveObjectReferences.sav").string()) &&
+        fixture.Snapshot("ColdInactiveReferences") == inactiveReferences,
+        "Cold save restoration changed inactive UObject references or presentation flags");
+    assertInactiveReferences(); GC::Collect(); assertInactiveReferences();
+    scan(baseline); // Native membership and stored identity survive the same cold restore/GC boundary.
+    RefusedCall(fixture, "SetIterationFlags", {no, no}, {}, "Pawn0");
+    Require(LoadPortableRuntimeState((fixture.directory / "ActiveIteratorFlags.sav").string()), "Cannot restore active iterator fixture");
+    Call("Pawn0", "SetIterationFlags", {no, no});
+    fixture.Reset();
+
+    const auto makeTagged = [&](const std::string& cls, const std::string& tag) {
+        return Spawn("MakeAt", {Class(cls), Object(""), Name(tag), Vector({0.0f, 0.0f, 0.0f}), Rotation({0, 0, 0})});
+    };
+    const auto tagged = makeTagged("LoopActor", "MiXeD");
+    scan({tagged}, "LoopActor", "mixed"); scan({}, "LoopActor", "different");
+    scan({tagged}, "LoopActor", "None");
+    fixture.Reset();
+    const auto first = Spawn("Make", {Class("LoopActor")});
+    Call("Driver", "AppendDuringScan"); const auto born = Read("Driver", "NestedActor").text;
+    Require(!born.empty() && Published(born), "Iterator body failed to publish its nested birth");
+    assertMatches({first, born});
+    Require(Integer(born, "MatchCount") == 2, "Synchronous Spawn callback iterator missed its own provisional Level slot");
+    Same(Read(born, "Matches", 0u), Object(first).value, "Callback iterator lost first live actor");
+    Same(Read(born, "Matches", 1u), Object(born).value, "Callback iterator lost the currently spawning actor");
+    Call("Driver", "NestedScan"); assertMatches({first, born});
+    Require(Integer("Driver", "InnerCount") == 4, "Nested foreach cursors shared advancement or failed to restart");
+    Same(Read("Driver", "InnerCursor"), Object("").value, "Nested iterator OUT alias was not exhausted");
+    Same(Read("Driver", "Cursor"), Object("").value, "Outer iterator OUT alias was corrupted by nested traversal");
+    const auto persistent = fixture.Snapshot("IteratedBornActors"); fixture.Reset();
+    Require(ValidatePortableRuntimeState((fixture.directory / "IteratedBornActors.sav").string(), "SpawnFixture") &&
+        LoadPortableRuntimeState((fixture.directory / "IteratedBornActors.sav").string()) && fixture.Snapshot("ColdIteratorRestore") == persistent,
+        "Cold restore changed persistent iterator OUT writes, callback fields or dynamic Level order");
+    assertMatches({first, born}); scan({first, born}, "LoopActor");
+    RefusedCall(fixture, "ScanThenFail", {Class("LoopActor")});
+    limits = {}; limits.instructions = 1200u;
+    RefusedCall(fixture, "AppendForeverScan", {}, limits);
+    scan({first, born}, "LoopActor");
+    fixture.Reset();
+
+    const auto futureFirst = Spawn("Make", {Class("LoopActor")}), futureSecond = Spawn("Make", {Class("LoopActor")});
+    Call("Driver", "RemoveFutureDuringScan", {Object(futureSecond)}); assertMatches({futureFirst});
+    Require(Published(futureFirst) && !Published(futureSecond), "Iterator body Destroy did not clear the future native slot");
+    scan({futureFirst}, "LoopActor");
+    const auto futureThird = Spawn("Make", {Class("LoopActor")});
+    Call("Driver", "RemoveSelfDuringScan"); assertMatches({futureFirst, futureThird});
+    Require(!Published(futureFirst) && !Published(futureThird), "Destroying current iterator outputs skipped or retained live slots");
+    scan({}, "LoopActor");
+    const auto deleting = Spawn("Make", {Class("LoopDelete")});
+    Same(Call(deleting, "Destroy").value, Value::Bool(true), "Destroyed-callback iterator fixture failed to destroy");
+    Require(Integer(deleting, "MatchCount") == 1 && Read(deleting, "Matches", 0u).text == deleting,
+        "AllActors hid the bDeleteMe receiver before Destroyed returned and cleared its native slot");
+    scan({}, "LoopDelete");
+    fixture.Reset();
+
+    const auto liveFirst = makeTagged("LoopActor", "LIVE"), liveSecond = makeTagged("LoopActor", "Other");
+    Call("Driver", "TagDuringScan", {Object(liveSecond)}); assertMatches({liveFirst, liveSecond});
+    Same(Read(liveSecond, "Tag"), Name("lIvE").value, "Live Tag update was not committed through its typed context alias");
+    scan({liveFirst, liveSecond}, "LoopActor", "LiVe");
+    fixture.Reset();
+}
+
 void Synthetic() {
     Fixture fixture; const auto tables = Build(fixture);
     Require(InitializePortableRuntime({tables.core, tables.engine, tables.classes}).passed && LoadPortableRuntimeMap(tables.map).passed, "Generated spawn runtime/map metadata initialization failed");
     Require(ActorPaths(true).size() == tables.initialActors, "Generated true Level published nonactors/holes or missed original actors"); fixture.legacy = fixture.Snapshot("Legacy"); Require(fixture.legacy[4u] == 3u, "Untouched generated spawn baseline invented persistent state");
     ArgumentTests(fixture); DefaultsTests(fixture); CallbackTests(fixture); OrderingTests(fixture); PersistenceTests(fixture);
-    CollisionIntegrationTests(fixture); AliasAndBoundaryGcTests(fixture); fixture.UnchangedSources();
+    CollisionIntegrationTests(fixture); AliasAndBoundaryGcTests(fixture); GetPlayerPawnTests(fixture); AllActorsTests(fixture); fixture.UnchangedSources();
     Require(InitializePortableRuntime({tables.core, tables.engine, tables.classes}).passed && LoadPortableRuntimeMap(tables.map).passed && fixture.Snapshot("Reinitialized") == fixture.legacy, "Runtime reinitialization retained born objects/frozen defaults"); fixture.UnchangedSources();
 }
 } // namespace
 int main() {
     try {
         const auto before = GC::GetStats().numObjects; Synthetic(); GC::Collect(); Require(GC::GetStats().numObjects == before, "Generated Spawn test leaked rooted UObjects after shutdown");
-        std::cout << "Generated actor Spawn integration: " << checks << " checks, " << refusals << " rejection controls; actual natives278/262/283, serialized Level/model, frozen defaults, nested callbacks/cached collision rollback, InitBase, birth graph/save replacement/GC. No campaign startup claim.\n"; return 0;
+        std::cout << "Generated actor Spawn integration: " << checks << " checks, " << refusals << " rejection controls; actual natives278/262/283/304/720, serialized Level/model, frozen defaults, nested callbacks/live foreach rollback, InitBase, PlayerPawn fallback bindings, birth graph/save replacement/GC. No campaign startup claim.\n"; return 0;
     } catch (const std::exception& error) { std::cerr << "Actor Spawn integration failed: " << error.what() << '\n'; return 1; }
 }

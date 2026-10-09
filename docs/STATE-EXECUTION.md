@@ -69,6 +69,13 @@ transition-generation abort. A local alias still used by an old expression after
 its storage is destroyed fails explicitly; recreating guessed local values or
 writing through the alias into new storage is not supported.
 
+Synchronous foreach loops now run within a slice, using the shared
+Iterator/IteratorNext/IteratorPop interpreter. A slice cannot retain a live
+iterator across Stop/Return, latent continuation, null code or replacement of
+code/local storage: these paths fail and roll back explicitly until persistent
+iterator storage exists. Completed loops can commit their normal state-local
+and property writes. See [actor lookup](ACTOR-LOOKUP.md).
+
 ## Narrow physics-mode native
 
 SetPhysics (3970) writes the actor's reflected scalar Physics byte inside the

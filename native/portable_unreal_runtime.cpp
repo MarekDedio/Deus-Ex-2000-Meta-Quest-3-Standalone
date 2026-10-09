@@ -1418,6 +1418,24 @@ public:
             if (value.kind != Kind::Name) throw std::runtime_error("Animation native requires a Name argument");
             return value.text;
         };
+        if (index == 720u) { // Actor.GetPlayerPawn, pinned NActor.cpp current-Level fallback.
+            argumentCount(0u, 0u);
+            // There is no owned native viewport session yet. In its absence the
+            // pin searches actual Level slots, not snapshots, export order,
+            // bIsPlayer or the actor nearest the VR camera. A missing player is
+            // a real Object None; do not substitute a PlayerStart or an NPC.
+            for (auto* candidate : persistentWorldActors) {
+                LifecycleStep();
+                if (!candidate || candidate->worldRemoved ||
+                    !IsDerivedFromPath(candidate->cls, "Engine.PlayerPawn")) continue;
+                const auto player = Read(candidate, PropertyNamed(candidate, "Player"), 0u);
+                if (player.kind != Kind::Object)
+                    throw std::runtime_error("GetPlayerPawn Player binding is not an Object");
+                if (!player.text.empty())
+                    return {Value::Text(Kind::Object, candidate->reflection.objectPath), {}};
+            }
+            return {Value::Text(Kind::Object, {}), {}};
+        }
         if (index == 262u) { // Actor.SetCollision, optional arguments preserve current flags.
             argumentCount(0u, 3u); RequireMapActor(object);
             std::array<Value,3u> flags;
@@ -1527,6 +1545,73 @@ public:
             SynchronizeClock(object); object->committedScriptState = true;
         }
         return {};
+    }
+    std::unique_ptr<QuestVr::Vm::Iterator> CreateIterator(const std::uint16_t index,
+        const std::string&, const std::vector<Evaluation>& arguments, const Function*) override {
+        if (index != 304u) throw std::runtime_error("Unsupported runtime iterator native " + std::to_string(index));
+        if (arguments.size() < 2u || arguments.size() > 3u)
+            throw std::runtime_error("AllActors requires Class, writable Actor and optional Name");
+        const auto base = arguments[0u].Load();
+        if (base.kind != Kind::Object || base.text.empty())
+            throw std::runtime_error("AllActors BaseClass is not a nonnull UClass");
+        // Actual UClass identity is required, but membership is the pin's IsA
+        // declaration-Name comparison, not a qualified-path ancestry test.
+        const auto cls = CastClassIdentity(base.text);
+        const auto& output = arguments[1u].reference;
+        if (!output || !output->read || !output->write || output->zero.kind != Kind::Object ||
+            output->read().kind != Kind::Object)
+            throw std::runtime_error("AllActors Actor is not a writable Object binding");
+        std::string tag;
+        if (arguments.size() == 3u) {
+            const auto value = arguments[2u].Load();
+            if (value.kind != Kind::Nothing && value.kind != Kind::Name)
+                throw std::runtime_error("AllActors MatchTag is not a Name");
+            if (value.kind == Kind::Name) tag = value.text;
+        }
+        if (tag.size() > 8192u || tag.find('\0') != std::string::npos)
+            throw std::runtime_error("AllActors MatchTag is outside its byte budget");
+        tag = LowerAscii(tag);
+        if (tag == "none") tag.clear();
+        class ActorCursor final : public QuestVr::Vm::Iterator {
+        public:
+            ActorCursor(PortableActorVmHost& host, std::string cls,
+                std::shared_ptr<Reference> output, std::string tag)
+                : host_(host), classPath_(std::move(cls)), output_(std::move(output)), tag_(std::move(tag)) {}
+            std::size_t RetainedBytes() const override {
+                return sizeof(*this) + classPath_.capacity() + tag_.capacity();
+            }
+            bool Next() override {
+                // The pin snapshots size for each Next, not at construction:
+                // actors appended by a previous loop body are visible now.
+                const auto size = persistentWorldActors.size();
+                while (index_ < size) {
+                    host_.LifecycleStep();
+                    auto* actor = persistentWorldActors[index_++];
+                    // Native Destroy clears the Level slot after callbacks.
+                    // bDeleteMe, presentation active/hidden and collision flags
+                    // do not remove an otherwise live actor from AllActors.
+                    if (!actor || actor->worldRemoved) continue;
+                    const auto value = Value::Text(Kind::Object, actor->reflection.objectPath);
+                    if (host_.CastObject(classPath_, value, false).text.empty()) continue;
+                    if (!tag_.empty()) {
+                        const auto liveTag = host_.Read(actor, host_.PropertyNamed(actor, "Tag"), 0u);
+                        if (liveTag.kind != Kind::Name) throw std::runtime_error("AllActors live Tag is not a Name");
+                        if (LowerAscii(liveTag.text) != tag_) continue;
+                    }
+                    output_->write(value);
+                    return true;
+                }
+                output_->write(Value::Text(Kind::Object, {}));
+                return false;
+            }
+        private:
+            PortableActorVmHost& host_;
+            std::string classPath_;
+            std::shared_ptr<Reference> output_;
+            std::string tag_;
+            std::size_t index_{};
+        };
+        return std::make_unique<ActorCursor>(*this, cls.path, output, std::move(tag));
     }
     Evaluation NativeWithExecution(const std::uint16_t index, const std::string& receiver,
         const std::vector<Evaluation>& arguments, const Function* declaration, QuestVr::Vm::Execution& execution) override {
@@ -2508,7 +2593,9 @@ private:
     void ValidateObjectValue(const Value& value, const std::string& expected, const bool classValue) {
         if (value.text.empty()) return;
         auto* object = Object(value.text);
-        if (!object->active && !object->worldRemoved) throw std::runtime_error("Runtime object reference is inactive");
+        // Presentation inactivity does not destroy UObject identity. A live
+        // Level iterator (and ordinary script assignment) may retain this
+        // reference even when direct execution on that receiver is guarded.
         const auto actual = object->cls ? object->cls->reflection.objectPath :
             object->reflection.metaClass == "Class" ? "Core.Class" :
             Qualified(Table(object->sourcePath), Table(object->sourcePath).exports.at(object->exportIndex).ObjClass);
