@@ -135,8 +135,9 @@ struct Program {
 class Parser {
 public:
     Parser(Host& host, const Function& fn, const Limits& limits, std::size_t& totalNodes,
-        Result& result, bool analysis = false) : host_(host), fn_(fn), limits_(limits),
-            totalNodes_(totalNodes), result_(result), analysis_(analysis) {}
+        Result& result, bool analysis = false, std::size_t* executionRetainedBytes = nullptr) :
+            host_(host), fn_(fn), limits_(limits), totalNodes_(totalNodes), result_(result),
+            analysis_(analysis), executionRetainedBytes_(executionRetainedBytes) {}
     Program Parse() {
         if (fn_.bytecode.size() > limits_.sourceBytes) Fail(Status::Budget, "VM bytecode byte limit");
         Program p;
@@ -159,6 +160,7 @@ private:
     std::size_t cursor_{};
     bool analysis_{};
     std::size_t retainedBytes_{}, labels_{};
+    std::size_t* executionRetainedBytes_{};
     [[noreturn]] void Fail(Status status, const std::string& text) { throw Failure(status, text); }
     void Retain(const std::size_t bytes) {
         if (!analysis_) return;
@@ -175,6 +177,25 @@ private:
         }
         if (spelling.size() > limits_.stringBytes) Fail(Status::Budget, "VM program identity/name byte limit");
         return spelling;
+    }
+    std::string ResolveCastClass(const std::int32_t reference) {
+        std::string identity;
+        try { identity = host_.ResolveCastClass(fn_, reference); }
+        catch (const std::exception& error) {
+            Fail(Status::Invalid, std::string("Invalid VM cast class: ") + error.what());
+        }
+        if (identity.empty() || identity.find('\0') != std::string::npos)
+            Fail(Status::Invalid, "Invalid VM cast class identity");
+        if (identity.size() > limits_.stringBytes)
+            Fail(Status::Budget, "VM cast class identity byte limit");
+        // Parsed identities live alongside all recursive calls/state views.
+        // Charge their actual capacity to the same budget as locals/journals,
+        // not a fresh per-parser counter or a per-string-only check.
+        if (!executionRetainedBytes_ || identity.capacity() > limits_.retainedBytes ||
+            *executionRetainedBytes_ > limits_.retainedBytes - identity.capacity())
+            Fail(Status::Budget, "VM cast class retained byte limit");
+        *executionRetainedBytes_ += identity.capacity();
+        return identity;
     }
     std::uint8_t Byte() {
         if (cursor_ >= fn_.bytecode.size()) Fail(Status::Invalid, "Truncated VM expression");
@@ -242,7 +263,11 @@ private:
             case 0x0f: case 0x10: case 0x14: case 0x1a: child(); child(); break;
             case 0x11: child(); child(); child(); child(); break;
             case 0x12: case 0x19: child(); n.target = Word(); Byte(); child(); break;
-            case 0x13: case 0x2e: case 0x36: n.reference = std::bit_cast<std::int32_t>(Dword()); child(); break;
+            case 0x13: case 0x2e:
+                n.reference = std::bit_cast<std::int32_t>(Dword());
+                if (!analysis_) n.constant = Value::Text(Kind::Object, ResolveCastClass(n.reference));
+                child(); break;
+            case 0x36: n.reference = std::bit_cast<std::int32_t>(Dword()); child(); break;
             case 0x18: n.target = Word(); child(); break;
             case 0x1b: case 0x1c: case 0x38:
                 n.reference = std::bit_cast<std::int32_t>(Dword()); Arguments(n, depth); break;
@@ -386,7 +411,7 @@ public:
             auto result = Native(fn.nativeIndex, self, args, &fn).Load();
             ValidateValue(result, 0); result_.callStack.pop_back(); return result;
         }
-        auto program = Parser(host_, fn, limits_, nodes_, result_).Parse();
+        auto program = Parser(host_, fn, limits_, nodes_, result_, false, &retainedBytes_).Parse();
         Frame frame{fn, self, {}};
         std::size_t argument = 0;
         std::optional<Property> returnProperty;
@@ -544,7 +569,7 @@ private:
             Fail(Status::Invalid, "State locals owner changed identity or is native");
         Retain(sizeof(StateExecutionView) + self.size() + code.size() + localOwner.size() + function->bytecode.size());
         auto view = std::make_unique<StateExecutionView>(function,
-            Parser(host_, *function, limits_, nodes_, result_).Parse(), self);
+            Parser(host_, *function, limits_, nodes_, result_, false, &retainedBytes_).Parse(), self);
         for (const auto& property : locals->variables) {
             if (property.arrayDimension == 0 || property.arrayDimension > limits_.localElements ||
                 localElements_ > limits_.localElements - property.arrayDimension)
@@ -745,6 +770,19 @@ private:
                 break;
             }
             case 0x12: Fail(Status::Unsupported, "ClassContext requires class-default object identity");
+            case 0x13: case 0x2e: {
+                auto object = child(0).Load();
+                Locate(frame.function, n.offset, n.op);
+                if (object.kind != Kind::Object && object.kind != Kind::Nothing) TypeError();
+                if (object.kind == Kind::Nothing) object = Value::Text(Kind::Object, {});
+                result.value = host_.CastObject(n.constant.text, object, n.op == 0x13);
+                if (result.value.kind != Kind::Object ||
+                    (!result.value.text.empty() && !Equal(result.value, object)))
+                    Fail(Status::Invalid, "VM object cast changed value kind or source identity");
+                // Deliberately no reference: casts cannot assign through their
+                // operand, and later writes cannot alter this value snapshot.
+                break;
+            }
             case 0x19: {
                 const auto object = child(0).Load();
                 Locate(frame.function, n.offset, n.op);

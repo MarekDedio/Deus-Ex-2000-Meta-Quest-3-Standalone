@@ -37,6 +37,8 @@ transactional state control and persistence, still without a live AI scheduler.
 order and package-local member values to typed runtime writes and saves,
 including the eight original InitialInventory slots. Inventory spawning and
 campaign startup remain unfinished; this source update is not a new installed APK.
+[Original object/class casts](docs/OBJECT-CASTS.md) now have distinct identity
+and declaration-name rules; final original-data verification is in progress.
 
 ## Data boundary
 

@@ -2,8 +2,10 @@
 #include "surreal_portable_package_tables.h"
 #include "quest_portable_vm.h"
 
+#include <algorithm>
 #include <chrono>
 #include <bit>
+#include <cctype>
 #include <cmath>
 #include <cstring>
 #include <filesystem>
@@ -106,6 +108,12 @@ void NormalizedSerializedContracts() {
     raw={0x04,0x1c};Index(raw,1);raw.push_back(0x16);
     normalized={0x04,0x1c};U32(normalized,1);normalized.push_back(0x16);
     fixture.Decode(raw,normalized);
+    for (const std::uint8_t opcode : {std::uint8_t{0x13},std::uint8_t{0x2e}}) {
+        raw={0x04,opcode};Index(raw,-1);raw.push_back(0x20);Index(raw,1);
+        normalized={0x04,opcode};U32(normalized,static_cast<std::uint32_t>(-1));
+        normalized.push_back(0x20);U32(normalized,1);
+        fixture.Decode(raw,normalized);
+    }
     raw={0x0f,0x00};Index(raw,1);raw.push_back(0x1e);Float(raw,1.25f);raw.push_back(0x04);raw.push_back(0x0b);
     normalized={0x0f,0x00};U32(normalized,1);normalized.push_back(0x1e);Float(normalized,1.25f);normalized.push_back(0x04);normalized.push_back(0x0b);
     fixture.Decode(raw,normalized);
@@ -150,6 +158,7 @@ Bytes Context(const Bytes& object,const Bytes& child) {
 }
 Bytes Element(const Bytes& index,const Bytes& array) {return Join({{0x1a},index,array});}
 Bytes Member(std::int32_t field,const Bytes& parent) {return Join({Ref(0x36,field),parent});}
+Bytes Cast(std::uint8_t opcode,std::int32_t target,const Bytes& object) {return Join({Ref(opcode,target),object});}
 void PatchU16(Bytes& b,std::size_t position,std::size_t value) {
     Require(value<=65535 && position+1<b.size(),"Synthetic logical branch offset overflow");
     b[position]=static_cast<std::uint8_t>(value);b[position+1]=static_cast<std::uint8_t>(value>>8u);
@@ -166,6 +175,11 @@ struct TestHost final:Vm::Host {
     std::map<Identity,std::shared_ptr<const Vm::Function>> finals;
     std::map<std::tuple<std::string,Vm::CallKind,std::string>,std::shared_ptr<const Vm::Function>> named;
     std::map<Slot,std::vector<Value>> storage,saved;
+    struct CastClass {std::string parent,name;};
+    std::map<std::string,CastClass> castClasses;
+    std::map<std::string,std::string> castInstances;
+    std::optional<Value> castResultOverride;
+    std::size_t castClassResolutions{},castCalls{};
     std::vector<std::string> observations;
     std::vector<std::vector<Value>> nativeArguments;
     std::vector<std::string> nativeReceivers,nativeDeclarations;
@@ -186,6 +200,38 @@ struct TestHost final:Vm::Host {
     Vm::Property ResolveProperty(const Vm::Function& f,std::int32_t index) override {return properties.at({f.source,index});}
     std::string ResolveName(const Vm::Function& f,std::int32_t index) override {return names.at({f.source,index});}
     std::string ResolveObject(const Vm::Function& f,std::int32_t index) override {return objects.at({f.source,index});}
+    static std::string Fold(std::string text) {
+        for (char& c : text) c=static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        return text;
+    }
+    std::string ResolveCastClass(const Vm::Function& f,std::int32_t index) override {
+        ++castClassResolutions;observations.push_back("cast-target:"+f.source+":"+std::to_string(index));
+        const auto identity=ResolveObject(f,index);
+        if (!castClasses.contains(identity)) throw std::runtime_error("Fixture cast target is not an actual Class");
+        return identity;
+    }
+    Value CastObject(const std::string& target,const Value& value,bool meta) override {
+        ++castCalls;observations.push_back(meta ? "metacast" : "dynamiccast");
+        if (value.kind!=Vm::Kind::Object || !castClasses.contains(target))
+            throw std::runtime_error("Fixture cast lacks a typed target/object");
+        if (castResultOverride) return *castResultOverride;
+        if (value.text.empty()) return Value::Text(Vm::Kind::Object,{});
+        const bool sourceClass=castClasses.contains(value.text);
+        if (!sourceClass && !castInstances.contains(value.text))
+            throw std::runtime_error("Fixture cast object identity missing");
+        if (meta && !sourceClass) return Value::Text(Vm::Kind::Object,{});
+        auto current=meta ? value.text : sourceClass ? "Core.Class" : castInstances.at(value.text);
+        std::set<std::string> visited;
+        for (std::size_t depth=0;!current.empty();++depth) {
+            if (depth>=128u || !visited.insert(Fold(current)).second)
+                throw std::runtime_error("Fixture cast ancestry cycle/depth limit");
+            const auto& cls=castClasses.at(current);
+            if (meta ? Fold(current)==Fold(target) : Fold(cls.name)==Fold(castClasses.at(target).name))
+                return value;
+            current=cls.parent;
+        }
+        return Value::Text(Vm::Kind::Object,{});
+    }
     std::shared_ptr<const Vm::Function> ResolveFunction(const Vm::Function& caller,const std::string& receiver,const Vm::Invocation& call) override {
         if(call.kind==Vm::CallKind::Final) return finals.at({caller.source,call.reference});
         return named.at({receiver,call.kind,call.name});
@@ -682,9 +728,241 @@ void IntegerIncrementContracts() {
         Require(result.writes==writes && host.Load("Self",property).integer==7,"Integer increment ignored the shared write budget or rollback");
     }
 }
+void CastGraph(TestHost& host,const std::string& source="Fixture") {
+    host.castClasses={
+        {"Core.Object",{"","Object"}}, {"Core.Field",{"Core.Object","Field"}},
+        {"Core.Struct",{"Core.Field","Struct"}}, {"Core.Class",{"Core.Struct","Class"}},
+        {"Engine.Actor",{"Core.Object","Actor"}}, {"Engine.Inventory",{"Engine.Actor","Inventory"}},
+        {"Engine.Ammo",{"Engine.Inventory","Ammo"}}, {"Fixture.Weapon",{"Engine.Inventory","Weapon"}},
+        {"Fixture.Pistol",{"Fixture.Weapon","Pistol"}}, {"Other.Weapon",{"Engine.Actor","WEAPON"}}
+    };
+    host.castInstances={{"Map.Pistol0","Fixture.Pistol"},{"Map.Actor0","Engine.Actor"}};
+    host.objects[{source,1}]="Engine.Inventory";
+    host.objects[{source,2}]="Fixture.Pistol";
+    host.objects[{source,3}]="Map.Pistol0";
+    host.objects[{source,4}]="Engine.Ammo";
+    host.objects[{source,5}]="Fixture.Weapon";
+    host.objects[{source,6}]="Other.Weapon";
+    host.objects[{source,7}]="Core.Class";
+    host.objects[{source,0}]="";
+}
+void CastContracts() {
+    const auto object=[](std::string identity) {return Value::Text(Vm::Kind::Object,std::move(identity));};
+    for (const std::uint8_t opcode : {std::uint8_t{0x13},std::uint8_t{0x2e}}) {
+        for (const Bytes& input : {Bytes{0x2a},Bytes{0x0b},Context({0x2a},Native(1000))}) {
+            TestHost host;CastGraph(host);auto f=Function("CastNull",Return(Cast(opcode,1,input)));
+            const auto r=Vm::Execute(host,f,"Self");Returned(r,"Cast None/Nothing/null context");
+            Require(r.value.kind==Vm::Kind::Object && r.value.text.empty() && host.castClassResolutions==1u &&
+                host.castCalls==1u && host.effects==0u,"Cast null conversion lost object kind or evaluated null context");
+        }
+    }
+    struct Case {std::uint8_t opcode;std::int32_t target,input;const char* expected;};
+    for (const auto& control : {
+        Case{0x13,2,2,"Fixture.Pistol"},Case{0x13,1,2,"Fixture.Pistol"},Case{0x13,4,2,""},
+        Case{0x13,1,3,""},Case{0x13,6,2,""},Case{0x2e,1,3,"Map.Pistol0"},
+        Case{0x2e,2,3,"Map.Pistol0"},Case{0x2e,4,3,""},Case{0x2e,6,3,"Map.Pistol0"},
+        Case{0x2e,1,2,""},Case{0x2e,7,2,"Fixture.Pistol"}}) {
+        TestHost host;CastGraph(host);
+        const auto r=Vm::Execute(host,Function("CastIdentity",Return(Cast(control.opcode,control.target,Ref(0x20,control.input)))),"Self");
+        Returned(r,"Exact/inherited/class/instance/namespace cast");
+        Require(r.value.kind==Vm::Kind::Object && r.value.text==control.expected && host.castCalls==1u,
+            "MetaCast exact class ancestry or DynamicCast NameString ancestry changed");
+    }
+    for (const std::uint8_t opcode : {std::uint8_t{0x13},std::uint8_t{0x2e}}) {
+        // Every non-object value is a type error, even scalar zero/false/None
+        // names. Coerce or truth conversion must not invent a null object.
+        for (const Bytes& input : {Int(0),Real(0),Bytes{0x28},Bytes{0x24,0},String(""),
+            Ref(0x21,10),Bytes{0x22,0,0,0,0,0,0,0,0,0,0,0,0},
+            Bytes{0x23,0,0,0,0,0,0,0,0,0,0,0,0},Native(1005)}) {
+            TestHost host;CastGraph(host);host.names[{"Fixture",10}]="None";
+            const auto f=Function("CastWrongKind",Return(Cast(opcode,1,input)));
+            const auto r=Vm::Execute(host,f,"Self");Failed(r,Vm::Status::Unsupported,host,"Cast wrong child value kind");
+            Require(host.castClassResolutions==1u && !host.castCalls && r.offset==1u && r.opcode==opcode,
+                "Cast wrong kind reached host or reported its child instead of the cast");
+        }
+        for (const std::int32_t reference : {0,99,10,11,12,3,std::numeric_limits<std::int32_t>::min()}) {
+            TestHost host;CastGraph(host);
+            host.objects[{"Fixture",10}]="Fixture.Struct";
+            host.objects[{"Fixture",11}]="Fixture.Actor.State";
+            host.objects[{"Fixture",12}]="Fixture.Actor.Property";
+            const auto f=Function("CastWrongTarget",Return(Cast(opcode,reference,Native(1000))));
+            const auto r=Vm::Execute(host,f,"Self");Failed(r,Vm::Status::Invalid,host,"Cast target not an actual class");
+            Require(!host.castCalls && host.nativeArguments.empty() && host.effects==0u && r.offset==1u && r.opcode==opcode,
+                "Cast child ran before typed target resolution or lost target diagnostic");
+        }
+        // Target loading precedes even parsing its malformed child.
+        {
+            TestHost host;CastGraph(host);
+            const auto r=Vm::Execute(host,Function("CastTargetBeforeChild",Return(Cast(opcode,99,{0x03}))),"Self");
+            Failed(r,Vm::Status::Invalid,host,"Bad target before malformed child");
+            Require(r.offset==1u && r.opcode==opcode && host.castClassResolutions==1u,
+                "Malformed child was parsed before the target Class lookup");
+        }
+        for (std::size_t size=0u;size<5u;++size) {
+            TestHost host;CastGraph(host);auto expression=Ref(opcode,1);expression.resize(size);
+            const auto r=Vm::Execute(host,Function("TruncatedCastTarget",Return(expression)),"Self");
+            Failed(r,Vm::Status::Invalid,host,"Truncated fixed32 cast target");
+            Require(!host.castClassResolutions && !host.castCalls,"Truncated target entered host class lookup");
+        }
+        {
+            TestHost host;CastGraph(host);
+            const auto r=Vm::Execute(host,Function("TruncatedCastChild",Return(Ref(opcode,1))),"Self");
+            Failed(r,Vm::Status::Invalid,host,"Missing cast child");
+            Require(host.castClassResolutions==1u && !host.castCalls,"Missing child was not parsed after target resolution");
+        }
+        {
+            TestHost host;CastGraph(host);Bytes code{0x07,0,0,0x28};
+            const auto expression=Cast(opcode,99,Native(1000));code.insert(code.end(),expression.begin(),expression.end());
+            PatchU16(code,1u,code.size());const auto returned=Return({0x26});code.insert(code.end(),returned.begin(),returned.end());
+            const auto r=Vm::Execute(host,Function("UntakenInvalidCastTarget",code),"Self");
+            Failed(r,Vm::Status::Invalid,host,"Untaken branch still decodes typed cast target");
+            Require(host.effects==0u && host.nativeArguments.empty(),"Untaken invalid cast target performed runtime effects");
+        }
+        {
+            TestHost host;CastGraph(host);auto f=Function("CastNonVariable",Let(Cast(opcode,1,Ref(0x01,8)),{0x2a}));
+            const auto property=host.Property(f,8,"Input",object(""));host.Store("Self",property,{object(opcode==0x13 ? "Fixture.Pistol" : "Map.Pistol0")});
+            const auto r=Vm::Execute(host,f,"Self");Failed(r,Vm::Status::Invalid,host,"Cast result is not assignable");
+            Require(!r.writes && host.Load("Self",property).text==(opcode==0x13 ? "Fixture.Pistol" : "Map.Pistol0"),
+                "Cast preserved an assignable alias to its operand");
+        }
+    }
+    {
+        TestHost host;CastGraph(host);auto f=Function("CastSnapshot",Return(Native(1003,{
+            Cast(0x13,1,Ref(0x01,8)),Let(Ref(0x01,8),Ref(0x20,4))})));
+        const auto property=host.Property(f,8,"Input",object(""));host.Store("Self",property,{object("Fixture.Pistol")});
+        const auto r=Vm::Execute(host,f,"Self");Returned(r,"Detached cast snapshot before later argument write");
+        Require(r.value.text=="Fixture.Pistol" && host.Load("Self",property).text=="Engine.Ammo" &&
+            host.nativeArguments.back()[0].text=="Fixture.Pistol","Cast result changed when its original property was overwritten");
+    }
+    {
+        TestHost host;CastGraph(host,"Caller");CastGraph(host,"Callee");
+        host.objects[{"Caller",1}]="Engine.Ammo";host.objects[{"Caller",2}]="Engine.Ammo";
+        auto callee=Function("CastSource",Return(Cast(0x13,1,Ref(0x20,2))),"Callee");
+        auto caller=Function("CastSourceCaller",Return(Call(0x1c,-17)),"Caller");
+        host.finals[{caller.source,-17}]=std::make_shared<Vm::Function>(callee);
+        const auto r=Vm::Execute(host,caller,"Self");Returned(r,"Nested function-local cast operand provenance");
+        Require(r.value.text=="Fixture.Pistol" && host.observations.front()=="cast-target:Callee:1",
+            "Nested cast used caller's target or source object table");
+    }
+    {
+        TestHost host;CastGraph(host);auto f=Function("NestedCast",Return(Cast(0x2e,7,Cast(0x13,1,Ref(0x20,2)))));
+        const auto r=Vm::Execute(host,f,"Self");Returned(r,"Nested detached casts");
+        Require(r.value.text=="Fixture.Pistol" && host.castClassResolutions==2u && host.castCalls==2u &&
+            host.observations==std::vector<std::string>{"cast-target:Fixture:7","cast-target:Fixture:1","metacast","dynamiccast"},
+            "Nested cast decode/evaluation ordering differs from pinned expression tree");
+    }
+    for (const bool failAfterCast : {false,true}) {
+        TestHost host;CastGraph(host,"Caller");CastGraph(host,"Callee");
+        auto callee=Function("CastChildEffects",Join({Native(1000),Let(Ref(0x01,8),Int(9)),Return(Ref(0x20,2))}),"Callee");
+        const auto property=host.Property(callee,8,"Counter",Value::Integer(0));host.Store("Self",property,{Value::Integer(4)});
+        auto caller=Function("CastEffects",failAfterCast ? Join({Cast(0x13,1,Call(0x1c,17)),Native(4095),Return({0x0b})}) :
+            Return(Cast(0x13,1,Call(0x1c,17))),"Caller");
+        host.finals[{caller.source,17}]=std::make_shared<Vm::Function>(callee);
+        const auto r=Vm::Execute(host,caller,"Self");
+        if (failAfterCast) {
+            Failed(r,Vm::Status::Unsupported,host,"Unsupported required action after cast child effects");
+            Require(host.effects==0u && host.rng==12345u && host.Load("Self",property).integer==4,
+                "Later unsupported action leaked cast child's effects/RNG/property writes");
+        } else {
+            Returned(r,"Cast evaluates effectful nested child exactly once");
+            Require(r.value.text=="Fixture.Pistol" && host.effects==1u && host.Load("Self",property).integer==9,
+                "Cast duplicated or skipped effectful child");
+        }
+        Require(r.writes==1u && host.castCalls==1u &&
+            std::count(host.observations.begin(),host.observations.end(),"effect")==1,
+            "Cast child was evaluated more than once");
+    }
+    for (const Value& badResult : {Value{},Value::Integer(0),object("Map.Actor0")}) {
+        TestHost host;CastGraph(host);host.castResultOverride=badResult;
+        const auto r=Vm::Execute(host,Function("CastHostBadResult",Return(Cast(0x13,1,Ref(0x20,2)))),"Self");
+        Failed(r,Vm::Status::Invalid,host,"Cast host changed value kind or object identity");
+        Require(r.offset==1u && r.opcode==0x13u,"Host result failure lost cast diagnostic");
+    }
+    {
+        TestHost host;CastGraph(host);host.castResultOverride=object("FIXTURE.PISTOL");
+        const auto r=Vm::Execute(host,Function("CastCanonicalCase",Return(Cast(0x13,1,Ref(0x20,2)))),"Self");
+        Returned(r,"Host canonical spelling preserves case-insensitive object identity");
+    }
+    for (const std::uint8_t opcode : {std::uint8_t{0x13},std::uint8_t{0x2e}}) {
+        for (const unsigned malformed : {0u,1u,2u,3u}) {
+            TestHost host;CastGraph(host);std::string source="Fixture.Broken";
+            if (malformed==0u) source="Map.Missing";
+            if (malformed==1u) host.castClasses[source]={"Fixture.MissingBase","Broken"};
+            if (malformed==2u) {
+                host.castClasses[source]={"Fixture.Cycle","Broken"};
+                host.castClasses["Fixture.Cycle"]={source,"Cycle"};
+            }
+            if (malformed==3u) {
+                source="Fixture.Deep0";
+                for (std::size_t i=0u;i<130u;++i)
+                    host.castClasses["Fixture.Deep"+std::to_string(i)]={i==129u ? "Core.Object" : "Fixture.Deep"+std::to_string(i+1u),"Deep"+std::to_string(i)};
+            }
+            if (opcode==0x2eu && malformed!=0u) {host.castInstances["Map.Broken0"]=source;source="Map.Broken0";}
+            host.objects[{"Fixture",20}]=source;
+            const auto r=Vm::Execute(host,Function("CastMalformedSource",Return(Cast(opcode,1,Ref(0x20,20)))),"Self");
+            Failed(r,Vm::Status::Unsupported,host,"Missing/cyclic/deep actual cast object ancestry");
+            Require(r.offset==1u && r.opcode==opcode,"Malformed cast object ancestry lost cast diagnostic");
+        }
+        for (const std::string& identity : {std::string{},std::string("Fixture.Bad\0Tail",16u)}) {
+            TestHost host;CastGraph(host);host.castClasses[identity]={"Core.Object","Bad"};host.objects[{"Fixture",10}]=identity;
+            const auto r=Vm::Execute(host,Function("CastMalformedTargetIdentity",Return(Cast(opcode,10,Native(1000)))),"Self");
+            Failed(r,Vm::Status::Invalid,host,"Empty/NUL cast target identity");
+            Require(!host.castCalls && host.nativeArguments.empty(),"Malformed cast target identity evaluated child");
+        }
+    }
+    // Structural analysis validates normalized references but not UClass kinds.
+    {
+        TestHost host;CastGraph(host);host.objects[{"Fixture",10}]="Fixture.Actor.State";
+        const auto f=Function("CastAnalysis",Return(Cast(0x13,10,Cast(0x2e,3,{0x0b}))));
+        const auto layout=Vm::AnalyzeProgram(host,f);
+        Require(layout.statementOffsets==std::vector<std::size_t>{0u} && !host.castClassResolutions && !host.castCalls &&
+            !host.beginCount && host.observations.empty(),"AnalyzeProgram performed typed cast lookup or execution");
+    }
+    // Hostile class names are rejected before the child. Aggregate path memory
+    // uses the Machine budget across repeated and nested function parses.
+    for (const unsigned budget : {0u,1u,2u,3u,4u,5u}) {
+        TestHost host;CastGraph(host);auto f=Function("CastBudget",Return(Cast(0x13,1,Ref(0x20,2))));
+        Vm::Limits limits;
+        if (budget==0u) limits.sourceBytes=f.bytecode.size()-1u;
+        if (budget==1u) limits.nodes=2u;
+        if (budget==2u) limits.expressionDepth=2u;
+        if (budget==3u) limits.instructions=1u;
+        if (budget==4u) limits.stringBytes=1u;
+        if (budget==5u) limits.retainedBytes=1u;
+        const auto r=Vm::Execute(host,f,"Self",{},limits);Failed(r,Vm::Status::Budget,host,"Bounded cast execution");
+        Require(!host.castCalls,"Cast exceeded budget before required evaluation");
+    }
+    {
+        TestHost host;CastGraph(host);auto f=Function("CastAggregatePaths",Join({Cast(0x13,1,{0x2a}),Return(Cast(0x13,1,{0x2a}))}));
+        Vm::Limits limits;limits.retainedBytes=std::string("Engine.Inventory").capacity();
+        const auto r=Vm::Execute(host,f,"Self",{},limits);Failed(r,Vm::Status::Budget,host,"Aggregate parsed cast identity retention");
+        Require(host.castClassResolutions==2u && !host.castCalls,"Cast path retention was limited per-string instead of cumulatively");
+    }
+    {
+        TestHost host;CastGraph(host,"Caller");CastGraph(host,"Callee");
+        auto leaf=Function("CastRetentionLeaf",Return(Cast(0x13,1,{0x2a})),"Callee");
+        auto caller=Function("CastRetentionCaller",Join({Cast(0x13,1,{0x2a}),Return(Call(0x1c,17))}),"Caller");
+        host.finals[{caller.source,17}]=std::make_shared<Vm::Function>(leaf);
+        Vm::Limits limits;limits.retainedBytes=sizeof(Value);
+        // SSO-independent paths larger than half a Value guarantee that two
+        // simultaneous parses exceed this budget, while one null value fits.
+        const auto identity=std::string(sizeof(Value)/2u+1u,'x');
+        host.castClasses[identity]={"Core.Object",identity};
+        host.objects[{"Caller",1}]=identity;host.objects[{"Callee",1}]=identity;
+        const auto r=Vm::Execute(host,caller,"Self",{},limits);Failed(r,Vm::Status::Budget,host,"Nested cast path retention shares caller budget");
+        Require(host.castClassResolutions==2u && host.castCalls==1u,"Nested function reset retained cast identity budget");
+    }
+    {
+        TestHost host;CastGraph(host);auto f=Function("CastChildWriteBudget",Return(Cast(0x13,1,Let(Ref(0x01,8),Ref(0x20,2)))));
+        const auto property=host.Property(f,8,"Input",object(""));host.Store("Self",property,{object("Engine.Ammo")});
+        Vm::Limits limits;limits.writes=0u;
+        const auto r=Vm::Execute(host,f,"Self",{},limits);Failed(r,Vm::Status::Budget,host,"Cast child shares write budget");
+        Require(!host.castCalls && host.Load("Self",property).text=="Engine.Ammo","Cast child bypassed write budget or rollback");
+    }
+}
 void ExecutionContracts() {
     ScalarAndLocalContracts();ParametersAndReturns();AssignmentArraysAndStructs();LazyAndContextContracts();
-    OptionalAndReferenceTables();ControlAndFailureContracts();BudgetAndNestedRollback();IntegerIncrementContracts();
+    OptionalAndReferenceTables();ControlAndFailureContracts();BudgetAndNestedRollback();IntegerIncrementContracts();CastContracts();
 }
 void ProgramAndEligibilityContracts() {
     TestHost host;

@@ -817,24 +817,24 @@ void VerifyOriginalInventoryTransactions(const std::string& actor,const std::fil
     SameInventoryProperties(actor,positive,"Initialization fixture did not retain all8 independently typed slots");
     const auto initialize=ExecutePortableActorFunction(actor,"InitializeInventory");
     Require(initialize.status==Status::Unsupported && initialize.function=="DeusEx.ScriptedPawn.InitializeInventory" &&
-        initialize.offset==123u && initialize.opcode==0x13u,
-        "Original initialization stopped before InventoryItem read or fabricated required MetaCast/Spawn: "+initialize.error+
+        initialize.offset==253u && initialize.opcode==0x61u && initialize.error.find("native 278")!=std::string::npos,
+        "Original initialization stopped before its actual class cast or fabricated required Spawn: "+initialize.error+
         " at "+initialize.function+':'+std::to_string(initialize.offset));
-    unchanged(initializedBytes,"Original InitializeInventory MetaCast refusal");
+    unchanged(initializedBytes,"Original InitializeInventory Spawn refusal after actual class cast");
     Call(actor,"SetInitialState");
     Require(SavePortableRuntimeState(inspect.string()),"Actual StartUp + inventory continuation could not checkpoint");
     const auto startup=CheckpointBytes(inspect);
     const auto slice=ResumePortableActorState(actor);
     Require(slice.status==Status::Unsupported && slice.function=="DeusEx.ScriptedPawn.InitializeInventory" &&
-        slice.offset==123u && slice.opcode==0x13u,
-        "Actual StartUp did not reach next required inventory MetaCast or fabricated campaign startup: "+slice.error);
+        slice.offset==253u && slice.opcode==0x61u && slice.error.find("native 278")!=std::string::npos,
+        "Actual StartUp did not reach next required inventory Spawn or fabricated campaign startup: "+slice.error);
     unchanged(startup,"Actual StartUp inventory dependency rollback");
     Require(LoadPortableRuntimeState(legacy.string()) && !GetPortableRuntimeScriptStatePresent(),
         "Legacy restore retained InventoryItem overlay or composed state");
     SameInventoryProperties(actor,originalAuthored,"Legacy restore failed to recover all8 authored/inherited inventory slots");
     unchanged(originalLegacyBytes,"Legacy inventory/state reset");
     std::cout<<"ORIGINAL INVENTORY MEMBER writes/negative Count/optional zero/default class constraint, v4/v5 composition; rejections="<<
-        rejections<<"; exact InitializeInventory MetaCast13 PC123 refusal + full StartUp rollback; no inventory spawned\n";
+        rejections<<"; actual class cast then exact InitializeInventory Spawn278 PC253 refusal + full StartUp rollback; no inventory spawned\n";
 }
 
 void VerifyOriginalStateExecution(const std::string& actor, const std::filesystem::path& legacy,

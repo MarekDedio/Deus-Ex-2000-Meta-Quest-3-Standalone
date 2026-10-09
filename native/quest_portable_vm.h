@@ -124,6 +124,19 @@ public:
     virtual Property ResolveProperty(const Function&, std::int32_t reference) = 0;
     virtual std::string ResolveName(const Function&, std::int32_t index) = 0;
     virtual std::string ResolveObject(const Function&, std::int32_t reference) = 0;
+    // Decoding casts requires an actual UClass, using THIS function's source
+    // table, before its child is decoded/evaluated. Structural analysis still
+    // uses ResolveObject and does not perform this typed lookup.
+    virtual std::string ResolveCastClass(const Function&, std::int32_t) {
+        throw std::runtime_error("VM cast class resolution unavailable");
+    }
+    // Object input is detached and Nothing has already become a null Object.
+    // meta=true compares exact UClass/BaseStruct identities; dynamic casts use
+    // the target's NameString leaf along the object's actual Class ancestry.
+    // Return only a detached Object: its unchanged input identity, or null.
+    virtual Value CastObject(const std::string&, const Value&, bool) {
+        throw std::runtime_error("VM object cast unavailable");
+    }
     virtual std::shared_ptr<const Function> ResolveFunction(const Function& caller,
         const std::string& receiver, const Invocation&) = 0;
     virtual std::shared_ptr<Reference> Variable(const std::string& receiver,

@@ -1,5 +1,33 @@
 # Port status
 
+## Offline original object/class casts (2026-10-09; verification in progress)
+
+- Added MetaCast/DynamicCast execution, source-local typed target resolution,
+  detached Object results and shared transaction/budget accounting. Actual
+  class identity and literal declaration Name semantics remain distinct.
+- Added a shared bounded hierarchy helper and a generated-package test of the
+  production adapter. Review fixed wrong imported ClassName acceptance for
+  targets/ObjClass/ObjBase and permanent interning of rejected native paths.
+  Known native class metadata is not spawned actor gameplay.
+- Final host build and ordinary CTest pass: 34 tests pass, two optional-root
+  entries explicitly skip. VM controls pass 641 checks/150 rejections; pure
+  hierarchy controls pass 111/54 and the production adapter passes 381/59 across
+  164 generated metadata exports. The separate original-data runtime test
+  completed with exit 0: paired-save recovery, retained assets, v4/v5 script
+  composition and guarded travel pass. The original-data actor check is still
+  running; its updated startup assertion is not yet a pass. The real initializer test
+  requires Spawn278 PC253 after its class cast; spawning remains unimplemented.
+- Quest USB is no longer available on the latest check. No APK replacement,
+  permission changes or save modifications were performed. Original-data
+  actor verification remains pending; the passes above do not imply startup.
+  See [OBJECT-CASTS.md](OBJECT-CASTS.md).
+- The current source compiles for Android ARM64. Signature v2 verifies, both
+  packaged port libraries match the built stripped outputs, and the APK has
+  no original commercial packages. This is not an on-device startup test;
+  the user's installed build remains frozen. Fresh Inventory/Health CPU
+  previews also pass and were visually inspected without obvious missing
+  artwork, panel overlap or text clipping; live state/input remain unverified.
+
 ## Offline authored struct support (2026-10-08; verified, not deployed)
 
 - Added exact Core.Struct descriptors and bounded declaration-order scalar/nested

@@ -8,6 +8,7 @@
 #include "portable_model_geometry.h"
 #include "quest_actor_animation_clock.h"
 #include "quest_authored_struct_value.h"
+#include "quest_object_cast.h"
 
 #include <memory>
 #include <algorithm>
@@ -1191,6 +1192,15 @@ public:
         if (path.empty()) throw std::runtime_error("VM function-local object reference is out of range");
         return reference > 0 ? PackageStem(table.sourcePath) + '.' + path : path;
     }
+    std::string ResolveCastClass(const Function& function, const std::int32_t reference) override {
+        return ResolveCastReference(Table(function.source), reference);
+    }
+    Value CastObject(const std::string& target, const Value& value, const bool meta) override {
+        QuestVr::ObjectCastResolvers resolvers;
+        resolvers.resolveClass = [this](const std::string& path) { return CastClassIdentity(path); };
+        resolvers.resolveObject = [this](const std::string& path) { return CastObjectIdentity(path); };
+        return QuestVr::CastAuthoredObject(target, value, meta, resolvers);
+    }
     std::shared_ptr<const Function> ResolveFunction(const Function& caller,
         const std::string& receiver, const QuestVr::Vm::Invocation& invocation) override {
         if (invocation.kind == QuestVr::Vm::CallKind::Final)
@@ -1739,6 +1749,117 @@ private:
             }
         }
         return false;
+    }
+    // Native UClasses absent from package exports are registered by the pin,
+    // not fabricated actor instances. Only these independently audited Core
+    // metadata and Engine asset registrations supply an absent class identity.
+    // Serialized UClasses always take precedence and use their actual ObjBase.
+    std::optional<QuestVr::ObjectCastClass> NativeCastClass(const std::string& path) {
+        static constexpr std::pair<const char*, const char*> registered[] = {
+            {"Core.Object", ""}, {"Core.Package", "Core.Object"},
+            {"Core.Field", "Core.Object"}, {"Core.Const", "Core.Field"},
+            {"Core.Enum", "Core.Field"}, {"Core.Struct", "Core.Field"},
+            {"Core.Function", "Core.Struct"}, {"Core.State", "Core.Struct"},
+            {"Core.Class", "Core.State"}, {"Core.Property", "Core.Field"},
+            {"Core.PointerProperty", "Core.Property"}, {"Core.ByteProperty", "Core.Property"},
+            {"Core.ObjectProperty", "Core.Property"}, {"Core.ClassProperty", "Core.ObjectProperty"},
+            {"Core.FixedArrayProperty", "Core.Property"}, {"Core.ArrayProperty", "Core.Property"},
+            {"Core.MapProperty", "Core.Property"}, {"Core.StructProperty", "Core.Property"},
+            {"Core.IntProperty", "Core.Property"}, {"Core.BoolProperty", "Core.Property"},
+            {"Core.FloatProperty", "Core.Property"}, {"Core.NameProperty", "Core.Property"},
+            {"Core.StrProperty", "Core.Property"}, {"Core.StringProperty", "Core.Property"},
+            {"Core.TextBuffer", "Core.Object"}, {"Core.Subsystem", "Core.Object"},
+            {"Core.Language", "Core.Object"},
+            {"Engine.Palette", "Core.Object"}, {"Engine.Sound", "Core.Object"},
+            {"Engine.Music", "Core.Object"}, {"Engine.Primitive", "Core.Object"},
+            {"Engine.Mesh", "Engine.Primitive"}, {"Engine.LodMesh", "Engine.Mesh"},
+            {"Engine.SkeletalMesh", "Engine.LodMesh"}, {"Engine.Animation", "Core.Object"},
+            {"Engine.Model", "Engine.Primitive"}, {"Engine.LevelBase", "Core.Object"},
+            {"Engine.Level", "Engine.LevelBase"}, {"Engine.LevelSummary", "Core.Object"},
+            {"Engine.Polys", "Core.Object"}, {"Engine.BspNodes", "Core.Object"},
+            {"Engine.BspSurfs", "Core.Object"}, {"Engine.Vectors", "Core.Object"},
+            {"Engine.Verts", "Core.Object"}, {"Engine.Bitmap", "Core.Object"},
+            {"Engine.Texture", "Engine.Bitmap"}, {"Engine.FractalTexture", "Engine.Texture"},
+            {"Engine.FireTexture", "Engine.FractalTexture"}, {"Engine.IceTexture", "Engine.FractalTexture"},
+            {"Engine.WaterTexture", "Engine.FractalTexture"}, {"Engine.WaveTexture", "Engine.WaterTexture"},
+            {"Engine.WetTexture", "Engine.WaterTexture"}, {"Engine.ScriptedTexture", "Engine.Texture"},
+            {"Engine.Font", "Core.Object"}
+        };
+        // Runtime operand strings are not authored NameString table entries.
+        // Comparing them must not permanently intern arbitrary rejected input.
+        const auto key = QuestVr::ObjectCastDetail::Fold(path);
+        const auto found = std::find_if(std::begin(registered), std::end(registered),
+            [&](const auto& item) { return key == QuestVr::ObjectCastDetail::Fold(item.first); });
+        if (found == std::end(registered)) return {};
+        const std::string canonical = found->first;
+        return QuestVr::ObjectCastClass{canonical, canonical.substr(canonical.find('.') + 1u), found->second};
+    }
+    std::string CastClassPath(const std::string& path) {
+        const auto found = persistentVmObjects.find(LowerAscii(path));
+        if (found == persistentVmObjects.end()) {
+            if (const auto registered = NativeCastClass(path)) return registered->path;
+            throw std::runtime_error("VM cast class identity unavailable: " + path);
+        }
+        const auto* object = found->second;
+        const auto& entry = Table(object->sourcePath).exports.at(object->exportIndex);
+        if (entry.ObjClass != 0 || object->reflection.metaClass != "Class")
+            throw std::runtime_error("VM cast target/base is not a serialized UClass: " + path);
+        return object->reflection.objectPath;
+    }
+    std::string ResolveCastReference(const PortablePackageTables& table, const std::int32_t reference) {
+        if (reference == 0) throw std::runtime_error("VM cast class reference is null");
+        const auto path = ResolvePortableValueObjectReference(table, reference,
+            [this](const std::string& resolved, const std::string& importedClass) {
+                // FindObjectReference's non-Class branch excludes ObjClass0
+                // exports. Metaclass IsA(Object/Struct/State) cannot make a
+                // wrongly declared import resolve to a supported UClass.
+                if (NameString(importedClass) != "Class") return false;
+                // Class kind/identity only: do not recursively walk bases
+                // while resolving an import, which would hide cycle bounds.
+                static_cast<void>(CastClassPath(resolved));
+                return true;
+            });
+        return CastClassPath(path);
+    }
+    QuestVr::ObjectCastClass CastClassIdentity(const std::string& path) {
+        const auto found = persistentVmObjects.find(LowerAscii(path));
+        if (found == persistentVmObjects.end()) {
+            if (const auto registered = NativeCastClass(path)) return *registered;
+            throw std::runtime_error("VM cast class identity unavailable: " + path);
+        }
+        auto* object = found->second;
+        const auto& table = Table(object->sourcePath);
+        const auto& entry = table.exports.at(object->exportIndex);
+        if (entry.ObjClass != 0 || object->reflection.metaClass != "Class")
+            throw std::runtime_error("VM cast target/base is not a serialized UClass: " + path);
+        if (entry.ObjName < 0 || static_cast<std::size_t>(entry.ObjName) >= table.names.size())
+            throw std::runtime_error("VM cast declaration Name is invalid");
+        const auto& name = table.names[static_cast<std::size_t>(entry.ObjName)].Name;
+        if (name.IsNone()) throw std::runtime_error("VM cast declaration Name is None");
+        std::string base;
+        if (entry.ObjBase != 0) {
+            base = ResolveCastReference(table, entry.ObjBase);
+        } else if (name != "Object") {
+            // Package::LoadExportObject gives zero-base classes Core.Object;
+            // a missing NONZERO authored reference is not silently defaulted.
+            base = "Core.Object";
+        }
+        return {object->reflection.objectPath, name.ToString(), std::move(base)};
+    }
+    QuestVr::ObjectCastObject CastObjectIdentity(const std::string& path) {
+        const auto found = persistentVmObjects.find(LowerAscii(path));
+        if (found == persistentVmObjects.end()) {
+            if (const auto registered = NativeCastClass(path))
+                return {registered->path, "Core.Class", true};
+            throw std::runtime_error("VM cast object identity unavailable: " + path);
+        }
+        auto* object = found->second;
+        const auto& table = Table(object->sourcePath);
+        const auto& entry = table.exports.at(object->exportIndex);
+        const bool classObject = entry.ObjClass == 0;
+        const auto actualClass = classObject ? std::string("Core.Class") : ResolveCastReference(table, entry.ObjClass);
+        if (actualClass.empty()) throw std::runtime_error("VM cast object has no actual Class");
+        return {object->reflection.objectPath, actualClass, classObject};
     }
     void ValidateObjectValue(const Value& value, const std::string& expected, const bool classValue) {
         if (value.text.empty()) return;
@@ -2991,6 +3112,17 @@ std::vector<QuestVr::Vm::Value> ReadPortableActorScriptPropertySlots(const std::
         values.push_back(std::move(value));
     }
     return values;
+}
+
+QuestVr::Vm::Value CastPortableRuntimeObject(const std::string& declaringObjectPath,
+    const std::int32_t targetReference, const QuestVr::Vm::Value& value, const bool meta) {
+    PortableActorVmHost host;
+    const auto* declaring = host.Object(declaringObjectPath);
+    QuestVr::Vm::Function source;
+    source.path = declaring->reflection.objectPath;
+    source.source = declaring->sourcePath;
+    const auto target = host.ResolveCastClass(source, targetReference);
+    return host.CastObject(target, value, meta);
 }
 
 std::optional<PortableObjectStack> ReadPortableActorSerializedStack(const std::string& actorPath) {

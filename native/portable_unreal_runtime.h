@@ -298,6 +298,11 @@ QuestVr::Vm::Value ReadPortableActorScriptProperty(
 std::vector<QuestVr::Vm::Value> ReadPortableActorScriptPropertySlots(
     const std::string& actorPath, const std::string& propertyName,
     std::uint32_t firstIndex, std::uint32_t count);
+// Read-only original object/class cast inspection using an indexed declaring
+// object's source table. The normalized reference belongs to that table, not
+// the operand's package. It does not execute bytecode or enter actor lifecycle.
+QuestVr::Vm::Value CastPortableRuntimeObject(const std::string& declaringObjectPath,
+    std::int32_t targetReference, const QuestVr::Vm::Value& value, bool meta);
 // Read-only authored metadata, not an active AI frame or a resumable state.
 // Requires the indexed vector-package initialization path used by the game,
 // not the single-package lifecycle-verification helper. Descriptors are loaded
