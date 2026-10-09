@@ -1,6 +1,20 @@
-# Current Quest test-build handoff (2026-10-09)
+# Current Quest test-build handoff (2026-10-10)
 
-The latest **backend-only, not installed** actor-lookup APK is
+The latest **backend-only, not installed** native AI event-state APK is
+`artifacts/release-ai-event-state-20261010/DeusExQuestVR-ai-event-state-20261010.apk`:
+18,681,209 bytes, SHA-256
+`2419A01F160BDEBB1A518862FBD3ABED5EF4EC0A61942E26A900E9A72132916B`.
+Android ARM64 compilation and APK Signature Scheme v2 verification pass; its
+16 ZIP entries contain no original commercial game packages. The packaged
+native libraries differ from the lookup build (data-probe 5,569,672 bytes,
+SHA-256 `34004A11B3CC0C0D49EA8E207447346B275BBC3B0FCDF0402DC7E38CEF7AFF78`).
+It adds manager initialization/registration/emission state, sensory histories,
+transactional GC ownership and codec6/checkpoint9 snapshots, not AI processing
+or a finished campaign. The 48 ordinary host tests pass (three optional original
+data tests are verified separately). This batch is not device-tested or installed
+over the accepted seated-player APK. See [AI-EVENT-STATE.md](AI-EVENT-STATE.md).
+
+The preceding **backend-only, not installed** actor-lookup APK is
 `artifacts/release-actor-lookup-20261009/DeusExQuestVR-actor-lookup-20261009.apk`:
 18,681,209 bytes, SHA-256
 `F812793EA19300A794EE8901623068C9BA69370C6FAC1302A7EED1EA92637DD7`.

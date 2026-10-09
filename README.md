@@ -29,10 +29,14 @@ The [runtime actor birth foundation](docs/ACTOR-SPAWN.md) now executes native
 Spawn with original callbacks, bounded collision registration and transactional
 rollback. Codec v5 / checkpoint v8 cold-restore real born identities and frozen
 defaults. The original InitializeInventory helper creates and links a real
-weapon/ammo graph in isolated host tests; automatic StartUp next requires the
-actual player-pawn binding. This is not full campaign startup or newly accepted
+weapon/ammo graph in isolated host tests; automatic StartUp and actual player
+possession remain unfinished. This is not full campaign startup or newly accepted
 Quest gameplay. Runtime actor texture replacement is ARM-compiled but still
 requires device performance and visual verification.
+The [native AI event-state foundation](docs/AI-EVENT-STATE.md) adds real
+manager initialization, callback registrations and sensory history mutations
+with rollback and codec6/checkpoint9 graph snapshots. It does not yet implement
+AI processing, perception, deferred cleanup or automatic level ticking.
 The [installed Quest test build](docs/QUEST-TEST-BUILD.md) remains frozen while
 the user tests it. Subsequent offline source work retains
 [authored state metadata](docs/AUTHORED-STATE-FOUNDATION.md); it does not enable

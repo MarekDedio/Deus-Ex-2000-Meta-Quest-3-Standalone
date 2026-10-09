@@ -8,8 +8,10 @@ blocks, separately from actor instances. Version 7 retains native ordered
 child/base lists, four touch-event flags and removal from the world registry.
 Version 8 additionally preserves runtime-born actors, their actual loaded
 classes, appended Level slots and frozen typed birth defaults.
+Version 9 preserves native AI manager presence (including empty managers),
+ordered registration/emission graphs, detection state and sensory history.
 None of these versions adds
-automatic NPC startup, AI, live animation, or a general UnrealScript savegame.
+automatic NPC startup, AI processing, live animation, or a general UnrealScript savegame.
 Only the current map's supported authored and runtime-born actors are restored.
 
 This document updates the earlier memory-only/save-refusal description in
@@ -25,15 +27,17 @@ born weapon/ammo graph; it does not establish a complete authored player invento
 ## Runtime envelope
 
 The runtime checkpoint still starts with magic `0x53515844`. A checkpoint
-without committed script objects or class defaults is written as version 3, with no new trailer.
+without committed script objects, class defaults, births or native AI managers
+is written as version 3, with no new trailer.
 A checkpoint containing only properties/clocks uses version 4; one with any
 portable state object uses version 5. A checkpoint with class-default mutations
 uses version 6, including when it has no actor records. Any native lifecycle
-record selects version 7; a nonempty birth manifest selects version 8. The version word changes, the existing
+record selects version 7; a nonempty birth manifest selects version 8. Native
+AI manager presence takes precedence and selects version 9. The version word changes, the existing
 version-3 fields retain their order and widths, and one trailer is appended.
 
 ```text
-u32 magic, u32 version=4, 5, 6, 7 or 8
+u32 magic, u32 version=4, 5, 6, 7, 8 or 9
 version-3 fields:
   inventory[], inactive actors[], activated actors[]
   f32 player health, damaged actors[(path,f32 health)]
@@ -53,6 +57,16 @@ without state records; a v5 envelope must contain codec v2 with a state record.
 A v6 envelope must contain codec v3 and a nonempty class-default section.
 A v7 envelope must contain codec v4 and at least one native lifecycle record.
 A v8 envelope must contain codec v5 and a nonempty birth manifest.
+A v9 envelope must contain codec v6 and at least one native AI manager. Codec6
+includes the codec5 sections with a possibly empty birth manifest, followed by
+manager records sorted by owner identity. Each graph preserves node/list/ring
+order, IDs, tombstones, all sixteen history samples and every modeled AI field.
+Read-only preflight validates the symbolic graph against its actual map Level,
+LevelInfo owner and authored/born actor membership before GC allocation or
+publication. Nonzero processing depth is rejected. Legacy saves clear managers.
+These are portable snapshots, not original archive cleanup normalization;
+original Serialize cleans pending deletions on save. See
+[AI-EVENT-STATE.md](AI-EVENT-STATE.md) for supported operations and explicit limits.
 
 This version number is distinct from the Persona/UI metadata version and from
 the paired `.qsv` bundle format. The alternating-slot, checksum and durable
@@ -70,6 +84,8 @@ the exact legacy v1 representation is retained. Class-default mutations select
 byte 6 = 3; without them the v1/v2 representation remains unchanged. Native
 lifecycle records select byte 6 = 4; otherwise v1-v3 bytes remain unchanged.
 Births select byte 6 = 5; without births the v1-v4 representation is unchanged.
+Native AI managers select byte 6 = 6, including an empty manager; without
+manager records the v1-v5 representation is unchanged.
 
 ```text
 mapName
@@ -82,26 +98,45 @@ objects[]:
     u8 value tag, typed value payload
   u8 hasClock (0 or 1)
   optional complete animation clock
-  codec v2-v5: u8 hasState, optional portable state object
-  codec v4/v5: u8 hasLifecycle, optional native lifecycle:
+  codec v2-v6: u8 hasState, optional portable state object
+  codec v4-v6: u8 hasLifecycle, optional native lifecycle:
     u8 worldRemoved (0 or 1)
     u8 touchEventSent[4] (each 0 or 1)
     u32 child count, child actor paths[] in native order
     u32 based count, based actor paths[] in native order
-codec v3-v5:
-  u32 concrete class-default count (nonzero in v3; may be zero in v4/v5)
+codec v3-v6:
+  u32 concrete class-default count (nonzero in v3; may be zero in v4-v6)
   class defaults[]:
     loaded script Actor class path
     u32 property count (nonzero)
     properties[]: same property key/name/index/value layout as above
-codec v5:
-  u32 birth count (nonzero)
+codec v5/v6:
+  u32 birth count (nonzero in v5; may be zero in v6)
   births[]:
     map-qualified object path, loaded concrete Actor class path
     u32 appended Level actor slot
     u32 frozen-default property count (may be zero)
     frozen defaults[]: same typed property layout as above
+codec v6:
+  u32 native AI manager count (nonzero)
+  managers[] sorted by case-insensitive owner path:
+    owner LevelInfo path, native Level path
+    u32 processDepth, u32 pendingDeleteCount, u8 historyCursor, u32 receiverHead
+    counted event types: name, ordered u32 sender IDs[], ordered u32 receiver IDs[]
+    counted senders: actor path, event-type ID, deleted flag, score,
+      sixteen sensory history samples, current sensory channels
+    counted receivers: actor path, event-type ID, deleted flag,
+      callback and score names, four perception flags, callbackPending,
+      eventState, detected, previousScore, previousBestActor, historyCursor,
+      current XAIParams, ringNext ID, ringPrev ID
 ```
+
+AI booleans are one byte (0 or 1), IDs are u32 (zero means null), and sensory
+channels and score parameters use binary32. A sensory sample contains
+visibility, volume, radius and smell; XAIParams contains bestActor, score,
+visibility, volume and smell. Node/list/ring order is not sorted or normalized.
+See `native/quest_script_state.h` for the exact field order and
+[AI event state](AI-EVENT-STATE.md) for runtime ownership and restoration limits.
 
 Born actors have no fabricated map export. Restore first registers the whole
 symbolic birth graph, then validates actual class ancestry, reflected fields,
@@ -204,12 +239,19 @@ Generic codec defaults are:
 | Disabled-event names | 262,144 across objects |
 | Native actor links | 65,536 across child and based lists |
 | Level actor slot index | Below 1,000,000 |
+| Native AI managers | 4,096 total |
+| AI event types | 1,024 across managers |
+| AI sender and receiver nodes | 8,192 combined across managers |
+| AI graph links | 65,536 across managers |
+| AI graph validation work | 65,536 charged steps across managers |
 
 Retained estimates include object/property arrays, nested map nodes, strings
 and bounded sorting pointers. Encoding validates/counts the complete tree
-before reserving the output. Decoding first uses a non-materializing pass with
-string views; restored object/property/field containers are allocated only
-after the complete payload passes limits and canonical uniqueness checks.
+before reserving the output. Decoding first verifies the complete payload,
+using string views for legacy sections. Codec6 additionally materializes one
+fully budgeted AI graph at a time for shared graph validation, then discards
+it. This temporary heap state allocates no runtime GC objects. The complete
+restored result is materialized only after that verification pass succeeds.
 
 Runtime saves further limit the entire runtime payload to 16 MiB. The codec's
 byte allowance is reduced to `16 MiB - legacy prefix bytes - 4`, so the blob
@@ -220,7 +262,7 @@ the serialized-value quota. Unsupported map-local classes in a different,
 unloaded custom map fail closed; imported original campaign classes use the
 initialized script reflection graph.
 
-Persistent property/state/class-default/birth/native-link storage is measured cumulatively without copying before a
+Persistent property/state/class-default/birth/native-link/AI storage is measured cumulatively without copying before a
 transaction and after allocating state mutations/at commit. This uses conservative
 codec accounting with the 16 MiB runtime cap and aggregate state counts, so
 independent calls cannot grow unbounded sets/locals/default values. Combined
@@ -274,7 +316,7 @@ hierarchies fail closed.
 property overlays, clocks and portable state. It can inspect the saved map's authored schema
 while a different map is loaded; it does not replace the map or apply that
 timeline. Schema caches may be populated during inspection. Born identities are
-validated symbolically without allocating UObjects. Actual version-4 through version-8
+validated symbolically without allocating UObjects. Actual version-4 through version-9
 application requires the matching authored map to be loaded and resolves all
 targets and prepares all allocating containers before clearing live state.
 
@@ -283,7 +325,8 @@ property overlays, clocks and portable state intact. Capture collects and schema
 state before writing, so validation/budget failure must not truncate an existing
 checkpoint. After successful application, saved script state replaces the
 current scoped overlays/clocks/state/class defaults/native lifecycle rather than merging abandoned timelines.
-Version 8 also replaces births. Native collision membership is rebuilt from the
+Versions 8/9 also replace births; version 9 replaces native AI manager graphs.
+All older versions clear existing native AI managers. Native collision membership is rebuilt from the
 restored fields and Level order, as in the pinned saved-game LinkActorsToLevel;
 cached/stale hash buckets are not serialized. This is not a physics save.
 Read-only validation does not currently preflight collision resource work:

@@ -158,7 +158,7 @@ void MalformedStreams() {
     }
     auto broken=bytes;broken.push_back(0);Reject([&] { DecodeScriptSavedState(broken); },"Trailing save bytes accepted");
     broken=bytes;broken[0]^=1;Reject([&] { DecodeScriptSavedState(broken); },"Bad save magic accepted");
-    broken=bytes;broken[6]=6;Reject([&] { DecodeScriptSavedState(broken); },"Unsupported codec version accepted");
+    broken=bytes;broken[6]=7;Reject([&] { DecodeScriptSavedState(broken); },"Unsupported codec version accepted");
     for(const Bytes& value : {Bytes{255},Bytes{3,2},Bytes{4,0,0,0xc0,0x7f},Bytes{4,0,0,0x80,0x7f},
         Bytes{8,0,0,0x80,0x7f,0,0,0,0,0,0,0,0}}) {
         broken=OneValue(value);Reject([&] { DecodeScriptSavedState(broken); },"Bad value tag/bool/non-finite payload accepted");
@@ -825,6 +825,227 @@ void InvalidBirthsAndBudgets() {
         copiedParsed.births[0].frozenDefaults[0].value.integer==1,
         "Mutable born actor overlay aliased immutable birth CDO snapshot");
 }
+Ai::State AiManager(const std::string& owner="Map.LevelInfoZ") {
+    Ai::State state; state.ownerPath=owner; state.levelPath="Map.MyLevel";
+    state.processDepth=7u; state.pendingDeleteCount=2u; state.historyCursor=13u; state.receiverHead=2u;
+    state.eventTypes={{"ZNoise",{2u,1u},{2u,1u}},{"Distress",{3u},{}},{"ASmell",{},{3u}}};
+    for (std::size_t i=0u;i<3u;++i) {
+        Ai::Sender sender; sender.actor="Map.Sender"+std::to_string(i);
+        sender.eventType=i==2u ? 2u : 1u; sender.deleted=i==2u; sender.score=-static_cast<float>(i)-0.125f;
+        for (std::size_t slot=0u;slot<sender.history.size();++slot) {
+            const auto value=static_cast<float>(i*100u+slot);
+            sender.history[slot]={value+0.125f,-value-0.25f,value+0.5f,-value-0.75f};
+        }
+        sender.current={-0.0f,1.25f+static_cast<float>(i),-3.5f,4.75f}; state.senders.push_back(sender);
+    }
+    for (std::size_t i=0u;i<3u;++i) {
+        Ai::Receiver receiver; receiver.actor=i<2u ? "Map.Receiver" : "Map.OtherReceiver";
+        receiver.eventType=i==2u ? 3u : 1u; receiver.deleted=i==0u;
+        receiver.callback=i==0u ? "" : i==1u ? "OnDistress" : "None";
+        receiver.scoreCallback=i==1u ? "ScoreSender" : "";
+        receiver.flags={i==0u,i==1u,i==2u,i!=2u}; receiver.callbackPending=i!=0u;
+        receiver.eventState=static_cast<std::uint8_t>(i+1u); receiver.detected=i==1u;
+        receiver.previousScore=-0.0f; receiver.previousBestActor=i==2u ? "" : "Map.Sender0";
+        receiver.historyCursor=static_cast<std::uint8_t>(i+3u);
+        receiver.params={i==0u ? "" : "Map.Sender1",-1.25f,2.5f,-3.75f,-0.0f};
+        receiver.ringNext=static_cast<Ai::Id>((i+1u)%3u+1u);
+        receiver.ringPrev=static_cast<Ai::Id>((i+2u)%3u+1u); state.receivers.push_back(receiver);
+    }
+    return state;
+}
+void SameAi(const Ai::State& original,const Ai::State& restored) {
+    Require(original==restored,"AI graph identities, arrays, flags, counters or ring changed");
+    const auto channels=[](const Ai::Channels& a,const Ai::Channels& b) {
+        Require(SameFloat(a.visibility,b.visibility) && SameFloat(a.volume,b.volume) &&
+            SameFloat(a.radius,b.radius) && SameFloat(a.smell,b.smell),"AI channel bits/history changed");
+    };
+    for (std::size_t i=0u;i<original.senders.size();++i) {
+        const auto& a=original.senders[i]; const auto& b=restored.senders[i];
+        Require(SameFloat(a.score,b.score),"AI sender score bits changed"); channels(a.current,b.current);
+        for (std::size_t slot=0u;slot<a.history.size();++slot) channels(a.history[slot],b.history[slot]);
+    }
+    for (std::size_t i=0u;i<original.receivers.size();++i) {
+        const auto& a=original.receivers[i]; const auto& b=restored.receivers[i];
+        Require(SameFloat(a.previousScore,b.previousScore) && SameFloat(a.params.score,b.params.score) &&
+            SameFloat(a.params.visibility,b.params.visibility) && SameFloat(a.params.volume,b.params.volume) &&
+            SameFloat(a.params.smell,b.params.smell),"AI detection/parameter float bits changed");
+    }
+}
+Bytes AiPrefix(std::uint32_t managers=1u) {
+    auto bytes=Prefix(0u);bytes[6]=ScriptStateDetail::AiManagerVersion;
+    U32(bytes,0u);U32(bytes,0u);U32(bytes,managers);return bytes;
+}
+void F32(Bytes& bytes,float value) {
+    std::uint32_t bits{};std::memcpy(&bits,&value,sizeof(bits));U32(bytes,bits);
+}
+void AiLiteral(Bytes& bytes,const Ai::State& state) {
+    String(bytes,state.ownerPath);String(bytes,state.levelPath);U32(bytes,state.processDepth);
+    U32(bytes,state.pendingDeleteCount);bytes.push_back(state.historyCursor);U32(bytes,state.receiverHead);
+    U32(bytes,static_cast<std::uint32_t>(state.eventTypes.size()));
+    const auto ids=[&](const auto& values) {
+        U32(bytes,static_cast<std::uint32_t>(values.size()));for (const auto value : values) U32(bytes,value);
+    };
+    for (const auto& event : state.eventTypes) {String(bytes,event.name);ids(event.senderIds);ids(event.receiverIds);}
+    const auto channels=[&](const Ai::Channels& value) {
+        F32(bytes,value.visibility);F32(bytes,value.volume);F32(bytes,value.radius);F32(bytes,value.smell);
+    };
+    U32(bytes,static_cast<std::uint32_t>(state.senders.size()));
+    for (const auto& sender : state.senders) {
+        String(bytes,sender.actor);U32(bytes,sender.eventType);bytes.push_back(sender.deleted);F32(bytes,sender.score);
+        for (const auto& sample : sender.history) channels(sample);
+        channels(sender.current);
+    }
+    U32(bytes,static_cast<std::uint32_t>(state.receivers.size()));
+    for (const auto& receiver : state.receivers) {
+        String(bytes,receiver.actor);U32(bytes,receiver.eventType);bytes.push_back(receiver.deleted);
+        String(bytes,receiver.callback);String(bytes,receiver.scoreCallback);
+        bytes.push_back(receiver.flags.checkVisibility);bytes.push_back(receiver.flags.checkDirection);
+        bytes.push_back(receiver.flags.checkCylinder);bytes.push_back(receiver.flags.checkLineOfSight);
+        bytes.push_back(receiver.callbackPending);bytes.push_back(receiver.eventState);bytes.push_back(receiver.detected);
+        F32(bytes,receiver.previousScore);String(bytes,receiver.previousBestActor);bytes.push_back(receiver.historyCursor);
+        String(bytes,receiver.params.bestActor);F32(bytes,receiver.params.score);F32(bytes,receiver.params.visibility);
+        F32(bytes,receiver.params.volume);F32(bytes,receiver.params.smell);U32(bytes,receiver.ringNext);U32(bytes,receiver.ringPrev);
+    }
+}
+void AiRoundtripAndLegacy() {
+    auto saved=BirthState();saved.aiManagers={AiManager("FixtureMap.LevelInfoZ"),AiManager("FixtureMap.LevelInfoA")};
+    const auto bytes=EncodeScriptSavedState(saved);const auto restored=DecodeScriptSavedState(bytes);
+    Require(bytes[6]==6u && restored.aiManagers.size()==2u && restored.births.size()==saved.births.size(),
+        "AI manager did not select codec6 or changed birth count");
+    SameAi(saved.aiManagers[0],restored.aiManagers[1]);SameAi(saved.aiManagers[1],restored.aiManagers[0]);
+    Require(EncodeScriptSavedState(restored)==bytes,"AI decode/reencode changed bytes");
+    std::reverse(saved.aiManagers.begin(),saved.aiManagers.end());
+    Require(EncodeScriptSavedState(saved)==bytes,"AI manager input order changed canonical bytes");
+    Ai::State empty;empty.ownerPath="Map.LevelInfo0";empty.levelPath="Map.MyLevel";
+    auto minimal=ScriptSavedState{"Map",{}, {}, {},{empty}};
+    auto literal=AiPrefix();AiLiteral(literal,empty);
+    Require(EncodeScriptSavedState(minimal)==literal,"Literal empty-manager wire layout changed");
+    const auto parsed=DecodeScriptSavedState(literal);
+    Require(parsed.objects.empty() && parsed.births.empty() && parsed.classDefaults.empty() &&
+        parsed.aiManagers.size()==1u,"Present empty manager was dropped or invented actor records");
+    SameAi(empty,parsed.aiManagers[0]);
+    auto full=ScriptSavedState{"Map",{}, {}, {},{AiManager()}};
+    literal=AiPrefix();AiLiteral(literal,full.aiManagers[0]);
+    Require(EncodeScriptSavedState(full)==literal,"Literal AI graph wire layout changed");
+    SameAi(full.aiManagers[0],DecodeScriptSavedState(literal).aiManagers[0]);
+    // Codec structure retains processing fields; the runtime independently
+    // refuses to save in-flight processing at its public save boundary.
+    Require(DecodeScriptSavedState(literal).aiManagers[0].processDepth==7u,
+        "Structural AI codec silently reset processing depth");
+    for (std::size_t mode=0u;mode<5u;++mode) {
+        auto old=mode==2u ? DefaultsState() : mode==4u ? BirthState() : State();
+        if (mode==1u) old.objects[0].state=DefaultsState().objects[0].state;
+        if (mode==3u) old.objects[0].lifecycle=Lifecycle();
+        const auto prior=EncodeScriptSavedState(old);Require(prior[6]==mode+1u,"AI legacy fixture selected wrong codec");
+        old.aiManagers={empty};Require(EncodeScriptSavedState(old)[6]==6u,"AI failed to override legacy codec selection");
+        old.aiManagers.clear();Require(EncodeScriptSavedState(old)==prior,"Removing AI graph changed legacy codec1–5 bytes");
+        Require(DecodeScriptSavedState(prior).aiManagers.empty(),"Legacy codec invented an AI manager");
+    }
+    auto copy=restored;copy.aiManagers[0].senders[0].history[0].volume=99.0f;
+    Require(EncodeScriptSavedState(restored)==bytes,"Copied AI graph aliases restored history");
+}
+void InvalidAiGraphs() {
+    for (std::size_t mode=0u;mode<27u;++mode) {
+        auto manager=AiManager();
+        if (mode==0u) manager.ownerPath.clear();
+        if (mode==1u) manager.levelPath="Bad\nLevel";
+        if (mode==2u) manager.eventTypes[1].name="znoise";
+        if (mode==3u) manager.eventTypes[0].name="None";
+        if (mode==4u) manager.eventTypes[0].senderIds[0]=0u;
+        if (mode==5u) manager.eventTypes[0].senderIds[0]=999u;
+        if (mode==6u) manager.eventTypes[0].senderIds[0]=1u;
+        if (mode==7u) manager.eventTypes[0].receiverIds.clear();
+        if (mode==8u) manager.senders[0].eventType=2u;
+        if (mode==9u) manager.senders[1].actor="map.sender0";
+        if (mode==10u) {manager.receivers[0].deleted=false;manager.pendingDeleteCount=1u;}
+        if (mode==11u) manager.pendingDeleteCount=0u;
+        if (mode==12u) manager.historyCursor=16u;
+        if (mode==13u) manager.receivers[0].historyCursor=16u;
+        if (mode==14u) manager.receivers[1].eventState=4u;
+        if (mode==15u) manager.receiverHead=0u;
+        if (mode==16u) manager.receiverHead=999u;
+        if (mode==17u) manager.receivers[0].ringNext=0u;
+        if (mode==18u) manager.receivers[0].ringPrev=999u;
+        if (mode==19u) manager.receivers[0].ringPrev=2u;
+        if (mode==20u) for (std::size_t i=0u;i<manager.receivers.size();++i)
+            manager.receivers[i].ringNext=manager.receivers[i].ringPrev=static_cast<Ai::Id>(i+1u);
+        if (mode==21u) manager.senders[0].history[9].smell=std::numeric_limits<float>::infinity();
+        if (mode==22u) manager.receivers[1].params.score=std::numeric_limits<float>::quiet_NaN();
+        if (mode==23u) manager.receivers[1].callback=std::string("Bad\0Name",8u);
+        if (mode==24u) manager.senders[0].actor.clear();
+        if (mode==25u) manager.eventTypes[0].name=std::string(8193u,'A');
+        if (mode==26u) manager.receivers[1].previousBestActor="Bad\nActor";
+        const auto saved=ScriptSavedState{"Map",{}, {}, {},{manager}};
+        Reject([&] { EncodeScriptSavedState(saved); },"Invalid input AI graph accepted, mode="+std::to_string(mode));
+        auto bytes=AiPrefix();AiLiteral(bytes,manager);
+        Reject([&] { DecodeScriptSavedState(bytes); },"Invalid encoded AI graph accepted, mode="+std::to_string(mode));
+    }
+    const auto valid=ScriptSavedState{"Map",{}, {}, {},{AiManager()}};
+    const auto bytes=EncodeScriptSavedState(valid);
+    for (std::size_t length=0u;length<bytes.size();++length) {
+        const Bytes truncated(bytes.begin(),bytes.begin()+length);
+        Reject([&] { DecodeScriptSavedState(truncated); },"Truncated codec6 AI graph accepted");
+    }
+    for (const auto& owners : {std::array<std::string,2>{"Map.LevelA","Map.LevelA"},
+        std::array<std::string,2>{"Map.LevelA","map.levela"},std::array<std::string,2>{"Map.LevelZ","Map.LevelA"}}) {
+        auto literal=AiPrefix(2u);AiLiteral(literal,AiManager(owners[0]));AiLiteral(literal,AiManager(owners[1]));
+        Reject([&] { DecodeScriptSavedState(literal); },"Duplicate/colliding/unsorted AI manager owners accepted");
+    }
+    for (const std::uint32_t count : {0u,0xffffffffu}) {
+        auto literal=AiPrefix(count);Reject([&] { DecodeScriptSavedState(literal); },"Empty/unbounded AI manager count accepted");
+    }
+    auto literal=AiPrefix();Ai::State empty;empty.ownerPath="Map.LevelInfo0";empty.levelPath="Map.MyLevel";AiLiteral(literal,empty);
+    for (std::size_t count=0u;count<3u;++count) {
+        auto broken=literal;
+        for (std::size_t byte=0u;byte<4u;++byte) broken[broken.size()-12u+count*4u+byte]=0xffu;
+        Reject([&] { DecodeScriptSavedState(broken); },"Unbounded AI event/sender/receiver count accepted");
+    }
+    literal=bytes;literal.push_back(0u);Reject([&] { DecodeScriptSavedState(literal); },"Trailing AI graph bytes accepted");
+    for (const std::uint8_t version : {0u,1u,2u,3u,4u,5u,7u,255u}) {
+        literal=bytes;literal[6]=version;Reject([&] { DecodeScriptSavedState(literal); },"AI graph accepted with wrong codec version");
+    }
+    for (std::size_t mode=0u;mode<2u;++mode) {
+        auto duplicate=valid;duplicate.aiManagers.push_back(duplicate.aiManagers[0]);
+        if (mode==1u) duplicate.aiManagers[1].ownerPath="map.levelinfoz";
+        Reject([&] { EncodeScriptSavedState(duplicate); },"Duplicate/colliding input manager accepted");
+    }
+}
+void AiBudgets() {
+    auto saved=ScriptSavedState{"Map",{}, {}, {},{AiManager("Map.LevelInfoA"),AiManager("Map.LevelInfoZ")}};
+    const auto bytes=EncodeScriptSavedState(saved);
+    ScriptStateLimits measuredLimits;ScriptStateDetail::Writer measured(measuredLimits,nullptr);measured.State(saved);
+    const auto measuredBudget=measured.measuredBudget();
+    Require(measuredBudget.aiManagers==2u && measuredBudget.aiNodes==12u && measuredBudget.aiEventTypes==6u &&
+        measuredBudget.aiLinks>12u,"AI measurement omitted aggregate manager/node/type/link counts");
+    for (std::size_t mode=0u;mode<7u;++mode) {
+        ScriptStateLimits limits;
+        if (mode==0u) limits.maxAiManagers=1u;
+        if (mode==1u) limits.maxAiEventTypes=5u;
+        if (mode==2u) limits.maxAiNodes=11u;
+        if (mode==3u) limits.maxAiLinks=measuredBudget.aiLinks-1u;
+        if (mode==4u) limits.maxBytes=measuredBudget.retained-1u;
+        if (mode==5u) limits.maxStringBytes=4u;
+        if (mode==6u) limits.maxBytes=bytes.size()-1u;
+        Reject([&] { EncodeScriptSavedState(saved,limits); },"Aggregate AI encode budget was only per manager");
+        Reject([&] { DecodeScriptSavedState(bytes,limits); },"Aggregate AI decode budget was only per manager");
+    }
+    ScriptStateLimits exact;exact.maxAiManagers=2u;exact.maxAiEventTypes=6u;exact.maxAiNodes=12u;
+    exact.maxAiLinks=measuredBudget.aiLinks;exact.totalValueNodes=0u;exact.maxProperties=0u;
+    Require(EncodeScriptSavedState(saved,exact)==bytes && EncodeScriptSavedState(DecodeScriptSavedState(bytes,exact),exact)==bytes,
+        "Exact cumulative AI budgets rejected native-only graphs or invented script value nodes");
+    ScriptStateDetail::Writer live(exact,nullptr);live.MeasureAiManager(saved.aiManagers[0]);live.MeasureAiManager(saved.aiManagers[1]);
+    Require(live.measuredBudget().aiNodes==12u && live.measuredBudget().aiLinks==measuredBudget.aiLinks,
+        "Live non-copy AI measurement differs from codec graph budget");
+    Reject([&] { live.MeasureAiManager(saved.aiManagers[0]); },"Live AI measurement did not accumulate manager budget");
+    Bytes output;ScriptStateDetail::Writer emitting(exact,&output);
+    Reject([&] { emitting.MeasureAiManager(saved.aiManagers[0]); },"Emitting writer accepted AI-only measurement");
+    Require(output.empty(),"Rejected AI-only measurement changed emitted bytes");
+    auto mixed=BirthState();mixed.aiManagers=saved.aiManagers;const auto mixedBytes=EncodeScriptSavedState(mixed);
+    ScriptStateLimits joint;ScriptStateDetail::Writer jointMeasure(joint,nullptr);jointMeasure.State(mixed);
+    joint.maxBytes=jointMeasure.measuredBudget().retained-1u;
+    Reject([&] { EncodeScriptSavedState(mixed,joint); },"Mixed actor/birth/AI retained encode budget was not cumulative");
+    Reject([&] { DecodeScriptSavedState(mixedBytes,joint); },"Mixed actor/birth/AI retained decode budget was not cumulative");
+}
 }
 
 int main() {
@@ -833,7 +1054,8 @@ int main() {
         DefaultsRoundtripAndLegacy();MalformedDefaults();InvalidDefaultsAndBudgets();
         LifecycleRoundtripAndLegacy();MalformedLifecycle();InvalidLifecycleAndBudgets();
         BirthRoundtripAndLegacy();MalformedBirths();InvalidBirthsAndBudgets();
+        AiRoundtripAndLegacy();InvalidAiGraphs();AiBudgets();
         std::cout<<"PASS script-state codec controls="<<checks<<" rejection controls="<<rejections
-            <<"; codecs1–4 legacy bytes and codec5 frozen actor births, structural codec only\n";return 0;
+            <<"; codecs1–5 legacy bytes, codec6 ordered AI graphs, structural codec only\n";return 0;
     }catch(const std::exception& error) {std::cerr<<"FAIL script-state codec: "<<error.what()<<" after "<<checks<<" controls\n";return 1;}
 }

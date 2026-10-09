@@ -3,6 +3,7 @@
 #include "quest_actor_animation_clock.h"
 #include "quest_portable_vm.h"
 #include "quest_state_frame.h"
+#include "quest_ai_event_state.h"
 
 #include <algorithm>
 #include <array>
@@ -56,6 +57,9 @@ struct ScriptSavedState {
     std::vector<ScriptSavedObject> objects;
     std::vector<ScriptSavedClassDefaults> classDefaults{};
     std::vector<ScriptSavedBirth> births{};
+    // Native level-owned graphs are neither reflected actor properties nor
+    // spawned UObjects. An empty graph still records manager presence.
+    std::vector<Ai::State> aiManagers{};
 };
 struct ScriptStateLimits {
     std::size_t maxBytes{32u << 20u};
@@ -66,6 +70,8 @@ struct ScriptStateLimits {
     std::size_t maxStateLocals{65'536u}, maxLocalElements{262'144u};
     std::size_t maxDisabledStates{65'536u}, maxDisabledNames{262'144u};
     std::size_t maxActorLinks{65'536u};
+    std::size_t maxAiManagers{4096u}, maxAiEventTypes{Ai::MaxEventTypes};
+    std::size_t maxAiNodes{Ai::MaxNodes}, maxAiLinks{65'536u};
 };
 
 namespace ScriptStateDetail {
@@ -77,6 +83,7 @@ inline constexpr std::uint8_t StateFrameVersion=2u;
 inline constexpr std::uint8_t ClassDefaultsVersion=3u;
 inline constexpr std::uint8_t ActorLifecycleVersion=4u;
 inline constexpr std::uint8_t BirthManifestVersion=5u;
+inline constexpr std::uint8_t AiManagerVersion=6u;
 inline constexpr std::uint32_t MaximumWorldActorSlots=1'000'000u;
 // Stable serialized tags deliberately do not depend on Vm::Kind ordinals.
 enum class Tag : std::uint8_t {
@@ -178,6 +185,7 @@ inline void Clock(const ActorAnimationClock& clock, const ScriptStateLimits& lim
 struct Budget {
     const ScriptStateLimits& limits;
     std::size_t retained{}, properties{}, nodes{}, stateLocals{}, localElements{}, disabledStates{}, disabledNames{}, actorLinks{};
+    std::size_t aiManagers{}, aiEventTypes{}, aiNodes{}, aiLinks{};
     void Retain(std::size_t bytes) {
         if (bytes>limits.maxBytes || retained>limits.maxBytes-bytes)
             Fail("aggregate retained-state budget exceeded");
@@ -202,6 +210,10 @@ struct Budget {
     void DisabledStates(std::size_t count) { Aggregate(count,limits.maxDisabledStates,disabledStates,"aggregate disabled-state count exceeds the budget"); }
     void DisabledNames(std::size_t count) { Aggregate(count,limits.maxDisabledNames,disabledNames,"aggregate disabled-name count exceeds the budget"); }
     void ActorLinks(std::size_t count) { Aggregate(count,limits.maxActorLinks,actorLinks,"aggregate native actor-link count exceeds the budget"); }
+    void AiManagers(std::size_t count) { Aggregate(count,limits.maxAiManagers,aiManagers,"aggregate AI manager count exceeds the budget"); }
+    void AiEventTypes(std::size_t count) { Aggregate(count,limits.maxAiEventTypes,aiEventTypes,"aggregate AI event-type count exceeds the budget"); }
+    void AiNodes(std::size_t count) { Aggregate(count,limits.maxAiNodes,aiNodes,"aggregate AI node count exceeds the budget"); }
+    void AiLinks(std::size_t count) { Aggregate(count,limits.maxAiLinks,aiLinks,"aggregate AI link count exceeds the budget"); }
 private:
     static void Aggregate(std::size_t count,std::size_t cap,std::size_t& current,const char* message) {
         if (count>cap || current>cap-count) Fail(message);
@@ -250,20 +262,26 @@ public:
         budget_.Retain(sizeof(ScriptSavedActorLifecycle));
         ActorLifecycle(lifecycle);
     }
+    void MeasureAiManager(const Ai::State& state) {
+        if (output_) Fail("AI-manager measurement requires a non-emitting writer");
+        budget_.AiManagers(1u);
+        AiManager(state);
+    }
     void State(const ScriptSavedState& state) {
         budget_.Retain(sizeof(ScriptSavedState));
         const bool withFrames=std::any_of(state.objects.begin(),state.objects.end(),[](const auto& object) { return object.state.has_value(); });
         const bool withDefaults=!state.classDefaults.empty();
         const bool withLifecycle=std::any_of(state.objects.begin(),state.objects.end(),[](const auto& object) { return object.lifecycle.has_value(); });
         const bool withBirths=!state.births.empty();
-        const auto version=withBirths ? BirthManifestVersion : withLifecycle ? ActorLifecycleVersion : withDefaults ? ClassDefaultsVersion : withFrames ? StateFrameVersion : Magic[6u];
+        const bool withAi=!state.aiManagers.empty();
+        const auto version=withAi ? AiManagerVersion : withBirths ? BirthManifestVersion : withLifecycle ? ActorLifecycleVersion : withDefaults ? ClassDefaultsVersion : withFrames ? StateFrameVersion : Magic[6u];
         for (std::size_t i=0; i<Magic.size(); ++i) Byte(i==6u ? version : Magic[i]);
         String(state.mapName,true,false,128u);
         if (state.objects.size()>limits_.maxObjects || state.classDefaults.size()>limits_.maxObjects-state.objects.size() ||
             state.births.size()>limits_.maxObjects)
             Fail("aggregate object/class-default count exceeds the budget");
         budget_.Array(state.objects.size(),sizeof(ScriptSavedObject)+sizeof(void*));
-        if (withBirths) budget_.Array(state.objects.size(),sizeof(SavedObjectIdentity));
+        if (withBirths || withAi) budget_.Array(state.objects.size(),sizeof(SavedObjectIdentity));
         Count(state.objects.size());
         for (const auto& object : state.objects) {
             Text(object.path,limits_,true); Text(object.classPath,limits_,true);
@@ -276,19 +294,19 @@ public:
             Properties(object.properties,false);
             Byte(object.clock ? 1u : 0u);
             if (object.clock) Animation(*object.clock);
-            if (withFrames || withDefaults || withLifecycle || withBirths) {
+            if (withFrames || withDefaults || withLifecycle || withBirths || withAi) {
                 Byte(object.state ? 1u : 0u);
                 if (object.state) ObjectState(*object.state);
             }
-            if (withLifecycle || withBirths) {
+            if (withLifecycle || withBirths || withAi) {
                 Byte(object.lifecycle ? 1u : 0u);
                 if (object.lifecycle) ActorLifecycle(*object.lifecycle);
             }
         }
         budget_.Array(state.classDefaults.size(),sizeof(ScriptSavedClassDefaults)+sizeof(void*));
-        if (withBirths) budget_.Array(state.classDefaults.size(),sizeof(std::string_view));
+        if (withBirths || withAi) budget_.Array(state.classDefaults.size(),sizeof(std::string_view));
         const auto classes=Sorted(state.classDefaults,[](const auto& defaults) -> const std::string& { return defaults.classPath; });
-        if (withDefaults || withLifecycle || withBirths) {
+        if (withDefaults || withLifecycle || withBirths || withAi) {
             Count(state.classDefaults.size());
             for (const auto& defaults : state.classDefaults) Text(defaults.classPath,limits_,true);
             for (std::size_t i=0; i<classes.size(); ++i) {
@@ -299,7 +317,7 @@ public:
                 String(defaults.classPath,true); Properties(defaults.properties,true);
             }
         }
-        if (withBirths) {
+        if (withBirths || withAi) {
             budget_.Array(state.births.size(),sizeof(ScriptSavedBirth)+sizeof(void*));
             budget_.Array(state.births.size(),sizeof(std::uint32_t));
             std::vector<std::uint32_t> indices; indices.reserve(state.births.size());
@@ -323,12 +341,24 @@ public:
                 String(birth.path,true); String(birth.classPath,true); U32(birth.worldActorIndex); Properties(birth.frozenDefaults,true);
             }
         }
+        if (withAi) {
+            budget_.AiManagers(state.aiManagers.size());
+            budget_.Array(state.aiManagers.size(),sizeof(void*));
+            Count(state.aiManagers.size());
+            const auto managers=Sorted(state.aiManagers,[](const auto& manager) -> const std::string& { return manager.ownerPath; });
+            for (std::size_t i=0u; i<managers.size(); ++i) {
+                if (i!=0u && Compare(managers[i-1u]->ownerPath,managers[i]->ownerPath)==0)
+                    Fail("duplicate or case-colliding AI manager owner");
+                AiManager(*managers[i]);
+            }
+        }
     }
 private:
     const ScriptStateLimits& limits_;
     Budget budget_;
     std::vector<std::uint8_t>* output_;
     std::size_t size_{};
+    std::size_t aiWork_{};
     void Byte(std::uint8_t value) {
         if (size_>=limits_.maxBytes) Fail("encoded-state byte budget exceeded");
         ++size_; if (output_) output_->push_back(value);
@@ -343,6 +373,54 @@ private:
     void String(const std::string& value,bool identity,bool empty=false,std::size_t cap=0) {
         Text(value,limits_,identity,empty,cap); budget_.Retain(value.size()+1u);
         Count(value.size()); for (const unsigned char c : value) Byte(c);
+    }
+    void AiChannels(const Ai::Channels& channels) {
+        F32(channels.visibility); F32(channels.volume); F32(channels.radius); F32(channels.smell);
+    }
+    void AiManager(const Ai::State& state) {
+        budget_.AiEventTypes(state.eventTypes.size());
+        budget_.AiNodes(state.senders.size()); budget_.AiNodes(state.receivers.size());
+        budget_.AiLinks(2u+(state.receiverHead ? 1u : 0u));
+        for (const auto& event : state.eventTypes) {
+            budget_.AiLinks(event.senderIds.size()); budget_.AiLinks(event.receiverIds.size());
+        }
+        for (const auto& sender : state.senders) {
+            static_cast<void>(sender); budget_.AiLinks(2u);
+        }
+        for (const auto& receiver : state.receivers)
+            budget_.AiLinks(4u+(!receiver.previousBestActor.empty() ? 1u : 0u)+(!receiver.params.bestActor.empty() ? 1u : 0u));
+        Ai::Validate(state,aiWork_);
+        budget_.Retain(sizeof(Ai::State));
+        String(state.ownerPath,true); String(state.levelPath,true);
+        U32(state.processDepth); U32(state.pendingDeleteCount); Byte(state.historyCursor); U32(state.receiverHead);
+        budget_.Array(state.eventTypes.size(),sizeof(Ai::EventType));
+        Count(state.eventTypes.size());
+        const auto ids=[&](const std::vector<Ai::Id>& values) {
+            budget_.Array(values.size(),sizeof(Ai::Id));
+            Count(values.size()); for (const auto id : values) U32(id);
+        };
+        for (const auto& event : state.eventTypes) {
+            String(event.name,true); ids(event.senderIds); ids(event.receiverIds);
+        }
+        budget_.Array(state.senders.size(),sizeof(Ai::Sender));
+        Count(state.senders.size());
+        for (const auto& sender : state.senders) {
+            String(sender.actor,true); U32(sender.eventType); Byte(sender.deleted ? 1u : 0u); F32(sender.score);
+            for (const auto& channels : sender.history) AiChannels(channels);
+            AiChannels(sender.current);
+        }
+        budget_.Array(state.receivers.size(),sizeof(Ai::Receiver));
+        Count(state.receivers.size());
+        for (const auto& receiver : state.receivers) {
+            String(receiver.actor,true); U32(receiver.eventType); Byte(receiver.deleted ? 1u : 0u);
+            String(receiver.callback,true,true); String(receiver.scoreCallback,true,true);
+            Byte(receiver.flags.checkVisibility ? 1u : 0u); Byte(receiver.flags.checkDirection ? 1u : 0u);
+            Byte(receiver.flags.checkCylinder ? 1u : 0u); Byte(receiver.flags.checkLineOfSight ? 1u : 0u);
+            Byte(receiver.callbackPending ? 1u : 0u); Byte(receiver.eventState); Byte(receiver.detected ? 1u : 0u);
+            F32(receiver.previousScore); String(receiver.previousBestActor,true,true); Byte(receiver.historyCursor);
+            String(receiver.params.bestActor,true,true); F32(receiver.params.score); F32(receiver.params.visibility);
+            F32(receiver.params.volume); F32(receiver.params.smell); U32(receiver.ringNext); U32(receiver.ringPrev);
+        }
     }
     void ActorLifecycle(const ScriptSavedActorLifecycle& lifecycle) {
         Byte(lifecycle.worldRemoved ? 1u : 0u);
@@ -504,7 +582,7 @@ public:
             if (i==6u) {
                 version=byte;
                 if (version!=Magic[i] && version!=StateFrameVersion && version!=ClassDefaultsVersion &&
-                    version!=ActorLifecycleVersion && version!=BirthManifestVersion)
+                    version!=ActorLifecycleVersion && version!=BirthManifestVersion && version!=AiManagerVersion)
                     Fail("bad magic or unsupported codec version");
             } else if (byte!=Magic[i]) Fail("bad magic or unsupported codec version");
         }
@@ -515,7 +593,7 @@ public:
         if constexpr(Materialize) state.objects.reserve(count);
         std::vector<SavedObjectIdentity> objectIdentities;
         std::vector<std::string_view> classIdentities;
-        if (version==BirthManifestVersion) {
+        if (version>=BirthManifestVersion) {
             budget_.Array(count,sizeof(SavedObjectIdentity)); objectIdentities.reserve(count);
         }
         std::string_view previous;
@@ -525,7 +603,7 @@ public:
             const auto path=String(true),cls=String(true);
             if (i!=0 && Compare(previous,path)>=0) Fail("object paths are not canonical and unique");
             previous=path;
-            if (version==BirthManifestVersion) objectIdentities.push_back({path,cls});
+            if (version>=BirthManifestVersion) objectIdentities.push_back({path,cls});
             if constexpr(Materialize) { object.path=path; object.classPath=cls; }
             Properties(object.properties,false);
             if (Boolean()) { auto clock=Animation(); if constexpr(Materialize) object.clock=std::move(clock); }
@@ -547,7 +625,7 @@ public:
                 Fail("class-default count is empty or exceeds aggregate budget/payload");
             budget_.Array(classes,sizeof(ScriptSavedClassDefaults)+sizeof(void*));
             if constexpr(Materialize) state.classDefaults.reserve(classes);
-            if (version==BirthManifestVersion) {
+            if (version>=BirthManifestVersion) {
                 budget_.Array(classes,sizeof(std::string_view)); classIdentities.reserve(classes);
             }
             previous={};
@@ -555,15 +633,15 @@ public:
                 ScriptSavedClassDefaults defaults; const auto cls=String(true);
                 if (i!=0 && Compare(previous,cls)>=0) Fail("class-default identities are not canonical and unique");
                 previous=cls;
-                if (version==BirthManifestVersion) classIdentities.push_back(cls);
+                if (version>=BirthManifestVersion) classIdentities.push_back(cls);
                 if constexpr(Materialize) defaults.classPath=cls;
                 Properties(defaults.properties,true);
                 if constexpr(Materialize) state.classDefaults.push_back(std::move(defaults));
             }
         }
-        if (version==BirthManifestVersion) {
+        if (version>=BirthManifestVersion) {
             const auto births=U32();
-            if (births==0u || births>limits_.maxObjects || births>Remaining()/18u)
+            if ((version==BirthManifestVersion && births==0u) || births>limits_.maxObjects || births>Remaining()/18u)
                 Fail("birth count is empty or exceeds budget/payload");
             budget_.Array(births,sizeof(ScriptSavedBirth)+sizeof(void*));
             budget_.Array(births,sizeof(std::uint32_t));
@@ -586,6 +664,26 @@ public:
             }
             BirthIndices(indices);
         }
+        if (version>=AiManagerVersion) {
+            const auto managers=U32(); budget_.AiManagers(managers);
+            if (managers==0u || managers>Remaining()/35u)
+                Fail("AI manager count is empty or exceeds encoded payload");
+            budget_.Array(managers,sizeof(void*));
+            if constexpr(Materialize) state.aiManagers.reserve(managers);
+            previous={};
+            for (std::uint32_t i=0u; i<managers; ++i) {
+                // One bounded native graph is materialized in the verifier so
+                // the shared ring/link validator runs in BOTH passes. It is
+                // discarded immediately, without copying actor/value trees.
+                auto manager=AiManager();
+                if (i!=0u && Compare(previous,manager.ownerPath)>=0)
+                    Fail("AI manager owners are not canonical and unique");
+                // Keep the previous identity as a view of the encoded bytes,
+                // not a reference to this temporary manager's owned string.
+                previous=lastAiOwner_;
+                if constexpr(Materialize) state.aiManagers.push_back(std::move(manager));
+            }
+        }
         if (Remaining()!=0u) Fail("trailing encoded-state bytes");
         return state;
     }
@@ -594,6 +692,8 @@ private:
     const ScriptStateLimits& limits_;
     Budget budget_;
     std::size_t cursor_{};
+    std::size_t aiWork_{};
+    std::string_view lastAiOwner_;
     std::size_t Remaining() const { return bytes_.size()-cursor_; }
     std::uint8_t Byte() { if (Remaining()==0u) Fail("truncated encoded-state payload"); return bytes_[cursor_++]; }
     std::uint32_t U32() { std::uint32_t value{}; for (unsigned i=0; i<4u; ++i) value|=std::uint32_t(Byte())<<(8u*i); return value; }
@@ -606,6 +706,67 @@ private:
         const std::string_view value(reinterpret_cast<const char*>(bytes_.data()+cursor_),size);
         Text(value,limits_,identity,empty,cap); budget_.Retain(static_cast<std::size_t>(size)+1u);
         cursor_+=size; return value;
+    }
+    Ai::Channels AiChannels() {
+        return {F32(),F32(),F32(),F32()};
+    }
+    Ai::State AiManager() {
+        const auto retainedStart=budget_.retained;
+        const auto bounded=[&]() {
+            if (budget_.retained-retainedStart>Ai::MaxStateBytes)
+                Fail("AI manager retained-state budget exceeded");
+        };
+        const auto text=[&](const bool empty=false) {
+            const auto value=String(true,empty,Ai::MaxStringBytes); bounded(); return value;
+        };
+        const auto array=[&](const std::size_t count,const std::size_t size) {
+            budget_.Array(count,size); bounded();
+        };
+        Ai::State state; budget_.Retain(sizeof(Ai::State));
+        const auto owner=text(),level=text();
+        lastAiOwner_=owner; state.ownerPath=owner; state.levelPath=level;
+        state.processDepth=U32(); state.pendingDeleteCount=U32();
+        state.historyCursor=Byte(); state.receiverHead=U32();
+        budget_.AiLinks(2u+(state.receiverHead ? 1u : 0u));
+        const auto events=U32(); budget_.AiEventTypes(events);
+        if (events>Ai::MaxEventTypes || events>Remaining()/13u) Fail("AI event-type count exceeds native cap or encoded payload");
+        array(events,sizeof(Ai::EventType)); state.eventTypes.reserve(events);
+        const auto ids=[&]() {
+            const auto count=U32(); budget_.AiLinks(count);
+            if (count>Ai::MaxNodes || count>Remaining()/4u) Fail("AI node-link count exceeds native cap or encoded payload");
+            array(count,sizeof(Ai::Id)); std::vector<Ai::Id> values; values.reserve(count);
+            for (std::uint32_t i=0u; i<count; ++i) values.push_back(U32());
+            return values;
+        };
+        for (std::uint32_t i=0u; i<events; ++i) {
+            Ai::EventType event; event.name=text();
+            event.senderIds=ids(); event.receiverIds=ids(); state.eventTypes.push_back(std::move(event));
+        }
+        const auto senders=U32(); budget_.AiNodes(senders);
+        if (senders>Ai::MaxNodes || senders>Remaining()/286u) Fail("AI sender count exceeds native cap or encoded payload");
+        array(senders,sizeof(Ai::Sender)); state.senders.reserve(senders);
+        for (std::uint32_t i=0u; i<senders; ++i) {
+            budget_.AiLinks(2u); Ai::Sender sender;
+            sender.actor=text(); sender.eventType=U32(); sender.deleted=Boolean(); sender.score=F32();
+            for (auto& channels : sender.history) channels=AiChannels();
+            sender.current=AiChannels(); state.senders.push_back(std::move(sender));
+        }
+        const auto receivers=U32(); budget_.AiNodes(receivers);
+        if (receivers>Ai::MaxNodes-senders || receivers>Remaining()/62u) Fail("AI receiver count exceeds native cap or encoded payload");
+        array(receivers,sizeof(Ai::Receiver)); state.receivers.reserve(receivers);
+        for (std::uint32_t i=0u; i<receivers; ++i) {
+            Ai::Receiver receiver; receiver.actor=text(); receiver.eventType=U32(); receiver.deleted=Boolean();
+            receiver.callback=text(true); receiver.scoreCallback=text(true);
+            receiver.flags={Boolean(),Boolean(),Boolean(),Boolean()};
+            receiver.callbackPending=Boolean(); receiver.eventState=Byte(); receiver.detected=Boolean();
+            receiver.previousScore=F32(); receiver.previousBestActor=text(true); receiver.historyCursor=Byte();
+            receiver.params.bestActor=text(true); receiver.params.score=F32(); receiver.params.visibility=F32();
+            receiver.params.volume=F32(); receiver.params.smell=F32(); receiver.ringNext=U32(); receiver.ringPrev=U32();
+            budget_.AiLinks(4u+(!receiver.previousBestActor.empty() ? 1u : 0u)+(!receiver.params.bestActor.empty() ? 1u : 0u));
+            state.receivers.push_back(std::move(receiver));
+        }
+        Ai::Validate(state,aiWork_);
+        return state;
     }
     ScriptSavedActorLifecycle ActorLifecycle() {
         ScriptSavedActorLifecycle lifecycle;
@@ -771,10 +932,10 @@ inline std::vector<std::uint8_t> EncodeScriptSavedState(
 }
 inline ScriptSavedState DecodeScriptSavedState(
     const std::vector<std::uint8_t>& bytes,const ScriptStateLimits& limits={}) {
-    // First pass is non-materializing: strings are views into the input, and no
-    // decoded object/property/field trees are allocated until aggregate budgets
-    // and canonical uniqueness are checked. CDO/birth alias validation uses
-    // budgeted input views and slot-index arrays, never retained value copies.
+    // First pass does not materialize actor/property/field trees. CDO/birth
+    // aliases use budgeted input views/slot arrays. Native AI consistency needs
+    // the shared graph validator, so one fully budgeted manager at a time is
+    // materialized and discarded during verification before full publication.
     ScriptStateDetail::Reader<false> verified(bytes,limits); verified.State();
     ScriptStateDetail::Reader<true> materialized(bytes,limits); return materialized.State();
 }

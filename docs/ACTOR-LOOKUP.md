@@ -91,12 +91,13 @@ AllActors and nearest-distance selection, and InitializeHomeBase scale HomeRot.
 The random-selection branch still requires RNG support and is not covered by
 nonrandom lookup tests.
 
-Actual StartUp now reaches native711 AIClearEventCallback in
-ScriptedPawn.UpdateReactionCallbacks at PC41/opcode0x62. It fails explicitly
-with complete rollback; the pinned AI methods are stubs, not a justification
-for successful no-ops. The original native-manager characterization in
-[AI-NATIVE-AUDIT.md](AI-NATIVE-AUDIT.md) describes the required deferred
-registrations, histories, dispatch and unresolved scheduling/perception work.
+The lookup increment originally stopped at native711 AIClearEventCallback in
+ScriptedPawn.UpdateReactionCallbacks at PC41/opcode0x62. The subsequent
+[AI event-state foundation](AI-EVENT-STATE.md) implements real registration
+and emission mutations. With an explicitly initialized manager, original
+StartUp now advances to unsupported native1010 in Engine.Pawn.PlayTurnHead
+PC211/opcode0x63, with complete rollback. Automatic startup, head animation,
+AI processing and perception remain unfinished; no stub was treated as success.
 
 The generated package integration exercises original-shaped iterator bytecode,
 Level holes/order, all alias types, nested loops/callbacks, live births/deletions/

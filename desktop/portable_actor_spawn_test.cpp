@@ -264,7 +264,7 @@ std::uint32_t Read32(const Bytes& bytes, std::size_t& cursor) {
     return result;
 }
 std::size_t PrefixSize(const Bytes& bytes) {
-    std::size_t cursor{}; Require(Read32(bytes, cursor) == 0x53515844u, "Independent spawn checkpoint magic mismatch"); const auto version = Read32(bytes, cursor); Require(version >= 1u && version <= 8u, "Independent spawn checkpoint version mismatch");
+    std::size_t cursor{}; Require(Read32(bytes, cursor) == 0x53515844u, "Independent spawn checkpoint magic mismatch"); const auto version = Read32(bytes, cursor); Require(version >= 1u && version <= 9u, "Independent spawn checkpoint version mismatch");
     const auto string = [&]() { const auto size = Read32(bytes, cursor); Require(cursor <= bytes.size() && size <= bytes.size() - cursor, "Independent spawn checkpoint string overflow"); cursor += size; };
     const auto strings = [&]() { const auto count = Read32(bytes, cursor); for (std::uint32_t i = 0u; i < count; ++i) string(); };
     strings(); strings(); strings();
@@ -318,9 +318,9 @@ void ChangeBirthClass(QuestVr::ScriptSavedState& state, const std::string& path,
     Birth(state, path).classPath = cls;
     for (auto& object : state.objects) if (object.path == path) object.classPath = cls;
 }
-void RefusedSave(const Fixture& fixture, const Bytes& prefix, const QuestVr::ScriptSavedState& script, const std::string& label) {
+void RefusedSave(const Fixture& fixture, const Bytes& prefix, const QuestVr::ScriptSavedState& script, const std::string& label, std::uint32_t version = 8u) {
     const auto current = fixture.Snapshot("BeforeBadSave"); const auto paths = ActorPaths(true); const auto revision = GetPortableRuntimeWorldRevision();
-    const auto path = fixture.directory / (label + ".sav"); WriteBytes(path, Envelope(prefix, script));
+    const auto path = fixture.directory / (label + ".sav"); WriteBytes(path, Envelope(prefix, script, version));
     Require(!ValidatePortableRuntimeState(path.string(), "SpawnFixture") && !LoadPortableRuntimeState(path.string()), "Invalid birth manifest validated/loaded: " + label);
     Require(fixture.Snapshot("AfterBadSave") == current && ActorPaths(true) == paths && GetPortableRuntimeWorldRevision() == revision, "Invalid birth manifest partially published: " + label); ++refusals;
 }
@@ -403,6 +403,25 @@ Tables Build(Fixture& fixture) {
     const auto deletedInput = engine.Property("Deleted", "BoolProperty", actorFlags, engineCore, 1u, 0, 0x80u);
     engine.FunctionCode(actorFlags, Join({Assign(Ref(0x01u, hiddenFlag), Ref(0x00u, hiddenInput)),
         Assign(Ref(0x01u, deleteFlag), Ref(0x00u, deletedInput)), Return()}));
+    engine.Function("InitEventManager", levelInfo, engineCore, {}, 650u);
+    engine.Function("InitAI", levelInfo, engineCore, Join({Native(650u), Return()}));
+    engine.Function("InitAIThenFail", levelInfo, engineCore, Join({Native(650u), Native(999u), Return()}));
+    for (const auto& [name, index] : std::vector<std::pair<std::string, std::uint16_t>>{
+        {"AISetEventCallback", 710u}, {"AIClearEventCallback", 711u}, {"AISendEvent", 713u},
+        {"AIStartEvent", 714u}, {"AIEndEvent", 715u}, {"AIClearEvent", 716u}}) {
+        const auto function = engine.Function(name, actor, engineCore, {}, index);
+        engine.Property("EventName", "NameProperty", function, engineCore, 1u, 0, 0x80u);
+        if (index == 710u) {
+            engine.Property("Callback", "NameProperty", function, engineCore, 1u, 0, 0x80u);
+            engine.Property("ScoreCallback", "NameProperty", function, engineCore, 1u, 0, 0x90u);
+            for (const auto& flag : {"Visibility", "Direction", "Cylinder", "LineOfSight"})
+                engine.Property(flag, "BoolProperty", function, engineCore, 1u, 0, 0x90u);
+        } else if (index == 713u || index == 714u || index == 715u) {
+            engine.Property("Channel", "ByteProperty", function, engineCore, 1u, 0, 0x80u);
+            if (index != 715u) for (const auto& field : {"Value", "Radius"})
+                engine.Property(field, "FloatProperty", function, engineCore, 1u, 0, 0x90u);
+        }
+    }
     Bytes actorDefaults; engine.FloatTag(actorDefaults, "CollisionRadius", 12.0f); engine.FloatTag(actorDefaults, "CollisionHeight", 20.0f); engine.ClassBody(actor, actorDefaults);
     for (auto cls : {zone, levelInfo, level, model, brush, pawn, player, viewport, playerPawn, notify, decoration}) engine.ClassBody(cls);
     const auto engineTable = fixture.Write(engine);
@@ -418,6 +437,7 @@ Tables Build(Fixture& fixture) {
     const auto importedPlayerPawn = classes.Import("PlayerPawn", classesEngine);
     const auto importedAllActors = classes.Import("AllActors", importedActor, "Function");
     const auto importedTag = classes.Import("Tag", importedActor, "NameProperty");
+    const auto importedXLevel = classes.Import("XLevel", importedActor, "ObjectProperty");
     const auto fauxPlayer = classes.Export("FauxPlayer", 0, importedPawn);
     const auto pawnAlias = classes.Export("Pawn", 0, classesObject); // Non-Actor UClass, same NameString leaf as Engine.Pawn.
     const auto loopActor = classes.Export("LoopActor", 0, probe), loopBirth = classes.Export("LoopBirth", 0, loopActor);
@@ -440,6 +460,42 @@ Tables Build(Fixture& fixture) {
     const auto importedLocation = classes.Import("Location", importedActor, "StructProperty"), importedRotation = classes.Import("Rotation", importedActor, "StructProperty");
     const auto begun = classes.Import("bBegunPlay", importedLevelInfo, "BoolProperty");
     const auto prop = [&](const std::string& name) { return Ref(0x01u, properties.at(name)); };
+    for (const auto& [name, index, defaults] : std::vector<std::tuple<std::string, std::uint16_t, bool>>{
+        {"RegisterAI", 710u, false}, {"RegisterDefaultAI", 710u, true}, {"ClearReceiverAI", 711u, false},
+        {"SendAI", 713u, false}, {"SendDefaultAI", 713u, true}, {"StartAI", 714u, false},
+        {"StartDefaultAI", 714u, true}, {"EndAI", 715u, false}, {"ClearSenderAI", 716u, false}}) {
+        const auto function = classes.Function(name, probe, classesCore);
+        std::vector<Code> arguments{Ref(0x00u, classes.Property("EventName", "NameProperty", function, classesCore, 1u, 0, 0x80u))};
+        if (index == 710u) {
+            arguments.push_back(Ref(0x00u, classes.Property("Callback", "NameProperty", function, classesCore, 1u, 0, 0x80u)));
+            if (!defaults) {
+                arguments.push_back(Ref(0x00u, classes.Property("ScoreCallback", "NameProperty", function, classesCore, 1u, 0, 0x80u)));
+                for (const auto& flag : {"Visibility", "Direction", "Cylinder", "LineOfSight"})
+                    arguments.push_back(Ref(0x00u, classes.Property(flag, "BoolProperty", function, classesCore, 1u, 0, 0x80u)));
+            }
+        } else if (index == 713u || index == 714u || index == 715u) {
+            arguments.push_back(Ref(0x00u, classes.Property("Channel", "IntProperty", function, classesCore, 1u, 0, 0x80u)));
+            if (index != 715u && !defaults) for (const auto& field : {"Value", "Radius"})
+                arguments.push_back(Ref(0x00u, classes.Property(field, "FloatProperty", function, classesCore, 1u, 0, 0x80u)));
+        }
+        auto call = Native(index); call.raw.pop_back(); --call.logical;
+        for (const auto& argument : arguments) { Append(call.raw, argument.raw); call.logical += argument.logical; }
+        classes.FunctionCode(function, Join({call, Token(0x16u), Return()}));
+    }
+    classes.Function("AIMutationThenFail", probe, classesCore, Join({
+        Native(710u, {Ref(0x21u, classes.Name("RollbackEvent")), Ref(0x21u, classes.Name("Callback"))}),
+        Native(714u, {Ref(0x21u, classes.Name("RollbackEvent")), Int(1)}), Native(999u), Return()}));
+    classes.Function("AISpawnThenFail", probe, classesCore, Join({Assign(prop("NestedActor"), Native(278u, {Ref(0x20u, leaf)})),
+        Context(prop("NestedActor"), Native(714u, {Ref(0x21u, classes.Name("RollbackBirth")), Int(0)})), Native(999u), Return()}));
+    classes.Function("OverrideReflectedXLevel", probe, classesCore, Join({Assign(Ref(0x01u, importedXLevel), Token(0x2au)), Return()}));
+    classes.Function("InitAIWrongReceiver", probe, classesCore, Join({Native(650u), Return()}));
+    for (const auto& [name, index] : std::vector<std::pair<std::string, std::uint16_t>>{{"ContextStartAI", 714u}, {"ContextEndAI", 715u}}) {
+        const auto function = classes.Function(name, probe, classesCore);
+        const auto target = classes.Property("Target", "ObjectProperty", function, classesCore, 1u, importedActor, 0x80u);
+        const auto event = classes.Property("EventName", "NameProperty", function, classesCore, 1u, 0, 0x80u);
+        const auto channel = classes.Property("Channel", "IntProperty", function, classesCore, 1u, 0, 0x80u);
+        classes.FunctionCode(function, Join({Context(Ref(0x00u, target), Native(index, {Ref(0x00u, event), Ref(0x00u, channel)})), Return()}));
+    }
     const auto count = [&] { return Ref(0x01u, matchCount); };
     const auto output = [&] { return Ref(0x01u, cursor); };
     const auto increment = [](Code value) { return Assign(value, Native(146u, {value, Int(1)})); };
@@ -571,6 +627,8 @@ Tables Build(Fixture& fixture) {
     const auto playerObject = map.Export("BindingPlayer", map.Import("Player", mapEngine));
     const auto viewportObject = map.Export("BindingViewport", map.Import("Viewport", mapEngine));
     map.ActorBody(playerObject, {}); map.ActorBody(viewportObject, {}); // Real UObjects, deliberately not Level actors.
+    const auto detachedActor = map.Export("DetachedActor", map.Import("Probe", mapClasses));
+    map.ActorBody(detachedActor, {}); // Real Actor class, deliberately absent from serialized Level slots.
     for (const auto reference : {levelActor, driver, owner, instigator, collision}) {
         Bytes properties; map.ObjectTag(properties, "Level", levelActor); map.ObjectTag(properties, "XLevel", world);
         if (reference == levelActor) map.BoolTag(properties, "bBegunPlay", true);
@@ -1090,18 +1148,192 @@ void AllActorsTests(Fixture& fixture) {
     fixture.Reset();
 }
 
+void AiIntegrationTests(Fixture& fixture) {
+    fixture.Reset();
+    const auto integer = [](std::int32_t value) { return Evaluation{Value::Integer(value), {}}; };
+    const auto number = [](float value) { return Evaluation{Value::Float(value), {}}; };
+    const Evaluation yes{Value::Bool(true), {}}, no{Value::Bool(false), {}};
+    const auto state = [&] {
+        auto decoded = Decode(fixture.Snapshot("AiInspect"));
+        Require(decoded.aiManagers.size() == 1u, "Runtime did not persist exactly its initialized native AI manager");
+        Require(decoded.aiManagers.front().ownerPath == Path("Level0") && decoded.aiManagers.front().levelPath == Path("MyLevel"),
+            "AI manager confused its LevelInfo owner and actual serialized native ULevel");
+        return std::move(decoded.aiManagers.front());
+    };
+    const auto sender = [](const QuestVr::Ai::State& manager, const std::string& actor, const std::string& event) -> const QuestVr::Ai::Sender& {
+        const auto found = std::find_if(manager.senders.begin(), manager.senders.end(), [&](const auto& item) {
+            return Fold(item.actor) == Fold(Path(actor)) && Fold(manager.eventTypes.at(item.eventType - 1u).name) == Fold(event);
+        });
+        Require(found != manager.senders.end(), "AI sender identity/event was not captured"); return *found;
+    };
+    const auto noneGc = GC::GetStats(); const auto noManagerRevision = GetPortableRuntimeWorldRevision();
+    Call("Driver", "RegisterDefaultAI", {Name("Absent"), Name("Callback")});
+    Call("Driver", "StartDefaultAI", {Name("Absent"), integer(0)});
+    Call("Driver", "SendDefaultAI", {Name("Absent"), integer(1)});
+    Call("Driver", "EndAI", {Name("Absent"), integer(0)});
+    Call("Driver", "ClearReceiverAI", {Name("Absent")}); Call("Driver", "ClearSenderAI", {Name("Absent")});
+    Require(fixture.Snapshot("AbsentAiManager") == fixture.legacy && GetPortableRuntimeWorldRevision() == noManagerRevision &&
+        GC::GetStats().numObjects == noneGc.numObjects && GC::GetStats().memoryUsage == noneGc.memoryUsage,
+        "Absent-manager wrappers allocated a graph or changed saved/world state");
+    RefusedCall(fixture, "InitAIWrongReceiver");
+    RefusedCall(fixture, "AISetEventCallback", {Name("Event")});
+    RefusedCall(fixture, "AISetEventCallback", {Name("Event"), Name("Callback"), Name("Score"), integer(1)});
+    RefusedCall(fixture, "InitAIThenFail", {}, {}, "Level0");
+    Call("Level0", "InitAI");
+    const auto empty = fixture.Snapshot("EmptyAiManager"); auto emptyDecoded = Decode(empty);
+    Require(empty.at(4u) == 9u && empty.at(PrefixSize(empty) + 4u + 6u) == 6u &&
+        emptyDecoded.objects.empty() && emptyDecoded.births.empty() && emptyDecoded.aiManagers.size() == 1u,
+        "Empty initialized AI manager did not independently select envelope9/codec6");
+    Require(state().eventTypes.empty() && GetPortableRuntimeWorldRevision() == noManagerRevision,
+        "Native AI initialization invented events or dirtied actor geometry publication");
+    const auto managerGc = GC::GetStats(); Call("Level0", "InitEventManager"); Call("Level0", "InitAI");
+    Require(fixture.Snapshot("IdempotentAiInit") == empty && GC::GetStats().numObjects == managerGc.numObjects &&
+        GC::GetStats().memoryUsage == managerGc.memoryUsage && GetPortableRuntimeWorldRevision() == noManagerRevision,
+        "Repeated InitEventManager replaced its native object or changed geometry/save state");
+    fixture.Reset();
+    Require(GC::GetStats().numObjects == noneGc.numObjects && GC::GetStats().memoryUsage == noneGc.memoryUsage,
+        "Legacy reset retained the empty native AI manager allocation");
+    Require(LoadPortableRuntimeState((fixture.directory / "EmptyAiManager.sav").string()) && fixture.Snapshot("ColdEmptyAi") == empty,
+        "Cold restore lost empty native manager presence");
+    const auto otherLevelInfo = Spawn("Make", {Class("Engine.LevelInfo")});
+    Call(otherLevelInfo, "InitAI");
+    Call("Driver", "StartDefaultAI", {Name("SlotZeroOnly"), integer(0)});
+    Call(otherLevelInfo, "AIStartEvent", {Name("FromOtherLevelInfo"), integer(0)});
+    auto multiple = Decode(fixture.Snapshot("TwoLevelInfoManagers"));
+    const auto attached = [&](const auto& decoded, const std::string& owner) -> const QuestVr::Ai::State& {
+        const auto found = std::find_if(decoded.aiManagers.begin(), decoded.aiManagers.end(), [&](const auto& item) { return item.ownerPath == owner; });
+        Require(found != decoded.aiManagers.end(), "Initialized LevelInfo lost its independent native manager attachment"); return *found;
+    };
+    Require(multiple.aiManagers.size() == 2u && attached(multiple, otherLevelInfo).eventTypes.empty() &&
+        attached(multiple, Path("Level0")).senders.size() == 2u,
+        "Native AI wrappers routed through receiver-owned manager instead of actual Level slot zero");
+    Require(sender(attached(multiple, Path("Level0")), otherLevelInfo, "FromOtherLevelInfo").current.visibility == 1.0f,
+        "Secondary linked LevelInfo did not use the canonical native Level manager");
+    fixture.Reset(); Require(LoadPortableRuntimeState((fixture.directory / "TwoLevelInfoManagers.sav").string()), "Cannot cold restore two LevelInfo manager attachments");
+    Call(otherLevelInfo, "AIEndEvent", {Name("FromOtherLevelInfo"), integer(0)});
+    multiple = Decode(fixture.Snapshot("ColdTwoLevelInfoManagers"));
+    Require(attached(multiple, otherLevelInfo).eventTypes.empty() &&
+        sender(attached(multiple, Path("Level0")), otherLevelInfo, "FromOtherLevelInfo").current.visibility == 0.0f,
+        "Cold restore confused separate manager attachment with wrapper slot-zero routing");
+    fixture.Reset(); Require(LoadPortableRuntimeState((fixture.directory / "EmptyAiManager.sav").string()), "Cannot reset secondary-LevelInfo manager test");
+    Call("Driver", "EndAI", {Name("Missing"), integer(1)}); Call("Driver", "ClearSenderAI", {Name("Missing")});
+    Call("Driver", "ClearReceiverAI", {Name("Missing")}); Call("Driver", "RegisterDefaultAI", {Name("None"), Name("Callback")});
+    Require(fixture.Snapshot("MissingAiNodes") == empty, "Absent End/Clear or None registration created an AI event type");
+    Call("Driver", "RegisterDefaultAI", {Name("Distress"), Name("OnDistress")});
+    auto registered = state(); Require(registered.receivers.size() == 1u && registered.receivers.front().flags == QuestVr::Ai::PerceptionFlags{} &&
+        registered.receivers.front().scoreCallback.empty(), "AI registration optional perception defaults differ from original wrappers");
+    auto seeded = Decode(fixture.Snapshot("RegisteredAi")); auto& manager = seeded.aiManagers.front();
+    manager.historyCursor = 5u; auto& receiver = manager.receivers.front();
+    receiver.callbackPending = true; receiver.eventState = 3u; receiver.detected = true; receiver.previousScore = 2.25f;
+    receiver.previousBestActor = Path("Owner"); receiver.historyCursor = 3u;
+    receiver.params = {Path("Pawn0"), 7.0f, 0.25f, 0.5f, 0.75f};
+    const auto seededPath = fixture.directory / "SeededAiDetection.sav";
+    WriteBytes(seededPath, Envelope(empty, seeded, 9u)); Require(LoadPortableRuntimeState(seededPath.string()), "Cannot restore typed AI detection/history fixture");
+    auto expectedReceiver = receiver;
+    Call("Driver", "RegisterAI", {Name("dIsTrEsS"), Name("Replacement"), Name("Score"), no, yes, yes, no});
+    expectedReceiver.callback = "Replacement"; expectedReceiver.scoreCallback = "Score"; expectedReceiver.flags = {false, true, true, false};
+    registered = state();
+    Require(registered.receivers.size() == 1u && registered.receivers.front() == expectedReceiver && registered.historyCursor == 5u,
+        "Re-registration reset detection/history or misread explicit perception bool flags");
+    Call("Driver", "StartAI", {Name("Distress"), integer(1), number(0.5f), number(60.0f)});
+    auto emissions = state(); Require(sender(emissions, "Driver", "Distress").current.volume == 0.5f &&
+        sender(emissions, "Driver", "Distress").current.radius == 60.0f, "Persistent audio emission did not set current volume/radius");
+    Call("Driver", "SendAI", {Name("dIsTrEsS"), integer(1), number(0.9f), number(100.0f)});
+    emissions = state(); const auto& pulse = sender(emissions, "Driver", "Distress");
+    Require(pulse.history[5u].volume == 0.9f && pulse.history[5u].radius == 100.0f && pulse.current.volume == 0.5f && pulse.current.radius == 60.0f,
+        "Send pulse enabled persistent emission or lost per-slot maxima");
+    Call("Driver", "EndAI", {Name("DISTRESS"), integer(1)}); emissions = state();
+    Require(sender(emissions, "Driver", "Distress").current.volume == 0.0f && sender(emissions, "Driver", "Distress").current.radius == 0.0f &&
+        sender(emissions, "Driver", "Distress").history[5u].volume == 0.9f, "End erased history maxima or failed to zero current channel");
+    Call("Driver", "StartAI", {Name("Distress"), integer(256), number(0.75f), number(9000.0f)});
+    Call("Driver", "StartAI", {Name("Distress"), integer(2), number(-0.2f), number(-30.0f)}); emissions = state();
+    Require(sender(emissions, "Driver", "Distress").current.visibility == 0.75f && sender(emissions, "Driver", "Distress").current.smell == -0.2f &&
+        sender(emissions, "Driver", "Distress").history[5u].smell == 0.0f, "Byte-masked sensory type or finite negative channel semantics changed");
+    const auto beforeUnknown = sender(emissions, "Driver", "Distress");
+    Call("Driver", "StartAI", {Name("Distress"), integer(255), number(7.0f), number(30.0f)}); emissions = state();
+    Require(sender(emissions, "Driver", "Distress") == beforeUnknown, "Unknown masked sensory channel wrote valid sensory state");
+    Call("Driver", "ClearSenderAI", {Name("Distress")}); emissions = state();
+    Require(sender(emissions, "Driver", "Distress").current == QuestVr::Ai::Channels{} &&
+        !sender(emissions, "Driver", "Distress").deleted && sender(emissions, "Driver", "Distress").history[5u].visibility == 0.75f,
+        "Clear716 incorrectly deleted sender identity or erased channel history");
+    Call("Owner", "StartDefaultAI", {Name("Other"), integer(1)}); emissions = state();
+    Require(sender(emissions, "Owner", "Other").current.volume == 1.0f && sender(emissions, "Owner", "Other").current.radius == 800.0f,
+        "Original default emission intensity/radius or independent actor/name identity changed");
+    Call("Driver", "SetIterationFlags", {no, yes});
+    Call("Driver", "StartAI", {Name("Distress"), integer(1), number(1.0f), number(400.0f)}); emissions = state();
+    Require(sender(emissions, "Driver", "Distress").current.volume == 0.0f && sender(emissions, "Driver", "Distress").history[5u].volume == 0.9f,
+        "Pending-kill emitter retained a live current emission or erased prior history");
+    Call("Driver", "SetIterationFlags", {no, no});
+    Call("Driver", "ClearReceiverAI", {Name("Distress")}); const auto deleted = state();
+    Require(deleted.receivers.front().deleted && deleted.pendingDeleteCount == 1u, "Clear711 failed to defer receiver deletion");
+    Call("Driver", "ClearReceiverAI", {Name("Distress")}); Require(state() == deleted, "Repeated Clear711 incremented deletion count twice");
+    Call("Driver", "RegisterDefaultAI", {Name("Distress"), Name("NewReceiver")}); registered = state();
+    Require(registered.receivers.size() == 2u && registered.receivers.front().deleted && !registered.receivers.back().deleted &&
+        registered.pendingDeleteCount == 1u && !registered.receivers.back().detected,
+        "Re-registration reused a tombstone or reset pending-deletion identity");
+    RefusedCall(fixture, "AIMutationThenFail"); RefusedCall(fixture, "AISpawnThenFail");
+    RefusedCall(fixture, "StartAI", {Name("Bad"), integer(1), number(std::numeric_limits<float>::infinity()), number(1.0f)});
+    const auto activeAi = fixture.Snapshot("ActiveAiBeforeContext");
+    const auto inactiveAiPath = fixture.directory / "InactiveAiContext.sav";
+    WriteBytes(inactiveAiPath, InactivePrefix(activeAi, Path("Owner")));
+    Require(LoadPortableRuntimeState(inactiveAiPath.string()) && !HasPath(ActorPaths(false), Path("Owner")),
+        "Inactive AI Context fixture did not retain its presentation-inactive target");
+    Call("Driver", "ContextStartAI", {Object("Owner"), Name("ContextEvent"), integer(0)}); emissions = state();
+    Require(sender(emissions, "Owner", "ContextEvent").current.visibility == 1.0f,
+        "Native AI wrapper incorrectly rejected a presentation-inactive Context receiver");
+    RefusedCall(fixture, "StartDefaultAI", {Name("ContextEvent"), integer(0)}, {}, "Owner");
+    bool inactiveReadRejected{};
+    try { static_cast<void>(Read("Owner", "Tag")); } catch (const std::exception&) { inactiveReadRejected = true; }
+    Require(inactiveReadRejected, "AI Context support widened unrelated explicit inactive property reads");
+    Call("Driver", "ContextEndAI", {Object("Owner"), Name("ContextEvent"), integer(0)}); emissions = state();
+    Require(sender(emissions, "Owner", "ContextEvent").current.visibility == 0.0f &&
+        sender(emissions, "Owner", "ContextEvent").history[5u].visibility == 1.0f,
+        "Inactive Context End failed to preserve its pulse/history state");
+    Require(LoadPortableRuntimeState((fixture.directory / "ActiveAiBeforeContext.sav").string()), "Cannot reset inactive AI Context fixture");
+    const auto born = Spawn(); Call(born, "RegisterDefaultAI", {Name("Born"), Name("Callback")});
+    Call(born, "StartAI", {Name("Born"), integer(2), number(0.6f), number(1.0f)}); Call(born, "OverrideReflectedXLevel");
+    Same(Read(born, "XLevel"), Object("").value, "Reflected XLevel override fixture failed");
+    Call(born, "EndAI", {Name("Born"), integer(2)}); // Native routing ignores the reflected None overlay while live.
+    const auto saved = fixture.Snapshot("BornAiGraph"); const auto savedState = Decode(saved); const auto savedGraph = savedState.aiManagers.front();
+    fixture.Reset(); Require(LoadPortableRuntimeState((fixture.directory / "BornAiGraph.sav").string()) && fixture.Snapshot("ColdBornAiGraph") == saved,
+        "Cold native AI graph restore lost runtime-born identity, fields or Level membership");
+    Same(Read(born, "XLevel"), Object("").value, "Cold restore replaced the reflected XLevel override with its native root");
+    Require(state() == savedGraph, "Cold restore changed native receiver/sender identities or history/ring state");
+    GC::Collect(); Require(state() == savedGraph && Published(born), "GC released a native AI graph or its restored born actor roots");
+    Call(born, "StartAI", {Name("Born"), integer(2), number(0.3f), number(2.0f)}); emissions = state();
+    Require(sender(emissions, born, "Born").current.smell == 0.3f, "Cold birth native XLevel routing incorrectly used reflected None");
+    const auto canonical = fixture.Snapshot("CanonicalAiGraph"); const auto canonicalState = Decode(canonical);
+    const auto badGraph = [&](const std::string& label, const std::function<void(QuestVr::Ai::State&)>& mutate) {
+        auto invalid = canonicalState; mutate(invalid.aiManagers.front()); const auto beforeGc = GC::GetStats();
+        RefusedSave(fixture, canonical, invalid, label, 9u);
+        Require(GC::GetStats().numObjects == beforeGc.numObjects && GC::GetStats().memoryUsage == beforeGc.memoryUsage,
+            "Rejected symbolic AI graph retained staged native allocations");
+    };
+    badGraph("AiWrongOwner", [](auto& graph) { graph.ownerPath = Path("Driver"); });
+    badGraph("AiWrongLevel", [](auto& graph) { graph.levelPath = Path("Level0"); });
+    badGraph("AiWrongSenderClass", [](auto& graph) { graph.senders.front().actor = Path("BindingPlayer"); });
+    badGraph("AiActorOutsideLevel", [](auto& graph) { graph.senders.front().actor = Path("DetachedActor"); });
+    badGraph("AiMissingReceiver", [](auto& graph) { graph.receivers.back().actor = Path("MissingActor"); });
+    badGraph("AiWrongPreviousBest", [](auto& graph) { graph.receivers.front().previousBestActor = Path("BindingViewport"); });
+    badGraph("AiWrongParamsBest", [](auto& graph) { graph.receivers.front().params.bestActor = "OtherMap.Actor0"; });
+    badGraph("AiInFlightProcess", [](auto& graph) { graph.processDepth = 1u; });
+    RefusedCall(fixture, "AISpawnThenFail");
+    fixture.Reset(); Require(GC::GetStats().numObjects == noneGc.numObjects && GC::GetStats().memoryUsage == noneGc.memoryUsage,
+        "Legacy reset retained native AI graph roots or restored runtime births");
+}
+
 void Synthetic() {
     Fixture fixture; const auto tables = Build(fixture);
     Require(InitializePortableRuntime({tables.core, tables.engine, tables.classes}).passed && LoadPortableRuntimeMap(tables.map).passed, "Generated spawn runtime/map metadata initialization failed");
     Require(ActorPaths(true).size() == tables.initialActors, "Generated true Level published nonactors/holes or missed original actors"); fixture.legacy = fixture.Snapshot("Legacy"); Require(fixture.legacy[4u] == 3u, "Untouched generated spawn baseline invented persistent state");
     ArgumentTests(fixture); DefaultsTests(fixture); CallbackTests(fixture); OrderingTests(fixture); PersistenceTests(fixture);
-    CollisionIntegrationTests(fixture); AliasAndBoundaryGcTests(fixture); GetPlayerPawnTests(fixture); AllActorsTests(fixture); fixture.UnchangedSources();
+    CollisionIntegrationTests(fixture); AliasAndBoundaryGcTests(fixture); GetPlayerPawnTests(fixture); AllActorsTests(fixture); AiIntegrationTests(fixture); fixture.UnchangedSources();
     Require(InitializePortableRuntime({tables.core, tables.engine, tables.classes}).passed && LoadPortableRuntimeMap(tables.map).passed && fixture.Snapshot("Reinitialized") == fixture.legacy, "Runtime reinitialization retained born objects/frozen defaults"); fixture.UnchangedSources();
 }
 } // namespace
 int main() {
     try {
         const auto before = GC::GetStats().numObjects; Synthetic(); GC::Collect(); Require(GC::GetStats().numObjects == before, "Generated Spawn test leaked rooted UObjects after shutdown");
-        std::cout << "Generated actor Spawn integration: " << checks << " checks, " << refusals << " rejection controls; actual natives278/262/283/304/720, serialized Level/model, frozen defaults, nested callbacks/live foreach rollback, InitBase, PlayerPawn fallback bindings, birth graph/save replacement/GC. No campaign startup claim.\n"; return 0;
+        std::cout << "Generated actor Spawn integration: " << checks << " checks, " << refusals << " rejection controls; actual natives278/262/283/304/650/710/711/713/714/715/716/720, serialized Level/model, native AI graph/history/rollback, frozen defaults, nested callbacks/live foreach rollback, InitBase, PlayerPawn fallback bindings, birth graph/save replacement/GC. No AI processing/campaign startup claim.\n"; return 0;
     } catch (const std::exception& error) { std::cerr << "Actor Spawn integration failed: " << error.what() << '\n'; return 1; }
 }

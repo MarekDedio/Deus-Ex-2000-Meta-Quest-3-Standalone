@@ -225,10 +225,10 @@ std::vector<std::uint8_t> CheckpointBytes(const std::filesystem::path& path) {
     return bytes;
 }
 // Independent exact v3 prefix walk. No guessed search for blob signatures or
-// trailer bytes: v4-v8 append one bounded length + codec payload after every
+// trailer bytes: v4-v9 append one bounded length + codec payload after every
 // existing gameplay/progress field, preserving the old layout verbatim.
 std::size_t ScriptTailOffset(const std::vector<std::uint8_t>& bytes) {
-    Require(Word(bytes,0)==0x53515844u && Word(bytes,4)>=4u && Word(bytes,4)<=8u,"Script checkpoint is not runtime v4-v8");
+    Require(Word(bytes,0)==0x53515844u && Word(bytes,4)>=4u && Word(bytes,4)<=9u,"Script checkpoint is not runtime v4-v9");
     std::size_t cursor=8;
     const auto skip=[&](const std::size_t count) {
         Require(cursor<=bytes.size() && count<=bytes.size()-cursor,"Generated checkpoint prefix truncated");cursor+=count;
@@ -828,6 +828,71 @@ void VerifyOriginalActorLookup(const std::filesystem::path& root,const std::stri
         group->first<<" candidates="<<group->second.size()<<" result="<<nearest<<
         "; case/class/empty controls, byte-identical readonly state/GC; InitializeHomeBase Return PC186/native221 verified\n";
 }
+void VerifyOriginalAIEvents(const std::string& actor, const std::filesystem::path& legacy,
+    const std::filesystem::path& directory) {
+    Require(LoadPortableRuntimeState(legacy.string()), "Could not reset original AI fixture");
+    const auto inspect = directory / "original-ai-events.sav";
+    const auto original = CheckpointBytes(legacy);
+    const auto initialGc = GC::GetStats();
+    Call(actor, "UpdateReactionCallbacks");
+    Require(SavePortableRuntimeState(inspect.string()) && CheckpointBytes(inspect) == original &&
+        GC::GetStats().numObjects == initialGc.numObjects,
+        "Original absent-manager wrapper branch fabricated native state");
+    const auto level = ReadPortableActorScriptProperty(actor, "Level").text;
+    const auto revision = GetPortableRuntimeWorldRevision();
+    Call(level, "InitEventManager");
+    Require(GetPortableRuntimeScriptStatePresent() && GetPortableRuntimeWorldRevision() == revision &&
+        SavePortableRuntimeState(inspect.string()), "Original native650 failed to retain an empty manager independently of geometry");
+    const auto emptyBytes = CheckpointBytes(inspect);
+    auto graph = QuestVr::DecodeScriptSavedState(ScriptBlob(emptyBytes));
+    Require(Word(emptyBytes, 4u) == 9u && graph.aiManagers.size() == 1u &&
+        graph.aiManagers.front().ownerPath == level && graph.aiManagers.front().eventTypes.empty(),
+        "Original empty native manager did not select envelope9/codec6");
+    const auto managerGc = GC::GetStats();
+    Call(level, "InitEventManager");
+    Require(SavePortableRuntimeState(inspect.string()) && CheckpointBytes(inspect) == emptyBytes &&
+        GC::GetStats().numObjects == managerGc.numObjects, "Repeated original initialization replaced or duplicated its manager");
+    Call(actor, "AISetEventCallback", {Name("Futz"), Name("Quest_Test_Handler")});
+    const auto callbacks = Call(actor, "UpdateReactionCallbacks");
+    Require(callbacks.function == "DeusEx.ScriptedPawn.UpdateReactionCallbacks" && callbacks.offset == 484u &&
+        callbacks.opcode == 0x0bu && SavePortableRuntimeState(inspect.string()),
+        "Original reaction registration bytecode did not complete its actual Return");
+    graph = QuestVr::DecodeScriptSavedState(ScriptBlob(CheckpointBytes(inspect)));
+    const auto& manager = graph.aiManagers.front();
+    const auto futz = std::find_if(manager.receivers.begin(), manager.receivers.end(), [&](const auto& receiver) {
+        return receiver.actor == actor && manager.eventTypes.at(receiver.eventType - 1u).name == "Futz";
+    });
+    const bool expectedFutz = QuestVr::Vm::ToBool(ReadPortableActorScriptProperty(actor, "bReactFutz")) &&
+        QuestVr::Vm::ToBool(ReadPortableActorScriptProperty(actor, "bLookingForFutz"));
+    Require(futz != manager.receivers.end() && futz->deleted != expectedFutz &&
+        (!expectedFutz || (futz->callback == "HandleFutz" && futz->flags == QuestVr::Ai::PerceptionFlags{})),
+        "Original Futz registration/clear branch lost its native identity or perception flags");
+    const Evaluation visual{Value::Byte(0u), {}};
+    Call(actor, "AIStartEvent", {Name("Distress"), visual, Number(0.75f), Number(640.0f)});
+    const auto distress = Call(actor, "SetDistress", {{Value::Bool(false), {}}});
+    Require(distress.function == "DeusEx.ScriptedPawn.SetDistress" && distress.offset == 57u &&
+        SavePortableRuntimeState(inspect.string()), "Original SetDistress did not execute native715 and return");
+    const auto saved = CheckpointBytes(inspect);
+    graph = QuestVr::DecodeScriptSavedState(ScriptBlob(saved));
+    const auto& emitted = graph.aiManagers.front();
+    const auto sender = std::find_if(emitted.senders.begin(), emitted.senders.end(), [&](const auto& candidate) {
+        return candidate.actor == actor && emitted.eventTypes.at(candidate.eventType - 1u).name == "Distress";
+    });
+    Require(sender != emitted.senders.end() && sender->current.visibility == 0.0f &&
+        sender->history.at(emitted.historyCursor).visibility == 0.75f,
+        "Original SetDistress end erased sensory history or left a persistent emission");
+    Require(ValidatePortableRuntimeState(inspect.string()) && LoadPortableRuntimeState(inspect.string()) &&
+        SavePortableRuntimeState(inspect.string()) && CheckpointBytes(inspect) == saved,
+        "Original manager graph did not roundtrip exact portable snapshot bytes");
+    GC::Collect();
+    Require(SavePortableRuntimeState(inspect.string()) && CheckpointBytes(inspect) == saved,
+        "Original manager graph was not rooted across GC");
+    Require(LoadPortableRuntimeState(legacy.string()) && !GetPortableRuntimeScriptStatePresent() &&
+        GC::GetStats().numObjects == initialGc.numObjects && SavePortableRuntimeState(inspect.string()) &&
+        CheckpointBytes(inspect) == original, "Legacy reset retained native AI state or allocations");
+    std::cout << "ORIGINAL AI native650/710/711/714/715; actual UpdateReactionCallbacks ReturnPC484 and SetDistress ReturnPC57; empty ownership, history, codec6/envelope9/GC/reset. No AI processing or world startup claim.\n";
+}
+
 void VerifyOriginalInventoryTransactions(const std::string& actor,const std::filesystem::path& legacy,
     const std::filesystem::path& directory) {
     Require(LoadPortableRuntimeState(legacy.string()) && !GetPortableRuntimeScriptStatePresent(),
@@ -1098,6 +1163,7 @@ void VerifyOriginalInventoryTransactions(const std::string& actor,const std::fil
     // evidence gate; successful inventory creation is not campaign startup.
     Require(LoadPortableRuntimeState(generated.string()),"Could not reset actual StartUp inventory fixture");
     unchanged(initializedBytes,"Original StartUp pre-initialization baseline");
+    Call(ReadPortableActorScriptProperty(actor,"Level").text,"InitEventManager");
     Call(actor,"SetInitialState");
     Require(SavePortableRuntimeState(inspect.string()),"Actual StartUp + inventory continuation could not checkpoint");
     const auto startup=CheckpointBytes(inspect);
@@ -1109,9 +1175,9 @@ void VerifyOriginalInventoryTransactions(const std::string& actor,const std::fil
         " committed="<<slice.committed<<" error="<<slice.error<<" at "<<slice.function<<':'<<slice.offset<<
         " opcode="<<static_cast<unsigned>(slice.opcode)<<'\n';
     Require(slice.status==Status::Unsupported && !slice.committed &&
-        slice.function=="DeusEx.ScriptedPawn.UpdateReactionCallbacks" && slice.offset==41u &&
-        slice.opcode==0x62u && slice.error=="Unsupported runtime native 711",
-        "Actual StartUp did not reach the next required reaction-event binding or fabricated campaign startup: "+slice.error);
+        slice.function=="Engine.Pawn.PlayTurnHead" && slice.offset==211u &&
+        slice.opcode==0x63u && slice.error=="Unsupported runtime native 1010",
+        "Actual StartUp did not reach its original head-animation dependency or fabricated completion: "+slice.error);
     Require(GetPortableRuntimeMapActors(true).size()==startupActors &&
         GetPortableRuntimeWorldRevision()==startupRevision &&
         GC::GetStats().numObjects==startupGc.numObjects &&
@@ -1282,8 +1348,9 @@ void VerifyOriginalStateExecution(const std::string& actor, const std::filesyste
     Require(ReadPortableActorDispatchContext(actor).disabledNames.count("quest_test_event")==0u,
         "Enable failed to remove a restored mixed-case disabled event");
     Require(LoadPortableRuntimeState(saved.string()),"Could not reset selected state after terminal/mixed-case controls");
-    // Generate only a typed bBegunPlay overlay. This does not claim world startup
-    // occurred; it exposes the actual BeginState chain's next missing native.
+    // Explicit begun-play fixture, not automatic world startup. Initialize a
+    // real native manager and registration so BeginState's BlockReactions must
+    // perform the original clear path rather than use an absent-manager branch.
     auto begun=baseline;
     const auto levelValue=ReadPortableActorScriptProperty(actor,"Level");
     const auto levelSnapshot=Snapshot(levelValue.text);
@@ -1293,11 +1360,28 @@ void VerifyOriginalStateExecution(const std::string& actor, const std::filesyste
     auto begunBytes=ReplaceScriptBlob(selected,QuestVr::EncodeScriptSavedState(begun));PutWord(begunBytes,4,4u);
     Require(QuestVr::WriteDurableSaveFile(generated.string(),begunBytes) && LoadPortableRuntimeState(generated.string()),
         "Actual BeginState begun-play fixture was rejected");
+    Call(levelValue.text,"InitEventManager");
+    Call(actor,"AISetEventCallback",{Name("Futz"),Name("Quest_Test_Handler")});
     const auto entry=ExecutePortableActorFunction(actor,"SetInitialState");
-    Require(!entry.passed() && !entry.error.empty() && !ReadPortableActorStateObject(actor),
-        "Original BeginState missing native was faked or leaked its new state");
-    unchanged(begunBytes,"Original synchronous BeginState failure rollback");
-    std::cout<<"ORIGINAL BEGINSTATE explicit refusal: "<<entry.error<<" at "<<entry.function<<':'<<entry.offset<<'\n';
+    const auto entered=ReadPortableActorStateObject(actor);
+    Require(entry.passed() && entry.committed && entered && entered->frame &&
+        entered->frame->codePath=="DeusEx.ScriptedPawn.StartUp" &&
+        ReadPortableActorDispatchContext(actor).stateName=="StartUp" &&
+        QuestVr::Vm::ToBool(ReadPortableActorScriptProperty(actor,"bInterruptState")) &&
+        !QuestVr::Vm::ToBool(ReadPortableActorScriptProperty(actor,"bCanConverse")) &&
+        !QuestVr::Vm::ToBool(ReadPortableActorScriptProperty(actor,"bStasis")) &&
+        !QuestVr::Vm::ToBool(ReadPortableActorScriptProperty(actor,"bDistressed")) &&
+        ReadPortableActorScriptProperty(actor,"DestAttempts").integer==0 &&
+        QuestVr::Vm::Equal(ReadPortableActorScriptProperty(actor,"LastDestLoc"),
+            ReadPortableActorScriptProperty(actor,"LastDestPoint")) && SavePortableRuntimeState(inspect.string()),
+        // Registration now has a real manager; this entry must execute its
+        // authored effects, not retain the former unsupported-AI expectation.
+        "Original synchronous begun-play BeginState did not perform its actual property/state effects: "+entry.error);
+    const auto enteredGraph=QuestVr::DecodeScriptSavedState(ScriptBlob(CheckpointBytes(inspect)));
+    Require(enteredGraph.aiManagers.size()==1u && enteredGraph.aiManagers.front().receivers.size()==1u &&
+        enteredGraph.aiManagers.front().receivers.front().deleted && enteredGraph.aiManagers.front().pendingDeleteCount==1u,
+        "Original begun-play BlockReactions bypassed real manager callback deletion");
+    std::cout<<"ORIGINAL BEGINSTATE explicit real-manager SetMovementPhysics/SetDistress/BlockReactions/ResetDestLoc completed; not automatic world startup\n";
     Require(LoadPortableRuntimeState(legacy.string()) && !ReadPortableActorStateObject(actor) &&
         !GetPortableRuntimeUnsavedScriptState(),"Legacy restore failed to clear complete portable state override");
     std::cout<<"ORIGINAL v5 state-only/Auto/Begin/None/Stop/disabled-set roundtrip; schema rejections="<<rejected<<
@@ -1351,6 +1435,7 @@ void TestOriginal(const std::filesystem::path& root, const bool inventoryOnly = 
             if (humanTests == 0u && !IsA(actor, "Robot") && !IsA(actor, "Animal")) {
                 VerifyOriginalDormantSpawn(root,actor.objectPath,checkpoint,temporary.directory);
                 VerifyOriginalActorLookup(root,actor.objectPath,checkpoint,temporary.directory);
+                VerifyOriginalAIEvents(actor.objectPath,checkpoint,temporary.directory);
                 VerifyOriginalInventoryTransactions(actor.objectPath, checkpoint, temporary.directory);
                 if (inventoryOnly) { ++humanTests; continue; }
                 VerifyAuthoredStack(root, actor.objectPath);

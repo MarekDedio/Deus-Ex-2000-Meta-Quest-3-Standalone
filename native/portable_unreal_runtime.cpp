@@ -11,6 +11,7 @@
 #include "quest_object_cast.h"
 #include "quest_spawn_placement.h"
 #include "quest_actor_overlap.h"
+#include "quest_ai_event_state.h"
 
 #include <memory>
 #include <algorithm>
@@ -33,6 +34,7 @@
 namespace {
 
 class RuntimeObject;
+class RuntimeAIManager;
 struct InventoryIconClassConstraint {
     RuntimeObject* indexedClass{}; // Non-owning immutable metadata, not a new GC root.
     std::uint8_t nativeClass{};
@@ -52,6 +54,7 @@ public:
     RuntimeObject* base{};
     RuntimeObject* cls{};
     RuntimeObject* nativeXLevel{}; // Immutable LinkActorsToLevel baseline, not a script write.
+    RuntimeAIManager* nativeAiManager{}; // LevelInfo-owned native state, not an actor/export.
     std::unique_ptr<PortableScriptBody> script;
     std::unique_ptr<PortablePropertyDescriptor> property;
     std::unique_ptr<PortableClassDescriptor> classDescriptor;
@@ -116,18 +119,35 @@ protected:
         if (destroyed_ != nullptr) ++*destroyed_;
     }
 
-    GCAllocation* Mark(GCAllocation* marklist) override {
-        for (RuntimeObject* reference : references) {
-            marklist = GC::MarkObject(marklist, reference);
-        }
-        for (auto* actor : childActors) marklist = GC::MarkObject(marklist, actor);
-        for (auto* actor : basedActors) marklist = GC::MarkObject(marklist, actor);
-        return marklist;
-    }
+    GCAllocation* Mark(GCAllocation* marklist) override;
 
 private:
     std::size_t* destroyed_{};
 };
+
+class RuntimeAIManager final : public GCObject {
+public:
+    QuestVr::Ai::State state;
+    RuntimeObject* owner{};
+    RuntimeObject* level{};
+    // Includes pending-deletion nodes and previous/current best actors. The
+    // symbolic graph is serializable; these edges preserve UObject lifetimes.
+    std::vector<RuntimeObject*> actorRoots;
+protected:
+    GCAllocation* Mark(GCAllocation* marklist) override {
+        marklist = GC::MarkObject(marklist, owner);
+        marklist = GC::MarkObject(marklist, level);
+        for (auto* actor : actorRoots) marklist = GC::MarkObject(marklist, actor);
+        return marklist;
+    }
+};
+
+GCAllocation* RuntimeObject::Mark(GCAllocation* marklist) {
+    for (auto* reference : references) marklist = GC::MarkObject(marklist, reference);
+    for (auto* actor : childActors) marklist = GC::MarkObject(marklist, actor);
+    for (auto* actor : basedActors) marklist = GC::MarkObject(marklist, actor);
+    return GC::MarkObject(marklist, nativeAiManager);
+}
 
 class RuntimePackage final : public GCObject {
 public:
@@ -1314,10 +1334,20 @@ public:
         if (worldChanged) persistentMapTagIndex.swap(tags);
         if (worldChanged) ++persistentWorldRevision;
         beforeCollision_.reset();
-        saved_.clear(); transaction_ = false;
+        saved_.clear(); savedAi_.clear(); provisionalAi_.clear(); transaction_ = false;
     }
     void Rollback() noexcept override {
         if (!transaction_) return;
+        // Restore native bindings/edges before provisional actor identities are
+        // retired. Swap-only rollback cannot allocate or invoke game scripts.
+        for (auto& [owner, before] : savedAi_) {
+            auto* manager = before.manager.get();
+            if (manager && before.state) {
+                std::swap(manager->state, *before.state);
+                manager->actorRoots.swap(before.actorRoots);
+            }
+            owner->nativeAiManager = manager;
+        }
         if (beforeCollision_) persistentActorCollision.Swap(*beforeCollision_);
         for (auto& entry : saved_) {
             entry.first->scriptValues.swap(entry.second.values);
@@ -1342,7 +1372,7 @@ public:
         }
         persistentRuntime->get()->exports.resize(beforeExportCount_);
         persistentWorldActors.resize(beforeWorldSlots_);
-        beforeCollision_.reset(); saved_.clear(); transaction_ = false;
+        beforeCollision_.reset(); saved_.clear(); savedAi_.clear(); provisionalAi_.clear(); transaction_ = false;
     }
     Property ResolveProperty(const Function& function, const std::int32_t reference) override {
         RuntimeObject* object = Object(ResolveObject(function, reference));
@@ -1401,6 +1431,12 @@ public:
     Evaluation Native(const std::uint16_t index, const std::string& receiver,
         const std::vector<Evaluation>& arguments, const Function* declaration) override {
         RuntimeObject* object = Object(receiver);
+        // Native event wrappers have no presentation-active gate. Their actual
+        // identity/Level checks remain in AiNative; unrelated native receivers
+        // retain the existing explicit inactive guard.
+        if (index == 650u || index == 710u || index == 711u ||
+            (index >= 713u && index <= 716u))
+            return AiNative(index, object, arguments);
         if (!object->active && !object->worldRemoved) throw std::runtime_error("VM native receiver is inactive");
         const auto argumentCount = [&](const std::size_t required, const std::size_t maximum) {
             if (arguments.size() < required || arguments.size() > maximum)
@@ -2150,6 +2186,11 @@ private:
         std::array<bool, 4u> touchSent{};
         bool lifecycle{}, removed{};
     };
+    struct BeforeAI {
+        GCRoot<RuntimeAIManager> manager;
+        std::optional<QuestVr::Ai::State> state;
+        std::vector<RuntimeObject*> actorRoots;
+    };
     std::unordered_map<std::string, PortablePackageTables> tables_;
     std::unordered_map<std::string, std::shared_ptr<const Function>> functions_;
     std::unordered_map<std::string, std::shared_ptr<const QuestVr::AuthoredStructSchema>> structSchemas_;
@@ -2158,6 +2199,8 @@ private:
     std::size_t structFields_{};
     std::size_t structSchemaBytes_{};
     std::unordered_map<RuntimeObject*, Before> saved_;
+    std::unordered_map<RuntimeObject*, BeforeAI> savedAi_;
+    std::vector<GCRoot<RuntimeAIManager>> provisionalAi_;
     std::optional<QuestVr::ActorCollisionRegistry> beforeCollision_;
     std::size_t lifecycleOperations_{};
     std::size_t beforeExportCount_{}, beforeWorldSlots_{};
@@ -2659,6 +2702,130 @@ private:
         if (!transaction_) throw std::runtime_error("Actor collision mutation outside a VM transaction");
         if (!beforeCollision_) beforeCollision_.emplace(persistentActorCollision);
     }
+    void TouchAI(RuntimeObject* owner) {
+        if (!transaction_) throw std::runtime_error("AI mutation outside a VM transaction");
+        if (savedAi_.count(owner)) return;
+        if (savedAi_.size() >= 64u) throw std::runtime_error("AI manager journal count exceeds budget");
+        BeforeAI before;
+        before.manager.set(owner->nativeAiManager);
+        if (owner->nativeAiManager) {
+            before.state = owner->nativeAiManager->state;
+            before.actorRoots = owner->nativeAiManager->actorRoots;
+        }
+        savedAi_.emplace(owner, std::move(before));
+    }
+    void RefreshAIRoots(RuntimeAIManager* manager) {
+        std::vector<RuntimeObject*> roots;
+        const auto retain = [&](const std::string& path) {
+            if (path.empty()) return;
+            LifecycleStep();
+            auto* actor = Object(path); RequireMapActor(actor);
+            if (actor->nativeXLevel != manager->level)
+                throw std::runtime_error("AI graph actor belongs to another native Level");
+            roots.push_back(actor);
+        };
+        for (const auto& sender : manager->state.senders) retain(sender.actor);
+        for (const auto& receiver : manager->state.receivers) {
+            retain(receiver.actor); retain(receiver.previousBestActor); retain(receiver.params.bestActor);
+        }
+        manager->actorRoots.swap(roots);
+    }
+    RuntimeAIManager* ActorAIManager(RuntimeObject* actor) {
+        RequireMapActor(actor);
+        auto* level = actor->nativeXLevel;
+        if (!level || level->sourcePath != persistentMapSourcePath ||
+            LowerAscii(CastObjectIdentity(level->reflection.objectPath).classPath) != "engine.level")
+            throw std::runtime_error("AI receiver has no actual linked native Level");
+        // Native wrappers dereference ULevel.Actors[0], not the reflected
+        // Actor.Level/XLevel overlays or the first LevelInfo export by name.
+        if (persistentWorldActors.empty() || !persistentWorldActors.front() ||
+            persistentWorldActors.front()->worldRemoved ||
+            !IsDerivedFromPath(persistentWorldActors.front()->cls, "Engine.LevelInfo") ||
+            persistentWorldActors.front()->nativeXLevel != level)
+            throw std::runtime_error("AI Level slot zero is not its actual LevelInfo");
+        return persistentWorldActors.front()->nativeAiManager;
+    }
+    Evaluation AiNative(const std::uint16_t index, RuntimeObject* actor,
+        const std::vector<Evaluation>& arguments) {
+        LifecycleStep(); RequireMapActor(actor);
+        const auto count = [&](const std::size_t minimum, const std::size_t maximum) {
+            if (arguments.size() < minimum || arguments.size() > maximum)
+                throw std::runtime_error("AI native argument count is invalid");
+        };
+        const auto arg = [&](const std::size_t slot) {
+            return slot < arguments.size() ? arguments[slot].Load() : Value{};
+        };
+        const auto name = [&](const std::size_t slot, const bool optional = false) {
+            const auto value = arg(slot);
+            if (optional && value.kind == Kind::Nothing) return std::string{};
+            if (value.kind != Kind::Name) throw std::runtime_error("AI native requires a Name");
+            return value.text;
+        };
+        const auto boolean = [&](const std::size_t slot, const bool fallback) {
+            const auto value = arg(slot);
+            if (value.kind == Kind::Nothing) return fallback;
+            if (value.kind != Kind::Bool) throw std::runtime_error("AI perception flag is not Bool");
+            return QuestVr::Vm::ToBool(value);
+        };
+        const auto number = [&](const std::size_t slot, const float fallback) {
+            const auto value = arg(slot);
+            if (value.kind == Kind::Nothing) return fallback;
+            if (value.kind != Kind::Float && value.kind != Kind::Byte && value.kind != Kind::Int)
+                throw std::runtime_error("AI intensity/radius is not numeric");
+            const auto result = QuestVr::Vm::ToFloat(value);
+            if (!std::isfinite(result)) throw std::runtime_error("AI intensity/radius is not finite");
+            return result;
+        };
+        if (index == 650u) {
+            count(0u, 0u);
+            if (!IsDerivedFromPath(actor->cls, "Engine.LevelInfo") || !actor->nativeXLevel)
+                throw std::runtime_error("InitEventManager receiver is not a linked LevelInfo");
+            if (actor->nativeAiManager) return {};
+            TouchAI(actor);
+            pendingBirthGarbage = true;
+            provisionalAi_.emplace_back(GC::Alloc<RuntimeAIManager>());
+            auto* manager = provisionalAi_.back().get();
+            manager->owner = actor; manager->level = actor->nativeXLevel;
+            manager->state.ownerPath = actor->reflection.objectPath;
+            manager->state.levelPath = manager->level->reflection.objectPath;
+            actor->nativeAiManager = manager;
+            return {};
+        }
+        std::string event, callback, scoreCallback;
+        QuestVr::Ai::PerceptionFlags flags;
+        std::uint8_t channel{};
+        float value = 1.0f, radius = 800.0f;
+        if (index == 710u) {
+            count(2u, 7u); event = name(0u); callback = name(1u); scoreCallback = name(2u, true);
+            flags = {boolean(3u, true), boolean(4u, true), boolean(5u, false), boolean(6u, true)};
+        } else if (index == 711u || index == 716u) {
+            count(1u, 1u); event = name(0u);
+        } else {
+            count(2u, index == 715u ? 2u : 4u); event = name(0u);
+            const auto type = arg(1u);
+            if (type.kind != Kind::Byte && type.kind != Kind::Int)
+                throw std::runtime_error("AI sensory type is not Byte");
+            channel = static_cast<std::uint8_t>(type.integer);
+            if (index != 715u) { value = number(2u, 1.0f); radius = number(3u, 800.0f); }
+        }
+        auto* manager = ActorAIManager(actor);
+        if (!manager) return {}; // Original absent-manager branch, after evaluating all arguments.
+        TouchAI(manager->owner);
+        const auto& path = actor->reflection.objectPath;
+        if (index == 710u) QuestVr::Ai::Register(manager->state, path, event, callback, scoreCallback, flags, lifecycleOperations_);
+        else if (index == 711u) QuestVr::Ai::ClearReceiver(manager->state, path, event, lifecycleOperations_);
+        else if (index == 715u) QuestVr::Ai::End(manager->state, path, event, channel, lifecycleOperations_);
+        else if (index == 716u) QuestVr::Ai::ClearSender(manager->state, path, event, lifecycleOperations_);
+        else {
+            // Original IsPendingKill reads the same packed bit whose cleanup
+            // assertion names ActorToKill->bDeleteMe (Engine.dll 103966bd).
+            const bool pendingKill = QuestVr::Vm::ToBool(Read(actor, PropertyNamed(actor, "bDeleteMe"), 0u));
+            QuestVr::Ai::Emit(manager->state, path, event, channel, value, radius, index == 713u,
+                pendingKill, lifecycleOperations_);
+        }
+        RefreshAIRoots(manager);
+        return {};
+    }
     void ValidateStateBudget() const {
         // Bound persistent state across independent calls, not just one VM's
         // temporary allocations. Measure without copying live values/sets.
@@ -2686,6 +2853,15 @@ private:
         };
         std::size_t objects{}, totalNativeLinks{};
         for (const auto* object : persistentRuntime->get()->exports) {
+            if (object->nativeAiManager) {
+                const auto before = measured.measuredBudget().retained;
+                const auto* manager = object->nativeAiManager;
+                measured.MeasureAiManager(manager->state);
+                const auto accounted = measured.measuredBudget().retained - before;
+                const auto actual = QuestVr::Ai::RetainedBytes(manager->state) + sizeof(RuntimeAIManager) -
+                    sizeof(QuestVr::Ai::State) + sizeof(GCAllocation) + manager->actorRoots.capacity() * sizeof(RuntimeObject*);
+                if (actual > accounted) defaults.Retain(actual - accounted);
+            }
             const auto nativeCount = object->childActors.size() + object->basedActors.size();
             if (nativeCount > limits.maxActorLinks || totalNativeLinks > limits.maxActorLinks - nativeCount)
                 throw std::runtime_error("Persistent total native actor link budget exceeded");
@@ -2916,6 +3092,7 @@ struct PreparedScriptState {
     std::vector<PreparedScriptObject> objects;
     std::vector<PreparedClassDefaults> classDefaults;
     std::vector<GCRoot<RuntimeObject>> births;
+    std::vector<GCRoot<RuntimeAIManager>> aiManagers;
     std::vector<RuntimeObject*> exports, worldActors;
     decltype(persistentQualifiedObjects) qualified;
     decltype(persistentVmObjects) vm;
@@ -2997,6 +3174,14 @@ QuestVr::ScriptSavedState CollectScriptSavedState() {
         }
     };
     for (auto* object : persistentRuntime->get()->exports) {
+        if (object->nativeAiManager) {
+            const auto& state = object->nativeAiManager->state;
+            // Measure the complete graph before its first snapshot copy.
+            QuestVr::ScriptStateDetail::Writer aiMeasure(limits, nullptr);
+            aiMeasure.MeasureAiManager(state);
+            capture.Retain(aiMeasure.measuredBudget().retained);
+            saved.aiManagers.push_back(state);
+        }
         if (!object->classDefaultValues.empty()) {
             if (saved.objects.size() + saved.classDefaults.size() >= limits.maxObjects)
                 throw std::runtime_error("Script save default/actor count exceeds budget");
@@ -3145,6 +3330,57 @@ public:
         }
     }
     const std::string& MapSource() const { return mapPath_; }
+    const std::string& NativeLevelPath() {
+        if (!nativeLevelPath_.empty()) return nativeLevelPath_;
+        const auto& map = Table(mapPath_);
+        std::string path;
+        for (std::size_t i = 0u; i < map.exports.size(); ++i) {
+            if (LowerAscii(Qualified(map, map.exports[i].ObjClass)) != "engine.level") continue;
+            if (!path.empty()) throw std::runtime_error("Script save map has multiple native Levels");
+            path = Qualified(map, static_cast<std::int32_t>(i + 1u));
+        }
+        if (path.empty()) throw std::runtime_error("Script save map has no serialized native Level");
+        Retain(path.size() + 1u);
+        nativeLevelPath_ = std::move(path);
+        return nativeLevelPath_;
+    }
+    void ValidateAI(const QuestVr::Ai::State& state) {
+        QuestVr::Ai::Validate(state);
+        if (state.processDepth != 0u)
+            throw std::runtime_error("Script save AI manager is inside an active processing pass");
+        if (LowerAscii(state.levelPath) != LowerAscii(NativeLevelPath()))
+            throw std::runtime_error("Script save AI manager native Level identity is invalid");
+        const auto owner = mapClasses_.find(LowerAscii(state.ownerPath));
+        if (owner == mapClasses_.end() || !ClassDerives(owner->second, "Engine.LevelInfo"))
+            throw std::runtime_error("Script save AI manager owner is not a map LevelInfo");
+        if (!nativeActorOrder_) {
+            auto order = ReadPortableLevel68ActorOrder(Table(mapPath_));
+            Retain(order.size() * sizeof(std::int32_t));
+            for (const auto reference : order)
+                if (reference < 0 || static_cast<std::size_t>(reference) > Table(mapPath_).exports.size())
+                    throw std::runtime_error("Script save AI Level slot is not a local export");
+            std::sort(order.begin(), order.end());
+            nativeActorOrder_ = std::move(order);
+        }
+        const auto linked = [&](const std::string& path) {
+            if (IsBirth(path)) return true;
+            const auto found = mapExports_.find(LowerAscii(path));
+            return found != mapExports_.end() && std::binary_search(nativeActorOrder_->begin(),
+                nativeActorOrder_->end(), static_cast<std::int32_t>(found->second + 1u));
+        };
+        if (!linked(state.ownerPath))
+            throw std::runtime_error("Script save AI owner has no native Level binding");
+        const auto actor = [&](const std::string& path, const bool optional = false) {
+            if (optional && path.empty()) return;
+            const auto found = mapClasses_.find(LowerAscii(path));
+            if (found == mapClasses_.end() || !ClassDerives(found->second, "Engine.Actor") || !linked(path))
+                throw std::runtime_error("Script save AI reference is not an actor in its map");
+        };
+        for (const auto& sender : state.senders) actor(sender.actor);
+        for (const auto& receiver : state.receivers) {
+            actor(receiver.actor); actor(receiver.previousBestActor, true); actor(receiver.params.bestActor, true);
+        }
+    }
     void RegisterBirths(const std::vector<QuestVr::ScriptSavedBirth>& births) {
         const auto& map = Table(mapPath_);
         const bool realLevel = std::any_of(map.exports.begin(),map.exports.end(),[&](const auto& entry) {
@@ -3298,6 +3534,8 @@ private:
     std::unordered_map<std::string, std::string> mapClasses_;
     std::unordered_map<std::string, std::size_t> mapExports_;
     std::unordered_map<std::string, RuntimeObject*> birthClasses_;
+    std::optional<std::vector<std::int32_t>> nativeActorOrder_;
+    std::string nativeLevelPath_;
     std::size_t retainedMetadata_{};
     void Retain(const std::size_t bytes) {
         constexpr std::size_t cap = 64u * 1024u * 1024u;
@@ -3456,6 +3694,8 @@ PreparedScriptState PrepareScriptSavedState(
     // Register the entire symbolic graph before validating a single property:
     // valid references can point to births not present in the running session.
     schema.RegisterBirths(saved.births);
+    // Check the complete symbolic graph before allocating staged GC objects.
+    for (const auto& state : saved.aiManagers) schema.ValidateAI(state);
     PreparedScriptState prepared;
     prepared.objects.reserve(saved.objects.size());
     prepared.classDefaults.reserve(saved.classDefaults.size());
@@ -3556,8 +3796,24 @@ PreparedScriptState PrepareScriptSavedState(
             actor->outer = outer.text.empty() ? nullptr : target(outer.text);
             actor->reflection.outerPath = outer.text;
             if (actor->outer) actor->references.push_back(actor->outer);
-            const auto& xlevel = record->values.at("xlevel").at(0u);
-            actor->nativeXLevel = xlevel.text.empty() ? nullptr : target(xlevel.text);
+            // Preserve the constructor's actual native Level independently of
+            // a later script overlay (which may legitimately contain None).
+            actor->nativeXLevel = target(schema.NativeLevelPath());
+        }
+    }
+    for (const auto& state : saved.aiManagers) {
+        if (!apply) continue;
+        pendingBirthGarbage = true;
+        prepared.aiManagers.emplace_back(GC::Alloc<RuntimeAIManager>());
+        auto* manager = prepared.aiManagers.back().get();
+        manager->owner = target(state.ownerPath); manager->level = target(state.levelPath);
+        manager->state = state;
+        const auto retain = [&](const std::string& path) {
+            if (!path.empty()) manager->actorRoots.push_back(target(path));
+        };
+        for (const auto& sender : state.senders) retain(sender.actor);
+        for (const auto& receiver : state.receivers) {
+            retain(receiver.actor); retain(receiver.previousBestActor); retain(receiver.params.bestActor);
         }
     }
     if (LowerAscii(saved.mapName) == LowerAscii(persistentMapPackageName)) {
@@ -4299,7 +4555,7 @@ QuestVr::Vm::Result ExecutePortableActorEvent(const std::string& actorPath, cons
 bool GetPortableRuntimeScriptStatePresent() {
     if (!persistentRuntime || !persistentRuntime->get()) return false;
     for (const auto* object : persistentRuntime->get()->exports)
-        if (object->committedScriptState || !object->classDefaultValues.empty()) return true;
+        if (object->committedScriptState || !object->classDefaultValues.empty() || object->nativeAiManager) return true;
     return false;
 }
 
@@ -5479,7 +5735,8 @@ bool SavePortableRuntimeState(const std::string& path) {
         const auto scriptState = CollectScriptSavedState();
         const bool hasDefaults = !scriptState.classDefaults.empty();
         const bool hasBirths = !scriptState.births.empty();
-        const bool hasScript = !scriptState.objects.empty() || hasDefaults || hasBirths;
+        const bool hasAiManagers = !scriptState.aiManagers.empty();
+        const bool hasScript = !scriptState.objects.empty() || hasDefaults || hasBirths || hasAiManagers;
         const bool hasState = std::any_of(scriptState.objects.begin(), scriptState.objects.end(),
             [](const auto& object) { return object.state.has_value(); });
         const bool hasLifecycle = std::any_of(scriptState.objects.begin(), scriptState.objects.end(),
@@ -5529,7 +5786,7 @@ bool SavePortableRuntimeState(const std::string& path) {
         // This is exactly the v3 prefix, including list order and field widths.
         // Only the version word and appended trailer differ for v4-v7. Pure
         // property/clock captures retain the byte-exact original v4 format.
-        write32(0x53515844u); write32(hasBirths ? 8u : hasLifecycle ? 7u : hasDefaults ? 6u : hasState ? 5u : hasScript ? 4u : 3u);
+        write32(0x53515844u); write32(hasAiManagers ? 9u : hasBirths ? 8u : hasLifecycle ? 7u : hasDefaults ? 6u : hasState ? 5u : hasScript ? 4u : 3u);
         writeStrings(persistentInventory); writeStrings(inactive); writeStrings(activated); writeFloat(persistentPlayerHealth);
         write32(static_cast<std::uint32_t>(damaged.size()));
         for (const auto& entry : damaged) {
@@ -5596,7 +5853,7 @@ static bool ReadPortableRuntimeState(const std::string& path, const bool apply, 
         };
         if (read32() != 0x53515844u) throw std::runtime_error("Runtime checkpoint magic is invalid");
         const auto version = read32();
-        if (version < 1u || version > 8u) throw std::runtime_error("Runtime checkpoint version is unsupported");
+        if (version < 1u || version > 9u) throw std::runtime_error("Runtime checkpoint version is unsupported");
         auto inventory = readStrings(); auto inactive = readStrings(); auto activated = readStrings();
         float playerHealth = 100.0f;
         std::vector<std::pair<std::string, float>> damaged;
@@ -5639,6 +5896,7 @@ static bool ReadPortableRuntimeState(const std::string& path, const bool apply, 
                 [](const auto& object) { return object.state.has_value(); });
             const bool hasDefaults = !scriptState.classDefaults.empty();
             const bool hasBirths = !scriptState.births.empty();
+            const bool hasAiManagers = !scriptState.aiManagers.empty();
             for (const auto& birth : scriptState.births) savedBirthKeys.emplace(LowerAscii(birth.path));
             const bool hasLifecycle = std::any_of(scriptState.objects.begin(), scriptState.objects.end(),
                 [](const auto& object) { return object.lifecycle.has_value(); });
@@ -5646,7 +5904,8 @@ static bool ReadPortableRuntimeState(const std::string& path, const bool apply, 
                 (version == 5u && (blob.at(6u) != QuestVr::ScriptStateDetail::StateFrameVersion || !hasState)) ||
                 (version == 6u && (blob.at(6u) != QuestVr::ScriptStateDetail::ClassDefaultsVersion || !hasDefaults)) ||
                 (version == 7u && (blob.at(6u) != QuestVr::ScriptStateDetail::ActorLifecycleVersion || !hasLifecycle)) ||
-                (version == 8u && (blob.at(6u) != QuestVr::ScriptStateDetail::BirthManifestVersion || !hasBirths)))
+                (version == 8u && (blob.at(6u) != QuestVr::ScriptStateDetail::BirthManifestVersion || !hasBirths)) ||
+                (version == 9u && (blob.at(6u) != QuestVr::ScriptStateDetail::AiManagerVersion || !hasAiManagers)))
                 throw std::runtime_error("Runtime checkpoint state trailer does not match its envelope version");
             if (!expectedMapName.empty() && LowerAscii(expectedMapName) != LowerAscii(scriptState.mapName))
                 throw std::runtime_error("Runtime checkpoint script map does not match save metadata");
@@ -5737,6 +5996,12 @@ static bool ReadPortableRuntimeState(const std::string& path, const bool apply, 
         // Cold manifests can reference geometry absent from the live world.
         // Decode it while every allocating restore container is still staged.
         static_cast<void>(DecodeRuntimeActorAssets(visualAssets));
+        // All versions replace native AI ownership. Missing graph sections in
+        // legacy saves mean reset, never merge or re-run initialization.
+        for (auto* object : persistentRuntime->get()->exports) {
+            if (object->nativeAiManager) pendingBirthGarbage = true;
+            object->nativeAiManager = nullptr;
+        }
         persistentRuntime->get()->exports.swap(prepared.exports);
         persistentWorldActors.swap(prepared.worldActors);
         persistentQualifiedObjects.swap(prepared.qualified); persistentVmObjects.swap(prepared.vm);
@@ -5771,6 +6036,7 @@ static bool ReadPortableRuntimeState(const std::string& path, const bool apply, 
                 object.target->committedLifecycle = true;
             }
         }
+        for (const auto& root : prepared.aiManagers) root.get()->owner->nativeAiManager = root.get();
         ++persistentWorldRevision;
         return true;
     } catch (const std::exception& error) {

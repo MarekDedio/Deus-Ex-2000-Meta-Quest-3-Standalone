@@ -1,5 +1,40 @@
 # Port status
 
+## Native AI event-state foundation (2026-10-10)
+
+- Implemented actual LevelInfo.InitEventManager650 and Actor event natives
+  710/711/713/714/715/716: ordered registrations, deferred-deletion markers,
+  perception flags, persistent/pulsed sensory channels and sixteen history
+  slots. An absent manager retains the original wrapper branch; actual native
+  Level ownership is independent of reflected Level/XLevel overlays.
+- Native manager GC ownership and a separate transactional journal preserve
+  bindings/actor references through callbacks, failures and cold graph restore.
+  AI-only changes do not republish geometry. Codec6 / checkpoint9 retain empty
+  manager presence and full ordered native graph snapshots with bounded,
+  typed symbolic preflight; legacy saves clear managers atomically.
+- Corrected cold-born native XLevel restoration: reflected None stays None,
+  but actual native event routing keeps the constructor's serialized Level.
+- Original UpdateReactionCallbacks now reaches its actual Return PC484, and
+  SetDistress reaches Return PC57 while retaining emission history. Explicit
+  begun-play BeginState also completes its original property/state effects and
+  real BlockReactions deletion. This does not initialize the world automatically.
+  Explicit StartUp with a real initialized manager advances beyond registration and next
+  refuses native1010 in Engine.Pawn.PlayTurnHead PC211/opcode0x63, with complete
+  graph/inventory/world rollback. This is not automatic campaign startup.
+- Registration is not working NPC AI. Processing/perception/callback delivery,
+  native deferred cleanup and automatic world/player startup remain unfinished.
+  Original manager destruction notification occurs in CleanupDestroyed, not
+  synchronous Destroy279. Original saves normalize deletions; portable graph
+  snapshots explicitly preserve them. See [AI-EVENT-STATE.md](AI-EVENT-STATE.md).
+- Final host suite: 48 passes / three optional original-data skips (51 entries).
+  All three separate final-source original actor/runtime/defaults integrations
+  pass. Generated runtime integration passes 3,485 checks / 77 rejection
+  controls; AI mutation tests pass 188 / 51 and codec controls 6,128 / 5,574.
+- Final ARM64 APK builds and verifies with signature scheme v2; 16 ZIP entries
+  contain no original commercial packages. It is archived locally, not installed
+  over the physically accepted seated-player build. This batch has no new
+  headset performance/visual acceptance. See [QUEST-TEST-BUILD.md](QUEST-TEST-BUILD.md).
+
 ## Original actor lookup and synchronous foreach (2026-10-09)
 
 - VM Iterator/Next/Pop now execute real native foreach loops with independent

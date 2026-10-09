@@ -323,7 +323,7 @@ foreach(test_target IN ITEMS quest_actor_animation_clock_test quest_portable_vm_
     quest_script_state_test portable_object_stack_test quest_state_frame_codec_test quest_state_execution_test
     quest_authored_struct_value_test portable_struct_descriptor_test quest_object_cast_test portable_object_cast_test
     portable_buffered_file_test quest_spawn_placement_test portable_class_defaults_test portable_actor_lifecycle_test portable_actor_spawn_test
-    quest_actor_overlap_test)
+    quest_actor_overlap_test quest_ai_event_state_test)
     add_executable(${test_target} ${test_target}.cpp)
     target_compile_features(${test_target} PRIVATE cxx_std_20)
     target_link_libraries(${test_target} PRIVATE quest_portable_host)
