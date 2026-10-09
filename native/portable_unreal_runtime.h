@@ -293,6 +293,11 @@ QuestVr::Vm::Result ExecutePortableActorFunction(
 QuestVr::Vm::Value ReadPortableActorScriptProperty(
     const std::string& actorPath, const std::string& propertyName,
     std::uint32_t arrayIndex = 0u);
+// Read-only concrete loaded Actor UClass default block. Later CDO writes do
+// not change already-loaded instances or derived/sibling default blocks.
+QuestVr::Vm::Value ReadPortableClassDefault(
+    const std::string& classPath, const std::string& propertyName,
+    std::uint32_t arrayIndex = 0u);
 // Read-only contiguous fixed-array slots using one property resolution. Count
 // must be 1..1024, and the complete range must fit the actual declaration.
 std::vector<QuestVr::Vm::Value> ReadPortableActorScriptPropertySlots(
@@ -343,10 +348,12 @@ QuestVr::Vm::Result ExecutePortableActorEvent(const std::string& actorPath,
     const std::vector<QuestVr::Vm::Evaluation>& arguments = {},
     const QuestVr::Vm::Limits& limits = {});
 // v4 preserves supported actor overlays/clocks; v5 adds portable state frames,
-// local storage and state-keyed disabled sets. This
+// local storage and state-keyed disabled sets; v6 adds concrete-class defaults.
+// This
 // predicate means state is present, not that a successful save has cleared it.
 // Map replacement/unload still require a per-map archive and are guarded while
-// state exists. Legacy v1-v3 load explicitly restores authored properties;
+// state exists. Legacy v1-v3 load explicitly restores authored properties,
+// and every v1-v5 load clears mutable class defaults;
 // ShutdownPortableRuntime explicitly discards the runtime's object lifetime.
 bool GetPortableRuntimeScriptStatePresent();
 // Compatibility name for callers written before v4 persistence.

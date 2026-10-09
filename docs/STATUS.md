@@ -1,5 +1,34 @@
 # Port status
 
+## Concrete class-default startup dependency (2026-10-09)
+
+- Original `DefaultVariable` writes now mutate the concrete loaded Actor
+  class's own default block, with typed metadata validation and transaction
+  rollback. Existing actor instances and loaded sibling/child defaults remain
+  unchanged. No instance substitution or original callback suppression is used.
+- Runtime checkpoint v6 / script codec v3 retain concrete-class patches
+  separately from authored actors. Class-only captures, complete replacement,
+  omitted-class reset and legacy v1-v5 clearing are supported. Combined
+  persistent default/state retained bytes and value nodes are bounded.
+- Native283 publishes original collision radius/height assignments and returns
+  true, matching the pin's reflected contract. Actor collision-hash reinsertion
+  and full physics remain unfinished.
+- All 44 ordinary host tests pass; three original-data integrations skip in
+  the default 47-entry CTest invocation. Separate original actor and runtime
+  regressions pass with the changed source. Android ARM64 builds successfully;
+  the signed backend-only APK is retained locally, not installed over the
+  accepted player-controls build. See [CLASS-DEFAULTS.md](CLASS-DEFAULTS.md).
+- The complete original AssaultGun `PreBeginPlay` passes with explicitly
+  generated singleplayer/listen-server relevance preconditions: original height
+  adjustment, concrete default ammo count, existing-instance/base/sibling
+  isolation, v6 restoration and nested rollback. This is a scoped callback
+  test, not automatic world startup; the unmodified dormant map callback still
+  refuses `Destroy279` at `Engine.Actor.PreBeginPlay:199` with full rollback.
+- Real actor births/Destroy/lifecycle publication, persistent birth manifests,
+  automatic startup, AI/timers/latent actions, authored player inventory and
+  complete campaign progression remain unfinished. This is not a full-game
+  release or a newly verified on-device gameplay change.
+
 ## Quest player/body, input and original UI increment (2026-10-09)
 
 - Original JC trousers/shoes/lower coat and original weapon-viewmodel hand

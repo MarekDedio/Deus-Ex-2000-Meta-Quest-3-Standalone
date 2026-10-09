@@ -1,5 +1,15 @@
 # Current Quest test-build handoff (2026-10-09)
 
+A newer **backend-only, not installed** class-default build is available at
+`artifacts/release-class-defaults-20261009/DeusExQuestVR-class-defaults-20261009.apk`.
+Its SHA-256 is `DE69AC761B7D6A6D01FDEE9C024348E244191D59D5213F1498BCF7BBAE5F9BB2`
+and size is 18,600,785 bytes. Android compilation and APK Signature Scheme v2
+verification pass; no original commercial packages are embedded. It adds
+transactional concrete-class defaults/native283/checkpoint-v6 backend support,
+not new visible player controls or complete campaign startup. See
+[CLASS-DEFAULTS.md](CLASS-DEFAULTS.md). The installed, physically accepted
+player-controls handoff remains the build described below.
+
 This player-controls APK replaces the frozen asynchronous-startup build
 `25e38b3`. It is installed on the user's Quest 3, not a finished full-campaign
 release. Original commercial game data remains in the existing

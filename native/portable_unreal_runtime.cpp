@@ -77,6 +77,10 @@ public:
     std::unique_ptr<PortableLodMesh> brushMesh;
     std::unordered_map<std::string,
         std::unordered_map<std::uint32_t, QuestVr::Vm::Value>> scriptValues;
+    // Mutable storage belongs to this concrete UClass's copied default block.
+    // Existing instances/derived classes keep their immutable authored copy;
+    // they must never fall through to later mutations on this or a base CDO.
+    decltype(scriptValues) classDefaultValues;
     std::optional<QuestVr::ActorAnimationClock> animationClock;
     std::optional<QuestVr::StateObject> stateObject;
     // Nonserialized local-storage identity. References held by an executing
@@ -1247,6 +1251,7 @@ public:
     void Rollback() noexcept override {
         for (auto& entry : saved_) {
             entry.first->scriptValues.swap(entry.second.values);
+            entry.first->classDefaultValues.swap(entry.second.defaults);
             entry.first->animationClock.swap(entry.second.clock);
             entry.first->stateObject.swap(entry.second.state);
             entry.first->stateLocalsRevision = entry.second.revision;
@@ -1328,6 +1333,32 @@ public:
             if (value.kind != Kind::Name) throw std::runtime_error("Animation native requires a Name argument");
             return value.text;
         };
+        if (index == 283u) { // Actor.SetCollisionSize, pinned UActor_Phys.cpp.
+            argumentCount(2u, 2u);
+            if (!IsDerivedFromPath(object->cls, "Engine.Actor"))
+                throw std::runtime_error("SetCollisionSize receiver is not Engine.Actor");
+            const auto numeric = [&](const std::size_t slot) {
+                const auto value = argument(slot);
+                if (value.kind != Kind::Byte && value.kind != Kind::Int && value.kind != Kind::Float)
+                    throw std::runtime_error("SetCollisionSize requires two numeric floats");
+                const auto result = QuestVr::Vm::ToFloat(value);
+                if (!std::isfinite(result)) throw std::runtime_error("SetCollisionSize bounds are not finite");
+                return result;
+            };
+            const auto radius = numeric(0u), height = numeric(1u);
+            const auto radiusProperty = PropertyNamed(object, "CollisionRadius");
+            const auto heightProperty = PropertyNamed(object, "CollisionHeight");
+            if (radiusProperty.zero.kind != Kind::Float || heightProperty.zero.kind != Kind::Float ||
+                radiusProperty.arrayDimension != 1u || heightProperty.arrayDimension != 1u)
+                throw std::runtime_error("SetCollisionSize authored bounds are not scalar floats");
+            // The pin's room-fit refusal is TODO: it assigns both fields and
+            // returns true. Preserve that rather than inventing a placement
+            // test or clamp. This portable host publishes reflected bounds;
+            // it does not yet simulate the pin's actor collision hash/physics.
+            ReferenceFor(object, radiusProperty, 0u, false)->write(Value::Float(radius));
+            ReferenceFor(object, heightProperty, 0u, false)->write(Value::Float(height));
+            return {Value::Bool(true), {}};
+        }
         if (index == 3970u) { // Actor.SetPhysics, pinned UActor_Phys.cpp.
             argumentCount(1u, 2u);
             if (!IsDerivedFromPath(object->cls, "Engine.Actor"))
@@ -1470,24 +1501,31 @@ public:
     }
     Value Read(RuntimeObject* object, const Property& property, const std::uint32_t index,
         const bool defaults = false) {
-        if (!defaults) {
+        const bool classDefaults = defaults || object->classDescriptor != nullptr;
+        RuntimeObject* source = classDefaults ? DefaultClass(object) : object;
+        if (classDefaults) {
+            const auto values = source->classDefaultValues.find(LowerAscii(property.name));
+            if (values != source->classDefaultValues.end()) {
+                const auto slot = values->second.find(index);
+                if (slot != values->second.end()) return slot->second;
+            }
+        } else {
             if (const auto* value = FindScriptOverlay(object, property.name.c_str(), index)) return *value;
             if (LowerAscii(property.name) == "region" && property.zero.kind == Kind::Struct)
                 return Region(object, property.zero);
         }
-        RuntimeObject* source = defaults ? object->cls : object;
         while (source != nullptr) {
             const auto& properties = source->classDescriptor ? source->classDescriptor->defaults : source->instanceProperties;
             for (auto tag = properties.rbegin(); tag != properties.rend(); ++tag) {
                 if (tag->name != property.name || tag->arrayIndex != index) continue;
                 return Decode(*source, *tag, property);
             }
-            source = source == object ? object->cls : source->base;
+            source = !classDefaults && source == object ? object->cls : source->base;
         }
         return property.zero;
     }
     Property PropertyNamed(RuntimeObject* object, const std::string& name) {
-        return ClassProperty(object->cls, name);
+        return ClassProperty(object->classDescriptor ? DefaultClass(object) : object->cls, name);
     }
     Property ClassProperty(RuntimeObject* actorClass, const std::string& name) {
         for (RuntimeObject* cls = actorClass; cls != nullptr; cls = cls->base) {
@@ -1497,6 +1535,15 @@ public:
         throw std::runtime_error("Runtime property metadata unavailable: " + name);
     }
     Property DescribeProperty(const std::string& key) { return Describe(Object(key)); }
+    RuntimeObject* DefaultClass(RuntimeObject* object) {
+        auto* cls = object->classDescriptor ? object : object->cls;
+        if (!cls || !cls->classDescriptor || cls->reflection.metaClass != "Class" ||
+            !IsDerivedFromPath(cls, "Engine.Actor") ||
+            LowerAscii(std::filesystem::path(cls->sourcePath).extension().string()) == ".dx" ||
+            Table(cls->sourcePath).exports.at(cls->exportIndex).ObjClass != 0)
+            throw std::runtime_error("Class-default receiver is not a loaded script Actor UClass");
+        return cls;
+    }
     std::shared_ptr<const QuestVr::AuthoredStructSchema> StructPropertySchema(const std::string& key) {
         auto* property = Object(key);
         if (!property->property || property->property->type != "StructProperty")
@@ -1506,6 +1553,7 @@ public:
 private:
     struct Before {
         decltype(RuntimeObject::scriptValues) values;
+        decltype(RuntimeObject::classDefaultValues) defaults;
         std::optional<QuestVr::ActorAnimationClock> clock;
         std::optional<QuestVr::StateObject> state;
         std::uint64_t revision{};
@@ -1974,12 +2022,19 @@ private:
         auto result = std::make_shared<Reference>(); result->zero = property.zero;
         result->read = [this, object, property, index, defaults]() { return Read(object, property, index, defaults); };
         result->write = [this, object, property, index, defaults](const Value& value) {
-            if (defaults) throw std::runtime_error("Class-default mutation is not supported by actor VM host");
+            auto* target = defaults || object->classDescriptor ? DefaultClass(object) : object;
+            const auto actual = ClassProperty(target->classDescriptor ? target : target->cls, property.name);
+            if (LowerAscii(actual.key) != LowerAscii(property.key) || index >= actual.arrayDimension)
+                throw std::runtime_error("VM property is not owned by its concrete receiver class");
             auto normalized = TypedLiveValue(property, value);
-            Touch(object);
-            object->scriptValues[LowerAscii(property.name)][index] = std::move(normalized);
-            object->committedScriptState = true;
-            UpdateClockProperty(object, property.name, index);
+            Touch(target);
+            if (target->classDescriptor) {
+                target->classDefaultValues[LowerAscii(property.name)][index] = std::move(normalized);
+            } else {
+                target->scriptValues[LowerAscii(property.name)][index] = std::move(normalized);
+                target->committedScriptState = true;
+                UpdateClockProperty(target, property.name, index);
+            }
         };
         return result;
     }
@@ -1987,24 +2042,56 @@ private:
         if (!transaction_) throw std::runtime_error("VM mutation outside a transaction");
         if (saved_.find(object) == saved_.end()) {
             if (saved_.size() >= 4096u) throw std::runtime_error("VM touched actor budget exceeded");
-            saved_.emplace(object, Before{object->scriptValues, object->animationClock, object->stateObject,
+            saved_.emplace(object, Before{object->scriptValues, object->classDefaultValues, object->animationClock, object->stateObject,
                 object->stateLocalsRevision, object->committedScriptState});
         }
     }
     void ValidateStateBudget() const {
         // Bound persistent state across independent calls, not just one VM's
         // temporary allocations. Measure without copying live values/sets.
-        // This is a state-only cap; the save path additionally applies its
-        // combined gameplay/property/clock/state capture and envelope budgets.
+        // State/default storage is bounded without copying live values. The
+        // save path additionally applies combined gameplay/property/clock/
+        // state/default capture and envelope budgets.
         QuestVr::ScriptStateLimits limits;
         limits.maxBytes = QuestVr::kMaximumSaveRuntimeBytes;
         QuestVr::ScriptStateDetail::Writer measured(limits, nullptr);
+        QuestVr::ScriptStateDetail::Budget defaults{limits};
+        const auto valueBudget = [&](const auto& self, const Value& value, const std::size_t depth) -> void {
+            defaults.Node(depth); defaults.Retain(sizeof(value));
+            QuestVr::ScriptStateDetail::Text(value.text, limits, false, true);
+            defaults.Retain(value.text.size() + 1u);
+            if (value.kind == Kind::Float && !std::isfinite(value.floating))
+                throw std::runtime_error("Persistent class-default float is not finite");
+            if (value.kind == Kind::Vector)
+                for (const auto component : value.vector) if (!std::isfinite(component))
+                    throw std::runtime_error("Persistent class-default vector is not finite");
+            for (const auto& [name, member] : value.fields) {
+                QuestVr::ScriptStateDetail::Text(name, limits, true);
+                defaults.Retain(sizeof(std::string) + 5u * sizeof(void*) + name.size() + 1u);
+                self(self, member, depth + 1u);
+            }
+        };
         std::size_t objects{};
         for (const auto* object : persistentRuntime->get()->exports) {
+            if (!object->classDefaultValues.empty()) {
+                if (++objects > limits.maxObjects) throw std::runtime_error("Persistent default/state object budget exceeded");
+                defaults.Retain(sizeof(QuestVr::ScriptSavedClassDefaults) + object->reflection.objectPath.size() + 1u);
+                for (const auto& [name, slots] : object->classDefaultValues) {
+                    QuestVr::ScriptStateDetail::Text(name, limits, true);
+                    defaults.Properties(slots.size());
+                    defaults.Retain(sizeof(std::string) + 5u * sizeof(void*) + name.size() + 1u);
+                    defaults.Array(slots.size(), sizeof(QuestVr::ScriptSavedProperty) + 5u * sizeof(void*));
+                    for (const auto& [index, value] : slots) { static_cast<void>(index); valueBudget(valueBudget, value, 0u); }
+                }
+            }
             if (!object->stateObject) continue;
             if (++objects > limits.maxObjects) throw std::runtime_error("Persistent state object budget exceeded");
             measured.MeasureStateObject(*object->stateObject);
         }
+        if (measured.measuredBudget().retained > limits.maxBytes - defaults.retained)
+            throw std::runtime_error("Persistent combined default/state byte budget exceeded");
+        if (measured.measuredBudget().nodes > limits.totalValueNodes - defaults.nodes)
+            throw std::runtime_error("Persistent combined default/state value-node budget exceeded");
     }
     QuestVr::StateObject& EnsureStateObject(RuntimeObject* object) {
         Touch(object);
@@ -2173,6 +2260,14 @@ struct PreparedScriptObject {
     std::optional<QuestVr::ActorAnimationClock> clock;
     std::optional<QuestVr::StateObject> state;
 };
+struct PreparedClassDefaults {
+    RuntimeObject* target{};
+    decltype(RuntimeObject::classDefaultValues) values;
+};
+struct PreparedScriptState {
+    std::vector<PreparedScriptObject> objects;
+    std::vector<PreparedClassDefaults> classDefaults;
+};
 
 std::vector<QuestVr::ScriptSavedProperty> ClockProperties(
     const QuestVr::ActorAnimationClock& clock) {
@@ -2224,8 +2319,27 @@ QuestVr::ScriptSavedState CollectScriptSavedState() {
         }
     };
     for (auto* object : persistentRuntime->get()->exports) {
+        if (!object->classDefaultValues.empty()) {
+            if (saved.objects.size() + saved.classDefaults.size() >= limits.maxObjects)
+                throw std::runtime_error("Script save default/actor count exceeds budget");
+            auto* cls = host.DefaultClass(object);
+            if (cls != object) throw std::runtime_error("Script save defaults are not owned by their concrete class");
+            QuestVr::ScriptSavedClassDefaults record;
+            capture.Retain(sizeof(record) + cls->reflection.objectPath.size() + 1u);
+            record.classPath = cls->reflection.objectPath;
+            for (const auto& [name, slots] : cls->classDefaultValues) {
+                const auto property = host.ClassProperty(cls, name);
+                for (const auto& [index, value] : slots) {
+                    capture.Properties(1u);
+                    capture.Retain(sizeof(QuestVr::ScriptSavedProperty) + property.key.size() + property.name.size() + 2u);
+                    measure(measure, value, 0u);
+                    record.properties.push_back({property.key, property.name, index, value});
+                }
+            }
+            saved.classDefaults.push_back(std::move(record));
+        }
         if (!object->committedScriptState) continue;
-        if (saved.objects.size() >= 4096u || object->cls == nullptr)
+        if (saved.objects.size() + saved.classDefaults.size() >= limits.maxObjects || object->cls == nullptr)
             throw std::runtime_error("Script save object budget or class is invalid");
         QuestVr::ScriptSavedObject record;
         capture.Retain(sizeof(record) + object->reflection.objectPath.size() + object->cls->reflection.objectPath.size() + 2u);
@@ -2327,6 +2441,12 @@ public:
         if (!IsDerivedFromPath(cls, "Engine.Actor"))
             throw std::runtime_error("Script save target is not an actor");
         return cls;
+    }
+    RuntimeObject* DefaultClass(const std::string& classPath) {
+        auto* object = host_.Object(classPath);
+        if (host_.DefaultClass(object) != object)
+            throw std::runtime_error("Script save default target is not an actual script Actor UClass");
+        return object;
     }
     QuestVr::Vm::Value PropertyValue(RuntimeObject* cls, const QuestVr::ScriptSavedProperty& saved) {
         const auto property = host_.ClassProperty(cls, saved.name);
@@ -2565,13 +2685,28 @@ private:
     }
 };
 
-std::vector<PreparedScriptObject> PrepareScriptSavedState(
+PreparedScriptState PrepareScriptSavedState(
     const QuestVr::ScriptSavedState& saved, const bool apply) {
     if (apply && LowerAscii(saved.mapName) != LowerAscii(persistentMapPackageName))
         throw std::runtime_error("Script save can only restore into its authored map");
     ScriptSaveSchema schema(saved.mapName);
-    std::vector<PreparedScriptObject> prepared;
-    prepared.reserve(saved.objects.size());
+    PreparedScriptState prepared;
+    prepared.objects.reserve(saved.objects.size());
+    prepared.classDefaults.reserve(saved.classDefaults.size());
+    std::unordered_set<std::string> defaultClasses;
+    for (const auto& record : saved.classDefaults) {
+        if (record.properties.empty() || !defaultClasses.emplace(LowerAscii(record.classPath)).second)
+            throw std::runtime_error("Empty or duplicate script save class defaults");
+        auto* cls = schema.DefaultClass(record.classPath);
+        PreparedClassDefaults next;
+        if (apply) next.target = cls;
+        for (const auto& property : record.properties) {
+            auto value = schema.PropertyValue(cls, property);
+            if (!next.values[LowerAscii(property.name)].emplace(property.index, std::move(value)).second)
+                throw std::runtime_error("Duplicate script save class-default property alias/index");
+        }
+        prepared.classDefaults.push_back(std::move(next));
+    }
     std::unordered_set<std::string> seen;
     for (const auto& record : saved.objects) {
         if (!seen.emplace(LowerAscii(record.path)).second)
@@ -2598,7 +2733,7 @@ std::vector<PreparedScriptObject> PrepareScriptSavedState(
         }
         next.clock = record.clock;
         if (record.state) next.state = schema.StateValue(cls, record);
-        prepared.push_back(std::move(next));
+        prepared.objects.push_back(std::move(next));
     }
     return prepared;
 }
@@ -3172,6 +3307,18 @@ QuestVr::Vm::Value ReadPortableActorScriptProperty(const std::string& actorPath,
     return host.Read(actor, property, arrayIndex);
 }
 
+QuestVr::Vm::Value ReadPortableClassDefault(const std::string& classPath,
+    const std::string& propertyName, const std::uint32_t arrayIndex) {
+    PortableActorVmHost host;
+    auto* object = host.Object(classPath);
+    if (host.DefaultClass(object) != object)
+        throw std::runtime_error("Explicit default receiver is not a loaded script Actor UClass");
+    const auto property = host.ClassProperty(object, propertyName);
+    if (arrayIndex >= property.arrayDimension)
+        throw std::runtime_error("Class-default fixed-array index is out of range");
+    return host.Read(object, property, arrayIndex, true);
+}
+
 std::vector<QuestVr::Vm::Value> ReadPortableActorScriptPropertySlots(const std::string& actorPath,
     const std::string& propertyName, const std::uint32_t firstIndex, const std::uint32_t count) {
     if (count == 0u || count > 1024u)
@@ -3297,7 +3444,7 @@ QuestVr::Vm::Result ExecutePortableActorEvent(const std::string& actorPath, cons
 bool GetPortableRuntimeScriptStatePresent() {
     if (!persistentRuntime || !persistentRuntime->get()) return false;
     for (const auto* object : persistentRuntime->get()->exports)
-        if (object->committedScriptState) return true;
+        if (object->committedScriptState || !object->classDefaultValues.empty()) return true;
     return false;
 }
 
@@ -4351,7 +4498,8 @@ bool SavePortableRuntimeState(const std::string& path) {
         // Collect and schema-check all script state before opening the output.
         // A rejected/over-budget capture must not truncate an existing save.
         const auto scriptState = CollectScriptSavedState();
-        const bool hasScript = !scriptState.objects.empty();
+        const bool hasDefaults = !scriptState.classDefaults.empty();
+        const bool hasScript = !scriptState.objects.empty() || hasDefaults;
         const bool hasState = std::any_of(scriptState.objects.begin(), scriptState.objects.end(),
             [](const auto& object) { return object.state.has_value(); });
         if (hasScript) static_cast<void>(PrepareScriptSavedState(scriptState, false));
@@ -4397,9 +4545,9 @@ bool SavePortableRuntimeState(const std::string& path) {
             persistentCredits < 0 || persistentSkillPoints < 0 || damaged.size() > 100'000u)
             throw std::runtime_error("Runtime checkpoint gameplay values are outside their valid ranges");
         // This is exactly the v3 prefix, including list order and field widths.
-        // Only the version word and appended trailer differ for v4/v5. Pure
+        // Only the version word and appended trailer differ for v4/v5/v6. Pure
         // property/clock captures retain the byte-exact original v4 format.
-        write32(0x53515844u); write32(hasState ? 5u : hasScript ? 4u : 3u);
+        write32(0x53515844u); write32(hasDefaults ? 6u : hasState ? 5u : hasScript ? 4u : 3u);
         writeStrings(persistentInventory); writeStrings(inactive); writeStrings(activated); writeFloat(persistentPlayerHealth);
         write32(static_cast<std::uint32_t>(damaged.size()));
         for (const auto& entry : damaged) {
@@ -4466,7 +4614,7 @@ static bool ReadPortableRuntimeState(const std::string& path, const bool apply, 
         };
         if (read32() != 0x53515844u) throw std::runtime_error("Runtime checkpoint magic is invalid");
         const auto version = read32();
-        if (version < 1u || version > 5u) throw std::runtime_error("Runtime checkpoint version is unsupported");
+        if (version < 1u || version > 6u) throw std::runtime_error("Runtime checkpoint version is unsupported");
         auto inventory = readStrings(); auto inactive = readStrings(); auto activated = readStrings();
         float playerHealth = 100.0f;
         std::vector<std::pair<std::string, float>> damaged;
@@ -4494,7 +4642,7 @@ static bool ReadPortableRuntimeState(const std::string& path, const bool apply, 
             credits = static_cast<std::int32_t>(savedCredits); skillPoints = static_cast<std::int32_t>(savedSkills);
             flags = readStrings(); goals = readStrings(); notes = readStrings(); applied = readStrings();
         }
-        std::vector<PreparedScriptObject> prepared;
+        PreparedScriptState prepared;
         if (version >= 4u) {
             const auto prefixBytes = cursor;
             const auto length = read32();
@@ -4506,8 +4654,10 @@ static bool ReadPortableRuntimeState(const std::string& path, const bool apply, 
             const auto scriptState = QuestVr::DecodeScriptSavedState(blob, limits);
             const bool hasState = std::any_of(scriptState.objects.begin(), scriptState.objects.end(),
                 [](const auto& object) { return object.state.has_value(); });
+            const bool hasDefaults = !scriptState.classDefaults.empty();
             if ((version == 4u && (blob.at(6u) != QuestVr::ScriptStateDetail::Magic[6u] || hasState)) ||
-                (version == 5u && (blob.at(6u) != QuestVr::ScriptStateDetail::StateFrameVersion || !hasState)))
+                (version == 5u && (blob.at(6u) != QuestVr::ScriptStateDetail::StateFrameVersion || !hasState)) ||
+                (version == 6u && (blob.at(6u) != QuestVr::ScriptStateDetail::ClassDefaultsVersion || !hasDefaults)))
                 throw std::runtime_error("Runtime checkpoint state trailer does not match its envelope version");
             if (!expectedMapName.empty() && LowerAscii(expectedMapName) != LowerAscii(scriptState.mapName))
                 throw std::runtime_error("Runtime checkpoint script map does not match save metadata");
@@ -4544,7 +4694,8 @@ static bool ReadPortableRuntimeState(const std::string& path, const bool apply, 
         }
         if (!apply) return true;
         for (RuntimeObject* object : persistentRuntime->get()->exports) {
-            object->scriptValues.clear(); object->animationClock.reset(); object->stateObject.reset(); object->committedScriptState = false;
+            object->scriptValues.clear(); object->classDefaultValues.clear();
+            object->animationClock.reset(); object->stateObject.reset(); object->committedScriptState = false;
         }
         for (std::size_t index = persistentScriptExportCount; index < persistentRuntime->get()->exports.size(); ++index) {
             RuntimeObject* object = persistentRuntime->get()->exports[index];
@@ -4557,7 +4708,8 @@ static bool ReadPortableRuntimeState(const std::string& path, const bool apply, 
         for (auto* object : inactiveTargets) object->active = false;
         for (auto* object : activatedTargets) object->activated = true;
         for (const auto& entry : damagedTargets) {entry.first->healthInitialized = true; entry.first->health = entry.second;}
-        for (auto& object : prepared) {
+        for (auto& cls : prepared.classDefaults) cls.target->classDefaultValues.swap(cls.values);
+        for (auto& object : prepared.objects) {
             object.target->scriptValues.swap(object.values); object.target->animationClock.swap(object.clock);
             object.target->stateObject.swap(object.state);
             object.target->committedScriptState = true;

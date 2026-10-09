@@ -146,6 +146,16 @@ endif()
 add_test(NAME portable_runtime_state COMMAND portable_runtime_state_test)
 set_tests_properties(portable_runtime_state PROPERTIES SKIP_RETURN_CODE 77)
 
+add_executable(portable_original_defaults_test portable_original_defaults_test.cpp)
+target_compile_features(portable_original_defaults_test PRIVATE cxx_std_20)
+target_link_libraries(portable_original_defaults_test PRIVATE quest_portable_host)
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+    target_compile_options(portable_original_defaults_test PRIVATE -Wall -Wextra -Werror)
+    target_link_options(portable_original_defaults_test PRIVATE -static -static-libgcc -static-libstdc++)
+endif()
+add_test(NAME portable_original_defaults COMMAND portable_original_defaults_test)
+set_tests_properties(portable_original_defaults PROPERTIES SKIP_RETURN_CODE 77)
+
 add_executable(quest_save_metadata_test quest_save_metadata_test.cpp)
 target_compile_features(quest_save_metadata_test PRIVATE cxx_std_17)
 target_include_directories(quest_save_metadata_test PRIVATE "${PORT_NATIVE}")
@@ -311,7 +321,7 @@ endif()
 foreach(test_target IN ITEMS quest_actor_animation_clock_test quest_portable_vm_test
     quest_script_state_test portable_object_stack_test quest_state_frame_codec_test quest_state_execution_test
     quest_authored_struct_value_test portable_struct_descriptor_test quest_object_cast_test portable_object_cast_test
-    portable_buffered_file_test quest_spawn_placement_test)
+    portable_buffered_file_test quest_spawn_placement_test portable_class_defaults_test)
     add_executable(${test_target} ${test_target}.cpp)
     target_compile_features(${test_target} PRIVATE cxx_std_20)
     target_link_libraries(${test_target} PRIVATE quest_portable_host)

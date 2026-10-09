@@ -158,7 +158,7 @@ void MalformedStreams() {
     }
     auto broken=bytes;broken.push_back(0);Reject([&] { DecodeScriptSavedState(broken); },"Trailing save bytes accepted");
     broken=bytes;broken[0]^=1;Reject([&] { DecodeScriptSavedState(broken); },"Bad save magic accepted");
-    broken=bytes;broken[6]=3;Reject([&] { DecodeScriptSavedState(broken); },"Unsupported codec version accepted");
+    broken=bytes;broken[6]=4;Reject([&] { DecodeScriptSavedState(broken); },"Unsupported codec version accepted");
     for(const Bytes& value : {Bytes{255},Bytes{3,2},Bytes{4,0,0,0xc0,0x7f},Bytes{4,0,0,0x80,0x7f},
         Bytes{8,0,0,0x80,0x7f,0,0,0,0,0,0,0,0}}) {
         broken=OneValue(value);Reject([&] { DecodeScriptSavedState(broken); },"Bad value tag/bool/non-finite payload accepted");
@@ -251,12 +251,208 @@ void InvalidStateAndBudgets() {
     for(unsigned i=0;i<8;++i) clockBytes[clockBytes.size()-10u+i]=static_cast<std::uint8_t>(bits>>(8u*i));
     Reject([&] { DecodeScriptSavedState(clockBytes); },"Non-finite decoded simulation time accepted");
 }
+Bytes DefaultsPrefix(std::uint32_t classes=1u) {
+    auto bytes=Prefix(0u);bytes[6]=ScriptStateDetail::ClassDefaultsVersion;U32(bytes,classes);return bytes;
+}
+void Defaults(Bytes& bytes,const std::string& cls,std::uint32_t properties) {
+    String(bytes,cls);U32(bytes,properties);
+}
+Bytes DefaultsValue(const Bytes& value) {
+    auto bytes=DefaultsPrefix();Defaults(bytes,"Fixture.Actor",1u);
+    Property(bytes,"Fixture.Actor.Value","Value",0u);bytes.insert(bytes.end(),value.begin(),value.end());return bytes;
+}
+ScriptSavedState DefaultsState() {
+    auto saved=State();
+    StateObject state;state.hasStack=true;state.frameOverride=true;StateFrame frame;
+    frame.codePath="Fixture.Pawn.Waiting";frame.localsCodePath=frame.codePath;
+    frame.statementIndex=73u;frame.latent=StateLatent::Stop;
+    frame.locals.push_back({"Fixture.Pawn.Waiting.Target",{Text(Vm::Kind::Object,"FixtureMap.ActorA")}});
+    state.frame=std::move(frame);state.disabled["Waiting"]={"Tick"};saved.objects[0].state=std::move(state);
+    saved.classDefaults.push_back({"Fixture.Pawn",saved.objects[0].properties});
+    saved.classDefaults.push_back({"Fixture.Actor",{{"Fixture.Actor.Shared","Shared",0u,Integer(42)}}});
+    return saved;
+}
+void DefaultsRoundtripAndLegacy() {
+    const auto saved=DefaultsState();const auto bytes=EncodeScriptSavedState(saved);
+    const auto restored=DecodeScriptSavedState(bytes);
+    Require(bytes[6]==3u && restored.classDefaults.size()==2u && restored.objects.size()==2u,
+        "Shared defaults did not select codec3 or changed actor count");
+    Require(restored.classDefaults[0].classPath=="Fixture.Actor" && restored.classDefaults[1].classPath=="Fixture.Pawn",
+        "Shared defaults classes are not canonical");
+    for (const auto& original : saved.classDefaults) {
+        const auto found=std::find_if(restored.classDefaults.begin(),restored.classDefaults.end(),[&](const auto& item) {
+            return item.classPath==original.classPath;
+        });
+        Require(found!=restored.classDefaults.end() && found->properties.size()==original.properties.size(),
+            "Shared defaults class/property count changed");
+        for (const auto& property : original.properties) {
+            const auto value=std::find_if(found->properties.begin(),found->properties.end(),[&](const auto& item) {
+                return item.key==property.key && item.index==property.index;
+            });
+            Require(value!=found->properties.end() && value->name==property.name && SameValue(value->value,property.value),
+                "Shared defaults typed value/array slot changed: "+property.name);
+        }
+    }
+    const auto& actor=restored.objects[1];
+    Require(actor.clock && actor.state && actor.state->hasStack && actor.state->frameOverride && actor.state->frame &&
+        actor.state->frame->statementIndex==73u && actor.state->frame->latent==StateLatent::Stop &&
+        actor.state->frame->codePath=="Fixture.Pawn.Waiting" && actor.state->frame->localsCodePath=="Fixture.Pawn.Waiting" &&
+        actor.state->disabled.at("Waiting").count("Tick")==1u &&
+        actor.state->frame->locals[0].values[0].text=="FixtureMap.ActorA",
+        "Codec3 changed existing actor state/frame/local data");
+    SameClock(*saved.objects[0].clock,*actor.clock);
+    Require(!restored.objects[0].clock && !restored.objects[0].state,"Codec3 fabricated absent actor clock/state");
+    Require(EncodeScriptSavedState(restored)==bytes,"Codec3 decode/reencode is not byte deterministic");
+    auto reordered=saved;std::reverse(reordered.objects.begin(),reordered.objects.end());
+    std::reverse(reordered.classDefaults.begin(),reordered.classDefaults.end());
+    for (auto& item : reordered.classDefaults) std::reverse(item.properties.begin(),item.properties.end());
+    Require(EncodeScriptSavedState(reordered)==bytes,"Shared class/default property input order changes the save");
+    // Explicit class-only bytes contain neither actor records nor clock/state
+    // flags after the default properties. They reuse the stable Int tag.
+    const auto literal=DefaultsValue({2u,0x78u,0x56u,0x34u,0x12u});
+    const auto parsed=DecodeScriptSavedState(literal);
+    Require(parsed.objects.empty() && parsed.classDefaults.size()==1u &&
+        parsed.classDefaults[0].properties[0].value.integer==0x12345678,
+        "Literal defaults-only little-endian value changed");
+    Require(EncodeScriptSavedState(parsed)==literal,"Literal codec3 bytes changed");
+    // Empty defaults must retain EXACT existing v1/v2 bytes and optionality.
+    auto old=State();const auto v1=EncodeScriptSavedState(old);
+    old.classDefaults=saved.classDefaults;Require(EncodeScriptSavedState(old)[6]==3u,"CDO-only extension failed without frames");
+    old.classDefaults.clear();Require(EncodeScriptSavedState(old)==v1,"Removing defaults changed legacy codec1 bytes");
+    old.objects[0].state=saved.objects[0].state;const auto v2=EncodeScriptSavedState(old);
+    Require(v2[6]==2u,"Existing state no longer selects codec2");
+    old.classDefaults=saved.classDefaults;Require(EncodeScriptSavedState(old)[6]==3u,"Shared defaults did not override codec2 selection");
+    old.classDefaults.clear();Require(EncodeScriptSavedState(old)==v2,"Removing defaults changed legacy codec2 bytes");
+    auto minimal=Prefix(1u);minimal[6]=2u;Object(minimal,"Map.A",0u);
+    minimal.insert(minimal.end(),{0u,1u,0u,0u,0u});U32(minimal,0u);
+    Require(EncodeScriptSavedState(DecodeScriptSavedState(minimal))==minimal,
+        "Literal codec2 no-frame bytes changed");
+    Require(DecodeScriptSavedState(v1).classDefaults.empty() && DecodeScriptSavedState(v2).classDefaults.empty(),
+        "Legacy codec invented shared defaults");
+    auto independent=restored;independent.classDefaults[1].properties.back().value=Integer(-17);
+    Require(EncodeScriptSavedState(restored)==bytes,"Copied default properties alias the restored values");
+}
+void MalformedDefaults() {
+    const auto bytes=EncodeScriptSavedState(DefaultsState());
+    for (std::size_t length=0u;length<bytes.size();++length) {
+        const Bytes truncated(bytes.begin(),bytes.begin()+length);
+        Reject([&] { DecodeScriptSavedState(truncated); },"Truncated codec3 defaults accepted");
+    }
+    auto broken=bytes;broken.push_back(0u);Reject([&] { DecodeScriptSavedState(broken); },"Trailing codec3 bytes accepted");
+    for (const std::uint8_t version : {0u,1u,2u,4u,255u}) {
+        broken=bytes;broken[6]=version;
+        Reject([&] { DecodeScriptSavedState(broken); },"Incompatible defaults codec version accepted");
+    }
+    broken=EncodeScriptSavedState(State());broken[6]=3u;
+    Reject([&] { DecodeScriptSavedState(broken); },"Legacy layout accepted as codec3 without class section");
+    for (const std::uint32_t count : {0u,0xffffffffu}) {
+        broken=DefaultsPrefix(count);Reject([&] { DecodeScriptSavedState(broken); },"Empty/unbounded class section accepted");
+    }
+    broken=DefaultsPrefix();Defaults(broken,"Fixture.Actor",0u);
+    Reject([&] { DecodeScriptSavedState(broken); },"Empty defaults record accepted");
+    broken=DefaultsPrefix();Defaults(broken,"Fixture.Actor",0xffffffffu);
+    Reject([&] { DecodeScriptSavedState(broken); },"Unbounded defaults property count accepted");
+    for (const auto& classes : {std::array<std::string,2>{"Fixture.A","Fixture.A"},
+        std::array<std::string,2>{"Fixture.A","fixture.a"},std::array<std::string,2>{"Fixture.Z","Fixture.A"}}) {
+        broken=DefaultsPrefix(2u);
+        for (const auto& cls : classes) { Defaults(broken,cls,1u);Property(broken,"Fixture.Actor.Value","Value",0u);broken.push_back(0u); }
+        Reject([&] { DecodeScriptSavedState(broken); },"Duplicate/colliding/unsorted class defaults accepted");
+    }
+    for (std::size_t mode=0u;mode<7u;++mode) {
+        broken=DefaultsPrefix();Defaults(broken,"Fixture.Actor",2u);
+        Property(broken,mode==3u ? "Fixture.Z" : "Fixture.Value","Value",mode==5u ? 1u : 0u);broken.push_back(0u);
+        const auto key=mode==1u ? "fixture.value" : mode==2u ? "Fixture.Value2" :
+            mode==3u ? "Fixture.A" : mode==6u ? "Fixture.Z" : "Fixture.Value";
+        const auto name=mode==4u ? "Other" : mode==6u ? "value" : "Value";
+        Property(broken,key,name,mode==1u || mode==4u ? 1u : 0u);broken.push_back(0u);
+        Reject([&] { DecodeScriptSavedState(broken); },"Default property key/alias/index collision or ordering accepted");
+    }
+    for (const auto& identity : {std::string(""),std::string("bad\nidentity"),std::string("bad\0identity",12),std::string(1,'\xff')}) {
+        broken=DefaultsPrefix();Defaults(broken,identity,1u);Property(broken,"Fixture.Value","Value",0u);broken.push_back(0u);
+        Reject([&] { DecodeScriptSavedState(broken); },"Malformed default class identity accepted");
+        broken=DefaultsPrefix();Defaults(broken,"Fixture.Actor",1u);Property(broken,identity,"Value",0u);broken.push_back(0u);
+        Reject([&] { DecodeScriptSavedState(broken); },"Malformed default property key accepted");
+        broken=DefaultsPrefix();Defaults(broken,"Fixture.Actor",1u);Property(broken,"Fixture.Value",identity,0u);broken.push_back(0u);
+        Reject([&] { DecodeScriptSavedState(broken); },"Malformed default property name accepted");
+    }
+    for (const Bytes& value : {Bytes{255u},Bytes{3u,2u},Bytes{4u,0u,0u,0xc0u,0x7fu},Bytes{4u,0u,0u,0x80u,0x7fu},
+        Bytes{10u,255u,255u,255u,255u}}) {
+        broken=DefaultsValue(value);Reject([&] { DecodeScriptSavedState(broken); },"Malformed defaults typed value accepted");
+    }
+    // Actor flags retain v2 validation even when shared defaults select v3.
+    for (const std::size_t flag : {0u,1u}) {
+        broken=Prefix(1u);broken[6]=3u;Object(broken,"Map.A",0u);
+        broken.push_back(flag==0u ? 2u : 0u);broken.push_back(flag==1u ? 2u : 0u);
+        U32(broken,1u);Defaults(broken,"Fixture.Actor",1u);Property(broken,"Fixture.Value","Value",0u);broken.push_back(0u);
+        Reject([&] { DecodeScriptSavedState(broken); },"Codec3 invalid actor clock/state flag accepted");
+    }
+    broken=DefaultsValue({0u});broken.insert(broken.end(),{1u,0u,0u,0u});
+    Reject([&] { DecodeScriptSavedState(broken); },"Invented CDO clock/state payload accepted");
+}
+void InvalidDefaultsAndBudgets() {
+    const auto saved=DefaultsState();const auto valid=EncodeScriptSavedState(saved);
+    const auto rejection=[](const ScriptSavedState& item,const std::string& message) {
+        Reject([&] { EncodeScriptSavedState(item); },message);
+    };
+    auto broken=saved;broken.classDefaults.push_back(broken.classDefaults[0]);rejection(broken,"Duplicate input CDO accepted");
+    broken=saved;broken.classDefaults[1].classPath="fixture.pawn";rejection(broken,"Case-colliding input CDO accepted");
+    broken=saved;broken.classDefaults[0].properties.clear();rejection(broken,"Empty input CDO accepted");
+    broken=saved;broken.classDefaults[0].classPath="Bad\nClass";rejection(broken,"Malformed input CDO identity accepted");
+    for (std::size_t mode=0u;mode<5u;++mode) {
+        broken=saved;auto duplicate=broken.classDefaults[1].properties[0];
+        if (mode==1u) { duplicate.key="Fixture.Actor.Shared2"; }
+        if (mode==2u) { duplicate.key="Fixture.Actor.Shared2";duplicate.name="shared"; }
+        if (mode==3u) { duplicate.key="fixture.actor.shared";duplicate.index=1u; }
+        if (mode==4u) { duplicate.name="Other";duplicate.index=1u; }
+        broken.classDefaults[1].properties.push_back(std::move(duplicate));
+        rejection(broken,"Input default property key/alias/index collision accepted");
+    }
+    broken=saved;broken.classDefaults[1].properties[0].value=Floating(std::numeric_limits<float>::infinity());
+    rejection(broken,"Nonfinite input CDO value accepted");
+    broken=saved;broken.classDefaults[1].properties[0].value=Text(Vm::Kind::String,std::string("a\0b",3));
+    rejection(broken,"NUL input CDO value accepted");
+    for (std::size_t mode=0u;mode<6u;++mode) {
+        ScriptStateLimits limits;
+        if (mode==0u) limits.maxObjects=saved.objects.size()+saved.classDefaults.size()-1u;
+        if (mode==1u) limits.maxProperties=saved.objects[0].properties.size()+saved.objects[1].properties.size();
+        if (mode==2u) limits.totalValueNodes=25u;
+        if (mode==3u) limits.maxBytes=valid.size()-1u;
+        if (mode==4u) limits.maxStringBytes=8u;
+        if (mode==5u) limits.maxDepth=2u;
+        Reject([&] { EncodeScriptSavedState(saved,limits); },"Aggregate mixed actor/CDO encode budget not enforced");
+        Reject([&] { DecodeScriptSavedState(valid,limits); },"Aggregate mixed actor/CDO decode budget not enforced");
+    }
+    auto lean=ScriptSavedState{"Map",{},{{"Fixture.Actor",{{"Fixture.Actor.Value","Value",0u,{}}}}}};
+    const auto leanBytes=EncodeScriptSavedState(lean);ScriptStateLimits retained;retained.maxBytes=leanBytes.size()+1u;
+    Reject([&] { EncodeScriptSavedState(lean,retained); },"CDO retained-state budget missing during encode");
+    Reject([&] { DecodeScriptSavedState(leanBytes,retained); },"CDO retained-state budget missing during decode");
+    ScriptStateLimits noRecords;noRecords.maxObjects=0u;
+    Reject([&] { EncodeScriptSavedState(lean,noRecords); },"CDO record bypasses zero object budget during encode");
+    Reject([&] { DecodeScriptSavedState(leanBytes,noRecords); },"CDO record bypasses zero object budget during decode");
+    auto two=lean;two.classDefaults.push_back({"Fixture.Pawn",{{"Fixture.Pawn.Value","Value",0u,{}}}});
+    const auto twoBytes=EncodeScriptSavedState(two);ScriptStateLimits one;one.maxObjects=1u;
+    Reject([&] { EncodeScriptSavedState(two,one); },"CDO record count is only bounded per class during encode");
+    Reject([&] { DecodeScriptSavedState(twoBytes,one); },"CDO record count is only bounded per class during decode");
+    one=ScriptStateLimits{};one.maxProperties=1u;
+    Reject([&] { EncodeScriptSavedState(two,one); },"CDO property count is only bounded per class during encode");
+    Reject([&] { DecodeScriptSavedState(twoBytes,one); },"CDO property count is only bounded per class during decode");
+    one=ScriptStateLimits{};one.totalValueNodes=1u;
+    Reject([&] { EncodeScriptSavedState(two,one); },"CDO value nodes are only bounded per class during encode");
+    Reject([&] { DecodeScriptSavedState(twoBytes,one); },"CDO value nodes are only bounded per class during decode");
+    auto deep=Scalar(Vm::Kind::Nothing);
+    for (std::size_t i=0u;i<8u;++i) { auto parent=Scalar(Vm::Kind::Struct);parent.fields["Child"]=std::move(deep);deep=std::move(parent); }
+    lean.classDefaults[0].properties[0].value=std::move(deep);const auto deepBytes=EncodeScriptSavedState(lean);
+    one=ScriptStateLimits{};one.maxDepth=8u;
+    Reject([&] { EncodeScriptSavedState(lean,one); },"CDO nested encode depth is off by one");
+    Reject([&] { DecodeScriptSavedState(deepBytes,one); },"CDO nested decode depth is off by one");
+}
 }
 
 int main() {
     try {
         RoundtripAndDeterminism();MalformedStreams();InvalidStateAndBudgets();
+        DefaultsRoundtripAndLegacy();MalformedDefaults();InvalidDefaultsAndBudgets();
         std::cout<<"PASS script-state codec controls="<<checks<<" rejection controls="<<rejections
-            <<"; structural codec only, live Quest clock/VM continuation not verified\n";return 0;
+            <<"; codec1/2 legacy identity and codec3 shared defaults, structural codec only\n";return 0;
     }catch(const std::exception& error) {std::cerr<<"FAIL script-state codec: "<<error.what()<<" after "<<checks<<" controls\n";return 1;}
 }

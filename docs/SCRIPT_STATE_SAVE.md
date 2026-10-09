@@ -3,7 +3,8 @@
 Runtime checkpoint version 4 adds persistence for properties committed by the
 bounded actor interpreter and its native animation clocks. Version 5 additionally
 stores explicit portable state frames, typed locals and state-keyed disabled sets.
-Neither version adds
+Version 6 additionally retains mutations of concrete, loaded Actor class-default
+blocks, separately from actor instances. None of these versions adds
 automatic NPC startup, AI, live animation, or a general UnrealScript savegame.
 Only the current map's supported, authored actor objects are restored.
 
@@ -19,13 +20,14 @@ object/class constraints, including InventoryItem; see
 ## Runtime envelope
 
 The runtime checkpoint still starts with magic `0x53515844`. A checkpoint
-without committed script objects is written as version 3, with no new trailer.
+without committed script objects or class defaults is written as version 3, with no new trailer.
 A checkpoint containing only properties/clocks uses version 4; one with any
-portable state object uses version 5. The version word changes, the existing
+portable state object uses version 5. A checkpoint with class-default mutations
+uses version 6, including when it has no actor records. The version word changes, the existing
 version-3 fields retain their order and widths, and one trailer is appended.
 
 ```text
-u32 magic, u32 version=4 or 5
+u32 magic, u32 version=4, 5 or 6
 version-3 fields:
   inventory[], inactive actors[], activated actors[]
   f32 player health, damaged actors[(path,f32 health)]
@@ -42,6 +44,7 @@ remaining runtime payload. Truncation, oversized lengths and trailing bytes
 are errors. Versions 1, 2 and 3 remain readable through their existing field
 sets; they cannot contain a script trailer. A v4 envelope must contain codec v1
 without state records; a v5 envelope must contain codec v2 with a state record.
+A v6 envelope must contain codec v3 and a nonempty class-default section.
 
 This version number is distinct from the Persona/UI metadata version and from
 the paired `.qsv` bundle format. The alternating-slot, checksum and durable
@@ -55,7 +58,8 @@ the codec does not implement file I/O.
 `DecodeScriptSavedState`. Its internal format starts with eight magic/version
 bytes: `44 58 51 56 4d 53 01 00` (`DXQVMS`, version 1, reserved zero).
 If any object has portable state, byte 6 is 2 instead of 1. Without such state,
-the exact legacy v1 representation is retained.
+the exact legacy v1 representation is retained. Class-default mutations select
+byte 6 = 3; without them the v1/v2 representation remains unchanged.
 
 ```text
 mapName
@@ -68,8 +72,22 @@ objects[]:
     u8 value tag, typed value payload
   u8 hasClock (0 or 1)
   optional complete animation clock
-  codec v2 only: u8 hasState, optional portable state object
+  codec v2/v3: u8 hasState, optional portable state object
+codec v3 only:
+  u32 concrete class-default count (nonzero)
+  class defaults[]:
+    loaded script Actor class path
+    u32 property count (nonzero)
+    properties[]: same property key/name/index/value layout as above
 ```
+
+Class-default records contain no animation clock or state frame. They are
+canonical by case-insensitive class path and share the actor section's object,
+property, value-node, depth and retained-byte budgets. Duplicate class paths or
+property name/index aliases are rejected before materialization. Actual runtime
+validation additionally requires a loaded script Actor UClass and its inherited
+property declaration; an actor instance, asset or unrelated property is not a
+valid default target. See [class-default semantics](CLASS-DEFAULTS.md).
 
 The v2 state object contains three booleans (HasStack, portable-frame override,
 hasFrame), optional qualified running/local-owner paths, u32 next-statement ordinal,
@@ -128,8 +146,8 @@ Generic codec defaults are:
 | Limit | Default |
 | --- | --- |
 | Encoded bytes and estimated aggregate retained state | 32 MiB each |
-| Objects | 4,096 total |
-| Properties | 65,536 total, across all objects |
+| Objects and class-default records | 4,096 combined |
+| Properties | 65,536 total, across actors and class defaults |
 | Typed value nodes | 262,144 total |
 | String bytes | 8,192 per string |
 | Map name | 128 bytes, also within the string limit |
@@ -154,10 +172,12 @@ the serialized-value quota. Unsupported map-local classes in a different,
 unloaded custom map fail closed; imported original campaign classes use the
 initialized script reflection graph.
 
-Persistent portable state is measured cumulatively without copying before a
+Persistent portable state and class defaults are measured cumulatively without copying before a
 transaction and after allocating state mutations/at commit. This uses conservative
 codec accounting with the 16 MiB runtime cap and aggregate state counts, so
-independent calls cannot grow unbounded sets/locals. The combined save capture
+independent calls cannot grow unbounded sets/locals/default values. Combined
+retained bytes and typed value nodes are checked, not just encoded byte length.
+The combined save capture
 still accounts for gameplay prefix, object identities, properties and clocks;
 its quota can reject a capture even within this state-only bound.
 
@@ -205,7 +225,7 @@ hierarchies fail closed.
 `ValidatePortableRuntimeState` is a read-only preflight for live gameplay,
 property overlays, clocks and portable state. It can inspect the saved map's authored schema
 while a different map is loaded; it does not replace the map or apply that
-timeline. Schema caches may be populated during inspection. Actual version-4/5
+timeline. Schema caches may be populated during inspection. Actual version-4/5/6
 application requires the matching authored map to be loaded and resolves all
 targets and prepares all allocating containers before clearing live state.
 
@@ -213,7 +233,9 @@ A rejected/truncated/mismatched checkpoint leaves the current gameplay state,
 property overlays, clocks and portable state intact. Capture collects and schema-validates its
 state before writing, so validation/budget failure must not truncate an existing
 checkpoint. After successful application, saved script state replaces the
-current scoped overlays/clocks/state rather than merging abandoned timelines.
+current scoped overlays/clocks/state/class defaults rather than merging abandoned timelines.
+Every validated version-1 through version-5 load clears all mutable class
+defaults, including omitted classes. Read-only validation never clears them.
 
 A fully validated legacy version-1/2/3 load has no script blob and intentionally
 clears scoped overlays, clocks, portable state objects and committed flags, returning those fields to

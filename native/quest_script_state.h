@@ -28,9 +28,14 @@ struct ScriptSavedObject {
     std::optional<ActorAnimationClock> clock;
     std::optional<StateObject> state{};
 };
+struct ScriptSavedClassDefaults {
+    std::string classPath;
+    std::vector<ScriptSavedProperty> properties;
+};
 struct ScriptSavedState {
     std::string mapName;
     std::vector<ScriptSavedObject> objects;
+    std::vector<ScriptSavedClassDefaults> classDefaults{};
 };
 struct ScriptStateLimits {
     std::size_t maxBytes{32u << 20u};
@@ -46,6 +51,7 @@ static_assert(sizeof(float)==4u && sizeof(double)==8u &&
     "Script state codec requires IEEE binary32/binary64 floats");
 inline constexpr std::array<std::uint8_t, 8> Magic{{'D','X','Q','V','M','S',1,0}};
 inline constexpr std::uint8_t StateFrameVersion=2u;
+inline constexpr std::uint8_t ClassDefaultsVersion=3u;
 // Stable serialized tags deliberately do not depend on Vm::Kind ordinals.
 enum class Tag : std::uint8_t {
     Nothing=0, Byte=1, Int=2, Bool=3, Float=4, Name=5, Object=6,
@@ -147,11 +153,23 @@ inline std::vector<const Item*> Sorted(const std::vector<Item>& items, Name name
     return sorted;
 }
 
+using PropertyAlias=std::pair<std::string_view,std::uint32_t>;
+inline void ValidatePropertyAliases(std::vector<PropertyAlias>& aliases) {
+    std::sort(aliases.begin(),aliases.end(),[](const auto& a,const auto& b) {
+        const auto order=Compare(a.first,b.first);
+        return order!=0 ? order<0 : a.second<b.second;
+    });
+    for (std::size_t i=1u; i<aliases.size(); ++i)
+        if (Compare(aliases[i-1u].first,aliases[i].first)==0 && aliases[i-1u].second==aliases[i].second)
+            Fail("duplicate or case-colliding class-default property alias/index");
+}
+
 class Writer {
 public:
     Writer(const ScriptStateLimits& limits, std::vector<std::uint8_t>* output)
         : limits_(limits),budget_{limits},output_(output) {}
     std::size_t size() const { return size_; }
+    const Budget& measuredBudget() const { return budget_; }
     // Cumulative, non-copy validation of standalone live StateObjects. Runtime
     // transactions can preflight persistent state with the exact codec rules
     // before committing, without creating a saved-object snapshot or blob.
@@ -164,9 +182,12 @@ public:
     void State(const ScriptSavedState& state) {
         budget_.Retain(sizeof(ScriptSavedState));
         const bool withFrames=std::any_of(state.objects.begin(),state.objects.end(),[](const auto& object) { return object.state.has_value(); });
-        for (std::size_t i=0; i<Magic.size(); ++i) Byte(i==6u && withFrames ? StateFrameVersion : Magic[i]);
+        const bool withDefaults=!state.classDefaults.empty();
+        const auto version=withDefaults ? ClassDefaultsVersion : withFrames ? StateFrameVersion : Magic[6u];
+        for (std::size_t i=0; i<Magic.size(); ++i) Byte(i==6u ? version : Magic[i]);
         String(state.mapName,true,false,128u);
-        if (state.objects.size()>limits_.maxObjects) Fail("object count exceeds the budget");
+        if (state.objects.size()>limits_.maxObjects || state.classDefaults.size()>limits_.maxObjects-state.objects.size())
+            Fail("aggregate object/class-default count exceeds the budget");
         budget_.Array(state.objects.size(),sizeof(ScriptSavedObject)+sizeof(void*));
         Count(state.objects.size());
         for (const auto& object : state.objects) {
@@ -177,33 +198,25 @@ public:
             const auto& object=*objects[i];
             if (i!=0 && Compare(objects[i-1]->path,object.path)==0) Fail("duplicate or case-colliding object path");
             String(object.path,true); String(object.classPath,true);
-            budget_.Properties(object.properties.size());
-            budget_.Array(object.properties.size(),sizeof(ScriptSavedProperty)+sizeof(void*));
-            Count(object.properties.size());
-            std::vector<const ScriptSavedProperty*> properties; properties.reserve(object.properties.size());
-            for (const auto& property : object.properties) {
-                Text(property.key,limits_,true); Text(property.name,limits_,true);
-                properties.push_back(&property);
-            }
-            std::sort(properties.begin(),properties.end(),[](const auto* a,const auto* b) {
-                const auto order=Compare(a->key,b->key);
-                return order!=0 ? order<0 : a->index<b->index;
-            });
-            for (std::size_t j=0; j<properties.size(); ++j) {
-                const auto& property=*properties[j];
-                if (j!=0 && Compare(properties[j-1]->key,property.key)==0) {
-                    if (properties[j-1]->key!=property.key || properties[j-1]->index==property.index ||
-                        properties[j-1]->name!=property.name)
-                        Fail("duplicate or case-colliding property identity");
-                }
-                String(property.key,true); String(property.name,true); U32(property.index);
-                Value(property.value,0u);
-            }
+            Properties(object.properties,false);
             Byte(object.clock ? 1u : 0u);
             if (object.clock) Animation(*object.clock);
-            if (withFrames) {
+            if (withFrames || withDefaults) {
                 Byte(object.state ? 1u : 0u);
                 if (object.state) ObjectState(*object.state);
+            }
+        }
+        if (withDefaults) {
+            budget_.Array(state.classDefaults.size(),sizeof(ScriptSavedClassDefaults)+sizeof(void*));
+            Count(state.classDefaults.size());
+            for (const auto& defaults : state.classDefaults) Text(defaults.classPath,limits_,true);
+            const auto classes=Sorted(state.classDefaults,[](const auto& defaults) -> const std::string& { return defaults.classPath; });
+            for (std::size_t i=0; i<classes.size(); ++i) {
+                const auto& defaults=*classes[i];
+                if (i!=0 && Compare(classes[i-1u]->classPath,defaults.classPath)==0)
+                    Fail("duplicate or case-colliding class-default identity");
+                if (defaults.properties.empty()) Fail("empty class-default record");
+                String(defaults.classPath,true); Properties(defaults.properties,true);
             }
         }
     }
@@ -226,6 +239,32 @@ private:
     void String(const std::string& value,bool identity,bool empty=false,std::size_t cap=0) {
         Text(value,limits_,identity,empty,cap); budget_.Retain(value.size()+1u);
         Count(value.size()); for (const unsigned char c : value) Byte(c);
+    }
+    void Properties(const std::vector<ScriptSavedProperty>& values,const bool defaults) {
+        budget_.Properties(values.size());
+        budget_.Array(values.size(),sizeof(ScriptSavedProperty)+sizeof(void*));
+        Count(values.size());
+        std::vector<const ScriptSavedProperty*> properties; properties.reserve(values.size());
+        std::vector<PropertyAlias> aliases;
+        if (defaults) { budget_.Array(values.size(),sizeof(PropertyAlias)); aliases.reserve(values.size()); }
+        for (const auto& property : values) {
+            Text(property.key,limits_,true); Text(property.name,limits_,true);
+            properties.push_back(&property);
+            if (defaults) aliases.emplace_back(property.name,property.index);
+        }
+        if (defaults) ValidatePropertyAliases(aliases);
+        std::sort(properties.begin(),properties.end(),[](const auto* a,const auto* b) {
+            const auto order=Compare(a->key,b->key);
+            return order!=0 ? order<0 : a->index<b->index;
+        });
+        for (std::size_t j=0; j<properties.size(); ++j) {
+            const auto& property=*properties[j];
+            if (j!=0 && Compare(properties[j-1u]->key,property.key)==0 &&
+                (properties[j-1u]->key!=property.key || properties[j-1u]->index==property.index ||
+                 properties[j-1u]->name!=property.name))
+                Fail("duplicate or case-colliding property identity");
+            String(property.key,true); String(property.name,true); U32(property.index); Value(property.value,0u);
+        }
     }
     void Value(const Vm::Value& value,std::size_t depth) {
         budget_.Node(depth);
@@ -349,7 +388,8 @@ public:
             const auto byte=Byte();
             if (i==6u) {
                 version=byte;
-                if (version!=Magic[i] && version!=StateFrameVersion) Fail("bad magic or unsupported codec version");
+                if (version!=Magic[i] && version!=StateFrameVersion && version!=ClassDefaultsVersion)
+                    Fail("bad magic or unsupported codec version");
             } else if (byte!=Magic[i]) Fail("bad magic or unsupported codec version");
         }
         const auto map=String(true,false,128u); if constexpr(Materialize) state.mapName=map;
@@ -364,31 +404,28 @@ public:
             if (i!=0 && Compare(previous,path)>=0) Fail("object paths are not canonical and unique");
             previous=path;
             if constexpr(Materialize) { object.path=path; object.classPath=cls; }
-            const auto properties=U32(); budget_.Properties(properties);
-            if (properties>Remaining()/13u) Fail("property count exceeds encoded payload");
-            budget_.Array(properties,sizeof(ScriptSavedProperty)+sizeof(void*));
-            if constexpr(Materialize) object.properties.reserve(properties);
-            std::string_view previousKey,previousName; std::uint32_t previousIndex{};
-            for (std::uint32_t j=0; j<properties; ++j) {
-                ScriptSavedProperty property;
-                const auto key=String(true),name=String(true); const auto index=U32();
-                if (j!=0) {
-                    const auto order=Compare(previousKey,key);
-                    if (order>0 || (order==0 && (previousKey!=key || previousIndex>=index || previousName!=name)))
-                        Fail("property identities are not canonical and unique");
-                }
-                previousKey=key; previousIndex=index; previousName=name;
-                auto value=Value(0u);
-                if constexpr(Materialize) {
-                    property.key=key; property.name=name; property.index=index; property.value=std::move(value);
-                    object.properties.push_back(std::move(property));
-                }
-            }
+            Properties(object.properties,false);
             if (Boolean()) { auto clock=Animation(); if constexpr(Materialize) object.clock=std::move(clock); }
-            if (version==StateFrameVersion && Boolean()) {
+            if (version>=StateFrameVersion && Boolean()) {
                 auto saved=ObjectState(); if constexpr(Materialize) object.state=std::move(saved);
             }
             if constexpr(Materialize) state.objects.push_back(std::move(object));
+        }
+        if (version==ClassDefaultsVersion) {
+            const auto classes=U32();
+            if (classes==0u || classes>limits_.maxObjects-count || classes>Remaining()/9u)
+                Fail("class-default count is empty or exceeds aggregate budget/payload");
+            budget_.Array(classes,sizeof(ScriptSavedClassDefaults)+sizeof(void*));
+            if constexpr(Materialize) state.classDefaults.reserve(classes);
+            previous={};
+            for (std::uint32_t i=0; i<classes; ++i) {
+                ScriptSavedClassDefaults defaults; const auto cls=String(true);
+                if (i!=0 && Compare(previous,cls)>=0) Fail("class-default identities are not canonical and unique");
+                previous=cls;
+                if constexpr(Materialize) defaults.classPath=cls;
+                Properties(defaults.properties,true);
+                if constexpr(Materialize) state.classDefaults.push_back(std::move(defaults));
+            }
         }
         if (Remaining()!=0u) Fail("trailing encoded-state bytes");
         return state;
@@ -410,6 +447,33 @@ private:
         const std::string_view value(reinterpret_cast<const char*>(bytes_.data()+cursor_),size);
         Text(value,limits_,identity,empty,cap); budget_.Retain(static_cast<std::size_t>(size)+1u);
         cursor_+=size; return value;
+    }
+    void Properties(std::vector<ScriptSavedProperty>& values,const bool defaults) {
+        const auto count=U32(); budget_.Properties(count);
+        if (defaults && count==0u) Fail("empty class-default record");
+        if (count>Remaining()/13u) Fail("property count exceeds encoded payload");
+        budget_.Array(count,sizeof(ScriptSavedProperty)+sizeof(void*));
+        if constexpr(Materialize) values.reserve(count);
+        std::vector<PropertyAlias> aliases;
+        if (defaults) { budget_.Array(count,sizeof(PropertyAlias)); aliases.reserve(count); }
+        std::string_view previousKey,previousName; std::uint32_t previousIndex{};
+        for (std::uint32_t j=0; j<count; ++j) {
+            ScriptSavedProperty property;
+            const auto key=String(true),name=String(true); const auto index=U32();
+            if (j!=0) {
+                const auto order=Compare(previousKey,key);
+                if (order>0 || (order==0 && (previousKey!=key || previousIndex>=index || previousName!=name)))
+                    Fail("property identities are not canonical and unique");
+            }
+            previousKey=key; previousIndex=index; previousName=name;
+            if (defaults) aliases.emplace_back(name,index);
+            auto value=Value(0u);
+            if constexpr(Materialize) {
+                property.key=key; property.name=name; property.index=index; property.value=std::move(value);
+                values.push_back(std::move(property));
+            }
+        }
+        if (defaults) ValidatePropertyAliases(aliases);
     }
     Vm::Value Value(std::size_t depth) {
         budget_.Node(depth); Vm::Value value;
@@ -532,8 +596,9 @@ inline std::vector<std::uint8_t> EncodeScriptSavedState(
 inline ScriptSavedState DecodeScriptSavedState(
     const std::vector<std::uint8_t>& bytes,const ScriptStateLimits& limits={}) {
     // First pass is non-materializing: strings are views into the input, and no
-    // object/property/field arrays are allocated until aggregate budgets and
-    // canonical uniqueness have been checked for the complete payload.
+    // decoded object/property/field trees are allocated until aggregate budgets
+    // and canonical uniqueness are checked. CDO alias validation uses only
+    // budgeted views into the input, not retained values or identity copies.
     ScriptStateDetail::Reader<false> verified(bytes,limits); verified.State();
     ScriptStateDetail::Reader<true> materialized(bytes,limits); return materialized.State();
 }
