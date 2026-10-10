@@ -1,5 +1,28 @@
 # Port status
 
+## Original Switch/Case interpreter path (2026-10-10)
+
+- Original Switch/Case now supports alias-retaining selector evaluation,
+  selector-directed typed comparisons, absolute Case links, default, fallthrough,
+  breaks and nested control flow. Generic Struct comparison refuses explicitly
+  rather than inventing an original layout. Structural validation precedes effects;
+  cyclic links share the existing execution budget and root transaction.
+- Explicit state slices follow callback-changed live code/position, retain
+  same-state/inherited-label locals and reject destroyed local aliases or
+  replacement with live iterators. This is not automatic world scheduling.
+- The unchanged DeusEx.ScriptedPawn.PlayTurnHead override passes directions
+  0–4/default255, exact +/-5461 view offsets, native blend/timer effects, its
+  actual false Bool return, short-circuiting and save/budget rollback.
+  Explicit StartUp advances to unsupported FRand195 at its original PC9,
+  with full provisional inventory/AI/world rollback; startup is not complete.
+- See [SWITCH-CASE.md](SWITCH-CASE.md) for source contracts and final evidence.
+  The physically accepted seated-player APK remains installed unchanged.
+- All 48 ordinary host tests and all three separate original-data integrations
+  pass. Structural audit covers all 8,208 functions, 262 Switches and 1,599 Cases;
+  this is not general execution feasibility. VM controls pass 677,351 / 242
+  rejections, with 420 / 58 specific to Switch; state controls pass 208 / 32.
+  The ARM64 APK builds and verifies with v2 signing and no commercial packages.
+
 ## Original blend-animation commands (2026-10-10)
 
 - Native1010 PlayBlendAnim and native1012 TweenBlendAnim now mutate actual
@@ -12,10 +35,10 @@
   tween history, rollback and current-map clock restoration are retained.
   Older portable clocks derive the previously omitted reflected Plane view;
   partial/disagreeing views reject. No save wire-version change is introduced.
-- Explicit original StartUp now passes native1010, then refuses Switch opcode5
+- In this blend increment, explicit original StartUp passed native1010, then refused Switch opcode5
   at DeusEx.ScriptedPawn.PlayTurnHead PC52 with complete inventory/AI/world
-  rollback. Switch execution remains the next interpreter dependency, not
-  fabricated startup success. See [BLEND-ANIMATION.md](BLEND-ANIMATION.md).
+  rollback. The later Switch/Case increment above implements that dependency;
+  neither increment fabricates startup success. See [BLEND-ANIMATION.md](BLEND-ANIMATION.md).
 - An actual native-command character capture exposed missing texture paths in
   the lazy mesh cache. Animation queries/commands and map-wide decoding now
   publish through one complete loader. True-cold original controls check both

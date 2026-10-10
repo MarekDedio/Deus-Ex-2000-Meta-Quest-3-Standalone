@@ -78,7 +78,8 @@ captured tween history. This is not automatically started NPC behavior.
 Original PlayBlendAnim1010 and TweenBlendAnim1012 now execute four-channel
 commands with original negative tween frames and packed Plane values, including
 isolated Engine.Pawn.PlayTurnHead tests. See [BLEND-ANIMATION.md](BLEND-ANIMATION.md)
-for the original-binary characterization and the remaining Switch dependency.
+for the original-binary characterization, and [SWITCH-CASE.md](SWITCH-CASE.md)
+for the subsequently completed head-turn override and remaining startup boundary.
 Original ScriptedPawn initialization, states, ticking, event eligibility,
 notify/AnimEnd dispatch and transitions still need integration before NPCs
 animate and behave normally. A pure native main/blend clock has offline tests,

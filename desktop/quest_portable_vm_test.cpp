@@ -119,6 +119,16 @@ void NormalizedSerializedContracts() {
     raw={0x0f,0x00};Index(raw,1);raw.push_back(0x1e);Float(raw,1.25f);raw.push_back(0x04);raw.push_back(0x0b);
     normalized={0x0f,0x00};U32(normalized,1);normalized.push_back(0x1e);Float(normalized,1.25f);normalized.push_back(0x04);normalized.push_back(0x0b);
     fixture.Decode(raw,normalized);
+    // Switch carries an ignored value-size byte. Case links remain absolute
+    // logical offsets despite compact serialized Name references, and 0xffff
+    // is a childless default label rather than a branch address.
+    raw={0x05,255,0x21};Index(raw,3);raw.push_back(0x0a);U16(raw,21);
+    raw.push_back(0x21);Index(raw,3);raw.push_back(0x04);raw.push_back(0x1d);U32(raw,1);
+    raw.push_back(0x0a);U16(raw,0xffff);raw.push_back(0x04);raw.push_back(0x1d);U32(raw,0);
+    normalized={0x05,255,0x21};U32(normalized,3);normalized.push_back(0x0a);U16(normalized,21);
+    normalized.push_back(0x21);U32(normalized,3);normalized.push_back(0x04);normalized.push_back(0x1d);U32(normalized,1);
+    normalized.push_back(0x0a);U16(normalized,0xffff);normalized.push_back(0x04);normalized.push_back(0x1d);U32(normalized,0);
+    fixture.Decode(raw,normalized);
     const auto reject=[&](const Bytes& broken,std::uint32_t logical,const std::string& context) {
         fixture.Save(broken,logical);
         bool rejected{};try {LoadPortableFunctionScript(fixture.package,0);}catch(const std::runtime_error&) {rejected=true;}
@@ -366,6 +376,16 @@ Bytes Vector(const std::array<float,3>& value) {
     Bytes result{0x23};for(const auto component:value) Float(result,component);return result;
 }
 Bytes Rotation(const std::array<std::int32_t,3>& rotation);
+Bytes Switch(const Bytes& selector,std::uint8_t valueSize=1u) {return Join({{0x05,valueSize},selector});}
+std::size_t BeginCase(Bytes& code,const Bytes& label) {
+    code.push_back(0x0a);const auto link=code.size();U16(code,0u);Append(code,label);return link;
+}
+void DefaultCase(Bytes& code) {code.push_back(0x0a);U16(code,0xffffu);}
+std::size_t BeginJump(Bytes& code) {code.push_back(0x06);const auto target=code.size();U16(code,0u);return target;}
+Bytes SingleCaseSwitch(const Bytes& selector,const Bytes& label,std::uint8_t valueSize=1u) {
+    auto code=Switch(selector,valueSize);const auto next=BeginCase(code,label);Append(code,Return(Int(1)));
+    PatchU16(code,next,code.size());DefaultCase(code);Append(code,Return(Int(0)));return code;
+}
 void VectorNativeContracts() {
     for(const std::array<float,3> components : {std::array<float,3>{0.0f,-0.0f,0.0f},
         std::array<float,3>{3.0f,4.0f,-12.0f},std::array<float,3>{-0.125f,73.5f,1.0e-18f}}) {
@@ -888,8 +908,8 @@ void ControlAndFailureContracts() {
     }
     {
         TestHost host;const auto r=Vm::Execute(host,Function("UnsupportedSwitch",Join({Native(1000),{0x05,0,0x25},Return({0x26})})),"Self");
-        Failed(r,Vm::Status::Unsupported,host,"Switch without control-flow support");
-        Require(host.effects==0,"Unsupported Switch committed native prefix effects");
+        Failed(r,Vm::Status::Invalid,host,"Switch requires an immediate Case label");
+        Require(host.effects==0 && host.observations.empty(),"Malformed Switch evaluated native prefix effects before control validation");
     }
     {
         TestHost host;const auto r=Vm::Execute(host,Function("UnknownNative",Join({Native(1000),Native(4095),Return({0x26})})),"Self");
@@ -1318,9 +1338,297 @@ void CastContracts() {
         Require(!host.castCalls && host.Load("Self",property).text=="Engine.Ammo","Cast child bypassed write budget or rollback");
     }
 }
+void SwitchContracts() {
+    const auto initialChecks=checks,initialRejections=rejections;
+    const auto addNamesAndObjects=[](TestHost& host,const std::string& source="Fixture") {
+        host.names[{source,0}]="None";host.names[{source,1}]="Alpha";host.names[{source,2}]="aLpHa";
+        host.names[{source,3}]="None";host.names[{source,4}]="NONE";host.names[{source,5}]="";
+        host.objects[{source,0}]="";host.objects[{source,1}]="Map.Actor0";
+        host.objects[{source,2}]="mAP.aCTOR0";host.objects[{source,3}]="Map.Other0";
+    };
+    struct Comparison {const char* name;Bytes selector,label;bool match;};
+    // IsEqual is selector-directed, not symmetric typed Coerce/Equal. In
+    // particular Byte promotes to Int rather than wrapping a label to uint8.
+    const std::vector<Comparison> comparisons{
+        {"ByteInt",{0x24,1},Int(1),true},{"ByteNotModulo",{0x24,1},Int(257),false},
+        {"ByteNotNegativeModulo",{0x24,255},Int(-1),false},{"ByteFloatTruncate",{0x24,1},Real(1.9f),true},
+        {"ByteNothingZero",{0x24,0},{0x0b},true},{"ByteNothingNonzero",{0x24,1},{0x0b},false},
+        {"IntByte",Int(255),{0x24,255},true},{"IntFloatTruncate",Int(-1),Real(-1.9f),true},
+        {"IntNothingZero",Int(0),{0x0b},true},{"IntNothingNonzero",Int(1),{0x0b},false},
+        {"IntKeepsPrecision",Int(16777217),Real(16777216.0f),false},
+        {"FloatInt",Real(1.0f),Int(1),true},{"FloatNotTruncated",Real(1.9f),Int(1),false},
+        {"FloatByte",Real(255.0f),{0x24,255},true},{"FloatRoundsInt",Real(16777216.0f),Int(16777217),true},
+        {"FloatNothingZero",Real(-0.0f),{0x0b},true},{"FloatNothingNonzero",Real(0.5f),{0x0b},false},
+        {"BoolTrue",{0x27},{0x27},true},{"BoolDifferent",{0x27},{0x28},false},
+        {"BoolNothingZero",{0x28},{0x0b},true},{"BoolNothingNonzero",{0x27},{0x0b},false},
+        {"NameFold",Ref(0x21,1),Ref(0x21,2),true},{"NameDifferent",Ref(0x21,1),Ref(0x21,3),false},
+        {"NameNoneNothing",Ref(0x21,3),{0x0b},true},{"NameEmptyNone",Ref(0x21,5),Ref(0x21,4),true},
+        {"StringExact",String("Alpha"),String("Alpha"),true},
+        {"StringNotFolded",String("Alpha"),String("aLpHa"),false},
+        {"StringNameExact",String("Alpha"),Ref(0x21,1),true},
+        {"StringNameNotFolded",String("Alpha"),Ref(0x21,2),false},
+        {"StringEmptyNothing",String(""),{0x0b},true},{"StringNoneNothing",String("None"),{0x0b},false},
+        {"StringNoneEmptyName",String("None"),Ref(0x21,5),true},
+        {"ObjectIdentity",Ref(0x20,1),Ref(0x20,2),true},{"ObjectDifferent",Ref(0x20,1),Ref(0x20,3),false},
+        {"ObjectNullNothing",{0x2a},{0x0b},true},{"ObjectNonNullNothing",Ref(0x20,1),{0x0b},false},
+        {"NothingNothing",{0x0b},{0x0b},true},{"NothingNullObject",{0x0b},{0x2a},true},
+        {"NothingNonNullObject",{0x0b},Ref(0x20,1),false},
+        {"NothingNotIntZero",{0x0b},Int(0),false},{"NothingNotByteZero",{0x0b},{0x24,0},false},
+        {"NothingNotFloatZero",{0x0b},Real(0.0f),false},{"NothingNotBoolZero",{0x0b},{0x28},false},
+        {"NothingNotNameNone",{0x0b},Ref(0x21,3),false},{"NothingNotEmptyString",{0x0b},String(""),false},
+        {"NothingNotVectorZero",{0x0b},Vector({}),false},{"NothingNotRotatorZero",{0x0b},Rotation({}),false},
+        {"NothingNotStruct",{0x0b},Native(1005u),false},
+        {"VectorExact",Vector({1,-2,3}),Vector({1,-2,3}),true},
+        {"VectorDifferent",Vector({1,-2,3}),Vector({1,-2,4}),false},
+        {"VectorNothingZero",Vector({}),{0x0b},true},{"VectorNothingNonzero",Vector({1,0,0}),{0x0b},false},
+        {"RotatorExact",Rotation({1,-2,3}),Rotation({1,-2,3}),true},
+        {"RotatorNotWrapped",Rotation({0,0,0}),Rotation({65536,0,0}),false},
+        {"RotatorNothingZero",Rotation({}),{0x0b},true},{"RotatorNothingNonzero",Rotation({1,0,0}),{0x0b},false}
+    };
+    for(const auto& comparison:comparisons) {
+        TestHost host;addNamesAndObjects(host);
+        const auto result=Vm::Execute(host,Function(comparison.name,SingleCaseSwitch(comparison.selector,comparison.label)),"Self");
+        Returned(result,std::string("Selector-directed Switch ")+comparison.name);
+        Require(result.value.kind==Vm::Kind::Int && result.value.integer==(comparison.match ? 1 : 0),
+            std::string("Switch comparison changed pinned selector-directed conversion: ")+comparison.name);
+    }
+    for(const auto valueSize:{std::uint8_t{0},std::uint8_t{1},std::uint8_t{4},std::uint8_t{255}}) {
+        TestHost host;const auto result=Vm::Execute(host,Function("IgnoredSwitchValueSize",SingleCaseSwitch(Int(1),Int(1),valueSize)),"Self");
+        Returned(result,"Switch value-size byte is not a selector coercion or offset");
+        Require(result.value.integer==1,"Switch changed semantics with its ignored serialized value-size byte");
+    }
+    const std::vector<std::pair<Bytes,Bytes>> wrongTypes{
+        {Int(1),{0x27}},{{0x24,1},String("1")},{Real(1),Ref(0x21,1)},{{0x27},Int(1)},
+        {Ref(0x21,1),String("Alpha")},{Ref(0x20,1),Ref(0x21,1)},
+        {Vector({}),Rotation({})},{Rotation({}),Vector({})},
+        {Vector({}),Native(1005u)},{Rotation({}),Native(1005u)},
+        {Native(1005u),Native(1005u)},{Native(1005u),{0x0b}},{Native(1005u),Vector({})}
+    };
+    for(const auto& [selector,label]:wrongTypes) {
+        TestHost host;addNamesAndObjects(host);
+        const auto function=Function("SwitchWrongComparisonType",SingleCaseSwitch(selector,label));
+        const auto result=Vm::Execute(host,function,"Self");Failed(result,Vm::Status::Unsupported,host,"Switch typed comparison / unknown Struct identity");
+        Require(result.function==function.path && result.offset==Switch(selector).size() && result.opcode==0x0a,
+            "Switch comparison failure reports a evaluated operand instead of the responsible Case");
+    }
+    {
+        TestHost host;auto code=Switch(Native(1005u));DefaultCase(code);Append(code,Return(Int(7)));
+        const auto result=Vm::Execute(host,Function("StructDefaultOnly",code),"Self");Returned(result,"Unknown Struct selector needs no comparison for default-only Switch");
+        Require(result.value.integer==7 && host.nativeArguments.size()==1u,"Default-only Switch compared a Struct or reevaluated its selector");
+    }
+    {
+        TestHost host;auto code=Switch(Native(165u,{Ref(0x01,1)}));
+        const auto first=BeginCase(code,Native(1002u));Append(code,Return(Int(23)));
+        PatchU16(code,first,code.size());const auto second=BeginCase(code,Int(1));Append(code,Return(Int(11)));
+        PatchU16(code,second,code.size());const auto third=BeginCase(code,Native(1003u,{Int(1),Native(1000u)}));
+        Append(code,Return(Int(22)));PatchU16(code,third,code.size());DefaultCase(code);Append(code,Return(Int(0)));
+        const auto function=Function("SelectorOnceFirstDuplicate",code);
+        const auto property=host.Property(function,1,"Selector",Value::Integer(0));host.Store("Self",property,{Value::Integer(1)});
+        const auto result=Vm::Execute(host,function,"Self");Returned(result,"Switch evaluates selector once and only visited case expressions");
+        Require(result.value.integer==11 && result.writes==1u && host.Load("Self",property).integer==2 && host.effects==0u &&
+            host.observations==std::vector<std::string>{"variable:Self:Selector","rhs"},
+            "Switch reevaluated its selector, missed first duplicate, or evaluated an unvisited label");
+    }
+    for(const bool nativeSnapshot:{false,true}) {
+        TestHost host;auto code=Switch(nativeSnapshot ? Native(1007u,{Ref(0x01,1)}) : Ref(0x01,1));
+        const auto first=BeginCase(code,Native(165u,{Ref(0x01,1)}));Append(code,Return(Int(1)));
+        PatchU16(code,first,code.size());const auto second=BeginCase(code,Int(2));Append(code,Return(Int(2)));
+        PatchU16(code,second,code.size());DefaultCase(code);Append(code,Return(Int(0)));
+        const auto function=Function(nativeSnapshot ? "SelectorNativeDetached" : "SelectorAliasAfterCaseEffects",code);
+        const auto property=host.Property(function,1,"Selector",Value::Integer(0));host.Store("Self",property,{Value::Integer(1)});
+        const auto result=Vm::Execute(host,function,"Self");Returned(result,"Switch distinguishes a variable alias from a detached native result");
+        Require(result.value.integer==(nativeSnapshot ? 1 : 2) && result.writes==1u && host.Load("Self",property).integer==2 &&
+            host.nativeArguments.size()==(nativeSnapshot ? 1u : 0u) &&
+            (!nativeSnapshot || host.nativeArguments.front()[0].integer==1) &&
+            std::count(host.observations.begin(),host.observations.end(),"variable:Self:Selector")==2,
+            "Switch detached a variable selector before the case write, or reevaluated its expression");
+    }
+    {
+        TestHost host;auto code=Switch(Int(1));const auto first=BeginCase(code,Int(1));Append(code,Native(1000u));
+        PatchU16(code,first,code.size());const auto second=BeginCase(code,Native(4095u));Append(code,Native(1000u));
+        PatchU16(code,second,code.size());DefaultCase(code);Append(code,Native(1000u));Append(code,Return(Int(9)));
+        const auto result=Vm::Execute(host,Function("CaseFallthrough",code),"Self");Returned(result,"Matched Case body falls through labels/default without reevaluation");
+        Require(result.value.integer==9 && host.effects==3u && host.nativeArguments.size()==3u,
+            "Fallthrough tested a later Case expression or failed to execute all body statements");
+    }
+    {
+        TestHost host;Bytes code;const auto jump=BeginJump(code);Append(code,Native(4095u));
+        PatchU16(code,jump,code.size());const auto next=BeginCase(code,Native(4095u));Append(code,Native(1000u));Append(code,Return(Int(5)));
+        PatchU16(code,next,code.size());DefaultCase(code);Append(code,Return(Int(0)));
+        const auto result=Vm::Execute(host,Function("JumpDirectlyToCase",code),"Self");Returned(result,"Authored Jump to a Case does not evaluate its label");
+        Require(result.value.integer==5 && host.effects==1u && host.nativeArguments.size()==1u,
+            "Direct Case entry evaluated its label or treated it as an active Switch comparison");
+    }
+    {
+        TestHost host;auto code=Switch(Int(1));const auto outerNext=BeginCase(code,Int(1));
+        Append(code,Switch(Int(2)));const auto innerNext=BeginCase(code,Int(2));Append(code,Native(1000u));
+        const auto innerBreak=BeginJump(code);PatchU16(code,innerNext,code.size());DefaultCase(code);Append(code,Native(4095u));
+        PatchU16(code,innerBreak,code.size());Append(code,Native(1000u));const auto outerBreak=BeginJump(code);
+        PatchU16(code,outerNext,code.size());DefaultCase(code);Append(code,Native(4095u));
+        PatchU16(code,outerBreak,code.size());Append(code,Return(Int(8)));
+        const auto result=Vm::Execute(host,Function("NestedSwitchBreak",code),"Self");Returned(result,"Nested Switches and authored break Jumps");
+        Require(result.value.integer==8 && host.effects==2u && host.nativeArguments.size()==2u,
+            "Nested Switch consumed outer Case links, or a break entered a default body");
+    }
+    {
+        TestHost host;auto code=Switch(Int(1));const auto first=BeginCase(code,Int(0));Append(code,Native(4095u));
+        const auto skipped=BeginCase(code,Native(4095u));Append(code,Native(4095u));
+        PatchU16(code,first,code.size());const auto matched=BeginCase(code,Int(1));Append(code,Return(Int(3)));
+        PatchU16(code,skipped,code.size());PatchU16(code,matched,code.size());DefaultCase(code);Append(code,Return(Int(0)));
+        const auto result=Vm::Execute(host,Function("LinkedCasesNotSequential",code),"Self");Returned(result,"Switch follows authored Case links, not physical next label");
+        Require(result.value.integer==3 && host.nativeArguments.empty(),"Switch evaluated a physically adjacent but unlinked label/body");
+    }
+    {
+        TestHost host;addNamesAndObjects(host,"Caller");addNamesAndObjects(host,"Callee");
+        host.names[{"Caller",1}]="Wrong";
+        const auto callee=Function("SwitchSource",SingleCaseSwitch(Ref(0x21,1),Ref(0x21,2)),"Callee");
+        const auto caller=Function("SwitchSourceCaller",Return(Call(0x1c,17)),"Caller");
+        host.finals[{caller.source,17}]=std::make_shared<Vm::Function>(callee);
+        const auto result=Vm::Execute(host,caller,"Self");Returned(result,"Switch selector/Case references use their own callee source tables");
+        Require(result.value.integer==1,"Nested Switch read caller Name references");
+    }
+    {
+        TestHost host;const auto function=Function("SwitchAnalysis",SingleCaseSwitch(Int(1),Native(4095u)));
+        const auto layout=Vm::AnalyzeProgram(host,function);
+        const auto first=Switch(Int(1)).size(),body=first+3u+Native(4095u).size(),fallback=body+Return(Int(1)).size();
+        Require(layout.statementOffsets==std::vector<std::size_t>{0u,first,body,fallback,fallback+3u} &&
+            layout.labels.empty() && !layout.terminalLabelTable && host.observations.empty() && host.nativeArguments.empty() && !host.beginCount,
+            "AnalyzeProgram changed logical Case boundaries, evaluated labels, or began an execution transaction");
+    }
+    // Both Execute and structural AnalyzeProgram reject malformed links before
+    // earlier property/native/RNG effects. Diagnostics identify the owner node.
+    struct Broken {Bytes code;std::size_t offset;std::uint8_t opcode;};
+    std::vector<Broken> broken;
+    const auto selection=SingleCaseSwitch(Int(1),Int(1));const auto caseOffset=Switch(Int(1)).size();
+    for(const auto target:std::array<std::size_t,7>{0u,caseOffset+1u,caseOffset+3u,caseOffset+4u,caseOffset+8u,selection.size(),65534u}) {
+        auto code=selection;PatchU16(code,caseOffset+1u,target);broken.push_back({std::move(code),caseOffset,0x0a});
+    }
+    broken.push_back({Join({Switch(Int(1)),Return(Int(0))}),0u,0x05});
+    broken.push_back({Switch(Int(1)),0u,0x05});
+    broken.push_back({{0x05},0u,0x05});broken.push_back({{0x05,1u},0u,0x05});
+    broken.push_back({Join({Switch(Int(1)),{0x0a}}),caseOffset,0x0a});
+    broken.push_back({Join({Switch(Int(1)),{0x0a,0}}),caseOffset,0x0a});
+    broken.push_back({Join({Switch(Int(1)),{0x0a,0,0}}),caseOffset,0x0a});
+    broken.push_back({Join({Switch(Int(1)),{0x0a,0,0,0x1d,0}}),caseOffset+3u,0x1d});
+    for(const auto& control:broken) {
+        TestHost host;const auto function=Function("MalformedSwitchControl",control.code);
+        const auto result=Vm::Execute(host,function,"Self");Failed(result,Vm::Status::Invalid,host,"Malformed Switch/Case topology or operands");
+        Require(result.function==function.path && result.offset==control.offset && result.opcode==control.opcode &&
+            host.nativeArguments.empty() && host.effects==0u,"Malformed Switch/Case lost exact failing logical offset or performed effects");
+        bool rejected{};try {Vm::AnalyzeProgram(host,function);}catch(const std::exception&) {rejected=true;}
+        Require(rejected,"AnalyzeProgram accepted the same malformed Switch/Case rejected by execution");++rejections;
+    }
+    {
+        TestHost host;auto code=Join({Native(1000u),Let(Ref(0x01,1),Int(55)),Switch(Int(1)),Return(Int(0))});
+        const auto function=Function("MalformedSwitchBeforeEffects",code);
+        const auto property=host.Property(function,1,"Value",Value::Integer(0));host.Store("Self",property,{Value::Integer(3)});
+        const auto result=Vm::Execute(host,function,"Self");Failed(result,Vm::Status::Invalid,host,"Whole program Switch validation precedes prefix effects");
+        Require(host.Load("Self",property).integer==3 && host.effects==0u && host.rng==12345u && host.observations.empty(),
+            "Malformed later Switch executed an earlier property/native/RNG prefix");
+    }
+    {
+        TestHost host;auto code=Join({Native(1000u),Return(Switch(Int(1)))});
+        DefaultCase(code);Append(code,Return(Int(0)));const auto function=Function("NestedExpressionSwitch",code);
+        const auto result=Vm::Execute(host,function,"Self");Failed(result,Vm::Status::Unsupported,host,"Switch used as a value expression remains explicit unsupported");
+        Require(result.offset==Native(1000u).size()+1u && result.opcode==0x05 && host.effects==0u && host.rng==12345u,
+            "Nested Switch silently returned a value, lost its own diagnostic, or escaped rollback");
+    }
+    for(const std::size_t instructionLimit:{10u,11u}) {
+        TestHost host;auto code=Join({Native(1000u),Let(Ref(0x01,1),Int(55)),Switch(Int(1))});
+        const auto next=BeginCase(code,Int(0));PatchU16(code,next,next-1u);Append(code,Return(Int(0)));
+        const auto function=Function("CyclicCaseLinks",code);
+        const auto property=host.Property(function,1,"Value",Value::Integer(0));host.Store("Self",property,{Value::Integer(3)});
+        host.objects[{function.source,1}]=property.key;
+        const auto layout=Vm::AnalyzeProgram(host,function);Require(!layout.statementOffsets.empty(),"Bounded Case cycle was rejected structurally instead of executing under its instruction limit");
+        Vm::Limits limits;limits.instructions=instructionLimit;
+        const auto result=Vm::Execute(host,function,"Self",{},limits);Failed(result,Vm::Status::Budget,host,"Case chain cycle uses shared instruction budget");
+        Require(result.instructions==instructionLimit && result.offset==(instructionLimit==10u ? next-1u : next+2u) &&
+            result.opcode==(instructionLimit==10u ? 0x0a : 0x1d) && host.Load("Self",property).integer==3 &&
+            host.effects==0u && host.rng==12345u && std::count(host.observations.begin(),host.observations.end(),"effect")==1,
+            "Case cycle bypassed the shared budget, lost failing Case/label offsets, or retained prefix changes");
+    }
+    {
+        const auto function=Function("SwitchInstructionBoundary",SingleCaseSwitch(Int(1),Int(1)));
+        const std::array<std::pair<std::size_t,std::uint8_t>,6> failures{{{0u,0x05},{2u,0x1d},{7u,0x0a},{10u,0x1d},{15u,0x04},{16u,0x1d}}};
+        for(std::size_t limit=0;limit<failures.size();++limit) {
+            TestHost host;Vm::Limits limits;limits.instructions=limit;
+            const auto result=Vm::Execute(host,function,"Self",{},limits);Failed(result,Vm::Status::Budget,host,"Switch and visited Case expressions are individually budgeted");
+            Require(result.instructions==limit && result.offset==failures[limit].first && result.opcode==failures[limit].second,
+                "Switch instruction budget diagnostics do not identify the actual next instruction");
+        }
+        TestHost host;Vm::Limits limits;limits.instructions=6u;const auto result=Vm::Execute(host,function,"Self",{},limits);
+        Returned(result,"Exact successful Switch instruction boundary");Require(result.instructions==6u && result.value.integer==1,"Switch reset or inflated its instruction budget");
+    }
+    // A nested script can complete OUT copy-back while evaluating a label.
+    // Failed comparison, matched body, and late write-budget failures must
+    // restore both those changes and the preceding caller/native/RNG prefix.
+    for(const unsigned failure:{0u,1u,2u}) {
+        TestHost host;auto callee=Function("CaseOut",Join({Native(1000u),Let(Ref(0x00,1),Int(88)),
+            Return(failure==0u ? Ref(0x21,7) : Int(1))}),"Callee");
+        callee.variables={host.Property(callee,1,"Output",Value::Integer(0),0x180u,1u,true)};
+        host.names[{callee.source,7}]="WrongCaseType";
+        auto code=Join({Native(1000u),Let(Ref(0x01,2),Int(55)),Switch(Int(1))});
+        const auto next=BeginCase(code,Call(0x1c,17,{Ref(0x01,2)}));const auto body=code.size();
+        Append(code,failure==2u ? Let(Ref(0x01,2),Int(99)) : Native(4095u));Append(code,Return(Int(1)));
+        PatchU16(code,next,code.size());DefaultCase(code);Append(code,Return(Int(0)));
+        const auto function=Function("SwitchNestedOutRollback",code,"Caller");
+        const auto property=host.Property(function,2,"Value",Value::Integer(0));host.Store("Self",property,{Value::Integer(3)});
+        host.finals[{function.source,17}]=std::make_shared<Vm::Function>(callee);
+        Vm::Limits limits;if(failure==2u) limits.writes=3u;
+        const auto result=Vm::Execute(host,function,"Self",{},limits);
+        Failed(result,failure==2u ? Vm::Status::Budget : Vm::Status::Unsupported,host,"Case nested OUT/property/native/RNG rollback");
+        Require(result.writes==3u && host.Load("Self",property).integer==3 && host.effects==0u && host.rng==12345u &&
+            std::count(host.observations.begin(),host.observations.end(),"effect")==2,
+            "Switch failure retained a nested OUT copy-back, caller property prefix, or native/RNG side effect");
+        Require(result.function==function.path && result.offset==(failure==0u ? next-1u : body) &&
+            result.opcode==(failure==0u ? 0x0a : failure==1u ? 0x6f : 0x0f),
+            "Nested Case comparison/body/write-budget failure lost the responsible instruction diagnostic");
+    }
+    {
+        TestHost host;auto code=Join({Native(1000u),Let(Ref(0x01,1),Int(55)),Switch(Int(1))});
+        const auto next=BeginCase(code,Native(1003u,{Int(1),Native(1006u,{Ref(0x01,1)})}));
+        Append(code,Return(Int(1)));PatchU16(code,next,code.size());DefaultCase(code);Append(code,Return(Int(0)));
+        const auto function=Function("FailedCaseNativeOut",code);
+        const auto property=host.Property(function,1,"Value",Value::Integer(0));host.Store("Self",property,{Value::Integer(3)});
+        const auto result=Vm::Execute(host,function,"Self");Failed(result,Vm::Status::Unsupported,host,"Failure inside a visited Case native OUT expression");
+        Require(result.offset==next+2u+2u+Int(1).size() && result.opcode==0x63 && result.writes==2u &&
+            host.Load("Self",property).integer==3 && host.effects==0u && host.rng==12345u,
+            "Case native child failure reported its wrapper/last argument or escaped guarded OUT rollback");
+    }
+    // Persistent state execution uses the same selection/Case-no-op contracts,
+    // while its statement ordinal and stop state participate in the journal.
+    for(const bool fail:{false,true}) {
+        TestHost host;auto code=Switch(Int(1));const auto next=BeginCase(code,Int(1));Append(code,Native(1000u));
+        PatchU16(code,next,code.size());DefaultCase(code);Append(code,fail ? Native(4095u) : Native(1000u));code.push_back(0x08);
+        const auto function=Function("StateSwitch",code);QuestVr::StateFrame frame;frame.codePath=frame.localsCodePath=function.path;
+        host.state=QuestVr::StateObject{true,true,frame,{}};host.statePrograms[function.path]=function;
+        const auto result=Vm::ResumeState(host,"Self");
+        if(fail) {
+            Failed(result,Vm::Status::Unsupported,host,"State Switch failure restores persistent cursor");
+            Require(host.state->frame->statementIndex==0u && host.state->frame->latent==QuestVr::StateLatent::Continue &&
+                host.effects==0u && host.rng==12345u,"Failed state Switch committed its selected position or native/RNG prefix");
+        } else {
+            Require(result.passed() && result.status==Vm::Status::Stopped && result.committed && host.effects==2u &&
+                host.state->frame->latent==QuestVr::StateLatent::Stop && host.state->frame->statementIndex==6u,
+                "State Switch did not commit fallthrough/default bodies followed by its authored Stop");
+        }
+    }
+    {
+        FunctionFixture fixture;Bytes raw{0x05,255,0x21};Index(raw,3);raw.push_back(0x0a);U16(raw,21);
+        raw.push_back(0x21);Index(raw,3);Append(raw,Return(Int(1)));DefaultCase(raw);Append(raw,Return(Int(0)));
+        auto normalized=SingleCaseSwitch(Ref(0x21,3),Ref(0x21,3),255u);const auto body=fixture.Decode(raw,normalized);
+        TestHost host;host.names[{"Fixture",3}]="TestName";const auto function=Function("SerializedSwitch",body.bytecode);
+        const auto layout=Vm::AnalyzeProgram(host,function);Require(layout.statementOffsets==std::vector<std::size_t>{0u,7u,15u,21u,24u},
+            "Decoded Switch/Case topology used serialized offsets after compact reference widening");
+        const auto result=Vm::Execute(host,function,"Self");Returned(result,"Raw package normalization feeds real Switch execution");
+        Require(result.value.integer==1,"Real normalized Name selector/Case did not choose its matched body");
+    }
+    std::cout<<"Generated Switch/Case control, typed comparison and transactional failure contracts: "
+        <<checks-initialChecks<<" checks and "<<rejections-initialRejections<<" rejection controls passed.\n";
+}
 void ExecutionContracts() {
     RotatorDirectionContracts();ScalarAndLocalContracts();ParametersAndReturns();AssignmentArraysAndStructs();LazyAndContextContracts();
-    OptionalAndReferenceTables();ControlAndFailureContracts();BudgetAndNestedRollback();IntegerIncrementContracts();CastContracts();
+    OptionalAndReferenceTables();ControlAndFailureContracts();BudgetAndNestedRollback();IntegerIncrementContracts();CastContracts();SwitchContracts();
 }
 void ProgramAndEligibilityContracts() {
     TestHost host;

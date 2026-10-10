@@ -97,9 +97,11 @@ ScriptedPawn.UpdateReactionCallbacks at PC41/opcode0x62. The subsequent
 and emission mutations. With an explicitly initialized manager, original
 StartUp advanced to native1010 in Engine.Pawn.PlayTurnHead PC211/opcode0x63.
 The subsequent [blend-animation commands](BLEND-ANIMATION.md) implement that
-dependency; StartUp now refuses Switch opcode5 in DeusEx.ScriptedPawn.PlayTurnHead
-PC52 with complete rollback. Automatic startup, live animation, AI processing
-and perception remain unfinished; no stub was treated as success.
+dependency and originally advanced to Switch opcode5 in
+DeusEx.ScriptedPawn.PlayTurnHead PC52. The later [Switch/Case path](SWITCH-CASE.md)
+passes that override; explicit StartUp now refuses FRand195 at PC9 with complete
+rollback. Automatic startup, live animation, AI processing and perception remain
+unfinished; no stub was treated as success.
 
 The generated package integration exercises original-shaped iterator bytecode,
 Level holes/order, all alias types, nested loops/callbacks, live births/deletions/

@@ -71,9 +71,11 @@ and ResetDestLoc effects; the sole Futz registration becomes one tombstone.
 This is not automatic world initialization. This increment originally stopped
 explicit StartUp at native1010 in Engine.Pawn.PlayTurnHead PC211/opcode0x63.
 The subsequent [blend-animation commands](BLEND-ANIMATION.md) implement that
-dependency; StartUp now refuses Switch opcode5 in DeusEx.ScriptedPawn.PlayTurnHead
-PC52. Provisional registrations, inventory births and world changes still roll
-back. Automatic startup and live animation remain unfinished.
+dependency and originally advanced to Switch opcode5 in
+DeusEx.ScriptedPawn.PlayTurnHead PC52. The later [Switch/Case path](SWITCH-CASE.md)
+passes that override; explicit StartUp now refuses FRand195 at PC9.
+Provisional registrations, inventory births and world changes still roll back.
+Automatic startup and live animation remain unfinished.
 
 ## Verification
 

@@ -17,6 +17,15 @@ Native boolean AND/OR are lazy; call arguments evaluate on caller Self before
 invocation on the Context receiver. Native omitted arguments retain Nothing,
 while script optional arguments initialize typed-zero locals.
 
+Original Switch/Case now uses alias-retaining selectors, selector-directed
+comparison, authored absolute Case links and normal fallthrough. Synchronous
+functions and explicit state slices share transaction and instruction budgets;
+state selection follows callback-changed live code/position without reusing
+destroyed local storage. Generic Struct comparison remains explicitly
+unsupported. See [Switch/Case](SWITCH-CASE.md) for the exact contract and original
+head-turn tests. `script_bytecode_inspect` accepts Function or State paths,
+including state child-function chains; inspection never starts the world.
+
 Synchronous Iterator/IteratorNext/IteratorPop execution and native AllActors304
 now use live Level order and guarded OUT bindings. Native221 Vector-times-Float
 assignment and native225 VSize support original actor-search helpers.

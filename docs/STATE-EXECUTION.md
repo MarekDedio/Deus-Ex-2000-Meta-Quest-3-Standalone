@@ -3,7 +3,7 @@
 The portable runtime now has an explicit bounded state-slice API, transactional
 GotoState/Enable/Disable, and runtime-v5 state-frame persistence. This is offline
 source work, not automatic level startup, working NPC AI, a campaign playthrough,
-or a replacement for the installed `25e38b3` Quest test APK.
+or a replacement for the installed, accepted seated-player Quest test APK.
 
 The contract follows the locally pinned SurrealEngine commit
 `677ee14c5b83486e6634687953779aafb7973ad6`, especially `VM/Frame.cpp`,
@@ -75,6 +75,13 @@ iterator across Stop/Return, latent continuation, null code or replacement of
 code/local storage: these paths fail and roll back explicitly until persistent
 iterator storage exists. Completed loops can commit their normal state-local
 and property writes. See [actor lookup](ACTOR-LOOKUP.md).
+
+Switch/Case selection now follows the live state frame after selector and
+Case-expression callbacks. Matching preserves a callback-selected position;
+mismatching resolves the old label's absolute next offset in current code.
+Same-state/inherited-label changes retain local storage; state replacement,
+including A-to-B-to-A, invalidates old aliases. Live-iterator replacement is
+refused before searching a new Case list. See [Switch/Case](SWITCH-CASE.md).
 
 ## Narrow physics-mode native
 

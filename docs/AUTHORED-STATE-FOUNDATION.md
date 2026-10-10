@@ -142,11 +142,14 @@ Nothing; their emptiness must not be confused with unsupported NPC overrides.
   SetDistress(false) (AIEndEvent, 715), and reaction setup. Standing.BeginState
   disables AnimEnd through native 118; explicitly calling Standing.AnimEnd or
   PlayWaiting does not establish genuine state entry or event eligibility.
-- SetOrders begins with unsupported Switch/Case (0x05/0x0a), with DynamicCast
+- At this earlier foundation stage, SetOrders began with unsupported Switch/Case (0x05/0x0a), with DynamicCast
   (0x2e) on a hostile-order branch. FindTaggedActor uses Iterator/IteratorNext/
   IteratorPop (0x2f/0x31/0x30), native AllActors (304), VSize (225), optional
   FRand, and GetPlayerPawn (720) for a None tag. Parsing these tokens is not
   equivalent to executing their control flow or maintaining iterator frames.
+  Subsequent [object casts](OBJECT-CASTS.md), [actor lookup](ACTOR-LOOKUP.md) and
+  [Switch/Case](SWITCH-CASE.md) implement those respective control paths.
+  FRand, automatic startup and live scheduling remain unfinished.
 
 The pinned native implementations show why property-only approximations are
 insufficient: AddPawn prepends self to Level.PawnList and links nextPawn.

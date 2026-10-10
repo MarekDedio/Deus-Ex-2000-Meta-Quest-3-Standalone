@@ -1,6 +1,25 @@
 # Current Quest test-build handoff (2026-10-10)
 
-The latest **backend-only, not installed** blend-animation APK is
+The latest **backend-only, not installed** Switch/Case APK is
+`artifacts/release-switch-case-20261010/DeusExQuestVR-switch-case-20261010.apk`:
+18,681,209 bytes, SHA-256
+`AEB64340ED1C88BFD549D2363615B555D8ACE8B35DC2B385E813799CD0AB1465`.
+Android ARM64 compilation and APK Signature Scheme v2 verification pass; its
+16 ZIP entries contain no original commercial game packages. The data-probe
+library is 5,588,496 bytes, SHA-256
+`3F6A3CDC6E8E151D78F71227E2855BA0A5807A92F81FBF19F29683D38AB5E36E`.
+It adds original Switch/Case control, live state callback/alias safety and
+transactional fallthrough. All 8,208 original functions pass structural
+inspection; the original DeusEx head-turn override executes all directions.
+Explicit StartUp advances to unsupported FRand195 at PC9 and rolls back fully.
+This is not automatic world startup, working NPC AI or a new device acceptance.
+The installed, physically accepted seated-player APK remains unchanged.
+All 48 ordinary host tests and all three separate original-data integrations
+pass on the final production source. State controls pass 208 / 32 rejections;
+Switch-specific synchronous controls pass 420 / 58.
+See [SWITCH-CASE.md](SWITCH-CASE.md) for scoped tests and evidence.
+
+The preceding **backend-only, not installed** blend-animation APK is
 `artifacts/release-blend-animation-20261010/DeusExQuestVR-blend-animation-20261010.apk`:
 18,681,209 bytes, SHA-256
 `E9500D83B97621DF0AE55D1BF02DAD1F3D4DA28FF34EFBFD585E66952FA9E8EA`.

@@ -123,6 +123,33 @@ void VerifyAuthoredStateMetadata(const std::filesystem::path& root) {
         "Metadata inspection accepted wrong identities or created live script state");
     std::cout << "ORIGINAL STATE/CLASS METADATA retained; readonly identity controls passed\n";
 }
+// Only table identities are available during structural analysis. Any attempt
+// to execute, resolve a callee or access live variables must fail this audit.
+struct OriginalProgramHost final : QuestVr::Vm::Host {
+    explicit OriginalProgramHost(const PortablePackageTables& source) : package(source) {}
+    const PortablePackageTables& package;
+    std::size_t unexpected{};
+    [[noreturn]] void Reject() { ++unexpected; throw std::runtime_error("Structural original audit requested effects"); }
+    void Begin() override { Reject(); }
+    void Commit() override { Reject(); }
+    void Rollback() noexcept override { ++unexpected; }
+    QuestVr::Vm::Property ResolveProperty(const QuestVr::Vm::Function&, std::int32_t) override { Reject(); }
+    std::string ResolveName(const QuestVr::Vm::Function& function, const std::int32_t index) override {
+        Require(function.source == package.sourcePath && index >= 0 &&
+            static_cast<std::size_t>(index) < package.names.size(), "Original structural name table mismatch");
+        return package.names[static_cast<std::size_t>(index)].Name.ToString();
+    }
+    std::string ResolveObject(const QuestVr::Vm::Function& function, const std::int32_t reference) override {
+        Require(function.source == package.sourcePath, "Original structural object table mismatch");
+        return GetPortableObjectPath(package, reference);
+    }
+    std::shared_ptr<const QuestVr::Vm::Function> ResolveFunction(const QuestVr::Vm::Function&,
+        const std::string&, const QuestVr::Vm::Invocation&) override { Reject(); }
+    std::shared_ptr<QuestVr::Vm::Reference> Variable(const std::string&,
+        const QuestVr::Vm::Property&, QuestVr::Vm::Scope) override { Reject(); }
+    Evaluation Native(std::uint16_t, const std::string&, const std::vector<Evaluation>&,
+        const QuestVr::Vm::Function*) override { Reject(); }
+};
 void VerifyOriginalDispatchPrograms(const std::vector<PortablePackageTables>& tables,
     const PortableRuntimeSummary& runtime) {
     const auto graph = ReadPortableRuntimeDispatchSummary();
@@ -130,10 +157,34 @@ void VerifyOriginalDispatchPrograms(const std::vector<PortablePackageTables>& ta
         graph.classFunctions + graph.stateFunctions == runtime.functions,
         "Original Children/Next dispatch graph lost class/state/functions");
     std::size_t states{}, classes{}, labels{}, terminalTables{}, statements{};
+    std::size_t functions{}, functionStatements{}, switches{}, cases{}, switchFunctions{};
     for (const auto& package : tables) {
         const auto reflection = BuildPortableReflectionGraph(package);
+        OriginalProgramHost inspection(package);
         for (std::size_t index=0;index<reflection.objects.size();++index) {
             const auto& object=reflection.objects[index];
+            if (object.metaClass == "Function") {
+                const auto script = LoadPortableFunctionScript(package, index);
+                QuestVr::Vm::Function function;
+                function.path = std::filesystem::path(package.sourcePath).stem().string()+'.'+script.objectPath;
+                function.source = package.sourcePath; function.bytecode = script.bytecode;
+                function.nativeIndex = script.nativeIndex; function.flags = script.functionFlags;
+                QuestVr::Vm::ProgramLayout layout;
+                try { layout = QuestVr::Vm::AnalyzeProgram(inspection, function); }
+                catch (const std::exception& error) {
+                    throw std::runtime_error("Original function layout failed at "+function.path+": "+error.what());
+                }
+                ++functions; functionStatements += layout.statementOffsets.size();
+                bool hasSwitch{};
+                for (const auto offset : layout.statementOffsets) {
+                    Require(offset < function.bytecode.size(), "Original function statement offset escaped code");
+                    switches += function.bytecode[offset] == 0x05u;
+                    cases += function.bytecode[offset] == 0x0au;
+                    hasSwitch = hasSwitch || function.bytecode[offset] == 0x05u;
+                }
+                switchFunctions += hasSwitch;
+                continue;
+            }
             if (object.metaClass != "State" && object.metaClass != "Class") continue;
             const auto path=std::filesystem::path(package.sourcePath).stem().string()+'.'+object.objectPath;
             const auto layout=ReadPortableRuntimeStateProgram(path);
@@ -176,13 +227,18 @@ void VerifyOriginalDispatchPrograms(const std::vector<PortablePackageTables>& ta
                 Require(layout.labels.empty(), "Nonterminal label table contributed labels: "+path);
             }
         }
+        Require(inspection.unexpected == 0u, "Original structural function inspection attempted execution");
     }
-    Require(states==runtime.states && classes==runtime.classes && labels!=0u && !GetPortableRuntimeScriptStatePresent(),
+    Require(states==runtime.states && classes==runtime.classes && functions==runtime.functions &&
+        switches != 0u && cases > switches && labels!=0u && !GetPortableRuntimeScriptStatePresent(),
         "Original program inspection lost coverage or created execution state");
     std::cout << "ORIGINAL DISPATCH GRAPH classes="<<graph.classes<<" states="<<graph.states<<
         " classFunctions="<<graph.classFunctions<<" stateFunctions="<<graph.stateFunctions<<" commonFields="<<graph.commonFields<<'\n';
     std::cout << "ORIGINAL PROGRAM LAYOUT states="<<states<<" classes="<<classes<<" statements="<<statements<<
         " labels="<<labels<<" terminalTables="<<terminalTables<<"; inspection only\n";
+    std::cout << "ORIGINAL FUNCTION LAYOUT functions="<<functions<<" statements="<<functionStatements<<
+        " switchFunctions="<<switchFunctions<<" switches="<<switches<<" cases="<<cases<<
+        "; structural table-only inspection, not execution feasibility\n";
 }
 void VerifyStoppedDispatch(const std::string& actor) {
     const auto context=ReadPortableActorDispatchContext(actor);
@@ -1019,6 +1075,72 @@ void VerifyOriginalBlendCommands(const std::filesystem::path& root, const std::s
     std::cout<<"ORIGINAL BLEND actual PlayTurnHead directions1–4 Return/native1010 slot3, Tween1012 negative frame/Plane, signed slots/missing sequence, rollback, reflected import/partial/disagree rejection, v4/legacy clock roundtrip; no automatic ticking\n";
 }
 
+void VerifyOriginalSwitchHeadTurn(const std::string& actor, const std::filesystem::path& legacy,
+    const std::filesystem::path& directory) {
+    Require(LoadPortableRuntimeState(legacy.string()), "Could not reset original Switch fixture");
+    Require(QuestVr::Vm::ToBool(ReadPortableActorScriptProperty(actor, "bCanTurnHead")),
+        "Original human Switch fixture does not permit head turns");
+    const auto saved = directory / "original-switch-v4.sav";
+    const auto generated = directory / "original-switch-seeded.sav";
+    const auto inspect = directory / "original-switch-inspect.sav";
+    Call(actor, "PlayAnim", {Name("Still"), Number(1), Number(0)});
+    Require(SavePortableRuntimeState(saved.string()), "Original Switch baseline could not save");
+    const auto baselineBytes = CheckpointBytes(saved);
+    auto seeded = QuestVr::DecodeScriptSavedState(ScriptBlob(baselineBytes));
+    const auto object = std::find_if(seeded.objects.begin(), seeded.objects.end(),
+        [&](const auto& value) { return value.path == actor; });
+    Require(object != seeded.objects.end() && object->clock, "Original Switch fixture has no native clock");
+    object->properties.push_back({"Engine.Pawn.animTimer", "animTimer", 1u, Value::Float(1)});
+    object->properties.push_back({"Engine.Pawn.AIAddViewRotation", "AIAddViewRotation", 0u,
+        Value::Rotator({123, -456, 789})});
+    const auto seedBytes = ReplaceScriptBlob(baselineBytes, QuestVr::EncodeScriptSavedState(seeded));
+    Require(QuestVr::WriteDurableSaveFile(generated.string(), seedBytes) &&
+        ValidatePortableRuntimeState(generated.string()), "Original typed Switch input rejected");
+    struct Direction { std::uint8_t value; const char* sequence; std::array<std::int32_t, 3> rotation; };
+    for (const auto& direction : {Direction{0, "Still", {0, 0, 0}}, Direction{1, "HeadLeft", {0, -5461, 0}},
+            Direction{2, "HeadRight", {0, 5461, 0}}, Direction{3, "HeadUp", {5461, 0, 0}},
+            Direction{4, "HeadDown", {-5461, 0, 0}}, Direction{255, "Still", {0, 0, 0}}}) {
+        Require(LoadPortableRuntimeState(generated.string()), "Could not reset original Switch direction");
+        const auto before = Snapshot(actor);
+        const auto args = std::vector<Evaluation>{{Value::Byte(direction.value), {}}, Number(1), Number(0.2f)};
+        const auto result = Call(actor, "DeusEx.ScriptedPawn.PlayTurnHead", args);
+        const auto after = Snapshot(actor);
+        const auto rotation = ReadPortableActorScriptProperty(actor, "AIAddViewRotation");
+        auto untouched = after; untouched.animation.blends[3] = before.animation.blends[3];
+        // The actual override returns Nothing at PC208, hence its Bool return
+        // property supplies false even when the base helper successfully turns.
+        Require(result.status == Status::Returned && result.value.kind == Kind::Bool && !result.value.boolean &&
+            result.function == "DeusEx.ScriptedPawn.PlayTurnHead" && result.offset == 208u && result.opcode == 0x0bu &&
+            rotation.kind == Kind::Rotator && rotation.rotation == direction.rotation &&
+            after.animation.blends[3].sequence == direction.sequence && Same(before, untouched),
+            "Actual original Switch selected an incorrect head/view branch or fabricated its Bool return");
+        Require(ReadPortableActorScriptProperty(actor, "animTimer", 1u).floating == 0.0f &&
+            SavePortableRuntimeState(saved.string()), "Original Switch did not retain the base helper's timer write");
+        const auto committed = CheckpointBytes(saved);
+        // Same sequence with an exhausted timer makes the real base helper
+        // return false, and the override must skip its reset/Switch entirely.
+        const auto skipped = Call(actor, "DeusEx.ScriptedPawn.PlayTurnHead", args);
+        Require(skipped.value.kind == Kind::Bool && !skipped.value.boolean &&
+            SavePortableRuntimeState(inspect.string()) && CheckpointBytes(inspect) == committed,
+            "Original false head-turn branch evaluated Switch or changed its clock/view properties");
+        Require(LoadPortableRuntimeState(saved.string()) && Same(after, Snapshot(actor)) &&
+            ReadPortableActorScriptProperty(actor, "AIAddViewRotation").rotation == direction.rotation &&
+            SavePortableRuntimeState(inspect.string()) && CheckpointBytes(inspect) == committed,
+            "Original Switch view/clock checkpoint did not roundtrip exactly");
+    }
+    Require(LoadPortableRuntimeState(generated.string()), "Could not reset original Switch rollback input");
+    QuestVr::Vm::Limits limits; limits.writes = 6u;
+    const auto failed = ExecutePortableActorFunction(actor, "DeusEx.ScriptedPawn.PlayTurnHead",
+        {{Value::Byte(1), {}}, Number(1), Number(0.2f)}, limits);
+    Require(failed.status == Status::Budget && !failed.committed && failed.offset == 64u && failed.opcode == 0x0fu &&
+        SavePortableRuntimeState(inspect.string()) && CheckpointBytes(inspect) == seedBytes,
+        "Original selected Switch body did not share write budget or roll back base animation/view writes");
+    Require(LoadPortableRuntimeState(legacy.string()) && !GetPortableRuntimeScriptStatePresent(),
+        "Legacy reset retained original Switch properties or native clock");
+    std::cout << "ORIGINAL SWITCH actual DeusEx head override directions0–4/default255, exact yaw/pitch +/-5461, "
+        "native1010/base timer, original false Bool return, short-circuit, selected-body rollback and view/clock v4 roundtrip; no live NPC tick\n";
+}
+
 void VerifyOriginalAIEvents(const std::string& actor, const std::filesystem::path& legacy,
     const std::filesystem::path& directory) {
     Require(LoadPortableRuntimeState(legacy.string()), "Could not reset original AI fixture");
@@ -1366,9 +1488,9 @@ void VerifyOriginalInventoryTransactions(const std::string& actor,const std::fil
         " committed="<<slice.committed<<" error="<<slice.error<<" at "<<slice.function<<':'<<slice.offset<<
         " opcode="<<static_cast<unsigned>(slice.opcode)<<'\n';
     Require(slice.status==Status::Unsupported && !slice.committed &&
-        slice.function=="DeusEx.ScriptedPawn.PlayTurnHead" && slice.offset==52u &&
-        slice.opcode==0x05u && slice.error=="Unsupported VM opcode 5",
-        "Actual StartUp did not advance through head animation to its original Switch dependency: "+slice.error);
+        slice.function=="DeusEx.ScriptedPawn.StartUp" && slice.offset==9u &&
+        slice.opcode==195u && slice.error=="Unsupported runtime native 195",
+        "Actual StartUp did not advance through head animation/Switch to its next original native dependency: "+slice.error);
     Require(GetPortableRuntimeMapActors(true).size()==startupActors &&
         GetPortableRuntimeWorldRevision()==startupRevision &&
         GC::GetStats().numObjects==startupGc.numObjects &&
@@ -1579,7 +1701,8 @@ void VerifyOriginalStateExecution(const std::string& actor, const std::filesyste
         "; atomic slice/callback failure; no world startup/tick implied\n";
 }
 
-void TestOriginal(const std::filesystem::path& root, const bool inventoryOnly = false) {
+void TestOriginal(const std::filesystem::path& root, const bool inventoryOnly = false,
+    const bool switchOnly = false) {
     static constexpr const char* packages[] = {
         "ConSys", "Core", "DeusEx", "DeusExCharacters", "DeusExConAudioAIBarks",
         "DeusExConAudioEndGame", "DeusExConAudioHK_Shared", "DeusExConAudioIntro",
@@ -1619,6 +1742,12 @@ void TestOriginal(const std::filesystem::path& root, const bool inventoryOnly = 
         Require(Word(CheckpointBytes(checkpoint),4)==3u,"Untouched runtime unexpectedly changed legacy v3 save format");
         const auto actors = GetPortableRuntimeMapActors();
         if (std::string(map) == "00_Training") VerifyColdOriginalAnimationAssets(root, checkpoint, temporary.directory);
+        if (switchOnly) {
+            VerifyOriginalSwitchHeadTurn("00_Training.Doctor1", checkpoint, temporary.directory);
+            UnloadPortableRuntimeMap();
+            Require(!GetPortableRuntimeUnsavedScriptState(), "Focused original Switch suite leaked actor state");
+            return;
+        }
         VerifyOriginalInventorySources(tables, LoadPortablePackageTables((root / "Maps" /
             (std::string(map) + ".dx")).string()), inventoryCoverage);
         for (const auto& actor : actors) {
@@ -1628,6 +1757,7 @@ void TestOriginal(const std::filesystem::path& root, const bool inventoryOnly = 
                 VerifyOriginalDormantSpawn(root,actor.objectPath,checkpoint,temporary.directory);
                 VerifyOriginalActorLookup(root,actor.objectPath,checkpoint,temporary.directory);
                 VerifyOriginalBlendCommands(root,actor.objectPath,checkpoint,temporary.directory);
+                VerifyOriginalSwitchHeadTurn(actor.objectPath,checkpoint,temporary.directory);
                 VerifyOriginalAIEvents(actor.objectPath,checkpoint,temporary.directory);
                 VerifyOriginalInventoryTransactions(actor.objectPath, checkpoint, temporary.directory);
                 if (inventoryOnly) { ++humanTests; continue; }
@@ -1832,9 +1962,12 @@ int main(int argc, char** argv) {
             std::cout << "SKIP: supply readonly original Deus Ex installation for real actor script integration\n";
             return 77;
         }
-        Require(argc == 2 || (argc == 3 && std::string(argv[2]) == "--inventory-only"),
-            "Usage: portable_actor_script_test GAME_ROOT [--inventory-only]");
-        TestOriginal(std::filesystem::path(argv[1]), argc == 3);
+        Require(argc == 2 || (argc == 3 && (std::string(argv[2]) == "--inventory-only" ||
+                std::string(argv[2]) == "--switch-only")),
+            "Usage: portable_actor_script_test GAME_ROOT [--inventory-only|--switch-only]");
+        const bool switchOnly = argc == 3 && std::string(argv[2]) == "--switch-only";
+        TestOriginal(std::filesystem::path(argv[1]), argc == 3 && !switchOnly, switchOnly);
+        if (switchOnly) { std::cout << "PASS focused original cold-assets/head-Switch suite\n"; return 0; }
         std::cout << "PASS original actor authored struct inspection, member writes, typed references, v4/v5 composition and rollback"
             << (argc == 2 ? "; full actor bytecode/natives/BSP Region/state/clock suite" : "; focused inventory suite") << '\n';
         return 0;

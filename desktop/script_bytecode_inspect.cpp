@@ -164,19 +164,37 @@ struct Inspector {
 };
 void Parameters(const PortablePackageTables& package, const std::size_t index) {
     const auto& entry = package.exports[index];
+    if (entry.ObjSize <= 0 || entry.ObjSize > (1 << 20))
+        throw std::runtime_error("Inspected struct payload exceeds byte bound");
     std::ifstream file(package.sourcePath,std::ios::binary);
     std::vector<std::uint8_t> bytes(static_cast<std::size_t>(entry.ObjSize));
     file.seekg(entry.ObjOffset); file.read(reinterpret_cast<char*>(bytes.data()),static_cast<std::streamsize>(bytes.size()));
-    if (!file) throw std::runtime_error("Could not read inspected function payload");
+    if (!file) throw std::runtime_error("Could not read inspected struct payload");
     Reader header{bytes,LoadPortableExportProperties(package,index).bytesConsumed};
     const auto base = header.Index(), next = header.Index(), source = header.Index();
     auto child = header.Index();
     std::cout << "header base=" << GetPortableObjectPath(package,base) << " next=" << GetPortableObjectPath(package,next) <<
         " source=" << GetPortableObjectPath(package,source) << " children=" << GetPortableObjectPath(package,child) << '\n';
     std::set<std::int32_t> visited;
-    while (child > 0) {
-        if (!visited.insert(child).second || visited.size() > 4096u) throw std::runtime_error("Invalid function child chain");
-        const auto descriptor = LoadPortablePropertyDescriptor(package,static_cast<std::size_t>(child-1));
+    while (child != 0) {
+        if (child < 0 || !visited.insert(child).second || visited.size() > 4096u ||
+            static_cast<std::size_t>(child) > package.exports.size())
+            throw std::runtime_error("Invalid inspected struct child chain");
+        const auto childIndex = static_cast<std::size_t>(child - 1);
+        if (package.exports[childIndex].ObjOuter != static_cast<std::int32_t>(index + 1u))
+            throw std::runtime_error("Inspected struct child belongs to a different owner");
+        if (package.exports[childIndex].ObjSize <= 0 || package.exports[childIndex].ObjSize > (1 << 20))
+            throw std::runtime_error("Inspected struct child payload exceeds byte bound");
+        auto childClass = GetPortableObjectPath(package, package.exports[childIndex].ObjClass);
+        childClass = childClass.substr(childClass.find_last_of('.') + 1u);
+        if (!childClass.ends_with("Property")) {
+            std::cout << "child " << GetPortableObjectPath(package, child) << " type=" << childClass << '\n';
+            if (childClass == "Function") child = LoadPortableFunctionScript(package, childIndex).nextField;
+            else if (childClass == "State") child = LoadPortableStateDescriptor(package, childIndex).nextField;
+            else child = LoadPortableFieldLinks(package, childIndex).nextField;
+            continue;
+        }
+        const auto descriptor = LoadPortablePropertyDescriptor(package,childIndex);
         std::cout << "child " << descriptor.objectPath << " type=" << descriptor.type << " dim=" << descriptor.arrayDimension <<
             " flags=0x" << std::hex << descriptor.flags << std::dec <<
             " refType=" << GetPortableObjectPath(package,descriptor.referencedType) << '\n';
@@ -187,7 +205,7 @@ void Parameters(const PortablePackageTables& package, const std::size_t index) {
 
 int main(int argc, char** argv) {
     try {
-        if (argc < 3) throw std::runtime_error("Usage: script_bytecode_inspect GAME_ROOT PACKAGE.FunctionPath [...]");
+        if (argc < 3) throw std::runtime_error("Usage: script_bytecode_inspect GAME_ROOT PACKAGE.FunctionOrStatePath [...]");
         const std::filesystem::path root(argv[1]);
         std::map<std::string,PortablePackageTables> packages;
         std::map<unsigned,std::string> natives;
@@ -209,12 +227,24 @@ int main(int argc, char** argv) {
         }
         for (int arg=2; arg<argc; ++arg) {
             const std::string requested(argv[arg]); const auto dot=requested.find('.');
-            if (dot == std::string::npos) throw std::runtime_error("Function path lacks package");
+            if (dot == std::string::npos) throw std::runtime_error("Script path lacks package");
             const auto& package=load(requested.substr(0u,dot));
             const auto index=FindPortableExport(package,requested.substr(dot+1u));
-            const auto script=LoadPortableFunctionScript(package,index);
-            std::cout << "\nFUNCTION " << requested << " logicalBytes=" << script.bytecode.size() <<
-                " native=" << script.nativeIndex << " flags=0x" << std::hex << script.functionFlags << std::dec << '\n';
+            auto scriptClass = GetPortableObjectPath(package, package.exports[index].ObjClass);
+            scriptClass = scriptClass.substr(scriptClass.find_last_of('.') + 1u);
+            PortableScriptBody script;
+            if (scriptClass == "State") {
+                const auto state = LoadPortableStateDescriptor(package, index);
+                script.objectPath = state.objectPath; script.logicalSize = state.logicalSize;
+                script.bytecode = state.bytecode;
+                std::cout << "\nSTATE " << requested << " logicalBytes=" << script.bytecode.size() <<
+                    " flags=0x" << std::hex << state.stateFlags << std::dec <<
+                    " labelTableOffset=" << state.labelTableOffset << '\n';
+            } else {
+                script = LoadPortableFunctionScript(package, index);
+                std::cout << "\nFUNCTION " << requested << " logicalBytes=" << script.bytecode.size() <<
+                    " native=" << script.nativeIndex << " flags=0x" << std::hex << script.functionFlags << std::dec << '\n';
+            }
             Parameters(package,index);
             Inspector inspector{package,natives,{script.bytecode,0u},{},{}};
             while (inspector.reader.position<script.bytecode.size()) inspector.Expr();

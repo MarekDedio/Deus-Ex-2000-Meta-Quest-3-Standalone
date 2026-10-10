@@ -47,6 +47,36 @@ Bytes Native(std::uint16_t index, std::initializer_list<Bytes> args = {}) {
     result.push_back(0x16); return result;
 }
 Bytes Jump(std::uint16_t offset) { return {0x06, static_cast<std::uint8_t>(offset), static_cast<std::uint8_t>(offset >> 8u)}; }
+Bytes Switch(Bytes selector) { return Join({{0x05,4},selector}); }
+Bytes Case(Bytes value) { return Join({{0x0a,0,0},value}); }
+void Append(Bytes& code, const Bytes& value) { code.insert(code.end(),value.begin(),value.end()); }
+void Target(Bytes& code, const std::size_t position, const std::size_t offset) {
+    if (offset > 0xfffeu) throw std::runtime_error("synthetic branch offset overflow");
+    code.at(position+1u) = static_cast<std::uint8_t>(offset);
+    code.at(position+2u) = static_cast<std::uint8_t>(offset >> 8u);
+}
+struct Choices {
+    Bytes body;
+    std::uint32_t first{}, second{}, fallback{}, end{};
+};
+Choices Choice(Bytes selector, Bytes firstValue, Bytes firstBody, Bytes secondValue, Bytes secondBody,
+    Bytes fallbackBody, bool breakFirst = true, Bytes continuation = {0x08}) {
+    Choices result; result.body = Switch(std::move(selector));
+    result.first = static_cast<std::uint32_t>(result.body.size()); Append(result.body,Case(std::move(firstValue)));
+    Append(result.body,firstBody);
+    const auto firstBreak = result.body.size(); if (breakFirst) Append(result.body,Jump(0));
+    result.second = static_cast<std::uint32_t>(result.body.size()); Append(result.body,Case(std::move(secondValue)));
+    Append(result.body,secondBody); const auto secondBreak = result.body.size(); Append(result.body,Jump(0));
+    result.fallback = static_cast<std::uint32_t>(result.body.size()); Append(result.body,{0x0a,0xff,0xff});
+    Append(result.body,fallbackBody); result.end = static_cast<std::uint32_t>(result.body.size()); Append(result.body,continuation);
+    Target(result.body,result.first,result.second); Target(result.body,result.second,result.fallback);
+    if (breakFirst) Target(result.body,firstBreak,result.end);
+    Target(result.body,secondBreak,result.end); return result;
+}
+void Relocate(Choices& choice, const std::uint32_t base) {
+    Target(choice.body,choice.first,base+choice.second); Target(choice.body,choice.second,base+choice.fallback);
+    Target(choice.body,choice.second-3u,base+choice.end); Target(choice.body,choice.fallback-3u,base+choice.end);
+}
 std::string Leaf(const std::string& text) { return text.substr(text.find_last_of('.') + 1u); }
 
 // This host implements only synthetic authored programs. Observation traces
@@ -57,13 +87,14 @@ struct Host final : Vm::Host {
     std::map<std::string, Vm::Function> programs, functions;
     std::map<std::uint32_t, Vm::Property> properties;
     std::map<std::uint32_t, std::string> names{{0,"None"},{1,"Begin"},{2,"A"},{3,"B"},{4,"C"},{5,"D"},
-        {6,"Worker"},{7,"AnimEnd"},{8,"ParentOnly"},{9,"Missing"},{10,"ContinueHere"}};
+        {6,"Worker"},{7,"AnimEnd"},{8,"ParentOnly"},{9,"Missing"},{10,"ContinueHere"},{12,"Probe"}};
     std::map<std::string, std::vector<std::string>> labelChain;
     std::map<std::string, Value> values, savedValues;
     std::vector<std::string> trace;
     bool active{}, begun{true}, deleted{}, badPreparedIdentity{};
     std::size_t begins{}, commits{}, rollbacks{}, preparations{}, mutableReads{}, effects{}, savedEffects{};
     std::size_t stateReads{};
+    std::size_t iteratorCreates{}, iteratorDestroys{}, iteratorSteps{};
     void Begin() override {
         if (active) throw std::runtime_error("nested transaction");
         savedStates = states; savedLocalRevisions = localRevisions; savedValues = values; savedEffects = effects; active = true; ++begins;
@@ -169,6 +200,18 @@ struct Host final : Vm::Host {
         if (transition) frame.latent = StateLatent::Stop;
         else throw std::runtime_error("missing authored goto label");
     }
+    std::unique_ptr<Vm::Iterator> CreateIterator(std::uint16_t index, const std::string&,
+        const std::vector<Vm::Evaluation>&, const Vm::Function*) override {
+        if (index != 819) throw std::runtime_error("unknown synthetic iterator");
+        struct Cursor final : Vm::Iterator {
+            Host& host; bool yielded{};
+            explicit Cursor(Host& owner) : host(owner) {}
+            ~Cursor() override { ++host.iteratorDestroys; }
+            bool Next() override { ++host.iteratorSteps; const auto result = !yielded; yielded = true; return result; }
+            std::size_t RetainedBytes() const override { return sizeof(Cursor); }
+        };
+        ++iteratorCreates; return std::make_unique<Cursor>(*this);
+    }
     Vm::Evaluation Native(std::uint16_t, const std::string&, const std::vector<Vm::Evaluation>&, const Vm::Function*) override {
         throw std::runtime_error("native requires execution bridge");
     }
@@ -216,6 +259,32 @@ struct Host final : Vm::Host {
         if (index == 810) {
             MutableState(self)->frame->latent = StateLatent::Sleep;
             return {Value::Text(Vm::Kind::Name,"ParentOnly"),{}};
+        }
+        if (index == 811) {
+            trace.push_back("probe:" + StateName(self));
+            execution.CallEvent(self,args.at(0).Load().text,true);
+            return args.size() > 1 ? args[1] : Vm::Evaluation{};
+        }
+        if (index == 814) {
+            args.at(0).reference->write(args.at(1).Load());
+            return {args.at(2).Load(),{}};
+        }
+        if (index == 815) {
+            MutableState(self)->frame->latent = StateLatent::Stop;
+            return {args.at(0).Load(),{}};
+        }
+        if (index == 816) {
+            GotoStateLabel(self,args.at(0).Load().text,false);
+            return {};
+        }
+        if (index == 817 || index == 818) {
+            auto& object = *MutableState(self);
+            ++localRevisions[self];
+            if (index == 818) object.frame.reset();
+            else {
+                object.frame->codePath.clear(); object.frame->localsCodePath.clear(); object.frame->locals.clear();
+            }
+            return {args.at(0).Load(),{}};
         }
         throw std::runtime_error("unknown synthetic native");
     }
@@ -452,6 +521,324 @@ void InCodeLabelPreservesLatent() {
         "unsupported latent-label slice did not restore the original frame");
     ++rejections;
 }
+
+std::vector<std::string> EffectTrace(const Host& host) {
+    std::vector<std::string> result;
+    for (const auto& entry : host.trace) if (entry.starts_with("effect:")) result.push_back(entry);
+    return result;
+}
+bool SameState(const StateObject& a, const StateObject& b) {
+    if (a.hasStack != b.hasStack || a.frameOverride != b.frameOverride || a.disabled != b.disabled ||
+        a.frame.has_value() != b.frame.has_value()) return false;
+    if (!a.frame) return true;
+    const auto& x = *a.frame; const auto& y = *b.frame;
+    if (x.codePath != y.codePath || x.localsCodePath != y.localsCodePath || x.statementIndex != y.statementIndex ||
+        x.latent != y.latent || x.locals.size() != y.locals.size()) return false;
+    for (std::size_t i = 0; i < x.locals.size(); ++i) {
+        if (x.locals[i].key != y.locals[i].key || x.locals[i].values.size() != y.locals[i].values.size()) return false;
+        for (std::size_t j = 0; j < x.locals[i].values.size(); ++j)
+            if (!Vm::Equal(x.locals[i].values[j],y.locals[i].values[j])) return false;
+    }
+    return true;
+}
+void SwitchRollback(Host& host, const Vm::Status status, const std::string& description,
+    const Vm::Limits& limits = {}) {
+    const auto state = host.states.at("Actor"); const auto values = host.values;
+    const auto revisions = host.localRevisions; const auto effects = host.effects;
+    const auto rollbacks = host.rollbacks;
+    const auto result = Vm::ResumeState(host,"Actor",limits);
+    Check(!result.passed() && !result.committed && result.status == status,description + " did not fail explicitly: " + result.error);
+    Check(host.rollbacks == rollbacks + 1 && SameState(state,host.states.at("Actor")) &&
+        host.localRevisions == revisions && host.effects == effects,description + " lost complete frame/effect/disabled rollback");
+    Check(values.size() == host.values.size(),description + " changed instance storage shape");
+    for (const auto& [key,value] : values) Check(Vm::Equal(value,host.values.at(key)),description + " changed instance value");
+    ++rejections;
+}
+Vm::Property SwitchLocal(Host& host) {
+    const Vm::Property local{"State.A.SwitchLocal","SwitchLocal",Value::Integer(0),0,1};
+    host.properties[33] = local;
+    host.properties[20] = {"Class.Count","Count",Value::Integer(0),0,1}; host.values["Class.Count"] = Value::Integer(0);
+    return local;
+}
+
+void StateSwitchSelection() {
+    for (const auto selected : {1,2,99}) {
+        Host host;
+        const auto program = Choice(Int(selected),Int(1),Native(800,{Int(1)}),Int(2),Native(800,{Int(2)}),Native(800,{Int(3)}));
+        host.Program("State.A",program.body); host.Install("State.A");
+        const auto result = Vm::ResumeState(host,"Actor");
+        Check(result.passed() && result.status == Vm::Status::Stopped,"simple state Switch failed");
+        Check(EffectTrace(host) == std::vector<std::string>{"effect:" + std::to_string(selected == 99 ? 3 : selected)},
+            "state Switch selected wrong branch or failed to break");
+    }
+    {
+        Host host;
+        auto inner = Choice(Int(2),Int(1),Native(800,{Int(101)}),Int(2),Native(800,{Int(102)}),
+            Native(800,{Int(103)}),true,{0x0b});
+        Relocate(inner,static_cast<std::uint32_t>(Switch(Int(1)).size()+Case(Int(1)).size()));
+        const auto outer = Choice(Int(1),Int(1),Join({inner.body,Native(800,{Int(104)})}),Int(2),Native(801),Native(801));
+        host.Program("State.A",outer.body); host.Install("State.A");
+        Check(Vm::ResumeState(host,"Actor").passed() && EffectTrace(host) == std::vector<std::string>{"effect:102","effect:104"},
+            "nested state Switch retained an obsolete selector or branch target");
+    }
+    {
+        Host host;
+        // Fall-through executes Case as a no-op, never evaluating its value.
+        const auto program = Choice(Int(1),Int(1),Native(800,{Int(1)}),Native(801),Native(800,{Int(2)}),Native(801),false);
+        host.Program("State.A",program.body); host.Install("State.A");
+        Check(Vm::ResumeState(host,"Actor").passed() && EffectTrace(host) == std::vector<std::string>{"effect:1","effect:2"},
+            "Case fall-through evaluated skipped selector expressions");
+    }
+    {
+        Host host; const auto local = SwitchLocal(host);
+        const auto caseValue = Native(814,{Ref(0x01,20),Native(802),Int(1)});
+        const auto program = Choice(Int(1),caseValue,Let(Ref(0x00,33),Int(27)),Int(2),Native(801),Native(801));
+        host.Program("State.A",program.body,{local}); host.Install("State.A");
+        host.states.at("Actor").frame->locals[0].values[0] = Value::Integer(12);
+        const auto layout = Vm::AnalyzeProgram(host,host.programs.at("State.A"));
+        const auto caseOrdinal = std::find(layout.statementOffsets.begin(),layout.statementOffsets.end(),program.first)-layout.statementOffsets.begin();
+        Check(Vm::ResumeState(host,"Actor").passed() && host.values.at("Class.Count").integer == caseOrdinal+1,
+            "Case did not advance live current-code ordinal before evaluating its expression");
+        Check(host.states.at("Actor").frame->localsCodePath == "State.A" && host.states.at("Actor").frame->locals[0].values[0].integer == 27,
+            "ordinary Switch reset retained state-local ownership/storage");
+    }
+    {
+        Host host; const auto local = SwitchLocal(host);
+        const auto program = Choice(Ref(0x00,33),Native(814,{Ref(0x00,33),Int(19),Int(19)}),Native(800,{Int(19)}),Int(12),Native(801),Native(801));
+        host.Program("State.A",program.body,{local}); host.Install("State.A");
+        host.states.at("Actor").frame->locals[0].values[0] = Value::Integer(12);
+        Check(Vm::ResumeState(host,"Actor").passed() && EffectTrace(host) == std::vector<std::string>{"effect:19"} &&
+            host.states.at("Actor").frame->locals[0].values[0].integer == 19,
+            "Switch eagerly detached a selector alias before evaluating the Case");
+    }
+    {
+        Host host; const auto local = SwitchLocal(host);
+        const auto program = Choice(Ref(0x00,33),Native(814,{Ref(0x00,33),Int(19),Int(18)}),Native(801),
+            Native(814,{Ref(0x00,33),Int(21),Int(21)}),Native(800,{Int(21)}),Native(801));
+        host.Program("State.A",program.body,{local}); host.Install("State.A");
+        host.states.at("Actor").frame->locals[0].values[0] = Value::Integer(12);
+        Check(Vm::ResumeState(host,"Actor").passed() && EffectTrace(host) == std::vector<std::string>{"effect:21"},
+            "Switch did not reload selector alias after every visited Case");
+    }
+}
+
+void StateSwitchSelectorTransitions() {
+    for (const auto mode : {0,1,2,3}) {
+        Host host; const auto local = SwitchLocal(host);
+        const auto selector = Native(811,{Ref(0x21,12),Int(2)});
+        const auto branch = Join({Let(Ref(0x01,20),Ref(0x00,33)),Let(Ref(0x00,33),Int(27)),Native(800,{Int(2)})});
+        const auto program = Choice(selector,Int(1),Native(801),Int(2),branch,Native(801));
+        host.Program("State.A",program.body,{local},{{1,0},{10,program.second}});
+        if (mode == 0) host.Function("State.A.Probe",Join({Native(113,{Ref(0x21,2),Ref(0x21,10)}),Return()}));
+        else if (mode == 1) {
+            const auto other = Choice(Int(0),Int(2),branch,Int(1),Native(801),Native(801));
+            host.Program("State.B",other.body,{local},{{1,other.first}});
+            host.Function("State.A.Probe",Join({Native(113,{Ref(0x21,3)}),Return()}));
+        } else if (mode == 2) {
+            host.Program("State.B",{0x08});
+            host.Function("State.A.Probe",Join({Native(113,{Ref(0x21,3)}),Return()}));
+            host.Function("State.B.BeginState",Join({Native(113,{Ref(0x21,2),Ref(0x21,10)}),Return()}));
+        } else {
+            const auto inherited = Choice(Int(0),Int(2),branch,Int(1),Native(801),Native(801));
+            host.Program("Parent.A",inherited.body,{local},{{10,inherited.first}});
+            host.labelChain["A"] = {"State.A","Parent.A"};
+            host.Function("State.A.Probe",Join({Native(816,{Ref(0x21,10)}),Return()}));
+            // State.A has no ContinueHere here: force inherited label selection.
+            host.Program("State.A",program.body,{local});
+        }
+        host.Install("State.A"); const auto initialRevision = host.localRevisions.at("Actor");
+        host.states.at("Actor").frame->locals[0].values[0] = Value::Integer(12);
+        const auto result = Vm::ResumeState(host,"Actor");
+        Check(result.passed() && EffectTrace(host) == std::vector<std::string>{"effect:2"},
+            "selector callback did not search Cases at live code/label PC, mode " + std::to_string(mode) + ": " + result.error);
+        const auto& frame = *host.states.at("Actor").frame;
+        Check(frame.codePath == (mode == 1 ? "State.B" : mode == 3 ? "Parent.A" : "State.A") &&
+            frame.localsCodePath == (mode == 1 ? "State.B" : "State.A") && frame.locals[0].values[0].integer == 27,
+            "selector transition used old code, locals owner or invalidated aliases");
+        Check(host.localRevisions.at("Actor") == initialRevision + (mode == 1 ? 1 : mode == 2 ? 2 : 0),
+            "selector transition unexpectedly recreated or retained state locals");
+        Check(host.values.at("Class.Count").integer == (mode == 0 || mode == 3 ? 12 : 0),
+            "selector transition failed to retain old locals or zero newly recreated storage before branch mutation");
+    }
+}
+
+void StateSwitchCaseTransitions() {
+    for (const auto mode : {0,1,2,3}) {
+        Host host; const auto local = SwitchLocal(host);
+        const auto caseValue = Native(811,{Ref(0x21,12),Int(mode == 2 ? 0 : 1)});
+        const auto branchBody = Join({Let(Ref(0x01,20),Ref(0x00,33)),Let(Ref(0x00,33),Int(27)),Native(800,{Int(2)})});
+        const auto program = Choice(Int(1),caseValue,Native(801),Int(2),branchBody,Native(801));
+        const auto secondBody = program.second + static_cast<std::uint32_t>(Case(Int(2)).size());
+        host.Program("State.A",program.body,{local},{{1,0},{10,secondBody}});
+        if (mode == 0) host.Function("State.A.Probe",Join({Native(816,{Ref(0x21,10)}),Return()}));
+        else if (mode == 1) {
+            host.Program("State.B",Join({branchBody,{0x08}}),{local});
+            host.Function("State.A.Probe",Join({Native(113,{Ref(0x21,3)}),Return()}));
+        } else if (mode == 2) {
+            // The old Case NextOffset points at a Case in B, not B's Begin.
+            // Deliberately use a different first Case expression so offsets
+            // cannot accidentally match by statement ordinal.
+            Bytes other(program.second,0x0b);
+            Append(other,Case(Int(1))); const auto newCase = program.second;
+            Append(other,Join({branchBody,Jump(0)}));
+            const auto branch = other.size()-3u; const auto fallback = other.size();
+            Append(other,{0x0a,0xff,0xff}); Append(other,Native(801)); const auto end = other.size(); Append(other,{0x08});
+            Target(other,newCase,fallback); Target(other,branch,end);
+            host.Program("State.B",other,{local},{{1,0}});
+            host.Function("State.A.Probe",Join({Native(113,{Ref(0x21,3)}),Return()}));
+        } else {
+            host.Program("State.B",{0x08});
+            host.Function("State.A.Probe",Join({Native(113,{Ref(0x21,3)}),Return()}));
+            host.Function("State.B.BeginState",Join({Native(113,{Ref(0x21,2),Ref(0x21,10)}),Return()}));
+        }
+        host.Install("State.A"); const auto revision = host.localRevisions.at("Actor");
+        host.states.at("Actor").frame->locals[0].values[0] = Value::Integer(12);
+        const auto result = Vm::ResumeState(host,"Actor");
+        Check(result.passed() && EffectTrace(host) == std::vector<std::string>{"effect:2"},
+            "Case callback match/mismatch did not preserve or map live code PC, mode " + std::to_string(mode) + ": " + result.error);
+        Check(host.states.at("Actor").frame->locals[0].values[0].integer == 27 &&
+            host.localRevisions.at("Actor") == revision + (mode == 0 ? 0 : mode == 3 ? 2 : 1),
+            "Case callback changed storage without rebinding current state locals");
+        Check(host.values.at("Class.Count").integer == (mode == 0 ? 12 : 0),
+            "Case callback failed to preserve old locals or zero recreated storage before selected branch mutation");
+    }
+}
+
+void StateSwitchCallbackStopsAndClears() {
+    for (const auto selectorStops : {false,true}) {
+        Host host;
+        const auto program = Choice(selectorStops ? Native(815,{Int(1)}) : Int(1),
+            selectorStops ? Int(1) : Native(815,{Int(1)}),Native(801),Int(2),Native(801),Native(801));
+        host.Program("State.A",program.body); host.Install("State.A");
+        const auto layout = Vm::AnalyzeProgram(host,host.programs.at("State.A"));
+        const auto caseOrdinal = std::find(layout.statementOffsets.begin(),layout.statementOffsets.end(),program.first)-layout.statementOffsets.begin();
+        const auto result = Vm::ResumeState(host,"Actor");
+        Check(result.passed() && result.status == Vm::Status::Stopped && host.effects == 0 &&
+            host.states.at("Actor").frame->statementIndex == caseOrdinal+1,
+            "Switch stopped linked search prematurely or executed body after callback Stop");
+    }
+    {
+        Host host; SwitchLocal(host);
+        const auto program = Choice(Int(9),Native(815,{Int(1)}),Native(801),
+            Native(814,{Ref(0x01,20),Int(29),Int(2)}),Native(801),Native(801));
+        host.Program("State.A",program.body); host.Install("State.A");
+        const auto layout = Vm::AnalyzeProgram(host,host.programs.at("State.A"));
+        const auto fallbackOrdinal = std::find(layout.statementOffsets.begin(),layout.statementOffsets.end(),program.fallback)-layout.statementOffsets.begin();
+        Check(Vm::ResumeState(host,"Actor").passed() && host.values.at("Class.Count").integer == 29 &&
+            host.states.at("Actor").frame->statementIndex == fallbackOrdinal+1,
+            "Stop during nonmatching Case truncated linked search before default selection");
+    }
+    for (const auto native : {817,818}) {
+        Host host;
+        const auto program = Choice(Native(native,{Int(1)}),Int(1),Native(801),Int(2),Native(801),Native(801));
+        host.Program("State.A",program.body); host.Install("State.A");
+        const auto result = Vm::ResumeState(host,"Actor");
+        Check(result.passed() && result.committed && host.effects == 0 &&
+            (native == 818 ? !host.states.at("Actor").frame : host.states.at("Actor").frame->codePath.empty()),
+            "selector-cleared frame executed old Case chain");
+        const auto second = Choice(Int(1),Native(native,{Int(1)}),Native(801),Int(2),Native(801),Native(801));
+        host.Program("State.A",second.body); host.Install("State.A");
+        SwitchRollback(host,Vm::Status::Invalid,"Case cleared active frame");
+    }
+}
+
+void StateSwitchFailureAndBudgets() {
+    for (const auto inCase : {false,true}) {
+        Host host; const auto local = SwitchLocal(host);
+        const auto callback = Native(811,{Ref(0x21,12),Int(1)});
+        const auto program = Choice(inCase ? Int(1) : callback,inCase ? callback : Int(1),Native(800),Int(2),Native(801),Native(801));
+        host.Program("State.A",program.body,{local}); host.Install("State.A");
+        host.states.at("Actor").disabled["C"].insert("Worker");
+        host.Function("State.A.Probe",Join({Let(Ref(0x01,20),Int(19)),Native(800),Native(118,{Ref(0x21,7)}),Native(801),Return()}));
+        SwitchRollback(host,Vm::Status::Unsupported,inCase ? "Case callback failure" : "selector callback failure");
+    }
+    {
+        Host host; const auto local = SwitchLocal(host);
+        const auto selected = Join({Let(Ref(0x00,33),Int(19)),Let(Ref(0x01,20),Int(29)),Native(800),Native(118,{Ref(0x21,7)}),Native(801)});
+        const auto program = Choice(Int(1),Int(1),selected,Int(2),Native(801),Native(801));
+        host.Program("State.A",program.body,{local}); host.Install("State.A");
+        host.states.at("Actor").frame->locals[0].values[0] = Value::Integer(12);
+        host.states.at("Actor").disabled["C"].insert("Worker");
+        SwitchRollback(host,Vm::Status::Unsupported,"selected Switch branch failure");
+        host.Program("State.A",Choice(Int(1),Int(1),
+            Join({Let(Ref(0x00,33),Int(19)),Native(811,{Ref(0x21,12),Int(0)})}),Int(2),Native(801),Native(801)).body,{local});
+        host.Function("State.A.Probe",Join({Native(800),Let(Ref(0x01,20),Int(29)),Native(118,{Ref(0x21,7)}),Return()}));
+        Vm::Limits writes; writes.writes = 1;
+        SwitchRollback(host,Vm::Status::Budget,"Switch callback shared write budget",writes);
+        Vm::Limits depth; depth.callDepth = 1;
+        SwitchRollback(host,Vm::Status::Budget,"Switch callback shared call depth budget",depth);
+        const auto successful = Vm::ResumeState(host,"Actor");
+        Check(successful.passed(),"Switch budget fixture's unbounded control failed");
+        host.Install("State.A"); host.values["Class.Count"] = Value::Integer(0); host.effects = 0;
+        Vm::Limits instructions; instructions.instructions = successful.instructions-1u;
+        SwitchRollback(host,Vm::Status::Budget,"Switch linked search shared instruction budget",instructions);
+    }
+    {
+        Host host; const auto local = SwitchLocal(host);
+        const auto program = Choice(Ref(0x00,33),Native(811,{Ref(0x21,12),Int(12)}),Native(801),Int(2),Native(801),Native(801));
+        host.Program("State.A",program.body,{local}); host.Program("State.B",{0x08}); host.Install("State.A");
+        host.states.at("Actor").frame->locals[0].values[0] = Value::Integer(12);
+        host.Function("State.A.Probe",Join({Native(113,{Ref(0x21,3)}),Return()}));
+        host.Function("State.B.BeginState",Join({Native(113,{Ref(0x21,2)}),Return()}));
+        SwitchRollback(host,Vm::Status::Invalid,"recreated state-local Switch selector alias");
+    }
+    {
+        Host host; const auto local = SwitchLocal(host);
+        const auto program = Choice(Ref(0x01,20),Native(811,{Ref(0x21,12),Int(12)}),Native(801),Int(2),Native(801),Native(801));
+        host.Program("State.A",program.body,{local}); host.Program("State.B",Join({Native(800,{Int(2)}),{0x08}}),{local}); host.Install("State.A");
+        host.values["Class.Count"] = Value::Integer(12);
+        host.Function("State.A.Probe",Join({Native(113,{Ref(0x21,3)}),Return()}));
+        Check(Vm::ResumeState(host,"Actor").passed() && EffectTrace(host) == std::vector<std::string>{"effect:2"},
+            "Switch invalidated a stable instance selector alias when only state locals were replaced");
+    }
+    for (const auto selectorChanges : {false,true}) {
+        Host host;
+        const auto callback = Native(811,{Ref(0x21,12),Int(0)});
+        const auto program = Choice(selectorChanges ? callback : Int(1),selectorChanges ? Int(1) : callback,Native(801),Int(2),Native(801),Native(801));
+        host.Program("State.A",program.body);
+        Bytes other(program.second+1u,0x0b); other.back() = 0x08;
+        host.Program("State.B",other); host.Install("State.A");
+        host.Function("State.A.Probe",Join({Native(800),Native(113,{Ref(0x21,3)}),Return()}));
+        SwitchRollback(host,Vm::Status::Invalid,selectorChanges ? "selector selected non-Case current PC" : "Case NextOffset maps to non-Case current code");
+    }
+    {
+        Host host;
+        Bytes body = Switch(Int(99)); const auto firstCase = body.size(); Append(body,Case(Int(1))); Append(body,{0x08});
+        Target(body,firstCase,firstCase); host.Program("State.A",body); host.Install("State.A");
+        Vm::Limits limits; limits.instructions = 9;
+        SwitchRollback(host,Vm::Status::Budget,"cyclic state Case linked search",limits);
+    }
+}
+
+void StateSwitchWithIterators() {
+    for (const auto mode : {0,1,2,3,4}) {
+        Host host;
+        Bytes code{0x2f}; Append(code,Native(819)); const auto endPosition = code.size(); Append(code,{0,0});
+        const auto branch = mode == 1 ? Bytes{0x08} : mode == 2 ? Return() : Native(800,{Int(1)});
+        const auto choice = Choice(mode >= 3 ? Native(811,{Ref(0x21,12),Int(1)}) : Int(1),Int(1),branch,Int(2),Native(801),Native(801),true,{0x0b});
+        Append(code,choice.body); Append(code,{0x31}); const auto pop = code.size(); Append(code,{0x30,0x08});
+        code.at(endPosition) = static_cast<std::uint8_t>(pop); code.at(endPosition+1u) = static_cast<std::uint8_t>(pop >> 8u);
+        // Choice was assembled from offset zero; rebase every Case/Jump target.
+        const auto start = endPosition+2u;
+        Target(code,start+choice.first,start+choice.second); Target(code,start+choice.second,start+choice.fallback);
+        Target(code,start+choice.second-3u,start+choice.end); Target(code,start+choice.fallback-3u,start+choice.end);
+        host.Program("State.A",code); host.Program("State.B",{0x08}); host.Install("State.A");
+        if (mode == 4) {
+            // Begin points at a valid effectful Case. A post-search guard
+            // would still roll back effects, but wrongly visit this label.
+            auto replacement = Case(Native(800,{Int(999)}));
+            const auto fallback = replacement.size(); Append(replacement,{0x0a,0xff,0xff,0x08});
+            Target(replacement,0,fallback); host.Program("State.B",replacement);
+        }
+        host.Function("State.A.Probe",Join({Native(113,{Ref(0x21,3)}),Return()}));
+        if (mode == 0) Check(Vm::ResumeState(host,"Actor").passed() && host.effects == 1 && host.iteratorSteps == 2,
+            "synchronous Switch inside state iterator failed to Pop before Stop");
+        else SwitchRollback(host,Vm::Status::Unsupported,"Switch live iterator continuation/code change");
+        if (mode == 4) Check(std::find(host.trace.begin(),host.trace.end(),"effect:999") == host.trace.end(),
+            "Switch visited a replacement Case before refusing its live iterator");
+        Check(host.iteratorCreates == 1 && host.iteratorDestroys == 1,"Switch leaked a state iterator after exit/rollback");
+    }
+}
 } // namespace
 
 int main() {
@@ -461,6 +848,8 @@ int main() {
         OldStatementControlsNewCode();
         RecreatedSameCodeLocals();
         InCodeLabelPreservesLatent();
+        StateSwitchSelection(); StateSwitchSelectorTransitions(); StateSwitchCaseTransitions();
+        StateSwitchCallbackStopsAndClears(); StateSwitchFailureAndBudgets(); StateSwitchWithIterators();
         std::cout << "PASS state execution checks=" << checks << " rejections=" << rejections << '\n';
         return 0;
     } catch (const std::exception& error) {

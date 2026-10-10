@@ -43,6 +43,11 @@ tween frames and Plane packing. Isolated original head-turn helpers pass;
 automatic NPC animation and world startup are still unfinished.
 Animation calls no longer cache meshes without texture paths; cold original
 regressions and inspected textured Doctor/Jaime captures verify that render fix.
+The [original Switch/Case interpreter path](docs/SWITCH-CASE.md) now executes
+selector-directed cases, fallthrough and live state callbacks transactionally.
+The unchanged DeusEx head-turn override passes all directions and default;
+explicit StartUp advances to the unsupported FRand195 operation at PC9.
+This is isolated backend progress, not automatic world startup or live NPC AI.
 The [installed Quest test build](docs/QUEST-TEST-BUILD.md) remains frozen while
 the user tests it. Subsequent offline source work retains
 [authored state metadata](docs/AUTHORED-STATE-FOUNDATION.md); it does not enable
@@ -57,7 +62,7 @@ including the eight original InitialInventory slots. Complete authored player
 inventory and campaign startup remain unfinished; this source update is not a
 new installed APK.
 [Original object/class casts](docs/OBJECT-CASTS.md) now have distinct identity
-and declaration-name rules; final original-data verification is in progress.
+and declaration-name rules, covered by the final original-data integration.
 
 ## Data boundary
 

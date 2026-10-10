@@ -188,6 +188,8 @@ public:
 // Structural, read-only inspection of normalized bytecode, not execution
 // feasibility or a state continuation. Only a terminal top-level LabelTable
 // contributes labels; targets must be top-level statement boundaries.
+// Non-default Case links target top-level Case labels; a top-level Switch must
+// be immediately followed by a Case. Cyclic links are bounded at execution.
 // May call ResolveName/ResolveObject, never transaction/effect/function lookup.
 ProgramLayout AnalyzeProgram(Host& host, const Function& function, const Limits& limits = {});
 enum class Status { Returned, Stopped, Unsupported, Invalid, Budget };

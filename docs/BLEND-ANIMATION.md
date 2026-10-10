@@ -60,9 +60,11 @@ separate unfinished work.
 
 The original Engine.Pawn.PlayTurnHead helper uses slot3 for HeadLeft/Right/Up/Down.
 The DeusEx override adds view rotation using a Switch at logical PC52. Explicit
-StartUp now reaches that actual Switch opcode5, which remains unsupported and
-rolls back the entire enclosing transaction. Completing the base helper is not
-completion of the override or automatic campaign startup.
+In this blend increment, StartUp reached that unsupported Switch opcode5 and
+rolled back the entire enclosing transaction. The subsequent
+[Switch/Case increment](SWITCH-CASE.md) completes the unchanged override and
+advances explicit StartUp to FRand195 at PC9; automatic campaign startup is
+still unfinished.
 
 ## Cold mesh material cache
 
@@ -120,7 +122,8 @@ Ignored local evidence is under `artifacts/blend-animation-20261010/`:
 `apk-signature-cold-cache.log`, `tween-blend-visual-fixed.log`,
 `tween-blend-jaime-fixed.log` and their BMP/JSON pairs. The initial CTest failure
 retains the missing generated Plane schema; it was corrected, not bypassed. The earlier original
-run retains the stale native1010 gate; the final test expects the actual Switch
-dependency. Failed pre-fix captures retain the incomplete-cache material
+run retains the stale native1010 gate; that increment's final test expected the
+actual Switch dependency (subsequently implemented in [SWITCH-CASE.md](SWITCH-CASE.md)).
+Failed pre-fix captures retain the incomplete-cache material
 omission; their coverage gate was not relaxed. No unsupported execution was
 treated as successful startup.

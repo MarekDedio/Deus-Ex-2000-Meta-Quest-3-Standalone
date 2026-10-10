@@ -151,6 +151,13 @@ public:
         // Only top-level statements are jumpable. Never reinterpret an operand
         // as an opcode or allow a branch to run off the end of a function.
         for (const auto& n : p.statements) ValidateJump(n, p);
+        for (std::size_t i = 0; i < p.statements.size(); ++i) {
+            const auto& n = p.statements[i];
+            if (n.op == 0x05 && (i + 1u >= p.statements.size() || p.statements[i + 1u].op != 0x0a)) {
+                result_.offset = n.offset; result_.opcode = n.op;
+                Fail(Status::Invalid, "VM Switch is not followed by a Case statement");
+            }
+        }
         return p;
     }
 private:
@@ -212,6 +219,11 @@ private:
         }
         if (n.op == 0x2f && p.statements.at(p.boundaries.at(n.target)).op != 0x30)
             Fail(Status::Invalid, "VM iterator end is not an IteratorPop statement");
+        if (n.op == 0x0a && n.target != 0xffffu &&
+            (!p.boundaries.count(n.target) || p.statements.at(p.boundaries.at(n.target)).op != 0x0a)) {
+            result_.offset = n.offset; result_.opcode = n.op;
+            Fail(Status::Invalid, "VM Case link is not a top-level Case statement");
+        }
         for (const auto& child : n.children) ValidateJump(child, p);
     }
     void Arguments(Node& n, std::size_t depth) {
@@ -241,7 +253,7 @@ private:
             case 0x00: case 0x01: case 0x02: case 0x20: case 0x21: case 0x29:
                 n.reference = std::bit_cast<std::int32_t>(Dword()); break;
             case 0x04: child(); break; // Supported packages are UE1 version > 61.
-            case 0x05: Byte(); child(); break;
+            case 0x05: n.reference = static_cast<std::int32_t>(Byte()) + 1; child(); break;
             case 0x06: n.target = Word(); break;
             case 0x07: case 0x09: n.target = Word(); child(); break;
             case 0x08: case 0x0b: case 0x15: case 0x16: case 0x17:
@@ -452,6 +464,13 @@ public:
             if (n.op == 0x04) { value = Eval(frame, n.children.at(0), self).Load(); returned = true; break; }
             if (n.op == 0x08 || n.op == 0x15) Fail(Status::Stopped, "State stop requires a continuation engine");
             if (n.op == 0x06) { pc = program.boundaries.at(n.target); continue; }
+            if (n.op == 0x05) {
+                auto selector = Eval(frame, n.children.at(0), self);
+                RetainSwitchSelector(selector);
+                Locate(fn, n.offset, n.op);
+                pc = SelectSwitchCase(frame, program, pc + 1u, selector);
+                continue;
+            }
             if (n.op == 0x07) {
                 const auto condition = Eval(frame, n.children.at(0), self).Load(); Locate(fn, n.offset, n.op);
                 if (!ToBool(condition)) { pc = program.boundaries.at(n.target); continue; }
@@ -459,7 +478,7 @@ public:
                 const auto condition = Eval(frame, n.children.at(0), self).Load(); Locate(fn, n.offset, n.op);
                 if (!ToBool(condition))
                     Fail(Status::Invalid, "Script assert failed at line " + std::to_string(n.target));
-            } else Eval(frame, n, self);
+            } else if (n.op != 0x0a) Eval(frame, n, self);
             ++pc;
         }
         if (!returned) Fail(Status::Invalid, "VM function reached end without Return");
@@ -522,7 +541,24 @@ public:
             std::size_t iteratorPosition = statementIndex;
             const bool iteratorControl = AdvanceIterator(view.frame, statement, view.program,
                 iteratorPosition, iterators);
+            const bool switchControl = statement.op == 0x05;
             if (iteratorControl) {}
+            else if (switchControl) {
+                auto selector = Eval(view.frame, statement.children.at(0), self);
+                RetainSwitchSelector(selector);
+                Locate(view.function, statement.offset, statement.op);
+                // Selector callbacks can replace code/locals before Case
+                // search captures its own view. Preserve the enclosing live
+                // iterator's original storage identity, not that new view.
+                if (!iterators.empty()) {
+                    const auto* current = host_.ReadState(self);
+                    if (current && current->frameOverride && current->frame && !current->frame->codePath.empty() &&
+                        (current->frame->codePath != code || current->frame->localsCodePath != localOwner ||
+                            host_.StateLocalRevision(self) != localRevision))
+                        Fail(Status::Unsupported, "State code or locals changed with live iterators");
+                }
+                SelectStateSwitchCase(self, selector, iterators);
+            }
             else if (statement.op == 0x04) value = Eval(view.frame, statement.children.at(0), self).Load();
             else if (statement.op == 0x06) jump = true;
             else if (statement.op == 0x07) jump = !ToBool(Eval(view.frame, statement.children.at(0), self).Load());
@@ -532,7 +568,8 @@ public:
             } else if (statement.op == 0x0d) {
                 value = Eval(view.frame, statement.children.at(0), self).Load();
                 if (value.kind != Kind::Name && value.kind != Kind::Nothing) TypeError();
-            } else if (statement.op != 0x08 && statement.op != 0x15) Eval(view.frame, statement, self);
+            } else if (statement.op != 0x08 && statement.op != 0x15 && statement.op != 0x0a)
+                Eval(view.frame, statement, self);
             Locate(view.function, statement.offset, statement.op);
             object = host_.ReadState(self);
             if (!object || !object->frameOverride || !object->frame || object->frame->codePath.empty()) return finish(value);
@@ -601,6 +638,126 @@ private:
         CheckIteratorStorage(iterator);
         pc = next ? iterator.start : iterator.end;
         return true;
+    }
+    Value LoadSwitchSelector(const Evaluation& selector) {
+        Value value;
+        try { value = selector.Load(); }
+        catch (const Failure&) { throw; }
+        catch (const std::exception& error) {
+            Fail(Status::Invalid, std::string("VM Switch selector alias is unavailable: ") + error.what());
+        }
+        ValidateValue(value, 0);
+        return value;
+    }
+    void RetainSwitchSelector(const Evaluation& selector) {
+        // Keep the Evaluation, not just this value snapshot: the pinned
+        // Switch result retains a variable alias and reloads it after each
+        // visited Case expression. Native returns are already detached.
+        Retain(ValueBytes(LoadSwitchSelector(selector)));
+        if (selector.reference) Retain(2u * sizeof(Reference));
+    }
+    bool SwitchMatches(const Evaluation& selector, const Value& label) {
+        const auto value = LoadSwitchSelector(selector);
+        // ExpressionValue::IsEqual dispatches on its LEFT/selector type. It
+        // is not generic Equal (which requires identical portable kinds),
+        // nor Byte assignment coercion (which wraps integers to uint8).
+        switch (value.kind) {
+        case Kind::Nothing:
+            return label.kind == Kind::Nothing || (label.kind == Kind::Object && label.text.empty());
+        case Kind::Byte: case Kind::Int: return ToInt(value) == ToInt(label);
+        case Kind::Float: return ToFloat(value) == ToFloat(label);
+        case Kind::Bool: return value.boolean == ToBool(label);
+        case Kind::Name:
+            if (label.kind != Kind::Name && label.kind != Kind::Nothing) TypeError();
+            return NameKey(value.text) == NameKey(label.text);
+        case Kind::String:
+            if (label.kind != Kind::String && label.kind != Kind::Name && label.kind != Kind::Nothing) TypeError();
+            return value.text == (label.kind == Kind::Name && label.text.empty() ? "None" : label.text);
+        case Kind::Object:
+            if (label.kind != Kind::Object && label.kind != Kind::Nothing) TypeError();
+            return Lower(value.text) == Lower(label.text);
+        case Kind::Vector:
+            if (label.kind != Kind::Vector && label.kind != Kind::Nothing) TypeError();
+            return value.vector == (label.kind == Kind::Nothing ? std::array<float, 3>{} : label.vector);
+        case Kind::Rotator:
+            if (label.kind != Kind::Rotator && label.kind != Kind::Nothing) TypeError();
+            return value.rotation == (label.kind == Kind::Nothing ? std::array<std::int32_t, 3>{} : label.rotation);
+        case Kind::Struct:
+            // The portable value has no UStruct layout identity. Pinned
+            // memory-punning ToVector/ToRotator and UStruct::IsEqual cannot
+            // safely be inferred from an arbitrary field-name map.
+            Fail(Status::Unsupported, "VM Switch generic Struct comparison requires its layout identity");
+        }
+        Fail(Status::Unsupported, "VM Switch selector kind is unavailable");
+    }
+    std::size_t SelectSwitchCase(Frame& frame, const Program& program,
+        std::size_t pc, const Evaluation& selector) {
+        for (;;) {
+            if (pc >= program.statements.size() || program.statements[pc].op != 0x0a)
+                Fail(Status::Invalid, "VM Switch search is not at a Case statement");
+            const auto& label = program.statements[pc];
+            Step(frame.function, label.offset, label.op);
+            ++pc;
+            if (label.target == 0xffffu) return pc;
+            const auto value = Eval(frame, label.children.at(0), frame.self).Load();
+            Locate(frame.function, label.offset, label.op);
+            if (SwitchMatches(selector, value)) return pc;
+            pc = program.boundaries.at(label.target);
+        }
+    }
+    void SelectStateSwitchCase(const std::string& self, const Evaluation& selector,
+        const IteratorStack& iterators) {
+        // ProcessSwitch reads the LIVE Func/StatementIndex, including any
+        // changes made by the selector. Each Case advances that ordinal before
+        // evaluating its expression. A match preserves callback-selected PC;
+        // a miss resolves this old Case's offset in the new live program.
+        for (;;) {
+            const auto* object = host_.ReadState(self);
+            if (!object || !object->frameOverride || !object->frame || object->frame->codePath.empty()) return;
+            const auto code = object->frame->codePath;
+            const auto localOwner = object->frame->localsCodePath;
+            const auto revision = host_.StateLocalRevision(self);
+            const auto pc = object->frame->statementIndex;
+            auto& view = StateView(self, code, localOwner);
+            if (pc >= view.program.statements.size() || view.program.statements[pc].op != 0x0a)
+                Fail(Status::Invalid, "State Switch search is not at a current-code Case statement");
+            const auto& label = view.program.statements[pc];
+            Step(view.function, label.offset, label.op);
+            auto* writable = host_.MutableState(self);
+            if (!writable || !writable->frameOverride || !writable->frame ||
+                writable->frame->codePath != code || writable->frame->localsCodePath != localOwner ||
+                writable->frame->statementIndex != pc || host_.StateLocalRevision(self) != revision)
+                Fail(Status::Invalid, "State frame changed while advancing its Case");
+            if (pc == std::numeric_limits<std::uint32_t>::max())
+                Fail(Status::Invalid, "State Case statement ordinal overflow");
+            writable->frame->statementIndex = pc + 1u;
+            if (label.target == 0xffffu) return;
+            const auto value = Eval(view.frame, label.children.at(0), self).Load();
+            Locate(view.function, label.offset, label.op);
+            object = host_.ReadState(self);
+            if (!object || !object->frameOverride || !object->frame || object->frame->codePath.empty())
+                Fail(Status::Invalid, "State code was cleared while evaluating a Case");
+            if (!iterators.empty() && (object->frame->codePath != code ||
+                object->frame->localsCodePath != localOwner || host_.StateLocalRevision(self) != revision))
+                Fail(Status::Unsupported, "State code or locals changed with live iterators");
+            if (SwitchMatches(selector, value)) return;
+            const auto currentCode = object->frame->codePath;
+            const auto currentOwner = object->frame->localsCodePath;
+            const auto currentRevision = host_.StateLocalRevision(self);
+            auto& current = StateView(self, currentCode, currentOwner);
+            Locate(view.function, label.offset, label.op);
+            const auto target = current.program.boundaries.find(label.target);
+            if (target == current.program.boundaries.end() || current.program.statements[target->second].op != 0x0a)
+                Fail(Status::Invalid, "State Case link is not a current-code Case statement");
+            if (target->second > std::numeric_limits<std::uint32_t>::max())
+                Fail(Status::Invalid, "State Case target ordinal overflow");
+            writable = host_.MutableState(self);
+            if (!writable || !writable->frameOverride || !writable->frame ||
+                writable->frame->codePath != currentCode || writable->frame->localsCodePath != currentOwner ||
+                host_.StateLocalRevision(self) != currentRevision)
+                Fail(Status::Invalid, "State frame changed while following its Case link");
+            writable->frame->statementIndex = static_cast<std::uint32_t>(target->second);
+        }
     }
     std::unique_ptr<Iterator> IteratorFactory(Frame& frame, const Node& expression,
         const std::string& context) {
