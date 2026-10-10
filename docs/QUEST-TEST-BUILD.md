@@ -1,6 +1,24 @@
 # Current Quest test-build handoff (2026-10-10)
 
-The latest **backend-only, not installed** native AI event-state APK is
+The latest **backend-only, not installed** blend-animation APK is
+`artifacts/release-blend-animation-20261010/DeusExQuestVR-blend-animation-20261010.apk`:
+18,681,209 bytes, SHA-256
+`E9500D83B97621DF0AE55D1BF02DAD1F3D4DA28FF34EFBFD585E66952FA9E8EA`.
+Android ARM64 compilation and APK Signature Scheme v2 verification pass; its
+16 ZIP entries contain no original commercial game packages. The data-probe
+library is 5,579,312 bytes, SHA-256
+`683A63DA9264AF546A912300608EEF998745A385E8EFF4E3F554032C38D59B96`.
+It adds original PlayBlendAnim1010/TweenBlendAnim1012 commands, corrected tween
+frames/Plane packing, bounded older-clock restoration and complete cold mesh
+material caching. Offline native-command Doctor/Jaime captures were inspected
+with zero missing material selections; this is not new Quest GPU evidence.
+It does not enable live animation ticking or finish original world startup. The installed,
+physically accepted seated-player APK remains unchanged; this increment has
+no new headset performance/visual acceptance. See [BLEND-ANIMATION.md](BLEND-ANIMATION.md).
+All 48 ordinary host tests and all three separate original-data integrations
+pass; 200 pure clock controls and the exact legacy import budget boundary pass.
+
+The preceding **backend-only, not installed** native AI event-state APK is
 `artifacts/release-ai-event-state-20261010/DeusExQuestVR-ai-event-state-20261010.apk`:
 18,681,209 bytes, SHA-256
 `2419A01F160BDEBB1A518862FBD3ABED5EF4EC0A61942E26A900E9A72132916B`.

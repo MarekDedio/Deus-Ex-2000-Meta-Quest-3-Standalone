@@ -39,7 +39,8 @@ adds GotoState/Enable/Disable, state slices and synchronous BeginState/EndState
 inside the caller's transaction. No automatic callbacks or world startup run.
 
 The actor host stages actual PlayAnim (259), LoopAnim (260), TweenAnim (294),
-animation queries and IsA. Actor properties and captured tween history are
+PlayBlendAnim (1010), TweenBlendAnim (1012), animation queries and IsA.
+Actor properties and captured tween history are
 visible in snapshots and the shared mesh sampler. Region.Zone is calculated
 from the original BSP plane/front/back/zone/leaf records, with the original
 LevelInfo fallback; it is not a guessed dry-room value.
@@ -67,7 +68,7 @@ native invocations. The write counter is not an all-effects diagnostic.
 
 `quest_actor_animation_clock.h` implements command properties, main-channel
 event boundaries, four independent blend slots and FinishAnim wait state.
-The bridge currently dispatches only the three main non-latent commands above.
+The bridge dispatches the three main and two blend non-latent commands above.
 The clock is not yet connected to per-frame actor uploads or campaign events.
 
 Notifies and AnimEnd must dispatch synchronously at each boundary, followed by
@@ -80,8 +81,11 @@ animation scheduling remains unconnected; explicit transitions reuse these gates
 Two deliberate corrections are labelled in clock results: pinned blend ticking
 shares/mutates elapsed time and can starve later slots, and past-end main frames
 can create negative elapsed consumption. The portable clock uses independent
-blend elapsed time and nonnegative consumption. The pinned positive-frame
-TweenBlendAnim behavior is retained and labelled, not reinterpreted as a tween.
+blend elapsed time and nonnegative consumption. The later
+[original blend-command characterization](BLEND-ANIMATION.md) supersedes the
+pinned positive-frame TweenBlendAnim behavior with the original negative frame
+and correct Plane packing. It does not certify the elapsed driver against
+original Tick or enable live NPC animation.
 Frame-1 history is captured without reading vertices; an unusable captured
 history is diagnosed when sampled. Out-of-range notify times fail explicitly.
 

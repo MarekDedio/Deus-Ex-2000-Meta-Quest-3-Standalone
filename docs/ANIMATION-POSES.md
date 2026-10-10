@@ -75,6 +75,10 @@ not proof of bit-exact behavior of the original closed-source Deus Ex DLL.
 The bounded portable interpreter can execute isolated original PlayWaiting and
 Play/Loop/TweenAnimPivot helpers, including their actual native commands and
 captured tween history. This is not automatically started NPC behavior.
+Original PlayBlendAnim1010 and TweenBlendAnim1012 now execute four-channel
+commands with original negative tween frames and packed Plane values, including
+isolated Engine.Pawn.PlayTurnHead tests. See [BLEND-ANIMATION.md](BLEND-ANIMATION.md)
+for the original-binary characterization and the remaining Switch dependency.
 Original ScriptedPawn initialization, states, ticking, event eligibility,
 notify/AnimEnd dispatch and transitions still need integration before NPCs
 animate and behave normally. A pure native main/blend clock has offline tests,

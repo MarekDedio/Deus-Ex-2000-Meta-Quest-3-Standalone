@@ -37,6 +37,12 @@ The [native AI event-state foundation](docs/AI-EVENT-STATE.md) adds real
 manager initialization, callback registrations and sensory history mutations
 with rollback and codec6/checkpoint9 graph snapshots. It does not yet implement
 AI processing, perception, deferred cleanup or automatic level ticking.
+The [original blend-animation commands](docs/BLEND-ANIMATION.md) now execute
+PlayBlendAnim1010 and TweenBlendAnim1012 with original signed slots, negative
+tween frames and Plane packing. Isolated original head-turn helpers pass;
+automatic NPC animation and world startup are still unfinished.
+Animation calls no longer cache meshes without texture paths; cold original
+regressions and inspected textured Doctor/Jaime captures verify that render fix.
 The [installed Quest test build](docs/QUEST-TEST-BUILD.md) remains frozen while
 the user tests it. Subsequent offline source work retains
 [authored state metadata](docs/AUTHORED-STATE-FOUNDATION.md); it does not enable

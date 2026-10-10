@@ -5,8 +5,10 @@ The desktop capture can now include original mesh actors and movers with
 `--actor-isolate <full-map-object-path>`. This is a static asset inspection
 tool, not a playable desktop game or a substitute for Quest testing. Mesh
 captures now sample inherited authored animation properties through the same
-CPU pose sampler used by Quest's initial actor geometry. That is not a native
-animation clock or an implementation of scripted startup/idle selection.
+CPU pose sampler used by Quest's initial actor geometry. Explicitly invoked
+animation natives/helpers can also publish their native clock state; the tool
+does not automatically tick that clock or implement campaign startup/idle
+selection.
 
 ## Shared fixes
 
@@ -32,6 +34,12 @@ animation clock or an implementation of scripted startup/idle selection.
   bounded draw chunks after opaque BSP. Neither is exact visibility sorting
   for intersecting translucent polygons. NoSmooth and environment mapping
   remain incomplete, and actor lighting is still the direct approximation.
+- Lazy animation queries/commands and map-wide decoding now use one complete
+  mesh loader. Previously, calling an animation native before the first decode
+  cached vertices without texture paths, causing otherwise valid textured
+  characters to disappear. The new cold-original regression checks both query
+  and mutating paths, independent mesh references and selected material layers;
+  see [BLEND-ANIMATION.md](BLEND-ANIMATION.md).
 
 ## Commands
 
@@ -59,6 +67,9 @@ Isolation automatically frames original actor bounds; yaw chooses the viewing
 side. JSON reports retain full original object paths, bounds, source asset,
 material overrides, omitted sprites, fallback textures and errors. A successful
 capture does not mean every actor is supported: inspect its reported omissions.
+An isolated-capture failure now names the original actor and reports its
+omission reason (including unavailable materials), instead of only a generic
+"must name a rendered object" error.
 Original files are read-only. Commercial derived textures, meshes, captures
 and reports stay under ignored `artifacts/`, never in Git.
 
@@ -96,6 +107,26 @@ pass. The inspected yaw45/pitch-60 frame shows barrel, trigger and grip and
 passes the unchanged 1% gate at 2.0434% coverage, hash `8f382586b76073a`.
 Failing edge-on artifacts remain retained. This one CPU fixture is not
 original-renderer pixel equivalence, live gameplay or headset GPU evidence.
+
+For a cold animation-to-render material check, invoke the native before the
+first decode in a fresh process:
+
+```powershell
+.\artifacts\prerequisites-20261009\build\deusex_desktop_visual.exe --game-root $ownedGame `
+    --map 00_Training --actor-isolate 00_Training.Doctor1 `
+    --actor-script-function Engine.Actor.TweenBlendAnim `
+    --actor-script-name Still --actor-script-float 0.3 `
+    --yaw 70 --pitch -10 --width 720 --height 720 --min-coverage 0.01 `
+    --output artifacts\actors\doctor-tween.bmp --report artifacts\actors\doctor-tween.json
+```
+
+On 2026-10-10 the pre-fix capture failed with "No available materials for this
+mesh". After complete lazy-cache hydration, inspected Doctor1 and JaimeReyes0
+frames each show full textured bodies, 603 triangles, seven overrides and zero
+missing material selections. Coverage is 7.8808% / 8.3084% at the unchanged 1%
+gate. No elapsed tick occurs; this is cache/render availability evidence, not
+an animated original-renderer comparison. Local failure and fixed artifacts
+remain under `artifacts/blend-animation-20261010/`.
 
 ## Evidence and remaining work
 

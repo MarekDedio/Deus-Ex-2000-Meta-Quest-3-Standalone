@@ -95,9 +95,11 @@ The lookup increment originally stopped at native711 AIClearEventCallback in
 ScriptedPawn.UpdateReactionCallbacks at PC41/opcode0x62. The subsequent
 [AI event-state foundation](AI-EVENT-STATE.md) implements real registration
 and emission mutations. With an explicitly initialized manager, original
-StartUp now advances to unsupported native1010 in Engine.Pawn.PlayTurnHead
-PC211/opcode0x63, with complete rollback. Automatic startup, head animation,
-AI processing and perception remain unfinished; no stub was treated as success.
+StartUp advanced to native1010 in Engine.Pawn.PlayTurnHead PC211/opcode0x63.
+The subsequent [blend-animation commands](BLEND-ANIMATION.md) implement that
+dependency; StartUp now refuses Switch opcode5 in DeusEx.ScriptedPawn.PlayTurnHead
+PC52 with complete rollback. Automatic startup, live animation, AI processing
+and perception remain unfinished; no stub was treated as success.
 
 The generated package integration exercises original-shaped iterator bytecode,
 Level holes/order, all alias types, nested loops/callbacks, live births/deletions/

@@ -121,44 +121,54 @@ void BlendCommands() {
     Apply(data,clock,Command(ActorAnimationCommandKind::PlayBlendAnim,"Primary",1,0.2f,0,2));
     const auto& channel=clock.pose.blends[2]; const auto& blend=clock.blends[2];
     Require(channel.sequence=="Primary" && channel.previous.fraction==-1,"Initial blend history changed");
+    Near(channel.normalizedFrame,0.001,"Original first blend must suppress tween from None");
+    Near(blend.tweenRate,0,"First blend from None retained a tween");
+    Apply(data,clock,Command(ActorAnimationCommandKind::PlayBlendAnim,"Primary",1,0.2f,0,2));
     Near(channel.normalizedFrame,-0.25,"Blend negative tween start changed");
     Near(blend.rate,2,"Blend normalized rate changed");
     Near(blend.last,0.75,"Blend last frame changed");
     Near(blend.tweenRate,1.25,"Blend tween rate changed");
-    Near(blend.simulated[0],1250,"SimBlendAnim x changed");
-    Near(blend.simulated[1],7500,"SimBlendAnim y changed");
-    Near(blend.simulated[2],-2500,"SimBlendAnim z changed");
-    Near(blend.simulated[3],20000,"SimBlendAnim w changed");
+    Near(blend.simulated[0],-2500,"Original SimBlendAnim x/frame changed");
+    Near(blend.simulated[1],20000,"Original SimBlendAnim y/rate changed");
+    Near(blend.simulated[2],1250,"Original SimBlendAnim z/tween changed");
+    Near(blend.simulated[3],7500,"Original SimBlendAnim w/last changed");
     clock.pose.blends[2].normalizedFrame=0.1f;
     Apply(data,clock,Command(ActorAnimationCommandKind::PlayBlendAnim,"Next",1,0,0,2));
     Near(clock.pose.blends[2].previous.fraction,0.4,"PlayBlendAnim old fraction changed");
     Near(clock.pose.blends[2].normalizedFrame,0.001,"PlayBlendAnim no-tween nonzero frame quirk changed");
     Near(clock.blends[2].tweenRate,0,"No-tween blend rate changed");
     Apply(data,clock,Command(ActorAnimationCommandKind::PlayBlendAnim,"Next",1,-1,0,2));
-    Near(clock.pose.blends[2].normalizedFrame,0,"Blend special -1 tween-time start changed");
-    Near(clock.blends[2].tweenRate,10,"Blend special -1 tween-time rate changed");
-    clock.blends[2].minRate=-0.1f;
+    Near(clock.pose.blends[2].normalizedFrame,-0.25,"Original automatic tween must retain negative frame");
+    Near(clock.blends[2].tweenRate,1,"Original automatic tween must use old rate");
+    clock.blends[2].oldRate=-0.1f;
+    clock.blends[2].minRate=1234.0f;
     Apply(data,clock,Command(ActorAnimationCommandKind::PlayBlendAnim,"Next",1,-1,0,2),10);
     Near(clock.blends[2].tweenRate,1,"Blend velocity special tween-time rate changed");
-    clock.blends[2].minRate=0.3f;
+    clock.blends[2].oldRate=0.3f;
     Apply(data,clock,Command(ActorAnimationCommandKind::PlayBlendAnim,"Next",1,-1,0,2));
-    Near(clock.blends[2].tweenRate,0.3,"Blend positive MinRate tween selection changed");
+    Near(clock.blends[2].tweenRate,0.3,"Original positive OldRate tween selection changed");
+    clock.blends[2].oldRate=0;
+    Apply(data,clock,Command(ActorAnimationCommandKind::PlayBlendAnim,"Next",1,-1,0,2));
+    Near(clock.blends[2].tweenRate,10,"Original zero OldRate automatic tween fallback changed");
 
-    const auto prior=clock.pose.blends[2].previous;
-    const auto sim=clock.blends[2].simulated;
     const auto result=ApplyActorAnimationCommand(&data,clock,Command(ActorAnimationCommandKind::TweenBlendAnim,"Primary",1,0.5f,0,2));
-    Require(result.applied && result.pinnedTweenBlendPositiveFrame,"Pinned positive TweenBlendAnim diagnostic missing");
-    Near(clock.pose.blends[2].normalizedFrame,0.25,"Pinned positive TweenBlendAnim frame changed");
-    Require(clock.pose.blends[2].previous.vertexOffset0==prior.vertexOffset0 &&
-        clock.pose.blends[2].previous.vertexOffset1==prior.vertexOffset1 && clock.pose.blends[2].previous.fraction==prior.fraction,
-        "Pinned TweenBlendAnim unexpectedly captures old history");
-    Require(clock.blends[2].simulated==sim,"Pinned TweenBlendAnim rewrote SimBlendAnim");
+    Require(result.applied,"Original TweenBlendAnim did not apply");
+    Near(clock.pose.blends[2].normalizedFrame,-0.25,"Original TweenBlendAnim negative frame changed");
+    Require(clock.pose.blends[2].previous.vertexOffset0==12 && clock.pose.blends[2].previous.fraction==0,
+        "Portable tween history did not capture the previous blend pose");
+    Require(clock.blends[2].simulated==std::array<float,4>{-2500,0,500,0},"Original TweenBlendAnim packed Plane changed");
     Require(clock.blends[2].last==0 && clock.blends[2].rate==0 && clock.blends[2].minRate==0,"TweenBlend scalar resets changed");
     const auto ignored=ApplyActorAnimationCommand(&data,clock,Command(ActorAnimationCommandKind::TweenBlendAnim,"Unknown",1,0,0,2));
     Require(!ignored.applied && ignored.error.empty(),"TweenBlendAnim unknown name must not use fallback");
     Apply(data,clock,Command(ActorAnimationCommandKind::PlayBlendAnim,"Single",1,0,0,1));
-    Require(clock.pose.blends[1].normalizedFrame==0 && clock.blends[1].rate==0 && clock.blends[1].tweenRate==10,
+    Require(clock.pose.blends[1].normalizedFrame==-1 && clock.blends[1].rate==0 && clock.blends[1].tweenRate==10,
         "Single-frame blend native properties changed");
+    const auto sim=clock.blends[1].simulated;
+    Apply(data,clock,Command(ActorAnimationCommandKind::PlayBlendAnim,"Single",1,0,0,1));
+    Require(clock.blends[1].simulated[3]==sim[3]+1,"Original repeated PlayBlendAnim signal must increment W");
+    Apply(data,clock,Command(ActorAnimationCommandKind::TweenBlendAnim,"Single",1,0,0,1));
+    Apply(data,clock,Command(ActorAnimationCommandKind::TweenBlendAnim,"Single",1,0,0,1));
+    Require(clock.blends[1].simulated==std::array<float,4>{0,0,0,0},"Original TweenBlendAnim must not emit repeated-play signal");
 }
 
 void EventBoundaries() {
@@ -273,17 +283,16 @@ void BlendClock() {
         Near(clock.blends[slot].rate,0,"Completed blend rate did not stop");
         Near(result.consumedSeconds[slot],1,"Blend slot elapsed was dropped");
         Near(result.remainingSeconds[slot],0,"Blend completion residual remains");
-        Near(clock.blends[slot].simulated[2],7500,"Blend SimBlendAnim terminal frame changed");
-        Near(clock.blends[slot].simulated[3],0,"Blend SimBlendAnim terminal rate changed");
+        Near(clock.blends[slot].simulated[0],7500,"Blend SimBlendAnim terminal frame changed");
+        Near(clock.blends[slot].simulated[1],0,"Blend SimBlendAnim terminal rate changed");
     }
     Apply(data,clock,Command(ActorAnimationCommandKind::PlayBlendAnim,"Next",-10,0,0,0));
     clock.blends[0].minRate=999;
     result=AdvanceBlendAnimationClock(clock,0.5f,100);
     Near(clock.pose.blends[0].normalizedFrame,0.376,"Pinned negative blend-rate cap against Last changed");
     Apply(data,clock,Command(ActorAnimationCommandKind::TweenBlendAnim,"Next",1,0.2f,0,1));
-    const float frame=clock.pose.blends[1].normalizedFrame;
     result=AdvanceBlendAnimationClock(clock,1,0);
-    Near(clock.pose.blends[1].normalizedFrame,frame,"Pinned positive TweenBlendAnim quirk was silently fixed");
+    Near(clock.pose.blends[1].normalizedFrame,0,"Original TweenBlendAnim did not reach its target frame");
 }
 
 void BudgetsAndFailure() {
@@ -341,7 +350,11 @@ void BudgetsAndFailure() {
     Require(!command.applied && !command.error.empty() && notify.pose.main.sequence==before.pose.main.sequence,
         "Invalid command was applied");
     command=ApplyActorAnimationCommand(&data,notify,Command(ActorAnimationCommandKind::PlayBlendAnim,"Next",1,0,0,4));
-    Require(!command.applied && !command.error.empty(),"Out-of-range blend native slot accepted");
+    Require(!command.applied && command.error.empty(),"Original out-of-range slot must return without mutation");
+    for (const auto slot : {-1, 256, std::numeric_limits<std::int32_t>::max()}) {
+        command=ApplyActorAnimationCommand(&data,notify,Command(ActorAnimationCommandKind::PlayBlendAnim,"Next",1,0,0,slot));
+        Require(!command.applied && command.error.empty(),"Original signed blend slot was wrapped to Byte");
+    }
     step=AdvanceMainAnimationBoundary(&data,notify,-1,0,HasNotify);
     Require(!step.ok && !step.error.empty() && notify.simulationTime==before.simulationTime,"Negative elapsed time accepted");
     step=AdvanceMainAnimationBoundary(&data,notify,0.1f,std::numeric_limits<float>::infinity(),HasNotify);

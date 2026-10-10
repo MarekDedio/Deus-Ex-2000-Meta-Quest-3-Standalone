@@ -2,6 +2,7 @@
 #include "GC/GC.h"
 #include "portable_unreal_runtime.h"
 #include "portable_model_geometry.h"
+#include "quest_actor_geometry.h"
 #include "quest_mesh_animation.h"
 #include "quest_save_bundle.h"
 #include "quest_script_state.h"
@@ -828,6 +829,196 @@ void VerifyOriginalActorLookup(const std::filesystem::path& root,const std::stri
         group->first<<" candidates="<<group->second.size()<<" result="<<nearest<<
         "; case/class/empty controls, byte-identical readonly state/GC; InitializeHomeBase Return PC186/native221 verified\n";
 }
+void VerifyColdOriginalAnimationAssets(const std::filesystem::path& root,
+    const std::filesystem::path& legacy, const std::filesystem::path& directory) {
+    const auto doctor = Snapshot("00_Training.Doctor1");
+    const auto actors = GetPortableRuntimeMapActors();
+    auto jaime = std::find_if(actors.begin(), actors.end(), [](const auto& actor) {
+        return actor.objectPath == "00_Training.JaimeReyes0" && !actor.hidden && actor.drawType != 0u;
+    });
+    if (jaime == actors.end()) jaime = std::find_if(actors.begin(), actors.end(), [](const auto& actor) {
+        return actor.objectPath == "00_Training.JaimeReyes1" && !actor.hidden && actor.drawType != 0u;
+    });
+    Require(!doctor.hidden && jaime != actors.end() && doctor.meshPath == "DeusExCharacters.GM_Trench" &&
+        jaime->meshPath == "DeusExCharacters.GM_Trench_F", "Cold asset controls need two rendered original meshes");
+    const auto original = LoadPortablePackageTables((root / "System" / "DeusExCharacters.u").string());
+    const auto expectedPaths = [&](const PortableActorSnapshot& actor) {
+        const auto mesh = LoadPortableLodMesh(original,
+            FindPortableExport(original, actor.meshPath.substr(actor.meshPath.find('.') + 1u)));
+        std::vector<std::string> paths;
+        for (const auto reference : mesh.textures) {
+            auto path = GetPortableObjectPath(original, reference);
+            if (reference > 0 && !path.empty()) path = "DeusExCharacters." + path;
+            paths.push_back(std::move(path));
+        }
+        Require(!mesh.triangles.empty() && !paths.empty(), "Independent original mesh lacks geometry/material slots");
+        return paths;
+    };
+    const auto doctorPaths = expectedPaths(doctor), jaimePaths = expectedPaths(*jaime);
+    const auto requireCold = [&](const std::string& path) {
+        bool unavailable{};
+        try { static_cast<void>(GetPortableRuntimeMesh(path)); } catch (const std::exception&) { unavailable = true; }
+        Require(unavailable, "Cold native asset regression was incidentally warmed: " + path);
+    };
+    requireCold(doctor.meshPath); requireCold(jaime->meshPath);
+    const auto inspect = directory / "original-cold-animation-inspect.sav";
+    const auto saved = directory / "original-cold-animation-v4.sav";
+    const auto authored = CheckpointBytes(legacy); const auto revision = GetPortableRuntimeWorldRevision();
+    const auto stats = GC::GetStats();
+    Require(QuestVr::Vm::ToBool(Call(doctor.objectPath, "HasAnim", {Name("Still")}).value),
+        "Cold original HasAnim did not find Still");
+    const auto queried = GetPortableRuntimeMesh(doctor.meshPath);
+    Require(queried.texturePaths == doctorPaths && queried.texturePaths.size() == queried.textures.size() &&
+        !GetPortableRuntimeScriptStatePresent() && GetPortableRuntimeWorldRevision() == revision &&
+        GC::GetStats().numObjects == stats.numObjects && SavePortableRuntimeState(inspect.string()) &&
+        CheckpointBytes(inspect) == authored, "Cold HasAnim published a partial mesh or changed actor/save state");
+    // A read-only query must not warm unrelated geometry. The first mutating
+    // native therefore takes the other mesh's lazy path before Commit's first
+    // map-wide decode, exactly as isolated desktop helper capture does.
+    requireCold(jaime->meshPath);
+    Call(jaime->objectPath, "TweenBlendAnim", {Name("Still"), Number(0.3f)});
+    const auto tweened = Snapshot(jaime->objectPath);
+    Require(tweened.animation.blends[0].sequence == "Still" && tweened.animation.blends[0].frame < 0 &&
+        GetPortableRuntimeMesh(jaime->meshPath).texturePaths == jaimePaths,
+        "Cold TweenBlendAnim did not publish its real pose and fully resolved mesh");
+    Require(DecodePortableRuntimeActorMeshes().passed, "Cold native cache prevented complete map asset decoding");
+    const auto textures = BuildPortableRuntimeActorTextureArray(16u, 16u);
+    Require(textures.passed, "Cold native cache prevented original actor texture-array creation");
+    std::size_t materialChecks{};
+    for (const auto& actor : {doctor, tweened}) {
+        const auto mesh = GetPortableRuntimeMesh(actor.meshPath);
+        const auto& paths = actor.meshPath == doctor.meshPath ? doctorPaths : jaimePaths;
+        Require(mesh.texturePaths == paths && mesh.texturePaths.size() == mesh.textures.size() &&
+            mesh.animation && QuestVr::PrepareMeshPose(mesh, QuestVr::BuildSnapshotMeshAnimationState(actor)).drawable,
+            "Map-wide decode lost the fully hydrated native mesh or drawable original pose");
+        for (const auto& vertex : mesh.triangles) {
+            const auto material = QuestVr::ResolveActorMeshMaterial(actor.materialOverrides,
+                mesh.texturePaths, mesh.materialTextureIndices, vertex.material);
+            Require(material.validMaterial && !material.texturePath.empty() &&
+                std::find(textures.texturePaths.begin(), textures.texturePaths.end(), material.texturePath) != textures.texturePaths.end(),
+                "Cold native mesh lost original MultiSkins/material-layer coverage");
+            ++materialChecks;
+        }
+    }
+    Require(SavePortableRuntimeState(saved.string()), "Cold blend command could not save its complete clock");
+    const auto committed = CheckpointBytes(saved);
+    QuestVr::Vm::Limits limits; limits.writes = 1u;
+    const auto failed = ExecutePortableActorFunction(tweened.objectPath, "PlayAnimPivot",
+        {Name("Still"), Number(3.0f), Number(0.5f), Vector({9.0f, 8.0f, 7.0f})}, limits);
+    Require(failed.status == Status::Budget && !failed.committed && Same(tweened, Snapshot(tweened.objectPath)) &&
+        SavePortableRuntimeState(inspect.string()) && CheckpointBytes(inspect) == committed &&
+        GetPortableRuntimeMesh(tweened.meshPath).texturePaths == jaimePaths,
+        "Failed original animation transaction damaged actor/save state or immutable material cache");
+    Require(LoadPortableRuntimeState(legacy.string()) && SavePortableRuntimeState(inspect.string()) &&
+        CheckpointBytes(inspect) == authored && GetPortableRuntimeMesh(doctor.meshPath).texturePaths == doctorPaths &&
+        GetPortableRuntimeMesh(jaime->meshPath).texturePaths == jaimePaths,
+        "Legacy reset changed actor state or discarded complete cold-loaded assets");
+    std::cout << "ORIGINAL COLD ASSETS HasAnim " << doctor.objectPath << " and TweenBlendAnim " << jaime->objectPath
+        << " before first decode; exact original texture references, drawable poses," << materialChecks
+        << " vertex-material checks, readonly v3/save rollback and retained complete immutable cache\n";
+}
+
+void VerifyOriginalBlendCommands(const std::filesystem::path& root, const std::string& actor,
+    const std::filesystem::path& legacy, const std::filesystem::path& directory) {
+    Require(LoadPortableRuntimeState(legacy.string()), "Could not reset original blend fixture");
+    const auto initial = Snapshot(actor);
+    const auto mesh = LoadPortableLodMesh(LoadPortablePackageTables(
+        (root / "System" / "DeusExCharacters.u").string()),
+        FindPortableExport(LoadPortablePackageTables((root / "System" / "DeusExCharacters.u").string()),
+            initial.meshPath.substr(initial.meshPath.find('.') + 1u)));
+    Require(mesh.animation != nullptr, "Original human fixture has no animation metadata");
+    const auto saved = directory / "original-blend-v4.sav", inspect = directory / "original-blend-inspect.sav";
+    const auto generated = directory / "original-blend-seeded.sav";
+    Call(actor,"PlayAnim",{Name("Still"),Number(1),Number(0)});
+    Require(SavePortableRuntimeState(saved.string()),"Original blend baseline could not save");
+    const auto baselineBytes = CheckpointBytes(saved);
+    auto baseline = QuestVr::DecodeScriptSavedState(ScriptBlob(baselineBytes));
+    const auto index = static_cast<std::size_t>(std::find_if(baseline.objects.begin(),baseline.objects.end(),
+        [&](const auto& value) { return value.path==actor; }) - baseline.objects.begin());
+    Require(index<baseline.objects.size() && baseline.objects[index].clock,"Original clock was not captured");
+    const auto replace = [&](QuestVr::ScriptSavedState state) {
+        auto bytes=ReplaceScriptBlob(baselineBytes,QuestVr::EncodeScriptSavedState(state));
+        Require(QuestVr::WriteDurableSaveFile(generated.string(),bytes) && LoadPortableRuntimeState(generated.string()),
+            "Original generated blend seed rejected"); return bytes;
+    };
+    const auto unchanged = [&](const std::vector<std::uint8_t>& bytes, const std::string& label) {
+        Require(SavePortableRuntimeState(inspect.string()) && CheckpointBytes(inspect)==bytes,label+" changed saved clock/properties");
+    };
+    auto seeded=baseline;
+    seeded.objects[index].properties.push_back({"Engine.Pawn.animTimer","animTimer",1u,Value::Float(1)});
+    const auto seedBytes=replace(seeded);
+    for (const auto& direction : {std::pair{1,"HeadLeft"},std::pair{2,"HeadRight"},std::pair{3,"HeadUp"},std::pair{4,"HeadDown"}}) {
+        Require(LoadPortableRuntimeState(generated.string()),"Could not reset head-turn seed");
+        const auto before=Snapshot(actor);
+        const auto* sequence=QuestVr::FindMeshAnimationSequence(*mesh.animation,direction.second,false);
+        Require(sequence && sequence->numFrames>0,"Original head sequence unavailable");
+        const auto result=Call(actor,"Engine.Pawn.PlayTurnHead",{{Value::Byte(static_cast<std::uint8_t>(direction.first)),{}},Number(1),Number(0.2f)});
+        const auto after=Snapshot(actor); const auto& blend=after.animation.blends[3];
+        auto untouched=after; untouched.animation.blends[3]=before.animation.blends[3];
+        Require(QuestVr::Vm::ToBool(result.value) && blend.sequence==direction.second &&
+            std::abs(blend.frame + 1.0f/static_cast<float>(sequence->numFrames))<0.00001f &&
+            Same(before,untouched),
+            "Original PlayTurnHead did not execute native1010 on slot3 independently of main animation");
+        const auto sim=ReadPortableActorScriptProperty(actor,"SimBlendAnim",3u);
+        Require(sim.kind==Kind::Struct && sim.fields.size()==4u &&
+            std::abs(sim.fields.at("x").floating-blend.frame*10000)<0.01 &&
+            std::abs(sim.fields.at("y").floating-blend.rate*10000)<0.01 &&
+            std::abs(sim.fields.at("z").floating-blend.tweenRate*1000)<0.01 &&
+            std::abs(sim.fields.at("w").floating-blend.last*10000)<0.01,
+            "Original blend Plane layout not synchronized to actual script properties");
+        Require(SavePortableRuntimeState(saved.string()),"Original head blend could not checkpoint");
+        const auto bytes=CheckpointBytes(saved);
+        Call(actor,"TweenBlendAnim",{Name("Still"),Number(0.3f),{Value::Integer(3),{}}});
+        const auto tween=Snapshot(actor).animation.blends[3];
+        Require(tween.frame<0 && tween.rate==0 && tween.last==0,"Original TweenBlendAnim retained pinned positive frame");
+        Require(LoadPortableRuntimeState(saved.string()) && Same(after,Snapshot(actor)),"Original head blend roundtrip changed pose/history");
+        unchanged(bytes,"Original head blend v4 roundtrip");
+        for (const auto slot : {-1,4,256}) {
+            Call(actor,"PlayBlendAnim",{Name("Still"),Number(1),Number(0),{Value::Integer(slot),{}}});
+            unchanged(bytes,"Original invalid signed blend slot return");
+        }
+        Call(actor,"PlayBlendAnim",{Name("Quest_No_Such_Sequence")});
+        unchanged(bytes,"Original missing blend sequence return");
+    }
+    Require(LoadPortableRuntimeState(generated.string()),"Could not reset head rollback seed");
+    QuestVr::Vm::Limits limits; limits.writes=3u;
+    const auto rollback=ExecutePortableActorFunction(actor,"Engine.Pawn.PlayTurnHead",{{Value::Byte(1),{}},Number(1),Number(0.2f)},limits);
+    Require(rollback.status==Status::Budget && !rollback.committed,"Head-turn write budget did not refuse transaction");
+    unchanged(seedBytes,"Original head helper rollback");
+    for (const bool partial : {true,false}) {
+        auto invalid=baseline; auto& properties=invalid.objects[index].properties;
+        if (partial) properties.erase(std::remove_if(properties.begin(),properties.end(),[](const auto& value) {
+            return value.name=="SimBlendAnim" && value.index==1u; }),properties.end());
+        else for (auto& property : properties) if (property.name=="SimBlendAnim" && property.index==2u)
+            property.value.fields.at("x")=Value::Float(17);
+        const auto bytes=ReplaceScriptBlob(baselineBytes,QuestVr::EncodeScriptSavedState(invalid));
+        const auto rejected=directory/"original-blend-rejected.sav";
+        Require(QuestVr::WriteDurableSaveFile(rejected.string(),bytes) &&
+            !ValidatePortableRuntimeState(rejected.string()) && !LoadPortableRuntimeState(rejected.string()),
+            "Partial/disagreeing reflected blend Plane was accepted");
+        unchanged(seedBytes,"Rejected reflected blend Plane rollback");
+    }
+    // A reflected Plane overlay without a native clock is legal. The first
+    // actual command must import it, not overwrite it with synthetic zeros.
+    auto reflected=baseline; reflected.objects[index].clock.reset();
+    for (auto& property : reflected.objects[index].properties)
+        if (property.name=="SimBlendAnim" && property.index==2u) property.value.fields.at("w")=Value::Float(123);
+    replace(reflected); Call(actor,"PlayAnim",{Name("Still"),Number(1),Number(0)});
+    Require(SavePortableRuntimeState(inspect.string()),"Authored Plane import could not checkpoint");
+    const auto imported=QuestVr::DecodeScriptSavedState(ScriptBlob(CheckpointBytes(inspect)));
+    Require(imported.objects[index].clock && imported.objects[index].clock->blends[2u].simulated[3u]==123 &&
+        ReadPortableActorScriptProperty(actor,"SimBlendAnim",2u).fields.at("w").floating==123,
+        "First native command discarded the reflected SimBlendAnim overlay");
+    auto legacyClock=baseline;
+    auto& properties=legacyClock.objects[index].properties;
+    properties.erase(std::remove_if(properties.begin(),properties.end(),[](const auto& value) {
+        return value.name=="SimBlendAnim"; }),properties.end());
+    replace(legacyClock);
+    unchanged(baselineBytes,"Legacy clock derives omitted SimBlendAnim without changing native state");
+    Require(LoadPortableRuntimeState(legacy.string()) && !GetPortableRuntimeScriptStatePresent(),"Blend legacy reset retained state");
+    std::cout<<"ORIGINAL BLEND actual PlayTurnHead directions1–4 Return/native1010 slot3, Tween1012 negative frame/Plane, signed slots/missing sequence, rollback, reflected import/partial/disagree rejection, v4/legacy clock roundtrip; no automatic ticking\n";
+}
+
 void VerifyOriginalAIEvents(const std::string& actor, const std::filesystem::path& legacy,
     const std::filesystem::path& directory) {
     Require(LoadPortableRuntimeState(legacy.string()), "Could not reset original AI fixture");
@@ -1175,9 +1366,9 @@ void VerifyOriginalInventoryTransactions(const std::string& actor,const std::fil
         " committed="<<slice.committed<<" error="<<slice.error<<" at "<<slice.function<<':'<<slice.offset<<
         " opcode="<<static_cast<unsigned>(slice.opcode)<<'\n';
     Require(slice.status==Status::Unsupported && !slice.committed &&
-        slice.function=="Engine.Pawn.PlayTurnHead" && slice.offset==211u &&
-        slice.opcode==0x63u && slice.error=="Unsupported runtime native 1010",
-        "Actual StartUp did not reach its original head-animation dependency or fabricated completion: "+slice.error);
+        slice.function=="DeusEx.ScriptedPawn.PlayTurnHead" && slice.offset==52u &&
+        slice.opcode==0x05u && slice.error=="Unsupported VM opcode 5",
+        "Actual StartUp did not advance through head animation to its original Switch dependency: "+slice.error);
     Require(GetPortableRuntimeMapActors(true).size()==startupActors &&
         GetPortableRuntimeWorldRevision()==startupRevision &&
         GC::GetStats().numObjects==startupGc.numObjects &&
@@ -1427,6 +1618,7 @@ void TestOriginal(const std::filesystem::path& root, const bool inventoryOnly = 
         const auto checkpointBytes = std::filesystem::file_size(checkpoint);
         Require(Word(CheckpointBytes(checkpoint),4)==3u,"Untouched runtime unexpectedly changed legacy v3 save format");
         const auto actors = GetPortableRuntimeMapActors();
+        if (std::string(map) == "00_Training") VerifyColdOriginalAnimationAssets(root, checkpoint, temporary.directory);
         VerifyOriginalInventorySources(tables, LoadPortablePackageTables((root / "Maps" /
             (std::string(map) + ".dx")).string()), inventoryCoverage);
         for (const auto& actor : actors) {
@@ -1435,6 +1627,7 @@ void TestOriginal(const std::filesystem::path& root, const bool inventoryOnly = 
             if (humanTests == 0u && !IsA(actor, "Robot") && !IsA(actor, "Animal")) {
                 VerifyOriginalDormantSpawn(root,actor.objectPath,checkpoint,temporary.directory);
                 VerifyOriginalActorLookup(root,actor.objectPath,checkpoint,temporary.directory);
+                VerifyOriginalBlendCommands(root,actor.objectPath,checkpoint,temporary.directory);
                 VerifyOriginalAIEvents(actor.objectPath,checkpoint,temporary.directory);
                 VerifyOriginalInventoryTransactions(actor.objectPath, checkpoint, temporary.directory);
                 if (inventoryOnly) { ++humanTests; continue; }

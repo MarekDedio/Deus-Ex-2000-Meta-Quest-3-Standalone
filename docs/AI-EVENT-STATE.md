@@ -68,10 +68,12 @@ The unchanged original UpdateReactionCallbacks and SetDistress functions now
 reach their actual Returns (PC484 and PC57). Explicit begun-play BeginState
 executes its original movement-physics selection, SetDistress, BlockReactions
 and ResetDestLoc effects; the sole Futz registration becomes one tombstone.
-This is not automatic world initialization. Resuming explicit StartUp with an
-initialized manager next stops at native1010 in Engine.Pawn.PlayTurnHead PC211/opcode0x63;
-its provisional registrations, inventory births and world changes roll back.
-Head animation is a remaining real dependency, not a no-op to bypass.
+This is not automatic world initialization. This increment originally stopped
+explicit StartUp at native1010 in Engine.Pawn.PlayTurnHead PC211/opcode0x63.
+The subsequent [blend-animation commands](BLEND-ANIMATION.md) implement that
+dependency; StartUp now refuses Switch opcode5 in DeusEx.ScriptedPawn.PlayTurnHead
+PC52. Provisional registrations, inventory births and world changes still roll
+back. Automatic startup and live animation remain unfinished.
 
 ## Verification
 

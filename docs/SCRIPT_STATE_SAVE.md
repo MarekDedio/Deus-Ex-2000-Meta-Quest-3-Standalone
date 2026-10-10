@@ -24,6 +24,17 @@ object/class constraints, including InventoryItem; see
 [AUTHORED-STRUCTS.md](AUTHORED-STRUCTS.md). Version 8 can cold-restore a supported
 born weapon/ammo graph; it does not establish a complete authored player inventory.
 
+Blend commands synchronize the four SimBlendAnim Plane properties with the
+already-retained native clock floats. Older portable clock saves that omitted
+all four reflected Plane records derive that view during typed preflight;
+their logical clock state is retained, while the next save canonically includes
+the new records. Partial views or values disagreeing with the clock reject
+atomically. This does not change the wire codec/version or add original-game
+save compatibility. See [BLEND-ANIMATION.md](BLEND-ANIMATION.md).
+Legacy-derived Plane records are cumulatively measured before staged GC
+allocation against the loader's property/node/retained/encoded-byte limits;
+omitting them from the input cannot bypass those limits.
+
 ## Runtime envelope
 
 The runtime checkpoint still starts with magic `0x53515844`. A checkpoint

@@ -1,5 +1,37 @@
 # Port status
 
+## Original blend-animation commands (2026-10-10)
+
+- Native1010 PlayBlendAnim and native1012 TweenBlendAnim now mutate actual
+  four-channel animation clocks and reflected SimBlendAnim Plane properties.
+  Read-only original GOTY binary characterization corrects signed Int slots,
+  exact sequence lookup, default tween=-1, negative tween frames, previous-rate
+  selection and X/Y/Z/W packing. The pinned wrapper is incomplete here.
+- The unchanged Engine.Pawn.PlayTurnHead helper completes all four directional
+  head turns in isolated original-data tests. Main animation remains independent;
+  tween history, rollback and current-map clock restoration are retained.
+  Older portable clocks derive the previously omitted reflected Plane view;
+  partial/disagreeing views reject. No save wire-version change is introduced.
+- Explicit original StartUp now passes native1010, then refuses Switch opcode5
+  at DeusEx.ScriptedPawn.PlayTurnHead PC52 with complete inventory/AI/world
+  rollback. Switch execution remains the next interpreter dependency, not
+  fabricated startup success. See [BLEND-ANIMATION.md](BLEND-ANIMATION.md).
+- An actual native-command character capture exposed missing texture paths in
+  the lazy mesh cache. Animation queries/commands and map-wide decoding now
+  publish through one complete loader. True-cold original controls check both
+  paths, exact material references, drawable poses and transaction/save rollback.
+  Inspected native-command Doctor/Jaime software captures now show complete
+  textured bodies with zero missing material selections at the unchanged gate.
+- This is a backend increment, not live animation, a full player rig, working
+  NPC AI or campaign completion. The physically accepted seated-player APK
+  remains installed unchanged; no new headset performance acceptance is claimed.
+- All 48 ordinary host tests and all three separate original-data integrations
+  pass on the final production source. Pure clock controls pass 200; legacy
+  import boundary validation accepts 65,532 properties with four free slots and
+  rejects 65,536 before adding the reflected view, preserving checkpoint/GC.
+  The final ARM64 APK builds and verifies with v2 signing and no original game
+  packages. See [QUEST-TEST-BUILD.md](QUEST-TEST-BUILD.md) for the local archive.
+
 ## Native AI event-state foundation (2026-10-10)
 
 - Implemented actual LevelInfo.InitEventManager650 and Actor event natives
@@ -18,9 +50,10 @@
   SetDistress reaches Return PC57 while retaining emission history. Explicit
   begun-play BeginState also completes its original property/state effects and
   real BlockReactions deletion. This does not initialize the world automatically.
-  Explicit StartUp with a real initialized manager advances beyond registration and next
-  refuses native1010 in Engine.Pawn.PlayTurnHead PC211/opcode0x63, with complete
-  graph/inventory/world rollback. This is not automatic campaign startup.
+  In this earlier increment, explicit StartUp with a real initialized manager
+  advanced beyond registration and refused native1010 in Engine.Pawn.PlayTurnHead
+  PC211/opcode0x63, with complete graph/inventory/world rollback. The subsequent
+  blend increment above advances to Switch; neither is automatic campaign startup.
 - Registration is not working NPC AI. Processing/perception/callback delivery,
   native deferred cleanup and automatic world/player startup remain unfinished.
   Original manager destruction notification occurs in CleanupDestroyed, not

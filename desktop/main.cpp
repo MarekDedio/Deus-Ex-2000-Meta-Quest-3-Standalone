@@ -900,8 +900,12 @@ int main(int argc, char** argv) {
             const auto actor = std::find_if(records.begin(),records.end(),[&](const auto& record) {
                 return Lower(record.path) == Lower(options.isolatedActor);
             });
-            if (actor == records.end() || actor->triangles == 0u || actor->chunkCount == 0u)
-                throw std::runtime_error("Isolated actor must name a rendered full original object path");
+            if (actor == records.end())
+                throw std::runtime_error("Isolated actor is absent from the preview index: " + options.isolatedActor);
+            if (actor->triangles == 0u || actor->chunkCount == 0u)
+                throw std::runtime_error("Isolated actor has no rendered geometry: " + actor->path +
+                    (actor->hidden ? " (hidden or DrawType=None)" : "") +
+                    (actor->error.empty() ? "" : "; " + actor->error));
             Scene isolated;
             isolated.actorTextureWidth = scene.actorTextureWidth;
             isolated.actorTextureHeight = scene.actorTextureHeight;

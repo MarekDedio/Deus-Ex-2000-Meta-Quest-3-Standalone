@@ -3,7 +3,9 @@
 #include "quest_mesh_animation.h"
 
 // Native animation-command/clock state, independent of the VM, OpenXR and GL.
-// Audited against pinned UActor_Animation.cpp and Native/NActor.cpp. A caller
+// Main clocks follow pinned UActor_Animation.cpp; blend commands additionally
+// follow the original GOTY Engine.dll execPlayBlendAnim/execTweenBlendAnim.
+// A caller
 // must execute actual script commands; this header never selects idle/startup
 // sequences, starts AI, or substitutes a guessed UnrealScript state branch.
 namespace QuestVr {
@@ -34,7 +36,8 @@ enum class ActorAnimationCommandKind {
 struct ActorAnimationCommand {
     ActorAnimationCommandKind kind{ActorAnimationCommandKind::PlayAnim};
     std::string sequence;
-    // NActor's native defaults: Rate 1, TweenTime 0, MinRate 0, BlendSlot 0.
+    // Command values are explicit; the native wrapper supplies defaults.
+    // Original PlayBlendAnim defaults TweenTime to -1, unlike PlayAnim's 0.
     float rate{1.0f}, tweenTime{}, minRate{};
     std::int32_t blendSlot{};
 };
@@ -42,7 +45,6 @@ struct ActorAnimationCommand {
 struct ActorAnimationCommandResult {
     bool applied{}, fallbackUsed{}, selectedOriginalSpanInvalid{};
     bool capturedOriginalSpanInvalid{}, capturedOriginalHistoryInvalid{};
-    bool pinnedTweenBlendPositiveFrame{};
     std::string resolvedSequence, error;
 };
 
@@ -181,11 +183,13 @@ inline void SetSingleFrame(ActorAnimationClock& clock,const float tweenTime) {
     clock.main.notify = false;
 }
 
-inline void UpdateSimulatedBlend(ActorBlendAnimationClock& blend,const float frame) {
+inline void UpdateSimulatedBlend(ActorBlendAnimationClock& blend,const float frame,
+                                 const bool signalRepeatedPlay = true) {
     const auto previous = blend.simulated;
-    blend.simulated = {blend.tweenRate*1000.0f,blend.last*10000.0f,
-                       frame*10000.0f,blend.rate*10000.0f};
-    if (blend.simulated == previous) blend.simulated[1] += 1.0f;
+    // Original Plane.{X,Y,Z,W}, not the pinned port's reordered packing.
+    blend.simulated = {frame*10000.0f,blend.rate*10000.0f,
+                       blend.tweenRate*1000.0f,blend.last*10000.0f};
+    if (signalRepeatedPlay && blend.simulated == previous) blend.simulated[3] += 1.0f;
 }
 
 inline float BoundedConsumption(const float requested,const float available) {
@@ -231,10 +235,11 @@ inline ActorAnimationCommandResult ApplyActorAnimationCommand(
         }
         const bool blend = command.kind == ActorAnimationCommandKind::PlayBlendAnim ||
                            command.kind == ActorAnimationCommandKind::TweenBlendAnim;
-        if (blend && (command.blendSlot < 0 || command.blendSlot >= 4))
-            throw std::runtime_error("Animation native blend slot is outside 0..3");
+        // Original wrappers evaluate arguments then warn/return for an invalid
+        // signed Int slot; never mask it to Byte or index an array.
+        if (blend && (command.blendSlot < 0 || command.blendSlot >= 4)) return result;
         const auto* sequence = ActorAnimationClockDetail::Sequence(mesh,command.sequence,
-            command.kind != ActorAnimationCommandKind::TweenBlendAnim,limits,&result.fallbackUsed);
+            !blend,limits,&result.fallbackUsed);
         if (sequence == nullptr) return result; // Pinned no-mesh/no-sequence no-op.
         result.resolvedSequence = sequence->name;
         result.selectedOriginalSpanInvalid = sequence->invalidOriginalSpan || !HasUsableMeshAnimationSpan(*mesh,*sequence);
@@ -268,6 +273,8 @@ inline ActorAnimationCommandResult ApplyActorAnimationCommand(
         } else if (command.kind == ActorAnimationCommandKind::PlayBlendAnim) {
             auto& channel = next.pose.blends[static_cast<std::size_t>(command.blendSlot)];
             auto& target = next.blends[static_cast<std::size_t>(command.blendSlot)];
+            const float tweenTime = channel.sequence.empty() || MeshAnimationNamesEqual(channel.sequence,"None")
+                ? 0.0f : command.tweenTime;
             channel.previous = ActorAnimationClockDetail::CaptureHistory(mesh,channel,true,limits,
                 result.capturedOriginalSpanInvalid,result.capturedOriginalHistoryInvalid);
             channel.sequence = command.sequence;
@@ -275,29 +282,27 @@ inline ActorAnimationCommandResult ApplyActorAnimationCommand(
             target.rate = command.rate*sequence->rate/frames;
             target.last = 1.0f-1.0f/frames;
             if (target.last == 0.0f) {
-                target.rate = channel.normalizedFrame = 0.0f;
-                target.tweenRate = command.tweenTime <= 0.0f ? 10.0f : 1.0f/command.tweenTime;
-            } else if (command.tweenTime <= 0.0f) {
-                if (command.tweenTime == -1.0f) {
-                    channel.normalizedFrame = 0.0f;
-                    if (target.minRate <= 0.0f) target.tweenRate = target.minRate == 0.0f ?
-                        1.0f/(frames*0.025f) : std::max(velocitySpeed*(-target.minRate),target.rate*0.5f);
-                    else target.tweenRate = target.minRate;
+                target.rate = target.oldRate = target.minRate = 0.0f;
+                target.tweenRate = tweenTime <= 0.0f ? 10.0f : 1.0f/tweenTime;
+            } else if (tweenTime <= 0.0f) {
+                if (tweenTime == -1.0f) {
+                    if (target.oldRate <= 0.0f) target.tweenRate = target.oldRate == 0.0f ?
+                        1.0f/(frames*0.025f) : std::max(velocitySpeed*(-target.oldRate),target.rate*0.5f);
+                    else target.tweenRate = target.oldRate;
                 } else { target.tweenRate = 0.0f; channel.normalizedFrame = 0.001f; }
-            } else target.tweenRate = 1.0f/(frames*command.tweenTime);
+            } else target.tweenRate = 1.0f/(frames*tweenTime);
             ActorAnimationClockDetail::UpdateSimulatedBlend(target,channel.normalizedFrame);
             target.oldRate = target.rate;
         } else if (command.kind == ActorAnimationCommandKind::TweenBlendAnim) {
             auto& channel = next.pose.blends[static_cast<std::size_t>(command.blendSlot)];
             auto& target = next.blends[static_cast<std::size_t>(command.blendSlot)];
+            channel.previous = ActorAnimationClockDetail::CaptureHistory(mesh,channel,true,limits,
+                result.capturedOriginalSpanInvalid,result.capturedOriginalHistoryInvalid);
             channel.sequence = command.sequence;
             target.last = target.minRate = target.rate = target.oldRate = 0.0f;
             target.tweenRate = command.tweenTime <= 0.0f ? 0.0f : 1.0f/(frames*command.tweenTime);
-            // Deliberately preserve this pinned command quirk. It neither
-            // captures history nor writes a negative tween frame, so time>0
-            // does not actually tween. Do not claim original-DLL equivalence.
-            channel.normalizedFrame = command.tweenTime <= 0.0f ? 0.0f : 1.0f/frames;
-            result.pinnedTweenBlendPositiveFrame = command.tweenTime > 0.0f;
+            channel.normalizedFrame = command.tweenTime <= 0.0f ? 0.0f : -1.0f/frames;
+            ActorAnimationClockDetail::UpdateSimulatedBlend(target,channel.normalizedFrame,false);
         } else throw std::runtime_error("Unsupported actor animation command kind");
         ActorAnimationClockDetail::ValidateClock(next);
         for (std::size_t slot = 0u; slot < next.blends.size(); ++slot) {
@@ -469,8 +474,8 @@ inline ActorBlendClockResult AdvanceBlendAnimationClock(
                 if (to >= target.last) {
                     channel.normalizedFrame = target.last; target.rate = 0.0f;
                     if (next.remoteRole < 2u) {
-                        target.simulated[2] = channel.normalizedFrame*10000.0f;
-                        target.simulated[3] = std::min(target.rate*5000.0f,32767.0f);
+                        target.simulated[0] = channel.normalizedFrame*10000.0f;
+                        target.simulated[1] = std::min(target.rate*5000.0f,32767.0f);
                     }
                 } else channel.normalizedFrame = to;
             }

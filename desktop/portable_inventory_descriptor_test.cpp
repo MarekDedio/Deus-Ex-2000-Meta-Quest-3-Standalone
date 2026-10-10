@@ -102,8 +102,19 @@ struct Package {
         std::uint32_t dimension = 1u, std::int32_t target = 0) {
         const auto reference = Export(name, Import(type, core), 0, owner);
         Bytes body; Index(body, 0); Index(body, 0); Index(body, 0); U32(body, dimension); U32(body, 0); Index(body, 0);
-        if (std::string(type) == "ObjectProperty" || std::string(type) == "ByteProperty") Index(body, target);
+        if (std::string(type) == "ObjectProperty" || std::string(type) == "ByteProperty" || std::string(type) == "StructProperty") Index(body, target);
         Body(reference, std::move(body)); return reference;
+    }
+    void PropertyNext(std::int32_t reference, std::int32_t next) {
+        auto& body = bodies.at(static_cast<std::size_t>(reference - 1));
+        // Property() emits an empty tagged prefix and zero Base/Next links.
+        Bytes linked{0u}; Index(linked, 0); Index(linked, next);
+        linked.insert(linked.end(), body.begin() + 3, body.end()); body = std::move(linked);
+    }
+    void Struct(std::int32_t reference, std::int32_t firstChild) {
+        Bytes body{0u}; Index(body, 0); Index(body, 0); Index(body, 0); Index(body, firstChild);
+        Index(body, exports.at(static_cast<std::size_t>(reference - 1)).ObjName);
+        U32(body, 0); U32(body, 0); U32(body, 0); Body(reference, std::move(body));
     }
     Bytes Serialize() const {
         Bytes bytes; U32(bytes, 0x9e2a83c1u); U16(bytes, 68u); U16(bytes, 0u);
@@ -192,6 +203,13 @@ Package Engine(bool localTextureClass = false) {
         package.Property(name, "FloatProperty", actor, core, std::string(name).find("Blend") != std::string::npos ? 4u : 1u);
     for (const char* name : {"bAnimLoop", "bAnimNotify", "bAnimFinished"}) package.Property(name, "BoolProperty", actor, core);
     package.Property("Fatness", "ByteProperty", actor, core); package.Property("RemoteRole", "ByteProperty", actor, core);
+    package.Property("QuestBudgetPadding", "FloatProperty", actor, core, 65'536u);
+    const auto plane = package.Export("Plane", package.Import("Struct", core));
+    std::array<std::int32_t, 4u> planeFields{};
+    for (std::size_t i = 0u; i < planeFields.size(); ++i)
+        planeFields[i] = package.Property(std::array<const char*, 4u>{"X", "Y", "Z", "W"}[i], "FloatProperty", plane, core);
+    for (std::size_t i = 1u; i < planeFields.size(); ++i) package.PropertyNext(planeFields[i - 1u], planeFields[i]);
+    package.Struct(plane, planeFields.front()); package.Property("SimBlendAnim", "StructProperty", actor, core, 4u, plane);
     Bytes defaults; package.Int(defaults, "invSlotsX", 1); package.Int(defaults, "invSlotsY", 1);
     package.Int(defaults, "invPosX", -1); package.Int(defaults, "invPosY", -1); package.Bool(defaults, "bDisplayableInv", true);
     package.Body(actor, package.Class(actor, {})); package.Body(inventory, package.Class(inventory, defaults, firstInventory));
@@ -263,8 +281,68 @@ std::vector<QuestVr::ScriptSavedProperty> ClockProperties(const QuestVr::ActorAn
         add("BlendAnimFrame", Value::Float(clock.pose.blends[i].normalizedFrame), i); add("BlendAnimRate", Value::Float(rates.rate), i);
         add("BlendAnimLast", Value::Float(rates.last), i); add("BlendAnimMinRate", Value::Float(rates.minRate), i);
         add("BlendTweenRate", Value::Float(rates.tweenRate), i); add("OldBlendAnimRate", Value::Float(rates.oldRate), i);
+        Value simulated; simulated.kind = Kind::Struct;
+        for (std::size_t field = 0u; field < rates.simulated.size(); ++field)
+            simulated.fields[std::array<const char*, 4u>{"x", "y", "z", "w"}[field]] = Value::Float(rates.simulated[field]);
+        add("SimBlendAnim", std::move(simulated), i);
     }
     return values;
+}
+void LegacySimBlendImportBudget(const Fixture& fixture, const Bytes& legacy) {
+    QuestVr::ScriptStateLimits limits;
+    Require(legacy.size() + 4u < QuestVr::kMaximumSaveRuntimeBytes, "Legacy prefix exhausts runtime budget");
+    limits.maxBytes = QuestVr::kMaximumSaveRuntimeBytes - legacy.size() - 4u;
+    QuestVr::ScriptSavedState saved; saved.mapName = "DescriptorMap";
+    QuestVr::ScriptSavedObject actor; actor.path = "DescriptorMap.Rifle0"; actor.classPath = "DescriptorItems.Rifle";
+    actor.clock.emplace(); actor.clock->pose.main.sequence = "None";
+    for (std::size_t slot = 0u; slot < actor.clock->blends.size(); ++slot) {
+        actor.clock->pose.blends[slot].sequence = "None";
+        actor.clock->blends[slot].simulated = {float(slot + 1u), 2.5f, -3.25f, 4.75f};
+    }
+    actor.properties = ClockProperties(*actor.clock);
+    actor.properties.erase(std::remove_if(actor.properties.begin(), actor.properties.end(),
+        [](const auto& property) { return property.name == "SimBlendAnim"; }), actor.properties.end());
+    saved.objects.push_back(std::move(actor));
+    const auto bytesFor = [&](const QuestVr::ScriptSavedState& state) {
+        const auto blob = QuestVr::EncodeScriptSavedState(state, limits); auto bytes = legacy;
+        Require(bytes.size() >= 8u && bytes[4] == 3u, "Import budget control needs an exact legacy checkpoint");
+        Replace32(bytes, 4u, 4u); U32(bytes, static_cast<std::uint32_t>(blob.size()));
+        bytes.insert(bytes.end(), blob.begin(), blob.end()); return bytes;
+    };
+    const auto path = fixture.directory / "LegacySimBlendImportBudget.sav";
+    // Establish that the complete typed clock is valid before adding padding;
+    // no fake property, malformed graph or exhausted input byte budget is used.
+    Require(QuestVr::WriteDurableSaveFile(path.string(), bytesFor(saved)) &&
+        ValidatePortableRuntimeState(path.string()), "Small legacy SimBlendAnim import is not valid");
+    auto& properties = saved.objects.front().properties;
+    const auto padding = limits.maxProperties - properties.size();
+    for (std::uint32_t index = 0u; index < padding; ++index)
+        properties.push_back({"Engine.Actor.QuestBudgetPadding", "QuestBudgetPadding", index, Value::Float(0.125f)});
+    QuestVr::ScriptStateDetail::Writer input(limits, nullptr); input.State(saved);
+    Require(input.measuredBudget().properties == limits.maxProperties &&
+        input.measuredBudget().retained < limits.maxBytes && input.size() < limits.maxBytes,
+        "Legacy padding must fit the actual 16 MiB trailer limits before importing four Planes");
+    const auto before = fixture.Snapshot("BeforeLegacySimBlendImportBudget"); const auto stats = GC::GetStats();
+    const auto actorCount = GetPortableRuntimeMapActors(true).size();
+    Require(QuestVr::WriteDurableSaveFile(path.string(), bytesFor(saved)) &&
+        !ValidatePortableRuntimeState(path.string()) && !LoadPortableRuntimeState(path.string()),
+        "Legacy SimBlendAnim import bypassed the cumulative property limit");
+    ++rejections;
+    Require(fixture.Snapshot("AfterLegacySimBlendImportBudget") == before &&
+        !GetPortableRuntimeScriptStatePresent() && GetPortableRuntimeMapActors(true).size() == actorCount &&
+        GC::GetStats().numObjects == stats.numObjects && GC::GetStats().memoryUsage == stats.memoryUsage,
+        "Rejected legacy Plane import mutated checkpoint, script state, actor index or GC");
+    // Exactly four free slots permit the four derived records. Validation stays
+    // read-only and proves this is a cumulative migration limit, not a blanket
+    // refusal of legacy records or this large fixed-array declaration.
+    properties.resize(limits.maxProperties - 4u);
+    Require(QuestVr::WriteDurableSaveFile(path.string(), bytesFor(saved)) &&
+        ValidatePortableRuntimeState(path.string()), "Exact legacy Plane-import property boundary was rejected");
+    Require(fixture.Snapshot("AfterLegacySimBlendImportBoundary") == before &&
+        GC::GetStats().numObjects == stats.numObjects && GC::GetStats().memoryUsage == stats.memoryUsage,
+        "Boundary import validation mutated checkpoint or GC");
+    std::cout << "PASS legacy SimBlendAnim import cumulative budget: legal input " << input.measuredBudget().retained
+        << '/' << limits.maxBytes << " retained bytes,65536 input properties rejected before four-Plane publication;65532 accepted\n";
 }
 void OverlayClockAndState(const Fixture& fixture, const Bytes& legacy) {
     QuestVr::ScriptSavedState saved; saved.mapName = "DescriptorMap";
@@ -361,6 +439,7 @@ void Synthetic() {
     Require(ReadPortableRuntimeInventoryDescriptors({"DescriptorMap.Rifle0"}, shallow)[0].status == Status::MalformedProperty, "Ancestry bound bypassed");
     Require(fixture.Snapshot("AfterDescriptors") == legacy && !GetPortableRuntimeScriptStatePresent() && GetPortableRuntimeMapActors(true).size() == actorsBefore &&
         GC::GetStats().numObjects == stats.numObjects && GC::GetStats().memoryUsage == stats.memoryUsage, "Read-only descriptor/rejection mutated checkpoint/index/GC/script state");
+    LegacySimBlendImportBudget(fixture, legacy);
     OverlayClockAndState(fixture, legacy); const auto overlay = fixture.Snapshot("BeforeOverlayDescriptors"); const auto overlayStats = GC::GetStats();
     const auto overlayItem = ReadPortableRuntimeInventoryDescriptors({"DescriptorMap.Rifle0"})[0];
     Require(overlayItem.status == Status::Available && !overlayItem.active && overlayItem.invSlotsX == 2 && overlayItem.invSlotsY == 3 && overlayItem.invPosX == 1 && overlayItem.invPosY == 2 &&

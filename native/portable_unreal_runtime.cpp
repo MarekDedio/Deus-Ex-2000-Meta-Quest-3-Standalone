@@ -386,6 +386,13 @@ bool ReadInheritedRuntimeBool(RuntimeObject* object, const char* name) {
     return property != nullptr && property->type == 3u && property->boolValue;
 }
 
+QuestVr::Vm::Value BlendSimulatedValue(const std::array<float, 4u>& fields) {
+    QuestVr::Vm::Value value; value.kind = QuestVr::Vm::Kind::Struct;
+    for (std::size_t i = 0u; i < fields.size(); ++i)
+        value.fields[std::array<const char*, 4u>{"x", "y", "z", "w"}[i]] = QuestVr::Vm::Value::Float(fields[i]);
+    return value;
+}
+
 PortableActorAnimationSnapshot ReadRuntimeAnimationSnapshot(RuntimeObject* object) {
     PortableActorAnimationSnapshot animation;
     animation.sequence = ReadInheritedRuntimeName(object, "AnimSequence");
@@ -918,6 +925,21 @@ std::string PackageStem(const std::string& path) {
     const std::size_t dot = path.find_last_of('.');
     const std::size_t end = dot == std::string::npos || dot < begin ? path.size() : dot;
     return path.substr(begin, end - begin);
+}
+
+std::unique_ptr<PortableLodMesh> LoadCompleteRuntimeLodMesh(
+    const PortablePackageTables& package, const std::size_t exportIndex, const std::string& sourcePath) {
+    auto mesh = std::make_unique<PortableLodMesh>(LoadPortableLodMesh(package, exportIndex));
+    mesh->texturePaths.reserve(mesh->textures.size());
+    for (const std::int32_t texture : mesh->textures) {
+        auto path = GetPortableObjectPath(package, texture);
+        if (texture > 0 && !path.empty()) path = PackageStem(sourcePath) + '.' + path;
+        mesh->texturePaths.push_back(std::move(path));
+    }
+    // Geometry, animation and qualified material slots are one immutable cache
+    // entry. Resolve all paths before either lazy native queries/commands or
+    // map-wide decode can publish it; failure must not leave a partial mesh.
+    return mesh;
 }
 
 std::string ResolveRuntimePackagePath(
@@ -1555,26 +1577,50 @@ public:
             }
             return {Value::Bool(found), {}};
         }
-        if (index != 259u && index != 260u && index != 294u && index != 263u && index != 293u && index != 282u)
+        if (index != 259u && index != 260u && index != 294u && index != 263u && index != 293u && index != 282u &&
+            index != 1010u && index != 1012u)
             throw std::runtime_error("Unsupported runtime native " + std::to_string(index) +
                 (declaration ? " (" + declaration->path + ")" : std::string()));
         if (!IsDerivedFromPath(object->cls, "Engine.Actor"))
             throw std::runtime_error("Animation native receiver is not Engine.Actor");
-        argumentCount(index == 282u ? 0u : index == 294u ? 2u : 1u,
-            index == 260u ? 4u : index == 259u ? 3u : index == 294u ? 2u : index == 282u ? 0u : 1u);
+        const bool blend = index == 1010u || index == 1012u;
+        argumentCount(index == 282u ? 0u : index == 294u || index == 1012u ? 2u : 1u,
+            index == 260u || index == 1010u ? 4u : index == 259u || index == 1012u ? 3u :
+            index == 294u ? 2u : index == 282u ? 0u : 1u);
         if (index == 282u) return {Value::Bool(ReadInheritedRuntimeFloat(object, "AnimRate") != 0.0f), {}};
-        const auto* mesh = AnimationMesh(object);
-        if (index == 263u) return {Value::Bool(QuestVr::ActorClockHasAnim(mesh, sequence())), {}};
-        if (index == 293u) return {Value::Text(Kind::Name, QuestVr::ActorClockGetAnimGroup(mesh, sequence())), {}};
-        QuestVr::ActorAnimationClock next = object->animationClock ? *object->animationClock : AuthoredClock(object);
         QuestVr::ActorAnimationCommand command;
         command.sequence = sequence();
         command.kind = index == 259u ? QuestVr::ActorAnimationCommandKind::PlayAnim : index == 260u ?
-            QuestVr::ActorAnimationCommandKind::LoopAnim : QuestVr::ActorAnimationCommandKind::TweenAnim;
+            QuestVr::ActorAnimationCommandKind::LoopAnim : index == 1010u ?
+            QuestVr::ActorAnimationCommandKind::PlayBlendAnim : index == 1012u ?
+            QuestVr::ActorAnimationCommandKind::TweenBlendAnim : QuestVr::ActorAnimationCommandKind::TweenAnim;
         command.rate = optionalFloat(1u, 1.0f);
-        command.tweenTime = optionalFloat(index == 294u ? 1u : 2u, 0.0f);
-        command.minRate = optionalFloat(3u, 0.0f);
-        const auto applied = QuestVr::ApplyActorAnimationCommand(mesh, next, command);
+        command.tweenTime = optionalFloat(index == 294u || index == 1012u ? 1u : 2u, index == 1010u ? -1.0f : 0.0f);
+        if (blend) {
+            const auto slot = argument(index == 1010u ? 3u : 2u);
+            if (slot.kind != Kind::Nothing && slot.kind != Kind::Int && slot.kind != Kind::Byte)
+                throw std::runtime_error("Blend animation slot requires an Int");
+            command.blendSlot = slot.kind == Kind::Nothing ? 0 : QuestVr::Vm::ToInt(slot);
+            // Original signed slot warning/return, not Byte wrapping or an
+            // unsupported-native success. All arguments have been evaluated.
+            if (command.blendSlot < 0 || command.blendSlot >= 4) return {};
+        } else command.minRate = optionalFloat(3u, 0.0f);
+        const auto* mesh = AnimationMesh(object);
+        if (index == 263u) return {Value::Bool(QuestVr::ActorClockHasAnim(mesh, command.sequence)), {}};
+        if (index == 293u) return {Value::Text(Kind::Name, QuestVr::ActorClockGetAnimGroup(mesh, command.sequence)), {}};
+        if (blend && QuestVr::ActorAnimationClockDetail::Sequence(mesh, command.sequence, false, {}) == nullptr)
+            return {}; // Original no-mesh/missing-sequence branch precedes clock/property access.
+        QuestVr::ActorAnimationClock next = object->animationClock ? *object->animationClock : AuthoredClock(object);
+        float velocitySpeed{};
+        if (index == 1010u && command.tweenTime == -1.0f &&
+            !QuestVr::MeshAnimationNamesEqual(next.pose.blends[command.blendSlot].sequence, "None") &&
+            next.blends[command.blendSlot].oldRate < 0.0f) {
+            const auto velocity = Read(object, PropertyNamed(object, "Velocity"), 0u);
+            if (velocity.kind != Kind::Vector) throw std::runtime_error("Blend animation Velocity schema is not Vector");
+            velocitySpeed = std::sqrt(velocity.vector[0]*velocity.vector[0] +
+                velocity.vector[1]*velocity.vector[1] + velocity.vector[2]*velocity.vector[2]);
+        }
+        const auto applied = QuestVr::ApplyActorAnimationCommand(mesh, next, command, velocitySpeed);
         if (!applied.error.empty()) throw std::runtime_error(applied.error);
         if (applied.applied) {
             Touch(object); object->animationClock = std::move(next);
@@ -2973,7 +3019,7 @@ private:
         if (!mesh->lodMesh) {
             // Decode immutable authored assets lazily. They are not actor state
             // and may remain cached after a failed script transaction.
-            mesh->lodMesh = std::make_unique<PortableLodMesh>(LoadPortableLodMesh(Table(mesh->sourcePath), mesh->exportIndex));
+            mesh->lodMesh = LoadCompleteRuntimeLodMesh(Table(mesh->sourcePath), mesh->exportIndex, mesh->sourcePath);
         }
         return mesh->lodMesh->animation.get();
     }
@@ -2992,6 +3038,12 @@ private:
             clock.blends[slot].rate = source.rate; clock.blends[slot].last = source.last;
             clock.blends[slot].minRate = source.minRate; clock.blends[slot].tweenRate = source.tweenRate;
             clock.blends[slot].oldRate = source.oldRate;
+            const auto simulated = Read(object, PropertyNamed(object, "SimBlendAnim"), slot);
+            if (simulated.kind != Kind::Struct || simulated.fields.size() != 4u)
+                throw std::runtime_error("Authored SimBlendAnim schema is not a four-field Plane");
+            for (std::size_t field = 0u; field < 4u; ++field)
+                clock.blends[slot].simulated[field] = QuestVr::Vm::ToFloat(
+                    simulated.fields.at(std::array<const char*, 4u>{"x", "y", "z", "w"}[field]));
         }
         return clock;
     }
@@ -3006,13 +3058,21 @@ private:
         Put(object, "AnimMinRate", Value::Float(clock.main.minRate)); Put(object, "TweenRate", Value::Float(clock.main.tweenRate));
         Put(object, "OldAnimRate", Value::Float(clock.main.oldRate)); Put(object, "bAnimLoop", Value::Bool(clock.main.loop));
         Put(object, "bAnimNotify", Value::Bool(clock.main.notify)); Put(object, "bAnimFinished", Value::Bool(clock.main.finished));
+        for (std::uint32_t slot = 0u; slot < clock.blends.size(); ++slot) {
+            const auto& channel = clock.pose.blends[slot]; const auto& rates = clock.blends[slot];
+            Put(object, "BlendAnimSequence", Value::Text(Kind::Name, channel.sequence), slot);
+            Put(object, "BlendAnimFrame", Value::Float(channel.normalizedFrame), slot);
+            Put(object, "BlendAnimRate", Value::Float(rates.rate), slot); Put(object, "BlendAnimLast", Value::Float(rates.last), slot);
+            Put(object, "BlendAnimMinRate", Value::Float(rates.minRate), slot); Put(object, "BlendTweenRate", Value::Float(rates.tweenRate), slot);
+            Put(object, "OldBlendAnimRate", Value::Float(rates.oldRate), slot);
+            Put(object, "SimBlendAnim", BlendSimulatedValue(rates.simulated), slot);
+        }
     }
     void UpdateClockProperty(RuntimeObject* object, const std::string& name, const std::uint32_t index) {
         if (!object->animationClock) return;
         // Preserve captured tween offsets while explicit script assignments
-        // update animation properties. Blend commands are not dispatched yet.
+        // update main/blend properties, including explicit SimBlendAnim writes.
         const auto previous = object->animationClock->pose;
-        const auto priorBlends = object->animationClock->blends;
         const bool finishWaiting = object->animationClock->main.finishAnimWaiting;
         const auto updated = AuthoredClock(object);
         object->animationClock->main = updated.main;
@@ -3023,7 +3083,6 @@ private:
         object->animationClock->pose.main.previous = previous.main.previous;
         for (std::size_t slot = 0u; slot < previous.blends.size(); ++slot) {
             object->animationClock->pose.blends[slot].previous = previous.blends[slot].previous;
-            object->animationClock->blends[slot].simulated = priorBlends[slot].simulated;
         }
         (void)name; (void)index;
     }
@@ -3146,6 +3205,7 @@ std::vector<QuestVr::ScriptSavedProperty> ClockProperties(
         add("BlendAnimRate", V::Float(rates.rate), slot); add("BlendAnimLast", V::Float(rates.last), slot);
         add("BlendAnimMinRate", V::Float(rates.minRate), slot); add("BlendTweenRate", V::Float(rates.tweenRate), slot);
         add("OldBlendAnimRate", V::Float(rates.oldRate), slot);
+        add("SimBlendAnim", BlendSimulatedValue(rates.simulated), slot);
     }
     return values;
 }
@@ -3686,14 +3746,59 @@ private:
     }
 };
 
+void MeasureLegacySimBlendImports(const QuestVr::ScriptSavedState& saved,
+    const QuestVr::ScriptStateLimits& limits, ScriptSaveSchema& schema) {
+    const auto needsImport = [](const QuestVr::ScriptSavedObject& object) {
+        return object.clock && std::none_of(object.properties.begin(), object.properties.end(),
+            [](const auto& property) { return LowerAscii(property.name) == "simblendanim"; });
+    };
+    if (std::none_of(saved.objects.begin(), saved.objects.end(), needsImport)) return;
+
+    // Deriving the legacy reflected view must obey the SAME cumulative codec
+    // limits as records present on disk. Measure without copying the decoded
+    // graph; each bounded four-Plane import is compared with its empty wrapper
+    // so only its exact property/value/string/encoded-byte delta is charged.
+    QuestVr::ScriptStateDetail::Writer original(limits, nullptr);
+    original.State(saved);
+    auto budget = original.measuredBudget();
+    auto encodedBytes = original.size();
+    for (const auto& object : saved.objects) {
+        if (!needsImport(object)) continue;
+        auto* cls = schema.SavedClass(object);
+        const auto property = schema.Host().ClassProperty(cls, "SimBlendAnim");
+        QuestVr::ScriptSavedState imported; imported.mapName = saved.mapName;
+        imported.objects.push_back({object.path, object.classPath, {}, {}, {}, {}});
+        QuestVr::ScriptStateDetail::Writer empty(limits, nullptr);
+        empty.State(imported);
+        for (std::uint32_t slot = 0u; slot < object.clock->blends.size(); ++slot) {
+            QuestVr::ScriptSavedProperty value{property.key, property.name, slot,
+                BlendSimulatedValue(object.clock->blends[slot].simulated)};
+            value.value = schema.PropertyValue(cls, value);
+            imported.objects.front().properties.push_back(std::move(value));
+        }
+        QuestVr::ScriptStateDetail::Writer complete(limits, nullptr);
+        complete.State(imported);
+        const auto& base = empty.measuredBudget();
+        const auto& added = complete.measuredBudget();
+        budget.Properties(added.properties - base.properties);
+        for (std::size_t node = base.nodes; node < added.nodes; ++node) budget.Node(0u);
+        budget.Retain(added.retained - base.retained);
+        const auto bytes = complete.size() - empty.size();
+        if (bytes > limits.maxBytes || encodedBytes > limits.maxBytes - bytes)
+            throw std::runtime_error("Legacy SimBlendAnim import exceeds encoded-state byte budget");
+        encodedBytes += bytes;
+    }
+}
+
 PreparedScriptState PrepareScriptSavedState(
-    const QuestVr::ScriptSavedState& saved, const bool apply) {
+    const QuestVr::ScriptSavedState& saved, const bool apply, const QuestVr::ScriptStateLimits& limits) {
     if (apply && LowerAscii(saved.mapName) != LowerAscii(persistentMapPackageName))
         throw std::runtime_error("Script save can only restore into its authored map");
     ScriptSaveSchema schema(saved.mapName);
     // Register the entire symbolic graph before validating a single property:
     // valid references can point to births not present in the running session.
     schema.RegisterBirths(saved.births);
+    MeasureLegacySimBlendImports(saved, limits, schema);
     // Check the complete symbolic graph before allocating staged GC objects.
     for (const auto& state : saved.aiManagers) schema.ValidateAI(state);
     PreparedScriptState prepared;
@@ -3756,7 +3861,17 @@ PreparedScriptState PrepareScriptSavedState(
                 throw std::runtime_error("Duplicate script save property alias/index");
         }
         if (record.clock) {
+            const bool legacyWithoutSim = next.values.count("simblendanim") == 0u;
             for (const auto& property : ClockProperties(*record.clock)) {
+                if (legacyWithoutSim && property.name == "SimBlendAnim") {
+                    // Old portable clocks already retained these four floats,
+                    // but did not duplicate them as reflected Plane records.
+                    // Derive this missing view without changing wire codecs.
+                    auto compatible = property;
+                    compatible.key = schema.Host().ClassProperty(cls, compatible.name).key;
+                    next.values["simblendanim"].emplace(property.index, schema.PropertyValue(cls, compatible));
+                    continue;
+                }
                 const auto values = next.values.find(LowerAscii(property.name));
                 if (values == next.values.end()) throw std::runtime_error("Script save clock property is missing");
                 const auto slot = values->second.find(property.index);
@@ -5010,16 +5125,7 @@ PortableActorMeshSummary DecodeRuntimeActorAssets(const std::vector<PortableActo
                 meshObject->sourcePath,
                 LoadPortablePackageTables(meshObject->sourcePath)).first;
         }
-        meshObject->lodMesh = std::make_unique<PortableLodMesh>(
-            LoadPortableLodMesh(package->second, meshObject->exportIndex));
-        meshObject->lodMesh->texturePaths.reserve(meshObject->lodMesh->textures.size());
-        for (const std::int32_t texture : meshObject->lodMesh->textures) {
-            std::string texturePath = GetPortableObjectPath(package->second, texture);
-            if (texture > 0 && !texturePath.empty()) {
-                texturePath = PackageStem(meshObject->sourcePath) + "." + texturePath;
-            }
-            meshObject->lodMesh->texturePaths.push_back(std::move(texturePath));
-        }
+        meshObject->lodMesh = LoadCompleteRuntimeLodMesh(package->second, meshObject->exportIndex, meshObject->sourcePath);
         summary.triangleVertices += meshObject->lodMesh->triangles.size();
         ++summary.decodedMeshes;
     }
@@ -5741,7 +5847,11 @@ bool SavePortableRuntimeState(const std::string& path) {
             [](const auto& object) { return object.state.has_value(); });
         const bool hasLifecycle = std::any_of(scriptState.objects.begin(), scriptState.objects.end(),
             [](const auto& object) { return object.lifecycle.has_value(); });
-        if (hasScript) static_cast<void>(PrepareScriptSavedState(scriptState, false));
+        if (hasScript) {
+            QuestVr::ScriptStateLimits limits;
+            limits.maxBytes = QuestVr::kMaximumSaveRuntimeBytes;
+            static_cast<void>(PrepareScriptSavedState(scriptState, false, limits));
+        }
         std::vector<std::string> inactive;
         std::vector<std::string> activated;
         std::vector<std::pair<std::string, float>> damaged;
@@ -5909,7 +6019,7 @@ static bool ReadPortableRuntimeState(const std::string& path, const bool apply, 
                 throw std::runtime_error("Runtime checkpoint state trailer does not match its envelope version");
             if (!expectedMapName.empty() && LowerAscii(expectedMapName) != LowerAscii(scriptState.mapName))
                 throw std::runtime_error("Runtime checkpoint script map does not match save metadata");
-            prepared = PrepareScriptSavedState(scriptState, apply);
+            prepared = PrepareScriptSavedState(scriptState, apply, limits);
             cursor += length;
         }
         if (cursor != bytes.size()) throw std::runtime_error("Runtime checkpoint has trailing bytes");
