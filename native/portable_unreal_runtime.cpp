@@ -1135,8 +1135,10 @@ PortableActorDispatchContext AuthoredDispatchContext(RuntimeObject* actor) {
         throw std::runtime_error("Authored dispatch receiver has no serialized Class masks");
     PortableActorDispatchContext result;
     result.classProbeMask = actor->cls->classDescriptor->state.probeMask;
+    result.liveProbeMask = ~std::uint64_t{0}; // Original absent-frame IsProbing permits all probes.
     if (!actor->serializedStack) return result;
     const auto& stack = *actor->serializedStack;
+    result.liveProbeMask = stack.probeMask;
     if (stack.functionReference && stack.stateReference) {
         if (!actor->serializedFunctionCode || !(actor->serializedFunctionCode->script ||
             StateMetadata(actor->serializedFunctionCode) || actor->serializedFunctionCode->reflection.metaClass == "Struct"))
@@ -1152,7 +1154,7 @@ PortableActorDispatchContext AuthoredDispatchContext(RuntimeObject* actor) {
         result.stateName = result.codePath.substr(result.codePath.find_last_of('.') + 1u);
     }
     for (std::uint8_t index = 0; index < 64u; ++index)
-        if (stack.probeMask & (std::uint64_t{1} << index))
+        if (!(stack.probeMask & (std::uint64_t{1} << index)))
             result.disabledNames.insert(QuestVr::ScriptDispatch::ProbeEventName(index));
     return result;
 }
@@ -1163,6 +1165,7 @@ PortableActorDispatchContext CurrentDispatchContext(RuntimeObject* actor) {
     const auto& live = *actor->stateObject;
     if (live.frameOverride) {
         result.codePath.clear(); result.stateName = "None"; result.codeMasks.reset();
+        result.liveProbeMask = result.classProbeMask;
         if (live.frame && !live.frame->codePath.empty()) {
             const auto found = persistentVmObjects.find(LowerAscii(live.frame->codePath));
             if (found == persistentVmObjects.end() || !found->second->stateDescriptor)
@@ -1172,12 +1175,27 @@ PortableActorDispatchContext CurrentDispatchContext(RuntimeObject* actor) {
             result.stateName = result.codePath.substr(result.codePath.find_last_of('.') + 1u);
             result.codeMasks = QuestVr::ScriptDispatch::CodeMasks{
                 code->stateDescriptor->probeMask, code->stateDescriptor->ignoreMask};
+            result.liveProbeMask = (result.classProbeMask | result.codeMasks->probeMask) & result.codeMasks->ignoreMask;
         }
+    } else {
+        // The complete negative probe set is copied from the positive raw
+        // frame on first mutation. Retain enables of formerly clear bits;
+        // ANDing the original mask again would lose those native writes.
+        result.liveProbeMask = ~std::uint64_t{0};
     }
     result.disabledNames.clear();
     const auto key = QuestVr::ScriptDispatch::FoldName(result.stateName);
     for (const auto& [state, names] : live.disabled)
         if (QuestVr::ScriptDispatch::FoldName(state) == key) { result.disabledNames = names; break; }
+    const bool ownedFrame = live.frameOverride ? live.frame.has_value() : actor->serializedStack.has_value();
+    if (!ownedFrame) {
+        result.liveProbeMask = ~std::uint64_t{0};
+        result.disabledNames.clear(); // No frame means no original probe gate.
+    } else {
+        for (const auto& name : result.disabledNames)
+            if (const auto index = QuestVr::ScriptDispatch::EventProbeIndex(name))
+                *result.liveProbeMask &= ~(std::uint64_t{1} << *index);
+    }
     return result;
 }
 
@@ -1216,7 +1234,7 @@ public:
     bool CanCall(const Function& function, const std::string& receiver) override {
         const auto context = CurrentDispatchContext(Object(receiver));
         const auto name = function.path.substr(function.path.find_last_of('.') + 1u);
-        return QuestVr::ScriptDispatch::IsEnabled(name, context.classProbeMask, context.codeMasks, context.disabledNames);
+        return QuestVr::ScriptDispatch::IsEnabled(name, context.classProbeMask, context.codeMasks, context.disabledNames, context.liveProbeMask);
     }
     std::shared_ptr<const Function> PrepareFunction(const Function& identity, const std::string&) override {
         return FunctionFor(Object(identity.path));
@@ -1226,7 +1244,7 @@ public:
         RuntimeObject* actor = Object(receiver);
         if (!IsDerivedFromPath(actor->cls, "Engine.Actor")) throw std::runtime_error("Event receiver is not Engine.Actor");
         const auto context = CurrentDispatchContext(actor);
-        const bool enabled = QuestVr::ScriptDispatch::IsEnabled(name, context.classProbeMask, context.codeMasks, context.disabledNames);
+        const bool enabled = QuestVr::ScriptDispatch::IsEnabled(name, context.classProbeMask, context.codeMasks, context.disabledNames, context.liveProbeMask);
         if (!enabled) return {};
         const auto value = Read(actor, PropertyNamed(actor, "Level"), 0u);
         if (value.kind != Kind::Object || value.text.empty()) throw std::runtime_error("Event receiver has no authored Level binding");
@@ -1249,7 +1267,7 @@ public:
         Touch(actor); actor->committedScriptState = true;
         return &*actor->stateObject;
     }
-    bool PollState(const std::string& receiver, const float elapsed, QuestVr::Vm::Execution&) override {
+    bool PollState(const std::string& receiver, const float elapsed, QuestVr::Vm::Execution& execution) override {
         auto* actor = Object(receiver);
         const auto* state = ReadState(receiver);
         // Original ProcessState does not poll null code, nor run dormant raw
@@ -1266,6 +1284,26 @@ public:
             const bool released = QuestVr::PollActorSleep(next, elapsed);
             Touch(actor); actor->latentTimeLeft = next; actor->committedScriptState = true;
             if (released) actor->stateObject->frame->latent = QuestVr::StateLatent::Continue;
+        } else if (state->frame->latent == QuestVr::StateLatent::WaitForLanding) {
+            if (!IsDerivedFromPath(actor->cls,"Engine.Pawn"))
+                throw std::runtime_error("Landing wait receiver is not Engine.Pawn");
+            if (!actor->latentTimeLeft) throw std::runtime_error("Landing actor has no native latent timer");
+            const auto physics = QuestVr::Vm::ToInt(Read(actor,PropertyNamed(actor,"Physics"),0u));
+            if (physics != 2) {
+                // Original poll528 releases before touching the shared timer.
+                Touch(actor); actor->committedScriptState = true;
+                actor->stateObject->frame->latent = QuestVr::StateLatent::Continue;
+            } else {
+                float next = *actor->latentTimeLeft;
+                const bool timedOut = QuestVr::PollActorLanding(next, elapsed);
+                Touch(actor); actor->latentTimeLeft = next; actor->committedScriptState = true;
+                if (timedOut) {
+                    // Dynamic, synchronous ProcessEvent; same interpreter/root
+                    // transaction. Never rewrite a callback's replacement frame.
+                    static_cast<void>(execution.CallEvent(receiver,"LongFall",false,{}));
+                    if (QuestVr::Vm::ToBool(Read(actor,PropertyNamed(actor,"bDeleteMe"),0u))) return false;
+                }
+            }
         } else if (state->frame->latent != QuestVr::StateLatent::Continue &&
                    state->frame->latent != QuestVr::StateLatent::Stop)
             throw std::runtime_error("State latent action requires its runtime handler");
@@ -1530,6 +1568,18 @@ public:
             object->stateObject->frame->latent = QuestVr::StateLatent::Sleep;
             return {};
         }
+        if (index == 527u) {
+            argumentCount(0u,0u);
+            if (!IsDerivedFromPath(object->cls,"Engine.Pawn")) throw std::runtime_error("WaitForLanding receiver is not Engine.Pawn");
+            const auto physics = QuestVr::Vm::ToInt(Read(object,PropertyNamed(object,"Physics"),0u));
+            if (physics == 2 && (!object->stateObject || !object->stateObject->frameOverride || !object->stateObject->frame))
+                throw std::runtime_error("Falling WaitForLanding requires an established portable actor frame");
+            // Original exec527 always writes the shared native counter, even
+            // when nonfalling; only Falling installs the latent action528.
+            Touch(object); object->latentTimeLeft = 2.5f; object->committedScriptState = true;
+            if (physics == 2) object->stateObject->frame->latent = QuestVr::StateLatent::WaitForLanding;
+            return {};
+        }
         if (index == 0u && declaration && LowerAscii(declaration->path) == "engine.pawn.stopwaiting") {
             argumentCount(0u,0u);
             if (!IsDerivedFromPath(object->cls,"Engine.Pawn")) throw std::runtime_error("StopWaiting receiver is not Engine.Pawn");
@@ -1783,7 +1833,20 @@ public:
             if (arguments.size() != 1u || arguments[0].Load().kind != Kind::Name)
                 throw std::runtime_error("Enable/Disable requires one Name");
             const auto event = QuestVr::ScriptDispatch::FoldName(name(0u, "None"));
+            // Original Core.dll execEnable/execDisable mutate only fixed
+            // probes300..363. Nonprobe names (including LongFall) are no-ops,
+            // not arbitrary function-disable storage or fabricated frames.
+            if (!QuestVr::ScriptDispatch::EventProbeIndex(event)) return {};
+            const bool ownedFrame = actor->stateObject && actor->stateObject->frameOverride ?
+                actor->stateObject->frame.has_value() : actor->serializedStack.has_value();
+            if (!ownedFrame) return {}; // Original native117/118 also require a StateFrame.
             const auto current = CurrentDispatchContext(actor);
+            if (index == 117u) {
+                const auto bit = std::uint64_t{1} << *QuestVr::ScriptDispatch::EventProbeIndex(event);
+                const auto allowed = (current.classProbeMask | (current.codeMasks ? current.codeMasks->probeMask : 0u)) &
+                    (current.codeMasks ? current.codeMasks->ignoreMask : ~std::uint64_t{0});
+                if (!(allowed & bit)) return {}; // Enable cannot add an ineligible original probe.
+            }
             auto& state = EnsureStateObject(actor);
             const auto key = QuestVr::ScriptDispatch::FoldName(current.stateName);
             auto& disabled = state.disabled[key];
@@ -3618,10 +3681,12 @@ public:
         if (!state.frame) return normalized;
         const auto& frame = *state.frame;
         if (frame.latent != QuestVr::StateLatent::Continue && frame.latent != QuestVr::StateLatent::Stop &&
-            frame.latent != QuestVr::StateLatent::Sleep)
+            frame.latent != QuestVr::StateLatent::Sleep && frame.latent != QuestVr::StateLatent::WaitForLanding)
             throw std::runtime_error("Script save state latent action is not implemented by this runtime");
-        if (frame.latent == QuestVr::StateLatent::Sleep && !saved.latentTimeLeft)
-            throw std::runtime_error("Script save sleeping actor has no native latent timer");
+        if (frame.latent == QuestVr::StateLatent::WaitForLanding && !IsDerivedFromPath(cls,"Engine.Pawn"))
+            throw std::runtime_error("Script save landing receiver is not Engine.Pawn");
+        if ((frame.latent == QuestVr::StateLatent::Sleep || frame.latent == QuestVr::StateLatent::WaitForLanding) && !saved.latentTimeLeft)
+            throw std::runtime_error("Script save waiting actor has no native latent timer");
         if (frame.codePath.empty()) {
             if (!frame.localsCodePath.empty() || !frame.locals.empty())
                 throw std::runtime_error("Script save cleared state frame retains local storage");

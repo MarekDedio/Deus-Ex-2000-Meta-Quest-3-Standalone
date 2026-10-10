@@ -96,19 +96,22 @@ struct Host final : Vm::Host {
     std::map<std::string, std::vector<std::string>> labelChain;
     std::map<std::string, Value> values, savedValues;
     std::map<std::string,float> timers, savedTimers;
+    std::map<std::string,std::int32_t> physics, savedPhysics;
     std::vector<std::string> trace;
-    bool active{}, begun{true}, deleted{}, badPreparedIdentity{}, pollEligible{true};
+    bool active{}, begun{true}, deleted{}, savedDeleted{}, badPreparedIdentity{}, pollEligible{true};
     std::size_t polls{};
     std::size_t begins{}, commits{}, rollbacks{}, preparations{}, mutableReads{}, effects{}, savedEffects{};
     std::size_t stateReads{};
     std::size_t iteratorCreates{}, iteratorDestroys{}, iteratorSteps{};
     void Begin() override {
         if (active) throw std::runtime_error("nested transaction");
-        savedStates = states; savedLocalRevisions = localRevisions; savedValues = values; savedTimers = timers; savedEffects = effects; active = true; ++begins;
+        savedStates = states; savedLocalRevisions = localRevisions; savedValues = values; savedTimers = timers; savedPhysics = physics;
+        savedEffects = effects; savedDeleted = deleted; active = true; ++begins;
     }
     void Commit() override { Check(active,"commit outside transaction"); active = false; ++commits; }
     void Rollback() noexcept override {
-        states.swap(savedStates); localRevisions.swap(savedLocalRevisions); values.swap(savedValues); timers.swap(savedTimers); effects = savedEffects; active = false; ++rollbacks;
+        states.swap(savedStates); localRevisions.swap(savedLocalRevisions); values.swap(savedValues); timers.swap(savedTimers); physics.swap(savedPhysics);
+        effects = savedEffects; deleted = savedDeleted; active = false; ++rollbacks;
     }
     std::string StateName(const std::string& self) const {
         const auto found = states.find(self);
@@ -164,10 +167,10 @@ struct Host final : Vm::Host {
         if (!active) throw std::runtime_error("state mutation outside transaction");
         ++mutableReads; return &states.at(self);
     }
-    bool PollState(const std::string& self, float elapsed, Vm::Execution&) override {
+    bool PollState(const std::string& self, float elapsed, Vm::Execution& execution) override {
         ++polls;
         const auto found = states.find(self);
-        if (!pollEligible || found == states.end() || !found->second.frame || found->second.frame->codePath.empty()) return false;
+        if (!pollEligible || deleted || found == states.end() || !found->second.frame || found->second.frame->codePath.empty()) return false;
         auto& frame = *found->second.frame;
         if (frame.latent == StateLatent::Sleep) {
             // Independent original x87 oracle: comparison uses the unrounded
@@ -175,6 +178,18 @@ struct Host final : Vm::Host {
             const double next = double(timers.at(self))-double(elapsed);
             timers.at(self) = float(next);
             if (next < double(elapsed)*0.5) frame.latent = StateLatent::Continue;
+        } else if (frame.latent == StateLatent::WaitForLanding) {
+            if (physics.at(self) != 2) frame.latent = StateLatent::Continue;
+            else {
+                // Original Engine.dll poll528 does not reset the shared
+                // counter or overwrite the frame after dynamic LongFall.
+                const double next = double(timers.at(self))-double(elapsed);
+                timers.at(self) = float(next);
+                if (next < 0.0) {
+                    execution.CallEvent(self,"LongFall",false);
+                    if (deleted) return false;
+                }
+            }
         }
         return true;
     }
@@ -276,6 +291,14 @@ struct Host final : Vm::Host {
             timers[self] = Vm::ToFloat(args.at(0).Load());
             MutableState(self)->frame->latent = StateLatent::Sleep; return {};
         }
+        if (index == 527) {
+            if (!args.empty()) throw std::runtime_error("WaitForLanding requires no arguments");
+            timers[self] = 2.5f;
+            if (physics.at(self) == 2) MutableState(self)->frame->latent = StateLatent::WaitForLanding;
+            return {};
+        }
+        if (index == 820) { physics[self] = Vm::ToInt(args.at(0).Load()); return {}; }
+        if (index == 821) { deleted = true; return {}; }
         if (index == 805 || index == 806) { execution.CallEvent(self,"Destroyed",index == 805); return {}; }
         if (index == 807 || index == 808 || index == 809) {
             NativeWithExecution(113,self,{{Value::Text(Vm::Kind::Name,"B"),{}}},nullptr,execution);
@@ -948,6 +971,219 @@ void SleepNestedReceiverAndDeclaration() {
         "Sleep committed an unserializable iterator continuation or leaked its cursor");++rejections;
 }
 
+void LandingEntryAndPoll() {
+    for (const auto mode : {0,1,3,4,5,6,7,8,9,10,255}) {
+        Host host;host.physics["Actor"] = mode;host.timers["Actor"] = -7.0f;
+        host.Program("State.A",Join({Native(527),Native(800,{Int(mode)}),{0x08}}));host.Install("State.A");
+        const auto result = Vm::ResumeState(host,"Actor");
+        Check(result.passed() && result.status == Vm::Status::Stopped && host.effects == 1 && host.timers.at("Actor") == 2.5f,
+            "WaitForLanding failed to reset the shared counter without yielding for nonfalling Physics " + std::to_string(mode));
+    }
+    Host host;host.physics["Actor"] = 2;
+    host.Program("State.A",Join({Native(527),Native(800,{Int(3)}),{0x08}}));host.Install("State.A");
+    host.Function("State.A.LongFall",Join({Native(800,{Int(91)}),Return()}));
+    const auto first = Vm::ResumeState(host,"Actor");
+    Check(first.passed() && first.committed && first.status == Vm::Status::Waiting && host.effects == 0 && host.timers.at("Actor") == 2.5f &&
+        host.states.at("Actor").frame->statementIndex == 1 && host.polls == 0,"Falling WaitForLanding did not commit its next statement ordinal");
+    const auto reads = host.mutableReads, preparations = host.preparations;
+    host.states.at("Actor").frame->statementIndex = 999;
+    const auto dormant = Vm::ResumeState(host,"Actor");
+    Check(dormant.passed() && dormant.status == Vm::Status::Waiting && dormant.instructions == 0 && host.mutableReads == reads &&
+        host.preparations == preparations && host.polls == 0 && host.timers.at("Actor") == 2.5f,"Existing landing wait was executed, polled or prepared by ResumeState");
+    host.states.at("Actor").frame->statementIndex = 1;
+    const auto equal = Vm::AdvanceState(host,"Actor",2.5f);
+    Check(equal.passed() && equal.status == Vm::Status::Waiting && equal.instructions == 0 && host.timers.at("Actor") == 0.0f && host.effects == 0,
+        "Landing timeout equality incorrectly dispatched LongFall or released the wait");
+    Check(Vm::AdvanceState(host,"Actor",0.0f).status == Vm::Status::Waiting && host.effects == 0,"Landing timer zero triggered a non-strict timeout");
+    const auto begins = host.begins, commits = host.commits;
+    const auto expired = Vm::AdvanceState(host,"Actor",0.25f);
+    Check(expired.passed() && expired.status == Vm::Status::Waiting && host.timers.at("Actor") == -0.25f && host.effects == 1 &&
+        host.begins == begins+1 && host.commits == commits+1 && host.rollbacks == 0 && host.states.at("Actor").frame->statementIndex == 1,
+        "LongFall did not run synchronously inside one polling transaction, or auto-released/reset landing wait");
+    Check(Vm::AdvanceState(host,"Actor",0.0f).status == Vm::Status::Waiting && host.effects == 2 && host.timers.at("Actor") == -0.25f,
+        "Negative landing counter failed to dispatch LongFall again on the next eligible poll");
+    for (const auto gate : {0,1,2}) {
+        host.begun = gate != 0;host.deleted = gate == 1;host.pollEligible = gate != 2;
+        const auto timer = host.timers.at("Actor");const auto effects = host.effects;
+        Check(Vm::AdvanceState(host,"Actor",0.1f).passed() && host.effects == effects &&
+            host.timers.at("Actor") == (gate != 0 ? timer : float(double(timer)-double(0.1f))),"LongFall dispatch ignored begun-play/deleted/poll eligibility");
+    }
+    host.begun = true;host.deleted = false;host.pollEligible = true;host.physics["Actor"] = 1;
+    const auto timer = host.timers.at("Actor");const auto effects = host.effects;
+    const auto landed = Vm::AdvanceState(host,"Actor",100.0f);
+    Check(landed.passed() && landed.status == Vm::Status::Stopped && host.timers.at("Actor") == timer && host.effects == effects+1,
+        "Leaving falling Physics decremented landing's counter or failed to release its continuation");
+}
+
+void LandingNestedReceiverAndDeclaration() {
+    Host host;host.physics["Actor"] = 2;
+    const Vm::Property count{"Class.Count","Count",Value::Integer(0),0,1};host.properties[20] = count;host.values[count.key] = Value::Integer(0);
+    const Vm::Property out{"Class.Worker.Out","Out",Value::Integer(0),0x180,1};host.properties[21] = out;
+    host.Function("Class.Worker",Join({Native(527),Let(Ref(0x00,21),Int(43)),Native(800,{Int(7)}),Return()}),{out});
+    host.Program("State.A",Join({Call(6,{Ref(0x01,20)}),Native(801),{0x08}}));host.Install("State.A");
+    auto result = Vm::ResumeState(host,"Actor");
+    Check(result.passed() && result.status == Vm::Status::Waiting && host.effects == 1 && host.values.at(count.key).integer == 43 &&
+        host.timers.at("Actor") == 2.5f && host.states.at("Actor").frame->statementIndex == 1,
+        "Nested landing wait interrupted ordinary function execution/OUT copyback before the state statement completed");
+    host.properties[90] = {"Other","Other",Value::Text(Vm::Kind::Object,"Other"),0,1};
+    host.states["Other"] = host.states.at("Actor");host.localRevisions["Other"] = 1;host.physics["Other"] = 2;
+    const auto context = Join({{0x19},Ref(0x20,90),{0,0,0},Native(527)});
+    host.Program("State.A",Join({context,Native(800),{0x08}}));host.Install("State.A");
+    result = Vm::ResumeState(host,"Actor");
+    Check(result.passed() && result.status == Vm::Status::Stopped && host.effects == 2 &&
+        host.states.at("Other").frame->latent == StateLatent::WaitForLanding && host.timers.at("Other") == 2.5f,
+        "Context landing wait incorrectly yielded the caller instead of changing its actual receiver");
+    auto declaration = host.Function("Class.WaitForLanding",{});declaration.flags = 0x409;declaration.nativeIndex = 527;
+    host.functions[declaration.path] = declaration;host.names[13] = "WaitForLanding";
+    host.Program("State.A",Join({Call(13),Native(801),{0x08}}));host.Install("State.A");
+    result = Vm::ResumeState(host,"Actor");
+    Check(result.passed() && result.status == Vm::Status::Waiting && host.timers.at("Actor") == 2.5f,
+        "Latent native527 declaration was not callable from an actual state statement");
+    result = Vm::Execute(host,declaration,"Actor");
+    Check(result.passed() && result.status == Vm::Status::Returned && host.states.at("Actor").frame->latent == StateLatent::WaitForLanding,
+        "Ordinary Execute wrongly suspended its own function frame for native527");
+    host.states.erase("Actor");host.physics["Actor"] = 0;host.timers["Actor"] = -1.0f;
+    Check(Vm::Execute(host,declaration,"Actor").passed() && host.timers.at("Actor") == 2.5f && !host.states.contains("Actor"),
+        "Nonfalling native527 required or fabricated a portable frame");
+    host.Install("State.A",1,StateLatent::Sleep);host.timers["Actor"] = -0.75f;
+    Check(Vm::Execute(host,declaration,"Actor").passed() && host.timers.at("Actor") == 2.5f && host.states.at("Actor").frame->latent == StateLatent::Sleep,
+        "Nonfalling native527 cleared an already installed, different latent action");
+    const auto refused = Vm::Execute(host,declaration,"Actor",{{Value::Integer(1),{}}});
+    Check(!refused.passed() && !refused.committed && host.timers.at("Actor") == 2.5f,"Invalid native527 arguments changed the shared timer");++rejections;
+    for (const auto& flagsAndIndex : {std::pair{0x409u,528u},std::pair{0x9u,527u},std::pair{0x409u,526u}}) {
+        declaration.flags = flagsAndIndex.first;declaration.nativeIndex = static_cast<std::uint16_t>(flagsAndIndex.second);host.functions[declaration.path] = declaration;
+        const auto failed = Vm::Execute(host,declaration,"Actor");
+        Check(!failed.passed() && failed.status == Vm::Status::Unsupported && host.timers.at("Actor") == 2.5f,
+            "Landing latent whitelist accepted a poll token or scripted/unknown latent declaration");++rejections;
+    }
+    host.physics["Actor"] = 2;
+    Bytes iterator{0x2f};Append(iterator,Native(819));const auto end = iterator.size();Append(iterator,{0,0});
+    Append(iterator,Native(527));Append(iterator,{0x31});const auto pop = iterator.size();Append(iterator,{0x30,0x08});
+    iterator[end] = std::uint8_t(pop);iterator[end+1u] = std::uint8_t(pop >> 8u);
+    host.Program("State.I",iterator);host.Install("State.I");const auto timers = host.timers;
+    result = Vm::ResumeState(host,"Actor");
+    Check(!result.passed() && result.status == Vm::Status::Unsupported && host.timers == timers &&
+        host.states.at("Actor").frame->statementIndex == 0 && host.iteratorCreates == host.iteratorDestroys,
+        "Landing wait committed a live iterator continuation or leaked its cursor");++rejections;
+}
+
+void LandingPollCallbackReentry() {
+    for (const auto mode : {0,1,2,3,4,5}) {
+        Host host;host.physics["Actor"] = 2;
+        const Vm::Property local{"State.A.Local","Local",Value::Integer(0),0,1};host.properties[33] = local;
+        const auto landing = Native(527), forbidden = Native(801);
+        host.Program("State.A",Join({landing,forbidden,Native(800,{Int(3)}),Native(256,{Float(6.0f)}),{0x08}}),{local},
+            {{1,0},{10,static_cast<std::uint32_t>(landing.size()+forbidden.size())}});
+        host.Program("State.B",Join({Let(Ref(0x00,33),Int(29)),Native(800,{Int(2)}),Native(256,{Float(4.0f)}),{0x08}}),{local});
+        if (mode == 0 || mode == 2) host.Function("State.A.LongFall",Join({Native(113,{Ref(0x21,3)}),Native(800,{Int(40)}),Return()}));
+        else if (mode == 1) host.Function("State.A.LongFall",Join({Native(256,{Float(7.0f)}),Native(800,{Int(31)}),Return()}));
+        else if (mode == 3) host.Function("State.A.LongFall",Join({Native(818,{Int(0)}),Native(800,{Int(31)}),Return()}));
+        else if (mode == 4) host.Function("State.A.LongFall",Join({Native(820,{Int(1)}),Native(800,{Int(31)}),Return()}));
+        else host.Function("State.A.LongFall",Join({Native(821),Native(800,{Int(31)}),Return()}));
+        if (mode == 2) host.Function("State.B.BeginState",Join({Native(113,{Ref(0x21,2),Ref(0x21,10)}),Return()}));
+        host.Install("State.A");Check(Vm::ResumeState(host,"Actor").status == Vm::Status::Waiting,"Landing callback setup did not yield");
+        host.states.at("Actor").frame->locals[0].values[0] = Value::Integer(12);
+        const auto revision = host.localRevisions.at("Actor"), begins = host.begins, commits = host.commits;
+        const auto result = Vm::AdvanceState(host,"Actor",10.0f);
+        Check(result.passed() && result.committed && host.begins == begins+1 && host.commits == commits+1 && host.rollbacks == 0,
+            "Landing poll callback opened another root transaction or failed its shared continuation");
+        if (mode == 0) Check(result.status == Vm::Status::Waiting && host.states.at("Actor").frame->codePath == "State.B" &&
+            host.states.at("Actor").frame->locals[0].values[0].integer == 29 && host.timers.at("Actor") == 4.0f &&
+            EffectTrace(host) == std::vector<std::string>{"effect:40","effect:2"},"LongFall replacement did not use live new code/locals or reused elapsed time for new Sleep");
+        else if (mode == 1) Check(result.status == Vm::Status::Waiting && host.states.at("Actor").frame->latent == StateLatent::Sleep &&
+            host.timers.at("Actor") == 7.0f && host.effects == 1,"LongFall callback's replacement Sleep was overwritten or repolled with old elapsed time");
+        else if (mode == 2) Check(result.status == Vm::Status::Waiting && host.states.at("Actor").frame->codePath == "State.A" &&
+            host.localRevisions.at("Actor") == revision+2 && host.states.at("Actor").frame->locals[0].values[0].integer == 0 &&
+            host.timers.at("Actor") == 6.0f && EffectTrace(host) == std::vector<std::string>{"effect:40","effect:3"},
+            "LongFall A->B->A reentry reused stale state locals/ordinal or repolled newly reached Sleep");
+        else if (mode == 3) Check(result.status == Vm::Status::Returned && !host.states.at("Actor").frame && host.timers.at("Actor") == -7.5f && host.effects == 1,
+            "LongFall-cleared frame resumed stale code or reset actor-owned timer");
+        else if (mode == 4) {
+            Check(result.status == Vm::Status::Waiting && host.physics.at("Actor") == 1 && host.states.at("Actor").frame->latent == StateLatent::WaitForLanding &&
+                host.timers.at("Actor") == -7.5f,"Poll reread Physics after callback and auto-cleared its still-installed landing wait");
+            host.Program("State.A",Join({landing,Native(800),{0x08}}),{local});
+            Check(Vm::AdvanceState(host,"Actor",10.0f).status == Vm::Status::Stopped && host.timers.at("Actor") == -7.5f,
+                "Next nonfalling poll altered the timer instead of only releasing landing");
+        } else {
+            Check(result.status == Vm::Status::Returned && host.deleted && host.states.at("Actor").frame->latent == StateLatent::WaitForLanding &&
+                host.timers.at("Actor") == -7.5f && host.effects == 1,"LongFall pending-kill callback still executed its retained next state statement");
+            Check(Vm::AdvanceState(host,"Actor",10.0f).passed() && host.timers.at("Actor") == -7.5f && host.effects == 1,
+                "Deleted actor's next poll decremented the timer or dispatched LongFall");
+        }
+    }
+}
+
+void LandingPollRollbackAndBudgets() {
+    Host host;host.physics["Actor"] = 2;
+    const Vm::Property count{"Class.Count","Count",Value::Integer(0),0,1};host.properties[20] = count;host.values[count.key] = Value::Integer(0);
+    const Vm::Property local{"State.A.Local","Local",Value::Integer(0),0,1};host.properties[33] = local;
+    host.Program("State.A",Join({Native(527),Let(Ref(0x01,20),Int(51)),Native(800),{0x08}}),{local});host.Install("State.A");
+    host.Program("State.B",Join({Let(Ref(0x00,33),Int(73)),Let(Ref(0x01,20),Int(61)),Native(800),Native(801),{0x08}}),{local});
+    host.Function("State.A.LongFall",Join({Let(Ref(0x01,20),Int(41)),Native(800),Native(113,{Ref(0x21,3)}),Return()}));
+    Check(Vm::ResumeState(host,"Actor").status == Vm::Status::Waiting,"Landing rollback setup did not yield");
+    host.states.at("Actor").disabled["A"].insert("Worker");
+    const auto state = host.states.at("Actor");const auto values = host.values;
+    const auto timers = host.timers;const auto physics = host.physics;
+    const auto revisions = host.localRevisions;const auto effects = host.effects;
+    const auto refusal = [&](const Vm::Limits& limits, Vm::Status expected, const std::string& description) {
+        const auto begins = host.begins, commits = host.commits, rollbacks = host.rollbacks;
+        const auto result = Vm::AdvanceState(host,"Actor",10.0f,limits);
+        Check(!result.passed() && !result.committed && result.status == expected && host.begins == begins+1 &&
+            host.commits == commits && host.rollbacks == rollbacks+1,description + " failed to roll back one polling root");
+        Check(SameState(host.states.at("Actor"),state) && host.values.size() == values.size() &&
+            host.values.at(count.key).integer == values.at(count.key).integer && host.timers == timers && host.physics == physics &&
+            host.localRevisions == revisions && host.effects == effects && !host.deleted,description + " retained callback/continuation timer, frame, local or native effects");++rejections;
+        return result;
+    };
+    const auto missing = refusal({},Vm::Status::Unsupported,"Failure in replacement continuation after LongFall");
+    Check(missing.function == "State.B" && missing.opcode == 0x63,"Landing rollback fixture failed before its actual unsupported replacement native");
+    host.functions["State.A.LongFall"].bytecode = Join({Let(Ref(0x01,20),Int(41)),Native(800),Native(801),Return()});
+    const auto callback = refusal({},Vm::Status::Unsupported,"Failure inside LongFall callback");
+    Check(callback.function == "State.A.LongFall","LongFall callback error lost its actual function diagnostic");
+    host.functions["State.A.LongFall"].bytecode = Join({Native(821),Let(Ref(0x01,20),Int(41)),Native(801),Return()});
+    refusal({},Vm::Status::Unsupported,"Failure after LongFall callback pending-kill mutation");
+    host.functions["State.A.LongFall"].bytecode = Join({Let(Ref(0x01,20),Int(41)),Native(800),Native(113,{Ref(0x21,3)}),Return()});
+    host.Program("State.B",Join({Let(Ref(0x00,33),Int(73)),Let(Ref(0x01,20),Int(61)),Native(800),{0x08}}),{local});
+    Vm::Limits writes;writes.writes = 1;refusal(writes,Vm::Status::Budget,"LongFall and replacement state shared write budget");
+    host.names[14] = "Deep";host.Function("Class.Deep",Join({Native(800),Return()}));
+    host.functions["State.A.LongFall"].bytecode = Join({Native(800),Call(14),Return()});
+    Vm::Limits depth;depth.callDepth = 1;refusal(depth,Vm::Status::Budget,"LongFall nested callback shared call depth");
+    host.functions["State.A.LongFall"].bytecode = Join({Let(Ref(0x01,20),Int(41)),Native(800),Native(113,{Ref(0x21,3)}),Return()});
+    const auto success = Vm::AdvanceState(host,"Actor",10.0f);
+    Check(success.passed() && success.status == Vm::Status::Stopped && host.values.at(count.key).integer == 61,
+        "Landing shared-budget fixture's unbounded continuation failed");
+    host.states["Actor"] = state;host.values = values;host.timers = timers;host.physics = physics;host.localRevisions = revisions;host.effects = effects;
+    Vm::Limits instructions;instructions.instructions = success.instructions-1u;
+    const auto budget = refusal(instructions,Vm::Status::Budget,"LongFall and replacement state shared instruction budget");
+    Check(budget.instructions == instructions.instructions,"Landing instruction budget was reset after its poll callback");
+}
+
+void OriginalLandingArithmetic() {
+    for (const auto seconds : {0.0f,-0.0f,-1.0f,std::numeric_limits<float>::denorm_min(),0.01f,0.1f,2.5f,100.0f}) {
+        for (const auto elapsed : {0.0f,0.001f,0.01f,0.1f,1.0f,2.5f,100.0f}) {
+            auto timer = seconds;const auto expected = double(seconds)-double(elapsed);
+            Check(QuestVr::PollActorLanding(timer,elapsed) == (expected < 0.0) && timer == float(expected),
+                "Original landing subtraction/storage or strict negative LongFall threshold changed");
+        }
+    }
+    auto timer = 2.5f;
+    Check(!QuestVr::PollActorLanding(timer,2.5f) && timer == 0.0f && !QuestVr::PollActorLanding(timer,0.0f),
+        "Landing equality or signed zero produced an early LongFall request");
+    Check(QuestVr::PollActorLanding(timer,0.25f) && timer == -0.25f && QuestVr::PollActorLanding(timer,0.0f) && timer == -0.25f,
+        "Landing helper reset its negative counter or suppressed repeated LongFall requests");
+    for (const auto invalid : {-1.0f,std::numeric_limits<float>::infinity(),std::numeric_limits<float>::quiet_NaN()}) {
+        timer = 2.5f;bool refused{};try {QuestVr::PollActorLanding(timer,invalid);}catch(const std::exception&){refused = true;}
+        Check(refused && timer == 2.5f,"Invalid landing elapsed changed the actor-owned counter");++rejections;
+    }
+    for (const auto invalid : {std::numeric_limits<float>::infinity(),-std::numeric_limits<float>::infinity(),std::numeric_limits<float>::quiet_NaN()}) {
+        timer = invalid;bool refused{};try {QuestVr::PollActorLanding(timer,0.1f);}catch(const std::exception&){refused = true;}
+        Check(refused && std::memcmp(&timer,&invalid,sizeof(float)) == 0,"Invalid stored landing counter was accepted or changed");++rejections;
+    }
+    timer = std::numeric_limits<float>::lowest();bool refused{};
+    try {QuestVr::PollActorLanding(timer,std::numeric_limits<float>::max());}catch(const std::exception&){refused = true;}
+    Check(refused && timer == std::numeric_limits<float>::lowest(),"Finite landing storage overflow committed an infinite counter");++rejections;
+}
+
 void OriginalSleepArithmetic() {
     for (const auto seconds : {0.0f,-0.0f,-1.0f,0.01f,0.1f,1.0f,1.5f,100.0f}) {
         for (const auto elapsed : {0.0f,0.001f,0.01f,0.1f,1.0f,2.0f,100.0f}) {
@@ -980,6 +1216,7 @@ int main() {
         StateSwitchSelection(); StateSwitchSelectorTransitions(); StateSwitchCaseTransitions();
         StateSwitchCallbackStopsAndClears(); StateSwitchFailureAndBudgets(); StateSwitchWithIterators();
         SleepContinuationAndPoll();SleepNestedReceiverAndDeclaration();OriginalSleepArithmetic();
+        LandingEntryAndPoll();LandingNestedReceiverAndDeclaration();LandingPollCallbackReentry();LandingPollRollbackAndBudgets();OriginalLandingArithmetic();
         std::cout << "PASS state execution checks=" << checks << " rejections=" << rejections << '\n';
         return 0;
     } catch (const std::exception& error) {

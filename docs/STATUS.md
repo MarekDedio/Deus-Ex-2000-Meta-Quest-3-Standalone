@@ -1,5 +1,50 @@
 # Port status
 
+## Original landing wait and positive authored probes (2026-10-10)
+
+- WaitForLanding527 always retains the original shared2.5s native counter;
+  only Falling installs poll528. Nonfalling polling releases without changing
+  that counter. Strict negative timeout dispatches actual LongFall within the
+  same interpreter/rollback boundary and respects callback frame replacement,
+  deletion, budgets and RNG. No physical falling/landing is fabricated.
+- The actual original LongFall commits286 instructions into FallingState's
+  Sleep at PC20 (0.7s, next28). The isolated original StartUp/inventory fixture
+  now reaches Standing's authored FRand()*14+8 Sleep at PC304 (next319), retaining
+  the two-object weapon/ammo graph. This is not automatic campaign startup.
+- Enable/Disable now require a real owned frame and one of the original64
+  probe names. LongFall/custom names are no-ops, including saved nonprobe
+  disable records. Original Serialize/IsProbing evidence corrects the inherited
+  backwards package mask: dormant frames use actual positive enabled bits,
+  independent of class-mask recomputation; frameless calls permit all probes.
+  Raw-frame negative overlays preserve real enables/disables. Full independent
+  selected-StateNode/running-Node/null-Code/live-mask transitions remain pending.
+- Codec8/envelope11 retain landing waits and their native timer without changing
+  old wire bytes. Typed preflight requires actual Pawn/timer evidence, including
+  null-code waits. Legacy counter reset, warm/cold continuation, invalid-state
+  rejection and complete transaction rollback are covered.
+- All49 ordinary host tests and all three separate original-data integrations
+  pass. State controls pass473 /58 rejections, save-codec6477 /5731,
+  dispatch63562 /20, generated lifecycle1353 /14 and original defaults998 checks.
+  The corrected actor suite explicitly disables AnimEnd, instead of relying on
+  the former inverted authored-mask interpretation.
+- The final corrected landing/probe APK was installed with app data preserved
+  and its on-device hash checked. A fresh final-build capture confirms Training
+  rendering with valid head tracking and automatic seated calibration. Its
+  upward view has no tracked controller grips and does not accept body alignment.
+  Training/UI/body frames were also captured on the earlier landing APK.
+  Automatic seated height reached1.650m and feet match the actual floor.
+  Hands/lower-body surfaces render, but original open hand/waist geometry and
+  UI edge fragments need original-artwork comparison. Idle Training reports72fps; screenshot
+  readback causes large spikes. These are scoped checks, not visual/performance
+  or campaign completion. See [QUEST-TEST-BUILD.md](QUEST-TEST-BUILD.md).
+- Production Quest still has no real GameInfo/world startup, player login/
+  possession or automatic actor Tick. Camera/custom gameplay containers are
+  not a running original campaign. Next integration: correct shared original
+  state identities/control, then staged map-wide bootstrap and actual player
+  ownership, before enabling world simulation. See
+  [WORLD-STARTUP-GAPS.md](WORLD-STARTUP-GAPS.md) and
+  [SCRIPT-LANDING.md](SCRIPT-LANDING.md).
+
 ## Original Sleep and explicit wait continuation (2026-10-10)
 
 - Native Sleep256 retains raw signed finite seconds in actor-owned native
@@ -19,8 +64,8 @@
   remain unchanged without timers. Cold wait/RNG restoration is covered.
 - Actual StartUp on the isolated generated weapon-slot fixture now commits
   original weapon/ammo initialization and its Sleep at PC6. Waking
-  reaches required WaitForLanding527 at DeusEx.ScriptedPawn.StartUp PC18,
-  opcode0x62; this next dependency is not stubbed as success.
+  reached required WaitForLanding527 at DeusEx.ScriptedPawn.StartUp PC18,
+  opcode0x62 in this earlier increment; the landing increment above implements it.
 - All49 ordinary host tests pass. State controls pass296 /40 rejections; save
   codec controls6467 /5731. All three separate original-data integrations pass,
   including the full actor suite's Sleep/cold restore and inventory wake rollback.
@@ -28,9 +73,9 @@
   `artifacts/sleep-state-20261010/`; see [SCRIPT-SLEEP.md](SCRIPT-SLEEP.md).
 - Automatic world/player startup, full original state/frame identity and tick
   ordering, physics/AI, campaign progression and device acceptance remain
-  unfinished. The accepted installed seated-player build remains unchanged;
-  this backend APK is archived but not installed. Next gate: WaitForLanding and
-  remaining original state-control distinctions, before enabling world scheduling.
+  unfinished. This backend APK was initially archived without installation,
+  then installed at the user's request and superseded by the landing APK above.
+  Remaining original state-control distinctions still precede world scheduling.
 
 ## Original script RNG and saved continuation (2026-10-10)
 

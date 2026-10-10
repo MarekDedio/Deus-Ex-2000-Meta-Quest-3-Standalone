@@ -406,7 +406,8 @@ public:
         const Function& fn = *prepared;
         result_.callStack.push_back(fn.path);
         result_.function = fn.path; result_.offset = 0; result_.opcode = 0;
-        if ((fn.flags & 0x8) && !((fn.flags & 0x400) && fn.nativeIndex == 256u))
+        if ((fn.flags & 0x8) && !((fn.flags & 0x400) &&
+            (fn.nativeIndex == 256u || fn.nativeIndex == 527u)))
             Fail(Status::Unsupported, "Latent VM function requires its runtime handler");
         if (incoming.size() > limits_.arguments) Fail(Status::Budget, "VM argument limit");
         for (const auto& argument : incoming) {
@@ -516,7 +517,9 @@ public:
             const auto latent = object->frame->latent;
             const auto localRevision = host_.StateLocalRevision(self);
             if (latent == StateLatent::Stop) { result_.status = Status::Stopped; return finish(); }
-            if (latent == StateLatent::Sleep) { result_.status = Status::Waiting; return finish(); }
+            if (latent == StateLatent::Sleep || latent == StateLatent::WaitForLanding) {
+                result_.status = Status::Waiting; return finish();
+            }
             if (latent != StateLatent::Continue)
                 Fail(Status::Unsupported, "State latent action requires its runtime handler");
             if (!active) {
@@ -601,7 +604,10 @@ public:
             if (!object || !object->frameOverride || !object->frame || object->frame->codePath.empty()) return finish();
             if (object->frame->latent != StateLatent::Continue) {
                 if (object->frame->latent == StateLatent::Stop) { result_.status = Status::Stopped; return finish(); }
-                if (object->frame->latent == StateLatent::Sleep) { result_.status = Status::Waiting; return finish(); }
+                if (object->frame->latent == StateLatent::Sleep ||
+                    object->frame->latent == StateLatent::WaitForLanding) {
+                    result_.status = Status::Waiting; return finish();
+                }
                 Fail(Status::Unsupported, "State latent action requires its runtime handler");
             }
         }

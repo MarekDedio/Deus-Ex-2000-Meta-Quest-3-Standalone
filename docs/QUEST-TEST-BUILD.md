@@ -1,6 +1,59 @@
 # Current Quest test-build handoff (2026-10-10)
 
-The latest **backend-only, not installed** original-Sleep APK is
+The latest **installed development APK** adds original landing waits,
+nonprobe event eligibility and the corrected positive authored probe masks:
+`artifacts/release-landing-probes-20261010/DeusExQuestVR-landing-probes-20261010.apk`.
+It is 18,681,297 bytes, SHA256
+`649B0B5AF1C18287F0A7D2A09AD389AE1D019DF7C675F99EAF9CF4AF3FFF317A`.
+Android ARM64 compilation and v2 signature verification pass. Its 16 ZIP entries
+contain no original commercial packages. Packaged data-probe is 5,635,696 bytes,
+SHA256 `3DCA4B6CA765A93887A0B51C9AC24D941DD8858FB1A46A3B6F1968B77434C5A8`;
+quest library is 5,122,392 bytes, SHA256
+`1B864FB1D9B097228D9165A0AF9F1A8AC2C8FE80B8830EDDE5C6BD865CD8DEED`.
+Original StartUp now reaches Standing Sleep304; real LongFall reaches
+FallingState Sleep20. This is not full startup, actor ticking or physical landing.
+See [SCRIPT-LANDING.md](SCRIPT-LANDING.md).
+The existing save codec8/envelope11 remains unchanged.
+
+At the user's request this exact APK was installed with `adb install -r` on
+Quest3 serial `2G0YC5ZG620985`, preserving app data. On-device `sha256sum` of
+`base.apk` matches the release hash above. Device-reported lastUpdateTime is
+`2026-10-10 20:31:32`; the local receipt is
+`artifacts/release-landing-probes-20261010/headset-install-receipt.log`.
+The app launched and a fresh in-app eye capture confirms Training rendering
+with valid head tracking. Automatic seated calibration reached 1.650 m; after
+head movement the capture records 1.751 m and feet at the actual -0.198 m floor.
+This upward view has no tracked controller grips and does not accept hand/body
+alignment. The final-build frame is
+`artifacts/landing-state-20261010/quest-landing-probes-final.bmp`.
+Idle windows report 72 fps / 13.89 ms worst; screenshot readback causes a
+291.65 ms worst-frame spike. These are scoped checks, not performance acceptance.
+All 49 ordinary host
+tests and all three separate original-data integrations pass on the corrected
+source, including the full actor suite. State controls pass 473 / 58 rejections,
+save-codec 6477 / 5731, dispatch 63562 / 20, generated lifecycle 1353 / 14 and
+original defaults/lifecycle 998 checks. The actor run is
+`artifacts/landing-state-20261010/original-actor-probes-verified.log`;
+the other final logs have `-probes-final` suffixes.
+
+Earlier this turn, the first landing APK
+`artifacts/release-landing-state-20261010/DeusExQuestVR-landing-state-20261010.apk`
+(SHA256 `A7D071DD238D806D655CB4F0D10BE1C9138ECF22A21A578A3256D05220BFD3FD`)
+was installed and Training rendered with valid head/controller tracking.
+The following visual measurements are from that earlier APK, not acceptance of
+the final corrected positive-probe APK:
+Automatic seated calibration reached1.650m; the downward capture records1.619m
+after real head movement and feet on the actual -0.198m Training floor.
+The inspected inventory capture has original page artwork and readable text,
+but edge fragments need comparison with the original authored page decoration.
+The downward capture shows textured
+hands and lower body, including hand/finger spikes and an open waist viewed from
+above; this is not complete character-model acceptance. Idle Training windows
+report72fps/13.89ms worst, while screenshot readback causes277–292ms spikes.
+No campaign, live-actor simulation or full performance acceptance is claimed.
+Captures and logs are under `artifacts/landing-state-20261010/`.
+
+The **previously installed** original-Sleep APK (source commit `f8abf2a`) is
 `artifacts/release-sleep-state-20261010/DeusExQuestVR-sleep-state-20261010.apk`:
 18,681,297 bytes, SHA-256
 `587EB515CF7C51D1DC458BEE04D6E42925FCA6CE1BEBC0FECC76E8432B31A941`.
@@ -14,8 +67,13 @@ It adds original Sleep256/StopWaiting0, explicit native wait polling, signed
 timer retention and codec8/checkpoint11 saved continuation. StartUp now yields
 at Sleep instead of refusing it; waking reaches unsupported WaitForLanding527
 at PC18. This is not complete startup, automatic actor ticking, live AI or
-new device acceptance. The installed, accepted seated-player APK remains
-unchanged. See [SCRIPT-SLEEP.md](SCRIPT-SLEEP.md).
+new device acceptance. At the user's request this APK was installed with
+`adb install -r` on Quest3 serial `2G0YC5ZG620985`, preserving app data.
+On-device `sha256sum` of `base.apk` matches the release hash above;
+`dumpsys package` reports `lastUpdateTime=2026-10-10 07:56:10`.
+This replaces the older physically accepted seated-player APK `586cb78`;
+no new headset tracking, visual or performance acceptance is claimed for `f8abf2a`.
+See [SCRIPT-SLEEP.md](SCRIPT-SLEEP.md).
 All49 ordinary host controls pass; state controls pass296 /40 rejections and
 save-codec controls6467 /5731. All three separate original-data integrations
 pass, including the full actor suite's Sleep/RNG cold restart and actual

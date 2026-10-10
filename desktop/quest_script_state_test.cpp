@@ -1198,6 +1198,47 @@ void SleepRoundtripAndLegacy() {
     std::reverse(mixed.objects.begin(),mixed.objects.end());
     Require(EncodeScriptSavedState(mixed) == bytes,"Native timers changed canonical actor ordering");
 }
+void LandingSharedTimerWire() {
+    // Independent codec8 fixture, including the pre-existing ordinal11. The
+    // codec is structural: original class/frame eligibility is runtime work.
+    Bytes literal{'D','X','Q','V','M','S',8u,0u};String(literal,"Map");U32(literal,1u);
+    String(literal,"Map.Pawn");String(literal,"Engine.Pawn");U32(literal,0u);
+    literal.insert(literal.end(),{0u,1u,1u,1u,1u}); // No clock; state/stack/override/frame.
+    String(literal,"");String(literal,"");U32(literal,23u);literal.push_back(11u);
+    U32(literal,0u);U32(literal,0u); // No locals or disabled names.
+    literal.insert(literal.end(),{0u,1u});U32(literal,0x40200000u); // No lifecycle; timer2.5.
+    U32(literal,0u);U32(literal,0u);U32(literal,0u);literal.push_back(0u); // No defaults/births/AI/RNG.
+    ScriptSavedState only{"Map",{{"Map.Pawn","Engine.Pawn",{},std::nullopt}}};
+    StateObject state;state.hasStack=true;state.frameOverride=true;state.frame=StateFrame{};
+    state.frame->statementIndex=23u;state.frame->latent=StateLatent::WaitForLanding;
+    only.objects[0].state=state;only.objects[0].latentTimeLeft=2.5f;
+    const auto decoded=DecodeScriptSavedState(literal);
+    Require(EncodeScriptSavedState(only)==literal && decoded.objects[0].state->frame->latent==StateLatent::WaitForLanding &&
+        decoded.objects[0].state->frame->statementIndex==23u && decoded.objects[0].latentTimeLeft==2.5f &&
+        !decoded.randomSeed && EncodeScriptSavedState(decoded)==literal,
+        "Original landing counter/frame changed existing codec8 literal or fabricated RNG");
+    for (const float timer : {0.0f,-0.0f,-1.0f,2.5f,std::numeric_limits<float>::max(),std::numeric_limits<float>::lowest()}) {
+        only.objects[0].latentTimeLeft=timer;const auto bytes=EncodeScriptSavedState(only);
+        const auto parsed=DecodeScriptSavedState(bytes);
+        Require(bytes[6]==8u && SameFloat(*parsed.objects[0].latentTimeLeft,timer) &&
+            parsed.objects[0].state->frame->latent==StateLatent::WaitForLanding && EncodeScriptSavedState(parsed)==bytes,
+            "Landing shared signed counter failed bit-exact codec8 restoration");
+    }
+    only.objects[0].latentTimeLeft.reset();
+    const auto old=EncodeScriptSavedState(only);
+    Require(old[6]==2u && !DecodeScriptSavedState(old).objects[0].latentTimeLeft &&
+        DecodeScriptSavedState(old).objects[0].state->frame->latent==StateLatent::WaitForLanding,
+        "Structural codec invented a timer or revised legacy ordinal11 wire");
+    only.objects[0].latentTimeLeft=2.5f;only.objects[0].latentTimeLeft.reset();
+    Require(EncodeScriptSavedState(only)==old,"Removing landing native counter changed old codec2 bytes");
+    auto mixed=BirthState();mixed.aiManagers={AiManager()};mixed.randomSeed=0u;
+    mixed.objects[0].latentTimeLeft=-0.25f;mixed.objects[0].state->frame->latent=StateLatent::WaitForLanding;
+    const auto bytes=EncodeScriptSavedState(mixed);const auto parsed=DecodeScriptSavedState(bytes);
+    const auto actor=std::find_if(parsed.objects.begin(),parsed.objects.end(),[&](const auto& object){return object.path==mixed.objects[0].path;});
+    Require(actor!=parsed.objects.end() && actor->state->frame->latent==StateLatent::WaitForLanding && actor->latentTimeLeft==-0.25f &&
+        actor->clock && actor->lifecycle && parsed.aiManagers.size()==1u && parsed.randomSeed==0u && EncodeScriptSavedState(parsed)==bytes,
+        "Mixed landing wait/clock/lifecycle/birth/AI/RNG lost existing codec8 sections");
+}
 void InvalidSleepStateAndBudgets() {
     const auto literal = SleepLiteral();
     for (std::size_t length = 0u;length < literal.size();++length) {
@@ -1248,7 +1289,7 @@ int main() {
         BirthRoundtripAndLegacy();MalformedBirths();InvalidBirthsAndBudgets();
         AiRoundtripAndLegacy();InvalidAiGraphs();AiBudgets();
         RandomRoundtripAndLegacy();InvalidRandomStateAndBudgets();
-        SleepRoundtripAndLegacy();InvalidSleepStateAndBudgets();
+        SleepRoundtripAndLegacy();LandingSharedTimerWire();InvalidSleepStateAndBudgets();
         std::cout<<"PASS script-state codec controls="<<checks<<" rejection controls="<<rejections
             <<"; codecs1–7 legacy bytes, codec8 actor-owned signed timer and optional RNG, structural codec only\n";return 0;
     }catch(const std::exception& error) {std::cerr<<"FAIL script-state codec: "<<error.what()<<" after "<<checks<<" controls\n";return 1;}

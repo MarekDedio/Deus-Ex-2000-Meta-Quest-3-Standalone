@@ -1,5 +1,6 @@
 #include "quest_script_dispatch.h"
 
+#include <array>
 #include <iostream>
 #include <limits>
 #include <stdexcept>
@@ -29,6 +30,8 @@ std::vector<Dispatch::Class> Classes() {
     return {base, derived};
 }
 void Eligibility() {
+    // Compatibility controls for callers without exact live-frame evidence.
+    // These authored-mask rules are not the original IsProbing contract.
     constexpr auto all = std::numeric_limits<std::uint64_t>::max();
     for (std::uint8_t index = 0u; index < 64u; ++index) {
         const auto bit = std::uint64_t{1} << index;
@@ -51,8 +54,8 @@ void Eligibility() {
     Require(Dispatch::EventProbeIndex("AnimEnd") == 24u && Dispatch::EventProbeIndex("Tick") == 36u &&
         Dispatch::EventProbeIndex("All") == 63u && !Dispatch::EventProbeIndex("PreBeginPlay") &&
         !Dispatch::EventProbeIndex("PostPostBeginPlay"), "Critical event bit mapping changed");
-    Require(Dispatch::IsEnabled("Custom", 0u, {}, {}) && !Dispatch::IsEnabled("Custom", all, {}, {"cUSTOM"}),
-        "Arbitrary name disabled gating changed");
+    Require(Dispatch::IsEnabled("Custom", 0u, {}, {}) && Dispatch::IsEnabled("Custom", all, {}, {"cUSTOM"}),
+        "Nonprobe Custom was suppressed by a legacy arbitrary disabled record");
     Require(Dispatch::FoldName("") == "none" && Dispatch::FoldName("NONE") == "none" &&
         Dispatch::FoldName(std::string(1u, char(0xe0))) == std::string(1u, char(0xe0)),
         "Name identity folding diverged from pinned ASCII-only table");
@@ -64,6 +67,118 @@ void Eligibility() {
                 (enabled && begun && (!deleted || enumDispatch)), "Destroyed exception belongs only to enum dispatch");
         }
     Reject([] { Dispatch::ProbeEventName(64u); }, "Probe mask overflow index accepted");
+}
+void OriginalPositiveLiveProbeMask() {
+    constexpr auto all = std::numeric_limits<std::uint64_t>::max();
+    // Independent fixed FName300..363 oracle. Do not derive the expected bit
+    // from EventProbeIndex/ProbeEventName: a mutually wrong production table
+    // must not silently pass a positive-mask test.
+    constexpr std::array<const char*,64> names{{
+        "Spawned","Destroyed","GainedChild","LostChild","Probe4","Probe5","Trigger","UnTrigger",
+        "Timer","HitWall","Falling","Landed","ZoneChange","Touch","UnTouch","Bump",
+        "BeginState","EndState","BaseChange","Attach","Detach","ActorEntered","ActorLeaving","KillCredit",
+        "AnimEnd","EndedRotation","InterpolateEnd","EncroachingOn","EncroachedBy","FootZoneChange","HeadZoneChange","PainTimer",
+        "SpeechTimer","MayFall","Probe34","Die","Tick","PlayerTick","Expired","Probe39",
+        "SeePlayer","EnemyNotVisible","HearNoise","UpdateEyeHeight","SeeMonster","SeeFriend","SpecialHandling","BotDesireability",
+        "Probe48","Probe49","Probe50","Probe51","Probe52","Probe53","Probe54","Probe55",
+        "Probe56","Probe57","Probe58","Probe59","Probe60","Probe61","Probe62","All"
+    }};
+    const std::array<std::optional<Dispatch::CodeMasks>,5> authored{{
+        {},Dispatch::CodeMasks{0u,0u},Dispatch::CodeMasks{0u,all},
+        Dispatch::CodeMasks{all,0u},Dispatch::CodeMasks{all,all}
+    }};
+    struct DisabledControl { std::set<std::string> names; bool blocks{}; };
+    for (std::size_t index=0u;index<names.size();++index) {
+        const std::uint64_t bit = std::uint64_t{1} << index;
+        const std::string name = names[index];
+        std::string upper=name,mixed=name;
+        for (char& character : upper)
+            if (character>='a' && character<='z') character=static_cast<char>(character-'a'+'A');
+        for (std::size_t character=0u;character<mixed.size();++character) {
+            auto& value=mixed[character];
+            if (character%2u==0u && value>='a' && value<='z') value=static_cast<char>(value-'a'+'A');
+            if (character%2u!=0u && value>='A' && value<='Z') value=static_cast<char>(value-'A'+'a');
+        }
+        Require(Dispatch::EventProbeIndex(name)==static_cast<std::uint8_t>(index) &&
+            Dispatch::ProbeEventName(static_cast<std::uint8_t>(index))==name,
+            "Original fixed probe name/positive bit oracle changed");
+        const std::array<std::uint64_t,6> liveMasks{{
+            0u,all,0xAAAAAAAAAAAAAAAAull,0x5555555555555555ull,bit,all^bit
+        }};
+        const std::array<DisabledControl,5> disabled{{
+            {{},false},
+            {{name},true},
+            {{upper},true},
+            {{mixed,"LongFall","Custom"},true},
+            {{names[(index+1u)%names.size()],"LongFall","Custom","None",""},false}
+        }};
+        for (const auto liveMask : liveMasks) for (const std::uint64_t classMask : {std::uint64_t{0},all})
+            for (const auto& code : authored) for (const auto& control : disabled) {
+                const bool expected=(liveMask&bit)!=0u && !control.blocks;
+                for (const auto& spelling : {name,upper,mixed}) {
+                    Require(Dispatch::IsEnabled(spelling,classMask,code,control.names,liveMask)==expected,
+                        "Exact positive live probe mask was inverted, recomputed from authored masks, or lost its disabled-name overlay");
+                }
+            }
+        // Original no-frame IsProbing is equivalent to the host supplying an
+        // all-one live mask. Zero authored masks/IgnoreMask must not suppress it.
+        Require(Dispatch::IsEnabled(name,0u,Dispatch::CodeMasks{0u,0u},{},all) &&
+            Dispatch::IsEnabled(name,0u,{}, {},all),
+            "Frameless all-one live eligibility incorrectly required authored class/state probe evidence");
+        Require(!Dispatch::IsEnabled(name,all,Dispatch::CodeMasks{all,all},{},std::uint64_t{0}),
+            "Present zero live mask was treated as absent optional evidence");
+        for (const std::uint64_t classMask : {std::uint64_t{0},all}) for (const auto& code : authored)
+            for (const auto& control : disabled) {
+                Require(Dispatch::IsEnabled(name,classMask,code,control.names,std::nullopt)==
+                    Dispatch::IsEnabled(name,classMask,code,control.names),
+                    "Absent live-mask evidence changed the retained abstract authored-mask compatibility model");
+            }
+    }
+    const std::array<std::uint64_t,7> nonprobeMasks{{
+        0u,all,0xAAAAAAAAAAAAAAAAull,0x5555555555555555ull,
+        std::uint64_t{1},std::uint64_t{1}<<63u,(std::uint64_t{1}<<36u)
+    }};
+    const std::set<std::string> arbitraryDisabled{
+        "LongFall","LONGFALL","PreBeginPlay","POSTPOSTBEGINPLAY","Custom","CUSTOM","None","NONE","","Tick","All"
+    };
+    for (const auto* name : {"LongFall","longfall","LONGFALL","PreBeginPlay","prebeginplay",
+        "PostPostBeginPlay","Custom","CUSTOM","None","NONE",""}) {
+        Require(!Dispatch::EventProbeIndex(name),"Nonprobe live-mask control unexpectedly mapped to a fixed probe");
+        for (const auto liveMask : nonprobeMasks) for (const std::uint64_t classMask : {std::uint64_t{0},all})
+            for (const auto& code : authored) {
+                Require(Dispatch::IsEnabled(name,classMask,code,arbitraryDisabled,liveMask),
+                    "Live positive mask or legacy disabled records suppressed a nonprobe function");
+            }
+    }
+}
+void NonprobeLegacyRecords() {
+    constexpr auto all = std::numeric_limits<std::uint64_t>::max();
+    const std::set<std::string> legacy{"LongFall","LONGFALL","preBEGINplay","PostPostBeginPlay","cUSTOM","None","NONE","","Tick","Unrelated"};
+    const std::vector<std::optional<Dispatch::CodeMasks>> masks{
+        {},Dispatch::CodeMasks{0u,0u},Dispatch::CodeMasks{0u,all},Dispatch::CodeMasks{all,0u},Dispatch::CodeMasks{all,all}};
+    for (const auto* name : {"LongFall","longfall","LONGFALL","lOnGfAlL","PreBeginPlay","prebeginplay","PREBEGINPLAY",
+        "PostPostBeginPlay","Custom","custom","cUSTOM","None","none","NONE","","Unrelated","unRELATED"}) {
+        Require(!Dispatch::EventProbeIndex(name),"Nonprobe event was accidentally inserted into the original 64-bit table");
+        for (const auto classMask : {std::uint64_t{0},all}) for (const auto& code : masks) {
+            for (const auto& disabled : std::vector<std::set<std::string>>{{},{name},{Dispatch::FoldName(name)},legacy}) {
+                Require(Dispatch::IsEnabled(name,classMask,code,disabled),
+                    "A class/state mask or legacy disabled-name record suppressed an original nonprobe name");
+            }
+        }
+    }
+    const std::set<std::string> nonprobes{"LongFall","PREBEGINPLAY","Custom","None","","Unrelated"};
+    for (std::uint8_t index = 0u;index < 64u;++index) {
+        const auto name = Dispatch::ProbeEventName(index), folded = Dispatch::FoldName(name);
+        Require(Dispatch::IsEnabled(name,all,Dispatch::CodeMasks{all,all},nonprobes),
+            "Legacy nonprobe records incorrectly disabled an unrelated original probe");
+        auto disabled = nonprobes;disabled.insert(folded);
+        Require(!Dispatch::IsEnabled(name,all,Dispatch::CodeMasks{all,all},disabled),
+            "Nonprobe correction bypassed a real dynamically disabled probe");
+        Require(!Dispatch::IsEnabled(name,0u,Dispatch::CodeMasks{0u,0u},nonprobes),
+            "Nonprobe correction bypassed original zero-mask probe eligibility");
+    }
+    Require(!Dispatch::MayCallEvent("LongFall",Dispatch::IsEnabled("LongFall",0u,Dispatch::CodeMasks{0u,0u},legacy),false,false,false) &&
+        !Dispatch::MayCallEvent("LongFall",true,true,true,false),"Nonprobe eligibility bypassed begun-play or pending-kill event gates");
 }
 void Lookup() {
     const Dispatch::Graph graph(Classes());
@@ -122,8 +237,8 @@ void Lookup() {
 } // namespace
 int main() {
     try {
-        Eligibility(); Lookup();
-        std::cout << "PASS pinned script callback gating/selection: " << checks << " checks, " << rejections << " rejection controls\n";
+        Eligibility(); OriginalPositiveLiveProbeMask(); NonprobeLegacyRecords(); Lookup();
+        std::cout << "PASS original live probe masks / compatible script callback selection: " << checks << " checks, " << rejections << " rejection controls\n";
         return 0;
     } catch (const std::exception& error) { std::cerr << "FAIL: " << error.what() << '\n'; return 1; }
 }

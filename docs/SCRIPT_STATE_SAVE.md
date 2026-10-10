@@ -15,8 +15,10 @@ nonbaseline initial seeds before the first draw. Legacy versions1–9 reset an
 absent stream to deterministic seed1, never current history; Quest supplies time
 once at runtime initialization. See [SCRIPT-RANDOM.md](SCRIPT-RANDOM.md).
 Version11 retains actor-owned signed native wait counters (codec8), including
-counters independent of a frame. Sleeping frames require counter evidence;
-legacy envelopes1–10 reset omitted counters. See [SCRIPT-SLEEP.md](SCRIPT-SLEEP.md).
+counters independent of a frame. Sleeping and landing-wait frames require counter
+evidence; landing waits additionally require a Pawn receiver. Legacy envelopes1–10
+reset omitted counters. See [SCRIPT-SLEEP.md](SCRIPT-SLEEP.md) and
+[SCRIPT-LANDING.md](SCRIPT-LANDING.md). Landing uses the same codec/version.
 None of these versions adds
 automatic NPC startup, AI processing, live animation, or a general UnrealScript savegame.
 Only the current map's supported authored and runtime-born actors are restored.

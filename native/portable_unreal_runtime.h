@@ -332,6 +332,10 @@ struct PortableActorDispatchContext {
     std::string codePath, stateName{"None"};
     std::uint64_t classProbeMask{};
     std::optional<QuestVr::ScriptDispatch::CodeMasks> codeMasks;
+    // Positive effective FStateFrame bits, independent of authored masks.
+    // No frame permits every probe. Portable transitioned frames still use
+    // the documented selected-code approximation until StateNode is separate.
+    std::optional<std::uint64_t> liveProbeMask;
     std::set<std::string> disabledNames;
 };
 struct PortableScriptDispatchSummary {

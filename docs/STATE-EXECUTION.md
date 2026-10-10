@@ -10,6 +10,11 @@ earlier unsupported-Sleep and latent-preserving Goto behavior described below.
 It adds committed Waiting, explicit polling and codec8/envelope11 native timers.
 It cancels waits on supported transitions/labels according to the original DLL;
 remaining missing-label/selected-StateNode approximations are stated there.
+The [original landing-wait increment](SCRIPT-LANDING.md) adds native527 and
+poll528 with dynamic LongFall, the same saved counter/version, and shared
+callback/continuation transactions. It also corrects original nonprobe
+Enable/Disable no-ops and legacy nonprobe eligibility. It does not enable physical landing or
+automatic state scheduling.
 
 The initial state-control contract follows the locally pinned SurrealEngine commit
 `677ee14c5b83486e6634687953779aafb7973ad6`, especially `VM/Frame.cpp`,
@@ -40,8 +45,15 @@ Only terminal top-level LabelTable entries are used, with first matching authore
 entry and validated statement-boundary targets. A transition-label miss sets
 Stop and retains PC; an in-code miss is a transactional failure.
 
-Enable (117) and Disable (118) maintain separate case-insensitive sets keyed by
-current state name, including None/class-backed dormant names. Sets survive
+Enable (117) and Disable (118) maintain case-insensitive recognized-probe sets
+keyed by current state name, including None/class-backed dormant names. Following
+the original Core audit, nonprobe calls and absent-frame calls now leave storage
+unchanged. Older arbitrary nonprobe records remain saved but cannot suppress
+functions. Dormant authored frames now use the exact positive serialized
+ProbeMask and frameless calls permit all probes, rather than inverting bits or
+recomputing eligibility from class masks. Raw-frame overlays preserve Enable
+and Disable mutations. Full independent transitioned-StateNode/live-ProbeMask
+storage remains unimplemented. Sets survive
 transitions. Restored names are folded before mutation. Callable resolution
 retains identity/native flags only; full typed function preparation follows
 caller argument evaluation and a fresh eligibility check, so an argument that
@@ -114,7 +126,7 @@ Save preparation validates original map actor/class ownership, state definitions
 within receiver ancestry, same-named code/local owner, typed local identities and
 dimensions, HasStack, supported latent states and PC. Continue admits ordinals up
 to code end; Stop retains stale PC. Current runtime restore supports Continue/Stop
-and Sleep with its native timer, not the other latent handlers, although the structural codec represents all twelve
+and Sleep/WaitForLanding with their shared native timer, not the other latent handlers, although the structural codec represents all twelve
 pinned latent ordinals. Load never reruns startup. Legacy v1-v3 restoration clears
 portable overrides as well as properties/clocks.
 

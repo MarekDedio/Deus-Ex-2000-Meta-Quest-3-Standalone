@@ -285,15 +285,25 @@ void Original(const std::filesystem::path& root) {
         {{"Engine.LevelInfo.bBegunPlay", "bBegunPlay", 0u, Value::Bool(false)},
          {"Engine.LevelInfo.NetMode", "NetMode", 0u, Value::Byte(0u)}}, {}});
     LoadGenerated(temporary, "DormantDestroyedBaseline", Envelope(baseline, begunPreconditions));
+    const auto authoredDestroyed = ReadPortableActorDispatchContext(actor);
+    const auto authoredDestroyedStack = ReadPortableActorSerializedStack(actor);
+    Require(authoredDestroyedStack && authoredDestroyed.liveProbeMask == authoredDestroyedStack->probeMask &&
+        QuestVr::ScriptDispatch::IsEnabled("Destroyed", authoredDestroyed.classProbeMask,
+            authoredDestroyed.codeMasks, authoredDestroyed.disabledNames, authoredDestroyed.liveProbeMask),
+        "Original positive authored Destroyed bit was inverted or recomputed from class masks");
+    const auto disable = ExecutePortableActorFunction(actor, "Disable", {{Value::Text(Kind::Name, "Destroyed"), {}}});
+    Require(disable.passed() && disable.committed,
+        "Actual owned-frame Disable118 failed to establish the explicit disabled Destroyed control");
     const auto beforeEnabled = ReadPortableActorDispatchContext(actor);
     Require(beforeEnabled.disabledNames.count("Destroyed") == 1u || beforeEnabled.disabledNames.count("destroyed") == 1u,
-        "Original stopped frame no longer has its authored disabled Destroyed probe");
+        "Explicit owned-frame Disable did not retain its negative Destroyed gate");
     Require(!QuestVr::ScriptDispatch::IsEnabled("Destroyed", beforeEnabled.classProbeMask,
-        beforeEnabled.codeMasks, beforeEnabled.disabledNames), "Original dormant Destroyed event unexpectedly starts enabled");
+        beforeEnabled.codeMasks, beforeEnabled.disabledNames, beforeEnabled.liveProbeMask),
+        "Actual Disable left the dormant Destroyed control enabled");
     const auto enable = ExecutePortableActorFunction(actor, "Enable", {{Value::Text(Kind::Name, "Destroyed"), {}}});
     const auto afterEnabled = ReadPortableActorDispatchContext(actor);
     Require(enable.passed() && enable.committed &&
-        QuestVr::ScriptDispatch::IsEnabled("Destroyed", afterEnabled.classProbeMask, afterEnabled.codeMasks, afterEnabled.disabledNames) &&
+        QuestVr::ScriptDispatch::IsEnabled("Destroyed", afterEnabled.classProbeMask, afterEnabled.codeMasks, afterEnabled.disabledNames, afterEnabled.liveProbeMask) &&
         afterEnabled.disabledNames.size() + 1u == beforeEnabled.disabledNames.size(),
         "Actual inherited Enable117 did not enable only the original Destroyed event probe");
     Require(ResolvePortableActorFunction(actor, afterEnabled.stateName, "Destroyed") ==

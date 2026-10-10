@@ -21,8 +21,14 @@ struct CodeMasks {
 std::string FoldName(const std::string& name);
 std::optional<std::uint8_t> EventProbeIndex(const std::string& eventName);
 std::string ProbeEventName(std::uint8_t index);
+// Only the original 64 FName300..363 probes use these masks/disabled records.
+// Nonprobe names are always enabled here, including legacy arbitrary disabled
+// entries. Actor lifecycle gates remain separate in MayCallEvent.
+// A supplied positive live mask takes precedence over authored class/code
+// masks, matching original IsProbing. Nullopt retains the detached mask model.
 bool IsEnabled(const std::string& eventName, std::uint64_t classProbeMask,
-    std::optional<CodeMasks> currentCode, const std::set<std::string>& disabledNames);
+    std::optional<CodeMasks> currentCode, const std::set<std::string>& disabledNames,
+    std::optional<std::uint64_t> liveProbeMask = std::nullopt);
 // Actor CallEvent gate, separate from Frame.Call's eligibility check. Only
 // enum dispatch grants Destroyed's post-deletion exception.
 bool MayCallEvent(const std::string& eventName, bool enabled,

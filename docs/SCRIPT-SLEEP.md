@@ -2,8 +2,13 @@
 
 This increment implements native Sleep256 and Pawn.StopWaiting (native0), an
 explicit native wait-poll API, and portable saved wait continuation. It is backend
-work. It does not install a new headset build, start the original world, tick all
+work. Its original development verification did not install a new headset build,
+start the original world, tick all
 actors, implement movement/AI, or establish a playable campaign.
+
+The subsequent [landing-wait increment](SCRIPT-LANDING.md) supersedes the
+unsupported527/startup-wake outcome below without changing codec8/envelope11.
+It also corrects nonprobe Enable/Disable eligibility using original Core evidence.
 
 ## Original executable oracle
 
@@ -144,5 +149,8 @@ and a test-executable file lock during a rebuild. These are not final failures.
 .\artifacts\prerequisites-20261009\build\portable_actor_script_test.exe 'D:\Steam\steamapps\common\Deus Ex' --sleep-only
 ```
 
-The accepted installed seated-player APK remains unchanged. The newly built
-backend APK is an archived development artifact, not a headset-tested replacement.
+The original verification archived this backend APK without replacing the accepted
+seated-player build. Subsequently the user explicitly requested installation:
+`f8abf2a` was installed on2026-10-10, preserving app data, and the on-device APK
+hash was verified against the release. It is not newly headset-accepted; see
+[QUEST-TEST-BUILD.md](QUEST-TEST-BUILD.md) for the current installed build.

@@ -68,9 +68,20 @@ std::string ProbeEventName(const std::uint8_t index) {
     return probes[index];
 }
 bool IsEnabled(const std::string& name, const std::uint64_t classMask,
-    const std::optional<CodeMasks> code, const std::set<std::string>& disabled) {
-    if (const auto index = EventProbeIndex(name)) {
-        const auto bit = std::uint64_t{1} << *index;
+    const std::optional<CodeMasks> code, const std::set<std::string>& disabled,
+    const std::optional<std::uint64_t> liveMask) {
+    const auto index = EventProbeIndex(name);
+    // Original Core ProcessEvent/Enable/Disable use only FName300..363.
+    // Legacy saves may retain arbitrary disabled names; they cannot suppress
+    // a nonprobe event such as LongFall and must not become a new gate.
+    if (!index) return true;
+    const auto bit = std::uint64_t{1} << *index;
+    if (liveMask) {
+        // Original IsProbing tests the live positive bit, not a fresh
+        // class/state-mask expression. The optional fallback remains for
+        // detached authored-mask callers, not original FStateFrame proof.
+        if (!(*liveMask & bit)) return false;
+    } else {
         if (code && !(code->ignoreMask & bit)) return false;
         if (!((code ? code->probeMask : 0u) & bit) && !(classMask & bit)) return false;
     }

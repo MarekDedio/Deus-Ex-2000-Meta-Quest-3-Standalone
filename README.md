@@ -53,8 +53,10 @@ codec7/checkpoint10 saves, including saving before the first draw.
 The [original actor Sleep continuation](docs/SCRIPT-SLEEP.md) now commits actual
 Sleep256 waits, polls them explicitly, preserves signed native timers and
 StopWaiting behavior, and retains waits in codec8/checkpoint11 saves.
-Explicit StartUp can now yield at its original Sleep; later startup dependencies
-are still refused transactionally.
+The [original landing wait](docs/SCRIPT-LANDING.md) adds WaitForLanding527,
+falling-only poll528 and dynamic LongFall using that same saved native counter.
+Explicit StartUp can yield at its original Sleep and continue through landing;
+remaining startup dependencies are still refused transactionally.
 This is isolated backend progress, not automatic world startup or live NPC AI.
 The [installed Quest test build](docs/QUEST-TEST-BUILD.md) remains frozen while
 the user tests it. Subsequent offline source work retains

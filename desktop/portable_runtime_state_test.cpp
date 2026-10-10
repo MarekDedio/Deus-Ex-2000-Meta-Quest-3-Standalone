@@ -550,23 +550,48 @@ void TestOriginalRollback(const std::filesystem::path& suppliedGameRoot) {
             "readonly validation, full restore, and legacy authored reset passed.\n";
     }
 
-    // A separately verified v5 control changes only the actual actor's disabled Name set.
+    // A separately verified v5 control changes only an actual fixed probe's disabled Name set.
     // Keep the v3/v4 controls above strict: a state-only mutation must not be
     // mistaken for a property overlay, native clock, or fabricated live frame.
     {
-        constexpr const char* eventName = "QuestSaveStateProbe";
+        constexpr const char* eventName = "Tick";
         const auto contextFields = [](const PortableActorDispatchContext& context) {
             const auto masks = context.codeMasks.value_or(QuestVr::ScriptDispatch::CodeMasks{});
             return std::make_tuple(context.codePath, context.stateName, context.classProbeMask,
-                context.codeMasks.has_value(), masks.probeMask, masks.ignoreMask, context.disabledNames);
+                context.codeMasks.has_value(), masks.probeMask, masks.ignoreMask, context.disabledNames, context.liveProbeMask);
         };
         const auto enabled = [&](const PortableActorDispatchContext& context) {
             return QuestVr::ScriptDispatch::IsEnabled(eventName, context.classProbeMask,
-                context.codeMasks, context.disabledNames);
+                context.codeMasks, context.disabledNames, context.liveProbeMask);
         };
         const auto authoredContext = ReadPortableActorDispatchContext(pawn);
-        Require(enabled(authoredContext) && !ReadPortableActorStateObject(pawn),
-            "Training pawn does not have an untouched enabled Name for the state-only control");
+        Require(ReadPortableActorSerializedStack(pawn).has_value() && enabled(authoredContext) &&
+            !ReadPortableActorStateObject(pawn) && !GetPortableRuntimeScriptStatePresent(),
+            "Training pawn does not have an actual authored stack and untouched enabled Tick for the state-only control");
+        // The old fixture used QuestSaveStateProbe as if any Name could be
+        // disabled. Original natives117/118 mutate only probes300..363; that
+        // nonprobe must remain a no-op, including no fabricated portable frame.
+        const auto nonprobeCheckpoint=directory.path/"nonprobe-noop.runtime.tmp";
+        std::vector<std::uint8_t> nonprobeBaseline;
+        Require(SavePortableRuntimeState(nonprobeCheckpoint.string()) &&
+            QuestVr::ReadBoundedSaveFile(nonprobeCheckpoint.string(),QuestVr::kMaximumSaveRuntimeBytes,nonprobeBaseline),
+            "Original nonprobe no-op baseline could not be saved");
+        const auto nonprobeRevision=GetPortableRuntimeWorldRevision();
+        for (const auto* operation:{"Disable","Enable"}) {
+            const auto noOp=ExecutePortableActorFunction(pawn,operation,{
+                {QuestVr::Vm::Value::Text(QuestVr::Vm::Kind::Name,"QuestSaveStateProbe"),{}}});
+            Require(noOp.passed() && noOp.value.kind==QuestVr::Vm::Kind::Nothing &&
+                GetPortableRuntimeWorldRevision()==nonprobeRevision && !ReadPortableActorStateObject(pawn) &&
+                !GetPortableRuntimeScriptStatePresent() &&
+                contextFields(ReadPortableActorDispatchContext(pawn))==contextFields(authoredContext),
+                "Original nonprobe Enable/Disable mutated dispatch state or fabricated a portable frame");
+            RequireSameLiveState(expected);
+            std::vector<std::uint8_t> nonprobeAfter;
+            Require(SavePortableRuntimeState(nonprobeCheckpoint.string()) &&
+                QuestVr::ReadBoundedSaveFile(nonprobeCheckpoint.string(),QuestVr::kMaximumSaveRuntimeBytes,nonprobeAfter) &&
+                nonprobeAfter==nonprobeBaseline && ReadGeneratedCheckpoint(nonprobeCheckpoint)==saved,
+                "Original nonprobe Enable/Disable changed complete runtime bytes or gameplay/progress");
+        }
         const auto disabled = ExecutePortableActorFunction(pawn, "Disable", {
             {QuestVr::Vm::Value::Text(QuestVr::Vm::Kind::Name, eventName), {}}});
         const auto savedContext = ReadPortableActorDispatchContext(pawn);
@@ -639,7 +664,7 @@ void TestOriginalRollback(const std::filesystem::path& suppliedGameRoot) {
             nextStatePublish.saved && nextStatePublish.generation == 2u,
             "Paired v3/v5 state-only generation publication failed");
         const auto changed = ExecutePortableActorFunction(pawn, "Enable", {
-            {QuestVr::Vm::Value::Text(QuestVr::Vm::Kind::Name, eventName), {}}});
+            {QuestVr::Vm::Value::Text(QuestVr::Vm::Kind::Name, "TICK"), {}}});
         Require(changed.passed() && enabled(ReadPortableActorDispatchContext(pawn)) &&
             DamagePortableRuntimePlayer(5.0f) == expected.health - 5.0f &&
             ApplyPortableDialogueEffects(EffectFixture("state_after_save", 4, false)).applied == 5u,

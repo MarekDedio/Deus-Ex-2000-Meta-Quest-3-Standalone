@@ -345,10 +345,24 @@ void SetSavedProperty(QuestVr::ScriptSavedObject& object, const std::string& nam
     if (found == object.properties.end()) object.properties.push_back({key, name, slot, std::move(value)});
     else found->value = std::move(value);
 }
-void LoadScript(const Fixture& fixture, const Bytes& prefix, const QuestVr::ScriptSavedState& script, const std::string& label) {
-    const auto path = fixture.directory / (label + ".sav"); WriteBytes(path, Envelope(prefix, script));
+void LoadScript(const Fixture& fixture, const Bytes& prefix, const QuestVr::ScriptSavedState& script, const std::string& label,
+    std::uint32_t version = 7u) {
+    const auto path = fixture.directory / (label + ".sav"); WriteBytes(path, Envelope(prefix, script, version));
     Require(ValidatePortableRuntimeState(path.string(), "LifecycleFixture"), "Generated lifecycle payload did not validate: " + label);
     Require(LoadPortableRuntimeState(path.string()), "Generated lifecycle payload did not load: " + label);
+}
+void OwnNullCodeFrame(const Fixture& fixture, const std::string& actor) {
+    Require(!ReadPortableActorSerializedStack(Path(actor)), "Generated frameless actor unexpectedly has an authored stack");
+    QuestVr::ScriptSavedState script; script.mapName = "LifecycleFixture";
+    QuestVr::ScriptSavedObject object; object.path = Path(actor); object.classPath = "LifecycleClasses.Probe";
+    object.state.emplace(); object.state->hasStack = true; object.state->frameOverride = true;
+    object.state->frame.emplace(); // A real owned null-code frame, not invented state bytecode.
+    script.objects.push_back(std::move(object));
+    LoadScript(fixture, fixture.legacy, script, "OwnedNullCodeFrame" + actor, 5u);
+    const auto state = ReadPortableActorStateObject(Path(actor));
+    Require(state && state->hasStack && state->frameOverride && state->frame && state->frame->codePath.empty() &&
+        state->frame->localsCodePath.empty() && state->frame->locals.empty(), "Typed checkpoint did not establish the requested owned null-code frame");
+    Require(!ReadPortableActorSerializedStack(Path(actor)), "Owned portable frame altered immutable authored stack metadata");
 }
 void RefusedScript(const Fixture& fixture, const Bytes& prefix, QuestVr::ScriptSavedState script, const std::string& label) {
     const auto before = fixture.Snapshot("BeforeBadCheckpoint");
@@ -547,9 +561,23 @@ void OwnerTests(Fixture& fixture) {
     fixture.Reset(); Call("Child", "SetBegun", {Boolean(false)}); Call("Child", "Own", {Object("ParentA")});
     Require(Count("ParentA", "Gained") == 0, "SetOwner sent a callback before Level.bBegunPlay");
     HasObject("Child", "Owner", "ParentA", "Before-BeginPlay SetOwner failed to perform actual native mutation");
-    fixture.Reset(); Call("ParentA", "DisableEvent", {Name("GainedChild")}); Call("Child", "Own", {Object("ParentA")});
+    fixture.Reset();
+    Require(!ReadPortableActorStateObject(Path("ParentA")), "Generated parent unexpectedly owns a state frame before Disable");
+    const auto frameless = fixture.Snapshot("FramelessOwnerBeforeDisable"); const auto framelessRevision = GetPortableRuntimeWorldRevision();
+    Call("ParentA", "DisableEvent", {Name("GainedChild")}); Call("ParentA", "EnableEvent", {Name("GainedChild")});
+    Require(fixture.Snapshot("FramelessOwnerAfterProbeNoops") == frameless && GetPortableRuntimeWorldRevision() == framelessRevision &&
+        !ReadPortableActorStateObject(Path("ParentA")), "Recognized probe Enable/Disable fabricated a frame or state on a frameless receiver");
+    Call("ParentA", "DisableEvent", {Name("GainedChild")}); Call("Child", "Own", {Object("ParentA")});
+    Require(Count("ParentA", "Gained") == 1 && Life(Decode(fixture.Snapshot("FramelessOwnerCallback")), "ParentA").children.size() == 1u &&
+        !ReadPortableActorStateObject(Path("ParentA")), "Frameless recognized-probe Disable suppressed the actual owner relation/callback");
+    fixture.Reset(); OwnNullCodeFrame(fixture, "ParentA"); Call("ParentA", "DisableEvent", {Name("gAiNeDcHiLd")});
+    Require(ReadPortableActorDispatchContext(Path("ParentA")).disabledNames.contains("gainedchild"), "Owned-frame Disable did not retain its actual probe bit gate");
+    Call("Child", "Own", {Object("ParentA")});
     Require(Count("ParentA", "Gained") == 0 && Life(Decode(fixture.Snapshot("OwnerDisabled")), "ParentA").children.size() == 1u,
         "Disabled GainedChild suppressed the owner relation itself or ignored event eligibility");
+    Call("ParentA", "EnableEvent", {Name("GAINEDCHILD")}); Call("Child", "Own", {Object("ParentA")});
+    Require(Count("ParentA", "Gained") == 1 && !ReadPortableActorDispatchContext(Path("ParentA")).disabledNames.contains("gainedchild"),
+        "Owned-frame Enable failed to restore the recognized GainedChild callback");
     fixture.Reset();
 }
 
@@ -725,7 +753,15 @@ void DestroyTests(Fixture& fixture) {
     Require(QuestVr::Vm::ToBool(Call("Victim", "Die").value), "Destroy with unsent Touching relation failed");
     HasObject("Peer", "Touching", "", "Destroy failed to clear unsent peer Touching slot", 2u);
     Require(Count("Peer", "Untouched") == 0, "Destroy invented UnTouch callback for a tagged/unsent Touching relation");
-    fixture.Reset(); Call("Victim", "DisableEvent", {Name("Destroyed")}); Require(QuestVr::Vm::ToBool(Call("Victim", "Die").value), "Disabled Destroyed prevented native Destroy");
+    fixture.Reset(); const auto frameless = fixture.Snapshot("FramelessVictimBeforeDisable"); const auto framelessRevision = GetPortableRuntimeWorldRevision();
+    Call("Victim", "DisableEvent", {Name("Destroyed")});
+    Require(fixture.Snapshot("FramelessVictimAfterDisable") == frameless && GetPortableRuntimeWorldRevision() == framelessRevision &&
+        !ReadPortableActorStateObject(Path("Victim")), "Frameless Destroyed Disable created an owned frame or disabled probe state");
+    Require(QuestVr::Vm::ToBool(Call("Victim", "Die").value) && Count("Victim", "DestroyedCalls") == 1 && !Published("Victim"),
+        "Frameless recognized-probe Disable suppressed native destruction or its actual Destroyed callback");
+    fixture.Reset(); OwnNullCodeFrame(fixture, "Victim"); Call("Victim", "DisableEvent", {Name("Destroyed")});
+    Require(ReadPortableActorDispatchContext(Path("Victim")).disabledNames.contains("destroyed"), "Owned-frame Destroyed Disable did not retain its probe gate");
+    Require(QuestVr::Vm::ToBool(Call("Victim", "Die").value), "Disabled Destroyed prevented native Destroy");
     Require(Count("Victim", "DestroyedCalls") == 0 && !Published("Victim"), "Destroy ignored disabled event mask or suppressed world removal");
     fixture.Reset(); Call("Victim", "SetBegun", {Boolean(false)}); Require(QuestVr::Vm::ToBool(Call("Victim", "Die").value), "Before-BeginPlay Destroy did not perform native destruction");
     Require(Count("Victim", "DestroyedCalls") == 0 && !Published("Victim"), "Before-BeginPlay Destroy emitted callback or retained world publication");
