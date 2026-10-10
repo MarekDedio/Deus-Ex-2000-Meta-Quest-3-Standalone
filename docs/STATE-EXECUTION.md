@@ -5,7 +5,13 @@ GotoState/Enable/Disable, and runtime-v5 state-frame persistence. This is offlin
 source work, not automatic level startup, working NPC AI, a campaign playthrough,
 or a replacement for the installed, accepted seated-player Quest test APK.
 
-The contract follows the locally pinned SurrealEngine commit
+The original [Sleep continuation increment](SCRIPT-SLEEP.md) supersedes the
+earlier unsupported-Sleep and latent-preserving Goto behavior described below.
+It adds committed Waiting, explicit polling and codec8/envelope11 native timers.
+It cancels waits on supported transitions/labels according to the original DLL;
+remaining missing-label/selected-StateNode approximations are stated there.
+
+The initial state-control contract follows the locally pinned SurrealEngine commit
 `677ee14c5b83486e6634687953779aafb7973ad6`, especially `VM/Frame.cpp`,
 `Packages/Core/UObject.cpp`, and `Native/NObject.cpp`. It is not verification against
 the closed-source original engine DLL.
@@ -24,8 +30,9 @@ The pinned outer transition still replaces state after a reentrant EndState;
 a reentrant BeginState selection remains in effect. No generation-abort policy
 is substituted for that behavior. Same-code relabeling does not call entry or
 exit callbacks. SetState replaces local storage only when the captured old code
-differs; it does not reset the PC or latent status. Selecting no state clears
-code/local storage while retaining that position/status and the HasStack flag.
+differs; it does not reset the PC. Supported state changes now clear latent
+status before callbacks. Selecting no state clears code/local storage while
+retaining PC, the native actor timer and the HasStack flag.
 
 Transition-label lookup starts from receiver-derived same-named states and walks
 parent classes. An in-code goto tries current code first, then that hierarchy.
@@ -106,8 +113,8 @@ remain unsupported.
 Save preparation validates original map actor/class ownership, state definitions
 within receiver ancestry, same-named code/local owner, typed local identities and
 dimensions, HasStack, supported latent states and PC. Continue admits ordinals up
-to code end; Stop retains stale PC. Current runtime restore supports Continue/Stop,
-not the other latent handlers, although the structural codec represents all twelve
+to code end; Stop retains stale PC. Current runtime restore supports Continue/Stop
+and Sleep with its native timer, not the other latent handlers, although the structural codec represents all twelve
 pinned latent ordinals. Load never reruns startup. Legacy v1-v3 restoration clears
 portable overrides as well as properties/clocks.
 
@@ -169,7 +176,8 @@ are gated; that is not evidence that world startup or an NPC initialization ran.
 The actual begun-play StartUp entry and executable state slice still reach missing
 required behavior and must refuse atomically.
 
-Full level-wide startup, latent Sleep/FinishAnim/movement handlers, AI/physics
+Full level-wide startup, remaining FinishAnim/movement handlers, world Sleep
+scheduling, AI/physics
 natives, remaining iterators/timers/actor behavior, live animation/event boundaries,
 per-map archives and campaign progression remain unfinished. Current-map state
 presence still guards travel/unload, even after saving. Engine-global

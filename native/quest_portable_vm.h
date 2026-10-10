@@ -184,6 +184,11 @@ public:
     virtual void GotoStateLabel(const std::string&, const std::string&, bool) {
         throw std::runtime_error("VM state label control unavailable");
     }
+    // Actor.ProcessState's native poll, not a full Actor.Tick. False means
+    // no executable/eligible actor frame; do not manufacture a continuation.
+    virtual bool PollState(const std::string&, float, Execution&) {
+        throw std::runtime_error("VM native state polling unavailable");
+    }
 };
 // Structural, read-only inspection of normalized bytecode, not execution
 // feasibility or a state continuation. Only a terminal top-level LabelTable
@@ -192,7 +197,7 @@ public:
 // be immediately followed by a Case. Cyclic links are bounded at execution.
 // May call ResolveName/ResolveObject, never transaction/effect/function lookup.
 ProgramLayout AnalyzeProgram(Host& host, const Function& function, const Limits& limits = {});
-enum class Status { Returned, Stopped, Unsupported, Invalid, Budget };
+enum class Status { Returned, Stopped, Unsupported, Invalid, Budget, Waiting };
 struct Result {
     Status status{Status::Invalid};
     Value value;
@@ -203,11 +208,16 @@ struct Result {
     std::vector<std::string> callStack;
     std::string error;
     bool committed{};
-    bool passed() const { return status == Status::Returned || (status == Status::Stopped && committed); }
+    bool passed() const { return status == Status::Returned ||
+        ((status == Status::Stopped || status == Status::Waiting) && committed); }
 };
 Result Execute(Host& host, const Function& function, const std::string& self,
     const std::vector<Evaluation>& arguments = {}, const Limits& limits = {});
-// Executes one persistent state slice. Unsupported waits fail explicitly; no
+// Executes one persistent state slice. Sleep yields Waiting without advancing
+// elapsed time; other unsupported waits still fail explicitly. No
 // actor tick, elapsed-time advance or world startup is implied by this call.
 Result ResumeState(Host& host, const std::string& self, const Limits& limits = {});
+// Poll + resume share one transaction/interpreter budget. This is the explicit
+// Actor.ProcessState phase, not animation, Tick events, physics or timers.
+Result AdvanceState(Host& host, const std::string& self, float elapsed, const Limits& limits = {});
 } // namespace QuestVr::Vm

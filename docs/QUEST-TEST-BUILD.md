@@ -1,6 +1,28 @@
 # Current Quest test-build handoff (2026-10-10)
 
-The latest **backend-only, not installed** original-RNG APK is
+The latest **backend-only, not installed** original-Sleep APK is
+`artifacts/release-sleep-state-20261010/DeusExQuestVR-sleep-state-20261010.apk`:
+18,681,297 bytes, SHA-256
+`587EB515CF7C51D1DC458BEE04D6E42925FCA6CE1BEBC0FECC76E8432B31A941`.
+Android ARM64 compilation and APK Signature Scheme v2 verification pass. Its
+16 ZIP entries contain no commercial game packages. Packaged data-probe:
+5,622,808 bytes, SHA-256
+`A4D4BA670CCEDD6CD3C9270C2A7FF003299A98CF38D37277506CD7470801A548`;
+quest library:5,122,392 bytes, SHA-256
+`DB88F4D811D3D7B288D8B4EDD44A84F71D5838E587C3B67F0DEB9EDACC0D8789`.
+It adds original Sleep256/StopWaiting0, explicit native wait polling, signed
+timer retention and codec8/checkpoint11 saved continuation. StartUp now yields
+at Sleep instead of refusing it; waking reaches unsupported WaitForLanding527
+at PC18. This is not complete startup, automatic actor ticking, live AI or
+new device acceptance. The installed, accepted seated-player APK remains
+unchanged. See [SCRIPT-SLEEP.md](SCRIPT-SLEEP.md).
+All49 ordinary host controls pass; state controls pass296 /40 rejections and
+save-codec controls6467 /5731. All three separate original-data integrations
+pass, including the full actor suite's Sleep/RNG cold restart and actual
+StartUp inventory/wake rollback. This coverage uses isolated generated inventory
+slots where needed, not a claim that Doctor1 has authored weapon inventory.
+
+The preceding **backend-only, not installed** original-RNG APK is
 `artifacts/release-random-state-20261010/DeusExQuestVR-random-state-20261010.apk`:
 18,681,297 bytes, SHA-256
 `3DA281F523885D6AE25D9BCF14682527B78080EE573EF461E9381816D49293E1`.
@@ -12,7 +34,8 @@ quest library:5,122,392 bytes, SHA-256
 `F15E9D185D91E79C47C81E82031D4E4C69DF709CD85DBAB0239BA221AF43748B`.
 It adds original Rand/FRand, actual scripted RandRange/Bird branches and codec7 /
 checkpoint10 continuation, including pre-first-draw saves and global map carry.
-Explicit StartUp now refuses unsupported Sleep256 at PC6 with full rollback.
+In that batch StartUp refused unsupported Sleep256 at PC6 with full rollback;
+the subsequent original-Sleep increment above implements it.
 This is not automatic startup, live NPC AI or new device acceptance. The installed,
 physically accepted seated-player APK remains unchanged. See
 [SCRIPT-RANDOM.md](SCRIPT-RANDOM.md).

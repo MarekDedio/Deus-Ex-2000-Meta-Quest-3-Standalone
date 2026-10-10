@@ -1,8 +1,12 @@
 #include "quest_portable_vm.h"
 #include "quest_state_frame.h"
+#include "quest_actor_latent.h"
 
 #include <algorithm>
 #include <cstdint>
+#include <cmath>
+#include <cstring>
+#include <limits>
 #include <iostream>
 #include <map>
 #include <set>
@@ -32,6 +36,7 @@ Bytes Join(std::initializer_list<Bytes> parts) {
 }
 Bytes Ref(std::uint8_t op, std::uint32_t index) { Bytes result{op}; Dword(result, index); return result; }
 Bytes Int(std::int32_t value) { return Ref(0x1d, static_cast<std::uint32_t>(value)); }
+Bytes Float(float value) { std::uint32_t bits{}; std::memcpy(&bits,&value,4u); return Ref(0x1e,bits); }
 Bytes Return(Bytes expression = {0x0b}) { return Join({{0x04}, expression}); }
 Bytes Let(Bytes lhs, Bytes rhs) { return Join({{0x0f}, lhs, rhs}); }
 Bytes Call(std::uint32_t name, std::initializer_list<Bytes> args = {}) {
@@ -90,18 +95,20 @@ struct Host final : Vm::Host {
         {6,"Worker"},{7,"AnimEnd"},{8,"ParentOnly"},{9,"Missing"},{10,"ContinueHere"},{12,"Probe"}};
     std::map<std::string, std::vector<std::string>> labelChain;
     std::map<std::string, Value> values, savedValues;
+    std::map<std::string,float> timers, savedTimers;
     std::vector<std::string> trace;
-    bool active{}, begun{true}, deleted{}, badPreparedIdentity{};
+    bool active{}, begun{true}, deleted{}, badPreparedIdentity{}, pollEligible{true};
+    std::size_t polls{};
     std::size_t begins{}, commits{}, rollbacks{}, preparations{}, mutableReads{}, effects{}, savedEffects{};
     std::size_t stateReads{};
     std::size_t iteratorCreates{}, iteratorDestroys{}, iteratorSteps{};
     void Begin() override {
         if (active) throw std::runtime_error("nested transaction");
-        savedStates = states; savedLocalRevisions = localRevisions; savedValues = values; savedEffects = effects; active = true; ++begins;
+        savedStates = states; savedLocalRevisions = localRevisions; savedValues = values; savedTimers = timers; savedEffects = effects; active = true; ++begins;
     }
     void Commit() override { Check(active,"commit outside transaction"); active = false; ++commits; }
     void Rollback() noexcept override {
-        states.swap(savedStates); localRevisions.swap(savedLocalRevisions); values.swap(savedValues); effects = savedEffects; active = false; ++rollbacks;
+        states.swap(savedStates); localRevisions.swap(savedLocalRevisions); values.swap(savedValues); timers.swap(savedTimers); effects = savedEffects; active = false; ++rollbacks;
     }
     std::string StateName(const std::string& self) const {
         const auto found = states.find(self);
@@ -157,6 +164,20 @@ struct Host final : Vm::Host {
         if (!active) throw std::runtime_error("state mutation outside transaction");
         ++mutableReads; return &states.at(self);
     }
+    bool PollState(const std::string& self, float elapsed, Vm::Execution&) override {
+        ++polls;
+        const auto found = states.find(self);
+        if (!pollEligible || found == states.end() || !found->second.frame || found->second.frame->codePath.empty()) return false;
+        auto& frame = *found->second.frame;
+        if (frame.latent == StateLatent::Sleep) {
+            // Independent original x87 oracle: comparison uses the unrounded
+            // difference, although the actor stores a binary32 remainder.
+            const double next = double(timers.at(self))-double(elapsed);
+            timers.at(self) = float(next);
+            if (next < double(elapsed)*0.5) frame.latent = StateLatent::Continue;
+        }
+        return true;
+    }
     std::uint64_t StateLocalRevision(const std::string& self) override { return localRevisions[self]; }
     std::shared_ptr<const Vm::Function> StateProgram(const std::string&, const std::string& path) override {
         return std::make_shared<Vm::Function>(programs.at(path));
@@ -181,6 +202,7 @@ struct Host final : Vm::Host {
     }
     void GotoStateLabel(const std::string& self, const std::string& label, bool transition) override {
         auto& frame = MutableState(self)->frame.value();
+        frame.latent = StateLatent::Continue;
         const auto requested = transition && (label.empty() || label == "None") ? "Begin" : label;
         std::vector<std::string> candidates;
         if (!transition) candidates.push_back(frame.codePath);
@@ -224,6 +246,7 @@ struct Host final : Vm::Host {
             if (!object.frame) object.frame = StateFrame{};
             object.frameOverride = true;
             const auto old = object.frame->codePath;
+            if (old != target) object.frame->latent = StateLatent::Continue;
             if (!old.empty() && old != target) execution.CallEvent(self,"EndState",true);
             if (old != target) {
                 ++localRevisions[self];
@@ -249,6 +272,10 @@ struct Host final : Vm::Host {
         if (index == 802) return {Value::Integer(static_cast<std::int32_t>(states.at(self).frame->statementIndex)),{}};
         if (index == 803) { execution.CallEvent(self,"Notify",true); return {}; }
         if (index == 804) { MutableState(self)->frame->latent = StateLatent::Sleep; return {}; }
+        if (index == 256) {
+            timers[self] = Vm::ToFloat(args.at(0).Load());
+            MutableState(self)->frame->latent = StateLatent::Sleep; return {};
+        }
         if (index == 805 || index == 806) { execution.CallEvent(self,"Destroyed",index == 805); return {}; }
         if (index == 807 || index == 808 || index == 809) {
             NativeWithExecution(113,self,{{Value::Text(Vm::Kind::Name,"B"),{}}},nullptr,execution);
@@ -361,8 +388,8 @@ void ReentryAndSameState() {
     host.states.at("Actor").frame->statementIndex = 91; host.states.at("Actor").frame->latent = StateLatent::Sleep;
     Check(Vm::Execute(host,clear,"Actor").passed(),"clear-state control failed");
     const auto& frame = host.states.at("Actor").frame.value();
-    Check(frame.codePath.empty() && frame.localsCodePath.empty() && frame.locals.empty() && frame.statementIndex == 91 && frame.latent == StateLatent::Sleep,
-        "clear-state discarded frame position/latent or retained locals");
+    Check(frame.codePath.empty() && frame.localsCodePath.empty() && frame.locals.empty() && frame.statementIndex == 91 && frame.latent == StateLatent::Continue,
+        "clear-state did not cancel its wait or retained code locals");
     const auto mutations = host.mutableReads;
     Check(Vm::ResumeState(host,"Actor").passed() && host.mutableReads == mutations,"null-code frame was executed or mutated");
 }
@@ -435,7 +462,7 @@ void PreparationAfterArguments() {
 void StateRejectionControls() {
     Host host;
     host.Program("State.A",{0x08}); host.Install("State.A");
-    for (const auto latent : {StateLatent::Sleep,StateLatent::FinishAnim,StateLatent::MoveTo}) {
+    for (const auto latent : {StateLatent::FinishAnim,StateLatent::MoveTo}) {
         host.states.at("Actor").frame->latent = latent;
         const auto before = host.mutableReads;
         const auto result = Vm::ResumeState(host,"Actor");
@@ -448,8 +475,8 @@ void StateRejectionControls() {
     const auto table = Vm::ResumeState(host,"Actor");
     Check(!table.passed() && !table.committed,"terminal LabelTable was treated as executable success"); ++rejections;
     host.Program("State.B",Join({Native(804),{0x08}})); host.Install("State.B");
-    Check(!Vm::ResumeState(host,"Actor").passed() && host.states.at("Actor").frame->latent == StateLatent::Continue && host.states.at("Actor").frame->statementIndex == 0,
-        "unhandled newly entered latent action committed a partial slice"); ++rejections;
+    Check(Vm::ResumeState(host,"Actor").status == Vm::Status::Waiting && host.states.at("Actor").frame->latent == StateLatent::Sleep && host.states.at("Actor").frame->statementIndex == 1,
+        "newly entered Sleep did not commit its advanced statement ordinal");
     host.Program("State.C",Jump(0)); host.Install("State.C");
     Vm::Limits limits; limits.instructions = 8;
     Check(Vm::ResumeState(host,"Actor",limits).status == Vm::Status::Budget && host.states.at("Actor").frame->statementIndex == 0,
@@ -508,18 +535,15 @@ void RecreatedSameCodeLocals() {
         "same-code recreated locals reused stale references or kept old values");
 }
 
-void InCodeLabelPreservesLatent() {
+void InCodeLabelCancelsLatent() {
     Host host;
     const auto expression = Join({{0x0d},Native(810)});
     host.Program("State.A",Join({expression,{0x08}}),{},{{1,0},{8,static_cast<std::uint32_t>(expression.size())}});
     host.Install("State.A");
     const auto result = Vm::ResumeState(host,"Actor");
-    Check(!result.passed() && !result.committed && result.status == Vm::Status::Unsupported &&
-        result.error == "State latent action requires its runtime handler",
-        "in-code label wrongly cleared a latent action set while evaluating its label");
-    Check(host.states.at("Actor").frame->latent == StateLatent::Continue && host.states.at("Actor").frame->statementIndex == 0,
-        "unsupported latent-label slice did not restore the original frame");
-    ++rejections;
+    Check(result.passed() && result.committed && result.status == Vm::Status::Stopped &&
+        host.states.at("Actor").frame->latent == StateLatent::Stop && host.states.at("Actor").frame->statementIndex == 2,
+        "original GotoLabel did not cancel a Sleep reached while evaluating its label");
 }
 
 std::vector<std::string> EffectTrace(const Host& host) {
@@ -839,6 +863,111 @@ void StateSwitchWithIterators() {
         Check(host.iteratorCreates == 1 && host.iteratorDestroys == 1,"Switch leaked a state iterator after exit/rollback");
     }
 }
+
+void SleepContinuationAndPoll() {
+    Host host;
+    host.Program("State.A",Join({Native(256,{Float(1.5f)}),Native(800,{Int(1)}),Native(256,{Float(0.0f)}),Native(800,{Int(2)}),{0x08}}));
+    host.Install("State.A");
+    const auto first = Vm::ResumeState(host,"Actor");
+    Check(first.passed() && first.committed && first.status == Vm::Status::Waiting && host.effects == 0 &&
+        host.states.at("Actor").frame->statementIndex == 1 && host.timers.at("Actor") == 1.5f && host.polls == 0,
+        "Sleep did not yield after its complete state statement without polling");
+    const auto reads = host.mutableReads;
+    const auto dormant = Vm::ResumeState(host,"Actor");
+    Check(dormant.passed() && dormant.status == Vm::Status::Waiting && dormant.instructions == 0 && host.polls == 0 && host.mutableReads == reads,
+        "ResumeState silently consumed elapsed time or mutated an existing wait");
+    const auto equal = Vm::AdvanceState(host,"Actor",1.0f);
+    Check(equal.passed() && equal.status == Vm::Status::Waiting && host.timers.at("Actor") == 0.5f && host.effects == 0,
+        "Half-frame equality woke Sleep instead of retaining its signed remainder");
+    const auto wake = Vm::AdvanceState(host,"Actor",1.0f);
+    Check(wake.passed() && wake.status == Vm::Status::Waiting && host.effects == 1 && host.polls == 2 &&
+        host.timers.at("Actor") == 0.0f && host.states.at("Actor").frame->statementIndex == 3,
+        "Waking state reused elapsed time for its newly reached Sleep");
+    Check(Vm::AdvanceState(host,"Actor",0.0f).status == Vm::Status::Waiting && host.effects == 1,
+        "Zero-duration Sleep woke with zero elapsed time");
+    const auto done = Vm::AdvanceState(host,"Actor",0.01f);
+    Check(done.passed() && done.status == Vm::Status::Stopped && host.effects == 2 && host.timers.at("Actor") < 0.0f,
+        "Positive elapsed failed to wake Sleep(0), or counter was clamped/cleared");
+    host.Install("State.A",1,StateLatent::Sleep); host.timers["Actor"] = 0.1f; host.pollEligible = false;
+    Check(Vm::AdvanceState(host,"Actor",1.0f).passed() && host.timers.at("Actor") == 0.1f && host.effects == 2,
+        "Actor.ProcessState eligibility gate consumed the timer or ran script");
+    host.pollEligible = true;
+    for (const auto invalid : {-1.0f,std::numeric_limits<float>::infinity(),std::numeric_limits<float>::quiet_NaN()}) {
+        const auto begins = host.begins, polls = host.polls;
+        const auto result = Vm::AdvanceState(host,"Actor",invalid);
+        Check(!result.passed() && result.status == Vm::Status::Invalid && !result.committed && host.begins == begins && host.polls == polls,
+            "Invalid elapsed time entered a host transaction or polled native state"); ++rejections;
+    }
+    host.Program("State.F",Join({Native(800),Native(801),{0x08}}));host.Install("State.F",0,StateLatent::Sleep);host.timers["Actor"] = 0.1f;
+    auto fail = Vm::AdvanceState(host,"Actor",1.0f);
+    Check(!fail.passed() && !fail.committed && host.timers.at("Actor") == 0.1f && host.effects == 2 &&
+        host.states.at("Actor").frame->latent == StateLatent::Sleep && host.states.at("Actor").frame->statementIndex == 0,
+        "Failure after wake did not roll back timer, PC, latent action and script effects together");++rejections;
+    Vm::Limits budget;budget.instructions = 1;
+    fail = Vm::AdvanceState(host,"Actor",1.0f,budget);
+    Check(fail.status == Vm::Status::Budget && host.timers.at("Actor") == 0.1f && host.effects == 2,
+        "Wake continuation bypassed the shared instruction budget or timer rollback");++rejections;
+}
+
+void SleepNestedReceiverAndDeclaration() {
+    Host host;
+    const Vm::Property count{"Class.Count","Count",Value::Integer(0),0,1};host.properties[20] = count;host.values[count.key] = Value::Integer(0);
+    const Vm::Property out{"Class.Worker.Out","Out",Value::Integer(0),0x180,1};host.properties[21] = out;
+    host.Function("Class.Worker",Join({Native(256,{Float(2.0f)}),Let(Ref(0x00,21),Int(29)),Native(800,{Int(7)}),Return()}),{out});
+    host.Program("State.A",Join({Call(6,{Ref(0x01,20)}),Native(801),{0x08}}));host.Install("State.A");
+    auto result = Vm::ResumeState(host,"Actor");
+    Check(result.passed() && result.status == Vm::Status::Waiting && host.effects == 1 && host.values.at(count.key).integer == 29 &&
+        host.states.at("Actor").frame->statementIndex == 1,
+        "Nested Sleep interrupted ordinary function execution or OUT copyback before state statement completion");
+    host.properties[90] = {"Other","Other",Value::Text(Vm::Kind::Object,"Other"),0,1};
+    host.states["Other"] = host.states.at("Actor");host.localRevisions["Other"] = 1;
+    const auto context = Join({{0x19},Ref(0x20,90),{0,0,0},Native(256,{Float(3.0f)})});
+    host.Program("State.A",Join({context,Native(800),{0x08}}));host.Install("State.A");
+    result = Vm::ResumeState(host,"Actor");
+    Check(result.passed() && result.status == Vm::Status::Stopped && host.effects == 2 &&
+        host.states.at("Other").frame->latent == StateLatent::Sleep && host.timers.at("Other") == 3.0f,
+        "Context receiver Sleep incorrectly yielded or wrote the current actor's frame");
+    auto decl = host.Function("Class.Sleep",{},{{"Class.Sleep.Seconds","Seconds",Value::Float(0.0f),0x80,1}});
+    decl.flags = 0x409;decl.nativeIndex = 256;host.functions[decl.path] = decl;host.Install("State.A");
+    result = Vm::Execute(host,decl,"Actor",{{Value::Float(-0.25f),{}}});
+    Check(result.passed() && result.status == Vm::Status::Returned && host.timers.at("Actor") == -0.25f &&
+        host.states.at("Actor").frame->latent == StateLatent::Sleep,
+        "Original latent native256 declaration was rejected or incorrectly waited inside ordinary Execute");
+    decl.nativeIndex = 257;host.functions[decl.path] = decl;
+    result = Vm::Execute(host,decl,"Actor",{{Value::Float(1.0f),{}}});
+    Check(!result.passed() && result.status == Vm::Status::Unsupported && host.timers.at("Actor") == -0.25f,
+        "Unknown latent declaration bypassed its required runtime handler");++rejections;
+    // A yielded native iterator still cannot be serialized as a state PC.
+    Bytes iterator{0x2f};Append(iterator,Native(819));const auto end = iterator.size();Append(iterator,{0,0});
+    Append(iterator,Native(256,{Float(1.0f)}));Append(iterator,{0x31});const auto pop = iterator.size();Append(iterator,{0x30,0x08});
+    iterator[end] = std::uint8_t(pop);iterator[end+1u] = std::uint8_t(pop >> 8u);
+    host.Program("State.I",iterator);host.Install("State.I");const auto timer = host.timers.at("Actor");
+    result = Vm::ResumeState(host,"Actor");
+    Check(!result.passed() && result.status == Vm::Status::Unsupported && host.timers.at("Actor") == timer &&
+        host.states.at("Actor").frame->statementIndex == 0 && host.iteratorCreates == host.iteratorDestroys,
+        "Sleep committed an unserializable iterator continuation or leaked its cursor");++rejections;
+}
+
+void OriginalSleepArithmetic() {
+    for (const auto seconds : {0.0f,-0.0f,-1.0f,0.01f,0.1f,1.0f,1.5f,100.0f}) {
+        for (const auto elapsed : {0.0f,0.001f,0.01f,0.1f,1.0f,2.0f,100.0f}) {
+            auto timer = seconds;const auto expected = double(seconds)-double(elapsed);
+            Check(QuestVr::PollActorSleep(timer,elapsed) == (expected < 0.5*double(elapsed)) && timer == float(expected),
+                "Original signed Sleep arithmetic or strict half-frame comparison changed");
+        }
+    }
+    // Neighboring binary32 values straddle the strict half-frame boundary.
+    const float elapsed = std::nextafter(1.0f,2.0f);
+    auto timer = 1.5f;
+    Check(QuestVr::PollActorSleep(timer,elapsed),"Sleep rounded its comparison operand before the original half-frame test");
+    for (const auto bad : {-1.0f,std::numeric_limits<float>::infinity(),std::numeric_limits<float>::quiet_NaN()}) {
+        timer = 1.0f;bool refused{};try {QuestVr::PollActorSleep(timer,bad);}catch(const std::exception&){refused = true;}
+        Check(refused && timer == 1.0f,"Invalid sleep poll changed the actor counter");++rejections;
+    }
+    timer = std::numeric_limits<float>::lowest();bool refused{};
+    try {QuestVr::PollActorSleep(timer,std::numeric_limits<float>::max());}catch(const std::exception&){refused = true;}
+    Check(refused && timer == std::numeric_limits<float>::lowest(),"Finite Sleep storage overflow committed an infinite remainder");++rejections;
+}
 } // namespace
 
 int main() {
@@ -847,9 +976,10 @@ int main() {
         CallbackRollbackAndBudgets(); PreparationAfterArguments(); StateRejectionControls();
         OldStatementControlsNewCode();
         RecreatedSameCodeLocals();
-        InCodeLabelPreservesLatent();
+        InCodeLabelCancelsLatent();
         StateSwitchSelection(); StateSwitchSelectorTransitions(); StateSwitchCaseTransitions();
         StateSwitchCallbackStopsAndClears(); StateSwitchFailureAndBudgets(); StateSwitchWithIterators();
+        SleepContinuationAndPoll();SleepNestedReceiverAndDeclaration();OriginalSleepArithmetic();
         std::cout << "PASS state execution checks=" << checks << " rejections=" << rejections << '\n';
         return 0;
     } catch (const std::exception& error) {

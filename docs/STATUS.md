@@ -1,5 +1,37 @@
 # Port status
 
+## Original Sleep and explicit wait continuation (2026-10-10)
+
+- Native Sleep256 retains raw signed finite seconds in actor-owned native
+  storage. Polling uses the original strict half-frame wake boundary and signed
+  remainder, without clamping or reusing elapsed time for a newly reached Sleep.
+  Actual Pawn.StopWaiting native0 writes-1 only while sleeping and defers wake.
+- A no-time state resume yields committed Waiting. Explicit wait polling and
+  continuation share one interpreter/root transaction, including timer, PC,
+  locals, callbacks, RNG and native/birth effects. Unknown waits and persistent
+  iterator continuations still refuse and roll back; no full actor Tick is enabled.
+- Supported state changes and successful labels now cancel waits according to
+  original Core.dll evidence, including an in-code Sleep label expression.
+  Native actor timers survive state replacement, Stop, null code and frame absence.
+- Codec8/envelope11 retain those counters with optional RNG and all earlier
+  sections. Sleeping frames require timer evidence; typed validation never
+  polls, and legacy envelopes1–10 reset omitted counters. Old codec1–7 bytes
+  remain unchanged without timers. Cold wait/RNG restoration is covered.
+- Actual StartUp on the isolated generated weapon-slot fixture now commits
+  original weapon/ammo initialization and its Sleep at PC6. Waking
+  reaches required WaitForLanding527 at DeusEx.ScriptedPawn.StartUp PC18,
+  opcode0x62; this next dependency is not stubbed as success.
+- All49 ordinary host tests pass. State controls pass296 /40 rejections; save
+  codec controls6467 /5731. All three separate original-data integrations pass,
+  including the full actor suite's Sleep/cold restore and inventory wake rollback.
+  Android ARM64 and APK v2 signature verification pass. Evidence is in
+  `artifacts/sleep-state-20261010/`; see [SCRIPT-SLEEP.md](SCRIPT-SLEEP.md).
+- Automatic world/player startup, full original state/frame identity and tick
+  ordering, physics/AI, campaign progression and device acceptance remain
+  unfinished. The accepted installed seated-player build remains unchanged;
+  this backend APK is archived but not installed. Next gate: WaitForLanding and
+  remaining original state-control distinctions, before enabling world scheduling.
+
 ## Original script RNG and saved continuation (2026-10-10)
 
 - Rand167/FRand195 use an explicit MSVCRT-compatible shared uint32 stream,
@@ -13,9 +45,10 @@
   before the first draw. Quest supplies time once; portable tests default to1.
   Warm/cold restoration continues exactly; legacy envelopes1–9 explicitly reset
   to seed1. Unsupported algorithms or malformed typed state reject atomically.
-- Explicit original StartUp now passes FRand and refuses Sleep256 at
+- In this RNG batch, explicit original StartUp passed FRand and refused Sleep256 at
   DeusEx.ScriptedPawn.StartUp PC6, opcode0x61, with full rollback. Latent scheduling,
   automatic world startup, live AI and campaign completion remain unfinished.
+  The subsequent original-Sleep increment above implements that wait.
 - See [SCRIPT-RANDOM.md](SCRIPT-RANDOM.md) for contract, tests and limits.
   This backend APK is not installed; the accepted seated-player build is unchanged.
 - All 49 ordinary host tests and all three separate original-data integrations

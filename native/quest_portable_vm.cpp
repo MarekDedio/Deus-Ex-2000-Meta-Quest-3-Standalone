@@ -406,7 +406,8 @@ public:
         const Function& fn = *prepared;
         result_.callStack.push_back(fn.path);
         result_.function = fn.path; result_.offset = 0; result_.opcode = 0;
-        if (fn.flags & 0x8) Fail(Status::Unsupported, "Latent VM function requires a continuation engine");
+        if ((fn.flags & 0x8) && !((fn.flags & 0x400) && fn.nativeIndex == 256u))
+            Fail(Status::Unsupported, "Latent VM function requires its runtime handler");
         if (incoming.size() > limits_.arguments) Fail(Status::Budget, "VM argument limit");
         for (const auto& argument : incoming) {
             const auto value = argument.Load(); ValidateValue(value, 0); Retain(ValueBytes(value));
@@ -515,6 +516,7 @@ public:
             const auto latent = object->frame->latent;
             const auto localRevision = host_.StateLocalRevision(self);
             if (latent == StateLatent::Stop) { result_.status = Status::Stopped; return finish(); }
+            if (latent == StateLatent::Sleep) { result_.status = Status::Waiting; return finish(); }
             if (latent != StateLatent::Continue)
                 Fail(Status::Unsupported, "State latent action requires its runtime handler");
             if (!active) {
@@ -599,6 +601,7 @@ public:
             if (!object || !object->frameOverride || !object->frame || object->frame->codePath.empty()) return finish();
             if (object->frame->latent != StateLatent::Continue) {
                 if (object->frame->latent == StateLatent::Stop) { result_.status = Status::Stopped; return finish(); }
+                if (object->frame->latent == StateLatent::Sleep) { result_.status = Status::Waiting; return finish(); }
                 Fail(Status::Unsupported, "State latent action requires its runtime handler");
             }
         }
@@ -1311,13 +1314,38 @@ Result ResumeState(Host& host, const std::string& self, const Limits& limits) {
         result.value = machine.Resume(self);
         host.Commit(); begun = false;
         machine.Accept(); result.committed = true;
-        if (result.status != Status::Stopped) result.status = Status::Returned;
+        if (result.status != Status::Stopped && result.status != Status::Waiting) result.status = Status::Returned;
     } catch (const Failure& error) {
         result.status = error.status; result.error = error.what();
     } catch (const std::exception& error) {
         result.status = Status::Unsupported; result.error = error.what();
     } catch (...) {
         result.status = Status::Invalid; result.error = "Unknown state execution failure";
+    }
+    if (begun) host.Rollback();
+    if (!result.passed()) result.value = {};
+    return result;
+}
+Result AdvanceState(Host& host, const std::string& self, const float elapsed, const Limits& limits) {
+    Result result;
+    if (!std::isfinite(elapsed) || elapsed < 0.0f) {
+        result.status = Status::Invalid; result.error = "State elapsed time must be finite and nonnegative";
+        return result;
+    }
+    bool begun{};
+    try {
+        host.Begin(); begun = true;
+        Machine machine(host, limits, result);
+        if (host.PollState(self, elapsed, machine)) result.value = machine.Resume(self);
+        host.Commit(); begun = false;
+        machine.Accept(); result.committed = true;
+        if (result.status != Status::Stopped && result.status != Status::Waiting) result.status = Status::Returned;
+    } catch (const Failure& error) {
+        result.status = error.status; result.error = error.what();
+    } catch (const std::exception& error) {
+        result.status = Status::Unsupported; result.error = error.what();
+    } catch (...) {
+        result.status = Status::Invalid; result.error = "Unknown state polling failure";
     }
     if (begun) host.Rollback();
     if (!result.passed()) result.value = {};

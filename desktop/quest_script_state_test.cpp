@@ -1146,6 +1146,98 @@ void InvalidRandomStateAndBudgets() {
     Reject([&] { EncodeScriptSavedState(mixed,joint); },"Mixed RNG/actor/native retained encode budget was not cumulative");
     Reject([&] { DecodeScriptSavedState(bytes,joint); },"Mixed RNG/actor/native retained decode budget was not cumulative");
 }
+Bytes SleepLiteral() {
+    // Independent codec8 wire oracle: one actor-owned signed timer (-1),
+    // no reflected properties, clock, frame, lifecycle, defaults/births/AI/RNG.
+    return {'D','X','Q','V','M','S',8u,0u,3u,0u,0u,0u,'M','a','p',1u,0u,0u,0u,
+        9u,0u,0u,0u,'M','a','p','.','A','c','t','o','r',
+        12u,0u,0u,0u,'E','n','g','i','n','e','.','A','c','t','o','r',
+        0u,0u,0u,0u,0u,0u,0u,1u,0u,0u,0x80u,0xbfu,
+        0u,0u,0u,0u,0u,0u,0u,0u,0u,0u,0u,0u,0u};
+}
+void SleepRoundtripAndLegacy() {
+    ScriptSavedState only{"Map",{{"Map.Actor","Engine.Actor",{},std::nullopt}}};only.objects[0].latentTimeLeft = -1.0f;
+    const auto literal = SleepLiteral();const auto decoded = DecodeScriptSavedState(literal);
+    Require(literal.size() == 73u && EncodeScriptSavedState(only) == literal &&
+        decoded.objects[0].latentTimeLeft == -1.0f && !decoded.objects[0].state && !decoded.randomSeed &&
+        EncodeScriptSavedState(decoded) == literal,"Literal timer-only codec8 changed bytes or invented frame/RNG state");
+    for (const auto value : {0.0f,-0.0f,-1.0f,0.1f,std::numeric_limits<float>::max(),std::numeric_limits<float>::lowest()}) {
+        only.objects[0].latentTimeLeft = value;const auto encoded = EncodeScriptSavedState(only);
+        const auto parsed = DecodeScriptSavedState(encoded);const auto restored = *parsed.objects[0].latentTimeLeft;
+        Require(restored == value && std::signbit(restored) == std::signbit(value) && EncodeScriptSavedState(parsed) == encoded,
+            "Codec8 lost a signed finite float, including negative zero");
+    }
+    only.randomSeed = 0u;only.objects[0].latentTimeLeft = -1.0f;
+    auto expected = literal;expected.back() = 1u;expected.push_back(1u);U32(expected,0u);
+    Require(EncodeScriptSavedState(only) == expected && DecodeScriptSavedState(expected).randomSeed == 0u,
+        "Codec8 optional RNG presence/algorithm/zero seed changed codec7's actual stream data");
+    for (std::size_t mode = 0u;mode < 7u;++mode) {
+        auto old = mode == 2u ? DefaultsState() : mode >= 4u ? BirthState() : State();
+        if (mode == 1u) old.objects[0].state = DefaultsState().objects[0].state;
+        if (mode == 3u) old.objects[0].lifecycle = Lifecycle();
+        if (mode >= 5u) old.aiManagers = {AiManager()};
+        if (mode == 6u) old.randomSeed = 0x12345678u;
+        const auto prior = EncodeScriptSavedState(old);
+        Require(prior[6] == mode+1u && !DecodeScriptSavedState(prior).objects[0].latentTimeLeft,
+            "Legacy codec1–7 fabricated an actor native timer");
+        old.objects[0].latentTimeLeft = -0.25f;
+        const auto extended = EncodeScriptSavedState(old);const auto parsed = DecodeScriptSavedState(extended);
+        const auto actor = std::find_if(parsed.objects.begin(),parsed.objects.end(),[&](const auto& object){return object.path == old.objects[0].path;});
+        Require(extended[6] == 8u && actor != parsed.objects.end() && actor->latentTimeLeft == -0.25f && parsed.randomSeed == old.randomSeed &&
+            EncodeScriptSavedState(parsed) == extended,"Codec8 extension failed mixed older sections or optional RNG");
+        old.objects[0].latentTimeLeft.reset();
+        Require(EncodeScriptSavedState(old) == prior,"Removing timer changed byte-exact codec1–7 output");
+    }
+    auto mixed = BirthState();mixed.aiManagers = {AiManager()};mixed.randomSeed = 0xffffffffu;
+    mixed.objects[0].latentTimeLeft = 0.5f;mixed.objects[1].latentTimeLeft = -1.0f;
+    mixed.objects[0].state->frame->latent = StateLatent::Sleep;
+    const auto bytes = EncodeScriptSavedState(mixed);const auto parsed = DecodeScriptSavedState(bytes);
+    Require(parsed.objects[1].state->frame->latent == StateLatent::Sleep && parsed.objects[1].latentTimeLeft == 0.5f &&
+        parsed.objects[1].clock && parsed.objects[1].lifecycle && parsed.aiManagers.size() == 1u && parsed.randomSeed == 0xffffffffu &&
+        EncodeScriptSavedState(parsed) == bytes,"Codec8 lost composed wait/clock/lifecycle/birth/AI/RNG records");
+    std::reverse(mixed.objects.begin(),mixed.objects.end());
+    Require(EncodeScriptSavedState(mixed) == bytes,"Native timers changed canonical actor ordering");
+}
+void InvalidSleepStateAndBudgets() {
+    const auto literal = SleepLiteral();
+    for (std::size_t length = 0u;length < literal.size();++length) {
+        const Bytes truncated(literal.begin(),literal.begin()+length);
+        Reject([&] {DecodeScriptSavedState(truncated);},"Truncated codec8 accepted");
+    }
+    for (const std::uint32_t bits : {0x7f800000u,0xff800000u,0x7fc00000u}) {
+        auto broken = literal;for (unsigned i=0u;i<4u;++i) broken[56u+i] = std::uint8_t(bits>>(8u*i));
+        Reject([&] {DecodeScriptSavedState(broken);},"Non-finite encoded native timer accepted");
+    }
+    for (const auto position : {55u,72u}) {
+        auto broken = literal;broken[position] = 2u;
+        Reject([&] {DecodeScriptSavedState(broken);},"Invalid timer/RNG presence boolean accepted");
+    }
+    auto absent = literal;absent[55u] = 0u;absent.erase(absent.begin()+56u,absent.begin()+60u);
+    Reject([&] {DecodeScriptSavedState(absent);},"Codec8 accepted no native timer records");
+    for (const std::uint8_t version : {0u,1u,2u,3u,4u,5u,6u,7u,9u,255u}) {
+        auto broken = literal;broken[6] = version;
+        Reject([&] {DecodeScriptSavedState(broken);},"Codec8 data accepted under incompatible version");
+    }
+    auto tail = literal;tail.push_back(0u);Reject([&] {DecodeScriptSavedState(tail);},"Trailing codec8 data accepted");
+    tail = literal;tail.back() = 1u;tail.push_back(2u);U32(tail,0u);
+    Reject([&] {DecodeScriptSavedState(tail);},"Codec8 accepted unknown optional RNG algorithm");
+    ScriptSavedState only{"Map",{{"Map.Actor","Engine.Actor",{},std::nullopt}}};only.objects[0].latentTimeLeft = -1.0f;
+    ScriptStateLimits measuredLimits;ScriptStateDetail::Writer measured(measuredLimits,nullptr);measured.State(only);
+    Require(measured.size() == literal.size() && measured.measuredBudget().properties == 0u && measured.measuredBudget().nodes == 0u,
+        "Timer-only measurement invented reflected values or omitted wire bytes");
+    ScriptStateLimits exact;exact.maxBytes = measured.measuredBudget().retained;exact.maxProperties = 0u;exact.totalValueNodes = 0u;
+    Require(EncodeScriptSavedState(only,exact) == literal && EncodeScriptSavedState(DecodeScriptSavedState(literal,exact),exact) == literal,
+        "Exact retained timer budget failed");
+    for (const auto cap : {exact.maxBytes-1u,literal.size()-1u}) {
+        auto small = exact;small.maxBytes = cap;
+        Reject([&] {EncodeScriptSavedState(only,small);},"Native timer encode exceeded retained/encoded budget");
+        Reject([&] {DecodeScriptSavedState(literal,small);},"Native timer decode exceeded retained/encoded budget");
+    }
+    for (const auto bad : {std::numeric_limits<float>::infinity(),std::numeric_limits<float>::quiet_NaN()}) {
+        only.objects[0].latentTimeLeft = bad;
+        Reject([&] {EncodeScriptSavedState(only);},"Non-finite live native timer accepted");
+    }
+}
 }
 
 int main() {
@@ -1156,7 +1248,8 @@ int main() {
         BirthRoundtripAndLegacy();MalformedBirths();InvalidBirthsAndBudgets();
         AiRoundtripAndLegacy();InvalidAiGraphs();AiBudgets();
         RandomRoundtripAndLegacy();InvalidRandomStateAndBudgets();
+        SleepRoundtripAndLegacy();InvalidSleepStateAndBudgets();
         std::cout<<"PASS script-state codec controls="<<checks<<" rejection controls="<<rejections
-            <<"; codecs1–6 legacy bytes, codec7 engine-global RNG seed, structural codec only\n";return 0;
+            <<"; codecs1–7 legacy bytes, codec8 actor-owned signed timer and optional RNG, structural codec only\n";return 0;
     }catch(const std::exception& error) {std::cerr<<"FAIL script-state codec: "<<error.what()<<" after "<<checks<<" controls\n";return 1;}
 }

@@ -40,6 +40,10 @@ struct ScriptSavedObject {
     std::optional<ActorAnimationClock> clock;
     std::optional<StateObject> state{};
     std::optional<ScriptSavedActorLifecycle> lifecycle{};
+    // Actor-owned native timer, retained across state/frame replacement. Signed
+    // finite values are structural data; scheduling and Sleep ownership belong
+    // to the runtime rather than this codec.
+    std::optional<float> latentTimeLeft{};
 };
 struct ScriptSavedClassDefaults {
     std::string classPath;
@@ -89,6 +93,7 @@ inline constexpr std::uint8_t ActorLifecycleVersion=4u;
 inline constexpr std::uint8_t BirthManifestVersion=5u;
 inline constexpr std::uint8_t AiManagerVersion=6u;
 inline constexpr std::uint8_t RandomStateVersion=7u;
+inline constexpr std::uint8_t SleepStateVersion=8u;
 inline constexpr std::uint32_t MaximumWorldActorSlots=1'000'000u;
 // Stable serialized tags deliberately do not depend on Vm::Kind ordinals.
 enum class Tag : std::uint8_t {
@@ -280,14 +285,15 @@ public:
         const bool withBirths=!state.births.empty();
         const bool withAi=!state.aiManagers.empty();
         const bool withRandom=state.randomSeed.has_value();
-        const auto version=withRandom ? RandomStateVersion : withAi ? AiManagerVersion : withBirths ? BirthManifestVersion : withLifecycle ? ActorLifecycleVersion : withDefaults ? ClassDefaultsVersion : withFrames ? StateFrameVersion : Magic[6u];
+        const bool withSleep=std::any_of(state.objects.begin(),state.objects.end(),[](const auto& object) { return object.latentTimeLeft.has_value(); });
+        const auto version=withSleep ? SleepStateVersion : withRandom ? RandomStateVersion : withAi ? AiManagerVersion : withBirths ? BirthManifestVersion : withLifecycle ? ActorLifecycleVersion : withDefaults ? ClassDefaultsVersion : withFrames ? StateFrameVersion : Magic[6u];
         for (std::size_t i=0; i<Magic.size(); ++i) Byte(i==6u ? version : Magic[i]);
         String(state.mapName,true,false,128u);
         if (state.objects.size()>limits_.maxObjects || state.classDefaults.size()>limits_.maxObjects-state.objects.size() ||
             state.births.size()>limits_.maxObjects)
             Fail("aggregate object/class-default count exceeds the budget");
         budget_.Array(state.objects.size(),sizeof(ScriptSavedObject)+sizeof(void*));
-        if (withBirths || withAi || withRandom) budget_.Array(state.objects.size(),sizeof(SavedObjectIdentity));
+        if (withBirths || withAi || withRandom || withSleep) budget_.Array(state.objects.size(),sizeof(SavedObjectIdentity));
         Count(state.objects.size());
         for (const auto& object : state.objects) {
             Text(object.path,limits_,true); Text(object.classPath,limits_,true);
@@ -300,19 +306,23 @@ public:
             Properties(object.properties,false);
             Byte(object.clock ? 1u : 0u);
             if (object.clock) Animation(*object.clock);
-            if (withFrames || withDefaults || withLifecycle || withBirths || withAi || withRandom) {
+            if (withFrames || withDefaults || withLifecycle || withBirths || withAi || withRandom || withSleep) {
                 Byte(object.state ? 1u : 0u);
                 if (object.state) ObjectState(*object.state);
             }
-            if (withLifecycle || withBirths || withAi || withRandom) {
+            if (withLifecycle || withBirths || withAi || withRandom || withSleep) {
                 Byte(object.lifecycle ? 1u : 0u);
                 if (object.lifecycle) ActorLifecycle(*object.lifecycle);
             }
+            if (withSleep) {
+                Byte(object.latentTimeLeft ? 1u : 0u);
+                if (object.latentTimeLeft) F32(*object.latentTimeLeft);
+            }
         }
         budget_.Array(state.classDefaults.size(),sizeof(ScriptSavedClassDefaults)+sizeof(void*));
-        if (withBirths || withAi || withRandom) budget_.Array(state.classDefaults.size(),sizeof(std::string_view));
+        if (withBirths || withAi || withRandom || withSleep) budget_.Array(state.classDefaults.size(),sizeof(std::string_view));
         const auto classes=Sorted(state.classDefaults,[](const auto& defaults) -> const std::string& { return defaults.classPath; });
-        if (withDefaults || withLifecycle || withBirths || withAi || withRandom) {
+        if (withDefaults || withLifecycle || withBirths || withAi || withRandom || withSleep) {
             Count(state.classDefaults.size());
             for (const auto& defaults : state.classDefaults) Text(defaults.classPath,limits_,true);
             for (std::size_t i=0; i<classes.size(); ++i) {
@@ -323,7 +333,7 @@ public:
                 String(defaults.classPath,true); Properties(defaults.properties,true);
             }
         }
-        if (withBirths || withAi || withRandom) {
+        if (withBirths || withAi || withRandom || withSleep) {
             budget_.Array(state.births.size(),sizeof(ScriptSavedBirth)+sizeof(void*));
             budget_.Array(state.births.size(),sizeof(std::uint32_t));
             std::vector<std::uint32_t> indices; indices.reserve(state.births.size());
@@ -347,7 +357,7 @@ public:
                 String(birth.path,true); String(birth.classPath,true); U32(birth.worldActorIndex); Properties(birth.frozenDefaults,true);
             }
         }
-        if (withAi || withRandom) {
+        if (withAi || withRandom || withSleep) {
             budget_.AiManagers(state.aiManagers.size());
             budget_.Array(state.aiManagers.size(),sizeof(void*));
             Count(state.aiManagers.size());
@@ -358,6 +368,7 @@ public:
                 AiManager(*managers[i]);
             }
         }
+        if (withSleep) Byte(withRandom ? 1u : 0u);
         if (withRandom) {
             Byte(ScriptRandom::Algorithm); U32(*state.randomSeed);
         }
@@ -592,7 +603,7 @@ public:
                 version=byte;
                 if (version!=Magic[i] && version!=StateFrameVersion && version!=ClassDefaultsVersion &&
                     version!=ActorLifecycleVersion && version!=BirthManifestVersion && version!=AiManagerVersion &&
-                    version!=RandomStateVersion)
+                    version!=RandomStateVersion && version!=SleepStateVersion)
                     Fail("bad magic or unsupported codec version");
             } else if (byte!=Magic[i]) Fail("bad magic or unsupported codec version");
         }
@@ -607,7 +618,7 @@ public:
             budget_.Array(count,sizeof(SavedObjectIdentity)); objectIdentities.reserve(count);
         }
         std::string_view previous;
-        bool hasLifecycle{};
+        bool hasLifecycle{},hasLatentTimeLeft{};
         for (std::uint32_t i=0; i<count; ++i) {
             ScriptSavedObject object;
             const auto path=String(true),cls=String(true);
@@ -624,10 +635,17 @@ public:
                 hasLifecycle=true;
                 auto saved=ActorLifecycle(); if constexpr(Materialize) object.lifecycle=std::move(saved);
             }
+            if (version>=SleepStateVersion && Boolean()) {
+                hasLatentTimeLeft=true;
+                const auto timer=F32();
+                if constexpr(Materialize) object.latentTimeLeft=timer;
+            }
             if constexpr(Materialize) state.objects.push_back(std::move(object));
         }
         if (version==ActorLifecycleVersion && !hasLifecycle)
             Fail("actor-lifecycle codec has no native lifecycle record");
+        if (version==SleepStateVersion && !hasLatentTimeLeft)
+            Fail("sleep-state codec has no native latent timer record");
         std::uint32_t classes{};
         if (version>=ClassDefaultsVersion) {
             classes=U32();
@@ -694,7 +712,8 @@ public:
                 if constexpr(Materialize) state.aiManagers.push_back(std::move(manager));
             }
         }
-        if (version>=RandomStateVersion) {
+        const bool withRandom=version>=SleepStateVersion ? Boolean() : version>=RandomStateVersion;
+        if (withRandom) {
             if (Byte()!=ScriptRandom::Algorithm) Fail("unsupported random-state algorithm");
             const auto seed=U32();
             if constexpr(Materialize) state.randomSeed=seed;

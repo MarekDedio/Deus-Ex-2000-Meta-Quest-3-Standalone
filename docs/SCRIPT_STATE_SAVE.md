@@ -14,6 +14,9 @@ Version10 preserves the engine-global script random seed (codec7), including
 nonbaseline initial seeds before the first draw. Legacy versions1–9 reset an
 absent stream to deterministic seed1, never current history; Quest supplies time
 once at runtime initialization. See [SCRIPT-RANDOM.md](SCRIPT-RANDOM.md).
+Version11 retains actor-owned signed native wait counters (codec8), including
+counters independent of a frame. Sleeping frames require counter evidence;
+legacy envelopes1–10 reset omitted counters. See [SCRIPT-SLEEP.md](SCRIPT-SLEEP.md).
 None of these versions adds
 automatic NPC startup, AI processing, live animation, or a general UnrealScript savegame.
 Only the current map's supported authored and runtime-born actors are restored.
@@ -50,11 +53,12 @@ portable state object uses version 5. A checkpoint with class-default mutations
 uses version 6, including when it has no actor records. Any native lifecycle
 record selects version 7; a nonempty birth manifest selects version 8. Native
 AI manager presence selects version9; RNG presence takes precedence and selects
-version10, even with no actor/default/birth/manager records. The version word changes, the existing
+version10, even with no actor/default/birth/manager records. A native actor timer
+takes precedence and selects version11; its RNG record remains optional. The version word changes, the existing
 version-3 fields retain their order and widths, and one trailer is appended.
 
 ```text
-u32 magic, u32 version=4, 5, 6, 7, 8, 9 or 10
+u32 magic, u32 version=4, 5, 6, 7, 8, 9, 10 or 11
 version-3 fields:
   inventory[], inactive actors[], activated actors[]
   f32 player health, damaged actors[(path,f32 health)]
@@ -88,6 +92,13 @@ A v10 envelope requires codec7 and its RNG record. Codec7 includes every lower
 section, allowing zero managers, then algorithm byte1 and a uint32 seed. Unknown
 algorithms reject; zero and all-ones seeds are valid. Read-only validation does
 not change the stream, and application publishes it after staged preflight.
+A v11 envelope requires codec8 with at least one actor native timer. Each actor
+has a counter-presence byte and optional signed finite f32 after lifecycle;
+the final optional RNG presence byte precedes algorithm1/uint32 seed when present.
+Counter-only data invents neither RNG nor a frame. Sleeping-frame validation
+requires its counter; stopped/null-code/frameless counters remain valid native
+actor storage. Read-only validation never polls or advances script. Restore
+publishes the staged counter with the rest of its actor state, never separately.
 
 This version number is distinct from the Persona/UI metadata version and from
 the paired `.qsv` bundle format. The alternating-slot, checksum and durable
@@ -108,6 +119,7 @@ Births select byte 6 = 5; without births the v1-v4 representation is unchanged.
 Native AI managers select byte 6 = 6, including an empty manager; without
 manager records the v1-v5 representation is unchanged.
 RNG selects byte6=7; without it the v1-v6 wire representation is unchanged.
+Any native timer selects byte6=8; without timers, v1–7 bytes remain unchanged.
 
 ```text
 mapName
@@ -120,27 +132,28 @@ objects[]:
     u8 value tag, typed value payload
   u8 hasClock (0 or 1)
   optional complete animation clock
-  codec v2-v7: u8 hasState, optional portable state object
-  codec v4-v7: u8 hasLifecycle, optional native lifecycle:
+  codec v2-v8: u8 hasState, optional portable state object
+  codec v4-v8: u8 hasLifecycle, optional native lifecycle:
     u8 worldRemoved (0 or 1)
     u8 touchEventSent[4] (each 0 or 1)
     u32 child count, child actor paths[] in native order
     u32 based count, based actor paths[] in native order
-codec v3-v7:
+  codec v8: u8 hasNativeTimer, optional signed finite f32 latentTimeLeft
+codec v3-v8:
   u32 concrete class-default count (nonzero in v3; may be zero in v4-v7)
   class defaults[]:
     loaded script Actor class path
     u32 property count (nonzero)
     properties[]: same property key/name/index/value layout as above
-codec v5-v7:
+codec v5-v8:
   u32 birth count (nonzero in v5; may be zero in v6/v7)
   births[]:
     map-qualified object path, loaded concrete Actor class path
     u32 appended Level actor slot
     u32 frozen-default property count (may be zero)
     frozen defaults[]: same typed property layout as above
-codec v6/v7:
-  u32 native AI manager count (nonzero in v6; may be zero in v7)
+codec v6-v8:
+  u32 native AI manager count (nonzero in v6; may be zero in v7/v8)
   managers[] sorted by case-insensitive owner path:
     owner LevelInfo path, native Level path
     u32 processDepth, u32 pendingDeleteCount, u8 historyCursor, u32 receiverHead
@@ -151,7 +164,8 @@ codec v6/v7:
       callback and score names, four perception flags, callbackPending,
       eventState, detected, previousScore, previousBestActor, historyCursor,
       current XAIParams, ringNext ID, ringPrev ID
-codec v7:
+codec v8: u8 hasRNG (0 or 1)
+codec v7, or codec v8 with hasRNG=1:
   u8 RNG algorithm (must be1)
   u32 engine-global random seed (all values valid)
 ```

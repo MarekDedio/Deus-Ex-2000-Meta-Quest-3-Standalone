@@ -134,7 +134,12 @@ Final verification on the production source:
   fixture failure and the stale FRand startup assertion remain in earlier logs;
   they were corrected without weakening production gates or rejection controls.
 
-Sleep/latent scheduling, automatic world/player startup, AI processing, complete
+The subsequent [original Sleep increment](SCRIPT-SLEEP.md) supersedes the PC6
+refusal above: actual StartUp commits its Sleep, and waking reaches unsupported
+WaitForLanding527 at PC18. Codec8/envelope11 retain the actor timer and optional
+unchanged RNG stream together. The results above describe this RNG batch.
+
+Full latent/world scheduling, automatic world/player startup, AI processing, complete
 native coverage, live animation, campaign progression and per-map dynamic saves
 remain unfinished. This increment does not enable unsupported waits or fabricate
 world startup success.

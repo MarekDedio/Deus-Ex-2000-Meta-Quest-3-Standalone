@@ -283,10 +283,10 @@ std::vector<std::uint8_t> CheckpointBytes(const std::filesystem::path& path) {
     return bytes;
 }
 // Independent exact v3 prefix walk. No guessed search for blob signatures or
-// trailer bytes: v4-v10 append one bounded length + codec payload after every
+// trailer bytes: v4-v11 append one bounded length + codec payload after every
 // existing gameplay/progress field, preserving the old layout verbatim.
 std::size_t ScriptTailOffset(const std::vector<std::uint8_t>& bytes) {
-    Require(Word(bytes,0)==0x53515844u && Word(bytes,4)>=4u && Word(bytes,4)<=10u,"Script checkpoint is not runtime v4-v10");
+    Require(Word(bytes,0)==0x53515844u && Word(bytes,4)>=4u && Word(bytes,4)<=11u,"Script checkpoint is not runtime v4-v11");
     std::size_t cursor=8;
     const auto skip=[&](const std::size_t count) {
         Require(cursor<=bytes.size() && count<=bytes.size()-cursor,"Generated checkpoint prefix truncated");cursor+=count;
@@ -1596,29 +1596,137 @@ void VerifyOriginalInventoryTransactions(const std::string& actor,const std::fil
     Call(actor,"SetInitialState");
     Require(SavePortableRuntimeState(inspect.string()),"Actual StartUp + inventory continuation could not checkpoint");
     const auto startup=CheckpointBytes(inspect);
-    const auto startupActors=GetPortableRuntimeMapActors(true).size();
-    const auto startupRevision=GetPortableRuntimeWorldRevision();
-    const auto startupGc=GC::GetStats();
+    const auto preStartupActors=GetPortableRuntimeMapActors(true).size();
     const auto slice=ResumePortableActorState(actor);
     std::cout<<"ORIGINAL STARTUP NEXT DEPENDENCY status="<<static_cast<int>(slice.status)<<
         " committed="<<slice.committed<<" error="<<slice.error<<" at "<<slice.function<<':'<<slice.offset<<
         " opcode="<<static_cast<unsigned>(slice.opcode)<<'\n';
-    Require(slice.status==Status::Unsupported && !slice.committed &&
-        slice.function=="DeusEx.ScriptedPawn.StartUp" && slice.offset==6u &&
-        slice.opcode==0x61u && slice.error=="Unsupported runtime native 256",
-        "Actual StartUp did not advance through head animation/Switch/FRand to its original Sleep dependency: "+slice.error);
+    Require(slice.passed() && slice.status==Status::Waiting && slice.committed &&
+        slice.function=="DeusEx.ScriptedPawn.StartUp" && slice.offset==6u && slice.opcode==0x61u &&
+        ReadPortableActorLatentTimeLeft(actor).has_value() && SavePortableRuntimeState(inspect.string()),
+        "Actual StartUp did not commit its original FRand/Sleep statement: "+slice.error);
+    const auto waiting=CheckpointBytes(inspect);
+    Require(Word(waiting,4)==11u && ScriptBlob(waiting).at(6)==8u && waiting!=startup,
+        "Original StartUp wait did not capture codec8/envelope11");
+    const auto startupActors=GetPortableRuntimeMapActors(true).size();
+    Require(startupActors==preStartupActors+2u,"Actual StartUp did not commit its original weapon/ammo inventory before Sleep");
+    verifyInventoryGraph();
+    const auto startupRevision=GetPortableRuntimeWorldRevision();
+    const auto startupGc=GC::GetStats();
+    const auto wake=AdvancePortableActorState(actor,1.0f);
+    std::cout<<"ORIGINAL STARTUP AFTER SLEEP status="<<static_cast<int>(wake.status)<<
+        " committed="<<wake.committed<<" error="<<wake.error<<" at "<<wake.function<<':'<<wake.offset<<
+        " opcode="<<static_cast<unsigned>(wake.opcode)<<'\n';
+    Require(!wake.passed() && !wake.committed && wake.status==Status::Unsupported &&
+        wake.function=="DeusEx.ScriptedPawn.StartUp" && wake.offset==18u && wake.opcode==0x62u &&
+        wake.error=="Unsupported runtime native 527",
+        "Actual StartUp unexpectedly bypassed its next required implementation gate: "+wake.error);
+    std::cout<<"ORIGINAL STARTUP ROLLBACK counts="<<startupActors<<'/'<<GetPortableRuntimeMapActors(true).size()<<
+        " revision="<<startupRevision<<'/'<<GetPortableRuntimeWorldRevision()<<" objects="<<startupGc.numObjects<<'/'<<GC::GetStats().numObjects<<
+        " memory="<<startupGc.memoryUsage<<'/'<<GC::GetStats().memoryUsage<<'\n';
     Require(GetPortableRuntimeMapActors(true).size()==startupActors &&
         GetPortableRuntimeWorldRevision()==startupRevision &&
         GC::GetStats().numObjects==startupGc.numObjects &&
         GC::GetStats().memoryUsage==startupGc.memoryUsage,
         "Rejected actual StartUp retained provisional inventory births, roots or world publication");
-    unchanged(startup,"Actual StartUp inventory dependency rollback");
+    unchanged(waiting,"Actual StartUp wake dependency rollback");
     Require(LoadPortableRuntimeState(legacy.string()) && !GetPortableRuntimeScriptStatePresent(),
         "Legacy restore retained InventoryItem overlay or composed state");
     SameInventoryProperties(actor,originalAuthored,"Legacy restore failed to recover all8 authored/inherited inventory slots");
     unchanged(originalLegacyBytes,"Legacy inventory/state reset");
     std::cout<<"ORIGINAL INVENTORY MEMBER writes/negative Count/optional zero/default class constraint, v4/v5 composition; rejections="<<
         rejections<<"; actual InitializeInventory Return PC770, original owned WeaponPistol/ammo/GiveTo/base/Idle2/native links/v8 cold GC graph; StartUp remains a separate dependency gate\n";
+}
+
+void VerifyOriginalSleep(const std::filesystem::path& root,const std::vector<PortablePackageTables>& tables,
+    const std::string& actor,const std::filesystem::path& legacy,const std::filesystem::path& directory) {
+    const auto saved=directory/"original-sleep-v11.sav", inspect=directory/"sleep-unchanged.sav", generated=directory/"generated-sleep.sav";
+    const auto unchanged=[&](const std::vector<std::uint8_t>& expected,const std::string& context) {
+        Require(SavePortableRuntimeState(inspect.string()) && CheckpointBytes(inspect)==expected,context+" changed complete runtime state");
+    };
+    Require(LoadPortableRuntimeState(legacy.string()),"Could not reset original Sleep fixture");
+    const auto legacyBytes=CheckpointBytes(legacy);
+    const auto unframed=ExecutePortableActorFunction(actor,"Sleep",{Number(1.0f)});
+    Require(!unframed.passed() && !ReadPortableActorLatentTimeLeft(actor),"Sleep fabricated an executable frame from dormant authored metadata");
+    unchanged(legacyBytes,"Unframed original Sleep refusal");
+    Call(actor,"SetInitialState");Call(actor,"Sleep",{Number(1.5f)});
+    Require(ReadPortableActorLatentTimeLeft(actor)==1.5f && SavePortableRuntimeState(saved.string()),"Original Sleep declaration failed to retain signed seconds");
+    auto bytes=CheckpointBytes(saved);auto state=QuestVr::DecodeScriptSavedState(ScriptBlob(bytes));
+    Require(Word(bytes,4)==11u && ScriptBlob(bytes).at(6)==8u && !state.randomSeed,"Sleep-only original fixture invented an RNG stream or wrong envelope");
+    auto& record=*std::find_if(state.objects.begin(),state.objects.end(),[&](const auto& object){return object.path==actor;});
+    const auto layout=ReadPortableRuntimeStateProgram(record.state->frame->codePath);
+    const auto descriptor=ReadPortableRuntimeAuthoredStateDescriptor(record.state->frame->codePath);
+    const auto stop=std::find_if(layout.statementOffsets.begin(),layout.statementOffsets.end(),[&](const auto offset){
+        return offset<descriptor.bytecode.size() && descriptor.bytecode[offset]==0x08u;
+    });
+    Require(stop!=layout.statementOffsets.end(),"Original StartUp has no Stop boundary for isolated native-poll control");
+    record.state->frame->statementIndex=static_cast<std::uint32_t>(stop-layout.statementOffsets.begin());
+    record.properties.push_back({"Engine.Actor.Role","Role",0u,Value::Byte(4u)});
+    const auto publish=[&](const QuestVr::ScriptSavedState& value,std::uint32_t version=11u) {
+        auto composed=ReplaceScriptBlob(bytes,QuestVr::EncodeScriptSavedState(value));PutWord(composed,4u,version);
+        Require(QuestVr::WriteDurableSaveFile(generated.string(),composed),"Could not write generated original Sleep checkpoint");
+        return composed;
+    };
+    const auto baseline=publish(state);Require(LoadPortableRuntimeState(generated.string()),"Original waiting Stop-boundary fixture did not restore");
+    const auto waiting=ResumePortableActorState(actor);
+    Require(waiting.passed() && waiting.status==Status::Waiting && waiting.instructions==0u,"Existing Sleep ran script during a no-time ResumeState");
+    unchanged(baseline,"Existing original Sleep no-time resume");
+    const auto equal=AdvancePortableActorState(actor,1.0f);
+    Require(equal.passed() && equal.status==Status::Waiting && ReadPortableActorLatentTimeLeft(actor)==0.5f,
+        "Original half-frame equality did not preserve Sleep");
+    const auto wake=AdvancePortableActorState(actor,1.0f);
+    Require(wake.passed() && wake.status==Status::Stopped && ReadPortableActorLatentTimeLeft(actor)==-0.5f,
+        "Original signed Sleep wake did not execute its actual Stop boundary");
+    Call(actor,"StopWaiting");Require(ReadPortableActorLatentTimeLeft(actor)==-0.5f,"StopWaiting overwrote a counter when the actor was not sleeping");
+    Call(actor,"Sleep",{Number(0.0f)});Call(actor,"StopWaiting");
+    Require(ReadPortableActorLatentTimeLeft(actor)==-1.0f && ResumePortableActorState(actor).status==Status::Waiting,
+        "Original StopWaiting did not defer wake while assigning negative one");
+    // Native Sleep does not rewind PC; restore the known authored Stop before
+    // exercising the zero-elapsed release of StopWaiting's negative counter.
+    auto negative=state;negative.objects[0].latentTimeLeft=-1.0f;publish(negative);
+    Require(LoadPortableRuntimeState(generated.string()) && AdvancePortableActorState(actor,0.0f).status==Status::Stopped &&
+        ReadPortableActorLatentTimeLeft(actor)==-1.0f,"Negative Sleep counter did not wake with zero elapsed time");
+    for (std::size_t mode=0u;mode<2u;++mode) {
+        auto ineligible=state;auto& actorRecord=ineligible.objects[0];
+        if (mode==0u) actorRecord.properties.back().value=Value::Byte(3u);
+        else actorRecord.properties.push_back({"Engine.Actor.bDeleteMe","bDeleteMe",0u,Value::Bool(true)});
+        const auto gated=publish(ineligible);
+        Require(LoadPortableRuntimeState(generated.string()) && AdvancePortableActorState(actor,1.0f).passed() &&
+            ReadPortableActorLatentTimeLeft(actor)==1.5f,"Original ProcessState role/delete gate consumed a native wait");
+        unchanged(gated,"Original ProcessState eligibility gate");
+    }
+    publish(state);Require(LoadPortableRuntimeState(generated.string()),"Could not reset original Sleep budget fixture");
+    QuestVr::Vm::Limits limit;limit.instructions=0u;
+    const auto failed=AdvancePortableActorState(actor,2.0f,limit);
+    Require(failed.status==Status::Budget && !failed.committed && ReadPortableActorLatentTimeLeft(actor)==1.5f,
+        "Original poll-before-budget failure did not roll back its native timer");unchanged(baseline,"Original Sleep instruction budget rollback");
+    for (const auto bad : {-1.0f,std::numeric_limits<float>::infinity(),std::numeric_limits<float>::quiet_NaN()}) {
+        Require(!AdvancePortableActorState(actor,bad).passed(),"Invalid original state elapsed time accepted");unchanged(baseline,"Invalid original elapsed");
+    }
+    Call(actor,"GotoState",{Name("None")});
+    Require(ReadPortableActorLatentTimeLeft(actor)==1.5f && ReadPortableActorStateObject(actor)->frame->latent==QuestVr::StateLatent::Continue &&
+        AdvancePortableActorState(actor,2.0f).passed() && ReadPortableActorLatentTimeLeft(actor)==1.5f,
+        "GotoState(None) failed to cancel Sleep, discarded the actor-owned timer, or polled null code");
+    Call(actor,"StopWaiting");Require(ReadPortableActorLatentTimeLeft(actor)==1.5f,"StopWaiting changed a null-code actor's retained native timer");
+    auto absent=state;absent.objects[0].state.reset();const auto absentBytes=publish(absent);
+    Require(LoadPortableRuntimeState(generated.string()) && !ReadPortableActorStateObject(actor) && ReadPortableActorLatentTimeLeft(actor)==1.5f,
+        "Actor native timer could not restore independently of a state frame");unchanged(absentBytes,"Frameless native timer restore");
+    auto missing=state;missing.objects[0].latentTimeLeft.reset();publish(missing,5u);
+    Require(!ValidatePortableRuntimeState(generated.string()) && !LoadPortableRuntimeState(generated.string()),"Sleeping original actor restored without native timer evidence");
+    unchanged(absentBytes,"Missing native Sleep timer refusal");
+    auto combined=state;combined.randomSeed=0xfedcba98u;
+    const auto combinedBytes=publish(combined);
+    Require(LoadPortableRuntimeState(generated.string()) && SavePortableRuntimeState(saved.string()),"Could not stage original Sleep/RNG cold checkpoint");
+    Require(LoadPortableRuntimeState(legacy.string()) && !ReadPortableActorLatentTimeLeft(actor),"Legacy runtime save retained an actor timer");
+    ShutdownPortableRuntime();Require(InitializePortableRuntime(tables).passed,"Cold Sleep runtime initialization failed");
+    Require(LoadPortableRuntimeMap(LoadPortablePackageTables((root/"Maps"/"00_Training.dx").string())).passed &&
+        ValidatePortableRuntimeState(saved.string()) && !ReadPortableActorLatentTimeLeft(actor),"Readonly cold Sleep preflight published native state");
+    Require(LoadPortableRuntimeState(saved.string()) && ReadPortableActorLatentTimeLeft(actor)==1.5f,"Cold Sleep restore lost its native actor timer");
+    unchanged(combinedBytes,"Cold original Sleep/RNG restore");
+    Require(AdvancePortableActorState(actor,2.0f).status==Status::Stopped,"Cold restored original Sleep could not resume actual authored code");
+    Require(LoadPortableRuntimeState(legacy.string()) && !ReadPortableActorLatentTimeLeft(actor),"Cold legacy reset retained native Sleep state");
+    unchanged(legacyBytes,"Cold legacy Sleep reset");
+    std::cout<<"ORIGINAL SLEEP native256/StopWaiting0, strict half-frame signed timer, nested VM coverage, role/delete/null-code gates, rollback, codec8/envelope11, cold restore and legacy reset passed\n";
 }
 
 void VerifyOriginalStateExecution(const std::string& actor, const std::filesystem::path& legacy,
@@ -1691,9 +1799,14 @@ void VerifyOriginalStateExecution(const std::string& actor, const std::filesyste
     Require(SavePortableRuntimeState(saved.string()),"Actual selected state frame could not be saved");
     const auto selected = CheckpointBytes(saved);
     const auto slice = ResumePortableActorState(actor);
-    Require(!slice.passed() && !slice.error.empty(),"Original StartUp slice was silently treated as fully implemented");
-    unchanged(selected,"Unsupported original state slice rollback");
-    std::cout<<"ORIGINAL STATE SLICE explicit refusal: "<<slice.error<<" at "<<slice.function<<':'<<slice.offset<<'\n';
+    Require(slice.passed() && slice.status==Status::Waiting && slice.committed && SavePortableRuntimeState(inspect.string()),
+        "Original StartUp did not yield at the actual Sleep statement: "+slice.error);
+    const auto waiting=CheckpointBytes(inspect);
+    const auto wake=AdvancePortableActorState(actor,1.0f);
+    Require(!wake.passed() && !wake.committed && !wake.error.empty(),"Original StartUp wake was silently treated as fully implemented");
+    unchanged(waiting,"Unsupported original state wake rollback");
+    std::cout<<"ORIGINAL STATE WAKE explicit refusal: "<<wake.error<<" at "<<wake.function<<':'<<wake.offset<<'\n';
+    Require(LoadPortableRuntimeState(saved.string()),"Could not reset original state entry after Sleep test");
     Call(actor,"GotoState",{Name("None")});
     const auto cleared = ReadPortableActorStateObject(actor);
     Require(cleared && cleared->frame && cleared->frame->codePath.empty() && cleared->frame->locals.empty() &&
@@ -1818,7 +1931,7 @@ void VerifyOriginalStateExecution(const std::string& actor, const std::filesyste
 }
 
 void TestOriginal(const std::filesystem::path& root, const bool inventoryOnly = false,
-    const bool switchOnly = false, const bool randomOnly = false) {
+    const bool switchOnly = false, const bool randomOnly = false, const bool sleepOnly = false) {
     static constexpr const char* packages[] = {
         "ConSys", "Core", "DeusEx", "DeusExCharacters", "DeusExConAudioAIBarks",
         "DeusExConAudioEndGame", "DeusExConAudioHK_Shared", "DeusExConAudioIntro",
@@ -1859,6 +1972,8 @@ void TestOriginal(const std::filesystem::path& root, const bool inventoryOnly = 
         const auto actors = GetPortableRuntimeMapActors();
         if (std::string(map) == "00_Training") VerifyColdOriginalAnimationAssets(root, checkpoint, temporary.directory);
         if (std::string(map) == "00_Training") VerifyOriginalRandom("00_Training.Doctor1",checkpoint,temporary.directory);
+        if (std::string(map) == "00_Training") VerifyOriginalSleep(root,tables,"00_Training.Doctor1",checkpoint,temporary.directory);
+        if (sleepOnly) {UnloadPortableRuntimeMap();return;}
         if (randomOnly) {
             UnloadPortableRuntimeMap();
             Require(!GetPortableRuntimeScriptStatePresent(),"Focused original random suite leaked state");
@@ -2081,11 +2196,13 @@ int main(int argc, char** argv) {
             return 77;
         }
         Require(argc == 2 || (argc == 3 && (std::string(argv[2]) == "--inventory-only" ||
-                std::string(argv[2]) == "--switch-only" || std::string(argv[2]) == "--random-only")),
-            "Usage: portable_actor_script_test GAME_ROOT [--inventory-only|--switch-only|--random-only]");
+                std::string(argv[2]) == "--switch-only" || std::string(argv[2]) == "--random-only" || std::string(argv[2]) == "--sleep-only")),
+            "Usage: portable_actor_script_test GAME_ROOT [--inventory-only|--switch-only|--random-only|--sleep-only]");
         const bool switchOnly = argc == 3 && std::string(argv[2]) == "--switch-only";
         const bool randomOnly = argc == 3 && std::string(argv[2]) == "--random-only";
-        TestOriginal(std::filesystem::path(argv[1]), argc == 3 && !switchOnly && !randomOnly, switchOnly,randomOnly);
+        const bool sleepOnly = argc == 3 && std::string(argv[2]) == "--sleep-only";
+        TestOriginal(std::filesystem::path(argv[1]), argc == 3 && !switchOnly && !randomOnly && !sleepOnly, switchOnly,randomOnly,sleepOnly);
+        if (sleepOnly) {std::cout<<"PASS focused original Sleep/native actor wait suite\n";return 0;}
         if (switchOnly) { std::cout << "PASS focused original cold-assets/head-Switch suite\n"; return 0; }
         if (randomOnly) { std::cout << "PASS focused original cold-assets/Rand/FRand/RandRange suite\n"; return 0; }
         std::cout << "PASS original actor authored struct inspection, member writes, typed references, v4/v5 composition and rollback"

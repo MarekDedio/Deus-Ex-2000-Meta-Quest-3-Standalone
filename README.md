@@ -50,7 +50,11 @@ The [original random stream](docs/SCRIPT-RANDOM.md) now implements Rand167 and
 FRand195, executes the original scripted RandRange and both Bird idle branches,
 and preserves global random continuation through transactional failures and
 codec7/checkpoint10 saves, including saving before the first draw.
-Explicit StartUp now advances to unsupported Sleep256 at PC6.
+The [original actor Sleep continuation](docs/SCRIPT-SLEEP.md) now commits actual
+Sleep256 waits, polls them explicitly, preserves signed native timers and
+StopWaiting behavior, and retains waits in codec8/checkpoint11 saves.
+Explicit StartUp can now yield at its original Sleep; later startup dependencies
+are still refused transactionally.
 This is isolated backend progress, not automatic world startup or live NPC AI.
 The [installed Quest test build](docs/QUEST-TEST-BUILD.md) remains frozen while
 the user tests it. Subsequent offline source work retains

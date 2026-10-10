@@ -13,6 +13,7 @@
 #include "quest_actor_overlap.h"
 #include "quest_ai_event_state.h"
 #include "quest_script_random.h"
+#include "quest_actor_latent.h"
 
 #include <memory>
 #include <algorithm>
@@ -99,6 +100,9 @@ public:
     std::string birthVmKey;
     std::optional<QuestVr::ActorAnimationClock> animationClock;
     std::optional<QuestVr::StateObject> stateObject;
+    // Native AActor latent timer is actor-owned, not a state-frame local.
+    // It remains across GotoState, null code and stopped frames.
+    std::optional<float> latentTimeLeft;
     // Nonserialized local-storage identity. References held by an executing
     // expression cannot silently address replacement state locals.
     std::uint64_t stateLocalsRevision{};
@@ -1245,6 +1249,28 @@ public:
         Touch(actor); actor->committedScriptState = true;
         return &*actor->stateObject;
     }
+    bool PollState(const std::string& receiver, const float elapsed, QuestVr::Vm::Execution&) override {
+        auto* actor = Object(receiver);
+        const auto* state = ReadState(receiver);
+        // Original ProcessState does not poll null code, nor run dormant raw
+        // continuations. Explicit GotoState is required to establish live code.
+        if (!state || !state->frameOverride || !state->frame || state->frame->codePath.empty()) return false;
+        if (QuestVr::Vm::ToBool(Read(actor, PropertyNamed(actor,"bDeleteMe"),0u))) return false;
+        const auto role = QuestVr::Vm::ToInt(Read(actor, PropertyNamed(actor,"Role"),0u));
+        auto* code = Object(state->frame->codePath);
+        if (!code->stateDescriptor) throw std::runtime_error("State poll code is not an original State");
+        if (role < 4 && !(code->stateDescriptor->stateFlags & 4u)) return false;
+        if (state->frame->latent == QuestVr::StateLatent::Sleep) {
+            if (!actor->latentTimeLeft) throw std::runtime_error("Sleeping actor has no native latent timer");
+            float next = *actor->latentTimeLeft;
+            const bool released = QuestVr::PollActorSleep(next, elapsed);
+            Touch(actor); actor->latentTimeLeft = next; actor->committedScriptState = true;
+            if (released) actor->stateObject->frame->latent = QuestVr::StateLatent::Continue;
+        } else if (state->frame->latent != QuestVr::StateLatent::Continue &&
+                   state->frame->latent != QuestVr::StateLatent::Stop)
+            throw std::runtime_error("State latent action requires its runtime handler");
+        return true;
+    }
     std::shared_ptr<const Function> StateProgram(const std::string&, const std::string& path) override {
         return StateProgram(Object(path));
     }
@@ -1304,6 +1330,9 @@ public:
         if (!state.frameOverride || !state.frame || state.frame->codePath.empty())
             throw std::runtime_error("State label has no running code");
         const auto originalPath = state.frame->codePath;
+        // Original Core.dll GotoLabel clears the current latent action before
+        // searching, including an in-code goto whose label expression slept.
+        state.frame->latent = QuestVr::StateLatent::Continue;
         const auto stateName = originalPath.substr(originalPath.find_last_of('.') + 1u);
         const auto target = transition && QuestVr::ScriptDispatch::FoldName(label) == "none" ? "Begin" : label;
         const auto position = [&](RuntimeObject* code) {
@@ -1316,9 +1345,6 @@ public:
             const auto statement = std::lower_bound(layout.statementOffsets.begin(), layout.statementOffsets.end(), found->offset);
             state.frame->codePath = code->reflection.objectPath;
             state.frame->statementIndex = static_cast<std::uint32_t>(statement - layout.statementOffsets.begin());
-            // Only transition positioning clears a latent action. In-code goto
-            // preserves a latent action reached while evaluating its label.
-            if (transition) state.frame->latent = QuestVr::StateLatent::Continue;
             return true;
         };
         if (!transition && position(Object(originalPath))) return;
@@ -1383,6 +1409,7 @@ public:
             entry.first->scriptValues.swap(entry.second.values);
             entry.first->classDefaultValues.swap(entry.second.defaults);
             entry.first->animationClock.swap(entry.second.clock);
+            entry.first->latentTimeLeft.swap(entry.second.latentTimeLeft);
             entry.first->stateObject.swap(entry.second.state);
             entry.first->stateLocalsRevision = entry.second.revision;
             entry.first->committedScriptState = entry.second.committed;
@@ -1491,6 +1518,26 @@ public:
             if (!persistentScriptRandomSeed) persistentScriptRandomSeed = QuestVr::ScriptRandom::InitialSeed;
             if (index == 167u) return {Value::Integer(QuestVr::ScriptRandom::Rand(*persistentScriptRandomSeed, maximum)), {}};
             return {Value::Float(QuestVr::ScriptRandom::FRand(*persistentScriptRandomSeed)), {}};
+        }
+        if (index == 256u) {
+            argumentCount(1u,1u);
+            const float seconds = QuestVr::Vm::ToFloat(argument(0u));
+            if (!std::isfinite(seconds)) throw std::runtime_error("Sleep requires finite Seconds");
+            if (!IsDerivedFromPath(object->cls,"Engine.Actor")) throw std::runtime_error("Sleep receiver is not Engine.Actor");
+            if (!object->stateObject || !object->stateObject->frameOverride || !object->stateObject->frame)
+                throw std::runtime_error("Sleep requires an established portable actor frame");
+            Touch(object); object->latentTimeLeft = seconds; object->committedScriptState = true;
+            object->stateObject->frame->latent = QuestVr::StateLatent::Sleep;
+            return {};
+        }
+        if (index == 0u && declaration && LowerAscii(declaration->path) == "engine.pawn.stopwaiting") {
+            argumentCount(0u,0u);
+            if (!IsDerivedFromPath(object->cls,"Engine.Pawn")) throw std::runtime_error("StopWaiting receiver is not Engine.Pawn");
+            if (object->stateObject && object->stateObject->frameOverride && object->stateObject->frame &&
+                object->stateObject->frame->latent == QuestVr::StateLatent::Sleep) {
+                Touch(object); object->latentTimeLeft = -1.0f; object->committedScriptState = true;
+            }
+            return {};
         }
         if (!object->active && !object->worldRemoved) throw std::runtime_error("VM native receiver is inactive");
         if (index == 720u) { // Actor.GetPlayerPawn, pinned NActor.cpp current-Level fallback.
@@ -1754,6 +1801,10 @@ public:
         const auto selected = QuestVr::ScriptDispatch::ResolveState(DispatchGraph(), actor->cls->reflection.objectPath, requested);
         const std::string selectedPath = selected.value_or(std::string{});
         auto& state = EnsureStateObject(actor);
+        // Internal GotoState cancels a wait before EndState/BeginState. Its
+        // actor-owned timer is independent and is deliberately not cleared.
+        if (old.codePath != selectedPath && state.frameOverride && state.frame)
+            state.frame->latent = QuestVr::StateLatent::Continue;
         if (!old.codePath.empty() && old.codePath != selectedPath)
             static_cast<void>(execution.CallEvent(receiver, "EndState", true, {}));
         if (!state.frameOverride) {
@@ -2243,6 +2294,7 @@ private:
         decltype(RuntimeObject::classDefaultValues) defaults;
         std::optional<QuestVr::ActorAnimationClock> clock;
         std::optional<QuestVr::StateObject> state;
+        std::optional<float> latentTimeLeft;
         std::uint64_t revision{};
         bool committed{};
         std::vector<RuntimeObject*> children, based;
@@ -2757,7 +2809,7 @@ private:
         if (!transaction_) throw std::runtime_error("VM mutation outside a transaction");
         if (saved_.find(object) == saved_.end()) {
             if (saved_.size() >= 4096u) throw std::runtime_error("VM touched actor budget exceeded");
-            saved_.emplace(object, Before{object->scriptValues, object->classDefaultValues, object->animationClock, object->stateObject,
+            saved_.emplace(object, Before{object->scriptValues, object->classDefaultValues, object->animationClock, object->stateObject, object->latentTimeLeft,
                 object->stateLocalsRevision, object->committedScriptState, object->childActors, object->basedActors,
                 object->touchEventSent, object->committedLifecycle, object->worldRemoved});
         }
@@ -2934,6 +2986,10 @@ private:
             if ((object->runtimeBirth || object->committedScriptState || object->stateObject || object->committedLifecycle) &&
                 ++objects > limits.maxObjects)
                 throw std::runtime_error("Persistent script/lifecycle actor count budget exceeded");
+            if (object->latentTimeLeft) {
+                if (!std::isfinite(*object->latentTimeLeft)) throw std::runtime_error("Persistent actor latent timer is not finite");
+                defaults.Retain(sizeof(object->latentTimeLeft));
+            }
             if (object->runtimeBirth) defaults.Retain(sizeof(QuestVr::ScriptSavedBirth) +
                 object->reflection.objectPath.size() + object->cls->reflection.objectPath.size() + 2u);
             if (object->committedLifecycle) {
@@ -3158,6 +3214,7 @@ struct PreparedScriptObject {
     decltype(RuntimeObject::scriptValues) values;
     std::optional<QuestVr::ActorAnimationClock> clock;
     std::optional<QuestVr::StateObject> state;
+    std::optional<float> latentTimeLeft;
     std::vector<RuntimeObject*> children, based;
     std::array<bool, 4u> touchSent{};
     bool lifecycle{}, removed{};
@@ -3305,6 +3362,7 @@ QuestVr::ScriptSavedState CollectScriptSavedState() {
         record.path = object->reflection.objectPath;
         record.classPath = object->cls->reflection.objectPath;
         record.clock = object->animationClock;
+        record.latentTimeLeft = object->latentTimeLeft;
         if (object->committedLifecycle) {
             record.lifecycle.emplace();
             auto& lifecycle = *record.lifecycle;
@@ -3559,8 +3617,11 @@ public:
         }
         if (!state.frame) return normalized;
         const auto& frame = *state.frame;
-        if (frame.latent != QuestVr::StateLatent::Continue && frame.latent != QuestVr::StateLatent::Stop)
+        if (frame.latent != QuestVr::StateLatent::Continue && frame.latent != QuestVr::StateLatent::Stop &&
+            frame.latent != QuestVr::StateLatent::Sleep)
             throw std::runtime_error("Script save state latent action is not implemented by this runtime");
+        if (frame.latent == QuestVr::StateLatent::Sleep && !saved.latentTimeLeft)
+            throw std::runtime_error("Script save sleeping actor has no native latent timer");
         if (frame.codePath.empty()) {
             if (!frame.localsCodePath.empty() || !frame.locals.empty())
                 throw std::runtime_error("Script save cleared state frame retains local storage");
@@ -3577,7 +3638,7 @@ public:
         const auto program = host_.StateProgram(code);
         const auto localProgram = host_.StateProgram(localsCode);
         const auto layout = QuestVr::Vm::AnalyzeProgram(host_, *program);
-        if (frame.latent == QuestVr::StateLatent::Continue && frame.statementIndex > layout.statementOffsets.size())
+        if (frame.latent != QuestVr::StateLatent::Stop && frame.statementIndex > layout.statementOffsets.size())
             throw std::runtime_error("Script save running state PC exceeds the program's terminal ordinal");
         // A committed Return can leave the next PC at the end ordinal. Retain
         // it exactly; a subsequent resume still diagnoses the missing next
@@ -3900,6 +3961,7 @@ PreparedScriptState PrepareScriptSavedState(
             }
         }
         next.clock = record.clock;
+        next.latentTimeLeft = record.latentTimeLeft;
         if (record.state) next.state = schema.StateValue(cls, record);
         if (record.lifecycle) {
             next.lifecycle = true; next.removed = record.lifecycle->worldRemoved;
@@ -4645,6 +4707,25 @@ QuestVr::Vm::Result ResumePortableActorState(const std::string& actorPath, const
         QuestVr::Vm::Result result;
         result.status = QuestVr::Vm::Status::Unsupported; result.function = actorPath; result.error = error.what(); return result;
     }
+}
+
+QuestVr::Vm::Result AdvancePortableActorState(const std::string& actorPath, const float elapsed,
+    const QuestVr::Vm::Limits& limits) {
+    CollectBirthGarbageAtBoundary collect;
+    try {
+        PortableActorVmHost host;
+        return QuestVr::Vm::AdvanceState(host, actorPath, elapsed, limits);
+    } catch (const std::exception& error) {
+        QuestVr::Vm::Result result;
+        result.status = QuestVr::Vm::Status::Unsupported; result.function = actorPath; result.error = error.what(); return result;
+    }
+}
+
+std::optional<float> ReadPortableActorLatentTimeLeft(const std::string& actorPath) {
+    PortableActorVmHost host;
+    auto* actor=host.Object(actorPath);
+    if (!IsDerivedFromPath(actor->cls,"Engine.Actor")) throw std::runtime_error("Latent timer receiver is not Engine.Actor");
+    return actor->latentTimeLeft;
 }
 
 std::optional<std::string> ResolvePortableActorState(const std::string& actorPath, const std::string& stateName) {
@@ -5868,6 +5949,8 @@ bool SavePortableRuntimeState(const std::string& path) {
         const bool hasBirths = !scriptState.births.empty();
         const bool hasAiManagers = !scriptState.aiManagers.empty();
         const bool hasRandom = scriptState.randomSeed.has_value();
+        const bool hasSleep = std::any_of(scriptState.objects.begin(), scriptState.objects.end(),
+            [](const auto& object) { return object.latentTimeLeft.has_value(); });
         const bool hasScript = !scriptState.objects.empty() || hasDefaults || hasBirths || hasAiManagers || hasRandom;
         const bool hasState = std::any_of(scriptState.objects.begin(), scriptState.objects.end(),
             [](const auto& object) { return object.state.has_value(); });
@@ -5920,9 +6003,9 @@ bool SavePortableRuntimeState(const std::string& path) {
             persistentCredits < 0 || persistentSkillPoints < 0 || damaged.size() > 100'000u)
             throw std::runtime_error("Runtime checkpoint gameplay values are outside their valid ranges");
         // This is exactly the v3 prefix, including list order and field widths.
-        // Only the version word and appended trailer differ for v4-v10. Pure
+        // Only the version word and appended trailer differ for v4-v11. Pure
         // property/clock captures retain the byte-exact original v4 format.
-        write32(0x53515844u); write32(hasRandom ? 10u : hasAiManagers ? 9u : hasBirths ? 8u : hasLifecycle ? 7u : hasDefaults ? 6u : hasState ? 5u : hasScript ? 4u : 3u);
+        write32(0x53515844u); write32(hasSleep ? 11u : hasRandom ? 10u : hasAiManagers ? 9u : hasBirths ? 8u : hasLifecycle ? 7u : hasDefaults ? 6u : hasState ? 5u : hasScript ? 4u : 3u);
         writeStrings(persistentInventory); writeStrings(inactive); writeStrings(activated); writeFloat(persistentPlayerHealth);
         write32(static_cast<std::uint32_t>(damaged.size()));
         for (const auto& entry : damaged) {
@@ -5989,7 +6072,7 @@ static bool ReadPortableRuntimeState(const std::string& path, const bool apply, 
         };
         if (read32() != 0x53515844u) throw std::runtime_error("Runtime checkpoint magic is invalid");
         const auto version = read32();
-        if (version < 1u || version > 10u) throw std::runtime_error("Runtime checkpoint version is unsupported");
+        if (version < 1u || version > 11u) throw std::runtime_error("Runtime checkpoint version is unsupported");
         auto inventory = readStrings(); auto inactive = readStrings(); auto activated = readStrings();
         float playerHealth = 100.0f;
         std::vector<std::pair<std::string, float>> damaged;
@@ -6035,6 +6118,8 @@ static bool ReadPortableRuntimeState(const std::string& path, const bool apply, 
             const bool hasBirths = !scriptState.births.empty();
             const bool hasAiManagers = !scriptState.aiManagers.empty();
             const bool hasRandom = scriptState.randomSeed.has_value();
+            const bool hasSleep = std::any_of(scriptState.objects.begin(), scriptState.objects.end(),
+                [](const auto& object) { return object.latentTimeLeft.has_value(); });
             restoredRandomSeed = scriptState.randomSeed;
             for (const auto& birth : scriptState.births) savedBirthKeys.emplace(LowerAscii(birth.path));
             const bool hasLifecycle = std::any_of(scriptState.objects.begin(), scriptState.objects.end(),
@@ -6045,7 +6130,8 @@ static bool ReadPortableRuntimeState(const std::string& path, const bool apply, 
                 (version == 7u && (blob.at(6u) != QuestVr::ScriptStateDetail::ActorLifecycleVersion || !hasLifecycle)) ||
                 (version == 8u && (blob.at(6u) != QuestVr::ScriptStateDetail::BirthManifestVersion || !hasBirths)) ||
                 (version == 9u && (blob.at(6u) != QuestVr::ScriptStateDetail::AiManagerVersion || !hasAiManagers)) ||
-                (version == 10u && (blob.at(6u) != QuestVr::ScriptStateDetail::RandomStateVersion || !hasRandom)))
+                (version == 10u && (blob.at(6u) != QuestVr::ScriptStateDetail::RandomStateVersion || !hasRandom)) ||
+                (version == 11u && (blob.at(6u) != QuestVr::ScriptStateDetail::SleepStateVersion || !hasSleep)))
                 throw std::runtime_error("Runtime checkpoint state trailer does not match its envelope version");
             if (!expectedMapName.empty() && LowerAscii(expectedMapName) != LowerAscii(scriptState.mapName))
                 throw std::runtime_error("Runtime checkpoint script map does not match save metadata");
@@ -6155,6 +6241,7 @@ static bool ReadPortableRuntimeState(const std::string& path, const bool apply, 
         for (RuntimeObject* object : persistentRuntime->get()->exports) {
             object->scriptValues.clear(); object->classDefaultValues.clear();
             object->animationClock.reset(); object->stateObject.reset(); object->committedScriptState = false;
+            object->latentTimeLeft.reset();
             object->childActors.clear(); object->basedActors.clear(); object->touchEventSent = {};
             object->committedLifecycle = false; object->worldRemoved = false;
         }
@@ -6174,6 +6261,7 @@ static bool ReadPortableRuntimeState(const std::string& path, const bool apply, 
         for (auto& object : prepared.objects) {
             object.target->scriptValues.swap(object.values); object.target->animationClock.swap(object.clock);
             object.target->stateObject.swap(object.state);
+            object.target->latentTimeLeft.swap(object.latentTimeLeft);
             object.target->committedScriptState = true;
             if (object.lifecycle) {
                 object.target->childActors.swap(object.children); object.target->basedActors.swap(object.based);

@@ -343,6 +343,11 @@ std::optional<QuestVr::StateObject> ReadPortableActorStateObject(const std::stri
 // Explicit bounded state slice, not a world tick or automatic startup phase.
 QuestVr::Vm::Result ResumePortableActorState(const std::string& actorPath,
     const QuestVr::Vm::Limits& limits = {});
+// Explicit original Actor.ProcessState poll + continuation, not a full actor
+// Tick: no animation, Tick event, Timer, physics or automatic world startup.
+QuestVr::Vm::Result AdvancePortableActorState(const std::string& actorPath, float elapsed,
+    const QuestVr::Vm::Limits& limits = {});
+std::optional<float> ReadPortableActorLatentTimeLeft(const std::string& actorPath);
 std::optional<std::string> ResolvePortableActorState(const std::string& actorPath,
     const std::string& stateName);
 std::optional<std::string> ResolvePortableActorFunction(const std::string& actorPath,
