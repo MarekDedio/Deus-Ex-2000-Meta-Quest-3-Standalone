@@ -18,7 +18,7 @@ the pins needs no network access. Submodules, if declared by a locked revision,
 are initialized at their recorded revisions.
 
 Existing checkouts at the pinned revisions keep their local modifications,
-including the project-owned TinyUI patch. Existing checkouts at a different
+including the project-owned TinyUI and session-lifecycle patches. Existing checkouts at a different
 revision, submodules at a different revision, and nonempty directories without
 a Git checkout cause an error. The initializer does not reset, clean, or switch
 an existing dependency checkout. To resolve an error, inspect that checkout and
@@ -64,7 +64,7 @@ paths fail with an actionable error. The script restores the caller's Java and
 Android environment variables after the build.
 
 `-ValidateOnly` checks these toolchain paths, restores/checks the pinned source,
-and prepares the TinyUI patch without invoking Gradle. A normal build produces:
+and prepares both SDK patches without invoking Gradle. A normal build produces:
 
 ```text
 android/build/outputs/apk/debug/DeusExQuestVrSmokeTest-debug.apk
@@ -75,3 +75,33 @@ check their native exit codes. Compile success does not demonstrate a playable
 campaign; installation and runtime validation are separate steps. Original game
 data must be supplied from the user's legally owned installation and must remain
 outside the source repository.
+
+## OpenXR/Android focus ordering
+
+The session-lifecycle patch preserves OpenXR READY/begin and STOPPING/end rules
+and the existing active-session invariants, but removes assertions that require
+Android resume/pause commands to have already been consumed. The two event
+queues can interleave during a real focus change; a 2026-10-10 Quest log captured
+READY before the queued APP_CMD_RESUME and the old assertion aborted the game.
+Starting/ending a session still follows the actual OpenXR event, not a fabricated
+Android state or a swallowed OpenXR error. See the official
+[xrBeginSession](https://registry.khronos.org/OpenXR/specs/1.0/man/html/xrBeginSession.html)
+and [xrEndSession](https://registry.khronos.org/OpenXR/specs/1.0/man/html/xrEndSession.html)
+contracts. The patch is checked against the pinned pristine SDK index and
+idempotently checked on the working checkout; on-device focus tests are separate.
+
+`tools/Launch-QuestSmokeTest.ps1` sends one `am start -W` intent, then checks the
+process without sending another intent. It preserves app data and does not
+claim map/tracking readiness from an activity launch alone.
+
+Offline launch/install and fresh-patch regression tests require no headset:
+
+```powershell
+.\tools\tests\Test-QuestLifecycle.ps1
+.\tools\tests\Test-ThirdPartyPatches.ps1
+```
+
+They cover serial authorization/selection, one-intent launch, nonzero ADB
+failures, replace-install/data preservation, fresh and repeated patch application,
+retained OpenXR contracts and conflicting-edit preservation. Generated fixtures
+are confined to validated temporary directories, not the real SDK or device.

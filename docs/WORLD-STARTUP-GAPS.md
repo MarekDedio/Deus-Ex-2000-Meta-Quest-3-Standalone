@@ -89,8 +89,9 @@ audited original source; preserve original assets and texture appearance. Do
 not delete legitimate finger triangles or claim an arbitrary cap is an original
 torso. Front/back/top/underside captures and real controller poses are required.
 
-The Persona capture also has edge fragments requiring comparison with original
-authored page decoration before treating them as corruption. UI composition,
+The Persona capture's thin outer rails were compared with the original
+InventoryBorder artwork and are authored decoration, not padding corruption;
+they must not be cropped away to imitate a simplified menu. UI composition,
 original player/root-window lifecycle and actual usable inventory remain
 distinct requirements. A styled empty inventory screen is not original player
 inventory initialization.

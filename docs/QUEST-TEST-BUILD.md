@@ -1,6 +1,68 @@
 # Current Quest test-build handoff (2026-10-10)
 
-The latest **installed development APK** adds original landing waits,
+The latest **installed development APK** corrects the backwards hand direction,
+retains the accepted self-body geometry and includes the narrow SDK
+session-lifecycle queue-order patch:
+`artifacts/release-hand-direction-20261010/DeusExQuestVR-hand-direction-20261010.apk`.
+It is 18,919,145 bytes, SHA256
+`D66572A71FE41751452908ED428B959CB215E65B4727F7CAD458770701899A82`.
+Android ARM64 compilation and v2 signature verification pass; its 16 ZIP entries
+contain no original commercial packages. Data-probe is 5,635,696 bytes, SHA256
+`5935D2827575D455568B647A2DA3AA4AB20C899A73016C9C93FA1383C24B0B5D`;
+Quest library is 5,360,240 bytes, SHA256
+`397DE1651B720E4B68E145E8E503918576EC0B70D3922BB5C68B4DEA585662D4`.
+
+This exact archive was installed with `adb install -r` on authorized Quest3
+`2G0YC5ZG620985`; on-device `base.apk` SHA256 matches. LastUpdateTime is
+`2026-10-10 21:42:30`. One waited launch confirmed process18165. Replace-install
+preserves app data; no manual save/load or data reset was requested. After a
+fresh tracked capture, the user confirmed "Yes, directions match" while checking
+normal holding and palm-up/palm-down rotation. This accepts hand direction for
+that test case, not finger tracking, IK or all possible controller grips.
+
+The new self-view has 251 original torso/coat/chest/leg faces and 152 original
+plus four explicitly derived closed rear-cuff faces per hand. The original right
+source is prepared directly in grip space; only the left hand is mirrored. The
+previous extra source reflection put cuffs along -Y, away from the wearer.
+Actual neutral-controller telemetry demonstrates +Y toward the wearer, and
+the corrected mapping retains the proper palm/index axes with cuff +Y. A 16 cm
+render-only rear body offset clears the camera; near-vertical body yaw is stable,
+without changing eyes, floor, movement or saves. Native dimensions/UVs for four
+original textures are retained. These remain rigid visuals, not finger/arm IK
+or a possessed original player. See [PLAYER-VR.md](PLAYER-VR.md).
+
+All50 ordinary host tests pass; three optional original-data integrations skip
+without a game-root argument and were not rerun in this visual-only batch.
+Separate original player-asset proof passes1724 checks/25 expected rejections;
+hand proof passes147/30 synthetic and1705/34 original-data+preview controls,
+including both captured controller rotations, rejection of the previous wrist
+reversal, closed cuff depth/culling and all six views per hand. Shared transform
+tests pass17 groups. Offline launch/install30 and fresh-patch4 tests pass on both
+PowerShell versions. CPU checks do not establish Quest stereo comfort/input.
+The Persona outer rails were independently matched to original border texels;
+they are authored decoration, not cropped padding garbage.
+
+Full campaign startup, original player ownership and automatic actor simulation
+remain unfinished. The landing/probe backend below is retained unchanged in
+scope; save codec8/envelope11 is unchanged. Device capture/physical acceptance of
+this corrected hand mapping is recorded in the 21:43:27 frame and the user's
+physical acceptance. Both grips were tracked; actual eye height was1.650m,
+Training floor -0.198m and four body surfaces were submitted. Evidence is under
+`artifacts/player-geometry-20261010/` and the release archive directory.
+
+The previous geometry APK (SHA256
+`BA769234B1CF818F5CDFA26DB0CFD7D4C14B7568AC4C3B8A4A0A0D13F591D924`)
+received body acceptance but failed hand alignment: fingertips pointed toward
+the wearer. A logging-only diagnostic (SHA256
+`5F87839DD178FF1AF7166289DB7C58A03174D65FBCAD059DE259D39ED50F0935`)
+measured neutral grip +Y at head-local Z=+0.9033/+0.9402 while aim rays pointed
+forward. One earlier Home-return cycle survived without assertion; it did not
+reproduce READY-before-Android-resume ordering. See [PLAYER-VR.md](PLAYER-VR.md)
+for exact rejected-build and lifecycle evidence.
+
+## Previous installed landing/probe build
+
+The preceding **installed development APK** adds original landing waits,
 nonprobe event eligibility and the corrected positive authored probe masks:
 `artifacts/release-landing-probes-20261010/DeusExQuestVR-landing-probes-20261010.apk`.
 It is 18,681,297 bytes, SHA256

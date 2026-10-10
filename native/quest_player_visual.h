@@ -1,11 +1,11 @@
 #pragma once
 
 #include "quest_actor_geometry.h"
+#include "quest_vr_hand_geometry.h"
 
 #include <cstring>
 #include <filesystem>
 #include <limits>
-#include <set>
 
 namespace QuestVr {
 
@@ -32,6 +32,7 @@ struct PlayerVisualPart {
     std::string provenance;
     ActorVec3 originalPivotObjectUnits;
     bool derivedMirrored{};
+    std::size_t originalTriangleCount{}, derivedClosureTriangleCount{};
 };
 
 struct PlayerVisualTexture {
@@ -43,6 +44,8 @@ struct PlayerVisualTexture {
 struct PlayerVisualAssets {
     bool passed{};
     std::string error;
+    // The retained lowerBody field now includes authored torso/chest/collar
+    // coverage; its feet-local renderer attachment and callers stay unchanged.
     PlayerVisualPart lowerBody, rightHand, leftHand;
     std::vector<PlayerVisualTexture> textures;
 };
@@ -53,13 +56,13 @@ struct PlayerVisualTextureUploadEntry {
 };
 using PlayerVisualTextureUploadPlan = std::vector<PlayerVisualTextureUploadEntry>;
 
-// Only the wearer's restricted lower-body view disables culling: a camera
-// above the original open waist otherwise sees culled trouser interiors.
-// This returns renderer state only; authored flags, alpha/depth and geometry
-// remain unchanged. Hands continue honoring the original PF_TwoSided bit.
+// Torso coverage replaces the old cut-off waist, so the body again honors
+// authored PF_TwoSided instead of exposing every garment interior. Position
+// the feet-local body behind the eyes for near-camera clearance; this function
+// changes no geometry, flags, alpha/depth or existing hand culling behavior.
 inline bool CullPlayerVisualPart(std::size_t part, std::uint32_t polyFlags) {
     if (part >= 3u) throw std::runtime_error("Player visual part index is outside the three prepared parts");
-    return part != 0u && (polyFlags & 0x100u) == 0u;
+    return (polyFlags & 0x100u) == 0u;
 }
 
 namespace PlayerVisualDetail {
@@ -121,11 +124,36 @@ inline void Append(PlayerVisualPart& part, PlayerVisualTriangle triangle,
     part.triangles.push_back(std::move(triangle));
 }
 
-// Audited GM_Trench Still: material 2 maps texture slot 2 (trousers/shoes).
-// Material 4 maps slot 5 and has disconnected lower-coat and collar surfaces;
-// all lower-coat corners are <=11.3711 UE Z, all collar corners >=25.5742.
-// The 12-unit cut selects complete original lower-coat triangles, never clips
-// or manufactures geometry, and deliberately leaves out torso/head/arms.
+inline PlayerVisualPart PrepareClosedHandPart(const VrHandGeometry& geometry,
+    const PlayerVisualLimits& limits) {
+    ValidateLimits(limits);
+    if (geometry.originalProvenance.empty() || geometry.derivativeProvenance.empty() ||
+        geometry.triangles.size()>limits.maximumTrianglesPerPart ||
+        geometry.originalTriangleCount==0u || geometry.closureTriangleCount==0u ||
+        geometry.originalTriangleCount>geometry.triangles.size() ||
+        geometry.closureTriangleCount!=geometry.triangles.size()-geometry.originalTriangleCount ||
+        !IsFiniteActorVector(geometry.originalPivotObjectUnits))
+        throw std::runtime_error("Player hand original/derivative metadata is incomplete");
+    VrHandGeometryDetail::Inspect(geometry.triangles,{},true);
+    PlayerVisualPart part;
+    part.provenance=geometry.originalProvenance+"; "+geometry.derivativeProvenance;
+    part.originalPivotObjectUnits=geometry.originalPivotObjectUnits;
+    part.derivedMirrored=geometry.derivedMirrored;
+    for (const auto& face:geometry.triangles) {
+        Append(part,{face.vertices,face.polyFlags,face.textureIndex,face.sourceMaterial},limits);
+        if (face.origin==VrHandFaceOrigin::OriginalSurface) ++part.originalTriangleCount;
+        else if (face.origin==VrHandFaceOrigin::DerivedSleeveClosure) ++part.derivedClosureTriangleCount;
+        else throw std::runtime_error("Player hand has an unknown face provenance");
+    }
+    if (part.originalTriangleCount!=geometry.originalTriangleCount ||
+        part.derivedClosureTriangleCount!=geometry.closureTriangleCount)
+        throw std::runtime_error("Player hand faces disagree with original/derivative provenance");
+    return part;
+}
+
+// Historical lower surfaces are emitted first to retain their original source
+// ordering and texture indices. This is not the final body selection: the
+// complete upper coat/collar/chest is appended below without geometric cuts.
 inline bool LowerBodyTriangle(std::uint16_t material,
     const std::array<ActorTriangleVertex, 3>& triangle) {
     if (material == 2u) return true;
@@ -135,19 +163,18 @@ inline bool LowerBodyTriangle(std::uint16_t material,
     return true;
 }
 
-inline PlayerVisualPart MirroredHand(const PlayerVisualPart& original) {
-    auto mirrored = original;
-    mirrored.derivedMirrored = true;
-    mirrored.provenance = "Quest-X mirrored variant of original Glock right-hand/sleeve surfaces; not an authored left-hand asset";
-    for (auto& triangle : mirrored.triangles) {
-        for (auto& vertex : triangle.vertices) {
-            vertex.position.x = -vertex.position.x;
-            vertex.normal.x = -vertex.normal.x;
-        }
-        std::swap(triangle.vertices[1], triangle.vertices[2]);
-        ValidateTriangle(triangle);
-    }
-    return mirrored;
+// GM_Trench Still's authored material1 UV atlas separates 64 torso/back/shoulder
+// faces (all V<=112/255) from 60 sleeve/arm faces (all V>=182/255), with no mixed
+// triangles. The unused 0.5 gap selects whole original faces, not clipped arms
+// or a fabricated waist cap. Material3 is the 27-face chest/neck. Material2 is
+// trousers/shoes and material4 includes all33 lower-coat/collar faces. Material0
+// contains head plus static hands, and materials5/6 are glasses: all omitted.
+inline bool SelfBodyTriangle(std::uint16_t material,
+    const std::array<ActorTriangleVertex,3>& triangle) {
+    if (material==2u || material==3u || material==4u) return true;
+    if (material!=1u) return false;
+    for (const auto& vertex:triangle) if (vertex.v>0.5f) return false;
+    return true;
 }
 
 inline void CheckMeshExport(const PortablePackageTables& package, std::size_t index,
@@ -248,24 +275,24 @@ inline PlayerVisualTextureUploadPlan BuildPlayerVisualTextureUploadPlan(
 
 // Detached CPU preparation. Inputs contain actual decoded mesh transforms and
 // original animation topology. This does not allocate a runtime player actor.
-inline PlayerVisualAssets BuildPlayerVisualGeometry(const PortableLodMesh& body,
-    const ActorTextureOverrides& bodySkins, const PortableLodMesh& glock,
+inline PlayerVisualAssets BuildPlayerBodyGeometry(const PortableLodMesh& body,
+    const ActorTextureOverrides& bodySkins,
     const PlayerVisualLimits& limits = {}) {
     using namespace PlayerVisualDetail;
     PlayerVisualAssets assets;
     ValidateLimits(limits);
-    if (body.triangles.empty() || glock.triangles.empty() || body.triangles.size() % 3u || glock.triangles.size() % 3u)
-        throw std::runtime_error("Original player meshes have invalid triangle topology");
-    if (body.materialTextureIndices.size() <= 4u || body.materialTextureIndices[2] != 2 || body.materialTextureIndices[4] != 5)
+    if (body.triangles.empty() || body.triangles.size() % 3u)
+        throw std::runtime_error("Original player body has invalid triangle topology");
+    if (body.materialTextureIndices.size() <= 4u || body.materialTextureIndices[1] != 1 || body.materialTextureIndices[2] != 2 ||
+        body.materialTextureIndices[3] != 4 || body.materialTextureIndices[4] != 5)
         throw std::runtime_error("GM_Trench material/skin mapping does not match the audited original");
     const auto bodyPose = OriginalStillPose(body);
-    const auto handPose = OriginalStillPose(glock);
     const auto transform = ObjectToQuestMeters();
     float lowestFoot = std::numeric_limits<float>::infinity();
-    for (std::size_t first = 0u; first < body.triangles.size(); first += 3u) {
+    for (std::size_t pass=0u;pass<2u;++pass) for (std::size_t first = 0u; first < body.triangles.size(); first += 3u) {
         const auto& source = body.triangles[first];
         const auto vertices = BuildActorTriangle(body, first, transform, &bodyPose);
-        if (!LowerBodyTriangle(source.material, vertices)) continue;
+        if (!SelfBodyTriangle(source.material, vertices) || LowerBodyTriangle(source.material,vertices)!=(pass==0u)) continue;
         const auto selected = ResolveActorMeshMaterial(bodySkins, body.texturePaths, body.materialTextureIndices, source.material);
         const auto index = TextureIndex(assets, selected.texturePath, limits);
         Append(assets.lowerBody, {vertices, source.polyFlags, index, source.material}, limits);
@@ -277,46 +304,10 @@ inline PlayerVisualAssets BuildPlayerVisualGeometry(const PortableLodMesh& body,
     for (auto& triangle : assets.lowerBody.triangles)
         for (auto& vertex : triangle.vertices) vertex.position.y -= lowestFoot;
     for (const auto& triangle : assets.lowerBody.triangles) ValidateTriangle(triangle);
-    assets.lowerBody.provenance = "DeusEx.JCDentonMale / DeusExCharacters.GM_Trench original Still: trousers, shoes and lower coat only; head, torso and arms omitted";
+    assets.lowerBody.provenance = "DeusEx.JCDentonMale / DeusExCharacters.GM_Trench original Still: trousers, shoes, complete authored coat torso/back, chest and collar; static sleeves, hands, head and glasses omitted; no generated waist cap or IK";
 
-    std::set<std::uint32_t> gripVertices;
-    for (std::size_t first = 0u; first < glock.triangles.size(); first += 3u) {
-        const auto& source = glock.triangles[first];
-        const auto selected = ResolveActorMeshMaterial({}, glock.texturePaths, glock.materialTextureIndices, source.material);
-        if (selected.texturePath != OriginalHandTexture) continue;
-        const auto vertices = BuildActorTriangle(glock, first, transform, &handPose);
-        Append(assets.rightHand, {vertices, source.polyFlags, TextureIndex(assets, selected.texturePath, limits), source.material}, limits);
-        if (source.material == 1u)
-            for (std::size_t corner = 0u; corner < 3u; ++corner)
-                gripVertices.insert(glock.animation->triangleSourceVertexIndices.at(first + corner));
-    }
-    if (assets.rightHand.triangles.empty() || gripVertices.empty())
-        throw std::runtime_error("Glock original hand texture/material1 grip surfaces are unavailable");
-    // The pivot is the audited material1 grasp's unique source-vertex centroid,
-    // not the weapon origin, a guessed wrist bone, or a claimed authored joint.
-    double gripX{}, gripY{}, gripZ{};
-    for (const auto index : gripVertices) {
-        const auto& point = handPose.objectPositions.at(index);
-        if (!IsFiniteActorVector(point)) throw std::runtime_error("Original hand grip centroid is non-finite");
-        gripX += point.x; gripY += point.y; gripZ += point.z;
-    }
-    const auto inverseCount = 1.0 / static_cast<double>(gripVertices.size());
-    const ActorVec3 grip{static_cast<float>(gripX * inverseCount),
-        static_cast<float>(gripY * inverseCount), static_cast<float>(gripZ * inverseCount)};
-    if (!IsFiniteActorVector(grip)) throw std::runtime_error("Original hand grip centroid is outside finite float range");
-    assets.rightHand.originalPivotObjectUnits = grip;
-    const auto gripMeters = transform.TransformPoint(grip);
-    for (auto& triangle : assets.rightHand.triangles)
-        for (auto& vertex : triangle.vertices) {
-            vertex.position.x -= gripMeters.x;
-            vertex.position.y -= gripMeters.y;
-            vertex.position.z -= gripMeters.z;
-        }
-    for (const auto& triangle : assets.rightHand.triangles) ValidateTriangle(triangle);
-    assets.rightHand.provenance = "DeusExItems.Glock original Still WeaponHandsTex surfaces (sleeve plus grasp); material1 grasp centroid is controller-grip origin; rigid, no finger/arm IK";
-    assets.leftHand = MirroredHand(assets.rightHand);
-    const auto total = assets.lowerBody.triangles.size() + assets.rightHand.triangles.size() + assets.leftHand.triangles.size();
-    if (total > limits.maximumTotalTriangles)
+    assets.lowerBody.originalTriangleCount=assets.lowerBody.triangles.size();
+    if (assets.lowerBody.triangles.size() > limits.maximumTotalTriangles)
         throw std::runtime_error("Player visual total exceeds its triangle budget");
     return assets; // Texture pixels and passed are populated by the loader.
 }
@@ -341,11 +332,13 @@ inline PlayerVisualAssets LoadOriginalPlayerVisualAssets(const std::string& game
             SetActorTextureOverride(skins, property.name.ToString(), property.arrayIndex, path);
         }
         if (playerMesh != "DeusExCharacters.GM_Trench" ||
+            skins.multiSkins[1].path != "DeusExCharacters.Skins.JCDentonTex2" ||
             skins.multiSkins[2].path != "DeusExCharacters.Skins.JCDentonTex3" ||
+            skins.multiSkins[4].path != "DeusExCharacters.Skins.JCDentonTex1" ||
             skins.multiSkins[5].path != "DeusExCharacters.Skins.JCDentonTex2")
             throw std::runtime_error("JCDentonMale original mesh/skin defaults differ from the audited assets");
         const auto bodyIndex = FindPortableExport(characters, "GM_Trench");
-        const auto handIndex = FindPortableExport(items, "Glock");
+        const auto handIndex = FindPortableExport(items, "NanoKeyRingPOV");
         PlayerVisualDetail::CheckMeshExport(characters, bodyIndex, limits);
         PlayerVisualDetail::CheckMeshExport(items, handIndex, limits);
         auto body = LoadPortableLodMesh(characters, bodyIndex);
@@ -359,8 +352,23 @@ inline PlayerVisualAssets LoadOriginalPlayerVisualAssets(const std::string& game
                 mesh.texturePaths.push_back(std::move(path));
             }
         }
-        auto assets = BuildPlayerVisualGeometry(body, skins, hand, limits);
-        if (assets.lowerBody.triangles.size() != 147u || assets.rightHand.triangles.size() != 142u)
+        auto assets = BuildPlayerBodyGeometry(body, skins, limits);
+        const auto handTexture=PlayerVisualDetail::TextureIndex(assets,
+            PlayerVisualDetail::OriginalHandTexture,limits);
+        const auto right=BuildOriginalNanoKeyRingVrHand(hand,handTexture);
+        const auto left=MirrorClosedVrHandGeometry(right);
+        assets.rightHand=PlayerVisualDetail::PrepareClosedHandPart(right,limits);
+        assets.leftHand=PlayerVisualDetail::PrepareClosedHandPart(left,limits);
+        std::array<std::size_t,5> bodyMaterials{};
+        for (const auto& triangle:assets.lowerBody.triangles) {
+            if (triangle.sourceMaterial>=bodyMaterials.size()) throw std::runtime_error("Original self-body retained head/glasses material");
+            ++bodyMaterials[triangle.sourceMaterial];
+        }
+        if (assets.lowerBody.triangles.size() != 251u || bodyMaterials!=std::array<std::size_t,5>{0u,64u,127u,27u,33u} ||
+            assets.rightHand.originalTriangleCount!=152u || assets.rightHand.derivedClosureTriangleCount!=4u ||
+            assets.leftHand.originalTriangleCount!=152u || assets.leftHand.derivedClosureTriangleCount!=4u ||
+            assets.lowerBody.triangles.size()+assets.rightHand.triangles.size()+assets.leftHand.triangles.size()>
+                limits.maximumTotalTriangles)
             throw std::runtime_error("Original player surface counts differ from the bounded audited selection");
         PlayerVisualDetail::DecodeTextures(assets, characters, items, limits);
         assets.passed = true;

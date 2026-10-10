@@ -102,7 +102,8 @@ game build.
 The checked-in Android project references the pinned Meta OpenXR SDK checkout in
 `third_party/Meta-OpenXR-SDK`. On this workstation, the reproducible toolchain is
 installed at `D:\Android\Sdk` with Microsoft OpenJDK 17.
-The build helper idempotently applies the checked-in TinyUI font-path patch to
+The build helper idempotently applies the checked-in TinyUI font-path and
+OpenXR/Android lifecycle-order patches to
 the pinned SDK checkout before invoking Gradle. It now restores the exact source
 dependencies from `third-party-lock.json` on a fresh checkout, preserving any
 existing dependency edits. See [build dependencies](docs/BUILD-DEPENDENCIES.md)

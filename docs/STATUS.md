@@ -1,5 +1,52 @@
 # Port status
 
+## Self-view geometry and session lifecycle repair (2026-10-10)
+
+- The user's 41-second recording exposes genuinely open weapon-derived hands
+  and the old body's cut-off waist. The new self-body restores 104 authored
+  torso/chest/collar faces, for 251 total, omitting static arms/head. It honors
+  original culling and uses 0.16 m render-only rear camera clearance; floor,
+  tracked eyes, movement and saved player position are unchanged. Near-vertical
+  gaze retains a stable render-body yaw rather than flipping its rear offset.
+- Hands retain 152 original NanoKeyRingPOV hand/sleeve faces and add four
+  explicitly derived rear-cuff closure triangles. Bounded closed-manifold
+  checks reject other holes/nonmanifold or inconsistent topology. The original
+  source supplies the right grip; a grip-local X reflection supplies the left.
+  The earlier extra source reflection was incorrect and physically reversed
+  the wrist direction. Captured controller axes establish cuff +Y toward the
+  wearer, not -Y; actual-pose regression checks now guard this distinction.
+  Source IDs, original UVs, materials and normals/winding remain paired.
+- Four native-size JC/hand textures are retained without resampling. Desktop
+  front/back/top/underside diagnostics cover the original textured derivative;
+  these do not establish physical grip alignment, stereo comfort or animated
+  player ownership. See [PLAYER-VR.md](PLAYER-VR.md).
+- Independent Persona rail auditing found 439 lower-left original border texels
+  matching the shared canvas and full CPU preview exactly. Other sampled outer
+  rails also match. They are authored decoration and are not cropped away;
+  theme/blending fidelity, actual inventory initialization and input remain
+  separate requirements.
+- The SDK lifecycle patch removes only Android resume/pause queue-order
+  assertions; real OpenXR READY/begin, STOPPING/end, active-session assertions
+  and checked errors remain. Launch/install helpers use one waited launch and
+  exact authorized serial selection while preserving app data. Offline failure,
+  fresh-patch, idempotence and conflicting-edit tests cover both PowerShell
+  versions. See [BUILD-DEPENDENCIES.md](BUILD-DEPENDENCIES.md).
+- All50 ordinary host tests pass (three optional original-data integrations
+  skipped); separate original player proof passes1724/25 expected rejects and
+  hand proof147/30 synthetic plus1705/34 original+preview controls. Transform
+  tests pass17 groups. The signed ARM64 APK is installed and its actual on-device
+  hash matches the frozen archive; app data was preserved. With tracking active,
+  the user accepted the body but rejected the earlier hand alignment (fingertips
+  toward self). A subsequent diagnostic measured the wrong wrist direction;
+  the corrected build was then captured with both grips tracked and received
+  the user's "Yes, directions match" physical acceptance. The body remained
+  unchanged, with1.650m eye height and four submitted body surfaces. One Home-return cycle
+  survived without assertion but did not reproduce the narrow READY-before-
+  Android-resume ordering. See [QUEST-TEST-BUILD.md](QUEST-TEST-BUILD.md).
+- This remains render-only self-view geometry, not finger/arm IK, walking
+  animation, held weapons, a possessed original player or full campaign startup.
+  The backend/world-simulation boundaries below remain in force.
+
 ## Original landing wait and positive authored probes (2026-10-10)
 
 - WaitForLanding527 always retains the original shared2.5s native counter;
@@ -33,8 +80,9 @@
   upward view has no tracked controller grips and does not accept body alignment.
   Training/UI/body frames were also captured on the earlier landing APK.
   Automatic seated height reached1.650m and feet match the actual floor.
-  Hands/lower-body surfaces render, but original open hand/waist geometry and
-  UI edge fragments need original-artwork comparison. Idle Training reports72fps; screenshot
+  Hands/lower-body surfaces render, but this earlier build retains open
+  hand/waist geometry. Its UI edge rails have since been verified as original
+  authored decoration. Idle Training reports72fps; screenshot
   readback causes large spikes. These are scoped checks, not visual/performance
   or campaign completion. See [QUEST-TEST-BUILD.md](QUEST-TEST-BUILD.md).
 - Production Quest still has no real GameInfo/world startup, player login/

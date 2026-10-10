@@ -8,29 +8,58 @@ player pawn or a finished full-body rig.
 CPU preparation reads the user's original `DeusEx.u`, `DeusExCharacters.u`
 and `DeusExItems.u` on the existing startup worker. It verifies
 `JCDentonMale.Mesh=DeusExCharacters.GM_Trench` and the original JC skin defaults.
-The initial lower body comprises 147 original Still-pose trousers/shoes and
-lower-coat triangles. Head, torso and upper arms are omitted to keep the
-first-person camera clear; there is no invented skeletal rig or clipping mesh.
-The wearer's lower-body renderer deliberately disables back-face culling: an
-overhead self-view looks into the original mesh's open waist, where authored
-one-sided trousers otherwise disappear. This is a VR self-view exception, not
-a change to NPC/hand flags, geometry, alpha masking or depth occlusion.
+The self-body comprises 251 original Still-pose surfaces: 127 trousers/shoes,
+64 coat torso/back/shoulder, 27 chest/neck and 33 lower-coat/collar triangles.
+The original coat UV atlas cleanly separates torso faces (all V<=112/255) from
+static sleeves/arms (all V>=182/255). Whole original faces are selected; no
+geometry is clipped or invented. Static hands/head/glasses and arms are omitted.
+The neck/shoulder sockets remain open, so this is not a closed full-body mesh.
+Unlike the earlier 147-face cut-off waist, this torso honors original material
+back-face culling instead of exposing every garment interior.
 
-The right hand/sleeve comprises 142 original `Glock` Still-pose triangles whose
-material resolves to `DeusExItems.Skins.WeaponHandsTex`. No gun surface is
-included. Its local origin is the original grasp material's vertex centroid;
-it follows the actual right controller grip pose, not its pointing ray. A fixed
-hand-local X rotation of -90 degrees maps the original upright grasp's
-little-finger-to-thumb +Y direction to OpenXR grip -Z. Original textured CPU
-axis views confirm the anatomical sign; shared tests check that basis and
-centroid under independently yawed/pitched/rolled, translated controllers. The
-left hand is an explicitly mirrored derivative of those same original surfaces,
-with normals and triangle winding corrected. It is not an authored left-hand
-asset. Both are rigid poses, not finger tracking, grip animation or arm IK.
+Hands now use the more complete original `NanoKeyRingPOV` Still-pose hand and
+connected sleeve, not the visibly open Glock weapon grasp. Only its 152 original
+`WeaponHandsTex` faces are retained; no key-ring surface is included. Topology
+validation requires 80 source vertices, one simple audited six-vertex rear cuff
+and no extra holes, disconnected parts, inconsistent winding or nonmanifold
+edges/vertices. Four explicitly derived convex-ear triangles close that cuff,
+using exact source rim vertices and an original rear-cuff texture coordinate.
+All original face UVs/materials remain unchanged. This is a bounded VR
+derivative, not a claim that the original asset contained a cap.
 
-The lower body follows the tracked head's horizontal position and yaw on the
-active virtual floor. It is hidden below a 1.05 m relative head height to avoid a fixed standing
-waist intersecting a low/seated camera. Walking/crouching animation, full torso,
+The original source supplies the right-hand derivative without reflection
+(`derivedMirrored=false`). Reflecting the prepared right hand across grip-local
+X supplies the left variant (`derivedMirrored=true`), including normals, source
+corner identities and winding. Both are explicitly adapted derivatives, not
+separately authored assets. The earlier source-handedness classification was
+wrong: its extra reflection reversed the wrist direction on the headset.
+
+An audited palm/back landmark midpoint supplies the grip origin, independent
+of the long sleeve. Original source landmarks define right grip +X into the palm and -Z
+along the curled little-finger-to-index direction, with an orthogonal
+right-handed +Y. The cuff extends along +Y, not -Y: for a neutral upright
+controller the curled little-to-index direction points upward, making grip +Y
+point back toward the wrist. The 21:38:09 capture confirms head-local grip +Y
+Z=+0.9033/+0.9402 for right/left while the aim rays point forward. Preparation
+converts vertices/normals into this grip-local
+basis once. Rendering uses the actual controller grip pose directly, not its
+aim ray or the obsolete Glock-specific -90-degree correction. Both remain rigid poses, not finger tracking,
+grip animation or arm IK. Host geometry checks cannot establish physical grip
+comfort; that requires controller-in-hand acceptance on the Quest. The latest
+physical test rejected the earlier extra-reflection alignment: the fingertips
+pointed toward the wearer. The corrected source mapping passed a subsequent
+controller-in-hand direction test; see the latest device outcome below. Grip-axis
+definitions follow the [Khronos OpenXR standard pose identifiers](https://registry.khronos.org/OpenXR/specs/1.0-khr/html/xrspec.html#semantic-path-standard-pose-identifiers).
+
+The body follows tracked horizontal head yaw on the active virtual floor, with
+a render-only 0.16 m rearward clearance along that yaw's +Z axis. Multi-angle
+original-texture CPU comparisons at 0/12/16 cm found that 16 cm clears the old
+coat tunnel and reveals boots when looking down. The tracked eyes, calibrated
+floor, collision and saved map position are not shifted. Near-vertical gaze
+retains the last render-only heading to avoid a 180-degree projection flip;
+reference changes rebase that heading. The body is hidden
+below a 1.05 m relative head height to avoid a fixed standing waist intersecting
+a low/crouched camera. Walking/crouching animation,
 arm IK, held weapons and a real script-controlled player pawn remain unfinished.
 The new visuals do not add actors or alter inventory/checkpoints/saves.
 
@@ -78,8 +107,8 @@ no unrestricted upward teleport or fabricated ground. Original cache front and
 reverse triangles remain paired, so collision extraction still advances by six
 vertices. This mesh probe is not the original engine's full pawn physics.
 
-The three original images are 128x128 (trousers), 128x256 (coat), and 256x256
-(hands), not three equally sized layers. A bounded native-size upload plan is
+The four original images are 128x128 (trousers), 128x256 (coat), 64x128 (chest)
+and 256x256 (hands), not equally sized layers. A bounded native-size upload plan is
 fully validated before GL calls; each unchanged image uses a separate one-layer
 array with its original UVs and bilinear sampling. No resizing/padding/texel
 replication is used. These textures are uploaded once per XR session, kept
@@ -131,8 +160,12 @@ inputs cannot move or rearm the player.
 hysteresis. `vr_world_transform_test` covers off-origin/pitched HUD positioning,
 map-position-preserving user recenter and the existing room-space continuity,
 turn/collision/save mathematics. `quest_player_visual_test` tests bounded CPU
-geometry/mirroring and, with an explicit original game root, verifies the actual
-147/142/142 original surface selections and three decoded textures. The posture
+body selection/import and, with an explicit original game root, verifies the actual
+251 self-body faces, 152 original plus four derived faces per hand and four
+decoded textures. `quest_vr_hand_geometry_test` separately tests closed topology,
+source-face/UV retention, grip basis, mirror winding and bounded rejection.
+`vr_world_transform_test` also checks horizontal body clearance at off-origin,
+pitched, standing and seated poses. The posture
 test exercises 1,856 bounded synthetic calibration/recenter/settling checks;
 transform tests also cover seated
 save feet, floor-delta switching and recenter preservation. These are
@@ -141,6 +174,75 @@ grip alignment, headset comfort or full body animation. Capture-time logs also
 report actual submitted HUD-center/head-forward projections: the asymmetric
 left-eye image's forward point is not necessarily its pixel midpoint. Actual
 device captures and a physical recenter test are separate acceptance checks.
+
+Headless original-data diagnostics (write only to an ignored artifact directory):
+
+```powershell
+$hostBuild = 'artifacts\prerequisites-20261009\build'
+$ownedGame = 'D:\Steam\steamapps\common\Deus Ex'
+& "$hostBuild\quest_player_visual_test.exe" --game-root $ownedGame
+& "$hostBuild\quest_player_visual_test.exe" --preview-body $ownedGame artifacts\player-body-preview
+& "$hostBuild\quest_vr_hand_geometry_test.exe" --game-root $ownedGame
+```
+
+### Latest device outcome: corrected hand direction accepted
+
+The corrected archived APK
+`artifacts/release-hand-direction-20261010/DeusExQuestVR-hand-direction-20261010.apk`
+(SHA256 `D66572A71FE41751452908ED428B959CB215E65B4727F7CAD458770701899A82`)
+was replace-installed; the actual on-device APK hash matches. The user tested
+normal holding and palm-up/palm-down rotation and confirmed "Yes, directions
+match". This accepts the corrected hand direction in that physical test, not
+finger animation, IK, every grip or a complete original player pawn.
+
+The tracked 21:43:27 screenshot shows sleeves extending back toward the wearer,
+not away. Both grips are tracked, eye height is1.650m, floor is-0.198m and four
+body surfaces are submitted. Body geometry and height calibration were unchanged
+from the accepted body test. Evidence:
+`artifacts/player-geometry-20261010/quest-hands-direction-corrected.bmp` and its log.
+
+### Previous geometry build: body accepted, hand alignment rejected
+
+The archived geometry APK
+`artifacts/release-player-geometry-20261010/DeusExQuestVR-player-geometry-20261010.apk`
+(SHA256 `BA769234B1CF818F5CDFA26DB0CFD7D4C14B7568AC4C3B8A4A0A0D13F591D924`)
+was installed and subsequently tested with valid head and controller tracking.
+The user reported "body is fine, but hands are in a completely wrong direction"
+and clarified that the fingertips point toward them. Thus the body is accepted
+for this reported test case, while that build's hand alignment was **rejected**.
+The corrected build above supersedes that rejected mapping. This is not
+overall acceptance of the new geometry, every body/view angle, or a finished
+animated player.
+
+The 21:30:46 capture records both tracked grips and 1.680 m actual eye height
+after real movement; the session's seated calibration had targeted 1.650 m.
+Feet match the actual Training floor at -0.198 m, with four submitted body surfaces.
+The recorded frame and metadata are
+`artifacts/player-geometry-20261010/quest-hands-orientation-rejected.bmp` and its
+matching log; successful rendering/grounding does not override the physical
+hand-alignment rejection.
+
+The same APK also survived one Home-to-return lifecycle cycle in process 15719.
+At 21:29:37 the old session reached STOPPING, completed `xrEndSession`, and
+entered IDLE. Returning at 21:29:43 created a new activity/native thread 16470
+in the same process, and its new session reached READY and FOCUSED without an
+observed assertion or process crash. However, `APP_CMD_RESUME` at 21:29:43.253
+preceded READY at 21:29:43.267: this cycle did **not** reproduce the narrow
+READY-before-Android-resume queue ordering that triggered the earlier SDK
+assertion. It is one successful lifecycle regression check, not proof that all
+focus races are fixed. Evidence: `artifacts/player-geometry-20261010/quest-focus-cycle.log`.
+
+A subsequent quaternion-logging diagnostic APK
+`artifacts/player-geometry-20261010/DeusExQuestVR-hand-pose-diagnostic.apk`
+(SHA256 `5F87839DD178FF1AF7166289DB7C58A03174D65FBCAD059DE259D39ED50F0935`)
+was installed to investigate the hand direction. Installation is not a new
+physical acceptance or evidence that hand alignment has been corrected.
+
+### Earlier seated-height acceptances
+
+The following device acceptances describe the earlier cut-off-waist/Glock
+builds. They prove their recorded calibration/grounding cases, not acceptance
+of the new torso/closed-hand geometry above.
 
 The first seated device test was rejected by the user (view too low / legs
 missing). A requested downward Quest capture showed only the lower coat, and

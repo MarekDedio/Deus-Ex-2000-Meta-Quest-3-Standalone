@@ -757,6 +757,8 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                 playerPosture_.ApplyRecenter(origin.Translation.y)) {
                 const OVR::Vector3f right = origin.Rotation.Rotate(OVR::Vector3f(1.0f, 0.0f, 0.0f));
                 const float originYaw = std::atan2(-right.z, right.x);
+                if (selfBodyYawInitialized_)
+                    selfBodyStageYaw_=std::remainder(selfBodyStageYaw_-originYaw,2.0f*QuestVr::Pi);
                 const OVR::Vector3f oldHead = previousHeadStage_;
                 const bool recenterable = gameplayReferenceType_ == XR_REFERENCE_SPACE_TYPE_LOCAL_FLOOR_EXT;
                 if (recenterable) {
@@ -798,6 +800,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                 }
                 needsTrackingRebase_ = true;
                 hasPreviousHeadStage_ = false;
+                selfBodyYawInitialized_=false;
                 ALOG("DeusExQuest: OpenXR reference discontinuity; rebasing on valid tracking");
             }
         }
@@ -857,6 +860,9 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         const OVR::Vector3f saveHeadForward = frame.HeadPose.Rotation.Rotate({0.0f, 0.0f, -1.0f});
         if (std::hypot(saveHeadForward.x, saveHeadForward.z) > 0.0001f)
             currentHeadStageYaw_ = std::atan2(-saveHeadForward.x, -saveHeadForward.z);
+        selfBodyStageYaw_=QuestVr::StableSelfBodyYaw(saveHeadForward,
+            frame.HeadPose.Rotation.Rotate(OVR::Vector3f{1,0,0}),selfBodyStageYaw_,selfBodyYawInitialized_);
+        selfBodyYawInitialized_=true;
         if (!hasPreviousHeadStage_) {
             if (needsTrackingRebase_) {
                 worldPosition_ = QuestVr::RestoreHorizontalHeadPosition(
@@ -1167,6 +1173,22 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                 frame.HeadPose.Translation.x,frame.HeadPose.Translation.y,frame.HeadPose.Translation.z,
                 static_cast<int>(frame.RightRemoteTracked),static_cast<int>(frame.LeftRemoteTracked),
                 projected.x/projected.w,projected.y/projected.w,static_cast<int>(gameplayReferenceType_));
+            const OVR::Posef gripPoses[]{frame.RightRemotePose,frame.LeftRemotePose};
+            const OVR::Posef aimPoses[]{frame.RightRemotePointPose,frame.LeftRemotePointPose};
+            const bool gripTracked[]{frame.RightRemoteTracked,frame.LeftRemoteTracked};
+            for (std::size_t hand=0u;hand<2u;++hand) {
+                if (!gripTracked[hand]) continue;
+                const auto local=frame.HeadPose.Inverted()*gripPoses[hand];
+                const auto aim=frame.HeadPose.Inverted()*aimPoses[hand];
+                const auto x=local.Rotation.Rotate(OVR::Vector3f{1,0,0});
+                const auto y=local.Rotation.Rotate(OVR::Vector3f{0,1,0});
+                const auto z=local.Rotation.Rotate(OVR::Vector3f{0,0,1});
+                const auto ray=aim.Rotation.Rotate(OVR::Vector3f{0,0,-1});
+                ALOG("DeusExQuest: screenshot %s grip headLocal pos=(%.4f %.4f %.4f) quat=(%.5f %.5f %.5f %.5f) X=(%.4f %.4f %.4f) Y=(%.4f %.4f %.4f) Z=(%.4f %.4f %.4f) aimRay=(%.4f %.4f %.4f)",
+                    hand==0u?"right":"left",local.Translation.x,local.Translation.y,local.Translation.z,
+                    local.Rotation.x,local.Rotation.y,local.Rotation.z,local.Rotation.w,
+                    x.x,x.y,x.z,y.x,y.y,y.z,z.x,z.y,z.z,ray.x,ray.y,ray.z);
+            }
             ALOG("DeusExQuest: screenshot player seated=%d virtualFloor=%.3f eyeHeight=%.3f mapFeetY=%.3f",
                 static_cast<int>(playerPosture_.seated),playerPosture_.virtualFloorY,
                 frame.HeadPose.Translation.y-playerPosture_.virtualFloorY,
@@ -1617,15 +1639,16 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                     playerVisualRenderers_[part].emplace_back();
                     playerVisualRenderers_[part].back().Init(descriptor, playerVisualTextures_.at(textureIndex),
                         QuestVr::CullPlayerVisualPart(part,flags), flags);
-                    // The self-view camera looks into the original open waist.
-                    // Only the wearer's lower body is two-sided in VR; authored
-                    // hand/NPC flags, depth, alpha and topology remain unchanged.
+                    // Selected original torso coverage and body-only camera
+                    // clearance replace the old uncullable cut-off waist.
+                    // Authored material culling, alpha and depth are retained.
                 }
             }
             if (glGetError() != GL_NO_ERROR)
                 throw std::runtime_error("original player geometry upload failed");
-            ALOG("DeusExQuest: player visuals ready: %zu original lower-body, %zu right-hand, %zu mirrored-left triangles; rigid grip attachment, no IK",
-                assets.lowerBody.triangles.size(),assets.rightHand.triangles.size(),assets.leftHand.triangles.size());
+            ALOG("DeusExQuest: player visuals ready: %zu original self-body, each hand %zu original + %zu derived cuff triangles; right-grip local with mirrored left, body clearance %.2fm, rigid no IK",
+                assets.lowerBody.originalTriangleCount,assets.rightHand.originalTriangleCount,
+                assets.rightHand.derivedClosureTriangleCount,QuestVr::SelfBodyRearClearanceMeters);
         } catch (const std::exception& error) {
             DestroyPlayerVisuals();
             ALOG("DeusExQuest: player visuals rejected: %s",error.what());
@@ -1639,10 +1662,11 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         if (!runtimeAvailable_ || !pendingMapName_.empty() || !transitionMapName_.empty() ||
             GetPortableRuntimePlayerHealth() <= 0.0f || inventoryMenuOpen_) return 0u;
         std::size_t bodySurfaces{};
-        const OVR::Posef body(OVR::Quatf(OVR::Vector3f{0,1,0},currentHeadStageYaw_),
-            OVR::Vector3f{frame.HeadPose.Translation.x,playerPosture_.virtualFloorY,frame.HeadPose.Translation.z});
-        const OVR::Posef poses[]{body,QuestVr::OriginalHandGripPose(frame.RightRemotePose),
-            QuestVr::OriginalHandGripPose(frame.LeftRemotePose)};
+        const OVR::Posef body = QuestVr::FeetLocalSelfBodyPose(
+            frame.HeadPose,selfBodyStageYaw_,playerPosture_.virtualFloorY);
+        // Prepared hands already use canonical OpenXR grip-local axes. The
+        // former Glock-specific -90deg rotation must not be applied again.
+        const OVR::Posef poses[]{body,frame.RightRemotePose,frame.LeftRemotePose};
         const bool visible[]{gameplayReferenceType_ != XR_REFERENCE_SPACE_TYPE_LOCAL &&
             !postureCalibrationPending_ && frame.HeadPose.Translation.y-playerPosture_.virtualFloorY > 1.05f,
             frame.RightRemoteTracked,frame.LeftRemoteTracked};
@@ -5673,6 +5697,8 @@ class DeusExQuestApp final : public OVRFW::XrApp {
     bool headTrackingValid_{};
     bool headTrackingActive_{};
     float currentHeadStageYaw_{};
+    float selfBodyStageYaw_{};
+    bool selfBodyYawInitialized_{};
     bool headTrackingReported_{};
     bool needsTrackingRebase_{};
     OVR::Vector3f trackingResumeLocalHead_{};

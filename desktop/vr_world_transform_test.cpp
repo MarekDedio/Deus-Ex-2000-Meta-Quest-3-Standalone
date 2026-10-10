@@ -220,7 +220,7 @@ void UserRecenterAndHud() {
     }
 }
 
-void OriginalHandGripBasis() {
+void LegacyGlockHandGripBasis() {
     for (float yaw : {-2.7f,0.0f,1.6f}) {
         for (float pitch : {-1.1f,0.0f,0.8f}) {
             for (float roll : {-2.0f,0.0f,2.4f}) {
@@ -228,7 +228,7 @@ void OriginalHandGripBasis() {
                     OVR::Quatf(Vector{0,0,1},roll);
                 for (const Vector origin : {Vector{0,0,0},Vector{6.2f,1.4f,-3.8f}}) {
                     const OVR::Posef grip{rotation,origin};
-                    const auto hand = QuestVr::OriginalHandGripPose(grip);
+                    const auto hand = QuestVr::LegacyGlockHandGripPose(grip);
                     RequireNear(hand.Translation,origin,"Source hand basis moved the grip centroid");
                     RequireNear(hand.Rotation.Rotate(Vector{1,0,0}),rotation.Rotate(Vector{1,0,0}),
                         "Source palm normal disagrees with OpenXR grip X");
@@ -247,6 +247,53 @@ void OriginalHandGripBasis() {
                 }
             }
         }
+    }
+}
+
+void SelfBodyCameraClearance() {
+    for (float yaw : {-2.7f,0.0f,1.6f}) {
+        for (float pitch : {-QuestVr::Pi*0.5f,-0.8f,0.0f,0.7f}) {
+            for (float floor : {-1.1f,-0.73f,0.0f}) {
+                for (const Vector origin : {Vector{0,0,0},Vector{6.2f,1.4f,-3.8f}}) {
+                    const OVR::Posef head{Yaw(yaw)*OVR::Quatf(Vector{1,0,0},pitch),origin};
+                    const auto body=QuestVr::FeetLocalSelfBodyPose(head,yaw,floor);
+                    const auto clearance=Yaw(yaw).Inverted().Rotate(
+                        Vector{body.Translation.x-origin.x,0.0f,body.Translation.z-origin.z});
+                    RequireNear(clearance,Vector{0,0,QuestVr::SelfBodyRearClearanceMeters},
+                        "Body camera clearance must be horizontal and head-yaw local, not pitched or room fixed");
+                    Require(std::fabs(body.Translation.y-floor)<0.00001f,
+                        "Body camera clearance changed the calibrated feet height");
+                    RequireNear(body.Rotation.Rotate(Vector{0,1,0}),Vector{0,1,0},
+                        "Looking down tilted the feet-local body");
+                    RequireNear(body.Rotation.Rotate(Vector{0,0,-1}),Yaw(yaw).Rotate(Vector{0,0,-1}),
+                        "Self-body yaw disagreed with the tracked horizontal forward");
+                    RequireNear(head.Translation,origin,"Self-body placement mutated the tracked head");
+                }
+            }
+        }
+    }
+}
+
+void NearVerticalSelfBodyHeading() {
+    for (float yaw : {-2.7f,0.0f,1.6f}) {
+        for (float pitch : {-100.0f,-91.0f,-90.0f,-89.0f,-80.0f,80.0f,89.0f,90.0f,91.0f,100.0f}) {
+            const auto orientation=Yaw(yaw)*OVR::Quatf(Vector{1,0,0},pitch*QuestVr::Pi/180.0f);
+            const auto forward=orientation.Rotate(Vector{0,0,-1}),right=orientation.Rotate(Vector{1,0,0});
+            const float stable=QuestVr::StableSelfBodyYaw(forward,right,yaw,true);
+            Require(std::fabs(stable-yaw)<0.00001f,"Near-vertical gaze flipped the render-only body heading");
+            RequireNear(Yaw(QuestVr::StableSelfBodyYaw(forward,right,0.0f,false)).Rotate(Vector{0,0,1}),
+                Yaw(yaw).Rotate(Vector{0,0,1}),"Initial downward view failed to use the tracked right-axis heading");
+            for (float originYaw : {-2.0f,0.0f,0.9f}) {
+                const float rebased=std::remainder(stable-originYaw,2.0f*QuestVr::Pi);
+                const float after=QuestVr::StableSelfBodyYaw(Yaw(originYaw).Inverted().Rotate(forward),
+                    Yaw(originYaw).Inverted().Rotate(right),rebased,true);
+                RequireNear(Yaw(after).Rotate(Vector{0,0,1}),Yaw(originYaw).Inverted().Rotate(Yaw(yaw).Rotate(Vector{0,0,1})),
+                    "Reference change displaced the near-vertical body rear offset");
+            }
+        }
+        const float updated=QuestVr::StableSelfBodyYaw(Yaw(yaw).Rotate(Vector{0,0,-1}),
+            Yaw(yaw).Rotate(Vector{1,0,0}),yaw+0.2f,true);
+        Require(std::fabs(updated-yaw)<0.00001f,"Normal horizontal gaze froze body yaw");
     }
 }
 
@@ -379,11 +426,13 @@ int main() {
         SweepAcrossThinWall();
         ReferenceSpaceContinuity();
         UserRecenterAndHud();
-        OriginalHandGripBasis();
+        LegacyGlockHandGripBasis();
+        SelfBodyCameraClearance();
+        NearVerticalSelfBodyHeading();
         MapLocalSaveRestoration();
         SeatedFloorSaveAndRecenter();
         VirtualFloorReferenceHeightContinuity();
-        std::cout << "PASS: 15 shared Quest transform regression groups; "
+        std::cout << "PASS: 17 shared Quest transform regression groups; "
                      "481 renderer rotations, 1201 off-origin turns, 15 simultaneous "
                      "turn/move cases. No headset or game data required.\n";
         return 0;

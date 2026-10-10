@@ -1,0 +1,28 @@
+diff --git a/Samples/SampleXrFramework/Src/XrApp.cpp b/Samples/SampleXrFramework/Src/XrApp.cpp
+index fcfb8ec..58627c7 100755
+--- a/Samples/SampleXrFramework/Src/XrApp.cpp
++++ b/Samples/SampleXrFramework/Src/XrApp.cpp
+@@ -128,6 +128,11 @@ void XrApp::HandleAndroidCmd(struct android_app* app, int32_t cmd) {
+ void XrApp::HandleSessionStateChanges(XrSessionState state) {
+     if (state == XR_SESSION_STATE_READY) {
+ #if defined(ANDROID)
+-        assert(Resumed);
++        // Android lifecycle commands and OpenXR events are independent queues.
++        // READY may follow xrEndSession before APP_CMD_RESUME is consumed.
++        // OpenXR, not that queue ordering, determines when to begin a session.
++        if (!Resumed) {
++            ALOGV("OpenXR READY received before Android resume; beginning ready session");
++        }
+ #endif // defined(ANDROID)
+         assert(SessionActive == false);
+@@ -206,6 +211,9 @@ void XrApp::HandleSessionStateChanges(XrSessionState state) {
+         }
+     } else if (state == XR_SESSION_STATE_STOPPING) {
+ #if defined(ANDROID)
+-        assert(Resumed == false);
++        // STOPPING can precede Android's pause command during a focus change.
++        if (Resumed) {
++            ALOGV("OpenXR STOPPING received before Android pause; ending running session");
++        }
+ #endif // defined(ANDROID)
+         assert(SessionActive);
