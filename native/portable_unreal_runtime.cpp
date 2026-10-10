@@ -12,6 +12,7 @@
 #include "quest_spawn_placement.h"
 #include "quest_actor_overlap.h"
 #include "quest_ai_event_state.h"
+#include "quest_script_random.h"
 
 #include <memory>
 #include <algorithm>
@@ -174,6 +175,11 @@ private:
 };
 
 std::unique_ptr<GCRoot<RuntimePackage>> persistentRuntime;
+// One game/script-thread stream, shared by all receivers and retained through
+// ordinary map replacement. Absence means the deterministic seed1 baseline.
+// Every nonbaseline initial seed is retained before the first draw, so even
+// pre-draw checkpoints and map rollback preserve it. Quest supplies time once.
+std::optional<std::uint32_t> persistentScriptRandomSeed;
 std::unordered_map<std::string, RuntimeObject*> persistentQualifiedObjects;
 // UE names are case-insensitive. Keep the VM lookup alongside the owning
 // runtime index, rather than copying/lowercasing every export for every call.
@@ -1330,6 +1336,7 @@ public:
         lifecycleOperations_ = 0u;
         beforeExportCount_ = persistentRuntime->get()->exports.size();
         beforeWorldSlots_ = persistentWorldActors.size();
+        beforeRandomSeed_ = persistentScriptRandomSeed;
         transaction_ = true;
     }
     void Commit() override {
@@ -1360,6 +1367,7 @@ public:
     }
     void Rollback() noexcept override {
         if (!transaction_) return;
+        persistentScriptRandomSeed = beforeRandomSeed_;
         // Restore native bindings/edges before provisional actor identities are
         // retired. Swap-only rollback cannot allocate or invoke game scripts.
         for (auto& [owner, before] : savedAi_) {
@@ -1459,7 +1467,6 @@ public:
         if (index == 650u || index == 710u || index == 711u ||
             (index >= 713u && index <= 716u))
             return AiNative(index, object, arguments);
-        if (!object->active && !object->worldRemoved) throw std::runtime_error("VM native receiver is inactive");
         const auto argumentCount = [&](const std::size_t required, const std::size_t maximum) {
             if (arguments.size() < required || arguments.size() > maximum)
                 throw std::runtime_error("VM native argument count is invalid for " + std::to_string(index));
@@ -1476,6 +1483,16 @@ public:
             if (value.kind != Kind::Name) throw std::runtime_error("Animation native requires a Name argument");
             return value.text;
         };
+        if (index == 167u || index == 195u) { // Original Core.Object.Rand / FRand.
+            argumentCount(index == 167u ? 1u : 0u, index == 167u ? 1u : 0u);
+            const auto maximum = index == 167u ? QuestVr::Vm::ToInt(argument(0u)) : 0;
+            if (index == 167u && maximum <= 0) return {Value::Integer(0), {}};
+            if (!transaction_) throw std::runtime_error("Script random draw outside host transaction");
+            if (!persistentScriptRandomSeed) persistentScriptRandomSeed = QuestVr::ScriptRandom::InitialSeed;
+            if (index == 167u) return {Value::Integer(QuestVr::ScriptRandom::Rand(*persistentScriptRandomSeed, maximum)), {}};
+            return {Value::Float(QuestVr::ScriptRandom::FRand(*persistentScriptRandomSeed)), {}};
+        }
+        if (!object->active && !object->worldRemoved) throw std::runtime_error("VM native receiver is inactive");
         if (index == 720u) { // Actor.GetPlayerPawn, pinned NActor.cpp current-Level fallback.
             argumentCount(0u, 0u);
             // There is no owned native viewport session yet. In its absence the
@@ -2250,6 +2267,7 @@ private:
     std::optional<QuestVr::ActorCollisionRegistry> beforeCollision_;
     std::size_t lifecycleOperations_{};
     std::size_t beforeExportCount_{}, beforeWorldSlots_{};
+    std::optional<std::uint32_t> beforeRandomSeed_;
     bool spawnNotificationLocked_{};
     std::optional<PortableModelGeometry> rootModel_;
     bool transaction_{};
@@ -2882,6 +2900,7 @@ private:
         limits.maxBytes = QuestVr::kMaximumSaveRuntimeBytes;
         QuestVr::ScriptStateDetail::Writer measured(limits, nullptr);
         QuestVr::ScriptStateDetail::Budget defaults{limits};
+        if (persistentScriptRandomSeed) defaults.Retain(sizeof(persistentScriptRandomSeed));
         const auto valueBudget = [&](const auto& self, const Value& value, const std::size_t depth) -> void {
             defaults.Node(depth); defaults.Retain(sizeof(value));
             QuestVr::ScriptStateDetail::Text(value.text, limits, false, true);
@@ -3213,6 +3232,7 @@ std::vector<QuestVr::ScriptSavedProperty> ClockProperties(
 QuestVr::ScriptSavedState CollectScriptSavedState() {
     QuestVr::ScriptSavedState saved;
     saved.mapName = persistentMapPackageName;
+    saved.randomSeed = persistentScriptRandomSeed;
     PortableActorVmHost host;
     // Bound the additional snapshot before copying nested live values. The
     // codec independently measures the actual encoded/retained representation.
@@ -3987,8 +4007,9 @@ PortableRuntimeSummary BuildAndVerifyPortableRuntime(
 }
 
 PortableRuntimeSummary InitializePortableRuntime(
-    const PortablePackageTables& package) {
+    const PortablePackageTables& package, const std::uint32_t initialRandomSeed) {
     ShutdownPortableRuntime();
+    if (initialRandomSeed != QuestVr::ScriptRandom::InitialSeed) persistentScriptRandomSeed = initialRandomSeed;
     PortableRuntimeSummary summary;
     const std::size_t baseline = GC::GetStats().numObjects;
     const PortableReflectionGraph graph = BuildPortableReflectionGraph(package);
@@ -4008,8 +4029,9 @@ PortableRuntimeSummary InitializePortableRuntime(
 }
 
 PortableRuntimeSummary InitializePortableRuntime(
-    const std::vector<PortablePackageTables>& packages) {
+    const std::vector<PortablePackageTables>& packages, const std::uint32_t initialRandomSeed) {
     ShutdownPortableRuntime();
+    if (initialRandomSeed != QuestVr::ScriptRandom::InitialSeed) persistentScriptRandomSeed = initialRandomSeed;
     PortableRuntimeSummary summary;
     const std::size_t baseline = GC::GetStats().numObjects;
     persistentRuntime = std::make_unique<GCRoot<RuntimePackage>>(
@@ -4449,6 +4471,7 @@ PortableSound LoadPortableRuntimeSound(const std::string& objectPath) {
 }
 
 void ShutdownPortableRuntime() {
+    persistentScriptRandomSeed.reset();
     persistentDispatchGraph.reset();
     persistentDispatchSummary = {};
     persistentVmObjects.clear();
@@ -4669,13 +4692,15 @@ QuestVr::Vm::Result ExecutePortableActorEvent(const std::string& actorPath, cons
 
 bool GetPortableRuntimeScriptStatePresent() {
     if (!persistentRuntime || !persistentRuntime->get()) return false;
-    for (const auto* object : persistentRuntime->get()->exports)
-        if (object->committedScriptState || !object->classDefaultValues.empty() || object->nativeAiManager) return true;
-    return false;
+    if (persistentScriptRandomSeed) return true;
+    return GetPortableRuntimeUnsavedScriptState();
 }
 
 bool GetPortableRuntimeUnsavedScriptState() {
-    return GetPortableRuntimeScriptStatePresent();
+    if (!persistentRuntime || !persistentRuntime->get()) return false;
+    for (const auto* object : persistentRuntime->get()->exports)
+        if (object->committedScriptState || !object->classDefaultValues.empty() || object->nativeAiManager) return true;
+    return false;
 }
 
 std::uint64_t GetPortableRuntimeWorldRevision() { return persistentWorldRevision; }
@@ -5842,7 +5867,8 @@ bool SavePortableRuntimeState(const std::string& path) {
         const bool hasDefaults = !scriptState.classDefaults.empty();
         const bool hasBirths = !scriptState.births.empty();
         const bool hasAiManagers = !scriptState.aiManagers.empty();
-        const bool hasScript = !scriptState.objects.empty() || hasDefaults || hasBirths || hasAiManagers;
+        const bool hasRandom = scriptState.randomSeed.has_value();
+        const bool hasScript = !scriptState.objects.empty() || hasDefaults || hasBirths || hasAiManagers || hasRandom;
         const bool hasState = std::any_of(scriptState.objects.begin(), scriptState.objects.end(),
             [](const auto& object) { return object.state.has_value(); });
         const bool hasLifecycle = std::any_of(scriptState.objects.begin(), scriptState.objects.end(),
@@ -5894,9 +5920,9 @@ bool SavePortableRuntimeState(const std::string& path) {
             persistentCredits < 0 || persistentSkillPoints < 0 || damaged.size() > 100'000u)
             throw std::runtime_error("Runtime checkpoint gameplay values are outside their valid ranges");
         // This is exactly the v3 prefix, including list order and field widths.
-        // Only the version word and appended trailer differ for v4-v7. Pure
+        // Only the version word and appended trailer differ for v4-v10. Pure
         // property/clock captures retain the byte-exact original v4 format.
-        write32(0x53515844u); write32(hasAiManagers ? 9u : hasBirths ? 8u : hasLifecycle ? 7u : hasDefaults ? 6u : hasState ? 5u : hasScript ? 4u : 3u);
+        write32(0x53515844u); write32(hasRandom ? 10u : hasAiManagers ? 9u : hasBirths ? 8u : hasLifecycle ? 7u : hasDefaults ? 6u : hasState ? 5u : hasScript ? 4u : 3u);
         writeStrings(persistentInventory); writeStrings(inactive); writeStrings(activated); writeFloat(persistentPlayerHealth);
         write32(static_cast<std::uint32_t>(damaged.size()));
         for (const auto& entry : damaged) {
@@ -5963,7 +5989,7 @@ static bool ReadPortableRuntimeState(const std::string& path, const bool apply, 
         };
         if (read32() != 0x53515844u) throw std::runtime_error("Runtime checkpoint magic is invalid");
         const auto version = read32();
-        if (version < 1u || version > 9u) throw std::runtime_error("Runtime checkpoint version is unsupported");
+        if (version < 1u || version > 10u) throw std::runtime_error("Runtime checkpoint version is unsupported");
         auto inventory = readStrings(); auto inactive = readStrings(); auto activated = readStrings();
         float playerHealth = 100.0f;
         std::vector<std::pair<std::string, float>> damaged;
@@ -5992,6 +6018,7 @@ static bool ReadPortableRuntimeState(const std::string& path, const bool apply, 
             flags = readStrings(); goals = readStrings(); notes = readStrings(); applied = readStrings();
         }
         PreparedScriptState prepared;
+        std::optional<std::uint32_t> restoredRandomSeed;
         std::unordered_set<std::string> savedBirthKeys;
         if (version >= 4u) {
             const auto prefixBytes = cursor;
@@ -6007,6 +6034,8 @@ static bool ReadPortableRuntimeState(const std::string& path, const bool apply, 
             const bool hasDefaults = !scriptState.classDefaults.empty();
             const bool hasBirths = !scriptState.births.empty();
             const bool hasAiManagers = !scriptState.aiManagers.empty();
+            const bool hasRandom = scriptState.randomSeed.has_value();
+            restoredRandomSeed = scriptState.randomSeed;
             for (const auto& birth : scriptState.births) savedBirthKeys.emplace(LowerAscii(birth.path));
             const bool hasLifecycle = std::any_of(scriptState.objects.begin(), scriptState.objects.end(),
                 [](const auto& object) { return object.lifecycle.has_value(); });
@@ -6015,7 +6044,8 @@ static bool ReadPortableRuntimeState(const std::string& path, const bool apply, 
                 (version == 6u && (blob.at(6u) != QuestVr::ScriptStateDetail::ClassDefaultsVersion || !hasDefaults)) ||
                 (version == 7u && (blob.at(6u) != QuestVr::ScriptStateDetail::ActorLifecycleVersion || !hasLifecycle)) ||
                 (version == 8u && (blob.at(6u) != QuestVr::ScriptStateDetail::BirthManifestVersion || !hasBirths)) ||
-                (version == 9u && (blob.at(6u) != QuestVr::ScriptStateDetail::AiManagerVersion || !hasAiManagers)))
+                (version == 9u && (blob.at(6u) != QuestVr::ScriptStateDetail::AiManagerVersion || !hasAiManagers)) ||
+                (version == 10u && (blob.at(6u) != QuestVr::ScriptStateDetail::RandomStateVersion || !hasRandom)))
                 throw std::runtime_error("Runtime checkpoint state trailer does not match its envelope version");
             if (!expectedMapName.empty() && LowerAscii(expectedMapName) != LowerAscii(scriptState.mapName))
                 throw std::runtime_error("Runtime checkpoint script map does not match save metadata");
@@ -6117,6 +6147,11 @@ static bool ReadPortableRuntimeState(const std::string& path, const bool apply, 
         persistentQualifiedObjects.swap(prepared.qualified); persistentVmObjects.swap(prepared.vm);
         persistentMapTagIndex.swap(prepared.tags);
         persistentActorCollision.Swap(prepared.collision);
+        // Publish the staged engine-global stream only after all allocating
+        // preflight. Older saves explicitly reset it; validation never does.
+        persistentScriptRandomSeed = restoredRandomSeed;
+        // Pre-RNG portable formats contain no stream evidence. Their explicit
+        // migration baseline is CRT seed1, never the current random history.
         for (RuntimeObject* object : persistentRuntime->get()->exports) {
             object->scriptValues.clear(); object->classDefaultValues.clear();
             object->animationClock.reset(); object->stateObject.reset(); object->committedScriptState = false;

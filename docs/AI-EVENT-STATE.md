@@ -73,7 +73,8 @@ explicit StartUp at native1010 in Engine.Pawn.PlayTurnHead PC211/opcode0x63.
 The subsequent [blend-animation commands](BLEND-ANIMATION.md) implement that
 dependency and originally advanced to Switch opcode5 in
 DeusEx.ScriptedPawn.PlayTurnHead PC52. The later [Switch/Case path](SWITCH-CASE.md)
-passes that override; explicit StartUp now refuses FRand195 at PC9.
+passes that override. The subsequent [original RNG path](SCRIPT-RANDOM.md)
+implements FRand195; explicit StartUp now refuses Sleep256 at PC6.
 Provisional registrations, inventory births and world changes still roll back.
 Automatic startup and live animation remain unfinished.
 

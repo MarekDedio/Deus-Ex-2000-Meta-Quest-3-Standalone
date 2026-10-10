@@ -1,6 +1,25 @@
 # Current Quest test-build handoff (2026-10-10)
 
-The latest **backend-only, not installed** Switch/Case APK is
+The latest **backend-only, not installed** original-RNG APK is
+`artifacts/release-random-state-20261010/DeusExQuestVR-random-state-20261010.apk`:
+18,681,297 bytes, SHA-256
+`3DA281F523885D6AE25D9BCF14682527B78080EE573EF461E9381816D49293E1`.
+Android ARM64 compilation and APK Signature Scheme v2 verification pass; its
+16 ZIP entries contain no original commercial game packages. Packaged data-probe:
+5,595,032 bytes, SHA-256
+`5039FE7EEA0DF45ED8376F816234410E1DC63ECC21566E564CA30AAF00785BDB`;
+quest library:5,122,392 bytes, SHA-256
+`F15E9D185D91E79C47C81E82031D4E4C69DF709CD85DBAB0239BA221AF43748B`.
+It adds original Rand/FRand, actual scripted RandRange/Bird branches and codec7 /
+checkpoint10 continuation, including pre-first-draw saves and global map carry.
+Explicit StartUp now refuses unsupported Sleep256 at PC6 with full rollback.
+This is not automatic startup, live NPC AI or new device acceptance. The installed,
+physically accepted seated-player APK remains unchanged. See
+[SCRIPT-RANDOM.md](SCRIPT-RANDOM.md).
+All 49 ordinary host tests and all three separate original-data integrations pass.
+RNG controls pass 58,942 / 37 rejections; codec controls pass 6,337 / 5,634.
+
+The preceding **backend-only, not installed** Switch/Case APK is
 `artifacts/release-switch-case-20261010/DeusExQuestVR-switch-case-20261010.apk`:
 18,681,209 bytes, SHA-256
 `AEB64340ED1C88BFD549D2363615B555D8ACE8B35DC2B385E813799CD0AB1465`.
@@ -11,7 +30,8 @@ library is 5,588,496 bytes, SHA-256
 It adds original Switch/Case control, live state callback/alias safety and
 transactional fallthrough. All 8,208 original functions pass structural
 inspection; the original DeusEx head-turn override executes all directions.
-Explicit StartUp advances to unsupported FRand195 at PC9 and rolls back fully.
+In that increment StartUp reached unsupported FRand195 at PC9 and rolled back fully;
+the later original-RNG increment above implements it.
 This is not automatic world startup, working NPC AI or a new device acceptance.
 The installed, physically accepted seated-player APK remains unchanged.
 All 48 ordinary host tests and all three separate original-data integrations

@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <cmath>
 #include <chrono>
+#include <ctime>
 #include <cstdio>
 #include <cstring>
 #include <deque>
@@ -457,7 +458,8 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                         "/data/user/0/dev.deusex.questvr.smoketest/files/DeusEx/System/") +
                     packageName + ".u"));
             }
-            const PortableRuntimeSummary runtime = InitializePortableRuntime(scripts);
+            const PortableRuntimeSummary runtime = InitializePortableRuntime(
+                scripts, static_cast<std::uint32_t>(std::time(nullptr)));
             if (!runtime.passed) {
                 ALOG("DeusExQuest: persistent Unreal runtime validation failed");
                 return false;
@@ -2707,7 +2709,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         // A successful v4/v5 save does not authorize discarding the current map's
         // actor state. Check before cancelling UI/audio/geometry or starting a
         // replacement transaction, whose rollback needs the same archive.
-        if (runtimeAvailable_ && GetPortableRuntimeScriptStatePresent()) {
+        if (runtimeAvailable_ && GetPortableRuntimeUnsavedScriptState()) {
             interactionStatus_ = "MAP CHANGE NEEDS SCRIPT STATE ARCHIVE";
             interactionStatusSeconds_ = 5.0f;
             ALOG("DeusExQuest: map change to %s kept current script state", mapName.c_str());
@@ -4173,7 +4175,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
     bool RestoreGameState(QuestVr::QuestSaveMetadata metadata, const std::string& runtimePath) {
         const auto& pose = metadata.pose;
         if (metadata.mapName != currentMapName_) {
-            if (GetPortableRuntimeScriptStatePresent()) return false;
+            if (GetPortableRuntimeUnsavedScriptState()) return false;
             restoredMapLocalPose_ = metadata.mapLocalPose;
             restoredMapLocalFeet_ = {pose[0], pose[1], pose[2]};
             restoredMapLocalHeadYaw_ = pose[3];

@@ -170,9 +170,11 @@ The actual begun-play StartUp entry and executable state slice still reach missi
 required behavior and must refuse atomically.
 
 Full level-wide startup, latent Sleep/FinishAnim/movement handlers, AI/physics
-natives, iterators, timers, RNG, dynamic actors, live animation/event boundaries,
+natives, remaining iterators/timers/actor behavior, live animation/event boundaries,
 per-map archives and campaign progression remain unfinished. Current-map state
-presence still guards travel/unload, even after saving. No new GL/stereo/controller
+presence still guards travel/unload, even after saving. Engine-global
+[random state](SCRIPT-RANDOM.md) now persists independently and alone does not
+activate that per-map guard. No new GL/stereo/controller
 or device performance verification is established by this source batch.
 The separate [original AI-native audit](AI-NATIVE-AUDIT.md) records why pinned
 log stubs and a null-manager shortcut cannot establish faithful AI startup.

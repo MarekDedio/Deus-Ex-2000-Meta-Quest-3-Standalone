@@ -11,6 +11,7 @@
 #include <array>
 #include <string>
 #include <set>
+#include <optional>
 
 struct PortableRuntimeSummary {
     bool passed{};
@@ -158,10 +159,13 @@ struct PortableDamageResult {
 
 PortableRuntimeSummary BuildAndVerifyPortableRuntime(
     const PortablePackageTables& package);
+// A stable seed1 baseline is the portable embedding/test default. Quest passes
+// time(nullptr) once at engine initialization, matching the original Core policy.
+// Nonbaseline seeds are saved immediately, including before the first draw.
 PortableRuntimeSummary InitializePortableRuntime(
-    const PortablePackageTables& package);
+    const PortablePackageTables& package, std::uint32_t initialRandomSeed = 1u);
 PortableRuntimeSummary InitializePortableRuntime(
-    const std::vector<PortablePackageTables>& packages);
+    const std::vector<PortablePackageTables>& packages, std::uint32_t initialRandomSeed = 1u);
 void ShutdownPortableRuntime();
 PortableConversationSummary GetPortableConversationSummary();
 PortableDialogueResult GetPortableRuntimeDialogue(
@@ -355,12 +359,16 @@ QuestVr::Vm::Result ExecutePortableActorEvent(const std::string& actorPath,
 // local storage and state-keyed disabled sets; v6 adds concrete-class defaults.
 // This
 // predicate means state is present, not that a successful save has cleared it.
-// Map replacement/unload still require a per-map archive and are guarded while
-// state exists. Legacy v1-v3 load explicitly restores authored properties,
+// Envelope10/codec7 additionally retains the engine-global random stream.
+// Map-scoped actor/default/AI state still requires an archive before replacement.
+// Engine-global random state survives ordinary map changes and does not by
+// itself block them. Legacy v1-v3 load explicitly restores authored properties,
 // and every v1-v5 load clears mutable class defaults;
+// every v1-v9 load resets absent random state to the deterministic seed1 baseline.
 // ShutdownPortableRuntime explicitly discards the runtime's object lifetime.
 bool GetPortableRuntimeScriptStatePresent();
-// Compatibility name for callers written before v4 persistence.
+// Map-discard guard (historical name), not an indicator that saving cleared
+// dirty state. Excludes the engine-global RNG that survives map replacement.
 bool GetPortableRuntimeUnsavedScriptState();
 PortableMapRuntimeSummary LoadPortableRuntimeMap(
     const PortablePackageTables& package);

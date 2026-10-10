@@ -134,13 +134,16 @@ sequence/frame/fatness overrides cannot be mixed with helper execution.
 
 ## Remaining requirements and persistence boundary
 
-Automatic level startup, latent calls/handlers, persistent/remaining iterators, switches,
+Automatic level startup, latent calls/handlers, persistent/remaining iterators,
 dynamic arrays, class-default object identity, remaining structs/natives,
-RNG, attachment rendering and dynamic GPU pose
+attachment rendering and dynamic GPU pose
 updates remain unfinished. Virtual lookup now respects the supported authored
 context, including explicit portable states; bounded state entry/slices and
 state-keyed disabled sets are implemented but not automatically ticked. Unknown
 required behavior fails explicitly and rolls back the root transaction.
+Later increments implement [Switch/Case](SWITCH-CASE.md) and
+[original Rand/FRand](SCRIPT-RANDOM.md), including global random save continuation.
+Actual StartUp now refuses Sleep256 at PC6 with full rollback, not startup success.
 
 State/Class headers, raw and normalized state bytecode, masks, labels and flags
 are now retained as read-only authored metadata, along with map Actor HasStack

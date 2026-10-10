@@ -119,9 +119,11 @@ live-iterator selector guard ordering, inspector Function-child traversal, stale
 startup assertion and an extra scenario accidentally added to the wrong test
 loop. They were corrected; no rejection expectation was relaxed.
 
-Actual explicit StartUp now reaches `Core.Object.FRand` native195 at
+In this increment explicit StartUp reached `Core.Object.FRand` native195 at
 `DeusEx.ScriptedPawn.StartUp:9` (opcode195), inside the argument to Sleep256.
 It fails Unsupported with complete rollback, not simulated startup success.
-World/player startup, RNG persistence, AI processing, latent handlers, live
+The later [RNG increment](SCRIPT-RANDOM.md) implements this operation and saved
+continuation; actual StartUp now refuses Sleep256 at PC6 with full rollback.
+World/player startup, AI processing, latent handlers, live
 animation, campaign progression, per-map dynamic saves and headset performance
 remain unfinished.

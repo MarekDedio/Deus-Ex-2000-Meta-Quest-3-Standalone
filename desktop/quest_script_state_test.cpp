@@ -158,7 +158,7 @@ void MalformedStreams() {
     }
     auto broken=bytes;broken.push_back(0);Reject([&] { DecodeScriptSavedState(broken); },"Trailing save bytes accepted");
     broken=bytes;broken[0]^=1;Reject([&] { DecodeScriptSavedState(broken); },"Bad save magic accepted");
-    broken=bytes;broken[6]=7;Reject([&] { DecodeScriptSavedState(broken); },"Unsupported codec version accepted");
+    broken=bytes;broken[6]=8;Reject([&] { DecodeScriptSavedState(broken); },"Unsupported codec version accepted");
     for(const Bytes& value : {Bytes{255},Bytes{3,2},Bytes{4,0,0,0xc0,0x7f},Bytes{4,0,0,0x80,0x7f},
         Bytes{8,0,0,0x80,0x7f,0,0,0,0,0,0,0,0}}) {
         broken=OneValue(value);Reject([&] { DecodeScriptSavedState(broken); },"Bad value tag/bool/non-finite payload accepted");
@@ -1046,6 +1046,106 @@ void AiBudgets() {
     Reject([&] { EncodeScriptSavedState(mixed,joint); },"Mixed actor/birth/AI retained encode budget was not cumulative");
     Reject([&] { DecodeScriptSavedState(mixedBytes,joint); },"Mixed actor/birth/AI retained decode budget was not cumulative");
 }
+Bytes RandomLiteral() {
+    // Independent codec7 oracle: Map, zero actors/defaults/births/AI managers,
+    // algorithm1, little-endian seed0x12345678. No optional-presence byte.
+    return {'D','X','Q','V','M','S',7u,0u,3u,0u,0u,0u,'M','a','p',
+        0u,0u,0u,0u, 0u,0u,0u,0u, 0u,0u,0u,0u, 0u,0u,0u,0u,
+        1u,0x78u,0x56u,0x34u,0x12u};
+}
+void RandomRoundtripAndLegacy() {
+    auto only=ScriptSavedState{"Map",{}};only.randomSeed=0x12345678u;
+    const auto literal=RandomLiteral();const auto parsed=DecodeScriptSavedState(literal);
+    Require(literal.size()==36u && EncodeScriptSavedState(only)==literal,
+        "Literal RNG-only codec7 algorithm/seed or empty-section wire layout changed");
+    Require(parsed.mapName=="Map" && parsed.randomSeed==only.randomSeed && parsed.objects.empty() &&
+        parsed.classDefaults.empty() && parsed.births.empty() && parsed.aiManagers.empty(),
+        "RNG-only codec7 fabricated actor/native state or lost the seed");
+    Require(EncodeScriptSavedState(parsed)==literal,"RNG-only codec7 decode/reencode changed bytes");
+    for (const std::uint32_t seed : {0u,1u,0x12345678u,0xffffffffu}) {
+        only.randomSeed=seed;auto expected=literal;expected.resize(expected.size()-4u);U32(expected,seed);
+        Require(EncodeScriptSavedState(only)==expected && DecodeScriptSavedState(expected).randomSeed==seed,
+            "Codec7 rejected or changed a valid uint32 seed, including zero/all-ones");
+    }
+    auto mixed=BirthState();mixed.aiManagers={AiManager("FixtureMap.LevelInfoZ"),AiManager("FixtureMap.LevelInfoA")};
+    const auto prior=EncodeScriptSavedState(mixed);Require(prior[6]==6u,"Mixed RNG baseline did not select codec6");
+    mixed.randomSeed=0xfedcba98u;
+    auto expected=prior;expected[6]=7u;expected.push_back(1u);U32(expected,*mixed.randomSeed);
+    const auto bytes=EncodeScriptSavedState(mixed);const auto restored=DecodeScriptSavedState(bytes);
+    Require(bytes==expected && restored.randomSeed==mixed.randomSeed && restored.objects.size()==mixed.objects.size() &&
+        restored.classDefaults.size()==mixed.classDefaults.size() && restored.births.size()==mixed.births.size() &&
+        restored.aiManagers.size()==mixed.aiManagers.size(),
+        "Mixed codec7 failed to preserve all preceding sections plus the exact RNG tail");
+    SameAi(mixed.aiManagers[0],restored.aiManagers[1]);SameAi(mixed.aiManagers[1],restored.aiManagers[0]);
+    Require(restored.objects[1].state && restored.objects[1].state->frame && restored.objects[1].lifecycle &&
+        restored.objects[1].clock && restored.objects[1].state->frame->statementIndex==73u,
+        "Mixed codec7 lost state/frame/lifecycle/clock optional records");
+    Require(EncodeScriptSavedState(restored)==bytes,"Mixed codec7 decode/reencode changed bytes");
+    auto reordered=mixed;std::reverse(reordered.objects.begin(),reordered.objects.end());
+    std::reverse(reordered.classDefaults.begin(),reordered.classDefaults.end());
+    std::reverse(reordered.births.begin(),reordered.births.end());std::reverse(reordered.aiManagers.begin(),reordered.aiManagers.end());
+    Require(EncodeScriptSavedState(reordered)==bytes,"RNG extension changed canonical identity ordering");
+    auto independent=restored;independent.randomSeed=0u;
+    Require(EncodeScriptSavedState(restored)==bytes,"Copied RNG seed aliases restored state");
+    for (std::size_t mode=0u;mode<6u;++mode) {
+        auto old=mode==2u ? DefaultsState() : mode>=4u ? BirthState() : State();
+        if (mode==1u) old.objects[0].state=DefaultsState().objects[0].state;
+        if (mode==3u) old.objects[0].lifecycle=Lifecycle();
+        if (mode==5u) old.aiManagers={AiManager()};
+        const auto original=EncodeScriptSavedState(old);
+        Require(original[6]==mode+1u && !DecodeScriptSavedState(original).randomSeed,
+            "Legacy codec1–6 selected the wrong version or invented an RNG record");
+        old.randomSeed=0u;
+        Require(EncodeScriptSavedState(old)[6]==7u && DecodeScriptSavedState(EncodeScriptSavedState(old)).randomSeed==0u,
+            "Present zero RNG seed failed to override a legacy codec");
+        old.randomSeed.reset();
+        Require(EncodeScriptSavedState(old)==original,"Removing RNG changed legacy codec1–6 bytes");
+    }
+}
+void InvalidRandomStateAndBudgets() {
+    const auto literal=RandomLiteral();
+    for (std::size_t length=0u;length<literal.size();++length) {
+        const Bytes truncated(literal.begin(),literal.begin()+length);
+        Reject([&] { DecodeScriptSavedState(truncated); },"Truncated RNG-only codec7 accepted");
+    }
+    for (const std::uint8_t algorithm : {0u,2u,255u}) {
+        auto broken=literal;broken[broken.size()-5u]=algorithm;
+        Reject([&] { DecodeScriptSavedState(broken); },"Unknown RNG algorithm accepted");
+    }
+    for (const std::uint8_t version : {0u,1u,2u,3u,4u,5u,6u,8u,255u}) {
+        auto broken=literal;broken[6]=version;
+        Reject([&] { DecodeScriptSavedState(broken); },"RNG payload accepted with incompatible codec version");
+    }
+    auto broken=literal;broken.push_back(0u);
+    Reject([&] { DecodeScriptSavedState(broken); },"Trailing RNG state bytes accepted");
+    auto only=ScriptSavedState{"Map",{}};only.randomSeed=0x12345678u;
+    ScriptStateLimits exact;ScriptStateDetail::Writer measured(exact,nullptr);measured.State(only);
+    const auto retained=measured.measuredBudget().retained;
+    Require(measured.size()==literal.size() && measured.measuredBudget().properties==0u &&
+        measured.measuredBudget().nodes==0u && measured.measuredBudget().aiManagers==0u,
+        "RNG-only state measurement omitted wire bytes or invented value/native records");
+    exact.maxBytes=retained;exact.maxObjects=0u;exact.maxProperties=0u;exact.totalValueNodes=0u;
+    exact.maxAiManagers=0u;exact.maxAiEventTypes=0u;exact.maxAiNodes=0u;exact.maxAiLinks=0u;
+    exact.maxActorLinks=0u;exact.maxStringBytes=3u;
+    Require(EncodeScriptSavedState(only,exact)==literal &&
+        EncodeScriptSavedState(DecodeScriptSavedState(literal,exact),exact)==literal,
+        "Exact RNG-only budgets rejected empty lower sections or changed seed bytes");
+    for (const auto cap : {retained-1u,literal.size()-1u}) {
+        auto small=exact;small.maxBytes=cap;
+        Reject([&] { EncodeScriptSavedState(only,small); },"RNG-only encode exceeded retained/encoded byte cap");
+        Reject([&] { DecodeScriptSavedState(literal,small); },"RNG-only decode exceeded retained/encoded byte cap");
+    }
+    auto mixed=BirthState();mixed.aiManagers={AiManager()};mixed.randomSeed=0xffffffffu;
+    const auto bytes=EncodeScriptSavedState(mixed);
+    for (std::size_t missing=1u;missing<=5u;++missing) {
+        const Bytes truncated(bytes.begin(),bytes.end()-missing);
+        Reject([&] { DecodeScriptSavedState(truncated); },"Mixed codec7 accepted missing algorithm/seed tail bytes");
+    }
+    ScriptStateLimits joint;ScriptStateDetail::Writer combined(joint,nullptr);combined.State(mixed);
+    joint.maxBytes=combined.measuredBudget().retained-1u;
+    Reject([&] { EncodeScriptSavedState(mixed,joint); },"Mixed RNG/actor/native retained encode budget was not cumulative");
+    Reject([&] { DecodeScriptSavedState(bytes,joint); },"Mixed RNG/actor/native retained decode budget was not cumulative");
+}
 }
 
 int main() {
@@ -1055,7 +1155,8 @@ int main() {
         LifecycleRoundtripAndLegacy();MalformedLifecycle();InvalidLifecycleAndBudgets();
         BirthRoundtripAndLegacy();MalformedBirths();InvalidBirthsAndBudgets();
         AiRoundtripAndLegacy();InvalidAiGraphs();AiBudgets();
+        RandomRoundtripAndLegacy();InvalidRandomStateAndBudgets();
         std::cout<<"PASS script-state codec controls="<<checks<<" rejection controls="<<rejections
-            <<"; codecs1–5 legacy bytes, codec6 ordered AI graphs, structural codec only\n";return 0;
+            <<"; codecs1–6 legacy bytes, codec7 engine-global RNG seed, structural codec only\n";return 0;
     }catch(const std::exception& error) {std::cerr<<"FAIL script-state codec: "<<error.what()<<" after "<<checks<<" controls\n";return 1;}
 }

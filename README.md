@@ -46,7 +46,11 @@ regressions and inspected textured Doctor/Jaime captures verify that render fix.
 The [original Switch/Case interpreter path](docs/SWITCH-CASE.md) now executes
 selector-directed cases, fallthrough and live state callbacks transactionally.
 The unchanged DeusEx head-turn override passes all directions and default;
-explicit StartUp advances to the unsupported FRand195 operation at PC9.
+The [original random stream](docs/SCRIPT-RANDOM.md) now implements Rand167 and
+FRand195, executes the original scripted RandRange and both Bird idle branches,
+and preserves global random continuation through transactional failures and
+codec7/checkpoint10 saves, including saving before the first draw.
+Explicit StartUp now advances to unsupported Sleep256 at PC6.
 This is isolated backend progress, not automatic world startup or live NPC AI.
 The [installed Quest test build](docs/QUEST-TEST-BUILD.md) remains frozen while
 the user tests it. Subsequent offline source work retains

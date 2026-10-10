@@ -6,6 +6,7 @@
 #include "quest_mesh_animation.h"
 #include "quest_save_bundle.h"
 #include "quest_script_state.h"
+#include "quest_script_random.h"
 
 #include <algorithm>
 #include <chrono>
@@ -282,10 +283,10 @@ std::vector<std::uint8_t> CheckpointBytes(const std::filesystem::path& path) {
     return bytes;
 }
 // Independent exact v3 prefix walk. No guessed search for blob signatures or
-// trailer bytes: v4-v9 append one bounded length + codec payload after every
+// trailer bytes: v4-v10 append one bounded length + codec payload after every
 // existing gameplay/progress field, preserving the old layout verbatim.
 std::size_t ScriptTailOffset(const std::vector<std::uint8_t>& bytes) {
-    Require(Word(bytes,0)==0x53515844u && Word(bytes,4)>=4u && Word(bytes,4)<=9u,"Script checkpoint is not runtime v4-v9");
+    Require(Word(bytes,0)==0x53515844u && Word(bytes,4)>=4u && Word(bytes,4)<=10u,"Script checkpoint is not runtime v4-v10");
     std::size_t cursor=8;
     const auto skip=[&](const std::size_t count) {
         Require(cursor<=bytes.size() && count<=bytes.size()-cursor,"Generated checkpoint prefix truncated");cursor+=count;
@@ -1141,6 +1142,121 @@ void VerifyOriginalSwitchHeadTurn(const std::string& actor, const std::filesyste
         "native1010/base timer, original false Bool return, short-circuit, selected-body rollback and view/clock v4 roundtrip; no live NPC tick\n";
 }
 
+void VerifyOriginalRandom(const std::string& actor, const std::filesystem::path& legacy,
+    const std::filesystem::path& directory) {
+    Require(LoadPortableRuntimeState(legacy.string()), "Original random fixture could not reset to legacy seed1");
+    const auto inspect=directory/"original-random-v10.sav";
+    const auto generated=directory/"original-random-seeded-v10.sav";
+    const auto baseline=CheckpointBytes(legacy);
+    const auto pose=Snapshot(actor);
+    const auto revision=GetPortableRuntimeWorldRevision();
+    const auto gc=GC::GetStats();
+    const auto unchanged=[&](const std::vector<std::uint8_t>& expected,const std::string& context) {
+        Require(SavePortableRuntimeState(inspect.string()) && CheckpointBytes(inspect)==expected,
+            context+" changed full serialized state/random stream");
+    };
+    for (const auto bound:{0,-1,std::numeric_limits<std::int32_t>::min()}) {
+        const auto result=Call(actor,"Core.Object.Rand",{{Value::Integer(bound),{}}});
+        Require(result.value.kind==Kind::Int && result.value.integer==0 && !GetPortableRuntimeScriptStatePresent(),
+            "Original Rand(nonpositive) drew or created saved state");
+        unchanged(baseline,"Original Rand(nonpositive)");
+    }
+    // Independent uint64 recurrence, not the implementation under test.
+    std::uint32_t seed=1u;
+    const auto raw=[&]() {
+        seed=static_cast<std::uint32_t>(std::uint64_t(seed)*214013ull+2531011ull);
+        return (seed>>16u)&32767u;
+    };
+    const auto fraction=[&]() {return static_cast<float>(raw())*std::bit_cast<float>(0x38000100u);};
+    const auto first=Call(actor,"Core.Object.FRand");
+    Require(first.value.kind==Kind::Float && first.value.floating==fraction() &&
+        GetPortableRuntimeScriptStatePresent() && !GetPortableRuntimeUnsavedScriptState(),
+        "Original FRand failed first shared draw or created map-scoped state");
+    const auto actors=GetPortableRuntimeMapActors();
+    const auto other=std::find_if(actors.begin(),actors.end(),[&](const auto& candidate) {
+        return candidate.pawn && candidate.objectPath!=actor;
+    });
+    Require(other!=actors.end(),"Original shared-stream control lacks second actor");
+    const auto second=Call(other->objectPath,"Core.Object.Rand",{{Value::Integer(100000),{}}});
+    Require(second.value.kind==Kind::Int && second.value.integer==static_cast<std::int32_t>(raw()),
+        "Original Rand large-bound/cross-actor stream differed");
+    Require(Call(actor,"Core.Object.Rand",{{Value::Integer(1),{}}}).value.integer==0,
+        "Original Rand(1) did not return zero");
+    raw(); // Max1 consumes exactly one draw.
+    for (const auto& range:{std::pair{10.0f,-5.0f},std::pair{7.0f,7.0f},std::pair{-2.0f,4.0f}}) {
+        const auto value=Call(actor,"Core.Object.RandRange",{Number(range.first),Number(range.second)});
+        const float scaled=(range.second-range.first)*fraction();
+        const float expected=range.first+scaled;
+        Require(value.function=="Core.Object.RandRange" && value.value.kind==Kind::Float &&
+            std::bit_cast<std::uint32_t>(value.value.floating)==std::bit_cast<std::uint32_t>(expected),
+            "Actual scripted original RandRange did not evaluate Min+(Max-Min)*FRand");
+    }
+    Require(SavePortableRuntimeState(inspect.string()),"Original random-only state could not save");
+    const auto saved=CheckpointBytes(inspect);
+    const auto state=QuestVr::DecodeScriptSavedState(ScriptBlob(saved));
+    Require(Word(saved,4)==10u && ScriptBlob(saved).at(6)==7u && state.randomSeed==seed && state.objects.empty() &&
+        state.classDefaults.empty() && state.births.empty() && state.aiManagers.empty() &&
+        Same(pose,Snapshot(actor)) && GetPortableRuntimeWorldRevision()==revision &&
+        GC::GetStats().numObjects==gc.numObjects && GC::GetStats().memoryUsage==gc.memoryUsage,
+        "Original random-only save changed actors/assets/GC/world or omitted exact seed");
+    Require(ValidatePortableRuntimeState(inspect.string()),"Original v10 random-only read-only validation failed");
+    unchanged(saved,"Original random-only validation");
+    const float next=fraction();
+    Require(Call(actor,"Core.Object.FRand").value.floating==next && LoadPortableRuntimeState(inspect.string()) &&
+        Call(actor,"Core.Object.FRand").value.floating==next,
+        "Original restored random-only stream did not continue at the next draw");
+    for (const auto& endpoint:{std::pair{20057u,0.0f},std::pair{30091u,1.0f}}) {
+        auto injected=state;injected.randomSeed=endpoint.first;
+        const auto bytes=ReplaceScriptBlob(saved,QuestVr::EncodeScriptSavedState(injected));
+        Require(QuestVr::WriteDurableSaveFile(generated.string(),bytes) && LoadPortableRuntimeState(generated.string()),
+            "Original endpoint fixture could not restore seed");
+        Require(Call(actor,"Core.Object.FRand").value.floating==endpoint.second,
+            "Original FRand omitted inclusive binary32 endpoint");
+    }
+    Require(LoadPortableRuntimeState(legacy.string()) && !GetPortableRuntimeScriptStatePresent(),
+        "Original legacy reset retained random-only state");
+    unchanged(baseline,"Original random legacy reset");
+    std::cout<<"ORIGINAL RANDOM actual native167/195, nonpositive no-draw, Max1 draw, large-bound/shared-actor stream; "
+        "scripted RandRange native0 normal/reversed/equal ranges, inclusive0/1; random-only codec7/envelope10 and continuation\n";
+}
+
+void VerifyOriginalBirdRandom(const std::string& actor,const std::filesystem::path& legacy,
+    const std::filesystem::path& directory) {
+    const auto inspect=directory/"original-bird-random-v10.sav";
+    const auto generated=directory/"original-bird-random-seeded-v10.sav";
+    Require(SavePortableRuntimeState(inspect.string()),"Original Bird clock baseline could not save");
+    const auto baseline=CheckpointBytes(inspect);
+    const auto state=QuestVr::DecodeScriptSavedState(ScriptBlob(baseline));
+    for (const auto& branch:{std::pair{20057u,"Idle2"},std::pair{30091u,"Idle1"}}) {
+        auto injected=state;injected.randomSeed=branch.first;
+        auto bytes=ReplaceScriptBlob(baseline,QuestVr::EncodeScriptSavedState(injected));PutWord(bytes,4,10u);
+        Require(QuestVr::WriteDurableSaveFile(generated.string(),bytes) && LoadPortableRuntimeState(generated.string()),
+            "Original Bird random branch seed could not restore");
+        const auto before=Snapshot(actor);const auto revision=GetPortableRuntimeWorldRevision();
+        QuestVr::Vm::Limits limits;limits.writes=0u;
+        const auto failed=ExecutePortableActorFunction(actor,"TweenToWaiting",{Number(0.2f)},limits);
+        Require(failed.status==Status::Budget && !failed.committed && Same(before,Snapshot(actor)) &&
+            GetPortableRuntimeWorldRevision()==revision && SavePortableRuntimeState(inspect.string()) &&
+            CheckpointBytes(inspect)==bytes,"Original Bird failed selected assignment retained random draw or clock");
+        const auto result=Call(actor,"TweenToWaiting",{Number(0.2f)});
+        const auto pose=Snapshot(actor);
+        std::uint32_t expectedSeed=static_cast<std::uint32_t>(std::uint64_t(branch.first)*214013ull+2531011ull);
+        Require(result.function=="DeusEx.Bird.TweenToWaiting" && result.value.kind==Kind::Nothing &&
+            ReadPortableActorScriptProperty(actor,"WaitAnim").text==branch.second &&
+            pose.animation.sequence==branch.second && pose.animation.frame<0.0f &&
+            SavePortableRuntimeState(inspect.string()),"Original Bird FRand/compare/Let/Tween branch did not complete");
+        const auto saved=CheckpointBytes(inspect);
+        Require(Word(saved,4)==10u && QuestVr::DecodeScriptSavedState(ScriptBlob(saved)).randomSeed==expectedSeed &&
+            ValidatePortableRuntimeState(inspect.string()) && LoadPortableRuntimeState(inspect.string()) &&
+            Same(pose,Snapshot(actor)) && SavePortableRuntimeState(inspect.string()) && CheckpointBytes(inspect)==saved,
+            "Original Bird mixed random/property/native-clock save did not roundtrip exactly");
+    }
+    Require(LoadPortableRuntimeState(legacy.string()) && !GetPortableRuntimeScriptStatePresent(),
+        "Original Bird legacy reset retained random or clock state");
+    std::cout<<"ORIGINAL BIRD "<<actor<<" PlayWaiting/native optional; actual TweenToWaiting FRand endpoints "
+        "Idle1/Idle2, post-draw selected-write rollback and mixed clock/RNG v10 roundtrip\n";
+}
+
 void VerifyOriginalAIEvents(const std::string& actor, const std::filesystem::path& legacy,
     const std::filesystem::path& directory) {
     Require(LoadPortableRuntimeState(legacy.string()), "Could not reset original AI fixture");
@@ -1488,9 +1604,9 @@ void VerifyOriginalInventoryTransactions(const std::string& actor,const std::fil
         " committed="<<slice.committed<<" error="<<slice.error<<" at "<<slice.function<<':'<<slice.offset<<
         " opcode="<<static_cast<unsigned>(slice.opcode)<<'\n';
     Require(slice.status==Status::Unsupported && !slice.committed &&
-        slice.function=="DeusEx.ScriptedPawn.StartUp" && slice.offset==9u &&
-        slice.opcode==195u && slice.error=="Unsupported runtime native 195",
-        "Actual StartUp did not advance through head animation/Switch to its next original native dependency: "+slice.error);
+        slice.function=="DeusEx.ScriptedPawn.StartUp" && slice.offset==6u &&
+        slice.opcode==0x61u && slice.error=="Unsupported runtime native 256",
+        "Actual StartUp did not advance through head animation/Switch/FRand to its original Sleep dependency: "+slice.error);
     Require(GetPortableRuntimeMapActors(true).size()==startupActors &&
         GetPortableRuntimeWorldRevision()==startupRevision &&
         GC::GetStats().numObjects==startupGc.numObjects &&
@@ -1702,7 +1818,7 @@ void VerifyOriginalStateExecution(const std::string& actor, const std::filesyste
 }
 
 void TestOriginal(const std::filesystem::path& root, const bool inventoryOnly = false,
-    const bool switchOnly = false) {
+    const bool switchOnly = false, const bool randomOnly = false) {
     static constexpr const char* packages[] = {
         "ConSys", "Core", "DeusEx", "DeusExCharacters", "DeusExConAudioAIBarks",
         "DeusExConAudioEndGame", "DeusExConAudioHK_Shared", "DeusExConAudioIntro",
@@ -1742,6 +1858,12 @@ void TestOriginal(const std::filesystem::path& root, const bool inventoryOnly = 
         Require(Word(CheckpointBytes(checkpoint),4)==3u,"Untouched runtime unexpectedly changed legacy v3 save format");
         const auto actors = GetPortableRuntimeMapActors();
         if (std::string(map) == "00_Training") VerifyColdOriginalAnimationAssets(root, checkpoint, temporary.directory);
+        if (std::string(map) == "00_Training") VerifyOriginalRandom("00_Training.Doctor1",checkpoint,temporary.directory);
+        if (randomOnly) {
+            UnloadPortableRuntimeMap();
+            Require(!GetPortableRuntimeScriptStatePresent(),"Focused original random suite leaked state");
+            return;
+        }
         if (switchOnly) {
             VerifyOriginalSwitchHeadTurn("00_Training.Doctor1", checkpoint, temporary.directory);
             UnloadPortableRuntimeMap();
@@ -1925,12 +2047,8 @@ void TestOriginal(const std::filesystem::path& root, const bool inventoryOnly = 
                 const auto* expected = QuestVr::FindMeshAnimationSequence(*mesh.animation, wait.text, true);
                 Require(expected && bird.animation.sequence == expected->name && bird.animation.loop,
                     "Original Bird.PlayWaiting native optional defaults were not executed");
-                const auto before = bird;
-                const auto random = ExecutePortableActorFunction(actor.objectPath, "TweenToWaiting", {Number(0.2f)});
-                Require(random.status == Status::Unsupported && Same(before, Snapshot(actor.objectPath)),
-                    "Unsupported original FRand branch was replaced or leaked mutations: " + random.error);
+                VerifyOriginalBirdRandom(actor.objectPath,checkpoint,temporary.directory);
                 ++birdTests;
-                std::cout << "ORIGINAL BIRD " << actor.objectPath << " PlayWaiting/native optional/FRand refusal passed\n";
             }
             if (GetPortableRuntimeUnsavedScriptState()) {
                 const auto before = Snapshot(actor.objectPath);
@@ -1963,11 +2081,13 @@ int main(int argc, char** argv) {
             return 77;
         }
         Require(argc == 2 || (argc == 3 && (std::string(argv[2]) == "--inventory-only" ||
-                std::string(argv[2]) == "--switch-only")),
-            "Usage: portable_actor_script_test GAME_ROOT [--inventory-only|--switch-only]");
+                std::string(argv[2]) == "--switch-only" || std::string(argv[2]) == "--random-only")),
+            "Usage: portable_actor_script_test GAME_ROOT [--inventory-only|--switch-only|--random-only]");
         const bool switchOnly = argc == 3 && std::string(argv[2]) == "--switch-only";
-        TestOriginal(std::filesystem::path(argv[1]), argc == 3 && !switchOnly, switchOnly);
+        const bool randomOnly = argc == 3 && std::string(argv[2]) == "--random-only";
+        TestOriginal(std::filesystem::path(argv[1]), argc == 3 && !switchOnly && !randomOnly, switchOnly,randomOnly);
         if (switchOnly) { std::cout << "PASS focused original cold-assets/head-Switch suite\n"; return 0; }
+        if (randomOnly) { std::cout << "PASS focused original cold-assets/Rand/FRand/RandRange suite\n"; return 0; }
         std::cout << "PASS original actor authored struct inspection, member writes, typed references, v4/v5 composition and rollback"
             << (argc == 2 ? "; full actor bytecode/natives/BSP Region/state/clock suite" : "; focused inventory suite") << '\n';
         return 0;

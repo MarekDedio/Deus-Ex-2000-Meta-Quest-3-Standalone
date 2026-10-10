@@ -4,6 +4,7 @@
 #include "quest_portable_vm.h"
 #include "quest_state_frame.h"
 #include "quest_ai_event_state.h"
+#include "quest_script_random.h"
 
 #include <algorithm>
 #include <array>
@@ -60,6 +61,9 @@ struct ScriptSavedState {
     // Native level-owned graphs are neither reflected actor properties nor
     // spawned UObjects. An empty graph still records manager presence.
     std::vector<Ai::State> aiManagers{};
+    // One engine-global game-thread stream. Absence preserves old wire formats
+    // and means reset, never merge with the current stream, on runtime restore.
+    std::optional<std::uint32_t> randomSeed{};
 };
 struct ScriptStateLimits {
     std::size_t maxBytes{32u << 20u};
@@ -84,6 +88,7 @@ inline constexpr std::uint8_t ClassDefaultsVersion=3u;
 inline constexpr std::uint8_t ActorLifecycleVersion=4u;
 inline constexpr std::uint8_t BirthManifestVersion=5u;
 inline constexpr std::uint8_t AiManagerVersion=6u;
+inline constexpr std::uint8_t RandomStateVersion=7u;
 inline constexpr std::uint32_t MaximumWorldActorSlots=1'000'000u;
 // Stable serialized tags deliberately do not depend on Vm::Kind ordinals.
 enum class Tag : std::uint8_t {
@@ -274,14 +279,15 @@ public:
         const bool withLifecycle=std::any_of(state.objects.begin(),state.objects.end(),[](const auto& object) { return object.lifecycle.has_value(); });
         const bool withBirths=!state.births.empty();
         const bool withAi=!state.aiManagers.empty();
-        const auto version=withAi ? AiManagerVersion : withBirths ? BirthManifestVersion : withLifecycle ? ActorLifecycleVersion : withDefaults ? ClassDefaultsVersion : withFrames ? StateFrameVersion : Magic[6u];
+        const bool withRandom=state.randomSeed.has_value();
+        const auto version=withRandom ? RandomStateVersion : withAi ? AiManagerVersion : withBirths ? BirthManifestVersion : withLifecycle ? ActorLifecycleVersion : withDefaults ? ClassDefaultsVersion : withFrames ? StateFrameVersion : Magic[6u];
         for (std::size_t i=0; i<Magic.size(); ++i) Byte(i==6u ? version : Magic[i]);
         String(state.mapName,true,false,128u);
         if (state.objects.size()>limits_.maxObjects || state.classDefaults.size()>limits_.maxObjects-state.objects.size() ||
             state.births.size()>limits_.maxObjects)
             Fail("aggregate object/class-default count exceeds the budget");
         budget_.Array(state.objects.size(),sizeof(ScriptSavedObject)+sizeof(void*));
-        if (withBirths || withAi) budget_.Array(state.objects.size(),sizeof(SavedObjectIdentity));
+        if (withBirths || withAi || withRandom) budget_.Array(state.objects.size(),sizeof(SavedObjectIdentity));
         Count(state.objects.size());
         for (const auto& object : state.objects) {
             Text(object.path,limits_,true); Text(object.classPath,limits_,true);
@@ -294,19 +300,19 @@ public:
             Properties(object.properties,false);
             Byte(object.clock ? 1u : 0u);
             if (object.clock) Animation(*object.clock);
-            if (withFrames || withDefaults || withLifecycle || withBirths || withAi) {
+            if (withFrames || withDefaults || withLifecycle || withBirths || withAi || withRandom) {
                 Byte(object.state ? 1u : 0u);
                 if (object.state) ObjectState(*object.state);
             }
-            if (withLifecycle || withBirths || withAi) {
+            if (withLifecycle || withBirths || withAi || withRandom) {
                 Byte(object.lifecycle ? 1u : 0u);
                 if (object.lifecycle) ActorLifecycle(*object.lifecycle);
             }
         }
         budget_.Array(state.classDefaults.size(),sizeof(ScriptSavedClassDefaults)+sizeof(void*));
-        if (withBirths || withAi) budget_.Array(state.classDefaults.size(),sizeof(std::string_view));
+        if (withBirths || withAi || withRandom) budget_.Array(state.classDefaults.size(),sizeof(std::string_view));
         const auto classes=Sorted(state.classDefaults,[](const auto& defaults) -> const std::string& { return defaults.classPath; });
-        if (withDefaults || withLifecycle || withBirths || withAi) {
+        if (withDefaults || withLifecycle || withBirths || withAi || withRandom) {
             Count(state.classDefaults.size());
             for (const auto& defaults : state.classDefaults) Text(defaults.classPath,limits_,true);
             for (std::size_t i=0; i<classes.size(); ++i) {
@@ -317,7 +323,7 @@ public:
                 String(defaults.classPath,true); Properties(defaults.properties,true);
             }
         }
-        if (withBirths || withAi) {
+        if (withBirths || withAi || withRandom) {
             budget_.Array(state.births.size(),sizeof(ScriptSavedBirth)+sizeof(void*));
             budget_.Array(state.births.size(),sizeof(std::uint32_t));
             std::vector<std::uint32_t> indices; indices.reserve(state.births.size());
@@ -341,7 +347,7 @@ public:
                 String(birth.path,true); String(birth.classPath,true); U32(birth.worldActorIndex); Properties(birth.frozenDefaults,true);
             }
         }
-        if (withAi) {
+        if (withAi || withRandom) {
             budget_.AiManagers(state.aiManagers.size());
             budget_.Array(state.aiManagers.size(),sizeof(void*));
             Count(state.aiManagers.size());
@@ -351,6 +357,9 @@ public:
                     Fail("duplicate or case-colliding AI manager owner");
                 AiManager(*managers[i]);
             }
+        }
+        if (withRandom) {
+            Byte(ScriptRandom::Algorithm); U32(*state.randomSeed);
         }
     }
 private:
@@ -582,7 +591,8 @@ public:
             if (i==6u) {
                 version=byte;
                 if (version!=Magic[i] && version!=StateFrameVersion && version!=ClassDefaultsVersion &&
-                    version!=ActorLifecycleVersion && version!=BirthManifestVersion && version!=AiManagerVersion)
+                    version!=ActorLifecycleVersion && version!=BirthManifestVersion && version!=AiManagerVersion &&
+                    version!=RandomStateVersion)
                     Fail("bad magic or unsupported codec version");
             } else if (byte!=Magic[i]) Fail("bad magic or unsupported codec version");
         }
@@ -666,7 +676,7 @@ public:
         }
         if (version>=AiManagerVersion) {
             const auto managers=U32(); budget_.AiManagers(managers);
-            if (managers==0u || managers>Remaining()/35u)
+            if ((version==AiManagerVersion && managers==0u) || managers>Remaining()/35u)
                 Fail("AI manager count is empty or exceeds encoded payload");
             budget_.Array(managers,sizeof(void*));
             if constexpr(Materialize) state.aiManagers.reserve(managers);
@@ -683,6 +693,11 @@ public:
                 previous=lastAiOwner_;
                 if constexpr(Materialize) state.aiManagers.push_back(std::move(manager));
             }
+        }
+        if (version>=RandomStateVersion) {
+            if (Byte()!=ScriptRandom::Algorithm) Fail("unsupported random-state algorithm");
+            const auto seed=U32();
+            if constexpr(Materialize) state.randomSeed=seed;
         }
         if (Remaining()!=0u) Fail("trailing encoded-state bytes");
         return state;

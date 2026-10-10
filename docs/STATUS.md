@@ -1,5 +1,28 @@
 # Port status
 
+## Original script RNG and saved continuation (2026-10-10)
+
+- Rand167/FRand195 use an explicit MSVCRT-compatible shared uint32 stream,
+  characterized from the original Core.dll: nonpositive Rand consumes no draw,
+  Max1 consumes one, large bounds are not clamped and FRand includes exactly1.0.
+  Actual scripted RandRange and original Bird Idle1/Idle2 branches execute.
+- Root transactions roll back random draws with nested properties, completed
+  OUT writes and native clocks. RNG-only commits do not republish geometry or
+  block map travel; existing map-scoped actor/default/AI archive guards remain.
+- Codec7/checkpoint10 retain the global stream, including nonbaseline seeds
+  before the first draw. Quest supplies time once; portable tests default to1.
+  Warm/cold restoration continues exactly; legacy envelopes1–9 explicitly reset
+  to seed1. Unsupported algorithms or malformed typed state reject atomically.
+- Explicit original StartUp now passes FRand and refuses Sleep256 at
+  DeusEx.ScriptedPawn.StartUp PC6, opcode0x61, with full rollback. Latent scheduling,
+  automatic world startup, live AI and campaign completion remain unfinished.
+- See [SCRIPT-RANDOM.md](SCRIPT-RANDOM.md) for contract, tests and limits.
+  This backend APK is not installed; the accepted seated-player build is unchanged.
+- All 49 ordinary host tests and all three separate original-data integrations
+  pass. RNG controls pass 58,942 / 37 rejections; codec controls pass 6,337 / 5,634.
+  Android ARM64 build and v2 signature verification pass without commercial
+  packages. Local evidence is under `artifacts/random-state-20261010/`.
+
 ## Original Switch/Case interpreter path (2026-10-10)
 
 - Original Switch/Case now supports alias-retaining selector evaluation,
@@ -13,8 +36,9 @@
 - The unchanged DeusEx.ScriptedPawn.PlayTurnHead override passes directions
   0–4/default255, exact +/-5461 view offsets, native blend/timer effects, its
   actual false Bool return, short-circuiting and save/budget rollback.
-  Explicit StartUp advances to unsupported FRand195 at its original PC9,
-  with full provisional inventory/AI/world rollback; startup is not complete.
+  In this increment StartUp reached unsupported FRand195 at its original PC9,
+  with full provisional inventory/AI/world rollback. The later RNG increment
+  above implements it; startup is still incomplete at Sleep256.
 - See [SWITCH-CASE.md](SWITCH-CASE.md) for source contracts and final evidence.
   The physically accepted seated-player APK remains installed unchanged.
 - All 48 ordinary host tests and all three separate original-data integrations
