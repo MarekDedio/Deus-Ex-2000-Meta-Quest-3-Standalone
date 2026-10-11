@@ -116,6 +116,39 @@ struct PortableMapRuntimeSummary {
     std::size_t replacedExports{};
 };
 
+enum class PortableWorldStartupPhase : std::uint8_t {
+    ValidateWorld, SelectGameInfo, ResetTime, RestoreTime, ClearTouching,
+    InitializeExecution, PublishStartup, InitGame, PreBeginPlay, BeginPlay,
+    SetActorZone, LastRenderTime, PostBeginPlay, SetInitialState, WorldBases,
+    ClearStartup, PostPostBeginPlay, CompactActorSlots, Count
+};
+struct PortableWorldStartupProbeOptions {
+    // Already decoded URL GAME= class and the configured local client's
+    // DefaultGame class. Empty URL selects the map's actual DefaultGameType
+    // before this configured fallback; there is no server/Botpack guess.
+    std::string urlGameClass;
+    std::string defaultGameClass;
+    std::string initGameOptions;
+};
+struct PortableWorldStartupProbeResult {
+    QuestVr::Vm::Result execution;
+    PortableWorldStartupPhase phase{PortableWorldStartupPhase::ValidateWorld};
+    std::size_t actorSlot{static_cast<std::size_t>(-1)};
+    std::string actorPath, gameInfoPath, initGameError;
+    std::array<std::size_t, static_cast<std::size_t>(PortableWorldStartupPhase::Count)> visited{};
+    bool restoredWorld{};
+    float worldTime{}; // Staged native clock; never published by this probe.
+};
+const char* PortableWorldStartupPhaseName(PortableWorldStartupPhase phase);
+// Non-publishing diagnostic over actual Level slots and original callbacks.
+// One shared VM/host transaction is ALWAYS rolled back, including a prefix
+// that reaches the current native FindBase/slot-compaction implementation gap.
+// This neither starts a playable world nor binds/logs in a player. Exact first
+// VM failure and phase/slot/receiver are retained without accepting partial work.
+PortableWorldStartupProbeResult ProbePortableWorldStartup(
+    const PortableWorldStartupProbeOptions& options,
+    const QuestVr::Vm::Limits& limits = {});
+
 struct PortableActorMeshSummary {
     bool passed{};
     std::size_t referencedMeshes{};

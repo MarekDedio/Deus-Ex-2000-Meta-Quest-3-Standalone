@@ -1,9 +1,9 @@
 # Real world/player startup: current gaps
 
-This is the next integration boundary for a playable original campaign, not an
-implemented bootstrap or an acceptance claim. The landing/probe increment
-provides explicit actor-state calls; the production Quest loop still does not
-invoke them as a world simulation.
+This is the next integration boundary for a playable original campaign, not
+an accepted bootstrap. A [non-publishing world probe](WORLD-STARTUP-PROBE.md)
+now coordinates original lifecycle operations in one rollback-safe transaction.
+The production Quest loop still does not invoke them as a world simulation.
 
 ## Current production path
 
@@ -29,7 +29,9 @@ dependencies; original executables were not run for this audit:
 - The installation's DeusEx.ini selects `DeusEx.DeusExGameInfo` and
   `DeusEx.JCDentonMale`. The original DLL game-class precedence and fresh/restored
   phase contracts are now audited in [WORLD-BOOTSTRAP-CONTRACT.md](WORLD-BOOTSTRAP-CONTRACT.md);
-  the automatic coordinator remains unimplemented.
+  a diagnostic coordinator now exercises the known prefix without publishing
+  a partial world. Physical FindBase and original slot/save ordering remain
+  explicit refusal boundaries; automatic accepted startup is not implemented.
 - Inherited `Engine.GameInfo.InitGame` starts with Log231 at PC0, after evaluating
   string native168. Logging, original UTF16 option primitives, Min249 and
   validated ObjectToString0x56 are implemented alongside actual Spawn278.
@@ -40,6 +42,11 @@ dependencies; original executables were not run for this audit:
   prepend/first-splice/retained-next behavior. Actual Pawn.Destroyed invokes
   removal; generic Destroy does not force it. Tan189 and FClamp246 are added.
   Complete most-derived PreBeginPlay and live world phase execution remain required.
+- The unmodified Training world probe reaches PreBeginPlay slot756,
+  `00_Training.JaimeReyes0`, then fails in actual `Engine.Decal.AttachDecal`
+  (unsupported native0) while initializing the NPC shadow/decal. All prefix
+  state is rolled back. Decal geometry/native surface ownership must be
+  implemented rather than bypassing that original callback.
 - `Extension.PlayerPawnExt.Possess` calls its base, then InitRootWindow1052
   at PC6. Omitting the most-derived possession call would omit authored UI
   initialization. Root-window ownership and VR presentation integration remain

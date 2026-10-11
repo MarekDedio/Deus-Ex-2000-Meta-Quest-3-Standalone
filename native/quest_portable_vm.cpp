@@ -9,6 +9,7 @@
 #include <cstring>
 #include <cerrno>
 #include <cstdlib>
+#include <exception>
 #include <limits>
 #include <stdexcept>
 #include <tuple>
@@ -410,12 +411,49 @@ public:
         }
     }
     void Accept() { accepted_ = true; }
+    void CheckFailure() const {
+        if (!failure_) return;
+        // A native may catch an inner failure and finish unwinding its own
+        // frame. Report the first failing callee, not that later caller cursor.
+        result_.function = failureLocation_->function;
+        result_.offset = failureLocation_->offset;
+        result_.opcode = failureLocation_->opcode;
+        result_.callStack = failureLocation_->callStack;
+        std::rethrow_exception(failure_);
+    }
+    Value FinishTransaction(Value value) {
+        CheckFailure();
+        ValidateValue(value, 0);
+        return value;
+    }
     Value CallEvent(const std::string& receiver, const std::string& eventName,
         const bool enumDispatch, const std::vector<Evaluation>& arguments) override {
-        if (eventName.size() > limits_.stringBytes || receiver.size() > limits_.stringBytes)
-            Fail(Status::Budget, "VM callback identity/name limit");
-        const auto identity = host_.ResolveEvent(receiver, eventName, enumDispatch);
-        return identity ? Run(*identity, receiver, arguments) : Value{};
+        // Resolution/budget failures at a coordinator boundary have no
+        // bytecode caller. Do not blame a previously completed declaration.
+        // A nested event must keep its active caller until its callee is known.
+        const bool coordinator = result_.callStack.empty();
+        if (coordinator && !failure_) {
+            result_.function.clear(); result_.offset = 0; result_.opcode = 0;
+        }
+        return DirectOperation([&] {
+            if (eventName.size() > limits_.stringBytes || receiver.size() > limits_.stringBytes)
+                Fail(Status::Budget, "VM callback identity/name limit");
+            const auto identity = host_.ResolveEvent(receiver, eventName, enumDispatch);
+            if (identity && coordinator) Locate(*identity, 0, 0);
+            return identity ? Run(*identity, receiver, arguments) : Value{};
+        });
+    }
+    Value CallFunction(const Function& identity, const std::string& receiver,
+        const std::vector<Evaluation>& arguments) override {
+        // At a coordinator boundary there is no caller bytecode location. A
+        // nested callback keeps the current caller until Run enters the callee.
+        if (result_.callStack.empty() && !failure_) Locate(identity, 0, 0);
+        return DirectOperation([&] {
+            if (identity.path.size() > limits_.stringBytes || identity.source.size() > limits_.stringBytes ||
+                receiver.size() > limits_.stringBytes)
+                Fail(Status::Budget, "VM direct function identity limit");
+            return Run(identity, receiver, arguments);
+        });
     }
     Value Run(const Function& identity, const std::string& self, const std::vector<Evaluation>& incoming,
         std::optional<std::optional<Value>> capturedContext = {}) {
@@ -986,10 +1024,36 @@ private:
     Host& host_;
     const Limits& limits_;
     Result& result_;
-    std::size_t nodes_{}, localElements_{}, retainedBytes_{};
+    std::size_t nodes_{}, localElements_{}, retainedBytes_{}, operations_{};
     bool accepted_{};
+    std::exception_ptr failure_;
+    struct FailureLocation {
+        std::string function;
+        std::size_t offset{};
+        std::uint8_t opcode{};
+        std::vector<std::string> callStack;
+    };
+    std::optional<FailureLocation> failureLocation_;
     std::shared_ptr<bool> alive_{std::make_shared<bool>(true)};
     std::vector<std::pair<std::shared_ptr<Reference>, Value>> journal_;
+    template<class Operation> Value DirectOperation(Operation&& operation) {
+        CheckFailure();
+        try {
+            if (operations_ >= limits_.operations) Fail(Status::Budget, "VM operation entry limit");
+            ++operations_;
+            auto result = operation();
+            CheckFailure();
+            return result;
+        } catch (...) {
+            // A host coordinator/native cannot suppress one failed callback
+            // and commit an earlier prefix using the damaged interpreter.
+            if (!failure_) {
+                failureLocation_ = FailureLocation{result_.function, result_.offset, result_.opcode, result_.callStack};
+                failure_ = std::current_exception();
+            }
+            throw;
+        }
+    }
     [[noreturn]] void Fail(Status status, const std::string& text) { throw Failure(status, text); }
     void Locate(const Function& fn, std::size_t offset, std::uint8_t op) {
         result_.function = fn.path; result_.offset = offset; result_.opcode = op;
@@ -1434,7 +1498,11 @@ private:
             // No implicit success for missing campaign behavior or latent calls.
             auto guarded = args;
             for (auto& argument : guarded) argument.reference = GuardReference(argument.reference);
-            const auto value = host_.NativeWithContext(index, self, guarded, declaration, *this, capturedContext).Load();
+            const auto value = [&] {
+                try { return host_.NativeWithContext(index, self, guarded, declaration, *this, capturedContext).Load(); }
+                catch (...) { CheckFailure(); throw; }
+            }();
+            CheckFailure();
             // Native return slots are values in the pinned VM, never aliases
             // to an out argument or to a guard owned by this Machine.
             ValidateValue(value, 0); return {value, {}};
@@ -1469,6 +1537,7 @@ Result Execute(Host& host, const Function& function, const std::string& self,
         host.Begin(); begun = true;
         Machine machine(host, limits, result);
         result.value = machine.Run(function, self, arguments);
+        machine.CheckFailure();
         host.Commit(); begun = false;
         machine.Accept();
         result.committed = true;
@@ -1486,6 +1555,41 @@ Result Execute(Host& host, const Function& function, const std::string& self,
     return result;
 }
 
+Result ExecuteTransaction(Host& host, const std::function<Value(Execution&)>& operation,
+    const Limits& limits) {
+    Result result;
+    bool begun{};
+    try {
+        host.Begin(); begun = true;
+        Machine machine(host, limits, result);
+        if (!operation) throw Failure(Status::Invalid, "Missing VM transaction callback");
+        try {
+            result.value = machine.FinishTransaction(operation(machine));
+        } catch (...) {
+            // Prefer the first failed script entry even if a callback catches
+            // it and subsequently throws an unrelated host exception.
+            machine.CheckFailure();
+            // With no poisoned entry, this is coordinator work (or callback
+            // return validation), not the last successfully returned script.
+            // Do not attribute a host-side failure to that stale bytecode PC.
+            result.function.clear(); result.offset = 0; result.opcode = 0;
+            result.callStack.clear();
+            throw;
+        }
+        host.Commit(); begun = false;
+        machine.Accept(); result.committed = true; result.status = Status::Returned;
+    } catch (const Failure& error) {
+        result.status = error.status; result.error = error.what();
+    } catch (const std::exception& error) {
+        result.status = Status::Unsupported; result.error = error.what();
+    } catch (...) {
+        result.status = Status::Invalid; result.error = "Unknown VM transaction failure";
+    }
+    if (begun) host.Rollback();
+    if (!result.passed()) result.value = {};
+    return result;
+}
+
 Result ResumeState(Host& host, const std::string& self, const Limits& limits) {
     Result result;
     bool begun{};
@@ -1493,6 +1597,7 @@ Result ResumeState(Host& host, const std::string& self, const Limits& limits) {
         host.Begin(); begun = true;
         Machine machine(host, limits, result);
         result.value = machine.Resume(self);
+        machine.CheckFailure();
         host.Commit(); begun = false;
         machine.Accept(); result.committed = true;
         if (result.status != Status::Stopped && result.status != Status::Waiting) result.status = Status::Returned;
@@ -1523,7 +1628,12 @@ Result AdvanceState(Host& host, const std::string& self, const float elapsed, co
             ? &*object->frame->control : nullptr;
         if (control) selectedBeforePoll = control->selectedPath;
         if (control && (!control->codePresent || host.IsStateDeleted(self))) result.status = Status::Stopped;
-        else if (host.PollState(self, elapsed, machine)) result.value = machine.Resume(self, selectedBeforePoll);
+        else {
+            const bool eligible = host.PollState(self, elapsed, machine);
+            machine.CheckFailure();
+            if (eligible) result.value = machine.Resume(self, selectedBeforePoll);
+        }
+        machine.CheckFailure();
         host.Commit(); begun = false;
         machine.Accept(); result.committed = true;
         if (result.status != Status::Stopped && result.status != Status::Waiting) result.status = Status::Returned;

@@ -2,30 +2,57 @@
 
 ## Latest backend development APK
 
-`artifacts/startup-primitives-20261011/DeusExQuestVR-startup-primitives-20261011.apk`
+`artifacts/world-startup-probe-20261011/DeusExQuestVR-world-startup-probe-final-20261011.apk`
 is the newest signed ARM64 build: 18,919,145 bytes, SHA256
-`88008638C1EC7F2DD79C9C1FA66B6DE56D59595A424DB481E4FBBE22B90D9BE9`.
-It adds audited startup string/logging/math primitives, native PawnList links
-and the original Spawn/world AttachTag separation. No accepted hand/body
+`C0085B58B56F86AF24D647384CB64981E0CE361D671841323C1220A8C63E7927`.
+It adds shared-budget VM transactions, a rollback-only original-world startup
+diagnostic, native Level ownership assertions and corrected BSP Region side,
+leaf and zone fallback behavior. No accepted hand/body
 geometry or controller/recenter mapping was changed. Signature v2 passes and
 the16 ZIP entries contain SDK assets/libraries, not original game packages.
 
-Data-probe: 5,757,208 bytes, SHA256
-`A7B98F85005F532449470D0D63B56228A6107B00C2E2FFEEA89B1D4A6EC0EDD2`.
+Data-probe: 5,833,752 bytes, SHA256
+`D7EFDC0F635B4106C28222132A524F11327F4804C9824B6B40BEAF8685EEB20E`.
 Quest library: 5,360,240 bytes, SHA256
-`C1E678CE160BDDFB7E9E10D96B920A796C78E5553D344A098FA3ABF1D4D1FDDB`.
+`7461DF739F8E661097B675A024C8EF6DE9B54EB6DB2E3059104D864D270A331C`.
 
-The build helper attempted its default automatic deployment, but Quest3
-`2G0YC5ZG620985` had disappeared from ADB before installation. Independent
-ADB and present-device checks also found no physical Quest/Android device;
-only installed Meta virtual display/audio devices were present. A second
-install-if-connected check skipped explicitly. This APK is **not installed**
-or visually accepted on hardware. Saves/app data were not cleared. On the
-next authorized USB connection, use the automatic/manual install helper with
-this archive; do not confuse the currently installed older state-control APK
-with this build.
+Earlier APK builds explicitly skipped default deployment while the Quest was
+absent. During the final build Quest3 `2G0YC5ZG620985` reconnected: the default
+build helper automatically replace-installed this exact APK, preserving app
+data/saves. Device `base.apk` SHA256 matches the archive; device-reported
+lastUpdateTime is `2026-10-11 21:00:43`. A single waited launch confirms
+process25160. Installation/process startup alone is not visual acceptance.
 
-Existing most recent hardware evidence belongs to the older
+Fresh in-app eye captures from this installed APK are
+`artifacts/world-startup-probe-20261011/quest-release-frame.bmp` (21:03:02)
+and `quest-release-inventory.bmp` (21:04:02). They show textured Training
+architecture, differentiated lighting, readable debug text and the original
+Persona inventory artwork/text. The inventory was opened/closed with the
+diagnostic bridge, not tested with physical controller input. Tracking is
+valid, seated actual eye height1.650m and the scene capture submitted four body
+surfaces; neither controller grip is tracked, and neither view looks down at
+the body. No renewed hand/leg alignment or comfort acceptance is claimed.
+Uncaptured samples reached72fps; each capture caused a291.64ms worst-frame
+stall. Menu was closed again afterwards; no save/load, pickup or map change
+was requested. These two frames are smoke evidence, not complete visual QA.
+
+All51 ordinary host tests pass (55 registered; four owned-data suites skip
+without arguments). The four suites were separately run against the read-only
+owned GOTY installation: original defaults1,002, original PawnList67, runtime
+save/restore and the full Training/UNATCOIsland/Intro actor suite pass. Generated
+Spawn/world integration passes5,398 checks/114 expected refusals; shared VM
+transaction controls pass125/31 and total VM677,809/302. Automatic deployment
+controls pass21/0 without hardware. The event-location regression was first
+reproduced failing before its fix, then passed with the same generated control.
+
+The separate unmodified Training startup probe creates GameInfo/Mutator and
+reaches PreBeginPlay slot756, JaimeReyes0, failing in Engine.Decal.AttachDecal
+native0. Exact repeated failure and byte-identical world/save/GC rollback pass
+again after the final VM change. This diagnostic intentionally never publishes
+a partial world; it is not full world startup, player ownership or Tick. See
+[WORLD-STARTUP-PROBE.md](WORLD-STARTUP-PROBE.md).
+
+Earlier hardware evidence belongs to the older
 `original-state-control-20261011` APK, SHA256
 `A17B145B1D4C29D8E6D0F27FB1A46D721904738F09ED2F14B980456A91943112`:
 Training architecture, textures, differentiated lighting, readable debug HUD

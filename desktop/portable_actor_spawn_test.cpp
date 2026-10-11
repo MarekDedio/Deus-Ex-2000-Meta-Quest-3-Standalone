@@ -59,6 +59,10 @@ struct Code { Bytes raw; std::size_t logical{}; };
 Code Token(std::uint8_t op) { return {{op}, 1u}; }
 Code Ref(std::uint8_t op, std::int32_t reference) { Code code{{op}, 5u}; Index(code.raw, reference); return code; }
 Code Int(std::int32_t value) { Code code{{0x1du}, 5u}; U32(code.raw, static_cast<std::uint32_t>(value)); return code; }
+Code Text(const std::string& value) {
+    Code code{{0x1fu}, value.size() + 2u};
+    code.raw.insert(code.raw.end(), value.begin(), value.end()); code.raw.push_back(0u); return code;
+}
 Code Join(std::initializer_list<Code> parts) {
     Code code; for (const auto& part : parts) { Append(code.raw, part.raw); code.logical += part.logical; } return code;
 }
@@ -338,7 +342,7 @@ void RefusedSave(const Fixture& fixture, const Bytes& prefix, const QuestVr::Scr
 }
 
 struct Tables { PortablePackageTables core, engine, classes, map; std::size_t initialActors{}; };
-Tables Build(Fixture& fixture) {
+Tables Build(Fixture& fixture, unsigned worldModel = 0u) {
     Package core; core.stem = "Core"; const auto corePackage = core.ImportPackage("Core"), object = core.Export("Object"), metaclass = core.Export("Class", 0, object);
     const auto vector = core.Export("Vector", core.Import("Struct", corePackage), 0, object), rotator = core.Export("Rotator", core.Import("Struct", corePackage), 0, object);
     for (const auto& name : {"X", "Y", "Z"}) core.Property(name, "FloatProperty", vector, corePackage);
@@ -359,6 +363,7 @@ Tables Build(Fixture& fixture) {
     const auto player = engine.Export("Player", 0, importedObject), viewport = engine.Export("Viewport", 0, player);
     const auto playerPawn = engine.Export("PlayerPawn", 0, pawn);
     const auto decoration = engine.Export("Decoration", 0, actor);
+    const auto gameInfo = engine.Export("GameInfo", 0, actor);
     const auto notify = engine.Export("SpawnNotify", 0, actor), pointRegion = engine.Export("PointRegion", engine.Import("Struct", engineCore), 0, actor);
     engine.Property("Zone", "ObjectProperty", pointRegion, engineCore, 1u, zone); engine.Property("iLeaf", "IntProperty", pointRegion, engineCore); engine.Property("ZoneNumber", "ByteProperty", pointRegion, engineCore);
     engine.StructBody(pointRegion);
@@ -367,7 +372,7 @@ Tables Build(Fixture& fixture) {
     const auto actorXLevelField = engine.Property("XLevel", "ObjectProperty", actor, engineCore, 1u, level);
     const auto loadedObjectPath = engine.Function("LoadedObjectPath",actor,engineCore);
     engine.Property("ReturnValue","StrProperty",loadedObjectPath,engineCore,1u,0,0x580u);
-    engine.FunctionCode(loadedObjectPath,Join({{0x04u,0x56u},Ref(0x20u,actorLevelField)}));
+    engine.FunctionCode(loadedObjectPath,Join({Token(0x04u),Token(0x56u),Ref(0x20u,actorLevelField)}));
     engine.Property("Instigator", "ObjectProperty", actor, engineCore, 1u, pawn); engine.Property("Brush", "ObjectProperty", actor, engineCore, 1u, brush);
     for (const auto& name : {"Location", "OldLocation"}) engine.Property(name, "StructProperty", actor, engineCore, 1u, importedVector);
     engine.Property("Rotation", "StructProperty", actor, engineCore, 1u, importedRotator); engine.Property("Region", "StructProperty", actor, engineCore, 1u, pointRegion);
@@ -380,6 +385,11 @@ Tables Build(Fixture& fixture) {
     for (const auto& name : {"CollisionRadius", "CollisionHeight"}) engine.Property(name, "FloatProperty", actor, engineCore);
     engine.Property("Physics", "ByteProperty", actor, engineCore); engine.Property("StandingCount", "ByteProperty", actor, engineCore); engine.Property("Touching", "ObjectProperty", actor, engineCore, 4u, actor);
     engine.Property("bWaterZone", "BoolProperty", zone, engineCore); engine.Property("bBegunPlay", "BoolProperty", levelInfo, engineCore);
+    engine.Property("bStartup", "BoolProperty", levelInfo, engineCore);
+    engine.Property("TimeSeconds", "FloatProperty", levelInfo, engineCore);
+    engine.Property("NetMode", "ByteProperty", levelInfo, engineCore);
+    engine.Property("Game", "ObjectProperty", levelInfo, engineCore, 1u, gameInfo);
+    engine.Property("DefaultGameType", "ClassProperty", levelInfo, engineCore, 1u, importedClass, 0u, gameInfo);
     engine.Property("SpawnNotify", "ObjectProperty", levelInfo, engineCore, 1u, notify);
     engine.Property("PawnList", "ObjectProperty", levelInfo, engineCore, 1u, pawn);
     const auto nextPawn = engine.Property("nextPawn", "ObjectProperty", pawn, engineCore, 1u, pawn);
@@ -465,7 +475,7 @@ Tables Build(Fixture& fixture) {
         }
     }
     Bytes actorDefaults; engine.FloatTag(actorDefaults, "CollisionRadius", 12.0f); engine.FloatTag(actorDefaults, "CollisionHeight", 20.0f); engine.ClassBody(actor, actorDefaults);
-    for (auto cls : {zone, levelInfo, level, model, brush, pawn, player, viewport, playerPawn, notify, decoration}) engine.ClassBody(cls);
+    for (auto cls : {zone, levelInfo, level, model, brush, pawn, player, viewport, playerPawn, notify, decoration, gameInfo}) engine.ClassBody(cls);
     const auto engineTable = fixture.Write(engine);
 
     Package classes; classes.stem = "SpawnClasses"; const auto classesCore = classes.ImportPackage("Core"), classesEngine = classes.ImportPackage("Engine");
@@ -714,13 +724,120 @@ Tables Build(Fixture& fixture) {
     classes.ClassBody(support);
     classes.ClassBody(attachTaggedBirth);
     for (auto cls : {fauxPlayer, pawnAlias, loopActor, loopBirth, loopDelete, pawnProbe, pawnFailure, pawnShadowProbe}) classes.ClassBody(cls);
+    // World diagnostics execute real generated callbacks in one production VM
+    // transaction. Reaching the terminal native gap proves these assertions
+    // observed the required prefix values before the outer rollback.
+    const auto worldGame = classes.Export("WorldGame", 0, classes.Import("GameInfo", classesEngine));
+    const auto alternateWorldGame = classes.Export("AlternateWorldGame", 0, worldGame);
+    const auto failingWorldGame = classes.Export("FailingWorldGame", 0, worldGame);
+    const auto blockActorsWorldGame = classes.Export("BlockActorsWorldGame", 0, worldGame);
+    const auto blockPlayersWorldGame = classes.Export("BlockPlayersWorldGame", 0, worldGame);
+    const auto collideActorsWorldGame = classes.Export("CollideActorsWorldGame", 0, worldGame);
+    const auto worldProbe = classes.Export("WorldProbe", 0, probe);
+    const auto worldPassive = classes.Export("WorldPassive", 0, importedActor);
+    const auto worldBirth = classes.Export("WorldBirth", 0, probe);
+    const auto restoredFixture = classes.Property("RestoredFixture", "BoolProperty", worldProbe, classesCore);
+    const auto startup = classes.Import("bStartup", importedLevelInfo, "BoolProperty");
+    const auto touching = classes.Import("Touching", importedActor, "ObjectProperty");
+    const auto physics = classes.Import("Physics", importedActor, "ByteProperty");
+    const auto game = classes.Import("Game", importedLevelInfo, "ObjectProperty");
+    const auto defaultGame = classes.Import("DefaultGameType", importedLevelInfo, "ClassProperty");
+    const auto importedGameInfo = classes.Import("GameInfo", classesEngine);
+    const auto baseProperty = classes.Import("Base", importedActor, "ObjectProperty");
+    const auto region = classes.Import("Region", importedActor, "StructProperty");
+    const auto importedPointRegion = classes.Import("PointRegion", importedActor, "Struct");
+    const auto regionLeaf = classes.Import("iLeaf", importedPointRegion, "IntProperty");
+    const auto levelValue = [&](std::int32_t property) { return Context(Ref(0x01u, importedLevel), Ref(0x01u, property)); };
+    const auto assertCode = [&](Flow& flow, Code condition, const std::string& label) {
+        flow.IfNot(Native(129u, {condition}), label); flow.Add(Native(999u)); flow.Label(label);
+    };
+    for (const auto& [name, field, type, target] : std::vector<std::tuple<std::string, std::int32_t, std::string, std::int32_t>>{
+        {"SetWorldGameType", defaultGame, "ClassProperty", importedGameInfo},
+        {"SetWorldGame", game, "ObjectProperty", importedGameInfo}}) {
+        const auto function = classes.Function(name, probe, classesCore);
+        const auto input = classes.Property("Input", type, function, classesCore, 1u,
+            type == "ClassProperty" ? classesClass : target, 0x80u, type == "ClassProperty" ? target : 0);
+        classes.FunctionCode(function, Join({Assign(levelValue(field), Ref(0x00u, input)), Return()}));
+    }
+    const auto birthPreCount = classes.Property("PreCount", "IntProperty", worldBirth, classesCore);
+    const auto birthBeginCount = classes.Property("BeginCount", "IntProperty", worldBirth, classesCore);
+    const auto birthPre = Ref(0x01u, birthPreCount), birthBegin = Ref(0x01u, birthBeginCount);
+    classes.Function("PreBeginPlay", worldBirth, classesCore, Join({Assign(birthPre, Native(146u, {birthPre, Int(1)})), Return()}));
+    classes.Function("BeginPlay", worldBirth, classesCore, Join({Assign(birthBegin, Native(146u, {birthBegin, Int(1)})), Return()}));
+    Flow birthFinal;
+    birthFinal.IfNot(levelValue(startup), "world-final"); birthFinal.Add(Return()); birthFinal.Label("world-final");
+    assertCode(birthFinal, Native(154u, {birthPre, Int(2)}), "pre-twice");
+    assertCode(birthFinal, Native(154u, {birthBegin, Int(2)}), "begin-twice");
+    birthFinal.Add(Return()); classes.Function("PostPostBeginPlay", worldBirth, classesCore, birthFinal.Finish());
+    for (const auto cls : {worldGame, failingWorldGame}) {
+        const auto init = classes.Function("InitGame", cls, classesCore);
+        const auto options = classes.Property("Options", "StrProperty", init, classesCore, 1u, 0, 0x80u);
+        const auto error = classes.Property("Error", "StrProperty", init, classesCore, 1u, 0, 0x180u);
+        Flow flow;
+        assertCode(flow, Native(122u, {Ref(0x00u, options), Text("fixture-options")}), "options");
+        assertCode(flow, levelValue(begun), "begun"); assertCode(flow, levelValue(startup), "startup");
+        assertCode(flow, Native(114u, {Ref(0x01u, importedInstigator), Token(0x2au)}), "null-instigator");
+        assertCode(flow, Native(154u, {Native(156u, {Ref(0x01u, importedObjectFlags), Int(0x02000000)}), Int(0x02000000)}), "frame");
+        flow.Add(Native(278u, {Ref(0x20u, worldBirth)}));
+        flow.Add(Assign(Ref(0x00u, error), Text("generated nonempty out error")));
+        if (cls == failingWorldGame) flow.Add(Native(999u));
+        flow.Add(Return()); classes.FunctionCode(init, flow.Finish());
+    }
+    classes.Function("Spawned", worldGame, classesCore, Join({Native(999u), Return()}));
+    Flow driverPre;
+    assertCode(driverPre, levelValue(startup), "startup"); assertCode(driverPre, levelValue(begun), "begun");
+    assertCode(driverPre, Native(154u, {Native(156u, {Ref(0x01u, importedObjectFlags), Int(0x02000000)}), Int(0x02000000)}), "frame");
+    for (std::int32_t slot = 0; slot < 4; ++slot)
+        assertCode(driverPre, Native(114u, {Array(touching, slot), Token(0x2au)}), "touch-" + std::to_string(slot));
+    driverPre.Add(Context(prop("Link"), Native(279u))); // Delete future slot before its PreBeginPlay.
+    driverPre.Add(Native(278u, {Ref(0x20u, worldBirth)})); // Append during live outer pass.
+    driverPre.Add(Assign(prop("Counter"), Int(1))); driverPre.Add(Return());
+    classes.Function("PreBeginPlay", worldProbe, classesCore, driverPre.Finish());
+    Flow driverBegin;
+    assertCode(driverBegin, Native(154u, {prop("Counter"), Int(1)}), "phase-order");
+    driverBegin.Add(Assign(prop("Counter"), Int(2)));
+    driverBegin.Add(Assign(Ref(0x01u, importedAttachTag), Ref(0x21u, classes.Name("WorldTarget"))));
+    driverBegin.Add(Return()); classes.Function("BeginPlay", worldProbe, classesCore, driverBegin.Finish());
+    Flow driverPost;
+    assertCode(driverPost, Native(154u, {prop("Counter"), Int(2)}), "phase-order");
+    assertCode(driverPost, Native(154u, {Join({Token(0x3au), Ref(0x01u, physics)}), Int(0)}), "world-no-water-physics");
+    driverPost.Add(Assign(prop("Counter"), Int(3))); driverPost.Add(Return());
+    classes.Function("PostBeginPlay", worldProbe, classesCore, driverPost.Finish());
+    Flow driverState;
+    assertCode(driverState, Native(154u, {prop("Counter"), Int(3)}), "phase-order");
+    driverState.Add(Assign(prop("Counter"), Int(4))); driverState.Add(Return());
+    classes.Function("SetInitialState", worldProbe, classesCore, driverState.Finish());
+    Flow driverFinal;
+    assertCode(driverFinal, Native(129u, {levelValue(startup)}), "startup-cleared");
+    driverFinal.IfNot(Ref(0x01u,restoredFixture),"fresh-world"); driverFinal.Add(Return()); driverFinal.Label("fresh-world");
+    assertCode(driverFinal, Native(154u, {prop("Counter"), Int(4)}), "phase-order");
+    assertCode(driverFinal, Native(114u, {Ref(0x01u, baseProperty), prop("NestedActor")}), "first-match-world-base");
+    driverFinal.Add(Return()); classes.Function("PostPostBeginPlay", worldProbe, classesCore, driverFinal.Finish());
+    classes.Function("PrepareRestoredWorld", worldProbe, classesCore, Join({Assign(Ref(0x01u,restoredFixture),Token(0x27u)),Return()}));
+    classes.Function("BaseChange", worldProbe, classesCore, Join({Native(999u), Return()}));
+    classes.Function("PreBeginPlay", worldPassive, classesCore, Join({Native(999u), Return()}));
+    // Region lookup is read-only, independently checkable after rolled-back probes.
+    classes.Function("ReadRegionLeaf", probe, classesCore, Return(Join({Ref(0x36u, regionLeaf), Ref(0x01u, region)})));
+    for (auto cls : {worldGame, alternateWorldGame, failingWorldGame, worldProbe, worldPassive, worldBirth}) classes.ClassBody(cls);
+    // Original CheckEncroachment's early-return mask is 0x0d, not just
+    // bCollideActors and not bCollideWorld. Isolate each actual tested bit.
+    for (const auto& [cls, flag] : std::vector<std::pair<std::int32_t,const char*>>{
+        {blockActorsWorldGame,"bBlockActors"}, {blockPlayersWorldGame,"bBlockPlayers"},
+        {collideActorsWorldGame,"bCollideActors"}}) {
+        Bytes collisionDefaults;
+        for (const auto* field : {"bCollideActors","bBlockActors","bBlockPlayers"})
+            classes.BoolTag(collisionDefaults,field,std::string(field)==flag);
+        classes.ClassBody(cls,std::move(collisionDefaults));
+    }
     const auto classesTable = fixture.Write(classes);
     Require(GetPortableObjectPath(coreTable, recordCount) == "Object.Record.Count" && GetPortableObjectPath(coreTable, recordTarget) == "Object.Record.Target", "Generated frozen-struct metadata identity is wrong");
 
     Package map; map.stem = "SpawnFixture"; const auto mapEngine = map.ImportPackage("Engine"), mapClasses = map.ImportPackage("SpawnClasses");
     const auto world = map.Export("MyLevel", map.Import("Level", mapEngine)), mapModel = map.Export("Model0", map.Import("Model", mapEngine));
-    const auto levelActor = map.Export("Level0", map.Import("LevelInfo", mapEngine)), driver = map.Export("Driver", map.Import("Probe", mapClasses));
-    const auto owner = map.Export("Owner", map.Import("Support", mapClasses)), instigator = map.Export("Pawn0", map.Import("Pawn", mapEngine));
+    const auto misleadingLevel = worldModel ? map.Export("MisleadingLevel", map.Import("LevelInfo", mapEngine)) : 0;
+    const auto zoneActor = worldModel ? map.Export("RegionZone", map.Import("ZoneInfo", mapEngine)) : 0;
+    const auto levelActor = map.Export("Level0", map.Import("LevelInfo", mapEngine)), driver = map.Export("Driver", map.Import(worldModel ? "WorldProbe" : "Probe", mapClasses));
+    const auto owner = map.Export("Owner", map.Import(worldModel ? "WorldPassive" : "Support", mapClasses)), instigator = map.Export("Pawn0", map.Import("Pawn", mapEngine));
     const auto collision = map.Export("Leaf0", map.Import("Probe", mapClasses)); // Deliberate authored birth-name collision.
     const auto playerObject = map.Export("BindingPlayer", map.Import("Player", mapEngine));
     const auto viewportObject = map.Export("BindingViewport", map.Import("Viewport", mapEngine));
@@ -729,10 +846,23 @@ Tables Build(Fixture& fixture) {
     map.ActorBody(detachedActor, {}); // Real Actor class, deliberately absent from serialized Level slots.
     const auto detachedPawn = map.Export("DetachedPawn", map.Import("Pawn", mapEngine));
     map.ActorBody(detachedPawn, {}); // Reflected Pawn identity has no native XLevel/slot membership.
+    if (worldModel) { map.ActorBody(misleadingLevel, {}); map.ActorBody(zoneActor, {}); }
     for (const auto reference : {levelActor, driver, owner, instigator, collision}) {
         Bytes properties; map.ObjectTag(properties, "Level", levelActor); map.ObjectTag(properties, "XLevel", world);
-        if (reference == levelActor) map.BoolTag(properties, "bBegunPlay", true);
-        if (reference == driver) { map.VectorTag(properties, "Location", {12.0f, -25.0f, 40.0f}); map.RotatorTag(properties, "Rotation", {128, 16384, -512}); map.BoolTag(properties, "bTicked", true); map.ObjectTag(properties, "Instigator", instigator); }
+        if (reference == levelActor) {
+            map.BoolTag(properties, "bBegunPlay", !worldModel);
+            if (worldModel) { map.BoolTag(properties, "bWaterZone", true); map.FloatTag(properties, "TimeSeconds", 123.0f); }
+        }
+        if (reference == driver) {
+            map.VectorTag(properties, "Location", worldModel ? std::array<float,3>{0.0f,0.0f,40.0f} : std::array<float,3>{12.0f,-25.0f,40.0f});
+            map.RotatorTag(properties, "Rotation", {128, 16384, -512}); map.BoolTag(properties, "bTicked", true); map.ObjectTag(properties, "Instigator", instigator);
+            if (worldModel) {
+                map.ObjectTag(properties, "Link", owner); map.ObjectTag(properties, "NestedActor", instigator);
+                for (std::uint8_t slot=0u;slot<4u;++slot) { Bytes value; Index(value,owner); map.Tag(properties,"Touching",5u,value,slot); }
+            }
+        }
+        if (worldModel && (reference==instigator || reference==collision)) map.NameTag(properties,"Tag","WorldTarget");
+        if (worldModel==4u && reference==instigator) map.BoolTag(properties,"bCollideWorld",true);
         map.ActorBody(reference, std::move(properties));
     }
     Bytes levelBody; Index(levelBody, 0); U32(levelBody, 7u); U32(levelBody, 7u);
@@ -741,12 +871,30 @@ Tables Build(Fixture& fixture) {
     Index(levelBody, 0); U32(levelBody, 7777u); U32(levelBody, 0u); Index(levelBody, mapModel); Index(levelBody, 0); map.Body(world, std::move(levelBody));
     Bytes modelBody; Index(modelBody, 0); for (unsigned i = 0u; i < 6u; ++i) FloatBytes(modelBody, 0.0f); modelBody.push_back(0u);
     for (unsigned i = 0u; i < 4u; ++i) FloatBytes(modelBody, 0.0f);
-    for (unsigned i = 0u; i < 5u; ++i) Index(modelBody, 0); // Vectors, points, nodes, surfaces, vertices.
-    U32(modelBody, 0u); U32(modelBody, 1u); Index(modelBody, levelActor); U64(modelBody, 0u); U64(modelBody, 0u);
-    for (unsigned i = 0u; i < 7u; ++i) Index(modelBody, 0); // Polys, lightmaps, bits, bounds, hulls, leaves, lights.
+    Index(modelBody,0); Index(modelBody,0); // Vectors, points.
+    const bool nodes = worldModel==2u || worldModel==3u;
+    Index(modelBody,nodes ? 2 : 0);
+    if (nodes) for (unsigned index=0u;index<2u;++index) {
+        FloatBytes(modelBody,index ? 0.0f : 1.0f); FloatBytes(modelBody,index ? 1.0f : 0.0f);
+        FloatBytes(modelBody,0.0f); FloatBytes(modelBody,index ? 100.0f : 0.0f);
+        U64(modelBody,0u); modelBody.push_back(0u);
+        Index(modelBody,-1); Index(modelBody,-1); // Empty vertex pool, no surface.
+        Index(modelBody,index ? -1 : 1); Index(modelBody,-1); Index(modelBody,-1); // Back child exists only for root; front missing.
+        Index(modelBody,-1); Index(modelBody,-1); Index(modelBody,0); Index(modelBody,1);
+        modelBody.push_back(0u); U32(modelBody,index ? 2u : 0u); U32(modelBody,index ? 3u : 1u);
+    }
+    Index(modelBody,0); Index(modelBody,0); // Surfaces, vertices.
+    U32(modelBody,0u); const auto zoneCount = worldModel==3u ? 0u : nodes ? 2u : 1u;
+    U32(modelBody,zoneCount);
+    for (unsigned index=0u;index<zoneCount;++index) { Index(modelBody,nodes ? index ? zoneActor : 0 : levelActor); U64(modelBody,0u); U64(modelBody,0u); }
+    for (unsigned i=0u;i<5u;++i) Index(modelBody,0); // Polys, lightmaps, bits, bounds, hulls.
+    Index(modelBody,nodes ? 4 : 0);
+    if (nodes) for (unsigned index=0u;index<4u;++index) { Index(modelBody,static_cast<std::int32_t>(index&1u)); Index(modelBody,-1); Index(modelBody,-1); U64(modelBody,0u); }
+    Index(modelBody,0); // Lights.
     U32(modelBody, 1u); U32(modelBody, 0u); map.Body(mapModel, std::move(modelBody));
     const auto mapTable = fixture.Write(map, true); const auto decodedModel = LoadPortableRootModel68(mapTable);
-    Require(decodedModel.nodes.empty() && decodedModel.zones.size() == 1u && decodedModel.zones[0].actorReference == levelActor, "Genuine minimal map model is not decoded correctly");
+    Require(decodedModel.nodes.size()==(nodes ? 2u : 0u) && decodedModel.zones.size()==zoneCount &&
+        (nodes || decodedModel.zones[0].actorReference==levelActor), "Genuine generated map model is not decoded correctly");
     Require(ReadPortableLevel68ActorOrder(mapTable) == std::vector<std::int32_t>{levelActor, driver, 0, owner, instigator, collision, 0}, "Genuine Level actor ordering/holes were lost");
     return {coreTable, engineTable, classesTable, mapTable, 5u};
 }
@@ -1600,6 +1748,116 @@ void AiIntegrationTests(Fixture& fixture) {
         "Legacy reset retained native AI graph roots or restored runtime births");
 }
 
+void WorldStartupSynthetic() {
+    using Phase=PortableWorldStartupPhase;
+    const auto at=[](const PortableWorldStartupProbeResult& result,Phase phase) { return result.visited.at(static_cast<std::size_t>(phase)); };
+    for (const unsigned model : {1u,2u,3u,4u}) {
+        Fixture fixture; const auto tables=Build(fixture,model);
+        Require(InitializePortableRuntime({tables.core,tables.engine,tables.classes}).passed && LoadPortableRuntimeMap(tables.map).passed,
+            "Generated world-startup map failed initialization");
+        fixture.legacy=fixture.Snapshot("Legacy");
+        const auto regionBefore=fixture.Snapshot("BeforeRegion");
+        const auto fallback=Read("Level0","Region");
+        Same(fallback.fields.at("zone"),Object("Level0").value,"Slot0 Region did not use its native identity");
+        Require(QuestVr::Vm::ToInt(fallback.fields.at("ileaf"))==-1 && QuestVr::Vm::ToInt(fallback.fields.at("zonenumber"))==0,
+            "Slot0 Region entered BSP or lost -1/0 fallback");
+        const auto forward=Read("Driver","Region");
+        Same(forward.fields.at("zone"),Object(model==2u ? "RegionZone" : "Level0").value,
+            "Actor Region fallback scanned a misleading LevelInfo or lost actual node zone");
+        Require(QuestVr::Vm::ToInt(forward.fields.at("ileaf"))==((model==2u||model==3u) ? 1 : -1) &&
+            QuestVr::Vm::ToInt(forward.fields.at("zonenumber"))==(model==2u ? 1 : 0),
+            "Plane equality took opposite child, reversed leaf side, or lost empty/NumZones0 fallback");
+        Require(fixture.Snapshot("AfterRegion")==regionBefore,"Read-only PointRegion authored a save overlay");
+        if (model==2u || model==3u) {
+            Call("Driver","MoveDirect",{Vector({-1.0f,0.0f,40.0f})});
+            const auto backward=Read("Driver","Region");
+            Same(backward.fields.at("zone"),Object("Level0").value,"Null native zone-table slot did not fallback to actual slot0");
+            Require(QuestVr::Vm::ToInt(backward.fields.at("ileaf"))==2 &&
+                QuestVr::Vm::ToInt(backward.fields.at("zonenumber"))==0,"Negative-side traversal chose wrong node leaf or zone");
+            fixture.Reset();
+        }
+        const auto probe=[&](const PortableWorldStartupProbeOptions& options,Phase expected,const QuestVr::Vm::Limits& limits=QuestVr::Vm::Limits{}) {
+            const auto before=fixture.Snapshot("BeforeWorldProbe"); const auto paths=ActorPaths(true);
+            const auto revision=GetPortableRuntimeWorldRevision(); const auto gc=GC::GetStats();
+            const auto result=ProbePortableWorldStartup(options,limits);
+            Require(!result.execution.passed() && !result.execution.committed && !result.execution.error.empty(),
+                "World diagnostic incorrectly accepted or published a partial campaign");
+            Require(result.phase==expected,"World diagnostic failed at "+std::string(PortableWorldStartupPhaseName(result.phase))+
+                " instead of "+PortableWorldStartupPhaseName(expected)+": "+result.execution.error+
+                " at "+result.execution.function+":"+std::to_string(result.execution.offset));
+            Require(GC::GetStats().numObjects==gc.numObjects && GC::GetStats().memoryUsage==gc.memoryUsage,
+                "World diagnostic retained rolled-back allocation roots");
+            Require(fixture.Snapshot("AfterWorldProbe")==before && ActorPaths(true)==paths && GetPortableRuntimeWorldRevision()==revision,
+                "World diagnostic leaked phase writes, frames, births, names, attachments or revision");
+            ++refusals; return result;
+        };
+        const PortableWorldStartupProbeOptions fallbackOptions{"","SpawnClasses.WorldGame","fixture-options"};
+        const auto terminal=model==4u ? Phase::WorldBases : Phase::CompactActorSlots;
+        const auto full=probe(fallbackOptions,terminal);
+        Require(full.execution.function.empty() && full.execution.callStack.empty() && full.execution.offset==0u && full.execution.opcode==0u,
+            "Native world terminal gap retained an unrelated successful script PC");
+        Require(full.gameInfoPath==Path("WorldGame0") && !full.restoredWorld &&
+            full.initGameError=="generated nonempty out error","Native GameInfo choice or InitGame out-error copy was lost");
+        Require(at(full,Phase::InitializeExecution)==6u && at(full,Phase::PreBeginPlay)==7u &&
+            at(full,Phase::BeginPlay)==7u && at(full,Phase::SetActorZone)==7u &&
+            at(full,Phase::PostBeginPlay)==7u && at(full,Phase::SetInitialState)==7u,
+            "World loops captured actor count, failed nested callbacks/live births, or called deleted future slot");
+        if (model==4u) {
+            Require(full.actorPath==Path("Pawn0") && full.actorSlot==4u && at(full,Phase::PostPostBeginPlay)==0u,
+                "Physical FindBase gap lost exact native receiver/slot or ran later phases");
+        } else Require(at(full,Phase::PostPostBeginPlay)==7u,"World final callbacks did not observe cleared startup and first-match attachment");
+        Require(!QuestVr::Vm::ToBool(Read("Level0","bBegunPlay")) &&
+            QuestVr::Vm::ToInt(Read("Level0","TimeSeconds"))==123,"Rolled-back world published begun play or reset time");
+        if (model==1u) {
+            Call("Pawn0","SetPawnBindings",{Object("MisleadingLevel"),Object("MyLevel")});
+            const auto badBinding=probe(fallbackOptions,Phase::InitializeExecution);
+            Require(badBinding.actorSlot==4u && badBinding.actorPath==Path("Pawn0") && at(badBinding,Phase::InitGame)==0u,
+                "InitExecution accepted reflected Level different from its native slot0 binding");
+            fixture.Reset();
+            probe({"","","fixture-options"},Phase::SelectGameInfo);
+            probe({"","Missing.GameInfo","fixture-options"},Phase::SelectGameInfo);
+            probe({"SpawnFixture.Driver","","fixture-options"},Phase::SelectGameInfo);
+            probe({"SpawnClasses.Probe","","fixture-options"},Phase::SelectGameInfo);
+            for (const auto* cls : {"BlockActorsWorldGame","BlockPlayersWorldGame","CollideActorsWorldGame"}) {
+                const auto blocked=probe({std::string("SpawnClasses.")+cls,"SpawnClasses.WorldGame","fixture-options"},Phase::SelectGameInfo);
+                Require(blocked.execution.error.find("CheckEncroachment")!=std::string::npos &&
+                    at(blocked,Phase::InitializeExecution)==0u && at(blocked,Phase::InitGame)==0u,
+                    "Colliding GameInfo default bypassed exact native encroachment guard or advanced world phases");
+            }
+            const auto alternate=probe({"SpawnClasses.AlternateWorldGame","Missing.Fallback","fixture-options"},terminal);
+            Require(alternate.gameInfoPath==Path("AlternateWorldGame0"),"URL GameInfo did not take precedence over configured fallback");
+            Call("Driver","SetWorldGameType",{Class("WorldGame")});
+            const auto mapDefault=probe({"","Missing.Fallback","fixture-options"},terminal);
+            Require(mapDefault.gameInfoPath==Path("WorldGame0"),"Map DefaultGameType did not precede configured fallback");
+            const auto urlWins=probe({"SpawnClasses.AlternateWorldGame","Missing.Fallback","fixture-options"},terminal);
+            Require(urlWins.gameInfoPath==Path("AlternateWorldGame0"),"URL GameInfo did not override actual map DefaultGameType");
+            fixture.Reset();
+            const auto failed=probe({"SpawnClasses.FailingWorldGame","","fixture-options"},Phase::InitGame);
+            Require(failed.execution.function=="SpawnClasses.FailingWorldGame.InitGame" &&
+                at(failed,Phase::PreBeginPlay)==0u,"InitGame failure lost actual function evidence or advanced phases");
+            QuestVr::Vm::Limits tight; tight.instructions=4u;
+            const auto bounded=ProbePortableWorldStartup(fallbackOptions,tight);
+            Require(!bounded.execution.passed() && !bounded.execution.committed &&
+                fixture.Snapshot("BoundedWorldRollback")==fixture.legacy,"World VM budget failure leaked its prefix");
+            ++refusals;
+            const auto existing=Call("Level0","Spawn",{Class("Engine.GameInfo"),Object(""),Name("None"),Vector({0.0f,0.0f,0.0f}),Rotation({0,0,0})}).value;
+            Require(existing.kind==Kind::Object && !existing.text.empty(),"Cannot create before-begun existing GameInfo fixture");
+            Call("Driver","SetWorldGame",{{existing,{}}});
+            const auto preserved=probe({"Missing.Url","Missing.Fallback","fixture-options"},terminal);
+            Require(preserved.gameInfoPath==existing.text,"Existing Level.Game was replaced by URL/config selection");
+            fixture.Reset();
+            const auto restoredGame=Call("Level0","Spawn",{Class("Engine.GameInfo"),Object(""),Name("None"),Vector({0.0f,0.0f,0.0f}),Rotation({0,0,0})}).value;
+            Call("Driver","SetWorldGame",{{restoredGame,{}}});
+            Call("Driver","PrepareRestoredWorld"); Call("Driver","SetBegun",{{Value::Bool(true),{}}});
+            const auto restored=probe(fallbackOptions,Phase::CompactActorSlots);
+            Require(restored.restoredWorld && at(restored,Phase::InitializeExecution)==0u && at(restored,Phase::InitGame)==0u &&
+                at(restored,Phase::PreBeginPlay)==0u && at(restored,Phase::SetActorZone)==0u &&
+                at(restored,Phase::WorldBases)==0u && at(restored,Phase::PostPostBeginPlay)==6u,
+                "Already-begun world reran fresh phases or omitted PostPostBeginPlay");
+        }
+        fixture.UnchangedSources();
+    }
+}
 void Synthetic() {
     Fixture fixture; const auto tables = Build(fixture);
     Require(InitializePortableRuntime({tables.core, tables.engine, tables.classes}).passed && LoadPortableRuntimeMap(tables.map).passed, "Generated spawn runtime/map metadata initialization failed");
@@ -1614,7 +1872,7 @@ void Synthetic() {
 } // namespace
 int main() {
     try {
-        const auto before = GC::GetStats().numObjects; Synthetic(); GC::Collect(); Require(GC::GetStats().numObjects == before, "Generated Spawn test leaked rooted UObjects after shutdown");
-        std::cout << "Generated actor Spawn integration: " << checks << " checks, " << refusals << " rejection controls; actual natives278/262/283/304/529/530/650/710/711/713/714/715/716/720, serialized Level/model, native PawnList prepend/splice/retained links and callback rollback, native AI graph/history/rollback, frozen defaults, nested callbacks/live foreach rollback, InitBase, PlayerPawn fallback bindings, birth graph/save replacement/GC. No AI processing/campaign startup claim.\n"; return 0;
+        const auto before = GC::GetStats().numObjects; Synthetic(); WorldStartupSynthetic(); GC::Collect(); Require(GC::GetStats().numObjects == before, "Generated Spawn test leaked rooted UObjects after shutdown");
+        std::cout << "Generated actor Spawn integration: " << checks << " checks, " << refusals << " rejection controls; actual natives278/262/283/304/529/530/650/710/711/713/714/715/716/720, serialized Level/model, native PawnList and AI graph rollback, frozen defaults, callbacks/live foreach, birth/save/GC, read-only BSP region side/fallback controls and non-publishing world startup prefix/live-growth/deletion/order/attachment rollback. No AI processing or accepted campaign startup claim.\n"; return 0;
     } catch (const std::exception& error) { std::cerr << "Actor Spawn integration failed: " << error.what() << '\n'; return 1; }
 }

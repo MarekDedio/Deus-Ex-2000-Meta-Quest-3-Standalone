@@ -2812,9 +2812,76 @@ void VerifyOriginalInitGame(const std::filesystem::path& root,
     std::cout<<"ORIGINAL InitGame inherited by actual DeusExGameInfo: options/logging/base Mutator/OUT/rollback/warm+cold save; not automatic world startup\n";
 }
 
+void VerifyOriginalWorldStartupProbe(const std::filesystem::path& legacy,
+    const std::filesystem::path& directory) {
+    const auto baseline = CheckpointBytes(legacy);
+    const auto actors = GetPortableRuntimeMapActors(true);
+    Require(!actors.empty() && !GetPortableRuntimeScriptStatePresent(),
+        "Original world probe did not start from untouched map state");
+    const auto level = ReadPortableActorScriptProperty(actors.front().objectPath, "Level");
+    Require(level.kind == Kind::Object && !level.text.empty() &&
+        !QuestVr::Vm::ToBool(ReadPortableActorScriptProperty(level.text, "bBegunPlay")),
+        "Original world probe was seeded with begun play");
+    const auto originalGame = ReadPortableActorScriptProperty(level.text, "Game");
+    Require(originalGame.kind == Kind::Object && originalGame.text.empty(),
+        "Original world probe was seeded with a manually constructed GameInfo");
+    const auto revision = GetPortableRuntimeWorldRevision();
+    const auto gc = GC::GetStats();
+    const auto inspect = directory / "world-startup-probe-rollback.sav";
+    PortableWorldStartupProbeOptions options;
+    options.defaultGameClass = "DeusEx.DeusExGameInfo";
+    QuestVr::Vm::Limits limits;
+    limits.instructions = 1'000'000u; limits.nodes = 262'144u;
+    limits.writes = 262'144u; limits.retainedBytes = 128u << 20u;
+    const auto verifyRollback = [&] {
+        Require(SavePortableRuntimeState(inspect.string()) && CheckpointBytes(inspect) == baseline &&
+            GetPortableRuntimeWorldRevision() == revision && !GetPortableRuntimeScriptStatePresent() &&
+            GetPortableRuntimeMapActors(true).size() == actors.size() &&
+            QuestVr::Vm::Equal(ReadPortableActorScriptProperty(level.text, "Game"), originalGame) &&
+            GC::GetStats().numObjects == gc.numObjects && GC::GetStats().memoryUsage == gc.memoryUsage,
+            "Original world probe retained partial authored writes/frames/births/RNG/native publication");
+    };
+    const auto result = ProbePortableWorldStartup(options, limits);
+    Require(!result.execution.passed() && !result.execution.committed && !result.restoredWorld &&
+        !result.execution.error.empty() && !result.gameInfoPath.empty() &&
+        result.visited.at(static_cast<std::size_t>(PortableWorldStartupPhase::InitializeExecution)) == actors.size() + 1u &&
+        result.visited.at(static_cast<std::size_t>(PortableWorldStartupPhase::InitGame)) == 1u,
+        "Original world prefix did not perform true GameInfo birth + all-world InitExecution + InitGame: " +
+            std::string(PortableWorldStartupPhaseName(result.phase)) + " " + result.execution.error);
+    Require(result.phase == PortableWorldStartupPhase::PreBeginPlay && result.actorSlot == 756u &&
+        result.actorPath == "00_Training.JaimeReyes0" && result.gameInfoPath == "00_Training.DeusExGameInfo0" &&
+        result.execution.status == Status::Unsupported && result.execution.function == "Engine.Decal.AttachDecal" &&
+        result.execution.offset == 0u && result.execution.opcode == 0u &&
+        result.execution.error == "Unsupported runtime native 0 (Engine.Decal.AttachDecal)" &&
+        result.execution.callStack.size() >= 2u && result.execution.callStack.back() == "Engine.Decal.AttachDecal",
+        "Unmodified Training first startup gap changed without an updated original contract: " +
+            std::string(PortableWorldStartupPhaseName(result.phase)) + " " + result.actorPath + " " + result.execution.error);
+    verifyRollback();
+    const auto again = ProbePortableWorldStartup(options, limits);
+    Require(again.phase == result.phase && again.actorSlot == result.actorSlot &&
+        again.actorPath == result.actorPath && again.gameInfoPath == result.gameInfoPath &&
+        again.execution.function == result.execution.function && again.execution.offset == result.execution.offset &&
+        again.execution.opcode == result.execution.opcode && again.execution.error == result.execution.error &&
+        again.execution.callStack == result.execution.callStack && again.visited == result.visited,
+        "Original world probe did not reproduce exact first-failure/birth name after rollback");
+    verifyRollback();
+    auto shortBudget = limits; shortBudget.instructions = 2u;
+    const auto bounded = ProbePortableWorldStartup(options, shortBudget);
+    Require(!bounded.execution.passed() && !bounded.execution.committed &&
+        bounded.phase == PortableWorldStartupPhase::InitGame,
+        "Original world probe ignored shared script instruction budget");
+    verifyRollback();
+    std::cout << "ORIGINAL WORLD PROBE " << actors.size() << " actors, direct GameInfo=" << result.gameInfoPath
+        << " phase=" << PortableWorldStartupPhaseName(result.phase) << " slot=" << result.actorSlot
+        << " actor=" << result.actorPath << " function=" << result.execution.function << ':' << result.execution.offset
+        << " opcode=" << static_cast<unsigned>(result.execution.opcode) << " error=" << result.execution.error
+        << "; exact repeated failure, all state/GC/birth/revision bytes rolled back; NOT world/player completion\n";
+}
+
 void TestOriginal(const std::filesystem::path& root, const bool inventoryOnly = false,
     const bool switchOnly = false, const bool randomOnly = false, const bool sleepOnly = false,
-    const bool landingOnly = false, const bool dispatchOnly = false, const bool startupOnly = false) {
+    const bool landingOnly = false, const bool dispatchOnly = false, const bool startupOnly = false,
+    const bool worldStartupOnly = false) {
     static constexpr const char* packages[] = {
         "ConSys", "Core", "DeusEx", "DeusExCharacters", "DeusExConAudioAIBarks",
         "DeusExConAudioEndGame", "DeusExConAudioHK_Shared", "DeusExConAudioIntro",
@@ -2855,6 +2922,7 @@ void TestOriginal(const std::filesystem::path& root, const bool inventoryOnly = 
         const auto checkpointBytes = std::filesystem::file_size(checkpoint);
         Require(Word(CheckpointBytes(checkpoint),4)==3u,"Untouched runtime unexpectedly changed legacy v3 save format");
         const auto actors = GetPortableRuntimeMapActors();
+        if (worldStartupOnly) { VerifyOriginalWorldStartupProbe(checkpoint, temporary.directory); UnloadPortableRuntimeMap(); return; }
         if (startupOnly) { VerifyOriginalInitGame(root,checkpoint,temporary.directory); UnloadPortableRuntimeMap(); return; }
         if (std::string(map) == "00_Training") VerifyColdOriginalAnimationAssets(root, checkpoint, temporary.directory);
         if (std::string(map)=="00_Training") VerifyOriginalInitGame(root,checkpoint,temporary.directory);
@@ -3101,16 +3169,18 @@ int main(int argc, char** argv) {
             return 77;
         }
         Require(argc == 2 || (argc == 3 && (std::string(argv[2]) == "--inventory-only" ||
-                std::string(argv[2]) == "--switch-only" || std::string(argv[2]) == "--random-only" || std::string(argv[2]) == "--sleep-only" || std::string(argv[2]) == "--landing-only" || std::string(argv[2]) == "--dispatch-only" || std::string(argv[2]) == "--startup-only")),
-            "Usage: portable_actor_script_test GAME_ROOT [--inventory-only|--switch-only|--random-only|--sleep-only|--landing-only|--dispatch-only|--startup-only]");
+                std::string(argv[2]) == "--switch-only" || std::string(argv[2]) == "--random-only" || std::string(argv[2]) == "--sleep-only" || std::string(argv[2]) == "--landing-only" || std::string(argv[2]) == "--dispatch-only" || std::string(argv[2]) == "--startup-only" || std::string(argv[2]) == "--world-startup-only")),
+            "Usage: portable_actor_script_test GAME_ROOT [--inventory-only|--switch-only|--random-only|--sleep-only|--landing-only|--dispatch-only|--startup-only|--world-startup-only]");
         const bool switchOnly = argc == 3 && std::string(argv[2]) == "--switch-only";
         const bool randomOnly = argc == 3 && std::string(argv[2]) == "--random-only";
         const bool sleepOnly = argc == 3 && std::string(argv[2]) == "--sleep-only";
         const bool landingOnly = argc == 3 && std::string(argv[2]) == "--landing-only";
         const bool dispatchOnly = argc == 3 && std::string(argv[2]) == "--dispatch-only";
         const bool startupOnly = argc == 3 && std::string(argv[2]) == "--startup-only";
-        TestOriginal(std::filesystem::path(argv[1]), argc == 3 && !switchOnly && !randomOnly && !sleepOnly && !landingOnly && !dispatchOnly && !startupOnly,
-            switchOnly,randomOnly,sleepOnly,landingOnly,dispatchOnly,startupOnly);
+        const bool worldStartupOnly = argc == 3 && std::string(argv[2]) == "--world-startup-only";
+        TestOriginal(std::filesystem::path(argv[1]), argc == 3 && !switchOnly && !randomOnly && !sleepOnly && !landingOnly && !dispatchOnly && !startupOnly && !worldStartupOnly,
+            switchOnly,randomOnly,sleepOnly,landingOnly,dispatchOnly,startupOnly,worldStartupOnly);
+        if (worldStartupOnly) {std::cout<<"PASS focused original non-publishing world startup/rollback probe\n";return 0;}
         if (startupOnly) {std::cout<<"PASS focused original InitGame startup primitive suite\n";return 0;}
         if (dispatchOnly) {std::cout<<"PASS focused original readonly dispatch/source-program audit\n";return 0;}
         if (landingOnly) {std::cout<<"PASS focused original WaitForLanding/native actor wait suite\n";return 0;}

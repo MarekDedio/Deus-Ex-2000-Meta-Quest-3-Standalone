@@ -189,6 +189,11 @@ struct TestHost final:Vm::Host {
     std::map<Identity,std::string> names,objects;
     std::map<Identity,std::shared_ptr<const Vm::Function>> finals;
     std::map<std::tuple<std::string,Vm::CallKind,std::string>,std::shared_ptr<const Vm::Function>> named;
+    std::map<std::tuple<std::string,std::string,bool>,std::shared_ptr<const Vm::Function>> events;
+    std::map<std::string,Vm::Function> preparedFunctions;
+    std::vector<std::string> preparations;
+    std::function<Vm::Evaluation(const std::string&,const std::vector<Vm::Evaluation>&,
+        const Vm::Function*,Vm::Execution&)> executionNative;
     std::map<Slot,std::vector<Value>> storage,saved;
     struct CastClass {std::string parent,name;};
     std::map<std::string,CastClass> castClasses;
@@ -204,6 +209,7 @@ struct TestHost final:Vm::Host {
     std::size_t beginCount{},commitCount{},rollbackCount{},effects{},savedEffects{};
     std::uint32_t rng{12345},savedRng{};
     bool active{};
+    bool rejectBegin{},rejectCommit{},rejectEvent{};
     std::vector<Value> iteratorValues{Value::Integer(1),Value::Integer(2),Value::Integer(3)};
     std::size_t iteratorCreates{},iteratorDestroys{},iteratorNextCalls{},iteratorBytes{128u};
     std::optional<QuestVr::StateObject> state,savedState;
@@ -213,12 +219,28 @@ struct TestHost final:Vm::Host {
     bool CanCall(const Vm::Function& fn, const std::string&) override {
         return !disabledFunctions.contains(fn.path);
     }
+    std::shared_ptr<const Vm::Function> PrepareFunction(const Vm::Function& identity,const std::string& receiver) override {
+        preparations.push_back(receiver+":"+identity.path);
+        const auto found=preparedFunctions.find(identity.path);
+        return std::make_shared<Vm::Function>(found==preparedFunctions.end() ? identity : found->second);
+    }
+    std::shared_ptr<const Vm::Function> ResolveEvent(const std::string& receiver,const std::string& event,bool enumDispatch) override {
+        observations.push_back("event:"+receiver+":"+event+(enumDispatch ? ":enum" : ":named"));
+        if(rejectEvent) throw std::runtime_error("Fixture rejected event resolution");
+        const auto found=events.find({receiver,event,enumDispatch});
+        return found==events.end() ? nullptr : found->second;
+    }
     void Begin() override {
         if(active) throw std::runtime_error("Nested host transaction");
+        if(rejectBegin) throw std::runtime_error("Fixture rejected begin");
         active=true;saved=storage;savedEffects=effects;savedRng=rng;
         savedState=state;savedStateRevision=stateRevision;++beginCount;
     }
-    void Commit() override {if(!active) throw std::runtime_error("Commit outside transaction");active=false;++commitCount;}
+    void Commit() override {
+        if(!active) throw std::runtime_error("Commit outside transaction");
+        if(rejectCommit) throw std::runtime_error("Fixture rejected commit");
+        active=false;++commitCount;
+    }
     void Rollback() noexcept override {
         storage.swap(saved);effects=savedEffects;rng=savedRng;
         state.swap(savedState);stateRevision=savedStateRevision;active=false;++rollbackCount;
@@ -369,6 +391,17 @@ struct TestHost final:Vm::Host {
             return {Value::Integer(values.empty() ? -1 : static_cast<std::int32_t>(values.front().kind)),{}};
         }
         throw std::runtime_error("Fixture unknown native "+std::to_string(index));
+    }
+    Vm::Evaluation NativeWithExecution(std::uint16_t index,const std::string& receiver,
+        const std::vector<Vm::Evaluation>& arguments,const Vm::Function* declaration,Vm::Execution& execution) override {
+        // This index belongs only to this generated fixture, not to Deus Ex.
+        if(index==1008u && executionNative) {
+            std::vector<Value> values;for(const auto& argument:arguments) values.push_back(argument.Load());
+            nativeArguments.push_back(std::move(values));nativeReceivers.push_back(receiver);
+            nativeDeclarations.push_back(declaration ? declaration->path : "");
+            return executionNative(receiver,arguments,declaration,execution);
+        }
+        return Native(index,receiver,arguments,declaration);
     }
 };
 Vm::Function Function(const std::string& name,Bytes code,const std::string& source="Fixture") {
@@ -1844,6 +1877,374 @@ void ExecutionContracts() {
     RotatorDirectionContracts();ScalarAndLocalContracts();ParametersAndReturns();AssignmentArraysAndStructs();LazyAndContextContracts();
     OptionalAndReferenceTables();ControlAndFailureContracts();BudgetAndNestedRollback();IntegerIncrementContracts();CastContracts();SwitchContracts();
 }
+void TransactionContracts() {
+    const auto initialChecks=checks,initialRejections=rejections;
+    const auto declaration=[](const std::string& name,std::uint16_t index) {
+        auto result=Function(name,{});result.flags=0x400u;result.nativeIndex=index;return result;
+    };
+    const auto externalReference=[](Value& value) {
+        auto alias=std::make_shared<Vm::Reference>();alias->zero=Value::Integer(0);
+        alias->read=[&value] {return value;};alias->write=[&value](const Value& next) {value=next;};return alias;
+    };
+    {
+        TestHost host;
+        auto first=Function("First",Join({Let(Ref(0x01,1),Int(10)),Let(Ref(0x00,2),Int(11)),Native(1000u),Return({0x17})}));
+        const auto firstProperty=host.Property(first,1,"FirstValue",Value::Integer(0));
+        first.variables={host.Property(first,2,"Output",Value::Integer(0),0x180u,1u,true)};
+        host.Store("FirstReceiver",firstProperty,{Value::Integer(3)});
+        const auto second=Function("Second",Join({Let(Ref(0x01,1),Int(20)),Native(1000u),Return({0x17})}),"OtherSource");
+        const auto secondProperty=host.Property(second,1,"SecondValue",Value::Integer(0));
+        host.Store("SecondReceiver",secondProperty,{Value::Integer(4)});
+        const auto firstBytes=first.bytecode,secondBytes=second.bytecode;
+        const auto retain=declaration("RetainOutput",1007u);
+        Value output=Value::Integer(5);const auto alias=externalReference(output);
+        Value firstValue;
+        const auto result=Vm::ExecuteTransaction(host,[&](Vm::Execution& execution) {
+            firstValue=execution.CallFunction(first,"FirstReceiver",{{{},alias}});
+            Require(host.active && host.beginCount==1u && host.commitCount==0u && output.integer==11,
+                "A first direct function committed before its transaction completed");
+            const auto secondValue=execution.CallFunction(second,"SecondReceiver");
+            execution.CallFunction(retain,"SecondReceiver",{{{},alias}});
+            Require(host.active && host.commitCount==0u,"A later native call opened/committed a separate transaction");
+            return secondValue;
+        });
+        Returned(result,"Several actual declarations share one transaction");
+        Require(result.committed && host.beginCount==1u && host.commitCount==1u && !host.rollbackCount && !host.active,
+            "Successful coordinated calls did not commit exactly once");
+        Require(firstValue.kind==Vm::Kind::Object && firstValue.text=="FirstReceiver" &&
+            result.value.kind==Vm::Kind::Object && result.value.text=="SecondReceiver" &&
+            host.Load("FirstReceiver",firstProperty).integer==10 && host.Load("SecondReceiver",secondProperty).integer==20 &&
+            output.integer==11 && host.effects==2u && host.rng==((12345u*1664525u+1013904223u)*1664525u+1013904223u),
+            "A coordinated function changed receiver, source table, OUT output or native/RNG order");
+        Require(first.bytecode==firstBytes && second.bytecode==secondBytes && first.source=="Fixture" && second.source=="OtherSource" &&
+            alias->read().integer==11,"Direct execution mutated caller function identity or its unguarded alias");
+        bool expired{};try {host.retainedNativeReference->write(Value::Integer(99));} catch(const std::runtime_error&) {expired=true;}
+        Require(expired && output.integer==11,"A coordinated native alias remained usable after commit");++rejections;
+    }
+    {
+        TestHost host;
+        auto first=Function("Prefix",Join({Let(Ref(0x01,1),Int(17)),Let(Ref(0x00,2),Int(31)),Native(1000u),Return(Int(99))}));
+        const auto property=host.Property(first,1,"Value",Value::Integer(0));
+        first.variables={host.Property(first,2,"Output",Value::Integer(0),0x180u,1u,true)};
+        host.Store("Self",property,{Value::Integer(3)});
+        Value output=Value::Integer(4);const auto alias=externalReference(output);
+        const auto fail=declaration("FailureAfterWrite",1006u);
+        const auto result=Vm::ExecuteTransaction(host,[&](Vm::Execution& execution) {
+            execution.CallFunction(first,"Self",{{{},alias}});
+            Require(output.integer==31 && host.Load("Self",property).integer==17 && host.effects==1u,
+                "The later-call rollback fixture did not execute its real prefix");
+            return execution.CallFunction(fail,"Self",{{{},alias}});
+        });
+        Failed(result,Vm::Status::Unsupported,host,"Later native failure reverses earlier direct calls");
+        Require(result.error=="Fixture failure after external out write" && result.function==fail.path && result.offset==0u &&
+            result.opcode==0u && result.callStack==std::vector<std::string>{fail.path} && !result.committed &&
+            result.value.kind==Vm::Kind::Nothing && output.integer==4 && host.Load("Self",property).integer==3 &&
+            host.effects==0u && host.rng==12345u,"Failure lost its exact callee diagnostic or retained a prefix OUT/property/native/RNG write");
+    }
+    for(const bool unrelatedThrow : {false,true}) {
+        TestHost host;const auto prefix=declaration("PrefixEffect",1000u);
+        const auto bad=Function("Bad",Join({Native(1000u),Return(Native(4095u))}));
+        bool caught{},blocked{};
+        const auto result=Vm::ExecuteTransaction(host,[&](Vm::Execution& execution) -> Value {
+            execution.CallFunction(prefix,"Self");
+            try {execution.CallFunction(bad,"Self");} catch(const std::exception&) {caught=true;}
+            const auto preparations=host.preparations.size();
+            try {execution.CallFunction(prefix,"Other");} catch(const std::exception&) {blocked=true;}
+            Require(host.preparations.size()==preparations,"A poisoned coordinator entered another declaration");
+            if(unrelatedThrow) throw std::runtime_error("Unrelated callback exception");
+            return Value::Integer(123);
+        });
+        Failed(result,Vm::Status::Unsupported,host,"Caught callback failure cannot commit a prefix");
+        Require(caught && blocked && result.error=="Fixture unknown native 4095" && result.function==bad.path &&
+            result.offset==4u && result.opcode==0x6fu && result.callStack==std::vector<std::string>{bad.path} &&
+            host.effects==0u && host.rng==12345u,"Poisoning changed the first script failure or committed native effects");
+    }
+    {
+        TestHost host;
+        const auto completed=Function("SucceededBeforeCoordinatorFailure",Join({Native(1000u),Return(Int(7))}));
+        const auto result=Vm::ExecuteTransaction(host,[&](Vm::Execution& execution) -> Value {
+            const auto value=execution.CallFunction(completed,"Self");
+            Require(value.integer==7 && host.effects==1u,"Coordinator failure control did not complete its preceding real script");
+            throw std::runtime_error("Coordinator schema failure after successful script");
+        });
+        Failed(result,Vm::Status::Unsupported,host,"A coordinator failure cannot retain a completed script location");
+        Require(result.error=="Coordinator schema failure after successful script" && result.function.empty() &&
+            result.offset==0u && result.opcode==0u && result.callStack.empty() && result.instructions>0u &&
+            host.effects==0u && host.rng==12345u,"Non-bytecode failure retained a stale successful function/PC/stack or committed effects");
+    }
+    for(unsigned boundary=0u;boundary<4u;++boundary) {
+        TestHost host;auto limits=Vm::Limits{};
+        const auto completed=Function("SucceededBeforeEventFailure",Join({Native(1000u),Return(Int(7))}));
+        const auto event=declaration("ResolvedEventFailure",1000u);
+        host.events[{"Self","StartupEvent",false}]=std::make_shared<Vm::Function>(event);
+        if(boundary==0u) host.rejectEvent=true;
+        if(boundary==1u) limits.operations=1u;
+        if(boundary==3u) {auto changed=event;changed.source="WrongSource";host.preparedFunctions[event.path]=changed;}
+        const auto result=Vm::ExecuteTransaction(host,[&](Vm::Execution& execution) {
+            const auto value=execution.CallFunction(completed,"Self");
+            Require(value.integer==7 && host.effects==1u,"Event failure control did not finish its preceding script");
+            return execution.CallEvent("Self",boundary==2u ? std::string(limits.stringBytes+1u,'x') : "StartupEvent",false);
+        },limits);
+        const auto status=boundary==0u ? Vm::Status::Unsupported : boundary==3u ? Vm::Status::Invalid : Vm::Status::Budget;
+        Failed(result,status,host,"A coordinator event failure cannot retain a preceding successful script location");
+        const std::array<std::string,4> errors{"Fixture rejected event resolution","VM operation entry limit",
+            "VM callback identity/name limit","Prepared VM function changed callable identity"};
+        Require(result.error==errors[boundary] && result.function==(boundary==3u ? event.path : "") &&
+            result.offset==0u && result.opcode==0u && result.callStack.empty() && result.instructions>0u &&
+            host.effects==0u && host.rng==12345u,"Event boundary retained a stale script cursor or committed its prefix");
+    }
+    {
+        TestHost host;const auto outer=declaration("NativeBeforeEventResolutionFailure",1008u);host.rejectEvent=true;
+        host.executionNative=[](const std::string&,const std::vector<Vm::Evaluation>&,
+            const Vm::Function*,Vm::Execution& execution) -> Vm::Evaluation {
+            return {execution.CallEvent("InnerReceiver","MissingEvent",false),{}};
+        };
+        const auto result=Vm::ExecuteTransaction(host,[&](Vm::Execution& execution) {return execution.CallFunction(outer,"Self");});
+        Failed(result,Vm::Status::Unsupported,host,"Nested event resolution retains its active native caller");
+        Require(result.error=="Fixture rejected event resolution" && result.function==outer.path && result.offset==0u &&
+            result.opcode==0u && result.callStack==std::vector<std::string>{outer.path},
+            "A nested unresolved event erased its real active caller");
+    }
+    for(const bool transaction : {false,true}) {
+        TestHost host;const auto outer=declaration("SwallowingOuter",1008u);
+        const auto bad=Function("InnerFailure",Join({Native(1000u),Return(Native(4095u))}));
+        bool caught{};
+        host.executionNative=[&](const std::string&,const std::vector<Vm::Evaluation>&,
+            const Vm::Function*,Vm::Execution& execution) -> Vm::Evaluation {
+            try {execution.CallFunction(bad,"InnerReceiver");} catch(const std::exception&) {caught=true;}
+            // Returning a value must not hide the nested failure or pop its
+            // original diagnostic frame before the public entry reports it.
+            return {Value::Bool(true),{}};
+        };
+        const auto result=transaction ? Vm::ExecuteTransaction(host,[&](Vm::Execution& execution) {
+            return execution.CallFunction(outer,"OuterReceiver");
+        }) : Vm::Execute(host,outer,"OuterReceiver");
+        Failed(result,Vm::Status::Unsupported,host,"A native cannot swallow a failed nested declaration");
+        Require(caught && result.function==bad.path && result.offset==4u && result.opcode==0x6fu &&
+            result.callStack==std::vector<std::string>{outer.path,bad.path} && result.error=="Fixture unknown native 4095" &&
+            host.effects==0u && host.rng==12345u,"Caught native callback failure lost its first call stack/location or committed effects");
+    }
+    {
+        const auto function=Function("Budget",Return(Int(7)));
+        TestHost single;const auto one=Vm::Execute(single,function,"Self");Returned(one,"Single instruction-budget reference");
+        TestHost host;auto limits=Vm::Limits{};limits.instructions=one.instructions;
+        const auto result=Vm::ExecuteTransaction(host,[&](Vm::Execution& execution) {
+            execution.CallFunction(function,"Self");return execution.CallFunction(function,"Self");
+        },limits);
+        Failed(result,Vm::Status::Budget,host,"Sequential calls share instruction budget");
+        Require(result.instructions==one.instructions && result.error=="VM instruction limit",
+            "A later direct call reset the instruction budget");
+    }
+    {
+        TestHost host;auto limits=Vm::Limits{};limits.nodes=2u;
+        const auto first=Function("NodeFirst",Return(Int(1))),second=Function("NodeSecond",Return(Int(2)));
+        const auto result=Vm::ExecuteTransaction(host,[&](Vm::Execution& execution) {
+            execution.CallFunction(first,"Self");return execution.CallFunction(second,"Self");
+        },limits);
+        Failed(result,Vm::Status::Budget,host,"Sequential calls share parsed-node budget");
+        Require(result.function==second.path && result.instructions==2u,"Node failure was charged to a reset/incorrect function");
+    }
+    {
+        TestHost host;auto limits=Vm::Limits{};limits.writes=1u;
+        const auto function=Function("WriteBudget",Join({Let(Ref(0x01,1),Int(9)),Return()}));
+        const auto property=host.Property(function,1,"Value",Value::Integer(0));host.Store("Self",property,{Value::Integer(3)});
+        const auto result=Vm::ExecuteTransaction(host,[&](Vm::Execution& execution) {
+            execution.CallFunction(function,"Self");return execution.CallFunction(function,"Self");
+        },limits);
+        Failed(result,Vm::Status::Budget,host,"Sequential calls share write budget");
+        Require(result.writes==1u && host.Load("Self",property).integer==3,"Later write budget failure committed the first write");
+    }
+    {
+        TestHost host;const auto native=declaration("RetainedInputBudget",1003u);
+        const auto input=Value::Text(Vm::Kind::String,std::string(256u,'x'));
+        auto limits=Vm::Limits{};limits.retainedBytes=sizeof(Value)+input.text.size();
+        const auto result=Vm::ExecuteTransaction(host,[&](Vm::Execution& execution) {
+            const auto first=execution.CallFunction(native,"Self",{{input,{}}});
+            Require(first.text==input.text,"Retained-byte control failed before its first call returned");
+            return execution.CallFunction(native,"Self",{{input,{}}});
+        },limits);
+        Failed(result,Vm::Status::Budget,host,"Sequential calls share retained-value budget");
+        Require(result.error=="VM retained byte limit" && result.instructions==1u && host.nativeArguments.size()==1u,
+            "A later call reset retained storage or performed its native work before the budget guard");
+    }
+    for(const bool absent : {false,true}) {
+        TestHost host;auto limits=Vm::Limits{};limits.operations=2u;
+        const auto disabled=Function("DisabledEntry",{0x03});host.disabledFunctions.insert(disabled.path);
+        auto alias=std::make_shared<Vm::Reference>();alias->zero=Value::Integer(0);
+        alias->read=[]() -> Value {throw std::runtime_error("Ineligible transaction argument read");};
+        const auto result=Vm::ExecuteTransaction(host,[&](Vm::Execution& execution) {
+            for(unsigned i=0;i<3u;++i) {
+                if(absent) execution.CallEvent("Self","Absent",true,{{{},alias}});
+                else execution.CallFunction(disabled,"Self",{{{},alias}});
+            }
+            return Value{};
+        },limits);
+        Failed(result,Vm::Status::Budget,host,"Absent/ineligible attempts share bounded operation entries");
+        Require(result.error=="VM operation entry limit" && result.instructions==0u && result.writes==0u &&
+            host.preparations.empty() && host.observations.size()==(absent ? 2u : 0u),
+            "Suppressed direct entries consumed arguments or evaded the operation guard");
+    }
+    {
+        TestHost host;auto limits=Vm::Limits{};limits.operations=1u;
+        const auto disabled=Function("MixedDisabled",{0x03});host.disabledFunctions.insert(disabled.path);
+        const auto result=Vm::ExecuteTransaction(host,[&](Vm::Execution& execution) {
+            execution.CallEvent("Self","Missing",false);return execution.CallFunction(disabled,"Self");
+        },limits);
+        Failed(result,Vm::Status::Budget,host,"Named events and direct functions use one operation counter");
+        Require(host.observations.size()==1u && host.preparations.empty(),"Mixed entry budget was separate per API");
+    }
+    for(const bool fail : {false,true}) {
+        TestHost host;const auto outer=declaration("NestedOuter",1008u),inner=declaration("NestedInnerEffect",1000u);
+        auto event=Function("RealEvent",Join({Let(Ref(0x01,1),Int(27)),Let(Ref(0x00,2),Int(18)),Native(1000u),Return({0x17})}),"EventSource");
+        const auto property=host.Property(event,1,"EventValue",Value::Integer(0));host.Store("EventReceiver",property,{Value::Integer(6)});
+        event.variables={host.Property(event,2,"Output",Value::Integer(0),0x180u,1u,true)};
+        host.events[{"EventReceiver","StartupEvent",true}]=std::make_shared<Vm::Function>(event);
+        Value output=Value::Integer(8);const auto alias=externalReference(output);
+        host.executionNative=[&](const std::string& receiver,const std::vector<Vm::Evaluation>& arguments,
+            const Vm::Function* actual,Vm::Execution& execution) -> Vm::Evaluation {
+            Require(receiver=="OuterReceiver" && actual && actual->path==outer.path,
+                "Nested native callback lost its original receiver/declaration");
+            const auto value=execution.CallEvent("EventReceiver","StartupEvent",true,arguments);
+            execution.CallFunction(inner,"InnerReceiver");
+            Require(host.beginCount==1u && !host.commitCount && host.active,"Nested callbacks opened another host transaction");
+            return {value,{}};
+        };
+        const auto bad=declaration("AfterNestedFailure",4095u);
+        const auto result=Vm::ExecuteTransaction(host,[&](Vm::Execution& execution) {
+            const auto value=execution.CallFunction(outer,"OuterReceiver",{{{},alias}});
+            if(fail) return execution.CallFunction(bad,"FailureReceiver");
+            return value;
+        });
+        if(fail) {
+            Failed(result,Vm::Status::Unsupported,host,"Nested direct/event calls join the outer rollback");
+            Require(host.Load("EventReceiver",property).integer==6 && output.integer==8 && !host.effects && host.rng==12345u,
+                "Failed later operation retained nested callback properties/OUT/native/RNG writes");
+        } else {
+            Returned(result,"Nested direct native and event calls share one Machine");
+            Require(result.value.text=="EventReceiver" && host.Load("EventReceiver",property).integer==27 && output.integer==18 &&
+                host.effects==2u && host.beginCount==1u && host.commitCount==1u && host.rollbackCount==0u &&
+                host.nativeReceivers==std::vector<std::string>{"OuterReceiver","EventReceiver","InnerReceiver"},
+                "Nested calls changed source/receiver identities or committed separately");
+        }
+    }
+    {
+        TestHost host;const auto recursive=declaration("RecursiveDirect",1008u),effect=declaration("RecursiveEffect",1000u);
+        auto limits=Vm::Limits{};limits.callDepth=2u;
+        host.executionNative=[&](const std::string& receiver,const std::vector<Vm::Evaluation>&,
+            const Vm::Function*,Vm::Execution& execution) -> Vm::Evaluation {
+            execution.CallFunction(effect,receiver);return {execution.CallFunction(recursive,receiver),{}};
+        };
+        const auto result=Vm::ExecuteTransaction(host,[&](Vm::Execution& execution) {
+            return execution.CallFunction(recursive,"Self");
+        },limits);
+        Failed(result,Vm::Status::Budget,host,"Direct callback recursion uses the current call-depth budget");
+        Require(result.error=="VM call depth limit" && result.callStack==std::vector<std::string>{recursive.path,recursive.path} &&
+            host.effects==0u && host.rng==12345u,"Nested direct-call depth failure escaped its caller or rollback");
+    }
+    {
+        TestHost host;auto disabled=Function("Suppressed",{0x03});disabled.flags=0x8u;
+        host.disabledFunctions.insert(disabled.path);host.events[{"Self","Suppressed",false}]=std::make_shared<Vm::Function>(disabled);
+        auto alias=std::make_shared<Vm::Reference>();alias->zero=Value::Integer(0);
+        alias->read=[]() -> Value {throw std::runtime_error("Suppressed entry loaded an external argument");};
+        const auto result=Vm::ExecuteTransaction(host,[&](Vm::Execution& execution) {
+            execution.CallFunction(disabled,"Self",{{{},alias}});
+            execution.CallEvent("Self","Suppressed",false,{{{},alias}});
+            execution.CallFunction(disabled,"",{{{},alias}});
+            host.disabledFunctions.clear();
+            return execution.CallFunction(declaration("NowEligible",1000u),"Self");
+        });
+        Returned(result,"Every direct/event entry rechecks eligibility before arguments/preparation");
+        Require(host.preparations==std::vector<std::string>{"Self:Fixture.NowEligible"} && host.effects==1u &&
+            result.instructions==1u && result.writes==0u,"Suppressed declarations performed latent/argument/preparation work");
+    }
+    {
+        TestHost host;const auto identity=declaration("ChangingEligibility",1000u);
+        auto alias=std::make_shared<Vm::Reference>();alias->zero=Value::Integer(0);
+        alias->read=[]() -> Value {throw std::runtime_error("Changed eligibility read a later argument");};
+        const auto result=Vm::ExecuteTransaction(host,[&](Vm::Execution& execution) {
+            execution.CallFunction(identity,"Self");host.disabledFunctions.insert(identity.path);
+            return execution.CallFunction(identity,"Self",{{{},alias}});
+        });
+        Returned(result,"A repeated direct declaration rechecks changed eligibility");
+        Require(result.value.kind==Vm::Kind::Nothing && host.effects==1u && result.instructions==1u &&
+            host.preparations==std::vector<std::string>{"Self:"+identity.path},
+            "A later call reused cached eligibility or prepared/loaded its suppressed argument");
+    }
+    for(const bool changeNative : {false,true}) {
+        TestHost host;const auto prefix=declaration("PreparedPrefix",1000u),identity=declaration("PreparedIdentity",1000u);
+        auto changed=identity;if(changeNative) changed.nativeIndex=1001u;else changed.source="WrongSource";
+        host.preparedFunctions[identity.path]=changed;
+        const auto result=Vm::ExecuteTransaction(host,[&](Vm::Execution& execution) {
+            execution.CallFunction(prefix,"Self");return execution.CallFunction(identity,"Self");
+        });
+        Failed(result,Vm::Status::Invalid,host,"Direct preparation cannot change callable source/native identity");
+        Require(result.error=="Prepared VM function changed callable identity" && host.effects==0u && host.rng==12345u &&
+            identity.source=="Fixture" && identity.nativeIndex==1000u,"Invalid preparation mutated its declaration or committed a prefix");
+    }
+    {
+        TestHost host;host.rejectCommit=true;const auto effect=declaration("BeforeCommit",1000u),write=declaration("CommitOut",1004u);
+        Value output=Value::Integer(4);const auto alias=externalReference(output);
+        const auto result=Vm::ExecuteTransaction(host,[&](Vm::Execution& execution) {
+            execution.CallFunction(effect,"Self");return execution.CallFunction(write,"Self",{{{},alias}});
+        });
+        Failed(result,Vm::Status::Unsupported,host,"Rejected final commit restores Machine and host journals");
+        Require(result.error=="Fixture rejected commit" && output.integer==4 && !host.effects && host.rng==12345u,
+            "Commit failure retained external OUT/native/RNG writes");
+    }
+    {
+        TestHost host;const auto retain=declaration("OwnedOutputRetain",1007u),write=declaration("OwnedOutputWrite",1004u);
+        std::weak_ptr<Value> output;
+        const auto result=Vm::ExecuteTransaction(host,[&](Vm::Execution& execution) -> Value {
+            // Both closures own the backing value. The callback's local
+            // shared_ptr dies before Machine performs its rollback.
+            auto storage=std::make_shared<Value>(Value::Integer(4));output=storage;
+            auto alias=std::make_shared<Vm::Reference>();alias->zero=Value::Integer(0);
+            alias->read=[storage] {return *storage;};alias->write=[storage](const Value& value) {*storage=value;};
+            execution.CallFunction(retain,"Self",{{{},alias}});
+            execution.CallFunction(write,"Self",{{{},alias}});
+            Require(storage->integer==9,"Owned callback-local OUT control did not write its storage");
+            throw std::runtime_error("Owned callback failed after its OUT write");
+        });
+        Failed(result,Vm::Status::Unsupported,host,"Owned callback-local OUT storage survives callback unwinding");
+        Require(result.error=="Owned callback failed after its OUT write" && output.lock() && output.lock()->integer==4,
+            "Rollback used dead callback-local OUT storage or failed to restore it");
+        host.retainedNativeReference.reset();host.retainedNativeElement.reset();
+        Require(output.expired(),"A finished VM transaction leaked its owned OUT storage/journal");
+    }
+    for(unsigned invalid=0u;invalid<5u;++invalid) {
+        TestHost host;std::function<Value(Vm::Execution&)> callback;
+        if(invalid!=0u) callback=[invalid](Vm::Execution&) -> Value {
+            if(invalid==1u) throw std::runtime_error("Coordinator failure");
+            if(invalid==2u) throw 42;
+            if(invalid==3u) return Value::Float(std::numeric_limits<float>::infinity());
+            return Value::Text(Vm::Kind::String,std::string(8193u,'x'));
+        };
+        const auto result=Vm::ExecuteTransaction(host,callback);
+        const auto status=invalid==1u ? Vm::Status::Unsupported : invalid==4u ? Vm::Status::Budget : Vm::Status::Invalid;
+        Failed(result,status,host,"Coordinator failure/return validation uses ordinary transaction policy");
+        const std::array<std::string,5> errors{"Missing VM transaction callback","Coordinator failure","Unknown VM transaction failure",
+            "Non-finite VM float","VM value storage limit"};
+        Require(result.error==errors[invalid] && !result.committed && result.value.kind==Vm::Kind::Nothing,
+            "Coordinator failure produced an incorrect status/error or return value");
+    }
+    {
+        TestHost host;host.rejectBegin=true;bool called{};
+        const auto result=Vm::ExecuteTransaction(host,[&](Vm::Execution&) {called=true;return Value{};});
+        Require(result.status==Vm::Status::Unsupported && result.error=="Fixture rejected begin" && !result.committed && !called &&
+            host.beginCount==0u && host.commitCount==0u && host.rollbackCount==0u && !host.active,
+            "A failed Begin executed the coordinator or rolled back an unentered host transaction");++rejections;
+    }
+    {
+        TestHost host;auto limits=Vm::Limits{};limits.operations=0u;
+        const auto result=Vm::ExecuteTransaction(host,[](Vm::Execution&) {return Value::Integer(9);},limits);
+        Returned(result,"A coordinator with no script entries can commit bounded host-only work");
+        Require(result.value.integer==9 && result.instructions==0u && result.writes==0u && result.function.empty() &&
+            host.beginCount==1u && host.commitCount==1u && host.rollbackCount==0u,
+            "An empty operation sequence invented a script frame or failed its single final commit");
+    }
+    std::cout<<"Generated multi-operation VM transactions, shared budgets and callback rollback: "
+        <<checks-initialChecks<<" checks and "<<rejections-initialRejections<<" rejection controls passed.\n";
+}
 void ProgramAndEligibilityContracts() {
     TestHost host;
     host.names[{"Fixture",0}] = "None";
@@ -1907,6 +2308,7 @@ int main() {
     try {
         NormalizedSerializedContracts();
         ExecutionContracts();
+        TransactionContracts();
         ProgramAndEligibilityContracts();
         VectorNativeContracts();
         StartupPrimitiveContracts();

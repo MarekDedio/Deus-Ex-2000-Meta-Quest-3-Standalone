@@ -105,6 +105,9 @@ public:
     // Native AActor latent timer is actor-owned, not a state-frame local.
     // It remains across GotoState, null code and stopped frames.
     std::optional<float> latentTimeLeft;
+    // Native renderer timestamp, not an invented UnrealScript property.
+    // World-startup probes journal it and never publish an incomplete world.
+    std::optional<float> lastRenderTime;
     // Nonserialized local-storage identity. References held by an executing
     // expression cannot silently address replacement state locals.
     std::uint64_t stateLocalsRevision{};
@@ -1506,6 +1509,7 @@ public:
             entry.first->classDefaultValues.swap(entry.second.defaults);
             entry.first->animationClock.swap(entry.second.clock);
             entry.first->latentTimeLeft.swap(entry.second.latentTimeLeft);
+            entry.first->lastRenderTime.swap(entry.second.lastRenderTime);
             entry.first->stateObject.swap(entry.second.state);
             entry.first->stateLocalsRevision = entry.second.revision;
             entry.first->stateTransitionFlags = entry.second.transitionFlags;
@@ -2127,7 +2131,176 @@ public:
             throw std::runtime_error("Runtime property is not an authored StructProperty");
         return StructSchema(Object(Qualified(Table(property->sourcePath), property->property->referencedType)));
     }
+    Value ProbeWorldStartup(const PortableWorldStartupProbeOptions& options,
+        PortableWorldStartupProbeResult& result, QuestVr::Vm::Execution& execution) {
+        if (!transaction_) throw std::runtime_error("World startup probe requires its outer VM transaction");
+        struct ProbeScope { bool& active; ~ProbeScope() { active = false; } } scope{worldStartupProbe_};
+        worldStartupProbe_ = true;
+        using Phase = PortableWorldStartupPhase;
+        const auto visit = [&](const Phase phase, RuntimeObject* actor, const std::size_t slot) {
+            LifecycleStep();
+            result.phase = phase; result.actorSlot = slot;
+            result.actorPath = actor ? actor->reflection.objectPath : std::string{};
+            ++result.visited.at(static_cast<std::size_t>(phase));
+        };
+        const auto write = [&](RuntimeObject* actor, const char* name, const Value& value) {
+            ReferenceFor(actor, PropertyNamed(actor, name), 0u, false)->write(value);
+        };
+        if (persistentMapSourcePath.empty() || persistentWorldActors.empty() || !persistentWorldActors.front())
+            throw std::runtime_error("World startup requires a loaded actual ULevel with slot-zero LevelInfo");
+        auto* info = NativeLevelInfo(persistentWorldActors.front());
+        visit(Phase::ValidateWorld, info, 0u);
+        const auto validText = [](const std::string& value, const std::size_t bound) {
+            return value.size() <= bound && value.find('\0') == std::string::npos;
+        };
+        if (!validText(options.urlGameClass, 4096u) || !validText(options.defaultGameClass, 4096u) ||
+            !validText(options.initGameOptions, 8192u))
+            throw std::runtime_error("World startup configuration is oversized or contains an embedded NUL");
+        // This diagnostic targets standalone authority. Client-only removal /
+        // Role swapping is a separate original branch, never silently emulated.
+        if (QuestVr::Vm::ToInt(Read(info, PropertyNamed(info, "NetMode"), 0u)) != 0)
+            throw std::runtime_error("World startup probe requires original NM_Standalone authority");
+        visit(Phase::SelectGameInfo, info, 0u);
+        auto* game = ActorLink(info, "Game");
+        if (!game) {
+            RuntimeObject* gameClass{};
+            if (!options.urlGameClass.empty()) gameClass = Object(options.urlGameClass);
+            else {
+                const auto mapClass = Read(info, PropertyNamed(info, "DefaultGameType"), 0u);
+                if (mapClass.kind != Kind::Object)
+                    throw std::runtime_error("LevelInfo.DefaultGameType is not a Class reference");
+                if (!mapClass.text.empty()) gameClass = Object(mapClass.text);
+                else if (!options.defaultGameClass.empty()) gameClass = Object(options.defaultGameClass);
+                else throw std::runtime_error("World startup has no map GameInfo class or configured local DefaultGame");
+            }
+            if (!gameClass->classDescriptor || !IsDerivedFromPath(gameClass, "Engine.GameInfo"))
+                throw std::runtime_error("World startup selected class is not an actual GameInfo UClass");
+            // LoadMap directly calls ULevel::SpawnActor with null Owner,
+            // Instigator and name, and zero Location/Rotation. Native birth
+            // assigns Tag=Class.Name; execSpawn's captured Instigator and
+            // post-return SpawnTag assignment do NOT
+            // belong to that call. Share native allocation, not that wrapper.
+            const auto born = SpawnNative(info->reflection.objectPath,
+                {{Value::Text(Kind::Object, gameClass->reflection.objectPath), {}},
+                 {Value::Text(Kind::Object, {}), {}}, {Value::Text(Kind::Name, {}), {}},
+                 {Value::Vector({0.0f, 0.0f, 0.0f}), {}}, {Value::Rotator({0, 0, 0}), {}}},
+                execution, true).Load();
+            if (born.kind != Kind::Object || born.text.empty())
+                throw std::runtime_error("Original world GameInfo native SpawnActor returned None");
+            game = Object(born.text);
+            write(info, "Game", born);
+        }
+        if (!IsDerivedFromPath(game->cls, "Engine.GameInfo") || NativeLevelInfo(game) != info)
+            throw std::runtime_error("LevelInfo.Game is not an actual GameInfo in its native Level");
+        result.gameInfoPath = game->reflection.objectPath;
+        result.restoredWorld = QuestVr::Vm::ToBool(Read(info, PropertyNamed(info, "bBegunPlay"), 0u));
+        // Index/count is deliberately re-read after every callback. Nested
+        // Spawn can append actors that this SAME pass must subsequently visit.
+        const auto each = [&](const Phase phase, const auto& operation) {
+            for (std::size_t slot = 0u; slot < persistentWorldActors.size(); ++slot) {
+                LifecycleStep();
+                auto* actor = persistentWorldActors[slot];
+                if (!actor || actor->worldRemoved) continue;
+                visit(phase, actor, slot);
+                operation(actor);
+            }
+        };
+        const auto events = [&](const Phase phase, const char* name, const bool enumDispatch) {
+            each(phase, [&](RuntimeObject* actor) {
+                static_cast<void>(execution.CallEvent(actor->reflection.objectPath, name, enumDispatch, {}));
+            });
+        };
+        if (!result.restoredWorld) {
+            visit(Phase::ResetTime, info, 0u);
+            result.worldTime = 0.0f;
+            write(info, "TimeSeconds", Value::Float(0.0f));
+            each(Phase::ClearTouching, [&](RuntimeObject* actor) {
+                const auto property = PropertyNamed(actor, "Touching");
+                if (property.zero.kind != Kind::Object || property.arrayDimension != 4u)
+                    throw std::runtime_error("Original world Touching reset requires Actor.Touching[4]");
+                for (std::uint32_t slot = 0u; slot < 4u; ++slot)
+                    ReferenceFor(actor, property, slot, false)->write(Value::Text(Kind::Object, {}));
+            });
+            each(Phase::InitializeExecution, [&](RuntimeObject* actor) { InitializeActorExecution(actor); });
+            visit(Phase::PublishStartup, info, 0u);
+            write(info, "bBegunPlay", Value::Bool(true));
+            write(info, "bStartup", Value::Bool(true));
+            visit(Phase::InitGame, game, static_cast<std::size_t>(game->worldActorIndex));
+            auto error = std::make_shared<Value>(Value::Text(Kind::String, {}));
+            auto out = std::make_shared<Reference>(); out->zero = *error;
+            // Owned OUT storage stays alive through the outer Machine's
+            // rollback, including after this coordinator callback unwinds.
+            out->read = [error] { return *error; };
+            out->write = [error](const Value& value) { *error = value; };
+            static_cast<void>(execution.CallEvent(game->reflection.objectPath, "InitGame", false,
+                {{Value::Text(Kind::String, options.initGameOptions), {}}, {*error, out}}));
+            if (error->kind != Kind::String) throw std::runtime_error("InitGame OUT Error did not remain a String");
+            result.initGameError = error->text;
+            // Original LoadMap copies this OUT string but does NOT test it for
+            // nonempty here. VM/native failures still abort the transaction.
+            events(Phase::PreBeginPlay, "PreBeginPlay", true);
+            events(Phase::BeginPlay, "BeginPlay", true);
+            each(Phase::SetActorZone, [&](RuntimeObject* actor) { InitializeWorldZone(actor, info); });
+            each(Phase::LastRenderTime, [&](RuntimeObject* actor) { Touch(actor); actor->lastRenderTime = -10.0f; });
+            events(Phase::PostBeginPlay, "PostBeginPlay", true);
+            events(Phase::SetInitialState, "SetInitialState", true);
+            each(Phase::WorldBases, [&](RuntimeObject* actor) {
+                const auto tagValue = Read(actor, PropertyNamed(actor, "AttachTag"), 0u);
+                if (tagValue.kind != Kind::Name) throw std::runtime_error("World AttachTag is not a Name");
+                const auto attachTag = QuestVr::ScriptDispatch::FoldName(tagValue.text);
+                if (!attachTag.empty() && attachTag != "none") {
+                    for (std::size_t slot = 0u; slot < persistentWorldActors.size(); ++slot) {
+                        LifecycleStep();
+                        auto* candidate = persistentWorldActors[slot];
+                        if (!candidate || candidate->worldRemoved) continue;
+                        const auto tag = Read(candidate, PropertyNamed(candidate, "Tag"), 0u);
+                        if (tag.kind != Kind::Name) throw std::runtime_error("World attachment candidate Tag is not a Name");
+                        if (QuestVr::ScriptDispatch::FoldName(tag.text) != attachTag) continue;
+                        SetBase(actor, candidate, false, execution); break;
+                    }
+                    return; // No match still MUST NOT fall through to FindBase.
+                }
+                const bool physical = IsDerivedFromPath(actor->cls, "Engine.Decoration") ||
+                    IsDerivedFromPath(actor->cls, "Engine.Inventory") || IsDerivedFromPath(actor->cls, "Engine.Pawn");
+                const auto physics = QuestVr::Vm::ToInt(Read(actor, PropertyNamed(actor, "Physics"), 0u));
+                if (physical && !ActorLink(actor, "Base") &&
+                    QuestVr::Vm::ToBool(Read(actor, PropertyNamed(actor, "bCollideWorld"), 0u)) &&
+                    (physics == 0 || physics == 5))
+                    throw std::runtime_error("Unsupported original world FindBase: extent SingleLineCheck flags0x17 / SupportActor contract is not implemented");
+            });
+            visit(Phase::ClearStartup, info, 0u);
+            write(info, "bStartup", Value::Bool(false));
+        } else {
+            visit(Phase::RestoreTime, info, 0u);
+            result.worldTime = QuestVr::Vm::ToFloat(Read(info, PropertyNamed(info, "TimeSeconds"), 0u));
+            if (!std::isfinite(result.worldTime)) throw std::runtime_error("Restored native world time is not finite");
+        }
+        events(Phase::PostPostBeginPlay, "PostPostBeginPlay", false);
+        visit(Phase::CompactActorSlots, info, 0u);
+        // The current save/birth manifest assumes an authored-slot prefix and
+        // appended births. Original static/dynamic compaction needs a genuine
+        // persistent ordering format before it can be published. Always fail
+        // this probe, rolling back ALL phases, rather than accept half a world.
+        throw std::runtime_error("Unsupported original world slot compaction/save ordering; non-publishing startup probe rolled back");
+    }
 private:
+    void InitializeWorldZone(RuntimeObject* actor, RuntimeObject* info) {
+        // Original SetActorZone(actor,1,1): reset old regions first; suppress
+        // every zone callback. There is no SpawnZone water/Physics/Base branch.
+        if (QuestVr::Vm::ToBool(Read(actor, PropertyNamed(actor, "bDeleteMe"), 0u))) return;
+        const auto store = [&](const char* name, const float offset) {
+            const auto property = PropertyNamed(actor, name);
+            ReferenceFor(actor, property, 0u, false)->write(Region(actor, property.zero, offset));
+        };
+        store("Region", 0.0f);
+        if (!IsDerivedFromPath(actor->cls, "Engine.Pawn")) return;
+        store("FootRegion", -QuestVr::Vm::ToFloat(Read(actor, PropertyNamed(actor, "CollisionHeight"), 0u)));
+        store("HeadRegion", QuestVr::Vm::ToFloat(Read(actor, PropertyNamed(actor, "EyeHeight"), 0u)));
+        if (QuestVr::Vm::ToInt(Read(info, PropertyNamed(info, "NetMode"), 0u)) == 3) return;
+        auto* pri = ActorLink(actor, "PlayerReplicationInfo");
+        if (pri) ReferenceFor(pri, PropertyNamed(pri, "PlayerZone"), 0u, false)->write(
+            Read(actor, PropertyNamed(actor, "Region"), 0u).fields.at("zone"));
+    }
     void SpawnZone(RuntimeObject* actor, QuestVr::Vm::Execution& execution) {
         const auto regionProperty = PropertyNamed(actor, "Region");
         auto region = Region(actor, regionProperty.zero);
@@ -2163,6 +2336,8 @@ private:
         if (physical && !ActorLink(actor, "Base") &&
             QuestVr::Vm::ToBool(Read(actor, PropertyNamed(actor, "bCollideWorld"), 0u)) &&
             (physics == 0 || physics == 5)) {
+            if (worldStartupProbe_)
+                throw std::runtime_error("Unsupported original spawned FindBase during world startup probe: extent SingleLineCheck / SupportActor contract is not implemented");
             const auto record=CollisionRecord(actor);
             const auto overlap=persistentActorCollision.Query(record.location,record.height,record.radius);
             std::vector<RuntimeObject*> hits;
@@ -2172,7 +2347,7 @@ private:
         }
     }
     Evaluation SpawnNative(const std::string& receiver, const std::vector<Evaluation>& arguments,
-        QuestVr::Vm::Execution& execution) {
+        QuestVr::Vm::Execution& execution, const bool worldGameInfo = false) {
         LifecycleStep();
         auto* spawner = Object(receiver); RequireMapActor(spawner);
         std::vector<Value> values;
@@ -2187,6 +2362,8 @@ private:
         if (!cls->classDescriptor) throw std::runtime_error("Spawn Class is not an actual UClass");
         cls = DefaultClass(cls);
         if (!cls->classDescriptor || (cls->classDescriptor->classFlags & 1u)) return none();
+        if (worldStartupProbe_ && IsDerivedFromPath(cls, "Engine.Mover"))
+            throw std::runtime_error("Unsupported original AMover native Spawned transform storage during world startup probe");
         auto* owner = values.size() > 1u && values[1].kind != Kind::Nothing &&
             !values[1].text.empty() ? Object(values[1].text) : nullptr;
         if (values.size() > 1u && values[1].kind != Kind::Nothing && values[1].kind != Kind::Object)
@@ -2204,7 +2381,8 @@ private:
         // execSpawn captures Instigator after optional argument evaluation and
         // passes it into Level::SpawnActor. SetOwner callbacks may mutate the
         // spawner before SpawnActor publishes that captured value on the birth.
-        const auto instigator = Read(spawner, PropertyNamed(spawner, "Instigator"), 0u);
+        const auto instigator = worldGameInfo ? Value::Text(Kind::Object, {}) :
+            Read(spawner, PropertyNamed(spawner, "Instigator"), 0u);
         if (location.kind != Kind::Vector || rotation.kind != Kind::Rotator)
             throw std::runtime_error("Spawn Location/Rotation have invalid concrete kinds");
         for (const auto component : location.vector)
@@ -2219,14 +2397,17 @@ private:
             if (!placed.found) return none();
             location = Value::Vector({placed.location.x, placed.location.y, placed.location.z});
         }
-        auto* level = ActorLink(spawner, "Level");
+        auto* level = worldGameInfo ? NativeLevelInfo(spawner) : ActorLink(spawner, "Level");
         if (!level || !IsDerivedFromPath(level->cls,"Engine.LevelInfo")) throw std::runtime_error("Spawn has no LevelInfo");
-        const auto xlevelValue = Read(spawner, PropertyNamed(spawner,"XLevel"),0u);
+        const auto xlevelValue = worldGameInfo ? Value::Text(Kind::Object, spawner->nativeXLevel->reflection.objectPath) :
+            Read(spawner, PropertyNamed(spawner,"XLevel"),0u);
         if (xlevelValue.kind != Kind::Object || xlevelValue.text.empty()) throw std::runtime_error("Spawn has no XLevel");
         auto* xlevel = Object(xlevelValue.text);
         if (xlevel->runtimeBirth || xlevel->sourcePath != persistentMapSourcePath ||
             LowerAscii(CastObjectIdentity(xlevelValue.text).classPath) != "engine.level")
             throw std::runtime_error("Spawn XLevel is not the current serialized Level");
+        if (worldStartupProbe_ && ActorLink(level, "SpawnNotify"))
+            throw std::runtime_error("Unsupported original native SpawnNotify chain during world startup probe");
         if (persistentWorldActors.size() >= 1'000'000u) throw std::runtime_error("Spawn world slot budget exceeded");
         const auto className = cls->reflection.objectPath.substr(cls->reflection.objectPath.find_last_of('.') + 1u);
         std::string path;
@@ -2255,7 +2436,8 @@ private:
         set("ObjectFlags",Value::Integer(0x4000));
         set("Outer",Value::Text(Kind::Object,actor->reflection.outerPath));
         set("XLevel",xlevelValue); set("Level",Value::Text(Kind::Object,level->reflection.objectPath));
-        set("Tag",Value::Text(Kind::Name,tag)); set("bTicked",Read(spawner,PropertyNamed(spawner,"bTicked"),0u));
+        set("Tag",Value::Text(Kind::Name, worldGameInfo ? className : tag));
+        set("bTicked",Read(spawner,PropertyNamed(spawner,"bTicked"),0u));
         set("Brush",Value::Text(Kind::Object,{})); set("Location",location); set("OldLocation",location); set("Rotation",rotation);
         auto region = Read(actor,PropertyNamed(actor,"Region"),0u,true);
         region.fields.at("zone") = Value::Text(Kind::Object,level->reflection.objectPath); set("Region",region);
@@ -2263,14 +2445,41 @@ private:
         SetOwner(actor,owner,execution);
         set("Instigator",instigator);
         InitializeActorExecution(actor);
-        if (!QuestVr::Vm::ToBool(Read(level,PropertyNamed(level,"bBegunPlay"),0u))) return {Value::Text(Kind::Object,path),{}};
+        if (!QuestVr::Vm::ToBool(Read(level,PropertyNamed(level,"bBegunPlay"),0u))) {
+            if (worldGameInfo) {
+                // Original direct GameInfo birth does NOT return at the
+                // ProcessEvent begun-play gate. Its native Spawned is empty,
+                // but zone(1,1) and LastRenderTime still initialize. No Pawn /
+                // Decoration / Inventory FindBase branch applies to GameInfo.
+                InitializeWorldZone(actor, level);
+                Touch(actor); actor->lastRenderTime = -10.0f;
+                if (QuestVr::Vm::ToBool(Read(actor, PropertyNamed(actor, "bCollideActors"), 0u)) ||
+                    QuestVr::Vm::ToBool(Read(actor, PropertyNamed(actor, "bBlockActors"), 0u)) ||
+                    QuestVr::Vm::ToBool(Read(actor, PropertyNamed(actor, "bBlockPlayers"), 0u)))
+                    throw std::runtime_error("Unsupported colliding direct-world GameInfo native CheckEncroachment contract");
+            }
+            return {Value::Text(Kind::Object,path),{}};
+        }
         for (const auto* event : {"Spawned","PreBeginPlay","BeginPlay"})
             static_cast<void>(execution.CallEvent(path,event,true,{}));
         if (QuestVr::Vm::ToBool(Read(actor,PropertyNamed(actor,"bDeleteMe"),0u))) return none();
-        SpawnZone(actor,execution);
-        for (const auto* event : {"PostBeginPlay","SetInitialState"}) static_cast<void>(execution.CallEvent(path,event,true,{}));
-        static_cast<void>(execution.CallEvent(path,"PostPostBeginPlay",false,{}));
-        SpawnBase(actor,execution);
+        if (worldStartupProbe_) {
+            InitializeWorldZone(actor, level);
+            Touch(actor); actor->lastRenderTime = -10.0f;
+            static_cast<void>(execution.CallEvent(path, "PostBeginPlay", true, {}));
+            if (QuestVr::Vm::ToBool(Read(actor, PropertyNamed(actor, "bCollideActors"), 0u)) ||
+                QuestVr::Vm::ToBool(Read(actor, PropertyNamed(actor, "bBlockActors"), 0u)) ||
+                QuestVr::Vm::ToBool(Read(actor, PropertyNamed(actor, "bBlockPlayers"), 0u)))
+                throw std::runtime_error("Unsupported original spawned CheckEncroachment during world startup probe");
+            static_cast<void>(execution.CallEvent(path, "SetInitialState", true, {}));
+            SpawnBase(actor, execution); // Original native base pass precedes PPP.
+            static_cast<void>(execution.CallEvent(path, "PostPostBeginPlay", false, {}));
+        } else {
+            SpawnZone(actor,execution);
+            for (const auto* event : {"PostBeginPlay","SetInitialState"}) static_cast<void>(execution.CallEvent(path,event,true,{}));
+            static_cast<void>(execution.CallEvent(path,"PostPostBeginPlay",false,{}));
+            SpawnBase(actor,execution);
+        }
         if (!spawnNotificationLocked_) {
             struct Unlock { bool& flag; ~Unlock() { flag = false; } } unlock{spawnNotificationLocked_};
             spawnNotificationLocked_ = true;
@@ -2464,6 +2673,7 @@ private:
         std::optional<QuestVr::ActorAnimationClock> clock;
         std::optional<QuestVr::StateObject> state;
         std::optional<float> latentTimeLeft;
+        std::optional<float> lastRenderTime;
         std::uint64_t revision{};
         std::uint32_t transitionFlags{};
         bool committed{};
@@ -2491,6 +2701,7 @@ private:
     std::size_t beforeExportCount_{}, beforeWorldSlots_{};
     std::optional<std::uint32_t> beforeRandomSeed_;
     bool spawnNotificationLocked_{};
+    bool worldStartupProbe_{};
     std::optional<PortableModelGeometry> rootModel_;
     bool transaction_{};
     const PortablePackageTables& Table(const std::string& source) {
@@ -2979,7 +3190,7 @@ private:
         if (!transaction_) throw std::runtime_error("VM mutation outside a transaction");
         if (saved_.find(object) == saved_.end()) {
             if (saved_.size() >= 4096u) throw std::runtime_error("VM touched actor budget exceeded");
-            saved_.emplace(object, Before{object->scriptValues, object->classDefaultValues, object->animationClock, object->stateObject, object->latentTimeLeft,
+            saved_.emplace(object, Before{object->scriptValues, object->classDefaultValues, object->animationClock, object->stateObject, object->latentTimeLeft, object->lastRenderTime,
                 object->stateLocalsRevision, object->stateTransitionFlags, object->committedScriptState, object->childActors, object->basedActors,
                 object->touchEventSent, object->committedLifecycle, object->worldRemoved});
         }
@@ -3315,6 +3526,8 @@ private:
     void InitializeActorExecution(RuntimeObject* actor) {
         if (!actor->cls || !actor->cls->classDescriptor)
             throw std::runtime_error("Actor InitExecution requires its authored Class");
+        if (ActorLink(actor, "Level") != NativeLevelInfo(actor))
+            throw std::runtime_error("Original Actor InitExecution Level binding differs from native XLevel slot zero");
         if (actor->stateLocalsRevision == std::numeric_limits<std::uint64_t>::max())
             throw std::runtime_error("State local revision budget exceeded");
         Touch(actor);
@@ -3495,13 +3708,23 @@ private:
     Value Region(RuntimeObject* object, const Value& zero, const float verticalOffset = 0.0f) {
         if (object->sourcePath.empty() || PackageStem(object->sourcePath) != persistentMapPackageName)
             throw std::runtime_error("Actor.Region unavailable outside the current authored map");
+        auto* levelInfo = NativeLevelInfo(object);
+        // Original ULevel::SetActorZone and UModel::PointRegion use the
+        // native slot-zero LevelInfo, not the first reflected LevelInfo export.
+        if (object == levelInfo) {
+            Value result = zero;
+            result.fields.at("zone") = Value::Text(Kind::Object, levelInfo->reflection.objectPath);
+            result.fields.at("ileaf") = Value::Integer(-1);
+            result.fields.at("zonenumber") = Value::Byte(0u);
+            return result;
+        }
         if (!rootModel_) rootModel_ = LoadPortableRootModel68(Table(object->sourcePath));
         auto location = Read(object, PropertyNamed(object, "Location"), 0u);
         location.vector[2] += verticalOffset;
         if (location.kind != Kind::Vector || !std::isfinite(location.vector[0]) ||
             !std::isfinite(location.vector[1]) || !std::isfinite(location.vector[2]))
             throw std::runtime_error("Actor.Region has an invalid location");
-        std::uint32_t zone{}; std::int32_t leaf{};
+        std::uint32_t zone{}; std::int32_t leaf{-1};
         if (!rootModel_->nodes.empty()) {
             std::int32_t current{}; bool terminal{};
             for (std::size_t steps = 0u; steps <= rootModel_->nodes.size(); ++steps) {
@@ -3510,26 +3733,24 @@ private:
                 const auto& node = rootModel_->nodes[static_cast<std::size_t>(current)];
                 const float side = location.vector[0]*node.planeX + location.vector[1]*node.planeY +
                     location.vector[2]*node.planeZ - node.planeW;
-                if (node.front >= 0 && side >= 0.0f) current = node.front;
-                else if (node.back >= 0 && side <= 0.0f) current = node.back;
+                // Equality selects side1. If that child is absent the original
+                // stops here; it never falls through to the other child.
+                const bool front = side >= 0.0f;
+                const auto child = front ? node.front : node.back;
+                if (child >= 0) current = child;
                 else {
-                    zone = static_cast<std::uint32_t>(side >= 0.0f ? node.zone1 : node.zone0);
-                    leaf = side >= 0.0f ? node.leaf0 : node.leaf1; terminal = true; break;
+                    zone = static_cast<std::uint32_t>(front ? node.zone1 : node.zone0);
+                    leaf = front ? node.leaf1 : node.leaf0; terminal = true; break;
                 }
             }
             if (!terminal) throw std::runtime_error("Actor.Region BSP traversal budget exceeded");
         }
+        if (rootModel_->zones.empty()) zone = 0u;
         if (zone >= 64u) throw std::runtime_error("Actor.Region zone number out of range");
         RuntimeObject* zoneObject{};
         if (zone < rootModel_->zones.size() && rootModel_->zones[zone].actorReference != 0)
             zoneObject = Object(Qualified(Table(object->sourcePath), rootModel_->zones[zone].actorReference));
-        if (zoneObject == nullptr) {
-            for (std::size_t index = persistentScriptExportCount; index < persistentRuntime->get()->exports.size(); ++index) {
-                auto* candidate = persistentRuntime->get()->exports[index];
-                if (IsDerivedFromPath(candidate->cls, "Engine.LevelInfo")) { zoneObject = candidate; break; }
-            }
-        }
-        if (zoneObject == nullptr) throw std::runtime_error("Actor.Region has no LevelInfo fallback");
+        if (zoneObject == nullptr) zoneObject = levelInfo;
         Value result = zero;
         result.fields["zone"] = Value::Text(Kind::Object, zoneObject->reflection.objectPath);
         result.fields["ileaf"] = Value::Integer(leaf); result.fields["zonenumber"] = Value::Byte(static_cast<std::uint8_t>(zone));
@@ -4979,6 +5200,46 @@ QuestVr::Vm::Result ExecutePortableActorFunction(const std::string& actorPath,
         result.function = functionName; result.error = error.what();
         return result;
     }
+}
+
+const char* PortableWorldStartupPhaseName(const PortableWorldStartupPhase phase) {
+    switch (phase) {
+    case PortableWorldStartupPhase::ValidateWorld: return "ValidateWorld";
+    case PortableWorldStartupPhase::SelectGameInfo: return "SelectGameInfo";
+    case PortableWorldStartupPhase::ResetTime: return "ResetTime";
+    case PortableWorldStartupPhase::RestoreTime: return "RestoreTime";
+    case PortableWorldStartupPhase::ClearTouching: return "ClearTouching";
+    case PortableWorldStartupPhase::InitializeExecution: return "InitializeExecution";
+    case PortableWorldStartupPhase::PublishStartup: return "PublishStartup";
+    case PortableWorldStartupPhase::InitGame: return "InitGame";
+    case PortableWorldStartupPhase::PreBeginPlay: return "PreBeginPlay";
+    case PortableWorldStartupPhase::BeginPlay: return "BeginPlay";
+    case PortableWorldStartupPhase::SetActorZone: return "SetActorZone";
+    case PortableWorldStartupPhase::LastRenderTime: return "LastRenderTime";
+    case PortableWorldStartupPhase::PostBeginPlay: return "PostBeginPlay";
+    case PortableWorldStartupPhase::SetInitialState: return "SetInitialState";
+    case PortableWorldStartupPhase::WorldBases: return "WorldBases";
+    case PortableWorldStartupPhase::ClearStartup: return "ClearStartup";
+    case PortableWorldStartupPhase::PostPostBeginPlay: return "PostPostBeginPlay";
+    case PortableWorldStartupPhase::CompactActorSlots: return "CompactActorSlots";
+    default: return "InvalidPhase";
+    }
+}
+
+PortableWorldStartupProbeResult ProbePortableWorldStartup(
+    const PortableWorldStartupProbeOptions& options, const QuestVr::Vm::Limits& limits) {
+    CollectBirthGarbageAtBoundary collect;
+    PortableWorldStartupProbeResult result;
+    try {
+        PortableActorVmHost host;
+        result.execution = QuestVr::Vm::ExecuteTransaction(host, [&](QuestVr::Vm::Execution& execution) {
+            return host.ProbeWorldStartup(options, result, execution);
+        }, limits);
+    } catch (const std::exception& error) {
+        result.execution.status = QuestVr::Vm::Status::Unsupported;
+        result.execution.error = error.what();
+    }
+    return result;
 }
 
 QuestVr::Vm::Value ReadPortableActorScriptProperty(const std::string& actorPath,

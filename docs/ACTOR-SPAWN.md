@@ -14,7 +14,12 @@ abstract class return a null Object without allocating. Invalid class identities
 fail the caller's transaction; an Actor instance is not accepted as a UClass.
 Arguments are loaded from VM references, including local parameters. Omitted
 Location/Rotation retain the spawner's values; Owner defaults to None and a None
-Tag uses the concrete class's name.
+Tag currently uses the concrete class's name in the general portable adapter.
+This is a known wrapper mismatch: original native SpawnActor writes Class.Name
+before callbacks, but original execSpawn writes the script SpawnTag, including
+omitted/explicit None, after return. The direct-world diagnostic mode uses
+native Class.Name without that wrapper and does not establish general Spawn
+tag fidelity. See [WORLD-NATIVE-STARTUP.md](WORLD-NATIVE-STARTUP.md).
 
 Placement uses the prospective class-default collision radius/height and
 bCollideWorld/bCollideWhenPlacing. The bounded world-only CheckLocation port
@@ -46,12 +51,19 @@ loaded UClass. Authored Level members receive a native XLevel baseline at map
 linking, without creating a script mutation or dirty checkpoint. Level and
 XLevel are distinct bindings and are not guessed from the first LevelInfo.
 
-## Original callback sequence
+## Current callback subset and original gaps
 
 Collision registration precedes synchronous SetOwner and its owner callbacks.
 After ownership and captured Instigator publication, Spawn initializes its
 class-backed execution frame. A dormant Level then returns without script
-startup events.
+startup events. Original ProcessEvent does suppress scripts here, but the
+native SpawnActor body has no begun-play return: native subclass Spawned,
+zone(1,1), LastRenderTime, encroachment, bases and notification work still
+apply. The general adapter's early return remains incomplete. The strict
+world diagnostic implements the scoped noncolliding GameInfo native prefix,
+uses audited zone/base ordering for nested begun births, and explicitly
+refuses unimplemented Mover/encroachment/physical-base/notification paths.
+It always rolls back and is not accepted world startup.
 For a begun Level, Spawn executes enum Spawned, PreBeginPlay and BeginPlay,
 then checks bDeleteMe once. Self-deletion at that point returns None; the deleted
 UObject can still be addressed directly until map teardown.

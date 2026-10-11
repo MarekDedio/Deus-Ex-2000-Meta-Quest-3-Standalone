@@ -84,6 +84,9 @@ struct Limits {
     std::size_t stringBytes{8192};
     std::size_t arguments{256};
     std::size_t retainedBytes{32u << 20u};
+    // Explicit synchronous entry attempts, including absent/ineligible events.
+    // Bytecode instructions and all other execution budgets remain shared.
+    std::size_t operations{100000};
 };
 struct StateLabel {
     std::string name;
@@ -103,6 +106,11 @@ public:
     // transaction. Never enter public Execute from a host native callback.
     virtual Value CallEvent(const std::string& receiver, const std::string& eventName,
         bool enumDispatch, const std::vector<Evaluation>& arguments = {}) = 0;
+    // Calls an actual host-resolved declaration, preserving its own source table
+    // and the same eligibility/preparation rules as an ordinary nested call.
+    // The declaration must remain alive until this synchronous call returns.
+    virtual Value CallFunction(const Function& identity, const std::string& receiver,
+        const std::vector<Evaluation>& arguments = {}) = 0;
 };
 class Iterator {
 public:
@@ -234,6 +242,19 @@ struct Result {
 };
 Result Execute(Host& host, const Function& function, const std::string& self,
     const std::vector<Evaluation>& arguments = {}, const Limits& limits = {});
+// Coordinates several real script/native/event calls in one interpreter and
+// one host transaction. There is no per-call commit; later failure also restores
+// earlier external OUT writes. The callback is synchronous trusted host code,
+// must not retain Execution, and must bound its own non-script scan work. Entry
+// attempts share limits.operations; all nested script budgets/journals are shared.
+// External Reference closures and their backing storage must survive through
+// this function's return, including rollback after the callback has unwound.
+// Callback-local OUT storage must be owned by its closures (for example via
+// shared_ptr), not captured by reference to a callback-local stack variable.
+// A failed Execution call poisons the transaction even if the callback catches
+// its exception. The original failure is reported and cannot become a commit.
+Result ExecuteTransaction(Host& host, const std::function<Value(Execution&)>& operation,
+    const Limits& limits = {});
 // Executes one persistent state slice. Sleep yields Waiting without advancing
 // elapsed time; other unsupported waits still fail explicitly. No
 // actor tick, elapsed-time advance or world startup is implied by this call.

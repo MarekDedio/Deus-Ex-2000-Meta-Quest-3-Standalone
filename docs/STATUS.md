@@ -1,5 +1,43 @@
 # Port status
 
+## Transactional original-world startup and BSP regions (2026-10-11)
+
+- Added one shared-budget VM transaction for a sequence of actual declarations
+  and events. Later failures restore earlier OUT/property/native/RNG writes;
+  catching a failed callback cannot commit its prefix. Coordinator-only errors
+  and unresolved top-level event failures cannot inherit a completed script's
+  function/PC, while nested failures retain their real active caller.
+- Added a deliberately non-publishing original-world startup diagnostic over
+  actual native Level slots: GameInfo selection/birth, all-world frames,
+  InitGame, separate live actor phases, zone refresh and world attachments.
+  Births/deletions are observed within each live pass. Every outcome rolls back;
+  physical FindBase and original slot/save compaction remain explicit gaps.
+  Native Mover birth, collision encroachment and SpawnNotify paths are refused
+  where their original contracts are not implemented. See
+  [WORLD-STARTUP-PROBE.md](WORLD-STARTUP-PROBE.md) and
+  [WORLD-NATIVE-STARTUP.md](WORLD-NATIVE-STARTUP.md).
+- Corrected BSP Region traversal at exact plane equality, child/leaf side
+  pairing, empty-BSP leaf and zero-zone behavior. Fallback and InitExecution
+  ownership use native XLevel slot0 instead of mutable reflected Level links.
+  Original world zone refresh does not apply the older Spawn water shortcut.
+- The unmodified 1,308-actor Training probe creates real DeusExGameInfo/Mutator
+  objects and reaches PreBeginPlay slot756, JaimeReyes0, before the first
+  observed unsupported native: Engine.Decal.AttachDecal. Repeated failure and
+  short-budget controls restore exact save bytes, actor count/revision and GC
+  totals. This is not accepted world startup, player login or live campaign AI.
+- All51 ordinary host tests pass, and all four optional original-data suites
+  pass when supplied the read-only installation. Generated world/Spawn checks
+  pass5,398/114 expected refusals; VM transactions pass125/31, total VM677,809/302.
+  The signed final APK was automatically replace-installed when Quest3
+  reconnected during its build; installed/archived SHA256 matches. Default
+  auto-install remains enabled for every new build. Exact APK and deployment
+  evidence are in [QUEST-TEST-BUILD.md](QUEST-TEST-BUILD.md). Fresh installed-APK
+  eye frames show Training and the original-style inventory; diagnostic menu
+  toggling and72fps samples pass. Controllers are untracked in these captures,
+  so no renewed hand/body alignment or physical-input acceptance is claimed.
+  Accepted player/body, controller/recenter geometry and app saves were not
+  changed.
+
 ## Original startup primitives and pawn topology (2026-10-11)
 
 - Added audited Log231, full validated ObjectToString0x56, original UTF16
