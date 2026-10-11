@@ -1953,7 +1953,29 @@ public:
     }
     Evaluation NativeWithExecution(const std::uint16_t index, const std::string& receiver,
         const std::vector<Evaluation>& arguments, const Function* declaration, QuestVr::Vm::Execution& execution) override {
-        if (index == 278u) return SpawnNative(receiver, arguments, execution);
+        if (index == 278u) {
+            // execSpawn owns evaluated arguments across synchronous native
+            // callbacks. In particular, SpawnTag may alias an actor property
+            // which SetOwner/SpawnNotify changes before SpawnActor returns.
+            std::vector<Evaluation> captured;
+            captured.reserve(arguments.size());
+            for (const auto& argument : arguments) captured.push_back({argument.Load(), {}});
+            auto tag = Value::Text(Kind::Name, "None");
+            if (captured.size() > 2u && captured[2].value.kind != Kind::Nothing) {
+                if (captured[2].value.kind != Kind::Name) throw std::runtime_error("Spawn Tag is not a Name");
+                tag = captured[2].value;
+            }
+            auto result = SpawnNative(receiver, captured, execution);
+            if (!result.value.text.empty()) {
+                // Original execSpawn writes AFTER all native callbacks and
+                // notifications, to the returned actor (possibly replacement),
+                // including an omitted/explicit None. Direct world GameInfo
+                // births call SpawnNative itself and bypass this wrapper.
+                auto* actor = Object(result.value.text);
+                ReferenceFor(actor, PropertyNamed(actor, "Tag"), 0u, false)->write(tag);
+            }
+            return result;
+        }
         if (index == 272u || index == 298u || index == 279u)
             return LifecycleNative(index, receiver, arguments, execution);
         if (index == 529u || index == 530u) return PawnListNative(index, Object(receiver), arguments);
@@ -2369,10 +2391,8 @@ private:
         if (values.size() > 1u && values[1].kind != Kind::Nothing && values[1].kind != Kind::Object)
             throw std::runtime_error("Spawn Owner is not an Object");
         if (owner) RequireMapActor(owner);
-        auto tag = cls->reflection.objectPath.substr(cls->reflection.objectPath.find_last_of('.') + 1u);
         if (values.size() > 2u && values[2].kind != Kind::Nothing) {
             if (values[2].kind != Kind::Name) throw std::runtime_error("Spawn Tag is not a Name");
-            if (!values[2].text.empty() && LowerAscii(values[2].text) != "none") tag = values[2].text;
         }
         auto location = values.size() > 3u && values[3].kind != Kind::Nothing ?
             values[3] : Read(spawner, PropertyNamed(spawner, "Location"), 0u);
@@ -2436,7 +2456,7 @@ private:
         set("ObjectFlags",Value::Integer(0x4000));
         set("Outer",Value::Text(Kind::Object,actor->reflection.outerPath));
         set("XLevel",xlevelValue); set("Level",Value::Text(Kind::Object,level->reflection.objectPath));
-        set("Tag",Value::Text(Kind::Name, worldGameInfo ? className : tag));
+        set("Tag",Value::Text(Kind::Name,className));
         set("bTicked",Read(spawner,PropertyNamed(spawner,"bTicked"),0u));
         set("Brush",Value::Text(Kind::Object,{})); set("Location",location); set("OldLocation",location); set("Rotation",rotation);
         auto region = Read(actor,PropertyNamed(actor,"Region"),0u,true);

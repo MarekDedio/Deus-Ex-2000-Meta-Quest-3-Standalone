@@ -30,7 +30,7 @@ bool SnapshotNativeInput(const std::uint16_t index) {
     // none has OUT parameters. Unknown/OUT natives retain their guarded aliases.
     switch (index) {
     case 112: case 113: case 124: case 125: case 126: case 127: case 128:
-    case 168: case 189: case 231: case 234: case 235: case 246: case 249: return true;
+    case 168: case 189: case 231: case 234: case 235: case 246: case 249: case 278: return true;
     default: return false;
     }
 }

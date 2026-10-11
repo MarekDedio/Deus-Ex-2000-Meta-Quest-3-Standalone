@@ -68,6 +68,11 @@ Original transition authoring now uses callback flags, pre-argument capture and
 selected-node label ancestry; owned Spawn frame initialization is wired.
 Map-wide startup remains required; ambiguous legacy frames are not silently
 upgraded. These shared controls do not establish a running original campaign.
+Script Spawn now preserves native callback-visible Class.Name and applies the
+captured optional tag after return, including notification replacements.
+The [original BSP point-trace prerequisite](docs/MODEL-POINT-TRACE.md) and
+[decal native audit](docs/DECAL-NATIVE-CONTRACT.md) prepare exact NPC shadows;
+AttachDecal itself remains unsupported, not bypassed to accept partial startup.
 The [Quest test build notes](docs/QUEST-TEST-BUILD.md) record an earlier installed
 test build, not a permanent deployment freeze. At the user's standing request,
 every successful new APK build now automatically installs on the connected,

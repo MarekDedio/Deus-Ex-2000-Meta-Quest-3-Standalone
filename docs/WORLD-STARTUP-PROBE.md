@@ -30,7 +30,9 @@ LastRenderTime initialization; only script ProcessEvent is suppressed. Its
 native Spawned is the audited empty base and its ancestry excludes physical
 FindBase. A colliding custom GameInfo explicitly refuses the unaudited native
 CheckEncroachment path. General script Spawn's broader before-begun native
-completion and post-return SpawnTag fidelity remain separate existing gaps.
+completion remains a separate existing gap. Script Spawn now preserves native
+Class.Name during callbacks, then writes its captured optional SpawnTag to the
+returned identity after native completion, including replacement actors/None.
 The original encroachment fast path is specifically null Brush and clear
 bCollideActors/bBlockActors/bBlockPlayers (native mask0x0d), not bCollideWorld;
 the strict probe checks the recovered three flags after native Brush clearing.

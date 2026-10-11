@@ -140,7 +140,10 @@ expressed by calling the script Spawn declaration, even with null Owner and
 zero transforms. Reuse transactional native birth internals with an owned
 direct-world argument mode; do not mutate LevelInfo.Instigator temporarily or
 claim class-default Tag preservation. Script Spawn's post-return Tag semantics
-are a separate regression requirement from this world entry point.
+are independently implemented and covered by callback, later-argument alias,
+notification replacement, rollback and cold-save regressions. Its ordinary
+inputs are detached as each expression evaluates; direct world birth still
+bypasses that wrapper. This does not resolve the other generic birth gaps.
 
 ### Before-begun native birth does not return at the script gate
 
@@ -227,8 +230,6 @@ contract. The existing generic path still needs separate regression work for:
 
 - completing native birth operations before begun-play, rather than returning
   at a gate that belongs only to individual Actor.ProcessEvent calls;
-- installing native Class.Name Tag before callbacks, then writing the script
-  SpawnTag (including omitted/explicit None) **after** successful native birth;
 - removing any claimed recovered native water assignment unless independently
   supported by original evidence;
 - calling eligible native FindBase/SetSupportBase **before** PPP, not afterward;

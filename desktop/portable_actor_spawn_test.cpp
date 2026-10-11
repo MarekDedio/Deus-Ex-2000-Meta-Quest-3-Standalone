@@ -485,6 +485,8 @@ Tables Build(Fixture& fixture, unsigned worldModel = 0u) {
     const auto probe = classes.Export("Probe", 0, importedActor), leaf = classes.Export("Leaf", 0, probe), abstract = classes.Export("Abstract", 0, probe);
     const auto fail = classes.Export("FailPost", 0, probe), nested = classes.Export("Nested", 0, probe), recursive = classes.Export("Recursive", 0, probe), selfDelete = classes.Export("SelfDelete", 0, probe);
     const auto captureOwner = classes.Export("CaptureOwner", 0, probe);
+    const auto tagMutator = classes.Export("TagMutator", 0, probe);
+    const auto tagNotify = classes.Export("TagNotify", 0, classes.Import("SpawnNotify", classesEngine));
     const auto pointBase = classes.Export("PointBase", 0, classes.Import("Decoration", classesEngine)), support = classes.Export("Support", 0, probe);
     const auto attachTaggedBirth = classes.Export("AttachTaggedBirth", 0, probe);
     const auto importedPawn = classes.Import("Pawn", classesEngine), importedPlayer = classes.Import("Player", classesEngine);
@@ -515,6 +517,7 @@ Tables Build(Fixture& fixture, unsigned worldModel = 0u) {
     const auto matchCount = classes.Property("MatchCount", "IntProperty", probe, classesCore);
     const auto innerCount = classes.Property("InnerCount", "IntProperty", probe, classesCore);
     const auto importedLevel = classes.Import("Level", importedActor, "ObjectProperty"), importedLevelInfo = classes.Import("LevelInfo", classesEngine);
+    const auto importedSpawnNotify = classes.Import("SpawnNotify", importedLevelInfo, "ObjectProperty");
     const auto importedLocation = classes.Import("Location", importedActor, "StructProperty"), importedRotation = classes.Import("Rotation", importedActor, "StructProperty");
     const auto begun = classes.Import("bBegunPlay", importedLevelInfo, "BoolProperty");
     const auto importedPawnList = classes.Import("PawnList", importedLevelInfo, "ObjectProperty");
@@ -654,13 +657,22 @@ Tables Build(Fixture& fixture, unsigned worldModel = 0u) {
         Assign(Context(prop("Link"), Ref(0x01u, importedPlayerField)), Ref(0x00u, failPlayerInput)),
         Assign(prop("Link"), Native(720u)), Native(999u), Return()}));
     const auto callbackTrace = [&](int digit) { return Assign(prop("Trace"), Native(146u, {Native(144u, {prop("Trace"), Int(10)}), Int(digit)})); };
-    for (const auto& [name, digit] : std::vector<std::pair<std::string, int>>{{"Spawned", 1}, {"PreBeginPlay", 2}, {"BeginPlay", 3}, {"PostBeginPlay", 4}, {"SetInitialState", 5}, {"PostPostBeginPlay", 6}})
-        classes.Function(name, probe, classesCore, Join({callbackTrace(digit), Return()}));
+    std::map<std::string, std::int32_t> callbackTags;
+    for (const auto& [name, digit] : std::vector<std::pair<std::string, int>>{{"Spawned", 1}, {"PreBeginPlay", 2}, {"BeginPlay", 3}, {"PostBeginPlay", 4}, {"SetInitialState", 5}, {"PostPostBeginPlay", 6}}) {
+        const auto observed = classes.Property("Observed" + name + "Tag", "NameProperty", probe, classesCore);
+        callbackTags.emplace(name, observed);
+        classes.Function(name, probe, classesCore, Join({callbackTrace(digit),
+            Assign(Ref(0x01u, observed), Ref(0x01u, importedTag)), Return()}));
+    }
+    classes.Function("PostPostBeginPlay", tagMutator, classesCore, Join({callbackTrace(6),
+        Assign(Ref(0x01u, callbackTags.at("PostPostBeginPlay")), Ref(0x01u, importedTag)),
+        Assign(Ref(0x01u, importedTag), Ref(0x21u, classes.Name("CallbackTag"))), Return()}));
     const auto gained = classes.Function("GainedChild", probe, classesCore); classes.Property("Other", "ObjectProperty", gained, classesCore, 1u, importedActor, 0x80u);
     classes.FunctionCode(gained, Join({Assign(prop("ChildEvents"), Native(146u, {prop("ChildEvents"), Int(1)})), Return()}));
     const auto observedInstigator = classes.Property("ObservedChildInstigator", "ObjectProperty", captureOwner, classesCore, 1u, importedPawn);
     const auto observedFlags = classes.Property("ObservedChildFlags", "IntProperty", captureOwner, classesCore);
     const auto observedState = classes.Property("ObservedChildState", "NameProperty", captureOwner, classesCore);
+    const auto observedChildTag = classes.Property("ObservedChildTag", "NameProperty", captureOwner, classesCore);
     const auto captureGained = classes.Function("GainedChild", captureOwner, classesCore);
     const auto captureChild = classes.Property("Other", "ObjectProperty", captureGained, classesCore, 1u, importedActor, 0x80u);
     classes.FunctionCode(captureGained, Join({
@@ -668,6 +680,8 @@ Tables Build(Fixture& fixture, unsigned worldModel = 0u) {
         Assign(Ref(0x01u, observedInstigator), Context(Ref(0x00u, captureChild), Ref(0x01u, importedInstigator))),
         Assign(Ref(0x01u, observedFlags), Context(Ref(0x00u, captureChild), Ref(0x01u, importedObjectFlags))),
         Assign(Ref(0x01u, observedState), Context(Ref(0x00u, captureChild), Native(284u))),
+        Assign(Ref(0x01u, observedChildTag), Context(Ref(0x00u, captureChild), Ref(0x01u, importedTag))),
+        Assign(Context(prop("Link"), Ref(0x01u, importedTag)), Ref(0x21u, classes.Name("CallbackChangedInput"))),
         Assign(Context(prop("Link"), Ref(0x01u, importedInstigator)), Token(0x2au)), Return()}));
     const auto make = classes.Function("Make", probe, classesCore), inputClass = classes.Property("InputClass", "ClassProperty", make, classesCore, 1u, classesClass, 0x80u, importedActor);
     classes.FunctionCode(make, Return(Native(278u, {Ref(0x00u, inputClass)})));
@@ -677,6 +691,42 @@ Tables Build(Fixture& fixture, unsigned worldModel = 0u) {
     const auto atOwner = classes.Property("InputOwner", "ObjectProperty", makeAt, classesCore, 1u, importedActor, 0x80u), atTag = classes.Property("InputTag", "NameProperty", makeAt, classesCore, 1u, 0, 0x80u);
     const auto atLocation = classes.Property("InputLocation", "StructProperty", makeAt, classesCore, 1u, classesVector, 0x80u), atRotation = classes.Property("InputRotation", "StructProperty", makeAt, classesCore, 1u, classesRotator, 0x80u);
     classes.FunctionCode(makeAt, Return(Native(278u, {Ref(0x00u, atClass), Ref(0x00u, atOwner), Ref(0x00u, atTag), Ref(0x00u, atLocation), Ref(0x00u, atRotation)})));
+    const auto makeReferenceTag = classes.Function("MakeReferenceTag", probe, classesCore);
+    const auto referenceOwner = classes.Property("InputOwner", "ObjectProperty", makeReferenceTag, classesCore, 1u, importedActor, 0x80u);
+    classes.FunctionCode(makeReferenceTag, Join({Assign(Ref(0x01u, importedTag), Ref(0x21u, classes.Name("CapturedInput"))),
+        Return(Native(278u, {Ref(0x20u, leaf), Ref(0x00u, referenceOwner), Ref(0x01u, importedTag)}))}));
+    const auto mutateTagLocation = classes.Function("MutateTagLocation", probe, classesCore);
+    classes.Property("ReturnValue", "StructProperty", mutateTagLocation, classesCore, 1u, classesVector, 0x480u);
+    classes.FunctionCode(mutateTagLocation, Join({
+        Assign(Ref(0x01u, importedTag), Ref(0x21u, classes.Name("LaterArgumentChangedTag"))),
+        Return(Ref(0x01u, importedLocation))}));
+    classes.Function("MakeLaterArgumentTag", probe, classesCore, Join({
+        Assign(Ref(0x01u, importedTag), Ref(0x21u, classes.Name("EarlierArgumentTag"))),
+        Return(Native(278u, {Ref(0x20u, leaf), Token(0x2au), Ref(0x01u, importedTag),
+            Final(mutateTagLocation)}))}));
+    const auto makeTaggedFail = classes.Function("MakeTaggedThenFail", probe, classesCore);
+    const auto failedTag = classes.Property("InputTag", "NameProperty", makeTaggedFail, classesCore, 1u, 0, 0x80u);
+    classes.FunctionCode(makeTaggedFail, Join({Assign(prop("Link"), Native(278u, {Ref(0x20u, leaf),
+        Token(0x2au), Ref(0x00u, failedTag)})), Native(999u), Return()}));
+    const auto setNotify = classes.Function("SetSpawnNotify", probe, classesCore);
+    const auto notifyInput = classes.Property("Input", "ObjectProperty", setNotify, classesCore, 1u, importedActor, 0x80u);
+    classes.FunctionCode(setNotify, Join({Assign(Context(Ref(0x01u, importedLevel), Ref(0x01u, importedSpawnNotify)),
+        Ref(0x00u, notifyInput)), Return()}));
+    const auto notifyReplacement = classes.Property("Replacement", "ObjectProperty", tagNotify, classesCore, 1u, importedActor);
+    const auto notifyObservedTag = classes.Property("ObservedNativeTag", "NameProperty", tagNotify, classesCore);
+    const auto notifyObservedActor = classes.Property("ObservedSpawned", "ObjectProperty", tagNotify, classesCore, 1u, importedActor);
+    const auto notifyClass = classes.Import("ActorClass", classes.Import("SpawnNotify", classesEngine), "ClassProperty");
+    const auto configureNotify = classes.Function("ConfigureNotify", tagNotify, classesCore);
+    const auto replacementInput = classes.Property("Input", "ObjectProperty", configureNotify, classesCore, 1u, importedActor, 0x80u);
+    classes.FunctionCode(configureNotify, Join({Assign(Ref(0x01u, notifyReplacement), Ref(0x00u, replacementInput)),
+        Assign(Ref(0x01u, notifyClass), Ref(0x20u, leaf)), Return()}));
+    const auto notification = classes.Function("SpawnNotification", tagNotify, classesCore);
+    const auto notifiedActor = classes.Property("Actor", "ObjectProperty", notification, classesCore, 1u, importedActor, 0x80u);
+    classes.Property("ReturnValue", "ObjectProperty", notification, classesCore, 1u, importedActor, 0x480u);
+    classes.FunctionCode(notification, Join({
+        Assign(Ref(0x01u, notifyObservedTag), Context(Ref(0x00u, notifiedActor), Ref(0x01u, importedTag))),
+        Assign(Ref(0x01u, notifyObservedActor), Ref(0x00u, notifiedActor)),
+        Return(Ref(0x01u, notifyReplacement))}));
     const auto omitted = classes.Function("MakeOmitted", probe, classesCore), omittedClass = classes.Property("InputClass", "ClassProperty", omitted, classesCore, 1u, classesClass, 0x80u, importedActor);
     classes.FunctionCode(omitted, Return(Native(278u, {Ref(0x00u, omittedClass), Token(0x0bu), Token(0x0bu), Token(0x0bu), Token(0x0bu)})));
     const auto makeFail = classes.Function("MakeThenFail", probe, classesCore), failureClass = classes.Property("InputClass", "ClassProperty", makeFail, classesCore, 1u, classesClass, 0x80u, importedActor);
@@ -718,7 +768,8 @@ Tables Build(Fixture& fixture, unsigned worldModel = 0u) {
     Bytes defaults; classes.IntTag(defaults, "Counter", 10); for (std::uint8_t i = 0u; i < 3u; ++i) classes.IntTag(defaults, "Slots", 3 + 2 * i, i);
     Bytes recordDefault; U32(recordDefault, 7u); Index(recordDefault, 0); classes.Tag(defaults, "Payload", 10u, recordDefault, 0u, "Record"); classes.ClassBody(probe, defaults);
     Bytes overrides; classes.IntTag(overrides, "Counter", 20); classes.ClassBody(leaf, overrides); classes.ClassBody(abstract, {}, 1u);
-    for (auto cls : {fail, nested, recursive, selfDelete, captureOwner}) classes.ClassBody(cls);
+    for (auto cls : {fail, nested, recursive, selfDelete, captureOwner, tagNotify}) classes.ClassBody(cls);
+    Bytes authoredTag; classes.NameTag(authoredTag, "Tag", "AuthoredTag"); classes.ClassBody(tagMutator, authoredTag);
     Bytes pointDefaults; classes.FloatTag(pointDefaults, "CollisionRadius", 0.0f); classes.FloatTag(pointDefaults, "CollisionHeight", 0.0f);
     classes.BoolTag(pointDefaults, "bCollideWorld", true); classes.BoolTag(pointDefaults, "bCollideActors", false); classes.ClassBody(pointBase, pointDefaults);
     classes.ClassBody(support);
@@ -910,7 +961,7 @@ void ArgumentTests(Fixture& fixture) {
     Require(GetPortableRuntimeWorldRevision() > revision && Published(first), "Successful Spawn was not committed/world-published");
     Same(Read(first, "Location"), Read("Driver", "Location"), "Omitted Spawn Location did not use spawner"); Same(Read(first, "OldLocation"), Read("Driver", "Location"), "Spawn OldLocation not initialized to spawn location");
     Same(Read(first, "Rotation"), Read("Driver", "Rotation"), "Omitted Spawn Rotation did not use spawner");
-    Same(Read(first, "Owner"), Object("").value, "Omitted SpawnOwner did not mean None"); Same(Read(first, "Tag"), Name("Leaf").value, "Omitted SpawnTag did not use prospective class leaf");
+    Same(Read(first, "Owner"), Object("").value, "Omitted SpawnOwner did not mean None"); Same(Read(first, "Tag"), Name("None").value, "Omitted SpawnTag did not overwrite native Class.Name after return");
     Same(Read(first, "Level"), Object("Level0").value, "Spawn did not bind actual LevelInfo"); Same(Read(first, "XLevel"), Object("MyLevel").value, "Spawn did not bind actual ULevel");
     Same(Read(first, "Instigator"), Object("Pawn0").value, "Spawn did not copy spawner Instigator"); Same(Read(first, "bTicked"), Value::Bool(true), "Spawn did not copy bTicked");
     Same(Read(first, "Brush"), Object("").value, "Spawn did not clear Brush"); Same(Read(first, "Class"), Class("Leaf").value, "Spawn UObject.Class not initialized");
@@ -923,10 +974,77 @@ void ArgumentTests(Fixture& fixture) {
     const auto owned = Spawn("MakeOwned", {Class("Leaf"), Object("Owner")}); Same(Read(owned, "Owner"), Object("Owner").value, "SpawnOwner was ignored"); Require(Integer("Owner", "ChildEvents") == 1, "Owner did not receive synchronous GainedChild from birth");
     const auto at = Spawn("MakeAt", {Class("Leaf"), Object("Owner"), Name("CustomTag"), Vector({2.0f, 4.0f, 8.0f}), Rotation({-17, 32000, 255})});
     Same(Read(at, "Tag"), Name("CustomTag").value, "Explicit SpawnTag was not retained"); Same(Read(at, "Location"), Vector({2.0f, 4.0f, 8.0f}).value, "Explicit SpawnLocation was not retained"); Same(Read(at, "Rotation"), Rotation({-17, 32000, 255}).value, "Explicit SpawnRotation was not retained");
-    const auto noneTag = Spawn("MakeAt", {Class("Leaf"), Object(""), Name("None"), Vector({0.0f, 0.0f, 0.0f}), Rotation({0, 0, 0})}); Same(Read(noneTag, "Tag"), Name("Leaf").value, "Explicit None SpawnTag did not fall back to class leaf");
+    const auto noneTag = Spawn("MakeAt", {Class("Leaf"), Object(""), Name("None"), Vector({0.0f, 0.0f, 0.0f}), Rotation({0, 0, 0})}); Same(Read(noneTag, "Tag"), Name("None").value, "Explicit None SpawnTag was replaced by native Class.Name");
     Same(Read(noneTag, "Location"), Vector({0.0f, 0.0f, 0.0f}).value, "Explicit zero location was incorrectly treated as omitted");
     RefusedCall(fixture, "MakeAt", {Class("Leaf"), Object("Owner"), Name("BadLocation"), Vector({std::numeric_limits<float>::quiet_NaN(), 0.0f, 0.0f}), Rotation({0, 0, 0})});
     fixture.Reset(); const auto resetBirth = Spawn(); Require(resetBirth == first, "Legacy reset did not restore deterministic name allocation/collision skipping"); fixture.Reset();
+}
+void SpawnTagTests(Fixture& fixture) {
+    const auto callbackTags = [&](const std::string& actor, const std::string& cls) {
+        for (const auto* event : {"Spawned", "PreBeginPlay", "BeginPlay", "PostBeginPlay", "SetInitialState", "PostPostBeginPlay"})
+            Same(Read(actor, std::string("Observed") + event + "Tag"), Name(cls).value,
+                std::string(event) + " saw script SpawnTag instead of native Class.Name");
+    };
+    for (const auto& tag : {"CustomTag", "None", ""}) {
+        const auto actor = Spawn("MakeAt", {Class("TagMutator"), Object(""), Name(tag),
+            Vector({2.0f, 4.0f, 8.0f}), Rotation({0, 0, 0})});
+        callbackTags(actor, "TagMutator");
+        Same(Read(actor, "Tag"), Name(tag).value, "execSpawn failed to overwrite a callback-written Tag after native return");
+    }
+    const auto omitted = Spawn("MakeOmitted", {Class("TagMutator")});
+    callbackTags(omitted, "TagMutator");
+    Same(Read(omitted, "Tag"), Name("None").value, "Omitted SpawnTag token retained a callback-written Tag");
+    const auto canonical = fixture.Snapshot("ScriptSpawnTagCanonical"); fixture.Reset();
+    Require(LoadPortableRuntimeState((fixture.directory / "ScriptSpawnTagCanonical.sav").string()) &&
+        fixture.Snapshot("ScriptSpawnTagRestored") == canonical, "Post-wrapper SpawnTag did not survive cold canonical restore");
+    RefusedCall(fixture, "MakeTaggedThenFail", {Name("RollbackTag")}); fixture.Reset();
+
+    // The third argument aliases Driver.Tag. SetOwner runs GainedChild, which
+    // changes that property; the wrapper must use its detached entry capture.
+    const auto capture = Spawn("Make", {Class("CaptureOwner")});
+    Call(capture, "StoreReference", {Object("Driver")});
+    const auto captured = Spawn("MakeReferenceTag", {Object(capture)});
+    Same(Read("Driver", "Tag"), Name("CallbackChangedInput").value, "Tag alias regression did not execute owner mutation");
+    Same(Read(capture, "ObservedChildTag"), Name("Leaf").value, "GainedChild did not see pre-wrapper native Class.Name");
+    callbackTags(captured, "Leaf");
+    Same(Read(captured, "Tag"), Name("CapturedInput").value, "execSpawn reloaded SpawnTag alias after callbacks");
+    fixture.Reset();
+
+    // Original execSpawn copies SpawnTag when its expression is evaluated,
+    // before the later optional Location expression calls another function.
+    const auto earlier = Spawn("MakeLaterArgumentTag", {});
+    Same(Read("Driver", "Tag"), Name("LaterArgumentChangedTag").value, "Later native argument did not mutate the aliased Tag");
+    Same(Read(earlier, "Tag"), Name("EarlierArgumentTag").value, "Spawn captured Tag only after a later argument mutated its source");
+    callbackTags(earlier, "Leaf"); fixture.Reset();
+
+    // SpawnNotify replaces the native return. Only the replacement receives
+    // execSpawn's script Tag; the actual birth retains its native Class.Name.
+    const auto replacement = Spawn("Make", {Class("Engine.GameInfo")});
+    const auto notify = Spawn("Make", {Class("TagNotify")});
+    Call(notify, "ConfigureNotify", {Object(replacement)});
+    Call("Driver", "SetSpawnNotify", {Object(notify)});
+    for (const auto& tag : {"ReplacementTag", "None"}) {
+        const auto returned = Spawn("MakeAt", {Class("Leaf"), Object(""), Name(tag),
+            Vector({2.0f, 4.0f, 8.0f}), Rotation({0, 0, 0})});
+        Same(Object(returned).value, Object(replacement).value, "SpawnNotify did not replace native Spawn return");
+        Same(Read(notify, "ObservedNativeTag"), Name("Leaf").value, "SpawnNotification observed script Tag before native return");
+        const auto born = Read(notify, "ObservedSpawned").text;
+        Require(!born.empty() && born != replacement && Published(born), "SpawnNotify lost the actual retained birth");
+        callbackTags(born, "Leaf");
+        Same(Read(born, "Tag"), Name("Leaf").value, "execSpawn wrote Tag on original birth instead of returned replacement");
+        Same(Read(replacement, "Tag"), Name(tag).value, "SpawnNotify replacement missed post-return SpawnTag write");
+    }
+    RefusedCall(fixture, "MakeTaggedThenFail", {Name("RolledBackReplacementTag")});
+    Same(Read(replacement, "Tag"), Name("None").value, "Failed outer transaction retained replacement Tag write");
+    Call(notify, "ConfigureNotify", {Object("")});
+    Same(Call("Driver", "Make", {Class("Leaf")}).value, Object("").value, "Null SpawnNotify replacement did not return None");
+    const auto nullBorn = Read(notify, "ObservedSpawned").text;
+    Require(!nullBorn.empty() && Published(nullBorn), "Null replacement destroyed its actual native birth");
+    Same(Read(nullBorn, "Tag"), Name("Leaf").value, "Null replacement incorrectly applied script Tag to original birth");
+    const auto replaced = fixture.Snapshot("SpawnTagReplacementCanonical"); fixture.Reset();
+    Require(LoadPortableRuntimeState((fixture.directory / "SpawnTagReplacementCanonical.sav").string()) &&
+        fixture.Snapshot("SpawnTagReplacementRestored") == replaced, "SpawnNotify replacement/actual birth tags failed canonical restore");
+    fixture.Reset();
 }
 void DefaultsTests(Fixture& fixture) {
     const auto old = Spawn(); Require(Integer(old, "Counter") == 20, "Spawn did not freeze concrete inherited leaf CDO");
@@ -963,6 +1081,7 @@ void CallbackTests(Fixture& fixture) {
     saved = Decode(fixture.Snapshot("SelfDeletedBirth")); const auto self = std::find_if(saved.births.begin(), saved.births.end(), [](const auto& birth) { return birth.classPath == "SpawnClasses.SelfDelete"; });
     Require(self != saved.births.end() && !Published(self->path) && ActorPaths(true).size() == beforeDeleteBirth, "Self-deleted Spawn was forgotten or remained world published");
     Require(Integer(self->path, "Trace") == 123 && QuestVr::Vm::ToBool(Read(self->path, "bDeleteMe")), "Self-deleted birth lost exact completed callback phase or UObject lifetime");
+    Same(Read(self->path, "Tag"), Name("SelfDelete").value, "Null self-deleted Spawn return received the script wrapper's omitted Tag");
     Same(Call(self->path, "ReadCounter").value, Value::Integer(10), "Direct function on removed spawned UObject was refused");
     fixture.Reset(); Call("Driver", "SetBegun", {{Value::Bool(false), {}}}); const auto dormant = Spawn(); Require(Integer(dormant, "Trace") == 0, "Before-begun Spawn ran BeginPlay callbacks");
     auto dormantState = Decode(fixture.Snapshot("BeforeBegunInitialized")); InitializedFrame(dormantState, dormant, "SpawnClasses.Leaf");
@@ -1865,7 +1984,7 @@ void Synthetic() {
     const auto nestedPath=ExecutePortableActorFunction(Path("Driver"),"LoadedObjectPath");
     Require(nestedPath.passed() && nestedPath.value.kind==Kind::String && nestedPath.value.text=="Engine.Actor.Level" &&
         fixture.Snapshot("ReadonlyObjectString")==fixture.legacy,"ObjectToString lost a loaded property's complete nested path or changed state");
-    ArgumentTests(fixture); DefaultsTests(fixture); CallbackTests(fixture); OrderingTests(fixture); PersistenceTests(fixture);
+    ArgumentTests(fixture); SpawnTagTests(fixture); DefaultsTests(fixture); CallbackTests(fixture); OrderingTests(fixture); PersistenceTests(fixture);
     CollisionIntegrationTests(fixture); AliasAndBoundaryGcTests(fixture); GetPlayerPawnTests(fixture); PawnListTests(fixture); AllActorsTests(fixture); AiIntegrationTests(fixture); fixture.UnchangedSources();
     Require(InitializePortableRuntime({tables.core, tables.engine, tables.classes}).passed && LoadPortableRuntimeMap(tables.map).passed && fixture.Snapshot("Reinitialized") == fixture.legacy, "Runtime reinitialization retained born objects/frozen defaults"); fixture.UnchangedSources();
 }

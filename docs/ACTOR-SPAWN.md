@@ -13,13 +13,20 @@ Spawn requires an actual loaded, nonabstract script Actor UClass. None and an
 abstract class return a null Object without allocating. Invalid class identities
 fail the caller's transaction; an Actor instance is not accepted as a UClass.
 Arguments are loaded from VM references, including local parameters. Omitted
-Location/Rotation retain the spawner's values; Owner defaults to None and a None
-Tag currently uses the concrete class's name in the general portable adapter.
-This is a known wrapper mismatch: original native SpawnActor writes Class.Name
-before callbacks, but original execSpawn writes the script SpawnTag, including
-omitted/explicit None, after return. The direct-world diagnostic mode uses
-native Class.Name without that wrapper and does not establish general Spawn
-tag fidelity. See [WORLD-NATIVE-STARTUP.md](WORLD-NATIVE-STARTUP.md).
+Location/Rotation retain the spawner's values; Owner defaults to None. Original
+native SpawnActor writes Class.Name as Tag before all callbacks, even when the
+script requested a different Tag. The VM detaches each ordinary input before
+evaluating the next argument; the execSpawn wrapper retains those captures
+through callbacks and writes the captured SpawnTag, including omitted
+or explicit None, only after native return. If SpawnNotify returns a replacement,
+that replacement receives the script Tag; the original birth keeps its native
+or callback-written Tag. Both writes participate in the caller's rollback and
+checkpoint state. Direct-world GameInfo births bypass the script wrapper and
+retain native Class.Name. Generated controls distinguish every callback's Tag,
+callback-mutated and later-argument-mutated aliases, notification replacement
+and cold restore. Original WeaponPistol controls also verify omitted/custom
+tags and exact cold-save restoration.
+See [WORLD-NATIVE-STARTUP.md](WORLD-NATIVE-STARTUP.md).
 
 Placement uses the prospective class-default collision radius/height and
 bCollideWorld/bCollideWhenPlacing. The bounded world-only CheckLocation port

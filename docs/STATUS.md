@@ -1,5 +1,48 @@
 # Port status
 
+## Spawn tag fidelity and original shadow prerequisites (2026-10-11)
+
+- Corrected the script/native Spawn boundary: native Class.Name is visible in
+  every birth callback; captured optional SpawnTag, including None, is applied
+  only after return and to a notification replacement when present. Native278
+  copies ordinary inputs as each argument evaluates, before later expressions
+  or owner/notification callbacks can mutate their source. Direct world
+  GameInfo births retain native Class.Name. Generated and actual original
+  WeaponPistol controls cover tags, exact rollback and cold-save restoration.
+- Added a bounded, iterative original BSP point-trace prerequisite, audited
+  against the original GOTY UModel recursion and wrapper: flags6/null-owner/
+  zero-extent only, native LastNode/first-solid-leaf ordering, double threshold
+  precedence, float store boundaries and half-unit backoff. Its owned Training
+  ray finds node1848/surface1837; actual near-floor clamping and a raised ray
+  pass without changing the runtime/save graph. This is not Actor.Trace,
+  native AttachDecal or rendered shadows. See
+  [MODEL-POINT-TRACE.md](MODEL-POINT-TRACE.md).
+- The new original-binary [decal audit](DECAL-NATIVE-CONTRACT.md) establishes
+  primary projection, ordered surface-owned records, duplicate SurfList,
+  detach/GC, rendering and nonserialized native geometry. Multidecal, movers,
+  viewport binding and restore policy still require implementation. The real
+  rollback-only Training startup probe retains its exact unsupported
+  Engine.Decal.AttachDecal first failure; there is no fake false/success bypass
+  or accepted partial startup. Full original player possession/Tick and the
+  campaign remain unfinished.
+- All 52 ordinary host tests pass (56 registered; four owned-data skips), and
+  all four optional original-data suites pass separately: original defaults
+  1,002, PawnList 67, runtime save/restore and full actor controls across
+  Training/UNATCOIsland/Intro. Point trace passes 943 checks/50 expected
+  refusals; Spawn/world passes 5,598/116. The later-argument Tag alias bug was
+  reproduced failing before its fix. Final CTest takes 7.04 seconds;
+  auto-install controls pass 21/0 without hardware.
+- The signed APK was automatically replace-installed on connected Quest 3,
+  preserving saves/data; installed/archived hashes match and one waited launch
+  confirms the app. The runtime worker changed; the accepted Quest renderer
+  library, hand/body geometry and control/recenter mapping are byte-identical.
+  Fresh eye captures show Training and original-style inventory; head/grips
+  are tracked at 1.650m eye height. Overlapping hands in an uncontrolled pose
+  are not renewed alignment acceptance. Inventory toggling was diagnostic,
+  not physical-input testing. Uncaptured samples reach 72fps; screenshot
+  stalls remain. Exact APK/deployment evidence is in
+  [QUEST-TEST-BUILD.md](QUEST-TEST-BUILD.md).
+
 ## Transactional original-world startup and BSP regions (2026-10-11)
 
 - Added one shared-budget VM transaction for a sequence of actual declarations

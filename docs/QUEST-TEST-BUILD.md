@@ -1,6 +1,57 @@
 # Current Quest test-build handoff (2026-10-11)
 
-## Latest backend development APK
+## Latest: Spawn tag fidelity and shadow prerequisites
+
+`artifacts/decal-prerequisites-20261011/DeusExQuestVR-decal-prerequisites-20261011.apk`
+is the newest signed ARM64 build: 18,919,145 bytes, SHA256
+`F0E78EA681C70E0DF509375D0DC2B746CCCBAE7C337A01295A508604887EF70B`.
+The default build helper automatically replace-installed it on connected Quest 3
+`2G0YC5ZG620985`, without clearing app data/saves. On-device `base.apk` SHA256
+matches; device lastUpdateTime is `2026-10-11 21:32:51`. One waited launch
+confirmed process28821. APK signature v2 passes; its 16 ZIP entries contain SDK
+assets/libraries and no original commercial packages.
+
+The shared runtime worker now writes native Class.Name before Spawn callbacks,
+then captured optional SpawnTag after native return, including None and
+notification replacements. VM inputs are captured before later argument
+expressions can mutate their sources. The updated data-probe library is
+5,834,328 bytes, SHA256
+`BEC3A9C6793F1D7CE66410B869BFE3F1E6203ED9D6290395D016F07C17E775EE`.
+The Quest renderer library is byte-identical to the prior build: 5,360,240 bytes,
+SHA256 `7461DF739F8E661097B675A024C8EF6DE9B54EB6DB2E3059104D864D270A331C`.
+Accepted hand/body geometry, controller mapping and recentering are unchanged.
+
+New host-tested original BSP point-trace code and its static original-decal
+audit are prerequisites, not enabled NPC shadows. Native AttachDecal remains
+explicitly unsupported; the rollback-only original Training startup probe still
+reports the same actual PreBeginPlay slot756/JaimeReyes0 first failure and exact
+save/actor/revision/GC rollback. See [MODEL-POINT-TRACE.md](MODEL-POINT-TRACE.md)
+and [DECAL-NATIVE-CONTRACT.md](DECAL-NATIVE-CONTRACT.md). No original world/player
+startup, possession or Tick is accepted by this batch.
+
+Fresh installed-build captures are `quest-final-frame.bmp` and
+`quest-final-inventory.bmp` under `artifacts/decal-prerequisites-20261011/`.
+They show textured Training, differentiated lighting, readable debug HUD and
+Persona inventory artwork/text. Both grips and head pose are reported tracked;
+actual eye height is 1.650m, with four body surfaces submitted. The tilted
+forward/upward pose has overlapping hands near the face; there was no controlled
+physical grip/leg test or new user alignment acceptance. The inventory was
+opened/closed by the diagnostic bridge and left closed, not physically tested.
+Uncaptured samples reach 72fps; captures still cause 291.64ms worst-frame stalls.
+These are smoke captures, not full visual or performance acceptance.
+
+Ordinary CTest: 52 passed, zero failures, four owned-data skips (56 registered).
+Point-trace controls pass 943/50 expected refusals, including all 256 flag bytes,
+threshold neighbors, ordered first-node hits, native float boundaries, graph
+validation/budgets and an 8,192-node iterative chain. Spawn/world controls
+pass 5,598/116. The later-argument Tag alias control was first reproduced failing
+before Native278 input snapshotting, then passed with the same control. Original
+Training rays verify node1848/surface1837, near-floor clamping and a raised
+half-unit backoff without modifying runtime/save state. Auto-install controls
+pass 21 without hardware; the real connected-headset installation is separately
+verified above. Remaining original-data suite results are recorded in STATUS.
+
+## Previous backend development APK
 
 `artifacts/world-startup-probe-20261011/DeusExQuestVR-world-startup-probe-final-20261011.apk`
 is the newest signed ARM64 build: 18,919,145 bytes, SHA256

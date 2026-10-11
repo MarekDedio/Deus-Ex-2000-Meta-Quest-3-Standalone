@@ -4,6 +4,7 @@
 #include "portable_model_geometry.h"
 #include "quest_actor_geometry.h"
 #include "quest_mesh_animation.h"
+#include "quest_model_point_trace.h"
 #include "quest_save_bundle.h"
 #include "quest_script_state.h"
 #include "quest_script_random.h"
@@ -15,6 +16,7 @@
 #include <filesystem>
 #include <fstream>
 #include <functional>
+#include <iomanip>
 #include <iostream>
 #include <limits>
 #include <map>
@@ -937,7 +939,7 @@ void VerifyOriginalDormantSpawn(const std::filesystem::path& root,const std::str
     equalProperty("Owner",Value::Text(Kind::Object,actor));
     equalProperty("Level",level);equalProperty("XLevel",xLevel);
     equalProperty("Outer",Value::Text(Kind::Object,expectedOuter));
-    equalProperty("Tag",Value::Text(Kind::Name,"WeaponPistol"));
+    equalProperty("Tag",Value::Text(Kind::Name,"None"));
     equalProperty("bTicked",ReadPortableActorScriptProperty(actor,"bTicked"));
     equalProperty("Instigator",ReadPortableActorScriptProperty(actor,"Instigator"));
     equalProperty("Brush",Value::Text(Kind::Object,{}));
@@ -1002,6 +1004,7 @@ void VerifyOriginalDormantSpawn(const std::filesystem::path& root,const std::str
     Require(ValidatePortableRuntimeState(saved.string(),mapName) && LoadPortableRuntimeState(saved.string()) &&
         SavePortableRuntimeState(inspect.string()) && CheckpointBytes(inspect)==bytes && Snapshot(born).meshPath==spawned.meshPath,
         "Original unknown birth could not cold-restore exact native bindings/defaults/mesh/owner graph");
+    equalProperty("Tag",Value::Text(Kind::Name,"None"));
     const auto stableGc=GC::GetStats();
     for(unsigned iteration=0u;iteration<3u;++iteration) {
         Require(LoadPortableRuntimeState(saved.string()),"Original v8 birth replacement failed");
@@ -1009,11 +1012,24 @@ void VerifyOriginalDormantSpawn(const std::filesystem::path& root,const std::str
         Require(currentGc.numObjects==stableGc.numObjects && currentGc.memoryUsage==stableGc.memoryUsage,
             "Repeated original v8 birth replacement retained unrooted retired allocations");
     }
+    const auto tagged=Call(actor,"Engine.Actor.Spawn",{
+        {Value::Text(Kind::Object,weaponClass),{}},{Value::Text(Kind::Object,actor),{}},Name("OriginalCustomSpawnTag")}).value;
+    Require(tagged.kind==Kind::Object && !tagged.text.empty() && tagged.text!=born &&
+        QuestVr::Vm::Equal(ReadPortableActorScriptProperty(tagged.text,"Tag"),Name("OriginalCustomSpawnTag").value),
+        "Actual original execSpawn did not publish its explicit post-return Tag");
+    const auto taggedSave=directory/"original-tagged-birth.sav";
+    Require(SavePortableRuntimeState(taggedSave.string()),"Actual original tagged Spawn could not save");
+    const auto taggedBytes=CheckpointBytes(taggedSave);
+    Require(LoadPortableRuntimeState(legacy.string()) && LoadPortableRuntimeState(taggedSave.string()) &&
+        QuestVr::Vm::Equal(ReadPortableActorScriptProperty(tagged.text,"Tag"),Name("OriginalCustomSpawnTag").value) &&
+        QuestVr::Vm::Equal(ReadPortableActorScriptProperty(born,"Tag"),Name("None").value) &&
+        SavePortableRuntimeState(inspect.string()) && CheckpointBytes(inspect)==taggedBytes,
+        "Actual original custom/omitted SpawnTag did not survive a cold exact graph restore");
     Require(LoadPortableRuntimeState(legacy.string()) && !GetPortableRuntimeScriptStatePresent() &&
         SavePortableRuntimeState(inspect.string()) && CheckpointBytes(inspect)==originalBytes,
         "Original dormant Spawn control did not completely restore authored legacy state");
     std::cout<<"ORIGINAL DORMANT SPAWN "<<born<<" original WeaponPistol CDO/mesh/materials/owner/native Level/XLevel, "<<
-        "codec9/v12 class-backed InitExecution, cold replacement/GC/legacy reset; actual Level before-begun, no campaign startup claim\n";
+        "codec9/v12 class-backed InitExecution, original omitted/custom post-return SpawnTag, cold replacement/GC/legacy reset; actual Level before-begun, no campaign startup claim\n";
 }
 
 void VerifyOriginalActorLookup(const std::filesystem::path& root,const std::string& actor,
@@ -2812,6 +2828,61 @@ void VerifyOriginalInitGame(const std::filesystem::path& root,
     std::cout<<"ORIGINAL InitGame inherited by actual DeusExGameInfo: options/logging/base Mutator/OUT/rollback/warm+cold save; not automatic world startup\n";
 }
 
+void VerifyOriginalModelPointTrace(const std::filesystem::path& root,
+    const std::filesystem::path& legacy,const std::filesystem::path& directory) {
+    const auto original=CheckpointBytes(legacy);
+    const auto revision=GetPortableRuntimeWorldRevision(); const auto gc=GC::GetStats();
+    const auto actorCount=GetPortableRuntimeMapActors(true).size();
+    const auto model=LoadPortableRootModel68(LoadPortablePackageTables((root/"Maps"/"00_Training.dx").string()));
+    const auto location=ReadPortableActorScriptProperty("00_Training.JaimeReyes0","Location");
+    const auto height=QuestVr::Vm::ToFloat(ReadPortableActorScriptProperty("00_Training.JaimeReyes0","CollisionHeight"));
+    Require(location.kind==Kind::Vector && std::isfinite(height) && height>0.0f,
+        "Original shadow trace lacks an authored pawn location/collision height");
+    // ScriptedPawn.CreateShadow places the birth at Location-CollisionHeight,
+    // with Pitch16384; Decal.BeginPlay requests a100-unit -RotationXAxis ray.
+    const PortableModelVec3 start{location.vector[0],location.vector[1],location.vector[2]-height};
+    const PortableModelVec3 end{start.x,start.y,start.z-100.0f};
+    const auto hit=QuestVr::TraceOriginalModelPoint(model,start,end);
+    Require(!hit.clear && hit.node>=0 && static_cast<std::size_t>(hit.node)<model.nodes.size() &&
+        hit.time>=0.0f && hit.time<=1.0f,"Original Jaime shadow ray did not find a finite blocking BSP node");
+    const auto& node=model.nodes.at(static_cast<std::size_t>(hit.node));
+    Require(node.surface>=0 && static_cast<std::size_t>(node.surface)<model.surfaces.size() && node.vertexCount>0u &&
+        node.planeZ>0.0f && hit.normal.z>0.0f,"Original shadow ray returned an invalid/nonfloor BSP node");
+    const auto& surface=model.surfaces.at(static_cast<std::size_t>(node.surface));
+    const auto base=model.points.at(static_cast<std::size_t>(surface.basePoint));
+    const auto normal=model.vectors.at(static_cast<std::size_t>(surface.normalVector));
+    Require(normal.z>0.0f,"Original shadow hit surface does not face the pawn");
+    const double exactZ=(node.planeW-static_cast<double>(start.x)*node.planeX-
+        static_cast<double>(start.y)*node.planeY)/node.planeZ;
+    std::cout<<std::setprecision(10)<<"ORIGINAL SHADOW RAY start="<<start.x<<','<<start.y<<','<<start.z<<
+        " node="<<hit.node<<" surface="<<node.surface<<" hit="<<hit.location.z<<" planeZ="<<exactZ<<
+        " normal="<<normal.x<<','<<normal.y<<','<<normal.z<<" base="<<base.x<<','<<base.y<<','<<base.z<<'\n';
+    Require(start.z-exactZ>=0.0 && start.z-exactZ<0.5 && hit.time==0.0f &&
+        hit.location.x==start.x && hit.location.y==start.y && hit.location.z==start.z &&
+        std::abs((static_cast<double>(start.x)-base.x)*normal.x+
+            (static_cast<double>(start.y)-base.y)*normal.y+(exactZ-base.z)*normal.z)<0.001,
+        "Original near-floor shadow ray did not clamp its half-unit backoff to the input start");
+    // The actual feet are only0.099815 UE units above this floor, so the native
+    // half-unit backoff clamps Time to0. Raise only the diagnostic start by2UE
+    // units to exercise the unclamped wrapper without moving the actual actor.
+    const PortableModelVec3 raised{start.x,start.y,start.z+2.0f};
+    const auto backed=QuestVr::TraceOriginalModelPoint(model,raised,{raised.x,raised.y,raised.z-100.0f});
+    Require(!backed.clear && backed.node==hit.node && backed.time>0.0f &&
+        std::abs(backed.location.z-(exactZ+0.5))<0.0001 && backed.normal.z>0.0f,
+        "Raised original shadow diagnostic ray lost its actual node or half-unit backoff");
+    const auto repeat=QuestVr::TraceOriginalModelPoint(model,start,end);
+    Require(repeat.node==hit.node && repeat.time==hit.time && repeat.location.z==hit.location.z &&
+        repeat.stats.querySteps==hit.stats.querySteps,"Original BSP point query is not repeatable");
+    const auto inspect=directory/"readonly-original-model-trace.sav";
+    Require(SavePortableRuntimeState(inspect.string()) && CheckpointBytes(inspect)==original &&
+        GetPortableRuntimeWorldRevision()==revision && GetPortableRuntimeMapActors(true).size()==actorCount &&
+        GC::GetStats().numObjects==gc.numObjects && GC::GetStats().memoryUsage==gc.memoryUsage,
+        "Read-only original BSP trace changed map/runtime/save/GC state");
+    std::cout<<"ORIGINAL MODEL POINT TRACE Jaime shadow ray node="<<hit.node<<" surface="<<node.surface<<
+        " time="<<hit.time<<" validation="<<hit.stats.validationSteps<<" visits="<<hit.stats.nodeVisits<<
+        "; exact surface-plane/0.5UE backoff/read-only repeatability; NOT AttachDecal or rendered shadow completion\n";
+}
+
 void VerifyOriginalWorldStartupProbe(const std::filesystem::path& legacy,
     const std::filesystem::path& directory) {
     const auto baseline = CheckpointBytes(legacy);
@@ -2922,9 +2993,15 @@ void TestOriginal(const std::filesystem::path& root, const bool inventoryOnly = 
         const auto checkpointBytes = std::filesystem::file_size(checkpoint);
         Require(Word(CheckpointBytes(checkpoint),4)==3u,"Untouched runtime unexpectedly changed legacy v3 save format");
         const auto actors = GetPortableRuntimeMapActors();
-        if (worldStartupOnly) { VerifyOriginalWorldStartupProbe(checkpoint, temporary.directory); UnloadPortableRuntimeMap(); return; }
+        if (worldStartupOnly) {
+            VerifyOriginalModelPointTrace(root,checkpoint,temporary.directory);
+            VerifyOriginalWorldStartupProbe(checkpoint,temporary.directory); UnloadPortableRuntimeMap(); return;
+        }
         if (startupOnly) { VerifyOriginalInitGame(root,checkpoint,temporary.directory); UnloadPortableRuntimeMap(); return; }
-        if (std::string(map) == "00_Training") VerifyColdOriginalAnimationAssets(root, checkpoint, temporary.directory);
+        if (std::string(map) == "00_Training") {
+            VerifyOriginalModelPointTrace(root,checkpoint,temporary.directory);
+            VerifyColdOriginalAnimationAssets(root, checkpoint, temporary.directory);
+        }
         if (std::string(map)=="00_Training") VerifyOriginalInitGame(root,checkpoint,temporary.directory);
         if (std::string(map) == "00_Training") VerifyOriginalRandom("00_Training.Doctor1",checkpoint,temporary.directory);
         if (std::string(map) == "00_Training") VerifyOriginalSleep(root,tables,"00_Training.Doctor1",checkpoint,temporary.directory);
