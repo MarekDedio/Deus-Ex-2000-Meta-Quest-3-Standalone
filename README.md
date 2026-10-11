@@ -62,6 +62,10 @@ The [original state-dispatch correction](docs/ORIGINAL-STATE-DISPATCH.md) now
 uses actual Children/Next Auto order and explicit selected-state SuperField
 callback ancestry. Full state identity/control and campaign bootstrap remain
 unfinished; the accepted hand-direction test APK is kept installed.
+The [independent actor-state model](docs/STATE-CONTROL-MODEL.md) adds exact
+selected/running identities, nullable Code, live masks and codec9/envelope12.
+Original transition authoring and map-wide startup remain the next integration
+steps; legacy frames are not silently upgraded.
 The [installed Quest test build](docs/QUEST-TEST-BUILD.md) remains frozen while
 the user tests it. Subsequent offline source work retains
 [authored state metadata](docs/AUTHORED-STATE-FOUNDATION.md); it does not enable

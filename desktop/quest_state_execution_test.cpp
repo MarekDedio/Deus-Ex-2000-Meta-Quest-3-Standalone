@@ -17,6 +17,7 @@
 namespace {
 namespace Vm = QuestVr::Vm;
 using QuestVr::StateFrame;
+using QuestVr::StateControl;
 using QuestVr::StateLatent;
 using QuestVr::StateObject;
 using Vm::Value;
@@ -99,6 +100,7 @@ struct Host final : Vm::Host {
     std::map<std::string,std::int32_t> physics, savedPhysics;
     std::vector<std::string> trace;
     bool active{}, begun{true}, deleted{}, savedDeleted{}, badPreparedIdentity{}, pollEligible{true};
+    std::string pollSelectedPath;
     std::size_t polls{};
     std::size_t begins{}, commits{}, rollbacks{}, preparations{}, mutableReads{}, effects{}, savedEffects{};
     std::size_t stateReads{};
@@ -167,11 +169,16 @@ struct Host final : Vm::Host {
         if (!active) throw std::runtime_error("state mutation outside transaction");
         ++mutableReads; return &states.at(self);
     }
+    bool IsStateDeleted(const std::string&) override { return deleted; }
     bool PollState(const std::string& self, float elapsed, Vm::Execution& execution) override {
         ++polls;
         const auto found = states.find(self);
         if (!pollEligible || deleted || found == states.end() || !found->second.frame || found->second.frame->codePath.empty()) return false;
         auto& frame = *found->second.frame;
+        if (frame.control) {
+            if (!frame.control->codePresent) return false;
+            if (!pollSelectedPath.empty()) frame.control->selectedPath = pollSelectedPath;
+        }
         if (frame.latent == StateLatent::Sleep) {
             // Independent original x87 oracle: comparison uses the unrounded
             // difference, although the actor stores a binary32 remainder.
@@ -320,8 +327,25 @@ struct Host final : Vm::Host {
             return {args.at(2).Load(),{}};
         }
         if (index == 815) {
-            MutableState(self)->frame->latent = StateLatent::Stop;
+            auto& frame = *MutableState(self)->frame;
+            if (frame.control) frame.control->codePresent = false;
+            else frame.latent = StateLatent::Stop;
             return {args.at(0).Load(),{}};
+        }
+        if (index == 830) {
+            auto& control = *MutableState(self)->frame->control;
+            control.selectedPath = control.selectedPath == "State.A" ? "State.B" : "State.A";
+            ++effects; trace.push_back("selected-change"); return {};
+        }
+        if (index == 831) {
+            auto& frame = *MutableState(self)->frame;
+            frame.codePath = frame.codePath == "State.A" ? "State.B" : "State.A";
+            ++effects; trace.push_back("running-change"); return {};
+        }
+        if (index == 832) {
+            auto& selected = MutableState(self)->frame->control->selectedPath;
+            const auto old = selected; selected = "State.CallbackTemporary"; selected = old;
+            ++effects; trace.push_back("selected-round-trip"); return {};
         }
         if (index == 816) {
             GotoStateLabel(self,args.at(0).Load().text,false);
@@ -356,7 +380,114 @@ struct Host final : Vm::Host {
         if (!code.empty()) for (const auto& property : programs.at(code).variables)
             object.frame->locals.push_back({property.key,std::vector<Value>(property.arrayDimension,property.zero)});
     }
+    void InstallModern(const std::string& code, const std::string& selected = "State.A",
+        std::uint32_t pc = 0, StateLatent latent = StateLatent::Continue) {
+        Install(code,pc,latent);
+        states.at("Actor").frame->control = StateControl{selected,true,0xfedcba9876543210ull};
+    }
 };
+
+void ModernNullCodeAndStop() {
+    Host host;
+    const Vm::Property local{"State.A.KeepLocal","KeepLocal",Value::Integer(0),0,1};
+    host.Program("State.A",Join({Native(800),{0x08}}),{local});
+    host.InstallModern("State.A","State.Selected");
+    host.states.at("Actor").frame->locals[0].values[0] = Value::Integer(73);
+    host.timers["Actor"] = -3.25f;
+    const auto result = Vm::ResumeState(host,"Actor");
+    const auto& frame = *host.states.at("Actor").frame;
+    Check(result.passed() && result.committed && result.status == Vm::Status::Stopped && host.effects == 1,
+        "Modern EX_Stop did not commit nullable Code clearing");
+    Check(frame.control && !frame.control->codePresent && frame.control->selectedPath == "State.Selected" &&
+        frame.control->liveProbeMask == 0xfedcba9876543210ull && frame.codePath == "State.A" &&
+        frame.localsCodePath == "State.A" && frame.statementIndex == 2 && frame.latent == StateLatent::Continue &&
+        frame.locals[0].values[0].integer == 73 && host.timers.at("Actor") == -3.25f,
+        "Modern EX_Stop erased a retained node, mask, latent, local or actor timer");
+    const auto mutations = host.mutableReads;
+    const auto dormant = Vm::ResumeState(host,"Actor");
+    Check(dormant.passed() && dormant.status == Vm::Status::Stopped && dormant.instructions == 0 &&
+        host.mutableReads == mutations,"Modern null Code resumed or mutated retained storage");
+    auto& stopped = *host.states.at("Actor").frame;
+    stopped.statementIndex = std::numeric_limits<std::uint32_t>::max();
+    stopped.latent = StateLatent::Sleep;
+    const auto preparations = host.preparations;
+    Check(Vm::ResumeState(host,"Actor").status == Vm::Status::Stopped && host.preparations == preparations &&
+        host.mutableReads == mutations,"Modern dormant Code validated an intentionally retained stale ordinal");
+    const auto polls = host.polls;
+    Check(Vm::AdvanceState(host,"Actor",0.25f).status == Vm::Status::Stopped && host.polls == polls &&
+        host.timers.at("Actor") == -3.25f,"Modern null Code polled or consumed an actor wait");
+
+    host.Program("State.A",Join({Native(800),{0x15}})); host.InstallModern("State.A");
+    const auto oldEffects = host.effects;
+    const auto unsupported = Vm::ResumeState(host,"Actor");
+    Check(unsupported.status == Vm::Status::Unsupported && !unsupported.committed && host.effects == oldEffects &&
+        host.states.at("Actor").frame->control->codePresent && host.states.at("Actor").frame->statementIndex == 0,
+        "Modern opcode 0x15 guessed Stop semantics or failed to roll back"); ++rejections;
+    const auto function = host.Function("Class.UnsupportedStateOpcode",{0x15});
+    Check(Vm::Execute(host,function,"Actor").status == Vm::Status::Unsupported,
+        "Modern ordinary callback accepted unproven opcode 0x15 Stop semantics"); ++rejections;
+    host.InstallModern("State.A","State.A",0,StateLatent::Stop);
+    Check(Vm::ResumeState(host,"Actor").status == Vm::Status::Unsupported,
+        "Modern frame accepted a legacy synthetic Stop latent action"); ++rejections;
+}
+
+void ModernStateSliceBoundaries() {
+    {
+        Host host; const auto change = Native(830);
+        host.Program("State.Loop",Join({change,Jump(0)})); host.InstallModern("State.Loop");
+        const auto result = Vm::ResumeState(host,"Actor");
+        Check(result.passed() && result.committed && result.status == Vm::Status::Returned && host.effects == 5 &&
+            host.states.at("Actor").frame->statementIndex == 1 && host.states.at("Actor").frame->control->codePresent,
+            "Modern state slice did not yield after the fifth observed selected-node change");
+        Check(Vm::ResumeState(host,"Actor").passed() && host.effects == 10,
+            "Modern selected-node throttle did not reset its slice-local counter");
+    }
+    for (const auto native : {831,832}) {
+        Host host; const auto action = Native(native);
+        const auto body = Join({action,Jump(0)});
+        host.Program("State.A",body); host.Program("State.B",body); host.InstallModern("State.A");
+        Vm::Limits limits; limits.instructions = 30;
+        const auto result = Vm::ResumeState(host,"Actor",limits);
+        const auto traceName = native == 831 ? "running-change" : "selected-round-trip";
+        Check(result.status == Vm::Status::Budget && !result.committed &&
+            std::count(host.trace.begin(),host.trace.end(),traceName) > 5 && host.effects == 0 &&
+            host.states.at("Actor").frame->codePath == "State.A" &&
+            host.states.at("Actor").frame->control->selectedPath == "State.A",
+            "Modern throttle counted running-Node changes or callback-internal selected round trips"); ++rejections;
+    }
+    {
+        Host host; host.Program("State.Loop",Join({Native(830),Jump(0)}));
+        host.InstallModern("State.Loop"); host.pollSelectedPath = "State.B";
+        const auto result = Vm::AdvanceState(host,"Actor",0.1f);
+        Check(result.passed() && result.committed && host.effects == 6 && host.polls == 1,
+            "Modern ProcessState captured selected-node identity after its poll instead of before it");
+    }
+    {
+        Host host; host.Program("State.A",Join({Native(821),Native(801),{0x08}})); host.InstallModern("State.A");
+        const auto result = Vm::ResumeState(host,"Actor");
+        // The VM charges both top-level dispatch and native evaluation. No
+        // following statement (including the deliberately failing native) runs.
+        Check(result.passed() && result.committed && host.deleted && result.instructions == 2 &&
+            host.states.at("Actor").frame->statementIndex == 1 && host.states.at("Actor").frame->control->codePresent,
+            "Modern state execution continued after a callback deleted its actor");
+    }
+}
+
+void ModernStateSwitchNullCode() {
+    for (const auto selectorStops : {false,true}) {
+        Host host;
+        const auto program = Choice(selectorStops ? Native(815,{Int(1)}) : Int(1),
+            selectorStops ? Int(1) : Native(815,{Int(1)}),Native(801),Int(2),Native(801),Native(801));
+        host.Program("State.A",program.body); host.InstallModern("State.A","State.Selected");
+        const auto result = Vm::ResumeState(host,"Actor");
+        const auto& frame = *host.states.at("Actor").frame;
+        Check(result.passed() && result.committed && result.status == Vm::Status::Stopped &&
+            frame.control && !frame.control->codePresent && frame.control->selectedPath == "State.Selected" &&
+            frame.control->liveProbeMask == 0xfedcba9876543210ull && frame.codePath == "State.A" &&
+            frame.latent == StateLatent::Continue && host.effects == 0,
+            "Modern Switch evaluated a linked Case or branch after a callback cleared nullable Code");
+    }
+}
 
 void SuccessStopAndReturn() {
     Host host;
@@ -1208,6 +1339,7 @@ void OriginalSleepArithmetic() {
 
 int main() {
     try {
+        ModernNullCodeAndStop(); ModernStateSliceBoundaries(); ModernStateSwitchNullCode();
         SuccessStopAndReturn(); ReentryAndSameState(); InheritedLabelsAndLocals();
         CallbackRollbackAndBudgets(); PreparationAfterArguments(); StateRejectionControls();
         OldStatementControlsNewCode();

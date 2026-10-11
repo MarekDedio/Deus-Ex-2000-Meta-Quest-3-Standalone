@@ -326,15 +326,20 @@ std::optional<PortableObjectStack> ReadPortableActorSerializedStack(
     const std::string& actorPath);
 PortableStateDescriptor ReadPortableRuntimeAuthoredStateDescriptor(
     const std::string& objectPath);
-// Effective authored-dormant or explicit portable state context. Runnable raw
-// HasStack continuations remain unsupported; no automatic callback caller.
+// Detached authored or explicit portable state context. Raw runnable identities
+// can be inspected, but their byte offsets are not executable VM continuations.
+// Inspection does not initialize a frame or call actor lifecycle callbacks.
 struct PortableActorDispatchContext {
     std::string codePath, stateName{"None"};
+    // Detached identities: selected StateNode is not the running Node. Raw
+    // inspection never converts a serialized byte offset into a VM ordinal.
+    std::string selectedPath, runningPath;
+    bool framePresent{}, codePresent{}, exactSelected{};
     std::uint64_t classProbeMask{};
     std::optional<QuestVr::ScriptDispatch::CodeMasks> codeMasks;
     // Positive effective FStateFrame bits, independent of authored masks.
-    // No frame permits every probe. Portable transitioned frames still use
-    // the documented selected-code approximation until StateNode is separate.
+    // No frame permits every probe. Legacy portable overrides explicitly
+    // retain their old approximation; only modern controls have exact identity.
     std::optional<std::uint64_t> liveProbeMask;
     std::set<std::string> disabledNames;
 };

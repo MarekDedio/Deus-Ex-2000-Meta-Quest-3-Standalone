@@ -167,6 +167,9 @@ public:
         throw std::runtime_error("VM native iterator unavailable");
     }
     virtual const QuestVr::StateObject* ReadState(const std::string&) { return nullptr; }
+    // ProcessState rechecks deletion between statements. Role/simulated-state
+    // eligibility belongs to the initial poll boundary, not this live guard.
+    virtual bool IsStateDeleted(const std::string&) { return false; }
     // Storage identity only, not a transition-generation abort guard. Hosts
     // increment this whenever state locals are recreated, including A->B->A.
     virtual std::uint64_t StateLocalRevision(const std::string&) { return 0; }

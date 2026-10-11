@@ -47,18 +47,20 @@ dependencies; original executables were not run for this audit:
 
 Original Core/Engine disassembly distinguishes selected StateNode, running
 Node, nullable Code and a live positive ProbeMask. Dormant package masks and
-frameless probing are now corrected, but transitioned portable frames still
-conflate these identities and retain per-state negative records.
+frameless probing are corrected. The [modern representation](STATE-CONTROL-MODEL.md)
+now separates these identities, persists the live mask and fixes modern Stop,
+queries, eligibility and slice throttling. Production transitions still author
+legacy frames with conflated identities and per-state negative records.
 
 The shared [original dispatch graph](ORIGINAL-STATE-DISPATCH.md) now preserves
 actual Children/Next Auto order and explicit state SuperField callback ancestry.
 Inherited Auto paths are not re-resolved to derived same-name overrides. This
 corrects lookup metadata, not the remaining frame/control integration below.
 
-Before connecting automatic simulation, implement independent identities and
-live-mask persistence, original callback/preemption order, selected-node label
-ancestry, null-Code Stop/miss semantics, selected-state simulated gating and
-the original post-statement transition throttle. Missing behavior must report
+Before connecting automatic simulation, switch production authoring together
+with original callback/preemption order, selected-node label ancestry and
+null-Code label-miss semantics. Modern authoring remains explicitly refused
+until that switch. Missing behavior must report
 an actual actor/function/PC failure, not become a successful no-op. Detailed
 read-only evidence is in the ignored
 `artifacts/landing-state-20261010/original-state-identity-audit.md` and its
@@ -92,7 +94,8 @@ tracks physically accepted hand direction without changing accepted seated
 body placement. It remains render-only geometry, not a possessed player or IK.
 See [PLAYER-VR.md](PLAYER-VR.md). The original
 Glock weapon grasp has genuinely open, one-sided surfaces exposed by VR angles;
-the partial JC body still omits most torso surfaces.
+the accepted derived self-body now restores torso surfaces but remains static
+and omits original arms/head.
 Use bounded, explicitly marked VR geometry adaptation or a more complete
 audited original source; preserve original assets and texture appearance. Do
 not delete legitimate finger triangles or claim an arbitrary cap is an original

@@ -397,12 +397,22 @@ void VerifyOriginalDispatchPrograms(const std::vector<PortablePackageTables>& ta
         " switchFunctions="<<switchFunctions<<" switches="<<switches<<" cases="<<cases<<
         "; structural table-only inspection, not execution feasibility\n";
 }
-void VerifyStoppedDispatch(const std::string& actor) {
+void VerifyStoppedDispatch(const std::filesystem::path& root,const std::string& actor) {
     const auto context=ReadPortableActorDispatchContext(actor);
     const auto before=Snapshot(actor);
     const auto stack=ReadPortableActorSerializedStack(actor);
     Require(stack && !context.codePath.empty() && context.codeMasks && context.liveProbeMask==stack->probeMask,
         "Original dormant frame context lost class code or its actual positive serialized ProbeMask");
+    const auto mapName=actor.substr(0u,actor.find('.'));
+    const auto source=LoadPortablePackageTables((root/"Maps"/(mapName+".dx")).string());
+    const auto qualified=[&](const std::int32_t reference) {
+        const auto path=GetPortableObjectPath(source,reference);
+        return reference>0 ? mapName+'.'+path : path;
+    };
+    Require(context.framePresent && context.exactSelected && !context.codePresent &&
+        context.selectedPath==qualified(stack->stateReference) &&
+        context.runningPath==qualified(stack->functionReference) && context.codePath==context.selectedPath,
+        "Original stopped inspection conflated selected/running identities or fabricated executable Code");
     std::set<std::string> negativeNames;
     for (std::uint8_t index=0u;index<64u;++index) {
         const auto event=QuestVr::ScriptDispatch::ProbeEventName(index);
@@ -455,10 +465,10 @@ std::vector<std::uint8_t> CheckpointBytes(const std::filesystem::path& path) {
     return bytes;
 }
 // Independent exact v3 prefix walk. No guessed search for blob signatures or
-// trailer bytes: v4-v11 append one bounded length + codec payload after every
+// trailer bytes: v4-v12 append one bounded length + codec payload after every
 // existing gameplay/progress field, preserving the old layout verbatim.
 std::size_t ScriptTailOffset(const std::vector<std::uint8_t>& bytes) {
-    Require(Word(bytes,0)==0x53515844u && Word(bytes,4)>=4u && Word(bytes,4)<=11u,"Script checkpoint is not runtime v4-v11");
+    Require(Word(bytes,0)==0x53515844u && Word(bytes,4)>=4u && Word(bytes,4)<=12u,"Script checkpoint is not runtime v4-v12");
     std::size_t cursor=8;
     const auto skip=[&](const std::size_t count) {
         Require(cursor<=bytes.size() && count<=bytes.size()-cursor,"Generated checkpoint prefix truncated");cursor+=count;
@@ -2164,6 +2174,189 @@ void VerifyOriginalLanding(const std::filesystem::path& root,const std::vector<P
         "post-release budget rollback, codec8/envelope11 warm/cold/RNG, typed receiver and missing-timer atomic preflight passed\n";
 }
 
+void VerifyModernStateControl(const std::filesystem::path& root,const std::vector<PortablePackageTables>& tables,
+    const std::string& actor,const std::filesystem::path& legacy,const std::filesystem::path& directory) {
+    const auto saved=directory/"generated-modern-control-v12.sav",inspect=directory/"modern-control-unchanged.sav",
+        generated=directory/"generated-modern-control-input.sav";
+    const auto unchanged=[&](const std::vector<std::uint8_t>& expected,const std::string& message) {
+        Require(SavePortableRuntimeState(inspect.string()) && CheckpointBytes(inspect)==expected,
+            message+" changed complete runtime gameplay/script/native payload");
+    };
+    Require(LoadPortableRuntimeState(legacy.string()),"Could not reset generated modern-control fixture");
+    const auto legacyBytes=CheckpointBytes(legacy);
+    // Production SetInitialState still authors a legacy continuation. Explicit
+    // generated codec9 controls below test representation/typed preflight only;
+    // this is not a claim of original transition callbacks or world startup.
+    Call(actor,"SetInitialState"); Call(actor,"Sleep",{Number(1.5f)});
+    Require(SavePortableRuntimeState(saved.string()),"Could not capture original legacy StartUp local schema");
+    const auto prefix=CheckpointBytes(saved);
+    auto baseline=QuestVr::DecodeScriptSavedState(ScriptBlob(prefix));
+    const auto recordFor=[&](QuestVr::ScriptSavedState& graph)->QuestVr::ScriptSavedObject& {
+        const auto found=std::find_if(graph.objects.begin(),graph.objects.end(),[&](const auto& value) {return value.path==actor;});
+        Require(found!=graph.objects.end() && found->state && found->state->frame,"Generated control lost original actor frame schema");
+        return *found;
+    };
+    Require(Word(prefix,4u)==11u && ScriptBlob(prefix).at(6u)==8u && !recordFor(baseline).state->frame->control &&
+        recordFor(baseline).state->frame->codePath=="DeusEx.ScriptedPawn.StartUp",
+        "Original SetInitialState unexpectedly claimed modern control authoring");
+    const auto startup=ReadPortableRuntimeStateProgram("DeusEx.ScriptedPawn.StartUp");
+    const auto startupDescriptor=ReadPortableRuntimeAuthoredStateDescriptor("DeusEx.ScriptedPawn.StartUp");
+    const auto stop=std::find_if(startup.statementOffsets.begin(),startup.statementOffsets.end(),[&](const auto offset) {
+        return offset<startupDescriptor.bytecode.size() && startupDescriptor.bytecode[offset]==0x08u;
+    });
+    Require(stop!=startup.statementOffsets.end(),"Original StartUp lacks required actual EX_Stop control");
+    const auto stopOrdinal=static_cast<std::uint32_t>(stop-startup.statementOffsets.begin());
+    const auto property=[](QuestVr::ScriptSavedObject& record,const std::string& key,const std::string& name,Value value) {
+        const auto found=std::find_if(record.properties.begin(),record.properties.end(),[&](const auto& item) {return item.key==key && item.index==0u;});
+        if (found==record.properties.end()) record.properties.push_back({key,name,0u,std::move(value)});
+        else found->value=std::move(value);
+    };
+    auto& baselineRecord=recordFor(baseline);
+    baselineRecord.state->disabled.clear();
+    baselineRecord.state->frame->codePath="DeusEx.ScriptedPawn.FallingState";
+    baselineRecord.state->frame->statementIndex=std::numeric_limits<std::uint32_t>::max();
+    baselineRecord.state->frame->control=QuestVr::StateControl{"DeusEx.ScriptedPawn.Standing",false,0xaaaaaaaa55555555ull};
+    property(baselineRecord,"Engine.Actor.Role","Role",Value::Byte(4u));
+    const auto publish=[&](const QuestVr::ScriptSavedState& graph,const std::uint32_t version=12u) {
+        const auto blob=QuestVr::EncodeScriptSavedState(graph);
+        Require(blob.at(6u)==9u,"Generated modern fixture did not explicitly select codec9");
+        auto bytes=ReplaceScriptBlob(prefix,blob); PutWord(bytes,4u,version);
+        Require(QuestVr::WriteDurableSaveFile(generated.string(),bytes),"Could not write generated modern-control checkpoint");
+        return bytes;
+    };
+    const auto verifyFrame=[&](const QuestVr::ScriptSavedState& expected) {
+        auto copy=expected; const auto& entry=recordFor(copy); const auto& want=*entry.state->frame;
+        const auto actual=ReadPortableActorStateObject(actor); const auto context=ReadPortableActorDispatchContext(actor);
+        Require(actual && actual->hasStack && actual->frameOverride && actual->frame && actual->frame->control && actual->disabled.empty(),
+            "Modern restore lost explicit frame/control provenance or invented disabled sets");
+        const auto& frame=*actual->frame;
+        Require(frame.codePath==want.codePath && frame.localsCodePath==want.localsCodePath && frame.statementIndex==want.statementIndex &&
+            frame.latent==want.latent && frame.control->selectedPath==want.control->selectedPath &&
+            frame.control->codePresent==want.control->codePresent && frame.control->liveProbeMask==want.control->liveProbeMask &&
+            context.framePresent && context.exactSelected && context.codePresent==want.control->codePresent &&
+            context.runningPath==want.codePath && context.selectedPath==want.control->selectedPath &&
+            context.codePath==context.selectedPath && context.liveProbeMask==want.control->liveProbeMask && context.disabledNames.empty() &&
+            ReadPortableActorLatentTimeLeft(actor)==entry.latentTimeLeft,
+            "Modern control conflated selected/running/local owner, Code/PC, positive mask or actor timer");
+    };
+    auto current=publish(baseline);
+    Require(ValidatePortableRuntimeState(generated.string()) && LoadPortableRuntimeState(generated.string()),
+        "Generated null-Code modern control failed typed warm restore");
+    verifyFrame(baseline); unchanged(current,"Generated null-Code warm restore");
+    Require(Call(actor,"GetStateName").value.text=="Standing" && QuestVr::Vm::ToBool(Call(actor,"IsInState",{Name("Standing")}).value) &&
+        !QuestVr::Vm::ToBool(Call(actor,"IsInState",{Name("FallingState")}).value) &&
+        !QuestVr::Vm::ToBool(Call(actor,"IsInState",{Name("StartUp")}).value),
+        "Modern selected state queries read running/local declaration identities");
+    for (const std::uint64_t mask : {0ull,0xffffffffffffffffull,0xaaaaaaaa55555555ull,0x8000000000000000ull}) {
+        auto graph=baseline; recordFor(graph).state->frame->control->liveProbeMask=mask;
+        current=publish(graph); Require(LoadPortableRuntimeState(generated.string()),"Modern literal positive mask did not restore"); verifyFrame(graph);
+        const auto context=ReadPortableActorDispatchContext(actor);
+        for (std::uint8_t index=0u;index<64u;++index) Require(QuestVr::ScriptDispatch::IsEnabled(
+            QuestVr::ScriptDispatch::ProbeEventName(index),context.classProbeMask,context.codeMasks,context.disabledNames,context.liveProbeMask)==
+            ((mask & (std::uint64_t{1}<<index))!=0u),"Modern positive live mask was recomputed, inverted or truncated");
+        const auto noTime=ResumePortableActorState(actor),elapsed=AdvancePortableActorState(actor,100.0f);
+        Require(noTime.passed() && noTime.status==Status::Stopped && noTime.instructions==0u && elapsed.passed() &&
+            elapsed.status==Status::Stopped && elapsed.instructions==0u && ReadPortableActorLatentTimeLeft(actor)==1.5f,
+            "Modern null Code parsed stale PC or polled retained Sleep timer");
+        unchanged(current,"Modern null-Code no-time/elapsed control");
+    }
+    current=publish(baseline); Require(LoadPortableRuntimeState(generated.string()),"Could not reset modern mask mutation control");
+    auto mutated=baseline; auto& liveMask=recordFor(mutated).state->frame->control->liveProbeMask;
+    const auto authored=ReadPortableActorDispatchContext(actor);
+    const auto allowed=(authored.classProbeMask | authored.codeMasks->probeMask) & authored.codeMasks->ignoreMask;
+    for (std::uint8_t index=0u;index<64u;++index) {
+        const auto name=QuestVr::ScriptDispatch::ProbeEventName(index);
+        const auto bit=std::uint64_t{1}<<index;
+        Call(actor,"Disable",{Name(name)}); liveMask &= ~bit; verifyFrame(mutated);
+        Call(actor,"Enable",{Name(name)}); liveMask |= bit & allowed; verifyFrame(mutated);
+    }
+    current=publish(mutated); unchanged(current,"Modern original Enable/Disable positive bit mutation");
+    Call(actor,"Disable",{Name("LongFall")}); Call(actor,"Enable",{Name("Quest_NoSuchProbe")});
+    unchanged(current,"Modern nonprobe mutation no-op");
+    const auto revision=GetPortableRuntimeWorldRevision(); const auto gc=GC::GetStats();
+    const auto transition=ExecutePortableActorFunction(actor,"GotoState",{Name("StartUp")});
+    Require(transition.status==Status::Unsupported && !transition.committed && !transition.error.empty() &&
+        GetPortableRuntimeWorldRevision()==revision && GC::GetStats().numObjects==gc.numObjects && GC::GetStats().memoryUsage==gc.memoryUsage,
+        "Unimplemented modern transition silently authored legacy state or leaked transaction effects");
+    unchanged(current,"Modern GotoState explicit atomic refusal");
+    auto classBacked=baseline; auto& classFrame=*recordFor(classBacked).state->frame;
+    const auto actorClass=Snapshot(actor).classPath;
+    classFrame.codePath=actorClass; classFrame.localsCodePath.clear(); classFrame.locals.clear();
+    classFrame.control=QuestVr::StateControl{actorClass,false,~std::uint64_t{0}}; classFrame.latent=QuestVr::StateLatent::Continue;
+    current=publish(classBacked); Require(LoadPortableRuntimeState(generated.string()),"Modern class-backed null-Code frame did not restore");
+    verifyFrame(classBacked);
+    Require(Call(actor,"GetStateName").value.text==actorClass.substr(actorClass.find_last_of('.')+1u) &&
+        QuestVr::Vm::ToBool(Call(actor,"IsInState",{Name("Actor")}).value) &&
+        QuestVr::Vm::ToBool(Call(actor,"IsInState",{Name("Object")}).value) &&
+        !QuestVr::Vm::ToBool(Call(actor,"IsInState",{Name("Standing")}).value),
+        "Modern class-backed state queries failed explicit class ancestry");
+    unchanged(current,"Modern class-backed readonly selected-node queries");
+    auto runnable=baseline; auto& run=*recordFor(runnable).state->frame;
+    run.codePath="DeusEx.ScriptedPawn.StartUp"; run.statementIndex=stopOrdinal;
+    run.control->selectedPath=run.codePath; run.control->codePresent=true; run.latent=QuestVr::StateLatent::Continue;
+    current=publish(runnable); Require(LoadPortableRuntimeState(generated.string()),"Modern actual EX_Stop continuation did not restore");
+    const auto stopped=ResumePortableActorState(actor);
+    Require(stopped.passed() && stopped.status==Status::Stopped && stopped.instructions==1u,
+        "Modern original EX_Stop did not execute exactly its actual one statement");
+    auto afterStop=runnable; auto& stoppedFrame=*recordFor(afterStop).state->frame;
+    stoppedFrame.statementIndex=stopOrdinal+1u; stoppedFrame.control->codePresent=false;
+    verifyFrame(afterStop); current=publish(afterStop); unchanged(current,"Original EX_Stop retained modern identities/locals/mask/timer");
+    auto sleeping=runnable; recordFor(sleeping).state->frame->latent=QuestVr::StateLatent::Sleep;
+    const auto waitingBytes=publish(sleeping); Require(LoadPortableRuntimeState(generated.string()),"Modern actual Stop/Sleep control did not restore");
+    QuestVr::Vm::Limits noInstructions; noInstructions.instructions=0u;
+    const auto refused=AdvancePortableActorState(actor,2.0f,noInstructions);
+    Require(refused.status==Status::Budget && !refused.committed && ReadPortableActorLatentTimeLeft(actor)==1.5f,
+        "Modern native Sleep poll failed to roll back on subsequent statement-budget refusal");
+    unchanged(waitingBytes,"Modern Sleep poll/budget rollback");
+    Require((startupDescriptor.stateFlags & 4u)==0u,"Original non-simulated StartUp Role gate fixture changed");
+    auto roleGated=sleeping; property(recordFor(roleGated),"Engine.Actor.Role","Role",Value::Byte(3u));
+    current=publish(roleGated); Require(LoadPortableRuntimeState(generated.string()) && AdvancePortableActorState(actor,2.0f).passed() &&
+        ReadPortableActorLatentTimeLeft(actor)==1.5f,"Modern selected-state Role gate consumed native timer");
+    unchanged(current,"Modern selected-state Role gate");
+    current=publish(sleeping); Require(LoadPortableRuntimeState(generated.string()),"Could not reset modern typed rejection baseline");
+    std::size_t rejected{};
+    const auto reject=[&](QuestVr::ScriptSavedState graph,const std::string& description,const std::uint32_t version=12u) {
+        publish(graph,version); const auto beforeRevision=GetPortableRuntimeWorldRevision(); const auto beforeGc=GC::GetStats();
+        Require(!ValidatePortableRuntimeState(generated.string()) && !LoadPortableRuntimeState(generated.string()) &&
+            GetPortableRuntimeWorldRevision()==beforeRevision && GC::GetStats().numObjects==beforeGc.numObjects &&
+            GC::GetStats().memoryUsage==beforeGc.memoryUsage,description+" bypassed typed preflight or leaked runtime state");
+        unchanged(current,description+" atomic refusal"); ++rejected;
+    };
+    auto invalid=runnable; recordFor(invalid).state->frame->control->selectedPath="Engine.PlayerPawn"; reject(invalid,"Foreign selected Class owner");
+    invalid=runnable; recordFor(invalid).state->frame->codePath="Engine.PlayerPawn"; recordFor(invalid).state->frame->control->codePresent=false;
+    reject(invalid,"Foreign retained running Class owner");
+    invalid=runnable; recordFor(invalid).state->frame->control->selectedPath="Engine.Actor.BeginPlay"; reject(invalid,"Function as selected StateNode");
+    invalid=runnable; recordFor(invalid).state->frame->codePath="Engine.Actor.BeginPlay"; reject(invalid,"Function as retained running State/Class");
+    invalid=classBacked; recordFor(invalid).state->frame->control->codePresent=true; reject(invalid,"Runnable Class Node");
+    invalid=runnable; recordFor(invalid).state->frame->codePath="DeusEx.ScriptedPawn.FallingState"; reject(invalid,"Runnable sibling outside selected ancestry");
+    invalid=runnable; recordFor(invalid).state->frame->localsCodePath.clear(); reject(invalid,"Runnable modern frame missing local owner");
+    invalid=runnable; recordFor(invalid).state->frame->localsCodePath="Engine.Actor"; reject(invalid,"Class as modern local declaration owner");
+    invalid=runnable; recordFor(invalid).state->frame->statementIndex=std::numeric_limits<std::uint32_t>::max(); reject(invalid,"Runnable modern PC overrun");
+    reject(runnable,"Codec9 under legacy envelope11",11u);
+    auto wrongEnvelope=ReplaceScriptBlob(prefix,QuestVr::EncodeScriptSavedState(QuestVr::DecodeScriptSavedState(ScriptBlob(prefix))));
+    PutWord(wrongEnvelope,4u,12u); Require(QuestVr::WriteDurableSaveFile(generated.string(),wrongEnvelope) &&
+        !ValidatePortableRuntimeState(generated.string()) && !LoadPortableRuntimeState(generated.string()),"Envelope12 accepted legacy codec without controls");
+    unchanged(current,"Envelope12/legacy codec atomic refusal"); ++rejected;
+    auto cold=baseline; cold.randomSeed=0xfedcba98u; const auto coldBytes=publish(cold);
+    Require(LoadPortableRuntimeState(generated.string()) && SavePortableRuntimeState(saved.string()) &&
+        Word(CheckpointBytes(saved),4u)==12u && ScriptBlob(CheckpointBytes(saved)).at(6u)==9u,
+        "Generated modern control did not persist codec9/envelope12");
+    Require(LoadPortableRuntimeState(legacy.string()) && !ReadPortableActorStateObject(actor) && !ReadPortableActorLatentTimeLeft(actor),
+        "Legacy reset retained modern frame or timer");
+    ShutdownPortableRuntime(); Require(InitializePortableRuntime(tables).passed,"Cold modern-control runtime initialization failed");
+    Require(LoadPortableRuntimeMap(LoadPortablePackageTables((root/"Maps"/"00_Training.dx").string())).passed &&
+        ValidatePortableRuntimeState(saved.string()) && !ReadPortableActorStateObject(actor) && !ReadPortableActorLatentTimeLeft(actor),
+        "Cold modern-control readonly preflight published generated state");
+    Require(LoadPortableRuntimeState(saved.string()),"Cold generated modern control did not restore");
+    verifyFrame(cold); unchanged(coldBytes,"Cold generated modern selected/running/local/control/RNG restore");
+    Require(LoadPortableRuntimeState(legacy.string()) && !GetPortableRuntimeScriptStatePresent() && !ReadPortableActorLatentTimeLeft(actor),
+        "Final legacy reset retained generated modern continuation");
+    unchanged(legacyBytes,"Final modern-control legacy reset");
+    std::cout<<"GENERATED MODERN CONTROL original Doctor/StartUp schema, codec9/envelope12 selected/running/local/null-Code/high masks, "
+        "class ancestry, literal Enable/Disable, actual EX_Stop, Sleep rollback/Role gate, warm/cold/RNG and typed rejections="<<rejected<<
+        "; production transition authoring remains explicitly unsupported\n";
+}
+
 void VerifyOriginalStateExecution(const std::string& actor, const std::filesystem::path& legacy,
     const std::filesystem::path& directory) {
     const auto saved = directory / "original-state-v5.sav";
@@ -2432,6 +2625,7 @@ void TestOriginal(const std::filesystem::path& root, const bool inventoryOnly = 
         if (std::string(map) == "00_Training") VerifyOriginalRandom("00_Training.Doctor1",checkpoint,temporary.directory);
         if (std::string(map) == "00_Training") VerifyOriginalSleep(root,tables,"00_Training.Doctor1",checkpoint,temporary.directory);
         if (std::string(map) == "00_Training") VerifyOriginalLanding(root,tables,"00_Training.Doctor1",checkpoint,temporary.directory);
+        if (std::string(map) == "00_Training") VerifyModernStateControl(root,tables,"00_Training.Doctor1",checkpoint,temporary.directory);
         if (landingOnly) {UnloadPortableRuntimeMap();return;}
         if (sleepOnly) {UnloadPortableRuntimeMap();return;}
         if (randomOnly) {
@@ -2459,7 +2653,7 @@ void TestOriginal(const std::filesystem::path& root, const bool inventoryOnly = 
                 VerifyOriginalInventoryTransactions(actor.objectPath, checkpoint, temporary.directory);
                 if (inventoryOnly) { ++humanTests; continue; }
                 VerifyAuthoredStack(root, actor.objectPath);
-                VerifyStoppedDispatch(actor.objectPath);
+                VerifyStoppedDispatch(root,actor.objectPath);
                 Require(ResolvePortableActorState(actor.objectPath,"Auto")=="DeusEx.ScriptedPawn.StartUp" &&
                     ResolvePortableActorState(actor.objectPath,"Standing")=="DeusEx.ScriptedPawn.Standing" &&
                     ResolvePortableActorFunction(actor.objectPath,"Standing","AnimEnd")=="DeusEx.ScriptedPawn.Standing.AnimEnd" &&
@@ -2619,7 +2813,7 @@ void TestOriginal(const std::filesystem::path& root, const bool inventoryOnly = 
             if (inventoryOnly) continue;
             if (robotTests == 0u && IsA(actor, "Robot")) {
                 VerifyAuthoredStack(root, actor.objectPath);
-                VerifyStoppedDispatch(actor.objectPath);
+                VerifyStoppedDispatch(root,actor.objectPath);
                 Call(actor.objectPath, "PlayWaiting");
                 const auto robot = Snapshot(actor.objectPath);
                 Require(!robot.animation.sequence.empty() && robot.animation.frame < 0.0f,
@@ -2629,7 +2823,7 @@ void TestOriginal(const std::filesystem::path& root, const bool inventoryOnly = 
             }
             if (birdTests == 0u && IsA(actor, "Bird")) {
                 VerifyAuthoredStack(root, actor.objectPath);
-                VerifyStoppedDispatch(actor.objectPath);
+                VerifyStoppedDispatch(root,actor.objectPath);
                 const auto wait = ReadPortableActorScriptProperty(actor.objectPath, "WaitAnim");
                 Call(actor.objectPath, "PlayWaiting");
                 const auto bird = Snapshot(actor.objectPath);

@@ -27,13 +27,12 @@ selection request.
 Original FindObjectField at `10150b50` looks at the selected StateNode, not the
 running Node, then the receiver class. This functions-only decoded graph does
 not reconstruct every native hash-link precedence or non-function name-hiding
-rule. Runtime virtual/event calls still use the legacy current-state-name query:
-their context conflates selected state and running code after inherited label
-jumps. Wiring that running path to the new exact-selected-node API would be a
-regression when derived callbacks must remain selected. Exact-path dispatch is
-ready at the shared graph layer, not yet at live portable overrides. Independent
-identities, nullable Code, original live-mask transitions and callback/preemption
-order remain required before world startup.
+rule. The subsequent [independent state model](STATE-CONTROL-MODEL.md) wires exact
+selected-node lookup for raw authored contexts and explicit modern overrides.
+Legacy portable frames still use the current-state-name query: their context
+conflates selected state and running code after inherited labels. That running
+path is never passed as an exact StateNode. Production modern transition
+authoring and original callback/preemption order remain required before startup.
 
 The detached graph rejects missing, cyclic, over-depth or foreign-owner state
 parents; incomplete, duplicate or foreign child-order entries; and Class/State

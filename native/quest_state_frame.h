@@ -23,6 +23,14 @@ struct StateLocal {
     std::string key;
     std::vector<Vm::Value> values;
 };
+// Original FStateFrame control has independent selected StateNode, running
+// Node and nullable Code. Presence is explicit provenance: old saved frames
+// cannot in general infer this control from their state-keyed disabled sets.
+struct StateControl {
+    std::string selectedPath;
+    bool codePresent{};
+    std::uint64_t liveProbeMask{};
+};
 struct StateFrame {
     // GotoLabel may replace executable code without recreating Variables.
     // Locals therefore retain their own declaration identity.
@@ -32,6 +40,10 @@ struct StateFrame {
     std::uint32_t statementIndex{};
     StateLatent latent{StateLatent::Continue};
     std::vector<StateLocal> locals;
+    // With control, codePath is the retained running Node even when Code is
+    // null. selectedPath is a concrete state/class identity; liveProbeMask is
+    // the original positive enabled mask, not complemented disabled bits.
+    std::optional<StateControl> control{};
 };
 struct StateObject {
     bool hasStack{};
@@ -40,7 +52,8 @@ struct StateObject {
     // True makes frame (including absent or null-code) the portable override.
     bool frameOverride{};
     std::optional<StateFrame> frame;
-    // State names (including None and class names) own distinct disabled sets.
+    // Legacy-only state-keyed disabled sets. Modern control owns one live mask
+    // instead and must not carry these ambiguous old records.
     // Identity spelling is retained; lookup/codec uniqueness is ASCII-folded.
     std::map<std::string, std::set<std::string>> disabled;
 };

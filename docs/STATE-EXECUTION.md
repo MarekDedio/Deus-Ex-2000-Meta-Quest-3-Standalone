@@ -5,6 +5,13 @@ GotoState/Enable/Disable, and runtime-v5 state-frame persistence. This is offlin
 source work, not automatic level startup, working NPC AI, a campaign playthrough,
 or a replacement for the installed, accepted seated-player Quest test APK.
 
+The [independent state-control model](STATE-CONTROL-MODEL.md) supersedes the
+conflated representation below for explicitly modern frames: selected/running
+identities, nullable Code, live positive mask, exact queries and codec9/envelope12.
+Modern transition/label authoring is still refused pending the original callback
+control switch. The old behavior below remains legacy compatibility, not the
+original GOTY contract.
+
 The original [Sleep continuation increment](SCRIPT-SLEEP.md) supersedes the
 earlier unsupported-Sleep and latent-preserving Goto behavior described below.
 It adds committed Waiting, explicit polling and codec8/envelope11 native timers.
@@ -19,9 +26,9 @@ automatic state scheduling.
 The [original dispatch correction](ORIGINAL-STATE-DISPATCH.md) now selects Auto
 in actual Children/Next order and resolves callbacks through explicit selected
 state SuperField links. This supersedes same-name callback inheritance from the
-initial pinned model. The stored runtime context still needs independent
-selected-StateNode/running-Node/null-Code identities; label lookup and transition
-preemption described below remain approximations, not the original contract.
+initial pinned model. Legacy contexts still lack independent selected/running
+identity; label lookup and transition preemption described below remain
+approximations, not the original contract.
 
 The initial state-control contract follows the locally pinned SurrealEngine commit
 `677ee14c5b83486e6634687953779aafb7973ad6`, especially `VM/Frame.cpp`,

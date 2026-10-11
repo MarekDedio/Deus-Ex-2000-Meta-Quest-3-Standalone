@@ -94,6 +94,7 @@ inline constexpr std::uint8_t BirthManifestVersion=5u;
 inline constexpr std::uint8_t AiManagerVersion=6u;
 inline constexpr std::uint8_t RandomStateVersion=7u;
 inline constexpr std::uint8_t SleepStateVersion=8u;
+inline constexpr std::uint8_t StateControlVersion=9u;
 inline constexpr std::uint32_t MaximumWorldActorSlots=1'000'000u;
 // Stable serialized tags deliberately do not depend on Vm::Kind ordinals.
 enum class Tag : std::uint8_t {
@@ -265,7 +266,7 @@ public:
     void MeasureStateObject(const StateObject& state) {
         if (output_) Fail("state-only measurement requires a non-emitting writer");
         budget_.Retain(sizeof(StateObject));
-        ObjectState(state);
+        ObjectState(state,state.frame && state.frame->control.has_value());
     }
     void MeasureActorLifecycle(const ScriptSavedActorLifecycle& lifecycle) {
         if (output_) Fail("actor-lifecycle measurement requires a non-emitting writer");
@@ -286,14 +287,17 @@ public:
         const bool withAi=!state.aiManagers.empty();
         const bool withRandom=state.randomSeed.has_value();
         const bool withSleep=std::any_of(state.objects.begin(),state.objects.end(),[](const auto& object) { return object.latentTimeLeft.has_value(); });
-        const auto version=withSleep ? SleepStateVersion : withRandom ? RandomStateVersion : withAi ? AiManagerVersion : withBirths ? BirthManifestVersion : withLifecycle ? ActorLifecycleVersion : withDefaults ? ClassDefaultsVersion : withFrames ? StateFrameVersion : Magic[6u];
+        const bool withControl=std::any_of(state.objects.begin(),state.objects.end(),[](const auto& object) {
+            return object.state && object.state->frame && object.state->frame->control.has_value();
+        });
+        const auto version=withControl ? StateControlVersion : withSleep ? SleepStateVersion : withRandom ? RandomStateVersion : withAi ? AiManagerVersion : withBirths ? BirthManifestVersion : withLifecycle ? ActorLifecycleVersion : withDefaults ? ClassDefaultsVersion : withFrames ? StateFrameVersion : Magic[6u];
         for (std::size_t i=0; i<Magic.size(); ++i) Byte(i==6u ? version : Magic[i]);
         String(state.mapName,true,false,128u);
         if (state.objects.size()>limits_.maxObjects || state.classDefaults.size()>limits_.maxObjects-state.objects.size() ||
             state.births.size()>limits_.maxObjects)
             Fail("aggregate object/class-default count exceeds the budget");
         budget_.Array(state.objects.size(),sizeof(ScriptSavedObject)+sizeof(void*));
-        if (withBirths || withAi || withRandom || withSleep) budget_.Array(state.objects.size(),sizeof(SavedObjectIdentity));
+        if (version>=BirthManifestVersion) budget_.Array(state.objects.size(),sizeof(SavedObjectIdentity));
         Count(state.objects.size());
         for (const auto& object : state.objects) {
             Text(object.path,limits_,true); Text(object.classPath,limits_,true);
@@ -306,23 +310,23 @@ public:
             Properties(object.properties,false);
             Byte(object.clock ? 1u : 0u);
             if (object.clock) Animation(*object.clock);
-            if (withFrames || withDefaults || withLifecycle || withBirths || withAi || withRandom || withSleep) {
+            if (version>=StateFrameVersion) {
                 Byte(object.state ? 1u : 0u);
-                if (object.state) ObjectState(*object.state);
+                if (object.state) ObjectState(*object.state,withControl);
             }
-            if (withLifecycle || withBirths || withAi || withRandom || withSleep) {
+            if (version>=ActorLifecycleVersion) {
                 Byte(object.lifecycle ? 1u : 0u);
                 if (object.lifecycle) ActorLifecycle(*object.lifecycle);
             }
-            if (withSleep) {
+            if (version>=SleepStateVersion) {
                 Byte(object.latentTimeLeft ? 1u : 0u);
                 if (object.latentTimeLeft) F32(*object.latentTimeLeft);
             }
         }
         budget_.Array(state.classDefaults.size(),sizeof(ScriptSavedClassDefaults)+sizeof(void*));
-        if (withBirths || withAi || withRandom || withSleep) budget_.Array(state.classDefaults.size(),sizeof(std::string_view));
+        if (version>=BirthManifestVersion) budget_.Array(state.classDefaults.size(),sizeof(std::string_view));
         const auto classes=Sorted(state.classDefaults,[](const auto& defaults) -> const std::string& { return defaults.classPath; });
-        if (withDefaults || withLifecycle || withBirths || withAi || withRandom || withSleep) {
+        if (version>=ClassDefaultsVersion) {
             Count(state.classDefaults.size());
             for (const auto& defaults : state.classDefaults) Text(defaults.classPath,limits_,true);
             for (std::size_t i=0; i<classes.size(); ++i) {
@@ -333,7 +337,7 @@ public:
                 String(defaults.classPath,true); Properties(defaults.properties,true);
             }
         }
-        if (withBirths || withAi || withRandom || withSleep) {
+        if (version>=BirthManifestVersion) {
             budget_.Array(state.births.size(),sizeof(ScriptSavedBirth)+sizeof(void*));
             budget_.Array(state.births.size(),sizeof(std::uint32_t));
             std::vector<std::uint32_t> indices; indices.reserve(state.births.size());
@@ -357,7 +361,7 @@ public:
                 String(birth.path,true); String(birth.classPath,true); U32(birth.worldActorIndex); Properties(birth.frozenDefaults,true);
             }
         }
-        if (withAi || withRandom || withSleep) {
+        if (version>=AiManagerVersion) {
             budget_.AiManagers(state.aiManagers.size());
             budget_.Array(state.aiManagers.size(),sizeof(void*));
             Count(state.aiManagers.size());
@@ -368,7 +372,7 @@ public:
                 AiManager(*managers[i]);
             }
         }
-        if (withSleep) Byte(withRandom ? 1u : 0u);
+        if (version>=SleepStateVersion) Byte(withRandom ? 1u : 0u);
         if (withRandom) {
             Byte(ScriptRandom::Algorithm); U32(*state.randomSeed);
         }
@@ -538,8 +542,16 @@ private:
         std::uint64_t bits; std::memcpy(&bits,&clock.simulationTime,8u); U64(bits);
         Byte(clock.remoteRole); Byte(clock.pose.fatness);
     }
-    void ObjectState(const StateObject& state) {
+    void ObjectState(const StateObject& state,const bool withControl) {
         if (state.frame && !state.frameOverride) Fail("state frame requires a portable frame override");
+        if (state.frame && state.frame->control) {
+            const auto& frame=*state.frame;
+            if (!state.hasStack) Fail("modern state frame requires stack ownership");
+            Text(frame.codePath,limits_,true);
+            Text(frame.control->selectedPath,limits_,true);
+            if (frame.latent==StateLatent::Stop) Fail("modern state frame cannot use legacy Stop latent");
+            if (!state.disabled.empty()) Fail("modern state frame cannot carry legacy disabled sets");
+        }
         Byte(state.hasStack ? 1u : 0u); Byte(state.frameOverride ? 1u : 0u); Byte(state.frame ? 1u : 0u);
         if (state.frame) {
             const auto& frame=*state.frame;
@@ -561,6 +573,16 @@ private:
                 budget_.Array(local.values.size(),sizeof(Vm::Value));
                 Count(local.values.size());
                 for (const auto& value : local.values) Value(value,0u);
+            }
+            // Version9 emits this discriminator for every present frame, so
+            // mixed modern/legacy saves preserve provenance without guessing.
+            if (withControl) {
+                Byte(frame.control ? 1u : 0u);
+                if (frame.control) {
+                    String(frame.control->selectedPath,true);
+                    Byte(frame.control->codePresent ? 1u : 0u);
+                    U64(frame.control->liveProbeMask);
+                }
             }
         }
         budget_.DisabledStates(state.disabled.size());
@@ -603,7 +625,7 @@ public:
                 version=byte;
                 if (version!=Magic[i] && version!=StateFrameVersion && version!=ClassDefaultsVersion &&
                     version!=ActorLifecycleVersion && version!=BirthManifestVersion && version!=AiManagerVersion &&
-                    version!=RandomStateVersion && version!=SleepStateVersion)
+                    version!=RandomStateVersion && version!=SleepStateVersion && version!=StateControlVersion)
                     Fail("bad magic or unsupported codec version");
             } else if (byte!=Magic[i]) Fail("bad magic or unsupported codec version");
         }
@@ -618,7 +640,7 @@ public:
             budget_.Array(count,sizeof(SavedObjectIdentity)); objectIdentities.reserve(count);
         }
         std::string_view previous;
-        bool hasLifecycle{},hasLatentTimeLeft{};
+        bool hasLifecycle{},hasLatentTimeLeft{},hasControl{};
         for (std::uint32_t i=0; i<count; ++i) {
             ScriptSavedObject object;
             const auto path=String(true),cls=String(true);
@@ -629,7 +651,7 @@ public:
             Properties(object.properties,false);
             if (Boolean()) { auto clock=Animation(); if constexpr(Materialize) object.clock=std::move(clock); }
             if (version>=StateFrameVersion && Boolean()) {
-                auto saved=ObjectState(); if constexpr(Materialize) object.state=std::move(saved);
+                auto saved=ObjectState(version,hasControl); if constexpr(Materialize) object.state=std::move(saved);
             }
             if (version>=ActorLifecycleVersion && Boolean()) {
                 hasLifecycle=true;
@@ -646,6 +668,8 @@ public:
             Fail("actor-lifecycle codec has no native lifecycle record");
         if (version==SleepStateVersion && !hasLatentTimeLeft)
             Fail("sleep-state codec has no native latent timer record");
+        if (version==StateControlVersion && !hasControl)
+            Fail("state-control codec has no modern state control record");
         std::uint32_t classes{};
         if (version>=ClassDefaultsVersion) {
             classes=U32();
@@ -901,9 +925,10 @@ private:
         const auto bits=U64(); std::memcpy(&clock.simulationTime,&bits,8u);
         clock.remoteRole=Byte(); clock.pose.fatness=Byte(); Clock(clock,limits_); return clock;
     }
-    StateObject ObjectState() {
+    StateObject ObjectState(const std::uint8_t version,bool& hasControl) {
         StateObject state; state.hasStack=Boolean();
         state.frameOverride=Boolean();
+        bool modern{};
         if (Boolean()) {
             if (!state.frameOverride) Fail("state frame requires a portable frame override");
             StateFrame frame;
@@ -929,9 +954,19 @@ private:
                 }
                 if constexpr(Materialize) frame.locals.push_back(std::move(local));
             }
+            if (version>=StateControlVersion && Boolean()) {
+                modern=true; hasControl=true;
+                if (!state.hasStack) Fail("modern state frame requires stack ownership");
+                if (code.empty()) Fail("modern state frame requires a running node");
+                if (frame.latent==StateLatent::Stop) Fail("modern state frame cannot use legacy Stop latent");
+                const auto selected=String(true);
+                const auto codePresent=Boolean(); const auto liveProbeMask=U64();
+                if constexpr(Materialize) frame.control=StateControl{std::string(selected),codePresent,liveProbeMask};
+            }
             if constexpr(Materialize) state.frame=std::move(frame);
         }
         const auto count=U32(); budget_.DisabledStates(count);
+        if (modern && count!=0u) Fail("modern state frame cannot carry legacy disabled sets");
         if (count>Remaining()/9u) Fail("disabled-state count exceeds encoded payload");
         using Disabled=std::pair<const std::string,std::set<std::string>>;
         budget_.Array(count,sizeof(Disabled)+5u*sizeof(void*));

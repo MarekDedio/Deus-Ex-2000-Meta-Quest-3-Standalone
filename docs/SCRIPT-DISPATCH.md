@@ -42,10 +42,10 @@ Current selection follows the independently audited original contract:
   its name or falling back to a non-Auto state literally named Auto.
 - Virtual/event function lookup at an exact selected state follows explicit
   SuperField ancestry, then receiver-class functions derived-to-base. It does
-  not manufacture same-name state inheritance. The current runtime context
-  still needs selected-state/running-code separation after inherited labels,
-  so runtime virtual/event calls retain the literal current-name convenience
-  query until that migration; running code must not masquerade as StateNode.
+  not manufacture same-name state inheritance. Raw authored and explicitly
+  modern runtime contexts use exact selected identity; legacy overrides retain
+  the literal current-name query. Running code never masquerades as StateNode.
+  See [state-control provenance and remaining authoring](STATE-CONTROL-MODEL.md).
 - Global calls skip states. Final calls use the function reference from the
   executing function's own package; a fully qualified diagnostic target likewise
   selects an identity but does not bypass eligibility.

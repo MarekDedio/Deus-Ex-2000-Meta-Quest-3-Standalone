@@ -464,6 +464,11 @@ public:
             Step(fn, n.offset, n.op);
             if (AdvanceIterator(frame, n, program, pc, iterators)) continue;
             if (n.op == 0x04) { value = Eval(frame, n.children.at(0), self).Load(); returned = true; break; }
+            if (n.op == 0x15) {
+                const auto* object = host_.ReadState(self);
+                if (object && object->frame && object->frame->control)
+                    Fail(Status::Unsupported, "Original opcode 0x15 state semantics are not established");
+            }
             if (n.op == 0x08 || n.op == 0x15) Fail(Status::Stopped, "State stop requires a continuation engine");
             if (n.op == 0x06) { pc = program.boundaries.at(n.target); continue; }
             if (n.op == 0x05) {
@@ -498,9 +503,10 @@ public:
         for (const auto& p : fn.variables) localElements_ -= p.arrayDimension;
         result_.callStack.pop_back(); return value;
     }
-    Value Resume(const std::string& self) {
+    Value Resume(const std::string& self, std::optional<std::string> priorSelected = {}) {
         if (self.size() > limits_.stringBytes) Fail(Status::Budget, "VM state receiver identity limit");
         bool active{};
+        std::size_t selectedChanges{};
         IteratorStack iterators;
         const auto finish = [&](Value value = {}) {
             if (!iterators.empty())
@@ -510,13 +516,30 @@ public:
         };
         for (;;) {
             const auto* object = host_.ReadState(self);
-            if (!object || !object->frameOverride || !object->frame || object->frame->codePath.empty()) return finish();
+            if (!object || !object->frameOverride || !object->frame) return finish();
+            const auto& control = object->frame->control;
+            if (control) {
+                if (control->selectedPath.size() > limits_.stringBytes)
+                    Fail(Status::Budget, "VM selected state identity limit");
+                if (!priorSelected) priorSelected = control->selectedPath;
+                if (!control->codePresent || host_.IsStateDeleted(self)) {
+                    result_.status = Status::Stopped; return finish();
+                }
+                if (object->frame->codePath.empty() || control->selectedPath.empty())
+                    Fail(Status::Invalid, "Modern state continuation has an empty node identity");
+            } else {
+                if (priorSelected) Fail(Status::Invalid, "Modern state continuation lost its control metadata");
+                if (object->frame->codePath.empty()) return finish();
+            }
             const auto code = object->frame->codePath;
             const auto localOwner = object->frame->localsCodePath;
             const auto statementIndex = object->frame->statementIndex;
             const auto latent = object->frame->latent;
             const auto localRevision = host_.StateLocalRevision(self);
-            if (latent == StateLatent::Stop) { result_.status = Status::Stopped; return finish(); }
+            if (latent == StateLatent::Stop) {
+                if (control) Fail(Status::Unsupported, "Modern state frame cannot use a synthetic Stop latent action");
+                result_.status = Status::Stopped; return finish();
+            }
             if (latent == StateLatent::Sleep || latent == StateLatent::WaitForLanding) {
                 result_.status = Status::Waiting; return finish();
             }
@@ -533,6 +556,7 @@ public:
             Step(view.function, statement.offset, statement.op);
             auto* writable = host_.MutableState(self);
             if (!writable || !writable->frameOverride || !writable->frame ||
+                !HasStateCode(*writable->frame) ||
                 writable->frame->codePath != code ||
                 writable->frame->statementIndex != statementIndex)
                 Fail(Status::Invalid, "State frame changed while advancing its instruction");
@@ -557,7 +581,7 @@ public:
                 // iterator's original storage identity, not that new view.
                 if (!iterators.empty()) {
                     const auto* current = host_.ReadState(self);
-                    if (current && current->frameOverride && current->frame && !current->frame->codePath.empty() &&
+                    if (current && current->frameOverride && current->frame && HasStateCode(*current->frame) &&
                         (current->frame->codePath != code || current->frame->localsCodePath != localOwner ||
                             host_.StateLocalRevision(self) != localRevision))
                         Fail(Status::Unsupported, "State code or locals changed with live iterators");
@@ -577,7 +601,11 @@ public:
                 Eval(view.frame, statement, self);
             Locate(view.function, statement.offset, statement.op);
             object = host_.ReadState(self);
-            if (!object || !object->frameOverride || !object->frame || object->frame->codePath.empty()) return finish(value);
+            if (!object || !object->frameOverride || !object->frame) return finish(value);
+            if (!HasStateCode(*object->frame)) {
+                if (object->frame->control) result_.status = Status::Stopped;
+                return finish(value);
+            }
             if (!iterators.empty() && (object->frame->codePath != code ||
                 object->frame->localsCodePath != localOwner || host_.StateLocalRevision(self) != localRevision))
                 Fail(Status::Unsupported, "State code or locals changed with live iterators");
@@ -595,24 +623,57 @@ public:
                 changed->frame->statementIndex = static_cast<std::uint32_t>(target->second);
             } else if (statement.op == 0x0d) host_.GotoStateLabel(self, value.text, false);
             else if (statement.op == 0x08 || statement.op == 0x15) {
-                host_.MutableState(self)->frame->latent = StateLatent::Stop;
+                auto& frame = *host_.MutableState(self)->frame;
+                if (frame.control) {
+                    if (statement.op == 0x15)
+                        Fail(Status::Unsupported, "Original opcode 0x15 state semantics are not established");
+                    // Original EX_Stop clears nullable Code only. The running
+                    // Node, selected node, live mask, locals and latent remain.
+                    frame.control->codePresent = false;
+                } else frame.latent = StateLatent::Stop;
                 result_.status = Status::Stopped; return finish();
             } else if (statement.op == 0x04) {
                 ValidateValue(value, 0); return finish(value);
             }
             object = host_.ReadState(self);
-            if (!object || !object->frameOverride || !object->frame || object->frame->codePath.empty()) return finish();
+            if (!object || !object->frameOverride || !object->frame) return finish();
+            if (!HasStateCode(*object->frame)) {
+                if (object->frame->control) result_.status = Status::Stopped;
+                return finish();
+            }
             if (object->frame->latent != StateLatent::Continue) {
-                if (object->frame->latent == StateLatent::Stop) { result_.status = Status::Stopped; return finish(); }
+                if (object->frame->latent == StateLatent::Stop) {
+                    if (object->frame->control)
+                        Fail(Status::Unsupported, "Modern state frame cannot use a synthetic Stop latent action");
+                    result_.status = Status::Stopped; return finish();
+                }
                 if (object->frame->latent == StateLatent::Sleep ||
                     object->frame->latent == StateLatent::WaitForLanding) {
                     result_.status = Status::Waiting; return finish();
                 }
                 Fail(Status::Unsupported, "State latent action requires its runtime handler");
             }
+            if (priorSelected) {
+                if (!object->frame->control)
+                    Fail(Status::Invalid, "Modern state continuation lost its control metadata");
+                const auto& selected = object->frame->control->selectedPath;
+                if (selected.empty()) Fail(Status::Invalid, "Modern state continuation lost its selected node");
+                if (selected.size() > limits_.stringBytes)
+                    Fail(Status::Budget, "VM selected state identity limit");
+                // ProcessState observes the final selected StateNode once per
+                // completed statement, not changes inside nested callbacks or
+                // running-Node relabels. The fifth observed change ends a slice.
+                if (Lower(selected) != Lower(*priorSelected)) {
+                    priorSelected = selected;
+                    if (++selectedChanges > 4u) return finish();
+                }
+            }
         }
     }
 private:
+    static bool HasStateCode(const StateFrame& frame) {
+        return frame.control ? frame.control->codePresent : !frame.codePath.empty();
+    }
     struct ActiveIterator {
         std::unique_ptr<Iterator> iterator;
         std::size_t start{}, end{}, retained{};
@@ -722,7 +783,7 @@ private:
         // a miss resolves this old Case's offset in the new live program.
         for (;;) {
             const auto* object = host_.ReadState(self);
-            if (!object || !object->frameOverride || !object->frame || object->frame->codePath.empty()) return;
+            if (!object || !object->frameOverride || !object->frame || !HasStateCode(*object->frame)) return;
             const auto code = object->frame->codePath;
             const auto localOwner = object->frame->localsCodePath;
             const auto revision = host_.StateLocalRevision(self);
@@ -734,6 +795,7 @@ private:
             Step(view.function, label.offset, label.op);
             auto* writable = host_.MutableState(self);
             if (!writable || !writable->frameOverride || !writable->frame ||
+                !HasStateCode(*writable->frame) ||
                 writable->frame->codePath != code || writable->frame->localsCodePath != localOwner ||
                 writable->frame->statementIndex != pc || host_.StateLocalRevision(self) != revision)
                 Fail(Status::Invalid, "State frame changed while advancing its Case");
@@ -746,6 +808,7 @@ private:
             object = host_.ReadState(self);
             if (!object || !object->frameOverride || !object->frame || object->frame->codePath.empty())
                 Fail(Status::Invalid, "State code was cleared while evaluating a Case");
+            if (!HasStateCode(*object->frame)) return;
             if (!iterators.empty() && (object->frame->codePath != code ||
                 object->frame->localsCodePath != localOwner || host_.StateLocalRevision(self) != revision))
                 Fail(Status::Unsupported, "State code or locals changed with live iterators");
@@ -762,6 +825,7 @@ private:
                 Fail(Status::Invalid, "State Case target ordinal overflow");
             writable = host_.MutableState(self);
             if (!writable || !writable->frameOverride || !writable->frame ||
+                !HasStateCode(*writable->frame) ||
                 writable->frame->codePath != currentCode || writable->frame->localsCodePath != currentOwner ||
                 host_.StateLocalRevision(self) != currentRevision)
                 Fail(Status::Invalid, "State frame changed while following its Case link");
@@ -1342,7 +1406,13 @@ Result AdvanceState(Host& host, const std::string& self, const float elapsed, co
     try {
         host.Begin(); begun = true;
         Machine machine(host, limits, result);
-        if (host.PollState(self, elapsed, machine)) result.value = machine.Resume(self);
+        std::optional<std::string> selectedBeforePoll;
+        const auto* object = host.ReadState(self);
+        const auto* control = object && object->frameOverride && object->frame && object->frame->control
+            ? &*object->frame->control : nullptr;
+        if (control) selectedBeforePoll = control->selectedPath;
+        if (control && (!control->codePresent || host.IsStateDeleted(self))) result.status = Status::Stopped;
+        else if (host.PollState(self, elapsed, machine)) result.value = machine.Resume(self, selectedBeforePoll);
         host.Commit(); begun = false;
         machine.Accept(); result.committed = true;
         if (result.status != Status::Stopped && result.status != Status::Waiting) result.status = Status::Returned;

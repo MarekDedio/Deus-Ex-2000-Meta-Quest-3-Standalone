@@ -1,5 +1,32 @@
 # Port status
 
+## Independent state-control representation (2026-10-11)
+
+- Modern frames now retain selected StateNode, running Node, nullable Code and
+  positive live mask separately, with independent typed local storage. Raw
+  serialized identities can be inspected without converting byte offsets or
+  executing unsupported continuations. Modern/raw dispatch and state queries
+  use selected ancestry; legacy overrides retain explicit compatibility.
+- Codec9/envelope12 preserve modern controls alongside existing optional
+  sections. Codecs1–8 keep their bytes/provenance; there is no guessed migration.
+  Typed preflight checks ownership, runnable ancestry/PC/local schema, wait
+  timers and version pairing before publication. Null Code retains stale PCs.
+- Modern EX_Stop clears Code only. Slices use selected-state role eligibility,
+  repeated deletion checks and the original fifth-observed-state-change yield
+  with pre-poll capture. Modern probe toggles mutate one live mask.
+- Production modern GotoState/label authoring still awaits original callback
+  ordering/preemption and is explicitly refused on modern frames. Existing
+  production transitions remain legacy. This is preparation for actual
+  world/player startup, not live AI or campaign completion. See
+  [STATE-CONTROL-MODEL.md](STATE-CONTROL-MODEL.md).
+- All 50 ordinary host tests pass. Modern frame-codec checks pass1,632/833
+  expected rejects; VM state checks499/63 and existing save-codec6,477/5,731
+  pass. Generated original Doctor controls pass independent identity/mask,
+  Stop, rollback, warm/cold/RNG and11 typed/version refusals. Original defaults
+  and runtime save/restore pass; the full original actor suite also passes
+  Training/UNATCOIsland/Intro. Signed ARM64 APK builds and is archived,
+  not installed; USB currently reports no connected headset.
+
 ## Original state-dispatch correction (2026-10-11)
 
 - Auto selection now returns the actual first Children/Next Auto-flag state,
@@ -18,9 +45,9 @@
   metadata/program, defaults, full actor and runtime save/restore checks pass separately.
   A signed ARM64 APK builds and is archived, not deployed; the installed APK
   hash still matches the user's accepted hand-direction build.
-- Selected-state/running-code/null-Code/live-mask storage and original transition
-  control remain unfinished. Runtime event calls retain their name-based context
-  until that migration rather than passing inherited running code as StateNode.
+- The later independent representation above adds modern identity/mask storage;
+  original production transition control remains unfinished. Legacy runtime
+  calls retain their name-based context rather than passing running code as StateNode.
   This corrects shared lookup prerequisites, not automatic world startup,
   player possession, live AI or full campaign playability.
 

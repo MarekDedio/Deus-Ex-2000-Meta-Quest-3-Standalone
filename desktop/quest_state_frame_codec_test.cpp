@@ -50,6 +50,10 @@ void SameState(const StateObject& a,const StateObject& b) {
     const auto& x=*a.frame; const auto& y=*b.frame;
     Require(x.codePath==y.codePath && x.localsCodePath==y.localsCodePath && x.statementIndex==y.statementIndex &&
         x.latent==y.latent && x.locals.size()==y.locals.size(),"Code/local declaration/PC/latent changed");
+    Require(x.control.has_value()==y.control.has_value(),"Modern/legacy frame provenance changed");
+    if (x.control) Require(x.control->selectedPath==y.control->selectedPath &&
+        x.control->codePresent==y.control->codePresent && x.control->liveProbeMask==y.control->liveProbeMask,
+        "Selected node/nullable Code/positive live probe mask changed");
     for (const auto& local : x.locals) {
         const auto found=std::find_if(y.locals.begin(),y.locals.end(),[&](const auto& item) { return item.key==local.key; });
         Require(found!=y.locals.end() && found->values.size()==local.values.size(),"Local identity/array changed");
@@ -101,6 +105,182 @@ ScriptSavedState Saved() {
     ScriptSavedObject legacy; legacy.path="Map.Legacy"; legacy.classPath="Fixture.Actor";
     legacy.properties.push_back({"Fixture.Actor.Health","Health",0,Integer(42)}); saved.objects.push_back(std::move(legacy));
     return saved;
+}
+ScriptSavedState ModernSaved() {
+    ScriptSavedState saved; saved.mapName="Map";
+    ScriptSavedObject object; object.path="Map.A"; object.classPath="Fixture.Actor";
+    StateObject state; state.hasStack=true; state.frameOverride=true;
+    StateFrame frame; frame.codePath="Fixture.Base.Running"; frame.localsCodePath="Fixture.Locals.StartUp";
+    frame.statementIndex=0x89abcdefu;
+    frame.control=StateControl{"Fixture.Derived.Selected",true,0x80abcdef12345678ull};
+    state.frame=frame; object.state=state; saved.objects.push_back(object); return saved;
+}
+Bytes ControlStateOnly(const Bytes& tail) {
+    auto bytes=Prefix(9); Object(bytes); bytes.push_back(1); bytes.insert(bytes.end(),tail.begin(),tail.end());
+    bytes.insert(bytes.end(),{0,0}); // Absent native lifecycle and actor timer.
+    U32(bytes,0); U32(bytes,0); U32(bytes,0); // No CDO patches, births or AI managers.
+    bytes.push_back(0); // Absent engine-global random stream.
+    return bytes;
+}
+struct ModernWire {
+    Bytes bytes;
+    std::size_t stack{},overrideFrame{},control{},selected{},codePresent{},mask{},disabled{};
+};
+ModernWire ModernLiteral(const bool codePresent=true,const std::string& selected="Fixture.Derived.Selected") {
+    // Independent wire fixture: deliberately different selected/running/local
+    // owners, nonzero retained PC, and literal positive little-endian mask.
+    auto tail=Frame(0,0,0x89abcdefu,"Fixture.Base.Running","Fixture.Locals.StartUp");
+    const auto control=tail.size(); tail.push_back(1);
+    const auto selectedAt=tail.size(); String(tail,selected);
+    const auto codeAt=tail.size(); tail.push_back(codePresent ? 1u : 0u);
+    const auto mask=tail.size(); tail.insert(tail.end(),{0x78,0x56,0x34,0x12,0xef,0xcd,0xab,0x80});
+    const auto disabled=tail.size(); U32(tail,0);
+    auto prefix=Prefix(9); Object(prefix); prefix.push_back(1); const auto base=prefix.size();
+    return {ControlStateOnly(tail),base,base+1u,base+control,base+selectedAt,base+codeAt,base+mask,base+disabled};
+}
+void ModernControlRoundtrips() {
+    const auto literal=ModernLiteral(); const auto saved=ModernSaved();
+    const auto decoded=DecodeScriptSavedState(literal.bytes);
+    Require(EncodeScriptSavedState(saved)==literal.bytes && EncodeScriptSavedState(decoded)==literal.bytes,
+        "Independent codec9 wire fixture changed");
+    SameState(*saved.objects[0].state,*decoded.objects[0].state);
+    Require(decoded.objects[0].state->disabled.empty() && !decoded.objects[0].latentTimeLeft && !decoded.randomSeed,
+        "Modern control fabricated disabled sets, timer or random stream");
+    for (const bool present : {false,true}) {
+        auto item=saved; item.objects[0].state->frame->control->codePresent=present;
+        const auto bytes=EncodeScriptSavedState(item); const auto restored=DecodeScriptSavedState(bytes);
+        Require(bytes==ModernLiteral(present).bytes && restored.objects[0].state->frame->codePath=="Fixture.Base.Running" &&
+            restored.objects[0].state->frame->statementIndex==0x89abcdefu,
+            "Nullable Code erased retained running node or statement position");
+        SameState(*item.objects[0].state,*restored.objects[0].state);
+    }
+    for (const std::uint64_t mask : {0ull,1ull,0x80000000ull,0x100000000ull,0x8000000000000000ull,0xffffffffffffffffull}) {
+        auto item=saved; item.objects[0].state->frame->control->liveProbeMask=mask;
+        const auto bytes=EncodeScriptSavedState(item); const auto restored=DecodeScriptSavedState(bytes);
+        for (unsigned i=0; i<8u; ++i) Require(bytes[literal.mask+i]==static_cast<std::uint8_t>(mask>>(8u*i)),
+            "Live positive mask was complemented, truncated or changed endianness");
+        Require(restored.objects[0].state->frame->control->liveProbeMask==mask && EncodeScriptSavedState(restored)==bytes,
+            "Live probe high/low bits changed on roundtrip");
+    }
+    auto classBacked=saved; auto& classFrame=*classBacked.objects[0].state->frame;
+    classFrame.codePath="Fixture.Actor"; classFrame.localsCodePath.clear();
+    classFrame.control=StateControl{"Fixture.Actor",false,~std::uint64_t{0}};
+    const auto classDecoded=DecodeScriptSavedState(EncodeScriptSavedState(classBacked));
+    SameState(*classBacked.objects[0].state,*classDecoded.objects[0].state);
+    Require(classDecoded.objects[0].state->frame->localsCodePath.empty() && classDecoded.objects[0].state->frame->locals.empty(),
+        "Class-backed initialized frame invented local storage");
+    for (std::uint8_t latent=0; latent<=11u; ++latent) if (latent!=1u) {
+        auto item=saved; item.objects[0].state->frame->latent=static_cast<StateLatent>(latent);
+        item.objects[0].state->frame->control->codePresent=false;
+        item.objects[0].state->frame->statementIndex=std::numeric_limits<std::uint32_t>::max();
+        const auto restored=DecodeScriptSavedState(EncodeScriptSavedState(item));
+        SameState(*item.objects[0].state,*restored.objects[0].state);
+    }
+    // Explicitly retain legacy provenance within a v9 tree: no mask or selected
+    // identity is guessed for old frame/disabled records, or frameless actors.
+    auto mixed=Saved(); auto modern=saved.objects[0]; modern.path="Map.Modern"; mixed.objects.push_back(modern);
+    ScriptSavedObject dormant; dormant.path="Map.Dormant"; dormant.classPath="Fixture.Actor";
+    dormant.state=StateObject{}; dormant.state->hasStack=true; dormant.state->disabled["Waiting"]={"Tick"};
+    mixed.objects.push_back(dormant);
+    const auto mixedBytes=EncodeScriptSavedState(mixed); const auto restored=DecodeScriptSavedState(mixedBytes);
+    Require(mixedBytes[6]==9u && restored.objects.size()==4u && EncodeScriptSavedState(restored)==mixedBytes,
+        "Mixed modern/legacy/frameless codec9 was not deterministic");
+    for (const auto& object : mixed.objects) {
+        const auto found=std::find_if(restored.objects.begin(),restored.objects.end(),[&](const auto& item) {return item.path==object.path;});
+        Require(found!=restored.objects.end() && found->state.has_value()==object.state.has_value(),"Mixed optional state provenance changed");
+        if (object.state) SameState(*object.state,*found->state);
+    }
+    std::reverse(mixed.objects.begin(),mixed.objects.end());
+    Require(EncodeScriptSavedState(mixed)==mixedBytes,"Modern control changed canonical object order");
+    mixed.objects.erase(std::find_if(mixed.objects.begin(),mixed.objects.end(),[](const auto& object) {return object.path=="Map.Modern";}));
+    const auto legacyOnly=EncodeScriptSavedState(mixed);
+    Require(legacyOnly[6]==2u && !DecodeScriptSavedState(legacyOnly).objects[0].state->frame->control,
+        "Removing modern frame failed to restore legacy codec or invented control");
+    // Compose the complete pre-existing v8 payload with modern frame control.
+    auto composed=saved; auto& actor=composed.objects[0]; actor.clock=ActorAnimationClock{};
+    actor.lifecycle=ScriptSavedActorLifecycle{}; actor.lifecycle->children={"Map.Child"}; actor.latentTimeLeft=-0.25f;
+    composed.classDefaults.push_back({"Fixture.Actor",{{"Fixture.Actor.Health","Health",0,Integer(42)}}});
+    composed.births.push_back({"Map.Born","Fixture.Actor",17u,{}});
+    Ai::State manager; manager.ownerPath="Map.LevelInfo"; manager.levelPath="Map.MyLevel"; composed.aiManagers.push_back(manager);
+    composed.randomSeed=0x80000000u;
+    const auto allBytes=EncodeScriptSavedState(composed); const auto all=DecodeScriptSavedState(allBytes);
+    Require(allBytes[6]==9u && all.objects[0].clock && all.objects[0].lifecycle && all.objects[0].lifecycle->children==actor.lifecycle->children &&
+        all.objects[0].latentTimeLeft==-0.25f && all.classDefaults.size()==1u && all.births.size()==1u &&
+        all.aiManagers==composed.aiManagers && all.randomSeed==composed.randomSeed && EncodeScriptSavedState(all)==allBytes,
+        "Modern control lost composed animation/lifecycle/timer/default/birth/AI/random data");
+    SameState(*actor.state,*all.objects[0].state);
+}
+void InvalidModernControl() {
+    const auto wire=ModernLiteral();
+    for (std::size_t size=0; size<wire.bytes.size(); ++size) {
+        const Bytes truncated(wire.bytes.begin(),wire.bytes.begin()+size);
+        Reject([&] {DecodeScriptSavedState(truncated);},"Truncated codec9 accepted");
+    }
+    auto broken=wire.bytes; broken.push_back(0);
+    Reject([&] {DecodeScriptSavedState(broken);},"Trailing codec9 byte accepted");
+    for (const auto offset : {wire.control,wire.codePresent}) {
+        broken=wire.bytes; broken[offset]=2;
+        Reject([&] {DecodeScriptSavedState(broken);},"Invalid control/Code-presence boolean accepted");
+    }
+    broken=wire.bytes; broken[wire.stack]=0;
+    Reject([&] {DecodeScriptSavedState(broken);},"Modern frame without stack accepted");
+    broken=wire.bytes; broken[wire.overrideFrame]=0;
+    Reject([&] {DecodeScriptSavedState(broken);},"Modern frame without override accepted");
+    for (const auto& selected : {std::string(""),std::string("Bad\nNode"),std::string("Bad\0Node",8)}) {
+        const auto literal=ModernLiteral(true,selected);
+        Reject([&] {DecodeScriptSavedState(literal.bytes);},"Malformed modern selected identity accepted");
+    }
+    broken=wire.bytes;
+    broken.erase(broken.begin()+wire.control+1u,broken.begin()+wire.disabled);
+    broken[wire.control]=0;
+    Reject([&] {DecodeScriptSavedState(broken);},"Codec9 without any modern control accepted");
+    auto absent=Prefix(9); U32(absent,0); U32(absent,0); U32(absent,0); absent.push_back(0);
+    Reject([&] {DecodeScriptSavedState(absent);},"Empty codec9 without modern frames accepted");
+    broken=wire.bytes; broken[wire.disabled]=1;
+    Bytes disabled; Disabled(disabled,"Waiting",{});
+    broken.insert(broken.begin()+wire.disabled+4u,disabled.begin(),disabled.end());
+    Reject([&] {DecodeScriptSavedState(broken);},"Modern wire accepted even empty legacy disabled sets");
+    for (const std::uint8_t version : {1u,2u,3u,4u,5u,6u,7u,8u,10u,255u}) {
+        broken=wire.bytes; broken[6]=version;
+        Reject([&] {DecodeScriptSavedState(broken);},"Modern control accepted under incompatible version");
+    }
+    const auto saved=ModernSaved();
+    const auto rejectInput=[](const ScriptSavedState& item,const char* message) {
+        Reject([&] {EncodeScriptSavedState(item);},message);
+        ScriptStateLimits limits; ScriptStateDetail::Writer measured(limits,nullptr);
+        Reject([&] {measured.MeasureStateObject(*item.objects[0].state);},message);
+    };
+    auto item=saved; item.objects[0].state->hasStack=false; rejectInput(item,"Modern input without stack accepted");
+    item=saved; item.objects[0].state->frameOverride=false; rejectInput(item,"Modern input without override accepted");
+    item=saved; item.objects[0].state->frame->codePath.clear(); rejectInput(item,"Modern input without running Node accepted");
+    item=saved; item.objects[0].state->frame->control->selectedPath.clear(); rejectInput(item,"Modern input without selected StateNode accepted");
+    item=saved; item.objects[0].state->frame->control->selectedPath="Bad\nNode"; rejectInput(item,"Modern input invalid selected path accepted");
+    item=saved; item.objects[0].state->frame->latent=StateLatent::Stop; rejectInput(item,"Modern input synthetic Stop accepted");
+    item=saved; item.objects[0].state->disabled["Waiting"]={}; rejectInput(item,"Modern input legacy disabled sets accepted");
+    // Reader performs the same modern Stop/running-node validation, independently
+    // of the writer. These offsets belong to the fixed pre-control frame fields.
+    auto tail=Frame(0,1,7,"Fixture.Base.Running","Fixture.Locals.StartUp");
+    tail.push_back(1); String(tail,"Fixture.Derived.Selected"); tail.push_back(0);
+    tail.insert(tail.end(),8u,0); U32(tail,0);
+    Reject([&] {DecodeScriptSavedState(ControlStateOnly(tail));},"Modern wire synthetic Stop accepted");
+    tail=Frame(0,0,7,"","Fixture.Locals.StartUp"); tail.push_back(1); String(tail,"Fixture.Derived.Selected"); tail.push_back(0);
+    tail.insert(tail.end(),8u,0); U32(tail,0);
+    Reject([&] {DecodeScriptSavedState(ControlStateOnly(tail));},"Modern wire empty running Node accepted");
+    ScriptStateLimits measuredLimits; ScriptStateDetail::Writer measured(measuredLimits,nullptr); measured.State(saved);
+    ScriptStateLimits exact; exact.maxBytes=measured.measuredBudget().retained;
+    Require(EncodeScriptSavedState(saved,exact)==wire.bytes && EncodeScriptSavedState(DecodeScriptSavedState(wire.bytes,exact),exact)==wire.bytes,
+        "Exact retained modern-frame budget disagreed between codec passes");
+    --exact.maxBytes;
+    Reject([&] {EncodeScriptSavedState(saved,exact);},"Modern selected-node retained encode budget missing");
+    Reject([&] {DecodeScriptSavedState(wire.bytes,exact);},"Modern selected-node retained decode budget missing");
+    ScriptStateLimits stringLimit; stringLimit.maxStringBytes=22u; // Only selected path is longer.
+    Reject([&] {EncodeScriptSavedState(saved,stringLimit);},"Modern selected-node string encode budget missing");
+    Reject([&] {DecodeScriptSavedState(wire.bytes,stringLimit);},"Modern selected-node string decode budget missing");
+    ScriptStateDetail::Writer standalone(measuredLimits,nullptr); standalone.MeasureStateObject(*saved.objects[0].state);
+    const auto retained=standalone.measuredBudget().retained;
+    ScriptStateLimits cumulative; cumulative.maxBytes=retained*2u-1u;
+    ScriptStateDetail::Writer shared(cumulative,nullptr); shared.MeasureStateObject(*saved.objects[0].state);
+    Reject([&] {shared.MeasureStateObject(*saved.objects[0].state);},"Standalone modern selected/control budget did not accumulate");
 }
 void LegacyIdentity() {
     auto literal=Prefix(1); String(literal,"Map.A"); String(literal,"Fixture.Actor"); U32(literal,1);
@@ -311,6 +491,7 @@ void StandaloneMeasurement() {
 int main() {
     try {
         LegacyIdentity(); Roundtrips(); MalformedStreams(); InvalidInputsAndBudgets(); StandaloneMeasurement();
+        ModernControlRoundtrips(); InvalidModernControl();
         std::cout<<"PASS state-frame codec controls="<<checks<<" rejection controls="<<rejections
             <<"; structural continuation data only, no runtime schema/state scheduler implied\n";
         return 0;
