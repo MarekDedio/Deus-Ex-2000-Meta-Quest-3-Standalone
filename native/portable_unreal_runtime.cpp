@@ -14,6 +14,7 @@
 #include "quest_ai_event_state.h"
 #include "quest_script_random.h"
 #include "quest_actor_latent.h"
+#include "quest_actor_state_control.h"
 
 #include <memory>
 #include <algorithm>
@@ -106,6 +107,9 @@ public:
     // Nonserialized local-storage identity. References held by an executing
     // expression cannot silently address replacement state locals.
     std::uint64_t stateLocalsRevision{};
+    // Original state-changed / in-EndState flags, journaled with the frame.
+    // These control synchronous reentrancy, not a transition generation.
+    std::uint32_t stateTransitionFlags{};
     bool committedScriptState{};
     // Native ordered relationships are not inferred from arbitrary Owner/Base
     // assignments. Destroy removes the world slot, not the UObject lifetime.
@@ -1414,37 +1418,38 @@ public:
     }
     void GotoStateLabel(const std::string& receiver, const std::string& label, const bool transition) override {
         auto* actor = Object(receiver);
-        if (actor->stateObject && actor->stateObject->frame && actor->stateObject->frame->control)
-            throw std::runtime_error("Modern state label authoring awaits original transition/callback control");
-        auto& state = EnsureStateObject(actor);
-        if (!state.frameOverride || !state.frame || state.frame->codePath.empty())
-            throw std::runtime_error("State label has no running code");
-        const auto originalPath = state.frame->codePath;
-        // Original Core.dll GotoLabel clears the current latent action before
-        // searching, including an in-code goto whose label expression slept.
-        state.frame->latent = QuestVr::StateLatent::Continue;
-        const auto stateName = originalPath.substr(originalPath.find_last_of('.') + 1u);
-        const auto target = transition && QuestVr::ScriptDispatch::FoldName(label) == "none" ? "Begin" : label;
-        const auto position = [&](RuntimeObject* code) {
+        auto* frame = ControlFrame(actor);
+        if (!frame) return; // Original GotoLabel never manufactures a frame.
+        const auto normalized = label.empty() ? std::string{"None"} : label;
+        const auto target = transition && QuestVr::ScriptDispatch::FoldName(normalized) == "none" ? "Begin" : normalized;
+        if (QuestVr::StateNameEqual(target, "None")) { frame->control->codePresent = false; return; }
+        for (const auto& path : QuestVr::ScriptDispatch::SelectedNodeAncestry(DispatchGraph(),
+            actor->cls->reflection.objectPath, frame->control->selectedPath)) {
+            auto* code = Object(path);
+            if (!code->stateDescriptor) {
+                // Original GOTY Class scripts have no executable labels. Do
+                // not mistake their instance properties for state locals.
+                if (!StateMetadata(code)) throw std::runtime_error("Label ancestry is not State/Class");
+                continue;
+            }
             const auto program = StateProgram(code);
             const auto layout = QuestVr::Vm::AnalyzeProgram(*this, *program);
             const auto found = std::find_if(layout.labels.begin(), layout.labels.end(), [&](const auto& value) {
-                return QuestVr::ScriptDispatch::FoldName(value.name) == QuestVr::ScriptDispatch::FoldName(target);
+                return QuestVr::StateNameEqual(value.name, target);
             });
-            if (found == layout.labels.end()) return false;
+            if (found == layout.labels.end()) continue;
+            if (frame->localsCodePath.empty() && (!frame->locals.empty() || !program->variables.empty()))
+                throw std::runtime_error("State label requires unsupported absent persistent-local storage");
             const auto statement = std::lower_bound(layout.statementOffsets.begin(), layout.statementOffsets.end(), found->offset);
-            state.frame->codePath = code->reflection.objectPath;
-            state.frame->statementIndex = static_cast<std::uint32_t>(statement - layout.statementOffsets.begin());
-            return true;
-        };
-        if (!transition && position(Object(originalPath))) return;
-        for (auto* cls = actor->cls; cls; cls = cls->base) {
-            const auto* graphClass = DispatchGraph().FindClass(cls->reflection.objectPath);
-            const auto found = graphClass->states.find(QuestVr::ScriptDispatch::FoldName(stateName));
-            if (found != graphClass->states.end() && position(Object(found->second.path))) return;
+            frame->codePath = code->reflection.objectPath;
+            frame->statementIndex = static_cast<std::uint32_t>(statement - layout.statementOffsets.begin());
+            frame->control->codePresent = true;
+            ValidateStateBudget();
+            return;
         }
-        if (!transition) throw std::runtime_error("Could not find state label: " + target);
-        state.frame->latent = QuestVr::StateLatent::Stop;
+        frame->control->codePresent = false; // Miss retains Node, stale PC, locals, mask and timer.
+        __android_log_print(ANDROID_LOG_WARN, "quest_main", "DeusExQuest: state label %s not found on %s",
+            target.c_str(), receiver.c_str());
     }
     void Begin() override {
         if (transaction_) throw std::runtime_error("Portable actor VM nested host transaction");
@@ -1502,6 +1507,7 @@ public:
             entry.first->latentTimeLeft.swap(entry.second.latentTimeLeft);
             entry.first->stateObject.swap(entry.second.state);
             entry.first->stateLocalsRevision = entry.second.revision;
+            entry.first->stateTransitionFlags = entry.second.transitionFlags;
             entry.first->committedScriptState = entry.second.committed;
             entry.first->childActors.swap(entry.second.children);
             entry.first->basedActors.swap(entry.second.based);
@@ -1870,12 +1876,49 @@ public:
         };
         return std::make_unique<ActorCursor>(*this, cls.path, output, std::move(tag));
     }
+    std::optional<Value> CaptureNativeContext(const std::uint16_t index, const std::string& receiver,
+        const Function*) override {
+        if (index != 113u) return std::nullopt;
+        return Value::Text(Kind::Name, TransitionStateName(Object(receiver)));
+    }
+    Evaluation NativeWithContext(const std::uint16_t index, const std::string& receiver,
+        const std::vector<Evaluation>& arguments, const Function* declaration, QuestVr::Vm::Execution& execution,
+        const std::optional<Value>& context) override {
+        if (index != 113u) return NativeWithExecution(index, receiver, arguments, declaration, execution);
+        auto* actor = Object(receiver);
+        if ((!actor->active && !actor->worldRemoved) || !IsDerivedFromPath(actor->cls, "Engine.Actor"))
+            throw std::runtime_error("State native receiver is not an active Engine.Actor");
+        if (arguments.size() > 2u || !context || context->kind != Kind::Name)
+            throw std::runtime_error("GotoState requires its detached pre-argument Name context");
+        const auto name = [&](const std::size_t slot, const std::string& fallback) {
+            if (slot >= arguments.size()) return fallback;
+            const auto value = arguments[slot].Load();
+            if (value.kind == Kind::Nothing) return fallback;
+            if (value.kind != Kind::Name || value.text.size() > 8192u || value.text.find('\0') != std::string::npos ||
+                std::any_of(value.text.begin(), value.text.end(), [](const unsigned char c) { return c < 32u || c > 126u; }))
+                throw std::runtime_error("GotoState requires a bounded ASCII Name");
+            return value.text.empty() ? std::string{"None"} : value.text;
+        };
+        const auto requested = name(0u, context->text);
+        const auto label = name(1u, "None");
+        // execGotoState compares against its PRE-argument capture, not the
+        // selection that optional argument callbacks may have left behind.
+        bool positionLabel = QuestVr::StateNameEqual(requested, context->text);
+        if (!positionLabel) {
+            StateControlOperations operations{*this, actor, execution};
+            positionLabel = QuestVr::OriginalGotoState(operations, requested) == QuestVr::StateEntryResult::Entered;
+        }
+        if (positionLabel) GotoStateLabel(receiver, label, true); // AFTER BeginState, unless preempted.
+        ValidateStateBudget();
+        return {};
+    }
     Evaluation NativeWithExecution(const std::uint16_t index, const std::string& receiver,
         const std::vector<Evaluation>& arguments, const Function* declaration, QuestVr::Vm::Execution& execution) override {
         if (index == 278u) return SpawnNative(receiver, arguments, execution);
         if (index == 272u || index == 298u || index == 279u)
             return LifecycleNative(index, receiver, arguments, execution);
-        if (index != 113u && index != 117u && index != 118u) return Native(index, receiver, arguments, declaration);
+        if (index == 113u) throw std::runtime_error("GotoState bypassed its pre-argument context");
+        if (index != 117u && index != 118u) return Native(index, receiver, arguments, declaration);
         auto* actor = Object(receiver);
         if ((!actor->active && !actor->worldRemoved) || !IsDerivedFromPath(actor->cls, "Engine.Actor"))
             throw std::runtime_error("State native receiver is not an active Engine.Actor");
@@ -1898,6 +1941,9 @@ public:
             // probes300..363. Nonprobe names (including LongFall) are no-ops,
             // not arbitrary function-disable storage or fabricated frames.
             if (!QuestVr::ScriptDispatch::EventProbeIndex(event)) return {};
+            if (actor->stateObject && actor->stateObject->frameOverride && actor->stateObject->frame &&
+                !actor->stateObject->frame->control)
+                throw std::runtime_error("Ambiguous legacy probe control requires an explicit fresh-world reset");
             const bool ownedFrame = actor->stateObject && actor->stateObject->frameOverride ?
                 actor->stateObject->frame.has_value() : actor->serializedStack.has_value();
             if (!ownedFrame) return {}; // Original native117/118 also require a StateFrame.
@@ -1929,51 +1975,6 @@ public:
             ValidateStateBudget();
             return {};
         }
-        if (arguments.size() > 2u) throw std::runtime_error("GotoState argument count is invalid");
-        if (actor->stateObject && actor->stateObject->frame && actor->stateObject->frame->control)
-            throw std::runtime_error("Modern GotoState authoring awaits original transition/callback control");
-        const auto old = CurrentDispatchContext(actor);
-        const auto requested = name(0u, old.stateName);
-        const auto label = name(1u, "None");
-        const auto selected = QuestVr::ScriptDispatch::ResolveState(DispatchGraph(), actor->cls->reflection.objectPath, requested);
-        const std::string selectedPath = selected.value_or(std::string{});
-        auto& state = EnsureStateObject(actor);
-        // Internal GotoState cancels a wait before EndState/BeginState. Its
-        // actor-owned timer is independent and is deliberately not cleared.
-        if (old.codePath != selectedPath && state.frameOverride && state.frame)
-            state.frame->latent = QuestVr::StateLatent::Continue;
-        if (!old.codePath.empty() && old.codePath != selectedPath)
-            static_cast<void>(execution.CallEvent(receiver, "EndState", true, {}));
-        if (!state.frameOverride) {
-            QuestVr::StateFrame frame;
-            // The immutable authored class-backed frame is stopped with PC 0.
-            // Its unsupported native class locals are never fabricated; changed
-            // state entry below replaces them before executable state code.
-            frame.latent = old.codePath.empty() ? QuestVr::StateLatent::Continue : QuestVr::StateLatent::Stop;
-            if (!old.codePath.empty() && old.codePath == selectedPath) {
-                frame.codePath = old.codePath; frame.localsCodePath = old.codePath;
-                for (const auto& property : StateProgram(Object(old.codePath))->variables)
-                    frame.locals.push_back({property.key, std::vector<Value>(property.arrayDimension, property.zero)});
-            }
-            state.frame = std::move(frame); state.frameOverride = true;
-        } else if (!state.frame) state.frame.emplace();
-        if (old.codePath != selectedPath) {
-            if (actor->stateLocalsRevision == std::numeric_limits<std::uint64_t>::max())
-                throw std::runtime_error("State local revision budget exceeded");
-            ++actor->stateLocalsRevision;
-            state.frame->codePath = selectedPath; state.frame->localsCodePath = selectedPath;
-            state.frame->locals.clear();
-            if (selected) {
-                for (const auto& property : StateProgram(Object(*selected))->variables)
-                    state.frame->locals.push_back({property.key, std::vector<Value>(property.arrayDimension, property.zero)});
-            }
-        }
-        if (selected) {
-            state.hasStack = true;
-            GotoStateLabel(receiver, label, true);
-        }
-        ValidateStateBudget();
-        if (selected && old.codePath != selectedPath) static_cast<void>(execution.CallEvent(receiver, "BeginState", true, {}));
         return {};
     }
     Value Read(RuntimeObject* object, const Property& property, const std::uint32_t index,
@@ -2174,6 +2175,10 @@ private:
             values[3] : Read(spawner, PropertyNamed(spawner, "Location"), 0u);
         auto rotation = values.size() > 4u && values[4].kind != Kind::Nothing ?
             values[4] : Read(spawner, PropertyNamed(spawner, "Rotation"), 0u);
+        // execSpawn captures Instigator after optional argument evaluation and
+        // passes it into Level::SpawnActor. SetOwner callbacks may mutate the
+        // spawner before SpawnActor publishes that captured value on the birth.
+        const auto instigator = Read(spawner, PropertyNamed(spawner, "Instigator"), 0u);
         if (location.kind != Kind::Vector || rotation.kind != Kind::Rotator)
             throw std::runtime_error("Spawn Location/Rotation have invalid concrete kinds");
         for (const auto component : location.vector)
@@ -2225,12 +2230,13 @@ private:
         set("Outer",Value::Text(Kind::Object,actor->reflection.outerPath));
         set("XLevel",xlevelValue); set("Level",Value::Text(Kind::Object,level->reflection.objectPath));
         set("Tag",Value::Text(Kind::Name,tag)); set("bTicked",Read(spawner,PropertyNamed(spawner,"bTicked"),0u));
-        set("Instigator",Read(spawner,PropertyNamed(spawner,"Instigator"),0u));
         set("Brush",Value::Text(Kind::Object,{})); set("Location",location); set("OldLocation",location); set("Rotation",rotation);
         auto region = Read(actor,PropertyNamed(actor,"Region"),0u,true);
         region.fields.at("zone") = Value::Text(Kind::Object,level->reflection.objectPath); set("Region",region);
         TouchCollision(); RegisterCollisionActor(actor,persistentActorCollision);
         SetOwner(actor,owner,execution);
+        set("Instigator",instigator);
+        InitializeActorExecution(actor);
         if (!QuestVr::Vm::ToBool(Read(level,PropertyNamed(level,"bBegunPlay"),0u))) return {Value::Text(Kind::Object,path),{}};
         for (const auto* event : {"Spawned","PreBeginPlay","BeginPlay"})
             static_cast<void>(execution.CallEvent(path,event,true,{}));
@@ -2433,6 +2439,7 @@ private:
         std::optional<QuestVr::StateObject> state;
         std::optional<float> latentTimeLeft;
         std::uint64_t revision{};
+        std::uint32_t transitionFlags{};
         bool committed{};
         std::vector<RuntimeObject*> children, based;
         std::array<bool, 4u> touchSent{};
@@ -2947,7 +2954,7 @@ private:
         if (saved_.find(object) == saved_.end()) {
             if (saved_.size() >= 4096u) throw std::runtime_error("VM touched actor budget exceeded");
             saved_.emplace(object, Before{object->scriptValues, object->classDefaultValues, object->animationClock, object->stateObject, object->latentTimeLeft,
-                object->stateLocalsRevision, object->committedScriptState, object->childActors, object->basedActors,
+                object->stateLocalsRevision, object->stateTransitionFlags, object->committedScriptState, object->childActors, object->basedActors,
                 object->touchEventSent, object->committedLifecycle, object->worldRemoved});
         }
     }
@@ -3171,6 +3178,103 @@ private:
         if (measured.measuredBudget().nodes > limits.totalValueNodes - defaults.nodes)
             throw std::runtime_error("Persistent combined default/state value-node budget exceeded");
     }
+    bool HasStateFrame(RuntimeObject* object) const {
+        return object->stateObject && object->stateObject->frameOverride ?
+            object->stateObject->frame.has_value() : object->serializedStack.has_value();
+    }
+    std::string TransitionStateName(RuntimeObject* object) {
+        const auto current = CurrentDispatchContext(object, true);
+        if (!current.framePresent) return "None";
+        if (!current.exactSelected)
+            throw std::runtime_error("Ambiguous legacy state control requires an explicit fresh-world reset");
+        return LowerAscii(current.selectedPath) == LowerAscii(object->cls->reflection.objectPath) ? "None" : current.stateName;
+    }
+    QuestVr::StateFrame* ControlFrame(RuntimeObject* object) {
+        if (!HasStateFrame(object)) return nullptr;
+        if (object->stateObject && object->stateObject->frameOverride) {
+            if (!object->stateObject->frame->control)
+                throw std::runtime_error("Ambiguous legacy state control requires an explicit fresh-world reset");
+            Touch(object); object->committedScriptState = true;
+            object->stateObject->frame->latent = QuestVr::StateLatent::Continue;
+            return &*object->stateObject->frame;
+        }
+        const auto current = CurrentDispatchContext(object, true);
+        if (!current.exactSelected || current.selectedPath.empty() || current.runningPath.empty() ||
+            !StateMetadata(Object(current.runningPath)))
+            throw std::runtime_error("Original frame control lacks exact State/Class identities");
+        if (object->stateObject) {
+            for (const auto& [state, names] : object->stateObject->disabled) {
+                if (!names.empty() && !QuestVr::StateNameEqual(state, current.stateName))
+                    throw std::runtime_error("Legacy dormant probe overlay has an unrelated state identity");
+                for (const auto& name : names)
+                    if (!QuestVr::ScriptDispatch::EventProbeIndex(name))
+                        throw std::runtime_error("Legacy dormant probe overlay has an unrecognized probe");
+            }
+        }
+        // Only audited clearing operations enter here. Raw native latent IDs
+        // (including unknown nonzero stopped-frame values) are cancelled, not
+        // guessed into portable latent ordinals. Dormant 117/118 retain them.
+        QuestVr::StateFrame frame;
+        frame.codePath = current.runningPath;
+        frame.control = QuestVr::StateControl{current.selectedPath, false, *current.liveProbeMask};
+        QuestVr::StateObject state;
+        state.hasStack = state.frameOverride = true; state.frame = std::move(frame);
+        Touch(object); object->stateObject = std::move(state); object->committedScriptState = true;
+        return &*object->stateObject->frame;
+    }
+    void InitializeActorExecution(RuntimeObject* actor) {
+        if (!actor->cls || !actor->cls->classDescriptor)
+            throw std::runtime_error("Actor InitExecution requires its authored Class");
+        if (actor->stateLocalsRevision == std::numeric_limits<std::uint64_t>::max())
+            throw std::runtime_error("State local revision budget exceeded");
+        Touch(actor);
+        QuestVr::StateFrame frame;
+        frame.codePath = actor->cls->reflection.objectPath;
+        frame.control = QuestVr::StateControl{frame.codePath, false, ~std::uint64_t{0}};
+        QuestVr::StateObject state;
+        state.hasStack = state.frameOverride = true; state.frame = std::move(frame);
+        actor->stateObject = std::move(state); ++actor->stateLocalsRevision;
+        actor->stateTransitionFlags = 0u; actor->committedScriptState = true;
+        const auto property = PropertyNamed(actor, "ObjectFlags");
+        ReferenceFor(actor, property, 0u, false)->write(Value::Integer(
+            QuestVr::Vm::ToInt(Read(actor, property, 0u)) | 0x02000000));
+        // Continue is a portable policy while Code is null, NOT a claim about
+        // the original constructor's unassigned native latent slot. Both state
+        // entry and relabel clear that slot before enabling executable code.
+    }
+    struct StateControlOperations {
+        PortableActorVmHost& host;
+        RuntimeObject* actor;
+        QuestVr::Vm::Execution& execution;
+        bool HasFrame() const { return host.HasStateFrame(actor); }
+        void CancelLatent() { static_cast<void>(host.ControlFrame(actor)); }
+        std::string StateName() { return host.TransitionStateName(actor); }
+        QuestVr::StateSelection Resolve(const std::string& requested) {
+            const auto selected = QuestVr::ScriptDispatch::ResolveState(DispatchGraph(), actor->cls->reflection.objectPath, requested);
+            auto* node = selected ? host.Object(*selected) : actor->cls;
+            const auto* metadata = StateMetadata(node);
+            if (!metadata) throw std::runtime_error("State selection is not State/Class");
+            return {node->reflection.objectPath, selected ? node->reflection.objectPath.substr(node->reflection.objectPath.find_last_of('.') + 1u) : "None",
+                (actor->cls->classDescriptor->state.probeMask | metadata->probeMask) & metadata->ignoreMask};
+        }
+        bool IsProbing(const std::string& event) {
+            const auto current = CurrentDispatchContext(actor);
+            return QuestVr::ScriptDispatch::IsEnabled(event, current.classProbeMask, current.codeMasks, current.disabledNames, current.liveProbeMask);
+        }
+        std::uint32_t Flags() const { return actor->stateTransitionFlags; }
+        void ClearFlags(const std::uint32_t bits) noexcept { actor->stateTransitionFlags &= ~bits; }
+        void SetFlags(const std::uint32_t bits) noexcept { actor->stateTransitionFlags |= bits; }
+        void CallEvent(const std::string& event) {
+            static_cast<void>(execution.CallEvent(actor->reflection.objectPath, event, true, {}));
+        }
+        void Publish(const QuestVr::StateSelection& selection) {
+            auto& frame = *actor->stateObject->frame;
+            frame.codePath = selection.path;
+            frame.control->selectedPath = selection.path;
+            frame.control->codePresent = false;
+            frame.control->liveProbeMask = selection.liveProbeMask;
+        }
+    };
     QuestVr::StateObject& EnsureStateObject(RuntimeObject* object) {
         Touch(object);
         if (!object->stateObject) {
@@ -3734,7 +3838,7 @@ public:
         if (exported == mapExports_.end() && !IsBirth(saved.path)) throw std::runtime_error("Script save state actor is unavailable in its map");
         const bool authoredHasStack = exported != mapExports_.end() &&
             AnyFlags(Table(mapPath_).exports.at(exported->second).ObjFlags, ObjectFlags::HasStack);
-        // HasStack is established by authored load or an actual GotoState. A
+        // HasStack is established by authored load or owned InitExecution. A
         // portable override must not erase an existing object's stack flag.
         if (authoredHasStack && !state.hasStack)
             throw std::runtime_error("Script save state clears an authored HasStack flag");
@@ -3788,8 +3892,16 @@ public:
                 })) throw std::runtime_error("Script save running Node is outside selected-node ancestry");
             }
             if (frame.localsCodePath.empty()) {
-                if (frame.control->codePresent || !frame.locals.empty())
+                if (!frame.locals.empty())
                     throw std::runtime_error("Script save modern state lacks its retained local schema");
+                if (frame.control->codePresent) {
+                    const auto program = host_.StateProgram(code);
+                    if (!program->variables.empty())
+                        throw std::runtime_error("Script save runnable state requires absent persistent-local storage");
+                    const auto layout = QuestVr::Vm::AnalyzeProgram(host_, *program);
+                    if (frame.statementIndex > layout.statementOffsets.size())
+                        throw std::runtime_error("Script save running state PC exceeds the program's terminal ordinal");
+                }
                 return normalized; // Null Code retains an unconstrained stale ordinal.
             }
         }
@@ -6426,6 +6538,7 @@ static bool ReadPortableRuntimeState(const std::string& path, const bool apply, 
         for (RuntimeObject* object : persistentRuntime->get()->exports) {
             object->scriptValues.clear(); object->classDefaultValues.clear();
             object->animationClock.reset(); object->stateObject.reset(); object->committedScriptState = false;
+            object->stateTransitionFlags = 0u;
             object->latentTimeLeft.reset();
             object->childActors.clear(); object->basedActors.clear(); object->touchEventSent = {};
             object->committedLifecycle = false; object->worldRemoved = false;

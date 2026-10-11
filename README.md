@@ -64,8 +64,10 @@ callback ancestry. Full state identity/control and campaign bootstrap remain
 unfinished; recorded headset test receipts identify previously accepted builds.
 The [independent actor-state model](docs/STATE-CONTROL-MODEL.md) adds exact
 selected/running identities, nullable Code, live masks and codec9/envelope12.
-Original transition authoring and map-wide startup remain the next integration
-steps; legacy frames are not silently upgraded.
+Original transition authoring now uses callback flags, pre-argument capture and
+selected-node label ancestry; owned Spawn frame initialization is wired.
+Map-wide startup remains required; ambiguous legacy frames are not silently
+upgraded. These shared controls do not establish a running original campaign.
 The [Quest test build notes](docs/QUEST-TEST-BUILD.md) record an earlier installed
 test build, not a permanent deployment freeze. At the user's standing request,
 every successful new APK build now automatically installs on the connected,

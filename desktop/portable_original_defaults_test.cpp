@@ -66,7 +66,7 @@ std::uint32_t Word(const Bytes& bytes, std::size_t offset) {
 std::size_t PrefixSize(const Bytes& bytes) {
     Require(Word(bytes, 0u) == 0x53515844u, "Independent runtime checkpoint magic mismatch");
     const auto version = Word(bytes, 4u);
-    Require(version >= 3u && version <= 7u, "Independent runtime checkpoint version mismatch");
+    Require(version >= 3u && version <= 12u, "Independent runtime checkpoint version mismatch");
     std::size_t cursor = 8u;
     const auto word = [&]() { const auto value = Word(bytes, cursor); cursor += 4u; return value; };
     const auto skip = [&](std::size_t length) {
@@ -95,10 +95,10 @@ QuestVr::ScriptSavedState SavedScript(const Bytes& bytes) {
 Bytes Envelope(const Bytes& legacy, const QuestVr::ScriptSavedState& state) {
     Require(Word(legacy, 0u) == 0x53515844u && Word(legacy, 4u) == 3u, "Generated preconditions need untouched authored v3 prefix");
     auto bytes = legacy;
-    const bool hasState = std::any_of(state.objects.begin(), state.objects.end(), [](const auto& object) { return object.state.has_value(); });
-    const bool hasLifecycle = std::any_of(state.objects.begin(), state.objects.end(), [](const auto& object) { return object.lifecycle.has_value(); });
-    bytes[4u] = static_cast<std::uint8_t>(hasLifecycle ? 7u : !state.classDefaults.empty() ? 6u : hasState ? 5u : 4u);
     const auto blob = QuestVr::EncodeScriptSavedState(state);
+    Require(blob.size() > 6u && blob.at(6u) >= 1u && blob.at(6u) <= 9u,
+        "Generated preconditions selected an unknown script codec version");
+    bytes[4u] = static_cast<std::uint8_t>(3u + blob.at(6u));
     for (unsigned i = 0u; i < 4u; ++i) bytes.push_back(static_cast<std::uint8_t>(blob.size() >> (8u * i)));
     bytes.insert(bytes.end(), blob.begin(), blob.end());
     return bytes;

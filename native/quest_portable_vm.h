@@ -123,8 +123,10 @@ public:
     // Read-only event/function eligibility, before any callee argument/local/
     // native work. The permissive default preserves existing host behavior.
     virtual bool CanCall(const Function&, const std::string&) { return true; }
-    // Callable resolution may return only path/source identity. Preparation
-    // follows argument evaluation and the fresh eligibility check.
+    // Script callable resolution may retain only path/source identity. Native
+    // declarations also retain immutable flags/index (needed before arguments
+    // for lazy operators and entry capture). Preparation follows argument
+    // evaluation and the fresh eligibility check; it cannot swap native identity.
     virtual std::shared_ptr<const Function> PrepareFunction(const Function& identity,
         const std::string&) { return std::make_shared<Function>(identity); }
     virtual std::shared_ptr<const Function> ResolveEvent(const std::string&,
@@ -158,6 +160,17 @@ public:
     virtual Evaluation NativeWithExecution(std::uint16_t index, const std::string& receiver,
         const std::vector<Evaluation>& arguments, const Function* declaration, Execution&) {
         return Native(index, receiver, arguments, declaration);
+    }
+    // A detached, read-only native-entry snapshot taken BEFORE argument
+    // expressions. Nested calls own independent snapshots; hosts must not
+    // materialize/mutate a state frame while capturing this context.
+    virtual std::optional<Value> CaptureNativeContext(std::uint16_t, const std::string&, const Function*) {
+        return std::nullopt;
+    }
+    virtual Evaluation NativeWithContext(std::uint16_t index, const std::string& receiver,
+        const std::vector<Evaluation>& arguments, const Function* declaration, Execution& execution,
+        const std::optional<Value>&) {
+        return NativeWithExecution(index, receiver, arguments, declaration, execution);
     }
     // Iterator factories may retain these guarded aliases only within the
     // enclosing synchronous VM frame. Their lifetime never crosses Execute /

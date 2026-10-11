@@ -49,18 +49,19 @@ Original Core/Engine disassembly distinguishes selected StateNode, running
 Node, nullable Code and a live positive ProbeMask. Dormant package masks and
 frameless probing are corrected. The [modern representation](STATE-CONTROL-MODEL.md)
 now separates these identities, persists the live mask and fixes modern Stop,
-queries, eligibility and slice throttling. Production transitions still author
-legacy frames with conflated identities and per-state negative records.
+queries, eligibility and slice throttling. Production transitions now author
+modern frames with original callback flags, pre-argument wrapper capture and
+selected-node label search. Spawn initializes its owned class-backed execution
+frame after SetOwner, including before begun play. These shared controls do not
+themselves start the world.
 
 The shared [original dispatch graph](ORIGINAL-STATE-DISPATCH.md) now preserves
 actual Children/Next Auto order and explicit state SuperField callback ancestry.
 Inherited Auto paths are not re-resolved to derived same-name overrides. This
 corrects lookup metadata, not the remaining frame/control integration below.
 
-Before connecting automatic simulation, switch production authoring together
-with original callback/preemption order, selected-node label ancestry and
-null-Code label-miss semantics. Modern authoring remains explicitly refused
-until that switch. Missing behavior must report
+Before connecting automatic simulation, complete original world InitExecution
+and captured actor startup phases, plus the dependencies above. Missing behavior must report
 an actual actor/function/PC failure, not become a successful no-op. Detailed
 read-only evidence is in the ignored
 `artifacts/landing-state-20261010/original-state-identity-audit.md` and its

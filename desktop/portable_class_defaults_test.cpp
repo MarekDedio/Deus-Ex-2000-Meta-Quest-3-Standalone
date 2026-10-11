@@ -410,8 +410,18 @@ void Synthetic() {
     Same(Instance("Base1","CollisionHeight"),Value::Float(-8.25f),"Native 283 incorrectly clamped height");
     Require(LoadPortableRuntimeState((fixture.directory/"NativeOnly.sav").string()),"Native-only v4 restore failed");
     Require(fixture.Snapshot("NativeRoundTrip")==nativeOnly,"Native-only v4 restore was not canonical");
-    Call("Base1","ClearState"); const auto stateOnly=fixture.Snapshot("StateOnly");
-    Require(stateOnly[4u]==5u && SavedScript(stateOnly).objects[0].state.has_value(),"Actual GotoState(None) did not produce legacy v5 state capture");
+    Call("Base1","ClearState");
+    Require(fixture.Snapshot("FramelessClearState")==nativeOnly,
+        "Actual GotoState(None) fabricated a frame on a frameless actor");
+    // Retain a generated legacy v5 payload solely to exercise old-checkpoint
+    // replacement below. Native GotoState must not author this ambiguous frame.
+    auto legacyState=nativeScript;
+    legacyState.objects[0].state.emplace();
+    legacyState.objects[0].state->frameOverride=true;
+    legacyState.objects[0].state->frame.emplace();
+    const auto stateOnly=Envelope(nativeOnly,legacyState,5u);
+    Require(SavedScript(stateOnly).objects[0].state.has_value(),
+        "Generated legacy v5 compatibility fixture lost its frame");
     Require(LoadPortableRuntimeState((fixture.directory/"Legacy.sav").string()),"Native/state fixture cleanup failed");
     Same(Instance("Base1","CollisionRadius"),Value::Float(12.5f),"Legacy baseline restore retained native radius");
     Same(Cdo("Base","Counter"),Value::Integer(10),"Base default mismatch"); Same(Cdo("Derived","Counter"),Value::Integer(20),"Derived default mismatch");

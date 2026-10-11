@@ -2,6 +2,7 @@
 #include "GC/GC.h"
 #include "portable_unreal_runtime.h"
 #include "quest_script_state.h"
+#include "quest_script_dispatch.h"
 
 #include <algorithm>
 #include <chrono>
@@ -287,7 +288,7 @@ std::uint32_t Read32(const Bytes& bytes, std::size_t& cursor) {
 }
 std::size_t PrefixSize(const Bytes& bytes) {
     std::size_t cursor{}; Require(Read32(bytes, cursor) == 0x53515844u, "Independent lifecycle runtime magic mismatch");
-    const auto version = Read32(bytes, cursor); Require(version >= 1u && version <= 7u, "Independent lifecycle runtime envelope version mismatch");
+    const auto version = Read32(bytes, cursor); Require(version >= 1u && version <= 12u, "Independent lifecycle runtime envelope version mismatch");
     const auto skipString = [&]() {
         const auto size = Read32(bytes, cursor); Require(cursor <= bytes.size() && size <= bytes.size() - cursor, "Independent lifecycle string exceeds checkpoint"); cursor += size;
     };
@@ -308,10 +309,11 @@ QuestVr::ScriptSavedState Decode(const Bytes& bytes) {
     Require(size == bytes.size() - cursor, "Independent lifecycle trailer size mismatch");
     return QuestVr::DecodeScriptSavedState(Bytes(bytes.begin() + static_cast<std::ptrdiff_t>(cursor), bytes.end()));
 }
-Bytes Envelope(const Bytes& prefixSource, const QuestVr::ScriptSavedState& script, std::uint32_t version = 7u) {
+Bytes Envelope(const Bytes& prefixSource, const QuestVr::ScriptSavedState& script, std::uint32_t version = 0u) {
     const auto prefix = PrefixSize(prefixSource);
-    Bytes bytes(prefixSource.begin(), prefixSource.begin() + static_cast<std::ptrdiff_t>(prefix)); Replace32(bytes, 4u, version);
-    const auto blob = QuestVr::EncodeScriptSavedState(script); U32(bytes, static_cast<std::uint32_t>(blob.size())); Append(bytes, blob); return bytes;
+    Bytes bytes(prefixSource.begin(), prefixSource.begin() + static_cast<std::ptrdiff_t>(prefix));
+    const auto blob = QuestVr::EncodeScriptSavedState(script); Replace32(bytes, 4u, version ? version : 3u + blob.at(6u));
+    U32(bytes, static_cast<std::uint32_t>(blob.size())); Append(bytes, blob); return bytes;
 }
 Bytes OldEmptyEnvelope(std::uint32_t version) {
     Require(version >= 1u && version <= 3u, "Generated old lifecycle envelope version is invalid");
@@ -346,7 +348,7 @@ void SetSavedProperty(QuestVr::ScriptSavedObject& object, const std::string& nam
     else found->value = std::move(value);
 }
 void LoadScript(const Fixture& fixture, const Bytes& prefix, const QuestVr::ScriptSavedState& script, const std::string& label,
-    std::uint32_t version = 7u) {
+    std::uint32_t version = 0u) {
     const auto path = fixture.directory / (label + ".sav"); WriteBytes(path, Envelope(prefix, script, version));
     Require(ValidatePortableRuntimeState(path.string(), "LifecycleFixture"), "Generated lifecycle payload did not validate: " + label);
     Require(LoadPortableRuntimeState(path.string()), "Generated lifecycle payload did not load: " + label);
@@ -356,13 +358,24 @@ void OwnNullCodeFrame(const Fixture& fixture, const std::string& actor) {
     QuestVr::ScriptSavedState script; script.mapName = "LifecycleFixture";
     QuestVr::ScriptSavedObject object; object.path = Path(actor); object.classPath = "LifecycleClasses.Probe";
     object.state.emplace(); object.state->hasStack = true; object.state->frameOverride = true;
-    object.state->frame.emplace(); // A real owned null-code frame, not invented state bytecode.
+    object.state->frame.emplace(); // Generated modern InitExecution-shaped frame, not invented bytecode.
+    object.state->frame->codePath = object.classPath;
+    object.state->frame->control = QuestVr::StateControl{object.classPath, false, ~std::uint64_t{0u}};
     script.objects.push_back(std::move(object));
-    LoadScript(fixture, fixture.legacy, script, "OwnedNullCodeFrame" + actor, 5u);
+    LoadScript(fixture, fixture.legacy, script, "OwnedNullCodeFrame" + actor);
     const auto state = ReadPortableActorStateObject(Path(actor));
-    Require(state && state->hasStack && state->frameOverride && state->frame && state->frame->codePath.empty() &&
-        state->frame->localsCodePath.empty() && state->frame->locals.empty(), "Typed checkpoint did not establish the requested owned null-code frame");
+    Require(state && state->hasStack && state->frameOverride && state->frame && state->frame->codePath == "LifecycleClasses.Probe" &&
+        state->frame->control && state->frame->control->selectedPath == "LifecycleClasses.Probe" && !state->frame->control->codePresent &&
+        state->frame->control->liveProbeMask == ~std::uint64_t{0u} && state->disabled.empty() &&
+        state->frame->localsCodePath.empty() && state->frame->locals.empty(), "Typed checkpoint did not establish the requested modern owned null-code frame");
     Require(!ReadPortableActorSerializedStack(Path(actor)), "Owned portable frame altered immutable authored stack metadata");
+}
+bool ProbeEnabled(const std::string& actor, const std::string& event) {
+    const auto context = ReadPortableActorDispatchContext(Path(actor));
+    Require(context.liveProbeMask.has_value() && context.disabledNames.empty(),
+        "Modern owned frame lost its positive probe mask or invented a legacy negative gate");
+    return QuestVr::ScriptDispatch::IsEnabled(event, context.classProbeMask, context.codeMasks,
+        context.disabledNames, context.liveProbeMask);
 }
 void RefusedScript(const Fixture& fixture, const Bytes& prefix, QuestVr::ScriptSavedState script, const std::string& label) {
     const auto before = fixture.Snapshot("BeforeBadCheckpoint");
@@ -571,12 +584,12 @@ void OwnerTests(Fixture& fixture) {
     Require(Count("ParentA", "Gained") == 1 && Life(Decode(fixture.Snapshot("FramelessOwnerCallback")), "ParentA").children.size() == 1u &&
         !ReadPortableActorStateObject(Path("ParentA")), "Frameless recognized-probe Disable suppressed the actual owner relation/callback");
     fixture.Reset(); OwnNullCodeFrame(fixture, "ParentA"); Call("ParentA", "DisableEvent", {Name("gAiNeDcHiLd")});
-    Require(ReadPortableActorDispatchContext(Path("ParentA")).disabledNames.contains("gainedchild"), "Owned-frame Disable did not retain its actual probe bit gate");
+    Require(!ProbeEnabled("ParentA", "GainedChild"), "Owned-frame Disable did not clear its actual positive probe bit");
     Call("Child", "Own", {Object("ParentA")});
     Require(Count("ParentA", "Gained") == 0 && Life(Decode(fixture.Snapshot("OwnerDisabled")), "ParentA").children.size() == 1u,
         "Disabled GainedChild suppressed the owner relation itself or ignored event eligibility");
     Call("ParentA", "EnableEvent", {Name("GAINEDCHILD")}); Call("Child", "Own", {Object("ParentA")});
-    Require(Count("ParentA", "Gained") == 1 && !ReadPortableActorDispatchContext(Path("ParentA")).disabledNames.contains("gainedchild"),
+    Require(Count("ParentA", "Gained") == 1 && ProbeEnabled("ParentA", "GainedChild"),
         "Owned-frame Enable failed to restore the recognized GainedChild callback");
     fixture.Reset();
 }
@@ -760,7 +773,7 @@ void DestroyTests(Fixture& fixture) {
     Require(QuestVr::Vm::ToBool(Call("Victim", "Die").value) && Count("Victim", "DestroyedCalls") == 1 && !Published("Victim"),
         "Frameless recognized-probe Disable suppressed native destruction or its actual Destroyed callback");
     fixture.Reset(); OwnNullCodeFrame(fixture, "Victim"); Call("Victim", "DisableEvent", {Name("Destroyed")});
-    Require(ReadPortableActorDispatchContext(Path("Victim")).disabledNames.contains("destroyed"), "Owned-frame Destroyed Disable did not retain its probe gate");
+    Require(!ProbeEnabled("Victim", "Destroyed"), "Owned-frame Destroyed Disable did not clear its positive probe bit");
     Require(QuestVr::Vm::ToBool(Call("Victim", "Die").value), "Disabled Destroyed prevented native Destroy");
     Require(Count("Victim", "DestroyedCalls") == 0 && !Published("Victim"), "Destroy ignored disabled event mask or suppressed world removal");
     fixture.Reset(); Call("Victim", "SetBegun", {Boolean(false)}); Require(QuestVr::Vm::ToBool(Call("Victim", "Die").value), "Before-BeginPlay Destroy did not perform native destruction");

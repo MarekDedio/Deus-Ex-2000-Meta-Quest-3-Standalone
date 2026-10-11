@@ -264,7 +264,7 @@ std::uint32_t Read32(const Bytes& bytes, std::size_t& cursor) {
     return result;
 }
 std::size_t PrefixSize(const Bytes& bytes) {
-    std::size_t cursor{}; Require(Read32(bytes, cursor) == 0x53515844u, "Independent spawn checkpoint magic mismatch"); const auto version = Read32(bytes, cursor); Require(version >= 1u && version <= 9u, "Independent spawn checkpoint version mismatch");
+    std::size_t cursor{}; Require(Read32(bytes, cursor) == 0x53515844u, "Independent spawn checkpoint magic mismatch"); const auto version = Read32(bytes, cursor); Require(version >= 1u && version <= 12u, "Independent spawn checkpoint version mismatch");
     const auto string = [&]() { const auto size = Read32(bytes, cursor); Require(cursor <= bytes.size() && size <= bytes.size() - cursor, "Independent spawn checkpoint string overflow"); cursor += size; };
     const auto strings = [&]() { const auto count = Read32(bytes, cursor); for (std::uint32_t i = 0u; i < count; ++i) string(); };
     strings(); strings(); strings();
@@ -276,9 +276,10 @@ QuestVr::ScriptSavedState Decode(const Bytes& bytes) {
     auto cursor = PrefixSize(bytes); const auto size = Read32(bytes, cursor); Require(size == bytes.size() - cursor, "Independent spawn trailer size mismatch");
     return QuestVr::DecodeScriptSavedState(Bytes(bytes.begin() + static_cast<std::ptrdiff_t>(cursor), bytes.end()));
 }
-Bytes Envelope(const Bytes& prefixSource, const QuestVr::ScriptSavedState& script, std::uint32_t version = 8u) {
-    const auto prefix = PrefixSize(prefixSource); Bytes result(prefixSource.begin(), prefixSource.begin() + static_cast<std::ptrdiff_t>(prefix)); Replace32(result, 4u, version);
-    const auto blob = QuestVr::EncodeScriptSavedState(script); U32(result, static_cast<std::uint32_t>(blob.size())); Append(result, blob); return result;
+Bytes Envelope(const Bytes& prefixSource, const QuestVr::ScriptSavedState& script, std::uint32_t version = 0u) {
+    const auto prefix = PrefixSize(prefixSource); Bytes result(prefixSource.begin(), prefixSource.begin() + static_cast<std::ptrdiff_t>(prefix));
+    const auto blob = QuestVr::EncodeScriptSavedState(script); Replace32(result, 4u, version ? version : 3u + blob.at(6u));
+    U32(result, static_cast<std::uint32_t>(blob.size())); Append(result, blob); return result;
 }
 Bytes InactivePrefix(Bytes bytes, const std::string& actor) {
     // Change only the gameplay inactive list, leaving the actual envelope,
@@ -304,6 +305,17 @@ QuestVr::ScriptSavedObject& Record(QuestVr::ScriptSavedState& state, const std::
     if (found == state.objects.end()) throw std::runtime_error("Generated spawn checkpoint lacks actor record " + path);
     return *found;
 }
+void InitializedFrame(QuestVr::ScriptSavedState& state, const std::string& path, const std::string& cls) {
+    const auto& object = Record(state, path);
+    Require(object.state && object.state->hasStack && object.state->frameOverride && object.state->frame,
+        "Owned Spawn did not initialize an explicit HasStack frame");
+    const auto& frame = *object.state->frame;
+    Require(frame.control && frame.control->selectedPath == cls && frame.codePath == cls && !frame.control->codePresent &&
+        frame.control->liveProbeMask == ~std::uint64_t{}, "Owned InitExecution lost class-backed Node/StateNode, null Code or initial positive probe mask");
+    Require(frame.localsCodePath.empty() && frame.locals.empty() && object.state->disabled.empty() &&
+        frame.statementIndex == 0u && frame.latent == QuestVr::StateLatent::Continue,
+        "Owned InitExecution fabricated Locals/legacy disabled sets or lost the portable null-Code latent policy");
+}
 QuestVr::ScriptSavedBirth& Birth(QuestVr::ScriptSavedState& state, const std::string& path) {
     const auto found = std::find_if(state.births.begin(), state.births.end(), [&](const auto& birth) { return birth.path == path; });
     if (found == state.births.end()) throw std::runtime_error("Generated save lacks birth " + path);
@@ -318,7 +330,7 @@ void ChangeBirthClass(QuestVr::ScriptSavedState& state, const std::string& path,
     Birth(state, path).classPath = cls;
     for (auto& object : state.objects) if (object.path == path) object.classPath = cls;
 }
-void RefusedSave(const Fixture& fixture, const Bytes& prefix, const QuestVr::ScriptSavedState& script, const std::string& label, std::uint32_t version = 8u) {
+void RefusedSave(const Fixture& fixture, const Bytes& prefix, const QuestVr::ScriptSavedState& script, const std::string& label, std::uint32_t version = 0u) {
     const auto current = fixture.Snapshot("BeforeBadSave"); const auto paths = ActorPaths(true); const auto revision = GetPortableRuntimeWorldRevision();
     const auto path = fixture.directory / (label + ".sav"); WriteBytes(path, Envelope(prefix, script, version));
     Require(!ValidatePortableRuntimeState(path.string(), "SpawnFixture") && !LoadPortableRuntimeState(path.string()), "Invalid birth manifest validated/loaded: " + label);
@@ -432,12 +444,15 @@ Tables Build(Fixture& fixture) {
     const auto importedCount = classes.Import("Count", classesRecord, "IntProperty"), importedTarget = classes.Import("Target", classesRecord, "ObjectProperty");
     const auto probe = classes.Export("Probe", 0, importedActor), leaf = classes.Export("Leaf", 0, probe), abstract = classes.Export("Abstract", 0, probe);
     const auto fail = classes.Export("FailPost", 0, probe), nested = classes.Export("Nested", 0, probe), recursive = classes.Export("Recursive", 0, probe), selfDelete = classes.Export("SelfDelete", 0, probe);
+    const auto captureOwner = classes.Export("CaptureOwner", 0, probe);
     const auto pointBase = classes.Export("PointBase", 0, classes.Import("Decoration", classesEngine)), support = classes.Export("Support", 0, probe);
     const auto importedPawn = classes.Import("Pawn", classesEngine), importedPlayer = classes.Import("Player", classesEngine);
     const auto importedPlayerPawn = classes.Import("PlayerPawn", classesEngine);
     const auto importedAllActors = classes.Import("AllActors", importedActor, "Function");
     const auto importedTag = classes.Import("Tag", importedActor, "NameProperty");
     const auto importedXLevel = classes.Import("XLevel", importedActor, "ObjectProperty");
+    const auto importedInstigator = classes.Import("Instigator", importedActor, "ObjectProperty");
+    const auto importedObjectFlags = classes.Import("ObjectFlags", classesObject, "IntProperty");
     const auto fauxPlayer = classes.Export("FauxPlayer", 0, importedPawn);
     const auto pawnAlias = classes.Export("Pawn", 0, classesObject); // Non-Actor UClass, same NameString leaf as Engine.Pawn.
     const auto loopActor = classes.Export("LoopActor", 0, probe), loopBirth = classes.Export("LoopBirth", 0, loopActor);
@@ -565,6 +580,17 @@ Tables Build(Fixture& fixture) {
         classes.Function(name, probe, classesCore, Join({callbackTrace(digit), Return()}));
     const auto gained = classes.Function("GainedChild", probe, classesCore); classes.Property("Other", "ObjectProperty", gained, classesCore, 1u, importedActor, 0x80u);
     classes.FunctionCode(gained, Join({Assign(prop("ChildEvents"), Native(146u, {prop("ChildEvents"), Int(1)})), Return()}));
+    const auto observedInstigator = classes.Property("ObservedChildInstigator", "ObjectProperty", captureOwner, classesCore, 1u, importedPawn);
+    const auto observedFlags = classes.Property("ObservedChildFlags", "IntProperty", captureOwner, classesCore);
+    const auto observedState = classes.Property("ObservedChildState", "NameProperty", captureOwner, classesCore);
+    const auto captureGained = classes.Function("GainedChild", captureOwner, classesCore);
+    const auto captureChild = classes.Property("Other", "ObjectProperty", captureGained, classesCore, 1u, importedActor, 0x80u);
+    classes.FunctionCode(captureGained, Join({
+        Assign(prop("ChildEvents"), Native(146u, {prop("ChildEvents"), Int(1)})),
+        Assign(Ref(0x01u, observedInstigator), Context(Ref(0x00u, captureChild), Ref(0x01u, importedInstigator))),
+        Assign(Ref(0x01u, observedFlags), Context(Ref(0x00u, captureChild), Ref(0x01u, importedObjectFlags))),
+        Assign(Ref(0x01u, observedState), Context(Ref(0x00u, captureChild), Native(284u))),
+        Assign(Context(prop("Link"), Ref(0x01u, importedInstigator)), Token(0x2au)), Return()}));
     const auto make = classes.Function("Make", probe, classesCore), inputClass = classes.Property("InputClass", "ClassProperty", make, classesCore, 1u, classesClass, 0x80u, importedActor);
     classes.FunctionCode(make, Return(Native(278u, {Ref(0x00u, inputClass)})));
     const auto makeOwned = classes.Function("MakeOwned", probe, classesCore), ownClass = classes.Property("InputClass", "ClassProperty", makeOwned, classesCore, 1u, classesClass, 0x80u, importedActor), own = classes.Property("InputOwner", "ObjectProperty", makeOwned, classesCore, 1u, importedActor, 0x80u);
@@ -611,7 +637,7 @@ Tables Build(Fixture& fixture) {
     Bytes defaults; classes.IntTag(defaults, "Counter", 10); for (std::uint8_t i = 0u; i < 3u; ++i) classes.IntTag(defaults, "Slots", 3 + 2 * i, i);
     Bytes recordDefault; U32(recordDefault, 7u); Index(recordDefault, 0); classes.Tag(defaults, "Payload", 10u, recordDefault, 0u, "Record"); classes.ClassBody(probe, defaults);
     Bytes overrides; classes.IntTag(overrides, "Counter", 20); classes.ClassBody(leaf, overrides); classes.ClassBody(abstract, {}, 1u);
-    for (auto cls : {fail, nested, recursive, selfDelete}) classes.ClassBody(cls);
+    for (auto cls : {fail, nested, recursive, selfDelete, captureOwner}) classes.ClassBody(cls);
     Bytes pointDefaults; classes.FloatTag(pointDefaults, "CollisionRadius", 0.0f); classes.FloatTag(pointDefaults, "CollisionHeight", 0.0f);
     classes.BoolTag(pointDefaults, "bCollideWorld", true); classes.BoolTag(pointDefaults, "bCollideActors", false); classes.ClassBody(pointBase, pointDefaults);
     classes.ClassBody(support);
@@ -667,7 +693,8 @@ void ArgumentTests(Fixture& fixture) {
     Same(Read(first, "Instigator"), Object("Pawn0").value, "Spawn did not copy spawner Instigator"); Same(Read(first, "bTicked"), Value::Bool(true), "Spawn did not copy bTicked");
     Same(Read(first, "Brush"), Object("").value, "Spawn did not clear Brush"); Same(Read(first, "Class"), Class("Leaf").value, "Spawn UObject.Class not initialized");
     Same(Read(first, "Name"), Name(first.substr(first.find_last_of('.') + 1u)).value, "Spawn UObject.Name not initialized from unique identity");
-    Same(Read(first, "ObjectFlags"), Value::Integer(0x4000), "Spawn UObject.ObjectFlags did not use Transient");
+    Same(Read(first, "ObjectFlags"), Value::Integer(0x02004000), "Spawn UObject.ObjectFlags did not retain Transient and InitExecution HasStack");
+    auto initialized = Decode(fixture.Snapshot("InitializedBirth")); InitializedFrame(initialized, first, "SpawnClasses.Leaf");
     Same(Read(first, "Outer"), Object("").value, "Spawn UObject.Outer did not copy ULevel.Outer");
     const auto region = Read(first, "Region"); Same(region.fields.at("zone"), Object("Level0").value, "Spawn Region fallback does not use real decoded LevelInfo zone");
     const auto omitted = Spawn("MakeOmitted"); Same(Read(omitted, "Location"), Read("Driver", "Location"), "Explicit omitted Location token became zero vector"); Same(Read(omitted, "Rotation"), Read("Driver", "Rotation"), "Explicit omitted Rotation token became zero rotator");
@@ -691,7 +718,8 @@ void DefaultsTests(Fixture& fixture) {
     Same(Read(old, "Slots", 1u), Value::Integer(5), "Birth fixed-array slot aliases another birth");
     auto detached = Read(old, "Payload"); detached.fields["count"] = Value::Integer(-900); Require(QuestVr::Vm::ToInt(Read(old, "Payload").fields.at("count")) == 7, "Birth getter aliases mutable frozen storage");
     const auto bytes = fixture.Snapshot("FrozenDefaults"); auto saved = Decode(bytes);
-    Require(saved.births.size() == 2u && bytes[4u] == 8u && QuestVr::EncodeScriptSavedState(saved)[6u] == 5u, "Birth save did not select complete manifest/codec5/envelope8");
+    Require(saved.births.size() == 2u && bytes[4u] == 12u && QuestVr::EncodeScriptSavedState(saved)[6u] == 9u, "Birth save did not select complete manifest and modern control/codec9/envelope12");
+    InitializedFrame(saved, old, "SpawnClasses.Leaf"); InitializedFrame(saved, newer, "SpawnClasses.Leaf");
     Require(Birth(saved, old).frozenDefaults.empty(), "Unchanged birth copied redundant authored defaults instead of immutable baseline plus sparse patch");
     Same(Frozen(saved, newer, "Counter").value, Value::Integer(99), "Manifest omitted later mutable CDO baseline");
     Same(Frozen(saved, newer, "Payload").value.fields.at("target"), Object(old).value, "Manifest lost typed birth-to-birth nested reference");
@@ -714,7 +742,28 @@ void CallbackTests(Fixture& fixture) {
     Require(self != saved.births.end() && !Published(self->path) && ActorPaths(true).size() == beforeDeleteBirth, "Self-deleted Spawn was forgotten or remained world published");
     Require(Integer(self->path, "Trace") == 123 && QuestVr::Vm::ToBool(Read(self->path, "bDeleteMe")), "Self-deleted birth lost exact completed callback phase or UObject lifetime");
     Same(Call(self->path, "ReadCounter").value, Value::Integer(10), "Direct function on removed spawned UObject was refused");
-    fixture.Reset(); Call("Driver", "SetBegun", {{Value::Bool(false), {}}}); const auto dormant = Spawn(); Require(Integer(dormant, "Trace") == 0, "Before-begun Spawn ran BeginPlay callbacks"); fixture.Reset();
+    fixture.Reset(); Call("Driver", "SetBegun", {{Value::Bool(false), {}}}); const auto dormant = Spawn(); Require(Integer(dormant, "Trace") == 0, "Before-begun Spawn ran BeginPlay callbacks");
+    auto dormantState = Decode(fixture.Snapshot("BeforeBegunInitialized")); InitializedFrame(dormantState, dormant, "SpawnClasses.Leaf");
+    Same(Read(dormant, "ObjectFlags"), Value::Integer(0x02004000), "Before-begun Spawn skipped native InitExecution HasStack");
+    const auto dormantBytes = fixture.Snapshot("BeforeBegunCanonical");
+    fixture.Reset(); Require(LoadPortableRuntimeState((fixture.directory / "BeforeBegunCanonical.sav").string()) &&
+        fixture.Snapshot("BeforeBegunRestored") == dormantBytes, "Before-begun initialized class/null-Code/null-Locals frame did not restore canonically");
+    dormantState = Decode(fixture.Snapshot("BeforeBegunFrameRestored")); InitializedFrame(dormantState, dormant, "SpawnClasses.Leaf"); fixture.Reset();
+
+    // execSpawn captures the spawner's Instigator before SetOwner callbacks;
+    // Level::SpawnActor publishes it only after the synchronous GainedChild.
+    const auto capturingOwner = Spawn("Make", {Class("CaptureOwner")});
+    Call(capturingOwner, "StoreReference", {Object("Driver")});
+    Same(Read("Driver", "Instigator"), Object("Pawn0").value, "Spawn capture regression did not start with a distinct Instigator");
+    const auto capturedBirth = Spawn("MakeOwned", {Class("Leaf"), Object(capturingOwner)});
+    Require(Integer(capturingOwner, "ChildEvents") == 1, "CaptureOwner did not execute its isolated GainedChild callback");
+    Same(Read("Driver", "Instigator"), Object("").value, "GainedChild did not mutate the spawner Instigator for the capture regression");
+    Same(Read(capturingOwner, "ObservedChildInstigator"), Object("").value, "Spawn published captured Instigator before GainedChild returned");
+    Same(Read(capturingOwner, "ObservedChildFlags"), Value::Integer(0x4000), "Spawn initialized HasStack before SetOwner/GainedChild completed");
+    Same(Read(capturingOwner, "ObservedChildState"), Name("None").value, "GainedChild observed a frame before native InitExecution");
+    Same(Read(capturedBirth, "Instigator"), Object("Pawn0").value, "GainedChild spawner mutation replaced the entry-captured Spawn Instigator");
+    auto capturedState = Decode(fixture.Snapshot("CapturedSpawnInstigator")); InitializedFrame(capturedState, capturedBirth, "SpawnClasses.Leaf");
+    fixture.Reset();
 }
 void OrderingTests(Fixture& fixture) {
     std::vector<std::string> births;
@@ -906,10 +955,10 @@ void AliasAndBoundaryGcTests(Fixture& fixture) {
     // No explicit Collect occurs before/inside these assertions. Public runtime
     // boundaries must reclaim replaced or rolled-back staged actors themselves.
     for (unsigned iteration = 0u; iteration < 24u; ++iteration) {
-        Require(LoadPortableRuntimeState((fixture.directory / "BoundaryBirthGraph.sav").string()), "Repeated successful v8 replacement failed");
+        Require(LoadPortableRuntimeState((fixture.directory / "BoundaryBirthGraph.sav").string()), "Repeated successful modern birth replacement failed");
         const auto current = GC::GetStats();
         Require(current.numObjects == stable.numObjects && current.memoryUsage == stable.memoryUsage,
-            "Successful v8 replacement retained unrooted prior birth allocations at public boundary");
+            "Successful modern birth replacement retained unrooted prior birth allocations at public boundary");
     }
     auto malformed = Decode(canonical);
     Record(malformed, first).properties.push_back({"SpawnClasses.Probe.Counter", "Counter", 0u, Value::Float(9.0f)});
@@ -919,7 +968,7 @@ void AliasAndBoundaryGcTests(Fixture& fixture) {
         Require(!LoadPortableRuntimeState(malformedPath.string()), "Late invalid actor overlay after staged birth allocation was accepted");
         const auto current = GC::GetStats();
         Require(current.numObjects == stable.numObjects && current.memoryUsage == stable.memoryUsage && GetPortableRuntimeWorldRevision() == beforeRevision,
-            "Failed staged v8 load retained unrooted births or advanced world revision at public boundary");
+            "Failed staged modern birth load retained unrooted births or advanced world revision at public boundary");
     }
     for (unsigned iteration = 0u; iteration < 16u; ++iteration) {
         RefusedCall(fixture, "MakeThenFail", {Class("Nested")}); const auto current = GC::GetStats();
@@ -1305,10 +1354,13 @@ void AiIntegrationTests(Fixture& fixture) {
     const auto canonical = fixture.Snapshot("CanonicalAiGraph"); const auto canonicalState = Decode(canonical);
     const auto badGraph = [&](const std::string& label, const std::function<void(QuestVr::Ai::State&)>& mutate) {
         auto invalid = canonicalState; mutate(invalid.aiManagers.front()); const auto beforeGc = GC::GetStats();
-        RefusedSave(fixture, canonical, invalid, label, 9u);
+        RefusedSave(fixture, canonical, invalid, label);
         Require(GC::GetStats().numObjects == beforeGc.numObjects && GC::GetStats().memoryUsage == beforeGc.memoryUsage,
             "Rejected symbolic AI graph retained staged native allocations");
     };
+    // Explicit old envelope remains a pairing rejection; graph mutation checks
+    // use the actual modern pair so a version mismatch cannot mask their checks.
+    RefusedSave(fixture, canonical, canonicalState, "ModernBirthAiWrongEnvelope", 9u);
     badGraph("AiWrongOwner", [](auto& graph) { graph.ownerPath = Path("Driver"); });
     badGraph("AiWrongLevel", [](auto& graph) { graph.levelPath = Path("Level0"); });
     badGraph("AiWrongSenderClass", [](auto& graph) { graph.senders.front().actor = Path("BindingPlayer"); });

@@ -1,11 +1,13 @@
 #include "quest_portable_vm.h"
 #include "quest_state_frame.h"
 #include "quest_actor_latent.h"
+#include "quest_actor_state_control.h"
 
 #include <algorithm>
 #include <cstdint>
 #include <cmath>
 #include <cstring>
+#include <functional>
 #include <limits>
 #include <iostream>
 #include <map>
@@ -100,8 +102,17 @@ struct Host final : Vm::Host {
     std::map<std::string,std::int32_t> physics, savedPhysics;
     std::vector<std::string> trace;
     bool active{}, begun{true}, deleted{}, savedDeleted{}, badPreparedIdentity{}, pollEligible{true};
+    bool captureGotoContext{}, absentNativeCapture{}, badPreparedNativeIdentity{}, badPreparedNativeFlags{}, preparedScriptMetadata{};
     std::string pollSelectedPath;
+    struct NativeObservation {
+        std::string receiver;
+        std::optional<Value> context;
+        std::vector<Value> arguments;
+        bool argumentAlias{};
+    };
+    std::vector<NativeObservation> nativeObservations;
     std::size_t polls{};
+    std::size_t nativeCaptures{};
     std::size_t begins{}, commits{}, rollbacks{}, preparations{}, mutableReads{}, effects{}, savedEffects{};
     std::size_t stateReads{};
     std::size_t iteratorCreates{}, iteratorDestroys{}, iteratorSteps{};
@@ -141,6 +152,11 @@ struct Host final : Vm::Host {
         ++preparations; trace.push_back("prepare:" + identity.path);
         auto prepared = std::make_shared<Vm::Function>(functions.at(identity.path));
         if (badPreparedIdentity) prepared->path += ".Wrong";
+        if (badPreparedNativeIdentity && prepared->nativeIndex == 113u) ++prepared->nativeIndex;
+        if (badPreparedNativeFlags && prepared->nativeIndex == 113u) prepared->flags ^= 0x100u;
+        if (preparedScriptMetadata && !(prepared->flags & 0x400u)) {
+            prepared->flags ^= 0x100u; prepared->nativeIndex = 83u;
+        }
         return prepared;
     }
     std::shared_ptr<const Vm::Function> ResolveFunction(const Vm::Function&, const std::string&,
@@ -259,6 +275,32 @@ struct Host final : Vm::Host {
     Vm::Evaluation Native(std::uint16_t, const std::string&, const std::vector<Vm::Evaluation>&, const Vm::Function*) override {
         throw std::runtime_error("native requires execution bridge");
     }
+    std::optional<Value> CaptureNativeContext(std::uint16_t index, const std::string& receiver,
+        const Vm::Function*) override {
+        ++nativeCaptures;
+        if (!captureGotoContext || index != 113u) return std::nullopt;
+        const auto found = states.find(receiver);
+        const auto selected = found != states.end() && found->second.frame && found->second.frame->control
+            ? found->second.frame->control->selectedPath : std::string{};
+        const auto name = selected == "Class.Actor" || selected.empty() ? "None" : Leaf(selected);
+        trace.push_back("capture:"+receiver+":"+name);
+        if (absentNativeCapture) return std::nullopt;
+        return Value::Text(Vm::Kind::Name,name);
+    }
+    Vm::Evaluation NativeWithContext(std::uint16_t index, const std::string& receiver,
+        const std::vector<Vm::Evaluation>& arguments, const Vm::Function* declaration, Vm::Execution& execution,
+        const std::optional<Value>& context) override {
+        if (!captureGotoContext || index != 113u)
+            return NativeWithExecution(index,receiver,arguments,declaration,execution);
+        NativeObservation observation; observation.receiver = receiver; observation.context = context;
+        for (const auto& argument : arguments) {
+            observation.arguments.push_back(argument.Load()); observation.argumentAlias |= bool(argument.reference);
+        }
+        nativeObservations.push_back(std::move(observation));
+        // These controls observe entry/evaluation order, not a second mock
+        // implementation of the original GotoState transition state machine.
+        return {context.value_or(Value{}),{}};
+    }
     Vm::Evaluation NativeWithExecution(std::uint16_t index, const std::string& self,
         const std::vector<Vm::Evaluation>& args, const Vm::Function*, Vm::Execution& execution) override {
         if (index == 113) {
@@ -346,6 +388,10 @@ struct Host final : Vm::Host {
             auto& selected = MutableState(self)->frame->control->selectedPath;
             const auto old = selected; selected = "State.CallbackTemporary"; selected = old;
             ++effects; trace.push_back("selected-round-trip"); return {};
+        }
+        if (index == 833) {
+            MutableState(self)->frame->control->selectedPath = "State.B";
+            return {Value::Text(Vm::Kind::Name,"B"),{}};
         }
         if (index == 816) {
             GotoStateLabel(self,args.at(0).Load().text,false);
@@ -486,6 +532,342 @@ void ModernStateSwitchNullCode() {
             frame.control->liveProbeMask == 0xfedcba9876543210ull && frame.codePath == "State.A" &&
             frame.latent == StateLatent::Continue && host.effects == 0,
             "Modern Switch evaluated a linked Case or branch after a callback cleared nullable Code");
+    }
+}
+
+// These controls call the SAME coordinator used by the real runtime. Ops only
+// supplies observable storage and callbacks; it contains no transition logic.
+// Expected traces/results come from the owned Core.dll GotoState disassembly,
+// not the legacy synthetic Native113 implementation above.
+struct OriginalTransitionOps {
+    static constexpr std::uint32_t unrelatedFlag = 0x80000000u;
+    bool present{true}, endProbes{true}, beginProbes{true};
+    std::uint32_t flags{unrelatedFlag};
+    std::string selectedName{"A"};
+    StateFrame frame{"State.A","Owner.Keep",37u,StateLatent::Sleep,
+        {{"Owner.Local",{Value::Integer(73)}}},StateControl{"State.A",true,0x81u}};
+    float actorTimer{-3.25f};
+    std::map<std::string,QuestVr::StateSelection> selections{
+        {"A",{"State.A","A",0x11u}}, {"B",{"State.B","B",0x22u}}, {"C",{"State.C","C",0x33u}},
+        {"None",{"Class.Actor","None",0xffu}}};
+    std::vector<std::string> trace;
+    struct Event {
+        std::string name, selected;
+        std::uint32_t flags{};
+        bool codePresent{};
+        std::uint64_t mask{};
+    };
+    std::vector<Event> events;
+    std::map<std::string,std::function<void(OriginalTransitionOps&)>> callbacks;
+    bool HasFrame() const { return present; }
+    void CancelLatent() { trace.push_back("cancel"); frame.latent = StateLatent::Continue; }
+    std::string StateName() const { return selectedName; }
+    QuestVr::StateSelection Resolve(const std::string& requested) {
+        trace.push_back("resolve:"+requested);
+        for (const auto& [name,selection] : selections)
+            if (QuestVr::StateNameEqual(name,requested)) return selection;
+        return selections.at("None");
+    }
+    bool IsProbing(const std::string& event) const { return event == "EndState" ? endProbes : beginProbes; }
+    std::uint32_t Flags() const { return flags; }
+    void ClearFlags(const std::uint32_t bits) noexcept { flags &= ~bits; }
+    void SetFlags(const std::uint32_t bits) noexcept { flags |= bits; }
+    void CallEvent(const std::string& event) {
+        const auto key = selectedName+"."+event;
+        trace.push_back("event:"+key);
+        events.push_back({event,frame.control->selectedPath,flags,frame.control->codePresent,frame.control->liveProbeMask});
+        const auto callback = callbacks.find(key);
+        if (callback != callbacks.end()) callback->second(*this);
+    }
+    void Publish(const QuestVr::StateSelection& selection) {
+        trace.push_back("publish:"+selection.path);
+        frame.codePath = selection.path; selectedName = selection.name;
+        frame.control->selectedPath = selection.path; frame.control->codePresent = false;
+        frame.control->liveProbeMask = selection.liveProbeMask;
+    }
+};
+
+void OriginalInternalStateSequence() {
+    using QuestVr::StateEntryResult;
+    constexpr auto changed = QuestVr::StateChangedFlag;
+    constexpr auto inEnd = QuestVr::InEndStateFlag;
+    static_assert(static_cast<std::uint8_t>(StateEntryResult::NoEntry) == 0u &&
+        static_cast<std::uint8_t>(StateEntryResult::Entered) == 1u &&
+        static_cast<std::uint8_t>(StateEntryResult::Preempted) == 2u);
+    {
+        OriginalTransitionOps ops; ops.present = false;
+        Check(QuestVr::OriginalGotoState(ops,"B") == StateEntryResult::NoEntry && ops.trace.empty() &&
+            ops.frame.latent == StateLatent::Sleep && ops.flags == ops.unrelatedFlag,
+            "Original internal GotoState mutated or resolved a frameless actor");
+    }
+    {
+        OriginalTransitionOps ops; ops.flags |= changed;
+        const auto result = QuestVr::OriginalGotoState(ops,"B");
+        Check(result == StateEntryResult::Entered && ops.trace == std::vector<std::string>{
+            "cancel","resolve:B","event:A.EndState","publish:State.B","event:B.BeginState"},
+            "Original internal GotoState did not cancel, exit, publish and enter in audited order");
+        Check(ops.events.size() == 2 && ops.events[0].selected == "State.A" && ops.events[0].codePresent &&
+            ops.events[0].mask == 0x81u && (ops.events[0].flags & inEnd) && !(ops.events[0].flags & changed) &&
+            ops.events[1].selected == "State.B" && !ops.events[1].codePresent && ops.events[1].mask == 0x22u &&
+            !(ops.events[1].flags & (changed|inEnd)) && ops.flags == (ops.unrelatedFlag|changed),
+            "Original callbacks observed wrong selected node, nullable Code, live mask or transition flags");
+        Check(ops.frame.localsCodePath == "Owner.Keep" && ops.frame.locals[0].values[0].integer == 73 &&
+            ops.frame.statementIndex == 37u && ops.actorTimer == -3.25f && ops.frame.latent == StateLatent::Continue,
+            "Original internal state publication recreated locals, reset ordinal or cleared actor timer");
+    }
+    {
+        OriginalTransitionOps ops;
+        Check(QuestVr::OriginalGotoState(ops,"a") == StateEntryResult::Entered &&
+            ops.trace == std::vector<std::string>{"cancel","resolve:a","publish:State.A"} &&
+            ops.frame.control->liveProbeMask == 0x11u && !ops.frame.control->codePresent,
+            "Direct internal same-state selection failed to reset mask/null Code or called state callbacks");
+        ops.selections["A"] = {"Base.A","a",0x44u};
+        Check(QuestVr::OriginalGotoState(ops,"A") == StateEntryResult::Entered && ops.events.empty() &&
+            ops.frame.codePath == "Base.A" && ops.frame.control->selectedPath == "Base.A" &&
+            ops.frame.control->liveProbeMask == 0x44u,
+            "Original internal callback suppression compared state paths instead of FName identities");
+    }
+    for (const auto& requested : {std::string("None"),std::string("Missing")}) {
+        OriginalTransitionOps ops;
+        Check(QuestVr::OriginalGotoState(ops,requested) == StateEntryResult::NoEntry && ops.events.size() == 1 &&
+            ops.events[0].name == "EndState" && ops.frame.control->selectedPath == "Class.Actor" &&
+            !ops.frame.control->codePresent && ops.frame.control->liveProbeMask == 0xffu &&
+            ops.flags == ops.unrelatedFlag,
+            "Original None/missing selection failed to publish class-backed state before returning0");
+    }
+    {
+        OriginalTransitionOps ops; ops.selectedName = "None"; ops.frame.control->selectedPath = "Class.Actor";
+        ops.flags |= changed;
+        Check(QuestVr::OriginalGotoState(ops,"None") == StateEntryResult::NoEntry && ops.events.empty() &&
+            (ops.flags & changed),"Original None return incorrectly cleared an already-set successful-transition flag");
+    }
+    {
+        OriginalTransitionOps ops; ops.endProbes = false; ops.beginProbes = false;
+        Check(QuestVr::OriginalGotoState(ops,"B") == StateEntryResult::Entered && ops.events.empty() &&
+            ops.frame.control->selectedPath == "State.B" && ops.flags == (ops.unrelatedFlag|changed),
+            "Original transition dispatched unprobed callbacks or omitted publication/success flag");
+    }
+    {
+        OriginalTransitionOps ops; ops.endProbes = false; ops.flags |= changed;
+        Check(QuestVr::OriginalGotoState(ops,"B") == StateEntryResult::Entered && ops.events.size() == 1 &&
+            ops.events[0].name == "BeginState" && !(ops.events[0].flags & (changed|inEnd)),
+            "Original BeginState entry failed to clear a prior success flag when EndState was not probing");
+    }
+}
+
+void OriginalNestedStateFlags() {
+    using QuestVr::StateEntryResult;
+    constexpr auto changed = QuestVr::StateChangedFlag;
+    constexpr auto inEnd = QuestVr::InEndStateFlag;
+    for (const auto& nested : {std::string("C"),std::string("A")}) {
+        OriginalTransitionOps ops;
+        StateEntryResult inner{};
+        ops.callbacks["A.EndState"] = [&](OriginalTransitionOps& live) { inner = QuestVr::OriginalGotoState(live,nested); };
+        const auto result = QuestVr::OriginalGotoState(ops,"B");
+        Check(result == StateEntryResult::Preempted && inner == StateEntryResult::Entered &&
+            ops.frame.control->selectedPath == "State."+nested &&
+            std::count(ops.trace.begin(),ops.trace.end(),"event:A.EndState") == 1 &&
+            std::count(ops.trace.begin(),ops.trace.end(),"publish:State.B") == 0 && !(ops.flags & inEnd) &&
+            (ops.flags & changed),
+            "Nested EndState success failed guard/preemption or counted only changed selected-node identity");
+        if (nested == "C") Check(ops.events.size() == 2 && ops.events[1].name == "BeginState" &&
+            (ops.events[1].flags & inEnd),"BeginState was incorrectly blocked by the inherited EndState recursion guard");
+    }
+    {
+        OriginalTransitionOps ops; StateEntryResult inner{};
+        ops.callbacks["B.BeginState"] = [&](OriginalTransitionOps& live) { inner = QuestVr::OriginalGotoState(live,"C"); };
+        Check(QuestVr::OriginalGotoState(ops,"B") == StateEntryResult::Preempted && inner == StateEntryResult::Entered &&
+            ops.trace == std::vector<std::string>{"cancel","resolve:B","event:A.EndState","publish:State.B",
+                "event:B.BeginState","cancel","resolve:C","event:B.EndState","publish:State.C","event:C.BeginState"} &&
+            ops.frame.control->selectedPath == "State.C" && !(ops.flags & inEnd),
+            "Nested BeginState transition did not execute synchronous exit/entry or preserve its live selection");
+    }
+    for (const auto fromEnd : {false,true}) {
+        OriginalTransitionOps ops; StateEntryResult inner{};
+        ops.callbacks[fromEnd ? "A.EndState" : "B.BeginState"] = [&](OriginalTransitionOps& live) {
+            inner = QuestVr::OriginalGotoState(live,"None");
+        };
+        const auto result = QuestVr::OriginalGotoState(ops,"B");
+        Check(result == StateEntryResult::Entered && inner == StateEntryResult::NoEntry &&
+            ops.frame.control->selectedPath == (fromEnd ? "State.B" : "Class.Actor") &&
+            ops.flags == (ops.unrelatedFlag|changed) &&
+            std::count(ops.trace.begin(),ops.trace.end(),"event:A.EndState") == 1,
+            "Nested None incorrectly set preemption flag or a generation counter replaced original flag semantics");
+        if (!fromEnd) Check(ops.frame.control->liveProbeMask == 0xffu && !ops.frame.control->codePresent &&
+            std::count(ops.trace.begin(),ops.trace.end(),"publish:State.B") == 1,
+            "Outer BeginState completion republished its original selection after an inner None result");
+    }
+    for (const auto fromEnd : {false,true}) {
+        OriginalTransitionOps ops;
+        ops.callbacks[fromEnd ? "A.EndState" : "B.BeginState"] = [](OriginalTransitionOps&) {
+            throw std::runtime_error("contract callback failure");
+        };
+        bool failed{}; try { static_cast<void>(QuestVr::OriginalGotoState(ops,"B")); }
+        catch (const std::runtime_error&) { failed = true; }
+        Check(failed && !(ops.flags & (changed|inEnd)) &&
+            ops.frame.control->selectedPath == (fromEnd ? "State.A" : "State.B"),
+            "Throwing state callback left EndState recursion guard set or published at the wrong boundary"); ++rejections;
+    }
+}
+
+void OriginalNativeEntryCapture() {
+    {
+        Host host; host.preparedScriptMetadata = true;
+        const auto caller = host.Function("Class.LazyScriptMetadata",Return(Int(73)));
+        const auto result = Vm::Execute(host,caller,"Actor");
+        Check(result.passed() && result.value.integer == 73 && host.nativeCaptures == 0,
+            "Script-only lazy preparation lost path/source compatibility or unnecessarily captured native context");
+    }
+    for (const auto declared : {false,true}) {
+        Host host; host.captureGotoContext = true;
+        host.Program("State.A",{0x08}); host.InstallModern("State.A");
+        auto declaration = host.Function("Class.Probe",{}); declaration.flags = 0x400u; declaration.nativeIndex = 113u;
+        host.functions[declaration.path] = declaration;
+        const auto expression = declared ? Call(12,{Native(833)}) : Native(113,{Native(833)});
+        const auto caller = host.Function("Class.CaptureCaller",Return(expression));
+        const auto result = Vm::Execute(host,caller,"Actor");
+        Check(result.passed() && result.value.kind == Vm::Kind::Name && result.value.text == "A" &&
+            host.nativeObservations.size() == 1 && host.nativeObservations[0].context->text == "A" &&
+            host.nativeObservations[0].arguments[0].text == "B" &&
+            host.states.at("Actor").frame->control->selectedPath == "State.B" &&
+            host.nativeCaptures == 2 &&
+            std::count(host.trace.begin(),host.trace.end(),"capture:Actor:A") == 1,
+            "Native113 old state name was captured after argument expressions or recaptured during preparation");
+    }
+    {
+        Host host; host.captureGotoContext = true; host.absentNativeCapture = true;
+        host.Program("State.A",{0x08}); host.InstallModern("State.A");
+        auto declaration = host.Function("Class.Probe",{}); declaration.flags = 0x400u; declaration.nativeIndex = 113u;
+        host.functions[declaration.path] = declaration;
+        const auto caller = host.Function("Class.AbsentNativeCapture",Return(Call(12,{Native(833)})));
+        const auto result = Vm::Execute(host,caller,"Actor");
+        Check(result.passed() && host.nativeObservations.size() == 1 && !host.nativeObservations[0].context &&
+            std::count(host.trace.begin(),host.trace.end(),"capture:Actor:A") == 1 &&
+            std::count(host.trace.begin(),host.trace.end(),"capture:Actor:B") == 0,
+            "Deliberately absent native entry context was recaptured after its arguments changed the state");
+    }
+    {
+        Host host; host.captureGotoContext = true;
+        host.Program("State.A",{0x08}); host.InstallModern("State.A");
+        const auto caller = host.Function("Class.NestedCapture",Return(Native(113,{Native(833),Native(113)})));
+        const auto result = Vm::Execute(host,caller,"Actor");
+        Check(result.passed() && result.value.text == "A" && host.nativeObservations.size() == 2 &&
+            host.nativeObservations[0].context->text == "B" && host.nativeObservations[1].context->text == "A",
+            "Nested native113 entry capture overwrote its caller's detached old-state name");
+    }
+    {
+        Host host; host.captureGotoContext = true;
+        host.Program("State.A",{0x08}); host.InstallModern("State.A");
+        host.properties[90] = {"Other","Other",Value::Text(Vm::Kind::Object,"Other"),0,1};
+        host.states["Other"] = host.states.at("Actor"); host.states["Other"].frame->control->selectedPath = "State.C";
+        const auto expression = Join({{0x19},Ref(0x20,90),{0,0,0},Native(113,{Native(833)})});
+        const auto caller = host.Function("Class.ContextCapture",Return(expression));
+        const auto result = Vm::Execute(host,caller,"Actor");
+        Check(result.passed() && result.value.text == "C" && host.nativeObservations.size() == 1 &&
+            host.nativeObservations[0].receiver == "Other" && host.nativeObservations[0].arguments[0].text == "B" &&
+            host.states.at("Actor").frame->control->selectedPath == "State.B" &&
+            host.states.at("Other").frame->control->selectedPath == "State.C",
+            "Native113 capture used argument Self instead of the actual Context receiver");
+    }
+    for (const auto& selected : {std::string("State.A"),std::string("Class.Actor")}) {
+        Host host; host.captureGotoContext = true;
+        host.Program("State.A",{0x08}); host.InstallModern("State.A",selected);
+        const auto mutations = host.mutableReads;
+        const auto caller = host.Function("Class.OmittedCapture",Return(Native(113)));
+        const auto result = Vm::Execute(host,caller,"Actor");
+        Check(result.passed() && result.value.text == (selected == "Class.Actor" ? "None" : "A") &&
+            host.nativeObservations[0].arguments.empty() && host.mutableReads == mutations,
+            "Omitted native113 name lost captured class-as-None semantics or capture mutated a frame");
+    }
+    {
+        Host host; host.captureGotoContext = true;
+        const auto caller = host.Function("Class.FramelessCapture",Return(Native(113)));
+        Check(Vm::Execute(host,caller,"Actor").passed() && host.states.empty() && host.mutableReads == 0 &&
+            host.nativeObservations[0].context->text == "None",
+            "Read-only native113 entry capture manufactured an absent state frame");
+    }
+    {
+        Host host; host.captureGotoContext = true;
+        host.Program("State.A",{0x08}); host.InstallModern("State.A");
+        const auto caller = host.Function("Class.CaptureFailure",Join({Native(113,{Native(833)}),Native(801),Return()}));
+        const auto result = Vm::Execute(host,caller,"Actor");
+        Check(!result.passed() && !result.committed && host.rollbacks == 1 &&
+            host.states.at("Actor").frame->control->selectedPath == "State.A" &&
+            host.nativeObservations.size() == 1 && host.nativeObservations[0].context->text == "A",
+            "Argument-time state mutation escaped root rollback or destroyed detached capture evidence"); ++rejections;
+    }
+}
+
+void OriginalGotoStateInputSnapshots() {
+    for (const auto declared : {false,true}) {
+        Host host; host.captureGotoContext = true;
+        host.Program("State.A",{0x08}); host.InstallModern("State.A");
+        const Vm::Property name{"Class.StateInput","StateInput",Value::Text(Vm::Kind::Name,"None"),0,1};
+        host.properties[91] = name; host.values[name.key] = Value::Text(Vm::Kind::Name,"A");
+        auto declaration = host.Function("Class.Probe",{}); declaration.flags = 0x400u; declaration.nativeIndex = 113u;
+        host.functions[declaration.path] = declaration;
+        const auto second = Native(814,{Ref(0x01,91),Ref(0x21,3),Ref(0x21,1)});
+        const auto expression = declared ? Call(12,{Ref(0x01,91),second}) : Native(113,{Ref(0x01,91),second});
+        const auto caller = host.Function("Class.SnapshotCaller",Return(expression));
+        Check(Vm::Execute(host,caller,"Actor").passed() && host.nativeObservations.size() == 1 &&
+            host.nativeObservations[0].arguments[0].text == "A" && host.nativeObservations[0].arguments[1].text == "Begin" &&
+            !host.nativeObservations[0].argumentAlias && host.values.at(name.key).text == "B",
+            "Native113 first Name argument remained a live alias while its Label argument mutated it");
+    }
+    {
+        Host host; host.captureGotoContext = true;
+        host.Program("State.A",{0x08}); host.InstallModern("State.A");
+        const Vm::Property name{"Class.StateInput","StateInput",Value::Text(Vm::Kind::Name,"None"),0,1};
+        host.values[name.key] = Value::Text(Vm::Kind::Name,"A");
+        auto first = host.Variable("Actor",name,Vm::Scope::Instance);
+        auto second = std::make_shared<Vm::Reference>(); second->zero = name.zero;
+        second->read = [&host,key = name.key] {
+            host.values[key] = Value::Text(Vm::Kind::Name,"B");
+            host.states.at("Actor").frame->control->selectedPath = "State.C";
+            return Value::Text(Vm::Kind::Name,"Begin");
+        };
+        auto declaration = host.Function("Class.DirectGoto",{}); declaration.flags = 0x400u; declaration.nativeIndex = 113u;
+        host.functions[declaration.path] = declaration;
+        const auto result = Vm::Execute(host,declaration,"Actor",{{{},first},{{},second}});
+        Check(result.passed() && result.value.text == "A" && host.nativeObservations[0].context->text == "A" &&
+            host.nativeObservations[0].arguments[0].text == "A" && !host.nativeObservations[0].argumentAlias &&
+            host.values.at(name.key).text == "B" && host.states.at("Actor").frame->control->selectedPath == "State.C",
+            "Public native113 entry loaded caller aliases before capturing or failed to detach input arguments");
+        host.badPreparedNativeIdentity = true;
+        const auto invalid = Vm::Execute(host,declaration,"Actor");
+        Check(invalid.status == Vm::Status::Invalid && !invalid.committed,
+            "Preparation replaced the native index after entry context was captured"); ++rejections;
+        host.badPreparedNativeIdentity = false; host.badPreparedNativeFlags = true;
+        Check(Vm::Execute(host,declaration,"Actor").status == Vm::Status::Invalid,
+            "Preparation replaced immutable function flags after entry context was captured"); ++rejections;
+    }
+}
+
+void ModernNullLocalsOwner() {
+    {
+        Host host; host.Program("State.A",Join({Native(800),{0x08}})); host.InstallModern("State.A");
+        host.states.at("Actor").frame->localsCodePath.clear();
+        const auto result = Vm::ResumeState(host,"Actor");
+        Check(result.passed() && result.status == Vm::Status::Stopped && host.effects == 1 &&
+            host.states.at("Actor").frame->localsCodePath.empty() && host.states.at("Actor").frame->locals.empty(),
+            "Modern executable without declared variables could not retain original NULL local storage");
+    }
+    for (const auto declared : {false,true}) {
+        Host host;
+        const Vm::Property local{"State.A.Declared","Declared",Value::Integer(0),0,1};
+        host.Program("State.A",{0x08},declared ? std::vector<Vm::Property>{local} : std::vector<Vm::Property>{});
+        host.InstallModern("State.A");
+        auto& frame = *host.states.at("Actor").frame; frame.localsCodePath.clear(); frame.locals.clear();
+        if (!declared) frame.locals.push_back({local.key,{Value::Integer(1)}});
+        const auto result = Vm::ResumeState(host,"Actor");
+        Check(result.status == Vm::Status::Invalid && !result.committed &&
+            host.states.at("Actor").frame->statementIndex == 0,
+            "Modern NULL local storage fabricated declared variables or accepted orphaned retained locals"); ++rejections;
+    }
+    {
+        Host host; host.Program("State.A",{0x08}); host.Install("State.A");
+        host.states.at("Actor").frame->localsCodePath.clear();
+        Check(!Vm::ResumeState(host,"Actor").passed(),"Legacy empty locals-owner behavior changed during modern migration"); ++rejections;
     }
 }
 
@@ -1339,6 +1721,8 @@ void OriginalSleepArithmetic() {
 
 int main() {
     try {
+        OriginalInternalStateSequence(); OriginalNestedStateFlags();
+        OriginalNativeEntryCapture(); OriginalGotoStateInputSnapshots(); ModernNullLocalsOwner();
         ModernNullCodeAndStop(); ModernStateSliceBoundaries(); ModernStateSwitchNullCode();
         SuccessStopAndReturn(); ReentryAndSameState(); InheritedLabelsAndLocals();
         CallbackRollbackAndBudgets(); PreparationAfterArguments(); StateRejectionControls();

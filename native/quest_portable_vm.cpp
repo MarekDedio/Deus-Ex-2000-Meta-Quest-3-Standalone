@@ -397,11 +397,19 @@ public:
         const auto identity = host_.ResolveEvent(receiver, eventName, enumDispatch);
         return identity ? Run(*identity, receiver, arguments) : Value{};
     }
-    Value Run(const Function& identity, const std::string& self, const std::vector<Evaluation>& incoming) {
+    Value Run(const Function& identity, const std::string& self, const std::vector<Evaluation>& incoming,
+        std::optional<std::optional<Value>> capturedContext = {}) {
         if (self.empty() || !host_.CanCall(identity, self)) return {};
         if (result_.callStack.size() >= limits_.callDepth) Fail(Status::Budget, "VM call depth limit");
+        // An engaged outer optional records that expression evaluation already
+        // captured even a deliberately absent context. Never recapture after
+        // argument expressions or after loading caller-provided aliases.
+        if (!capturedContext) capturedContext.emplace((identity.flags & 0x400u) ?
+            CaptureNativeContext(identity.nativeIndex, self, &identity) : std::nullopt);
         const auto prepared = host_.PrepareFunction(identity, self);
-        if (!prepared || prepared->path != identity.path || prepared->source != identity.source)
+        if (!prepared || prepared->path != identity.path || prepared->source != identity.source ||
+            (((prepared->flags | identity.flags) & 0x400u) &&
+                (prepared->flags != identity.flags || prepared->nativeIndex != identity.nativeIndex)))
             Fail(Status::Invalid, "Prepared VM function changed callable identity");
         const Function& fn = *prepared;
         result_.callStack.push_back(fn.path);
@@ -410,10 +418,15 @@ public:
             (fn.nativeIndex == 256u || fn.nativeIndex == 527u)))
             Fail(Status::Unsupported, "Latent VM function requires its runtime handler");
         if (incoming.size() > limits_.arguments) Fail(Status::Budget, "VM argument limit");
+        std::vector<Evaluation> args;
+        args.reserve(incoming.size());
         for (const auto& argument : incoming) {
             const auto value = argument.Load(); ValidateValue(value, 0); Retain(ValueBytes(value));
+            // execGotoState consumes each input value before evaluating the
+            // next argument. Ordinary native OUT arguments retain aliases.
+            if ((fn.flags & 0x400u) && fn.nativeIndex == 113u) args.push_back({value,{}});
+            else args.push_back(argument);
         }
-        std::vector<Evaluation> args = incoming;
         std::size_t argCount = 0;
         for (const auto& p : fn.variables) {
             if (!(p.flags & 0x80) || (p.flags & 0x400)) continue;
@@ -426,7 +439,7 @@ public:
         if (args.size() > argCount && !fn.variables.empty()) Fail(Status::Invalid, "Excess VM arguments");
         if (fn.flags & 0x400) {
             Step(fn, 0, 0);
-            auto result = Native(fn.nativeIndex, self, args, &fn).Load();
+            auto result = Native(fn.nativeIndex, self, args, &fn, *capturedContext).Load();
             ValidateValue(result, 0); result_.callStack.pop_back(); return result;
         }
         auto program = Parser(host_, fn, limits_, nodes_, result_, false, &retainedBytes_).Parse();
@@ -906,14 +919,24 @@ private:
     StateExecutionView& StateView(const std::string& self, const std::string& code, const std::string& localOwner) {
         if (code.size() > limits_.stringBytes || localOwner.size() > limits_.stringBytes)
             Fail(Status::Budget, "VM state code identity limit");
+        if (localOwner.empty()) {
+            const auto* object = host_.ReadState(self);
+            if (!object || !object->frameOverride || !object->frame || !object->frame->control ||
+                !object->frame->locals.empty())
+                Fail(Status::Invalid, "Null state locals owner cannot provide retained locals");
+        }
         const auto key = std::make_tuple(self, code, localOwner, host_.StateLocalRevision(self));
         const auto found = stateViews_.find(key);
         if (found != stateViews_.end()) return *found->second;
         auto function = host_.StateProgram(self, code);
         if (!function || function->path != code || function->source.empty() || (function->flags & 0x400u))
             Fail(Status::Invalid, "State program changed code identity or is native");
-        const auto locals = localOwner == code ? function : host_.StateProgram(self, localOwner);
-        if (!locals || locals->path != localOwner || locals->source.empty() || (locals->flags & 0x400u))
+        if (localOwner.empty()) {
+            if (!function->variables.empty())
+                Fail(Status::Invalid, "Null state locals owner cannot provide declared locals");
+        }
+        const auto locals = localOwner.empty() || localOwner == code ? function : host_.StateProgram(self, localOwner);
+        if (!locals || (!localOwner.empty() && locals->path != localOwner) || locals->source.empty() || (locals->flags & 0x400u))
             Fail(Status::Invalid, "State locals owner changed identity or is native");
         Retain(sizeof(StateExecutionView) + self.size() + code.size() + localOwner.size() + function->bytecode.size());
         auto view = std::make_unique<StateExecutionView>(function,
@@ -1041,6 +1064,9 @@ private:
                 if (!fn) Fail(Status::Unsupported, "Unresolved VM function call " + call.name);
                 if (fn->flags & 0x400) index = fn->nativeIndex;
             }
+            std::optional<std::optional<Value>> capturedContext;
+            capturedContext.emplace(!fn || (fn->flags & 0x400u) ?
+                CaptureNativeContext(index, context, fn.get()) : std::nullopt);
             std::vector<Evaluation> args;
             for (std::size_t i = 0; i < n.children.size(); ++i) {
                 // Pinned VM evaluates arguments using Self, NOT the changed
@@ -1051,10 +1077,16 @@ private:
                         result.value = Value::Bool(a); return result;
                     }
                 }
-                args.push_back(Eval(frame, n.children[i], frame.self));
+                auto argument = Eval(frame, n.children[i], frame.self);
+                if (index == 113u && (!fn || (fn->flags & 0x400u))) {
+                    auto value = argument.Load(); ValidateValue(value, 0); Retain(ValueBytes(value));
+                    argument = {std::move(value),{}};
+                }
+                args.push_back(std::move(argument));
             }
             Locate(frame.function, n.offset, n.op);
-            result = fn ? Evaluation{Run(*fn, context, args), {}} : Native(index, context, args, nullptr);
+            result = fn ? Evaluation{Run(*fn, context, args, capturedContext), {}} :
+                Native(index, context, args, nullptr, *capturedContext);
         } else if (n.op >= 0x39) {
             const auto v = child(0).Load();
             Locate(frame.function, n.offset, n.op);
@@ -1198,8 +1230,15 @@ private:
         ValidateValue(result.Load(), 0); return result;
     }
 
+    std::optional<Value> CaptureNativeContext(std::uint16_t index, const std::string& self,
+        const Function* declaration) {
+        auto context = host_.CaptureNativeContext(index, self, declaration);
+        if (context) { ValidateValue(*context, 0); Retain(ValueBytes(*context)); }
+        return context;
+    }
     Evaluation Native(std::uint16_t index, const std::string& self,
-        const std::vector<Evaluation>& args, const Function* declaration) {
+        const std::vector<Evaluation>& args, const Function* declaration,
+        const std::optional<Value>& capturedContext = {}) {
         const auto count = [&](std::size_t n) {
             if (args.size() != n) Fail(Status::Invalid, "VM native argument count for " + std::to_string(index));
         };
@@ -1323,7 +1362,7 @@ private:
             // No implicit success for missing campaign behavior or latent calls.
             auto guarded = args;
             for (auto& argument : guarded) argument.reference = GuardReference(argument.reference);
-            const auto value = host_.NativeWithExecution(index, self, guarded, declaration, *this).Load();
+            const auto value = host_.NativeWithContext(index, self, guarded, declaration, *this, capturedContext).Load();
             // Native return slots are values in the pinned VM, never aliases
             // to an out argument or to a guard owned by this Machine.
             ValidateValue(value, 0); return {value, {}};

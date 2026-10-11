@@ -1,5 +1,33 @@
 # Port status
 
+## Original transition authoring and spawned frames (2026-10-11)
+
+- Production GotoState uses modern controls and the original internal 0/1/2
+  result, EndState recursion guard and BeginState preemption flags. The VM
+  captures the wrapper name before argument expressions and detaches each
+  Name input. Same-state wrapper relabel preserves masks; real selection resets
+  them. Labels are searched after BeginState through selected SuperField
+  ancestry; misses clear Code without erasing retained identities or throwing.
+- Spawn captures Instigator before owner callbacks, publishes it after ownership,
+  and initializes a class-backed frame after Instigator, even
+  before begun play, with null Code/Locals and an all-one mask. Frame/HasStack
+  changes share the birth journal. State selection/relabel retain local storage,
+  timer and storage revision. Original package inspection found zero persistent
+  State properties across all 261 States, and zero executable Class labels.
+- Raw dormant probe overlays retain unknown native latent IDs. Audited clearing
+  operations promote exact raw identities; ambiguous transitioned legacy frames
+  explicitly refuse new control rather than guessing a selected identity.
+- The shared backend passes all 50 ordinary host tests and the three separately
+  invoked original actor/default/save suites. Coordinator/VM controls pass
+  551 checks with 71 expected rejections. This is not automatic world
+  startup, player possession, live NPC scheduling or full campaign completion.
+  See [STATE-CONTROL-MODEL.md](STATE-CONTROL-MODEL.md).
+- At the user's standing request, every successful new APK build installs on
+  the connected authorized Quest 3. The Quest appeared after this APK build,
+  and the new APK was replace-installed without clearing data. Hardware visual
+  acceptance remains separate; the installed APK hash matches the archive.
+  Offline install/lifecycle checks pass 21 and 30 controls.
+
 ## Independent state-control representation (2026-10-11)
 
 - Modern frames now retain selected StateNode, running Node, nullable Code and
