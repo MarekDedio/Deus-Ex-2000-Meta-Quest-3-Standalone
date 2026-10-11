@@ -49,6 +49,11 @@ const Class* Receiver(const Graph& graph, const std::string& path) {
     if (!cls) throw std::runtime_error("Script dispatch receiver class is unavailable: " + path);
     return cls;
 }
+bool ClassAncestor(const Graph& graph,const Class* receiver,const std::string& path) {
+    for(auto* cls=receiver;cls;cls=cls->parentPath.empty()?nullptr:graph.FindClass(cls->parentPath))
+        if(FoldName(cls->path)==FoldName(path)) return true;
+    return false;
+}
 } // namespace
 
 std::string FoldName(const std::string& name) {
@@ -108,7 +113,8 @@ Graph::Graph(std::vector<Class> classes, const Limits& limits) : limits_(limits)
         for (auto& [name, state] : cls.states) {
             Count(stateCount, limits_.states); CheckName(name, limits_); CheckName(state.name, limits_);
             CheckName(state.path, limits_, true);
-            Retain(bytes, sizeof(State)+256u, limits_); Retain(bytes, (name.size()+state.name.size()+state.path.size())*3u, limits_);
+            if(!state.parentPath.empty()) CheckName(state.parentPath,limits_,true);
+            Retain(bytes, sizeof(State)+256u, limits_); Retain(bytes, (name.size()+state.name.size()+state.path.size()+state.parentPath.size())*3u, limits_);
             const auto key = FoldName(name);
             if (key != FoldName(state.name) || FoldName(state.path) != FoldName(cls.path + '.' + name) ||
                 state.compareIndex == 0u || state.compareIndex > static_cast<std::uint32_t>(std::numeric_limits<int>::max()))
@@ -122,6 +128,17 @@ Graph::Graph(std::vector<Class> classes, const Limits& limits) : limits_(limits)
                 throw std::runtime_error("Script dispatch duplicate state identity");
         }
         cls.states.swap(normalized);
+        if(cls.stateChildOrder.size()!=cls.states.size())
+            throw std::runtime_error("Script dispatch state child order is incomplete");
+        std::set<std::string> children;
+        for(auto& path:cls.stateChildOrder) {
+            CheckName(path,limits_,true);Retain(bytes,sizeof(std::string)+path.size()*3u,limits_);
+            const auto dot=path.find_last_of('.');
+            const auto state=cls.states.find(FoldName(path.substr(dot+1u)));
+            if(state==cls.states.end()||FoldName(state->second.path)!=FoldName(path)||!children.insert(FoldName(path)).second)
+                throw std::runtime_error("Script dispatch state child order has a foreign, missing or duplicate child");
+            path=state->second.path;
+        }
         const auto key = FoldName(cls.path);
         if (!classes_.emplace(key, std::move(cls)).second)
             throw std::runtime_error("Script dispatch duplicate class identity");
@@ -139,11 +156,42 @@ Graph::Graph(std::vector<Class> classes, const Limits& limits) : limits_(limits)
             if (!current) throw std::runtime_error("Script dispatch parent class is unavailable");
         }
     }
+    // State SuperField can refer to a differently named state. Validate actual
+    // links rather than manufacturing same-name superclass inheritance.
+    for(const auto& [key,cls]:classes_) for(const auto& [name,state]:cls.states) {
+        if(FindClass(state.path))
+            throw std::runtime_error("Script dispatch class/state path identity is duplicated");
+        std::set<std::string> visited;
+        std::string path=state.path;
+        while(!path.empty()) {
+            if(visited.size()>=limits_.classDepth||!visited.insert(FoldName(path)).second)
+                throw std::runtime_error("Script dispatch state inheritance is cyclic/deep");
+            if(const auto* parentClass=FindClass(path)) {
+                if(!ClassAncestor(*this,&cls,parentClass->path))
+                    throw std::runtime_error("Script dispatch selected class is outside its owner's ancestry");
+                path=parentClass->parentPath;
+            } else {
+                const auto* node=FindState(path);
+                if(!node||!ClassAncestor(*this,&cls,node->path.substr(0u,node->path.find_last_of('.'))))
+                    throw std::runtime_error("Script dispatch state parent is unavailable or has a foreign owner");
+                path=node->parentPath;
+            }
+        }
+    }
 }
 const Class* Graph::FindClass(const std::string& path) const {
     CheckQueryName(path);
     const auto found = classes_.find(FoldName(path));
     return found == classes_.end() ? nullptr : &found->second;
+}
+const State* Graph::FindState(const std::string& path) const {
+    CheckQueryName(path);
+    const auto dot=path.find_last_of('.');
+    if(dot==std::string::npos) return nullptr;
+    const auto* cls=FindClass(path.substr(0u,dot));
+    if(!cls) return nullptr;
+    const auto found=cls->states.find(FoldName(path.substr(dot+1u)));
+    return found==cls->states.end()||FoldName(found->second.path)!=FoldName(path)?nullptr:&found->second;
 }
 void Graph::CheckQueryName(const std::string& name) const {
     if (name.size() > limits_.nameBytes || name.find('\0') != std::string::npos)
@@ -157,12 +205,10 @@ std::optional<std::string> ResolveState(const Graph& graph, const std::string& c
     if (key == "none") return {};
     if (key == "auto") {
         for (auto* cls = receiver; cls; cls = cls->parentPath.empty() ? nullptr : graph.FindClass(cls->parentPath)) {
-            const State* selected{};
-            for (const auto& [name, state] : cls->states) {
-                if ((state.flags & 2u) && (!selected || state.compareIndex < selected->compareIndex)) selected = &state;
-            }
-            if (selected) { key = FoldName(selected->name); break; }
+            for(const auto& path:cls->stateChildOrder)
+                if(const auto* state=graph.FindState(path);state->flags&2u) return state->path;
         }
+        return {};
     }
     for (auto* cls = receiver; cls; cls = cls->parentPath.empty() ? nullptr : graph.FindClass(cls->parentPath)) {
         const auto found = cls->states.find(key);
@@ -172,17 +218,50 @@ std::optional<std::string> ResolveState(const Graph& graph, const std::string& c
 }
 std::optional<std::string> ResolveFunction(const Graph& graph, const std::string& classPath,
     const std::string& stateName, const std::string& functionName, const LookupKind kind) {
-    const auto* receiver = Receiver(graph, classPath);
+    const auto* receiver=Receiver(graph,classPath);
     graph.CheckQueryName(stateName); graph.CheckQueryName(functionName);
-    const auto name = FoldName(functionName);
-    const auto state = FoldName(stateName);
-    if (kind == LookupKind::Virtual && state != "none") {
-        for (auto* cls = receiver; cls; cls = cls->parentPath.empty() ? nullptr : graph.FindClass(cls->parentPath)) {
-            const auto found = cls->states.find(state);
-            if (found == cls->states.end()) continue;
-            const auto function = found->second.functions.find(name);
-            if (function != found->second.functions.end()) return function->second;
+    // This is a current state NAME, not a GotoState request. In particular, a
+    // state literally named Auto must not trigger the Auto-state iterator.
+    std::optional<std::string> selected;
+    if(kind==LookupKind::Virtual) {
+        const auto key=FoldName(stateName);
+        for(auto* cls=receiver;cls;cls=cls->parentPath.empty()?nullptr:graph.FindClass(cls->parentPath)) {
+            const auto found=cls->states.find(key);
+            if(found!=cls->states.end()) {selected=found->second.path;break;}
         }
+    }
+    return ResolveFunctionAtSelectedNode(graph,classPath,selected.value_or(std::string{}),functionName,kind);
+}
+std::vector<std::string> SelectedNodeAncestry(const Graph& graph,const std::string& classPath,
+    const std::string& selectedPath) {
+    const auto* receiver=Receiver(graph,classPath);graph.CheckQueryName(selectedPath);
+    std::vector<std::string> result;
+    auto path=selectedPath;
+    // Graph construction already validated every link's depth/cycle/ownership.
+    while(!path.empty()) {
+        if(const auto* cls=graph.FindClass(path)) {
+            if(!ClassAncestor(graph,receiver,cls->path))
+                throw std::runtime_error("Script dispatch selected class is not a receiver ancestor");
+            result.push_back(cls->path);path=cls->parentPath;
+        } else {
+            const auto* state=graph.FindState(path);
+            if(!state||!ClassAncestor(graph,receiver,state->path.substr(0u,state->path.find_last_of('.'))))
+                throw std::runtime_error("Script dispatch selected state is unavailable or foreign to receiver");
+            result.push_back(state->path);path=state->parentPath;
+        }
+    }
+    return result;
+}
+std::optional<std::string> ResolveFunctionAtSelectedNode(const Graph& graph,const std::string& classPath,
+    const std::string& selectedPath,const std::string& functionName,const LookupKind kind) {
+    const auto* receiver=Receiver(graph,classPath);
+    graph.CheckQueryName(selectedPath);graph.CheckQueryName(functionName);
+    const auto name=FoldName(functionName);
+    if(kind==LookupKind::Virtual) for(const auto& path:SelectedNodeAncestry(graph,classPath,selectedPath)) {
+        const auto* state=graph.FindState(path);
+        const auto& functions=state?state->functions:graph.FindClass(path)->functions;
+        const auto found=functions.find(name);
+        if(found!=functions.end()) return found->second;
     }
     for (auto* cls = receiver; cls; cls = cls->parentPath.empty() ? nullptr : graph.FindClass(cls->parentPath)) {
         const auto function = cls->functions.find(name);

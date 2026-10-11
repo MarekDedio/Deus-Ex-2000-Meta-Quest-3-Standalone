@@ -198,6 +198,11 @@ current state name, and switching states does not clear those sets. Frame.Call
 also checks eligibility for ordinary function calls; the level/deletion gates
 are additional behavior of CallEvent, not of every function call.
 
+The following pinned-source description is historical, not the current original
+dispatch contract. [Original GOTY dispatch](ORIGINAL-STATE-DISPATCH.md) now uses
+actual Children/Next Auto order and explicit selected-state SuperField callback
+ancestry; selected/running identity separation and label control remain pending.
+
 Event and virtual lookup searches same-named states through the receiver class
 hierarchy first, then class functions. Global bytecode calls skip states; Final
 calls use their referenced function. The running code can be a parent state's

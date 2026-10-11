@@ -1,18 +1,21 @@
 # Authored script selection and eligibility
 
-This offline source batch adds bounded, read-only state/function selection,
+The initial offline source batch added bounded, read-only state/function selection,
 terminal label-table analysis and call eligibility to the existing synchronous
 interpreter. It does not enter states, run startup, tick AI or connect animation
-callbacks to the live game. The installed `25e38b3` Quest test APK is unchanged;
-this batch has no Android build or device deployment.
+callbacks to the live game. Its evidence below is historical; the current
+[accepted device build](QUEST-TEST-BUILD.md) and
+[original dispatch increment](ORIGINAL-STATE-DISPATCH.md) have separate evidence.
 
 The subsequent [explicit state-execution layer](STATE-EXECUTION.md) now adds
 bounded transitions, mutable disabled sets, state slices and runtime-v5 saves.
 The selection/layout layer itself remains read-only; no live AI tick is implied.
 
-The fidelity reference is the locally pinned SurrealEngine commit
+The initial fidelity reference was the locally pinned SurrealEngine commit
 `677ee14c5b83486e6634687953779aafb7973ad6`, not the closed-source original DLL
-or a later Unreal Engine version. The earlier
+or a later Unreal Engine version. Subsequent
+[original GOTY dispatch corrections](ORIGINAL-STATE-DISPATCH.md) supersede its
+Auto ordering and same-name state callback inheritance. The earlier
 [metadata foundation](AUTHORED-STATE-FOUNDATION.md) remains the retention and
 startup audit; this document describes the subsequent interpretation boundary.
 
@@ -30,28 +33,31 @@ comparison table. Empty names and `None` share the null-name identity. State
 names also retain their actual global `NameString.GetCompareIndex()`: a package
 name index, alphabetical rank or freshly assigned graph order is not a substitute.
 
-Selection follows the pinned implementation:
+Current selection follows the independently audited original contract:
 
 - Named states resolve derived class first, then parents. `None` and unresolved
   names select no state.
-- `Auto` finds the first Auto-flag (`2`) candidate in the derived class's state
-  map, then parent maps. Within one class this means the lowest actual global
-  CompareIndex, not alphabetical or serialized-child order. The selected name
-  is then resolved again from the receiver class, so a derived same-named
-  override can win. Without an Auto-flag candidate, a state literally named
-  `Auto` can still resolve.
-- Virtual/event function lookup searches the current same-named states through
-  the receiver class hierarchy first, then class functions derived-to-base.
-  A parent state's running code does not move this lookup origin to the parent.
+- `Auto` finds the first Auto-flag (`2`) candidate in actual Children/Next order,
+  then superclass order. It returns that exact state path without re-resolving
+  its name or falling back to a non-Auto state literally named Auto.
+- Virtual/event function lookup at an exact selected state follows explicit
+  SuperField ancestry, then receiver-class functions derived-to-base. It does
+  not manufacture same-name state inheritance. The current runtime context
+  still needs selected-state/running-code separation after inherited labels,
+  so runtime virtual/event calls retain the literal current-name convenience
+  query until that migration; running code must not masquerade as StateNode.
 - Global calls skip states. Final calls use the function reference from the
   executing function's own package; a fully qualified diagnostic target likewise
   selects an identity but does not bypass eligibility.
 
 `ResolvePortableActorState` and `ResolvePortableActorFunction` return detached
 path values without entering the proposed state or running its callbacks. The
-latter can query a hypothetical state name; it is not proof that the actor has
+latter can query a hypothetical literal current state name (including Auto),
+not an Auto selection request; it is not proof that the actor has
 ever occupied that state. Absent selection returns no path. Invalid receiver
 metadata, ownership, references or bounded graph construction fail explicitly.
+`ReadPortableRuntimeDispatchClass` exposes a detached read-only copy of actual
+child order, explicit state parents and callable members for source audits.
 
 Primary pinned references: `Packages/Core/UClass.cpp`, `UState.cpp`,
 `UObject.cpp` (`GotoState`); `Package/NameString.h`; `VM/ScriptCall.cpp`
@@ -64,32 +70,30 @@ for example AnimEnd is index 24 and Tick is 36. Other known events and arbitrary
 names do not use compiled probe bits. Spelling and case do not create a second
 probe identity.
 
-For a probe, `IsEnabled` requires all applicable conditions:
-
-1. With a current code object, its IgnoreMask bit must be **one**. A zero bit
-   denies the probe; the field's name is not a reason to invert this polarity.
-2. The code object's ProbeMask bit or the receiver's exact serialized
-   Class.ProbeMask bit must be one. The check does not OR masks from ancestors.
-3. The event must not be in the current state name's dynamic disabled set.
-
-Without a current code object, only the class bit supplies compiled eligibility.
-Non-probe events use the disabled-name check without the compiled-mask test.
-Compiled masks describe eligibility, not whether a function actually exists.
+Original IsProbing consults a frame's live positive bit; no frame permits all
+probes. Nonprobe names are always eligible at this layer. Level/deletion and
+other callback gates remain separate. `IsEnabled` now accepts this exact live
+mask; its authored class/code-mask fallback remains only for detached callers.
+Portable transitioned frames still approximate original independent live-mask
+updates with per-state negative records. They are not a completed original
+FStateFrame implementation. See [landing/probe corrections](SCRIPT-LANDING.md).
 
 `ReadPortableActorDispatchContext` interprets only supported dormant headers.
 When both authored function/state references exist and the logical offset is
-`-1`, the pinned loader installs a stopped frame whose code is the referenced
+`-1`, the portable query retains a stopped context whose code is the referenced
 State or Class. The portable query validates those identities and derives its
 name and masks without allocating a live frame. A class-backed Doctor record
 therefore reports `Doctor`, not a guessed initial state and not `None`.
 GetStateName (native 284) and IsInState (281) read this same context. Runnable
 serialized continuations explicitly remain unsupported.
 
-The HasStack field called `probeMask` is **not** compiled UState.ProbeMask.
-Pinned loading feeds its set bits into DisableEvent. The portable stopped
-context accordingly exposes the corresponding disabled probe names; it does
-not use those bits as permission to run. The latent action number does not
-start a wait in the offset-`-1` branch. Raw headers remain immutable and queryable.
+The HasStack field called `probeMask` is **not** compiled UState.ProbeMask and
+is not an inverted disabled mask. Original Serialize retains the positive
+enabled bits directly. The portable stopped context exposes those exact live
+bits, derives negative names from unset bits and preserves actual Enable/Disable
+overlays. The latent action number does not start a wait in the offset-`-1`
+branch. Raw headers remain immutable and queryable. This supersedes the pinned
+loader interpretation used by the initial batch.
 
 This is enough to correctly suppress a manually selected callback in that
 dormant context. In particular, selecting
@@ -198,12 +202,12 @@ not leave callable aliases for removed actors. Queries use the indexed
 vector-package initialization path, not the single-package lifecycle helper.
 Modified map-local Class/State definitions remain outside the supported path.
 
-Current asset-free evidence: the 30-entry host suite has 28 passing tests and
+Initial asset-free evidence (historical): the 30-entry host suite had 28 passing tests and
 two optional original-data skips. The VM controls pass 285 checks with 66
 rejections, dispatch controls 899 checks with 20 rejections, and descriptor
 controls 386 checks with 101 rejections. Dispatch fixtures cover all 64 probes,
 mask polarity/provenance, disabled names, event lifetime gates, inherited/state/
-global lookup, CompareIndex ordering, invalid identities and resource budgets.
+global lookup, the former CompareIndex ordering, invalid identities and resource budgets.
 VM fixtures cover suppression and malformed/terminal label analysis.
 
 Both separate original-data integrations passed. The graph covered 1,502

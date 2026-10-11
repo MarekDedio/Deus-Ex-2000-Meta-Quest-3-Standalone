@@ -1,5 +1,29 @@
 # Port status
 
+## Original state-dispatch correction (2026-10-11)
+
+- Auto selection now returns the actual first Children/Next Auto-flag state,
+  including inherited exact identities, without CompareIndex sorting, derived
+  same-name interception or a literal Auto fallback. Current-state-name callback
+  queries still treat Auto literally. Exact-node callback lookup follows actual
+  state SuperField links, not inferred same-name superclass states.
+- Detached metadata validates state parent ownership/depth/cycles, complete
+  child order and cross-kind path uniqueness. Original source-link audit passes
+  all 1,502 classes/261 states, 100 explicit state parents and 3,098 scoped
+  callback queries without live script state. It shares package decoders and
+  does not prove all native hash precedence. See
+  [ORIGINAL-STATE-DISPATCH.md](ORIGINAL-STATE-DISPATCH.md).
+- All 50 ordinary host tests pass (three optional original-data skips).
+  Dispatch controls pass 63,597 checks/36 expected rejects. Focused original
+  metadata/program, defaults, full actor and runtime save/restore checks pass separately.
+  A signed ARM64 APK builds and is archived, not deployed; the installed APK
+  hash still matches the user's accepted hand-direction build.
+- Selected-state/running-code/null-Code/live-mask storage and original transition
+  control remain unfinished. Runtime event calls retain their name-based context
+  until that migration rather than passing inherited running code as StateNode.
+  This corrects shared lookup prerequisites, not automatic world startup,
+  player possession, live AI or full campaign playability.
+
 ## Self-view geometry and session lifecycle repair (2026-10-10)
 
 - The user's 41-second recording exposes genuinely open weapon-derived hands

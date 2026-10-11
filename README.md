@@ -58,6 +58,10 @@ falling-only poll528 and dynamic LongFall using that same saved native counter.
 Explicit StartUp can yield at its original Sleep and continue through landing;
 remaining startup dependencies are still refused transactionally.
 This is isolated backend progress, not automatic world startup or live NPC AI.
+The [original state-dispatch correction](docs/ORIGINAL-STATE-DISPATCH.md) now
+uses actual Children/Next Auto order and explicit selected-state SuperField
+callback ancestry. Full state identity/control and campaign bootstrap remain
+unfinished; the accepted hand-direction test APK is kept installed.
 The [installed Quest test build](docs/QUEST-TEST-BUILD.md) remains frozen while
 the user tests it. Subsequent offline source work retains
 [authored state metadata](docs/AUTHORED-STATE-FOUNDATION.md); it does not enable

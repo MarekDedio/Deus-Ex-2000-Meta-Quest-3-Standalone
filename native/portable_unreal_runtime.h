@@ -342,6 +342,9 @@ struct PortableScriptDispatchSummary {
     std::size_t classes{}, states{}, classFunctions{}, stateFunctions{}, commonFields{};
 };
 PortableScriptDispatchSummary ReadPortableRuntimeDispatchSummary();
+// Detached read-only class/state dispatch metadata, preserving actual
+// Children/Next state order and explicit SuperField paths. No actor effects.
+QuestVr::ScriptDispatch::Class ReadPortableRuntimeDispatchClass(const std::string& classPath);
 PortableActorDispatchContext ReadPortableActorDispatchContext(const std::string& actorPath);
 std::optional<QuestVr::StateObject> ReadPortableActorStateObject(const std::string& actorPath);
 // Explicit bounded state slice, not a world tick or automatic startup phase.

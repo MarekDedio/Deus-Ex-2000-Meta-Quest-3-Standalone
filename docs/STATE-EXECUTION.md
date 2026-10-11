@@ -16,6 +16,13 @@ callback/continuation transactions. It also corrects original nonprobe
 Enable/Disable no-ops and legacy nonprobe eligibility. It does not enable physical landing or
 automatic state scheduling.
 
+The [original dispatch correction](ORIGINAL-STATE-DISPATCH.md) now selects Auto
+in actual Children/Next order and resolves callbacks through explicit selected
+state SuperField links. This supersedes same-name callback inheritance from the
+initial pinned model. The stored runtime context still needs independent
+selected-StateNode/running-Node/null-Code identities; label lookup and transition
+preemption described below remain approximations, not the original contract.
+
 The initial state-control contract follows the locally pinned SurrealEngine commit
 `677ee14c5b83486e6634687953779aafb7973ad6`, especially `VM/Frame.cpp`,
 `Packages/Core/UObject.cpp`, and `Native/NObject.cpp`. It is not verification against

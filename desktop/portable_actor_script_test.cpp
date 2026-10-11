@@ -151,6 +151,162 @@ struct OriginalProgramHost final : QuestVr::Vm::Host {
     Evaluation Native(std::uint16_t, const std::string&, const std::vector<Evaluation>&,
         const QuestVr::Vm::Function*) override { Reject(); }
 };
+// Independently decode source Children/Next and SuperField links. A detached
+// runtime graph must not silently substitute alphabetical/FName order or
+// same-name receiver states for the original selected state identity.
+void VerifyOriginalDispatchMetadata(const std::vector<PortablePackageTables>& tables,
+    const PortableRuntimeSummary& runtime) {
+    namespace Dispatch = QuestVr::ScriptDispatch;
+    std::map<std::string, Dispatch::Class> expectedClasses;
+    std::map<std::string, Dispatch::State> expectedStates;
+    std::vector<Dispatch::Class> actualClasses;
+    std::size_t linkedStates{}, childFields{}, explicitParents{}, callbackQueries{};
+    for (const auto& package : tables) {
+        const auto reflection = BuildPortableReflectionGraph(package);
+        const auto prefix = std::filesystem::path(package.sourcePath).stem().string()+'.';
+        const auto path = [&](const std::int32_t reference) {
+            if (!reference) return std::string{};
+            const auto name = GetPortableObjectPath(package,reference);
+            return reference > 0 ? prefix+name : name;
+        };
+        const auto children = [&](const std::string& owner,const std::int32_t first) {
+            std::vector<std::size_t> result;
+            std::set<std::int32_t> visited;
+            auto reference = first;
+            while (reference) {
+                Require(reference > 0 && static_cast<std::size_t>(reference) <= reflection.objects.size() &&
+                    visited.size() < 8192u && visited.insert(reference).second,
+                    "Original source Children/Next is nonlocal, cyclic or invalid: "+owner);
+                const auto index = static_cast<std::size_t>(reference-1);
+                const auto& field = reflection.objects[index];
+                Require(field.outerPath == owner,"Original source child has a foreign owner: "+owner);
+                result.push_back(index); ++childFields;
+                if (field.metaClass == "Function") reference = LoadPortableFunctionScript(package,index).nextField;
+                else if (field.metaClass == "State") reference = LoadPortableStateDescriptor(package,index).nextField;
+                else if (field.metaClass == "Class") reference = LoadPortableClassDescriptor(package,index).state.nextField;
+                else if (field.metaClass.size() >= 8u && field.metaClass.compare(field.metaClass.size()-8u,8u,"Property") == 0)
+                    reference = LoadPortablePropertyDescriptor(package,index).nextField;
+                else reference = LoadPortableFieldLinks(package,index).nextField;
+            }
+            return result;
+        };
+        for (std::size_t index=0;index<reflection.objects.size();++index) {
+            const auto& object = reflection.objects[index];
+            if (object.metaClass != "Class") continue;
+            const auto descriptor = LoadPortableClassDescriptor(package,index);
+            Dispatch::Class expected;
+            expected.path = prefix+object.objectPath;
+            expected.parentPath = path(descriptor.state.baseField);
+            expected.probeMask = descriptor.state.probeMask;
+            for (const auto child : children(object.objectPath,descriptor.state.children)) {
+                const auto& field = reflection.objects[child];
+                const auto name = package.names.at(static_cast<std::size_t>(package.exports[child].ObjName)).Name;
+                if (field.metaClass == "Function")
+                    expected.functions.emplace(Dispatch::FoldName(name.ToString()),prefix+field.objectPath);
+                else if (field.metaClass == "State") {
+                    const auto source = LoadPortableStateDescriptor(package,child);
+                    Dispatch::State state;
+                    state.path = prefix+field.objectPath; state.name = name.ToString();
+                    state.compareIndex = static_cast<std::uint32_t>(name.GetCompareIndex());
+                    state.flags = source.stateFlags; state.parentPath = path(source.baseField);
+                    explicitParents += !state.parentPath.empty();
+                    for (const auto member : children(field.objectPath,source.children)) {
+                        if (reflection.objects[member].metaClass != "Function") continue;
+                        const auto memberName = package.names.at(static_cast<std::size_t>(package.exports[member].ObjName)).Name.ToString();
+                        state.functions.emplace(Dispatch::FoldName(memberName),prefix+reflection.objects[member].objectPath);
+                    }
+                    expected.stateChildOrder.push_back(state.path);
+                    expectedStates.emplace(Dispatch::FoldName(state.path),state);
+                    expected.states.emplace(Dispatch::FoldName(state.name),std::move(state)); ++linkedStates;
+                }
+            }
+            auto actual = ReadPortableRuntimeDispatchClass(expected.path);
+            Require(std::tie(actual.path,actual.parentPath,actual.probeMask,actual.functions,actual.stateChildOrder) ==
+                std::tie(expected.path,expected.parentPath,expected.probeMask,expected.functions,expected.stateChildOrder) &&
+                actual.states.size() == expected.states.size(),
+                "Original runtime class Children/Next/SuperField metadata diverged: "+expected.path);
+            for (const auto& [name,state] : expected.states) {
+                const auto found = actual.states.find(name);
+                Require(found != actual.states.end(),"Original runtime lost owned state: "+state.path);
+                const auto& value = found->second;
+                Require(std::tie(value.path,value.name,value.compareIndex,value.flags,value.functions,value.parentPath) ==
+                    std::tie(state.path,state.name,state.compareIndex,state.flags,state.functions,state.parentPath),
+                    "Original runtime selected state SuperField/functions diverged: "+state.path);
+            }
+            expectedClasses.emplace(Dispatch::FoldName(expected.path),std::move(expected));
+            actualClasses.push_back(std::move(actual));
+        }
+    }
+    Require(actualClasses.size() == runtime.classes && linkedStates == runtime.states && explicitParents != 0u,
+        "Original dispatch metadata audit lost class/state/inheritance coverage");
+    const Dispatch::Graph actual(std::move(actualClasses));
+    const auto classAt = [&](const std::string& path) -> const Dispatch::Class& {
+        const auto found = expectedClasses.find(Dispatch::FoldName(path));
+        Require(found != expectedClasses.end(),"Original source class link is unavailable: "+path);
+        return found->second;
+    };
+    const auto sourceFunction = [&](const std::string& receiver,const std::string& selected,
+        const std::string& name,const Dispatch::LookupKind kind) -> std::optional<std::string> {
+        auto node = kind == Dispatch::LookupKind::Virtual ? selected : std::string{};
+        std::set<std::string> visited;
+        while (!node.empty()) {
+            Require(visited.size() < 256u && visited.insert(Dispatch::FoldName(node)).second,
+                "Original source selected-node ancestry is cyclic/deep: "+selected);
+            const auto state = expectedStates.find(Dispatch::FoldName(node));
+            const auto& functions = state != expectedStates.end() ? state->second.functions : classAt(node).functions;
+            const auto function = functions.find(Dispatch::FoldName(name));
+            if (function != functions.end()) return function->second;
+            node = state != expectedStates.end() ? state->second.parentPath : classAt(node).parentPath;
+        }
+        node = receiver;
+        visited.clear();
+        while (!node.empty()) {
+            Require(visited.size() < 256u && visited.insert(Dispatch::FoldName(node)).second,
+                "Original source receiver-class ancestry is cyclic/deep: "+receiver);
+            const auto& cls = classAt(node);
+            const auto function = cls.functions.find(Dispatch::FoldName(name));
+            if (function != cls.functions.end()) return function->second;
+            node = cls.parentPath;
+        }
+        return {};
+    };
+    std::size_t autoSelections{}, noAuto{};
+    for (const auto& [key,cls] : expectedClasses) {
+        std::optional<std::string> expectedAuto;
+        auto node = cls.path;
+        std::set<std::string> visited;
+        while (!node.empty() && !expectedAuto) {
+            Require(visited.size() < 256u && visited.insert(Dispatch::FoldName(node)).second,
+                "Original source Auto class ancestry is cyclic/deep: "+cls.path);
+            const auto& source = classAt(node);
+            for (const auto& statePath : source.stateChildOrder) {
+                if (expectedStates.at(Dispatch::FoldName(statePath)).flags & 2u) { expectedAuto=statePath; break; }
+            }
+            node = source.parentPath;
+        }
+        Require(Dispatch::ResolveState(actual,cls.path,"Auto") == expectedAuto,
+            "Original Auto lost exact source Children/Next selection: "+cls.path);
+        autoSelections += expectedAuto.has_value(); noAuto += !expectedAuto;
+        for (const auto& [name,state] : cls.states) {
+            std::set<std::string> names{"tick","beginstate","endstate","nosuchauthoredevent"};
+            for (const auto& [function,path] : state.functions) names.insert(function);
+            for (const auto& function : names) for (const auto kind : {Dispatch::LookupKind::Virtual,Dispatch::LookupKind::Global}) {
+                Require(Dispatch::ResolveFunctionAtSelectedNode(actual,cls.path,state.path,function,kind) ==
+                    sourceFunction(cls.path,state.path,function,kind),
+                    "Original selected-node callback lost source SuperField/fallback: "+state.path+'.'+function);
+                ++callbackQueries;
+            }
+        }
+    }
+    Require(autoSelections != 0u && noAuto != 0u && callbackQueries != 0u && !GetPortableRuntimeScriptStatePresent(),
+        "Original dispatch selection audit missed controls or created live script state");
+    bool wrongClass{};
+    try { ReadPortableRuntimeDispatchClass("Engine.Actor.BeginPlay"); } catch (const std::exception&) { wrongClass=true; }
+    Require(wrongClass,"Readonly class dispatch inspection accepted a Function identity");
+    std::cout << "ORIGINAL DISPATCH SOURCE LINKS classes="<<runtime.classes<<" states="<<linkedStates<<
+        " childFields="<<childFields<<" explicitStateParents="<<explicitParents<<" autoSelections="<<autoSelections<<
+        " noAuto="<<noAuto<<" selectedCallbackQueries="<<callbackQueries<<"; readonly, not full native hash precedence\n";
+}
 void VerifyOriginalDispatchPrograms(const std::vector<PortablePackageTables>& tables,
     const PortableRuntimeSummary& runtime) {
     const auto graph = ReadPortableRuntimeDispatchSummary();
@@ -2230,7 +2386,8 @@ void VerifyOriginalStateExecution(const std::string& actor, const std::filesyste
 }
 
 void TestOriginal(const std::filesystem::path& root, const bool inventoryOnly = false,
-    const bool switchOnly = false, const bool randomOnly = false, const bool sleepOnly = false, const bool landingOnly = false) {
+    const bool switchOnly = false, const bool randomOnly = false, const bool sleepOnly = false,
+    const bool landingOnly = false, const bool dispatchOnly = false) {
     static constexpr const char* packages[] = {
         "ConSys", "Core", "DeusEx", "DeusExCharacters", "DeusExConAudioAIBarks",
         "DeusExConAudioEndGame", "DeusExConAudioHK_Shared", "DeusExConAudioIntro",
@@ -2254,8 +2411,10 @@ void TestOriginal(const std::filesystem::path& root, const bool inventoryOnly = 
         " states=" << runtime.states << '\n';
     if (!inventoryOnly) {
         VerifyAuthoredStateMetadata(root);
+        VerifyOriginalDispatchMetadata(tables,runtime);
         VerifyOriginalDispatchPrograms(tables,runtime);
     }
+    if (dispatchOnly) return;
     TemporaryCheckpoint temporary(root);
     const auto checkpoint = (temporary.directory / "original-authored.sav").string();
     std::size_t humanTests{}, robotTests{}, birdTests{};
@@ -2512,13 +2671,16 @@ int main(int argc, char** argv) {
             return 77;
         }
         Require(argc == 2 || (argc == 3 && (std::string(argv[2]) == "--inventory-only" ||
-                std::string(argv[2]) == "--switch-only" || std::string(argv[2]) == "--random-only" || std::string(argv[2]) == "--sleep-only" || std::string(argv[2]) == "--landing-only")),
-            "Usage: portable_actor_script_test GAME_ROOT [--inventory-only|--switch-only|--random-only|--sleep-only|--landing-only]");
+                std::string(argv[2]) == "--switch-only" || std::string(argv[2]) == "--random-only" || std::string(argv[2]) == "--sleep-only" || std::string(argv[2]) == "--landing-only" || std::string(argv[2]) == "--dispatch-only")),
+            "Usage: portable_actor_script_test GAME_ROOT [--inventory-only|--switch-only|--random-only|--sleep-only|--landing-only|--dispatch-only]");
         const bool switchOnly = argc == 3 && std::string(argv[2]) == "--switch-only";
         const bool randomOnly = argc == 3 && std::string(argv[2]) == "--random-only";
         const bool sleepOnly = argc == 3 && std::string(argv[2]) == "--sleep-only";
         const bool landingOnly = argc == 3 && std::string(argv[2]) == "--landing-only";
-        TestOriginal(std::filesystem::path(argv[1]), argc == 3 && !switchOnly && !randomOnly && !sleepOnly && !landingOnly, switchOnly,randomOnly,sleepOnly,landingOnly);
+        const bool dispatchOnly = argc == 3 && std::string(argv[2]) == "--dispatch-only";
+        TestOriginal(std::filesystem::path(argv[1]), argc == 3 && !switchOnly && !randomOnly && !sleepOnly && !landingOnly && !dispatchOnly,
+            switchOnly,randomOnly,sleepOnly,landingOnly,dispatchOnly);
+        if (dispatchOnly) {std::cout<<"PASS focused original readonly dispatch/source-program audit\n";return 0;}
         if (landingOnly) {std::cout<<"PASS focused original WaitForLanding/native actor wait suite\n";return 0;}
         if (sleepOnly) {std::cout<<"PASS focused original Sleep/native actor wait suite\n";return 0;}
         if (switchOnly) { std::cout << "PASS focused original cold-assets/head-Switch suite\n"; return 0; }

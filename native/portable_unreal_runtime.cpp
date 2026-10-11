@@ -1112,6 +1112,10 @@ const QuestVr::ScriptDispatch::Graph& DispatchGraph() {
                 state.path = field->reflection.objectPath; state.name = name.ToString();
                 state.compareIndex = static_cast<std::uint32_t>(name.GetCompareIndex());
                 state.flags = field->stateDescriptor->stateFlags;
+                if(auto* parent=referenced(field,field->stateDescriptor->baseField)) {
+                    if(!StateMetadata(parent)) throw std::runtime_error("Dispatch state SuperField is not State/Class: "+state.path);
+                    state.parentPath=parent->reflection.objectPath;
+                }
                 for (auto* member : children(field, field->stateDescriptor->children)) {
                     if (!member->script) continue;
                     const auto& memberPackage = table(member->sourcePath);
@@ -1119,6 +1123,7 @@ const QuestVr::ScriptDispatch::Graph& DispatchGraph() {
                     state.functions.emplace(functionName.ToString(), member->reflection.objectPath);
                     ++summary.stateFunctions;
                 }
+                cls.stateChildOrder.push_back(state.path);
                 cls.states.emplace(state.name, std::move(state)); ++summary.states;
             }
         }
@@ -1226,6 +1231,9 @@ public:
     std::shared_ptr<const Function> Member(RuntimeObject* receiver, const std::string& name) {
         if (name.find('.') != std::string::npos) return FunctionIdentity(Object(name));
         const auto context = CurrentDispatchContext(receiver);
+        // Portable overrides still lack a separate selected StateNode. Their
+        // codePath can be an inherited running node after a label jump; never
+        // pass it to the exact-selected-node API as if it were StateNode.
         const auto selected = QuestVr::ScriptDispatch::ResolveFunction(DispatchGraph(),
             receiver->cls->reflection.objectPath, context.stateName, name);
         if (selected) return FunctionIdentity(Object(*selected));
@@ -4746,6 +4754,11 @@ PortableStateDescriptor ReadPortableRuntimeAuthoredStateDescriptor(const std::st
 
 PortableScriptDispatchSummary ReadPortableRuntimeDispatchSummary() {
     DispatchGraph(); return persistentDispatchSummary;
+}
+QuestVr::ScriptDispatch::Class ReadPortableRuntimeDispatchClass(const std::string& classPath) {
+    const auto* cls = DispatchGraph().FindClass(classPath);
+    if (!cls) throw std::runtime_error("Dispatch metadata class is unavailable: " + classPath);
+    return *cls;
 }
 
 PortableActorDispatchContext ReadPortableActorDispatchContext(const std::string& actorPath) {

@@ -18,15 +18,17 @@ template<class Action> void Reject(Action action, const char* reason) {
     Require(rejected, reason); ++rejections;
 }
 std::vector<Dispatch::Class> Classes() {
-    Dispatch::Class base{"Test.Base", {}, 0x1234u, {}, {{"Run", "Test.Base.Run"}, {"BaseOnly", "Test.Base.BaseOnly"}}};
+    Dispatch::Class base{"Test.Base", {}, 0x1234u, {}, {{"Run", "Test.Base.Run"}, {"BaseOnly", "Test.Base.BaseOnly"}}, {}};
     base.states.emplace("Idle", Dispatch::State{"Test.Base.Idle", "Idle", 90u, 2u,
-        {{"Tick", "Test.Base.Idle.Tick"}, {"Run", "Test.Base.Idle.Run"}}});
-    base.states.emplace("BaseAuto", Dispatch::State{"Test.Base.BaseAuto", "BaseAuto", 50u, 2u, {}});
-    Dispatch::Class derived{"Test.Derived", "Test.Base", 0u, {}, {{"Run", "Test.Derived.Run"}}};
+        {{"Tick", "Test.Base.Idle.Tick"}, {"Run", "Test.Base.Idle.Run"}}, {}});
+    base.states.emplace("BaseAuto", Dispatch::State{"Test.Base.BaseAuto", "BaseAuto", 50u, 2u, {}, {}});
+    base.stateChildOrder={"Test.Base.Idle","Test.Base.BaseAuto"};
+    Dispatch::Class derived{"Test.Derived", "Test.Base", 0u, {}, {{"Run", "Test.Derived.Run"}}, {}};
     derived.states.emplace("Idle", Dispatch::State{"Test.Derived.Idle", "IDLE", 90u, 0u,
-        {{"Run", "Test.Derived.Idle.Run"}}});
-    derived.states.emplace("Alpha", Dispatch::State{"Test.Derived.Alpha", "Alpha", 200u, 2u, {}});
-    derived.states.emplace("Zulu", Dispatch::State{"Test.Derived.Zulu", "Zulu", 100u, 0x80000002u, {}});
+        {{"Run", "Test.Derived.Idle.Run"}}, "Test.Base.Idle"});
+    derived.states.emplace("Alpha", Dispatch::State{"Test.Derived.Alpha", "Alpha", 200u, 2u, {}, {}});
+    derived.states.emplace("Zulu", Dispatch::State{"Test.Derived.Zulu", "Zulu", 100u, 0x80000002u, {}, {}});
+    derived.stateChildOrder={"Test.Derived.Idle","Test.Derived.Alpha","Test.Derived.Zulu"};
     return {base, derived};
 }
 void Eligibility() {
@@ -183,15 +185,15 @@ void NonprobeLegacyRecords() {
 void Lookup() {
     const Dispatch::Graph graph(Classes());
     Require(Dispatch::ResolveState(graph, "test.derived", "iDLE") == "Test.Derived.Idle", "Named state not derived-first");
-    Require(Dispatch::ResolveState(graph, "Test.Derived", "Auto") == "Test.Derived.Zulu",
-        "Auto selection used alphabetical/child/flag order instead of CompareIndex");
-    Require(Dispatch::ResolveState(graph, "Test.Base", "AUTO") == "Test.Base.BaseAuto", "Base Auto selection changed");
+    Require(Dispatch::ResolveState(graph, "Test.Derived", "Auto") == "Test.Derived.Alpha",
+        "Auto selection did not use exact Children order independent of CompareIndex");
+    Require(Dispatch::ResolveState(graph, "Test.Base", "AUTO") == "Test.Base.Idle", "Base Auto child order changed");
     Require(!Dispatch::ResolveState(graph, "Test.Derived", "") && !Dispatch::ResolveState(graph, "Test.Derived", "None") &&
         !Dispatch::ResolveState(graph, "Test.Derived", "Missing"), "None/unresolved states did not select null");
     Require(Dispatch::ResolveFunction(graph, "Test.Derived", "Idle", "Run") == "Test.Derived.Idle.Run",
         "State override lost priority over class function");
     Require(Dispatch::ResolveFunction(graph, "Test.Derived", "Idle", "Tick") == "Test.Base.Idle.Tick",
-        "Inherited same-name state callback unavailable");
+        "Explicit inherited state callback unavailable");
     Require(Dispatch::ResolveFunction(graph, "Test.Derived", "Idle", "Run", Dispatch::LookupKind::Global) == "Test.Derived.Run",
         "Global call incorrectly resolved state override");
     Require(Dispatch::ResolveFunction(graph, "Test.Derived", "Idle", "BaseOnly") == "Test.Base.BaseOnly",
@@ -200,15 +202,16 @@ void Lookup() {
         !Dispatch::ResolveFunction(graph, "Test.Derived", "Idle", "Absent"), "Absent callback should resolve None");
     auto classes = Classes();
     classes[1].states["Alpha"].flags = classes[1].states["Zulu"].flags = 0u;
-    Require(Dispatch::ResolveState(Dispatch::Graph(classes), "Test.Derived", "Auto") == "Test.Base.BaseAuto",
+    Require(Dispatch::ResolveState(Dispatch::Graph(classes), "Test.Derived", "Auto") == "Test.Base.Idle",
         "Parent Auto candidate not selected after derived scan");
-    classes[0].states["BaseAuto"].flags = 0u;
-    Require(Dispatch::ResolveState(Dispatch::Graph(classes), "Test.Derived", "Auto") == "Test.Derived.Idle",
-        "Parent Auto name did not re-resolve to derived non-Auto override");
+    classes[0].stateChildOrder={"Test.Base.BaseAuto","Test.Base.Idle"};
+    Require(Dispatch::ResolveState(Dispatch::Graph(classes), "Test.Derived", "Auto") == "Test.Base.BaseAuto",
+        "Reordered actual parent Children did not affect first Auto candidate");
     classes[0].states["Idle"].flags = classes[0].states["BaseAuto"].flags = 0u;
-    classes[1].states.emplace("Auto", Dispatch::State{"Test.Derived.Auto", "Auto", 300u, 0u, {}});
-    Require(Dispatch::ResolveState(Dispatch::Graph(classes), "Test.Derived", "Auto") == "Test.Derived.Auto",
-        "Literal Auto state fallback lost");
+    classes[1].states.emplace("Auto", Dispatch::State{"Test.Derived.Auto", "Auto", 300u, 0u, {}, {}});
+    classes[1].stateChildOrder.push_back("Test.Derived.Auto");
+    Require(!Dispatch::ResolveState(Dispatch::Graph(classes), "Test.Derived", "Auto"),
+        "Absent Auto flag incorrectly selected a literal Auto-named state");
     Reject([&] { Dispatch::ResolveState(graph, "Test.Absent", "Idle"); }, "Unavailable receiver class accepted");
     const auto mutate = [](auto action) { auto values = Classes(); action(values); Dispatch::Graph result(std::move(values)); };
     Reject([&] { mutate([](auto& v) { v[0].parentPath = v[1].path; }); }, "Class cycle accepted");
@@ -234,10 +237,101 @@ void Lookup() {
     }
     Reject([&] { Dispatch::ResolveState(graph,"Test.Derived",std::string(8193u,'A')); }, "Unbounded state query accepted");
 }
+void OriginalSelectedNodeInheritance() {
+    auto values=Classes();
+    values[0].states.emplace("Old",Dispatch::State{"Test.Base.Old","Old",401u,0u,
+        {{"Tick","Test.Base.Old.Tick"}}, {}});
+    values[0].states.emplace("New",Dispatch::State{"Test.Base.New","New",402u,0u,
+        {{"Tick","Test.Base.New.Tick"}}, {}});
+    values[0].stateChildOrder.insert(values[0].stateChildOrder.end(),{"Test.Base.Old","Test.Base.New"});
+    values[1].functions.emplace("Tick","Test.Derived.Tick");
+    values[1].states.emplace("Old",Dispatch::State{"Test.Derived.Old","Old",401u,0u,
+        {{"Tick","Test.Derived.Old.Tick"}}, {}});
+    values[1].states.emplace("New",Dispatch::State{"Test.Derived.New","New",402u,0u,{},"Test.Base.Old"});
+    values[1].stateChildOrder.insert(values[1].stateChildOrder.end(),{"Test.Derived.New","Test.Derived.Old"});
+    const Dispatch::Graph graph(values);
+    Require(Dispatch::ResolveFunction(graph,"Test.Derived","New","Tick")=="Test.Base.Old.Tick",
+        "Differently named explicit State SuperField was replaced by receiver same-name traversal");
+    Require(Dispatch::ResolveFunctionAtSelectedNode(graph,"Test.Derived","Test.Base.Idle","Run")=="Test.Base.Idle.Run",
+        "Exact inherited selected node was intercepted by derived same-name state");
+    Require(Dispatch::ResolveFunctionAtSelectedNode(graph,"Test.Derived","Test.Derived.New","Run")=="Test.Derived.Run",
+        "Absent state member must fall back from receiver class, not selected state's owner");
+    Require(Dispatch::ResolveFunctionAtSelectedNode(graph,"Test.Derived","Test.Derived.New","Tick",Dispatch::LookupKind::Global)=="Test.Derived.Tick",
+        "Global callback consulted selected state");
+    Require(Dispatch::SelectedNodeAncestry(graph,"Test.Derived","Test.Derived.New")==
+        std::vector<std::string>{"Test.Derived.New","Test.Base.Old"},"Explicit selected-node ancestry changed");
+    Require(Dispatch::SelectedNodeAncestry(graph,"Test.Derived","Test.Derived")==
+        std::vector<std::string>{"Test.Derived","Test.Base"},"Class-backed selected-node ancestry changed");
+    Require(Dispatch::SelectedNodeAncestry(graph,"Test.Derived",{}).empty(),"Absent selected frame manufactured ancestry");
+    Require(Dispatch::ResolveFunctionAtSelectedNode(graph,"Test.Derived","Test.Derived","Tick")=="Test.Derived.Tick" &&
+        Dispatch::ResolveFunctionAtSelectedNode(graph,"Test.Derived","test.DERIVED","Tick")=="Test.Derived.Tick",
+        "Receiver Class-backed selection lost its own callback or case-insensitive identity");
+    Require(Dispatch::ResolveFunctionAtSelectedNode(graph,"Test.Derived",{},"Tick")=="Test.Derived.Tick",
+        "Absent selected node failed to use receiver class fallback");
+    Require(Dispatch::ResolveFunctionAtSelectedNode(graph,"Test.Derived","Test.Base","Run")=="Test.Base.Run" &&
+        Dispatch::SelectedNodeAncestry(graph,"Test.Derived","Test.Base")==std::vector<std::string>{"Test.Base"},
+        "Detached ancestor-Class selection lost its explicit ancestry priority");
+    Require(Dispatch::ResolveFunctionAtSelectedNode(graph,"Test.Derived","Test.Base","Run",Dispatch::LookupKind::Global)=="Test.Derived.Run",
+        "Global lookup was intercepted by an ancestor-Class selected node");
+    auto classParent=values;classParent[1].states["New"].parentPath="Test.Base";
+    const Dispatch::Graph classParentGraph(classParent);
+    Require(Dispatch::SelectedNodeAncestry(classParentGraph,"Test.Derived","Test.Derived.New")==
+        std::vector<std::string>{"Test.Derived.New","Test.Base"} &&
+        Dispatch::ResolveFunctionAtSelectedNode(classParentGraph,"Test.Derived","Test.Derived.New","Run")=="Test.Base.Run",
+        "Explicit State-to-Class SuperField failed to preserve detached metadata ancestry");
+    Require(Dispatch::ResolveFunctionAtSelectedNode(classParentGraph,"Test.Derived","Test.Derived.New","Tick")=="Test.Derived.Tick",
+        "Missing explicit ancestor-Class callback did not fall back to receiver class");
+    auto literalAuto=values;
+    literalAuto[1].states.emplace("Auto",Dispatch::State{"Test.Derived.Auto","Auto",300u,0u,
+        {{"Tick","Test.Derived.Auto.Tick"}}, {}});
+    literalAuto[1].stateChildOrder.push_back("Test.Derived.Auto");
+    const Dispatch::Graph literalAutoGraph(literalAuto);
+    Require(Dispatch::ResolveState(literalAutoGraph,"Test.Derived","Auto")=="Test.Derived.Alpha",
+        "Auto request control did not select the first flagged state");
+    Require(Dispatch::ResolveFunction(literalAutoGraph,"Test.Derived","Auto","Tick")=="Test.Derived.Auto.Tick" &&
+        Dispatch::ResolveFunction(literalAutoGraph,"Test.Derived","aUTO","Tick")=="Test.Derived.Auto.Tick",
+        "Current Auto-named state was incorrectly treated as an Auto-selection request");
+    Require(Dispatch::ResolveFunction(literalAutoGraph,"Test.Derived","Auto","Tick",Dispatch::LookupKind::Global)=="Test.Derived.Tick",
+        "Global lookup consulted the current Auto-named state");
+    auto noParent=values;noParent[1].states["Idle"].parentPath.clear();
+    Require(Dispatch::ResolveFunction(Dispatch::Graph(noParent),"Test.Derived","Idle","Tick")=="Test.Derived.Tick",
+        "Uninherited state acquired same-name base callback");
+    // Children Zulu before Alpha; both alphabetical and comparison-index order
+    // place Alpha before Zulu after the comparison-index mutation below.
+    auto order=values;order[1].stateChildOrder={"Test.Derived.Zulu","Test.Derived.Alpha","Test.Derived.Idle","Test.Derived.New","Test.Derived.Old"};
+    order[1].states["Alpha"].compareIndex=80u;
+    Require(Dispatch::ResolveState(Dispatch::Graph(order),"Test.Derived","Auto")=="Test.Derived.Zulu",
+        "Auto used either alphabetical or comparison-index order instead of actual child order");
+    const auto mutate=[&](auto action) {auto changed=values;action(changed);Dispatch::Graph invalid(std::move(changed));};
+    Reject([&]{mutate([](auto& v){v[1].stateChildOrder.pop_back();});},"Incomplete state child order accepted");
+    Reject([&]{mutate([](auto& v){v[1].stateChildOrder[0]=v[1].stateChildOrder[1];});},"Duplicate state child order accepted");
+    Reject([&]{mutate([](auto& v){v[1].stateChildOrder[0]="test.derived.ALPHA";});},"Case-duplicate state child accepted");
+    Reject([&]{mutate([](auto& v){v[1].stateChildOrder[0]="Test.Base.Idle";});},"Foreign state child accepted");
+    Reject([&]{mutate([](auto& v){v[1].stateChildOrder[0]="Test.Derived.Missing";});},"Missing state child accepted");
+    Reject([&]{mutate([](auto& v){v.push_back(Dispatch::Class{"Test.Base.Idle","Test.Base",0u,{}, {}, {}});});},
+        "Class and State with the same qualified path were accepted");
+    Reject([&]{mutate([](auto& v){v.push_back(Dispatch::Class{"test.BASE.idle","Test.Base",0u,{}, {}, {}});});},
+        "Case-insensitive Class/State qualified-path collision was accepted");
+    Reject([&]{mutate([](auto& v){v[1].states["New"].parentPath="Test.Missing.State";});},"Missing State SuperField accepted");
+    Reject([&]{mutate([](auto& v){v[1].states["New"].parentPath="Test.Base.Run";});},"Function used as State SuperField");
+    Reject([&]{mutate([](auto& v){v[1].states["New"].parentPath="Test.Derived.Old";v[1].states["Old"].parentPath="Test.Derived.New";});},"Cyclic State SuperField accepted");
+    Reject([&]{mutate([](auto& v){v[0].states["Old"].parentPath="Test.Derived.Old";});},"Descendant-owner State SuperField accepted");
+    Reject([&]{Dispatch::SelectedNodeAncestry(graph,"Test.Base","Test.Derived.New");},"Foreign selected state accepted");
+    Reject([&]{Dispatch::SelectedNodeAncestry(graph,"Test.Base","Test.Derived");},"Descendant selected Class accepted for base receiver");
+    Reject([&]{Dispatch::ResolveFunctionAtSelectedNode(graph,"Test.Derived","Test.Missing.Idle","Tick");},"Unknown selected state accepted");
+    Reject([&]{Dispatch::SelectedNodeAncestry(graph,"Test.Derived",std::string(8193u,'X'));},"Unbounded selected path accepted");
+    auto deep=values;deep[1].states["New"].parentPath="Test.Derived.Old";
+    deep[1].states["Old"].parentPath="Test.Base.Old";auto limits=Dispatch::Limits{};limits.classDepth=2u;
+    Reject([&]{Dispatch::Graph invalid(deep,limits);},"Over-depth explicit state ancestry accepted");
+    // No internal pointer index: copied/moved graphs must still own their data.
+    auto copy=graph;
+    Require(Dispatch::ResolveFunctionAtSelectedNode(copy,"Test.Derived","Test.Derived.New","Tick")=="Test.Base.Old.Tick",
+        "Copied selected-node graph lost its owned ancestry");
+}
 } // namespace
 int main() {
     try {
-        Eligibility(); OriginalPositiveLiveProbeMask(); NonprobeLegacyRecords(); Lookup();
+        Eligibility(); OriginalPositiveLiveProbeMask(); NonprobeLegacyRecords(); Lookup(); OriginalSelectedNodeInheritance();
         std::cout << "PASS original live probe masks / compatible script callback selection: " << checks << " checks, " << rejections << " rejection controls\n";
         return 0;
     } catch (const std::exception& error) { std::cerr << "FAIL: " << error.what() << '\n'; return 1; }

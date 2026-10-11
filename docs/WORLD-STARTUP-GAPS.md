@@ -30,10 +30,12 @@ dependencies; original executables were not run for this audit:
   `DeusEx.JCDentonMale`. Map-specific game-class precedence still needs the
   original engine contract.
 - Inherited `Engine.GameInfo.InitGame` starts with Log231 at PC0. The portable
-  host has no logging handler. Later option/string handling, Mutator creation
+  host has no logging handler, but its first argument evaluates string native168
+  at PC1 before invoking Log. Option/string handling, Mutator creation
   and ObjectToString opcode0x56 also require implementation.
 - `Engine.Pawn.PreBeginPlay` starts with AddPawn529 at PC0. Native pawn-list
-  ownership/cleanup and required Tan189/FClamp246 are absent.
+  ownership/cleanup and required Tan189/FClamp246 are absent. AddPawn must be
+  paired with actual RemovePawn530/Destroyed cleanup, not only insertion.
 - `Extension.PlayerPawnExt.Possess` calls its base, then InitRootWindow1052
   at PC6. Omitting the most-derived possession call would omit authored UI
   initialization. Root-window ownership and VR presentation integration remain
@@ -47,6 +49,11 @@ Original Core/Engine disassembly distinguishes selected StateNode, running
 Node, nullable Code and a live positive ProbeMask. Dormant package masks and
 frameless probing are now corrected, but transitioned portable frames still
 conflate these identities and retain per-state negative records.
+
+The shared [original dispatch graph](ORIGINAL-STATE-DISPATCH.md) now preserves
+actual Children/Next Auto order and explicit state SuperField callback ancestry.
+Inherited Auto paths are not re-resolved to derived same-name overrides. This
+corrects lookup metadata, not the remaining frame/control integration below.
 
 Before connecting automatic simulation, implement independent identities and
 live-mask persistence, original callback/preemption order, selected-node label
@@ -80,10 +87,12 @@ real transition/restore lifecycle and campaign progression also remain required.
 
 ## Visual work remains separate
 
-The earlier landing build's downward capture confirms tracked textured hands
-and grounded lower-body surfaces, not a complete VR character. The original
+The accepted hand-direction build repairs the open cuff/waist geometry and
+tracks physically accepted hand direction without changing accepted seated
+body placement. It remains render-only geometry, not a possessed player or IK.
+See [PLAYER-VR.md](PLAYER-VR.md). The original
 Glock weapon grasp has genuinely open, one-sided surfaces exposed by VR angles;
-the partial JC body omits torso surfaces and exposes its open waist from above.
+the partial JC body still omits most torso surfaces.
 Use bounded, explicitly marked VR geometry adaptation or a more complete
 audited original source; preserve original assets and texture appearance. Do
 not delete legitimate finger triangles or claim an arbitrary cap is an original
