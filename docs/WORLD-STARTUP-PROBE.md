@@ -115,3 +115,10 @@ declaration offset0, unsupported runtime native0. This is an NPC shadow/decal
 dependency, not a completed pass or evidence that later FindBase, compaction,
 Login, player UI and scheduling will work. The control pins this evidence so
 an implementation change must deliberately update the original contract.
+
+The 2026-10-12 [decal geometry plan](DECAL-GEOMETRY-PLAN.md) adds a separate
+read-only Jaime shadow diagnostic to this focused suite, using actual inherited
+Shadow defaults, texture USize, BSP surface selection, full multilevel grid and
+quad membership. It does not publish a native graph or suppress the original
+startup refusal. Graph/GC/dynamic SurfList/save/render integration remains
+necessary before this startup probe can legitimately move past AttachDecal.

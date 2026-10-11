@@ -1,6 +1,6 @@
 # Original GOTY decal native contract audit
 
-Audit date: 2026-10-11. This is a bounded static audit of the user's original
+Audit dates: 2026-10-11 and 2026-10-12. This is a bounded static audit of the user's original
 GOTY binaries and package bytecode, not a claim that the port implements decals.
 The original executables/DLLs were only read, never loaded or executed. Generic
 Unreal/SurrealEngine decal behavior is not evidence for this contract.
@@ -21,6 +21,8 @@ disassemblies; `original-decal-scripts.log`, `original-decal-properties.log`,
 `original-shadow-tick.log`; and the `read-*-*.ps1` read-only PE/package helpers.
 Exports/imports are also recorded in
 `artifacts/world-native-startup-20261011/engine-exports-imports.log`.
+The follow-up evidence includes `original-decal-inherited-cdo.log`,
+`model-postload-*`, `multi-vector-multiply-*`, and `pe-multi-evidence.log`.
 LLVM NDK 27 was used for static disassembly; the existing desktop bytecode
 inspector decoded package functions. Nearest unrelated symbols printed by
 objdump do not name the private function bodies; thunk targets identify them.
@@ -46,6 +48,35 @@ the pawn, at `Pawn.Location-(0,0,CollisionHeight)`, rotation `(16384,0,0)`.
 This invokes inherited `Decal.BeginPlay`; a valid BSP attachment is therefore
 part of the actual NPC startup lifecycle.
 
+### Authored inherited defaults (not a primary-only shadow)
+
+The read-only `read-decal-cdo.ps1` reader now skips nonempty original class
+bytecode with the same token/logical-size rules as the existing package decoder;
+it checks the exact class payload ending after the tagged defaults. The actual
+chain is `Core.Object -> Engine.Actor -> Engine.Decal -> DeusEx.Shadow`.
+
+- Actor has `DrawScale=1` (tag `62380`, value `62383`) and `ScaleGlow=1`
+  (tag `62387`, value `62390`). Its declared logical class bytecode is 832 bytes,
+  and the default-property stream begins at `62304` and ends at `62461`.
+- Decal has **`MultiDecalLevel=4`** (tag `106781`, value `106784`), not zero.
+  Its defaults run from `106781` to exact class end `106828`; it does not
+  override DrawScale or ScaleGlow.
+- Shadow overrides only `bHasDecal=true` and
+  `Texture=DeusExItems.Skins.FlatFXTex40` in its default stream
+  `601877..601886`. It therefore inherits MultiDecalLevel four and DrawScale one.
+  `DeusEx.u` SHA-256 is
+  `257F5C166739B3D13884A8B8E98A47DDA458B325FA929B3B3B99BE056CB74480`.
+- That actual Texture is export 476, class Engine.Texture, in DeusExItems.u.
+  Tagged `USize=32` and `VSize=32` occur at `5707776`/`5707782`, with values at
+  `5707778`/`5707784`. Its tagged stream ends at `5707828`; native texture payload
+  follows through export end `5708869`, so that texture stream is deliberately
+  not mistaken for a complete class payload. DeusExItems.u SHA-256 is
+  `F7114C5228248FCBE9E89E9C6408ABCCE1E41566207A5ABB7C7E58CC4D9BEAAA`.
+
+These are class defaults before instance/script changes; Shadow.Tick subsequently
+changes DrawScale. Reducing MultiDecalLevel to zero would change actual authored
+NPC behavior rather than implement the original startup path.
+
 ## Attach: bounded entry and primary surface selection
 
 The following is directly established for the primary attachment path:
@@ -57,7 +88,7 @@ The following is directly established for the primary attachment path:
    `AttachDecal: No Texture` and return false. Only after these guards,
    `MultiDecalLevel` (`+0x318`) is upper-clamped to four; negatives are preserved.
 3. Let `X` be rotation X axis. Trace from actor Location to
-   `Location-normalize(-X)*TraceDistance` against **UModel**, not Actor.Trace or
+   `Location+guardedNormalize(-X)*TraceDistance` against **UModel**, not Actor.Trace or
    ULevel.SingleLineCheck. Owner argument is null, extent is zero, flags are
    **6**. Call at `0x103E7632` uses model vtable slot `+0x58`.
 4. Nonzero LineCheck return means unobstructed and returns false. Item `-1`
@@ -73,7 +104,14 @@ The following is directly established for the primary attachment path:
    surface index. Resolve the selected surface's own point/normal and recompute
    the exact center `C` on that plane.
 7. Reject exact zero `X dot N` (`0x103E78A6`), or
-   `abs((surfaceBase-C) dot N)>0.001` (`0x103E7910`). Reject surface flags masked
+   `abs((surfaceBase-C) dot N)>FLOAT(0.001)` (`0x103E7910`). The first dot uses
+   `(Yproduct+Zproduct)+Xproduct` with no FLOAT store before comparison to
+   FLOAT zero (`0x103E787D..789B`). The residual first FLOAT-stores the
+   base-minus-center vector components, then sums `(Xproduct+Zproduct)+Yproduct`
+   in the register (`0x103E78E1..78F4`). Its dot is **not FLOAT-stored** before
+   sign handling and comparison (`0x103E78F6..7905`). The threshold is the
+   binary32 constant at `0x10432B6C`, bits `0x3A83126F`, promoted for comparison,
+   not DOUBLE 0.001. Exact boundary is accepted. Reject surface flags masked
    by **`0x00000600`** (`0x103E7919`). The numeric mask is established; this audit
    does not assign it an unproven Invisible/FakeBackdrop name.
 
@@ -113,6 +151,16 @@ Texture `USize` only is read for geometry, twice at `0x103E7A13` and nearby;
 Negative DrawScale thus does not invert geometric radius, but can invert UVs.
 Below, native guarded normalization divides by length only when squared length
 is at least `1e-8`; it is not an invented fallback for degenerate vectors.
+The secondary correction's imported `FVector.Normalize` is independently
+confirmed by Core export `0x1010112C -> 0x10117CF0`: sum order is
+`(x*x+y*y)+z*z`, comparison is against DOUBLE `1e-8` at `0x101765D8`, and a
+strictly smaller sum returns false **without any component writes**. Tiny and
+zero vectors therefore remain unchanged, not replaced with zero or a tangent.
+On success the double-stored sum is passed to appSqrt, its reciprocal scales
+components, and X/Y/Z are separately FLOAT-stored in place. This is the same
+finite-domain retention policy used by primary inlined guarded normalizations.
+Evidence is `core-normalize-*` and `read-core-normalize.ps1`; Core.dll SHA-256
+is `8BF3039E14F849942EE70A95BDF26CF1F636245926E30106BBE58B7097EBA7E4`.
 
 - Exact zero optional vector: sample three `appFrand` components in `[-1,1]`,
   reject squared length greater than one, then UnsafeNormal the accepted vector.
@@ -137,6 +185,93 @@ the clipped polygon is nonempty. It stores **node membership**, not the clipped
 geometry. The retained whole quad is clipped again during rendering. An empty
 membership list means no node restriction to the original renderer; it does not
 mean the record is invisible.
+
+### Cached surface-node order
+
+`UModel.PostLoad` export `0x10301F0A` jumps to `0x103ACE90`. The loop at
+`0x103ACEBA..0x103ACF14` visits **every node in ascending authored node-table
+index**, reads that node's iSurf (`+0x1C`), and appends the node index to the
+surface's cached Nodes (`+0x34`, count `+0x38`). There is no vertex-count or
+node-flag filter: even an empty polygon's node index is included. This is not
+front/back/coplanar BSP traversal order. The loop itself does not clear an
+existing cache; on a fresh model its initially empty arrays acquire that order.
+FBspSurf.Serialize does not write/read the cached node list.
+
+## MultiDecalLevel secondary grid and reprojection
+
+This section is a static translation of `0x103E7E37..0x103E8915`, not yet
+portable implementation/test evidence. Let `M` be the already upper-clamped
+MultiDecalLevel, `K[0..3]` the **absolute** primary corners, `N0` the raw authored
+primary surface normal, and `O=UnsafeNormal(N0)*(-16)`.
+
+The grid uses `E0=K[1]-K[0]`, `E1=K[3]-K[0]`. The outer index `i` starts at zero
+and runs while `i<M`; the inner index `j` restarts at zero and runs while `j<M`
+(`0x103E7F28..0x103E7F58`, increments `0x103E8905/890D`). Fractions are
+**`(i+1)/M` and `(j+1)/M`**, not i/M, j/M or half-cell centers. It computes,
+with intermediate component float stores:
+
+`Q = K[0] + E0*((i+1)/M) + E1*((j+1)/M)`.
+
+Thus M=4 makes sixteen ordered samples including the far corner, excluding
+the origin row/column; M<=0 performs no secondary samples. The ray is
+**Start=`Q-O`, End=`Q+O`**, owner null, zero extent, flags six (`0x103E80C6..812D`).
+For an upward primary normal it starts 16 units above Q and ends 16 below.
+
+Each sample:
+
+1. Skip a clear UModel trace or Item -1. Resolve the hit NODE's surface and
+   intersect this complete secondary ray with its authored base/normal, ignoring
+   the backed-off Hit.Location, then run FindCoplanarSurface on that center
+   (`0x103E8147..8289`).
+2. Resolve selected surface base `B1` and raw normal `N1`. Skip if that surface
+   occurs **anywhere in this actor's existing SurfList**, including primary and
+   earlier secondary attachments. Skip PolyFlags masked by `0x600`
+   (`0x103E82CD..82F4`, `0x103E846A`). This uniqueness check is secondary-only;
+   the primary can accumulate duplicates over repeated Attach calls.
+3. Compute signed cosine `c=(N0 dot N1)/(Size(N0)*Size(N1))`; primary Size is
+   float-stored, secondary Size remains an unrounded appSqrt return for the
+   denominator. Save c to FLOAT at `0x103E84FA`. The acceptance comparison still
+   uses the retained unrounded value: reject **`abs(c)<=0.7`**, where 0.7 is
+   DOUBLE constant `0x1042ADC0`; opposite-facing normals can pass. Later corner
+   calculations use the float-stored **signed** c, not its absolute value.
+4. Insert a zeroed FDecal using the same first-live-Texture grouping as primary,
+   write owning self, and append surface index to self.SurfList
+   (`0x103E851F..85AC`). There is no corresponding secondary moverRotation or
+   SetBase block in this path; those occur for the primary attachment only.
+5. For each original primary corner q, perform the following two line-plane
+   projections, then the original correction. `F(...)` denotes a FLOAT store,
+   vector arithmetic stores each output component, and `Normalize` is the
+   original guarded mutating normalization:
+
+   ```text
+   E = q - N0
+   R = E + (q-E) * F(((B1-E) dot N1) / ((q-E) dot N1))
+   W = q - N1
+   S = W + (q-W) * F(((B1-W) dot N1) / ((q-W) dot N1))
+   a = F(Size(q-S) / c)
+   b = F(Size(q-R) / c)
+   D = Normalize(S-R)
+   secondaryCorner = S - D * F(b-a)
+   ```
+
+   This is the literal operation sequence (`0x103E85BB..889C`), not a replacement
+   by a simple projection onto N1. The scalar-times-vector helper
+   `0x10301EEC -> 0x103D7CB0` confirms the final scalar multiplication with
+   component float stores. Imported `FVector.Normalize` is IAT `0x1059A0F4`.
+   Both imported dot results in each projection are FLOAT-stored before ratio
+   division; the dot implementation is Core export `0x101017AD -> 0x10117710`,
+   returning register `(Zproduct+Yproduct)+Xproduct` without an intervening
+   FLOAT store. `core-dot-thunk/body.asm` independently establish that order.
+6. Clip the whole resulting absolute quad against the selected surface's cached
+   node polygons to retain membership (`0x103E88AA..88B4`), then subtract B1 from
+   each retained corner (`0x103E88BF..88FC`). Continue the grid; do not replace
+   earlier records. Finally subtract primary base from primary corners and
+   return true.
+
+Native NaN/zero-normal/singular-denominator behavior is not certified useful or
+safe. Portable input validation and bounded sample/clip work must be explicit;
+rejecting such inputs is a port safety boundary, not a proven native early-return
+branch. Exact x87 near-threshold/component rounding remains uncertified.
 
 ## Native ownership, ordering, and detach
 
@@ -230,13 +365,14 @@ returned bool** (`original-shadow-tick.log`, bytecode offsets `353..529`).
 
 ## Explicit remaining gaps / implementation boundary
 
-- MultiDecalLevel > 0: secondary grid traces, angular rejection and corner
-  reprojection are present (`0x103E7F28..0x103E8915`), but their complete contract
-  is not translated/tested here. Secondary surfaces already present in SurfList
-  are skipped; this differs from primary repeated-attach accumulation. Grid
-  traces use the normal-scaled `-16` offset. Do not claim full multidecal parity.
-- Exact cached-surface-node list construction/order is not audited. Deriving
-  table order is a port policy until demonstrated equivalent.
+- MultiDecalLevel > 0 secondary grid/selection/reprojection is statically
+  translated above. Subsequent portable geometry/state implementations and
+  generated/original-data controls are tracked separately in
+  [DECAL-GEOMETRY-PLAN.md](DECAL-GEOMETRY-PLAN.md). Those controls do not complete
+  native Attach, viewport/mover ownership, saves, renderer or full parity.
+- Cached surface-node construction/order is proven for fresh UModel.PostLoad;
+  repeated native PostLoad appends without clearing and must not be silently
+  conflated with a fresh cache.
 - Full mover corner-transform/UV lifecycle, every rendering enable gate, and
   native field names for render gray inputs remain unproven.
 - Generic original save/load native-attachment reconstruction remains open.

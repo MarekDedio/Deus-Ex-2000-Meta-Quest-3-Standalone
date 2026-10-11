@@ -5,6 +5,8 @@
 #include "quest_actor_geometry.h"
 #include "quest_mesh_animation.h"
 #include "quest_model_point_trace.h"
+#include "quest_decal_projection.h"
+#include "quest_decal_state.h"
 #include "quest_save_bundle.h"
 #include "quest_script_state.h"
 #include "quest_script_random.h"
@@ -2883,6 +2885,82 @@ void VerifyOriginalModelPointTrace(const std::filesystem::path& root,
         "; exact surface-plane/0.5UE backoff/read-only repeatability; NOT AttachDecal or rendered shadow completion\n";
 }
 
+void VerifyOriginalShadowDecalGeometry(const std::filesystem::path& root,
+    const std::filesystem::path& legacy,const std::filesystem::path& directory) {
+    // The actual class defaults and texture descriptor drive this probe. Never
+    // reduce MultiDecalLevel to0 to make Training's required Shadow look valid.
+    const auto multi=QuestVr::Vm::ToInt(ReadPortableClassDefault("DeusEx.Shadow","MultiDecalLevel"));
+    const auto scale=QuestVr::Vm::ToFloat(ReadPortableClassDefault("DeusEx.Shadow","DrawScale"));
+    const auto texture=ReadPortableClassDefault("DeusEx.Shadow","Texture");
+    Require(multi==4 && scale==1.0f && texture.kind==Kind::Object && texture.text=="DeusExItems.Skins.FlatFXTex40",
+        "Original inherited Shadow defaults no longer match audited MultiDecalLevel4/DrawScale1/FlatFXTex40");
+    const auto package=LoadPortablePackageTables((root/"System"/"DeusExItems.u").string());
+    // Package-table export paths are local to their package; runtime object
+    // identities above are qualified. Strip only the proven package prefix.
+    const auto textureExport=FindPortableTextureExport(package,texture.text.substr(std::string("DeusExItems.").size()));
+    const auto properties=LoadPortableExportProperties(package,textureExport);
+    std::int32_t uSize{},vSize{};
+    for (const auto& property:properties.properties) {
+        if (property.name!="USize" && property.name!="VSize") continue;
+        Require(property.value.size()==4u,"Original shadow texture size is not INT");
+        std::int32_t value{}; std::memcpy(&value,property.value.data(),4u);
+        if (property.name=="USize") uSize=value; else vSize=value;
+    }
+    Require(uSize==32 && vSize==32,"Original Shadow texture is not authored32x32");
+    const auto original=CheckpointBytes(legacy); const auto revision=GetPortableRuntimeWorldRevision();
+    const auto gc=GC::GetStats(); const auto actorCount=GetPortableRuntimeMapActors(true).size();
+    const auto model=LoadPortableRootModel68(LoadPortablePackageTables((root/"Maps"/"00_Training.dx").string()));
+    const auto location=ReadPortableActorScriptProperty("00_Training.JaimeReyes0","Location");
+    const auto height=QuestVr::Vm::ToFloat(ReadPortableActorScriptProperty("00_Training.JaimeReyes0","CollisionHeight"));
+    const PortableModelVec3 start{location.vector[0],location.vector[1],location.vector[2]-height};
+    std::uint32_t seed=1u,repeatSeed=1u;
+    const auto plan=QuestVr::ProjectOriginalDecalGeometry(model,start,{0,0,1},100,{},uSize,scale,multi,{},seed);
+    const auto repeat=QuestVr::ProjectOriginalDecalGeometry(model,start,{0,0,1},100,{},uSize,scale,multi,{},repeatSeed);
+    Require(plan.hasPrimaryGeometry && plan.primaryTraceNode==1848 && plan.primarySelectedNode==1852 &&
+        plan.primaryCenter.z==-96.0f && !plan.surfaces.empty() && plan.surfaces.front().surface==1861 &&
+        plan.surfaces.front().primary && plan.randomDraws==6 && plan.secondarySamples==16,
+        "Actual original Shadow geometry did not cover trace/selected surface/exact floor/default sixteen-sample mode");
+    Require(seed==repeatSeed && plan.surfaces.size()==repeat.surfaces.size() && plan.workSteps==repeat.workSteps,
+        "Original Shadow projection is not repeatable");
+    QuestVr::DecalState state(model.surfaces.size(),model.nodes.size());
+    const auto resolver=[&](const std::string&) -> std::optional<std::string> { return texture.text; };
+    std::size_t unrestricted{};
+    for (std::size_t index=0;index<plan.surfaces.size();++index) {
+        const auto& surface=plan.surfaces[index]; const auto& again=repeat.surfaces[index];
+        Require(surface.surface==again.surface && surface.nodeMembership==again.nodeMembership,
+            "Actual Shadow geometry lost repeatable node membership");
+        if (surface.nodeMembership.empty()) ++unrestricted;
+        for (const auto node:surface.nodeMembership)
+            Require(node>=0 && static_cast<std::size_t>(node)<model.nodes.size() &&
+                model.nodes[static_cast<std::size_t>(node)].surface==surface.surface,
+                "Original Shadow membership node does not belong to its selected surface");
+        QuestVr::DecalSurfaceRecord record; record.ownerIdentity="OriginalProbe.Shadow";
+        record.nodeMembership=surface.nodeMembership;
+        for (std::size_t corner=0;corner<4;++corner) {
+            const auto p=surface.relativeCorners[corner],q=again.relativeCorners[corner];
+            Require(p.x==q.x && p.y==q.y && p.z==q.z && std::isfinite(p.x) && std::isfinite(p.y) && std::isfinite(p.z),
+                "Original Shadow relative corners differ/nonfinite");
+            record.relativeCorners[corner]={p.x,p.y,p.z};
+        }
+        state.AttachPrimary(surface.surface,record,texture.text,resolver);
+    }
+    Require(state.Usage().records==plan.surfaces.size() && state.Usage().nodeMembership==plan.membershipEntries,
+        "Original projected Shadow plan not publishable in ordered bounded state");
+    const auto detached=state.Detach("OriginalProbe.Shadow");
+    Require(detached.recordsRemoved==plan.surfaces.size() && !state.Usage().records && !state.Usage().surfListEntries,
+        "Original projected Shadow geometry failed exact detach");
+    const auto inspect=directory/"readonly-original-shadow-geometry.sav";
+    Require(SavePortableRuntimeState(inspect.string()) && CheckpointBytes(inspect)==original &&
+        GetPortableRuntimeWorldRevision()==revision && GetPortableRuntimeMapActors(true).size()==actorCount &&
+        GC::GetStats().numObjects==gc.numObjects && GC::GetStats().memoryUsage==gc.memoryUsage,
+        "Read-only original shadow geometry changed runtime/save/GC state");
+    std::cout<<"ORIGINAL SHADOW GEOMETRY USize="<<uSize<<" DrawScale="<<scale<<" Multi="<<multi<<
+        " primary="<<plan.surfaces.front().surface<<" projected-surfaces="<<plan.surfaces.size()<<
+        " membership="<<plan.membershipEntries<<" unrestricted="<<unrestricted<<" RNGdraws="<<plan.randomDraws<<" grid="<<plan.secondarySamples<<
+        " duplicate="<<plan.secondaryDuplicates<<" misses="<<plan.secondaryMisses<<" work="<<plan.workSteps<<
+        "; real floor/coplanar selection/quad/grid/clipping/ordered state/detach/read-only replay; NOT native startup or rendered Shadow completion\n";
+}
+
 void VerifyOriginalWorldStartupProbe(const std::filesystem::path& legacy,
     const std::filesystem::path& directory) {
     const auto baseline = CheckpointBytes(legacy);
@@ -2995,11 +3073,13 @@ void TestOriginal(const std::filesystem::path& root, const bool inventoryOnly = 
         const auto actors = GetPortableRuntimeMapActors();
         if (worldStartupOnly) {
             VerifyOriginalModelPointTrace(root,checkpoint,temporary.directory);
+            VerifyOriginalShadowDecalGeometry(root,checkpoint,temporary.directory);
             VerifyOriginalWorldStartupProbe(checkpoint,temporary.directory); UnloadPortableRuntimeMap(); return;
         }
         if (startupOnly) { VerifyOriginalInitGame(root,checkpoint,temporary.directory); UnloadPortableRuntimeMap(); return; }
         if (std::string(map) == "00_Training") {
             VerifyOriginalModelPointTrace(root,checkpoint,temporary.directory);
+            VerifyOriginalShadowDecalGeometry(root,checkpoint,temporary.directory);
             VerifyColdOriginalAnimationAssets(root, checkpoint, temporary.directory);
         }
         if (std::string(map)=="00_Training") VerifyOriginalInitGame(root,checkpoint,temporary.directory);

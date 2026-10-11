@@ -1,5 +1,44 @@
 # Port status
 
+## Original multidecal geometry and ordered attachment state (2026-10-12)
+
+- Added original authored BSP polygon selection, distinct primary/secondary
+  plane-center behavior, ascending fresh surface-node cache and bounded
+  insert-before-prune quad clipping. Primary quads retain all three original
+  orientation paths, USize-only radius and exact random-draw consumption.
+  Secondary geometry retains all sixteen default Shadow samples, signed-angle
+  handling and the original two-line corner correction, not simple projection.
+- Added a bounded geometry-only plan plus surface-owned ordered records and
+  SurfList mirrors: first live-Texture insertion, repeated primary records,
+  secondary uniqueness, reverse detach/first owner match and atomic copy/swap
+  rollback. Review corrections included pre-call aggregate work limits, nested
+  schema validation on misses and original ray normalization sum order. An
+  accepted empty-membership regression preserves renderer-unrestricted records.
+- Real Training evidence separates the BSP hit node1848/surface1837 from the
+  actual containing coplanar node1852/surface1861. Original Shadow defaults are
+  Multi4/DrawScale1/32x32 FlatFXTex40. The full geometry query produces one
+  record/one membership node, six RNG draws and sixteen secondary duplicates;
+  independent planar edge checks confirm the selected polygon. Focused original
+  controls pass exact repeatability, standalone publication/detach and unchanged
+  checkpoint/actor/revision/GC observations. See
+  [DECAL-GEOMETRY-PLAN.md](DECAL-GEOMETRY-PLAN.md).
+- All56 ordinary host tests pass (60 registered, four owned-data skips).
+  Generated quad checks6195/25 expected refusals, surface649/77, state260/102 and
+  composed projection79/8 pass. Android ARM64 syntax compilation with warnings
+  as errors passes. All four optional owned-data suites pass separately:
+  runtime-save, defaults1002, PawnList67 and full original actor controls across
+  Training/UNATCOIsland/Intro. Focused startup retains the exact unsupported
+  AttachDecal failure and full rollback. Logs are ignored under
+  `artifacts/decal-geometry-20261012/`.
+- This is not published native Shadow rendering. Truthful viewport binding,
+  native graph/GC journalling, reflected dynamic SurfList, mover callbacks,
+  checkpoint preflight/restore and Quest render publication remain required.
+  The original startup probe still stops at AttachDecal; player possession,
+  live Tick and full campaign remain unfinished. No new APK was produced for
+  host-only work, so the accepted installed hand/body renderer is unchanged.
+  Quest3 is connected; every actual new APK retains default data-preserving
+  auto-install.
+
 ## Spawn tag fidelity and original shadow prerequisites (2026-10-11)
 
 - Corrected the script/native Spawn boundary: native Class.Name is visible in

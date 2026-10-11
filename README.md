@@ -73,6 +73,10 @@ captured optional tag after return, including notification replacements.
 The [original BSP point-trace prerequisite](docs/MODEL-POINT-TRACE.md) and
 [decal native audit](docs/DECAL-NATIVE-CONTRACT.md) prepare exact NPC shadows;
 AttachDecal itself remains unsupported, not bypassed to accept partial startup.
+The [decal geometry and ordered-state prerequisites](docs/DECAL-GEOMETRY-PLAN.md)
+now compose original projection, the full sixteen-sample Shadow grid and node
+clipping, with live-texture record ordering and exact duplicate/detach controls.
+These are host-tested foundations, not published native shadows or Quest startup.
 The [Quest test build notes](docs/QUEST-TEST-BUILD.md) record an earlier installed
 test build, not a permanent deployment freeze. At the user's standing request,
 every successful new APK build now automatically installs on the connected,

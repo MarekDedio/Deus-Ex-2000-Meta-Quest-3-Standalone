@@ -1,5 +1,11 @@
 # Current Quest test-build handoff (2026-10-11)
 
+Host-only decal geometry/state work dated 2026-10-12 is documented in
+[DECAL-GEOMETRY-PLAN.md](DECAL-GEOMETRY-PLAN.md). It has not created a replacement
+APK or changed the installed renderer; the signed APK recorded below remains
+the latest build. Connected-Quest default auto-install remains enabled for
+every actual new APK, preserving data/saves.
+
 ## Latest: Spawn tag fidelity and shadow prerequisites
 
 `artifacts/decal-prerequisites-20261011/DeusExQuestVR-decal-prerequisites-20261011.apk`
