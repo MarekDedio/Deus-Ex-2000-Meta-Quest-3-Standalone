@@ -2,7 +2,9 @@
 param(
     [string]$AndroidSdkPath,
     [string]$JavaHome,
-    [switch]$ValidateOnly
+    [switch]$ValidateOnly,
+    [switch]$SkipInstall,
+    [ValidatePattern('^[A-Za-z0-9_.:-]+$')][string]$DeviceSerial
 )
 
 $ErrorActionPreference = 'Stop'
@@ -124,3 +126,12 @@ if (-not (Test-Path -LiteralPath $apk)) {
 }
 
 Get-Item -LiteralPath $apk | Select-Object FullName, Length, LastWriteTime
+$deploymentOptions = @{
+    AdbPath = (Join-Path $sdkRoot 'platform-tools\adb.exe')
+    ApkPath = $apk
+    SkipInstall = $SkipInstall
+}
+# Omit an unspecified serial rather than binding an empty string to its
+# validation attribute; the deployment helper then uses the known Quest.
+if ($DeviceSerial) { $deploymentOptions.DeviceSerial = $DeviceSerial }
+& (Join-Path $PSScriptRoot 'Install-QuestBuildIfConnected.ps1') @deploymentOptions

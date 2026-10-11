@@ -61,15 +61,17 @@ This is isolated backend progress, not automatic world startup or live NPC AI.
 The [original state-dispatch correction](docs/ORIGINAL-STATE-DISPATCH.md) now
 uses actual Children/Next Auto order and explicit selected-state SuperField
 callback ancestry. Full state identity/control and campaign bootstrap remain
-unfinished; the accepted hand-direction test APK is kept installed.
+unfinished; recorded headset test receipts identify previously accepted builds.
 The [independent actor-state model](docs/STATE-CONTROL-MODEL.md) adds exact
 selected/running identities, nullable Code, live masks and codec9/envelope12.
 Original transition authoring and map-wide startup remain the next integration
 steps; legacy frames are not silently upgraded.
-The [installed Quest test build](docs/QUEST-TEST-BUILD.md) remains frozen while
-the user tests it. Subsequent offline source work retains
-[authored state metadata](docs/AUTHORED-STATE-FOUNDATION.md); it does not enable
-automatic AI or replace that installed APK.
+The [Quest test build notes](docs/QUEST-TEST-BUILD.md) record an earlier installed
+test build, not a permanent deployment freeze. At the user's standing request,
+every successful new APK build now automatically installs on the connected,
+authorized Quest 3. Offline source work retains
+[authored state metadata](docs/AUTHORED-STATE-FOUNDATION.md); this does not enable
+automatic AI or establish on-device campaign completion.
 The subsequent [script-dispatch foundation](docs/SCRIPT-DISPATCH.md) adds
 read-only state/function selection, label analysis and eligibility suppression,
 not automatic startup. [Explicit state execution](docs/STATE-EXECUTION.md) adds
@@ -77,8 +79,8 @@ transactional state control and persistence, still without a live AI scheduler.
 [Original authored struct support](docs/AUTHORED-STRUCTS.md) connects declaration
 order and package-local member values to typed runtime writes and saves,
 including the eight original InitialInventory slots. Complete authored player
-inventory and campaign startup remain unfinished; this source update is not a
-new installed APK.
+inventory and campaign startup remain unfinished; backend tests do not establish
+live headset gameplay.
 [Original object/class casts](docs/OBJECT-CASTS.md) now have distinct identity
 and declaration-name rules, covered by the final original-data integration.
 
@@ -121,6 +123,15 @@ for toolchain paths and validation-only checks.
 .\tools\Build-QuestSmokeTest.ps1
 ```
 
+After a successful build, the helper checks for authorized Quest 3
+`2G0YC5ZG620985` and replace-installs the new APK without clearing saves or
+automatically launching the app. It never guesses another phone/headset.
+Use `-DeviceSerial <serial>` for another verified Quest 3, or `-SkipInstall`
+for an explicit offline/CI build. Missing ADB or an absent/unauthorized headset
+prints a skipped-install result and retains the built APK; an attempted install
+failure is reported as an error. `-ValidateOnly` never contacts a device.
+Installation is not proof of rendering, tracking or campaign playability.
+
 ## Visual tests without a headset
 
 The desktop capture tool decodes the original packages with the same portable
@@ -162,6 +173,11 @@ With one Quest in developer mode connected and authorized over USB:
 ```powershell
 .\tools\Install-QuestSmokeTest.ps1
 ```
+
+The manual helper verifies the selected device is a Quest 3, installs with `-r`,
+and launches by default. Pass `-InstallOnly` to omit explicit force-stop/launch
+commands. Installing an update can itself stop the app; reopen it afterward.
+With multiple devices, explicitly provide `-DeviceSerial <serial>`.
 
 Quest OS capture can return black for immersive compositor layers. The app has
 an independent left-eye framebuffer capture path that includes the world,

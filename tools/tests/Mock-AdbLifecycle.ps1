@@ -25,6 +25,10 @@ if ($args.Count -lt 3 -or $args[0] -cne '-s' -or $args[1] -cne $fixture.Expected
     throw "Mock ADB operation did not target the expected serial: $commandText"
 }
 $operation = ($args | Select-Object -Skip 2) -join ' '
+if ($operation -eq 'shell getprop ro.product.model') {
+    if ($fixture.FailOperation -eq 'Model') { Complete-MockAdb 1 $fixture.Model }
+    Complete-MockAdb 0 $fixture.Model
+}
 if ($operation -eq 'shell am start -W -n dev.deusex.questvr.smoketest/dev.deusex.questvr.MainActivity') {
     $fixture.Launches++
     if ($fixture.FailOperation -eq 'Launch') { Complete-MockAdb 1 'Status: ok' }
@@ -42,6 +46,7 @@ if ($args.Count -eq 5 -and $args[2] -ceq 'install' -and $args[3] -ceq '-r' -and
     $args[4] -ceq $fixture.ExpectedApk) {
     $fixture.Installs++
     if ($fixture.FailOperation -eq 'Install') { Complete-MockAdb 1 'Success' }
+    if ($fixture.FailOperation -eq 'InstallText') { Complete-MockAdb 0 'Failure [INSTALL_FAILED_TEST]' }
     Complete-MockAdb 0 'Success'
 }
 if ($operation -eq 'shell am force-stop dev.deusex.questvr.smoketest') {

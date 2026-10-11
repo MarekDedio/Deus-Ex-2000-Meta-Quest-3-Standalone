@@ -38,7 +38,8 @@ Install a JDK 17 and an Android SDK containing:
 - Android SDK Build-Tools 33.0.1 (`build-tools;33.0.1`).
 - Android NDK 27.0.12077973 (`ndk;27.0.12077973`).
 - CMake 3.22.1 (`cmake;3.22.1`).
-- Android SDK Platform-Tools (`platform-tools`) for later Quest deployment.
+- Android SDK Platform-Tools (`platform-tools`) for automatic Quest deployment.
+  Their absence skips installation, not an otherwise successful APK build.
 
 Accept the Android SDK licenses through Android Studio's SDK Manager or
 `sdkmanager --licenses`. The Gradle wrapper supplies Gradle 8.5; the Android
@@ -64,15 +65,41 @@ paths fail with an actionable error. The script restores the caller's Java and
 Android environment variables after the build.
 
 `-ValidateOnly` checks these toolchain paths, restores/checks the pinned source,
-and prepares both SDK patches without invoking Gradle. A normal build produces:
+and prepares both SDK patches without invoking Gradle **or contacting ADB/a
+device**. A normal build produces:
 
 ```text
 android/build/outputs/apk/debug/DeusExQuestVrSmokeTest-debug.apk
 ```
 
+## Automatic installation after each successful build
+
+The user's standing deployment policy is to install every new APK on the Quest
+when it is connected and authorized. `Build-QuestSmokeTest.ps1` invokes
+`Install-QuestBuildIfConnected.ps1` only after Gradle succeeds and the expected
+APK exists. It pins the known headset serial `2G0YC5ZG620985`, verifies the
+device's reported model is Quest 3, and uses `adb -s <serial> install -r`.
+It does not uninstall, clear app data/saves, or issue force-stop/launch commands.
+Package-manager installation can naturally replace/stop a running application;
+the helper does not promise uninterrupted play or tracking.
+
+Missing ADB, device-enumeration failure, no matching authorized headset, an
+offline/unauthorized headset, ambiguous duplicate serials, or an unverified
+model produce an explicit **Skipped** result. A different authorized phone or
+headset is never silently selected. `-DeviceSerial <serial>` on the build/helper
+supports another Quest 3 with the same model verification. `-SkipInstall` is an
+explicit offline/CI override. If installation is actually attempted and fails,
+the script throws visibly; build success is not reported as install success.
+The **Installed** result includes the targeted serial and source APK SHA256;
+it is not a claim that the application launched, rendered or tracked correctly.
+
+The manual `Install-QuestSmokeTest.ps1` retains its default stop/launch workflow
+after a verified successful install. Its optional `-InstallOnly` mode performs
+only the replace-install and returns the receipt used by automatic deployment.
+
 Git operations, patch operations, Java version probing, and the Gradle build
 check their native exit codes. Compile success does not demonstrate a playable
-campaign; installation and runtime validation are separate steps. Original game
+campaign; automatic installation and runtime validation remain separate evidence. Original game
 data must be supplied from the user's legally owned installation and must remain
 outside the source repository.
 
@@ -98,10 +125,17 @@ Offline launch/install and fresh-patch regression tests require no headset:
 
 ```powershell
 .\tools\tests\Test-QuestLifecycle.ps1
+.\tools\tests\Test-QuestAutoInstall.ps1
 .\tools\tests\Test-ThirdPartyPatches.ps1
 ```
 
-They cover serial authorization/selection, one-intent launch, nonzero ADB
-failures, replace-install/data preservation, fresh and repeated patch application,
+They cover serial authorization/selection, model verification, missing ADB,
+no-device/unauthorized/offline/wrong-target/multiple-device deployment decisions,
+install-only mode, explicit offline/validation-only modes, one-intent launch,
+nonzero ADB and misleading install-text failures, replace-install/data preservation,
+fresh and repeated patch application,
 retained OpenXR contracts and conflicting-edit preservation. Generated fixtures
 are confined to validated temporary directories, not the real SDK or device.
+Automatic-deployment tests execute the helpers against an allowlisted mock;
+build-success/ValidateOnly wiring is checked statically. These tests do not run
+Gradle, perform a hardware installation, or verify headset tracking/rendering.

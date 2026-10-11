@@ -2,7 +2,8 @@
 param(
     [string]$AdbPath = 'D:\Android\Sdk\platform-tools\adb.exe',
     [string]$ApkPath,
-    [ValidatePattern('^[A-Za-z0-9_.:-]+$')][string]$DeviceSerial
+    [ValidatePattern('^[A-Za-z0-9_.:-]+$')][string]$DeviceSerial,
+    [switch]$InstallOnly
 )
 
 $ErrorActionPreference = 'Stop'
@@ -37,9 +38,26 @@ if ($DeviceSerial) {
 
 # Replace the installed APK without uninstalling or clearing its saves/data.
 # Pin every operation to this serial, even if another device connects later.
-& $AdbPath -s $DeviceSerial install -r $ApkPath
-if ($LASTEXITCODE -ne 0) {
-    throw "ADB install failed with exit code $LASTEXITCODE"
+$modelOutput = @(& $AdbPath -s $DeviceSerial shell getprop ro.product.model)
+$modelExitCode = $LASTEXITCODE
+$model = ($modelOutput -join '').Trim()
+if ($modelExitCode -ne 0 -or $model -notmatch '^(Meta )?Quest[ _]3$') {
+    throw "Selected device is not a verified Quest 3: $DeviceSerial (model '$model', exit $modelExitCode)."
+}
+$installOutput = @(& $AdbPath -s $DeviceSerial install -r $ApkPath)
+$installExitCode = $LASTEXITCODE
+if ($installExitCode -ne 0 -or -not ($installOutput | Where-Object { $_ -match '^Success\s*$' })) {
+    throw "ADB install failed with exit code ${installExitCode}: $($installOutput -join ' ')"
+}
+Write-Host "Installed APK on Quest 3 $DeviceSerial using replace-install; app data was not cleared."
+if ($InstallOnly) {
+    [pscustomobject]@{
+        Device = $DeviceSerial
+        ApkPath = (Resolve-Path -LiteralPath $ApkPath).Path
+        ApkSha256 = (Get-FileHash -LiteralPath $ApkPath -Algorithm SHA256).Hash
+        State = 'Installed; app not launched. Rendering/tracking/gameplay validation is separate.'
+    }
+    return
 }
 
 & $AdbPath -s $DeviceSerial shell am force-stop dev.deusex.questvr.smoketest

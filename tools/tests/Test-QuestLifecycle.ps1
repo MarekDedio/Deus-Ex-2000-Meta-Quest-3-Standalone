@@ -22,6 +22,7 @@ function New-MockState([hashtable]$Overrides = @{}) {
     $state = [ordered]@{
         Devices = "List of devices attached`nMOCK_QUEST_SERIAL`tdevice"
         ExpectedSerial = 'MOCK_QUEST_SERIAL'; ExpectedApk = $fixtureApk
+        Model = 'Quest 3'
         FailOperation = ''; EmptyProcessPolls = 0; ProcessPolls = 0
         Launches = 0; Installs = 0; Stops = 0; Commands = @()
     }
@@ -126,7 +127,7 @@ try {
     $state = Read-MockState
     Assert-True ($state.Installs -eq 1 -and $state.Stops -eq 1 -and $state.Launches -eq 1) 'replace install, stop, one launch'
     Assert-True (@($state.Commands | Where-Object { $_ -match 'uninstall|pm clear|shell rm|install -r -' }).Count -eq 0) 'no uninstall/data clearing/removal options'
-    Assert-True ($state.Commands[1] -ceq "-s MOCK_QUEST_SERIAL install -r $fixtureApk") 'space-containing APK path is one exact argument'
+    Assert-True ($state.Commands[2] -ceq "-s MOCK_QUEST_SERIAL install -r $fixtureApk") 'space-containing APK path is one exact argument'
     Complete-Test 'install targets authorized serial with -r and preserves app data'
 
     # Test the real default path without needing an existing production APK.
