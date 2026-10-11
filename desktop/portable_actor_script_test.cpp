@@ -2739,9 +2739,82 @@ void VerifyOriginalStateExecution(const std::string& actor, const std::filesyste
         "; atomic slice/callback failure; no world startup/tick implied\n";
 }
 
+void VerifyOriginalInitGame(const std::filesystem::path& root,
+    const std::filesystem::path& legacy, const std::filesystem::path& directory) {
+    const auto original = CheckpointBytes(legacy);
+    const auto originalActors = GetPortableRuntimeMapActors(true).size();
+    const auto game = Call("00_Training.Doctor1","Engine.Actor.Spawn",
+        {{Value::Text(Kind::Object,"DeusEx.DeusExGameInfo"),{}}}).value.text;
+    Require(!game.empty(),"Original GameInfo class could not be born before begun-play");
+    const auto level = ReadPortableActorScriptProperty(game,"Level").text;
+    Require(!QuestVr::Vm::ToBool(ReadPortableActorScriptProperty(level,"bBegunPlay")),
+        "Controlled original InitGame input is already a begun world");
+    const auto before = directory/"original-initgame-before.sav";
+    const auto saved = directory/"original-initgame-complete.sav";
+    const auto inspect = directory/"original-initgame-inspect.sav";
+    Require(SavePortableRuntimeState(before.string()),"Cannot save original GameInfo birth baseline");
+    const auto baseline = CheckpointBytes(before);
+    const auto string = [](const std::string& text) { return Evaluation{Value::Text(Kind::String,text),{}}; };
+    const std::string options="?mAxPlAyErS=64?Difficulty=2?AdminPassword=fixture-admin?GamePassword=fixture-game?LocalLog=TrUe?WorldLog=TrUe";
+    Require(Call(game,"ParseOption",{string(options),string("MAXPLAYERS")}).value.text=="64" &&
+        Call(game,"ParseOption",{string(options),string("Absent")}).value.text.empty() &&
+        Call(game,"GetIntOption",{string(options),string("Difficulty"),{Value::Integer(7),{}}}).value.integer==2 &&
+        Call(game,"GetIntOption",{string(options),string("Absent"),{Value::Integer(7),{}}}).value.integer==7,
+        "Original option helper scripts did not preserve lookup/case/default behavior");
+    Value error = Value::Text(Kind::String,"unchanged OUT sentinel");
+    auto output = std::make_shared<QuestVr::Vm::Reference>();
+    output->zero = Value::Text(Kind::String,{});
+    output->read = [&] { return error; };
+    output->write = [&](const Value& value) { error=value; };
+    const auto initialized = Call(game,"InitGame",{string(options),{error,output}});
+    const auto baseMutator = ReadPortableActorScriptProperty(game,"BaseMutator");
+    Require(initialized.committed && error.text=="unchanged OUT sentinel" &&
+        ReadPortableActorScriptProperty(game,"MaxPlayers").integer==32 &&
+        ReadPortableActorScriptProperty(game,"Difficulty").integer==2 &&
+        ReadPortableActorScriptProperty(game,"AdminPassword").text=="fixture-admin" &&
+        ReadPortableActorScriptProperty(game,"GamePassword").text=="fixture-game" &&
+        QuestVr::Vm::ToBool(ReadPortableActorScriptProperty(game,"bLocalLog")) &&
+        QuestVr::Vm::ToBool(ReadPortableActorScriptProperty(game,"bWorldLog")) &&
+        baseMutator.kind==Kind::Object && !baseMutator.text.empty() &&
+        QuestVr::Vm::ToBool(Call(baseMutator.text,"IsA",{Name("Mutator")}).value) &&
+        GetPortableRuntimeMapActors(true).size()==originalActors+2u,
+        "Actual InitGame did not execute original options and actual base Mutator birth");
+    Require(SavePortableRuntimeState(saved.string()),"Cannot save original completed InitGame control");
+    const auto complete = CheckpointBytes(saved);
+    Require(QuestVr::DecodeScriptSavedState(ScriptBlob(complete)).births.size()==2u &&
+        !QuestVr::Vm::ToBool(ReadPortableActorScriptProperty(level,"bBegunPlay")),
+        "Scoped InitGame control fabricated world begun-play or lost two original births");
+    GC::Collect();
+    Require(LoadPortableRuntimeState(saved.string()) && SavePortableRuntimeState(inspect.string()) &&
+        CheckpointBytes(inspect)==complete,"Original InitGame warm save/GC changed the complete graph");
+    Require(LoadPortableRuntimeState(legacy.string()) && UnloadPortableRuntimeMap() &&
+        LoadPortableRuntimeMap(LoadPortablePackageTables((root/"Maps"/"00_Training.dx").string())).passed &&
+        LoadPortableRuntimeState(saved.string()) && SavePortableRuntimeState(inspect.string()) &&
+        CheckpointBytes(inspect)==complete && ReadPortableActorScriptProperty(game,"BaseMutator").text==baseMutator.text,
+        "Original InitGame cold restore lost actual GameInfo/Mutator identities");
+    Require(LoadPortableRuntimeState(before.string()),"Cannot restore original InitGame baseline");
+    QuestVr::Vm::Limits budget; budget.instructions=100u;
+    auto failed = ExecutePortableActorFunction(game,"InitGame",{string(options),{error,output}},budget);
+    Require(!failed.passed() && failed.status==Status::Budget && !failed.committed &&
+        SavePortableRuntimeState(inspect.string()) && CheckpointBytes(inspect)==baseline &&
+        error.text=="unchanged OUT sentinel","Bounded original InitGame failed to roll back its partial fields");
+    failed=ExecutePortableActorFunction(game,"InitGame",{string("?MaxPlayers=3?Mutator=Engine.Mutator"),{error,output}});
+    Require(!failed.passed() && !failed.committed && failed.status==Status::Unsupported &&
+        failed.function=="Core.Object.DynamicLoadObject" && failed.offset==0u &&
+        failed.callStack==std::vector<std::string>{"Engine.GameInfo.InitGame","Core.Object.DynamicLoadObject"} &&
+        failed.error.find("Unsupported runtime native 0 (Core.Object.DynamicLoadObject)")!=std::string::npos &&
+        SavePortableRuntimeState(inspect.string()) && CheckpointBytes(inspect)==baseline &&
+        GetPortableRuntimeMapActors(true).size()==originalActors+1u,
+        "Unsupported real mutator option did not report exact evidence and roll back nested birth: "+
+            failed.function+':'+std::to_string(failed.offset)+" "+failed.error);
+    Require(LoadPortableRuntimeState(legacy.string()) && SavePortableRuntimeState(inspect.string()) &&
+        CheckpointBytes(inspect)==original,"Scoped original InitGame left state/births behind");
+    std::cout<<"ORIGINAL InitGame inherited by actual DeusExGameInfo: options/logging/base Mutator/OUT/rollback/warm+cold save; not automatic world startup\n";
+}
+
 void TestOriginal(const std::filesystem::path& root, const bool inventoryOnly = false,
     const bool switchOnly = false, const bool randomOnly = false, const bool sleepOnly = false,
-    const bool landingOnly = false, const bool dispatchOnly = false) {
+    const bool landingOnly = false, const bool dispatchOnly = false, const bool startupOnly = false) {
     static constexpr const char* packages[] = {
         "ConSys", "Core", "DeusEx", "DeusExCharacters", "DeusExConAudioAIBarks",
         "DeusExConAudioEndGame", "DeusExConAudioHK_Shared", "DeusExConAudioIntro",
@@ -2782,7 +2855,9 @@ void TestOriginal(const std::filesystem::path& root, const bool inventoryOnly = 
         const auto checkpointBytes = std::filesystem::file_size(checkpoint);
         Require(Word(CheckpointBytes(checkpoint),4)==3u,"Untouched runtime unexpectedly changed legacy v3 save format");
         const auto actors = GetPortableRuntimeMapActors();
+        if (startupOnly) { VerifyOriginalInitGame(root,checkpoint,temporary.directory); UnloadPortableRuntimeMap(); return; }
         if (std::string(map) == "00_Training") VerifyColdOriginalAnimationAssets(root, checkpoint, temporary.directory);
+        if (std::string(map)=="00_Training") VerifyOriginalInitGame(root,checkpoint,temporary.directory);
         if (std::string(map) == "00_Training") VerifyOriginalRandom("00_Training.Doctor1",checkpoint,temporary.directory);
         if (std::string(map) == "00_Training") VerifyOriginalSleep(root,tables,"00_Training.Doctor1",checkpoint,temporary.directory);
         if (std::string(map) == "00_Training") VerifyOriginalLanding(root,tables,"00_Training.Doctor1",checkpoint,temporary.directory);
@@ -3026,15 +3101,17 @@ int main(int argc, char** argv) {
             return 77;
         }
         Require(argc == 2 || (argc == 3 && (std::string(argv[2]) == "--inventory-only" ||
-                std::string(argv[2]) == "--switch-only" || std::string(argv[2]) == "--random-only" || std::string(argv[2]) == "--sleep-only" || std::string(argv[2]) == "--landing-only" || std::string(argv[2]) == "--dispatch-only")),
-            "Usage: portable_actor_script_test GAME_ROOT [--inventory-only|--switch-only|--random-only|--sleep-only|--landing-only|--dispatch-only]");
+                std::string(argv[2]) == "--switch-only" || std::string(argv[2]) == "--random-only" || std::string(argv[2]) == "--sleep-only" || std::string(argv[2]) == "--landing-only" || std::string(argv[2]) == "--dispatch-only" || std::string(argv[2]) == "--startup-only")),
+            "Usage: portable_actor_script_test GAME_ROOT [--inventory-only|--switch-only|--random-only|--sleep-only|--landing-only|--dispatch-only|--startup-only]");
         const bool switchOnly = argc == 3 && std::string(argv[2]) == "--switch-only";
         const bool randomOnly = argc == 3 && std::string(argv[2]) == "--random-only";
         const bool sleepOnly = argc == 3 && std::string(argv[2]) == "--sleep-only";
         const bool landingOnly = argc == 3 && std::string(argv[2]) == "--landing-only";
         const bool dispatchOnly = argc == 3 && std::string(argv[2]) == "--dispatch-only";
-        TestOriginal(std::filesystem::path(argv[1]), argc == 3 && !switchOnly && !randomOnly && !sleepOnly && !landingOnly && !dispatchOnly,
-            switchOnly,randomOnly,sleepOnly,landingOnly,dispatchOnly);
+        const bool startupOnly = argc == 3 && std::string(argv[2]) == "--startup-only";
+        TestOriginal(std::filesystem::path(argv[1]), argc == 3 && !switchOnly && !randomOnly && !sleepOnly && !landingOnly && !dispatchOnly && !startupOnly,
+            switchOnly,randomOnly,sleepOnly,landingOnly,dispatchOnly,startupOnly);
+        if (startupOnly) {std::cout<<"PASS focused original InitGame startup primitive suite\n";return 0;}
         if (dispatchOnly) {std::cout<<"PASS focused original readonly dispatch/source-program audit\n";return 0;}
         if (landingOnly) {std::cout<<"PASS focused original WaitForLanding/native actor wait suite\n";return 0;}
         if (sleepOnly) {std::cout<<"PASS focused original Sleep/native actor wait suite\n";return 0;}

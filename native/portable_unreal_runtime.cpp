@@ -15,6 +15,7 @@
 #include "quest_script_random.h"
 #include "quest_actor_latent.h"
 #include "quest_actor_state_control.h"
+#include "quest_unreal_string.h"
 
 #include <memory>
 #include <algorithm>
@@ -1548,6 +1549,27 @@ public:
     std::string ResolveCastClass(const Function& function, const std::int32_t reference) override {
         return ResolveCastReference(Table(function.source), reference);
     }
+    std::string ObjectString(const std::string& path) override {
+        auto* object = Object(path); // Validate identity and canonicalize spelling.
+        // No native Rename/SetOuter exists in this host. Loaded object names
+        // and complete package/outer paths are immutable, including nested
+        // function/property outers. Validate metadata instead of returning an
+        // arbitrary operand spelling or reducing GetPathName to a leaf name.
+        if (!object->runtimeBirth) {
+            if (object->exportIndex >= Table(object->sourcePath).exports.size() ||
+                object->exportIndex >= static_cast<std::size_t>(std::numeric_limits<std::int32_t>::max()))
+                throw std::runtime_error("ObjectToString identity has no authored export");
+            const auto authored = Qualified(Table(object->sourcePath),
+                static_cast<std::int32_t>(object->exportIndex+1u));
+            if (authored != object->reflection.objectPath)
+                throw std::runtime_error("ObjectToString authored outer path disagrees with indexed identity");
+        } else {
+            RequireMapActor(object);
+            if (object->reflection.objectPath.rfind(persistentMapPackageName+'.',0u) != 0u)
+                throw std::runtime_error("ObjectToString birth has no current-map package identity");
+        }
+        return object->reflection.objectPath;
+    }
     Value CastObject(const std::string& target, const Value& value, const bool meta) override {
         QuestVr::ObjectCastResolvers resolvers;
         resolvers.resolveClass = [this](const std::string& path) { return CastClassIdentity(path); };
@@ -1606,6 +1628,19 @@ public:
             if (value.kind != Kind::Name) throw std::runtime_error("Animation native requires a Name argument");
             return value.text;
         };
+        if (index == 231u) { // Original Core.Object.Log, fixed-format diagnostic sink.
+            argumentCount(1u,2u);
+            const auto message = QuestVr::Vm::Coerce(argument(0u),Value::Text(Kind::String,{}));
+            const auto category = argument(1u);
+            if (category.kind != Kind::Nothing && category.kind != Kind::Name)
+                throw std::runtime_error("Log category is not a Name");
+            const auto tag = category.kind == Kind::Nothing ? std::string("ScriptLog") :
+                (category.text.empty() ? std::string("None") : category.text);
+            const auto units = QuestVr::UnrealString::Decode(message.text);
+            const auto text = QuestVr::UnrealString::Encode(QuestVr::UnrealString::CString(units));
+            __android_log_print(ANDROID_LOG_INFO,"DeusExScript","[%s] %s",tag.c_str(),text.c_str());
+            return {};
+        }
         if (index == 167u || index == 195u) { // Original Core.Object.Rand / FRand.
             argumentCount(index == 167u ? 1u : 0u, index == 167u ? 1u : 0u);
             const auto maximum = index == 167u ? QuestVr::Vm::ToInt(argument(0u)) : 0;
@@ -1917,6 +1952,7 @@ public:
         if (index == 278u) return SpawnNative(receiver, arguments, execution);
         if (index == 272u || index == 298u || index == 279u)
             return LifecycleNative(index, receiver, arguments, execution);
+        if (index == 529u || index == 530u) return PawnListNative(index, Object(receiver), arguments);
         if (index == 113u) throw std::runtime_error("GotoState bypassed its pre-argument context");
         if (index != 117u && index != 118u) return Native(index, receiver, arguments, declaration);
         auto* actor = Object(receiver);
@@ -2118,19 +2154,9 @@ private:
         }
     }
     void SpawnBase(RuntimeObject* actor, QuestVr::Vm::Execution& execution) {
-        const auto attachTag = Read(actor, PropertyNamed(actor, "AttachTag"), 0u).text;
-        if (!attachTag.empty() && LowerAscii(attachTag) != "none") {
-            // Do not cache tags: earlier callbacks can change them. Iterate
-            // actual Level slot order, including newly appended actor slots.
-            for (std::size_t i = 0u; i < persistentWorldActors.size(); ++i) {
-                LifecycleStep();
-                auto* candidate = persistentWorldActors[i];
-                if (candidate && !candidate->worldRemoved &&
-                    LowerAscii(Read(candidate, PropertyNamed(candidate, "Tag"), 0u).text) == LowerAscii(attachTag))
-                    SetBase(candidate, actor, false, execution);
-            }
-            return;
-        }
+        // Original GOTY SpawnActor (0x10395612--0x103956a1) only invokes
+        // FindBase under the conditions below. AttachTag resolution belongs
+        // to LoadMap's separate world-startup base pass, not actor births.
         const bool physical = IsDerivedFromPath(actor->cls, "Engine.Decoration") ||
             IsDerivedFromPath(actor->cls, "Engine.Inventory") || IsDerivedFromPath(actor->cls, "Engine.Pawn");
         const auto physics = QuestVr::Vm::ToInt(Read(actor, PropertyNamed(actor, "Physics"), 0u));
@@ -2740,7 +2766,7 @@ private:
                     Qualified(Table(source.sourcePath), DecodePortableObjectReference(tag)));
                 break;
             case Kind::String:
-                if (tag.type == 13u) return Value::Text(Kind::String, DecodePortableStringProperty(tag));
+                if (tag.type == 13u) return Value::Text(Kind::String, DecodePortableVmStringProperty(tag));
                 break;
             default: break;
         }
@@ -2990,20 +3016,84 @@ private:
         }
         manager->actorRoots.swap(roots);
     }
-    RuntimeAIManager* ActorAIManager(RuntimeObject* actor) {
+    RuntimeObject* NativeLevelInfo(RuntimeObject* actor) {
         RequireMapActor(actor);
         auto* level = actor->nativeXLevel;
         if (!level || level->sourcePath != persistentMapSourcePath ||
             LowerAscii(CastObjectIdentity(level->reflection.objectPath).classPath) != "engine.level")
-            throw std::runtime_error("AI receiver has no actual linked native Level");
+            throw std::runtime_error("Native receiver has no actual linked native Level");
         // Native wrappers dereference ULevel.Actors[0], not the reflected
         // Actor.Level/XLevel overlays or the first LevelInfo export by name.
         if (persistentWorldActors.empty() || !persistentWorldActors.front() ||
             persistentWorldActors.front()->worldRemoved ||
             !IsDerivedFromPath(persistentWorldActors.front()->cls, "Engine.LevelInfo") ||
             persistentWorldActors.front()->nativeXLevel != level)
-            throw std::runtime_error("AI Level slot zero is not its actual LevelInfo");
-        return persistentWorldActors.front()->nativeAiManager;
+            throw std::runtime_error("Native Level slot zero is not its actual LevelInfo");
+        return persistentWorldActors.front();
+    }
+    RuntimeAIManager* ActorAIManager(RuntimeObject* actor) {
+        return NativeLevelInfo(actor)->nativeAiManager;
+    }
+    Evaluation PawnListNative(const std::uint16_t index, RuntimeObject* actor,
+        const std::vector<Evaluation>& arguments) {
+        LifecycleStep();
+        if (!arguments.empty()) throw std::runtime_error("AddPawn/RemovePawn takes no arguments");
+        RequireMapActor(actor);
+        if (!IsDerivedFromPath(actor->cls, "Engine.Pawn"))
+            throw std::runtime_error("AddPawn/RemovePawn receiver is not Engine.Pawn");
+        auto* info = NativeLevelInfo(actor);
+        const auto headProperty = PropertyNamed(info, "PawnList");
+        const auto nextProperty = PropertyNamed(actor, "nextPawn");
+        const auto schema = [&](const Property& property, const char* path) {
+            auto* metadata = Object(property.key);
+            if (LowerAscii(property.key) != path || property.arrayDimension != 1u ||
+                property.zero.kind != Kind::Object || !metadata->property ||
+                metadata->property->type != "ObjectProperty" ||
+                LowerAscii(Qualified(Table(metadata->sourcePath), metadata->property->referencedType)) != "engine.pawn")
+                throw std::runtime_error("Native pawn-list property is not its original scalar Pawn field");
+        };
+        schema(headProperty, "engine.levelinfo.pawnlist");
+        schema(nextProperty, "engine.pawn.nextpawn");
+        const auto link = [&](RuntimeObject* owner, const Property& property) -> RuntimeObject* {
+            const auto value = Read(owner, property, 0u);
+            if (value.kind != Kind::Object) throw std::runtime_error("Native pawn-list link is not an Object");
+            if (value.text.empty()) return nullptr;
+            auto* target = Object(value.text); RequireMapActor(target);
+            if (!IsDerivedFromPath(target->cls, "Engine.Pawn") || target->nativeXLevel != actor->nativeXLevel)
+                throw std::runtime_error("Native pawn-list link is not a Pawn in its actual Level");
+            return target;
+        };
+        const auto write = [&](RuntimeObject* owner, const Property& property, RuntimeObject* target) {
+            ReferenceFor(owner, property, 0u, false)->write(Value::Text(Kind::Object,
+                target ? target->reflection.objectPath : std::string{}));
+        };
+        auto* head = link(info, headProperty);
+        // Original GOTY execAddPawn0x103bb430 uses native XLevel.Actors[0],
+        // then unconditionally prepends. No begun/Role/deletion/dedup gate.
+        if (index == 529u) {
+            write(actor, nextProperty, head);
+            write(info, headProperty, actor);
+            return {};
+        }
+        // Original execRemovePawn0x103bb570 only splices the first match.
+        // Neither branch clears Self.nextPawn (unlike the vendored NPawn).
+        if (head == actor) {
+            write(info, headProperty, link(actor, nextProperty));
+            return {};
+        }
+        std::unordered_set<RuntimeObject*> visited;
+        for (auto* current = head; current;) {
+            LifecycleStep();
+            if (visited.size() >= 4096u || !visited.insert(current).second)
+                throw std::runtime_error("Native pawn-list traversal is cyclic or exceeds its work bound");
+            auto* next = link(current, nextProperty);
+            if (next == actor) {
+                write(current, nextProperty, link(actor, nextProperty));
+                return {};
+            }
+            current = next;
+        }
+        return {};
     }
     Evaluation AiNative(const std::uint16_t index, RuntimeObject* actor,
         const std::vector<Evaluation>& arguments) {

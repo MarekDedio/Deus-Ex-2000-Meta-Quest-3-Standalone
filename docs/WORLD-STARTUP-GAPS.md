@@ -27,15 +27,19 @@ Read-only inspection of the owned GOTY scripts establishes these fresh-start
 dependencies; original executables were not run for this audit:
 
 - The installation's DeusEx.ini selects `DeusEx.DeusExGameInfo` and
-  `DeusEx.JCDentonMale`. Map-specific game-class precedence still needs the
-  original engine contract.
-- Inherited `Engine.GameInfo.InitGame` starts with Log231 at PC0. The portable
-  host has no logging handler, but its first argument evaluates string native168
-  at PC1 before invoking Log. Option/string handling, Mutator creation
-  and ObjectToString opcode0x56 also require implementation.
-- `Engine.Pawn.PreBeginPlay` starts with AddPawn529 at PC0. Native pawn-list
-  ownership/cleanup and required Tan189/FClamp246 are absent. AddPawn must be
-  paired with actual RemovePawn530/Destroyed cleanup, not only insertion.
+  `DeusEx.JCDentonMale`. The original DLL game-class precedence and fresh/restored
+  phase contracts are now audited in [WORLD-BOOTSTRAP-CONTRACT.md](WORLD-BOOTSTRAP-CONTRACT.md);
+  the automatic coordinator remains unimplemented.
+- Inherited `Engine.GameInfo.InitGame` starts with Log231 at PC0, after evaluating
+  string native168. Logging, original UTF16 option primitives, Min249 and
+  validated ObjectToString0x56 are implemented alongside actual Spawn278.
+  Optional DynamicLoadObject and SetGameSpeed/timer paths remain unsupported;
+  a scoped InitGame control is not automatic world initialization.
+- `Engine.Pawn.PreBeginPlay` starts with AddPawn529 at PC0. Add/Remove529/530 now
+  operate on native XLevel's actual slot-zero LevelInfo, preserving original
+  prepend/first-splice/retained-next behavior. Actual Pawn.Destroyed invokes
+  removal; generic Destroy does not force it. Tan189 and FClamp246 are added.
+  Complete most-derived PreBeginPlay and live world phase execution remain required.
 - `Extension.PlayerPawnExt.Possess` calls its base, then InitRootWindow1052
   at PC6. Omitting the most-derived possession call would omit authored UI
   initialization. Root-window ownership and VR presentation integration remain
@@ -61,7 +65,7 @@ Inherited Auto paths are not re-resolved to derived same-name overrides. This
 corrects lookup metadata, not the remaining frame/control integration below.
 
 Before connecting automatic simulation, complete original world InitExecution
-and captured actor startup phases, plus the dependencies above. Missing behavior must report
+and live-slot actor startup phases, plus the dependencies above. Missing behavior must report
 an actual actor/function/PC failure, not become a successful no-op. Detailed
 read-only evidence is in the ignored
 `artifacts/landing-state-20261010/original-state-identity-audit.md` and its
@@ -71,7 +75,7 @@ bounded Core/Engine disassembly logs.
 
 Characterize the original level initialization order, then implement one staged
 world bootstrap transaction. It must create/bind the actual GameInfo, execute
-InitGame, run separate loaded-actor lifecycle passes in actual captured Level
+InitGame, run separate loaded-actor lifecycle passes over actual live Level
 slot order, handle nested births/deletion correctly, establish native bases and
 perform real player login plus most-derived possession. Publish a started world
 only when required phases succeed; preserve precise phase/receiver/function/PC
@@ -81,7 +85,8 @@ Generated ordering/reentrancy tests are necessary but not sufficient. The owned
 unmodified Training map must initialize without checkpoint-seeding begun-play
 or selectively skipping callbacks. Evidence must show a real JCDenton identity,
 native player ownership, original inventory and GetPlayerPawn, then actual
-Quest interaction/rendering. Restored worlds must not rerun fresh login.
+Quest interaction/rendering. Restored-world and player restoration behavior must
+follow their separately established contracts, not silently rerun fresh startup.
 
 Full original Tick/animation/state/timer/physics ordering and authority gates
 follow that bootstrap, not a partial loop over map snapshots. Current-map

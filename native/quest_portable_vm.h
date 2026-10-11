@@ -134,6 +134,11 @@ public:
     virtual Property ResolveProperty(const Function&, std::int32_t reference) = 0;
     virtual std::string ResolveName(const Function&, std::int32_t index) = 0;
     virtual std::string ResolveObject(const Function&, std::int32_t reference) = 0;
+    // Original ObjectToString uses full UObject::GetPathName, not an operand's
+    // unvalidated spelling. Null is handled by the VM before this lookup.
+    virtual std::string ObjectString(const std::string&) {
+        throw std::runtime_error("VM object path conversion unavailable");
+    }
     // Decoding casts requires an actual UClass, using THIS function's source
     // table, before its child is decoded/evaluated. Structural analysis still
     // uses ResolveObject and does not perform this typed lookup.

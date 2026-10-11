@@ -1,6 +1,43 @@
-# Current Quest test-build handoff (2026-10-10)
+# Current Quest test-build handoff (2026-10-11)
 
-The latest **installed development APK** corrects the backwards hand direction,
+## Latest backend development APK
+
+`artifacts/startup-primitives-20261011/DeusExQuestVR-startup-primitives-20261011.apk`
+is the newest signed ARM64 build: 18,919,145 bytes, SHA256
+`88008638C1EC7F2DD79C9C1FA66B6DE56D59595A424DB481E4FBBE22B90D9BE9`.
+It adds audited startup string/logging/math primitives, native PawnList links
+and the original Spawn/world AttachTag separation. No accepted hand/body
+geometry or controller/recenter mapping was changed. Signature v2 passes and
+the16 ZIP entries contain SDK assets/libraries, not original game packages.
+
+Data-probe: 5,757,208 bytes, SHA256
+`A7B98F85005F532449470D0D63B56228A6107B00C2E2FFEEA89B1D4A6EC0EDD2`.
+Quest library: 5,360,240 bytes, SHA256
+`C1E678CE160BDDFB7E9E10D96B920A796C78E5553D344A098FA3ABF1D4D1FDDB`.
+
+The build helper attempted its default automatic deployment, but Quest3
+`2G0YC5ZG620985` had disappeared from ADB before installation. Independent
+ADB and present-device checks also found no physical Quest/Android device;
+only installed Meta virtual display/audio devices were present. A second
+install-if-connected check skipped explicitly. This APK is **not installed**
+or visually accepted on hardware. Saves/app data were not cleared. On the
+next authorized USB connection, use the automatic/manual install helper with
+this archive; do not confuse the currently installed older state-control APK
+with this build.
+
+Existing most recent hardware evidence belongs to the older
+`original-state-control-20261011` APK, SHA256
+`A17B145B1D4C29D8E6D0F27FB1A46D721904738F09ED2F14B980456A91943112`:
+Training architecture, textures, differentiated lighting, readable debug HUD
+and accepted hands were captured. A second seated frame reported eye1.694m
+and four body surfaces; a forward frame does not prove leg/pose alignment.
+Uncaptured Training samples reached72fps; screenshots themselves caused stalls.
+Neither those frames nor this installable build prove campaign startup,
+player ownership, live NPC scheduling or original player/root-window UI.
+
+## Previous user-accepted hand-direction build
+
+The previous **user-accepted hand-direction APK** corrected the backwards hands,
 retains the accepted self-body geometry and includes the narrow SDK
 session-lifecycle queue-order patch:
 `artifacts/release-hand-direction-20261010/DeusExQuestVR-hand-direction-20261010.apk`.

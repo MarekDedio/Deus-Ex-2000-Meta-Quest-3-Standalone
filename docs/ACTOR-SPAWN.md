@@ -4,8 +4,7 @@ Native Actor.Spawn278 now allocates real portable runtime actors, executes the
 original caller's callbacks, and preserves born actors in checkpoints. This is
 a runtime dependency for original inventory/player startup, not a claim that
 automatic world startup, an authored player inventory or the campaign is
-finished. This batch has not been verified on Quest and has not been installed
-over the last accepted player-control build. Final host/build evidence is
+finished. Host build and Quest installation evidence is
 recorded in [STATUS.md](STATUS.md) and [QUEST-TEST-BUILD.md](QUEST-TEST-BUILD.md).
 
 ## Allocation and defaults
@@ -50,7 +49,9 @@ XLevel are distinct bindings and are not guessed from the first LevelInfo.
 ## Original callback sequence
 
 Collision registration precedes synchronous SetOwner and its owner callbacks.
-A dormant Level returns the allocated actor without dispatching startup events.
+After ownership and captured Instigator publication, Spawn initializes its
+class-backed execution frame. A dormant Level then returns without script
+startup events.
 For a begun Level, Spawn executes enum Spawned, PreBeginPlay and BeginPlay,
 then checks bDeleteMe once. Self-deletion at that point returns None; the deleted
 UObject can still be addressed directly until map teardown.
@@ -63,9 +64,10 @@ follow, then the Deus Ex named PostPostBeginPlay event, InitBase and SpawnNotify
 No extra deletion checks or ZoneChange callbacks are invented between these
 steps.
 
-AttachTag InitBase iterates current live Level slots and current Tags; matching
-actors call SetBase on the newborn, in the original direction. The other
-supported branch queries actor overlap for unbased Decoration/Inventory/Pawn
+Original SpawnActor has no AttachTag scan. That is a separate world-startup
+rule, where the tagged actor bases itself on the first matching candidate;
+see [WORLD-BOOTSTRAP-CONTRACT.md](WORLD-BOOTSTRAP-CONTRACT.md).
+The current SpawnBase branch queries actor overlap for unbased Decoration/Inventory/Pawn
 actors with bCollideWorld and Physics None/Rotating. Hits retain the pin's final
 stable actor-pointer ordering. The query does not discard Self; SetBase's normal
 cycle refusal still applies.

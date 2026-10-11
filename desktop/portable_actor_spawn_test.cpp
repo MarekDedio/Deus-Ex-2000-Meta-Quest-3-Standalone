@@ -363,7 +363,11 @@ Tables Build(Fixture& fixture) {
     engine.Property("Zone", "ObjectProperty", pointRegion, engineCore, 1u, zone); engine.Property("iLeaf", "IntProperty", pointRegion, engineCore); engine.Property("ZoneNumber", "ByteProperty", pointRegion, engineCore);
     engine.StructBody(pointRegion);
     for (const auto& name : {"Owner", "Base"}) engine.Property(name, "ObjectProperty", actor, engineCore, 1u, actor);
-    engine.Property("Level", "ObjectProperty", actor, engineCore, 1u, levelInfo); engine.Property("XLevel", "ObjectProperty", actor, engineCore, 1u, level);
+    const auto actorLevelField = engine.Property("Level", "ObjectProperty", actor, engineCore, 1u, levelInfo);
+    const auto actorXLevelField = engine.Property("XLevel", "ObjectProperty", actor, engineCore, 1u, level);
+    const auto loadedObjectPath = engine.Function("LoadedObjectPath",actor,engineCore);
+    engine.Property("ReturnValue","StrProperty",loadedObjectPath,engineCore,1u,0,0x580u);
+    engine.FunctionCode(loadedObjectPath,Join({{0x04u,0x56u},Ref(0x20u,actorLevelField)}));
     engine.Property("Instigator", "ObjectProperty", actor, engineCore, 1u, pawn); engine.Property("Brush", "ObjectProperty", actor, engineCore, 1u, brush);
     for (const auto& name : {"Location", "OldLocation"}) engine.Property(name, "StructProperty", actor, engineCore, 1u, importedVector);
     engine.Property("Rotation", "StructProperty", actor, engineCore, 1u, importedRotator); engine.Property("Region", "StructProperty", actor, engineCore, 1u, pointRegion);
@@ -377,6 +381,32 @@ Tables Build(Fixture& fixture) {
     engine.Property("Physics", "ByteProperty", actor, engineCore); engine.Property("StandingCount", "ByteProperty", actor, engineCore); engine.Property("Touching", "ObjectProperty", actor, engineCore, 4u, actor);
     engine.Property("bWaterZone", "BoolProperty", zone, engineCore); engine.Property("bBegunPlay", "BoolProperty", levelInfo, engineCore);
     engine.Property("SpawnNotify", "ObjectProperty", levelInfo, engineCore, 1u, notify);
+    engine.Property("PawnList", "ObjectProperty", levelInfo, engineCore, 1u, pawn);
+    const auto nextPawn = engine.Property("nextPawn", "ObjectProperty", pawn, engineCore, 1u, pawn);
+    const auto pawnRole = engine.Property("Role", "ByteProperty", actor, engineCore);
+    const auto pawnShadow = engine.Property("Shadow", "ObjectProperty", pawn, engineCore, 1u, actor);
+    engine.Function("AddPawn", pawn, engineCore, {}, 529u, 0x401u);
+    engine.Function("RemovePawn", pawn, engineCore, {}, 530u, 0x401u);
+    engine.Function("PawnAddThenFail", pawn, engineCore, Join({Native(529u), Native(999u), Return()}));
+    engine.Function("PawnRemoveThenFail", pawn, engineCore, Join({Native(530u), Native(999u), Return()}));
+    engine.Function("PawnAddTooMany", pawn, engineCore, Join({Native(529u, {Int(1)}), Return()}));
+    engine.Function("PawnRemoveTooMany", pawn, engineCore, Join({Native(530u, {Int(1)}), Return()}));
+    for (const auto& [name, property, type] : std::vector<std::tuple<std::string, std::int32_t, std::int32_t>>{
+        {"SetNextPawn", nextPawn, pawn}, {"SetPawnShadow", pawnShadow, actor}}) {
+        const auto function = engine.Function(name, pawn, engineCore);
+        const auto input = engine.Property("Input", "ObjectProperty", function, engineCore, 1u, type, 0x80u);
+        engine.FunctionCode(function, Join({Assign(Ref(0x01u, property), Ref(0x00u, input)), Return()}));
+    }
+    const auto pawnFlags = engine.Function("SetPawnFlags", pawn, engineCore);
+    const auto pawnDeleted = engine.Property("Deleted", "BoolProperty", pawnFlags, engineCore, 1u, 0, 0x80u);
+    const auto pawnRoleInput = engine.Property("RoleInput", "ByteProperty", pawnFlags, engineCore, 1u, 0, 0x80u);
+    engine.FunctionCode(pawnFlags, Join({Assign(Ref(0x01u, deleteFlag), Ref(0x00u, pawnDeleted)),
+        Assign(Ref(0x01u, pawnRole), Ref(0x00u, pawnRoleInput)), Return()}));
+    const auto pawnBindings = engine.Function("SetPawnBindings", pawn, engineCore);
+    const auto pawnLevelInput = engine.Property("LevelInput", "ObjectProperty", pawnBindings, engineCore, 1u, levelInfo, 0x80u);
+    const auto pawnXLevelInput = engine.Property("XLevelInput", "ObjectProperty", pawnBindings, engineCore, 1u, level, 0x80u);
+    engine.FunctionCode(pawnBindings, Join({Assign(Ref(0x01u, actorLevelField), Ref(0x00u, pawnLevelInput)),
+        Assign(Ref(0x01u, actorXLevelField), Ref(0x00u, pawnXLevelInput)), Return()}));
     for (const auto& name : {"FootRegion", "HeadRegion"}) engine.Property(name, "StructProperty", pawn, engineCore, 1u, pointRegion);
     engine.Property("EyeHeight", "FloatProperty", pawn, engineCore);
     const auto isPlayer = engine.Property("bIsPlayer", "BoolProperty", pawn, engineCore);
@@ -446,10 +476,13 @@ Tables Build(Fixture& fixture) {
     const auto fail = classes.Export("FailPost", 0, probe), nested = classes.Export("Nested", 0, probe), recursive = classes.Export("Recursive", 0, probe), selfDelete = classes.Export("SelfDelete", 0, probe);
     const auto captureOwner = classes.Export("CaptureOwner", 0, probe);
     const auto pointBase = classes.Export("PointBase", 0, classes.Import("Decoration", classesEngine)), support = classes.Export("Support", 0, probe);
+    const auto attachTaggedBirth = classes.Export("AttachTaggedBirth", 0, probe);
     const auto importedPawn = classes.Import("Pawn", classesEngine), importedPlayer = classes.Import("Player", classesEngine);
     const auto importedPlayerPawn = classes.Import("PlayerPawn", classesEngine);
     const auto importedAllActors = classes.Import("AllActors", importedActor, "Function");
     const auto importedTag = classes.Import("Tag", importedActor, "NameProperty");
+    const auto importedAttachTag = classes.Import("AttachTag", importedActor, "NameProperty");
+    const auto importedOwner = classes.Import("Owner", importedActor, "ObjectProperty");
     const auto importedXLevel = classes.Import("XLevel", importedActor, "ObjectProperty");
     const auto importedInstigator = classes.Import("Instigator", importedActor, "ObjectProperty");
     const auto importedObjectFlags = classes.Import("ObjectFlags", classesObject, "IntProperty");
@@ -474,6 +507,41 @@ Tables Build(Fixture& fixture) {
     const auto importedLevel = classes.Import("Level", importedActor, "ObjectProperty"), importedLevelInfo = classes.Import("LevelInfo", classesEngine);
     const auto importedLocation = classes.Import("Location", importedActor, "StructProperty"), importedRotation = classes.Import("Rotation", importedActor, "StructProperty");
     const auto begun = classes.Import("bBegunPlay", importedLevelInfo, "BoolProperty");
+    const auto importedPawnList = classes.Import("PawnList", importedLevelInfo, "ObjectProperty");
+    const auto importedPawnShadow = classes.Import("Shadow", importedPawn, "ObjectProperty");
+    const auto importedPawnRole = classes.Import("Role", importedActor, "ByteProperty");
+    const auto pawnProbe = classes.Export("PawnListProbe", 0, importedPawn);
+    const auto pawnFailure = classes.Export("PawnListFailure", 0, pawnProbe);
+    const auto pawnShadowProbe = classes.Export("PawnListShadow", 0, probe);
+    const auto pawnEvents = classes.Property("PawnEvents", "IntProperty", pawnProbe, classesCore);
+    const auto observedPawn = classes.Property("ObservedPawn", "ObjectProperty", pawnShadowProbe, classesCore, 1u, importedPawn);
+    const auto pawnEventValue = Ref(0x01u, pawnEvents);
+    classes.Function("PreBeginPlay", pawnProbe, classesCore, Join({Native(529u),
+        Assign(pawnEventValue, Native(146u, {pawnEventValue, Int(1)})), Return()}));
+    Flow pawnDestroyed;
+    pawnDestroyed.IfNot(Native(119u, {Ref(0x01u, importedPawnShadow), Token(0x2au)}), "remove");
+    pawnDestroyed.Add(Context(Ref(0x01u, importedPawnShadow), Native(279u))); pawnDestroyed.Label("remove");
+    pawnDestroyed.Add(Native(530u));
+    pawnDestroyed.IfNot(Native(150u, {Join({Token(0x3au), Ref(0x01u, importedPawnRole)}), Int(4)}), "authority");
+    pawnDestroyed.Add(Return()); pawnDestroyed.Label("authority");
+    pawnDestroyed.Add(Assign(pawnEventValue, Native(146u, {pawnEventValue, Int(10)}))); pawnDestroyed.Add(Return());
+    classes.Function("Destroyed", pawnProbe, classesCore, pawnDestroyed.Finish());
+    classes.Function("Destroyed", pawnFailure, classesCore, Join({Native(530u), Native(999u), Return()}));
+    classes.Function("DisablePawnDestroyed", pawnProbe, classesCore, Join({Native(118u, {Ref(0x21u, classes.Name("Destroyed"))}), Return()}));
+    classes.Function("Destroyed", pawnShadowProbe, classesCore, Join({
+        Assign(Ref(0x01u, observedPawn), Context(Ref(0x01u, importedLevel), Ref(0x01u, importedPawnList))), Return()}));
+    for (const auto& [name, index] : std::vector<std::pair<std::string, std::uint16_t>>{
+        {"PawnAddWrongReceiver", 529u}, {"PawnRemoveWrongReceiver", 530u}})
+        classes.Function(name, probe, classesCore, Join({Native(index), Return()}));
+    for (const auto& [name, index] : std::vector<std::pair<std::string, std::uint16_t>>{
+        {"ContextPawnAdd", 529u}, {"ContextPawnRemove", 530u}}) {
+        const auto function = classes.Function(name, probe, classesCore);
+        const auto target = classes.Property("Target", "ObjectProperty", function, classesCore, 1u, importedPawn, 0x80u);
+        classes.FunctionCode(function, Join({Context(Ref(0x00u, target), Native(index)), Return()}));
+    }
+    classes.Function("PawnSpawnThenFail", probe, classesCore, Join({
+        Assign(Ref(0x01u, pawnCursor), Native(278u, {Ref(0x20u, importedPawn)})),
+        Context(Ref(0x01u, pawnCursor), Native(529u)), Native(999u), Return()}));
     const auto prop = [&](const std::string& name) { return Ref(0x01u, properties.at(name)); };
     for (const auto& [name, index, defaults] : std::vector<std::tuple<std::string, std::uint16_t, bool>>{
         {"RegisterAI", 710u, false}, {"RegisterDefaultAI", 710u, true}, {"ClearReceiverAI", 711u, false},
@@ -633,6 +701,9 @@ Tables Build(Fixture& fixture) {
     const auto pointBegun = classes.Property("BegunEvents", "IntProperty", pointBase, classesCore), pointChanges = classes.Property("BaseEvents", "IntProperty", pointBase, classesCore);
     classes.Function("BeginPlay", pointBase, classesCore, Join({Assign(Ref(0x01u, pointBegun), Native(146u, {Ref(0x01u, pointBegun), Int(1)})), Return()}));
     classes.Function("BaseChange", pointBase, classesCore, Join({Assign(Ref(0x01u, pointChanges), Native(146u, {Ref(0x01u, pointChanges), Int(1)})), Return()}));
+    classes.Function("BeginPlay", attachTaggedBirth, classesCore, Join({
+        Assign(Ref(0x01u, importedAttachTag), Ref(0x21u, classes.Name("AttachTarget"))),
+        Assign(Context(Ref(0x01u, importedOwner), Ref(0x01u, importedTag)), Ref(0x21u, classes.Name("AttachTarget"))), Return()}));
     classes.Function("Destroyed", support, classesCore, Join({Assign(prop("NestedActor"), Native(278u, {Ref(0x20u, pointBase), Token(0x17u), Token(0x0bu), Ref(0x01u, importedLocation), Ref(0x01u, importedRotation)})), Return()}));
     Bytes defaults; classes.IntTag(defaults, "Counter", 10); for (std::uint8_t i = 0u; i < 3u; ++i) classes.IntTag(defaults, "Slots", 3 + 2 * i, i);
     Bytes recordDefault; U32(recordDefault, 7u); Index(recordDefault, 0); classes.Tag(defaults, "Payload", 10u, recordDefault, 0u, "Record"); classes.ClassBody(probe, defaults);
@@ -641,7 +712,8 @@ Tables Build(Fixture& fixture) {
     Bytes pointDefaults; classes.FloatTag(pointDefaults, "CollisionRadius", 0.0f); classes.FloatTag(pointDefaults, "CollisionHeight", 0.0f);
     classes.BoolTag(pointDefaults, "bCollideWorld", true); classes.BoolTag(pointDefaults, "bCollideActors", false); classes.ClassBody(pointBase, pointDefaults);
     classes.ClassBody(support);
-    for (auto cls : {fauxPlayer, pawnAlias, loopActor, loopBirth, loopDelete}) classes.ClassBody(cls);
+    classes.ClassBody(attachTaggedBirth);
+    for (auto cls : {fauxPlayer, pawnAlias, loopActor, loopBirth, loopDelete, pawnProbe, pawnFailure, pawnShadowProbe}) classes.ClassBody(cls);
     const auto classesTable = fixture.Write(classes);
     Require(GetPortableObjectPath(coreTable, recordCount) == "Object.Record.Count" && GetPortableObjectPath(coreTable, recordTarget) == "Object.Record.Target", "Generated frozen-struct metadata identity is wrong");
 
@@ -655,6 +727,8 @@ Tables Build(Fixture& fixture) {
     map.ActorBody(playerObject, {}); map.ActorBody(viewportObject, {}); // Real UObjects, deliberately not Level actors.
     const auto detachedActor = map.Export("DetachedActor", map.Import("Probe", mapClasses));
     map.ActorBody(detachedActor, {}); // Real Actor class, deliberately absent from serialized Level slots.
+    const auto detachedPawn = map.Export("DetachedPawn", map.Import("Pawn", mapEngine));
+    map.ActorBody(detachedPawn, {}); // Reflected Pawn identity has no native XLevel/slot membership.
     for (const auto reference : {levelActor, driver, owner, instigator, collision}) {
         Bytes properties; map.ObjectTag(properties, "Level", levelActor); map.ObjectTag(properties, "XLevel", world);
         if (reference == levelActor) map.BoolTag(properties, "bBegunPlay", true);
@@ -831,6 +905,22 @@ void CollisionIntegrationTests(Fixture& fixture) {
             "Point spawn skipped BeginPlay/native BaseChange callbacks or invented a base");
         return point;
     };
+    fixture.Reset();
+    // Original SpawnActor has no AttachTag scan. An authored BeginPlay may
+    // establish matching tags, but neither its owner nor this fresh actor is
+    // attached by that separate LoadMap-only startup rule during a birth.
+    const auto taggedBirth = Spawn("MakeAt", {Class("AttachTaggedBirth"), Object("Owner"),
+        Name("None"), Vector({256.0f, 0.0f, 0.0f}), Rotation({0, 0, 0})});
+    Same(Read(taggedBirth, "AttachTag"), Name("AttachTarget").value, "AttachTag birth callback did not really execute");
+    Same(Read("Owner", "Tag"), Name("AttachTarget").value, "AttachTag birth callback did not publish its matching target tag");
+    Same(Read(taggedBirth, "Base"), Object("").value, "Spawn invented LoadMap-only AttachTag binding on fresh actor");
+    Same(Read("Owner", "Base"), Object("").value, "Spawn attached matching target to the fresh actor in the wrong direction");
+    const auto taggedSave = fixture.Snapshot("AttachTagBirthIgnored");
+    fixture.Reset();
+    Require(LoadPortableRuntimeState((fixture.directory / "AttachTagBirthIgnored.sav").string()) &&
+        fixture.Snapshot("AttachTagBirthIgnoredRestore") == taggedSave,
+        "Ignored Spawn AttachTag state failed cold canonical restore");
+    Same(Read("Owner", "Base"), Object("").value, "Restore synthesized omitted Spawn AttachTag binding");
     fixture.Reset();
     // Pin native283 does not clamp/reject negative reflected dimensions. A
     // disabled actor is not registered, so those fields also round-trip through
@@ -1059,6 +1149,142 @@ void GetPlayerPawnTests(Fixture& fixture) {
     lookup(second);
     Same(Call(second, "Destroy").value, Value::Bool(true), "Second bound PlayerPawn Destroy failed");
     lookup(""); fixture.Reset();
+}
+void PawnListTests(Fixture& fixture) {
+    // Generated native ownership/order controls, not automatic world startup.
+    // The wrappers and callback ordering mirror the independently audited GOTY
+    // DLL; no normalized hidden Pawn vector substitutes for the actual fields.
+    const auto head = [] { return Read("Level0", "PawnList"); };
+    const auto next = [](const std::string& actor) { return Read(actor, "nextPawn"); };
+    const auto pawn = [] { return Spawn("Make", {Class("Engine.Pawn")}); };
+    const auto flags = [](const std::string& actor, const bool deleted, const std::uint8_t role) {
+        Call(actor, "SetPawnFlags", {{Value::Bool(deleted), {}}, {Value::Byte(role), {}}});
+    };
+    fixture.Reset(); Same(head(), Object("").value, "Untouched world invented a native PawnList");
+    const auto a = pawn(), b = pawn(), c = pawn(), absent = pawn();
+    for (const auto& actor : {a, b, c}) Call(actor, "AddPawn");
+    Same(head(), Object(c).value, "AddPawn did not prepend in actual call order");
+    Same(next(c), Object(b).value, "Newest Pawn lost its previous native head");
+    Same(next(b), Object(a).value, "Middle Pawn next pointer changed order");
+    Same(next(a), Object("").value, "First Pawn next pointer is not original empty head");
+    const auto revision = GetPortableRuntimeWorldRevision(); const auto beforeMissing = fixture.Snapshot("PawnBeforeMissing");
+    Call(absent, "RemovePawn");
+    Require(fixture.Snapshot("PawnAfterMissing") == beforeMissing && GetPortableRuntimeWorldRevision() == revision,
+        "Removing an absent Pawn mutated the native list or world revision");
+    Call(b, "RemovePawn"); Same(next(c), Object(a).value, "RemovePawn did not splice first matching predecessor");
+    Same(next(b), Object(a).value, "RemovePawn incorrectly cleared the removed middle Pawn.nextPawn");
+    Call(c, "RemovePawn"); Same(head(), Object(a).value, "RemovePawn did not replace the actual head");
+    Same(next(c), Object(a).value, "RemovePawn incorrectly cleared the removed head Pawn.nextPawn");
+    Call(a, "RemovePawn"); Same(head(), Object("").value, "RemovePawn did not splice the tail/last Pawn");
+    RefusedCall(fixture, "PawnAddWrongReceiver"); RefusedCall(fixture, "PawnRemoveWrongReceiver");
+    RefusedCall(fixture, "PawnAddTooMany", {}, {}, a); RefusedCall(fixture, "PawnRemoveTooMany", {}, {}, a);
+    RefusedCall(fixture, "ContextPawnAdd", {Object("DetachedPawn")});
+    RefusedCall(fixture, "ContextPawnRemove", {Object("DetachedPawn")});
+    RefusedCall(fixture, "SetNextPawn", {Object("Driver")}, {}, a);
+    RefusedCall(fixture, "PawnAddThenFail", {}, {}, a);
+    Call(a, "AddPawn"); RefusedCall(fixture, "PawnRemoveThenFail", {}, {}, a);
+    RefusedCall(fixture, "PawnSpawnThenFail");
+
+    // Native routing is tied to the actual ULevel actor slot zero even when
+    // reflected Level/XLevel have been overwritten, including after a cold save.
+    Call(b, "SetPawnBindings", {Object(""), Object("")});
+    Same(Read(b, "Level"), Object("").value, "Pawn reflected Level override fixture failed");
+    Same(Read(b, "XLevel"), Object("").value, "Pawn reflected XLevel override fixture failed");
+    Call(b, "AddPawn"); Same(head(), Object(b).value, "AddPawn routed through reflected None instead of native Level");
+    Same(next(b), Object(a).value, "Native Level routing lost the existing head");
+    const auto saved = fixture.Snapshot("PawnNativeBindings");
+    Call(b, "RemovePawn");
+    Require(LoadPortableRuntimeState((fixture.directory / "PawnNativeBindings.sav").string()) &&
+        fixture.Snapshot("PawnWarmBindings") == saved, "Warm restore changed exact PawnList/nextPawn/overlays");
+    fixture.Reset();
+    Require(LoadPortableRuntimeState((fixture.directory / "PawnNativeBindings.sav").string()) &&
+        fixture.Snapshot("PawnColdBindings") == saved, "Cold restore lost born Pawns or native-list linkage");
+    GC::Collect(); Require(fixture.Snapshot("PawnAfterGc") == saved && Published(a) && Published(b),
+        "GC released native PawnList links or changed the cold-restored graph");
+    Call(b, "RemovePawn"); Same(head(), Object(a).value, "Cold RemovePawn failed to rebind native Level behind None overlays");
+    Same(next(b), Object(a).value, "Cold removal cleared retained nextPawn");
+    Call(b, "AddPawn");
+    const auto canonical = fixture.Snapshot("PawnCanonical"); const auto canonicalState = Decode(canonical);
+    const auto corrupt = [&](const std::string& actor, const std::string& name, const Value& value, const std::string& label) {
+        auto invalid = canonicalState; auto& record = Record(invalid, Path(actor));
+        const auto property = std::find_if(record.properties.begin(), record.properties.end(),
+            [&](const auto& field) { return Fold(field.name) == Fold(name); });
+        Require(property != record.properties.end(), "Pawn save lacks required actual link property");
+        property->value = value; const auto beforeGc = GC::GetStats();
+        RefusedSave(fixture, canonical, invalid, label);
+        Require(GC::GetStats().numObjects == beforeGc.numObjects && GC::GetStats().memoryUsage == beforeGc.memoryUsage,
+            "Rejected native Pawn link retained staged allocations");
+    };
+    corrupt("Level0", "PawnList", Object("Driver").value, "PawnHeadWrongClass");
+    corrupt(b, "nextPawn", Object("BindingPlayer").value, "PawnNextNonActor");
+    corrupt(b, "nextPawn", Object("MissingPawn").value, "PawnNextUnknownIdentity");
+
+    // Neither native suppresses work before begun play, for lower Role, or for
+    // a still-live UObject marked bDeleteMe. Event suppression stays separate.
+    fixture.Reset(); Call("Driver", "SetBegun", {{Value::Bool(false), {}}});
+    const auto dormant = Spawn("Make", {Class("PawnListProbe")});
+    const auto preEvent = fixture.Snapshot("PawnDormantBeforeEvent");
+    const auto skipped = ExecutePortableActorEvent(dormant, "PreBeginPlay", true);
+    Require(skipped.passed() && fixture.Snapshot("PawnDormantAfterEvent") == preEvent,
+        "Before-begun enum PreBeginPlay bypassed the actual event gate");
+    flags(dormant, true, 0u); Call(dormant, "AddPawn"); Same(head(), Object(dormant).value,
+        "AddPawn invented a begun-play/Role/deletion gate");
+    Call(dormant, "RemovePawn"); Same(head(), Object("").value,
+        "RemovePawn invented a begun-play/Role/deletion gate");
+    flags(dormant, false, 0u); Call(dormant, "PreBeginPlay"); Same(head(), Object(dormant).value,
+        "Direct PreBeginPlay incorrectly suppressed its AddPawn call");
+    Require(Integer(dormant, "PawnEvents") == 1, "Direct pre-begun callback body did not execute");
+
+    fixture.Reset();
+    const auto callbackPawn = Spawn("Make", {Class("PawnListProbe")});
+    const auto shadow = Spawn("Make", {Class("PawnListShadow")});
+    Call(callbackPawn, "SetPawnShadow", {Object(shadow)}); flags(callbackPawn, false, 0u);
+    Require(Integer(callbackPawn, "PawnEvents") == 1 && head().text == callbackPawn,
+        "Spawn PreBeginPlay did not publish original-order Pawn insertion");
+    Call(callbackPawn, "Destroy");
+    Same(Read(shadow, "ObservedPawn"), Object(callbackPawn).value,
+        "Pawn removal happened before the nested Shadow.Destroy callback");
+    Same(head(), Object("").value, "Lower-Role Destroyed did not remove Pawn before its early return");
+    Require(!Published(callbackPawn) && !Published(shadow) && Integer(callbackPawn, "PawnEvents") == 1,
+        "Destroyed lower-Role ordering/deletion membership changed");
+    const auto authority = Spawn("Make", {Class("PawnListProbe")}); flags(authority, false, 4u);
+    Call(authority, "Destroy"); Require(Integer(authority, "PawnEvents") == 11 && head().text.empty(),
+        "Authority Destroyed continuation skipped removal or callback effects");
+    const auto failure = Spawn("Make", {Class("PawnListFailure")});
+    RefusedCall(fixture, "Destroy", {}, {}, failure);
+    Same(head(), Object(failure).value, "Rejected Destroyed did not restore native PawnList head");
+    Require(Published(failure) && !QuestVr::Vm::ToBool(Read(failure, "bDeleteMe")),
+        "Rejected Destroyed retained deletion before its pawn-list rollback");
+
+    // Generic Destroy must NOT manufacture the cleanup which a disabled actual
+    // Destroyed callback would have performed. References remain usable later.
+    fixture.Reset(); const auto disabled = Spawn("Make", {Class("PawnListProbe")});
+    Call(disabled, "DisablePawnDestroyed"); Call(disabled, "Destroy");
+    Same(head(), Object(disabled).value, "Generic Destroy unlinked Pawn despite suppressed Destroyed callback");
+    Require(!Published(disabled), "Disabled Destroyed incorrectly blocked native deletion");
+    const auto retained = fixture.Snapshot("PawnRemovedButLinked"); fixture.Reset();
+    Require(LoadPortableRuntimeState((fixture.directory / "PawnRemovedButLinked.sav").string()) &&
+        fixture.Snapshot("PawnColdRemovedButLinked") == retained,
+        "Cold restore discarded original retained removed-Pawn links");
+    Call(disabled, "RemovePawn"); Same(head(), Object("").value, "RemovePawn rejected a removed-but-live Pawn UObject");
+
+    // Duplicate Add intentionally creates cyclic pointers. Only an actually
+    // encountered repeat during an unsuccessful search is bounded/refused.
+    fixture.Reset(); const auto repeated = pawn(), missing = pawn();
+    Call(repeated, "AddPawn"); Call(repeated, "AddPawn");
+    Same(head(), Object(repeated).value, "Repeated Add was silently deduplicated");
+    Same(next(repeated), Object(repeated).value, "Repeated Add did not retain the original self-link consequence");
+    const auto cycle = fixture.Snapshot("PawnDuplicateCycle"); fixture.Reset();
+    Require(LoadPortableRuntimeState((fixture.directory / "PawnDuplicateCycle.sav").string()) &&
+        fixture.Snapshot("PawnColdCycle") == cycle, "Save/restore normalized an original duplicate-Add cycle");
+    RefusedCall(fixture, "RemovePawn", {}, {}, missing);
+    Call(repeated, "RemovePawn"); Same(head(), Object(repeated).value, "Head removal normalized its retained self-cycle");
+    const auto firstMatch = pawn(); Call(firstMatch, "AddPawn");
+    Call(repeated, "RemovePawn"); Same(next(firstMatch), Object(repeated).value,
+        "Removal pre-rejected a cycle before finding its first matching predecessor");
+    fixture.Reset(); const auto slotPawn = pawn(); Call("Level0", "Destroy");
+    RefusedCall(fixture, "AddPawn", {}, {}, slotPawn); RefusedCall(fixture, "RemovePawn", {}, {}, slotPawn);
+    fixture.Reset();
 }
 void AllActorsTests(Fixture& fixture) {
     fixture.Reset();
@@ -1378,14 +1604,17 @@ void Synthetic() {
     Fixture fixture; const auto tables = Build(fixture);
     Require(InitializePortableRuntime({tables.core, tables.engine, tables.classes}).passed && LoadPortableRuntimeMap(tables.map).passed, "Generated spawn runtime/map metadata initialization failed");
     Require(ActorPaths(true).size() == tables.initialActors, "Generated true Level published nonactors/holes or missed original actors"); fixture.legacy = fixture.Snapshot("Legacy"); Require(fixture.legacy[4u] == 3u, "Untouched generated spawn baseline invented persistent state");
+    const auto nestedPath=ExecutePortableActorFunction(Path("Driver"),"LoadedObjectPath");
+    Require(nestedPath.passed() && nestedPath.value.kind==Kind::String && nestedPath.value.text=="Engine.Actor.Level" &&
+        fixture.Snapshot("ReadonlyObjectString")==fixture.legacy,"ObjectToString lost a loaded property's complete nested path or changed state");
     ArgumentTests(fixture); DefaultsTests(fixture); CallbackTests(fixture); OrderingTests(fixture); PersistenceTests(fixture);
-    CollisionIntegrationTests(fixture); AliasAndBoundaryGcTests(fixture); GetPlayerPawnTests(fixture); AllActorsTests(fixture); AiIntegrationTests(fixture); fixture.UnchangedSources();
+    CollisionIntegrationTests(fixture); AliasAndBoundaryGcTests(fixture); GetPlayerPawnTests(fixture); PawnListTests(fixture); AllActorsTests(fixture); AiIntegrationTests(fixture); fixture.UnchangedSources();
     Require(InitializePortableRuntime({tables.core, tables.engine, tables.classes}).passed && LoadPortableRuntimeMap(tables.map).passed && fixture.Snapshot("Reinitialized") == fixture.legacy, "Runtime reinitialization retained born objects/frozen defaults"); fixture.UnchangedSources();
 }
 } // namespace
 int main() {
     try {
         const auto before = GC::GetStats().numObjects; Synthetic(); GC::Collect(); Require(GC::GetStats().numObjects == before, "Generated Spawn test leaked rooted UObjects after shutdown");
-        std::cout << "Generated actor Spawn integration: " << checks << " checks, " << refusals << " rejection controls; actual natives278/262/283/304/650/710/711/713/714/715/716/720, serialized Level/model, native AI graph/history/rollback, frozen defaults, nested callbacks/live foreach rollback, InitBase, PlayerPawn fallback bindings, birth graph/save replacement/GC. No AI processing/campaign startup claim.\n"; return 0;
+        std::cout << "Generated actor Spawn integration: " << checks << " checks, " << refusals << " rejection controls; actual natives278/262/283/304/529/530/650/710/711/713/714/715/716/720, serialized Level/model, native PawnList prepend/splice/retained links and callback rollback, native AI graph/history/rollback, frozen defaults, nested callbacks/live foreach rollback, InitBase, PlayerPawn fallback bindings, birth graph/save replacement/GC. No AI processing/campaign startup claim.\n"; return 0;
     } catch (const std::exception& error) { std::cerr << "Actor Spawn integration failed: " << error.what() << '\n'; return 1; }
 }

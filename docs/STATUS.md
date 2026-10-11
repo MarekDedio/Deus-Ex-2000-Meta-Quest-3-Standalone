@@ -1,5 +1,40 @@
 # Port status
 
+## Original startup primitives and pawn topology (2026-10-11)
+
+- Added audited Log231, full validated ObjectToString0x56, original UTF16
+  string literals/option helpers and Tan189/FClamp246/Min249. FString VM
+  ingress retains ANSI zero-extension, surrogate/NUL storage and original
+  slice quirks, with strict tagged-payload and transport-allocation bounds.
+  Known pure-input natives detach inputs before later argument callbacks;
+  real OUT aliases and rollback remain intact. See
+  [STARTUP-PRIMITIVES.md](STARTUP-PRIMITIVES.md) for explicit fidelity limits.
+- AddPawn529/RemovePawn530 now use actual native XLevel slot-zero ownership,
+  unconditional prepend, first-match splice and retained nextPawn. Native
+  links are journaled/saved as original typed properties. Actual Pawn.Destroyed
+  owns removal; suppressed callbacks are not replaced with forced unlinking.
+- Removed the invented Spawn AttachTag scan. The read-only original LoadMap
+  contract establishes live-count phase loops, before-frame GameInfo selection,
+  startup-bit timing, first-match world attachments and restored-world
+  differences. Its actor-slot compaction and full world/player transaction
+  still require implementation; see [WORLD-BOOTSTRAP-CONTRACT.md](WORLD-BOOTSTRAP-CONTRACT.md).
+- All51 ordinary host tests pass (55 registered, four owned-data suites skip
+  without arguments and were run separately). Startup VM controls pass333/29
+  expected refusals; total VM677,684/271. FString ingress passes263,735/240,
+  exhaustive ANSI and single-UTF16-unit coverage. Spawn/Pawn integration
+  passes4,162/95. Original defaults pass1,002; original PawnList passes67.
+  Original runtime saves and the full original actor suite pass Training,
+  UNATCOIsland and Intro, including actual inherited InitGame on a controlled
+  DeusExGameInfo birth, base Mutator creation, OUT behavior, rollback and saves.
+  No checkpoint-seeded automatic world startup or campaign proof is claimed.
+- Signed ARM64 APK builds and is archived as
+  `artifacts/startup-primitives-20261011/DeusExQuestVR-startup-primitives-20261011.apk`,
+  SHA256 `88008638C1EC7F2DD79C9C1FA66B6DE56D59595A424DB481E4FBBE22B90D9BE9`.
+  Default automatic installation was attempted, but the previously connected
+  Quest disappeared before deployment; repeat ADB/device checks confirm no
+  physical headset. This APK is not installed or visually verified on Quest.
+  App data/saves and accepted hand/body/control geometry were not changed.
+
 ## Original transition authoring and spawned frames (2026-10-11)
 
 - Production GotoState uses modern controls and the original internal 0/1/2

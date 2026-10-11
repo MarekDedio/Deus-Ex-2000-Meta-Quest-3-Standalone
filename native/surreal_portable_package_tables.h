@@ -236,6 +236,10 @@ std::string DecodePortableNameProperty(
     const PortablePackageTables& package,
     const PortableTaggedProperty& property);
 std::string DecodePortableStringProperty(const PortableTaggedProperty& property);
+// VM FString transport preserves original UTF-16 units (including surrogate
+// splits), unlike the legacy presentation decoder's ASCII fallback.
+std::string DecodePortableVmStringProperty(const PortableTaggedProperty& property,
+    std::size_t maxTransportBytes = 32u << 20u);
 std::vector<std::uint32_t> LoadPortablePalette(
     const PortablePackageTables& package,
     std::size_t exportIndex);

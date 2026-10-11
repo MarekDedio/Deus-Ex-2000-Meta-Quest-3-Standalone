@@ -2,6 +2,7 @@
 #include "quest_actor_transform.h"
 #include "portable_model_geometry.h"
 #include "portable_buffered_file.h"
+#include "quest_unreal_string.h"
 
 #include "Package/PackageStream.h"
 #include "Utils/File.h"
@@ -834,6 +835,47 @@ std::string DecodePortableNameProperty(
         throw std::runtime_error("UE1 name property has an invalid name-table index");
     }
     return package.names[static_cast<std::size_t>(index)].Name.ToString();
+}
+
+std::string DecodePortableVmStringProperty(const PortableTaggedProperty& property,
+    const std::size_t maxTransportBytes) {
+    if (property.type!=13u) return {};
+    // PayloadReader owns its input. Copy only the at-most-five-byte compact
+    // index, not the potentially large string before its allocation budget.
+    PayloadReader reader(std::vector<std::uint8_t>(property.value.begin(),
+        property.value.begin()+static_cast<std::ptrdiff_t>(std::min<std::size_t>(5u,property.value.size()))));
+    const auto length=reader.ReadIndex();
+    if (length==0) {
+        if (reader.Tell()!=property.value.size()) throw std::runtime_error("VM FString has trailing payload");
+        return {};
+    }
+    if (length==std::numeric_limits<std::int32_t>::min()) throw std::runtime_error("VM FString length is invalid");
+    const auto count=static_cast<std::size_t>(length<0 ? -length : length);
+    const auto width=length<0 ? 2u : 1u;
+    const auto remaining=property.value.size()-reader.Tell();
+    if (count>remaining/width) throw std::runtime_error("VM FString payload is truncated");
+    if (count*width!=remaining) throw std::runtime_error("VM FString has trailing payload");
+    const auto* bytes=property.value.data()+reader.Tell(); // No unbounded payload copy.
+    const auto unit=[&](const std::size_t i) {
+        return length>0 ? static_cast<char16_t>(bytes[i]) : static_cast<char16_t>(
+            static_cast<std::uint16_t>(bytes[2u*i]) | (static_cast<std::uint16_t>(bytes[2u*i+1u])<<8u));
+    };
+    if (unit(count-1u)!=u'\0') throw std::runtime_error("VM FString is not terminated");
+    std::size_t transportBytes=0u;
+    for (std::size_t i=0; i+1u<count; ++i) {
+        const auto c=unit(i);
+        std::size_t required=c<0x80u ? 1u : c<0x800u ? 2u : 3u;
+        if (c>=0xd800u && c<=0xdbffu && i+2u<count && unit(i+1u)>=0xdc00u && unit(i+1u)<=0xdfffu) {
+            required=4u; ++i;
+        }
+        if (required>maxTransportBytes || transportBytes>maxTransportBytes-required)
+            throw std::runtime_error("VM FString transport exceeds allocation budget");
+        transportBytes+=required;
+    }
+    std::u16string units;
+    units.reserve(count-1u);
+    for (std::size_t i=0; i+1u<count; ++i) units.push_back(unit(i));
+    return QuestVr::UnrealString::Encode(units);
 }
 
 std::string DecodePortableStringProperty(const PortableTaggedProperty& property) {

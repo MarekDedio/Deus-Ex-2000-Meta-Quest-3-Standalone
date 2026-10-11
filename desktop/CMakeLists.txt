@@ -331,7 +331,7 @@ endif()
 foreach(test_target IN ITEMS quest_actor_animation_clock_test quest_portable_vm_test
     quest_script_state_test portable_object_stack_test quest_state_frame_codec_test quest_state_execution_test
     quest_authored_struct_value_test portable_struct_descriptor_test quest_object_cast_test portable_object_cast_test
-    portable_buffered_file_test quest_spawn_placement_test portable_class_defaults_test portable_actor_lifecycle_test portable_actor_spawn_test
+    portable_buffered_file_test quest_spawn_placement_test portable_class_defaults_test portable_actor_lifecycle_test portable_actor_spawn_test portable_vm_string_test
     quest_actor_overlap_test quest_ai_event_state_test portable_script_random_test)
     add_executable(${test_target} ${test_target}.cpp)
     target_compile_features(${test_target} PRIVATE cxx_std_20)
@@ -365,6 +365,16 @@ if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
 endif()
 add_test(NAME portable_actor_script COMMAND portable_actor_script_test)
 set_tests_properties(portable_actor_script PROPERTIES SKIP_RETURN_CODE 77)
+
+add_executable(portable_original_pawn_list_test portable_original_pawn_list_test.cpp)
+target_compile_features(portable_original_pawn_list_test PRIVATE cxx_std_20)
+target_link_libraries(portable_original_pawn_list_test PRIVATE quest_portable_host)
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+    target_compile_options(portable_original_pawn_list_test PRIVATE -Wall -Wextra -Werror)
+    target_link_options(portable_original_pawn_list_test PRIVATE -static -static-libgcc -static-libstdc++)
+endif()
+add_test(NAME portable_original_pawn_list COMMAND portable_original_pawn_list_test)
+set_tests_properties(portable_original_pawn_list PROPERTIES SKIP_RETURN_CODE 77)
 
 add_executable(portable_state_descriptor_test portable_state_descriptor_test.cpp)
 target_compile_features(portable_state_descriptor_test PRIVATE cxx_std_20)

@@ -151,6 +151,9 @@ Bytes Ref(std::uint8_t opcode,std::int32_t index) {Bytes b{opcode};U32(b,static_
 Bytes Int(std::int32_t value) {Bytes b{0x1d};U32(b,static_cast<std::uint32_t>(value));return b;}
 Bytes Real(float value) {Bytes b{0x1e};Float(b,value);return b;}
 Bytes String(const std::string& value) {Bytes b{0x1f};b.insert(b.end(),value.begin(),value.end());b.push_back(0);return b;}
+Bytes Unicode(const std::u16string& value) {
+    Bytes b{0x34};for(const auto unit:value) U16(b,unit);U16(b,0u);return b;
+}
 Bytes Native(std::uint16_t index,std::initializer_list<Bytes> args={}) {
     Bytes b;
     if(index>=0x70 && index<=0xff) b.push_back(static_cast<std::uint8_t>(index));
@@ -195,6 +198,8 @@ struct TestHost final:Vm::Host {
     std::vector<std::string> observations;
     std::vector<std::vector<Value>> nativeArguments;
     std::vector<std::string> nativeReceivers,nativeDeclarations;
+    std::map<std::string,std::string> objectDisplayPaths;
+    std::vector<std::string> objectStringLookups;
     std::shared_ptr<Vm::Reference> retainedNativeReference,retainedNativeElement;
     std::size_t beginCount{},commitCount{},rollbackCount{},effects{},savedEffects{};
     std::uint32_t rng{12345},savedRng{};
@@ -254,6 +259,12 @@ struct TestHost final:Vm::Host {
     Vm::Property ResolveProperty(const Vm::Function& f,std::int32_t index) override {return properties.at({f.source,index});}
     std::string ResolveName(const Vm::Function& f,std::int32_t index) override {return names.at({f.source,index});}
     std::string ResolveObject(const Vm::Function& f,std::int32_t index) override {return objects.at({f.source,index});}
+    std::string ObjectString(const std::string& identity) override {
+        objectStringLookups.push_back(identity);
+        const auto found=objectDisplayPaths.find(identity);
+        if(found==objectDisplayPaths.end()) throw std::runtime_error("Fixture object has no actual path identity");
+        return found->second;
+    }
     static std::string Fold(std::string text) {
         for (char& c : text) c=static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
         return text;
@@ -339,6 +350,12 @@ struct TestHost final:Vm::Host {
             retainedNativeReference=arguments.front().reference;
             if(retainedNativeReference->element) retainedNativeElement=retainedNativeReference->element(0);
             return arguments.front();
+        }
+        if(index==1060u) {
+            if(arguments.size()<2u || arguments.size()>3u || !arguments[0].reference)
+                throw std::runtime_error("Fixture snapshot mutation needs OUT target/value");
+            arguments[0].reference->write(values[1]);
+            return {values.size()==3u ? values[2] : values[1],{}};
         }
         if(index==1043u) {
             if(!state || !state->frame) throw std::runtime_error("Fixture lacks a state frame");
@@ -437,6 +454,203 @@ void VectorNativeContracts() {
         const auto result=Vm::Execute(host,function,"Self");Failed(result,Vm::Status::Unsupported,host,"Vector assignment nested rollback");
         Require(Vm::Equal(host.Load("Self",property),before),"Vector assignment survived later failure");
     }
+}
+void StartupPrimitiveContracts() {
+    const auto initialChecks=checks, initialRejections=rejections;
+    const auto evaluate=[](const Bytes& expression,const std::string& context,const Vm::Limits& limits=Vm::Limits{}) {
+        TestHost host;const auto result=Vm::Execute(host,Function("StartupPrimitive",Return(expression)),"Self",{},limits);
+        Returned(result,context);Require(host.commitCount==1u && host.rollbackCount==0u && result.writes==0u,
+            context+": pure primitive changed transactional storage");return result.value;
+    };
+    const auto expectText=[&](const Bytes& expression,const std::string& text,const std::string& context,
+        const Vm::Limits& limits=Vm::Limits{}) {
+        const auto value=evaluate(expression,context,limits);
+        Require(value.kind==Vm::Kind::String && value.text==text,context+": code-unit/string mismatch");
+    };
+    const auto expectInt=[&](const Bytes& expression,std::int32_t number,const std::string& context) {
+        const auto value=evaluate(expression,context);
+        Require(value.kind==Vm::Kind::Int && value.integer==number,context+": int mismatch");
+    };
+    const std::string face="\xf0\x9f\x98\x80", high="\xed\xa0\xbd", low="\xed\xb8\x80", lone="\xed\xa0\x80";
+    const std::u16string units{u'A',0xd83d,0xde00,0x00e9,u'Z',0xd800};
+    const auto unicode=Unicode(units);
+    expectText(unicode,"A"+face+"\xc3\xa9"+"Z"+lone,"UnicodeConst preserves pairs/lone units");
+    expectText(Unicode({}),"","Empty UnicodeConst");
+    expectInt(Native(125u,{unicode}),6,"Len uses UTF16 units not UTF8 bytes/scalars");
+    expectInt(Native(126u,{unicode,Unicode(std::u16string{0xd83d,0xde00})}),1,"InStr UTF16 pair index");
+    expectInt(Native(126u,{unicode,Unicode(std::u16string{0xd83d})}),1,"InStr can match isolated high unit");
+    expectInt(Native(126u,{unicode,Unicode(u"Z")}),4,"InStr offsets after non-BMP pair");
+    expectText(Native(127u,{unicode,Int(1),Int(1)}),high,"Mid preserves split high surrogate");
+    expectText(Native(127u,{unicode,Int(2),Int(1)}),low,"Mid preserves split low surrogate");
+    expectText(Native(128u,{unicode,Int(2)}),"A"+high,"Left can split a surrogate pair");
+    expectText(Native(234u,{unicode,Int(4)}),low+"\xc3\xa9"+"Z"+lone,"Right indexes code units");
+    expectText(String(std::string("\x80\xe9\xff",3)),"\xc2\x80\xc3\xa9\xc3\xbf","ANSI constants zero-extend high bytes");
+    expectInt(Native(125u,{String(std::string("\x80\xe9\xff",3))}),3,"ANSI constant wide-unit count");
+    {
+        TestHost host;auto function=Function("LongAnsiAdvance",Join({Let(Ref(0x01,1),String(std::string(10000u,'x'))),Return(Int(37))}));
+        const auto p=host.Property(function,1,"Text",Value::Text(Vm::Kind::String,{}));host.Store("Self",p,{p.zero});
+        const auto result=Vm::Execute(host,function,"Self");Returned(result,"ANSI truncation consumes complete literal");
+        Require(result.value.integer==37 && host.Load("Self",p).text==std::string(1023u,'x') && result.writes==1u,
+            "ANSI 1023-unit conversion cap altered bytecode Code advance");
+    }
+    {
+        auto limits=Vm::Limits{};limits.stringBytes=160000u;
+        expectText(Native(127u,{Unicode(std::u16string(70000u,u'x')),Int(0)}),std::string(65535u,'x'),
+            "Mid default count is65535 not remaining string length",limits);
+    }
+    for(const auto& [start,count,expected] : std::vector<std::tuple<std::int32_t,std::int32_t,std::string>>{
+        {-1,2,""},{1,-1,""},{1,-2,"bc"},{0,-1,"abc"},{5,2,""},{1,100,"bc"},{0,0,""},
+        {std::numeric_limits<std::int32_t>::min(),std::numeric_limits<std::int32_t>::min(),""},
+        {1,std::numeric_limits<std::int32_t>::max(),"bc"}})
+        expectText(Native(127u,{String("abc"),Int(start),Int(count)}),expected,"Mid original unsigned wrapping clamp");
+    expectText(Native(127u,{String("abc"),Int(1),{0x0b}}),"bc","Mid explicit Nothing means omitted count");
+    for(const auto index : {128u,234u}) {
+        expectText(Native(index,{String("abc"),Int(-1)}),"","Left/Right negative count");
+        expectText(Native(index,{String("abc"),Int(0)}),"","Left/Right zero count");
+        expectText(Native(index,{String("abc"),Int(100)}),"abc","Left/Right excessive count");
+        expectText(Native(index,{String(""),Int(2)}),"","Left/Right empty source");
+    }
+    expectInt(Native(126u,{String("abcabc"),String("bc")}),1,"InStr first match");
+    expectInt(Native(126u,{String("Abc"),String("abc")}),-1,"InStr is case-sensitive");
+    expectInt(Native(126u,{String("abc"),String("")}),0,"InStr empty needle");
+    expectInt(Native(126u,{String(""),String("")}),0,"InStr two empty strings");
+    expectText(Native(168u,{String(""),String("")})," ","@ retains space with empty operands");
+    expectText(Native(168u,{String("a "),String(" b")}),"a   b","@ does not trim inputs");
+    expectText(Native(235u,{Unicode(std::u16string{u'a',0x00e9,u'z',0xd800})}),"A\xc3\xa9"+std::string("Z")+lone,
+        "Caps changes only ASCII lowercase code units");
+    Require(evaluate(Native(124u,{String("AbC"),String("aBc")}),"~= ASCII fold").boolean,"~= lost ASCII folding");
+    Require(!evaluate(Native(124u,{Unicode(u"\u00e9"),Unicode(u"\u00c9")}),"~= explicit portable C-locale policy").boolean,
+        "~= fabricated a Unicode case expansion");
+    {
+        const auto stored=std::string("a\0bc",4);
+        const auto inspect=[&](std::uint16_t index,const Bytes& second,const Value& expected) {
+            TestHost host;auto function=Function("StoredNul",Return(Native(index,{Ref(0x01,1),second})));
+            const auto p=host.Property(function,1,"Text",Value::Text(Vm::Kind::String,{}));host.Store("Self",p,{Value::Text(Vm::Kind::String,stored)});
+            const auto result=Vm::Execute(host,function,"Self");Returned(result,"Native stored-NUL semantics");
+            Require(Vm::Equal(result.value,expected) && host.Load("Self",p).text==stored,"Native changed/truncated storage input");
+        };
+        inspect(126u,String("bc"),Value::Integer(-1));
+        inspect(124u,String("A"),Value::Bool(true));
+        inspect(128u,Int(4),Value::Text(Vm::Kind::String,std::string("a\0\0\0",4)));
+        inspect(234u,Int(4),Value::Text(Vm::Kind::String,"a"));
+        inspect(234u,Int(3),Value::Text(Vm::Kind::String,{}));
+        inspect(234u,Int(2),Value::Text(Vm::Kind::String,"bc"));
+        for(const auto index : {112u,168u}) {
+            TestHost host;auto function=Function("ConcatNul",Return(Native(index,{Ref(0x01,1),Ref(0x01,2)})));
+            const auto a=host.Property(function,1,"A",Value::Text(Vm::Kind::String,{}));
+            const auto b=host.Property(function,2,"B",a.zero);host.Store("Self",a,{Value::Text(Vm::Kind::String,std::string("a\0x",3))});
+            host.Store("Self",b,{Value::Text(Vm::Kind::String,std::string("b\0y",3))});
+            const auto result=Vm::Execute(host,function,"Self");Returned(result,"Concat retains A storage/B C-prefix");
+            Require(result.value.text==std::string("a\0x",3)+(index==168u ? " " : "")+"b","Concat embedded-NUL operand asymmetry");
+        }
+        TestHost host;auto function=Function("MidNul",Return(Native(127u,{Ref(0x01,1),Int(1),Int(3)})));
+        const auto p=host.Property(function,1,"Text",Value::Text(Vm::Kind::String,{}));host.Store("Self",p,{Value::Text(Vm::Kind::String,stored)});
+        const auto result=Vm::Execute(host,function,"Self");Returned(result,"Mid zero-pads encountered source NUL");
+        Require(result.value.text==std::string(3u,'\0'),"Mid copied hidden nonzero suffix after NUL");
+    }
+    // Each ordinary input is detached when evaluated, before later arguments
+    // mutate its original reference. Both direct opcodes and resolved natives
+    // retain the original first argument, while the genuine OUT helper aliases.
+    for(const auto index : {112u,168u,124u,127u,128u,234u}) {
+        for(const bool declared : {false,true}) {
+            TestHost host;Bytes mutation;std::vector<Bytes> arguments{Ref(0x01,1)};Value expected;
+            if(index==112u || index==168u) {
+                mutation=Native(1060u,{Ref(0x01,1),String("XYZ"),String("suffix")});
+                expected=Value::Text(Vm::Kind::String,index==112u ? "abcsuffix" : "abc suffix");
+            } else if(index==124u) {
+                mutation=Native(1060u,{Ref(0x01,1),String("XYZ"),String("ABC")});expected=Value::Bool(true);
+            } else {
+                mutation=Native(1060u,{Ref(0x01,1),String("XYZ"),Int(1)});
+                expected=Value::Text(Vm::Kind::String,index==127u ? "bc" : index==128u ? "a" : "c");
+            }
+            arguments.push_back(mutation);Bytes expression;
+            if(declared) {
+                auto declaration=Function("OriginalInputNative",{},"NativeSource");declaration.flags=0x400u;declaration.nativeIndex=index;
+                declaration.variables={{"Native.A","A",Value::Text(Vm::Kind::String,{}),0x80u,1u},
+                    {"Native.B","B",index==112u || index==168u || index==124u ? Value::Text(Vm::Kind::String,{}) : Value::Integer(0),0x80u,1u}};
+                host.finals[{"Fixture",9}]=std::make_shared<Vm::Function>(declaration);
+                expression=Call(0x1c,9,{arguments[0],arguments[1]});
+            } else expression=Native(index,{arguments[0],arguments[1]});
+            auto function=Function("SnapshotInput",Return(expression));
+            const auto p=host.Property(function,1,"Text",Value::Text(Vm::Kind::String,{}));host.Store("Self",p,{Value::Text(Vm::Kind::String,"abc")});
+            const auto result=Vm::Execute(host,function,"Self");Returned(result,"Original pure input snapshot");
+            Require(Vm::Equal(result.value,expected) && host.Load("Self",p).text=="XYZ" && result.writes==1u,
+                "Later argument mutation re-read earlier native input / lost genuine OUT alias");
+        }
+    }
+    for(const auto index : {249u,246u}) {
+        TestHost host;Bytes expression=index==249u ? Native(index,{Ref(0x01,1),Native(1060u,{Ref(0x01,1),Int(1),Int(5)})}) :
+            Native(index,{Ref(0x01,1),Native(1060u,{Ref(0x01,1),Real(100.0f),Real(0.0f)}),Real(10.0f)});
+        auto function=Function("MathSnapshot",Return(expression));const auto p=host.Property(function,1,"Number",
+            index==249u ? Value::Integer(0) : Value::Float(0));host.Store("Self",p,{index==249u ? Value::Integer(7) : Value::Float(5)});
+        const auto result=Vm::Execute(host,function,"Self");Returned(result,"Math earlier-input snapshot");
+        Require(index==249u ? result.value.integer==5 : result.value.floating==5.0f,"Math reloaded mutated first input");
+    }
+    expectInt(Native(249u,{Int(-7),Int(3)}),-7,"Min signed operands");
+    expectInt(Native(249u,{Int(std::numeric_limits<std::int32_t>::min()),Int(std::numeric_limits<std::int32_t>::max())}),
+        std::numeric_limits<std::int32_t>::min(),"Min signed32 boundaries");
+    for(const auto& [v,a,b,expected] : std::vector<std::array<float,4>>{{5,0,10,5},{-1,0,10,0},{11,0,10,10},{5,10,0,10},{15,10,0,0}})
+        Require(evaluate(Native(246u,{Real(v),Real(a),Real(b)}),"FClamp ordered/reversed bounds").floating==expected,
+            "FClamp sorted bounds or selected wrong branch");
+    const auto zero=evaluate(Native(246u,{Real(-0.0f),Real(0.0f),Real(0.0f)}),"FClamp signed zero retention");
+    Require(std::bit_cast<std::uint32_t>(zero.floating)==0x80000000u,"FClamp discarded in-range negative zero");
+    for(const auto number : {0.0f,-0.0f,0.25f,-0.5f,1.0f}) {
+        const auto value=evaluate(Native(189u,{Real(number)}),"Tan float input/double operation/float result policy");
+        const auto expected=static_cast<float>(std::tan(static_cast<double>(number)));
+        Require(value.kind==Vm::Kind::Float && std::bit_cast<std::uint32_t>(value.floating)==std::bit_cast<std::uint32_t>(expected),
+            "Tan changed argument units or portable float/double promotion policy");
+    }
+    for(const auto& expression : {Join({{0x56},{0x2a}}),Join({{0x56},{0x0b}})})
+        expectText(expression,"None","ObjectToString null avoids host identity lookup");
+    {
+        TestHost host;host.objects[{"Fixture",1}]="opaque-id";host.objectDisplayPaths["opaque-id"]="OwnedMap.Package.Outer.Actor0";
+        const auto result=Vm::Execute(host,Function("FullObjectPath",Return(Join({{0x56},Ref(0x20,1)}))),"Self");
+        Returned(result,"ObjectToString validated host full path");
+        Require(result.value.text=="OwnedMap.Package.Outer.Actor0" && host.objectStringLookups==std::vector<std::string>{"opaque-id"},
+            "ObjectToString echoed operand spelling/lost nested Outer or evaluated twice");
+    }
+    const auto refuse=[&](const Bytes& expression,Vm::Status status,const std::string& context,const Vm::Limits& limits=Vm::Limits{}) {
+        TestHost host;const auto result=Vm::Execute(host,Function("RejectedStartup",Join({Native(1000u),Return(expression)})),"Self",{},limits);
+        Failed(result,status,host,context);Require(host.effects==0u && host.rng==12345u,context+": earlier effect/RNG escaped rollback");
+    };
+    for(const auto& expression : {Native(125u,{Int(1)}),Native(124u,{String("a"),Int(1)}),Native(189u,{String("1")}),
+        Native(246u,{Real(1),String("0"),Real(2)}),Native(249u,{String("1"),Int(2)}),Join({{0x56},Int(1)})})
+        refuse(expression,Vm::Status::Unsupported,"Startup concrete argument types refused");
+    for(const auto& expression : {Native(125u,{}),Native(126u,{String("a")}),Native(127u,{String("a")}),
+        Native(127u,{String("a"),Int(0),Int(1),Int(2)}),Native(168u,{String("a")}),Native(249u,{Int(1)})})
+        refuse(expression,Vm::Status::Invalid,"Startup native arity refused");
+    for(const auto nonfinite : {std::numeric_limits<float>::quiet_NaN(),std::numeric_limits<float>::infinity()}) {
+        refuse(Native(189u,{Real(nonfinite)}),Vm::Status::Invalid,"Tan nonfinite ingress policy");
+        for(const auto& expression : {Native(246u,{Real(nonfinite),Real(0),Real(1)}),Native(246u,{Real(0),Real(nonfinite),Real(1)}),
+            Native(246u,{Real(0),Real(0),Real(nonfinite)})})
+            refuse(expression,Vm::Status::Invalid,"Clamp nonfinite ingress refused before x87 branch emulation");
+    }
+    for(const auto& malformed : {Bytes{0x34,0x41},Bytes{0x34,0x41,0},Bytes{0x1f,'a'}})
+        refuse(malformed,Vm::Status::Invalid,"Truncated string constant refused");
+    auto stringLimit=Vm::Limits{};stringLimit.stringBytes=3u;
+    expectText(Unicode(u"ab"),"ab","Unicode ASCII length uses transport-byte budget",stringLimit);
+    refuse(Unicode(u"\u00e9\u00e9"),Vm::Status::Budget,"Unicode expanded transport budget",stringLimit);
+    refuse(String(std::string("\xff\xff",2)),Vm::Status::Budget,"ANSI expanded transport budget",stringLimit);
+    refuse(Native(168u,{String("aa"),String("b")}),Vm::Status::Budget,"@ inserted space budget",stringLimit);
+    {
+        TestHost host;auto function=Function("CapsUnsafeNul",Join({Native(1000u),Return(Native(235u,{Ref(0x01,1)}))}));
+        const auto p=host.Property(function,1,"Text",Value::Text(Vm::Kind::String,{}));host.Store("Self",p,{Value::Text(Vm::Kind::String,std::string("a\0b",3))});
+        const auto result=Vm::Execute(host,function,"Self");Failed(result,Vm::Status::Invalid,host,"Original unsafe Caps storage refusal");
+        Require(host.effects==0u && host.Load("Self",p).text==std::string("a\0b",3),"Unsafe Caps failed atomic rollback");
+    }
+    {
+        TestHost host;auto function=Function("SnapshotRollback",Join({Native(168u,{Ref(0x01,1),Native(1060u,{Ref(0x01,1),String("changed")})}),Native(4095u),Return()}));
+        const auto p=host.Property(function,1,"Text",Value::Text(Vm::Kind::String,{}));host.Store("Self",p,{Value::Text(Vm::Kind::String,"original")});
+        const auto result=Vm::Execute(host,function,"Self");Failed(result,Vm::Status::Unsupported,host,"Snapshot mutation rollback on later failure");
+        Require(host.Load("Self",p).text=="original","Pure native snapshot detached OUT mutation from transaction");
+    }
+    {
+        TestHost host;host.objects[{"Fixture",1}]="unresolved";
+        const auto result=Vm::Execute(host,Function("UnresolvedObjectPath",Join({Native(1000u),Return(Join({{0x56},Ref(0x20,1)}))})),"Self");
+        Failed(result,Vm::Status::Unsupported,host,"ObjectToString refuses unvalidated host identity");Require(host.effects==0u,"Failed object path leaked earlier native effect");
+    }
+    std::cout<<"Original-audited startup primitives/UTF16/input snapshots: "<<checks-initialChecks<<" checks and "
+        <<rejections-initialRejections<<" rejection controls passed.\n";
 }
 void IteratorContracts() {
     const auto configure=[](TestHost& host,const Vm::Function& function) {
@@ -1695,6 +1909,7 @@ int main() {
         ExecutionContracts();
         ProgramAndEligibilityContracts();
         VectorNativeContracts();
+        StartupPrimitiveContracts();
         IteratorContracts();
         std::cout<<"Normalized original-style serialization and bounded script execution: "<<checks<<" checks and "<<rejections<<" rejection controls passed.\n";
         return 0;

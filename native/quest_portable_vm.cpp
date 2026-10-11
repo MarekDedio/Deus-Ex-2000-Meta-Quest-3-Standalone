@@ -1,5 +1,6 @@
 #include "quest_portable_vm.h"
 #include "quest_state_frame.h"
+#include "quest_unreal_string.h"
 
 #include <algorithm>
 #include <bit>
@@ -23,6 +24,15 @@ std::string Lower(std::string text) {
 }
 [[noreturn]] void TypeError() { throw std::runtime_error("VM value type mismatch"); }
 std::string NameKey(const std::string& name) { return name.empty() ? "none" : Lower(name); }
+bool SnapshotNativeInput(const std::uint16_t index) {
+    // These audited natives copy ordinary inputs during expression evaluation;
+    // none has OUT parameters. Unknown/OUT natives retain their guarded aliases.
+    switch (index) {
+    case 112: case 113: case 124: case 125: case 126: case 127: case 128:
+    case 168: case 189: case 231: case 234: case 235: case 246: case 249: return true;
+    default: return false;
+    }
+}
 std::int32_t ParseInteger(const std::string& text) {
     // Match atoi's decimal prefix semantics on defined inputs; fail closed
     // rather than invoking its undefined overflow behavior on hostile scripts.
@@ -292,11 +302,15 @@ private:
             case 0x1f: {
                 std::string text;
                 for (auto c = Byte(); c != 0; c = Byte()) {
-                    if (text.size() >= limits_.stringBytes) Fail(Status::Budget, "VM string limit");
-                    text.push_back(static_cast<char>(c));
+                    // Code still consumes the entire serialized literal, but
+                    // appFromAnsi retains only the first1023 source bytes.
+                    if (text.size()<1023u) text.push_back(static_cast<char>(c));
                 }
-                Retain(text.size()); Retain(text.size());
-                n.constant = Value::Text(Kind::String, std::move(text)); break;
+                // Original appFromAnsi has a static 1024-word buffer; Code
+                // nevertheless advances through the complete encoded literal.
+                n.constant = Value::Text(Kind::String, UnrealString::FromAnsi(text));
+                if (n.constant.text.size()>limits_.stringBytes) Fail(Status::Budget,"VM string transport limit");
+                Retain(n.constant.text.size()); Retain(n.constant.text.size()); break;
             }
             case 0x22: {
                 std::array<std::int32_t, 3> v{};
@@ -313,12 +327,18 @@ private:
             case 0x2c: n.constant = Value::Byte(Byte()); break;
             case 0x2f: child(); n.target = Word(); break;
             case 0x32: case 0x33: n.reference = std::bit_cast<std::int32_t>(Dword()); child(); child(); break;
-            case 0x34:
-                // Parse even in an untaken branch, but do not guess UTF-16
-                // conversion behavior until it has its own fidelity tests.
-                for (std::size_t count = 0; Word() != 0; ++count)
-                    if (count >= limits_.stringBytes / 2) Fail(Status::Budget, "VM Unicode string limit");
-                break;
+            case 0x34: {
+                std::u16string units;
+                for (auto word=Word(); word!=0u; word=Word()) {
+                    // Each unit needs at least one transport byte. This bounds
+                    // parsing without treating UTF-16 storage as UTF-8 length.
+                    if (units.size()>=limits_.stringBytes) Fail(Status::Budget,"VM Unicode string limit");
+                    units.push_back(static_cast<char16_t>(word));
+                }
+                n.constant=Value::Text(Kind::String,UnrealString::Encode(units));
+                if (n.constant.text.size()>limits_.stringBytes) Fail(Status::Budget,"VM Unicode transport limit");
+                Retain(n.constant.text.size()); Retain(n.constant.text.size()); break;
+            }
             default: Fail(Status::Invalid, "Unknown VM opcode " + std::to_string(n.op));
             }
         }
@@ -424,7 +444,7 @@ public:
             const auto value = argument.Load(); ValidateValue(value, 0); Retain(ValueBytes(value));
             // execGotoState consumes each input value before evaluating the
             // next argument. Ordinary native OUT arguments retain aliases.
-            if ((fn.flags & 0x400u) && fn.nativeIndex == 113u) args.push_back({value,{}});
+            if ((fn.flags & 0x400u) && SnapshotNativeInput(fn.nativeIndex)) args.push_back({value,{}});
             else args.push_back(argument);
         }
         std::size_t argCount = 0;
@@ -1078,7 +1098,7 @@ private:
                     }
                 }
                 auto argument = Eval(frame, n.children[i], frame.self);
-                if (index == 113u && (!fn || (fn->flags & 0x400u))) {
+                if (SnapshotNativeInput(index) && (!fn || (fn->flags & 0x400u))) {
                     auto value = argument.Load(); ValidateValue(value, 0); Retain(ValueBytes(value));
                     argument = {std::move(value),{}};
                 }
@@ -1137,6 +1157,9 @@ private:
             case 0x5a:
                 if (v.kind != Kind::String && v.kind != Kind::Name && v.kind != Kind::Nothing) TypeError();
                 result.value = Value::Text(Kind::Name, v.text.empty() ? "None" : v.text); break;
+            case 0x56:
+                if (v.kind!=Kind::Object && v.kind!=Kind::Nothing) TypeError();
+                result.value=Value::Text(Kind::String,v.text.empty() ? "None" : host_.ObjectString(v.text)); break;
             default: Fail(Status::Unsupported, "Unsupported VM conversion " + std::to_string(n.op));
             }
         } else {
@@ -1195,7 +1218,7 @@ private:
                     static_cast<std::int64_t>(array.reference->dimension - 1)));
                 result.reference = array.reference->element(clamped); break;
             }
-            case 0x1d: case 0x1e: case 0x1f: case 0x22: case 0x23: case 0x24: case 0x2c:
+            case 0x1d: case 0x1e: case 0x1f: case 0x22: case 0x23: case 0x24: case 0x2c: case 0x34:
                 result.value = n.constant; break;
             case 0x20: result.value = Value::Text(Kind::Object, host_.ResolveObject(frame.function, n.reference)); break;
             case 0x21: result.value = Value::Text(Kind::Name, host_.ResolveName(frame.function, n.reference)); break;
@@ -1346,11 +1369,60 @@ private:
             // not a double hypot that would silently change overflow behavior.
             return {Value::Float(length(vec3(v[0], v[1], v[2]))), {}};
         }
-        case 112: {
+        case 189: count(1); return {Value::Float(static_cast<float>(
+            std::tan(static_cast<double>(ToFloat(a(0)))))),{}};
+        case 246: {
+            count(3); const auto v=ToFloat(a(0)), low=ToFloat(a(1)), high=ToFloat(a(2));
+            // Original x87 tests C0, so unordered comparisons take the branch.
+            return {Value::Float(std::isnan(v)||std::isnan(low)||v<low ? low :
+                std::isnan(high)||high<v ? high : v),{}};
+        }
+        case 249: return binaryInt([](auto x,auto y) { return x<y ? x : y; });
+        case 124: case 125: case 126: case 127: case 128: case 234: case 235: {
+            const auto text=[&](std::size_t i) { return UnrealString::Decode(Coerce(a(i),Value::Text(Kind::String,{})).text); };
+            if (index==127u) { if (args.size()<2u || args.size()>3u) Fail(Status::Invalid,"VM Mid argument count"); }
+            else count(index==125u || index==235u ? 1u : 2u);
+            auto x=text(0);
+            if (index==124u) return {Value::Bool(UnrealString::EqualInsensitive(x,text(1))),{}};
+            if (index==125u) return {Value::Integer(static_cast<std::int32_t>(x.size())),{}};
+            if (index==126u) {
+                const auto y=text(1); const auto found=UnrealString::CString(x).find(UnrealString::CString(y));
+                return {Value::Integer(found==std::u16string_view::npos ? -1 : static_cast<std::int32_t>(found)),{}};
+            }
+            if (index==235u) {
+                if (x.find(u'\0')!=std::u16string::npos) Fail(Status::Invalid,"Original Caps has unsafe embedded-NUL storage");
+                for (auto& c:x) if (c>=u'a' && c<=u'z') c-=u'a'-u'A';
+                return {Value::Text(Kind::String,UnrealString::Encode(x)),{}};
+            }
+            const auto len=static_cast<std::uint32_t>(x.size());
+            std::uint32_t begin=0u,end=len;
+            if (index==127u) {
+                const auto start=static_cast<std::uint32_t>(ToInt(a(1)));
+                const auto amount=args.size()<3u || a(2).kind==Kind::Nothing ? 65535u : static_cast<std::uint32_t>(ToInt(a(2)));
+                begin=std::min(start,len); end=std::clamp(start+amount,begin,len);
+            } else {
+                const auto amount=static_cast<std::uint32_t>(std::clamp<std::int64_t>(ToInt(a(1)),0,len));
+                if (index==128u) end=amount; else begin=len-amount;
+            }
+            auto slice=std::u16string(std::u16string_view(x).substr(begin,end-begin));
+            // FString::Right constructs from the C-string suffix, unlike the
+            // predetermined-length appStrncpy copies used by Left and Mid.
+            if (index==234u) return {Value::Text(Kind::String,
+                UnrealString::Encode(UnrealString::CString(slice))),{}};
+            // appStrncpy/wcsncpy pads through the requested count after NUL.
+            if (const auto nul=slice.find(u'\0'); nul!=std::u16string::npos)
+                std::fill(slice.begin()+static_cast<std::ptrdiff_t>(nul),slice.end(),u'\0');
+            return {Value::Text(Kind::String,UnrealString::Encode(slice)),{}};
+        }
+        case 112: case 168: {
             count(2); Value zero = Value::Text(Kind::String, {});
-            auto x = Coerce(a(0), zero).text; const auto y = Coerce(a(1), zero).text;
-            if (x.size() + y.size() > limits_.stringBytes) Fail(Status::Budget, "VM concatenation limit");
-            return {Value::Text(Kind::String, x + y), {}};
+            const auto first=Coerce(a(0),zero).text, second=Coerce(a(1),zero).text;
+            if (first.size()>limits_.stringBytes || second.size()>limits_.stringBytes-first.size() ||
+                (index==168u && first.size()+second.size()==limits_.stringBytes)) Fail(Status::Budget,"VM concatenation limit");
+            auto x=UnrealString::Decode(first); const auto y=UnrealString::Decode(second);
+            if (index==168u) x.push_back(u' ');
+            x+=UnrealString::CString(y);
+            return {Value::Text(Kind::String, UnrealString::Encode(x)), {}};
         }
         case 161: case 162: case 182: case 183: case 184: case 185: case 223: case 224: {
             count(2); const auto op = index == 161 ? 146 : index == 162 ? 147 :
