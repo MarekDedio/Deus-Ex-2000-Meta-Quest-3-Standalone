@@ -21,8 +21,12 @@ below are the original map's Unreal units, not metres or room-tracking positions
 
 The instructor recordings remain unmodified, including references to the mouse
 and right-clicking. In VR, use **A** for the corresponding pointed interaction.
-Compact subtitles are independent of the blue diagnostic panel, so hiding that
-panel must not hide the instructor's line.
+Remote instructor speech uses the original InfoLink panel, speaker photograph
+and bitmap fonts. It is independent of the blue diagnostic panel, so hiding
+that panel must not hide the instructor's line. Face-to-face cinematic dialogue
+UI remains a separate unfinished path; see [DIALOGUE-UI.md](DIALOGUE-UI.md).
+The introduction starts ahead of spawn because its original trigger is in the
+corridor, not at the player start.
 Contacts crossed during another transmission enter a bounded 16-line queue.
 The queue plays in order after the current voice/subtitle finishes. It resets
 on map/session replacement and quick-load; pending speech itself is not yet
@@ -66,14 +70,18 @@ to toggle the lock. Automatic NPC AI and the full tutorial are not finished.
 
 ## Acceptance checklist
 
-Host evidence (2026-10-12): 358 original-data route checks pass, alongside the
+Host evidence (2026-10-12): 1,184 original-data route checks pass, alongside the
 bounded mover primitive and save-regression controls. A desktop closed-door
 view shows original textured panels and static lighting, with zero missing
 actor materials in that preview. These results do not check live Quest motion.
-The installed checkpoint's user test confirms the introduction and door opening,
-but exposes a visible opening-animation FPS drop and broken stairs. Original
-speech-panel portraits/artwork and interaction frames are requested next. The
-checklist remains open; the route is not yet accepted as recording-ready.
+The first checkpoint's user test confirmed the introduction and door opening,
+but exposed a visible opening-animation FPS drop and broken stairs. Follow-up
+changes add original speech-panel portraits/artwork, interaction brackets,
+footprint-based stair sweeps and changed-mover-only publication. The shared
+stair tests traverse six real Training/UNATCOHQ routes in both directions; they
+are not headset acceptance. See [QUEST-TEST-BUILD.md](QUEST-TEST-BUILD.md) for
+the exact installed checkpoint and remaining physical checks. The route is not
+yet accepted as recording-ready.
 
 Complete this from a fresh start on the exact APK intended for recording.
 Desktop data/logic checks alone do not establish headset visual acceptance.
@@ -81,7 +89,12 @@ Desktop data/logic checks alone do not establish headset visual acceptance.
 - [ ] Walk from the original start without debug teleporting or map shortcuts.
 - [ ] Hear each introductory line once, with the correct readable subtitle.
 - [ ] Hide the debug panel; verify subtitles remain visible.
+- [ ] See Jaime's original portrait, panel artwork and readable progressive text.
+- [ ] Aim at a door/item: white focus brackets follow the same target used by A.
+- [ ] Walk from the corridor to the desk without nearby objects vanishing during refresh.
+- [ ] See the room behind the desk window through the original glass material.
 - [ ] Open and pass the first door; both panels move smoothly and remain visible.
+- [ ] Walk up and down the lobby stairs without stopping at risers or clipping.
 - [ ] Verify the keyed door is locked before collecting the desk key.
 - [ ] Pick up the key, inspect the original-style inventory, then open the keyed pair.
 - [ ] Save halfway through a door's movement; load and verify its pose and continuation.

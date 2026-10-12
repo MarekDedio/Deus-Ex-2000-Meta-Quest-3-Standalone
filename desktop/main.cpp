@@ -890,6 +890,10 @@ int main(int argc, char** argv) {
         if (options.authoredLighting || options.actors) lighting = options.selfTest ? BuildSyntheticLightingPreview(scene) :
             BuildAuthoredLightingPreview(scene,options.gameRoot,options.map,options.mesh,options.bakedLighting,
                 options.actors,options.authoredLighting,options.posePreview);
+        else if (!options.gameRoot.empty()) {
+            const auto package=LoadPortablePackageTables((options.gameRoot/"Maps"/(options.map+".dx")).string());
+            ApplyOriginalWorldMaterials(scene,package,options.mesh);
+        }
         if (options.posePreview.scriptUseResultActor) {
             if (lighting.scriptResultActor.empty())
                 throw std::runtime_error("Compiled helper did not return an eligible nonnull map Actor Object");

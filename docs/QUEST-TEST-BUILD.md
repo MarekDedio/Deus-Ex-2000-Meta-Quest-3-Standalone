@@ -1,6 +1,77 @@
 # Current Quest test-build handoff (2026-10-12)
 
-## Latest installed APK: introductory Training recording route
+## Latest installed APK: Training video visual fixes
+
+`artifacts/tutorial-mover-20261012/DeusExQuestVR-training-visual-fixes-20261012.apk`
+is signed ARM64, 19,983,745 bytes, SHA256
+`A3FEA0B06DDFE6967215144D2EFAA2FFEEF87870DD98A3D947E78F781A77E83A`.
+APK v2 signature verifies. Its 16 ZIP entries contain port/SDK libraries and
+assets, not original commercial packages. Default replace-install preserved
+app data/saves on Quest3 `2G0YC5ZG620985`; installed base.apk has the exact same
+hash and lastUpdateTime `2026-10-12 12:40:03`. One launch confirms process25187.
+
+This replacement includes the reviewed original speech artwork, four-matrix
+focus-bracket upload, inside-object targeting and footprint stair sweeps below.
+It also retains the visible actor/collision bank until its replacement is
+complete, preserves atlas generations through renderer retirement, and recovers
+original static BSP material flags for screen/modulated glass blending. Door
+refreshes use authoritative mover state; speech/UI remains visible during a
+retained refresh. The existing 25m/512-actor residency limits remain unchanged.
+
+Fresh full host verification: 64 ordinary tests pass (70 registered, six
+explicit owned-data skips), zero failures, 24.57 seconds. Separately, the owned
+Training route passes 1,184 checks, six real stair routes pass 26 checks, the
+actual window1942 audit passes, and original speech artwork passes 13 checks.
+Pure speech49,158, targeting97, ground/publication141, retained-bank36 and
+material15 checks pass. The Android build and strict native syntax checks pass.
+
+Same-camera original-data software previews show the previously black window
+now revealing the observation room/NPCs, with the same 60,766 triangles. Frame
+hash changes from `2cda0a972317c51a` to `41dead0d704197df`; this is offline
+evidence, not acceptance of the Quest glass shader.
+
+The exact installed APK reports valid head/grip tracking and steady samples at
+72fps. A paired-door opening publishes 130 frames, two moving leaves, 8.369ms
+mean/8.946ms worst. Two retained actor-bank swaps complete atomically in the live
+log. Larger stalls still occur around loading/refresh and screenshot readback;
+these samples are not final performance acceptance. An inspected live eye frame
+shows textured hands and the `00_TrainingCombat` corridor after a map change;
+it does not accept the Training desk/window/brackets. The screenshot request
+timed out during transition but was later consumed; its completed frame was
+pulled without replacing the pending command. Physical stairs, visible focus
+frames, transparent glass and uninterrupted objects still require the user's
+replacement-build walk/recording. Full tutorial/campaign completion is not
+claimed. See [VIDEO-REVIEW-20261012.md](VIDEO-REVIEW-20261012.md).
+
+## Previous installed APK: reviewed Training UI and stairs
+
+`artifacts/tutorial-mover-20261012/DeusExQuestVR-training-ui-stairs-reviewed-20261012.apk`
+is signed ARM64, 19,983,745 bytes, SHA256
+`07F883068A00393DFC50B9FA1C2B3AB4886D2E0EE51D8A072B482ECDC2E00941`.
+APK v2 signature verifies. Default replace-install preserved app data/saves on
+Quest3 `2G0YC5ZG620985`; installed base.apk has the exact same hash and
+lastUpdateTime `2026-10-12 12:21:26`. One launch confirms process22572.
+
+This checkpoint adds original remote speech art/fonts/portraits, a corrected
+four-matrix upload for all focus-bracket strips, inside-object controller
+targeting, footprint stair sweeps and changed-mover publication through the
+world-actor registry. It also keeps speech typing/expiry coherent across
+tracking loss and refuses grounding against incomplete actor colliders.
+The last launch reports no tracked head pose; launch alone is not acceptance.
+
+Fresh verification: 62 ordinary host tests pass (68 registered, six explicit
+owned-data skips), zero failures, 28.87 seconds. Original route1,184 checks,
+actual runtime cross-map/save rollback and original speech-art13 checks pass
+separately. Speech composition/timing49,158, target-frame97, stair26 and
+ground/publication141 checks pass. Original assets remain separate from APK/Git.
+
+The user's earlier 53.33-second headset recording confirms original Jaime
+speech artwork, but exposes refresh pop-out and opaque BSP glass; see
+[VIDEO-REVIEW-20261012.md](VIDEO-REVIEW-20261012.md). Those two fixes are being
+prepared and are **not included in this installed checkpoint**. Nor does this
+checkpoint prove full tutorial/campaign or final Quest performance acceptance.
+
+## Previous installed APK: introductory Training recording route
 
 `artifacts/tutorial-mover-20261012/DeusExQuestVR-training-demo-20261012.apk`
 is the signed ARM64 test build: 19,983,537 bytes, SHA256

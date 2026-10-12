@@ -6,6 +6,7 @@
 #include "quest_static_lightmap_cache.h"
 #include "actor_scene_preview.h"
 #include "quest_script_dispatch.h"
+#include "world_material_preview.h"
 
 #include <algorithm>
 #include <array>
@@ -279,6 +280,7 @@ inline AuthoredLightingPreview BuildAuthoredLightingPreview(Scene& scene,
         cache.vertices.clear();
         metadata.baked = true;
     }
+    ApplyOriginalWorldMaterials(scene,package,meshPath);
     if (includeActors) metadata.actors = AppendActorScenePreview(scene,actors,
         {verified.x,verified.y,verified.z},lights,applyLighting,effectivePoseOptions);
     return metadata;

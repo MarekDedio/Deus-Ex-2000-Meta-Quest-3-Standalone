@@ -1,5 +1,61 @@
 # Port status
 
+## Original Training speech UI, target brackets and stairs (2026-10-12)
+
+- Remote instructor speech now uses the original 431x114 InfoLink art, bitmap
+  fonts and exact speaker portrait from the owned installation. Its typing and
+  expiry share one clock, including tracking loss and long frames. Face-to-face
+  cinematic conversation UI and transmission noise effects remain unfinished;
+  see [DIALOGUE-UI.md](DIALOGUE-UI.md).
+- Object focus uses the original white L-corners, black shadow and inset
+  animation. The A-button and frame share the controller target and live door
+  bounds. The complete original object-information/tool-strength panels remain
+  unfinished; see [ORIGINAL-TARGET-FRAME.md](ORIGINAL-TARGET-FRAME.md).
+- Capsule-footprint grounding and per-sample floor resolution replace the
+  center-only stair test. Six real Training/UNATCOHQ routes reproduce the old
+  ascent/descent failures and pass the new sweep, alongside wall, ceiling,
+  ledge and failed-movement controls (26 checks). Horizontal map-space head
+  movement freezes while actor colliders are being republished, preserving
+  rotation and vertical tracking; ground/publication controls pass 141 checks.
+- Door motion publishes only changed mover actors. An intermediate on-device
+  opening ran 141 frames with two moving leaves, but publication still cost
+  9.391ms mean/10.468ms worst. The follow-up removes a scan of the full loaded
+  export population, using the live world-actor registry instead. The exact
+  replacement APK publishes 130 paired-door frames at 8.369ms mean/8.946ms
+  worst, with steady idle samples at72fps. Loading/refresh stalls remain;
+  final-device performance acceptance is still required.
+- Fresh full host CTest passes 64 ordinary tests (70 registered, six owned-data
+  opt-in skips), zero failures, 24.57 seconds. Separate original speech-art
+  checks pass 13 controls and render Jaime's actual introduction. Pure speech
+  composition/timing passes 49,158 checks; 97 target-frame checks include the SDK
+  uniform packing path. Original route/save acceptance and exact APK identity
+  are tracked in [QUEST-TEST-BUILD.md](QUEST-TEST-BUILD.md).
+- An intermediate installed APK produces a tracked live Quest world/hand frame;
+  the user's video also shows original Jaime speech art. These do not verify
+  corrected brackets or physical stair traversal. Review
+  caught an SDK vec4-array upload limitation before final acceptance; all strips
+  must use the SDK-supported matrix-array upload. The recording checklist
+  remains open. No full tutorial/campaign completion is claimed.
+- The user's recording exposes actor refresh pop-out and opaque static glass.
+  Source/log correlation identifies full-bank deletion during >10m streaming
+  refresh and baked BSP ignoring original translucent flags. Follow-up atomic
+  bank publication and original BSP material support now preserve old visible
+  generations and use exact original glass flags; device acceptance is pending.
+  Shared bank lifecycle controls pass 36 checks (cancellation, scene/revision/
+  atlas mismatch, stable renderer addresses, retained atlas lifetimes). Material
+  controls pass 15 checks; actual Training window1942 is independently audited.
+  Same-camera software before/after frames reveal the observation room/NPCs
+  through the formerly opaque window. The exact replacement APK is installed
+  and tracked; its inspected frame is from TrainingCombat, not desk/window or
+  bracket acceptance. Two live retained-bank swaps complete atomically.
+  The 25m/512-actor residency limits remain, not full campaign visibility; see
+  [VIDEO-REVIEW-20261012.md](VIDEO-REVIEW-20261012.md).
+- The next original startup gap is still native280 SetTimer. A fresh static
+  retail audit establishes signed rates, >= expiration, one coalesced callback
+  and Timer-before-physics ordering, which differ from the independent reference
+  engine. No timer implementation/startup success is claimed; see
+  [ACTOR-TIMER-CONTRACT.md](ACTOR-TIMER-CONTRACT.md).
+
 ## Training recording route and positive CPU decal attachment (2026-10-12)
 
 - Current priority is the introductory recording route documented in

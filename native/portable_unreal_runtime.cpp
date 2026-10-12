@@ -6482,13 +6482,22 @@ std::size_t UnloadPortableRuntimeMap() {
     return removed;
 }
 
-static std::vector<PortableActorSnapshot> ReadPortableRuntimeActors(const bool includeInactive, const bool moversOnly) {
+static std::vector<PortableActorSnapshot> ReadPortableRuntimeActors(const bool includeInactive, const bool moversOnly,
+    const bool changedMoversOnly = false) {
     std::vector<PortableActorSnapshot> snapshots;
     if (!persistentRuntime || !persistentRuntime->get()) return snapshots;
-    for (std::size_t index = persistentScriptExportCount;
-         index < persistentRuntime->get()->exports.size();
-         ++index) {
-        RuntimeObject* object = persistentRuntime->get()->exports[index];
+    // A VR motion frame must not walk the entire loaded script/object export
+    // population just to publish two door leaves. The world registry already
+    // owns the live map/born actor order and removes retired actors on unload.
+    const auto& candidates = moversOnly
+        ? persistentWorldActors : persistentRuntime->get()->exports;
+    for (std::size_t index = moversOnly ? 0u : persistentScriptExportCount;
+         index < candidates.size(); ++index) {
+        RuntimeObject* object = candidates[index];
+        if (!object) continue;
+        if (changedMoversOnly && (!object->moverMotion ||
+            (object->moverMotion->state.phase == QuestVr::MoverMotionPhase::Idle &&
+             !object->moverMotion->beforeStep))) continue;
         if (object->worldActorIndex < 0 || object->worldRemoved || (!includeInactive && !object->active) ||
             !IsDerivedFromPath(object->cls, "Engine.Actor")) continue;
         if (moversOnly && !IsDerivedFromPath(object->cls, "Engine.Mover")) continue;
@@ -6692,8 +6701,8 @@ std::vector<PortableActorSnapshot> GetPortableRuntimeMapActors(bool includeInact
     return ReadPortableRuntimeActors(includeInactive, false);
 }
 
-std::vector<PortableActorSnapshot> GetPortableRuntimeMoverActors() {
-    return ReadPortableRuntimeActors(false, true);
+std::vector<PortableActorSnapshot> GetPortableRuntimeMoverActors(const bool changedOnly) {
+    return ReadPortableRuntimeActors(false, true, changedOnly);
 }
 
 bool AdvancePortableRuntimeMovers(const float elapsedSeconds) {

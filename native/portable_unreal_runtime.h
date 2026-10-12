@@ -459,7 +459,9 @@ PortableInteractionResult InteractPortableRuntimeActor(const std::string& object
 // Authored-key motion for the bounded VR interaction layer, not original
 // Mover script startup/Tick/encroachment. Never advances while UI is paused.
 bool AdvancePortableRuntimeMovers(float elapsedSeconds);
-std::vector<PortableActorSnapshot> GetPortableRuntimeMoverActors();
+// changedOnly retains in-flight/holding motion plus the last advanced endpoint,
+// avoiding full metadata snapshots of every unrelated door during each VR frame.
+std::vector<PortableActorSnapshot> GetPortableRuntimeMoverActors(bool changedOnly = false);
 // Undo the most recent closing step and reopen instead of crushing the player.
 bool BlockPortableRuntimeMover(const std::string& objectPath);
 bool VerifyPortableRuntimeInteraction();

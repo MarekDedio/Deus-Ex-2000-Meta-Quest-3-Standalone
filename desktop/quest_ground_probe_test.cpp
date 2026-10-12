@@ -1,4 +1,5 @@
 #include "quest_ground_probe.h"
+#include "vr_world_transform.h"
 
 #include <cmath>
 #include <iostream>
@@ -26,7 +27,9 @@ Triangle Plane(float height) {
 
 void ReadinessAndPartialPlaneRegression() {
     for (bool runtime : {false, true}) for (bool pending : {false, true}) for (bool transition : {false, true})
-        Require(QuestVr::GroundCollisionReady(runtime, pending, transition) == (runtime && !pending && !transition),
+        for (bool actorPublication : {false,true})
+        Require(QuestVr::GroundCollisionReady(runtime, pending, transition, actorPublication) ==
+                (runtime && !pending && !transition && !actorPublication),
                 "partial/unavailable map collision was marked ready");
     // Structural synthetic regression, not a reproduction against an original
     // map: committing a lower plane before the actual floor arrives can put the
@@ -51,6 +54,32 @@ void ReadinessAndPartialPlaneRegression() {
     Require(QuestVr::GroundCollisionReady(true, false, false), "complete map collision was not enabled");
     if (const auto floor = complete.Height()) committedFloor = *floor;
     Require(committedFloor == completeFloor, "complete collision failed to retain the highest authored floor");
+}
+
+void ActorColliderPublicationRetainsMapHead() {
+    // The immutable BSP can be complete while moving brushes are absent
+    // between DestroyActorGeometry and incremental actor publication. Neither
+    // stick nor room-scale translation may consume those partial colliders.
+    for (float yaw : {0.0f,0.7f,-1.8f}) for (float virtualFloor : {0.0f,-0.73f}) {
+        const Vector world{2.0f,virtualFloor+0.2f,-1.0f};
+        const Vector previousHead{2.3f,0.91f,-0.6f};
+        const auto safeHead = QuestVr::StageToLocal(previousHead,world,yaw);
+        const Vector currentHead{previousHead.x+0.55f,previousHead.y+0.08f,previousHead.z-0.35f};
+        Require(!QuestVr::GroundCollisionReady(true,false,false,true),
+                "Partial actor collider set enabled collision/ground publication");
+        const auto rebased = QuestVr::RestoreHorizontalHeadPosition(world,currentHead,safeHead,yaw);
+        const auto heldHead = QuestVr::StageToLocal(currentHead,rebased,yaw);
+        Require(std::fabs(heldHead.x-safeHead.x)<0.000001f && std::fabs(heldHead.z-safeHead.z)<0.000001f,
+                "Physical tracking translation crossed an absent moving-brush collider");
+        Require(rebased.y==world.y && virtualFloor-rebased.y==virtualFloor-world.y,
+                "Actor collider publication freeze changed seated/standing map feet");
+        Require(std::fabs(heldHead.y-safeHead.y-0.08f)<0.000001f,
+                "Collider publication freeze suppressed tracked vertical head motion");
+        const auto readyHead = QuestVr::StageToLocal(currentHead,rebased,yaw);
+        Require(QuestVr::GroundCollisionReady(true,false,false,false) &&
+                std::fabs(readyHead.x-safeHead.x)<0.000001f && std::fabs(readyHead.z-safeHead.z)<0.000001f,
+                "Completed collider publication changed the resumed horizontal map head");
+    }
 }
 
 void GeometrySignsSlopesAndBounds() {
@@ -134,10 +163,11 @@ void NonfiniteGeometryAndProbeFailClosed() {
 int main() {
     try {
         ReadinessAndPartialPlaneRegression();
+        ActorColliderPublicationRetainsMapHead();
         GeometrySignsSlopesAndBounds();
         ProbeStepDropAndMaximum();
         NonfiniteGeometryAndProbeFailClosed();
-        std::cout << "PASS: 4 Quest ground-probe regression groups; " << checks
+        std::cout << "PASS: 5 Quest ground-probe regression groups; " << checks
                   << " checks. Partial-upload case is synthetic structural coverage, not an original-map reproduction or full physics validation.\n";
         return 0;
     } catch (const std::exception& error) {

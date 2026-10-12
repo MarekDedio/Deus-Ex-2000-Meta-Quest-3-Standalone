@@ -68,7 +68,23 @@ void Near(float actual, float expected, const std::string& message) {
         message + ": expected " + std::to_string(expected) + ", got " + std::to_string(actual));
 }
 void Advance(unsigned count) {
-    for (unsigned i = 0u; i < count; ++i) AdvancePortableRuntimeMovers(0.05f);
+    for (unsigned i = 0u; i < count; ++i) {
+        const bool changed = AdvancePortableRuntimeMovers(0.05f);
+        const auto moved = GetPortableRuntimeMoverActors(true);
+        Require(changed == !moved.empty(),
+            "Per-frame mover publication omitted a final endpoint or retained an idle door");
+        if (!changed) continue;
+        const auto complete = GetPortableRuntimeMoverActors();
+        Require(moved.size() < complete.size(),
+            "Per-frame mover publication still snapshots all unrelated doors");
+        for (const auto& actor : moved) {
+            const auto found = std::find_if(complete.begin(), complete.end(), [&](const auto& other) {
+                return other.objectPath == actor.objectPath;
+            });
+            Require(found != complete.end() && Fields(*found) == Fields(actor),
+                "Filtered mover publication changed the complete actor pose/collision data");
+        }
+    }
 }
 void PairPose(const PortableActorSnapshot& first, const PortableActorSnapshot& second,
     float offset, bool moving) {
@@ -240,6 +256,8 @@ void Original(const std::filesystem::path& gameRoot) {
     Near(second.y, 863.999f, "Wrong original second-panel location");
     Require(!first.moverMoving && !second.moverMoving && !first.activated && !second.activated,
         "Training first door did not start closed and stationary");
+    Require(GetPortableRuntimeMoverActors(true).empty(),
+        "Untouched Training published unrelated idle movers as animated doors");
     const auto opened = InteractPortableRuntimeActor(first.objectPath);
     Require(opened.handled && opened.worldChanged && opened.action == "mover_open",
         "Original unlocked first door was not usable");

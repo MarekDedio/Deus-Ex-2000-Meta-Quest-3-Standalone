@@ -13,6 +13,11 @@ bounded VR interaction layer, not completion of all three tutorial maps or the
 original mission scheduler. Headset acceptance is recorded separately from host
 logic tests.
 
+The latest Training work adds the original remote-speech panel and portraits,
+original-style interaction brackets, footprint-based stair movement and bounded
+live door updates. These fixes still require the physical recording-route
+checklist; the original face-to-face dialogue UI remains unfinished.
+
 The Android ARM64/OpenXR app has been exercised on Quest 3 with textured
 training geometry, VR locomotion/interaction, UI, audio and save/load features.
 The latest offline work adds original static BSP shadow lightmaps and fixes
