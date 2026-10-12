@@ -76,6 +76,11 @@ save/restore, state-aware dispatch and atomic callback rollback. Timer-only writ
 preserve animation and avoid geometry publication. This source-only checkpoint
 does not enable automatic campaign ticking or replace the installed visual-test
 APK; original Training startup still reports an exact later class-default gap.
+The [qualified class-default read audit](docs/CLASS-DEFAULT-CONTEXT-CONTRACT.md)
+now distinguishes inherited fields from same-named redeclarations, rejects
+unrelated qualified read aliases and tests mutable overlays/save round-trips.
+This source-only hardening does not implement ClassContext or complete original
+world startup; the installed visual-test APK remains unchanged.
 The [original state-dispatch correction](docs/ORIGINAL-STATE-DISPATCH.md) now
 uses actual Children/Next Auto order and explicit selected-state SuperField
 callback ancestry. Full state identity/control and campaign bootstrap remain

@@ -2195,35 +2195,50 @@ public:
         const bool defaults = false, const bool immutable = false) {
         const bool classDefaults = defaults || object->classDescriptor != nullptr;
         RuntimeObject* source = classDefaults ? DefaultClass(object) : object;
+        const auto selectedField = [&](RuntimeObject* storage) {
+            auto* cls = storage->classDescriptor ? storage : storage->cls;
+            for(;cls;cls=cls->base) {
+                const auto found=persistentVmObjects.find(LowerAscii(cls->reflection.objectPath+'.'+property.name));
+                if(found!=persistentVmObjects.end() && found->second->property)
+                    return LowerAscii(found->second->reflection.objectPath)==LowerAscii(property.key);
+            }
+            return false;
+        };
+        // Tags and mutable patches use leaf names, but a class may redeclare a
+        // inherited field (retail Actor/PlayerPawn.bSinglePlayer does). A tag
+        // targets the nearest declaration in ITS source class, not every same-
+        // named field on the ancestry. Keep inherited compiled references
+        // distinct, and do not leak a parent's tag into a new declaration.
         if (classDefaults) {
             const auto values = source->classDefaultValues.find(LowerAscii(property.name));
-            if (values != source->classDefaultValues.end()) {
+            if (selectedField(source) && values != source->classDefaultValues.end()) {
                 const auto slot = values->second.find(index);
                 if (slot != values->second.end()) return slot->second;
             }
         } else {
-            if (!immutable) {
+            if (!immutable && selectedField(object)) {
                 if (const auto* value = FindScriptOverlay(object, property.name.c_str(), index)) return *value;
-            } else {
+            } else if (immutable && selectedField(object)) {
                 const auto values=object->frozenBirthDefaults.find(LowerAscii(property.name));
                 if (values!=object->frozenBirthDefaults.end()) {
                     const auto slot=values->second.find(index);
                     if (slot!=values->second.end()) return slot->second;
                 }
             }
-            if (LowerAscii(property.name) == "xlevel" && index == 0u && object->nativeXLevel)
+            if (LowerAscii(property.key) == "engine.actor.xlevel" && index == 0u && object->nativeXLevel)
                 return Value::Text(Kind::Object, object->nativeXLevel->reflection.objectPath);
-            if (LowerAscii(property.name) == "standingcount" && index == 0u && object->initialStandingCount)
+            if (LowerAscii(property.key) == "engine.actor.standingcount" && index == 0u && object->initialStandingCount)
                 return Value::Byte(*object->initialStandingCount);
-            if (LowerAscii(property.name) == "region" && property.zero.kind == Kind::Struct)
+            if (LowerAscii(property.key) == "engine.actor.region" && property.zero.kind == Kind::Struct)
                 return Region(object, property.zero);
         }
         while (source != nullptr) {
             const auto& properties = source->classDescriptor ? source->classDescriptor->defaults : source->instanceProperties;
-            for (auto tag = properties.rbegin(); tag != properties.rend(); ++tag) {
-                if (tag->name != property.name || tag->arrayIndex != index) continue;
-                return Decode(*source, *tag, property);
-            }
+            if (selectedField(source))
+                for (auto tag = properties.rbegin(); tag != properties.rend(); ++tag) {
+                    if (tag->name != property.name || tag->arrayIndex != index) continue;
+                    return Decode(*source, *tag, property);
+                }
             source = !classDefaults && source == object ? object->cls : source->base;
         }
         return property.zero;
@@ -2304,6 +2319,16 @@ public:
         throw std::runtime_error("Runtime property metadata unavailable: " + name);
     }
     Property DescribeProperty(const std::string& key) { return Describe(Object(key)); }
+    bool OwnsProperty(RuntimeObject* concreteClass,const Property& property) {
+        // Compiled inherited references retain their declaring field even
+        // when the concrete class redeclares a field with the same name.
+        auto* metadata = Object(property.key);
+        if (!metadata->property || !metadata->outer || !metadata->outer->classDescriptor)
+            return false;
+        for (auto* cls=concreteClass;cls;cls=cls->base)
+            if (cls==metadata->outer) return true;
+        return false;
+    }
     RuntimeObject* DefaultClass(RuntimeObject* object) {
         auto* cls = object->classDescriptor ? object : object->cls;
         if (!cls || !cls->classDescriptor || cls->reflection.metaClass != "Class" ||
@@ -3545,6 +3570,14 @@ private:
     }
     std::shared_ptr<Reference> ReferenceFor(RuntimeObject* object, const Property& property,
         const std::uint32_t index, const bool defaults) {
+        // A qualified property reference is not interchangeable with another
+        // class's same-named field. Validate before exposing a READ alias too:
+        // untrusted bytecode must not retrieve a sibling value/default-zero
+        // merely because the fallback storage lookup uses a leaf field name.
+        auto* target = defaults || object->classDescriptor ? DefaultClass(object) : object;
+        if (!OwnsProperty(target->classDescriptor ? target : target->cls,property) ||
+            index >= property.arrayDimension)
+            throw std::runtime_error("VM property is not owned by its concrete receiver class");
         auto result = std::make_shared<Reference>(); result->zero = property.zero;
         result->read = [this, object, property, index, defaults]() { return Read(object, property, index, defaults); };
         result->write = [this, object, property, index, defaults](const Value& value) {

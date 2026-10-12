@@ -234,12 +234,13 @@ Value Instance(const std::string& actor,const std::string& property,std::uint32_
 void Same(const Value& actual,const Value& expected,const std::string& description) {
     Require(QuestVr::Vm::Equal(actual,expected),description);
 }
-void RefusedCall(const Fixture& fixture,const std::string& actor,const std::string& function,
+QuestVr::Vm::Result RefusedCall(const Fixture& fixture,const std::string& actor,const std::string& function,
     const std::vector<Evaluation>& arguments={}) {
     const auto before=fixture.Snapshot("BeforeRefusal");
     const auto result=ExecutePortableActorFunction("DefaultFixture."+actor,function,arguments);
     Require(!result.passed() && !result.committed,"Invalid CDO operation silently committed: "+function);
     Require(fixture.Snapshot("AfterRefusal")==before,"Failed CDO operation changed canonical persistent state: "+function); ++refusals;
+    return result;
 }
 std::uint32_t Read32(const Bytes& bytes,std::size_t& cursor) {
     Require(cursor<=bytes.size() && bytes.size()-cursor>=4u,"Independent checkpoint inspection encountered truncation");
@@ -321,6 +322,11 @@ void Synthetic() {
     const auto importedActor=classes.Import("Actor",classesEngine);
     const auto base=classes.Export("Base",0,importedActor), derived=classes.Export("Derived",0,base);
     const auto sibling=classes.Export("Sibling",0,base), child=classes.Export("Child",0,derived);
+    const auto foreign=classes.Export("Foreign",0,importedActor);
+    const auto foreignCounter=classes.Property("Counter","IntProperty",foreign,classesCore);
+    const auto shadow=classes.Export("Shadow",0,base), shadowZero=classes.Export("ShadowZero",0,base);
+    const auto shadowCounter=classes.Property("Counter","IntProperty",shadow,classesCore);
+    classes.Property("Counter","IntProperty",shadowZero,classesCore);
     const auto counter=classes.Property("Counter","IntProperty",base,classesCore);
     const auto source=classes.Property("Source","IntProperty",base,classesCore);
     const auto slots=classes.Property("Slots","IntProperty",base,classesCore,3u);
@@ -339,8 +345,17 @@ void Synthetic() {
     classes.ObjectTag(defaults,"Link",0); Bytes members; U32(members,4u); Index(members,0); classes.Tag(defaults,"Payload",10u,members,0u,"Record");
     classes.ClassBody(base,defaults); Bytes overrides; classes.IntTag(overrides,"Counter",20); classes.IntTag(overrides,"Source",12); classes.ClassBody(derived,overrides);
     overrides.clear(); classes.IntTag(overrides,"Counter",30); classes.IntTag(overrides,"Source",13); classes.ClassBody(sibling,overrides); classes.ClassBody(child,{});
+    Bytes foreignDefaults;classes.IntTag(foreignDefaults,"Counter",777);classes.ClassBody(foreign,foreignDefaults);
+    Bytes shadowDefaults;classes.IntTag(shadowDefaults,"Counter",777);classes.ClassBody(shadow,shadowDefaults);
+    classes.ClassBody(shadowZero,{});
+    classes.Function("WrongDefaultRead",base,classesCore,Return(Ref(0x02u,foreignCounter)));
+    classes.Function("WrongInstanceRead",base,classesCore,Return(Ref(0x01u,foreignCounter)));
+    classes.Function("WrongReadAfterWrite",base,classesCore,Join({Assign(Ref(0x02u,counter),Int(321)),Return(Ref(0x02u,foreignCounter))}));
     classes.Function("CopyDefault",base,classesCore,Join({Assign(Ref(0x02u,counter),Ref(0x02u,source)),Return()}));
     classes.Function("ReadDefault",base,classesCore,Return(Ref(0x02u,counter)));
+    classes.Function("ReadInstanceCounter",base,classesCore,Return(Ref(0x01u,counter)));
+    classes.Function("SetShadowCounters",shadow,classesCore,Join({
+        Assign(Ref(0x02u,shadowCounter),Int(555)),Assign(Ref(0x01u,shadowCounter),Int(888)),Return()}));
     classes.Function("ReadSlot",base,classesCore,Return(Slot(slots,1)));
     const auto set=classes.Function("SetDefaults",base,classesCore,Join({
         Assign(Ref(0x02u,counter),Int(99)),Assign(Slot(slots,1),Int(77)),Assign(Ref(0x02u,label),Ref(0x21u,classes.Name("Changed"))),
@@ -377,9 +392,10 @@ void Synthetic() {
     // Struct import identities are verified independently by the actual loader.
     Require(GetPortableObjectPath(coreTable,count)=="Record.Count" && GetPortableObjectPath(coreTable,target)=="Record.Target","Generated struct declaration identity was not retained");
     Package map; map.stem="DefaultFixture"; const auto importedClasses=map.ImportPackage("DefaultClasses");
-    for(const auto& [name,cls]:std::vector<std::pair<std::string,std::string>>{{"Base0","Base"},{"Base1","Base"},{"Derived0","Derived"},{"Derived1","Derived"},{"Sibling0","Sibling"},{"Child0","Child"}}) {
+    for(const auto& [name,cls]:std::vector<std::pair<std::string,std::string>>{{"Base0","Base"},{"Base1","Base"},{"Derived0","Derived"},{"Derived1","Derived"},{"Sibling0","Sibling"},{"Child0","Child"},{"Shadow0","Shadow"},{"ShadowZero0","ShadowZero"}}) {
         const auto ref=map.Export(name,map.Import(cls,importedClasses)); Bytes properties;
         if(name=="Base0") map.IntTag(properties,"Counter",42);
+        if(name=="Shadow0") map.IntTag(properties,"Counter",999);
         map.ActorBody(ref,properties);
     }
     const auto mapTable=fixture.Write(map,true);
@@ -388,6 +404,34 @@ void Synthetic() {
     Require(LoadPortableRuntimeMap(mapTable).passed,"Generated map actors were not loaded");
     Require(!GetPortableRuntimeScriptStatePresent(),"Read-only generated metadata initialization created persistent writes");
     const auto legacy=fixture.Snapshot("Legacy"); Require(legacy.size()>8u && legacy[4u]==3u,"Initial generated snapshot is not legacy v3");
+    Same(Cdo("Foreign","Counter"),Value::Integer(777),"Qualified foreign-class read control is not a distinct real default");
+    for(const auto& function:{"WrongDefaultRead","WrongInstanceRead","WrongReadAfterWrite"}) {
+        const auto refused=RefusedCall(fixture,"Base0",function);
+        Require(refused.error=="VM property is not owned by its concrete receiver class",
+            "Qualified foreign read failed for an unrelated reason: "+std::string(function)+": "+refused.error);
+    }
+    Same(Cdo("Base","Counter"),Value::Integer(10),"Rejected qualified read retained its earlier CDO write");
+    Same(Instance("Base0","Counter"),Value::Integer(42),"Rejected same-name property read changed actual instance storage");
+    Same(Cdo("Shadow","Counter"),Value::Integer(777),"Redeclared default did not select its own tag");
+    Same(Cdo("ShadowZero","Counter"),Value::Integer(0),"Redeclared zero default leaked its ancestor's tag");
+    Same(Call("Shadow0","ReadDefault").value,Value::Integer(10),"Inherited compiled default reference aliased the redeclared field");
+    Same(Call("ShadowZero0","ReadDefault").value,Value::Integer(10),"Inherited compiled read lost the original declaration");
+    Same(Instance("Shadow0","Counter"),Value::Integer(999),"Redeclared instance did not select its own map tag");
+    Same(Call("Shadow0","ReadInstanceCounter").value,Value::Integer(10),"Inherited compiled instance reference aliased a shadowed map tag");
+    Call("Shadow0","SetShadowCounters");
+    Same(Cdo("Shadow","Counter"),Value::Integer(555),"Redeclared mutable default lost its own write");
+    Same(Instance("Shadow0","Counter"),Value::Integer(888),"Redeclared mutable instance lost its own write");
+    Same(Call("Shadow0","ReadDefault").value,Value::Integer(10),"Inherited compiled default read consumed a redeclared mutable overlay");
+    Same(Call("Shadow0","ReadInstanceCounter").value,Value::Integer(10),"Inherited compiled instance read consumed a redeclared mutable overlay");
+    const auto shadowSaved=fixture.Snapshot("ShadowSaved");
+    Require(LoadPortableRuntimeState((fixture.directory/"Legacy.sav").string()),"Shadow overlay legacy reset failed");
+    Same(Cdo("Shadow","Counter"),Value::Integer(777),"Shadow legacy reset retained mutable defaults");
+    Same(Instance("Shadow0","Counter"),Value::Integer(999),"Shadow legacy reset lost authored map tag");
+    Require(LoadPortableRuntimeState((fixture.directory/"ShadowSaved.sav").string()) &&
+        fixture.Snapshot("ShadowRoundTrip")==shadowSaved,"Shadowed declarations did not round-trip canonically");
+    Same(Call("Shadow0","ReadDefault").value,Value::Integer(10),"Restored shadow CDO overlay redirected its inherited field");
+    Same(Call("Shadow0","ReadInstanceCounter").value,Value::Integer(10),"Restored shadow instance overlay redirected its inherited field");
+    Require(LoadPortableRuntimeState((fixture.directory/"Legacy.sav").string()),"Shadow fixture did not restore untouched baseline");
     Same(Call("Base1","SetCollisionSize",{{Value::Float(18.5f),{}},{Value::Integer(31),{}}}).value,Value::Bool(true),
         "Actual Engine.Actor native 283 declaration did not return Bool success");
     Same(Call("Base1","SetBounds").value,Value::Bool(true),"Native 283 did not return its declared Bool success");

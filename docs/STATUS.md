@@ -1,5 +1,37 @@
 # Port status
 
+## Qualified property reads, source-only checkpoint (2026-10-13)
+
+- VM read aliases now reject unrelated qualified property declarations before
+  reading leaf-name storage. Legitimate inherited references remain valid when
+  a derived class redeclares the same name. Authored default/map tags and mutable
+  overlays are bound to their selected declaration instead of aliasing both
+  fields. Retail Actor/PlayerPawn.bSinglePlayer demonstrates this distinction.
+- Generated defaults integration passes 1,379 checks and 40 atomic rejection
+  controls, including exact foreign-read diagnostics, failure-after-write
+  rollback, inherited/redeclared tags, mutable default/instance isolation,
+  canonical checkpoint round-trip and legacy reset. Strict NDK27 ARM64 syntax
+  passes; the production host build succeeds. Fresh CTest passes 66 ordinary
+  tests (73 registered, seven owned-data opt-in skips), zero failures, 58.40
+  seconds; owned defaults/save/startup checks run separately.
+- The unchanged fresh Training world probe repeats its exact ClassContext
+  boundary with complete save/GC/birth/revision rollback. Original defaults
+  passes 1,002 checks, and original Training/Combat save/rollback checks pass.
+  Full original actor integration passes Training/UNATCOIsland/Intro.
+  These are regression checks, not successful original world startup.
+- A read-only census decodes 8,282 original script sections with zero errors:
+  110 ClassContext expressions in 42 functions include default reads/writes,
+  arrays, Bool wrappers, static calls and non-Actor UI classes. Retail static
+  disassembly establishes distinct class-owned default blocks and destination-
+  sensitive null behavior. See [CLASS-DEFAULT-CONTEXT-CONTRACT.md](CLASS-DEFAULT-CONTEXT-CONTRACT.md).
+  ClassContext remains explicitly unsupported; no class-path proxy or guessed
+  player name replaces the original callback. Shadowed-base writes, malformed
+  orphan-property linkage and frozen-birth shadow controls remain unfinished.
+- No APK is built for this backend checkpoint. The installed visual-test APK
+  below remains unchanged, and physical desk/window/bracket/stair acceptance
+  still needs a new recording. USB currently reports the known Quest offline.
+  Ignored diagnostics are under `artifacts/class-context-20261013/`.
+
 ## Original actor timers, source-only checkpoint (2026-10-13)
 
 - Native280 SetTimer now validates the original declaration and reflected Actor
