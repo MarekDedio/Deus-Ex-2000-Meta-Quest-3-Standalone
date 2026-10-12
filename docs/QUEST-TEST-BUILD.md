@@ -1,6 +1,44 @@
 # Current Quest test-build handoff (2026-10-12)
 
-## Latest APK: native client and Quest target lifetime
+## Latest installed APK: introductory Training recording route
+
+`artifacts/tutorial-mover-20261012/DeusExQuestVR-training-demo-20261012.apk`
+is the signed ARM64 test build: 19,983,537 bytes, SHA256
+`E2398B7A2D89C4C81AED1DD86FEF31B7CA450DCE12A3A4123107D72AE6DED189`.
+APK signature v2 verifies; its 16 entries contain port/SDK libraries and assets,
+not original commercial packages. The default data-preserving deployment helper
+replace-installed it on Quest3 `2G0YC5ZG620985`. Installed `base.apk` has the same
+hash; lastUpdateTime is `2026-10-12 11:28:17`. One waited launch confirms process
+12864. Rendering/tracking and physical route acceptance are separate checks.
+
+This build adds exact opening Mission00 contact speech/audio and independent
+gold subtitles, a bounded pending-instruction queue, paired authored sliding
+door transforms/collision, matching-key use and v14 motion saves. Door use no
+longer rebuilds every actor. See [TRAINING-DEMO.md](TRAINING-DEMO.md) for the
+recording route, controls, acceptance checklist and explicit full-tutorial gaps.
+No player hand/body geometry or controller/recenter mapping changed.
+
+Fresh host evidence: 59 ordinary CTests pass (64 registered, five owned-data
+opt-in skips), 25.17 seconds; 358 owned Training route checks and separate
+original runtime save/cross-map rollback tests pass. Defaults1,002/PawnList67
+and generated Spawn/positive attachment8,268/143 controls pass. The inspected
+software closed-door image is not headset motion/performance acceptance.
+Positive native CPU Attach is integrated; native shadow rendering, original
+world/player startup, automatic AI and the full tutorial remain unfinished.
+Logs, desktop frame and archived APK are ignored under
+`artifacts/tutorial-mover-20261012/`.
+
+Fresh `quest-training-demo.bmp` and `quest-door-check.bmp` show the corridor and
+post-door lobby, textured hands, original lighting and compact status/control
+text, with valid head/grips and actual eye heights1.721/1.683m. The introduction
+and door-instruction contacts resolve event79/audio79 and event41/audio41 on
+device. The user confirms introduction and door use. Idle samples reach72fps,
+but the opening interval drops to43.3fps/166.66ms worst; screenshot readback
+stalls291.65ms. Stairs remain impassable by user report. PC-style speech artwork/
+portraits and object interaction frames remain pending. This is an installed
+test checkpoint, NOT full tutorial or recording/performance acceptance.
+
+## Previous APK: native client and Quest target lifetime
 
 `artifacts/native-client-20261012/DeusExQuestVR-native-client-20261012.apk`
 is the newest signed ARM64 build:19,695,049 bytes, SHA256
@@ -32,7 +70,7 @@ acceptance without hardware. See [NATIVE-CLIENT-BINDING.md](NATIVE-CLIENT-BINDIN
 Build/test logs and the archived APK remain ignored under
 `artifacts/native-client-20261012/`.
 
-## Last installed: native decal ownership, Detach and checkpoints
+## Previous installed: native decal ownership, Detach and checkpoints
 
 `artifacts/decal-runtime-20261012/DeusExQuestVR-decal-runtime-20261012.apk`
 was the last device-verified signed ARM64 build:18,919,193 bytes, SHA256

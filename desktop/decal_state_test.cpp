@@ -338,7 +338,8 @@ void BoundsAndUsage() {
         "Tightened texture byte bound");
 
     State usage(2, 4);
-    const auto initial = sizeof(Snapshot) + 2 * sizeof(std::vector<Record>);
+    const auto initial = sizeof(Snapshot) + 2 * sizeof(std::vector<Record>) +
+        State::TransientStorageBytes(2);
     Require(usage.Usage().storageBytes == initial && usage.Usage().surfaces == 2 &&
         usage.Usage().owners == 0 && usage.Usage().records == 0, "Initial deterministic byte charge");
     const auto record = MakeRecord("A", 1, {2, 1, 2});
@@ -376,6 +377,10 @@ void BoundsAndUsage() {
         "Size addition overflow");
     Refused([&] { QuestVr::DecalStateDetail::Multiply(std::numeric_limits<std::size_t>::max(), 2); },
         "Size multiplication overflow");
+    Require(QuestVr::DecalStateDetail::IncrementSerial(std::numeric_limits<std::uint64_t>::max() - 1u) ==
+        std::numeric_limits<std::uint64_t>::max(), "Last valid primary serial increment");
+    Refused([&] { QuestVr::DecalStateDetail::IncrementSerial(std::numeric_limits<std::uint64_t>::max()); },
+        "Primary serial overflow");
 }
 
 void WorkRollbackAndReentrancy() {
@@ -456,14 +461,258 @@ void CopyAndSwapJournal() {
     Require(SameState(state, alternativeBefore) && SameState(alternate, before),
         "Swap omitted model bounds, limits or duplicate mirror entries");
 }
+
+void ProvisionalPublicationAndCompletion() {
+    State state(3, 10);
+    TextureMap textures{{"A", "stone"}, {"B", "metal"}, {"C", "stone"}, {"D", "glass"}};
+    std::vector<std::string> visits;
+    const auto resolver = Resolve(textures, &visits);
+    state.AttachPrimary(0, MakeRecord("A", 1), "stone", resolver);
+    state.AttachPrimary(0, MakeRecord("B", 2), "metal", resolver);
+    visits.clear();
+    const auto begun = state.BeginPrimary(0, "C", "stone", resolver, {7, -8, 9});
+    Require(visits == std::vector<std::string>{"A"} && begun.stats.resolverCalls == 1 &&
+        begun.stats.recordsInserted == 1 && begun.token.SurfaceIndex() == 0 &&
+        begun.token.RecordIndex() == 0, "Provisional primary live-texture insertion/token");
+    Order(state, 0, {"C", "A", "B"}, "Provisional record published before callback");
+    const auto& zero = state.ReadOnlySnapshot().surfaces[0][0];
+    Require(zero.ownerIdentity == "C" && zero.nodeMembership.empty() &&
+        Owner(state, "C").surfaces == std::vector<std::int32_t>{0},
+        "Provisional owner/list publication missing");
+    for (const auto& corner : zero.relativeCorners)
+        Require(Bits(corner.x) == Bits(0.0f) && Bits(corner.y) == Bits(0.0f) && Bits(corner.z) == Bits(0.0f),
+            "Provisional record exposed nonzero geometry before callback");
+    Require(zero.moverRotation.pitch == 7 && zero.moverRotation.yaw == -8 && zero.moverRotation.roll == 9,
+        "Provisional mover rotation was not published");
+    auto absolute = MakeRecord("C", 10, {9, 0, 9});
+    auto completed = state.CompletePrimary(begun.token, absolute);
+    Require(completed.recordsInserted == 0 && completed.recordsRemoved == 0 &&
+        state.Usage().records == 3 && state.Usage().nodeMembership == 3 &&
+        Owner(state, "C").surfaces == std::vector<std::int32_t>{0},
+        "Completion reinserted a record or appended SurfList");
+    Require(state.ReadOnlySnapshot().surfaces[0][0].relativeCorners[0].x == 10 &&
+        state.ReadOnlySnapshot().surfaces[0][0].nodeMembership == std::vector<std::int32_t>({9, 0, 9}),
+        "Completion did not retain exact corner/membership payload");
+    state.AttachPrimary(1, MakeRecord("D", 30), "glass", resolver);
+    state.ReplaceOwnerSurfList("C", {2, 0, 2});
+    state.ReplaceOwnerSurfList("Ghost", {0, 0});
+    const auto noRemoval = state.Detach("Ghost");
+    Require(noRemoval.recordsRemoved == 0 && noRemoval.surfListEntriesPopped == 2,
+        "Mirror-only callback test accidentally removed a record");
+    state.Detach("D"); // Foreign-surface record removal must not invalidate C.
+    state.Detach("Unknown");
+    absolute = MakeRecord("C", 40, {3, 3, 1});
+    state.CompletePrimary(begun.token, absolute);
+    const auto& final = state.ReadOnlySnapshot().surfaces[0][0];
+    Require(final.relativeCorners[0].x == 40 && final.nodeMembership == std::vector<std::int32_t>({3, 3, 1}) &&
+        final.moverRotation.pitch == 7 && final.moverRotation.yaw == -8 && final.moverRotation.roll == 9 &&
+        Owner(state, "C").surfaces == std::vector<std::int32_t>({2, 0, 2}),
+        "Foreign-surface/list callback mutation invalidated token or changed Begin rotation/list");
+    absolute.ownerIdentity = "changed caller";
+    absolute.relativeCorners[0].x = 900;
+    absolute.nodeMembership.clear();
+    Require(final.relativeCorners[0].x == 40 && final.ownerIdentity == "C" && final.nodeMembership.size() == 3,
+        "Completion retained caller-owned mutable payload");
+    auto relative = MakeRecord("C", -4);
+    relative.relativeCorners[0].x = -0.0f;
+    state.CompletePrimary(begun.token, relative);
+    Require(Bits(state.ReadOnlySnapshot().surfaces[0][0].relativeCorners[0].x) == Bits(-0.0f) &&
+        state.ReadOnlySnapshot().surfaces[0][0].nodeMembership.empty(),
+        "Second completion token failed or signed-zero/membership replacement changed");
+    Order(state, 0, {"C", "A", "B"}, "Completion preserved native record order");
+}
+
+void ProvisionalInvalidationAndFailure() {
+    TextureMap textures{{"A", "tex"}, {"B", "other"}};
+    const auto resolver = Resolve(textures);
+    State state(2, 3);
+    const auto begun = state.BeginPrimary(0, "A", "tex", resolver);
+    RefusedUnchanged(state, [&] { state.CompletePrimary({}, MakeRecord("A", 1)); }, "Default primary token");
+    State unrelated(2, 3);
+    const auto other = unrelated.BeginPrimary(0, "A", "tex", resolver);
+    RefusedUnchanged(state, [&] { state.CompletePrimary(other.token, MakeRecord("A", 1)); },
+        "Unrelated identical-container primary token");
+    RefusedUnchanged(state, [&] { state.CompletePrimary(begun.token, MakeRecord("B", 1)); },
+        "Completion owner replacement");
+    auto invalid = MakeRecord("A", 1, {3});
+    RefusedUnchanged(state, [&] { state.CompletePrimary(begun.token, invalid); }, "Completion node bounds");
+    invalid = MakeRecord("A", 1);
+    invalid.relativeCorners[2].z = std::numeric_limits<float>::quiet_NaN();
+    RefusedUnchanged(state, [&] { state.CompletePrimary(begun.token, invalid); }, "Completion nonfinite corner");
+    RefusedUnchanged(state, [&] {
+        state.BeginPrimary(0, "B", "other", [](const std::string&) -> std::optional<std::string> {
+            throw std::runtime_error("Native decal state: throwing resolver fixture");
+        });
+    }, "Failed same-surface Begin resolver");
+    state.CompletePrimary(begun.token, MakeRecord("A", 2, {0}));
+    Require(state.ReadOnlySnapshot().surfaces[0][0].relativeCorners[0].x == 2,
+        "Rejected operations invalidated the pending token");
+    state.ReplaceOwnerSurfList("A", {});
+    state.Detach("A"); // No actual removal; the provisional record still exists.
+    state.CompletePrimary(begun.token, MakeRecord("A", 3));
+    Require(Owner(state, "A").surfaces.empty() && state.Usage().records == 1,
+        "Completion reconstructed callback-mutated SurfList");
+    state.AttachPrimary(0, MakeRecord("B", 99), "other", resolver);
+    RefusedUnchanged(state, [&] { state.CompletePrimary(begun.token, MakeRecord("A", 4)); },
+        "Same-surface insertion failed to invalidate primary token");
+    Require(state.ReadOnlySnapshot().surfaces[0][1].relativeCorners[0].x == 99,
+        "Invalidated completion overwrote callback's foreign record");
+
+    State removal(2, 3);
+    removal.AttachPrimary(0, MakeRecord("B", 50), "other", resolver);
+    const auto pending = removal.BeginPrimary(0, "A", "tex", resolver);
+    removal.Detach("B");
+    RefusedUnchanged(removal, [&] { removal.CompletePrimary(pending.token, MakeRecord("A", 6)); },
+        "Same-surface foreign record removal failed to invalidate token");
+
+    State reentrant(1, 3);
+    const auto old = reentrant.BeginPrimary(0, "A", "tex", resolver);
+    reentrant.Detach("A");
+    const auto replacement = reentrant.BeginPrimary(0, "A", "tex", resolver, {10, 20, 30});
+    RefusedUnchanged(reentrant, [&] { reentrant.CompletePrimary(old.token, MakeRecord("A", 7)); },
+        "Detached/reinserted same-owner record accepted old token");
+    reentrant.CompletePrimary(replacement.token, MakeRecord("A", 8));
+    const auto nested = reentrant.BeginPrimary(0, "A", "tex", resolver);
+    RefusedUnchanged(reentrant, [&] { reentrant.CompletePrimary(replacement.token, MakeRecord("A", 9)); },
+        "Nested same-surface primary shifted index accepted old token");
+    reentrant.CompletePrimary(nested.token, MakeRecord("A", 10));
+    Require(reentrant.ReadOnlySnapshot().surfaces[0][0].relativeCorners[0].x == 10 &&
+        reentrant.ReadOnlySnapshot().surfaces[0][1].relativeCorners[0].x == 8,
+        "Nested same-owner completion targeted the wrong record");
+}
+
+void ProvisionalCheckpointAndJournal() {
+    State state(2, 4);
+    TextureMap textures{{"A", "tex"}, {"B", "other"}};
+    const auto resolver = Resolve(textures);
+    const auto begun = state.BeginPrimary(0, "A", "tex", resolver, {1, 2, 3});
+    State journal(state);
+    journal.CompletePrimary(begun.token, MakeRecord("A", 4, {3, 0, 3}));
+    Require(state.ReadOnlySnapshot().surfaces[0][0].nodeMembership.empty() &&
+        journal.ReadOnlySnapshot().surfaces[0][0].nodeMembership.size() == 3,
+        "Journal copy omitted token domain or retained mutable graph alias");
+    const State before(state);
+    state.AttachPrimary(0, MakeRecord("B", 5), "other", resolver);
+    RefusedUnchanged(state, [&] { state.CompletePrimary(begun.token, MakeRecord("A", 6)); },
+        "Pre-rollback token unexpectedly valid");
+    State rollback(before);
+    Require(state.Swap(rollback), "Token-sidecar rollback swap failed");
+    state.CompletePrimary(begun.token, MakeRecord("A", 7));
+    Require(state.ReadOnlySnapshot().surfaces[0][0].relativeCorners[0].x == 7,
+        "Journal rollback did not restore token validity");
+    RefusedUnchanged(rollback, [&] { rollback.CompletePrimary(begun.token, MakeRecord("A", 8)); },
+        "Swap did not move invalidated surface serial to journal");
+    State assigned(0, 0);
+    assigned = state;
+    assigned.CompletePrimary(begun.token, MakeRecord("A", 9));
+    Require(assigned.ReadOnlySnapshot().surfaces[0][0].relativeCorners[0].x == 9 &&
+        state.ReadOnlySnapshot().surfaces[0][0].relativeCorners[0].x == 7,
+        "Copy assignment did not preserve valid token independently");
+    auto malformed = state.ReadOnlySnapshot();
+    malformed.owners.push_back(malformed.owners[0]);
+    RefusedUnchanged(state, [&] { state.ImportSnapshot(malformed); }, "Failed import duplicate owner");
+    state.CompletePrimary(begun.token, MakeRecord("A", 10));
+    const auto snapshot = state.ReadOnlySnapshot();
+    const auto usage = state.Usage();
+    state.ImportSnapshot(snapshot);
+    Require(SameSnapshot(state.ReadOnlySnapshot(), snapshot) && state.Usage().storageBytes == usage.storageBytes &&
+        state.TransientRetainedBytes() >= State::TransientStorageBytes(2),
+        "Import changed exact graph payload or omitted transient sidecar charge");
+    RefusedUnchanged(state, [&] { state.CompletePrimary(begun.token, MakeRecord("A", 11)); },
+        "Checkpoint import resurrected a pre-import token");
+    const auto afterImport = state.BeginPrimary(1, "B", "other", resolver);
+    state.CompletePrimary(afterImport.token, MakeRecord("B", 12));
+    Require(state.ReadOnlySnapshot().surfaces[1][0].relativeCorners[0].x == 12,
+        "Fresh imported token domain refused normal completion");
+}
+
+void ProvisionalBudgetsAndReentrancy() {
+    TextureMap textures{{"A", "tex"}, {"B", "other"}};
+    const auto resolver = Resolve(textures);
+    State measured(1, 4);
+    const auto initial = measured.Usage().storageBytes;
+    const auto begun = measured.BeginPrimary(0, "A", "tex", resolver);
+    const auto incoming = sizeof(Record) + 2u + sizeof(QuestVr::DecalPrimaryToken) + 2u;
+    Require(begun.stats.stagedBytes == 2u * initial + measured.Usage().storageBytes + incoming,
+        "Begin staging omitted copied token owner/payload/sidecar");
+    Limits limits;
+    limits.storageBytes = measured.Usage().storageBytes - 1u;
+    State storage(1, 4, limits);
+    RefusedUnchanged(storage, [&] { storage.BeginPrimary(0, "A", "tex", resolver); }, "Begin storage budget");
+    limits = {};
+    limits.stagingBytes = begun.stats.stagedBytes - 1u;
+    State staging(1, 4, limits);
+    RefusedUnchanged(staging, [&] { staging.BeginPrimary(0, "A", "tex", resolver); }, "Begin token staging budget");
+    limits = {};
+    limits.operationSteps = begun.stats.steps - 1u;
+    State work(1, 4, limits);
+    RefusedUnchanged(work, [&] { work.BeginPrimary(0, "A", "tex", resolver); }, "Begin work budget");
+
+    limits = {};
+    limits.storageBytes = measured.Usage().storageBytes;
+    State completeStorage(1, 4, limits);
+    const auto pendingStorage = completeStorage.BeginPrimary(0, "A", "tex", resolver);
+    RefusedUnchanged(completeStorage, [&] {
+        completeStorage.CompletePrimary(pendingStorage.token, MakeRecord("A", 1, {0}));
+    }, "Completion storage budget");
+    completeStorage.CompletePrimary(pendingStorage.token, MakeRecord("A", 2));
+
+    const auto completed = measured.CompletePrimary(begun.token, MakeRecord("A", 3, {0, 1, 2, 3}));
+    Require(completed.stagedBytes > begun.stats.stagedBytes && completed.steps > begun.stats.steps,
+        "Completion budget fixture does not exceed initial Begin");
+    limits = {};
+    limits.stagingBytes = completed.stagedBytes - 1u;
+    State completeStaging(1, 4, limits);
+    const auto pendingStaging = completeStaging.BeginPrimary(0, "A", "tex", resolver);
+    RefusedUnchanged(completeStaging, [&] {
+        completeStaging.CompletePrimary(pendingStaging.token, MakeRecord("A", 3, {0, 1, 2, 3}));
+    }, "Completion staging budget");
+    completeStaging.CompletePrimary(pendingStaging.token, MakeRecord("A", 4));
+    limits = {};
+    limits.operationSteps = completed.steps - 1u;
+    State completeWork(1, 4, limits);
+    const auto pendingWork = completeWork.BeginPrimary(0, "A", "tex", resolver);
+    RefusedUnchanged(completeWork, [&] {
+        completeWork.CompletePrimary(pendingWork.token, MakeRecord("A", 3, {0, 1, 2, 3}));
+    }, "Completion work budget");
+    completeWork.CompletePrimary(pendingWork.token, MakeRecord("A", 5));
+    limits = {};
+    limits.nodeMembership = 1;
+    State membership(1, 4, limits);
+    const auto pendingMembership = membership.BeginPrimary(0, "A", "tex", resolver);
+    RefusedUnchanged(membership, [&] {
+        membership.CompletePrimary(pendingMembership.token, MakeRecord("A", 6, {0, 0}));
+    }, "Completion aggregate node membership budget");
+    membership.CompletePrimary(pendingMembership.token, MakeRecord("A", 7, {1}));
+
+    State reentrant(1, 4);
+    const auto outer = reentrant.BeginPrimary(0, "A", "tex", resolver);
+    RefusedUnchanged(reentrant, [&] {
+        reentrant.BeginPrimary(0, "B", "other", [&](const std::string&) {
+            reentrant.CompletePrimary(outer.token, MakeRecord("A", 8));
+            return std::optional<std::string>{"tex"};
+        });
+    }, "Resolver reentrant completion");
+    RefusedUnchanged(reentrant, [&] {
+        reentrant.AttachPrimary(0, MakeRecord("B", 9), "other", [&](const std::string&) {
+            reentrant.BeginPrimary(0, "A", "tex", resolver);
+            return std::optional<std::string>{"tex"};
+        });
+    }, "Resolver reentrant Begin");
+    reentrant.CompletePrimary(outer.token, MakeRecord("A", 10));
+    Require(reentrant.ReadOnlySnapshot().surfaces[0][0].relativeCorners[0].x == 10,
+        "Resolver refusal changed primary serial/domain or left mutation guard active");
+}
 } // namespace
 
 int main() {
     try {
         LiveTextureOrdering(); DuplicatesAndDetach(); MirrorAndOpaqueOwnership();
         InvalidDataAndResolverFailure(); BoundsAndUsage(); WorkRollbackAndReentrancy(); CopyAndSwapJournal();
+        ProvisionalPublicationAndCompletion(); ProvisionalInvalidationAndFailure();
+        ProvisionalCheckpointAndJournal(); ProvisionalBudgetsAndReentrancy();
         std::cout << "Native decal surface state: " << checks << " checks, " << refusals
-                  << " expected refusals; insertion, mirror, detach and rollback passed\n";
+                  << " expected refusals; insertion, provisional completion, mirror, detach and rollback passed\n";
         return 0;
     } catch (const std::exception& error) {
         std::cerr << "Native decal surface state test failed: " << error.what() << '\n';

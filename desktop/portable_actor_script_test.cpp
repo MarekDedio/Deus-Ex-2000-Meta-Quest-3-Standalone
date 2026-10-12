@@ -3113,8 +3113,8 @@ void VerifyOriginalWorldStartupProbe(const std::filesystem::path& legacy,
     PortableWorldStartupProbeOptions options;
     options.defaultGameClass = "DeusEx.DeusExGameInfo";
     QuestVr::Vm::Limits limits;
-    limits.instructions = 1'000'000u; limits.nodes = 262'144u;
-    limits.writes = 262'144u; limits.retainedBytes = 128u << 20u;
+    limits.instructions = 4'000'000u; limits.nodes = 1'048'576u;
+    limits.writes = 1'048'576u; limits.retainedBytes = 128u << 20u;
     const auto verifyRollback = [&] {
         Require(SavePortableRuntimeState(inspect.string()) && CheckpointBytes(inspect) == baseline &&
             GetPortableRuntimeWorldRevision() == revision && !GetPortableRuntimeScriptStatePresent() &&
@@ -3125,18 +3125,24 @@ void VerifyOriginalWorldStartupProbe(const std::filesystem::path& legacy,
             "Original world probe retained partial authored writes/frames/births/RNG/native publication");
     };
     const auto result = ProbePortableWorldStartup(options, limits);
+    std::cout << "WORLD PROBE BOUNDARY phase=" << PortableWorldStartupPhaseName(result.phase)
+        << " slot=" << result.actorSlot << " actor=" << result.actorPath
+        << " function=" << result.execution.function << ':' << result.execution.offset
+        << " opcode=" << static_cast<unsigned>(result.execution.opcode)
+        << " error=" << result.execution.error << std::endl;
     Require(!result.execution.passed() && !result.execution.committed && !result.restoredWorld &&
         !result.execution.error.empty() && !result.gameInfoPath.empty() &&
         result.visited.at(static_cast<std::size_t>(PortableWorldStartupPhase::InitializeExecution)) == actors.size() + 1u &&
         result.visited.at(static_cast<std::size_t>(PortableWorldStartupPhase::InitGame)) == 1u,
         "Original world prefix did not perform true GameInfo birth + all-world InitExecution + InitGame: " +
             std::string(PortableWorldStartupPhaseName(result.phase)) + " " + result.execution.error);
-    Require(result.phase == PortableWorldStartupPhase::PreBeginPlay && result.actorSlot == 756u &&
-        result.actorPath == "00_Training.JaimeReyes0" && result.gameInfoPath == "00_Training.DeusExGameInfo0" &&
-        result.execution.status == Status::Unsupported && result.execution.function == "Engine.Decal.AttachDecal" &&
-        result.execution.offset == 0u && result.execution.opcode == 0u &&
-        result.execution.error == "Unsupported runtime native 0 (Engine.Decal.AttachDecal)" &&
-        result.execution.callStack.size() >= 2u && result.execution.callStack.back() == "Engine.Decal.AttachDecal",
+    Require(result.phase == PortableWorldStartupPhase::PreBeginPlay && result.actorSlot == 1331u &&
+        result.actorPath == "00_Training.Camera4" && result.gameInfoPath == "00_Training.DeusExGameInfo0" &&
+        result.execution.status == Status::Unsupported && result.execution.function == "Engine.PlayerReplicationInfo.PostBeginPlay" &&
+        result.execution.offset == 27u && result.execution.opcode == 97u &&
+        result.execution.error == "Unsupported runtime native 280" &&
+        result.execution.callStack.size() >= 2u &&
+        result.execution.callStack.back() == "Engine.PlayerReplicationInfo.PostBeginPlay",
         "Unmodified Training first startup gap changed without an updated original contract: " +
             std::string(PortableWorldStartupPhaseName(result.phase)) + " " + result.actorPath + " " + result.execution.error);
     verifyRollback();

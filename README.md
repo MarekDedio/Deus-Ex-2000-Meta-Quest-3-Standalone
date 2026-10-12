@@ -6,6 +6,13 @@ the original game.
 
 ## Current milestone
 
+The immediate focus is a short, recordable Training route: the original opening
+instructor transmissions, smoothly moving paired doors, and the desk key/keyed
+door. See [Training demo scope and acceptance](docs/TRAINING-DEMO.md). This is a
+bounded VR interaction layer, not completion of all three tutorial maps or the
+original mission scheduler. Headset acceptance is recorded separately from host
+logic tests.
+
 The Android ARM64/OpenXR app has been exercised on Quest 3 with textured
 training geometry, VR locomotion/interaction, UI, audio and save/load features.
 The latest offline work adds original static BSP shadow lightmaps and fixes
@@ -72,17 +79,18 @@ Script Spawn now preserves native callback-visible Class.Name and applies the
 captured optional tag after return, including notification replacements.
 The [original BSP point-trace prerequisite](docs/MODEL-POINT-TRACE.md) and
 [decal native audit](docs/DECAL-NATIVE-CONTRACT.md) prepare exact NPC shadows;
-AttachDecal itself remains unsupported, not bypassed to accept partial startup.
+Positive CPU AttachDecal now publishes original callback-visible native records
+transactionally; rendered shadows and complete original startup remain pending.
 The [decal geometry and ordered-state prerequisites](docs/DECAL-GEOMETRY-PLAN.md)
 now compose original projection, the full sixteen-sample Shadow grid and node
 clipping, with live-texture record ordering and exact duplicate/detach controls.
 These are host-tested foundations, not published native shadows or Quest startup.
 The [native decal checkpoint integration](docs/DECAL-CHECKPOINT.md) adds bounded
 dynamic INT arrays, map-owned GC/journal state, original native Detach and exact
-codec10/envelope13 persistence. Native Attach and rendered shadows remain pending.
+codec10/envelope13 persistence. Rendered native shadows remain pending.
 The [native client binding](docs/NATIVE-CLIENT-BINDING.md) now owns Quest's actual
 stereo viewport lifetime and original Attach entry guards. It does not invent
-player possession or accept the still-missing positive attachment backend.
+player possession or complete original world startup.
 The [Quest test build notes](docs/QUEST-TEST-BUILD.md) record an earlier installed
 test build, not a permanent deployment freeze. At the user's standing request,
 every successful new APK build now automatically installs on the connected,
@@ -116,7 +124,7 @@ and declaration-name rules, covered by the final original-data integration.
 2. Runtime discovers and validates user-supplied game data.
 3. UE1 packages, names, imports, exports, and properties can be read.
 4. All 88 catalog maps decode in desktop world-cache audits; campaign-wide stereo rendering remains to verify on Quest.
-5. Training interactions are implemented; original mission/campaign scripting remains incomplete.
+5. Introductory Training interactions are under acceptance; the full tutorial and original mission/campaign scripting remain incomplete.
 6. Motion controls, interaction, weapons, inventory, HUD, conversations, and
    saves and spatial audio are usable in VR.
 7. All campaign maps pass progression, performance, and comfort testing.
@@ -254,7 +262,8 @@ See [Quest diagnostics](docs/QUEST-DIAGNOSTICS.md) for safe screenshot/map reque
 Pointing at a pawn and pressing A resolves its real `BindName` against the
 active mission's serialized conversation events and displays the shipped
 subtitle while decoding and mixing its referenced MP3 speech over ambient audio;
-Training uses the game's mission `-1` conversation bucket.
+Training uses the original Mission00 conversation bucket (`0`). Its opening
+datalinks resolve by exact authored name rather than the generic NPC-line cursor.
 Real `Engine.Teleporter` and `DeusEx.MapExit` actors decode their URL/DestMap
 properties and initiate catalog-validated travel when entered. Quick-saves now
 record the active map and can restore across a later level transition.

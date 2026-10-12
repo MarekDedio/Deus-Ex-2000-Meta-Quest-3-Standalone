@@ -167,10 +167,99 @@ void AtomicRefusalAndMiss() {
     Require(!noPolygon.hasPrimaryGeometry && noPolygon.primaryTraceNode==0 && seed==1030492215u,
         "Point-trace hit outside polygon bypassed actual coplanar selection");
 }
+void ReentrantPhases() {
+    using namespace QuestVr;
+    auto model=SplitFloor(); std::uint32_t seed=1;
+    const auto prepared=PrepareOriginalDecalPrimary(model,{-.5f,0,1},{0,0,1},100,{},seed);
+    Require(prepared.hasPrimaryGeometry && prepared.primaryTraceNode==0 && prepared.selectedNode==0 && prepared.surface==0,
+        "Pre-callback selection lost authored identities");
+    Require(prepared.center.x==-.5f && prepared.center.z==0 && prepared.surfaceBase.x==0 && prepared.surfaceNormal.z==1,
+        "Pre-callback phase did not retain selected center/base/normal");
+    Require(prepared.randomDraws==6 && prepared.preparedDirection.randomized && seed==1030492215u,
+        "Successful pretrace RNG was not visible before callback");
+    const auto beforeCallbackSeed=seed;
+    ScriptRandom::Draw15(seed);
+    const auto callbackSeed=seed;
+    const auto small=BuildOriginalDecalPrimaryQuad(prepared.center,prepared.surfaceBase,prepared.surfaceNormal,
+        4,1,prepared.preparedDirection);
+    const auto large=BuildOriginalDecalPrimaryQuad(prepared.center,prepared.surfaceBase,prepared.surfaceNormal,
+        12,2,prepared.preparedDirection);
+    Require(large.radius==small.radius*6 && seed==callbackSeed && seed!=beforeCallbackSeed,
+        "Post-callback quad froze USize/DrawScale or overwrote callback RNG");
+    DecalProjectionWork work; work.workSteps=prepared.workSteps;
+    const auto primary=BuildOriginalDecalPrimaryMembership(model,prepared.surface,small,work);
+    Require(primary.primary && primary.surface==0 && primary.nodeMembership==std::vector<std::int32_t>{0},
+        "Separate primary membership altered the whole quad");
+    std::vector<std::int32_t> liveList{prepared.surface};
+    for (int i=0;i<5;++i) for (int j=0;j<5;++j) {
+        const auto secondary=ProcessOriginalDecalSecondarySample(model,small.worldCorners,prepared.surfaceNormal,
+            5,i,j,liveList,work);
+        if (secondary.status==DecalSecondarySampleStatus::Accepted) liveList.push_back(secondary.projected.surface);
+    }
+    Require(work.secondarySamples==25 && liveList==std::vector<std::int32_t>({0,1}) && work.secondaryDuplicates==24,
+        "Post-callback Multi5 was reclamped or live SurfList was frozen");
+    const auto rawFive=BuildOriginalDecalSecondarySample(small.worldCorners,prepared.surfaceNormal,5,0,0);
+    const auto oldFour=BuildOriginalDecalSecondaryGrid(small.worldCorners,prepared.surfaceNormal,5);
+    Require(rawFive.point.x!=oldFour[0].point.x || rawFive.point.y!=oldFour[0].point.y,
+        "Raw Multi5 fractions still used clamped denominator four");
+    const auto lastFive=BuildOriginalDecalSecondarySample(small.worldCorners,prepared.surfaceNormal,5,4,4);
+    Require(lastFive.outer==4 && lastFive.inner==4 && lastFive.point.x==small.worldCorners[2].x &&
+        lastFive.point.y==small.worldCorners[2].y,"Raw Multi grid did not include the far corner");
+    const auto originalPlan=Project(model,seed,{}, {1,0,0},4);
+    std::uint32_t phaseSeed=seed;
+    const auto fixedPrepared=PrepareOriginalDecalPrimary(model,{-.5f,0,1},{0,0,1},100,{1,0,0},phaseSeed);
+    const auto fixedQuad=BuildOriginalDecalPrimaryQuad(fixedPrepared.center,fixedPrepared.surfaceBase,
+        fixedPrepared.surfaceNormal,4,1,fixedPrepared.preparedDirection);
+    DecalProjectionWork fixedWork; fixedWork.workSteps=fixedPrepared.workSteps;
+    std::vector<DecalProjectedSurface> fixedSurfaces{
+        BuildOriginalDecalPrimaryMembership(model,fixedPrepared.surface,fixedQuad,fixedWork)};
+    std::vector<std::int32_t> fixedList{fixedPrepared.surface};
+    for (int i=0;i<4;++i) for (int j=0;j<4;++j) {
+        const auto secondary=ProcessOriginalDecalSecondarySample(model,fixedQuad.worldCorners,fixedPrepared.surfaceNormal,
+            4,i,j,fixedList,fixedWork);
+        if (secondary.status==DecalSecondarySampleStatus::Accepted) {
+            fixedList.push_back(secondary.projected.surface); fixedSurfaces.push_back(secondary.projected);
+        }
+    }
+    Require(fixedWork.workSteps==originalPlan.workSteps && fixedWork.membershipEntries==originalPlan.membershipEntries &&
+        fixedWork.secondarySamples==originalPlan.secondarySamples && fixedWork.secondaryDuplicates==originalPlan.secondaryDuplicates &&
+        fixedSurfaces.size()==originalPlan.surfaces.size(),"Phased and composed budgets/record order diverged");
+    for (std::size_t s=0;s<fixedSurfaces.size();++s) for (std::size_t c=0;c<4;++c) {
+        const auto a=fixedSurfaces[s].relativeCorners[c],b=originalPlan.surfaces[s].relativeCorners[c];
+        Require(a.x==b.x && a.y==b.y && a.z==b.z && fixedSurfaces[s].nodeMembership==originalPlan.surfaces[s].nodeMembership,
+            "Phased and composed exact corners/membership diverged");
+    }
+    DecalProjectionLimits limits; limits.secondarySamples=1;
+    DecalProjectionWork capped;
+    const auto first=ProcessOriginalDecalSecondarySample(model,fixedQuad.worldCorners,fixedPrepared.surfaceNormal,
+        5,0,0,{0,1},capped,limits);
+    Require(first.status==DecalSecondarySampleStatus::Duplicate && capped.secondarySamples==1,
+        "Live SurfList duplicate check ignored current entries");
+    const auto before=capped;
+    Refuse([&] { ProcessOriginalDecalSecondarySample(model,fixedQuad.worldCorners,fixedPrepared.surfaceNormal,
+        5,0,1,{0,1},capped,limits); },"Raw Multi sample loop ignored the fixed sample cap");
+    Require(capped.workSteps==before.workSteps && capped.secondarySamples==before.secondarySamples,
+        "Sample budget exception partially published work");
+    for (const auto multi:{-7,0})
+        Refuse([&] { BuildOriginalDecalSecondarySample(fixedQuad.worldCorners,fixedPrepared.surfaceNormal,multi,0,0); },
+            "Nonpositive live Multi manufactured a secondary sample");
+    Refuse([&] { BuildOriginalDecalSecondarySample(fixedQuad.worldCorners,fixedPrepared.surfaceNormal,5,5,0); },
+        "Out of range raw grid index accepted");
+    DecalProjectionWork invalidWork; invalidWork.workSteps=std::numeric_limits<std::size_t>::max();
+    Refuse([&] { BuildOriginalDecalPrimaryMembership(model,0,fixedQuad,invalidWork); },
+        "Overflowed phase work counter accepted");
+    std::uint32_t failedSeed=1; limits={}; limits.workSteps=1;
+    Refuse([&] { PrepareOriginalDecalPrimary(model,{-.5f,0,1},{0,0,1},100,{},failedSeed,limits); },
+        "Pretrace phase ignored bounded random preparation");
+    Require(failedSeed==1,"Rejected pretrace phase published RNG");
+    limits={}; const auto miss=PrepareOriginalDecalPrimary(model,{-.5f,0,1},{0,0,-1},100,{},failedSeed,limits);
+    Require(!miss.hasPrimaryGeometry && failedSeed==1030492215u && miss.randomDraws==6,
+        "Phased ordinary miss did not publish successful pretrace draws");
+}
 } // namespace
 int main() {
     try {
-        PrimaryGates(); ComposedSplitFloor(); PlanToOrderedState(); AcceptedEmptyMembership(); AtomicRefusalAndMiss();
+        PrimaryGates(); ComposedSplitFloor(); PlanToOrderedState(); AcceptedEmptyMembership(); AtomicRefusalAndMiss(); ReentrantPhases();
         std::cout<<"PASS original composed decal geometry checks="<<checks<<" expected-refusals="<<refusals
             <<"; trace/selection/gates/quad/grid/clip/order/atomic RNG; not native/renderer/GC/save completion\n";
         return 0;

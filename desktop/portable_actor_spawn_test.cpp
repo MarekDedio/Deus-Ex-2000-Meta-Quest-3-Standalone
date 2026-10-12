@@ -3,6 +3,8 @@
 #include "portable_unreal_runtime.h"
 #include "portable_model_geometry.h"
 #include "quest_script_state.h"
+#include "quest_decal_primary_quad.h"
+#include "quest_script_random.h"
 
 #include <algorithm>
 #include <chrono>
@@ -63,6 +65,9 @@ Code Int(std::int32_t value) { Code code{{0x1du}, 5u}; U32(code.raw, static_cast
 Code Number(float value) { Code code{{0x1eu}, 5u}; FloatBytes(code.raw, value); return code; }
 Code VectorLiteral(std::array<float, 3> value) {
     Code code{{0x23u}, 13u}; for (const auto component : value) FloatBytes(code.raw, component); return code;
+}
+Code RotatorLiteral(std::array<std::int32_t, 3> value) {
+    Code code{{0x22u}, 13u}; for (const auto component : value) U32(code.raw, static_cast<std::uint32_t>(component)); return code;
 }
 Code Text(const std::string& value) {
     Code code{{0x1fu}, value.size() + 2u};
@@ -357,8 +362,12 @@ void RefusedSave(const Fixture& fixture, const Bytes& prefix, const QuestVr::Scr
 
 struct Tables { PortablePackageTables core, engine, classes, map; std::size_t initialActors{}; };
 // Decal fixture variants: 1 exact; 2 malformed Texture target; 3 malformed
-// native function flags; 4 malformed return flags; 5 malformed optional flags.
+// native function flags; 4 malformed return flags; 5 malformed optional flags;
+// 6 malformed signed Bitmap.USize declaration. World models5/6 are a real
+// finite floor; model6 also binds its surface to an authored Mover.
 Tables Build(Fixture& fixture, unsigned worldModel = 0u, unsigned decalSchema = 0u) {
+    const bool decalFloor = worldModel == 5u || worldModel == 6u;
+    const bool decalMover = worldModel == 6u;
     Package core; core.stem = "Core"; const auto corePackage = core.ImportPackage("Core"), object = core.Export("Object"), metaclass = core.Export("Class", 0, object);
     const auto vector = core.Export("Vector", core.Import("Struct", corePackage), 0, object), rotator = core.Export("Rotator", core.Import("Struct", corePackage), 0, object);
     for (const auto& name : {"X", "Y", "Z"}) core.Property(name, "FloatProperty", vector, corePackage);
@@ -380,8 +389,10 @@ Tables Build(Fixture& fixture, unsigned worldModel = 0u, unsigned decalSchema = 
     const auto playerPawn = engine.Export("PlayerPawn", 0, pawn);
     const auto decoration = engine.Export("Decoration", 0, actor);
     const auto gameInfo = engine.Export("GameInfo", 0, actor);
-    const auto texture = decalSchema ? engine.Export("Texture", 0, importedObject) : 0;
+    const auto bitmap = decalSchema ? engine.Export("Bitmap", 0, importedObject) : 0;
+    const auto texture = decalSchema ? engine.Export("Texture", 0, bitmap) : 0;
     const auto decal = decalSchema ? engine.Export("Decal", 0, actor) : 0;
+    const auto mover = decalSchema ? engine.Export("Mover", 0, brush) : 0;
     const auto notify = engine.Export("SpawnNotify", 0, actor), pointRegion = engine.Export("PointRegion", engine.Import("Struct", engineCore), 0, actor);
     engine.Property("Zone", "ObjectProperty", pointRegion, engineCore, 1u, zone); engine.Property("iLeaf", "IntProperty", pointRegion, engineCore); engine.Property("ZoneNumber", "ByteProperty", pointRegion, engineCore);
     engine.StructBody(pointRegion);
@@ -402,18 +413,27 @@ Tables Build(Fixture& fixture, unsigned worldModel = 0u, unsigned decalSchema = 
     }
     for (const auto& name : {"CollisionRadius", "CollisionHeight"}) engine.Property(name, "FloatProperty", actor, engineCore);
     if (decalSchema) {
+        engine.Property("USize", decalSchema == 6u ? "FloatProperty" : "IntProperty", bitmap, engineCore);
         const auto textureField = engine.Property("Texture", "ObjectProperty", actor, engineCore, 1u, decalSchema == 2u ? actor : texture);
         engine.Property("DrawScale", "FloatProperty", actor, engineCore);
         const auto multi = engine.Property("MultiDecalLevel", "IntProperty", decal, engineCore);
         engine.Property("LastRenderedTime", "FloatProperty", decal, engineCore);
         const auto surfaces = engine.IntArrayProperty("SurfList", decal, engineCore, 0x00400002u);
         const auto attach = engine.Function("AttachDecal", decal, engineCore, {}, 0u, decalSchema == 3u ? 0x501u : 0x500u);
+        engine.Function("DetachDecal", decal, engineCore, {}, 0u, 0x500u);
         engine.Property("TraceDistance", "FloatProperty", attach, engineCore, 1u, 0, 0x80u);
         engine.Property("DecalDir", "StructProperty", attach, engineCore, 1u, importedVector, decalSchema == 5u ? 0x80u : 0x90u);
         engine.Property("ReturnValue", "BoolProperty", attach, engineCore, 1u, 0, decalSchema == 4u ? 0x480u : 0x580u);
         const auto attachDefault = engine.Function("AttachDefault", decal, engineCore, Return(Final(attach, {Number(100.0f)})));
         engine.Property("ReturnValue", "BoolProperty", attachDefault, engineCore, 1u, 0, 0x580u);
+        engine.Function("AttachThenFail", decal, engineCore, Join({Final(attach, {Number(100.0f)}), Native(999u), Return()}));
         const auto counter = engine.Property("ArgumentCounter", "IntProperty", decal, engineCore);
+        // The interpreter write quota meters actual script assignments/guarded
+        // OUT references, not the host native's direct property journal. Fail
+        // after a real attachment and one script write, rather than assuming
+        // native SurfList/clamp mutations are interpreter assignment opcodes.
+        engine.Function("AttachThenWrites", decal, engineCore, Join({Final(attach, {Number(100.0f)}),
+            Assign(Ref(0x01u,counter),Int(1)),Assign(Ref(0x01u,counter),Int(2)),Return()}));
         const auto distance = engine.Function("DistanceWithSideEffect", decal, engineCore);
         engine.Property("ReturnValue", "FloatProperty", distance, engineCore, 1u, 0, 0x580u);
         engine.FunctionCode(distance, Join({Assign(Ref(0x01u, counter), Native(146u, {Ref(0x01u, counter), Int(1)})), Return(Number(100.0f))}));
@@ -432,6 +452,19 @@ Tables Build(Fixture& fixture, unsigned worldModel = 0u, unsigned decalSchema = 
         const auto setTexture = engine.Function("SetTexture", decal, engineCore);
         const auto textureInput = engine.Property("Input", "ObjectProperty", setTexture, engineCore, 1u, decalSchema == 2u ? actor : texture, 0x80u);
         engine.FunctionCode(setTexture, Join({Assign(Ref(0x01u, textureField), Ref(0x00u, textureInput)), Return()}));
+        for (const auto& [name, fieldName, type, target] : std::vector<std::tuple<std::string, std::string, std::string, std::int32_t>>{
+            {"SetDrawScale", "DrawScale", "FloatProperty", 0},
+            {"SetDecalLocation", "Location", "StructProperty", importedVector},
+            {"SetDecalRotation", "Rotation", "StructProperty", importedRotator}}) {
+            const auto function = engine.Function(name, decal, engineCore);
+            const auto input = engine.Property("Input", type, function, engineCore, 1u, target, 0x80u);
+            const auto found = std::find_if(engine.exports.begin(), engine.exports.end(), [&](const auto& entry) {
+                return entry.ObjOuter == actor && engine.names.at(static_cast<std::size_t>(entry.ObjName)) == fieldName;
+            });
+            Require(found != engine.exports.end(), "Generated Decal mutator lacks actual Actor field");
+            const auto field = static_cast<std::int32_t>(found - engine.exports.begin() + 1u);
+            engine.FunctionCode(function, Join({Assign(Ref(0x01u, field), Ref(0x00u, input)), Return()}));
+        }
         // SurfList's original Const bit must still deny script assignment.
         const auto writeSurfaces = engine.Function("WriteSurfList", decal, engineCore);
         const auto surfacesInput = engine.IntArrayProperty("Input", writeSurfaces, engineCore, 0x00400080u);
@@ -531,7 +564,8 @@ Tables Build(Fixture& fixture, unsigned worldModel = 0u, unsigned decalSchema = 
     Bytes actorDefaults; engine.FloatTag(actorDefaults, "CollisionRadius", 12.0f); engine.FloatTag(actorDefaults, "CollisionHeight", 20.0f); engine.ClassBody(actor, actorDefaults);
     for (auto cls : {zone, levelInfo, level, model, brush, pawn, player, viewport, playerPawn, notify, decoration, gameInfo}) engine.ClassBody(cls);
     if (decalSchema) {
-        engine.ClassBody(texture); Bytes defaults; engine.IntTag(defaults, "MultiDecalLevel", 4); engine.ClassBody(decal, defaults);
+        engine.ClassBody(bitmap); engine.ClassBody(texture); engine.ClassBody(mover);
+        Bytes defaults; engine.IntTag(defaults, "MultiDecalLevel", 4); engine.ClassBody(decal, defaults);
     }
     const auto engineTable = fixture.Write(engine);
 
@@ -937,6 +971,61 @@ Tables Build(Fixture& fixture, unsigned worldModel = 0u, unsigned decalSchema = 
             classes.BoolTag(collisionDefaults,field,std::string(field)==flag);
         classes.ClassBody(cls,std::move(collisionDefaults));
     }
+    std::int32_t decalProbeClass{}, decalOwnerClass{};
+    if (decalMover) {
+        const auto importedDecal = classes.Import("Decal", classesEngine);
+        const auto importedTexture = classes.Import("Texture", classesEngine);
+        const auto importedMover = classes.Import("Mover", classesEngine);
+        const auto textureProperty = classes.Import("Texture", importedActor, "ObjectProperty");
+        const auto drawScaleProperty = classes.Import("DrawScale", importedActor, "FloatProperty");
+        const auto multiProperty = classes.Import("MultiDecalLevel", importedDecal, "IntProperty");
+        const auto surfListProperty = classes.Import("SurfList", importedDecal, "ArrayProperty");
+        const auto detachFunction = classes.Import("DetachDecal", importedDecal, "Function");
+        decalProbeClass = classes.Export("DecalProbe", 0, importedDecal);
+        decalOwnerClass = classes.Export("DecalOwner", 0, importedActor);
+        const auto mode = classes.Property("CallbackMode", "IntProperty", decalOwnerClass, classesCore);
+        const auto trace = classes.Property("CallbackTrace", "IntProperty", decalOwnerClass, classesCore);
+        const auto seenMulti = classes.Property("ObservedMulti", "IntProperty", decalOwnerClass, classesCore);
+        const auto seenRandom = classes.Property("ObservedRandom", "IntProperty", decalOwnerClass, classesCore);
+        const auto seenSurfaces = classes.IntArrayProperty("ObservedSurfList", decalOwnerClass, classesCore, 0u);
+        const auto replacement = classes.Property("ReplacementTexture", "ObjectProperty", decalOwnerClass, classesCore, 1u, importedTexture);
+        const auto surfaceMover = classes.Property("SurfaceMover", "ObjectProperty", decalOwnerClass, classesCore, 1u, importedMover);
+        const auto setMode = classes.Function("SetCallbackMode", decalOwnerClass, classesCore);
+        const auto modeInput = classes.Property("Input", "IntProperty", setMode, classesCore, 1u, 0, 0x80u);
+        classes.FunctionCode(setMode, Join({Assign(Ref(0x01u, mode), Ref(0x00u, modeInput)), Return()}));
+        const auto onAttach = classes.Function("Attach", decalOwnerClass, classesCore);
+        const auto attached = classes.Property("Other", "ObjectProperty", onAttach, classesCore, 1u, importedActor, 0x80u);
+        const auto receiver = [&]() { return Ref(0x00u, attached); };
+        const auto receiverField = [&](std::int32_t field) { return Context(receiver(), Ref(0x01u, field)); };
+        Flow callback;
+        callback.Add(Assign(Ref(0x01u, trace), Int(1)));
+        callback.Add(Assign(Ref(0x01u, seenSurfaces), receiverField(surfListProperty)));
+        callback.Add(Assign(Ref(0x01u, seenMulti), receiverField(multiProperty)));
+        callback.Add(Assign(Ref(0x01u, seenRandom), Native(167u, {Int(1000)})));
+        callback.Add(Assign(receiverField(drawScaleProperty), Number(2.0f)));
+        callback.Add(Assign(receiverField(multiProperty), Int(5)));
+        callback.Add(Assign(receiverField(importedLocation), VectorLiteral({1000.0f, 1000.0f, 100.0f})));
+        callback.Add(Assign(receiverField(importedRotation), RotatorLiteral({0, 0, 0})));
+        callback.Add(Assign(Context(Ref(0x01u, surfaceMover), Ref(0x01u, importedRotation)), RotatorLiteral({9, 10, 11})));
+        callback.IfNot(Native(154u, {Ref(0x01u, mode), Int(2)}), "nonnull-texture");
+        callback.Add(Assign(receiverField(textureProperty), Token(0x17u)));
+        callback.Add(Return()); callback.Label("nonnull-texture");
+        callback.Add(Assign(receiverField(textureProperty), Ref(0x01u, replacement)));
+        callback.IfNot(Native(154u, {Ref(0x01u, mode), Int(3)}), "keep-primary");
+        callback.Add(Context(receiver(), Final(detachFunction))); callback.Label("keep-primary");
+        callback.IfNot(Native(154u, {Ref(0x01u, mode), Int(4)}), "callback-success");
+        callback.Add(Native(999u)); callback.Label("callback-success"); callback.Add(Return());
+        classes.FunctionCode(onAttach, callback.Finish());
+        const auto baseTrace = classes.Property("BaseChangeTrace", "IntProperty", decalProbeClass, classesCore);
+        const auto baseMulti = classes.Property("BaseChangeMulti", "IntProperty", decalProbeClass, classesCore);
+        const auto baseSurfaces = classes.IntArrayProperty("BaseChangeSurfList", decalProbeClass, classesCore, 0u);
+        classes.Function("BaseChange", decalProbeClass, classesCore, Join({
+            Assign(Ref(0x01u, baseTrace), Context(Ref(0x01u, importedOwner), Ref(0x01u, trace))),
+            Assign(Ref(0x01u, baseMulti), Ref(0x01u, multiProperty)),
+            Assign(Ref(0x01u, baseSurfaces), Ref(0x01u, surfListProperty)), Return()}));
+        Bytes ownerDefaults; classes.IntTag(ownerDefaults, "CallbackMode", 1);
+        classes.ClassBody(decalOwnerClass, std::move(ownerDefaults)); classes.ClassBody(decalProbeClass);
+    }
     const auto classesTable = fixture.Write(classes);
     Require(GetPortableObjectPath(coreTable, recordCount) == "Object.Record.Count" && GetPortableObjectPath(coreTable, recordTarget) == "Object.Record.Target", "Generated frozen-struct metadata identity is wrong");
 
@@ -945,17 +1034,35 @@ Tables Build(Fixture& fixture, unsigned worldModel = 0u, unsigned decalSchema = 
     const auto misleadingLevel = worldModel ? map.Export("MisleadingLevel", map.Import("LevelInfo", mapEngine)) : 0;
     const auto zoneActor = worldModel ? map.Export("RegionZone", map.Import("ZoneInfo", mapEngine)) : 0;
     const auto levelActor = map.Export("Level0", map.Import("LevelInfo", mapEngine)), driver = map.Export("Driver", map.Import(worldModel ? "WorldProbe" : "Probe", mapClasses));
-    const auto owner = map.Export("Owner", map.Import(worldModel ? "WorldPassive" : "Support", mapClasses)), instigator = map.Export("Pawn0", map.Import("Pawn", mapEngine));
+    const auto owner = map.Export("Owner", map.Import(decalMover ? "DecalOwner" : worldModel ? "WorldPassive" : "Support", mapClasses)), instigator = map.Export("Pawn0", map.Import("Pawn", mapEngine));
     const auto collision = map.Export("Leaf0", map.Import("Probe", mapClasses)); // Deliberate authored birth-name collision.
     const auto playerObject = map.Export("BindingPlayer", map.Import("Player", mapEngine));
     const auto viewportObject = map.Export("BindingViewport", map.Import("Viewport", mapEngine));
-    const auto decalActor = decalSchema ? map.Export("Decal0", map.Import("Decal", mapEngine)) : 0;
+    const auto decalActor = decalSchema ? map.Export("Decal0", map.Import(decalMover ? "DecalProbe" : "Decal", decalMover ? mapClasses : mapEngine)) : 0;
+    const auto surfaceMoverActor = decalMover ? map.Export("SurfaceMover", map.Import("Mover", mapEngine)) : 0;
+    std::int32_t replacementTexture{};
     if (decalSchema) {
         const auto textureObject = map.Export("Texture0", map.Import("Texture", mapEngine));
-        map.ActorBody(textureObject, {});
+        Bytes textureProperties;
+        if (decalSchema == 6u) map.FloatTag(textureProperties, "USize", 32.0f);
+        else map.IntTag(textureProperties, "USize", 32);
+        map.ActorBody(textureObject, std::move(textureProperties));
+        replacementTexture = map.Export("Texture1", map.Import("Texture", mapEngine));
+        Bytes replacementProperties; map.IntTag(replacementProperties, "USize", 64);
+        map.ActorBody(replacementTexture, std::move(replacementProperties));
         Bytes properties; map.ObjectTag(properties, "Level", levelActor); map.ObjectTag(properties, "XLevel", world);
         map.FloatTag(properties, "LastRenderedTime", 27.5f); map.FloatTag(properties, "DrawScale", 1.0f);
+        if (decalFloor) {
+            map.VectorTag(properties, "Location", {0.0f, 0.0f, 0.1f});
+            map.RotatorTag(properties, "Rotation", {16384, 0, 0});
+            if (decalMover) map.ObjectTag(properties, "Owner", owner);
+        }
         map.IntTag(properties, "MultiDecalLevel", 9); map.ActorBody(decalActor, std::move(properties));
+    }
+    if (decalMover) {
+        Bytes properties; map.ObjectTag(properties, "Level", levelActor); map.ObjectTag(properties, "XLevel", world);
+        map.RotatorTag(properties, "Rotation", {128, 512, -256});
+        map.ActorBody(surfaceMoverActor, std::move(properties));
     }
     map.ActorBody(playerObject, {}); map.ActorBody(viewportObject, {}); // Real UObjects, deliberately not Level actors.
     const auto detachedActor = map.Export("DetachedActor", map.Import("Probe", mapClasses));
@@ -966,7 +1073,10 @@ Tables Build(Fixture& fixture, unsigned worldModel = 0u, unsigned decalSchema = 
     for (const auto reference : {levelActor, driver, owner, instigator, collision}) {
         Bytes properties; map.ObjectTag(properties, "Level", levelActor); map.ObjectTag(properties, "XLevel", world);
         if (reference == levelActor) {
-            map.BoolTag(properties, "bBegunPlay", !worldModel);
+            // Startup-probe variants deliberately precede BeginPlay. The mover
+            // attachment variant instead exercises live Attach/BaseChange
+            // callbacks, which original enum-event dispatch gates on begun play.
+            map.BoolTag(properties, "bBegunPlay", !worldModel || decalMover);
             if (worldModel) { map.BoolTag(properties, "bWaterZone", true); map.FloatTag(properties, "TimeSeconds", 123.0f); }
         }
         if (reference == driver) {
@@ -978,18 +1088,49 @@ Tables Build(Fixture& fixture, unsigned worldModel = 0u, unsigned decalSchema = 
             }
         }
         if (worldModel && (reference==instigator || reference==collision)) map.NameTag(properties,"Tag","WorldTarget");
+        if (decalMover && reference == owner) {
+            map.ObjectTag(properties, "ReplacementTexture", replacementTexture);
+            map.ObjectTag(properties, "SurfaceMover", surfaceMoverActor);
+        }
         if (worldModel==4u && reference==instigator) map.BoolTag(properties,"bCollideWorld",true);
         map.ActorBody(reference, std::move(properties));
     }
-    Bytes levelBody; Index(levelBody, 0); U32(levelBody, decalSchema ? 8u : 7u); U32(levelBody, decalSchema ? 8u : 7u);
+    const auto levelSlotCount = (decalSchema ? 8u : 7u) + (decalMover ? 1u : 0u);
+    Bytes levelBody; Index(levelBody, 0); U32(levelBody, levelSlotCount); U32(levelBody, levelSlotCount);
     for (const auto reference : {levelActor, driver, 0, owner, instigator, collision, 0}) Index(levelBody, reference);
     if (decalSchema) Index(levelBody, decalActor);
+    if (decalMover) Index(levelBody, surfaceMoverActor);
     for (unsigned i = 0u; i < 4u; ++i) Index(levelBody, 0);
     Index(levelBody, 0); U32(levelBody, 7777u); U32(levelBody, 0u); Index(levelBody, mapModel); Index(levelBody, 0); map.Body(world, std::move(levelBody));
     Bytes modelBody; Index(modelBody, 0); for (unsigned i = 0u; i < 6u; ++i) FloatBytes(modelBody, 0.0f); modelBody.push_back(0u);
     for (unsigned i = 0u; i < 4u; ++i) FloatBytes(modelBody, 0.0f);
-    Index(modelBody,0); Index(modelBody,0); // Vectors, points.
     const bool nodes = worldModel==2u || worldModel==3u;
+    const auto zoneCount = worldModel==3u ? 0u : nodes ? 2u : 1u;
+    if (decalFloor) {
+        Index(modelBody, 3);
+        for (const auto& value : std::array<std::array<float,3>,3>{{{0,0,1}, {1,0,0}, {0,1,0}}})
+            for (const auto component : value) FloatBytes(modelBody, component);
+        Index(modelBody, 5);
+        for (const auto& value : std::array<std::array<float,3>,5>{{{0,0,0}, {-256,-256,0},
+            {256,-256,0}, {256,256,0}, {-256,256,0}}})
+            for (const auto component : value) FloatBytes(modelBody, component);
+        Index(modelBody, 1); // One solid plane and its real finite authored polygon.
+        FloatBytes(modelBody, 0); FloatBytes(modelBody, 0); FloatBytes(modelBody, 1); FloatBytes(modelBody, 0);
+        U64(modelBody, 0); modelBody.push_back(0);
+        Index(modelBody, 0); Index(modelBody, 0);
+        for (unsigned i=0u;i<5u;++i) Index(modelBody, -1); // Back/front/plane, collision/render bounds.
+        Index(modelBody, 0); Index(modelBody, 0); modelBody.push_back(4);
+        U32(modelBody, 0xffffffffu); U32(modelBody, 0xffffffffu);
+        Index(modelBody, 1); // Real FBspSurf; only mover mode has its AMover Actor.
+        Index(modelBody, 0); U32(modelBody, 0); Index(modelBody, 0); Index(modelBody, 0);
+        Index(modelBody, 1); Index(modelBody, 2); Index(modelBody, -1); Index(modelBody, -1);
+        U16(modelBody, 0); U16(modelBody, 0); Index(modelBody, surfaceMoverActor);
+        Index(modelBody, 4);
+        for (std::int32_t i=1;i<=4;++i) { Index(modelBody, i); Index(modelBody, -1); }
+        U32(modelBody, 0); U32(modelBody, 1); Index(modelBody, levelActor); U64(modelBody, 0); U64(modelBody, 0);
+        for (unsigned i=0u;i<7u;++i) Index(modelBody, 0); // Polys, lightmaps, bits, bounds, hulls, leaves, lights.
+    } else {
+    Index(modelBody,0); Index(modelBody,0); // Vectors, points.
     Index(modelBody,nodes ? 2 : 0);
     if (nodes) for (unsigned index=0u;index<2u;++index) {
         FloatBytes(modelBody,index ? 0.0f : 1.0f); FloatBytes(modelBody,index ? 1.0f : 0.0f);
@@ -1001,22 +1142,28 @@ Tables Build(Fixture& fixture, unsigned worldModel = 0u, unsigned decalSchema = 
         modelBody.push_back(0u); U32(modelBody,index ? 2u : 0u); U32(modelBody,index ? 3u : 1u);
     }
     Index(modelBody,0); Index(modelBody,0); // Surfaces, vertices.
-    U32(modelBody,0u); const auto zoneCount = worldModel==3u ? 0u : nodes ? 2u : 1u;
+    U32(modelBody,0u);
     U32(modelBody,zoneCount);
     for (unsigned index=0u;index<zoneCount;++index) { Index(modelBody,nodes ? index ? zoneActor : 0 : levelActor); U64(modelBody,0u); U64(modelBody,0u); }
     for (unsigned i=0u;i<5u;++i) Index(modelBody,0); // Polys, lightmaps, bits, bounds, hulls.
     Index(modelBody,nodes ? 4 : 0);
     if (nodes) for (unsigned index=0u;index<4u;++index) { Index(modelBody,static_cast<std::int32_t>(index&1u)); Index(modelBody,-1); Index(modelBody,-1); U64(modelBody,0u); }
     Index(modelBody,0); // Lights.
+    }
     U32(modelBody, 1u); U32(modelBody, 0u); map.Body(mapModel, std::move(modelBody));
     const auto mapTable = fixture.Write(map, true); const auto decodedModel = LoadPortableModel68(mapTable, static_cast<std::size_t>(mapModel - 1));
-    Require(decodedModel.nodes.size()==(nodes ? 2u : 0u) && decodedModel.zones.size()==zoneCount &&
+    Require(decodedModel.nodes.size()==(decalFloor ? 1u : nodes ? 2u : 0u) && decodedModel.zones.size()==zoneCount &&
         (nodes || decodedModel.zones[0].actorReference==levelActor), "Genuine generated map model is not decoded correctly");
+    if (decalFloor) Require(decodedModel.surfaces.size()==1u && decodedModel.points.size()==5u &&
+        decodedModel.vertices.size()==4u && decodedModel.nodes[0].surface==0 &&
+        decodedModel.surfaces[0].brushActorReference==surfaceMoverActor,
+        "Generated decal floor lost real polygon/surface/mover native records");
     auto expectedOrder = std::vector<std::int32_t>{levelActor, driver, 0, owner, instigator, collision, 0};
     if (decalSchema) expectedOrder.push_back(decalActor);
+    if (decalMover) expectedOrder.push_back(surfaceMoverActor);
     Require(ReadPortableLevel68ActorOrder(mapTable) == expectedOrder, "Genuine Level actor ordering/holes were lost");
     Require(FindPortableRootModel68Export(mapTable) == static_cast<std::size_t>(mapModel - 1), "Genuine Level root model selection was lost");
-    return {coreTable, engineTable, classesTable, mapTable, decalSchema ? 6u : 5u};
+    return {coreTable, engineTable, classesTable, mapTable, (decalSchema ? 6u : 5u) + (decalMover ? 1u : 0u)};
 }
 
 void ArgumentTests(Fixture& fixture) {
@@ -2071,8 +2218,8 @@ void WorldStartupSynthetic() {
 }
 void DecalGuardSynthetic() {
     // Real generated reflection, native Level slots and valid empty root BSP.
-    // A registered live texture must expose the downstream native gap; this
-    // incomplete implementation cannot fabricate a geometric no-hit result.
+    // After the exact entry guards, this BSP genuinely has no geometry. The
+    // ordinary false result still publishes the native's RNG and upper clamp.
     for (unsigned schema = 1u; schema <= 5u; ++schema) {
         Fixture fixture; const auto tables = Build(fixture, 0u, schema);
         Require(InitializePortableRuntime({tables.core, tables.engine, tables.classes}).passed &&
@@ -2176,18 +2323,23 @@ void DecalGuardSynthetic() {
             currentViewport={202u,viewport.width,viewport.height,viewport.swapchainImages,viewport.eyeCount};
             RegisterPortableRuntimeViewport(102u,currentViewport); bound();
             Call("Decal0", "SetTexture", {Object("Texture0")});
-            const auto before = fixture.Snapshot("BeforeGeometryGap"); const auto revision = GetPortableRuntimeWorldRevision();
+            const auto revision = GetPortableRuntimeWorldRevision();
             const auto gc = GC::GetStats();
-            const auto gap = ExecutePortableActorFunction(Path("Decal0"), "AttachDecal", {Evaluation{Value::Float(100.0f), {}}});
-            Require(!gap.passed() && !gap.committed && gap.status == QuestVr::Vm::Status::Unsupported &&
-                gap.error.find("Unsupported runtime native 0 (Engine.Decal.AttachDecal)") != std::string::npos,
-                "Live Texture downstream AttachDecal gap was hidden behind fake success or false");
+            const auto miss = Call("Decal0", "AttachDecal", {{Value::Float(100.0f), {}}});
+            const auto missedState = Decode(fixture.Snapshot("EmptyBspMiss"));
+            Require(miss.committed && miss.value.kind==Kind::Bool && !QuestVr::Vm::ToBool(miss.value) &&
+                missedState.randomSeed && *missedState.randomSeed==1030492215u && !missedState.nativeDecals &&
+                Integer("Decal0","MultiDecalLevel")==4 && Read("Decal0","SurfList").intArray.empty(),
+                "Real empty BSP no-hit lost six pretrace draws/clamp, invented graph or returned true");
             Require(GC::GetStats().numObjects == gc.numObjects && GC::GetStats().memoryUsage == gc.memoryUsage &&
-                GetPortableRuntimeWorldRevision() == revision && fixture.Snapshot("AfterGeometryGap") == before,
-                "Downstream AttachDecal refusal changed actor/save/RNG/native graph/revision or retained allocations"); ++refusals;
-            // Both script argument writes must roll back if the actual native
-            // call refuses after evaluating them, not merely its graph writes.
-            RefusedCall(fixture, "AttachEvaluatedArguments", {}, {}, "Decal0");
+                GetPortableRuntimeWorldRevision() == revision + 1u && Read("Decal0","LastRenderedTime").floating==27.5f,
+                "Ordinary no-hit retained geometry allocations, lost its shared revision or changed render time");
+            Same(Call("Decal0", "AttachEvaluatedArguments").value, Value::Bool(false),
+                "Evaluated supplied-direction call on real empty BSP fabricated a hit");
+            const auto evaluatedMiss = Decode(fixture.Snapshot("EvaluatedEmptyBspMiss"));
+            Require(Integer("Decal0","ArgumentCounter")==11 && evaluatedMiss.randomSeed==missedState.randomSeed &&
+                !evaluatedMiss.nativeDecals, "Supplied-direction no-hit lost argument effects or drew optional RNG");
+            fixture.Reset();
             lifetime->Revoke();
             Require(!HasPortableRuntimeClient() && ReadPortableRuntimeClientView().empty(),
                 "Revoked renderer lifetime retained a live client view");
@@ -2208,6 +2360,204 @@ void DecalGuardSynthetic() {
         falseGuard("FreshLifetimeAbsent"); fixture.UnchangedSources();
     }
 }
+void DecalNativeSynthetic() {
+    const auto refusedNative=[](const Fixture& fixture,const std::string& label,
+        const std::string& function,const std::vector<Evaluation>& args=std::vector<Evaluation>{},
+        const QuestVr::Vm::Limits& limits=QuestVr::Vm::Limits{}) {
+        try { RefusedCall(fixture,function,args,limits,"Decal0"); }
+        catch (const std::exception& error) { throw std::runtime_error(label+": "+error.what()); }
+    };
+    const auto bind = []() {
+        auto lifetime = std::make_shared<QuestVr::NativeClientLifetime>();
+        BindPortableRuntimeClient(lifetime, 401u);
+        RegisterPortableRuntimeViewport(401u, {402u, 1024u, 1152u, 3u, 2u});
+        return lifetime;
+    };
+    const auto expectGraph = [](const QuestVr::ScriptSavedState& saved, std::size_t records, std::size_t listSize) {
+        Require(saved.nativeDecals.has_value(), "Successful native Attach did not publish an actual surface-owned graph");
+        const auto& graph = *saved.nativeDecals;
+        Require(graph.mapName=="SpawnFixture" && graph.modelPath=="SpawnFixture.Model0" &&
+            graph.levelPath=="SpawnFixture.MyLevel" && graph.surfaceCount==1u && graph.nodeCount==1u &&
+            graph.state.surfaces.size()==1u && graph.state.surfaces[0].size()==records && graph.state.owners.size()==1u &&
+            graph.state.owners[0].ownerIdentity==Path("Decal0") &&
+            graph.state.owners[0].surfaces==std::vector<std::int32_t>(listSize,0),
+            "Native Attach graph identity/count/order or mirrored duplicate SurfList was lost");
+        for (const auto& record : graph.state.surfaces[0]) Require(record.ownerIdentity==Path("Decal0") &&
+            record.nodeMembership==std::vector<std::int32_t>{0},
+            "Native Attach graph lost its canonical owner or actual finite-polygon membership");
+    };
+    const auto expectQuad = [](const QuestVr::DecalSurfaceRecord& record, const QuestVr::DecalPrimaryQuad& quad) {
+        for (std::size_t i=0u;i<4u;++i) {
+            const auto actual=record.relativeCorners[i]; const auto expected=quad.relativeCorners[i];
+            if (!(std::fabs(actual.x-expected.x)<=0.0001f && std::fabs(actual.y-expected.y)<=0.0001f &&
+                std::fabs(actual.z-expected.z)<=0.0001f))
+                throw std::runtime_error("Native record corner " + std::to_string(i) + " actual=" +
+                    std::to_string(actual.x) + "," + std::to_string(actual.y) + "," + std::to_string(actual.z) +
+                    " expected=" + std::to_string(expected.x) + "," + std::to_string(expected.y) + "," +
+                    std::to_string(expected.z));
+        }
+    };
+    {
+        Fixture fixture; const auto tables=Build(fixture,5u,1u);
+        Require(InitializePortableRuntime({tables.core,tables.engine,tables.classes}).passed &&
+            LoadPortableRuntimeMap(tables.map).passed,"Generated native decal floor failed initialization");
+        fixture.legacy=fixture.Snapshot("Legacy"); auto lifetime=bind();
+        Call("Decal0","SetTexture",{Object("Texture0")});
+        const auto revision=GetPortableRuntimeWorldRevision(), gc=GC::GetStats().numObjects;
+        const auto attached=Call("Decal0","AttachDecal",{{Value::Float(100.0f),{}}});
+        Require(attached.committed && attached.value.kind==Kind::Bool && QuestVr::Vm::ToBool(attached.value),
+            "Native Attach did not return true for a real authored finite floor");
+        const auto firstBytes=fixture.Snapshot("FirstNativeAttachment"); const auto first=Decode(firstBytes);
+        expectGraph(first,1u,1u);
+        Require(first.randomSeed && *first.randomSeed==1030492215u && Integer("Decal0","MultiDecalLevel")==4 &&
+            Read("Decal0","SurfList").intArray==std::vector<std::int32_t>{0} &&
+            Read("Decal0","LastRenderedTime").floating==27.5f &&
+            GetPortableRuntimeWorldRevision()==revision+1u && GC::GetStats().numObjects==gc+1u,
+            "Native Attach did not atomically publish six RNG draws/clamp/list/one graph or changed render timestamp");
+        std::uint32_t expectedSeed=1u;
+        const auto prepared=QuestVr::PrepareOriginalDecalDirection({},expectedSeed);
+        Require(prepared.draws==6u && expectedSeed==1030492215u,"Independent prepared-direction evidence changed");
+        const auto quad=QuestVr::BuildOriginalDecalPrimaryQuad({0,0,0},{0,0,0},{0,0,1},32,1.0f,prepared);
+        expectQuad(first.nativeDecals->state.surfaces[0][0],quad);
+        GC::Collect(); Require(fixture.Snapshot("FirstNativeAfterGc")==firstBytes,
+            "Garbage collection retired the map-owned native decal or its real owner");
+        Require(ValidatePortableRuntimeState((fixture.directory/"FirstNativeAttachment.sav").string(),"SpawnFixture"),
+            "Production native attachment failed typed cold checkpoint preflight");
+        fixture.Reset(); Require(LoadPortableRuntimeState((fixture.directory/"FirstNativeAttachment.sav").string()) &&
+            fixture.Snapshot("FirstNativeRestore")==firstBytes,"Native Attach graph failed canonical replacement restore");
+        fixture.Reset(); Call("Decal0","SetTexture",{Object("Texture0")});
+        const auto supplied=Call("Decal0","AttachDecal",{{Value::Float(100.0f),{}},Vector({0.1f,0.1f,0.0f})});
+        Require(supplied.value.kind==Kind::Bool && QuestVr::Vm::ToBool(supplied.value),
+            "Supplied-direction native attachment failed a real authored polygon");
+        const auto suppliedState=Decode(fixture.Snapshot("SuppliedNativeAttachment")); expectGraph(suppliedState,1u,1u);
+        Require(!suppliedState.randomSeed,"Nonzero supplied DecalDir drew or materialized the optional RNG stream");
+        expectedSeed=1u;
+        const auto suppliedDirection=QuestVr::PrepareOriginalDecalDirection({0.1f,0.1f,0.0f},expectedSeed);
+        expectQuad(suppliedState.nativeDecals->state.surfaces[0][0],
+            QuestVr::BuildOriginalDecalPrimaryQuad({0,0,0},{0,0,0},{0,0,1},32,1.0f,suppliedDirection));
+        Call("Decal0","SetDecalLocation",{Vector({0.25f,0.0f,0.1f})});
+        Same(Call("Decal0","AttachDecal",{{Value::Float(100.0f),{}},Vector({0.1f,0.1f,0.0f})}).value,
+            Value::Bool(true),"Repeated native Attach silently suppressed a duplicate primary");
+        const auto repeatedBytes=fixture.Snapshot("RepeatedNativeAttachment"); const auto repeated=Decode(repeatedBytes);
+        expectGraph(repeated,2u,2u); Require(!repeated.randomSeed && Read("Decal0","SurfList").intArray==std::vector<std::int32_t>({0,0}),
+            "Repeated supplied native attachment lost duplicate mirrors or advanced RNG");
+        expectQuad(repeated.nativeDecals->state.surfaces[0][0],
+            QuestVr::BuildOriginalDecalPrimaryQuad({0.25f,0,0},{0,0,0},{0,0,1},32,1.0f,suppliedDirection));
+        expectQuad(repeated.nativeDecals->state.surfaces[0][1],
+            QuestVr::BuildOriginalDecalPrimaryQuad({0,0,0},{0,0,0},{0,0,1},32,1.0f,suppliedDirection));
+        const auto detachRevision=GetPortableRuntimeWorldRevision(); Call("Decal0","DetachDecal");
+        const auto detachedBytes=fixture.Snapshot("RepeatedNativeDetached"); const auto detached=Decode(detachedBytes);
+        expectGraph(detached,0u,0u);
+        Require(Read("Decal0","SurfList").intArray.empty() && GetPortableRuntimeWorldRevision()==detachRevision+1u &&
+            detached.randomSeed==repeated.randomSeed,"Reverse-pop native Detach retained repeated records/list or consumed RNG");
+        Call("Decal0","DetachDecal"); Require(fixture.Snapshot("SecondNativeDetach")==detachedBytes &&
+            GetPortableRuntimeWorldRevision()==detachRevision+1u,"Empty native Detach invented graph/property/revision changes");
+        fixture.Reset(); Call("Decal0","SetTexture",{Object("Texture0")});
+        refusedNative(fixture,"Positive floor attachment followed by unsupported instruction","AttachThenFail");
+        QuestVr::Vm::Limits tight; tight.writes=1u;
+        refusedNative(fixture,"Positive floor attachment followed by script write budget","AttachThenWrites",{},tight);
+        tight={}; tight.retainedBytes=128u;
+        refusedNative(fixture,"Positive floor attachment retained byte budget","AttachDecal",{{Value::Float(100.0f),{}}},tight);
+        const auto beforeRevoke=fixture.Snapshot("BeforePositiveNativeRevoke");
+        const auto revokeRevision=GetPortableRuntimeWorldRevision(); const auto revokeGc=GC::GetStats();
+        Value externalOut=Value::Integer(17); std::vector<std::int32_t> outWrites;
+        auto output=std::make_shared<QuestVr::Vm::Reference>(); output->zero=Value::Integer(0);
+        output->read=[&]() { return externalOut; };
+        output->write=[&](const Value& value) {
+            externalOut=value; outWrites.push_back(QuestVr::Vm::ToInt(value));
+            if (QuestVr::Vm::ToInt(value)==73) lifetime->Revoke();
+        };
+        const auto revoked=ExecutePortableActorFunction(Path("Decal0"),"AttachThenOutWrite",{{Value{},output}});
+        Require(!revoked.passed() && !revoked.committed && revoked.status==QuestVr::Vm::Status::Unsupported &&
+            revoked.error.find("Native client lifetime revoked during script transaction")!=std::string::npos &&
+            outWrites==std::vector<std::int32_t>{73,17} && externalOut.integer==17,
+            "Client teardown after real positive Attach did not roll back the external OUT alias");
+        Require(fixture.Snapshot("AfterPositiveNativeRevoke")==beforeRevoke &&
+            GetPortableRuntimeWorldRevision()==revokeRevision && GC::GetStats().numObjects==revokeGc.numObjects &&
+            GC::GetStats().memoryUsage==revokeGc.memoryUsage && !HasPortableRuntimeClient(),
+            "Postgeometry renderer teardown leaked native graph, argument effects, RNG, revision or GC allocations"); ++refusals;
+        ClearPortableRuntimeClient(); lifetime=bind();
+        // This is a real clear ray above the same solid floor, not an early
+        // client/Texture guard. It must retain six successful pretrace draws.
+        Call("Decal0","SetDecalRotation",{Rotation({-16384,0,0})});
+        const auto missRevision=GetPortableRuntimeWorldRevision();
+        Same(Call("Decal0","AttachDecal",{{Value::Float(100.0f),{}}}).value,Value::Bool(false),
+            "Native up-ray invented a solid floor hit");
+        const auto miss=Decode(fixture.Snapshot("NativeFloorMiss"));
+        Require(miss.randomSeed && *miss.randomSeed==1030492215u && !miss.nativeDecals &&
+            Integer("Decal0","MultiDecalLevel")==4 && GetPortableRuntimeWorldRevision()==missRevision+1u,
+            "Ordinary floor miss rolled back sampled RNG/clamp or fabricated a native graph");
+        fixture.Reset(); Require(LoadPortableRuntimeState((fixture.directory/"RepeatedNativeAttachment.sav").string()) &&
+            fixture.Snapshot("RepeatedNativeRestore")==repeatedBytes,"Ordered duplicate graph failed restore");
+        ShutdownPortableRuntime();
+        Require(InitializePortableRuntime({tables.core,tables.engine,tables.classes}).passed &&
+            LoadPortableRuntimeMap(tables.map).passed &&
+            LoadPortableRuntimeState((fixture.directory/"RepeatedNativeAttachment.sav").string()) &&
+            fixture.Snapshot("RepeatedNativeColdRestore")==repeatedBytes && !HasPortableRuntimeClient(),
+            "Cold native graph restore replayed geometry/RNG/callbacks or fabricated a renderer session");
+        fixture.Reset(); fixture.UnchangedSources();
+    }
+    {
+        Fixture fixture; const auto tables=Build(fixture,5u,6u);
+        Require(InitializePortableRuntime({tables.core,tables.engine,tables.classes}).passed &&
+            LoadPortableRuntimeMap(tables.map).passed,"Malformed late Bitmap fixture failed basic initialization");
+        fixture.legacy=fixture.Snapshot("Legacy"); auto lifetime=bind();
+        Call("Decal0","SetTexture",{Object("Texture0")});
+        refusedNative(fixture,"Malformed late Bitmap.USize","AttachDecal",{{Value::Float(100.0f),{}}});
+        fixture.Reset(); fixture.UnchangedSources();
+    }
+    {
+        Fixture fixture; const auto tables=Build(fixture,6u,1u);
+        Require(InitializePortableRuntime({tables.core,tables.engine,tables.classes}).passed &&
+            LoadPortableRuntimeMap(tables.map).passed,"Generated native decal mover callback fixture failed initialization");
+        fixture.legacy=fixture.Snapshot("Legacy"); auto lifetime=bind();
+        const auto prepare = [&]() { fixture.Reset(); Call("Decal0","SetTexture",{Object("Texture0")}); };
+        prepare();
+        const auto revision=GetPortableRuntimeWorldRevision();
+        Same(Call("Decal0","AttachDecal",{{Value::Float(100.0f),{}}}).value,Value::Bool(true),
+            "Full native Attach failed its original mover/SetBase callback path");
+        const auto callbackBytes=fixture.Snapshot("NativeMoverAttachment"); const auto callback=Decode(callbackBytes);
+        expectGraph(callback,1u,1u);
+        Same(Read("Decal0","Base"),Object("Owner").value,"Mover Attach based self on surface Actor instead of self.Owner");
+        Same(Read("Decal0","Texture"),Object("Texture1").value,"Original SetBase callback Texture write was lost");
+        Same(Read("Decal0","Location"),Value::Vector({1000,1000,100}),"SetBase callback Location write was discarded");
+        Same(Read("Decal0","Rotation"),Value::Rotator({0,0,0}),"SetBase callback Rotation write was discarded");
+        Same(Read("SurfaceMover","Rotation"),Value::Rotator({9,10,11}),"Mover callback rotation change was lost");
+        Require(Read("Owner","ObservedSurfList").intArray==std::vector<std::int32_t>{0} &&
+            Integer("Owner","ObservedMulti")==4 && Integer("Owner","ObservedRandom")==478 &&
+            Integer("Decal0","BaseChangeTrace")==1 && Integer("Decal0","BaseChangeMulti")==5 &&
+            Read("Decal0","BaseChangeSurfList").intArray==std::vector<std::int32_t>{0},
+            "Native primary/clamp/RNG was not visible before Attach/BaseChange or callback order changed");
+        Require(callback.randomSeed && *callback.randomSeed==752224798u &&
+            Read("Decal0","DrawScale").floating==2.0f && Integer("Decal0","MultiDecalLevel")==5 &&
+            Read("Decal0","LastRenderedTime").floating==27.5f && GetPortableRuntimeWorldRevision()==revision+1u,
+            "Postcallback quad used stale radius/multi/seed, reapplied upper clamp or split the outer transaction");
+        const auto& record=callback.nativeDecals->state.surfaces[0][0];
+        Require(record.moverRotation.pitch==128 && record.moverRotation.yaw==512 && record.moverRotation.roll==-256,
+            "Native primary record captured mover Rotation after, instead of before, SetBase callbacks");
+        std::uint32_t seed=1u; const auto prepared=QuestVr::PrepareOriginalDecalDirection({},seed);
+        expectQuad(record,QuestVr::BuildOriginalDecalPrimaryQuad({0,0,0},{0,0,0},{0,0,1},64,2.0f,prepared));
+        prepare();
+        Same(Call("Decal0","AttachDecal",{{Value::Float(100.0f),{}},Vector({0.1f,0.1f,0})}).value,Value::Bool(true),
+            "Supplied-direction Attach failed live mover callbacks");
+        const auto supplied=Decode(fixture.Snapshot("NativeMoverSupplied"));
+        Require(supplied.randomSeed && *supplied.randomSeed==2745024u && Integer("Owner","ObservedRandom")==41,
+            "Supplied-direction native Attach consumed hidden draws or overwrote its callback's first RNG draw");
+        for (const auto mode : {2,3,4}) {
+            prepare(); Call("Owner","SetCallbackMode",{{Value::Integer(mode),{}}});
+            refusedNative(fixture,"Mover callback mode "+std::to_string(mode),"AttachDecal",{{Value::Float(100.0f),{}}});
+        }
+        prepare(); QuestVr::Vm::Limits tight; tight.writes=7u;
+        refusedNative(fixture,"Positive mover attachment write budget","AttachDecal",{{Value::Float(100.0f),{}}},tight);
+        prepare(); refusedNative(fixture,"Positive mover attachment followed by unsupported instruction","AttachThenFail");
+        fixture.Reset(); Require(LoadPortableRuntimeState((fixture.directory/"NativeMoverAttachment.sav").string()) &&
+            fixture.Snapshot("NativeMoverRestore")==callbackBytes,
+            "Saved mover native record failed exact restore without replaying SetBase/RNG callbacks");
+        GC::Collect(); Require(fixture.Snapshot("NativeMoverRestoreGc")==callbackBytes,
+            "Restored surface-owned mover attachment lost its actual GC roots");
+        fixture.Reset(); fixture.UnchangedSources();
+    }
+}
 void Synthetic() {
     Fixture fixture; const auto tables = Build(fixture);
     Require(InitializePortableRuntime({tables.core, tables.engine, tables.classes}).passed && LoadPortableRuntimeMap(tables.map).passed, "Generated spawn runtime/map metadata initialization failed");
@@ -2222,7 +2572,7 @@ void Synthetic() {
 } // namespace
 int main() {
     try {
-        const auto before = GC::GetStats().numObjects; Synthetic(); WorldStartupSynthetic(); DecalGuardSynthetic(); GC::Collect(); Require(GC::GetStats().numObjects == before, "Generated Spawn test leaked rooted UObjects after shutdown");
-        std::cout << "Generated actor Spawn integration: " << checks << " checks, " << refusals << " rejection controls; actual natives278/262/283/304/529/530/650/710/711/713/714/715/716/720, serialized Level/model, native PawnList and AI graph rollback, frozen defaults, callbacks/live foreach, birth/save/GC, read-only BSP region side/fallback controls, non-publishing world startup prefix/live-growth/deletion/order/attachment rollback, and native AttachDecal exact client/viewport/Texture negative guards, evaluated argument effects, engine-session lifetime/save independence and downstream refusal. No rendered decal, AI processing or accepted campaign startup claim.\n"; return 0;
+        const auto before = GC::GetStats().numObjects; Synthetic(); WorldStartupSynthetic(); DecalGuardSynthetic(); DecalNativeSynthetic(); GC::Collect(); Require(GC::GetStats().numObjects == before, "Generated Spawn test leaked rooted UObjects after shutdown");
+        std::cout << "Generated actor Spawn integration: " << checks << " checks, " << refusals << " rejection controls; actual natives278/262/283/304/529/530/650/710/711/713/714/715/716/720, serialized Level/model, native PawnList and AI graph rollback, frozen defaults, callbacks/live foreach, birth/save/GC, read-only BSP region side/fallback controls, non-publishing world startup prefix/live-growth/deletion/order/attachment rollback, native AttachDecal exact guards/real finite polygon/provisional SurfList/ordered records/postcallback radius and RNG/mover Rotation/Detach/checkpoint/GC/late rollback. No rendered decal, AI processing or accepted campaign startup claim.\n"; return 0;
     } catch (const std::exception& error) { std::cerr << "Actor Spawn integration failed: " << error.what() << '\n'; return 1; }
 }

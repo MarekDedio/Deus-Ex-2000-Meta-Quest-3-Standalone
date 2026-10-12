@@ -1,5 +1,54 @@
 # Port status
 
+## Training recording route and positive CPU decal attachment (2026-10-12)
+
+- Current priority is the introductory recording route documented in
+  [TRAINING-DEMO.md](TRAINING-DEMO.md), not a claim of full tutorial completion.
+  Exact Mission00 named contact datalinks select original introductory speech
+  and audio; conditional/complex graphs are refused rather than flattened.
+  A bounded 16-line queue keeps contacts crossed during another transmission;
+  it is not yet persisted. Compact gold subtitles remain visible independently
+  of the debug panel.
+- Supported authored mover keys now drive paired door motion, live rendering
+  and player collision instead of hiding an activated brush. Matching collected
+  NanoKeys permit keyed-door use. This automatic key use is a scoped VR
+  convenience, not execution of the complete original key-ring/state-machine
+  behavior. Closing player-blocked pairs reverse together. Inventory/loading
+  pauses movement; v14 wraps existing runtime formats to save motion progress.
+- Positive native CPU Attach now retains the original pretrace RNG, provisional
+  primary/SurfList publication, mover SetBase callback and live postcallback
+  texture/scale/raw Multi ordering. Native decal graph codec10/envelope13 is
+  unchanged. Generated Spawn/attachment controls pass 8,268 checks with 143
+  expected refusals. See [DECAL-GEOMETRY-PLAN.md](DECAL-GEOMETRY-PLAN.md).
+- The unmodified Training startup diagnostic advances past Attach to
+  PreBeginPlay slot1331, Camera4, Engine.PlayerReplicationInfo.PostBeginPlay:27,
+  opcode97, unsupported native280. It remains a rollback-only probe: original
+  world/player startup, rendered native shadows and automatic AI are unfinished.
+- Fresh original-data route tests pass 358 checks, including exact voice/audio,
+  both door pairs, blocking/reversal, mid-motion saves and malformed-state
+  rejection. Original runtime/save tests pass cross-map preflight, corrupt-latest
+  recovery, unchanged-world refusal and v14/v4/v5 composition. An inspected
+  desktop closed-door frame has textured panels and static lighting; its actor
+  preview has 64 mesh/25 brush instances and zero missing materials. This is
+  software/static evidence, not live Quest door acceptance.
+- Fresh ordinary CTest passes 59 tests (64 registered, five owned-data opt-in
+  skips), zero failures, 25.17 seconds. Those skips are separate from the owned
+  route/save runs above. Original defaults (1,002 checks) and PawnList (67 checks)
+  pass separately. NDK27 strict syntax also accepts the final Quest main file.
+- Full original actor tests also pass Training/UNATCOIsland/Intro. The signed
+  19,983,537-byte APK is installed and its device SHA256 matches the archived
+  artifact; see [QUEST-TEST-BUILD.md](QUEST-TEST-BUILD.md). Fresh Quest captures
+  show the original corridor/lobby, hands, lighting and compact control/status
+  text; head/grips are tracked. The user confirms the introduction and opening
+  door work. Intro contact being just ahead of spawn is authored behavior.
+- Physical testing exposes remaining defects: a door-opening interval falls to
+  43.3fps/166.66ms worst, despite 72fps idle samples; stairs remain impassable.
+  Screenshot readback also stalls about291.65ms. Original speech-panel artwork/
+  NPC portraits and interaction brackets are still missing. The demo is NOT
+  fully accepted or recording-ready until these issues and the key route pass.
+- Earlier dated entries below are historical;
+  their old unsupported-Attach boundary is superseded by this entry.
+
 ## Native client, Quest target lifetime and original entry guards (2026-10-12)
 
 - Added an engine-session-owned, nonserialized native client and bounded ordered

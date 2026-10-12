@@ -134,6 +134,7 @@ class TexturedGeometryRenderer {
         if (sharedProgram_.IsValid()) OVRFW::GlProgram::Free(sharedProgram_);
     }
     void SetPose(const OVR::Posef& pose) { pose_ = pose; }
+    void SetModelMatrix(const OVR::Matrix4f& matrix) { modelMatrix_ = matrix; }
     bool IsBlended() const { return blended_; }
     float DepthAlong(const OVR::Vector3f& eye, const OVR::Vector3f& forward) const {
         return (modelMatrix_.Transform(localCenter_)-eye).Dot(forward);
@@ -371,6 +372,24 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         hudRoot->SetLocalPose(OVR::Posef::Identity());
         hudLabel_->SetTextLocalPosition({0.0f, -0.025f, 0.0f});
         hudLabel_->SetTextColor(OVR::Vector4f(0.82f, 0.68f, 0.25f, 1.0f));
+        subtitleLabel_ = ui_.AddLabel("", {}, {720.0f,110.0f});
+        if (subtitleLabel_ == nullptr) return false;
+        auto* subtitleRoot = ui_.GetGuiSys().GetVRMenuMgr().ToObject(subtitleLabel_->GetParentHandle());
+        if (subtitleRoot == nullptr) return false;
+        subtitleRoot->SetLocalPose(OVR::Posef::Identity());
+        subtitleLabel_->SetSurfaceVisible(0,false);
+        subtitleLabel_->SetTextColor({0.82f,0.68f,0.25f,1.0f});
+        subtitleLabel_->SetTextLocalScale({0.7f,0.7f,1.0f});
+        subtitleLabel_->SetVisible(false);
+        controlHintLabel_ = ui_.AddLabel("A: USE DOOR / PICK UP    MENU: INVENTORY", {}, {720.0f,35.0f});
+        if (controlHintLabel_ == nullptr) return false;
+        auto* hintRoot = ui_.GetGuiSys().GetVRMenuMgr().ToObject(controlHintLabel_->GetParentHandle());
+        if (hintRoot == nullptr) return false;
+        hintRoot->SetLocalPose(OVR::Posef::Identity());
+        controlHintLabel_->SetSurfaceVisible(0,false);
+        controlHintLabel_->SetTextColor({0.82f,0.68f,0.25f,1.0f});
+        controlHintLabel_->SetTextLocalScale({0.5f,0.5f,1.0f});
+        controlHintLabel_->SetVisible(false);
         inventoryLabel_ = ui_.AddLabel(
             "Inventory",
             OVR::Vector3f(0.0f, 0.0f, 0.0f),
@@ -403,6 +422,8 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         DiscardInitialPreparation();
         inventoryLabel_ = personaTabsLabel_ = personaDetailsLabel_ = personaFooterLabel_ = nullptr;
         hudLabel_ = nullptr;
+        subtitleLabel_ = nullptr;
+        controlHintLabel_ = nullptr;
         ui_.Shutdown();
         DestroyPlayerVisuals();
         ClearPendingStaticLightmapUpload();
@@ -643,6 +664,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         sceneYaw_ = 0.0f;
         selectedInventoryIndex_ = 0u;
         debugHudVisible_ = true;
+        hideDebugHudAtFirstReady_ = true;
         debugHudToggleLatch_ = true;
         personaPage_ = PersonaPage::Inventory;
         personaOriginalTextReady_ = false;
@@ -836,6 +858,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             return;
         }
         PollDialogueAudioDecode();
+        dialogueSubtitleSeconds_ = std::max(0.0f,dialogueSubtitleSeconds_-frame.DeltaSeconds);
         if (interactionStatusSeconds_ > 0.0f) {
             interactionStatusSeconds_ = std::max(
                 0.0f, interactionStatusSeconds_ - frame.DeltaSeconds);
@@ -900,7 +923,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         const OVR::Vector3f safeLocalHead =
             StageToLocal(previousHeadStage_, worldPosition_);
         const bool mapLoading = !runtimeAvailable_ || runtimeActorTextureUploadPending_ ||
-            !pendingMapName_.empty() || !transitionMapName_.empty();
+            !pendingMapName_.empty() || !transitionMapName_.empty() || static_cast<bool>(actorGeometryBuild_);
         const bool playerAlive = !mapLoading && GetPortableRuntimePlayerHealth() > 0.0f;
         if (!mapLoading && frame.Clicked(frame.kButtonMenu)) {
             SetInventoryMenuOpen(!inventoryMenuOpen_);
@@ -911,6 +934,8 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             dismissedMenuWithB = true;
         }
         const bool gameplayActive = playerAlive && !mapLoading && !inventoryMenuOpen_;
+        if (gameplayActive && Focused && !AdvanceRuntimeMoverPublication(frame.DeltaSeconds)) return;
+        if (gameplayActive && Focused) PollTouchDataLinks(frame.DeltaSeconds);
         if (!mapLoading && !inventoryMenuOpen_ && frame.LeftRemoteTracked &&
             frame.Clicked(frame.kButtonLeftThumbStick)) {
             SetPlayerPosture(!seatedPostureRequested_,true);
@@ -1014,6 +1039,9 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             renderer.SetPose(worldPose);
             renderer.Update();
         }
+        for (const auto& [path,visual] : moverVisuals_)
+            for (const auto index : visual.rendererIndices)
+                texturedRenderers_.at(index).SetModelMatrix(OVR::Matrix4f(worldPose)*visual.deltaTransform);
         for (auto& renderer : bakedWorldRenderers_) {
             renderer.SetPose(worldPose);
             renderer.Update();
@@ -1122,7 +1150,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         AdvanceMapTransition();
         CompletePendingMapLoad();
         const bool mapLoadingNow = !runtimeAvailable_ || runtimeActorTextureUploadPending_ ||
-            !pendingMapName_.empty() || !transitionMapName_.empty();
+            !pendingMapName_.empty() || !transitionMapName_.empty() || static_cast<bool>(actorGeometryBuild_);
         if (hudLabel_ != nullptr) {
             hudLabel_->SetLocalPose(QuestVr::HeadLockedHudPose(frame.HeadPose));
             const std::size_t inventoryCount = mapLoadingNow
@@ -1157,6 +1185,33 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             }
         }
         UpdateInventoryMenu(frame, mapLoadingNow);
+        if (subtitleLabel_ != nullptr) {
+            auto pose = frame.HeadPose;
+            pose.Translation += pose.Rotation.Rotate({0.0f,-0.35f,-1.4f});
+            subtitleLabel_->SetLocalPose(pose);
+            std::string text;
+            if (dialogueSubtitleSeconds_ > 0.0f && !dialogueSubtitlePages_.empty()) {
+                const float elapsed = std::clamp(1.0f-dialogueSubtitleSeconds_/
+                    std::max(dialogueSubtitleTotalSeconds_,0.001f),0.0f,1.0f);
+                const auto page = std::min(dialogueSubtitlePages_.size()-1u,
+                    static_cast<std::size_t>(elapsed*dialogueSubtitlePages_.size()));
+                text = dialogueSubtitlePages_[page];
+            } else if (!debugHudVisible_ && !interactionStatus_.empty()) {
+                text = WrapPersonaEntry(interactionStatus_,4u,58u);
+            }
+            if (text != displayedSubtitle_) {
+                subtitleLabel_->SetText("%s",text.c_str());
+                displayedSubtitle_ = text;
+            }
+            subtitleLabel_->SetVisible(!mapLoadingNow && !inventoryMenuOpen_ &&
+                !text.empty());
+        }
+        if (controlHintLabel_ != nullptr) {
+            auto pose = frame.HeadPose;
+            pose.Translation += pose.Rotation.Rotate({0.0f,-0.54f,-1.4f});
+            controlHintLabel_->SetLocalPose(pose);
+            controlHintLabel_->SetVisible(!mapLoadingNow && !inventoryMenuOpen_ && !debugHudVisible_);
+        }
         ui_.Update(frame);
     }
 
@@ -1328,6 +1383,8 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         worldRenderers_.clear();
         texturedRenderers_.clear();
         bakedWorldRenderers_.clear();
+        moverVisuals_.clear();
+        moverCollisionTriangleCount_ = 0u;
         actorWorldRendererIndex_ = invalidRendererIndex_;
         actorTexturedRendererIndex_ = invalidRendererIndex_;
         personaRenderer_.Shutdown();
@@ -1384,6 +1441,20 @@ class DeusExQuestApp final : public OVRFW::XrApp {
     static constexpr std::size_t actorGeometryOperationsPerFrame_ = 8u;
     static constexpr double actorGeometryMillisecondsPerFrame_ = 3.0;
 
+    struct CollisionTriangle {
+        OVR::Vector3f a, b, c, normal;
+    };
+
+    struct MoverVisual {
+        OVR::Matrix4f inverseInitialTransform;
+        OVR::Matrix4f deltaTransform = OVR::Matrix4f::Identity();
+        std::vector<std::size_t> rendererIndices;
+        std::vector<CollisionTriangle> initialCollision, collision;
+        OVR::Vector3f minimum, maximum;
+        bool hasBounds{};
+        bool blocksPlayer{};
+    };
+
     struct ActorGeometryPart {
         const OVRFW::GlGeometry::Descriptor* descriptor{};
         const PortableLodMesh* mesh{};
@@ -1398,6 +1469,8 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         std::uint32_t polyFlags{};
         std::uint32_t sourcePolyFlags{};
         std::shared_ptr<const QuestVr::MeshPose> meshPose;
+        std::string moverPath;
+        bool collisionOnly{};
     };
 
     struct ActorGeometryBuild {
@@ -1427,6 +1500,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         OVRFW::GlGeometry::Descriptor markerChunk;
         OVRFW::GlGeometry::Descriptor texturedChunk;
         std::uint32_t texturedChunkPolyFlags{};
+        std::string texturedChunkMoverPath;
         std::deque<ActorGeometryPart> parts;
     };
 
@@ -1782,6 +1856,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         std::string classPath;
         bool travel{};
         std::string destinationMap;
+        bool mover{};
     };
 
     static std::vector<MapLight> BuildMapLights(
@@ -1948,7 +2023,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             }
             build.actorIndices.push_back(index);
             interactiveActors_.push_back({position, actor.objectPath, actor.classPath,
-                                          actor.travel, actor.destinationMap});
+                                          actor.travel, actor.destinationMap, actor.mover});
             if (build.actorIndices.size() >= 512u) break;
         }
         ALOG("DeusExQuest: queued incremental geometry for %zu targetable actors; budget %.1f ms/%zu operations/%zu vertices",
@@ -2143,6 +2218,108 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                 static_cast<unsigned long long>(revision), actorSnapshots_.size());
     }
 
+    static OVR::Matrix4f ActorTransformMatrix(const QuestVr::ActorTransform& transform) {
+        OVR::Matrix4f result = OVR::Matrix4f::Identity();
+        for (std::size_t row=0u; row<3u; ++row)
+            for (std::size_t column=0u; column<3u; ++column)
+                result.M[row][column] = transform.linear.values[row*3u+column];
+        result.M[0][3] = transform.translation.x;
+        result.M[1][3] = transform.translation.y;
+        result.M[2][3] = transform.translation.z;
+        return result;
+    }
+
+    static CollisionTriangle TransformMoverCollision(const CollisionTriangle& triangle,
+        const OVR::Matrix4f& delta, const OVR::Matrix3f& normalTransform) {
+        const auto normal = normalTransform.Transform(triangle.normal);
+        return {delta.Transform(triangle.a),delta.Transform(triangle.b),
+            delta.Transform(triangle.c),normal.LengthSq() > 0.000001f ? normal.Normalized() : OVR::Vector3f{}};
+    }
+
+    static void ExpandMoverBounds(MoverVisual& visual, const CollisionTriangle& triangle) {
+        for (const auto point : {triangle.a,triangle.b,triangle.c}) {
+            if (!visual.hasBounds) {
+                visual.minimum = visual.maximum = point;
+                visual.hasBounds = true;
+            } else {
+                visual.minimum.x = std::min(visual.minimum.x,point.x);
+                visual.minimum.y = std::min(visual.minimum.y,point.y);
+                visual.minimum.z = std::min(visual.minimum.z,point.z);
+                visual.maximum.x = std::max(visual.maximum.x,point.x);
+                visual.maximum.y = std::max(visual.maximum.y,point.y);
+                visual.maximum.z = std::max(visual.maximum.z,point.z);
+            }
+        }
+    }
+
+    void PublishMoverPose(const PortableActorSnapshot& actor) {
+        const auto found = moverVisuals_.find(actor.objectPath);
+        if (found == moverVisuals_.end()) return; // Its streamed brush is not ready yet.
+        auto& visual = found->second;
+        const auto transform = QuestVr::BuildSnapshotActorTransform(actor,
+            {activeMapUnrealOrigin_.x,activeMapUnrealOrigin_.y,activeMapUnrealOrigin_.z},true);
+        const auto delta = ActorTransformMatrix(transform)*visual.inverseInitialTransform;
+        visual.blocksPlayer = actor.blockPlayers && actor.collideActors;
+        bool changed{};
+        for (std::size_t row=0u; row<3u; ++row)
+            for (std::size_t column=0u; column<4u; ++column)
+                changed = changed || delta.M[row][column] != visual.deltaTransform.M[row][column];
+        if (!changed) return;
+        visual.deltaTransform = delta;
+        const auto normalTransform = OVR::Matrix3f(delta).Inverse().Transposed();
+        visual.hasBounds = false;
+        for (std::size_t i=0u; i<visual.initialCollision.size(); ++i) {
+            visual.collision[i] = TransformMoverCollision(visual.initialCollision[i],delta,normalTransform);
+            ExpandMoverBounds(visual,visual.collision[i]);
+        }
+        // The authored pivot is often beside a door, not on its visible face.
+        // Triangle targeting below is authoritative for movers; keep the point
+        // marker current too for the other existing targeting consumers.
+        for (auto& target : interactiveActors_)
+            if (target.objectPath == actor.objectPath)
+                target.localPosition = visual.hasBounds ? (visual.minimum+visual.maximum)*0.5f :
+                    OVR::Vector3f{transform.translation.x,transform.translation.y,transform.translation.z};
+    }
+
+    bool PlayerTouchesMover(const MoverVisual& visual) const {
+        if (!visual.blocksPlayer || !visual.hasBounds) return false;
+        constexpr float radius = 0.28f;
+        const auto center = StageToLocal({currentHeadStage_.x,playerPosture_.virtualFloorY+0.85f,
+            currentHeadStage_.z},worldPosition_);
+        if (center.x+radius < visual.minimum.x || center.x-radius > visual.maximum.x ||
+            center.z+radius < visual.minimum.z || center.z-radius > visual.maximum.z ||
+            center.y+0.85f < visual.minimum.y || center.y-0.85f > visual.maximum.y) return false;
+        for (const auto& triangle : visual.collision) {
+            for (const auto height : {0.3f,0.85f,1.4f}) {
+                const auto point = StageToLocal({currentHeadStage_.x,playerPosture_.virtualFloorY+height,
+                    currentHeadStage_.z},worldPosition_);
+                if ((point-ClosestPointOnTriangle(point,triangle)).LengthSq() < radius*radius) return true;
+            }
+        }
+        return false;
+    }
+
+    bool AdvanceRuntimeMoverPublication(const float seconds) {
+        try {
+            if (!AdvancePortableRuntimeMovers(seconds)) return true;
+            const auto movers = GetPortableRuntimeMoverActors();
+            for (const auto& mover : movers) PublishMoverPose(mover);
+            bool corrected{};
+            for (const auto& mover : movers) {
+                const auto found = moverVisuals_.find(mover.objectPath);
+                if (mover.moverClosing && found != moverVisuals_.end() && PlayerTouchesMover(found->second))
+                    corrected = BlockPortableRuntimeMover(mover.objectPath) || corrected;
+            }
+            if (corrected)
+                for (const auto& mover : GetPortableRuntimeMoverActors()) PublishMoverPose(mover);
+            return true;
+        } catch (const std::exception& error) {
+            ALOG("DeusExQuest: live mover publication failed: %s",error.what());
+            SuspendRuntimeActorPublication("DOOR MOTION FAILED - RESTART SESSION");
+            return false;
+        }
+    }
+
     void AdvanceRuntimeActorTexturePublication() {
         if (!runtimeActorTextureUploadPending_) return;
         try {
@@ -2263,13 +2440,17 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         const std::size_t ordinal = build.nextActor;
         const auto& actor = actorSnapshots_[build.actorIndices[ordinal]];
         const OVR::Vector3f position = interactiveActors_[ordinal].localPosition;
-        if (actor.hidden || actor.drawType == 0u) { ++build.hiddenActors; return true; }
+        const bool brushActor = actor.mover && !actor.brushPath.empty();
+        const bool hidden = actor.hidden || actor.drawType == 0u;
+        if (hidden) {
+            ++build.hiddenActors;
+            if (!brushActor) return true;
+        }
         if (!actor.mover && (actor.drawScale == 0.0f || actor.drawScaleX == 0.0f ||
             actor.drawScaleY == 0.0f || actor.drawScaleZ == 0.0f)) return true;
         const auto light = actor.unlit ? OVR::Vector3f(1.0f) :
             CalculateMapLighting(position,{0.0f,1.0f,0.0f});
         bool rendered = false;
-        const bool brushActor = actor.mover && !actor.activated && !actor.brushPath.empty();
         const std::string assetPath = brushActor ? actor.brushPath : actor.meshPath;
         if (!assetPath.empty()) {
             try {
@@ -2293,13 +2474,29 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                 }
                 const auto transform = QuestVr::BuildSnapshotActorTransform(actor,
                     {build.originX,build.originY,build.originZ},brushActor);
+                if (brushActor) {
+                    MoverVisual visual;
+                    visual.inverseInitialTransform = ActorTransformMatrix(transform).Inverted();
+                    visual.blocksPlayer = actor.blockPlayers && actor.collideActors;
+                    moverVisuals_.emplace(actor.objectPath,std::move(visual));
+                }
                 std::set<std::pair<std::uint16_t,std::uint32_t>> materials;
                 for (const auto& vertex : mesh.triangles) materials.emplace(vertex.material,vertex.polyFlags);
                 for (const auto& [material,sourceFlags] : materials) {
                     const auto selected = QuestVr::ResolveActorMeshMaterial(actor.materialOverrides,
                         mesh.texturePaths,mesh.materialTextureIndices,material);
                     const auto layer = build.textureLayers.find(FoldActorAssetPath(selected.texturePath));
-                    if (layer == build.textureLayers.end()) continue;
+                    if (hidden || layer == build.textureLayers.end() || (sourceFlags & 1u) != 0u) {
+                        // Collision is a brush property, not a side effect of a
+                        // successful material lookup or PF_Invisible rendering.
+                        if (brushActor && (sourceFlags & 8u) == 0u) {
+                            QueueActorMeshPart(mesh,material,{},transform,sourceFlags);
+                            build.parts.back().sourcePolyFlags = sourceFlags;
+                            build.parts.back().moverPath = actor.objectPath;
+                            build.parts.back().collisionOnly = true;
+                        }
+                        continue;
+                    }
                     const auto textureFlags = layer->second < actorTexturePolyFlags_.size() ?
                         actorTexturePolyFlags_[layer->second] : 0u;
                     const auto flags = sourceFlags | QuestVr::ActorMaterialPolyFlags(actor.style,
@@ -2316,6 +2513,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                     // Store source flags separately: texture/style bits are shared
                     // across this material but do not identify its source faces.
                     build.parts.back().sourcePolyFlags = sourceFlags;
+                    if (brushActor) build.parts.back().moverPath = actor.objectPath;
                     rendered = true;
                 }
                 if (rendered) { if (brushActor) ++build.brushInstances; else ++build.meshInstances; }
@@ -2332,7 +2530,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         }
         const bool sprite = actor.drawType == 1u || actor.drawType == 4u ||
             actor.drawType == 5u || actor.drawType == 7u;
-        if (!rendered && sprite && !actor.texturePath.empty()) {
+        if (!hidden && !rendered && sprite && !actor.texturePath.empty()) {
             const auto layer = build.textureLayers.find(FoldActorAssetPath(actor.texturePath));
             if (layer != build.textureLayers.end()) {
                 const float scale = (actor.inventory ? 0.35f : 0.65f)*actor.drawScale;
@@ -2416,13 +2614,35 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             for (std::size_t triangle = part.nextIndex; triangle < end; triangle += 3u) {
                 const auto& source = part.mesh->triangles[triangle];
                 if (source.material != part.material || source.polyFlags != part.sourcePolyFlags) continue;
-                for (const auto& vertex : QuestVr::BuildActorTriangle(*part.mesh,triangle,
-                    part.actorTransform,part.meshPose.get())) {
-                    chunk.attribs.position.emplace_back(vertex.position.x,vertex.position.y,vertex.position.z);
-                    chunk.attribs.normal.emplace_back(vertex.normal.x,vertex.normal.y,vertex.normal.z);
-                    chunk.attribs.uv0.emplace_back(vertex.u,vertex.v);
-                    chunk.attribs.color.push_back(part.color);
-                    chunk.indices.push_back(static_cast<OVRFW::TriangleIndex>(chunk.indices.size()));
+                if (!part.collisionOnly)
+                    for (const auto& vertex : QuestVr::BuildActorTriangle(*part.mesh,triangle,
+                        part.actorTransform,part.meshPose.get())) {
+                        chunk.attribs.position.emplace_back(vertex.position.x,vertex.position.y,vertex.position.z);
+                        chunk.attribs.normal.emplace_back(vertex.normal.x,vertex.normal.y,vertex.normal.z);
+                        chunk.attribs.uv0.emplace_back(vertex.u,vertex.v);
+                        chunk.attribs.color.push_back(part.color);
+                        chunk.indices.push_back(static_cast<OVRFW::TriangleIndex>(chunk.indices.size()));
+                    }
+                // Brush vertices are prepared once. Their collider and GPU
+                // chunks share the same later rigid-motion delta; neither the
+                // static BSP grid nor unrelated actors is rebuilt per tick.
+                if (!part.moverPath.empty() && (part.sourcePolyFlags & 8u) == 0u) {
+                    const auto vertices = QuestVr::BuildActorTriangle(*part.mesh,triangle,
+                        part.actorTransform);
+                    auto& visual = moverVisuals_.at(part.moverPath);
+                    if (visual.initialCollision.size() >= 4096u || moverCollisionTriangleCount_ >= 65536u)
+                        throw std::runtime_error("Mover collider exceeds its bounded triangle budget");
+                    const auto vector = [](const QuestVr::ActorVec3& v) {
+                        return OVR::Vector3f{v.x,v.y,v.z};
+                    };
+                    const CollisionTriangle collision{vector(vertices[0].position),
+                        vector(vertices[1].position),vector(vertices[2].position),
+                        vector(vertices[0].normal)};
+                    visual.initialCollision.push_back(collision);
+                    visual.collision.push_back(TransformMoverCollision(collision,visual.deltaTransform,
+                        OVR::Matrix3f(visual.deltaTransform).Inverse().Transposed()));
+                    ExpandMoverBounds(visual,visual.collision.back());
+                    ++moverCollisionTriangleCount_;
                 }
             }
         } else {
@@ -2456,6 +2676,11 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                 (build.texturedChunkPolyFlags & 0x100u) == 0u,build.texturedChunkPolyFlags);
             texturedRenderers_.back().SetPose(pose);
             texturedRenderers_.back().Update();
+            if (!build.texturedChunkMoverPath.empty()) {
+                auto& visual = moverVisuals_.at(build.texturedChunkMoverPath);
+                visual.rendererIndices.push_back(texturedRenderers_.size()-1u);
+                texturedRenderers_.back().SetModelMatrix(OVR::Matrix4f(pose)*visual.deltaTransform);
+            }
         } else {
             if (actorWorldRendererIndex_ == invalidRendererIndex_)
                 actorWorldRendererIndex_ = worldRenderers_.size();
@@ -2494,7 +2719,9 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         const bool uploadTextured = build.texturedChunk.indices.size() >= actorGeometryChunkVertices_ ||
             (allPrepared && !build.texturedChunk.indices.empty()) ||
             (!build.texturedChunk.indices.empty() && !build.parts.empty() &&
-                build.parts.front().textured && build.parts.front().polyFlags != build.texturedChunkPolyFlags);
+                build.parts.front().textured &&
+                (build.parts.front().polyFlags != build.texturedChunkPolyFlags ||
+                 build.parts.front().moverPath != build.texturedChunkMoverPath));
         // Keep driver allocation/upload separate from preparation; never issue
         // more than one bounded 6144-vertex GPU upload in a frame.
         if (uploadMarker || uploadTextured) {
@@ -2509,8 +2736,10 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                                            : part.descriptor->indices.size());
                     auto& chunk = part.textured ? build.texturedChunk : build.markerChunk;
                     if (part.textured) {
-                        if (!chunk.indices.empty() && build.texturedChunkPolyFlags != part.polyFlags) break;
+                        if (!chunk.indices.empty() && (build.texturedChunkPolyFlags != part.polyFlags ||
+                            build.texturedChunkMoverPath != part.moverPath)) break;
                         build.texturedChunkPolyFlags = part.polyFlags;
+                        build.texturedChunkMoverPath = part.moverPath;
                     }
                     if (part.nextIndex > total || total % 3u != 0u ||
                         part.nextIndex % 3u != 0u ||
@@ -2582,6 +2811,8 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         }
         actorTexturedRendererIndex_ = invalidRendererIndex_;
         actorWorldRendererIndex_ = invalidRendererIndex_;
+        moverVisuals_.clear();
+        moverCollisionTriangleCount_ = 0u;
         interactiveActors_.clear();
     }
 
@@ -2596,6 +2827,8 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         bakedWorldRenderers_.clear();
         actorWorldRendererIndex_ = invalidRendererIndex_;
         actorTexturedRendererIndex_ = invalidRendererIndex_;
+        moverVisuals_.clear();
+        moverCollisionTriangleCount_ = 0u;
         interactiveActors_.clear();
         actorSnapshots_.clear();
         if (firstTexture_.IsValid()) {
@@ -2752,6 +2985,11 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                     GetPortableRuntimePlayerHealth());
                 transitionMapName_.clear();
                 transitionPhase_ = MapTransitionPhase::Idle;
+                if (hideDebugHudAtFirstReady_) {
+                    hideDebugHudAtFirstReady_ = false;
+                    debugHudVisible_ = false;
+                    if (hudLabel_ != nullptr) hudLabel_->SetVisible(false);
+                }
                 publishedRuntimeWorldRevision_ = GetPortableRuntimeWorldRevision();
                 hasPublishedRuntimeWorldRevision_ = true;
                 hasTransitionHeadAnchor_ = false;
@@ -3100,7 +3338,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                     missionNumber = std::numeric_limits<std::int32_t>::min();
                 }
             }
-            if (currentMapName_.rfind("00_Training", 0u) == 0u) missionNumber = -1;
+            if (currentMapName_.rfind("00_Training", 0u) == 0u) missionNumber = 0;
             bool found{};
             for (const PortableActorSnapshot& actor : actorSnapshots_) {
                 if (!actor.pawn) continue;
@@ -3139,7 +3377,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                     missionNumber = std::numeric_limits<std::int32_t>::min();
                 }
             }
-            if (currentMapName_.rfind("00_Training", 0u) == 0u) missionNumber = -1;
+            if (currentMapName_.rfind("00_Training", 0u) == 0u) missionNumber = 0;
             bool found{};
             for (const PortableActorSnapshot& actor : actorSnapshots_) {
                 if (!actor.pawn) continue;
@@ -3216,6 +3454,46 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         BeginMapLoad(*found);
     }
 
+    static float RayTriangleDistance(const OVR::Vector3f& origin,
+        const OVR::Vector3f& direction, const CollisionTriangle& triangle) {
+        const auto edge1 = triangle.b-triangle.a;
+        const auto edge2 = triangle.c-triangle.a;
+        const auto p = direction.Cross(edge2);
+        const float determinant = edge1.Dot(p);
+        if (std::fabs(determinant) < 0.000001f) return -1.0f;
+        const float inverse = 1.0f/determinant;
+        const auto offset = origin-triangle.a;
+        const float u = offset.Dot(p)*inverse;
+        if (u < 0.0f || u > 1.0f) return -1.0f;
+        const auto q = offset.Cross(edge1);
+        const float v = direction.Dot(q)*inverse;
+        if (v < 0.0f || u+v > 1.0f) return -1.0f;
+        return edge2.Dot(q)*inverse;
+    }
+
+    const InteractiveActor* RayTargetMover(const OVR::Vector3f& originStage,
+        const OVR::Vector3f& directionStage, float& nearestDistance) const {
+        const auto origin = StageToLocal(originStage,worldPosition_);
+        const auto direction = QuestVr::StageDirectionToLocal(directionStage,sceneYaw_);
+        const InteractiveActor* nearest{};
+        for (const auto& [path,visual] : moverVisuals_) {
+            bool hit{};
+            for (const auto& triangle : visual.collision) {
+                const auto distance = RayTriangleDistance(origin,direction,triangle);
+                if (distance > 0.0f && distance < nearestDistance) {
+                    nearestDistance = distance;
+                    hit = true;
+                }
+            }
+            if (hit) {
+                const auto target = std::find_if(interactiveActors_.begin(),interactiveActors_.end(),
+                    [&](const InteractiveActor& actor) { return actor.objectPath == path; });
+                if (target != interactiveActors_.end()) nearest = &*target;
+            }
+        }
+        return nearest;
+    }
+
     bool UseTargetedActor(const OVR::Posef& pointerPose) {
         const OVR::Vector3f origin = pointerPose.Translation;
         const OVR::Vector3f direction =
@@ -3225,6 +3503,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         const InteractiveActor* best{};
         float bestDistance = 3.0f;
         for (const InteractiveActor& actor : interactiveActors_) {
+            if (moverVisuals_.find(actor.objectPath) != moverVisuals_.end()) continue;
             const OVR::Vector3f position =
                 worldRotation.Rotate(actor.localPosition) + worldPosition_;
             const OVR::Vector3f toActor = position - origin;
@@ -3236,6 +3515,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                 bestDistance = distance;
             }
         }
+        if (const auto mover = RayTargetMover(origin,direction,bestDistance)) best = mover;
         if (best != nullptr) {
             const PortableInteractionResult interaction =
                 InteractPortableRuntimeActor(best->objectPath);
@@ -3258,7 +3538,9 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             if (!interaction.destinationMap.empty()) {
                 RequestDestinationMap(interaction.destinationMap);
             }
-            return interaction.worldChanged;
+            // Door motion has its own live transforms/colliders. Rebuilding
+            // every actor here would unnecessarily freeze a simple door use.
+            return interaction.worldChanged && !best->mover;
         } else {
             if (UseSelectedConsumable()) return false;
             interactionStatus_ = "NO USABLE TARGET";
@@ -3266,6 +3548,76 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             ALOG("DeusExQuest: VR use found no actor within 3m ray");
         }
         return false;
+    }
+
+    void SetDialogueSubtitle(const std::string& text, const float seconds) {
+        dialogueSubtitle_ = text;
+        dialogueSubtitlePages_.clear();
+        std::string remaining = text;
+        for (auto& character : remaining)
+            if (character == '\n' || character == '\r' || character == '\t') character = ' ';
+        // Page the original text instead of losing the latter half of a long
+        // tutorial line (notably DL_F1F2). Audio stays a single original clip.
+        while (!remaining.empty() && dialogueSubtitlePages_.size() < 64u) {
+            std::string page;
+            for (std::size_t line=0u; line<4u && !remaining.empty(); ++line) {
+                std::size_t split = std::min<std::size_t>(58u,remaining.size());
+                if (split < remaining.size()) {
+                    const auto space = remaining.find_last_of(' ',split);
+                    if (space != std::string::npos && space != 0u) split = space;
+                }
+                if (!page.empty()) page += '\n';
+                page += remaining.substr(0u,split);
+                remaining.erase(0u,split);
+                const auto first = remaining.find_first_not_of(' ');
+                remaining.erase(0u,first == std::string::npos ? remaining.size() : first);
+            }
+            dialogueSubtitlePages_.push_back(std::move(page));
+        }
+        if (!remaining.empty()) ALOG("DeusExQuest: subtitle exceeds 64-page bounded display budget");
+        dialogueSubtitleSeconds_ = dialogueSubtitleTotalSeconds_ = seconds;
+    }
+
+    void PollTouchDataLinks(const float seconds) {
+        touchDataLinkPollSeconds_ += seconds;
+        // Collect contacts even while the preceding line plays. Runtime contact
+        // selection marks a one-shot trigger immediately, so never call it when
+        // this bounded queue is full. This is not original voice-finished event
+        // timing; it preserves instructions crossed during another transmission.
+        if (touchDataLinkPollSeconds_ >= 0.15f &&
+            pendingTouchDataLinks_.size() < maxPendingTouchDataLinks_) {
+            touchDataLinkPollSeconds_ = 0.0f;
+            const auto feet = StageToLocal({currentHeadStage_.x,playerPosture_.virtualFloorY,
+                currentHeadStage_.z},worldPosition_);
+            constexpr float unitsPerMeter = 52.5f;
+            const float x = activeMapUnrealOrigin_.x-feet.z*unitsPerMeter;
+            const float y = activeMapUnrealOrigin_.y+feet.x*unitsPerMeter;
+            const float z = activeMapUnrealOrigin_.z+(feet.y-1.0f)*unitsPerMeter+39.0f;
+            try {
+                PortableDialogueResult dialogue;
+                if (GetPortableRuntimeTouchDataLink(x,y,z,17.0f,39.0f,dialogue)) {
+                    pendingTouchDataLinks_.push_back(std::move(dialogue));
+                    ALOG("DeusExQuest: contact datalink queued event=%s depth=%zu",
+                        pendingTouchDataLinks_.back().eventPath.c_str(),pendingTouchDataLinks_.size());
+                }
+            } catch (const std::exception& error) {
+                ALOG("DeusExQuest: touch datalink unavailable: %s",error.what());
+                touchDataLinkPollSeconds_ = -5.0f;
+            }
+        }
+        if (pendingTouchDataLinks_.empty() || !pendingChoices_.empty() ||
+            dialogueDecodeFuture_.valid() || dialogueSubtitleSeconds_ > 0.0f) return;
+        {
+            std::lock_guard<std::mutex> lock(audioMutex_);
+            if (dialogueCursor_ < dialogueSamples_.size()) return;
+        }
+        PortableDialogueResult dialogue = std::move(pendingTouchDataLinks_.front());
+        pendingTouchDataLinks_.pop_front();
+        try {
+            PresentDialogueResult(dialogue,{}); // Datalinks are head-centered, not room speakers.
+        } catch (const std::exception& error) {
+            ALOG("DeusExQuest: queued touch datalink presentation failed: %s",error.what());
+        }
     }
 
     bool ShowDialogue(const std::string& actorPath) {
@@ -3279,7 +3631,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                 missionNumber = std::numeric_limits<std::int32_t>::min();
             }
         }
-        if (currentMapName_.rfind("00_Training", 0u) == 0u) missionNumber = -1;
+        if (currentMapName_.rfind("00_Training", 0u) == 0u) missionNumber = 0;
         const PortableDialogueResult dialogue =
             GetPortableRuntimeDialogue(actorPath, cursor, missionNumber);
         if (!dialogue.found) {
@@ -3293,14 +3645,22 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             return false;
         }
         ++cursor;
+        return PresentDialogueResult(dialogue,actorPath,cursor);
+    }
+
+    bool PresentDialogueResult(const PortableDialogueResult& dialogue,
+        const std::string& actorPath, const std::size_t ordinal = 0u) {
+        if (!dialogue.found) return false;
         std::string subtitle = dialogue.speech;
         std::replace(subtitle.begin(), subtitle.end(), '\n', ' ');
         std::replace(subtitle.begin(), subtitle.end(), '\r', ' ');
+        const auto fullSubtitle = dialogue.bindName+": "+subtitle;
         if (subtitle.size() > 220u) subtitle.resize(220u);
         interactionStatus_ = dialogue.bindName + ": " + subtitle;
         AppendPersonaLog(interactionStatus_);
         interactionStatusSeconds_ = std::clamp(
             static_cast<float>(subtitle.size()) * 0.055f, 4.0f, 12.0f);
+        SetDialogueSubtitle(fullSubtitle,interactionStatusSeconds_);
         PortableSound dialogueSound;
         try {
             dialogueSound = LoadPortableRuntimeDialogueSound(dialogue);
@@ -3327,7 +3687,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             "DeusExQuest: dialogue %s bind=%s line=%zu/%zu sound=%d package=%s audio=%s/%zu bytes queued=%s effects=%zu credits=%d skill=%d goals=%zu notes=%zu inventory=%zu text=%s",
             dialogue.eventPath.c_str(),
             dialogue.bindName.c_str(),
-            cursor,
+            ordinal,
             dialogue.matchingLines,
             dialogue.soundId,
             dialogue.audioPackageName.c_str(),
@@ -3356,6 +3716,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             "/" + std::to_string(pendingChoices_.size()) + ": " + text +
             "\nRIGHT STICK SELECT   A CONFIRM";
         interactionStatusSeconds_ = 60.0f;
+        SetDialogueSubtitle(interactionStatus_,interactionStatusSeconds_);
     }
 
     void ClearPendingConversation() {
@@ -3389,6 +3750,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         AppendPersonaLog(interactionStatus_);
         interactionStatusSeconds_ = std::clamp(
             static_cast<float>(text.size()) * 0.055f, 4.0f, 12.0f);
+        SetDialogueSubtitle(interactionStatus_,interactionStatusSeconds_);
         ALOG(
             "DeusExQuest: VR choice selected label=%s target=%zu event=%s sound=%d queued=%s text=%s",
             choice.label.c_str(),
@@ -4136,6 +4498,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         const InteractiveActor* best{};
         float bestDistance = weaponRange;
         for (const InteractiveActor& actor : interactiveActors_) {
+            if (moverVisuals_.find(actor.objectPath) != moverVisuals_.end()) continue;
             const OVR::Vector3f position =
                 worldRotation.Rotate(actor.localPosition) + worldPosition_;
             const OVR::Vector3f toActor = position - origin;
@@ -4147,6 +4510,8 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                 bestDistance = distance;
             }
         }
+        // An actual moving brush face occludes a point-targeted NPC behind it.
+        if (const auto mover = RayTargetMover(origin,direction,bestDistance)) best = mover;
         if (best == nullptr) {
             interactionStatus_ = "SHOT MISSED";
             interactionStatusSeconds_ = 1.5f;
@@ -4337,13 +4702,6 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             GetPortableRuntimePlayerHealth());
         return true;
     }
-
-    struct CollisionTriangle {
-        OVR::Vector3f a;
-        OVR::Vector3f b;
-        OVR::Vector3f c;
-        OVR::Vector3f normal;
-    };
 
     static std::uint16_t ReadLe16(const std::uint8_t* bytes) {
         return static_cast<std::uint16_t>(bytes[0]) |
@@ -4760,6 +5118,12 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         // its std::async future (which would wait on the render thread). The
         // decoder owns only compressed bytes and can finish independently.
         dialogueAudioEpoch_.Invalidate(dialogueDecodeEpoch_, dialogueDecodeFuture_.valid());
+        dialogueSubtitle_.clear();
+        dialogueSubtitlePages_.clear();
+        dialogueSubtitleSeconds_ = dialogueSubtitleTotalSeconds_ = 0.0f;
+        touchDataLinkPollSeconds_ = 0.0f;
+        pendingTouchDataLinks_.clear();
+        if (subtitleLabel_ != nullptr) subtitleLabel_->SetVisible(false);
         pendingDialogueSpatialized_ = false;
         pendingDialogueActorPath_.clear();
         pendingDialogueLocalPosition_ = {};
@@ -4863,6 +5227,10 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         }
         if (decoded.stereo.empty()) return;
         const std::size_t outputFrames = decoded.stereo.size() / 2u;
+        if (!dialogueSubtitle_.empty() && decoded.targetRate != 0u)
+            dialogueSubtitleSeconds_ = std::max(dialogueSubtitleSeconds_,
+                static_cast<float>(outputFrames)/static_cast<float>(decoded.targetRate));
+        dialogueSubtitleTotalSeconds_ = dialogueSubtitleSeconds_;
         {
             std::lock_guard<std::mutex> lock(audioMutex_);
             dialogueSamples_ = std::move(decoded.stereo);
@@ -5059,6 +5427,15 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         }
         for (std::uint32_t index : oversizedCollisionTriangles_) {
             callback(collisionTriangles_[index]);
+        }
+        // Movers own a small, bounded live triangle set. Do not leave their
+        // closed-position triangles in the immutable BSP spatial grid.
+        const float reach = 8.0f*static_cast<float>(cellRadius+1);
+        for (const auto& [path,visual] : moverVisuals_) {
+            if (!visual.blocksPlayer || !visual.hasBounds ||
+                point.x+reach < visual.minimum.x || point.x-reach > visual.maximum.x ||
+                point.z+reach < visual.minimum.z || point.z-reach > visual.maximum.z) continue;
+            for (const auto& triangle : visual.collision) callback(triangle);
         }
     }
 
@@ -5754,6 +6131,11 @@ class DeusExQuestApp final : public OVRFW::XrApp {
     std::vector<SpatialAudioEmitter> spatialAudioEmitterCatalog_;
     std::uint32_t audioSampleRate_{};
     std::vector<std::int16_t> dialogueSamples_;
+    std::string dialogueSubtitle_, displayedSubtitle_;
+    std::vector<std::string> dialogueSubtitlePages_;
+    static constexpr std::size_t maxPendingTouchDataLinks_ = 16u;
+    std::deque<PortableDialogueResult> pendingTouchDataLinks_;
+    float dialogueSubtitleSeconds_{}, dialogueSubtitleTotalSeconds_{}, touchDataLinkPollSeconds_{};
     std::size_t dialogueCursor_{};
     OVR::Vector3f dialogueLocalPosition_{};
     OVR::Vector3f pendingDialogueLocalPosition_{};
@@ -5767,6 +6149,8 @@ class DeusExQuestApp final : public OVRFW::XrApp {
     QuestVr::AsyncResultEpoch dialogueAudioEpoch_;
     std::uint64_t dialogueDecodeEpoch_{};
     std::vector<CollisionTriangle> collisionTriangles_;
+    std::unordered_map<std::string,MoverVisual> moverVisuals_;
+    std::size_t moverCollisionTriangleCount_{};
     std::unordered_map<std::int64_t, std::vector<std::uint32_t>> collisionGrid_;
     std::vector<std::uint32_t> oversizedCollisionTriangles_;
     OVR::Vector3f worldPosition_{0.0f, 0.0f, 0.0f};
@@ -5793,6 +6177,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
     bool fireLatch_{};
     bool inventoryCycleLatch_{};
     bool debugHudVisible_{true};
+    bool hideDebugHudAtFirstReady_{true};
     bool debugHudToggleLatch_{true};
     QuestVr::SeatedPosture playerPosture_;
     QuestVr::SeatedCalibrationGate seatedCalibrationGate_;
@@ -5805,6 +6190,8 @@ class DeusExQuestApp final : public OVRFW::XrApp {
     OVRFW::TinyUI ui_;
     std::vector<OVRFW::ovrSurfaceDef> headLockedUiSurfaces_;
     OVRFW::VRMenuObject* hudLabel_{};
+    OVRFW::VRMenuObject* subtitleLabel_{};
+    OVRFW::VRMenuObject* controlHintLabel_{};
     OVRFW::VRMenuObject* inventoryLabel_{};
     OVRFW::VRMenuObject* personaTabsLabel_{};
     OVRFW::VRMenuObject* personaDetailsLabel_{};

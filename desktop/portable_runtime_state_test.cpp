@@ -5,11 +5,14 @@
 #include "quest_script_state.h"
 
 #include <algorithm>
+#include <array>
 #include <chrono>
+#include <cmath>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <stdexcept>
+#include <set>
 #include <string>
 #include <tuple>
 #include <utility>
@@ -56,11 +59,21 @@ struct IsolatedCheckpointDirectory {
 // Inspect the test's generated v3 checkpoint independently of live getters.
 // Sorted unordered fields allow exact comparison without relying on hash-table
 // iteration order. This is not a new runtime save parser or a user-save editor.
+struct SavedMover {
+    std::string objectPath;
+    std::array<float, 3u> position{}, sourcePosition{};
+    std::array<std::int32_t, 3u> rotation{}, sourceRotation{};
+    std::uint32_t target{}, phase{};
+    std::int32_t returnKey{};
+    float elapsed{}, remainingStay{};
+    bool operator==(const SavedMover&) const = default;
+};
 struct SavedState {
     std::vector<std::string> inventory, inactive, activated, flags, goals, notes, applied;
     std::vector<std::pair<std::string, float>> damaged;
     float health{};
     std::int32_t credits{}, skillPoints{};
+    std::vector<SavedMover> movers;
     bool operator==(const SavedState&) const = default;
 };
 
@@ -88,9 +101,12 @@ SavedState ReadGeneratedCheckpoint(const std::filesystem::path& path, const std:
         Require(count <= 100'000u, "Generated checkpoint list exceeds test bound");
         for (std::uint32_t i = 0; i < count; ++i) values.push_back(readString());
     };
-    std::uint32_t magic{}, version{};
-    read(magic); read(version);
-    Require((expectedVersion == 3u || expectedVersion == 5u) && magic == 0x53515844u && version == expectedVersion,
+    std::uint32_t magic{}, format{}, version{};
+    read(magic); read(format);
+    version = format;
+    if (format == 14u) read(version);
+    Require((expectedVersion == 3u || expectedVersion == 5u) && magic == 0x53515844u && version == expectedVersion &&
+        (format == version || format == 14u),
         "Generated checkpoint does not match its explicitly requested runtime format");
     SavedState state;
     readStrings(state.inventory); readStrings(state.inactive); readStrings(state.activated);
@@ -106,6 +122,35 @@ SavedState ReadGeneratedCheckpoint(const std::filesystem::path& path, const std:
     }
     read(state.credits); read(state.skillPoints);
     readStrings(state.flags); readStrings(state.goals); readStrings(state.notes); readStrings(state.applied);
+    if (format == 14u) {
+        std::uint32_t movers{};
+        read(movers);
+        Require(movers >= 1u && movers <= 10'000u,
+            "Generated v14 checkpoint has no mover payload or exceeds the independent actor bound");
+        std::set<std::string> paths;
+        for (std::uint32_t i = 0u; i < movers; ++i) {
+            SavedMover mover;
+            mover.objectPath = readString();
+            Require(!mover.objectPath.empty() && paths.insert(mover.objectPath).second,
+                "Generated v14 checkpoint contains an empty/duplicate mover identity");
+            for (auto& value : mover.position) read(value);
+            for (auto& value : mover.rotation) read(value);
+            for (auto& value : mover.sourcePosition) read(value);
+            for (auto& value : mover.sourceRotation) read(value);
+            read(mover.target); read(mover.returnKey); read(mover.phase);
+            read(mover.elapsed); read(mover.remainingStay);
+            Require(std::all_of(mover.position.begin(), mover.position.end(), [](float value) { return std::isfinite(value); }) &&
+                std::all_of(mover.sourcePosition.begin(), mover.sourcePosition.end(), [](float value) { return std::isfinite(value); }) &&
+                mover.target <= 7u && mover.returnKey >= -1 && mover.returnKey <= 7 && mover.phase <= 2u &&
+                std::isfinite(mover.elapsed) && mover.elapsed >= 0.0f &&
+                std::isfinite(mover.remainingStay) && mover.remainingStay >= 0.0f,
+                "Generated v14 checkpoint mover contains invalid pose, keys, phase or timers");
+            state.movers.push_back(std::move(mover));
+        }
+        std::sort(state.movers.begin(), state.movers.end(), [](const auto& a, const auto& b) {
+            return a.objectPath < b.objectPath;
+        });
+    }
     if (version == 5u) {
         std::uint32_t size{}; read(size);
         Require(size >= QuestVr::ScriptStateDetail::Magic.size() && size <= QuestVr::kMaximumSaveRuntimeBytes,
@@ -122,10 +167,62 @@ SavedState ReadGeneratedCheckpoint(const std::filesystem::path& path, const std:
     return state;
 }
 
+struct GeneratedMoverRecord {
+    std::size_t nameOffset{}, nameBytes{}, poseOffset{};
+};
+
+std::vector<GeneratedMoverRecord> GeneratedMoverRecords(const std::vector<std::uint8_t>& bytes) {
+    std::size_t cursor{};
+    const auto skip = [&](const std::size_t count) {
+        Require(cursor <= bytes.size() && count <= bytes.size() - cursor,
+            "Independent mover-fixture parser exceeded generated checkpoint bytes");
+        cursor += count;
+    };
+    const auto word = [&]() {
+        const auto offset = cursor; skip(4u);
+        std::uint32_t value{};
+        for (unsigned i = 0u; i < 4u; ++i) value |= static_cast<std::uint32_t>(bytes[offset + i]) << (8u * i);
+        return value;
+    };
+    const auto string = [&]() {
+        const auto count = word();
+        Require(count <= 1'048'576u, "Independent mover-fixture string exceeds test bound");
+        const auto offset = cursor; skip(count);
+        return std::pair{offset, static_cast<std::size_t>(count)};
+    };
+    const auto strings = [&]() {
+        const auto count = word();
+        Require(count <= 100'000u && count <= (bytes.size() - cursor) / 4u,
+            "Independent mover-fixture list exceeds test bound or payload");
+        for (std::uint32_t i = 0u; i < count; ++i) static_cast<void>(string());
+    };
+    Require(word() == 0x53515844u && word() == 14u && word() == 3u,
+        "Cross-map mover fixture is not an independent v14/v3 checkpoint");
+    strings(); strings(); strings(); skip(4u);
+    const auto damaged = word();
+    Require(damaged <= 100'000u && damaged <= (bytes.size() - cursor) / 8u,
+        "Independent mover-fixture damaged count exceeds test bound or payload");
+    for (std::uint32_t i = 0u; i < damaged; ++i) { static_cast<void>(string()); skip(4u); }
+    skip(8u); strings(); strings(); strings(); strings();
+    const auto count = word();
+    Require(count >= 1u && count <= 10'000u && count <= (bytes.size() - cursor) / 72u,
+        "Independent mover-fixture count exceeds test bound or payload");
+    std::vector<GeneratedMoverRecord> result;
+    result.reserve(count);
+    for (std::uint32_t i = 0u; i < count; ++i) {
+        const auto [offset, length] = string();
+        result.push_back({offset, length, cursor});
+        skip(68u);
+    }
+    Require(cursor == bytes.size(), "Independent mover-fixture parser found trailing bytes");
+    return result;
+}
+
 auto ActorFields(const PortableActorSnapshot& actor) {
     return std::tie(actor.objectPath, actor.classPath, actor.x, actor.y, actor.z,
         actor.hasLocation, actor.pawn, actor.inventory, actor.decoration, actor.mover,
         actor.trigger, actor.travel, actor.light, actor.hidden, actor.activated,
+        actor.collideActors, actor.blockPlayers, actor.moverMoving, actor.moverClosing,
         actor.drawType, actor.destinationMap, actor.drawScale, actor.drawScaleX,
         actor.drawScaleY, actor.drawScaleZ, actor.prePivotX,actor.prePivotY,actor.prePivotZ,
         actor.fatness,actor.animByOwner,actor.ownerPath,actor.animationSourcePath,actor.pitch, actor.yaw, actor.roll,
@@ -228,6 +325,10 @@ void TestOriginalRollback(const std::filesystem::path& suppliedGameRoot) {
     const auto training = LoadPortablePackageTables((gameRoot / "Maps" / "00_Training.dx").string());
     const auto combat = LoadPortablePackageTables((gameRoot / "Maps" / "00_TrainingCombat.dx").string());
     Require(LoadPortableRuntimeMap(training).passed, "Original Training map runtime failed");
+    IsolatedCheckpointDirectory directory(gameRoot);
+    const auto untouched = directory.path / "untouched-authored-v3.sav";
+    Require(SavePortableRuntimeState(untouched.string()) && ReadGeneratedCheckpoint(untouched).movers.empty(),
+        "Untouched original map did not preserve exact legacy v3 without mover records");
     const auto actors = GetPortableRuntimeMapActors();
     const auto choose = [&](auto predicate, const char* missing) {
         const auto found = std::find_if(actors.begin(), actors.end(), predicate);
@@ -235,7 +336,9 @@ void TestOriginalRollback(const std::filesystem::path& suppliedGameRoot) {
         return found->objectPath;
     };
     const auto item = choose([](const auto& actor) { return actor.inventory; }, "Training has no inventory test actor");
-    const auto mover = choose([](const auto& actor) { return actor.mover; }, "Training has no mover test actor");
+    const auto mover = choose([](const auto& actor) {
+        return actor.mover && actor.objectPath == "00_Training.DeusExMover16";
+    }, "Training has no authored unlocked first-door test actor");
     const auto pawn = choose([](const auto& actor) { return actor.pawn; }, "Training has no pawn test actor");
     Require(InteractPortableRuntimeActor(item).action == "pickup", "Original inventory pickup fixture failed");
     Require(InteractPortableRuntimeActor(mover).action == "mover_open", "Original mover activation fixture failed");
@@ -252,11 +355,14 @@ void TestOriginalRollback(const std::filesystem::path& suppliedGameRoot) {
             expected.progress.notes.size() == 1 && expected.actors.size() + 1 == actors.size(),
             "Checkpoint fixture did not mutate all expected live fields");
 
-    IsolatedCheckpointDirectory directory(gameRoot);
     const auto checkpoint = directory.path / "rollback-checkpoint.sav";
     const auto afterRollback = directory.path / "after-rollback.sav";
     Require(SavePortableRuntimeState(checkpoint.string()), "Rollback checkpoint write failed");
     const auto saved = ReadGeneratedCheckpoint(checkpoint);
+    Require(saved.movers.size() == 2u &&
+        saved.movers[0].objectPath == "00_Training.DeusExMover16" &&
+        saved.movers[1].objectPath == "00_Training.DeusExMover17",
+        "New v14 checkpoint did not independently retain both authored moving door panels");
     Require(saved.inventory == expected.inventory && saved.health == expected.health &&
             saved.flags == std::vector<std::string>{"runtimerollbacktestflag\n1"} &&
             saved.damaged == std::vector<std::pair<std::string, float>>{{pawn, damaged.remainingHealth}} &&
@@ -340,6 +446,59 @@ void TestOriginalRollback(const std::filesystem::path& suppliedGameRoot) {
             SavePortableRuntimeState(captureSecond.string()) &&
             QuestVr::ReadBoundedSaveFile(captureSecond.string(), QuestVr::kMaximumSaveRuntimeBytes, secondRuntime),
             "Second paired UI/runtime capture failed");
+    // A valid mover checkpoint must be fully preflighted before the Quest
+    // starts its cross-map worker. Validate the authored Training spec while
+    // Combat stays live, never substitute the loaded map's actors or commit
+    // a temporary map replacement merely to inspect the save candidate.
+    const auto crossMapRevision = GetPortableRuntimeWorldRevision();
+    const auto requireUnchangedCrossMap = [&]() {
+        RequireSameLiveState(expectedSecond);
+        Require(GetPortableRuntimeWorldRevision() == crossMapRevision,
+            "Read-only cross-map mover preflight changed the live world revision");
+        std::vector<std::uint8_t> current;
+        Require(SavePortableRuntimeState(captureSecond.string()) &&
+            QuestVr::ReadBoundedSaveFile(captureSecond.string(), QuestVr::kMaximumSaveRuntimeBytes, current) &&
+            current == secondRuntime,
+            "Read-only cross-map mover preflight changed hidden checkpoint state");
+    };
+    Require(QuestVr::WriteDurableSaveFile(loadStage.string(), firstRuntime) &&
+        ValidatePortableRuntimeState(loadStage.string(), "00_Training") &&
+        ValidatePortableRuntimeState(loadStage.string(), "00_training") &&
+        ValidatePortableRuntimeState(loadStage.string()),
+        "Valid authored v14 Training motion did not preflight while Combat was loaded");
+    requireUnchangedCrossMap();
+    Require(!ValidatePortableRuntimeState(loadStage.string(), "00_TrainingCombat") &&
+        !LoadPortableRuntimeState(loadStage.string()),
+        "Cross-map mover checkpoint accepted wrong metadata or restored into the wrong loaded map");
+    requireUnchangedCrossMap();
+    const auto moverRecords = GeneratedMoverRecords(firstRuntime);
+    Require(moverRecords.size() == 2u && moverRecords.front().nameBytes >= 2u,
+        "Cross-map authored paired-door fixture lost its independently decoded records");
+    const auto refuseCrossMap = [&](const std::vector<std::uint8_t>& malformed, const char* description) {
+        Require(QuestVr::WriteDurableSaveFile(loadStage.string(), malformed) &&
+            !ValidatePortableRuntimeState(loadStage.string(), "00_Training"), description);
+        requireUnchangedCrossMap();
+    };
+    auto invalidMoverPose = firstRuntime;
+    // Finite float 1.0 cannot match the original -220 authored X coordinate
+    // at elapsed zero. This checks spec/pose consistency, not only NaN guards.
+    const auto poseOffset = moverRecords.front().poseOffset;
+    invalidMoverPose[poseOffset] = 0u; invalidMoverPose[poseOffset + 1u] = 0u;
+    invalidMoverPose[poseOffset + 2u] = 0x80u; invalidMoverPose[poseOffset + 3u] = 0x3fu;
+    refuseCrossMap(invalidMoverPose, "Cross-map preflight accepted a finite pose inconsistent with authored Training motion");
+    auto mixedMoverMaps = firstRuntime;
+    mixedMoverMaps[moverRecords.back().nameOffset] = static_cast<std::uint8_t>('9');
+    refuseCrossMap(mixedMoverMaps, "Cross-map preflight accepted mover owners from multiple maps");
+    auto aliasedMover = firstRuntime;
+    const auto identityStart = moverRecords.front().nameOffset;
+    const auto identityEnd = identityStart + moverRecords.front().nameBytes;
+    const auto separator = std::find(aliasedMover.begin() + static_cast<std::ptrdiff_t>(identityStart),
+        aliasedMover.begin() + static_cast<std::ptrdiff_t>(identityEnd), static_cast<std::uint8_t>('.'));
+    Require(separator != aliasedMover.begin() + static_cast<std::ptrdiff_t>(identityEnd) &&
+        separator + 1u != aliasedMover.begin() + static_cast<std::ptrdiff_t>(identityEnd),
+        "Cross-map alias fixture owner is missing its actor identity");
+    *(separator + 1u) = static_cast<std::uint8_t>('d');
+    refuseCrossMap(aliasedMover, "Cross-map preflight accepted a noncanonical alias for the authored Mover");
     const auto secondPublish = QuestVr::PublishSaveBundle(bundlePaths, secondMetadata, secondRuntime);
     Require(secondPublish.saved && secondPublish.generation == 2u, "Second actual runtime bundle publish failed");
     auto pairs = QuestVr::LoadSaveBundleCandidates(bundlePaths);
@@ -515,8 +674,9 @@ void TestOriginalRollback(const std::filesystem::path& suppliedGameRoot) {
         std::vector<std::uint8_t> scriptRuntime;
         Require(SavePortableRuntimeState(scriptCheckpoint.string()) &&
             QuestVr::ReadBoundedSaveFile(scriptCheckpoint.string(),QuestVr::kMaximumSaveRuntimeBytes,scriptRuntime) &&
-            scriptRuntime.size()>8 && scriptRuntime[4]==4 && scriptRuntime[5]==0 && scriptRuntime[6]==0 && scriptRuntime[7]==0,
-            "Committed script state did not produce runtime v4");
+            scriptRuntime.size()>12 && scriptRuntime[4]==14 && scriptRuntime[5]==0 && scriptRuntime[6]==0 && scriptRuntime[7]==0 &&
+            scriptRuntime[8]==4 && scriptRuntime[9]==0 && scriptRuntime[10]==0 && scriptRuntime[11]==0,
+            "Committed script state did not produce the exact v14 mover wrapper around runtime v4");
         const auto scriptPairs=QuestVr::MakeSaveBundlePaths((directory.path/"quest-save-script-state").string());
         Require(QuestVr::PublishSaveBundle(scriptPairs,firstMetadata,firstRuntime).saved &&
             QuestVr::PublishSaveBundle(scriptPairs,firstMetadata,scriptRuntime).saved,
@@ -607,8 +767,8 @@ void TestOriginalRollback(const std::filesystem::path& suppliedGameRoot) {
             QuestVr::ReadBoundedSaveFile(stateCheckpoint.string(), QuestVr::kMaximumSaveRuntimeBytes, stateRuntime),
             "State-only actor context could not be saved");
 
-        // Read this generated v5 prefix independently of runtime getters. The
-        // trailer must follow every unchanged v3 field and consume the tail.
+        // Read the v14-wrapped v5 prefix independently of runtime getters. The
+        // trailer must follow the exact mover records and consume the tail.
         const auto stateBlobFrom = [](const std::vector<std::uint8_t>& bytes) {
             std::size_t cursor{};
             const auto advance = [&](const std::size_t count) {
@@ -633,12 +793,17 @@ void TestOriginalRollback(const std::filesystem::path& suppliedGameRoot) {
                     "Generated v5 prefix list exceeded its test budget");
                 for (std::uint32_t i = 0u; i < count; ++i) skipString();
             };
-            Require(word() == 0x53515844u && word() == 5u, "State-only checkpoint did not select runtime v5");
+            Require(word() == 0x53515844u && word() == 14u && word() == 5u,
+                "State-only checkpoint did not select the exact v14 mover wrapper around runtime v5");
             skipStrings(); skipStrings(); skipStrings(); advance(4u);
             const auto damageCount = word();
             Require(damageCount <= 100'000u, "Generated v5 damaged-actor count exceeded its test budget");
             for (std::uint32_t i = 0u; i < damageCount; ++i) { skipString(); advance(4u); }
             advance(8u); skipStrings(); skipStrings(); skipStrings(); skipStrings();
+            const auto moverCount = word();
+            Require(moverCount >= 1u && moverCount <= 10'000u,
+                "Generated v14/v5 mover record count exceeded its independent bound");
+            for (std::uint32_t i = 0u; i < moverCount; ++i) { skipString(); advance(68u); }
             const auto blobSize = word();
             Require(blobSize > 0u && blobSize == bytes.size() - cursor,
                 "Generated v5 state trailer did not cover the exact prefix tail");

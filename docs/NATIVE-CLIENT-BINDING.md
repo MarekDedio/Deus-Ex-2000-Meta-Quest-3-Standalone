@@ -5,6 +5,11 @@ possession, accepted world startup or successful native decal rendering. The
 original entry and bootstrap authority is in [DECAL-NATIVE-CONTRACT.md](DECAL-NATIVE-CONTRACT.md)
 and [WORLD-BOOTSTRAP-CONTRACT.md](WORLD-BOOTSTRAP-CONTRACT.md).
 
+Positive CPU native Attach is now integrated with this binding. The fresh
+generated actor suite passes 8,268 checks/143 refusal controls, including actual
+finite-floor/mover attachment and post-geometry client revocation. No rendered
+native shadow or accepted original world/player startup is claimed.
+
 ## Ownership and teardown
 
 `quest_native_client.h` retains one actual embedding-owned client and an ordered
@@ -45,10 +50,21 @@ After argument evaluation and exact declaration validation, an absent client or
 empty viewport registry returns original bool false before reading Texture,
 clamping MultiDecalLevel, consuming RNG or accessing native geometry. A live
 client/viewport then requires actual Actor.Texture schema; None logs the original
-`AttachDecal: No Texture` and returns false. Nonnull Texture still reaches an
-explicit unsupported backend error: geometry-only projection is not accepted as
-Attach and no fake no-hit/success bypass is used. Const SurfList is untouched by
-these guards. Detach/checkpoint behavior is unchanged.
+`AttachDecal: No Texture` and returns false. Nonnull Texture reaches the actual
+bounded native geometry path: ordinary BSP misses return false while retaining
+successful pretrace RNG draws and the entry's upper Multi clamp. Successful
+attachment publishes ordered map-owned records, not just a standalone geometry
+plan. Const SurfList remains untouched by negative guards and is updated only
+through the native bridge when a primary/secondary is accepted.
+
+The primary is provisional and callback-visible before the original mover
+`SetBase(self.Owner,true)` path. Radius reads live Texture USize/DrawScale after
+callbacks; secondary samples use current SurfList and raw live Multi without
+clamping it a second time. Successful pretrace RNG is published before callbacks,
+whose subsequent draws remain authoritative. Renderer consumption of these
+records is still pending; native success does not imply a drawn shadow. The
+phase and checkpoint contracts are in [DECAL-GEOMETRY-PLAN.md](DECAL-GEOMETRY-PLAN.md)
+and [DECAL-CHECKPOINT.md](DECAL-CHECKPOINT.md).
 
 Original GameInfo class precedence is URL GAME, then map DefaultGameType, then
 configured DefaultGame if the client exists or DefaultServerGame if it does not.
@@ -58,13 +74,22 @@ instead of substituting the other. Existing Level.Game bypasses class selection.
 
 ## Verification scope
 
-Final host build and CTest pass58 ordinary tests (62 registered, four owned-data
-skips),33.50s. Registry116/39 rejected mutations, VM677971/338 (66 new Attach
-controls), generated Spawn/world/client7072/135 and SDK patch6/0 pass. All four
-optional owned-data suites pass separately: runtime-save, defaults1002,
-PawnList67 and full actor controls across Training/UNATCOIsland/Intro. The focused
-world probe also retains its exact positive Attach refusal and complete rollback.
+The historical native-client host baseline passed 58 ordinary CTest tests
+(62 registered, four owned-data skips),33.50s. Registry116/39 rejected mutations,
+VM677971/338 (66 new Attach controls), generated Spawn/world/client7072/135 and
+SDK patch6/0 passed. All four optional owned-data suites passed separately:
+runtime-save, defaults1002, PawnList67 and full actor controls across
+Training/UNATCOIsland/Intro. The focused world probe at that stage retained its
+exact positive Attach refusal and complete rollback.
 These are host proofs, not device or complete campaign acceptance.
+
+Current generated runtime verification passes 8,268 checks/143 refusal controls in
+`artifacts/tutorial-mover-20261012/spawn-positive.log`. In addition to the entry
+guards, it executes real finite-polygon attachment, callback-visible provisional
+records, post-callback Texture/Multi/RNG and primary mover rotation, ordered
+repeated attachment, Detach, canonical cold restore and GC roots. Client revocation
+after positive geometry rolls back the external OUT write, native graph, RNG,
+properties and revision while leaving the renderer lease revoked.
 
 Generated registry controls cover absent/bound-empty/live/revoked lifetimes,
 ordered targets, stale/duplicate identities, exact limits and strong refusal.
@@ -76,12 +101,12 @@ precedence and exact complete rollback. SDK patch fixtures prove pre-teardown
 ordering, idempotence and preservation of conflicting local source edits.
 
 The owned Training startup probe explicitly owns a synthetic stereo target so
-its real Texture reaches the remaining positive Attach gap. That fixture is not
-device rendering or an accepted playable-world result. APK/device evidence is
+its real Texture can reach the positive native path. It now advances beyond the
+old Attach gap; the next limiting operation is under investigation. That fixture
+is not device rendering or an accepted playable-world result. APK/device evidence is
 recorded in [QUEST-TEST-BUILD.md](QUEST-TEST-BUILD.md); missing headset/tracking
 prevents renewed physical acceptance, not these host checks.
 
-Remaining: faithful positive Attach sequencing/live Texture ordering, primary
-mover/SetBase callbacks and secondary paths; ordered renderer publication and
+Remaining: ordered renderer publication and
 LastRenderedTime; original player login/possession/UI and complete campaign Tick,
 travel archives, gameplay and Quest performance/visual acceptance.

@@ -99,6 +99,12 @@ struct PortableDialogueEffectResult {
     std::string status;
 };
 
+// Exact named, single-speech -> End authored datalinks. Complex conversation
+// graphs remain unsupported rather than being flattened into a different line.
+PortableDialogueResult GetPortableRuntimeDataLink(const std::string& name, std::int32_t missionNumber = 0);
+bool GetPortableRuntimeTouchDataLink(float x, float y, float z, float radius,
+    float height, PortableDialogueResult& dialogue);
+
 struct PortablePlayerProgress {
     std::int32_t credits{};
     std::int32_t skillPoints{};
@@ -292,6 +298,8 @@ struct PortableActorSnapshot {
     bool light{}; // Engine.Light-derived or any actor with non-LT_None LightType.
     bool hidden{};
     bool activated{};
+    bool collideActors{}, blockPlayers{};
+    bool moverMoving{}, moverClosing{};
     std::uint8_t drawType{};
     std::uint8_t style{1u};
     bool unlit{};
@@ -448,10 +456,18 @@ PortableTextureArray BuildPortableRuntimeActorTextureArray(
     std::uint32_t width,
     std::uint32_t height);
 PortableInteractionResult InteractPortableRuntimeActor(const std::string& objectPath);
+// Authored-key motion for the bounded VR interaction layer, not original
+// Mover script startup/Tick/encroachment. Never advances while UI is paused.
+bool AdvancePortableRuntimeMovers(float elapsedSeconds);
+std::vector<PortableActorSnapshot> GetPortableRuntimeMoverActors();
+// Undo the most recent closing step and reopen instead of crushing the player.
+bool BlockPortableRuntimeMover(const std::string& objectPath);
 bool VerifyPortableRuntimeInteraction();
 bool SavePortableRuntimeState(const std::string& path);
-// Optional binding protects paired metadata from referring to another v4/v5 map.
-// Legacy v1-v3 have no embedded map identity and retain their existing behavior.
+// Optional binding protects paired metadata from referring to another saved map.
+// Validation may inspect the target map without replacing the current world.
+// Legacy v1-v3 have no embedded map identity and retain their existing behavior;
+// v14 additionally binds authored mover owners to their single target map.
 bool ValidatePortableRuntimeState(const std::string& path, const std::string& expectedMapName = {});
 bool LoadPortableRuntimeState(const std::string& path);
 PortableDamageResult DamagePortableRuntimeActor(

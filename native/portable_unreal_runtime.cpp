@@ -17,7 +17,9 @@
 #include "quest_actor_state_control.h"
 #include "quest_unreal_string.h"
 #include "quest_decal_checkpoint.h"
+#include "quest_decal_projection.h"
 #include "quest_unreal_int_array.h"
+#include "quest_mover_motion.h"
 
 #include <memory>
 #include <algorithm>
@@ -42,6 +44,12 @@ namespace {
 class RuntimeObject;
 class RuntimeAIManager;
 class RuntimeMapDecals;
+struct RuntimeMoverMotion {
+    QuestVr::MoverMotionSpec spec;
+    QuestVr::MoverMotionState state;
+    std::optional<QuestVr::MoverMotionState> beforeStep;
+    bool timedReturn{};
+};
 struct InventoryIconClassConstraint {
     RuntimeObject* indexedClass{}; // Non-owning immutable metadata, not a new GC root.
     std::uint8_t nativeClass{};
@@ -127,6 +135,7 @@ public:
     std::int32_t worldActorIndex{-1};
     bool active{true};
     bool activated{};
+    std::optional<RuntimeMoverMotion> moverMotion;
     bool healthInitialized{};
     float health{100.0f};
 
@@ -180,9 +189,10 @@ protected:
 std::size_t NativeDecalRetainedBytes(const RuntimeMapDecals& graph) {
     const auto snapshot = QuestVr::DecalSnapshotRetainedBytes(graph.state.ReadOnlySnapshot(),
         graph.state.Usage().surfaces, graph.state.NodeCount());
-    return QuestVr::DecalStateDetail::Add(snapshot, QuestVr::DecalStateDetail::Add(
+    return QuestVr::DecalStateDetail::Add(graph.state.TransientRetainedBytes(),
+        QuestVr::DecalStateDetail::Add(snapshot, QuestVr::DecalStateDetail::Add(
         sizeof(RuntimeMapDecals) + sizeof(GCAllocation),
-        QuestVr::DecalStateDetail::Multiply(graph.actorRoots.capacity(), sizeof(RuntimeObject*))));
+        QuestVr::DecalStateDetail::Multiply(graph.actorRoots.capacity(), sizeof(RuntimeObject*)))));
 }
 
 GCAllocation* RuntimeObject::Mark(GCAllocation* marklist) {
@@ -336,6 +346,7 @@ struct IndexedDialogueLine {
 };
 
 std::unordered_map<std::string, std::vector<IndexedDialogueLine>> persistentDialogueIndex;
+std::unordered_map<std::string, PortableDialogueResult> persistentDataLinkIndex;
 std::unordered_map<std::string, std::set<std::int32_t>> persistentSpeakerMissions;
 
 std::string LowerAscii(std::string value) {
@@ -477,6 +488,7 @@ PortableActorAnimationSnapshot ReadRuntimeAnimationSnapshot(RuntimeObject* objec
 
 void BuildPersistentDialogueIndex() {
     persistentDialogueIndex.clear();
+    persistentDataLinkIndex.clear();
     persistentSpeakerMissions.clear();
     if (!persistentRuntime || !persistentRuntime->get()) return;
     const auto intProperty = [](RuntimeObject* object, const char* name, std::int32_t fallback) {
@@ -505,7 +517,9 @@ void BuildPersistentDialogueIndex() {
     std::vector<std::pair<std::string, std::int32_t>> conversationOrder;
     for (RuntimeObject* list : persistentRuntime->get()->exports) {
         if (list == nullptr || !IsDerivedFromPath(list->cls, "ConSys.ConversationList")) continue;
-        const std::int32_t mission = intProperty(list, "missionNumber", -1);
+        // Mission00 omits the serialized zero Int. Missing is the original
+        // class/zero default, not a synthetic mission -1 bucket.
+        const std::int32_t mission = intProperty(list, "missionNumber", 0);
         const auto firstItem = list->objectPropertyPaths.find("conversations");
         if (firstItem == list->objectPropertyPaths.end()) continue;
         std::string itemPath = firstItem->second;
@@ -855,6 +869,47 @@ void BuildPersistentDialogueIndex() {
                 line.choices = choices->second;
                 indexedChoiceCount += line.choices.size();
             }
+        }
+    }
+    for (const auto& [path, mission] : conversationOrder) {
+        const auto found = persistentQualifiedObjects.find(path);
+        if (found == persistentQualifiedObjects.end() || !found->second) continue;
+        auto* conversation = found->second;
+        if (!ReadInheritedRuntimeBool(conversation, "bDataLinkCon")) continue;
+        const auto flags = conversation->objectPropertyPaths.find("flagRefList");
+        if (flags != conversation->objectPropertyPaths.end() && !flags->second.empty()) continue;
+        const auto name = ReadInheritedRuntimeName(conversation, "conName");
+        const auto first = conversation->objectPropertyPaths.find("eventList");
+        if (name.empty() || first == conversation->objectPropertyPaths.end()) continue;
+        const auto event = persistentQualifiedObjects.find(first->second);
+        if (event == persistentQualifiedObjects.end() || !event->second ||
+            !IsDerivedFromPath(event->second->cls, "ConSys.ConEventSpeech")) continue;
+        const auto next = event->second->objectPropertyPaths.find("nextEvent");
+        if (next == event->second->objectPropertyPaths.end()) continue;
+        const auto end = persistentQualifiedObjects.find(next->second);
+        if (end == persistentQualifiedObjects.end() || !end->second ||
+            !IsDerivedFromPath(end->second->cls, "ConSys.ConEventEnd")) continue;
+        // Resolve this exact event, never an arbitrary speech by its speaker.
+        for (const auto& [key, lines] : persistentDialogueIndex) {
+            if (key.rfind(std::to_string(mission) + "\n", 0u) != 0u) continue;
+            const auto line = std::find_if(lines.begin(), lines.end(), [&](const auto& candidate) {
+                return candidate.eventPath == first->second;
+            });
+            if (line == lines.end()) continue;
+            PortableDialogueResult result;
+            result.found = true; result.bindName = key.substr(key.find('\n') + 1u);
+            for (const auto& property : event->second->instanceProperties)
+                if (property.name == "speakerName" && property.type == 13u)
+                    result.bindName = DecodePortableStringProperty(property);
+            result.eventPath = line->eventPath; result.speech = line->text;
+            result.audioPackageName = line->audioPackageName; result.soundId = line->soundId;
+            result.matchingLines = 1u;
+            const auto dataKey = DialogueKey(mission, name);
+            // Ambiguous names are refused, not resolved by hash iteration.
+            const auto duplicate = persistentDataLinkIndex.find(dataKey);
+            if (duplicate != persistentDataLinkIndex.end()) duplicate->second = {};
+            else persistentDataLinkIndex.emplace(dataKey, std::move(result));
+            break;
         }
     }
     __android_log_print(
@@ -2009,7 +2064,7 @@ public:
     Evaluation NativeWithExecution(const std::uint16_t index, const std::string& receiver,
         const std::vector<Evaluation>& arguments, const Function* declaration, QuestVr::Vm::Execution& execution) override {
         if (index == 0u && declaration && LowerAscii(declaration->path) == "engine.decal.attachdecal")
-            return AttachDecalEntryNative(Object(receiver), arguments, *declaration);
+            return AttachDecalEntryNative(Object(receiver), arguments, *declaration, execution);
         if (index == 0u && declaration && LowerAscii(declaration->path) == "engine.decal.detachdecal")
             return DetachDecalNative(Object(receiver), arguments, *declaration);
         if (index == 278u) {
@@ -3352,8 +3407,59 @@ private:
         for (const auto& surface : snapshot.surfaces) for (const auto& record : surface) retain(record.ownerIdentity);
         graph->actorRoots.swap(roots);
     }
+    RuntimeObject* LiveDecalTexture(RuntimeObject* actor) {
+        LifecycleStep(); RequireMapActor(actor);
+        const auto property = PropertyNamed(actor, "Texture");
+        const auto* metadata = Object(property.key);
+        if (LowerAscii(property.key) != "engine.actor.texture" || property.zero.kind != Kind::Object ||
+            property.arrayDimension != 1u || !metadata->property || metadata->property->type != "ObjectProperty" ||
+            LowerAscii(Qualified(Table(metadata->sourcePath), metadata->property->referencedType)) != "engine.texture")
+            throw std::runtime_error("AttachDecal Texture schema does not match original GOTY");
+        const auto value = TypedLiveValue(property, Read(actor, property, 0u));
+        return value.text.empty() ? nullptr : Object(value.text);
+    }
+    std::int32_t LiveDecalTextureUSize(RuntimeObject* texture) {
+        // UTexture's native bitmap fields are authored independently of mip
+        // decoding. Never substitute rounded mip dimensions or a guessed size.
+        if (const auto* overlay = FindScriptOverlay(texture, "USize", 0u)) {
+            if (overlay->kind != Kind::Int) throw std::runtime_error("Native Texture USize is not an INT");
+            return overlay->integer;
+        }
+        const auto properties = LoadPortableExportProperties(Table(texture->sourcePath), texture->exportIndex,
+            64u * 1024u * 1024u);
+        for (auto property = properties.properties.rbegin(); property != properties.properties.rend(); ++property)
+            if (property->name == "USize" && property->arrayIndex == 0u) {
+                if (property->type != 2u || property->value.size() != 4u)
+                    throw std::runtime_error("Native Texture USize tag is not an INT");
+                std::int32_t value{}; std::memcpy(&value, property->value.data(), sizeof(value)); return value;
+            }
+        throw std::runtime_error("Native Texture has no authored USize field");
+    }
+    void EnsureDecalRootModel() {
+        if (rootModel_) return;
+        const auto& map = Table(persistentMapSourcePath);
+        constexpr std::size_t scratch = 64u * 1024u * 1024u;
+        const auto index = FindPortableRootModel68Export(map, scratch);
+        const auto bytes = map.exports.at(index).ObjSize;
+        if (bytes <= 0 || QuestVr::DecalStateDetail::Multiply(static_cast<std::size_t>(bytes), 16u) > scratch - 1024u)
+            throw std::runtime_error("Native decal Model scratch budget exceeded");
+        rootModel_ = LoadPortableModel68(map, index, scratch);
+    }
+    Property DecalSurfListProperty(RuntimeObject* actor) {
+        const auto property = PropertyNamed(actor, "SurfList");
+        if (LowerAscii(property.key) != "engine.decal.surflist" || property.flags != 0x00400002u ||
+            property.zero.kind != Kind::IntArray || property.arrayDimension != 1u)
+            throw std::runtime_error("Native decal SurfList schema does not match original GOTY");
+        return property;
+    }
+    void PrechargeDecalMutation(RuntimeMapDecals* graph, const std::size_t additionalBytes = 0u) {
+        auto bytes = QuestVr::DecalStateDetail::Multiply(NativeDecalRetainedBytes(*graph), 3u);
+        bytes = QuestVr::DecalStateDetail::Add(bytes,
+            QuestVr::DecalStateDetail::Multiply(additionalBytes, 3u));
+        ValidateStateBudget(QuestVr::DecalStateDetail::Add(bytes, 4096u));
+    }
     Evaluation AttachDecalEntryNative(RuntimeObject* actor, const std::vector<Evaluation>& arguments,
-                                     const Function& declaration) {
+                                     const Function& declaration, QuestVr::Vm::Execution& execution) {
         RequireMapActor(actor);
         if (!IsDerivedFromPath(actor->cls, "Engine.Decal") || declaration.nativeIndex != 0u ||
             declaration.flags != 0x500u || declaration.variables.size() != 3u ||
@@ -3380,22 +3486,124 @@ private:
         // Texture, MultiDecalLevel, random draws and all native geometry access.
         if (!persistentNativeClient.HasViewport()) return {Value::Bool(false), {}};
         clientDependent_ = true;
-        const auto textureProperty = PropertyNamed(actor, "Texture");
-        const auto* textureMetadata = Object(textureProperty.key);
-        if (LowerAscii(textureProperty.key) != "engine.actor.texture" ||
-            textureProperty.zero.kind != Kind::Object || textureProperty.arrayDimension != 1u ||
-            !textureMetadata->property || textureMetadata->property->type != "ObjectProperty" ||
-            LowerAscii(Qualified(Table(textureMetadata->sourcePath), textureMetadata->property->referencedType)) != "engine.texture")
-            throw std::runtime_error("AttachDecal Texture schema does not match original GOTY");
-        const auto texture = TypedLiveValue(textureProperty, Read(actor, textureProperty, 0u));
-        if (texture.text.empty()) {
+        auto* texture = LiveDecalTexture(actor);
+        if (!texture) {
             __android_log_print(ANDROID_LOG_WARN, "quest_main", "AttachDecal: No Texture");
             return {Value::Bool(false), {}};
         }
-        // A real registered target is necessary but not sufficient. Do not
-        // accept projection-only geometry as native Attach or fake a no-hit to
-        // skip live Texture ordering, mover callbacks and renderer publication.
-        throw std::runtime_error("Unsupported runtime native 0 (Engine.Decal.AttachDecal)");
+        const auto multiProperty = PropertyNamed(actor, "MultiDecalLevel");
+        if (LowerAscii(multiProperty.key) != "engine.decal.multidecallevel" ||
+            multiProperty.zero.kind != Kind::Int || multiProperty.flags != 0u || multiProperty.arrayDimension != 1u)
+            throw std::runtime_error("AttachDecal MultiDecalLevel schema does not match original GOTY");
+        const auto multi = QuestVr::Vm::ToInt(Read(actor, multiProperty, 0u));
+        if (multi > 4) ReferenceFor(actor, multiProperty, 0u, false)->write(Value::Integer(4));
+        const auto location = Read(actor, PropertyNamed(actor, "Location"), 0u);
+        const auto rotation = Read(actor, PropertyNamed(actor, "Rotation"), 0u);
+        if (location.kind != Kind::Vector || rotation.kind != Kind::Rotator)
+            throw std::runtime_error("AttachDecal Location/Rotation schema is invalid");
+        const auto axis = Coords::Rotation(Rotator(rotation.rotation[0], rotation.rotation[1], rotation.rotation[2])).XAxis;
+        const auto supplied = arguments.size() == 2u ? arguments[1u].Load() : Value{};
+        const auto directionValue = supplied.kind == Kind::Nothing ? std::array<float, 3>{} : supplied.vector;
+        EnsureDecalRootModel();
+        auto seed = persistentScriptRandomSeed.value_or(QuestVr::ScriptRandom::InitialSeed);
+        const auto primary = QuestVr::PrepareOriginalDecalPrimary(*rootModel_,
+            {location.vector[0], location.vector[1], location.vector[2]}, {axis.x, axis.y, axis.z},
+            arguments[0u].Load().floating, {directionValue[0], directionValue[1], directionValue[2]}, seed);
+        // Publish pretrace draws before any mover callback can use the stream.
+        if (primary.randomDraws) persistentScriptRandomSeed = seed;
+        if (!primary.hasPrimaryGeometry) return {Value::Bool(false), {}};
+        const auto surfProperty = DecalSurfListProperty(actor);
+        auto list = Read(actor, surfProperty, 0u).intArray;
+        for (const auto surface : list)
+            if (surface < 0 || static_cast<std::size_t>(surface) >= rootModel_->surfaces.size())
+                throw std::runtime_error("AttachDecal SurfList is outside its native Model");
+        TouchDecals();
+        auto* graph = persistentRuntime->get()->nativeDecals;
+        if (!graph) {
+            const auto rows = QuestVr::DecalStateDetail::Multiply(rootModel_->surfaces.size(),
+                sizeof(std::vector<QuestVr::DecalSurfaceRecord>));
+            ValidateStateBudget(QuestVr::DecalStateDetail::Add(rows,
+                QuestVr::DecalState::TransientStorageBytes(rootModel_->surfaces.size()) + sizeof(RuntimeMapDecals)));
+            graph = GC::Alloc<RuntimeMapDecals>(rootModel_->surfaces.size(), rootModel_->nodes.size());
+            pendingBirthGarbage = true;
+            graph->level = actor->nativeXLevel;
+            graph->model = Object(Qualified(Table(persistentMapSourcePath),
+                static_cast<std::int32_t>(rootModel_->exportIndex + 1u)));
+            persistentRuntime->get()->nativeDecals = graph;
+        }
+        if (graph->level != actor->nativeXLevel || graph->state.Usage().surfaces != rootModel_->surfaces.size() ||
+            graph->state.NodeCount() != rootModel_->nodes.size())
+            throw std::runtime_error("AttachDecal graph belongs to another native Model/Level");
+        const auto resolveTexture = [&](const std::string& path) -> std::optional<std::string> {
+            auto* owner = Object(path); RequireMapActor(owner);
+            if (!IsDerivedFromPath(owner->cls, "Engine.Decal") || owner->nativeXLevel != graph->level)
+                throw std::runtime_error("Native decal record owner is not a Decal in its Level");
+            auto* live = LiveDecalTexture(owner);
+            return live ? std::optional<std::string>(live->reflection.objectPath) : std::nullopt;
+        };
+        RuntimeObject* mover{};
+        QuestVr::DecalStateRotation moverRotation;
+        const auto reference = rootModel_->surfaces.at(static_cast<std::size_t>(primary.surface)).brushActorReference;
+        if (reference) {
+            auto* surfaceActor = Object(Qualified(Table(persistentMapSourcePath), reference));
+            if (IsDerivedFromPath(surfaceActor->cls, "Engine.Mover")) {
+                RequireMapActor(surfaceActor); mover = surfaceActor;
+                const auto value = Read(mover, PropertyNamed(mover, "Rotation"), 0u);
+                if (value.kind != Kind::Rotator) throw std::runtime_error("Decal mover Rotation is not a Rotator");
+                moverRotation = {value.rotation[0], value.rotation[1], value.rotation[2]};
+            }
+        }
+        PrechargeDecalMutation(graph, actor->reflection.objectPath.size() + list.capacity() * sizeof(std::int32_t));
+        graph->state.ReplaceOwnerSurfList(actor->reflection.objectPath, list);
+        const auto begun = graph->state.BeginPrimary(primary.surface, actor->reflection.objectPath,
+            texture->reflection.objectPath, resolveTexture, moverRotation);
+        list.push_back(primary.surface);
+        ReferenceFor(actor, surfProperty, 0u, false)->write(Value::IntArray(std::move(list)));
+        RefreshDecalRoots(graph); // The provisional owner is rooted before script.
+        if (mover) SetBase(actor, ActorLink(actor, "Owner"), true, execution);
+        if (persistentRuntime->get()->nativeDecals != graph)
+            throw std::runtime_error("Mover callback replaced the native decal graph");
+        texture = LiveDecalTexture(actor);
+        if (!texture) throw std::runtime_error("Mover callback cleared Texture during native AttachDecal");
+        const auto drawScale = Read(actor, PropertyNamed(actor, "DrawScale"), 0u);
+        if (drawScale.kind != Kind::Float) throw std::runtime_error("AttachDecal DrawScale is not a Float");
+        const auto quad = QuestVr::BuildOriginalDecalPrimaryQuad(primary.center, primary.surfaceBase,
+            primary.surfaceNormal, LiveDecalTextureUSize(texture), drawScale.floating, primary.preparedDirection);
+        QuestVr::DecalProjectionWork work; work.workSteps = primary.workSteps;
+        const auto projected = QuestVr::BuildOriginalDecalPrimaryMembership(*rootModel_, primary.surface, quad, work);
+        const auto recordFor = [&](const auto& corners, const std::vector<std::int32_t>& membership) {
+            QuestVr::DecalSurfaceRecord record; record.ownerIdentity = actor->reflection.objectPath;
+            for (std::size_t corner = 0u; corner < 4u; ++corner)
+                record.relativeCorners[corner] = {corners[corner].x, corners[corner].y, corners[corner].z};
+            // CompletePrimary preserves its pre-callback mover rotation;
+            // secondary zeroed records have no original mover/SetBase block.
+            record.nodeMembership = membership; return record;
+        };
+        PrechargeDecalMutation(graph, projected.nodeMembership.capacity() * sizeof(std::int32_t));
+        graph->state.CompletePrimary(begun.token, recordFor(quad.worldCorners, projected.nodeMembership));
+        // No clamp here: SetBase may have changed Multi after its entry clamp.
+        for (std::int64_t i = 0; i < QuestVr::Vm::ToInt(Read(actor, multiProperty, 0u)); ++i)
+            for (std::int64_t j = 0; j < QuestVr::Vm::ToInt(Read(actor, multiProperty, 0u)); ++j) {
+                auto currentList = Read(actor, surfProperty, 0u).intArray;
+                const auto rawMulti = QuestVr::Vm::ToInt(Read(actor, multiProperty, 0u));
+                const auto secondary = QuestVr::ProcessOriginalDecalSecondarySample(*rootModel_, quad.worldCorners,
+                    primary.surfaceNormal, rawMulti, static_cast<std::int32_t>(i), static_cast<std::int32_t>(j), currentList, work);
+                if (secondary.status != QuestVr::DecalSecondarySampleStatus::Accepted) continue;
+                texture = LiveDecalTexture(actor);
+                if (!texture) throw std::runtime_error("Native AttachDecal lost live secondary Texture");
+                const auto& surface = secondary.projected;
+                PrechargeDecalMutation(graph, surface.nodeMembership.capacity() * sizeof(std::int32_t) +
+                    currentList.capacity() * sizeof(std::int32_t));
+                graph->state.ReplaceOwnerSurfList(actor->reflection.objectPath, currentList);
+                graph->state.AttachPrimary(surface.surface, recordFor(surface.relativeCorners, surface.nodeMembership),
+                    texture->reflection.objectPath, resolveTexture);
+                currentList.push_back(surface.surface);
+                ReferenceFor(actor, surfProperty, 0u, false)->write(Value::IntArray(std::move(currentList)));
+            }
+        PrechargeDecalMutation(graph, projected.nodeMembership.capacity() * sizeof(std::int32_t));
+        graph->state.CompletePrimary(begun.token, recordFor(quad.relativeCorners, projected.nodeMembership));
+        RefreshDecalRoots(graph); ValidateStateBudget();
+        return {Value::Bool(true), {}};
     }
     Evaluation DetachDecalNative(RuntimeObject* actor, const std::vector<Evaluation>& arguments,
                                  const Function& declaration) {
@@ -3629,6 +3837,7 @@ private:
         if (beforeDecals_ && beforeDecals_->state) {
             defaults.Retain(QuestVr::DecalSnapshotRetainedBytes(beforeDecals_->state->ReadOnlySnapshot(),
                 beforeDecals_->state->Usage().surfaces, beforeDecals_->state->NodeCount()));
+            defaults.Retain(beforeDecals_->state->TransientRetainedBytes());
             defaults.Retain(beforeDecals_->actorRoots.capacity() * sizeof(RuntimeObject*));
         }
         if (persistentScriptRandomSeed) defaults.Retain(sizeof(persistentScriptRandomSeed));
@@ -4274,6 +4483,49 @@ public:
         }
     }
     const std::string& MapSource() const { return mapPath_; }
+    static std::string MoverMapName(const std::string& path) {
+        const auto separator = path.find('.');
+        if (separator == std::string::npos || separator + 1u == path.size())
+            throw std::runtime_error("Mover checkpoint owner has no map identity");
+        auto name = path.substr(0u, separator);
+        SafePackage(name);
+        return name;
+    }
+    void ReadAuthoredMover(const std::string& path, RuntimeObject& actor) {
+        const auto& map = Table(mapPath_);
+        const auto found = mapExports_.find(LowerAscii(path));
+        if (found == mapExports_.end() ||
+            path != Qualified(map, static_cast<std::int32_t>(found->second + 1u)))
+            throw std::runtime_error("Mover checkpoint owner is not a canonical authored map export");
+        if (!nativeActorOrder_) {
+            auto order = ReadPortableLevel68ActorOrder(map, SchemaScratchBytes);
+            Retain(order.size() * sizeof(std::int32_t));
+            for (const auto reference : order)
+                if (reference < 0 || static_cast<std::size_t>(reference) > map.exports.size())
+                    throw std::runtime_error("Mover checkpoint Level slot is not a local export");
+            std::sort(order.begin(), order.end());
+            nativeActorOrder_ = std::move(order);
+        }
+        if (!std::binary_search(nativeActorOrder_->begin(), nativeActorOrder_->end(),
+                static_cast<std::int32_t>(found->second + 1u)))
+            throw std::runtime_error("Mover checkpoint owner has no native Level binding");
+        auto* cls = host_.Object(mapClasses_.at(LowerAscii(path)));
+        if (!cls->classDescriptor || cls->reflection.metaClass != "Class" ||
+            !IsDerivedFromPath(cls, "Engine.Mover") ||
+            LowerAscii(std::filesystem::path(cls->sourcePath).extension().string()) == ".dx")
+            throw std::runtime_error("Mover checkpoint owner does not have a loaded script Mover class");
+        const auto& entry = map.exports.at(found->second);
+        actor.reflection.objectPath = path;
+        actor.reflection.metaClass = cls->reflection.objectPath.substr(cls->reflection.objectPath.find_last_of('.') + 1u);
+        actor.reflection.flags = static_cast<std::uint32_t>(entry.ObjFlags);
+        actor.reflection.serializedSize = entry.ObjSize;
+        actor.cls = cls;
+        actor.sourcePath = mapPath_;
+        actor.exportIndex = found->second;
+        auto properties = LoadPortableExportProperties(map, found->second, SchemaScratchBytes);
+        actor.instanceProperties = std::move(properties.properties);
+        CacheRuntimeNameProperties(&actor, map, actor.instanceProperties);
+    }
     const std::string& NativeLevelPath() {
         if (!nativeLevelPath_.empty()) return nativeLevelPath_;
         const auto& map = Table(mapPath_);
@@ -4984,7 +5236,8 @@ PreparedScriptState PrepareScriptSavedState(
         QuestVr::ScriptStateDetail::Writer measured(limits, nullptr); measured.State(saved);
         std::size_t rootCount{};
         for (const auto& surface : graph.state.surfaces) rootCount = QuestVr::DecalStateDetail::Add(rootCount, surface.size());
-        const auto graphBytes = QuestVr::DecalCheckpointRetainedBytes(graph);
+        const auto graphBytes = QuestVr::DecalStateDetail::Add(QuestVr::DecalCheckpointRetainedBytes(graph),
+            QuestVr::DecalState::TransientStorageBytes(graph.surfaceCount));
         const auto rootBytes = QuestVr::DecalStateDetail::Multiply(rootCount, sizeof(RuntimeObject*));
         // The decoder, complete staged script/AI records, exact native import
         // candidate/old buffers and roots can coexist. Bound their aggregate
@@ -5228,6 +5481,7 @@ PortableRuntimeSummary InitializePortableRuntime(
             try {
                 object->instanceProperties =
                     LoadPortableExportProperties(*slice.package, localIndex).properties;
+                CacheRuntimeNameProperties(object, *slice.package, object->instanceProperties);
                 ++summary.conversationObjects;
                 summary.conversationProperties += object->instanceProperties.size();
                 for (const PortableTaggedProperty& property : object->instanceProperties) {
@@ -5259,6 +5513,104 @@ PortableRuntimeSummary InitializePortableRuntime(
         summary.normalizedBytecodeBytes != 0 &&
         GC::GetStats().numObjects == baseline + summary.objects + 1;
     return summary;
+}
+
+static RuntimeMoverMotion ReadRuntimeMoverMotion(RuntimeObject* actor, const bool legacyActivated = false,
+    PortableActorVmHost* sharedHost = nullptr) {
+    if (!actor || !IsDerivedFromPath(actor->cls, "Engine.Mover") || actor->worldRemoved)
+        throw std::runtime_error("Mover motion requires a live map Mover");
+    PortableActorVmHost localHost;
+    auto& host = sharedHost ? *sharedHost : localHost;
+    // This small interaction layer uses immutable authored keys. Original VM
+    // InterpolateTo/state scheduling remains a separate engine integration.
+    const auto read = [&](const char* name, const std::uint32_t slot = 0u) {
+        return host.Read(actor, host.PropertyNamed(actor, name), slot, false, true);
+    };
+    RuntimeMoverMotion motion;
+    const auto count = QuestVr::Vm::ToInt(read("NumKeys"));
+    const auto initialKey = QuestVr::Vm::ToInt(read("KeyNum"));
+    if (count < 2 || count > 8 || initialKey < 0 || initialKey >= count)
+        throw std::runtime_error("Unsupported authored mover key layout");
+    motion.spec.keyCount = static_cast<std::uint8_t>(count);
+    motion.spec.moveTime = QuestVr::Vm::ToFloat(read("MoveTime"));
+    motion.spec.stayOpenTime = QuestVr::Vm::ToFloat(read("StayOpenTime"));
+    const auto glide = QuestVr::Vm::ToInt(read("MoverGlideType"));
+    if (glide != 0 && glide != 1) throw std::runtime_error("Unsupported authored mover glide");
+    motion.spec.smooth = glide == 1;
+    for (std::uint32_t key = 0u; key < motion.spec.keyCount; ++key) {
+        const auto position = read("KeyPos", key), rotation = read("KeyRot", key);
+        if (position.kind != QuestVr::Vm::Kind::Vector || rotation.kind != QuestVr::Vm::Kind::Rotator)
+            throw std::runtime_error("Authored mover key has invalid concrete types");
+        motion.spec.keys[key] = {{position.vector[0], position.vector[1], position.vector[2]},
+            {rotation.rotation[0], rotation.rotation[1], rotation.rotation[2]}};
+    }
+    const auto position = read("Location"), rotation = read("Rotation");
+    if (position.kind != QuestVr::Vm::Kind::Vector || rotation.kind != QuestVr::Vm::Kind::Rotator)
+        throw std::runtime_error("Authored mover base has invalid concrete types");
+    const auto& key = motion.spec.keys[static_cast<std::size_t>(initialKey)];
+    motion.spec.base = {{position.vector[0] - key.position.x, position.vector[1] - key.position.y,
+        position.vector[2] - key.position.z},
+        {QuestVr::MoverMotionDetail::Wrap(static_cast<std::int64_t>(rotation.rotation[0]) - key.rotation.pitch),
+         QuestVr::MoverMotionDetail::Wrap(static_cast<std::int64_t>(rotation.rotation[1]) - key.rotation.yaw),
+         QuestVr::MoverMotionDetail::Wrap(static_cast<std::int64_t>(rotation.rotation[2]) - key.rotation.roll)}};
+    const auto state = LowerAscii(ReadInheritedRuntimeName(actor, "InitialState"));
+    // Supported demo-layer commands are deliberately narrower than UE1's full
+    // Mover state machine (no lifts, pounding, trigger-control or encroachment).
+    if (state != "triggertoggle" && state != "triggeropentimed" && state != "bumpopentimed" &&
+        state != "standopentimed" && !state.empty() && state != "none")
+        throw std::runtime_error("Mover InitialState is outside the supported tutorial motion subset");
+    motion.timedReturn = state == "triggeropentimed" || state == "bumpopentimed" || state == "standopentimed";
+    motion.state = QuestVr::MakeMoverMotionState(motion.spec,
+        legacyActivated ? 1u : static_cast<std::uint8_t>(initialKey));
+    return motion;
+}
+
+static bool HasRuntimeMoverKey(RuntimeObject* actor) {
+    const auto wanted = LowerAscii(ReadInheritedRuntimeName(actor, "KeyIDNeeded"));
+    if (wanted.empty() || wanted == "none") return false;
+    for (const auto& path : persistentInventory) {
+        const auto item = persistentVmObjects.find(LowerAscii(path));
+        if (item != persistentVmObjects.end() && item->second &&
+            IsDerivedFromPath(item->second->cls, "DeusEx.NanoKey") &&
+            LowerAscii(ReadInheritedRuntimeName(item->second, "KeyID")) == wanted) return true;
+    }
+    return false;
+}
+
+static bool RequestRuntimeMover(RuntimeObject* actor, const bool open, const bool directUse,
+    const bool undoClosingStep = false) {
+    if (directUse && IsDerivedFromPath(actor->cls, "DeusEx.DeusExMover") &&
+        !ReadInheritedRuntimeBool(actor, "bFrobbable")) return false;
+    if (ReadInheritedRuntimeBool(actor, "bLocked") && !HasRuntimeMoverKey(actor)) return false;
+    std::vector<RuntimeObject*> members{actor};
+    // Pair only explicit level tags; a class's default Tag must not join every
+    // otherwise unrelated door of that class into one giant moving group.
+    const bool explicitTag = std::any_of(actor->instanceProperties.begin(), actor->instanceProperties.end(),
+        [](const auto& property) { return property.name == "Tag"; }) || FindScriptOverlay(actor, "Tag");
+    const auto tag = LowerAscii(ReadInheritedRuntimeName(actor, "Tag"));
+    if (explicitTag && !tag.empty() && tag != "none" && tag != "deusexmover") {
+        const auto group = persistentMapTagIndex.find(tag);
+        if (group != persistentMapTagIndex.end()) for (auto* candidate : group->second)
+            if (candidate != actor && candidate && candidate->active && !candidate->worldRemoved &&
+                IsDerivedFromPath(candidate->cls, "Engine.Mover")) members.push_back(candidate);
+    }
+    std::vector<std::pair<RuntimeObject*, RuntimeMoverMotion>> staged;
+    staged.reserve(members.size());
+    for (auto* member : members) {
+        if (ReadInheritedRuntimeBool(member, "bLocked") && !HasRuntimeMoverKey(member)) return false;
+        auto motion = member->moverMotion ? *member->moverMotion : ReadRuntimeMoverMotion(member, member->activated);
+        if (undoClosingStep && motion.beforeStep && motion.beforeStep->phase == QuestVr::MoverMotionPhase::Moving &&
+            motion.beforeStep->targetKey == 0u) motion.state = *motion.beforeStep;
+        QuestVr::RequestMoverMotionKey(motion.spec, motion.state, open ? 1u : 0u,
+            open && motion.timedReturn ? 0 : -1);
+        motion.beforeStep.reset();
+        staged.emplace_back(member, std::move(motion));
+    }
+    for (auto& [member, motion] : staged) {
+        member->moverMotion = std::move(motion);
+        member->activated = open;
+    }
+    return true;
 }
 
 PortableConversationSummary GetPortableConversationSummary() {
@@ -5393,6 +5745,47 @@ PortableDialogueResult GetPortableRuntimeDialogue(
     return result;
 }
 
+PortableDialogueResult GetPortableRuntimeDataLink(const std::string& name, const std::int32_t missionNumber) {
+    const auto found = persistentDataLinkIndex.find(DialogueKey(missionNumber, name));
+    return found == persistentDataLinkIndex.end() ? PortableDialogueResult{} : found->second;
+}
+
+bool GetPortableRuntimeTouchDataLink(const float x, const float y, const float z,
+    const float radius, const float height, PortableDialogueResult& dialogue) {
+    if (!std::isfinite(x) || !std::isfinite(y) || !std::isfinite(z) ||
+        !std::isfinite(radius) || !std::isfinite(height) || radius < 0.0f || height < 0.0f)
+        throw std::runtime_error("DataLink contact cylinder is invalid");
+    if (persistentMapPackageName.rfind("00_Training", 0u) != 0u) return false;
+    for (auto* actor : persistentWorldActors) {
+        if (!actor || !actor->active || actor->activated || actor->worldRemoved ||
+            !IsDerivedFromPath(actor->cls, "DeusEx.DataLinkTrigger") ||
+            !ReadInheritedRuntimeBool(actor, "bCollideActors")) continue;
+        const auto flag = LowerAscii(ReadInheritedRuntimeName(actor, "CheckFlag"));
+        if (!flag.empty() && flag != "none") continue; // Timer/flag polling not implemented here.
+        const auto* location = FindInheritedRuntimeProperty(actor, "Location");
+        if (!location || location->type != 10u || location->value.size() != 12u) continue;
+        QuestVr::ActorVec3 center;
+        std::memcpy(&center, location->value.data(), 12u);
+        const auto r = ReadInheritedRuntimeFloat(actor, "CollisionRadius");
+        const auto h = ReadInheritedRuntimeFloat(actor, "CollisionHeight");
+        if (!QuestVr::IsFiniteActorVector(center) || !std::isfinite(r) || !std::isfinite(h) || r < 0 || h < 0) continue;
+        const double dx = static_cast<double>(x) - center.x, dy = static_cast<double>(y) - center.y;
+        if (dx*dx + dy*dy > static_cast<double>(radius+r)*(radius+r) ||
+            std::fabs(static_cast<double>(z)-center.z) > static_cast<double>(height)+h) continue;
+        auto candidate = GetPortableRuntimeDataLink(ReadInheritedRuntimeName(actor, "datalinkTag"), 0);
+        if (!candidate.found) continue;
+        const auto marker = "DataLink:" + candidate.eventPath;
+        if (persistentAppliedDialogueEffects.count(marker)) continue;
+        candidate.actorPath = actor->reflection.objectPath;
+        // Allocate every returned/persisted string before marking it consumed.
+        dialogue = std::move(candidate);
+        persistentAppliedDialogueEffects.insert(marker);
+        actor->activated = true;
+        return true;
+    }
+    return false;
+}
+
 PortableDialogueEffectResult ApplyPortableDialogueEffects(
     const PortableDialogueResult& dialogue) {
     PortableDialogueEffectResult result;
@@ -5423,7 +5816,14 @@ PortableDialogueEffectResult ApplyPortableDialogueEffects(
             const std::string wanted = LowerAscii(effect.key);
             const auto tagged = persistentMapTagIndex.find(wanted);
             if (tagged != persistentMapTagIndex.end()) {
-                for (RuntimeObject* object : tagged->second) object->activated = true;
+                for (RuntimeObject* object : tagged->second) {
+                    if (IsDerivedFromPath(object->cls, "Engine.Mover")) {
+                        try { static_cast<void>(RequestRuntimeMover(object, true, false)); }
+                        catch (const std::exception& error) {
+                            __android_log_print(ANDROID_LOG_WARN, "quest_main", "Triggered mover rejected: %.512s", error.what());
+                        }
+                    } else object->activated = true;
+                }
             }
             result.status = "TRIGGERED " + effect.key;
             break;
@@ -5553,6 +5953,7 @@ void ShutdownPortableRuntime() {
     persistentNotes.clear();
     persistentAppliedDialogueEffects.clear();
     persistentDialogueIndex.clear();
+    persistentDataLinkIndex.clear();
     persistentSpeakerMissions.clear();
     persistentPlayerHealth = 100.0f;
     GC::Collect();
@@ -6081,7 +6482,7 @@ std::size_t UnloadPortableRuntimeMap() {
     return removed;
 }
 
-std::vector<PortableActorSnapshot> GetPortableRuntimeMapActors(bool includeInactive) {
+static std::vector<PortableActorSnapshot> ReadPortableRuntimeActors(const bool includeInactive, const bool moversOnly) {
     std::vector<PortableActorSnapshot> snapshots;
     if (!persistentRuntime || !persistentRuntime->get()) return snapshots;
     for (std::size_t index = persistentScriptExportCount;
@@ -6090,6 +6491,7 @@ std::vector<PortableActorSnapshot> GetPortableRuntimeMapActors(bool includeInact
         RuntimeObject* object = persistentRuntime->get()->exports[index];
         if (object->worldActorIndex < 0 || object->worldRemoved || (!includeInactive && !object->active) ||
             !IsDerivedFromPath(object->cls, "Engine.Actor")) continue;
+        if (moversOnly && !IsDerivedFromPath(object->cls, "Engine.Mover")) continue;
         PortableActorSnapshot snapshot;
         snapshot.objectPath = object->reflection.objectPath;
         snapshot.classPath = object->cls ? object->cls->reflection.objectPath : std::string();
@@ -6102,6 +6504,8 @@ std::vector<PortableActorSnapshot> GetPortableRuntimeMapActors(bool includeInact
             IsDerivedFromPath(object->cls, "Engine.Teleporter");
         snapshot.light = IsDerivedFromPath(object->cls, "Engine.Light");
         snapshot.activated = object->activated;
+        snapshot.collideActors = ReadInheritedRuntimeBool(object, "bCollideActors");
+        snapshot.blockPlayers = ReadInheritedRuntimeBool(object, "bBlockPlayers");
         const auto resolveInheritedObjectProperty = [&](const std::string& name) {
             if (const auto* value = FindScriptOverlay(object, name.c_str())) return value->text;
             const auto instance = object->objectPropertyPaths.find(name);
@@ -6268,9 +6672,60 @@ std::vector<PortableActorSnapshot> GetPortableRuntimeMapActors(bool includeInact
             snapshot.x = value->vector[0]; snapshot.y = value->vector[1]; snapshot.z = value->vector[2];
             snapshot.hasLocation = std::isfinite(snapshot.x) && std::isfinite(snapshot.y) && std::isfinite(snapshot.z);
         }
+        if (snapshot.mover && object->moverMotion) {
+            const auto& motion = *object->moverMotion;
+            const auto& pose = motion.state.pose;
+            snapshot.x = pose.location.x; snapshot.y = pose.location.y; snapshot.z = pose.location.z;
+            snapshot.pitch = pose.rotation.pitch; snapshot.yaw = pose.rotation.yaw; snapshot.roll = pose.rotation.roll;
+            snapshot.hasLocation = true;
+            snapshot.moverMoving = motion.state.phase == QuestVr::MoverMotionPhase::Moving;
+            snapshot.moverClosing = (snapshot.moverMoving && motion.state.targetKey == 0u) ||
+                (motion.beforeStep && motion.beforeStep->phase == QuestVr::MoverMotionPhase::Moving &&
+                 motion.beforeStep->targetKey == 0u);
+        }
         snapshots.push_back(std::move(snapshot));
     }
     return snapshots;
+}
+
+std::vector<PortableActorSnapshot> GetPortableRuntimeMapActors(bool includeInactive) {
+    return ReadPortableRuntimeActors(includeInactive, false);
+}
+
+std::vector<PortableActorSnapshot> GetPortableRuntimeMoverActors() {
+    return ReadPortableRuntimeActors(false, true);
+}
+
+bool AdvancePortableRuntimeMovers(const float elapsedSeconds) {
+    if (!std::isfinite(elapsedSeconds) || elapsedSeconds < 0.0f)
+        throw std::runtime_error("Mover elapsed time must be finite and nonnegative");
+    if (!persistentRuntime || !persistentRuntime->get() || elapsedSeconds == 0.0f) return false;
+    // Discard long background/loading stalls, rather than teleporting a door
+    // through the player. This demo layer is not a swept encroachment solver.
+    const float elapsed = std::min(elapsedSeconds, 0.05f);
+    bool changed{};
+    for (auto* actor : persistentWorldActors) {
+        if (!actor || !actor->active || actor->worldRemoved || !actor->moverMotion) continue;
+        auto& motion = *actor->moverMotion;
+        motion.beforeStep.reset();
+        if (motion.state.phase == QuestVr::MoverMotionPhase::Idle) continue;
+        motion.beforeStep = motion.state;
+        changed = QuestVr::AdvanceMoverMotion(motion.spec, motion.state, elapsed) || changed;
+        actor->activated = motion.state.targetKey != 0u;
+    }
+    return changed;
+}
+
+bool BlockPortableRuntimeMover(const std::string& objectPath) {
+    const auto found = persistentVmObjects.find(LowerAscii(objectPath));
+    if (found == persistentVmObjects.end() || !found->second || !found->second->moverMotion) return false;
+    auto* actor = found->second;
+    auto& motion = *actor->moverMotion;
+    if (!motion.beforeStep || motion.beforeStep->phase != QuestVr::MoverMotionPhase::Moving ||
+        motion.beforeStep->targetKey != 0u) return false;
+    // Stage the whole pair at its prior safe sample. A failed key/layout or
+    // allocation preflight cannot rewind only one leaf and leak a partial edit.
+    return RequestRuntimeMover(actor, true, false, true);
 }
 
 namespace {
@@ -6637,14 +7092,35 @@ PortableInteractionResult InteractPortableRuntimeActor(const std::string& object
         result.worldChanged = true;
         result.action = "pickup";
     } else if (IsDerivedFromPath(object->cls, "Engine.Mover")) {
-        object->activated = !object->activated;
-        result.handled = true;
-        result.worldChanged = true;
-        result.action = object->activated ? "mover_open" : "mover_close";
+        const bool open = object->moverMotion ? object->moverMotion->state.targetKey == 0u : !object->activated;
+        if (ReadInheritedRuntimeBool(object, "bLocked") && !HasRuntimeMoverKey(object)) {
+            result.handled = true;
+            result.action = "mover_locked";
+        } else {
+            try {
+                result.handled = RequestRuntimeMover(object, open, true);
+                result.worldChanged = result.handled;
+                result.action = result.handled ? (open ? "mover_open" : "mover_close") : "mover_requires_trigger";
+            } catch (const std::exception& error) {
+                result.action = "mover_unsupported";
+                __android_log_print(ANDROID_LOG_WARN, "quest_main", "Mover motion rejected: %.512s", error.what());
+            }
+        }
     } else if (IsDerivedFromPath(object->cls, "Engine.Triggers")) {
         object->activated = true;
         result.handled = true;
         result.action = "trigger";
+        const auto event = LowerAscii(ReadInheritedRuntimeName(object, "Event"));
+        const auto targets = persistentMapTagIndex.find(event);
+        if (!event.empty() && event != "none" && targets != persistentMapTagIndex.end()) {
+            for (auto* target : targets->second) {
+                if (!target || !target->active || target->worldRemoved || !IsDerivedFromPath(target->cls, "Engine.Mover")) continue;
+                try { result.worldChanged = RequestRuntimeMover(target, true, false) || result.worldChanged; }
+                catch (const std::exception& error) {
+                    __android_log_print(ANDROID_LOG_WARN, "quest_main", "Triggered mover rejected: %.512s", error.what());
+                }
+            }
+        }
     } else if (IsDerivedFromPath(object->cls, "Engine.Pawn")) {
         object->activated = true;
         result.handled = true;
@@ -7035,12 +7511,19 @@ bool SavePortableRuntimeState(const std::string& path) {
         std::vector<std::string> inactive;
         std::vector<std::string> activated;
         std::vector<std::pair<std::string, float>> damaged;
+        std::vector<RuntimeObject*> movers;
         for (std::size_t index = persistentScriptExportCount;
              index < persistentRuntime->get()->exports.size(); ++index) {
             RuntimeObject* object = persistentRuntime->get()->exports[index];
             if (!object->active) inactive.push_back(object->reflection.objectPath);
             if (object->activated) activated.push_back(object->reflection.objectPath);
             if (object->healthInitialized) damaged.emplace_back(object->reflection.objectPath, object->health);
+            if (object->moverMotion) {
+                QuestVr::ValidateMoverMotionState(object->moverMotion->spec, object->moverMotion->state);
+                if (object->runtimeBirth || object->worldRemoved || !IsDerivedFromPath(object->cls, "Engine.Mover"))
+                    throw std::runtime_error("Mover checkpoint owner is not an authored live map Mover");
+                movers.push_back(object);
+            }
         }
         std::vector<std::uint8_t> bytes;
         const auto requireBytes = [&](const std::size_t count) {
@@ -7076,7 +7559,9 @@ bool SavePortableRuntimeState(const std::string& path) {
         // This is exactly the v3 prefix, including list order and field widths.
         // Only the version word and appended trailer differ for v4-v13. Pure
         // property/clock captures retain the byte-exact original v4 format.
-        write32(0x53515844u); write32(hasDecals ? 13u : hasControl ? 12u : hasSleep ? 11u : hasRandom ? 10u : hasAiManagers ? 9u : hasBirths ? 8u : hasLifecycle ? 7u : hasDefaults ? 6u : hasState ? 5u : hasScript ? 4u : 3u);
+        const auto scriptVersion = hasDecals ? 13u : hasControl ? 12u : hasSleep ? 11u : hasRandom ? 10u : hasAiManagers ? 9u : hasBirths ? 8u : hasLifecycle ? 7u : hasDefaults ? 6u : hasState ? 5u : hasScript ? 4u : 3u;
+        write32(0x53515844u); write32(movers.empty() ? scriptVersion : 14u);
+        if (!movers.empty()) write32(scriptVersion);
         writeStrings(persistentInventory); writeStrings(inactive); writeStrings(activated); writeFloat(persistentPlayerHealth);
         write32(static_cast<std::uint32_t>(damaged.size()));
         for (const auto& entry : damaged) {
@@ -7085,6 +7570,24 @@ bool SavePortableRuntimeState(const std::string& path) {
         }
         write32(static_cast<std::uint32_t>(persistentCredits)); write32(static_cast<std::uint32_t>(persistentSkillPoints));
         writeStrings(flags); writeStrings(persistentGoals); writeStrings(persistentNotes); writeStrings(applied);
+        if (!movers.empty()) {
+            if (movers.size() > 10'000u) throw std::runtime_error("Mover checkpoint count exceeds budget");
+            write32(static_cast<std::uint32_t>(movers.size()));
+            const auto writePose = [&](const QuestVr::MoverPose& pose) {
+                writeFloat(pose.location.x); writeFloat(pose.location.y); writeFloat(pose.location.z);
+                write32(static_cast<std::uint32_t>(pose.rotation.pitch));
+                write32(static_cast<std::uint32_t>(pose.rotation.yaw));
+                write32(static_cast<std::uint32_t>(pose.rotation.roll));
+            };
+            for (auto* object : movers) {
+                writeString(object->reflection.objectPath);
+                const auto& state = object->moverMotion->state;
+                writePose(state.pose); writePose(state.sourcePose);
+                write32(state.targetKey); write32(static_cast<std::uint32_t>(static_cast<std::int32_t>(state.returnKey)));
+                write32(static_cast<std::uint32_t>(state.phase));
+                writeFloat(state.elapsedSeconds); writeFloat(state.remainingStaySeconds);
+            }
+        }
         if (hasScript) {
             requireBytes(4u);
             QuestVr::ScriptStateLimits limits;
@@ -7142,8 +7645,10 @@ static bool ReadPortableRuntimeState(const std::string& path, const bool apply, 
             return value;
         };
         if (read32() != 0x53515844u) throw std::runtime_error("Runtime checkpoint magic is invalid");
-        const auto version = read32();
-        if (version < 1u || version > 13u) throw std::runtime_error("Runtime checkpoint version is unsupported");
+        const auto formatVersion = read32();
+        const auto version = formatVersion == 14u ? read32() : formatVersion;
+        if (formatVersion < 1u || formatVersion > 14u || version < 1u || version > 13u ||
+            (formatVersion == 14u && version < 3u)) throw std::runtime_error("Runtime checkpoint version is unsupported");
         auto inventory = readStrings(); auto inactive = readStrings(); auto activated = readStrings();
         float playerHealth = 100.0f;
         std::vector<std::pair<std::string, float>> damaged;
@@ -7170,6 +7675,44 @@ static bool ReadPortableRuntimeState(const std::string& path, const bool apply, 
                 throw std::runtime_error("Runtime checkpoint credits or skill points are negative/out of range");
             credits = static_cast<std::int32_t>(savedCredits); skillPoints = static_cast<std::int32_t>(savedSkills);
             flags = readStrings(); goals = readStrings(); notes = readStrings(); applied = readStrings();
+        }
+        std::vector<std::pair<std::string, QuestVr::MoverMotionState>> savedMovers;
+        std::string moverMapName;
+        if (formatVersion == 14u) {
+            const auto count = read32();
+            if (!count || count > 10'000u || count > (bytes.size() - cursor) / 72u)
+                throw std::runtime_error("Mover checkpoint count exceeds budget or payload");
+            savedMovers.reserve(count);
+            const auto readInt = [&]() { const auto bits = read32(); std::int32_t value; std::memcpy(&value, &bits, 4u); return value; };
+            const auto readPose = [&]() {
+                QuestVr::MoverPose pose;
+                pose.location = {readFloat(), readFloat(), readFloat()};
+                pose.rotation = {readInt(), readInt(), readInt()};
+                return pose;
+            };
+            std::unordered_set<std::string> identities;
+            for (std::uint32_t i = 0u; i < count; ++i) {
+                auto name = readString();
+                if (name.empty() || !identities.insert(LowerAscii(name)).second)
+                    throw std::runtime_error("Mover checkpoint owner is empty or duplicated");
+                const auto ownerMap = ScriptSaveSchema::MoverMapName(name);
+                if (moverMapName.empty()) moverMapName = ownerMap;
+                else if (LowerAscii(moverMapName) != LowerAscii(ownerMap))
+                    throw std::runtime_error("Mover checkpoint contains actors from multiple maps");
+                QuestVr::MoverMotionState state;
+                state.pose = readPose(); state.sourcePose = readPose();
+                const auto target = read32(); const auto returnKey = readInt(); const auto phase = read32();
+                if (target > 7u || returnKey < -1 || returnKey > 7 || phase > 2u)
+                    throw std::runtime_error("Mover checkpoint key or phase is invalid");
+                state.targetKey = static_cast<std::uint8_t>(target); state.returnKey = static_cast<std::int8_t>(returnKey);
+                state.phase = static_cast<QuestVr::MoverMotionPhase>(phase);
+                state.elapsedSeconds = readFloat(); state.remainingStaySeconds = readFloat();
+                savedMovers.emplace_back(std::move(name), state);
+            }
+            if (!expectedMapName.empty() && LowerAscii(expectedMapName) != LowerAscii(moverMapName))
+                throw std::runtime_error("Mover checkpoint map does not match save metadata");
+            if (apply && LowerAscii(moverMapName) != LowerAscii(persistentMapPackageName))
+                throw std::runtime_error("Mover checkpoint map is not the loaded map");
         }
         PreparedScriptState prepared;
         std::optional<std::uint32_t> restoredRandomSeed;
@@ -7211,6 +7754,8 @@ static bool ReadPortableRuntimeState(const std::string& path, const bool apply, 
                 throw std::runtime_error("Runtime checkpoint state trailer does not match its envelope version");
             if (!expectedMapName.empty() && LowerAscii(expectedMapName) != LowerAscii(scriptState.mapName))
                 throw std::runtime_error("Runtime checkpoint script map does not match save metadata");
+            if (!moverMapName.empty() && LowerAscii(moverMapName) != LowerAscii(scriptState.mapName))
+                throw std::runtime_error("Runtime checkpoint script and mover maps disagree");
             prepared = PrepareScriptSavedState(scriptState, apply, limits);
             cursor += length;
         }
@@ -7249,6 +7794,48 @@ static bool ReadPortableRuntimeState(const std::string& path, const bool apply, 
         }
         for (const auto& entry : damaged) {
             if (auto* object = prefixTarget(entry.first)) damagedTargets.emplace_back(object, entry.second);
+        }
+        std::vector<std::pair<RuntimeObject*, RuntimeMoverMotion>> restoredMovers;
+        restoredMovers.reserve(savedMovers.size());
+        std::unique_ptr<ScriptSaveSchema> moverSchema;
+        if (!savedMovers.empty() && LowerAscii(moverMapName) != LowerAscii(persistentMapPackageName))
+            moverSchema = std::make_unique<ScriptSaveSchema>(moverMapName);
+        for (const auto& [path, state] : savedMovers) {
+            if (moverSchema) {
+                // Read-only preflight must work before a cross-map load worker
+                // starts. This temporary receiver is neither GC-allocated nor
+                // registered in any live map, tag, collision or VM index.
+                struct DetachedMover final : RuntimeObject {
+                    DetachedMover() : RuntimeObject({}, nullptr) {}
+                    ~DetachedMover() override = default;
+                } actor;
+                moverSchema->ReadAuthoredMover(path, actor);
+                const auto motion = ReadRuntimeMoverMotion(&actor, false, &moverSchema->Host());
+                QuestVr::ValidateMoverMotionState(motion.spec, state);
+                const bool isActivated = std::any_of(activated.begin(), activated.end(), [&](const auto& value) {
+                    return LowerAscii(value) == LowerAscii(path);
+                });
+                if (isActivated != (state.targetKey != 0u))
+                    throw std::runtime_error("Mover checkpoint activation and motion disagree");
+                continue;
+            }
+            auto* actor = prefixTarget(path);
+            if (!actor || actor->runtimeBirth || actor->worldActorIndex < 0 || actor->reflection.objectPath != path ||
+                !IsDerivedFromPath(actor->cls, "Engine.Mover"))
+                throw std::runtime_error("Mover checkpoint has an invalid map actor identity");
+            auto motion = ReadRuntimeMoverMotion(actor);
+            QuestVr::ValidateMoverMotionState(motion.spec, state);
+            const bool activated = std::find(activatedTargets.begin(), activatedTargets.end(), actor) != activatedTargets.end();
+            if (activated != (state.targetKey != 0u)) throw std::runtime_error("Mover checkpoint activation and motion disagree");
+            motion.state = state;
+            restoredMovers.emplace_back(actor, std::move(motion));
+        }
+        // Old saves contain a boolean open state only. Migrate it to an actual
+        // authored endpoint so the brush no longer vanishes after quick-load.
+        if (formatVersion < 14u) for (auto* actor : activatedTargets) {
+            if (!IsDerivedFromPath(actor->cls, "Engine.Mover")) continue;
+            try { restoredMovers.emplace_back(actor, ReadRuntimeMoverMotion(actor, true)); }
+            catch (const std::exception&) { /* Unsupported movers stay visible at their authored pose. */ }
         }
         if (!apply) return true;
         // Allocate the legacy/native reset before touching live state. All
@@ -7328,6 +7915,7 @@ static bool ReadPortableRuntimeState(const std::string& path, const bool apply, 
         for (std::size_t index = persistentScriptExportCount; index < persistentRuntime->get()->exports.size(); ++index) {
             RuntimeObject* object = persistentRuntime->get()->exports[index];
             object->active = true; object->activated = false; object->healthInitialized = false; object->health = 100.0f;
+            object->moverMotion.reset();
         }
         persistentInventory.swap(inventory); persistentPlayerHealth = playerHealth;
         persistentCredits = credits; persistentSkillPoints = skillPoints;
@@ -7335,6 +7923,7 @@ static bool ReadPortableRuntimeState(const std::string& path, const bool apply, 
         persistentAppliedDialogueEffects.swap(restoredApplied);
         for (auto* object : inactiveTargets) object->active = false;
         for (auto* object : activatedTargets) object->activated = true;
+        for (auto& [actor, motion] : restoredMovers) actor->moverMotion = std::move(motion);
         for (const auto& entry : damagedTargets) {entry.first->healthInitialized = true; entry.first->health = entry.second;}
         for (auto& cls : prepared.classDefaults) cls.target->classDefaultValues.swap(cls.values);
         for (auto& object : prepared.objects) {

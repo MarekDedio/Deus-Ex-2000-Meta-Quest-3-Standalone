@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <functional>
 #include <limits>
+#include <memory>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -16,9 +17,11 @@
 namespace QuestVr {
 
 // The surface-owned FDecal/Self.SurfList portion of the original GOTY native
-// contract, docs/DECAL-NATIVE-CONTRACT.md. Geometry must already be projected
-// and relative to the selected authored surface base. This is NOT AttachDecal
-// itself, a reflected SurfList, a renderer, disk serialization or GC ownership.
+// contract, docs/DECAL-NATIVE-CONTRACT.md. Geometry supplied to AttachPrimary
+// must already be projected and relative to the selected authored surface base;
+// Begin/Complete also represent the original callback-visible provisional path.
+// This is NOT AttachDecal itself, a reflected SurfList, a renderer, disk
+// serialization or GC ownership.
 struct DecalStateVec3 { float x{}, y{}, z{}; };
 struct DecalStateRotation { std::int32_t pitch{}, yaw{}, roll{}; };
 struct DecalSurfaceRecord {
@@ -59,6 +62,10 @@ struct DecalStateStats {
 };
 
 namespace DecalStateDetail {
+// Shared only by a live state, its journal copies and ephemeral tokens. A new
+// checkpoint import gets a distinct domain; keeping the old domain alive in a
+// token prevents an allocator address reuse from accepting a stale token.
+struct PrimaryTokenDomain {};
 [[noreturn]] inline void Fail(const char* reason) {
     throw std::runtime_error(std::string("Native decal state: ") + reason);
 }
@@ -69,6 +76,11 @@ inline std::size_t Add(std::size_t a, std::size_t b) {
 inline std::size_t Multiply(std::size_t a, std::size_t b) {
     if (a && b > std::numeric_limits<std::size_t>::max() / a) Fail("size arithmetic overflow");
     return a * b;
+}
+inline std::uint64_t IncrementSerial(std::uint64_t serial) {
+    if (serial == std::numeric_limits<std::uint64_t>::max())
+        Fail("primary record token serial exhausted");
+    return serial + 1u;
 }
 inline void Step(DecalStateStats& stats, std::size_t count, const DecalStateLimits& limits) {
     if (stats.steps > limits.operationSteps || count > limits.operationSteps - stats.steps)
@@ -111,6 +123,24 @@ inline void AddIdentity(DecalStateUsage& usage, const std::string& identity) {
 }
 } // namespace DecalStateDetail
 
+class DecalPrimaryToken {
+public:
+    DecalPrimaryToken() = default;
+    std::int32_t SurfaceIndex() const noexcept { return surfaceIndex_; }
+    std::size_t RecordIndex() const noexcept { return recordIndex_; }
+private:
+    friend class DecalState;
+    std::shared_ptr<const DecalStateDetail::PrimaryTokenDomain> domain_;
+    std::string ownerIdentity_;
+    std::int32_t surfaceIndex_{};
+    std::size_t recordIndex_{};
+    std::uint64_t surfaceSerial_{};
+};
+struct DecalPrimaryBegin {
+    DecalPrimaryToken token;
+    DecalStateStats stats;
+};
+
 class DecalState {
 public:
     // None is a valid live Texture on an EXISTING owner, and never matches the
@@ -126,13 +156,15 @@ public:
         if (surfaceCount > limits_.surfaces || nodeCount > limits_.nodes)
             DecalStateDetail::Fail("model count budget exceeded");
         usage_.surfaces = surfaceCount;
-        usage_.storageBytes = DecalStateDetail::Add(sizeof(DecalStateSnapshot),
-            DecalStateDetail::Multiply(surfaceCount, sizeof(std::vector<DecalSurfaceRecord>)));
+        usage_.storageBytes = InitialStorageBytes(surfaceCount);
         DecalStateDetail::ValidateUsage(usage_, limits_);
         state_.surfaces.resize(surfaceCount);
+        surfaceSerials_.resize(surfaceCount);
+        tokenDomain_ = std::make_shared<const DecalStateDetail::PrimaryTokenDomain>();
     }
     DecalState(const DecalState& other)
-        : limits_(other.limits_), nodeCount_(other.nodeCount_), state_(other.state_), usage_(other.usage_) {}
+        : limits_(other.limits_), nodeCount_(other.nodeCount_), state_(other.state_), usage_(other.usage_),
+          surfaceSerials_(other.surfaceSerials_), tokenDomain_(other.tokenDomain_) {}
     DecalState& operator=(const DecalState& other) {
         if (this == &other) return *this;
         CheckIdle();
@@ -145,50 +177,56 @@ public:
                                  const std::string& receiverTexture,
                                  const LiveTextureResolver& resolveLiveTexture) {
         MutationGuard guard(*this);
-        DecalStateStats stats;
-        SurfaceIndex(surfaceIndex, stats);
-        Record(record, stats);
-        DecalStateDetail::Identity(receiverTexture, stats, limits_);
-        if (!resolveLiveTexture) DecalStateDetail::Fail("missing live texture resolver");
-        const auto ownerIndex = FindOwner(record.ownerIdentity, stats);
-        auto projected = usage_;
-        AddRecordUsage(projected, record);
-        if (ownerIndex == state_.owners.size()) AddOwnerUsage(projected, record.ownerIdentity);
-        projected.surfListEntries = DecalStateDetail::Add(projected.surfListEntries, 1u);
-        projected.storageBytes = DecalStateDetail::Add(projected.storageBytes, sizeof(std::int32_t));
-        Prepare(projected, stats, RecordPayloadBytes(record));
+        return InsertPrimary(surfaceIndex, record.ownerIdentity, &record, record.moverRotation,
+            receiverTexture, resolveLiveTexture, false).stats;
+    }
 
-        const auto surface = static_cast<std::size_t>(surfaceIndex);
-        std::size_t insertion{};
-        for (const auto& existing : state_.surfaces[surface]) {
-            DecalStateDetail::Step(stats, 1u, limits_);
-            ++stats.resolverCalls;
-            const auto texture = resolveLiveTexture(existing.ownerIdentity);
-            if (texture) {
-                DecalStateDetail::Identity(*texture, stats, limits_);
-                DecalStateDetail::Step(stats,
-                    DecalStateDetail::Add(texture->size(), receiverTexture.size()), limits_);
-                if (*texture == receiverTexture) break;
-            }
-            ++insertion;
-        }
-        // Charge the shifted records and payload copy before allocating or
-        // altering the candidate. A throwing resolver/budget/allocation cannot
-        // mutate surface records or either owner list in the original state.
-        DecalStateDetail::Step(stats, state_.surfaces[surface].size() - insertion + 1u, limits_);
+    // The original primary path publishes an owner-bearing, zero-corner FDecal
+    // and appends SurfList BEFORE SetBase can run script callbacks. The host must
+    // leave this mutation before invoking those callbacks, then complete using
+    // the token. Tokens are transient, not snapshot or wire data.
+    DecalPrimaryBegin BeginPrimary(std::int32_t surfaceIndex, const std::string& ownerIdentity,
+                                  const std::string& receiverTexture,
+                                  const LiveTextureResolver& resolveLiveTexture,
+                                  DecalStateRotation moverRotation = {}) {
+        MutationGuard guard(*this);
+        return InsertPrimary(surfaceIndex, ownerIdentity, nullptr, moverRotation,
+            receiverTexture, resolveLiveTexture, true);
+    }
+
+    // A same-surface insertion/removal can invalidate the original raw FDecal
+    // pointer: refuse explicitly instead of accidentally updating a replacement
+    // record at the old index. Foreign-surface edits and owner-list-only changes
+    // do not invalidate it. Update only corners/membership, preserving the
+    // BeginPrimary owner, mover rotation, insertion order and current SurfList.
+    DecalStateStats CompletePrimary(const DecalPrimaryToken& token,
+                                    const DecalSurfaceRecord& record) {
+        MutationGuard guard(*this);
+        DecalStateStats stats;
+        SurfaceIndex(token.surfaceIndex_, stats);
+        const auto surface = static_cast<std::size_t>(token.surfaceIndex_);
+        if (!token.domain_ || token.domain_ != tokenDomain_ ||
+            token.surfaceSerial_ != surfaceSerials_[surface] ||
+            token.recordIndex_ >= state_.surfaces[surface].size())
+            DecalStateDetail::Fail("invalidated primary record token");
+        const auto& previous = state_.surfaces[surface][token.recordIndex_];
+        DecalStateDetail::Step(stats, DecalStateDetail::Add(1u,
+            DecalStateDetail::Add(previous.ownerIdentity.size(), token.ownerIdentity_.size())), limits_);
+        if (previous.ownerIdentity != token.ownerIdentity_ || record.ownerIdentity != previous.ownerIdentity)
+            DecalStateDetail::Fail("primary record token owner mismatch");
+        Record(record, stats);
+        auto projected = usage_;
+        projected.nodeMembership -= previous.nodeMembership.size();
+        projected.storageBytes -= previous.nodeMembership.size() * sizeof(std::int32_t);
+        projected.nodeMembership = DecalStateDetail::Add(projected.nodeMembership, record.nodeMembership.size());
+        projected.storageBytes = DecalStateDetail::Add(projected.storageBytes,
+            DecalStateDetail::Multiply(record.nodeMembership.size(), sizeof(std::int32_t)));
+        Prepare(projected, stats, RecordPayloadBytes(record));
         auto prepared = state_;
-        auto& records = prepared.surfaces[surface];
-        records.reserve(DecalStateDetail::Add(records.size(), 1u));
-        records.insert(records.begin() + static_cast<std::ptrdiff_t>(insertion), record);
-        if (ownerIndex == prepared.owners.size()) {
-            prepared.owners.reserve(DecalStateDetail::Add(prepared.owners.size(), 1u));
-            prepared.owners.push_back({record.ownerIdentity, {}});
-        }
-        auto& surfList = prepared.owners[ownerIndex].surfaces;
-        surfList.reserve(DecalStateDetail::Add(surfList.size(), 1u));
-        surfList.push_back(surfaceIndex); // Preserve primary-path duplicates.
+        auto& completed = prepared.surfaces[surface][token.recordIndex_];
+        completed.relativeCorners = record.relativeCorners;
+        completed.nodeMembership = record.nodeMembership;
         Publish(prepared, projected);
-        stats.recordsInserted = 1u;
         return stats;
     }
 
@@ -200,16 +238,19 @@ public:
         if (ownerIndex == state_.owners.size()) return stats;
         Prepare(usage_, stats);
         auto prepared = state_;
+        auto preparedSerials = surfaceSerials_;
         auto projected = usage_;
         auto& surfList = prepared.owners[ownerIndex].surfaces;
         while (!surfList.empty()) {
             DecalStateDetail::Step(stats, 1u, limits_);
-            auto& records = prepared.surfaces[static_cast<std::size_t>(surfList.back())];
+            const auto surface = static_cast<std::size_t>(surfList.back());
+            auto& records = prepared.surfaces[surface];
             for (std::size_t index = 0u; index < records.size(); ++index) {
                 DecalStateDetail::Step(stats,
                     DecalStateDetail::Add(1u, DecalStateDetail::Add(records[index].ownerIdentity.size(),
                         ownerIdentity.size())), limits_);
                 if (records[index].ownerIdentity != ownerIdentity) continue;
+                preparedSerials[surface] = NextSerial(preparedSerials[surface], stats);
                 DecalStateDetail::Step(stats, records.size() - index, limits_);
                 RemoveRecordUsage(projected, records[index]);
                 records.erase(records.begin() + static_cast<std::ptrdiff_t>(index));
@@ -222,6 +263,7 @@ public:
             ++stats.surfListEntriesPopped;
         }
         Publish(prepared, projected);
+        surfaceSerials_.swap(preparedSerials);
         return stats;
     }
 
@@ -272,8 +314,7 @@ public:
             DecalStateDetail::Fail("checkpoint owner count budget exceeded");
         DecalStateUsage projected;
         projected.surfaces = snapshot.surfaces.size();
-        projected.storageBytes = DecalStateDetail::Add(sizeof(DecalStateSnapshot),
-            DecalStateDetail::Multiply(projected.surfaces, sizeof(std::vector<DecalSurfaceRecord>)));
+        projected.storageBytes = InitialStorageBytes(projected.surfaces);
         for (const auto& surface : snapshot.surfaces) {
             DecalStateDetail::Step(stats, 1u, limits_);
             if (surface.size() > limits_.records - projected.records)
@@ -314,7 +355,11 @@ public:
                 DecalStateDetail::Fail("duplicate checkpoint owner mirror identity");
         }
         auto prepared = snapshot;
+        std::vector<std::uint64_t> preparedSerials(snapshot.surfaces.size());
+        auto preparedDomain = std::make_shared<const DecalStateDetail::PrimaryTokenDomain>();
         Publish(prepared, projected);
+        surfaceSerials_.swap(preparedSerials);
+        tokenDomain_.swap(preparedDomain);
         return stats;
     }
 
@@ -322,6 +367,21 @@ public:
     const DecalStateUsage& Usage() const noexcept { return usage_; }
     const DecalStateLimits& Limits() const noexcept { return limits_; }
     std::size_t NodeCount() const noexcept { return nodeCount_; }
+
+    // The snapshot/wire deliberately excludes the transient token sidecar. The
+    // runtime must charge it separately when measuring a live/journal state or
+    // staging a checkpoint. This reports actual vector capacity without copying;
+    // shared_ptr allocator/control-block metadata is outside the structural
+    // payload budget just like other allocator metadata.
+    static std::size_t TransientStorageBytes(std::size_t surfaceCount) {
+        return DecalStateDetail::Add(sizeof(std::vector<std::uint64_t>) +
+            sizeof(std::shared_ptr<const DecalStateDetail::PrimaryTokenDomain>) +
+            sizeof(DecalStateDetail::PrimaryTokenDomain),
+            DecalStateDetail::Multiply(surfaceCount, sizeof(std::uint64_t)));
+    }
+    std::size_t TransientRetainedBytes() const {
+        return TransientStorageBytes(surfaceSerials_.capacity());
+    }
 
     // Whole-container journal rollback, including duplicate records, owner
     // lists, geometry and limits. No allocation. False only refuses callback
@@ -334,6 +394,8 @@ public:
         swap(nodeCount_, other.nodeCount_);
         state_.surfaces.swap(other.state_.surfaces);
         state_.owners.swap(other.state_.owners);
+        surfaceSerials_.swap(other.surfaceSerials_);
+        tokenDomain_.swap(other.tokenDomain_);
         swap(usage_, other.usage_);
         return true;
     }
@@ -379,18 +441,106 @@ private:
         }
         return state_.owners.size();
     }
+    static std::size_t InitialStorageBytes(std::size_t surfaceCount) {
+        auto bytes = DecalStateDetail::Add(sizeof(DecalStateSnapshot),
+            DecalStateDetail::Multiply(surfaceCount, sizeof(std::vector<DecalSurfaceRecord>)));
+        return DecalStateDetail::Add(bytes, TransientStorageBytes(surfaceCount));
+    }
+    std::uint64_t NextSerial(std::uint64_t serial, DecalStateStats& stats) const {
+        DecalStateDetail::Step(stats, 1u, limits_);
+        return DecalStateDetail::IncrementSerial(serial);
+    }
+    DecalPrimaryBegin InsertPrimary(std::int32_t surfaceIndex, const std::string& ownerIdentity,
+                                   const DecalSurfaceRecord* record,
+                                   DecalStateRotation moverRotation,
+                                   const std::string& receiverTexture,
+                                   const LiveTextureResolver& resolveLiveTexture, bool makeToken) {
+        DecalPrimaryBegin result;
+        auto& stats = result.stats;
+        SurfaceIndex(surfaceIndex, stats);
+        if (record) Record(*record, stats);
+        else {
+            DecalStateDetail::Identity(ownerIdentity, stats, limits_);
+            DecalStateDetail::Step(stats, 4u, limits_); // Four finite zero corners.
+        }
+        DecalStateDetail::Identity(receiverTexture, stats, limits_);
+        if (!resolveLiveTexture) DecalStateDetail::Fail("missing live texture resolver");
+        const auto surface = static_cast<std::size_t>(surfaceIndex);
+        const auto serial = NextSerial(surfaceSerials_[surface], stats);
+        const auto ownerIndex = FindOwner(ownerIdentity, stats);
+        auto projected = usage_;
+        AddRecordUsage(projected, ownerIdentity, record ? record->nodeMembership.size() : 0u);
+        if (ownerIndex == state_.owners.size()) AddOwnerUsage(projected, ownerIdentity);
+        projected.surfListEntries = DecalStateDetail::Add(projected.surfListEntries, 1u);
+        projected.storageBytes = DecalStateDetail::Add(projected.storageBytes, sizeof(std::int32_t));
+        auto incomingBytes = DecalStateDetail::Add(sizeof(DecalSurfaceRecord),
+            DecalStateDetail::Add(ownerIdentity.size(), 1u));
+        if (record) incomingBytes = RecordPayloadBytes(*record);
+        if (makeToken) incomingBytes = DecalStateDetail::Add(incomingBytes,
+            DecalStateDetail::Add(sizeof(DecalPrimaryToken), DecalStateDetail::Add(ownerIdentity.size(), 1u)));
+        Prepare(projected, stats, incomingBytes);
+
+        std::size_t insertion{};
+        for (const auto& existing : state_.surfaces[surface]) {
+            DecalStateDetail::Step(stats, 1u, limits_);
+            ++stats.resolverCalls;
+            const auto texture = resolveLiveTexture(existing.ownerIdentity);
+            if (texture) {
+                DecalStateDetail::Identity(*texture, stats, limits_);
+                DecalStateDetail::Step(stats,
+                    DecalStateDetail::Add(texture->size(), receiverTexture.size()), limits_);
+                if (*texture == receiverTexture) break;
+            }
+            ++insertion;
+        }
+        // Precharge all shifts/copies before allocating. Publication of the
+        // snapshot and serial is nonthrowing, including token construction.
+        DecalStateDetail::Step(stats, state_.surfaces[surface].size() - insertion + 1u, limits_);
+        auto prepared = state_;
+        auto& records = prepared.surfaces[surface];
+        records.reserve(DecalStateDetail::Add(records.size(), 1u));
+        if (record) records.insert(records.begin() + static_cast<std::ptrdiff_t>(insertion), *record);
+        else {
+            DecalSurfaceRecord provisional;
+            provisional.ownerIdentity = ownerIdentity;
+            provisional.moverRotation = moverRotation;
+            records.insert(records.begin() + static_cast<std::ptrdiff_t>(insertion), std::move(provisional));
+        }
+        if (ownerIndex == prepared.owners.size()) {
+            prepared.owners.reserve(DecalStateDetail::Add(prepared.owners.size(), 1u));
+            prepared.owners.push_back({ownerIdentity, {}});
+        }
+        auto& surfList = prepared.owners[ownerIndex].surfaces;
+        surfList.reserve(DecalStateDetail::Add(surfList.size(), 1u));
+        surfList.push_back(surfaceIndex); // Preserve primary-path duplicates.
+        if (makeToken) {
+            result.token.domain_ = tokenDomain_;
+            result.token.ownerIdentity_ = ownerIdentity;
+            result.token.surfaceIndex_ = surfaceIndex;
+            result.token.recordIndex_ = insertion;
+            result.token.surfaceSerial_ = serial;
+        }
+        Publish(prepared, projected);
+        surfaceSerials_[surface] = serial;
+        stats.recordsInserted = 1u;
+        return result;
+    }
     static void AddOwnerUsage(DecalStateUsage& usage, const std::string& identity) {
         usage.owners = DecalStateDetail::Add(usage.owners, 1u);
         usage.storageBytes = DecalStateDetail::Add(usage.storageBytes, sizeof(DecalOwnerSurfList));
         DecalStateDetail::AddIdentity(usage, identity);
     }
     static void AddRecordUsage(DecalStateUsage& usage, const DecalSurfaceRecord& record) {
+        AddRecordUsage(usage, record.ownerIdentity, record.nodeMembership.size());
+    }
+    static void AddRecordUsage(DecalStateUsage& usage, const std::string& ownerIdentity,
+                               std::size_t nodeMembership) {
         usage.records = DecalStateDetail::Add(usage.records, 1u);
-        usage.nodeMembership = DecalStateDetail::Add(usage.nodeMembership, record.nodeMembership.size());
+        usage.nodeMembership = DecalStateDetail::Add(usage.nodeMembership, nodeMembership);
         usage.storageBytes = DecalStateDetail::Add(usage.storageBytes, sizeof(DecalSurfaceRecord));
         usage.storageBytes = DecalStateDetail::Add(usage.storageBytes,
-            DecalStateDetail::Multiply(record.nodeMembership.size(), sizeof(std::int32_t)));
-        DecalStateDetail::AddIdentity(usage, record.ownerIdentity);
+            DecalStateDetail::Multiply(nodeMembership, sizeof(std::int32_t)));
+        DecalStateDetail::AddIdentity(usage, ownerIdentity);
     }
     static void RemoveRecordUsage(DecalStateUsage& usage, const DecalSurfaceRecord& record) noexcept {
         --usage.records;
@@ -444,6 +594,8 @@ private:
     std::size_t nodeCount_{};
     DecalStateSnapshot state_;
     DecalStateUsage usage_;
+    std::vector<std::uint64_t> surfaceSerials_;
+    std::shared_ptr<const DecalStateDetail::PrimaryTokenDomain> tokenDomain_;
     bool mutationActive_{};
 };
 

@@ -1,8 +1,14 @@
-# Original decal geometry and ordered state prerequisites
+# Original decal geometry and native attachment
 
 Added 2026-10-12. The user's original GOTY DLLs/packages were read, never
 executed or redistributed. The authority, addresses, defaults and gaps are in
 [DECAL-NATIVE-CONTRACT.md](DECAL-NATIVE-CONTRACT.md).
+
+Positive native `Engine.Decal.AttachDecal` is now integrated with live Texture,
+the map-owned ordered graph, original primary mover/SetBase callbacks and
+transaction rollback. Generated integration passes 8,268 checks/143 refusal
+controls. This establishes CPU native attachment, not rendered native shadows
+or accepted original world/player startup.
 
 ## Implemented scope
 
@@ -14,8 +20,8 @@ These portable, bounded headers work in authored Unreal coordinates:
 | `quest_decal_surface_select.h` | Actual polygon edge signs, immediate-previous-distance comparison, iPlane-only fallback, primary/secondary center distinctions, fresh surface-node cache and whole-quad node membership clipping. |
 | `quest_decal_primary_quad.h` | Original random/supplied/base-fallback orientation, USize-only radius, ordered world/relative corners and pretrace random consumption. |
 | `quest_decal_secondary_quad.h` | Upper-only multilevel clamp, original ordered grid, signed-angle rejection and two-line corner correction. |
-| `quest_decal_projection.h` | Composes primary trace/selection/gates, quad, secondary grid/reprojection and membership into an ordered geometry-only plan. |
-| `quest_decal_state.h` | Surface-owned records and owner SurfList mirrors: first live-Texture insertion, primary duplicates, reverse detach/first owner match, copy/swap rollback. |
+| `quest_decal_projection.h` | Separate primary preparation, membership and one-secondary-sample phases, plus a composed geometry-only query for fixed inputs. |
+| `quest_decal_state.h` | Surface-owned records and owner SurfList mirrors: first live-Texture insertion, provisional primary completion, primary duplicates, reverse detach/first owner match, copy/swap rollback. |
 
 The original Shadow inherits MultiDecalLevel4 and DrawScale1. Its actual
 `DeusExItems.Skins.FlatFXTex40` texture is 32x32. The plan therefore executes
@@ -50,6 +56,25 @@ their validation/query counters. Tight custom limits may refuse conservatively
 when one partition exhausts. Nested limit schemas are validated even on misses.
 Exact x87 extended-precision boundary parity remains uncertified.
 
+The live host uses the split phases instead of publishing the composed fixed-input
+plan. `PrepareOriginalDecalPrimary` retains the selected center/base/normal and
+prepared direction without reading the later quad radius. The host publishes
+successful pretrace RNG draws before any SetBase callback. `BeginPrimary` inserts
+an owner-bearing zero record; the host appends the reflected SurfList, making the
+provisional attachment visible to callbacks. On a primary mover surface, its
+rotation is captured before `SetBase(self.Owner,true)`, not after the callback
+and not by basing the decal on the surface actor.
+
+After callbacks, the host reads live Texture USize and DrawScale to construct the
+quad. `BuildOriginalDecalPrimaryMembership` supplies membership for absolute
+primary completion. `ProcessOriginalDecalSecondarySample` uses the current
+reflected SurfList and raw live MultiDecalLevel for each sample; the entry's upper
+clamp 4 is not repeated after callbacks. A callback-written 5 means 25 samples.
+Secondary insertions use the then-live Texture grouping, have zero mover rotation
+and do not repeat SetBase. The primary stays absolute until secondary processing
+finishes, then `CompletePrimary` writes relative corners. The host never restores
+a stale prepared seed over callback RNG draws.
+
 The state container has deterministic structural/payload byte accounting and
 conservative candidate/temporary charges. This is not a process-RSS or allocator
 capacity measurement. Resolver lookup work, runtime object roots, journal
@@ -63,6 +88,16 @@ live Texture changes, duplicate records, mirrored missing/foreign records,
 detach order and rollback. The composed split-floor fixture exercises two
 surface records, sixteen samples and secondary deduplication, then publishes
 and detaches repeated records using the standalone state container.
+
+The integrated generated actor suite additionally executes actual native Attach
+against a finite floor and a mover surface. It checks repeated newest-first
+primary records, callback-visible provisional SurfList, pre-callback mover
+rotation, post-callback Texture/radius/Multi/RNG, supplied-direction draw behavior,
+reverse Detach, exact warm/cold checkpoint replacement and GC roots. Late script
+failure, callback failure, primary invalidation, retained/write budgets and client
+revocation must restore exact checkpoint bytes, revision, GC and external OUT
+state. The fresh host result is recorded in
+`artifacts/tutorial-mover-20261012/spawn-positive.log` (8,268/143).
 
 The owned-data actor suite additionally reads real Shadow class defaults and
 the texture's authored USize/VSize, queries JaimeReyes0's actual Training floor,
@@ -92,14 +127,13 @@ pins both identities separately. Ignored evidence is
 
 ## Native integration progress
 
-The subsequent [runtime/checkpoint integration](DECAL-CHECKPOINT.md) implements
-items2–4,6–7 below and native Detach from item5. Native Attach, its callbacks and
-the renderer remain pending. The numbered list records the original integration
+The [runtime/checkpoint integration](DECAL-CHECKPOINT.md) and
+[native client binding](NATIVE-CLIENT-BINDING.md) now implement items1–7 below,
+including positive Attach and primary mover callbacks. Item8's renderer consumer
+remains pending. The numbered list preserves the original integration
 requirements, not a claim that each is still missing.
 
-The [native client binding](NATIVE-CLIENT-BINDING.md) now supplies item1's client/
-viewport ownership and exact entry guards. Positive Attach/live Texture operation
-and the renderer remain pending. The reentrant mover callback ordering in the
+The reentrant mover callback ordering in the
 [native audit](DECAL-NATIVE-CONTRACT.md) forbids publishing a whole fixed-input
 projection plan as one Attach: radius and several native reads follow SetBase.
 
@@ -133,9 +167,10 @@ projection plan as one Attach: radius and several native reads follow SetBase.
    bias, mover deltas and LastRenderedTime. Validate on Quest before claiming
    rendered original shadows or full Attach fidelity.
 
-The rollback-only Training startup still stops at unsupported
-`Engine.Decal.AttachDecal`; no original world/player possession, campaign Tick,
-or full standalone campaign acceptance is established by these prerequisites.
+The rollback-only Training startup probe now advances beyond Attach. Its next
+limiting operation is still being investigated; no original world/player
+possession, campaign Tick or full standalone campaign acceptance is established
+by this native attachment work.
 The later runtime integration produces a replacement APK; deployment evidence is
 in [QUEST-TEST-BUILD.md](QUEST-TEST-BUILD.md). Corrected hand/body geometry is
 unchanged by these native-state changes. Every actual new APK continues

@@ -29,8 +29,14 @@ keep explicit legacy provenance; no selected-state or mask migration is guessed.
 See [STATE-CONTROL-MODEL.md](STATE-CONTROL-MODEL.md).
 Version13 adds bounded whole INT-array values and optional map-owned native
 decal geometry (codec10). This is a deliberate port checkpoint extension, not
-original GOTY FDecal disk serialization or completed Attach/render support.
+original GOTY FDecal disk serialization or completed native shadow rendering.
 See [DECAL-CHECKPOINT.md](DECAL-CHECKPOINT.md).
+Version14 wraps an unchanged version3–13 payload when the bounded VR mover
+layer has motion to retain. It adds authored mover identities, sampled/source
+poses, target/return keys, phase and timers, not original Mover script frames.
+Read-only preflight checks the target map's actual exports/Level membership and
+authored motion even when another map is loaded; applying still requires the
+saved map to be current. See [TRAINING-DEMO.md](TRAINING-DEMO.md).
 None of these versions adds
 automatic NPC startup, AI processing, live animation, or a general UnrealScript savegame.
 Only the current map's supported authored and runtime-born actors are restored.
@@ -61,7 +67,7 @@ omitting them from the input cannot bypass those limits.
 
 The runtime checkpoint still starts with magic `0x53515844`. A checkpoint
 without committed script objects, class defaults, births, native AI managers, RNG
-or native decal state
+or native decal state, and without supported mover motion,
 is written as version 3, with no new trailer.
 A checkpoint containing only properties/clocks uses version 4; one with any
 portable state object uses version 5. A checkpoint with class-default mutations
@@ -86,6 +92,17 @@ version-3 fields:
 u32 script blob length
 script blob[exactly that many bytes]
 ```
+
+With motion present, the header instead contains `u32 magic, u32 version=14,
+u32 underlyingVersion=3..13`. The unchanged v3 fields follow, then a nonzero
+`u32 moverCount` (at most 10,000). Each mover has a path string and 68 bytes:
+sampled pose and source pose (each three f32 coordinates and three i32 rotator
+components), u32 target key, i32 return key, u32 phase, f32 elapsed time and f32
+remaining hold time. The existing script-length/blob follows only when the
+underlying version is at least 4. Without motion, the previous wire stays exact.
+Duplicate/noncanonical owners, mixed maps, nonfinite or inconsistent poses,
+invalid keys/phases/timers and activation disagreement reject before publication.
+The motion wrapper does not alter the script/decal codec.
 
 All integers and floating-point bit patterns are explicitly little-endian.
 Strings are `u32 byte length` followed by bytes, without a terminator; lists
