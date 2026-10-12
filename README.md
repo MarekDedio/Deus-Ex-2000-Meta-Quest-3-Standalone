@@ -70,6 +70,12 @@ falling-only poll528 and dynamic LongFall using that same saved native counter.
 Explicit StartUp can yield at its original Sleep and continue through landing;
 remaining startup dependencies are still refused transactionally.
 This is isolated backend progress, not automatic world startup or live NPC AI.
+The [original actor timer phase](docs/ACTOR-TIMER-CONTRACT.md) now implements
+SetTimer280 and explicit once-per-tick callback coalescing, with reflected
+save/restore, state-aware dispatch and atomic callback rollback. Timer-only writes
+preserve animation and avoid geometry publication. This source-only checkpoint
+does not enable automatic campaign ticking or replace the installed visual-test
+APK; original Training startup still reports an exact later class-default gap.
 The [original state-dispatch correction](docs/ORIGINAL-STATE-DISPATCH.md) now
 uses actual Children/Next Auto order and explicit selected-state SuperField
 callback ancestry. Full state identity/control and campaign bootstrap remain

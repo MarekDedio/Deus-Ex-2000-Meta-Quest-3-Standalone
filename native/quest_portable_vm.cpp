@@ -41,7 +41,8 @@ bool SnapshotNativeInput(const std::uint16_t index, const Function* declaration 
         // unknown native-zero/OUT functions must retain their guarded aliases.
         return declaration && Lower(declaration->path) == "engine.decal.attachdecal";
     case 112: case 113: case 124: case 125: case 126: case 127: case 128:
-    case 168: case 189: case 231: case 234: case 235: case 246: case 249: case 278: return true;
+    case 168: case 189: case 231: case 234: case 235: case 246: case 249: case 278:
+    case 280: return true; // SetTimer copies rate before evaluating bLoop.
     default: return false;
     }
 }
@@ -472,6 +473,15 @@ public:
                 Fail(Status::Budget, "VM direct function identity limit");
             return Run(identity, receiver, arguments);
         });
+    }
+    void WriteReference(const std::shared_ptr<Reference>& reference,const Value& value) override {
+        if (result_.callStack.empty() && !failure_) {
+            result_.function.clear(); result_.offset=0; result_.opcode=0;
+        }
+        static_cast<void>(DirectOperation([&] {
+            Write(reference,value);
+            return Value{};
+        }));
     }
     Value Run(const Function& identity, const std::string& self, const std::vector<Evaluation>& incoming,
         std::optional<std::optional<Value>> capturedContext = {}) {

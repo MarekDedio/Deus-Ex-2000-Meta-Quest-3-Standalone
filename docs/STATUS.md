@@ -1,5 +1,46 @@
 # Port status
 
+## Original actor timers, source-only checkpoint (2026-10-13)
+
+- Native280 SetTimer now validates the original declaration and reflected Actor
+  schema, captures argument side effects in order, preserves signed rates and
+  always resets Counter. An explicit `AdvancePortableActorTimer` phase consumes
+  whole periods, retains the remainder and dispatches one current-state Timer
+  callback with shared rollback. Timer-only writes persist without rebuilding
+  geometry or resetting animation. This is not automatic world ticking.
+- Retail arithmetic passes 20,343 checks, including 20,293 independent host x87
+  PC64-oracle comparisons. Generated production-host integration passes 1,469
+  checks with 47 atomic rejection controls. Owned original-script integration
+  passes 1,743 total checks, including untouched PlayerReplicationInfo startup,
+  the focused DataLinkPlay text-delay/state Timer path, Sleep isolation, actual
+  animation-clock preservation, cold checkpoints and legacy reset. Strict NDK27
+  ARM64 syntax passes. See [ACTOR-TIMER-CONTRACT.md](ACTOR-TIMER-CONTRACT.md).
+- Fresh full host build succeeds. CTest passes 66 ordinary tests (73 registered,
+  seven owned-data opt-in skips), zero failures, 20.47 seconds. The Spawn/AI
+  suite passes 8,268 checks/143 rejection controls; review caught and corrected
+  an AI-manager-only geometry-publication regression before this checkpoint.
+  Raw execution-owned write controls bring VM coverage to 677,995 checks/345
+  rejection controls. Original save/rollback, defaults1,002, PawnList67,
+  Training route1,184 and speech-art12 controls pass separately.
+- Full owned actor integration passes Training/UNATCOIsland/Intro; all seven
+  optional owned-data suites complete separately. The rebuilt fresh Training
+  diagnostic repeats its exact ClassContext boundary with byte-identical complete
+  save/GC/birth/revision rollback. Logs are ignored under
+  `artifacts/actor-timer-20261012/`; this remains a diagnostic failure, not an
+  accepted started world or a possessed player.
+- The unmodified Training startup diagnostic passes the previous native280
+  boundary and now stops at PreBeginPlay slot1331 `00_Training.Camera4`,
+  `Engine.Pawn.InitPlayerReplicationInfo` PC36/opcode18:
+  `ClassContext requires class-default object identity`. The expression reads
+  original `Engine.GameInfo.default.DefaultPlayerName`; no guessed value or
+  skipped original callback is substituted. Full startup/player ownership,
+  automatic AI and the campaign remain unfinished.
+- No new APK is built for this source-only work. The installed visual-test APK
+  remains the retained-bank/bracket/glass replacement documented below. Physical
+  desk/window/bracket and stair acceptance still require the user's new recording.
+- Older dated native280/decal boundaries below are historical and superseded by
+  this exact diagnostic. Passing isolated timers is not a successful world probe.
+
 ## Original Training speech UI, target brackets and stairs (2026-10-12)
 
 - Remote instructor speech now uses the original 431x114 InfoLink art, bitmap
@@ -50,10 +91,11 @@
   bracket acceptance. Two live retained-bank swaps complete atomically.
   The 25m/512-actor residency limits remain, not full campaign visibility; see
   [VIDEO-REVIEW-20261012.md](VIDEO-REVIEW-20261012.md).
-- The next original startup gap is still native280 SetTimer. A fresh static
+- At this visual checkpoint the next original startup gap was native280 SetTimer. A fresh static
   retail audit establishes signed rates, >= expiration, one coalesced callback
   and Timer-before-physics ordering, which differ from the independent reference
-  engine. No timer implementation/startup success is claimed; see
+  engine. The source-only timer increment above supersedes this boundary without
+  claiming startup success; see
   [ACTOR-TIMER-CONTRACT.md](ACTOR-TIMER-CONTRACT.md).
 
 ## Training recording route and positive CPU decal attachment (2026-10-12)

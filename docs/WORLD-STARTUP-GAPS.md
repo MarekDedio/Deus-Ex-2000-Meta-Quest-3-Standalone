@@ -35,18 +35,24 @@ dependencies; original executables were not run for this audit:
 - Inherited `Engine.GameInfo.InitGame` starts with Log231 at PC0, after evaluating
   string native168. Logging, original UTF16 option primitives, Min249 and
   validated ObjectToString0x56 are implemented alongside actual Spawn278.
-  Optional DynamicLoadObject and SetGameSpeed/timer paths remain unsupported;
+  Optional DynamicLoadObject and SetGameSpeed paths remain unsupported;
   a scoped InitGame control is not automatic world initialization.
 - `Engine.Pawn.PreBeginPlay` starts with AddPawn529 at PC0. Add/Remove529/530 now
   operate on native XLevel's actual slot-zero LevelInfo, preserving original
   prepend/first-splice/retained-next behavior. Actual Pawn.Destroyed invokes
   removal; generic Destroy does not force it. Tan189 and FClamp246 are added.
   Complete most-derived PreBeginPlay and live world phase execution remain required.
-- The unmodified Training world probe reaches PreBeginPlay slot756,
-  `00_Training.JaimeReyes0`, then fails in actual `Engine.Decal.AttachDecal`
-  (unsupported native0) while initializing the NPC shadow/decal. All prefix
-  state is rolled back. Decal geometry/native surface ownership must be
-  implemented rather than bypassing that original callback.
+- Positive CPU AttachDecal and native280 SetTimer now move the unmodified Training
+  diagnostic past those earlier boundaries. It reaches PreBeginPlay slot1331,
+  `00_Training.Camera4`, then fails in actual `Engine.Pawn.InitPlayerReplicationInfo`
+  at PC36/opcode18: `ClassContext requires class-default object identity`, reading
+  `Engine.GameInfo.default.DefaultPlayerName`. All prefix state is rolled back.
+  Class-default identity/storage must be implemented rather than substituting a
+  guessed player name or skipping the original expression.
+- [Original actor timers](ACTOR-TIMER-CONTRACT.md) now support native280 and an
+  explicit isolated transactional phase, with original once-per-tick coalescing,
+  current-state callback dispatch and saved reflected fields. This does not wire
+  Timer into the Quest frame loop or provide complete world scheduler ordering.
 - `Extension.PlayerPawnExt.Possess` calls its base, then InitRootWindow1052
   at PC6. Omitting the most-derived possession call would omit authored UI
   initialization. Root-window ownership and VR presentation integration remain

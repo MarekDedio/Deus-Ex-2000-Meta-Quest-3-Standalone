@@ -1,9 +1,10 @@
-# Actor SetTimer / Timer contract audit
+# Actor SetTimer / Timer contract and isolated implementation
 
-Read-only prerequisite audit, 2026-10-12. Native280 remains unsupported; this
-document does not implement actor ticking or claim a playable original campaign.
-Only this document was written. Original executables/DLLs were not loaded or
-executed. Package metadata and bounded static DLL disassembly were read.
+Retail prerequisite audit, 2026-10-12, followed by the isolated portable
+implementation on 2026-10-13. Native280 and an explicit transactional actor
+timer phase are now implemented; automatic world ticking and a playable original
+campaign are not. Original executables/DLLs were not loaded or executed.
+Package metadata and bounded static DLL disassembly establish the retail contract.
 
 ## Authority and important reference-engine differences
 
@@ -79,6 +80,31 @@ helper must characterize boundary rounding explicitly, not assume a rounded
 float addition or arbitrary epsilon reproduces those operations. Conversion
 overflow/nonfinite behavior is not an accepted portable implementation policy.
 
+The conversion's EAX is stored at `[ebp-0x2c]` and loaded with **DWORD FILD**
+at103a26c8..103a26ce; remainder multiplication uses that signed32 value, not the
+full EDX:EAX conversion result. Nonloop clearing is gated by this EAX being
+nonzero. A safe portable implementation may explicitly refuse a whole-period
+count beyond INT32_MAX rather than reproduce wrap/overflow, but must identify
+that as refusal policy rather than retail validation.
+
+Fresh static FPU follow-up resolves the ordinary non-render precision rather
+than assuming the C runtime default: Core `appEnableFastMath` thunk10102ecd
+leads to1016e050, which calls `_controlfp(bool ? 0x20000 : 0, 0x30000)`.
+False selects64-bit x87 significand precision; true selects24-bit. Core's
+initialization path calls false at1016defa. Render's named PreRender thunk
+10b01280/body10b14560 calls true at10b14629, and PostRender thunk10b0119f/
+body10b14700 restores false at10b1472c. This supports64-bit live intermediates
+for the ordinary actor timer phase outside rendering. A portable host must
+round to that precision even if its `long double` provides more bits; a rounded
+binary32 addition or platform-dependent default precision is not equivalent.
+Bounded static evidence and fresh DLL hashes are in ignored
+`artifacts/actor-timer-20261012/original-timer-fpu-audit.log`.
+The precision-mask interpretation follows Microsoft's
+[_controlfp documentation](https://learn.microsoft.com/en-us/cpp/c-runtime-library/reference/control87-controlfp-control87-2?view=msvc-170).
+These audited calls change precision only, not rounding mode. Portable timer
+arithmetic explicitly uses round-to-nearest, ties-to-even; it does not emulate
+foreign DLLs changing the process FPU environment or render-time24-bit math.
+
 The exported `eventTimer` thunk10303364/body10323160 uses the same Timer FName
 global10583718 and virtual ProcessEvent+10 as the tick block. Lookup must use
 the current selected StateNode and explicit inherited dispatch graph, not cache
@@ -138,12 +164,15 @@ time and map-worker pauses must not silently define original game elapsed time.
 
 ## Portable integration, persistence and refusal requirements
 
-- `PortableActorVmHost::Native` has no native280 handler. The unmodified Training
-  world probe is pinned by `desktop/portable_actor_script_test.cpp` to
+- `PortableActorVmHost::Native` now validates the real native280 declaration and
+  canonical reflected Actor timer schema. The unmodified Training probe passes
+  `Engine.PlayerReplicationInfo.PostBeginPlay` PC27/native280 and stops later:
   PreBeginPlay, slot1331 `00_Training.Camera4`, actual function
-  `Engine.PlayerReplicationInfo.PostBeginPlay`, PC27/opcode97, with
-  `Unsupported runtime native 280` and complete rollback. Adding the entry only
-  moves this diagnostic boundary; it does not finish startup.
+  `Engine.Pawn.InitPlayerReplicationInfo`, PC36/opcode18, with
+  `ClassContext requires class-default object identity`. That original expression
+  reads `Engine.GameInfo.default.DefaultPlayerName`. The exact boundary and full
+  rollback remain pinned by `desktop/portable_actor_script_test.cpp`; startup is
+  not accepted merely because its diagnostic advances.
 - `AdvancePortableActorState` explicitly advances ProcessState only: no Timer,
   Tick, physics or startup. Do not repurpose `latentTimeLeft`, which belongs to
   Sleep/WaitForLanding, or add an independent shadow counter disconnected from
@@ -163,14 +192,18 @@ time and map-worker pauses must not silently define original game elapsed time.
   and Loop, including stopped/frameless actors. Legacy reset and map replacement
   must not merge stale timers. Do not invent Counter<Rate or Counter>=0 save
   invariants for arbitrary reflected values. Save only at a quiescent transaction
-  boundary. Current Variable's explicit Const-write restriction covers native
-  INT arrays only; scalar timer write permissions need a deliberate port policy,
-  not a claim that retail bytecode dynamically enforces its compiler's Const rule.
-- Current host Commit marks **any touched Actor** as a world change, calls
-  DecodePortableRuntimeActorMeshes, rebuilds tag indices and increments world
-  revision. Per-frame counter persistence needs correct simulation/render
-  mutation classification before enabling a campaign tick; omitting persistence
-  or skipping nonvisible actors is not a valid performance fix.
+  boundary. Variable now explicitly blocks script writes to canonical Const
+  Actor.TimerCounter as well as native Const INT arrays. This is deliberate port
+  policy, not a claim that retail bytecode dynamically enforces compiler Const.
+- Host Commit now skips geometry/tag/revision publication only when byte-exact
+  before/after comparison proves the touched Actor changed just the three
+  canonical timer overlays and its committed-state marker. Animation clocks,
+  state frames/locals/probes, other properties/defaults and native links are
+  compared; collision, decal and birth journals remain conservative world
+  changes. Coupled AI effects disqualify the touched actor's timer-only fast path;
+  independent AI-manager-only state retains its existing save/rollback path
+  without geometry publication. Timer fields still persist. This classification is not a
+  general simulation-property whitelist or a completed campaign scheduler.
 - Explicitly reject invalid elapsed time, nonfinite data, unsafe count conversion
   or counter/remainder overflow atomically. Such finite/safety limits are port
   refusal policy, not evidence of retail input validation. Do not replace the
@@ -198,3 +231,51 @@ time and map-worker pauses must not silently define original game elapsed time.
    original startup. Generated fixtures or a handpicked actor list are not proof
    of complete campaign timing. Performance evidence must show timer-only writes
    avoid unnecessary geometry publication without losing genuine callback effects.
+
+## Implemented scope and regression evidence (2026-10-13)
+
+`AdvancePortableActorTimer` is an explicit isolated phase, separate from
+`AdvancePortableActorState`. Integer-dyadic arithmetic reproduces PC64 nearest-even
+live intermediates and binary32 stores without depending on host `long double`
+width. Native280 captures each argument before the next expression, stores signed
+rates and always resets Counter. Advancement writes Counter/Rate and invokes at
+most one current-state event in the same execution/root transaction. No timer
+write follows the callback. Before-begun, deleted and probe-suppressed events
+consume periods without running the callback. Timer writes do not reconstruct
+unrelated live animation clocks.
+
+Both native280's three stores and advancement's changed Counter/Rate stores use
+the execution-owned `WriteReference` path: shared write/retained-journal budgets,
+raw host-reference rollback and transaction poisoning after a caught failure.
+Zero/partial budgets must refuse even a counter-only or suppressed phase that
+executes no callback instructions. Other native operations are not silently
+reclassified by this timer increment.
+
+- `quest_actor_timer_test`: 20,343 checks, including 20,293 independent host x87
+  PC64-oracle triples, exact/below-threshold and live-sum/store boundaries,
+  signed zero, subnormals, cancellation, long gaps and atomic refusal cases.
+  The oracle compiles its own arithmetic; it does not execute original DLL code.
+- `portable_actor_timer_test`: 1,469 generated checks and 47 atomic rejection
+  controls using serialized UE1 fixtures and the production host. These cover
+  declaration/receiver validation, captured argument side effects, real state
+  dispatch, callbacks changing state/rearming/spawning/destroying, suppression,
+  instruction/write/depth/storage budgets, RNG/GC/topology rollback, cold saves,
+  legacy reset, map retirement and timer-only publication.
+- With the owned GOTY root: 1,743 total integration checks, retaining those 47
+  rejection controls. Unmodified PlayerReplicationInfo.PostBeginPlay executes its
+  explicit Timer/RNG call and native280. Focused original DataLinkPlay.WaitForSpeech
+  PC154 uses the compiled text-delay fallback and selected-state Timer, independent
+  of Sleep. Original Doctor.PlayWaiting verifies live animation survives timer
+  updates/rearming. These are scoped actor slices, not complete conversation UI
+  or world startup.
+- Strict NDK27 ARM64 syntax accepts the helper and runtime. This source-only
+  checkpoint builds no new APK and changes no installed visual-test build.
+- Final full host build and CTest pass: 66 ordinary tests, 73 registered with
+  seven owned-data opt-in skips, zero failures, 20.47 seconds. The broader
+  Spawn/AI and raw VM-write suites retain independent manager-only persistence
+  without geometry publication, plus coupled callback effects and rollback.
+
+Asset-free CTest runs the generated test. `portable_actor_timer_original`
+is an owned-data opt-in CTest entry (skip77 without a supplied installation);
+invoke `portable_actor_timer_test --original <GOTY-root>` to run it explicitly.
+The remaining scheduler/startup requirements above still apply.

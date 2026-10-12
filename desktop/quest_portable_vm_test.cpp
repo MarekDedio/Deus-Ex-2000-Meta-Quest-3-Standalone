@@ -2193,6 +2193,62 @@ void TransactionContracts() {
         alias->read=[&value] {return value;};alias->write=[&value](const Value& next) {value=next;};return alias;
     };
     {
+        TestHost host;Value output=Value::Integer(3);const auto alias=externalReference(output);
+        const auto result=Vm::ExecuteTransaction(host,[&](Vm::Execution& execution) {
+            execution.WriteReference(alias,Value::Integer(4));
+            execution.WriteReference(alias,Value::Integer(5));
+            return output;
+        });
+        Returned(result,"Trusted host writes use the shared VM journal");
+        Require(output.integer==5 && result.value.integer==5 && result.writes==2u &&
+            result.instructions==0u && result.function.empty() && host.commitCount==1u,
+            "Host writes escaped accounting or invented a bytecode frame");
+    }
+    for(unsigned mode=0u;mode<5u;++mode) {
+        TestHost host;Value output=Value::Integer(3);const auto alias=externalReference(output);
+        auto limits=Vm::Limits{};
+        if(mode==0u) limits.writes=0u;
+        if(mode==1u) limits.writes=1u;
+        if(mode==2u) limits.retainedBytes=0u;
+        if(mode==3u) limits.retainedBytes=sizeof(Value);
+        if(mode==4u) limits.operations=1u;
+        unsigned completed{};
+        const auto result=Vm::ExecuteTransaction(host,[&](Vm::Execution& execution) {
+            execution.WriteReference(alias,Value::Integer(4));++completed;
+            execution.WriteReference(alias,Value::Integer(5));++completed;
+            return output;
+        },limits);
+        Failed(result,Vm::Status::Budget,host,"Host write/storage/operation budget restores all earlier writes");
+        Require(output.integer==3 && result.instructions==0u && result.function.empty() &&
+            completed==((mode==0u || mode==2u) ? 0u : 1u) &&
+            result.writes==(mode==0u ? 0u : mode==3u ? 2u : 1u),
+            "Budgeted host write failed after incorrect work or retained partial external storage");
+    }
+    {
+        TestHost host;Value output=Value::Integer(3);const auto alias=externalReference(output);
+        auto limits=Vm::Limits{};limits.writes=1u;bool caught{},blocked{};
+        const auto next=declaration("AfterCaughtHostWrite",1000u);
+        const auto result=Vm::ExecuteTransaction(host,[&](Vm::Execution& execution) {
+            execution.WriteReference(alias,Value::Integer(4));
+            try {execution.WriteReference(alias,Value::Integer(5));} catch(...) {caught=true;}
+            const auto preparations=host.preparations.size();
+            try {static_cast<void>(execution.CallFunction(next,"Self"));} catch(...) {blocked=true;}
+            Require(host.preparations.size()==preparations,"A caught host-write failure entered another function");
+            return output;
+        },limits);
+        Failed(result,Vm::Status::Budget,host,"Caught host-write failure poisons the root transaction");
+        Require(caught && blocked && output.integer==3 && !host.effects && host.rng==12345u &&
+            result.function.empty() && result.writes==1u,"Caught write failure committed or lost its first diagnostic");
+    }
+    {
+        TestHost host;Value output=Value::Integer(3);auto alias=externalReference(output);alias->write={};
+        const auto result=Vm::ExecuteTransaction(host,[&](Vm::Execution& execution) {
+            execution.WriteReference(alias,Value::Integer(4));return output;
+        });
+        Failed(result,Vm::Status::Invalid,host,"Read-only raw host references stay read-only");
+        Require(output.integer==3 && result.writes==0u,"Read-only host write changed external storage");
+    }
+    {
         TestHost host;
         auto first=Function("First",Join({Let(Ref(0x01,1),Int(10)),Let(Ref(0x00,2),Int(11)),Native(1000u),Return({0x17})}));
         const auto firstProperty=host.Property(first,1,"FirstValue",Value::Integer(0));

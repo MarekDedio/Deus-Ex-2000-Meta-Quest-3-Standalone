@@ -117,6 +117,14 @@ public:
     // The declaration must remain alive until this synchronous call returns.
     virtual Value CallFunction(const Function& identity, const std::string& receiver,
         const std::vector<Evaluation>& arguments = {}) = 0;
+    // Trusted synchronous host writes to raw host-owned references use the same
+    // write/storage budgets and rollback journal as bytecode assignments. A
+    // failed write poisons the enclosing transaction even if its caller catches
+    // the exception. Do not pass already guarded native OUT references: their
+    // write closures already perform this accounting. Closures/backing storage
+    // must survive through transaction rollback, just like external OUT aliases.
+    virtual void WriteReference(const std::shared_ptr<Reference>& reference,
+        const Value& value) = 0;
 };
 class Iterator {
 public:

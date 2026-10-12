@@ -107,18 +107,22 @@ actor count, revision and GC allocation totals after rollback, plus a short
 shared instruction-budget failure. Its output is a diagnostic, never proof
 that original Training or a player session completed startup.
 
-The unmodified 1,308-actor Training control currently reaches PreBeginPlay
-slot756, `00_Training.JaimeReyes0`, after actual `DeusExGameInfo0` native birth,
-all-world frame initialization, InitGame and base Mutator creation. Its first
-observed portable failure is actual `Engine.Decal.AttachDecal` at native
-declaration offset0, unsupported runtime native0. This is an NPC shadow/decal
-dependency, not a completed pass or evidence that later FindBase, compaction,
-Login, player UI and scheduling will work. The control pins this evidence so
-an implementation change must deliberately update the original contract.
+The unmodified 1,308-actor Training control now reaches PreBeginPlay
+slot1331, `00_Training.Camera4`, after actual `DeusExGameInfo0` native birth,
+all-world frame initialization, InitGame, base Mutator creation, positive CPU
+AttachDecal and original PlayerReplicationInfo native280 SetTimer. The first
+failure is `Engine.Pawn.InitPlayerReplicationInfo` PC36/opcode18:
+`ClassContext requires class-default object identity`, reading the original
+`Engine.GameInfo.default.DefaultPlayerName`. The repeated exact failure and
+complete rollback pass on 2026-10-13. This is not a completed pass or evidence
+that later FindBase, compaction, Login, player UI and scheduling will work.
+The control pins this evidence so implementation changes must deliberately
+update the original contract. See [the class-default audit](CLASS-DEFAULT-CONTEXT-CONTRACT.md).
 
 The 2026-10-12 [decal geometry plan](DECAL-GEOMETRY-PLAN.md) adds a separate
 read-only Jaime shadow diagnostic to this focused suite, using actual inherited
 Shadow defaults, texture USize, BSP surface selection, full multilevel grid and
-quad membership. It does not publish a native graph or suppress the original
-startup refusal. Graph/GC/dynamic SurfList/save/render integration remains
-necessary before this startup probe can legitimately move past AttachDecal.
+quad membership. Subsequent native graph/GC/dynamic SurfList/save and positive
+CPU attachment integration move the diagnostic past AttachDecal without skipping
+its original callback. Rendered native shadows remain unfinished; the pure
+geometry diagnostic alone does not establish native startup or visual acceptance.

@@ -14,6 +14,7 @@
 #include "quest_ai_event_state.h"
 #include "quest_script_random.h"
 #include "quest_actor_latent.h"
+#include "quest_actor_timer.h"
 #include "quest_actor_state_control.h"
 #include "quest_unreal_string.h"
 #include "quest_decal_checkpoint.h"
@@ -1558,9 +1559,14 @@ public:
         if (clientDependent_ && !persistentNativeClient.HasViewport())
             throw std::runtime_error("Native client lifetime revoked during script transaction");
         ValidateStateBudget();
-        const bool worldChanged = beforeDecals_.has_value() || persistentRuntime->get()->exports.size() != beforeExportCount_ ||
-            std::any_of(saved_.begin(), saved_.end(), [](const auto& entry) {
-            return !entry.first->classDescriptor && IsDerivedFromPath(entry.first->cls, "Engine.Actor");
+        // AI-manager-only state already has independent checkpoint/journal
+        // ownership and is not actor geometry. Preserve that existing path;
+        // coupled AI effects still disqualify the narrow timer-only fast path.
+        const bool worldChanged = beforeDecals_.has_value() || beforeCollision_.has_value() ||
+            persistentRuntime->get()->exports.size() != beforeExportCount_ ||
+            std::any_of(saved_.begin(), saved_.end(), [this](const auto& entry) {
+            return !entry.first->classDescriptor && IsDerivedFromPath(entry.first->cls, "Engine.Actor") &&
+                (!savedAi_.empty() || !OnlyActorTimerChanged(entry.first,entry.second));
         });
         if (worldChanged && persistentWorldRevision == std::numeric_limits<std::uint64_t>::max())
             throw std::runtime_error("Portable world revision budget exceeded");
@@ -1703,22 +1709,26 @@ public:
         if (!object->active && !object->worldRemoved) throw std::runtime_error("VM receiver is inactive");
         const bool defaults = scope == QuestVr::Vm::Scope::Default;
         auto result = ReferenceFor(object, property, 0u, defaults);
-        // Native INT array support does not authorize compiled script to write
-        // the original Const SurfList. Native ReferenceFor remains writable.
-        const bool nativeConstArray = property.zero.kind == Kind::IntArray && (property.flags & 2u);
-        if (nativeConstArray) result->write = {};
+        // Native writes do not authorize ordinary compiled script to mutate
+        // Const SurfList or the audited scalar Actor.TimerCounter. Keep this
+        // explicit port policy narrow; native ReferenceFor remains writable.
+        const bool nativeConst = (property.flags & 2u) && (property.zero.kind == Kind::IntArray ||
+            LowerAscii(property.key) == "engine.actor.timercounter");
+        if (nativeConst) result->write = {};
         result->dimension = property.arrayDimension;
-        result->element = [this, object, property, defaults, nativeConstArray](const std::size_t slot) {
+        result->element = [this, object, property, defaults, nativeConst](const std::size_t slot) {
             if (slot >= property.arrayDimension || slot > std::numeric_limits<std::uint32_t>::max())
                 throw std::runtime_error("VM property fixed-array index is out of range");
             auto element = ReferenceFor(object, property, static_cast<std::uint32_t>(slot), defaults);
-            if (nativeConstArray) element->write = {};
+            if (nativeConst) element->write = {};
             return element;
         };
         return result;
     }
     Evaluation Native(const std::uint16_t index, const std::string& receiver,
         const std::vector<Evaluation>& arguments, const Function* declaration) override {
+        if (index == 280u)
+            throw std::runtime_error("SetTimer requires its budgeted VM execution context");
         RuntimeObject* object = Object(receiver);
         // Native event wrappers have no presentation-active gate. Their actual
         // identity/Level checks remain in AiNative; unrelated native receivers
@@ -2063,6 +2073,34 @@ public:
     }
     Evaluation NativeWithExecution(const std::uint16_t index, const std::string& receiver,
         const std::vector<Evaluation>& arguments, const Function* declaration, QuestVr::Vm::Execution& execution) override {
+        if (index == 280u) {
+            auto* object = Object(receiver);
+            if (!object->active && !object->worldRemoved)
+                throw std::runtime_error("VM native receiver is inactive");
+            if (arguments.size() != 2u)
+                throw std::runtime_error("VM native argument count is invalid for 280");
+            const auto parameters = ActorTimerProperties(object);
+            // Native-index bytecode has no declaration pointer. Resolve the
+            // real authored entry in that case; never trust index280 alone.
+            const auto authored = FunctionFor(Object("Engine.Actor.SetTimer"));
+            ValidateSetTimerDeclaration(*authored);
+            if (declaration) {
+                ValidateSetTimerDeclaration(*declaration);
+                if (declaration->source != authored->source)
+                    throw std::runtime_error("SetTimer declaration source is not the authored Actor entry");
+            }
+            const auto rate = arguments[0u].Load(), loop = arguments[1u].Load();
+            if (rate.kind != Kind::Float || !std::isfinite(rate.floating) || loop.kind != Kind::Bool)
+                throw std::runtime_error("SetTimer requires a finite Float rate and a Bool loop argument");
+            // Retail stores the signed argument verbatim and always rearms at
+            // Counter0, including an identical Rate or a disabled timer. Native
+            // storage remains writable, but all stores share interpreter
+            // write/retained budgets and poison the root execution on failure.
+            execution.WriteReference(ReferenceFor(object,parameters.counter,0u,false),Value::Float(0.0f));
+            execution.WriteReference(ReferenceFor(object,parameters.rate,0u,false),rate);
+            execution.WriteReference(ReferenceFor(object,parameters.loop,0u,false),loop);
+            return {};
+        }
         if (index == 0u && declaration && LowerAscii(declaration->path) == "engine.decal.attachdecal")
             return AttachDecalEntryNative(Object(receiver), arguments, *declaration, execution);
         if (index == 0u && declaration && LowerAscii(declaration->path) == "engine.decal.detachdecal")
@@ -2192,6 +2230,71 @@ public:
     }
     Property PropertyNamed(RuntimeObject* object, const std::string& name) {
         return ClassProperty(object->classDescriptor ? DefaultClass(object) : object->cls, name);
+    }
+    struct ActorTimerSchema { Property rate,counter,loop; };
+    ActorTimerSchema ActorTimerProperties(RuntimeObject* actor) {
+        if (!IsDerivedFromPath(actor->cls,"Engine.Actor") || actor->classDescriptor)
+            throw std::runtime_error("Actor timer receiver is not an Engine.Actor instance");
+        ActorTimerSchema schema{PropertyNamed(actor,"TimerRate"),PropertyNamed(actor,"TimerCounter"),
+            PropertyNamed(actor,"bTimerLoop")};
+        const auto valid = [](const Property& property,const char* key,const Kind kind,const std::uint32_t flags) {
+            return LowerAscii(property.key)==key && property.zero.kind==kind &&
+                property.arrayDimension==1u && property.flags==flags;
+        };
+        if (!valid(schema.rate,"engine.actor.timerrate",Kind::Float,0u) ||
+            !valid(schema.counter,"engine.actor.timercounter",Kind::Float,2u) ||
+            !valid(schema.loop,"engine.actor.btimerloop",Kind::Bool,0u))
+            throw std::runtime_error("Actor timer fields do not match the original scalar reflected schema");
+        return schema;
+    }
+    static void ValidateSetTimerDeclaration(const Function& declaration) {
+        if (LowerAscii(declaration.path)!="engine.actor.settimer" || declaration.nativeIndex!=280u ||
+            declaration.flags!=0x401u || declaration.variables.size()!=2u)
+            throw std::runtime_error("Native280 is not the authored Engine.Actor.SetTimer declaration");
+        const auto& rate=declaration.variables[0];
+        const auto& loop=declaration.variables[1];
+        if (LowerAscii(rate.key)!="engine.actor.settimer.newtimerrate" || rate.zero.kind!=Kind::Float ||
+            rate.flags!=0x80u || rate.arrayDimension!=1u ||
+            LowerAscii(loop.key)!="engine.actor.settimer.bloop" || loop.zero.kind!=Kind::Bool ||
+            loop.flags!=0x80u || loop.arrayDimension!=1u)
+            throw std::runtime_error("SetTimer requires the two original mandatory Float/Bool parameters");
+    }
+    bool AdvanceTimer(RuntimeObject* actor,const float elapsed,QuestVr::Vm::Execution& execution) {
+        RequireMapActor(actor);
+        if (!actor->active && !actor->worldRemoved)
+            throw std::runtime_error("Actor timer receiver is inactive");
+        const auto schema=ActorTimerProperties(actor);
+        const auto rate=Read(actor,schema.rate,0u), counter=Read(actor,schema.counter,0u),
+            loop=Read(actor,schema.loop,0u);
+        if (rate.kind!=Kind::Float || counter.kind!=Kind::Float || loop.kind!=Kind::Bool)
+            throw std::runtime_error("Actor timer values do not match their reflected Float/Bool fields");
+        const auto step=QuestVr::AdvanceActorTimer(rate.floating,counter.floating,loop.boolean,elapsed);
+        if (!SameBits(step.counter,counter.floating))
+            execution.WriteReference(ReferenceFor(actor,schema.counter,0u,false),Value::Float(step.counter));
+        if (!SameBits(step.rate,rate.floating))
+            execution.WriteReference(ReferenceFor(actor,schema.rate,0u,false),Value::Float(step.rate));
+        if (!step.expired) return false;
+
+        // Retail ProcessEvent rejects before-begun events before probing the
+        // state frame. Consume the timer even on a raw runnable stack whose
+        // continuation cannot yet be executed by the portable VM. Deletion
+        // also suppresses the callback, not the already completed timer phase.
+        const auto levelValue=Read(actor,PropertyNamed(actor,"Level"),0u);
+        if (levelValue.kind!=Kind::Object || levelValue.text.empty())
+            throw std::runtime_error("Actor timer receiver has no authored Level binding");
+        auto* level=Object(levelValue.text);
+        if (!IsDerivedFromPath(level->cls,"Engine.LevelInfo"))
+            throw std::runtime_error("Actor timer Level is not Engine.LevelInfo");
+        const auto begun=Read(level,PropertyNamed(level,"bBegunPlay"),0u);
+        const auto deleted=Read(actor,PropertyNamed(actor,"bDeleteMe"),0u);
+        if (begun.kind!=Kind::Bool || deleted.kind!=Kind::Bool)
+            throw std::runtime_error("Actor timer begun/deletion gates are not reflected Bool values");
+        if (!begun.boolean || deleted.boolean) return true;
+
+        // Same interpreter, budgets and root host journal as the field writes.
+        // No cached class Timer, nested public transaction or second callback.
+        static_cast<void>(execution.CallEvent(actor->reflection.objectPath,"Timer",false,{}));
+        return true;
     }
     Property ClassProperty(RuntimeObject* actorClass, const std::string& name) {
         for (RuntimeObject* cls = actorClass; cls != nullptr; cls = cls->base) {
@@ -2824,6 +2927,117 @@ private:
         std::array<bool, 4u> touchSent{};
         bool lifecycle{}, removed{};
     };
+    template <typename Number> static bool SameBits(const Number& a,const Number& b) {
+        return std::memcmp(&a,&b,sizeof(Number))==0;
+    }
+    static bool SameStoredValue(const Value& a,const Value& b) {
+        // Publication classification is storage identity, not UnrealScript
+        // equality: preserve signed zero and exact Name/Object spelling too.
+        if (a.kind!=b.kind || a.integer!=b.integer || !SameBits(a.floating,b.floating) ||
+            a.boolean!=b.boolean || a.text!=b.text || a.rotation!=b.rotation ||
+            a.intArray!=b.intArray || a.fields.size()!=b.fields.size()) return false;
+        for (std::size_t i=0u;i<a.vector.size();++i) if (!SameBits(a.vector[i],b.vector[i])) return false;
+        for (const auto& [key,value]:a.fields) {
+            const auto found=b.fields.find(key);
+            if (found==b.fields.end() || !SameStoredValue(value,found->second)) return false;
+        }
+        return true;
+    }
+    static bool TimerOverlayName(const std::string& name) {
+        return name=="timerrate" || name=="timercounter" || name=="btimerloop";
+    }
+    static bool SameStoredProperties(const decltype(RuntimeObject::scriptValues)& a,
+        const decltype(RuntimeObject::scriptValues)& b,const bool excludeTimer) {
+        for (const auto& [name,slots]:a) {
+            if (excludeTimer && TimerOverlayName(name)) continue;
+            const auto found=b.find(name);
+            if (found==b.end() || slots.size()!=found->second.size()) return false;
+            for (const auto& [index,value]:slots) {
+                const auto other=found->second.find(index);
+                if (other==found->second.end() || !SameStoredValue(value,other->second)) return false;
+            }
+        }
+        for (const auto& [name,slots]:b) {
+            static_cast<void>(slots);
+            if (!(excludeTimer && TimerOverlayName(name)) && a.find(name)==a.end()) return false;
+        }
+        return true;
+    }
+    static bool SameOptionalFloat(const std::optional<float>& a,const std::optional<float>& b) {
+        return a.has_value()==b.has_value() && (!a || SameBits(*a,*b));
+    }
+    static bool SameStoredClock(const std::optional<QuestVr::ActorAnimationClock>& a,
+        const std::optional<QuestVr::ActorAnimationClock>& b) {
+        if (a.has_value()!=b.has_value()) return false;
+        if (!a) return true;
+        const auto channel=[](const QuestVr::MeshAnimationChannel& x,const QuestVr::MeshAnimationChannel& y) {
+            return x.sequence==y.sequence && SameBits(x.normalizedFrame,y.normalizedFrame) &&
+                x.previous.vertexOffset0==y.previous.vertexOffset0 && x.previous.vertexOffset1==y.previous.vertexOffset1 &&
+                SameBits(x.previous.fraction,y.previous.fraction);
+        };
+        const auto rates=[](const auto& x,const auto& y) {
+            return SameBits(x.rate,y.rate) && SameBits(x.last,y.last) && SameBits(x.minRate,y.minRate) &&
+                SameBits(x.tweenRate,y.tweenRate) && SameBits(x.oldRate,y.oldRate);
+        };
+        if (!channel(a->pose.main,b->pose.main) || !rates(a->main,b->main) ||
+            a->main.loop!=b->main.loop || a->main.notify!=b->main.notify || a->main.finished!=b->main.finished ||
+            a->main.finishAnimWaiting!=b->main.finishAnimWaiting || !SameBits(a->simulationTime,b->simulationTime) ||
+            a->remoteRole!=b->remoteRole || a->pose.fatness!=b->pose.fatness) return false;
+        for (std::size_t i=0u;i<a->blends.size();++i) {
+            if (!channel(a->pose.blends[i],b->pose.blends[i]) || !rates(a->blends[i],b->blends[i])) return false;
+            for (std::size_t j=0u;j<a->blends[i].simulated.size();++j)
+                if (!SameBits(a->blends[i].simulated[j],b->blends[i].simulated[j])) return false;
+        }
+        return true;
+    }
+    static bool SameStoredState(const std::optional<QuestVr::StateObject>& a,
+        const std::optional<QuestVr::StateObject>& b) {
+        if (a.has_value()!=b.has_value()) return false;
+        if (!a) return true;
+        if (a->hasStack!=b->hasStack || a->frameOverride!=b->frameOverride || a->disabled!=b->disabled ||
+            a->frame.has_value()!=b->frame.has_value()) return false;
+        if (!a->frame) return true;
+        const auto& x=*a->frame; const auto& y=*b->frame;
+        if (x.codePath!=y.codePath || x.localsCodePath!=y.localsCodePath || x.statementIndex!=y.statementIndex ||
+            x.latent!=y.latent || x.locals.size()!=y.locals.size() || x.control.has_value()!=y.control.has_value()) return false;
+        if (x.control && (x.control->selectedPath!=y.control->selectedPath ||
+            x.control->codePresent!=y.control->codePresent || x.control->liveProbeMask!=y.control->liveProbeMask)) return false;
+        for (std::size_t i=0u;i<x.locals.size();++i) {
+            if (x.locals[i].key!=y.locals[i].key || x.locals[i].values.size()!=y.locals[i].values.size()) return false;
+            for (std::size_t j=0u;j<x.locals[i].values.size();++j)
+                if (!SameStoredValue(x.locals[i].values[j],y.locals[i].values[j])) return false;
+        }
+        return true;
+    }
+    bool OnlyActorTimerChanged(RuntimeObject* actor,const Before& before) {
+        bool hasTimer{};
+        const std::array<const decltype(RuntimeObject::scriptValues)*,2u> timerStates{
+            &before.values,&actor->scriptValues};
+        for (const auto* properties:timerStates)
+            for (const auto& [name,slots]:*properties) {
+                if (!TimerOverlayName(name)) continue;
+                hasTimer=true;
+                if (slots.size()!=1u || slots.begin()->first!=0u) return false;
+                const auto& value=slots.begin()->second;
+                if (name=="btimerloop" ? value.kind!=Kind::Bool :
+                    value.kind!=Kind::Float || !std::isfinite(value.floating)) return false;
+            }
+        if (!hasTimer || !actor->committedScriptState ||
+            !SameStoredProperties(before.values,actor->scriptValues,true) ||
+            !SameStoredProperties(before.defaults,actor->classDefaultValues,false) ||
+            !SameStoredClock(before.clock,actor->animationClock) || !SameStoredState(before.state,actor->stateObject) ||
+            !SameOptionalFloat(before.latentTimeLeft,actor->latentTimeLeft) ||
+            !SameOptionalFloat(before.lastRenderTime,actor->lastRenderTime) ||
+            before.revision!=actor->stateLocalsRevision || before.transitionFlags!=actor->stateTransitionFlags ||
+            before.children!=actor->childActors || before.based!=actor->basedActors || before.touchSent!=actor->touchEventSent ||
+            before.lifecycle!=actor->committedLifecycle || before.removed!=actor->worldRemoved) return false;
+        // No optimistic general simulation-property whitelist: only the exact
+        // three original fields, plus their persistent committed-state marker,
+        // may bypass expensive geometry/tag publication. All other deltas keep
+        // the previous conservative full Actor publication behavior.
+        static_cast<void>(ActorTimerProperties(actor));
+        return true;
+    }
     struct BeforeAI {
         GCRoot<RuntimeAIManager> manager;
         std::optional<QuestVr::Ai::State> state;
@@ -3345,7 +3559,12 @@ private:
             } else {
                 target->scriptValues[LowerAscii(property.name)][index] = std::move(normalized);
                 target->committedScriptState = true;
-                UpdateClockProperty(target, property.name, index);
+                // Actor timer fields are independent native storage. Updating
+                // them must not reconstruct/reset an unrelated live animation
+                // clock merely because the reflected-property path is shared.
+                const auto key=LowerAscii(property.key);
+                if (key!="engine.actor.timerrate" && key!="engine.actor.timercounter" && key!="engine.actor.btimerloop")
+                    UpdateClockProperty(target, property.name, index);
                 const auto name=LowerAscii(property.name);
                 if (index==0u && (name=="location" || name=="collisionradius" || name=="collisionheight" ||
                     name=="brush" || name=="bcollideactors") && HasCollisionSchema(target)) {
@@ -6184,6 +6403,28 @@ QuestVr::Vm::Result AdvancePortableActorState(const std::string& actorPath, cons
     } catch (const std::exception& error) {
         QuestVr::Vm::Result result;
         result.status = QuestVr::Vm::Status::Unsupported; result.function = actorPath; result.error = error.what(); return result;
+    }
+}
+
+QuestVr::Vm::Result AdvancePortableActorTimer(const std::string& actorPath,const float elapsed,
+    const QuestVr::Vm::Limits& limits) {
+    CollectBirthGarbageAtBoundary collect;
+    if (!std::isfinite(elapsed) || elapsed<0.0f) {
+        QuestVr::Vm::Result result;
+        result.status=QuestVr::Vm::Status::Invalid; result.function=actorPath;
+        result.error="Actor timer elapsed time must be finite and nonnegative";
+        return result;
+    }
+    try {
+        PortableActorVmHost host;
+        auto* actor=host.Object(actorPath);
+        return QuestVr::Vm::ExecuteTransaction(host,[&](QuestVr::Vm::Execution& execution) {
+            return QuestVr::Vm::Value::Bool(host.AdvanceTimer(actor,elapsed,execution));
+        },limits);
+    } catch (const std::exception& error) {
+        QuestVr::Vm::Result result;
+        result.status=QuestVr::Vm::Status::Unsupported; result.function=actorPath;
+        result.error=error.what(); return result;
     }
 }
 

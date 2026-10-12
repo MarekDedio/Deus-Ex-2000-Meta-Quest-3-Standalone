@@ -415,6 +415,14 @@ QuestVr::Vm::Result ResumePortableActorState(const std::string& actorPath,
 // Tick: no animation, Tick event, Timer, physics or automatic world startup.
 QuestVr::Vm::Result AdvancePortableActorState(const std::string& actorPath, float elapsed,
     const QuestVr::Vm::Limits& limits = {});
+// Explicit isolated original Actor timer phase, NOT a world tick/scheduler.
+// Advances reflected TimerRate/TimerCounter/bTimerLoop and synchronously calls
+// the current-state Timer at most once in one interpreter/root journal. A Bool
+// result means a period elapsed, not that an eligible event body ran; suppressed
+// events still consume periods. Callback failure rolls back the entire phase.
+// Signed finite reflected counters/rates persist through ordinary actor saves.
+QuestVr::Vm::Result AdvancePortableActorTimer(const std::string& actorPath, float elapsed,
+    const QuestVr::Vm::Limits& limits = {});
 std::optional<float> ReadPortableActorLatentTimeLeft(const std::string& actorPath);
 std::optional<std::string> ResolvePortableActorState(const std::string& actorPath,
     const std::string& stateName);
