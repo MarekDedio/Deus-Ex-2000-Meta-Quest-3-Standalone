@@ -25,6 +25,12 @@ std::string Lower(std::string text) {
 }
 [[noreturn]] void TypeError() { throw std::runtime_error("VM value type mismatch"); }
 std::string NameKey(const std::string& name) { return name.empty() ? "none" : Lower(name); }
+bool HasIntArray(const Value& value) {
+    if (value.kind == Kind::IntArray) return true;
+    for (const auto& [key, field] : value.fields)
+        if (HasIntArray(field)) return true;
+    return false;
+}
 bool SnapshotNativeInput(const std::uint16_t index) {
     // These audited natives copy ordinary inputs during expression evaluation;
     // none has OUT parameters. Unknown/OUT natives retain their guarded aliases.
@@ -61,6 +67,9 @@ Value Value::Vector(std::array<float, 3> n) { Value v; v.kind = Kind::Vector; v.
 Value Value::Rotator(std::array<std::int32_t, 3> n) {
     Value v; v.kind = Kind::Rotator; v.rotation = n; return v;
 }
+Value Value::IntArray(std::vector<std::int32_t> values) {
+    Value v; v.kind = Kind::IntArray; v.intArray = std::move(values); return v;
+}
 bool ToBool(const Value& v) {
     if (v.kind == Kind::Nothing) return false;
     if (v.kind != Kind::Bool) TypeError();
@@ -89,6 +98,9 @@ Value Coerce(const Value& v, const Value& zero) {
         if (v.kind == Kind::String || v.kind == Kind::Name) return Value::Text(Kind::String,
             v.kind == Kind::Name && v.text.empty() ? "None" : v.text);
         TypeError();
+    case Kind::IntArray:
+        if (v.kind != Kind::IntArray) TypeError();
+        return v;
     case Kind::Struct: {
         if (v.kind != Kind::Struct || v.fields.size() != zero.fields.size()) TypeError();
         Value result = zero;
@@ -116,6 +128,7 @@ bool Equal(const Value& a, const Value& b) {
     case Kind::String: return a.text == b.text;
     case Kind::Vector: return a.vector == b.vector;
     case Kind::Rotator: return a.rotation == b.rotation;
+    case Kind::IntArray: return a.intArray == b.intArray;
     case Kind::Struct:
         if (a.fields.size() != b.fields.size()) return false;
         for (const auto& [key, value] : a.fields) {
@@ -479,6 +492,7 @@ public:
         std::vector<Evaluation> args;
         args.reserve(incoming.size());
         for (const auto& argument : incoming) {
+            if (!argument.reference) ValidateValue(argument.value, 0);
             const auto value = argument.Load(); ValidateValue(value, 0); Retain(ValueBytes(value));
             // execGotoState consumes each input value before evaluating the
             // next argument. Ordinary native OUT arguments retain aliases.
@@ -828,6 +842,8 @@ private:
             // memory-punning ToVector/ToRotator and UStruct::IsEqual cannot
             // safely be inferred from an arbitrary field-name map.
             Fail(Status::Unsupported, "VM Switch generic Struct comparison requires its layout identity");
+        case Kind::IntArray:
+            Fail(Status::Unsupported, "VM Switch dynamic INT-array comparison is not established");
         }
         Fail(Status::Unsupported, "VM Switch selector kind is unavailable");
     }
@@ -1068,8 +1084,31 @@ private:
             Fail(Status::Budget, "VM retained byte limit");
         retainedBytes_ += bytes;
     }
+    std::size_t IntArrayBytes(const Value& v) {
+        if (v.intArray.size() > limits_.intArrayElements || v.intArray.capacity() > limits_.intArrayElements ||
+            v.intArray.capacity() > limits_.retainedBytes / sizeof(std::int32_t))
+            Fail(Status::Budget, "VM dynamic INT-array storage limit");
+        return v.intArray.capacity() * sizeof(std::int32_t);
+    }
+    std::size_t ValueOwnBytes(const Value& v) {
+        const auto arrayBytes = IntArrayBytes(v);
+        if (sizeof(Value) > limits_.retainedBytes || v.text.size() > limits_.retainedBytes - sizeof(Value) ||
+            arrayBytes > limits_.retainedBytes - sizeof(Value) - v.text.size())
+            Fail(Status::Budget, "VM value byte limit");
+        return sizeof(Value) + v.text.size() + arrayBytes;
+    }
+    std::size_t ValueIntArrayBytes(const Value& v) {
+        auto bytes = IntArrayBytes(v);
+        for (const auto& [key, field] : v.fields) {
+            const auto childBytes = ValueIntArrayBytes(field);
+            if (bytes > limits_.retainedBytes - childBytes)
+                Fail(Status::Budget, "VM aggregate dynamic INT-array byte limit");
+            bytes += childBytes;
+        }
+        return bytes;
+    }
     std::size_t ValueBytes(const Value& v) {
-        std::size_t bytes = sizeof(Value) + v.text.size();
+        std::size_t bytes = ValueOwnBytes(v);
         for (const auto& [key, field] : v.fields) {
             const auto childBytes = ValueBytes(field);
             if (bytes > limits_.retainedBytes || childBytes > limits_.retainedBytes ||
@@ -1087,10 +1126,10 @@ private:
     void ValidateValueTree(const Value& v, std::size_t depth, std::size_t& bytes, std::size_t& nodes) {
         if (depth >= limits_.expressionDepth || v.text.size() > limits_.stringBytes || v.fields.size() > limits_.localElements)
             Fail(Status::Budget, "VM value storage limit");
-        if (++nodes > limits_.localElements || sizeof(Value) + v.text.size() > limits_.retainedBytes ||
-            bytes > limits_.retainedBytes - sizeof(Value) - v.text.size())
+        const auto ownBytes = ValueOwnBytes(v);
+        if (++nodes > limits_.localElements || bytes > limits_.retainedBytes - ownBytes)
             Fail(Status::Budget, "VM aggregate value limit");
-        bytes += sizeof(Value) + v.text.size();
+        bytes += ownBytes;
         if (v.kind == Kind::Float && !std::isfinite(v.floating)) Fail(Status::Invalid, "Non-finite VM float");
         if (v.kind == Kind::Vector)
             for (float f : v.vector) if (!std::isfinite(f)) Fail(Status::Invalid, "Non-finite VM vector");
@@ -1106,9 +1145,13 @@ private:
         if (!reference || !reference->write) Fail(Status::Invalid, "VM assignment is not writable");
         if (result_.writes >= limits_.writes) Fail(Status::Budget, "VM write limit");
         ++result_.writes;
+        // Check caller-owned capacity before Coerce's detached copy can shrink
+        // it, and account native replacement payloads as well as rollback data.
+        ValidateValue(value, 0); ValidateValue(reference->zero, 0);
         auto typed = Coerce(value, reference->zero); ValidateValue(typed, 0);
         auto previous = reference->read(); ValidateValue(previous, 0);
         Retain(ValueBytes(previous));
+        Retain(ValueIntArrayBytes(typed));
         journal_.emplace_back(reference, std::move(previous));
         reference->write(typed);
     }
@@ -1248,6 +1291,11 @@ private:
                 else Fail(Status::Invalid, "VM assignment to non-variable");
                 break;
             }
+            case 0x10:
+                // GOTY Core.dll execDynArrayElement (1012F190) unconditionally
+                // asserts "Array" before its unusable placeholder access. No
+                // original element-address/clamp/grow semantics are established.
+                Fail(Status::Unsupported, "Original dynamic-array indexing opcode 0x10 is not implemented");
             case 0x12: Fail(Status::Unsupported, "ClassContext requires class-default object identity");
             case 0x13: case 0x2e: {
                 auto object = child(0).Load();
@@ -1294,6 +1342,8 @@ private:
             case 0x32: case 0x33: {
                 const auto a = child(0).Load(); const auto b = child(1).Load();
                 Locate(frame.function, n.offset, n.op);
+                if (HasIntArray(a) || HasIntArray(b))
+                    Fail(Status::Unsupported, "VM script dynamic INT-array comparison is not established");
                 result.value = Value::Bool(Equal(a, b) == (n.op == 0x32)); break;
             }
             case 0x36: {
@@ -1314,7 +1364,9 @@ private:
             default: Fail(Status::Unsupported, "Unsupported VM opcode " + std::to_string(n.op));
             }
         }
-        ValidateValue(result.Load(), 0); return result;
+        if (!result.reference) ValidateValue(result.value, 0);
+        else ValidateValue(result.Load(), 0);
+        return result;
     }
 
     std::optional<Value> CaptureNativeContext(std::uint16_t index, const std::string& self,
@@ -1499,7 +1551,13 @@ private:
             auto guarded = args;
             for (auto& argument : guarded) argument.reference = GuardReference(argument.reference);
             const auto value = [&] {
-                try { return host_.NativeWithContext(index, self, guarded, declaration, *this, capturedContext).Load(); }
+                try {
+                    auto evaluated = host_.NativeWithContext(index, self, guarded, declaration, *this, capturedContext);
+                    // Validate a detached native allocation before copying can
+                    // discard spare capacity. Native aliases are snapshotted.
+                    if (!evaluated.reference) { ValidateValue(evaluated.value, 0); return std::move(evaluated.value); }
+                    return evaluated.Load();
+                }
                 catch (...) { CheckFailure(); throw; }
             }();
             CheckFailure();

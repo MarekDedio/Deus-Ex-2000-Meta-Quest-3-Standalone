@@ -93,15 +93,21 @@ PortableModelGeometry DecodePortableModel68Body(
     std::size_t exportCount,
     std::uint16_t version = 68,
     std::uint16_t licenseeMode = 0);
+// propertyWorkingBytes bounds property decoding and native body-copy scratch;
+// the native geometry decoder retains its separate fixed decoded-array bounds.
 PortableModelGeometry LoadPortableModel68(
-    const PortablePackageTables& package, std::size_t exportIndex);
+    const PortablePackageTables& package, std::size_t exportIndex,
+    std::size_t propertyWorkingBytes = 512u * 1024u * 1024u);
 // Selects ULevel's serialized Model reference, not the first Model export
 // (maps also contain many brush/mover Models).
-std::size_t FindPortableRootModel68Export(const PortablePackageTables& package);
-PortableModelGeometry LoadPortableRootModel68(const PortablePackageTables& package);
+std::size_t FindPortableRootModel68Export(const PortablePackageTables& package,
+    std::size_t propertyWorkingBytes = 512u * 1024u * 1024u);
+PortableModelGeometry LoadPortableRootModel68(const PortablePackageTables& package,
+    std::size_t propertyWorkingBytes = 512u * 1024u * 1024u);
 // Exact serialized ULevel actor order, including zero references. This lets
 // cache/lighting adapters select the same first authored PlayerStart.
-std::vector<std::int32_t> ReadPortableLevel68ActorOrder(const PortablePackageTables& package);
+std::vector<std::int32_t> ReadPortableLevel68ActorOrder(const PortablePackageTables& package,
+    std::size_t propertyWorkingBytes = 512u * 1024u * 1024u);
 
 // These validate the requested list/span even if callers modified the public
 // records after decoding. Widths not divisible by eight retain padded row pitch.

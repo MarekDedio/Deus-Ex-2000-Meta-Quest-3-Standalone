@@ -1,5 +1,9 @@
 # Scoped script-state saves
 
+Format description updated 2026-10-12. Historical verification results below
+retain their original scope and dates; they are not final acceptance of the
+current runtime or Quest rendering.
+
 Runtime checkpoint version 4 adds persistence for properties committed by the
 bounded actor interpreter and its native animation clocks. Version 5 additionally
 stores explicit portable state frames, typed locals and state-keyed disabled sets.
@@ -19,6 +23,14 @@ counters independent of a frame. Sleeping and landing-wait frames require counte
 evidence; landing waits additionally require a Pawn receiver. Legacy envelopes1–10
 reset omitted counters. See [SCRIPT-SLEEP.md](SCRIPT-SLEEP.md) and
 [SCRIPT-LANDING.md](SCRIPT-LANDING.md). Landing uses the same codec/version.
+Version12 retains independent selected/running State or Class identities,
+nullable Code and the literal positive live probe mask (codec9). Legacy frames
+keep explicit legacy provenance; no selected-state or mask migration is guessed.
+See [STATE-CONTROL-MODEL.md](STATE-CONTROL-MODEL.md).
+Version13 adds bounded whole INT-array values and optional map-owned native
+decal geometry (codec10). This is a deliberate port checkpoint extension, not
+original GOTY FDecal disk serialization or completed Attach/render support.
+See [DECAL-CHECKPOINT.md](DECAL-CHECKPOINT.md).
 None of these versions adds
 automatic NPC startup, AI processing, live animation, or a general UnrealScript savegame.
 Only the current map's supported authored and runtime-born actors are restored.
@@ -48,7 +60,8 @@ omitting them from the input cannot bypass those limits.
 ## Runtime envelope
 
 The runtime checkpoint still starts with magic `0x53515844`. A checkpoint
-without committed script objects, class defaults, births, native AI managers or RNG
+without committed script objects, class defaults, births, native AI managers, RNG
+or native decal state
 is written as version 3, with no new trailer.
 A checkpoint containing only properties/clocks uses version 4; one with any
 portable state object uses version 5. A checkpoint with class-default mutations
@@ -56,11 +69,15 @@ uses version 6, including when it has no actor records. Any native lifecycle
 record selects version 7; a nonempty birth manifest selects version 8. Native
 AI manager presence selects version9; RNG presence takes precedence and selects
 version10, even with no actor/default/birth/manager records. A native actor timer
-takes precedence and selects version11; its RNG record remains optional. The version word changes, the existing
+takes precedence and selects version11; its RNG record remains optional. Modern
+state control takes precedence and selects version12. Any active IntArray value
+or native decal graph presence takes precedence over every earlier feature and
+selects version13. Empty arrays and empty native graphs still count as presence.
+The version word changes, the existing
 version-3 fields retain their order and widths, and one trailer is appended.
 
 ```text
-u32 magic, u32 version=4, 5, 6, 7, 8, 9, 10 or 11
+u32 magic, u32 version=4 through 13
 version-3 fields:
   inventory[], inactive actors[], activated actors[]
   f32 player health, damaged actors[(path,f32 health)]
@@ -101,6 +118,11 @@ Counter-only data invents neither RNG nor a frame. Sleeping-frame validation
 requires its counter; stopped/null-code/frameless counters remain valid native
 actor storage. Read-only validation never polls or advances script. Restore
 publishes the staged counter with the rest of its actor state, never separately.
+A v12 envelope requires codec9 and at least one modern state control. A v13
+envelope requires codec10 and either a native decal graph or an IntArray value;
+neither timers nor RNG nor modern controls are required by that version alone.
+Lower optional sections still compose. Decoder/envelope validation rejects a
+feature-selected version without its selecting feature or a mismatched codec.
 
 This version number is distinct from the Persona/UI metadata version and from
 the paired `.qsv` bundle format. The alternating-slot, checksum and durable
@@ -122,6 +144,12 @@ Native AI managers select byte 6 = 6, including an empty manager; without
 manager records the v1-v5 representation is unchanged.
 RNG selects byte6=7; without it the v1-v6 wire representation is unchanged.
 Any native timer selects byte6=8; without timers, v1–7 bytes remain unchanged.
+Modern state control selects byte6=9. A native decal graph or any active IntArray
+value selects byte6=10, including arrays nested in structs, actor/default/frozen
+birth properties or persistent state locals. The highest present feature wins;
+without modern controls, native graphs or arrays, earlier feature-selected wire
+bytes remain unchanged. Codec9 requires a modern control; codec10 requires at
+least one graph or array, but allows all modern-control discriminators to be zero.
 
 ```text
 mapName
@@ -134,28 +162,28 @@ objects[]:
     u8 value tag, typed value payload
   u8 hasClock (0 or 1)
   optional complete animation clock
-  codec v2-v8: u8 hasState, optional portable state object
-  codec v4-v8: u8 hasLifecycle, optional native lifecycle:
+  codec v2-v10: u8 hasState, optional portable state object
+  codec v4-v10: u8 hasLifecycle, optional native lifecycle:
     u8 worldRemoved (0 or 1)
     u8 touchEventSent[4] (each 0 or 1)
     u32 child count, child actor paths[] in native order
     u32 based count, based actor paths[] in native order
-  codec v8: u8 hasNativeTimer, optional signed finite f32 latentTimeLeft
-codec v3-v8:
-  u32 concrete class-default count (nonzero in v3; may be zero in v4-v7)
+  codec v8-v10: u8 hasNativeTimer, optional signed finite f32 latentTimeLeft
+codec v3-v10:
+  u32 concrete class-default count (nonzero in v3; may be zero in v4-v10)
   class defaults[]:
     loaded script Actor class path
     u32 property count (nonzero)
     properties[]: same property key/name/index/value layout as above
-codec v5-v8:
-  u32 birth count (nonzero in v5; may be zero in v6/v7)
+codec v5-v10:
+  u32 birth count (nonzero in v5; may be zero in v6-v10)
   births[]:
     map-qualified object path, loaded concrete Actor class path
     u32 appended Level actor slot
     u32 frozen-default property count (may be zero)
     frozen defaults[]: same typed property layout as above
-codec v6-v8:
-  u32 native AI manager count (nonzero in v6; may be zero in v7/v8)
+codec v6-v10:
+  u32 native AI manager count (nonzero in v6; may be zero in v7-v10)
   managers[] sorted by case-insensitive owner path:
     owner LevelInfo path, native Level path
     u32 processDepth, u32 pendingDeleteCount, u8 historyCursor, u32 receiverHead
@@ -166,11 +194,37 @@ codec v6-v8:
       callback and score names, four perception flags, callbackPending,
       eventState, detected, previousScore, previousBestActor, historyCursor,
       current XAIParams, ringNext ID, ringPrev ID
-codec v8: u8 hasRNG (0 or 1)
-codec v7, or codec v8 with hasRNG=1:
+codec v8-v10: u8 hasRNG (0 or 1)
+codec v7, or codec v8-v10 with hasRNG=1:
   u8 RNG algorithm (must be1)
   u32 engine-global random seed (all values valid)
+codec v10: u8 hasNativeDecals (0 or 1)
+codec v10 with hasNativeDecals=1:
+  saved map name, native root Model path, native Level path
+  u32 surface count, u32 node count
+  surfaces[surface count] in authored index order:
+    u32 record count
+    records[] in native order:
+      owner path
+      f32 relativeCorners[4][3]
+      u32 node-membership count, signed i32 node indices[]
+      signed i32 mover pitch, yaw, roll
+  u32 owner-mirror count
+  owner mirrors[] in retained order:
+    owner path, u32 SurfList count, signed i32 surface indices[]
 ```
+
+The optional decal graph follows the complete optional RNG record, including
+its algorithm/seed when present. Graph surfaces and records, owner mirrors,
+membership lists and SurfLists are not sorted or deduplicated. Only mirror-owner
+identity uniqueness is checked case-insensitively; per-surface duplicate owners
+and duplicate list indices are valid. Empty membership means unrestricted,
+not invisible. Whole relative quads and mover rotation bit patterns survive
+unchanged. The runtime separately validates exact map/Level/root Model identity,
+authored counts, canonical Decal owners/native Level bindings, each membership
+node's surface, and reflected SurfList/mirror agreement before staged publication.
+Missing/foreign records are not repaired by rebuilding from the mirrors.
+See [DECAL-CHECKPOINT.md](DECAL-CHECKPOINT.md) for ownership and limits.
 
 AI booleans are one byte (0 or 1), IDs are u32 (zero means null), and sensory
 channels and score parameters use binary32. A sensory sample contains
@@ -190,7 +244,7 @@ Frozen defaults copy the concrete class's mutable patch at birth and share
 immutable authored defaults. They are independent of later CDO mutations.
 Instance overlays remain separate. Prepared actors are temporarily GC-rooted;
 replacement registries and geometry are prepared before nonallocating
-publication. Loads replay no startup/lifecycle callbacks. Versions 1-7 clear
+publication. Loads replay no startup/lifecycle callbacks. Runtime versions1–7 clear
 the abandoned birth tail instead of merging it with the old timeline.
 See [actor births](ACTOR-SPAWN.md) for allocation, rollback and GC controls.
 
@@ -211,7 +265,7 @@ scripts can clear that flag after Destroy without recreating the native slot.
 Deleted UObject identities remain callable/readable until map teardown.
 See [actor lifecycle](ACTOR-LIFECYCLE.md).
 
-The v2 state object contains three booleans (HasStack, portable-frame override,
+The legacy v2 state object contains three booleans (HasStack, portable-frame override,
 hasFrame), optional qualified running/local-owner paths, u32 next-statement ordinal,
 u8 latent ordinal, counted typed fixed-array locals, and counted state-keyed
 disabled-name sets. It stores no native pointers or package-local property indices.
@@ -219,11 +273,28 @@ The running code may differ from the same-named local declaration owner after an
 inherited label jump. A false override preserves immutable raw dormant context
 without fabricating native class locals; it requires no portable frame.
 
+In codec9/10, every present frame adds a `u8 hasControl` discriminator after
+its counted locals and before the state's counted disabled sets. A present
+control carries the selected State/Class path, `u8 codePresent` and a
+little-endian `u64 liveProbeMask`, in that order. The running `codePath`, local
+owner and ordinal remain separate retained fields. Modern controls require
+HasStack and a portable override, a nonempty running Node and selected path,
+no legacy disabled sets, and no synthetic legacy Stop latent. Null Code preserves
+the running Node, selected identity, locals, literal mask and stale ordinal;
+it is not serialized as a cleared Node. Legacy frames can coexist in codec9/10
+with a zero discriminator and unchanged compatibility meaning. See
+[STATE-CONTROL-MODEL.md](STATE-CONTROL-MODEL.md).
+
 Structural codec validation represents all twelve pinned latent ordinals, retains
 null/stopped stale PC, checks canonical case-insensitive ordering and duplicate
 identity rejection, and bounds every count/value/tree before materialization.
 Runtime preparation adds actual authored schema/ancestry/HasStack/typed-local and
-PC checks; only Continue/Stop have supported restore behavior today. Continue
+PC checks. Continue, legacy Stop, Sleep and WaitForLanding have supported
+restore validation; the latter two require native timer evidence, and landing
+additionally requires a Pawn. Modern Stop is represented by null Code, not
+the legacy Stop ordinal. Runnable State code must belong to selected-node
+ancestry; runnable Class code remains unsupported. Null Code does not execute
+or validate a stale ordinal as if it were runnable. Continue
 allows the exact end ordinal produced by a committed Return; next resume rejects
 the absent statement. Disabled identities are folded on preparation so subsequent
 Enable mutates the restored set. See [state execution](STATE-EXECUTION.md).
@@ -244,6 +315,16 @@ ordinals and C++ structure layout:
 | 8 | Vector; three binary32 components |
 | 9 | Rotator; three signed 32-bit components |
 | 10 | Struct; counted `(field name, typed value)` members |
+| 11 | IntArray (codec10 only); u32 count followed by signed i32 elements |
+
+IntArray retains ordered full-width signed INTs and duplicates. It is not a
+generic array or a fixed-property `ArrayDim`; no element tags occur within its
+payload. Runtime support requires actual Core.ArrayProperty/Core.IntProperty
+metadata, an owned inner and fixed ArrayDim1. Native code can replace the whole
+original Const SurfList, while script-facing Const-array aliases are read-only.
+Token0x10 dynamic indexing and unaudited script array comparisons remain
+explicitly unsupported. The authored tag9 payload uses CompactIndex rather than
+this checkpoint's u32 count; the two formats must not be interchanged.
 
 The codec preserves signed zero, concrete value kinds, string bytes and
 original spelling. Empty/`None` names and empty object references are retained
@@ -271,6 +352,7 @@ Generic codec defaults are:
 | Actor identities and class-default records | 4,096 combined; birth plus overlay counts once |
 | Properties | 65,536 total, including overlays, class and frozen birth defaults |
 | Typed value nodes | 262,144 total |
+| Dynamic INT-array elements | 262,144 total; also charged against typed value nodes |
 | String bytes | 8,192 per string |
 | Map name | 128 bytes, also within the string limit |
 | Value depth | 32 levels, root at depth zero |
@@ -285,6 +367,12 @@ Generic codec defaults are:
 | AI sender and receiver nodes | 8,192 combined across managers |
 | AI graph links | 65,536 across managers |
 | AI graph validation work | 65,536 charged steps across managers |
+| Native decal surfaces / nodes | 1,000,000 each |
+| Native decal owner mirrors | 65,536 total |
+| Native decal surface records | 262,144 total |
+| Native decal membership indices | 1,048,576 total |
+| Native decal SurfList indices | 262,144 total |
+| Native decal owner/Model/Level identity | 1,024 bytes each, also within the string limit |
 
 Retained estimates include object/property arrays, nested map nodes, strings
 and bounded sorting pointers. Encoding validates/counts the complete tree
@@ -293,6 +381,11 @@ using string views for legacy sections. Codec6 additionally materializes one
 fully budgeted AI graph at a time for shared graph validation, then discards
 it. This temporary heap state allocates no runtime GC objects. The complete
 restored result is materialized only after that verification pass succeeds.
+Codec10 bounds every array and graph count against both the encoded payload
+and the appropriate aggregate budget before reserving storage. Runtime capture
+and VM validation additionally charge actual INT-vector capacity, not only its
+logical size. Array element counts are separate from reflected fixed-array/local
+slot counts; codec value-node accounting still charges each array entry.
 
 Runtime saves further limit the entire runtime payload to 16 MiB. The codec's
 byte allowance is reduced to `16 MiB - legacy prefix bytes - 4`, so the blob
@@ -303,7 +396,7 @@ the serialized-value quota. Unsupported map-local classes in a different,
 unloaded custom map fail closed; imported original campaign classes use the
 initialized script reflection graph.
 
-Persistent property/state/class-default/birth/native-link/AI storage is measured cumulatively without copying before a
+Persistent property/state/class-default/birth/native-link/AI/decal storage is measured cumulatively without copying before a
 transaction and after allocating state mutations/at commit. This uses conservative
 codec accounting with the 16 MiB runtime cap and aggregate state counts, so
 independent calls cannot grow unbounded sets/locals/default values. Combined
@@ -311,6 +404,11 @@ retained bytes and typed value nodes are checked, not just encoded byte length.
 The combined save capture
 still accounts for gameplay prefix, object identities, properties and clocks;
 its quota can reject a capture even within this state-only bound.
+Native decal journaling, mutation candidates and root buffers are precharged
+before allocation. Graph restore has a conservative combined 128 MiB staging
+bound, separate from the 64 MiB schema-metadata cap and 16 MiB runtime-file cap;
+these structural/payload/capacity estimates are not allocator-overhead or RSS
+measurements. See [DECAL-CHECKPOINT.md](DECAL-CHECKPOINT.md).
 
 ## Complete animation clock
 
@@ -357,7 +455,7 @@ hierarchies fail closed.
 property overlays, clocks and portable state. It can inspect the saved map's authored schema
 while a different map is loaded; it does not replace the map or apply that
 timeline. Schema caches may be populated during inspection. Born identities are
-validated symbolically without allocating UObjects. Actual version-4 through version-9
+validated symbolically without allocating UObjects. Actual version-4 through version-13
 application requires the matching authored map to be loaded and resolves all
 targets and prepares all allocating containers before clearing live state.
 
@@ -366,7 +464,7 @@ property overlays, clocks and portable state intact. Capture collects and schema
 state before writing, so validation/budget failure must not truncate an existing
 checkpoint. After successful application, saved script state replaces the
 current scoped overlays/clocks/state/class defaults/native lifecycle rather than merging abandoned timelines.
-Versions 8/9 also replace births; version 9 replaces native AI manager graphs.
+Versions8–13 also replace births; versions9–13 replace native AI manager graphs.
 All older versions clear existing native AI managers. Native collision membership is rebuilt from the
 restored fields and Level order, as in the pinned saved-game LinkActorsToLevel;
 cached/stale hash buckets are not serialized. This is not a physics save.
@@ -382,6 +480,14 @@ native lists explicitly; omitted records likewise reset to the original map
 baseline. All allocating preparation completes before publication. Only a
 successful mutation/load advances the runtime world revision.
 
+Version13 replaces the optional native decal graph and its independently rooted
+surface owners with the staged snapshot. All older envelopes, and array-only
+version13 saves without a graph, clear abandoned native geometry rather than
+merge it. Loading never calls Attach, projects corners, regroups records by
+live Texture, runs startup callbacks or consumes the random stream to recreate
+geometry. A graph is map-scoped unsaved state and activates the existing travel
+guard even if empty. RNG alone remains engine-global and does not activate it.
+
 A fully validated legacy version-1/2/3 load has no script blob and intentionally
 clears scoped overlays, clocks, portable state objects and committed flags, returning those fields to
 authored inheritance. Read-only legacy validation does not clear them.
@@ -389,22 +495,26 @@ Cross-map script references and arbitrary dynamic objects are not synthesized.
 
 ## Evidence and commands
 
-The actor-birth update passes 4,480 structural codec controls, including 4,133
-rejections; legacy codec1-4 byte fixtures remain unchanged. Generated actual-VM
-Spawn tests pass 1,416 checks / 37 refusals, including cold symbolic graphs,
+### 2026-10-09 — actor-birth baseline
+
+The actor-birth update passed 4,480 structural codec controls, including 4,133
+rejections; legacy codec1-4 byte fixtures remained unchanged. Generated actual-VM
+Spawn tests passed 1,416 checks / 37 refusals, including cold symbolic graphs,
 frozen defaults, legacy birth removal and GC at rollback/replacement boundaries.
-The 50-entry host suite passes 47 ordinary tests; three original-data entries
+The 50-entry host suite passed 47 ordinary tests; three original-data entries
 skip by default and must be run separately with the user's installation.
 Original runtime save/load and 996 original class-default/lifecycle checks
-pass with this source. These are host results, not Quest GPU or campaign proof.
+passed for that baseline. These are host results, not Quest GPU or campaign proof.
 
-The earlier state-frame codec adds 1,251 checks, including 621 rejection
+### 2026-10-08 — state-frame baseline
+
+The earlier state-frame codec added 1,251 checks, including 621 rejection
 controls, for all twelve structural latent ordinals, code/local-owner identities,
 fixed-array locals, disabled sets, malformed input and cumulative retained/count
-budgets. The final-source host suite passes 30 ordinary tests with two separate
+budgets. That final-source host suite passed 30 ordinary tests with two separate
 original-data tests skipped by default (32 entries total).
 
-The separate original-runtime test with the explicit game root also passes the
+The separate original-runtime test with the explicit game root also passed the
 new state-only v5 composition and paired v3/v5 save generations. It independently
 walks the gameplay prefix and verifies exact canonical script-blob bytes, restored
 gameplay semantics, read-only wrong-map rejection, legacy reset and guarded travel.
@@ -416,10 +526,12 @@ The final-source original actor integration also completed exit 0 in
 `original-actors.log`: state-only/selected-frame/None/Stop/disabled-set roundtrips,
 twelve new schema rejections, end-ordinal and mixed-case controls, and complete
 payload rollback at unsupported original InventoryItem/AI behavior. Physics-only
-v4 restoration and legacy clearing also pass. These fixtures do not run a full
+v4 restoration and legacy clearing also passed. These fixtures did not run a full
 NPC initialization or campaign.
 
 The earlier property/clock-only evidence below remains a regression baseline.
+
+### 2026-10-07 — property/clock baseline
 
 The standalone structural codec was compiled with g++17, optimization and
 `-Wall -Wextra -Wpedantic`, without compiler diagnostics. It passed 1,415 checks,
@@ -454,13 +566,20 @@ full clock continuation comparisons, read-only validation, wrong-current-map
 application refusal, malformed schema/trailer preservation and legacy reset.
 Never fault-inject corruption into the user's only save.
 
+Current codec10/envelope13 host/original-data verification and remaining
+Attach/render/device scope are tracked in
+[DECAL-CHECKPOINT.md](DECAL-CHECKPOINT.md).
+
 ## Remaining scope
 
 This is scoped current-map persistence, not a per-map campaign archive. Travel
 and unload still refuse committed scoped state; shutdown is not a substitute
-for saving. Version 5 stores supported persistent state locals/code/PC/disabled
-sets, but not VM call stacks, latent call continuations, timers, RNG or
-event/animation residual elapsed debt. Version 8 adds the supported born-actor
+for saving. The original version5 state-frame format stores supported persistent
+locals/code/PC/disabled sets, but not timers or RNG; later feature versions add
+the native timer, engine-global RNG and modern control fields described above.
+Version13 adds native decal snapshots/INT arrays without completing Attach or
+rendering. No version stores VM call stacks, arbitrary latent-call continuations
+or event/animation residual elapsed debt. Version8 adds the supported born-actor
 graph; it does not serialize every possible native subsystem. The stored FinishAnim flag does not
 implement a latent VM resumption engine.
 

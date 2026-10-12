@@ -77,6 +77,9 @@ The [decal geometry and ordered-state prerequisites](docs/DECAL-GEOMETRY-PLAN.md
 now compose original projection, the full sixteen-sample Shadow grid and node
 clipping, with live-texture record ordering and exact duplicate/detach controls.
 These are host-tested foundations, not published native shadows or Quest startup.
+The [native decal checkpoint integration](docs/DECAL-CHECKPOINT.md) adds bounded
+dynamic INT arrays, map-owned GC/journal state, original native Detach and exact
+codec10/envelope13 persistence. Native Attach and rendered shadows remain pending.
 The [Quest test build notes](docs/QUEST-TEST-BUILD.md) record an earlier installed
 test build, not a permanent deployment freeze. At the user's standing request,
 every successful new APK build now automatically installs on the connected,

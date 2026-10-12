@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -253,6 +254,66 @@ public:
             prepared.owners.push_back({ownerIdentity, {}});
         }
         prepared.owners[ownerIndex].surfaces = surfaces;
+        Publish(prepared, projected);
+        return stats;
+    }
+
+    // Structural checkpoint import only. Preserve exact per-surface record and
+    // mirror order, including duplicates and legitimate missing/foreign links.
+    // Do NOT invoke the live-Texture insertion path or reconstruct geometry.
+    // The runtime must validate symbolic identities against its actual map and
+    // stage the corresponding GC roots before publishing this native state.
+    DecalStateStats ImportSnapshot(const DecalStateSnapshot& snapshot) {
+        MutationGuard guard(*this);
+        DecalStateStats stats;
+        if (snapshot.surfaces.size() != state_.surfaces.size())
+            DecalStateDetail::Fail("checkpoint model surface count mismatch");
+        if (snapshot.owners.size() > limits_.owners)
+            DecalStateDetail::Fail("checkpoint owner count budget exceeded");
+        DecalStateUsage projected;
+        projected.surfaces = snapshot.surfaces.size();
+        projected.storageBytes = DecalStateDetail::Add(sizeof(DecalStateSnapshot),
+            DecalStateDetail::Multiply(projected.surfaces, sizeof(std::vector<DecalSurfaceRecord>)));
+        for (const auto& surface : snapshot.surfaces) {
+            DecalStateDetail::Step(stats, 1u, limits_);
+            if (surface.size() > limits_.records - projected.records)
+                DecalStateDetail::Fail("checkpoint record count budget exceeded");
+            for (const auto& record : surface) {
+                Record(record, stats); AddRecordUsage(projected, record);
+                DecalStateDetail::ValidateUsage(projected, limits_);
+            }
+        }
+        for (const auto& owner : snapshot.owners) {
+            DecalStateDetail::Identity(owner.ownerIdentity, stats, limits_);
+            AddOwnerUsage(projected, owner.ownerIdentity);
+            if (owner.surfaces.size() > limits_.surfListEntries - projected.surfListEntries)
+                DecalStateDetail::Fail("checkpoint surface-list count budget exceeded");
+            for (const auto surface : owner.surfaces) SurfaceIndex(surface, stats);
+            projected.surfListEntries = DecalStateDetail::Add(projected.surfListEntries, owner.surfaces.size());
+            projected.storageBytes = DecalStateDetail::Add(projected.storageBytes,
+                DecalStateDetail::Multiply(owner.surfaces.size(), sizeof(std::int32_t)));
+            DecalStateDetail::ValidateUsage(projected, limits_);
+        }
+        Prepare(projected, stats);
+        const auto identityPointers = DecalStateDetail::Multiply(snapshot.owners.size(), sizeof(const std::string*));
+        stats.stagedBytes = DecalStateDetail::Add(stats.stagedBytes, identityPointers);
+        if (stats.stagedBytes > limits_.stagingBytes)
+            DecalStateDetail::Fail("checkpoint staging byte budget exceeded");
+        std::vector<const std::string*> identities;
+        identities.reserve(snapshot.owners.size());
+        for (const auto& owner : snapshot.owners) identities.push_back(&owner.ownerIdentity);
+        std::sort(identities.begin(), identities.end(), [&](const auto* a, const auto* b) {
+            DecalStateDetail::Step(stats, DecalStateDetail::Add(1u,
+                DecalStateDetail::Add(a->size(), b->size())), limits_);
+            return *a < *b; // Opaque exact identity, no case folding.
+        });
+        for (std::size_t i = 1u; i < identities.size(); ++i) {
+            DecalStateDetail::Step(stats, DecalStateDetail::Add(1u,
+                DecalStateDetail::Add(identities[i-1u]->size(), identities[i]->size())), limits_);
+            if (*identities[i-1u] == *identities[i])
+                DecalStateDetail::Fail("duplicate checkpoint owner mirror identity");
+        }
+        auto prepared = snapshot;
         Publish(prepared, projected);
         return stats;
     }

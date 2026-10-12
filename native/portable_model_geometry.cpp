@@ -40,7 +40,9 @@ void ValidateReference(std::int32_t reference, std::size_t imports,
 
 class Reader {
 public:
-    explicit Reader(const std::vector<std::uint8_t>& bytes) : bytes_(bytes) {
+    explicit Reader(const std::vector<std::uint8_t>& bytes,
+                    std::size_t decodedLimit = MaxDecodedBytes)
+        : bytes_(bytes), decodedLimit_(std::min(decodedLimit, MaxDecodedBytes)) {
         if (bytes.size() > MaxPayloadBytes) Fail("payload exceeds 256 MiB bound");
     }
     std::size_t Position() const { return position_; }
@@ -97,8 +99,8 @@ public:
                              std::size_t minimumBytes, std::size_t decodedSize) {
         Require(Multiply(count, minimumBytes, label));
         const std::size_t allocation = Multiply(count, decodedSize, label);
-        if (allocation > MaxDecodedBytes - decodedBytes_)
-            Fail("decoded arrays exceed 256 MiB bound");
+        if (allocation > decodedLimit_ - decodedBytes_)
+            Fail("decoded arrays exceed working-byte budget");
         decodedBytes_ += allocation;
         return count;
     }
@@ -130,7 +132,7 @@ private:
         if (count > Remaining()) Fail("serialized section is truncated");
     }
     const std::vector<std::uint8_t>& bytes_;
-    std::size_t position_{}, decodedBytes_{};
+    std::size_t position_{}, decodedBytes_{}, decodedLimit_{};
 };
 
 PortableModelBounds ReadBounds(Reader& reader) {
@@ -268,7 +270,8 @@ bool LeafClassEquals(const PortablePackageTables& package,
     return true;
 }
 std::vector<std::uint8_t> ReadExportBody(const PortablePackageTables& package,
-                                       std::size_t exportIndex, const char* className) {
+                                       std::size_t exportIndex, const char* className,
+                                       std::size_t propertyWorkingBytes) {
     RequireLayout(package.version, package.licenseeMode);
     if (exportIndex >= package.exports.size()) Fail("export index is outside table");
     const auto& entry = package.exports[exportIndex];
@@ -277,17 +280,25 @@ std::vector<std::uint8_t> ReadExportBody(const PortablePackageTables& package,
     if (entry.ObjSize <= 0 || entry.ObjOffset < 0 ||
         static_cast<std::uint64_t>(entry.ObjSize) > MaxPayloadBytes)
         Fail("invalid/bounded export payload");
+    constexpr std::size_t bodyOverhead = sizeof(std::vector<std::uint8_t>);
+    if (propertyWorkingBytes < bodyOverhead || static_cast<std::size_t>(entry.ObjSize) >
+            propertyWorkingBytes - bodyOverhead)
+        Fail("export body exceeds working-byte budget");
     const auto file = File::open_existing(package.sourcePath);
     const std::int64_t fileSize = file->size();
     if (fileSize < 0 || static_cast<std::uint64_t>(entry.ObjOffset) +
             static_cast<std::uint64_t>(entry.ObjSize) > static_cast<std::uint64_t>(fileSize))
         Fail("export payload exceeds file");
-    const auto properties = LoadPortableExportProperties(package, exportIndex);
-    if (properties.bytesConsumed > static_cast<std::uint32_t>(entry.ObjSize))
+    // Release the tag table/value payloads before allocating the body copy.
+    const auto propertyBytes = LoadPortableExportProperties(package, exportIndex,
+        propertyWorkingBytes).bytesConsumed;
+    if (propertyBytes > static_cast<std::uint32_t>(entry.ObjSize))
         Fail("property body boundary exceeds export");
-    const std::size_t remaining = static_cast<std::size_t>(entry.ObjSize) - properties.bytesConsumed;
+    const std::size_t remaining = static_cast<std::size_t>(entry.ObjSize) - propertyBytes;
     std::vector<std::uint8_t> bytes(remaining);
-    file->seek(static_cast<std::int64_t>(entry.ObjOffset) + properties.bytesConsumed);
+    if (bytes.capacity() > propertyWorkingBytes - bodyOverhead)
+        Fail("export body capacity exceeds working-byte budget");
+    file->seek(static_cast<std::int64_t>(entry.ObjOffset) + propertyBytes);
     if (!bytes.empty()) file->read(bytes.data(), bytes.size());
     return bytes;
 }
@@ -436,8 +447,9 @@ PortableModelGeometry DecodePortableModel68Body(const std::vector<std::uint8_t>&
 }
 
 PortableModelGeometry LoadPortableModel68(const PortablePackageTables& package,
-                                         std::size_t exportIndex) {
-    const auto bytes = ReadExportBody(package, exportIndex, "Model");
+                                         std::size_t exportIndex,
+                                         std::size_t propertyWorkingBytes) {
+    const auto bytes = ReadExportBody(package, exportIndex, "Model", propertyWorkingBytes);
     auto model = DecodePortableModel68Body(bytes, package.imports.size(), package.exports.size(),
                                           package.version, package.licenseeMode);
     model.objectPath = GetPortableObjectPath(package, static_cast<std::int32_t>(exportIndex + 1u));
@@ -450,7 +462,8 @@ struct LevelSelection {
     std::size_t modelIndex{};
     std::vector<std::int32_t> actorOrder;
 };
-LevelSelection ReadLevelSelection(const PortablePackageTables& package) {
+LevelSelection ReadLevelSelection(const PortablePackageTables& package,
+                                 std::size_t propertyWorkingBytes) {
     RequireLayout(package.version, package.licenseeMode);
     std::size_t levelIndex = std::numeric_limits<std::size_t>::max();
     for (std::size_t index = 0; index < package.exports.size(); ++index) {
@@ -459,8 +472,11 @@ LevelSelection ReadLevelSelection(const PortablePackageTables& package) {
         levelIndex = index;
     }
     if (levelIndex == std::numeric_limits<std::size_t>::max()) Fail("map has no Level export");
-    const auto bytes = ReadExportBody(package, levelIndex, "Level");
-    Reader reader(bytes);
+    const auto bytes = ReadExportBody(package, levelIndex, "Level", propertyWorkingBytes);
+    constexpr std::size_t levelOverhead = sizeof(Reader) + sizeof(LevelSelection) + sizeof(bytes);
+    if (propertyWorkingBytes < levelOverhead || bytes.capacity() > propertyWorkingBytes - levelOverhead)
+        Fail("Level body exceeds working-byte budget");
+    Reader reader(bytes, propertyWorkingBytes - levelOverhead - bytes.capacity());
     const std::int32_t actorCount = reader.I32();
     const std::int32_t actorCapacity = reader.I32();
     if (actorCount < 0 || actorCount > 100'000 || actorCapacity < actorCount)
@@ -468,6 +484,9 @@ LevelSelection ReadLevelSelection(const PortablePackageTables& package) {
     reader.CheckedCount(static_cast<std::size_t>(actorCount), "Level actor", 1u, sizeof(std::int32_t));
     LevelSelection selection;
     selection.actorOrder.reserve(static_cast<std::size_t>(actorCount));
+    if (Multiply(selection.actorOrder.capacity(), sizeof(std::int32_t), "Level actor") >
+            propertyWorkingBytes - levelOverhead - bytes.capacity())
+        Fail("Level actor capacity exceeds working-byte budget");
     for (std::int32_t index = 0; index < actorCount; ++index) {
         const std::int32_t reference = reader.Index();
         ValidateReference(reference, package.imports.size(), package.exports.size());
@@ -489,12 +508,16 @@ LevelSelection ReadLevelSelection(const PortablePackageTables& package) {
     return selection;
 }
 }
-std::size_t FindPortableRootModel68Export(const PortablePackageTables& package) {
-    return ReadLevelSelection(package).modelIndex;
+std::size_t FindPortableRootModel68Export(const PortablePackageTables& package,
+                                        std::size_t propertyWorkingBytes) {
+    return ReadLevelSelection(package, propertyWorkingBytes).modelIndex;
 }
-PortableModelGeometry LoadPortableRootModel68(const PortablePackageTables& package) {
-    return LoadPortableModel68(package, FindPortableRootModel68Export(package));
+PortableModelGeometry LoadPortableRootModel68(const PortablePackageTables& package,
+                                            std::size_t propertyWorkingBytes) {
+    return LoadPortableModel68(package, FindPortableRootModel68Export(package, propertyWorkingBytes),
+                              propertyWorkingBytes);
 }
-std::vector<std::int32_t> ReadPortableLevel68ActorOrder(const PortablePackageTables& package) {
-    return ReadLevelSelection(package).actorOrder;
+std::vector<std::int32_t> ReadPortableLevel68ActorOrder(const PortablePackageTables& package,
+                                                    std::size_t propertyWorkingBytes) {
+    return ReadLevelSelection(package, propertyWorkingBytes).actorOrder;
 }

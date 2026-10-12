@@ -90,7 +90,12 @@ pins both identities separately. Ignored evidence is
 & artifacts/prerequisites-20261009/build/portable_actor_script_test.exe 'D:\Steam\steamapps\common\Deus Ex' --world-startup-only
 ```
 
-## Required native integration, not completed here
+## Native integration progress
+
+The subsequent [runtime/checkpoint integration](DECAL-CHECKPOINT.md) implements
+items2–4,6–7 below and native Detach from item5. Native Attach, its callbacks and
+the renderer remain pending. The numbered list records the original integration
+requirements, not a claim that each is still missing.
 
 1. Bind the real native client viewport and live Texture, preserving guard order.
    Geometry-only success is not native Attach success. Do not turn unsupported
@@ -98,8 +103,8 @@ pins both identities separately. Ignored evidence is
 2. Put one map-native decal GC object under RuntimePackage; retain actual native
    Level/model and record-owner roots. Per-call Host.rootModel_ is not persistent
    attachment ownership. Strings alone do not retain actors.
-3. Add journalled native dynamic INT SurfList storage/bridging. Current VM
-   ArrayProperty decoding is unsupported; fixed arrayDimension is not a dynamic
+3. Add journalled native dynamic INT SurfList storage/bridging. Fixed
+   arrayDimension is not a dynamic
    array length. Preserve legitimate mirror/native mismatches and original Const
    metadata instead of inventing a fixed array.
 4. Add TouchDecals snapshots/provisional roots, aggregate retained/staging
@@ -125,6 +130,7 @@ pins both identities separately. Ignored evidence is
 The rollback-only Training startup still stops at unsupported
 `Engine.Decal.AttachDecal`; no original world/player possession, campaign Tick,
 or full standalone campaign acceptance is established by these prerequisites.
-No APK is created merely for host-only headers; the last installed Quest renderer
-and corrected hand/body geometry are unchanged. Every actual new APK continues
+The later runtime integration produces a replacement APK; deployment evidence is
+in [QUEST-TEST-BUILD.md](QUEST-TEST-BUILD.md). Corrected hand/body geometry is
+unchanged by these native-state changes. Every actual new APK continues
 to use the build helper's default data-preserving connected-Quest install.

@@ -1873,9 +1873,192 @@ void SwitchContracts() {
     std::cout<<"Generated Switch/Case control, typed comparison and transactional failure contracts: "
         <<checks-initialChecks<<" checks and "<<rejections-initialRejections<<" rejection controls passed.\n";
 }
+void DynamicIntArrayContracts() {
+    const auto initialChecks=checks,initialRejections=rejections;
+    static_assert(static_cast<unsigned>(Vm::Kind::Struct)==10u);
+    static_assert(static_cast<unsigned>(Vm::Kind::IntArray)==11u);
+    const auto zero=Value::IntArray({});
+    const auto payload=Value::IntArray({std::numeric_limits<std::int32_t>::min(),17,17,
+        std::numeric_limits<std::int32_t>::max(),0,-1});
+    Require(payload.kind==Vm::Kind::IntArray && payload.intArray.size()==6u &&
+        payload.intArray[0]==std::numeric_limits<std::int32_t>::min() && payload.intArray[1]==payload.intArray[2] &&
+        payload.intArray[3]==std::numeric_limits<std::int32_t>::max(),
+        "Native INT-array factory lost ordered duplicate/full-width elements");
+    Require(Vm::Equal(Vm::Coerce(payload,zero),payload) && Vm::Equal(Vm::Coerce({},zero),zero) &&
+        Vm::Equal(Vm::Coerce({},payload),payload),"INT-array exact coercion or typed Nothing default changed values");
+    Require(!Vm::Equal(payload,Value::Integer(17)) && !Vm::Equal(payload,Value::IntArray({17,17})) &&
+        !Vm::Equal(Value::IntArray({1,2,1}),Value::IntArray({1,1,2})) &&
+        !Vm::Equal(Value::IntArray({1,1}),Value::IntArray({1})),
+        "INT-array equality ignored element type, order, length or duplicates");
+    const auto rejectValue=[&](const std::function<void()>& operation,const std::string& context) {
+        bool rejected{};try {operation();} catch(const std::runtime_error&) {rejected=true;}
+        Require(rejected,context);++rejections;
+    };
+    for(const auto& scalar:std::vector<Value>{Value::Integer(1),Value::Byte(1),Value::Bool(true),Value::Float(1),
+        Value::Text(Vm::Kind::String,"1"),Value::Text(Vm::Kind::Name,"One"),Value::Text(Vm::Kind::Object,"Map.Actor"),
+        Value::Vector({}),Value::Rotator({})}) {
+        rejectValue([&] {Vm::Coerce(scalar,zero);},"Non-INT-array value was coerced to an INT array");
+        rejectValue([&] {Vm::Coerce(payload,scalar);},"INT array was coerced to an unrelated scalar value");
+    }
+    rejectValue([&] {Vm::ToInt(payload);},"INT array implicitly became an integer");
+    rejectValue([&] {Vm::ToFloat(payload);},"INT array implicitly became a float");
+    rejectValue([&] {Vm::ToBool(payload);},"INT array implicitly became a boolean");
+    {
+        TestHost host;
+        auto callee=Function("ArrayCopy",Join({Let(Ref(0x00,2),Ref(0x00,1)),Return(Ref(0x00,2))}),"ArrayCallee");
+        callee.variables={host.Property(callee,1,"Input",zero,0x80u,1u,true),
+            host.Property(callee,2,"Output",zero,0x180u,1u,true),
+            host.Property(callee,3,"ReturnValue",zero,0x480u,1u,true)};
+        const auto caller=Function("ArrayCaller",Return(Call(0x1c,4,{Ref(0x01,8),Ref(0x01,9)})),"ArrayCaller");
+        const auto input=host.Property(caller,8,"Input",zero),output=host.Property(caller,9,"Output",zero);
+        host.Store("Self",input,{payload});host.Store("Self",output,{Value::IntArray({5})});
+        host.finals[{caller.source,4}]=std::make_shared<Vm::Function>(callee);
+        const auto result=Vm::Execute(host,caller,"Self");Returned(result,"Whole INT-array input/local/OUT/return");
+        Require(Vm::Equal(result.value,payload) && Vm::Equal(host.Load("Self",output),payload) &&
+            Vm::Equal(host.Load("Self",input),payload),"Whole INT-array call changed ordering, input or OUT copyback");
+    }
+    {
+        TestHost host;auto function=Function("ArrayNotReflectedElements",Return(Ref(0x00,1)));
+        function.variables={host.Property(function,1,"Input",zero,0x80u,1u,true)};
+        Vm::Limits limits;limits.localElements=1u;
+        const auto result=Vm::Execute(host,function,"Self",{{payload,{}}},limits);
+        Returned(result,"INT-array entries do not consume reflected local element slots");
+        Require(Vm::Equal(result.value,payload),"Separate INT-array/local budgets changed a legal parameter");
+    }
+    {
+        TestHost host;Value structure;structure.kind=Vm::Kind::Struct;
+        structure.fields["surfaces"]=zero;structure.fields["keep"]=Value::Bool(true);
+        auto function=Function("NestedArrayWrite",Join({Let(Member(2,Ref(0x01,1)),Ref(0x01,3)),Return(Ref(0x01,1))}));
+        const auto record=host.Property(function,1,"Record",structure),input=host.Property(function,3,"Input",zero);
+        host.Property(function,2,"Surfaces",zero);host.Store("Self",record,{structure});host.Store("Self",input,{payload});
+        const auto result=Vm::Execute(host,function,"Self");Returned(result,"Nested struct INT-array alias write");
+        Require(Vm::Equal(result.value.fields.at("surfaces"),payload) && result.value.fields.at("keep").boolean &&
+            Vm::Equal(host.Load("Self",record),result.value),"INT-array member write lost its parent or unrelated fields");
+        Require(Vm::Equal(Vm::Coerce(result.value,structure),result.value),"Recursive struct coercion lost its INT-array member");
+    }
+    {
+        TestHost host;const auto ordered=Function("NativeArrayWrite",Join({
+            Native(1060u,{Ref(0x01,1),Ref(0x01,2)}),Return(Native(1007u,{Ref(0x01,1)}))}));
+        const auto output=host.Property(ordered,1,"Output",zero),input=host.Property(ordered,2,"Input",zero);
+        host.Store("Self",output,{Value::IntArray({9})});host.Store("Self",input,{payload});
+        const auto result=Vm::Execute(host,ordered,"Self");Returned(result,"Guarded native whole INT-array write");
+        Require(Vm::Equal(result.value,payload) && Vm::Equal(host.Load("Self",output),payload),
+            "Native whole INT-array write or detached alias return changed payload");
+        rejectValue([&] {host.retainedNativeReference->write(Value::IntArray({99}));},"Expired native INT-array alias remained writable");
+        Require(Vm::Equal(host.Load("Self",output),payload),"Expired native array alias changed committed storage");
+    }
+    {
+        TestHost host;const auto function=Function("ArrayRollback",Join({
+            Native(1060u,{Ref(0x01,1),Ref(0x01,2)}),Native(1000u),Return(Native(4095u))}));
+        const auto output=host.Property(function,1,"Output",zero),input=host.Property(function,2,"Input",zero);
+        const auto previous=Value::IntArray({7,7,3});host.Store("Self",output,{previous});host.Store("Self",input,{payload});
+        const auto result=Vm::Execute(host,function,"Self");Failed(result,Vm::Status::Unsupported,host,"Whole INT-array native rollback");
+        Require(Vm::Equal(host.Load("Self",output),previous) && Vm::Equal(host.Load("Self",input),payload) &&
+            host.effects==0u && host.rng==12345u,"Failed native prefix leaked INT-array data/effects/RNG");
+    }
+    for(const auto index:{-1,0,1000000}) {
+        TestHost host;
+        // Neither child is evaluated when the audited-but-unimplemented
+        // opcode is rejected; the index expression would record "rhs".
+        const auto expression=Join({{0x10},Native(1002u,{Int(index)}),Ref(0x01,1)});
+        const auto function=Function("UnimplementedDynamicIndex",Join({
+            Native(1060u,{Ref(0x01,1),Ref(0x01,2)}),Native(1000u),Return(expression)}));
+        const auto output=host.Property(function,1,"Output",zero),input=host.Property(function,2,"Input",zero);
+        const auto previous=Value::IntArray({4,4});host.Store("Self",output,{previous});host.Store("Self",input,{payload});
+        host.objects[{function.source,1}]=output.key;host.objects[{function.source,2}]=input.key;
+        const auto layout=Vm::AnalyzeProgram(host,function);
+        Require(layout.statementOffsets.size()==3u,"Dynamic-array token lost its known structural operand layout");
+        const auto result=Vm::Execute(host,function,"Self");Failed(result,Vm::Status::Unsupported,host,"Original dynamic indexing remains unsupported");
+        Require(result.opcode==0x10u && result.error.find("0x10")!=std::string::npos &&
+            std::find(host.observations.begin(),host.observations.end(),"rhs")==host.observations.end() &&
+            Vm::Equal(host.Load("Self",output),previous) && host.effects==0u && host.rng==12345u,
+            "Unsupported dynamic indexing evaluated operands, fabricated clamping/growth, or leaked its prefix");
+    }
+    for(const auto opcode:{std::uint8_t{0x32},std::uint8_t{0x33}}) {
+        TestHost host;const auto function=Function("NoScriptArrayComparison",Return(Join({Ref(opcode,7),Ref(0x01,1),Ref(0x01,1)})));
+        host.objects[{function.source,7}]="Fixture.ArrayLayout";
+        const auto property=host.Property(function,1,"Array",zero);host.Store("Self",property,{payload});
+        const auto result=Vm::Execute(host,function,"Self");Failed(result,Vm::Status::Unsupported,host,"No invented script INT-array comparison");
+    }
+    {
+        TestHost host;const auto function=Function("NoSwitchArrayComparison",SingleCaseSwitch(Ref(0x01,1),Ref(0x01,1)));
+        const auto property=host.Property(function,1,"Array",zero);host.Store("Self",property,{payload});
+        const auto result=Vm::Execute(host,function,"Self");Failed(result,Vm::Status::Unsupported,host,"No invented INT-array Switch comparison");
+    }
+    const auto reserved=[](std::size_t count) {std::vector<std::int32_t> values;values.reserve(count);return Value::IntArray(std::move(values));};
+    for(const bool excess:{false,true}) {
+        TestHost host;auto array=reserved(64u);const auto capacity=array.intArray.capacity();
+        Vm::Limits limits;limits.intArrayElements=excess ? capacity-1u : capacity;
+        const auto result=Vm::ExecuteTransaction(host,[&](Vm::Execution&) {return std::move(array);},limits);
+        if(excess) Failed(result,Vm::Status::Budget,host,"INT-array spare capacity exceeds its element bound");
+        else {Returned(result,"INT-array capacity at exact element bound");Require(result.value.intArray.empty() &&
+            result.value.intArray.capacity()==capacity,"Native INT-array move discarded its retained allocation");}
+    }
+    for(const bool excess:{false,true}) {
+        TestHost host;auto array=reserved(64u);const auto capacity=array.intArray.capacity();
+        Vm::Limits limits;limits.retainedBytes=sizeof(Value)+capacity*sizeof(std::int32_t)-(excess ? 1u : 0u);
+        const auto result=Vm::ExecuteTransaction(host,[&](Vm::Execution&) {return std::move(array);},limits);
+        if(excess) Failed(result,Vm::Status::Budget,host,"INT-array spare allocation contributes retained bytes");
+        else Returned(result,"INT-array exact retained byte boundary");
+    }
+    for(const bool excess:{false,true}) {
+        TestHost host;Value structure;structure.kind=Vm::Kind::Struct;
+        structure.fields["first"]=reserved(32u);structure.fields["second"]=reserved(48u);
+        const auto allocation=(structure.fields.at("first").intArray.capacity()+structure.fields.at("second").intArray.capacity())*sizeof(std::int32_t);
+        Vm::Limits limits;limits.localElements=3u;limits.retainedBytes=3u*sizeof(Value)+11u+allocation-(excess ? 1u : 0u);
+        const auto result=Vm::ExecuteTransaction(host,[&](Vm::Execution&) {return std::move(structure);},limits);
+        if(excess) Failed(result,Vm::Status::Budget,host,"Nested INT-array allocations share aggregate value budget");
+        else Returned(result,"Nested INT-array allocations at exact aggregate boundary");
+    }
+    {
+        TestHost host;auto function=Function("BoundedArrayParameter",Return(Ref(0x00,1)));
+        function.variables={host.Property(function,1,"Input",zero,0x80u,1u,true)};
+        Vm::Limits limits;limits.intArrayElements=payload.intArray.size()-1u;
+        const auto result=Vm::Execute(host,function,"Self",{{payload,{}}},limits);
+        Failed(result,Vm::Status::Budget,host,"Oversized whole INT-array parameter is bounded");
+    }
+    {
+        TestHost host;const auto function=Function("BoundedNativeCapacity",Return(Native(1008u)));
+        host.executionNative=[&](const std::string&,const std::vector<Vm::Evaluation>&,const Vm::Function*,Vm::Execution&) {
+            return Vm::Evaluation{reserved(64u),{}};
+        };
+        Vm::Limits limits;limits.intArrayElements=63u;
+        const auto result=Vm::Execute(host,function,"Self",{},limits);
+        Failed(result,Vm::Status::Budget,host,"Detached native array capacity is checked before snapshot copying");
+    }
+    {
+        TestHost host;const auto function=Function("BoundedNativeWrite",Return(Native(1008u,{Ref(0x01,1)})));
+        const auto output=host.Property(function,1,"Output",zero);host.Store("Self",output,{Value::IntArray({7})});
+        host.executionNative=[&](const std::string&,const std::vector<Vm::Evaluation>& arguments,const Vm::Function*,Vm::Execution&) {
+            arguments.at(0).reference->write(reserved(64u));return Vm::Evaluation{};
+        };
+        Vm::Limits limits;limits.intArrayElements=63u;
+        const auto result=Vm::Execute(host,function,"Self",{},limits);
+        Failed(result,Vm::Status::Budget,host,"Native array write capacity is checked before whole-value coercion");
+        Require(Vm::Equal(host.Load("Self",output),Value::IntArray({7})),"Over-capacity native array write changed its destination");
+    }
+    {
+        TestHost host;const auto function=Function("RepeatedNativeArrayGrowth",Return(Native(1008u,{Ref(0x01,1)})));
+        const auto output=host.Property(function,1,"Output",zero);host.Store("Self",output,{zero});
+        std::size_t completedWrites{};
+        host.executionNative=[&](const std::string&,const std::vector<Vm::Evaluation>& arguments,const Vm::Function*,Vm::Execution&) {
+            const auto large=Value::IntArray(std::vector<std::int32_t>(8192u,13));
+            arguments.at(0).reference->write(large);++completedWrites;
+            arguments.at(0).reference->write(large);++completedWrites;
+            return Vm::Evaluation{};
+        };
+        Vm::Limits limits;limits.retainedBytes=40u*1024u;
+        const auto result=Vm::Execute(host,function,"Self",{},limits);
+        Failed(result,Vm::Status::Budget,host,"Native replacement arrays and rollback snapshots share retained budget");
+        Require(completedWrites==1u && Vm::Equal(host.Load("Self",output),zero),
+            "Repeated native array growth bypassed allocation accounting or rollback");
+    }
+    std::cout<<"Generated whole native INT-array value, rollback and allocation contracts: "
+        <<checks-initialChecks<<" checks and "<<rejections-initialRejections<<" rejection controls passed.\n";
+}
 void ExecutionContracts() {
     RotatorDirectionContracts();ScalarAndLocalContracts();ParametersAndReturns();AssignmentArraysAndStructs();LazyAndContextContracts();
-    OptionalAndReferenceTables();ControlAndFailureContracts();BudgetAndNestedRollback();IntegerIncrementContracts();CastContracts();SwitchContracts();
+    OptionalAndReferenceTables();ControlAndFailureContracts();BudgetAndNestedRollback();IntegerIncrementContracts();CastContracts();SwitchContracts();DynamicIntArrayContracts();
 }
 void TransactionContracts() {
     const auto initialChecks=checks,initialRejections=rejections;

@@ -31,6 +31,7 @@ bool SameValue(const Vm::Value& a,const Vm::Value& b) {
     case Vm::Kind::Float: return SameFloat(a.floating,b.floating);
     case Vm::Kind::Name: case Vm::Kind::Object: case Vm::Kind::String: return a.text==b.text;
     case Vm::Kind::Rotator: return a.rotation==b.rotation;
+    case Vm::Kind::IntArray: return a.intArray==b.intArray;
     case Vm::Kind::Vector:
         for (std::size_t i=0;i<3;++i) if (!SameFloat(a.vector[i],b.vector[i])) return false;
         return true;
@@ -1279,6 +1280,368 @@ void InvalidSleepStateAndBudgets() {
         Reject([&] {EncodeScriptSavedState(only);},"Non-finite live native timer accepted");
     }
 }
+
+Vm::Value IntArray(std::vector<std::int32_t> values) {
+    auto value=Scalar(Vm::Kind::IntArray);value.intArray=std::move(values);return value;
+}
+ScriptSavedState IntArrayState() {
+    ScriptSavedState state{"Map",{{"Map.Decal","Engine.Decal",{},std::nullopt}}};
+    state.objects[0].properties.push_back({"Engine.Decal.SurfList","SurfList",0u,
+        IntArray({std::numeric_limits<std::int32_t>::min(),-1,0,0,std::numeric_limits<std::int32_t>::max()})});
+    return state;
+}
+Bytes IntArrayLiteral() {
+    // Independent codec10 oracle. Tag11 is stable and not a Vm::Kind ordinal.
+    Bytes bytes{'D','X','Q','V','M','S',10u,0u};String(bytes,"Map");U32(bytes,1u);
+    String(bytes,"Map.Decal");String(bytes,"Engine.Decal");U32(bytes,1u);
+    Property(bytes,"Engine.Decal.SurfList","SurfList",0u);bytes.push_back(11u);U32(bytes,5u);
+    for (const auto value : {0x80000000u,0xffffffffu,0u,0u,0x7fffffffu}) U32(bytes,value);
+    bytes.insert(bytes.end(),{0u,0u,0u,0u}); // No clock/state/lifecycle/timer.
+    U32(bytes,0u);U32(bytes,0u);U32(bytes,0u); // No defaults/births/AI.
+    bytes.push_back(0u);bytes.push_back(0u); // No RNG/native decal graph.
+    return bytes;
+}
+DecalSurfaceRecord DecalRecord(const std::string& owner,float marker,std::vector<std::int32_t> nodes) {
+    DecalSurfaceRecord record;record.ownerIdentity=owner;record.nodeMembership=std::move(nodes);
+    record.relativeCorners={{{marker,-0.0f,-3.5f},{marker+1u,4.5f,-5.5f},
+        {marker+2u,6.5f,-7.5f},{marker+3u,8.5f,-9.5f}}};
+    record.moverRotation={std::numeric_limits<std::int32_t>::min(),123456789,std::numeric_limits<std::int32_t>::max()};
+    return record;
+}
+ScriptSavedNativeDecals DecalGraph() {
+    ScriptSavedNativeDecals graph;graph.mapName="Map";graph.modelPath="Map.Model0";graph.levelPath="Map.Level0";
+    graph.surfaceCount=3u;graph.nodeCount=5u;graph.state.surfaces.resize(3u);
+    graph.state.surfaces[0]={DecalRecord("Map.DecalZ",1u,{4,1,4}),
+        DecalRecord("Map.DecalA",2u,{}),DecalRecord("Map.DecalZ",3u,{0})};
+    graph.state.surfaces[2]={DecalRecord("Map.NoMirror",4u,{2})};
+    graph.state.owners={{"Map.DecalA",{2,0,2,0}},{"Map.Ghost",{1,1}},{"Map.DecalZ",{}}};
+    return graph;
+}
+struct DecalWireOffsets {
+    std::size_t presence{},mapCharacters{},surfaceCount{},nodeCount{},firstRecordCount{},firstOwnerCharacters{};
+    std::size_t firstCorner{},firstMembershipCount{},firstMembershipIndex{},ownerCount{},firstMirrorCharacters{},firstMirrorIndex{};
+};
+Bytes DecalLiteral(DecalWireOffsets* offsets=nullptr) {
+    // Independent graph-only codec10 oracle with unsorted surface-record/owner
+    // arrays. Relative corners, duplicate node/list indices and full rotations
+    // are explicit little-endian fields; no machine-layout serialization.
+    Bytes bytes{'D','X','Q','V','M','S',10u,0u};String(bytes,"Map");
+    for (int i=0;i<4;++i) U32(bytes,0u); // Objects/defaults/births/AI.
+    bytes.push_back(0u);
+    if(offsets) offsets->presence=bytes.size();
+    bytes.push_back(1u);
+    if(offsets) offsets->mapCharacters=bytes.size()+4u;
+    String(bytes,"Map");
+    String(bytes,"Map.Model0");String(bytes,"Map.Level0");
+    if(offsets) offsets->surfaceCount=bytes.size();
+    U32(bytes,3u);
+    if(offsets) offsets->nodeCount=bytes.size();
+    U32(bytes,5u);
+    const auto record=[&](const char* owner,float marker,const std::vector<std::int32_t>& nodes,bool first) {
+        if(first && offsets) offsets->firstOwnerCharacters=bytes.size()+4u;
+        String(bytes,owner);
+        if(first && offsets) offsets->firstCorner=bytes.size();
+        for (const auto value : {marker,-0.0f,-3.5f,marker+1u,4.5f,-5.5f,
+                marker+2u,6.5f,-7.5f,marker+3u,8.5f,-9.5f}) {
+            std::uint32_t bits{};std::memcpy(&bits,&value,4u);U32(bytes,bits);
+        }
+        if(first && offsets) offsets->firstMembershipCount=bytes.size();
+        U32(bytes,static_cast<std::uint32_t>(nodes.size()));
+        if(first && offsets) offsets->firstMembershipIndex=bytes.size();
+        for(const auto value:nodes) U32(bytes,static_cast<std::uint32_t>(value));
+        U32(bytes,0x80000000u);U32(bytes,123456789u);U32(bytes,0x7fffffffu);
+    };
+    if(offsets) offsets->firstRecordCount=bytes.size();
+    U32(bytes,3u);
+    record("Map.DecalZ",1u,{4,1,4},true);record("Map.DecalA",2u,{},false);record("Map.DecalZ",3u,{0},false);
+    U32(bytes,0u);U32(bytes,1u);record("Map.NoMirror",4u,{2},false);
+    if(offsets) offsets->ownerCount=bytes.size();
+    U32(bytes,3u);
+    if(offsets) offsets->firstMirrorCharacters=bytes.size()+4u;
+    String(bytes,"Map.DecalA");U32(bytes,4u);
+    if(offsets) offsets->firstMirrorIndex=bytes.size();
+    for(const auto value:{2u,0u,2u,0u}) U32(bytes,value);
+    String(bytes,"Map.Ghost");U32(bytes,2u);U32(bytes,1u);U32(bytes,1u);
+    String(bytes,"Map.DecalZ");U32(bytes,0u);return bytes;
+}
+void SameDecalGraph(const ScriptSavedNativeDecals& a,const ScriptSavedNativeDecals& b) {
+    Require(a.mapName==b.mapName && a.modelPath==b.modelPath && a.levelPath==b.levelPath &&
+        a.surfaceCount==b.surfaceCount && a.nodeCount==b.nodeCount,"Native decal model binding changed");
+    Require(a.state.surfaces.size()==b.state.surfaces.size() && a.state.owners.size()==b.state.owners.size(),
+        "Native decal matrix/mirror size changed");
+    for(std::size_t surface=0u;surface<a.state.surfaces.size();++surface) {
+        Require(a.state.surfaces[surface].size()==b.state.surfaces[surface].size(),"Native decal surface record count changed");
+        for(std::size_t index=0u;index<a.state.surfaces[surface].size();++index) {
+            const auto& x=a.state.surfaces[surface][index];const auto& y=b.state.surfaces[surface][index];
+            Require(x.ownerIdentity==y.ownerIdentity && x.nodeMembership==y.nodeMembership &&
+                x.moverRotation.pitch==y.moverRotation.pitch && x.moverRotation.yaw==y.moverRotation.yaw &&
+                x.moverRotation.roll==y.moverRotation.roll,"Native decal record order/nodes/rotation changed");
+            for(std::size_t corner=0u;corner<4u;++corner)
+                Require(SameFloat(x.relativeCorners[corner].x,y.relativeCorners[corner].x) &&
+                    SameFloat(x.relativeCorners[corner].y,y.relativeCorners[corner].y) &&
+                    SameFloat(x.relativeCorners[corner].z,y.relativeCorners[corner].z),"Relative decal corner lost exact float bits");
+        }
+    }
+    for(std::size_t owner=0u;owner<a.state.owners.size();++owner)
+        Require(a.state.owners[owner].ownerIdentity==b.state.owners[owner].ownerIdentity &&
+            a.state.owners[owner].surfaces==b.state.owners[owner].surfaces,"Native mirror order/duplicate/missing links changed");
+}
+void IntArrayAndDecalRoundtrip() {
+    const auto arrays=IntArrayState();const auto literal=IntArrayLiteral();const auto restored=DecodeScriptSavedState(literal);
+    Require(EncodeScriptSavedState(arrays)==literal && restored.objects[0].properties[0].value.intArray==
+        arrays.objects[0].properties[0].value.intArray && !restored.nativeDecals && !restored.randomSeed &&
+        EncodeScriptSavedState(restored)==literal,"Independent codec10/Tag11 integer-array bytes changed");
+    auto empty=arrays;empty.objects[0].properties[0].value.intArray.clear();
+    Require(EncodeScriptSavedState(empty)[6]==10u && DecodeScriptSavedState(EncodeScriptSavedState(empty)).objects[0].properties[0].value.intArray.empty(),
+        "Empty dynamic integer array failed feature10 selection");
+    auto nested=State();auto structure=Scalar(Vm::Kind::Struct);structure.fields["Nested"]=arrays.objects[0].properties[0].value;
+    nested.objects[0].properties[0].value=structure;
+    Require(ScriptStateDetail::HasIntArrays(nested) && EncodeScriptSavedState(nested)[6]==10u &&
+        EncodeScriptSavedState(DecodeScriptSavedState(EncodeScriptSavedState(nested)))==EncodeScriptSavedState(nested),
+        "Nested struct array did not select codec10");
+    auto defaults=DefaultsState();defaults.classDefaults[0].properties[0].value=IntArray({2,2,1});
+    Require(ScriptStateDetail::HasIntArrays(defaults) && EncodeScriptSavedState(defaults)[6]==10u &&
+        EncodeScriptSavedState(DecodeScriptSavedState(EncodeScriptSavedState(defaults)))==EncodeScriptSavedState(defaults),
+        "Class-default integer array did not select codec10");
+    auto births=BirthState();births.births[0].frozenDefaults.push_back({"Fixture.Pawn.Array","Array",0u,IntArray({1,0,1})});
+    Require(ScriptStateDetail::HasIntArrays(births) && EncodeScriptSavedState(births)[6]==10u &&
+        EncodeScriptSavedState(DecodeScriptSavedState(EncodeScriptSavedState(births)))==EncodeScriptSavedState(births),
+        "Frozen birth array did not select codec10");
+    auto local=DefaultsState();local.objects[0].state->frame->locals.push_back({"Fixture.State.Array",{IntArray({-1,0,1})}});
+    Require(ScriptStateDetail::HasIntArrays(local) && EncodeScriptSavedState(local)[6]==10u &&
+        EncodeScriptSavedState(DecodeScriptSavedState(EncodeScriptSavedState(local)))==EncodeScriptSavedState(local),
+        "State-local integer array did not select codec10/control discriminator");
+    auto modern=arrays;StateObject modernState;modernState.hasStack=true;modernState.frameOverride=true;
+    modernState.frame.emplace();modernState.frame->codePath="Engine.Decal.Active";
+    modernState.frame->control=StateControl{"Engine.Decal.Active",true,0xfedcba9876543210ull};
+    modern.objects[0].state=modernState;
+    const auto modernBytes=EncodeScriptSavedState(modern);const auto modernParsed=DecodeScriptSavedState(modernBytes);
+    Require(modernBytes[6]==10u && modernParsed.objects[0].state->frame->control &&
+        modernParsed.objects[0].state->frame->control->liveProbeMask==0xfedcba9876543210ull &&
+        EncodeScriptSavedState(modernParsed)==modernBytes,"Codec10 lost modern frame/control discriminator");
+    modern.objects[0].properties[0].value=Integer(1);const auto codec9=EncodeScriptSavedState(modern);
+    Require(codec9[6]==9u && EncodeScriptSavedState(DecodeScriptSavedState(codec9))==codec9,
+        "Absent graph/array changed existing modern codec9 bytes");
+    modern.nativeDecals=DecalGraph();Require(EncodeScriptSavedState(modern)[6]==10u,"Graph failed codec9 extension");
+    modern.nativeDecals.reset();Require(EncodeScriptSavedState(modern)==codec9,"Removing graph changed codec9 bytes");
+    ScriptSavedState only{"Map",{}};only.nativeDecals=DecalGraph();const auto graphLiteral=DecalLiteral();
+    const auto parsed=DecodeScriptSavedState(graphLiteral);
+    Require(EncodeScriptSavedState(only)==graphLiteral && parsed.nativeDecals && parsed.objects.empty() &&
+        parsed.aiManagers.empty() && !parsed.randomSeed && EncodeScriptSavedState(parsed)==graphLiteral,
+        "Independent native-decal-only codec10 wire changed or invented state");
+    SameDecalGraph(*only.nativeDecals,*parsed.nativeDecals);
+    auto reordered=only;std::reverse(reordered.nativeDecals->state.surfaces[0].begin(),reordered.nativeDecals->state.surfaces[0].end());
+    Require(EncodeScriptSavedState(reordered)!=graphLiteral,"Codec sorted original native decal record order");
+    reordered=only;std::reverse(reordered.nativeDecals->state.owners.begin(),reordered.nativeDecals->state.owners.end());
+    Require(EncodeScriptSavedState(reordered)!=graphLiteral,"Codec sorted original native mirror order");
+    auto mixed=BirthState();mixed.nativeDecals=DecalGraph();mixed.nativeDecals->mapName=mixed.mapName;
+    mixed.randomSeed=0xffffffffu;mixed.aiManagers={AiManager()};mixed.objects[0].latentTimeLeft=-0.25f;
+    mixed.objects[0].properties.push_back({"Fixture.Pawn.SurfList","SurfList",0u,IntArray({2,0,2})});
+    const auto mixedBytes=EncodeScriptSavedState(mixed);const auto mixedParsed=DecodeScriptSavedState(mixedBytes);
+    Require(mixedBytes[6]==10u && mixedParsed.nativeDecals && mixedParsed.randomSeed==0xffffffffu &&
+        mixedParsed.aiManagers.size()==1u && EncodeScriptSavedState(mixedParsed)==mixedBytes,
+        "Mixed codec10 omitted birth/frame/lifecycle/timer/AI/RNG or array data");
+    SameDecalGraph(*mixed.nativeDecals,*mixedParsed.nativeDecals);
+    auto legacy=State();const auto oldBytes=EncodeScriptSavedState(legacy);legacy.nativeDecals=DecalGraph();
+    legacy.nativeDecals->mapName=legacy.mapName;Require(EncodeScriptSavedState(legacy)[6]==10u,"Graph did not force codec10");
+    legacy.nativeDecals.reset();Require(EncodeScriptSavedState(legacy)==oldBytes && !ScriptStateDetail::HasIntArrays(legacy),
+        "Removing graph changed byte-exact legacy codec");
+    ScriptSavedState emptyGraph{"Map",{}};emptyGraph.nativeDecals=ScriptSavedNativeDecals{"Map","Map.Model0","Map.Level0",0u,0u,{}};
+    Require(DecodeScriptSavedState(EncodeScriptSavedState(emptyGraph)).nativeDecals.has_value(),
+        "Present empty graph binding was silently discarded");
+}
+void SetU32(Bytes& bytes,std::size_t offset,std::uint32_t value) {
+    for(unsigned i=0u;i<4u;++i) bytes.at(offset+i)=static_cast<std::uint8_t>(value>>(8u*i));
+}
+void InvalidIntArrayAndDecalData() {
+    const auto arrayLiteral=IntArrayLiteral();
+    for(std::size_t length=0u;length<arrayLiteral.size();++length) {
+        const Bytes truncated(arrayLiteral.begin(),arrayLiteral.begin()+length);
+        Reject([&] {DecodeScriptSavedState(truncated);},"Truncated codec10 integer array accepted");
+    }
+    for(std::uint8_t version=1u;version<10u;++version) {
+        auto broken=arrayLiteral;broken[6]=version;
+        Reject([&] {DecodeScriptSavedState(broken);},"Legacy codec accepted Tag11 integer array");
+    }
+    auto broken=OneValue({11u,0u,0u,0u,0u});
+    Reject([&] {DecodeScriptSavedState(broken);},"Legacy codec1 accepted even empty Tag11 payload");
+    // The array value occurs after the property key/name/index. Find that exact
+    // independently constructed prefix, not an arbitrary byte11 in a string.
+    Bytes prefix{'D','X','Q','V','M','S',10u,0u};String(prefix,"Map");U32(prefix,1u);
+    String(prefix,"Map.Decal");String(prefix,"Engine.Decal");U32(prefix,1u);
+    Property(prefix,"Engine.Decal.SurfList","SurfList",0u);
+    broken=arrayLiteral;SetU32(broken,prefix.size()+1u,0xffffffffu);
+    Reject([&] {DecodeScriptSavedState(broken);},"Unbounded dynamic integer-array count accepted");
+    auto noFeature=ScriptSavedState{"Map",{}};broken=EncodeScriptSavedState(noFeature);broken[6]=10u;
+    U32(broken,0u);U32(broken,0u);U32(broken,0u);broken.push_back(0u);broken.push_back(0u);
+    Reject([&] {DecodeScriptSavedState(broken);},"Codec10 with neither graph nor IntArray was accepted");
+    DecalWireOffsets offsets;const auto literal=DecalLiteral(&offsets);
+    for(std::size_t length=0u;length<literal.size();++length) {
+        const Bytes truncated(literal.begin(),literal.begin()+length);
+        Reject([&] {DecodeScriptSavedState(truncated);},"Truncated native decal graph accepted");
+    }
+    for(const auto offset : {offsets.surfaceCount,offsets.nodeCount,offsets.firstRecordCount,
+            offsets.firstMembershipCount,offsets.ownerCount}) {
+        broken=literal;SetU32(broken,offset,0xffffffffu);
+        Reject([&] {DecodeScriptSavedState(broken);},"Unbounded native decal graph count accepted");
+    }
+    for(const auto value : {5u,0xffffffffu}) {
+        broken=literal;SetU32(broken,offsets.firstMembershipIndex,value);
+        Reject([&] {DecodeScriptSavedState(broken);},"Out-of-range encoded node membership accepted");
+    }
+    for(const auto value : {3u,0xffffffffu}) {
+        broken=literal;SetU32(broken,offsets.firstMirrorIndex,value);
+        Reject([&] {DecodeScriptSavedState(broken);},"Out-of-range encoded SurfList index accepted");
+    }
+    for(std::size_t component=0u;component<12u;++component)
+        for(const auto bits : {0x7f800000u,0xff800000u,0x7fc00000u}) {
+            broken=literal;SetU32(broken,offsets.firstCorner+component*4u,bits);
+            Reject([&] {DecodeScriptSavedState(broken);},"Nonfinite encoded native corner accepted");
+        }
+    broken=literal;broken[offsets.presence]=2u;
+    Reject([&] {DecodeScriptSavedState(broken);},"Invalid graph-presence boolean accepted");
+    broken=literal;broken[offsets.mapCharacters]='X';
+    Reject([&] {DecodeScriptSavedState(broken);},"Graph bound to another saved map accepted");
+    for(const auto offset : {offsets.firstOwnerCharacters,offsets.firstMirrorCharacters}) {
+        broken=literal;broken[offset]=0u;
+        Reject([&] {DecodeScriptSavedState(broken);},"NUL graph owner identity accepted");
+        broken=literal;broken[offset]=255u;
+        Reject([&] {DecodeScriptSavedState(broken);},"Non-ASCII checkpoint object identity accepted");
+    }
+    broken=literal;broken.push_back(0u);
+    Reject([&] {DecodeScriptSavedState(broken);},"Trailing graph checkpoint bytes accepted");
+    ScriptSavedState graph{"Map",{}};graph.nativeDecals=DecalGraph();
+    for(const auto& identity : {std::string{},std::string("A\0B",3u),std::string(1025u,'a')}) {
+        auto invalid=graph;invalid.nativeDecals->state.surfaces[0][0].ownerIdentity=identity;
+        Reject([&] {EncodeScriptSavedState(invalid);},"Malformed live record owner identity accepted");
+        invalid=graph;invalid.nativeDecals->state.owners[0].ownerIdentity=identity;
+        Reject([&] {EncodeScriptSavedState(invalid);},"Malformed live mirror identity accepted");
+        invalid=graph;invalid.nativeDecals->modelPath=identity;
+        Reject([&] {EncodeScriptSavedState(invalid);},"Malformed live native model identity accepted");
+        invalid=graph;invalid.nativeDecals->levelPath=identity;
+        Reject([&] {EncodeScriptSavedState(invalid);},"Malformed live native Level identity accepted");
+    }
+    auto invalid=graph;invalid.nativeDecals->surfaceCount=2u;
+    Reject([&] {EncodeScriptSavedState(invalid);},"Surface matrix/count mismatch accepted");
+    invalid=graph;invalid.nativeDecals->nodeCount=0u;
+    Reject([&] {EncodeScriptSavedState(invalid);},"Node membership accepted with zero model nodes");
+    for(const auto index : {-1,5}) {
+        invalid=graph;invalid.nativeDecals->state.surfaces[0][0].nodeMembership={index};
+        Reject([&] {EncodeScriptSavedState(invalid);},"Invalid live membership index accepted");
+    }
+    for(const auto index : {-1,3}) {
+        invalid=graph;invalid.nativeDecals->state.owners[0].surfaces={index};
+        Reject([&] {EncodeScriptSavedState(invalid);},"Invalid live mirror surface index accepted");
+    }
+    for(const auto& alias : {std::string("Map.DecalA"),std::string("map.decala")}) {
+        invalid=graph;invalid.nativeDecals->state.owners.push_back({alias,{}});
+        Reject([&] {EncodeScriptSavedState(invalid);},"Duplicate/case-colliding live mirror accepted");
+    }
+    invalid=graph;invalid.nativeDecals->state.surfaces[0][0].relativeCorners[0].x=std::numeric_limits<float>::infinity();
+    Reject([&] {EncodeScriptSavedState(invalid);},"Nonfinite live relative corner accepted");
+    invalid=graph;invalid.nativeDecals->mapName="Other";
+    Reject([&] {EncodeScriptSavedState(invalid);},"Different live graph map accepted");
+    // Corrupt a later equal-length mirror identity to a case alias, while
+    // preserving every count/length so uniqueness itself is the rejection.
+    Bytes needle;String(needle,"Map.DecalZ");U32(needle,0u);
+    const auto found=std::search(literal.begin()+static_cast<std::ptrdiff_t>(offsets.ownerCount),literal.end(),needle.begin(),needle.end());
+    Require(found!=literal.end(),"Mirror alias corruption fixture not found");
+    broken=literal;const auto aliasPosition=static_cast<std::size_t>(found-literal.begin())+4u;
+    const std::string alias="map.decala";
+    std::copy(alias.begin(),alias.end(),broken.begin()+static_cast<std::ptrdiff_t>(aliasPosition));
+    Reject([&] {DecodeScriptSavedState(broken);},"Encoded case-colliding mirror owner accepted");
+}
+void IntArrayAndDecalBudgets() {
+    const auto arrays=IntArrayState();const auto arrayBytes=IntArrayLiteral();
+    ScriptStateLimits measuredLimits;ScriptStateDetail::Writer arrayMeasured(measuredLimits,nullptr);arrayMeasured.State(arrays);
+    Require(arrayMeasured.measuredBudget().nodes==6u && arrayMeasured.measuredBudget().intArrayElements==5u,
+        "Dynamic integer elements did not consume aggregate node/element budget");
+    auto exact=measuredLimits;exact.totalValueNodes=6u;exact.maxIntArrayElements=5u;
+    exact.maxBytes=arrayMeasured.measuredBudget().retained;
+    Require(EncodeScriptSavedState(arrays,exact)==arrayBytes &&
+        EncodeScriptSavedState(DecodeScriptSavedState(arrayBytes,exact),exact)==arrayBytes,"Exact integer-array budgets failed");
+    for(const auto which : {0,1,2}) {
+        auto small=exact;if(which==0) --small.totalValueNodes;else if(which==1) --small.maxIntArrayElements;else --small.maxBytes;
+        Reject([&] {EncodeScriptSavedState(arrays,small);},"Integer-array encode exceeded aggregate budget");
+        Reject([&] {DecodeScriptSavedState(arrayBytes,small);},"Integer-array decode exceeded aggregate budget");
+    }
+    auto composed=arrays;composed.objects[0].properties.push_back({"Engine.Decal.Other","Other",0u,IntArray({1})});
+    auto small=measuredLimits;small.maxIntArrayElements=5u;
+    Reject([&] {EncodeScriptSavedState(composed,small);},"Separate arrays did not share aggregate element budget");
+    const auto composedBytes=EncodeScriptSavedState(composed);
+    Reject([&] {DecodeScriptSavedState(composedBytes,small);},"Decoded separate arrays exceeded aggregate element budget");
+    ScriptSavedState graph{"Map",{}};graph.nativeDecals=DecalGraph();const auto bytes=DecalLiteral();
+    ScriptStateDetail::Writer graphMeasured(measuredLimits,nullptr);graphMeasured.State(graph);
+    const auto& measured=graphMeasured.measuredBudget();
+    Require(measured.decalSurfaces==3u && measured.decalOwners==3u && measured.decalRecords==4u &&
+        measured.decalMembership==5u && measured.decalSurfListEntries==6u,"Native graph aggregate counters changed");
+    exact={};exact.maxBytes=measured.retained;exact.maxDecalSurfaces=3u;exact.maxDecalNodes=5u;
+    exact.maxDecalOwners=3u;exact.maxDecalRecords=4u;exact.maxDecalMembership=5u;exact.maxDecalSurfListEntries=6u;
+    exact.totalValueNodes=0u;exact.maxProperties=0u;exact.maxObjects=0u;exact.maxAiManagers=0u;
+    Require(EncodeScriptSavedState(graph,exact)==bytes && EncodeScriptSavedState(DecodeScriptSavedState(bytes,exact),exact)==bytes,
+        "Exact graph-only budgets failed or required fabricated actors/values/AI");
+    const std::array<std::size_t ScriptStateLimits::*,7> caps{&ScriptStateLimits::maxDecalSurfaces,&ScriptStateLimits::maxDecalNodes,
+        &ScriptStateLimits::maxDecalOwners,&ScriptStateLimits::maxDecalRecords,&ScriptStateLimits::maxDecalMembership,
+        &ScriptStateLimits::maxDecalSurfListEntries,&ScriptStateLimits::maxBytes};
+    for(const auto cap:caps) {
+        auto tooSmall=exact;--(tooSmall.*cap);
+        Reject([&] {EncodeScriptSavedState(graph,tooSmall);},"Graph encode exceeded tightened aggregate budget");
+        Reject([&] {DecodeScriptSavedState(bytes,tooSmall);},"Graph decode exceeded tightened aggregate budget");
+    }
+    Bytes output;ScriptStateDetail::Writer emitting(exact,&output);
+    Reject([&] {emitting.MeasureNativeDecals(*graph.nativeDecals);},"Emitting writer accepted graph-only measurement");
+    Require(output.empty(),"Rejected graph measurement wrote output");
+    ScriptStateDetail::Writer graphOnly(measuredLimits,nullptr);graphOnly.MeasureNativeDecals(*graph.nativeDecals);
+    Require(graphOnly.measuredBudget().decalRecords==4u && graphOnly.measuredBudget().nodes==0u,
+        "Live graph measurement lost native records or fabricated script nodes");
+    auto mixed=IntArrayState();mixed.nativeDecals=DecalGraph();const auto mixedBytes=EncodeScriptSavedState(mixed);
+    ScriptStateDetail::Writer joint(measuredLimits,nullptr);joint.State(mixed);small={};small.maxBytes=joint.measuredBudget().retained-1u;
+    Reject([&] {EncodeScriptSavedState(mixed,small);},"Mixed native/array retained encode budget was not cumulative");
+    Reject([&] {DecodeScriptSavedState(mixedBytes,small);},"Mixed native/array retained decode budget was not cumulative");
+}
+void DecalSnapshotImportAndCapacity() {
+    const auto graph=DecalGraph();DecalState native(graph.surfaceCount,graph.nodeCount);
+    const auto stats=native.ImportSnapshot(graph.state);
+    ScriptSavedNativeDecals reconstructed=graph;reconstructed.state=native.ReadOnlySnapshot();SameDecalGraph(graph,reconstructed);
+    Require(stats.resolverCalls==0u && native.Usage().records==4u && native.Usage().surfListEntries==6u,
+        "Checkpoint import invoked live grouping or lost native/mirror records");
+    ScriptSavedState encoded{"Map",{}};encoded.nativeDecals=reconstructed;const auto before=EncodeScriptSavedState(encoded);
+    const auto usage=native.Usage();
+    const auto unchanged=[&]() {
+        encoded.nativeDecals->state=native.ReadOnlySnapshot();
+        Require(EncodeScriptSavedState(encoded)==before && native.Usage().storageBytes==usage.storageBytes &&
+            native.Usage().records==usage.records && native.Usage().surfListEntries==usage.surfListEntries,
+            "Failed snapshot import changed native graph/usage");
+    };
+    const auto refused=[&](const DecalStateSnapshot& snapshot) {
+        bool caught{};try {native.ImportSnapshot(snapshot);}catch(const std::runtime_error&) {caught=true;}
+        Require(caught,"Malformed snapshot import was accepted");unchanged();
+    };
+    auto invalid=graph.state;invalid.surfaces.pop_back();refused(invalid);
+    invalid=graph.state;invalid.surfaces[0][0].nodeMembership={5};refused(invalid);
+    invalid=graph.state;invalid.surfaces[0][0].relativeCorners[1].z=std::numeric_limits<float>::quiet_NaN();refused(invalid);
+    invalid=graph.state;invalid.owners[0].surfaces={3};refused(invalid);
+    invalid=graph.state;invalid.owners.push_back(invalid.owners[0]);refused(invalid);
+    invalid=graph.state;invalid.owners[0].ownerIdentity.clear();refused(invalid);
+    native.ImportSnapshot(native.ReadOnlySnapshot());unchanged(); // Aliased read-only source.
+    DecalStateLimits caps;caps.records=3u;DecalState bounded(graph.surfaceCount,graph.nodeCount,caps);
+    bool refusedCount{};try {bounded.ImportSnapshot(graph.state);}catch(const std::runtime_error&) {refusedCount=true;}
+    Require(refusedCount && bounded.Usage().records==0u && bounded.ReadOnlySnapshot().owners.empty(),
+        "Over-budget import partially published records/mirrors");
+    const auto baseline=DecalSnapshotRetainedBytes(graph.state,graph.surfaceCount,graph.nodeCount);
+    auto capacity=graph;capacity.state.surfaces[0].reserve(50u);capacity.state.surfaces[0][0].nodeMembership.reserve(100u);
+    capacity.state.owners[0].surfaces.reserve(100u);capacity.state.owners[0].ownerIdentity.reserve(200u);
+    const auto reserved=DecalSnapshotRetainedBytes(capacity.state,capacity.surfaceCount,capacity.nodeCount);
+    Require(reserved>baseline && DecalCheckpointRetainedBytes(capacity)>reserved,
+        "Noncopy retained accounting omitted reserved vector/string capacity or graph wrapper");
+    Require(DecalSnapshotRetainedBytes(capacity.state,capacity.surfaceCount,capacity.nodeCount,reserved)==reserved,
+        "Exact retained capacity bound failed");
+    bool refusedBytes{};try {DecalSnapshotRetainedBytes(capacity.state,capacity.surfaceCount,capacity.nodeCount,reserved-1u);}
+    catch(const std::runtime_error&) {refusedBytes=true;}
+    Require(refusedBytes,"Noncopy retained capacity byte bound was ignored");
+    ScriptSavedState capacityState{"Map",{}};capacityState.nativeDecals=capacity;
+    Require(EncodeScriptSavedState(capacityState)==before,"Reserved capacities altered canonical checkpoint bytes");
+}
 }
 
 int main() {
@@ -1290,7 +1653,8 @@ int main() {
         AiRoundtripAndLegacy();InvalidAiGraphs();AiBudgets();
         RandomRoundtripAndLegacy();InvalidRandomStateAndBudgets();
         SleepRoundtripAndLegacy();LandingSharedTimerWire();InvalidSleepStateAndBudgets();
+        IntArrayAndDecalRoundtrip();InvalidIntArrayAndDecalData();IntArrayAndDecalBudgets();DecalSnapshotImportAndCapacity();
         std::cout<<"PASS script-state codec controls="<<checks<<" rejection controls="<<rejections
-            <<"; codecs1–7 legacy bytes, codec8 actor-owned signed timer and optional RNG, structural codec only\n";return 0;
+            <<"; legacy bytes, signed timers, codec10 native decals/Tag11 integer arrays, structural codec only\n";return 0;
     }catch(const std::exception& error) {std::cerr<<"FAIL script-state codec: "<<error.what()<<" after "<<checks<<" controls\n";return 1;}
 }

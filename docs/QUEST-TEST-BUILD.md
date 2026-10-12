@@ -1,15 +1,44 @@
-# Current Quest test-build handoff (2026-10-11)
+# Current Quest test-build handoff (2026-10-12)
 
-Host-only decal geometry/state work dated 2026-10-12 is documented in
-[DECAL-GEOMETRY-PLAN.md](DECAL-GEOMETRY-PLAN.md). It has not created a replacement
-APK or changed the installed renderer; the signed APK recorded below remains
-the latest build. Connected-Quest default auto-install remains enabled for
-every actual new APK, preserving data/saves.
+## Latest: native decal ownership, Detach and checkpoints
 
-## Latest: Spawn tag fidelity and shadow prerequisites
+`artifacts/decal-runtime-20261012/DeusExQuestVR-decal-runtime-20261012.apk`
+is the newest signed ARM64 build:18,919,193 bytes, SHA256
+`8D6B115A3745F51819FF0C8D977A03618B9D48D69A4674D5A19938CA0AE48237`.
+The default helper automatically replace-installed it on connected Quest3
+`2G0YC5ZG620985`, preserving app data/saves. Installed `base.apk` has the exact
+same hash; device lastUpdateTime is `2026-10-12 02:31:21`. APK Signature Scheme
+v2 verification passes. Its16 ZIP entries contain port/SDK libraries/assets,
+not the original commercial game packages. One waited launch confirms
+process22672; launch alone does not establish map/tracking readiness.
+
+Data-probe library:6,110,648 bytes, SHA256
+`1573F9BA501955A3D15D09DD1C28048A57C1447D4B3AFE947CF3470BE1BAF7EF`.
+Quest renderer library:5,360,288 bytes, SHA256
+`6BA7314A44E05C6CA6CA55E10204126940BC6BDD999A1D009AD94E91B2352FB4`.
+The shared VM type/loader changes cause a relink; no hand/body geometry,
+controller mapping or recenter behavior was edited in this batch.
+
+The new runtime owns/journals native decal records and roots, implements original
+Detach and bounded INT-array bridging, and cold-restores codec10/envelope13
+checkpoints after actual authored schema validation. See
+[DECAL-CHECKPOINT.md](DECAL-CHECKPOINT.md). Native Attach and rendered NPC shadows,
+original player/world startup, possession and live campaign Tick remain pending.
+This is not a full playable-campaign release. Default connected-Quest
+data-preserving auto-install stays enabled for every actual new APK.
+
+The latest launch reports tracking unavailable; no new physical hand/body or
+visual/performance acceptance is inferred from the running process or untracked
+72fps timing samples. The screenshot request could not complete because the
+app did not consume its pending diagnostic within20 seconds; that mailbox was
+left intact, not overwritten or repeatedly queued. Host/original-data results are in
+[STATUS.md](STATUS.md); local logs and the archived APK are ignored under
+`artifacts/decal-runtime-20261012/`.
+
+## Previous: Spawn tag fidelity and shadow prerequisites
 
 `artifacts/decal-prerequisites-20261011/DeusExQuestVR-decal-prerequisites-20261011.apk`
-is the newest signed ARM64 build: 18,919,145 bytes, SHA256
+was the preceding signed ARM64 build: 18,919,145 bytes, SHA256
 `F0E78EA681C70E0DF509375D0DC2B746CCCBAE7C337A01295A508604887EF70B`.
 The default build helper automatically replace-installed it on connected Quest 3
 `2G0YC5ZG620985`, without clearing app data/saves. On-device `base.apk` SHA256

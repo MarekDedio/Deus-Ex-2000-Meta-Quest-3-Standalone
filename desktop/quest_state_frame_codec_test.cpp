@@ -30,6 +30,7 @@ bool SameValue(const Vm::Value& a,const Vm::Value& b) {
     case Vm::Kind::Bool: return a.boolean==b.boolean;
     case Vm::Kind::Name: case Vm::Kind::Object: case Vm::Kind::String: return a.text==b.text;
     case Vm::Kind::Rotator: return a.rotation==b.rotation;
+    case Vm::Kind::IntArray: return a.intArray==b.intArray;
     case Vm::Kind::Vector:
         for (std::size_t i=0; i<3u; ++i) if (!SameFloat(a.vector[i],b.vector[i])) return false;
         return true;

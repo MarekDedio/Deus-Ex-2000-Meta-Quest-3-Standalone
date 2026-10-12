@@ -1,5 +1,47 @@
 # Port status
 
+## Native decal ownership, Detach and checkpoints (2026-10-12)
+
+- Added a map-owned native decal GC graph with actual Level/Model/record-owner
+  roots, journalled mutation/rollback, native dirty-world revisions and guarded
+  map retirement. Ordered records, duplicate/empty memberships and reflected
+  SurfList mirrors retain legitimate missing/foreign-record behavior.
+- Added bounded whole INT-array VM values and authored tag decoding. Original
+  Const SurfList remains script-read-only but native-writable. Actual native-zero
+  Detach processes the reflected list in reverse and preserves foreign records;
+  original Destroyed dispatch uses the normal script/super path.
+- Codec10/envelope13 stores arrays and explicit native checkpoints. Cold schema
+  preflight verifies map/Level/root Model, counts, canonical Decal owners,
+  membership surfaces and mirror agreement before rooted staging/publication.
+  Legacy loads reset rather than replay Attach or RNG. Capacity-aware property
+  decoding bounds raw bytes, payloads and simultaneous old/new record buffers;
+  schema native Model scratch is separately bounded before decoding.
+- Strict standalone VM controls pass677,905/338 expected rejections (new arrays
+  96/36); codec controls7355/6482 and model/property controls450 expected
+  rejections pass. All57 ordinary host tests pass (61 registered; four owned-data
+  entries skipped by default). Runtime-save, original defaults1002 and PawnList67
+  pass separately. The focused real Training checkpoint/world proof passes exact
+  cold replacement, duplicate/mismatch retention, symbolic refusals, GC and
+  post-native rollback. Its original startup still refuses AttachDecal with exact
+  complete rollback. Full original actor controls across Training/UNATCOIsland/
+  Intro also pass. Thus all four optional owned-data suites completed separately.
+  CTest rerun takes30.49 seconds; logs are ignored under
+  `artifacts/decal-runtime-20261012/`.
+- Test-only corrections keep the cold-asset check before checkpoint collision
+  rebuilds warm meshes and shorten a generated padding-property name. The
+  inventory migration test still uses65,536 legal properties and rejects four
+  derived Planes before publication;65,532 passes under the unchanged16MiB cap.
+- The final signed APK automatically installed data-preservingly on Quest3;
+  archived and device hashes match. One waited launch passes, but tracking was
+  unavailable and the capture mailbox timed out without being overwritten.
+  No renewed physical/visual acceptance is claimed. The headset disconnected
+  after verified installation. See [QUEST-TEST-BUILD.md](QUEST-TEST-BUILD.md).
+- See [DECAL-CHECKPOINT.md](DECAL-CHECKPOINT.md). Native Attach, renderer
+  publication, original world/player startup, possession and live campaign Tick
+  remain unfinished. These changes are not evidence of rendered NPC shadows or
+  complete campaign gameplay. Every actual new APK automatically replace-installs
+  on the connected authorized Quest without clearing data/saves.
+
 ## Original multidecal geometry and ordered attachment state (2026-10-12)
 
 - Added original authored BSP polygon selection, distinct primary/secondary

@@ -16,6 +16,8 @@
 #include "quest_actor_latent.h"
 #include "quest_actor_state_control.h"
 #include "quest_unreal_string.h"
+#include "quest_decal_checkpoint.h"
+#include "quest_unreal_int_array.h"
 
 #include <memory>
 #include <algorithm>
@@ -39,6 +41,7 @@ namespace {
 
 class RuntimeObject;
 class RuntimeAIManager;
+class RuntimeMapDecals;
 struct InventoryIconClassConstraint {
     RuntimeObject* indexedClass{}; // Non-owning immutable metadata, not a new GC root.
     std::uint8_t nativeClass{};
@@ -155,6 +158,33 @@ protected:
     }
 };
 
+// Native surface records live with their loaded map, not a temporary VM host.
+// Symbolic owner names are checkpoint identities; these actual GC edges keep
+// even pending-deletion Decals alive while a surface still references them.
+class RuntimeMapDecals final : public GCObject {
+public:
+    RuntimeMapDecals(std::size_t surfaces, std::size_t nodes) : state(surfaces, nodes) {}
+    QuestVr::DecalState state;
+    RuntimeObject* level{};
+    RuntimeObject* model{};
+    std::vector<RuntimeObject*> actorRoots;
+protected:
+    GCAllocation* Mark(GCAllocation* marklist) override {
+        marklist = GC::MarkObject(marklist, level);
+        marklist = GC::MarkObject(marklist, model);
+        for (auto* actor : actorRoots) marklist = GC::MarkObject(marklist, actor);
+        return marklist;
+    }
+};
+
+std::size_t NativeDecalRetainedBytes(const RuntimeMapDecals& graph) {
+    const auto snapshot = QuestVr::DecalSnapshotRetainedBytes(graph.state.ReadOnlySnapshot(),
+        graph.state.Usage().surfaces, graph.state.NodeCount());
+    return QuestVr::DecalStateDetail::Add(snapshot, QuestVr::DecalStateDetail::Add(
+        sizeof(RuntimeMapDecals) + sizeof(GCAllocation),
+        QuestVr::DecalStateDetail::Multiply(graph.actorRoots.capacity(), sizeof(RuntimeObject*))));
+}
+
 GCAllocation* RuntimeObject::Mark(GCAllocation* marklist) {
     for (auto* reference : references) marklist = GC::MarkObject(marklist, reference);
     for (auto* actor : childActors) marklist = GC::MarkObject(marklist, actor);
@@ -169,6 +199,7 @@ public:
 
     std::vector<RuntimeObject*> exports;
     std::size_t structDescriptorBytes{};
+    RuntimeMapDecals* nativeDecals{};
 
 protected:
     ~RuntimePackage() override {
@@ -179,7 +210,7 @@ protected:
         for (RuntimeObject* object : exports) {
             marklist = GC::MarkObject(marklist, object);
         }
-        return marklist;
+        return GC::MarkObject(marklist, nativeDecals);
     }
 
 private:
@@ -1466,7 +1497,7 @@ public:
     }
     void Commit() override {
         ValidateStateBudget();
-        const bool worldChanged = persistentRuntime->get()->exports.size() != beforeExportCount_ ||
+        const bool worldChanged = beforeDecals_.has_value() || persistentRuntime->get()->exports.size() != beforeExportCount_ ||
             std::any_of(saved_.begin(), saved_.end(), [](const auto& entry) {
             return !entry.first->classDescriptor && IsDerivedFromPath(entry.first->cls, "Engine.Actor");
         });
@@ -1488,13 +1519,21 @@ public:
         if (worldChanged) persistentMapTagIndex.swap(tags);
         if (worldChanged) ++persistentWorldRevision;
         beforeCollision_.reset();
-        saved_.clear(); savedAi_.clear(); provisionalAi_.clear(); transaction_ = false;
+        saved_.clear(); savedAi_.clear(); provisionalAi_.clear(); beforeDecals_.reset(); transaction_ = false;
     }
     void Rollback() noexcept override {
         if (!transaction_) return;
         persistentScriptRandomSeed = beforeRandomSeed_;
         // Restore native bindings/edges before provisional actor identities are
         // retired. Swap-only rollback cannot allocate or invoke game scripts.
+        if (beforeDecals_) {
+            auto* graph = beforeDecals_->graph.get();
+            if (graph && beforeDecals_->state) {
+                static_cast<void>(graph->state.Swap(*beforeDecals_->state));
+                graph->actorRoots.swap(beforeDecals_->actorRoots);
+            }
+            persistentRuntime->get()->nativeDecals = graph;
+        }
         for (auto& [owner, before] : savedAi_) {
             auto* manager = before.manager.get();
             if (manager && before.state) {
@@ -1530,7 +1569,7 @@ public:
         }
         persistentRuntime->get()->exports.resize(beforeExportCount_);
         persistentWorldActors.resize(beforeWorldSlots_);
-        beforeCollision_.reset(); saved_.clear(); savedAi_.clear(); provisionalAi_.clear(); transaction_ = false;
+        beforeCollision_.reset(); saved_.clear(); savedAi_.clear(); provisionalAi_.clear(); beforeDecals_.reset(); transaction_ = false;
     }
     Property ResolveProperty(const Function& function, const std::int32_t reference) override {
         RuntimeObject* object = Object(ResolveObject(function, reference));
@@ -1599,11 +1638,17 @@ public:
         if (!object->active && !object->worldRemoved) throw std::runtime_error("VM receiver is inactive");
         const bool defaults = scope == QuestVr::Vm::Scope::Default;
         auto result = ReferenceFor(object, property, 0u, defaults);
+        // Native INT array support does not authorize compiled script to write
+        // the original Const SurfList. Native ReferenceFor remains writable.
+        const bool nativeConstArray = property.zero.kind == Kind::IntArray && (property.flags & 2u);
+        if (nativeConstArray) result->write = {};
         result->dimension = property.arrayDimension;
-        result->element = [this, object, property, defaults](const std::size_t slot) {
+        result->element = [this, object, property, defaults, nativeConstArray](const std::size_t slot) {
             if (slot >= property.arrayDimension || slot > std::numeric_limits<std::uint32_t>::max())
                 throw std::runtime_error("VM property fixed-array index is out of range");
-            return ReferenceFor(object, property, static_cast<std::uint32_t>(slot), defaults);
+            auto element = ReferenceFor(object, property, static_cast<std::uint32_t>(slot), defaults);
+            if (nativeConstArray) element->write = {};
+            return element;
         };
         return result;
     }
@@ -1953,6 +1998,8 @@ public:
     }
     Evaluation NativeWithExecution(const std::uint16_t index, const std::string& receiver,
         const std::vector<Evaluation>& arguments, const Function* declaration, QuestVr::Vm::Execution& execution) override {
+        if (index == 0u && declaration && LowerAscii(declaration->path) == "engine.decal.detachdecal")
+            return DetachDecalNative(Object(receiver), arguments, *declaration);
         if (index == 278u) {
             // execSpawn owns evaluated arguments across synchronous native
             // callbacks. In particular, SpawnTag may alias an actor property
@@ -2706,6 +2753,11 @@ private:
         std::optional<QuestVr::Ai::State> state;
         std::vector<RuntimeObject*> actorRoots;
     };
+    struct BeforeDecals {
+        GCRoot<RuntimeMapDecals> graph;
+        std::optional<QuestVr::DecalState> state;
+        std::vector<RuntimeObject*> actorRoots;
+    };
     std::unordered_map<std::string, PortablePackageTables> tables_;
     std::unordered_map<std::string, std::shared_ptr<const Function>> functions_;
     std::unordered_map<std::string, std::shared_ptr<const QuestVr::AuthoredStructSchema>> structSchemas_;
@@ -2716,6 +2768,7 @@ private:
     std::unordered_map<RuntimeObject*, Before> saved_;
     std::unordered_map<RuntimeObject*, BeforeAI> savedAi_;
     std::vector<GCRoot<RuntimeAIManager>> provisionalAi_;
+    std::optional<BeforeDecals> beforeDecals_;
     std::optional<QuestVr::ActorCollisionRegistry> beforeCollision_;
     std::size_t lifecycleOperations_{};
     std::size_t beforeExportCount_{}, beforeWorldSlots_{};
@@ -2870,6 +2923,21 @@ private:
         if (type == "NameProperty") return Value::Text(Kind::Name, "None");
         if (type == "StrProperty" || type == "StringProperty") return Value::Text(Kind::String, {});
         if (type == "ObjectProperty" || type == "ClassProperty") return Value::Text(Kind::Object, {});
+        if (type == "ArrayProperty") {
+            // A dynamic array's inner is an actual UProperty reference. The
+            // fixed ArrayDim is NOT its length. Only the audited native INT
+            // payload is supported; no generic element opcode is enabled.
+            auto* inner = Object(Qualified(Table(property->sourcePath), descriptor.referencedType));
+            const auto& arrayTable = Table(property->sourcePath);
+            const auto& innerTable = Table(inner->sourcePath);
+            if (descriptor.arrayDimension != 1 || !inner->property ||
+                inner->property->type != "IntProperty" || inner->property->arrayDimension != 1 ||
+                inner->outer != property ||
+                LowerAscii(Qualified(arrayTable, arrayTable.exports.at(property->exportIndex).ObjClass)) != "core.arrayproperty" ||
+                LowerAscii(Qualified(innerTable, innerTable.exports.at(inner->exportIndex).ObjClass)) != "core.intproperty")
+                throw std::runtime_error("Unsupported runtime dynamic array inner schema");
+            return Value::IntArray({});
+        }
         if (type == "StructProperty") {
             return QuestVr::MakeAuthoredStructZero(*StructPropertySchema(property->reflection.objectPath));
         }
@@ -2913,6 +2981,10 @@ private:
     }
     Value Decode(RuntimeObject& source, const PortableTaggedProperty& tag, const Property& property) {
         const auto& zero = property.zero;
+        if (zero.kind == Kind::IntArray) {
+            if (tag.type != 9u) throw std::runtime_error("Authored INT array tag has the wrong type");
+            return Value::IntArray(QuestVr::DecodeAuthoredIntArray(tag.value));
+        }
         if (zero.kind == Kind::Struct || zero.kind == Kind::Vector || zero.kind == Kind::Rotator) {
             const auto schema = StructPropertySchema(property.key);
             if (tag.type != 10u)
@@ -3231,6 +3303,73 @@ private:
         }
         savedAi_.emplace(owner, std::move(before));
     }
+    void TouchDecals() {
+        if (!transaction_) throw std::runtime_error("Decal mutation outside a VM transaction");
+        if (beforeDecals_) return;
+        auto* graph = persistentRuntime->get()->nativeDecals;
+        // Charge the additional journal before copying any nested geometry.
+        if (graph) ValidateStateBudget(NativeDecalRetainedBytes(*graph));
+        BeforeDecals before; before.graph.set(graph);
+        if (graph) { before.state.emplace(graph->state); before.actorRoots = graph->actorRoots; }
+        beforeDecals_.emplace(std::move(before));
+    }
+    void RefreshDecalRoots(RuntimeMapDecals* graph) {
+        std::vector<RuntimeObject*> roots;
+        const auto rootCount = graph->state.Usage().records;
+        ValidateStateBudget(QuestVr::DecalStateDetail::Multiply(rootCount, sizeof(RuntimeObject*)));
+        roots.reserve(rootCount);
+        const auto retain = [&](const std::string& path) {
+            LifecycleStep();
+            auto* actor = Object(path); RequireMapActor(actor);
+            if (!IsDerivedFromPath(actor->cls, "Engine.Decal") || actor->nativeXLevel != graph->level ||
+                actor->reflection.objectPath != path)
+                throw std::runtime_error("Native decal owner is not a canonical Decal in its native Level");
+            roots.push_back(actor);
+        };
+        const auto& snapshot = graph->state.ReadOnlySnapshot();
+        for (const auto& surface : snapshot.surfaces) for (const auto& record : surface) retain(record.ownerIdentity);
+        graph->actorRoots.swap(roots);
+    }
+    Evaluation DetachDecalNative(RuntimeObject* actor, const std::vector<Evaluation>& arguments,
+                                 const Function& declaration) {
+        RequireMapActor(actor);
+        if (!IsDerivedFromPath(actor->cls, "Engine.Decal") || !arguments.empty() ||
+            declaration.nativeIndex != 0u || declaration.flags != 0x500u || !declaration.variables.empty())
+            throw std::runtime_error("DetachDecal declaration or receiver does not match original GOTY schema");
+        const auto property = PropertyNamed(actor, "SurfList");
+        if (LowerAscii(property.key) != "engine.decal.surflist" || property.flags != 0x00400002u ||
+            property.zero.kind != Kind::IntArray || property.arrayDimension != 1u)
+            throw std::runtime_error("DetachDecal SurfList schema does not match original GOTY");
+        const auto list = Read(actor, property, 0u);
+        if (list.intArray.empty()) return {}; // Do not invent native state on an empty original loop.
+        if (!rootModel_) rootModel_ = LoadPortableRootModel68(Table(persistentMapSourcePath));
+        for (const auto surface : list.intArray)
+            if (surface < 0 || static_cast<std::size_t>(surface) >= rootModel_->surfaces.size())
+                throw std::runtime_error("DetachDecal SurfList surface is outside its native Model");
+        auto* graph = persistentRuntime->get()->nativeDecals;
+        if (graph) {
+            if (graph->level != actor->nativeXLevel || graph->state.Usage().surfaces != rootModel_->surfaces.size() ||
+                graph->state.NodeCount() != rootModel_->nodes.size())
+                throw std::runtime_error("DetachDecal graph belongs to another native Model/Level");
+            TouchDecals();
+            // Standalone mutations stage full candidates before publication.
+            // Charge their old/new/overlap buffers in the enclosing host before
+            // allocating, in addition to the already retained rollback journal.
+            auto extra = QuestVr::DecalStateDetail::Multiply(NativeDecalRetainedBytes(*graph), 3u);
+            extra = QuestVr::DecalStateDetail::Add(extra,
+                QuestVr::DecalStateDetail::Multiply(list.intArray.capacity(), 3u * sizeof(std::int32_t)));
+            extra = QuestVr::DecalStateDetail::Add(extra, actor->reflection.objectPath.size() + 1024u);
+            ValidateStateBudget(extra);
+            graph->state.ReplaceOwnerSurfList(actor->reflection.objectPath, list.intArray);
+            graph->state.Detach(actor->reflection.objectPath);
+            RefreshDecalRoots(graph);
+        }
+        // Native code may update this Const reflected array; ordinary script
+        // writes still pass the VM's original Const-property guard.
+        ReferenceFor(actor, property, 0u, false)->write(Value::IntArray({}));
+        ValidateStateBudget();
+        return {};
+    }
     void RefreshAIRoots(RuntimeAIManager* manager) {
         std::vector<RuntimeObject*> roots;
         const auto retain = [&](const std::string& path) {
@@ -3407,7 +3546,7 @@ private:
         RefreshAIRoots(manager);
         return {};
     }
-    void ValidateStateBudget() const {
+    void ValidateStateBudget(const std::size_t extraRetained = 0u) const {
         // Bound persistent state across independent calls, not just one VM's
         // temporary allocations. Measure without copying live values/sets.
         // State/default storage is bounded without copying live values. The
@@ -3417,9 +3556,19 @@ private:
         limits.maxBytes = QuestVr::kMaximumSaveRuntimeBytes;
         QuestVr::ScriptStateDetail::Writer measured(limits, nullptr);
         QuestVr::ScriptStateDetail::Budget defaults{limits};
+        defaults.Retain(extraRetained);
+        if (persistentRuntime->get()->nativeDecals)
+            defaults.Retain(NativeDecalRetainedBytes(*persistentRuntime->get()->nativeDecals));
+        if (beforeDecals_ && beforeDecals_->state) {
+            defaults.Retain(QuestVr::DecalSnapshotRetainedBytes(beforeDecals_->state->ReadOnlySnapshot(),
+                beforeDecals_->state->Usage().surfaces, beforeDecals_->state->NodeCount()));
+            defaults.Retain(beforeDecals_->actorRoots.capacity() * sizeof(RuntimeObject*));
+        }
         if (persistentScriptRandomSeed) defaults.Retain(sizeof(persistentScriptRandomSeed));
         const auto valueBudget = [&](const auto& self, const Value& value, const std::size_t depth) -> void {
             defaults.Node(depth); defaults.Retain(sizeof(value));
+            defaults.IntArrayElements(value.intArray.size());
+            defaults.Retain(QuestVr::DecalStateDetail::Multiply(value.intArray.capacity(), sizeof(std::int32_t)));
             QuestVr::ScriptStateDetail::Text(value.text, limits, false, true);
             defaults.Retain(value.text.size() + 1u);
             if (value.kind == Kind::Float && !std::isfinite(value.floating))
@@ -3800,6 +3949,7 @@ struct PreparedScriptState {
     std::vector<PreparedClassDefaults> classDefaults;
     std::vector<GCRoot<RuntimeObject>> births;
     std::vector<GCRoot<RuntimeAIManager>> aiManagers;
+    GCRoot<RuntimeMapDecals> nativeDecals;
     std::vector<RuntimeObject*> exports, worldActors;
     decltype(persistentQualifiedObjects) qualified;
     decltype(persistentVmObjects) vm;
@@ -3868,8 +4018,24 @@ QuestVr::ScriptSavedState CollectScriptSavedState() {
     QuestVr::ScriptStateLimits limits;
     limits.maxBytes = QuestVr::kMaximumSaveRuntimeBytes;
     QuestVr::ScriptStateDetail::Budget capture{limits};
+    if (const auto* graph = persistentRuntime->get()->nativeDecals) {
+        capture.Retain(NativeDecalRetainedBytes(*graph));
+        if (!graph->model || !graph->level) throw std::runtime_error("Script save native decal binding is missing");
+        capture.Retain(saved.mapName.size() + graph->model->reflection.objectPath.size() +
+            graph->level->reflection.objectPath.size() + 3u);
+        QuestVr::ScriptSavedNativeDecals record;
+        record.mapName = saved.mapName;
+        record.modelPath = graph->model->reflection.objectPath;
+        record.levelPath = graph->level->reflection.objectPath;
+        record.surfaceCount = static_cast<std::uint32_t>(graph->state.Usage().surfaces);
+        record.nodeCount = static_cast<std::uint32_t>(graph->state.NodeCount());
+        record.state = graph->state.ReadOnlySnapshot();
+        saved.nativeDecals.emplace(std::move(record));
+    }
     const auto measure = [&](const auto& self, const QuestVr::Vm::Value& value, const std::size_t depth) -> void {
         capture.Node(depth); capture.Retain(sizeof(value));
+        capture.IntArrayElements(value.intArray.size());
+        capture.Retain(QuestVr::DecalStateDetail::Multiply(value.intArray.capacity(), sizeof(std::int32_t)));
         if (value.text.size() > limits.maxStringBytes)
             throw std::runtime_error("Script save live string budget exceeded");
         capture.Retain(value.text.size() + 1u);
@@ -4065,7 +4231,7 @@ public:
         if (owner == mapClasses_.end() || !ClassDerives(owner->second, "Engine.LevelInfo"))
             throw std::runtime_error("Script save AI manager owner is not a map LevelInfo");
         if (!nativeActorOrder_) {
-            auto order = ReadPortableLevel68ActorOrder(Table(mapPath_));
+            auto order = ReadPortableLevel68ActorOrder(Table(mapPath_), SchemaScratchBytes);
             Retain(order.size() * sizeof(std::int32_t));
             for (const auto reference : order)
                 if (reference < 0 || static_cast<std::size_t>(reference) > Table(mapPath_).exports.size())
@@ -4098,7 +4264,7 @@ public:
             return LowerAscii(Qualified(map,entry.ObjClass)) == "engine.level";
         });
         std::size_t baseline{};
-        if (realLevel) baseline = ReadPortableLevel68ActorOrder(map).size();
+        if (realLevel) baseline = ReadPortableLevel68ActorOrder(map, SchemaScratchBytes).size();
         else for (const auto& entry : map.exports) {
             const auto found = persistentVmObjects.find(LowerAscii(Qualified(map,entry.ObjClass)));
             if (found != persistentVmObjects.end() && IsDerivedFromPath(found->second,"Engine.Actor")) ++baseline;
@@ -4117,6 +4283,119 @@ public:
                 !mapClasses_.emplace(key,cls->reflection.objectPath).second)
                 throw std::runtime_error("Script save birth collides with authored or other actor identity");
             birthClasses_.emplace(key,cls);
+        }
+    }
+    void ValidateNativeDecals(const QuestVr::ScriptSavedState& saved) {
+        if (!saved.nativeDecals) return;
+        const auto& graph = *saved.nativeDecals;
+        Retain(QuestVr::DecalCheckpointRetainedBytes(graph));
+        const auto& map = Table(mapPath_);
+        const auto modelIndex = FindPortableRootModel68Export(map, SchemaScratchBytes);
+        if (graph.mapName != mapName_ || graph.levelPath != NativeLevelPath() ||
+            graph.modelPath != Qualified(map, static_cast<std::int32_t>(modelIndex + 1u)))
+            throw std::runtime_error("Script save native decal map/Level/root Model identity is invalid");
+        // Property parsing has its own capacity-aware scratch bound. Native
+        // geometry additionally retains up to4x decoded records,8x light-list
+        // terminator scratch and its body copy.16x the complete export plus
+        // fixed handles conservatively bounds this separate decode phase.
+        const auto modelBytes = map.exports.at(modelIndex).ObjSize;
+        if (modelBytes <= 0) throw std::runtime_error("Script save native decal Model export is empty");
+        constexpr std::size_t modelOverhead = sizeof(PortableModelGeometry) + 1024u;
+        if (QuestVr::DecalStateDetail::Multiply(static_cast<std::size_t>(modelBytes), 16u) >
+                SchemaScratchBytes - modelOverhead)
+            throw std::runtime_error("Script save native decal Model scratch budget exceeded");
+        const auto model = LoadPortableModel68(map, modelIndex, SchemaScratchBytes);
+        if (graph.surfaceCount != model.surfaces.size() || graph.nodeCount != model.nodes.size())
+            throw std::runtime_error("Script save native decal Model counts disagree with authored geometry");
+        if (!nativeActorOrder_) {
+            auto order = ReadPortableLevel68ActorOrder(map, SchemaScratchBytes);
+            Retain(order.size() * sizeof(std::int32_t));
+            for (const auto ref : order)
+                if (ref < 0 || static_cast<std::size_t>(ref) > map.exports.size())
+                    throw std::runtime_error("Script save decal native Level slot is not a local export");
+            std::sort(order.begin(), order.end()); nativeActorOrder_ = std::move(order);
+        }
+        // Validate once per symbolic owner; repeated records remain ordered and
+        // are not collapsed. Canonical spelling prevents aliases becoming two
+        // opaque native owner identities for one actual UObject.
+        std::set<std::string> checked;
+        std::map<std::string, const QuestVr::ScriptSavedBirth*> births;
+        std::map<std::string, const QuestVr::ScriptSavedObject*> actors;
+        for (const auto& birth : saved.births) {
+            Retain(birth.path.size() + sizeof(std::string) + sizeof(void*) * 6u);
+            births.emplace(LowerAscii(birth.path), &birth);
+        }
+        for (const auto& actor : saved.objects) {
+            Retain(actor.path.size() + sizeof(std::string) + sizeof(void*) * 6u);
+            actors.emplace(LowerAscii(actor.path), &actor);
+        }
+        const auto ownerClass = [&](const std::string& path) -> RuntimeObject* {
+            const auto key = LowerAscii(path);
+            const auto found = mapClasses_.find(key);
+            if (found == mapClasses_.end() || !ClassDerives(found->second, "Engine.Decal"))
+                throw std::runtime_error("Script save native decal owner is not a Decal in its map");
+            const auto born = births.find(key);
+            if (born != births.end()) {
+                if (born->second->path != path) throw std::runtime_error("Script save decal birth owner is not canonical");
+            } else {
+                const auto index = mapExports_.at(key);
+                if (path != Qualified(map, static_cast<std::int32_t>(index + 1u)) ||
+                    !std::binary_search(nativeActorOrder_->begin(), nativeActorOrder_->end(),
+                        static_cast<std::int32_t>(index + 1u)))
+                    throw std::runtime_error("Script save native decal owner has no canonical native Level binding");
+            }
+            auto* cls = host_.Object(found->second);
+            const auto property = host_.ClassProperty(cls, "SurfList");
+            if (LowerAscii(property.key) != "engine.decal.surflist" || property.flags != 0x00400002u ||
+                property.arrayDimension != 1u || property.zero.kind != QuestVr::Vm::Kind::IntArray)
+                throw std::runtime_error("Script save native decal SurfList schema is not original GOTY");
+            return cls;
+        };
+        for (std::size_t surface = 0u; surface < graph.state.surfaces.size(); ++surface)
+            for (const auto& record : graph.state.surfaces[surface]) {
+                if (checked.emplace(record.ownerIdentity).second) {
+                    Retain(record.ownerIdentity.size() + sizeof(std::string) + sizeof(void*) * 5u);
+                    static_cast<void>(ownerClass(record.ownerIdentity));
+                }
+                for (const auto node : record.nodeMembership)
+                    if (node < 0 || static_cast<std::size_t>(node) >= model.nodes.size() ||
+                        model.nodes[static_cast<std::size_t>(node)].surface != static_cast<std::int32_t>(surface))
+                        throw std::runtime_error("Script save native decal membership node belongs to another surface");
+            }
+        for (const auto& owner : graph.state.owners) {
+            auto* cls = ownerClass(owner.ownerIdentity);
+            const auto property = host_.ClassProperty(cls, "SurfList");
+            const auto effective = [&]() -> QuestVr::Vm::Value {
+                const auto slot = [&](const std::vector<QuestVr::ScriptSavedProperty>& values) -> const QuestVr::ScriptSavedProperty* {
+                    for (const auto& value : values) if (LowerAscii(value.name) == "surflist" && value.index == 0u) return &value;
+                    return nullptr;
+                };
+                const auto actor = actors.find(LowerAscii(owner.ownerIdentity));
+                if (actor != actors.end())
+                    if (const auto* value = slot(actor->second->properties)) return PropertyValue(cls, *value);
+                const auto born = births.find(LowerAscii(owner.ownerIdentity));
+                if (born != births.end()) {
+                    if (const auto* value = slot(born->second->frozenDefaults)) return PropertyValue(cls, *value);
+                } else {
+                    const auto index = mapExports_.at(LowerAscii(owner.ownerIdentity));
+                    const auto tags = LoadPortableExportProperties(map, index, SchemaScratchBytes);
+                    for (auto tag = tags.properties.rbegin(); tag != tags.properties.rend(); ++tag)
+                        if (tag->name == "SurfList" && tag->arrayIndex == 0u) {
+                            if (tag->type != 9u) throw std::runtime_error("Authored decal SurfList tag has the wrong type");
+                            return QuestVr::Vm::Value::IntArray(QuestVr::DecodeAuthoredIntArray(tag->value));
+                        }
+                }
+                for (auto* source = cls; source; source = source->base)
+                    if (source->classDescriptor)
+                        for (auto tag = source->classDescriptor->defaults.rbegin(); tag != source->classDescriptor->defaults.rend(); ++tag)
+                            if (tag->name == "SurfList" && tag->arrayIndex == 0u) {
+                                if (tag->type != 9u) throw std::runtime_error("Authored decal default SurfList tag has the wrong type");
+                                return QuestVr::Vm::Value::IntArray(QuestVr::DecodeAuthoredIntArray(tag->value));
+                            }
+                return property.zero;
+            }();
+            if (effective.intArray != owner.surfaces)
+                throw std::runtime_error("Script save native owner mirror and reflected SurfList disagree");
         }
     }
     bool IsBirth(const std::string& path) const { return birthClasses_.count(LowerAscii(path)) != 0u; }
@@ -4286,6 +4565,7 @@ private:
     std::unordered_map<std::string, RuntimeObject*> birthClasses_;
     std::optional<std::vector<std::int32_t>> nativeActorOrder_;
     std::string nativeLevelPath_;
+    static constexpr std::size_t SchemaScratchBytes = 64u * 1024u * 1024u;
     std::size_t retainedMetadata_{};
     void Retain(const std::size_t bytes) {
         constexpr std::size_t cap = 64u * 1024u * 1024u;
@@ -4500,6 +4780,7 @@ PreparedScriptState PrepareScriptSavedState(
     MeasureLegacySimBlendImports(saved, limits, schema);
     // Check the complete symbolic graph before allocating staged GC objects.
     for (const auto& state : saved.aiManagers) schema.ValidateAI(state);
+    schema.ValidateNativeDecals(saved);
     PreparedScriptState prepared;
     prepared.objects.reserve(saved.objects.size());
     prepared.classDefaults.reserve(saved.classDefaults.size());
@@ -4630,6 +4911,40 @@ PreparedScriptState PrepareScriptSavedState(
         for (const auto& receiver : state.receivers) {
             retain(receiver.actor); retain(receiver.previousBestActor); retain(receiver.params.bestActor);
         }
+    }
+    if (apply && saved.nativeDecals) {
+        const auto& graph = *saved.nativeDecals;
+        QuestVr::ScriptStateDetail::Writer measured(limits, nullptr); measured.State(saved);
+        std::size_t rootCount{};
+        for (const auto& surface : graph.state.surfaces) rootCount = QuestVr::DecalStateDetail::Add(rootCount, surface.size());
+        const auto graphBytes = QuestVr::DecalCheckpointRetainedBytes(graph);
+        const auto rootBytes = QuestVr::DecalStateDetail::Multiply(rootCount, sizeof(RuntimeObject*));
+        // The decoder, complete staged script/AI records, exact native import
+        // candidate/old buffers and roots can coexist. Bound their aggregate
+        // before the first graph allocation; schema metadata has its own64MiB
+        // cap. This is conservative payload/capacity accounting, not RSS.
+        auto staging = QuestVr::DecalStateDetail::Multiply(measured.measuredBudget().retained, 4u);
+        staging = QuestVr::DecalStateDetail::Add(staging,
+            QuestVr::DecalStateDetail::Add(QuestVr::DecalStateDetail::Multiply(graphBytes, 3u), rootBytes));
+        if (const auto* previous = persistentRuntime->get()->nativeDecals)
+            staging = QuestVr::DecalStateDetail::Add(staging, NativeDecalRetainedBytes(*previous));
+        if (staging > 128u * 1024u * 1024u || graphBytes > limits.maxBytes || rootBytes > limits.maxBytes - graphBytes)
+            throw std::runtime_error("Native decal restore aggregate staging/root budget exceeded");
+        pendingBirthGarbage = true;
+        prepared.nativeDecals.set(GC::Alloc<RuntimeMapDecals>(graph.surfaceCount, graph.nodeCount));
+        auto* next = prepared.nativeDecals.get();
+        next->actorRoots.reserve(rootCount);
+        next->level = target(graph.levelPath); next->model = target(graph.modelPath);
+        static_cast<void>(next->state.ImportSnapshot(graph.state));
+        const auto retain = [&](const std::string& path) {
+            auto* actor = target(path);
+            if (!actor || !IsDerivedFromPath(actor->cls, "Engine.Decal") || actor->nativeXLevel != next->level)
+                throw std::runtime_error("Staged native decal owner is not bound to its restored native Level");
+            next->actorRoots.push_back(actor);
+        };
+        for (const auto& surface : graph.state.surfaces) for (const auto& record : surface) retain(record.ownerIdentity);
+        if (NativeDecalRetainedBytes(*next) > limits.maxBytes)
+            throw std::runtime_error("Staged native decal graph exceeds runtime retained byte budget");
     }
     if (LowerAscii(saved.mapName) == LowerAscii(persistentMapPackageName)) {
         std::unordered_map<std::string, std::size_t> replacements;
@@ -5442,6 +5757,7 @@ bool GetPortableRuntimeScriptStatePresent() {
 
 bool GetPortableRuntimeUnsavedScriptState() {
     if (!persistentRuntime || !persistentRuntime->get()) return false;
+    if (persistentRuntime->get()->nativeDecals) return true;
     for (const auto* object : persistentRuntime->get()->exports)
         if (object->committedScriptState || !object->classDefaultValues.empty() || object->nativeAiManager) return true;
     return false;
@@ -5648,6 +5964,7 @@ std::size_t UnloadPortableRuntimeMap() {
         throw std::runtime_error("Map unload refused: script state requires a per-map archive");
     if (!persistentRuntime || !persistentRuntime->get() ||
         persistentRuntime->get()->exports.size() <= persistentScriptExportCount) {
+        if (persistentRuntime && persistentRuntime->get()) persistentRuntime->get()->nativeDecals = nullptr;
         persistentMapPackageName.clear();
         persistentMapTagIndex.clear();
         return 0;
@@ -5666,6 +5983,7 @@ std::size_t UnloadPortableRuntimeMap() {
             }
         }
     }
+    persistentRuntime->get()->nativeDecals = nullptr;
     persistentRuntime->get()->exports.resize(persistentScriptExportCount);
     ++persistentWorldRevision;
     persistentMapPackageName.clear();
@@ -6616,7 +6934,8 @@ bool SavePortableRuntimeState(const std::string& path) {
             [](const auto& object) { return object.latentTimeLeft.has_value(); });
         const bool hasControl = std::any_of(scriptState.objects.begin(), scriptState.objects.end(),
             [](const auto& object) { return object.state && object.state->frame && object.state->frame->control; });
-        const bool hasScript = !scriptState.objects.empty() || hasDefaults || hasBirths || hasAiManagers || hasRandom;
+        const bool hasDecals = scriptState.nativeDecals.has_value() || QuestVr::ScriptStateDetail::HasIntArrays(scriptState);
+        const bool hasScript = !scriptState.objects.empty() || hasDefaults || hasBirths || hasAiManagers || hasRandom || hasDecals;
         const bool hasState = std::any_of(scriptState.objects.begin(), scriptState.objects.end(),
             [](const auto& object) { return object.state.has_value(); });
         const bool hasLifecycle = std::any_of(scriptState.objects.begin(), scriptState.objects.end(),
@@ -6668,9 +6987,9 @@ bool SavePortableRuntimeState(const std::string& path) {
             persistentCredits < 0 || persistentSkillPoints < 0 || damaged.size() > 100'000u)
             throw std::runtime_error("Runtime checkpoint gameplay values are outside their valid ranges");
         // This is exactly the v3 prefix, including list order and field widths.
-        // Only the version word and appended trailer differ for v4-v12. Pure
+        // Only the version word and appended trailer differ for v4-v13. Pure
         // property/clock captures retain the byte-exact original v4 format.
-        write32(0x53515844u); write32(hasControl ? 12u : hasSleep ? 11u : hasRandom ? 10u : hasAiManagers ? 9u : hasBirths ? 8u : hasLifecycle ? 7u : hasDefaults ? 6u : hasState ? 5u : hasScript ? 4u : 3u);
+        write32(0x53515844u); write32(hasDecals ? 13u : hasControl ? 12u : hasSleep ? 11u : hasRandom ? 10u : hasAiManagers ? 9u : hasBirths ? 8u : hasLifecycle ? 7u : hasDefaults ? 6u : hasState ? 5u : hasScript ? 4u : 3u);
         writeStrings(persistentInventory); writeStrings(inactive); writeStrings(activated); writeFloat(persistentPlayerHealth);
         write32(static_cast<std::uint32_t>(damaged.size()));
         for (const auto& entry : damaged) {
@@ -6737,7 +7056,7 @@ static bool ReadPortableRuntimeState(const std::string& path, const bool apply, 
         };
         if (read32() != 0x53515844u) throw std::runtime_error("Runtime checkpoint magic is invalid");
         const auto version = read32();
-        if (version < 1u || version > 12u) throw std::runtime_error("Runtime checkpoint version is unsupported");
+        if (version < 1u || version > 13u) throw std::runtime_error("Runtime checkpoint version is unsupported");
         auto inventory = readStrings(); auto inactive = readStrings(); auto activated = readStrings();
         float playerHealth = 100.0f;
         std::vector<std::pair<std::string, float>> damaged;
@@ -6787,6 +7106,7 @@ static bool ReadPortableRuntimeState(const std::string& path, const bool apply, 
                 [](const auto& object) { return object.latentTimeLeft.has_value(); });
             const bool hasControl = std::any_of(scriptState.objects.begin(), scriptState.objects.end(),
                 [](const auto& object) { return object.state && object.state->frame && object.state->frame->control; });
+            const bool hasDecals = scriptState.nativeDecals.has_value() || QuestVr::ScriptStateDetail::HasIntArrays(scriptState, limits);
             restoredRandomSeed = scriptState.randomSeed;
             for (const auto& birth : scriptState.births) savedBirthKeys.emplace(LowerAscii(birth.path));
             const bool hasLifecycle = std::any_of(scriptState.objects.begin(), scriptState.objects.end(),
@@ -6799,7 +7119,8 @@ static bool ReadPortableRuntimeState(const std::string& path, const bool apply, 
                 (version == 9u && (blob.at(6u) != QuestVr::ScriptStateDetail::AiManagerVersion || !hasAiManagers)) ||
                 (version == 10u && (blob.at(6u) != QuestVr::ScriptStateDetail::RandomStateVersion || !hasRandom)) ||
                 (version == 11u && (blob.at(6u) != QuestVr::ScriptStateDetail::SleepStateVersion || !hasSleep)) ||
-                (version == 12u && (blob.at(6u) != QuestVr::ScriptStateDetail::StateControlVersion || !hasControl)))
+                (version == 12u && (blob.at(6u) != QuestVr::ScriptStateDetail::StateControlVersion || !hasControl)) ||
+                (version == 13u && (blob.at(6u) != QuestVr::ScriptStateDetail::DecalStateVersion || !hasDecals)))
                 throw std::runtime_error("Runtime checkpoint state trailer does not match its envelope version");
             if (!expectedMapName.empty() && LowerAscii(expectedMapName) != LowerAscii(scriptState.mapName))
                 throw std::runtime_error("Runtime checkpoint script map does not match save metadata");
@@ -6892,6 +7213,8 @@ static bool ReadPortableRuntimeState(const std::string& path, const bool apply, 
         static_cast<void>(DecodeRuntimeActorAssets(visualAssets));
         // All versions replace native AI ownership. Missing graph sections in
         // legacy saves mean reset, never merge or re-run initialization.
+        if (persistentRuntime->get()->nativeDecals) pendingBirthGarbage = true;
+        persistentRuntime->get()->nativeDecals = prepared.nativeDecals.get();
         for (auto* object : persistentRuntime->get()->exports) {
             if (object->nativeAiManager) pendingBirthGarbage = true;
             object->nativeAiManager = nullptr;

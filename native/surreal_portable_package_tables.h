@@ -215,9 +215,13 @@ struct PortableLodMesh {
 };
 
 PortablePackageTables LoadPortablePackageTables(const std::string& path);
+// Bounds raw export, retained value capacities, record-table capacities, and
+// simultaneous old/new record buffers during explicit table growth. Checked
+// before each allocation; HasStack/header parsing retains its original layout.
 PortablePropertyStream LoadPortableExportProperties(
     const PortablePackageTables& package,
-    std::size_t exportIndex);
+    std::size_t exportIndex,
+    std::size_t maxWorkingBytes = 512u * 1024u * 1024u);
 std::vector<std::int32_t> LoadPortableObjectReferenceArrayTail(
     const PortablePackageTables& package,
     std::size_t exportIndex);

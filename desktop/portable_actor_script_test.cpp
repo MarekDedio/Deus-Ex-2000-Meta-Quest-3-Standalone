@@ -469,10 +469,10 @@ std::vector<std::uint8_t> CheckpointBytes(const std::filesystem::path& path) {
     return bytes;
 }
 // Independent exact v3 prefix walk. No guessed search for blob signatures or
-// trailer bytes: v4-v12 append one bounded length + codec payload after every
+// trailer bytes: v4-v13 append one bounded length + codec payload after every
 // existing gameplay/progress field, preserving the old layout verbatim.
 std::size_t ScriptTailOffset(const std::vector<std::uint8_t>& bytes) {
-    Require(Word(bytes,0)==0x53515844u && Word(bytes,4)>=4u && Word(bytes,4)<=12u,"Script checkpoint is not runtime v4-v12");
+    Require(Word(bytes,0)==0x53515844u && Word(bytes,4)>=4u && Word(bytes,4)<=13u,"Script checkpoint is not runtime v4-v13");
     std::size_t cursor=8;
     const auto skip=[&](const std::size_t count) {
         Require(cursor<=bytes.size() && count<=bytes.size()-cursor,"Generated checkpoint prefix truncated");cursor+=count;
@@ -2961,6 +2961,127 @@ void VerifyOriginalShadowDecalGeometry(const std::filesystem::path& root,
         "; real floor/coplanar selection/quad/grid/clipping/ordered state/detach/read-only replay; NOT native startup or rendered Shadow completion\n";
 }
 
+void VerifyOriginalDecalCheckpoint(const std::filesystem::path& root,
+    const std::filesystem::path& legacy, const std::filesystem::path& directory) {
+    Require(LoadPortableRuntimeState(legacy.string()), "Decal checkpoint test could not reset authored state");
+    const auto baselineGc = GC::GetStats();
+    const auto baselineActors = GetPortableRuntimeMapActors(true).size();
+    const auto map = LoadPortablePackageTables((root/"Maps"/"00_Training.dx").string());
+    const auto model = LoadPortableRootModel68(map);
+    const auto jaime = Snapshot("00_Training.JaimeReyes0");
+    const auto height = QuestVr::Vm::ToFloat(ReadPortableActorScriptProperty(jaime.objectPath,"CollisionHeight"));
+    std::uint32_t seed = 1u;
+    const auto plan = QuestVr::ProjectOriginalDecalGeometry(model,
+        {jaime.x,jaime.y,jaime.z-height},{0,0,1},100,{},32,1,4,{},seed);
+    Require(plan.hasPrimaryGeometry && plan.surfaces.size()==1u, "Decal checkpoint fixture lost original floor geometry");
+    const auto spawn = [&]() {
+        const auto value = Call(jaime.objectPath,"Engine.Actor.Spawn",{
+            {Value::Text(Kind::Object,"DeusEx.Shadow"),{}},{Value::Text(Kind::Object,jaime.objectPath),{}}}).value;
+        Require(value.kind==Kind::Object && !value.text.empty() &&
+            ReadPortableActorScriptProperty(value.text,"SurfList").kind==Kind::IntArray,
+            "Dormant original Shadow birth lacks a typed dynamic INT SurfList");
+        return value.text;
+    };
+    const auto first=spawn(), second=spawn();
+    const auto spawned=directory/"original-decal-dormant.sav";
+    const auto fixture=directory/"original-decal-graph-v13.sav";
+    const auto inspection=directory/"original-decal-inspect.sav";
+    Require(SavePortableRuntimeState(spawned.string()),"Dormant original Shadow births could not save");
+    const auto prefix=CheckpointBytes(spawned);
+    auto saved=QuestVr::DecodeScriptSavedState(ScriptBlob(prefix));
+    const auto surface=plan.surfaces.front().surface;
+    QuestVr::DecalState graph(model.surfaces.size(),model.nodes.size());
+    QuestVr::DecalSurfaceRecord record;
+    record.nodeMembership=plan.surfaces.front().nodeMembership;
+    record.nodeMembership.push_back(record.nodeMembership.front()); // Ordered native duplicates survive.
+    record.moverRotation={123,-456,789};
+    for(std::size_t index=0u;index<4u;++index) {
+        const auto& point=plan.surfaces.front().relativeCorners[index];
+        record.relativeCorners[index]={point.x,point.y,point.z};
+    }
+    for(const auto& owner:{first,second,first}) {
+        record.ownerIdentity=owner;
+        graph.AttachPrimary(surface,record,"DeusExItems.Skins.FlatFXTex40",
+            [](const auto&) {return std::optional<std::string>("DeusExItems.Skins.FlatFXTex40");});
+    }
+    // Legitimate missing/foreign native mirror references: three pops remove
+    // only the first owner's two records, leaving the other owner's record.
+    graph.ReplaceOwnerSurfList(first,{surface,surface,surface});
+    graph.ReplaceOwnerSurfList(second,{});
+    for(auto& actor:saved.objects) if(actor.path==first || actor.path==second)
+        actor.properties.push_back({"Engine.Decal.SurfList","SurfList",0u,
+            Value::IntArray(actor.path==first ? std::vector<std::int32_t>{surface,surface,surface} : std::vector<std::int32_t>{})});
+    saved.nativeDecals.emplace();
+    auto& native=*saved.nativeDecals;
+    native.mapName=saved.mapName;
+    native.modelPath=QualifiedReference(map,static_cast<std::int32_t>(model.exportIndex+1u));
+    native.levelPath=ReadPortableActorScriptProperty(first,"XLevel").text;
+    native.surfaceCount=static_cast<std::uint32_t>(model.surfaces.size());
+    native.nodeCount=static_cast<std::uint32_t>(model.nodes.size());
+    native.state=graph.ReadOnlySnapshot(); saved.randomSeed=seed;
+    auto bytes=ReplaceScriptBlob(prefix,QuestVr::EncodeScriptSavedState(saved)); PutWord(bytes,4u,13u);
+    Require(QuestVr::WriteDurableSaveFile(fixture.string(),bytes) && ValidatePortableRuntimeState(fixture.string(),saved.mapName),
+        "Original map-bound native decal checkpoint preflight failed");
+    Require(LoadPortableRuntimeState(legacy.string()) && LoadPortableRuntimeState(fixture.string()) &&
+        SavePortableRuntimeState(inspection.string()) && CheckpointBytes(inspection)==bytes,
+        "Cold native decal restore changed geometry/order/mirrors/RNG or replayed attachment");
+    Require(GetPortableRuntimeMapActors(true).size()==baselineActors+2u &&
+        GC::GetStats().numObjects==baselineGc.numObjects+3u && GetPortableRuntimeUnsavedScriptState(),
+        "Native decal restore did not retain exactly two real Shadow births and one map GC graph");
+    GC::Collect();
+    Require(SavePortableRuntimeState(inspection.string()) && CheckpointBytes(inspection)==bytes,
+        "Native surface owner roots/geometry did not survive collection");
+    const auto stableGc=GC::GetStats();
+    for(unsigned iteration=0u;iteration<3u;++iteration)
+        Require(LoadPortableRuntimeState(fixture.string()) && GC::GetStats().numObjects==stableGc.numObjects &&
+            GC::GetStats().memoryUsage==stableGc.memoryUsage,
+            "Repeated native decal replacement leaked retired graph/owner allocations");
+    auto revision=GetPortableRuntimeWorldRevision();
+    const auto reject=[&](auto mutate,const std::string& description) {
+        auto invalid=saved; mutate(invalid);
+        auto forged=ReplaceScriptBlob(prefix,QuestVr::EncodeScriptSavedState(invalid)); PutWord(forged,4u,13u);
+        const auto bad=directory/"original-decal-invalid.sav";
+        Require(QuestVr::WriteDurableSaveFile(bad.string(),forged) && !ValidatePortableRuntimeState(bad.string()) &&
+            !LoadPortableRuntimeState(bad.string()) && GetPortableRuntimeWorldRevision()==revision &&
+            SavePortableRuntimeState(inspection.string()) && CheckpointBytes(inspection)==bytes &&
+            GC::GetStats().numObjects==stableGc.numObjects,description+" changed or passed native decal preflight");
+    };
+    reject([](auto& value) {value.nativeDecals->modelPath="00_Training.NoSuchModel";},"Wrong root Model");
+    reject([](auto& value) {++value.nativeDecals->nodeCount;},"Wrong Model count");
+    reject([&](auto& value) {value.nativeDecals->levelPath=ReadPortableActorScriptProperty(first,"Level").text;},"LevelInfo instead of native Level");
+    reject([&](auto& value) {value.nativeDecals->state.surfaces.at(static_cast<std::size_t>(surface)).front().ownerIdentity=jaime.objectPath;},"Non-Decal record owner");
+    reject([&](auto& value) {value.nativeDecals->state.surfaces.at(static_cast<std::size_t>(surface)).front().nodeMembership={1848};},"Membership from another surface");
+    reject([](auto& value) {value.nativeDecals->state.owners.front().surfaces.clear();},"Conflicting reflected/native mirror");
+    reject([&](auto& value) {
+        auto& owner=value.nativeDecals->state.surfaces.at(static_cast<std::size_t>(surface)).front().ownerIdentity;
+        owner[0]='0'; owner[3]='t';
+    },"Noncanonical owner alias");
+    // Measure the actual original Destroyed script, then fail its last return
+    // instruction after Detach and its original superclass callback completed.
+    const auto measuredDetach=Call(first,"Engine.Decal.Destroyed");
+    Require(measuredDetach.instructions>1u && ReadPortableActorScriptProperty(first,"SurfList").intArray.empty() &&
+        LoadPortableRuntimeState(fixture.string()),"Original Decal.Destroyed did not execute native Detach");
+    revision=GetPortableRuntimeWorldRevision();
+    QuestVr::Vm::Limits tight; tight.instructions=measuredDetach.instructions-1u;
+    const auto rollback=ExecutePortableActorFunction(first,"Engine.Decal.Destroyed",{},tight);
+    Require(!rollback.passed() && SavePortableRuntimeState(inspection.string()) && CheckpointBytes(inspection)==bytes &&
+        GetPortableRuntimeWorldRevision()==revision,"Failed DetachDecal did not restore native/reflected graph atomically");
+    Call(first,"Engine.Decal.DetachDecal");
+    Require(GetPortableRuntimeWorldRevision()==revision+1u &&
+        ReadPortableActorScriptProperty(first,"SurfList").intArray.empty() && SavePortableRuntimeState(inspection.string()),
+        "Original DetachDecal did not clear SurfList and publish one revision");
+    const auto detached=QuestVr::DecodeScriptSavedState(ScriptBlob(CheckpointBytes(inspection)));
+    const auto& remaining=detached.nativeDecals->state.surfaces.at(static_cast<std::size_t>(surface));
+    Require(remaining.size()==1u && remaining.front().ownerIdentity==second && detached.randomSeed==saved.randomSeed,
+        "Original reverse-pop DetachDecal removed foreign records or changed RNG");
+    bool unloadRefused{}; try {UnloadPortableRuntimeMap();} catch(const std::exception&) {unloadRefused=true;}
+    Require(unloadRefused && LoadPortableRuntimeState(legacy.string()) &&
+        GC::GetStats().numObjects==baselineGc.numObjects && GC::GetStats().memoryUsage==baselineGc.memoryUsage &&
+        SavePortableRuntimeState(inspection.string()) && CheckpointBytes(inspection)==CheckpointBytes(legacy),
+        "Legacy reset/unload policy lost or leaked native decal graph state");
+    std::cout<<"ORIGINAL DECAL CHECKPOINT codec10/envelope13: real Shadow births, original floor geometry, ordered duplicates/mismatches, cold rooted replacement/GC, symbolic refusals, Detach rollback/revision, legacy reset; NOT Attach/startup/render completion\n";
+}
+
 void VerifyOriginalWorldStartupProbe(const std::filesystem::path& legacy,
     const std::filesystem::path& directory) {
     const auto baseline = CheckpointBytes(legacy);
@@ -3074,6 +3195,7 @@ void TestOriginal(const std::filesystem::path& root, const bool inventoryOnly = 
         if (worldStartupOnly) {
             VerifyOriginalModelPointTrace(root,checkpoint,temporary.directory);
             VerifyOriginalShadowDecalGeometry(root,checkpoint,temporary.directory);
+            VerifyOriginalDecalCheckpoint(root,checkpoint,temporary.directory);
             VerifyOriginalWorldStartupProbe(checkpoint,temporary.directory); UnloadPortableRuntimeMap(); return;
         }
         if (startupOnly) { VerifyOriginalInitGame(root,checkpoint,temporary.directory); UnloadPortableRuntimeMap(); return; }
@@ -3081,6 +3203,9 @@ void TestOriginal(const std::filesystem::path& root, const bool inventoryOnly = 
             VerifyOriginalModelPointTrace(root,checkpoint,temporary.directory);
             VerifyOriginalShadowDecalGeometry(root,checkpoint,temporary.directory);
             VerifyColdOriginalAnimationAssets(root, checkpoint, temporary.directory);
+            // Native checkpoint restore rebuilds collision and may load actor
+            // meshes. Keep the independent cold-asset control genuinely cold.
+            VerifyOriginalDecalCheckpoint(root,checkpoint,temporary.directory);
         }
         if (std::string(map)=="00_Training") VerifyOriginalInitGame(root,checkpoint,temporary.directory);
         if (std::string(map) == "00_Training") VerifyOriginalRandom("00_Training.Doctor1",checkpoint,temporary.directory);

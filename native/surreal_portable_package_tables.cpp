@@ -619,7 +619,8 @@ PortablePackageTables LoadPortablePackageTables(const std::string& path) {
 
 PortablePropertyStream LoadPortableExportProperties(
     const PortablePackageTables& package,
-    std::size_t exportIndex) {
+    std::size_t exportIndex,
+    std::size_t maxWorkingBytes) {
     if (exportIndex >= package.exports.size()) {
         throw std::runtime_error("UE1 export index is outside the export table");
     }
@@ -631,13 +632,38 @@ PortablePropertyStream LoadPortableExportProperties(
         throw std::runtime_error("UE1 object instance has no serialized payload");
     }
 
+    const auto budgetFailure = []() -> void {
+        throw std::runtime_error("UE1 property working-byte budget exceeded");
+    };
+    const auto add = [&](std::size_t left, std::size_t right) -> std::size_t {
+        if (right > std::numeric_limits<std::size_t>::max() - left) budgetFailure();
+        return left + right;
+    };
+    const auto multiply = [&](std::size_t count, std::size_t size) -> std::size_t {
+        if (size != 0u && count > std::numeric_limits<std::size_t>::max() / size) budgetFailure();
+        return count * size;
+    };
+    // Include the current property and raw-buffer handles as well as the
+    // returned stream. NameString copies are interned handles, not string copies.
+    constexpr std::size_t fixedBytes = sizeof(PortablePropertyStream) +
+        sizeof(PortableTaggedProperty) + sizeof(PayloadReader) + sizeof(std::vector<std::uint8_t>);
+    std::size_t baseBytes = add(fixedBytes, static_cast<std::size_t>(entry.ObjSize));
+    const auto check = [&](std::size_t tableBytes, std::size_t payloadBytes,
+                           std::size_t temporaryBytes = 0u) {
+        if (add(baseBytes, add(tableBytes, add(payloadBytes, temporaryBytes))) > maxWorkingBytes)
+            budgetFailure();
+    };
+    check(0u, 0u); // Refuse before opening/allocating the raw export.
     std::vector<std::uint8_t> bytes(static_cast<std::size_t>(entry.ObjSize));
+    baseBytes = add(fixedBytes, bytes.capacity());
+    check(0u, 0u);
     const std::shared_ptr<File> file = File::open_existing(package.sourcePath);
     file->seek(entry.ObjOffset);
     file->read(bytes.data(), bytes.size());
     PayloadReader reader(std::move(bytes));
 
     PortablePropertyStream result;
+    std::size_t tableBytes{}, payloadBytes{};
     if (AnyFlags(entry.ObjFlags, ObjectFlags::HasStack)) {
         PortableObjectStack stack;
         stack.functionReference = reader.ReadIndex();
@@ -695,7 +721,23 @@ PortablePropertyStream LoadPortableExportProperties(
         }
 
         property.valueOffset = reader.Tell();
-        if (property.type != 3u) property.value = reader.ReadBytes(property.size);
+        // Control growth explicitly: the peak includes BOTH old and replacement
+        // record buffers. Do not rely on push_back's implementation growth ratio.
+        if (result.properties.size() == result.properties.capacity()) {
+            const auto oldCapacity = result.properties.capacity();
+            const auto newCapacity = oldCapacity == 0u ? 1u : multiply(oldCapacity, 2u);
+            if (newCapacity > result.properties.max_size()) budgetFailure();
+            check(tableBytes, payloadBytes, multiply(newCapacity, sizeof(PortableTaggedProperty)));
+            result.properties.reserve(newCapacity);
+            tableBytes = multiply(result.properties.capacity(), sizeof(PortableTaggedProperty));
+            check(tableBytes, payloadBytes);
+        }
+        if (property.type != 3u) {
+            check(tableBytes, payloadBytes, property.size); // Before ReadBytes allocates.
+            property.value = reader.ReadBytes(property.size);
+            check(tableBytes, payloadBytes, property.value.capacity());
+            payloadBytes = add(payloadBytes, property.value.capacity());
+        }
         result.properties.push_back(std::move(property));
     }
 }

@@ -203,7 +203,9 @@ Package Engine(bool localTextureClass = false) {
         package.Property(name, "FloatProperty", actor, core, std::string(name).find("Blend") != std::string::npos ? 4u : 1u);
     for (const char* name : {"bAnimLoop", "bAnimNotify", "bAnimFinished"}) package.Property(name, "BoolProperty", actor, core);
     package.Property("Fatness", "ByteProperty", actor, core); package.Property("RemoteRole", "ByteProperty", actor, core);
-    package.Property("QuestBudgetPadding", "FloatProperty", actor, core, 65'536u);
+    // Short fixture-only name keeps65536 legal scalar slots below the byte cap
+    // even when the whole-value VM representation gains another payload kind.
+    package.Property("P", "FloatProperty", actor, core, 65'536u);
     const auto plane = package.Export("Plane", package.Import("Struct", core));
     std::array<std::int32_t, 4u> planeFields{};
     for (std::size_t i = 0u; i < planeFields.size(); ++i)
@@ -317,7 +319,7 @@ void LegacySimBlendImportBudget(const Fixture& fixture, const Bytes& legacy) {
     auto& properties = saved.objects.front().properties;
     const auto padding = limits.maxProperties - properties.size();
     for (std::uint32_t index = 0u; index < padding; ++index)
-        properties.push_back({"Engine.Actor.QuestBudgetPadding", "QuestBudgetPadding", index, Value::Float(0.125f)});
+        properties.push_back({"Engine.Actor.P", "P", index, Value::Float(0.125f)});
     QuestVr::ScriptStateDetail::Writer input(limits, nullptr); input.State(saved);
     Require(input.measuredBudget().properties == limits.maxProperties &&
         input.measuredBudget().retained < limits.maxBytes && input.size() < limits.maxBytes,

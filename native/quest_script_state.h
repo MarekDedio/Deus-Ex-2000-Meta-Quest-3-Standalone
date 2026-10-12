@@ -5,6 +5,7 @@
 #include "quest_state_frame.h"
 #include "quest_ai_event_state.h"
 #include "quest_script_random.h"
+#include "quest_decal_checkpoint.h"
 
 #include <algorithm>
 #include <array>
@@ -68,6 +69,9 @@ struct ScriptSavedState {
     // One engine-global game-thread stream. Absence preserves old wire formats
     // and means reset, never merge with the current stream, on runtime restore.
     std::optional<std::uint32_t> randomSeed{};
+    // Explicit port-only native geometry checkpoint. Absence means the old
+    // wire format and an external runtime reset policy, never live-state merge.
+    std::optional<ScriptSavedNativeDecals> nativeDecals{};
 };
 struct ScriptStateLimits {
     std::size_t maxBytes{32u << 20u};
@@ -80,6 +84,10 @@ struct ScriptStateLimits {
     std::size_t maxActorLinks{65'536u};
     std::size_t maxAiManagers{4096u}, maxAiEventTypes{Ai::MaxEventTypes};
     std::size_t maxAiNodes{Ai::MaxNodes}, maxAiLinks{65'536u};
+    std::size_t maxIntArrayElements{262'144u};
+    std::size_t maxDecalSurfaces{1'000'000u}, maxDecalNodes{1'000'000u};
+    std::size_t maxDecalOwners{65'536u}, maxDecalRecords{262'144u};
+    std::size_t maxDecalMembership{1'048'576u}, maxDecalSurfListEntries{262'144u};
 };
 
 namespace ScriptStateDetail {
@@ -95,11 +103,13 @@ inline constexpr std::uint8_t AiManagerVersion=6u;
 inline constexpr std::uint8_t RandomStateVersion=7u;
 inline constexpr std::uint8_t SleepStateVersion=8u;
 inline constexpr std::uint8_t StateControlVersion=9u;
+inline constexpr std::uint8_t DecalStateVersion=10u;
 inline constexpr std::uint32_t MaximumWorldActorSlots=1'000'000u;
+inline constexpr std::size_t MaximumIntArrayElements=262'144u;
 // Stable serialized tags deliberately do not depend on Vm::Kind ordinals.
 enum class Tag : std::uint8_t {
     Nothing=0, Byte=1, Int=2, Bool=3, Float=4, Name=5, Object=6,
-    String=7, Vector=8, Rotator=9, Struct=10
+    String=7, Vector=8, Rotator=9, Struct=10, IntArray=11
 };
 
 [[noreturn]] inline void Fail(const char* message) {
@@ -197,6 +207,7 @@ struct Budget {
     const ScriptStateLimits& limits;
     std::size_t retained{}, properties{}, nodes{}, stateLocals{}, localElements{}, disabledStates{}, disabledNames{}, actorLinks{};
     std::size_t aiManagers{}, aiEventTypes{}, aiNodes{}, aiLinks{};
+    std::size_t intArrayElements{}, decalSurfaces{}, decalOwners{}, decalRecords{}, decalMembership{}, decalSurfListEntries{};
     void Retain(std::size_t bytes) {
         if (bytes>limits.maxBytes || retained>limits.maxBytes-bytes)
             Fail("aggregate retained-state budget exceeded");
@@ -225,12 +236,60 @@ struct Budget {
     void AiEventTypes(std::size_t count) { Aggregate(count,limits.maxAiEventTypes,aiEventTypes,"aggregate AI event-type count exceeds the budget"); }
     void AiNodes(std::size_t count) { Aggregate(count,limits.maxAiNodes,aiNodes,"aggregate AI node count exceeds the budget"); }
     void AiLinks(std::size_t count) { Aggregate(count,limits.maxAiLinks,aiLinks,"aggregate AI link count exceeds the budget"); }
+    void IntArrayElements(std::size_t count) {
+        Aggregate(count,std::min(limits.maxIntArrayElements,MaximumIntArrayElements),intArrayElements,"aggregate dynamic integer-array element budget exceeded");
+        Aggregate(count,limits.totalValueNodes,nodes,"dynamic integer-array elements exceed aggregate value-node budget");
+    }
+    void DecalSurfaces(std::size_t count) { Aggregate(count,std::min(limits.maxDecalSurfaces,DecalStateLimits{}.surfaces),decalSurfaces,"native decal surface count budget exceeded"); }
+    void DecalOwners(std::size_t count) { Aggregate(count,std::min(limits.maxDecalOwners,DecalStateLimits{}.owners),decalOwners,"native decal owner count budget exceeded"); }
+    void DecalRecords(std::size_t count) { Aggregate(count,std::min(limits.maxDecalRecords,DecalStateLimits{}.records),decalRecords,"native decal record count budget exceeded"); }
+    void DecalMembership(std::size_t count) { Aggregate(count,std::min(limits.maxDecalMembership,DecalStateLimits{}.nodeMembership),decalMembership,"native decal membership count budget exceeded"); }
+    void DecalSurfListEntries(std::size_t count) { Aggregate(count,std::min(limits.maxDecalSurfListEntries,DecalStateLimits{}.surfListEntries),decalSurfListEntries,"native decal SurfList count budget exceeded"); }
 private:
     static void Aggregate(std::size_t count,std::size_t cap,std::size_t& current,const char* message) {
         if (count>cap || current>cap-count) Fail(message);
         current+=count;
     }
 };
+
+// Pre-emission feature scan: only active value payloads are encoded. Bound the
+// complete walk before recursion; arrays in nested structs, frozen defaults or
+// state locals must select codec10 even when no native geometry is present.
+inline bool HasIntArrays(const ScriptSavedState& state, const ScriptStateLimits& limits = {}) {
+    Budget measured{limits};
+    bool present{};
+    const auto visit = [&](const auto& self, const Vm::Value& value, std::size_t depth) -> void {
+        measured.Node(depth);
+        if (value.kind == Vm::Kind::IntArray) {
+            measured.IntArrayElements(value.intArray.size()); present = true;
+        } else if (value.kind == Vm::Kind::Struct) {
+            if (value.fields.size() > limits.totalValueNodes - measured.nodes)
+                Fail("feature scan struct count exceeds value-node budget");
+            for (const auto& [name, member] : value.fields) {
+                static_cast<void>(name); self(self, member, depth + 1u);
+            }
+        }
+    };
+    const auto properties = [&](const std::vector<ScriptSavedProperty>& values) {
+        measured.Properties(values.size());
+        for (const auto& property : values) visit(visit, property.value, 0u);
+    };
+    if (state.objects.size() > limits.maxObjects || state.classDefaults.size() > limits.maxObjects - state.objects.size() ||
+        state.births.size() > limits.maxObjects) Fail("feature scan object count exceeds budget");
+    for (const auto& object : state.objects) {
+        properties(object.properties);
+        if (object.state && object.state->frame) {
+            measured.StateLocals(object.state->frame->locals.size());
+            for (const auto& local : object.state->frame->locals) {
+                measured.LocalElements(local.values.size());
+                for (const auto& value : local.values) visit(visit, value, 0u);
+            }
+        }
+    }
+    for (const auto& defaults : state.classDefaults) properties(defaults.properties);
+    for (const auto& birth : state.births) properties(birth.frozenDefaults);
+    return present;
+}
 
 template<typename Item,typename Name>
 inline std::vector<const Item*> Sorted(const std::vector<Item>& items, Name name) {
@@ -265,6 +324,7 @@ public:
     // This method is deliberately unavailable on an emitting writer.
     void MeasureStateObject(const StateObject& state) {
         if (output_) Fail("state-only measurement requires a non-emitting writer");
+        version_=DecalStateVersion;
         budget_.Retain(sizeof(StateObject));
         ObjectState(state,state.frame && state.frame->control.has_value());
     }
@@ -278,6 +338,10 @@ public:
         budget_.AiManagers(1u);
         AiManager(state);
     }
+    void MeasureNativeDecals(const ScriptSavedNativeDecals& state) {
+        if (output_) Fail("native-decal measurement requires a non-emitting writer");
+        NativeDecals(state,state.mapName);
+    }
     void State(const ScriptSavedState& state) {
         budget_.Retain(sizeof(ScriptSavedState));
         const bool withFrames=std::any_of(state.objects.begin(),state.objects.end(),[](const auto& object) { return object.state.has_value(); });
@@ -290,7 +354,10 @@ public:
         const bool withControl=std::any_of(state.objects.begin(),state.objects.end(),[](const auto& object) {
             return object.state && object.state->frame && object.state->frame->control.has_value();
         });
-        const auto version=withControl ? StateControlVersion : withSleep ? SleepStateVersion : withRandom ? RandomStateVersion : withAi ? AiManagerVersion : withBirths ? BirthManifestVersion : withLifecycle ? ActorLifecycleVersion : withDefaults ? ClassDefaultsVersion : withFrames ? StateFrameVersion : Magic[6u];
+        const bool withDecals=state.nativeDecals.has_value();
+        const bool withIntArrays=HasIntArrays(state,limits_);
+        const auto version=withDecals || withIntArrays ? DecalStateVersion : withControl ? StateControlVersion : withSleep ? SleepStateVersion : withRandom ? RandomStateVersion : withAi ? AiManagerVersion : withBirths ? BirthManifestVersion : withLifecycle ? ActorLifecycleVersion : withDefaults ? ClassDefaultsVersion : withFrames ? StateFrameVersion : Magic[6u];
+        version_=version;
         for (std::size_t i=0; i<Magic.size(); ++i) Byte(i==6u ? version : Magic[i]);
         String(state.mapName,true,false,128u);
         if (state.objects.size()>limits_.maxObjects || state.classDefaults.size()>limits_.maxObjects-state.objects.size() ||
@@ -312,7 +379,7 @@ public:
             if (object.clock) Animation(*object.clock);
             if (version>=StateFrameVersion) {
                 Byte(object.state ? 1u : 0u);
-                if (object.state) ObjectState(*object.state,withControl);
+                if (object.state) ObjectState(*object.state,version>=StateControlVersion);
             }
             if (version>=ActorLifecycleVersion) {
                 Byte(object.lifecycle ? 1u : 0u);
@@ -376,8 +443,13 @@ public:
         if (withRandom) {
             Byte(ScriptRandom::Algorithm); U32(*state.randomSeed);
         }
+        if (version>=DecalStateVersion) {
+            Byte(withDecals ? 1u : 0u);
+            if (withDecals) NativeDecals(*state.nativeDecals,state.mapName);
+        }
     }
 private:
+    std::uint8_t version_{Magic[6u]};
     const ScriptStateLimits& limits_;
     Budget budget_;
     std::vector<std::uint8_t>* output_;
@@ -397,6 +469,52 @@ private:
     void String(const std::string& value,bool identity,bool empty=false,std::size_t cap=0) {
         Text(value,limits_,identity,empty,cap); budget_.Retain(value.size()+1u);
         Count(value.size()); for (const unsigned char c : value) Byte(c);
+    }
+    void NativeDecals(const ScriptSavedNativeDecals& saved,const std::string& map) {
+        if (Compare(saved.mapName,map)!=0) Fail("native decal graph map differs from saved map");
+        if (saved.surfaceCount!=saved.state.surfaces.size() ||
+            saved.nodeCount>std::min(limits_.maxDecalNodes,DecalStateLimits{}.nodes))
+            Fail("native decal model counts are invalid");
+        budget_.Retain(sizeof(ScriptSavedNativeDecals));
+        String(saved.mapName,true,false,128u);
+        String(saved.modelPath,true,false,DecalStateLimits{}.identityBytes);
+        String(saved.levelPath,true,false,DecalStateLimits{}.identityBytes);
+        budget_.DecalSurfaces(saved.surfaceCount); U32(saved.surfaceCount); U32(saved.nodeCount);
+        budget_.Array(saved.surfaceCount,sizeof(std::vector<DecalSurfaceRecord>));
+        const auto indices=[&](const std::vector<std::int32_t>& values,std::size_t maximum,bool nodes) {
+            if (nodes) budget_.DecalMembership(values.size()); else budget_.DecalSurfListEntries(values.size());
+            budget_.Array(values.size(),sizeof(std::int32_t)); Count(values.size());
+            for (const auto value : values) {
+                if (value<0 || static_cast<std::size_t>(value)>=maximum)
+                    Fail("native decal node/surface index is out of bounds");
+                U32(static_cast<std::uint32_t>(value));
+            }
+        };
+        for (const auto& surface : saved.state.surfaces) {
+            budget_.DecalRecords(surface.size()); budget_.Array(surface.size(),sizeof(DecalSurfaceRecord)); Count(surface.size());
+            for (const auto& record : surface) {
+                String(record.ownerIdentity,true,false,DecalStateLimits{}.identityBytes);
+                for (const auto& corner : record.relativeCorners) { F32(corner.x); F32(corner.y); F32(corner.z); }
+                indices(record.nodeMembership,saved.nodeCount,true);
+                U32(static_cast<std::uint32_t>(record.moverRotation.pitch));
+                U32(static_cast<std::uint32_t>(record.moverRotation.yaw));
+                U32(static_cast<std::uint32_t>(record.moverRotation.roll));
+            }
+        }
+        budget_.DecalOwners(saved.state.owners.size());
+        budget_.Array(saved.state.owners.size(),sizeof(DecalOwnerSurfList)+sizeof(std::string_view));
+        // Uniqueness is structural; encoded owner order is not canonicalized.
+        for (const auto& owner : saved.state.owners)
+            Text(owner.ownerIdentity,limits_,true,false,DecalStateLimits{}.identityBytes);
+        const auto owners=Sorted(saved.state.owners,[](const auto& owner)->const std::string& { return owner.ownerIdentity; });
+        for (std::size_t i=1u;i<owners.size();++i)
+            if (Compare(owners[i-1u]->ownerIdentity,owners[i]->ownerIdentity)==0)
+                Fail("duplicate or case-colliding native decal owner mirror");
+        Count(saved.state.owners.size());
+        for (const auto& owner : saved.state.owners) {
+            String(owner.ownerIdentity,true,false,DecalStateLimits{}.identityBytes);
+            indices(owner.surfaces,saved.surfaceCount,false);
+        }
     }
     void AiChannels(const Ai::Channels& channels) {
         F32(channels.visibility); F32(channels.volume); F32(channels.radius); F32(channels.smell);
@@ -501,6 +619,13 @@ private:
         case Vm::Kind::Rotator:
             Byte(static_cast<std::uint8_t>(Tag::Rotator));
             for (const auto component : value.rotation) U32(static_cast<std::uint32_t>(component));
+            break;
+        case Vm::Kind::IntArray:
+            if (version_<DecalStateVersion) Fail("dynamic integer array requires codec10");
+            budget_.IntArrayElements(value.intArray.size());
+            budget_.Array(value.intArray.size(),sizeof(std::int32_t));
+            Byte(static_cast<std::uint8_t>(Tag::IntArray)); Count(value.intArray.size());
+            for (const auto element : value.intArray) U32(static_cast<std::uint32_t>(element));
             break;
         case Vm::Kind::Struct: {
             Byte(static_cast<std::uint8_t>(Tag::Struct));
@@ -625,10 +750,11 @@ public:
                 version=byte;
                 if (version!=Magic[i] && version!=StateFrameVersion && version!=ClassDefaultsVersion &&
                     version!=ActorLifecycleVersion && version!=BirthManifestVersion && version!=AiManagerVersion &&
-                    version!=RandomStateVersion && version!=SleepStateVersion && version!=StateControlVersion)
+                    version!=RandomStateVersion && version!=SleepStateVersion && version!=StateControlVersion && version!=DecalStateVersion)
                     Fail("bad magic or unsupported codec version");
             } else if (byte!=Magic[i]) Fail("bad magic or unsupported codec version");
         }
+        version_=version;
         const auto map=String(true,false,128u); if constexpr(Materialize) state.mapName=map;
         const auto count=U32();
         if (count>limits_.maxObjects || count>Remaining()/13u) Fail("object count exceeds budget or encoded payload");
@@ -742,6 +868,14 @@ public:
             const auto seed=U32();
             if constexpr(Materialize) state.randomSeed=seed;
         }
+        bool hasDecals{};
+        if (version>=DecalStateVersion && Boolean()) {
+            hasDecals=true;
+            auto graph=NativeDecals(map);
+            if constexpr(Materialize) state.nativeDecals=std::move(graph);
+        }
+        if (version==DecalStateVersion && !hasDecals && !hasIntArrays_)
+            Fail("native-decal codec has neither graph nor dynamic integer array");
         if (Remaining()!=0u) Fail("trailing encoded-state bytes");
         return state;
     }
@@ -751,6 +885,8 @@ private:
     Budget budget_;
     std::size_t cursor_{};
     std::size_t aiWork_{};
+    std::uint8_t version_{Magic[6u]};
+    bool hasIntArrays_{};
     std::string_view lastAiOwner_;
     std::size_t Remaining() const { return bytes_.size()-cursor_; }
     std::uint8_t Byte() { if (Remaining()==0u) Fail("truncated encoded-state payload"); return bytes_[cursor_++]; }
@@ -764,6 +900,67 @@ private:
         const std::string_view value(reinterpret_cast<const char*>(bytes_.data()+cursor_),size);
         Text(value,limits_,identity,empty,cap); budget_.Retain(static_cast<std::size_t>(size)+1u);
         cursor_+=size; return value;
+    }
+    ScriptSavedNativeDecals NativeDecals(const std::string_view map) {
+        ScriptSavedNativeDecals saved;
+        budget_.Retain(sizeof(ScriptSavedNativeDecals));
+        const auto graphMap=String(true,false,128u);
+        const auto model=String(true,false,DecalStateLimits{}.identityBytes);
+        const auto level=String(true,false,DecalStateLimits{}.identityBytes);
+        if (Compare(graphMap,map)!=0) Fail("native decal graph map differs from saved map");
+        const auto surfaces=U32(),nodes=U32(); budget_.DecalSurfaces(surfaces);
+        if (nodes>std::min(limits_.maxDecalNodes,DecalStateLimits{}.nodes) || surfaces>Remaining()/4u)
+            Fail("native decal model counts exceed bounds or encoded payload");
+        budget_.Array(surfaces,sizeof(std::vector<DecalSurfaceRecord>));
+        if constexpr(Materialize) {
+            saved.mapName=graphMap; saved.modelPath=model; saved.levelPath=level;
+            saved.surfaceCount=surfaces; saved.nodeCount=nodes; saved.state.surfaces.resize(surfaces);
+        }
+        const auto indices=[&](std::vector<std::int32_t>& values,std::size_t maximum,bool membership) {
+            const auto count=U32();
+            if (membership) budget_.DecalMembership(count); else budget_.DecalSurfListEntries(count);
+            if (count>Remaining()/4u) Fail("native decal index count exceeds encoded payload");
+            budget_.Array(count,sizeof(std::int32_t));
+            if constexpr(Materialize) values.reserve(count);
+            for (std::uint32_t i=0u;i<count;++i) {
+                const auto value=I32();
+                if (value<0 || static_cast<std::size_t>(value)>=maximum)
+                    Fail("native decal node/surface index is out of bounds");
+                if constexpr(Materialize) values.push_back(value);
+            }
+        };
+        for (std::uint32_t surface=0u;surface<surfaces;++surface) {
+            const auto count=U32(); budget_.DecalRecords(count);
+            if (count>Remaining()/69u) Fail("native decal record count exceeds encoded payload");
+            budget_.Array(count,sizeof(DecalSurfaceRecord));
+            if constexpr(Materialize) saved.state.surfaces[surface].reserve(count);
+            for (std::uint32_t index=0u;index<count;++index) {
+                DecalSurfaceRecord record;
+                const auto owner=String(true,false,DecalStateLimits{}.identityBytes);
+                if constexpr(Materialize) record.ownerIdentity=owner;
+                for (auto& corner : record.relativeCorners) { corner.x=F32(); corner.y=F32(); corner.z=F32(); }
+                indices(record.nodeMembership,nodes,true);
+                record.moverRotation={I32(),I32(),I32()};
+                if constexpr(Materialize) saved.state.surfaces[surface].push_back(std::move(record));
+            }
+        }
+        const auto owners=U32(); budget_.DecalOwners(owners);
+        if (owners>Remaining()/9u) Fail("native decal owner count exceeds encoded payload");
+        budget_.Array(owners,sizeof(DecalOwnerSurfList)+sizeof(std::string_view));
+        std::vector<std::string_view> identities; identities.reserve(owners);
+        if constexpr(Materialize) saved.state.owners.reserve(owners);
+        for (std::uint32_t index=0u;index<owners;++index) {
+            DecalOwnerSurfList owner;
+            const auto identity=String(true,false,DecalStateLimits{}.identityBytes); identities.push_back(identity);
+            if constexpr(Materialize) owner.ownerIdentity=identity;
+            indices(owner.surfaces,surfaces,false);
+            if constexpr(Materialize) saved.state.owners.push_back(std::move(owner));
+        }
+        std::sort(identities.begin(),identities.end(),[](auto a,auto b) {return Compare(a,b)<0;});
+        for (std::size_t i=1u;i<identities.size();++i)
+            if (Compare(identities[i-1u],identities[i])==0)
+                Fail("duplicate or case-colliding native decal owner mirror");
+        return saved;
     }
     Ai::Channels AiChannels() {
         return {F32(),F32(),F32(),F32()};
@@ -886,6 +1083,19 @@ private:
         }
         case Tag::Vector: value.kind=Vm::Kind::Vector; for (auto& v : value.vector) v=F32(); break;
         case Tag::Rotator: value.kind=Vm::Kind::Rotator; for (auto& v : value.rotation) v=I32(); break;
+        case Tag::IntArray: {
+            if (version_<DecalStateVersion) Fail("dynamic integer array requires codec10");
+            hasIntArrays_=true; value.kind=Vm::Kind::IntArray;
+            const auto count=U32(); budget_.IntArrayElements(count);
+            if (count>Remaining()/4u) Fail("dynamic integer-array count exceeds encoded payload");
+            budget_.Array(count,sizeof(std::int32_t));
+            if constexpr(Materialize) value.intArray.reserve(count);
+            for (std::uint32_t i=0u;i<count;++i) {
+                const auto element=I32();
+                if constexpr(Materialize) value.intArray.push_back(element);
+            }
+            break;
+        }
         case Tag::Struct: {
             value.kind=Vm::Kind::Struct; const auto count=U32();
             if (count>limits_.totalValueNodes-budget_.nodes || count>Remaining()/6u)

@@ -9,6 +9,7 @@
 #include <fstream>
 #include <functional>
 #include <iostream>
+#include <iterator>
 #include <map>
 #include <stdexcept>
 #include <string>
@@ -61,6 +62,13 @@ void Replace32(Bytes& bytes, std::size_t offset, std::uint32_t value) {
 void ExpectFailure(const std::function<void()>& action, const char* description) {
     bool rejected{};
     try { action(); } catch (const std::runtime_error&) { rejected = true; }
+    Require(rejected, description); ++rejectionControls;
+}
+void ExpectWorkingBudgetFailure(const std::function<void()>& action, const char* description) {
+    bool rejected{};
+    try { action(); } catch (const std::runtime_error& error) {
+        rejected = std::string(error.what()).find("working-byte budget") != std::string::npos;
+    }
     Require(rejected, description); ++rejectionControls;
 }
 
@@ -261,6 +269,22 @@ struct TempFixture {
         stream.write(reinterpret_cast<const char*>(payload.data()), static_cast<std::streamsize>(payload.size()));
         Require(static_cast<bool>(stream), "Cannot write synthetic model payload");
     }
+    void ReplaceExport(std::size_t index, const Bytes& bytes, ObjectFlags flags = ObjectFlags{}) {
+        auto& entry = package.exports.at(index);
+        entry.ObjOffset = static_cast<std::int32_t>(payload.size());
+        entry.ObjSize = static_cast<std::int32_t>(bytes.size());
+        entry.ObjFlags = flags;
+        payload.insert(payload.end(), bytes.begin(), bytes.end());
+        std::ofstream stream(package.sourcePath, std::ios::binary | std::ios::trunc);
+        Require(static_cast<bool>(stream), "Cannot open synthetic replacement export");
+        stream.write(reinterpret_cast<const char*>(payload.data()), static_cast<std::streamsize>(payload.size()));
+        Require(static_cast<bool>(stream), "Cannot write synthetic replacement export");
+    }
+    void RequireUnchangedFile() const {
+        std::ifstream stream(package.sourcePath, std::ios::binary);
+        const Bytes actual((std::istreambuf_iterator<char>(stream)), std::istreambuf_iterator<char>());
+        Require(actual == payload, "Budgeted decoder mutated its input file");
+    }
     ~TempFixture() {
         // Remove only this program's exact synthetic file and empty directory.
         std::error_code ignored;
@@ -290,6 +314,116 @@ void TestFileLoader() {
     package = fixture.package; package.exports[4].ObjClass = -3;
     ExpectFailure([&] { (void)FindPortableRootModel68Export(package); }, "Ambiguous Level exports accepted");
     ExpectFailure([&] { (void)LoadPortableModel68(fixture.package, 5u); }, "Out-of-table export accepted");
+}
+
+void TestPropertyWorkingBudgets() {
+    TempFixture fixture;
+    const auto originalSize = fixture.package.exports[1].ObjSize;
+    ExpectWorkingBudgetFailure([&] { (void)LoadPortableExportProperties(fixture.package, 1u, 0u); },
+        "Zero property budget accepted a raw export");
+    ExpectWorkingBudgetFailure([&] {
+        (void)LoadPortableExportProperties(fixture.package, 1u, static_cast<std::size_t>(originalSize));
+    }, "Raw export-only budget omitted result/current-property overhead");
+    auto invalidSource = fixture.package;
+    invalidSource.sourcePath = (fixture.directory / "does-not-exist.bin").string();
+    invalidSource.exports[1].ObjSize = 64 * 1024 * 1024;
+    ExpectWorkingBudgetFailure([&] { (void)LoadPortableExportProperties(invalidSource, 1u, 1024u); },
+        "Oversized raw export was not refused before file access/allocation");
+    ExpectWorkingBudgetFailure([&] { (void)LoadPortableModel68(invalidSource, 1u, 1024u); },
+        "Model body cap was not checked before file access/allocation");
+    Require(fixture.package.exports[1].ObjSize == originalSize,
+        "Budgeted decode changed caller export metadata");
+
+    // One-byte names + bool info, no value payload: many tiny tags formerly
+    // amplified into unbounded record-table buffers. This budget admits raw
+    // bytes and earlier tables, but not the old4096 + new8192 growth peak.
+    Bytes many;
+    constexpr std::size_t tagCount = 4097u;
+    for (std::size_t index = 0u; index < tagCount; ++index) {
+        Index(many, 7); many.push_back(index % 2u ? 0x83u : 0x03u);
+    }
+    Index(many, 0);
+    const Fixture body;
+    many.insert(many.end(), body.bytes.begin(), body.bytes.end());
+    fixture.ReplaceExport(1u, many);
+    const auto tableCap = many.size() + 8192u * sizeof(PortableTaggedProperty) + 1024u;
+    ExpectWorkingBudgetFailure([&] { (void)LoadPortableExportProperties(fixture.package, 1u, tableCap); },
+        "Property growth failed to charge simultaneous old/new record buffers");
+    ExpectWorkingBudgetFailure([&] { (void)LoadPortableModel68(fixture.package, 1u, tableCap); },
+        "Model loader failed to pass its property-table budget");
+    const auto tags = LoadPortableExportProperties(fixture.package, 1u, 2u * 1024u * 1024u);
+    Require(tags.properties.size() == tagCount && tags.bytesConsumed == tagCount * 2u + 1u,
+        "Manual table growth lost authored duplicate tag count/boundary");
+    for (std::size_t index = 0u; index < tags.properties.size(); ++index) {
+        const auto& tag = tags.properties[index];
+        Require(tag.name == "Zone" && tag.type == 3u && tag.value.empty() &&
+            tag.boolValue == (index % 2u != 0u), "Budgeted property parsing changed bool tag ordering/value");
+    }
+    Require(LoadPortableModel68(fixture.package, 1u, 2u * 1024u * 1024u).lightBits.size() == 15u,
+        "Sufficient explicit property budget changed Model body semantics");
+
+    Bytes values;
+    constexpr std::size_t valueSize = 32768u;
+    for (unsigned index = 0u; index < 2u; ++index) {
+        Index(values, 7); values.push_back(0x79u); U32(values, valueSize);
+        values.insert(values.end(), valueSize, static_cast<std::uint8_t>(index + 17u));
+    }
+    Index(values, 0);
+    fixture.ReplaceExport(0u, values);
+    const auto valueCap = values.size() + valueSize + 4096u;
+    ExpectWorkingBudgetFailure([&] { (void)LoadPortableExportProperties(fixture.package, 0u, valueCap); },
+        "Property budget omitted all previously retained raw value capacities");
+    const auto decodedValues = LoadPortableExportProperties(fixture.package, 0u, values.size() * 3u);
+    Require(decodedValues.properties.size() == 2u && decodedValues.properties[0].value == Bytes(valueSize, 17u) &&
+        decodedValues.properties[1].value == Bytes(valueSize, 18u),
+        "Sufficient payload budget changed raw array values");
+    // Header advertises an enormous value in a tiny raw input. The budget gate
+    // must win before ReadBytes attempts that allocation/read.
+    Bytes enormous; Index(enormous, 7); enormous.push_back(0x79u); U32(enormous, 64u * 1024u * 1024u);
+    fixture.ReplaceExport(0u, enormous);
+    ExpectWorkingBudgetFailure([&] { (void)LoadPortableExportProperties(fixture.package, 0u, 4096u); },
+        "New property payload was not charged before ReadBytes");
+
+    Bytes stacked; Index(stacked, 1); Index(stacked, 0); U64(stacked, 0x123456789abcdef0ull);
+    U32(stacked, 7u); Index(stacked, 23); Index(stacked, 7); stacked.push_back(0x83u); Index(stacked, 0);
+    fixture.ReplaceExport(0u, stacked, ObjectFlags::HasStack);
+    const auto stack = LoadPortableExportProperties(fixture.package, 0u, 4096u);
+    Require(stack.stack && stack.stack->functionReference == 1 && stack.stack->stateReference == 0 &&
+        stack.stack->probeMask == 0x123456789abcdef0ull && stack.stack->latentAction == 7u &&
+        stack.stack->logicalOffset == 23 && stack.properties.size() == 1u && stack.properties[0].boolValue,
+        "Budgeted property loader changed HasStack header/tag semantics");
+    fixture.RequireUnchangedFile();
+}
+
+void TestLevelWorkingBudgets() {
+    TempFixture fixture;
+    for (const auto cap : {0u, 1u}) {
+        ExpectWorkingBudgetFailure([&] { (void)FindPortableRootModel68Export(fixture.package, cap); },
+            "Root Model selection omitted the Level property/body cap");
+        ExpectWorkingBudgetFailure([&] { (void)ReadPortableLevel68ActorOrder(fixture.package, cap); },
+            "Level actor-order loading omitted its property/body cap");
+        ExpectWorkingBudgetFailure([&] { (void)LoadPortableRootModel68(fixture.package, cap); },
+            "Root Model loader omitted its Level selection cap");
+    }
+    Bytes level; Index(level, 0);
+    constexpr std::uint32_t count = 100000u;
+    U32(level, count); U32(level, count);
+    for (std::uint32_t index = 0u; index < count; ++index) Index(level, 0);
+    for (unsigned string = 0u; string < 4u; ++string) Index(level, 0);
+    Index(level, 0); U32(level, 7777); U32(level, 0); Index(level, 2); Index(level, 0);
+    fixture.ReplaceExport(2u, level);
+    const auto insufficient = level.size() + count * sizeof(std::int32_t) / 2u;
+    ExpectWorkingBudgetFailure([&] { (void)ReadPortableLevel68ActorOrder(fixture.package, insufficient); },
+        "Level actor output was not charged with its retained native body before reserve");
+    ExpectWorkingBudgetFailure([&] { (void)FindPortableRootModel68Export(fixture.package, insufficient); },
+        "Root selection allocated a Level actor table beyond its working budget");
+    const auto order = ReadPortableLevel68ActorOrder(fixture.package, 1024u * 1024u);
+    Require(order.size() == count && std::all_of(order.begin(), order.end(), [](auto ref) { return ref == 0; }),
+        "Bounded Level loader changed actor null/order semantics");
+    Require(FindPortableRootModel68Export(fixture.package, 1024u * 1024u) == 1u &&
+        LoadPortableRootModel68(fixture.package, 1024u * 1024u).exportIndex == 1u,
+        "Sufficient Level/root scratch cap changed native Model reference selection");
+    fixture.RequireUnchangedFile();
 }
 
 std::uint64_t HashBytes(const Bytes& bytes) {
@@ -343,7 +477,7 @@ int main(int argc, char** argv) {
             else if (option == "--all-maps") allMaps = true;
             else throw std::runtime_error("Usage: portable_model_geometry_test [--game-root PATH [--map NAME | --all-maps]]");
         }
-        TestBody(); TestFileLoader();
+        TestBody(); TestFileLoader(); TestPropertyWorkingBudgets(); TestLevelWorkingBudgets();
         std::cout << "Portable UModel v68 synthetic body/file tests passed; rejection controls=" << rejectionControls << '\n';
         if (!gameRoot.empty()) {
             const auto maps = std::filesystem::path(gameRoot) / "Maps";

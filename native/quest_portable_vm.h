@@ -15,7 +15,7 @@
 namespace QuestVr { struct StateObject; }
 
 namespace QuestVr::Vm {
-enum class Kind { Nothing, Byte, Int, Bool, Float, Name, Object, String, Vector, Rotator, Struct };
+enum class Kind { Nothing, Byte, Int, Bool, Float, Name, Object, String, Vector, Rotator, Struct, IntArray };
 struct Value {
     Kind kind{Kind::Nothing};
     std::int32_t integer{};
@@ -24,6 +24,9 @@ struct Value {
     std::string text;
     std::array<float, 3> vector{};
     std::array<std::int32_t, 3> rotation{};
+    // Whole native INT-array values only. This does not establish script
+    // dynamic indexing or support arrays with any other element type.
+    std::vector<std::int32_t> intArray;
     std::map<std::string, Value> fields;
     static Value Integer(std::int32_t n);
     static Value Byte(std::uint8_t n);
@@ -32,6 +35,7 @@ struct Value {
     static Value Text(Kind kind, std::string text);
     static Value Vector(std::array<float, 3> n);
     static Value Rotator(std::array<std::int32_t, 3> n);
+    static Value IntArray(std::vector<std::int32_t> values);
 };
 bool ToBool(const Value& value);
 std::int32_t ToInt(const Value& value);
@@ -87,6 +91,8 @@ struct Limits {
     // Explicit synchronous entry attempts, including absent/ineligible events.
     // Bytecode instructions and all other execution budgets remain shared.
     std::size_t operations{100000};
+    // Separate from reflected local/fixed-array elements; includes capacity.
+    std::size_t intArrayElements{262144};
 };
 struct StateLabel {
     std::string name;
