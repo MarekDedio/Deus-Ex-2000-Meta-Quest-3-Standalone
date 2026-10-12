@@ -1,0 +1,22 @@
+diff --git a/Samples/SampleXrFramework/Src/XrApp.h b/Samples/SampleXrFramework/Src/XrApp.h
+--- a/Samples/SampleXrFramework/Src/XrApp.h
++++ b/Samples/SampleXrFramework/Src/XrApp.h
+@@ -422,2 +422,6 @@ class XrApp {
+     virtual bool SessionInit();
++    // Called on the render owner before any session framebuffer is destroyed.
++    // Derived apps can revoke CPU-visible native-client lifetime tokens here.
++    // Existing SessionEnd remains after framebuffer/reference-space teardown.
++    virtual void SessionDestroying();
+     virtual void SessionEnd();
+diff --git a/Samples/SampleXrFramework/Src/XrApp.cpp b/Samples/SampleXrFramework/Src/XrApp.cpp
+--- a/Samples/SampleXrFramework/Src/XrApp.cpp
++++ b/Samples/SampleXrFramework/Src/XrApp.cpp
+@@ -1114,3 +1114,4 @@ bool XrApp::InitSession() {
+ void XrApp::EndSession() {
++    SessionDestroying();
+     for (int eye = 0; eye < MAX_NUM_EYES; eye++) {
+         ovrFramebuffer_Destroy(&FrameBuffer[eye]);
+@@ -1443,1 +1444,3 @@ bool XrApp::SessionInit() {
++void XrApp::SessionDestroying() {}
++
+ void XrApp::SessionEnd() {}

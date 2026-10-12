@@ -394,8 +394,9 @@ struct TestHost final:Vm::Host {
     }
     Vm::Evaluation NativeWithExecution(std::uint16_t index,const std::string& receiver,
         const std::vector<Vm::Evaluation>& arguments,const Vm::Function* declaration,Vm::Execution& execution) override {
-        // This index belongs only to this generated fixture, not to Deus Ex.
-        if(index==1008u && executionNative) {
+        // 1008 belongs only to this generated fixture. Native zero is keyed by
+        // its declaration; individual tests provide the host-side observation.
+        if((index==1008u || index==0u) && executionNative) {
             std::vector<Value> values;for(const auto& argument:arguments) values.push_back(argument.Load());
             nativeArguments.push_back(std::move(values));nativeReceivers.push_back(receiver);
             nativeDeclarations.push_back(declaration ? declaration->path : "");
@@ -992,6 +993,128 @@ void ParametersAndReturns() {
     auto native=Function("OutNative",Return(Native(1004,{Ref(0x01,8)})),"CallerPackage");
     r=Vm::Execute(host,native,"Self");Returned(r,"Native out alias");
     Require(host.Load("Self",actor).integer==9,"Native argument lost writable alias");
+}
+void DecalNativeInputContracts() {
+    const auto initialChecks=checks;
+    const auto declaration=[](TestHost& host,const std::string& path,bool out=false) {
+        auto function=Function("AttachDecal",{},"Engine.Decal");
+        function.path=path;function.flags=0x500u;function.nativeIndex=0u;
+        function.variables={host.Property(function,101,"TraceDistance",Value::Float(0),out ? 0x180u : 0x80u,1u,true),
+            host.Property(function,102,"DecalDir",Value::Vector({}),0x90u,1u,true),
+            host.Property(function,103,"ReturnValue",Value::Bool(false),0x580u,1u,true)};
+        return function;
+    };
+    const auto direction=std::array<float,3>{1.25f,-2.5f,3.75f};
+    // The original native-zero declaration copies P_GET_FLOAT and P_GET_VECTOR
+    // as each expression runs. A later expression must not reload the already
+    // consumed first alias. Exact qualified identity is case-insensitive; a
+    // same-named function in another class must not inherit this policy.
+    for(const auto& path:{std::string("Engine.Decal.AttachDecal"),std::string("eNgInE.dEcAl.aTtAcHdEcAl")}) {
+        for(const auto opcode:{std::uint8_t{0x1c},std::uint8_t{0x1b},std::uint8_t{0x38}}) {
+            TestHost host;
+            const auto attach=declaration(host,path);
+            const auto caller=Function("DecalInputOrder",Return(Call(opcode,7u,{Ref(0x01,1),
+                Native(1060u,{Ref(0x01,1),Real(99.0f),Vector(direction)})})),"DecalCaller");
+            const auto distance=host.Property(caller,1,"TraceDistance",Value::Float(0));
+            host.Store("Self",distance,{Value::Float(35.0f)});
+            if(opcode==0x1c) host.finals[{caller.source,7}]=std::make_shared<Vm::Function>(attach);
+            else {
+                host.names[{caller.source,7}]="AttachDecal";
+                host.named[{"Self",opcode==0x38 ? Vm::CallKind::Global : Vm::CallKind::Virtual,"AttachDecal"}]=
+                    std::make_shared<Vm::Function>(attach);
+            }
+            std::size_t calls{};
+            host.executionNative=[&](const std::string& receiver,const std::vector<Vm::Evaluation>& arguments,
+                const Vm::Function* actual,Vm::Execution&) {
+                ++calls;host.observations.push_back("attach");
+                Require(receiver=="Self" && actual && actual->path==path && actual->flags==0x500u &&
+                    actual->nativeIndex==0u && actual->variables.size()==3u &&
+                    actual->variables[0].name=="TraceDistance" && actual->variables[0].flags==0x80u &&
+                    actual->variables[1].name=="DecalDir" && actual->variables[1].flags==0x90u &&
+                    actual->variables[2].name=="ReturnValue" && actual->variables[2].flags==0x580u &&
+                    actual->variables[2].zero.kind==Vm::Kind::Bool,
+                    "Attach observation lost original native-zero identity/signature");
+                Require(arguments.size()==2u && !arguments[0].reference && !arguments[1].reference &&
+                    arguments[0].Load().kind==Vm::Kind::Float && arguments[0].Load().floating==35.0f &&
+                    arguments[1].Load().kind==Vm::Kind::Vector && arguments[1].Load().vector==direction,
+                    "Attach reloaded earlier Float alias after the Vector expression mutated it");
+                Require(host.Load("Self",distance).floating==99.0f,
+                    "Attach snapshot suppressed the later argument's real mutation");
+                return Vm::Evaluation{Value::Bool(true),{}};
+            };
+            const auto result=Vm::Execute(host,caller,"Self");Returned(result,"Original Attach native expression-time inputs");
+            Require(result.value.kind==Vm::Kind::Bool && result.value.boolean && calls==1u &&
+                host.nativeArguments.size()==2u && host.nativeArguments[1][0].floating==35.0f &&
+                host.nativeDeclarations==std::vector<std::string>{"",path} &&
+                host.observations==std::vector<std::string>{"variable:Self:TraceDistance","variable:Self:TraceDistance","attach"},
+                "Attach argument order, copied value, native return or declaration routing changed");
+            Require(host.beginCount==1u && host.commitCount==1u && host.rollbackCount==0u &&
+                host.Load("Self",distance).floating==99.0f && host.effects==0u && host.rng==12345u,
+                "Attach observation invented native effects/RNG or lost the argument mutation transaction");
+        }
+        {
+            TestHost host;
+            const auto attach=declaration(host,path);
+            Value distance=Value::Float(41.0f);
+            auto first=std::make_shared<Vm::Reference>();first->zero=Value::Float(0);
+            auto second=std::make_shared<Vm::Reference>();second->zero=Value::Vector({});
+            std::vector<std::string> reads;
+            first->read=[&] {reads.push_back("distance");return distance;};
+            second->read=[&] {reads.push_back("direction");distance=Value::Float(88.0f);return Value::Vector(direction);};
+            host.executionNative=[&](const std::string&,const std::vector<Vm::Evaluation>& arguments,
+                const Vm::Function* actual,Vm::Execution&) {
+                Require(actual && actual->path==path && arguments.size()==2u &&
+                    !arguments[0].reference && !arguments[1].reference &&
+                    arguments[0].Load().floating==41.0f && arguments[1].Load().vector==direction,
+                    "Direct Attach entry retained incoming aliases rather than successive value copies");
+                return Vm::Evaluation{Value::Bool(true),{}};
+            };
+            const auto result=Vm::Execute(host,attach,"Self",{{{},first},{{},second}});
+            Returned(result,"Direct original Attach incoming-alias snapshots");
+            Require(result.value.kind==Vm::Kind::Bool && result.value.boolean && distance.floating==88.0f &&
+                reads==std::vector<std::string>{"distance","direction"},
+                "Direct Attach reordered or repeatedly loaded incoming aliases");
+        }
+        {
+            TestHost host;
+            const auto attach=declaration(host,path);
+            host.executionNative=[&](const std::string&,const std::vector<Vm::Evaluation>& arguments,
+                const Vm::Function*,Vm::Execution&) {
+                Require(arguments.size()==2u && !arguments[0].reference && !arguments[1].reference &&
+                    arguments[0].Load().floating==35.0f && arguments[1].Load().kind==Vm::Kind::Nothing,
+                    "Attach optional Vector omission lost its native Nothing discriminator");
+                return Vm::Evaluation{Value::Bool(false),{}};
+            };
+            const auto result=Vm::Execute(host,attach,"Self",{{Value::Float(35.0f),{}}});
+            Returned(result,"Original Attach omitted optional Vector");
+            Require(result.value.kind==Vm::Kind::Bool && !result.value.boolean,
+                "Attach typed native Bool return was replaced by an input kind/value");
+        }
+    }
+    for(const auto& path:{std::string("Fixture.Decal.AttachDecal"),std::string("Engine.Decal.AttachDecalSuffix"),
+        std::string("Fixture.Actor.GeneratedOut")}) {
+        TestHost host;
+        const auto unknown=declaration(host,path,true);
+        const auto caller=Function("UnknownZeroOut",Return(Call(0x1c,7u,{Ref(0x01,1),
+            Native(1060u,{Ref(0x01,1),Real(99.0f),Vector(direction)})})),"UnknownZeroCaller");
+        const auto distance=host.Property(caller,1,"TraceDistance",Value::Float(0));
+        host.Store("Self",distance,{Value::Float(35.0f)});
+        host.finals[{caller.source,7}]=std::make_shared<Vm::Function>(unknown);
+        host.executionNative=[&](const std::string&,const std::vector<Vm::Evaluation>& arguments,
+            const Vm::Function* actual,Vm::Execution&) {
+            Require(actual && actual->path==path && arguments.size()==2u && arguments[0].reference &&
+                arguments[0].Load().floating==99.0f,
+                "Unknown native-zero OUT alias was mistaken for audited Attach ordinary input");
+            arguments[0].reference->write(Value::Float(42.0f));
+            return Vm::Evaluation{Value::Bool(true),{}};
+        };
+        const auto result=Vm::Execute(host,caller,"Self");Returned(result,"Generic native-zero OUT alias preservation");
+        Require(result.value.kind==Vm::Kind::Bool && result.value.boolean && host.Load("Self",distance).floating==42.0f &&
+            host.nativeArguments.size()==2u && host.nativeArguments[1][0].floating==99.0f,
+            "Native-zero qualified exclusion lost genuine OUT writeback");
+    }
+    std::cout<<"Generated original Attach expression-time Float/Vector input contracts: "
+        <<checks-initialChecks<<" checks passed.\n";
 }
 void AssignmentArraysAndStructs() {
     TestHost host;
@@ -2057,7 +2180,7 @@ void DynamicIntArrayContracts() {
         <<checks-initialChecks<<" checks and "<<rejections-initialRejections<<" rejection controls passed.\n";
 }
 void ExecutionContracts() {
-    RotatorDirectionContracts();ScalarAndLocalContracts();ParametersAndReturns();AssignmentArraysAndStructs();LazyAndContextContracts();
+    RotatorDirectionContracts();ScalarAndLocalContracts();ParametersAndReturns();DecalNativeInputContracts();AssignmentArraysAndStructs();LazyAndContextContracts();
     OptionalAndReferenceTables();ControlAndFailureContracts();BudgetAndNestedRollback();IntegerIncrementContracts();CastContracts();SwitchContracts();DynamicIntArrayContracts();
 }
 void TransactionContracts() {

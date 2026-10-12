@@ -97,6 +97,12 @@ items2–4,6–7 below and native Detach from item5. Native Attach, its callback
 the renderer remain pending. The numbered list records the original integration
 requirements, not a claim that each is still missing.
 
+The [native client binding](NATIVE-CLIENT-BINDING.md) now supplies item1's client/
+viewport ownership and exact entry guards. Positive Attach/live Texture operation
+and the renderer remain pending. The reentrant mover callback ordering in the
+[native audit](DECAL-NATIVE-CONTRACT.md) forbids publishing a whole fixed-input
+projection plan as one Attach: radius and several native reads follow SetBase.
+
 1. Bind the real native client viewport and live Texture, preserving guard order.
    Geometry-only success is not native Attach success. Do not turn unsupported
    native modes into false/success to bypass startup.

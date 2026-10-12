@@ -1,9 +1,41 @@
 # Current Quest test-build handoff (2026-10-12)
 
-## Latest: native decal ownership, Detach and checkpoints
+## Latest APK: native client and Quest target lifetime
+
+`artifacts/native-client-20261012/DeusExQuestVR-native-client-20261012.apk`
+is the newest signed ARM64 build:19,695,049 bytes, SHA256
+`C090387B78BF173026E9B33030CBD83C6E50EF5B8174C29821B5D4116F6D53A3`.
+APK Signature Scheme v2 verifies. Its16 ZIP entries contain only port/SDK
+libraries/assets, not original commercial game packages.
+
+Both actual builds used default data-preserving auto-install, but the configured
+Quest3 `2G0YC5ZG620985` was absent at deployment time. No alternative device was
+selected and no installation is claimed. The checkpoint APK recorded below is
+still the last device-hash-verified installation. A new APK will continue to
+replace-install automatically whenever that authorized Quest is connected.
+
+Data-probe:6,136,144 bytes, SHA256
+`E67F782D5BBC7641754DE522B75CAEDBB0D159F009BDAD5B8EFDF311F4457B21`.
+Quest renderer:5,375,640 bytes, SHA256
+`4FF16F3B1BA9822193A4312DFA0552E5053F09C9E3AE09963565891766B35572`.
+This batch binds the actual stereo target's native-client lifetime after SDK
+resource creation and revokes it before target teardown. Original Attach entry
+guards and client/server default-class selection are implemented, but positive
+Attach, rendered native shadows and original world/player startup remain pending.
+No hand/body geometry or controller/recenter mapping was edited.
+
+All58 ordinary host tests pass (62 registered, four owned-data skips),33.50s;
+generated Spawn/world/client7072/135, registry116/39, VM677971/338 and SDK patch6/0
+pass. Original-data results and limitations are in [STATUS.md](STATUS.md).
+There is no new Quest capture, physical alignment, tracking or performance
+acceptance without hardware. See [NATIVE-CLIENT-BINDING.md](NATIVE-CLIENT-BINDING.md).
+Build/test logs and the archived APK remain ignored under
+`artifacts/native-client-20261012/`.
+
+## Last installed: native decal ownership, Detach and checkpoints
 
 `artifacts/decal-runtime-20261012/DeusExQuestVR-decal-runtime-20261012.apk`
-is the newest signed ARM64 build:18,919,193 bytes, SHA256
+was the last device-verified signed ARM64 build:18,919,193 bytes, SHA256
 `8D6B115A3745F51819FF0C8D977A03618B9D48D69A4674D5A19938CA0AE48237`.
 The default helper automatically replace-installed it on connected Quest3
 `2G0YC5ZG620985`, preserving app data/saves. Installed `base.apk` has the exact

@@ -13,6 +13,7 @@
 #include <iostream>
 #include <limits>
 #include <map>
+#include <memory>
 #include <stdexcept>
 #include <string>
 #include <tuple>
@@ -59,6 +60,10 @@ struct Code { Bytes raw; std::size_t logical{}; };
 Code Token(std::uint8_t op) { return {{op}, 1u}; }
 Code Ref(std::uint8_t op, std::int32_t reference) { Code code{{op}, 5u}; Index(code.raw, reference); return code; }
 Code Int(std::int32_t value) { Code code{{0x1du}, 5u}; U32(code.raw, static_cast<std::uint32_t>(value)); return code; }
+Code Number(float value) { Code code{{0x1eu}, 5u}; FloatBytes(code.raw, value); return code; }
+Code VectorLiteral(std::array<float, 3> value) {
+    Code code{{0x23u}, 13u}; for (const auto component : value) FloatBytes(code.raw, component); return code;
+}
 Code Text(const std::string& value) {
     Code code{{0x1fu}, value.size() + 2u};
     code.raw.insert(code.raw.end(), value.begin(), value.end()); code.raw.push_back(0u); return code;
@@ -161,9 +166,18 @@ struct Package {
         builders.at(static_cast<std::size_t>(reference - 1)) = [type, dimension, target, flags, secondary](std::int32_t next, std::int32_t) {
             Bytes body{0u}; Index(body, 0); Index(body, next); U32(body, dimension); U32(body, flags); Index(body, 0);
             if (type == "ClassProperty") { Index(body, target); Index(body, secondary); }
-            else if (type == "ObjectProperty" || type == "ByteProperty" || type == "StructProperty") Index(body, target);
+            else if (type == "ObjectProperty" || type == "ByteProperty" || type == "StructProperty" || type == "ArrayProperty") Index(body, target);
             return body;
         }; return reference;
+    }
+    std::int32_t IntArrayProperty(const std::string& name, std::int32_t owner, std::int32_t core, std::uint32_t flags) {
+        // Actual owned UProperty reference, not a name/type approximation.
+        const auto array = Property(name, "ArrayProperty", owner, core, 1u, 0, flags);
+        const auto inner = Property(name, "IntProperty", array, core);
+        builders.at(static_cast<std::size_t>(array - 1)) = [inner, flags](std::int32_t next, std::int32_t) {
+            Bytes body{0u}; Index(body, 0); Index(body, next); U32(body, 1u); U32(body, flags); Index(body, 0); Index(body, inner); return body;
+        };
+        return array;
     }
     std::int32_t Function(const std::string& name, std::int32_t owner, std::int32_t core, Code code = {}, std::uint16_t native = 0u, std::uint32_t flags = 0u) {
         const auto reference = Export(name, Import("Function", core), 0, owner, true); FunctionCode(reference, std::move(code), native, flags); return reference;
@@ -268,7 +282,7 @@ std::uint32_t Read32(const Bytes& bytes, std::size_t& cursor) {
     return result;
 }
 std::size_t PrefixSize(const Bytes& bytes) {
-    std::size_t cursor{}; Require(Read32(bytes, cursor) == 0x53515844u, "Independent spawn checkpoint magic mismatch"); const auto version = Read32(bytes, cursor); Require(version >= 1u && version <= 12u, "Independent spawn checkpoint version mismatch");
+    std::size_t cursor{}; Require(Read32(bytes, cursor) == 0x53515844u, "Independent spawn checkpoint magic mismatch"); const auto version = Read32(bytes, cursor); Require(version >= 1u && version <= 13u, "Independent spawn checkpoint version mismatch");
     const auto string = [&]() { const auto size = Read32(bytes, cursor); Require(cursor <= bytes.size() && size <= bytes.size() - cursor, "Independent spawn checkpoint string overflow"); cursor += size; };
     const auto strings = [&]() { const auto count = Read32(bytes, cursor); for (std::uint32_t i = 0u; i < count; ++i) string(); };
     strings(); strings(); strings();
@@ -342,7 +356,9 @@ void RefusedSave(const Fixture& fixture, const Bytes& prefix, const QuestVr::Scr
 }
 
 struct Tables { PortablePackageTables core, engine, classes, map; std::size_t initialActors{}; };
-Tables Build(Fixture& fixture, unsigned worldModel = 0u) {
+// Decal fixture variants: 1 exact; 2 malformed Texture target; 3 malformed
+// native function flags; 4 malformed return flags; 5 malformed optional flags.
+Tables Build(Fixture& fixture, unsigned worldModel = 0u, unsigned decalSchema = 0u) {
     Package core; core.stem = "Core"; const auto corePackage = core.ImportPackage("Core"), object = core.Export("Object"), metaclass = core.Export("Class", 0, object);
     const auto vector = core.Export("Vector", core.Import("Struct", corePackage), 0, object), rotator = core.Export("Rotator", core.Import("Struct", corePackage), 0, object);
     for (const auto& name : {"X", "Y", "Z"}) core.Property(name, "FloatProperty", vector, corePackage);
@@ -364,6 +380,8 @@ Tables Build(Fixture& fixture, unsigned worldModel = 0u) {
     const auto playerPawn = engine.Export("PlayerPawn", 0, pawn);
     const auto decoration = engine.Export("Decoration", 0, actor);
     const auto gameInfo = engine.Export("GameInfo", 0, actor);
+    const auto texture = decalSchema ? engine.Export("Texture", 0, importedObject) : 0;
+    const auto decal = decalSchema ? engine.Export("Decal", 0, actor) : 0;
     const auto notify = engine.Export("SpawnNotify", 0, actor), pointRegion = engine.Export("PointRegion", engine.Import("Struct", engineCore), 0, actor);
     engine.Property("Zone", "ObjectProperty", pointRegion, engineCore, 1u, zone); engine.Property("iLeaf", "IntProperty", pointRegion, engineCore); engine.Property("ZoneNumber", "ByteProperty", pointRegion, engineCore);
     engine.StructBody(pointRegion);
@@ -383,6 +401,42 @@ Tables Build(Fixture& fixture, unsigned worldModel = 0u) {
         if (std::string(name) == "bDeleteMe") deleteFlag = field;
     }
     for (const auto& name : {"CollisionRadius", "CollisionHeight"}) engine.Property(name, "FloatProperty", actor, engineCore);
+    if (decalSchema) {
+        const auto textureField = engine.Property("Texture", "ObjectProperty", actor, engineCore, 1u, decalSchema == 2u ? actor : texture);
+        engine.Property("DrawScale", "FloatProperty", actor, engineCore);
+        const auto multi = engine.Property("MultiDecalLevel", "IntProperty", decal, engineCore);
+        engine.Property("LastRenderedTime", "FloatProperty", decal, engineCore);
+        const auto surfaces = engine.IntArrayProperty("SurfList", decal, engineCore, 0x00400002u);
+        const auto attach = engine.Function("AttachDecal", decal, engineCore, {}, 0u, decalSchema == 3u ? 0x501u : 0x500u);
+        engine.Property("TraceDistance", "FloatProperty", attach, engineCore, 1u, 0, 0x80u);
+        engine.Property("DecalDir", "StructProperty", attach, engineCore, 1u, importedVector, decalSchema == 5u ? 0x80u : 0x90u);
+        engine.Property("ReturnValue", "BoolProperty", attach, engineCore, 1u, 0, decalSchema == 4u ? 0x480u : 0x580u);
+        const auto attachDefault = engine.Function("AttachDefault", decal, engineCore, Return(Final(attach, {Number(100.0f)})));
+        engine.Property("ReturnValue", "BoolProperty", attachDefault, engineCore, 1u, 0, 0x580u);
+        const auto counter = engine.Property("ArgumentCounter", "IntProperty", decal, engineCore);
+        const auto distance = engine.Function("DistanceWithSideEffect", decal, engineCore);
+        engine.Property("ReturnValue", "FloatProperty", distance, engineCore, 1u, 0, 0x580u);
+        engine.FunctionCode(distance, Join({Assign(Ref(0x01u, counter), Native(146u, {Ref(0x01u, counter), Int(1)})), Return(Number(100.0f))}));
+        const auto direction = engine.Function("DirectionWithSideEffect", decal, engineCore);
+        engine.Property("ReturnValue", "StructProperty", direction, engineCore, 1u, importedVector, 0x580u);
+        engine.FunctionCode(direction, Join({Assign(Ref(0x01u, counter), Native(146u, {Ref(0x01u, counter), Int(10)})), Return(VectorLiteral({1.0f, 0.0f, 0.0f}))}));
+        const auto sideEffects = engine.Function("AttachEvaluatedArguments", decal, engineCore, Return(Final(attach, {Final(distance), Final(direction)})));
+        engine.Property("ReturnValue", "BoolProperty", sideEffects, engineCore, 1u, 0, 0x580u);
+        const auto attachThenOut = engine.Function("AttachThenOutWrite", decal, engineCore);
+        const auto out = engine.Property("Output", "IntProperty", attachThenOut, engineCore, 1u, 0, 0x180u);
+        engine.FunctionCode(attachThenOut, Join({Final(attach, {Final(distance), Final(direction)}),
+            Assign(Ref(0x00u, out), Int(73)), Return()}));
+        const auto setMulti = engine.Function("SetMulti", decal, engineCore);
+        const auto multiInput = engine.Property("Input", "IntProperty", setMulti, engineCore, 1u, 0, 0x80u);
+        engine.FunctionCode(setMulti, Join({Assign(Ref(0x01u, multi), Ref(0x00u, multiInput)), Return()}));
+        const auto setTexture = engine.Function("SetTexture", decal, engineCore);
+        const auto textureInput = engine.Property("Input", "ObjectProperty", setTexture, engineCore, 1u, decalSchema == 2u ? actor : texture, 0x80u);
+        engine.FunctionCode(setTexture, Join({Assign(Ref(0x01u, textureField), Ref(0x00u, textureInput)), Return()}));
+        // SurfList's original Const bit must still deny script assignment.
+        const auto writeSurfaces = engine.Function("WriteSurfList", decal, engineCore);
+        const auto surfacesInput = engine.IntArrayProperty("Input", writeSurfaces, engineCore, 0x00400080u);
+        engine.FunctionCode(writeSurfaces, Join({Assign(Ref(0x01u, surfaces), Ref(0x00u, surfacesInput)), Return()}));
+    }
     engine.Property("Physics", "ByteProperty", actor, engineCore); engine.Property("StandingCount", "ByteProperty", actor, engineCore); engine.Property("Touching", "ObjectProperty", actor, engineCore, 4u, actor);
     engine.Property("bWaterZone", "BoolProperty", zone, engineCore); engine.Property("bBegunPlay", "BoolProperty", levelInfo, engineCore);
     engine.Property("bStartup", "BoolProperty", levelInfo, engineCore);
@@ -476,6 +530,9 @@ Tables Build(Fixture& fixture, unsigned worldModel = 0u) {
     }
     Bytes actorDefaults; engine.FloatTag(actorDefaults, "CollisionRadius", 12.0f); engine.FloatTag(actorDefaults, "CollisionHeight", 20.0f); engine.ClassBody(actor, actorDefaults);
     for (auto cls : {zone, levelInfo, level, model, brush, pawn, player, viewport, playerPawn, notify, decoration, gameInfo}) engine.ClassBody(cls);
+    if (decalSchema) {
+        engine.ClassBody(texture); Bytes defaults; engine.IntTag(defaults, "MultiDecalLevel", 4); engine.ClassBody(decal, defaults);
+    }
     const auto engineTable = fixture.Write(engine);
 
     Package classes; classes.stem = "SpawnClasses"; const auto classesCore = classes.ImportPackage("Core"), classesEngine = classes.ImportPackage("Engine");
@@ -892,6 +949,14 @@ Tables Build(Fixture& fixture, unsigned worldModel = 0u) {
     const auto collision = map.Export("Leaf0", map.Import("Probe", mapClasses)); // Deliberate authored birth-name collision.
     const auto playerObject = map.Export("BindingPlayer", map.Import("Player", mapEngine));
     const auto viewportObject = map.Export("BindingViewport", map.Import("Viewport", mapEngine));
+    const auto decalActor = decalSchema ? map.Export("Decal0", map.Import("Decal", mapEngine)) : 0;
+    if (decalSchema) {
+        const auto textureObject = map.Export("Texture0", map.Import("Texture", mapEngine));
+        map.ActorBody(textureObject, {});
+        Bytes properties; map.ObjectTag(properties, "Level", levelActor); map.ObjectTag(properties, "XLevel", world);
+        map.FloatTag(properties, "LastRenderedTime", 27.5f); map.FloatTag(properties, "DrawScale", 1.0f);
+        map.IntTag(properties, "MultiDecalLevel", 9); map.ActorBody(decalActor, std::move(properties));
+    }
     map.ActorBody(playerObject, {}); map.ActorBody(viewportObject, {}); // Real UObjects, deliberately not Level actors.
     const auto detachedActor = map.Export("DetachedActor", map.Import("Probe", mapClasses));
     map.ActorBody(detachedActor, {}); // Real Actor class, deliberately absent from serialized Level slots.
@@ -916,8 +981,9 @@ Tables Build(Fixture& fixture, unsigned worldModel = 0u) {
         if (worldModel==4u && reference==instigator) map.BoolTag(properties,"bCollideWorld",true);
         map.ActorBody(reference, std::move(properties));
     }
-    Bytes levelBody; Index(levelBody, 0); U32(levelBody, 7u); U32(levelBody, 7u);
+    Bytes levelBody; Index(levelBody, 0); U32(levelBody, decalSchema ? 8u : 7u); U32(levelBody, decalSchema ? 8u : 7u);
     for (const auto reference : {levelActor, driver, 0, owner, instigator, collision, 0}) Index(levelBody, reference);
+    if (decalSchema) Index(levelBody, decalActor);
     for (unsigned i = 0u; i < 4u; ++i) Index(levelBody, 0);
     Index(levelBody, 0); U32(levelBody, 7777u); U32(levelBody, 0u); Index(levelBody, mapModel); Index(levelBody, 0); map.Body(world, std::move(levelBody));
     Bytes modelBody; Index(modelBody, 0); for (unsigned i = 0u; i < 6u; ++i) FloatBytes(modelBody, 0.0f); modelBody.push_back(0u);
@@ -943,11 +1009,14 @@ Tables Build(Fixture& fixture, unsigned worldModel = 0u) {
     if (nodes) for (unsigned index=0u;index<4u;++index) { Index(modelBody,static_cast<std::int32_t>(index&1u)); Index(modelBody,-1); Index(modelBody,-1); U64(modelBody,0u); }
     Index(modelBody,0); // Lights.
     U32(modelBody, 1u); U32(modelBody, 0u); map.Body(mapModel, std::move(modelBody));
-    const auto mapTable = fixture.Write(map, true); const auto decodedModel = LoadPortableRootModel68(mapTable);
+    const auto mapTable = fixture.Write(map, true); const auto decodedModel = LoadPortableModel68(mapTable, static_cast<std::size_t>(mapModel - 1));
     Require(decodedModel.nodes.size()==(nodes ? 2u : 0u) && decodedModel.zones.size()==zoneCount &&
         (nodes || decodedModel.zones[0].actorReference==levelActor), "Genuine generated map model is not decoded correctly");
-    Require(ReadPortableLevel68ActorOrder(mapTable) == std::vector<std::int32_t>{levelActor, driver, 0, owner, instigator, collision, 0}, "Genuine Level actor ordering/holes were lost");
-    return {coreTable, engineTable, classesTable, mapTable, 5u};
+    auto expectedOrder = std::vector<std::int32_t>{levelActor, driver, 0, owner, instigator, collision, 0};
+    if (decalSchema) expectedOrder.push_back(decalActor);
+    Require(ReadPortableLevel68ActorOrder(mapTable) == expectedOrder, "Genuine Level actor ordering/holes were lost");
+    Require(FindPortableRootModel68Export(mapTable) == static_cast<std::size_t>(mapModel - 1), "Genuine Level root model selection was lost");
+    return {coreTable, engineTable, classesTable, mapTable, decalSchema ? 6u : 5u};
 }
 
 void ArgumentTests(Fixture& fixture) {
@@ -1912,6 +1981,25 @@ void WorldStartupSynthetic() {
         };
         const PortableWorldStartupProbeOptions fallbackOptions{"","SpawnClasses.WorldGame","fixture-options"};
         const auto terminal=model==4u ? Phase::WorldBases : Phase::CompactActorSlots;
+        if (model==1u) {
+            Require(!HasPortableRuntimeClient(), "Fresh world fixture unexpectedly bound a native client");
+            probe(fallbackOptions,Phase::SelectGameInfo);
+            const auto server=probe({"","Missing.Local","fixture-options","SpawnClasses.WorldGame"},terminal);
+            Require(server.gameInfoPath==Path("WorldGame0") && at(server,Phase::InitializeExecution)==6u &&
+                at(server,Phase::PreBeginPlay)==7u,
+                "Absent-client startup ignored configured DefaultServerGame or ran a shortened world prefix");
+            probe({"","SpawnClasses.WorldGame","fixture-options","Missing.Server"},Phase::SelectGameInfo);
+        }
+        std::uint64_t clientGeneration=1000u+model*100u;
+        std::shared_ptr<QuestVr::NativeClientLifetime> localLifetime;
+        const auto bindLocalClient=[&]() {
+            ClearPortableRuntimeClient(); localLifetime=std::make_shared<QuestVr::NativeClientLifetime>();
+            BindPortableRuntimeClient(localLifetime,++clientGeneration);
+            Require(HasPortableRuntimeClient() && ReadPortableRuntimeClientView().empty(),
+                "Configured local DefaultGame test lost client presence or invented a viewport");
+        };
+        const auto resetLocal=[&]() { fixture.Reset(); bindLocalClient(); };
+        bindLocalClient();
         const auto full=probe(fallbackOptions,terminal);
         Require(full.execution.function.empty() && full.execution.callStack.empty() && full.execution.offset==0u && full.execution.opcode==0u,
             "Native world terminal gap retained an unrelated successful script PC");
@@ -1932,7 +2020,7 @@ void WorldStartupSynthetic() {
             const auto badBinding=probe(fallbackOptions,Phase::InitializeExecution);
             Require(badBinding.actorSlot==4u && badBinding.actorPath==Path("Pawn0") && at(badBinding,Phase::InitGame)==0u,
                 "InitExecution accepted reflected Level different from its native slot0 binding");
-            fixture.Reset();
+            resetLocal();
             probe({"","","fixture-options"},Phase::SelectGameInfo);
             probe({"","Missing.GameInfo","fixture-options"},Phase::SelectGameInfo);
             probe({"SpawnFixture.Driver","","fixture-options"},Phase::SelectGameInfo);
@@ -1943,6 +2031,8 @@ void WorldStartupSynthetic() {
                     at(blocked,Phase::InitializeExecution)==0u && at(blocked,Phase::InitGame)==0u,
                     "Colliding GameInfo default bypassed exact native encroachment guard or advanced world phases");
             }
+            ClearPortableRuntimeClient();
+            Require(!HasPortableRuntimeClient(), "URL/map precedence fixture retained a local client");
             const auto alternate=probe({"SpawnClasses.AlternateWorldGame","Missing.Fallback","fixture-options"},terminal);
             Require(alternate.gameInfoPath==Path("AlternateWorldGame0"),"URL GameInfo did not take precedence over configured fallback");
             Call("Driver","SetWorldGameType",{Class("WorldGame")});
@@ -1950,7 +2040,7 @@ void WorldStartupSynthetic() {
             Require(mapDefault.gameInfoPath==Path("WorldGame0"),"Map DefaultGameType did not precede configured fallback");
             const auto urlWins=probe({"SpawnClasses.AlternateWorldGame","Missing.Fallback","fixture-options"},terminal);
             Require(urlWins.gameInfoPath==Path("AlternateWorldGame0"),"URL GameInfo did not override actual map DefaultGameType");
-            fixture.Reset();
+            resetLocal();
             const auto failed=probe({"SpawnClasses.FailingWorldGame","","fixture-options"},Phase::InitGame);
             Require(failed.execution.function=="SpawnClasses.FailingWorldGame.InitGame" &&
                 at(failed,Phase::PreBeginPlay)==0u,"InitGame failure lost actual function evidence or advanced phases");
@@ -1962,12 +2052,14 @@ void WorldStartupSynthetic() {
             const auto existing=Call("Level0","Spawn",{Class("Engine.GameInfo"),Object(""),Name("None"),Vector({0.0f,0.0f,0.0f}),Rotation({0,0,0})}).value;
             Require(existing.kind==Kind::Object && !existing.text.empty(),"Cannot create before-begun existing GameInfo fixture");
             Call("Driver","SetWorldGame",{{existing,{}}});
+            ClearPortableRuntimeClient();
             const auto preserved=probe({"Missing.Url","Missing.Fallback","fixture-options"},terminal);
             Require(preserved.gameInfoPath==existing.text,"Existing Level.Game was replaced by URL/config selection");
-            fixture.Reset();
+            resetLocal();
             const auto restoredGame=Call("Level0","Spawn",{Class("Engine.GameInfo"),Object(""),Name("None"),Vector({0.0f,0.0f,0.0f}),Rotation({0,0,0})}).value;
             Call("Driver","SetWorldGame",{{restoredGame,{}}});
             Call("Driver","PrepareRestoredWorld"); Call("Driver","SetBegun",{{Value::Bool(true),{}}});
+            ClearPortableRuntimeClient();
             const auto restored=probe(fallbackOptions,Phase::CompactActorSlots);
             Require(restored.restoredWorld && at(restored,Phase::InitializeExecution)==0u && at(restored,Phase::InitGame)==0u &&
                 at(restored,Phase::PreBeginPlay)==0u && at(restored,Phase::SetActorZone)==0u &&
@@ -1975,6 +2067,145 @@ void WorldStartupSynthetic() {
                 "Already-begun world reran fresh phases or omitted PostPostBeginPlay");
         }
         fixture.UnchangedSources();
+    }
+}
+void DecalGuardSynthetic() {
+    // Real generated reflection, native Level slots and valid empty root BSP.
+    // A registered live texture must expose the downstream native gap; this
+    // incomplete implementation cannot fabricate a geometric no-hit result.
+    for (unsigned schema = 1u; schema <= 5u; ++schema) {
+        Fixture fixture; const auto tables = Build(fixture, 0u, schema);
+        Require(InitializePortableRuntime({tables.core, tables.engine, tables.classes}).passed &&
+            LoadPortableRuntimeMap(tables.map).passed, "Generated Decal guard map failed initialization");
+        fixture.legacy = fixture.Snapshot("Legacy");
+        Require(!HasPortableRuntimeClient() && ReadPortableRuntimeClientView().empty(),
+            "Runtime initialization invented a renderer client or a viewport");
+        Require(Integer("Decal0", "MultiDecalLevel") == 9 &&
+            Read("Decal0", "LastRenderedTime").floating == 27.5f,
+            "Generated Decal native guard input fields were not authored correctly");
+        const auto surfaces = Read("Decal0", "SurfList");
+        Require(surfaces.kind == Kind::IntArray && surfaces.intArray.empty(),
+            "Generated original Const SurfList lacks its owned IntProperty schema");
+        const auto falseGuard = [&](const std::string& label, const std::vector<Evaluation>& args = {Evaluation{Value::Float(100.0f), {}}}) {
+            const auto before = fixture.Snapshot("Before" + label); const auto revision = GetPortableRuntimeWorldRevision();
+            const auto gc = GC::GetStats(); const auto result = ExecutePortableActorFunction(Path("Decal0"), "AttachDecal", args);
+            Require(result.passed() && result.committed && result.value.kind == Kind::Bool && !QuestVr::Vm::ToBool(result.value),
+                "Original AttachDecal negative guard did not return bool false: " + label + ": " + result.error);
+            Require(GC::GetStats().numObjects == gc.numObjects && GC::GetStats().memoryUsage == gc.memoryUsage &&
+                GetPortableRuntimeWorldRevision() == revision && fixture.Snapshot("After" + label) == before,
+                "AttachDecal negative guard changed actor fields, RNG, native graph, save, revision or GC: " + label);
+            Require(Integer("Decal0", "MultiDecalLevel") == 9 &&
+                Read("Decal0", "LastRenderedTime").floating == 27.5f && Read("Decal0", "SurfList").intArray.empty(),
+                "Early AttachDecal false clamped MultiDecalLevel or changed unrelated native fields: " + label);
+        };
+        if (schema >= 3u) {
+            RefusedCall(fixture, "AttachDefault", {}, {}, "Decal0");
+            // Supply both parameters so the optional-flag variant also reaches
+            // the native descriptor check, rather than only failing arity.
+            RefusedCall(fixture, "AttachDecal", {Evaluation{Value::Float(100.0f), {}}, Vector({1.0f, 0.0f, 0.0f})}, {}, "Decal0");
+            fixture.UnchangedSources(); continue;
+        }
+        falseGuard("AbsentClient");
+        // Compiled final-call arguments are evaluated before the native guard,
+        // including optional DecalDir. The guard cannot suppress their effects.
+        const auto argumentRevision = GetPortableRuntimeWorldRevision();
+        Same(Call("Decal0", "AttachEvaluatedArguments").value, Value::Bool(false),
+            "Compiled AttachDecal arguments changed the original no-client result");
+        Require(Integer("Decal0", "ArgumentCounter") == 11 && GetPortableRuntimeWorldRevision() == argumentRevision + 1u,
+            "AttachDecal guard bypassed either argument expression or split their shared transaction");
+        const auto sideEffects = Decode(fixture.Snapshot("EvaluatedArguments"));
+        Require(!sideEffects.nativeDecals && !sideEffects.randomSeed,
+            "AttachDecal no-client guard allocated a native graph or drew RNG after evaluating arguments");
+        fixture.Reset();
+        RefusedCall(fixture, "AttachDecal", {}, {}, "Decal0");
+        RefusedCall(fixture, "AttachDecal", {Evaluation{Value::Float(100.0f), {}}, Vector({0.0f, 0.0f, 0.0f}), Name("extra")}, {}, "Decal0");
+        RefusedCall(fixture, "WriteSurfList", {Evaluation{Value::IntArray({3, 3, 1}), {}}}, {}, "Decal0");
+
+        auto lifetime = std::make_shared<QuestVr::NativeClientLifetime>();
+        BindPortableRuntimeClient(lifetime, 101u);
+        Require(HasPortableRuntimeClient() && ReadPortableRuntimeClientView().empty(),
+            "Live native client without viewports was confused with absence");
+        falseGuard("EmptyRegistry");
+        const QuestVr::NativeViewport viewport{201u, 1024u, 1152u, 3u, 2u};
+        auto currentViewport=viewport;
+        RegisterPortableRuntimeViewport(101u, viewport);
+        const auto bound = [&]() {
+            const auto views = ReadPortableRuntimeClientView();
+            Require(HasPortableRuntimeClient() && views.size() == 1u && views[0].identity == currentViewport.identity &&
+                views[0].width == currentViewport.width && views[0].height == currentViewport.height &&
+                views[0].swapchainImages == currentViewport.swapchainImages && views[0].eyeCount == currentViewport.eyeCount,
+                "Runtime lost or fabricated engine-owned live viewport metadata");
+        };
+        bound();
+        Require(fixture.Snapshot("ClientBinding") == fixture.legacy && !GetPortableRuntimeUnsavedScriptState(),
+            "Native renderer client binding leaked into actor/save state or map discard guard");
+        fixture.Reset(); bound();
+        Require(UnloadPortableRuntimeMap() != 0u, "Generated map refused clean unload with engine-owned viewport metadata");
+        bound(); Require(LoadPortableRuntimeMap(tables.map).passed, "Cannot reload generated map with an existing native client"); bound();
+        if (schema == 2u) {
+            // Wrong declaration is deliberately untouched by absent/empty
+            // client guards, but cannot pass the live-client Texture guard.
+            RefusedCall(fixture, "AttachDecal", {Evaluation{Value::Float(100.0f), {}}}, {}, "Decal0");
+        } else {
+            falseGuard("TextureNone", {Evaluation{Value::Float(100.0f), {}}, Vector({0.0f, 0.0f, 0.0f})});
+            Same(Call("Driver", "FindPlayer").value, Object("").value,
+                "Native renderer viewport fabricated PlayerPawn possession");
+            const auto beforeRevoke=fixture.Snapshot("BeforePostNativeRevoke");
+            const auto revokeRevision=GetPortableRuntimeWorldRevision(); const auto revokeGc=GC::GetStats();
+            Value externalOut=Value::Integer(17); std::vector<std::int32_t> outWrites;
+            auto output=std::make_shared<QuestVr::Vm::Reference>(); output->zero=Value::Integer(0);
+            output->read=[&]() { return externalOut; };
+            output->write=[&](const Value& value) {
+                externalOut=value; outWrites.push_back(QuestVr::Vm::ToInt(value));
+                if (QuestVr::Vm::ToInt(value)==73) lifetime->Revoke();
+            };
+            const auto revoked=ExecutePortableActorFunction(Path("Decal0"),"AttachThenOutWrite",{{Value{},output}});
+            Require(!revoked.passed() && !revoked.committed && revoked.status==QuestVr::Vm::Status::Unsupported &&
+                revoked.error.find("Native client lifetime revoked during script transaction")!=std::string::npos,
+                "Post-native render teardown committed a client-dependent script transaction");
+            Require(externalOut.kind==Kind::Int && externalOut.integer==17 && outWrites==std::vector<std::int32_t>{73,17},
+                "Post-native revocation failed to restore the externally owned OUT alias exactly");
+            Require(Integer("Decal0","ArgumentCounter")==0 && GetPortableRuntimeWorldRevision()==revokeRevision &&
+                GC::GetStats().numObjects==revokeGc.numObjects && GC::GetStats().memoryUsage==revokeGc.memoryUsage &&
+                fixture.Snapshot("AfterPostNativeRevoke")==beforeRevoke,
+                "Post-native revocation leaked evaluated argument writes, RNG, graph, save, revision or GC allocations");
+            Require(!HasPortableRuntimeClient() && ReadPortableRuntimeClientView().empty(),
+                "Script rollback resurrected the externally revoked renderer lifetime"); ++refusals;
+            ClearPortableRuntimeClient(); lifetime=std::make_shared<QuestVr::NativeClientLifetime>();
+            BindPortableRuntimeClient(lifetime,102u);
+            currentViewport={202u,viewport.width,viewport.height,viewport.swapchainImages,viewport.eyeCount};
+            RegisterPortableRuntimeViewport(102u,currentViewport); bound();
+            Call("Decal0", "SetTexture", {Object("Texture0")});
+            const auto before = fixture.Snapshot("BeforeGeometryGap"); const auto revision = GetPortableRuntimeWorldRevision();
+            const auto gc = GC::GetStats();
+            const auto gap = ExecutePortableActorFunction(Path("Decal0"), "AttachDecal", {Evaluation{Value::Float(100.0f), {}}});
+            Require(!gap.passed() && !gap.committed && gap.status == QuestVr::Vm::Status::Unsupported &&
+                gap.error.find("Unsupported runtime native 0 (Engine.Decal.AttachDecal)") != std::string::npos,
+                "Live Texture downstream AttachDecal gap was hidden behind fake success or false");
+            Require(GC::GetStats().numObjects == gc.numObjects && GC::GetStats().memoryUsage == gc.memoryUsage &&
+                GetPortableRuntimeWorldRevision() == revision && fixture.Snapshot("AfterGeometryGap") == before,
+                "Downstream AttachDecal refusal changed actor/save/RNG/native graph/revision or retained allocations"); ++refusals;
+            // Both script argument writes must roll back if the actual native
+            // call refuses after evaluating them, not merely its graph writes.
+            RefusedCall(fixture, "AttachEvaluatedArguments", {}, {}, "Decal0");
+            lifetime->Revoke();
+            Require(!HasPortableRuntimeClient() && ReadPortableRuntimeClientView().empty(),
+                "Revoked renderer lifetime retained a live client view");
+            falseGuard("RevokedClient");
+        }
+        ClearPortableRuntimeClient();
+        Require(!HasPortableRuntimeClient() && ReadPortableRuntimeClientView().empty(),
+            "Explicit client teardown retained viewport metadata");
+        auto replacement = std::make_shared<QuestVr::NativeClientLifetime>();
+        BindPortableRuntimeClient(replacement, 103u);
+        RegisterPortableRuntimeViewport(103u, {203u, viewport.width, viewport.height, viewport.swapchainImages, viewport.eyeCount});
+        ShutdownPortableRuntime();
+        Require(!HasPortableRuntimeClient() && ReadPortableRuntimeClientView().empty(),
+            "Runtime shutdown retained the prior renderer session binding");
+        Require(InitializePortableRuntime({tables.core, tables.engine, tables.classes}).passed &&
+            LoadPortableRuntimeMap(tables.map).passed && !HasPortableRuntimeClient() && ReadPortableRuntimeClientView().empty(),
+            "Fresh runtime adopted stale renderer metadata from its previous lifetime");
+        falseGuard("FreshLifetimeAbsent"); fixture.UnchangedSources();
     }
 }
 void Synthetic() {
@@ -1991,7 +2222,7 @@ void Synthetic() {
 } // namespace
 int main() {
     try {
-        const auto before = GC::GetStats().numObjects; Synthetic(); WorldStartupSynthetic(); GC::Collect(); Require(GC::GetStats().numObjects == before, "Generated Spawn test leaked rooted UObjects after shutdown");
-        std::cout << "Generated actor Spawn integration: " << checks << " checks, " << refusals << " rejection controls; actual natives278/262/283/304/529/530/650/710/711/713/714/715/716/720, serialized Level/model, native PawnList and AI graph rollback, frozen defaults, callbacks/live foreach, birth/save/GC, read-only BSP region side/fallback controls and non-publishing world startup prefix/live-growth/deletion/order/attachment rollback. No AI processing or accepted campaign startup claim.\n"; return 0;
+        const auto before = GC::GetStats().numObjects; Synthetic(); WorldStartupSynthetic(); DecalGuardSynthetic(); GC::Collect(); Require(GC::GetStats().numObjects == before, "Generated Spawn test leaked rooted UObjects after shutdown");
+        std::cout << "Generated actor Spawn integration: " << checks << " checks, " << refusals << " rejection controls; actual natives278/262/283/304/529/530/650/710/711/713/714/715/716/720, serialized Level/model, native PawnList and AI graph rollback, frozen defaults, callbacks/live foreach, birth/save/GC, read-only BSP region side/fallback controls, non-publishing world startup prefix/live-growth/deletion/order/attachment rollback, and native AttachDecal exact client/viewport/Texture negative guards, evaluated argument effects, engine-session lifetime/save independence and downstream refusal. No rendered decal, AI processing or accepted campaign startup claim.\n"; return 0;
     } catch (const std::exception& error) { std::cerr << "Actor Spawn integration failed: " << error.what() << '\n'; return 1; }
 }

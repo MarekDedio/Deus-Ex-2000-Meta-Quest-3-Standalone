@@ -218,6 +218,9 @@ private:
 };
 
 std::unique_ptr<GCRoot<RuntimePackage>> persistentRuntime;
+// Actual embedding-owned engine client/render-target registrations. No UObject
+// or map actor is synthesized; the render owner revokes only its atomic lease.
+QuestVr::NativeClientRegistry persistentNativeClient;
 // One game/script-thread stream, shared by all receivers and retained through
 // ordinary map replacement. Absence means the deterministic seed1 baseline.
 // Every nonbaseline initial seed is retained before the first draw, so even
@@ -1493,9 +1496,12 @@ public:
         beforeExportCount_ = persistentRuntime->get()->exports.size();
         beforeWorldSlots_ = persistentWorldActors.size();
         beforeRandomSeed_ = persistentScriptRandomSeed;
+        clientDependent_ = false;
         transaction_ = true;
     }
     void Commit() override {
+        if (clientDependent_ && !persistentNativeClient.HasViewport())
+            throw std::runtime_error("Native client lifetime revoked during script transaction");
         ValidateStateBudget();
         const bool worldChanged = beforeDecals_.has_value() || persistentRuntime->get()->exports.size() != beforeExportCount_ ||
             std::any_of(saved_.begin(), saved_.end(), [](const auto& entry) {
@@ -1516,6 +1522,10 @@ public:
                 if (!tag.empty() && tag != "none") tags[tag].push_back(actor);
             }
         }
+        // Immutable asset preparation above may take time on the CPU owner.
+        // Recheck the render-owner lease at the actual publication boundary.
+        if (clientDependent_ && !persistentNativeClient.HasViewport())
+            throw std::runtime_error("Native client lifetime revoked before script publication");
         if (worldChanged) persistentMapTagIndex.swap(tags);
         if (worldChanged) ++persistentWorldRevision;
         beforeCollision_.reset();
@@ -1734,8 +1744,8 @@ public:
         if (!object->active && !object->worldRemoved) throw std::runtime_error("VM native receiver is inactive");
         if (index == 720u) { // Actor.GetPlayerPawn, pinned NActor.cpp current-Level fallback.
             argumentCount(0u, 0u);
-            // There is no owned native viewport session yet. In its absence the
-            // pin searches actual Level slots, not snapshots, export order,
+            // No viewport.Actor/player possession is established yet. The
+            // fallback searches actual Level slots, not snapshots, export order,
             // bIsPlayer or the actor nearest the VR camera. A missing player is
             // a real Object None; do not substitute a PlayerStart or an NPC.
             for (auto* candidate : persistentWorldActors) {
@@ -1998,6 +2008,8 @@ public:
     }
     Evaluation NativeWithExecution(const std::uint16_t index, const std::string& receiver,
         const std::vector<Evaluation>& arguments, const Function* declaration, QuestVr::Vm::Execution& execution) override {
+        if (index == 0u && declaration && LowerAscii(declaration->path) == "engine.decal.attachdecal")
+            return AttachDecalEntryNative(Object(receiver), arguments, *declaration);
         if (index == 0u && declaration && LowerAscii(declaration->path) == "engine.decal.detachdecal")
             return DetachDecalNative(Object(receiver), arguments, *declaration);
         if (index == 278u) {
@@ -2223,6 +2235,7 @@ public:
             return value.size() <= bound && value.find('\0') == std::string::npos;
         };
         if (!validText(options.urlGameClass, 4096u) || !validText(options.defaultGameClass, 4096u) ||
+            !validText(options.defaultServerGameClass, 4096u) ||
             !validText(options.initGameOptions, 8192u))
             throw std::runtime_error("World startup configuration is oversized or contains an embedded NUL");
         // This diagnostic targets standalone authority. Client-only removal /
@@ -2239,8 +2252,16 @@ public:
                 if (mapClass.kind != Kind::Object)
                     throw std::runtime_error("LevelInfo.DefaultGameType is not a Class reference");
                 if (!mapClass.text.empty()) gameClass = Object(mapClass.text);
-                else if (!options.defaultGameClass.empty()) gameClass = Object(options.defaultGameClass);
-                else throw std::runtime_error("World startup has no map GameInfo class or configured local DefaultGame");
+                else {
+                    // Original LoadMap selects ini DefaultGame by Client
+                    // presence, not viewport count, tracking or PlayerPawn.
+                    const bool localClient = persistentNativeClient.HasClient();
+                    const auto& configured = localClient ? options.defaultGameClass : options.defaultServerGameClass;
+                    if (configured.empty()) throw std::runtime_error(localClient ?
+                        "World startup has no map GameInfo class or configured local DefaultGame" :
+                        "World startup has no map GameInfo class or configured DefaultServerGame without a native client");
+                    gameClass = Object(configured);
+                }
             }
             if (!gameClass->classDescriptor || !IsDerivedFromPath(gameClass, "Engine.GameInfo"))
                 throw std::runtime_error("World startup selected class is not an actual GameInfo UClass");
@@ -2769,6 +2790,7 @@ private:
     std::unordered_map<RuntimeObject*, BeforeAI> savedAi_;
     std::vector<GCRoot<RuntimeAIManager>> provisionalAi_;
     std::optional<BeforeDecals> beforeDecals_;
+    bool clientDependent_{};
     std::optional<QuestVr::ActorCollisionRegistry> beforeCollision_;
     std::size_t lifecycleOperations_{};
     std::size_t beforeExportCount_{}, beforeWorldSlots_{};
@@ -3329,6 +3351,51 @@ private:
         const auto& snapshot = graph->state.ReadOnlySnapshot();
         for (const auto& surface : snapshot.surfaces) for (const auto& record : surface) retain(record.ownerIdentity);
         graph->actorRoots.swap(roots);
+    }
+    Evaluation AttachDecalEntryNative(RuntimeObject* actor, const std::vector<Evaluation>& arguments,
+                                     const Function& declaration) {
+        RequireMapActor(actor);
+        if (!IsDerivedFromPath(actor->cls, "Engine.Decal") || declaration.nativeIndex != 0u ||
+            declaration.flags != 0x500u || declaration.variables.size() != 3u ||
+            arguments.empty() || arguments.size() > 2u)
+            throw std::runtime_error("AttachDecal declaration or receiver does not match original GOTY schema");
+        bool distance{}, direction{}, returned{};
+        for (const auto& variable : declaration.variables) {
+            if (variable.arrayDimension != 1u)
+                throw std::runtime_error("AttachDecal parameter is not an original scalar");
+            const auto key = LowerAscii(variable.key);
+            if (key == "engine.decal.attachdecal.tracedistance" &&
+                variable.zero.kind == Kind::Float && variable.flags == 0x80u && !distance) distance = true;
+            else if (key == "engine.decal.attachdecal.decaldir" &&
+                variable.zero.kind == Kind::Vector && variable.flags == 0x90u && !direction) direction = true;
+            else if (key == "engine.decal.attachdecal.returnvalue" &&
+                variable.zero.kind == Kind::Bool && variable.flags == 0x580u && !returned) returned = true;
+            else throw std::runtime_error("AttachDecal parameter/return does not match original GOTY schema");
+        }
+        if (!distance || !direction || !returned || arguments[0u].Load().kind != Kind::Float ||
+            (arguments.size() == 2u && arguments[1u].Load().kind != Kind::Nothing &&
+                arguments[1u].Load().kind != Kind::Vector))
+            throw std::runtime_error("AttachDecal arguments do not match original GOTY schema");
+        // Arguments have already evaluated. The original false guard precedes
+        // Texture, MultiDecalLevel, random draws and all native geometry access.
+        if (!persistentNativeClient.HasViewport()) return {Value::Bool(false), {}};
+        clientDependent_ = true;
+        const auto textureProperty = PropertyNamed(actor, "Texture");
+        const auto* textureMetadata = Object(textureProperty.key);
+        if (LowerAscii(textureProperty.key) != "engine.actor.texture" ||
+            textureProperty.zero.kind != Kind::Object || textureProperty.arrayDimension != 1u ||
+            !textureMetadata->property || textureMetadata->property->type != "ObjectProperty" ||
+            LowerAscii(Qualified(Table(textureMetadata->sourcePath), textureMetadata->property->referencedType)) != "engine.texture")
+            throw std::runtime_error("AttachDecal Texture schema does not match original GOTY");
+        const auto texture = TypedLiveValue(textureProperty, Read(actor, textureProperty, 0u));
+        if (texture.text.empty()) {
+            __android_log_print(ANDROID_LOG_WARN, "quest_main", "AttachDecal: No Texture");
+            return {Value::Bool(false), {}};
+        }
+        // A real registered target is necessary but not sufficient. Do not
+        // accept projection-only geometry as native Attach or fake a no-hit to
+        // skip live Texture ordering, mover callbacks and renderer publication.
+        throw std::runtime_error("Unsupported runtime native 0 (Engine.Decal.AttachDecal)");
     }
     Evaluation DetachDecalNative(RuntimeObject* actor, const std::vector<Evaluation>& arguments,
                                  const Function& declaration) {
@@ -5466,6 +5533,7 @@ PortableSound LoadPortableRuntimeSound(const std::string& objectPath) {
 }
 
 void ShutdownPortableRuntime() {
+    persistentNativeClient.Clear();
     persistentScriptRandomSeed.reset();
     persistentDispatchGraph.reset();
     persistentDispatchSummary = {};
@@ -5488,6 +5556,25 @@ void ShutdownPortableRuntime() {
     persistentSpeakerMissions.clear();
     persistentPlayerHealth = 100.0f;
     GC::Collect();
+}
+
+void BindPortableRuntimeClient(std::shared_ptr<QuestVr::NativeClientLifetime> lifetime,
+    const std::uint64_t clientIdentity) {
+    if (!persistentRuntime || !persistentRuntime->get())
+        throw std::runtime_error("Native client requires an initialized engine runtime");
+    persistentNativeClient.Bind(std::move(lifetime), clientIdentity);
+}
+void RegisterPortableRuntimeViewport(const std::uint64_t clientIdentity,
+    const QuestVr::NativeViewport& viewport) {
+    if (!persistentRuntime || !persistentRuntime->get())
+        throw std::runtime_error("Native viewport requires an initialized engine runtime");
+    persistentNativeClient.Register(clientIdentity, viewport);
+}
+void ClearPortableRuntimeClient() { persistentNativeClient.Clear(); }
+bool HasPortableRuntimeClient() { return persistentNativeClient.HasClient(); }
+std::vector<QuestVr::NativeViewport> ReadPortableRuntimeClientView() {
+    const auto targets = persistentNativeClient.ReadOnlyView();
+    return {targets.begin(), targets.end()};
 }
 
 PortableVmValue ExecutePortableFunction(const std::string& objectPath) {

@@ -86,14 +86,18 @@ legacy reset. Checkpoint injection is test setup, not evidence that Attach works
 & artifacts/prerequisites-20261009/build/portable_actor_script_test.exe 'D:\Steam\steamapps\common\Deus Ex' --world-startup-only
 ```
 
-Remaining: truthful native viewport binding; original Attach with live Texture,
+Remaining: original positive Attach with live Texture,
 all multidecal paths and primary mover/SetBase callbacks; renderer publication,
 UVs/modulation/visible clipping/mover deltas/LastRenderedTime; Quest visual and
 performance acceptance. Original world/player startup and campaign Tick are still
 unfinished. Every actual new APK is automatically installed data-preservingly
 when the configured Quest3 is connected.
 
-### Next: truthful native client binding
+### Native client binding now implemented
+
+The subsequent [native client integration](NATIVE-CLIENT-BINDING.md) implements
+the owned registry, Quest target capture, pre-teardown revocation and entry
+guards described below. It is not successful positive Attach or possession.
 
 The original entry guard checks native client presence and viewport count,
 not possession, tracking or focus. The bridge must be engine-session-owned,

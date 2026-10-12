@@ -71,6 +71,13 @@ concept to choose DefaultGame, not accidental absence of a UViewport object
 causing server-only class selection. Neither class precedence nor a styled
 inventory screen proves player ownership.
 
+The2026-10-12 [native-client bridge](NATIVE-CLIENT-BINDING.md) now provides that
+engine-session presence independently of possession. The non-publishing probe
+accepts both configured defaults and selects by actual client presence (even an
+empty client viewport registry), after URL/map precedence. A missing required
+configuration branch refuses rather than borrowing the other default. Saves do
+not restore this session binding, and player login/possession remains unfinished.
+
 ## Fresh-world phases use live slots, not a captured loaded-actor count
 
 Level.Actors is at `+0x2c`, its live Num at `+0x30`. Each outer loop rereads

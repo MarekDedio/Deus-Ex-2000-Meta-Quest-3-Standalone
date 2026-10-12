@@ -143,8 +143,8 @@ blocked zero-length query; those safety policies are not native early returns.
 ## Primary quad geometry
 
 The optional direction controls **texture orientation**, not the trace ray.
-Texture `USize` only is read for geometry, twice at `0x103E7A13` and nearby;
-`VSize` is not used. The radius is:
+Texture `USize` only is read for geometry at `0x103E7A13`; that loaded value
+is used twice in the radius product. `VSize` is not used. The radius is:
 
 `R = sqrt(USize*USize*DrawScale*DrawScale*0.5)`.
 
@@ -295,6 +295,89 @@ On a surface owned by AMover, Attach stores that mover's current Rotation and
 calls `self.SetBase(self.Owner,true)`, notably not surface.Actor
 (`0x103E79FE`). This establishes a mover dependency, not a complete translation
 of moving-decal rendering.
+
+### Reentrant primary publication/callback ordering
+
+Follow-up static reading of `artifacts/decal-native-20261011/attach-body.asm`
+and `pe-evidence.log` establishes the following **in-call** order. These are
+original image addresses, not evidence of completed host integration:
+
+1. After the client/viewport and nonnull Texture guards, upper-clamp and write
+   `self.MultiDecalLevel` at `0x103E733B..7351`. Compute the rotation-derived
+   ray and prepare the optional direction; zero direction consumes its
+   rejection-sampled random draws at `0x103E74FD/7514/752B`, before the primary
+   UModel trace at `0x103E7632`. Trace/selection/acceptance finish before any
+   native surface record is inserted. The selected center, references to the
+   surface base/normal, and prepared direction are retained across the later
+   callback, not recomputed from a callback-modified self Location or Rotation.
+2. Scan the primary surface's records using each owner's **then-live** Texture
+   and self's then-live Texture (`0x103E793B..7948`). InsertZeroed
+   (`0x103E7957`) or AddZeroed (`0x103E7979`) creates the FDecal; the PE evidence
+   names the imports `FArray::InsertZeroed` and `FArray::AddZeroed`. Write self
+   into record `+0x30` at `0x103E7992`, then append the selected surface to
+   self.SurfList (`0x103E799F..79AA`). The primary record/list entry therefore
+   already exists, with zero corner/membership storage, before the mover
+   SetBase path. It is not a fully computed quad atomically inserted afterwards.
+3. Test the selected surface's Actor for AMover ancestry
+   (`0x103E79AD..79D4`). Copy that mover's current Rotation into record `+0x40`
+   (`0x103E79D6..79F4`), then read **self.Owner** and call
+   `self.SetBase(self.Owner,true)` (`0x103E79F7..79FE`). This uses the already
+   captured mover rotation even if the subsequent callbacks rotate the mover.
+   The existing original SetBase contract includes old-base Detach, new-base
+   Attach and self BaseChange when applicable; see
+   [ACTOR-LIFECYCLE.md](ACTOR-LIFECYCLE.md). Equal-base/cycle refusal does not
+   manufacture callbacks.
+4. **After SetBase returns**, reread self.Texture at `0x103E7A0D`, load its
+   signed USize at `0x103E7A13`, and read live self.DrawScale at
+   `0x103E7A16/7A1C`. Build orientation/radius using those post-callback values.
+   The direct-axis path first writes the two axes into record corner0/1
+   (`0x103E7BC7..7BD8`, `0x103E7C24..7C2F`); the supplied-direction combination
+   path writes them at `0x103E8423..842C`, `0x103E845A..845F` and joins the
+   common normalization at `0x103E7C2F`. The common path normalizes/scales them,
+   writes the opposite corners (`0x103E7D4B..7D60`, `0x103E7D85..7D9B`), then adds
+   retained center C to all four (`0x103E7D9E..7E2F`). Only then does
+   `0x103E7E32` call the cached-surface-node membership helper on the absolute
+   quad. The cache's ascending authored-node order remains as described above.
+5. Build secondary grid edges from that absolute primary record. The outer
+   and inner loop tests reread live self.MultiDecalLevel at
+   `0x103E7F35/7F4A`; the fraction denominators use the current value at
+   `0x103E7F68/7FA9`. **There is no second upper clamp after SetBase.**
+   Secondary deduplication scans the then-current native self.SurfList
+   (`0x103E82D5..82EA`), not a list captured before callbacks. Each secondary
+   insertion again compares the existing owner's live Texture with self's
+   current Texture (`0x103E853E/8547`), inserts a zeroed record, writes its owner
+   and appends SurfList (`0x103E855A..85AC`). It has no second mover/SetBase
+   block. Corrected secondary corners are written before membership clipping
+   (`0x103E88B4`), then made relative to that secondary base
+   (`0x103E88C9..88FC`). **Primary** corners remain absolute through the entire
+   secondary grid and become relative to the retained primary base only at
+   `0x103E892A/8941/8958/896F`, just before returning true.
+
+Consequently, `ProjectOriginalDecalGeometry` is a geometry-only **fixed-input**
+query; its composed result must not drive an entire native Attach across the
+mover callback as if all inputs and owner lists were snapshots. A faithful host
+needs a pre-callback trace/selection phase; journalled provisional primary
+record, root and reflected SurfList publication; the original SetBase callback
+path; then post-callback live radius/Texture/Multi/SurfList reads and ordered
+quad/membership/secondary updates. Successful pretrace RNG draws must be visible
+to callback script's RNG operations; publishing an old candidate seed after the
+callback would overwrite its draws. The full outer VM transaction still owns
+rollback and final world revision publication.
+
+Callbacks can change self.Texture/DrawScale/MultiDecalLevel and the participating
+actors' ownership, bases or rotations. Native Attach/Detach calls can change
+SurfList and surface record storage even though SurfList is script-Const. For
+example, changing Texture can change post-callback radius and secondary grouping
+without relocating the primary record selected using the pre-callback Texture.
+Changing Multi above four after its initial clamp must not be silently clamped
+again by a reused fixed-input grid helper; explicit bounded work remains a port
+safety requirement. The original retains a raw primary-record pointer across
+SetBase. This audit does **not** certify defined behavior when callbacks delete
+that record, invalidate its storage, clear Texture before the later dereference,
+or otherwise invalidate captured native references. Such cases need explicit
+transactional refusal/safety contracts, not invented replacement records,
+automatic reattachment, null-as-false behavior or claims of original crash parity.
+No new x87 precision or rendered-shadow acceptance is established here.
 
 Detach (`0x103E9A67..0x103E9C2D`) repeatedly takes the **last SurfList index**,
 scans that surface's records forward, destroys node-array storage and removes

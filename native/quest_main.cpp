@@ -33,6 +33,7 @@
 #include "Render/SurfaceRender.h"
 #include "XrApp.h"
 #include "portable_unreal_runtime.h"
+#include "quest_native_client.h"
 #include "persona_ui_canvas.h"
 #include "quest_map_cache.h"
 #include "vr_world_transform.h"
@@ -398,6 +399,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
     }
 
     void AppShutdown(const xrJava* context) override {
+        RevokeNativeClientBinding();
         DiscardInitialPreparation();
         inventoryLabel_ = personaTabsLabel_ = personaDetailsLabel_ = personaFooterLabel_ = nullptr;
         hudLabel_ = nullptr;
@@ -409,7 +411,9 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         OVRFW::XrApp::AppShutdown(context);
     }
 
-    static bool ValidateInitialRuntime() {
+    static bool ValidateInitialRuntime(
+        const std::shared_ptr<QuestVr::NativeClientLifetime>& clientLifetime,
+        std::uint64_t clientIdentity, const QuestVr::NativeViewport& viewport) {
         try {
             static constexpr const char* packageNames[] = {
                 "ConSys",
@@ -464,6 +468,10 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                 ALOG("DeusExQuest: persistent Unreal runtime validation failed");
                 return false;
             }
+            // This CPU worker receives only an immutable description of the
+            // owner's real targets. It must never inspect GL/OpenXR handles.
+            BindPortableRuntimeClient(clientLifetime, clientIdentity);
+            RegisterPortableRuntimeViewport(clientIdentity, viewport);
             ALOG(
                 "DeusExQuest: persistent Unreal runtime ready: %zu objects, %zu classes, %zu functions, %zu properties, %zu bytecode bytes, %zu class defaults/%zu default properties, %zu links resolved/%zu external",
                 runtime.objects,
@@ -590,6 +598,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
     }
 
     bool SessionInit() override {
+        RevokeNativeClientBinding();
         // No prior-session worker may retain ownership of the global portable
         // runtime/name tables when this session starts another bootstrap.
         DiscardInitialPreparation();
@@ -665,10 +674,19 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         mapNames_.clear();
         if (hudLabel_ != nullptr) hudLabel_->SetText("DEUS EX VR\nSTARTING... PREPARING GAME DATA");
         try {
-            initialPreparationFuture_ = std::async(std::launch::async, [] {
-                return PrepareInitialRuntime();
-            });
+            // SessionInit follows the SDK's actual swapchain creation. Head
+            // tracking, focus and SessionActive are deliberately not gates:
+            // an existing target remains a viewport while rendering is paused.
+            const QuestVr::NativeViewport viewport = CaptureNativeViewport();
+            const auto clientLifetime = std::make_shared<QuestVr::NativeClientLifetime>();
+            nativeClientLifetime_ = clientLifetime;
+            const std::uint64_t clientIdentity = viewport.identity;
+            initialPreparationFuture_ = std::async(std::launch::async,
+                [clientLifetime, clientIdentity, viewport] {
+                    return PrepareInitialRuntime(clientLifetime, clientIdentity, viewport);
+                });
         } catch (const std::exception& error) {
+            RevokeNativeClientBinding();
             initialPreparationPending_ = false;
             initialPreparationFailed_ = true;
             interactionStatus_ = error.what();
@@ -1258,6 +1276,13 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         ovrFramebuffer_SetNone();
     }
 
+    void SessionDestroying() override {
+        // The SDK calls this before releasing any eye framebuffer. Atomically
+        // revoke the token only: a startup/map worker can still own the global
+        // runtime, so reset/GC waits for the existing joins in SessionEnd.
+        RevokeNativeClientBinding();
+    }
+
     void SessionEnd() override {
         if (gameplayFloorSpace_ != XR_NULL_HANDLE) {
             CurrentSpace = XR_NULL_HANDLE;
@@ -1334,6 +1359,8 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         oversizedCollisionTriangles_.clear();
         actorSnapshots_.clear();
         interactiveActors_.clear();
+        ClearPortableRuntimeClient();
+        nativeClientLifetime_.reset();
         ShutdownPortableRuntime();
     }
 
@@ -1492,10 +1519,12 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         QuestVr::PlayerVisualAssets playerVisuals;
     };
 
-    static InitialPreparation PrepareInitialRuntime() {
+    static InitialPreparation PrepareInitialRuntime(
+        const std::shared_ptr<QuestVr::NativeClientLifetime>& clientLifetime,
+        std::uint64_t clientIdentity, const QuestVr::NativeViewport& viewport) {
         InitialPreparation preparation;
         try {
-            if (!ValidateInitialRuntime())
+            if (!ValidateInitialRuntime(clientLifetime, clientIdentity, viewport))
                 throw std::runtime_error("initial portable runtime validation failed; see quest_main log");
             preparation.mapNames = ReadMapCatalog();
             if (!BuildQuestMapCache(gameRoot_, "00_Training"))
@@ -1680,6 +1709,56 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             }
         }
         return bodySurfaces;
+    }
+
+    void RevokeNativeClientBinding() {
+        if (nativeClientLifetime_) nativeClientLifetime_->Revoke();
+    }
+
+    QuestVr::NativeViewport CaptureNativeViewport() {
+        if (Session == XR_NULL_HANDLE || GetNumFramebuffers() != 2)
+            throw std::runtime_error("native client requires the created stereo XR session");
+        QuestVr::NativeViewport viewport{};
+        viewport.eyeCount = 2u;
+        for (int eye = 0; eye < GetNumFramebuffers(); ++eye) {
+            const ovrFramebuffer* frameBuffer = GetFrameBuffer(eye);
+            if (frameBuffer == nullptr || frameBuffer->ColorSwapChain.Handle == XR_NULL_HANDLE ||
+                frameBuffer->Width <= 0 || frameBuffer->Height <= 0 ||
+                frameBuffer->TextureSwapChainLength == 0u ||
+                frameBuffer->TextureSwapChainLength > QuestVr::NativeClientRegistry::MaximumSwapchainImages ||
+                frameBuffer->ColorSwapChainImage == nullptr || frameBuffer->FrameBuffers == nullptr ||
+                frameBuffer->DepthBuffers == nullptr ||
+                frameBuffer->ColorSwapChain.Width != static_cast<std::uint32_t>(frameBuffer->Width) ||
+                frameBuffer->ColorSwapChain.Height != static_cast<std::uint32_t>(frameBuffer->Height))
+                throw std::runtime_error("native client eye target has no created color swapchain");
+            const std::uint32_t width = static_cast<std::uint32_t>(frameBuffer->Width);
+            const std::uint32_t height = static_cast<std::uint32_t>(frameBuffer->Height);
+            if (width > QuestVr::NativeClientRegistry::MaximumDimension ||
+                height > QuestVr::NativeClientRegistry::MaximumDimension)
+                throw std::runtime_error("native client eye target dimensions exceed descriptor bounds");
+            for (std::uint32_t image = 0u; image < frameBuffer->TextureSwapChainLength; ++image) {
+                if (frameBuffer->ColorSwapChainImage[image].image == 0u ||
+                    frameBuffer->FrameBuffers[image] == 0u || frameBuffer->DepthBuffers[image] == 0u)
+                    throw std::runtime_error("native client eye target has incomplete image resources");
+            }
+            if (eye == 0) {
+                viewport.width = width;
+                viewport.height = height;
+                viewport.swapchainImages = frameBuffer->TextureSwapChainLength;
+            } else if (viewport.width != width || viewport.height != height ||
+                viewport.swapchainImages != frameBuffer->TextureSwapChainLength) {
+                throw std::runtime_error("native client stereo eye targets disagree");
+            }
+        }
+        if (nativeClientGeneration_ == std::numeric_limits<std::uint64_t>::max())
+            throw std::runtime_error("native client session identity exhausted");
+        // Do not use an XR/GL address as identity: those handles can be reused
+        // by the next session, whereas a revoked token must stay revoked.
+        viewport.identity = ++nativeClientGeneration_;
+        ALOG("DeusExQuest: native stereo viewport %llu: %ux%u, %u images per eye, 2 eyes",
+            static_cast<unsigned long long>(viewport.identity), viewport.width, viewport.height,
+            viewport.swapchainImages);
+        return viewport;
     }
 
     void DiscardInitialPreparation() {
@@ -5781,6 +5860,8 @@ class DeusExQuestApp final : public OVRFW::XrApp {
     bool runtimeAvailable_{};
     bool initialPreparationPending_{};
     bool initialPreparationFailed_{};
+    std::uint64_t nativeClientGeneration_{};
+    std::shared_ptr<QuestVr::NativeClientLifetime> nativeClientLifetime_;
     std::future<InitialPreparation> initialPreparationFuture_;
     std::future<MapPreparation> mapCacheFuture_;
     std::string transitionMapName_;

@@ -1,5 +1,41 @@
 # Port status
 
+## Native client, Quest target lifetime and original entry guards (2026-10-12)
+
+- Added an engine-session-owned, nonserialized native client and bounded ordered
+  viewport registry. Quest registers one actual logical stereo target after SDK
+  resource creation, passing immutable metadata to the CPU runtime worker. An
+  atomic owner lease is revoked by a new optional SDK hook before framebuffer
+  destruction; global teardown follows existing worker joins. Tracking/focus do
+  not fabricate target existence, and no PlayerPawn/Viewport.Actor is invented.
+- Original Attach arguments are copied as each expression evaluates. Exact
+  native/declaration validation now reaches the original absent/empty-client and
+  TextureNone bool-false guards before Multi/RNG/geometry. Live nonnull Texture
+  retains an explicit unsupported backend error. Client-dependent transactions
+  recheck revocation immediately before publication, with full OUT/script/native
+  rollback. GameInfo fallback now chooses configured DefaultGame versus
+  DefaultServerGame by actual client presence, not viewport count.
+- Strict registry controls116/39 rejected mutations, VM677971/338 (66 new Attach
+  argument controls), generated Spawn/world/client7072/135 and SDK patch6/0 pass.
+  All58 ordinary CTest entries pass (62 registered, four owned-data skips),33.50s.
+  Original runtime-save, defaults1002, PawnList67 and focused Training world/
+  decal checkpoints pass separately. The live synthetic-client startup still
+  stops at positive Attach with exact full rollback. Full actor controls across
+  Training/UNATCOIsland/Intro also pass; all four optional owned-data suites
+  completed separately. Logs are ignored under `artifacts/native-client-20261012/`.
+- The final signed APK builds and verifies; it contains no original commercial
+  packages. Both actual builds skipped auto-install because the configured Quest
+  was absent. The prior checkpoint APK remains the last device-verified build.
+  No renewed visual, tracking, hand/body or performance acceptance is claimed;
+  hand/body geometry and controller/recenter behavior were not edited. Deployment
+  evidence is in [QUEST-TEST-BUILD.md](QUEST-TEST-BUILD.md).
+- See [NATIVE-CLIENT-BINDING.md](NATIVE-CLIENT-BINDING.md). Positive Attach/render
+  publication, original login/possession/UI, full world startup/campaign Tick,
+  travel archives and full Quest gameplay/visual/performance acceptance remain
+  unfinished. The new static reentrancy audit proves primary record/SurfList and
+  mover SetBase precede live Texture/radius/Multi reads; the fixed-input geometry
+  helper must not replace that callback ordering.
+
 ## Native decal ownership, Detach and checkpoints (2026-10-12)
 
 - Added a map-owned native decal GC graph with actual Level/Model/record-owner

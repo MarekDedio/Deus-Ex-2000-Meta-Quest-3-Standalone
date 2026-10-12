@@ -31,10 +31,15 @@ bool HasIntArray(const Value& value) {
         if (HasIntArray(field)) return true;
     return false;
 }
-bool SnapshotNativeInput(const std::uint16_t index) {
+bool SnapshotNativeInput(const std::uint16_t index, const Function* declaration = nullptr) {
     // These audited natives copy ordinary inputs during expression evaluation;
     // none has OUT parameters. Unknown/OUT natives retain their guarded aliases.
     switch (index) {
+    case 0:
+        // Original Attach's wrapper copies distance/vector as their expressions
+        // evaluate. Native-zero dispatch must use its actual declaration;
+        // unknown native-zero/OUT functions must retain their guarded aliases.
+        return declaration && Lower(declaration->path) == "engine.decal.attachdecal";
     case 112: case 113: case 124: case 125: case 126: case 127: case 128:
     case 168: case 189: case 231: case 234: case 235: case 246: case 249: case 278: return true;
     default: return false;
@@ -496,7 +501,7 @@ public:
             const auto value = argument.Load(); ValidateValue(value, 0); Retain(ValueBytes(value));
             // execGotoState consumes each input value before evaluating the
             // next argument. Ordinary native OUT arguments retain aliases.
-            if ((fn.flags & 0x400u) && SnapshotNativeInput(fn.nativeIndex)) args.push_back({value,{}});
+            if ((fn.flags & 0x400u) && SnapshotNativeInput(fn.nativeIndex, &fn)) args.push_back({value,{}});
             else args.push_back(argument);
         }
         std::size_t argCount = 0;
@@ -1205,7 +1210,7 @@ private:
                     }
                 }
                 auto argument = Eval(frame, n.children[i], frame.self);
-                if (SnapshotNativeInput(index) && (!fn || (fn->flags & 0x400u))) {
+                if (SnapshotNativeInput(index, fn.get()) && (!fn || (fn->flags & 0x400u))) {
                     auto value = argument.Load(); ValidateValue(value, 0); Retain(ValueBytes(value));
                     argument = {std::move(value),{}};
                 }

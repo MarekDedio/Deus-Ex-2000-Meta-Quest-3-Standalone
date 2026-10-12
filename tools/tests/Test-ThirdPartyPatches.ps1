@@ -22,7 +22,7 @@ $fixtureRoot = Join-Path ([IO.Path]::GetTempPath()) ('QuestPatchTests-' + [guid]
 $fixtureSdk = Join-Path $fixtureRoot 'third_party\Meta-OpenXR-SDK'
 New-Item -ItemType Directory -Path $fixtureSdk, (Join-Path $fixtureRoot 'tools'), (Join-Path $fixtureRoot 'patches') | Out-Null
 $fixtureHelper = Join-Path $fixtureRoot 'tools\Apply-ThirdPartyPatches.ps1'
-$patchNames = @('meta-openxr-tinyui-font-override.patch', 'meta-openxr-session-lifecycle.patch')
+$patchNames = @('meta-openxr-tinyui-font-override.patch', 'meta-openxr-session-lifecycle.patch', 'meta-openxr-session-destroying.patch')
 $passed = 0
 
 function Assert-True([bool]$Condition, [string]$Message) {
@@ -36,7 +36,8 @@ function Get-FixtureHashes {
     foreach ($relativePath in @(
         'Samples\SampleXrFramework\Src\Input\TinyUI.cpp',
         'Samples\SampleXrFramework\Src\Input\TinyUI.h',
-        'Samples\SampleXrFramework\Src\XrApp.cpp'
+        'Samples\SampleXrFramework\Src\XrApp.cpp',
+        'Samples\SampleXrFramework\Src\XrApp.h'
     )) {
         (Get-FileHash -LiteralPath (Join-Path $fixtureSdk $relativePath) -Algorithm SHA256).Hash
     }
@@ -50,6 +51,7 @@ try {
     $archivePath = Join-Path $fixtureRoot 'pinned-sdk-source.tar'
     & $gitCommand.Source -C $SdkRoot archive ('--output=' + $archivePath) HEAD -- `
         Samples/SampleXrFramework/Src/XrApp.cpp `
+        Samples/SampleXrFramework/Src/XrApp.h `
         Samples/SampleXrFramework/Src/Input/TinyUI.cpp `
         Samples/SampleXrFramework/Src/Input/TinyUI.h
     Assert-True ($LASTEXITCODE -eq 0) 'read-only pinned SDK archive succeeds'
@@ -63,7 +65,7 @@ try {
         & $gitCommand.Source -C $fixtureSdk apply --reverse --check (Join-Path $fixtureRoot ('patches\' + $patchName))
         Assert-True ($LASTEXITCODE -eq 0) "fresh helper applied $patchName"
     }
-    Complete-Test 'fresh pinned SDK source accepts both real patches'
+    Complete-Test 'fresh pinned SDK source accepts all tracked patches'
 
     $patchedHashes = @(Get-FixtureHashes) -join ','
     & $fixtureHelper
@@ -76,6 +78,33 @@ try {
     Assert-True ($xrApp.Contains('OXR(result = xrBeginSession(Session, &sessionBeginInfo));') -and $xrApp.Contains('OXR(xrEndSession(Session));')) 'OpenXR begin/end calls and error checks retained'
     Assert-True (-not $xrApp.Contains('assert(Resumed);') -and -not $xrApp.Contains('assert(Resumed == false);')) 'only Android queue timing assumptions are relaxed'
     Complete-Test 'lifecycle patch preserves OpenXR session state contracts'
+
+    $endSessionOffset = $xrApp.IndexOf('void XrApp::EndSession() {', [StringComparison]::Ordinal)
+    $revokeOffset = $xrApp.IndexOf('SessionDestroying();', $endSessionOffset, [StringComparison]::Ordinal)
+    $destroyFramebufferOffset = $xrApp.IndexOf('ovrFramebuffer_Destroy(&FrameBuffer[eye]);', $endSessionOffset, [StringComparison]::Ordinal)
+    $endHookOffset = $xrApp.IndexOf('SessionEnd();', $endSessionOffset, [StringComparison]::Ordinal)
+    Assert-True ($endSessionOffset -ge 0 -and $revokeOffset -gt $endSessionOffset -and
+        $destroyFramebufferOffset -gt $revokeOffset -and $endHookOffset -gt $destroyFramebufferOffset) 'revocation hook runs before swapchain teardown; old end hook stays after teardown'
+    $xrAppHeader = Get-Content -LiteralPath (Join-Path $fixtureSdk 'Samples\SampleXrFramework\Src\XrApp.h') -Raw
+    Assert-True ($xrAppHeader.Contains('virtual void SessionDestroying();') -and
+        $xrApp.Contains('void XrApp::SessionDestroying() {}')) 'pre-teardown hook is optional for other SDK applications'
+    Complete-Test 'native-client revocation precedes framebuffer destruction'
+
+    & $gitCommand.Source -C $fixtureSdk apply --reverse (Join-Path $fixtureRoot 'patches\meta-openxr-session-destroying.patch')
+    Assert-True ($LASTEXITCODE -eq 0) 'fixture pre-teardown hook patch can be reversed'
+    $xrAppHeaderPath = Join-Path $fixtureSdk 'Samples\SampleXrFramework\Src\XrApp.h'
+    $unpatchedHeader = Get-Content -LiteralPath $xrAppHeaderPath -Raw
+    Assert-True ($unpatchedHeader.Contains('virtual void SessionEnd();')) 'hook conflict fixture starts from pinned end declaration'
+    $unpatchedHeader.Replace('virtual void SessionEnd();', 'virtual void SessionEnd(int localConflict);') |
+        Set-Content -LiteralPath $xrAppHeaderPath -NoNewline -Encoding utf8
+    $hookConflictHashes = @(Get-FixtureHashes) -join ','
+    $hookCaught = $null
+    try { & $fixtureHelper } catch { $hookCaught = $_ }
+    Assert-True ($null -ne $hookCaught -and $hookCaught.Exception.Message -match 'conflicting edits.*session-destroying') 'hook conflict raises explicit patch error'
+    Assert-True ((@(Get-FixtureHashes) -join ',') -ceq $hookConflictHashes) 'hook conflict leaves both SDK sources byte-identical'
+    Complete-Test 'pre-teardown hook conflicts preserve local source edits'
+    $unpatchedHeader | Set-Content -LiteralPath $xrAppHeaderPath -NoNewline -Encoding utf8
+    & $fixtureHelper
 
     # Create a conflicting, local-only fixture edit. This generated test source
     # is never installed, built, committed or written into the actual SDK.

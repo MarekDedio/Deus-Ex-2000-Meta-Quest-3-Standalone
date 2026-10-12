@@ -80,6 +80,9 @@ These are host-tested foundations, not published native shadows or Quest startup
 The [native decal checkpoint integration](docs/DECAL-CHECKPOINT.md) adds bounded
 dynamic INT arrays, map-owned GC/journal state, original native Detach and exact
 codec10/envelope13 persistence. Native Attach and rendered shadows remain pending.
+The [native client binding](docs/NATIVE-CLIENT-BINDING.md) now owns Quest's actual
+stereo viewport lifetime and original Attach entry guards. It does not invent
+player possession or accept the still-missing positive attachment backend.
 The [Quest test build notes](docs/QUEST-TEST-BUILD.md) record an earlier installed
 test build, not a permanent deployment freeze. At the user's standing request,
 every successful new APK build now automatically installs on the connected,

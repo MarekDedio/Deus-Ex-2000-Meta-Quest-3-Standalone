@@ -3084,6 +3084,18 @@ void VerifyOriginalDecalCheckpoint(const std::filesystem::path& root,
 
 void VerifyOriginalWorldStartupProbe(const std::filesystem::path& legacy,
     const std::filesystem::path& directory) {
+    // An explicitly owned synthetic stereo target exercises the actual live
+    // client guard. This is not a Quest viewport or player-possession claim.
+    std::array<std::uint32_t, 8u * 8u * 2u> testStereoTarget{};
+    static_cast<void>(testStereoTarget);
+    auto clientLifetime = std::make_shared<QuestVr::NativeClientLifetime>();
+    Require(!HasPortableRuntimeClient(), "Original world probe inherited an unowned client");
+    BindPortableRuntimeClient(clientLifetime, 1u);
+    RegisterPortableRuntimeViewport(1u, {1u, 8u, 8u, 1u, 2u});
+    struct ClientScope {
+        std::shared_ptr<QuestVr::NativeClientLifetime> lifetime;
+        ~ClientScope() { lifetime->Revoke(); ClearPortableRuntimeClient(); }
+    } clientScope{clientLifetime};
     const auto baseline = CheckpointBytes(legacy);
     const auto actors = GetPortableRuntimeMapActors(true);
     Require(!actors.empty() && !GetPortableRuntimeScriptStatePresent(),
@@ -3107,6 +3119,7 @@ void VerifyOriginalWorldStartupProbe(const std::filesystem::path& legacy,
         Require(SavePortableRuntimeState(inspect.string()) && CheckpointBytes(inspect) == baseline &&
             GetPortableRuntimeWorldRevision() == revision && !GetPortableRuntimeScriptStatePresent() &&
             GetPortableRuntimeMapActors(true).size() == actors.size() &&
+            HasPortableRuntimeClient() && ReadPortableRuntimeClientView().size() == 1u &&
             QuestVr::Vm::Equal(ReadPortableActorScriptProperty(level.text, "Game"), originalGame) &&
             GC::GetStats().numObjects == gc.numObjects && GC::GetStats().memoryUsage == gc.memoryUsage,
             "Original world probe retained partial authored writes/frames/births/RNG/native publication");
@@ -3145,7 +3158,7 @@ void VerifyOriginalWorldStartupProbe(const std::filesystem::path& legacy,
         << " phase=" << PortableWorldStartupPhaseName(result.phase) << " slot=" << result.actorSlot
         << " actor=" << result.actorPath << " function=" << result.execution.function << ':' << result.execution.offset
         << " opcode=" << static_cast<unsigned>(result.execution.opcode) << " error=" << result.execution.error
-        << "; exact repeated failure, all state/GC/birth/revision bytes rolled back; NOT world/player completion\n";
+        << "; owned synthetic client/viewport, exact repeated failure, all state/GC/birth/revision bytes rolled back; NOT world/player completion\n";
 }
 
 void TestOriginal(const std::filesystem::path& root, const bool inventoryOnly = false,

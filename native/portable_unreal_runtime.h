@@ -5,6 +5,7 @@
 #include "quest_portable_vm.h"
 #include "quest_script_dispatch.h"
 #include "quest_state_frame.h"
+#include "quest_native_client.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -125,10 +126,13 @@ enum class PortableWorldStartupPhase : std::uint8_t {
 struct PortableWorldStartupProbeOptions {
     // Already decoded URL GAME= class and the configured local client's
     // DefaultGame class. Empty URL selects the map's actual DefaultGameType
-    // before this configured fallback; there is no server/Botpack guess.
+    // before the actual client/server configuration branch, never a guess.
     std::string urlGameClass;
     std::string defaultGameClass;
     std::string initGameOptions;
+    // Used only without an actual native client (viewport count is irrelevant).
+    // Omission refuses that missing configuration rather than using DefaultGame.
+    std::string defaultServerGameClass{};
 };
 struct PortableWorldStartupProbeResult {
     QuestVr::Vm::Result execution;
@@ -200,6 +204,17 @@ PortableRuntimeSummary InitializePortableRuntime(
 PortableRuntimeSummary InitializePortableRuntime(
     const std::vector<PortablePackageTables>& packages, std::uint32_t initialRandomSeed = 1u);
 void ShutdownPortableRuntime();
+// Engine-session embedding state, never a map/checkpoint or player binding.
+// These APIs share the runtime's exclusive CPU/script-thread ownership. The
+// renderer may ONLY revoke the shared lifetime token before target teardown.
+// Initialize/Shutdown reset registration; map replacement and save/load do not.
+void BindPortableRuntimeClient(std::shared_ptr<QuestVr::NativeClientLifetime> lifetime,
+    std::uint64_t clientIdentity);
+void RegisterPortableRuntimeViewport(std::uint64_t clientIdentity,
+    const QuestVr::NativeViewport& viewport);
+void ClearPortableRuntimeClient();
+bool HasPortableRuntimeClient();
+std::vector<QuestVr::NativeViewport> ReadPortableRuntimeClientView();
 PortableConversationSummary GetPortableConversationSummary();
 PortableDialogueResult GetPortableRuntimeDialogue(
     const std::string& actorPath,
