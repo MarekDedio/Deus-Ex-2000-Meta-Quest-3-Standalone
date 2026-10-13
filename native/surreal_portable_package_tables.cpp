@@ -1253,6 +1253,36 @@ PortableSound LoadPortableSound(
     return sound;
 }
 
+PortableMusic LoadPortableMusic(const PortablePackageTables& package,
+    const std::size_t exportIndex,const std::size_t byteBudget) {
+    if (exportIndex>=package.exports.size() || byteBudget==0u || byteBudget>32u*1024u*1024u)
+        throw std::runtime_error("UE1 music export/budget is outside its bounds");
+    const auto& entry=package.exports[exportIndex];
+    auto type=ResolvePortableObjectPath(entry.ObjClass,package);
+    if (entry.ObjClass>0) type=std::filesystem::path(package.sourcePath).stem().string()+'.'+type;
+    if (NameString(type)!=NameString("Engine.Music"))
+        throw std::runtime_error("UE1 music export is not an actual Engine.Music");
+    const auto bytes=ReadDescriptorPayload(package,exportIndex,byteBudget);
+    PayloadReader reader(bytes);
+    reader.Skip(LoadPortableExportProperties(package,exportIndex,byteBudget).bytesConsumed);
+    const auto format=reader.ReadIndex();ValidateNameIndex(format,package.names.size());
+    // UMusic::Load reads the lazy-array end offset only after version61.
+    const auto lazyEnd=package.version>61u ? reader.ReadUInt32() : 0u;
+    const auto count=reader.ReadIndex();
+    if (count<=0 || static_cast<std::size_t>(count)>byteBudget ||
+        static_cast<std::size_t>(count)!=reader.Size()-reader.Tell())
+        throw std::runtime_error("UE1 music data is truncated or has trailing bytes");
+    if (package.version>61u && lazyEnd!=0u &&
+        static_cast<std::uint64_t>(lazyEnd)!=static_cast<std::uint64_t>(entry.ObjOffset)+reader.Size())
+        throw std::runtime_error("UE1 music lazy-array end differs from its export end");
+    PortableMusic result;
+    result.objectPath=std::filesystem::path(package.sourcePath).stem().string()+'.'+
+        ResolvePortableObjectPath(static_cast<std::int32_t>(exportIndex+1u),package);
+    result.format=package.names[static_cast<std::size_t>(format)].Name.ToString();
+    result.data=reader.ReadBytes(static_cast<std::size_t>(count));
+    return result;
+}
+
 PortableReflectionGraph BuildPortableReflectionGraph(
     const PortablePackageTables& package) {
     PortableReflectionGraph graph;

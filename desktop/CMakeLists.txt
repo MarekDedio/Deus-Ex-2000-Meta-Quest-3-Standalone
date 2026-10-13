@@ -1,5 +1,6 @@
 cmake_minimum_required(VERSION 3.22.1)
-project(deusex_desktop_visual LANGUAGES CXX)
+project(deusex_desktop_visual LANGUAGES C CXX)
+include("${CMAKE_CURRENT_LIST_DIR}/../native/quest_music_decoder.cmake")
 
 set(SURREAL_ENGINE_ROOT "${CMAKE_CURRENT_LIST_DIR}/../third_party/SurrealEngine/SurrealEngine")
 if(NOT EXISTS "${SURREAL_ENGINE_ROOT}/Precomp.cpp")
@@ -46,6 +47,31 @@ if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
 endif()
 
 enable_testing()
+add_executable(quest_music_stream_test quest_music_stream_test.cpp)
+# Link the same older Vorbis implementation as the Quest framework as well:
+# this regression must fail at link time if music leaks unprefixed codec APIs.
+target_sources(quest_music_stream_test PRIVATE
+    "${CMAKE_CURRENT_LIST_DIR}/../third_party/Meta-OpenXR-SDK/Samples/3rdParty/stb/src/stb_vorbis.c")
+target_compile_features(quest_music_stream_test PRIVATE cxx_std_20)
+target_include_directories(quest_music_stream_test PRIVATE "${PORT_NATIVE}")
+target_link_libraries(quest_music_stream_test PRIVATE quest_music_decoder)
+add_test(NAME quest_music_stream COMMAND quest_music_stream_test)
+add_executable(portable_music_test portable_music_test.cpp)
+target_compile_features(portable_music_test PRIVATE cxx_std_20)
+target_link_libraries(portable_music_test PRIVATE quest_music_decoder quest_portable_host)
+add_test(NAME portable_music COMMAND portable_music_test)
+set_tests_properties(portable_music PROPERTIES SKIP_RETURN_CODE 77)
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+    foreach(MUSIC_TEST quest_music_stream_test portable_music_test)
+        # Strict on maintained C++; leave the pinned legacy Meta C fixture's
+        # existing compiler-warning policy unchanged.
+        target_compile_options(${MUSIC_TEST} PRIVATE
+            $<$<COMPILE_LANGUAGE:CXX>:-Wall>
+            $<$<COMPILE_LANGUAGE:CXX>:-Wextra>
+            $<$<COMPILE_LANGUAGE:CXX>:-Werror>)
+        target_link_options(${MUSIC_TEST} PRIVATE -static -static-libgcc -static-libstdc++)
+    endforeach()
+endif()
 if(WIN32)
     # Windows system SHA-256 keeps audit output to bounded metadata digests,
     # never commercial package contents. The ordinary test uses synthetic input.

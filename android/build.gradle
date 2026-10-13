@@ -42,6 +42,7 @@ android {
             manifest.srcFile "AndroidManifest.xml"
             java.srcDirs = ["java"]
             assets.srcDirs = [
+                "assets",
                 "../third_party/Meta-OpenXR-SDK/Samples/XrSamples/XrInput/assets",
                 "../third_party/Meta-OpenXR-SDK/Samples/SampleXrFramework/res/raw"
             ]

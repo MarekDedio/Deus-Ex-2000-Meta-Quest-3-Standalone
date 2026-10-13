@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cctype>
 #include <cstdint>
 #include <cmath>
@@ -48,6 +49,7 @@
 #include "frame_work_budget.h"
 #include "map_transition_transaction.h"
 #include "quest_map_lighting.h"
+#include "quest_map_music.h"
 #include "quest_static_lightmap_cache.h"
 #include "quest_world_material.h"
 #include "portable_model_geometry.h"
@@ -58,7 +60,6 @@
 #include "retained_bank_publication.h"
 #include "actor_visibility_state.h"
 
-#define MINIMP3_IMPLEMENTATION
 #include "portable_mp3_audio.h"
 
 class TexturedGeometryRenderer {
@@ -562,9 +563,18 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         return true;
     }
 
+    void AppPaused(const xrJava* context) override {
+        musicPlaybackActive_.store(false,std::memory_order_release);
+        OVRFW::XrApp::AppPaused(context);
+    }
+
     void AppShutdown(const xrJava* context) override {
+        musicPlaybackActive_.store(false,std::memory_order_release);
         RevokeNativeClientBinding();
         DiscardInitialPreparation();
+        // Defensive cleanup if no session reached SessionDestroying. AAudio
+        // retains this pointer; close it before app audio state is destroyed.
+        StopAmbientAudio();
         inventoryLabel_ = personaTabsLabel_ = personaDetailsLabel_ = personaFooterLabel_ = nullptr;
         hudLabel_ = nullptr;
         subtitleLabel_ = nullptr;
@@ -997,6 +1007,8 @@ class DeusExQuestApp final : public OVRFW::XrApp {
     }
 
     void Update(const OVRFW::ovrApplFrameIn& frame) override {
+        musicPlaybackActive_.store(Focused && runtimeAvailable_ && pendingMapName_.empty() &&
+            transitionMapName_.empty(),std::memory_order_release);
         CompleteInitialPreparation();
         if (initialPreparationPending_ || initialPreparationFailed_) {
             // The bootstrap is the sole owner of portable runtime and NameString
@@ -1836,6 +1848,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         WorldMeshPreparation worldMesh;
         std::vector<SpatialAudioEmitter> spatialAudioEmitters;
         std::vector<MapLight> lights;
+        QuestVr::MapMusicPreparation music;
     };
 
     struct AmbientPreparation {
@@ -1896,6 +1909,11 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             if (!map.worldTexture.passed || !map.actorTextures.passed)
                 throw std::runtime_error("initial material/actor texture preparation failed");
             preparation.ambient = PrepareAmbientAudio();
+            // Music/dialogue must not depend on the optional old ambience WAV.
+            if (!preparation.ambient.passed) {
+                preparation.ambient.passed=true;preparation.ambient.sampleRate=48'000u;
+            }
+            map.music=QuestVr::PrepareOriginalMapMusic(gameRoot_,"00_Training",preparation.ambient.sampleRate);
             map.spatialAudioEmitters = PrepareSpatialAudioEmitters(
                 map.actors, preparation.ambient.sampleRate, map.worldMesh.lightmap.unrealOrigin);
             preparation.persona = PrepareOriginalPersonaBackground();
@@ -1953,6 +1971,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         preparedWorldTexture_ = std::move(preparation.map.worldTexture);
         preparedWorldMesh_ = std::move(preparation.map.worldMesh);
         preparedSpatialAudioEmitters_ = std::move(preparation.map.spatialAudioEmitters);
+        preparedMapMusic_ = std::move(preparation.map.music);
         preparedMapLights_ = std::move(preparation.map.lights);
         runtimeAvailable_ = true;
         transitionMapName_ = currentMapName_;
@@ -3427,6 +3446,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                 actorSnapshots_ = preparedActorSnapshots_;
                 preparedActorSnapshots_.clear();
                 ReplaceSpatialAudioEmitters(std::move(preparedSpatialAudioEmitters_));
+                PublishMapMusic(std::move(preparedMapMusic_));
                 ReconcileSpatialAudioEmitters(actorSnapshots_);
                 if (!BeginActorTextureUpload(std::move(preparedActorTextures_))) {
                     throw std::runtime_error("GPU actor texture allocation failed");
@@ -3607,6 +3627,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                     throw std::runtime_error("restored actor texture preparation failed");
                 preparation.actors = GetPortableRuntimeMapActors();
                 preparation.lights = BuildMapLights(preparation.actors,preparation.worldMesh.lightmap.unrealOrigin);
+                preparation.music=QuestVr::PrepareOriginalMapMusic(gameRoot_,mapName,targetAudioRate);
                 return true;
                 }, [&] {
                     const PortablePackageTables previousMap = LoadPortablePackageTables(
@@ -3685,6 +3706,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         preparedWorldTexture_ = std::move(preparation.worldTexture);
         preparedWorldMesh_ = std::move(preparation.worldMesh);
         preparedSpatialAudioEmitters_ = std::move(preparation.spatialAudioEmitters);
+        preparedMapMusic_ = std::move(preparation.music);
         preparedMapLights_ = std::move(preparation.lights);
         transitionMapName_ = mapName;
         transitionPhase_ = MapTransitionPhase::WorldTextureAllocate;
@@ -3777,6 +3799,13 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         if (std::strcmp(requested, "CONSUME") == 0) {
             const bool used = UseSelectedConsumable();
             ALOG("DeusExQuest: diagnostic consume result=%s", used ? "used" : "not_consumable");
+            return;
+        }
+        if (std::strcmp(requested, "MUSIC") == 0) {
+            std::lock_guard<std::mutex> lock(audioMutex_);
+            ALOG("DeusExQuest: music diagnostic present=%s active=%s rate=%u underrunFrames=%llu",
+                musicStream_?"true":"false",musicPlaybackActive_.load(std::memory_order_acquire)?"true":"false",
+                audioSampleRate_,static_cast<unsigned long long>(musicStream_?musicStream_->UnderrunFrames():0u));
             return;
         }
         if (std::strcmp(requested, "READY") == 0) {
@@ -5990,6 +6019,25 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         }
     }
 
+    void PublishMapMusic(QuestVr::MapMusicPreparation preparation) {
+        std::shared_ptr<QuestVr::MusicStream> retired;
+        {
+            std::lock_guard<std::mutex> lock(audioMutex_);
+            retired=std::move(musicStream_);
+            if (preparation.stream && preparation.stream->SampleRate()==audioSampleRate_)
+                musicStream_=std::move(preparation.stream);
+        }
+        // Thread join/decoder destruction never occurs under callback lock.
+        retired.reset();
+        if (!preparation.error.empty()) {
+            ALOG("DeusExQuest: original map music unavailable: %s",preparation.error.c_str());
+        } else if (musicStream_) {
+            ALOG("DeusExQuest: original map music playing %s format=%s section=%u rate=%u duration=%.2fs; decoder worker/fixed PCM ring",
+                preparation.songPath.c_str(),preparation.format.c_str(),preparation.section,
+                audioSampleRate_,musicStream_->DurationSeconds());
+        }
+    }
+
     static aaudio_data_callback_result_t AmbientAudioCallback(
         AAudioStream*,
         void* userData,
@@ -6024,6 +6072,8 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                 app->ambientCursor_ = (app->ambientCursor_ + 1u) % app->ambientSamples_.size();
             }
         }
+        if (app->musicStream_ && app->musicPlaybackActive_.load(std::memory_order_acquire))
+            app->musicStream_->Mix(output,static_cast<std::size_t>(numFrames),0.35f);
         for (std::size_t index = 0; index < sampleCount; ++index) {
             if (app->dialogueCursor_ >= app->dialogueSamples_.size()) break;
             const float dialogueGain = (index & 1u) == 0u
@@ -6255,6 +6305,9 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         const aaudio_result_t opened = AAudioStreamBuilder_openStream(builder, &ambientStream_);
         AAudioStreamBuilder_delete(builder);
         if (opened != AAUDIO_OK || ambientStream_ == nullptr ||
+            AAudioStream_getSampleRate(ambientStream_)!=static_cast<std::int32_t>(sampleRate) ||
+            AAudioStream_getChannelCount(ambientStream_)!=2 ||
+            AAudioStream_getFormat(ambientStream_)!=AAUDIO_FORMAT_PCM_I16 ||
             AAudioStream_requestStart(ambientStream_) != AAUDIO_OK) {
             StopAmbientAudio();
             return false;
@@ -6273,6 +6326,8 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             ambientStream_ = nullptr;
         }
         ambientSamples_.clear();
+        musicStream_.reset();
+        preparedMapMusic_={};
         ambientCursor_ = 0;
         spatialAudioEmitters_.clear();
         spatialAudioEmitterCatalog_.clear();
@@ -7090,6 +7145,8 @@ class DeusExQuestApp final : public OVRFW::XrApp {
     std::vector<SpatialAudioEmitter> spatialAudioEmitters_;
     std::vector<SpatialAudioEmitter> spatialAudioEmitterCatalog_;
     std::uint32_t audioSampleRate_{};
+    std::shared_ptr<QuestVr::MusicStream> musicStream_;
+    std::atomic<bool> musicPlaybackActive_{};
     std::vector<std::int16_t> dialogueSamples_;
     std::string dialogueSubtitle_, displayedSubtitle_;
     std::vector<std::string> dialogueSubtitlePages_;
@@ -7246,6 +7303,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
     MapTransitionPhase transitionPhase_{MapTransitionPhase::Idle};
     std::vector<PortableActorSnapshot> preparedActorSnapshots_;
     std::vector<SpatialAudioEmitter> preparedSpatialAudioEmitters_;
+    QuestVr::MapMusicPreparation preparedMapMusic_;
     std::vector<MapLight> preparedMapLights_;
     PortableTextureArray preparedActorTextures_;
     WorldTexturePreparation preparedWorldTexture_;

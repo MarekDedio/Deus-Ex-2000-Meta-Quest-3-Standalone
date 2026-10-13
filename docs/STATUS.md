@@ -1,5 +1,36 @@
 # Port status
 
+## Training music milestone (2026-10-13)
+
+- User priority one is implemented: the loaded map's typed LevelInfo.Song and
+  SongSection select its original UMusic export. Training uses
+  Training_Music.Training_Music (IT, section 0), title Training Room, 123.726s.
+  No game music is bundled in Git or the APK. This is baseline map music;
+  dynamic combat/death transitions, original fades/settings and saved cursor
+  are not implemented. See TRAINING-MUSIC.md.
+- The pinned libopenmpt decodes off the AAudio callback into a fixed 256KiB
+  PCM ring. Focus/pause/map gating preserves playback position; the callback
+  mixes ready samples with ambience and speech. Newer Vorbis symbols are
+  isolated from Meta's older library, and MP3 implementation is linked once.
+- Final host build passes. CTest: 72 ordinary / 82 registered / 10 owned-data
+  skips, zero failures in 11.37s. Generated tests exercise ring refill/wrap,
+  actual song looping, callback/input/gain bounds and both Vorbis libraries
+  linked together. Separate original Training metadata/PCM/fingerprint test
+  passes; diagnostic-tool mock suite passes 25/0. Original Windows code was
+  not run.
+- Final Android build passes in 2m13s. Signed ARM64 APK: 32,918,766 bytes,
+  `artifacts/crate-runtime-20261013/DeusExQuestVR-training-music-20261013.apk`,
+  SHA256 `8673B16C3F37B5771DC0470299786D4834BF2DCD6062B426C66388416FC536C1`.
+  APK v2 signature and its 20 entries are checked, including four decoder
+  license notices and no commercial packages. Automatic replacement was
+  attempted but skipped because the known Quest is absent from USB; no
+  alternate device was selected. Latest confirmed installed APK remains
+  B07B838E below. Final headset audibility/mix balance/underruns are unverified.
+- Next priority remains the original full HUD, actual starting keyring and
+  functional ten-slot belt, health and map-relative compass. Then NPC poses/
+  animation, gravity/crate destruction/visible held items. Lamp illumination
+  also remains open. No full tutorial or campaign completion is claimed.
+
 ## User-prioritized Training work and focus checkpoint (2026-10-13)
 
 - Explicit work order: Training background music; full original HUD including

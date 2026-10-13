@@ -5,9 +5,9 @@
 #include <cstdint>
 #include <vector>
 
-// The consumer translation unit defines MINIMP3_IMPLEMENTATION before this
-// include when it supplies the decoder implementation. Do not also include
-// minimp3_ex.h in that TU: its implementation lies outside its include guard.
+// Quest links the implementation from quest_music_codecs.cpp. Standalone tests
+// may instead define MINIMP3_IMPLEMENTATION before this include. In that case
+// do not also include minimp3_ex.h: its implementation is outside its guard.
 #include "minimp3_ex.h"
 
 namespace QuestVr {

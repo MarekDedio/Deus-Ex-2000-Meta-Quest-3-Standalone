@@ -58,6 +58,13 @@ try {
     Complete-Test 'command consumed successfully, normalized token and serial'
 
     New-MockState
+    $result = & $helper -Command MUSIC -TimeoutSeconds 1 -AdbPath $mockAdb
+    $state = Read-MockState
+    Assert-True ($result.Consumed -eq $true -and $state.LastRequest -eq 'MUSIC') 'music diagnostic consumed'
+    Assert-True ($state.SuccessfulWrites -eq 1 -and -not $state.Pending) 'music diagnostic queued exactly once'
+    Complete-Test 'music diagnostic uses the same acknowledged bounded mailbox'
+
+    New-MockState
     $result = & $helper -MapName 00_Training -TimeoutSeconds 1 -AdbPath $mockAdb
     $state = Read-MockState
     Assert-True ($result.Consumed -eq $true -and $state.LastRequest -eq '00_Training') 'map request consumed'

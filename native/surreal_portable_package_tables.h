@@ -285,6 +285,14 @@ std::string ResolvePortableValueObjectReference(
 PortableSound LoadPortableSound(
     const PortablePackageTables& package,
     std::size_t exportIndex);
+struct PortableMusic {
+    std::string objectPath,format;
+    std::vector<std::uint8_t> data;
+};
+// Actual Engine.Music export, v62+ lazy-array payload; not a sound or raw
+// signature search through arbitrary package bytes. Original files are read-only.
+PortableMusic LoadPortableMusic(const PortablePackageTables& package,
+    std::size_t exportIndex,std::size_t byteBudget=32u*1024u*1024u);
 PortableReflectionGraph BuildPortableReflectionGraph(
     const PortablePackageTables& package);
 PortableScriptBody LoadPortableFunctionScript(

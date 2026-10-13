@@ -1,5 +1,6 @@
 cmake_minimum_required(VERSION 3.22.1)
 project(deusex_quest_port LANGUAGES C CXX)
+include("${CMAKE_CURRENT_LIST_DIR}/quest_music_decoder.cmake")
 
 add_subdirectory(
     "${CMAKE_CURRENT_LIST_DIR}/../third_party/Meta-OpenXR-SDK/Samples"
@@ -52,6 +53,7 @@ target_link_libraries(deusex_quest PRIVATE
     deusex_data_probe
     samplexrframework
     surreal_portable_core
+    quest_music_decoder
 )
 set_target_properties(deusex_quest PROPERTIES LINK_FLAGS "-u ANativeActivity_onCreate")
 
