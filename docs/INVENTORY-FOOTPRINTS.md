@@ -129,10 +129,12 @@ Remaining behavior is explicitly incomplete:
 - Neutral opaque gray item fills and generic normal edges remain a port
   approximation; original theme-driven translucent fill/selection colors and
   blending have not been executed.
-- The controller still enumerates the raw inventory list. A hidden,
-  unavailable or capacity-unplaced selected entry can have no visible
-  highlight; `selectedVisible=0` reports this. It is not silently shown as a
-  placeholder, and this change does not claim faithful visible-item navigation.
+- The 2026-10-13 navigation update now enumerates visible layout targets only,
+  retaining actor identity through list changes. Hidden/unavailable/unplaced
+  entries cannot become actionable selections; explicit layout errors clear
+  selection. Held-repeat stick and tracked panel-ray/trigger selection share
+  the same model and highlight. The user confirms browsing works. This remains
+  display/input adaptation rather than original inventory-window execution.
 - Belt-position numbers, ammunition/copy labels, equipment state and drag/drop
   interaction are not supplied by this footprint adapter.
 - Original action chrome uses Change Ammo / Drop / Use / Equip (including
@@ -143,3 +145,9 @@ Remaining behavior is explicitly incomplete:
   belt are not made functional by correcting rectangles. Live inventory
   lifecycle, standalone Quest GPU presentation and controller behavior require
   separate verification.
+
+Original ItemName and Description strings are now available through detached
+bounded descriptor fields with independent Available/Missing/Malformed states.
+This does not fabricate ammo, equipment state or readiness. Selection still
+feeds the port's older simplified attack adapter; real equip/unequip and a
+held weapon model remain open, as the latest user test confirms.

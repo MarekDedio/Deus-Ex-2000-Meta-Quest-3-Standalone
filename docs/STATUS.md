@@ -1,5 +1,44 @@
 # Port status
 
+## Retained streaming and visible inventory navigation (2026-10-13)
+
+- The user tested the replacement build and reports freezes are basically fixed
+  and inventory browsing now works. Navigation uses the actual visible layout,
+  skips hidden keys/unavailable/unplaced rows, preserves selected identity,
+  supports dominant-axis held repeat and tracked controller-ray selection.
+  Original ItemName/Description now come from bounded reflected FString reads.
+  An unsupported A/equip action no longer claims EQUIPPED; selected items still
+  drive the older simplified attack path, not a real item-in-hand lifecycle.
+- Ordinary pickup/death removal now masks actor-owned triangles in both active
+  and staged banks without geometry re-upload, and invalidates targets/audio.
+  Spatial rebuilds keep completed gameplay/collision inside retained coverage;
+  authoritative restoration/material changes remain blocking. Movers reserve
+  collider coverage first and rebase to their current poses before bank commit.
+  Emitting removals retain the authoritative lighting-rebuild fallback.
+- Live profiling caught 109.273ms all-mover snapshot reads at commit and
+  116.01ms preparation. The final source/APK removes those repeat reads via
+  an owner-thread cache seeded from authoritative snapshots and updated through
+  every mover publication, including final idle samples. The cache's physical
+  timing/door acceptance on the final APK is still pending.
+- Full host build and strict NDK27 Quest syntax pass. Final CTest passes68
+  ordinary tests/76 registered/eight explicit owned-data skips, zero failures,
+  10.86s. New navigation75 and ownership/cache1,045 checks pass. Separate
+  original three-weapon name/description/footprint metadata and original
+  Training/UNATCOIsland/Intro inventory integration pass. Original-artwork
+  software preview is visually inspected; it is a fixture, not live UI proof.
+- Installed test APK is20,049,273 bytes, SHA256
+  `ACC35F28EB61E8900A45391C3C94607EBEA7415809597AA7E030FD3BF605F0B5`,
+  with exact pulled base.apk match on Quest2G0YC5ZG620985, update08:20:55,
+  process22073. Final additional cache-fix APK is signed/build-successful at
+  `artifacts/tutorial-streaming-20261013/DeusExQuestVR-training-streaming-retained-poses-20261013.apk`,
+  SHA256`12D465000B70844516AD7AF6B5F40133FA7A4DCBC4E7CDCDD8424A957D865D76`.
+  It is not yet installed: USB was absent at its build completion.
+- Latest user test identifies invisible selected crowbar, breakable crates
+  rejected by the NPC-only damage adapter, and an apparently floating crate
+  stack. These, NPC lifecycle/T-poses and original player/HUD bootstrap remain
+  open. See VIDEO-REVIEW-20261013.md and ORIGINAL-HUD-CONTRACT.md. No full
+  tutorial, campaign, equipment, physics or performance completion is claimed.
+
 ## Receiver/context foundation and installed APK (2026-10-13)
 
 - Audited opcode/frame receiver distinctions now cover Self, Let/LetBool,

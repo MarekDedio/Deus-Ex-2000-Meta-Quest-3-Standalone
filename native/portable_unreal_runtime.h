@@ -460,6 +460,10 @@ std::vector<PortableActorSnapshot> GetPortableRuntimeMapActors(bool includeInact
 PortableActorMeshSummary DecodePortableRuntimeActorMeshes();
 PortableLodMesh GetPortableRuntimeMesh(const std::string& meshPath);
 PortableLodMesh GetPortableRuntimeBrush(const std::string& brushPath);
+// Read-only retained assets. Valid only on the runtime-owning thread until
+// map replacement/unload; workers must take their own detached copy.
+const PortableLodMesh& GetPortableRuntimeMeshView(const std::string& meshPath);
+const PortableLodMesh& GetPortableRuntimeBrushView(const std::string& brushPath);
 PortableTextureArray BuildPortableRuntimeActorTextureArray(
     std::uint32_t width,
     std::uint32_t height);
@@ -492,6 +496,9 @@ enum class PortableInventoryDescriptorStatus : std::uint8_t {
     InvalidIconDimensions, MissingIconMetadata
 };
 enum class PortableInventoryValueOrigin : std::uint8_t { Zero, ClassDefault, Instance, Overlay };
+enum class PortableInventoryTextStatus : std::uint8_t {
+    Unavailable, Available, MissingPropertyMetadata, MalformedProperty
+};
 struct PortableInventoryIconProvenance {
     PortableInventoryValueOrigin origin{PortableInventoryValueOrigin::Zero};
     std::string declarationPath, declarationSourcePath, ownerPath, ownerSourcePath;
@@ -506,6 +513,12 @@ struct PortableInventoryDescriptor {
     std::int32_t largeIconWidth{}, largeIconHeight{}, displayWidth{}, displayHeight{};
     bool usesLargeIcon{};
     PortableInventoryIconProvenance largeIconProvenance, fallbackIconProvenance;
+    // Original scalar StrProperty values only, detached VM UTF-8/WTF-8 text.
+    // Available may contain an explicitly empty/typed-zero string. Optional
+    // text errors do not change the independent icon/layout row status.
+    std::optional<std::string> itemName, description;
+    PortableInventoryTextStatus itemNameStatus{PortableInventoryTextStatus::Unavailable};
+    PortableInventoryTextStatus descriptionStatus{PortableInventoryTextStatus::Unavailable};
 };
 struct PortableInventoryDescriptorLimits {
     std::size_t count{1024u}, retainedBytes{4u * 1024u * 1024u}, stringBytes{4096u}, hierarchy{128u};
@@ -526,6 +539,9 @@ struct PortableInventoryDescriptorLimits {
 // Narrow immutable class-reference metadata is cached at package/map load.
 // Count/aggregate limits reject the whole request before returning any results;
 // oversized/invalid individual identities are marked without retaining them.
+// ItemName/Description require actual inherited scalar StrProperty declarations
+// and typed overlay/tag/default data. Missing or malformed text is explicit and
+// never replaced with a class-name label, guessed description or item state.
 std::vector<PortableInventoryDescriptor> ReadPortableRuntimeInventoryDescriptors(
     const std::vector<std::string>& actorPaths,
     const PortableInventoryDescriptorLimits& limits = {});

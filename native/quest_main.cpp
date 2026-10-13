@@ -39,6 +39,7 @@
 #include "quest_map_cache.h"
 #include "vr_world_transform.h"
 #include "quest_vr_input.h"
+#include "quest_inventory_navigation.h"
 #include "quest_player_visual.h"
 #include "quest_player_posture.h"
 #include "quest_ground_probe.h"
@@ -54,25 +55,39 @@
 #include "quest_save_bundle.h"
 #include "async_result_epoch.h"
 #include "retained_bank_publication.h"
+#include "actor_visibility_state.h"
 
 #define MINIMP3_IMPLEMENTATION
 #include "portable_mp3_audio.h"
 
 class TexturedGeometryRenderer {
    public:
+    using ActorVisibilityMatrices = std::array<OVR::Matrix4f,QuestVr::ActorVisibilityState::MatrixCount>;
     void Init(
         const OVRFW::GlGeometry::Descriptor& descriptor,
         const OVRFW::GlTexture& texture,
-        bool cullEnable = true, std::uint32_t polyFlags = 0u) {
+        bool cullEnable = true, std::uint32_t polyFlags = 0u,
+        ActorVisibilityMatrices* actorVisibility = nullptr) {
         static const char* vertexShader = R"glsl(
             attribute highp vec4 Position;
             attribute highp vec2 TexCoord;
+            attribute highp vec2 TexCoord1;
             attribute lowp vec4 VertexColor;
+            uniform highp mat4 ActorVisibility[32];
             varying highp vec2 oTexCoord;
             varying mediump float oLayer;
             varying lowp vec3 oLight;
             void main() {
                 gl_Position = TransformVertex(Position);
+                // Every triangle has one actor ordinal. Clipping all three
+                // vertices suppresses its color AND depth without a buffer
+                // rewrite, new draw calls or a fragment-discard overdraw pass.
+                highp int actor = int(floor(TexCoord1.x + 0.5));
+                highp int block = actor / 16;
+                highp int row = (actor - block * 16) / 4;
+                highp int column = actor - block * 16 - row * 4;
+                if (ActorVisibility[block][column][row] < 0.5)
+                    gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
                 oTexCoord = TexCoord;
                 oLayer = VertexColor.r * 255.0;
                 oLight = VertexColor.gba;
@@ -96,10 +111,11 @@ class TexturedGeometryRenderer {
         static OVRFW::ovrProgramParm uniformParms[] = {
             {.Name = "Texture0", .Type = OVRFW::ovrProgramParmType::TEXTURE_SAMPLED},
             {.Name = "Masked", .Type = OVRFW::ovrProgramParmType::FLOAT},
+            {.Name = "ActorVisibility[0]", .Type = OVRFW::ovrProgramParmType::FLOAT_MATRIX4},
         };
         if (!sharedProgram_.IsValid()) {
             sharedProgram_ = OVRFW::GlProgram::Build(
-                "", vertexShader, "", fragmentShader, uniformParms, 2);
+                "", vertexShader, "", fragmentShader, uniformParms, 3);
         }
         if (!sharedProgram_.IsValid())
             throw std::runtime_error("textured geometry shader creation failed");
@@ -112,6 +128,9 @@ class TexturedGeometryRenderer {
         masked_ = (polyFlags & 2u) != 0u ? 1.0f : 0.0f;
         if ((polyFlags & 0x10000000u) != 0u && (polyFlags & (4u|64u)) == 0u) masked_ = -1.0f;
         command.UniformData[1].Data = &masked_;
+        actorVisibility_ = actorVisibility ? actorVisibility : &allVisibleActors_;
+        command.UniformData[2].Data = actorVisibility_->data();
+        command.UniformData[2].Count = static_cast<int>(actorVisibility_->size());
         command.GpuState.depthEnable = command.GpuState.depthMaskEnable = true;
         command.GpuState.blendEnable = OVRFW::ovrGpuState::BLEND_DISABLE;
         command.GpuState.cullEnable = cullEnable;
@@ -152,12 +171,20 @@ class TexturedGeometryRenderer {
         surface_.graphicsCommand.UniformData[0].Data =
             &surface_.graphicsCommand.Textures[0];
         surface_.graphicsCommand.UniformData[1].Data = &masked_;
+        surface_.graphicsCommand.UniformData[2].Data = actorVisibility_->data();
         surfaces.emplace_back(modelMatrix_, &surface_);
     }
 
    private:
     OVRFW::ovrSurfaceDef surface_;
     inline static OVRFW::GlProgram sharedProgram_;
+    inline static ActorVisibilityMatrices allVisibleActors_ = [] {
+        ActorVisibilityMatrices matrices;
+        for (auto& matrix : matrices)
+            for (auto& row : matrix.M) for (auto& value : row) value = 1.0f;
+        return matrices;
+    }();
+    ActorVisibilityMatrices* actorVisibility_{&allVisibleActors_};
     float masked_{};
     bool blended_{};
     OVR::Vector3f localCenter_;
@@ -775,6 +802,8 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         currentHeadStage_ = previousHeadStage_ = {};
         sceneYaw_ = 0.0f;
         selectedInventoryIndex_ = 0u;
+        inventoryNavigation_ = {};
+        inventoryLayoutCached_ = false;
         debugHudVisible_ = true;
         hideDebugHudAtFirstReady_ = true;
         debugHudToggleLatch_ = true;
@@ -1036,8 +1065,8 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         }
         const OVR::Vector3f safeLocalHead =
             StageToLocal(previousHeadStage_, worldPosition_);
-        const bool mapLoading = !runtimeAvailable_ || runtimeActorTextureUploadPending_ ||
-            !pendingMapName_.empty() || !transitionMapName_.empty() || static_cast<bool>(actorGeometryBuild_);
+        const bool mapLoading = !runtimeAvailable_ || ActorPublicationBlocksGameplay() ||
+            !pendingMapName_.empty() || !transitionMapName_.empty();
         const bool playerAlive = !mapLoading && GetPortableRuntimePlayerHealth() > 0.0f;
         if (!mapLoading && frame.Clicked(frame.kButtonMenu)) {
             SetInventoryMenuOpen(!inventoryMenuOpen_);
@@ -1057,20 +1086,30 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         const bool debugToggle = QuestVr::UpdateAxis(frame.LeftRemoteTracked ?
             frame.LeftRemoteGripTrigger : std::numeric_limits<float>::quiet_NaN(), debugHudToggleLatch_);
         if (!mapLoading && !inventoryMenuOpen_ && debugToggle) ToggleDebugHud();
-        const bool turnPressed = QuestVr::UpdateAxis(frame.RightRemoteJoystick.x, turnLatch_);
+        const bool turnPressed = QuestVr::UpdateAxis(frame.RightRemoteTracked ?
+            frame.RightRemoteJoystick.x : std::numeric_limits<float>::quiet_NaN(), turnLatch_);
         if (gameplayActive && turnPressed) {
             constexpr float snapRadians = 3.14159265358979323846f / 6.0f;
             SnapTurnAroundHead(
                 std::copysign(snapRadians, frame.RightRemoteJoystick.x),
                 frame.HeadPose.Translation);
-        } else if (inventoryMenuOpen_ && turnPressed) {
+        }
+        if (!mapLoading && inventoryMenuOpen_) {
+            EnsureInventoryNavigation(GetPortableRuntimeInventoryItems());
+            const auto navigation = menuNavigationInput_.Update(frame.RightRemoteJoystick.x,
+                frame.RightRemoteJoystick.y, frame.RightRemoteTracked, frame.DeltaSeconds);
             const std::size_t pageCount = static_cast<std::size_t>(PersonaPage::Count);
-            std::size_t page = static_cast<std::size_t>(personaPage_);
-            page = frame.RightRemoteJoystick.x > 0.0f
-                ? (page + 1u) % pageCount
-                : (page + pageCount - 1u) % pageCount;
-            personaPage_ = static_cast<PersonaPage>(page);
-            inventoryMenuDirty_ = true;
+            if (navigation.pageSteps != 0) {
+                const auto page = static_cast<int>(personaPage_);
+                const auto count = static_cast<int>(pageCount);
+                personaPage_ = static_cast<PersonaPage>((page + navigation.pageSteps % count + count) % count);
+                inventoryMenuDirty_ = true;
+            }
+            if (personaPage_ == PersonaPage::Inventory && navigation.itemSteps != 0)
+                MoveInventorySelection(navigation.itemSteps);
+            if (personaPage_ == PersonaPage::Inventory && frame.RightRemoteTracked &&
+                frame.RightRemoteIndexTrigger > 0.75f && !fireLatch_)
+                SelectInventoryAtPointer(frame);
         }
         const OVR::Vector3f stageRight = QuestVr::HorizontalHeadRight(
             frame.HeadPose.Rotation.Rotate(OVR::Vector3f(0.0f, 0.0f, -1.0f)),
@@ -1086,22 +1125,9 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             gameplayActive ? moveStick.x : 0.0f,
             gameplayActive ? moveStick.y : 0.0f,
             2.2f, frame.DeltaSeconds);
-        const bool choiceCyclePressed = QuestVr::UpdateAxis(frame.RightRemoteJoystick.y, choiceCycleLatch_);
-        if (!mapLoading && inventoryMenuOpen_ && personaPage_ == PersonaPage::Inventory &&
-            choiceCyclePressed) {
-            const std::size_t count = GetPortableRuntimeInventoryCount();
-            if (count != 0u) {
-                if (frame.RightRemoteJoystick.y > 0.0f) {
-                    selectedInventoryIndex_ = selectedInventoryIndex_ == 0u
-                        ? count - 1u
-                        : selectedInventoryIndex_ - 1u;
-                } else {
-                    selectedInventoryIndex_ = (selectedInventoryIndex_ + 1u) % count;
-                }
-                inventoryMenuDirty_ = true;
-                displayedInventoryCount_ = invalidRendererIndex_;
-            }
-        } else if (!pendingChoices_.empty() && choiceCyclePressed) {
+        const bool choiceCyclePressed = QuestVr::UpdateAxis(frame.RightRemoteTracked ?
+            frame.RightRemoteJoystick.y : std::numeric_limits<float>::quiet_NaN(), choiceCycleLatch_);
+        if (!inventoryMenuOpen_ && !pendingChoices_.empty() && choiceCyclePressed) {
             if (frame.RightRemoteJoystick.y > 0.0f) {
                 pendingChoiceIndex_ = pendingChoiceIndex_ == 0u
                     ? pendingChoices_.size() - 1u
@@ -1115,16 +1141,14 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         // Never ground or roll back against a partially uploaded collision
         // mesh. An early, lower surface can otherwise bury the feet before
         // the real floor arrives beyond the normal 45 cm step-up limit.
-        const bool actorCollisionPublicationPending =
-            runtimeActorTextureUploadPending_ || static_cast<bool>(actorGeometryBuild_);
+        const bool actorCollisionPublicationPending = ActorCollisionPublicationPending();
         const bool collisionReady = QuestVr::GroundCollisionReady(
             runtimeAvailable_,!pendingMapName_.empty(),!transitionMapName_.empty(),actorCollisionPublicationPending);
         bool movementBlocked{};
         if (actorCollisionPublicationPending && pendingMapName_.empty() && transitionMapName_.empty()) {
-            // Actor refresh retires the old moving-brush colliders before the
-            // replacement is complete. Keep the last horizontal map position;
-            // BSP-only checks would permit a room-scale walk through a closed
-            // door. Preserve vertical posture and tracked head rotation.
+            // Initial/authoritative publication, or leaving retained collision
+            // coverage, cannot ground against a partial replacement. Spatial
+            // refresh inside coverage keeps the complete live colliders active.
             candidate = QuestVr::RestoreHorizontalHeadPosition(
                 worldPosition_,currentHeadStage_,safeLocalHead,sceneYaw_);
         } else if (collisionReady) {
@@ -1192,21 +1216,25 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                 }
             }
         }
-        if (!mapLoading && !actorGeometryBuild_ && !runtimeActorTextureUploadPending_ &&
+        if (!mapLoading &&
             inventoryMenuOpen_ && personaPage_ == PersonaPage::Inventory &&
+            frame.RightRemoteTracked &&
             frame.Clicked(frame.kButtonA)) {
             const std::vector<std::string> inventory = GetPortableRuntimeInventoryItems();
-            if (inventory.empty()) {
+            EnsureInventoryNavigation(inventory);
+            if (!inventoryNavigation_.SelectedIndex()) {
                 inventoryMenuDirty_ = true;
             } else if (!UseSelectedConsumable()) {
-                interactionStatus_ = "EQUIPPED " +
-                    SelectedInventoryLabel(inventory);
+                interactionStatus_ = "SELECTED " + SelectedInventoryDisplayName() +
+                    " - EQUIP ACTION NOT IMPLEMENTED";
+                inventoryActionStatus_ = "EQUIP ACTION NOT IMPLEMENTED";
                 interactionStatusSeconds_ = 2.0f;
-                SetInventoryMenuOpen(false);
+                inventoryMenuDirty_ = true;
             } else {
+                inventoryActionStatus_ = interactionStatus_;
                 inventoryMenuDirty_ = true;
             }
-        } else if (gameplayActive && !actorGeometryBuild_ && !runtimeActorTextureUploadPending_ &&
+        } else if (gameplayActive &&
             frame.RightRemoteTracked && frame.Clicked(frame.kButtonA)) {
             if (!pendingChoices_.empty()) {
                 ConfirmPendingChoice();
@@ -1216,7 +1244,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             }
         }
         const bool firePressed = frame.RightRemoteIndexTrigger > 0.75f;
-        if (gameplayActive && !actorGeometryBuild_ && !runtimeActorTextureUploadPending_ && pendingMapName_.empty() && transitionMapName_.empty() &&
+        if (gameplayActive && pendingMapName_.empty() && transitionMapName_.empty() &&
             frame.RightRemoteTracked && firePressed && !fireLatch_) {
             const std::vector<std::string> inventory = GetPortableRuntimeInventoryItems();
             const float weaponDamage = SelectedWeaponDamage(inventory);
@@ -1237,11 +1265,10 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         }
         fireLatch_ = firePressed;
         const bool gripPressed = frame.RightRemoteGripTrigger > 0.75f;
-        if (gameplayActive && !actorGeometryBuild_ && !runtimeActorTextureUploadPending_ && pendingMapName_.empty() && transitionMapName_.empty() &&
-            gripPressed && !inventoryCycleLatch_) {
-            const std::size_t count = GetPortableRuntimeInventoryCount();
-            if (count != 0u) selectedInventoryIndex_ = (selectedInventoryIndex_ + 1u) % count;
-            displayedInventoryCount_ = invalidRendererIndex_;
+        if (gameplayActive && pendingMapName_.empty() && transitionMapName_.empty() &&
+            frame.RightRemoteTracked && gripPressed && !inventoryCycleLatch_) {
+            EnsureInventoryNavigation(GetPortableRuntimeInventoryItems());
+            MoveInventorySelection(1);
         }
         inventoryCycleLatch_ = gripPressed;
         if (!mapLoading && pendingMapName_.empty() && transitionMapName_.empty() &&
@@ -1384,7 +1411,9 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         };
         gatherActors(texturedRenderers_);
         if (activeActorGeometry_) {
-            for (auto& renderer : activeActorGeometry_->world) renderer.Render(output.Surfaces);
+            for (std::size_t index=0u;index<activeActorGeometry_->world.size();++index)
+                if (activeActorGeometry_->visibility.Visible(activeActorGeometry_->markerOwners.at(index)))
+                    activeActorGeometry_->world[index].Render(output.Surfaces);
             gatherActors(activeActorGeometry_->textured);
         }
         const std::size_t submittedBodySurfaces = RenderPlayerVisuals(frame, output.Surfaces);
@@ -1646,8 +1675,27 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         std::unordered_map<std::string,MoverVisual> movers;
         std::vector<InteractiveActor> targets;
         std::shared_ptr<ActorAtlasGeneration> atlas;
+        QuestVr::ActorVisibilityState visibility;
+        std::set<std::string> lightingActors;
+        TexturedGeometryRenderer::ActorVisibilityMatrices visibilityMatrices;
+        std::deque<std::size_t> markerOwners;
         OVR::Vector3f streamingCenter;
+        bool spatiallyFiltered{};
         std::size_t collisionTriangles{};
+        ActorGeometryBank() {
+            for (std::size_t slot=0u;slot<QuestVr::ActorVisibilityState::MaximumActors;++slot)
+                visibilityMatrices[QuestVr::ActorVisibilityState::Matrix(slot)].M
+                    [QuestVr::ActorVisibilityState::Row(slot)][QuestVr::ActorVisibilityState::Column(slot)] = 1.0f;
+        }
+        void HideActor(const std::string& path) {
+            if (!visibility.Hide(path)) return;
+            const auto slot = *visibility.Slot(path);
+            visibilityMatrices[QuestVr::ActorVisibilityState::Matrix(slot)].M
+                [QuestVr::ActorVisibilityState::Row(slot)][QuestVr::ActorVisibilityState::Column(slot)] = 0.0f;
+            for (auto& target : targets)
+                if (QuestVr::ActorVisibilityKey(target.objectPath) == QuestVr::ActorVisibilityKey(path))
+                    target.usable = target.highlight = false;
+        }
         ~ActorGeometryBank() {
             for (auto& renderer:world) renderer.Shutdown();
             for (auto& renderer:textured) renderer.Shutdown();
@@ -1670,10 +1718,12 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         std::shared_ptr<const QuestVr::MeshPose> meshPose;
         std::string moverPath;
         bool collisionOnly{};
+        std::size_t actorOrdinal{QuestVr::ActorVisibilityState::MaximumActors};
     };
 
     struct ActorGeometryBuild {
         QuestVr::RetainedBankToken publication;
+        QuestVr::ActorRefreshKind kind{QuestVr::ActorRefreshKind::Spatial};
         float originX{-1149.244f};
         float originY{825.844f};
         float originZ{-65.103f};
@@ -1691,8 +1741,10 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         double maximumSliceMilliseconds{};
         std::map<std::string, std::size_t> meshClasses;
         std::map<std::string, std::size_t> cubeClasses;
-        std::map<std::string, PortableLodMesh> meshes;
-        std::map<std::string, PortableLodMesh> brushes;
+        // Borrow decoded immutable assets only while this thread owns runtime.
+        // Map replacement cancels the build before its worker starts.
+        std::map<std::string, const PortableLodMesh*> meshes;
+        std::map<std::string, const PortableLodMesh*> brushes;
         std::map<std::string, std::set<std::uint16_t>> meshMaterials;
         std::unordered_map<std::string, std::size_t> textureLayers;
         OVRFW::GlGeometry::Descriptor spriteDescriptor;
@@ -1701,6 +1753,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         OVRFW::GlGeometry::Descriptor texturedChunk;
         std::uint32_t texturedChunkPolyFlags{};
         std::string texturedChunkMoverPath;
+        std::size_t markerChunkActor{QuestVr::ActorVisibilityState::MaximumActors};
         std::deque<ActorGeometryPart> parts;
     };
 
@@ -2174,24 +2227,76 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         return descriptor;
     }
 
-    void BuildActorMarkers() {
+    bool ActorPublicationBlocksGameplay() const {
+        return runtimeActorTextureUploadPending_ || QuestVr::ActorRefreshBlocksGameplay(
+            activeActorGeometry_ != nullptr, static_cast<bool>(actorGeometryBuild_),
+            actorGeometryBuild_ ? actorGeometryBuild_->kind : QuestVr::ActorRefreshKind::Spatial);
+    }
+
+    bool ActorCollisionPublicationPending() const {
+        if (ActorPublicationBlocksGameplay()) return true;
+        if (!actorGeometryBuild_ || !activeActorGeometry_) return false;
+        const auto player = StageToLocal(currentHeadStage_,worldPosition_);
+        return !QuestVr::RetainedActorCoverageContains(activeActorGeometry_->spatiallyFiltered,
+            actorStreamingCenter_.x,actorStreamingCenter_.z,player.x,player.z);
+    }
+
+    void ResetActorRemovalState() { actorRemovals_.Reset(); }
+
+    bool IsPublishedActorVisible(const std::string& path) const {
+        if (!activeActorGeometry_) return false;
+        const auto slot = activeActorGeometry_->visibility.Slot(path);
+        return slot && activeActorGeometry_->visibility.Visible(*slot);
+    }
+
+    bool PublishRuntimeActorRemoval(const std::string& path) {
+        if (!activeActorGeometry_ || !activeActorGeometry_->visibility.Slot(path)) return false;
+        // Other actors' baked vertex colors may consume this actor's light.
+        // Masking its triangles alone cannot reproduce that wider effect.
+        if (activeActorGeometry_->lightingActors.count(QuestVr::ActorVisibilityKey(path))) return false;
+        const auto started = std::chrono::steady_clock::now();
+        actorRemovals_.Remove(path);
+        activeActorGeometry_->HideActor(path);
+        if (auto* staged = actorGeometryPublication_.Staged()) staged->HideActor(path);
+        const auto identity = QuestVr::ActorVisibilityKey(path);
+        for (auto& target : interactiveActors_)
+            if (QuestVr::ActorVisibilityKey(target.objectPath) == identity)
+                target.usable = target.highlight = false;
+        for (auto it=moverVisuals_.begin();it!=moverVisuals_.end();)
+            if (QuestVr::ActorVisibilityKey(it->first) == identity) it=moverVisuals_.erase(it); else ++it;
+        {
+            std::lock_guard<std::mutex> lock(audioMutex_);
+            spatialAudioEmitters_.erase(std::remove_if(spatialAudioEmitters_.begin(),spatialAudioEmitters_.end(),
+                [&](const auto& emitter) { return QuestVr::ActorVisibilityKey(emitter.actorPath) == identity; }),
+                spatialAudioEmitters_.end());
+        }
+        inventoryMenuDirty_ = true;
+        displayedInventoryCount_ = invalidRendererIndex_;
+        ALOG("DeusExQuest: actor removal delta %.3f ms for %.256s; active/staged masked, no world rebuild or geometry upload",
+            std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-started).count(),path.c_str());
+        return true;
+    }
+
+    void BuildActorMarkers(QuestVr::ActorRefreshKind kind = QuestVr::ActorRefreshKind::Spatial) {
+        if (actorGeometryBuild_ && kind == QuestVr::ActorRefreshKind::Spatial) return;
+        const auto started = std::chrono::steady_clock::now();
         CancelActorGeometryBuild();
         if (!actorAtlas_ || !actorTexture_.IsValid())
             throw std::runtime_error("Actor bank preparation has no retained atlas");
         // Moving brushes do not bump the general actor revision every frame.
         // A later spatial refresh must not rebuild a now-open idle door from
-        // its older closed snapshot. Refresh only the bounded world mover
-        // registry once per bank build, never all exports on a frame tick.
-        const auto liveMovers = GetPortableRuntimeMoverActors(false);
-        std::unordered_map<std::string,const PortableActorSnapshot*> moversByPath;
-        for (const auto& mover : liveMovers) moversByPath.emplace(mover.objectPath,&mover);
+        // its older closed snapshot. Full reflected mover snapshots cost >100ms
+        // on Quest. Seed from the authoritative actor snapshot, then retain all
+        // published motion deltas instead of repeating those reads per bank.
+        if (kind == QuestVr::ActorRefreshKind::Authoritative || !activeActorGeometry_)
+            latestMoverSnapshots_.Replace(actorSnapshots_);
         for (auto& actor : actorSnapshots_) {
             if (!actor.mover) continue;
-            const auto live = moversByPath.find(actor.objectPath);
-            if (live != moversByPath.end()) actor = *live->second;
+            if (const auto* live = latestMoverSnapshots_.Find(actor.objectPath)) actor = *live;
         }
         actorGeometryBuild_ = std::make_unique<ActorGeometryBuild>();
         ActorGeometryBuild& build = *actorGeometryBuild_;
+        build.kind = kind;
         auto bank = std::make_unique<ActorGeometryBank>();
         bank->atlas = actorAtlas_;
         build.publication = actorGeometryPublication_.Begin(std::move(bank),
@@ -2211,6 +2316,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             originZ);
         const OVR::Vector3f playerLocal = StageToLocal(currentHeadStage_, worldPosition_);
         staged.streamingCenter = playerLocal;
+        staged.spatiallyFiltered = actorSnapshots_.size() > 1000u;
         build.spriteDescriptor = BuildCrossedSpriteDescriptor();
         build.cubeDescriptor = OVRFW::BuildUnitCubeDescriptor();
         for (std::size_t layer = 0; layer < actorTexturePaths_.size(); ++layer) {
@@ -2218,8 +2324,13 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         }
         // Targeting/travel metadata is available immediately, independently of
         // delayed visual chunks. Preserve the exact previous ordering/filter.
+        // Reserve visibility/collider slots for EVERY mover in the retained
+        // coverage first. The 512 visual cap must not discard a nearby closed
+        // door merely because pickups appeared earlier in export order.
+        for (const bool moversOnly : {true,false}) {
         for (std::size_t index = 0u; index < actorSnapshots_.size(); ++index) {
             const PortableActorSnapshot& actor = actorSnapshots_[index];
+            if (actor.mover != moversOnly || actorRemovals_.Removed(actor.objectPath)) continue;
             // Serialized editor cameras are not gameplay characters or targets.
             if (actor.classPath == "Engine.Camera") continue;
             if (!actor.hasLocation ||
@@ -2236,7 +2347,15 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                 const float dz = position.z - playerLocal.z;
                 if (dx * dx + dz * dz > 25.0f * 25.0f) continue;
             }
+            if (build.actorIndices.size() >= QuestVr::ActorVisibilityState::MaximumActors) {
+                if (moversOnly) throw std::runtime_error("Complete retained mover coverage exceeds actor visibility budget");
+                break;
+            }
             build.actorIndices.push_back(index);
+            const auto ordinal = staged.visibility.Add(actor.objectPath,actorRemovals_);
+            if (actor.light) staged.lightingActors.insert(QuestVr::ActorVisibilityKey(actor.objectPath));
+            if (ordinal+1u != build.actorIndices.size())
+                throw std::runtime_error("Actor visibility ordinal lost geometry ownership");
             // Cache the authored collision cylinder and PC highlight policy at
             // publication. Aiming never asks for a full runtime-world snapshot.
             const auto readFloat = [&](const char* name) {
@@ -2259,11 +2378,19 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             staged.targets.push_back({position, actor.objectPath, actor.classPath,
                 actor.travel, actor.destinationMap, actor.mover,usable,highlight,
                 readFloat("CollisionRadius"),readFloat("CollisionHeight")});
-            if (build.actorIndices.size() >= 512u) break;
+            if (build.actorIndices.size() >= QuestVr::ActorVisibilityState::MaximumActors) {
+                if (!moversOnly) break;
+            }
+        }
+        if (build.actorIndices.size() >= QuestVr::ActorVisibilityState::MaximumActors) break;
         }
         ALOG("DeusExQuest: queued incremental geometry for %zu targetable actors; budget %.1f ms/%zu operations/%zu vertices",
              build.actorIndices.size(), actorGeometryMillisecondsPerFrame_,
              actorGeometryOperationsPerFrame_, actorGeometryChunkVertices_);
+        ALOG("DeusExQuest: actor bank snapshot selection %.2f ms; %s refresh, retained gameplay %s",
+            std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-started).count(),
+            kind == QuestVr::ActorRefreshKind::Spatial ? "spatial" : "authoritative",
+            ActorPublicationBlocksGameplay() ? "blocked" : "active");
     }
 
     void UpdateActorGeometryPose(const OVR::Posef& worldPose) {
@@ -2308,11 +2435,12 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         if (found != actorMaterialMetadata_.end()) return &found->second;
         if (actorMaterialMetadata_.size() >= 4096u)
             throw std::runtime_error("Actor material metadata cache exceeds its map budget");
-        // Copies the already-decoded asset once, not on every actor revision.
+        // Extract small immutable material metadata once; do not copy the
+        // already-decoded triangle array on every asset probe/revision.
         // This runs only on the current portable-runtime owner, never a worker.
-        PortableLodMesh mesh;
+        const PortableLodMesh* mesh{};
         try {
-            mesh = brush ? GetPortableRuntimeBrush(path) : GetPortableRuntimeMesh(path);
+            mesh = &(brush ? GetPortableRuntimeBrushView(path) : GetPortableRuntimeMeshView(path));
         } catch (const std::runtime_error& error) {
             // These getters' precise unavailable-asset contract is also handled
             // by PrepareNextActorGeometry's per-asset fallback. Do not turn an
@@ -2332,10 +2460,10 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             return nullptr;
         }
         ActorMaterialMetadata metadata;
-        metadata.texturePaths = std::move(mesh.texturePaths);
-        metadata.materialTextureIndices = std::move(mesh.materialTextureIndices);
+        metadata.texturePaths = mesh->texturePaths;
+        metadata.materialTextureIndices = mesh->materialTextureIndices;
         std::set<std::pair<std::uint16_t, std::uint32_t>> materials;
-        for (const auto& vertex : mesh.triangles) materials.emplace(vertex.material, vertex.polyFlags);
+        for (const auto& vertex : mesh->triangles) materials.emplace(vertex.material, vertex.polyFlags);
         metadata.materials.assign(materials.begin(), materials.end());
         return &actorMaterialMetadata_.emplace(key, std::move(metadata)).first->second;
     }
@@ -2381,6 +2509,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
     }
 
     void RebuildRuntimeActorPublication() {
+        const auto started = std::chrono::steady_clock::now();
         // The caller owns the loaded runtime. A background map worker or staged
         // transition must never race this snapshot/revision read.
         if (!runtimeAvailable_ || runtimeActorTextureUploadPending_ || !pendingMapName_.empty() || !transitionMapName_.empty() ||
@@ -2418,11 +2547,14 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             runtimeActorTextureUploadPending_ = true;
             interactionStatus_ = "UPDATING ACTOR MATERIALS...";
             interactionStatusSeconds_ = 3.0f;
-        } else BuildActorMarkers();
+        } else BuildActorMarkers(QuestVr::ActorRefreshKind::Authoritative);
         publishedRuntimeWorldRevision_ = revision;
         hasPublishedRuntimeWorldRevision_ = true;
         inventoryMenuDirty_ = true;
         displayedInventoryCount_ = invalidRendererIndex_;
+        ALOG("DeusExQuest: authoritative actor snapshot/resources %.2f ms; %zu live actors; material replacement=%s",
+            std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-started).count(),
+            actorSnapshots_.size(),replaceTextures ? "yes" : "no");
     }
 
     void SuspendRuntimeActorPublication(const char* status) {
@@ -2502,9 +2634,11 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         }
     }
 
-    void PublishMoverPose(const PortableActorSnapshot& actor) {
-        const auto found = moverVisuals_.find(actor.objectPath);
-        if (found == moverVisuals_.end()) return; // Its streamed brush is not ready yet.
+    void ApplyMoverPose(const PortableActorSnapshot& actor,
+        std::unordered_map<std::string,MoverVisual>& visuals,
+        std::vector<InteractiveActor>& targets) {
+        const auto found = visuals.find(actor.objectPath);
+        if (found == visuals.end()) return; // Its streamed brush is not ready yet.
         auto& visual = found->second;
         const auto transform = QuestVr::BuildSnapshotActorTransform(actor,
             {activeMapUnrealOrigin_.x,activeMapUnrealOrigin_.y,activeMapUnrealOrigin_.z},true);
@@ -2525,10 +2659,30 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         // The authored pivot is often beside a door, not on its visible face.
         // Triangle targeting below is authoritative for movers; keep the point
         // marker current too for the other existing targeting consumers.
-        for (auto& target : interactiveActors_)
+        for (auto& target : targets)
             if (target.objectPath == actor.objectPath)
                 target.localPosition = visual.hasBounds ? (visual.minimum+visual.maximum)*0.5f :
                     OVR::Vector3f{transform.translation.x,transform.translation.y,transform.translation.z};
+    }
+
+    void PublishMoverPose(const PortableActorSnapshot& actor) {
+        latestMoverSnapshots_.Observe(actor);
+        ApplyMoverPose(actor,moverVisuals_,interactiveActors_);
+        if (auto* staged = actorGeometryPublication_.Staged())
+            ApplyMoverPose(actor,staged->movers,staged->targets);
+    }
+
+    void RebaseStagedMoverPoses() {
+        auto* staged = actorGeometryPublication_.Staged();
+        if (!staged) return;
+        const auto started = std::chrono::steady_clock::now();
+        for (const auto& entry : latestMoverSnapshots_.Entries())
+            ApplyMoverPose(entry.second,staged->movers,staged->targets);
+        for (auto it=staged->movers.begin();it!=staged->movers.end();)
+            if (actorRemovals_.Removed(it->first)) it=staged->movers.erase(it); else ++it;
+        ALOG("DeusExQuest: actor bank retained live mover rebase %.3f ms; %zu current mover snapshots",
+            std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-started).count(),
+            latestMoverSnapshots_.Entries().size());
     }
 
     bool PlayerTouchesMover(const MoverVisual& visual) const {
@@ -2598,7 +2752,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                 runtimeActorTextureUploadPending_ = false;
                 // Every actor chunk was retired before atlas allocation. Build
                 // only against the completed replacement's current ordinals.
-                BuildActorMarkers();
+                BuildActorMarkers(QuestVr::ActorRefreshKind::Authoritative);
                 ALOG("DeusExQuest: runtime actor material publication complete; geometry queued, BSP/static atlas retained");
             }
         } catch (const std::exception& error) {
@@ -2621,6 +2775,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             throw std::runtime_error("actor geometry transform is singular or non-finite");
         actorGeometryBuild_->parts.push_back({&descriptor, nullptr, transform,
             normalTransform.Inverse().Transposed(), color, 0u, textured, sequential, 0u});
+        actorGeometryBuild_->parts.back().actorOrdinal = actorGeometryBuild_->nextActor;
     }
 
     void QueueActorMeshPart(
@@ -2636,6 +2791,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         part.sequential = true; part.material = material;
         part.actorTransform = transform; part.polyFlags = polyFlags;
         part.meshPose = std::move(meshPose);
+        part.actorOrdinal = actorGeometryBuild_->nextActor;
         actorGeometryBuild_->parts.push_back(std::move(part));
     }
 
@@ -2706,6 +2862,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         const std::size_t ordinal = build.nextActor;
         const auto& actor = actorSnapshots_[build.actorIndices[ordinal]];
         auto& staged = *actorGeometryPublication_.Staged();
+        if (!staged.visibility.Visible(ordinal)) return true;
         const OVR::Vector3f position = staged.targets[ordinal].localPosition;
         const bool brushActor = actor.mover && !actor.brushPath.empty();
         const bool hidden = actor.hidden || actor.drawType == 0u;
@@ -2723,9 +2880,9 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             try {
                 auto& cache = brushActor ? build.brushes : build.meshes;
                 auto found = cache.find(assetPath);
-                if (found == cache.end()) found = cache.emplace(assetPath,brushActor ?
-                    GetPortableRuntimeBrush(assetPath) : GetPortableRuntimeMesh(assetPath)).first;
-                const auto& mesh = found->second;
+                if (found == cache.end()) found = cache.emplace(assetPath,&(brushActor ?
+                    GetPortableRuntimeBrushView(assetPath) : GetPortableRuntimeMeshView(assetPath))).first;
+                const auto& mesh = *found->second;
                 std::shared_ptr<const QuestVr::MeshPose> meshPose;
                 if (!brushActor && mesh.animation) {
                     if (!PrepareActorMeshPose(mesh.animation,
@@ -2746,10 +2903,12 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                     visual.inverseInitialTransform = ActorTransformMatrix(transform).Inverted();
                     visual.blocksPlayer = actor.blockPlayers && actor.collideActors;
                     staged.movers.emplace(actor.objectPath,std::move(visual));
+                    if (const auto* live = latestMoverSnapshots_.Find(actor.objectPath))
+                        ApplyMoverPose(*live,staged.movers,staged.targets);
                 }
-                std::set<std::pair<std::uint16_t,std::uint32_t>> materials;
-                for (const auto& vertex : mesh.triangles) materials.emplace(vertex.material,vertex.polyFlags);
-                for (const auto& [material,sourceFlags] : materials) {
+                const auto* metadata = ActorAssetMaterialMetadata(assetPath,brushActor);
+                if (!metadata) throw std::runtime_error("Decoded actor geometry lacks material metadata");
+                for (const auto& [material,sourceFlags] : metadata->materials) {
                     const auto selected = QuestVr::ResolveActorMeshMaterial(actor.materialOverrides,
                         mesh.texturePaths,mesh.materialTextureIndices,material);
                     const auto layer = build.textureLayers.find(FoldActorAssetPath(selected.texturePath));
@@ -2874,6 +3033,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                 ? transformedNormal.Normalized() : OVR::Vector3f(0.0f));
             chunk.attribs.uv0.push_back(uv);
             chunk.attribs.color.push_back(part.color);
+            if (part.textured) chunk.attribs.uv1.emplace_back(static_cast<float>(part.actorOrdinal),0.0f);
             chunk.indices.push_back(static_cast<OVRFW::TriangleIndex>(chunk.indices.size()));
         };
         const std::size_t end = part.nextIndex + count;
@@ -2888,6 +3048,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                         chunk.attribs.normal.emplace_back(vertex.normal.x,vertex.normal.y,vertex.normal.z);
                         chunk.attribs.uv0.emplace_back(vertex.u,vertex.v);
                         chunk.attribs.color.push_back(part.color);
+                        chunk.attribs.uv1.emplace_back(static_cast<float>(part.actorOrdinal),0.0f);
                         chunk.indices.push_back(static_cast<OVRFW::TriangleIndex>(chunk.indices.size()));
                     }
                 // Brush vertices are prepared once. Their collider and GPU
@@ -2940,7 +3101,8 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                 throw std::runtime_error("actor texture disappeared during geometry upload");
             staged.textured.emplace_back();
             staged.textured.back().Init(chunk, staged.atlas->texture,
-                (build.texturedChunkPolyFlags & 0x100u) == 0u,build.texturedChunkPolyFlags);
+                (build.texturedChunkPolyFlags & 0x100u) == 0u,build.texturedChunkPolyFlags,
+                &staged.visibilityMatrices);
             staged.textured.back().SetPose(pose);
             staged.textured.back().Update();
             if (!build.texturedChunkMoverPath.empty()) {
@@ -2950,6 +3112,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             }
         } else {
             staged.world.emplace_back();
+            staged.markerOwners.push_back(build.markerChunkActor);
             staged.world.back().Init(chunk);
             staged.world.back().AmbientLightColor = {0.45f, 0.45f, 0.45f};
             staged.world.back().SetPose(pose);
@@ -2963,8 +3126,10 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         chunk.attribs.position.clear();
         chunk.attribs.normal.clear();
         chunk.attribs.uv0.clear();
+        chunk.attribs.uv1.clear();
         chunk.attribs.color.clear();
         chunk.indices.clear();
+        if (!textured) build.markerChunkActor = QuestVr::ActorVisibilityState::MaximumActors;
     }
 
     bool AdvanceActorGeometry() {
@@ -2980,7 +3145,9 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             actorGeometryChunkVertices_, actorGeometryMillisecondsPerFrame_);
         const bool allPrepared = build.nextActor == build.actorIndices.size() && build.parts.empty() && !build.pendingMeshPose;
         const bool uploadMarker = build.markerChunk.indices.size() >= actorGeometryChunkVertices_ ||
-            (allPrepared && !build.markerChunk.indices.empty());
+            (allPrepared && !build.markerChunk.indices.empty()) ||
+            (!build.markerChunk.indices.empty() && !build.parts.empty() && !build.parts.front().textured &&
+                build.parts.front().actorOrdinal != build.markerChunkActor);
         const bool uploadTextured = build.texturedChunk.indices.size() >= actorGeometryChunkVertices_ ||
             (allPrepared && !build.texturedChunk.indices.empty()) ||
             (!build.texturedChunk.indices.empty() && !build.parts.empty() &&
@@ -3005,6 +3172,9 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                             build.texturedChunkMoverPath != part.moverPath)) break;
                         build.texturedChunkPolyFlags = part.polyFlags;
                         build.texturedChunkMoverPath = part.moverPath;
+                    } else {
+                        if (!chunk.indices.empty() && build.markerChunkActor != part.actorOrdinal) break;
+                        build.markerChunkActor = part.actorOrdinal;
                     }
                     if (part.nextIndex > total || total % 3u != 0u ||
                         part.nextIndex % 3u != 0u ||
@@ -3038,7 +3208,9 @@ class DeusExQuestApp final : public OVRFW::XrApp {
              budget.Vertices(), build.uploadedChunks);
         if (build.nextActor == build.actorIndices.size() && build.parts.empty() && !build.pendingMeshPose &&
             build.markerChunk.indices.empty() && build.texturedChunk.indices.empty()) {
+            const auto commitStarted = std::chrono::steady_clock::now();
             LogActorGeometryBuild();
+            RebaseStagedMoverPoses();
             if (!actorAtlas_ || !actorGeometryPublication_.MarkReady(build.publication) ||
                 !actorGeometryPublication_.Commit(build.publication,
                     {actorSceneGeneration_,GetPortableRuntimeWorldRevision(),actorAtlas_->generation}))
@@ -3056,6 +3228,8 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             ALOG("DeusExQuest: complete retained actor bank published atomically; %zu targets %zu chunks atlas=%llu",
                 interactiveActors_.size(),activeActorGeometry_->world.size()+activeActorGeometry_->textured.size(),
                 static_cast<unsigned long long>(activeActorGeometry_->atlas->generation));
+            ALOG("DeusExQuest: actor bank commit/old GPU retirement %.3f ms",
+                std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-commitStarted).count());
             actorGeometryBuild_.reset();
             actorGeometryComplete_ = true;
             return true;
@@ -3085,12 +3259,14 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         activeActorGeometry_ = nullptr;
         actorGeometryPublication_.Clear();
         moverVisuals_.clear();
+        latestMoverSnapshots_.Clear();
         moverCollisionTriangleCount_ = 0u;
         interactiveActors_.clear();
     }
 
     void DestroySceneGeometry() {
         DestroyActorGeometry();
+        ResetActorRemovalState();
         if (actorSceneGeneration_ == std::numeric_limits<std::uint64_t>::max())
             throw std::runtime_error("Actor scene generation exceeds its lifetime bound");
         ++actorSceneGeneration_;
@@ -3561,9 +3737,8 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             return;
         }
         if (std::strcmp(requested, "CYCLE") == 0) {
-            const std::size_t count = GetPortableRuntimeInventoryCount();
-            if (count != 0u) selectedInventoryIndex_ = (selectedInventoryIndex_ + 1u) % count;
-            displayedInventoryCount_ = invalidRendererIndex_;
+            EnsureInventoryNavigation(GetPortableRuntimeInventoryItems());
+            MoveInventorySelection(1);
             ALOG(
                 "DeusExQuest: diagnostic inventory cycle selected=%s",
                 SelectedInventoryLabel(GetPortableRuntimeInventoryItems()).c_str());
@@ -3770,7 +3945,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
     }
 
     const InteractiveActor* FindUsableRayTarget(const OVR::Posef& pointerPose, float& bestDistance) const {
-        if (!runtimeAvailable_ || actorGeometryBuild_ || runtimeActorTextureUploadPending_ ||
+        if (!runtimeAvailable_ || ActorPublicationBlocksGameplay() ||
             !pendingMapName_.empty() || !transitionMapName_.empty()) return nullptr;
         const OVR::Vector3f origin = pointerPose.Translation;
         const OVR::Vector3f direction =
@@ -3811,7 +3986,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
 
     void RenderTargetingFrame(const OVRFW::ovrApplFrameIn& frame, OVRFW::ovrRendererOutput& output) {
         if (!runtimeAvailable_ || !frame.RightRemoteTracked || inventoryMenuOpen_ ||
-            actorGeometryBuild_ || runtimeActorTextureUploadPending_ || !pendingMapName_.empty() ||
+            ActorPublicationBlocksGameplay() || !pendingMapName_.empty() ||
             !transitionMapName_.empty() || transitionPhase_ != MapTransitionPhase::Idle) return;
         float distance = 3.0f;
         const auto* target = FindUsableRayTarget(frame.RightRemotePointPose,distance);
@@ -3853,7 +4028,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
     }
 
     bool UseTargetedActor(const OVR::Posef& pointerPose) {
-        if (!runtimeAvailable_ || actorGeometryBuild_ || runtimeActorTextureUploadPending_ ||
+        if (!runtimeAvailable_ || ActorPublicationBlocksGameplay() ||
             !pendingMapName_.empty() || !transitionMapName_.empty()) return false;
         float bestDistance = 3.0f;
         const auto* best = FindUsableRayTarget(pointerPose,bestDistance);
@@ -3881,6 +4056,12 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             }
             // Door motion has its own live transforms/colliders. Rebuilding
             // every actor here would unnecessarily freeze a simple door use.
+            if (interaction.worldChanged && interaction.action == "pickup" &&
+                PublishRuntimeActorRemoval(interaction.objectPath)) {
+                inventoryLayoutCached_ = false;
+                inventoryMenuDirty_ = true;
+                return false;
+            }
             return interaction.worldChanged && !best->mover;
         } else {
             if (UseSelectedConsumable()) return false;
@@ -4481,6 +4662,88 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         return &personaChrome_.inventorySelection;
     }
 
+    void EnsureInventoryNavigation(const std::vector<std::string>& inventory) {
+        const auto revision = GetPortableRuntimeWorldRevision();
+        if (inventoryLayoutCached_ && inventory == inventoryNavigationIdentities_ &&
+            revision == inventoryNavigationRevision_) return;
+        inventoryNavigationIdentities_ = inventory;
+        inventoryNavigationRevision_ = revision;
+        inventoryLayoutCached_ = true;
+        inventoryDescriptors_.clear();
+        inventoryGridItems_.clear();
+        try {
+            inventoryDescriptors_ = ReadPortableRuntimeInventoryDescriptors(inventory);
+            if (inventoryDescriptors_.size() != inventory.size())
+                throw std::runtime_error("Inventory metadata did not preserve item identities");
+            inventoryGridItems_.resize(inventoryDescriptors_.size());
+            for (std::size_t index = 0u; index < inventoryDescriptors_.size(); ++index) {
+                const auto& descriptor = inventoryDescriptors_[index];
+                auto& item = inventoryGridItems_[index];
+                item.available = descriptor.status == PortableInventoryDescriptorStatus::Available;
+                if (!item.available) continue;
+                item.slotsX = static_cast<std::uint32_t>(descriptor.invSlotsX);
+                item.slotsY = static_cast<std::uint32_t>(descriptor.invSlotsY);
+                item.positionX = descriptor.invPosX; item.positionY = descriptor.invPosY;
+                item.iconWidth = static_cast<std::uint32_t>(descriptor.displayWidth);
+                item.iconHeight = static_cast<std::uint32_t>(descriptor.displayHeight);
+                item.displayable = descriptor.bDisplayableInv;
+            }
+            const auto layout = QuestVr::BuildPersonaInventoryLayout(inventoryGridItems_);
+            if (!inventoryNavigation_.SetLayout(inventory,layout))
+                throw std::runtime_error(inventoryNavigation_.State().error);
+            selectedInventoryIndex_ = inventoryNavigation_.SelectedIndex().value_or(invalidRendererIndex_);
+            const auto& state = inventoryNavigation_.State();
+            ALOG("DeusExQuest: inventory navigation visible=%zu hidden=%zu unavailable=%zu overflow=%zu selected=%s",
+                state.visibleItems,state.hiddenItems,state.unavailableItems,state.overflowItems,
+                inventoryNavigation_.SelectedIdentity().c_str());
+        } catch (const std::exception& error) {
+            inventoryNavigation_.SetError(error.what(),inventory.size());
+            selectedInventoryIndex_ = invalidRendererIndex_;
+            ALOG("DeusExQuest: inventory layout unavailable: %s",error.what());
+        }
+        inventoryMenuDirty_ = true;
+        displayedInventoryCount_ = invalidRendererIndex_;
+    }
+
+    void MoveInventorySelection(const int steps) {
+        if (!inventoryNavigation_.Move(steps)) return;
+        inventoryActionStatus_.clear();
+        selectedInventoryIndex_ = inventoryNavigation_.SelectedIndex().value_or(invalidRendererIndex_);
+        inventoryMenuDirty_ = true;
+        displayedInventoryCount_ = invalidRendererIndex_;
+    }
+
+    static OVR::Posef PersonaArtworkPose(const OVRFW::ovrApplFrameIn& frame) {
+        auto pose = frame.HeadPose;
+        pose.Translation += pose.Rotation.Rotate({0.0f,-0.015f,-1.055f});
+        return pose;
+    }
+
+    void SelectInventoryAtPointer(const OVRFW::ovrApplFrameIn& frame) {
+        // Intersect exactly the same head-relative quad used by the renderer,
+        // before its scale. Right trigger selects; A remains the use action.
+        const auto inverse = PersonaArtworkPose(frame).Inverted();
+        const auto origin = inverse.Transform(frame.RightRemotePointPose.Translation);
+        const auto direction = inverse.Rotation.Rotate(
+            frame.RightRemotePointPose.Rotation.Rotate({0.0f,0.0f,-1.0f}));
+        const auto point = QuestVr::IntersectPersonaPanelRay(
+            {origin.x,origin.y,origin.z},{direction.x,direction.y,direction.z},
+            1.20f,0.90f,640u,480u);
+        if (!point || !inventoryNavigation_.SelectCanvasPoint(point->x,point->y)) return;
+        inventoryActionStatus_.clear();
+        selectedInventoryIndex_ = inventoryNavigation_.SelectedIndex().value_or(invalidRendererIndex_);
+        inventoryMenuDirty_ = true;
+        displayedInventoryCount_ = invalidRendererIndex_;
+    }
+
+    std::string SelectedInventoryDisplayName() const {
+        const auto selected = inventoryNavigation_.SelectedIndex();
+        if (!selected || *selected >= inventoryDescriptors_.size()) return "NO ITEM SELECTED";
+        const auto& descriptor = inventoryDescriptors_[*selected];
+        return descriptor.itemName && !descriptor.itemName->empty()
+            ? *descriptor.itemName : "ITEM NAME UNAVAILABLE";
+    }
+
     void RefreshPersonaInventoryArtwork(const std::vector<std::string>& inventory,
         const std::string& left, const std::string& right) {
         const auto& base = personaPageBaseRgba_[static_cast<std::size_t>(personaPage_)];
@@ -4489,27 +4752,12 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             personaTextureWidth_, personaTextureHeight_, base};
         if (personaPage_ == PersonaPage::Inventory) {
             try {
-                const auto descriptors = ReadPortableRuntimeInventoryDescriptors(inventory);
-                std::vector<QuestVr::PersonaInventoryItem> items(descriptors.size());
-                for (std::size_t index = 0u; index < descriptors.size(); ++index) {
-                    const auto& descriptor = descriptors[index];
-                    auto& item = items[index];
-                    item.available = descriptor.status == PortableInventoryDescriptorStatus::Available;
-                    if (!item.available) {
-                        ALOG("DeusExQuest: inventory metadata unavailable for %s status=%u",
-                            descriptor.requestedPath.c_str(),static_cast<unsigned>(descriptor.status));
-                        continue;
-                    }
-                    item.slotsX = static_cast<std::uint32_t>(descriptor.invSlotsX);
-                    item.slotsY = static_cast<std::uint32_t>(descriptor.invSlotsY);
-                    item.positionX = descriptor.invPosX; item.positionY = descriptor.invPosY;
-                    item.iconWidth = static_cast<std::uint32_t>(descriptor.displayWidth);
-                    item.iconHeight = static_cast<std::uint32_t>(descriptor.displayHeight);
-                    item.displayable = descriptor.bDisplayableInv;
-                }
+                EnsureInventoryNavigation(inventory);
+                if (inventoryNavigation_.State().kind == QuestVr::InventoryViewKind::Error)
+                    throw std::runtime_error(inventoryNavigation_.State().error);
                 const auto layout = QuestVr::DrawPersonaInventoryGrid(
-                    canvas,items,selectedInventoryIndex_,
-                    [&](std::size_t index) { return GetPersonaIcon(descriptors[index].iconPath); },
+                    canvas,inventoryGridItems_,selectedInventoryIndex_,
+                    [&](std::size_t index) { return GetPersonaIcon(inventoryDescriptors_[index].iconPath); },
                     GetPersonaInventorySelection());
                 const bool selectedVisible = std::any_of(layout.placements.begin(),layout.placements.end(),
                     [&](const auto& placement) { return placement.inventoryIndex == selectedInventoryIndex_; });
@@ -4517,6 +4765,8 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                     layout.placements.size(),layout.occupiedCells,layout.unavailable.size(),
                     layout.unplaced.size(),layout.generatedPositions,selectedVisible ? 1u : 0u);
             } catch (const std::exception& error) {
+                inventoryNavigation_.SetError(error.what(),inventory.size());
+                selectedInventoryIndex_ = invalidRendererIndex_;
                 ALOG("DeusExQuest: inventory footprint composition unavailable: %s",error.what());
             }
         }
@@ -4576,8 +4826,8 @@ class DeusExQuestApp final : public OVRFW::XrApp {
     }
 
     static std::string SelectedInventoryLabel(const std::vector<std::string>& inventory) {
-        if (inventory.empty()) return "NONE";
-        const std::string& path = inventory[selectedInventoryIndex_ % inventory.size()];
+        if (selectedInventoryIndex_ >= inventory.size()) return "NONE";
+        const std::string& path = inventory[selectedInventoryIndex_];
         return InventoryItemLabel(path);
     }
 
@@ -4711,6 +4961,9 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         inventoryMenuOpen_ = open;
         inventoryMenuDirty_ = true;
         choiceCycleLatch_ = true;
+        menuNavigationInput_.Reset();
+        inventoryActionStatus_.clear();
+        if (open) inventoryLayoutCached_ = false;
         if (hudLabel_ != nullptr) hudLabel_->SetVisible(!open && debugHudVisible_);
         for (OVRFW::VRMenuObject* label : PersonaLabels()) {
             if (label != nullptr) label->SetVisible(open && !personaOriginalTextReady_);
@@ -4730,12 +4983,9 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         for (OVRFW::VRMenuObject* label : PersonaLabels()) {
             if (label != nullptr) label->SetLocalPose(menuPose);
         }
-        OVR::Posef artworkPose = frame.HeadPose;
-        artworkPose.Translation += frame.HeadPose.Rotation.Rotate(
-            OVR::Vector3f(0.0f, -0.015f, -1.055f));
-        personaRenderer_.SetPose(artworkPose);
+        personaRenderer_.SetPose(PersonaArtworkPose(frame));
         const std::vector<std::string> inventory = GetPortableRuntimeInventoryItems();
-        if (!inventory.empty()) selectedInventoryIndex_ %= inventory.size();
+        EnsureInventoryNavigation(inventory);
         const float health = GetPortableRuntimePlayerHealth();
         if (!inventoryMenuDirty_ && inventory.size() == inventoryMenuDisplayedCount_ &&
             std::fabs(health - inventoryMenuDisplayedHealth_) <= 0.01f &&
@@ -4765,15 +5015,25 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         std::string left;
         std::string right;
         if (personaPage_ == PersonaPage::Inventory) {
-            std::string item = "NO ITEM SELECTED";
-            std::string type = "INVENTORY EMPTY";
-            if (!inventory.empty()) {
-                item = InventoryItemLabel(inventory[selectedInventoryIndex_]);
-                type = InventoryItemType(inventory[selectedInventoryIndex_]);
-            }
             left = "Inventory";
-            right = "ITEM DATA\n\n" + WrapPersonaEntry(item) + "\n\n" +
-                WrapPersonaEntry(type) + "\n\nSTATE READY\nA: EQUIP / USE";
+            const auto selected = inventoryNavigation_.SelectedIndex();
+            if (selected && *selected < inventoryDescriptors_.size()) {
+                const auto& descriptor = inventoryDescriptors_[*selected];
+                right = "ITEM DATA\n\n" + WrapPersonaEntry(SelectedInventoryDisplayName()) + "\n\n";
+                right += descriptor.description && !descriptor.description->empty()
+                    ? WrapPersonaEntry(*descriptor.description,6u,32u)
+                    : "DESCRIPTION UNAVAILABLE";
+                if (!inventoryActionStatus_.empty())
+                    right += "\n\n" + WrapPersonaEntry(inventoryActionStatus_,3u,32u);
+            } else {
+                const auto& state = inventoryNavigation_.State();
+                right = state.kind == QuestVr::InventoryViewKind::Error
+                    ? "INVENTORY LAYOUT UNAVAILABLE\n\n" + WrapPersonaEntry(state.error,6u)
+                    : state.kind == QuestVr::InventoryViewKind::Empty ? "INVENTORY EMPTY"
+                    : "NO VISIBLE GRID ITEMS\n\n" + std::to_string(state.hiddenItems) + " HIDDEN\n" +
+                        std::to_string(state.unavailableItems) + " METADATA UNAVAILABLE\n" +
+                        std::to_string(state.overflowItems) + " UNPLACED";
+            }
         } else if (personaPage_ == PersonaPage::Health) {
             left = "Health";
             right = "CURRENT HEALTH\n" + std::to_string(static_cast<int>(health)) +
@@ -4831,13 +5091,15 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             case PersonaPage::Count:
                 break;
         }
+        const auto& inventoryState = inventoryNavigation_.State();
         std::string footer = personaPage_ == PersonaPage::Inventory
-            ? "SLOT " + std::to_string(inventory.empty() ? 0u : selectedInventoryIndex_ + 1u) +
-                " / " + std::to_string(inventory.size()) + "   UP / DOWN: SELECT   A: EQUIP / USE\n"
+            ? std::to_string(inventoryState.visibleItems) + " VISIBLE ITEMS   UP / DOWN: SELECT   A: USE\n"
             : "Y: SAVE   X: LOAD\n";
         footer += "LEFT / RIGHT: PAGE   B / MENU: CLOSE";
         if (personaPage_ == PersonaPage::Inventory) {
-            footer += "\n" + currentMapName_;
+            footer += "\nPOINT + TRIGGER: SELECT";
+            if (inventoryState.overflowItems != 0u)
+                footer += "   " + std::to_string(inventoryState.overflowItems) + " UNPLACED";
             SetPersonaPanelText(personaFooterLabel_, footer, 42.0f,391.0f,575.0f,70.0f);
         } else if (personaPage_ == PersonaPage::Health) {
             SetPersonaPanelText(personaFooterLabel_, footer, 38.0f,444.0f,572.0f,34.0f);
@@ -4854,8 +5116,10 @@ class DeusExQuestApp final : public OVRFW::XrApp {
 
     bool UseSelectedConsumable() {
         const std::vector<std::string> inventory = GetPortableRuntimeInventoryItems();
-        if (inventory.empty()) return false;
-        const std::size_t selected = selectedInventoryIndex_ % inventory.size();
+        EnsureInventoryNavigation(inventory);
+        const auto selection = inventoryNavigation_.SelectedIndex();
+        if (!selection || *selection >= inventory.size()) return false;
+        const std::size_t selected = *selection;
         const std::string& path = inventory[selected];
         const std::string label = SelectedInventoryLabel(inventory);
         float healing{};
@@ -4881,7 +5145,8 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         }
         const float after = HealPortableRuntimePlayer(healing);
         const std::size_t remaining = GetPortableRuntimeInventoryCount();
-        if (remaining != 0u) selectedInventoryIndex_ %= remaining;
+        inventoryLayoutCached_ = false;
+        EnsureInventoryNavigation(GetPortableRuntimeInventoryItems());
         interactionStatus_ = "USED " + label + "  HEALTH " +
             std::to_string(static_cast<int>(after));
         interactionStatusSeconds_ = 3.0f;
@@ -4951,7 +5216,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         const OVR::Posef& pointerPose,
         float weaponDamage,
         float weaponRange) {
-        if (!runtimeAvailable_ || actorGeometryBuild_ || runtimeActorTextureUploadPending_ ||
+        if (!runtimeAvailable_ || ActorPublicationBlocksGameplay() ||
             !pendingMapName_.empty() || !transitionMapName_.empty()) return false;
         const OVR::Vector3f origin = pointerPose.Translation;
         const OVR::Vector3f direction =
@@ -4961,6 +5226,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         const InteractiveActor* best{};
         float bestDistance = weaponRange;
         for (const InteractiveActor& actor : interactiveActors_) {
+            if (!IsPublishedActorVisible(actor.objectPath)) continue;
             if (moverVisuals_.find(actor.objectPath) != moverVisuals_.end()) continue;
             const OVR::Vector3f position =
                 worldRotation.Rotate(actor.localPosition) + worldPosition_;
@@ -5002,6 +5268,8 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             bestDistance,
             damage.remainingHealth,
             damage.killed ? "true" : "false");
+        if (damage.killed && damage.worldChanged && PublishRuntimeActorRemoval(damage.objectPath))
+            return false;
         return damage.worldChanged;
     }
 
@@ -5132,6 +5400,8 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             ALOG("DeusExQuest: VR quick-load runtime failed");
             return false;
         }
+        ResetActorRemovalState();
+        inventoryLayoutCached_ = false;
         ClearPendingConversation();
         InvalidateDialogueAudio();
         // Restore only after the runtime parser succeeds. Failed quick-loads
@@ -6602,6 +6872,8 @@ class DeusExQuestApp final : public OVRFW::XrApp {
     std::size_t actorPoseActorOrdinal_{};
     bool actorGeometryComplete_{};
     std::vector<PortableActorSnapshot> actorSnapshots_;
+    QuestVr::ActorRemovalState actorRemovals_;
+    QuestVr::RetainedMoverPoseSnapshots<PortableActorSnapshot> latestMoverSnapshots_;
     std::uint64_t publishedRuntimeWorldRevision_{};
     bool hasPublishedRuntimeWorldRevision_{};
     std::vector<MapLight> activeMapLights_;
@@ -6680,6 +6952,14 @@ class DeusExQuestApp final : public OVRFW::XrApp {
     bool seatedPostureRequested_{};
     bool postureCalibrationPending_{};
     inline static std::size_t selectedInventoryIndex_{};
+    QuestVr::InventoryNavigationModel inventoryNavigation_;
+    QuestVr::MenuNavigationInput menuNavigationInput_;
+    std::vector<std::string> inventoryNavigationIdentities_;
+    std::vector<PortableInventoryDescriptor> inventoryDescriptors_;
+    std::vector<QuestVr::PersonaInventoryItem> inventoryGridItems_;
+    std::uint64_t inventoryNavigationRevision_{};
+    bool inventoryLayoutCached_{};
+    std::string inventoryActionStatus_;
     std::size_t performanceFrames_{};
     float performanceSeconds_{};
     float performanceWorstDelta_{};

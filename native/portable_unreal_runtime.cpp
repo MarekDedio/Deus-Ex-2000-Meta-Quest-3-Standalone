@@ -7080,7 +7080,7 @@ PortableActorMeshSummary DecodePortableRuntimeActorMeshes() {
     return DecodeRuntimeActorAssets(GetPortableRuntimeMapActors(true));
 }
 
-PortableLodMesh GetPortableRuntimeMesh(const std::string& meshPath) {
+const PortableLodMesh& GetPortableRuntimeMeshView(const std::string& meshPath) {
     const auto found = persistentVmObjects.find(LowerAscii(meshPath));
     if (found == persistentVmObjects.end() || !found->second->lodMesh) {
         throw std::runtime_error("Portable actor mesh is not decoded: " + meshPath);
@@ -7088,12 +7088,20 @@ PortableLodMesh GetPortableRuntimeMesh(const std::string& meshPath) {
     return *found->second->lodMesh;
 }
 
-PortableLodMesh GetPortableRuntimeBrush(const std::string& brushPath) {
+const PortableLodMesh& GetPortableRuntimeBrushView(const std::string& brushPath) {
     const auto found = persistentVmObjects.find(LowerAscii(brushPath));
     if (found == persistentVmObjects.end() || !found->second->brushMesh) {
         throw std::runtime_error("Portable actor brush is not decoded: " + brushPath);
     }
     return *found->second->brushMesh;
+}
+
+PortableLodMesh GetPortableRuntimeMesh(const std::string& meshPath) {
+    return GetPortableRuntimeMeshView(meshPath);
+}
+
+PortableLodMesh GetPortableRuntimeBrush(const std::string& brushPath) {
+    return GetPortableRuntimeBrushView(brushPath);
 }
 
 PortableTextureArray BuildPortableRuntimeActorTextureArray(
@@ -7500,6 +7508,7 @@ std::vector<PortableInventoryDescriptor> ReadPortableRuntimeInventoryDescriptors
     const std::vector<std::string>& actorPaths, const PortableInventoryDescriptorLimits& limits) {
     using Status = PortableInventoryDescriptorStatus;
     using Origin = PortableInventoryValueOrigin;
+    using TextStatus = PortableInventoryTextStatus;
     using Kind = QuestVr::Vm::Kind;
     if (limits.count == 0u || limits.count > 1024u || actorPaths.size() > limits.count ||
         limits.retainedBytes == 0u || limits.retainedBytes > 8u * 1024u * 1024u ||
@@ -7515,7 +7524,9 @@ std::vector<PortableInventoryDescriptor> ReadPortableRuntimeInventoryDescriptors
     // Bound fixed result capacity and transient lookup/row/hierarchy storage,
     // excluding the already-owned runtime graph and borrowed tagged values.
     charge(2u * actorPaths.size() * sizeof(PortableInventoryDescriptor));
-    charge(8u * (limits.stringBytes + 64u) + sizeof(PortableInventoryDescriptor) + 256u * sizeof(RuntimeObject*));
+    // Extra bounded scratch covers FString decoding/transport validation and
+    // its UTF-16 units while detached optional display strings are copied.
+    charge(12u * (limits.stringBytes + 64u) + sizeof(PortableInventoryDescriptor) + 256u * sizeof(RuntimeObject*));
     std::vector<PortableInventoryDescriptor> results; results.reserve(actorPaths.size());
     if (results.capacity() > 2u * actorPaths.size())
         throw std::runtime_error("Inventory descriptor result capacity exceeds charged bound");
@@ -7612,6 +7623,73 @@ std::vector<PortableInventoryDescriptor> ReadPortableRuntimeInventoryDescriptors
             item.status = Status::MalformedProperty; results.push_back(std::move(item)); continue;
         }
         item.status = Status::Available;
+        const auto readText = [&](const char* name, std::optional<std::string>& destination, TextStatus& textStatus) {
+            RuntimeObject* declaration{};
+            for (std::size_t index = 0u; index < depth; ++index) {
+                const auto field = persistentVmObjects.find(folded(ancestry[index]->reflection.objectPath + '.' + name));
+                if (field != persistentVmObjects.end() && field->second && field->second->property &&
+                    field->second->outer == ancestry[index]) { declaration = field->second; break; }
+            }
+            if (!declaration) { textStatus = TextStatus::MissingPropertyMetadata; return; }
+            const auto& metadata = *declaration->property;
+            if (metadata.type != "StrProperty" || metadata.arrayDimension != 1) {
+                textStatus = TextStatus::MalformedProperty; return;
+            }
+            const auto* overlay = FindScriptOverlay(actor, name);
+            std::string decoded;
+            const std::string* source = &decoded;
+            if (overlay) {
+                if (overlay->kind != Kind::String || !validText(overlay->text, true)) {
+                    textStatus = TextStatus::MalformedProperty; return;
+                }
+                // Check transport without coercing Name/object text or losing
+                // original FString units. The aggregate scratch is precharged.
+                try { static_cast<void>(QuestVr::UnrealString::Decode(overlay->text)); }
+                catch (const std::exception&) { textStatus = TextStatus::MalformedProperty; return; }
+                source = &overlay->text;
+            } else {
+                const PortableTaggedProperty* tag{};
+                for (std::size_t index = 0u; index <= depth && !tag; ++index) {
+                    auto* owner = index == 0u ? actor : ancestry[index - 1u];
+                    if (index != 0u) {
+                        // A tag belongs to the nearest declaration in its
+                        // source class, not to a descendant's same-name field.
+                        // Do not leak a parent's description into a newly
+                        // declared string which has only its typed-zero value.
+                        RuntimeObject* selected{};
+                        for (std::size_t base = index - 1u; base < depth; ++base) {
+                            const auto field = persistentVmObjects.find(folded(ancestry[base]->reflection.objectPath + '.' + name));
+                            if (field != persistentVmObjects.end() && field->second && field->second->property &&
+                                field->second->outer == ancestry[base]) { selected = field->second; break; }
+                        }
+                        if (selected != declaration) continue;
+                    }
+                    const auto& properties = index == 0u ? owner->instanceProperties :
+                        owner->classDescriptor ? owner->classDescriptor->defaults : owner->instanceProperties;
+                    for (auto entry = properties.rbegin(); entry != properties.rend(); ++entry) {
+                        if (!same(entry->name.ToString(), name)) continue;
+                        if (entry->arrayIndex != 0u) { textStatus = TextStatus::MalformedProperty; return; }
+                        if (!tag) tag = &*entry;
+                    }
+                }
+                if (tag) {
+                    if (tag->type != 13u) { textStatus = TextStatus::MalformedProperty; return; }
+                    // The production decoder validates exact payload length,
+                    // terminator and transport budget before allocating units.
+                    try { decoded = DecodePortableVmStringProperty(*tag, limits.stringBytes); }
+                    catch (const std::exception&) { textStatus = TextStatus::MalformedProperty; return; }
+                }
+                // No tag with a real declaration is the typed empty FString,
+                // not missing metadata and not a guessed item/class label.
+            }
+            std::string detached;
+            // Keep request-wide allocation failures outside the malformed-text
+            // catch: aggregate exhaustion still rejects the complete request.
+            if (!copy(detached, *source, true)) { textStatus = TextStatus::MalformedProperty; return; }
+            destination.emplace(std::move(detached)); textStatus = TextStatus::Available;
+        };
+        readText("ItemName", item.itemName, item.itemNameStatus);
+        readText("Description", item.description, item.descriptionStatus);
         const auto read = [&](const char* name, const Kind kind, std::int32_t* integer, bool* boolean,
             std::string* objectPath, PortableInventoryIconProvenance* provenance) {
             RuntimeObject* declaration{};

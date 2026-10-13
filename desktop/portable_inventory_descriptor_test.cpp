@@ -24,6 +24,7 @@ using Value = QuestVr::Vm::Value;
 using Kind = QuestVr::Vm::Kind;
 using Status = PortableInventoryDescriptorStatus;
 using Origin = PortableInventoryValueOrigin;
+using TextStatus = PortableInventoryTextStatus;
 std::size_t checks{}, rejections{};
 void Require(bool condition, const std::string& message) {
     if (!condition) throw std::runtime_error(message);
@@ -404,6 +405,8 @@ void Synthetic() {
     Require(rifle.largeIconProvenance.origin == Origin::ClassDefault && rifle.largeIconProvenance.ownerPath == "DescriptorItems.Rifle" &&
         rifle.largeIconProvenance.ownerSourcePath == itemTable.sourcePath && rifle.largeIconProvenance.declarationPath == "Engine.Inventory.largeIcon" &&
         rifle.largeIconProvenance.declarationSourcePath == engineTable.sourcePath, "Icon provenance guessed from an item name");
+    Require(!rifle.itemName && !rifle.description && rifle.itemNameStatus == TextStatus::MissingPropertyMetadata &&
+        rifle.descriptionStatus == TextStatus::MissingPropertyMetadata, "Missing reflected display text became a guessed class label");
     Require(values[1].status == Status::Available && values[1].invSlotsX == 2 && values[1].invSlotsY == 2 && values[1].displayWidth == 94 && values[1].displayHeight == 65,
         "Assault metadata wrong");
     Require(values[2].status == Status::Available && values[2].invSlotsX == 4 && values[2].invSlotsY == 2 && values[2].displayWidth == 203 && values[2].displayHeight == 77,
@@ -500,6 +503,101 @@ void LocalClassReferenceMetadata() {
     fixture.SourcesUnchanged();
     std::cout << "PASS generated positive same-package Texture class constraints; authored3 weapon windows, inactive/None fallback and5 failclosed icon controls; no source/checkpoint/GC mutation\n";
 }
+void DisplayTextMetadata() {
+    Fixture fixture; auto engine = Engine(), items = Items(), map = Map(); const auto icons = Icons();
+    const auto exported = [](const Package& package, const std::string& name) {
+        for (std::size_t i = 0u; i < package.exports.size(); ++i)
+            if (package.names.at(static_cast<std::size_t>(package.exports[i].ObjName)) == name)
+                return static_cast<std::int32_t>(i + 1u);
+        throw std::runtime_error("Display-text fixture export missing: " + name);
+    };
+    const auto inventory = exported(engine, "Inventory");
+    engine.Property("ItemName", "StrProperty", inventory, -1);
+    engine.Property("Description", "StrProperty", inventory, -1);
+    // Scalar Description is deliberately shadowed by a wrong typed declaration
+    // on one concrete item. Optional text failure must not spoil valid icons.
+    items.Property("Description", "FloatProperty", exported(items, "GEP"), items.ImportPackage("Core"));
+    items.Property("Description", "StrProperty", exported(items, "RifleChild"), items.ImportPackage("Core"));
+    const auto shadow = map.Export("ShadowText0", map.Import("RifleChild", map.ImportPackage("DescriptorItems")));
+    map.Body(shadow, Bytes{0u});
+    const auto text = [](Package& package, Bytes& body, const char* name, const std::u16string& value,
+        const bool terminate = true, const std::uint8_t slot = 0u) {
+        Bytes encoded; Index(encoded, -static_cast<std::int32_t>(value.size() + 1u));
+        for (const auto unit : value) U16(encoded, static_cast<std::uint16_t>(unit));
+        U16(encoded, terminate ? 0u : 1u);
+        Index(body, package.Name(name)); body.push_back(static_cast<std::uint8_t>(0x7du | (slot ? 0x80u : 0u)));
+        U32(body, static_cast<std::uint32_t>(encoded.size())); if (slot) body.push_back(slot);
+        body.insert(body.end(), encoded.begin(), encoded.end());
+    };
+    const auto append = [&](Package& package, const char* object, const char* property, const std::u16string& value,
+        const bool terminate = true, const std::uint8_t slot = 0u) {
+        auto& body = package.bodies.at(static_cast<std::size_t>(exported(package, object) - 1));
+        Require(!body.empty() && body.back() == 0u, "Display-text fixture lacks terminal None");
+        body.pop_back(); text(package, body, property, value, terminate, slot); Index(body, 0);
+    };
+    append(items, "Rifle", "ItemName", u"Authored rifle name");
+    append(items, "Rifle", "Description", u"Original reflected description; no readiness or equipment assertion.");
+    append(map, "Override0", "ItemName", u"Instance name");
+    append(map, "Assault0", "Description", u"Caf\u00e9 \u03a9 \U0001f600");
+    append(map, "Hidden0", "ItemName", u"Bad terminator", false);
+    append(map, "Child0", "Description", u"Wrong indexed string", true, 1u);
+    append(map, "BadDimensions0", "Description", std::u16string(4097u, u'x'));
+    const auto engineTable = fixture.Write(engine), itemTable = fixture.Write(items), iconTable = fixture.Write(icons), mapTable = fixture.Write(map, true);
+    InitializePortableRuntime(std::vector<PortablePackageTables>{engineTable, iconTable, itemTable});
+    Require(LoadPortableRuntimeMap(mapTable).passed, "Display-text fixture map did not load");
+    Require(InteractPortableRuntimeActor("DescriptorMap.Rifle0").action == "pickup", "Display-text fixture is not a real inactive inventory actor");
+    const auto before = fixture.Snapshot("DisplayTextBefore"); const auto stats = GC::GetStats();
+    auto values = ReadPortableRuntimeInventoryDescriptors({"DescriptorMap.Rifle0", "DescriptorMap.Override0", "DescriptorMap.Assault0",
+        "DescriptorMap.Fallback0", "DescriptorMap.Hidden0", "DescriptorMap.Child0", "DescriptorMap.GEP0", "DescriptorMap.BadDimensions0",
+        "DescriptorItems.Rifle", "Missing.Actor", "DescriptorMap.ShadowText0"});
+    Require(values[0].status == Status::Available && !values[0].active && values[0].itemNameStatus == TextStatus::Available &&
+        values[0].descriptionStatus == TextStatus::Available && values[0].itemName == std::optional<std::string>("Authored rifle name") &&
+        values[0].description == std::optional<std::string>("Original reflected description; no readiness or equipment assertion."),
+        "Inactive actor lost original reflected class-default display text");
+    Require(values[1].itemName == std::optional<std::string>("Instance name") && values[1].description == values[0].description,
+        "Instance display text did not override inherited defaults independently");
+    Require(values[2].descriptionStatus == TextStatus::Available && values[2].description == std::optional<std::string>("Caf\xc3\xa9 \xce\xa9 \xf0\x9f\x98\x80"),
+        "Original UTF-16 FString text was narrowed, substituted or corrupted");
+    Require(values[3].itemNameStatus == TextStatus::Available && values[3].descriptionStatus == TextStatus::Available &&
+        values[3].itemName && values[3].itemName->empty() && values[3].description && values[3].description->empty(),
+        "Typed empty reflected strings were confused with missing metadata");
+    Require(values[4].status == Status::Available && !values[4].itemName && values[4].itemNameStatus == TextStatus::MalformedProperty &&
+        values[4].descriptionStatus == TextStatus::Available, "Bad FString terminator spoiled unrelated valid metadata or produced fake text");
+    Require(values[5].status == Status::Available && values[5].itemName == values[0].itemName && !values[5].description &&
+        values[5].descriptionStatus == TextStatus::MalformedProperty, "Wrong scalar string index was accepted or lost inherited name");
+    Require(values[6].status == Status::Available && !values[6].description && values[6].descriptionStatus == TextStatus::MalformedProperty,
+        "Wrong reflected display-text property type silently coerced");
+    Require(values[7].status == Status::InvalidIconDimensions && !values[7].description && values[7].descriptionStatus == TextStatus::MalformedProperty,
+        "Over-budget optional text changed icon/layout semantics or allocated a display value");
+    Require(values[8].status == Status::NotInventoryActor && values[8].itemNameStatus == TextStatus::Unavailable && !values[8].itemName &&
+        values[9].status == Status::UnindexedIdentity && values[9].descriptionStatus == TextStatus::Unavailable,
+        "Class/missing identities acquired fabricated inventory display text");
+    Require(values[10].status == Status::Available && values[10].itemName == values[0].itemName &&
+        values[10].descriptionStatus == TextStatus::Available && values[10].description && values[10].description->empty(),
+        "Parent's same-name string tag leaked into a newly declared reflected field");
+    values[0].itemName = "Detached modification";
+    Require(ReadPortableRuntimeInventoryDescriptors({"DescriptorMap.Rifle0"})[0].itemName == std::optional<std::string>("Authored rifle name"),
+        "Returned optional display text aliases runtime storage");
+    Require(fixture.Snapshot("DisplayTextAfter") == before && GC::GetStats().numObjects == stats.numObjects && GC::GetStats().memoryUsage == stats.memoryUsage,
+        "Display-text read changed checkpoint/GC/runtime state");
+    // A schema-checked saved String overlay is the highest-priority source.
+    QuestVr::ScriptSavedState saved; saved.mapName = "DescriptorMap";
+    QuestVr::ScriptSavedObject actor; actor.path = "DescriptorMap.Rifle0"; actor.classPath = "DescriptorItems.Rifle";
+    actor.properties.push_back({"Engine.Inventory.ItemName", "ItemName", 0u, Value::Text(Kind::String, "Committed name overlay")});
+    actor.properties.push_back({"Engine.Inventory.Description", "Description", 0u, Value::Text(Kind::String, "")});
+    saved.objects.push_back(std::move(actor));
+    auto envelope = before; Replace32(envelope, 4u, 4u); const auto blob = QuestVr::EncodeScriptSavedState(saved);
+    U32(envelope, static_cast<std::uint32_t>(blob.size())); envelope.insert(envelope.end(), blob.begin(), blob.end());
+    const auto path = fixture.directory / "DisplayTextOverlay.sav";
+    Require(QuestVr::WriteDurableSaveFile(path.string(), envelope) && LoadPortableRuntimeState(path.string()), "Typed display-text overlay fixture did not restore");
+    const auto overlayBefore = fixture.Snapshot("DisplayTextOverlayBefore");
+    const auto overlay = ReadPortableRuntimeInventoryDescriptors({"DescriptorMap.Rifle0"})[0];
+    Require(overlay.itemName == std::optional<std::string>("Committed name overlay") && overlay.descriptionStatus == TextStatus::Available &&
+        overlay.description && overlay.description->empty(), "Text overlay/explicit empty value did not suppress inherited defaults");
+    Require(fixture.Snapshot("DisplayTextOverlayAfter") == overlayBefore, "Display-text overlay inspection mutated persistence");
+    fixture.SourcesUnchanged();
+    std::cout << "PASS generated optional original ItemName/Description: inherited/instance/overlay/empty/UTF-16 values, absent/malformed text, detached/bounded reads and unchanged icon/layout/persistence; no fabricated item state\n";
+}
 void OriginalMetadata(const std::filesystem::path& root) {
     struct Stamp { std::filesystem::path path; std::uintmax_t size; std::filesystem::file_time_type time; };
     std::vector<Stamp> sources; std::vector<PortablePackageTables> packages;
@@ -528,6 +626,9 @@ void OriginalMetadata(const std::filesystem::path& root) {
             item.invSlotsX == expected[i][0] && item.invSlotsY == expected[i][1] && item.displayWidth == expected[i][2] && item.displayHeight == expected[i][3] &&
             item.usesLargeIcon && !item.iconPath.empty() && item.largeIconProvenance.origin == Origin::ClassDefault &&
             item.classSourcePath == packages[2].sourcePath && item.largeIconProvenance.declarationSourcePath == packages[1].sourcePath;
+        Require(item.itemNameStatus == TextStatus::Available && item.descriptionStatus == TextStatus::Available &&
+            item.itemName && !item.itemName->empty() && item.description && !item.description->empty(),
+            "Original inventory display strings were unavailable, empty or guessed");
         if (!matches) {
             const auto statusIndex = static_cast<std::size_t>(item.status);
             std::cerr << "ORIGINAL DESCRIPTOR mismatch requested=" << item.requestedPath << " expected=" << paths[i]
@@ -556,6 +657,6 @@ void OriginalMetadata(const std::filesystem::path& root) {
 int main(int argc, char** argv) {
     try {
         if (argc > 2) throw std::runtime_error("Usage: portable_inventory_descriptor_test [original-game-root]");
-        Synthetic(); LocalClassReferenceMetadata(); if (argc == 2) OriginalMetadata(argv[1]); return 0;
+        Synthetic(); LocalClassReferenceMetadata(); DisplayTextMetadata(); if (argc == 2) OriginalMetadata(argv[1]); return 0;
     } catch (const std::exception& error) { std::cerr << "FAIL: " << error.what() << '\n'; ShutdownPortableRuntime(); return 1; }
 }

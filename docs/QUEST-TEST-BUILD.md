@@ -1,6 +1,43 @@
 # Current Quest test-build handoff (2026-10-13)
 
-## Latest installed APK: receiver/context foundation
+## Latest built APK: streaming, inventory and retained mover poses
+
+`artifacts/tutorial-streaming-20261013/DeusExQuestVR-training-streaming-retained-poses-20261013.apk`
+is signed ARM64,20,049,273 bytes, SHA256
+`12D465000B70844516AD7AF6B5F40133FA7A4DCBC4E7CDCDD8424A957D865D76`.
+APK v2 signature verifies; all16 ZIP entries contain port/SDK code/assets, not
+commercial packages. Gradle succeeds in1m2s. USB was absent at completion, so
+automatic install was correctly skipped; install this file when Quest returns.
+
+This adds visible-only identity-preserving inventory selection, held-repeat
+stick navigation, controller-ray/trigger icon selection, original item names
+and descriptions, retained spatial gameplay and actor removal without a bank
+rebuild. Door poses are retained and rebased without re-reading every mover.
+Full CTest passes68 ordinary tests/76 registered/eight owned-data skips,
+zero failures,10.86s; new navigation75 and ownership/cache1,045 checks pass.
+Strict Android syntax and separate original metadata/inventory integration pass.
+Final cache-change headset timing is not yet verified.
+
+## Latest installed APK: first streaming/inventory replacement
+
+`artifacts/tutorial-streaming-20261013/DeusExQuestVR-training-streaming-20261013.apk`
+is20,049,273 bytes, SHA256
+`ACC35F28EB61E8900A45391C3C94607EBEA7415809597AA7E030FD3BF605F0B5`.
+Data-preserving replacement succeeded on Quest3`2G0YC5ZG620985`, lastUpdateTime
+`2026-10-13 08:20:55`; pulled base.apk matches exactly, launch process22073.
+The user confirms freezes are basically fixed and inventory browsing works.
+Live scene publication/screenshot succeeds. Logs still caught109.273ms mover
+snapshot rebase and116.01ms selection, which motivated the final cache change.
+
+The user also confirms an invisible selected crowbar and rejected damage on
+intentionally breakable crates, plus a floating stack. The current attack
+adapter is NPC-only; selection is not original equipment state. Held weapons,
+crate damage/gravity, NPC T-poses, starting NanoKeyRing, ten functional belt
+slots, body-part health and compass remain unfinished. MENU opens inventory;
+right-stick up/down or pointing+right trigger selects; A only has the existing
+consumable action, not genuine weapon equip. See ORIGINAL-HUD-CONTRACT.md.
+
+## Previous installed APK: receiver/context foundation
 
 `artifacts/class-context-foundation-20261013/DeusExQuestVR-receiver-foundation-20261013.apk`
 is signed ARM64, 20,044,129 bytes, SHA256
