@@ -1,5 +1,31 @@
 # Port status
 
+## Streaming safety follow-up (2026-10-13)
+
+- Removing the actor currently awaiting a pose worker now invalidates its
+  result and clears the build's pending slot without waiting/destroying the
+  unfinished future. This prevents a final-actor pickup from leaving the bank
+  permanently unfinished; the shared async helper has regression controls.
+- Instant/zero-duration mover commands now queue one transient pose publication
+  for the next positive elapsed update, including an already-Idle endpoint.
+  Zero elapsed preserves the command; collision corrections immediately expose
+  current samples without permitting a stale second block. No save format
+  changed and restored state cannot replay the transient flag.
+- Production host build, strict Quest syntax and Android build pass. Final
+  CTest68 ordinary/76 registered/eight owned-data skips has zero failures in
+  21.57s. Separate owned Training route plus generated instant-mover controls
+  pass1,226 checks. Latest signed ARM64 APK is20,049,433 bytes:
+  `artifacts/tutorial-streaming-20261013/DeusExQuestVR-training-streaming-safety-20261013.apk`,
+  SHA256`DBE03808B1A46DCF5D4FD4144D35DFF03AC76D2D72C9269AF44C559C189C3BA2`.
+  USB is absent; latest installed/tested APK remains ACC35F28... below.
+- Read-only original-data investigation proves the stacked crates start with
+  a39-unit/0.743m gap and PHYS_Falling; decoded bounds/pivots are correct.
+  Original crowbar base damage is6, versus the old selection heuristic12.
+  Actual crate damage needs its Active.TakeDamage/DropThings/Frag/Destroyed
+  chain, not the Pawn-only adapter. BasedActors306 is its first concrete
+  missing native. Held weapon, crate damage/contents/support physics, NPCs
+  and original player/HUD remain open. See TRAINING-WEAPON-CRATE-GAPS.md.
+
 ## Retained streaming and visible inventory navigation (2026-10-13)
 
 - The user tested the replacement build and reports freezes are basically fixed

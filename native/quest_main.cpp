@@ -2862,7 +2862,15 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         const std::size_t ordinal = build.nextActor;
         const auto& actor = actorSnapshots_[build.actorIndices[ordinal]];
         auto& staged = *actorGeometryPublication_.Staged();
-        if (!staged.visibility.Visible(ordinal)) return true;
+        if (!staged.visibility.Visible(ordinal)) {
+            // A pickup can remove this very actor while its immutable pose
+            // worker is unfinished. Release the build's pending slot before
+            // advancing, but retain/reap the future without an XR-thread wait.
+            QuestVr::AbandonPendingAsyncResult(build.pendingMeshPose,actorPoseEpoch_,
+                actorPoseJobEpoch_,actorPoseFuture_.valid());
+            ReapRetiredActorPose();
+            return true;
+        }
         const OVR::Vector3f position = staged.targets[ordinal].localPosition;
         const bool brushActor = actor.mover && !actor.brushPath.empty();
         const bool hidden = actor.hidden || actor.drawType == 0u;

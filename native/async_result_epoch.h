@@ -29,4 +29,15 @@ private:
     std::uint64_t current_;
 };
 
+// Abandon the owner's pending slot without destroying or waiting on its
+// future. The owner must still reap the stale result once ready. In particular,
+// removing the final actor of a staged build must clear its pending-pose flag
+// before advancing the cursor, or the completed build can never publish.
+inline void AbandonPendingAsyncResult(bool& pending, AsyncResultEpoch& epoch,
+    const std::uint64_t token, const bool hasPendingResult) noexcept {
+    if (!pending) return;
+    epoch.Invalidate(token,hasPendingResult);
+    pending = false;
+}
+
 } // namespace QuestVr

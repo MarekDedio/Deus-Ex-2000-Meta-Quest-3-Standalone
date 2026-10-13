@@ -50,6 +50,9 @@ struct RuntimeMoverMotion {
     QuestVr::MoverMotionState state;
     std::optional<QuestVr::MoverMotionState> beforeStep;
     bool timedReturn{};
+    // Transient render-publication work, not persisted movement state. A
+    // command can jump directly to Idle (MoveTime==0) without a ticking delta.
+    bool commandPublicationPending{};
 };
 struct InventoryIconClassConstraint {
     RuntimeObject* indexedClass{}; // Non-owning immutable metadata, not a new GC root.
@@ -5856,6 +5859,11 @@ static bool RequestRuntimeMover(RuntimeObject* actor, const bool open, const boo
         QuestVr::RequestMoverMotionKey(motion.spec, motion.state, open ? 1u : 0u,
             open && motion.timedReturn ? 0 : -1);
         motion.beforeStep.reset();
+        motion.commandPublicationPending = true;
+        // The caller republishes a collision-corrected pair immediately. Keep
+        // a current sample discoverable even if that correction ends at Idle;
+        // never preserve the old closing sample as another blockable step.
+        if (undoClosingStep) motion.beforeStep = motion.state;
         staged.emplace_back(member, std::move(motion));
     }
     for (auto& [member, motion] : staged) {
@@ -6991,9 +6999,13 @@ bool AdvancePortableRuntimeMovers(const float elapsedSeconds) {
         if (!actor || !actor->active || actor->worldRemoved || !actor->moverMotion) continue;
         auto& motion = *actor->moverMotion;
         motion.beforeStep.reset();
-        if (motion.state.phase == QuestVr::MoverMotionPhase::Idle) continue;
+        const bool commandPending = motion.commandPublicationPending;
+        if (motion.state.phase == QuestVr::MoverMotionPhase::Idle && !commandPending) continue;
         motion.beforeStep = motion.state;
-        changed = QuestVr::AdvanceMoverMotion(motion.spec, motion.state, elapsed) || changed;
+        const bool moved = motion.state.phase != QuestVr::MoverMotionPhase::Idle &&
+            QuestVr::AdvanceMoverMotion(motion.spec, motion.state, elapsed);
+        motion.commandPublicationPending = false;
+        changed = commandPending || moved || changed;
         actor->activated = motion.state.targetKey != 0u;
     }
     return changed;

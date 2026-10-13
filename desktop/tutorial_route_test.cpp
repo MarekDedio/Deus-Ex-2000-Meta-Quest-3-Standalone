@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstring>
 #include <filesystem>
 #include <iostream>
 #include <limits>
@@ -174,6 +175,125 @@ void RejectGeneratedCheckpoint(const OwnedTemporary& temporary, const std::strin
         Require(Fields(after[i]) == Fields(before[i]),
             "Malformed-motion refusal changed a live mover snapshot: " + name);
 }
+
+// Generated map payload only: actual Engine.Mover schema is read from the
+// already-loaded owned script packages. No commercial source is modified and
+// no original executable, startup callback or renderer is invoked.
+PortablePackageTables InstantMoverMap(const OwnedTemporary& temporary) {
+    using Bytes = std::vector<std::uint8_t>;
+    std::vector<std::string> names{"None"};
+    const auto name = [&](const std::string& value) {
+        const auto found = std::find(names.begin(),names.end(),value);
+        if (found != names.end()) return static_cast<std::int32_t>(found-names.begin());
+        names.push_back(value); return static_cast<std::int32_t>(names.size()-1u);
+    };
+    const auto index = [](Bytes& bytes,std::int32_t value) {
+        auto magnitude = static_cast<std::uint32_t>(value < 0 ? -static_cast<std::int64_t>(value) : value);
+        auto first = static_cast<std::uint8_t>((value < 0 ? 0x80u : 0u) | (magnitude&63u));
+        magnitude >>= 6u; if (magnitude) first |= 64u; bytes.push_back(first);
+        while (magnitude) {
+            auto next=static_cast<std::uint8_t>(magnitude&127u); magnitude>>=7u;
+            if (magnitude) next|=128u;
+            bytes.push_back(next);
+        }
+    };
+    const auto word = [](Bytes& bytes,std::uint32_t value) {
+        for (unsigned i=0u;i<4u;++i) bytes.push_back(static_cast<std::uint8_t>(value>>(8u*i)));
+    };
+    const auto real = [&](Bytes& bytes,float value) {
+        std::uint32_t bits{}; std::memcpy(&bits,&value,sizeof(bits)); word(bytes,bits);
+    };
+    const auto floatTag = [&](Bytes& bytes,const char* field,float value) {
+        index(bytes,name(field)); bytes.push_back(0x24u); real(bytes,value);
+    };
+    const auto byteTag = [&](Bytes& bytes,const char* field,std::uint8_t value) {
+        index(bytes,name(field)); bytes.push_back(0x01u); bytes.push_back(value);
+    };
+    const auto vectorTag = [&](Bytes& bytes,const char* field,float x,float y,float z,unsigned slot=0u) {
+        index(bytes,name(field)); bytes.push_back(slot ? 0xbau : 0x3au);
+        index(bytes,name("Vector")); if (slot) bytes.push_back(static_cast<std::uint8_t>(slot));
+        real(bytes,x); real(bytes,y); real(bytes,z);
+    };
+    const auto rotatorTag = [&](Bytes& bytes,const char* field,unsigned slot=0u) {
+        index(bytes,name(field)); bytes.push_back(slot ? 0xbau : 0x3au);
+        index(bytes,name("Rotator")); if (slot) bytes.push_back(static_cast<std::uint8_t>(slot));
+        word(bytes,0u); word(bytes,0u); word(bytes,0u);
+    };
+    const auto core=name("Core"), package=name("Package"), engine=name("Engine"), cls=name("Class"), mover=name("Mover");
+    const auto first=name("InstantDoor"), second=name("UnrelatedDoor");
+    std::vector<Bytes> bodies;
+    for (unsigned actor=0u;actor<2u;++actor) {
+        Bytes body;
+        vectorTag(body,"Location",static_cast<float>(actor)*1000.0f,0.0f,0.0f);
+        rotatorTag(body,"Rotation"); vectorTag(body,"KeyPos",0,0,0); vectorTag(body,"KeyPos",0,56,0,1u);
+        rotatorTag(body,"KeyRot"); rotatorTag(body,"KeyRot",1u);
+        byteTag(body,"NumKeys",2u); byteTag(body,"KeyNum",0u); byteTag(body,"MoverGlideType",0u);
+        floatTag(body,"MoveTime",0.0f); floatTag(body,"StayOpenTime",0.0f);
+        index(body,name("InitialState")); body.push_back(0x56u);
+        Bytes state; index(state,name("TriggerToggle")); body.push_back(static_cast<std::uint8_t>(state.size()));
+        body.insert(body.end(),state.begin(),state.end()); index(body,0);
+        bodies.push_back(std::move(body));
+    }
+    Bytes bytes; word(bytes,0x9e2a83c1u); word(bytes,68u); bytes.resize(56u,0u);
+    std::vector<std::uint32_t> offsets;
+    for (const auto& body : bodies) { offsets.push_back(static_cast<std::uint32_t>(bytes.size())); bytes.insert(bytes.end(),body.begin(),body.end()); }
+    WriteWord(bytes,12u,static_cast<std::uint32_t>(names.size())); WriteWord(bytes,16u,static_cast<std::uint32_t>(bytes.size()));
+    for (const auto& value : names) {
+        index(bytes,static_cast<std::int32_t>(value.size()+1u)); bytes.insert(bytes.end(),value.begin(),value.end()); bytes.push_back(0u); word(bytes,0u);
+    }
+    WriteWord(bytes,20u,2u); WriteWord(bytes,24u,static_cast<std::uint32_t>(bytes.size()));
+    for (unsigned actor=0u;actor<2u;++actor) {
+        index(bytes,-2); index(bytes,0); word(bytes,0u); index(bytes,actor ? second : first); word(bytes,0u);
+        index(bytes,static_cast<std::int32_t>(bodies[actor].size())); index(bytes,static_cast<std::int32_t>(offsets[actor]));
+    }
+    WriteWord(bytes,28u,2u); WriteWord(bytes,32u,static_cast<std::uint32_t>(bytes.size()));
+    index(bytes,core); index(bytes,package); word(bytes,0u); index(bytes,engine);
+    index(bytes,core); index(bytes,cls); word(bytes,0xffffffffu); index(bytes,mover);
+    const auto path=temporary.directory/"GeneratedInstantMovers.dx";
+    Require(QuestVr::WriteDurableSaveFile(path.string(),bytes),"Cannot write isolated generated instant-mover map");
+    return LoadPortablePackageTables(path.string());
+}
+
+void GeneratedInstantMoverPublication(const OwnedTemporary& temporary) {
+    const auto map=InstantMoverMap(temporary);
+    Require(LoadPortableRuntimeMap(map).passed,"Generated instant-mover map did not load through production runtime");
+    const std::string path="GeneratedInstantMovers.InstantDoor";
+    const auto only = [&]() {
+        const auto moved=GetPortableRuntimeMoverActors(true);
+        Require(moved.size()==1u && moved.front().objectPath==path,
+            "Instant command publication omitted its actor or included an unrelated stationary mover");
+        return moved.front();
+    };
+    Require(GetPortableRuntimeMoverActors(true).empty(),"Fresh instant fixture published untouched idle movers");
+    Require(InteractPortableRuntimeActor(path).action=="mover_open","Generated instant mover did not accept open");
+    const auto queued=Snapshot(temporary,"instant-command-queued");
+    Require(!AdvancePortableRuntimeMovers(0.0f) && GetPortableRuntimeMoverActors(true).empty() &&
+        Snapshot(temporary,"instant-after-zero")==queued,"Zero elapsed consumed or published an instant command");
+    Require(AdvancePortableRuntimeMovers(0.05f),"Instant idle open command never requested publication");
+    const auto opened=only();
+    Near(opened.y,56.0f,"Published instant open missed its authored key");
+    Require(!opened.moverMoving && !opened.moverClosing && opened.activated && !BlockPortableRuntimeMover(path),
+        "Instant open fabricated a moving/blockable closing sample");
+    Require(Snapshot(temporary,"instant-command-published")==queued,"Transient command publication changed checkpoint format/state");
+    Require(!AdvancePortableRuntimeMovers(0.05f) && GetPortableRuntimeMoverActors(true).empty(),
+        "Instant idle open command published more than once");
+    Require(InteractPortableRuntimeActor(path).action=="mover_close" && AdvancePortableRuntimeMovers(0.05f),
+        "Instant idle close command never requested publication");
+    const auto closed=only(); Near(closed.y,0.0f,"Published instant close missed its authored key");
+    Require(!closed.moverMoving && !closed.moverClosing && !closed.activated && !BlockPortableRuntimeMover(path),
+        "Instant close fabricated a blockable transition");
+    Require(!AdvancePortableRuntimeMovers(0.05f) && GetPortableRuntimeMoverActors(true).empty(),
+        "Instant close final sample was retained beyond its publication step");
+    Require(InteractPortableRuntimeActor(path).action=="mover_open","Instant restore fixture did not queue a command");
+    Snapshot(temporary,"instant-restore-pending");
+    Require(LoadPortableRuntimeState(temporary.Path("instant-restore-pending")),"Instant authoritative checkpoint restore failed");
+    const auto restored=GetPortableRuntimeMoverActors();
+    const auto actor=std::find_if(restored.begin(),restored.end(),[&](const auto& value) {return value.objectPath==path;});
+    Require(actor!=restored.end() && !actor->moverMoving && actor->activated,"Authoritative restore lost instant command endpoint");
+    Near(actor->y,56.0f,"Authoritative restore changed the instant key pose");
+    Require(!AdvancePortableRuntimeMovers(0.0f) && !AdvancePortableRuntimeMovers(0.05f) &&
+        GetPortableRuntimeMoverActors(true).empty(),"Restore serialized/replayed transient command publication work");
+}
 void Original(const std::filesystem::path& gameRoot) {
     OwnedTemporary temporary(gameRoot);
     static constexpr const char* packages[] = {
@@ -325,6 +445,14 @@ void Original(const std::filesystem::path& gameRoot) {
         blockedB.x == beforeBlockB.x && blockedB.y == beforeBlockB.y && blockedB.z == beforeBlockB.z &&
         !blockedA.moverClosing && !blockedB.moverClosing,
         "Blocked closing pair did not undo the most recent step and reopen");
+    const auto corrected = GetPortableRuntimeMoverActors(true);
+    Require(corrected.size() == 2u, "Immediate collision correction did not republish both door leaves");
+    for (const auto& actor : corrected)
+        Require((actor.objectPath == first.objectPath && Fields(actor) == Fields(blockedA)) ||
+            (actor.objectPath == second.objectPath && Fields(actor) == Fields(blockedB)),
+            "Corrected changed-only sample retained the old closing pose/direction");
+    Require(!BlockPortableRuntimeMover(first.objectPath),
+        "Collision correction retained a stale closing beforeStep that could be applied twice");
     Advance(41u);
 
     const auto invalidBefore = Snapshot(temporary, "invalid-before");
@@ -367,6 +495,7 @@ void Original(const std::filesystem::path& gameRoot) {
     Require(LoadPortableRuntimeState(temporary.Path("keyed-door")), "Key door checkpoint did not restore");
     SameMover(keyedA); SameMover(keyedB);
     Require(GetPortableRuntimeInventoryCount() == inventoryBefore + 1u, "Restoring key door lost its collected key");
+    GeneratedInstantMoverPublication(temporary);
     std::cout << "Owned Training recording-route interaction tests passed: " << checks << " checks.\n";
 }
 } // namespace

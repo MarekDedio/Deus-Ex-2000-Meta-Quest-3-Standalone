@@ -31,10 +31,18 @@ int main() {
         return 7;
     });
     const auto workerToken = epoch.Capture();
-    epoch.Invalidate(workerToken, worker.valid());
+    bool pendingPose = true;
+    QuestVr::AbandonPendingAsyncResult(pendingPose,epoch,workerToken,worker.valid());
+    const std::size_t nextActor = 1u, totalActors = 1u;
+    check(!pendingPose && nextActor == totalActors,
+          "removing the final staged actor releases its pending pose completion gate");
     check(worker.valid() && worker.wait_for(std::chrono::seconds(0)) != std::future_status::ready,
           "invalidation preserves the unfinished worker handle without waiting");
     check(!epoch.IsCurrent(workerToken), "unfinished result becomes stale immediately");
+    const auto abandonedEpoch = epoch.Capture();
+    QuestVr::AbandonPendingAsyncResult(pendingPose,epoch,workerToken,worker.valid());
+    check(epoch.Capture() == abandonedEpoch,
+          "revisiting a removed actor does not invalidate an unrelated replacement");
     release.set_value();
     check(worker.get() == 7 && !epoch.IsCurrent(workerToken),
           "worker result can be consumed without applying abandoned speech");
@@ -55,6 +63,6 @@ int main() {
     check(idleWrap.Capture() == 0u && idleWrap.IsCurrent(idleWrap.Capture()),
           "idle wrap permits a fresh token");
     if (failures != 0) return 1;
-    std::cout << "Async result epoch checks passed: abandoned speech, unfinished worker, replacement and wrap guards\n";
+    std::cout << "Async result epoch checks passed: abandoned speech/removed last actor pose, nonblocking retained worker, replacement and wrap guards\n";
     return 0;
 }

@@ -1,6 +1,24 @@
 # Current Quest test-build handoff (2026-10-13)
 
-## Latest built APK: streaming, inventory and retained mover poses
+## Latest built APK: streaming safety follow-up
+
+`artifacts/tutorial-streaming-20261013/DeusExQuestVR-training-streaming-safety-20261013.apk`
+is signed ARM64,20,049,433 bytes, SHA256
+`DBE03808B1A46DCF5D4FD4144D35DFF03AC76D2D72C9269AF44C559C189C3BA2`.
+APK v2 signature verifies; Gradle succeeds in1m46s. USB was absent at build
+completion and latest check, so install was skipped without targeting another
+device or clearing data. Latest installed/tested APK is still ACC35F28... below.
+
+This includes the retained-pose version plus nonblocking retirement when a
+pickup removes the pending-pose actor, and one-shot publication of instant
+mover command endpoints/collision correction. Final CTest passes68 ordinary
+tests/76 registered/eight skips, zero failures,21.57s. Separate owned Training
+route/generated instant-mover tests pass1,226 checks. The strict native check,
+host and Android builds pass. Final headset timing/visual acceptance is pending.
+It does not add visible held weapons, crate damage, gravity or NPC animation;
+see TRAINING-WEAPON-CRATE-GAPS.md for the latest user's confirmed requirements.
+
+## Previous built APK: streaming, inventory and retained mover poses
 
 `artifacts/tutorial-streaming-20261013/DeusExQuestVR-training-streaming-retained-poses-20261013.apk`
 is signed ARM64,20,049,273 bytes, SHA256
