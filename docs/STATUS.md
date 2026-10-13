@@ -25,10 +25,14 @@
   license notices and no commercial packages. Automatic replacement was
   attempted but skipped because the known Quest is absent from USB; no
   alternate device was selected. On reconnect the music APK was replace-
-  installed without clearing data on Quest 2G0YC5ZG620985, update14:23:21;
-  pulled base.apk hash matches exactly. One launch confirms process8558,
-  Training CPU preparation and AAudio22050 Hz. Head pose remains unavailable;
-  final GPU publication/audibility/mix balance/underruns are unverified.
+  installed without clearing data on Quest 2G0YC5ZG620985, update 14:23:21;
+  pulled base.apk hash matches exactly. One launch confirms process 8558,
+  Training CPU preparation and AAudio 22050 Hz. Tracking then becomes valid,
+  Training banks publish and the original IT section0 stream plays. The user
+  confirms music and Jaime are both audible. A consumed MUSIC diagnostic
+  reports stream present and zero underrun frames (focus inactive at the
+  later check). Sustained playback/focus-resume and broader performance remain
+  unverified; this is initial music acceptance, not full tutorial acceptance.
 - Next priority remains the original full HUD, actual starting keyring and
   functional ten-slot belt, health and map-relative compass. Then NPC poses/
   animation, gravity/crate destruction/visible held items. Lamp illumination

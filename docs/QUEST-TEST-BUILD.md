@@ -11,8 +11,12 @@ Initially installation was skipped while USB was absent. On reconnect it was
 replace-installed without clearing data on Quest `2G0YC5ZG620985`, update
 `2026-10-13 14:23:21`. Pulled installed base.apk matches the full SHA256 above
 exactly. One launch confirms process 8558; Training CPU preparation and AAudio
-startup (22050 Hz) pass. Quest currently reports no tracked head pose, so final
-GPU publication and physical audio acceptance remain pending.
+startup (22050 Hz) pass. Tracking subsequently becomes valid, Training actor/
+collision banks publish, and logs confirm the original IT section0 playing.
+The user confirms background music and Jaime's speech are both audible. A
+consumed MUSIC diagnostic reports stream present and zero underrun frames;
+the focus gate is inactive at that later check. Long-duration/focus-resume
+acceptance remains separate from this successful initial listening test.
 
 The actual Training map selects Training Room from its original UMX. Decoder
 work runs outside the callback into a fixed PCM ring; music is mixed at 0.35
@@ -23,9 +27,9 @@ diagnostic-tool mock tests pass. This does not yet complete dynamic music
 events/fades, player settings, full HUD/keyring, NPC animation, crate/gravity/
 held-item gameplay or lamp illumination.
 
-Return to Training with the headset worn and verify background music alongside
-Jaime's introduction, pause/resume focus, then MUSIC diagnostics for accumulated
-missing PCM frames. Headset audibility and final performance are still pending.
+Initial headset audibility is accepted. Further checks are pause/resume focus,
+long-duration playback and accumulated missing PCM frames. General gameplay
+performance and the remaining user-prioritized features are still unfinished.
 
 ## Previously installed APK: original focus labels and runtime prerequisites
 

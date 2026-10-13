@@ -54,6 +54,8 @@ APK v2 signature verifies. Initial automatic installation was skipped while
 USB was absent. On reconnect, data-preserving replacement succeeded on Quest
 2G0YC5ZG620985, update 2026-10-13 14:23:21; pulled base.apk matches exactly.
 One launch confirms process 8558, successful Training CPU preparation and
-AAudio at 22050 Hz. With no tracked head pose yet, GPU publication and music
-diagnostic consumption are pending. Physical audibility, mix balance,
-pause/resume and sustained zero-underrun checks still require wearing it.
+AAudio at 22050 Hz. Tracking subsequently becomes valid, Training publishes,
+and logs confirm the original IT section0 stream playing. The user confirms
+music and Jaime are both audible. A consumed MUSIC diagnostic reports
+present=true, underrunFrames=0, active=false at that later focus check. This
+is initial on-headset acceptance, not yet a sustained-playback/focus-resume test.
