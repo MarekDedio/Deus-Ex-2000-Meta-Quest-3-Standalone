@@ -222,6 +222,58 @@ void RegisterPortableRuntimeViewport(std::uint64_t clientIdentity,
 void ClearPortableRuntimeClient();
 bool HasPortableRuntimeClient();
 std::vector<QuestVr::NativeViewport> ReadPortableRuntimeClientView();
+struct PortablePlayerSessionSnapshot {
+    std::uint64_t clientIdentity{}, viewportIdentity{};
+    std::string clientPath, viewportPath, viewportClassPath, playerPath;
+    std::string viewportOuterPath;
+    std::int32_t clientObjectFlags{}, viewportObjectFlags{};
+    QuestVr::NativeViewport viewport;
+    bool bound{};
+};
+// Runtime CPU-owner entry after actual render-target registration. Materializes
+// genuine session-owned Engine.Client/UViewport objects (UViewport inherits the
+// original Engine.Player metadata), not a PlayerPawn or inventory item. Session
+// objects are GC-rooted outside map exports and never serialized in actor saves.
+// Preparation is idempotent for the same live registered viewport generation.
+PortablePlayerSessionSnapshot PreparePortableRuntimePlayerObjects(std::uint64_t viewportIdentity);
+PortablePlayerSessionSnapshot ReadPortableRuntimePlayerSession(std::uint64_t viewportIdentity);
+// Audited retail SetPlayer native pairing followed by dynamic original Possess,
+// in one VM/host transaction. Requires a live prepared viewport and actual begun
+// native world PlayerPawn; does not perform Login or authorize bypassing it.
+// Failure rolls back both old/new Player.Actor / PlayerPawn.Player edges and all
+// nested scripts. Renderer lease revocation remains irreversible.
+QuestVr::Vm::Result SetPortableRuntimePlayer(std::uint64_t viewportIdentity,
+    const std::string& playerActorPath, const QuestVr::Vm::Limits& limits = {});
+struct PortablePlayerHudItem {
+    std::string actorPath, classPath, iconPath, beltDescription;
+    bool inObjectBelt{};
+    std::int32_t beltPosition{};
+};
+struct PortablePlayerHudSnapshot {
+    bool available{}, bound{};
+    std::string playerPath, keyRingPath;
+    std::array<std::int32_t,6u> limbHealth{}; // Head, torso, arms L/R, legs L/R.
+    float energy{}, energyMax{};
+    std::vector<PortablePlayerHudItem> inventory; // Actual Inventory chain order.
+};
+// Explicit detached original-script fixture inspection; does not establish
+// native possession. Exact declared typed fields and actual owned Inventory
+// links only, with independent limb health and bounded cycle/identity checks.
+PortablePlayerHudSnapshot ReadPortablePlayerHudSnapshot(const std::string& playerActorPath);
+// Live HUD consumers must use this overload: source is the actual paired
+// native viewport.Actor, never an arbitrary actor or selected inventory index.
+// A genuinely unbound viewport returns available=false and no invented values.
+PortablePlayerHudSnapshot ReadPortableRuntimePlayerHud(std::uint64_t viewportIdentity);
+struct PortableMapNorthSnapshot {
+    bool found{};
+    std::string actorPath;
+    std::int32_t trueNorth{};
+};
+// Mirrors GetLevelInfo's first actual live Level-slot DeusExLevelInfo selection,
+// then reads its exact declared Int TrueNorth. An absent actor legitimately
+// leaves the original initial zero; malformed metadata/values throw. Read only,
+// with no player creation, script execution or authored-property mutation.
+PortableMapNorthSnapshot ReadPortableRuntimeMapNorth();
 PortableConversationSummary GetPortableConversationSummary();
 PortableDialogueResult GetPortableRuntimeDialogue(
     const std::string& actorPath,

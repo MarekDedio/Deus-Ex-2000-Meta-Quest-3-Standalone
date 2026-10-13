@@ -41,7 +41,7 @@ bool SnapshotNativeInput(const std::uint16_t index, const Function* declaration 
         // unknown native-zero/OUT functions must retain their guarded aliases.
         return declaration && Lower(declaration->path) == "engine.decal.attachdecal";
     case 112: case 113: case 124: case 125: case 126: case 127: case 128:
-    case 168: case 189: case 231: case 234: case 235: case 246: case 249: case 278:
+    case 168: case 189: case 231: case 234: case 235: case 244: case 246: case 249: case 278:
     case 280: return true; // SetTimer copies rate before evaluating bLoop.
     default: return false;
     }
@@ -573,7 +573,11 @@ public:
             const Node& n = program.statements[pc];
             Step(fn, n.offset, n.op);
             if (AdvanceIterator(frame, n, program, pc, iterators)) continue;
-            if (n.op == 0x04) { value = Eval(frame, n.children.at(0), self).Load(); returned = true; break; }
+            if (n.op == 0x04) {
+                const auto evaluated = Eval(frame, n.children.at(0), self);
+                value = returnProperty ? ResultValue(evaluated,frame.locals.at(returnProperty->key)->read()) : evaluated.Load();
+                returned = true; break;
+            }
             if (n.op == 0x15) {
                 const auto* object = host_.ReadState(self);
                 if (object && object->frame && object->frame->control)
@@ -1196,6 +1200,53 @@ private:
             };
         return guarded;
     }
+    Value ResultValue(const Evaluation& evaluation, const Value& destination) {
+        if (evaluation.disposition == ResultDisposition::Written) return evaluation.Load();
+        if (evaluation.disposition == ResultDisposition::NoWrite || evaluation.zeroFillBytes == 0u)
+            return destination;
+        std::size_t bytes{};
+        Value zero;
+        switch (destination.kind) {
+        case Kind::Byte: bytes=1u; zero=Value::Byte(0u); break;
+        case Kind::Int: bytes=4u; zero=Value::Integer(0); break;
+        case Kind::Float: bytes=4u; zero=Value::Float(0.0f); break;
+        case Kind::Bool: bytes=4u; zero=Value::Bool(false); break;
+        case Kind::Name: bytes=4u; zero=Value::Text(Kind::Name,"None"); break;
+        case Kind::Object: bytes=4u; zero=Value::Text(Kind::Object,{}); break;
+        case Kind::String: bytes=12u; zero=Value::Text(Kind::String,{}); break;
+        case Kind::Vector: bytes=12u; zero=Value::Vector({}); break;
+        case Kind::Rotator: bytes=12u; zero=Value::Rotator({}); break;
+        default: Fail(Status::Unsupported,"VM context zero-fill destination layout is not established");
+        }
+        // Retail writes raw bytes. Only complete audited portable layouts are
+        // represented here; do not silently turn a partial write into typed zero.
+        if (evaluation.zeroFillBytes != bytes)
+            Fail(Status::Unsupported,"VM partial context zero-fill destination is not established");
+        return zero;
+    }
+    std::optional<Value> BuiltinArgumentZero(const std::uint16_t index,const std::size_t argument) {
+        const auto zero=[](const Kind kind) {
+            Value value;value.kind=kind;if(kind==Kind::Name)value.text="None";return value;
+        };
+        switch(index) {
+        case 129: case 130: case 131: case 132: case 242: case 243:return zero(Kind::Bool);
+        case 114: case 119:return zero(Kind::Object);
+        case 254: case 255:return zero(Kind::Name);
+        case 112: case 168: case 122: case 123: case 124: case 125: case 126: case 235:return zero(Kind::String);
+        case 127: case 128: case 234:return zero(argument==0u ? Kind::String : Kind::Int);
+        case 143: case 144: case 145: case 146: case 147: case 150: case 151: case 152: case 153:
+        case 154: case 155: case 156: case 157: case 158: case 161: case 162: case 163: case 164:
+        case 165: case 166: case 249:return zero(Kind::Int);
+        case 169: case 170: case 171: case 172: case 173: case 174: case 175: case 176: case 177:
+        case 178: case 179: case 180: case 181: case 182: case 183: case 184: case 185: case 189:
+        case 244: case 246:return zero(Kind::Float);
+        case 212: case 214: case 221:return zero(argument==0u ? Kind::Vector : Kind::Float);
+        case 213:return zero(argument==0u ? Kind::Float : Kind::Vector);
+        case 215: case 216: case 217: case 218: case 219: case 220: case 223: case 224: case 225:
+        case 296:return zero(Kind::Vector);
+        default:return std::nullopt;
+        }
+    }
     Evaluation Eval(Frame& frame, const Node& n, const std::string& context) {
         Step(frame.function, n.offset, n.op);
         Evaluation result;
@@ -1219,6 +1270,13 @@ private:
             std::optional<std::optional<Value>> capturedContext;
             capturedContext.emplace(!fn || (fn->flags & 0x400u) ?
                 CaptureNativeContext(index, context, fn.get()) : std::nullopt);
+            const auto parameters=fn ? host_.FunctionParameters(*fn) : std::vector<Property>{};
+            if (parameters.size()>limits_.arguments) Fail(Status::Budget,"VM argument schema count limit");
+            Retain(parameters.capacity()*sizeof(Property));
+            for (const auto& parameter:parameters) {
+                ValidateValue(parameter.zero,0);
+                Retain(parameter.key.capacity());Retain(parameter.name.capacity());Retain(ValueBytes(parameter.zero));
+            }
             std::vector<Evaluation> args;
             for (std::size_t i = 0; i < n.children.size(); ++i) {
                 // Retail CallFunction evaluates arguments with FFrame.Object,
@@ -1230,6 +1288,19 @@ private:
                     }
                 }
                 auto argument = Eval(frame, n.children[i], frame.self);
+                // Explicit EX_Nothing is the native optional-argument marker,
+                // not a null Context writing into a typed argument slot. Keep
+                // it intact for the declaration-aware native reader/default.
+                const bool nativeOmission=(!fn || (fn->flags&0x400u)) && n.children[i].op==0x0bu;
+                if (argument.disposition!=ResultDisposition::Written && !nativeOmission) {
+                    const auto typedZero=i<parameters.size() ? std::optional<Value>{parameters[i].zero} :
+                        (!fn || (fn->flags&0x400u)) ? BuiltinArgumentZero(index,i) : std::nullopt;
+                    if (typedZero) {
+                        ValidateValue(*typedZero,0);Retain(ValueBytes(*typedZero));
+                        argument={ResultValue(argument,*typedZero),{}};
+                    } else if (argument.disposition==ResultDisposition::ZeroFill && argument.zeroFillBytes!=0u)
+                        Fail(Status::Unsupported,"VM context argument result destination layout is unavailable");
+                }
                 if (SnapshotNativeInput(index, fn.get()) && (!fn || (fn->flags & 0x400u))) {
                     auto value = argument.Load(); ValidateValue(value, 0); Retain(ValueBytes(value));
                     argument = {std::move(value),{}};
@@ -1309,7 +1380,7 @@ private:
                 if (!result.reference || !result.reference->read) Fail(Status::Unsupported, "VM property unavailable: " + p.key);
                 break;
             }
-            case 0x0b: break;
+            case 0x0b: result.disposition=ResultDisposition::NoWrite; break;
             case 0x0e: child(0); break;
             case 0x0f: case 0x14: {
                 // Both assignment operands use FFrame.Object, not the receiver
@@ -1317,8 +1388,24 @@ private:
                 auto left = Eval(frame, n.children.at(0), frame.self);
                 auto right = Eval(frame, n.children.at(1), frame.self);
                 Locate(frame.function, n.offset, n.op);
-                if (left.reference) { Write(left.reference, right.Load()); result = left; }
-                else if (left.Load().kind == Kind::Nothing) result = right;
+                if (left.reference) {
+                    // Let forwards the existing destination to the RHS. LetBool
+                    // instead prezeros its own integer temporary, then masks the
+                    // target bit even when the RHS performs no result write.
+                    const auto destination=n.op==0x14u ? Value::Bool(false) : left.Load();
+                    const auto value=ResultValue(right,destination);
+                    if (n.op==0x14u || right.disposition==ResultDisposition::Written ||
+                        (right.disposition==ResultDisposition::ZeroFill && right.zeroFillBytes!=0u))
+                        Write(left.reference,value);
+                    // execLet/execLetBool never use their own incoming Result.
+                    // Assignment is a reflected side effect, not a value alias.
+                    result.disposition=ResultDisposition::NoWrite;
+                }
+                else if (left.Load().kind == Kind::Nothing) {
+                    // A null LHS still evaluates RHS effects using scratch
+                    // storage; it never manufactures a writable reflected alias.
+                    result.disposition=ResultDisposition::NoWrite;
+                }
                 else Fail(Status::Invalid, "VM assignment to non-variable");
                 break;
             }
@@ -1327,7 +1414,25 @@ private:
                 // asserts "Array" before its unusable placeholder access. No
                 // original element-address/clamp/grow semantics are established.
                 Fail(Status::Unsupported, "Original dynamic-array indexing opcode 0x10 is not implemented");
-            case 0x12: Fail(Status::Unsupported, "ClassContext requires class-default object identity");
+            case 0x12: {
+                // The selector uses FFrame.Object, exactly once; the child uses
+                // a distinct default-block receiver while retaining the frame.
+                const auto selected=Eval(frame,n.children.at(0),frame.self).Load();
+                Locate(frame.function,n.offset,n.op);
+                if (selected.kind!=Kind::Object && selected.kind!=Kind::Nothing) TypeError();
+                if (selected.text.empty()) {
+                    result.disposition=ResultDisposition::ZeroFill;
+                    result.zeroFillBytes=n.zeroFillSize;
+                    break;
+                }
+                const auto receiver=host_.ClassDefaultObject(selected.text);
+                if (receiver.empty() || receiver.find('\0')!=std::string::npos ||
+                    Lower(receiver)==Lower(selected.text))
+                    Fail(Status::Invalid,"VM ClassContext host returned an invalid default-object identity");
+                if (receiver.size()>limits_.stringBytes) Fail(Status::Budget,"VM class-default identity byte limit");
+                result=Eval(frame,n.children.at(1),receiver);
+                break;
+            }
             case 0x13: case 0x2e: {
                 auto object = child(0).Load();
                 Locate(frame.function, n.offset, n.op);
@@ -1346,18 +1451,32 @@ private:
                 Locate(frame.function, n.offset, n.op);
                 if (object.kind != Kind::Object && object.kind != Kind::Nothing) TypeError();
                 if (object.text.empty()) {
+                    result.disposition=ResultDisposition::ZeroFill;
+                    result.zeroFillBytes=n.zeroFillSize;
                     break;
                 }
                 result = Eval(frame, n.children.at(1), object.text); break;
             }
             case 0x17: result.value = Value::Text(Kind::Object, context); break;
-            case 0x18: case 0x2d: result = child(0); break;
+            case 0x18: result = child(0); break;
+            case 0x2d: {
+                const auto variable=child(0);
+                // BoolVariable evaluates its child with nil Result, using only
+                // the reflected address. A null address produces false.
+                result.value=Value::Bool(variable.reference ? ToBool(variable.Load()) : false);
+                result.reference=variable.reference;
+                break;
+            }
             case 0x1a: {
                 // Retail uses FFrame.Object for the index but the incoming
                 // opcode receiver for the array's reflected address.
                 const auto index = ToInt(Eval(frame,n.children.at(0),frame.self).Load());
                 auto array = child(1);
                 Locate(frame.function, n.offset, n.op);
+                if (!array.reference && array.disposition!=ResultDisposition::Written) {
+                    result.disposition=ResultDisposition::NoWrite;
+                    break;
+                }
                 if (!array.reference || !array.reference->element || array.reference->dimension == 0)
                     Fail(Status::Invalid, "VM fixed array is not a variable");
                 const auto clamped = static_cast<std::size_t>(std::clamp<std::int64_t>(index, 0,
@@ -1398,6 +1517,12 @@ private:
             default: Fail(Status::Unsupported, "Unsupported VM opcode " + std::to_string(n.op));
             }
         }
+        // Nothing denotes absence of a VM return/result write, not a typed
+        // scalar zero. Concrete None is an Object value with an empty handle.
+        // Preserve explicit null-context ZeroFill separately from this case.
+        if (!result.reference && result.value.kind==Kind::Nothing &&
+            result.disposition==ResultDisposition::Written)
+            result.disposition=ResultDisposition::NoWrite;
         if (!result.reference) ValidateValue(result.value, 0);
         else ValidateValue(result.Load(), 0);
         return result;
@@ -1521,6 +1646,11 @@ private:
         }
         case 189: count(1); return {Value::Float(static_cast<float>(
             std::tan(static_cast<double>(ToFloat(a(0)))))),{}};
+        case 244:
+            // Retail execFMin (Core.dll 10136320) copies A then B into Float
+            // locals and selects A on equality, including either signed zero.
+            // Existing VM ingress refuses non-finite inputs before this call.
+            return binaryFloat([](float x,float y) {return y<x ? y : x;});
         case 246: {
             count(3); const auto v=ToFloat(a(0)), low=ToFloat(a(1)), high=ToFloat(a(2));
             // Original x87 tests C0, so unordered comparisons take the branch.

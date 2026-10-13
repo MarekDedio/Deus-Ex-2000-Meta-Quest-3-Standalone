@@ -65,9 +65,15 @@ struct Reference {
     std::function<void(const Value&)> write;
     std::function<std::shared_ptr<Reference>(std::size_t)> element;
 };
+// A null Context writes encoded bytes only when an actual result destination
+// exists. Keep this separate from reflected lvalue/address state: a missing
+// array base does not inherit its Context's zero-fill into the outer result.
+enum class ResultDisposition { Written, NoWrite, ZeroFill };
 struct Evaluation {
     Value value;
     std::shared_ptr<Reference> reference;
+    ResultDisposition disposition{ResultDisposition::Written};
+    std::uint8_t zeroFillBytes{};
     Value Load() const { return reference ? reference->read() : value; }
 };
 enum class Scope { Instance, Default };
@@ -163,11 +169,25 @@ public:
     // evaluation and the fresh eligibility check; it cannot swap native identity.
     virtual std::shared_ptr<const Function> PrepareFunction(const Function& identity,
         const std::string&) { return std::make_shared<Function>(identity); }
+    // Immutable declaration layout for actual argument result destinations.
+    // No argument evaluation, eligibility/state mutation or native work occurs.
+    virtual std::vector<Property> FunctionParameters(const Function& identity) {
+        std::vector<Property> parameters;
+        for (const auto& property:identity.variables)
+            if ((property.flags&0x80u) && !(property.flags&0x400u)) parameters.push_back(property);
+        return parameters;
+    }
     virtual std::shared_ptr<const Function> ResolveEvent(const std::string&,
         const std::string&, bool) { throw std::runtime_error("VM event dispatch unavailable"); }
     virtual Property ResolveProperty(const Function&, std::int32_t reference) = 0;
     virtual std::string ResolveName(const Function&, std::int32_t index) = 0;
     virtual std::string ResolveObject(const Function&, std::int32_t reference) = 0;
+    // Validate an actual loaded UClass and return its distinct class-owned
+    // default-object handle. This is neither the UClass identity nor an actor
+    // export/birth. The host owns its lifetime and reflected/default storage.
+    virtual std::string ClassDefaultObject(const std::string&) {
+        throw std::runtime_error("ClassContext requires class-default object identity");
+    }
     // Original ObjectToString uses full UObject::GetPathName, not an operand's
     // unvalidated spelling. Null is handled by the VM before this lookup.
     virtual std::string ObjectString(const std::string&) {

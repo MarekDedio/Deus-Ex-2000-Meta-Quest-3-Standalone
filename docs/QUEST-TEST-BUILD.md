@@ -1,6 +1,37 @@
-# Current Quest test-build handoff (2026-10-13)
+# Current Quest test-build handoff (2026-10-14)
 
-## Latest installed APK: original Training music
+## Latest installed APK: original compass, inward placement and player foundation
+
+`artifacts/crate-runtime-20261013/DeusExQuestVR-original-hud-compass-inset-20261014.apk`
+is signed ARM64,33,139,566 bytes, SHA256
+`9653002F6CDE58C463EE0EF72D7C59B2532C5F19AA80BF723C26EDFE2733D026`.
+Android build succeeds in1m9s; APK v2 signature verifies. Automatically
+replace-installed without clearing data on Quest `2G0YC5ZG620985`, update
+`2026-10-14 01:15:37`; pulled installed base.apk matches exactly, then launched.
+
+Original map-relative compass is implemented and captured on the preceding
+same-art build. The user confirms it works, but PC-edge attachment was too far
+outside comfortable view. This build moves its center to(-0.50,0.25,-1.65)m,
+preserving source scale; the health column follows its original alignment/gap.
+Process11070 and a frame captured from this exact installed APK confirm the
+inward shift. The user accepts the revised placement as comfortable, after
+confirming compass direction works. Broader recenter/map-route testing remains
+separate. Music/Jaime remain the previously accepted baseline.
+
+The full original health/belt artwork and typed owned-player readers are in
+place, but those panels intentionally remain hidden until real possession.
+Original keyring/session controls pass169 checks in isolated dormant worlds;
+they are not live equipment. InitRootWindow1052 and world ConsoleCommand are
+the next explicit startup dependencies. NPC animation, gravity, crate fatal
+damage, held items, lamp light and full tutorial completion remain unfinished.
+
+Final CTest74 ordinary/86 registered/12 owned-data skips passes,13.10s. Separate
+original HUD87, generated HUD20571, rendered heading/placement606, original
+player/keyring169, defaults1767/71 and VM678235/369 controls pass, as do
+diagnostic mocks26/0 and the focused original startup/rollback probe. No
+original Windows executable/DLL was run; commercial assets stay outside APK/Git.
+
+## Previously installed APK: original Training music
 
 `artifacts/crate-runtime-20261013/DeusExQuestVR-training-music-20261013.apk`
 is signed ARM64, 32,918,766 bytes, SHA256

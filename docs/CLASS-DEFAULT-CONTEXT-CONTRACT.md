@@ -1,7 +1,74 @@
 # ClassContext: next original startup boundary
 
-Read-binding hardening and read-only retail audit, 2026-10-13. No ClassContext implementation or successful original
-world startup is claimed. Original Windows executables/DLLs were not executed.
+## Current implementation increment (2026-10-14)
+
+ClassContext now evaluates its selector once against FFrame.Object and resolves
+an actual loaded UClass to a distinct `@ClassDefault:<qualified-class>` handle.
+The class-owned GC wrapper is allocated deterministically at package load, not
+on first execution; it is not registered as an export, map actor or birth. Its
+Class is its owning UClass, Name is None and Outer is null in the initialized
+default-block model. Concrete mutable defaults still use the existing UClass
+journal/storage and cold save schema. Native operations on a default block
+remain explicitly refused unless audited; ordinary/static script calls use the
+same receiver/frame rules as other script objects. UClass reflected receiver
+storage is not silently treated as its represented class's defaults.
+
+Written, no-write and encoded zero-fill outcomes are now explicit and separate
+from reflected lvalue aliases. Let forwards its existing target; LetBool uses
+its prezeroed Bool temporary; a missing array base produces no outer write.
+Only complete audited Byte/Int/Float/Bool/Name/Object/FString/Vector/Rotator
+layouts can receive zero-fill. Partial or unaudited raw writes refuse rather
+than being widened to typed zero. These changes are an execution increment,
+not a claim of complete generic raw-memory compatibility or campaign startup.
+Actual declared function arguments have immutable reflected parameter schemas
+and typed initial result slots; full/zero-size null-context writes are applied
+to those slots before call entry. OUT variable aliases remain real aliases.
+Audited direct numeric/vector/name/object/string/Bool builtins supply their
+actual input types. Unknown direct native arguments with nonzero encoded
+zero-fill have no guessed layout and explicitly refuse. Schemas and temporary
+values consume the shared retained-byte/argument budgets.
+
+Fresh bounded static Core.dll reads also prove that execLet body
+1012fe40..1012fecc never reads its incoming Result argument. LHS evaluation
+receives nil Result at1012fe49; its reflected address is selected at1012fe69;
+missing address becomes zeroed twelve-byte scratch at1012fe87..1012feaa; RHS
+receives that selected address at1012febc..1012fec3. execLetBool body
+1012ff30..1012fffa likewise ignores incoming Result, evaluates LHS with nil,
+prezeros the integer RHS temporary at1012ff69, and updates only its reflected
+bitmask. Both assignments themselves therefore produce no result write even
+when their target is valid. Previous generated `Return(Let(...))` controls
+expected the pinned evaluator's assigned-value return; controls now retain
+separate real writes/RHS effects and prove the enclosing result is not an alias.
+The original DLL was read-only disassembled, never executed.
+
+Generated controls cover exact base/derived defaults, one selector evaluation,
+distinct Self, inherited/fixed-array references, native/foreign/nonclass
+refusal, partial-fill refusal, ordinary/static call receiver/frame behavior,
+non-Actor defaults, complete rollback, cold GC roots, canonical cold
+save/default-object references, forged actor-record refusal and map replacement.
+The coherent host build and all 74 ordinary tests pass (86 registered, twelve
+explicit owned-data skips, final inset rerun13.10s). Separate untouched Training startup testing
+now passes Camera4's actual GameInfo.DefaultPlayerName ClassContext and stops
+at PreBeginPlay slot1332, Camera5, Engine.PlayerPawn.ConsoleCommand PC0/native0.
+Two identical attempts and a forced shared-instruction-budget failure restore
+complete checkpoint, actor/birth names, script frames, RNG, revision and GC
+allocation/memory totals. This is a non-publishing diagnostic, not world startup.
+
+Explicit EX_Nothing remains the declaration-aware native optional-argument
+marker; typed result-destination zeroing must not coerce that omission to Float0.
+Native244 FMin is implemented as a pure builtin needed by original Possess.
+Read-only Core.dll audit: thunk101011ea -> body10136320 copies A then B into
+independent Float locals, compares A with B, and selects B only when A>B. The
+first operand wins equality, including signed zeros. Tests cover direct and
+resolved calls, earlier-input copying across later mutation, Float null-context
+argument destinations, wrong types/arity, finite extremes and existing
+non-finite-ingress refusal/rollback. This introduces no player/world ownership.
+
+The remaining sections record the earlier read-binding hardening and read-only
+retail audit of 2026-10-13, before the implementation increment above. Earlier
+refusal locations/pass counts below describe that checkpoint, not current
+completion. Successful original world/player startup remains unproven. Original
+Windows executables/DLLs were not executed.
 
 ## Actual original expression
 

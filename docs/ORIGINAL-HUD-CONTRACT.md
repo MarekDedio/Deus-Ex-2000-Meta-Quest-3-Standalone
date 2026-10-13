@@ -65,7 +65,13 @@ enables all three HUD elements. Extension.PlayerPawnExt.Possess invokes native
 1052 InitRootWindow; the root binds parentPawn and constructs the HUD/window
 graph. Non-Actor window creation and lifetime, possession, original player
 startup, inventory ownership, item-in-hand state and key-list persistence
-remain open. The current original startup probe still refuses ClassContext.
+remain open. The 2026-10-14 ClassContext increment passes the former
+GameInfo.DefaultPlayerName boundary; the untouched Training probe next stops
+at Camera5's Engine.PlayerPawn.ConsoleCommand. An explicitly isolated
+SetPlayer/Possess control now passes its audited FMin244 and separately stops
+at Extension.PlayerPawnExt.Possess PC6/native1052 InitRootWindow. Neither
+diagnostic publishes a begun world or a possessed player.
+See PLAYER-HUD-BOOTSTRAP.md for implementation and verification boundaries.
 
 Implementation acceptance requires a fresh Training start with an actual
 owned ring, functional key collection/door use, ten correctly mapped slots,

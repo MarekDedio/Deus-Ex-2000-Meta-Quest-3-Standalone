@@ -204,6 +204,8 @@ struct TestHost final:Vm::Host {
     std::vector<std::vector<Value>> nativeArguments;
     std::vector<std::string> nativeReceivers,nativeDeclarations;
     std::map<std::string,std::string> objectDisplayPaths;
+    std::map<std::string,std::string> defaultObjects;
+    std::vector<std::string> defaultSelections;
     std::vector<std::string> objectStringLookups;
     std::shared_ptr<Vm::Reference> retainedNativeReference,retainedNativeElement;
     std::size_t beginCount{},commitCount{},rollbackCount{},effects{},savedEffects{};
@@ -285,6 +287,12 @@ struct TestHost final:Vm::Host {
         objectStringLookups.push_back(identity);
         const auto found=objectDisplayPaths.find(identity);
         if(found==objectDisplayPaths.end()) throw std::runtime_error("Fixture object has no actual path identity");
+        return found->second;
+    }
+    std::string ClassDefaultObject(const std::string& identity) override {
+        defaultSelections.push_back(identity);
+        const auto found=defaultObjects.find(identity);
+        if(found==defaultObjects.end()) throw std::runtime_error("ClassContext requires class-default object identity");
         return found->second;
     }
     static std::string Fold(std::string text) {
@@ -623,6 +631,29 @@ void StartupPrimitiveContracts() {
     expectInt(Native(249u,{Int(-7),Int(3)}),-7,"Min signed operands");
     expectInt(Native(249u,{Int(std::numeric_limits<std::int32_t>::min()),Int(std::numeric_limits<std::int32_t>::max())}),
         std::numeric_limits<std::int32_t>::min(),"Min signed32 boundaries");
+    for(const auto& [a,b,expected] : std::vector<std::array<float,3>>{{0.3f,0.25f,0.25f},{0.3f,0.5f,0.3f},{-7.0f,3.0f,-7.0f},
+            {std::numeric_limits<float>::lowest(),std::numeric_limits<float>::max(),std::numeric_limits<float>::lowest()}})
+        Require(evaluate(Native(244u,{Real(a),Real(b)}),"FMin finite operands").floating==expected,"FMin selected wrong finite operand");
+    for(const auto first : {0.0f,-0.0f}) {
+        const auto value=evaluate(Native(244u,{Real(first),Real(-first)}),"FMin first operand wins signed-zero tie");
+        Require(std::bit_cast<std::uint32_t>(value.floating)==std::bit_cast<std::uint32_t>(first),"FMin discarded first operand on equal zeros");
+    }
+    for(const bool declared : {false,true}) {
+        TestHost host;
+        const auto mutation=Native(1060u,{Ref(0x01,1),Real(-100.0f),Real(5.0f)});
+        auto expression=Native(244u,{Ref(0x01,1),mutation});
+        if(declared) {
+            auto declaration=Function("FMin",{},"NativeSource");declaration.flags=0x2401u;declaration.nativeIndex=244u;
+            declaration.variables={{"FMin.A","A",Value::Float(0),0x80u,1u},{"FMin.B","B",Value::Float(0),0x80u,1u}};
+            host.finals[{"Fixture",9}]=std::make_shared<Vm::Function>(declaration);
+            expression=Call(0x1c,9,{Ref(0x01,1),mutation});
+        }
+        const auto function=Function("FMinInputSnapshot",Return(expression));
+        const auto property=host.Property(function,1,"Number",Value::Float(0));host.Store("Self",property,{Value::Float(7.0f)});
+        const auto result=Vm::Execute(host,function,"Self");Returned(result,"FMin original sequential input copies");
+        Require(result.value.kind==Vm::Kind::Float && result.value.floating==5.0f && host.Load("Self",property).floating==-100.0f &&
+            result.writes==1u,"FMin reloaded first argument after second mutated it");
+    }
     for(const auto& [v,a,b,expected] : std::vector<std::array<float,4>>{{5,0,10,5},{-1,0,10,0},{11,0,10,10},{5,10,0,10},{15,10,0,0}})
         Require(evaluate(Native(246u,{Real(v),Real(a),Real(b)}),"FClamp ordered/reversed bounds").floating==expected,
             "FClamp sorted bounds or selected wrong branch");
@@ -648,13 +679,15 @@ void StartupPrimitiveContracts() {
         Failed(result,status,host,context);Require(host.effects==0u && host.rng==12345u,context+": earlier effect/RNG escaped rollback");
     };
     for(const auto& expression : {Native(125u,{Int(1)}),Native(124u,{String("a"),Int(1)}),Native(189u,{String("1")}),
-        Native(246u,{Real(1),String("0"),Real(2)}),Native(249u,{String("1"),Int(2)}),Join({{0x56},Int(1)})})
+        Native(244u,{Real(1),String("0")}),Native(246u,{Real(1),String("0"),Real(2)}),Native(249u,{String("1"),Int(2)}),Join({{0x56},Int(1)})})
         refuse(expression,Vm::Status::Unsupported,"Startup concrete argument types refused");
     for(const auto& expression : {Native(125u,{}),Native(126u,{String("a")}),Native(127u,{String("a")}),
-        Native(127u,{String("a"),Int(0),Int(1),Int(2)}),Native(168u,{String("a")}),Native(249u,{Int(1)})})
+        Native(127u,{String("a"),Int(0),Int(1),Int(2)}),Native(168u,{String("a")}),Native(244u,{Real(1)}),Native(249u,{Int(1)})})
         refuse(expression,Vm::Status::Invalid,"Startup native arity refused");
     for(const auto nonfinite : {std::numeric_limits<float>::quiet_NaN(),std::numeric_limits<float>::infinity()}) {
         refuse(Native(189u,{Real(nonfinite)}),Vm::Status::Invalid,"Tan nonfinite ingress policy");
+        refuse(Native(244u,{Real(nonfinite),Real(1)}),Vm::Status::Invalid,"FMin nonfinite first argument policy");
+        refuse(Native(244u,{Real(1),Real(nonfinite)}),Vm::Status::Invalid,"FMin nonfinite second argument policy");
         for(const auto& expression : {Native(246u,{Real(nonfinite),Real(0),Real(1)}),Native(246u,{Real(0),Real(nonfinite),Real(1)}),
             Native(246u,{Real(0),Real(0),Real(nonfinite)})})
             refuse(expression,Vm::Status::Invalid,"Clamp nonfinite ingress refused before x87 branch emulation");
@@ -1118,13 +1151,17 @@ void DecalNativeInputContracts() {
 }
 void AssignmentArraysAndStructs() {
     TestHost host;
-    auto f=Function("AssignmentOrder",Return(Let(Element(Native(1001),Ref(0x01,1)),Native(1002))));
+    auto f=Function("AssignmentOrder",Join({Let(Element(Native(1001),Ref(0x01,1)),Native(1002)),Return()}));
     const auto slot=host.Property(f,1,"Slot",Value::Integer(0));host.Store("Self",slot,{Value::Integer(0)});
     auto r=Vm::Execute(host,f,"Self");Returned(r,"Let evaluation order");
-    Require(host.observations==std::vector<std::string>{"lhs","variable:Self:Slot","rhs"} && r.value.integer==23,
-        "Let did not evaluate LHS before RHS or return the assigned alias");
-    f=Function("NothingAssignment",Return(Let({0x0b},Int(17))));
-    r=Vm::Execute(host,f,"Self");Returned(r,"Nothing assignment");Require(r.value.integer==17,"Nothing LHS did not preserve RHS");
+    Require(host.observations==std::vector<std::string>{"lhs","variable:Self:Slot","rhs"} &&
+        r.value.kind==Vm::Kind::Nothing && host.Load("Self",slot).integer==23,
+        "Let did not evaluate LHS before RHS, store through its address, or leave outer Result unwritten");
+    f=Function("NothingAssignment",Return(Let({0x0b},Native(1002))));
+    const auto observations=host.observations.size();
+    r=Vm::Execute(host,f,"Self");Returned(r,"Nothing assignment scratch result");
+    Require(r.value.kind==Vm::Kind::Nothing && !r.writes && host.observations.size()==observations+1u &&
+        host.observations.back()=="rhs","Nothing LHS did not execute RHS once without writing the enclosing result");
     f=Function("ArrayClamp",Join({Let(Element(Int(-12),Ref(0x01,1)),Int(11)),
         Let(Element(Int(900),Ref(0x01,1)),Int(99)),Return(Element(Int(1),Ref(0x01,1)))}));
     const auto array=host.Property(f,1,"Array",Value::Integer(0),0,3);
@@ -1318,7 +1355,135 @@ void ReceiverAndContextMetadataContracts() {
         }
     }
     std::cout<<"Retail receiver/context structural foundation: "<<checks-initialChecks
-        <<" checks, "<<rejections-initialRejections<<" rejection controls; ClassContext execution remains unsupported.\n";
+        <<" checks, "<<rejections-initialRejections<<" rejection controls.\n";
+}
+void ClassContextContracts() {
+    const auto initialChecks=checks,initialRejections=rejections;
+    TestHost host;
+    const auto refused=[&](const Vm::Function& function,const Vm::Status status,const std::string& label,
+        const Vm::Limits& limits=Vm::Limits{}) {
+        const auto counts=std::array<std::size_t,3>{host.beginCount,host.commitCount,host.rollbackCount};
+        const auto storage=host.storage;const auto effects=host.effects;const auto random=host.rng;
+        const auto result=Vm::Execute(host,function,"Self",{},limits);
+        Require(result.status==status && !result.passed() && !result.committed && !result.error.empty(),label+": invalid refusal diagnostic");
+        Require(host.beginCount==counts[0]+1u && host.commitCount==counts[1] && host.rollbackCount==counts[2]+1u &&
+            !host.active,label+": enclosing transaction did not roll back exactly once");
+        Require(host.storage.size()==storage.size() && host.effects==effects && host.rng==random,label+": host effects/storage count escaped rollback");
+        for(const auto& [key,values]:storage) {
+            const auto found=host.storage.find(key);Require(found!=host.storage.end() && found->second.size()==values.size(),label+": storage alias shape escaped rollback");
+            for(std::size_t i=0u;i<values.size();++i) Require(Vm::Equal(values[i],found->second[i]),label+": reflected value escaped rollback");
+        }
+        ++rejections;return result;
+    };
+    {
+        TestHost assignment;
+        auto function=Function("RetailAssignmentReturn",Join({Let(Ref(0x00,2),Int(91)),
+            Return(Let(Ref(0x01,1),Native(1002u)))}));
+        const auto target=assignment.Property(function,1,"Target",Value::Integer(0));
+        const auto returned=assignment.Property(function,2,"ReturnValue",Value::Integer(0),0x480u,1u,true);
+        function.variables={returned};assignment.Store("Self",target,{Value::Integer(7)});
+        auto result=Vm::Execute(assignment,function,"Self");Returned(result,"Let leaves caller result unwritten");
+        Require(result.value.integer==91 && assignment.Load("Self",target).integer==23 && result.writes==2u,
+            "Let returned its assigned lvalue or lost already initialized result-local storage");
+        function.bytecode=Join({Let(Ref(0x00,2),Int(91)),Return(Let({0x0b},Native(1002u)))});
+        result=Vm::Execute(assignment,function,"Self");Returned(result,"Null Let scratch leaves initialized caller result");
+        Require(result.value.integer==91 && result.writes==1u && assignment.Load("Self",target).integer==23,
+            "Null Let scratch wrote outer result or a real reflected target");
+    }
+    auto f=Function("RealClassContext",Return(Context(Ref(0x20,1),Ref(0x02,2),4u,0x12u)));
+    host.objects[{f.source,1}]="Engine.GameInfo";
+    host.defaultObjects["Engine.GameInfo"]="@Default:Engine.GameInfo";
+    host.defaultObjects["DeusEx.DeusExGameInfo"]="@Default:DeusEx.DeusExGameInfo";
+    const auto p=host.Property(f,2,"DefaultPlayerName",Value::Text(Vm::Kind::String,{}));
+    host.Store("@Default:Engine.GameInfo",p,{Value::Text(Vm::Kind::String,"Player")},Vm::Scope::Default);
+    host.Store("@Default:DeusEx.DeusExGameInfo",p,{Value::Text(Vm::Kind::String,"JC")},Vm::Scope::Default);
+    auto r=Vm::Execute(host,f,"Self");Returned(r,"Selected actual class default");
+    Require(r.value.text=="Player" && host.defaultSelections==std::vector<std::string>{"Engine.GameInfo"},
+        "ClassContext substituted derived defaults or evaluated selector twice");
+    f.bytecode=Return(Context(Ref(0x20,1),{0x17},4u,0x12u));
+    r=Vm::Execute(host,f,"Self");Returned(r,"Default block Self identity");
+    Require(r.value.text=="@Default:Engine.GameInfo" && r.value.text!="Engine.GameInfo",
+        "ClassContext Self returned its UClass instead of distinct default-object identity");
+    const auto selector=host.Property(f,3,"ClassSelector",Value::Text(Vm::Kind::Object,{}));
+    host.Store("Self",selector,{Value::Text(Vm::Kind::Object,"Engine.GameInfo")});
+    host.Store("Other",selector,{Value::Text(Vm::Kind::Object,"DeusEx.DeusExGameInfo")});
+    host.objects[{f.source,4}]="Other";
+    f.bytecode=Return(Context(Ref(0x20,4),Context(Ref(0x01,3),Ref(0x02,2),0u,0x12u)));
+    r=Vm::Execute(host,f,"Self");Returned(r,"Class selector uses frame Object");
+    Require(r.value.text=="Player","Nested ClassContext selector used incoming receiver rather than frame Object");
+    f.bytecode=Return(Context(Native(1003u,{Ref(0x20,1),Native(1000u)}),Ref(0x02,2),0u,0x12u));
+    const auto beforeEffects=host.effects;
+    r=Vm::Execute(host,f,"Self");Returned(r,"Class selector effects exactly once");
+    Require(r.value.text=="Player" && host.effects==beforeEffects+1u,"ClassContext selector effects repeated");
+    const auto value=host.Property(f,5,"Target",Value::Integer(0));host.Store("Self",value,{Value::Integer(97)});
+    for(const auto op:{std::uint8_t{0x12u},std::uint8_t{0x19u}}) {
+        f.bytecode=Join({Let(Ref(0x01,5),Context({0x2a},Native(1000u),0u,op)),Return(Ref(0x01,5))});
+        const auto effects=host.effects;
+        r=Vm::Execute(host,f,"Self");Returned(r,"Null zero-size context preserves destination");
+        Require(r.value.integer==97 && !r.writes && host.effects==effects,"Zero-size null Context cleared target or evaluated child");
+        f.bytecode=Join({Let(Ref(0x01,5),Context({0x2a},Int(10),4u,op)),Return(Ref(0x01,5))});
+        r=Vm::Execute(host,f,"Self");Returned(r,"Null context full result zeroing");
+        Require(r.value.integer==0 && r.writes==1u,"Null context did not zero complete Int destination");
+        host.Store("Self",value,{Value::Integer(97)});
+        f.bytecode=Join({Let(Ref(0x01,5),Element(Int(0),Context({0x2a},Ref(0x02,2),32u,op))),Return(Ref(0x01,5))});
+        r=Vm::Execute(host,f,"Self");Returned(r,"Null array base does not write outer result");
+        Require(r.value.integer==97 && !r.writes,"ArrayElement propagated null base's whole-array zero fill");
+    }
+    const auto bit=host.Property(f,6,"Bit",Value::Bool(false));host.Store("Self",bit,{Value::Bool(true)});
+    f.bytecode=Join({Let(Ref(0x01,6),Context({0x2a},Ref(0x02,6),0u,0x12u),0x14u),Return(Ref(0x01,6))});
+    r=Vm::Execute(host,f,"Self");Returned(r,"LetBool prezeros no-write RHS");
+    Require(!r.value.boolean && r.writes==1u,"LetBool preserved old bit for no-write RHS");
+    f.bytecode=Return(Join({{0x2d},Context({0x2a},Ref(0x02,6),4u,0x12u)}));
+    r=Vm::Execute(host,f,"Self");Returned(r,"BoolVariable null address");Require(!r.value.boolean,"Null BoolVariable did not yield false");
+    f.bytecode=Join({Let(Context({0x2a},Ref(0x02,5),0u,0x12u),Native(1000u)),Return()});
+    const auto effects=host.effects;r=Vm::Execute(host,f,"Self");Returned(r,"Null LHS evaluates RHS effects");
+    Require(host.effects==effects+1u && !r.writes,"Null reflected LHS suppressed RHS or manufactured a target");
+    f.bytecode=Join({Let(Context(Ref(0x20,1),Ref(0x02,2),0u,0x12u),String("Changed")),Native(4095u),Return()});
+    r=refused(f,Vm::Status::Unsupported,"Class default later-failure rollback");
+    Require(host.Load("@Default:Engine.GameInfo",p,0,Vm::Scope::Default).text=="Player" && r.writes==1u,
+        "ClassContext default assignment escaped rollback");
+    f.bytecode=Join({Let(Ref(0x01,5),Int(23)),Let(Ref(0x01,5),Context({0x2a},Int(10),1u,0x12u)),Return()});
+    r=refused(f,Vm::Status::Unsupported,"Unaudited partial zero fill refusal");
+    Require(host.Load("Self",value).integer==97 && r.error=="VM partial context zero-fill destination is not established",
+        "Partial zero fill was silently widened or prefix assignment escaped rollback");
+    auto callee=Function("OriginalStaticShape",Return(Ref(0x00,9)),"StaticSource");callee.flags=0x2002u;
+    callee.variables={host.Property(callee,9,"Caller",Value::Text(Vm::Kind::Object,{}),0x80u,1u,true)};
+    host.finals[{f.source,8}]=std::make_shared<Vm::Function>(callee);
+    f.bytecode=Return(Context(Ref(0x20,1),Call(0x1c,8,{{0x17}}),4u,0x12u));
+    r=Vm::Execute(host,f,"Self");Returned(r,"Static call receiver versus caller arguments");
+    Require(r.value.text=="Self" && host.preparations.back()=="@Default:Engine.GameInfo:"+callee.path,
+        "Static flag retargeted receiver or changed caller argument frame");
+    for (const auto& [zero,bytes]:std::vector<std::pair<Value,std::uint8_t>>{
+        {Value::Byte(0u),1u},{Value::Integer(0),4u},{Value::Float(0),4u},{Value::Bool(false),4u},
+        {Value::Text(Vm::Kind::Name,"None"),4u},{Value::Text(Vm::Kind::Object,{}),4u},
+        {Value::Text(Vm::Kind::String,{}),12u},{Value::Vector({}),12u},{Value::Rotator({}),12u}}) {
+        auto argumentCallee=Function("TypedContextArgument",Return(Ref(0x00,10)),"ParameterSource");
+        argumentCallee.variables={host.Property(argumentCallee,10,"Value",zero,0x80u,1u,true)};
+        host.finals[{f.source,11}]=std::make_shared<Vm::Function>(argumentCallee);
+        for(const auto size:{std::uint8_t{0u},bytes}) {
+            f.bytecode=Return(Call(0x1c,11,{Context({0x2a},Native(4095u),size,0x12u)}));
+            r=Vm::Execute(host,f,"Self");Returned(r,"Typed script parameter null context destination");
+            Require(Vm::Equal(r.value,zero),"Null ClassContext argument did not retain/zero actual declared parameter layout");
+        }
+    }
+    f.bytecode=Return(Native(174u,{Context({0x2a},Real(99),4u,0x12u),Real(2.5f)}));
+    r=Vm::Execute(host,f,"Self");Returned(r,"Direct numeric native null Float destination");
+    Require(r.value.kind==Vm::Kind::Float && r.value.floating==2.5f,"Float null argument got untyped Nothing instead of actual Float zero");
+    for(const auto first:{false,true}) {
+        const auto nullFloat=Context({0x2a},Native(4095u),4u,0x12u);
+        f.bytecode=Return(first ? Native(244u,{nullFloat,Real(2.5f)}) : Native(244u,{Real(2.5f),nullFloat}));
+        r=Vm::Execute(host,f,"Self");Returned(r,"FMin typed null Float argument destination");
+        Require(r.value.kind==Vm::Kind::Float && r.value.floating==0.0f,"FMin did not use actual four-byte Float zero destination");
+    }
+    f.bytecode=Return(Native(215u,{Context({0x2a},Native(4095u),12u,0x12u),
+        Bytes{0x23,0,0,128,63,0,0,0,64,0,0,64,64}}));
+    r=Vm::Execute(host,f,"Self");Returned(r,"Direct Vector native null destination");
+    Require(r.value.kind==Vm::Kind::Vector && r.value.vector==std::array<float,3>{1,2,3},"Vector null argument layout was lost");
+    f.bytecode=Return(Native(1003u,{Context({0x2a},Int(9),4u,0x12u)}));
+    r=refused(f,Vm::Status::Unsupported,"Unaudited direct native argument destination");
+    Require(r.error=="VM context argument result destination layout is unavailable", "Unknown direct native guessed null argument layout from byte count");
+    std::cout<<"Class default receiver/result destinations: "<<checks-initialChecks<<" checks, "
+        <<rejections-initialRejections<<" refusal controls.\n";
 }
 void OptionalAndReferenceTables() {
     TestHost host;
@@ -2290,7 +2455,7 @@ void DynamicIntArrayContracts() {
         <<checks-initialChecks<<" checks and "<<rejections-initialRejections<<" rejection controls passed.\n";
 }
 void ExecutionContracts() {
-    RotatorDirectionContracts();ScalarAndLocalContracts();ParametersAndReturns();DecalNativeInputContracts();AssignmentArraysAndStructs();LazyAndContextContracts();ReceiverAndContextMetadataContracts();
+    RotatorDirectionContracts();ScalarAndLocalContracts();ParametersAndReturns();DecalNativeInputContracts();AssignmentArraysAndStructs();LazyAndContextContracts();ReceiverAndContextMetadataContracts();ClassContextContracts();
     OptionalAndReferenceTables();ControlAndFailureContracts();BudgetAndNestedRollback();IntegerIncrementContracts();CastContracts();SwitchContracts();DynamicIntArrayContracts();
 }
 void TransactionContracts() {

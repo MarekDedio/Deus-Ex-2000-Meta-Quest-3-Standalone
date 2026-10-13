@@ -65,6 +65,13 @@ try {
     Complete-Test 'music diagnostic uses the same acknowledged bounded mailbox'
 
     New-MockState
+    $result = & $helper -Command COMPASS -TimeoutSeconds 1 -AdbPath $mockAdb
+    $state = Read-MockState
+    Assert-True ($result.Consumed -eq $true -and $state.LastRequest -eq 'COMPASS') 'compass diagnostic consumed'
+    Assert-True ($state.SuccessfulWrites -eq 1 -and -not $state.Pending) 'compass diagnostic queued exactly once'
+    Complete-Test 'compass diagnostic uses acknowledged mailbox without overriding pending state'
+
+    New-MockState
     $result = & $helper -MapName 00_Training -TimeoutSeconds 1 -AdbPath $mockAdb
     $state = Read-MockState
     Assert-True ($result.Consumed -eq $true -and $state.LastRequest -eq '00_Training') 'map request consumed'

@@ -3130,19 +3130,22 @@ void VerifyOriginalWorldStartupProbe(const std::filesystem::path& legacy,
         << " function=" << result.execution.function << ':' << result.execution.offset
         << " opcode=" << static_cast<unsigned>(result.execution.opcode)
         << " error=" << result.execution.error << std::endl;
+    std::cout << "WORLD PROBE STACK";
+    for (const auto& function:result.execution.callStack) std::cout << " -> " << function;
+    std::cout << std::endl;
     Require(!result.execution.passed() && !result.execution.committed && !result.restoredWorld &&
         !result.execution.error.empty() && !result.gameInfoPath.empty() &&
         result.visited.at(static_cast<std::size_t>(PortableWorldStartupPhase::InitializeExecution)) == actors.size() + 1u &&
         result.visited.at(static_cast<std::size_t>(PortableWorldStartupPhase::InitGame)) == 1u,
         "Original world prefix did not perform true GameInfo birth + all-world InitExecution + InitGame: " +
             std::string(PortableWorldStartupPhaseName(result.phase)) + " " + result.execution.error);
-    Require(result.phase == PortableWorldStartupPhase::PreBeginPlay && result.actorSlot == 1331u &&
-        result.actorPath == "00_Training.Camera4" && result.gameInfoPath == "00_Training.DeusExGameInfo0" &&
-        result.execution.status == Status::Unsupported && result.execution.function == "Engine.Pawn.InitPlayerReplicationInfo" &&
-        result.execution.offset == 36u && result.execution.opcode == 18u &&
-        result.execution.error == "ClassContext requires class-default object identity" &&
+    Require(result.phase == PortableWorldStartupPhase::PreBeginPlay && result.actorSlot == 1332u &&
+        result.actorPath == "00_Training.Camera5" && result.gameInfoPath == "00_Training.DeusExGameInfo0" &&
+        result.execution.status == Status::Unsupported && result.execution.function == "Engine.PlayerPawn.ConsoleCommand" &&
+        result.execution.offset == 0u && result.execution.opcode == 0u &&
+        result.execution.error == "Unsupported runtime native 0 (Engine.PlayerPawn.ConsoleCommand)" &&
         result.execution.callStack.size() >= 2u &&
-        result.execution.callStack.back() == "Engine.Pawn.InitPlayerReplicationInfo",
+        result.execution.callStack.back() == "Engine.PlayerPawn.ConsoleCommand",
         "Unmodified Training first startup gap changed without an updated original contract: " +
             std::string(PortableWorldStartupPhaseName(result.phase)) + " " + result.actorPath + " " + result.execution.error);
     verifyRollback();
@@ -3164,7 +3167,7 @@ void VerifyOriginalWorldStartupProbe(const std::filesystem::path& legacy,
         << " phase=" << PortableWorldStartupPhaseName(result.phase) << " slot=" << result.actorSlot
         << " actor=" << result.actorPath << " function=" << result.execution.function << ':' << result.execution.offset
         << " opcode=" << static_cast<unsigned>(result.execution.opcode) << " error=" << result.execution.error
-        << "; native280 passed actual PRI.PostBeginPlay; next original GameInfo.DefaultPlayerName ClassContext boundary; owned synthetic client/viewport, exact repeated failure, all state/GC/birth/revision bytes rolled back; NOT world/player completion\n";
+        << "; native280 and actual GameInfo.DefaultPlayerName ClassContext passed; next original Camera5 PlayerPawn.ConsoleCommand boundary; owned synthetic client/viewport, exact repeated failure, all state/GC/birth/revision bytes rolled back; NOT world/player completion\n";
 }
 
 void TestOriginal(const std::filesystem::path& root, const bool inventoryOnly = false,

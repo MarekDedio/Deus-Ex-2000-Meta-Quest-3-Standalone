@@ -19,6 +19,7 @@
 #include <memory>
 #include <mutex>
 #include <numeric>
+#include <optional>
 #include <set>
 #include <string_view>
 #include <unordered_map>
@@ -37,6 +38,8 @@
 #include "quest_native_client.h"
 #include "persona_ui_canvas.h"
 #include "quest_dialogue_ui.h"
+#include "quest_hud_ui.h"
+#include "quest_hud_view.h"
 #include "quest_map_cache.h"
 #include "vr_world_transform.h"
 #include "quest_vr_input.h"
@@ -582,7 +585,9 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         targetingFrameRenderer_.Shutdown();
         focusLabelRenderer_.Shutdown();
         if (focusLabelTextureId_!=0u) {glDeleteTextures(1,&focusLabelTextureId_);focusLabelTextureId_=0u;}
+        DestroyOriginalCompassUi();
         ui_.Shutdown();
+        DestroyOriginalPlayerHudUi();
         DestroyPlayerVisuals();
         ClearPendingStaticLightmapUpload();
         DestroySceneGeometry();
@@ -651,6 +656,13 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             // owner's real targets. It must never inspect GL/OpenXR handles.
             BindPortableRuntimeClient(clientLifetime, clientIdentity);
             RegisterPortableRuntimeViewport(clientIdentity, viewport);
+            // Original engine-owned Client/Viewport precede map Login. This
+            // materializes only the genuine registered stereo session objects;
+            // Actor remains None until original Login/SetPlayer/Possess works.
+            const auto playerSession=PreparePortableRuntimePlayerObjects(viewport.identity);
+            ALOG("DeusExQuest: native player session objects ready client=%s viewport=%s class=%s bound=%s",
+                playerSession.clientPath.c_str(),playerSession.viewportPath.c_str(),
+                playerSession.viewportClassPath.c_str(),playerSession.bound?"true":"false");
             ALOG(
                 "DeusExQuest: persistent Unreal runtime ready: %zu objects, %zu classes, %zu functions, %zu properties, %zu bytecode bytes, %zu class defaults/%zu default properties, %zu links resolved/%zu external",
                 runtime.objects,
@@ -1007,6 +1019,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
     }
 
     void Update(const OVRFW::ovrApplFrameIn& frame) override {
+        healthUiVisible_=beltUiVisible_=false;
         musicPlaybackActive_.store(Focused && runtimeAvailable_ && pendingMapName_.empty() &&
             transitionMapName_.empty(),std::memory_order_release);
         CompleteInitialPreparation();
@@ -1377,6 +1390,8 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         }
         UpdateInventoryMenu(frame, mapLoadingNow);
         UpdateOriginalDataLinkUi(frame,mapLoadingNow);
+        UpdateOriginalCompassUi(frame,mapLoadingNow);
+        UpdateOriginalPlayerHudUi(frame,mapLoadingNow);
         if (subtitleLabel_ != nullptr) {
             auto pose = frame.HeadPose;
             pose.Translation += pose.Rotation.Rotate({0.0f,-0.35f,-1.4f});
@@ -1446,6 +1461,9 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             else draw.actor->Render(output.Surfaces);
         }
         RenderTargetingFrame(frame,output);
+        if (healthUiVisible_) healthHudRenderer_.Render(output.Surfaces);
+        if (beltUiVisible_) beltHudRenderer_.Render(output.Surfaces);
+        if (compassUiVisible_) compassRenderer_.Render(output.Surfaces);
         if (inventoryMenuOpen_) personaRenderer_.Render(output.Surfaces);
         if (dataLinkUiVisible_) dataLinkRenderer_.Render(output.Surfaces);
         const std::size_t firstUiSurface = output.Surfaces.size();
@@ -1480,6 +1498,13 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                 static_cast<int>(playerPosture_.seated),playerPosture_.virtualFloorY,
                 frame.HeadPose.Translation.y-playerPosture_.virtualFloorY,
                 playerPosture_.virtualFloorY-worldPosition_.y);
+            if (compassUiVisible_ && activeMapNorth_) {
+                const auto center=frame.HeadPose.Translation+frame.HeadPose.Rotation.Rotate(
+                    OVR::Vector3f{QuestVr::kHudCompassCenterX,QuestVr::kHudCompassCenterY,-QuestVr::kHudVrDistance});
+                const auto clip=projection.Transform(OVR::Vector4f(center.x,center.y,center.z,1.0f));
+                ALOG("DeusExQuest: screenshot original compass mapNorth=%d leftEyeNdc=(%.4f %.4f); 73x40 original pixels",
+                    activeMapNorth_->trueNorth,clip.x/clip.w,clip.y/clip.w);
+            }
             const auto mapHead = StageToLocal(frame.HeadPose.Translation,worldPosition_);
             const auto mapFeet = StageToLocal(OVR::Vector3f{frame.HeadPose.Translation.x,
                 playerPosture_.virtualFloorY,frame.HeadPose.Translation.z},worldPosition_);
@@ -1578,6 +1603,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         preparedActorSnapshots_.clear();
         preparedSpatialAudioEmitters_.clear();
         preparedMapLights_.clear();
+        preparedMapNorth_.reset();activeMapNorth_.reset();
         preparedActorTextures_ = {};
         preparedWorldTexture_ = {};
         preparedWorldMesh_ = {};
@@ -1604,6 +1630,8 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         moverPublicationMilliseconds_ = moverPublicationWorstMilliseconds_ = 0.0;
         personaRenderer_.Shutdown();
         dataLinkRenderer_.Shutdown();
+        DestroyOriginalCompassUi();
+        DestroyOriginalPlayerHudUi();
         focusLabelRenderer_.Shutdown();
         if (focusLabelTextureId_!=0u) {
             glDeleteTextures(1,&focusLabelTextureId_);
@@ -1849,6 +1877,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         std::vector<SpatialAudioEmitter> spatialAudioEmitters;
         std::vector<MapLight> lights;
         QuestVr::MapMusicPreparation music;
+        std::optional<PortableMapNorthSnapshot> mapNorth;
     };
 
     struct AmbientPreparation {
@@ -1869,6 +1898,12 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         QuestVr::FrobDescriptionMessages focusMessages;
         QuestVr::FrobDescriptionPalette focusPalette;
         QuestVr::PersonaUiImage dataLinkBase;
+        QuestVr::HudCompassArtwork compass;
+        QuestVr::HudBeltArtwork belt;
+        QuestVr::HudHealthArtwork health;
+        PortableBitmapFont hudTinyFont;
+        std::unordered_map<std::string,QuestVr::PersonaUiImage> hudIcons;
+        bool playerHudReady{};
         PortableBitmapFont dataLinkNameFont;
         PortableBitmapFont dataLinkTextFont;
         std::unordered_map<std::string,QuestVr::PersonaUiImage> dataLinkPortraits;
@@ -1899,6 +1934,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                 std::string(gameRoot_) + "/Maps/00_Training.dx");
             auto& map = preparation.map;
             map.actors = GetPortableRuntimeMapActors();
+            map.mapNorth=PrepareOriginalMapNorth();
             map.worldMesh = LoadWorldMeshCacheCpu();
             if (!map.worldMesh.passed)
                 throw std::runtime_error("initial DXQM/DXQS mesh cache read failed");
@@ -1972,6 +2008,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         preparedWorldMesh_ = std::move(preparation.map.worldMesh);
         preparedSpatialAudioEmitters_ = std::move(preparation.map.spatialAudioEmitters);
         preparedMapMusic_ = std::move(preparation.map.music);
+        preparedMapNorth_ = std::move(preparation.map.mapNorth);
         preparedMapLights_ = std::move(preparation.map.lights);
         runtimeAvailable_ = true;
         transitionMapName_ = currentMapName_;
@@ -3381,6 +3418,9 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             if (transitionPhase_ == MapTransitionPhase::WorldTextureAllocate) {
                 DestroySceneGeometry();
                 currentMapName_ = transitionMapName_;
+                activeMapNorth_=std::move(preparedMapNorth_);preparedMapNorth_.reset();
+                compassDisplayedPositions_.reset();
+                ResetOriginalPlayerHudState();
                 activeMapLights_ = std::move(preparedMapLights_);
                 activeMapUnrealOrigin_ = preparedWorldMesh_.lightmap.unrealOrigin;
                 activeMapPlayerStartPath_ = preparedWorldMesh_.lightmap.playerStartPath;
@@ -3626,6 +3666,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                 if (!preparation.actorTextures.passed)
                     throw std::runtime_error("restored actor texture preparation failed");
                 preparation.actors = GetPortableRuntimeMapActors();
+                preparation.mapNorth=PrepareOriginalMapNorth();
                 preparation.lights = BuildMapLights(preparation.actors,preparation.worldMesh.lightmap.unrealOrigin);
                 preparation.music=QuestVr::PrepareOriginalMapMusic(gameRoot_,mapName,targetAudioRate);
                 return true;
@@ -3707,6 +3748,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         preparedWorldMesh_ = std::move(preparation.worldMesh);
         preparedSpatialAudioEmitters_ = std::move(preparation.spatialAudioEmitters);
         preparedMapMusic_ = std::move(preparation.music);
+        preparedMapNorth_ = std::move(preparation.mapNorth);
         preparedMapLights_ = std::move(preparation.lights);
         transitionMapName_ = mapName;
         transitionPhase_ = MapTransitionPhase::WorldTextureAllocate;
@@ -3806,6 +3848,15 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             ALOG("DeusExQuest: music diagnostic present=%s active=%s rate=%u underrunFrames=%llu",
                 musicStream_?"true":"false",musicPlaybackActive_.load(std::memory_order_acquire)?"true":"false",
                 audioSampleRate_,static_cast<unsigned long long>(musicStream_?musicStream_->UnderrunFrames():0u));
+            return;
+        }
+        if (std::strcmp(requested, "COMPASS") == 0) {
+            ALOG("DeusExQuest: compass diagnostic artwork=%s visible=%s northAvailable=%s mapNorth=%d draw=%d wrap=%d source=%s",
+                compassRenderer_.IsInitialized()?"true":"false",compassUiVisible_?"true":"false",
+                activeMapNorth_?"true":"false",activeMapNorth_?activeMapNorth_->trueNorth:0,
+                compassDisplayedPositions_?compassDisplayedPositions_->draw:0,
+                compassDisplayedPositions_?compassDisplayedPositions_->wrap:0,
+                activeMapNorth_ && activeMapNorth_->found?activeMapNorth_->actorPath.c_str():"None");
             return;
         }
         if (std::strcmp(requested, "READY") == 0) {
@@ -4234,6 +4285,176 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         return false;
     }
 
+    static std::optional<PortableMapNorthSnapshot> PrepareOriginalMapNorth() {
+        try {
+            auto north=ReadPortableRuntimeMapNorth();
+            ALOG("DeusExQuest: original HUD map north=%d source=%s; actual Level-slot metadata",
+                north.trueNorth,north.found?north.actorPath.c_str():"None (original initial zero)");
+            return north;
+        } catch (const std::exception& error) {
+            ALOG("DeusExQuest: original compass map metadata unavailable: %s",error.what());
+            return std::nullopt;
+        }
+    }
+
+    void DestroyOriginalCompassUi() {
+        compassUiVisible_=false;
+        compassRenderer_.Shutdown();
+        if (compassTextureId_!=0u) {glDeleteTextures(1,&compassTextureId_);compassTextureId_=0u;}
+        compassArtwork_={};compassDisplayedPositions_.reset();
+    }
+
+    static std::string OriginalHudIconKey(std::string path) {
+        if (path.size()>4096u || path.find('\0')!=std::string::npos)
+            throw std::runtime_error("Original HUD icon identity exceeds bound");
+        for (auto& letter:path) if (letter>='A' && letter<='Z') letter=static_cast<char>(letter+('a'-'A'));
+        return path;
+    }
+
+    void ResetOriginalPlayerHudState() {
+        healthUiVisible_=beltUiVisible_=false;
+        cachedPlayerHud_.reset();
+        hudQuerySeconds_=0.0f;
+        playerHudError_.clear();
+    }
+
+    void DestroyOriginalPlayerHudUi() {
+        ResetOriginalPlayerHudState();
+        healthHudRenderer_.Shutdown();beltHudRenderer_.Shutdown();
+        if (healthHudTextureId_!=0u) {glDeleteTextures(1,&healthHudTextureId_);healthHudTextureId_=0u;}
+        if (beltHudTextureId_!=0u) {glDeleteTextures(1,&beltHudTextureId_);beltHudTextureId_=0u;}
+        hudBeltArtwork_={};hudHealthArtwork_={};hudTinyFont_={};hudIcons_.clear();
+    }
+
+    static bool SamePlayerHudSnapshot(const PortablePlayerHudSnapshot& left,const PortablePlayerHudSnapshot& right) {
+        if (left.available!=right.available || left.bound!=right.bound || left.playerPath!=right.playerPath ||
+            left.keyRingPath!=right.keyRingPath || left.limbHealth!=right.limbHealth || left.energy!=right.energy ||
+            left.energyMax!=right.energyMax || left.inventory.size()!=right.inventory.size()) return false;
+        for (std::size_t index=0u;index<left.inventory.size();++index) {
+            const auto& a=left.inventory[index];const auto& b=right.inventory[index];
+            if (a.actorPath!=b.actorPath || a.classPath!=b.classPath || a.iconPath!=b.iconPath ||
+                a.beltDescription!=b.beltDescription || a.inObjectBelt!=b.inObjectBelt || a.beltPosition!=b.beltPosition) return false;
+        }
+        return true;
+    }
+
+    static GLuint CreateOriginalHudTexture(const QuestVr::PersonaUiImage& canvas) {
+        QuestVr::ValidatePersonaUiImage(canvas);
+        GLuint texture{};glGenTextures(1,&texture);glBindTexture(GL_TEXTURE_2D,texture);
+        glTexImage2D(GL_TEXTURE_2D,0,GL_RGBA8,static_cast<GLsizei>(canvas.width),static_cast<GLsizei>(canvas.height),
+            0,GL_RGBA,GL_UNSIGNED_BYTE,canvas.rgba.data());
+        glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_S,GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_T,GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,GL_NEAREST);
+        const auto error=glGetError();glBindTexture(GL_TEXTURE_2D,0);
+        if (texture==0u || error!=GL_NO_ERROR) {
+            if (texture!=0u) glDeleteTextures(1,&texture);
+            throw std::runtime_error("Original player HUD GPU allocation failed");
+        }
+        return texture;
+    }
+
+    static void UpdateOriginalHudTexture(GLuint texture,const QuestVr::PersonaUiImage& canvas) {
+        QuestVr::ValidatePersonaUiImage(canvas);
+        glBindTexture(GL_TEXTURE_2D,texture);
+        glTexSubImage2D(GL_TEXTURE_2D,0,0,0,static_cast<GLsizei>(canvas.width),static_cast<GLsizei>(canvas.height),
+            GL_RGBA,GL_UNSIGNED_BYTE,canvas.rgba.data());
+        const auto error=glGetError();glBindTexture(GL_TEXTURE_2D,0);
+        if (error!=GL_NO_ERROR) throw std::runtime_error("Original player HUD GPU update failed");
+    }
+
+    void UpdateOriginalPlayerHudUi(const OVRFW::ovrApplFrameIn& frame,bool mapLoading) {
+        healthUiVisible_=beltUiVisible_=false;
+        // Never query portable storage while a map/startup worker owns it.
+        // Retained actor-bank refreshes stay on this thread and retain a
+        // complete visible world: do not make the HUD blink during pickups.
+        if (mapLoading || !runtimeAvailable_ || inventoryMenuOpen_ || initialPreparationPending_ ||
+            initialPreparationFuture_.valid() || mapCacheFuture_.valid() || !pendingMapName_.empty() ||
+            !transitionMapName_.empty() ||
+            !healthHudRenderer_.IsInitialized() || !beltHudRenderer_.IsInitialized()) return;
+        hudQuerySeconds_=std::max(0.0f,hudQuerySeconds_-frame.DeltaSeconds);
+        if (hudQuerySeconds_<=0.0f) {
+            hudQuerySeconds_=0.10f;
+            try {
+                auto snapshot=ReadPortableRuntimePlayerHud(nativeClientGeneration_);
+                if (!snapshot.available || !snapshot.bound) {
+                    cachedPlayerHud_.reset();
+                    return; // No pretend player/ring/healthy limbs from defaults.
+                }
+                if (!cachedPlayerHud_ || !SamePlayerHudSnapshot(*cachedPlayerHud_,snapshot)) {
+                    const auto belt=QuestVr::BuildBoundPlayerHudBelt(snapshot,[&](const std::string& path) -> const QuestVr::PersonaUiImage* {
+                        const auto found=hudIcons_.find(OriginalHudIconKey(path));
+                        return found==hudIcons_.end()?nullptr:&found->second;
+                    });
+                    if (!belt) throw std::runtime_error("Original player HUD lost its genuine viewport binding");
+                    QuestVr::HudHealthSnapshot health;
+                    for (std::size_t part=0u;part<6u;++part) health.parts[part].displayedHealth=snapshot.limbHealth[part];
+                    health.energy=snapshot.energy;health.energyMax=snapshot.energyMax;
+                    const auto glyph=[&](std::uint32_t character) {return GetPortableBitmapGlyph(hudTinyFont_,character);};
+                    auto beltCanvas=QuestVr::BuildHudBeltCanvas(hudBeltArtwork_,*belt);
+                    auto healthCanvas=QuestVr::BuildHudHealthCanvas(hudHealthArtwork_,health);
+                    QuestVr::DrawHudBeltText(beltCanvas,*belt,hudTinyFont_,glyph);
+                    QuestVr::DrawHudHealthText(healthCanvas,health,hudTinyFont_,glyph);
+                    UpdateOriginalHudTexture(beltHudTextureId_,beltCanvas);
+                    UpdateOriginalHudTexture(healthHudTextureId_,healthCanvas);
+                    cachedPlayerHud_=std::move(snapshot);
+                    playerHudError_.clear();
+                }
+            } catch (const std::exception& error) {
+                cachedPlayerHud_.reset();
+                if (playerHudError_!=error.what()) {
+                    playerHudError_=error.what();
+                    ALOG("DeusExQuest: bound original player HUD unavailable: %s",error.what());
+                }
+                return;
+            }
+        }
+        if (!cachedPlayerHud_ || !cachedPlayerHud_->available || !cachedPlayerHud_->bound) return;
+        constexpr float pixels=QuestVr::kHudVrPixelsToMeters;
+        auto healthPose=frame.HeadPose;
+        healthPose.Translation+=healthPose.Rotation.Rotate({QuestVr::kHudHealthCenterX,
+            QuestVr::kHudHealthCenterY,-QuestVr::kHudVrDistance});
+        healthHudRenderer_.SetPose(healthPose,QuestVr::kHudHealthHalfWidth,QuestVr::kHudHealthHalfHeight);
+        auto beltPose=frame.HeadPose;
+        beltPose.Translation+=beltPose.Rotation.Rotate({(99.0f+541.0f/2.0f-320.0f)*pixels,
+            (240.0f-411.0f-69.0f/2.0f)*pixels,-QuestVr::kHudVrDistance});
+        beltHudRenderer_.SetPose(beltPose,541.0f/2.0f*pixels,69.0f/2.0f*pixels);
+        healthUiVisible_=beltUiVisible_=true;
+    }
+
+    void UpdateOriginalCompassUi(const OVRFW::ovrApplFrameIn& frame,bool mapLoading) {
+        compassUiVisible_=false;
+        if (mapLoading || inventoryMenuOpen_ || !activeMapNorth_ || !compassRenderer_.IsInitialized()) return;
+        const auto yaw=QuestVr::HudRenderedViewYaw(
+            frame.HeadPose.Rotation.Rotate(OVR::Vector3f{0,0,-1}),
+            frame.HeadPose.Rotation.Rotate(OVR::Vector3f{1,0,0}),sceneYaw_);
+        if (!yaw) return;
+        const auto positions=QuestVr::OriginalHudCompassPositions(*yaw,activeMapNorth_->trueNorth);
+        if (!compassDisplayedPositions_ || positions.draw!=compassDisplayedPositions_->draw ||
+            positions.wrap!=compassDisplayedPositions_->wrap) {
+            try {
+                // Tiny bounded raster update only when the authored strip moves
+                // by a pixel. All package decoding happened on the map worker.
+                const auto canvas=QuestVr::BuildHudCompassCanvas(compassArtwork_,*yaw,activeMapNorth_->trueNorth);
+                glBindTexture(GL_TEXTURE_2D,compassTextureId_);
+                glTexSubImage2D(GL_TEXTURE_2D,0,0,0,QuestVr::kHudCompassWidth,QuestVr::kHudCompassHeight,
+                    GL_RGBA,GL_UNSIGNED_BYTE,canvas.rgba.data());
+                const auto error=glGetError();glBindTexture(GL_TEXTURE_2D,0);
+                if (error!=GL_NO_ERROR) throw std::runtime_error("Compass GPU texture update failed");
+                compassDisplayedPositions_=positions;
+            } catch (const std::exception& error) {
+                ALOG("DeusExQuest: original compass unavailable: %s",error.what());
+                DestroyOriginalCompassUi();return;
+            }
+        }
+        auto pose=frame.HeadPose;
+        pose.Translation+=pose.Rotation.Rotate({QuestVr::kHudCompassCenterX,
+            QuestVr::kHudCompassCenterY,-QuestVr::kHudVrDistance});
+        compassRenderer_.SetPose(pose,QuestVr::kHudCompassHalfWidth,QuestVr::kHudCompassHalfHeight);
+        compassUiVisible_=true;
+    }
+
     void UpdateOriginalDataLinkUi(const OVRFW::ovrApplFrameIn& frame,const bool mapLoading) {
         dataLinkUiVisible_=false;
         if (dialogueSubtitleSeconds_<=0.0f ||
@@ -4590,6 +4811,67 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                 }
             };
             try {
+                const auto image=[&](const char* name) {
+                    auto source=DecodePortableIndexedTexture(uiPackage,name,true);
+                    return QuestVr::PersonaUiImage{source.width,source.height,std::move(source.rgba)};
+                };
+                preparation.compass={image(QuestVr::kHudCompassBackground),image(QuestVr::kHudCompassBorder),
+                    image(QuestVr::kHudCompassTicks),image(QuestVr::kHudCompassTickBox)};
+                (void)QuestVr::BuildHudCompassCanvas(preparation.compass,0,0);
+            } catch (const std::exception& error) {
+                preparation.compass={};
+                ALOG("DeusExQuest: original compass artwork unavailable: %s",error.what());
+            }
+            try {
+                const auto image=[&](const char* name) {
+                    auto source=DecodePortableIndexedTexture(uiPackage,name,true);
+                    return QuestVr::PersonaUiImage{source.width,source.height,std::move(source.rgba)};
+                };
+                preparation.belt.backgroundLeft=image(QuestVr::kHudBeltBackgroundLeft);
+                preparation.belt.backgroundRight=image(QuestVr::kHudBeltBackgroundRight);
+                preparation.belt.cell=image(QuestVr::kHudBeltBackgroundCell);
+                for (std::size_t piece=0u;piece<3u;++piece)
+                    preparation.belt.borders[piece]=image(QuestVr::kHudBeltBorders[piece]);
+                constexpr std::array<const char*,9> selectionNames{{
+                    "UserInterface.PersonaItemHighlight_TL","UserInterface.PersonaItemHighlight_TR",
+                    "UserInterface.PersonaItemHighlight_BL","UserInterface.PersonaItemHighlight_BR",
+                    "UserInterface.PersonaItemHighlight_Left","UserInterface.PersonaItemHighlight_Right",
+                    "UserInterface.PersonaItemHighlight_Top","UserInterface.PersonaItemHighlight_Bottom",
+                    "UserInterface.PersonaItemHighlight_Center"}};
+                for (std::size_t piece=0u;piece<9u;++piece) preparation.belt.selection[piece]=image(selectionNames[piece]);
+                preparation.health.background=image(QuestVr::kHudHealthBackground);
+                preparation.health.border=image(QuestVr::kHudHealthBorder);
+                preparation.health.body=image(QuestVr::kHudHealthBody);
+                for (std::size_t part=0u;part<6u;++part) preparation.health.parts[part]=image(QuestVr::kHudHealthPartNames[part]);
+                preparation.hudTinyFont=DecodePortableBitmapFont(uiPackage,QuestVr::kHudTinyFont);
+                if (preparation.hudTinyFont.glyphs.size()<256u)
+                    throw std::runtime_error("Original HUD FontTiny lacks byte-indexed glyphs");
+                std::size_t iconBytes{};
+                for (std::size_t index=0u;index<uiPackage.exports.size();++index) {
+                    if (OriginalHudIconKey(GetPortableObjectPath(uiPackage,uiPackage.exports[index].ObjClass))!="engine.texture") continue;
+                    const auto path=GetPortableObjectPath(uiPackage,static_cast<std::int32_t>(index+1u));
+                    if (OriginalHudIconKey(path).rfind("icons.",0u)!=0u) continue;
+                    if (preparation.hudIcons.size()>=512u)
+                        throw std::runtime_error("Original HUD icon catalog exceeds 512 textures");
+                    auto icon=image(path.c_str());
+                    if (icon.width>256u || icon.height>256u || icon.rgba.size()>32u*1024u*1024u-iconBytes)
+                        throw std::runtime_error("Original HUD icon catalog exceeds bounded texture/memory budget");
+                    iconBytes+=icon.rgba.size();
+                    const auto key=OriginalHudIconKey("DeusExUI."+path);
+                    if (!preparation.hudIcons.emplace(key,std::move(icon)).second)
+                        throw std::runtime_error("Original HUD icon catalog has ambiguous qualified identity");
+                }
+                (void)QuestVr::BuildHudBeltCanvas(preparation.belt,{});
+                (void)QuestVr::BuildHudHealthCanvas(preparation.health,{});
+                preparation.playerHudReady=true;
+                ALOG("DeusExQuest: original belt/body/FontTiny CPU artwork ready; %zu predecoded icons, %zu bytes; no invented player state",
+                    preparation.hudIcons.size(),iconBytes);
+            } catch (const std::exception& error) {
+                preparation.playerHudReady=false;
+                preparation.belt={};preparation.health={};preparation.hudTinyFont={};preparation.hudIcons.clear();
+                ALOG("DeusExQuest: original player HUD artwork unavailable: %s",error.what());
+            }
+            try {
                 preparation.focusFont=DecodePortableBitmapFont(uiPackage,"FontMenuSmall_DS");
                 auto background=DecodePortableIndexedTexture(uiPackage,"UserInterface.ConWindowBackground",true);
                 preparation.focusBackground={background.width,background.height,std::move(background.rgba)};
@@ -4758,6 +5040,43 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         focusMessages_=std::move(preparation.focusMessages);
         focusPalette_=preparation.focusPalette;
         focusDescriptionActor_.clear();focusLabelText_.clear();
+        DestroyOriginalPlayerHudUi();
+        if (preparation.playerHudReady) {
+            try {
+                // Allocate transparent canvases. Actual health/belt values are
+                // published only after a genuinely bound viewport snapshot.
+                healthHudTextureId_=CreateOriginalHudTexture(QuestVr::EmptyHudCanvas(QuestVr::kHudHealthWidth,QuestVr::kHudHealthHeight));
+                beltHudTextureId_=CreateOriginalHudTexture(QuestVr::EmptyHudCanvas(QuestVr::kHudBeltWidth,QuestVr::kHudBeltHeight));
+                hudBeltArtwork_=std::move(preparation.belt);hudHealthArtwork_=std::move(preparation.health);
+                hudTinyFont_=std::move(preparation.hudTinyFont);hudIcons_=std::move(preparation.hudIcons);
+                healthHudRenderer_.Init(OVRFW::GlTexture(healthHudTextureId_,GL_TEXTURE_2D,
+                    static_cast<int>(QuestVr::kHudHealthWidth),static_cast<int>(QuestVr::kHudHealthHeight)));
+                beltHudRenderer_.Init(OVRFW::GlTexture(beltHudTextureId_,GL_TEXTURE_2D,
+                    static_cast<int>(QuestVr::kHudBeltWidth),static_cast<int>(QuestVr::kHudBeltHeight)));
+                ALOG("DeusExQuest: original health/belt GPU artwork ready; hidden until actual viewport.Actor possession");
+            } catch (const std::exception& error) {
+                DestroyOriginalPlayerHudUi();
+                ALOG("DeusExQuest: original player HUD GPU preparation failed: %s",error.what());
+            }
+        }
+        DestroyOriginalCompassUi();
+        if (!preparation.compass.ticks.rgba.empty()) {
+            const auto canvas=QuestVr::BuildHudCompassCanvas(preparation.compass,0,0);
+            GLuint texture{};glGenTextures(1,&texture);glBindTexture(GL_TEXTURE_2D,texture);
+            glTexImage2D(GL_TEXTURE_2D,0,GL_RGBA8,QuestVr::kHudCompassWidth,QuestVr::kHudCompassHeight,
+                0,GL_RGBA,GL_UNSIGNED_BYTE,canvas.rgba.data());
+            glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_S,GL_CLAMP_TO_EDGE);
+            glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_T,GL_CLAMP_TO_EDGE);
+            glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_NEAREST);
+            glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,GL_NEAREST);
+            const auto error=glGetError();glBindTexture(GL_TEXTURE_2D,0);
+            if (error==GL_NO_ERROR && texture!=0u) {
+                compassTextureId_=texture;compassArtwork_=std::move(preparation.compass);
+                compassRenderer_.Init(OVRFW::GlTexture(texture,GL_TEXTURE_2D,
+                    static_cast<int>(QuestVr::kHudCompassWidth),static_cast<int>(QuestVr::kHudCompassHeight)));
+                ALOG("DeusExQuest: original HUDCompassDisplay artwork ready at 73x40; rendered-map heading");
+            } else if (texture!=0u) glDeleteTextures(1,&texture);
+        }
         if (!focusFont_.glyphs.empty() && !focusBackground_.rgba.empty()) {
             std::vector<std::uint8_t> blank(512u*128u*4u,0u);
             GLuint texture{};glGenTextures(1,&texture);glBindTexture(GL_TEXTURE_2D,texture);
@@ -7245,6 +7564,22 @@ class DeusExQuestApp final : public OVRFW::XrApp {
     float dataLinkElapsedSeconds_{};
     std::size_t dataLinkDisplayedCharacters_{invalidRendererIndex_};
     bool dataLinkDisplayedCursor_{},dataLinkUiVisible_{};
+    QuestVr::HudCompassArtwork compassArtwork_;
+    PersonaUiRenderer compassRenderer_;
+    GLuint compassTextureId_{};
+    bool compassUiVisible_{};
+    std::optional<QuestVr::HudCompassPositions> compassDisplayedPositions_;
+    std::optional<PortableMapNorthSnapshot> preparedMapNorth_,activeMapNorth_;
+    QuestVr::HudBeltArtwork hudBeltArtwork_;
+    QuestVr::HudHealthArtwork hudHealthArtwork_;
+    PortableBitmapFont hudTinyFont_;
+    std::unordered_map<std::string,QuestVr::PersonaUiImage> hudIcons_;
+    PersonaUiRenderer healthHudRenderer_,beltHudRenderer_;
+    GLuint healthHudTextureId_{},beltHudTextureId_{};
+    bool healthUiVisible_{},beltUiVisible_{};
+    std::optional<PortablePlayerHudSnapshot> cachedPlayerHud_;
+    float hudQuerySeconds_{};
+    std::string playerHudError_;
     PortablePackageTables personaUiPackage_;
     QuestVr::PersonaUiChrome personaChrome_;
     PortableBitmapFont personaHeaderFont_;

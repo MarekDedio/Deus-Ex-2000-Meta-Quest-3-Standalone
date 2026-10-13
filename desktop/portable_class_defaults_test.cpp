@@ -75,6 +75,11 @@ Code Join(std::initializer_list<Code> parts) {
 }
 Code Assign(Code left, Code right) { return Join({Token(0x0fu), std::move(left), std::move(right)}); }
 Code Return(Code value = Token(0x0bu)) { return Join({Token(0x04u), std::move(value)}); }
+Code Context(Code selector,Code child,std::uint8_t zero=0u,std::uint8_t opcode=0x12u) {
+    Code prefix=Join({Token(opcode),std::move(selector)});
+    U16(prefix.raw,static_cast<std::uint16_t>(child.logical));prefix.raw.push_back(zero);prefix.logical+=3u;
+    return Join({std::move(prefix),std::move(child)});
+}
 Code Native(std::uint16_t index, std::initializer_list<Code> arguments={}) {
     Code code;
     if(index>=256u) { code.raw={static_cast<std::uint8_t>(0x60u+(index>>8u)),static_cast<std::uint8_t>(index)}; code.logical=2u; }
@@ -154,16 +159,17 @@ struct Package {
         builders.at(static_cast<std::size_t>(ref-1))=[type,dimension,target,flags](std::int32_t next,std::int32_t) {
             Bytes body{0u}; Index(body,0); Index(body,next); U32(body,dimension); U32(body,flags); Index(body,0);
             if (type=="ObjectProperty" || type=="ByteProperty" || type=="StructProperty") Index(body,target);
+            else if(type=="ClassProperty") { Index(body,0);Index(body,target); }
             return body;
         }; return ref;
     }
     std::int32_t Function(const std::string& name, std::int32_t owner, std::int32_t core, Code code,
-        std::uint16_t native=0u) {
+        std::uint16_t native=0u,std::uint32_t flags=2u) {
         const auto ref=Export(name,Import("Function",core),0,owner,true);
-        builders.at(static_cast<std::size_t>(ref-1))=[this,ref,native,code=std::move(code)](std::int32_t next,std::int32_t child) {
+        builders.at(static_cast<std::size_t>(ref-1))=[this,ref,native,flags,code=std::move(code)](std::int32_t next,std::int32_t child) {
             Bytes body{0u}; Index(body,0); Index(body,next); Index(body,0); Index(body,child);
             Index(body,exports.at(static_cast<std::size_t>(ref-1)).ObjName); U32(body,0); U32(body,0);
-            U32(body,static_cast<std::uint32_t>(code.logical)); Append(body,code.raw); U16(body,native); body.push_back(0u); U32(body,native ? 0x402u : 2u); return body;
+            U32(body,static_cast<std::uint32_t>(code.logical)); Append(body,code.raw); U16(body,native); body.push_back(0u); U32(body,native ? 0x402u : flags); return body;
         }; return ref;
     }
     void ActorBody(std::int32_t ref, Bytes properties={}) {
@@ -298,6 +304,11 @@ void Synthetic() {
     Fixture fixture;
     Package core; core.stem="Core"; const auto corePackage=core.ImportPackage("Core");
     const auto object=core.Export("Object"); core.ClassBody(object,{});
+    const auto headerClass=core.Property("Class","ClassProperty",object,corePackage,1u,object,2u);
+    const auto headerName=core.Property("Name","NameProperty",object,corePackage,1u,0,2u);
+    const auto headerOuter=core.Property("Outer","ObjectProperty",object,corePackage,1u,object,2u);
+    const auto headerFlags=core.Property("ObjectFlags","IntProperty",object,corePackage,1u,0,2u);
+    const auto headerInternal=core.Property("ObjectInternal","IntProperty",object,corePackage,6u,0,2u);
     const auto record=core.Export("Record",core.Import("Struct",corePackage));
     const auto count=core.Property("Count","IntProperty",record,corePackage);
     const auto enginePackage=core.ImportPackage("Engine"), actorConstraint=core.Import("Actor",enginePackage);
@@ -320,7 +331,17 @@ void Synthetic() {
     Package classes; classes.stem="DefaultClasses";
     const auto classesCore=classes.ImportPackage("Core"), classesEngine=classes.ImportPackage("Engine");
     const auto importedActor=classes.Import("Actor",classesEngine);
+    const auto importedCoreObject=classes.Import("Object",classesCore);
+    const auto importedHeaderClass=classes.Import("Class",importedCoreObject,"ClassProperty");
+    const auto importedHeaderName=classes.Import("Name",importedCoreObject,"NameProperty");
+    const auto importedHeaderOuter=classes.Import("Outer",importedCoreObject,"ObjectProperty");
+    const auto importedHeaderFlags=classes.Import("ObjectFlags",importedCoreObject,"IntProperty");
+    const auto importedHeaderInternal=classes.Import("ObjectInternal",importedCoreObject,"IntProperty");
+    Require(headerClass && headerName && headerOuter && headerFlags && headerInternal,"Generated Core.Object header declarations missing");
     const auto base=classes.Export("Base",0,importedActor), derived=classes.Export("Derived",0,base);
+    const auto uiDefault=classes.Export("UiDefault",0,importedCoreObject);
+    const auto screenType=classes.Property("ScreenType","ByteProperty",uiDefault,classesCore);
+    Bytes uiTags;classes.Tag(uiTags,"ScreenType",1u,Bytes{3u});classes.ClassBody(uiDefault,uiTags);
     const auto sibling=classes.Export("Sibling",0,base), child=classes.Export("Child",0,derived);
     const auto foreign=classes.Export("Foreign",0,importedActor);
     const auto foreignCounter=classes.Property("Counter","IntProperty",foreign,classesCore);
@@ -362,6 +383,52 @@ void Synthetic() {
     classes.Function("CopyDefault",base,classesCore,Join({Assign(Ref(0x02u,counter),Ref(0x02u,source)),Return()}));
     classes.Function("ReadDefault",base,classesCore,Return(Ref(0x02u,counter)));
     classes.Function("ReadInstanceCounter",base,classesCore,Return(Ref(0x01u,counter)));
+    classes.Function("ClassSelectedBase",base,classesCore,Return(Context(Ref(0x20u,base),Ref(0x02u,counter))));
+    classes.Function("ClassSelectedDerived",base,classesCore,Return(Context(Ref(0x20u,derived),Ref(0x02u,counter))));
+    classes.Function("ClassSelf",base,classesCore,Return(Context(Ref(0x20u,base),Token(0x17u),4u)));
+    classes.Function("ClassInstanceField",base,classesCore,Return(Context(Ref(0x20u,base),Ref(0x01u,counter),4u)));
+    classes.Function("DefaultHeaderClass",base,classesCore,Return(Context(Ref(0x20u,base),Ref(0x01u,importedHeaderClass),4u)));
+    classes.Function("DefaultHeaderName",base,classesCore,Return(Context(Ref(0x20u,base),Ref(0x01u,importedHeaderName),4u)));
+    classes.Function("DefaultHeaderOuter",base,classesCore,Return(Context(Ref(0x20u,base),Ref(0x01u,importedHeaderOuter),4u)));
+    classes.Function("DefaultHeaderFlags",base,classesCore,Return(Context(Ref(0x20u,base),Ref(0x01u,importedHeaderFlags),4u)));
+    classes.Function("DefaultHeaderInternal",base,classesCore,Return(Context(Ref(0x20u,base),Ref(0x01u,importedHeaderInternal),24u)));
+    classes.Function("DefaultHeaderWrite",base,classesCore,Join({
+        Assign(Context(Ref(0x20u,base),Ref(0x01u,importedHeaderOuter),4u),Token(0x17u)),Return()}));
+    classes.Function("NonActorClassRead",base,classesCore,Return(Context(Ref(0x20u,uiDefault),Ref(0x02u,screenType),1u)));
+    classes.Function("NonActorClassWrite",base,classesCore,Join({
+        Assign(Context(Ref(0x20u,uiDefault),Ref(0x02u,screenType),1u),Int(7)),Return()}));
+    classes.Function("NonActorClassWrongObject",base,classesCore,Join({
+        Assign(Ref(0x01u,link),Context(Ref(0x20u,uiDefault),Token(0x17u),4u)),Return()}));
+    classes.Function("ClassObjectString",base,classesCore,Return(Context(Ref(0x20u,base),
+        Join({Token(0x56u),Token(0x17u)}),0u)));
+    const auto staticIdentity=classes.Function("StaticSelf",base,classesCore,Return(Token(0x17u)),0u,0x2002u);
+    const auto staticDefault=classes.Function("StaticDefault",base,classesCore,Return(Ref(0x02u,counter)),0u,0x2002u);
+    const auto staticString=classes.Function("StaticString",base,classesCore,Return(Join({Token(0x56u),Token(0x17u)})),0u,0x2002u);
+    const auto ordinaryIdentity=classes.Function("OrdinarySelf",base,classesCore,Return(Token(0x17u)));
+    classes.Function("ClassStaticCall",base,classesCore,Return(Context(Ref(0x20u,base),
+        Join({Ref(0x1cu,staticIdentity),Token(0x16u)}),4u)));
+    classes.Function("ClassStaticDefault",base,classesCore,Return(Context(Ref(0x20u,base),
+        Join({Ref(0x1cu,staticDefault),Token(0x16u)}),4u)));
+    classes.Function("ClassStaticString",base,classesCore,Return(Context(Ref(0x20u,base),
+        Join({Ref(0x1cu,staticString),Token(0x16u)}),0u)));
+    classes.Function("ClassOrdinaryCall",base,classesCore,Return(Context(Ref(0x20u,base),
+        Join({Ref(0x1cu,ordinaryIdentity),Token(0x16u)}),4u)));
+    classes.Function("DefaultObjectDynamicCast",base,classesCore,Return(Join({Ref(0x2eu,base),
+        Context(Ref(0x20u,base),Token(0x17u),4u)})));
+    classes.Function("DefaultObjectMetaCast",base,classesCore,Return(Join({Ref(0x13u,base),
+        Context(Ref(0x20u,base),Token(0x17u),4u)})));
+    classes.Function("ClassSlot",base,classesCore,Return(Slot(slots,1)));
+    classes.Function("ClassSelectedSlot",base,classesCore,Return(Join({Token(0x1au),Int(1),
+        Context(Ref(0x20u,derived),Ref(0x02u,slots),12u)})));
+    classes.Function("ClassWrite",base,classesCore,Join({
+        Assign(Context(Ref(0x20u,base),Ref(0x02u,counter)),Int(123)),Return()}));
+    classes.Function("ClassWriteRollback",base,classesCore,Join({
+        Assign(Context(Ref(0x20u,base),Ref(0x02u,counter)),Int(321)),Native(278u),Return()}));
+    classes.Function("ClassForeignRead",base,classesCore,Return(Context(Ref(0x20u,base),Ref(0x02u,foreignCounter))));
+    classes.Function("ClassNonClass",base,classesCore,Return(Context(Token(0x17u),Ref(0x02u,counter))));
+    classes.Function("ClassNative",base,classesCore,Return(Context(Ref(0x20u,base),Native(283u,{Float(1.0f),Float(2.0f)}))));
+    classes.Function("ClassStoreObject",base,classesCore,Join({
+        Assign(Ref(0x01u,link),Context(Ref(0x20u,base),Token(0x17u),4u)),Return()}));
     classes.Function("SetShadowCounters",shadow,classesCore,Join({
         Assign(Ref(0x02u,shadowCounter),Int(555)),Assign(Ref(0x01u,shadowCounter),Int(888)),Return()}));
     classes.Function("ReadSlot",base,classesCore,Return(Slot(slots,1)));
@@ -412,6 +479,60 @@ void Synthetic() {
     Require(LoadPortableRuntimeMap(mapTable).passed,"Generated map actors were not loaded");
     Require(!GetPortableRuntimeScriptStatePresent(),"Read-only generated metadata initialization created persistent writes");
     const auto legacy=fixture.Snapshot("Legacy"); Require(legacy.size()>8u && legacy[4u]==3u,"Initial generated snapshot is not legacy v3");
+    const auto coldStats=GC::GetStats();
+    RefusedCall(fixture,"Base0","ClassWriteRollback");
+    GC::Collect();
+    Require(GC::GetStats().numObjects==coldStats.numObjects && GC::GetStats().memoryUsage==coldStats.memoryUsage &&
+        fixture.Snapshot("ColdClassRollback")==legacy,"First failed ClassContext changed default-handle GC roots or persistent state");
+    Same(Call("Derived0","ClassSelectedBase").value,Value::Integer(10),"ClassContext selected derived rather than explicit base defaults");
+    Same(Call("Base0","ClassSelectedDerived").value,Value::Integer(20),"ClassContext failed to use actual selected concrete class");
+    const auto defaultHandle=Call("Base0","ClassSelf").value;
+    Require(defaultHandle.kind==Kind::Object && defaultHandle.text=="@ClassDefault:DefaultClasses.Base",
+        "ClassContext returned UClass/map actor instead of distinct class-owned identity");
+    Same(Call("Base0","ClassInstanceField").value,Value::Integer(10),"Default-object instance field did not address its copied default block");
+    Same(Call("Base0","ClassSelectedSlot").value,Value::Integer(5),"ClassContext inherited fixed-array lvalue lost its concrete class or element binding");
+    Same(Call("Base0","DefaultHeaderClass").value,Value::Text(Kind::Object,"DefaultClasses.Base"),"Default-object Class header is not its owning UClass");
+    Same(Call("Base0","DefaultHeaderName").value,Value::Text(Kind::Name,"None"),"Initialized default-object Name header is not None");
+    Same(Call("Base0","DefaultHeaderOuter").value,Value::Text(Kind::Object,{}),"Initialized default-object Outer header is not null");
+    Same(Call("Base0","DefaultHeaderFlags").value,Value::Integer(0),"Initialized default-object flags header is not zero");
+    RefusedCall(fixture,"Base0","DefaultHeaderInternal");RefusedCall(fixture,"Base0","DefaultHeaderWrite");
+    Same(Call("Base0","NonActorClassRead").value,Value::Byte(3u),"Non-Actor class defaults failed actual Core.Object inheritance");
+    Same(Call("Base0","ClassStaticCall").value,defaultHandle,"Static call retargeted class-default Self");
+    Same(Call("Base0","ClassOrdinaryCall").value,defaultHandle,"Ordinary script call lost class-default receiver frame");
+    Same(Call("Base0","ClassStaticDefault").value,Value::Integer(10),"Static call failed real receiver's default block");
+    Same(Call("Base0","ClassStaticString").value,Value::Text(Kind::String,"None"),"Default-block GetPathName did not use actual initialized None/Outer header");
+    Same(Call("Base0","ClassObjectString").value,Value::Text(Kind::String,"DefaultFixture.Base0"),
+        "ObjectToString direct ClassContext operand failed caller-frame evaluation");
+    Same(Call("Base0","DefaultObjectDynamicCast").value,defaultHandle,"Dynamic cast rejected class-default object's actual Class");
+    Same(Call("Base0","DefaultObjectMetaCast").value,Value::Text(Kind::Object,{}),"Metacast treated class-default object as actual UClass");
+    RefusedCall(fixture,"Base0","NonActorClassWrongObject");
+    Call("Base0","NonActorClassWrite");
+    Same(ReadPortableClassDefault("DefaultClasses.UiDefault","ScreenType"),Value::Byte(7u),"Non-Actor mutable class default lost typed Byte storage");
+    const auto nonActorState=fixture.Snapshot("NonActorClassDefaults");
+    Require(LoadPortableRuntimeState((fixture.directory/"Legacy.sav").string()),"Non-Actor class default legacy reset failed");
+    Require(LoadPortableRuntimeState((fixture.directory/"NonActorClassDefaults.sav").string()) &&
+        fixture.Snapshot("NonActorClassRoundTrip")==nonActorState,"Non-Actor class defaults did not restore canonically");
+    Require(LoadPortableRuntimeState((fixture.directory/"Legacy.sav").string()),"Non-Actor class controls did not reset baseline");
+    for(const auto& function:{"ClassWriteRollback","ClassForeignRead","ClassNonClass","ClassNative"})
+        RefusedCall(fixture,"Base0",function);
+    Call("Derived0","ClassWrite");
+    Same(Cdo("Base","Counter"),Value::Integer(123),"ClassContext write missed selected concrete default storage");
+    Same(Cdo("Derived","Counter"),Value::Integer(20),"Base default write leaked into derived copied defaults");
+    Same(Instance("Base0","Counter"),Value::Integer(42),"ClassContext write altered existing map instance");
+    const auto classWritten=fixture.Snapshot("ClassContextWritten");
+    Require(LoadPortableRuntimeState((fixture.directory/"Legacy.sav").string()),"ClassContext write legacy reset failed");
+    Require(LoadPortableRuntimeState((fixture.directory/"ClassContextWritten.sav").string()) &&
+        fixture.Snapshot("ClassContextWriteRestored")==classWritten,"ClassContext default write did not restore canonically");
+    Call("Base0","ClassStoreObject");
+    Same(Instance("Base0","Link"),defaultHandle,"ObjectProperty rejected or rewrote valid default-object identity");
+    const auto withDefaultObject=fixture.Snapshot("ClassDefaultObjectReference");
+    const auto references=SavedScript(withDefaultObject);
+    Require(references.births.empty() && references.objects.size()==1u && references.objects.front().path=="DefaultFixture.Base0",
+        "Default-object reference became a world actor/export/birth checkpoint entry");
+    Require(LoadPortableRuntimeState((fixture.directory/"Legacy.sav").string()),"Default-object reference reset failed");
+    Require(LoadPortableRuntimeState((fixture.directory/"ClassDefaultObjectReference.sav").string()) &&
+        fixture.Snapshot("DefaultObjectReferenceRestored")==withDefaultObject,"Default-object reference did not restore canonically");
+    Require(LoadPortableRuntimeState((fixture.directory/"Legacy.sav").string()),"ClassContext controls did not restore untouched baseline");
     const auto declaredRevision=GetPortableRuntimeWorldRevision();
     const auto declaredStats=GC::GetStats();
     Same(ReadPortableActorDeclaredScriptProperty("DefaultFixture.Shadow0","DefaultClasses.Base.Counter"),Value::Integer(10),
@@ -648,6 +769,16 @@ void Synthetic() {
     Same(Cdo("Derived","Counter"),Value::Integer(20),"Runtime reinitialization retained old derived defaults");
     Require(!GetPortableRuntimeScriptStatePresent() && fixture.Snapshot("Reinitialized")==legacy,
         "Runtime reinitialization retained abandoned default/instance state");
+    Require(LoadPortableRuntimeState((fixture.directory/"ClassDefaultObjectReference.sav").string()) &&
+        fixture.Snapshot("ColdDefaultObjectReference")==withDefaultObject,
+        "Cold runtime restore could not resolve class-owned default-object reference");
+    Same(Instance("Base0","Link"),defaultHandle,"Cold restore changed default-object symbolic identity");
+    RefusedScript(fixture,withDefaultObject,[](auto& state) {
+        auto& actor=state.objects.front();actor.path="@ClassDefault:DefaultClasses.Base";
+    },"DefaultHandleAsWorldActor");
+    Require(LoadPortableRuntimeState((fixture.directory/"Legacy.sav").string()),"Cold default-object controls failed baseline reset");
+    Require(LoadPortableRuntimeMap(mapTable).passed,"Clean map replacement failed after class-default handle use");
+    Same(Call("Base0","ClassSelf").value,defaultHandle,"Map replacement invalidated class-owned default handle identity");
     fixture.UnchangedSources();
 }
 void MalformedAncestry() {

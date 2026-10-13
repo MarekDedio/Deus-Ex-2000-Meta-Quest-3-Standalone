@@ -1,5 +1,46 @@
 # Port status
 
+## Original compass / HUD and player prerequisites (2026-10-14)
+
+- Training music and Jaime's speech are accepted by the user. Original compass
+  artwork is now live, using actual Level-slot TrueNorth and rendered heading
+  through physical yaw, snap turns, room rebases and Meta recentering. Captured
+  Quest frame and COMPASS diagnostic verify original art/source/visibility.
+  The user confirms direction works but the initial PC-edge placement was too
+  far out. The replacement insets the left HUD column while preserving artwork
+  scale, alignment and gap. A capture from the exact replacement APK confirms
+  the inward shift; the user accepts the revised placement as comfortable.
+- Original 541x69 ten-slot belt, 84x106 six-limb health pane, FontTiny, selection
+  artwork and 162 bounded predecoded icons are prepared without pickup-time
+  package reads. Production renders health/belt only from a real bound player;
+  no live possession means they remain hidden, not healthy/ring fixtures.
+  Full belt activation, ammo/counts, breath and health animation remain open.
+- Added genuine transient native Client/Viewport UObjects, persistent native
+  class identities, GC roots, lease/schema checks and transactional SetPlayer
+  pairing with original dynamic Possess. Original CreateKeyRing/GiveTo/
+  AddInventory/Idle2/base and warm/cold owned graph controls pass169 checks in
+  a deliberately dormant test world. Actual Login/possession is not accepted.
+- ClassContext now resolves distinct class-owned default objects, with typed
+  result-destination/zero-fill/no-write semantics and native optional omission
+  preserved. Audited FMin244 copies inputs sequentially and retains first signed
+  zero on ties. Untouched world startup advances past GameInfo.DefaultPlayerName
+  to Camera5's ConsoleCommand; isolated Possess advances to InitRootWindow1052.
+  Both unsupported paths roll back, not publish partial gameplay.
+- Host build passes; final CTest74 ordinary/86 registered/12 explicit owned-data
+  skips, zero failures,13.10s. Separate generated HUD20571, heading/placement606,
+  original artwork87, player/keyring169, VM678235/369 refusal controls, defaults
+  1767/71 and diagnostic mocks26/0 pass. Focused original world-startup repeated
+  failure/shared-budget rollback passes. No original Windows code was executed.
+- Android build passes in1m9s. Signed ARM64 APK33,139,566 bytes:
+  `artifacts/crate-runtime-20261013/DeusExQuestVR-original-hud-compass-inset-20261014.apk`,
+  SHA256 `9653002F6CDE58C463EE0EF72D7C59B2532C5F19AA80BF723C26EDFE2733D026`.
+  Automatically replace-installed preserving data on Quest2G0YC5ZG620985,
+  update01:15:37, launch11070; pulled base.apk hash matches exactly. Final Quest
+  capture shows the inset compass and subsequent stationary timing72fps;
+  synchronous screenshot capture itself stalls. This is not route/gameplay
+  performance acceptance. Current priority remains full HUD/keyring, then NPC
+  poses/animation, gravity/crate destruction/held items; lamp illumination open.
+
 ## Training music milestone (2026-10-13)
 
 - User priority one is implemented: the loaded map's typed LevelInfo.Song and

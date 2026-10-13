@@ -72,6 +72,19 @@ public:
     RuntimeObject* outer{};
     RuntimeObject* base{};
     RuntimeObject* cls{};
+    // A class-owned default block has UObject identity but no map/export slot,
+    // Actor lifecycle, serialized stack, or runtime-birth identity. Its owner
+    // holds the GC edge; mutable reflected data stays on that concrete UClass.
+    RuntimeObject* defaultOwner{};
+    RuntimeObject* defaultObject{};
+    // Engine-session native UObjects/classes are not authored exports or map
+    // births. Viewport.Actor / PlayerPawn.Player stay native transient edges,
+    // never serialized pointer-shaped script patches or guessed possession.
+    bool nativeClientClass{};
+    std::uint64_t nativeClientIdentity{}, nativeViewportIdentity{};
+    RuntimeObject* nativePlayer{};
+    RuntimeObject* nativeViewportActor{};
+    bool nativePlayerBinding{};
     RuntimeObject* nativeXLevel{}; // Immutable LinkActorsToLevel baseline, not a script write.
     RuntimeAIManager* nativeAiManager{}; // LevelInfo-owned native state, not an actor/export.
     std::unique_ptr<PortableScriptBody> script;
@@ -205,6 +218,10 @@ std::size_t NativeDecalRetainedBytes(const RuntimeMapDecals& graph) {
 }
 
 GCAllocation* RuntimeObject::Mark(GCAllocation* marklist) {
+    marklist = GC::MarkObject(marklist, defaultObject);
+    marklist = GC::MarkObject(marklist, defaultOwner);
+    marklist = GC::MarkObject(marklist, nativePlayer);
+    marklist = GC::MarkObject(marklist, nativeViewportActor);
     for (auto* reference : references) marklist = GC::MarkObject(marklist, reference);
     for (auto* actor : childActors) marklist = GC::MarkObject(marklist, actor);
     for (auto* actor : basedActors) marklist = GC::MarkObject(marklist, actor);
@@ -236,10 +253,44 @@ private:
     std::size_t* destroyedPackage_{};
 };
 
+// UClass owns its default block from load, not from first bytecode access.
+// Deterministic allocation prevents a failed/over-budget script transaction
+// from introducing an unjournaled new GC root or observable identity lifetime.
+std::size_t MaterializeClassDefaultObjects(RuntimePackage* runtime) {
+    std::size_t count{};
+    for (auto* cls : runtime->exports) {
+        if (!cls || !cls->classDescriptor) continue;
+        if (!cls->defaultObject) {
+            PortableReflectionObject metadata{};
+            metadata.objectPath="@ClassDefault:"+cls->reflection.objectPath;
+            metadata.metaClass=cls->reflection.objectPath.substr(cls->reflection.objectPath.find_last_of('.')+1u);
+            auto* object=GC::Alloc<RuntimeObject>(std::move(metadata),nullptr);
+            object->defaultOwner=cls; object->cls=cls;
+            object->sourcePath=cls->sourcePath;
+            object->exportIndex=std::numeric_limits<std::size_t>::max();
+            cls->defaultObject=object;
+        }
+        ++count;
+    }
+    return count;
+}
+
 std::unique_ptr<GCRoot<RuntimePackage>> persistentRuntime;
 // Actual embedding-owned engine client/render-target registrations. No UObject
 // or map actor is synthesized; the render owner revokes only its atomic lease.
 QuestVr::NativeClientRegistry persistentNativeClient;
+struct RuntimePlayerSession final : GCObject {
+    RuntimeObject* client{};
+    std::vector<RuntimeObject*> classes, viewports;
+protected:
+    GCAllocation* Mark(GCAllocation* marklist) override {
+        marklist=GC::MarkObject(marklist,client);
+        for(auto* object:classes) marklist=GC::MarkObject(marklist,object);
+        for(auto* object:viewports) marklist=GC::MarkObject(marklist,object);
+        return marklist;
+    }
+};
+std::unique_ptr<GCRoot<RuntimePlayerSession>> persistentPlayerSession;
 // One game/script-thread stream, shared by all receivers and retained through
 // ordinary map replacement. Absence means the deterministic seed1 baseline.
 // Every nonbaseline initial seed is retained before the first draw, so even
@@ -367,6 +418,54 @@ std::string LowerAscii(std::string value) {
         return static_cast<char>(std::tolower(character));
     });
     return value;
+}
+
+RuntimeObject* NativeSessionViewport(const std::uint64_t identity) {
+    if (!persistentNativeClient.HasClient() || !persistentPlayerSession ||
+        !persistentPlayerSession->get())
+        throw std::runtime_error("Player viewport has no live engine client/session objects");
+    const auto registered=persistentNativeClient.ReadOnlyView();
+    if (std::none_of(registered.begin(),registered.end(),[&](const auto& viewport) {
+            return viewport.identity==identity;
+        })) throw std::runtime_error("Player viewport identity is absent, revoked or stale");
+    for(auto* viewport:persistentPlayerSession->get()->viewports)
+        if(viewport && viewport->nativeViewportIdentity==identity &&
+            viewport->nativeClientIdentity==persistentNativeClient.ClientIdentity()) return viewport;
+    throw std::runtime_error("Registered viewport has no actual native player UObject");
+}
+
+void ClearNativePlayerEdges() noexcept {
+    if (persistentRuntime && persistentRuntime->get())
+        for(auto* object:persistentRuntime->get()->exports) {
+            object->nativePlayer=nullptr;
+            // Keep an established native-None view authoritative over any
+            // older authored patch; clearing a session is not re-possession.
+        }
+    if(persistentPlayerSession && persistentPlayerSession->get())
+        for(auto* viewport:persistentPlayerSession->get()->viewports)
+            if(viewport) viewport->nativeViewportActor=nullptr;
+}
+
+void ClearNativePlayerObjects() noexcept {
+    ClearNativePlayerEdges();
+    if(!persistentPlayerSession || !persistentPlayerSession->get()) return;
+    const auto unindex=[](RuntimeObject* object) {
+        if(!object) return;
+        for(auto it=persistentVmObjects.begin();it!=persistentVmObjects.end();)
+            if(it->second==object) it=persistentVmObjects.erase(it); else ++it;
+        for(auto it=persistentQualifiedObjects.begin();it!=persistentQualifiedObjects.end();)
+            if(it->second==object) it=persistentQualifiedObjects.erase(it); else ++it;
+    };
+    auto* session=persistentPlayerSession->get();
+    unindex(session->client);
+    for(auto* viewport:session->viewports) unindex(viewport);
+    session->client=nullptr;session->viewports.clear();
+    // Registered native UClasses outlive every particular renderer client.
+    // Keep their engine-owned roots and indexes until engine shutdown, including
+    // when script retains an actual UClass reference across session teardown.
+    // Never collect inside an in-flight script/OUT callback: its host journal
+    // can still reference these objects until the outer boundary is released.
+    pendingBirthGarbage=true;
 }
 
 std::string DialogueKey(std::int32_t mission, const std::string& speaker) {
@@ -1385,10 +1484,78 @@ public:
             throw std::runtime_error("Portable actor VM object lookup budget exceeded");
     }
     RuntimeObject* Object(const std::string& path) const {
+        static constexpr std::string_view prefix="@ClassDefault:";
+        if (LowerAscii(path).rfind(LowerAscii(std::string(prefix)),0u)==0u) {
+            const auto found=persistentVmObjects.find(LowerAscii(path.substr(prefix.size())));
+            if (found==persistentVmObjects.end() || !found->second ||
+                !found->second->classDescriptor || !found->second->defaultObject)
+                throw std::runtime_error("Portable class-default identity is unavailable: "+path);
+            return found->second->defaultObject;
+        }
         const auto found = persistentVmObjects.find(LowerAscii(path));
         if (found == persistentVmObjects.end() || found->second == nullptr)
             throw std::runtime_error("Portable actor VM object is unavailable: " + path);
+        if(found->second->nativeClientIdentity &&
+            found->second->nativeClientIdentity!=persistentNativeClient.ClientIdentity())
+            throw std::runtime_error("Portable native session UObject is revoked or stale");
         return found->second;
+    }
+    RuntimeObject* RequireNativeLevelInfo(RuntimeObject* actor) { return NativeLevelInfo(actor); }
+    Value SetSessionPlayer(const std::uint64_t viewportIdentity,const std::string& actorPath,
+        QuestVr::Vm::Execution& execution) {
+        if(!transaction_) throw std::runtime_error("SetPlayer requires its outer native/script transaction");
+        auto* viewport=NativeSessionViewport(viewportIdentity);
+        auto* actor=Object(actorPath);RequireMapActor(actor);
+        if(!actor->active || actor->worldRemoved || ReadInheritedRuntimeBool(actor,"bDeleteMe") ||
+            !IsDerivedFromPath(actor->cls,"Engine.PlayerPawn"))
+            throw std::runtime_error("SetPlayer receiver is not an actual live PlayerPawn");
+        auto* level=NativeLevelInfo(actor);
+        if(!QuestVr::Vm::ToBool(Read(level,PropertyNamed(level,"bBegunPlay"),0u)))
+            throw std::runtime_error("SetPlayer requires accepted begun world before original Possess");
+        const auto playerField=DescribeProperty("Engine.PlayerPawn.Player");
+        const auto actorField=DescribeProperty("Engine.Player.Actor");
+        const auto scalarObject=[](const Property& property,const char* key) {
+            return LowerAscii(property.key)==key && property.zero.kind==Kind::Object && property.arrayDimension==1u;
+        };
+        if(!scalarObject(playerField,"engine.playerpawn.player") || !scalarObject(actorField,"engine.player.actor") ||
+            !OwnsProperty(actor->cls,playerField) || !OwnsProperty(viewport->cls,actorField))
+            throw std::runtime_error("SetPlayer fields do not match original Player/PlayerPawn declarations");
+        clientDependent_=true;
+        const auto pointer=[&](RuntimeObject* owner,const bool viewportActor) {
+            auto reference=std::make_shared<Reference>();reference->zero=Value::Text(Kind::Object,{});
+            reference->read=[owner,viewportActor] {
+                auto* target=viewportActor ? owner->nativeViewportActor : owner->nativePlayer;
+                return Value::Text(Kind::Object,target ? target->reflection.objectPath : std::string{});
+            };
+            reference->write=[this,owner,viewportActor](const Value& value) {
+                if(value.kind!=Kind::Object) throw std::runtime_error("Native SetPlayer edge is not an Object");
+                auto* target=value.text.empty() ? nullptr : Object(value.text);
+                Touch(owner);
+                if(viewportActor) owner->nativeViewportActor=target;
+                else {owner->nativePlayer=target;owner->nativePlayerBinding=true;}
+            };
+            return reference;
+        };
+        // Retail body10368cd7 first detaches the target UPlayer's old Actor,
+        // then pairs newPawn.Player / Player.Actor before invoking Possess.
+        if(auto* previous=viewport->nativeViewportActor) {
+            RequireMapActor(previous);
+            execution.WriteReference(pointer(previous,false),Value::Text(Kind::Object,{}));
+            execution.WriteReference(pointer(viewport,true),Value::Text(Kind::Object,{}));
+        }
+        execution.WriteReference(pointer(actor,false),Value::Text(Kind::Object,viewport->reflection.objectPath));
+        execution.WriteReference(pointer(viewport,true),Value::Text(Kind::Object,actor->reflection.objectPath));
+        static_cast<void>(execution.CallEvent(actor->reflection.objectPath,"Possess",false,{}));
+        static_cast<void>(NativeSessionViewport(viewportIdentity));
+        return Value::Text(Kind::Object,actor->reflection.objectPath);
+    }
+    std::string ClassDefaultObject(const std::string& path) override {
+        auto* cls=Object(path);
+        if (!cls->classDescriptor || cls->defaultOwner || DefaultClass(cls)!=cls)
+            throw std::runtime_error("ClassContext selector is not an actual loaded UClass");
+        if (!cls->defaultObject)
+            throw std::runtime_error("Loaded UClass has no class-owned default-object block");
+        return cls->defaultObject->reflection.objectPath;
     }
     std::shared_ptr<const Function> Member(RuntimeObject* receiver, const std::string& name) {
         if (name.find('.') != std::string::npos) return FunctionIdentity(Object(name));
@@ -1409,6 +1576,13 @@ public:
     }
     std::shared_ptr<const Function> PrepareFunction(const Function& identity, const std::string&) override {
         return FunctionFor(Object(identity.path));
+    }
+    std::vector<Property> FunctionParameters(const Function& identity) override {
+        const auto declaration=FunctionFor(Object(identity.path));
+        if (declaration->source!=identity.source || declaration->nativeIndex!=identity.nativeIndex ||
+            declaration->flags!=identity.flags)
+            throw std::runtime_error("Function argument schema changed declaration identity");
+        return QuestVr::Vm::Host::FunctionParameters(*declaration);
     }
     std::shared_ptr<const Function> ResolveEvent(const std::string& receiver, const std::string& name,
         const bool enumDispatch) override {
@@ -1660,6 +1834,9 @@ public:
             entry.first->touchEventSent = entry.second.touchSent;
             entry.first->committedLifecycle = entry.second.lifecycle;
             entry.first->worldRemoved = entry.second.removed;
+            entry.first->nativePlayerBinding = entry.second.playerBinding;
+            entry.first->nativePlayer = persistentNativeClient.HasClient() ? entry.second.player : nullptr;
+            entry.first->nativeViewportActor = persistentNativeClient.HasClient() ? entry.second.viewportActor : nullptr;
         }
         // Rooted births are appended during the call so nested bytecode can
         // address them. Remove every provisional identity after restoring old
@@ -1696,6 +1873,11 @@ public:
     }
     std::string ObjectString(const std::string& path) override {
         auto* object = Object(path); // Validate identity and canonicalize spelling.
+        // Original initialized default blocks have Name None and Outer null.
+        // This display spelling does not replace their distinct nonnull handle.
+        if (object->defaultOwner) return "None";
+        if(object->nativeClientIdentity || object->nativeClientClass)
+            return object->reflection.objectPath;
         // No native Rename/SetOuter exists in this host. Loaded object names
         // and complete package/outer paths are immutable, including nested
         // function/property outers. Validate metadata instead of returning an
@@ -1738,13 +1920,18 @@ public:
         const Property& property, const QuestVr::Vm::Scope scope) override {
         RuntimeObject* object = Object(receiver);
         if (!object->active && !object->worldRemoved) throw std::runtime_error("VM receiver is inactive");
+        if (object->classDescriptor || object->nativeClientClass)
+            throw std::runtime_error("UClass reflected receiver requires its actual Core.Class storage");
         const bool defaults = scope == QuestVr::Vm::Scope::Default;
         auto result = ReferenceFor(object, property, 0u, defaults);
         // Native writes do not authorize ordinary compiled script to mutate
         // Const SurfList or the audited scalar Actor.TimerCounter. Keep this
         // explicit port policy narrow; native ReferenceFor remains writable.
-        const bool nativeConst = (property.flags & 2u) && (property.zero.kind == Kind::IntArray ||
-            LowerAscii(property.key) == "engine.actor.timercounter");
+        const auto nativeKey=LowerAscii(property.key);
+        const bool nativeConst = ((property.flags & 2u) && (property.zero.kind == Kind::IntArray ||
+            nativeKey == "engine.actor.timercounter")) ||
+            (object->nativeViewportIdentity && nativeKey=="engine.player.actor") ||
+            (object->nativePlayerBinding && nativeKey=="engine.playerpawn.player");
         if (nativeConst) result->write = {};
         result->dimension = property.arrayDimension;
         result->element = [this, object, property, defaults, nativeConst](const std::size_t slot) {
@@ -1761,6 +1948,8 @@ public:
         if (index == 280u)
             throw std::runtime_error("SetTimer requires its budgeted VM execution context");
         RuntimeObject* object = Object(receiver);
+        if (object->defaultOwner)
+            throw std::runtime_error("Native execution on a class-default object requires its audited handler");
         // Native event wrappers have no presentation-active gate. Their actual
         // identity/Level checks remain in AiNative; unrelated native receivers
         // retain the existing explicit inactive guard.
@@ -2166,6 +2355,8 @@ public:
     Evaluation NativeWithContext(const std::uint16_t index, const std::string& receiver,
         const std::vector<Evaluation>& arguments, const Function* declaration, QuestVr::Vm::Execution& execution,
         const std::optional<Value>& context) override {
+        if (Object(receiver)->defaultOwner)
+            throw std::runtime_error("Native execution on a class-default object requires its audited handler");
         if (index != 113u) return NativeWithExecution(index, receiver, arguments, declaration, execution);
         auto* actor = Object(receiver);
         if ((!actor->active && !actor->worldRemoved) || !IsDerivedFromPath(actor->cls, "Engine.Actor"))
@@ -2196,6 +2387,8 @@ public:
     }
     Evaluation NativeWithExecution(const std::uint16_t index, const std::string& receiver,
         const std::vector<Evaluation>& arguments, const Function* declaration, QuestVr::Vm::Execution& execution) override {
+        if (Object(receiver)->defaultOwner)
+            throw std::runtime_error("Native execution on a class-default object requires its audited handler");
         if (index == 280u) {
             auto* object = Object(receiver);
             if (!object->active && !object->worldRemoved)
@@ -2316,8 +2509,37 @@ public:
     }
     Value Read(RuntimeObject* object, const Property& property, const std::uint32_t index,
         const bool defaults = false, const bool immutable = false) {
-        const bool classDefaults = defaults || object->classDescriptor != nullptr;
-        RuntimeObject* source = classDefaults ? DefaultClass(object) : object;
+        if (object->defaultOwner) {
+            const auto key=LowerAscii(property.key);
+            if (key=="core.object.objectinternal")
+                throw std::runtime_error("Class-default raw UObject pointer/index storage is not established");
+            const auto scalar=[&](const Kind kind) {
+                if (index!=0u || property.arrayDimension!=1u || property.zero.kind!=kind)
+                    throw std::runtime_error("Class-default UObject header property has an invalid reflected layout");
+            };
+            if (key=="core.object.class") { scalar(Kind::Object);return Value::Text(Kind::Object,object->defaultOwner->reflection.objectPath); }
+            if (key=="core.object.name") { scalar(Kind::Name);return Value::Text(Kind::Name,"None"); }
+            if (key=="core.object.outer") { scalar(Kind::Object);return Value::Text(Kind::Object,{}); }
+            if (key=="core.object.objectflags") { scalar(Kind::Int);return Value::Integer(0); }
+        }
+        // Internal selected-UClass reads are explicit default-storage queries
+        // (Spawn/save/public ReadPortableClassDefault). Bytecode Variable rejects
+        // a UClass receiver rather than confusing this with its Core.Class data.
+        const bool classDefaults = defaults || object->classDescriptor || object->defaultOwner;
+        if(!classDefaults && !immutable && index==0u) {
+            const auto key=LowerAscii(property.key);
+            if(key=="engine.playerpawn.player" && object->nativePlayerBinding) {
+                auto* player=object->nativePlayer;
+                return Value::Text(Kind::Object,player &&
+                    player->nativeClientIdentity==persistentNativeClient.ClientIdentity() ?
+                        player->reflection.objectPath : std::string{});
+            }
+            if(key=="engine.player.actor" && object->nativeViewportIdentity)
+                return Value::Text(Kind::Object,object->nativeViewportActor ?
+                    object->nativeViewportActor->reflection.objectPath : std::string{});
+        }
+        RuntimeObject* source = classDefaults ?
+            (object->classDescriptor ? DefaultClass(object) : DefaultOwner(object)) : object;
         const auto selectedField = [&](RuntimeObject* storage) {
             auto* cls = storage->classDescriptor ? storage : storage->cls;
             std::array<RuntimeObject*,128u> visited{};
@@ -2493,11 +2715,19 @@ public:
     RuntimeObject* DefaultClass(RuntimeObject* object) {
         auto* cls = object->classDescriptor ? object : object->cls;
         if (!cls || !cls->classDescriptor || cls->reflection.metaClass != "Class" ||
-            !IsDerivedFromPath(cls, "Engine.Actor") ||
+            object->defaultOwner || !cls->active ||
             LowerAscii(std::filesystem::path(cls->sourcePath).extension().string()) == ".dx" ||
             Table(cls->sourcePath).exports.at(cls->exportIndex).ObjClass != 0)
-            throw std::runtime_error("Class-default receiver is not a loaded script Actor UClass");
+            throw std::runtime_error("Class-default receiver is not a loaded script UClass");
         return cls;
+    }
+    RuntimeObject* DefaultOwner(RuntimeObject* object) {
+        if (object->defaultOwner) return DefaultClass(object->defaultOwner);
+        // A UClass object's actual class is Core.Class, not itself. Native
+        // metaclass default storage is not synthesized from its selected class.
+        if (object->classDescriptor)
+            throw std::runtime_error("UClass receiver Core.Class default storage is not established");
+        return DefaultClass(object);
     }
     bool HasPropertyNamed(RuntimeObject* actor, const char* name) const {
         std::array<RuntimeObject*,128u> visited{};
@@ -2802,6 +3032,8 @@ private:
         auto* cls = Object(values[0].text);
         if (!cls->classDescriptor) throw std::runtime_error("Spawn Class is not an actual UClass");
         cls = DefaultClass(cls);
+        if (!IsDerivedFromPath(cls,"Engine.Actor"))
+            throw std::runtime_error("Spawn Class is not derived from Engine.Actor");
         if (!cls->classDescriptor || (cls->classDescriptor->classFlags & 1u)) return none();
         if (worldStartupProbe_ && IsDerivedFromPath(cls, "Engine.Mover"))
             throw std::runtime_error("Unsupported original AMover native Spawned transform storage during world startup probe");
@@ -2957,7 +3189,7 @@ private:
             throw std::runtime_error("Native actor lifecycle work budget exceeded");
     }
     void RequireMapActor(RuntimeObject* actor) {
-        if (!actor || !IsDerivedFromPath(actor->cls, "Engine.Actor") ||
+        if (!actor || actor->defaultOwner || !IsDerivedFromPath(actor->cls, "Engine.Actor") ||
             LowerAscii(std::filesystem::path(actor->sourcePath).extension().string()) != ".dx" ||
             PackageStem(actor->sourcePath) != persistentMapPackageName)
             throw std::runtime_error("Native lifecycle identity is not an actor in the current map");
@@ -3119,6 +3351,9 @@ private:
         std::vector<RuntimeObject*> children, based;
         std::array<bool, 4u> touchSent{};
         bool lifecycle{}, removed{};
+        RuntimeObject* player{};
+        RuntimeObject* viewportActor{};
+        bool playerBinding{};
     };
     template <typename Number> static bool SameBits(const Number& a,const Number& b) {
         return std::memcmp(&a,&b,sizeof(Number))==0;
@@ -3622,7 +3857,8 @@ private:
             {"Engine.FireTexture", "Engine.FractalTexture"}, {"Engine.IceTexture", "Engine.FractalTexture"},
             {"Engine.WaterTexture", "Engine.FractalTexture"}, {"Engine.WaveTexture", "Engine.WaterTexture"},
             {"Engine.WetTexture", "Engine.WaterTexture"}, {"Engine.ScriptedTexture", "Engine.Texture"},
-            {"Engine.Font", "Core.Object"}
+            {"Engine.Font", "Core.Object"},
+            {"Engine.Client", "Core.Object"}, {"Engine.Viewport", "Engine.Player"}
         };
         // Runtime operand strings are not authored NameString table entries.
         // Comparing them must not permanently intern arbitrary rejected input.
@@ -3640,6 +3876,11 @@ private:
             throw std::runtime_error("VM cast class identity unavailable: " + path);
         }
         const auto* object = found->second;
+        if(object->nativeClientClass) {
+            const auto registered=NativeCastClass(object->reflection.objectPath);
+            if(!registered) throw std::runtime_error("Native player class is not an audited registration");
+            return registered->path;
+        }
         const auto& entry = Table(object->sourcePath).exports.at(object->exportIndex);
         if (entry.ObjClass != 0 || object->reflection.metaClass != "Class")
             throw std::runtime_error("VM cast target/base is not a serialized UClass: " + path);
@@ -3667,6 +3908,11 @@ private:
             throw std::runtime_error("VM cast class identity unavailable: " + path);
         }
         auto* object = found->second;
+        if(object->nativeClientClass) {
+            const auto registered=NativeCastClass(object->reflection.objectPath);
+            if(!registered) throw std::runtime_error("Native player class is not an audited registration");
+            return *registered;
+        }
         if (object->runtimeBirth) throw std::runtime_error("Runtime birth is not a UClass");
         const auto& table = Table(object->sourcePath);
         const auto& entry = table.exports.at(object->exportIndex);
@@ -3687,6 +3933,10 @@ private:
         return {object->reflection.objectPath, name.ToString(), std::move(base)};
     }
     QuestVr::ObjectCastObject CastObjectIdentity(const std::string& path) {
+        if (LowerAscii(path).rfind("@classdefault:",0u)==0u) {
+            auto* object=Object(path);
+            return {object->reflection.objectPath,object->defaultOwner->reflection.objectPath,false};
+        }
         const auto found = persistentVmObjects.find(LowerAscii(path));
         if (found == persistentVmObjects.end()) {
             if (const auto registered = NativeCastClass(path))
@@ -3694,6 +3944,13 @@ private:
             throw std::runtime_error("VM cast object identity unavailable: " + path);
         }
         auto* object = found->second;
+        if(object->nativeClientClass)
+            return {object->reflection.objectPath,"Core.Class",true};
+        if(object->nativeClientIdentity) {
+            object=Object(path); // Reject revoked lease before exposing kind.
+            if(!object->cls) throw std::runtime_error("Native player UObject lacks actual class");
+            return {object->reflection.objectPath,object->cls->reflection.objectPath,false};
+        }
         if (object->runtimeBirth) {
             if (!object->cls || !object->cls->classDescriptor)
                 throw std::runtime_error("Runtime birth has no original class identity");
@@ -3716,7 +3973,8 @@ private:
             object->reflection.metaClass == "Class" ? "Core.Class" :
             Qualified(Table(object->sourcePath), Table(object->sourcePath).exports.at(object->exportIndex).ObjClass);
         if (classValue) {
-            if (LowerAscii(actual) != "core.class" || (!expected.empty() && !ClassDerives(value.text, expected)))
+            if (object->defaultOwner || (!object->classDescriptor && !object->nativeClientClass) || LowerAscii(actual) != "core.class" ||
+                (!expected.empty() && !ClassDerives(value.text, expected)))
                 throw std::runtime_error("Runtime Class property violates its class constraint");
         } else if (!expected.empty() && !ClassDerives(actual, expected))
             throw std::runtime_error("Runtime Object property violates its class constraint");
@@ -3742,14 +4000,20 @@ private:
         // class's same-named field. Validate before exposing a READ alias too:
         // untrusted bytecode must not retrieve a sibling value/default-zero
         // merely because the fallback storage lookup uses a leaf field name.
-        auto* target = defaults || object->classDescriptor ? DefaultClass(object) : object;
+        auto* target = defaults || object->defaultOwner ? DefaultOwner(object) : object;
         if (!OwnsProperty(target->classDescriptor ? target : target->cls,property) ||
             index >= property.arrayDimension)
             throw std::runtime_error("VM property is not owned by its concrete receiver class");
         auto result = std::make_shared<Reference>(); result->zero = property.zero;
         result->read = [this, object, property, index, defaults]() { return Read(object, property, index, defaults); };
         result->write = [this, object, property, index, defaults](const Value& value) {
-            auto* target = defaults || object->classDescriptor ? DefaultClass(object) : object;
+            if (object->defaultOwner) {
+                const auto key=LowerAscii(property.key);
+                if (key=="core.object.class" || key=="core.object.name" || key=="core.object.outer" ||
+                    key=="core.object.objectflags" || key=="core.object.objectinternal")
+                    throw std::runtime_error("Class-default UObject header mutation is not established");
+            }
+            auto* target = defaults || object->defaultOwner ? DefaultOwner(object) : object;
             const auto actual = ClassProperty(target->classDescriptor ? target : target->cls, property.name);
             if (LowerAscii(actual.key) != LowerAscii(property.key) || index >= actual.arrayDimension)
                 throw std::runtime_error("VM property is not owned by its concrete receiver class");
@@ -3781,7 +4045,8 @@ private:
             if (saved_.size() >= 4096u) throw std::runtime_error("VM touched actor budget exceeded");
             saved_.emplace(object, Before{object->scriptValues, object->classDefaultValues, object->animationClock, object->stateObject, object->latentTimeLeft, object->lastRenderTime,
                 object->stateLocalsRevision, object->stateTransitionFlags, object->committedScriptState, object->childActors, object->basedActors,
-                object->touchEventSent, object->committedLifecycle, object->worldRemoved});
+                object->touchEventSent, object->committedLifecycle, object->worldRemoved,
+                object->nativePlayer, object->nativeViewportActor, object->nativePlayerBinding});
         }
     }
     void TouchCollision() {
@@ -5011,7 +5276,7 @@ public:
         std::set<std::uint32_t> indices;
         for (const auto& birth : births) {
             auto* cls = DefaultClass(birth.classPath);
-            if ((cls->classDescriptor->classFlags & 1u) ||
+            if (!IsDerivedFromPath(cls,"Engine.Actor") || (cls->classDescriptor->classFlags & 1u) ||
                 birth.worldActorIndex < baseline || birth.worldActorIndex - baseline >= births.size() ||
                 !indices.emplace(birth.worldActorIndex).second)
                 throw std::runtime_error("Script save birth class or appended Level slot is invalid");
@@ -5139,6 +5404,11 @@ public:
     }
     bool IsBirth(const std::string& path) const { return birthClasses_.count(LowerAscii(path)) != 0u; }
     RuntimeObject* SavedClass(const QuestVr::ScriptSavedObject& record) {
+        // ObjectProperty values may refer to a class-owned default block, but
+        // saved actor records must be members of this map's authored/birth set.
+        // Neither Actor ancestry nor an asset/UClass identity creates a slot.
+        if (!mapClasses_.count(LowerAscii(record.path)))
+            throw std::runtime_error("Script save object record is not an actor in its map");
         const auto actual = ObjectClass(record.path, false);
         if (LowerAscii(actual) != LowerAscii(record.classPath))
             throw std::runtime_error("Script save actor class does not match authored object");
@@ -5373,6 +5643,13 @@ private:
     }
     std::string ObjectClass(const std::string& path, const bool assetAllowed) {
         const auto key = LowerAscii(path);
+        if (key.rfind("@classdefault:",0u)==0u) {
+            const auto selected=path.substr(std::string_view("@ClassDefault:").size());
+            const auto canonical=host_.ClassDefaultObject(selected);
+            if (LowerAscii(canonical)!=key)
+                throw std::runtime_error("Script save class-default object handle is not canonical");
+            return host_.Object(canonical)->defaultOwner->reflection.objectPath;
+        }
         const auto mapped = mapClasses_.find(key);
         if (mapped != mapClasses_.end()) return mapped->second;
         const auto found = persistentVmObjects.find(key);
@@ -5440,7 +5717,7 @@ private:
         if (value.text.empty()) return;
         const auto actual = ObjectClass(value.text, true);
         if (classValue) {
-            if (LowerAscii(actual) != "core.class" ||
+            if (LowerAscii(value.text).rfind("@classdefault:",0u)==0u || LowerAscii(actual) != "core.class" ||
                 (!expected.empty() && !ClassDerives(value.text, expected)))
                 throw std::runtime_error("Script save Class property violates its class constraint");
         } else if (!expected.empty() && !ClassDerives(actual, expected)) {
@@ -5962,6 +6239,7 @@ PortableRuntimeSummary InitializePortableRuntime(
         }
     }
     BuildPersistentDialogueIndex();
+    const auto classDefaultObjects=MaterializeClassDefaultObjects(persistentRuntime->get());
     summary.objects = persistentRuntime->get()->exports.size();
     persistentScriptExportCount = summary.objects;
     summary.peakGcObjects = GC::GetStats().numObjects;
@@ -5969,7 +6247,7 @@ PortableRuntimeSummary InitializePortableRuntime(
     summary.passed = !packages.empty() && summary.objects != 0 &&
         summary.classes != 0 && summary.functions != 0 &&
         summary.normalizedBytecodeBytes != 0 &&
-        GC::GetStats().numObjects == baseline + summary.objects + 1;
+        GC::GetStats().numObjects == baseline + summary.objects + classDefaultObjects + 1;
     return summary;
 }
 
@@ -6396,11 +6674,13 @@ PortableSound LoadPortableRuntimeSound(const std::string& objectPath) {
 }
 
 void ShutdownPortableRuntime() {
+    ClearNativePlayerObjects();
     persistentNativeClient.Clear();
     persistentScriptRandomSeed.reset();
     persistentDispatchGraph.reset();
     persistentDispatchSummary = {};
     persistentVmObjects.clear();
+    persistentPlayerSession.reset();
     persistentRuntime.reset();
     persistentQualifiedObjects.clear();
     persistentMapTagIndex.clear();
@@ -6434,11 +6714,229 @@ void RegisterPortableRuntimeViewport(const std::uint64_t clientIdentity,
         throw std::runtime_error("Native viewport requires an initialized engine runtime");
     persistentNativeClient.Register(clientIdentity, viewport);
 }
-void ClearPortableRuntimeClient() { persistentNativeClient.Clear(); }
+void ClearPortableRuntimeClient() { ClearNativePlayerObjects(); persistentNativeClient.Clear(); }
 bool HasPortableRuntimeClient() { return persistentNativeClient.HasClient(); }
 std::vector<QuestVr::NativeViewport> ReadPortableRuntimeClientView() {
     const auto targets = persistentNativeClient.ReadOnlyView();
     return {targets.begin(), targets.end()};
+}
+
+PortablePlayerSessionSnapshot ReadPortableRuntimePlayerSession(const std::uint64_t viewportIdentity) {
+    auto* viewport=NativeSessionViewport(viewportIdentity);
+    auto* session=persistentPlayerSession->get();
+    PortablePlayerSessionSnapshot result;
+    result.clientIdentity=persistentNativeClient.ClientIdentity();result.viewportIdentity=viewportIdentity;
+    result.clientPath=session->client->reflection.objectPath;
+    result.viewportPath=viewport->reflection.objectPath;result.viewportClassPath=viewport->cls->reflection.objectPath;
+    PortableActorVmHost identityHost;
+    const auto readIdentity=[&](RuntimeObject* object,const char* field,QuestVr::Vm::Kind kind) {
+        const auto property=identityHost.DescribeProperty(field);
+        if(property.zero.kind!=kind || property.arrayDimension!=1u || !identityHost.OwnsProperty(object->cls,property))
+            throw std::runtime_error("Native session UObject identity field has wrong type/ownership");
+        auto value=identityHost.Read(object,property,0u);
+        if(value.kind!=kind) throw std::runtime_error("Native session UObject identity field has wrong value type");
+        return value;
+    };
+    result.clientObjectFlags=readIdentity(session->client,"Core.Object.ObjectFlags",QuestVr::Vm::Kind::Int).integer;
+    result.viewportObjectFlags=readIdentity(viewport,"Core.Object.ObjectFlags",QuestVr::Vm::Kind::Int).integer;
+    result.viewportOuterPath=readIdentity(viewport,"Core.Object.Outer",QuestVr::Vm::Kind::Object).text;
+    if(readIdentity(viewport,"Core.Object.Class",QuestVr::Vm::Kind::Object).text!=result.viewportClassPath ||
+        result.viewportOuterPath!=result.clientPath ||
+        result.clientObjectFlags!=static_cast<std::int32_t>(session->client->reflection.flags) ||
+        result.viewportObjectFlags!=static_cast<std::int32_t>(viewport->reflection.flags))
+        throw std::runtime_error("Native session UObject fields disagree with actual native identities");
+    for(const auto& registered:persistentNativeClient.ReadOnlyView())
+        if(registered.identity==viewportIdentity) result.viewport=registered;
+    if(auto* actor=viewport->nativeViewportActor) {
+        PortableActorVmHost host;
+        if(host.Object(actor->reflection.objectPath)!=actor || actor->worldRemoved ||
+            !IsDerivedFromPath(actor->cls,"Engine.PlayerPawn") || !actor->nativePlayerBinding || actor->nativePlayer!=viewport)
+            throw std::runtime_error("Native viewport/player pairing is stale or inconsistent");
+        static_cast<void>(host.RequireNativeLevelInfo(actor));
+        result.playerPath=actor->reflection.objectPath;result.bound=true;
+    }
+    if(result.viewport.identity!=viewportIdentity || result.clientIdentity==0u ||
+        NativeSessionViewport(viewportIdentity)!=viewport ||
+        result.clientIdentity!=persistentNativeClient.ClientIdentity())
+        throw std::runtime_error("Native client/viewport revoked during player-session snapshot");
+    return result;
+}
+
+PortablePlayerSessionSnapshot PreparePortableRuntimePlayerObjects(const std::uint64_t viewportIdentity) {
+    CollectBirthGarbageAtBoundary collect;
+    if(!persistentRuntime || !persistentRuntime->get() || !persistentNativeClient.HasClient())
+        throw std::runtime_error("Player UObject preparation requires a genuine live native client");
+    const auto registered=persistentNativeClient.ReadOnlyView();
+    if(std::none_of(registered.begin(),registered.end(),[&](const auto& viewport) {return viewport.identity==viewportIdentity;}))
+        throw std::runtime_error("Player UObject preparation requires a registered live viewport");
+    if(persistentPlayerSession)
+        for(auto* viewport:persistentPlayerSession->get()->viewports)
+            if(viewport->nativeViewportIdentity==viewportIdentity) return ReadPortableRuntimePlayerSession(viewportIdentity);
+    PortableActorVmHost host;
+    auto* playerClass=host.Object("Engine.Player");auto* objectClass=host.Object("Core.Object");
+    if(!playerClass->classDescriptor || !objectClass->classDescriptor ||
+        !IsDerivedFromPath(playerClass,"Core.Object"))
+        throw std::runtime_error("Native viewport requires original Engine.Player/Core.Object UClass metadata");
+    using Kind=QuestVr::Vm::Kind;
+    for(const auto& [key,kind]:{
+            std::pair{"Core.Object.Class",Kind::Object},std::pair{"Core.Object.Name",Kind::Name},
+            std::pair{"Core.Object.Outer",Kind::Object},std::pair{"Core.Object.ObjectFlags",Kind::Int}}) {
+        const auto field=host.DescribeProperty(key);
+        if(LowerAscii(field.key)!=LowerAscii(key) || field.zero.kind!=kind || field.arrayDimension!=1u ||
+            !host.OwnsProperty(objectClass,field) || !host.OwnsProperty(playerClass,field))
+            throw std::runtime_error("Native player UObject identity schema is malformed: "+std::string(key));
+    }
+    const auto actorField=host.DescribeProperty("Engine.Player.Actor");
+    if(actorField.zero.kind!=QuestVr::Vm::Kind::Object || actorField.arrayDimension!=1u ||
+        !host.OwnsProperty(playerClass,actorField))
+        throw std::runtime_error("Native viewport requires the actual Engine.Player.Actor declaration");
+    pendingBirthGarbage=true;
+    GCRoot<RuntimePlayerSession> staged(persistentPlayerSession ? persistentPlayerSession->get() : GC::Alloc<RuntimePlayerSession>());
+    auto* session=staged.get();
+    auto nextQualified=persistentQualifiedObjects;auto nextVm=persistentVmObjects;
+    const auto index=[&](RuntimeObject* object) {
+        if(!nextQualified.emplace(object->reflection.objectPath,object).second ||
+            !nextVm.emplace(LowerAscii(object->reflection.objectPath),object).second)
+            throw std::runtime_error("Native player/session UObject identity collision");
+    };
+    std::vector<GCRoot<RuntimeObject>> allocations;
+    const auto allocate=[&](const std::string& path,const std::string& name,RuntimeObject* cls,RuntimeObject* outer) {
+        allocations.emplace_back(GC::Alloc<RuntimeObject>(PortableReflectionObject{
+            path,cls ? cls->reflection.objectPath.substr(cls->reflection.objectPath.find_last_of('.')+1u) : name,
+            outer ? outer->reflection.objectPath : std::string{}, {},0x4000u,0},nullptr));
+        auto* object=allocations.back().get();object->cls=cls;object->outer=outer;
+        object->sourcePath=cls ? cls->sourcePath : objectClass->sourcePath;
+        object->exportIndex=std::numeric_limits<std::size_t>::max();
+        if(cls) object->references.push_back(cls);
+        if(outer) object->references.push_back(outer);
+        return object;
+    };
+    auto classes=session->classes;auto viewports=session->viewports;
+    const auto nativeClass=[&](const char* path,RuntimeObject* base) {
+        const auto found=nextVm.find(LowerAscii(path));
+        if(found!=nextVm.end()) {
+            auto* cls=found->second;
+            if(!cls->classDescriptor && !cls->nativeClientClass)
+                throw std::runtime_error("Native player class registration collides with a non-UClass");
+            if(!IsDerivedFromPath(cls,base->reflection.objectPath))
+                throw std::runtime_error("Native player class has the wrong audited base");
+            return cls;
+        }
+        auto* cls=allocate(path,std::string(path).substr(std::string(path).find('.')+1u),nullptr,nullptr);
+        cls->reflection.metaClass="Class";cls->nativeClientClass=true;cls->base=base;
+        cls->references.push_back(base);classes.push_back(cls);index(cls);return cls;
+    };
+    auto* clientClass=nativeClass("Engine.Client",objectClass);
+    auto* viewportClass=nativeClass("Engine.Viewport",playerClass);
+    const auto clientIdentity=persistentNativeClient.ClientIdentity();
+    auto* client=session->client;
+    const bool newClient=client==nullptr;
+    if(!client) {
+        const auto name="QuestClient"+std::to_string(clientIdentity);
+        client=allocate(name,name,clientClass,nullptr);client->nativeClientIdentity=clientIdentity;index(client);
+    }
+    const auto name="QuestViewport"+std::to_string(viewportIdentity);
+    auto* viewport=allocate(client->reflection.objectPath+'.'+name,name,viewportClass,client);
+    viewport->nativeClientIdentity=clientIdentity;viewport->nativeViewportIdentity=viewportIdentity;
+    // Concrete native UObject fields are independent of map Actors. Identity
+    // fields use their actual loaded declarations, not package table indices.
+    for(auto* object:{newClient ? client : nullptr,viewport}) {
+        if(!object) continue;
+        object->scriptValues["class"][0u]=QuestVr::Vm::Value::Text(QuestVr::Vm::Kind::Object,object->cls->reflection.objectPath);
+        object->scriptValues["name"][0u]=QuestVr::Vm::Value::Text(QuestVr::Vm::Kind::Name,
+            object->reflection.objectPath.substr(object->reflection.objectPath.find_last_of('.')+1u));
+        object->scriptValues["outer"][0u]=QuestVr::Vm::Value::Text(QuestVr::Vm::Kind::Object,
+            object->outer ? object->outer->reflection.objectPath : std::string{});
+        object->scriptValues["objectflags"][0u]=QuestVr::Vm::Value::Integer(static_cast<std::int32_t>(object->reflection.flags));
+    }
+    index(viewport);viewports.push_back(viewport);
+    auto newOwner=persistentPlayerSession ? std::unique_ptr<GCRoot<RuntimePlayerSession>>{} :
+        std::make_unique<GCRoot<RuntimePlayerSession>>(session);
+    if(clientIdentity!=persistentNativeClient.ClientIdentity())
+        throw std::runtime_error("Native client revoked during player UObject preparation");
+    // All allocations/index copies complete before this publication interval.
+    persistentQualifiedObjects.swap(nextQualified);persistentVmObjects.swap(nextVm);
+    session->classes.swap(classes);session->viewports.swap(viewports);session->client=client;
+    if(newOwner) persistentPlayerSession=std::move(newOwner);
+    return ReadPortableRuntimePlayerSession(viewportIdentity);
+}
+
+QuestVr::Vm::Result SetPortableRuntimePlayer(const std::uint64_t viewportIdentity,
+    const std::string& actorPath,const QuestVr::Vm::Limits& limits) {
+    CollectBirthGarbageAtBoundary collect;
+    try {
+        PortableActorVmHost host;
+        return QuestVr::Vm::ExecuteTransaction(host,[&](QuestVr::Vm::Execution& execution) {
+            return host.SetSessionPlayer(viewportIdentity,actorPath,execution);
+        },limits);
+    } catch(const std::exception& error) {
+        QuestVr::Vm::Result result;result.status=QuestVr::Vm::Status::Unsupported;result.error=error.what();return result;
+    }
+}
+
+PortablePlayerHudSnapshot ReadPortablePlayerHudSnapshot(const std::string& actorPath) {
+    PortableActorVmHost host;
+    auto* player=host.Object(actorPath);
+    if(!player->active || player->worldRemoved || !IsDerivedFromPath(player->cls,"DeusEx.DeusExPlayer"))
+        throw std::runtime_error("Player HUD source is not an actual live DeusExPlayer");
+    auto* level=host.RequireNativeLevelInfo(player);
+    const auto read=[&](RuntimeObject* object,const std::string& field,QuestVr::Vm::Kind kind) {
+        const auto property=host.DescribeProperty(field);
+        if(property.zero.kind!=kind || property.arrayDimension!=1u || !host.OwnsProperty(object->cls,property))
+            throw std::runtime_error("Player HUD declared field has wrong type/ownership: "+field);
+        auto value=host.Read(object,property,0u);
+        if(value.kind!=kind || (kind==QuestVr::Vm::Kind::Float && !std::isfinite(value.floating)) ||
+            value.text.size()>4096u || value.text.find('\0')!=std::string::npos)
+            throw std::runtime_error("Player HUD declared field is malformed: "+field);
+        return value;
+    };
+    using Kind=QuestVr::Vm::Kind;
+    PortablePlayerHudSnapshot result;result.playerPath=player->reflection.objectPath;
+    static constexpr const char* healthFields[]={"HealthHead","HealthTorso","HealthArmLeft","HealthArmRight","HealthLegLeft","HealthLegRight"};
+    for(std::size_t index=0u;index<result.limbHealth.size();++index)
+        result.limbHealth[index]=read(player,std::string("Engine.Pawn.")+healthFields[index],Kind::Int).integer;
+    result.energy=read(player,"DeusEx.DeusExPlayer.Energy",Kind::Float).floating;
+    result.energyMax=read(player,"DeusEx.DeusExPlayer.EnergyMax",Kind::Float).floating;
+    result.keyRingPath=read(player,"DeusEx.DeusExPlayer.KeyRing",Kind::Object).text;
+    if(!result.keyRingPath.empty()) {
+        auto* ring=host.Object(result.keyRingPath);
+        if(ring->worldRemoved || !IsDerivedFromPath(ring->cls,"DeusEx.NanoKeyRing") ||
+            host.RequireNativeLevelInfo(ring)!=level ||
+            read(ring,"Engine.Actor.Owner",Kind::Object).text!=result.playerPath)
+            throw std::runtime_error("Player HUD KeyRing is not its actual owned same-world ring");
+    }
+    auto current=read(player,"Engine.Actor.Inventory",Kind::Object).text;
+    std::array<RuntimeObject*,1024u> visited{};std::size_t count{};
+    while(!current.empty()) {
+        auto* item=host.Object(current);
+        if(count==visited.size() || std::find(visited.begin(),visited.begin()+count,item)!=visited.begin()+count)
+            throw std::runtime_error("Player HUD Inventory chain cycles or exceeds 1024 objects");
+        visited[count++]=item;
+        if(item->worldRemoved || !IsDerivedFromPath(item->cls,"Engine.Inventory") ||
+            host.RequireNativeLevelInfo(item)!=level ||
+            read(item,"Engine.Actor.Owner",Kind::Object).text!=result.playerPath)
+            throw std::runtime_error("Player HUD Inventory member is not its actual owned same-world item");
+        PortablePlayerHudItem row;
+        row.actorPath=item->reflection.objectPath;row.classPath=item->cls->reflection.objectPath;
+        row.inObjectBelt=read(item,"Engine.Inventory.bInObjectBelt",Kind::Bool).boolean;
+        row.beltPosition=read(item,"Engine.Inventory.beltPos",Kind::Int).integer;
+        row.iconPath=read(item,"Engine.Inventory.Icon",Kind::Object).text;
+        row.beltDescription=read(item,"Engine.Inventory.beltDescription",Kind::String).text;
+        if(row.inObjectBelt && (row.beltPosition<0 || row.beltPosition>9))
+            throw std::runtime_error("Player HUD active belt position is outside original ten slots");
+        result.inventory.push_back(std::move(row));
+        current=read(item,"Engine.Actor.Inventory",Kind::Object).text;
+    }
+    if(!result.keyRingPath.empty() && std::none_of(result.inventory.begin(),result.inventory.end(),[&](const auto& item) {
+            return item.actorPath==result.keyRingPath;
+        })) throw std::runtime_error("Player HUD KeyRing is absent from its actual Inventory chain");
+    result.available=true;return result;
+}
+
+PortablePlayerHudSnapshot ReadPortableRuntimePlayerHud(const std::uint64_t viewportIdentity) {
+    const auto session=ReadPortableRuntimePlayerSession(viewportIdentity);
+    if(!session.bound) return {};
+    auto result=ReadPortablePlayerHudSnapshot(session.playerPath);result.bound=true;return result;
 }
 
 PortableVmValue ExecutePortableFunction(const std::string& objectPath) {
@@ -6538,6 +7036,30 @@ QuestVr::Vm::Value ReadPortableActorScriptProperty(const std::string& actorPath,
     if (arrayIndex >= property.arrayDimension)
         throw std::runtime_error("VM property fixed-array index is out of range");
     return host.Read(actor, property, arrayIndex);
+}
+
+PortableMapNorthSnapshot ReadPortableRuntimeMapNorth() {
+    if (persistentMapSourcePath.empty() || persistentWorldActors.empty() ||
+        !persistentWorldActors.front() || persistentWorldActors.front()->worldRemoved ||
+        !IsDerivedFromPath(persistentWorldActors.front()->cls, "Engine.LevelInfo"))
+        throw std::runtime_error("Map north requires an actual loaded Level");
+    auto* level = persistentWorldActors.front()->nativeXLevel;
+    PortableActorVmHost host;
+    if (!level || level->runtimeBirth || level->sourcePath != persistentMapSourcePath ||
+        host.RequireNativeLevelInfo(persistentWorldActors.front())!=persistentWorldActors.front())
+        throw std::runtime_error("Map north requires the current serialized native Level");
+    for (auto* actor : persistentWorldActors) {
+        if (!actor || actor->worldRemoved ||
+            !IsDerivedFromPath(actor->cls, "DeusEx.DeusExLevelInfo")) continue;
+        if (actor->nativeXLevel != level)
+            throw std::runtime_error("Map north candidate belongs to a foreign native Level");
+        const auto value = ReadPortableActorDeclaredScriptProperty(actor->reflection.objectPath,
+            "DeusEx.DeusExLevelInfo.TrueNorth");
+        if (value.kind != QuestVr::Vm::Kind::Int)
+            throw std::runtime_error("DeusExLevelInfo.TrueNorth is not the declared Int value");
+        return {true, actor->reflection.objectPath, value.integer};
+    }
+    return {};
 }
 
 QuestVr::Vm::Value ReadPortableActorDeclaredScriptProperty(const std::string& actorPath,
@@ -6963,6 +7485,7 @@ std::size_t UnloadPortableRuntimeMap() {
     }
     const std::size_t removed =
         persistentRuntime->get()->exports.size() - persistentScriptExportCount;
+    ClearNativePlayerEdges();
     if (!persistentMapPackageName.empty()) {
         const std::string prefix = persistentMapPackageName + ".";
         for (auto it = persistentQualifiedObjects.begin();
@@ -8725,6 +9248,7 @@ static bool ReadPortableRuntimeState(const std::string& path, const bool apply, 
             if (object->nativeAiManager) pendingBirthGarbage = true;
             object->nativeAiManager = nullptr;
         }
+        ClearNativePlayerEdges(); // Checkpoints never restore engine-session UPlayer pointers.
         persistentRuntime->get()->exports.swap(prepared.exports);
         persistentWorldActors.swap(prepared.worldActors);
         persistentQualifiedObjects.swap(prepared.qualified); persistentVmObjects.swap(prepared.vm);
