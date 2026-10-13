@@ -73,14 +73,15 @@ This is isolated backend progress, not automatic world startup or live NPC AI.
 The [original actor timer phase](docs/ACTOR-TIMER-CONTRACT.md) now implements
 SetTimer280 and explicit once-per-tick callback coalescing, with reflected
 save/restore, state-aware dispatch and atomic callback rollback. Timer-only writes
-preserve animation and avoid geometry publication. This source-only checkpoint
-does not enable automatic campaign ticking or replace the installed visual-test
-APK; original Training startup still reports an exact later class-default gap.
+preserve animation and avoid geometry publication. These backend changes do not
+enable automatic campaign ticking; original Training startup still reports an
+exact later class-default gap.
 The [qualified class-default read audit](docs/CLASS-DEFAULT-CONTEXT-CONTRACT.md)
 now distinguishes inherited fields from same-named redeclarations, rejects
 unrelated qualified read aliases and tests mutable overlays/save round-trips.
-This source-only hardening does not implement ClassContext or complete original
-world startup; the installed visual-test APK remains unchanged.
+This hardening and the audited opcode/frame receiver foundation do not implement
+ClassContext or complete original world startup. The latest installed APK includes
+these backend corrections; see [test-build handoff](docs/QUEST-TEST-BUILD.md).
 The [original state-dispatch correction](docs/ORIGINAL-STATE-DISPATCH.md) now
 uses actual Children/Next Auto order and explicit selected-state SuperField
 callback ancestry. Full state identity/control and campaign bootstrap remain

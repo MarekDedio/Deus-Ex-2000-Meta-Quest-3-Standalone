@@ -98,8 +98,20 @@ struct StateLabel {
     std::string name;
     std::uint32_t offset{};
 };
+// Detached structural AST metadata, in preorder. Child indices refer into the
+// same ProgramLayout::expressions vector. No evaluation or typed field/call
+// resolution occurs while producing this snapshot.
+struct ExpressionLayout {
+    std::size_t offset{};
+    std::uint8_t opcode{};
+    std::int32_t reference{};
+    std::uint16_t target{}, native{};
+    std::uint8_t zeroFillSize{};
+    std::vector<std::size_t> children;
+};
 struct ProgramLayout {
     std::vector<std::size_t> statementOffsets;
+    std::vector<ExpressionLayout> expressions;
     // Authored order and duplicates are retained. The None terminator is
     // consumed but omitted, matching pinned FindLabelIndex's label vector.
     std::vector<StateLabel> labels;

@@ -1,6 +1,33 @@
-# Current Quest test-build handoff (2026-10-12)
+# Current Quest test-build handoff (2026-10-13)
 
-## Latest installed APK: Training video visual fixes
+## Latest installed APK: receiver/context foundation
+
+`artifacts/class-context-foundation-20261013/DeusExQuestVR-receiver-foundation-20261013.apk`
+is signed ARM64, 20,044,129 bytes, SHA256
+`5A382E5DEDA7771B4B3FF4036F0BF1FDACC5D75E0E763BE265F1DC9FD0D78746`.
+APK v2 signature verifies; all16 ZIP entries contain port/SDK code/assets, not
+commercial game packages. Data-preserving replace-install completed on Quest3
+`2G0YC5ZG620985`, installed base.apk matches exactly, and lastUpdateTime is
+`2026-10-13 07:21:56`. One launch confirms process10802 and tracked Training.
+
+This includes the preceding visual fixes plus native280 timers, qualified-field
+read/shadow isolation and audited opcode/frame receiver distinctions. It does
+not enable original world startup, automatic NPC ticking or ClassContext.
+Fresh CTest passes66 ordinary tests/74 registered/eight opt-in skips, zero
+failures,29.58 seconds. Separate original actor integration and exact unchanged
+startup rollback pass. The permanent original ClassContext structural census
+passes1,184,728 checks; these are not full gameplay acceptance.
+
+Inspected live eye captures show original Jaime artwork/portrait, rendered hands,
+all four white focus corners on a moving door, and textured plant/lamp/drink at
+the desk. Door publication125 frames is8.530ms mean/9.928ms worst; live retained
+bank swaps complete. Stalls remain. The new user recording specifically reports
+streaming/pickup freezes, NPC T-poses and equipment browsing problems; these are
+under investigation, not accepted as fixed. Glass, full route and final performance
+acceptance remain open. Captures/logs are ignored under
+`artifacts/class-context-foundation-20261013/`.
+
+## Previous installed APK: Training video visual fixes
 
 `artifacts/tutorial-mover-20261012/DeusExQuestVR-training-visual-fixes-20261012.apk`
 is signed ARM64, 19,983,745 bytes, SHA256

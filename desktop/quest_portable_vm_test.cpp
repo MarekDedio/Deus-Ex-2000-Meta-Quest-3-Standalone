@@ -168,8 +168,8 @@ Bytes Call(std::uint8_t opcode,std::int32_t index,std::initializer_list<Bytes> a
 Bytes Return(const Bytes& value={0x0b}) {return Join({{0x04},value});}
 Bytes Let(const Bytes& lhs,const Bytes& rhs,std::uint8_t opcode=0x0f) {return Join({{opcode},lhs,rhs});}
 Bytes Skip(const Bytes& value) {Bytes b{0x18};U16(b,static_cast<std::uint16_t>(value.size()));return Join({b,value});}
-Bytes Context(const Bytes& object,const Bytes& child) {
-    auto b=Join({{0x19},object});U16(b,static_cast<std::uint16_t>(child.size()));b.push_back(0);return Join({b,child});
+Bytes Context(const Bytes& object,const Bytes& child,std::uint8_t zeroFill=0u,std::uint8_t opcode=0x19u) {
+    auto b=Join({{opcode},object});U16(b,static_cast<std::uint16_t>(child.size()));b.push_back(zeroFill);return Join({b,child});
 }
 Bytes Element(const Bytes& index,const Bytes& array) {return Join({{0x1a},index,array});}
 Bytes Member(std::int32_t field,const Bytes& parent) {return Join({Ref(0x36,field),parent});}
@@ -199,7 +199,7 @@ struct TestHost final:Vm::Host {
     std::map<std::string,CastClass> castClasses;
     std::map<std::string,std::string> castInstances;
     std::optional<Value> castResultOverride;
-    std::size_t castClassResolutions{},castCalls{};
+    std::size_t castClassResolutions{},castCalls{},objectResolutions{};
     std::vector<std::string> observations;
     std::vector<std::vector<Value>> nativeArguments;
     std::vector<std::string> nativeReceivers,nativeDeclarations;
@@ -280,7 +280,7 @@ struct TestHost final:Vm::Host {
     }
     Vm::Property ResolveProperty(const Vm::Function& f,std::int32_t index) override {return properties.at({f.source,index});}
     std::string ResolveName(const Vm::Function& f,std::int32_t index) override {return names.at({f.source,index});}
-    std::string ResolveObject(const Vm::Function& f,std::int32_t index) override {return objects.at({f.source,index});}
+    std::string ResolveObject(const Vm::Function& f,std::int32_t index) override {++objectResolutions;return objects.at({f.source,index});}
     std::string ObjectString(const std::string& identity) override {
         objectStringLookups.push_back(identity);
         const auto found=objectDisplayPaths.find(identity);
@@ -1209,6 +1209,116 @@ void LazyAndContextContracts() {
         Failed(result,Vm::Status::Unsupported,rejected,"ClassContext without class-default identity");
         Require(rejected.effects==0 && rejected.observations.empty(),"Unsupported ClassContext evaluated child on an ordinary object");
     }
+}
+void ReceiverAndContextMetadataContracts() {
+    const auto initialChecks=checks,initialRejections=rejections;
+    TestHost host;
+    auto f=Function("RetailReceivers",Return(Context(Ref(0x20,1),{0x17})));
+    host.objects[{f.source,1}]="Other";
+    auto r=Vm::Execute(host,f,"Self");Returned(r,"Self uses incoming opcode receiver");
+    Require(r.value.kind==Vm::Kind::Object && r.value.text=="Other",
+        "Changed-context Self incorrectly returned FFrame.Object");
+    const auto value=host.Property(f,2,"Value",Value::Integer(0));
+    const auto source=host.Property(f,3,"Source",Value::Integer(0));
+    host.Store("Self",value,{Value::Integer(12)});host.Store("Other",value,{Value::Integer(77)});
+    host.Store("Self",source,{Value::Integer(34)});host.Store("Other",source,{Value::Integer(98)});
+    f.bytecode=Return(Context(Ref(0x20,1),Context({0x17},Ref(0x01,2))));
+    r=Vm::Execute(host,f,"Self");Returned(r,"Nested Context selector uses incoming receiver");
+    Require(r.value.integer==77,"Nested Context rebound its selector to the frame object");
+    f.bytecode=Join({Context(Ref(0x20,1),Let(Ref(0x01,2),Ref(0x01,3))),Return(Ref(0x01,2))});
+    r=Vm::Execute(host,f,"Self");Returned(r,"Let operands use frame object");
+    Require(r.value.integer==34 && host.Load("Other",value).integer==77 && r.writes==1u,
+        "Changed-context Let redirected its target or source away from FFrame.Object");
+    const auto bit=host.Property(f,4,"Bit",Value::Bool(false));
+    const auto bitSource=host.Property(f,5,"BitSource",Value::Bool(false));
+    host.Store("Self",bit,{Value::Bool(true)});host.Store("Other",bit,{Value::Bool(false)});
+    host.Store("Self",bitSource,{Value::Bool(false)});host.Store("Other",bitSource,{Value::Bool(true)});
+    f.bytecode=Join({Context(Ref(0x20,1),Let(Ref(0x01,4),Ref(0x01,5),0x14u)),Return(Ref(0x01,4))});
+    r=Vm::Execute(host,f,"Self");Returned(r,"LetBool operands use frame object");
+    Require(!r.value.boolean && !host.Load("Other",bit).boolean && r.writes==1u,
+        "Changed-context LetBool redirected its reflected operands");
+    const auto array=host.Property(f,6,"Slots",Value::Integer(0),0u,3u);
+    const auto index=host.Property(f,7,"Index",Value::Integer(0));
+    host.Store("Self",index,{Value::Integer(1)});host.Store("Other",index,{Value::Integer(2)});
+    host.Store("Self",array,{Value::Integer(10),Value::Integer(11),Value::Integer(12)});
+    host.Store("Other",array,{Value::Integer(70),Value::Integer(71),Value::Integer(72)});
+    f.bytecode=Return(Context(Ref(0x20,1),Element(Ref(0x01,7),Ref(0x01,6))));
+    r=Vm::Execute(host,f,"Self");Returned(r,"Array index frame versus array receiver");
+    Require(r.value.integer==71,"ArrayElement did not separate frame index and incoming array receiver");
+    host.objectDisplayPaths["Self"]="Map.Player0";host.objectDisplayPaths["Other"]="Map.Other0";
+    f.bytecode=Return(Context(Ref(0x20,1),Join({{0x56},{0x17}})));
+    r=Vm::Execute(host,f,"Self");Returned(r,"ObjectToString operand uses frame object");
+    Require(r.value.text=="Map.Player0" && host.objectStringLookups==std::vector<std::string>{"Self"},
+        "ObjectToString evaluated its operand against a changed opcode receiver");
+    auto callee=Function("ActualReceiverFrame",Return({0x17}),"Callee");
+    host.finals[{f.source,8}]=std::make_shared<Vm::Function>(callee);
+    f.bytecode=Return(Context(Ref(0x20,1),Call(0x1c,8)));
+    r=Vm::Execute(host,f,"Self");Returned(r,"Callee creates frame from actual receiver");
+    Require(r.value.text=="Other" && host.preparations.back()=="Other:"+callee.path,
+        "Nested scripted call kept caller frame Object instead of callee receiver");
+    {
+        TestHost failed;
+        const auto fn=Function("ChangedReceiverRollback",Join({
+            Context(Ref(0x20,1),Let(Ref(0x01,2),Int(66))),Native(4095u),Return()}));
+        failed.objects[{fn.source,1}]="Other";
+        const auto target=failed.Property(fn,2,"Value",Value::Integer(0));
+        failed.Store("Self",target,{Value::Integer(12)});failed.Store("Other",target,{Value::Integer(77)});
+        const auto failure=Vm::Execute(failed,fn,"Self");
+        Failed(failure,Vm::Status::Unsupported,failed,"Changed-receiver assignment rollback");
+        Require(failure.writes==1u && failed.Load("Self",target).integer==12 && failed.Load("Other",target).integer==77,
+            "Later failure leaked a corrected frame-object assignment");
+    }
+    {
+        TestHost structural;
+        const auto fn=Function("ClassContextMetadata",Return(Context({0x17},Join({{0x2d},Ref(0x02,100)}),4u,0x12u)));
+        structural.objects[{fn.source,100}]="Engine.Pawn.bIsHuman";
+        const auto layout=Vm::AnalyzeProgram(structural,fn);
+        Require(layout.expressions.size()==5u && layout.expressions[0].opcode==0x04u &&
+            layout.expressions[0].children==std::vector<std::size_t>{1u} &&
+            layout.expressions[1].offset==1u && layout.expressions[1].opcode==0x12u &&
+            layout.expressions[1].target==6u && layout.expressions[1].zeroFillSize==4u &&
+            layout.expressions[1].children==std::vector<std::size_t>{2u,3u} &&
+            layout.expressions[2].opcode==0x17u && layout.expressions[3].opcode==0x2du &&
+            layout.expressions[3].children==std::vector<std::size_t>{4u} &&
+            layout.expressions[4].opcode==0x02u && layout.expressions[4].reference==100,
+            "Structural AST lost context skip/zero-fill, preorder children or qualified reference");
+        Require(!structural.beginCount && structural.observations.empty() && !structural.castClassResolutions,
+            "Structural context metadata extraction executed or resolved typed fields");
+        auto limits=Vm::Limits{};limits.retainedBytes=1u;
+        bool refused{};try {Vm::AnalyzeProgram(structural,fn,limits);}catch(const std::exception&) {refused=true;}
+        Require(refused,"Detached expression metadata escaped the retained-byte budget");++rejections;
+        // Find the exact parser-only budget via its last/sole object lookup.
+        // All parser Retain calls precede this DefaultVariable leaf; exported
+        // AST allocation follows Parse. A 1-byte test alone cannot prove this
+        // NEW allocation is charged, since the old parser already rejects it.
+        std::size_t low=0u,high=Vm::Limits{}.retainedBytes;
+        while(low<high) {
+            const auto middle=low+(high-low)/2u;limits.retainedBytes=middle;
+            structural.objectResolutions=0u;
+            try {Vm::AnalyzeProgram(structural,fn,limits);}catch(const std::exception&) {}
+            if(structural.objectResolutions) high=middle; else low=middle+1u;
+        }
+        limits.retainedBytes=low;structural.objectResolutions=0u;refused=false;
+        try {Vm::AnalyzeProgram(structural,fn,limits);}catch(const std::exception&) {refused=true;}
+        Require(refused && structural.objectResolutions==1u,
+            "Detached expression allocation was not charged after the complete parser-only budget");++rejections;
+    }
+    for(const auto opcode:{std::uint8_t{0x12u},std::uint8_t{0x19u}}) {
+        for(const auto skip:{std::uint16_t{0u},std::uint16_t{1u},std::uint16_t{65535u}}) {
+            TestHost rejected;
+            auto context=Context({0x2a},Int(7),4u,opcode);PatchU16(context,2u,skip);
+            const auto fn=Function("MalformedContextSpan",Join({Native(1000u),Return(context)}));
+            const auto failure=Vm::Execute(rejected,fn,"Self");
+            Failed(failure,Vm::Status::Invalid,rejected,"Malformed logical Context child span");
+            Require(failure.error=="VM context skip does not match its child expression span" &&
+                failure.offset==Native(1000u).size()+1u && failure.opcode==opcode &&
+                !rejected.effects && rejected.observations.empty(),"Malformed context span reached prefix effects");
+            bool refused{};try {Vm::AnalyzeProgram(rejected,fn);}catch(const std::exception&) {refused=true;}
+            Require(refused,"Structural inspection accepted malformed context skip metadata");++rejections;
+        }
+    }
+    std::cout<<"Retail receiver/context structural foundation: "<<checks-initialChecks
+        <<" checks, "<<rejections-initialRejections<<" rejection controls; ClassContext execution remains unsupported.\n";
 }
 void OptionalAndReferenceTables() {
     TestHost host;
@@ -2180,7 +2290,7 @@ void DynamicIntArrayContracts() {
         <<checks-initialChecks<<" checks and "<<rejections-initialRejections<<" rejection controls passed.\n";
 }
 void ExecutionContracts() {
-    RotatorDirectionContracts();ScalarAndLocalContracts();ParametersAndReturns();DecalNativeInputContracts();AssignmentArraysAndStructs();LazyAndContextContracts();
+    RotatorDirectionContracts();ScalarAndLocalContracts();ParametersAndReturns();DecalNativeInputContracts();AssignmentArraysAndStructs();LazyAndContextContracts();ReceiverAndContextMetadataContracts();
     OptionalAndReferenceTables();ControlAndFailureContracts();BudgetAndNestedRollback();IntegerIncrementContracts();CastContracts();SwitchContracts();DynamicIntArrayContracts();
 }
 void TransactionContracts() {

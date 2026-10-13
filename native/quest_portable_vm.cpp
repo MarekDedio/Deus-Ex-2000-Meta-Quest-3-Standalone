@@ -153,6 +153,7 @@ struct Failure : std::runtime_error {
 };
 struct Node {
     std::uint8_t op{};
+    std::uint8_t zeroFillSize{};
     std::size_t offset{};
     std::int32_t reference{};
     std::uint16_t target{}, native{};
@@ -190,6 +191,7 @@ public:
         }
         return p;
     }
+    std::size_t AnalysisRetainedBytes() const { return retainedBytes_; }
 private:
     Host& host_;
     const Function& fn_;
@@ -308,7 +310,15 @@ private:
             case 0x0d: case 0x0e: case 0x2d: child(); break;
             case 0x0f: case 0x10: case 0x14: case 0x1a: child(); child(); break;
             case 0x11: child(); child(); child(); child(); break;
-            case 0x12: case 0x19: child(); n.target = Word(); Byte(); child(); break;
+            case 0x12: case 0x19: {
+                child(); n.target = Word(); n.zeroFillSize = Byte();
+                const auto childStart = cursor_; child();
+                if (cursor_ - childStart != n.target) {
+                    result_.offset = n.offset; result_.opcode = n.op;
+                    Fail(Status::Invalid, "VM context skip does not match its child expression span");
+                }
+                break;
+            }
             case 0x13: case 0x2e:
                 n.reference = std::bit_cast<std::int32_t>(Dword());
                 if (!analysis_) n.constant = Value::Text(Kind::Object, ResolveCastClass(n.reference));
@@ -1211,8 +1221,8 @@ private:
                 CaptureNativeContext(index, context, fn.get()) : std::nullopt);
             std::vector<Evaluation> args;
             for (std::size_t i = 0; i < n.children.size(); ++i) {
-                // Pinned VM evaluates arguments using Self, NOT the changed
-                // Context receiver. Native &&/|| alone skip their right side.
+                // Retail CallFunction evaluates arguments with FFrame.Object,
+                // not the incoming opcode receiver. &&/|| alone skip RHS.
                 if (i == 1 && (index == 130 || index == 132) && (!fn || (fn->flags & 0x400))) {
                     const bool a = ToBool(args[0].Load());
                     if ((index == 130 && !a) || (index == 132 && a)) {
@@ -1230,7 +1240,10 @@ private:
             result = fn ? Evaluation{Run(*fn, context, args, capturedContext), {}} :
                 Native(index, context, args, nullptr, *capturedContext);
         } else if (n.op >= 0x39) {
-            const auto v = child(0).Load();
+            // Retail ObjectToString explicitly evaluates its operand using
+            // FFrame.Object even when the enclosing opcode receiver changed.
+            const auto v = (n.op == 0x56 ?
+                Eval(frame, n.children.at(0), frame.self) : child(0)).Load();
             Locate(frame.function, n.offset, n.op);
             switch (n.op) {
             case 0x39: {
@@ -1299,7 +1312,10 @@ private:
             case 0x0b: break;
             case 0x0e: child(0); break;
             case 0x0f: case 0x14: {
-                auto left = child(0); auto right = child(1);
+                // Both assignment operands use FFrame.Object, not the receiver
+                // supplied by an enclosing ordinary/class Context.
+                auto left = Eval(frame, n.children.at(0), frame.self);
+                auto right = Eval(frame, n.children.at(1), frame.self);
                 Locate(frame.function, n.offset, n.op);
                 if (left.reference) { Write(left.reference, right.Load()); result = left; }
                 else if (left.Load().kind == Kind::Nothing) result = right;
@@ -1334,10 +1350,13 @@ private:
                 }
                 result = Eval(frame, n.children.at(1), object.text); break;
             }
-            case 0x17: result.value = Value::Text(Kind::Object, frame.self); break;
+            case 0x17: result.value = Value::Text(Kind::Object, context); break;
             case 0x18: case 0x2d: result = child(0); break;
             case 0x1a: {
-                const auto index = ToInt(child(0).Load()); auto array = child(1);
+                // Retail uses FFrame.Object for the index but the incoming
+                // opcode receiver for the array's reflected address.
+                const auto index = ToInt(Eval(frame,n.children.at(0),frame.self).Load());
+                auto array = child(1);
                 Locate(frame.function, n.offset, n.op);
                 if (!array.reference || !array.reference->element || array.reference->dimension == 0)
                     Fail(Status::Invalid, "VM fixed array is not a variable");
@@ -1588,8 +1607,32 @@ private:
 ProgramLayout AnalyzeProgram(Host& host, const Function& function, const Limits& limits) {
     Result diagnostics;
     std::size_t nodes{};
-    auto program = Parser(host, function, limits, nodes, diagnostics, true).Parse();
+    Parser parser(host, function, limits, nodes, diagnostics, true);
+    auto program = parser.Parse();
+    auto retainedBytes = parser.AnalysisRetainedBytes();
+    const auto retain = [&](const std::size_t bytes) {
+        if (bytes > limits.retainedBytes || retainedBytes > limits.retainedBytes - bytes)
+            throw std::runtime_error("VM program layout retained byte limit");
+        retainedBytes += bytes;
+    };
     ProgramLayout layout;
+    if (nodes > limits.retainedBytes / sizeof(ExpressionLayout))
+        throw std::runtime_error("VM program layout retained byte limit");
+    retain(nodes * sizeof(ExpressionLayout));
+    layout.expressions.reserve(nodes);
+    const auto append = [&](const auto& recurse, const Node& node) -> std::size_t {
+        const auto index = layout.expressions.size();
+        layout.expressions.push_back({node.offset,node.op,node.reference,node.target,
+            node.native,node.zeroFillSize,{}});
+        retain(node.children.size() * sizeof(std::size_t));
+        layout.expressions[index].children.reserve(node.children.size());
+        for (const auto& child : node.children) {
+            const auto childIndex = recurse(recurse,child);
+            layout.expressions[index].children.push_back(childIndex);
+        }
+        return index;
+    };
+    for (const auto& statement : program.statements) append(append,statement);
     layout.statementOffsets.reserve(program.statements.size());
     for (const auto& statement : program.statements) layout.statementOffsets.push_back(statement.offset);
     if (!program.statements.empty() && program.statements.back().op == 0x0cu) {

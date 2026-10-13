@@ -59,7 +59,8 @@ legacy reset. The unchanged owned Training startup probe still reaches its exact
 PC36 ClassContext refusal with complete repeated rollback; original defaults
 passes 1,002 checks and original Training/Combat save regression checks pass.
 Strict NDK27 ARM64 syntax passes. These do not establish ClassContext execution
-or live headset acceptance; no new APK is built for this checkpoint.
+or live headset acceptance. The a635d9f read-binding checkpoint was source-only;
+the later receiver/context APK is tracked in QUEST-TEST-BUILD.md.
 
 ## Owned retail Core.dll evidence
 
@@ -78,13 +79,15 @@ Named export thunks were followed through bounded static disassembly:
   stays the caller.
 
 Pinned SurrealEngine differs in null handling and Self context, so it is useful
-comparison evidence, not retail authority for these branches. The existing VM
-hardcodes `frame.self` and ordinary child evaluation carries an outer context;
-merely replacing the opcode refusal with `Eval(child,classPath)` would silently
+comparison evidence, not retail authority for these branches. The evaluator now
+keeps frame Object and opcode receiver distinct for the audited Self, assignment,
+array-index and ObjectToString rules below. Merely replacing the opcode refusal
+with `Eval(child,classPath)` would still silently
 misrepresent broader behavior. A UClass path is not a generic default-object
 identity for casts, instance fields, function/native calls or event dispatch.
-The parser currently discards ZeroFillSize; that metadata needs preservation and
-validation before any null/result-layout behavior can be claimed.
+The parser now preserves ZeroFillSize and validates both ordinary/ClassContext
+skip lengths against decoded child spans. Result-buffer semantics remain
+unimplemented; preserving metadata alone is not proof of correct zero filling.
 
 ## Implementation and proof requirements
 
@@ -158,9 +161,19 @@ Extension.u 9984FAEDA55FB2100B1A15A37BFEB8CDB4878248B39AFF832002A799F1D787F7
 The in-memory decoder follows production compact-reference expansion and script
 headers, checks logical size and Function/State payload termination. Both existing
 inspector binaries independently verify representative paths. No original code
-is executed. Reproduce examples with `script_bytecode_inspect.exe <GOTY-root>`
-followed by the qualified function names above; a permanent structural census
-test remains to add.
+is executed. A permanent `portable_class_context_audit_test <GOTY-root>` now
+uses production loaders and the budgeted AnalyzeProgram AST snapshot: all 8,282
+sections/110 expressions/42 exact function-PC inventories pass 1,184,728 checks.
+It verifies representative qualified property layouts, real static declarations,
+non-Actor UI ancestry, metadata histograms and unchanged source bytes. Its host
+refuses every transaction, typed binding, dispatch or native operation; this is
+structural evidence only. Without an owned-data root it explicitly skips.
+
+AnalyzeProgram exposes flat preorder ExpressionLayout metadata with child indices
+and retained-byte accounting, not executable/default-object identities. Generated
+controls isolate the parser-only allocation threshold and prove detached metadata
+also consumes the shared analysis budget. Malformed context spans fail before
+prefix effects and report the offending context's PC/opcode, not the last child.
 
 ## Retail default-block identity and lifetime
 
@@ -230,11 +243,42 @@ This differs materially from returning Nothing and coercing it to typed zero.
   changes only its reflected bitmask. No-write RHS therefore assigns false to a
   valid target, unlike Let's zero-size String preservation.
 
-The implementation needs separate frame/opcode receivers, a distinct class-owned
-default handle and an explicit result sink/outcome (written value, no write, or
+The audited receiver rules are implemented; generated context cases prove Self,
+nested selectors, caller argument evaluation, separate array receiver/index,
+Let/LetBool operands, ObjectToString and the callee's new frame, including later-
+failure rollback. They pass 65 checks/15 refusal controls within the full VM
+678,060-check/360-refusal suite. Strict NDK27 ARM64 syntax passes.
+
+The implementation still needs a distinct class-owned default handle and an
+explicit result sink/outcome (written value, no write, or
 zero bytes), independent of lvalue property/address state. An EvalInto model can
 represent nil destinations for array/Bool lvalue evaluation and forwarded Let
 destinations. Preserve skip/zero metadata and prove supported portable layouts;
 unaudited partial byte writes must refuse explicitly. Persistence, GC, references,
 default handles, UI classes and call dispatch must expand together. No ClassContext
 opcode implementation or successful original-world startup is claimed here.
+
+## Coherent host integration still required
+
+DefaultClass currently conflates selected UClass storage with an actual receiver's
+Class->Defaults. Split explicit loaded-class selection from default-owner lookup;
+UClass receivers themselves have Core.Class as their actual class. A prospective
+opaque default handle must represent a separate class-owned, GC-rooted wrapper,
+never a world actor/export/birth. Header Class/Name/Outer/flags, ObjectString,
+casts, script/static call eligibility and object-property constraints must follow
+that actual identity. Raw ObjectInternal pointer/index bytes remain unaudited.
+
+Before permitting non-Actor defaults, add explicit Actor-only birth gates at
+SpawnNative and ScriptSaveSchema::RegisterBirths: they currently rely on the old
+DefaultClass Actor gate. Save object-reference validation must distinguish an
+actual UClass from a default object even when its owner is Core.Class, and must
+recognize default handles before package/asset lookup. Default handles must never
+enter saved actor objects, native collision/inventory/lifecycle links or births.
+
+Full inherited qualified writes additionally require storage keys through live
+class/instance overlays, frozen birth defaults, capture, save schema and codec
+alias validation. Current leaf-name storage and nearest-field save reconstruction
+cannot represent two mutable declarations with the same name. Retaining explicit
+unsupported writes is preferable to silently redirecting them, but is not the
+completed ClassContext/campaign target. The distinct identity, typed result sinks,
+storage and persistence changes must be implemented and tested together.

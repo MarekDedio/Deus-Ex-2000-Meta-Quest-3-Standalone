@@ -1,5 +1,34 @@
 # Port status
 
+## Receiver/context foundation and installed APK (2026-10-13)
+
+- Audited opcode/frame receiver distinctions now cover Self, Let/LetBool,
+  ArrayElement indices and ObjectToString, with 65 new checks/15 refusal
+  controls. VM coverage is 678,060 checks/360 refusals. Context skip lengths
+  are validated before effects, with exact diagnostics; zero-fill metadata is
+  retained but result-buffer behavior and ClassContext remain unimplemented.
+- Production-loader/AST census passes 1,184,728 checks over all 8,282 original
+  sections, 110 contexts and 42 exact function/PC inventories. Full host CTest
+  passes 66 ordinary tests (74 registered, eight owned-data skips), zero failures,
+  29.58 seconds. State execution554/71 and timer1,469/47 pass after malformed
+  synthetic context lengths and wrongly scoped fixture assignments were fixed
+  to the verified retail shapes. Original Training/UNATCOIsland/Intro actor
+  integration and the unchanged exact Training startup/rollback probe pass.
+- Android Gradle/ARM64 build succeeds; strict NDK27 VM syntax passes. Signed APK
+  `artifacts/class-context-foundation-20261013/DeusExQuestVR-receiver-foundation-20261013.apk`
+  is replace-installed without clearing data on Quest `2G0YC5ZG620985`; installed
+  base.apk matches SHA256 `5A382E5DEDA7771B4B3FF4036F0BF1FDACC5D75E0E763BE265F1DC9FD0D78746`.
+  Tracked captures show original Jaime speech art, hands, all four door brackets
+  during successful door motion, and textured desk items. Door publication is
+  8.530ms mean/9.928ms worst over125 frames; streaming/readback stalls remain.
+  This is not full tutorial/campaign or performance acceptance.
+- The user's replacement recording reports streaming/pickup freezes, NPC T-poses
+  and unusable equipment browsing. PC references additionally identify missing
+  starting NanoKeyRing, ten quick slots, body-part health and compass HUD. These
+  are the current priority. ClassContext,
+  original startup/player ownership, automatic AI and the campaign remain open.
+  See [CLASS-DEFAULT-CONTEXT-CONTRACT.md](CLASS-DEFAULT-CONTEXT-CONTRACT.md).
+
 ## Qualified property reads, source-only checkpoint (2026-10-13)
 
 - VM read aliases now reject unrelated qualified property declarations before
@@ -30,7 +59,8 @@
 - No APK is built for this backend checkpoint. The installed visual-test APK
   below remains unchanged, and physical desk/window/bracket/stair acceptance
   still needs a new recording. USB currently reports the known Quest offline.
-  Ignored diagnostics are under `artifacts/class-context-20261013/`.
+  That USB observation is historical; the installed foundation checkpoint above
+  supersedes it. Ignored diagnostics are under `artifacts/class-context-20261013/`.
 
 ## Original actor timers, source-only checkpoint (2026-10-13)
 

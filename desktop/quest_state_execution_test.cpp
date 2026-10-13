@@ -54,6 +54,11 @@ Bytes Native(std::uint16_t index, std::initializer_list<Bytes> args = {}) {
     for (const auto& arg : args) result.insert(result.end(), arg.begin(), arg.end());
     result.push_back(0x16); return result;
 }
+Bytes Context(Bytes receiver,Bytes expression) {
+    Check(expression.size()<=65535u,"Generated context exceeds uint16 logical span");
+    return Join({{0x19},receiver,
+        {static_cast<std::uint8_t>(expression.size()),static_cast<std::uint8_t>(expression.size()>>8u),0u},expression});
+}
 Bytes Jump(std::uint16_t offset) { return {0x06, static_cast<std::uint8_t>(offset), static_cast<std::uint8_t>(offset >> 8u)}; }
 Bytes Switch(Bytes selector) { return Join({{0x05,4},selector}); }
 Bytes Case(Bytes value) { return Join({{0x0a,0,0},value}); }
@@ -760,7 +765,7 @@ void OriginalNativeEntryCapture() {
         host.Program("State.A",{0x08}); host.InstallModern("State.A");
         host.properties[90] = {"Other","Other",Value::Text(Vm::Kind::Object,"Other"),0,1};
         host.states["Other"] = host.states.at("Actor"); host.states["Other"].frame->control->selectedPath = "State.C";
-        const auto expression = Join({{0x19},Ref(0x20,90),{0,0,0},Native(113,{Native(833)})});
+        const auto expression = Context(Ref(0x20,90),Native(113,{Native(833)}));
         const auto caller = host.Function("Class.ContextCapture",Return(expression));
         const auto result = Vm::Execute(host,caller,"Actor");
         Check(result.passed() && result.value.text == "C" && host.nativeObservations.size() == 1 &&
@@ -1457,7 +1462,7 @@ void SleepNestedReceiverAndDeclaration() {
         "Nested Sleep interrupted ordinary function execution or OUT copyback before state statement completion");
     host.properties[90] = {"Other","Other",Value::Text(Vm::Kind::Object,"Other"),0,1};
     host.states["Other"] = host.states.at("Actor");host.localRevisions["Other"] = 1;
-    const auto context = Join({{0x19},Ref(0x20,90),{0,0,0},Native(256,{Float(3.0f)})});
+    const auto context = Context(Ref(0x20,90),Native(256,{Float(3.0f)}));
     host.Program("State.A",Join({context,Native(800),{0x08}}));host.Install("State.A");
     result = Vm::ResumeState(host,"Actor");
     Check(result.passed() && result.status == Vm::Status::Stopped && host.effects == 2 &&
@@ -1540,7 +1545,7 @@ void LandingNestedReceiverAndDeclaration() {
         "Nested landing wait interrupted ordinary function execution/OUT copyback before the state statement completed");
     host.properties[90] = {"Other","Other",Value::Text(Vm::Kind::Object,"Other"),0,1};
     host.states["Other"] = host.states.at("Actor");host.localRevisions["Other"] = 1;host.physics["Other"] = 2;
-    const auto context = Join({{0x19},Ref(0x20,90),{0,0,0},Native(527)});
+    const auto context = Context(Ref(0x20,90),Native(527));
     host.Program("State.A",Join({context,Native(800),{0x08}}));host.Install("State.A");
     result = Vm::ResumeState(host,"Actor");
     Check(result.passed() && result.status == Vm::Status::Stopped && host.effects == 2 &&

@@ -283,8 +283,10 @@ Tables Build(Fixture& fixture, unsigned schema = 0u) {
     branch(3,Native(118u,{Ref(0x21u,classes.Name("Timer"))}));
     branch(4,Native(113u,{Ref(0x21u,classes.Name("Second"))}));
     branch(5,Native(279u));
-    const auto birth=Join({Context(Ref(0x01u,importedLevel),Assign(Ref(0x01u,importedBegun),Token(0x28u))),Native(278u,{Ref(0x20u,probe)}),Context(Ref(0x01u,importedLevel),Assign(Ref(0x01u,importedBegun),Token(0x27u)))});
-    branch(6,Join({Context(Ref(0x01u,link),Assign(Ref(0x01u,importedLocation),Vector({90.0f,80.0f,70.0f}))),Native(195u),birth,Native(999u)}));
+    // Retail Let evaluates its operands on Frame.Object: the selected object
+    // belongs in the LHS Context, not around the whole assignment.
+    const auto birth=Join({Assign(Context(Ref(0x01u,importedLevel),Ref(0x01u,importedBegun)),Token(0x28u)),Native(278u,{Ref(0x20u,probe)}),Assign(Context(Ref(0x01u,importedLevel),Ref(0x01u,importedBegun)),Token(0x27u))});
+    branch(6,Join({Assign(Context(Ref(0x01u,link),Ref(0x01u,importedLocation)),Vector({90.0f,80.0f,70.0f})),Native(195u),birth,Native(999u)}));
     branch(7,Assign(Ref(0x01u,importedCounter),Real(88.0f)));
     branch(8,Virtual(classes.Name("Timer")));
     branch(9,birth);
