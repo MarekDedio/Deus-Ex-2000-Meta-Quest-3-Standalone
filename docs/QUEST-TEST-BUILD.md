@@ -1,15 +1,18 @@
 # Current Quest test-build handoff (2026-10-13)
 
-## Latest built APK: original Training music
+## Latest installed APK: original Training music
 
 `artifacts/crate-runtime-20261013/DeusExQuestVR-training-music-20261013.apk`
 is signed ARM64, 32,918,766 bytes, SHA256
 `8673B16C3F37B5771DC0470299786D4834BF2DCD6062B426C66388416FC536C1`.
 Android build succeeds in 2m13s and APK v2 signature verifies. Its 20 entries
 contain port/SDK code and licensed decoder notices, not original game packages.
-The automatic data-preserving install was attempted, but the expected Quest
-`2G0YC5ZG620985` is absent from USB. This APK is NOT confirmed installed.
-The focus/runtime APK below remains the last confirmed installed version.
+Initially installation was skipped while USB was absent. On reconnect it was
+replace-installed without clearing data on Quest `2G0YC5ZG620985`, update
+`2026-10-13 14:23:21`. Pulled installed base.apk matches the full SHA256 above
+exactly. One launch confirms process 8558; Training CPU preparation and AAudio
+startup (22050 Hz) pass. Quest currently reports no tracked head pose, so final
+GPU publication and physical audio acceptance remain pending.
 
 The actual Training map selects Training Room from its original UMX. Decoder
 work runs outside the callback into a fixed PCM ring; music is mixed at 0.35
@@ -20,12 +23,11 @@ diagnostic-tool mock tests pass. This does not yet complete dynamic music
 events/fades, player settings, full HUD/keyring, NPC animation, crate/gravity/
 held-item gameplay or lamp illumination.
 
-When USB returns, use the usual Install-QuestBuildIfConnected helper with this
-APK, preserving app data. Launch Training and verify background music alongside
+Return to Training with the headset worn and verify background music alongside
 Jaime's introduction, pause/resume focus, then MUSIC diagnostics for accumulated
 missing PCM frames. Headset audibility and final performance are still pending.
 
-## Latest installed APK: original focus labels and runtime prerequisites
+## Previously installed APK: original focus labels and runtime prerequisites
 
 `artifacts/crate-runtime-20261013/DeusExQuestVR-focus-runtime-20261013.apk`
 is signed ARM64,20,094,921 bytes, SHA256

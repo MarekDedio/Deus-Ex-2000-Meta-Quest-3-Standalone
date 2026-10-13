@@ -50,6 +50,10 @@ AAudio defensively if no session reached its normal SessionDestroying cleanup.
 
 Final signed ARM64 APK is 32,918,766 bytes, SHA256
 8673B16C3F37B5771DC0470299786D4834BF2DCD6062B426C66388416FC536C1;
-APK v2 signature verifies. Automatic installation was attempted and skipped
-because the known Quest is absent from USB. Physical audibility, mix balance,
-pause/resume and sustained zero-underrun checks still require the headset.
+APK v2 signature verifies. Initial automatic installation was skipped while
+USB was absent. On reconnect, data-preserving replacement succeeded on Quest
+2G0YC5ZG620985, update 2026-10-13 14:23:21; pulled base.apk matches exactly.
+One launch confirms process 8558, successful Training CPU preparation and
+AAudio at 22050 Hz. With no tracked head pose yet, GPU publication and music
+diagnostic consumption are pending. Physical audibility, mix balance,
+pause/resume and sustained zero-underrun checks still require wearing it.
