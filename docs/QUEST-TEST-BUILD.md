@@ -1,13 +1,39 @@
 # Current Quest test-build handoff (2026-10-13)
 
+## Latest installed APK: original focus labels and runtime prerequisites
+
+`artifacts/crate-runtime-20261013/DeusExQuestVR-focus-runtime-20261013.apk`
+is signed ARM64,20,094,921 bytes, SHA256
+`B07B838EA6BE257D3E8533ECE35C570C3371DA42DF86655E14FB25D7F46F8D76`.
+Android build succeeds in1m51s. Replace-install preserves data on authorized
+Quest3`2G0YC5ZG620985`, update13:16:25; pulled base.apk matches exactly,
+launch8979. Golden original-font object labels and Unlocked door status were
+captured on the preceding same-UI build; the user confirms the lamp label too.
+The final rebuild additionally fixes qualified class-name case sensitivity.
+
+Original mover focus proxies/non-mover insets and original Amber palette follow
+the supplied PC references. Declared-field ownership and bounded class ancestry
+protect the typed name/status queries. Full CTest passes70 ordinary tests out
+of79 registered/nine skips,25.37s; separate fresh-process case-order test passes
+(now80 registered). Original focus audit finds Desk Lamp and14 unlocked movers;
+held-item metadata and both crates' original DropThings/surviving-damage probes
+pass. Fatal crate damage and lamp Frob explicitly roll back at native264.
+
+This does not fix lamp illumination, held-item rendering/equip, gravity,
+fatal crate destruction or NPC T-poses. The user's requested work order is now
+Training music, original full HUD/starting keyring, NPC poses/animation, then
+gravity/crate destruction/held items. See STATUS.md and the source contracts.
+
 ## Latest built APK: streaming safety follow-up
 
 `artifacts/tutorial-streaming-20261013/DeusExQuestVR-training-streaming-safety-20261013.apk`
 is signed ARM64,20,049,433 bytes, SHA256
 `DBE03808B1A46DCF5D4FD4144D35DFF03AC76D2D72C9269AF44C559C189C3BA2`.
 APK v2 signature verifies; Gradle succeeds in1m46s. USB was absent at build
-completion and latest check, so install was skipped without targeting another
-device or clearing data. Latest installed/tested APK is still ACC35F28... below.
+completion. On reconnect it was data-preservingly installed to authorized
+Quest3 `2G0YC5ZG620985`, lastUpdateTime `2026-10-13 12:06:13` and launch
+process8446. Pulled installed base.apk matches the SHA256 above exactly.
+This is the latest installed APK until the next focus/runtime build below.
 
 This includes the retained-pose version plus nonblocking retirement when a
 pickup removes the pending-pose actor, and one-shot publication of instant
@@ -36,7 +62,7 @@ zero failures,10.86s; new navigation75 and ownership/cache1,045 checks pass.
 Strict Android syntax and separate original metadata/inventory integration pass.
 Final cache-change headset timing is not yet verified.
 
-## Latest installed APK: first streaming/inventory replacement
+## Previously installed/tested APK: first streaming/inventory replacement
 
 `artifacts/tutorial-streaming-20261013/DeusExQuestVR-training-streaming-20261013.apk`
 is20,049,273 bytes, SHA256

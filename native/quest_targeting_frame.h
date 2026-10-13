@@ -16,6 +16,44 @@ struct TargetFrameProjection {
     float centerX{320.0f}, centerY{240.0f};
 };
 
+// DrawWindow PC302..349 deliberately replaces a mover's brush extents with
+// (16,16,16), after retaining its current brush center. It is not a door outline.
+inline constexpr float OriginalFrobMoverHalfExtentUnits = 16.0f;
+struct OriginalFrobFrameLayout { TargetFrameRect bounds; float corner{}; };
+
+inline std::optional<OriginalFrobFrameLayout> LayoutOriginalFrobFrame(
+    TargetFrameRect box, float radiusUnits = 0.0f, float heightUnits = 0.0f,
+    float width = 640.0f, float height = 480.0f) {
+    if (!std::isfinite(box.x) || !std::isfinite(box.y) || !std::isfinite(box.width) ||
+        !std::isfinite(box.height) || !std::isfinite(width) || !std::isfinite(height) ||
+        !std::isfinite(radiusUnits) || !std::isfinite(heightUnits) || box.width < 0.0f ||
+        box.height < 0.0f || radiusUnits < 0.0f || heightUnits < 0.0f ||
+        width < 140.0f || height < 140.0f) return {};
+    // Non-movers use the authored Unreal-unit radius/height divided by four
+    // as SCREEN pixels (PC858..969), not as metres or a fraction of the box.
+    float left = std::clamp(box.x+radiusUnits/4.0f,70.0f,width-70.0f);
+    float top = std::clamp(box.y+heightUnits/4.0f,70.0f,height-70.0f);
+    float right = std::clamp(box.x+box.width-radiusUnits/4.0f,70.0f,width-70.0f);
+    float bottom = std::clamp(box.y+box.height-heightUnits/4.0f,70.0f,height-70.0f);
+    const float corner = std::clamp(((right-left)+(bottom-top))*0.1f,4.0f,40.0f);
+    if (right-left < corner) { left -= corner+4.0f; right += corner+4.0f; }
+    if (bottom-top < corner) { top -= corner+4.0f; bottom += corner+4.0f; }
+    return OriginalFrobFrameLayout{{left,top,right-left,bottom-top},corner};
+}
+
+// Original infoX/infoY=boxTL+10, measured text extent+8, then screen clamp.
+inline std::optional<TargetFrameRect> LayoutOriginalFrobLabel(
+    const OriginalFrobFrameLayout& frame, float textWidth, float textHeight,
+    float width=640.0f,float height=480.0f) {
+    if (!std::isfinite(textWidth) || !std::isfinite(textHeight) || textWidth < 0.0f ||
+        textHeight <= 0.0f || !std::isfinite(width) || !std::isfinite(height) ||
+        width < textWidth+28.0f || height < textHeight+28.0f) return {};
+    const float w=textWidth+8.0f,h=textHeight+8.0f;
+    const float x=std::clamp(frame.bounds.x+10.0f,w*0.5f+10.0f,width-10.0f-w*0.5f);
+    const float y=std::clamp(frame.bounds.y+10.0f,h*0.5f+10.0f,height-10.0f-h*0.5f);
+    return TargetFrameRect{x,y,w,h};
+}
+
 using TargetFrameMatrixPacking = std::array<std::array<float,16>,4>;
 
 // The pinned SDK honors Count for FLOAT_MATRIX4, but uploads only one value
@@ -63,18 +101,17 @@ inline std::optional<TargetFrameRect> ProjectTargetFrameBounds(
 // No custom bitmap substitutes: the PC draws Extension.Solid one-pixel strips.
 // First eight strips are the black +1/+1 shadow, last eight HUD header color.
 inline std::optional<std::array<TargetFrameRect,16>> BuildOriginalFrobCornerStrips(
-    TargetFrameRect box, float timeSeconds, float width = 640.0f, float height = 480.0f) {
+    TargetFrameRect box, float timeSeconds, float width = 640.0f, float height = 480.0f,
+    float radiusUnits=0.0f,float heightUnits=0.0f) {
     if (!std::isfinite(box.x) || !std::isfinite(box.y) || !std::isfinite(box.width) ||
         !std::isfinite(box.height) || !std::isfinite(timeSeconds) ||
         !std::isfinite(width) || !std::isfinite(height) || box.width < 0.0f || box.height < 0.0f ||
         width < 140.0f || height < 140.0f || timeSeconds < 0.0f) return {};
-    float left = std::clamp(box.x,70.0f,width-70.0f);
-    float top = std::clamp(box.y,70.0f,height-70.0f);
-    float right = std::clamp(box.x+box.width,70.0f,width-70.0f);
-    float bottom = std::clamp(box.y+box.height,70.0f,height-70.0f);
-    const float corner = std::clamp(((right-left)+(bottom-top))*0.1f,4.0f,40.0f);
-    if (right-left < corner) { left -= corner+4.0f; right += corner+4.0f; }
-    if (bottom-top < corner) { top -= corner+4.0f; bottom += corner+4.0f; }
+    const auto layout=LayoutOriginalFrobFrame(box,radiusUnits,heightUnits,width,height);
+    if (!layout) return {};
+    const float left=layout->bounds.x,top=layout->bounds.y;
+    const float right=left+layout->bounds.width,bottom=top+layout->bounds.height;
+    const float corner=layout->corner;
     const float offset = std::floor(24.0f*std::fmod(timeSeconds,0.3f));
     std::array<TargetFrameRect,16> result;
     for (std::size_t pass=0u; pass<2u; ++pass) {
@@ -96,7 +133,7 @@ inline std::optional<float> RayTargetFrameBounds(
     TargetFramePoint origin, TargetFramePoint direction,
     TargetFramePoint minimum, TargetFramePoint maximum, float maximumDistance) {
     if (!std::isfinite(maximumDistance) || maximumDistance <= 0.0f) return {};
-    float near = 0.0f, far = maximumDistance;
+    float nearDistance = 0.0f, farDistance = maximumDistance;
     const float origins[]{origin.x,origin.y,origin.z}, directions[]{direction.x,direction.y,direction.z};
     const float minima[]{minimum.x,minimum.y,minimum.z}, maxima[]{maximum.x,maximum.y,maximum.z};
     for (unsigned axis=0u; axis<3u; ++axis) {
@@ -108,11 +145,11 @@ inline std::optional<float> RayTargetFrameBounds(
             float a = (minima[axis]-origins[axis])/directions[axis];
             float b = (maxima[axis]-origins[axis])/directions[axis];
             if (a > b) std::swap(a,b);
-            near = std::max(near,a); far = std::min(far,b);
-            if (near > far) return {};
+            nearDistance = std::max(nearDistance,a); farDistance = std::min(farDistance,b);
+            if (nearDistance > farDistance) return {};
         }
     }
-    return near;
+    return nearDistance;
 }
 
 } // namespace QuestVr

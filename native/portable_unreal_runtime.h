@@ -6,6 +6,7 @@
 #include "quest_script_dispatch.h"
 #include "quest_state_frame.h"
 #include "quest_native_client.h"
+#include "quest_held_item_visual.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -357,6 +358,12 @@ std::uint64_t GetPortableRuntimeWorldRevision();
 QuestVr::Vm::Value ReadPortableActorScriptProperty(
     const std::string& actorPath, const std::string& propertyName,
     std::uint32_t arrayIndex = 0u);
+// Read a specific authored declaring field, not the closest same-name shadow.
+// Requires an active, nonretired Actor and actual Class.Children/Next ownership.
+// Like all runtime snapshots, call only on the runtime-owning thread.
+QuestVr::Vm::Value ReadPortableActorDeclaredScriptProperty(
+    const std::string& actorPath, const std::string& propertyPath,
+    std::uint32_t arrayIndex = 0u);
 // Read-only concrete loaded Actor UClass default block. Later CDO writes do
 // not change already-loaded instances or derived/sibling default blocks.
 QuestVr::Vm::Value ReadPortableClassDefault(
@@ -545,6 +552,13 @@ struct PortableInventoryDescriptorLimits {
 std::vector<PortableInventoryDescriptor> ReadPortableRuntimeInventoryDescriptors(
     const std::vector<std::string>& actorPaths,
     const PortableInventoryDescriptorLimits& limits = {});
+// One indexed, actual collected Engine.Inventory instance, including inactive
+// pickups. No UClass/class@event interpretation, invented POV name or equipped
+// state. Typed optional fields retain independent errors and source provenance.
+// Uses only load-time indexed metadata: no file/asset decode, script execution,
+// allocation of game actors, runtime/clock/GC writes or cache mutation.
+PortableHeldItemVisualDescriptor ReadPortableRuntimeHeldItemVisualDescriptor(
+    const std::string& collectedActorPath, const PortableHeldItemDescriptorLimits& limits = {});
 bool ConsumePortableRuntimeInventoryItem(const std::string& objectPath);
 PortablePlayerProgress GetPortableRuntimePlayerProgress();
 float GetPortableRuntimePlayerHealth();

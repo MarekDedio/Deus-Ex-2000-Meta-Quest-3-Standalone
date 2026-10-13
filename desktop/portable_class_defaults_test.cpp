@@ -328,6 +328,9 @@ void Synthetic() {
     const auto shadowCounter=classes.Property("Counter","IntProperty",shadow,classesCore);
     classes.Property("Counter","IntProperty",shadowZero,classesCore);
     const auto counter=classes.Property("Counter","IntProperty",base,classesCore);
+    const auto orphan=classes.Property("Orphan","IntProperty",base,classesCore);
+    auto& baseChildren=classes.children[base];
+    baseChildren.erase(std::remove(baseChildren.begin(),baseChildren.end(),orphan),baseChildren.end());
     const auto source=classes.Property("Source","IntProperty",base,classesCore);
     const auto slots=classes.Property("Slots","IntProperty",base,classesCore,3u);
     const auto label=classes.Property("Label","NameProperty",base,classesCore);
@@ -339,6 +342,7 @@ void Synthetic() {
     const auto importedCount=classes.Import("Count",importedRecord,"IntProperty");
     const auto importedTarget=classes.Import("Target",importedRecord,"ObjectProperty");
     Bytes defaults; classes.IntTag(defaults,"Counter",10); classes.IntTag(defaults,"Source",7);
+    classes.IntTag(defaults,"Orphan",900);
     for(std::uint8_t i=0u;i<3u;++i) classes.IntTag(defaults,"Slots",3+2*i,i);
     classes.NameTag(defaults,"Label","Baseline"); Index(defaults,classes.Name("Enabled")); defaults.push_back(3u);
     Bytes f; std::uint32_t bits{}; const float baseline=1.25f; std::memcpy(&bits,&baseline,4u); U32(f,bits); classes.Tag(defaults,"Ratio",4u,f);
@@ -351,6 +355,10 @@ void Synthetic() {
     classes.Function("WrongDefaultRead",base,classesCore,Return(Ref(0x02u,foreignCounter)));
     classes.Function("WrongInstanceRead",base,classesCore,Return(Ref(0x01u,foreignCounter)));
     classes.Function("WrongReadAfterWrite",base,classesCore,Join({Assign(Ref(0x02u,counter),Int(321)),Return(Ref(0x02u,foreignCounter))}));
+    classes.Function("OrphanDefaultRead",base,classesCore,Return(Ref(0x02u,orphan)));
+    classes.Function("OrphanInstanceRead",base,classesCore,Return(Ref(0x01u,orphan)));
+    classes.Function("OrphanWriteAfterDefault",base,classesCore,Join({
+        Assign(Ref(0x02u,counter),Int(321)),Assign(Ref(0x01u,orphan),Int(123)),Return()}));
     classes.Function("CopyDefault",base,classesCore,Join({Assign(Ref(0x02u,counter),Ref(0x02u,source)),Return()}));
     classes.Function("ReadDefault",base,classesCore,Return(Ref(0x02u,counter)));
     classes.Function("ReadInstanceCounter",base,classesCore,Return(Ref(0x01u,counter)));
@@ -404,8 +412,38 @@ void Synthetic() {
     Require(LoadPortableRuntimeMap(mapTable).passed,"Generated map actors were not loaded");
     Require(!GetPortableRuntimeScriptStatePresent(),"Read-only generated metadata initialization created persistent writes");
     const auto legacy=fixture.Snapshot("Legacy"); Require(legacy.size()>8u && legacy[4u]==3u,"Initial generated snapshot is not legacy v3");
+    const auto declaredRevision=GetPortableRuntimeWorldRevision();
+    const auto declaredStats=GC::GetStats();
+    Same(ReadPortableActorDeclaredScriptProperty("DefaultFixture.Shadow0","DefaultClasses.Base.Counter"),Value::Integer(10),
+        "Declared read redirected a compiled base field to the shadowed map tag");
+    Same(ReadPortableActorDeclaredScriptProperty("defaultfixture.shadow0","defaultclasses.shadow.counter"),Value::Integer(999),
+        "Declared read lost the nearest field's map value or case-insensitive identity");
+    Same(ReadPortableActorDeclaredScriptProperty("DefaultFixture.Base0","DefaultClasses.Base.Counter"),Value::Integer(42),
+        "Declared read lost an ordinary authored map override");
+    const auto refusedDeclared=[&](const std::string& receiver,const std::string& property,
+        const std::uint32_t slot,const std::string& expected) {
+        std::string error;
+        try { static_cast<void>(ReadPortableActorDeclaredScriptProperty(receiver,property,slot)); }
+        catch(const std::exception& failure) { error=failure.what(); }
+        Require(error==expected,"Declared read did not retain its exact typed refusal: "+error);
+        ++refusals;
+    };
+    for (const auto& property:{"DefaultClasses.Foreign.Counter","DefaultClasses.Base.Orphan","DefaultClasses.Base.PutPayload.Value"})
+        refusedDeclared("DefaultFixture.Base0",property,0u,"Declared property is not owned by its concrete receiver class");
+    refusedDeclared("DefaultFixture.Base0","DefaultClasses.Base.Counter",1u,"Declared property fixed-array index is out of range");
+    refusedDeclared("DefaultFixture.Base0","DefaultClasses.Base.Slots",3u,"Declared property fixed-array index is out of range");
+    refusedDeclared("DefaultFixture.Base0","DefaultClasses.Base.ReadDefault",0u,"VM object has no property descriptor");
+    refusedDeclared("DefaultClasses.Base","DefaultClasses.Base.Counter",0u,"Declared property receiver is not an active nonretired Engine.Actor");
+    for (const auto& invalid:{std::string{},std::string("x\0y",3u),std::string(4097u,'x')}) {
+        refusedDeclared(invalid,"DefaultClasses.Base.Counter",0u,"Declared actor property identity is invalid");
+        refusedDeclared("DefaultFixture.Base0",invalid,0u,"Declared actor property identity is invalid");
+    }
+    Require(fixture.Snapshot("DeclaredReadAfter")==legacy && GetPortableRuntimeWorldRevision()==declaredRevision &&
+        GC::GetStats().numObjects==declaredStats.numObjects && GC::GetStats().memoryUsage==declaredStats.memoryUsage,
+        "Declared reads or typed refusals changed checkpoint, revision, or rooted GC state");
     Same(Cdo("Foreign","Counter"),Value::Integer(777),"Qualified foreign-class read control is not a distinct real default");
-    for(const auto& function:{"WrongDefaultRead","WrongInstanceRead","WrongReadAfterWrite"}) {
+    for(const auto& function:{"WrongDefaultRead","WrongInstanceRead","WrongReadAfterWrite",
+        "OrphanDefaultRead","OrphanInstanceRead","OrphanWriteAfterDefault"}) {
         const auto refused=RefusedCall(fixture,"Base0",function);
         Require(refused.error=="VM property is not owned by its concrete receiver class",
             "Qualified foreign read failed for an unrelated reason: "+std::string(function)+": "+refused.error);
@@ -424,6 +462,13 @@ void Synthetic() {
     Same(Call("Shadow0","ReadDefault").value,Value::Integer(10),"Inherited compiled default read consumed a redeclared mutable overlay");
     Same(Call("Shadow0","ReadInstanceCounter").value,Value::Integer(10),"Inherited compiled instance read consumed a redeclared mutable overlay");
     const auto shadowSaved=fixture.Snapshot("ShadowSaved");
+    const auto shadowRevision=GetPortableRuntimeWorldRevision();
+    Same(ReadPortableActorDeclaredScriptProperty("DefaultFixture.Shadow0","DefaultClasses.Base.Counter"),Value::Integer(10),
+        "Declared base read consumed a shadowed mutable instance/CDO overlay");
+    Same(ReadPortableActorDeclaredScriptProperty("DefaultFixture.Shadow0","DefaultClasses.Shadow.Counter"),Value::Integer(888),
+        "Declared shadow read lost its actual mutable instance overlay");
+    Require(fixture.Snapshot("DeclaredShadowAfter")==shadowSaved && GetPortableRuntimeWorldRevision()==shadowRevision,
+        "Declared shadow reads changed checkpoint or revision");
     Require(LoadPortableRuntimeState((fixture.directory/"Legacy.sav").string()),"Shadow overlay legacy reset failed");
     Same(Cdo("Shadow","Counter"),Value::Integer(777),"Shadow legacy reset retained mutable defaults");
     Same(Instance("Shadow0","Counter"),Value::Integer(999),"Shadow legacy reset lost authored map tag");
@@ -472,6 +517,8 @@ void Synthetic() {
     Call("Base0","CopyDefault"); Same(Cdo("Base","Counter"),Value::Integer(7),"Original-style default assignment did not alter shared concrete CDO");
     Same(Call("Base1","ReadDefault").value,Value::Integer(7),"Second existing actor did not read same class default");
     Same(Instance("Base0","Counter"),Value::Integer(42),"Explicit instance override was changed by CDO write"); Same(Instance("Base1","Counter"),Value::Integer(10),"Existing inherited instance changed retroactively");
+    Same(ReadPortableActorDeclaredScriptProperty("DefaultFixture.Base1","DefaultClasses.Base.Counter"),Value::Integer(10),
+        "Declared existing instance read retroactively inherited a mutable CDO write");
     Same(Cdo("Derived","Counter"),Value::Integer(20),"Base CDO write changed derived CDO"); Same(Cdo("Sibling","Counter"),Value::Integer(30),"Base CDO write changed sibling CDO");
     RefusedCall(fixture,"Derived0","Rollback"); Same(Cdo("Derived","Counter"),Value::Integer(20),"Rollback failed to remove previously missing concrete CDO patches");
     Call("Derived0","SetDefaults");
@@ -603,11 +650,82 @@ void Synthetic() {
         "Runtime reinitialization retained abandoned default/instance state");
     fixture.UnchangedSources();
 }
+void MalformedAncestry() {
+    // Use genuine serialized ObjBase/SuperField links. A field on the first
+    // class must not permit an early successful read that hides a later cycle
+    // or ancestry exceeding the fixed 128-class runtime bound.
+    for (unsigned mode=0u;mode<3u;++mode) {
+        Fixture fixture;
+        Package core; core.stem="Core";
+        const auto object=core.Export("Object"); core.ClassBody(object,{});
+        const auto coreTable=fixture.Write(core);
+        Package engine; engine.stem="Engine";
+        const auto engineCore=engine.ImportPackage("Core");
+        const auto actor=engine.Export("Actor",0,engine.Import("Object",engineCore));
+        engine.Property("Counter","IntProperty",actor,engineCore);
+        Bytes baseline; engine.IntTag(baseline,"Counter",10); engine.ClassBody(actor,baseline);
+        std::string rejected="Engine.Actor";
+        if (mode==0u) {
+            engine.exports.at(static_cast<std::size_t>(actor-1)).ObjBase=actor;
+        } else if (mode==1u) {
+            const auto other=engine.Export("CycleMate",0,actor);
+            engine.exports.at(static_cast<std::size_t>(actor-1)).ObjBase=other;
+            engine.ClassBody(other,{});
+        } else {
+            auto parent=actor;
+            for (unsigned index=0u;index<127u;++index) {
+                const auto cls=engine.Export("Deep"+std::to_string(index),0,parent);
+                Bytes defaults;
+                if (index>=125u) {
+                    engine.Property("Counter","IntProperty",cls,engineCore);
+                    engine.IntTag(defaults,"Counter",static_cast<std::int32_t>(index));
+                }
+                engine.ClassBody(cls,std::move(defaults)); parent=cls;
+            }
+            rejected="Engine.Deep126"; // 127 deep classes + Actor + Object.
+        }
+        const auto engineTable=fixture.Write(engine);
+        InitializePortableRuntime(std::vector<PortablePackageTables>{coreTable,engineTable});
+        const auto before=fixture.Snapshot("AncestryBefore");
+        const auto revision=GetPortableRuntimeWorldRevision();
+        const auto stats=GC::GetStats();
+        if (mode==2u) {
+            Same(ReadPortableClassDefault("Engine.Deep125","Counter"),Value::Integer(125),
+                "Exact 128-class ancestry was incorrectly refused");
+            Same(ReadPortableClassDefault("Engine.Deep124","Counter"),Value::Integer(10),
+                "Bounded ancestry changed ordinary inherited field selection");
+        }
+        for (const auto& name:{"Counter","MissingProperty"}) {
+            std::string error;
+            try { static_cast<void>(ReadPortableClassDefault(rejected,name)); }
+            catch(const std::exception& failure) { error=failure.what(); }
+            Require(error=="Runtime class hierarchy cycles or exceeds its native work bound",
+                "Malformed ancestry was not refused explicitly before field lookup: "+rejected+'.'+name+": "+error);
+            ++refusals;
+        }
+        Require(fixture.Snapshot("AncestryAfter")==before && GetPortableRuntimeWorldRevision()==revision &&
+            GC::GetStats().numObjects==stats.numObjects && GC::GetStats().memoryUsage==stats.memoryUsage,
+            "Malformed ancestry refusal changed checkpoint, world revision, or rooted GC state");
+        fixture.UnchangedSources();
+    }
+}
 } // namespace
-int main() {
+int main(int argc,char** argv) {
     try {
+        Require(argc==1 || (argc==2 && std::string(argv[1])=="--case-order"),
+            "Usage: portable_class_defaults_test [--case-order]");
+        if (argc==2) {
+            // Fresh-process FName insertion order must not change fully
+            // qualified reflected type identity. All normal/shadow/foreign
+            // controls below run unchanged against this mixed display casing.
+            static_cast<void>(NameString("eNgInE"));
+            static_cast<void>(NameString("aCtOr"));
+            static_cast<void>(NameString("mOvEr"));
+            static_cast<void>(NameString("iNvEnToRy"));
+        }
         const auto gcBefore=GC::GetStats().numObjects;
         Synthetic();
+        if(argc==1) MalformedAncestry();
         GC::Collect();
         Require(GC::GetStats().numObjects==gcBefore,"Generated class-default test leaked rooted GC objects after shutdown");
         std::cout << "Generated class-default integration: " << checks << " checks, " << refusals

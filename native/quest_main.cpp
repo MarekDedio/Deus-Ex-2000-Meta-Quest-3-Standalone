@@ -44,6 +44,7 @@
 #include "quest_player_posture.h"
 #include "quest_ground_probe.h"
 #include "quest_targeting_frame.h"
+#include "quest_target_description.h"
 #include "frame_work_budget.h"
 #include "map_transition_transaction.h"
 #include "quest_map_lighting.h"
@@ -407,14 +408,16 @@ class TargetingFrameRenderer {
         )glsl";
         static const char* fragmentShader = R"glsl(
             precision lowp float;
+            uniform lowp vec4 ForegroundColor;
             varying lowp float oWhite;
-            void main() { gl_FragColor = vec4(vec3(oWhite),1.0); }
+            void main() { gl_FragColor = vec4(ForegroundColor.rgb*oWhite,1.0); }
         )glsl";
         static OVRFW::ovrProgramParm parms[] = {
             {.Name = "StripMatrices", .Type = OVRFW::ovrProgramParmType::FLOAT_MATRIX4},
             {.Name = "PixelPlane", .Type = OVRFW::ovrProgramParmType::FLOAT_VECTOR4},
+            {.Name = "ForegroundColor", .Type = OVRFW::ovrProgramParmType::FLOAT_VECTOR4},
         };
-        program_ = OVRFW::GlProgram::Build("",vertexShader,"",fragmentShader,parms,2);
+        program_ = OVRFW::GlProgram::Build("",vertexShader,"",fragmentShader,parms,3);
         OVRFW::VertexAttribs attribs;
         std::vector<OVRFW::TriangleIndex> indices;
         for (unsigned strip=0u; strip<16u; ++strip) {
@@ -430,6 +433,7 @@ class TargetingFrameRenderer {
         command.UniformData[0].Data = stripMatrices_.data();
         command.UniformData[0].Count = 4;
         command.UniformData[1].Data = &pixelPlane_;
+        command.UniformData[2].Data = &foregroundColor_;
         command.GpuState.depthEnable = command.GpuState.depthMaskEnable = false;
         command.GpuState.cullEnable = false;
         initialized_ = true;
@@ -442,7 +446,8 @@ class TargetingFrameRenderer {
     }
     void Render(const std::array<QuestVr::TargetFrameRect,16>& strips,
         const QuestVr::TargetFrameProjection& projection, const OVR::Posef& head,
-        float depth, std::vector<OVRFW::ovrDrawSurface>& surfaces) {
+        float depth, std::vector<OVRFW::ovrDrawSurface>& surfaces,
+        const std::array<std::uint8_t,3>& color) {
         if (!initialized_) return;
         const auto packed = QuestVr::PackTargetFrameMatrices(strips);
         for (std::size_t matrix=0u; matrix<packed.size(); ++matrix)
@@ -451,6 +456,7 @@ class TargetingFrameRenderer {
                     stripMatrices_[matrix].M[row][column] = packed[matrix][row*4u+column];
         pixelPlane_ = {depth/projection.focalX,depth/projection.focalY,
             projection.centerX,projection.centerY};
+        foregroundColor_={color[0]/255.0f,color[1]/255.0f,color[2]/255.0f,1.0f};
         const auto model = OVR::Matrix4f(head)*OVR::Matrix4f::Translation(0,0,-depth);
         surfaces.emplace_back(model,&surface_);
     }
@@ -459,6 +465,7 @@ class TargetingFrameRenderer {
     OVRFW::GlProgram program_;
     std::array<OVR::Matrix4f,4> stripMatrices_;
     OVR::Vector4f pixelPlane_;
+    OVR::Vector4f foregroundColor_{1.0f,1.0f,1.0f,1.0f};
     bool initialized_{};
 };
 
@@ -563,6 +570,8 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         subtitleLabel_ = nullptr;
         controlHintLabel_ = nullptr;
         targetingFrameRenderer_.Shutdown();
+        focusLabelRenderer_.Shutdown();
+        if (focusLabelTextureId_!=0u) {glDeleteTextures(1,&focusLabelTextureId_);focusLabelTextureId_=0u;}
         ui_.Shutdown();
         DestroyPlayerVisuals();
         ClearPendingStaticLightmapUpload();
@@ -1583,6 +1592,13 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         moverPublicationMilliseconds_ = moverPublicationWorstMilliseconds_ = 0.0;
         personaRenderer_.Shutdown();
         dataLinkRenderer_.Shutdown();
+        focusLabelRenderer_.Shutdown();
+        if (focusLabelTextureId_!=0u) {
+            glDeleteTextures(1,&focusLabelTextureId_);
+            focusLabelTextureId_=0u;
+        }
+        focusDescriptionActor_.clear();
+        focusLabelText_.clear();
         if (dataLinkTextureId_ != 0u) {
             glDeleteTextures(1,&dataLinkTextureId_);
             dataLinkTextureId_=0u;
@@ -1661,6 +1677,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         bool mover{};
         bool usable{}, highlight{};
         float collisionRadius{}, collisionHeight{};
+        bool pawn{},inventory{},decoration{};
     };
 
     struct ActorAtlasGeneration {
@@ -1834,6 +1851,10 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         QuestVr::PersonaUiChrome chrome;
         PortableBitmapFont headerFont;
         PortableBitmapFont bodyFont;
+        PortableBitmapFont focusFont;
+        QuestVr::PersonaUiImage focusBackground;
+        QuestVr::FrobDescriptionMessages focusMessages;
+        QuestVr::FrobDescriptionPalette focusPalette;
         QuestVr::PersonaUiImage dataLinkBase;
         PortableBitmapFont dataLinkNameFont;
         PortableBitmapFont dataLinkTextFont;
@@ -2377,7 +2398,8 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             const bool highlight = usable && !actor.trigger && readBool("bHighlight",true);
             staged.targets.push_back({position, actor.objectPath, actor.classPath,
                 actor.travel, actor.destinationMap, actor.mover,usable,highlight,
-                readFloat("CollisionRadius"),readFloat("CollisionHeight")});
+                readFloat("CollisionRadius"),readFloat("CollisionHeight"),
+                actor.pawn,actor.inventory,actor.decoration});
             if (build.actorIndices.size() >= QuestVr::ActorVisibilityState::MaximumActors) {
                 if (!moversOnly) break;
             }
@@ -3992,6 +4014,100 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         return occluded ? nullptr : best;
     }
 
+    std::optional<std::string> ReadOriginalTargetDescription(const InteractiveActor& target) {
+        QuestVr::FrobDescriptionFields fields;
+        fields.mover=target.mover;fields.pawn=target.pawn;
+        fields.inventory=target.inventory;fields.decoration=target.decoration;
+        const auto readString=[&](const char* path)->std::optional<std::string> {
+            try {
+                const auto value=ReadPortableActorDeclaredScriptProperty(target.objectPath,path);
+                if (value.kind==QuestVr::Vm::Kind::String && value.text.size()<=4096u &&
+                    value.text.find('\0')==std::string::npos) return value.text;
+            } catch (const std::exception&) {}
+            return {};
+        };
+        const auto readBool=[&](const char* path)->std::optional<bool> {
+            try {
+                const auto value=ReadPortableActorDeclaredScriptProperty(target.objectPath,path);
+                if (value.kind==QuestVr::Vm::Kind::Bool) return value.boolean;
+            } catch (const std::exception&) {}
+            return {};
+        };
+        const auto readFloat=[&](const char* path)->std::optional<float> {
+            try {
+                const auto value=ReadPortableActorDeclaredScriptProperty(target.objectPath,path);
+                if (value.kind==QuestVr::Vm::Kind::Float && std::isfinite(value.floating)) return value.floating;
+            } catch (const std::exception&) {}
+            return {};
+        };
+        if (target.mover) {
+            fields.locked=readBool("DeusEx.DeusExMover.bLocked");
+            if (fields.locked && *fields.locked) {
+                fields.pickable=readBool("DeusEx.DeusExMover.bPickable");
+                fields.breakable=readBool("DeusEx.DeusExMover.bBreakable");
+                fields.lockStrength=readFloat("DeusEx.DeusExMover.lockStrength");
+                fields.doorStrength=readFloat("DeusEx.DeusExMover.doorStrength");
+            }
+        } else if (target.inventory) fields.itemName=readString("Engine.Inventory.ItemName");
+        else if (target.pawn || target.decoration) {
+            fields.familiarName=readString("Engine.Actor.FamiliarName");
+            fields.unfamiliarName=readString("Engine.Actor.UnfamiliarName");
+            fields.lastConversationEndTime=readFloat("Engine.Actor.LastConEndTime");
+            if (target.decoration) fields.itemName=readString("DeusEx.DeusExDecoration.ItemName");
+            else fields.bindName=readString("Engine.Actor.BindName");
+        } else {
+            fields.itemName=readString("DeusEx.DeusExCarcass.ItemName");
+            if (!fields.itemName) fields.itemName=readString("DeusEx.DeusExProjectile.ItemName");
+        }
+        return QuestVr::BuildOriginalFrobDescription(fields,focusMessages_);
+    }
+
+    void RenderOriginalTargetDescription(const InteractiveActor& target,
+        const QuestVr::OriginalFrobFrameLayout& layout,
+        const QuestVr::TargetFrameProjection& projection,const OVR::Posef& head,float depth,
+        std::vector<OVRFW::ovrDrawSurface>& surfaces,float elapsed) {
+        if (!focusLabelRenderer_.IsInitialized() || focusLabelTextureId_==0u) return;
+        const auto revision=GetPortableRuntimeWorldRevision();
+        if (std::isfinite(elapsed) && elapsed>0.0f) focusDescriptionPollSeconds_-=elapsed;
+        // A door publishes Location each frame; that must not decode every
+        // focused object's strings each frame. Selection is immediate and
+        // changed mutable descriptions are sampled at most ten times a second.
+        if (focusDescriptionActor_!=target.objectPath ||
+            (focusDescriptionRevision_!=revision && focusDescriptionPollSeconds_<=0.0f)) {
+            focusDescription_=ReadOriginalTargetDescription(target);
+            focusDescriptionActor_=target.objectPath;focusDescriptionRevision_=revision;
+            focusDescriptionPollSeconds_=0.1f;
+        }
+        if (!focusDescription_ || focusDescription_->empty()) return;
+        if (focusLabelText_!=*focusDescription_) {
+            try {
+                const auto canvas=QuestVr::BuildOriginalFrobLabelCanvas(focusFont_,*focusDescription_,
+                    focusBackground_,[&](std::uint32_t c) {return GetPortableBitmapGlyph(focusFont_,c);},focusPalette_);
+                glBindTexture(GL_TEXTURE_2D,focusLabelTextureId_);
+                glTexSubImage2D(GL_TEXTURE_2D,0,0,0,512,128,GL_RGBA,GL_UNSIGNED_BYTE,canvas.image.rgba.data());
+                const auto error=glGetError();glBindTexture(GL_TEXTURE_2D,0);
+                if (error!=GL_NO_ERROR) throw std::runtime_error("Focus label GPU update failed");
+                focusLabelTextWidth_=canvas.textWidth;focusLabelTextHeight_=canvas.textHeight;
+                focusLabelText_=*focusDescription_;
+            } catch (const std::exception& error) {
+                // Do not show a stale name or replace original text with an SDK font.
+                focusLabelText_.clear();
+                ALOG("DeusExQuest: original focus label unavailable: %s",error.what());return;
+            }
+        }
+        const auto label=QuestVr::LayoutOriginalFrobLabel(layout,
+            static_cast<float>(focusLabelTextWidth_),static_cast<float>(focusLabelTextHeight_));
+        if (!label) return;
+        // The retained 512x128 texture is transparent outside its measured
+        // original info panel. Position that texture's upper-left at infoX/Y;
+        // it shares the corners' binocular plane and original pixel scale.
+        const OVR::Vector3f local{(label->x+256.0f-projection.centerX)*depth/projection.focalX,
+            -(label->y+64.0f-projection.centerY)*depth/projection.focalY,-depth};
+        auto pose=head;pose.Translation=head.Transform(local);
+        focusLabelRenderer_.SetPose(pose,256.0f*depth/projection.focalX,64.0f*depth/projection.focalY);
+        focusLabelRenderer_.Render(surfaces);
+    }
+
     void RenderTargetingFrame(const OVRFW::ovrApplFrameIn& frame, OVRFW::ovrRendererOutput& output) {
         if (!runtimeAvailable_ || !frame.RightRemoteTracked || inventoryMenuOpen_ ||
             ActorPublicationBlocksGameplay() || !pendingMapName_.empty() ||
@@ -4003,10 +4119,12 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         if (target->mover) {
             const auto found = moverVisuals_.find(target->objectPath);
             if (found == moverVisuals_.end() || !found->second.hasBounds) return;
-            minimum = found->second.minimum; maximum = found->second.maximum;
+            const auto center=(found->second.minimum+found->second.maximum)*0.5f;
+            constexpr float half=QuestVr::OriginalFrobMoverHalfExtentUnits/52.5f;
+            minimum=center-OVR::Vector3f{half,half,half};maximum=center+OVR::Vector3f{half,half,half};
         } else {
-            const auto extents = OVR::Vector3f{std::max(target->collisionRadius,0.04f),
-                std::max(target->collisionHeight,0.04f),std::max(target->collisionRadius,0.04f)};
+            const auto extents = OVR::Vector3f{target->collisionRadius,
+                target->collisionHeight,target->collisionRadius};
             minimum = target->localPosition-extents; maximum = target->localPosition+extents;
         }
         const OVR::Quatf worldRotation(OVR::Vector3f{0,1,0},sceneYaw_);
@@ -4030,9 +4148,16 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         projection.centerY = 240.0f*(1.0f+(left.M[1][2]+right.M[1][2])*0.5f);
         const auto box = QuestVr::ProjectTargetFrameBounds(points,projection);
         if (!box) return;
+        const float radiusUnits=target->mover?0.0f:target->collisionRadius*52.5f;
+        const float heightUnits=target->mover?0.0f:target->collisionHeight*52.5f;
+        const auto layout=QuestVr::LayoutOriginalFrobFrame(*box,radiusUnits,heightUnits);
+        if (!layout) return;
         const auto strips = QuestVr::BuildOriginalFrobCornerStrips(*box,
-            static_cast<float>(std::fmod(frame.PredictedDisplayTime,86400.0)));
-        if (strips) targetingFrameRenderer_.Render(*strips,projection,frame.HeadPose,-center.z,output.Surfaces);
+            static_cast<float>(std::fmod(frame.PredictedDisplayTime,86400.0)),640.0f,480.0f,radiusUnits,heightUnits);
+        if (strips) {
+            targetingFrameRenderer_.Render(*strips,projection,frame.HeadPose,-center.z,output.Surfaces,focusPalette_.header);
+            RenderOriginalTargetDescription(*target,*layout,projection,frame.HeadPose,-center.z,output.Surfaces,frame.DeltaSeconds);
+        }
     }
 
     bool UseTargetedActor(const OVR::Posef& pointerPose) {
@@ -4435,6 +4560,48 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                     return DecodePortableIndexedTexture(uiPackage, name, true);
                 }
             };
+            try {
+                preparation.focusFont=DecodePortableBitmapFont(uiPackage,"FontMenuSmall_DS");
+                auto background=DecodePortableIndexedTexture(uiPackage,"UserInterface.ConWindowBackground",true);
+                preparation.focusBackground={background.width,background.height,std::move(background.rgba)};
+                const auto scripts=LoadPortablePackageTables(std::string(gameRoot_)+"/System/DeusEx.u");
+                const auto focus=LoadPortableClassDescriptor(scripts,FindPortableExport(scripts,"FrobDisplayWindow"));
+                // Explicit original Amber presentation palette matching the
+                // user's golden PC reference, not a claimed live player theme.
+                std::string theme="ColorThemeHUD_Amber";
+                std::size_t themeIndex{};
+                try {themeIndex=FindPortableExport(scripts,theme);}
+                catch (const std::exception&) {theme="ColorThemeHUD_Default";themeIndex=FindPortableExport(scripts,theme);}
+                const auto colors=LoadPortableClassDescriptor(scripts,themeIndex);
+                std::array<bool,3> foundColor{};
+                for (const auto& property:colors.defaults) {
+                    if (property.name!="Colors" || property.type!=10u || property.value.size()!=4u) continue;
+                    std::array<std::uint8_t,3> color{{property.value[0],property.value[1],property.value[2]}};
+                    if (property.arrayIndex==0u) {preparation.focusPalette.background=color;foundColor[0]=true;}
+                    else if (property.arrayIndex==1u) {preparation.focusPalette.border=color;foundColor[1]=true;}
+                    else if (property.arrayIndex==7u) {preparation.focusPalette.header=color;foundColor[2]=true;}
+                }
+                if (!foundColor[0] || !foundColor[1] || !foundColor[2])
+                    throw std::runtime_error("Original focus palette requires authored background/border/header colors");
+                ALOG("DeusExQuest: focus presentation palette %s header=(%u,%u,%u), chosen PC-reference style, not live player theme",
+                    theme.c_str(),preparation.focusPalette.header[0],preparation.focusPalette.header[1],preparation.focusPalette.header[2]);
+                for (const auto& property:focus.defaults) {
+                    if (property.type!=13u || property.arrayIndex!=0u) continue;
+                    const auto value=DecodePortableStringProperty(property);
+                    if (value.size()>4096u || value.find('\0')!=std::string::npos)
+                        throw std::runtime_error("Original focus message exceeds bounded text identity");
+                    if (property.name=="msgLocked") preparation.focusMessages.locked=value;
+                    else if (property.name=="msgUnlocked") preparation.focusMessages.unlocked=value;
+                    else if (property.name=="msgLockStr") preparation.focusMessages.lockStrength=value;
+                    else if (property.name=="msgDoorStr") preparation.focusMessages.doorStrength=value;
+                    else if (property.name=="msgInf") preparation.focusMessages.infinite=value;
+                }
+                if (preparation.focusMessages.locked.empty() || preparation.focusMessages.unlocked.empty())
+                    throw std::runtime_error("Original focus lock messages unavailable");
+            } catch (const std::exception& error) {
+                preparation.focusFont={};preparation.focusBackground={};preparation.focusMessages={};
+                ALOG("DeusExQuest: original focus label assets unavailable: %s",error.what());
+            }
             static_assert(static_cast<std::size_t>(PersonaPage::Count) ==
                           QuestVr::kPersonaPageLayouts.size());
             for (std::size_t page = 0u; page < QuestVr::kPersonaPageLayouts.size(); ++page) {
@@ -4557,6 +4724,25 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         personaHeaderFont_ = std::move(preparation.headerFont);
         personaBodyFont_ = std::move(preparation.bodyFont);
         personaUiPackage_ = std::move(preparation.uiPackage);
+        focusFont_=std::move(preparation.focusFont);
+        focusBackground_=std::move(preparation.focusBackground);
+        focusMessages_=std::move(preparation.focusMessages);
+        focusPalette_=preparation.focusPalette;
+        focusDescriptionActor_.clear();focusLabelText_.clear();
+        if (!focusFont_.glyphs.empty() && !focusBackground_.rgba.empty()) {
+            std::vector<std::uint8_t> blank(512u*128u*4u,0u);
+            GLuint texture{};glGenTextures(1,&texture);glBindTexture(GL_TEXTURE_2D,texture);
+            glTexImage2D(GL_TEXTURE_2D,0,GL_RGBA8,512,128,0,GL_RGBA,GL_UNSIGNED_BYTE,blank.data());
+            glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_S,GL_CLAMP_TO_EDGE);
+            glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_T,GL_CLAMP_TO_EDGE);
+            glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_NEAREST);
+            glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,GL_NEAREST);
+            const auto error=glGetError();glBindTexture(GL_TEXTURE_2D,0);
+            if (error==GL_NO_ERROR && texture!=0u) {
+                focusLabelTextureId_=texture;
+                focusLabelRenderer_.Init(OVRFW::GlTexture(texture,GL_TEXTURE_2D,512,128));
+            } else if (texture!=0u) glDeleteTextures(1,&texture);
+        }
         dataLinkBase_=std::move(preparation.dataLinkBase);
         dataLinkNameFont_=std::move(preparation.dataLinkNameFont);
         dataLinkTextFont_=std::move(preparation.dataLinkTextFont);
@@ -6981,6 +7167,17 @@ class DeusExQuestApp final : public OVRFW::XrApp {
     OVRFW::VRMenuObject* personaDetailsLabel_{};
     OVRFW::VRMenuObject* personaFooterLabel_{};
     PersonaUiRenderer personaRenderer_;
+    PersonaUiRenderer focusLabelRenderer_;
+    PortableBitmapFont focusFont_;
+    QuestVr::PersonaUiImage focusBackground_;
+    QuestVr::FrobDescriptionMessages focusMessages_;
+    QuestVr::FrobDescriptionPalette focusPalette_;
+    GLuint focusLabelTextureId_{};
+    std::string focusDescriptionActor_,focusLabelText_;
+    std::optional<std::string> focusDescription_;
+    std::uint64_t focusDescriptionRevision_{std::numeric_limits<std::uint64_t>::max()};
+    std::uint32_t focusLabelTextWidth_{},focusLabelTextHeight_{};
+    float focusDescriptionPollSeconds_{};
     PersonaUiRenderer dataLinkRenderer_;
     QuestVr::PersonaUiImage dataLinkBase_;
     PortableBitmapFont dataLinkNameFont_;

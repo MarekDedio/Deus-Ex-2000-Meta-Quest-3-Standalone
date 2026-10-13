@@ -1,0 +1,11 @@
+add_executable(portable_lamp_interaction_test portable_lamp_interaction_test.cpp)
+target_compile_features(portable_lamp_interaction_test PRIVATE cxx_std_20)
+target_link_libraries(portable_lamp_interaction_test PRIVATE quest_portable_host)
+target_include_directories(portable_lamp_interaction_test PRIVATE
+    "${CMAKE_CURRENT_LIST_DIR}/../third_party/Meta-OpenXR-SDK/Samples/1stParty/OVR/Include")
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+    target_compile_options(portable_lamp_interaction_test PRIVATE -Wall -Wextra -Werror)
+    target_link_options(portable_lamp_interaction_test PRIVATE -static -static-libgcc -static-libstdc++)
+endif()
+add_test(NAME portable_lamp_interaction COMMAND portable_lamp_interaction_test)
+set_tests_properties(portable_lamp_interaction PROPERTIES SKIP_RETURN_CODE 77)

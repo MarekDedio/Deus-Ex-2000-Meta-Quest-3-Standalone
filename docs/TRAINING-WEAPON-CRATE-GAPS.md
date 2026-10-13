@@ -43,7 +43,11 @@ DeusExDecoration.Active.TakeDamage, not a class-level function. A fatal hit
 calls DropThings, emits sound/noise, spawns WoodFragments through Frag and
 invokes Destroy, which dispatches Containers.Destroyed. The first concrete
 current script blocker is DropThings' BasedActors iterator native306; the
-iterator host currently implements only AllActors304. Additional contracts
+iterator host previously implemented only AllActors304. The new native306
+implementation now uses the retail live ULevel scan, direct Base and actual
+UClass pointer ancestry, not the pin's cached BasedActors/name filter. The
+original two crates' empty-base DropThings passes in a read-only integration
+probe; this is not fatal damage, support physics or a gameplay fix. Additional contracts
 include MakeNoise512, PlaySound264, GetMeshTexture1013, fragment lifecycle and
 FastTrace548. The latter is evaluated before false bGenerateTrash, so it cannot
 be skipped. Any failure must roll back earlier damage, bases, births, random
@@ -79,3 +83,24 @@ births and collection, a visible controller-aligned held crowbar, attack timing,
 falling/landing/support after the lower crate is destroyed, and save/load of
 these states without stale visuals, duplicate contents or streaming freezes.
 Original player ownership, script startup and general physics remain incomplete.
+
+## Runtime prerequisites added in the current batch
+
+The detached held-item descriptor reads the actual collected Inventory actor,
+including its inactive picked-up identity, through typed linked declarations.
+PlayerViewMesh/PickupViewMesh/ThirdPersonMesh, scale, Skin/eight MultiSkins slots,
+Int damage/ranges and bHandToHand retain separate optional failures and exact
+source provenance. No asset-name guessing, package I/O, equipment-state writes
+or script execution occurs in this query. Current mutable class defaults must
+not leak into old map instances; frozen birth patches remain separate.
+
+Class property access now requires actual authored Class.Children/Next
+membership rather than Outer/name coincidence. Malformed chains publish no
+valid prefix, and orphan/foreign field reads roll back preceding writes.
+The new qualified actor-property reader preserves exact declaring-field
+identities needed by the original focus-name/status UI.
+
+These are prerequisites. They do not themselves add a weapon draw path,
+original player equip/Fire, fatal crate destruction, spawned contents, gravity,
+or a playable lamp. See ORIGINAL-LAMP-CONTRACT.md for the lamp's original Frob,
+native sound, ScaleGlow and dynamic BSP-lighting gaps.

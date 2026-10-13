@@ -108,9 +108,33 @@ struct Package {
     }
     void PropertyNext(std::int32_t reference, std::int32_t next) {
         auto& body = bodies.at(static_cast<std::size_t>(reference - 1));
-        // Property() emits an empty tagged prefix and zero Base/Next links.
+        // Property emits an empty tagged prefix and zero Base. Relinking may
+        // replace a previously nonzero, multi-byte compact Next reference.
+        std::size_t tail=3u;
+        if ((body.at(2u)&64u)!=0u) {
+            while ((body.at(tail++)&128u)!=0u) {}
+        }
         Bytes linked{0u}; Index(linked, 0); Index(linked, next);
-        linked.insert(linked.end(), body.begin() + 3, body.end()); body = std::move(linked);
+        linked.insert(linked.end(),body.begin()+static_cast<std::ptrdiff_t>(tail),body.end()); body = std::move(linked);
+    }
+    void LinkClassFields(std::int32_t owner) {
+        std::vector<std::int32_t> fields;
+        for (std::size_t i=0u;i<exports.size();++i)
+            if(exports[i].ObjOuter==owner) fields.push_back(static_cast<std::int32_t>(i+1u));
+        for(std::size_t i=0u;i<fields.size();++i)
+            PropertyNext(fields[i],i+1u<fields.size()?fields[i+1u]:0);
+        auto& body=bodies.at(static_cast<std::size_t>(owner-1));
+        std::size_t cursor{};
+        const auto skip=[&] {
+            const auto first=body.at(cursor++);
+            if((first&64u)!=0u) while((body.at(cursor++)&128u)!=0u) {}
+        };
+        skip(); skip(); skip(); // SuperField, Next, ScriptText.
+        const auto start=cursor; skip(); // Children.
+        Bytes replacement(body.begin(),body.begin()+static_cast<std::ptrdiff_t>(start));
+        Index(replacement,fields.empty()?0:fields.front());
+        replacement.insert(replacement.end(),body.begin()+static_cast<std::ptrdiff_t>(cursor),body.end());
+        body=std::move(replacement);
     }
     void Struct(std::int32_t reference, std::int32_t firstChild) {
         Bytes body{0u}; Index(body, 0); Index(body, 0); Index(body, 0); Index(body, firstChild);
@@ -216,6 +240,7 @@ Package Engine(bool localTextureClass = false) {
     Bytes defaults; package.Int(defaults, "invSlotsX", 1); package.Int(defaults, "invSlotsY", 1);
     package.Int(defaults, "invPosX", -1); package.Int(defaults, "invPosY", -1); package.Bool(defaults, "bDisplayableInv", true);
     package.Body(actor, package.Class(actor, {})); package.Body(inventory, package.Class(inventory, defaults, firstInventory));
+    package.LinkClassFields(actor); package.LinkClassFields(inventory);
     if (localTextureClass) {
         package.Body(bitmap, package.Class(bitmap, {})); package.Body(texture, package.Class(texture, {}));
     }
@@ -383,6 +408,14 @@ void Synthetic() {
     Require(ReadPortableRuntimeInventoryDescriptors({"DescriptorMap.Rifle0"}).at(0).status == Status::RuntimeUnavailable, "Unavailable runtime was invented");
     Fixture fixture; auto engine = Engine(); const auto icons = Icons(), items = Items(), map = Map();
     const auto engineTable = fixture.Write(engine), iconTable = fixture.Write(icons), itemTable = fixture.Write(items), mapTable = fixture.Write(map, true);
+    auto child = LoadPortableClassDescriptor(engineTable, FindPortableExport(engineTable,"Actor")).state.children;
+    bool linkedSim{};
+    while (child > 0) {
+        const auto field=LoadPortablePropertyDescriptor(engineTable,static_cast<std::size_t>(child-1));
+        linkedSim = linkedSim || field.objectPath=="Actor.SimBlendAnim";
+        child=field.nextField;
+    }
+    Require(linkedSim,"Clock fixture does not link SimBlendAnim in Actor.Children/Next");
     const auto summary = InitializePortableRuntime(std::vector<PortablePackageTables>{engineTable, iconTable, itemTable});
     Require(!summary.passed && summary.functions == 0u && summary.normalizedBytecodeBytes == 0u && summary.properties > 9u,
         "Generated metadata-only runtime gained fake script/startup success");
@@ -518,6 +551,9 @@ void DisplayTextMetadata() {
     // on one concrete item. Optional text failure must not spoil valid icons.
     items.Property("Description", "FloatProperty", exported(items, "GEP"), items.ImportPackage("Core"));
     items.Property("Description", "StrProperty", exported(items, "RifleChild"), items.ImportPackage("Core"));
+    engine.LinkClassFields(inventory);
+    items.LinkClassFields(exported(items,"GEP"));
+    items.LinkClassFields(exported(items,"RifleChild"));
     const auto shadow = map.Export("ShadowText0", map.Import("RifleChild", map.ImportPackage("DescriptorItems")));
     map.Body(shadow, Bytes{0u});
     const auto text = [](Package& package, Bytes& body, const char* name, const std::u16string& value,

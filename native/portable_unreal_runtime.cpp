@@ -85,6 +85,11 @@ public:
     RuntimeObject* serializedStateCode{}; // Outward GC-linked authored identity only.
     RuntimeObject* serializedFunctionCode{};
     std::optional<PortableFieldLinks> commonFieldLinks;
+    // Validated once while the original tables are available. Outer/path
+    // coincidence alone cannot authorize a compiled class-property alias.
+    // linkedClassOwner aliases the already GC-linked immutable Outer.
+    RuntimeObject* linkedClassOwner{};
+    bool classFieldLinksValid{};
     // Exact immutable table identities, captured only at load while its source
     // table is already available. A read-only inventory query must not reopen
     // packages or treat reflection's package-stripped metaclass as an IsA proof.
@@ -281,18 +286,19 @@ bool SameInventoryIdentity(const std::string_view left, const std::string_view r
     return true;
 }
 const char* InventoryNativeClassPath(const std::uint8_t id) {
-    // The exact Texture native registrations/bases from NativeCastClass below;
+    // Exact Texture and held-view Mesh native registrations/bases;
     // no bare metaclass/suffix or package-name guess supplies a class identity.
     static constexpr const char* paths[] = {"", "Core.Object", "Engine.Bitmap", "Engine.Texture", "Engine.FractalTexture",
-        "Engine.FireTexture", "Engine.IceTexture", "Engine.WaterTexture", "Engine.WaveTexture", "Engine.WetTexture", "Engine.ScriptedTexture"};
+        "Engine.FireTexture", "Engine.IceTexture", "Engine.WaterTexture", "Engine.WaveTexture", "Engine.WetTexture", "Engine.ScriptedTexture",
+        "Engine.Mesh", "Engine.LodMesh", "Engine.Primitive"};
     return id < std::size(paths) ? paths[id] : "";
 }
 std::uint8_t InventoryNativeClassId(const std::string_view path) {
-    for (std::uint8_t id = 1u; id <= 10u; ++id) if (SameInventoryIdentity(path, InventoryNativeClassPath(id))) return id;
+    for (std::uint8_t id = 1u; id <= 13u; ++id) if (SameInventoryIdentity(path, InventoryNativeClassPath(id))) return id;
     return 0u;
 }
 std::uint8_t InventoryNativeClassBase(const std::uint8_t id) {
-    static constexpr std::uint8_t bases[] = {0u, 0u, 1u, 2u, 3u, 4u, 4u, 4u, 7u, 7u, 3u};
+    static constexpr std::uint8_t bases[] = {0u, 0u, 1u, 2u, 3u, 4u, 4u, 4u, 7u, 7u, 3u, 13u, 11u, 1u};
     return id < std::size(bases) ? bases[id] : 0u;
 }
 void CacheInventoryTableMetadata(RuntimeObject* object, const PortablePackageTables& table, const ExportTableEntry& entry) {
@@ -327,7 +333,10 @@ void CacheInventoryTableMetadata(RuntimeObject* object, const PortablePackageTab
     const auto dot = object->reflection.objectPath.find_last_of('.');
     const std::string_view name(object->reflection.objectPath.data() + (dot == std::string::npos ? 0u : dot + 1u),
         object->reflection.objectPath.size() - (dot == std::string::npos ? 0u : dot + 1u));
-    if (!SameInventoryIdentity(name, "largeIcon") && !SameInventoryIdentity(name, "Icon")) return;
+    if (!SameInventoryIdentity(name, "largeIcon") && !SameInventoryIdentity(name, "Icon") &&
+        !SameInventoryIdentity(name, "PlayerViewMesh") && !SameInventoryIdentity(name, "PickupViewMesh") &&
+        !SameInventoryIdentity(name, "ThirdPersonMesh") && !SameInventoryIdentity(name, "Skin") &&
+        !SameInventoryIdentity(name, "MultiSkins")) return;
     object->inventoryIconClassConstraint = std::make_unique<InventoryIconClassConstraint>();
     auto& constraint = *object->inventoryIconClassConstraint;
     const auto path = classReference(object->property->referencedType, constraint.valid);
@@ -365,10 +374,29 @@ std::string DialogueKey(std::int32_t mission, const std::string& speaker) {
 }
 
 bool IsDerivedFromPath(RuntimeObject* cls, const std::string& path) {
+    // UE FName identities are case-insensitive. Their retained display spelling
+    // can depend on which package first interned the name (e.g. FrobDisplayWindow
+    // mentions 'mover' before Engine's Mover export is loaded). Compare the full
+    // qualified identity, without allocations or leaf-name type guesses.
+    const auto sameIdentity = [](const std::string& a, const std::string& b) {
+        if (a.size()!=b.size()) return false;
+        const auto fold = [](unsigned char c) { return c>='A'&&c<='Z' ? static_cast<unsigned char>(c+('a'-'A')) : c; };
+        for (std::size_t index=0u;index<a.size();++index)
+            if (fold(static_cast<unsigned char>(a[index]))!=fold(static_cast<unsigned char>(b[index]))) return false;
+        return true;
+    };
+    std::array<RuntimeObject*,128u> visited{};
+    std::size_t depth{};
+    bool matches{};
     for (RuntimeObject* current = cls; current != nullptr; current = current->base) {
-        if (current->reflection.objectPath == path) return true;
+        if (depth == visited.size() ||
+            std::find(visited.begin(),visited.begin()+depth,current) != visited.begin()+depth)
+            throw std::runtime_error("Runtime class hierarchy cycles or exceeds its native work bound");
+        visited[depth++] = current;
+        matches = matches || sameIdentity(current->reflection.objectPath,path);
     }
-    return false;
+    // An early matching class must not conceal malformed later Super links.
+    return matches;
 }
 
 const QuestVr::Vm::Value* FindScriptOverlay(
@@ -1972,7 +2000,99 @@ public:
         return {};
     }
     std::unique_ptr<QuestVr::Vm::Iterator> CreateIterator(const std::uint16_t index,
-        const std::string&, const std::vector<Evaluation>& arguments, const Function*) override {
+        const std::string& receiver, const std::vector<Evaluation>& arguments, const Function* declaration) override {
+        if (index == 306u) {
+            // Retail GOTY Engine.dll SHA256 0C3A8B18239CA98AE132506A1BD966CB5D91C6852E650E179CB15860832C20B4:
+            // execBasedActors export RVA4048 -> VA103e4800. Unlike the pin's
+            // snapshot of BasedActors, retail scans live Level slots, compares
+            // actual Class/Super pointers and the candidate's live direct Base.
+            const auto validate = [&](const Function& function) {
+                if (LowerAscii(function.path) != "engine.actor.basedactors" || function.nativeIndex != 306u ||
+                    function.flags != 0x405u || function.variables.size() != 2u)
+                    throw std::runtime_error("Native306 is not the authored Engine.Actor.BasedActors declaration");
+                const std::array<const char*,2u> keys{"engine.actor.basedactors.baseclass","engine.actor.basedactors.actor"};
+                const std::array<std::uint32_t,2u> flags{0x80u,0x180u};
+                for (std::size_t i=0u;i<keys.size();++i) {
+                    const auto& parameter = function.variables[i];
+                    if (LowerAscii(parameter.key) != keys[i] || parameter.zero.kind != Kind::Object ||
+                        parameter.arrayDimension != 1u || parameter.flags != flags[i])
+                        throw std::runtime_error("BasedActors requires its original Class and OUT Actor parameters");
+                    auto* metadata = Object(parameter.key);
+                    if (!metadata->property || metadata->property->type != (i == 0u ? "ClassProperty" : "ObjectProperty"))
+                        throw std::runtime_error("BasedActors parameter metadata has the wrong reflected type");
+                    const auto& table = Table(metadata->sourcePath);
+                    if (LowerAscii(Qualified(table, metadata->property->referencedType)) != (i == 0u ? "core.class" : "engine.actor") ||
+                        (i == 0u && LowerAscii(Qualified(table, metadata->property->secondaryType)) != "engine.actor"))
+                        throw std::runtime_error("BasedActors parameter metadata has the wrong original class constraint");
+                }
+            };
+            const auto authored = FunctionFor(Object("Engine.Actor.BasedActors"));
+            validate(*authored);
+            if (declaration) {
+                validate(*declaration);
+                if (declaration->source != authored->source)
+                    throw std::runtime_error("BasedActors declaration source is not the authored Actor entry");
+            }
+            auto* caller = Object(receiver); RequireMapActor(caller);
+            if (arguments.size() != 2u) throw std::runtime_error("BasedActors requires Class and writable Actor");
+            const auto requested = arguments[0u].Load();
+            if (requested.kind != Kind::Object) throw std::runtime_error("BasedActors BaseClass is not an Object/UClass");
+            // Retail VA103e4885 defaults None to the real Actor UClass. Do not
+            // fabricate a class from a path or reuse Name-based DynamicCast.
+            const auto identity = CastClassIdentity(requested.text.empty() ? "Engine.Actor" : requested.text);
+            auto* baseClass = Object(identity.path);
+            if (!baseClass->classDescriptor) throw std::runtime_error("BasedActors BaseClass is not a loaded serialized UClass");
+            const auto& output = arguments[1u].reference;
+            if (!output || !output->read || !output->write || output->zero.kind != Kind::Object ||
+                output->read().kind != Kind::Object)
+                throw std::runtime_error("BasedActors Actor is not a writable Object binding");
+            class BasedCursor final : public QuestVr::Vm::Iterator {
+            public:
+                BasedCursor(PortableActorVmHost& host, RuntimeObject* caller, RuntimeObject* baseClass,
+                    std::shared_ptr<Reference> output)
+                    : host_(host), caller_(caller), baseClass_(baseClass), output_(std::move(output)) {}
+                std::size_t RetainedBytes() const override { return sizeof(*this); }
+                bool Next() override {
+                    host_.LifecycleStep();
+                    // VA103e48a6 clears OUT BEFORE every scan, including a
+                    // successful scan. Aliased Base OUT writes are observable.
+                    output_->write(Value::Text(Kind::Object, {}));
+                    // The retail loop selects the caller's native ULevel,
+                    // not its reflected LevelInfo link or a cached based list.
+                    // This embedding owns one world: refuse an absent/foreign
+                    // native level instead of silently scanning another world.
+                    static_cast<void>(host_.NativeLevelInfo(caller_));
+                    while (slot_ < persistentWorldActors.size()) {
+                        host_.LifecycleStep();
+                        auto* actor = persistentWorldActors[slot_++];
+                        if (!actor || actor->worldRemoved) continue;
+                        bool matches{};
+                        std::array<RuntimeObject*,128u> visited{};
+                        std::size_t depth{};
+                        for (auto* cls=actor->cls;cls;cls=cls->base) {
+                            host_.LifecycleStep();
+                            if (cls == baseClass_) { matches=true; break; }
+                            if (depth == visited.size() || std::find(visited.begin(),visited.begin()+depth,cls) != visited.begin()+depth)
+                                throw std::runtime_error("BasedActors Class hierarchy cycles or exceeds its native work bound");
+                            visited[depth++]=cls;
+                        }
+                        if (!matches || host_.ActorLink(actor,"Base") != caller_) continue;
+                        // No presentation-active, bDeleteMe, hidden, collision,
+                        // recursive Base or cached native based-list filter.
+                        output_->write(Value::Text(Kind::Object,actor->reflection.objectPath));
+                        return true;
+                    }
+                    return false;
+                }
+            private:
+                PortableActorVmHost& host_;
+                RuntimeObject* caller_;
+                RuntimeObject* baseClass_;
+                std::shared_ptr<Reference> output_;
+                std::size_t slot_{};
+            };
+            return std::make_unique<BasedCursor>(*this,caller,baseClass,output);
+        }
         if (index != 304u) throw std::runtime_error("Unsupported runtime iterator native " + std::to_string(index));
         if (arguments.size() < 2u || arguments.size() > 3u)
             throw std::runtime_error("AllActors requires Class, writable Actor and optional Name");
@@ -2200,12 +2320,20 @@ public:
         RuntimeObject* source = classDefaults ? DefaultClass(object) : object;
         const auto selectedField = [&](RuntimeObject* storage) {
             auto* cls = storage->classDescriptor ? storage : storage->cls;
+            std::array<RuntimeObject*,128u> visited{};
+            std::size_t depth{};
+            std::optional<bool> selected;
             for(;cls;cls=cls->base) {
+                if (depth == visited.size() ||
+                    std::find(visited.begin(),visited.begin()+depth,cls) != visited.begin()+depth)
+                    throw std::runtime_error("Runtime class hierarchy cycles or exceeds its native work bound");
+                visited[depth++] = cls;
                 const auto found=persistentVmObjects.find(LowerAscii(cls->reflection.objectPath+'.'+property.name));
-                if(found!=persistentVmObjects.end() && found->second->property)
-                    return LowerAscii(found->second->reflection.objectPath)==LowerAscii(property.key);
+                if(!selected && cls->classFieldLinksValid && found!=persistentVmObjects.end() && found->second->property &&
+                    found->second->linkedClassOwner==cls)
+                    selected = LowerAscii(found->second->reflection.objectPath)==LowerAscii(property.key);
             }
-            return false;
+            return selected.value_or(false);
         };
         // Tags and mutable patches use leaf names, but a class may redeclare a
         // inherited field (retail Actor/PlayerPawn.bSinglePlayer does). A tag
@@ -2235,7 +2363,14 @@ public:
             if (LowerAscii(property.key) == "engine.actor.region" && property.zero.kind == Kind::Struct)
                 return Region(object, property.zero);
         }
+        // The instance adds one storage source before the bounded class chain.
+        std::array<RuntimeObject*,129u> visitedSources{};
+        std::size_t sourceDepth{};
         while (source != nullptr) {
+            if (sourceDepth == visitedSources.size() ||
+                std::find(visitedSources.begin(),visitedSources.begin()+sourceDepth,source) != visitedSources.begin()+sourceDepth)
+                throw std::runtime_error("Runtime property source inheritance cycles or exceeds its native work bound");
+            visitedSources[sourceDepth++] = source;
             const auto& properties = source->classDescriptor ? source->classDescriptor->defaults : source->instanceProperties;
             if (selectedField(source))
                 for (auto tag = properties.rbegin(); tag != properties.rend(); ++tag) {
@@ -2315,10 +2450,24 @@ public:
         return true;
     }
     Property ClassProperty(RuntimeObject* actorClass, const std::string& name) {
+        std::array<RuntimeObject*,128u> visited{};
+        std::size_t depth{};
+        RuntimeObject* selected{};
         for (RuntimeObject* cls = actorClass; cls != nullptr; cls = cls->base) {
+            if (depth == visited.size() ||
+                std::find(visited.begin(),visited.begin()+depth,cls) != visited.begin()+depth)
+                throw std::runtime_error("Runtime class hierarchy cycles or exceeds its native work bound");
+            visited[depth++] = cls;
+            // Retain the nearest-field/metadata checks, but validate the whole
+            // Super chain even after a nearest declaration has been selected.
+            if (selected) continue;
+            if (cls->classDescriptor && !cls->classFieldLinksValid)
+                throw std::runtime_error("Runtime class Children/Next metadata is invalid: " + cls->reflection.objectPath);
             const auto found = persistentVmObjects.find(LowerAscii(cls->reflection.objectPath + '.' + name));
-            if (found != persistentVmObjects.end() && found->second->property) return Describe(found->second);
+            if (found != persistentVmObjects.end() && found->second->property &&
+                found->second->linkedClassOwner == cls) selected = found->second;
         }
+        if (selected) return Describe(selected);
         throw std::runtime_error("Runtime property metadata unavailable: " + name);
     }
     Property DescribeProperty(const std::string& key) { return Describe(Object(key)); }
@@ -2326,11 +2475,20 @@ public:
         // Compiled inherited references retain their declaring field even
         // when the concrete class redeclares a field with the same name.
         auto* metadata = Object(property.key);
-        if (!metadata->property || !metadata->outer || !metadata->outer->classDescriptor)
+        if (!metadata->property || !metadata->outer || !metadata->outer->classDescriptor ||
+            !metadata->outer->classFieldLinksValid || metadata->linkedClassOwner != metadata->outer)
             return false;
-        for (auto* cls=concreteClass;cls;cls=cls->base)
-            if (cls==metadata->outer) return true;
-        return false;
+        std::array<RuntimeObject*,128u> visited{};
+        std::size_t depth{};
+        bool owns{};
+        for (auto* cls=concreteClass;cls;cls=cls->base) {
+            if (depth == visited.size() ||
+                std::find(visited.begin(),visited.begin()+depth,cls) != visited.begin()+depth)
+                throw std::runtime_error("Runtime class hierarchy cycles or exceeds its native work bound");
+            visited[depth++] = cls;
+            owns = owns || cls==metadata->outer;
+        }
+        return owns;
     }
     RuntimeObject* DefaultClass(RuntimeObject* object) {
         auto* cls = object->classDescriptor ? object : object->cls;
@@ -2342,11 +2500,18 @@ public:
         return cls;
     }
     bool HasPropertyNamed(RuntimeObject* actor, const char* name) const {
+        std::array<RuntimeObject*,128u> visited{};
+        std::size_t depth{};
+        bool present{};
         for (auto* cls=actor->cls;cls;cls=cls->base) {
+            if (depth == visited.size() ||
+                std::find(visited.begin(),visited.begin()+depth,cls) != visited.begin()+depth)
+                throw std::runtime_error("Runtime class hierarchy cycles or exceeds its native work bound");
+            visited[depth++] = cls;
             const auto found=persistentVmObjects.find(LowerAscii(cls->reflection.objectPath+'.'+name));
-            if (found!=persistentVmObjects.end() && found->second->property) return true;
+            present = present || (found!=persistentVmObjects.end() && found->second->property);
         }
-        return false; // Explicit metadata-only fixtures lack native Actor fields.
+        return present; // Explicit metadata-only fixtures lack native Actor fields.
     }
     bool HasCollisionSchema(RuntimeObject* actor) const { return HasPropertyNamed(actor,"bCollideActors"); }
     QuestVr::ActorOverlapRecord CollisionRecord(RuntimeObject* actor,
@@ -5723,6 +5888,44 @@ PortableRuntimeSummary InitializePortableRuntime(
             if (object->reflection.metaClass == "Class") ++summary.classes;
         }
     }
+    // Cache actual class-property membership before the input tables leave
+    // scope. Rechecking this on every field read would introduce package I/O
+    // into the XR frame. Malformed chains remain explicitly invalid; no valid
+    // prefix is published and an orphan export is never treated as a field.
+    for (const PackageSlice& slice : slices) {
+        for (std::size_t localIndex = 0u; localIndex < slice.package->exports.size(); ++localIndex) {
+            auto* owner = persistentRuntime->get()->exports[slice.first+localIndex];
+            if (!owner->classDescriptor) continue;
+            std::vector<RuntimeObject*> fields;
+            std::unordered_set<RuntimeObject*> visited;
+            bool valid = true;
+            try {
+                auto reference = owner->classDescriptor->state.children;
+                const PackageSlice* source = &slice;
+                while (reference != 0) {
+                    auto* field = resolve(*source,reference);
+                    if (!field || field->outer != owner || visited.size() >= 8192u ||
+                        !visited.insert(field).second) { valid = false; break; }
+                    fields.push_back(field);
+                    const auto origin = std::find_if(slices.begin(),slices.end(),
+                        [&](const auto& value) { return value.package->sourcePath == field->sourcePath; });
+                    if (origin == slices.end()) { valid = false; break; }
+                    source = &*origin;
+                    if (field->property) reference = field->property->nextField;
+                    else if (field->script) reference = field->script->nextField;
+                    else if (const auto* state = StateMetadata(field)) reference = state->nextField;
+                    else {
+                        if (!field->commonFieldLinks)
+                            field->commonFieldLinks = LoadPortableFieldLinks(*source->package,field->exportIndex);
+                        reference = field->commonFieldLinks->nextField;
+                    }
+                }
+            } catch (const std::runtime_error&) { valid = false; }
+            owner->classFieldLinksValid = valid;
+            if (valid) for (auto* field : fields)
+                if (field->property) field->linkedClassOwner = owner;
+        }
+    }
     for (const PackageSlice& slice : slices) {
         for (std::size_t localIndex = 0;
              localIndex < slice.package->exports.size();
@@ -6335,6 +6538,25 @@ QuestVr::Vm::Value ReadPortableActorScriptProperty(const std::string& actorPath,
     if (arrayIndex >= property.arrayDimension)
         throw std::runtime_error("VM property fixed-array index is out of range");
     return host.Read(actor, property, arrayIndex);
+}
+
+QuestVr::Vm::Value ReadPortableActorDeclaredScriptProperty(const std::string& actorPath,
+    const std::string& propertyPath, const std::uint32_t arrayIndex) {
+    const auto valid = [](const std::string& identity) {
+        return !identity.empty() && identity.size() <= 4096u && identity.find('\0') == std::string::npos;
+    };
+    if (!valid(actorPath) || !valid(propertyPath))
+        throw std::runtime_error("Declared actor property identity is invalid");
+    PortableActorVmHost host;
+    auto* actor = host.Object(actorPath);
+    if (!actor->active || actor->worldRemoved || !IsDerivedFromPath(actor->cls,"Engine.Actor"))
+        throw std::runtime_error("Declared property receiver is not an active nonretired Engine.Actor");
+    const auto property = host.DescribeProperty(propertyPath);
+    if (!host.OwnsProperty(actor->cls,property))
+        throw std::runtime_error("Declared property is not owned by its concrete receiver class");
+    if (arrayIndex >= property.arrayDimension)
+        throw std::runtime_error("Declared property fixed-array index is out of range");
+    return host.Read(actor,property,arrayIndex);
 }
 
 QuestVr::Vm::Value ReadPortableClassDefault(const std::string& classPath,
@@ -7794,6 +8016,243 @@ std::vector<PortableInventoryDescriptor> ReadPortableRuntimeInventoryDescriptors
         results.push_back(std::move(item));
     }
     return results;
+}
+
+PortableHeldItemVisualDescriptor ReadPortableRuntimeHeldItemVisualDescriptor(
+    const std::string& collectedActorPath, const PortableHeldItemDescriptorLimits& limits) {
+    using Status = PortableHeldItemDescriptorStatus;
+    using FieldStatus = PortableHeldItemValueStatus;
+    using Origin = PortableHeldItemValueOrigin;
+    using Value = QuestVr::Vm::Value;
+    using Kind = QuestVr::Vm::Kind;
+    if (limits.retainedBytes == 0u || limits.retainedBytes > 1024u*1024u ||
+        limits.stringBytes == 0u || limits.stringBytes > 8192u ||
+        limits.hierarchy == 0u || limits.hierarchy > 128u ||
+        limits.inventoryEntries == 0u || limits.inventoryEntries > 100'000u)
+        throw std::runtime_error("Held-item descriptor limits are invalid");
+    std::size_t retained{};
+    const auto charge = [&](const std::size_t bytes) {
+        if (bytes > limits.retainedBytes || retained > limits.retainedBytes-bytes)
+            throw std::runtime_error("Held-item descriptor retained/scratch byte budget exceeded");
+        retained += bytes;
+    };
+    charge(sizeof(PortableHeldItemVisualDescriptor)+256u*sizeof(RuntimeObject*)+6u*(limits.stringBytes+64u));
+    const auto validText = [&](const std::string& text, const bool empty = false) {
+        return (empty || !text.empty()) && text.size() <= limits.stringBytes && text.find('\0') == std::string::npos;
+    };
+    const auto copy = [&](std::string& target, const std::string& source, const bool empty = false) {
+        if (!validText(source,empty)) return false;
+        const auto allowance = 2u*(source.size()+1u)+32u;
+        charge(allowance); target = source;
+        if (target.capacity()+1u > allowance)
+            throw std::runtime_error("Held-item descriptor string capacity exceeds charged bound");
+        return true;
+    };
+    const auto folded = [](const std::string_view text) { return QuestVr::ObjectCastDetail::Fold(text); };
+    PortableHeldItemVisualDescriptor result;
+    if (!validText(collectedActorPath)) { result.status = Status::InvalidIdentity; return result; }
+    copy(result.requestedPath,collectedActorPath);
+    if (!persistentRuntime || !persistentRuntime->get()) return result;
+    const auto found = persistentVmObjects.find(folded(collectedActorPath));
+    if (found == persistentVmObjects.end() || !found->second) { result.status = Status::UnindexedIdentity; return result; }
+    auto* actor = found->second;
+    if (actor->inventorySerializedClass || !actor->cls) { result.status = Status::NotInventoryActor; return result; }
+    std::array<RuntimeObject*,128u> ancestry{};
+    std::size_t depth{}; bool inventory{}, engineActor{};
+    for (auto* cls = actor->cls; cls; cls = cls->base) {
+        if (depth == limits.hierarchy || std::find(ancestry.begin(),ancestry.begin()+depth,cls) != ancestry.begin()+depth ||
+            cls->reflection.metaClass != "Class" || !cls->inventoryTableMetadata || !cls->inventorySerializedClass ||
+            !cls->inventoryBaseReferenceValid || (cls->classDescriptor && !cls->classFieldLinksValid) ||
+            !validText(cls->reflection.objectPath)) {
+            result.status = Status::MalformedIdentity; return result;
+        }
+        ancestry[depth++] = cls;
+        inventory = inventory || SameInventoryIdentity(cls->reflection.objectPath,"Engine.Inventory");
+        engineActor = engineActor || SameInventoryIdentity(cls->reflection.objectPath,"Engine.Actor");
+        result.weapon = result.weapon || SameInventoryIdentity(cls->reflection.objectPath,"Engine.Weapon");
+    }
+    if (!inventory || !engineActor) { result.status = Status::NotInventoryActor; return result; }
+    if (!actor->inventoryTableMetadata || !actor->inventoryClassReferenceValid ||
+        !copy(result.actorPath,actor->reflection.objectPath) || !copy(result.classPath,actor->cls->reflection.objectPath) ||
+        !copy(result.actorSourcePath,actor->sourcePath) || !copy(result.classSourcePath,actor->cls->sourcePath)) {
+        result.status = Status::MalformedIdentity; return result;
+    }
+    if (persistentInventory.size() > limits.inventoryEntries)
+        throw std::runtime_error("Held-item descriptor collected identity scan budget exceeded");
+    result.collected = std::any_of(persistentInventory.begin(),persistentInventory.end(),[&](const auto& identity) {
+        return SameInventoryIdentity(identity,actor->reflection.objectPath);
+    });
+    if (!result.collected) { result.status = Status::NotCollected; return result; }
+    result.active = actor->active;
+    result.status = Status::Available;
+    const auto classDerives = [&](RuntimeObject* cls, std::uint8_t native, RuntimeObject* target, const std::uint8_t targetNative) {
+        std::array<RuntimeObject*,128u> seen{};
+        std::size_t total{}, indexed{}; std::uint16_t nativeSeen{};
+        const std::string_view wanted = target ? std::string_view(target->reflection.objectPath) : InventoryNativeClassPath(targetNative);
+        if (wanted.empty() || wanted.size() > limits.stringBytes) return false;
+        while (cls || native != 0u) {
+            if (total++ == limits.hierarchy) return false;
+            if (!cls) {
+                if (native > 13u) return false;
+                const auto bit = static_cast<std::uint16_t>(1u<<native);
+                if ((nativeSeen&bit) != 0u) return false;
+                nativeSeen |= bit;
+                const auto path = InventoryNativeClassPath(native);
+                const auto resolved = persistentVmObjects.find(folded(path));
+                if (resolved != persistentVmObjects.end()) cls = resolved->second;
+                else {
+                    if (SameInventoryIdentity(path,wanted)) return true;
+                    native = InventoryNativeClassBase(native); continue;
+                }
+            }
+            if (!cls || !cls->inventoryTableMetadata || !cls->inventorySerializedClass || !cls->inventoryBaseReferenceValid ||
+                cls->reflection.metaClass != "Class" || !validText(cls->reflection.objectPath) ||
+                std::find(seen.begin(),seen.begin()+indexed,cls) != seen.begin()+indexed) return false;
+            seen[indexed++] = cls;
+            if (SameInventoryIdentity(cls->reflection.objectPath,wanted)) return true;
+            native = cls->base ? 0u : cls->inventoryNativeBase;
+            if (!cls->base && native == 0u && !SameInventoryIdentity(cls->reflection.objectPath,"Core.Object")) native = 1u;
+            cls = cls->base;
+        }
+        return false;
+    };
+    const auto declarationAt = [&](const std::size_t first, const char* name) -> RuntimeObject* {
+        for (std::size_t index = first; index < depth; ++index) {
+            const auto field = persistentVmObjects.find(folded(ancestry[index]->reflection.objectPath+'.'+name));
+            if (ancestry[index]->classFieldLinksValid && field != persistentVmObjects.end() && field->second &&
+                field->second->property && field->second->outer == ancestry[index] && field->second->linkedClassOwner == ancestry[index])
+                return field->second;
+        }
+        return nullptr;
+    };
+    const auto read = [&](const char* name, const std::uint32_t slot, const std::int32_t dimension,
+        const Kind kind, const std::uint8_t expectedNative, PortableHeldItemValueStatus& status,
+        PortableHeldItemValueProvenance& provenance) -> std::optional<Value> {
+        auto* declaration = declarationAt(0u,name);
+        if (!declaration) { status = FieldStatus::MissingPropertyMetadata; return {}; }
+        const auto& metadata = *declaration->property;
+        const char* type = kind == Kind::Int ? "IntProperty" : kind == Kind::Float ? "FloatProperty" :
+            kind == Kind::Bool ? "BoolProperty" : "ObjectProperty";
+        if (metadata.type != type || metadata.arrayDimension != dimension || slot >= static_cast<std::uint32_t>(dimension)) {
+            status = FieldStatus::MalformedProperty; return {};
+        }
+        if (!copy(provenance.declarationPath,declaration->reflection.objectPath) ||
+            !copy(provenance.declarationSourcePath,declaration->sourcePath)) { status = FieldStatus::MalformedProperty; return {}; }
+        const auto* constraint = declaration->inventoryIconClassConstraint.get();
+        if (kind == Kind::Object && (!constraint || !constraint->valid ||
+            !classDerives(constraint->indexedClass,constraint->nativeClass,nullptr,expectedNative))) {
+            status = FieldStatus::MalformedProperty; return {};
+        }
+        Value value = kind == Kind::Int ? Value::Integer(0) : kind == Kind::Float ? Value::Float(0) :
+            kind == Kind::Bool ? Value::Bool(false) : Value::Text(Kind::Object,{});
+        RuntimeObject* owner{};
+        const Value* overlay{};
+        const auto key = folded(name);
+        for (const auto* values : {&actor->scriptValues,&actor->frozenBirthDefaults}) {
+            const auto property = values->find(key);
+            if (property == values->end()) continue;
+            if (std::any_of(property->second.begin(),property->second.end(),[&](const auto& entry) {
+                return entry.first >= static_cast<std::uint32_t>(dimension);
+            })) { status = FieldStatus::MalformedProperty; return {}; }
+            const auto entry = property->second.find(slot);
+            if (entry == property->second.end()) continue;
+            overlay = &entry->second; owner = actor;
+            provenance.origin = values == &actor->scriptValues ? Origin::Overlay : Origin::FrozenClassDefault;
+            break;
+        }
+        if (overlay) {
+            if (overlay->kind != kind) { status = FieldStatus::MalformedProperty; return {}; }
+            if (kind == Kind::Object) {
+                if (!copy(value.text,overlay->text,true)) { status = FieldStatus::InvalidValue; return {}; }
+            } else if (kind == Kind::Float) value.floating = overlay->floating;
+            else if (kind == Kind::Int) value.integer = overlay->integer;
+            else value.boolean = overlay->boolean;
+        } else {
+            const PortableTaggedProperty* tag{};
+            for (std::size_t index = 0u; index <= depth && !tag; ++index) {
+                if (index != 0u && declarationAt(index-1u,name) != declaration) continue;
+                auto* source = index == 0u ? actor : ancestry[index-1u];
+                const auto& properties = index == 0u ? source->instanceProperties :
+                    source->classDescriptor ? source->classDescriptor->defaults : source->instanceProperties;
+                for (auto entry = properties.rbegin(); entry != properties.rend(); ++entry) {
+                    if (!SameInventoryIdentity(entry->name.ToString(),name)) continue;
+                    if (entry->arrayIndex >= static_cast<std::uint32_t>(dimension)) { status = FieldStatus::MalformedProperty; return {}; }
+                    if (!tag && entry->arrayIndex == slot) { tag = &*entry; owner = source; }
+                }
+            }
+            if (tag) {
+                provenance.origin = owner == actor ? Origin::Instance : Origin::ClassDefault;
+                if (kind == Kind::Int || kind == Kind::Float) {
+                    if (tag->type != (kind == Kind::Int ? 2u : 4u) || tag->value.size() != 4u) {
+                        status = FieldStatus::MalformedProperty; return {};
+                    }
+                    if (kind == Kind::Int) std::memcpy(&value.integer,tag->value.data(),4u);
+                    else std::memcpy(&value.floating,tag->value.data(),4u);
+                } else if (kind == Kind::Bool) {
+                    if (tag->type != 3u || !tag->value.empty()) { status = FieldStatus::MalformedProperty; return {}; }
+                    value.boolean = tag->boolValue;
+                } else {
+                    if (tag->type != 5u) { status = FieldStatus::MalformedProperty; return {}; }
+                    std::int32_t reference{};
+                    try { reference = DecodePortableObjectReference(*tag); }
+                    catch (const std::exception&) { status = FieldStatus::MalformedProperty; return {}; }
+                    if (reference != 0) {
+                        // Scalar cached objectPropertyPaths cannot represent
+                        // MultiSkins independently. Its load-time typed texture
+                        // override cache retains each actual source array slot.
+                        if (SameInventoryIdentity(name,"Skin") || SameInventoryIdentity(name,"MultiSkins")) {
+                            const auto& texture = SameInventoryIdentity(name,"Skin") ? owner->textureOverrides.skin : owner->textureOverrides.multiSkins[slot];
+                            if (!texture.specified || !copy(value.text,texture.path)) { status = FieldStatus::MalformedProperty; return {}; }
+                        } else {
+                            const auto path = owner->objectPropertyPaths.find(tag->name.ToString());
+                            if (path == owner->objectPropertyPaths.end() || !copy(value.text,path->second)) {
+                                status = FieldStatus::MalformedProperty; return {};
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if (kind == Kind::Float && !std::isfinite(value.floating)) { status = FieldStatus::InvalidValue; return {}; }
+        if (kind == Kind::Object && !value.text.empty()) {
+            const auto asset = persistentVmObjects.find(folded(value.text));
+            if (asset == persistentVmObjects.end() || !asset->second) { status = FieldStatus::MissingReferencedObject; return {}; }
+            const auto* object = asset->second;
+            if (!object->inventoryTableMetadata || object->inventorySerializedClass || !object->inventoryClassReferenceValid ||
+                !classDerives(object->cls,object->inventoryNativeClass,nullptr,expectedNative) ||
+                !classDerives(object->cls,object->inventoryNativeClass,constraint->indexedClass,constraint->nativeClass)) {
+                status = FieldStatus::MalformedProperty; return {};
+            }
+        }
+        if (owner && (!copy(provenance.ownerPath,owner->reflection.objectPath) || !copy(provenance.ownerSourcePath,owner->sourcePath))) {
+            status = FieldStatus::MalformedProperty; return {};
+        }
+        status = FieldStatus::Available; return value;
+    };
+    const auto object = [&](const char* name, PortableHeldItemValue<std::string>& field,
+        const std::uint8_t native, const std::uint32_t slot = 0u, const std::int32_t dimension = 1) {
+        if (auto value = read(name,slot,dimension,Kind::Object,native,field.status,field.provenance)) field.value.emplace(std::move(value->text));
+    };
+    const auto real = [&](const char* name, PortableHeldItemValue<float>& field) {
+        if (const auto value = read(name,0u,1,Kind::Float,0u,field.status,field.provenance)) field.value = value->floating;
+    };
+    const auto integer = [&](const char* name, PortableHeldItemValue<std::int32_t>& field) {
+        if (const auto value = read(name,0u,1,Kind::Int,0u,field.status,field.provenance)) field.value = value->integer;
+    };
+    object("PlayerViewMesh",result.playerViewMesh,11u);
+    object("PickupViewMesh",result.pickupViewMesh,11u);
+    object("ThirdPersonMesh",result.thirdPersonMesh,11u);
+    real("PlayerViewScale",result.playerViewScale);
+    real("PickupViewScale",result.pickupViewScale);
+    real("ThirdPersonScale",result.thirdPersonScale);
+    object("Skin",result.skin,3u);
+    for (std::uint32_t slot = 0u; slot < result.multiSkins.size(); ++slot) object("MultiSkins",result.multiSkins[slot],3u,slot,8);
+    integer("HitDamage",result.hitDamage);
+    integer("AccurateRange",result.accurateRange);
+    integer("MaxRange",result.maxRange);
+    if (const auto value = read("bHandToHand",0u,1,Kind::Bool,0u,result.handToHand.status,result.handToHand.provenance))
+        result.handToHand.value = value->boolean;
+    return result;
 }
 
 PortablePlayerProgress GetPortableRuntimePlayerProgress() {

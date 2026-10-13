@@ -1,5 +1,32 @@
 # Port status
 
+## User-prioritized Training work and focus checkpoint (2026-10-13)
+
+- Explicit work order: Training background music; full original HUD including
+  starting NanoKeyRing/ten slots, health and compass; authored NPC poses and
+  animation; gravity, breakable-crate destruction and visible held items.
+  Lamp on/off illumination remains open, despite accepted focus labels.
+- Golden original-font focus labels, typed object names/door states and original
+  mover/non-mover sizing are implemented. Live Quest capture shows Unlocked;
+  the user confirms Desk Lamp. Amber RGB is read from original packages.
+- Native306 now scans live actual Level slots/direct Base with exact UClass
+  ancestry and shared rollback/budgets. Both original Training crate DropThings
+  empty scans and isolated damage6 -> HP4/ScaleGlow0.46 pass. Fatal hit rollback
+  is verified at unsupported PlaySound264 PC464; no live destruction claim.
+- Typed detached collected-item mesh/material/Int damage/range inspection
+  passes original Crowbar metadata and CDO/instance isolation controls. It is
+  not an equipped identity or a weapon renderer. Original lamp Frob refuses
+  unsupported native264 at PC43 with exact property/save/revision rollback.
+- Class field access now validates Class.Children/Next ownership, refuses
+  orphan/foreign fields, and bounds complete ObjBase walks. Qualified type
+  comparisons respect case-insensitive FNames regardless of display spelling.
+- Host build, strict Quest syntax and Android build pass. CTest70 ordinary
+  tests/79 registered/nine skips is green,25.37s; added fresh-process mixed-case
+  test passes separately (80 registered after reconfigure). Final APK20,094,921
+  bytes SHA256B07B838EA6BE257D3E8533ECE35C570C3371DA42DF86655E14FB25D7F46F8D76
+  is installed data-preservingly on Quest2G0YC5ZG620985, update13:16:25,
+  launch8979, with exact pulled base.apk hash match.
+
 ## Streaming safety follow-up (2026-10-13)
 
 - Removing the actor currently awaiting a pose worker now invalidates its
@@ -17,7 +44,9 @@
   pass1,226 checks. Latest signed ARM64 APK is20,049,433 bytes:
   `artifacts/tutorial-streaming-20261013/DeusExQuestVR-training-streaming-safety-20261013.apk`,
   SHA256`DBE03808B1A46DCF5D4FD4144D35DFF03AC76D2D72C9269AF44C559C189C3BA2`.
-  USB is absent; latest installed/tested APK remains ACC35F28... below.
+  Initially skipped installation while USB was absent. On reconnect the APK
+  was installed without clearing data to Quest2G0YC5ZG620985, update12:06:13,
+  process8446; pulled base.apk matches the full hash above exactly.
 - Read-only original-data investigation proves the stacked crates start with
   a39-unit/0.743m gap and PHYS_Falling; decoded bounds/pivots are correct.
   Original crowbar base damage is6, versus the old selection heuristic12.
