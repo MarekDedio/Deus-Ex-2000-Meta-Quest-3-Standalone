@@ -2458,7 +2458,11 @@ public:
         if(index==1438u) return WindowAlignmentsNative(Object(receiver),arguments,declaration,execution);
         if(index==1425u) return WindowRootGetterNative(Object(receiver),arguments,declaration);
         if(index==1416u) return WindowSensitivityNative(Object(receiver),arguments,declaration,execution);
+        if(index==1467u) return WindowChildVisibilityNative(Object(receiver),arguments,declaration,execution);
         if(index==1431u) return WindowSizeNative(Object(receiver),arguments,declaration,execution);
+        if(index==1430u) return WindowConfigurationNative(Object(receiver),arguments,declaration,execution);
+        if(index==1421u || index==1422u)
+            return WindowBackgroundNative(index,Object(receiver),arguments,declaration,execution);
         if(index==1414u) {
             static_cast<void>(WindowNativeDeclaration(index,declaration));
             if(!arguments.empty()) throw std::runtime_error("Window.Hide takes no arguments");
@@ -2638,6 +2642,14 @@ public:
         const char* path{};std::vector<Parameter> parameters;
         switch(index) {
         case 1414u:path="Extension.Window.Hide";break;
+        case 1421u:path="Extension.Window.SetBackground";
+            parameters={{"newBackground",Kind::Object,0x80u,"ObjectProperty","Engine.Texture"}};break;
+        case 1422u:path="Extension.Window.SetBackgroundStyle";
+            parameters={{"NewStyle",Kind::Byte,0x80u,"ByteProperty","Extension.ExtensionObject.EDrawStyle"}};break;
+        case 1430u:path="Extension.Window.SetConfiguration";
+            for(const auto* name:{"newX","newY","newWidth","NewHeight"})
+                parameters.push_back({name,Kind::Float,0x80u,"FloatProperty",""});
+            break;
         case 1431u:path="Extension.Window.SetSize";
             parameters={{"newWidth",Kind::Float,0x80u,"FloatProperty",""},
                 {"NewHeight",Kind::Float,0x80u,"FloatProperty",""}};break;
@@ -2645,6 +2657,8 @@ public:
             parameters={{"ReturnValue",Kind::Object,0x580u,"ObjectProperty","Extension.RootWindow"}};break;
         case 1416u:path="Extension.Window.SetSensitivity";
             parameters={{"newSensitivity",Kind::Bool,0x80u,"BoolProperty",""}};break;
+        case 1467u:path="Extension.Window.SetChildVisibility";
+            parameters={{"bNewVisibility",Kind::Bool,0x80u,"BoolProperty",""}};break;
         case 1438u:path="Extension.Window.SetWindowAlignments";
             parameters={{"HAlign",Kind::Byte,0x80u,"ByteProperty","Extension.ExtensionObject.EHAlign"},
                 {"VAlign",Kind::Byte,0x80u,"ByteProperty","Extension.ExtensionObject.EVAlign"}};
@@ -2707,7 +2721,8 @@ public:
     }
     std::optional<Value> NativeArgumentSeed(const std::uint16_t index,const std::string& receiver,
         const std::size_t slot,const Function* declaration) override {
-        if(index!=1410u && index!=1416u && index!=1431u && index!=1454u && index!=1477u && index!=1510u && index!=1511u)
+        if(index!=1410u && index!=1416u && index!=1421u && index!=1422u && index!=1430u && index!=1431u &&
+            index!=1454u && index!=1467u && index!=1477u && index!=1510u && index!=1511u)
             return std::nullopt;
         auto* window=Object(receiver);
         if(!window->nativeWindowObject || !IsDerivedFromPath(window->cls,"Extension.Window"))
@@ -2807,6 +2822,85 @@ public:
         for(std::size_t slot=0u;slot<values.size();++slot)
             NativeWindowWrite(window,("Extension.Window."+std::string(fields[slot])).c_str(),values[slot],execution);
         AskHiddenWindowForReconfigure(window,execution);
+        return {};
+    }
+    Evaluation WindowConfigurationNative(RuntimeObject* window,const std::vector<Evaluation>& arguments,
+        const Function* declaration,QuestVr::Vm::Execution& execution) {
+        RequireNativeWindow(window);
+        const auto authored=WindowNativeDeclaration(1430u,declaration);
+        if(arguments.size()!=4u) throw std::runtime_error("SetConfiguration requires four Float inputs");
+        std::array<Value,4u> values;
+        for(std::size_t slot=0u;slot<values.size();++slot) {
+            auto value=arguments[slot].Load();
+            if(value.kind==Kind::Nothing) value=authored->variables[slot].zero;
+            if(value.kind!=Kind::Float || !std::isfinite(value.floating))
+                throw std::runtime_error("SetConfiguration requires copied finite Float inputs");
+            if(slot>=2u && value.floating<0.0f) value=Value::Float(0.0f);
+            values[slot]=value;
+        }
+        const std::array<const char*,4u> fields{"hMargin0","vMargin0","hardcodedWidth","hardcodedHeight"};
+        bool changed{};
+        for(const auto* name:{"winHAlign","winVAlign"}) {
+            const auto alignment=Read(window,DescribeProperty("Extension.Window."+std::string(name)),0u);
+            if(alignment.kind!=Kind::Byte) throw std::runtime_error("Native configuration alignment is not Byte");
+            changed|=alignment.integer!=0;
+        }
+        for(std::size_t slot=0u;slot<values.size();++slot) {
+            const auto old=Read(window,DescribeProperty("Extension.Window."+std::string(fields[slot])),0u);
+            if(old.kind!=Kind::Float || !std::isfinite(old.floating))
+                throw std::runtime_error("Native configuration has no finite Float storage");
+            changed|=old.floating!=values[slot].floating;
+        }
+        if(!changed) return {};
+        // Configure1004cd40 requests left/top alignment and hardcoded size.
+        // Far margins and current geometry/clip remain untouched until layout.
+        NativeWindowWrite(window,"Extension.Window.winHAlign",Value::Byte(0u),execution);
+        NativeWindowWrite(window,"Extension.Window.winVAlign",Value::Byte(0u),execution);
+        for(std::size_t slot=0u;slot<values.size();++slot)
+            NativeWindowWrite(window,("Extension.Window."+std::string(fields[slot])).c_str(),values[slot],execution);
+        AskHiddenWindowForReconfigure(window,execution);
+        return {};
+    }
+    Evaluation WindowBackgroundNative(const std::uint16_t index,RuntimeObject* window,
+        const std::vector<Evaluation>& arguments,const Function* declaration,QuestVr::Vm::Execution& execution) {
+        RequireNativeWindow(window);
+        const auto authored=WindowNativeDeclaration(index,declaration);
+        if(arguments.size()!=1u) throw std::runtime_error("Native Window background setter requires one input");
+        auto value=arguments[0u].Load();
+        if(value.kind==Kind::Nothing) value=authored->variables[0u].zero;
+        if(value.kind!=authored->variables[0u].zero.kind)
+            throw std::runtime_error("Native Window background input has the wrong declared type");
+        value=TypedLiveValue(authored->variables[0u],value);
+        if(index==1421u) {
+            const auto background=Read(window,DescribeProperty("Extension.Window.Background"),0u);
+            if(background.kind!=Kind::Object) throw std::runtime_error("Native Window background is not Object");
+            auto* oldTexture=background.text.empty()?nullptr:Object(background.text);
+            auto* newTexture=value.text.empty()?nullptr:Object(value.text);
+            if(oldTexture==newTexture) return {}; // UObject pointer equality, not handle spelling.
+            NativeWindowWrite(window,"Extension.Window.Background",value,execution);
+            AskHiddenWindowForReconfigure(window,execution);
+            return {};
+        }
+        // SetBackgroundStyle1004d670 always writes, even if unchanged. Only the
+        // window GC receives XGC::SetStyle; the general-purpose GC is untouched.
+        NativeWindowWrite(window,"Extension.Window.backgroundStyle",value,execution);
+        const auto context=Read(window,DescribeProperty("Extension.Window.wGc"),0u);
+        if(context.kind!=Kind::Object) throw std::runtime_error("Native Window wGc is not Object");
+        if(context.text.empty()) return {};
+        auto* gc=Object(context.text);
+        if(!gc->nativeWindowObject || !IsDerivedFromPath(gc->cls,"Extension.GC"))
+            throw std::runtime_error("Native Window background style has no actual GC");
+        NativeWindowWrite(gc,"Extension.GC.Style",value,execution);
+        NativeWindowWrite(gc,"Extension.GC.bDrawEnabled",Value::Bool(value.integer!=0),execution);
+        if(value.integer==0) return {}; // Preserve existing modes/PolyFlags.
+        NativeWindowWrite(gc,"Extension.GC.bMasked",Value::Bool(value.integer==2),execution);
+        NativeWindowWrite(gc,"Extension.GC.bTranslucent",Value::Bool(value.integer==3),execution);
+        NativeWindowWrite(gc,"Extension.GC.bModulated",Value::Bool(value.integer==4),execution);
+        const auto smoothed=Read(gc,DescribeProperty("Extension.GC.bSmoothed"),0u);
+        if(smoothed.kind!=Kind::Bool) throw std::runtime_error("Native GC smoothing has no Bool layout");
+        const auto flags=0x100|(value.integer==2?2:0)|(value.integer==3?4:0)|
+            (value.integer==4?0x40:0)|(smoothed.boolean?0:0x800);
+        NativeWindowWrite(gc,"Extension.GC.PolyFlags",Value::Integer(flags),execution);
         return {};
     }
     RuntimeObject* NativeWindowTerminal(RuntimeObject* window) {
@@ -3168,21 +3262,52 @@ public:
         }
         return true;
     }
-    void SetHiddenChildVisibility(RuntimeObject* window,const bool visible,QuestVr::Vm::Execution& execution) {
+    Evaluation WindowChildVisibilityNative(RuntimeObject* window,const std::vector<Evaluation>& arguments,
+        const Function* declaration,QuestVr::Vm::Execution& execution) {
+        RequireNativeWindow(window);
+        const auto authored=WindowNativeDeclaration(1467u,declaration);
+        if(arguments.size()!=1u) throw std::runtime_error("SetChildVisibility requires its one Bool input");
+        auto visible=arguments[0u].Load();
+        if(visible.kind==Kind::Nothing) visible=authored->variables[0u].zero;
+        if(visible.kind!=Kind::Bool) throw std::runtime_error("SetChildVisibility input is not Bool");
+        // Native1467 acts on Self directly: no invented parent relationship
+        // check or ChildRequestedVisibilityChange dispatch belongs here.
+        SetHiddenChildVisibilityDirect(window,visible.boolean,execution);
+        return {};
+    }
+    void SetHiddenChildVisibilityDirect(RuntimeObject* window,const bool visible,QuestVr::Vm::Execution& execution) {
+        RequireNativeWindow(window);
         const auto local=Read(window,DescribeProperty("Extension.Window.bIsVisible"),0u);
         if(local.kind!=Kind::Bool) throw std::runtime_error("Native child visibility is not Bool");
         if(local.boolean==visible) return;
-        auto* parent=WindowLink(window,"winParent");
-        if(!parent || NativeWindowAncestor(parent->cls)!="extension.rootwindow")
-            throw std::runtime_error("Native child visibility parent virtual dispatch is not implemented");
-        // Root inherits TabGroup.ChildRequestedVisibilityChange10045870,
-        // which directly sets child visibility, without a script event.
         const auto before=WindowEffectiveVisibility(window);
         NativeWindowWrite(window,"Extension.Window.bIsVisible",Value::Bool(visible),execution);
         if(before!=WindowEffectiveVisibility(window))
             throw std::runtime_error("Effective native Window visibility/init/focus/layout is not implemented");
-        // Under a hidden root both effective states are false: retail returns
-        // without any VisibilityChanged/initCount/layout/accelerator effects.
+        // SetChildVisibility1004ee20 returns immediately when effective state
+        // is unchanged. Reconfiguration on a TabGroup hide is its caller's job.
+    }
+    void SetHiddenChildVisibility(RuntimeObject* window,const bool visible,QuestVr::Vm::Execution& execution) {
+        RequireNativeWindow(window);
+        const auto local=Read(window,DescribeProperty("Extension.Window.bIsVisible"),0u);
+        if(local.kind!=Kind::Bool) throw std::runtime_error("Native child visibility is not Bool");
+        if(local.boolean==visible) return;
+        auto* parent=WindowLink(window,"winParent");
+        if(!parent) {SetHiddenChildVisibilityDirect(window,visible,execution);return;}
+        const auto native=NativeWindowAncestor(parent->cls);
+        if(native=="extension.window") {
+            // XWindow vtable+84 dispatches the optional most-derived script
+            // callback. DeusExHUD's override also runs ConfigurationChanged,
+            // even under a hidden root and before NewChild's outer assignment.
+            if(const auto callback=OptionalNativeWindowEvent(parent,"ChildRequestedVisibilityChange"))
+                static_cast<void>(execution.CallFunction(*callback,parent->reflection.objectPath,
+                    {{Value::Text(Kind::Object,window->reflection.objectPath),{}},{Value::Bool(visible),{}}}));
+            return; // A missing/overridden callback need not change the child.
+        }
+        if(native!="extension.tabgroupwindow" && native!="extension.modalwindow" && native!="extension.rootwindow")
+            throw std::runtime_error("Native child visibility parent virtual dispatch is not implemented: "+native);
+        // TabGroup10045870 (also inherited by Modal/Root) bypasses script.
+        SetHiddenChildVisibilityDirect(window,visible,execution);
         if(!visible) AskHiddenWindowForReconfigure(parent,execution);
     }
     void NativeWindowWrite(RuntimeObject* object,const char* key,const Value& value,
@@ -4501,6 +4626,7 @@ private:
     std::unordered_map<std::string, std::shared_ptr<const QuestVr::AuthoredStructSchema>> structSchemas_;
     std::set<RuntimeObject*> buildingStructs_;
     std::set<RuntimeObject*> chargedStructDescriptors_;
+    RuntimeObject* validatedCoreColorLayout_{};
     std::size_t structFields_{};
     std::size_t structSchemaBytes_{};
     std::unordered_map<RuntimeObject*, Before> saved_;
@@ -4684,12 +4810,53 @@ private:
         }
         throw std::runtime_error("Unsupported runtime property type " + type);
     }
+    QuestVr::Vm::ResultLayout StructResultLayout(RuntimeObject* property) {
+        using Layout = QuestVr::Vm::ResultLayout;
+        const auto& member = *property->property;
+        if (member.type != "StructProperty") return Layout::Unknown;
+        auto* structure = Object(Qualified(Table(property->sourcePath), member.referencedType));
+        if (LowerAscii(structure->reflection.objectPath) != "core.object.color") return Layout::Unknown;
+        const auto& propertyTable = Table(property->sourcePath);
+        if (LowerAscii(Qualified(propertyTable, propertyTable.exports.at(property->exportIndex).ObjClass)) != "core.structproperty")
+            throw std::runtime_error("Canonical Color result requires an actual Core.StructProperty");
+        if (validatedCoreColorLayout_ == structure) return Layout::CoreColor4;
+        const auto& descriptor = StructDescriptor(structure);
+        if (!structure->outer || LowerAscii(structure->outer->reflection.objectPath) != "core.object" ||
+            descriptor.baseField || descriptor.logicalSize || !descriptor.rawBytes.empty() || !descriptor.bytecode.empty())
+            throw std::runtime_error("Canonical Core.Object.Color result layout has an invalid owner/base/script");
+        // Retail UStruct::Link and UByteProperty::Link place these four owned
+        // fields at R0/G1/B2/A3, with total size4 and no padding. Authored value
+        // shape alone is never authority for an arbitrary struct's native ABI.
+        const auto schema = StructSchema(structure);
+        if (schema->kind != Kind::Struct || schema->fields.size() != 4u)
+            throw std::runtime_error("Canonical Core.Object.Color result schema is not four channels");
+        static constexpr const char* channels[] = {"r", "g", "b", "a"};
+        auto child = descriptor.children;
+        for (std::size_t i = 0u; i < 4u; ++i) {
+            if (!child) throw std::runtime_error("Canonical Core.Object.Color result channel chain is truncated");
+            auto* field = Object(Qualified(Table(structure->sourcePath), child));
+            const auto& fieldTable = Table(field->sourcePath);
+            if (field->outer != structure || !field->property || field->property->type != "ByteProperty" ||
+                field->property->arrayDimension != 1 || field->property->referencedType ||
+                LowerAscii(Qualified(fieldTable, fieldTable.exports.at(field->exportIndex).ObjClass)) != "core.byteproperty" ||
+                LowerAscii(field->reflection.objectPath) != std::string("core.object.color.") + channels[i] ||
+                LowerAscii(schema->fields[i].key) != LowerAscii(field->reflection.objectPath) ||
+                schema->fields[i].zero.kind != Kind::Byte || schema->fields[i].nested)
+                throw std::runtime_error("Canonical Core.Object.Color result channel declaration is invalid");
+            child = field->property->nextField;
+        }
+        if (child) throw std::runtime_error("Canonical Core.Object.Color result has extra native fields");
+        validatedCoreColorLayout_ = structure;
+        return Layout::CoreColor4;
+    }
     Property Describe(RuntimeObject* property) {
         if (!property->property) throw std::runtime_error("VM object has no property descriptor");
         const auto& descriptor = *property->property;
         const auto dot = property->reflection.objectPath.find_last_of('.');
-        return {property->reflection.objectPath, property->reflection.objectPath.substr(dot + 1u),
+        Property result{property->reflection.objectPath, property->reflection.objectPath.substr(dot + 1u),
             Zero(property), descriptor.flags, static_cast<std::size_t>(descriptor.arrayDimension)};
+        result.resultLayout = StructResultLayout(property);
+        return result;
     }
     std::shared_ptr<const Function> FunctionIdentity(RuntimeObject* object) {
         if (!object->script) throw std::runtime_error("VM object is not a compiled function");
@@ -5027,6 +5194,7 @@ private:
             index >= property.arrayDimension)
             throw std::runtime_error("VM property is not owned by its concrete receiver class");
         auto result = std::make_shared<Reference>(); result->zero = property.zero;
+        result->resultLayout = property.resultLayout;
         result->read = [this, object, property, index, defaults]() { return Read(object, property, index, defaults); };
         result->write = [this, object, property, index, defaults](const Value& value) {
             if (object->defaultOwner) {
@@ -5808,6 +5976,7 @@ private:
         };
         static_cast<void>(access());
         auto reference = std::make_shared<Reference>(); reference->zero = property.zero;
+        reference->resultLayout = property.resultLayout;
         reference->dimension = property.arrayDimension; reference->read = [access]() { return access(); };
         reference->write = [this, object, property, access](const Value& value) {
             auto normalized = TypedLiveValue(property, value);
@@ -7990,7 +8159,7 @@ PortableRootWindowProbeResult ProbePortableRootWindowInitialization(
             // walk after a failed bytecode instruction.
             if(domain->objects.size()>64u || domain->roots.size()>16u)
                 throw std::runtime_error("Native window initialization probe exceeds its snapshot bound");
-            QuestVr::AuthoredStructLimits bounds;bounds.retainedBytes=512u<<10u;
+            QuestVr::AuthoredStructLimits bounds;bounds.retainedBytes=1u<<20u;
             QuestVr::AuthoredStructDetail::Budget retained{bounds};
             result.pawnRootPath=pawn->nativeRootWindow?pawn->nativeRootWindow->reflection.objectPath:std::string{};
             for(const auto* root:domain->roots) result.rootedWindows.push_back(root->reflection.objectPath);
@@ -8037,7 +8206,7 @@ PortableRootWindowProbeResult ProbePortableRootWindowInitialization(
                         "lastSpecifiedWidth","lastSpecifiedHeight","lastQueryWidth","lastQueryHeight","textVSpacing","rowMajorIndex",
                         "colMajorIndex","att","firstTimer","windowType","winClipRect","focusSound","unfocusSound","visibleSound",
                         "invisibleSound","clientObject","Background","SoundVolume","acceleratorKey","maxClicks","freeTimer",
-                        "holdX","holdY","holdWidth","holdHeight","winHAlign","winVAlign",
+                        "holdX","holdY","holdWidth","holdHeight","winHAlign","winVAlign","backgroundStyle","tileColor","tilePlane",
                         "defaultCursor","defaultCursorShadow","defaultHotX","defaultHotY","defaultCursorColor"})
                         field((std::string("Extension.Window.")+name).c_str());
                     if(IsDerivedFromPath(object->cls,"Extension.TabGroupWindow"))
@@ -8067,11 +8236,18 @@ PortableRootWindowProbeResult ProbePortableRootWindowInitialization(
                         field("DeusEx.ActorDisplayWindow.maxPoints");
                         for(std::uint32_t slot=0u;slot<16u;++slot) field("DeusEx.ActorDisplayWindow.sinTable",slot);
                     }
+                    if(IsDerivedFromPath(object->cls,"DeusEx.DeusExHUD"))
+                        for(const auto* name:{"Ammo","hit"}) field((std::string("DeusEx.DeusExHUD.")+name).c_str());
+                    if(IsDerivedFromPath(object->cls,"DeusEx.HUDAmmoDisplay"))
+                        field("DeusEx.HUDAmmoDisplay.Player");
+                    if(IsDerivedFromPath(object->cls,"DeusEx.HUDHitDisplay"))
+                        for(const auto* name:{"Player","Head"}) field((std::string("DeusEx.HUDHitDisplay.")+name).c_str());
                     if(IsDerivedFromPath(object->cls,"DeusEx.HUDBaseWindow"))
                         for(const auto* name:{"Player","colBackground","colBorder","colText","colHeaderText"})
                             field((std::string("DeusEx.HUDBaseWindow.")+name).c_str());
                 } else if(IsDerivedFromPath(object->cls,"Extension.GC")) {
-                    for(const auto* name:{"Canvas","normalFont","boldFont","gcOwner"})
+                    for(const auto* name:{"Canvas","normalFont","boldFont","gcOwner","Style","PolyFlags","textPolyFlags",
+                        "bDrawEnabled","bSmoothed","bMasked","bTranslucent","bModulated"})
                         field((std::string("Extension.GC.")+name).c_str());
                 }
                 result.objects.push_back(std::move(view));

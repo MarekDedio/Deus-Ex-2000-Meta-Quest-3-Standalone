@@ -214,6 +214,7 @@ struct TestHost final:Vm::Host {
     std::vector<std::string> objectStringLookups;
     std::shared_ptr<Vm::Reference> retainedNativeReference,retainedNativeElement;
     std::size_t referenceReads{};
+    Vm::ResultLayout suppliedReferenceLayout{Vm::ResultLayout::Unknown};
     std::size_t beginCount{},commitCount{},rollbackCount{},effects{},savedEffects{};
     std::uint32_t rng{12345},savedRng{};
     bool active{};
@@ -258,6 +259,9 @@ struct TestHost final:Vm::Host {
     std::uint64_t StateLocalRevision(const std::string&) override {return stateRevision;}
     std::shared_ptr<const Vm::Function> StateProgram(const std::string&,const std::string& path) override {
         return std::make_shared<Vm::Function>(statePrograms.at(path));
+    }
+    std::shared_ptr<Vm::Reference> StateVariable(const std::string& receiver,const Vm::Property& property) override {
+        return Reference({receiver,Vm::Scope::Instance,property.key},property);
     }
     std::unique_ptr<Vm::Iterator> CreateIterator(const std::uint16_t index,const std::string& receiver,
         const std::vector<Vm::Evaluation>& arguments,const Vm::Function* declaration) override {
@@ -350,8 +354,9 @@ struct TestHost final:Vm::Host {
         return sequentialArgumentSeed ? sequentialArgumentSeed(index,receiver,slot,declaration,prefix) : std::nullopt;
     }
     Vm::Property Property(const Vm::Function& f,std::int32_t ref,const std::string& name,Value zero,
-        std::uint32_t flags=0,std::size_t dimension=1,bool local=false) {
-        Vm::Property p{local ? f.path+"."+name : "Fixture.Actor."+name,name,std::move(zero),flags,dimension};
+        std::uint32_t flags=0,std::size_t dimension=1,bool local=false,
+        Vm::ResultLayout layout=Vm::ResultLayout::Unknown) {
+        Vm::Property p{local ? f.path+"."+name : "Fixture.Actor."+name,name,std::move(zero),flags,dimension,layout};
         properties[{f.source,ref}]=p;return p;
     }
     void Store(const std::string& receiver,const Vm::Property& p,const std::vector<Value>& values,Vm::Scope scope=Vm::Scope::Instance) {
@@ -363,6 +368,7 @@ struct TestHost final:Vm::Host {
     std::shared_ptr<Vm::Reference> Reference(const Slot& slot,const Vm::Property& p,std::size_t index=0) {
         if(!storage.contains(slot)) storage[slot]=std::vector<Value>(p.arrayDimension,p.zero);
         auto ref=std::make_shared<Vm::Reference>();ref->zero=p.zero;ref->dimension=p.arrayDimension;
+        ref->resultLayout=suppliedReferenceLayout;
         ref->read=[this,slot,index] {++referenceReads;return storage.at(slot).at(index);};
         ref->write=[this,slot,index](const Value& v) {storage.at(slot).at(index)=v;};
         ref->element=[this,slot,p](std::size_t i) {return Reference(slot,p,i);};
@@ -422,7 +428,8 @@ struct TestHost final:Vm::Host {
         const std::vector<Vm::Evaluation>& arguments,const Vm::Function* declaration,Vm::Execution& execution) override {
         // 1008 belongs only to this generated fixture. Native zero is keyed by
         // its declaration; individual tests provide the host-side observation.
-        if((index==1008u || index==0u || index==1410u || index==1416u || index==1431u || index==1438u || index==1454u) && executionNative) {
+        if((index==1008u || index==0u || index==1410u || index==1416u || index==1421u || index==1422u ||
+            index==1430u || index==1431u || index==1438u || index==1454u || index==1467u) && executionNative) {
             std::vector<Value> values;for(const auto& argument:arguments) values.push_back(argument.Load());
             nativeArguments.push_back(std::move(values));nativeReceivers.push_back(receiver);
             nativeDeclarations.push_back(declaration ? declaration->path : "");
@@ -1626,6 +1633,246 @@ void ClassContextContracts() {
     std::cout<<"Class default receiver/result destinations: "<<checks-initialChecks<<" checks, "
         <<rejections-initialRejections<<" refusal controls.\n";
 }
+void CoreColorResultLayoutContracts() {
+    const auto initialChecks=checks,initialRejections=rejections;
+    const auto color=[](std::uint8_t r,std::uint8_t g,std::uint8_t b,std::uint8_t a) {
+        Value value;value.kind=Vm::Kind::Struct;
+        value.fields={{"r",Value::Byte(r)},{"g",Value::Byte(g)},{"b",Value::Byte(b)},{"a",Value::Byte(a)}};
+        return value;
+    };
+    const auto zero=color(0u,0u,0u,0u),original=color(11u,37u,91u,203u);
+    const auto layout=Vm::ResultLayout::CoreColor4;
+    const auto nullResult=[](std::uint8_t bytes,std::uint8_t op=0x19u) {return Context({0x2a},Native(4095u),bytes,op);};
+    Require(Vm::Property{}.resultLayout==Vm::ResultLayout::Unknown && Vm::Reference{}.resultLayout==Vm::ResultLayout::Unknown,
+        "Result layout capability is not Unknown by default");
+    for(const auto op:{std::uint8_t{0x19u},std::uint8_t{0x12u}}) for(const int mode:{-1,0,4}) {
+        const auto expression=mode<0?Bytes{0x0b}:nullResult(static_cast<std::uint8_t>(mode),op);
+        const auto expected=mode==4?zero:original;
+        for(const std::string path:{"instance","default","local","array","local-array","member","context"}) {
+            TestHost host;auto function=Function("ColorDestination"+path,{});Bytes destination;Bytes prefix;
+            Vm::Property target;Value stored=original;auto scope=Vm::Scope::Instance;std::string receiver="Self";
+            if(path=="member") {
+                stored.kind=Vm::Kind::Struct;stored.fields={{"tint",original},{"sentinel",Value::Integer(77)}};
+                target=host.Property(function,1,"Container",stored);host.Store("Self",target,{stored});
+                host.Property(function,2,"Tint",zero,0u,1u,false,layout);destination=Member(2,Ref(0x01,1));
+            } else if(path=="local" || path=="local-array") {
+                const auto count=path=="local-array"?2u:1u;
+                target=host.Property(function,1,"ColorLocal",zero,0u,count,true,layout);function.variables={target};
+                const auto source=host.Property(function,2,"InitialColor",zero);host.Store("Self",source,{original});
+                destination=count==1u?Ref(0x00,1):Element(Int(1),Ref(0x00,1));
+                prefix=Let(destination,Ref(0x01,2));
+            } else {
+                const auto count=path=="array"?2u:1u;
+                target=host.Property(function,1,"ColorTarget",zero,0u,count,false,layout);
+                if(path=="default") scope=Vm::Scope::Default;
+                if(path=="context") {receiver="Other";host.objects[{function.source,3}]=receiver;}
+                host.Store(receiver,target,count==1u?std::vector<Value>{original}:std::vector<Value>{original,original},scope);
+                destination=Ref(scope==Vm::Scope::Default?0x02u:0x01u,1);
+                if(path=="array") destination=Element(Int(1),destination);
+                if(path=="context") destination=Context(Ref(0x20,3),destination);
+            }
+            function.bytecode=Join({prefix,Let(destination,expression),Return(destination)});
+            const auto result=Vm::Execute(host,function,"Self");Returned(result,"CoreColor4 "+path+" result destination");
+            Require(Vm::Equal(result.value,expected),"CoreColor4 "+path+" zero/no-write destination changed incorrectly");
+            if(path=="member") {
+                const auto actual=host.Load("Self",target);
+                Require(Vm::Equal(actual.fields.at("tint"),expected) && actual.fields.at("sentinel").integer==77,
+                    "Color member result write cleared unrelated aggregate storage");
+            } else if(path=="array")
+                Require(Vm::Equal(host.Load("Self",target,0u),original) && Vm::Equal(host.Load("Self",target,1u),expected),
+                    "Color array element result write cleared another element");
+            Require(result.writes==(path=="local" || path=="local-array"?1u:0u)+(mode==4?1u:0u),
+                "Color zero-size/NoWrite created a write or full result write was omitted");
+        }
+        {
+            TestHost host;auto function=Function("CoreColorReturnDestination",Return(expression));
+            function.variables={host.Property(function,1,"ReturnValue",original,0x480u,1u,true,layout)};
+            const auto result=Vm::Execute(host,function,"Self");Returned(result,"CoreColor4 return result destination");
+            Require(Vm::Equal(result.value,expected) && result.writes==0u,"Color return lost its trusted destination or fabricated property writes");
+        }
+        for(const bool native:{false,true}) for(const bool seeded:{false,true}) {
+            if(seeded && !native) continue;
+            TestHost host;auto caller=Function("DeclaredCoreColorArgument",Return(Call(0x1c,7,{expression})));
+            auto callee=Function("ColorCallee",Return(Ref(0x00,1)),"ColorSource");
+            callee.variables={host.Property(callee,1,"Color",seeded?zero:original,0x90u,1u,true,layout)};
+            if(native) {callee.flags=0x400u;callee.nativeIndex=1454u;}
+            host.finals[{caller.source,7}]=std::make_shared<Vm::Function>(callee);
+            if(seeded) host.argumentSeed=[&](std::uint16_t,const std::string&,std::size_t,const Vm::Function*) {
+                return std::optional<Value>{original};
+            };
+            host.executionNative=[&](const std::string&,const std::vector<Vm::Evaluation>& arguments,const Vm::Function*,Vm::Execution&) {
+                auto value=arguments.at(0).Load();
+                Require((value.kind==Vm::Kind::Nothing)==(mode<0),"Trusted Color native argument consumed explicit Nothing");
+                if(value.kind==Vm::Kind::Nothing) value=original; // Native wrapper owns its omitted default.
+                return Vm::Evaluation{value,{}};
+            };
+            const auto result=Vm::Execute(host,caller,"Self");Returned(result,"Declared Color script/native/seed result destination");
+            Require(Vm::Equal(result.value,expected),"Declared Color parameter/native seed did not use its own layout authority");
+        }
+    }
+    {
+        TestHost host;auto function=Function("CoreColorStateLocal",Join({Let(Element(Int(1),Ref(0x00,1)),nullResult(4u)),{0x08}}));
+        const auto property=host.Property(function,1,"StateColors",zero,0u,2u,true,layout);function.variables={property};
+        host.Store("Self",property,{original,original});
+        QuestVr::StateFrame frame;frame.codePath=frame.localsCodePath=function.path;
+        host.state=QuestVr::StateObject{true,true,frame,{}};host.statePrograms[function.path]=function;
+        const auto result=Vm::ResumeState(host,"Self");Returned(result,"CoreColor4 retained state local element");
+        Require(result.status==Vm::Status::Stopped && Vm::Equal(host.Load("Self",property,0u),original) &&
+            Vm::Equal(host.Load("Self",property,1u),zero),"State local/element lost trusted Color layout or wrote another element");
+    }
+    for(const bool trusted:{false,true}) for(const auto bytes:{1u,2u,3u,4u,5u,255u}) {
+        if(trusted && bytes==4u) continue;
+        TestHost host;auto function=Function("ColorLayoutRefusal",Join({Native(1000u),Let(Ref(0x01,2),Int(55)),
+            Let(Ref(0x01,1),nullResult(static_cast<std::uint8_t>(bytes))),Return()}));
+        const auto target=host.Property(function,1,"Color",zero,0u,1u,false,trusted?layout:Vm::ResultLayout::Unknown);
+        const auto marker=host.Property(function,2,"Marker",Value::Integer(0));host.Store("Self",target,{original});host.Store("Self",marker,{Value::Integer(3)});
+        const auto result=Vm::ExecuteTransaction(host,[&](Vm::Execution& execution) {
+            try { execution.CallFunction(function,"Self"); } catch(const std::exception&) {}return Value{};
+        });
+        Failed(result,Vm::Status::Unsupported,host,"Color partial/overflow/untrusted-shape result refuses transactionally");
+        Require(Vm::Equal(host.Load("Self",target),original) && host.Load("Self",marker).integer==3 && host.effects==0u && host.rng==12345u,
+            "Color result layout refusal committed preceding state/effects");
+    }
+    {
+        TestHost host;const auto function=Function("UnknownColorZeroSize",Join({Let(Ref(0x01,1),nullResult(0u)),Return(Ref(0x01,1))}));
+        const auto target=host.Property(function,1,"SameShapedStruct",zero);host.Store("Self",target,{original});
+        const auto result=Vm::Execute(host,function,"Self");Returned(result,"Unknown same-shaped Color zero-size does not require a byte layout");
+        Require(Vm::Equal(result.value,original) && result.writes==0u,"Unknown Color zero-size lost original NoWrite contract");
+    }
+    {
+        TestHost host;host.suppliedReferenceLayout=layout;
+        const auto function=Function("PropertyOwnsColorAuthority",Join({Let(Ref(0x01,1),nullResult(4u)),Return()}));
+        const auto target=host.Property(function,1,"UntrustedColorShape",zero);host.Store("Self",target,{original});
+        const auto result=Vm::Execute(host,function,"Self");
+        Failed(result,Vm::Status::Unsupported,host,"Unknown Property cannot inherit a conflicting host Reference Color capability");
+        Require(Vm::Equal(host.Load("Self",target),original),"Conflicting host reference capability changed an untrusted property");
+    }
+    {
+        TestHost host;const auto function=Function("UnknownResultCapability",Return(Ref(0x01,1)));
+        const auto target=host.Property(function,1,"Color",zero,0u,1u,false,static_cast<Vm::ResultLayout>(99));
+        host.Store("Self",target,{original});
+        const auto result=Vm::Execute(host,function,"Self");
+        Failed(result,Vm::Status::Invalid,host,"Unknown trusted result capability is not silently accepted");
+    }
+    for(const bool sequential:{false,true}) for(const bool trusted:{false,true}) for(const auto bytes:{0u,1u,2u,3u,4u,5u}) {
+        TestHost host;const auto index=sequential?1438u:1454u;
+        const auto caller=Function("ColorNativeSeedAuthority",Return(Call(0x1c,7,{nullResult(static_cast<std::uint8_t>(bytes))})));
+        auto callee=Function("NativeColorSeed",{},"NativeColorSource");callee.flags=0x400u;callee.nativeIndex=index;
+        callee.variables={host.Property(callee,1,"Color",zero,0x90u,1u,true,trusted?layout:Vm::ResultLayout::Unknown)};
+        host.finals[{caller.source,7}]=std::make_shared<Vm::Function>(callee);
+        host.argumentSeed=[&](std::uint16_t,const std::string&,std::size_t,const Vm::Function*) {
+            return sequential?std::optional<Value>{}:std::optional<Value>{original};
+        };
+        host.hasSequentialSeeds=[&](std::uint16_t actual,const std::string&,const Vm::Function*) {return sequential && actual==index;};
+        host.sequentialArgumentSeed=[&](std::uint16_t,const std::string&,std::size_t,const Vm::Function*,const std::vector<Value>&) {
+            return std::optional<Value>{original};
+        };
+        host.executionNative=[](const std::string&,const std::vector<Vm::Evaluation>& arguments,const Vm::Function*,Vm::Execution&) {
+            return Vm::Evaluation{arguments.at(0).Load(),{}};
+        };
+        const auto result=Vm::Execute(host,caller,"Self");
+        if(bytes==0u || (trusted && bytes==4u)) {
+            Returned(result,"Declared native Color seed layout authority");
+            Require(Vm::Equal(result.value,bytes==4u?zero:original),"Native Color seed exact/zero-size result differs");
+        } else Failed(result,Vm::Status::Unsupported,host,"Native Color seed cannot infer shape/partial packed Color writes");
+    }
+    {
+        TestHost host;host.argumentSeed=[&](std::uint16_t,const std::string&,std::size_t,const Vm::Function*) {return std::optional<Value>{original};};
+        const auto result=Vm::Execute(host,Function("OpcodeColorSeedNoAuthority",Return(Native(1454u,{nullResult(4u)}))),"Self");
+        Failed(result,Vm::Status::Unsupported,host,"Opcode-only Color-shaped seed remains Unknown without a trusted declaration");
+    }
+    {
+        TestHost host;const auto result=Vm::Execute(host,Function("NoDestinationForColorContext",Return(nullResult(4u))),"Self");
+        Returned(result,"Null Context without a declared result destination stays absent");
+        Require(result.value.kind==Vm::Kind::Nothing && host.nativeArguments.empty(),"Color byte count manufactured destination authority");
+    }
+    std::vector<Value> malformed;
+    auto bad=original;bad.fields.erase("a");malformed.push_back(bad);
+    bad=original;bad.fields["extra"]=Value::Byte(1u);malformed.push_back(bad);
+    bad=original;bad.fields["R"]=bad.fields.at("r");bad.fields.erase("r");malformed.push_back(bad);
+    bad=original;bad.fields["r"]=Value::Integer(11);malformed.push_back(bad);
+    bad=original;bad.fields["r"].integer=-1;malformed.push_back(bad);
+    bad=original;bad.fields["r"].integer=256;malformed.push_back(bad);
+    bad=original;bad.fields["r"].fields["nested"]=Value::Byte(1u);malformed.push_back(bad);
+    bad=original;bad.text="not packed storage";malformed.push_back(bad);
+    bad=original;bad.intArray={1};malformed.push_back(bad);
+    malformed.push_back(Value::Vector({1.0f,2.0f,3.0f}));
+    for(const auto& invalid:malformed) for(const std::string ingress:{"stored","schema","argument","seed","sequential-seed","written","return","native-return"}) {
+        TestHost host;auto function=Function("MalformedTrustedColor",{});Vm::Property target;
+        if(ingress=="stored" || ingress=="schema" || ingress=="written") {
+            target=host.Property(function,1,"Color",ingress=="schema"?invalid:zero,0u,1u,false,layout);
+            host.Store("Self",target,{ingress=="stored"?invalid:original});
+            const auto source=host.Property(function,2,"UntrustedSource",zero);host.Store("Self",source,{invalid});
+            function.bytecode=Join({Native(1000u),Let(Ref(0x01,1),ingress=="written"?Ref(0x01,2):nullResult(4u)),Return()});
+        } else {
+            const bool returning=ingress=="return" || ingress=="native-return";
+            const bool seeded=ingress=="seed" || ingress=="sequential-seed";
+            auto callee=Function("MalformedColorCallee",returning?Return(Native(1008u)):Return(Ref(0x00,1)),"BadColorSource");
+            callee.variables={host.Property(callee,1,"Color",zero,returning?0x480u:0x80u,1u,true,layout)};
+            if(seeded || ingress=="native-return") {
+                callee.flags=0x400u;callee.nativeIndex=ingress=="seed"?1454u:ingress=="sequential-seed"?1438u:1008u;
+            }
+            host.finals[{function.source,7}]=std::make_shared<Vm::Function>(callee);
+            const auto source=host.Property(function,2,"UntrustedSource",zero);host.Store("Self",source,{invalid});
+            function.bytecode=Join({Native(1000u),Return(Call(0x1c,7,returning?std::initializer_list<Bytes>{}:
+                std::initializer_list<Bytes>{seeded?nullResult(4u):Ref(0x01,2)}))});
+            host.argumentSeed=[&](std::uint16_t actual,const std::string&,std::size_t,const Vm::Function*) {
+                return actual==1454u?std::optional<Value>{invalid}:std::nullopt;
+            };
+            host.hasSequentialSeeds=[](std::uint16_t actual,const std::string&,const Vm::Function*) {return actual==1438u;};
+            host.sequentialArgumentSeed=[&](std::uint16_t,const std::string&,std::size_t,const Vm::Function*,const std::vector<Value>&) {
+                return std::optional<Value>{invalid};
+            };
+            host.executionNative=[&](const std::string&,const std::vector<Vm::Evaluation>&,const Vm::Function*,Vm::Execution&) {
+                return Vm::Evaluation{invalid,{}};
+            };
+        }
+        const auto result=Vm::Execute(host,function,"Self");
+        Failed(result,Vm::Status::Invalid,host,"Malformed CoreColor4 "+ingress+" ingress refuses before canonicalization");
+        Require(host.effects==0u && host.rng==12345u,"Malformed trusted Color committed prior side effects");
+        if(ingress=="stored" || ingress=="schema" || ingress=="written")
+            Require(Vm::Equal(host.Load("Self",target),ingress=="stored"?invalid:original),"Malformed Color ingress modified target before rejection");
+    }
+    {
+        TestHost host;const auto function=Function("GuardedColorOut",Return(Native(1008u,{Element(Int(1),Ref(0x01,1))})));
+        const auto target=host.Property(function,1,"Colors",zero,0u,2u,false,layout);host.Store("Self",target,{original,original});
+        host.executionNative=[&](const std::string&,const std::vector<Vm::Evaluation>& arguments,const Vm::Function*,Vm::Execution&) {
+            const auto reference=arguments.at(0).reference;
+            Require(reference && reference->resultLayout==layout,"Guarded native OUT element lost Color authority");
+            reference->write(zero);return Vm::Evaluation{reference->read(),{}};
+        };
+        const auto result=Vm::Execute(host,function,"Self");Returned(result,"Guarded native OUT reference preserves Color authority");
+        Require(Vm::Equal(result.value,zero) && Vm::Equal(host.Load("Self",target,0u),original) &&
+            Vm::Equal(host.Load("Self",target,1u),zero),"Guarded Color write changed another fixed array element");
+    }
+    {
+        TestHost host;const auto function=Function("TrustedColorRollback",Join({Native(1000u),Let(Ref(0x01,1),nullResult(4u)),Native(4095u),Return()}));
+        const auto target=host.Property(function,1,"Color",zero,0u,1u,false,layout);host.Store("Self",target,{original});
+        const auto result=Vm::Execute(host,function,"Self");Failed(result,Vm::Status::Unsupported,host,"Later failure rolls back a successful full Color zero write");
+        Require(result.writes==1u && Vm::Equal(host.Load("Self",target),original) && host.effects==0u && host.rng==12345u,
+            "Color write rollback failed to restore the original four bytes/effects");
+    }
+    for(const bool budget:{false,true}) {
+        TestHost host;auto limits=Vm::Limits{};if(budget) limits.writes=1u;
+        const auto function=Function("CaughtGuardedColorFailure",Join({Native(1000u),Let(Ref(0x01,2),Int(55)),
+            Return(Native(1008u,{Ref(0x01,1)}))}));
+        const auto target=host.Property(function,1,"Color",zero,0u,1u,false,layout);
+        const auto marker=host.Property(function,2,"Marker",Value::Integer(0));host.Store("Self",target,{original});host.Store("Self",marker,{Value::Integer(3)});
+        bool caught{};auto invalid=original;invalid.fields["r"].integer=256;
+        host.executionNative=[&](const std::string&,const std::vector<Vm::Evaluation>& arguments,const Vm::Function*,Vm::Execution&) {
+            const auto reference=arguments.at(0).reference;
+            Require(reference && reference->resultLayout==layout,"Caught Color guard fixture lost its layout");
+            try { reference->write(budget?zero:invalid); } catch(const std::exception&) {caught=true;}
+            return Vm::Evaluation{Value::Bool(true),{}};
+        };
+        const auto result=Vm::Execute(host,function,"Self",{},limits);
+        Failed(result,budget?Vm::Status::Budget:Vm::Status::Invalid,host,"Caught guarded Color validation/write-budget failure poisons shared execution");
+        Require(caught && Vm::Equal(host.Load("Self",target),original) && host.Load("Self",marker).integer==3 &&
+            host.effects==0u && host.rng==12345u,"Native suppressed a guarded Color failure and committed its earlier prefix");
+    }
+    std::cout<<"Trusted Core.Object.Color result layout: "<<checks-initialChecks<<" checks and "
+        <<rejections-initialRejections<<" refusal controls.\n";
+}
 void NativeArgumentSeedContracts() {
     const auto initialChecks=checks,initialRejections=rejections;
     const auto nullResult=[](std::uint8_t bytes) {return Context({0x2a},Native(4095u),bytes);};
@@ -1888,6 +2135,24 @@ void SequentialNativeArgumentSeedContracts() {
             return prefix.at(slot-2u);
         };
     };
+    for(const auto index:{1416u,1467u}) for(const bool declared:{false,true}) {
+        TestHost host;const auto input=Native(1007u,{Ref(0x01,1)});
+        auto call=Native(static_cast<std::uint16_t>(index),{input});
+        if(declared) {
+            auto native=Function("BooleanWindowInput",{},"Extension.Window");native.flags=0x400u;native.nativeIndex=static_cast<std::uint16_t>(index);
+            native.variables={{"bValue","bValue",Value::Bool(false),0x80u,1u}};
+            host.finals[{"Fixture",7}]=std::make_shared<Vm::Function>(native);call=Call(0x1c,7,{input});
+        }
+        const auto caller=Function("WindowBooleanInputSnapshot",Return(call));
+        const auto source=host.Property(caller,1,"BooleanInput",Value::Bool(false));host.Store("Self",source,{Value::Bool(true)});
+        host.executionNative=[](const std::string&,const std::vector<Vm::Evaluation>& arguments,const Vm::Function*,Vm::Execution&) {
+            Require(arguments.size()==1u && !arguments[0].reference && arguments[0].Load().kind==Vm::Kind::Bool &&
+                arguments[0].Load().boolean,"Audited1416/1467 retained its ordinary Bool input alias");
+            return Vm::Evaluation{arguments[0].Load(),{}};
+        };
+        const auto result=Vm::Execute(host,caller,"Self");Returned(result,"Audited window Bool inputs snapshot their evaluated values");
+        Require(result.value.kind==Vm::Kind::Bool && result.value.boolean,"Window Bool input snapshot changed its written value");
+    }
     for(const bool declared:{false,true}) {
         for(const auto& [expression,expected]:std::vector<std::pair<Bytes,float>>{
             {nullResult(0u),-1.0f},{nullResult(4u),0.0f},{nullResult(3u),-0.5f},{{0x0b},-1.0f},{Real(2.5f),2.5f}}) {
@@ -2115,6 +2380,80 @@ void SequentialNativeArgumentSeedContracts() {
     }
     std::cout<<"Sequential native argument result seeds: "<<checks-initialChecks<<" checks and "
         <<rejections-initialRejections<<" refusal controls.\n";
+}
+void WindowInputSnapshotContracts() {
+    const auto initialChecks=checks;
+    const auto expression=[](std::uint16_t index,bool declared,const std::vector<Bytes>& inputs) {
+        auto code=declared?Call(0x1c,7):Native(index);code.pop_back();
+        for(const auto& input:inputs) Append(code,input);
+        code.push_back(0x16u);return code;
+    };
+    const auto declaration=[](TestHost& host,std::uint16_t index,const std::vector<Value>& zeros) {
+        auto native=Function("AuditedCopiedWindowInputs",{},"Extension.Window");native.flags=0x400u;native.nativeIndex=index;
+        for(std::size_t slot=0u;slot<zeros.size();++slot)
+            native.variables.push_back({"Input"+std::to_string(slot),"Input"+std::to_string(slot),zeros[slot],0x80u,1u});
+        host.finals[{"Fixture",7}]=std::make_shared<Vm::Function>(native);
+    };
+    for(const auto index:{std::uint16_t{1421u},std::uint16_t{1422u}}) for(const bool declared:{false,true}) {
+        TestHost host;const auto zero=index==1421u?Value::Text(Vm::Kind::Object,{}):Value::Byte(0u);
+        const auto input=index==1421u?Value::Text(Vm::Kind::Object,"Original.Window"):Value::Byte(7u);
+        if(declared) declaration(host,index,{zero});
+        const auto caller=Function("WindowScalarInputCopy",Return(expression(index,declared,{Native(1007u,{Ref(0x01,1)})})));
+        const auto source=host.Property(caller,1,"Input",zero);host.Store("Self",source,{input});
+        host.executionNative=[&](const std::string&,const std::vector<Vm::Evaluation>& arguments,const Vm::Function* actual,Vm::Execution&) {
+            Require(static_cast<bool>(actual)==declared && arguments.size()==1u && !arguments[0].reference && Vm::Equal(arguments[0].Load(),input),
+                "Audited1421/1422 ordinary scalar input retained its alias or changed native declaration identity");
+            return Vm::Evaluation{arguments[0].Load(),{}};
+        };
+        const auto result=Vm::Execute(host,caller,"Self");Returned(result,"Audited window Object/Byte inputs are detached during evaluation");
+        Require(Vm::Equal(result.value,input),"Audited Object/Byte snapshot changed input value");
+    }
+    for(const bool declared:{false,true}) for(const std::size_t earlier:{0u,1u,2u}) {
+        TestHost host;if(declared) declaration(host,1430u,std::vector<Value>(4u,Value::Float(0.0f)));
+        const std::array<float,4u> values{12.0f,23.0f,34.0f,45.0f};std::vector<Bytes> inputs;
+        for(std::size_t slot=0u;slot<3u;++slot) inputs.push_back(Ref(0x01,static_cast<std::int32_t>(slot+1u)));
+        inputs.push_back(Native(1060u,{Ref(0x01,static_cast<std::int32_t>(earlier+1u)),Real(99.0f),Real(values[3])}));
+        const auto caller=Function("WindowFourFloatInputCopies",Return(expression(1430u,declared,inputs)));
+        std::vector<Vm::Property> properties;
+        for(std::size_t slot=0u;slot<4u;++slot) {
+            properties.push_back(host.Property(caller,static_cast<std::int32_t>(slot+1u),"Input"+std::to_string(slot),Value::Float(0.0f)));
+            host.Store("Self",properties.back(),{Value::Float(values[slot])});
+        }
+        host.executionNative=[&](const std::string&,const std::vector<Vm::Evaluation>& arguments,const Vm::Function* actual,Vm::Execution&) {
+            Require(static_cast<bool>(actual)==declared && arguments.size()==4u,"Audited1430 lost its declaration or input count");
+            for(std::size_t slot=0u;slot<4u;++slot)
+                Require(!arguments[slot].reference && arguments[slot].Load().floating==values[slot],
+                    "Audited1430 reloaded an earlier Float after a later input mutated its source");
+            return Vm::Evaluation{arguments[earlier].Load(),{}};
+        };
+        const auto result=Vm::Execute(host,caller,"Self");Returned(result,"Audited1430 copies each ordinary Float before evaluating later inputs");
+        Require(result.value.floating==values[earlier] && host.Load("Self",properties[earlier]).floating==99.0f && result.writes==1u,
+            "Audited1430 input copies lost the real later mutation or returned the mutated source");
+    }
+    for(const auto index:{std::uint16_t{1421u},std::uint16_t{1422u},std::uint16_t{1430u}}) for(const bool declared:{false,true}) {
+        const auto zero=index==1421u?Value::Text(Vm::Kind::Object,{}):index==1422u?Value::Byte(0u):Value::Float(0.0f);
+        const auto count=index==1430u?4u:1u;
+        for(std::size_t selected=0u;selected<count;++selected) for(const int bytes:{-1,0,index==1422u?1:4}) {
+            TestHost host;if(declared) declaration(host,index,std::vector<Value>(count,zero));
+            std::vector<Bytes> inputs(count,index==1421u?Ref(0x20,9):index==1422u?Bytes{0x24u,7u}:Real(12.0f));
+            inputs[selected]=bytes<0?Bytes{0x0bu}:Context({0x2au},Native(4095u),static_cast<std::uint8_t>(bytes));
+            const auto caller=Function("WindowNativeSeededTypedInputs",Return(expression(index,declared,inputs)));
+            host.objects[{caller.source,9}]="Original.Window";
+            host.argumentSeed=[&](std::uint16_t actual,const std::string&,std::size_t slot,const Vm::Function* resolved)->std::optional<Value> {
+                if(actual!=index) return std::nullopt;
+                Require(slot<count && static_cast<bool>(resolved)==declared,"Audited native input seed lost its slot/declaration");return zero;
+            };
+            host.executionNative=[&](const std::string&,const std::vector<Vm::Evaluation>& arguments,const Vm::Function*,Vm::Execution&) {
+                Require(arguments.size()==count && !arguments[selected].reference,"Typed native seed retained a result alias");
+                const auto value=arguments[selected].Load();
+                Require((value.kind==Vm::Kind::Nothing)==(bytes<0),"Audited native seed consumed its explicit omission marker");
+                return Vm::Evaluation{value,{}};
+            };
+            const auto result=Vm::Execute(host,caller,"Self");Returned(result,"Audited native zero seeds preserve NoWrite/full-zero/explicit omissions");
+            Require(Vm::Equal(result.value,bytes<0?Value{}:zero),"Audited native seeded result used the wrong typed zero");
+        }
+    }
+    std::cout<<"Additional audited Window ordinary input copies and zero seeds: "<<checks-initialChecks<<" checks.\n";
 }
 void OptionalAndReferenceTables() {
     TestHost host;
@@ -3579,7 +3918,9 @@ int main() {
         TransactionContracts();
         ProgramAndEligibilityContracts();
         NativeArgumentSeedContracts();
+        CoreColorResultLayoutContracts();
         SequentialNativeArgumentSeedContracts();
+        WindowInputSnapshotContracts();
         VectorNativeContracts();
         StartupPrimitiveContracts();
         IteratorContracts();

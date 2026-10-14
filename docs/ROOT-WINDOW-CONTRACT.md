@@ -32,9 +32,9 @@ It is not a single Bool store: SetVisibility1004c7d0/internal1004ee20 recomputes
 the init tree, invokes most-derived VisibilityChanged, plays optional sound,
 reconfigures and negotiates focus. WindowReady/init completion belong to later
 Tick. The current bridge explicitly refuses this phase until implemented;
-the callback now completes ActorDisplayWindow and alignment, then enters HUD/ammo
-construction. It refuses the four-byte Color Context result at original
-HUDBaseWindow.StyleChanged PC30. No partial root or
+the callback now completes ActorDisplayWindow and ammo construction, then enters
+the health display's first body-part window. It refuses native1475 at original
+Extension.Window.SetTileColorRGB PC51. No partial root or
 possessed player is published as a successful result.
 
 ## Native initial state and boundaries
@@ -63,8 +63,8 @@ Counters survive map changes and revert on a refused portable transaction.
 General EX_New, NanoKeyInfo object-graph saves, non-root heap GC, complete native
 Window/TabGroup/Modal constructor/destructor/backend details and accepted root
 visibility/window Tick are still required. Original unbound native1052 and
-isolated SetPlayer/Possess both reach DeusEx.HUDBaseWindow.StyleChanged PC30,
-with a pending12-object graph. Failure restores root/child/GC indexes, native root list, class
+isolated SetPlayer/Possess reach the first health body-part color call,
+with a pending18-object graph. Failure restores root/child/GC indexes, native root list, class
 counters, Pawn.RootWindow, complete map save, revision and GC counts/memory.
 Repeated original callback and forced shared-write-budget controls pass, along
 with isolated CreateKeyRing/session/save tests. This does not certify the
@@ -104,10 +104,12 @@ the first callback failure, then rolls it all back. It does not alter owned INI,
 substitute a root script, call more VM operations after failure or publish a HUD.
 This permits direct assertions of font/cursor/hidden flags and actual GC edges,
 not merely relying on a later unsupported opcode as proof of correct values.
-The owned prefix/session/ring controls pass1309 checks, including constructor
+The owned prefix/session/ring controls pass1459 checks, including constructor
 flags, clipping, preserved CDO fields, all255 key/accelerator slots and the
-original HUD/ammo child binding. Generated VM checks pass681014/413 refusals;
-this includes expression-time input copies and sequential argument seeds.
+original HUD/ammo/health child binding, canonical Color zero-fill, requested
+geometry and the actual head-texture GC style. Generated VM checks pass682125/528
+refusals, including Color761/115, sequential seeds279/12 and334 additional
+Window argument-copy/zero-seed checks.
 
 ## Native construction and the first original child
 
@@ -151,7 +153,7 @@ and vMargin1 from vMargin0 before those later expressions. New opt-in sequential
 VM hooks capture detached bounded prefixes, preserve explicit omissions and
 merge no-write/full/partial scalar results against the actual seed. Existing
 entry seeds still run before all arguments; ordinary calls allocate no prefix.
-Seed callbacks/writes and caught failures poison shared execution.263 generated
+Seed callbacks/writes and caught failures poison shared execution.279 generated
 sequential controls/12 refusals pass, including later lvalue mutation and OUT
 alias preservation.1438 compares H,V,h0,h1,v0,v1, returns without writes if equal
 (including signed zeros), otherwise stores H,h0,V,v0,h1,v1 then asks to reconfigure.
@@ -166,16 +168,62 @@ optional most-derived SensitivityChanged, Self first then locally-sensitive
 children through live links. Nonnull focus/grab negotiation, destruction and
 unsupported native overrides remain explicit gaps. The original hidden HUD
 sets local sensitivity false; its new ammo child remains locally sensitive but
-inherits the actual player through root.parentPawn. Both InitWindow locks remain
-1 at the current failure; neither unfinished child assignment is fabricated.
+inherits the actual player through root.parentPawn. Ammo construction has now
+completed/unlocked and HUD.Ammo is genuinely assigned; HUD and health locks
+remain1 while the first health part's color call is pending. Root.hud, HUD.hit
+and Head.partWindow are not assigned early.
 
 Hide1414 and SetSize1431 handlers are also supplied. Equal local Hide is a genuine
-no-op; unsupported parent visibility dispatch still refuses. SetSize clamps
+no-op. SetSize clamps
 negative finite dimensions to0, preserves-0, compares requested hardcoded sizes,
-writes both when changed, and defers geometry/clip changes to layout. The ammo
-path stops earlier in StyleChanged, so owned execution of those later calls is
-not yet proved. The missing Color result remains a failure rather than guessing
-arbitrary Struct/native-pointer layouts or substituting a ThemeManager.
+writes both when changed, and defers geometry/clip changes to layout. Actual
+original ammo95x77 and health84x106 requested dimensions are checked while their
+current geometry remains10x10.
+
+## Typed Color, visibility callbacks and first health artwork
+
+Core.Object.Color has an explicit trusted result-layout capability, never
+inferred from same-shaped values. Runtime Describe verifies the actual
+Core.StructProperty target, actual Core.Struct/no base/no script and exactly
+four owned Core.ByteProperty children R,G,B,A, dimension1/no enum. Original
+Core.dll UStruct::Serialize10126fe0 calls Link10126060; UByteProperty::Link101656f0
+places one-byte fields at consecutive offsets, final size4. execContext101300d0
+zeros exactly its encoded result bytes; execLet1012fe40 supplies the actual LHS.
+Thus StyleChanged's null-theme result legitimately clears RGBA, without creating
+a ThemeManager. Locals, state locals, arrays, members, return/declared argument
+destinations and guarded references retain capability. Unknown structs and
+partial/overflow Color writes refuse. Caught guarded-write failures poison the
+shared transaction rather than committing an earlier prefix.
+
+SetVisibility1004c7d0 compares local state before dispatching the actual parent's
+native vtable+84. Ordinary Window10003540 calls optional most-derived
+ChildRequestedVisibilityChange. TabGroup/Modal/Root10045870 bypass script and
+call the child's SetChildVisibility, then reconfigure the parent only on hide.
+Native1467/100532e0 has a Bool0 temporary and calls1004ee20 directly, with no
+invented parent relationship. If effective visibility stays unchanged, it has
+no init/focus/layout/sound/accelerator effects. DeusExHUD's actual override also
+runs ConfigurationChanged while HUD.Ammo is stillNone; the outer assignment is
+not moved before this callback. Effective-visibility changes still refuse.
+
+SetBackground1421/1004d5e0 compares actual Texture identity (not case-sensitive
+handle spelling), writes only if different and asks to reconfigure. Style1422/
+1004d670 always updates Window and wGc style, not gGc. Style0 disables drawing
+while retaining modes/PolyFlags; nonzero styles enable drawing and set masked2,
+translucent3 or modulated4 exclusively, then regenerate original PolyFlags while
+preserving smoothing/text flags. Configure1430/1004cd40 clamps finite negative
+dimensions, preserves signed-zero no-ops, writes near alignment/margins/requested
+size, and never overwrites far margins or current geometry/clip. The original
+first Head window uses texture HUDHitDisplay_Head, requested39,17,4,7, style3,
+and wGc flags0x904 while gGc remains0x900. Other style modes/edge-case native
+branches still need direct integration coverage; argument-copy tests do not
+prove them. The non-publishing snapshot stays bounded at64 objects/16 roots/1MiB.
+
+Next native1475's original wrapper10053ad0 does not initialize its Color result
+temporary. Full written Color and full4 Context clearing are representable;
+Nothing/no-write/zero0/partial bytes must not silently become declared zero.
+That argument-destination contract and the setter remain unimplemented. The
+audited setter copies full RGBA to Window/wGc and computes RGB planes with the
+binary64 reciprocal1/255, W0; none is claimed working by the current refusal.
 
 ## Separate original startup prerequisites
 

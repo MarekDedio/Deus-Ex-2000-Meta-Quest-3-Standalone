@@ -43,12 +43,16 @@ float ToFloat(const Value& value);
 Value Coerce(const Value& value, const Value& typedZero);
 bool Equal(const Value& a, const Value& b);
 
+// Trusted reflected destination capability, never inferred from Value shape.
+// CoreColor4 denotes the audited Core.Object.Color four packed Byte channels.
+enum class ResultLayout { Unknown, CoreColor4 };
 struct Property {
     std::string key; // Stable fully-qualified identity, not a package-local index.
     std::string name;
     Value zero;
     std::uint32_t flags{};
     std::size_t arrayDimension{1};
+    ResultLayout resultLayout{ResultLayout::Unknown};
 };
 struct Function {
     std::string path;
@@ -64,6 +68,7 @@ struct Reference {
     std::function<Value()> read;
     std::function<void(const Value&)> write;
     std::function<std::shared_ptr<Reference>(std::size_t)> element;
+    ResultLayout resultLayout{ResultLayout::Unknown};
 };
 // A null Context writes encoded bytes only when an actual result destination
 // exists. Keep this separate from reflected lvalue/address state: a missing

@@ -11,6 +11,7 @@
 #include <fstream>
 #include <iostream>
 #include <stdexcept>
+#include <tuple>
 
 namespace {
 using QuestVr::Vm::Evaluation;
@@ -174,10 +175,10 @@ int main(int argc,char** argv) {
         const auto windowStats=GC::GetStats();
         const auto pending=ProbePortableRootWindowInitialization(player);
         std::cout<<"ORIGINAL root pending graph: "<<pending.execution.function<<':'<<pending.execution.offset<<
-            " objects="<<pending.objects.size()<<" "<<pending.execution.error<<"; inspection="<<pending.inspectionError<<std::endl;
+            " objects="<<pending.objects.size()<<" writes="<<pending.execution.writes<<" "<<pending.execution.error<<"; inspection="<<pending.inspectionError<<std::endl;
         Require(!pending.execution.passed() && !pending.execution.committed && pending.inspectionError.empty() &&
-            pending.execution.function=="DeusEx.HUDBaseWindow.StyleChanged" && pending.execution.offset==30u &&
-            pending.execution.error.find("context zero-fill destination layout")!=std::string::npos && pending.objects.size()==12u &&
+            pending.execution.function=="Extension.Window.SetTileColorRGB" && pending.execution.offset==51u &&
+            pending.execution.error=="Unsupported runtime native 1475" && pending.objects.size()==18u &&
             pending.rootedWindows==std::vector<std::string>{pending.pawnRootPath},
             "Original root prefix probe did not capture the actual pending native graph: "+pending.inspectionError);
         const auto object=[&](const std::string& path)->const PortableNativeWindowObjectSnapshot& {
@@ -256,24 +257,34 @@ int main(int argc,char** argv) {
         edge(rootView,"DeusEx.DeusExRootWindow.actorDisplay",display.path);
         const auto hudFound=std::find_if(pending.objects.begin(),pending.objects.end(),[](const auto& view) {return view.classPath=="DeusEx.DeusExHUD";});
         const auto ammoFound=std::find_if(pending.objects.begin(),pending.objects.end(),[](const auto& view) {return view.classPath=="DeusEx.HUDAmmoDisplay";});
-        Require(hudFound!=pending.objects.end() && ammoFound!=pending.objects.end(),"Original root did not create its actual HUD/ammo children");
+        const auto hitFound=std::find_if(pending.objects.begin(),pending.objects.end(),[](const auto& view) {return view.classPath=="DeusEx.HUDHitDisplay";});
+        Require(hudFound!=pending.objects.end() && ammoFound!=pending.objects.end() && hitFound!=pending.objects.end(),"Original root did not create its actual HUD/ammo/health children");
         const auto& hudView=*hudFound;const auto& ammoView=*ammoFound;
+        const auto& hitView=*hitFound;
         edge(rootView,"Extension.Window.firstChild",display.path);edge(rootView,"Extension.Window.lastChild",hudView.path);
-        // HUD and ammo NewChild are still in their original InitWindow calls;
-        // assignment/Show/unlock have NOT completed at the Color boundary.
+        // Ammo's original InitWindow/parent visibility callback/Show/unlock and
+        // HUD.Ammo assignment completed. HUD and health initialization remain
+        // pending, with the first body part not assigned before its color call.
         edge(rootView,"DeusEx.DeusExRootWindow.hud",{});
+        edge(hudView,"DeusEx.DeusExHUD.Ammo",ammoView.path);edge(hudView,"DeusEx.DeusExHUD.hit",{});
         edge(display,"Extension.Window.parentOwner",rootView.path);edge(display,"Extension.Window.winParent",rootView.path);
         edge(display,"Extension.Window.prevSibling",{});edge(display,"Extension.Window.nextSibling",hudView.path);
         edge(hudView,"Extension.Window.parentOwner",rootView.path);edge(hudView,"Extension.Window.winParent",rootView.path);
         edge(hudView,"Extension.Window.prevSibling",display.path);edge(hudView,"Extension.Window.nextSibling",{});
-        edge(hudView,"Extension.Window.firstChild",ammoView.path);edge(hudView,"Extension.Window.lastChild",ammoView.path);
+        edge(hudView,"Extension.Window.firstChild",ammoView.path);edge(hudView,"Extension.Window.lastChild",hitView.path);
         edge(ammoView,"Extension.Window.parentOwner",hudView.path);edge(ammoView,"Extension.Window.winParent",hudView.path);
-        edge(ammoView,"Extension.Window.prevSibling",{});edge(ammoView,"Extension.Window.nextSibling",{});
+        edge(ammoView,"Extension.Window.prevSibling",{});edge(ammoView,"Extension.Window.nextSibling",hitView.path);
         edge(ammoView,"DeusEx.HUDBaseWindow.Player",player);
+        edge(ammoView,"DeusEx.HUDAmmoDisplay.Player",player);
+        edge(hitView,"DeusEx.HUDBaseWindow.Player",player);edge(hitView,"DeusEx.HUDHitDisplay.Player",player);
+        edge(hitView,"Extension.Window.parentOwner",hudView.path);edge(hitView,"Extension.Window.winParent",hudView.path);
+        edge(hitView,"Extension.Window.prevSibling",ammoView.path);edge(hitView,"Extension.Window.nextSibling",{});
         Require(hudView.outerPath==rootView.path && ammoView.outerPath==hudView.path &&
-            !field(hudView,"Extension.Window.bIsVisible").value.boolean && !field(ammoView,"Extension.Window.bIsVisible").value.boolean &&
+            hitView.outerPath==hudView.path && !field(hudView,"Extension.Window.bIsVisible").value.boolean &&
+            field(ammoView,"Extension.Window.bIsVisible").value.boolean && !field(hitView,"Extension.Window.bIsVisible").value.boolean &&
             !field(hudView,"Extension.Window.bIsSensitive").value.boolean && field(ammoView,"Extension.Window.bIsSensitive").value.boolean &&
-            field(hudView,"Extension.Window.lockCount").value.integer==1 && field(ammoView,"Extension.Window.lockCount").value.integer==1,
+            field(hudView,"Extension.Window.lockCount").value.integer==1 && field(ammoView,"Extension.Window.lockCount").value.integer==0 &&
+            field(hitView,"Extension.Window.lockCount").value.integer==1,
             "Original hidden HUD sensitivity or in-flight child lock state was skipped/fabricated");
         edge(rootView,"Extension.RootWindow.FocusWindow",{});edge(rootView,"Extension.RootWindow.grabbedWindow",{});
         Require(field(display,"Extension.Window.winHAlign").value.integer==3 && field(display,"Extension.Window.winVAlign").value.integer==3,
@@ -297,7 +308,7 @@ int main(int argc,char** argv) {
             edge(displayGC,std::string("Extension.GC.")+name,"Extension.TechMedium");
             edge(displayGeneralGC,std::string("Extension.GC.")+name,{});
         }
-        for(const auto* view:{&hudView,&ammoView}) {
+        for(const auto* view:{&hudView,&ammoView,&hitView}) {
             edge(*view,"Extension.Window.normalFont","Extension.TechMedium");edge(*view,"Extension.Window.boldFont","Extension.TechMedium");
             const auto& ownGC=object(field(*view,"Extension.Window.wGc").value.text);
             const auto& ownGeneralGC=object(field(*view,"Extension.Window.gGc").value.text);
@@ -308,10 +319,49 @@ int main(int argc,char** argv) {
                 edge(ownGeneralGC,std::string("Extension.GC.")+name,{});
             }
         }
-        Require(Declared(player,"DeusEx.DeusExPlayer.ThemeManager",Kind::Object).text.empty() &&
-            QuestVr::Vm::Equal(field(ammoView,"DeusEx.HUDBaseWindow.colBackground").value,
-                ReadPortableClassDefault(ammoView.classPath,"colBackground")),
-            "Original theme-null Color failure wrote a simulated color or invented a ThemeManager");
+        Require(Declared(player,"DeusEx.DeusExPlayer.ThemeManager",Kind::Object).text.empty(),
+            "Original theme-null Color handling invented a ThemeManager");
+        for(const auto* view:{&ammoView,&hitView})
+            for(const auto* name:{"colBackground","colBorder","colText","colHeaderText"}) {
+                const auto& color=field(*view,"DeusEx.HUDBaseWindow."+std::string(name)).value;
+                Require(color.kind==Kind::Struct && color.fields.size()==4u,"Original Color result lost its native four-channel shape");
+                for(const auto* channel:{"r","g","b","a"})
+                    Require(color.fields.at(channel).kind==Kind::Byte && color.fields.at(channel).integer==0,
+                        "Original null Context did not zero exactly four canonical Color bytes");
+            }
+        const auto& partView=object(field(hitView,"Extension.Window.firstChild").value.text);
+        Require(partView.classPath=="Extension.Window" && partView.outerPath==hitView.path &&
+            field(hitView,"Extension.Window.lastChild").value.text==partView.path &&
+            field(partView,"Extension.Window.bIsVisible").value.boolean && field(partView,"Extension.Window.lockCount").value.integer==0,
+            "Original health body-part NewChild did not complete its inherited visibility callback");
+        edge(partView,"Extension.Window.winParent",hitView.path);edge(partView,"Extension.Window.parentOwner",hitView.path);
+        edge(partView,"Extension.Window.Background","DeusExUI.UserInterface.HUDHitDisplay_Head");
+        const auto& head=field(hitView,"DeusEx.HUDHitDisplay.Head").value;
+        Require(head.kind==Kind::Struct && head.fields.at("partwindow").kind==Kind::Object && head.fields.at("partwindow").text.empty(),
+            "Original health part was assigned before its unfinished color setter");
+        for(const auto& [name,expected]:{std::pair{"hMargin0",39.0f},std::pair{"vMargin0",17.0f},
+            std::pair{"hardcodedWidth",4.0f},std::pair{"hardcodedHeight",7.0f},
+            std::pair{"hMargin1",0.0f},std::pair{"vMargin1",0.0f},std::pair{"Width",10.0f},std::pair{"Height",10.0f}})
+            Require(field(partView,"Extension.Window."+std::string(name)).value.floating==expected,
+                "Original configuration changed far margins/current geometry or lost the requested Head dimensions");
+        Require(field(partView,"Extension.Window.winHAlign").value.integer==0 &&
+            field(partView,"Extension.Window.winVAlign").value.integer==0 &&
+            field(partView,"Extension.Window.backgroundStyle").value.integer==3,
+            "Original health part configuration/style was not applied");
+        const auto& partGC=object(field(partView,"Extension.Window.wGc").value.text);
+        const auto& partGeneralGC=object(field(partView,"Extension.Window.gGc").value.text);
+        Require(field(partGC,"Extension.GC.Style").value.integer==3 && field(partGC,"Extension.GC.PolyFlags").value.integer==0x904 &&
+            field(partGC,"Extension.GC.bDrawEnabled").value.boolean && field(partGC,"Extension.GC.bTranslucent").value.boolean &&
+            !field(partGC,"Extension.GC.bMasked").value.boolean && !field(partGC,"Extension.GC.bModulated").value.boolean &&
+            !field(partGC,"Extension.GC.bSmoothed").value.boolean && field(partGC,"Extension.GC.textPolyFlags").value.integer==0x802 &&
+            field(partGeneralGC,"Extension.GC.Style").value.integer==1 && field(partGeneralGC,"Extension.GC.PolyFlags").value.integer==0x900,
+            "Original background-style setter lost its GC modes/flags or touched the general GC/text/smoothing state");
+        for(const auto& [view,width,height]:{
+            std::tuple{&ammoView,95.0f,77.0f},std::tuple{&hitView,84.0f,106.0f}})
+            Require(field(*view,"Extension.Window.hardcodedWidth").value.floating==width &&
+                field(*view,"Extension.Window.hardcodedHeight").value.floating==height &&
+                field(*view,"Extension.Window.Width").value.floating==10.0f && field(*view,"Extension.Window.Height").value.floating==10.0f,
+                "Original ammo/health SetSize did not defer current geometry while storing requested dimensions");
         for(const auto* view:{&rootView,&display}) {
             for(const auto* name:{"bDrawRawBackground","bSpecialText","bLastWidthSpecified","bLastHeightSpecified","bIsSensitive"})
                 Require(field(*view,std::string("Extension.Window.")+name).value.boolean,"Native Window constructor missed a true original flag");
@@ -351,8 +401,8 @@ int main(int argc,char** argv) {
         const auto rootAttempt=ExecutePortableActorFunction(player,"Extension.PlayerPawnExt.InitRootWindow");
         std::cout<<"ORIGINAL unbound root initialization boundary: "<<rootAttempt.function<<':'<<rootAttempt.offset<<
             " opcode="<<unsigned(rootAttempt.opcode)<<" "<<rootAttempt.error<<std::endl;
-        Require(!rootAttempt.passed() && !rootAttempt.committed && rootAttempt.function=="DeusEx.HUDBaseWindow.StyleChanged" &&
-            rootAttempt.offset==30u && rootAttempt.error.find("context zero-fill destination layout")!=std::string::npos &&
+        Require(!rootAttempt.passed() && !rootAttempt.committed && rootAttempt.function=="Extension.Window.SetTileColorRGB" &&
+            rootAttempt.offset==51u && rootAttempt.error=="Unsupported runtime native 1475" &&
             std::find(rootAttempt.callStack.begin(),rootAttempt.callStack.end(),"DeusEx.DeusExRootWindow.InitWindow")!=rootAttempt.callStack.end(),
             "Native1052 did not construct/dispatch original root without a fabricated client prerequisite");
         const auto windowsAfter=ReadPortableRuntimeNativeWindowSummary();
@@ -369,7 +419,8 @@ int main(int argc,char** argv) {
             repeatedRoot.offset==rootAttempt.offset && repeatedRoot.opcode==rootAttempt.opcode &&
             repeatedRoot.error==rootAttempt.error && repeatedRoot.callStack==rootAttempt.callStack,
             "Original root callback did not reproduce its exact first remaining gap after rollback");
-        for(const auto writeLimit:{1u,5u,25u,100u,400u,650u}) {
+        Require(pending.execution.writes>650u,"Expanded root prefix did not reach its original later write sequence");
+        for(const auto writeLimit:std::vector<std::size_t>{1u,5u,25u,100u,400u,650u,pending.execution.writes-1u}) {
             QuestVr::Vm::Limits windowLimits;windowLimits.writes=writeLimit;
             const auto bounded=ExecutePortableActorFunction(player,"Extension.PlayerPawnExt.InitRootWindow",{},windowLimits);
             Require(bounded.status==QuestVr::Vm::Status::Budget && !bounded.committed,

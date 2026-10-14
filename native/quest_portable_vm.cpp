@@ -44,7 +44,8 @@ bool SnapshotNativeInput(const std::uint16_t index, const Function* declaration 
     case 112: case 113: case 124: case 125: case 126: case 127: case 128:
     case 168: case 187: case 189: case 231: case 234: case 235: case 244: case 245: case 246: case 249: case 251: case 278:
     case 280: return true; // SetTimer copies rate before evaluating bLoop.
-    case 1410: case 1416: case 1431: case 1438: case 1454: case 1477: case 1510: case 1511:
+    case 1410: case 1416: case 1421: case 1422: case 1430: case 1431: case 1438: case 1454: case 1467:
+    case 1477: case 1510: case 1511:
         return true; // Retail window wrappers have no OUT parameters.
     default: return false;
     }
@@ -399,6 +400,7 @@ std::shared_ptr<Reference> LocalReference(const Property& property,
     const std::shared_ptr<std::vector<Value>>& values, std::size_t index = 0) {
     auto ref = std::make_shared<Reference>();
     ref->zero = property.zero; ref->dimension = property.arrayDimension;
+    ref->resultLayout = property.resultLayout;
     ref->read = [values, index] { return values->at(index); };
     ref->write = [values, index](const Value& v) { values->at(index) = v; };
     ref->element = [property, values](std::size_t i) { return LocalReference(property, values, i); };
@@ -529,10 +531,15 @@ public:
         }
         std::size_t argCount = 0;
         for (const auto& p : fn.variables) {
+            ValidateResultLayout(p.zero,p.resultLayout);
             if (!(p.flags & 0x80) || (p.flags & 0x400)) continue;
             if (argCount == args.size()) {
                 if (!(p.flags & 0x10)) Fail(Status::Invalid, "Missing required VM parameter " + p.name);
                 args.push_back({});
+            }
+            if (p.resultLayout!=ResultLayout::Unknown) {
+                const auto value=args[argCount].Load();
+                if (value.kind!=Kind::Nothing) ValidateResultLayout(value,p.resultLayout);
             }
             ++argCount;
         }
@@ -540,6 +547,9 @@ public:
         if (fn.flags & 0x400) {
             Step(fn, 0, 0);
             auto result = Native(fn.nativeIndex, self, args, &fn, *capturedContext).Load();
+            for (const auto& property:fn.variables)
+                if ((property.flags&0x400u) && result.kind!=Kind::Nothing)
+                    ValidateResultLayout(result,property.resultLayout);
             ValidateValue(result, 0); result_.callStack.pop_back(); return result;
         }
         auto program = Parser(host_, fn, limits_, nodes_, result_, false, &retainedBytes_).Parse();
@@ -578,7 +588,7 @@ public:
             if (AdvanceIterator(frame, n, program, pc, iterators)) continue;
             if (n.op == 0x04) {
                 const auto evaluated = Eval(frame, n.children.at(0), self);
-                value = returnProperty ? ResultValue(evaluated,frame.locals.at(returnProperty->key)->read()) : evaluated.Load();
+                value = returnProperty ? ResultValue(evaluated,frame.locals.at(returnProperty->key)->read(),returnProperty->resultLayout) : evaluated.Load();
                 returned = true; break;
             }
             if (n.op == 0x15) {
@@ -1052,15 +1062,17 @@ private:
                 localElements_ > limits_.localElements - property.arrayDimension)
                 Fail(Status::Budget, "VM state local element limit");
             ValidateValue(property.zero, 0);
-            auto reference = host_.StateVariable(self, property);
+            auto reference = BindResultLayout(host_.StateVariable(self, property),property.resultLayout);
             if (!reference || !reference->read || !reference->write || reference->dimension != property.arrayDimension)
                 Fail(Status::Invalid, "State local storage/schema mismatch");
             localElements_ += property.arrayDimension;
             Retain(sizeof(Reference) + property.key.size());
             for (std::size_t index = 0; index < property.arrayDimension; ++index) {
-                const auto element = index ? (reference->element ? reference->element(index) : nullptr) : reference;
+                const auto element = index ? BindResultLayout(reference->element ? reference->element(index) : nullptr,
+                    property.resultLayout) : reference;
                 if (!element || !element->read) Fail(Status::Invalid, "State array local storage unavailable");
                 const auto stored = element->read(); ValidateValue(stored, 0);
+                ValidateResultLayout(property.zero,property.resultLayout);ValidateResultLayout(stored,property.resultLayout);
                 if (!Equal(Coerce(stored, property.zero), stored)) Fail(Status::Invalid, "State local has incorrect stored type");
                 Retain(ValueBytes(stored));
             }
@@ -1192,6 +1204,29 @@ private:
             ValidateValueTree(field, depth + 1, bytes, nodes);
         }
     }
+    void ValidateResultLayout(const Value& value, const ResultLayout layout) {
+        if (layout==ResultLayout::Unknown) return;
+        if (layout!=ResultLayout::CoreColor4)
+            Fail(Status::Invalid,"VM unknown trusted result layout");
+        if (value.kind!=Kind::Struct || value.fields.size()!=4u || !value.text.empty() || !value.intArray.empty())
+            Fail(Status::Invalid,"VM CoreColor4 destination is not canonical Color storage");
+        for (const auto* channel:{"r","g","b","a"}) {
+            const auto found=value.fields.find(channel);
+            if (found==value.fields.end() || found->second.kind!=Kind::Byte ||
+                found->second.integer<0 || found->second.integer>255 || !found->second.text.empty() ||
+                !found->second.fields.empty() || !found->second.intArray.empty())
+                Fail(Status::Invalid,"VM CoreColor4 destination has malformed Byte channels");
+        }
+    }
+    std::shared_ptr<Reference> BindResultLayout(const std::shared_ptr<Reference>& reference, const ResultLayout layout) {
+        if (!reference || reference->resultLayout==layout) return reference;
+        // The resolved Property supplies authority. Never grant a capability
+        // based on a same-shaped value or retain a host reference's conflicting
+        // capability for an Unknown property. Do not mutate host-owned aliases.
+        Retain(sizeof(Reference));
+        auto bound=std::make_shared<Reference>(*reference);bound->resultLayout=layout;
+        return bound;
+    }
     void Write(const std::shared_ptr<Reference>& reference, const Value& value) {
         if (nativeSeedHookActive_) {
             try { Fail(Status::Invalid, "VM write during read-only native seed capture"); }
@@ -1203,8 +1238,12 @@ private:
         // Check caller-owned capacity before Coerce's detached copy can shrink
         // it, and account native replacement payloads as well as rollback data.
         ValidateValue(value, 0); ValidateValue(reference->zero, 0);
+        ValidateResultLayout(reference->zero,reference->resultLayout);
+        if (value.kind!=Kind::Nothing) ValidateResultLayout(value,reference->resultLayout);
         auto typed = Coerce(value, reference->zero); ValidateValue(typed, 0);
+        ValidateResultLayout(typed,reference->resultLayout);
         auto previous = reference->read(); ValidateValue(previous, 0);
+        ValidateResultLayout(previous,reference->resultLayout);
         Retain(ValueBytes(previous));
         Retain(ValueIntArrayBytes(typed));
         journal_.emplace_back(reference, std::move(previous));
@@ -1219,7 +1258,11 @@ private:
             if (!alive || !*alive) throw std::runtime_error("Expired VM native reference");
         };
         guarded->read = [requireAlive, reference] { requireAlive(); return reference->read(); };
-        guarded->write = [this, requireAlive, reference](const Value& v) { requireAlive(); Write(reference, v); };
+        guarded->write = [this, requireAlive, reference](const Value& v) {
+            requireAlive();
+            try { Write(reference, v); }
+            catch (...) { RememberFailure(); throw; }
+        };
         if (reference->element)
             guarded->element = [this, requireAlive, reference](std::size_t i) {
                 requireAlive(); return GuardReference(reference->element(i));
@@ -1227,8 +1270,13 @@ private:
         return guarded;
     }
     Value ResultValue(const Evaluation& evaluation, const Value& destination,
-        const bool nativeSeed = false) {
-        if (evaluation.disposition == ResultDisposition::Written) return evaluation.Load();
+        const ResultLayout layout = ResultLayout::Unknown, const bool nativeSeed = false) {
+        ValidateResultLayout(destination,layout);
+        if (evaluation.disposition == ResultDisposition::Written) {
+            auto value=evaluation.Load();
+            if (value.kind!=Kind::Nothing) ValidateResultLayout(value,layout);
+            return value;
+        }
         if (evaluation.disposition == ResultDisposition::NoWrite || evaluation.zeroFillBytes == 0u)
             return destination;
         std::size_t bytes{};
@@ -1243,6 +1291,12 @@ private:
         case Kind::String: bytes=12u; zero=Value::Text(Kind::String,{}); break;
         case Kind::Vector: bytes=12u; zero=Value::Vector({}); break;
         case Kind::Rotator: bytes=12u; zero=Value::Rotator({}); break;
+        case Kind::Struct:
+            if (layout!=ResultLayout::CoreColor4)
+                Fail(Status::Unsupported,"VM context zero-fill Struct destination layout is not established");
+            bytes=4u;zero=destination;
+            for (auto& [name,channel]:zero.fields) channel=Value::Byte(0u);
+            break;
         default: Fail(Status::Unsupported,"VM context zero-fill destination layout is not established");
         }
         // Retail writes low-address bytes in its little-endian native result
@@ -1324,6 +1378,7 @@ private:
             Retain(parameters.capacity()*sizeof(Property));
             for (const auto& parameter:parameters) {
                 ValidateValue(parameter.zero,0);
+                ValidateResultLayout(parameter.zero,parameter.resultLayout);
                 Retain(parameter.key.capacity());Retain(parameter.name.capacity());Retain(ValueBytes(parameter.zero));
             }
             const bool nativeCall = !fn || (fn->flags & 0x400u);
@@ -1338,6 +1393,7 @@ private:
                     auto seed = host_.NativeArgumentSeed(index, context, i, fn.get());
                     if (seed) {
                         ValidateValue(*seed,0); Retain(ValueBytes(*seed)); RetainNativeSeedCapacity(*seed);
+                        if (i<parameters.size()) ValidateResultLayout(*seed,parameters[i].resultLayout);
                         // Most natives have no nonzero temporary defaults. Do
                         // not allocate or charge optional<Value> slots on that
                         // hot path; all host lookups still precede ALL arguments.
@@ -1382,6 +1438,7 @@ private:
                 if (sequentialSeed) {
                     ValidateValue(*sequentialSeed,0); Retain(ValueBytes(*sequentialSeed));
                     RetainNativeSeedCapacity(*sequentialSeed);
+                    if (i<parameters.size()) ValidateResultLayout(*sequentialSeed,parameters[i].resultLayout);
                 }
                 auto argument = Eval(frame, n.children[i], frame.self);
                 // Explicit EX_Nothing is the native optional-argument marker,
@@ -1396,7 +1453,8 @@ private:
                         nativeCall ? BuiltinArgumentZero(index,i) : std::nullopt;
                     if (typedZero) {
                         ValidateValue(*typedZero,0);Retain(ValueBytes(*typedZero));
-                        argument={ResultValue(argument,*typedZero,seeded),{}};
+                        const auto layout=i<parameters.size()?parameters[i].resultLayout:ResultLayout::Unknown;
+                        argument={ResultValue(argument,*typedZero,layout,seeded),{}};
                     } else if (argument.disposition==ResultDisposition::ZeroFill && argument.zeroFillBytes!=0u)
                         Fail(Status::Unsupported,"VM context argument result destination layout is unavailable");
                 }
@@ -1485,7 +1543,8 @@ private:
                     const auto found = frame.locals.find(p.key);
                     if (found == frame.locals.end()) Fail(Status::Invalid, "VM local not declared: " + p.key);
                     result.reference = found->second;
-                } else result.reference = host_.Variable(context, p, n.op == 0x02 ? Scope::Default : Scope::Instance);
+                } else result.reference = BindResultLayout(host_.Variable(context, p,
+                    n.op == 0x02 ? Scope::Default : Scope::Instance),p.resultLayout);
                 if (!result.reference || !result.reference->read) Fail(Status::Unsupported, "VM property unavailable: " + p.key);
                 break;
             }
@@ -1502,7 +1561,7 @@ private:
                     // instead prezeros its own integer temporary, then masks the
                     // target bit even when the RHS performs no result write.
                     const auto destination=n.op==0x14u ? Value::Bool(false) : left.Load();
-                    const auto value=ResultValue(right,destination);
+                    const auto value=ResultValue(right,destination,n.op==0x14u?ResultLayout::Unknown:left.reference->resultLayout);
                     if (n.op==0x14u || right.disposition==ResultDisposition::Written ||
                         (right.disposition==ResultDisposition::ZeroFill && right.zeroFillBytes!=0u))
                         Write(left.reference,value);
@@ -1590,7 +1649,7 @@ private:
                     Fail(Status::Invalid, "VM fixed array is not a variable");
                 const auto clamped = static_cast<std::size_t>(std::clamp<std::int64_t>(index, 0,
                     static_cast<std::int64_t>(array.reference->dimension - 1)));
-                result.reference = array.reference->element(clamped); break;
+                result.reference = BindResultLayout(array.reference->element(clamped),array.reference->resultLayout); break;
             }
             case 0x1d: case 0x1e: case 0x1f: case 0x22: case 0x23: case 0x24: case 0x2c: case 0x34:
                 result.value = n.constant; break;
@@ -1615,6 +1674,7 @@ private:
                 result.value = MemberValue(v, p.name);
                 if (parent.reference) {
                     auto ref = std::make_shared<Reference>(); ref->zero = p.zero;
+                    ref->resultLayout = p.resultLayout;
                     ref->read = [base = parent.reference, name = p.name] { return MemberValue(base->read(), name); };
                     ref->write = [base = parent.reference, name = p.name](const Value& member) {
                         auto value = base->read(); SetMember(value, name, member); base->write(value);
@@ -1633,7 +1693,11 @@ private:
             result.disposition==ResultDisposition::Written)
             result.disposition=ResultDisposition::NoWrite;
         if (!result.reference) ValidateValue(result.value, 0);
-        else ValidateValue(result.Load(), 0);
+        else {
+            const auto value=result.Load();ValidateValue(value, 0);
+            ValidateResultLayout(result.reference->zero,result.reference->resultLayout);
+            ValidateResultLayout(value,result.reference->resultLayout);
+        }
         return result;
     }
 
