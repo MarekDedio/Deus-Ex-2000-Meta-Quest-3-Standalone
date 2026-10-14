@@ -40,6 +40,8 @@
 #include "quest_dialogue_ui.h"
 #include "quest_hud_ui.h"
 #include "quest_hud_view.h"
+#include "quest_hud_health_clock.h"
+#include "quest_persona_view.h"
 #include "quest_map_cache.h"
 #include "vr_world_transform.h"
 #include "quest_vr_input.h"
@@ -4314,6 +4316,8 @@ class DeusExQuestApp final : public OVRFW::XrApp {
     void ResetOriginalPlayerHudState() {
         healthUiVisible_=beltUiVisible_=false;
         cachedPlayerHud_.reset();
+        hudHealthClock_.Reset();
+        displayedHealthHudPixels_.clear();
         hudQuerySeconds_=0.0f;
         playerHudError_.clear();
     }
@@ -4380,6 +4384,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                 auto snapshot=ReadPortableRuntimePlayerHud(nativeClientGeneration_);
                 if (!snapshot.available || !snapshot.bound) {
                     cachedPlayerHud_.reset();
+                    hudHealthClock_.Reset();displayedHealthHudPixels_.clear();
                     return; // No pretend player/ring/healthy limbs from defaults.
                 }
                 if (!cachedPlayerHud_ || !SamePlayerHudSnapshot(*cachedPlayerHud_,snapshot)) {
@@ -4388,21 +4393,16 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                         return found==hudIcons_.end()?nullptr:&found->second;
                     });
                     if (!belt) throw std::runtime_error("Original player HUD lost its genuine viewport binding");
-                    QuestVr::HudHealthSnapshot health;
-                    for (std::size_t part=0u;part<6u;++part) health.parts[part].displayedHealth=snapshot.limbHealth[part];
-                    health.energy=snapshot.energy;health.energyMax=snapshot.energyMax;
                     const auto glyph=[&](std::uint32_t character) {return GetPortableBitmapGlyph(hudTinyFont_,character);};
                     auto beltCanvas=QuestVr::BuildHudBeltCanvas(hudBeltArtwork_,*belt);
-                    auto healthCanvas=QuestVr::BuildHudHealthCanvas(hudHealthArtwork_,health);
                     QuestVr::DrawHudBeltText(beltCanvas,*belt,hudTinyFont_,glyph);
-                    QuestVr::DrawHudHealthText(healthCanvas,health,hudTinyFont_,glyph);
                     UpdateOriginalHudTexture(beltHudTextureId_,beltCanvas);
-                    UpdateOriginalHudTexture(healthHudTextureId_,healthCanvas);
                     cachedPlayerHud_=std::move(snapshot);
                     playerHudError_.clear();
                 }
             } catch (const std::exception& error) {
                 cachedPlayerHud_.reset();
+                hudHealthClock_.Reset();displayedHealthHudPixels_.clear();
                 if (playerHudError_!=error.what()) {
                     playerHudError_=error.what();
                     ALOG("DeusExQuest: bound original player HUD unavailable: %s",error.what());
@@ -4411,6 +4411,37 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             }
         }
         if (!cachedPlayerHud_ || !cachedPlayerHud_->available || !cachedPlayerHud_->bound) return;
+        try {
+            // Health presentation ticks every visible frame, independently of
+            // bounded10Hz player/inventory reads. A map/player/unbind resets
+            // only presentation; no default/aggregate gameplay health is used.
+            hudHealthClock_.ResetForContext(cachedPlayerHud_->playerPath,currentMapName_);
+            QuestVr::HudHealthClockInput actualHealth;
+            for(std::size_t part=0u;part<actualHealth.size();++part) actualHealth[part]=cachedPlayerHud_->limbHealth[part];
+            const auto colors=hudHealthClock_.Advance(actualHealth,frame.DeltaSeconds);
+            QuestVr::HudHealthSnapshot health;
+            for(std::size_t part=0u;part<colors.size();++part) {
+                health.parts[part].displayedHealth=colors[part].displayedHealth;
+                health.parts[part].damageFlashFraction=colors[part].damageFlashFraction;
+            }
+            health.energy=cachedPlayerHud_->energy;health.energyMax=cachedPlayerHud_->energyMax;
+            auto canvas=QuestVr::BuildHudHealthCanvas(hudHealthArtwork_,health);
+            QuestVr::DrawHudHealthText(canvas,health,hudTinyFont_,
+                [&](std::uint32_t character) {return GetPortableBitmapGlyph(hudTinyFont_,character);});
+            // No upload for an unchanged image; original timers may refresh
+            // their same color without forcing72Hz texture transfers.
+            if(canvas.rgba!=displayedHealthHudPixels_) {
+                UpdateOriginalHudTexture(healthHudTextureId_,canvas);
+                displayedHealthHudPixels_=std::move(canvas.rgba);
+            }
+        } catch(const std::exception& error) {
+            cachedPlayerHud_.reset();hudHealthClock_.Reset();displayedHealthHudPixels_.clear();
+            if(playerHudError_!=error.what()) {
+                playerHudError_=error.what();
+                ALOG("DeusExQuest: original limb-health presentation unavailable: %s",error.what());
+            }
+            return;
+        }
         constexpr float pixels=QuestVr::kHudVrPixelsToMeters;
         auto healthPose=frame.HeadPose;
         healthPose.Translation+=healthPose.Rotation.Rotate({QuestVr::kHudHealthCenterX,
@@ -5256,9 +5287,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
     }
 
     static OVR::Posef PersonaArtworkPose(const OVRFW::ovrApplFrameIn& frame) {
-        auto pose = frame.HeadPose;
-        pose.Translation += pose.Rotation.Rotate({0.0f,-0.015f,-1.055f});
-        return pose;
+        return QuestVr::PersonaPanelPose(frame.HeadPose);
     }
 
     void SelectInventoryAtPointer(const OVRFW::ovrApplFrameIn& frame) {
@@ -5270,7 +5299,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             frame.RightRemotePointPose.Rotation.Rotate({0.0f,0.0f,-1.0f}));
         const auto point = QuestVr::IntersectPersonaPanelRay(
             {origin.x,origin.y,origin.z},{direction.x,direction.y,direction.z},
-            1.20f,0.90f,640u,480u);
+            QuestVr::kPersonaPanelWidth,QuestVr::kPersonaPanelHeight,640u,480u);
         if (!point || !inventoryNavigation_.SelectCanvasPoint(point->x,point->y)) return;
         inventoryActionStatus_.clear();
         selectedInventoryIndex_ = inventoryNavigation_.SelectedIndex().value_or(invalidRendererIndex_);
@@ -5519,13 +5548,11 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         if (mapLoading && inventoryMenuOpen_) SetInventoryMenuOpen(false);
         if (!inventoryMenuOpen_ || inventoryLabel_ == nullptr) return;
 
-        OVR::Posef menuPose = frame.HeadPose;
-        menuPose.Translation += frame.HeadPose.Rotation.Rotate(
-            OVR::Vector3f(0.0f, -0.015f, -1.05f));
+        const auto menuPose=QuestVr::PersonaPanelPose(frame.HeadPose,QuestVr::kPersonaTextDistance);
         for (OVRFW::VRMenuObject* label : PersonaLabels()) {
             if (label != nullptr) label->SetLocalPose(menuPose);
         }
-        personaRenderer_.SetPose(PersonaArtworkPose(frame));
+        personaRenderer_.SetPose(PersonaArtworkPose(frame),QuestVr::kPersonaPanelHalfWidth,QuestVr::kPersonaPanelHalfHeight);
         const std::vector<std::string> inventory = GetPortableRuntimeInventoryItems();
         EnsureInventoryNavigation(inventory);
         const float health = GetPortableRuntimePlayerHealth();
@@ -7578,6 +7605,8 @@ class DeusExQuestApp final : public OVRFW::XrApp {
     GLuint healthHudTextureId_{},beltHudTextureId_{};
     bool healthUiVisible_{},beltUiVisible_{};
     std::optional<PortablePlayerHudSnapshot> cachedPlayerHud_;
+    QuestVr::HudHealthClock hudHealthClock_;
+    std::vector<std::uint8_t> displayedHealthHudPixels_;
     float hudQuerySeconds_{};
     std::string playerHudError_;
     PortablePackageTables personaUiPackage_;

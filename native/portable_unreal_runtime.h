@@ -264,6 +264,35 @@ PortablePlayerHudSnapshot ReadPortablePlayerHudSnapshot(const std::string& playe
 // native viewport.Actor, never an arbitrary actor or selected inventory index.
 // A genuinely unbound viewport returns available=false and no invented values.
 PortablePlayerHudSnapshot ReadPortableRuntimePlayerHud(std::uint64_t viewportIdentity);
+struct PortableNativeWindowSummary {
+    std::size_t objects{}, roots{};
+    std::optional<std::string> configuredRootClass;
+    std::int32_t configuredRootNameCounter{}, graphicsContextNameCounter{};
+};
+// CPU-owner diagnostics only. Does not initialize a window or claim a running
+// root graph. Naming counters and native roots must survive/revert together.
+PortableNativeWindowSummary ReadPortableRuntimeNativeWindowSummary();
+struct PortableNativeWindowFieldSnapshot {
+    std::string declaration;
+    QuestVr::Vm::Value value;
+    std::vector<std::string> propertyRoots;
+};
+struct PortableNativeWindowObjectSnapshot {
+    std::string path,classPath,outerPath;
+    std::vector<PortableNativeWindowFieldSnapshot> fields;
+};
+struct PortableRootWindowProbeResult {
+    QuestVr::Vm::Result execution;
+    std::string pawnRootPath,inspectionError;
+    std::vector<std::string> rootedWindows;
+    std::vector<PortableNativeWindowObjectSnapshot> objects;
+};
+// Non-publishing original1052 diagnostic. Captures the pending typed native
+// root/GC prefix before rollback, not a live HUD or a successful root. It always
+// rolls back, preserves the original callback failure, and never changes INI,
+// substitutes an InitWindow script or runs extra callbacks after a failure.
+PortableRootWindowProbeResult ProbePortableRootWindowInitialization(
+    const std::string& playerActorPath,const QuestVr::Vm::Limits& limits = {});
 struct PortableMapNorthSnapshot {
     bool found{};
     std::string actorPath;

@@ -194,6 +194,8 @@ struct TestHost final:Vm::Host {
     std::vector<std::string> preparations;
     std::function<Vm::Evaluation(const std::string&,const std::vector<Vm::Evaluation>&,
         const Vm::Function*,Vm::Execution&)> executionNative;
+    std::function<std::optional<Value>(std::uint16_t,const std::string&,std::size_t,
+        const Vm::Function*)> argumentSeed;
     std::map<Slot,std::vector<Value>> storage,saved;
     struct CastClass {std::string parent,name;};
     std::map<std::string,CastClass> castClasses;
@@ -331,6 +333,10 @@ struct TestHost final:Vm::Host {
         if(call.kind==Vm::CallKind::Final) return finals.at({caller.source,call.reference});
         return named.at({receiver,call.kind,call.name});
     }
+    std::optional<Value> NativeArgumentSeed(std::uint16_t index,const std::string& receiver,
+        std::size_t slot,const Vm::Function* declaration) override {
+        return argumentSeed ? argumentSeed(index,receiver,slot,declaration) : std::nullopt;
+    }
     Vm::Property Property(const Vm::Function& f,std::int32_t ref,const std::string& name,Value zero,
         std::uint32_t flags=0,std::size_t dimension=1,bool local=false) {
         Vm::Property p{local ? f.path+"."+name : "Fixture.Actor."+name,name,std::move(zero),flags,dimension};
@@ -404,7 +410,7 @@ struct TestHost final:Vm::Host {
         const std::vector<Vm::Evaluation>& arguments,const Vm::Function* declaration,Vm::Execution& execution) override {
         // 1008 belongs only to this generated fixture. Native zero is keyed by
         // its declaration; individual tests provide the host-side observation.
-        if((index==1008u || index==0u) && executionNative) {
+        if((index==1008u || index==0u || index==1454u) && executionNative) {
             std::vector<Value> values;for(const auto& argument:arguments) values.push_back(argument.Load());
             nativeArguments.push_back(std::move(values));nativeReceivers.push_back(receiver);
             nativeDeclarations.push_back(declaration ? declaration->path : "");
@@ -654,9 +660,91 @@ void StartupPrimitiveContracts() {
         Require(result.value.kind==Vm::Kind::Float && result.value.floating==5.0f && host.Load("Self",property).floating==-100.0f &&
             result.writes==1u,"FMin reloaded first argument after second mutated it");
     }
+    for(const auto& [a,b,expected] : std::vector<std::array<float,3>>{{0.3f,0.25f,0.3f},{0.3f,0.5f,0.5f},
+            {-7.0f,3.0f,3.0f},{3.0f,-7.0f,3.0f},{-7.0f,-3.0f,-3.0f},{-3.0f,-7.0f,-3.0f},
+            {0.1f,0.1f,0.1f},{std::numeric_limits<float>::lowest(),std::numeric_limits<float>::max(),std::numeric_limits<float>::max()},
+            {std::numeric_limits<float>::max(),std::numeric_limits<float>::lowest(),std::numeric_limits<float>::max()},
+            {std::numeric_limits<float>::denorm_min(),0.0f,std::numeric_limits<float>::denorm_min()}})
+        Require(evaluate(Native(245u,{Real(a),Real(b)}),"FMax finite ordered/reversed operands").floating==expected,
+            "FMax selected the wrong finite operand");
+    for(const auto first : {0.0f,-0.0f}) {
+        const auto value=evaluate(Native(245u,{Real(first),Real(-first)}),"FMax first operand wins signed-zero tie");
+        Require(std::bit_cast<std::uint32_t>(value.floating)==std::bit_cast<std::uint32_t>(first),
+            "FMax discarded first operand on equal zeros");
+    }
+    for(const bool declared : {false,true}) {
+        TestHost host;
+        const auto mutation=Native(1060u,{Ref(0x01,1),Real(100.0f),Real(5.0f)});
+        auto expression=Native(245u,{Ref(0x01,1),mutation});
+        if(declared) {
+            auto declaration=Function("FMax",{},"Core.Object");declaration.flags=0x2401u;declaration.nativeIndex=245u;
+            declaration.variables={{"FMax.A","A",Value::Float(0),0x80u,1u},{"FMax.B","B",Value::Float(0),0x80u,1u}};
+            host.finals[{"Fixture",9}]=std::make_shared<Vm::Function>(declaration);
+            expression=Call(0x1c,9,{Ref(0x01,1),mutation});
+        }
+        const auto function=Function("FMaxInputSnapshot",Return(expression));
+        const auto property=host.Property(function,1,"Number",Value::Float(0));host.Store("Self",property,{Value::Float(7.0f)});
+        const auto result=Vm::Execute(host,function,"Self");Returned(result,"FMax original sequential input copies");
+        Require(result.value.kind==Vm::Kind::Float && result.value.floating==7.0f && host.Load("Self",property).floating==100.0f &&
+            result.writes==1u,"FMax reloaded first argument after second mutated it");
+        Require(host.observations==std::vector<std::string>{"variable:Self:Number","variable:Self:Number"},
+            "FMax changed left-to-right argument evaluation or repeated a source expression");
+    }
     for(const auto& [v,a,b,expected] : std::vector<std::array<float,4>>{{5,0,10,5},{-1,0,10,0},{11,0,10,10},{5,10,0,10},{15,10,0,0}})
         Require(evaluate(Native(246u,{Real(v),Real(a),Real(b)}),"FClamp ordered/reversed bounds").floating==expected,
             "FClamp sorted bounds or selected wrong branch");
+    const std::array<std::int32_t,9> clampInputs{{std::numeric_limits<std::int32_t>::min(),
+        std::numeric_limits<std::int32_t>::min()+1,-10,-1,0,1,7,
+        std::numeric_limits<std::int32_t>::max()-1,std::numeric_limits<std::int32_t>::max()}};
+    for(const auto value:clampInputs) for(const auto low:clampInputs) for(const auto high:clampInputs) {
+        const auto expected=value<low ? low : value>=high ? high : value;
+        expectInt(Native(251u,{Int(value),Int(low),Int(high)}),expected,"Clamp signed32 ordered/reversed/equal boundaries");
+    }
+    expectInt(Native(251u,{Bytes{0x24,255u},Int(0),Int(7)}),7,"Clamp byte input fills zero-initialized Int destination");
+    expectInt(Native(251u,{{0x0b},Int(-5),Int(5)}),0,"Clamp Nothing value retains initialized zero");
+    expectInt(Native(251u,{Int(-2),{0x0b},Int(10)}),0,"Clamp Nothing lower bound retains initialized zero");
+    expectInt(Native(251u,{Int(2),Int(-10),{0x0b}}),0,"Clamp Nothing upper bound retains initialized zero");
+    expectInt(Native(251u,{Join({{0x44},Real(5.9f)}),Int(0),Int(7)}),5,"Clamp actual FloatToInt conversion input");
+    for(const bool declared:{false,true}) for(const bool mutateLower:{false,true}) {
+        TestHost host;
+        const auto mutation=Native(1060u,{Ref(0x01,1),Int(100),Int(mutateLower ? 10 : 0)});
+        auto expression=mutateLower ? Native(251u,{Int(5),Ref(0x01,1),mutation}) :
+            Native(251u,{Ref(0x01,1),mutation,Int(10)});
+        if(declared) {
+            auto declaration=Function("Clamp",{},"Core.Object");declaration.flags=0x2401u;declaration.nativeIndex=251u;
+            declaration.variables={{"Clamp.V","V",Value::Integer(0),0x80u,1u},
+                {"Clamp.A","A",Value::Integer(0),0x80u,1u},{"Clamp.B","B",Value::Integer(0),0x80u,1u}};
+            host.finals[{"Fixture",9}]=std::make_shared<Vm::Function>(declaration);
+            expression=mutateLower ? Call(0x1c,9,{Int(5),Ref(0x01,1),mutation}) :
+                Call(0x1c,9,{Ref(0x01,1),mutation,Int(10)});
+        }
+        const auto function=Function("ClampInputSnapshot",Return(expression));
+        const auto property=host.Property(function,1,"Number",Value::Integer(0));
+        host.Store("Self",property,{Value::Integer(mutateLower ? 0 : 5)});
+        const auto result=Vm::Execute(host,function,"Self");Returned(result,"Clamp original sequential Int input copies");
+        Require(result.value.kind==Vm::Kind::Int && result.value.integer==5 && host.Load("Self",property).integer==100 &&
+            result.writes==1u,"Clamp reloaded an earlier Int input after a later argument mutated it");
+        Require(host.observations==std::vector<std::string>{"variable:Self:Number","variable:Self:Number"},
+            "Clamp repeated or reordered its argument expressions");
+    }
+    {
+        TestHost host;auto function=Function("ClampArgumentOrder",Return(Native(251u,{
+            Native(1001u),Native(1002u),Native(1060u,{Ref(0x01,1),Int(100),Int(10)})})));
+        const auto property=host.Property(function,1,"Number",Value::Integer(0));host.Store("Self",property,{Value::Integer(0)});
+        const auto result=Vm::Execute(host,function,"Self");Returned(result,"Clamp signed branch and argument order");
+        Require(result.value.integer==23 && host.observations==std::vector<std::string>{"lhs","rhs","variable:Self:Number"},
+            "Clamp evaluated V/A/B out of order or sorted reversed bounds");
+    }
+    for(const bool budgetFailure:{false,true}) {
+        TestHost host;auto limits=Vm::Limits{};if(budgetFailure) limits.writes=0u;
+        const auto function=Function("ClampMutationRollback",Join({Native(1000u),
+            Native(251u,{Ref(0x01,1),Native(1060u,{Ref(0x01,1),Int(100),Int(0)}),Int(10)}),Native(4095u),Return()}));
+        const auto property=host.Property(function,1,"Number",Value::Integer(0));host.Store("Self",property,{Value::Integer(5)});
+        const auto result=Vm::Execute(host,function,"Self",{},limits);
+        Failed(result,budgetFailure ? Vm::Status::Budget : Vm::Status::Unsupported,host,"Clamp nested argument effects roll back");
+        Require(host.Load("Self",property).integer==5 && host.effects==0u && host.rng==12345u,
+            "Clamp input snapshot detached a genuine OUT mutation from rollback");
+    }
     const auto zero=evaluate(Native(246u,{Real(-0.0f),Real(0.0f),Real(0.0f)}),"FClamp signed zero retention");
     Require(std::bit_cast<std::uint32_t>(zero.floating)==0x80000000u,"FClamp discarded in-range negative zero");
     for(const auto number : {0.0f,-0.0f,0.25f,-0.5f,1.0f}) {
@@ -679,15 +767,22 @@ void StartupPrimitiveContracts() {
         Failed(result,status,host,context);Require(host.effects==0u && host.rng==12345u,context+": earlier effect/RNG escaped rollback");
     };
     for(const auto& expression : {Native(125u,{Int(1)}),Native(124u,{String("a"),Int(1)}),Native(189u,{String("1")}),
-        Native(244u,{Real(1),String("0")}),Native(246u,{Real(1),String("0"),Real(2)}),Native(249u,{String("1"),Int(2)}),Join({{0x56},Int(1)})})
+        Native(244u,{Real(1),String("0")}),Native(245u,{Real(1),String("0")}),Native(245u,{String("0"),Real(1)}),
+        Native(246u,{Real(1),String("0"),Real(2)}),Native(249u,{String("1"),Int(2)}),
+        Native(251u,{String("1"),Int(0),Int(7)}),Native(251u,{Int(1),Real(0),Int(7)}),
+        Native(251u,{Int(1),Int(0),{0x28}}),Native(251u,{{0x2a},Int(0),Int(7)}),Join({{0x56},Int(1)})})
         refuse(expression,Vm::Status::Unsupported,"Startup concrete argument types refused");
     for(const auto& expression : {Native(125u,{}),Native(126u,{String("a")}),Native(127u,{String("a")}),
-        Native(127u,{String("a"),Int(0),Int(1),Int(2)}),Native(168u,{String("a")}),Native(244u,{Real(1)}),Native(249u,{Int(1)})})
+        Native(127u,{String("a"),Int(0),Int(1),Int(2)}),Native(168u,{String("a")}),Native(244u,{Real(1)}),
+        Native(245u,{}),Native(245u,{Real(1)}),Native(245u,{Real(1),Real(2),Real(3)}),Native(249u,{Int(1)}),
+        Native(251u,{}),Native(251u,{Int(1)}),Native(251u,{Int(1),Int(0)}),Native(251u,{Int(1),Int(0),Int(7),Int(9)})})
         refuse(expression,Vm::Status::Invalid,"Startup native arity refused");
     for(const auto nonfinite : {std::numeric_limits<float>::quiet_NaN(),std::numeric_limits<float>::infinity()}) {
         refuse(Native(189u,{Real(nonfinite)}),Vm::Status::Invalid,"Tan nonfinite ingress policy");
         refuse(Native(244u,{Real(nonfinite),Real(1)}),Vm::Status::Invalid,"FMin nonfinite first argument policy");
         refuse(Native(244u,{Real(1),Real(nonfinite)}),Vm::Status::Invalid,"FMin nonfinite second argument policy");
+        refuse(Native(245u,{Real(nonfinite),Real(1)}),Vm::Status::Invalid,"FMax nonfinite first argument policy");
+        refuse(Native(245u,{Real(1),Real(nonfinite)}),Vm::Status::Invalid,"FMax nonfinite second argument policy");
         for(const auto& expression : {Native(246u,{Real(nonfinite),Real(0),Real(1)}),Native(246u,{Real(0),Real(nonfinite),Real(1)}),
             Native(246u,{Real(0),Real(0),Real(nonfinite)})})
             refuse(expression,Vm::Status::Invalid,"Clamp nonfinite ingress refused before x87 branch emulation");
@@ -1475,6 +1570,21 @@ void ClassContextContracts() {
         r=Vm::Execute(host,f,"Self");Returned(r,"FMin typed null Float argument destination");
         Require(r.value.kind==Vm::Kind::Float && r.value.floating==0.0f,"FMin did not use actual four-byte Float zero destination");
     }
+    for(const auto bytes:{std::uint8_t{0u},std::uint8_t{4u}}) for(const bool first:{false,true}) {
+        const auto nullFloat=Context({0x2a},Native(4095u),bytes,0x12u);
+        f.bytecode=Return(first ? Native(245u,{nullFloat,Real(-2.5f)}) : Native(245u,{Real(-2.5f),nullFloat}));
+        r=Vm::Execute(host,f,"Self");Returned(r,"FMax typed null Float argument destination");
+        Require(r.value.kind==Vm::Kind::Float && r.value.floating==0.0f,
+            "FMax did not retain/zero its actual four-byte Float argument destination");
+    }
+    for(const auto bytes:{std::uint8_t{0u},std::uint8_t{4u}}) for(unsigned slot=0u;slot<3u;++slot) {
+        const auto nullInt=Context({0x2a},Native(4095u),bytes,0x12u);
+        f.bytecode=Return(slot==0u ? Native(251u,{nullInt,Int(-5),Int(5)}) :
+            slot==1u ? Native(251u,{Int(-2),nullInt,Int(10)}) : Native(251u,{Int(2),Int(-10),nullInt}));
+        r=Vm::Execute(host,f,"Self");Returned(r,"Clamp typed null Int argument destination");
+        Require(r.value.kind==Vm::Kind::Int && r.value.integer==0,
+            "Clamp did not retain/zero its actual four-byte Int argument destination");
+    }
     f.bytecode=Return(Native(215u,{Context({0x2a},Native(4095u),12u,0x12u),
         Bytes{0x23,0,0,128,63,0,0,0,64,0,0,64,64}}));
     r=Vm::Execute(host,f,"Self");Returned(r,"Direct Vector native null destination");
@@ -1483,6 +1593,184 @@ void ClassContextContracts() {
     r=refused(f,Vm::Status::Unsupported,"Unaudited direct native argument destination");
     Require(r.error=="VM context argument result destination layout is unavailable", "Unknown direct native guessed null argument layout from byte count");
     std::cout<<"Class default receiver/result destinations: "<<checks-initialChecks<<" checks, "
+        <<rejections-initialRejections<<" refusal controls.\n";
+}
+void NativeArgumentSeedContracts() {
+    const auto initialChecks=checks,initialRejections=rejections;
+    const auto nullResult=[](std::uint8_t bytes) {return Context({0x2a},Native(4095u),bytes);};
+    const auto run=[&](const Value& seed,const Bytes& argument,const Value& expected,const std::string& label) {
+        TestHost host;
+        host.argumentSeed=[&](std::uint16_t index,const std::string& receiver,std::size_t slot,const Vm::Function* declaration)
+            ->std::optional<Value> {
+            Require(index==1454u && receiver=="Self" && slot==0u && !declaration,label+": seed identity mismatch");
+            host.observations.push_back("seed");return seed;
+        };
+        host.executionNative=[&](const std::string&,const std::vector<Vm::Evaluation>& arguments,
+            const Vm::Function*,Vm::Execution&) {
+            Require(arguments.size()==1u && !arguments[0].reference,label+": materialized argument retained an alias");
+            return Vm::Evaluation{arguments[0].Load(),{}};
+        };
+        const auto result=Vm::Execute(host,Function("SeededCursor",Return(Native(1454u,{argument}))),"Self");
+        Returned(result,label);
+        Require(Vm::Equal(result.value,expected),label+": native temporary seed/result differs");
+        Require(host.observations==std::vector<std::string>{"seed"} && host.effects==0u,
+            label+": null result evaluated its skipped child or captured more than once");
+    };
+    run(Value::Float(-1.0f),nullResult(0u),Value::Float(-1.0f),"Native cursor NoWrite retains negative-one seed");
+    run(Value::Float(-1.0f),nullResult(4u),Value::Float(0.0f),"Native cursor full Float zero fill");
+    run(Value::Float(-1.0f),nullResult(3u),Value::Float(-0.5f),"Native cursor partial Float preserves remaining seed bytes");
+    run(Value::Integer(0x11223344),nullResult(2u),Value::Integer(0x11220000),"Native partial Int preserves high seed bytes");
+    run(Value::Byte(255u),nullResult(1u),Value::Byte(0u),"Native Byte full result zero fill");
+    run(Value::Float(-1.0f),{0x0b},Value{},"Native explicit Nothing remains omitted despite captured seed");
+    run(Value::Float(-1.0f),Real(3.5f),Value::Float(3.5f),"Written native input replaces seed normally");
+    {
+        TestHost host;
+        auto caller=Function("DeclaredCursor",Return(Call(0x1c,7,{nullResult(0u)})));
+        auto declaration=Function("SetDefaultCursor",{},"Extension.Window");
+        declaration.flags=0x400u;declaration.nativeIndex=1454u;
+        declaration.variables={host.Property(declaration,1,"HotX",Value::Float(0.0f),0x90u,1u,true)};
+        host.finals[{caller.source,7}]=std::make_shared<Vm::Function>(declaration);
+        host.argumentSeed=[&](std::uint16_t index,const std::string&,std::size_t slot,const Vm::Function* actual)
+            ->std::optional<Value> {
+            Require(index==1454u && slot==0u && actual && actual->path==declaration.path,
+                "Native seed did not receive actual resolved declaration");return Value::Float(-1.0f);
+        };
+        host.executionNative=[](const std::string&,const std::vector<Vm::Evaluation>& arguments,const Vm::Function*,Vm::Execution&) {
+            return Vm::Evaluation{arguments.at(0).Load(),{}};
+        };
+        const auto result=Vm::Execute(host,caller,"Self");Returned(result,"Actual native seed overrides declared Float zero");
+        Require(result.value.kind==Vm::Kind::Float && result.value.floating==-1.0f,
+            "Declared parameter zero replaced actual native temporary seed");
+    }
+    {
+        TestHost host;
+        const auto caller=Function("AllSeedsBeforeArguments",Return(Context(Ref(0x20,9),Native(1454u,{
+            Native(1060u,{Ref(0x01,1),Real(99.0f)}),nullResult(0u)}))));
+        const auto current=host.Property(caller,1,"CurrentHotspot",Value::Float(0.0f));
+        host.Store("Self",current,{Value::Float(-1.0f)});host.objects[{caller.source,9}]="WindowReceiver";
+        host.argumentSeed=[&](std::uint16_t index,const std::string& receiver,std::size_t slot,const Vm::Function*)
+            ->std::optional<Value> {
+            if(index!=1454u) return std::nullopt;
+            Require(receiver=="WindowReceiver" && slot<2u,"Native seeds used argument frame rather than native receiver");
+            host.observations.push_back("seed"+std::to_string(slot));return host.Load("Self",current);
+        };
+        host.executionNative=[&](const std::string& receiver,const std::vector<Vm::Evaluation>& arguments,const Vm::Function*,Vm::Execution&) {
+            Require(receiver=="WindowReceiver" && arguments.size()==2u && arguments[0].Load().floating==99.0f &&
+                arguments[1].Load().floating==-1.0f,"A seed was recaptured after an earlier argument mutated its source");
+            return Vm::Evaluation{arguments[1].Load(),{}};
+        };
+        const auto result=Vm::Execute(host,caller,"Self");Returned(result,"All detached seeds captured before argument evaluation");
+        Require(host.observations==std::vector<std::string>{"seed0","seed1","variable:Self:CurrentHotspot"} &&
+            host.Load("Self",current).floating==99.0f,"Seed capture order or caller argument frame changed");
+    }
+    {
+        TestHost host;auto caller=Function("OrderedNativeArguments",Return(Native(1454u,{Native(1001u),Native(1002u)})));
+        host.argumentSeed=[&](std::uint16_t index,const std::string&,std::size_t slot,const Vm::Function*)->std::optional<Value> {
+            if(index==1454u) {host.observations.push_back("seed"+std::to_string(slot));return Value::Integer(-1);}
+            return std::nullopt;
+        };
+        host.executionNative=[](const std::string&,const std::vector<Vm::Evaluation>& arguments,const Vm::Function*,Vm::Execution&) {
+            return Vm::Evaluation{arguments.at(1).Load(),{}};
+        };
+        const auto result=Vm::Execute(host,caller,"Self");Returned(result,"Native argument evaluation remains left-to-right");
+        Require(host.observations==std::vector<std::string>{"seed0","seed1","lhs","rhs"},
+            "Native seeds or written arguments were evaluated in the wrong order");
+    }
+    {
+        TestHost host;const auto caller=Function("CursorInputCopiesBeforeLaterMutation",Return(Native(1454u,{
+            Ref(0x01,1),Native(1060u,{Ref(0x01,1),Ref(0x20,2)})})));
+        const auto texture=host.Property(caller,1,"CursorTexture",Value::Text(Vm::Kind::Object,{}));
+        host.Store("Self",texture,{Value::Text(Vm::Kind::Object,"Original.Cursor")});
+        host.objects[{caller.source,2}]="Replacement.Cursor";
+        host.argumentSeed=[](std::uint16_t index,const std::string&,std::size_t,const Vm::Function*)->std::optional<Value> {
+            return index==1454u ? std::optional<Value>{Value::Text(Vm::Kind::Object,{})} : std::nullopt;
+        };
+        host.executionNative=[](const std::string&,const std::vector<Vm::Evaluation>& arguments,const Vm::Function*,Vm::Execution&) {
+            Require(arguments.size()==2u && !arguments[0].reference && !arguments[1].reference &&
+                arguments[0].Load().text=="Original.Cursor" && arguments[1].Load().text=="Replacement.Cursor",
+                "Cursor ordinary input alias changed during a later argument expression");
+            return Vm::Evaluation{arguments[0].Load(),{}};
+        };
+        const auto result=Vm::Execute(host,caller,"Self");Returned(result,"Cursor input sequential snapshots preserve earlier texture");
+        Require(result.value.text=="Original.Cursor" && host.Load("Self",texture).text=="Replacement.Cursor",
+            "Cursor snapshot lost actual argument effects or retained a mutable alias");
+    }
+    {
+        TestHost host;const auto caller=Function("ConsoleCommandCopiedInput",Return(Call(0x1c,8,{
+            Native(1007u,{Ref(0x01,1)})})));
+        auto command=Function("ConsoleCommand",{},"Engine.PlayerPawn");command.flags=0x400u;command.nativeIndex=0u;
+        command.variables={host.Property(command,2,"Command",Value::Text(Vm::Kind::String,{}),0x80u,1u,true)};
+        host.finals[{caller.source,8}]=std::make_shared<Vm::Function>(command);
+        const auto text=host.Property(caller,1,"CommandText",Value::Text(Vm::Kind::String,{}));
+        host.Store("Self",text,{Value::Text(Vm::Kind::String,"get Engine.Engine Root")});
+        host.executionNative=[](const std::string&,const std::vector<Vm::Evaluation>& arguments,const Vm::Function*,Vm::Execution&) {
+            Require(arguments.size()==1u && !arguments[0].reference,"PlayerPawn ConsoleCommand retained an ordinary FString alias");
+            return Vm::Evaluation{arguments[0].Load(),{}};
+        };
+        const auto result=Vm::Execute(host,caller,"Self");Returned(result,"Native-zero ConsoleCommand snapshot uses actual declaration");
+        Require(result.value.text=="get Engine.Engine Root","ConsoleCommand input copy changed its text");
+    }
+    {
+        TestHost host;auto caller=Function("ScriptDoesNotCaptureNativeSeeds",Return(Call(0x1c,1,{Real(2.0f)})));
+        auto script=Function("ScriptCallee",Return(Ref(0x00,2)),"ScriptSource");
+        script.variables={host.Property(script,2,"Value",Value::Float(0.0f),0x80u,1u,true)};
+        host.finals[{caller.source,1}]=std::make_shared<Vm::Function>(script);
+        host.argumentSeed=[](std::uint16_t,const std::string&,std::size_t,const Vm::Function*)->std::optional<Value> {
+            throw std::runtime_error("Script call incorrectly captured native argument seeds");
+        };
+        const auto result=Vm::Execute(host,caller,"Self");Returned(result,"Script functions do not ask for native seeds");
+        Require(result.value.kind==Vm::Kind::Float && result.value.floating==2.0f,"Script argument binding regressed");
+    }
+    {
+        TestHost host;auto caller=Function("SeededOutAlias",Return(Native(1004u,{Ref(0x01,1)})));
+        const auto target=host.Property(caller,1,"Out",Value::Integer(0));host.Store("Self",target,{Value::Integer(3)});
+        host.argumentSeed=[](std::uint16_t,const std::string&,std::size_t,const Vm::Function*) {return std::optional<Value>{Value::Integer(-1)};};
+        const auto result=Vm::Execute(host,caller,"Self");Returned(result,"Native seeds preserve written OUT aliases");
+        Require(host.Load("Self",target).integer==9 && result.writes==1u,"Seed detached an actual OUT binding");
+    }
+    const auto refuse=[&](const Value& seed,const std::uint8_t bytes,const Vm::Status status,const std::string& label,
+        const Vm::Limits& limits=Vm::Limits{}) {
+        TestHost host;
+        bool captured{};
+        host.argumentSeed=[&](std::uint16_t index,const std::string&,std::size_t,const Vm::Function*)->std::optional<Value> {
+            if(index!=1454u) return std::nullopt;
+            captured=true;
+            Value value=seed;value.text.reserve(seed.text.capacity());
+            return value;
+        };
+        const auto caller=Function("RefusedNativeSeed",Join({Native(1000u),Let(Ref(0x01,1),Int(55)),
+            Return(Native(1454u,{nullResult(bytes)}))}));
+        const auto target=host.Property(caller,1,"Target",Value::Integer(0));host.Store("Self",target,{Value::Integer(3)});
+        const auto result=Vm::Execute(host,caller,"Self",{},limits);Failed(result,status,host,label);
+        Require(captured && host.effects==0u && host.rng==12345u && host.Load("Self",target).integer==3,
+            label+": seed validation/materialization escaped transaction rollback");
+        return result;
+    };
+    refuse(Value::Bool(true),1u,Vm::Status::Unsupported,"Partial packed Bool native seed remains unsupported");
+    Value structure;structure.kind=Vm::Kind::Struct;structure.fields["R"]=Value::Byte(255u);
+    refuse(structure,1u,Vm::Status::Unsupported,"Partial Struct native seed remains unsupported");
+    refuse(Value::Text(Vm::Kind::Object,"Some.Object"),1u,Vm::Status::Unsupported,"Partial Object native seed remains unsupported");
+    refuse(Value::Float(-1.0f),5u,Vm::Status::Unsupported,"Native seed zero fill cannot overrun destination");
+    refuse(Value::Float(std::numeric_limits<float>::quiet_NaN()),0u,Vm::Status::Invalid,"Nonfinite native seed rejected before argument evaluation");
+    auto stringLimit=Vm::Limits{};stringLimit.stringBytes=64u;
+    refuse(Value::Text(Vm::Kind::String,std::string(65u,'x')),0u,Vm::Status::Budget,"Native seed text storage is bounded",stringLimit);
+    Value retained;retained.kind=Vm::Kind::String;retained.text="x";retained.text.reserve(200000u);
+    auto storageLimit=Vm::Limits{};storageLimit.retainedBytes=100000u;
+    refuse(retained,0u,Vm::Status::Budget,"Native seed allocated capacity is bounded",storageLimit);
+    {
+        TestHost host;
+        host.argumentSeed=[&](std::uint16_t index,const std::string&,std::size_t slot,const Vm::Function*)->std::optional<Value> {
+            if(index!=1454u) return std::nullopt;
+            host.observations.push_back("seed"+std::to_string(slot));
+            if(slot==1u) throw std::runtime_error("Fixture rejected second native seed");
+            return Value::Integer(-1);
+        };
+        const auto caller=Function("SeedFailureBeforeAnyArgument",Return(Native(1454u,{Native(1000u),Native(1000u)})));
+        const auto result=Vm::Execute(host,caller,"Self");Failed(result,Vm::Status::Unsupported,host,"Seed failure before argument work");
+        Require(host.observations==std::vector<std::string>{"seed0","seed1"} && host.effects==0u && host.nativeArguments.empty(),
+            "Failed seed capture evaluated arguments or invoked native body");
+    }
+    std::cout<<"Detached native argument result seeds: "<<checks-initialChecks<<" checks and "
         <<rejections-initialRejections<<" refusal controls.\n";
 }
 void OptionalAndReferenceTables() {
@@ -2947,6 +3235,7 @@ int main() {
         ExecutionContracts();
         TransactionContracts();
         ProgramAndEligibilityContracts();
+        NativeArgumentSeedContracts();
         VectorNativeContracts();
         StartupPrimitiveContracts();
         IteratorContracts();

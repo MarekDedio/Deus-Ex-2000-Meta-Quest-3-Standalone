@@ -3139,13 +3139,12 @@ void VerifyOriginalWorldStartupProbe(const std::filesystem::path& legacy,
         result.visited.at(static_cast<std::size_t>(PortableWorldStartupPhase::InitGame)) == 1u,
         "Original world prefix did not perform true GameInfo birth + all-world InitExecution + InitGame: " +
             std::string(PortableWorldStartupPhaseName(result.phase)) + " " + result.execution.error);
-    Require(result.phase == PortableWorldStartupPhase::PreBeginPlay && result.actorSlot == 1332u &&
-        result.actorPath == "00_Training.Camera5" && result.gameInfoPath == "00_Training.DeusExGameInfo0" &&
-        result.execution.status == Status::Unsupported && result.execution.function == "Engine.PlayerPawn.ConsoleCommand" &&
-        result.execution.offset == 0u && result.execution.opcode == 0u &&
-        result.execution.error == "Unsupported runtime native 0 (Engine.PlayerPawn.ConsoleCommand)" &&
-        result.execution.callStack.size() >= 2u &&
-        result.execution.callStack.back() == "Engine.PlayerPawn.ConsoleCommand",
+    Require(result.phase == PortableWorldStartupPhase::BeginPlay && result.actorSlot == 126u &&
+        result.actorPath == "00_Training.DeusExMover16" && result.gameInfoPath == "00_Training.DeusExGameInfo0" &&
+        result.execution.status == Status::Unsupported && result.execution.function == "Engine.Mover.BeginPlay" &&
+        result.execution.offset == 166u && result.execution.opcode == 0x61u &&
+        result.execution.error == "Unsupported runtime native 266" &&
+        !result.execution.callStack.empty() && result.execution.callStack.back() == "Engine.Mover.BeginPlay",
         "Unmodified Training first startup gap changed without an updated original contract: " +
             std::string(PortableWorldStartupPhaseName(result.phase)) + " " + result.actorPath + " " + result.execution.error);
     verifyRollback();
@@ -3167,7 +3166,7 @@ void VerifyOriginalWorldStartupProbe(const std::filesystem::path& legacy,
         << " phase=" << PortableWorldStartupPhaseName(result.phase) << " slot=" << result.actorSlot
         << " actor=" << result.actorPath << " function=" << result.execution.function << ':' << result.execution.offset
         << " opcode=" << static_cast<unsigned>(result.execution.opcode) << " error=" << result.execution.error
-        << "; native280 and actual GameInfo.DefaultPlayerName ClassContext passed; next original Camera5 PlayerPawn.ConsoleCommand boundary; owned synthetic client/viewport, exact repeated failure, all state/GC/birth/revision bytes rolled back; NOT world/player completion\n";
+        << "; actual GameInfo.DefaultPlayerName, unbound Camera5 ConsoleCommand, FMax245, qualified Actor.Region/GRI Int Region and Clamp251 passed; next original Mover Move266 boundary; owned synthetic client/viewport, exact repeated failure, all state/GC/birth/revision bytes rolled back; NOT world/player completion\n";
 }
 
 void TestOriginal(const std::filesystem::path& root, const bool inventoryOnly = false,

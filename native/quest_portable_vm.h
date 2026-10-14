@@ -177,6 +177,14 @@ public:
             if ((property.flags&0x80u) && !(property.flags&0x400u)) parameters.push_back(property);
         return parameters;
     }
+    // An audited native wrapper may initialize its argument result temporary
+    // to something other than the declaration's zero (e.g. cursor hotspots
+    // start at -1). Capture detached, read-only seeds for ALL supplied argument
+    // slots before evaluating ANY argument. Do not mutate host state, expose
+    // references, or resolve a seed from state changed by an earlier argument.
+    // No seed preserves the existing declared/builtin result destination.
+    virtual std::optional<Value> NativeArgumentSeed(std::uint16_t,
+        const std::string&, std::size_t, const Function*) { return std::nullopt; }
     virtual std::shared_ptr<const Function> ResolveEvent(const std::string&,
         const std::string&, bool) { throw std::runtime_error("VM event dispatch unavailable"); }
     virtual Property ResolveProperty(const Function&, std::int32_t reference) = 0;

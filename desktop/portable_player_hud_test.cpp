@@ -166,6 +166,107 @@ int main(int argc,char** argv) {
         Require(SavePortableRuntimeState(baselinePath.string()),"Cannot checkpoint dormant original player");
         const auto baseline=Bytes(baselinePath);
         const auto count=GetPortableRuntimeMapActors(true).size();
+        const auto windowRevision=GetPortableRuntimeWorldRevision();
+        const auto windowBaseline=ReadPortableRuntimeNativeWindowSummary();
+        Require(windowBaseline.configuredRootClass==std::optional<std::string>("DeusEx.DeusExRootWindow") &&
+            windowBaseline.objects==0u && windowBaseline.roots==0u,"Original Root INI/native window baseline is wrong");
+        const auto windowStats=GC::GetStats();
+        const auto pending=ProbePortableRootWindowInitialization(player);
+        Require(!pending.execution.passed() && !pending.execution.committed && pending.inspectionError.empty() &&
+            pending.execution.function=="DeusEx.DeusExRootWindow.InitWindow" && pending.execution.offset==24u &&
+            pending.execution.error.find("1410")!=std::string::npos && pending.objects.size()==3u &&
+            pending.rootedWindows==std::vector<std::string>{pending.pawnRootPath},
+            "Original root prefix probe did not capture the actual pending native graph: "+pending.inspectionError);
+        const auto object=[&](const std::string& path)->const PortableNativeWindowObjectSnapshot& {
+            const auto found=std::find_if(pending.objects.begin(),pending.objects.end(),[&](const auto& view) {return view.path==path;});
+            Require(found!=pending.objects.end(),"Pending root prefix has no native object: "+path);return *found;
+        };
+        const auto field=[&](const PortableNativeWindowObjectSnapshot& view,const std::string& key)->const PortableNativeWindowFieldSnapshot& {
+            const auto found=std::find_if(view.fields.begin(),view.fields.end(),[&](const auto& entry) {return entry.declaration==key;});
+            Require(found!=view.fields.end(),"Pending root prefix has no declared field: "+key);return *found;
+        };
+        const auto edge=[&](const PortableNativeWindowObjectSnapshot& view,const std::string& key,const std::string& target) {
+            const auto& entry=field(view,key);
+            Require(entry.value.kind==Kind::Object && entry.value.text==target &&
+                entry.propertyRoots==(target.empty()?std::vector<std::string>{}:std::vector<std::string>{target}),
+                "Native window reflected/GC edge differs from the original callback: "+key);
+        };
+        const auto& rootView=object(pending.pawnRootPath);
+        Require(rootView.classPath=="DeusEx.DeusExRootWindow" && rootView.outerPath==player,
+            "Native root did not use the original class and actual Pawn Outer");
+        edge(rootView,"Extension.RootWindow.parentPawn",player);
+        edge(rootView,"Extension.Window.normalFont","Extension.TechMedium");
+        edge(rootView,"Extension.Window.boldFont","Extension.TechMedium");
+        edge(rootView,"Extension.Window.winParent",{});
+        edge(rootView,"Extension.Window.defaultCursor","Extension.defaultCursor");
+        edge(rootView,"Extension.Window.defaultCursorShadow",{});
+        const auto& windowGC=object(field(rootView,"Extension.Window.wGc").value.text);
+        const auto& generalGC=object(field(rootView,"Extension.Window.gGc").value.text);
+        Require(windowGC.path!=generalGC.path && windowGC.classPath=="Extension.GC" && generalGC.classPath=="Extension.GC" &&
+            windowGC.outerPath==rootView.path && generalGC.outerPath==rootView.path,"Native root has no two distinct owned GC instances");
+        edge(rootView,"Extension.Window.wGc",windowGC.path);edge(rootView,"Extension.Window.gGc",generalGC.path);
+        for(const auto* name:{"normalFont","boldFont"}) {
+            edge(windowGC,std::string("Extension.GC.")+name,"Extension.TechMedium");
+            edge(generalGC,std::string("Extension.GC.")+name,{});
+        }
+        for(const auto* name:{"defaultHotX","defaultHotY"}) {
+            const auto& value=field(rootView,std::string("Extension.Window.")+name).value;
+            Require(value.kind==Kind::Float && value.floating==-1.0f,"Original omitted cursor hotspot did not retain native -1");
+        }
+        const auto& cursorColor=field(rootView,"Extension.Window.defaultCursorColor").value;
+        Require(cursorColor.kind==Kind::Struct && cursorColor.fields.size()==4u &&
+            cursorColor.fields.at("r").integer==255 && cursorColor.fields.at("g").integer==255 &&
+            cursorColor.fields.at("b").integer==255 && cursorColor.fields.at("a").integer==0,
+            "Original cursor RGB/default storage policy is incorrect");
+        for(const auto& [name,texture]:{
+            std::pair{"defaultEditCursor","DefaultTextCursor"},std::pair{"DefaultMoveCursor","DefaultMoveCursor"},
+            std::pair{"defaultHorizontalMoveCursor","DefaultHMoveCursor"},std::pair{"defaultVerticalMoveCursor","DefaultVMoveCursor"},
+            std::pair{"defaultTopLeftMoveCursor","DefaultTLMoveCursor"},std::pair{"defaultTopRightMoveCursor","DefaultTRMoveCursor"}})
+            edge(rootView,std::string("Extension.RootWindow.")+name,std::string("Extension.")+texture);
+        for(const auto* name:{"bIsVisible","bNeedsQuery","bNeedsReconfigure"}) {
+            const auto& value=field(rootView,std::string("Extension.Window.")+name).value;
+            Require(value.kind==Kind::Bool && value.boolean!=(std::string(name)=="bIsVisible"),
+                "Hidden native root reconfiguration branch changed visibility or failed to mark Self");
+        }
+        Require(ReadPortableRuntimeNativeWindowSummary().objects==0u &&
+            Declared(player,"Extension.PlayerPawnExt.RootWindow",Kind::Object).text.empty() &&
+            GC::GetStats().numObjects==windowStats.numObjects && GC::GetStats().memoryUsage==windowStats.memoryUsage &&
+            SavePortableRuntimeState(inspectPath.string()) && Bytes(inspectPath)==baseline,
+            "Original root prefix probe published its pending root/GC state");
+        const auto rootAttempt=ExecutePortableActorFunction(player,"Extension.PlayerPawnExt.InitRootWindow");
+        std::cout<<"ORIGINAL unbound root initialization boundary: "<<rootAttempt.function<<':'<<rootAttempt.offset<<
+            " opcode="<<unsigned(rootAttempt.opcode)<<" "<<rootAttempt.error<<std::endl;
+        Require(!rootAttempt.passed() && !rootAttempt.committed && rootAttempt.error.find("1410")!=std::string::npos &&
+            std::find(rootAttempt.callStack.begin(),rootAttempt.callStack.end(),"DeusEx.DeusExRootWindow.InitWindow")!=rootAttempt.callStack.end(),
+            "Native1052 did not construct/dispatch original root without a fabricated client prerequisite");
+        const auto windowsAfter=ReadPortableRuntimeNativeWindowSummary();
+        Require(windowsAfter.objects==0u && windowsAfter.roots==0u &&
+            windowsAfter.configuredRootNameCounter==windowBaseline.configuredRootNameCounter &&
+            windowsAfter.graphicsContextNameCounter==windowBaseline.graphicsContextNameCounter &&
+            Declared(player,"Extension.PlayerPawnExt.RootWindow",Kind::Object).text.empty() &&
+            GC::GetStats().numObjects==windowStats.numObjects && GC::GetStats().memoryUsage==windowStats.memoryUsage &&
+            GetPortableRuntimeWorldRevision()==windowRevision && GetPortableRuntimeMapActors(true).size()==count &&
+            SavePortableRuntimeState(inspectPath.string()) && Bytes(inspectPath)==baseline,
+            "Root callback failure retained native roots/GC objects/names/player edges or map/save changes");
+        const auto repeatedRoot=ExecutePortableActorFunction(player,"Extension.PlayerPawnExt.InitRootWindow");
+        Require(repeatedRoot.status==rootAttempt.status && repeatedRoot.function==rootAttempt.function &&
+            repeatedRoot.offset==rootAttempt.offset && repeatedRoot.opcode==rootAttempt.opcode &&
+            repeatedRoot.error==rootAttempt.error && repeatedRoot.callStack==rootAttempt.callStack,
+            "Original root callback did not reproduce its exact first remaining gap after rollback");
+        for(const auto writeLimit:{1u,5u,25u,100u}) {
+            QuestVr::Vm::Limits windowLimits;windowLimits.writes=writeLimit;
+            const auto bounded=ExecutePortableActorFunction(player,"Extension.PlayerPawnExt.InitRootWindow",{},windowLimits);
+            Require(bounded.status==QuestVr::Vm::Status::Budget && !bounded.committed,
+                "Root native constructor ignored the shared write budget: "+std::to_string(writeLimit)+" "+bounded.error);
+            const auto boundedWindows=ReadPortableRuntimeNativeWindowSummary();
+            Require(boundedWindows.objects==0u && boundedWindows.roots==0u &&
+                boundedWindows.configuredRootNameCounter==windowBaseline.configuredRootNameCounter &&
+                boundedWindows.graphicsContextNameCounter==windowBaseline.graphicsContextNameCounter &&
+                Declared(player,"Extension.PlayerPawnExt.RootWindow",Kind::Object).text.empty() &&
+                GC::GetStats().numObjects==windowStats.numObjects && GC::GetStats().memoryUsage==windowStats.memoryUsage &&
+                GetPortableRuntimeWorldRevision()==windowRevision && SavePortableRuntimeState(inspectPath.string()) &&
+                Bytes(inspectPath)==baseline,"Budgeted root construction retained reflected/window/GC state");
+        }
         auto clientLifetime=std::make_shared<QuestVr::NativeClientLifetime>();
         BindPortableRuntimeClient(clientLifetime,17u);
         RegisterPortableRuntimeViewport(17u,{91u,1440u,1440u,3u,2u});

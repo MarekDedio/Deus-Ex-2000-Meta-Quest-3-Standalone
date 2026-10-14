@@ -36,13 +36,15 @@ bool SnapshotNativeInput(const std::uint16_t index, const Function* declaration 
     // none has OUT parameters. Unknown/OUT natives retain their guarded aliases.
     switch (index) {
     case 0:
-        // Original Attach's wrapper copies distance/vector as their expressions
-        // evaluate. Native-zero dispatch must use its actual declaration;
-        // unknown native-zero/OUT functions must retain their guarded aliases.
-        return declaration && Lower(declaration->path) == "engine.decal.attachdecal";
+        // Original Attach copies distance/vector; PlayerPawn.ConsoleCommand
+        // copies its FString. Native-zero dispatch must use its actual
+        // declaration; unknown native-zero/OUT calls retain guarded aliases.
+        return declaration && (Lower(declaration->path) == "engine.decal.attachdecal" ||
+            Lower(declaration->path) == "engine.playerpawn.consolecommand");
     case 112: case 113: case 124: case 125: case 126: case 127: case 128:
-    case 168: case 189: case 231: case 234: case 235: case 244: case 246: case 249: case 278:
+    case 168: case 189: case 231: case 234: case 235: case 244: case 245: case 246: case 249: case 251: case 278:
     case 280: return true; // SetTimer copies rate before evaluating bLoop.
+    case 1454: case 1477: case 1510: case 1511: return true; // Retail window wrappers have no OUT parameters.
     default: return false;
     }
 }
@@ -1200,7 +1202,8 @@ private:
             };
         return guarded;
     }
-    Value ResultValue(const Evaluation& evaluation, const Value& destination) {
+    Value ResultValue(const Evaluation& evaluation, const Value& destination,
+        const bool nativeSeed = false) {
         if (evaluation.disposition == ResultDisposition::Written) return evaluation.Load();
         if (evaluation.disposition == ResultDisposition::NoWrite || evaluation.zeroFillBytes == 0u)
             return destination;
@@ -1218,11 +1221,33 @@ private:
         case Kind::Rotator: bytes=12u; zero=Value::Rotator({}); break;
         default: Fail(Status::Unsupported,"VM context zero-fill destination layout is not established");
         }
-        // Retail writes raw bytes. Only complete audited portable layouts are
-        // represented here; do not silently turn a partial write into typed zero.
+        // Retail writes low-address bytes in its little-endian native result
+        // temporary. Only these three scalar native-seed layouts have an
+        // audited portable partial-write representation. Ordinary script
+        // destinations, packed bools, identities and pointer/aggregate layouts
+        // retain the existing explicit partial-write refusal.
+        if (nativeSeed && evaluation.zeroFillBytes < bytes &&
+            (destination.kind == Kind::Byte || destination.kind == Kind::Int || destination.kind == Kind::Float)) {
+            const unsigned bits = static_cast<unsigned>(evaluation.zeroFillBytes) * 8u;
+            const auto mask = ~((std::uint32_t{1u} << bits) - 1u);
+            return destination.kind == Kind::Float ?
+                Value::Float(std::bit_cast<float>(std::bit_cast<std::uint32_t>(destination.floating) & mask)) :
+                Value::Integer(std::bit_cast<std::int32_t>(std::bit_cast<std::uint32_t>(destination.integer) & mask));
+        }
+        // Never silently widen a partial or overflowing write into typed zero.
         if (evaluation.zeroFillBytes != bytes)
             Fail(Status::Unsupported,"VM partial context zero-fill destination is not established");
         return zero;
+    }
+    void RetainNativeSeedCapacity(const Value& seed) {
+        // ValueBytes already counts logical text/member bytes and audited
+        // INT-array capacity. A host-returned detached seed may nevertheless
+        // reserve much more string storage; bound that retained allocation too.
+        Retain(seed.text.capacity() - seed.text.size());
+        for (const auto& [key, field] : seed.fields) {
+            Retain(key.capacity() - key.size());
+            RetainNativeSeedCapacity(field);
+        }
     }
     std::optional<Value> BuiltinArgumentZero(const std::uint16_t index,const std::size_t argument) {
         const auto zero=[](const Kind kind) {
@@ -1236,10 +1261,10 @@ private:
         case 127: case 128: case 234:return zero(argument==0u ? Kind::String : Kind::Int);
         case 143: case 144: case 145: case 146: case 147: case 150: case 151: case 152: case 153:
         case 154: case 155: case 156: case 157: case 158: case 161: case 162: case 163: case 164:
-        case 165: case 166: case 249:return zero(Kind::Int);
+        case 165: case 166: case 249: case 251:return zero(Kind::Int);
         case 169: case 170: case 171: case 172: case 173: case 174: case 175: case 176: case 177:
         case 178: case 179: case 180: case 181: case 182: case 183: case 184: case 185: case 189:
-        case 244: case 246:return zero(Kind::Float);
+        case 244: case 245: case 246:return zero(Kind::Float);
         case 212: case 214: case 221:return zero(argument==0u ? Kind::Vector : Kind::Float);
         case 213:return zero(argument==0u ? Kind::Float : Kind::Vector);
         case 215: case 216: case 217: case 218: case 219: case 220: case 223: case 224: case 225:
@@ -1277,6 +1302,31 @@ private:
                 ValidateValue(parameter.zero,0);
                 Retain(parameter.key.capacity());Retain(parameter.name.capacity());Retain(ValueBytes(parameter.zero));
             }
+            const bool nativeCall = !fn || (fn->flags & 0x400u);
+            std::vector<std::optional<Value>> nativeSeeds;
+            if (nativeCall) {
+                if (n.children.size() > limits_.arguments)
+                    Fail(Status::Budget,"VM native argument seed count limit");
+                for (std::size_t i = 0u; i < n.children.size(); ++i) {
+                    auto seed = host_.NativeArgumentSeed(index, context, i, fn.get());
+                    if (seed) {
+                        ValidateValue(*seed,0); Retain(ValueBytes(*seed)); RetainNativeSeedCapacity(*seed);
+                        // Most natives have no nonzero temporary defaults. Do
+                        // not allocate or charge optional<Value> slots on that
+                        // hot path; all host lookups still precede ALL arguments.
+                        if (nativeSeeds.empty()) {
+                            if (n.children.size() > limits_.retainedBytes / sizeof(std::optional<Value>))
+                                Fail(Status::Budget,"VM native argument seed storage limit");
+                            Retain(n.children.size() * sizeof(std::optional<Value>));
+                            nativeSeeds.resize(n.children.size());
+                            if (nativeSeeds.capacity() > limits_.retainedBytes / sizeof(std::optional<Value>))
+                                Fail(Status::Budget,"VM native argument seed capacity limit");
+                            Retain((nativeSeeds.capacity() - n.children.size()) * sizeof(std::optional<Value>));
+                        }
+                        nativeSeeds[i]=std::move(seed);
+                    }
+                }
+            }
             std::vector<Evaluation> args;
             for (std::size_t i = 0; i < n.children.size(); ++i) {
                 // Retail CallFunction evaluates arguments with FFrame.Object,
@@ -1291,13 +1341,15 @@ private:
                 // Explicit EX_Nothing is the native optional-argument marker,
                 // not a null Context writing into a typed argument slot. Keep
                 // it intact for the declaration-aware native reader/default.
-                const bool nativeOmission=(!fn || (fn->flags&0x400u)) && n.children[i].op==0x0bu;
+                const bool nativeOmission=nativeCall && n.children[i].op==0x0bu;
                 if (argument.disposition!=ResultDisposition::Written && !nativeOmission) {
-                    const auto typedZero=i<parameters.size() ? std::optional<Value>{parameters[i].zero} :
-                        (!fn || (fn->flags&0x400u)) ? BuiltinArgumentZero(index,i) : std::nullopt;
+                    const bool seeded = nativeCall && !nativeSeeds.empty() && nativeSeeds[i].has_value();
+                    const auto typedZero=seeded ? nativeSeeds[i] :
+                        i<parameters.size() ? std::optional<Value>{parameters[i].zero} :
+                        nativeCall ? BuiltinArgumentZero(index,i) : std::nullopt;
                     if (typedZero) {
                         ValidateValue(*typedZero,0);Retain(ValueBytes(*typedZero));
-                        argument={ResultValue(argument,*typedZero),{}};
+                        argument={ResultValue(argument,*typedZero,seeded),{}};
                     } else if (argument.disposition==ResultDisposition::ZeroFill && argument.zeroFillBytes!=0u)
                         Fail(Status::Unsupported,"VM context argument result destination layout is unavailable");
                 }
@@ -1651,6 +1703,11 @@ private:
             // locals and selects A on equality, including either signed zero.
             // Existing VM ingress refuses non-finite inputs before this call.
             return binaryFloat([](float x,float y) {return y<x ? y : x;});
+        case 245:
+            // Retail execFMax (Core.dll thunk 10101d02 -> 10136400) likewise
+            // copies A then B. Its finite equality path selects A, preserving
+            // the first signed zero; non-finite ingress remains refused.
+            return binaryFloat([](float x,float y) {return x<y ? y : x;});
         case 246: {
             count(3); const auto v=ToFloat(a(0)), low=ToFloat(a(1)), high=ToFloat(a(2));
             // Original x87 tests C0, so unordered comparisons take the branch.
@@ -1658,6 +1715,23 @@ private:
                 std::isnan(high)||high<v ? high : v),{}};
         }
         case 249: return binaryInt([](auto x,auto y) { return x<y ? x : y; });
+        case 251: {
+            count(3);
+            // Retail Core.dll thunk 10101c5d -> execClamp10134be0 copies
+            // three zero-initialized Int temporaries, then uses signed V<A,
+            // V>=B tests in this order. Do not sort bounds or use std::clamp
+            // (whose reversed-bound precondition would not match retail).
+            const auto integer=[&](std::size_t slot) {
+                const auto value=a(slot);
+                if (value.kind==Kind::Nothing) return std::int32_t{0};
+                if (value.kind!=Kind::Int && value.kind!=Kind::Byte) TypeError();
+                // A compiled Float input needs an actual FloatToInt opcode;
+                // literal Object None is not the optional/no-write marker.
+                return value.integer;
+            };
+            const auto value=integer(0u),low=integer(1u),high=integer(2u);
+            return {Value::Integer(value<low ? low : value>=high ? high : value),{}};
+        }
         case 124: case 125: case 126: case 127: case 128: case 234: case 235: {
             const auto text=[&](std::size_t i) { return UnrealString::Decode(Coerce(a(i),Value::Text(Kind::String,{})).text); };
             if (index==127u) { if (args.size()<2u || args.size()>3u) Fail(Status::Invalid,"VM Mid argument count"); }

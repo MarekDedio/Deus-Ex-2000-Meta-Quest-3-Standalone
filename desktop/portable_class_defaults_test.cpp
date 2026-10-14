@@ -15,6 +15,7 @@
 #include <map>
 #include <stdexcept>
 #include <string>
+#include <tuple>
 #include <vector>
 
 // Generated UE1 packages only. No original game, actor startup, Spawn, headset,
@@ -431,6 +432,28 @@ void Synthetic() {
         Assign(Ref(0x01u,link),Context(Ref(0x20u,base),Token(0x17u),4u)),Return()}));
     classes.Function("SetShadowCounters",shadow,classesCore,Join({
         Assign(Ref(0x02u,shadowCounter),Int(555)),Assign(Ref(0x01u,shadowCounter),Int(888)),Return()}));
+    // Both compiled declarations remain legitimate instance slots even when
+    // the nearer class reuses the same leaf name. Their defaults stay separate.
+    classes.Function("ReadShadowInstanceCounter",shadow,classesCore,Return(Ref(0x01u,shadowCounter)));
+    for(const auto& definition:std::vector<std::tuple<std::int32_t,std::int32_t,std::string>>{
+        {base,counter,"SetBaseInstanceCounter"},{shadow,shadowCounter,"SetNearestInstanceCounter"}}) {
+        const auto& [owner,field,name]=definition;
+        const auto function=classes.Function(name,owner,classesCore,{});
+        const auto input=classes.Property("Value","IntProperty",function,classesCore,1u,0,0x80u);
+        const auto code=Join({Assign(Ref(0x01u,field),Ref(0x00u,input)),Return()});
+        classes.builders.at(static_cast<std::size_t>(function-1))=[&classes,function,code](std::int32_t next,std::int32_t first) {
+            Bytes body{0u};Index(body,0);Index(body,next);Index(body,0);Index(body,first);
+            Index(body,classes.exports.at(static_cast<std::size_t>(function-1)).ObjName);
+            U32(body,0);U32(body,0);U32(body,static_cast<std::uint32_t>(code.logical));Append(body,code.raw);
+            U16(body,0);body.push_back(0u);U32(body,2u);return body;
+        };
+    }
+    const auto bothInstanceWrites=Join({Assign(Ref(0x01u,counter),Int(211)),Assign(Ref(0x01u,shadowCounter),Int(422))});
+    classes.Function("SetBothInstanceCounters",shadow,classesCore,Join({bothInstanceWrites,Return()}));
+    const auto failedInstanceWrites=Join({Assign(Ref(0x01u,counter),Int(321)),Assign(Ref(0x01u,shadowCounter),Int(654))});
+    classes.Function("BothInstanceThenFail",shadow,classesCore,Join({failedInstanceWrites,Native(999u),Return()}));
+    classes.Function("BothInstanceThenForeign",shadow,classesCore,Join({failedInstanceWrites,Return(Ref(0x01u,foreignCounter))}));
+    classes.Function("BothInstanceThenOrphan",shadow,classesCore,Join({failedInstanceWrites,Assign(Ref(0x01u,orphan),Int(123)),Return()}));
     classes.Function("ReadSlot",base,classesCore,Return(Slot(slots,1)));
     const auto set=classes.Function("SetDefaults",base,classesCore,Join({
         Assign(Ref(0x02u,counter),Int(99)),Assign(Slot(slots,1),Int(77)),Assign(Ref(0x02u,label),Ref(0x21u,classes.Name("Changed"))),
@@ -598,6 +621,92 @@ void Synthetic() {
     Same(Call("Shadow0","ReadDefault").value,Value::Integer(10),"Restored shadow CDO overlay redirected its inherited field");
     Same(Call("Shadow0","ReadInstanceCounter").value,Value::Integer(10),"Restored shadow instance overlay redirected its inherited field");
     Require(LoadPortableRuntimeState((fixture.directory/"Legacy.sav").string()),"Shadow fixture did not restore untouched baseline");
+    const auto instanceCounters=[&](const std::int32_t inherited,const std::int32_t nearest) {
+        Same(Call("Shadow0","ReadInstanceCounter").value,Value::Integer(inherited),"Compiled base instance Counter lost its declaring slot");
+        Same(Call("Shadow0","ReadShadowInstanceCounter").value,Value::Integer(nearest),"Compiled shadow instance Counter lost its declaring slot");
+        Same(ReadPortableActorDeclaredScriptProperty("DefaultFixture.Shadow0","DefaultClasses.Base.Counter"),Value::Integer(inherited),
+            "Qualified base instance Counter selected the nearer same-name overlay");
+        Same(ReadPortableActorDeclaredScriptProperty("defaultfixture.shadow0","defaultclasses.shadow.counter"),Value::Integer(nearest),
+            "Qualified shadow instance Counter selected the inherited same-name overlay");
+        Same(Instance("Shadow0","Counter"),Value::Integer(nearest),"Ordinary leaf Counter did not select its nearest declaration");
+        Same(Cdo("Base","Counter"),Value::Integer(10),"Instance base write leaked into Base CDO");
+        Same(Cdo("Shadow","Counter"),Value::Integer(777),"Instance shadow write leaked into Shadow CDO");
+        Same(Instance("Base0","Counter"),Value::Integer(42),"Shadow instance write altered an unrelated Base instance");
+    };
+    instanceCounters(10,999);
+    Call("Shadow0","SetBaseInstanceCounter",{{Value::Integer(123),{}}});instanceCounters(123,999);
+    Call("Shadow0","SetNearestInstanceCounter",{{Value::Integer(456),{}}});instanceCounters(123,456);
+    const auto beforeInstanceFailure=fixture.Snapshot("BeforeInstanceShadowFailure");
+    const auto instanceRevision=GetPortableRuntimeWorldRevision();const auto instanceGc=GC::GetStats();
+    for(const auto& function:{"BothInstanceThenFail","BothInstanceThenForeign","BothInstanceThenOrphan"}) {
+        const auto failure=RefusedCall(fixture,"Shadow0",function);
+        Require(failure.writes==2u,"Later shadow failure occurred before both valid declaring-slot writes: "+std::string(function));
+        instanceCounters(123,456);
+        Require(GetPortableRuntimeWorldRevision()==instanceRevision && GC::GetStats().numObjects==instanceGc.numObjects &&
+            GC::GetStats().memoryUsage==instanceGc.memoryUsage,"Shadow later failure retained revision/GC changes");
+    }
+    QuestVr::Vm::Limits oneWrite;oneWrite.writes=1u;
+    const auto budgeted=ExecutePortableActorFunction("DefaultFixture.Shadow0","SetBothInstanceCounters",{},oneWrite);
+    Require(budgeted.status==QuestVr::Vm::Status::Budget && !budgeted.committed && budgeted.writes==1u &&
+        fixture.Snapshot("AfterInstanceShadowBudget")==beforeInstanceFailure && GetPortableRuntimeWorldRevision()==instanceRevision &&
+        GC::GetStats().numObjects==instanceGc.numObjects && GC::GetStats().memoryUsage==instanceGc.memoryUsage,
+        "Shadow write budget failed to restore its already-written inherited slot");
+    ++refusals;instanceCounters(123,456);
+    const auto both=Call("Shadow0","SetBothInstanceCounters");
+    Require(both.committed && both.writes==2u,"Independent shadow instance writes were not both charged/committed");
+    instanceCounters(211,422);
+    const auto instanceShadowSaved=fixture.Snapshot("InstanceShadowSaved");
+    const auto instanceShadowGraph=SavedScript(instanceShadowSaved);
+    Require(instanceShadowGraph.classDefaults.empty() && instanceShadowGraph.objects.size()==1u &&
+        instanceShadowGraph.objects.front().path=="DefaultFixture.Shadow0" &&
+        instanceShadowGraph.objects.front().properties.size()==2u,
+        "Independent same-name instance slots became defaults or duplicate actor identities");
+    const auto& sameNameProperties=instanceShadowGraph.objects.front().properties;
+    Require(sameNameProperties[0u].key=="DefaultClasses.Base.Counter" && sameNameProperties[0u].name=="Counter" &&
+        sameNameProperties[0u].index==0u && QuestVr::Vm::Equal(sameNameProperties[0u].value,Value::Integer(211)) &&
+        sameNameProperties[1u].key=="DefaultClasses.Shadow.Counter" && sameNameProperties[1u].name=="Counter" &&
+        sameNameProperties[1u].index==0u && QuestVr::Vm::Equal(sameNameProperties[1u].value,Value::Integer(422)),
+        "Same-leaf actor checkpoint did not retain two canonical qualified declaring keys");
+    Require(instanceShadowSaved[4u]==4u && QuestVr::EncodeScriptSavedState(instanceShadowGraph)[6u]==1u &&
+        ValidatePortableRuntimeState((fixture.directory/"InstanceShadowSaved.sav").string(),"DefaultFixture"),
+        "Same-leaf instance slots changed codec/envelope version or failed typed read-only validation");
+    Call("Shadow0","SetBaseInstanceCounter",{{Value::Integer(312),{}}});
+    Call("Shadow0","SetNearestInstanceCounter",{{Value::Integer(624),{}}});instanceCounters(312,624);
+    Require(LoadPortableRuntimeState((fixture.directory/"InstanceShadowSaved.sav").string()) &&
+        fixture.Snapshot("InstanceShadowWarmRoundTrip")==instanceShadowSaved,
+        "Same-name declaring-slot instance overlays did not round-trip canonically in the warm runtime");
+    instanceCounters(211,422);
+    for(const bool omitInherited:{false,true}) {
+        auto omitted=instanceShadowGraph;auto& properties=omitted.objects.front().properties;
+        properties.erase(properties.begin()+static_cast<std::ptrdiff_t>(omitInherited?0u:1u));
+        const auto partial=Envelope(instanceShadowSaved,omitted);
+        const auto path=fixture.directory/(omitInherited?"OmitInheritedInstance.sav":"OmitNearestInstance.sav");
+        WriteBytes(path,partial);
+        Require(LoadPortableRuntimeState(path.string()),"Partial same-name actor overlay replacement failed");
+        instanceCounters(omitInherited?10:211,omitInherited?422:999);
+        Require(LoadPortableRuntimeState((fixture.directory/"InstanceShadowSaved.sav").string()) &&
+            fixture.Snapshot("InstanceShadowAfterPartial")==instanceShadowSaved,
+            "Restoring both same-name instance slots after an omission was not canonical");
+    }
+    for(const auto& wrongKey:{"DefaultClasses.Foreign.Counter","DefaultClasses.Base.Orphan"}) {
+        RefusedScript(fixture,instanceShadowSaved,[&](auto& graph) {
+            graph.objects.front().properties.front().key=wrongKey;
+            graph.objects.front().properties.front().name=std::string(wrongKey).substr(std::string(wrongKey).find_last_of('.')+1u);
+        },"SameNameInstanceForeignOrOrphan"+std::string(wrongKey));
+    }
+    Require(InitializePortableRuntime({coreTable,engineTable,classesTable}).passed && LoadPortableRuntimeMap(mapTable).passed &&
+        fixture.Snapshot("InstanceShadowColdBaseline")==legacy,
+        "Cold shadow instance restart retained previous hidden/nearest patches");
+    instanceCounters(10,999);
+    Require(LoadPortableRuntimeState((fixture.directory/"InstanceShadowSaved.sav").string()) &&
+        fixture.Snapshot("InstanceShadowColdRoundTrip")==instanceShadowSaved,
+        "Cold runtime could not restore both same-leaf qualified instance values");
+    instanceCounters(211,422);
+    const auto instanceRestoredGc=GC::GetStats();GC::Collect();
+    Require(GC::GetStats().numObjects==instanceRestoredGc.numObjects && GC::GetStats().memoryUsage==instanceRestoredGc.memoryUsage,
+        "Same-name qualified instance restoration retained unrooted GC garbage");
+    Require(LoadPortableRuntimeState((fixture.directory/"Legacy.sav").string()) && fixture.Snapshot("AfterInstanceShadowControls")==legacy,
+        "Same-name instance controls failed to restore untouched CDO/instance baseline");
     Same(Call("Base1","SetCollisionSize",{{Value::Float(18.5f),{}},{Value::Integer(31),{}}}).value,Value::Bool(true),
         "Actual Engine.Actor native 283 declaration did not return Bool success");
     Same(Call("Base1","SetBounds").value,Value::Bool(true),"Native 283 did not return its declared Bool success");

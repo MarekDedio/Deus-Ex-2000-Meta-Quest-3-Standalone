@@ -1,6 +1,31 @@
 # Current Quest test-build handoff (2026-10-14)
 
-## Latest installed APK: original compass, inward placement and player foundation
+## Build gate requested by the user
+
+Do not create or install another APK until the full working HUD is implemented
+and passes offline integration tests: actual starter keyring, functional quick
+slots, health and the remaining original HUD. Source/host development and
+commits may continue; another partial compass/artwork APK is not authorized.
+Final physical acceptance will use the first build satisfying that feature gate.
+The eye-facing Persona adjustment was built/installed before this instruction.
+See HUD-COMPLETION.md for the functional acceptance checklist.
+
+## Latest installed APK: eye-facing Persona placement
+
+`artifacts/crate-runtime-20261013/DeusExQuestVR-persona-eye-facing-20261014.apk`
+is signed ARM64,33,217,654 bytes, SHA256
+`3516B8D72AF8A4B6575A38EB2D25E7F1A2465B521E8DA2BDFAA52D570D57BBD4`.
+Built/replace-installed before the HUD gate, preserving data on Quest
+`2G0YC5ZG620985`, update `2026-10-14 05:45:53`. The installed base.apk SHA256
+matches exactly. Android compilation passed in1m46s and APK v2 verified.
+
+The user's first lowering test was too low and looked tilted. The correction
+uses head-space centerY=-0.16m, shared1.20x0.90m geometry and a pitch that faces
+the eyes. Artwork, text and controller targeting share that placement;207
+generated placement checks pass. Exact corrected-build headset comfort has
+not yet been accepted. No later APK is authorized until the full HUD gate passes.
+
+## Previous installed APK: original compass, inward placement and player foundation
 
 `artifacts/crate-runtime-20261013/DeusExQuestVR-original-hud-compass-inset-20261014.apk`
 is signed ARM64,33,139,566 bytes, SHA256

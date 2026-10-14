@@ -21,6 +21,8 @@
 #include "quest_decal_projection.h"
 #include "quest_unreal_int_array.h"
 #include "quest_mover_motion.h"
+#include "quest_object_names.h"
+#include "quest_engine_config.h"
 
 #include <memory>
 #include <algorithm>
@@ -85,6 +87,16 @@ public:
     RuntimeObject* nativePlayer{};
     RuntimeObject* nativeViewportActor{};
     bool nativePlayerBinding{};
+    // Native Extension window-domain objects are neither Actor births nor
+    // package exports. RootWindow is a transient native player edge; its
+    // AddToRoot never changes flags; Core still applies CLASS_Transient.
+    bool nativeWindowObject{}, nativeRootWindowObject{};
+    RuntimeObject* nativeRootWindow{};
+    // Exact reflected slot ownership, including nested Struct Object fields.
+    // Replaceable window edges must not accumulate in immutable references.
+    std::unordered_map<std::string,
+        std::unordered_map<std::uint32_t,std::vector<RuntimeObject*>>> nativeWindowPropertyRoots;
+    std::int32_t uniqueObjectCounter{}; // Concrete UClass, survives map changes.
     RuntimeObject* nativeXLevel{}; // Immutable LinkActorsToLevel baseline, not a script write.
     RuntimeAIManager* nativeAiManager{}; // LevelInfo-owned native state, not an actor/export.
     std::unique_ptr<PortableScriptBody> script;
@@ -222,7 +234,15 @@ GCAllocation* RuntimeObject::Mark(GCAllocation* marklist) {
     marklist = GC::MarkObject(marklist, defaultOwner);
     marklist = GC::MarkObject(marklist, nativePlayer);
     marklist = GC::MarkObject(marklist, nativeViewportActor);
+    marklist = GC::MarkObject(marklist, nativeRootWindow);
     for (auto* reference : references) marklist = GC::MarkObject(marklist, reference);
+    for (const auto& [key,slots] : nativeWindowPropertyRoots) {
+        static_cast<void>(key);
+        for (const auto& [index,roots] : slots) {
+            static_cast<void>(index);
+            for (auto* root : roots) marklist = GC::MarkObject(marklist,root);
+        }
+    }
     for (auto* actor : childActors) marklist = GC::MarkObject(marklist, actor);
     for (auto* actor : basedActors) marklist = GC::MarkObject(marklist, actor);
     return GC::MarkObject(marklist, nativeAiManager);
@@ -291,6 +311,18 @@ protected:
     }
 };
 std::unique_ptr<GCRoot<RuntimePlayerSession>> persistentPlayerSession;
+struct RuntimeWindowDomain final : GCObject {
+    // Current domain consists only of explicitly rooted windows and their
+    // native GC objects. General EX_New/non-root object collection is separate.
+    std::vector<RuntimeObject*> objects, roots;
+protected:
+    GCAllocation* Mark(GCAllocation* marklist) override {
+        for(auto* root:roots) marklist=GC::MarkObject(marklist,root);
+        return marklist;
+    }
+};
+std::unique_ptr<GCRoot<RuntimeWindowDomain>> persistentWindowDomain;
+std::optional<std::string> persistentRootWindowClass;
 // One game/script-thread stream, shared by all receivers and retained through
 // ordinary map replacement. Absence means the deterministic seed1 baseline.
 // Every nonbaseline initial seed is retained before the first draw, so even
@@ -1757,6 +1789,10 @@ public:
         beforeExportCount_ = persistentRuntime->get()->exports.size();
         beforeWorldSlots_ = persistentWorldActors.size();
         beforeRandomSeed_ = persistentScriptRandomSeed;
+        beforeWindowObjects_=persistentWindowDomain && persistentWindowDomain->get() ?
+            persistentWindowDomain->get()->objects.size() : 0u;
+        beforeWindowRoots_=persistentWindowDomain && persistentWindowDomain->get() ?
+            persistentWindowDomain->get()->roots.size() : 0u;
         clientDependent_ = false;
         transaction_ = true;
     }
@@ -1795,7 +1831,7 @@ public:
         if (worldChanged) persistentMapTagIndex.swap(tags);
         if (worldChanged) ++persistentWorldRevision;
         beforeCollision_.reset();
-        saved_.clear(); savedAi_.clear(); provisionalAi_.clear(); beforeDecals_.reset(); transaction_ = false;
+        saved_.clear(); savedAi_.clear(); provisionalAi_.clear(); provisionalWindows_.clear(); beforeDecals_.reset(); transaction_ = false;
     }
     void Rollback() noexcept override {
         if (!transaction_) return;
@@ -1837,6 +1873,19 @@ public:
             entry.first->nativePlayerBinding = entry.second.playerBinding;
             entry.first->nativePlayer = persistentNativeClient.HasClient() ? entry.second.player : nullptr;
             entry.first->nativeViewportActor = persistentNativeClient.HasClient() ? entry.second.viewportActor : nullptr;
+            entry.first->nativeRootWindow=entry.second.rootWindow;
+            entry.first->uniqueObjectCounter=entry.second.uniqueCounter;
+            entry.first->nativeWindowPropertyRoots.swap(entry.second.windowPropertyRoots);
+        }
+        if(persistentWindowDomain && persistentWindowDomain->get()) {
+            auto* domain=persistentWindowDomain->get();
+            domain->roots.resize(beforeWindowRoots_);
+            for(std::size_t index=beforeWindowObjects_;index<domain->objects.size();++index) {
+                auto* object=domain->objects[index];
+                persistentQualifiedObjects.erase(object->reflection.objectPath);
+                persistentVmObjects.erase(LowerAscii(object->reflection.objectPath));
+            }
+            domain->objects.resize(beforeWindowObjects_);
         }
         // Rooted births are appended during the call so nested bytecode can
         // address them. Remove every provisional identity after restoring old
@@ -1848,7 +1897,7 @@ public:
         }
         persistentRuntime->get()->exports.resize(beforeExportCount_);
         persistentWorldActors.resize(beforeWorldSlots_);
-        beforeCollision_.reset(); saved_.clear(); savedAi_.clear(); provisionalAi_.clear(); beforeDecals_.reset(); transaction_ = false;
+        beforeCollision_.reset(); saved_.clear(); savedAi_.clear(); provisionalAi_.clear(); provisionalWindows_.clear(); beforeDecals_.reset(); transaction_ = false;
     }
     Property ResolveProperty(const Function& function, const std::int32_t reference) override {
         RuntimeObject* object = Object(ResolveObject(function, reference));
@@ -1876,7 +1925,7 @@ public:
         // Original initialized default blocks have Name None and Outer null.
         // This display spelling does not replace their distinct nonnull handle.
         if (object->defaultOwner) return "None";
-        if(object->nativeClientIdentity || object->nativeClientClass)
+        if(object->nativeClientIdentity || object->nativeClientClass || object->nativeWindowObject)
             return object->reflection.objectPath;
         // No native Rename/SetOuter exists in this host. Loaded object names
         // and complete package/outer paths are immutable, including nested
@@ -1931,7 +1980,8 @@ public:
         const bool nativeConst = ((property.flags & 2u) && (property.zero.kind == Kind::IntArray ||
             nativeKey == "engine.actor.timercounter")) ||
             (object->nativeViewportIdentity && nativeKey=="engine.player.actor") ||
-            (object->nativePlayerBinding && nativeKey=="engine.playerpawn.player");
+            (object->nativePlayerBinding && nativeKey=="engine.playerpawn.player") ||
+            nativeKey=="extension.playerpawnext.rootwindow";
         if (nativeConst) result->write = {};
         result->dimension = property.arrayDimension;
         result->element = [this, object, property, defaults, nativeConst](const std::size_t slot) {
@@ -1950,6 +2000,8 @@ public:
         RuntimeObject* object = Object(receiver);
         if (object->defaultOwner)
             throw std::runtime_error("Native execution on a class-default object requires its audited handler");
+        if (index==0u && declaration && LowerAscii(declaration->path)=="engine.playerpawn.consolecommand")
+            return PlayerPawnConsoleCommand(object,arguments,*declaration);
         // Native event wrappers have no presentation-active gate. Their actual
         // identity/Level checks remain in AiNative; unrelated native receivers
         // retain the existing explicit inactive guard.
@@ -2389,6 +2441,9 @@ public:
         const std::vector<Evaluation>& arguments, const Function* declaration, QuestVr::Vm::Execution& execution) override {
         if (Object(receiver)->defaultOwner)
             throw std::runtime_error("Native execution on a class-default object requires its audited handler");
+        if(index==1052u) return InitRootWindowNative(Object(receiver),arguments,declaration,execution);
+        if(index==1477u || index==1454u || index==1510u || index==1511u)
+            return WindowPropertyNative(index,Object(receiver),arguments,declaration,execution);
         if (index == 280u) {
             auto* object = Object(receiver);
             if (!object->active && !object->worldRemoved)
@@ -2507,6 +2562,371 @@ public:
         }
         return {};
     }
+
+    Evaluation PlayerPawnConsoleCommand(RuntimeObject* pawn,const std::vector<Evaluation>& arguments,
+        const Function& declaration) {
+        // Retail Engine.dll execConsoleCommand103ba200 initializes its return
+        // FString before checking Player at103ba2c7. An unbound camera returns
+        // empty without forwarding to Actor.ConsoleCommand or executing input.
+        const auto authored=FunctionFor(Object("Engine.PlayerPawn.ConsoleCommand"));
+        const auto validate=[&](const Function& function) {
+            if(LowerAscii(function.path)!="engine.playerpawn.consolecommand" || function.nativeIndex!=0u ||
+                function.flags!=0x400u || function.variables.size()!=2u)
+                throw std::runtime_error("PlayerPawn ConsoleCommand is not its original native declaration");
+            for(std::size_t slot=0u;slot<2u;++slot) {
+                const auto& field=function.variables[slot];
+                const auto key=std::string("engine.playerpawn.consolecommand.")+(slot?"returnvalue":"command");
+                auto* metadata=Object(field.key);
+                if(LowerAscii(field.key)!=key || field.zero.kind!=Kind::String || field.arrayDimension!=1u ||
+                    field.flags!=(slot?0x400580u:0x400080u) || !metadata->property || metadata->property->type!="StrProperty")
+                    throw std::runtime_error("PlayerPawn ConsoleCommand requires its authored FString parameters");
+            }
+        };
+        validate(*authored);validate(declaration);
+        if(declaration.source!=authored->source)
+            throw std::runtime_error("PlayerPawn ConsoleCommand source does not match the owned declaration");
+        RequireMapActor(pawn);
+        if(!IsDerivedFromPath(pawn->cls,"Engine.PlayerPawn") || arguments.size()!=1u ||
+            arguments.front().Load().kind!=Kind::String)
+            throw std::runtime_error("PlayerPawn ConsoleCommand requires an actual PlayerPawn and one FString");
+        const auto property=DescribeProperty("Engine.PlayerPawn.Player");
+        auto* playerMetadata=Object(property.key);
+        if(property.zero.kind!=Kind::Object || property.arrayDimension!=1u || !(property.flags&2u) ||
+            !OwnsProperty(pawn->cls,property) || !playerMetadata->property ||
+            playerMetadata->property->type!="ObjectProperty" ||
+            LowerAscii(Qualified(Table(playerMetadata->sourcePath),playerMetadata->property->referencedType))!="engine.player")
+            throw std::runtime_error("PlayerPawn ConsoleCommand has no original const Player field");
+        // Do not let a revoked native lease turn a nonnull native Player into
+        // the valid retail None branch merely because its public view is empty.
+        if(pawn->nativePlayerBinding && pawn->nativePlayer &&
+            (!persistentNativeClient.HasClient() ||
+             pawn->nativePlayer->nativeClientIdentity!=persistentNativeClient.ClientIdentity()))
+            throw std::runtime_error("PlayerPawn ConsoleCommand native Player lease is revoked or stale");
+        const auto player=Read(pawn,property,0u);
+        if(player.kind!=Kind::Object) throw std::runtime_error("PlayerPawn ConsoleCommand Player is not an Object");
+        if(player.text.empty()) return {Value::Text(Kind::String,{}),{}};
+        static_cast<void>(Object(player.text));
+        // Real bound FExec includes KEYNAME/KEYBINDING/config commands used by
+        // root initialization. No invented ping/key list or catch-all success.
+        throw std::runtime_error("Bound PlayerPawn ConsoleCommand native FExec is not implemented");
+    }
+    std::shared_ptr<const Function> WindowNativeDeclaration(const std::uint16_t index,const Function* declaration) {
+        struct Parameter { const char* name;Kind kind;std::uint32_t flags;const char* type;const char* constraint; };
+        const char* path{};std::vector<Parameter> parameters;
+        switch(index) {
+        case 1477u:path="Extension.Window.SetFont";
+            parameters={{"fn",Kind::Object,0x80u,"ObjectProperty","Engine.Font"}};break;
+        case 1454u:path="Extension.Window.SetDefaultCursor";
+            parameters={{"tX",Kind::Object,0x80u,"ObjectProperty","Engine.Texture"},
+                {"shadowTexture",Kind::Object,0x90u,"ObjectProperty","Engine.Texture"},
+                {"HotX",Kind::Float,0x90u,"FloatProperty",""},{"HotY",Kind::Float,0x90u,"FloatProperty",""},
+                {"cursorColor",Kind::Struct,0x90u,"StructProperty","Core.Object.Color"}};break;
+        case 1510u:path="Extension.RootWindow.SetDefaultEditCursor";
+            parameters={{"newEditCursor",Kind::Object,0x90u,"ObjectProperty","Engine.Texture"}};break;
+        case 1511u:path="Extension.RootWindow.SetDefaultMovementCursors";
+            for(const auto* name:{"newMovementCursor","newHorizontalMovementCursor","newVerticalMovementCursor",
+                "newTopLeftMovementCursor","newTopRightMovementCursor"}) {
+                parameters.push_back({name,Kind::Object,0x90u,"ObjectProperty","Engine.Texture"});
+            }
+            break;
+        default:throw std::runtime_error("Unregistered native window property declaration");
+        }
+        const auto authored=FunctionFor(Object(path));
+        const auto validate=[&](const Function& function) {
+            if(LowerAscii(function.path)!=LowerAscii(path) || function.nativeIndex!=index || function.flags!=0x401u ||
+                function.variables.size()!=parameters.size())
+                throw std::runtime_error("Native window function does not match its original declaration");
+            for(std::size_t slot=0u;slot<parameters.size();++slot) {
+                const auto& field=function.variables[slot];const auto& expected=parameters[slot];
+                const auto key=LowerAscii(std::string(path)+'.'+expected.name);
+                auto* metadata=Object(field.key);
+                if(LowerAscii(field.key)!=key || field.zero.kind!=expected.kind || field.arrayDimension!=1u ||
+                    field.flags!=expected.flags || !metadata->property || metadata->property->type!=expected.type ||
+                    (*expected.constraint && LowerAscii(Qualified(Table(metadata->sourcePath),metadata->property->referencedType))!=
+                        LowerAscii(expected.constraint)))
+                    throw std::runtime_error("Native window parameter is not its authored scalar schema");
+            }
+        };
+        validate(*authored);
+        if(declaration) {
+            validate(*declaration);
+            if(declaration->source!=authored->source)
+                throw std::runtime_error("Native window declaration source is not the owned function");
+        }
+        return authored;
+    }
+    Value CursorColorSeed() {
+        auto color=DescribeProperty("Extension.Window.SetDefaultCursor.cursorColor").zero;
+        if(color.kind!=Kind::Struct || color.fields.size()!=4u)
+            throw std::runtime_error("Native cursor Color does not have four original Byte channels");
+        for(auto& [name,member]:color.fields) {
+            if(member.kind!=Kind::Byte || (name!="r" && name!="g" && name!="b" && name!="a"))
+                throw std::runtime_error("Native cursor Color channel schema is invalid");
+            // Retail initializes RGB white, leaves A undefined. Defined A=0
+            // storage is a portable policy, not retail coverage evidence.
+            member=Value::Byte(name=="a"?0u:255u);
+        }
+        return color;
+    }
+    std::optional<Value> NativeArgumentSeed(const std::uint16_t index,const std::string& receiver,
+        const std::size_t slot,const Function* declaration) override {
+        if(index!=1454u && index!=1477u && index!=1510u && index!=1511u) return std::nullopt;
+        auto* window=Object(receiver);
+        if(!window->nativeWindowObject || !IsDerivedFromPath(window->cls,"Extension.Window"))
+            throw std::runtime_error("Native window argument seed requires an actual native Window");
+        const auto authored=WindowNativeDeclaration(index,declaration);
+        if(slot>=authored->variables.size()) throw std::runtime_error("Native window argument seed slot exceeds its schema");
+        if(index==1454u && (slot==2u || slot==3u)) return Value::Float(-1.0f);
+        if(index==1454u && slot==4u) return CursorColorSeed();
+        return authored->variables[slot].zero;
+    }
+    void AskHiddenWindowForReconfigure(RuntimeObject* window,QuestVr::Vm::Execution& execution) {
+        // Retail1004e119 always marks SELF. Any hidden node in the winParent
+        // chain defers layout/callbacks; this is the root InitWindow branch.
+        NativeWindowWrite(window,"Extension.Window.bNeedsReconfigure",Value::Bool(true),execution);
+        NativeWindowWrite(window,"Extension.Window.bNeedsQuery",Value::Bool(true),execution);
+        std::array<RuntimeObject*,128u> visited{};std::size_t depth{};
+        for(auto* current=window;current;) {
+            LifecycleStep();
+            if(depth==visited.size() || std::find(visited.begin(),visited.begin()+depth,current)!=visited.begin()+depth)
+                throw std::runtime_error("Native window ancestry cycles or exceeds its reconfiguration bound");
+            visited[depth++]=current;
+            if(!current->nativeWindowObject || !IsDerivedFromPath(current->cls,"Extension.Window"))
+                throw std::runtime_error("Native reconfiguration ancestor is not an actual Window");
+            const auto visible=Read(current,DescribeProperty("Extension.Window.bIsVisible"),0u);
+            if(visible.kind!=Kind::Bool) throw std::runtime_error("Native window visibility is not Bool");
+            if(!visible.boolean) return;
+            const auto parent=Read(current,DescribeProperty("Extension.Window.winParent"),0u);
+            if(parent.kind!=Kind::Object) throw std::runtime_error("Native window parent is not an Object");
+            current=parent.text.empty()?nullptr:Object(parent.text);
+        }
+        throw std::runtime_error("Visible native Window reconfiguration is not implemented");
+    }
+    Evaluation WindowPropertyNative(const std::uint16_t index,RuntimeObject* window,
+        const std::vector<Evaluation>& arguments,const Function* declaration,QuestVr::Vm::Execution& execution) {
+        const auto authored=WindowNativeDeclaration(index,declaration);
+        if(!window->nativeWindowObject || !IsDerivedFromPath(window->cls,"Extension.Window") ||
+            ((index==1510u || index==1511u) && !IsDerivedFromPath(window->cls,"Extension.RootWindow")))
+            throw std::runtime_error("Native window property receiver has no original constructed identity");
+        const auto required=index==1477u || index==1454u?1u:0u;
+        if(arguments.size()<required || arguments.size()>authored->variables.size())
+            throw std::runtime_error("Native window property argument count exceeds its declaration");
+        std::vector<Value> values;values.reserve(authored->variables.size());
+        for(std::size_t slot=0u;slot<authored->variables.size();++slot) {
+            auto value=slot<arguments.size()?arguments[slot].Load():Value{};
+            if(value.kind==Kind::Nothing) value=*NativeArgumentSeed(index,window->reflection.objectPath,slot,declaration);
+            if(value.kind!=authored->variables[slot].zero.kind)
+                throw std::runtime_error("Native window property argument has the wrong result type");
+            values.push_back(TypedLiveValue(authored->variables[slot],value));
+        }
+        if(index==1477u) {
+            NativeWindowWrite(window,"Extension.Window.normalFont",values[0u],execution);
+            NativeWindowWrite(window,"Extension.Window.boldFont",values[0u],execution);
+            const auto context=Read(window,DescribeProperty("Extension.Window.wGc"),0u);
+            if(context.kind!=Kind::Object) throw std::runtime_error("Native Window wGc has no Object layout");
+            if(!context.text.empty()) {
+                auto* gc=Object(context.text);
+                if(!gc->nativeWindowObject || !IsDerivedFromPath(gc->cls,"Extension.GC"))
+                    throw std::runtime_error("Native Window wGc is not its owned original GC instance");
+                NativeWindowWrite(gc,"Extension.GC.normalFont",values[0u],execution);
+                NativeWindowWrite(gc,"Extension.GC.boldFont",values[0u],execution);
+            }
+            AskHiddenWindowForReconfigure(window,execution);
+        } else if(index==1454u) {
+            const std::array<const char*,5u> fields{"defaultCursor","defaultCursorShadow","defaultHotX","defaultHotY","defaultCursorColor"};
+            for(std::size_t slot=0u;slot<fields.size();++slot)
+                NativeWindowWrite(window,(std::string("Extension.Window.")+fields[slot]).c_str(),values[slot],execution);
+        } else if(index==1510u) {
+            NativeWindowWrite(window,"Extension.RootWindow.defaultEditCursor",values[0u],execution);
+        } else {
+            const std::array<const char*,5u> fields{"DefaultMoveCursor","defaultHorizontalMoveCursor","defaultVerticalMoveCursor",
+                "defaultTopLeftMoveCursor","defaultTopRightMoveCursor"};
+            for(std::size_t slot=0u;slot<fields.size();++slot)
+                NativeWindowWrite(window,(std::string("Extension.RootWindow.")+fields[slot]).c_str(),values[slot],execution);
+        }
+        return {};
+    }
+    RuntimeObject* ConstructWindowObject(RuntimeObject* cls,RuntimeObject* outer,
+        QuestVr::Vm::Execution& execution) {
+        if(!transaction_ || !cls || !cls->classDescriptor || !outer || !persistentWindowDomain ||
+            !persistentWindowDomain->get() || IsDerivedFromPath(cls,"Engine.Actor") ||
+            !(IsDerivedFromPath(cls,"Extension.Window") || IsDerivedFromPath(cls,"Extension.GC")))
+            throw std::runtime_error("Native window construction requires an actual non-Actor Window/GC class and Outer");
+        if((cls->classDescriptor->classFlags&1u)!=0u)
+            throw std::runtime_error("Native window construction class is abstract");
+        auto* domain=persistentWindowDomain->get();
+        if(domain->objects.size()>=4096u) throw std::runtime_error("Native window object count exceeds its bound");
+        // Validate original header declarations before touching the name counter
+        // or allocating/publishing any native identity.
+        for(const auto& [key,kind]:{
+            std::pair{"Core.Object.Class",Kind::Object},std::pair{"Core.Object.Name",Kind::Name},
+            std::pair{"Core.Object.Outer",Kind::Object},std::pair{"Core.Object.ObjectFlags",Kind::Int}}) {
+            const auto field=DescribeProperty(key);
+            if(field.zero.kind!=kind || field.arrayDimension!=1u || !OwnsProperty(cls,field))
+                throw std::runtime_error("Native window UObject header schema is malformed");
+        }
+        Touch(cls);
+        const auto className=CastClassIdentity(cls->reflection.objectPath).name;
+        const auto name=QuestVr::ObjectNames::MakeUnique(className,cls->uniqueObjectCounter,
+            [&](const std::string_view candidate) {
+                LifecycleStep();
+                return persistentVmObjects.count(LowerAscii(outer->reflection.objectPath+'.'+std::string(candidate)))!=0u;
+            });
+        const auto path=outer->reflection.objectPath+'.'+name;
+        // Charge the copied CDO block before allocation, not only after a
+        // potentially large window/default graph has already been duplicated.
+        ValidateStateBudget(sizeof(RuntimeObject)+path.size()+sizeof(GCAllocation),cls);
+        pendingBirthGarbage=true;
+        provisionalWindows_.emplace_back(GC::Alloc<RuntimeObject>(PortableReflectionObject{
+            path,className,outer->reflection.objectPath,{},0u,0},nullptr));
+        auto* object=provisionalWindows_.back().get();
+        object->nativeWindowObject=true;object->cls=cls;object->outer=outer;
+        object->sourcePath=cls->sourcePath;object->exportIndex=std::numeric_limits<std::size_t>::max();
+        object->references={cls,outer};object->frozenBirthDefaults=cls->classDefaultValues;
+        // Register in rollback-owned domain before either index can throw.
+        domain->objects.push_back(object);
+        if(!persistentQualifiedObjects.emplace(path,object).second ||
+            !persistentVmObjects.emplace(LowerAscii(path),object).second)
+            throw std::runtime_error("Native window identity collides with an existing UObject");
+        NativeWindowWrite(object,"Core.Object.Class",Value::Text(Kind::Object,cls->reflection.objectPath),execution);
+        NativeWindowWrite(object,"Core.Object.Name",Value::Text(Kind::Name,name),execution);
+        NativeWindowWrite(object,"Core.Object.Outer",Value::Text(Kind::Object,outer->reflection.objectPath),execution);
+        // Core.StaticAllocateObject10157e9e applies CLASS_Transient independently
+        // of the caller's requested0 flags (e.g. original DamageHUDDisplay).
+        const auto flags=(cls->classDescriptor->classFlags&8u)?0x4000u:0u;
+        object->reflection.flags=flags;
+        NativeWindowWrite(object,"Core.Object.ObjectFlags",Value::Integer(static_cast<std::int32_t>(flags)),execution);
+        return object;
+    }
+    void NativeWindowWrite(RuntimeObject* object,const char* key,const Value& value,
+        QuestVr::Vm::Execution& execution) {
+        const auto property=DescribeProperty(key);
+        if(property.arrayDimension!=1u || !OwnsProperty(object->cls,property))
+            throw std::runtime_error("Native window field is not its original scalar declaration: "+std::string(key));
+        execution.WriteReference(ReferenceFor(object,property,0u,false),value);
+    }
+    void InitializeWindowGC(RuntimeObject* object,QuestVr::Vm::Execution& execution) {
+        const auto set=[&](const char* name,const Value& value) {
+            const auto key="Extension.GC."+std::string(name);NativeWindowWrite(object,key.c_str(),value,execution);
+        };
+        for(const auto* field:{"Canvas","normalFont","boldFont","gcStack","gcFree","gcOwner"})
+            set(field,Value::Text(Kind::Object,{}));
+        set("Style",Value::Byte(1u));set("PolyFlags",Value::Integer(0x900));set("textPolyFlags",Value::Integer(0x802));
+        for(const auto* field:{"bSmoothed","bMasked","bTranslucent","bModulated","bTextTranslucent","bFree"})
+            set(field,Value::Bool(false));
+        for(const auto* field:{"bDrawEnabled","bWordWrap","bParseMetachars"}) set(field,Value::Bool(true));
+        for(const auto* field:{"gcCount","hMultiplier","vMultiplier"}) set(field,Value::Integer(1));
+        for(const auto* field:{"underlineHeight","textVSpacing"}) set(field,Value::Float(1.0f));
+        set("baselineOffset",Value::Float(2.0f));set("HAlign",Value::Byte(0u));set("VAlign",Value::Byte(0u));
+        InitializeNativeWindowColors(object,"Extension.GC",execution);
+        ZeroNativeWindowFloatStruct(object,"Extension.GC.gcClipRect",execution);
+        // Retail preserves the original underlineTexture CDO (Extension.Solid).
+        // No Canvas, draw backend or parent context is fabricated here.
+    }
+    void ZeroNativeWindowFloatStruct(RuntimeObject* object,const char* key,QuestVr::Vm::Execution& execution) {
+        const auto field=DescribeProperty(key);auto value=Read(object,field,0u);
+        if(value.kind!=Kind::Struct || value.fields.empty())
+            throw std::runtime_error("Native window zeroed struct has no original layout");
+        for(auto& [name,member]:value.fields) {
+            static_cast<void>(name);
+            if(member.kind!=Kind::Float) throw std::runtime_error("Native window float struct has a different layout");
+            member=Value::Float(0.0f);
+        }
+        NativeWindowWrite(object,key,value,execution);
+    }
+    void InitializeNativeWindowColors(RuntimeObject* object,const std::string& base,QuestVr::Vm::Execution& execution) {
+        for(const bool tile:{false,true}) {
+            const auto key=base+(tile?".tileColor":".TextColor");const auto field=DescribeProperty(key);
+            auto color=Read(object,field,0u);
+            if(color.kind!=Kind::Struct) throw std::runtime_error("Native window color has no original struct layout");
+            for(const auto& [channel,byte]:{
+                std::pair{"r",tile?255u:0u},std::pair{"g",255u},std::pair{"b",tile?255u:0u}}) {
+                const auto member=color.fields.find(channel);
+                if(member==color.fields.end() || member->second.kind!=Kind::Byte)
+                    throw std::runtime_error("Native window Color lacks its original Byte channels");
+                member->second=Value::Byte(static_cast<std::uint8_t>(byte));
+            }
+            // Retail writes only RGB; no fixed-alpha initialization is proved.
+            // Preserve the copied CDO A instead of inventing pixel coverage.
+            NativeWindowWrite(object,key.c_str(),color,execution);
+            const auto planeKey=base+(tile?".tilePlane":".textPlane");
+            auto plane=Read(object,DescribeProperty(planeKey),0u);
+            if(plane.kind!=Kind::Struct || plane.fields.size()!=4u)
+                throw std::runtime_error("Native window Plane lacks its original four-Float layout");
+            for(auto& [name,member]:plane.fields) {
+                if(member.kind!=Kind::Float) throw std::runtime_error("Native window Plane channel is not Float");
+                const auto lower=LowerAscii(name);
+                if(lower!="x" && lower!="y" && lower!="z" && lower!="w")
+                    throw std::runtime_error("Native window Plane channel identity is invalid");
+                member=Value::Float(lower=="w"?0.0f:(tile || lower=="y")?1.0f:0.0f);
+            }
+            NativeWindowWrite(object,planeKey.c_str(),plane,execution);
+        }
+    }
+    Evaluation InitRootWindowNative(RuntimeObject* pawn,const std::vector<Evaluation>& arguments,
+        const Function* declaration,QuestVr::Vm::Execution& execution) {
+        if(!arguments.empty()) throw std::runtime_error("InitRootWindow takes no arguments");
+        const auto authored=FunctionFor(Object("Extension.PlayerPawnExt.InitRootWindow"));
+        if(authored->nativeIndex!=1052u || !(authored->flags&0x400u) ||
+            (declaration && (LowerAscii(declaration->path)!=LowerAscii(authored->path) || declaration->source!=authored->source)))
+            throw std::runtime_error("InitRootWindow native does not match its original declaration");
+        RequireMapActor(pawn);
+        if(!IsDerivedFromPath(pawn->cls,"Extension.PlayerPawnExt"))
+            throw std::runtime_error("InitRootWindow receiver is not an actual PlayerPawnExt");
+        if(pawn->nativeRootWindow) return {}; // Retail idempotence before config.
+        if(!persistentRootWindowClass)
+            throw std::runtime_error("InitRootWindow has no owned Engine.Engine.Root configuration");
+        auto* cls=DefaultClass(Object(*persistentRootWindowClass));
+        if(!IsDerivedFromPath(cls,"Extension.RootWindow"))
+            throw std::runtime_error("Configured Engine.Engine.Root is not an actual RootWindow class");
+        const auto pawnField=DescribeProperty("Extension.PlayerPawnExt.RootWindow");
+        if(pawnField.zero.kind!=Kind::Object || pawnField.arrayDimension!=1u || !OwnsProperty(pawn->cls,pawnField))
+            throw std::runtime_error("Player RootWindow has no original scalar schema");
+        auto* root=ConstructWindowObject(cls,pawn,execution);
+        root->nativeRootWindowObject=true;
+        auto* gcClass=DefaultClass(Object("Extension.GC"));
+        auto* windowGC=ConstructWindowObject(gcClass,root,execution);InitializeWindowGC(windowGC,execution);
+        auto* generalGC=ConstructWindowObject(gcClass,root,execution);InitializeWindowGC(generalGC,execution);
+        const auto set=[&](const char* name,const Value& value) {
+            const auto key="Extension.Window."+std::string(name);NativeWindowWrite(root,key.c_str(),value,execution);
+        };
+        set("wGc",Value::Text(Kind::Object,windowGC->reflection.objectPath));
+        set("gGc",Value::Text(Kind::Object,generalGC->reflection.objectPath));
+        for(const auto* name:{"parentOwner","winParent","firstChild","lastChild","prevSibling","nextSibling","normalFont","boldFont"})
+            set(name,Value::Text(Kind::Object,{}));
+        for(const auto* name:{"bIsVisible","bIsSelectable","bBeingDestroyed"}) set(name,Value::Bool(false));
+        set("bIsSensitive",Value::Bool(true));set("backgroundStyle",Value::Byte(1u));
+        for(const auto* name:{"X","Y","hMargin0","hMargin1","vMargin0","vMargin1"}) set(name,Value::Float(0.0f));
+        for(const auto* name:{"Width","Height"}) set(name,Value::Float(10.0f));
+        for(const auto* name:{"hardcodedWidth","hardcodedHeight"}) set(name,Value::Float(-1.0f));
+        set("winHAlign",Value::Byte(0u));set("winVAlign",Value::Byte(0u));set("windowType",Value::Byte(3u));
+        InitializeNativeWindowColors(root,"Extension.Window",execution);
+        const auto rootSet=[&](const char* name,const Value& value) {
+            const auto key="Extension.RootWindow."+std::string(name);NativeWindowWrite(root,key.c_str(),value,execution);
+        };
+        rootSet("parentPawn",Value::Text(Kind::Object,pawn->reflection.objectPath));
+        auto* domain=persistentWindowDomain->get();
+        rootSet("nextRootWindow",Value::Text(Kind::Object,domain->roots.empty()?std::string{}:domain->roots.back()->reflection.objectPath));
+        for(const auto* name:{"MouseX","MouseY"}) rootSet(name,Value::Float(0.0f));
+        for(const auto* name:{"prevMouseX","prevMouseY","firstButtonMouseX","firstButtonMouseY"}) rootSet(name,Value::Float(-1.0f));
+        for(const auto* name:{"bMouseMoved","bCursorVisible","bRender","bPositionalSound"}) rootSet(name,Value::Bool(true));
+        for(const auto* name:{"bMouseMoveLocked","bMouseButtonLocked","bClipRender"}) rootSet(name,Value::Bool(false));
+        rootSet("multiClickTimeout",Value::Float(0.5f));rootSet("maxMouseDist",Value::Float(10.0f));
+        rootSet("initCount",Value::Integer(0));
+        // Native AddToRoot is a root-list operation, not RF flag mutation.
+        domain->roots.push_back(root);
+        auto pointer=std::make_shared<Reference>();pointer->zero=Value::Text(Kind::Object,{});
+        pointer->read=[pawn] {return Value::Text(Kind::Object,pawn->nativeRootWindow?pawn->nativeRootWindow->reflection.objectPath:std::string{});};
+        pointer->write=[this,pawn](const Value& value) {Touch(pawn);pawn->nativeRootWindow=value.text.empty()?nullptr:Object(value.text);};
+        execution.WriteReference(pointer,Value::Text(Kind::Object,root->reflection.objectPath));
+        const auto init=Member(root,"InitWindow");
+        if(!init) throw std::runtime_error("Native root FindFunctionChecked InitWindow is unavailable");
+        static_cast<void>(execution.CallFunction(*init,root->reflection.objectPath,{}));
+        // SetVisibility invokes original VisibilityChanged, init-tree and
+        // reconfiguration/focus/native destruction. Do not replace it with a
+        // successful Bool write while those contracts remain unimplemented.
+        throw std::runtime_error("RootWindow native SetVisibility/init-tree/reconfiguration is not implemented");
+    }
     Value Read(RuntimeObject* object, const Property& property, const std::uint32_t index,
         const bool defaults = false, const bool immutable = false) {
         if (object->defaultOwner) {
@@ -2528,6 +2948,9 @@ public:
         const bool classDefaults = defaults || object->classDescriptor || object->defaultOwner;
         if(!classDefaults && !immutable && index==0u) {
             const auto key=LowerAscii(property.key);
+            if(key=="extension.playerpawnext.rootwindow")
+                return Value::Text(Kind::Object,object->nativeRootWindow ?
+                    object->nativeRootWindow->reflection.objectPath : std::string{});
             if(key=="engine.playerpawn.player" && object->nativePlayerBinding) {
                 auto* player=object->nativePlayer;
                 return Value::Text(Kind::Object,player &&
@@ -2537,6 +2960,16 @@ public:
             if(key=="engine.player.actor" && object->nativeViewportIdentity)
                 return Value::Text(Kind::Object,object->nativeViewportActor ?
                     object->nativeViewportActor->reflection.objectPath : std::string{});
+        }
+        if(!classDefaults && !immutable) {
+            // Hidden inherited fields have distinct native offsets even when
+            // the concrete class redeclares their leaf Name with another type.
+            // Only the exact declaration can consume its qualified overlay.
+            const auto qualified=object->scriptValues.find(LowerAscii(property.key));
+            if(qualified!=object->scriptValues.end()) {
+                const auto slot=qualified->second.find(index);
+                if(slot!=qualified->second.end()) return slot->second;
+            }
         }
         RuntimeObject* source = classDefaults ?
             (object->classDescriptor ? DefaultClass(object) : DefaultOwner(object)) : object;
@@ -2693,6 +3126,12 @@ public:
         throw std::runtime_error("Runtime property metadata unavailable: " + name);
     }
     Property DescribeProperty(const std::string& key) { return Describe(Object(key)); }
+    std::string InstanceStorageKey(RuntimeObject* cls,const Property& property) {
+        if(!OwnsProperty(cls,property))
+            throw std::runtime_error("Qualified instance property is not owned by its concrete receiver class");
+        const auto selected=ClassProperty(cls,property.name);
+        return LowerAscii(selected.key)==LowerAscii(property.key)?LowerAscii(property.name):LowerAscii(property.key);
+    }
     bool OwnsProperty(RuntimeObject* concreteClass,const Property& property) {
         // Compiled inherited references retain their declaring field even
         // when the concrete class redeclares a field with the same name.
@@ -2960,7 +3399,7 @@ private:
         // every zone callback. There is no SpawnZone water/Physics/Base branch.
         if (QuestVr::Vm::ToBool(Read(actor, PropertyNamed(actor, "bDeleteMe"), 0u))) return;
         const auto store = [&](const char* name, const float offset) {
-            const auto property = PropertyNamed(actor, name);
+            const auto property = DescribeProperty(std::string(std::strcmp(name,"Region")==0?"Engine.Actor.":"Engine.Pawn.")+name);
             ReferenceFor(actor, property, 0u, false)->write(Region(actor, property.zero, offset));
         };
         store("Region", 0.0f);
@@ -2970,10 +3409,10 @@ private:
         if (QuestVr::Vm::ToInt(Read(info, PropertyNamed(info, "NetMode"), 0u)) == 3) return;
         auto* pri = ActorLink(actor, "PlayerReplicationInfo");
         if (pri) ReferenceFor(pri, PropertyNamed(pri, "PlayerZone"), 0u, false)->write(
-            Read(actor, PropertyNamed(actor, "Region"), 0u).fields.at("zone"));
+            Read(actor, DescribeProperty("Engine.Actor.Region"), 0u).fields.at("zone"));
     }
     void SpawnZone(RuntimeObject* actor, QuestVr::Vm::Execution& execution) {
-        const auto regionProperty = PropertyNamed(actor, "Region");
+        const auto regionProperty = DescribeProperty("Engine.Actor.Region");
         auto region = Region(actor, regionProperty.zero);
         ReferenceFor(actor, regionProperty, 0u, false)->write(region);
         auto* zone = Object(region.fields.at("zone").text);
@@ -3110,8 +3549,15 @@ private:
         set("Tag",Value::Text(Kind::Name,className));
         set("bTicked",Read(spawner,PropertyNamed(spawner,"bTicked"),0u));
         set("Brush",Value::Text(Kind::Object,{})); set("Location",location); set("OldLocation",location); set("Rotation",rotation);
-        auto region = Read(actor,PropertyNamed(actor,"Region"),0u,true);
-        region.fields.at("zone") = Value::Text(Kind::Object,level->reflection.objectPath); set("Region",region);
+        // Native AActor.Region is a fixed declared PointRegion slot. The
+        // original GameReplicationInfo also declares an unrelated Int Region;
+        // leaf-name lookup must not select that field or fail with map::at.
+        const auto regionProperty=DescribeProperty("Engine.Actor.Region");
+        auto region = Read(actor,regionProperty,0u,true);
+        if(region.kind!=Kind::Struct || region.fields.find("zone")==region.fields.end())
+            throw std::runtime_error("Native Spawn Actor.Region has no original PointRegion layout");
+        region.fields.at("zone") = Value::Text(Kind::Object,level->reflection.objectPath);
+        ReferenceFor(actor,regionProperty,0u,false)->write(region);
         TouchCollision(); RegisterCollisionActor(actor,persistentActorCollision);
         SetOwner(actor,owner,execution);
         set("Instigator",instigator);
@@ -3354,6 +3800,9 @@ private:
         RuntimeObject* player{};
         RuntimeObject* viewportActor{};
         bool playerBinding{};
+        RuntimeObject* rootWindow{};
+        std::int32_t uniqueCounter{};
+        decltype(RuntimeObject::nativeWindowPropertyRoots) windowPropertyRoots;
     };
     template <typename Number> static bool SameBits(const Number& a,const Number& b) {
         return std::memcmp(&a,&b,sizeof(Number))==0;
@@ -3486,11 +3935,13 @@ private:
     std::unordered_map<RuntimeObject*, Before> saved_;
     std::unordered_map<RuntimeObject*, BeforeAI> savedAi_;
     std::vector<GCRoot<RuntimeAIManager>> provisionalAi_;
+    std::vector<GCRoot<RuntimeObject>> provisionalWindows_;
     std::optional<BeforeDecals> beforeDecals_;
     bool clientDependent_{};
     std::optional<QuestVr::ActorCollisionRegistry> beforeCollision_;
     std::size_t lifecycleOperations_{};
     std::size_t beforeExportCount_{}, beforeWorldSlots_{};
+    std::size_t beforeWindowObjects_{}, beforeWindowRoots_{};
     std::optional<std::uint32_t> beforeRandomSeed_;
     bool spawnNotificationLocked_{};
     bool worldStartupProbe_{};
@@ -3913,7 +4364,7 @@ private:
             if(!registered) throw std::runtime_error("Native player class is not an audited registration");
             return *registered;
         }
-        if (object->runtimeBirth) throw std::runtime_error("Runtime birth is not a UClass");
+        if (object->runtimeBirth || object->nativeWindowObject) throw std::runtime_error("Constructed instance is not a UClass");
         const auto& table = Table(object->sourcePath);
         const auto& entry = table.exports.at(object->exportIndex);
         if (entry.ObjClass != 0 || object->reflection.metaClass != "Class")
@@ -3951,7 +4402,7 @@ private:
             if(!object->cls) throw std::runtime_error("Native player UObject lacks actual class");
             return {object->reflection.objectPath,object->cls->reflection.objectPath,false};
         }
-        if (object->runtimeBirth) {
+        if (object->runtimeBirth || object->nativeWindowObject) {
             if (!object->cls || !object->cls->classDescriptor)
                 throw std::runtime_error("Runtime birth has no original class identity");
             return {object->reflection.objectPath, object->cls->reflection.objectPath, false};
@@ -4015,14 +4466,33 @@ private:
             }
             auto* target = defaults || object->defaultOwner ? DefaultOwner(object) : object;
             const auto actual = ClassProperty(target->classDescriptor ? target : target->cls, property.name);
-            if (LowerAscii(actual.key) != LowerAscii(property.key) || index >= actual.arrayDimension)
+            const bool shadowed=LowerAscii(actual.key) != LowerAscii(property.key);
+            if (shadowed && target->classDescriptor)
+                throw std::runtime_error("Shadowed runtime field needs qualified writable storage: "+property.key);
+            if(index >= property.arrayDimension || !OwnsProperty(target->classDescriptor?target:target->cls,property))
                 throw std::runtime_error("VM property is not owned by its concrete receiver class");
             auto normalized = TypedLiveValue(property, value);
+            std::vector<RuntimeObject*> windowRoots;
+            if(target->nativeWindowObject) {
+                const auto collect=[&](const auto& self,const Value& member,const std::size_t depth)->void {
+                    LifecycleStep();
+                    if(depth>64u || windowRoots.size()>4096u)
+                        throw std::runtime_error("Native window reflected edge graph exceeds its bound");
+                    if(member.kind==Kind::Object && !member.text.empty()) {
+                        auto* root=Object(member.text);
+                        if(std::find(windowRoots.begin(),windowRoots.end(),root)==windowRoots.end()) windowRoots.push_back(root);
+                    }
+                    for(const auto& [name,field]:member.fields) {static_cast<void>(name);self(self,field,depth+1u);}
+                };
+                collect(collect,normalized,0u);
+            }
             Touch(target);
             if (target->classDescriptor) {
                 target->classDefaultValues[LowerAscii(property.name)][index] = std::move(normalized);
             } else {
-                target->scriptValues[LowerAscii(property.name)][index] = std::move(normalized);
+                if(target->nativeWindowObject)
+                    target->nativeWindowPropertyRoots[LowerAscii(property.key)][index]=std::move(windowRoots);
+                target->scriptValues[shadowed?LowerAscii(property.key):LowerAscii(property.name)][index] = std::move(normalized);
                 target->committedScriptState = true;
                 // Actor timer fields are independent native storage. Updating
                 // them must not reconstruct/reset an unrelated live animation
@@ -4046,7 +4516,8 @@ private:
             saved_.emplace(object, Before{object->scriptValues, object->classDefaultValues, object->animationClock, object->stateObject, object->latentTimeLeft, object->lastRenderTime,
                 object->stateLocalsRevision, object->stateTransitionFlags, object->committedScriptState, object->childActors, object->basedActors,
                 object->touchEventSent, object->committedLifecycle, object->worldRemoved,
-                object->nativePlayer, object->nativeViewportActor, object->nativePlayerBinding});
+                object->nativePlayer, object->nativeViewportActor, object->nativePlayerBinding,
+                object->nativeRootWindow,object->uniqueObjectCounter,object->nativeWindowPropertyRoots});
         }
     }
     void TouchCollision() {
@@ -4506,7 +4977,7 @@ private:
         RefreshAIRoots(manager);
         return {};
     }
-    void ValidateStateBudget(const std::size_t extraRetained = 0u) const {
+    void ValidateStateBudget(const std::size_t extraRetained = 0u,const RuntimeObject* clonedDefaults = nullptr) const {
         // Bound persistent state across independent calls, not just one VM's
         // temporary allocations. Measure without copying live values/sets.
         // State/default storage is bounded without copying live values. The
@@ -4543,8 +5014,30 @@ private:
                 self(self, member, depth + 1u);
             }
         };
+        if(clonedDefaults)
+            for(const auto& [name,slots]:clonedDefaults->classDefaultValues) {
+                QuestVr::ScriptStateDetail::Text(name,limits,true);
+                defaults.Properties(slots.size());
+                defaults.Retain(sizeof(std::string)+5u*sizeof(void*)+name.capacity()+1u);
+                defaults.Array(slots.size(),sizeof(QuestVr::ScriptSavedProperty)+5u*sizeof(void*));
+                for(const auto& [index,value]:slots) {static_cast<void>(index);valueBudget(valueBudget,value,0u);}
+            }
         std::size_t objects{}, totalNativeLinks{};
-        for (const auto* object : persistentRuntime->get()->exports) {
+        const auto& exports=persistentRuntime->get()->exports;
+        const auto* windows=persistentWindowDomain && persistentWindowDomain->get() ? persistentWindowDomain->get() : nullptr;
+        const auto totalObjects=exports.size()+(windows?windows->objects.size():0u);
+        for(std::size_t objectIndex=0u;objectIndex<totalObjects;++objectIndex) {
+            const auto* object=objectIndex<exports.size()?exports[objectIndex]:windows->objects[objectIndex-exports.size()];
+            if(object->nativeWindowObject) defaults.Retain(sizeof(RuntimeObject)+sizeof(GCAllocation)+
+                object->reflection.objectPath.size()+object->references.capacity()*sizeof(RuntimeObject*));
+            for(const auto& [key,slots]:object->nativeWindowPropertyRoots) {
+                defaults.Retain(sizeof(std::string)+5u*sizeof(void*)+key.capacity());
+                defaults.Retain(slots.size()*(sizeof(std::uint32_t)+5u*sizeof(void*)+sizeof(std::vector<RuntimeObject*>)));
+                for(const auto& [index,roots]:slots) {
+                    static_cast<void>(index);
+                    defaults.Retain(QuestVr::DecalStateDetail::Multiply(roots.capacity(),sizeof(RuntimeObject*)));
+                }
+            }
             if (object->nativeAiManager) {
                 const auto before = measured.measuredBudget().retained;
                 const auto* manager = object->nativeAiManager;
@@ -5111,7 +5604,9 @@ QuestVr::ScriptSavedState CollectScriptSavedState() {
             record.state = state;
         }
         for (const auto& [name, slots] : object->scriptValues) {
-            const auto property = host.PropertyNamed(object, name);
+            const auto property = name.find('.')==std::string::npos?host.PropertyNamed(object,name):host.DescribeProperty(name);
+            if(!host.OwnsProperty(object->cls,property) || host.InstanceStorageKey(object->cls,property)!=name)
+                throw std::runtime_error("Script save instance overlay has an invalid qualified storage identity");
             for (const auto& [index, value] : slots) {
                 if (record.properties.size() >= 65'536u)
                     throw std::runtime_error("Script save property budget exceeded");
@@ -5444,10 +5939,11 @@ public:
         // callbacks. Script may directly overwrite Owner/Base/Touching/delete
         // flags; do not replace the pin with an invented normalized tree.
     }
-    QuestVr::Vm::Value PropertyValue(RuntimeObject* cls, const QuestVr::ScriptSavedProperty& saved) {
-        const auto property = host_.ClassProperty(cls, saved.name);
+    QuestVr::Vm::Value PropertyValue(RuntimeObject* cls, const QuestVr::ScriptSavedProperty& saved,const bool instance=false) {
+        const auto property = instance?host_.DescribeProperty(saved.key):host_.ClassProperty(cls, saved.name);
         if (LowerAscii(property.key) != LowerAscii(saved.key) ||
-            LowerAscii(property.name) != LowerAscii(saved.name) || saved.index >= property.arrayDimension)
+            LowerAscii(property.name) != LowerAscii(saved.name) || saved.index >= property.arrayDimension ||
+            (instance && !host_.OwnsProperty(cls,property)))
             throw std::runtime_error("Script save property identity or fixed array index is invalid");
         return TypedValue(property, saved.value);
     }
@@ -5852,8 +6348,9 @@ PreparedScriptState PrepareScriptSavedState(
             if (next.target->cls != cls) throw std::runtime_error("Script save live actor class mismatch");
         }
         for (const auto& property : record.properties) {
-            auto value = schema.PropertyValue(cls, property);
-            if (!next.values[LowerAscii(property.name)].emplace(property.index, std::move(value)).second)
+            auto value = schema.PropertyValue(cls, property,true);
+            const auto declared=schema.Host().DescribeProperty(property.key);
+            if (!next.values[schema.Host().InstanceStorageKey(cls,declared)].emplace(property.index, std::move(value)).second)
                 throw std::runtime_error("Duplicate script save property alias/index");
         }
         if (record.clock) {
@@ -5896,10 +6393,14 @@ PreparedScriptState PrepareScriptSavedState(
         });
         if (encoded == saved.objects.end()) throw std::runtime_error("Saved birth has no initialized instance record");
         for (const auto* name : {"Class","Name","ObjectFlags","Outer","XLevel","Level","Tag","bTicked",
-                                 "Instigator","Brush","Location","OldLocation","Rotation","Region","Owner"})
+                                 "Instigator","Brush","Location","OldLocation","Rotation","Region","Owner"}) {
+            const std::string leaf=LowerAscii(name);
+            const auto expected=(leaf=="class" || leaf=="name" || leaf=="objectflags" || leaf=="outer"?
+                std::string("core.object."):std::string("engine.actor."))+leaf;
             if (std::none_of(encoded->properties.begin(),encoded->properties.end(),[&](const auto& property) {
-                return LowerAscii(property.name) == LowerAscii(name) && property.index == 0u;
+                return LowerAscii(property.key)==expected && property.index == 0u;
             })) throw std::runtime_error("Saved birth is missing a native initialization field");
+        }
         if (apply) {
             auto* actor = target(birth.path);
             const auto record = std::find_if(prepared.objects.begin(),prepared.objects.end(),
@@ -6043,6 +6544,11 @@ PortableRuntimeSummary InitializePortableRuntime(
 PortableRuntimeSummary InitializePortableRuntime(
     const std::vector<PortablePackageTables>& packages, const std::uint32_t initialRandomSeed) {
     ShutdownPortableRuntime();
+    // Read configuration before allocating/publishing runtime objects. Missing
+    // is retained as unavailable; malformed owned input cannot leave a half
+    // initialized native window domain behind.
+    const auto configuredRootClass=packages.empty()?std::nullopt:QuestVr::EngineConfig::ReadRootClass(
+        std::filesystem::path(packages.front().sourcePath).parent_path().parent_path());
     if (initialRandomSeed != QuestVr::ScriptRandom::InitialSeed) persistentScriptRandomSeed = initialRandomSeed;
     PortableRuntimeSummary summary;
     const std::size_t baseline = GC::GetStats().numObjects;
@@ -6240,6 +6746,8 @@ PortableRuntimeSummary InitializePortableRuntime(
     }
     BuildPersistentDialogueIndex();
     const auto classDefaultObjects=MaterializeClassDefaultObjects(persistentRuntime->get());
+    persistentWindowDomain=std::make_unique<GCRoot<RuntimeWindowDomain>>(GC::Alloc<RuntimeWindowDomain>());
+    persistentRootWindowClass=configuredRootClass;
     summary.objects = persistentRuntime->get()->exports.size();
     persistentScriptExportCount = summary.objects;
     summary.peakGcObjects = GC::GetStats().numObjects;
@@ -6247,7 +6755,7 @@ PortableRuntimeSummary InitializePortableRuntime(
     summary.passed = !packages.empty() && summary.objects != 0 &&
         summary.classes != 0 && summary.functions != 0 &&
         summary.normalizedBytecodeBytes != 0 &&
-        GC::GetStats().numObjects == baseline + summary.objects + classDefaultObjects + 1;
+        GC::GetStats().numObjects == baseline + summary.objects + classDefaultObjects + 2;
     return summary;
 }
 
@@ -6680,6 +7188,7 @@ void ShutdownPortableRuntime() {
     persistentDispatchGraph.reset();
     persistentDispatchSummary = {};
     persistentVmObjects.clear();
+    persistentWindowDomain.reset();persistentRootWindowClass.reset();
     persistentPlayerSession.reset();
     persistentRuntime.reset();
     persistentQualifiedObjects.clear();
@@ -6872,6 +7381,93 @@ QuestVr::Vm::Result SetPortableRuntimePlayer(const std::uint64_t viewportIdentit
     } catch(const std::exception& error) {
         QuestVr::Vm::Result result;result.status=QuestVr::Vm::Status::Unsupported;result.error=error.what();return result;
     }
+}
+
+PortableNativeWindowSummary ReadPortableRuntimeNativeWindowSummary() {
+    PortableActorVmHost host;
+    PortableNativeWindowSummary result;result.configuredRootClass=persistentRootWindowClass;
+    if(persistentWindowDomain && persistentWindowDomain->get()) {
+        result.objects=persistentWindowDomain->get()->objects.size();
+        result.roots=persistentWindowDomain->get()->roots.size();
+    }
+    if(result.configuredRootClass)
+        result.configuredRootNameCounter=host.Object(*result.configuredRootClass)->uniqueObjectCounter;
+    const auto found=persistentVmObjects.find("extension.gc");
+    if(found!=persistentVmObjects.end()) result.graphicsContextNameCounter=found->second->uniqueObjectCounter;
+    return result;
+}
+
+PortableRootWindowProbeResult ProbePortableRootWindowInitialization(
+    const std::string& playerActorPath,const QuestVr::Vm::Limits& limits) {
+    CollectBirthGarbageAtBoundary collect;
+    PortableRootWindowProbeResult result;
+    try {
+        PortableActorVmHost host;
+        auto* pawn=host.Object(playerActorPath);
+        if(!IsDerivedFromPath(pawn->cls,"Extension.PlayerPawnExt") || pawn->nativeRootWindow)
+            throw std::runtime_error("Root initialization probe requires an actual uninitialized PlayerPawnExt");
+        const auto capture=[&] {
+            auto* domain=persistentWindowDomain && persistentWindowDomain->get()?persistentWindowDomain->get():nullptr;
+            if(!domain) throw std::runtime_error("Native window probe has no domain");
+            // A fixed bounded construction prefix, never an unbounded graph
+            // walk after a failed bytecode instruction.
+            if(domain->objects.size()>64u || domain->roots.size()>16u)
+                throw std::runtime_error("Native window initialization probe exceeds its snapshot bound");
+            QuestVr::AuthoredStructLimits bounds;bounds.retainedBytes=512u<<10u;
+            QuestVr::AuthoredStructDetail::Budget retained{bounds};
+            result.pawnRootPath=pawn->nativeRootWindow?pawn->nativeRootWindow->reflection.objectPath:std::string{};
+            for(const auto* root:domain->roots) result.rootedWindows.push_back(root->reflection.objectPath);
+            for(auto* object:domain->objects) {
+                PortableNativeWindowObjectSnapshot view{object->reflection.objectPath,
+                    object->cls->reflection.objectPath,object->outer->reflection.objectPath,{}};
+                retained.Retain(sizeof(view)+view.path.capacity()+view.classPath.capacity()+view.outerPath.capacity());
+                const auto field=[&](const char* key) {
+                    const auto property=host.DescribeProperty(key);
+                    if(property.arrayDimension!=1u) throw std::runtime_error("Native window probe field is not scalar");
+                    auto value=host.Read(object,property,0u);
+                    retained.Retain(sizeof(PortableNativeWindowFieldSnapshot)+std::strlen(key));
+                    QuestVr::AuthoredStructDetail::RetainedValue(value,retained);
+                    PortableNativeWindowFieldSnapshot entry{key,std::move(value),{}};
+                    const auto roots=object->nativeWindowPropertyRoots.find(LowerAscii(key));
+                    if(roots!=object->nativeWindowPropertyRoots.end()) {
+                        const auto slot=roots->second.find(0u);
+                        if(slot!=roots->second.end()) for(const auto* root:slot->second) {
+                            retained.Retain(sizeof(std::string)+root->reflection.objectPath.size());
+                            entry.propertyRoots.push_back(root->reflection.objectPath);
+                        }
+                    }
+                    view.fields.push_back(std::move(entry));
+                };
+                for(const auto* key:{"Core.Object.Class","Core.Object.Name","Core.Object.Outer","Core.Object.ObjectFlags"}) field(key);
+                if(IsDerivedFromPath(object->cls,"Extension.Window")) {
+                    for(const auto* name:{"normalFont","boldFont","wGc","gGc","winParent","bIsVisible","bNeedsQuery",
+                        "bNeedsReconfigure","defaultCursor","defaultCursorShadow","defaultHotX","defaultHotY","defaultCursorColor"})
+                        field((std::string("Extension.Window.")+name).c_str());
+                    if(IsDerivedFromPath(object->cls,"Extension.RootWindow"))
+                        for(const auto* name:{"parentPawn","nextRootWindow","defaultEditCursor","DefaultMoveCursor",
+                            "defaultHorizontalMoveCursor","defaultVerticalMoveCursor","defaultTopLeftMoveCursor","defaultTopRightMoveCursor"})
+                            field((std::string("Extension.RootWindow.")+name).c_str());
+                } else if(IsDerivedFromPath(object->cls,"Extension.GC")) {
+                    for(const auto* name:{"Canvas","normalFont","boldFont","gcOwner"})
+                        field((std::string("Extension.GC.")+name).c_str());
+                }
+                result.objects.push_back(std::move(view));
+            }
+        };
+        result.execution=QuestVr::Vm::ExecuteTransaction(host,[&](QuestVr::Vm::Execution& execution)->QuestVr::Vm::Value {
+            const auto init=host.Member(pawn,"Extension.PlayerPawnExt.InitRootWindow");
+            try { static_cast<void>(execution.CallFunction(*init,pawn->reflection.objectPath,{})); }
+            catch(...) {
+                try {capture();} catch(const std::exception& error) {result.inspectionError=error.what();}
+                throw; // Keep the original first poisoned callback failure.
+            }
+            capture();
+            throw std::runtime_error("Non-publishing native root initialization probe completed; rollback required");
+        },limits);
+    } catch(const std::exception& error) {
+        result.execution.status=QuestVr::Vm::Status::Unsupported;result.execution.error=error.what();
+    }
+    return result;
 }
 
 PortablePlayerHudSnapshot ReadPortablePlayerHudSnapshot(const std::string& actorPath) {
