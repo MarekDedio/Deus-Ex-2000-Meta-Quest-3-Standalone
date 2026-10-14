@@ -65,3 +65,38 @@ artwork87 controls pass. Runtime/VM/Quest ARM64 syntax-only checks pass. The
 untouched1308-actor world probe still refuses Move266 and fully rolls back.
 Software art previews use explicitly detached fixture states. No Android
 binary/APK was generated or installed, and no commercial assets were pushed.
+
+## Audited next slot constructor, not yet implemented
+
+Toggle.Init10049820 calls Button.Init10007640→Text.Init10045af0→Window.Init.
+Window parent/descendant notifications happen before derived initialization,
+so Radio appends the actual Toggle while its Text/Button fields are still
+uninitialized. Toggle later clears enableSound/disableSound only.
+
+Text sets alignments1/1, margins3/3, word wrap true, MinWidth0, min/max lines-1
+and an empty private FString. EnableTextAsAccelerator100464e0(true) preserves an
+already-true flag; otherwise sets it then always writes acceleratorKey0 through
+1004f3b0. Only a changed old nonzero accelerator dirties the nearest Modal.
+Text fields are original Const flags2; private Text is StrProperty flags1000.
+
+Button clears pressed/mouse/auto-repeat bits while preserving right-click
+enablement; delays are.3/.5/.1, key/timer/repeat time0, texture/sounds None.
+Its six ButtonDisplayInfo records contain tX Texture and canonical Color
+tlColor/txColor; tile RGB white, text RGB green. Current colors have white RGB.
+Original Color alpha bytes are undefined stack storage: support needs an
+explicit defined portable policy, not a claim that retail initializes RGBA.
+
+Button calls SetSelectability(true), and original HUDObjectSlot.InitWindow
+later calls native1420 SetSelectability(false). The temporary true phase must
+really insert/sort row/column tables and indices; skipping it is not equivalent
+to the original callbacks.1420 has one copied Bool parameter with native+0
+default. Changed selectability checks root focus, updates nearest TabGroup lists,
+and dirties accelerators only for an actual nonzero accelerator key.
+
+Table sorting uses row Y/X/address and column X/Y/address. ComputeTabGroupLocation
+10045000 scans positive-size traversable windows and uses clip origin+X/Y.
+IsTraversable(false) still checks all ancestors' visibility/sensitivity; false
+only bypasses the active-Modal constraint. The hidden HUD/root prefix has no
+eligible entries and keeps firstAbsX/Y0. Nonnull focus, visible layout, Button
+press/timers, Toggle selection and native virtual-event overrides still need
+their own implementation/audit. Constructor evidence does not prove interaction.
