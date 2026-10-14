@@ -51,18 +51,25 @@ script/sine/font/clipping/hidden-show/alignment path. Actual verified Color
 metadata now permits the original theme-null four-byte Context clearing; no
 ThemeManager or theme color is fabricated. Ammo initialization, its HUD parent
 visibility/layout callback, requested size and assignment now complete. The
-first health body-part window gets its original head texture, translucent GC
-style and requested geometry; initialization stops at SetTileColorRGB PC51/
-native1475, whose uninitialized argument-buffer contract still needs support.
-Native Root modal self-list,
-constructor flags, preserved CDO fields and255 key/accelerator slots are checked
+six health body-part windows now receive their original textures, translucent
+GC styles, requested geometry and colors. The body overlay is lowered beneath
+them with its original armor color. Both energy/breath ProgressBarWindows and
+the crosshair initialize and are assigned to the actual pending HUD. The next
+original boundary is HUDObjectBelt.CreateSlots PC11: the native RadioBoxWindow
+constructor is not implemented. The diagnostic captures48 objects/3391 writes;
+this is still an unpublished, rolled-back initialization prefix, not live health.
+Native Root modal self-list, constructor flags, preserved CDO fields and255
+key/accelerator slots are checked
 directly before rollback. This is still a pending construction graph. Full native
 window construction, layout, lifecycle/input/rendering, player Login/Possess and
 the remaining HUD behavior still need implementation and integration tests.
 Unsupported callbacks refuse and roll back instead of publishing a partial HUD.
-The original-data control passes1459 checks of the pending graph and complete
-rollback; the ordinary host suite
-passes79 tests/92 registered with13 explicit owned-data skips and zero failures.
+The coherent host suite passes79 ordinary tests/92 registered, with13 explicit
+owned-data skips and zero failures (45.80s alongside original-data probes).
+The separate owned-data control passes2163 checks, including the expanded
+health/belt prefix, all sibling/GC/color edges, repeated initialization, forced
+write-budget rollback and warm/cold ring/session ownership. ARM64 syntax-only
+checks pass for runtime, VM and Quest entry point; no Android binary/APK was made.
 These results do not satisfy the full-HUD functional acceptance checklist above.
 
 The six-limb presentation clock now follows the original .4s damage flash,
@@ -72,8 +79,12 @@ visible frame over bounded10Hz real-state reads, uploads changed images only,
 and resets presentation on player/map/unbind.357 offline checks pass. This is
 not evidence that live possession, underwater oxygen or the full HUD is ready.
 
-Startup fixes now include the real PlayerNone ConsoleCommand guard, FMax and
-integer Clamp primitives. Independent qualified instance storage also preserves
+Startup fixes now include the real PlayerNone ConsoleCommand guard, FMax,
+sign-preserving Abs and signed integer Max/Clamp primitives. Audited native
+argument buffers distinguish initialized defaults from SetTileColor's
+uninitialized four-byte Color destination; absent or partial Color writes are
+refused rather than filled from invented defaults. The VM passes683869 checks
+and672 refusal controls. Independent qualified instance storage also preserves
 Actor.Region's PointRegion separately from GameReplicationInfo.Region's Int,
 including save/load. Hidden inherited class-default writes remain unsupported;
 instance support must not be presented as completed mutable-CDO shadow support.

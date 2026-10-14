@@ -42,10 +42,10 @@ bool SnapshotNativeInput(const std::uint16_t index, const Function* declaration 
         return declaration && (Lower(declaration->path) == "engine.decal.attachdecal" ||
             Lower(declaration->path) == "engine.playerpawn.consolecommand");
     case 112: case 113: case 124: case 125: case 126: case 127: case 128:
-    case 168: case 187: case 189: case 231: case 234: case 235: case 244: case 245: case 246: case 249: case 251: case 278:
+    case 168: case 186: case 187: case 189: case 231: case 234: case 235: case 244: case 245: case 246: case 249: case 250: case 251: case 278:
     case 280: return true; // SetTimer copies rate before evaluating bLoop.
-    case 1410: case 1416: case 1421: case 1422: case 1430: case 1431: case 1438: case 1454: case 1467:
-    case 1477: case 1510: case 1511:
+    case 1410: case 1415: case 1416: case 1421: case 1422: case 1430: case 1431: case 1432: case 1438: case 1454: case 1467:
+    case 1475: case 1477: case 1510: case 1511:
         return true; // Retail window wrappers have no OUT parameters.
     default: return false;
     }
@@ -499,7 +499,7 @@ public:
         }));
     }
     Value Run(const Function& identity, const std::string& self, const std::vector<Evaluation>& incoming,
-        std::optional<std::optional<Value>> capturedContext = {}) {
+        std::optional<std::optional<Value>> capturedContext = {}, const bool nativeArgumentsMaterialized = false) {
         if (self.empty() || !host_.CanCall(identity, self)) return {};
         if (result_.callStack.size() >= limits_.callDepth) Fail(Status::Budget, "VM call depth limit");
         // An engaged outer optional records that expression evaluation already
@@ -519,15 +519,75 @@ public:
             (fn.nativeIndex == 256u || fn.nativeIndex == 527u)))
             Fail(Status::Unsupported, "Latent VM function requires its runtime handler");
         if (incoming.size() > limits_.arguments) Fail(Status::Budget, "VM argument limit");
+        const bool directNative=(fn.flags&0x400u) && !nativeArgumentsMaterialized;
+        const auto uninitializedLayouts=directNative ?
+            CaptureUninitializedNativeLayouts(fn.nativeIndex,self,incoming.size(),&fn) :
+            std::vector<std::optional<ResultLayout>>{};
+        // Expression calls already checked dispositions before any declared
+        // zero merge/snapshot. Direct Execution inputs must do so here BEFORE
+        // SnapshotNativeInput could turn NoWrite into an apparent written value.
+        std::size_t parameterSlot{};
+        for (const auto& property:fn.variables) {
+            if (!(property.flags&0x80u) || (property.flags&0x400u)) continue;
+            if (!uninitializedLayouts.empty() && parameterSlot<uninitializedLayouts.size() &&
+                uninitializedLayouts[parameterSlot] && property.resultLayout!=*uninitializedLayouts[parameterSlot])
+                Fail(Status::Invalid,"VM uninitialized native argument declaration layout mismatch");
+            ++parameterSlot;
+        }
+        const bool directSequentialSeeds=directNative && ReadOnlyNativeSeedOperation([&] {
+            return host_.HasSequentialNativeArgumentSeeds(fn.nativeIndex,self,&fn);
+        });
+        // Capture ALL immutable defaults before reading ANY incoming alias.
+        // Eval already did this before evaluating expressions; never repeat
+        // its hooks at the internal Run boundary.
+        const auto nativeSeeds=directNative ? CaptureNativeArgumentSeeds(fn.nativeIndex,self,
+            incoming.size(),&fn,uninitializedLayouts) : std::vector<std::optional<Value>>{};
+        std::vector<Value> directPrefix;
+        std::size_t directPrefixBytes{},directPrefixNodes{};
+        if (directSequentialSeeds) ReserveNativeInputPrefix(directPrefix,incoming.size());
         std::vector<Evaluation> args;
         args.reserve(incoming.size());
-        for (const auto& argument : incoming) {
-            if (!argument.reference) ValidateValue(argument.value, 0);
-            const auto value = argument.Load(); ValidateValue(value, 0); Retain(ValueBytes(value));
+        for (std::size_t slot=0u;slot<incoming.size();++slot) {
+            const auto& argument=incoming[slot];
+            Evaluation materialized;
+            const Evaluation* input=&argument;
+            const auto sequentialSeed=directSequentialSeeds ? ReadOnlyNativeSeedOperation([&] {
+                return host_.SequentialNativeArgumentSeed(fn.nativeIndex,self,slot,&fn,directPrefix);
+            }) : std::optional<Value>{};
+            if (sequentialSeed) {
+                if (!uninitializedLayouts.empty() && uninitializedLayouts[slot])
+                    Fail(Status::Invalid,"VM uninitialized native argument conflicts with an initialized seed");
+                ValidateValue(*sequentialSeed,0);Retain(ValueBytes(*sequentialSeed));RetainNativeSeedCapacity(*sequentialSeed);
+                ValidateResultLayout(*sequentialSeed,NativeParameterLayout(&fn,slot));
+            }
+            if (!uninitializedLayouts.empty() && uninitializedLayouts[slot]) {
+                materialized=MaterializeUninitializedNativeArgument(argument,*uninitializedLayouts[slot]);input=&materialized;
+            } else if (directNative && argument.disposition!=ResultDisposition::Written) {
+                const bool entrySeeded=!nativeSeeds.empty() && nativeSeeds[slot].has_value();
+                const auto destination=sequentialSeed ? sequentialSeed : entrySeeded ? nativeSeeds[slot] :
+                    BuiltinArgumentZero(fn.nativeIndex,slot);
+                if (destination) {
+                    ValidateValue(*destination,0);Retain(ValueBytes(*destination));
+                    materialized={ResultValue(argument,*destination,NativeParameterLayout(&fn,slot),true),{}};
+                } else if (argument.disposition==ResultDisposition::ZeroFill && argument.zeroFillBytes!=0u)
+                    Fail(Status::Unsupported,"VM context argument result destination layout is unavailable");
+                else {
+                    // There is no audited initialized temporary. Preserve
+                    // absence, not an arbitrary declaration zero or stale
+                    // caller payload, and never read an unwritten alias.
+                    materialized.disposition=argument.disposition;
+                    materialized.zeroFillBytes=argument.zeroFillBytes;
+                }
+                input=&materialized;
+            }
+            if (!input->reference) ValidateValue(input->value, 0);
+            const auto value = input->Load(); ValidateValue(value, 0); Retain(ValueBytes(value));
+            if (directSequentialSeeds) CaptureNativeInput(directPrefix,value,directPrefixBytes,directPrefixNodes);
             // execGotoState consumes each input value before evaluating the
             // next argument. Ordinary native OUT arguments retain aliases.
-            if ((fn.flags & 0x400u) && SnapshotNativeInput(fn.nativeIndex, &fn)) args.push_back({value,{}});
-            else args.push_back(argument);
+            if ((fn.flags & 0x400u) && SnapshotNativeInput(fn.nativeIndex, &fn) &&
+                input->disposition==ResultDisposition::Written) args.push_back({value,{}});
+            else args.push_back(*input);
         }
         std::size_t argCount = 0;
         for (const auto& p : fn.variables) {
@@ -1120,7 +1180,7 @@ private:
             throw;
         }
     }
-    template<class Operation> auto ReadOnlyNativeSeedOperation(Operation&& operation) {
+    template<class Operation> auto ReadOnlyNativeSeedOperation(Operation&& operation) -> decltype(operation()) {
         const auto previous = std::exchange(nativeSeedHookActive_, true);
         try {
             auto value = operation();
@@ -1327,6 +1387,104 @@ private:
             RetainNativeSeedCapacity(field);
         }
     }
+    void ReserveNativeInputPrefix(std::vector<Value>& prefix, const std::size_t count) {
+        if (count>limits_.arguments || count>limits_.retainedBytes/sizeof(Value))
+            Fail(Status::Budget,"VM native input prefix storage limit");
+        Retain(count*sizeof(Value));prefix.reserve(count);
+        if (prefix.capacity()>limits_.retainedBytes/sizeof(Value))
+            Fail(Status::Budget,"VM native input prefix capacity limit");
+        Retain((prefix.capacity()-count)*sizeof(Value));
+    }
+    void CaptureNativeInput(std::vector<Value>& prefix,const Value& value,std::size_t& bytes,std::size_t& nodes) {
+        prefix.push_back(value);
+        ValidateValueTree(prefix.back(),0,bytes,nodes);
+        Retain(ValueBytes(prefix.back())-sizeof(Value));RetainNativeSeedCapacity(prefix.back());
+    }
+    ResultLayout NativeParameterLayout(const Function* declaration,const std::size_t slot) {
+        if (!declaration) return ResultLayout::Unknown;
+        std::size_t index{};
+        for (const auto& property:declaration->variables) {
+            if (!(property.flags&0x80u) || (property.flags&0x400u)) continue;
+            if (index++==slot) return property.resultLayout;
+        }
+        return ResultLayout::Unknown;
+    }
+    std::vector<std::optional<Value>> CaptureNativeArgumentSeeds(const std::uint16_t index,
+        const std::string& receiver,const std::size_t count,const Function* declaration,
+        const std::vector<std::optional<ResultLayout>>& uninitializedLayouts,
+        const std::vector<Property>* parameters=nullptr) {
+        if (count>limits_.arguments) Fail(Status::Budget,"VM native argument seed count limit");
+        std::vector<std::optional<Value>> seeds;
+        for (std::size_t slot=0u;slot<count;++slot) {
+            auto seed=ReadOnlyNativeSeedOperation([&] {
+                return host_.NativeArgumentSeed(index,receiver,slot,declaration);
+            });
+            if (!seed) continue;
+            if (!uninitializedLayouts.empty() && uninitializedLayouts[slot])
+                Fail(Status::Invalid,"VM uninitialized native argument conflicts with an initialized seed");
+            ValidateValue(*seed,0);Retain(ValueBytes(*seed));RetainNativeSeedCapacity(*seed);
+            ValidateResultLayout(*seed,parameters && slot<parameters->size() ?
+                (*parameters)[slot].resultLayout : NativeParameterLayout(declaration,slot));
+            // No allocation on the ordinary no-default hot path.
+            if (seeds.empty()) {
+                if (count>limits_.retainedBytes/sizeof(std::optional<Value>))
+                    Fail(Status::Budget,"VM native argument seed storage limit");
+                Retain(count*sizeof(std::optional<Value>));seeds.resize(count);
+                if (seeds.capacity()>limits_.retainedBytes/sizeof(std::optional<Value>))
+                    Fail(Status::Budget,"VM native argument seed capacity limit");
+                Retain((seeds.capacity()-count)*sizeof(std::optional<Value>));
+            }
+            seeds[slot]=std::move(seed);
+        }
+        return seeds;
+    }
+    std::vector<std::optional<ResultLayout>> CaptureUninitializedNativeLayouts(const std::uint16_t index,
+        const std::string& receiver,const std::size_t count,const Function* declaration,
+        const std::vector<Property>* parameters=nullptr) {
+        if (count>limits_.arguments) Fail(Status::Budget,"VM uninitialized native argument count limit");
+        std::vector<std::optional<ResultLayout>> layouts;
+        for (std::size_t slot=0u;slot<count;++slot) {
+            const auto layout=ReadOnlyNativeSeedOperation([&] {
+                return host_.NativeArgumentUninitializedLayout(index,receiver,slot,declaration);
+            });
+            if (!layout) continue;
+            if (*layout==ResultLayout::Unknown)
+                Fail(Status::Unsupported,"VM uninitialized native argument layout is not established");
+            if (*layout!=ResultLayout::CoreColor4)
+                Fail(Status::Invalid,"VM unknown uninitialized native argument layout");
+            if (parameters && slot<parameters->size() && (*parameters)[slot].resultLayout!=*layout)
+                Fail(Status::Invalid,"VM uninitialized native argument declaration layout mismatch");
+            if (layouts.empty()) {
+                if (count>limits_.retainedBytes/sizeof(std::optional<ResultLayout>))
+                    Fail(Status::Budget,"VM uninitialized native argument layout storage limit");
+                Retain(count*sizeof(std::optional<ResultLayout>));layouts.resize(count);
+                if (layouts.capacity()>limits_.retainedBytes/sizeof(std::optional<ResultLayout>))
+                    Fail(Status::Budget,"VM uninitialized native argument layout capacity limit");
+                Retain((layouts.capacity()-count)*sizeof(std::optional<ResultLayout>));
+            }
+            layouts[slot]=layout;
+        }
+        return layouts;
+    }
+    Evaluation MaterializeUninitializedNativeArgument(const Evaluation& argument,const ResultLayout layout) {
+        if (layout!=ResultLayout::CoreColor4)
+            Fail(Status::Unsupported,"VM uninitialized native argument layout is not established");
+        Value value;
+        if (argument.disposition==ResultDisposition::Written) {
+            if (!argument.reference) {
+                ValidateValue(argument.value,0);RetainNativeSeedCapacity(argument.value);
+            }
+            value=argument.Load();ValidateValue(value,0);ValidateResultLayout(value,layout);
+        } else if (argument.disposition==ResultDisposition::ZeroFill && argument.zeroFillBytes==4u) {
+            // Construct storage only AFTER a complete four-byte write is known.
+            // No declared zero or arbitrary seed initializes an unwritten temp.
+            value.kind=Kind::Struct;
+            for (const auto* channel:{"r","g","b","a"}) value.fields.emplace(channel,Value::Byte(0u));
+            ValidateValue(value,0);ValidateResultLayout(value,layout);
+        } else Fail(Status::Unsupported,"VM uninitialized native argument requires a complete result write");
+        Retain(ValueBytes(value));RetainNativeSeedCapacity(value);
+        return {std::move(value),{}};
+    }
     std::optional<Value> BuiltinArgumentZero(const std::uint16_t index,const std::size_t argument) {
         const auto zero=[](const Kind kind) {
             Value value;value.kind=kind;if(kind==Kind::Name)value.text="None";return value;
@@ -1339,9 +1497,9 @@ private:
         case 127: case 128: case 234:return zero(argument==0u ? Kind::String : Kind::Int);
         case 143: case 144: case 145: case 146: case 147: case 150: case 151: case 152: case 153:
         case 154: case 155: case 156: case 157: case 158: case 161: case 162: case 163: case 164:
-        case 165: case 166: case 249: case 251:return zero(Kind::Int);
+        case 165: case 166: case 249: case 250: case 251:return zero(Kind::Int);
         case 169: case 170: case 171: case 172: case 173: case 174: case 175: case 176: case 177:
-        case 178: case 179: case 180: case 181: case 182: case 183: case 184: case 185: case 187: case 189:
+        case 178: case 179: case 180: case 181: case 182: case 183: case 184: case 185: case 186: case 187: case 189:
         case 244: case 245: case 246:return zero(Kind::Float);
         case 212: case 214: case 221:return zero(argument==0u ? Kind::Vector : Kind::Float);
         case 213:return zero(argument==0u ? Kind::Float : Kind::Vector);
@@ -1382,45 +1540,17 @@ private:
                 Retain(parameter.key.capacity());Retain(parameter.name.capacity());Retain(ValueBytes(parameter.zero));
             }
             const bool nativeCall = !fn || (fn->flags & 0x400u);
+            const auto uninitializedLayouts=nativeCall ?
+                CaptureUninitializedNativeLayouts(index,context,n.children.size(),fn.get(),&parameters) :
+                std::vector<std::optional<ResultLayout>>{};
             const bool sequentialSeeds = nativeCall && ReadOnlyNativeSeedOperation([&] {
                 return host_.HasSequentialNativeArgumentSeeds(index, context, fn.get());
             });
-            std::vector<std::optional<Value>> nativeSeeds;
-            if (nativeCall) {
-                if (n.children.size() > limits_.arguments)
-                    Fail(Status::Budget,"VM native argument seed count limit");
-                for (std::size_t i = 0u; i < n.children.size(); ++i) {
-                    auto seed = host_.NativeArgumentSeed(index, context, i, fn.get());
-                    if (seed) {
-                        ValidateValue(*seed,0); Retain(ValueBytes(*seed)); RetainNativeSeedCapacity(*seed);
-                        if (i<parameters.size()) ValidateResultLayout(*seed,parameters[i].resultLayout);
-                        // Most natives have no nonzero temporary defaults. Do
-                        // not allocate or charge optional<Value> slots on that
-                        // hot path; all host lookups still precede ALL arguments.
-                        if (nativeSeeds.empty()) {
-                            if (n.children.size() > limits_.retainedBytes / sizeof(std::optional<Value>))
-                                Fail(Status::Budget,"VM native argument seed storage limit");
-                            Retain(n.children.size() * sizeof(std::optional<Value>));
-                            nativeSeeds.resize(n.children.size());
-                            if (nativeSeeds.capacity() > limits_.retainedBytes / sizeof(std::optional<Value>))
-                                Fail(Status::Budget,"VM native argument seed capacity limit");
-                            Retain((nativeSeeds.capacity() - n.children.size()) * sizeof(std::optional<Value>));
-                        }
-                        nativeSeeds[i]=std::move(seed);
-                    }
-                }
-            }
+            const auto nativeSeeds=nativeCall ? CaptureNativeArgumentSeeds(index,context,n.children.size(),
+                fn.get(),uninitializedLayouts,&parameters) : std::vector<std::optional<Value>>{};
             std::vector<Value> capturedInputs;
             std::size_t capturedInputBytes{}, capturedInputNodes{};
-            if (sequentialSeeds) {
-                if (n.children.size() > limits_.retainedBytes / sizeof(Value))
-                    Fail(Status::Budget,"VM native input prefix storage limit");
-                Retain(n.children.size() * sizeof(Value));
-                capturedInputs.reserve(n.children.size());
-                if (capturedInputs.capacity() > limits_.retainedBytes / sizeof(Value))
-                    Fail(Status::Budget,"VM native input prefix capacity limit");
-                Retain((capturedInputs.capacity() - n.children.size()) * sizeof(Value));
-            }
+            if (sequentialSeeds) ReserveNativeInputPrefix(capturedInputs,n.children.size());
             std::vector<Evaluation> args;
             for (std::size_t i = 0; i < n.children.size(); ++i) {
                 // Retail CallFunction evaluates arguments with FFrame.Object,
@@ -1436,6 +1566,8 @@ private:
                     return host_.SequentialNativeArgumentSeed(index, context, i, fn.get(), capturedInputs);
                 }) : std::optional<Value>{};
                 if (sequentialSeed) {
+                    if (!uninitializedLayouts.empty() && uninitializedLayouts[i])
+                        Fail(Status::Invalid,"VM uninitialized native argument conflicts with an initialized seed");
                     ValidateValue(*sequentialSeed,0); Retain(ValueBytes(*sequentialSeed));
                     RetainNativeSeedCapacity(*sequentialSeed);
                     if (i<parameters.size()) ValidateResultLayout(*sequentialSeed,parameters[i].resultLayout);
@@ -1445,12 +1577,14 @@ private:
                 // not a null Context writing into a typed argument slot. Keep
                 // it intact for the declaration-aware native reader/default.
                 const bool nativeOmission=nativeCall && n.children[i].op==0x0bu;
-                if (argument.disposition!=ResultDisposition::Written && !nativeOmission) {
+                if (!uninitializedLayouts.empty() && uninitializedLayouts[i])
+                    argument=MaterializeUninitializedNativeArgument(argument,*uninitializedLayouts[i]);
+                else if (argument.disposition!=ResultDisposition::Written && !nativeOmission) {
                     const bool entrySeeded = nativeCall && !nativeSeeds.empty() && nativeSeeds[i].has_value();
-                    const bool seeded = sequentialSeed.has_value() || entrySeeded;
+                    const auto builtinZero=nativeCall ? BuiltinArgumentZero(index,i) : std::nullopt;
+                    const bool seeded = sequentialSeed.has_value() || entrySeeded || builtinZero.has_value();
                     const auto typedZero=sequentialSeed ? sequentialSeed : entrySeeded ? nativeSeeds[i] :
-                        i<parameters.size() ? std::optional<Value>{parameters[i].zero} :
-                        nativeCall ? BuiltinArgumentZero(index,i) : std::nullopt;
+                        builtinZero ? builtinZero : i<parameters.size() ? std::optional<Value>{parameters[i].zero} : std::nullopt;
                     if (typedZero) {
                         ValidateValue(*typedZero,0);Retain(ValueBytes(*typedZero));
                         const auto layout=i<parameters.size()?parameters[i].resultLayout:ResultLayout::Unknown;
@@ -1461,21 +1595,13 @@ private:
                 const bool snapshotInput = nativeCall && SnapshotNativeInput(index, fn.get());
                 if (snapshotInput || sequentialSeeds) {
                     auto value = argument.Load(); ValidateValue(value, 0); Retain(ValueBytes(value));
-                    if (sequentialSeeds) {
-                        capturedInputs.push_back(value);
-                        // The vector capacity already accounts for each root
-                        // Value. Bound the full prefix's aggregate nodes/bytes,
-                        // as well as any detached dynamic allocation capacity.
-                        ValidateValueTree(capturedInputs.back(),0,capturedInputBytes,capturedInputNodes);
-                        Retain(ValueBytes(capturedInputs.back()) - sizeof(Value));
-                        RetainNativeSeedCapacity(capturedInputs.back());
-                    }
+                    if (sequentialSeeds) CaptureNativeInput(capturedInputs,value,capturedInputBytes,capturedInputNodes);
                     if (snapshotInput) argument = {std::move(value),{}};
                 }
                 args.push_back(std::move(argument));
             }
             Locate(frame.function, n.offset, n.op);
-            result = fn ? Evaluation{Run(*fn, context, args, capturedContext), {}} :
+            result = fn ? Evaluation{Run(*fn, context, args, capturedContext,nativeCall), {}} :
                 Native(index, context, args, nullptr, *capturedContext);
         } else if (n.op >= 0x39) {
             // Retail ObjectToString explicitly evaluates its operand using
@@ -1817,6 +1943,12 @@ private:
             // not a double hypot that would silently change overflow behavior.
             return {Value::Float(length(vec3(v[0], v[1], v[2]))), {}};
         }
+        case 186: {
+            // Retail execAbs10135c60 compares with Float+0 and conditionally
+            // changes sign. Unlike fabs, it preserves negative zero unchanged.
+            count(1);const float value=ToFloat(a(0));
+            return {Value::Float(value<0.0f?-value:value),{}};
+        }
         case 187:
             // Retail Core.dll execSin10135d20: initialize Float0, evaluate
             // once, promote to double appSin, then store a binary32 result.
@@ -1847,6 +1979,20 @@ private:
                 std::isnan(high)||high<v ? high : v),{}};
         }
         case 249: return binaryInt([](auto x,auto y) { return x<y ? x : y; });
+        case 250: {
+            count(2);
+            // Retail thunk101015ff -> execMax10134b00 independently zeros
+            // and copies A then B; signed JL selects B only when A<B.
+            // Equality selects A, and no arithmetic can overflow.
+            const auto integer=[&](std::size_t slot) {
+                const auto value=a(slot);
+                if (value.kind==Kind::Nothing) return std::int32_t{0};
+                if (value.kind!=Kind::Int && value.kind!=Kind::Byte) TypeError();
+                return value.integer;
+            };
+            const auto first=integer(0u),second=integer(1u);
+            return {Value::Integer(first<second ? second : first),{}};
+        }
         case 251: {
             count(3);
             // Retail Core.dll thunk 10101c5d -> execClamp10134be0 copies

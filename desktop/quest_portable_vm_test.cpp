@@ -196,6 +196,8 @@ struct TestHost final:Vm::Host {
         const Vm::Function*,Vm::Execution&)> executionNative;
     std::function<std::optional<Value>(std::uint16_t,const std::string&,std::size_t,
         const Vm::Function*)> argumentSeed;
+    std::function<std::optional<Vm::ResultLayout>(std::uint16_t,const std::string&,std::size_t,
+        const Vm::Function*)> uninitializedArgumentLayout;
     std::function<bool(std::uint16_t,const std::string&,const Vm::Function*)> hasSequentialSeeds;
     std::function<std::optional<Value>(std::uint16_t,const std::string&,std::size_t,
         const Vm::Function*,const std::vector<Value>&)> sequentialArgumentSeed;
@@ -207,6 +209,7 @@ struct TestHost final:Vm::Host {
     std::size_t castClassResolutions{},castCalls{},objectResolutions{};
     std::vector<std::string> observations;
     std::vector<std::vector<Value>> nativeArguments;
+    std::vector<std::uint16_t> nativeIndices;
     std::vector<std::string> nativeReceivers,nativeDeclarations;
     std::map<std::string,std::string> objectDisplayPaths;
     std::map<std::string,std::string> defaultObjects;
@@ -269,7 +272,7 @@ struct TestHost final:Vm::Host {
             throw std::runtime_error("Fixture invalid iterator factory/out binding");
         ++iteratorCreates;observations.push_back("factory:"+receiver);
         std::vector<Value> values;for(const auto& arg:arguments) values.push_back(arg.Load());
-        nativeArguments.push_back(values);nativeReceivers.push_back(receiver);
+        nativeArguments.push_back(values);nativeReceivers.push_back(receiver);nativeIndices.push_back(index);
         nativeDeclarations.push_back(declaration ? declaration->path : "");
         retainedNativeReference=arguments[0].reference;
         struct Cursor final:Vm::Iterator {
@@ -345,6 +348,10 @@ struct TestHost final:Vm::Host {
         std::size_t slot,const Vm::Function* declaration) override {
         return argumentSeed ? argumentSeed(index,receiver,slot,declaration) : std::nullopt;
     }
+    std::optional<Vm::ResultLayout> NativeArgumentUninitializedLayout(std::uint16_t index,const std::string& receiver,
+        std::size_t slot,const Vm::Function* declaration) override {
+        return uninitializedArgumentLayout ? uninitializedArgumentLayout(index,receiver,slot,declaration) : std::nullopt;
+    }
     bool HasSequentialNativeArgumentSeeds(std::uint16_t index,const std::string& receiver,
         const Vm::Function* declaration) override {
         return hasSequentialSeeds ? hasSequentialSeeds(index,receiver,declaration) : false;
@@ -380,7 +387,7 @@ struct TestHost final:Vm::Host {
     Vm::Evaluation Native(std::uint16_t index,const std::string& receiver,
         const std::vector<Vm::Evaluation>& arguments,const Vm::Function* declaration) override {
         std::vector<Value> values;for(const auto& arg:arguments) values.push_back(arg.Load());
-        nativeArguments.push_back(values);nativeReceivers.push_back(receiver);
+        nativeArguments.push_back(values);nativeReceivers.push_back(receiver);nativeIndices.push_back(index);
         nativeDeclarations.push_back(declaration ? declaration->path : "");
         if(index==1000) {observations.push_back("effect");++effects;rng=rng*1664525u+1013904223u;return {Value::Bool(true),{}};}
         if(index==1001) {
@@ -428,10 +435,10 @@ struct TestHost final:Vm::Host {
         const std::vector<Vm::Evaluation>& arguments,const Vm::Function* declaration,Vm::Execution& execution) override {
         // 1008 belongs only to this generated fixture. Native zero is keyed by
         // its declaration; individual tests provide the host-side observation.
-        if((index==1008u || index==0u || index==1410u || index==1416u || index==1421u || index==1422u ||
-            index==1430u || index==1431u || index==1438u || index==1454u || index==1467u) && executionNative) {
+        if((index==1008u || index==0u || index==1410u || index==1415u || index==1416u || index==1421u || index==1422u ||
+            index==1430u || index==1431u || index==1432u || index==1438u || index==1454u || index==1467u || index==1475u) && executionNative) {
             std::vector<Value> values;for(const auto& argument:arguments) values.push_back(argument.Load());
-            nativeArguments.push_back(std::move(values));nativeReceivers.push_back(receiver);
+            nativeArguments.push_back(std::move(values));nativeReceivers.push_back(receiver);nativeIndices.push_back(index);
             nativeDeclarations.push_back(declaration ? declaration->path : "");
             return executionNative(receiver,arguments,declaration,execution);
         }
@@ -779,6 +786,40 @@ void StartupPrimitiveContracts() {
         Require(value.kind==Vm::Kind::Float && std::bit_cast<std::uint32_t>(value.floating)==std::bit_cast<std::uint32_t>(expected),
             "Sin changed radians, signed zero, x87 range refusal or portable float/double promotion");
     }
+    for(const bool declared:{false,true}) for(const float number:{0.0f,-0.0f,0.25f,-0.5f,1.0f,-1.0f,
+        std::numeric_limits<float>::denorm_min(),-std::numeric_limits<float>::denorm_min(),
+        std::numeric_limits<float>::max(),-std::numeric_limits<float>::max()}) {
+        TestHost host;auto native=Function("Abs",{},"Core.Object");native.nativeIndex=186u;native.flags=0x2401u;
+        native.variables={{"Abs.A","A",Value::Float(0),0x80u,1u},
+            {"Abs.ReturnValue","ReturnValue",Value::Float(0),0x580u,1u}};
+        host.finals[{"Fixture",7}]=std::make_shared<Vm::Function>(native);
+        const auto caller=Function("RetailAbsSignedBits",Return(declared?Call(0x1c,7,{Real(number)}):Native(186u,{Real(number)})));
+        const auto result=Vm::Execute(host,caller,"Self");Returned(result,"Abs conditional sign change, not fabs");
+        const auto expected=number<0.0f?-number:number;
+        Require(result.value.kind==Vm::Kind::Float && std::bit_cast<std::uint32_t>(result.value.floating)==
+            std::bit_cast<std::uint32_t>(expected) && result.writes==0u && host.nativeArguments.empty(),
+            "Abs lost signed zero/subnormal bits or performed host-side native work");
+        const auto direct=Vm::Execute(host,native,"Self",{{Value::Float(number),{}}});
+        Returned(direct,"Direct reflected Abs entry");
+        Require(std::bit_cast<std::uint32_t>(direct.value.floating)==std::bit_cast<std::uint32_t>(expected),
+            "Direct reflected Abs changed its finite Float result");
+    }
+    for(const auto& input:{Bytes{0x0bu},Context({0x2au},Native(4095u),0u),Context({0x2au},Native(4095u),1u),
+        Context({0x2au},Native(4095u),2u),Context({0x2au},Native(4095u),3u),Context({0x2au},Native(4095u),4u)}) {
+        const auto result=evaluate(Native(186u,{input}),"Abs initialized Float+0 result temporary");
+        Require(result.kind==Vm::Kind::Float && std::bit_cast<std::uint32_t>(result.floating)==0u,
+            "Abs omitted/no-write result did not preserve its initialized positive zero");
+    }
+    for(const bool budget:{false,true}) {
+        TestHost host;auto limits=Vm::Limits{};if(budget) limits.writes=0u;
+        const auto caller=Function("AbsArgumentMutationRollback",Join({Native(1000u),
+            Native(186u,{Native(1060u,{Ref(0x01,1),Real(100.0f),Real(-0.5f)})}),Native(4095u),Return()}));
+        const auto property=host.Property(caller,1,"Number",Value::Float(0));host.Store("Self",property,{Value::Float(7.0f)});
+        const auto result=Vm::Execute(host,caller,"Self",{},limits);
+        Failed(result,budget?Vm::Status::Budget:Vm::Status::Unsupported,host,"Abs argument effects roll back on later/budget failure");
+        Require(host.Load("Self",property).floating==7.0f && host.effects==0u && host.rng==12345u,
+            "Abs retained a nested argument mutation or earlier effect on failure");
+    }
     Require(evaluate(Native(187u,{{0x0b}}),"Sin Nothing retains native initialized Float0").floating==0.0f,
         "Sin Nothing read an uninitialized native result");
     {
@@ -803,18 +844,22 @@ void StartupPrimitiveContracts() {
         TestHost host;const auto result=Vm::Execute(host,Function("RejectedStartup",Join({Native(1000u),Return(expression)})),"Self",{},limits);
         Failed(result,status,host,context);Require(host.effects==0u && host.rng==12345u,context+": earlier effect/RNG escaped rollback");
     };
-    for(const auto& expression : {Native(125u,{Int(1)}),Native(124u,{String("a"),Int(1)}),Native(187u,{String("1")}),Native(189u,{String("1")}),
+    for(const auto bytes:{5u,255u})
+        refuse(Native(186u,{Context({0x2au},Native(4095u),static_cast<std::uint8_t>(bytes))}),
+            Vm::Status::Unsupported,"Abs overflowing result clearing remains unavailable");
+    for(const auto& expression : {Native(125u,{Int(1)}),Native(124u,{String("a"),Int(1)}),Native(186u,{String("1")}),Native(187u,{String("1")}),Native(189u,{String("1")}),
         Native(244u,{Real(1),String("0")}),Native(245u,{Real(1),String("0")}),Native(245u,{String("0"),Real(1)}),
         Native(246u,{Real(1),String("0"),Real(2)}),Native(249u,{String("1"),Int(2)}),
         Native(251u,{String("1"),Int(0),Int(7)}),Native(251u,{Int(1),Real(0),Int(7)}),
         Native(251u,{Int(1),Int(0),{0x28}}),Native(251u,{{0x2a},Int(0),Int(7)}),Join({{0x56},Int(1)})})
         refuse(expression,Vm::Status::Unsupported,"Startup concrete argument types refused");
-    for(const auto& expression : {Native(125u,{}),Native(126u,{String("a")}),Native(127u,{String("a")}),Native(187u,{}),Native(187u,{Real(1),Real(2)}),
+    for(const auto& expression : {Native(125u,{}),Native(126u,{String("a")}),Native(127u,{String("a")}),Native(186u,{}),Native(186u,{Real(1),Real(2)}),Native(187u,{}),Native(187u,{Real(1),Real(2)}),
         Native(127u,{String("a"),Int(0),Int(1),Int(2)}),Native(168u,{String("a")}),Native(244u,{Real(1)}),
         Native(245u,{}),Native(245u,{Real(1)}),Native(245u,{Real(1),Real(2),Real(3)}),Native(249u,{Int(1)}),
         Native(251u,{}),Native(251u,{Int(1)}),Native(251u,{Int(1),Int(0)}),Native(251u,{Int(1),Int(0),Int(7),Int(9)})})
         refuse(expression,Vm::Status::Invalid,"Startup native arity refused");
     for(const auto nonfinite : {std::numeric_limits<float>::quiet_NaN(),std::numeric_limits<float>::infinity()}) {
+        refuse(Native(186u,{Real(nonfinite)}),Vm::Status::Invalid,"Abs nonfinite ingress policy");
         refuse(Native(187u,{Real(nonfinite)}),Vm::Status::Invalid,"Sin nonfinite ingress policy");
         refuse(Native(189u,{Real(nonfinite)}),Vm::Status::Invalid,"Tan nonfinite ingress policy");
         refuse(Native(244u,{Real(nonfinite),Real(1)}),Vm::Status::Invalid,"FMin nonfinite first argument policy");
@@ -1873,6 +1918,490 @@ void CoreColorResultLayoutContracts() {
     std::cout<<"Trusted Core.Object.Color result layout: "<<checks-initialChecks<<" checks and "
         <<rejections-initialRejections<<" refusal controls.\n";
 }
+void UninitializedNativeArgumentContracts() {
+    const auto initialChecks=checks,initialRejections=rejections;
+    const auto color=[](std::uint8_t r,std::uint8_t g,std::uint8_t b,std::uint8_t a) {
+        Value value;value.kind=Vm::Kind::Struct;
+        value.fields={{"r",Value::Byte(r)},{"g",Value::Byte(g)},{"b",Value::Byte(b)},{"a",Value::Byte(a)}};return value;
+    };
+    const auto original=color(11u,37u,91u,203u),zero=color(0u,0u,0u,0u),replacement=color(1u,2u,3u,4u);
+    const auto layout=Vm::ResultLayout::CoreColor4;
+    const auto configure=[&](TestHost& host) {
+        auto native=Function("SetTileColor",{},"Extension.Window");native.nativeIndex=1475u;native.flags=0x401u;
+        native.variables={host.Property(native,11,"NewColor",zero,0x80u,1u,true,layout)};
+        host.finals[{"Fixture",7}]=std::make_shared<Vm::Function>(native);
+        host.uninitializedArgumentLayout=[&host,layout](std::uint16_t index,const std::string& receiver,std::size_t slot,
+            const Vm::Function* declaration)->std::optional<Vm::ResultLayout> {
+            if(index!=1475u) return std::nullopt;
+            if(slot!=0u) throw std::runtime_error("Fixture SetTileColor has exactly one native result slot");
+            Require(receiver=="Self" || receiver=="Other","Uninitialized native layout used an argument/source rather than native receiver");
+            Require(!declaration || declaration->path=="Extension.Window.SetTileColor","Uninitialized native layout lost actual declaration");
+            host.observations.push_back("uninitialized-layout");return layout;
+        };
+        host.executionNative=[](const std::string&,const std::vector<Vm::Evaluation>& arguments,const Vm::Function*,Vm::Execution&) {
+            if(arguments.size()!=1u) throw std::runtime_error("Fixture SetTileColor requires one Color");
+            Require(!arguments[0].reference,"Uninitialized native ordinary Color input retained an OUT alias");
+            return Vm::Evaluation{arguments[0].Load(),{}};
+        };
+        return native;
+    };
+    {
+        TestHost host;const auto native=configure(host);bool read{};
+        auto alias=std::make_shared<Vm::Reference>();alias->zero=zero;
+        alias->read=[&]()->Value {read=true;throw std::runtime_error("Full zero-fill must not read an uninitialized alias");};
+        alias->write=[](const Value&) {throw std::runtime_error("Ordinary input must not write the alias");};
+        const Vm::Evaluation argument{{},alias,Vm::ResultDisposition::ZeroFill,4u};
+        const auto result=Vm::ExecuteTransaction(host,[&](Vm::Execution& execution) {
+            return execution.CallFunction(native,"Self",{argument});
+        });
+        Returned(result,"Full four-byte uninitialized Color clearing does not read an alias");
+        Require(!read && Vm::Equal(result.value,zero),"Complete zero-fill read old pointer-like native temporary storage");
+    }
+    for(const bool declared:{false,true}) for(const auto op:{std::uint8_t{0x19u},std::uint8_t{0x12u}})
+        for(const bool written:{false,true}) {
+        TestHost host;configure(host);
+        const auto input=written?Ref(0x01,1):Context({0x2au},Native(4095u),4u,op);
+        const auto caller=Function("CompleteUninitializedNativeColor",Return(declared?Call(0x1c,7,{input}):Native(1475u,{input})));
+        const auto source=host.Property(caller,1,"SourceColor",zero);host.Store("Self",source,{original});
+        const auto result=Vm::Execute(host,caller,"Self");Returned(result,"Uninitialized native accepts only complete written Color/full-four-byte Context results");
+        Require(Vm::Equal(result.value,written?original:zero) &&
+            std::count(host.observations.begin(),host.observations.end(),"uninitialized-layout")==1,
+            "Uninitialized Color used a declaration zero for written bytes, repeated its hook, or lost full-zero semantics");
+        Require(host.observations.front()=="uninitialized-layout","Uninitialized layout was not captured before its argument expression");
+    }
+    for(const bool declared:{false,true}) {
+        TestHost host;configure(host);
+        const auto caller=Function("UninitializedColorArgumentFrame",Return(Context(Ref(0x20,9),
+            declared?Call(0x1c,7,{Ref(0x01,1)}):Native(1475u,{Ref(0x01,1)}))));
+        const auto source=host.Property(caller,1,"SourceColor",zero);host.Store("Self",source,{original});host.Store("Other",source,{replacement});
+        host.objects[{caller.source,9}]="Other";
+        host.executionNative=[&](const std::string& receiver,const std::vector<Vm::Evaluation>& arguments,const Vm::Function*,Vm::Execution& execution) {
+            Require(receiver=="Other" && !arguments[0].reference && Vm::Equal(arguments[0].Load(),original),
+                "1475 argument used its native receiver instead of FFrame.Object or retained the source alias");
+            execution.WriteReference(host.Reference({"Self",Vm::Scope::Instance,source.key},source),replacement);
+            Require(Vm::Equal(arguments[0].Load(),original),"1475 ordinary copied input changed after host entry mutated its source");
+            return Vm::Evaluation{arguments[0].Load(),{}};
+        };
+        const auto result=Vm::Execute(host,caller,"Self");Returned(result,"1475 preserves source-frame evaluation and copies native input");
+        Require(Vm::Equal(result.value,original) && Vm::Equal(host.Load("Self",source),replacement) && result.writes==1u,
+            "1475 native input copy suppressed the actual later write or retained its alias");
+    }
+    for(const bool declared:{false,true}) for(const auto op:{std::uint8_t{0x19u},std::uint8_t{0x12u}})
+        for(const int bytes:{-1,0,1,2,3,5,255}) {
+        TestHost host;configure(host);
+        const auto input=bytes<0?Bytes{0x0bu}:Context({0x2au},Native(4095u),static_cast<std::uint8_t>(bytes),op);
+        const auto caller=Function("IncompleteUninitializedNativeColor",Join({Native(1000u),Let(Ref(0x01,1),Int(55)),
+            Return(declared?Call(0x1c,7,{input}):Native(1475u,{input}))}));
+        const auto marker=host.Property(caller,1,"Marker",Value::Integer(0));host.Store("Self",marker,{Value::Integer(3)});
+        const auto result=Vm::ExecuteTransaction(host,[&](Vm::Execution& execution) {
+            try { execution.CallFunction(caller,"Self"); } catch(const std::exception&) {}return Value::Integer(123);
+        });
+        Failed(result,Vm::Status::Unsupported,host,"1475 incomplete result never falls back to declaration Color zero");
+        Require(host.effects==0u && host.rng==12345u && host.Load("Self",marker).integer==3 &&
+            std::find(host.nativeIndices.begin(),host.nativeIndices.end(),1475u)==host.nativeIndices.end(),
+            "Incomplete native Color reached its body or committed its earlier transaction prefix");
+    }
+    for(const bool directEvent:{false,true}) for(const auto disposition:{Vm::ResultDisposition::Written,Vm::ResultDisposition::NoWrite,Vm::ResultDisposition::ZeroFill})
+        for(const auto bytes:{0u,1u,2u,3u,4u,5u,255u}) {
+        TestHost host;const auto native=configure(host);host.events[{"Self","SetTileColor",false}]=std::make_shared<Vm::Function>(native);
+        const Vm::Evaluation argument{original,{},disposition,static_cast<std::uint8_t>(bytes)};
+        const bool complete=disposition==Vm::ResultDisposition::Written || (disposition==Vm::ResultDisposition::ZeroFill && bytes==4u);
+        const auto result=Vm::ExecuteTransaction(host,[&](Vm::Execution& execution) {
+            return directEvent?execution.CallEvent("Self","SetTileColor",false,{argument}):execution.CallFunction(native,"Self",{argument});
+        });
+        if(complete) {
+            Returned(result,"Direct Execution uninitialized Color inputs preserve write disposition until checked");
+            Require(Vm::Equal(result.value,disposition==Vm::ResultDisposition::Written?original:zero),
+                "Direct native input snapshots erased its disposition before full-write validation");
+        } else Failed(result,Vm::Status::Unsupported,host,"Direct Execution rejects incomplete Color even with a canonical payload");
+        Require(std::count(host.observations.begin(),host.observations.end(),"uninitialized-layout")==1,
+            "Direct uninitialized native argument captured its authority more than once");
+    }
+    for(const auto disposition:{Vm::ResultDisposition::NoWrite,Vm::ResultDisposition::ZeroFill}) {
+        TestHost host;const auto native=configure(host);bool read{};
+        auto reference=std::make_shared<Vm::Reference>();reference->zero=zero;
+        reference->read=[&]() ->Value {read=true;throw std::runtime_error("Unwritten native result read uninitialized storage");};
+        const Vm::Evaluation argument{original,reference,disposition,0u};
+        const auto result=Vm::Execute(host,native,"Self",{argument});
+        Failed(result,Vm::Status::Unsupported,host,"Uninitialized direct argument never reads a no-write alias");
+        Require(!read,"Uninitialized argument read its alias before checking write disposition");
+    }
+    for(const bool direct:{false,true}) for(const bool sequential:{false,true}) {
+        TestHost host;const auto native=configure(host);bool argumentEvaluated{};
+        host.argumentSeed=[&](std::uint16_t index,const std::string&,std::size_t,const Vm::Function*)->std::optional<Value> {
+            return index==1475u && !sequential?std::optional<Value>{original}:std::nullopt;
+        };
+        host.hasSequentialSeeds=[&](std::uint16_t index,const std::string&,const Vm::Function*) {return index==1475u && sequential;};
+        host.sequentialArgumentSeed=[&](std::uint16_t,const std::string&,std::size_t,const Vm::Function*,const std::vector<Value>& prefix) {
+            Require(prefix.empty(),"First uninitialized native slot saw a nonempty seed prefix");return std::optional<Value>{original};
+        };
+        const auto caller=Function("ConflictingUninitializedNativeSeed",Return(Native(1475u,{Native(1000u)})));
+        auto reference=std::make_shared<Vm::Reference>();reference->zero=zero;
+        reference->read=[&] {argumentEvaluated=true;return original;};
+        const auto result=direct?Vm::Execute(host,native,"Self",{{{},reference}}):Vm::Execute(host,caller,"Self");
+        Failed(result,Vm::Status::Invalid,host,"Uninitialized native result cannot also have an initialized entry/sequential seed");
+        Require(!argumentEvaluated && host.effects==0u && host.nativeArguments.empty(),"Conflicting native seed evaluated its argument or invoked native body");
+    }
+    for(const bool direct:{false,true}) for(const auto badLayout:{Vm::ResultLayout::Unknown,static_cast<Vm::ResultLayout>(99)}) {
+        TestHost host;const auto native=configure(host);
+        host.uninitializedArgumentLayout=[&](std::uint16_t index,const std::string&,std::size_t,const Vm::Function*) {
+            return index==1475u?std::optional<Vm::ResultLayout>{badLayout}:std::nullopt;
+        };
+        const auto caller=Function("UnknownUninitializedNativeLayout",Return(Native(1475u,{Native(1000u)})));
+        const auto result=direct?Vm::Execute(host,native,"Self",{{original,{}}}):Vm::Execute(host,caller,"Self");
+        Failed(result,badLayout==Vm::ResultLayout::Unknown?Vm::Status::Unsupported:Vm::Status::Invalid,host,
+            "Uninitialized native requires established explicit layout authority");
+        Require(host.effects==0u && host.nativeArguments.empty(),"Unknown uninitialized layout evaluated arguments or native work");
+    }
+    for(const bool direct:{false,true}) {
+        TestHost host;auto native=configure(host);native.variables[0].resultLayout=Vm::ResultLayout::Unknown;
+        host.finals[{"Fixture",7}]=std::make_shared<Vm::Function>(native);
+        const auto caller=Function("UninitializedNativeDeclarationMismatch",Return(Call(0x1c,7,{Native(1000u)})));
+        const auto result=direct?Vm::Execute(host,native,"Self",{{original,{}}}):Vm::Execute(host,caller,"Self");
+        Failed(result,Vm::Status::Invalid,host,"Native uninitialized layout cannot override conflicting declaration authority");
+        Require(host.effects==0u && host.nativeArguments.empty(),"Conflicting native declaration reached argument effects/body");
+    }
+    {
+        TestHost host;configure(host);host.uninitializedArgumentLayout={};
+        host.argumentSeed=[&](std::uint16_t index,const std::string&,std::size_t,const Vm::Function*) {
+            return index==1475u?std::optional<Value>{original}:std::nullopt;
+        };
+        const auto result=Vm::Execute(host,Function("UninitializedColorShapeIsNotAuthority",Return(Native(1475u,
+            {Context({0x2au},Native(4095u),4u)}))),"Self");
+        Failed(result,Vm::Status::Unsupported,host,"A same-shaped raw Struct seed cannot grant opcode-only Color ABI authority");
+    }
+    std::vector<Value> malformed{Value{},Value::Integer(0)};auto bad=original;
+    bad.fields.erase("a");malformed.push_back(bad);bad=original;bad.fields["extra"]=Value::Byte(1u);malformed.push_back(bad);
+    bad=original;bad.fields["r"]=Value::Integer(11);malformed.push_back(bad);bad=original;bad.fields["r"].integer=256;malformed.push_back(bad);
+    bad=original;bad.fields["r"].integer=-1;malformed.push_back(bad);bad=original;bad.fields["r"].fields["nested"]=Value::Byte(0u);malformed.push_back(bad);
+    for(const auto& invalid:malformed) for(const int dispatch:{0,1,2}) {
+        TestHost host;const auto native=configure(host);
+        const auto caller=Function("MalformedUninitializedNativeColor",Join({Native(1000u),Return(dispatch==1?
+            Call(0x1c,7,{Ref(0x01,1)}):Native(1475u,{Ref(0x01,1)}))}));
+        const auto source=host.Property(caller,1,"UntrustedSource",invalid);host.Store("Self",source,{invalid});
+        const auto result=dispatch==2?Vm::ExecuteTransaction(host,[&](Vm::Execution& execution) {
+            execution.CallFunction(Function("EarlierEffect",Join({Native(1000u),Return()})),"Self");
+            return execution.CallFunction(native,"Self",{{invalid,{}}});
+        }):Vm::Execute(host,caller,"Self");
+        Failed(result,Vm::Status::Invalid,host,"Fully written native Color still requires strict canonical Byte channels");
+        Require(host.effects==0u && host.rng==12345u,"Malformed uninitialized native Color committed preceding effects");
+    }
+    {
+        TestHost host;configure(host);auto caller=Function("AllUninitializedLayoutsBeforeArguments",Return(Native(1475u,
+            {Native(1000u),Native(1000u)})));
+        const auto result=Vm::Execute(host,caller,"Self");
+        Failed(result,Vm::Status::Unsupported,host,"All uninitialized native layout lookups precede every argument");
+        Require(host.effects==0u && host.nativeArguments.empty(),"A rejected second uninitialized layout evaluated the first argument");
+    }
+    for(const bool direct:{false,true}) {
+        TestHost host;const auto native=configure(host);
+        const auto caller=Function("MissingUninitializedNativeArgument",Return(Call(0x1c,7)));
+        const auto result=direct?Vm::Execute(host,native,"Self"):Vm::Execute(host,caller,"Self");
+        Failed(result,Vm::Status::Invalid,host,"Uninitialized native argument remains required");
+        Require(host.nativeArguments.empty(),"Missing required uninitialized native argument reached its body");
+    }
+    for(const bool write:{false,true}) {
+        TestHost host;configure(host);Vm::Execution* active{};bool attempted{};
+        const auto caller=Function("ReadOnlyUninitializedNativeLayout",Return(Native(1475u,{Native(1000u)})));
+        const auto marker=host.Property(caller,1,"Marker",Value::Integer(0));host.Store("Self",marker,{Value::Integer(3)});
+        host.uninitializedArgumentLayout=[&](std::uint16_t index,const std::string&,std::size_t,const Vm::Function*)->std::optional<Vm::ResultLayout> {
+            if(index!=1475u) return std::nullopt;
+            attempted=true;
+            try {
+                if(write) active->WriteReference(host.Reference({"Self",Vm::Scope::Instance,marker.key},marker),Value::Integer(55));
+                else active->CallFunction(Function("ForbiddenHookCallback",Join({Native(1000u),Return()})),"Self");
+            } catch(const std::exception&) {}return layout;
+        };
+        const auto result=Vm::ExecuteTransaction(host,[&](Vm::Execution& execution) {
+            active=&execution;try { execution.CallFunction(caller,"Self"); } catch(const std::exception&) {}return Value{};
+        });
+        Failed(result,Vm::Status::Invalid,host,"Uninitialized native layout hook is read-only and caught callbacks poison execution");
+        Require(attempted && host.effects==0u && host.Load("Self",marker).integer==3 && result.writes==0u,
+            "Read-only uninitialized hook performed a VM mutation or escaped shared poison");
+    }
+    {
+        TestHost host;configure(host);
+        const auto caller=Function("ThrowingUninitializedNativeLayout",Join({Native(1000u),Return(Native(1475u,{Native(1000u)}))}));
+        host.uninitializedArgumentLayout=[](std::uint16_t index,const std::string&,std::size_t,const Vm::Function*)->std::optional<Vm::ResultLayout> {
+            if(index==1475u) throw std::runtime_error("Fixture uninitialized native authority failure");
+            return std::nullopt;
+        };
+        const auto result=Vm::ExecuteTransaction(host,[&](Vm::Execution& execution) {
+            try { execution.CallFunction(caller,"Self"); } catch(const std::exception&) {}return Value{};
+        });
+        Failed(result,Vm::Status::Unsupported,host,"Caught uninitialized layout hook exception poisons enclosing transaction");
+        Require(host.effects==0u && host.rng==12345u && std::count(host.observations.begin(),host.observations.end(),"effect")==1,
+            "Uninitialized layout hook failure evaluated later input or committed prior effects");
+    }
+    {
+        TestHost host;configure(host);auto limits=Vm::Limits{};limits.localElements=4u;
+        const auto caller=Function("UninitializedColorNodeBudget",Return(Native(1475u,{Context({0x2au},Native(4095u),4u)})));
+        const auto result=Vm::ExecuteTransaction(host,[&](Vm::Execution& execution) {
+            try { execution.CallFunction(caller,"Self"); } catch(const std::exception&) {}return Value{};
+        },limits);
+        Failed(result,Vm::Status::Budget,host,"Complete uninitialized Color materialization retains aggregate Value node bounds");
+        Require(host.nativeArguments.empty(),"Uninitialized Color node-budget failure reached native body");
+    }
+    {
+        TestHost host;const auto native=configure(host);auto limits=Vm::Limits{};
+        limits.retainedBytes=sizeof(std::optional<Vm::ResultLayout>)-1u;
+        const auto result=Vm::ExecuteTransaction(host,[&](Vm::Execution& execution) {
+            try { execution.CallFunction(native,"Self",{{original,{}}}); } catch(const std::exception&) {}return Value{};
+        },limits);
+        Failed(result,Vm::Status::Budget,host,"Uninitialized native layout slot storage is bounded before argument reads");
+        Require(result.error=="VM uninitialized native argument layout storage limit" && host.nativeArguments.empty(),
+            "Uninitialized native layout capacity limit was not checked before materialization/native work");
+    }
+    {
+        TestHost host;const auto native=configure(host);auto limits=Vm::Limits{};limits.retainedBytes=100000u;
+        auto reserved=original;reserved.fields.at("r").text.reserve(200000u);
+        std::vector<Vm::Evaluation> incoming;incoming.push_back({std::move(reserved),{}});
+        Require(incoming[0].value.fields.at("r").text.capacity()>limits.retainedBytes,"Uninitialized Color capacity fixture lost its reserved payload");
+        const auto result=Vm::ExecuteTransaction(host,[&](Vm::Execution& execution) {
+            try { execution.CallFunction(native,"Self",incoming); } catch(const std::exception&) {}return Value{};
+        },limits);
+        Failed(result,Vm::Status::Budget,host,"Written uninitialized Color capacity is validated before detached copies can shrink it");
+        Require(host.nativeArguments.empty(),"Oversized uninitialized Color allocation reached native body");
+    }
+    for(const bool declared:{false,true}) {
+        TestHost host;configure(host);
+        const auto caller=Function("NativeWrittenUninitializedColor",Return(declared?Call(0x1c,7,{Native(1008u)}):Native(1475u,{Native(1008u)})));
+        host.executionNative=[&](const std::string&,const std::vector<Vm::Evaluation>& arguments,const Vm::Function*,Vm::Execution&) {
+            return Vm::Evaluation{arguments.empty()?original:arguments[0].Load(),{}};
+        };
+        const auto result=Vm::Execute(host,caller,"Self");Returned(result,"Fully written native Color return initializes1475 destination");
+        Require(Vm::Equal(result.value,original),"1475 failed to preserve a complete native Color return");
+    }
+    for(const bool declared:{false,true}) {
+        TestHost host;configure(host);
+        const auto caller=Function("AssignmentDoesNotInitializeNativeColor",Return(declared?Call(0x1c,7,{Let(Ref(0x01,1),Ref(0x01,2))}):
+            Native(1475u,{Let(Ref(0x01,1),Ref(0x01,2))})));
+        const auto target=host.Property(caller,1,"Target",zero),source=host.Property(caller,2,"Source",zero);
+        host.Store("Self",target,{original});host.Store("Self",source,{replacement});
+        const auto result=Vm::Execute(host,caller,"Self");Failed(result,Vm::Status::Unsupported,host,"Side-effect-only Let does not initialize1475 Color result");
+        Require(result.writes==1u && Vm::Equal(host.Load("Self",target),original) && host.nativeIndices.empty(),
+            "Uninitialized result refusal failed to roll back assignment-argument side effects");
+    }
+    {
+        TestHost host;configure(host);auto caller=Function("ScriptDoesNotAskUninitializedNativeLayout",Return(Call(0x1c,9,{Int(7)})));
+        auto script=Function("ScriptInput",Return(Ref(0x00,12)),"ScriptSource");
+        script.variables={host.Property(script,12,"Value",Value::Integer(0),0x80u,1u,true)};
+        host.finals[{caller.source,9}]=std::make_shared<Vm::Function>(script);
+        host.uninitializedArgumentLayout=[](std::uint16_t,const std::string&,std::size_t,const Vm::Function*)->std::optional<Vm::ResultLayout> {
+            throw std::runtime_error("Script incorrectly asked for native uninitialized layout");
+        };
+        const auto result=Vm::Execute(host,caller,"Self");Returned(result,"Script calls do not capture native uninitialized result contracts");
+        Require(result.value.integer==7,"Uninitialized-native opt-in changed ordinary script argument binding");
+    }
+    std::cout<<"Uninitialized native Color argument result contracts: "<<checks-initialChecks<<" checks and "
+        <<rejections-initialRejections<<" refusal controls.\n";
+}
+void DirectNativeInitializedArgumentContracts() {
+    const auto initialChecks=checks,initialRejections=rejections;
+    const auto declaration=[](std::uint16_t index,const std::vector<Value>& zeroes) {
+        auto native=Function("DirectInitializedNative",{},"FixtureNative");native.flags=0x400u;native.nativeIndex=index;
+        for(std::size_t slot=0u;slot<zeroes.size();++slot)
+            native.variables.push_back({"Native.Input"+std::to_string(slot),"Input"+std::to_string(slot),zeroes[slot],0x80u,1u});
+        return native;
+    };
+    for(const bool event:{false,true}) for(const auto disposition:{Vm::ResultDisposition::NoWrite,Vm::ResultDisposition::ZeroFill})
+        for(const auto bytes:{0u,1u,2u,3u,4u}) {
+        TestHost host;const auto native=declaration(250u,{Value::Integer(999),Value::Integer(999)});
+        host.events[{"Self","Max",false}]=std::make_shared<Vm::Function>(native);
+        bool read{};auto alias=std::make_shared<Vm::Reference>();alias->zero=Value::Integer(999);
+        alias->read=[&]() ->Value {read=true;throw std::runtime_error("Direct no-write Max input read stale storage");};
+        const Vm::Evaluation input{Value::Integer(999),alias,disposition,static_cast<std::uint8_t>(bytes)};
+        const auto result=Vm::ExecuteTransaction(host,[&](Vm::Execution& execution) {
+            return event?execution.CallEvent("Self","Max",false,{input,{Value::Integer(-7),{}}}):
+                execution.CallFunction(native,"Self",{input,{Value::Integer(-7),{}}});
+        });
+        Returned(result,"Direct initialized native ignores stale payload/alias and uses audited zero temporary");
+        Require(!read && result.value.kind==Vm::Kind::Int && result.value.integer==0 && result.writes==0u,
+            "Direct Max used stale input/declaration zero or read unwritten storage");
+    }
+    for(const auto index:{std::uint16_t{186u},std::uint16_t{250u}}) for(const bool declared:{false,true})
+        for(const auto bytes:{0u,1u,2u,3u,4u}) {
+        TestHost host;const auto scalar=index==186u?Value::Float(99.0f):Value::Integer(99);
+        const auto native=declaration(index,index==186u?std::vector<Value>{scalar}:std::vector<Value>{scalar,scalar});
+        host.finals[{"Fixture",7}]=std::make_shared<Vm::Function>(native);
+        const auto input=Context({0x2au},Native(4095u),static_cast<std::uint8_t>(bytes));
+        const auto call=index==186u?(declared?Call(0x1c,7,{input}):Native(index,{input})):
+            (declared?Call(0x1c,7,{input,Int(-7)}):Native(index,{input,Int(-7)}));
+        const auto result=Vm::Execute(host,Function("KnownBuiltinZeroNotDeclarationValue",Return(call)),"Self");
+        Returned(result,"Known builtin initialized scalar zero controls partial result writes");
+        Require(index==186u?result.value.floating==0.0f:result.value.integer==0,
+            "Builtin zero destination incorrectly inherited a nonzero declaration template");
+    }
+    for(const bool sequential:{false,true}) for(const auto bytes:{0u,1u,2u,3u,4u}) {
+        TestHost host;const auto native=declaration(1454u,{Value::Float(99.0f)});
+        host.argumentSeed=[&](std::uint16_t index,const std::string&,std::size_t,const Vm::Function*)->std::optional<Value> {
+            return index==1454u?std::optional<Value>{Value::Float(-1.0f)}:std::nullopt;
+        };
+        host.hasSequentialSeeds=[&](std::uint16_t index,const std::string&,const Vm::Function*) {return index==1454u && sequential;};
+        host.sequentialArgumentSeed=[](std::uint16_t,const std::string&,std::size_t,const Vm::Function*,const std::vector<Value>& prefix) {
+            Require(prefix.empty(),"First direct sequential native input has a nonempty prefix");return std::optional<Value>{Value::Float(-2.0f)};
+        };
+        host.executionNative=[](const std::string&,const std::vector<Vm::Evaluation>& arguments,const Vm::Function*,Vm::Execution&) {
+            Require(!arguments[0].reference && arguments[0].disposition==Vm::ResultDisposition::Written,
+                "Direct initialized native argument was not copied/materialized");return Vm::Evaluation{arguments[0].Load(),{}};
+        };
+        const auto result=Vm::Execute(host,native,"Self",{{Value::Float(99.0f),{},Vm::ResultDisposition::ZeroFill,static_cast<std::uint8_t>(bytes)}});
+        Returned(result,"Direct entry/sequential scalar defaults preserve native partial-byte semantics");
+        const auto bits=std::bit_cast<std::uint32_t>(sequential?-2.0f:-1.0f);
+        const auto expected=bytes==4u?0u:bytes==0u?bits:bits&~((std::uint32_t{1u}<<(bytes*8u))-1u);
+        Require(std::bit_cast<std::uint32_t>(result.value.floating)==expected,
+            "Direct scalar partial write lost a nonzero audited native default or sequential precedence");
+    }
+    {
+        TestHost host;const auto native=declaration(1438u,{Value::Integer(0),Value::Integer(0),Value::Float(0),
+            Value::Float(0),Value::Float(0),Value::Float(0)});
+        host.argumentSeed=[&](std::uint16_t,const std::string&,std::size_t slot,const Vm::Function*)->std::optional<Value> {
+            host.observations.push_back("entry"+std::to_string(slot));return std::nullopt;
+        };
+        host.hasSequentialSeeds=[&](std::uint16_t,const std::string&,const Vm::Function*) {host.observations.push_back("opt-in");return true;};
+        host.sequentialArgumentSeed=[&](std::uint16_t,const std::string&,std::size_t slot,const Vm::Function*,const std::vector<Value>& prefix)->std::optional<Value> {
+            host.observations.push_back("seq"+std::to_string(slot));Require(prefix.size()==slot,"Direct dependent prefix changed size/order");
+            return slot>=4u?std::optional<Value>{prefix.at(slot-2u)}:std::nullopt;
+        };
+        auto first=std::make_shared<Vm::Reference>(),second=std::make_shared<Vm::Reference>();
+        first->zero=second->zero=Value::Float(0.0f);Value source=Value::Float(-1.0f);
+        first->read=[&] {host.observations.push_back("read2");return source;};
+        second->read=[&] {host.observations.push_back("read3");source=Value::Float(99.0f);return Value::Float(0.75f);};
+        host.executionNative=[](const std::string&,const std::vector<Vm::Evaluation>& arguments,const Vm::Function*,Vm::Execution&) {
+            for(const auto& arg:arguments) Require(!arg.reference,"Direct ordinary sequential native input retained alias");
+            return Vm::Evaluation{Value::Vector({arguments[2].Load().floating,arguments[4].Load().floating,arguments[5].Load().floating}),{}};
+        };
+        const auto result=Vm::Execute(host,native,"Self",{{Value::Integer(1),{}},{Value::Integer(2),{}},{{},first},{{},second},
+            {Value::Float(999),{},Vm::ResultDisposition::NoWrite},{Value::Float(999),{},Vm::ResultDisposition::ZeroFill,0u}});
+        Returned(result,"Direct dependent defaults use detached prior inputs before later reads mutate their sources");
+        Require(Vm::Equal(result.value,Value::Vector({-1.0f,-1.0f,0.75f})) && source.floating==99.0f &&
+            host.observations==std::vector<std::string>{"opt-in","entry0","entry1","entry2","entry3","entry4","entry5",
+                "seq0","seq1","seq2","read2","seq3","read3","seq4","seq5"},
+            "Direct entry/sequential/default evaluation order or copy timing changed");
+    }
+    for(const auto index:{std::uint16_t{1008u},std::uint16_t{1432u}})
+        for(const auto disposition:{Vm::ResultDisposition::NoWrite,Vm::ResultDisposition::ZeroFill}) {
+        TestHost host;const auto native=declaration(index,{Value::Integer(123)});bool read{};
+        auto alias=std::make_shared<Vm::Reference>();alias->zero=Value::Integer(123);
+        alias->read=[&]() ->Value {read=true;throw std::runtime_error("Unknown native no-write alias read");};
+        host.executionNative=[&](const std::string&,const std::vector<Vm::Evaluation>& arguments,const Vm::Function*,Vm::Execution&) {
+            Require(arguments[0].disposition==disposition && arguments[0].zeroFillBytes==0u &&
+                arguments[0].Load().kind==Vm::Kind::Nothing && !arguments[0].reference,
+                "Unknown direct no-write/zero-byte result changed disposition or became an invented written/declaration-zero payload");
+            return Vm::Evaluation{Value::Integer(7),{}};
+        };
+        const auto result=Vm::Execute(host,native,"Self",{{Value::Integer(999),alias,disposition,0u}});
+        Returned(result,"Unaudited native preserves exact absence disposition without reading stale result storage");
+        Require(!read && result.value.integer==7,"Unknown direct NoWrite/ZeroFill0 disposition was not preserved");
+    }
+    {
+        TestHost host;const auto native=declaration(1004u,{Value::Integer(0)});
+        const auto property=host.Property(native,1,"Out",Value::Integer(0));host.Store("Self",property,{Value::Integer(3)});
+        host.argumentSeed=[](std::uint16_t,const std::string&,std::size_t,const Vm::Function*) {return std::optional<Value>{Value::Integer(-1)};};
+        const auto result=Vm::Execute(host,native,"Self",{{{},host.Reference({"Self",Vm::Scope::Instance,property.key},property)}});
+        Returned(result,"Direct native initialized defaults preserve genuinely written OUT aliases");
+        Require(host.Load("Self",property).integer==9 && result.writes==1u,"Direct seed capture detached a genuine OUT alias");
+    }
+    for(const unsigned mode:{0u,1u,2u,3u,4u,5u}) {
+        TestHost host;auto native=declaration(mode==5u?1008u:1454u,{mode==3u?Value::Bool(false):Value::Float(0)});
+        bool read{};auto alias=std::make_shared<Vm::Reference>();alias->zero=Value::Float(0);
+        alias->read=[&] {read=true;return Value::Float(99);};
+        if(mode!=5u) host.argumentSeed=[&](std::uint16_t,const std::string&,std::size_t,const Vm::Function*)->std::optional<Value> {
+            if(mode==0u) throw std::runtime_error("Direct seed hook failed before alias read");
+            if(mode==1u) return Value::Float(std::numeric_limits<float>::quiet_NaN());
+            if(mode==2u) {Value value=Value::Float(1);value.text.reserve(200000u);return value;}
+            return mode==3u?Value::Bool(true):Value::Float(-1);
+        };
+        host.executionNative=[](const std::string&,const std::vector<Vm::Evaluation>&,const Vm::Function*,Vm::Execution&) {return Vm::Evaluation{};};
+        auto limits=Vm::Limits{};if(mode==2u) limits.retainedBytes=100000u;
+        const Vm::Evaluation input{Value::Float(99),alias,Vm::ResultDisposition::ZeroFill,static_cast<std::uint8_t>(mode==3u?1u:mode==4u?5u:4u)};
+        const auto result=Vm::ExecuteTransaction(host,[&](Vm::Execution& execution) {
+            execution.CallFunction(Function("EarlierDirectEffect",Join({Native(1000u),Return()})),"Self");
+            try {execution.CallFunction(native,"Self",{input});}catch(const std::exception&){}return Value::Integer(1);
+        },limits);
+        Failed(result,mode==1u?Vm::Status::Invalid:mode==2u?Vm::Status::Budget:Vm::Status::Unsupported,host,
+            "Direct seed/type/layout/budget failures poison caught enclosing transactions");
+        Require(!read && host.effects==0u && host.rng==12345u && host.nativeIndices==std::vector<std::uint16_t>{1000u},
+            "Direct initialized argument failure read alias, reached native body or committed an earlier effect");
+    }
+    for(const bool mutation:{false,true}) {
+        TestHost host;const auto native=declaration(1454u,{Value::Float(0)});Vm::Execution* active{};
+        host.argumentSeed=[&](std::uint16_t index,const std::string&,std::size_t,const Vm::Function*)->std::optional<Value> {
+            if(index!=1454u) return std::nullopt;
+            try {
+                if(mutation) active->WriteReference({},Value::Integer(1));
+                else active->CallFunction(Function("ForbiddenDirectSeedCallback",Join({Native(1000u),Return()})),"Self");
+            }catch(const std::exception&){}return Value::Float(-1);
+        };
+        const auto result=Vm::ExecuteTransaction(host,[&](Vm::Execution& execution) {
+            active=&execution;try {execution.CallFunction(native,"Self",{{Value::Float(7),{}}});}catch(const std::exception&){}return Value{};
+        });
+        Failed(result,Vm::Status::Invalid,host,"Direct entry seeds remain readonly even when they suppress forbidden callback/write failures");
+        Require(host.effects==0u && host.nativeArguments.empty(),"Direct entry seed escaped readonly transaction poison");
+    }
+    std::cout<<"Direct initialized native argument result contracts: "<<checks-initialChecks<<" checks and "
+        <<rejections-initialRejections<<" refusal controls.\n";
+}
+void IntegerMaximumContracts() {
+    const auto initialChecks=checks,initialRejections=rejections;
+    const auto configure=[](TestHost& host) {
+        auto native=Function("Max",{},"Core.Object");native.nativeIndex=250u;native.flags=0x2401u;
+        native.variables={{"Max.A","A",Value::Integer(0),0x80u,1u},{"Max.B","B",Value::Integer(0),0x80u,1u},
+            {"Max.ReturnValue","ReturnValue",Value::Integer(0),0x580u,1u}};
+        host.finals[{"Fixture",7}]=std::make_shared<Vm::Function>(native);return native;
+    };
+    const std::array<std::int32_t,9u> values{std::numeric_limits<std::int32_t>::min(),std::numeric_limits<std::int32_t>::min()+1,
+        -123,-1,0,1,123,std::numeric_limits<std::int32_t>::max()-1,std::numeric_limits<std::int32_t>::max()};
+    for(const int dispatch:{0,1,2}) for(const auto first:values) for(const auto second:values) {
+        TestHost host;const auto native=configure(host);
+        const auto caller=Function("SignedMaxOriginalComparison",Return(dispatch==1?Call(0x1c,7,{Int(first),Int(second)}):Native(250u,{Int(first),Int(second)})));
+        const auto result=dispatch==2?Vm::Execute(host,native,"Self",{{Value::Integer(first),{}},{Value::Integer(second),{}}}):Vm::Execute(host,caller,"Self");
+        Returned(result,"Max signed32 boundaries/reversed/equal operands across all entries");
+        Require(result.value.kind==Vm::Kind::Int && result.value.integer==(first<second?second:first) &&
+            result.writes==0u && host.nativeArguments.empty(),"Max selected wrong signed operand or performed host-side side effects");
+    }
+    for(const bool declared:{false,true}) for(const auto& input:{Bytes{0x24u,255u},Bytes{0x0bu},Join({{0x44u},Real(255.9f)})}) {
+        TestHost host;configure(host);
+        const auto caller=Function("MaxNativeInputTypes",Return(declared?Call(0x1c,7,{input,Int(-1)}):Native(250u,{input,Int(-1)})));
+        const auto result=Vm::Execute(host,caller,"Self");Returned(result,"Max accepts Byte, absence zero and actual FloatToInt conversion");
+        Require(result.value.integer==(input==Bytes{0x0bu}?0:255),"Max confused actual converted/Byte/absent Int input");
+    }
+    for(const bool declared:{false,true}) {
+        TestHost host;configure(host);const auto mutation=Native(1060u,{Ref(0x01,1),Int(100),Int(5)});
+        const auto caller=Function("MaxCopiesPriorInput",Return(declared?Call(0x1c,7,{Ref(0x01,1),mutation}):Native(250u,{Ref(0x01,1),mutation})));
+        const auto source=host.Property(caller,1,"Number",Value::Integer(0));host.Store("Self",source,{Value::Integer(7)});
+        std::size_t seedCalls{};host.argumentSeed=[&](std::uint16_t index,const std::string&,std::size_t,const Vm::Function*)->std::optional<Value> {
+            if(index==250u) ++seedCalls;
+            return std::nullopt;
+        };
+        const auto result=Vm::Execute(host,caller,"Self");Returned(result,"Max captures A before B mutates its source");
+        Require(result.value.integer==7 && host.Load("Self",source).integer==100 && result.writes==1u && seedCalls==2u &&
+            host.observations==std::vector<std::string>{"variable:Self:Number","variable:Self:Number"},
+            "Max reread/mutated the earlier input or duplicated hooks at internal Run");
+    }
+    for(const auto& invalid:{Real(1.0f),String("1"),Bytes{0x27u},Bytes{0x2au},Join({{0x28u}})})
+        for(const bool declared:{false,true}) {
+        TestHost host;configure(host);const auto caller=Function("MaxConcreteTypesRefuse",Join({Native(1000u),
+            Return(declared?Call(0x1c,7,{invalid,Int(2)}):Native(250u,{invalid,Int(2)}))}));
+        const auto result=Vm::Execute(host,caller,"Self");Failed(result,Vm::Status::Unsupported,host,"Max requires a real Int/Byte result, not implicit Float/Bool/Object/String conversion");
+        Require(host.effects==0u && host.rng==12345u,"Max rejected input committed earlier effects");
+    }
+    for(const auto& inputs:{std::vector<Bytes>{},std::vector<Bytes>{Int(1)},std::vector<Bytes>{Int(1),Int(2),Int(3)}}) {
+        TestHost host;const auto native=configure(host);std::vector<Vm::Evaluation> direct;
+        for(std::size_t i=0u;i<inputs.size();++i) direct.push_back({Value::Integer(static_cast<std::int32_t>(i)),{}});
+        const auto result=Vm::Execute(host,native,"Self",direct);Failed(result,Vm::Status::Invalid,host,"Max exact required arity is preserved");
+    }
+    for(const bool budget:{false,true}) {
+        TestHost host;configure(host);auto limits=Vm::Limits{};if(budget) limits.writes=0u;
+        const auto caller=Function("MaxOriginalMutationRollback",Join({Native(1000u),Native(250u,{Ref(0x01,1),
+            Native(1060u,{Ref(0x01,1),Int(99),Int(2)})}),Native(4095u),Return()}));
+        const auto source=host.Property(caller,1,"Number",Value::Integer(0));host.Store("Self",source,{Value::Integer(7)});
+        const auto result=Vm::Execute(host,caller,"Self",{},limits);
+        Failed(result,budget?Vm::Status::Budget:Vm::Status::Unsupported,host,"Max genuine argument mutation shares enclosing failure/write budget rollback");
+        Require(host.Load("Self",source).integer==7 && host.effects==0u && host.rng==12345u,"Max left argument mutation committed after failure");
+    }
+    std::cout<<"Original signed Integer Max250: "<<checks-initialChecks<<" checks and "<<rejections-initialRejections<<" refusal controls.\n";
+}
 void NativeArgumentSeedContracts() {
     const auto initialChecks=checks,initialRejections=rejections;
     const auto nullResult=[](std::uint8_t bytes) {return Context({0x2a},Native(4095u),bytes);};
@@ -2118,6 +2647,34 @@ void NativeArgumentSeedContracts() {
         const auto result=Vm::Execute(host,caller,"Self");Failed(result,Vm::Status::Unsupported,host,"Seed failure before argument work");
         Require(host.observations==std::vector<std::string>{"seed0","seed1"} && host.effects==0u && host.nativeArguments.empty(),
             "Failed seed capture evaluated arguments or invoked native body");
+    }
+    for(const unsigned operation:{0u,1u,2u,3u}) {
+        TestHost host;Vm::Execution* active{};bool attempted{};
+        const auto owner=Function("RetainBeforeReadOnlyEntrySeed",Return(Native(1007u,{Ref(0x01,1)})));
+        const auto marker=host.Property(owner,1,"Marker",Value::Integer(0));host.Store("Self",marker,{Value::Integer(3)});
+        const auto caller=Function("ReadOnlyNativeEntrySeed",Join({Native(1000u),Return(Native(1454u,{Native(1000u)}))}));
+        host.argumentSeed=[&](std::uint16_t index,const std::string&,std::size_t,const Vm::Function*)->std::optional<Value> {
+            if(index!=1454u) return std::nullopt;
+            attempted=true;
+            if(operation==3u) throw std::runtime_error("Fixture read-only entry seed failure");
+            try {
+                if(operation==0u) active->CallFunction(Function("ForbiddenEntrySeedCallback",Join({Native(1000u),Return()})),"Self");
+                else if(operation==1u) active->WriteReference(host.Reference({"Self",Vm::Scope::Instance,marker.key},marker),Value::Integer(55));
+                else {
+                    Require(static_cast<bool>(host.retainedNativeReference),"Read-only entry-seed fixture did not retain guarded reference");
+                    host.retainedNativeReference->write(Value::Integer(55));
+                }
+            } catch(const std::exception&) {}return Value::Float(-1.0f);
+        };
+        const auto result=Vm::ExecuteTransaction(host,[&](Vm::Execution& execution) {
+            active=&execution;execution.CallFunction(owner,"Self");
+            try { execution.CallFunction(caller,"Self"); } catch(const std::exception&) {}return Value{};
+        });
+        Failed(result,operation==3u?Vm::Status::Unsupported:Vm::Status::Invalid,host,
+            "Native entry seed is read-only and caught callback/write/hook failures poison transaction");
+        Require(attempted && host.effects==0u && host.rng==12345u && host.Load("Self",marker).integer==3 && result.writes==0u &&
+            std::count(host.observations.begin(),host.observations.end(),"effect")==1,
+            "Native entry seed mutation/failure escaped read-only guard or evaluated the pending argument");
     }
     std::cout<<"Detached native argument result seeds: "<<checks-initialChecks<<" checks and "
         <<rejections-initialRejections<<" refusal controls.\n";
@@ -2408,31 +2965,33 @@ void WindowInputSnapshotContracts() {
         const auto result=Vm::Execute(host,caller,"Self");Returned(result,"Audited window Object/Byte inputs are detached during evaluation");
         Require(Vm::Equal(result.value,input),"Audited Object/Byte snapshot changed input value");
     }
-    for(const bool declared:{false,true}) for(const std::size_t earlier:{0u,1u,2u}) {
-        TestHost host;if(declared) declaration(host,1430u,std::vector<Value>(4u,Value::Float(0.0f)));
+    for(const auto index:{std::uint16_t{1430u},std::uint16_t{1432u}}) for(const bool declared:{false,true})
+        for(std::size_t earlier=0u;earlier<(index==1430u?3u:1u);++earlier) {
+        const auto count=index==1430u?4u:2u;
+        TestHost host;if(declared) declaration(host,index,std::vector<Value>(count,Value::Float(0.0f)));
         const std::array<float,4u> values{12.0f,23.0f,34.0f,45.0f};std::vector<Bytes> inputs;
-        for(std::size_t slot=0u;slot<3u;++slot) inputs.push_back(Ref(0x01,static_cast<std::int32_t>(slot+1u)));
-        inputs.push_back(Native(1060u,{Ref(0x01,static_cast<std::int32_t>(earlier+1u)),Real(99.0f),Real(values[3])}));
-        const auto caller=Function("WindowFourFloatInputCopies",Return(expression(1430u,declared,inputs)));
+        for(std::size_t slot=0u;slot<count-1u;++slot) inputs.push_back(Ref(0x01,static_cast<std::int32_t>(slot+1u)));
+        inputs.push_back(Native(1060u,{Ref(0x01,static_cast<std::int32_t>(earlier+1u)),Real(99.0f),Real(values[count-1u])}));
+        const auto caller=Function("WindowFloatInputCopies",Return(expression(index,declared,inputs)));
         std::vector<Vm::Property> properties;
-        for(std::size_t slot=0u;slot<4u;++slot) {
+        for(std::size_t slot=0u;slot<count;++slot) {
             properties.push_back(host.Property(caller,static_cast<std::int32_t>(slot+1u),"Input"+std::to_string(slot),Value::Float(0.0f)));
             host.Store("Self",properties.back(),{Value::Float(values[slot])});
         }
         host.executionNative=[&](const std::string&,const std::vector<Vm::Evaluation>& arguments,const Vm::Function* actual,Vm::Execution&) {
-            Require(static_cast<bool>(actual)==declared && arguments.size()==4u,"Audited1430 lost its declaration or input count");
-            for(std::size_t slot=0u;slot<4u;++slot)
+            Require(static_cast<bool>(actual)==declared && arguments.size()==count,"Audited1430/1432 lost its declaration or input count");
+            for(std::size_t slot=0u;slot<count;++slot)
                 Require(!arguments[slot].reference && arguments[slot].Load().floating==values[slot],
-                    "Audited1430 reloaded an earlier Float after a later input mutated its source");
+                    "Audited1430/1432 reloaded an earlier Float after a later input mutated its source");
             return Vm::Evaluation{arguments[earlier].Load(),{}};
         };
-        const auto result=Vm::Execute(host,caller,"Self");Returned(result,"Audited1430 copies each ordinary Float before evaluating later inputs");
+        const auto result=Vm::Execute(host,caller,"Self");Returned(result,"Audited1430/1432 copies each ordinary Float before evaluating later inputs");
         Require(result.value.floating==values[earlier] && host.Load("Self",properties[earlier]).floating==99.0f && result.writes==1u,
-            "Audited1430 input copies lost the real later mutation or returned the mutated source");
+            "Audited1430/1432 input copies lost the real later mutation or returned the mutated source");
     }
-    for(const auto index:{std::uint16_t{1421u},std::uint16_t{1422u},std::uint16_t{1430u}}) for(const bool declared:{false,true}) {
+    for(const auto index:{std::uint16_t{1421u},std::uint16_t{1422u},std::uint16_t{1430u},std::uint16_t{1432u}}) for(const bool declared:{false,true}) {
         const auto zero=index==1421u?Value::Text(Vm::Kind::Object,{}):index==1422u?Value::Byte(0u):Value::Float(0.0f);
-        const auto count=index==1430u?4u:1u;
+        const auto count=index==1430u?4u:index==1432u?2u:1u;
         for(std::size_t selected=0u;selected<count;++selected) for(const int bytes:{-1,0,index==1422u?1:4}) {
             TestHost host;if(declared) declaration(host,index,std::vector<Value>(count,zero));
             std::vector<Bytes> inputs(count,index==1421u?Ref(0x20,9):index==1422u?Bytes{0x24u,7u}:Real(12.0f));
@@ -2454,6 +3013,41 @@ void WindowInputSnapshotContracts() {
         }
     }
     std::cout<<"Additional audited Window ordinary input copies and zero seeds: "<<checks-initialChecks<<" checks.\n";
+}
+void WindowVisibilityInputContracts() {
+    const auto initialChecks=checks,initialRejections=rejections;
+    for(const bool declared:{false,true}) for(const int mode:{0,1,2,3,4,5,6,7}) {
+        TestHost host;auto native=Function("IsVisible",{},"Extension.Window");native.nativeIndex=1415u;native.flags=0x401u;
+        native.variables={{"IsVisible.bRecurse","bRecurse",Value::Bool(false),0x90u,1u},
+            {"IsVisible.ReturnValue","ReturnValue",Value::Bool(false),0x580u,1u}};
+        host.finals[{"Fixture",7}]=std::make_shared<Vm::Function>(native);
+        host.argumentSeed=[](std::uint16_t index,const std::string&,std::size_t slot,const Vm::Function*)->std::optional<Value> {
+            if(index!=1415u) return std::nullopt;
+            Require(slot==0u,"IsVisible seeded a return/excess input slot");return Value::Bool(true);
+        };
+        host.executionNative=[](const std::string&,const std::vector<Vm::Evaluation>& arguments,const Vm::Function*,Vm::Execution&) {
+            Require(arguments.size()<=1u,"IsVisible exceeded its single optional input");
+            const auto value=arguments.empty()?Value::Bool(true):arguments[0].Load();
+            if(!arguments.empty()) Require(!arguments[0].reference,"IsVisible ordinary input retained an OUT alias");
+            return Vm::Evaluation{value.kind==Vm::Kind::Nothing?Value::Bool(true):value,{}};
+        };
+        Bytes input;
+        if(mode==1) input={0x0bu};
+        else if(mode==2) input={0x28u};
+        else if(mode>=3) input=Context({0x2au},Native(4095u),static_cast<std::uint8_t>(mode==3?0u:mode==4?4u:mode-4u));
+        const auto expression=mode==0?(declared?Call(0x1c,7):Native(1415u)):
+            (declared?Call(0x1c,7,{input}):Native(1415u,{input}));
+        const auto caller=Function("IsVisibleNativeDefault",Return(expression));
+        const auto result=Vm::Execute(host,caller,"Self");
+        if(mode>=5) Failed(result,Vm::Status::Unsupported,host,"IsVisible partial Bool temporary clearing remains explicit refusal");
+        else {
+            Returned(result,"IsVisible native true default and exact context clearing");
+            Require(result.value.kind==Vm::Kind::Bool && result.value.boolean==(mode==0 || mode==1 || mode==3) && result.writes==0u,
+                "IsVisible replaced native true seed with declaration false or lost full clearing");
+        }
+    }
+    std::cout<<"Window visibility native input defaults: "<<checks-initialChecks<<" checks and "
+        <<rejections-initialRejections<<" refusal controls.\n";
 }
 void OptionalAndReferenceTables() {
     TestHost host;
@@ -3919,8 +4513,12 @@ int main() {
         ProgramAndEligibilityContracts();
         NativeArgumentSeedContracts();
         CoreColorResultLayoutContracts();
+        UninitializedNativeArgumentContracts();
+        DirectNativeInitializedArgumentContracts();
+        IntegerMaximumContracts();
         SequentialNativeArgumentSeedContracts();
         WindowInputSnapshotContracts();
+        WindowVisibilityInputContracts();
         VectorNativeContracts();
         StartupPrimitiveContracts();
         IteratorContracts();

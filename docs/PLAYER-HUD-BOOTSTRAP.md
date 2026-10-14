@@ -98,3 +98,12 @@ do not hide the HUD during pickups; actual map workers/atlas replacement do.
 Selection, ammo/counts, breath and damage/healing animation remain unavailable
 until their original owners are implemented, rather than inferred from the
 separate inventory-list selection or scalar player health.
+
+The later native root prefix now completes ammo assignment, all six body-part
+records, the lowered body overlay, both original energy/breath ProgressBarWindows
+and crosshair assignment. Its next explicit refusal is the item belt's native
+RadioBoxWindow construction at HUDObjectBelt.CreateSlots PC11, with48 pending
+objects/3391 writes. This diagnostic still rolls back instead of publishing a
+partial root. It does not establish live player possession or make production
+health/belt visible. The complete HUD remains an APK release gate; see
+HUD-COMPLETION.md and ORIGINAL-HUD-CONTRACT.md for the current exact boundary.

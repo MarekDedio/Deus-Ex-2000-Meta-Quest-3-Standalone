@@ -190,6 +190,15 @@ public:
     // No seed preserves the existing declared/builtin result destination.
     virtual std::optional<Value> NativeArgumentSeed(std::uint16_t,
         const std::string&, std::size_t, const Function*) { return std::nullopt; }
+    // Audited wrapper temporaries may have NO initialized bytes. Capture this
+    // immutable, read-only layout authority for ALL supplied native arguments
+    // before ANY argument expression/read. Never infer it from a seed's shape.
+    // An engaged layout requires a complete written value or exact full-layout
+    // Context zero-fill; Nothing, NoWrite, zero-size/partial writes and seeds
+    // cannot supply an initial value. Unknown layouts fail closed. No callbacks
+    // or host mutations are permitted. No capability preserves legacy behavior.
+    virtual std::optional<ResultLayout> NativeArgumentUninitializedLayout(std::uint16_t,
+        const std::string&, std::size_t, const Function*) { return std::nullopt; }
     // Opt-in for wrappers that initialize a later temporary from an already
     // evaluated ordinary input. Queried before argument expressions; only
     // opted-in natives allocate detached prefix snapshots or call the hook.

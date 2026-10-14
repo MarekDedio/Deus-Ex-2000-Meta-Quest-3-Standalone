@@ -78,3 +78,43 @@ owned ring, functional key collection/door use, ten correctly mapped slots,
 activation/save restoration, independent limb damage/healing, and map-relative
 compass behavior during physical turning, snap-turn and Meta recentering.
 Original artwork must accompany those states rather than replace them.
+
+## Native health initialization prefix (2026-10-14)
+
+The original root prefix now completes HUDHitDisplay.InitWindow, not just its
+first NewChild. All six seven-field body-part records hold distinct actual
+Window instances with original textures, geometry and initial black Color.
+The body overlay receives the actual colArmor CDO value and Lower prepends it
+without changing ownership or the other child lists. Both original vertical
+ProgressBarWindows initialize their0..100 range/current0, scaled foreground
+color and5x55 requested size. Crosshair initialization also completes. These
+are original startup values, not a claim that a live player's health is zero.
+
+SetTileColor1475 consumes an uninitialized native four-byte Color temporary.
+Only complete canonical Color writes are accepted, including exact four-byte
+Context clearing; absent/partial writes refuse. It stores RGBA plus RGB Plane
+components using the original binary64 reciprocal, W=+0, on the Window and
+window GC only. SetPos1432 stores unclamped near margins/absolute alignments,
+preserves far margins/current geometry, and defers hidden layout. IsVisible1415
+defaults to recursive ancestry inspection, not local visibility alone.
+
+ProgressBar helpers now execute Abs186 (preserving negative zero) and signed
+integer Max250 with copied, initialized inputs. Direct VM native calls apply
+audited temporary defaults before snapshotting; unaudited no-result inputs
+remain absent without reading stale aliases. No arbitrary declaration zero is
+used to make an uninitialized Color look written.
+
+The pending graph reaches HUDObjectBelt.CreateSlots PC11 and refuses the next
+native RadioBoxWindow constructor after48 objects/3391 writes. The probe rolls
+back the complete graph, names, player edge, GC allocations and save/revision
+state. Root.hud and HUD.belt are still unassigned. Native layout/lifecycle,
+remaining HUD windows, accepted world startup/Login/Possess and real belt
+ownership/activation remain required; this prefix does not satisfy the APK gate.
+
+Verification: full coherent host compilation;79 ordinary CTest passes out of92
+registered/13 explicit owned-data skips, zero failures,45.80s; separate original
+player/root/health/session/ring2163 checks; VM683869 checks/672 refusal controls;
+original ConsoleCommand65/1; untouched1308-actor world startup repeats its Move266
+boundary and completely rolls back. Runtime/VM/Quest ARM64 syntax-only checks
+pass without generating an Android binary/APK. The commercial assets and original
+Windows executables/DLLs were not modified or executed.
