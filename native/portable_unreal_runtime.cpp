@@ -2455,6 +2455,16 @@ public:
             throw std::runtime_error("Native execution on a class-default object requires its audited handler");
         if(index==1052u) return InitRootWindowNative(Object(receiver),arguments,declaration,execution);
         if(index==1410u) return NewChildWindowNative(Object(receiver),arguments,declaration,execution);
+        if(index==1438u) return WindowAlignmentsNative(Object(receiver),arguments,declaration,execution);
+        if(index==1425u) return WindowRootGetterNative(Object(receiver),arguments,declaration);
+        if(index==1416u) return WindowSensitivityNative(Object(receiver),arguments,declaration,execution);
+        if(index==1431u) return WindowSizeNative(Object(receiver),arguments,declaration,execution);
+        if(index==1414u) {
+            static_cast<void>(WindowNativeDeclaration(index,declaration));
+            if(!arguments.empty()) throw std::runtime_error("Window.Hide takes no arguments");
+            RequireNativeWindow(Object(receiver));SetHiddenChildVisibility(Object(receiver),false,execution);
+            return {};
+        }
         if(index==1477u || index==1454u || index==1510u || index==1511u)
             return WindowPropertyNative(index,Object(receiver),arguments,declaration,execution);
         if (index == 280u) {
@@ -2627,6 +2637,20 @@ public:
         struct Parameter { const char* name;Kind kind;std::uint32_t flags;const char* type;const char* constraint; };
         const char* path{};std::vector<Parameter> parameters;
         switch(index) {
+        case 1414u:path="Extension.Window.Hide";break;
+        case 1431u:path="Extension.Window.SetSize";
+            parameters={{"newWidth",Kind::Float,0x80u,"FloatProperty",""},
+                {"NewHeight",Kind::Float,0x80u,"FloatProperty",""}};break;
+        case 1425u:path="Extension.Window.GetRootWindow";
+            parameters={{"ReturnValue",Kind::Object,0x580u,"ObjectProperty","Extension.RootWindow"}};break;
+        case 1416u:path="Extension.Window.SetSensitivity";
+            parameters={{"newSensitivity",Kind::Bool,0x80u,"BoolProperty",""}};break;
+        case 1438u:path="Extension.Window.SetWindowAlignments";
+            parameters={{"HAlign",Kind::Byte,0x80u,"ByteProperty","Extension.ExtensionObject.EHAlign"},
+                {"VAlign",Kind::Byte,0x80u,"ByteProperty","Extension.ExtensionObject.EVAlign"}};
+            for(const auto* name:{"hMargin0","vMargin0","hMargin1","vMargin1"})
+                parameters.push_back({name,Kind::Float,0x90u,"FloatProperty",""});
+            break;
         case 1477u:path="Extension.Window.SetFont";
             parameters={{"fn",Kind::Object,0x80u,"ObjectProperty","Engine.Font"}};break;
         case 1454u:path="Extension.Window.SetDefaultCursor";
@@ -2683,7 +2707,8 @@ public:
     }
     std::optional<Value> NativeArgumentSeed(const std::uint16_t index,const std::string& receiver,
         const std::size_t slot,const Function* declaration) override {
-        if(index!=1410u && index!=1454u && index!=1477u && index!=1510u && index!=1511u) return std::nullopt;
+        if(index!=1410u && index!=1416u && index!=1431u && index!=1454u && index!=1477u && index!=1510u && index!=1511u)
+            return std::nullopt;
         auto* window=Object(receiver);
         if(!window->nativeWindowObject || !IsDerivedFromPath(window->cls,"Extension.Window"))
             throw std::runtime_error("Native window argument seed requires an actual native Window");
@@ -2693,6 +2718,244 @@ public:
         if(index==1454u && (slot==2u || slot==3u)) return Value::Float(-1.0f);
         if(index==1454u && slot==4u) return CursorColorSeed();
         return authored->variables[slot].zero;
+    }
+    bool HasSequentialNativeArgumentSeeds(const std::uint16_t index,const std::string& receiver,
+        const Function* declaration) override {
+        if(index!=1438u) return false;
+        RequireNativeWindow(Object(receiver));
+        static_cast<void>(WindowNativeDeclaration(index,declaration));
+        return true;
+    }
+    std::optional<Value> SequentialNativeArgumentSeed(const std::uint16_t index,const std::string& receiver,
+        const std::size_t slot,const Function* declaration,const std::vector<Value>& prefix) override {
+        if(index!=1438u) return std::nullopt;
+        RequireNativeWindow(Object(receiver));
+        const auto authored=WindowNativeDeclaration(index,declaration);
+        if(slot>=authored->variables.size() || prefix.size()!=slot)
+            throw std::runtime_error("Native window alignment seed has no ordered evaluated prefix");
+        if(slot<4u) return authored->variables[slot].zero;
+        auto seed=prefix[slot-2u]; // h1 from evaluated h0, v1 from evaluated v0.
+        if(seed.kind==Kind::Nothing) seed=authored->variables[slot-2u].zero;
+        if(seed.kind!=Kind::Float || !std::isfinite(seed.floating))
+            throw std::runtime_error("Native window alignment seed requires its copied finite Float");
+        return seed;
+    }
+    void RequireNativeWindow(RuntimeObject* window) {
+        if(!window || !window->nativeWindowObject || !IsDerivedFromPath(window->cls,"Extension.Window"))
+            throw std::runtime_error("Native Window operation requires an actual constructed Window");
+    }
+    Evaluation WindowAlignmentsNative(RuntimeObject* window,const std::vector<Evaluation>& arguments,
+        const Function* declaration,QuestVr::Vm::Execution& execution) {
+        RequireNativeWindow(window);
+        const auto authored=WindowNativeDeclaration(1438u,declaration);
+        if(arguments.size()<2u || arguments.size()>authored->variables.size())
+            throw std::runtime_error("SetWindowAlignments requires its two alignments and up to four margins");
+        std::vector<Value> values;values.reserve(authored->variables.size());
+        for(std::size_t slot=0u;slot<authored->variables.size();++slot) {
+            auto value=slot<arguments.size()?arguments[slot].Load():Value{};
+            if(value.kind==Kind::Nothing) value=slot>=4u?values[slot-2u]:authored->variables[slot].zero;
+            if(value.kind!=authored->variables[slot].zero.kind ||
+                (value.kind==Kind::Float && !std::isfinite(value.floating)))
+                throw std::runtime_error("SetWindowAlignments requires its authored Byte/finite Float inputs");
+            values.push_back(TypedLiveValue(authored->variables[slot],value));
+        }
+        // Retail compares H,V,h0,h1,v0,v1 with C3/equality. Portable finite
+        // ingress refuses NaN rather than claiming its unordered x87 path.
+        const std::array<const char*,6u> fields{"winHAlign","winVAlign","hMargin0","vMargin0","hMargin1","vMargin1"};
+        bool changed{};
+        for(const auto slot:{0u,1u,2u,4u,3u,5u}) {
+            const auto old=Read(window,DescribeProperty("Extension.Window."+std::string(fields[slot])),0u);
+            if(old.kind!=values[slot].kind || (old.kind==Kind::Float && !std::isfinite(old.floating)))
+                throw std::runtime_error("Native window stored alignment has no finite authored layout");
+            if(old.kind==Kind::Byte?old.integer!=values[slot].integer:old.floating!=values[slot].floating) {
+                changed=true;break;
+            }
+        }
+        if(!changed) return {}; // Equal signed zeros preserve old raw storage.
+        // Actual native store order H,h0,V,v0,h1,v1; all incoming values store
+        // even if only one differed. No enum clamp or sorted margin inference.
+        for(const auto slot:{0u,2u,1u,3u,4u,5u})
+            NativeWindowWrite(window,("Extension.Window."+std::string(fields[slot])).c_str(),values[slot],execution);
+        AskHiddenWindowForReconfigure(window,execution);
+        return {};
+    }
+    Evaluation WindowSizeNative(RuntimeObject* window,const std::vector<Evaluation>& arguments,
+        const Function* declaration,QuestVr::Vm::Execution& execution) {
+        RequireNativeWindow(window);
+        const auto authored=WindowNativeDeclaration(1431u,declaration);
+        if(arguments.size()!=2u) throw std::runtime_error("SetSize requires its two Float dimensions");
+        std::array<Value,2u> values;
+        for(std::size_t slot=0u;slot<values.size();++slot) {
+            auto value=arguments[slot].Load();
+            if(value.kind==Kind::Nothing) value=authored->variables[slot].zero;
+            if(value.kind!=Kind::Float || !std::isfinite(value.floating))
+                throw std::runtime_error("SetSize requires copied finite Float dimensions");
+            if(value.floating<0.0f) value=Value::Float(0.0f); // -0 preserves its bits.
+            values[slot]=value;
+        }
+        const std::array<const char*,2u> fields{"hardcodedWidth","hardcodedHeight"};
+        bool changed{};
+        for(std::size_t slot=0u;slot<values.size();++slot) {
+            const auto old=Read(window,DescribeProperty("Extension.Window."+std::string(fields[slot])),0u);
+            if(old.kind!=Kind::Float || !std::isfinite(old.floating))
+                throw std::runtime_error("Native requested window size has no finite Float layout");
+            if(old.floating!=values[slot].floating) {changed=true;break;}
+        }
+        if(!changed) return {};
+        // Retail Resize1004cf70 updates requested sizes, NOT current geometry
+        // or clip extents. A hidden ancestor defers configuration callbacks.
+        for(std::size_t slot=0u;slot<values.size();++slot)
+            NativeWindowWrite(window,("Extension.Window."+std::string(fields[slot])).c_str(),values[slot],execution);
+        AskHiddenWindowForReconfigure(window,execution);
+        return {};
+    }
+    RuntimeObject* NativeWindowTerminal(RuntimeObject* window) {
+        RequireNativeWindow(window);
+        std::array<RuntimeObject*,128u> visited{};std::size_t depth{};
+        for(auto* current=window;;) {
+            LifecycleStep();RequireNativeWindow(current);
+            if(depth==visited.size() || std::find(visited.begin(),visited.begin()+depth,current)!=visited.begin()+depth)
+                throw std::runtime_error("Native window root ancestry cycles or exceeds its bound");
+            visited[depth++]=current;
+            auto* parent=WindowLink(current,"winParent");
+            if(!parent) return current;
+            current=parent;
+        }
+    }
+    RuntimeObject* NativeWindowRoot(RuntimeObject* window) {
+        auto* terminal=NativeWindowTerminal(window);
+        const auto type=Read(terminal,DescribeProperty("Extension.Window.windowType"),0u);
+        if(type.kind!=Kind::Byte) throw std::runtime_error("Native window terminal type has no Byte layout");
+        if(type.integer<3) return nullptr;
+        // Retail returns a raw cast for unsigned type>=3, not the first root
+        // ancestor. Refuse an unsafe fabricated cast, never replace it by None.
+        if(!IsDerivedFromPath(terminal->cls,"Extension.RootWindow"))
+            throw std::runtime_error("Native terminal Window type cannot safely represent RootWindow");
+        return terminal;
+    }
+    Evaluation WindowRootGetterNative(RuntimeObject* window,const std::vector<Evaluation>& arguments,
+        const Function* declaration) {
+        static_cast<void>(WindowNativeDeclaration(1425u,declaration));
+        if(!arguments.empty()) throw std::runtime_error("GetRootWindow takes no arguments");
+        auto* root=NativeWindowRoot(window);
+        return {Value::Text(Kind::Object,root?root->reflection.objectPath:std::string{}),{}};
+    }
+    RuntimeObject* NativeWindowModal(RuntimeObject* window) {
+        RequireNativeWindow(window);
+        std::array<RuntimeObject*,128u> visited{};std::size_t depth{};
+        for(auto* current=window;current;current=WindowLink(current,"winParent")) {
+            LifecycleStep();RequireNativeWindow(current);
+            if(depth==visited.size() || std::find(visited.begin(),visited.begin()+depth,current)!=visited.begin()+depth)
+                throw std::runtime_error("Native window modal ancestry cycles or exceeds its bound");
+            visited[depth++]=current;
+            const auto type=Read(current,DescribeProperty("Extension.Window.windowType"),0u);
+            if(type.kind!=Kind::Byte) throw std::runtime_error("Native window modal type has no Byte layout");
+            if(type.integer>=2) {
+                if(!IsDerivedFromPath(current->cls,"Extension.ModalWindow"))
+                    throw std::runtime_error("Native Window type cannot safely represent ModalWindow");
+                return current;
+            }
+        }
+        return nullptr;
+    }
+    bool WindowEffectiveSensitivity(RuntimeObject* window) {
+        RequireNativeWindow(window);
+        std::array<RuntimeObject*,128u> visited{};std::size_t depth{};
+        for(auto* current=window;current;current=WindowLink(current,"winParent")) {
+            LifecycleStep();RequireNativeWindow(current);
+            if(depth==visited.size() || std::find(visited.begin(),visited.begin()+depth,current)!=visited.begin()+depth)
+                throw std::runtime_error("Native sensitivity ancestry cycles or exceeds its bound");
+            visited[depth++]=current;
+            const auto local=Read(current,DescribeProperty("Extension.Window.bIsSensitive"),0u);
+            if(local.kind!=Kind::Bool) throw std::runtime_error("Native sensitivity has no Bool layout");
+            if(!local.boolean) return false;
+        }
+        return true;
+    }
+    std::shared_ptr<const Function> OptionalNativeWindowEvent(RuntimeObject* receiver,const char* name) {
+        RequireNativeWindow(receiver);
+        const auto native=NativeWindowAncestor(receiver->cls);
+        if(native!="extension.window" && native!="extension.tabgroupwindow" &&
+            native!="extension.modalwindow" && native!="extension.rootwindow")
+            throw std::runtime_error("Native Window event override is not implemented: "+native);
+        const auto context=CurrentDispatchContext(receiver);
+        const auto selected=context.exactSelected?
+            QuestVr::ScriptDispatch::ResolveFunctionAtSelectedNode(DispatchGraph(),receiver->cls->reflection.objectPath,
+                context.selectedPath,name):QuestVr::ScriptDispatch::ResolveFunction(DispatchGraph(),
+                receiver->cls->reflection.objectPath,context.stateName,name);
+        return selected?FunctionIdentity(Object(*selected)):nullptr;
+    }
+    void InvokeSensitivityTree(RuntimeObject* window,const bool sensitive,QuestVr::Vm::Execution& execution) {
+        // Retail10050ef0: Self event, then locally sensitive children. Read the
+        // live firstChild after Self's callback and nextSibling after recursion.
+        std::vector<RuntimeObject*> stack{window};std::unordered_set<RuntimeObject*> entered;
+        while(!stack.empty()) {
+            LifecycleStep();auto* current=stack.back();
+            if(!entered.count(current)) {
+                if(entered.size()>=4096u || stack.size()>128u)
+                    throw std::runtime_error("Native sensitivity callback tree exceeds its bound");
+                entered.insert(current);
+                if(const auto callback=OptionalNativeWindowEvent(current,"SensitivityChanged"))
+                    static_cast<void>(execution.CallFunction(*callback,current->reflection.objectPath,{{Value::Bool(sensitive),{}}}));
+                if(Read(current,DescribeProperty("Extension.Window.bBeingDestroyed"),0u).boolean)
+                    throw std::runtime_error("Native sensitivity callback destruction is not implemented");
+                auto* child=WindowLink(current,"firstChild");
+                while(child && !Read(child,DescribeProperty("Extension.Window.bIsSensitive"),0u).boolean) {
+                    LifecycleStep();
+                    if(!entered.insert(child).second || entered.size()>4096u)
+                        throw std::runtime_error("Native sensitivity sibling traversal cycles or exceeds its bound");
+                    child=WindowLink(child,"nextSibling");
+                }
+                if(child) {
+                    if(entered.count(child)) throw std::runtime_error("Native sensitivity child tree cycles");
+                    stack.push_back(child);continue;
+                }
+            }
+            stack.pop_back();
+            if(stack.empty()) break;
+            auto* sibling=WindowLink(current,"nextSibling");
+            while(sibling && !Read(sibling,DescribeProperty("Extension.Window.bIsSensitive"),0u).boolean) {
+                LifecycleStep();
+                if(!entered.insert(sibling).second || entered.size()>4096u)
+                    throw std::runtime_error("Native sensitivity sibling traversal cycles or exceeds its bound");
+                sibling=WindowLink(sibling,"nextSibling");
+            }
+            if(sibling) {
+                if(entered.count(sibling)) throw std::runtime_error("Native sensitivity child tree cycles");
+                stack.push_back(sibling);
+            }
+        }
+    }
+    Evaluation WindowSensitivityNative(RuntimeObject* window,const std::vector<Evaluation>& arguments,
+        const Function* declaration,QuestVr::Vm::Execution& execution) {
+        RequireNativeWindow(window);
+        static_cast<void>(WindowNativeDeclaration(1416u,declaration));
+        if(arguments.size()!=1u) throw std::runtime_error("SetSensitivity requires its single Bool");
+        auto value=arguments.front().Load();
+        if(value.kind==Kind::Nothing) value=Value::Bool(false);
+        if(value.kind!=Kind::Bool) throw std::runtime_error("SetSensitivity requires its authored Bool input");
+        const auto old=Read(window,DescribeProperty("Extension.Window.bIsSensitive"),0u);
+        if(old.kind!=Kind::Bool) throw std::runtime_error("Native stored sensitivity has no Bool layout");
+        if(old.boolean==value.boolean) return {};
+        const auto before=WindowEffectiveSensitivity(window);
+        NativeWindowWrite(window,"Extension.Window.bIsSensitive",value,execution);
+        const auto after=WindowEffectiveSensitivity(window);
+        if(before==after) return {};
+        // Hidden visibility does NOT suppress this effective-change path.
+        // CheckFocus/CheckGrabbed return immediately on their actual null root
+        // pointers. Nonnull native focus/grab negotiation remains unsupported.
+        if(auto* root=NativeWindowRoot(window)) {
+            for(const auto* name:{"FocusWindow","grabbedWindow"}) {
+                const auto pointer=Read(root,DescribeProperty("Extension.RootWindow."+std::string(name)),0u);
+                if(pointer.kind!=Kind::Object) throw std::runtime_error("Native root focus/grab pointer is not Object");
+                if(!pointer.text.empty())
+                    throw std::runtime_error("Native sensitivity focus/grab negotiation is not implemented");
+            }
+        }
+        if(auto* modal=NativeWindowModal(window))
+            NativeWindowWrite(modal,"Extension.ModalWindow.bDirtyAccelerators",Value::Bool(true),execution);
+        InvokeSensitivityTree(window,after,execution);
+        return {};
     }
     void AskHiddenWindowForReconfigure(RuntimeObject* window,QuestVr::Vm::Execution& execution) {
         // Retail1004e119 always marks SELF. Any hidden node in the winParent
@@ -7774,7 +8037,8 @@ PortableRootWindowProbeResult ProbePortableRootWindowInitialization(
                         "lastSpecifiedWidth","lastSpecifiedHeight","lastQueryWidth","lastQueryHeight","textVSpacing","rowMajorIndex",
                         "colMajorIndex","att","firstTimer","windowType","winClipRect","focusSound","unfocusSound","visibleSound",
                         "invisibleSound","clientObject","Background","SoundVolume","acceleratorKey","maxClicks","freeTimer",
-                        "holdX","holdY","holdWidth","holdHeight","defaultCursor","defaultCursorShadow","defaultHotX","defaultHotY","defaultCursorColor"})
+                        "holdX","holdY","holdWidth","holdHeight","winHAlign","winVAlign",
+                        "defaultCursor","defaultCursorShadow","defaultHotX","defaultHotY","defaultCursorColor"})
                         field((std::string("Extension.Window.")+name).c_str());
                     if(IsDerivedFromPath(object->cls,"Extension.TabGroupWindow"))
                         for(const auto* name:{"bSizeParentToChildren","bSizeChildrenToParent","tabGroupIndex","firstAbsX","firstAbsY"})
@@ -7803,6 +8067,9 @@ PortableRootWindowProbeResult ProbePortableRootWindowInitialization(
                         field("DeusEx.ActorDisplayWindow.maxPoints");
                         for(std::uint32_t slot=0u;slot<16u;++slot) field("DeusEx.ActorDisplayWindow.sinTable",slot);
                     }
+                    if(IsDerivedFromPath(object->cls,"DeusEx.HUDBaseWindow"))
+                        for(const auto* name:{"Player","colBackground","colBorder","colText","colHeaderText"})
+                            field((std::string("DeusEx.HUDBaseWindow.")+name).c_str());
                 } else if(IsDerivedFromPath(object->cls,"Extension.GC")) {
                     for(const auto* name:{"Canvas","normalFont","boldFont","gcOwner"})
                         field((std::string("Extension.GC.")+name).c_str());

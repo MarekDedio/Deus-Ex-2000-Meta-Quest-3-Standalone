@@ -196,6 +196,9 @@ struct TestHost final:Vm::Host {
         const Vm::Function*,Vm::Execution&)> executionNative;
     std::function<std::optional<Value>(std::uint16_t,const std::string&,std::size_t,
         const Vm::Function*)> argumentSeed;
+    std::function<bool(std::uint16_t,const std::string&,const Vm::Function*)> hasSequentialSeeds;
+    std::function<std::optional<Value>(std::uint16_t,const std::string&,std::size_t,
+        const Vm::Function*,const std::vector<Value>&)> sequentialArgumentSeed;
     std::map<Slot,std::vector<Value>> storage,saved;
     struct CastClass {std::string parent,name;};
     std::map<std::string,CastClass> castClasses;
@@ -210,6 +213,7 @@ struct TestHost final:Vm::Host {
     std::vector<std::string> defaultSelections;
     std::vector<std::string> objectStringLookups;
     std::shared_ptr<Vm::Reference> retainedNativeReference,retainedNativeElement;
+    std::size_t referenceReads{};
     std::size_t beginCount{},commitCount{},rollbackCount{},effects{},savedEffects{};
     std::uint32_t rng{12345},savedRng{};
     bool active{};
@@ -337,6 +341,14 @@ struct TestHost final:Vm::Host {
         std::size_t slot,const Vm::Function* declaration) override {
         return argumentSeed ? argumentSeed(index,receiver,slot,declaration) : std::nullopt;
     }
+    bool HasSequentialNativeArgumentSeeds(std::uint16_t index,const std::string& receiver,
+        const Vm::Function* declaration) override {
+        return hasSequentialSeeds ? hasSequentialSeeds(index,receiver,declaration) : false;
+    }
+    std::optional<Value> SequentialNativeArgumentSeed(std::uint16_t index,const std::string& receiver,
+        std::size_t slot,const Vm::Function* declaration,const std::vector<Value>& prefix) override {
+        return sequentialArgumentSeed ? sequentialArgumentSeed(index,receiver,slot,declaration,prefix) : std::nullopt;
+    }
     Vm::Property Property(const Vm::Function& f,std::int32_t ref,const std::string& name,Value zero,
         std::uint32_t flags=0,std::size_t dimension=1,bool local=false) {
         Vm::Property p{local ? f.path+"."+name : "Fixture.Actor."+name,name,std::move(zero),flags,dimension};
@@ -351,7 +363,7 @@ struct TestHost final:Vm::Host {
     std::shared_ptr<Vm::Reference> Reference(const Slot& slot,const Vm::Property& p,std::size_t index=0) {
         if(!storage.contains(slot)) storage[slot]=std::vector<Value>(p.arrayDimension,p.zero);
         auto ref=std::make_shared<Vm::Reference>();ref->zero=p.zero;ref->dimension=p.arrayDimension;
-        ref->read=[this,slot,index] {return storage.at(slot).at(index);};
+        ref->read=[this,slot,index] {++referenceReads;return storage.at(slot).at(index);};
         ref->write=[this,slot,index](const Value& v) {storage.at(slot).at(index)=v;};
         ref->element=[this,slot,p](std::size_t i) {return Reference(slot,p,i);};
         return ref;
@@ -410,7 +422,7 @@ struct TestHost final:Vm::Host {
         const std::vector<Vm::Evaluation>& arguments,const Vm::Function* declaration,Vm::Execution& execution) override {
         // 1008 belongs only to this generated fixture. Native zero is keyed by
         // its declaration; individual tests provide the host-side observation.
-        if((index==1008u || index==0u || index==1410u || index==1454u) && executionNative) {
+        if((index==1008u || index==0u || index==1410u || index==1416u || index==1431u || index==1438u || index==1454u) && executionNative) {
             std::vector<Value> values;for(const auto& argument:arguments) values.push_back(argument.Load());
             nativeArguments.push_back(std::move(values));nativeReceivers.push_back(receiver);
             nativeDeclarations.push_back(declaration ? declaration->path : "");
@@ -1716,6 +1728,27 @@ void NativeArgumentSeedContracts() {
     }
     for(const bool declared:{false,true}) {
         TestHost host;
+        const std::initializer_list<Bytes> inputs{Ref(0x01,1),Native(1060u,{Ref(0x01,1),Real(99.0f),Real(55.0f)})};
+        auto call=Native(1431u,inputs);
+        if(declared) {
+            auto native=Function("SetSize",{},"Extension.Window");native.flags=0x400u;native.nativeIndex=1431u;
+            native.variables={{"Width","Width",Value::Float(0.0f),0x80u,1u},{"Height","Height",Value::Float(0.0f),0x80u,1u}};
+            host.finals[{"Fixture",7}]=std::make_shared<Vm::Function>(native);call=Call(0x1c,7,inputs);
+        }
+        const auto caller=Function("SetSizeInputCopiesBeforeLaterMutation",Return(call));
+        const auto width=host.Property(caller,1,"Width",Value::Float(0.0f));host.Store("Self",width,{Value::Float(12.0f)});
+        host.executionNative=[](const std::string&,const std::vector<Vm::Evaluation>& arguments,const Vm::Function*,Vm::Execution&) {
+            Require(arguments.size()==2u && !arguments[0].reference && !arguments[1].reference &&
+                arguments[0].Load().floating==12.0f && arguments[1].Load().floating==55.0f,
+                "SetSize first ordinary input reloaded its source after the second argument mutation");
+            return Vm::Evaluation{arguments[0].Load(),{}};
+        };
+        const auto result=Vm::Execute(host,caller,"Self");Returned(result,"SetSize copies width before evaluating height");
+        Require(result.value.floating==12.0f && host.Load("Self",width).floating==99.0f && result.writes==1u,
+            "SetSize input snapshot changed earlier value or suppressed later argument side effects");
+    }
+    for(const bool declared:{false,true}) {
+        TestHost host;
         const auto show=Native(1060u,{Ref(0x01,1),Ref(0x20,2),{0x27}});
         auto expression=Native(1410u,{Ref(0x01,1),show});
         if(declared) {
@@ -1840,6 +1873,247 @@ void NativeArgumentSeedContracts() {
             "Failed seed capture evaluated arguments or invoked native body");
     }
     std::cout<<"Detached native argument result seeds: "<<checks-initialChecks<<" checks and "
+        <<rejections-initialRejections<<" refusal controls.\n";
+}
+void SequentialNativeArgumentSeedContracts() {
+    const auto initialChecks=checks,initialRejections=rejections;
+    const auto nullResult=[](std::uint8_t bytes) {return Context({0x2a},Native(4095u),bytes);};
+    const auto enable=[](TestHost& host) {
+        host.hasSequentialSeeds=[](std::uint16_t index,const std::string&,const Vm::Function*) {return index==1438u;};
+        host.sequentialArgumentSeed=[](std::uint16_t index,const std::string&,std::size_t slot,
+            const Vm::Function*,const std::vector<Value>& prefix)->std::optional<Value> {
+            Require(index==1438u && prefix.size()==slot,"Sequential seed prefix is not the already-evaluated inputs");
+            if(slot<2u) return Value::Integer(0);
+            if(slot<4u) return Value::Float(0.0f);
+            return prefix.at(slot-2u);
+        };
+    };
+    for(const bool declared:{false,true}) {
+        for(const auto& [expression,expected]:std::vector<std::pair<Bytes,float>>{
+            {nullResult(0u),-1.0f},{nullResult(4u),0.0f},{nullResult(3u),-0.5f},{{0x0b},-1.0f},{Real(2.5f),2.5f}}) {
+            TestHost host;enable(host);
+            const std::initializer_list<Bytes> inputs{Int(1),Int(2),Real(-1.0f),Real(0.75f),expression,nullResult(0u)};
+            auto call=Native(1438u,inputs);
+            if(declared) {
+                auto native=Function("SetWindowAlignments",{},"Extension.Window");native.flags=0x400u;native.nativeIndex=1438u;
+                native.variables={{"H","H",Value::Integer(0),0x80u,1u},{"V","V",Value::Integer(0),0x80u,1u},
+                    {"H0","H0",Value::Float(0.0f),0x90u,1u},{"V0","V0",Value::Float(0.0f),0x90u,1u},
+                    {"H1","H1",Value::Float(0.0f),0x90u,1u},{"V1","V1",Value::Float(0.0f),0x90u,1u}};
+                host.finals[{"Fixture",7}]=std::make_shared<Vm::Function>(native);call=Call(0x1c,7,inputs);
+            }
+            host.hasSequentialSeeds=[&](std::uint16_t index,const std::string& receiver,const Vm::Function* actual) {
+                Require(index==1438u && receiver=="WindowReceiver" && static_cast<bool>(actual)==declared,
+                    "Sequential opt-in lost native identity/receiver/declaration");return true;
+            };
+            host.argumentSeed=[](std::uint16_t,const std::string&,std::size_t slot,const Vm::Function*)->std::optional<Value> {
+                // Sequential seeds take precedence over an existing entry seed.
+                return slot>=4u?std::optional<Value>{Value::Float(99.0f)}:std::nullopt;
+            };
+            const bool omitted=expression==Bytes{0x0b};
+            host.executionNative=[&](const std::string& receiver,const std::vector<Vm::Evaluation>& arguments,
+                const Vm::Function* actual,Vm::Execution&) {
+                Require(receiver=="WindowReceiver" && static_cast<bool>(actual)==declared && arguments.size()==6u,
+                    "Sequential native invocation identity changed");
+                for(const auto& argument:arguments) Require(!argument.reference,"Audited1438 ordinary input retained an alias");
+                auto h1=arguments[4].Load();
+                Require((h1.kind==Vm::Kind::Nothing)==omitted,"Sequential seed consumed explicit Nothing omission");
+                if(omitted) h1=arguments[2].Load(); // The real native reader applies the dependent default.
+                return Vm::Evaluation{Value::Vector({Vm::ToFloat(h1),Vm::ToFloat(arguments[5].Load()),0.0f}),{}};
+            };
+            const auto caller=Function("SequentialDependentDefaults",Return(Context(Ref(0x20,9),call)));
+            host.objects[{caller.source,9}]="WindowReceiver";
+            const auto result=Vm::Execute(host,caller,"Self");Returned(result,"Sequential dependent Float result defaults");
+            Require(Vm::Equal(result.value,Value::Vector({expected,0.75f,0.0f})),
+                "Sequential NoWrite/full/partial/written/omitted result differs from dependent native temporary");
+        }
+    }
+    {
+        TestHost host;enable(host);
+        std::size_t floatingExpression{};
+        host.hasSequentialSeeds=[&](std::uint16_t index,const std::string&,const Vm::Function*) {
+            if(index==1438u) host.observations.push_back("opt-in");
+            return index==1438u;
+        };
+        host.argumentSeed=[&](std::uint16_t index,const std::string&,std::size_t slot,const Vm::Function*)->std::optional<Value> {
+            if(index==1438u) host.observations.push_back("pre"+std::to_string(slot));
+            return std::nullopt;
+        };
+        host.sequentialArgumentSeed=[&](std::uint16_t,const std::string&,std::size_t slot,const Vm::Function*,
+            const std::vector<Value>& prefix)->std::optional<Value> {
+            host.observations.push_back("seq"+std::to_string(slot));Require(prefix.size()==slot,"Sequential prefix ordering differs");
+            if(slot>=4u) return prefix.at(slot-2u);
+            return std::nullopt;
+        };
+        host.executionNative=[&](const std::string&,const std::vector<Vm::Evaluation>& arguments,const Vm::Function*,Vm::Execution&) {
+            if(arguments.empty()) {
+                host.observations.push_back(floatingExpression==0u?"h0":"v0");
+                return Vm::Evaluation{Value::Float(floatingExpression++==0u?-1.0f:0.75f),{}};
+            }
+            return Vm::Evaluation{arguments.at(4u).Load(),{}};
+        };
+        const auto result=Vm::Execute(host,Function("SequentialHookOrdering",Return(Native(1438u,
+            {Native(1001u),Native(1002u),Native(1008u),Native(1008u),nullResult(0u),nullResult(0u)}))),"Self");
+        Returned(result,"Entry seeds precede all args; sequential seeds precede each arg");
+        Require(host.observations==std::vector<std::string>{"opt-in","pre0","pre1","pre2","pre3","pre4","pre5",
+            "seq0","lhs","seq1","rhs","seq2","h0","seq3","v0","seq4","seq5"},
+            "Entry/sequential seed evaluation order changed");
+    }
+    for(const bool declared:{false,true}) {
+        TestHost host;enable(host);
+        const std::initializer_list<Bytes> inputs{Int(1),Int(2),Ref(0x01,1),
+            Native(1060u,{Ref(0x01,1),Real(99.0f),Real(0.75f)}),nullResult(0u),nullResult(0u)};
+        auto call=Native(1438u,inputs);
+        if(declared) {
+            auto native=Function("SetWindowAlignments",{},"Extension.Window");native.flags=0x400u;native.nativeIndex=1438u;
+            host.finals[{"Fixture",7}]=std::make_shared<Vm::Function>(native);call=Call(0x1c,7,inputs);
+        }
+        const auto caller=Function("SequentialDefaultSnapshotsLvalue",Return(call));
+        const auto h0=host.Property(caller,1,"H0",Value::Float(0.0f));host.Store("Self",h0,{Value::Float(-1.0f)});
+        host.executionNative=[](const std::string&,const std::vector<Vm::Evaluation>& arguments,const Vm::Function*,Vm::Execution&) {
+            Require(!arguments[2].reference && arguments[2].Load().floating==-1.0f,
+                "Later1438 argument mutation changed earlier copied ordinary input");
+            return Vm::Evaluation{arguments[4].Load(),{}};
+        };
+        const auto result=Vm::Execute(host,caller,"Self");Returned(result,"Dependent seed retains copied earlier lvalue");
+        Require(result.value.floating==-1.0f && host.Load("Self",h0).floating==99.0f && result.writes==1u,
+            "Dependent seed used a reloaded lvalue or suppressed actual argument mutation");
+    }
+    {
+        TestHost host;host.hasSequentialSeeds=[](std::uint16_t index,const std::string&,const Vm::Function*) {return index==1004u;};
+        host.sequentialArgumentSeed=[](std::uint16_t,const std::string&,std::size_t,const Vm::Function*,
+            const std::vector<Value>& prefix)->std::optional<Value> {
+            Require(prefix.empty(),"First OUT seed had a nonempty prefix");return Value::Integer(-1);
+        };
+        const auto caller=Function("SequentialSeedsPreserveOut",Return(Native(1004u,{Ref(0x01,1)})));
+        const auto target=host.Property(caller,1,"Out",Value::Integer(0));host.Store("Self",target,{Value::Integer(3)});
+        const auto result=Vm::Execute(host,caller,"Self");Returned(result,"Sequential prefix does not detach OUT binding");
+        Require(host.Load("Self",target).integer==9 && result.writes==1u,"Sequential capture detached unknown native OUT argument");
+    }
+    {
+        TestHost host;const auto caller=Function("NoSequentialHookForScript",Return(Call(0x1c,7,{Real(2.0f)})));
+        auto script=Function("Callee",Return(Ref(0x00,2)),"ScriptSource");
+        script.variables={host.Property(script,2,"Input",Value::Float(0.0f),0x80u,1u,true)};
+        host.finals[{caller.source,7}]=std::make_shared<Vm::Function>(script);
+        host.hasSequentialSeeds=[](std::uint16_t,const std::string&,const Vm::Function*)->bool {
+            throw std::runtime_error("Script called sequential opt-in");
+        };
+        const auto result=Vm::Execute(host,caller,"Self");Returned(result,"Script calls do not consult sequential native hooks");
+        Require(result.value.floating==2.0f,"Script argument binding changed with sequential API");
+    }
+    {
+        TestHost host;host.sequentialArgumentSeed=[](std::uint16_t,const std::string&,std::size_t,const Vm::Function*,
+            const std::vector<Value>&)->std::optional<Value> {throw std::runtime_error("Non-opted-in native called sequential hook");};
+        const auto caller=Function("NoSequentialHookWithoutOptIn",Return(Native(1003u,{Ref(0x01,1)})));
+        const auto target=host.Property(caller,1,"Input",Value::Integer(0));host.Store("Self",target,{Value::Integer(7)});
+        const auto result=Vm::Execute(host,caller,"Self");
+        Returned(result,"Ordinary natives do not call sequential seed hook");
+        Require(result.value.integer==7 && host.referenceReads==2u,"Ordinary native gained an extra prefix-snapshot read");
+    }
+    const auto refuse=[&](const Value& seed,const Vm::Status status,const std::string& label,
+        const Vm::Limits& limits=Vm::Limits{},const std::uint8_t bytes=0u) {
+        TestHost host;enable(host);bool reached{};
+        host.sequentialArgumentSeed=[&](std::uint16_t,const std::string&,std::size_t slot,const Vm::Function*,
+            const std::vector<Value>&)->std::optional<Value> {
+            if(slot!=4u) return std::nullopt;
+            reached=true;
+            auto value=seed;value.text.reserve(seed.text.capacity());return value;
+        };
+        const auto caller=Function("RefusedSequentialSeed",Return(Native(1438u,
+            {Native(1000u),Int(2),Native(1060u,{Ref(0x01,1),Int(55)}),Real(0.75f),nullResult(bytes),Native(1000u)})));
+        const auto target=host.Property(caller,1,"Target",Value::Integer(0));host.Store("Self",target,{Value::Integer(3)});
+        const auto result=Vm::ExecuteTransaction(host,[&](Vm::Execution& execution) {
+            try { execution.CallFunction(caller,"Self"); } catch(const std::exception&) {}
+            return Value::Integer(123); // A caught hook/budget failure cannot commit the prefix.
+        },limits);
+        Failed(result,status,host,label);
+        Require(reached && host.effects==0u && host.rng==12345u && host.Load("Self",target).integer==3 && result.writes==1u,
+            label+": sequential seed failure did not roll back evaluated prefix");
+        Require(std::count(host.observations.begin(),host.observations.end(),"effect")==1,
+            label+": failing seed evaluated its own/later argument");
+    };
+    refuse(Value::Float(std::numeric_limits<float>::quiet_NaN()),Vm::Status::Invalid,"Nonfinite sequential seed poisons shared execution");
+    refuse(Value::Float(-1.0f),Vm::Status::Unsupported,"Sequential seed zero fill cannot exceed destination",Vm::Limits{},5u);
+    refuse(Value::Bool(true),Vm::Status::Unsupported,"Sequential partial Bool seed remains unsupported",Vm::Limits{},1u);
+    auto stringLimit=Vm::Limits{};stringLimit.stringBytes=64u;
+    refuse(Value::Text(Vm::Kind::String,std::string(65u,'x')),Vm::Status::Budget,"Sequential seed text limit",stringLimit);
+    Value reserved=Value::Text(Vm::Kind::String,"x");reserved.text.reserve(200000u);
+    auto storageLimit=Vm::Limits{};storageLimit.retainedBytes=100000u;
+    refuse(reserved,Vm::Status::Budget,"Sequential seed allocated capacity limit",storageLimit);
+    {
+        TestHost host;enable(host);
+        host.sequentialArgumentSeed=[](std::uint16_t,const std::string&,std::size_t slot,const Vm::Function*,
+            const std::vector<Value>&)->std::optional<Value> {
+            if(slot==1u) throw std::runtime_error("Fixture sequential seed failure");
+            return std::nullopt;
+        };
+        const auto caller=Function("ThrowingSequentialSeed",Return(Native(1438u,{Native(1000u),Native(1000u)})));
+        const auto result=Vm::ExecuteTransaction(host,[&](Vm::Execution& execution) {
+            try { execution.CallFunction(caller,"Self"); } catch(const std::exception&) {}return Value{};
+        });
+        Failed(result,Vm::Status::Unsupported,host,"Sequential hook exception poisons shared execution");
+        Require(host.effects==0u && std::count(host.observations.begin(),host.observations.end(),"effect")==1,
+            "Throwing sequential hook did not preserve rollback or evaluated later argument");
+    }
+    for(const bool optInHook:{false,true}) for(const bool write:{false,true}) {
+        TestHost host;enable(host);Vm::Execution* activeExecution{};bool attempted{};
+        const auto caller=Function("ReadOnlySequentialHooks",Return(Native(1438u,{Native(1000u)})));
+        const auto target=host.Property(caller,1,"Target",Value::Integer(0));host.Store("Self",target,{Value::Integer(3)});
+        const auto reference=host.Reference({"Self",Vm::Scope::Instance,target.key},target);
+        const auto callback=Function("ForbiddenCallback",Join({Native(1000u),Return()}));
+        const auto attempt=[&] {
+            attempted=true;
+            try {
+                if(write) activeExecution->WriteReference(reference,Value::Integer(55));
+                else activeExecution->CallFunction(callback,"Self");
+            } catch(const std::exception&) {}
+        };
+        host.hasSequentialSeeds=[&](std::uint16_t index,const std::string&,const Vm::Function*) {
+            if(index==1438u && optInHook) attempt();
+            return index==1438u;
+        };
+        host.sequentialArgumentSeed=[&](std::uint16_t,const std::string&,std::size_t,const Vm::Function*,
+            const std::vector<Value>&)->std::optional<Value> {
+            if(!optInHook) attempt();
+            return Value::Integer(0);
+        };
+        const auto result=Vm::ExecuteTransaction(host,[&](Vm::Execution& execution) {
+            activeExecution=&execution;try { execution.CallFunction(caller,"Self"); } catch(const std::exception&) {}return Value{};
+        });
+        Failed(result,Vm::Status::Invalid,host,"Read-only sequential hook refuses VM callbacks even when caught");
+        Require(attempted && host.effects==0u && host.Load("Self",target).integer==3 && result.writes==0u,
+            "Read-only sequential hook executed callback/mutation or escaped shared poison");
+    }
+    {
+        TestHost host;enable(host);bool attempted{};
+        const auto first=Function("RetainGuardBeforeSequentialHook",Return(Native(1007u,{Ref(0x01,1)})));
+        const auto target=host.Property(first,1,"Target",Value::Integer(0));host.Store("Self",target,{Value::Integer(3)});
+        const auto second=Function("ReadOnlyHookCannotWriteGuard",Return(Native(1438u,{Native(1000u)})));
+        host.sequentialArgumentSeed=[&](std::uint16_t,const std::string&,std::size_t,const Vm::Function*,
+            const std::vector<Value>&)->std::optional<Value> {
+            Require(static_cast<bool>(host.retainedNativeReference),"Read-only hook fixture did not capture guarded reference");
+            attempted=true;
+            try { host.retainedNativeReference->write(Value::Integer(55)); } catch(const std::exception&) {}
+            return Value::Integer(0);
+        };
+        const auto result=Vm::ExecuteTransaction(host,[&](Vm::Execution& execution) {
+            execution.CallFunction(first,"Self");
+            try { execution.CallFunction(second,"Self"); } catch(const std::exception&) {}return Value{};
+        });
+        Failed(result,Vm::Status::Invalid,host,"Read-only sequential hook refuses guarded OUT writes");
+        Require(attempted && host.effects==0u && host.Load("Self",target).integer==3 && result.writes==0u,
+            "Read-only sequential hook mutated guarded OUT reference or escaped shared poison");
+    }
+    {
+        TestHost host;enable(host);auto limits=Vm::Limits{};limits.localElements=3u;
+        const auto caller=Function("SequentialPrefixNodeLimit",Return(Native(1438u,{Native(1000u),Int(2),Int(3),Int(4),Native(1000u)})));
+        const auto result=Vm::ExecuteTransaction(host,[&](Vm::Execution& execution) {
+            try { execution.CallFunction(caller,"Self"); } catch(const std::exception&) {}return Value{};
+        },limits);
+        Failed(result,Vm::Status::Budget,host,"Detached sequential prefix aggregate node limit");
+        Require(host.effects==0u && std::count(host.observations.begin(),host.observations.end(),"effect")==1,
+            "Prefix aggregate node refusal evaluated later argument or failed rollback");
+    }
+    std::cout<<"Sequential native argument result seeds: "<<checks-initialChecks<<" checks and "
         <<rejections-initialRejections<<" refusal controls.\n";
 }
 void OptionalAndReferenceTables() {
@@ -3305,6 +3579,7 @@ int main() {
         TransactionContracts();
         ProgramAndEligibilityContracts();
         NativeArgumentSeedContracts();
+        SequentialNativeArgumentSeedContracts();
         VectorNativeContracts();
         StartupPrimitiveContracts();
         IteratorContracts();

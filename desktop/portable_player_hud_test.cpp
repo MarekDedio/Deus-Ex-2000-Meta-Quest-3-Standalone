@@ -176,8 +176,8 @@ int main(int argc,char** argv) {
         std::cout<<"ORIGINAL root pending graph: "<<pending.execution.function<<':'<<pending.execution.offset<<
             " objects="<<pending.objects.size()<<" "<<pending.execution.error<<"; inspection="<<pending.inspectionError<<std::endl;
         Require(!pending.execution.passed() && !pending.execution.committed && pending.inspectionError.empty() &&
-            pending.execution.function=="DeusEx.DeusExRootWindow.InitWindow" && pending.execution.offset==41u &&
-            pending.execution.error.find("1438")!=std::string::npos && pending.objects.size()==6u &&
+            pending.execution.function=="DeusEx.HUDBaseWindow.StyleChanged" && pending.execution.offset==30u &&
+            pending.execution.error.find("context zero-fill destination layout")!=std::string::npos && pending.objects.size()==12u &&
             pending.rootedWindows==std::vector<std::string>{pending.pawnRootPath},
             "Original root prefix probe did not capture the actual pending native graph: "+pending.inspectionError);
         const auto object=[&](const std::string& path)->const PortableNativeWindowObjectSnapshot& {
@@ -254,9 +254,34 @@ int main(int argc,char** argv) {
             display.rowMajorWindows.empty() && display.colMajorWindows.empty() && display.tabGroupWindows.empty(),
             "NewChild fabricated ActorDisplayWindow class/Outer/native subclass storage");
         edge(rootView,"DeusEx.DeusExRootWindow.actorDisplay",display.path);
-        edge(rootView,"Extension.Window.firstChild",display.path);edge(rootView,"Extension.Window.lastChild",display.path);
+        const auto hudFound=std::find_if(pending.objects.begin(),pending.objects.end(),[](const auto& view) {return view.classPath=="DeusEx.DeusExHUD";});
+        const auto ammoFound=std::find_if(pending.objects.begin(),pending.objects.end(),[](const auto& view) {return view.classPath=="DeusEx.HUDAmmoDisplay";});
+        Require(hudFound!=pending.objects.end() && ammoFound!=pending.objects.end(),"Original root did not create its actual HUD/ammo children");
+        const auto& hudView=*hudFound;const auto& ammoView=*ammoFound;
+        edge(rootView,"Extension.Window.firstChild",display.path);edge(rootView,"Extension.Window.lastChild",hudView.path);
+        // HUD and ammo NewChild are still in their original InitWindow calls;
+        // assignment/Show/unlock have NOT completed at the Color boundary.
+        edge(rootView,"DeusEx.DeusExRootWindow.hud",{});
         edge(display,"Extension.Window.parentOwner",rootView.path);edge(display,"Extension.Window.winParent",rootView.path);
-        edge(display,"Extension.Window.prevSibling",{});edge(display,"Extension.Window.nextSibling",{});
+        edge(display,"Extension.Window.prevSibling",{});edge(display,"Extension.Window.nextSibling",hudView.path);
+        edge(hudView,"Extension.Window.parentOwner",rootView.path);edge(hudView,"Extension.Window.winParent",rootView.path);
+        edge(hudView,"Extension.Window.prevSibling",display.path);edge(hudView,"Extension.Window.nextSibling",{});
+        edge(hudView,"Extension.Window.firstChild",ammoView.path);edge(hudView,"Extension.Window.lastChild",ammoView.path);
+        edge(ammoView,"Extension.Window.parentOwner",hudView.path);edge(ammoView,"Extension.Window.winParent",hudView.path);
+        edge(ammoView,"Extension.Window.prevSibling",{});edge(ammoView,"Extension.Window.nextSibling",{});
+        edge(ammoView,"DeusEx.HUDBaseWindow.Player",player);
+        Require(hudView.outerPath==rootView.path && ammoView.outerPath==hudView.path &&
+            !field(hudView,"Extension.Window.bIsVisible").value.boolean && !field(ammoView,"Extension.Window.bIsVisible").value.boolean &&
+            !field(hudView,"Extension.Window.bIsSensitive").value.boolean && field(ammoView,"Extension.Window.bIsSensitive").value.boolean &&
+            field(hudView,"Extension.Window.lockCount").value.integer==1 && field(ammoView,"Extension.Window.lockCount").value.integer==1,
+            "Original hidden HUD sensitivity or in-flight child lock state was skipped/fabricated");
+        edge(rootView,"Extension.RootWindow.FocusWindow",{});edge(rootView,"Extension.RootWindow.grabbedWindow",{});
+        Require(field(display,"Extension.Window.winHAlign").value.integer==3 && field(display,"Extension.Window.winVAlign").value.integer==3,
+            "Original SetWindowAlignments did not apply ActorDisplay's Full/Full alignment");
+        for(const auto* name:{"hMargin0","vMargin0","hMargin1","vMargin1"}) {
+            const auto& margin=field(display,std::string("Extension.Window.")+name).value;
+            Require(margin.kind==Kind::Float && margin.floating==0.0f,"Original omitted alignment margins changed");
+        }
         edge(display,"Extension.Window.normalFont","Extension.TechMedium");edge(display,"Extension.Window.boldFont","Extension.TechMedium");
         Require(field(display,"Extension.Window.bIsVisible").value.boolean &&
             field(display,"Extension.Window.bNeedsQuery").value.boolean && field(display,"Extension.Window.bNeedsReconfigure").value.boolean &&
@@ -272,6 +297,21 @@ int main(int argc,char** argv) {
             edge(displayGC,std::string("Extension.GC.")+name,"Extension.TechMedium");
             edge(displayGeneralGC,std::string("Extension.GC.")+name,{});
         }
+        for(const auto* view:{&hudView,&ammoView}) {
+            edge(*view,"Extension.Window.normalFont","Extension.TechMedium");edge(*view,"Extension.Window.boldFont","Extension.TechMedium");
+            const auto& ownGC=object(field(*view,"Extension.Window.wGc").value.text);
+            const auto& ownGeneralGC=object(field(*view,"Extension.Window.gGc").value.text);
+            Require(ownGC.path!=ownGeneralGC.path && ownGC.outerPath==view->path && ownGeneralGC.outerPath==view->path,
+                "Original HUD child lost either native owned GC");
+            for(const auto* name:{"normalFont","boldFont"}) {
+                edge(ownGC,std::string("Extension.GC.")+name,"Extension.TechMedium");
+                edge(ownGeneralGC,std::string("Extension.GC.")+name,{});
+            }
+        }
+        Require(Declared(player,"DeusEx.DeusExPlayer.ThemeManager",Kind::Object).text.empty() &&
+            QuestVr::Vm::Equal(field(ammoView,"DeusEx.HUDBaseWindow.colBackground").value,
+                ReadPortableClassDefault(ammoView.classPath,"colBackground")),
+            "Original theme-null Color failure wrote a simulated color or invented a ThemeManager");
         for(const auto* view:{&rootView,&display}) {
             for(const auto* name:{"bDrawRawBackground","bSpecialText","bLastWidthSpecified","bLastHeightSpecified","bIsSensitive"})
                 Require(field(*view,std::string("Extension.Window.")+name).value.boolean,"Native Window constructor missed a true original flag");
@@ -311,7 +351,8 @@ int main(int argc,char** argv) {
         const auto rootAttempt=ExecutePortableActorFunction(player,"Extension.PlayerPawnExt.InitRootWindow");
         std::cout<<"ORIGINAL unbound root initialization boundary: "<<rootAttempt.function<<':'<<rootAttempt.offset<<
             " opcode="<<unsigned(rootAttempt.opcode)<<" "<<rootAttempt.error<<std::endl;
-        Require(!rootAttempt.passed() && !rootAttempt.committed && rootAttempt.error.find("1438")!=std::string::npos &&
+        Require(!rootAttempt.passed() && !rootAttempt.committed && rootAttempt.function=="DeusEx.HUDBaseWindow.StyleChanged" &&
+            rootAttempt.offset==30u && rootAttempt.error.find("context zero-fill destination layout")!=std::string::npos &&
             std::find(rootAttempt.callStack.begin(),rootAttempt.callStack.end(),"DeusEx.DeusExRootWindow.InitWindow")!=rootAttempt.callStack.end(),
             "Native1052 did not construct/dispatch original root without a fabricated client prerequisite");
         const auto windowsAfter=ReadPortableRuntimeNativeWindowSummary();

@@ -32,8 +32,9 @@ It is not a single Bool store: SetVisibility1004c7d0/internal1004ee20 recomputes
 the init tree, invokes most-derived VisibilityChanged, plays optional sound,
 reconfigures and negotiates focus. WindowReady/init completion belong to later
 Tick. The current bridge explicitly refuses this phase until implemented;
-the original callback now completes its first NewChild1410/ActorDisplayWindow,
-then refuses SetWindowAlignments1438 at DeusExRootWindow PC41. No partial root or
+the callback now completes ActorDisplayWindow and alignment, then enters HUD/ammo
+construction. It refuses the four-byte Color Context result at original
+HUDBaseWindow.StyleChanged PC30. No partial root or
 possessed player is published as a successful result.
 
 ## Native initial state and boundaries
@@ -62,8 +63,8 @@ Counters survive map changes and revert on a refused portable transaction.
 General EX_New, NanoKeyInfo object-graph saves, non-root heap GC, complete native
 Window/TabGroup/Modal constructor/destructor/backend details and accepted root
 visibility/window Tick are still required. Original unbound native1052 and
-isolated SetPlayer/Possess both reach DeusEx.DeusExRootWindow.InitWindow PC41,
-native1438; callback failure restores root/child/GC indexes, native root list, class
+isolated SetPlayer/Possess both reach DeusEx.HUDBaseWindow.StyleChanged PC30,
+with a pending12-object graph. Failure restores root/child/GC indexes, native root list, class
 counters, Pawn.RootWindow, complete map save, revision and GC counts/memory.
 Repeated original callback and forced shared-write-budget controls pass, along
 with isolated CreateKeyRing/session/save tests. This does not certify the
@@ -103,10 +104,10 @@ the first callback failure, then rolls it all back. It does not alter owned INI,
 substitute a root script, call more VM operations after failure or publish a HUD.
 This permits direct assertions of font/cursor/hidden flags and actual GC edges,
 not merely relying on a later unsupported opcode as proof of correct values.
-The owned prefix/session/ring controls pass1225 checks, including constructor
+The owned prefix/session/ring controls pass1309 checks, including constructor
 flags, clipping, preserved CDO fields, all255 key/accelerator slots and the
-original first child. Generated VM checks pass680743/401 refusals; this includes
-NewChild's expression-time class copy and optional Show result-seed handling.
+original HUD/ammo child binding. Generated VM checks pass681014/413 refusals;
+this includes expression-time input copies and sequential argument seeds.
 
 ## Native construction and the first original child
 
@@ -144,10 +145,37 @@ VisibilityChanged, init-count, focus/grab, sound or layout callbacks. Its query/
 reconfigure flags remain pending. Effective visibility changes and deferred
 destruction still refuse; no accepted live root or completed HUD is claimed.
 
-The next SetWindowAlignments1438 is not implemented yet. Retail exec10052360
-defaults hMargin1 from the already-evaluated hMargin0, and vMargin1 from vMargin0;
-the current all-seeds-before-arguments mechanism cannot represent that full
-contract. A zero-margin special case must not stand in for the actual native.
+SetWindowAlignments1438 now implements the full finite-input/dependent-default
+contract. Retail exec10052360 defaults hMargin1 from already-evaluated hMargin0,
+and vMargin1 from vMargin0 before those later expressions. New opt-in sequential
+VM hooks capture detached bounded prefixes, preserve explicit omissions and
+merge no-write/full/partial scalar results against the actual seed. Existing
+entry seeds still run before all arguments; ordinary calls allocate no prefix.
+Seed callbacks/writes and caught failures poison shared execution.263 generated
+sequential controls/12 refusals pass, including later lvalue mutation and OUT
+alias preservation.1438 compares H,V,h0,h1,v0,v1, returns without writes if equal
+(including signed zeros), otherwise stores H,h0,V,v0,h1,v1 then asks to reconfigure.
+Original unordered-NaN C3 behavior is not claimed: portable ingress stays finite.
+
+GetRootWindow1425 follows actual winParent links to the terminal node, returning
+it for unsigned windowType>=3, not the first root-like ancestor. It performs no
+callbacks/writes/player pairing. Malformed/cyclic graphs and unsafe casts refuse.
+SetSensitivity1416 compares effective sensitivity independent of visibility;
+with actual None focus/grab pointers it marks the nearest modal dirty and sends
+optional most-derived SensitivityChanged, Self first then locally-sensitive
+children through live links. Nonnull focus/grab negotiation, destruction and
+unsupported native overrides remain explicit gaps. The original hidden HUD
+sets local sensitivity false; its new ammo child remains locally sensitive but
+inherits the actual player through root.parentPawn. Both InitWindow locks remain
+1 at the current failure; neither unfinished child assignment is fabricated.
+
+Hide1414 and SetSize1431 handlers are also supplied. Equal local Hide is a genuine
+no-op; unsupported parent visibility dispatch still refuses. SetSize clamps
+negative finite dimensions to0, preserves-0, compares requested hardcoded sizes,
+writes both when changed, and defers geometry/clip changes to layout. The ammo
+path stops earlier in StyleChanged, so owned execution of those later calls is
+not yet proved. The missing Color result remains a failure rather than guessing
+arbitrary Struct/native-pointer layouts or substituting a ThemeManager.
 
 ## Separate original startup prerequisites
 

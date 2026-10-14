@@ -44,7 +44,8 @@ bool SnapshotNativeInput(const std::uint16_t index, const Function* declaration 
     case 112: case 113: case 124: case 125: case 126: case 127: case 128:
     case 168: case 187: case 189: case 231: case 234: case 235: case 244: case 245: case 246: case 249: case 251: case 278:
     case 280: return true; // SetTimer copies rate before evaluating bLoop.
-    case 1410: case 1454: case 1477: case 1510: case 1511: return true; // Retail window wrappers have no OUT parameters.
+    case 1410: case 1416: case 1431: case 1438: case 1454: case 1477: case 1510: case 1511:
+        return true; // Retail window wrappers have no OUT parameters.
     default: return false;
     }
 }
@@ -1073,6 +1074,7 @@ private:
     Result& result_;
     std::size_t nodes_{}, localElements_{}, retainedBytes_{}, operations_{};
     bool accepted_{};
+    bool nativeSeedHookActive_{};
     std::exception_ptr failure_;
     struct FailureLocation {
         std::string function;
@@ -1083,9 +1085,17 @@ private:
     std::optional<FailureLocation> failureLocation_;
     std::shared_ptr<bool> alive_{std::make_shared<bool>(true)};
     std::vector<std::pair<std::shared_ptr<Reference>, Value>> journal_;
+    void RememberFailure() {
+        if (!failure_) {
+            failureLocation_ = FailureLocation{result_.function, result_.offset, result_.opcode, result_.callStack};
+            failure_ = std::current_exception();
+        }
+    }
     template<class Operation> Value DirectOperation(Operation&& operation) {
         CheckFailure();
         try {
+            if (nativeSeedHookActive_)
+                Fail(Status::Invalid, "VM callback during read-only native seed capture");
             if (operations_ >= limits_.operations) Fail(Status::Budget, "VM operation entry limit");
             ++operations_;
             auto result = operation();
@@ -1094,10 +1104,20 @@ private:
         } catch (...) {
             // A host coordinator/native cannot suppress one failed callback
             // and commit an earlier prefix using the damaged interpreter.
-            if (!failure_) {
-                failureLocation_ = FailureLocation{result_.function, result_.offset, result_.opcode, result_.callStack};
-                failure_ = std::current_exception();
-            }
+            RememberFailure();
+            throw;
+        }
+    }
+    template<class Operation> auto ReadOnlyNativeSeedOperation(Operation&& operation) {
+        const auto previous = std::exchange(nativeSeedHookActive_, true);
+        try {
+            auto value = operation();
+            nativeSeedHookActive_ = previous;
+            CheckFailure();
+            return value;
+        } catch (...) {
+            nativeSeedHookActive_ = previous;
+            RememberFailure();
             throw;
         }
     }
@@ -1173,6 +1193,10 @@ private:
         }
     }
     void Write(const std::shared_ptr<Reference>& reference, const Value& value) {
+        if (nativeSeedHookActive_) {
+            try { Fail(Status::Invalid, "VM write during read-only native seed capture"); }
+            catch (...) { RememberFailure(); throw; }
+        }
         if (!reference || !reference->write) Fail(Status::Invalid, "VM assignment is not writable");
         if (result_.writes >= limits_.writes) Fail(Status::Budget, "VM write limit");
         ++result_.writes;
@@ -1303,6 +1327,9 @@ private:
                 Retain(parameter.key.capacity());Retain(parameter.name.capacity());Retain(ValueBytes(parameter.zero));
             }
             const bool nativeCall = !fn || (fn->flags & 0x400u);
+            const bool sequentialSeeds = nativeCall && ReadOnlyNativeSeedOperation([&] {
+                return host_.HasSequentialNativeArgumentSeeds(index, context, fn.get());
+            });
             std::vector<std::optional<Value>> nativeSeeds;
             if (nativeCall) {
                 if (n.children.size() > limits_.arguments)
@@ -1327,6 +1354,17 @@ private:
                     }
                 }
             }
+            std::vector<Value> capturedInputs;
+            std::size_t capturedInputBytes{}, capturedInputNodes{};
+            if (sequentialSeeds) {
+                if (n.children.size() > limits_.retainedBytes / sizeof(Value))
+                    Fail(Status::Budget,"VM native input prefix storage limit");
+                Retain(n.children.size() * sizeof(Value));
+                capturedInputs.reserve(n.children.size());
+                if (capturedInputs.capacity() > limits_.retainedBytes / sizeof(Value))
+                    Fail(Status::Budget,"VM native input prefix capacity limit");
+                Retain((capturedInputs.capacity() - n.children.size()) * sizeof(Value));
+            }
             std::vector<Evaluation> args;
             for (std::size_t i = 0; i < n.children.size(); ++i) {
                 // Retail CallFunction evaluates arguments with FFrame.Object,
@@ -1337,14 +1375,23 @@ private:
                         result.value = Value::Bool(a); return result;
                     }
                 }
+                if (sequentialSeeds) Locate(frame.function, n.offset, n.op);
+                auto sequentialSeed = sequentialSeeds ? ReadOnlyNativeSeedOperation([&] {
+                    return host_.SequentialNativeArgumentSeed(index, context, i, fn.get(), capturedInputs);
+                }) : std::optional<Value>{};
+                if (sequentialSeed) {
+                    ValidateValue(*sequentialSeed,0); Retain(ValueBytes(*sequentialSeed));
+                    RetainNativeSeedCapacity(*sequentialSeed);
+                }
                 auto argument = Eval(frame, n.children[i], frame.self);
                 // Explicit EX_Nothing is the native optional-argument marker,
                 // not a null Context writing into a typed argument slot. Keep
                 // it intact for the declaration-aware native reader/default.
                 const bool nativeOmission=nativeCall && n.children[i].op==0x0bu;
                 if (argument.disposition!=ResultDisposition::Written && !nativeOmission) {
-                    const bool seeded = nativeCall && !nativeSeeds.empty() && nativeSeeds[i].has_value();
-                    const auto typedZero=seeded ? nativeSeeds[i] :
+                    const bool entrySeeded = nativeCall && !nativeSeeds.empty() && nativeSeeds[i].has_value();
+                    const bool seeded = sequentialSeed.has_value() || entrySeeded;
+                    const auto typedZero=sequentialSeed ? sequentialSeed : entrySeeded ? nativeSeeds[i] :
                         i<parameters.size() ? std::optional<Value>{parameters[i].zero} :
                         nativeCall ? BuiltinArgumentZero(index,i) : std::nullopt;
                     if (typedZero) {
@@ -1353,9 +1400,19 @@ private:
                     } else if (argument.disposition==ResultDisposition::ZeroFill && argument.zeroFillBytes!=0u)
                         Fail(Status::Unsupported,"VM context argument result destination layout is unavailable");
                 }
-                if (SnapshotNativeInput(index, fn.get()) && (!fn || (fn->flags & 0x400u))) {
+                const bool snapshotInput = nativeCall && SnapshotNativeInput(index, fn.get());
+                if (snapshotInput || sequentialSeeds) {
                     auto value = argument.Load(); ValidateValue(value, 0); Retain(ValueBytes(value));
-                    argument = {std::move(value),{}};
+                    if (sequentialSeeds) {
+                        capturedInputs.push_back(value);
+                        // The vector capacity already accounts for each root
+                        // Value. Bound the full prefix's aggregate nodes/bytes,
+                        // as well as any detached dynamic allocation capacity.
+                        ValidateValueTree(capturedInputs.back(),0,capturedInputBytes,capturedInputNodes);
+                        Retain(ValueBytes(capturedInputs.back()) - sizeof(Value));
+                        RetainNativeSeedCapacity(capturedInputs.back());
+                    }
+                    if (snapshotInput) argument = {std::move(value),{}};
                 }
                 args.push_back(std::move(argument));
             }

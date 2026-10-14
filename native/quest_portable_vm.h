@@ -185,6 +185,21 @@ public:
     // No seed preserves the existing declared/builtin result destination.
     virtual std::optional<Value> NativeArgumentSeed(std::uint16_t,
         const std::string&, std::size_t, const Function*) { return std::nullopt; }
+    // Opt-in for wrappers that initialize a later temporary from an already
+    // evaluated ordinary input. Queried before argument expressions; only
+    // opted-in natives allocate detached prefix snapshots or call the hook.
+    // Both hooks are read-only: no host mutation or VM execution/write callback.
+    virtual bool HasSequentialNativeArgumentSeeds(std::uint16_t,
+        const std::string&, const Function*) { return false; }
+    // Called immediately BEFORE each supplied argument expression. The prefix
+    // contains detached values captured immediately AFTER preceding arguments,
+    // never references, and retains explicit Nothing omission markers. A seed
+    // overrides the entry seed for this slot only; no seed preserves the entry
+    // seed or declared/builtin destination. Do not retain the prefix reference.
+    virtual std::optional<Value> SequentialNativeArgumentSeed(std::uint16_t,
+        const std::string&, std::size_t, const Function*, const std::vector<Value>&) {
+        return std::nullopt;
+    }
     virtual std::shared_ptr<const Function> ResolveEvent(const std::string&,
         const std::string&, bool) { throw std::runtime_error("VM event dispatch unavailable"); }
     virtual Property ResolveProperty(const Function&, std::int32_t reference) = 0;
