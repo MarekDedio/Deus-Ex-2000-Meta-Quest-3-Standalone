@@ -42,9 +42,9 @@ bool SnapshotNativeInput(const std::uint16_t index, const Function* declaration 
         return declaration && (Lower(declaration->path) == "engine.decal.attachdecal" ||
             Lower(declaration->path) == "engine.playerpawn.consolecommand");
     case 112: case 113: case 124: case 125: case 126: case 127: case 128:
-    case 168: case 189: case 231: case 234: case 235: case 244: case 245: case 246: case 249: case 251: case 278:
+    case 168: case 187: case 189: case 231: case 234: case 235: case 244: case 245: case 246: case 249: case 251: case 278:
     case 280: return true; // SetTimer copies rate before evaluating bLoop.
-    case 1454: case 1477: case 1510: case 1511: return true; // Retail window wrappers have no OUT parameters.
+    case 1410: case 1454: case 1477: case 1510: case 1511: return true; // Retail window wrappers have no OUT parameters.
     default: return false;
     }
 }
@@ -1263,7 +1263,7 @@ private:
         case 154: case 155: case 156: case 157: case 158: case 161: case 162: case 163: case 164:
         case 165: case 166: case 249: case 251:return zero(Kind::Int);
         case 169: case 170: case 171: case 172: case 173: case 174: case 175: case 176: case 177:
-        case 178: case 179: case 180: case 181: case 182: case 183: case 184: case 185: case 189:
+        case 178: case 179: case 180: case 181: case 182: case 183: case 184: case 185: case 187: case 189:
         case 244: case 245: case 246:return zero(Kind::Float);
         case 212: case 214: case 221:return zero(argument==0u ? Kind::Vector : Kind::Float);
         case 213:return zero(argument==0u ? Kind::Float : Kind::Vector);
@@ -1696,6 +1696,17 @@ private:
             // not a double hypot that would silently change overflow behavior.
             return {Value::Float(length(vec3(v[0], v[1], v[2]))), {}};
         }
+        case 187:
+            // Retail Core.dll execSin10135d20: initialize Float0, evaluate
+            // once, promote to double appSin, then store a binary32 result.
+            // appSin10123240 uses x87 FSIN. Out-of-range |x|>=2^63 leaves
+            // its operand unchanged. For the supported radians, use portable
+            // double libm like Tan; do not claim identical x87 final rounding.
+            count(1); {
+                const float angle=ToFloat(a(0));
+                return {Value::Float(std::abs(angle)>=0x1p63f?angle:
+                    static_cast<float>(std::sin(static_cast<double>(angle)))),{}};
+            }
         case 189: count(1); return {Value::Float(static_cast<float>(
             std::tan(static_cast<double>(ToFloat(a(0)))))),{}};
         case 244:

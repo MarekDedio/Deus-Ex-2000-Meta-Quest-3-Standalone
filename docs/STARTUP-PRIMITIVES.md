@@ -16,7 +16,7 @@ not portable layouts. The original Engine hash and world ordering are in
 [WORLD-BOOTSTRAP-CONTRACT.md](WORLD-BOOTSTRAP-CONTRACT.md).
 
 Core bodies: ANSI literal `0x10130890`, Unicode literal `0x10130990`,
-ObjectToString `0x10131f00`, Min `0x10134a20`, Tan `0x10135e80`,
+ObjectToString `0x10131f00`, Min `0x10134a20`, Sin `0x10135d20`, Tan `0x10135e80`,
 FClamp `0x101364e0`, spaced concat `0x1013ac30`, insensitive comparison
 `0x1013b900`, Len `0x1013bad0`, InStr `0x1013bc40`, Mid `0x1013bdf0`,
 Left `0x1013bfd0`, Right `0x1013c1a0`, and Log `0x1013cae0`.
@@ -42,8 +42,10 @@ Left `0x1013bfd0`, Right `0x1013c1a0`, and Log `0x1013cae0`.
   fabricated full Unicode case mapping. This is not Unicode name-table,
   localization or UI-font acceptance. Existing finite-value VM ingress still
   refuses NaN/Inf. FClamp preserves ordered/reversed bounds and signed zero;
-  Tan promotes float input to double and stores a float result. This is not
-  a bit-exact x87 FPTAN claim across host/ARM math libraries.
+  Sin187/Tan promote float input to double and store a float result. Retail
+  appSin10123240 uses x87 FSIN; out-of-range absolute values >=2^63 leave the
+  operand unchanged, which Sin preserves. In-range Sin uses portable double
+  libm. This is not a bit-exact x87 FSIN/FPTAN claim across host/ARM math libraries.
 - Known input-only primitives capture each value before later argument
   callbacks; unknown/native OUT operations retain their real aliases.
   ObjectToString validates actual identity and returns its canonical full

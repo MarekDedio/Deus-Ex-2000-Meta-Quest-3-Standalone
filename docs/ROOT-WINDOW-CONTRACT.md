@@ -32,8 +32,8 @@ It is not a single Bool store: SetVisibility1004c7d0/internal1004ee20 recomputes
 the init tree, invokes most-derived VisibilityChanged, plays optional sound,
 reconfigures and negotiates focus. WindowReady/init completion belong to later
 Tick. The current bridge explicitly refuses this phase until implemented;
-the original callback currently refuses NewChild1410 at DeusExRootWindow PC24.
-No partial root or
+the original callback now completes its first NewChild1410/ActorDisplayWindow,
+then refuses SetWindowAlignments1438 at DeusExRootWindow PC41. No partial root or
 possessed player is published as a successful result.
 
 ## Native initial state and boundaries
@@ -62,8 +62,8 @@ Counters survive map changes and revert on a refused portable transaction.
 General EX_New, NanoKeyInfo object-graph saves, non-root heap GC, complete native
 Window/TabGroup/Modal constructor/destructor/backend details and accepted root
 visibility/window Tick are still required. Original unbound native1052 and
-isolated SetPlayer/Possess both reach DeusEx.DeusExRootWindow.InitWindow PC24,
-native1410; callback failure restores root/GC indexes, native root list, class
+isolated SetPlayer/Possess both reach DeusEx.DeusExRootWindow.InitWindow PC41,
+native1438; callback failure restores root/child/GC indexes, native root list, class
 counters, Pawn.RootWindow, complete map save, revision and GC counts/memory.
 Repeated original callback and forced shared-write-budget controls pass, along
 with isolated CreateKeyRing/session/save tests. This does not certify the
@@ -103,7 +103,51 @@ the first callback failure, then rolls it all back. It does not alter owned INI,
 substitute a root script, call more VM operations after failure or publish a HUD.
 This permits direct assertions of font/cursor/hidden flags and actual GC edges,
 not merely relying on a later unsupported opcode as proof of correct values.
-The owned prefix/session/ring controls pass262 checks.
+The owned prefix/session/ring controls pass1225 checks, including constructor
+flags, clipping, preserved CDO fields, all255 key/accelerator slots and the
+original first child. Generated VM checks pass680743/401 refusals; this includes
+NewChild's expression-time class copy and optional Show result-seed handling.
+
+## Native construction and the first original child
+
+Base Window.Init1004bb30 establishes query/reconfiguration flags, raw-background
+and special-text flags, original specified/query geometry, timers/index values,
+cursor/sound/client defaults and two owned GCs. It preserves the CDO fields that
+retail does not overwrite, including initialized/text-translucent flags,
+Background, SoundVolume, held geometry, acceleratorKey, maxClicks and freeTimer.
+After parent callbacks it initializes the exact six-Float clip and inherits both
+fonts from the nearest current ancestor having either, updating wGc only.
+
+Root native TabGroup/Modal setup now clears the private row/column lists, uses
+sizeParentToChildren=true/sizeChildrenToParent=false, focusMode2, None preferred
+focus,255 None accelerator slots, dirty accelerators and modal self-list/index0.
+Native list pointers are journaled/GC-linked vectors, never pointer-shaped script
+Int values. Reading those private DynamicArray layouts as script values refuses.
+Root input/focus/render/cursor baseline and its255 Byte key map are initialized;
+black raw RGB uses defined A0 where retail's alpha source is uninitialized.
+
+NewChild1410's original NewClass parameter is a generic ClassProperty constrained
+to Core.Object, not class<Window>. Its return is Window and optional bShow defaults
+true. Portable construction still validates an actual supported Window class;
+it does not execute an invalid native cast. Only pure native Window descendants
+are implemented so far; other native subclass Init contracts explicitly refuse.
+Window/TabGroup/Modal/Root parent notifications use optional dynamic FindFunction,
+not the checked lookup used for InitWindow. Parent and all ancestor notifications
+precede clip/font inheritance and the destruction lock. Live parent traversal is
+bounded. Destruction during these unlocked notifications explicitly refuses.
+
+The first original ActorDisplayWindow.InitWindow now executes maxPoints=8 and
+all16 Sin187 entries. NewChild then follows lock/script/optional-show/reconfigure/
+unlock ordering. Showing this child under the hidden Root uses the inherited
+native TabGroup visibility request: only local visibility changes, without
+VisibilityChanged, init-count, focus/grab, sound or layout callbacks. Its query/
+reconfigure flags remain pending. Effective visibility changes and deferred
+destruction still refuse; no accepted live root or completed HUD is claimed.
+
+The next SetWindowAlignments1438 is not implemented yet. Retail exec10052360
+defaults hMargin1 from the already-evaluated hMargin0, and vMargin1 from vMargin0;
+the current all-seeds-before-arguments mechanism cannot represent that full
+contract. A zero-margin special case must not stand in for the actual native.
 
 ## Separate original startup prerequisites
 
@@ -141,8 +185,9 @@ NewChild1410/CreateNewWindow1004df70 also allocates Outer=parent, NameNone, flag
 Retail XWindow.Init links parentOwner+2c and family winParent+138, then calls
 parent.ChildAdded and parent plus every ancestor.DescendantAdded BEFORE script
 child.InitWindow. The pinned engine fires afterward and excludes the parent.
-Do not copy that sequence. Later lock/show/reconfigure/destroy-during-init rules
-also remain required.
+Do not copy that sequence. The supported pure-Window/hidden-root path now follows
+its ordinary later lock/show/reconfigure/unlock rules; destruction and visible
+layout remain required before accepting a live initialized root.
 
 The bounded owned-INI reader accepts unambiguous Root settings without guessing
 defaults. Conflicting duplicate Root values are refused because retail duplicate

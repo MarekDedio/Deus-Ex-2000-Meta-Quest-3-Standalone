@@ -276,10 +276,13 @@ struct PortableNativeWindowFieldSnapshot {
     std::string declaration;
     QuestVr::Vm::Value value;
     std::vector<std::string> propertyRoots;
+    std::uint32_t arrayIndex{};
 };
 struct PortableNativeWindowObjectSnapshot {
     std::string path,classPath,outerPath;
     std::vector<PortableNativeWindowFieldSnapshot> fields;
+    std::vector<std::string> rowMajorWindows,colMajorWindows,tabGroupWindows;
+    bool tabOrderDirty{};
 };
 struct PortableRootWindowProbeResult {
     QuestVr::Vm::Result execution;

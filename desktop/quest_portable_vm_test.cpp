@@ -410,7 +410,7 @@ struct TestHost final:Vm::Host {
         const std::vector<Vm::Evaluation>& arguments,const Vm::Function* declaration,Vm::Execution& execution) override {
         // 1008 belongs only to this generated fixture. Native zero is keyed by
         // its declaration; individual tests provide the host-side observation.
-        if((index==1008u || index==0u || index==1454u) && executionNative) {
+        if((index==1008u || index==0u || index==1410u || index==1454u) && executionNative) {
             std::vector<Value> values;for(const auto& argument:arguments) values.push_back(argument.Load());
             nativeArguments.push_back(std::move(values));nativeReceivers.push_back(receiver);
             nativeDeclarations.push_back(declaration ? declaration->path : "");
@@ -753,6 +753,24 @@ void StartupPrimitiveContracts() {
         Require(value.kind==Vm::Kind::Float && std::bit_cast<std::uint32_t>(value.floating)==std::bit_cast<std::uint32_t>(expected),
             "Tan changed argument units or portable float/double promotion policy");
     }
+    for(const auto number:{0.0f,-0.0f,0.25f,-0.5f,1.0f,-1.0f,3.1415927f,6.2831855f,
+        0x1p63f,-0x1p63f,std::numeric_limits<float>::max(),-std::numeric_limits<float>::max()}) {
+        const auto value=evaluate(Native(187u,{Real(number)}),"Sin retail Float/double/Float sequence");
+        const float expected=std::abs(number)>=0x1p63f?number:static_cast<float>(std::sin(static_cast<double>(number)));
+        Require(value.kind==Vm::Kind::Float && std::bit_cast<std::uint32_t>(value.floating)==std::bit_cast<std::uint32_t>(expected),
+            "Sin changed radians, signed zero, x87 range refusal or portable float/double promotion");
+    }
+    Require(evaluate(Native(187u,{{0x0b}}),"Sin Nothing retains native initialized Float0").floating==0.0f,
+        "Sin Nothing read an uninitialized native result");
+    {
+        TestHost host;const auto function=Function("SinRealArgumentSideEffect",Return(Native(187u,{
+            Native(1060u,{Ref(0x01,1),Real(100.0f),Real(0.5f)})})));
+        const auto property=host.Property(function,1,"Number",Value::Float(0));host.Store("Self",property,{Value::Float(7.0f)});
+        const auto result=Vm::Execute(host,function,"Self");Returned(result,"Sin argument evaluates once and genuine mutation commits");
+        Require(result.value.floating==static_cast<float>(std::sin(0.5)) && host.Load("Self",property).floating==100.0f &&
+            result.writes==1u && host.observations==std::vector<std::string>{"variable:Self:Number"},
+            "Sin repeated argument evaluation or lost original argument side effects");
+    }
     for(const auto& expression : {Join({{0x56},{0x2a}}),Join({{0x56},{0x0b}})})
         expectText(expression,"None","ObjectToString null avoids host identity lookup");
     {
@@ -766,18 +784,19 @@ void StartupPrimitiveContracts() {
         TestHost host;const auto result=Vm::Execute(host,Function("RejectedStartup",Join({Native(1000u),Return(expression)})),"Self",{},limits);
         Failed(result,status,host,context);Require(host.effects==0u && host.rng==12345u,context+": earlier effect/RNG escaped rollback");
     };
-    for(const auto& expression : {Native(125u,{Int(1)}),Native(124u,{String("a"),Int(1)}),Native(189u,{String("1")}),
+    for(const auto& expression : {Native(125u,{Int(1)}),Native(124u,{String("a"),Int(1)}),Native(187u,{String("1")}),Native(189u,{String("1")}),
         Native(244u,{Real(1),String("0")}),Native(245u,{Real(1),String("0")}),Native(245u,{String("0"),Real(1)}),
         Native(246u,{Real(1),String("0"),Real(2)}),Native(249u,{String("1"),Int(2)}),
         Native(251u,{String("1"),Int(0),Int(7)}),Native(251u,{Int(1),Real(0),Int(7)}),
         Native(251u,{Int(1),Int(0),{0x28}}),Native(251u,{{0x2a},Int(0),Int(7)}),Join({{0x56},Int(1)})})
         refuse(expression,Vm::Status::Unsupported,"Startup concrete argument types refused");
-    for(const auto& expression : {Native(125u,{}),Native(126u,{String("a")}),Native(127u,{String("a")}),
+    for(const auto& expression : {Native(125u,{}),Native(126u,{String("a")}),Native(127u,{String("a")}),Native(187u,{}),Native(187u,{Real(1),Real(2)}),
         Native(127u,{String("a"),Int(0),Int(1),Int(2)}),Native(168u,{String("a")}),Native(244u,{Real(1)}),
         Native(245u,{}),Native(245u,{Real(1)}),Native(245u,{Real(1),Real(2),Real(3)}),Native(249u,{Int(1)}),
         Native(251u,{}),Native(251u,{Int(1)}),Native(251u,{Int(1),Int(0)}),Native(251u,{Int(1),Int(0),Int(7),Int(9)})})
         refuse(expression,Vm::Status::Invalid,"Startup native arity refused");
     for(const auto nonfinite : {std::numeric_limits<float>::quiet_NaN(),std::numeric_limits<float>::infinity()}) {
+        refuse(Native(187u,{Real(nonfinite)}),Vm::Status::Invalid,"Sin nonfinite ingress policy");
         refuse(Native(189u,{Real(nonfinite)}),Vm::Status::Invalid,"Tan nonfinite ingress policy");
         refuse(Native(244u,{Real(nonfinite),Real(1)}),Vm::Status::Invalid,"FMin nonfinite first argument policy");
         refuse(Native(244u,{Real(1),Real(nonfinite)}),Vm::Status::Invalid,"FMin nonfinite second argument policy");
@@ -1694,6 +1713,56 @@ void NativeArgumentSeedContracts() {
         const auto result=Vm::Execute(host,caller,"Self");Returned(result,"Cursor input sequential snapshots preserve earlier texture");
         Require(result.value.text=="Original.Cursor" && host.Load("Self",texture).text=="Replacement.Cursor",
             "Cursor snapshot lost actual argument effects or retained a mutable alias");
+    }
+    for(const bool declared:{false,true}) {
+        TestHost host;
+        const auto show=Native(1060u,{Ref(0x01,1),Ref(0x20,2),{0x27}});
+        auto expression=Native(1410u,{Ref(0x01,1),show});
+        if(declared) {
+            auto native=Function("NewChild",{},"Extension.Window");native.nativeIndex=1410u;native.flags=0x401u;
+            native.variables={{"NewClass","NewClass",Value::Text(Vm::Kind::Object,{}),0x80u,1u},
+                {"bShow","bShow",Value::Bool(false),0x90u,1u}};
+            host.finals[{"Fixture",9}]=std::make_shared<Vm::Function>(native);
+            expression=Call(0x1c,9,{Ref(0x01,1),show});
+        }
+        const auto caller=Function("NewChildSequentialClassSnapshot",Return(expression));
+        const auto selected=host.Property(caller,1,"ClassChoice",Value::Text(Vm::Kind::Object,{}));
+        host.Store("Self",selected,{Value::Text(Vm::Kind::Object,"Original.WindowClass")});
+        host.objects[{caller.source,2}]="Replacement.WindowClass";
+        host.argumentSeed=[](std::uint16_t index,const std::string&,std::size_t slot,const Vm::Function*)->std::optional<Value> {
+            if(index!=1410u) return std::nullopt;
+            return slot==0u?Value::Text(Vm::Kind::Object,{}):Value::Bool(true);
+        };
+        host.executionNative=[](const std::string&,const std::vector<Vm::Evaluation>& arguments,const Vm::Function*,Vm::Execution&) {
+            Require(arguments.size()==2u && !arguments[0].reference && !arguments[1].reference &&
+                arguments[0].Load().text=="Original.WindowClass" && arguments[1].Load().kind==Vm::Kind::Bool &&
+                arguments[1].Load().boolean,"NewChild reloaded class after bShow changed its source");
+            return Vm::Evaluation{arguments[0].Load(),{}};
+        };
+        const auto result=Vm::Execute(host,caller,"Self");Returned(result,"NewChild inputs retain original class and evaluated show");
+        Require(result.value.text=="Original.WindowClass" && host.Load("Self",selected).text=="Replacement.WindowClass" &&
+            result.writes==1u,"NewChild class snapshot suppressed the real later argument mutation");
+    }
+    for(const auto& [show,expected]:std::vector<std::pair<Bytes,bool>>{{Bytes{0x0b},true},
+        {Context({0x2a},{0x27},0u),true},{Context({0x2a},{0x27},4u),false}}) {
+        TestHost host;const auto caller=Function("NewChildShowNativeSeed",Return(Native(1410u,{Ref(0x20,1),show})));
+        host.objects[{caller.source,1}]="Original.WindowClass";
+        host.argumentSeed=[](std::uint16_t index,const std::string&,std::size_t slot,const Vm::Function*)->std::optional<Value> {
+            if(index!=1410u) return std::nullopt;
+            return slot==0u?Value::Text(Vm::Kind::Object,{}):Value::Bool(true);
+        };
+        host.executionNative=[](const std::string&,const std::vector<Vm::Evaluation>& arguments,const Vm::Function*,Vm::Execution&) {
+            auto value=arguments.at(1u).Load();
+            // The VM preserves EX_Nothing for the declaration-aware native
+            // reader; the actual NewChild wrapper applies its true default.
+            if(value.kind==Vm::Kind::Nothing) value=Value::Bool(true);
+            return Vm::Evaluation{std::move(value),{}};
+        };
+        const auto result=Vm::Execute(host,caller,"Self");Returned(result,"NewChild Bool seed versus null-result writes");
+        Require(result.value.kind==Vm::Kind::Bool && result.value.boolean==expected,
+            "NewChild omitted/no-write Show did not retain true or full-zero did not clear it");
+        Require(host.nativeArguments.size()==1u && host.nativeArguments.front().at(1u).kind==
+            (show==Bytes{0x0b}?Vm::Kind::Nothing:Vm::Kind::Bool),"NewChild lost the explicit optional-argument marker");
     }
     {
         TestHost host;const auto caller=Function("ConsoleCommandCopiedInput",Return(Call(0x1c,8,{

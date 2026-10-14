@@ -46,10 +46,17 @@ original CreateKeyRing/GiveTo/AddInventory controls are not a live starter ring.
 
 The native root bridge currently executes the original InitWindow prefix only.
 Font/cursor setup and native object ownership now pass the actual original
-callback-prefix checks, with direct inspection before rollback. Full native
+callback-prefix checks. The first ActorDisplayWindow also completes its actual
+NewChild/script/sine/font/clipping/hidden-show path; the next original gap is
+SetWindowAlignments1438 at Root.InitWindow PC41. Native Root modal self-list,
+constructor flags, preserved CDO fields and255 key/accelerator slots are checked
+directly before rollback. This is still a pending construction graph. Full native
 window construction, layout, lifecycle/input/rendering, player Login/Possess and
 the remaining HUD behavior still need implementation and integration tests.
 Unsupported callbacks refuse and roll back instead of publishing a partial HUD.
+The expanded original-data control passes1225 checks; the ordinary host suite
+passes79 tests/92 registered with13 explicit owned-data skips and zero failures.
+These results do not satisfy the full-HUD functional acceptance checklist above.
 
 The six-limb presentation clock now follows the original .4s damage flash,
 1s healing and .5s refresh statement order, including retained applied tint when

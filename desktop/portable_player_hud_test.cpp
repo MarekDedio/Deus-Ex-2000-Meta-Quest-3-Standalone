@@ -6,6 +6,7 @@
 #include "quest_save_bundle.h"
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -172,17 +173,22 @@ int main(int argc,char** argv) {
             windowBaseline.objects==0u && windowBaseline.roots==0u,"Original Root INI/native window baseline is wrong");
         const auto windowStats=GC::GetStats();
         const auto pending=ProbePortableRootWindowInitialization(player);
+        std::cout<<"ORIGINAL root pending graph: "<<pending.execution.function<<':'<<pending.execution.offset<<
+            " objects="<<pending.objects.size()<<" "<<pending.execution.error<<"; inspection="<<pending.inspectionError<<std::endl;
         Require(!pending.execution.passed() && !pending.execution.committed && pending.inspectionError.empty() &&
-            pending.execution.function=="DeusEx.DeusExRootWindow.InitWindow" && pending.execution.offset==24u &&
-            pending.execution.error.find("1410")!=std::string::npos && pending.objects.size()==3u &&
+            pending.execution.function=="DeusEx.DeusExRootWindow.InitWindow" && pending.execution.offset==41u &&
+            pending.execution.error.find("1438")!=std::string::npos && pending.objects.size()==6u &&
             pending.rootedWindows==std::vector<std::string>{pending.pawnRootPath},
             "Original root prefix probe did not capture the actual pending native graph: "+pending.inspectionError);
         const auto object=[&](const std::string& path)->const PortableNativeWindowObjectSnapshot& {
             const auto found=std::find_if(pending.objects.begin(),pending.objects.end(),[&](const auto& view) {return view.path==path;});
             Require(found!=pending.objects.end(),"Pending root prefix has no native object: "+path);return *found;
         };
-        const auto field=[&](const PortableNativeWindowObjectSnapshot& view,const std::string& key)->const PortableNativeWindowFieldSnapshot& {
-            const auto found=std::find_if(view.fields.begin(),view.fields.end(),[&](const auto& entry) {return entry.declaration==key;});
+        const auto field=[&](const PortableNativeWindowObjectSnapshot& view,const std::string& key,
+            const std::uint32_t index=0u)->const PortableNativeWindowFieldSnapshot& {
+            const auto found=std::find_if(view.fields.begin(),view.fields.end(),[&](const auto& entry) {
+                return entry.declaration==key && entry.arrayIndex==index;
+            });
             Require(found!=view.fields.end(),"Pending root prefix has no declared field: "+key);return *found;
         };
         const auto edge=[&](const PortableNativeWindowObjectSnapshot& view,const std::string& key,const std::string& target) {
@@ -228,6 +234,75 @@ int main(int argc,char** argv) {
             Require(value.kind==Kind::Bool && value.boolean!=(std::string(name)=="bIsVisible"),
                 "Hidden native root reconfiguration branch changed visibility or failed to mark Self");
         }
+        Require(rootView.rowMajorWindows.empty() && rootView.colMajorWindows.empty() && rootView.tabOrderDirty &&
+            rootView.tabGroupWindows==std::vector<std::string>{rootView.path} &&
+            field(rootView,"Extension.TabGroupWindow.tabGroupIndex").value.integer==0 &&
+            field(rootView,"Extension.TabGroupWindow.bSizeParentToChildren").value.boolean &&
+            !field(rootView,"Extension.TabGroupWindow.bSizeChildrenToParent").value.boolean &&
+            field(rootView,"Extension.ModalWindow.focusMode").value.integer==2 &&
+            field(rootView,"Extension.ModalWindow.bDirtyAccelerators").value.boolean,
+            "Root native TabGroup/Modal initialization omitted its actual self table/flags/focus mode");
+        edge(rootView,"Extension.ModalWindow.preferredFocus",{});
+        for(std::uint32_t slot=0u;slot<255u;++slot) {
+            const auto& accelerator=field(rootView,"Extension.ModalWindow.acceleratorTable",slot);
+            const auto& key=field(rootView,"Extension.RootWindow.keyDownMap",slot);
+            Require(accelerator.value.kind==Kind::Object && accelerator.value.text.empty() && accelerator.propertyRoots.empty() &&
+                key.value.kind==Kind::Byte && key.value.integer==0,"Root did not clear its real255 accelerator/key slots");
+        }
+        const auto& display=object(field(rootView,"DeusEx.DeusExRootWindow.actorDisplay").value.text);
+        Require(display.classPath=="DeusEx.ActorDisplayWindow" && display.outerPath==rootView.path &&
+            display.rowMajorWindows.empty() && display.colMajorWindows.empty() && display.tabGroupWindows.empty(),
+            "NewChild fabricated ActorDisplayWindow class/Outer/native subclass storage");
+        edge(rootView,"DeusEx.DeusExRootWindow.actorDisplay",display.path);
+        edge(rootView,"Extension.Window.firstChild",display.path);edge(rootView,"Extension.Window.lastChild",display.path);
+        edge(display,"Extension.Window.parentOwner",rootView.path);edge(display,"Extension.Window.winParent",rootView.path);
+        edge(display,"Extension.Window.prevSibling",{});edge(display,"Extension.Window.nextSibling",{});
+        edge(display,"Extension.Window.normalFont","Extension.TechMedium");edge(display,"Extension.Window.boldFont","Extension.TechMedium");
+        Require(field(display,"Extension.Window.bIsVisible").value.boolean &&
+            field(display,"Extension.Window.bNeedsQuery").value.boolean && field(display,"Extension.Window.bNeedsReconfigure").value.boolean &&
+            field(display,"Extension.Window.lockCount").value.integer==0 && field(rootView,"Extension.RootWindow.initCount").value.integer==0 &&
+            field(rootView,"Extension.Window.bTickEnabled").value.boolean && !field(display,"Extension.Window.bTickEnabled").value.boolean,
+            "NewChild hidden-ancestor Show unexpectedly ran init-count/layout or retained its lock");
+        const auto& displayGC=object(field(display,"Extension.Window.wGc").value.text);
+        const auto& displayGeneralGC=object(field(display,"Extension.Window.gGc").value.text);
+        Require(displayGC.path!=displayGeneralGC.path && displayGC.outerPath==display.path && displayGeneralGC.outerPath==display.path,
+            "Native child did not allocate two distinct GC UObjects under itself");
+        edge(display,"Extension.Window.wGc",displayGC.path);edge(display,"Extension.Window.gGc",displayGeneralGC.path);
+        for(const auto* name:{"normalFont","boldFont"}) {
+            edge(displayGC,std::string("Extension.GC.")+name,"Extension.TechMedium");
+            edge(displayGeneralGC,std::string("Extension.GC.")+name,{});
+        }
+        for(const auto* view:{&rootView,&display}) {
+            for(const auto* name:{"bDrawRawBackground","bSpecialText","bLastWidthSpecified","bLastHeightSpecified","bIsSensitive"})
+                Require(field(*view,std::string("Extension.Window.")+name).value.boolean,"Native Window constructor missed a true original flag");
+            for(const auto* name:{"bStretchBackground","bSmoothBackground","bConfigured","bIsSelectable","bBeingDestroyed"})
+                Require(!field(*view,std::string("Extension.Window.")+name).value.boolean,"Native Window constructor missed a false original flag");
+            for(const auto* name:{"rowMajorIndex","colMajorIndex"})
+                Require(field(*view,std::string("Extension.Window.")+name).value.integer==-1,"Native Window list index is not -1");
+            const auto& clip=field(*view,"Extension.Window.winClipRect").value;
+            Require(clip.kind==Kind::Struct && clip.fields.size()==6u && clip.fields.at("originx").floating==0 &&
+                clip.fields.at("originy").floating==0 && clip.fields.at("clipx").floating==0 && clip.fields.at("clipy").floating==0 &&
+                clip.fields.at("clipwidth").floating==10 && clip.fields.at("clipheight").floating==10,
+                "Native Window constructor did not establish its actual initial six-Float clip");
+            for(const auto* name:{"bIsInitialized","bTextTranslucent","Background","SoundVolume","acceleratorKey","maxClicks","freeTimer",
+                "holdX","holdY","holdWidth","holdHeight"}) {
+                const auto original=ReadPortableClassDefault(view->classPath,name);
+                Require(QuestVr::Vm::Equal(field(*view,std::string("Extension.Window.")+name).value,original),
+                    "Native Window constructor overwrote an original preserved CDO field: "+std::string(name));
+            }
+        }
+        const auto& rawColor=field(rootView,"Extension.RootWindow.rawColor").value;
+        Require(rawColor.kind==Kind::Struct && rawColor.fields.size()==4u && rawColor.fields.at("r").integer==0 &&
+            rawColor.fields.at("g").integer==0 && rawColor.fields.at("b").integer==0 && rawColor.fields.at("a").integer==0,
+            "Native Root background color is not retail black RGB/defined portable alpha0");
+        Require(field(display,"DeusEx.ActorDisplayWindow.maxPoints").value.integer==8,
+            "Original ActorDisplayWindow.InitWindow did not execute its own maximum-point assignment");
+        for(std::uint32_t slot=0u;slot<16u;++slot) {
+            const auto& sine=field(display,"DeusEx.ActorDisplayWindow.sinTable",slot).value;
+            const float angle=(2.0f*3.14159265358979323846f)*(static_cast<float>(slot)/8.0f);
+            Require(sine.kind==Kind::Float && std::abs(sine.floating-static_cast<float>(std::sin(static_cast<double>(angle))))<0.000001f,
+                "Original ActorDisplayWindow.InitWindow did not calculate all16 sine entries");
+        }
         Require(ReadPortableRuntimeNativeWindowSummary().objects==0u &&
             Declared(player,"Extension.PlayerPawnExt.RootWindow",Kind::Object).text.empty() &&
             GC::GetStats().numObjects==windowStats.numObjects && GC::GetStats().memoryUsage==windowStats.memoryUsage &&
@@ -236,7 +311,7 @@ int main(int argc,char** argv) {
         const auto rootAttempt=ExecutePortableActorFunction(player,"Extension.PlayerPawnExt.InitRootWindow");
         std::cout<<"ORIGINAL unbound root initialization boundary: "<<rootAttempt.function<<':'<<rootAttempt.offset<<
             " opcode="<<unsigned(rootAttempt.opcode)<<" "<<rootAttempt.error<<std::endl;
-        Require(!rootAttempt.passed() && !rootAttempt.committed && rootAttempt.error.find("1410")!=std::string::npos &&
+        Require(!rootAttempt.passed() && !rootAttempt.committed && rootAttempt.error.find("1438")!=std::string::npos &&
             std::find(rootAttempt.callStack.begin(),rootAttempt.callStack.end(),"DeusEx.DeusExRootWindow.InitWindow")!=rootAttempt.callStack.end(),
             "Native1052 did not construct/dispatch original root without a fabricated client prerequisite");
         const auto windowsAfter=ReadPortableRuntimeNativeWindowSummary();
@@ -253,7 +328,7 @@ int main(int argc,char** argv) {
             repeatedRoot.offset==rootAttempt.offset && repeatedRoot.opcode==rootAttempt.opcode &&
             repeatedRoot.error==rootAttempt.error && repeatedRoot.callStack==rootAttempt.callStack,
             "Original root callback did not reproduce its exact first remaining gap after rollback");
-        for(const auto writeLimit:{1u,5u,25u,100u}) {
+        for(const auto writeLimit:{1u,5u,25u,100u,400u,650u}) {
             QuestVr::Vm::Limits windowLimits;windowLimits.writes=writeLimit;
             const auto bounded=ExecutePortableActorFunction(player,"Extension.PlayerPawnExt.InitRootWindow",{},windowLimits);
             Require(bounded.status==QuestVr::Vm::Status::Budget && !bounded.committed,
