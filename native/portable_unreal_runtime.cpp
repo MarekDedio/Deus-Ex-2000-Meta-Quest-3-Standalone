@@ -64,8 +64,11 @@ struct InventoryIconClassConstraint {
 struct RuntimeNativeWindowState {
     // Retail native TArray<Window*> storage is not a script IntArray, nor a
     // serializable pointer-shaped ExtensionObject.DynamicArray struct.
-    std::vector<RuntimeObject*> rowMajor, colMajor, tabGroups;
+    std::vector<RuntimeObject*> rowMajor, colMajor, tabGroups, toggleButtons;
     bool dirtyTabOrder{}; // Native TabGroup +164 bit4, no script declaration.
+    // Tile row elements have not been audited. Constructor-only support owns
+    // an explicitly empty opaque rowArray, never reflected pointer-shaped data.
+    bool emptyTileRows{};
 };
 
 class RuntimeObject : public GCObject {
@@ -251,7 +254,8 @@ GCAllocation* RuntimeObject::Mark(GCAllocation* marklist) {
         }
     }
     if(nativeWindowState) {
-        for(const auto* list:{&nativeWindowState->rowMajor,&nativeWindowState->colMajor,&nativeWindowState->tabGroups})
+        for(const auto* list:{&nativeWindowState->rowMajor,&nativeWindowState->colMajor,
+            &nativeWindowState->tabGroups,&nativeWindowState->toggleButtons})
             for(auto* window:*list) marklist=GC::MarkObject(marklist,window);
     }
     for (auto* actor : childActors) marklist = GC::MarkObject(marklist, actor);
@@ -2465,6 +2469,8 @@ public:
         if(index==1432u) return WindowPositionNative(Object(receiver),arguments,declaration,execution);
         if(index==1475u) return WindowTileColorNative(Object(receiver),arguments,declaration,execution);
         if(index==1412u) return WindowLowerNative(Object(receiver),arguments,declaration,execution);
+        if(index==1535u || index==1538u || index==1539u || index==1540u)
+            return TileWindowPropertyNative(index,Object(receiver),arguments,declaration,execution);
         if(index==1421u || index==1422u)
             return WindowBackgroundNative(index,Object(receiver),arguments,declaration,execution);
         if(index==1414u) {
@@ -2693,6 +2699,15 @@ public:
                 parameters.push_back({name,Kind::Object,0x90u,"ObjectProperty","Engine.Texture"});
             }
             break;
+        case 1535u:path="Extension.TileWindow.SetMargins";
+            parameters={{"newHMargin",Kind::Float,0x80u,"FloatProperty",""},
+                {"newVMargin",Kind::Float,0x80u,"FloatProperty",""}};break;
+        case 1538u:path="Extension.TileWindow.SetOrder";
+            parameters={{"newOrder",Kind::Byte,0x80u,"ByteProperty","Extension.ExtensionObject.EOrder"}};break;
+        case 1539u:path="Extension.TileWindow.SetMinorSpacing";
+            parameters={{"newSpacing",Kind::Float,0x80u,"FloatProperty",""}};break;
+        case 1540u:path="Extension.TileWindow.SetMajorSpacing";
+            parameters={{"newSpacing",Kind::Float,0x80u,"FloatProperty",""}};break;
         default:throw std::runtime_error("Unregistered native window property declaration");
         }
         const auto authored=FunctionFor(Object(path));
@@ -2735,11 +2750,14 @@ public:
     std::optional<Value> NativeArgumentSeed(const std::uint16_t index,const std::string& receiver,
         const std::size_t slot,const Function* declaration) override {
         if(index!=1410u && index!=1415u && index!=1416u && index!=1421u && index!=1422u && index!=1430u && index!=1431u && index!=1432u &&
-            index!=1454u && index!=1467u && index!=1477u && index!=1510u && index!=1511u)
+            index!=1454u && index!=1467u && index!=1477u && index!=1510u && index!=1511u &&
+            index!=1535u && index!=1538u && index!=1539u && index!=1540u)
             return std::nullopt;
         auto* window=Object(receiver);
         if(!window->nativeWindowObject || !IsDerivedFromPath(window->cls,"Extension.Window"))
             throw std::runtime_error("Native window argument seed requires an actual native Window");
+        if(index>=1535u && index<=1540u && !IsDerivedFromPath(window->cls,"Extension.TileWindow"))
+            throw std::runtime_error("Tile argument seed requires an actual constructed TileWindow");
         const auto authored=index==1410u?NewChildWindowDeclaration(declaration):WindowNativeDeclaration(index,declaration);
         if(index==1415u) {
             if(slot!=0u) throw std::runtime_error("IsVisible has only one optional input slot");
@@ -2965,6 +2983,55 @@ public:
         NativeWindowWrite(gc,"Extension.GC.PolyFlags",Value::Integer(flags),execution);
         return {};
     }
+    Evaluation TileWindowPropertyNative(const std::uint16_t index,RuntimeObject* window,
+        const std::vector<Evaluation>& arguments,const Function* declaration,QuestVr::Vm::Execution& execution) {
+        RequireNativeWindow(window);
+        if(!IsDerivedFromPath(window->cls,"Extension.TileWindow") || !window->nativeWindowState ||
+            !window->nativeWindowState->emptyTileRows)
+            throw std::runtime_error("Tile setter requires its actual constructed native TileWindow");
+        const auto authored=WindowNativeDeclaration(index,declaration);
+        if(arguments.size()!=authored->variables.size())
+            throw std::runtime_error("Tile setter argument count differs from its original declaration");
+        ValidateNativeTileFields(window);
+        if(index==1538u) {
+            auto value=arguments[0u].Load();
+            if(value.kind==Kind::Nothing) value=authored->variables[0u].zero;
+            if(value.kind!=Kind::Byte || value.integer<0 || value.integer>255)
+                throw std::runtime_error("Tile SetOrder requires its copied Byte input");
+            // Retail jump table100487a4; out-of-enum Byte inputs take case4.
+            constexpr std::array<std::array<std::uint8_t,4u>,12u> orders{{
+                {{0u,0u,0u,0u}},{{0u,1u,0u,0u}},{{1u,0u,0u,0u}},{{1u,0u,1u,0u}},
+                {{0u,0u,0u,1u}},{{0u,0u,1u,1u}},{{0u,1u,0u,1u}},{{0u,1u,1u,1u}},
+                {{1u,0u,0u,1u}},{{1u,1u,0u,1u}},{{1u,0u,1u,1u}},{{1u,1u,1u,1u}}
+            }};
+            const auto& order=orders[value.integer<12?static_cast<std::size_t>(value.integer):4u];
+            const std::array<const char*,3u> names{"orientation","hDirection","vDirection"};
+            for(std::size_t slot=0u;slot<names.size();++slot)
+                NativeWindowWrite(window,("Extension.TileWindow."+std::string(names[slot])).c_str(),
+                    Value::Byte(order[slot]),execution);
+            NativeWindowWrite(window,"Extension.TileWindow.bWrap",Value::Bool(order[3u]!=0u),execution);
+        } else {
+            std::array<Value,2u> values;
+            for(std::size_t slot=0u;slot<arguments.size();++slot) {
+                auto value=arguments[slot].Load();
+                if(value.kind==Kind::Nothing) value=authored->variables[slot].zero;
+                if(value.kind!=Kind::Float || !std::isfinite(value.floating))
+                    throw std::runtime_error("Tile setter requires copied finite Float inputs");
+                values[slot]=value; // Retail does not clamp margins or spacing.
+            }
+            if(index==1535u) {
+                NativeWindowWrite(window,"Extension.TileWindow.hMargin",values[0u],execution);
+                NativeWindowWrite(window,"Extension.TileWindow.vMargin",values[1u],execution);
+            } else if(index==1539u || index==1540u) {
+                NativeWindowWrite(window,index==1539u?"Extension.TileWindow.minorSpacing":
+                    "Extension.TileWindow.majorSpacing",values[0u],execution);
+            } else throw std::runtime_error("Unregistered TileWindow setter");
+        }
+        //1004922e/10049420/10049490/10048759 all call1004e060 on SELF,
+        // even for unchanged inputs. Hidden ancestors defer native layout.
+        AskHiddenWindowForReconfigure(window,execution);
+        return {};
+    }
     Evaluation WindowTileColorNative(RuntimeObject* window,const std::vector<Evaluation>& arguments,
         const Function* declaration,QuestVr::Vm::Execution& execution) {
         RequireNativeWindow(window);
@@ -3127,7 +3194,8 @@ public:
         RequireNativeWindow(receiver);
         const auto native=NativeWindowAncestor(receiver->cls);
         if(native!="extension.window" && native!="extension.tabgroupwindow" &&
-            native!="extension.modalwindow" && native!="extension.rootwindow")
+            native!="extension.modalwindow" && native!="extension.rootwindow" &&
+            native!="extension.radioboxwindow" && native!="extension.tilewindow")
             throw std::runtime_error("Native Window event override is not implemented: "+native);
         const auto context=CurrentDispatchContext(receiver);
         const auto selected=context.exactSelected?
@@ -3386,12 +3454,15 @@ public:
         if(selected.text.empty()) return {Value::Text(Kind::Object,{}),{}};
         auto* cls=Object(selected.text);
         const auto native=NativeWindowAncestor(cls);
-        // Each native subclass has distinct Init/callback/layout semantics.
-        // The pure Window constructor is the first ActorDisplayWindow branch.
-        if(native!="extension.window")
+        // Admit only audited actual native constructor registrations. Script
+        // subclasses still use their most-derived authored InitWindow callback.
+        if(native!="extension.window" && native!="extension.radioboxwindow" && native!="extension.tilewindow")
             throw std::runtime_error("NewChild native subclass Init is not implemented: "+native);
         auto* child=ConstructWindowObject(cls,parent,execution);
+        InitializeChildNativeWindowStorage(child,native);
         InitializeBaseWindow(child,parent,execution);
+        if(native=="extension.radioboxwindow") InitializeChildRadioBox(child,execution);
+        else if(native=="extension.tilewindow") InitializeChildTileWindow(child,execution);
         NativeWindowWrite(child,"Extension.Window.lockCount",Value::Integer(1),execution);
         const auto init=Member(child,"InitWindow");
         static_cast<void>(execution.CallFunction(*init,child->reflection.objectPath,{}));
@@ -3474,11 +3545,13 @@ public:
                     {{Value::Text(Kind::Object,window->reflection.objectPath),{}},{Value::Bool(visible),{}}}));
             return; // A missing/overridden callback need not change the child.
         }
-        if(native!="extension.tabgroupwindow" && native!="extension.modalwindow" && native!="extension.rootwindow")
+        if(native!="extension.tabgroupwindow" && native!="extension.modalwindow" && native!="extension.rootwindow" &&
+            native!="extension.radioboxwindow" && native!="extension.tilewindow")
             throw std::runtime_error("Native child visibility parent virtual dispatch is not implemented: "+native);
-        // TabGroup10045870 (also inherited by Modal/Root) bypasses script.
+        // TabGroup10045870/Radio100389d0 bypass script and reconfigure only
+        // on hide. Tile10048940 reconfigures Self for BOTH show and hide.
         SetHiddenChildVisibilityDirect(window,visible,execution);
-        if(!visible) AskHiddenWindowForReconfigure(parent,execution);
+        if(!visible || native=="extension.tilewindow") AskHiddenWindowForReconfigure(parent,execution);
     }
     void NativeWindowWrite(RuntimeObject* object,const char* key,const Value& value,
         QuestVr::Vm::Execution& execution) {
@@ -3520,7 +3593,8 @@ public:
         const auto notify=[&](RuntimeObject* receiver,const char* name) {
             const auto native=NativeWindowAncestor(receiver->cls);
             if(native!="extension.window" && native!="extension.tabgroupwindow" &&
-                native!="extension.modalwindow" && native!="extension.rootwindow")
+                native!="extension.modalwindow" && native!="extension.rootwindow" &&
+                native!="extension.radioboxwindow" && native!="extension.tilewindow")
                 throw std::runtime_error("Native child notification override is not implemented: "+native);
             // Retail ProcessScript(...,checked=false) does optional lookup on
             // dynamic Self. It does not require a newly fabricated base event.
@@ -3536,6 +3610,10 @@ public:
             }
             if(Read(child,DescribeProperty("Extension.Window.bBeingDestroyed"),0u).boolean)
                 throw std::runtime_error("NewChild destruction during unlocked parent notification is unsupported");
+            // Radio10038b90 invokes the optional script FIRST, then appends
+            // Toggle descendants belonging to this nearest actual RadioBox.
+            if(native=="extension.radioboxwindow" && std::string_view(name)=="DescendantAdded")
+                NativeRadioDescendantAdded(receiver,child);
         };
         notify(parent,"ChildAdded");
         std::array<RuntimeObject*,128u> visited{};std::size_t depth{};
@@ -3631,6 +3709,148 @@ public:
             !OwnsProperty(window->cls,property) || !metadata->property || metadata->property->type!="StructProperty" ||
             LowerAscii(Qualified(Table(metadata->sourcePath),metadata->property->referencedType))!="extension.extensionobject.dynamicarray")
             throw std::runtime_error("Native window list lacks its original private DynamicArray declaration");
+    }
+    void ValidateNativeWindowScalar(RuntimeObject* window,const char* key,const Kind kind,
+        const char* type,const char* constraint="",const std::uint32_t flags=0u) {
+        const auto property=DescribeProperty(key);auto* metadata=Object(property.key);
+        if(property.zero.kind!=kind || property.arrayDimension!=1u || property.flags!=flags ||
+            !OwnsProperty(window->cls,property) || !metadata->property || metadata->property->type!=type ||
+            (*constraint && LowerAscii(Qualified(Table(metadata->sourcePath),metadata->property->referencedType))!=
+                LowerAscii(constraint)))
+            throw std::runtime_error("Native window scalar lacks its original declaration: "+std::string(key));
+    }
+    void ValidateNativeTileFields(RuntimeObject* window) {
+        ValidateNativeWindowList(window,"Extension.TileWindow.rowArray");
+        for(const auto* name:{"orientation","hDirection","vDirection","hChildAlign","vChildAlign"})
+            ValidateNativeWindowScalar(window,("Extension.TileWindow."+std::string(name)).c_str(),Kind::Byte,"ByteProperty","",2u);
+        for(const auto* name:{"hMargin","vMargin","minorSpacing","majorSpacing"})
+            ValidateNativeWindowScalar(window,("Extension.TileWindow."+std::string(name)).c_str(),Kind::Float,"FloatProperty","",2u);
+        for(const auto* name:{"bWrap","bFillParent","bEqualWidth","bEqualHeight"})
+            ValidateNativeWindowScalar(window,("Extension.TileWindow."+std::string(name)).c_str(),Kind::Bool,"BoolProperty","",2u);
+    }
+    void InitializeChildNativeWindowStorage(RuntimeObject* window,const std::string& native) {
+        // Native TArray constructors precede Window.Init's parent callbacks.
+        // Tile row element layout is not claimed: only the constructor's empty
+        // state is represented until actual row-layout support is implemented.
+        if(native=="extension.window") return;
+        if(native=="extension.radioboxwindow") {
+            ValidateNativeWindowList(window,"Extension.TabGroupWindow.rowMajorWindowList");
+            ValidateNativeWindowList(window,"Extension.TabGroupWindow.colMajorWindowList");
+            ValidateNativeWindowList(window,"Extension.RadioBoxWindow.toggleButtons");
+        } else if(native=="extension.tilewindow") ValidateNativeTileFields(window);
+        else throw std::runtime_error("Native child constructor storage is not registered");
+        Touch(window);window->nativeWindowState.emplace();
+        window->nativeWindowState->emptyTileRows=native=="extension.tilewindow";
+        ValidateStateBudget();
+    }
+    void AppendNativeWindowList(RuntimeObject* owner,std::vector<RuntimeObject*>& list,RuntimeObject* window) {
+        if(list.size()>=4096u) throw std::runtime_error("Native window list exceeds its bound");
+        LifecycleStep();Touch(owner);
+        if(list.size()==list.capacity()) {
+            // Retail FArray's count+32+floor(3*count/8) growth, represented by
+            // owned edges rather than copied Windows pointer bytes.
+            const auto count=list.size()+1u;
+            const auto capacity=std::min<std::size_t>(4096u,count+32u+(3u*count)/8u);
+            ValidateStateBudget((capacity-list.capacity())*sizeof(RuntimeObject*));
+            list.reserve(capacity);
+        }
+        list.push_back(window); // Retail does not suppress duplicates.
+        ValidateStateBudget();
+    }
+    void RegisterNativeTabGroup(RuntimeObject* group,QuestVr::Vm::Execution& execution) {
+        if(IsDerivedFromPath(group->cls,"Extension.ModalWindow")) return;
+        auto* modal=NativeWindowModal(group);
+        if(!modal) return;
+        ValidateNativeWindowList(modal,"Extension.ModalWindow.tabGroupWindowList");
+        if(!modal->nativeWindowState) throw std::runtime_error("Native Modal has no owned tab table");
+        AppendNativeWindowList(modal,modal->nativeWindowState->tabGroups,group);
+        auto& groups=modal->nativeWindowState->tabGroups;
+        struct Position { RuntimeObject* object;float x,y; };
+        std::array<Position,4096u> positions{};
+        for(std::size_t index=0u;index<groups.size();++index) {
+            LifecycleStep();auto* item=groups[index];RequireNativeWindow(item);
+            if(!IsDerivedFromPath(item->cls,"Extension.TabGroupWindow"))
+                throw std::runtime_error("Native Modal table contains a non-TabGroup");
+            const auto x=Read(item,DescribeProperty("Extension.TabGroupWindow.firstAbsX"),0u);
+            const auto y=Read(item,DescribeProperty("Extension.TabGroupWindow.firstAbsY"),0u);
+            if(x.kind!=Kind::Float || y.kind!=Kind::Float || !std::isfinite(x.floating) || !std::isfinite(y.floating))
+                throw std::runtime_error("Native TabGroup sort coordinates are not finite Floats");
+            positions[index]={item,x.floating,y.floating};
+        }
+        // Retail10036f80 compares Y, X, then process-local UObject address.
+        // Portable object addresses are transient identities, never saved raw
+        // pointers or a fabricated semantic ordering key. Signed zeros tie.
+        std::sort(positions.begin(),positions.begin()+groups.size(),[](const Position& a,const Position& b) {
+            if(a.y<b.y) return true;if(a.y>b.y) return false;
+            if(a.x<b.x) return true;if(a.x>b.x) return false;
+            return std::less<RuntimeObject*>{}(a.object,b.object);
+        });
+        for(std::size_t index=0u;index<groups.size();++index) {
+            groups[index]=positions[index].object;
+            NativeWindowWrite(groups[index],"Extension.TabGroupWindow.tabGroupIndex",
+                Value::Integer(static_cast<std::int32_t>(index)),execution);
+        }
+        ValidateStateBudget(); // No dirty-accelerator or visibility filter.
+    }
+    void InitializeChildRadioBox(RuntimeObject* window,QuestVr::Vm::Execution& execution) {
+        RequireNativeWindow(window);
+        if(!IsDerivedFromPath(window->cls,"Extension.RadioBoxWindow") || !window->nativeWindowState)
+            throw std::runtime_error("Native Radio constructor has no owned storage");
+        for(const auto* name:{"bSizeChildrenToParent","bSizeParentToChildren"})
+            ValidateNativeWindowScalar(window,("Extension.TabGroupWindow."+std::string(name)).c_str(),Kind::Bool,"BoolProperty");
+        ValidateNativeWindowScalar(window,"Extension.TabGroupWindow.tabGroupIndex",Kind::Int,"IntProperty");
+        for(const auto* name:{"firstAbsX","firstAbsY"})
+            ValidateNativeWindowScalar(window,("Extension.TabGroupWindow."+std::string(name)).c_str(),Kind::Float,"FloatProperty");
+        ValidateNativeWindowScalar(window,"Extension.RadioBoxWindow.bOneCheck",Kind::Bool,"BoolProperty");
+        ValidateNativeWindowScalar(window,"Extension.RadioBoxWindow.currentSelection",Kind::Object,"ObjectProperty","Extension.ToggleWindow");
+        // TabGroup.Init10044d90, AFTER Window.Init parent callbacks.
+        Touch(window);window->nativeWindowState->rowMajor.clear();window->nativeWindowState->colMajor.clear();
+        window->nativeWindowState->dirtyTabOrder=true;
+        NativeWindowWrite(window,"Extension.Window.windowType",Value::Byte(1u),execution);
+        NativeWindowWrite(window,"Extension.TabGroupWindow.bSizeChildrenToParent",Value::Bool(false),execution);
+        NativeWindowWrite(window,"Extension.TabGroupWindow.bSizeParentToChildren",Value::Bool(true),execution);
+        NativeWindowWrite(window,"Extension.TabGroupWindow.tabGroupIndex",Value::Integer(-1),execution);
+        NativeWindowWrite(window,"Extension.TabGroupWindow.firstAbsX",Value::Float(0.0f),execution);
+        NativeWindowWrite(window,"Extension.TabGroupWindow.firstAbsY",Value::Float(0.0f),execution);
+        RegisterNativeTabGroup(window,execution);
+        // Radio.Init10038660: registration precedes Radio-specific writes.
+        window->nativeWindowState->toggleButtons.clear();
+        NativeWindowWrite(window,"Extension.RadioBoxWindow.bOneCheck",Value::Bool(true),execution);
+        NativeWindowWrite(window,"Extension.RadioBoxWindow.currentSelection",Value::Text(Kind::Object,{}),execution);
+        ValidateStateBudget();
+    }
+    void InitializeChildTileWindow(RuntimeObject* window,QuestVr::Vm::Execution& execution) {
+        RequireNativeWindow(window);ValidateNativeTileFields(window);
+        if(!window->nativeWindowState || !window->nativeWindowState->emptyTileRows)
+            throw std::runtime_error("Native Tile constructor has no empty row storage");
+        // Tile.Init10048360 calls only Window.Init, never TabGroup.Init.
+        for(const auto& [name,value]:{std::pair{"orientation",0u},std::pair{"hDirection",0u},
+            std::pair{"vDirection",0u},std::pair{"hChildAlign",3u},std::pair{"vChildAlign",3u}})
+            NativeWindowWrite(window,("Extension.TileWindow."+std::string(name)).c_str(),Value::Byte(value),execution);
+        for(const auto& [name,value]:{std::pair{"hMargin",3.0f},std::pair{"vMargin",3.0f},
+            std::pair{"minorSpacing",1.0f},std::pair{"majorSpacing",1.0f}})
+            NativeWindowWrite(window,("Extension.TileWindow."+std::string(name)).c_str(),Value::Float(value),execution);
+        for(const auto& [name,value]:{std::pair{"bWrap",true},std::pair{"bFillParent",true},
+            std::pair{"bEqualWidth",false},std::pair{"bEqualHeight",true}})
+            NativeWindowWrite(window,("Extension.TileWindow."+std::string(name)).c_str(),Value::Bool(value),execution);
+    }
+    void NativeRadioDescendantAdded(RuntimeObject* receiver,RuntimeObject* descendant) {
+        // Radio10038b90 invokes script in LinkNewWindowChild FIRST. Only
+        // Toggle descendants whose nearest actual Radio is Self are appended.
+        if(!IsDerivedFromPath(descendant->cls,"Extension.ToggleWindow")) return;
+        ValidateNativeWindowList(receiver,"Extension.RadioBoxWindow.toggleButtons");
+        if(!receiver->nativeWindowState) throw std::runtime_error("Native Radio has no owned toggle list");
+        std::array<RuntimeObject*,128u> visited{};std::size_t depth{};
+        for(auto* current=descendant;current;current=WindowLink(current,"winParent")) {
+            LifecycleStep();RequireNativeWindow(current);
+            if(depth==visited.size() || std::find(visited.begin(),visited.begin()+depth,current)!=visited.begin()+depth)
+                throw std::runtime_error("Native Radio ancestry cycles or exceeds its bound");
+            visited[depth++]=current;
+            if(IsDerivedFromPath(current->cls,"Extension.RadioBoxWindow")) {
+                if(current==receiver) AppendNativeWindowList(receiver,receiver->nativeWindowState->toggleButtons,descendant);
+                return;
+            }
+        }
     }
     void InitializeRootTabAndModal(RuntimeObject* window,QuestVr::Vm::Execution& execution) {
         // Root.Init calls Modal.Init(None), which calls TabGroup.Init(None).
@@ -3791,7 +4011,8 @@ public:
         if(object->nativeWindowObject && !defaults && !immutable) {
             const auto key=LowerAscii(property.key);
             if(key=="extension.tabgroupwindow.rowmajorwindowlist" || key=="extension.tabgroupwindow.colmajorwindowlist" ||
-                key=="extension.modalwindow.tabgroupwindowlist")
+                key=="extension.modalwindow.tabgroupwindowlist" || key=="extension.radioboxwindow.togglebuttons" ||
+                key=="extension.tilewindow.rowarray")
                 throw std::runtime_error("Native Window private pointer-array storage is not a script-visible value");
         }
         if (object->defaultOwner) {
@@ -5940,7 +6161,8 @@ private:
             if(object->nativeWindowObject) defaults.Retain(sizeof(RuntimeObject)+sizeof(GCAllocation)+
                 object->reflection.objectPath.size()+object->references.capacity()*sizeof(RuntimeObject*));
             if(object->nativeWindowState) {
-                for(const auto* list:{&object->nativeWindowState->rowMajor,&object->nativeWindowState->colMajor,&object->nativeWindowState->tabGroups}) {
+                for(const auto* list:{&object->nativeWindowState->rowMajor,&object->nativeWindowState->colMajor,
+                    &object->nativeWindowState->tabGroups,&object->nativeWindowState->toggleButtons}) {
                     if(list->size()>4096u) throw std::runtime_error("Native window list exceeds its bound");
                     defaults.Retain(QuestVr::DecalStateDetail::Multiply(list->capacity(),sizeof(RuntimeObject*)));
                 }
@@ -8357,10 +8579,12 @@ PortableRootWindowProbeResult ProbePortableRootWindowInitialization(
                 };
                 if(object->nativeWindowState) {
                     view.tabOrderDirty=object->nativeWindowState->dirtyTabOrder;
+                    view.emptyTileRows=object->nativeWindowState->emptyTileRows;
                     for(const auto& [source,target]:{
                         std::pair{&object->nativeWindowState->rowMajor,&view.rowMajorWindows},
                         std::pair{&object->nativeWindowState->colMajor,&view.colMajorWindows},
-                        std::pair{&object->nativeWindowState->tabGroups,&view.tabGroupWindows}})
+                        std::pair{&object->nativeWindowState->tabGroups,&view.tabGroupWindows},
+                        std::pair{&object->nativeWindowState->toggleButtons,&view.toggleButtons}})
                         for(const auto* window:*source) {
                             retained.Retain(sizeof(std::string)+window->reflection.objectPath.size());
                             target->push_back(window->reflection.objectPath);
@@ -8382,6 +8606,13 @@ PortableRootWindowProbeResult ProbePortableRootWindowInitialization(
                     if(IsDerivedFromPath(object->cls,"Extension.TabGroupWindow"))
                         for(const auto* name:{"bSizeParentToChildren","bSizeChildrenToParent","tabGroupIndex","firstAbsX","firstAbsY"})
                             field((std::string("Extension.TabGroupWindow.")+name).c_str());
+                    if(IsDerivedFromPath(object->cls,"Extension.RadioBoxWindow"))
+                        for(const auto* name:{"bOneCheck","currentSelection"})
+                            field((std::string("Extension.RadioBoxWindow.")+name).c_str());
+                    if(IsDerivedFromPath(object->cls,"Extension.TileWindow"))
+                        for(const auto* name:{"orientation","hDirection","vDirection","hMargin","vMargin","minorSpacing",
+                            "majorSpacing","hChildAlign","vChildAlign","bWrap","bFillParent","bEqualWidth","bEqualHeight"})
+                            field((std::string("Extension.TileWindow.")+name).c_str());
                     if(IsDerivedFromPath(object->cls,"Extension.ModalWindow")) {
                         for(const auto* name:{"focusMode","preferredFocus","bDirtyAccelerators"})
                             field((std::string("Extension.ModalWindow.")+name).c_str());
@@ -8410,6 +8641,8 @@ PortableRootWindowProbeResult ProbePortableRootWindowInitialization(
                         for(const auto* name:{"Ammo","hit","Cross","belt"}) field((std::string("DeusEx.DeusExHUD.")+name).c_str());
                     if(IsDerivedFromPath(object->cls,"DeusEx.HUDAmmoDisplay"))
                         field("DeusEx.HUDAmmoDisplay.Player");
+                    if(IsDerivedFromPath(object->cls,"DeusEx.HUDObjectBelt"))
+                        field("DeusEx.HUDObjectBelt.winSlots"); // winRadio is a CreateSlots local, not instance storage.
                     if(IsDerivedFromPath(object->cls,"DeusEx.HUDHitDisplay"))
                         for(const auto* name:{"Player","Head","torso","armLeft","armRight","legLeft","legRight","winEnergy","winBreath"})
                             field((std::string("DeusEx.HUDHitDisplay.")+name).c_str());
@@ -8466,6 +8699,23 @@ PortablePlayerHudSnapshot ReadPortablePlayerHudSnapshot(const std::string& actor
         result.limbHealth[index]=read(player,std::string("Engine.Pawn.")+healthFields[index],Kind::Int).integer;
     result.energy=read(player,"DeusEx.DeusExPlayer.Energy",Kind::Float).floating;
     result.energyMax=read(player,"DeusEx.DeusExPlayer.EnergyMax",Kind::Float).floating;
+    result.swimTimer=read(player,"DeusEx.DeusExPlayer.swimTimer",Kind::Float).floating;
+    result.swimDuration=read(player,"DeusEx.DeusExPlayer.swimDuration",Kind::Float).floating;
+    const auto headRegion=read(player,"Engine.Pawn.HeadRegion",Kind::Struct);
+    const auto regionDeclaration=host.DescribeProperty("Engine.Pawn.HeadRegion");
+    auto* regionMetadata=host.Object(regionDeclaration.key);
+    if(!regionMetadata->property || regionMetadata->property->type!="StructProperty" ||
+        LowerAscii(host.StructPropertySchema(regionDeclaration.key)->path)!="engine.actor.pointregion")
+        throw std::runtime_error("Player HUD HeadRegion lacks its original PointRegion declaration");
+    const auto headZone=headRegion.fields.find("zone");
+    if(headZone==headRegion.fields.end() || headZone->second.kind!=Kind::Object)
+        throw std::runtime_error("Player HUD HeadRegion.Zone is not an actual Object field");
+    if(!headZone->second.text.empty()) {
+        auto* zone=host.Object(headZone->second.text);
+        if(zone->worldRemoved || !IsDerivedFromPath(zone->cls,"Engine.ZoneInfo") || host.RequireNativeLevelInfo(zone)!=level)
+            throw std::runtime_error("Player HUD head zone is not an actual same-world ZoneInfo");
+        result.headInWater=read(zone,"Engine.ZoneInfo.bWaterZone",Kind::Bool).boolean;
+    } // Missing actual zone stays unavailable, never guessed from camera height.
     result.keyRingPath=read(player,"DeusEx.DeusExPlayer.KeyRing",Kind::Object).text;
     if(!result.keyRingPath.empty()) {
         auto* ring=host.Object(result.keyRingPath);

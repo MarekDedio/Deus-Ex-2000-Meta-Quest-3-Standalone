@@ -41,6 +41,7 @@
 #include "quest_hud_ui.h"
 #include "quest_hud_view.h"
 #include "quest_hud_health_clock.h"
+#include "quest_hud_oxygen_clock.h"
 #include "quest_persona_view.h"
 #include "quest_map_cache.h"
 #include "vr_world_transform.h"
@@ -4317,7 +4318,8 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         healthUiVisible_=beltUiVisible_=false;
         cachedPlayerHud_.reset();
         hudHealthClock_.Reset();
-        displayedHealthHudPixels_.clear();
+        hudOxygenClock_.Reset();
+        displayedHealthHudPixels_.clear();displayedBeltHudPixels_.clear();
         hudQuerySeconds_=0.0f;
         playerHudError_.clear();
     }
@@ -4333,7 +4335,8 @@ class DeusExQuestApp final : public OVRFW::XrApp {
     static bool SamePlayerHudSnapshot(const PortablePlayerHudSnapshot& left,const PortablePlayerHudSnapshot& right) {
         if (left.available!=right.available || left.bound!=right.bound || left.playerPath!=right.playerPath ||
             left.keyRingPath!=right.keyRingPath || left.limbHealth!=right.limbHealth || left.energy!=right.energy ||
-            left.energyMax!=right.energyMax || left.inventory.size()!=right.inventory.size()) return false;
+            left.energyMax!=right.energyMax || left.headInWater!=right.headInWater || left.swimTimer!=right.swimTimer ||
+            left.swimDuration!=right.swimDuration || left.inventory.size()!=right.inventory.size()) return false;
         for (std::size_t index=0u;index<left.inventory.size();++index) {
             const auto& a=left.inventory[index];const auto& b=right.inventory[index];
             if (a.actorPath!=b.actorPath || a.classPath!=b.classPath || a.iconPath!=b.iconPath ||
@@ -4384,7 +4387,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                 auto snapshot=ReadPortableRuntimePlayerHud(nativeClientGeneration_);
                 if (!snapshot.available || !snapshot.bound) {
                     cachedPlayerHud_.reset();
-                    hudHealthClock_.Reset();displayedHealthHudPixels_.clear();
+                    hudHealthClock_.Reset();hudOxygenClock_.Reset();displayedHealthHudPixels_.clear();
                     return; // No pretend player/ring/healthy limbs from defaults.
                 }
                 if (!cachedPlayerHud_ || !SamePlayerHudSnapshot(*cachedPlayerHud_,snapshot)) {
@@ -4396,13 +4399,18 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                     const auto glyph=[&](std::uint32_t character) {return GetPortableBitmapGlyph(hudTinyFont_,character);};
                     auto beltCanvas=QuestVr::BuildHudBeltCanvas(hudBeltArtwork_,*belt);
                     QuestVr::DrawHudBeltText(beltCanvas,*belt,hudTinyFont_,glyph);
-                    UpdateOriginalHudTexture(beltHudTextureId_,beltCanvas);
+                    // Health/oxygen reads may change every query while the
+                    // belt is unchanged. Do not upload identical belt pixels.
+                    if(beltCanvas.rgba!=displayedBeltHudPixels_) {
+                        UpdateOriginalHudTexture(beltHudTextureId_,beltCanvas);
+                        displayedBeltHudPixels_=std::move(beltCanvas.rgba);
+                    }
                     cachedPlayerHud_=std::move(snapshot);
                     playerHudError_.clear();
                 }
             } catch (const std::exception& error) {
                 cachedPlayerHud_.reset();
-                hudHealthClock_.Reset();displayedHealthHudPixels_.clear();
+                hudHealthClock_.Reset();hudOxygenClock_.Reset();displayedHealthHudPixels_.clear();
                 if (playerHudError_!=error.what()) {
                     playerHudError_=error.what();
                     ALOG("DeusExQuest: bound original player HUD unavailable: %s",error.what());
@@ -4425,6 +4433,13 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                 health.parts[part].damageFlashFraction=colors[part].damageFlashFraction;
             }
             health.energy=cachedPlayerHud_->energy;health.energyMax=cachedPlayerHud_->energyMax;
+            hudOxygenClock_.ResetForContext(cachedPlayerHud_->playerPath,currentMapName_);
+            const auto oxygen=hudOxygenClock_.Advance({true,true,true,cachedPlayerHud_->headInWater,
+                cachedPlayerHud_->swimTimer,cachedPlayerHud_->swimDuration});
+            if(oxygen) {
+                health.underwater=oxygen->underwater;health.breathPercent=oxygen->breathPercent;
+                if(oxygen->swimTimer) health.swimTimer=*oxygen->swimTimer;
+            }
             auto canvas=QuestVr::BuildHudHealthCanvas(hudHealthArtwork_,health);
             QuestVr::DrawHudHealthText(canvas,health,hudTinyFont_,
                 [&](std::uint32_t character) {return GetPortableBitmapGlyph(hudTinyFont_,character);});
@@ -4435,7 +4450,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                 displayedHealthHudPixels_=std::move(canvas.rgba);
             }
         } catch(const std::exception& error) {
-            cachedPlayerHud_.reset();hudHealthClock_.Reset();displayedHealthHudPixels_.clear();
+            cachedPlayerHud_.reset();hudHealthClock_.Reset();hudOxygenClock_.Reset();displayedHealthHudPixels_.clear();
             if(playerHudError_!=error.what()) {
                 playerHudError_=error.what();
                 ALOG("DeusExQuest: original limb-health presentation unavailable: %s",error.what());
@@ -7606,7 +7621,8 @@ class DeusExQuestApp final : public OVRFW::XrApp {
     bool healthUiVisible_{},beltUiVisible_{};
     std::optional<PortablePlayerHudSnapshot> cachedPlayerHud_;
     QuestVr::HudHealthClock hudHealthClock_;
-    std::vector<std::uint8_t> displayedHealthHudPixels_;
+    QuestVr::HudOxygenClock hudOxygenClock_;
+    std::vector<std::uint8_t> displayedHealthHudPixels_,displayedBeltHudPixels_;
     float hudQuerySeconds_{};
     std::string playerHudError_;
     PortablePackageTables personaUiPackage_;

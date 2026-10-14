@@ -319,16 +319,27 @@ inline void ValidateHudHealthSnapshot(const HudHealthSnapshot& snapshot) {
         (snapshot.energy && (!std::isfinite(*snapshot.energy) || *snapshot.energy<0.0f || !std::isfinite(*snapshot.energyMax) || *snapshot.energyMax<=0.0f)) ||
         (snapshot.energy && !std::isfinite(100.0f*(*snapshot.energy / *snapshot.energyMax))) ||
         (snapshot.breathPercent && (!std::isfinite(*snapshot.breathPercent) || *snapshot.breathPercent<0.0f || *snapshot.breathPercent>100.0f)) ||
-        !std::isfinite(snapshot.swimTimer) || snapshot.swimTimer<0.0f)
+        !std::isfinite(snapshot.swimTimer))
         throw std::runtime_error("Original HUD energy/breath snapshot is invalid");
+}
+struct HudProgressBarPresentation { std::uint32_t height{};HudRgb color; };
+inline HudProgressBarPresentation OriginalHudProgressBarPresentation(float percent) {
+    // SetCurrentValue uses integer Max/Min AFTER FloatToInt, then UpdateBars
+    // divides the stored integer-valued Float by100 before multiplying55.
+    // Ingress beyond the original Int conversion domain refuses explicitly.
+    if(!std::isfinite(percent) || static_cast<double>(percent)<-2147483648.0 ||
+        static_cast<double>(percent)>=2147483648.0)
+        throw std::runtime_error("Original HUD progress value exceeds its Int conversion domain");
+    const auto current=std::clamp(static_cast<std::int32_t>(percent),0,100);
+    const float fraction=static_cast<float>(current)/100.0f;
+    const auto height=static_cast<std::uint32_t>(fraction*55.0f);
+    return {height,OriginalHudScaledColor(fraction)}; // Authored scaleColorModifier1.
 }
 inline void DrawHudProgressBar(PersonaUiImage& canvas,std::uint32_t x,float percent) {
     ValidatePersonaUiImage(canvas);
     if (canvas.height<75u || x>canvas.width || 5u>canvas.width-x || !std::isfinite(percent))
         throw std::runtime_error("Original HUD progress window/value exceeds bounds");
-    const auto value=std::clamp(percent,0.0f,100.0f);
-    const auto height=static_cast<std::uint32_t>(value*0.55f);
-    const auto color=OriginalHudScaledColor(value/100.0f);
+    const auto [height,color]=OriginalHudProgressBarPresentation(percent);
     for (std::uint32_t row=0u;row<height;++row) for (std::uint32_t column=0u;column<5u;++column)
         SetPersonaUiPixel(canvas,x+column,20u+55u-height+row,color.red,color.green,color.blue);
 }
@@ -359,9 +370,9 @@ inline void DrawHudHealthText(PersonaUiImage& canvas,const HudHealthSnapshot& sn
     if (canvas.width!=kHudHealthWidth || canvas.height!=kHudHealthHeight)
         throw std::runtime_error("Original body-health text destination has wrong dimensions");
     if (snapshot.energy) DrawHudText(canvas,tinyFont,"BE",{13u,74u,8u,8u},
-        OriginalHudScaledColor( *snapshot.energy / *snapshot.energyMax),0u,lookup);
+        OriginalHudProgressBarPresentation(100.0f*(*snapshot.energy / *snapshot.energyMax)).color,0u,lookup);
     if (snapshot.underwater && snapshot.breathPercent) {
-        auto color=OriginalHudScaledColor(*snapshot.breathPercent/100.0f);
+        auto color=OriginalHudProgressBarPresentation(*snapshot.breathPercent).color;
         if (*snapshot.breathPercent<10.0f) color.red=std::fmod(snapshot.swimTimer,0.5f)>0.25f?255u:0u;
         DrawHudText(canvas,tinyFont,"O2",{61u,74u,8u,8u},color,0u,lookup);
     }

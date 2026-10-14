@@ -436,7 +436,8 @@ struct TestHost final:Vm::Host {
         // 1008 belongs only to this generated fixture. Native zero is keyed by
         // its declaration; individual tests provide the host-side observation.
         if((index==1008u || index==0u || index==1410u || index==1415u || index==1416u || index==1421u || index==1422u ||
-            index==1430u || index==1431u || index==1432u || index==1438u || index==1454u || index==1467u || index==1475u) && executionNative) {
+            index==1430u || index==1431u || index==1432u || index==1438u || index==1454u || index==1467u || index==1475u ||
+            index==1535u || index==1538u || index==1539u || index==1540u) && executionNative) {
             std::vector<Value> values;for(const auto& argument:arguments) values.push_back(argument.Load());
             nativeArguments.push_back(std::move(values));nativeReceivers.push_back(receiver);nativeIndices.push_back(index);
             nativeDeclarations.push_back(declaration ? declaration->path : "");
@@ -2951,21 +2952,23 @@ void WindowInputSnapshotContracts() {
             native.variables.push_back({"Input"+std::to_string(slot),"Input"+std::to_string(slot),zeros[slot],0x80u,1u});
         host.finals[{"Fixture",7}]=std::make_shared<Vm::Function>(native);
     };
-    for(const auto index:{std::uint16_t{1421u},std::uint16_t{1422u}}) for(const bool declared:{false,true}) {
-        TestHost host;const auto zero=index==1421u?Value::Text(Vm::Kind::Object,{}):Value::Byte(0u);
-        const auto input=index==1421u?Value::Text(Vm::Kind::Object,"Original.Window"):Value::Byte(7u);
+    for(const auto index:{std::uint16_t{1421u},std::uint16_t{1422u},std::uint16_t{1538u},std::uint16_t{1539u},std::uint16_t{1540u}})
+        for(const bool declared:{false,true}) {
+        const bool byte=index==1422u || index==1538u;
+        TestHost host;const auto zero=index==1421u?Value::Text(Vm::Kind::Object,{}):byte?Value::Byte(0u):Value::Float(0.0f);
+        const auto input=index==1421u?Value::Text(Vm::Kind::Object,"Original.Window"):byte?Value::Byte(7u):Value::Float(12.5f);
         if(declared) declaration(host,index,{zero});
         const auto caller=Function("WindowScalarInputCopy",Return(expression(index,declared,{Native(1007u,{Ref(0x01,1)})})));
         const auto source=host.Property(caller,1,"Input",zero);host.Store("Self",source,{input});
         host.executionNative=[&](const std::string&,const std::vector<Vm::Evaluation>& arguments,const Vm::Function* actual,Vm::Execution&) {
             Require(static_cast<bool>(actual)==declared && arguments.size()==1u && !arguments[0].reference && Vm::Equal(arguments[0].Load(),input),
-                "Audited1421/1422 ordinary scalar input retained its alias or changed native declaration identity");
+                "Audited Window/Tile ordinary scalar input retained its alias or changed native declaration identity");
             return Vm::Evaluation{arguments[0].Load(),{}};
         };
-        const auto result=Vm::Execute(host,caller,"Self");Returned(result,"Audited window Object/Byte inputs are detached during evaluation");
-        Require(Vm::Equal(result.value,input),"Audited Object/Byte snapshot changed input value");
+        const auto result=Vm::Execute(host,caller,"Self");Returned(result,"Audited Window/Tile Object/Byte/Float inputs are detached during evaluation");
+        Require(Vm::Equal(result.value,input),"Audited Window/Tile scalar snapshot changed input value");
     }
-    for(const auto index:{std::uint16_t{1430u},std::uint16_t{1432u}}) for(const bool declared:{false,true})
+    for(const auto index:{std::uint16_t{1430u},std::uint16_t{1432u},std::uint16_t{1535u}}) for(const bool declared:{false,true})
         for(std::size_t earlier=0u;earlier<(index==1430u?3u:1u);++earlier) {
         const auto count=index==1430u?4u:2u;
         TestHost host;if(declared) declaration(host,index,std::vector<Value>(count,Value::Float(0.0f)));
@@ -2979,22 +2982,25 @@ void WindowInputSnapshotContracts() {
             host.Store("Self",properties.back(),{Value::Float(values[slot])});
         }
         host.executionNative=[&](const std::string&,const std::vector<Vm::Evaluation>& arguments,const Vm::Function* actual,Vm::Execution&) {
-            Require(static_cast<bool>(actual)==declared && arguments.size()==count,"Audited1430/1432 lost its declaration or input count");
+            Require(static_cast<bool>(actual)==declared && arguments.size()==count,"Audited1430/1432/1535 lost its declaration or input count");
             for(std::size_t slot=0u;slot<count;++slot)
                 Require(!arguments[slot].reference && arguments[slot].Load().floating==values[slot],
-                    "Audited1430/1432 reloaded an earlier Float after a later input mutated its source");
+                    "Audited1430/1432/1535 reloaded an earlier Float after a later input mutated its source");
             return Vm::Evaluation{arguments[earlier].Load(),{}};
         };
-        const auto result=Vm::Execute(host,caller,"Self");Returned(result,"Audited1430/1432 copies each ordinary Float before evaluating later inputs");
+        const auto result=Vm::Execute(host,caller,"Self");Returned(result,"Audited1430/1432/1535 copies each ordinary Float before evaluating later inputs");
         Require(result.value.floating==values[earlier] && host.Load("Self",properties[earlier]).floating==99.0f && result.writes==1u,
-            "Audited1430/1432 input copies lost the real later mutation or returned the mutated source");
+            "Audited1430/1432/1535 input copies lost the real later mutation or returned the mutated source");
     }
-    for(const auto index:{std::uint16_t{1421u},std::uint16_t{1422u},std::uint16_t{1430u},std::uint16_t{1432u}}) for(const bool declared:{false,true}) {
-        const auto zero=index==1421u?Value::Text(Vm::Kind::Object,{}):index==1422u?Value::Byte(0u):Value::Float(0.0f);
-        const auto count=index==1430u?4u:index==1432u?2u:1u;
-        for(std::size_t selected=0u;selected<count;++selected) for(const int bytes:{-1,0,index==1422u?1:4}) {
+    for(const auto index:{std::uint16_t{1421u},std::uint16_t{1422u},std::uint16_t{1430u},std::uint16_t{1432u},
+        std::uint16_t{1535u},std::uint16_t{1538u},std::uint16_t{1539u},std::uint16_t{1540u}}) for(const bool declared:{false,true}) {
+        const bool byte=index==1422u || index==1538u;
+        const auto zero=index==1421u?Value::Text(Vm::Kind::Object,{}):byte?Value::Byte(0u):Value::Float(0.0f);
+        const auto count=index==1430u?4u:index==1432u || index==1535u?2u:1u;
+        const auto sizes=byte?std::vector<int>{-1,0,1}:index==1421u?std::vector<int>{-1,0,4}:std::vector<int>{-1,0,1,2,3,4};
+        for(std::size_t selected=0u;selected<count;++selected) for(const int bytes:sizes) {
             TestHost host;if(declared) declaration(host,index,std::vector<Value>(count,zero));
-            std::vector<Bytes> inputs(count,index==1421u?Ref(0x20,9):index==1422u?Bytes{0x24u,7u}:Real(12.0f));
+            std::vector<Bytes> inputs(count,index==1421u?Ref(0x20,9):byte?Bytes{0x24u,7u}:Real(12.0f));
             inputs[selected]=bytes<0?Bytes{0x0bu}:Context({0x2au},Native(4095u),static_cast<std::uint8_t>(bytes));
             const auto caller=Function("WindowNativeSeededTypedInputs",Return(expression(index,declared,inputs)));
             host.objects[{caller.source,9}]="Original.Window";
@@ -3013,6 +3019,95 @@ void WindowInputSnapshotContracts() {
         }
     }
     std::cout<<"Additional audited Window ordinary input copies and zero seeds: "<<checks-initialChecks<<" checks.\n";
+}
+void TileNativeInputContracts() {
+    const auto initialChecks=checks,initialRejections=rejections;
+    const auto configure=[](TestHost& host,std::uint16_t index) {
+        const bool byte=index==1538u;const auto count=index==1535u?2u:1u;
+        const auto zero=byte?Value::Byte(0u):Value::Float(0.0f);
+        auto native=Function("AuditedTileNativeInput",{},"Extension.TileWindow");native.nativeIndex=index;native.flags=0x401u;
+        for(std::size_t slot=0u;slot<count;++slot)
+            native.variables.push_back({"Tile.Input"+std::to_string(slot),"Input"+std::to_string(slot),zero,0x80u,1u});
+        host.argumentSeed=[&host,index,count,zero](std::uint16_t actual,const std::string& receiver,std::size_t slot,
+            const Vm::Function* declaration)->std::optional<Value> {
+            if(actual!=index) return std::nullopt;
+            Require(receiver=="Self" && slot<count && declaration && declaration->nativeIndex==index,
+                "Direct Tile seed lost native receiver, slot or declaration");
+            host.observations.push_back("seed"+std::to_string(slot));return zero;
+        };
+        return native;
+    };
+    for(const auto index:{std::uint16_t{1535u},std::uint16_t{1538u},std::uint16_t{1539u},std::uint16_t{1540u}}) {
+        const bool byte=index==1538u;const auto count=index==1535u?2u:1u;
+        const auto zero=byte?Value::Byte(0u):Value::Float(0.0f);
+        for(std::size_t selected=0u;selected<count;++selected)
+            for(const auto disposition:{Vm::ResultDisposition::NoWrite,Vm::ResultDisposition::ZeroFill})
+                for(const auto bytes:byte?std::vector<unsigned>{0u,1u}:std::vector<unsigned>{0u,1u,2u,3u,4u}) {
+            TestHost host;const auto native=configure(host,index);bool read{};
+            auto alias=std::make_shared<Vm::Reference>();alias->zero=zero;
+            alias->read=[&]() ->Value {read=true;throw std::runtime_error("Unwritten Tile input read stale alias");};
+            std::vector<Vm::Evaluation> inputs(count,{byte?Value::Byte(12u):Value::Float(12.5f),{}});
+            inputs[selected]={byte?Value::Byte(99u):Value::Float(99.0f),alias,disposition,static_cast<std::uint8_t>(bytes)};
+            host.executionNative=[&](const std::string&,const std::vector<Vm::Evaluation>& arguments,const Vm::Function*,Vm::Execution&) {
+                for(const auto& argument:arguments) Require(!argument.reference,"Ordinary Tile input kept an OUT alias");
+                return Vm::Evaluation{arguments[selected].Load(),{}};
+            };
+            const auto result=Vm::Execute(host,native,"Self",inputs);
+            Returned(result,"Direct Tile independently initialized scalar defaults and partial clearing");
+            Require(!read && Vm::Equal(result.value,zero) && result.writes==0u &&
+                host.observations==(count==2u?std::vector<std::string>{"seed0","seed1"}:std::vector<std::string>{"seed0"}),
+                "Tile default read stale storage, used other margin, repeated seed hooks or lost independent +0");
+        }
+        for(const auto number:{-12.5f,-0.0f,0.0f,12.5f}) {
+            if(byte) continue;
+            TestHost host;const auto native=configure(host,index);
+            std::vector<Vm::Evaluation> inputs(count,{Value::Float(number),{}});
+            host.executionNative=[](const std::string&,const std::vector<Vm::Evaluation>& arguments,const Vm::Function*,Vm::Execution&) {
+                for(const auto& argument:arguments) Require(!argument.reference,"Written Tile scalar input kept an OUT alias");
+                return Vm::Evaluation{arguments[0].Load(),{}};
+            };
+            const auto result=Vm::Execute(host,native,"Self",inputs);Returned(result,"Tile input bridge preserves finite negative and signed-zero bits");
+            Require(result.value.kind==Vm::Kind::Float && std::bit_cast<std::uint32_t>(result.value.floating)==std::bit_cast<std::uint32_t>(number),
+                "Tile VM bridge incorrectly clamped or changed signed-zero input before runtime setter");
+        }
+        for(const auto bytes:{byte?2u:5u,255u}) {
+            TestHost host;const auto native=configure(host,index);bool read{};
+            auto alias=std::make_shared<Vm::Reference>();alias->zero=zero;alias->read=[&] {read=true;return zero;};
+            std::vector<Vm::Evaluation> inputs(count,{zero,{}});inputs[0]={zero,alias,Vm::ResultDisposition::ZeroFill,static_cast<std::uint8_t>(bytes)};
+            const auto result=Vm::ExecuteTransaction(host,[&](Vm::Execution& execution) {
+                execution.CallFunction(Function("EarlierTileInputEffect",Join({Native(1000u),Return()})),"Self");
+                try {execution.CallFunction(native,"Self",inputs);}catch(const std::exception&){}return Value{};
+            });
+            Failed(result,Vm::Status::Unsupported,host,"Tile scalar result clearing cannot overflow its audited initialized destination");
+            Require(!read && host.effects==0u && host.rng==12345u && host.nativeIndices==std::vector<std::uint16_t>{1000u},
+                "Overflowing Tile input read stale storage, reached its body or escaped caught-failure rollback");
+        }
+        {
+            TestHost host;const auto result=Vm::Execute(host,Function("TileDoesNotInferGlobalDefault",Return(Native(index,
+                {Context({0x2au},Native(4095u),static_cast<std::uint8_t>(byte?1u:4u))}))),"Self");
+            Failed(result,Vm::Status::Unsupported,host,"Opcode-only Tile default requires runtime-owned native declaration/seed authority");
+            Require(host.nativeArguments.empty(),"Tile native index alone granted an unaudited global result default");
+        }
+    }
+    {
+        TestHost host;const auto native=configure(host,1535u);Value source=Value::Float(-12.5f);
+        auto first=std::make_shared<Vm::Reference>(),second=std::make_shared<Vm::Reference>();
+        first->zero=second->zero=Value::Float(0.0f);
+        first->read=[&] {host.observations.push_back("h-read");return source;};
+        second->read=[&] {host.observations.push_back("v-read");source=Value::Float(99.0f);return Value::Float(23.5f);};
+        host.executionNative=[](const std::string&,const std::vector<Vm::Evaluation>& arguments,const Vm::Function*,Vm::Execution&) {
+            Require(arguments.size()==2u && !arguments[0].reference && !arguments[1].reference,
+                "Direct Tile.SetMargins lost its two copied ordinary inputs");
+            return Vm::Evaluation{Value::Vector({arguments[0].Load().floating,arguments[1].Load().floating,0.0f}),{}};
+        };
+        const auto result=Vm::Execute(host,native,"Self",{{{},first},{{},second}});
+        Returned(result,"Direct Tile.SetMargins copies horizontal input before vertical input source effects");
+        Require(Vm::Equal(result.value,Value::Vector({-12.5f,23.5f,0.0f})) && source.floating==99.0f &&
+            host.observations==std::vector<std::string>{"seed0","seed1","h-read","v-read"},
+            "Tile.SetMargins reread horizontal source, reordered inputs or repeated native hooks");
+    }
+    std::cout<<"Audited Tile native input copies/defaults: "<<checks-initialChecks<<" checks and "
+        <<rejections-initialRejections<<" refusal controls.\n";
 }
 void WindowVisibilityInputContracts() {
     const auto initialChecks=checks,initialRejections=rejections;
@@ -4518,6 +4613,7 @@ int main() {
         IntegerMaximumContracts();
         SequentialNativeArgumentSeedContracts();
         WindowInputSnapshotContracts();
+        TileNativeInputContracts();
         WindowVisibilityInputContracts();
         VectorNativeContracts();
         StartupPrimitiveContracts();

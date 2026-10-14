@@ -191,6 +191,34 @@ void Health() {
     auto shortCanvas=EmptyHudCanvas(4u,4u);
     Reject([&] {DrawHudProgressBar(shortCanvas,0u,100.0f);},"Progress bar leaked beyond destination");
     Reject([&] {(void)OriginalHudScaledColor(std::numeric_limits<float>::infinity());},"Nonfinite health color accepted");
+    const auto tinyBar=OriginalHudProgressBarPresentation(1.9f);
+    Require(tinyBar.height==0u && tinyBar.color.red==255u,"Progress current value was not truncated before height/color");
+    const auto halfway=OriginalHudProgressBarPresentation(40.99f);
+    const auto halfColor=OriginalHudScaledColor(0.4f);
+    Require(halfway.height==22u && halfway.color.red==halfColor.red && halfway.color.green==halfColor.green,
+        "Progress color bypassed original integer-valued current state");
+    for(unsigned n=0u;n<=1000u;++n) {
+        const float percent=static_cast<float>(n)*0.1f;
+        const auto current=static_cast<std::int32_t>(percent);
+        const float fraction=static_cast<float>(current)/100.0f;
+        const auto expectedColor=OriginalHudScaledColor(fraction);
+        const auto actual=OriginalHudProgressBarPresentation(percent);
+        Require(actual.height==static_cast<std::uint32_t>(fraction*55.0f) && actual.color.red==expectedColor.red &&
+            actual.color.green==expectedColor.green && actual.color.blue==expectedColor.blue,
+            "Progress percentage or store order differs from original UpdateBars");
+    }
+    Reject([&] {(void)OriginalHudProgressBarPresentation(std::numeric_limits<float>::max());},"Out-of-domain progress conversion accepted");
+    Font font{7u,{Solid(1u,1u,{255u,255u,255u,255u})}};Glyph glyph;
+    state.energy.reset();state.energyMax.reset();state.breathPercent=5.0f;
+    for(const auto& [timer,red]:{std::pair{0.25f,0u},std::pair{std::nextafter(0.25f,1.0f),255u},
+        std::pair{0.5f,0u},std::pair{0.76f,255u},std::pair{-0.26f,0u},std::pair{-0.0f,0u}}) {
+        state.swimTimer=timer;auto oxygen=EmptyHudCanvas(kHudHealthWidth,kHudHealthHeight);
+        DrawHudHealthText(oxygen,state,font,[&](unsigned) {return &glyph;});
+        Require(Pixel(oxygen,61u,74u)[0u]==red,"Original low-oxygen modulo/strict flash threshold differs");
+    }
+    state.underwater=false;auto dry=EmptyHudCanvas(kHudHealthWidth,kHudHealthHeight);
+    DrawHudHealthText(dry,state,font,[&](unsigned) {return &glyph;});
+    Require(Pixel(dry,61u,74u)[3u]==0u,"Dry HUD displayed oxygen label");
 }
 }
 int main() {

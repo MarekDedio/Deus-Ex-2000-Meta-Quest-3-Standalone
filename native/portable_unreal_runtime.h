@@ -254,6 +254,8 @@ struct PortablePlayerHudSnapshot {
     std::string playerPath, keyRingPath;
     std::array<std::int32_t,6u> limbHealth{}; // Head, torso, arms L/R, legs L/R.
     float energy{}, energyMax{};
+    std::optional<bool> headInWater; // Actual Pawn.HeadRegion.Zone.bWaterZone; absent zone stays unknown.
+    float swimTimer{}, swimDuration{};
     std::vector<PortablePlayerHudItem> inventory; // Actual Inventory chain order.
 };
 // Explicit detached original-script fixture inspection; does not establish
@@ -281,8 +283,9 @@ struct PortableNativeWindowFieldSnapshot {
 struct PortableNativeWindowObjectSnapshot {
     std::string path,classPath,outerPath;
     std::vector<PortableNativeWindowFieldSnapshot> fields;
-    std::vector<std::string> rowMajorWindows,colMajorWindows,tabGroupWindows;
+    std::vector<std::string> rowMajorWindows,colMajorWindows,tabGroupWindows,toggleButtons;
     bool tabOrderDirty{};
+    bool emptyTileRows{};
 };
 struct PortableRootWindowProbeResult {
     QuestVr::Vm::Result execution;

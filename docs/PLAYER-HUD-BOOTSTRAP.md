@@ -102,8 +102,18 @@ separate inventory-list selection or scalar player health.
 The later native root prefix now completes ammo assignment, all six body-part
 records, the lowered body overlay, both original energy/breath ProgressBarWindows
 and crosshair assignment. Its next explicit refusal is the item belt's native
-RadioBoxWindow construction at HUDObjectBelt.CreateSlots PC11, with48 pending
-objects/3391 writes. This diagnostic still rolls back instead of publishing a
+ToggleWindow slot construction at HUDObjectBelt.CreateSlots PC206, with54 pending
+objects/3739 writes. The original RadioBox/Tile containers and Tile setters now
+initialize, with real owned tables and hidden visibility. This diagnostic still rolls back instead of publishing a
 partial root. It does not establish live player possession or make production
 health/belt visible. The complete HUD remains an APK release gate; see
 HUD-COMPLETION.md and ORIGINAL-HUD-CONTRACT.md for the current exact boundary.
+
+Actual HeadRegion.Zone.bWaterZone and player swimTimer/swimDuration now join the
+bound snapshot. Missing head zone stays unknown; no tracking-space height or
+camera-plane heuristic supplies water. A presentation-only oxygen state machine
+preserves first-entry100%, later original arithmetic and exit/hide behavior,
+without advancing the gameplay timer. It resets on player/map/unbind and is
+suppressed with the current visible-frame gates. Original health-visibility
+settings, local/network HUD Tick eligibility and full live underwater gameplay
+acceptance still need integration; this is not evidence of complete swimming.

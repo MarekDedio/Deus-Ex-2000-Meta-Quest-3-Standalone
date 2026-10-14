@@ -104,17 +104,31 @@ audited temporary defaults before snapshotting; unaudited no-result inputs
 remain absent without reading stale aliases. No arbitrary declaration zero is
 used to make an uninitialized Color look written.
 
-The pending graph reaches HUDObjectBelt.CreateSlots PC11 and refuses the next
-native RadioBoxWindow constructor after48 objects/3391 writes. The probe rolls
+The later pending graph reaches HUDObjectBelt.CreateSlots PC206 and refuses the
+native ToggleWindow slot constructor after54 objects/3739 writes. RadioBox and
+TileWindow constructors, actual Modal registration and Tile setters now execute;
+see HUD-NATIVE-BELT.md. The probe rolls
 back the complete graph, names, player edge, GC allocations and save/revision
 state. Root.hud and HUD.belt are still unassigned. Native layout/lifecycle,
 remaining HUD windows, accepted world startup/Login/Possess and real belt
 ownership/activation remain required; this prefix does not satisfy the APK gate.
 
-Verification: full coherent host compilation;79 ordinary CTest passes out of92
+Previous health checkpoint verification: full coherent host compilation;79 ordinary CTest passes out of92
 registered/13 explicit owned-data skips, zero failures,45.80s; separate original
 player/root/health/session/ring2163 checks; VM683869 checks/672 refusal controls;
 original ConsoleCommand65/1; untouched1308-actor world startup repeats its Move266
 boundary and completely rolls back. Runtime/VM/Quest ARM64 syntax-only checks
 pass without generating an Android binary/APK. The commercial assets and original
 Windows executables/DLLs were not modified or executed.
+
+The oxygen increment adds1067 presentation controls plus original integer-valued
+progress height/color and signed-modulo low-O2 flashing tests. The shared HUD
+compositor passes21582 controls; VM684788/684. The genuine bound reader supplies
+actual head-zone and timer values, not a guessed water surface. Missing values
+stay unavailable. Live ownership, HUD settings, swimming/timer gameplay and
+headset acceptance still need completion; no later APK was generated.
+
+The final Radio/Tile/oxygen checkpoint passes80 ordinary CTest tests out of93
+registered (13 explicit owned-data skips), zero failures,30.08s, plus2308 separate
+original-data player/root/container/oxygen-source/session/ring controls. Runtime,
+VM and Quest entry-point ARM64 syntax-only checks pass; no Android binary/APK.

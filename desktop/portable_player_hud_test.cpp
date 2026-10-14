@@ -106,6 +106,15 @@ void VerifyRing(const std::string& player,const std::string& ring) {
         hud.inventory.front().classPath=="DeusEx.NanoKeyRing" &&
         std::all_of(hud.limbHealth.begin(),hud.limbHealth.end(),[](auto health) {return health==100;}),
         "Original player HUD snapshot replaced actual limb or owned inventory state");
+    Require(hud.swimTimer==Declared(player,"DeusEx.DeusExPlayer.swimTimer",Kind::Float).floating &&
+        hud.swimDuration==Declared(player,"DeusEx.DeusExPlayer.swimDuration",Kind::Float).floating,
+        "HUD oxygen reader replaced actual player swim timer/duration");
+    const auto region=Declared(player,"Engine.Pawn.HeadRegion",Kind::Struct);
+    const auto zone=region.fields.at("zone");
+    Require(zone.kind==Kind::Object,"HUD oxygen head zone lacks actual Object storage");
+    if(zone.text.empty()) Require(!hud.headInWater,"HUD oxygen inferred a dry zone from missing state");
+    else Require(hud.headInWater && *hud.headInWater==Declared(zone.text,"Engine.ZoneInfo.bWaterZone",Kind::Bool).boolean,
+        "HUD oxygen did not use the actual declared head-region water flag");
 }
 }
 
@@ -177,9 +186,9 @@ int main(int argc,char** argv) {
         std::cout<<"ORIGINAL root pending graph: "<<pending.execution.function<<':'<<pending.execution.offset<<
             " objects="<<pending.objects.size()<<" writes="<<pending.execution.writes<<" "<<pending.execution.error<<"; inspection="<<pending.inspectionError<<std::endl;
         Require(!pending.execution.passed() && !pending.execution.committed && pending.inspectionError.empty() &&
-            pending.execution.function=="DeusEx.HUDObjectBelt.CreateSlots" && pending.execution.offset==11u &&
-            pending.execution.error=="NewChild native subclass Init is not implemented: extension.radioboxwindow" &&
-            pending.objects.size()==48u &&
+            pending.execution.function=="DeusEx.HUDObjectBelt.CreateSlots" && pending.execution.offset==206u &&
+            pending.execution.error=="NewChild native subclass Init is not implemented: extension.togglewindow" &&
+            pending.objects.size()==54u &&
             pending.rootedWindows==std::vector<std::string>{pending.pawnRootPath},
             "Original root prefix probe did not capture the actual pending native graph: "+pending.inspectionError);
         const auto object=[&](const std::string& path)->const PortableNativeWindowObjectSnapshot& {
@@ -197,7 +206,8 @@ int main(int argc,char** argv) {
             const auto& entry=field(view,key);
             Require(entry.value.kind==Kind::Object && entry.value.text==target &&
                 entry.propertyRoots==(target.empty()?std::vector<std::string>{}:std::vector<std::string>{target}),
-                "Native window reflected/GC edge differs from the original callback: "+key);
+                "Native window reflected/GC edge differs from the original callback: "+view.path+'.'+key+
+                " actual="+entry.value.text+" expected="+target);
         };
         const auto& rootView=object(pending.pawnRootPath);
         Require(rootView.classPath=="DeusEx.DeusExRootWindow" && rootView.outerPath==player,
@@ -237,13 +247,18 @@ int main(int argc,char** argv) {
                 "Hidden native root reconfiguration branch changed visibility or failed to mark Self");
         }
         Require(rootView.rowMajorWindows.empty() && rootView.colMajorWindows.empty() && rootView.tabOrderDirty &&
-            rootView.tabGroupWindows==std::vector<std::string>{rootView.path} &&
-            field(rootView,"Extension.TabGroupWindow.tabGroupIndex").value.integer==0 &&
+            rootView.tabGroupWindows.size()==2u &&
+            std::count(rootView.tabGroupWindows.begin(),rootView.tabGroupWindows.end(),rootView.path)==1 &&
             field(rootView,"Extension.TabGroupWindow.bSizeParentToChildren").value.boolean &&
             !field(rootView,"Extension.TabGroupWindow.bSizeChildrenToParent").value.boolean &&
             field(rootView,"Extension.ModalWindow.focusMode").value.integer==2 &&
             field(rootView,"Extension.ModalWindow.bDirtyAccelerators").value.boolean,
             "Root native TabGroup/Modal initialization omitted its actual self table/flags/focus mode");
+        for(std::size_t index=0u;index<rootView.tabGroupWindows.size();++index) {
+            const auto& group=object(rootView.tabGroupWindows[index]);
+            Require(field(group,"Extension.TabGroupWindow.tabGroupIndex").value.integer==static_cast<std::int32_t>(index),
+                "Native Modal append/resort lost its actual tab group index");
+        }
         edge(rootView,"Extension.ModalWindow.preferredFocus",{});
         for(std::uint32_t slot=0u;slot<255u;++slot) {
             const auto& accelerator=field(rootView,"Extension.ModalWindow.acceleratorTable",slot);
@@ -266,10 +281,63 @@ int main(int argc,char** argv) {
             "Original root did not create its actual HUD/ammo/health/crosshair/belt children");
         const auto& hudView=*hudFound;const auto& ammoView=*ammoFound;
         const auto& hitView=*hitFound;const auto& crossView=*crossFound;const auto& beltView=*beltFound;
+        const auto& radioView=object(field(beltView,"Extension.Window.firstChild").value.text);
+        const auto& slotsView=object(field(beltView,"DeusEx.HUDObjectBelt.winSlots").value.text);
+        Require(radioView.classPath=="Extension.RadioBoxWindow" && radioView.outerPath==beltView.path &&
+            slotsView.classPath=="Extension.TileWindow" && slotsView.outerPath==radioView.path,
+            "Original belt did not construct its actual Radio/Tile hierarchy");
+        edge(beltView,"Extension.Window.lastChild",radioView.path);
+        edge(radioView,"Extension.Window.winParent",beltView.path);edge(radioView,"Extension.Window.parentOwner",beltView.path);
+        edge(radioView,"Extension.Window.prevSibling",{});edge(radioView,"Extension.Window.nextSibling",{});
+        edge(radioView,"Extension.Window.firstChild",slotsView.path);edge(radioView,"Extension.Window.lastChild",slotsView.path);
+        edge(slotsView,"Extension.Window.winParent",radioView.path);edge(slotsView,"Extension.Window.parentOwner",radioView.path);
+        edge(slotsView,"Extension.Window.prevSibling",{});edge(slotsView,"Extension.Window.nextSibling",{});
+        edge(slotsView,"Extension.Window.firstChild",{});edge(slotsView,"Extension.Window.lastChild",{});
+        Require(std::count(rootView.tabGroupWindows.begin(),rootView.tabGroupWindows.end(),radioView.path)==1 &&
+            radioView.tabOrderDirty && radioView.rowMajorWindows.empty() && radioView.colMajorWindows.empty() &&
+            radioView.tabGroupWindows.empty() && radioView.toggleButtons.empty() && !radioView.emptyTileRows &&
+            slotsView.emptyTileRows && !slotsView.tabOrderDirty && slotsView.rowMajorWindows.empty() &&
+            slotsView.colMajorWindows.empty() && slotsView.tabGroupWindows.empty() && slotsView.toggleButtons.empty(),
+            "Native belt constructors fabricated pointer arrays, registered Tile as TabGroup, or retained Toggle entries");
+        Require(field(radioView,"Extension.Window.windowType").value.integer==1 &&
+            field(slotsView,"Extension.Window.windowType").value.integer==0 &&
+            !field(radioView,"Extension.RadioBoxWindow.bOneCheck").value.boolean &&
+            field(radioView,"Extension.RadioBoxWindow.currentSelection").value.text.empty() &&
+            field(radioView,"Extension.TabGroupWindow.bSizeParentToChildren").value.boolean &&
+            !field(radioView,"Extension.TabGroupWindow.bSizeChildrenToParent").value.boolean &&
+            field(radioView,"Extension.TabGroupWindow.firstAbsX").value.floating==0.0f &&
+            field(radioView,"Extension.TabGroupWindow.firstAbsY").value.floating==0.0f,
+            "Native Radio Init/registration or original later bOneCheck=false assignment differs");
+        for(const auto* view:{&radioView,&slotsView}) {
+            Require(field(*view,"Extension.Window.bIsVisible").value.boolean &&
+                field(*view,"Extension.Window.lockCount").value.integer==0 &&
+                field(*view,"Extension.Window.Width").value.floating==10.0f && field(*view,"Extension.Window.Height").value.floating==10.0f,
+                "Native Radio/Tile hidden-ancestor Show published layout or retained its Init lock");
+            for(const auto* font:{"normalFont","boldFont"}) {
+                edge(*view,"Extension.Window."+std::string(font),"Extension.TechMedium");
+                edge(object(field(*view,"Extension.Window.wGc").value.text),"Extension.GC."+std::string(font),"Extension.TechMedium");
+                edge(object(field(*view,"Extension.Window.gGc").value.text),"Extension.GC."+std::string(font),{});
+            }
+        }
+        for(const auto& [name,value]:{std::pair{"hMargin0",10.0f},std::pair{"vMargin0",6.0f},
+            std::pair{"hardcodedWidth",504.0f},std::pair{"hardcodedHeight",54.0f}})
+            Require(field(radioView,"Extension.Window."+std::string(name)).value.floating==value,
+                "Original belt Radio SetSize/SetPos did not preserve requested dimensions");
+        for(const auto& [name,value]:{std::pair{"hMargin",0.0f},std::pair{"vMargin",0.0f},
+            std::pair{"minorSpacing",0.0f},std::pair{"majorSpacing",1.0f}})
+            Require(field(slotsView,"Extension.TileWindow."+std::string(name)).value.floating==value,
+                "Original Tile constructor/default spacing or margin setters differ");
+        for(const auto& [name,value]:{std::pair{"orientation",0},std::pair{"hDirection",1},
+            std::pair{"vDirection",1},std::pair{"hChildAlign",3},std::pair{"vChildAlign",3}})
+            Require(field(slotsView,"Extension.TileWindow."+std::string(name)).value.integer==value,
+                "Original Tile SetOrder7 or constructor alignments differ");
+        Require(field(slotsView,"Extension.TileWindow.bWrap").value.boolean && field(slotsView,"Extension.TileWindow.bFillParent").value.boolean &&
+            !field(slotsView,"Extension.TileWindow.bEqualWidth").value.boolean && field(slotsView,"Extension.TileWindow.bEqualHeight").value.boolean,
+            "Original Tile setters changed unrelated constructor flags");
         edge(rootView,"Extension.Window.firstChild",display.path);edge(rootView,"Extension.Window.lastChild",hudView.path);
         // Ammo, all health children and Cross completed their original Init,
-        // visibility callbacks and unlocks. The belt's first native subclass
-        // constructor is pending, so neither HUD.belt nor Root.hud is assigned.
+        // visibility callbacks and unlocks. The belt containers completed, but
+        // its first Toggle slot is pending: HUD.belt/Root.hud are unassigned.
         edge(rootView,"DeusEx.DeusExRootWindow.hud",{});
         edge(hudView,"DeusEx.DeusExHUD.Ammo",ammoView.path);edge(hudView,"DeusEx.DeusExHUD.hit",hitView.path);
         edge(hudView,"DeusEx.DeusExHUD.Cross",crossView.path);edge(hudView,"DeusEx.DeusExHUD.belt",{});
@@ -289,7 +357,7 @@ int main(int argc,char** argv) {
         edge(crossView,"Extension.Window.prevSibling",hitView.path);edge(crossView,"Extension.Window.nextSibling",beltView.path);
         edge(beltView,"Extension.Window.parentOwner",hudView.path);edge(beltView,"Extension.Window.winParent",hudView.path);
         edge(beltView,"Extension.Window.prevSibling",crossView.path);edge(beltView,"Extension.Window.nextSibling",{});
-        edge(beltView,"Extension.Window.firstChild",{});edge(beltView,"Extension.Window.lastChild",{});
+        edge(beltView,"Extension.Window.firstChild",radioView.path);edge(beltView,"Extension.Window.lastChild",radioView.path);
         Require(hudView.outerPath==rootView.path && ammoView.outerPath==hudView.path &&
             hitView.outerPath==hudView.path && crossView.outerPath==hudView.path && beltView.outerPath==hudView.path &&
             !field(hudView,"Extension.Window.bIsVisible").value.boolean &&
@@ -507,7 +575,7 @@ int main(int argc,char** argv) {
         std::cout<<"ORIGINAL unbound root initialization boundary: "<<rootAttempt.function<<':'<<rootAttempt.offset<<
             " opcode="<<unsigned(rootAttempt.opcode)<<" "<<rootAttempt.error<<std::endl;
         Require(!rootAttempt.passed() && !rootAttempt.committed && rootAttempt.function=="DeusEx.HUDObjectBelt.CreateSlots" &&
-            rootAttempt.offset==11u && rootAttempt.error=="NewChild native subclass Init is not implemented: extension.radioboxwindow" &&
+            rootAttempt.offset==206u && rootAttempt.error=="NewChild native subclass Init is not implemented: extension.togglewindow" &&
             std::find(rootAttempt.callStack.begin(),rootAttempt.callStack.end(),"DeusEx.DeusExRootWindow.InitWindow")!=rootAttempt.callStack.end(),
             "Native1052 did not construct/dispatch original root without a fabricated client prerequisite");
         const auto windowsAfter=ReadPortableRuntimeNativeWindowSummary();

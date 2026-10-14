@@ -55,8 +55,10 @@ six health body-part windows now receive their original textures, translucent
 GC styles, requested geometry and colors. The body overlay is lowered beneath
 them with its original armor color. Both energy/breath ProgressBarWindows and
 the crosshair initialize and are assigned to the actual pending HUD. The next
-original boundary is HUDObjectBelt.CreateSlots PC11: the native RadioBoxWindow
-constructor is not implemented. The diagnostic captures48 objects/3391 writes;
+original boundary is HUDObjectBelt.CreateSlots PC206: the native ToggleWindow
+slot constructor is not implemented. RadioBox/TileWindow construction, Modal
+tab registration, hidden visibility and Tile margin/spacing/order setters now
+execute. The diagnostic captures54 objects/3739 writes;
 this is still an unpublished, rolled-back initialization prefix, not live health.
 Native Root modal self-list, constructor flags, preserved CDO fields and255
 key/accelerator slots are checked
@@ -64,12 +66,14 @@ directly before rollback. This is still a pending construction graph. Full nativ
 window construction, layout, lifecycle/input/rendering, player Login/Possess and
 the remaining HUD behavior still need implementation and integration tests.
 Unsupported callbacks refuse and roll back instead of publishing a partial HUD.
-The coherent host suite passes79 ordinary tests/92 registered, with13 explicit
-owned-data skips and zero failures (45.80s alongside original-data probes).
-The separate owned-data control passes2163 checks, including the expanded
-health/belt prefix, all sibling/GC/color edges, repeated initialization, forced
-write-budget rollback and warm/cold ring/session ownership. ARM64 syntax-only
-checks pass for runtime, VM and Quest entry point; no Android binary/APK was made.
+The coherent host suite passes80 ordinary tests/93 registered,13 explicit
+owned-data skips, zero failures (30.08s alongside original-data probes).
+The separate owned-data control passes2308 checks, including actual Radio/Tile
+hierarchy, native table indices, original properties, oxygen sources, repeated
+initialization, forced-budget rollback and warm/cold ring/session ownership.
+Runtime/VM/Quest ARM64 syntax-only checks pass. The87 original-artwork controls
+also pass with unchanged source files; inspected software previews are explicit
+fixtures, not live Quest health/equipment acceptance. No Android binary/APK was made.
 These results do not satisfy the full-HUD functional acceptance checklist above.
 
 The six-limb presentation clock now follows the original .4s damage flash,
@@ -77,14 +81,24 @@ The six-limb presentation clock now follows the original .4s damage flash,
 the script would early-return. The bound-player rendering path ticks it per
 visible frame over bounded10Hz real-state reads, uploads changed images only,
 and resets presentation on player/map/unbind.357 offline checks pass. This is
-not evidence that live possession, underwater oxygen or the full HUD is ready.
+not evidence that live possession or the full HUD is ready. A separate oxygen
+presentation helper now preserves the original entry-tick100%, later actual
+swimTimer/swimDuration arithmetic, exit/hide behavior and gate/reset rules;
+1067 tests pass. The bound-player reader supplies actual HeadRegion.Zone water
+state and swim fields; the Quest compositor consumes them without advancing
+gameplay timers. Missing actual head zone stays unknown. Live underwater
+gameplay/possession and device acceptance remain unproved. Original progress
+bars now truncate through SetCurrentValue's Int conversion before height/color,
+and low-O2 label flashing follows signed Float modulo and the strict.25 threshold.
 
 Startup fixes now include the real PlayerNone ConsoleCommand guard, FMax,
 sign-preserving Abs and signed integer Max/Clamp primitives. Audited native
 argument buffers distinguish initialized defaults from SetTileColor's
 uninitialized four-byte Color destination; absent or partial Color writes are
-refused rather than filled from invented defaults. The VM passes683869 checks
-and672 refusal controls. Independent qualified instance storage also preserves
+refused rather than filled from invented defaults. Tile setters copy each
+initialized Float/Byte input separately; no global default seed is inferred
+from an opcode. The VM passes684788 checks and684 refusal controls.
+Independent qualified instance storage also preserves
 Actor.Region's PointRegion separately from GameReplicationInfo.Region's Int,
 including save/load. Hidden inherited class-default writes remain unsupported;
 instance support must not be presented as completed mutable-CDO shadow support.
