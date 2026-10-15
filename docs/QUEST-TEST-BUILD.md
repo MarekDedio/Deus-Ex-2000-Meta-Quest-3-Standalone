@@ -1,6 +1,53 @@
 # Current Quest test-build handoff (2026-10-15)
 
-## Contextual quickbar and separated speech HUD (2026-10-15)
+## Tracked keyring, knife and crowbar / quiet trigger (2026-10-15)
+
+The accepted HUD placement remains. Right trigger now uses the equipped item
+without revealing the quickbar or extending its display window. Right grip
+still cycles/reveals and can hold the bar open; right-stick click selects the
+keyring. A-pickups and closing Inventory retain their brief selection feedback.
+
+Original full right-hand-plus-item assemblies replace the generic right hand
+for the native starter keyring and actual equipped CombatKnife/Crowbar actors.
+They track RightRemotePose in canonical grip-local meters. No duplicate hand,
+pickup-mesh substitution, model reload at equip or original Pawn claim is made.
+All textures/geometry are prepared before gameplay and retained across maps.
+Unsupported/mismatched/removed items fall back explicitly to the generic hand.
+
+Melee uses original typed base damage/range; trigger/controller-ray targeting
+remains, not original Fire/skill modifiers, attack animation or physical swings.
+Other item variants, firearms/ammo fidelity and breakable crates remain open.
+See HELD-ITEM-VISUALS.md for source contracts and bounds.
+
+Full coherent host build/CTest:92 passes/106 registered,14 explicit owned-data
+skips, zero failures in17.78s. Expanded actual collected/equipped metadata
+contract2016/16 refusal controls passes; cache1007448/42 also passes.
+
+Signed ARM64 APK:
+`artifacts/held-items-20261015/DeusExQuestVR-tracked-held-items-20261015.apk`
+(33,909,870 bytes), SHA256
+`155DF306966C77E523A0F326CC82D5892B18DDDA009FC0ACF28539016A2B4168`.
+Final Android build succeeds in1m1s; APK v2 signature verifies. Automatically
+replace-installed without clearing data on Quest3 `2G0YC5ZG620985`, update
+2026-10-15 11:45:24, launched process8708. Installed base.apk SHA256 matches.
+
+Exact-build1680x1760 Quest captures were inspected:
+`artifacts/held-items-20261015/quest-held-live-20261015.bmp` shows the original
+keyring and right hand, and `quest-held-followup-20261015.bmp` in the same folder
+shows the original crowbar and right hand. The generic left hand remains;
+there is no duplicate generic right hand. HELDSTATE confirms the corresponding
+native ring/actual Crowbar actor, cacheReady1/drawReady1/rightTracked1, with
+Crowbar base damage6/range80 original units. Live selection also resolves the
+actual CombatKnife actor with base damage5/range80. Knife capture and physical
+alignment/comfort acceptance are not inferred from those selection logs.
+
+Idle HUDSTATE records health1/compass1/belt0/alpha0 and grip0/trigger0. The human
+trigger-only test and palm-up/down acceptance are still pending. Steady timing
+windows reach72fps/13.89ms; screenshot readback produces slow frames, so this is
+not a complete performance pass. HELDSTATE is a read-only presentation diagnostic;
+HUDSTATE now includes grip/trigger values for the quiet-use check.
+
+## Previous installed build: contextual quickbar and separated speech HUD (2026-10-15)
 
 User-priority changes: Jaime/NPC portrait/text no longer covers health or compass.
 The original431x114 speech canvas is placed immediately to the column's right,

@@ -50,6 +50,9 @@
 #include "quest_vr_input.h"
 #include "quest_inventory_navigation.h"
 #include "quest_player_visual.h"
+#include "quest_held_item_assets.h"
+#include "quest_equipped_item_visual.h"
+#include "quest_held_visual_cache.h"
 #include "quest_player_posture.h"
 #include "quest_ground_probe.h"
 #include "quest_targeting_frame.h"
@@ -604,6 +607,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         ui_.Shutdown();
         DestroyOriginalPlayerHudUi();
         DestroyPlayerVisuals();
+        DestroyHeldItemVisuals();
         ClearPendingStaticLightmapUpload();
         DestroySceneGeometry();
         BakedWorldGeometryRenderer::ShutdownSharedProgram();
@@ -848,6 +852,11 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         currentHeadStage_ = previousHeadStage_ = {};
         sceneYaw_ = 0.0f;
         selectedInventoryIndex_ = 0u;
+        heldVisualCache_.Reset();
+        selectedHeldVisual_.reset();
+        equippedMeleeProfile_.reset();
+        heldEquippedIdentity_.clear();
+        playerVisualsCanRender_=false;
         inventoryNavigation_ = {};
         inventoryLayoutCached_ = false;
         debugHudVisible_ = true;
@@ -1036,6 +1045,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
 
     void Update(const OVRFW::ovrApplFrameIn& frame) override {
         healthUiVisible_=beltUiVisible_=false;
+        playerVisualsCanRender_=false;
         // Release any stale held input even through tracking/startup returns.
         // Time is presentation-only and never depends on runtime ownership.
         quickBeltVisibility_.SetHeld(false);
@@ -1133,7 +1143,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         }
         const bool gameplayActive = playerAlive && !mapLoading && !inventoryMenuOpen_;
         quickBeltVisibility_.SetHeld(gameplayActive && Focused && frame.RightRemoteTracked &&
-            (frame.RightRemoteGripTrigger>0.75f || frame.RightRemoteIndexTrigger>0.75f));
+            frame.RightRemoteGripTrigger>0.75f);
         if (gameplayActive && Focused && !AdvanceRuntimeMoverPublication(frame.DeltaSeconds)) return;
         if (gameplayActive && Focused) PollTouchDataLinks(frame.DeltaSeconds);
         if (!mapLoading && !inventoryMenuOpen_ && frame.LeftRemoteTracked &&
@@ -1284,7 +1294,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             } else {
                 const auto path=inventoryNavigation_.SelectedIdentity();
                 const bool equipped=EquipPortableRuntimeInventoryItem(path);
-                if(equipped) quickBeltVisibility_.Reveal();
+                if(equipped) {quickBeltVisibility_.Reveal();heldVisualCache_.Invalidate();}
                 interactionStatus_ = equipped ? "EQUIPPED " + SelectedInventoryDisplayName() : "ITEM CANNOT BE EQUIPPED";
                 inventoryActionStatus_ = interactionStatus_;
                 hudQuerySeconds_=0.0f;
@@ -1303,11 +1313,10 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         const bool firePressed = frame.RightRemoteIndexTrigger > 0.75f;
         if (gameplayActive && pendingMapName_.empty() && transitionMapName_.empty() &&
             frame.RightRemoteTracked && firePressed && !fireLatch_) {
-            quickBeltVisibility_.Reveal();
             const std::vector<std::string> inventory = GetPortableRuntimeInventoryItems();
             const float weaponDamage = SelectedWeaponDamage(inventory);
             if (PortableRuntimeKeyRingEquipped()) {
-                if(UseTargetedActor(frame.RightRemotePointPose) && pendingMapName_.empty() && transitionMapName_.empty())
+                if(UseTargetedActor(frame.RightRemotePointPose,false) && pendingMapName_.empty() && transitionMapName_.empty())
                     if(!TryRebuildRuntimeActorPublication()) return;
             } else if (weaponDamage <= 0.0f) {
                 const auto selected=GetPortableRuntimeEquippedItem();
@@ -1331,6 +1340,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             frame.RightRemoteTracked && gripPressed && !inventoryCycleLatch_) {
             quickBeltVisibility_.Reveal();
             CyclePortableRuntimeQuickBelt(1);
+            heldVisualCache_.Invalidate();
             const auto selected=GetPortableRuntimeEquippedItem();
             EnsureInventoryNavigation(GetPortableRuntimeInventoryItems());
             if(!inventoryNavigation_.SelectIdentity(selected)) selectedInventoryIndex_=invalidRendererIndex_;
@@ -1343,6 +1353,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             quickBeltVisibility_.Reveal();
             const auto belt=ReadPortableRuntimeQuickBelt();
             if(belt.slots[0u]) EquipPortableRuntimeInventoryItem(belt.slots[0u]->actorPath);
+            heldVisualCache_.Invalidate();
             interactionStatus_="EQUIPPED KEY RING";interactionStatusSeconds_=2.0f;hudQuerySeconds_=0.0f;
         }
         if (!mapLoading && pendingMapName_.empty() && transitionMapName_.empty() &&
@@ -1432,6 +1443,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         UpdateOriginalDataLinkUi(frame,mapLoadingNow);
         UpdateOriginalCompassUi(frame,mapLoadingNow);
         UpdateOriginalPlayerHudUi(frame,mapLoadingNow);
+        UpdateHeldItemVisualSelection(frame.DeltaSeconds,mapLoadingNow);
         if (subtitleLabel_ != nullptr) {
             auto pose = frame.HeadPose;
             pose.Translation += pose.Rotation.Rotate({0.0f,-0.35f,-1.4f});
@@ -1461,12 +1473,20 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         }
         if(hudStateDiagnosticRequested_) {
             hudStateDiagnosticRequested_=false;
-            ALOG("DeusExQuest: HUD presentation health=%d compass=%d speech=%d belt=%d alpha=%.3f; speech center=(%.4f %.4f) size=(%.4f %.4f); belt centerY=%.3f eyeFacing=true",
+            ALOG("DeusExQuest: HUD presentation health=%d compass=%d speech=%d belt=%d alpha=%.3f; speech center=(%.4f %.4f) size=(%.4f %.4f); belt centerY=%.3f eyeFacing=true grip=%.3f trigger=%.3f",
                 static_cast<int>(healthUiVisible_),static_cast<int>(compassUiVisible_),
                 static_cast<int>(dataLinkUiVisible_),static_cast<int>(beltUiVisible_),quickBeltVisibility_.Alpha(),
                 QuestVr::kHudDataLinkCenterX,QuestVr::kHudDataLinkCenterY,
                 QuestVr::kHudDataLinkHalfWidth*2.0f,QuestVr::kHudDataLinkHalfHeight*2.0f,
-                QuestVr::kPlayableBeltCenterY);
+                QuestVr::kPlayableBeltCenterY,frame.RightRemoteGripTrigger,frame.RightRemoteIndexTrigger);
+        }
+        if(heldStateDiagnosticRequested_) {
+            heldStateDiagnosticRequested_=false;
+            ALOG("DeusExQuest: held presentation equipment=%s model=%s cacheReady=%d drawReady=%d rightTracked=%d meleeDamage=%d rangeUnits=%d",
+                heldEquippedIdentity_.c_str(),selectedHeldVisual_?heldItemKeys_[*selectedHeldVisual_].playerViewMesh.c_str():"generic hand",
+                static_cast<int>(heldItemVisualsReady_),static_cast<int>(playerVisualsCanRender_),
+                static_cast<int>(frame.RightRemoteTracked),equippedMeleeProfile_?equippedMeleeProfile_->hitDamageOriginal:0,
+                equippedMeleeProfile_?equippedMeleeProfile_->maxRangeOriginal:0);
         }
         ui_.Update(frame);
     }
@@ -1658,6 +1678,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         preparedWorldMesh_ = {};
         ClearPendingStaticLightmapUpload();
         DestroyPlayerVisuals();
+        DestroyHeldItemVisuals();
         if (pendingWorldTextureId_ != 0u) {
             glDeleteTextures(1, &pendingWorldTextureId_);
             pendingWorldTextureId_ = 0u;
@@ -1967,6 +1988,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         AmbientPreparation ambient;
         PersonaPreparation persona;
         QuestVr::PlayerVisualAssets playerVisuals;
+        QuestVr::HeldItemVisualAssets heldItemVisuals;
     };
 
     static InitialPreparation PrepareInitialRuntime(
@@ -2006,6 +2028,10 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             if (!preparation.playerVisuals.passed)
                 ALOG("DeusExQuest: original player visuals unavailable: %s",
                     preparation.playerVisuals.error.c_str());
+            preparation.heldItemVisuals=QuestVr::LoadOriginalHeldItemAssets(gameRoot_);
+            if(!preparation.heldItemVisuals.passed)
+                ALOG("DeusExQuest: original held-item CPU preparation unavailable: %s",
+                    preparation.heldItemVisuals.error.c_str());
             map.passed = map.runtimeAvailable = true;
             preparation.passed = true;
         } catch (const std::exception& error) {
@@ -2051,6 +2077,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         }
         CommitOriginalPersonaBackground(std::move(preparation.persona));
         CommitPlayerVisuals(std::move(preparation.playerVisuals));
+        CommitHeldItemVisuals(std::move(preparation.heldItemVisuals));
         preparedActorSnapshots_ = std::move(preparation.map.actors);
         preparedActorTextures_ = std::move(preparation.map.actorTextures);
         preparedWorldTexture_ = std::move(preparation.map.worldTexture);
@@ -2064,6 +2091,139 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         transitionPhase_ = MapTransitionPhase::WorldTextureAllocate;
         displayedInventoryCount_ = invalidRendererIndex_;
         ALOG("DeusExQuest: initial CPU preparation committed; staged Training GPU upload pending");
+    }
+
+    void DestroyHeldItemVisuals() {
+        selectedHeldVisual_.reset();
+        heldEquippedIdentity_.clear();equippedMeleeProfile_.reset();
+        heldVisualCache_.Reset();heldItemVisualsReady_=false;playerVisualsCanRender_=false;
+        for(auto& variant:heldItemGpu_) {
+            for(auto& renderer:variant.renderers) renderer.Shutdown();
+            variant.renderers.clear();
+            for(auto& texture:variant.textures) if(texture.IsValid()) OVRFW::FreeTexture(texture);
+            variant.textures.clear();
+        }
+        heldItemKeys_={};
+    }
+
+    void CommitHeldItemVisuals(QuestVr::HeldItemVisualAssets assets) {
+        DestroyHeldItemVisuals();
+        if(!assets.passed) return; // Retain the already accepted generic hands.
+        try {
+            for(std::size_t index=0u;index<assets.variants.size();++index) {
+                const auto& asset=assets.variants[index];
+                const auto plan=QuestVr::BuildPlayerVisualTextureUploadPlan(asset.textures);
+                if(asset.rightHandAndItem.triangles.empty())
+                    throw std::runtime_error("Prepared held assembly has no original geometry");
+                auto& gpu=heldItemGpu_[index];
+                gpu.textures.resize(plan.size());
+                for(const auto& upload:plan) {
+                    GLuint texture{};glGenTextures(1,&texture);
+                    gpu.textures.at(upload.textureIndex)=OVRFW::GlTexture(texture,GL_TEXTURE_2D_ARRAY,
+                        static_cast<int>(upload.width),static_cast<int>(upload.height));
+                    glBindTexture(GL_TEXTURE_2D_ARRAY,texture);
+                    glTexStorage3D(GL_TEXTURE_2D_ARRAY,1,GL_RGBA8,upload.width,upload.height,1);
+                    glTexSubImage3D(GL_TEXTURE_2D_ARRAY,0,0,0,0,upload.width,upload.height,1,
+                        GL_RGBA,GL_UNSIGNED_BYTE,asset.textures.at(upload.textureIndex).image.rgba.data());
+                    glTexParameteri(GL_TEXTURE_2D_ARRAY,GL_TEXTURE_WRAP_S,GL_REPEAT);
+                    glTexParameteri(GL_TEXTURE_2D_ARRAY,GL_TEXTURE_WRAP_T,GL_REPEAT);
+                    glTexParameteri(GL_TEXTURE_2D_ARRAY,GL_TEXTURE_MIN_FILTER,GL_LINEAR);
+                    glTexParameteri(GL_TEXTURE_2D_ARRAY,GL_TEXTURE_MAG_FILTER,GL_LINEAR);
+                }
+                glBindTexture(GL_TEXTURE_2D_ARRAY,0);
+                if(glGetError()!=GL_NO_ERROR) throw std::runtime_error("Original held texture upload failed");
+                std::map<std::pair<std::uint32_t,std::uint32_t>,OVRFW::GlGeometry::Descriptor> groups;
+                for(const auto& triangle:asset.rightHandAndItem.triangles) {
+                    const auto flags=triangle.polyFlags|asset.textures.at(triangle.textureIndex).polyFlags;
+                    auto& group=groups[{triangle.textureIndex,flags}];
+                    if(group.attribs.position.size()+3u>65535u)
+                        throw std::runtime_error("Prepared held assembly exceeds its GPU index budget");
+                    for(const auto& vertex:triangle.vertices) {
+                        group.indices.push_back(static_cast<std::uint16_t>(group.attribs.position.size()));
+                        group.attribs.position.emplace_back(vertex.position.x,vertex.position.y,vertex.position.z);
+                        group.attribs.normal.emplace_back(vertex.normal.x,vertex.normal.y,vertex.normal.z);
+                        group.attribs.uv0.emplace_back(vertex.u,vertex.v);
+                        group.attribs.color.emplace_back(0.0f,1.0f,1.0f,1.0f);
+                    }
+                }
+                for(const auto& [key,descriptor]:groups) {
+                    const auto [textureIndex,flags]=key;
+                    gpu.renderers.emplace_back();
+                    gpu.renderers.back().Init(descriptor,gpu.textures.at(textureIndex),
+                        QuestVr::CullPlayerVisualPart(1u,flags),flags);
+                }
+                if(glGetError()!=GL_NO_ERROR) throw std::runtime_error("Original held geometry upload failed");
+                auto& key=heldItemKeys_[index];
+                key.classPath=asset.classPath;key.playerViewMesh=asset.meshPath;
+                key.playerViewScale=asset.playerViewScale;key.skin=asset.materialOverrides.skin.path;
+                for(std::size_t skin=0u;skin<key.multiSkins.size();++skin)
+                    key.multiSkins[skin]=asset.materialOverrides.multiSkins[skin].path;
+                key.supportsNativeStarterKeyRing=asset.supportsNativeStarterKeyRing;
+                ALOG("DeusExQuest: held assembly GPU ready class=%s mesh=%s surfaces=%zu original=%zu derivedCuff=%zu nativeTextures=%zu",
+                    key.classPath.c_str(),key.playerViewMesh.c_str(),gpu.renderers.size(),
+                    asset.rightHandAndItem.originalTriangleCount,asset.rightHandAndItem.derivedClosureTriangleCount,
+                    gpu.textures.size());
+            }
+            heldItemVisualsReady_=true;
+        } catch(const std::exception& error) {
+            DestroyHeldItemVisuals();
+            ALOG("DeusExQuest: held assembly GPU rejected; generic hands retained: %s",error.what());
+        }
+    }
+
+    bool CanReadEquippedItemVisual() const {
+        return runtimeAvailable_ && !initialPreparationPending_ && !initialPreparationFuture_.valid() &&
+            !mapCacheFuture_.valid() && pendingMapName_.empty() && transitionMapName_.empty();
+    }
+
+    void UpdateHeldItemVisualSelection(float seconds,bool mapLoading) {
+        // Only the frame owner may inspect the live equipment graph. Rendering
+        // consumes this detached result and never touches runtime or packages.
+        if(mapLoading || !CanReadEquippedItemVisual()) {
+            selectedHeldVisual_.reset();heldEquippedIdentity_.clear();equippedMeleeProfile_.reset();
+            heldVisualCache_.Invalidate();return;
+        }
+        playerVisualsCanRender_=!inventoryMenuOpen_ && GetPortableRuntimePlayerHealth()>0.0f;
+        std::string observedEquipment;
+        std::uint64_t observedRevision{};
+        bool observed{};
+        try {
+            heldVisualCache_.Tick(seconds);
+            const auto revision=GetPortableRuntimeWorldRevision();
+            // Reconciliation inspects owned inventory. Do not repeat it at
+            // display frequency; input/mutation paths invalidate immediately.
+            if(!heldVisualCache_.NeedsRefresh(heldEquippedIdentity_,currentMapName_,revision)) return;
+            observedEquipment=heldEquippedIdentity_;observedRevision=revision;observed=true;
+            const auto equipped=GetPortableRuntimeEquippedItem();
+            observedEquipment=equipped;observedRevision=revision;observed=true;
+            const auto previous=selectedHeldVisual_;
+            const bool identityChanged=equipped!=heldEquippedIdentity_;
+            selectedHeldVisual_.reset();equippedMeleeProfile_.reset();heldEquippedIdentity_=equipped;
+            std::optional<PortableHeldItemVisualDescriptor> descriptor;
+            if(!equipped.empty() && !QuestVr::EquippedItemVisualDetail::Same(equipped,QuestVr::kQuickBeltKeyRingIdentity))
+                descriptor=ReadPortableRuntimeHeldItemVisualDescriptor(equipped);
+            const auto* actual=descriptor?&*descriptor:nullptr;
+            equippedMeleeProfile_=QuestVr::ResolveEquippedMeleeProfile(equipped,actual);
+            const auto prepared=heldItemVisualsReady_?std::span<const QuestVr::PreparedHeldVisualKey>(heldItemKeys_):
+                std::span<const QuestVr::PreparedHeldVisualKey>{};
+            const auto selected=QuestVr::SelectEquippedItemVisual(equipped,actual,prepared);
+            if(selected.preparedIndex && *selected.preparedIndex<heldItemGpu_.size() &&
+                !heldItemGpu_[*selected.preparedIndex].renderers.empty()) selectedHeldVisual_=selected.preparedIndex;
+            heldVisualCache_.Refreshed(equipped,currentMapName_,revision);
+            heldItemVisualError_.clear();
+            if(identityChanged || previous!=selectedHeldVisual_)
+                ALOG("DeusExQuest: held selection equipment=%s model=%s status=%u meleeDamage=%d rangeUnits=%d",
+                    equipped.c_str(),selectedHeldVisual_?heldItemKeys_[*selectedHeldVisual_].playerViewMesh.c_str():"generic hand",
+                    static_cast<unsigned>(selected.status),equippedMeleeProfile_?equippedMeleeProfile_->hitDamageOriginal:0,
+                    equippedMeleeProfile_?equippedMeleeProfile_->maxRangeOriginal:0);
+        } catch(const std::exception& error) {
+            selectedHeldVisual_.reset();equippedMeleeProfile_.reset();
+            if(observed) heldVisualCache_.Refreshed(observedEquipment,currentMapName_,observedRevision);
+            else heldVisualCache_.Invalidate();
+            if(heldItemVisualError_!=error.what()) {
+                heldItemVisualError_=error.what();ALOG("DeusExQuest: held selection unavailable: %s",error.what());
+            }
+        }
     }
 
     void DestroyPlayerVisuals() {
@@ -2144,10 +2304,8 @@ class DeusExQuestApp final : public OVRFW::XrApp {
 
     std::size_t RenderPlayerVisuals(const OVRFW::ovrApplFrameIn& frame,
         std::vector<OVRFW::ovrDrawSurface>& surfaces) {
-        // A render-only first increment. No new runtime pawn, save properties,
-        // arm/finger IK or animation lifecycle is fabricated by these visuals.
-        if (!runtimeAvailable_ || !pendingMapName_.empty() || !transitionMapName_.empty() ||
-            GetPortableRuntimePlayerHealth() <= 0.0f || inventoryMenuOpen_) return 0u;
+        // Cached presentation only: a startup/map worker may own the runtime.
+        if(!playerVisualsCanRender_ || !headTrackingValid_ || !Focused) return 0u;
         std::size_t bodySurfaces{};
         const OVR::Posef body = QuestVr::FeetLocalSelfBodyPose(
             frame.HeadPose,selfBodyStageYaw_,playerPosture_.virtualFloorY);
@@ -2159,6 +2317,15 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             frame.RightRemoteTracked,frame.LeftRemoteTracked};
         for (std::size_t part = 0u; part < 3u; ++part) {
             if (!visible[part]) continue;
+            if(part==1u && selectedHeldVisual_ && *selectedHeldVisual_<heldItemGpu_.size()) {
+                const auto index=*selectedHeldVisual_;
+                if(!heldItemGpu_[index].renderers.empty()) {
+                    for(auto& renderer:heldItemGpu_[index].renderers) {
+                        renderer.SetPose(frame.RightRemotePose);renderer.Update();renderer.Render(surfaces);
+                    }
+                    continue; // Replace the generic right hand, never overlay it.
+                }
+            }
             for (auto& renderer : playerVisualRenderers_[part]) {
                 renderer.SetPose(poses[part]);
                 renderer.Update();
@@ -3865,6 +4032,10 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             hudStateDiagnosticRequested_=true;
             return;
         }
+        if(std::strcmp(requested,"HELDSTATE")==0) {
+            heldStateDiagnosticRequested_=true;
+            return;
+        }
         if (std::strcmp(requested, "SEATED") == 0 || std::strcmp(requested, "STANDING") == 0) {
             SetPlayerPosture(std::strcmp(requested,"SEATED") == 0,true);
             return;
@@ -4299,7 +4470,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         }
     }
 
-    bool UseTargetedActor(const OVR::Posef& pointerPose) {
+    bool UseTargetedActor(const OVR::Posef& pointerPose,bool revealPickup=true) {
         if (!runtimeAvailable_ || ActorPublicationBlocksGameplay() ||
             !pendingMapName_.empty() || !transitionMapName_.empty()) return false;
         float bestDistance = 3.0f;
@@ -4315,7 +4486,10 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                 ? interaction.action + ": " + actorName
                 : "CANNOT USE: " + actorName;
             interactionStatusSeconds_ = 3.0f;
-            if(interaction.handled && interaction.action=="pickup") quickBeltVisibility_.Reveal();
+            if(interaction.handled && interaction.action=="pickup") {
+                if(revealPickup) quickBeltVisibility_.Reveal();
+                heldVisualCache_.Invalidate();
+            }
             if (interaction.action == "conversation") ShowDialogue(best->objectPath);
             ALOG(
                 "DeusExQuest: VR use %s on %s (%s) at %.2fm; inventory=%zu",
@@ -5807,6 +5981,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         }
         const float after = HealPortableRuntimePlayer(healing);
         const std::size_t remaining = GetPortableRuntimeInventoryCount();
+        heldVisualCache_.Invalidate();
         inventoryLayoutCached_ = false;
         hudQuerySeconds_=0.0f;
         EnsureInventoryNavigation(GetPortableRuntimeInventoryItems());
@@ -5822,8 +5997,16 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         return true;
     }
 
-    static float SelectedWeaponDamage(const std::vector<std::string>& inventory) {
+    std::optional<QuestVr::EquippedMeleeProfile> CurrentEquippedMeleeProfile() const {
+        if(!equippedMeleeProfile_ || !CanReadEquippedItemVisual()) return {};
+        const auto current=GetPortableRuntimeEquippedItem();
+        if(!QuestVr::EquippedItemVisualDetail::Same(current,heldEquippedIdentity_)) return {};
+        return equippedMeleeProfile_;
+    }
+
+    float SelectedWeaponDamage(const std::vector<std::string>& inventory) {
         static_cast<void>(inventory);
+        if(const auto melee=CurrentEquippedMeleeProfile()) return static_cast<float>(melee->hitDamageOriginal);
         const std::string item = EquippedInventoryLabel();
         if (item.find("Weapon") == std::string::npos) return 0.0f;
         if (item.find("GEP") != std::string::npos || item.find("LAW") != std::string::npos) return 80.0f;
@@ -5834,7 +6017,8 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         return 18.0f;
     }
 
-    static bool SelectedWeaponHasAmmo(const std::vector<std::string>& inventory) {
+    bool SelectedWeaponHasAmmo(const std::vector<std::string>& inventory) {
+        if(CurrentEquippedMeleeProfile()) return true;
         const std::string weapon = EquippedInventoryLabel();
         if (weapon.find("Weapon") == std::string::npos) return false;
         if (weapon.find("Crowbar") != std::string::npos ||
@@ -5865,8 +6049,9 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         return true;
     }
 
-    static float SelectedWeaponRange(const std::vector<std::string>& inventory) {
+    float SelectedWeaponRange(const std::vector<std::string>& inventory) {
         static_cast<void>(inventory);
+        if(const auto melee=CurrentEquippedMeleeProfile()) return static_cast<float>(melee->maxRangeOriginal)/52.5f;
         const std::string item = EquippedInventoryLabel();
         if (item.find("Crowbar") != std::string::npos ||
             item.find("Baton") != std::string::npos ||
@@ -6065,6 +6250,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             ALOG("DeusExQuest: VR quick-load runtime failed");
             return false;
         }
+        heldVisualCache_.Invalidate();selectedHeldVisual_.reset();equippedMeleeProfile_.reset();
         ResetActorRemovalState();
         inventoryLayoutCached_ = false;
         ClearPendingConversation();
@@ -7549,6 +7735,18 @@ class DeusExQuestApp final : public OVRFW::XrApp {
     std::deque<BakedWorldGeometryRenderer> bakedWorldRenderers_;
     std::array<std::deque<TexturedGeometryRenderer>,3> playerVisualRenderers_;
     std::array<OVRFW::GlTexture,8> playerVisualTextures_;
+    struct HeldItemGpuVariant {
+        std::deque<TexturedGeometryRenderer> renderers;
+        std::vector<OVRFW::GlTexture> textures;
+    };
+    std::array<HeldItemGpuVariant,3> heldItemGpu_;
+    std::array<QuestVr::PreparedHeldVisualKey,3> heldItemKeys_;
+    QuestVr::HeldVisualCache heldVisualCache_;
+    std::optional<std::size_t> selectedHeldVisual_;
+    std::optional<QuestVr::EquippedMeleeProfile> equippedMeleeProfile_;
+    std::string heldEquippedIdentity_,heldItemVisualError_;
+    bool heldItemVisualsReady_{},playerVisualsCanRender_{};
+    bool heldStateDiagnosticRequested_{};
     std::unique_ptr<ActorGeometryBuild> actorGeometryBuild_;
     QuestVr::RetainedBankPublication<ActorGeometryBank> actorGeometryPublication_;
     ActorGeometryBank* activeActorGeometry_{}; // Publication-owned stable storage.

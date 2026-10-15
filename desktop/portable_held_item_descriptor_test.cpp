@@ -1,5 +1,7 @@
 #include "Precomp.h"
 #include "portable_unreal_runtime.h"
+#include "quest_equipped_item_visual.h"
+#include "quest_held_item_assets.h"
 #include "quest_save_bundle.h"
 #include "quest_script_state.h"
 #include "GC/GC.h"
@@ -20,7 +22,9 @@
 
 // Production-runtime controls with generated UE1 packages, not a mock reader
 // or class-name/icon heuristic. Optional owned-data mode reads original packages without writes and uses a
-// generated map importing actual inventory classes. This is not equipment.
+// generated map importing actual inventory classes. Owned mode additionally
+// checks native equipment selection against predecoded original POV metadata;
+// it does not prove tracked rendering or original Fire-state execution.
 namespace {
 using Bytes = std::vector<std::uint8_t>;
 using Value = QuestVr::Vm::Value;
@@ -455,15 +459,50 @@ void Original(const std::filesystem::path& root) {
         sources.push_back({path,std::filesystem::file_size(path),std::filesystem::last_write_time(path),SourceHash(path)});
         packages.push_back(LoadPortablePackageTables(path.string()));
     }
+    // Decode owned art before equipment selection, just as the preparation
+    // worker does. No selector call below is allowed to open an asset package.
+    const auto artwork=QuestVr::LoadOriginalHeldItemAssets(root.string());
+    Require(artwork.passed,"Original held artwork preparation failed: "+artwork.error);
+    std::array<QuestVr::PreparedHeldVisualKey,3u> prepared;
+    for (std::size_t index=0u;index<artwork.variants.size();++index) {
+        const auto& asset=artwork.variants[index];auto& key=prepared[index];
+        key.classPath=asset.classPath;key.playerViewMesh=asset.meshPath;
+        key.playerViewScale=asset.playerViewScale;key.skin=asset.materialOverrides.skin.path;
+        key.supportsNativeStarterKeyRing=asset.supportsNativeStarterKeyRing;
+        for (std::size_t slot=0u;slot<key.multiSkins.size();++slot)
+            key.multiSkins[slot]=asset.materialOverrides.multiSkins[slot].path;
+        Require(!asset.rightHandAndItem.triangles.empty() && !asset.textures.empty(),
+            "Prepared binding is not backed by an actual original hand/item assembly");
+    }
     Fixture fixture; Package map; map.stem = "OriginalHeldMetadata";
-    const auto ref = map.Export("ActualCrowbar0",map.Import("WeaponCrowbar",map.ImportPackage("DeusEx")));
-    Bytes actorProperties; map.Int(actorProperties,"invPosX",-1); map.Int(actorProperties,"invPosY",-1); Index(actorProperties,0);
-    map.Body(ref,std::move(actorProperties));
+    const auto deusEx=map.ImportPackage("DeusEx");
+    for (const auto& [name,className]:std::array<std::pair<const char*,const char*>,2u>{{
+        {"ActualCrowbar0","WeaponCrowbar"},{"ActualCombatKnife0","WeaponCombatKnife"}}}) {
+        const auto ref=map.Export(name,map.Import(className,deusEx));
+        Bytes actorProperties;map.Int(actorProperties,"invPosX",-1);map.Int(actorProperties,"invPosY",-1);Index(actorProperties,0);
+        map.Body(ref,std::move(actorProperties));
+    }
     const auto table = fixture.Write(map,true); InitializePortableRuntime(packages);
-    Require(LoadPortableRuntimeMap(table).passed,"Original Crowbar class did not bind generated actor");
+    Require(LoadPortableRuntimeMap(table).passed,"Original Crowbar/CombatKnife classes did not bind generated actors");
     Require(ReadPortableRuntimeHeldItemVisualDescriptor("OriginalHeldMetadata.ActualCrowbar0").status == Status::NotCollected,
         "Uncollected owned-data actor acquired a held/equipped claim");
+    Require(ReadPortableRuntimeHeldItemVisualDescriptor("OriginalHeldMetadata.ActualCombatKnife0").status == Status::NotCollected,
+        "Uncollected actual CombatKnife acquired a held/equipped claim");
+    Require(GetPortableRuntimeEquippedItem()==QuestVr::kQuickBeltKeyRingIdentity && PortableRuntimeKeyRingEquipped(),
+        "Fresh equipment did not start with the functional native keyring");
+    Require(ReadPortableRuntimeHeldItemVisualDescriptor(QuestVr::kQuickBeltKeyRingIdentity).status==Status::UnindexedIdentity,
+        "Native starter ring was fabricated as an indexed original UObject");
+    const auto starter=QuestVr::SelectEquippedItemVisual(GetPortableRuntimeEquippedItem(),nullptr,prepared);
+    Require(starter.status==QuestVr::EquippedItemVisualStatus::Available && starter.preparedIndex==0u &&
+        starter.source==QuestVr::EquippedItemVisualSource::NativeStarterKeyRing &&
+        prepared[0].classPath=="DeusEx.NanoKeyRing" && prepared[0].playerViewMesh=="DeusExItems.NanoKeyRingPOV",
+        "Functional native ring did not select its explicit original POV assembly without an actor descriptor");
     Require(InteractPortableRuntimeActor("OriginalHeldMetadata.ActualCrowbar0").action == "pickup","Actual owned Crowbar class was not collectible");
+    Require(InteractPortableRuntimeActor("OriginalHeldMetadata.ActualCombatKnife0").action == "pickup",
+        "Actual owned CombatKnife class was not collectible");
+    Require(EquipPortableRuntimeInventoryItem("OriginalHeldMetadata.ActualCrowbar0") &&
+        GetPortableRuntimeEquippedItem()=="OriginalHeldMetadata.ActualCrowbar0",
+        "Collected actual Crowbar could not be equipped independently of the Persona cursor");
     const auto before = fixture.Snapshot("OriginalBefore"); const auto revision = GetPortableRuntimeWorldRevision(); const auto stats = GC::GetStats();
     const auto value = ReadPortableRuntimeHeldItemVisualDescriptor("originalheldmetadata.actualcrowbar0");
     Require(value.status == Status::Available && value.collected && !value.active && value.weapon &&
@@ -480,14 +519,73 @@ void Original(const std::filesystem::path& root) {
         value.playerViewMesh.provenance.ownerPath == "DeusEx.WeaponCrowbar" &&
         value.playerViewMesh.provenance.ownerSourcePath == packages[2].sourcePath &&
         value.playerViewMesh.provenance.origin == Origin::ClassDefault,"Original Crowbar mesh declaration/effective-owner provenance was guessed");
+    const auto knife=ReadPortableRuntimeHeldItemVisualDescriptor("OriginalHeldMetadata.ActualCombatKnife0");
+    Require(knife.status==Status::Available && knife.collected && !knife.active && knife.weapon &&
+        knife.actorPath=="OriginalHeldMetadata.ActualCombatKnife0" && knife.classPath=="DeusEx.WeaponCombatKnife",
+        "Actual inactive collected CombatKnife identity/class was fabricated or lost");
+    RequireField(knife.playerViewMesh,"DeusExItems.CombatKnife","Actual CombatKnife POV mesh was guessed from a filename");
+    RequireField(knife.pickupViewMesh,"DeusExItems.CombatKnifePickup","Original CombatKnife pickup mesh reference changed");
+    RequireField(knife.thirdPersonMesh,"DeusExItems.CombatKnife3rd","Original CombatKnife third-person mesh reference changed");
+    const auto requireFingerprint=[&](const PortableHeldItemVisualDescriptor& descriptor,std::size_t index) {
+        const auto& key=prepared[index];
+        Require(descriptor.classPath==key.classPath && descriptor.playerViewScale.status==FieldStatus::Available &&
+            descriptor.playerViewScale.value && *descriptor.playerViewScale.value==key.playerViewScale &&
+            std::isfinite(*descriptor.playerViewScale.value) && *descriptor.playerViewScale.value>0.0f,
+            "Actual collected view scale/class differs from the prepared original metadata");
+        RequireField(descriptor.skin,key.skin,"Actual collected Skin differs from the effective prepared original material");
+        for (std::size_t slot=0u;slot<key.multiSkins.size();++slot)
+            RequireField(descriptor.multiSkins[slot],key.multiSkins[slot],
+                "Actual collected MultiSkins slot differs from prepared original typed effective material");
+        const auto selected=QuestVr::SelectEquippedItemVisual(descriptor.actorPath,&descriptor,prepared);
+        Require(selected.status==QuestVr::EquippedItemVisualStatus::Available && selected.preparedIndex==index &&
+            selected.source==QuestVr::EquippedItemVisualSource::CollectedActor,
+            "Exact live collected descriptor did not select the already prepared original hand/item assembly");
+        auto changed=descriptor;*changed.playerViewScale.value*=0.5f;
+        const auto mismatch=QuestVr::SelectEquippedItemVisual(descriptor.actorPath,&changed,prepared);
+        Require(mismatch.status==QuestVr::EquippedItemVisualStatus::PreparedAssetMismatch && !mismatch.preparedIndex,
+            "Changed effective live view scale selected stale predecoded geometry");
+    };
+    requireFingerprint(value,2u);requireFingerprint(knife,1u);
+    const auto melee=QuestVr::ResolveEquippedMeleeProfile(value.actorPath,&value);
+    Require(melee==QuestVr::EquippedMeleeProfile{6,80,80},
+        "Actual Crowbar melee profile changed original integer damage/range units");
+    Require(knife.hitDamage.status==FieldStatus::Available && knife.hitDamage.value &&
+        knife.accurateRange.status==FieldStatus::Available && knife.accurateRange.value &&
+        knife.maxRange.status==FieldStatus::Available && knife.maxRange.value &&
+        knife.handToHand.status==FieldStatus::Available && knife.handToHand.value==true &&
+        QuestVr::ResolveEquippedMeleeProfile(knife.actorPath,&knife)==QuestVr::EquippedMeleeProfile{
+            *knife.hitDamage.value,*knife.accurateRange.value,*knife.maxRange.value},
+        "Actual CombatKnife typed melee fields are unavailable or differ from its detached profile");
     Require(fixture.Snapshot("OriginalAfter") == before && GetPortableRuntimeWorldRevision() == revision &&
         GC::GetStats().numObjects == stats.numObjects && GC::GetStats().memoryUsage == stats.memoryUsage,
         "Owned-data metadata read changed runtime checkpoint/revision/GC");
+    // The presentation cache must compare with reconciled live equipment,
+    // never reuse a previous descriptor after an equip, consume or map restore.
+    Require(EquipPortableRuntimeInventoryItem(knife.actorPath),"Actual collected CombatKnife could not be equipped");
+    const auto wrongItem=QuestVr::SelectEquippedItemVisual(GetPortableRuntimeEquippedItem(),&value,prepared);
+    Require(wrongItem.status==QuestVr::EquippedItemVisualStatus::StaleDescriptor && !wrongItem.preparedIndex,
+        "Equipping CombatKnife reused the previous Crowbar descriptor/model");
+    const auto equippedKnife=QuestVr::SelectEquippedItemVisual(GetPortableRuntimeEquippedItem(),&knife,prepared);
+    Require(equippedKnife.preparedIndex==1u,"Actually equipped CombatKnife did not select its original assembly");
+    Require(ConsumePortableRuntimeInventoryItem(knife.actorPath),"Owned CombatKnife consume control failed");
+    const auto removed=ReadPortableRuntimeHeldItemVisualDescriptor(knife.actorPath);
+    Require(removed.status==Status::NotCollected,"Consumed actual CombatKnife still reports collected ownership");
+    const auto refused=QuestVr::SelectEquippedItemVisual(knife.actorPath,&removed,prepared);
+    Require(refused.status==QuestVr::EquippedItemVisualStatus::DescriptorUnavailable && !refused.preparedIndex,
+        "Fresh consumed descriptor retained the old held knife model");
+    const auto fallbackIdentity=GetPortableRuntimeEquippedItem();
+    const auto fallback=QuestVr::SelectEquippedItemVisual(fallbackIdentity,&knife,prepared);
+    Require(fallbackIdentity==QuestVr::kQuickBeltKeyRingIdentity && fallback.preparedIndex==0u &&
+        fallback.source==QuestVr::EquippedItemVisualSource::NativeStarterKeyRing,
+        "Consumption kept the removed knife assembly instead of reconciling to the explicit native keyring");
+    Require(!QuestVr::ResolveEquippedMeleeProfile(fallbackIdentity,&knife),
+        "Native ring inherited stale consumed-knife melee behavior");
     for (const auto& source : sources) Require(std::filesystem::file_size(source.path) == source.size &&
         std::filesystem::last_write_time(source.path) == source.time && SourceHash(source.path) == source.hash,
         "Owned package bytes or timestamps changed");
     fixture.SourcesUnchanged();
-    std::cout << "PASS owned Crowbar actual actor/three exact mesh refs/Int damage6/ranges80; source bytes unchanged; not equip/Fire/render evidence\n";
+    std::cout << "PASS owned Crowbar+CombatKnife actual collected/equipped actors, exact prepared original mesh/scale/Skin/MultiSkins selection; "
+        "explicit native ring without fake UObject; stale/consumed model refusal; source bytes unchanged; not tracked render/original Fire evidence\n";
 }
 } // namespace
 int main(int argc, char** argv) {

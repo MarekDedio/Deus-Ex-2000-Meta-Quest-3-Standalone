@@ -1,5 +1,24 @@
 # Port status
 
+## Tracked held-item integration / quiet trigger (2026-10-15)
+
+- User accepts the HUD and resumes items in hand. Trigger use no longer reveals
+  or holds the quickbar; grip selection, keyring shortcut and Inventory remain.
+- Original complete keyring/knife/crowbar hand-and-item assemblies are connected
+  to actual equipped identity and tracked right grip. GPU resources are prepared
+  once, generic right hand is replaced rather than doubled, and unsupported or
+  stale selection safely falls back. Render performs no runtime/package access.
+- Original typed melee base damage/range now feeds trigger-ray use; Fire states,
+  skills, attack animation, physical swings, other held variants and crate
+  destruction are not claimed complete. See HELD-ITEM-VISUALS.md.
+- Coherent host build/CTest92 passes/106 registered,14 explicit owned-data skips,
+  zero failures17.78s; actual equipped metadata2016/16 and cache1007448/42 pass.
+  Signed APK built and automatically replace-installed with saves preserved;
+  installed checksum matches. Exact-build Quest frames show keyring/crowbar in
+  the tracked right hand; live selection resolves the knife too. Knife capture,
+  physical alignment/comfort and trigger-only quiet-bar acceptance remain open.
+  See QUEST-TEST-BUILD.md for artifact/hash, captures and verification bounds.
+
 ## Contextual quickbar, eye-facing tilt and separated speech (2026-10-15)
 
 - New user priority: move original NPC portrait/text beside the health column
