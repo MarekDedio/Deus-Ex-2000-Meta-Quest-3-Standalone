@@ -14,8 +14,13 @@ Signed ARM64 APK:
 `4BB211985F145241C8E87BCEFDB8E9EF92CD3AAF780DC4F4CD9E756F5EE1378F`.
 Android build succeeds in1m3s; APK v2 signature verifies. Automatically
 replace-installed without clearing data on Quest3 `2G0YC5ZG620985`, update
-2026-10-15 11:05:33, then launched (process9786). Installed hash verification
-is recorded with this revision; physical comfort still needs the user's test.
+2026-10-15 11:05:33, then launched (process9786). Installed base.apk SHA256
+matches exactly. Head tracking became valid (flags0xf), Training loaded and an
+in-app1680x1760 frame from this exact process was captured and inspected:
+`artifacts/hud-reposition-20261015/quest-bottom-quickbar-20261015.bmp`.
+The bar is fully visible in its lower position, the health/compass left edge
+stays aligned and the center view is clearer. This is device rendering evidence,
+not physical comfort acceptance; that still needs the user's test.
 
 Playable presentation/placement passes240 controls, including unchanged
 health/compass and both-eye alignment; compass/view607. All affected host targets
