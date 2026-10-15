@@ -11,15 +11,22 @@
   It executes original font/cursor/sine/alignment, hidden HUD sensitivity,
   canonical Color Context clearing, ammo visibility callback/size/assignment,
   all six limb textures/colors/requested layouts, the lowered body overlay,
-  both ProgressBarWindows and crosshair assignment. It now refuses native
-  ToggleWindow slot construction at HUDObjectBelt.CreateSlots PC206, after54
-  objects/3739 writes. RadioBox/Tile construction, Modal registration, hidden
+  both ProgressBarWindows, crosshair query/layout and belt assignment. All ten
+  Text/Button/Toggle quick slots construct with actual FontTiny, native
+  selection/display tables and original sibling order. The new boundary is
+  HUDActiveAug.SetKeyNum PC21, unsupported IntToString0x53, after96 objects/6690
+  writes. RadioBox/Tile construction, Modal registration, hidden
   visibility and original Tile margin/spacing/order setters now execute.
   A diagnostic checks fonts,
   clip rectangles, constructor flags/preserved CDOs, native modal self-list,
   all255 key/accelerator slots, family/GC edges, hidden-child Show, player binding
   and in-flight child locks before rollback. Expanded original health, Radio/Tile,
-  oxygen-source, session/ring and forced-budget rollback controls pass2308 checks.
+  oxygen-source, session/ring and forced-budget rollback controls pass5145 checks.
+  ConfigureChild1461 now uses actual local visibility, scoped configuration
+  callbacks, aligned-child ResizeChild and ClipTree/wGC propagation. Native
+  Radio/Tile/Root configuration overrides and deferred destruction still refuse.
+  Three new pure geometry suites pass130745 controls, including82368 independent
+  x87 PC64 oracle tuples. Runtime/VM ARM64 checks are syntax-only, not a new APK.
   Native
   window subclasses/layout/lifetime/input/rendering and Login remain unfinished.
 - Original limb-health presentation is connected to the real bound-player

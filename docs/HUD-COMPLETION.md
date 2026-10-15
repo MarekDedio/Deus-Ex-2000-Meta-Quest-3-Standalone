@@ -55,18 +55,20 @@ six health body-part windows now receive their original textures, translucent
 GC styles, requested geometry and colors. The body overlay is lowered beneath
 them with its original armor color. Both energy/breath ProgressBarWindows and
 the crosshair initialize and are assigned to the actual pending HUD. The next
-original boundary is DeusExHUD.ConfigurationChanged PC327: native1461
-ConfigureChild is not implemented. QueryPreferredSize now executes its original
+original boundary is HUDActiveAug.SetKeyNum PC21: IntToString conversion0x53
+is not implemented. ConfigureChild1461 now executes the audited Window geometry,
+callback, aligned-child resize, clipping and selectable-resort path; native
+Radio/Tile/Root configuration overrides still refuse. QueryPreferredSize executes its original
 cache/callback/texture-fallback path. All ten HUDObjectSlot Text/Button/Toggle
 constructors now execute, including temporary selectable-table insertion/removal,
 original FontTiny, requested size, theme-null colors and sibling lowering.
 The Radio retains Toggle creation order; the Tile sibling order is0,9,8,...,1.
 RadioBox/TileWindow construction, Modal tab registration, hidden visibility and
-Tile margin/spacing/order setters execute. The bounded diagnostic captures84
-objects/6018 writes with no inspection error (128 objects/4MiB capture limits);
+Tile margin/spacing/order setters execute. The bounded diagnostic captures96
+objects/6690 writes with no inspection error (128 objects/4MiB capture limits);
 this is still an unpublished, rolled-back initialization prefix, not live health.
-The belt has completed its script InitWindow and locally shown itself, but its
-parent HUD layout callback has not returned. HUD.belt and Root.hud remain None;
+The belt has completed its script InitWindow, locally shown itself, returned
+from its parent's layout callback and been assigned to HUD.belt. Root.hud remains None;
 this does not establish working equipment or possession. Native Root modal
 self-list, constructor flags, preserved CDO fields and255
 key/accelerator slots are checked
@@ -74,12 +76,13 @@ directly before rollback. This is still a pending construction graph. Full nativ
 window construction, layout, lifecycle/input/rendering, player Login/Possess and
 the remaining HUD behavior still need implementation and integration tests.
 Unsupported callbacks refuse and roll back instead of publishing a partial HUD.
-The coherent host suite passes82 ordinary tests/95 registered,13 explicit
-owned-data skips, zero failures (34.12s alongside original-data probes).
-The separate owned-data control passes4429 checks, including all ten actual
-slots, Radio/Tile hierarchy, native table indices/display records, original
+The coherent host suite passes85 ordinary tests/98 registered,13 explicit
+owned-data skips, zero failures (25.89s). The separate owned-data control passes
+5145 checks covering all ten actual slots, Radio/Tile hierarchy, native table indices/display records, original
 properties, oxygen sources, repeated initialization, forced-budget rollback
-and warm/cold ring/session ownership. Runtime/VM ARM64 syntax-only checks pass.
+and warm/cold ring/session ownership. It also checks actual crosshair geometry,
+clip offsets, drawing-GC propagation and unchanged constructor/general GCs.
+Runtime/VM ARM64 syntax-only checks pass.
 The85 non-preview original-artwork controls also pass with unchanged source files;
 inspected software previews are explicit
 fixtures, not live Quest health/equipment acceptance. No Android binary/APK was made.
@@ -142,8 +145,23 @@ outermost ConfigureChild (or a TabGroup) clips the actual subtree and resorts
 selection tables. It must not be substituted with SetConfiguration, which
 stores requested geometry only. Original ChangeConfiguration performs dynamic
 script ConfigurationChanged and aligned-child ResizeChild propagation. These
-contracts, clip intersections and deferred-unlock destruction remain to be
-implemented/verified, rather than bypassing callbacks to publish the HUD.
+contracts now drive the runtime with exception-scoped configuration globals,
+actual lock counts and journaled fields. Window/Text/Button/Toggle use their
+verified shared optional script callback; other native configuration overrides
+and deferred-unlock destruction refuse and roll back. The original crosshair
+now reaches16x16 at(-2.5,-2.5) under the pending10x10 HUD and copies the clipped
+rectangle into its actual drawing GC. Constructor clip initialization remains
+separate: it copies raw parent origins and size without intersection or a GC
+clip write. No native callback is bypassed to publish this pending graph.
+
+The new configure/clipping/resize helpers pass130745 controls, including82368
+independent host x87 PC64 arithmetic/clip/resize comparisons. Production uses
+portable integer dyadics, not host long-double assumptions. Clipping retains
+negative intersections, live PC64 bottom-edge arithmetic and unconditional
+descendant traversal; sorting does not append duplicate selection entries.
+Resize captures parent size before the query but rereads child alignment and
+margins afterwards. Centered positions preserve the native truncation order;
+out-of-signed32 conversions and Float storage overflow explicitly refuse.
 
 The six-limb presentation clock now follows the original .4s damage flash,
 1s healing and .5s refresh statement order, including retained applied tint when
@@ -166,8 +184,8 @@ argument buffers distinguish initialized defaults from SetTileColor's
 uninitialized four-byte Color destination; absent or partial Color writes are
 refused rather than filled from invented defaults. Tile setters copy each
 initialized Float/Byte input separately; no global default seed is inferred
-from an opcode. The VM passes690142 checks and725 refusal controls, including
-203 preferred-size OUT-copy/reference controls, SetSelectability/SetWidth and
+from an opcode. The VM passes691761 checks and757 refusal controls, including
+1619 ConfigureChild input-copy/default controls,203 preferred-size OUT-copy/reference controls, SetSelectability/SetWidth and
 5126 Tile input-copy/default checks. Byte alignment
 inputs retain all256 values; partial packed-Bool clearing still refuses rather
 than inventing a native memory layout.

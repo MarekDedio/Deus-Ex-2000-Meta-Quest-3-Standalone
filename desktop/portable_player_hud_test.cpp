@@ -187,9 +187,9 @@ int main(int argc,char** argv) {
         std::cout<<"ORIGINAL root pending graph: "<<pending.execution.function<<':'<<pending.execution.offset<<
             " objects="<<pending.objects.size()<<" writes="<<pending.execution.writes<<" "<<pending.execution.error<<"; inspection="<<pending.inspectionError<<std::endl;
         Require(!pending.execution.passed() && !pending.execution.committed && pending.inspectionError.empty() &&
-            pending.execution.function=="DeusEx.DeusExHUD.ConfigurationChanged" && pending.execution.offset==327u &&
-            pending.execution.error=="Unsupported runtime native 1461" && pending.execution.writes==6018u &&
-            pending.objects.size()==84u &&
+            pending.execution.function=="DeusEx.HUDActiveAug.SetKeyNum" && pending.execution.offset==21u &&
+            pending.execution.error=="Unsupported VM conversion 83" && pending.execution.writes==6690u &&
+            pending.objects.size()==96u &&
             pending.rootedWindows==std::vector<std::string>{pending.pawnRootPath},
             "Original root prefix probe did not capture the actual pending native graph: "+pending.inspectionError);
         const auto object=[&](const std::string& path)->const PortableNativeWindowObjectSnapshot& {
@@ -282,19 +282,45 @@ int main(int argc,char** argv) {
             "Original root did not create its actual HUD/ammo/health/crosshair/belt children");
         const auto& hudView=*hudFound;const auto& ammoView=*ammoFound;
         const auto& hitView=*hitFound;const auto& crossView=*crossFound;const auto& beltView=*beltFound;
+        for(const auto& view:pending.objects) {
+            if(view.classPath=="Extension.GC") continue;
+            std::cout<<"PENDING layout "<<view.classPath<<" "<<view.path;
+            for(const auto* name:{"X","Y","Width","Height"})
+                std::cout<<" "<<name<<"="<<field(view,"Extension.Window."+std::string(name)).value.floating;
+            for(const auto* name:{"bIsVisible","bConfigured","bNeedsReconfigure"})
+                std::cout<<" "<<name<<"="<<field(view,"Extension.Window."+std::string(name)).value.boolean;
+            std::cout<<" lock="<<field(view,"Extension.Window.lockCount").value.integer<<'\n';
+        }
         Require(!field(crossView,"Extension.Window.bNeedsQuery").value.boolean &&
-            field(crossView,"Extension.Window.bNeedsReconfigure").value.boolean &&
+            !field(crossView,"Extension.Window.bNeedsReconfigure").value.boolean &&
+            field(crossView,"Extension.Window.bConfigured").value.boolean &&
             !field(crossView,"Extension.Window.bLastWidthSpecified").value.boolean &&
             !field(crossView,"Extension.Window.bLastHeightSpecified").value.boolean,
-            "Original crosshair preferred-size query did not update only its query cache flags");
+            "Original crosshair preferred-size/configure path has incorrect query/configuration flags");
         for(const auto* name:{"lastSpecifiedWidth","lastSpecifiedHeight","lastQueryWidth","lastQueryHeight"})
             Require(field(crossView,"Extension.Window."+std::string(name)).value.floating==-1.0f,
                 "Original preferred-size query cached texture fallback instead of the pre-fallback result");
-        Require(field(crossView,"Extension.Window.Width").value.floating==10.0f &&
-            field(crossView,"Extension.Window.Height").value.floating==10.0f &&
+        Require(field(crossView,"Extension.Window.Width").value.floating==16.0f &&
+            field(crossView,"Extension.Window.Height").value.floating==16.0f &&
+            field(crossView,"Extension.Window.X").value.floating==-2.5f &&
+            field(crossView,"Extension.Window.Y").value.floating==-2.5f &&
             field(crossView,"Extension.Window.hardcodedWidth").value.floating==-1.0f &&
             field(crossView,"Extension.Window.hardcodedHeight").value.floating==-1.0f,
-            "Original preferred-size query changed current/requested geometry instead of only returning outputs");
+            "Original ConfigureChild did not apply the actual crosshair background dimensions and script position");
+        const auto& crossClip=field(crossView,"Extension.Window.winClipRect").value;
+        Require(crossClip.fields.at("originx").floating==-2.5f && crossClip.fields.at("originy").floating==-2.5f &&
+            crossClip.fields.at("clipx").floating==2.5f && crossClip.fields.at("clipy").floating==2.5f &&
+            crossClip.fields.at("clipwidth").floating==10.0f && crossClip.fields.at("clipheight").floating==10.0f,
+            "Original crosshair ClipTree did not intersect the hidden parent's current clip");
+        const auto& crossGC=object(field(crossView,"Extension.Window.wGc").value.text);
+        Require(QuestVr::Vm::Equal(field(crossGC,"Extension.GC.gcClipRect").value,crossClip),
+            "Original ClipTree did not copy all six channels to the drawing GC");
+        for(const auto& view:pending.objects) if(view.classPath=="Extension.GC" && view.path!=crossGC.path)
+            for(const auto& [name,value]:field(view,"Extension.GC.gcClipRect").value.fields) {
+                static_cast<void>(name);
+                Require(value.kind==Kind::Float && value.floating==0.0f && !std::signbit(value.floating),
+                    "Window construction unexpectedly ran ClipTree or modified another drawing/general GC");
+            }
         const auto& radioView=object(field(beltView,"Extension.Window.firstChild").value.text);
         const auto& slotsView=object(field(beltView,"DeusEx.HUDObjectBelt.winSlots").value.text);
         Require(radioView.classPath=="Extension.RadioBoxWindow" && radioView.outerPath==beltView.path &&
@@ -459,12 +485,19 @@ int main(int argc,char** argv) {
         // Show's parent layout callback is pending: HUD.belt/Root.hud unassigned.
         edge(rootView,"DeusEx.DeusExRootWindow.hud",{});
         edge(hudView,"DeusEx.DeusExHUD.Ammo",ammoView.path);edge(hudView,"DeusEx.DeusExHUD.hit",hitView.path);
-        edge(hudView,"DeusEx.DeusExHUD.Cross",crossView.path);edge(hudView,"DeusEx.DeusExHUD.belt",{});
+        edge(hudView,"DeusEx.DeusExHUD.Cross",crossView.path);edge(hudView,"DeusEx.DeusExHUD.belt",beltView.path);
         edge(display,"Extension.Window.parentOwner",rootView.path);edge(display,"Extension.Window.winParent",rootView.path);
         edge(display,"Extension.Window.prevSibling",{});edge(display,"Extension.Window.nextSibling",hudView.path);
         edge(hudView,"Extension.Window.parentOwner",rootView.path);edge(hudView,"Extension.Window.winParent",rootView.path);
         edge(hudView,"Extension.Window.prevSibling",display.path);edge(hudView,"Extension.Window.nextSibling",{});
-        edge(hudView,"Extension.Window.firstChild",ammoView.path);edge(hudView,"Extension.Window.lastChild",beltView.path);
+        const auto activeItemsFound=std::find_if(pending.objects.begin(),pending.objects.end(),[](const auto& view) {
+            return view.classPath=="DeusEx.HUDActiveItemsDisplay";
+        });
+        Require(activeItemsFound!=pending.objects.end(),"Layout callback did not return to original active-item construction");
+        const auto& activeItems=*activeItemsFound;
+        edge(hudView,"Extension.Window.firstChild",ammoView.path);edge(hudView,"Extension.Window.lastChild",activeItems.path);
+        edge(activeItems,"Extension.Window.winParent",hudView.path);edge(activeItems,"Extension.Window.parentOwner",hudView.path);
+        edge(activeItems,"Extension.Window.prevSibling",beltView.path);edge(activeItems,"Extension.Window.nextSibling",{});
         edge(ammoView,"Extension.Window.parentOwner",hudView.path);edge(ammoView,"Extension.Window.winParent",hudView.path);
         edge(ammoView,"Extension.Window.prevSibling",{});edge(ammoView,"Extension.Window.nextSibling",hitView.path);
         edge(ammoView,"DeusEx.HUDBaseWindow.Player",player);
@@ -475,7 +508,7 @@ int main(int argc,char** argv) {
         edge(crossView,"Extension.Window.parentOwner",hudView.path);edge(crossView,"Extension.Window.winParent",hudView.path);
         edge(crossView,"Extension.Window.prevSibling",hitView.path);edge(crossView,"Extension.Window.nextSibling",beltView.path);
         edge(beltView,"Extension.Window.parentOwner",hudView.path);edge(beltView,"Extension.Window.winParent",hudView.path);
-        edge(beltView,"Extension.Window.prevSibling",crossView.path);edge(beltView,"Extension.Window.nextSibling",{});
+        edge(beltView,"Extension.Window.prevSibling",crossView.path);edge(beltView,"Extension.Window.nextSibling",activeItems.path);
         edge(beltView,"Extension.Window.firstChild",radioView.path);edge(beltView,"Extension.Window.lastChild",radioView.path);
         Require(hudView.outerPath==rootView.path && ammoView.outerPath==hudView.path &&
             hitView.outerPath==hudView.path && crossView.outerPath==hudView.path && beltView.outerPath==hudView.path &&
@@ -485,7 +518,7 @@ int main(int argc,char** argv) {
             !field(hudView,"Extension.Window.bIsSensitive").value.boolean && field(ammoView,"Extension.Window.bIsSensitive").value.boolean &&
             field(hudView,"Extension.Window.lockCount").value.integer==1 && field(ammoView,"Extension.Window.lockCount").value.integer==0 &&
             field(hitView,"Extension.Window.lockCount").value.integer==0 && field(crossView,"Extension.Window.lockCount").value.integer==0 &&
-            field(beltView,"Extension.Window.lockCount").value.integer==1,
+            field(beltView,"Extension.Window.lockCount").value.integer==0 && field(activeItems,"Extension.Window.lockCount").value.integer==1,
             "Original hidden HUD sensitivity or in-flight child lock state was skipped/fabricated");
         edge(rootView,"Extension.RootWindow.FocusWindow",{});edge(rootView,"Extension.RootWindow.grabbedWindow",{});
         Require(field(display,"Extension.Window.winHAlign").value.integer==3 && field(display,"Extension.Window.winVAlign").value.integer==3,
@@ -693,8 +726,8 @@ int main(int argc,char** argv) {
         const auto rootAttempt=ExecutePortableActorFunction(player,"Extension.PlayerPawnExt.InitRootWindow");
         std::cout<<"ORIGINAL unbound root initialization boundary: "<<rootAttempt.function<<':'<<rootAttempt.offset<<
             " opcode="<<unsigned(rootAttempt.opcode)<<" "<<rootAttempt.error<<std::endl;
-        Require(!rootAttempt.passed() && !rootAttempt.committed && rootAttempt.function=="DeusEx.DeusExHUD.ConfigurationChanged" &&
-            rootAttempt.offset==327u && rootAttempt.error=="Unsupported runtime native 1461" &&
+        Require(!rootAttempt.passed() && !rootAttempt.committed && rootAttempt.function=="DeusEx.HUDActiveAug.SetKeyNum" &&
+            rootAttempt.offset==21u && rootAttempt.error=="Unsupported VM conversion 83" &&
             std::find(rootAttempt.callStack.begin(),rootAttempt.callStack.end(),"DeusEx.DeusExRootWindow.InitWindow")!=rootAttempt.callStack.end(),
             "Native1052 did not construct/dispatch original root without a fabricated client prerequisite");
         const auto windowsAfter=ReadPortableRuntimeNativeWindowSummary();

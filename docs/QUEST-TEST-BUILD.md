@@ -10,6 +10,13 @@ Final physical acceptance will use the first build satisfying that feature gate.
 The eye-facing Persona adjustment was built/installed before this instruction.
 See HUD-COMPLETION.md for the functional acceptance checklist.
 
+Source-only HUD layout progress (2026-10-15): original crosshair preferred-size,
+ConfigureChild, clipping/drawing-GC propagation and belt assignment now execute.
+The pending graph reaches augmentation-key label setup (96 objects/6690 writes)
+before refusing the next missing VM conversion. Native geometry helpers and
+argument-copy tests pass; this is not a completed live HUD or a device build.
+The installed APK below is unchanged. Android packaging/installations remain paused.
+
 ## Latest installed APK: eye-facing Persona placement
 
 `artifacts/crate-runtime-20261013/DeusExQuestVR-persona-eye-facing-20261014.apk`

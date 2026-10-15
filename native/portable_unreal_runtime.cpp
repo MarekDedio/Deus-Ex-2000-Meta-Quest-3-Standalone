@@ -17,6 +17,9 @@
 #include "quest_actor_timer.h"
 #include "quest_native_window_location.h"
 #include "quest_native_window_query.h"
+#include "quest_native_window_clip.h"
+#include "quest_native_window_resize.h"
+#include "quest_native_window_configure.h"
 #include "quest_actor_state_control.h"
 #include "quest_unreal_string.h"
 #include "quest_decal_checkpoint.h"
@@ -2489,6 +2492,7 @@ public:
         if(index==1425u) return WindowRootGetterNative(Object(receiver),arguments,declaration);
         if(index==1415u) return WindowVisibilityGetterNative(Object(receiver),arguments,declaration);
         if(index==1465u) return WindowPreferredSizeNative(Object(receiver),arguments,declaration,execution);
+        if(index==1461u) return WindowConfigureChildNative(Object(receiver),arguments,declaration,execution);
         if(index==1416u) return WindowSensitivityNative(Object(receiver),arguments,declaration,execution);
         if(index==1420u) return WindowSelectabilityNative(Object(receiver),arguments,declaration,execution);
         if(index==1467u) return WindowChildVisibilityNative(Object(receiver),arguments,declaration,execution);
@@ -2712,6 +2716,10 @@ public:
         case 1465u:path="Extension.Window.QueryPreferredSize";
             parameters={{"preferredWidth",Kind::Float,0x180u,"FloatProperty",""},
                 {"preferredHeight",Kind::Float,0x180u,"FloatProperty",""}};break;
+        case 1461u:path="Extension.Window.ConfigureChild";
+            for(const auto* name:{"newX","newY","newWidth","NewHeight"})
+                parameters.push_back({name,Kind::Float,0x80u,"FloatProperty",""});
+            break;
         case 1438u:path="Extension.Window.SetWindowAlignments";
             parameters={{"HAlign",Kind::Byte,0x80u,"ByteProperty","Extension.ExtensionObject.EHAlign"},
                 {"VAlign",Kind::Byte,0x80u,"ByteProperty","Extension.ExtensionObject.EVAlign"}};
@@ -2793,7 +2801,7 @@ public:
     std::optional<Value> NativeArgumentSeed(const std::uint16_t index,const std::string& receiver,
         const std::size_t slot,const Function* declaration) override {
         if(index!=1410u && index!=1415u && index!=1416u && index!=1420u && index!=1421u && index!=1422u && index!=1430u && index!=1431u && index!=1432u && index!=1433u &&
-            index!=1454u && index!=1465u && index!=1467u && index!=1477u && index!=1510u && index!=1511u &&
+            index!=1454u && index!=1461u && index!=1465u && index!=1467u && index!=1477u && index!=1510u && index!=1511u &&
             index!=1535u && index!=1538u && index!=1539u && index!=1540u && index!=1541u && index!=1544u && index!=1545u)
             return std::nullopt;
         auto* window=Object(receiver);
@@ -2987,6 +2995,174 @@ public:
         for(const auto slot:{0u,2u,1u,3u,4u,5u})
             NativeWindowWrite(window,("Extension.Window."+std::string(fields[slot])).c_str(),values[slot],execution);
         AskHiddenWindowForReconfigure(window,execution);
+        return {};
+    }
+    float NativeWindowFloat(RuntimeObject* window,const char* name) {
+        const auto value=Read(window,DescribeProperty("Extension.Window."+std::string(name)),0u);
+        if(value.kind!=Kind::Float || !std::isfinite(value.floating))
+            throw std::runtime_error("Native window geometry is not finite Float storage");
+        return value.floating;
+    }
+    bool NativeWindowBool(RuntimeObject* window,const char* name) {
+        const auto value=Read(window,DescribeProperty("Extension.Window."+std::string(name)),0u);
+        if(value.kind!=Kind::Bool) throw std::runtime_error("Native window flag is not Bool storage");
+        return value.boolean;
+    }
+    std::uint8_t NativeWindowByte(RuntimeObject* window,const char* name) {
+        const auto value=Read(window,DescribeProperty("Extension.Window."+std::string(name)),0u);
+        if(value.kind!=Kind::Byte) throw std::runtime_error("Native window alignment/type is not Byte storage");
+        return static_cast<std::uint8_t>(value.integer);
+    }
+    struct NativeWindowResizeOperations {
+        PortableActorVmHost& host;RuntimeObject* window;QuestVr::Vm::Execution& execution;
+        QuestVr::NativeWindowPreferredSize CaptureParentSize() {
+            if(auto* parent=host.WindowLink(window,"winParent")) {
+                host.RequireNativeWindow(parent);
+                return {host.NativeWindowFloat(parent,"Width"),host.NativeWindowFloat(parent,"Height")};
+            }
+            return {};
+        }
+        std::uint8_t ReadHorizontalAlignment() {return host.NativeWindowByte(window,"winHAlign");}
+        std::uint8_t ReadVerticalAlignment() {return host.NativeWindowByte(window,"winVAlign");}
+        float ReadHorizontalMargin0() {return host.NativeWindowFloat(window,"hMargin0");}
+        float ReadHorizontalMargin1() {return host.NativeWindowFloat(window,"hMargin1");}
+        float ReadVerticalMargin0() {return host.NativeWindowFloat(window,"vMargin0");}
+        float ReadVerticalMargin1() {return host.NativeWindowFloat(window,"vMargin1");}
+        QuestVr::NativeWindowPreferredSize QueryPreferredSize(bool widthSpecified,float width,bool heightSpecified,float height) {
+            NativeWindowQueryOperations operations{host,window,execution};
+            return QuestVr::QueryNativeWindowPreferredSize(operations,widthSpecified,width,heightSpecified,height);
+        }
+        void ConfigureChild(float x,float y,float width,float height) {
+            host.ConfigureNativeWindowChild(window,x,y,width,height,execution);
+        }
+    };
+    void ResizeNativeWindowChild(RuntimeObject* window,QuestVr::Vm::Execution& execution) {
+        RequireNativeWindow(window);NativeWindowResizeOperations operations{*this,window,execution};
+        QuestVr::ResizeNativeWindowChild(operations);
+    }
+    void NativeWindowConfigurationChanged(RuntimeObject* window,QuestVr::Vm::Execution& execution) {
+        const auto native=NativeWindowAncestor(window->cls);
+        if(native!="extension.window" && native!="extension.textwindow" &&
+            native!="extension.buttonwindow" && native!="extension.togglewindow")
+            throw std::runtime_error("Native ConfigurationChanged virtual override is not implemented: "+native);
+        // XWindow10003600 uses optional most-derived ProcessScript, without a
+        // packet. Native Radio/Tile/Root have distinct overrides, not this call.
+        if(const auto identity=OptionalNativeWindowEvent(window,"ConfigurationChanged")) {
+            const auto callback=FunctionFor(Object(identity->path));
+            if(callback->flags&0x400u)
+                throw std::runtime_error("Native window ConfigurationChanged script callback is native");
+            for(const auto& variable:callback->variables)
+                if(variable.flags&0x80u)
+                    throw std::runtime_error("Native window ConfigurationChanged has an unexpected parameter");
+            static_cast<void>(execution.CallFunction(*callback,window->reflection.objectPath,{}));
+        }
+    }
+    void ChangeNativeWindowConfiguration(RuntimeObject* window,QuestVr::Vm::Execution& execution) {
+        //10050f90 has TWO live sibling walks. The script can add/reorder or
+        // explicitly configure children between them; never cache a child list.
+        const auto aligned=[&](RuntimeObject* child) {
+            return NativeWindowByte(child,"winHAlign")!=0u || NativeWindowByte(child,"winVAlign")!=0u;
+        };
+        std::unordered_set<RuntimeObject*> visited;
+        for(auto* child=WindowLink(window,"firstChild");child;child=WindowLink(child,"nextSibling")) {
+            LifecycleStep();RequireNativeWindow(child);
+            if(visited.size()>=4096u || !visited.insert(child).second || WindowLink(child,"winParent")!=window)
+                throw std::runtime_error("Native configuration child chain cycles or has invalid ownership");
+            NativeWindowWrite(child,"Extension.Window.bConfigured",Value::Bool(true),execution);
+            if(NativeWindowBool(child,"bIsVisible") && aligned(child))
+                NativeWindowWrite(child,"Extension.Window.bConfigured",Value::Bool(false),execution);
+        }
+        struct CallbackScope {
+            PortableActorVmHost& host;RuntimeObject* previous;std::size_t depth;
+            ~CallbackScope() {host.nativeConfiguringWindow_=previous;host.nativeConfigurationDepth_=depth;}
+        };
+        if(nativeConfigurationDepth_>=128u)
+            throw std::runtime_error("Native configuration callback depth exceeds its bound");
+        {
+            CallbackScope scope{*this,nativeConfiguringWindow_,nativeConfigurationDepth_};
+            ++nativeConfigurationDepth_;nativeConfiguringWindow_=window;
+            NativeWindowConfigurationChanged(window,execution);
+        } // Restore outer globals BEFORE aligned-child propagation.
+        visited.clear();
+        for(auto* child=WindowLink(window,"firstChild");child;child=WindowLink(child,"nextSibling")) {
+            LifecycleStep();RequireNativeWindow(child);
+            if(visited.size()>=4096u || !visited.insert(child).second || WindowLink(child,"winParent")!=window)
+                throw std::runtime_error("Native resize propagation child chain cycles or has invalid ownership");
+            if(NativeWindowBool(child,"bIsVisible") && aligned(child) && !NativeWindowBool(child,"bConfigured")) {
+                CallbackScope scope{*this,nativeConfiguringWindow_,nativeConfigurationDepth_};
+                nativeConfiguringWindow_=window;
+                ResizeNativeWindowChild(child,execution);
+            }
+        }
+    }
+    void ClipNativeWindowTree(RuntimeObject* window,QuestVr::Vm::Execution& execution) {
+        //10051160 clips Self and its wGC, then ALL descendants regardless of
+        // visibility. nextSibling is read after recursion, never pre-captured.
+        std::vector<RuntimeObject*> stack{window};std::unordered_set<RuntimeObject*> entered;
+        while(!stack.empty()) {
+            LifecycleStep();auto* current=stack.back();RequireNativeWindow(current);
+            if(!entered.count(current)) {
+                if(entered.size()>=4096u || stack.size()>128u)
+                    throw std::runtime_error("Native clip tree exceeds its bound");
+                entered.insert(current);NativeWindowClip(current,execution);
+                if(auto* child=WindowLink(current,"firstChild")) {
+                    if(WindowLink(child,"winParent")!=current || entered.count(child))
+                        throw std::runtime_error("Native clip tree has a cycle or invalid child ownership");
+                    stack.push_back(child);continue;
+                }
+            }
+            stack.pop_back();
+            if(!stack.empty()) if(auto* next=WindowLink(current,"nextSibling")) {
+                if(WindowLink(next,"winParent")!=stack.back() || entered.count(next))
+                    throw std::runtime_error("Native clip tree has a cycle or invalid sibling ownership");
+                stack.push_back(next);
+            }
+        }
+    }
+    struct NativeWindowConfigureOperations : NativeWindowQueryOperations {
+        void ChangeConfiguration() {host.ChangeNativeWindowConfiguration(window,execution);}
+        bool ShouldClip() {return host.nativeConfigureChildDepth_==1u || host.NativeWindowByte(window,"windowType")>=1u;}
+        void ClipTree() {host.ClipNativeWindowTree(window,execution);}
+        void ResortSelection() {
+            if(auto* group=host.NativeWindowTabGroup(window)) host.ResortNativeSelectableWindows(group,execution);
+        }
+    };
+    void ConfigureNativeWindowChild(RuntimeObject* window,float x,float y,float width,float height,
+        QuestVr::Vm::Execution& execution) {
+        RequireNativeWindow(window);
+        for(float value:{x,y,width,height}) if(!std::isfinite(value))
+            throw std::runtime_error("ConfigureChild requires finite copied Float inputs");
+        const auto lockProperty=DescribeProperty("Extension.Window.lockCount");
+        auto lock=Read(window,lockProperty,0u);
+        if(lock.kind!=Kind::Int || lock.integer<0 || lock.integer==std::numeric_limits<std::int32_t>::max())
+            throw std::runtime_error("ConfigureChild lock count cannot be incremented safely");
+        if(nativeConfigureChildDepth_>=128u)
+            throw std::runtime_error("ConfigureChild depth exceeds its bound");
+        NativeWindowWrite(window,"Extension.Window.lockCount",Value::Integer(lock.integer+1),execution);
+        struct DepthScope {std::size_t& depth;std::size_t before;~DepthScope() {depth=before;}};
+        DepthScope scope{nativeConfigureChildDepth_,nativeConfigureChildDepth_};++nativeConfigureChildDepth_;
+        NativeWindowConfigureOperations operations{{*this,window,execution}};
+        QuestVr::ConfigureNativeWindowGeometry(operations,x,y,width,height);
+        nativeConfigureChildDepth_=scope.before; // Retail decrements BEFORE UnlockWindow.
+        lock=Read(window,lockProperty,0u);
+        if(lock.kind!=Kind::Int || lock.integer<=0)
+            throw std::runtime_error("ConfigureChild callback invalidated the native lock count");
+        NativeWindowWrite(window,"Extension.Window.lockCount",Value::Integer(lock.integer-1),execution);
+        if(NativeWindowBool(window,"bBeingDestroyed"))
+            throw std::runtime_error("ConfigureChild deferred native destruction on unlock is not implemented");
+    }
+    Evaluation WindowConfigureChildNative(RuntimeObject* window,const std::vector<Evaluation>& arguments,
+        const Function* declaration,QuestVr::Vm::Execution& execution) {
+        RequireNativeWindow(window);const auto authored=WindowNativeDeclaration(1461u,declaration);
+        if(arguments.size()!=4u) throw std::runtime_error("ConfigureChild requires its four copied Float inputs");
+        std::array<float,4u> values{};
+        for(std::size_t slot=0u;slot<values.size();++slot) {
+            auto value=arguments[slot].Load();if(value.kind==Kind::Nothing) value=authored->variables[slot].zero;
+            if(value.kind!=Kind::Float || !std::isfinite(value.floating))
+                throw std::runtime_error("ConfigureChild input is not finite Float storage");
+            values[slot]=value.floating;
+        }
+        ConfigureNativeWindowChild(window,values[0u],values[1u],values[2u],values[3u],execution);
         return {};
     }
     Evaluation WindowSizeNative(RuntimeObject* window,const std::vector<Evaluation>& arguments,
@@ -3439,6 +3615,15 @@ public:
         auto& state=*group->nativeWindowState;
         AppendNativeWindowList(group,state.rowMajor,window);
         AppendNativeWindowList(group,state.colMajor,window);
+        ResortNativeSelectableWindows(group,execution);
+    }
+    void ResortNativeSelectableWindows(RuntimeObject* group,QuestVr::Vm::Execution& execution) {
+        RequireNativeWindow(group);
+        if(!group->nativeWindowState || !IsDerivedFromPath(group->cls,"Extension.TabGroupWindow"))
+            throw std::runtime_error("Native selectable resort requires actual owned TabGroup tables");
+        Touch(group);auto& state=*group->nativeWindowState;
+        if(state.rowMajor.size()>4096u || state.colMajor.size()>4096u)
+            throw std::runtime_error("Native selectable resort tables exceed their bound");
         struct Position {RuntimeObject* window;float x,y;};
         std::array<Position,4096u> positions{};
         for(const bool row:{true,false}) {
@@ -3973,41 +4158,63 @@ public:
             visited[depth++]=current;notify(current,"DescendantAdded");
         }
     }
-    void ValidateNativeWindowClipValue(const Value& clip) {
+    void ValidateNativeWindowClipValue(const Value& clip,const bool finite=true) {
         if(clip.kind!=Kind::Struct || clip.fields.size()!=6u)
             throw std::runtime_error("Native window clip lacks its original six-Float schema");
         for(const auto* name:{"originx","originy","clipx","clipy","clipwidth","clipheight"}) {
             const auto member=clip.fields.find(name);
-            if(member==clip.fields.end() || member->second.kind!=Kind::Float || !std::isfinite(member->second.floating))
+            if(member==clip.fields.end() || member->second.kind!=Kind::Float || (finite && !std::isfinite(member->second.floating)))
                 throw std::runtime_error("Native window clip lacks finite authored Float channels");
         }
     }
-    void NativeWindowClip(RuntimeObject* window,QuestVr::Vm::Execution& execution) {
+    void InitializeNativeWindowClip(RuntimeObject* window,QuestVr::Vm::Execution& execution) {
+        // Init1004bdaa..be26 does NOT call ClipTree: copy only parent's raw
+        // origins, +0 offsets and current size. No intersections or wGC write.
         const auto property=DescribeProperty("Extension.Window.winClipRect");
-        auto clip=Read(window,property,0u);
-        const std::array<const char*,6u> channels{"originx","originy","clipx","clipy","clipwidth","clipheight"};
-        if(clip.kind!=Kind::Struct || clip.fields.size()!=channels.size())
-            throw std::runtime_error("Native window ClipRect lacks its exact six-Float schema");
-        for(const auto* channel:channels) {
-            const auto member=clip.fields.find(channel);
-            if(member==clip.fields.end() || member->second.kind!=Kind::Float)
-                throw std::runtime_error("Native window ClipRect channel is not its original Float");
-            member->second=Value::Float(0.0f);
-        }
+        auto clip=Read(window,property,0u);ValidateNativeWindowClipValue(clip,false);
+        for(auto& [name,value]:clip.fields) {static_cast<void>(name);value=Value::Float(0.0f);}
         if(auto* parent=WindowLink(window,"winParent")) {
-            const auto inherited=Read(parent,property,0u);
-            if(inherited.kind!=Kind::Struct || inherited.fields.size()!=channels.size())
-                throw std::runtime_error("Native window parent ClipRect is malformed");
-            for(const auto* channel:{"originx","originy"}) {
-                const auto member=inherited.fields.find(channel);
-                if(member==inherited.fields.end() || member->second.kind!=Kind::Float)
-                    throw std::runtime_error("Native window parent clip origin is malformed");
-                clip.fields.at(channel)=member->second;
-            }
+            RequireNativeWindow(parent);const auto inherited=Read(parent,property,0u);
+            ValidateNativeWindowClipValue(inherited,false);
+            clip.fields.at("originx")=inherited.fields.at("originx");
+            clip.fields.at("originy")=inherited.fields.at("originy");
         }
         clip.fields.at("clipwidth")=Read(window,DescribeProperty("Extension.Window.Width"),0u);
         clip.fields.at("clipheight")=Read(window,DescribeProperty("Extension.Window.Height"),0u);
         NativeWindowWrite(window,"Extension.Window.winClipRect",clip,execution);
+    }
+    void NativeWindowClip(RuntimeObject* window,QuestVr::Vm::Execution& execution) {
+        RequireNativeWindow(window);
+        const auto property=DescribeProperty("Extension.Window.winClipRect");
+        auto clip=Read(window,property,0u);
+        const std::array<const char*,6u> channels{"originx","originy","clipx","clipy","clipwidth","clipheight"};
+        ValidateNativeWindowClipValue(clip,false); // Contents are overwritten, schema is not.
+        std::optional<QuestVr::NativeWindowClip> parentClip;
+        if(auto* parent=WindowLink(window,"winParent")) {
+            RequireNativeWindow(parent);
+            const auto inherited=Read(parent,property,0u);
+            ValidateNativeWindowClipValue(inherited);
+            parentClip=QuestVr::NativeWindowClip{inherited.fields.at("originx").floating,inherited.fields.at("originy").floating,
+                inherited.fields.at("clipx").floating,inherited.fields.at("clipy").floating,
+                inherited.fields.at("clipwidth").floating,inherited.fields.at("clipheight").floating};
+        }
+        const auto computed=QuestVr::ComputeNativeWindowClip(parentClip?&*parentClip:nullptr,
+            parentClip?NativeWindowFloat(window,"X"):0.0f,parentClip?NativeWindowFloat(window,"Y"):0.0f,
+            NativeWindowFloat(window,"Width"),NativeWindowFloat(window,"Height"));
+        const std::array<float,6u> values{computed.originX,computed.originY,computed.clipX,computed.clipY,
+            computed.clipWidth,computed.clipHeight};
+        for(std::size_t index=0u;index<channels.size();++index) clip.fields.at(channels[index])=Value::Float(values[index]);
+        NativeWindowWrite(window,"Extension.Window.winClipRect",clip,execution);
+        const auto context=Read(window,DescribeProperty("Extension.Window.wGc"),0u);
+        if(context.kind!=Kind::Object) throw std::runtime_error("Native window drawing context is not Object storage");
+        if(!context.text.empty()) {
+            auto* gc=Object(context.text);
+            if(!gc->nativeWindowObject || !IsDerivedFromPath(gc->cls,"Extension.GC"))
+                throw std::runtime_error("Native window drawing context is not an actual owned GC");
+            const auto existing=Read(gc,DescribeProperty("Extension.GC.gcClipRect"),0u);
+            ValidateNativeWindowClipValue(existing,false); // SetClipRect overwrites all channels.
+            NativeWindowWrite(gc,"Extension.GC.gcClipRect",clip,execution);
+        }
     }
     void InitializeBaseWindow(RuntimeObject* window,RuntimeObject* parent,QuestVr::Vm::Execution& execution) {
         // XWindow.Init1004bb30: no script InitWindow here. Derived native Init
@@ -4040,7 +4247,7 @@ public:
         for(const auto* name:{"winParent","firstChild","lastChild","prevSibling","nextSibling"}) WindowLinkWrite(window,name,nullptr,execution);
         if(parent) LinkNewWindowChild(parent,window,execution);
         // Native parent notifications happen BEFORE clipping/font inheritance.
-        NativeWindowClip(window,execution);
+        InitializeNativeWindowClip(window,execution);
         RuntimeObject* fontParent=WindowLink(window,"winParent");
         std::array<RuntimeObject*,128u> visited{};std::size_t depth{};
         Value normal=Value::Text(Kind::Object,{}),bold=normal;
@@ -5529,6 +5736,11 @@ private:
     std::optional<std::uint32_t> beforeRandomSeed_;
     bool spawnNotificationLocked_{};
     bool worldStartupProbe_{};
+    // Original Extension global layout-call bookkeeping is transient, scoped
+    // to this VM host. Exception guards restore it; UObject writes journal in
+    // the outer transaction. It is never persisted as guessed script fields.
+    std::size_t nativeConfigureChildDepth_{},nativeConfigurationDepth_{};
+    RuntimeObject* nativeConfiguringWindow_{};
     std::optional<PortableModelGeometry> rootModel_;
     bool transaction_{};
     const PortablePackageTables& Table(const std::string& source) {
@@ -9176,7 +9388,7 @@ PortableRootWindowProbeResult ProbePortableRootWindowInitialization(
                             field((std::string("DeusEx.HUDBaseWindow.")+name).c_str());
                 } else if(IsDerivedFromPath(object->cls,"Extension.GC")) {
                     for(const auto* name:{"Canvas","normalFont","boldFont","gcOwner","Style","PolyFlags","textPolyFlags",
-                        "bDrawEnabled","bSmoothed","bMasked","bTranslucent","bModulated","tileColor","tilePlane"})
+                        "bDrawEnabled","bSmoothed","bMasked","bTranslucent","bModulated","tileColor","tilePlane","gcClipRect"})
                         field((std::string("Extension.GC.")+name).c_str());
                 }
                 result.objects.push_back(std::move(view));

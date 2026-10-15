@@ -436,7 +436,7 @@ struct TestHost final:Vm::Host {
         // 1008 belongs only to this generated fixture. Native zero is keyed by
         // its declaration; individual tests provide the host-side observation.
         if((index==1008u || index==0u || index==1410u || index==1415u || index==1416u || index==1420u || index==1421u || index==1422u ||
-            index==1430u || index==1431u || index==1432u || index==1433u || index==1438u || index==1454u || index==1465u || index==1467u || index==1475u ||
+            index==1430u || index==1431u || index==1432u || index==1433u || index==1438u || index==1454u || index==1461u || index==1465u || index==1467u || index==1475u ||
             index==1535u || index==1538u || index==1539u || index==1540u ||
             index==1541u || index==1544u || index==1545u) && executionNative) {
             std::vector<Value> values;for(const auto& argument:arguments) values.push_back(index==1465u?argument.value:argument.Load());
@@ -3153,6 +3153,194 @@ void TileNativeInputContracts() {
     std::cout<<"Audited Tile native input copies/defaults: "<<checks-initialChecks<<" checks and "
         <<rejections-initialRejections<<" refusal controls.\n";
 }
+void WindowConfigureChildInputContracts() {
+    const auto initialChecks=checks,initialRejections=rejections;
+    const auto expression=[](bool declared,const std::vector<Bytes>& inputs) {
+        auto code=declared?Call(0x1c,7):Native(1461u);code.pop_back();
+        for(const auto& input:inputs) Append(code,input);
+        code.push_back(0x16u);return code;
+    };
+    const auto configure=[](TestHost& host) {
+        auto native=Function("ConfigureChild",{},"Extension.Window");native.nativeIndex=1461u;native.flags=0x401u;
+        for(const auto* name:{"newX","newY","newWidth","newHeight"})
+            native.variables.push_back({"ConfigureChild."+std::string(name),name,Value::Float(0.0f),0x80u,1u});
+        host.finals[{"Fixture",7}]=std::make_shared<Vm::Function>(native);
+        host.argumentSeed=[&host](std::uint16_t index,const std::string& receiver,std::size_t slot,
+            const Vm::Function* declaration)->std::optional<Value> {
+            if(index!=1461u) return std::nullopt;
+            Require(slot<4u && (receiver=="Self" || receiver=="Other") &&
+                (!declaration || declaration->path=="Extension.Window.ConfigureChild"),
+                "ConfigureChild initialized Float seed lost its receiver/slot/declaration");
+            host.observations.push_back("configure-seed"+std::to_string(slot));return Value::Float(0.0f);
+        };
+        return native;
+    };
+    const auto seeds=std::vector<std::string>{"configure-seed0","configure-seed1","configure-seed2","configure-seed3"};
+    for(const bool declared:{false,true}) for(std::size_t earlier=0u;earlier<3u;++earlier) {
+        TestHost host;configure(host);const std::array<float,4> values{-12.5f,23.0f,34.0f,45.0f};
+        const auto caller=Function("ConfigureChildCopiesBeforeLaterInputs",Return(expression(declared,
+            {Ref(0x01,1),Ref(0x01,2),Ref(0x01,3),Native(1060u,
+                {Ref(0x01,static_cast<std::int32_t>(earlier+1u)),Real(99.0f),Real(values[3])})})));
+        std::vector<Vm::Property> properties;
+        for(std::size_t slot=0u;slot<3u;++slot) {
+            properties.push_back(host.Property(caller,static_cast<std::int32_t>(slot+1u),
+                "Input"+std::to_string(slot),Value::Float(0.0f)));
+            host.Store("Self",properties.back(),{Value::Float(values[slot])});
+        }
+        host.executionNative=[&](const std::string& receiver,const std::vector<Vm::Evaluation>& arguments,
+            const Vm::Function* actual,Vm::Execution&) {
+            Require(receiver=="Self" && static_cast<bool>(actual)==declared && arguments.size()==4u,
+                "ConfigureChild lost its native receiver, actual declaration or four inputs");
+            for(std::size_t slot=0u;slot<4u;++slot)
+                Require(!arguments[slot].reference && arguments[slot].Load().kind==Vm::Kind::Float &&
+                    arguments[slot].Load().floating==values[slot],
+                    "ConfigureChild reloaded an earlier Float after a later expression mutated its source");
+            return Vm::Evaluation{arguments[earlier].Load(),{}};
+        };
+        const auto result=Vm::Execute(host,caller,"Self");Returned(result,"ConfigureChild independently copies four ordinary Float expressions");
+        Require(result.value.floating==values[earlier] && host.Load("Self",properties[earlier]).floating==99.0f && result.writes==1u,
+            "ConfigureChild snapshot suppressed real later mutation or returned the mutated source");
+        Require(host.observations.size()>=4u && std::equal(seeds.begin(),seeds.end(),host.observations.begin()),
+            "ConfigureChild did not capture all four seed contracts before expression side effects");
+    }
+    for(const bool declared:{false,true}) {
+        TestHost host;configure(host);std::vector<Bytes> inputs;
+        for(std::int32_t slot=1;slot<=4;++slot) inputs.push_back(Ref(0x01,slot));
+        const auto caller=Function("ConfigureChildUsesArgumentSourceFrame",Return(Context(Ref(0x20,9),expression(declared,inputs))));
+        host.objects[{caller.source,9}]="Other";std::vector<Vm::Property> properties;
+        for(std::int32_t slot=1;slot<=4;++slot) {
+            properties.push_back(host.Property(caller,slot,"FrameInput"+std::to_string(slot),Value::Float(0.0f)));
+            host.Store("Self",properties.back(),{Value::Float(static_cast<float>(slot))});
+            host.Store("Other",properties.back(),{Value::Float(-static_cast<float>(slot))});
+        }
+        host.executionNative=[&](const std::string& receiver,const std::vector<Vm::Evaluation>& arguments,
+            const Vm::Function* actual,Vm::Execution& execution) {
+            Require(receiver=="Other" && static_cast<bool>(actual)==declared && arguments.size()==4u,
+                "ConfigureChild context receiver/declaration changed");
+            for(std::size_t slot=0u;slot<4u;++slot) {
+                Require(!arguments[slot].reference && arguments[slot].Load().floating==static_cast<float>(slot+1u),
+                    "ConfigureChild evaluated argument in native receiver instead of FFrame.Object");
+                execution.WriteReference(host.Reference({"Self",Vm::Scope::Instance,properties[slot].key},properties[slot]),Value::Float(99.0f));
+                Require(arguments[slot].Load().floating==static_cast<float>(slot+1u),
+                    "ConfigureChild kept an ordinary input alias during native body work");
+            }
+            return Vm::Evaluation{arguments[3].Load(),{}};
+        };
+        const auto result=Vm::Execute(host,caller,"Self");Returned(result,"ConfigureChild source-frame inputs remain detached from native body mutations");
+        Require(result.value.floating==4.0f && result.writes==4u,"ConfigureChild lost copied height or actual body mutations");
+    }
+    for(const unsigned mode:{0u,1u,2u}) for(std::size_t selected=0u;selected<4u;++selected)
+        for(const float input:{-12.5f,-0.0f,0.0f,12.5f}) {
+        TestHost host;const auto native=configure(host);
+        host.executionNative=[&](const std::string&,const std::vector<Vm::Evaluation>& arguments,const Vm::Function*,Vm::Execution&) {
+            Require(arguments.size()==4u && !arguments[selected].reference,"ConfigureChild finite input retained an OUT alias");
+            return Vm::Evaluation{arguments[selected].Load(),{}};
+        };
+        std::vector<Bytes> inputs(4u,Real(25.0f));inputs[selected]=Real(input);
+        std::vector<Vm::Evaluation> direct(4u,{Value::Float(25.0f),{}});direct[selected]={Value::Float(input),{}};
+        const auto result=mode==2u?Vm::Execute(host,native,"Self",direct):
+            Vm::Execute(host,Function("ConfigureChildFiniteInputBits",Return(expression(mode==1u,inputs))),"Self");
+        Returned(result,"ConfigureChild input bridge preserves finite negative/signed-zero bits without layout clamps");
+        Require(result.value.kind==Vm::Kind::Float && std::bit_cast<std::uint32_t>(result.value.floating)==std::bit_cast<std::uint32_t>(input) &&
+            result.writes==0u && host.observations==seeds,"ConfigureChild VM bridge clamped an input or changed its signed zero");
+    }
+    for(const bool declared:{false,true}) for(std::size_t selected=0u;selected<4u;++selected) for(const int bytes:{-1,0,1,2,3,4}) {
+        TestHost host;configure(host);std::vector<Bytes> inputs(4u,Real(12.5f));
+        inputs[selected]=bytes<0?Bytes{0x0bu}:Context({0x2au},Native(4095u),static_cast<std::uint8_t>(bytes));
+        host.executionNative=[&](const std::string&,const std::vector<Vm::Evaluation>& arguments,const Vm::Function*,Vm::Execution&) {
+            Require(arguments.size()==4u,"ConfigureChild default lost independent input slots");
+            for(const auto& argument:arguments) Require(!argument.reference,"ConfigureChild default retained an OUT target");
+            const auto value=arguments[selected].Load();
+            Require(value.kind==(bytes<0?Vm::Kind::Nothing:Vm::Kind::Float),"ConfigureChild default consumed explicit Nothing or lost initialized Float destination");
+            return Vm::Evaluation{value.kind==Vm::Kind::Nothing?Value::Float(0.0f):value,{}};
+        };
+        const auto result=Vm::Execute(host,Function("ConfigureChildInitializedFloatTemporary",Return(expression(declared,inputs))),"Self");
+        Returned(result,"ConfigureChild initialized four independent Float+0 temporaries for Nothing and partial/full context clearing");
+        Require(result.value.kind==Vm::Kind::Float && std::bit_cast<std::uint32_t>(result.value.floating)==0u &&
+            host.observations==seeds && result.writes==0u,"ConfigureChild default inherited another slot or repeated seed hooks");
+    }
+    for(std::size_t selected=0u;selected<4u;++selected)
+        for(const auto disposition:{Vm::ResultDisposition::NoWrite,Vm::ResultDisposition::ZeroFill}) for(const unsigned bytes:{0u,1u,2u,3u,4u}) {
+        TestHost host;const auto native=configure(host);bool read{};
+        auto alias=std::make_shared<Vm::Reference>();alias->zero=Value::Float(0.0f);
+        alias->read=[&]() ->Value {read=true;throw std::runtime_error("Unwritten ConfigureChild alias read stale storage");};
+        std::vector<Vm::Evaluation> inputs(4u,{Value::Float(12.5f),{}});
+        inputs[selected]={Value::Float(99.0f),alias,disposition,static_cast<std::uint8_t>(bytes)};
+        host.executionNative=[&](const std::string&,const std::vector<Vm::Evaluation>& arguments,const Vm::Function*,Vm::Execution&) {
+            for(const auto& argument:arguments) Require(!argument.reference,"ConfigureChild direct ordinary input retained a reference");
+            return Vm::Evaluation{arguments[selected].Load(),{}};
+        };
+        const auto result=Vm::Execute(host,native,"Self",inputs);Returned(result,"Direct ConfigureChild unwritten initialized temporary never reads stale alias");
+        Require(!read && result.value.kind==Vm::Kind::Float && std::bit_cast<std::uint32_t>(result.value.floating)==0u &&
+            host.observations==seeds && result.writes==0u,"Direct ConfigureChild read stale payload or did not preserve independent initialized +0");
+    }
+    {
+        TestHost host;const auto native=configure(host);Value source=Value::Float(-12.5f);std::vector<Vm::Evaluation> inputs;
+        for(std::size_t slot=0u;slot<4u;++slot) {
+            auto alias=std::make_shared<Vm::Reference>();alias->zero=Value::Float(0.0f);
+            alias->read=[&,slot] {host.observations.push_back("read"+std::to_string(slot));
+                if(slot==0u) return source;
+                source=Value::Float(99.0f);return Value::Float(static_cast<float>(slot));};
+            inputs.push_back({{},alias});
+        }
+        host.executionNative=[](const std::string&,const std::vector<Vm::Evaluation>& arguments,const Vm::Function*,Vm::Execution&) {
+            for(const auto& argument:arguments) Require(!argument.reference,"Direct ConfigureChild written input kept an alias");
+            Require(arguments[1].Load().floating==1.0f && arguments[2].Load().floating==2.0f && arguments[3].Load().floating==3.0f,
+                "Direct ConfigureChild input read order changed");return Vm::Evaluation{arguments[0].Load(),{}};
+        };
+        const auto result=Vm::Execute(host,native,"Self",inputs);Returned(result,"Direct ConfigureChild captures input aliases once in order after all seed hooks");
+        auto expected=seeds;for(unsigned slot=0u;slot<4u;++slot) expected.push_back("read"+std::to_string(slot));
+        Require(result.value.floating==-12.5f && source.floating==99.0f && host.observations==expected,
+            "Direct ConfigureChild reread an earlier source, reordered input reads or repeated seed capture");
+    }
+    for(const bool direct:{false,true}) for(std::size_t selected=0u;selected<4u;++selected) for(const unsigned bytes:{5u,255u}) {
+        TestHost host;const auto native=configure(host);bool read{};
+        auto alias=std::make_shared<Vm::Reference>();alias->zero=Value::Float(0.0f);alias->read=[&] {read=true;return Value::Float(99.0f);};
+        std::vector<Bytes> inputs(4u,Real(12.5f));inputs[selected]=Context({0x2au},Native(4095u),static_cast<std::uint8_t>(bytes));
+        std::vector<Vm::Evaluation> incoming(4u,{Value::Float(12.5f),{}});
+        incoming[selected]={Value::Float(99.0f),alias,Vm::ResultDisposition::ZeroFill,static_cast<std::uint8_t>(bytes)};
+        const auto caller=Function("ConfigureChildOverflowResult",Return(expression(false,inputs)));
+        const auto result=Vm::ExecuteTransaction(host,[&](Vm::Execution& execution) {
+            execution.CallFunction(Function("EarlierConfigureChildEffect",Join({Native(1000u),Return()})),"Self");
+            try {if(direct) execution.CallFunction(native,"Self",incoming);else execution.CallFunction(caller,"Self");}
+            catch(const std::exception&){}return Value{};
+        });
+        Failed(result,Vm::Status::Unsupported,host,"ConfigureChild cannot clear beyond four-byte result destination; caught failure poisons transaction");
+        Require(!read && host.effects==0u && host.rng==12345u && host.nativeIndices==std::vector<std::uint16_t>{1000u},
+            "ConfigureChild result overflow read stale storage, entered native body or committed earlier effects");
+    }
+    for(const bool direct:{false,true}) for(std::size_t selected=0u;selected<4u;++selected) {
+        TestHost host;const auto native=configure(host);host.argumentSeed={};bool read{};
+        auto alias=std::make_shared<Vm::Reference>();alias->zero=Value::Float(0.0f);alias->read=[&] {read=true;return Value::Float(99.0f);};
+        std::vector<Bytes> inputs(4u,Real(12.5f));inputs[selected]=Context({0x2au},Native(4095u),4u);
+        std::vector<Vm::Evaluation> incoming(4u,{Value::Float(12.5f),{}});incoming[selected]={Value::Float(99.0f),alias,Vm::ResultDisposition::ZeroFill,4u};
+        const auto result=direct?Vm::Execute(host,native,"Self",incoming):
+            Vm::Execute(host,Function("ConfigureChildNoGlobalDefault",Return(expression(false,inputs))),"Self");
+        Failed(result,Vm::Status::Unsupported,host,"ConfigureChild native index or declaration alone cannot grant initialized result authority");
+        Require(!read && host.nativeArguments.empty(),"ConfigureChild inferred a global default, read stale input or entered its native body");
+    }
+    for(const bool storageBudget:{false,true}) for(std::size_t failedSlot=0u;failedSlot<4u;++failedSlot) {
+        TestHost host;const auto native=configure(host);bool read{};
+        auto alias=std::make_shared<Vm::Reference>();alias->zero=Value::Float(0.0f);alias->read=[&] {read=true;return Value::Float(12.5f);};
+        host.argumentSeed=[&](std::uint16_t index,const std::string&,std::size_t slot,const Vm::Function*)->std::optional<Value> {
+            if(index!=1461u) return std::nullopt;
+            if(slot==failedSlot) {if(!storageBudget) throw std::runtime_error("ConfigureChild seed lookup failed");
+                auto value=Value::Float(0.0f);value.text.reserve(200000u);return value;}
+            return Value::Float(0.0f);
+        };
+        auto limits=Vm::Limits{};if(storageBudget) limits.retainedBytes=100000u;
+        const auto result=Vm::ExecuteTransaction(host,[&](Vm::Execution& execution) {
+            execution.CallFunction(Function("EarlierConfigureChildSeedEffect",Join({Native(1000u),Return()})),"Self");
+            try {execution.CallFunction(native,"Self",std::vector<Vm::Evaluation>(4u,{{},alias}));}
+            catch(const std::exception&){}return Value{};
+        },limits);
+        Failed(result,storageBudget?Vm::Status::Budget:Vm::Status::Unsupported,host,"All ConfigureChild seed capture/budget failures precede any input read");
+        Require(!read && host.effects==0u && host.rng==12345u && host.nativeIndices==std::vector<std::uint16_t>{1000u},
+            "ConfigureChild seed failure read pending aliases or committed prior effects");
+    }
+    std::cout<<"Audited Window ConfigureChild input copies/defaults: "<<checks-initialChecks<<" checks and "
+        <<rejections-initialRejections<<" refusal controls.\n";
+}
 void WindowPreferredSizeOutContracts() {
     const auto initialChecks=checks,initialRejections=rejections;
     const auto configure=[](TestHost& host) {
@@ -4959,6 +5147,7 @@ int main() {
         SequentialNativeArgumentSeedContracts();
         WindowInputSnapshotContracts();
         TileNativeInputContracts();
+        WindowConfigureChildInputContracts();
         WindowPreferredSizeOutContracts();
         WindowWidthInputContracts();
         WindowSelectabilityInputContracts();
