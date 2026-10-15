@@ -36,8 +36,11 @@ An explicit None parameter remains valid for an isolated script unit probe.
   any of the authored lamp properties; it explains the reported no-op.
 - Original `Engine.Actor.PlaySound` is native264, flags0x401, with parameters
   Sound, optional Slot/Volume/bNoOverride/Radius/Pitch and an Int return.
-  It currently throws unsupported. Lamp writes before that call must roll
-  back, not be partly published and described as successful.
+  Its original Sound=None argument/no-write path is implemented. Nonnull
+  playback still throws unsupported. Lamp writes before that call must roll
+  back, not be partly published and described as successful. The VM argument,
+  result and caller-context foundation is described in SOUND-RUNTIME-CONTRACT.md;
+  it is not native audible playback or a completed lamp/crate fix.
 - `GetPortableRuntimeMapActors` projects committed LightType and bUnlit;
   `BuildMapLights` excludes LT_None regardless of an actor's light-class flag.
   ScaleGlow is not currently projected/applied to actor mesh lighting.
@@ -116,6 +119,11 @@ reproduces the full original mesh light model or dynamic BSP lighting.
 `portable_lamp_interaction_test GAME_ROOT` reads actual Training Lamp-derived
 actors and both original function declarations. It calls the unmodified
 original Frob with explicit legal None parameters solely as a scoped probe.
+It additionally calls actual PlaySound(None) with1..6 supplied inputs, verifies
+captured omissions/no return write and identical complete saved state/revision,
+and rejects an Actor incorrectly passed as a Sound. Engine.Sound is an actual
+registered native asset class; validation uses the existing declaration-aware
+cast path, not an assumption that every asset has a serialized UClass pointer.
 The current expected prerequisite is unsupported PlaySound264 at PC43/PC89;
 the test verifies every lamp property, the complete serialized runtime and
 world revision are unchanged. If the native later genuinely becomes

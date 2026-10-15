@@ -381,8 +381,25 @@ bool Original(const std::filesystem::path& root) {
                 " at "+fatal.function+':'+std::to_string(fatal.offset));
         Require(checkpoints.Snapshot("FatalAfter")==fatalBefore&&GetPortableRuntimeWorldRevision()==fatalRevision,
             "Fatal original crate damage leaked HP/scale/base/birth/deletion/random writes before unsupported sound");
+        // A real nonnull Pawn argument follows a different earlier branch.
+        // This NPC is only a legal isolated test input, never a stand-in for
+        // a possessed VR player or permission to skip original world startup.
+        const std::string instigator="00_Training.JaimeReyes0";
+        const auto isPawn=ExecutePortableActorFunction(instigator,"IsA",{{Value::Text(Kind::Name,"Pawn"),{}}});
+        Require(isPawn.passed()&&QuestVr::Vm::ToBool(isPawn.value),"Original nonnull damage fixture is not an actual Pawn");
+        auto instigatedHit=hit;instigatedHit[1u]={Value::Text(Kind::Object,instigator),{}};
+        const auto instigated=ExecutePortableActorFunction(actor,"TakeDamage",instigatedHit);
+        Require(!instigated.passed()&&!instigated.committed&&
+            instigated.error.find("Unsupported runtime native 512")!=std::string::npos&&
+            instigated.function=="DeusEx.DeusExDecoration.Active.TakeDamage"&&instigated.offset==428u,
+            "Nonnull instigated fatal damage bypassed its earlier MakeNoise prerequisite: "+instigated.error+
+                " at "+instigated.function+':'+std::to_string(instigated.offset));
+        Require(checkpoints.Snapshot("InstigatedFatalAfter")==fatalBefore&&GetPortableRuntimeWorldRevision()==fatalRevision,
+            "MakeNoise refusal leaked crate HP/Instigator or other complete-checkpoint effects");
         Require(LoadPortableRuntimeState(baseline.string()),"Could not restore isolated original crate probe");
         std::cout<<"PREREQUISITE "<<actor<<": actual Active.TakeDamage6 survives with HP4/ScaleGlow0.46; fatal original hit rolls back at "<<fatal.function<<':'<<fatal.offset<<" native264. Not live VR damage.\n";
+        std::cout<<"PREREQUISITE "<<actor<<": legal nonnull Pawn-instigated fatal hit rolls back earlier at "
+            <<instigated.function<<':'<<instigated.offset<<" native512, complete checkpoint unchanged. Not a possessed player.\n";
     }
     ShutdownPortableRuntime(); for(const auto& [path,b]:before) Require(ReadBytes(path)==b,"Original inspection changed a source package");
     std::cout<<"PASS original BasedActors306 declaration, both crate DropThings scans and isolated surviving/fatal-refusal damage probes; no DLL/EXE execution, live VR damage, physics, spawned loot, equipment or campaign startup claim\n"; return true;

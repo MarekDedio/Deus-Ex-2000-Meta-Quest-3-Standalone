@@ -1,5 +1,11 @@
 # Current Quest test-build handoff (2026-10-15)
 
+The subsequent crate sound-script checkpoint is source/tests only: no replacement
+APK was built or installed. The NPC APK below remains the accepted device build.
+Sound/default/result regressions and exact original crate refusal boundaries
+pass, but destructible crates are not ready for headset acceptance. See
+SOUND-RUNTIME-CONTRACT.md and STATUS.md for that checkpoint's explicit limits.
+
 ## Original Training NPC waiting animations (2026-10-15)
 
 The user accepts the hand models/quiet trigger, then prioritizes NPC T-poses

@@ -2066,6 +2066,7 @@ public:
         RuntimeObject* object = Object(receiver);
         if (object->defaultOwner)
             throw std::runtime_error("Native execution on a class-default object requires its audited handler");
+        if (index==264u) return PlaySoundArgumentPrerequisite(object,arguments,declaration);
         if (index==0u && declaration && LowerAscii(declaration->path)=="engine.playerpawn.consolecommand")
             return PlayerPawnConsoleCommand(object,arguments,*declaration);
         // Native event wrappers have no presentation-active gate. Their actual
@@ -2806,6 +2807,84 @@ public:
         }
         return authored;
     }
+    std::shared_ptr<const Function> PlaySoundDeclaration(const Function* supplied) {
+        const auto authored=FunctionFor(Object("Engine.Actor.PlaySound"));
+        const std::array<const char*,7u> names{"Sound","Slot","Volume","bNoOverride","Radius","Pitch","ReturnValue"};
+        const std::array<Kind,7u> kinds{Kind::Object,Kind::Byte,Kind::Float,Kind::Bool,Kind::Float,Kind::Float,Kind::Int};
+        const std::array<const char*,7u> types{"ObjectProperty","ByteProperty","FloatProperty","BoolProperty","FloatProperty","FloatProperty","IntProperty"};
+        const auto validate=[&](const Function& function) {
+            if (LowerAscii(function.path)!="engine.actor.playsound" || function.nativeIndex!=264u ||
+                function.flags!=0x401u || function.variables.size()!=names.size())
+                throw std::runtime_error("PlaySound does not match its original native declaration");
+            for (std::size_t slot=0u;slot<names.size();++slot) {
+                const auto& field=function.variables[slot];auto* metadata=Object(field.key);
+                const auto flags=slot==0u?0x80u:slot==6u?0x580u:0x90u;
+                if (LowerAscii(field.key)!=LowerAscii(std::string("Engine.Actor.PlaySound.")+names[slot]) ||
+                    field.zero.kind!=kinds[slot] || field.flags!=flags || field.arrayDimension!=1u ||
+                    !metadata->property || metadata->property->type!=types[slot])
+                    throw std::runtime_error("PlaySound parameter is not its original scalar declaration");
+                if (slot<2u) {
+                    const auto target=Qualified(Table(metadata->sourcePath),metadata->property->referencedType);
+                    if (LowerAscii(target)!=(slot==0u?"engine.sound":"engine.actor.esoundslot"))
+                        throw std::runtime_error("PlaySound Sound/Slot constraint does not match its declaration");
+                }
+            }
+        };
+        validate(*authored);
+        if (supplied) {
+            validate(*supplied);
+            if (supplied->source!=authored->source)
+                throw std::runtime_error("PlaySound declaration has a foreign source");
+        }
+        return authored;
+    }
+    Value PlaySoundArgumentSeed(RuntimeObject* actor,std::size_t slot) {
+        if (!actor || actor->defaultOwner || (!actor->active && !actor->worldRemoved) ||
+            !IsDerivedFromPath(actor->cls,"Engine.Actor"))
+            throw std::runtime_error("PlaySound requires an actual Actor receiver");
+        if (slot==0u) return Value::Text(Kind::Object,{});
+        if (slot==1u) return Value::Byte(1u);
+        if (slot==3u) return Value::Bool(false);
+        if (slot==5u) return Value::Float(1.0f);
+        if (slot!=2u && slot!=4u) throw std::runtime_error("PlaySound input slot exceeds its original schema");
+        const auto property=DescribeProperty(slot==2u?"Engine.Actor.TransientSoundVolume":"Engine.Actor.TransientSoundRadius");
+        if (property.zero.kind!=Kind::Float || property.arrayDimension!=1u || !OwnsProperty(actor->cls,property))
+            throw std::runtime_error("PlaySound default is not its actual inherited Actor Float");
+        const auto value=Read(actor,property,0u);
+        if (value.kind!=Kind::Float) throw std::runtime_error("PlaySound default has an invalid Float value");
+        return value;
+    }
+    Evaluation PlaySoundArgumentPrerequisite(RuntimeObject* actor,const std::vector<Evaluation>& arguments,
+        const Function* declaration) {
+        static_cast<void>(PlaySoundDeclaration(declaration));
+        if (arguments.empty() || arguments.size()>6u)
+            throw std::runtime_error("PlaySound requires one to six original inputs");
+        std::array<Value,6u> values;
+        for (std::size_t slot=0u;slot<values.size();++slot) {
+            values[slot]=slot<arguments.size()?arguments[slot].Load():PlaySoundArgumentSeed(actor,slot);
+            // Supplied bytecode omissions have already been materialized at
+            // their own Step boundary. Run pads absent trailing optionals with
+            // Nothing after all expressions; those defaults observe the final
+            // receiver state, with no later expression left to change it.
+            if (values[slot].kind==Kind::Nothing && slot!=0u)
+                values[slot]=PlaySoundArgumentSeed(actor,slot);
+            const Kind expected=slot==0u?Kind::Object:slot==1u?Kind::Byte:slot==3u?Kind::Bool:Kind::Float;
+            if (values[slot].kind!=expected) throw std::runtime_error("PlaySound argument is not its native destination type");
+        }
+        if (values[0u].text.empty()) {
+            // Retail103e2117 jumps directly to2618; not ReturnValue=0.
+            Evaluation absent;absent.disposition=QuestVr::Vm::ResultDisposition::NoWrite;return absent;
+        }
+        // Engine.Sound is a registered native asset class, not necessarily
+        // a serialized UClass linked through RuntimeObject::cls. Use the
+        // existing declaration-aware cast path for its real export identity.
+        ValidateObjectValue(values[0u],"Engine.Sound",false);
+        // Nonnull routing/ClientHearSound/audio publication is not implemented
+        // by the argument/result prerequisite. Preserve the exact failure and
+        // the enclosing crate/lamp transaction, never silently drop effects.
+        throw std::runtime_error("Unsupported runtime native 264");
+    }
+
     Value CursorColorSeed() {
         auto color=DescribeProperty("Extension.Window.SetDefaultCursor.cursorColor").zero;
         if(color.kind!=Kind::Struct || color.fields.size()!=4u)
@@ -2854,6 +2933,11 @@ public:
     }
     bool HasSequentialNativeArgumentSeeds(const std::uint16_t index,const std::string& receiver,
         const Function* declaration) override {
+        if (index==264u) {
+            static_cast<void>(PlaySoundDeclaration(declaration));
+            static_cast<void>(PlaySoundArgumentSeed(Object(receiver),0u));
+            return true;
+        }
         if(index!=1438u) return false;
         RequireNativeWindow(Object(receiver));
         static_cast<void>(WindowNativeDeclaration(index,declaration));
@@ -2861,6 +2945,12 @@ public:
     }
     std::optional<Value> SequentialNativeArgumentSeed(const std::uint16_t index,const std::string& receiver,
         const std::size_t slot,const Function* declaration,const std::vector<Value>& prefix) override {
+        if (index==264u) {
+            static_cast<void>(PlaySoundDeclaration(declaration));
+            if (slot>=6u || prefix.size()!=slot)
+                throw std::runtime_error("PlaySound default lacks its ordered evaluated prefix");
+            return PlaySoundArgumentSeed(Object(receiver),slot);
+        }
         if(index!=1438u) return std::nullopt;
         RequireNativeWindow(Object(receiver));
         const auto authored=WindowNativeDeclaration(index,declaration);
@@ -2872,6 +2962,14 @@ public:
         if(seed.kind!=Kind::Float || !std::isfinite(seed.floating))
             throw std::runtime_error("Native window alignment seed requires its copied finite Float");
         return seed;
+    }
+    bool MaterializeNativeArgumentOmission(const std::uint16_t index,const std::string& receiver,
+        const std::size_t slot,const Function* declaration) override {
+        if (index!=264u) return false;
+        static_cast<void>(PlaySoundDeclaration(declaration));
+        if (slot>=6u) throw std::runtime_error("PlaySound omission exceeds its input schema");
+        static_cast<void>(PlaySoundArgumentSeed(Object(receiver),0u));
+        return true;
     }
     void RequireNativeWindow(RuntimeObject* window) {
         if(!window || !window->nativeWindowObject || !IsDerivedFromPath(window->cls,"Extension.Window"))

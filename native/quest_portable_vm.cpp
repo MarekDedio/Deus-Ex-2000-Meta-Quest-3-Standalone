@@ -43,6 +43,7 @@ bool SnapshotNativeInput(const std::uint16_t index, const Function* declaration 
             Lower(declaration->path) == "engine.playerpawn.consolecommand");
     case 112: case 113: case 124: case 125: case 126: case 127: case 128:
     case 168: case 186: case 187: case 189: case 231: case 234: case 235: case 244: case 245: case 246: case 249: case 250: case 251: case 278:
+    case 264: return true; // PlaySound copies each initialized input before the next Step.
     case 280: return true; // SetTimer copies rate before evaluating bLoop.
     case 1410: case 1415: case 1416: case 1420: case 1421: case 1422: case 1430: case 1431: case 1432: case 1433: case 1438: case 1454: case 1461: case 1467:
     case 1475: case 1477: case 1510: case 1511: case 1535: case 1538: case 1539: case 1540:
@@ -507,21 +508,28 @@ public:
             return Value{};
         }));
     }
-    Value Run(const Function& identity, const std::string& self, const std::vector<Evaluation>& incoming,
+    Value Run(const Function& identity, const std::string& self, const std::vector<Evaluation>& incoming) {
+        const auto result=RunEvaluation(identity,self,incoming);
+        // This API has no caller-owned result destination. Unwritten native
+        // storage is absence, not a declaration zero or a stale return alias.
+        return result.disposition==ResultDisposition::Written ? result.Load() : Value{};
+    }
+    Evaluation RunEvaluation(const Function& identity, const std::string& self, const std::vector<Evaluation>& incoming,
         std::optional<std::optional<Value>> capturedContext = {}, const bool nativeArgumentsMaterialized = false) {
-        if (self.empty() || !host_.CanCall(identity, self)) return {};
+        if (self.empty() || !host_.CanCall(identity, self)) return {{},{},ResultDisposition::NoWrite};
         if (result_.callStack.size() >= limits_.callDepth) Fail(Status::Budget, "VM call depth limit");
         // An engaged outer optional records that expression evaluation already
         // captured even a deliberately absent context. Never recapture after
         // argument expressions or after loading caller-provided aliases.
         if (!capturedContext) capturedContext.emplace((identity.flags & 0x400u) ?
-            CaptureNativeContext(identity.nativeIndex, self, &identity) : std::nullopt);
+            CaptureNativeContext(identity.nativeIndex, self, &identity,activeFunction_) : std::nullopt);
         const auto prepared = host_.PrepareFunction(identity, self);
         if (!prepared || prepared->path != identity.path || prepared->source != identity.source ||
             (((prepared->flags | identity.flags) & 0x400u) &&
                 (prepared->flags != identity.flags || prepared->nativeIndex != identity.nativeIndex)))
             Fail(Status::Invalid, "Prepared VM function changed callable identity");
         const Function& fn = *prepared;
+        ActiveFunctionScope activeFunction(activeFunction_,fn);
         result_.callStack.push_back(fn.path);
         result_.function = fn.path; result_.offset = 0; result_.opcode = 0;
         if ((fn.flags & 0x8) && !((fn.flags & 0x400) &&
@@ -546,6 +554,8 @@ public:
         const bool directSequentialSeeds=directNative && ReadOnlyNativeSeedOperation([&] {
             return host_.HasSequentialNativeArgumentSeeds(fn.nativeIndex,self,&fn);
         });
+        const auto materializedOmissions=directNative ?
+            CaptureNativeArgumentOmissions(fn.nativeIndex,self,incoming.size(),&fn) : std::vector<std::uint8_t>{};
         // Capture ALL immutable defaults before reading ANY incoming alias.
         // Eval already did this before evaluating expressions; never repeat
         // its hooks at the internal Run boundary.
@@ -572,15 +582,24 @@ public:
             }
             if (!uninitializedLayouts.empty() && uninitializedLayouts[slot]) {
                 materialized=MaterializeUninitializedNativeArgument(argument,*uninitializedLayouts[slot]);input=&materialized;
-            } else if (directNative && argument.disposition!=ResultDisposition::Written) {
+            } else if (directNative && (argument.disposition!=ResultDisposition::Written ||
+                (!materializedOmissions.empty() && materializedOmissions[slot] &&
+                    !argument.reference && argument.value.kind==Kind::Nothing))) {
                 const bool entrySeeded=!nativeSeeds.empty() && nativeSeeds[slot].has_value();
                 const auto destination=sequentialSeed ? sequentialSeed : entrySeeded ? nativeSeeds[slot] :
                     BuiltinArgumentZero(fn.nativeIndex,slot);
                 if (destination) {
                     ValidateValue(*destination,0);Retain(ValueBytes(*destination));
-                    materialized={ResultValue(argument,*destination,NativeParameterLayout(&fn,slot),true),{}};
+                    auto evaluated=argument;
+                    if (argument.disposition==ResultDisposition::Written &&
+                        !argument.reference && argument.value.kind==Kind::Nothing)
+                        evaluated.disposition=ResultDisposition::NoWrite;
+                    materialized={ResultValue(evaluated,*destination,NativeParameterLayout(&fn,slot),true),{}};
                 } else if (argument.disposition==ResultDisposition::ZeroFill && argument.zeroFillBytes!=0u)
                     Fail(Status::Unsupported,"VM context argument result destination layout is unavailable");
+                else if (!materializedOmissions.empty() && materializedOmissions[slot] &&
+                    !argument.reference && argument.value.kind==Kind::Nothing)
+                    Fail(Status::Unsupported,"VM materialized native omission has no initialized seed");
                 else {
                     // There is no audited initialized temporary. Preserve
                     // absence, not an arbitrary declaration zero or stale
@@ -618,11 +637,12 @@ public:
         if (args.size() > argCount && !fn.variables.empty()) Fail(Status::Invalid, "Excess VM arguments");
         if (fn.flags & 0x400) {
             Step(fn, 0, 0);
-            auto result = Native(fn.nativeIndex, self, args, &fn, *capturedContext).Load();
+            auto result = Native(fn.nativeIndex, self, args, &fn, *capturedContext);
             for (const auto& property:fn.variables)
-                if ((property.flags&0x400u) && result.kind!=Kind::Nothing)
-                    ValidateResultLayout(result,property.resultLayout);
-            ValidateValue(result, 0); result_.callStack.pop_back(); return result;
+                if ((property.flags&0x400u) && result.disposition==ResultDisposition::Written &&
+                    result.value.kind!=Kind::Nothing)
+                    ValidateResultLayout(result.value,property.resultLayout);
+            ValidateValue(result.value, 0); result_.callStack.pop_back(); return result;
         }
         auto program = Parser(host_, fn, limits_, nodes_, result_, false, &retainedBytes_).Parse();
         Frame frame{fn, self, {}};
@@ -660,7 +680,8 @@ public:
             if (AdvanceIterator(frame, n, program, pc, iterators)) continue;
             if (n.op == 0x04) {
                 const auto evaluated = Eval(frame, n.children.at(0), self);
-                value = returnProperty ? ResultValue(evaluated,frame.locals.at(returnProperty->key)->read(),returnProperty->resultLayout) : evaluated.Load();
+                value = returnProperty ? ResultValue(evaluated,frame.locals.at(returnProperty->key)->read(),returnProperty->resultLayout) :
+                    evaluated.disposition==ResultDisposition::Written ? evaluated.Load() : Value{};
                 returned = true; break;
             }
             if (n.op == 0x15) {
@@ -700,7 +721,8 @@ public:
             ++argument;
         }
         for (const auto& p : fn.variables) localElements_ -= p.arrayDimension;
-        result_.callStack.pop_back(); return value;
+        result_.callStack.pop_back();
+        return {value,{},value.kind==Kind::Nothing ? ResultDisposition::NoWrite : ResultDisposition::Written};
     }
     Value Resume(const std::string& self, std::optional<std::string> priorSelected = {}) {
         if (self.size() > limits_.stringBytes) Fail(Status::Budget, "VM state receiver identity limit");
@@ -1156,6 +1178,14 @@ private:
     Host& host_;
     const Limits& limits_;
     Result& result_;
+    const Function* activeFunction_{};
+    struct ActiveFunctionScope {
+        const Function*& current;
+        const Function* previous;
+        ActiveFunctionScope(const Function*& slot,const Function& function)
+            :current(slot),previous(slot) { current=&function; }
+        ~ActiveFunctionScope() { current=previous; }
+    };
     std::size_t nodes_{}, localElements_{}, retainedBytes_{}, operations_{};
     bool accepted_{};
     bool nativeSeedHookActive_{};
@@ -1421,6 +1451,24 @@ private:
         }
         return ResultLayout::Unknown;
     }
+    std::vector<std::uint8_t> CaptureNativeArgumentOmissions(const std::uint16_t index,
+        const std::string& receiver,const std::size_t count,const Function* declaration) {
+        if (count>limits_.arguments) Fail(Status::Budget,"VM native omission capability count limit");
+        std::vector<std::uint8_t> capabilities;
+        for (std::size_t slot=0u;slot<count;++slot) {
+            const bool materialize=ReadOnlyNativeSeedOperation([&] {
+                return host_.MaterializeNativeArgumentOmission(index,receiver,slot,declaration);
+            });
+            if (!materialize) continue;
+            // No allocation or changed omission behavior without opt-in.
+            if (capabilities.empty()) {
+                Retain(count);capabilities.resize(count);
+                Retain(capabilities.capacity()-count);
+            }
+            capabilities[slot]=1u;
+        }
+        return capabilities;
+    }
     std::vector<std::optional<Value>> CaptureNativeArgumentSeeds(const std::uint16_t index,
         const std::string& receiver,const std::size_t count,const Function* declaration,
         const std::vector<std::optional<ResultLayout>>& uninitializedLayouts,
@@ -1521,6 +1569,7 @@ private:
         }
     }
     Evaluation Eval(Frame& frame, const Node& n, const std::string& context) {
+        ActiveFunctionScope activeFunction(activeFunction_,frame.function);
         Step(frame.function, n.offset, n.op);
         Evaluation result;
         const auto child = [&](std::size_t i) {
@@ -1542,7 +1591,7 @@ private:
             }
             std::optional<std::optional<Value>> capturedContext;
             capturedContext.emplace(!fn || (fn->flags & 0x400u) ?
-                CaptureNativeContext(index, context, fn.get()) : std::nullopt);
+                CaptureNativeContext(index, context, fn.get(),&frame.function) : std::nullopt);
             const auto parameters=fn ? host_.FunctionParameters(*fn) : std::vector<Property>{};
             if (parameters.size()>limits_.arguments) Fail(Status::Budget,"VM argument schema count limit");
             Retain(parameters.capacity()*sizeof(Property));
@@ -1558,6 +1607,8 @@ private:
             const bool sequentialSeeds = nativeCall && ReadOnlyNativeSeedOperation([&] {
                 return host_.HasSequentialNativeArgumentSeeds(index, context, fn.get());
             });
+            const auto materializedOmissions=nativeCall ?
+                CaptureNativeArgumentOmissions(index,context,n.children.size(),fn.get()) : std::vector<std::uint8_t>{};
             const auto nativeSeeds=nativeCall ? CaptureNativeArgumentSeeds(index,context,n.children.size(),
                 fn.get(),uninitializedLayouts,&parameters) : std::vector<std::optional<Value>>{};
             std::vector<Value> capturedInputs;
@@ -1585,10 +1636,11 @@ private:
                     if (i<parameters.size()) ValidateResultLayout(*sequentialSeed,parameters[i].resultLayout);
                 }
                 auto argument = Eval(frame, n.children[i], frame.self);
-                // Explicit EX_Nothing is the native optional-argument marker,
-                // not a null Context writing into a typed argument slot. Keep
-                // it intact for the declaration-aware native reader/default.
-                const bool nativeOmission=nativeCall && n.children[i].op==0x0bu;
+                // Preserve ordinary optional markers. Audited initialized
+                // wrappers instead consume Nothing at this exact Step, so a
+                // later argument cannot retroactively change this default.
+                const bool materializeOmission=!materializedOmissions.empty() && materializedOmissions[i];
+                const bool nativeOmission=nativeCall && n.children[i].op==0x0bu && !materializeOmission;
                 if (!uninitializedLayouts.empty() && uninitializedLayouts[i])
                     argument=MaterializeUninitializedNativeArgument(argument,*uninitializedLayouts[i]);
                 else if (argument.disposition!=ResultDisposition::Written && !nativeOmission) {
@@ -1597,6 +1649,8 @@ private:
                     const bool seeded = sequentialSeed.has_value() || entrySeeded || builtinZero.has_value();
                     const auto typedZero=sequentialSeed ? sequentialSeed : entrySeeded ? nativeSeeds[i] :
                         builtinZero ? builtinZero : i<parameters.size() ? std::optional<Value>{parameters[i].zero} : std::nullopt;
+                    if (materializeOmission && n.children[i].op==0x0bu && !seeded)
+                        Fail(Status::Unsupported,"VM materialized native omission has no initialized seed");
                     if (typedZero) {
                         ValidateValue(*typedZero,0);Retain(ValueBytes(*typedZero));
                         const auto layout=i<parameters.size()?parameters[i].resultLayout:ResultLayout::Unknown;
@@ -1615,7 +1669,7 @@ private:
                 args.push_back(std::move(argument));
             }
             Locate(frame.function, n.offset, n.op);
-            result = fn ? Evaluation{Run(*fn, context, args, capturedContext,nativeCall), {}} :
+            result = fn ? RunEvaluation(*fn, context, args, capturedContext,nativeCall) :
                 Native(index, context, args, nullptr, *capturedContext);
         } else if (n.op == 0x53) {
             // Retail Core.execIntToString10131600 seeds an INT0 temporary and
@@ -1854,8 +1908,10 @@ private:
     }
 
     std::optional<Value> CaptureNativeContext(std::uint16_t index, const std::string& self,
-        const Function* declaration) {
-        auto context = host_.CaptureNativeContext(index, self, declaration);
+        const Function* declaration,const Function* caller) {
+        auto context = ReadOnlyNativeSeedOperation([&] {
+            return host_.CaptureNativeCallSiteContext(index,self,declaration,caller);
+        });
         if (context) { ValidateValue(*context, 0); Retain(ValueBytes(*context)); }
         return context;
     }
@@ -2092,20 +2148,34 @@ private:
             // No implicit success for missing campaign behavior or latent calls.
             auto guarded = args;
             for (auto& argument : guarded) argument.reference = GuardReference(argument.reference);
-            const auto value = [&] {
+            const auto result = [&] {
                 try {
                     auto evaluated = host_.NativeWithContext(index, self, guarded, declaration, *this, capturedContext);
+                    // A native may leave the caller's result storage untouched.
+                    // Do not read an unwritten alias or manufacture a value by
+                    // discarding its destination-sensitive disposition.
+                    if (evaluated.disposition!=ResultDisposition::Written) {
+                        if (evaluated.disposition!=ResultDisposition::NoWrite &&
+                            evaluated.disposition!=ResultDisposition::ZeroFill)
+                            Fail(Status::Invalid,"VM native returned an invalid result disposition");
+                        return Evaluation{{},{},evaluated.disposition,evaluated.zeroFillBytes};
+                    }
                     // Validate a detached native allocation before copying can
                     // discard spare capacity. Native aliases are snapshotted.
-                    if (!evaluated.reference) { ValidateValue(evaluated.value, 0); return std::move(evaluated.value); }
-                    return evaluated.Load();
+                    if (!evaluated.reference) {
+                        ValidateValue(evaluated.value, 0);
+                        const auto disposition=evaluated.value.kind==Kind::Nothing ?
+                            ResultDisposition::NoWrite : ResultDisposition::Written;
+                        return Evaluation{std::move(evaluated.value),{},disposition};
+                    }
+                    return Evaluation{evaluated.Load(),{}};
                 }
                 catch (...) { CheckFailure(); throw; }
             }();
             CheckFailure();
             // Native return slots are values in the pinned VM, never aliases
             // to an out argument or to a guard owned by this Machine.
-            ValidateValue(value, 0); return {value, {}};
+            ValidateValue(result.value, 0); return result;
         }
         }
     }

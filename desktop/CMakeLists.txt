@@ -8,7 +8,7 @@ if(NOT EXISTS "${SURREAL_ENGINE_ROOT}/Precomp.cpp")
 endif()
 
 set(PORT_NATIVE "${CMAKE_CURRENT_LIST_DIR}/../native")
-foreach(OBJECT_HELPER quest_object_names quest_engine_config quest_persona_view quest_hud_health_clock quest_hud_oxygen_clock quest_quick_belt quest_playable_hud quest_quick_belt_visibility quest_equipped_item_visual quest_hud_layout quest_held_visual_cache)
+foreach(OBJECT_HELPER quest_object_names quest_engine_config quest_persona_view quest_hud_health_clock quest_hud_oxygen_clock quest_quick_belt quest_playable_hud quest_quick_belt_visibility quest_equipped_item_visual quest_hud_layout quest_held_visual_cache quest_sound_protocol)
     add_executable(${OBJECT_HELPER}_test ${OBJECT_HELPER}_test.cpp)
     target_compile_features(${OBJECT_HELPER}_test PRIVATE cxx_std_20)
     target_include_directories(${OBJECT_HELPER}_test PRIVATE "${PORT_NATIVE}")

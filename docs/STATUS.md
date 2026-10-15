@@ -1,5 +1,29 @@
 # Port status
 
+## Crate sound-script foundation checkpoint (2026-10-15)
+
+- The user accepts all Training NPC poses and resumes destructible crates.
+  Implemented original native264 sequential defaults/omission snapshots and
+  Sound=None's no-write path, with exact original declaration/type validation.
+  Native result dispositions and real pre-argument caller provenance now survive
+  raw/reflected/nested VM calls. Nonnull sounds still explicitly refuse; there
+  is no fake crate disappearance or claimed complete destruction.
+- New scalar sound protocol passes1,859,556 checks/43 safety refusals; VM
+  passes695,208/784, including new destination/default/caller controls. Strict
+  ARM64 syntax checks pass. Coherent host build and final CTest:94 passes,
+  108 registered,14 explicit owned-data skips, zero failures in23.32s.
+- Separately invoked owned lamp probes pass actual PlaySound(None) with1..6
+  inputs, complete checkpoint invariance and wrong-type refusal. Nonnull Frob
+  still rolls back at264 PC43. Owned crate152 checks now distinguish None
+  instigator's264 PC464 from a legal nonnull Pawn's earlier512 PC428; both
+  restore the exact complete checkpoint/revision. The NPC test input is not
+  substituted for a possessed player in gameplay.
+- No new APK is produced for this backend-only checkpoint. The accepted NPC
+  APK remains installed. Audible native effects, original damage-instigator
+  binding, noise, debris/contents, support gravity and full tutorial/campaign
+  remain unfinished. See SOUND-RUNTIME-CONTRACT.md for exact retail evidence,
+  rollback requirements and remaining native clock/identity/audio ownership.
+
 ## Training NPC poses/breathing accepted (2026-10-15)
 
 - User confirms tracked hand models and quiet trigger work, then prioritizes

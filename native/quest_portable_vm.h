@@ -205,9 +205,20 @@ public:
     // Both hooks are read-only: no host mutation or VM execution/write callback.
     virtual bool HasSequentialNativeArgumentSeeds(std::uint16_t,
         const std::string&, const Function*) { return false; }
+    // Narrow opt-in for an audited wrapper whose initialized input temporary
+    // consumes EX_Nothing at Step time, rather than deferring an omission to
+    // the eventual native handler. Capture this immutable capability for ALL
+    // supplied slots before ANY argument is evaluated/read. The initialized
+    // value still comes from that slot's sequential/entry/builtin seed; a
+    // declaration zero alone is not authority. Hooks are read-only and must
+    // not execute VM callbacks or mutate host state. Other natives preserve
+    // their explicit Nothing omission markers.
+    virtual bool MaterializeNativeArgumentOmission(std::uint16_t,
+        const std::string&, std::size_t, const Function*) { return false; }
     // Called immediately BEFORE each supplied argument expression. The prefix
     // contains detached values captured immediately AFTER preceding arguments,
-    // never references, and retains explicit Nothing omission markers. A seed
+    // never references, and retains explicit Nothing omission markers unless
+    // MaterializeNativeArgumentOmission opted that slot into Step-time defaults. A seed
     // overrides the entry seed for this slot only; no seed preserves the entry
     // seed or declared/builtin destination. Do not retain the prefix reference.
     virtual std::optional<Value> SequentialNativeArgumentSeed(std::uint16_t,
@@ -262,6 +273,15 @@ public:
     // materialize/mutate a state frame while capturing this context.
     virtual std::optional<Value> CaptureNativeContext(std::uint16_t, const std::string&, const Function*) {
         return std::nullopt;
+    }
+    // The executing caller declaration is distinct from the called native's
+    // declaration and receiver. Eval supplies its real script/state frame;
+    // a top-level direct entry has no caller and passes nullptr. This hook is
+    // captured before argument evaluation, and preserves legacy hosts through
+    // the default delegation. Never infer a missing caller from the callee.
+    virtual std::optional<Value> CaptureNativeCallSiteContext(std::uint16_t index,
+        const std::string& receiver, const Function* declaration, const Function*) {
+        return CaptureNativeContext(index,receiver,declaration);
     }
     virtual Evaluation NativeWithContext(std::uint16_t index, const std::string& receiver,
         const std::vector<Evaluation>& arguments, const Function* declaration, Execution& execution,

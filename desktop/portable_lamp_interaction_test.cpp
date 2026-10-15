@@ -127,6 +127,28 @@ void Original(const std::filesystem::path& root) {
         const bool initiallyOn = QuestVr::Vm::ToBool(properties.at(0u).second);
         const auto revision = GetPortableRuntimeWorldRevision();
         Require(SavePortableRuntimeState(before.string()), "Could not save lamp rollback checkpoint");
+        // Retail PlaySound(None) evaluates all supplied arguments, then leaves
+        // the result destination untouched. No audible playback is claimed.
+        for (std::size_t count=1u;count<=6u;++count) {
+            std::vector<QuestVr::Vm::Evaluation> arguments(count);
+            arguments[0u]={Value::Text(Kind::Object,{}),{}};
+            const auto silent=ExecutePortableActorFunction(lamp.objectPath,"PlaySound",arguments);
+            Require(silent.passed() && silent.value.kind==Kind::Nothing,
+                "Actual PlaySound(None) wrote a return or rejected captured omissions: "+silent.error);
+            SameProperties(lamp.objectPath,properties);
+            Require(GetPortableRuntimeWorldRevision()==revision &&
+                SavePortableRuntimeState(after.string()) && Bytes(before)==Bytes(after),
+                "PlaySound(None) changed properties/checkpoint/revision");
+        }
+        const auto invalidSound=ExecutePortableActorFunction(lamp.objectPath,"PlaySound",
+            {{Value::Text(Kind::Object,lamp.objectPath),{}}});
+        Require(!invalidSound.passed() && !invalidSound.committed &&
+            invalidSound.error.find("Runtime Object property violates its class constraint")!=std::string::npos,
+            "PlaySound accepted an Actor as its Sound input or refused it at the wrong boundary");
+        SameProperties(lamp.objectPath,properties);
+        Require(GetPortableRuntimeWorldRevision()==revision &&
+            SavePortableRuntimeState(after.string()) && Bytes(before)==Bytes(after),
+            "Rejected malformed Sound input changed the complete runtime checkpoint");
         // None is a legitimate explicit Engine.Actor parameter here. This is
         // an isolated original script probe, NOT a replacement for a real VR
         // player or permission to skip DeusExDecoration.Frob's player branch.
@@ -158,7 +180,7 @@ void Original(const std::filesystem::path& root) {
     }
     Require(Bytes(source) == sourceBefore && Bytes(map.sourcePath) == mapBefore,
         "Lamp probes changed original installed content");
-    std::cout << "PASS original Training lamp metadata, " << completed << " completed / " << refused <<
+    std::cout << "PASS original PlaySound(None)1..6 inputs/omissions/no-write/checkpoint invariance; Training lamp metadata, " << completed << " completed / " << refused <<
         " explicitly refused Frob probes, complete rollback and LightType emission projection; "
         "not a claim of VR player interaction or dynamic BSP lighting\n";
 }

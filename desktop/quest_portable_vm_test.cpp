@@ -199,8 +199,13 @@ struct TestHost final:Vm::Host {
     std::function<std::optional<Vm::ResultLayout>(std::uint16_t,const std::string&,std::size_t,
         const Vm::Function*)> uninitializedArgumentLayout;
     std::function<bool(std::uint16_t,const std::string&,const Vm::Function*)> hasSequentialSeeds;
+    std::function<bool(std::uint16_t,const std::string&,std::size_t,const Vm::Function*)> materializeOmission;
     std::function<std::optional<Value>(std::uint16_t,const std::string&,std::size_t,
         const Vm::Function*,const std::vector<Value>&)> sequentialArgumentSeed;
+    std::function<std::optional<Value>(std::uint16_t,const std::string&,const Vm::Function*)> legacyNativeContext;
+    std::function<std::optional<Value>(std::uint16_t,const std::string&,const Vm::Function*,const Vm::Function*)> nativeCallSiteContext;
+    std::function<Vm::Evaluation(std::uint16_t,const std::string&,const std::vector<Vm::Evaluation>&,
+        const Vm::Function*,Vm::Execution&,const std::optional<Value>&)> contextualNative;
     std::map<Slot,std::vector<Value>> storage,saved;
     struct CastClass {std::string parent,name;};
     std::map<std::string,CastClass> castClasses;
@@ -356,6 +361,10 @@ struct TestHost final:Vm::Host {
         const Vm::Function* declaration) override {
         return hasSequentialSeeds ? hasSequentialSeeds(index,receiver,declaration) : false;
     }
+    bool MaterializeNativeArgumentOmission(std::uint16_t index,const std::string& receiver,
+        std::size_t slot,const Vm::Function* declaration) override {
+        return materializeOmission ? materializeOmission(index,receiver,slot,declaration) : false;
+    }
     std::optional<Value> SequentialNativeArgumentSeed(std::uint16_t index,const std::string& receiver,
         std::size_t slot,const Vm::Function* declaration,const std::vector<Value>& prefix) override {
         return sequentialArgumentSeed ? sequentialArgumentSeed(index,receiver,slot,declaration,prefix) : std::nullopt;
@@ -435,7 +444,7 @@ struct TestHost final:Vm::Host {
         const std::vector<Vm::Evaluation>& arguments,const Vm::Function* declaration,Vm::Execution& execution) override {
         // 1008 belongs only to this generated fixture. Native zero is keyed by
         // its declaration; individual tests provide the host-side observation.
-        if((index==1008u || index==0u || index==1410u || index==1415u || index==1416u || index==1420u || index==1421u || index==1422u ||
+        if((index==264u || index==1008u || index==0u || index==1410u || index==1415u || index==1416u || index==1420u || index==1421u || index==1422u ||
             index==1430u || index==1431u || index==1432u || index==1433u || index==1438u || index==1454u || index==1461u || index==1465u || index==1467u || index==1475u ||
             index==1535u || index==1538u || index==1539u || index==1540u ||
             index==1541u || index==1544u || index==1545u) && executionNative) {
@@ -445,6 +454,21 @@ struct TestHost final:Vm::Host {
             return executionNative(receiver,arguments,declaration,execution);
         }
         return Native(index,receiver,arguments,declaration);
+    }
+    std::optional<Value> CaptureNativeContext(std::uint16_t index,const std::string& receiver,
+        const Vm::Function* declaration) override {
+        return legacyNativeContext ? legacyNativeContext(index,receiver,declaration) : std::nullopt;
+    }
+    std::optional<Value> CaptureNativeCallSiteContext(std::uint16_t index,const std::string& receiver,
+        const Vm::Function* declaration,const Vm::Function* caller) override {
+        return nativeCallSiteContext ? nativeCallSiteContext(index,receiver,declaration,caller) :
+            Vm::Host::CaptureNativeCallSiteContext(index,receiver,declaration,caller);
+    }
+    Vm::Evaluation NativeWithContext(std::uint16_t index,const std::string& receiver,
+        const std::vector<Vm::Evaluation>& arguments,const Vm::Function* declaration,Vm::Execution& execution,
+        const std::optional<Value>& context) override {
+        return contextualNative ? contextualNative(index,receiver,arguments,declaration,execution,context) :
+            NativeWithExecution(index,receiver,arguments,declaration,execution);
     }
 };
 Vm::Function Function(const std::string& name,Bytes code,const std::string& source="Fixture") {
@@ -3081,6 +3105,318 @@ void SequentialNativeArgumentSeedContracts() {
     std::cout<<"Sequential native argument result seeds: "<<checks-initialChecks<<" checks and "
         <<rejections-initialRejections<<" refusal controls.\n";
 }
+void NativeResultDispositionContracts() {
+    const auto initialChecks=checks,initialRejections=rejections;
+    const auto declaration=[] {
+        auto function=Function("ResultNative",{},"NativeFixture");function.nativeIndex=1008u;function.flags=0x400u;
+        function.variables={{"NativeFixture.ResultNative.ReturnValue","ReturnValue",Value::Integer(0),0x400u,1u}};
+        return function;
+    };
+    const auto call=[&](TestHost& host,const unsigned dispatch) {
+        if(dispatch==0u) return Native(1008u);
+        const auto native=std::make_shared<Vm::Function>(declaration());
+        if(dispatch==1u) host.finals[{"Fixture",7}]=native;
+        else {
+            host.names[{"Fixture",7}]="ResultNative";
+            host.named[{"Self",dispatch==2u?Vm::CallKind::Virtual:Vm::CallKind::Global,"ResultNative"}]=native;
+        }
+        return Call(dispatch==1u?0x1cu:dispatch==2u?0x1bu:0x38u,7);
+    };
+    // Empty native return, explicit NoWrite with hostile payload, unwritten
+    // alias, zero-size clear, full clear and genuine written scalar. Each
+    // expression must preserve its disposition until the actual destination.
+    for(unsigned dispatch=0u;dispatch<4u;++dispatch) for(unsigned mode=0u;mode<6u;++mode)
+        for(unsigned destination=0u;destination<4u;++destination) {
+        TestHost host;bool readUnwritten{};std::size_t nativeCalls{};
+        auto stale=std::make_shared<Vm::Reference>();stale->zero=Value::Integer(0);
+        stale->read=[&]() -> Value {readUnwritten=true;throw std::runtime_error("Read unwritten native result alias");};
+        host.executionNative=[&](const std::string&,const std::vector<Vm::Evaluation>& arguments,
+            const Vm::Function*,Vm::Execution&) {
+            if(!arguments.empty()) {
+                Require(arguments.size()==1u && !arguments[0].reference,"Native argument destination did not materialize a detached temporary");
+                return Vm::Evaluation{arguments[0].Load(),{}};
+            }
+            ++nativeCalls;
+            if(mode==0u) return Vm::Evaluation{};
+            if(mode==1u) return Vm::Evaluation{Value::Integer(999),{},Vm::ResultDisposition::NoWrite};
+            if(mode==2u) return Vm::Evaluation{Value::Integer(999),stale,Vm::ResultDisposition::NoWrite};
+            if(mode==3u || mode==4u) return Vm::Evaluation{Value::Integer(999),stale,
+                Vm::ResultDisposition::ZeroFill,static_cast<std::uint8_t>(mode==4u?4u:0u)};
+            return Vm::Evaluation{Value::Integer(43),{}};
+        };
+        const auto expression=call(host,dispatch);
+        auto caller=Function("NativeResultDestination",{});
+        if(destination==0u) {
+            const auto target=host.Property(caller,1,"Target",Value::Integer(0));host.Store("Self",target,{Value::Integer(41)});
+            caller.bytecode=Join({Let(Ref(0x01u,1),expression),Return(Ref(0x01u,1))});
+        } else if(destination==1u) {
+            caller.variables={host.Property(caller,2,"ReturnValue",Value::Integer(0),0x400u,1u,true)};
+            caller.bytecode=Join({Let(Ref(0x00u,2),Int(49)),Return(expression)});
+        } else if(destination==2u) caller.bytecode=Return(expression);
+        else {
+            host.argumentSeed=[](std::uint16_t index,const std::string&,std::size_t slot,const Vm::Function*) {
+                return index==1008u && slot==0u?std::optional<Value>{Value::Integer(7)}:std::nullopt;
+            };
+            caller.bytecode=Return(Native(1008u,{expression}));
+        }
+        const auto result=Vm::Execute(host,caller,"Self");Returned(result,"Native raw/reflected destination-sensitive result disposition");
+        Require(!readUnwritten && nativeCalls==1u,"Native result read unwritten storage or executed more than once");
+        const bool writes=mode==4u || mode==5u;
+        if(destination==2u) Require(writes && mode==5u ? result.value.kind==Vm::Kind::Int && result.value.integer==43 :
+            result.value.kind==Vm::Kind::Nothing,"Destination-free native result manufactured typed/stale storage");
+        else {
+            const auto expected=mode==5u?43:mode==4u?0:destination==0u?41:destination==1u?49:7;
+            Require(result.value.kind==Vm::Kind::Int && result.value.integer==expected,
+                "Native NoWrite/full clear/written result did not use its real destination");
+        }
+        Require(result.writes==(destination==0u?static_cast<unsigned>(writes):destination==1u?1u:0u),
+            "Native return disposition invented/suppressed a destination write");
+    }
+    for(const bool coordinated:{false,true}) for(const bool event:{false,true}) {
+        TestHost host;const auto native=declaration();bool read{};
+        auto stale=std::make_shared<Vm::Reference>();stale->zero=Value::Integer(0);
+        stale->read=[&] {read=true;return Value::Integer(999);};
+        host.executionNative=[&](const std::string&,const std::vector<Vm::Evaluation>&,const Vm::Function*,Vm::Execution&) {
+            return Vm::Evaluation{Value::Integer(999),stale,Vm::ResultDisposition::NoWrite};
+        };
+        host.events[{"Self","ResultNative",false}]=std::make_shared<Vm::Function>(native);
+        const auto result=coordinated?Vm::ExecuteTransaction(host,[&](Vm::Execution& execution) {
+            return event?execution.CallEvent("Self","ResultNative",false):execution.CallFunction(native,"Self");
+        }):Vm::Execute(host,native,"Self");
+        Returned(result,"Direct Value API exposes unwritten native result as absence");
+        Require(!read && result.value.kind==Vm::Kind::Nothing && result.writes==0u,
+            "Direct native entry inferred a scripted zero or read an unwritten alias");
+    }
+    for(const bool reflected:{false,true}) {
+        TestHost host;const auto expression=call(host,reflected?1u:0u);
+        host.executionNative=[](const std::string&,const std::vector<Vm::Evaluation>&,const Vm::Function*,Vm::Execution&) {
+            return Vm::Evaluation{Value::Integer(999),{},Vm::ResultDisposition::NoWrite};
+        };
+        auto script=Function("ScriptedReturnZero",Return(expression));
+        script.variables={host.Property(script,2,"ReturnValue",Value::Integer(0),0x400u,1u,true)};
+        host.finals[{"Fixture",8}]=std::make_shared<Vm::Function>(script);
+        auto caller=Function("ScriptedReturnIsWritten",Join({Let(Ref(0x01u,1),Call(0x1cu,8)),Return(Ref(0x01u,1))}));
+        const auto target=host.Property(caller,1,"Target",Value::Integer(0));host.Store("Self",target,{Value::Integer(41)});
+        const auto result=Vm::Execute(host,caller,"Self");Returned(result,"Scripted initialized return local remains a genuine written zero");
+        Require(result.value.kind==Vm::Kind::Int && result.value.integer==0 && result.writes==1u,
+            "Native NoWrite incorrectly escaped a SCRIPTED initialized return local");
+    }
+    for(const bool reflected:{false,true}) {
+        TestHost host;const auto expression=call(host,reflected?1u:0u);
+        host.executionNative=[](const std::string&,const std::vector<Vm::Evaluation>&,const Vm::Function*,Vm::Execution&) {
+            return Vm::Evaluation{{},{},Vm::ResultDisposition::ZeroFill,1u};
+        };
+        const auto caller=Function("NativePartialReturnRefused",Join({Native(1000u),Let(Ref(0x01u,1),expression),Return()}));
+        const auto target=host.Property(caller,1,"Target",Value::Integer(0));host.Store("Self",target,{Value::Integer(41)});
+        const auto result=Vm::Execute(host,caller,"Self");Failed(result,Vm::Status::Unsupported,host,"Native partial return clear cannot silently become a full scalar zero");
+        Require(host.effects==0u && host.Load("Self",target).integer==41,"Native partial-return refusal retained prefix effects/storage");
+    }
+    std::cout<<"Native return dispositions: "<<checks-initialChecks<<" checks and "<<rejections-initialRejections<<" refusal controls.\n";
+}
+void MaterializedNativeOmissionContracts() {
+    const auto initialChecks=checks,initialRejections=rejections;
+    for(unsigned dispatch=0u;dispatch<3u;++dispatch) for(const bool radiusMutation:{false,true}) {
+        TestHost host;auto native=Function("InitializedSoundInputs",{},"NativeFixture");native.flags=0x400u;native.nativeIndex=264u;
+        const std::array<Value,6> zeros{Value::Text(Vm::Kind::Object,{}),Value::Byte(0u),Value::Float(0.0f),
+            Value::Bool(false),Value::Float(0.0f),Value::Float(0.0f)};
+        for(std::size_t slot=0u;slot<zeros.size();++slot)
+            native.variables.push_back({"Input"+std::to_string(slot),"Input"+std::to_string(slot),zeros[slot],slot==0u?0x80u:0x90u,1u});
+        host.finals[{"Fixture",7}]=std::make_shared<Vm::Function>(native);
+        auto caller=Function("StepTimeOmissions",{});
+        const auto volume=host.Property(caller,1,"Volume",Value::Float(0.0f));host.Store("Self",volume,{Value::Float(1.0f)});
+        const auto radius=host.Property(caller,2,"Radius",Value::Float(0.0f));host.Store("Self",radius,{Value::Float(32.0f)});
+        host.objects[{"Fixture",9}]="Fixture.Sound";
+        std::size_t capabilities{},seeds{};std::vector<std::string> order;
+        host.hasSequentialSeeds=[](std::uint16_t index,const std::string&,const Vm::Function*) {return index==264u;};
+        host.materializeOmission=[&](std::uint16_t index,const std::string& receiver,std::size_t slot,const Vm::Function* declaration) {
+            if(index!=264u) return false;
+            Require(receiver=="Self" && slot<6u && static_cast<bool>(declaration)==(dispatch!=0u),
+                "Omission capability lost native receiver/declaration/slot");
+            Require(seeds==0u && host.Load("Self",volume).floating==1.0f && host.Load("Self",radius).floating==32.0f,
+                "Omission capabilities were not all captured before supplied argument reads/effects");
+            ++capabilities;order.push_back("cap"+std::to_string(slot));return true;
+        };
+        host.sequentialArgumentSeed=[&](std::uint16_t index,const std::string&,std::size_t slot,const Vm::Function*,
+            const std::vector<Value>& prefix)->std::optional<Value> {
+            Require(index==264u && capabilities==6u && prefix.size()==slot,"Sequential omission seed ordering/prefix differs");
+            ++seeds;order.push_back("seed"+std::to_string(slot));
+            if(slot==0u) return zeros[0];
+            if(slot==1u) return zeros[1];
+            if(slot==2u) return host.Load("Self",volume);
+            if(slot==3u) {
+                Require(prefix[2].kind==Vm::Kind::Float && prefix[2].floating==2.0f,
+                    "Materialized omitted volume was not snapshotted into later prefix");
+                return zeros[3];
+            }
+            if(slot==4u) return host.Load("Self",radius);
+            return Value::Float(1.0f);
+        };
+        host.executionNative=[&](const std::string&,const std::vector<Vm::Evaluation>& inputs,const Vm::Function*,Vm::Execution&) {
+            Require(inputs.size()==6u && capabilities==6u && seeds==6u,"Initialized native input count/hook repetition differs");
+            for(const auto& input:inputs) Require(!input.reference && input.disposition==Vm::ResultDisposition::Written &&
+                input.Load().kind!=Vm::Kind::Nothing,"Initialized native retained omission marker or ordinary input alias");
+            Require(inputs[0].Load().text=="Fixture.Sound" && inputs[2].Load().floating==2.0f &&
+                inputs[4].Load().floating==(radiusMutation?64.0f:32.0f) && inputs[5].Load().floating==1.0f,
+                "Omitted defaults used native-entry or final receiver state instead of their own argument Step");
+            return Vm::Evaluation{Value::Bool(true),{}};
+        };
+        Vm::Result result;
+        if(dispatch<2u) {
+            const std::initializer_list<Bytes> inputs{
+                Native(1060u,{Ref(0x01u,1),Real(2.0f),Ref(0x20u,9)}),{0x0bu},{0x0bu},
+                radiusMutation?Native(1060u,{Ref(0x01u,2),Real(64.0f),Bytes{0x28u}}):Bytes{0x0bu},
+                radiusMutation?Bytes{0x0bu}:Native(1060u,{Ref(0x01u,1),Real(9.0f),Real(32.0f)}),
+                radiusMutation?Native(1060u,{Ref(0x01u,2),Real(128.0f),Real(1.0f)}):Bytes{0x0bu}};
+            caller.bytecode=Return(dispatch==0u?Native(264u,inputs):Call(0x1cu,7,inputs));
+            result=Vm::Execute(host,caller,"Self");
+        } else {
+            auto sound=std::make_shared<Vm::Reference>();sound->zero=zeros[0];
+            sound->read=[&] {host.Store("Self",volume,{Value::Float(2.0f)});return Value::Text(Vm::Kind::Object,"Fixture.Sound");};
+            auto firstMutation=std::make_shared<Vm::Reference>();firstMutation->zero=radiusMutation?zeros[3]:zeros[4];
+            firstMutation->read=[&] {
+                host.Store("Self",radiusMutation?radius:volume,{Value::Float(radiusMutation?64.0f:9.0f)});
+                return radiusMutation?Value::Bool(false):Value::Float(32.0f);
+            };
+            auto lastMutation=std::make_shared<Vm::Reference>();lastMutation->zero=zeros[5];
+            lastMutation->read=[&] {host.Store("Self",radius,{Value::Float(128.0f)});return Value::Float(1.0f);};
+            std::vector<Vm::Evaluation> inputs(6u);inputs[0].reference=sound;
+            inputs[radiusMutation?3u:4u].reference=firstMutation;
+            if(radiusMutation) inputs[5].reference=lastMutation;
+            result=Vm::ExecuteTransaction(host,[&](Vm::Execution& execution) {return execution.CallFunction(native,"Self",inputs);});
+        }
+        Returned(result,"Raw/reflected/direct initialized optional omissions consume per-Step sequential defaults");
+        Require(result.value.kind==Vm::Kind::Bool && result.value.boolean && capabilities==6u && seeds==6u,
+            "Omission materialization changed actual native result or repeated internal reflected hooks");
+        Require(order==std::vector<std::string>{"cap0","cap1","cap2","cap3","cap4","cap5",
+            "seed0","seed1","seed2","seed3","seed4","seed5"},"Immutable capabilities and sequential Step ordering changed");
+        Require(host.Load("Self",radiusMutation?radius:volume).floating==(radiusMutation?128.0f:9.0f),
+            "Materializing an earlier default suppressed later real argument side effects");
+    }
+    for(const bool direct:{false,true}) {
+        TestHost host;auto native=Function("NoSeedForOmission",{},"NativeFixture");native.flags=0x400u;native.nativeIndex=1008u;
+        native.variables={{"Input","Input",Value::Integer(0),0x90u,1u}};
+        host.finals[{"Fixture",7}]=std::make_shared<Vm::Function>(native);
+        host.materializeOmission=[](std::uint16_t index,const std::string&,std::size_t,const Vm::Function*) {return index==1008u;};
+        const auto caller=Function("DeclaredZeroIsNotNativeDefault",Return(Call(0x1cu,7,{{0x0bu}})));
+        const auto result=direct?Vm::Execute(host,native,"Self",{{}}):Vm::Execute(host,caller,"Self");
+        Failed(result,Vm::Status::Unsupported,host,"Materialized omission needs an audited initialized seed, not a declaration zero");
+        Require(host.nativeIndices.empty(),"Missing native omission seed executed native body");
+    }
+    for(const bool write:{false,true}) {
+        TestHost host;Vm::Execution* active{};bool attempted{};
+        const auto caller=Function("ReadOnlyOmissionCapability",Return(Native(1008u,{Native(1000u)})));
+        const auto marker=host.Property(caller,1,"Marker",Value::Integer(0));host.Store("Self",marker,{Value::Integer(3)});
+        host.materializeOmission=[&](std::uint16_t index,const std::string&,std::size_t,const Vm::Function*) {
+            if(index!=1008u) return false;
+            attempted=true;
+            try {
+                if(write) active->WriteReference(host.Reference({"Self",Vm::Scope::Instance,marker.key},marker),Value::Integer(55));
+                else active->CallFunction(Function("ForbiddenOmissionCallback",Join({Native(1000u),Return()})),"Self");
+            } catch(const std::exception&) {}return true;
+        };
+        const auto result=Vm::ExecuteTransaction(host,[&](Vm::Execution& execution) {
+            active=&execution;try {execution.CallFunction(caller,"Self");} catch(const std::exception&) {}return Value{};
+        });
+        Failed(result,Vm::Status::Invalid,host,"Omission capability is immutable/read-only even when forbidden callback is caught");
+        Require(attempted && host.effects==0u && host.Load("Self",marker).integer==3 && result.writes==0u,
+            "Omission capability performed a mutation/effect or escaped shared poison");
+    }
+    std::cout<<"Per-Step materialized native omissions: "<<checks-initialChecks<<" checks and "<<rejections-initialRejections<<" refusal controls.\n";
+}
+void NativeCallSiteContextContracts() {
+    const auto initialChecks=checks,initialRejections=rejections;
+    const auto declaration=[] {
+        auto native=Function("CallSiteNative",{},"NativeFixture");native.nativeIndex=264u;native.flags=0x400u;return native;
+    };
+    for(const bool state:{false,true}) for(const bool reflected:{false,true}) {
+        TestHost host;const auto native=declaration();host.finals[{"Fixture",7}]=std::make_shared<Vm::Function>(native);
+        auto caller=Function(state?"RealStateCaller":"RealFunctionCaller",{});caller.flags=0x100u;
+        const auto marker=host.Property(caller,1,"Marker",Value::Integer(0));host.Store("Self",marker,{Value::Integer(3)});
+        host.objects[{"Fixture",9}]="OtherReceiver";
+        const auto argument=Native(1060u,{Ref(0x01u,1),Int(9)});
+        const auto expression=Context(Ref(0x20u,9),reflected?Call(0x1cu,7,{argument}):Native(264u,{argument}));
+        caller.bytecode=state?Join({expression,{0x08u}}):Return(expression);
+        std::size_t captures{},calls{};
+        host.nativeCallSiteContext=[&](std::uint16_t index,const std::string& receiver,const Vm::Function* actual,const Vm::Function* source)
+            ->std::optional<Value> {
+            if(index!=264u) return std::nullopt;
+            ++captures;
+            Require(receiver=="OtherReceiver" && static_cast<bool>(actual)==reflected && source &&
+                source->path==caller.path && source->source==caller.source && source->flags==0x100u,
+                "Native call-site capture confused caller frame, callee declaration or opcode receiver");
+            Require(host.Load("Self",marker).integer==3,"Native caller context was captured after evaluating argument side effects");
+            return Value::Text(Vm::Kind::String,source->path);
+        };
+        host.contextualNative=[&](std::uint16_t index,const std::string& receiver,const std::vector<Vm::Evaluation>& args,
+            const Vm::Function* actual,Vm::Execution& execution,const std::optional<Value>& context) {
+            if(index!=264u) return host.NativeWithExecution(index,receiver,args,actual,execution);
+            ++calls;Require(captures==1u && context && context->text==caller.path && host.Load("Self",marker).integer==9,
+                "Native context was recaptured/lost across reflected Run or failed to precede supplied arguments");
+            return Vm::Evaluation{Value::Integer(23),{}};
+        };
+        Vm::Result result;
+        if(state) {
+            QuestVr::StateFrame frame;frame.codePath=frame.localsCodePath=caller.path;
+            host.state=QuestVr::StateObject{true,true,frame,{}};host.statePrograms[caller.path]=caller;
+            result=Vm::ResumeState(host,"Self");
+        } else result=Vm::Execute(host,caller,"Self");
+        Returned(result,"Raw/reflected script/state call sites preserve their actual frame before arguments");
+        Require(captures==1u && calls==1u && result.writes==1u,"Native call-site context repeated capture or changed argument side effects");
+    }
+    for(unsigned dispatch=0u;dispatch<3u;++dispatch) {
+        TestHost host;const auto native=declaration();host.events[{"Self","CallSiteNative",false}]=std::make_shared<Vm::Function>(native);
+        std::size_t captures{};
+        host.nativeCallSiteContext=[&](std::uint16_t index,const std::string&,const Vm::Function* actual,const Vm::Function* caller)
+            ->std::optional<Value> {
+            Require(index==264u && actual && actual->path==native.path && !caller,
+                "Top-level direct native entry inferred its callee as a caller");++captures;return Value::Integer(31);
+        };
+        host.contextualNative=[&](std::uint16_t,const std::string&,const std::vector<Vm::Evaluation>&,
+            const Vm::Function*,Vm::Execution&,const std::optional<Value>& context) {
+            Require(context && context->integer==31,"Direct null-caller context was lost");return Vm::Evaluation{*context,{}};
+        };
+        const auto result=dispatch==0u?Vm::Execute(host,native,"Self"):
+            Vm::ExecuteTransaction(host,[&](Vm::Execution& execution) {
+                return dispatch==2u?execution.CallEvent("Self","CallSiteNative",false):execution.CallFunction(native,"Self");
+            });
+        Returned(result,"Direct API passes explicit null caller identity");
+        Require(captures==1u && result.value.integer==31,"Direct call site repeated capture or changed native result");
+    }
+    for(const bool event:{false,true}) {
+        TestHost host;const auto inner=declaration();auto outer=Function("ActualNativeCaller",{},"NativeFixture");
+        outer.flags=0x500u;outer.nativeIndex=1008u;
+        host.events[{"Inner","CallSiteNative",false}]=std::make_shared<Vm::Function>(inner);
+        std::vector<std::string> callers;
+        host.nativeCallSiteContext=[&](std::uint16_t index,const std::string&,const Vm::Function*,const Vm::Function* caller)
+            ->std::optional<Value> {
+            if(index==264u) callers.push_back(caller?caller->path:"<null>");
+            return std::nullopt;
+        };
+        host.executionNative=[&](const std::string&,const std::vector<Vm::Evaluation>&,const Vm::Function* actual,Vm::Execution& execution) {
+            if(actual && actual->path==outer.path) return Vm::Evaluation{
+                event?execution.CallEvent("Inner","CallSiteNative",false):execution.CallFunction(inner,"Inner"),{}};
+            return Vm::Evaluation{Value::Integer(23),{}};
+        };
+        const auto result=Vm::ExecuteTransaction(host,[&](Vm::Execution& execution) {
+            execution.CallFunction(outer,"Self");return execution.CallFunction(inner,"Self");
+        });
+        Returned(result,"Synchronous Execution bridge captures its active caller, then restores null coordinator context");
+        Require(callers==std::vector<std::string>{outer.path,"<null>"},"Nested bridge lost caller or retained stale prior caller after return");
+    }
+    {
+        TestHost host;std::size_t captures{};
+        host.legacyNativeContext=[&](std::uint16_t index,const std::string& receiver,const Vm::Function* actual)->std::optional<Value> {
+            Require(index==264u && receiver=="Self" && !actual,"Legacy native context delegation changed declaration/receiver");
+            ++captures;return Value::Integer(17);
+        };
+        host.contextualNative=[](std::uint16_t,const std::string&,const std::vector<Vm::Evaluation>&,
+            const Vm::Function*,Vm::Execution&,const std::optional<Value>& context) {return Vm::Evaluation{*context,{}};};
+        const auto result=Vm::Execute(host,Function("LegacyCaptureStillWorks",Return(Native(264u))),"Self");
+        Returned(result,"New call-site hook delegates existing CaptureNativeContext hosts unchanged");
+        Require(captures==1u && result.value.integer==17,"Legacy native context lost compatibility");
+    }
+    std::cout<<"Native caller-frame context: "<<checks-initialChecks<<" checks and "<<rejections-initialRejections<<" refusal controls.\n";
+}
 void WindowInputSnapshotContracts() {
     const auto initialChecks=checks;
     const auto expression=[](std::uint16_t index,bool declared,const std::vector<Bytes>& inputs) {
@@ -5287,6 +5623,9 @@ int main() {
         DirectNativeInitializedArgumentContracts();
         IntegerMaximumContracts();
         SequentialNativeArgumentSeedContracts();
+        NativeResultDispositionContracts();
+        MaterializedNativeOmissionContracts();
+        NativeCallSiteContextContracts();
         WindowInputSnapshotContracts();
         TileNativeInputContracts();
         WindowConfigureChildInputContracts();
