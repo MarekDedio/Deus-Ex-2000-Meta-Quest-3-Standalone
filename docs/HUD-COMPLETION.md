@@ -55,26 +55,62 @@ six health body-part windows now receive their original textures, translucent
 GC styles, requested geometry and colors. The body overlay is lowered beneath
 them with its original armor color. Both energy/breath ProgressBarWindows and
 the crosshair initialize and are assigned to the actual pending HUD. The next
-original boundary is HUDObjectBelt.CreateSlots PC206: the native ToggleWindow
-slot constructor is not implemented. RadioBox/TileWindow construction, Modal
-tab registration, hidden visibility and Tile margin/spacing/order setters now
-execute. The diagnostic captures54 objects/3739 writes;
+original boundary is DeusExHUD.ConfigurationChanged PC305: native1465
+QueryPreferredSize is not implemented. All ten HUDObjectSlot Text/Button/Toggle
+constructors now execute, including temporary selectable-table insertion/removal,
+original FontTiny, requested size, theme-null colors and sibling lowering.
+The Radio retains Toggle creation order; the Tile sibling order is0,9,8,...,1.
+RadioBox/TileWindow construction, Modal tab registration, hidden visibility and
+Tile margin/spacing/order setters execute. The bounded diagnostic captures84
+objects/6007 writes with no inspection error (128 objects/4MiB capture limits);
 this is still an unpublished, rolled-back initialization prefix, not live health.
-Native Root modal self-list, constructor flags, preserved CDO fields and255
+The belt has completed its script InitWindow and locally shown itself, but its
+parent HUD layout callback has not returned. HUD.belt and Root.hud remain None;
+this does not establish working equipment or possession. Native Root modal
+self-list, constructor flags, preserved CDO fields and255
 key/accelerator slots are checked
 directly before rollback. This is still a pending construction graph. Full native
 window construction, layout, lifecycle/input/rendering, player Login/Possess and
 the remaining HUD behavior still need implementation and integration tests.
 Unsupported callbacks refuse and roll back instead of publishing a partial HUD.
-The coherent host suite passes80 ordinary tests/93 registered,13 explicit
-owned-data skips, zero failures (30.08s alongside original-data probes).
-The separate owned-data control passes2308 checks, including actual Radio/Tile
-hierarchy, native table indices, original properties, oxygen sources, repeated
-initialization, forced-budget rollback and warm/cold ring/session ownership.
-Runtime/VM/Quest ARM64 syntax-only checks pass. The87 original-artwork controls
-also pass with unchanged source files; inspected software previews are explicit
+The coherent host suite passes81 ordinary tests/94 registered,13 explicit
+owned-data skips, zero failures (26.27s alongside original-data probes).
+The separate owned-data control passes4411 checks, including all ten actual
+slots, Radio/Tile hierarchy, native table indices/display records, original
+properties, oxygen sources, repeated initialization, forced-budget rollback
+and warm/cold ring/session ownership. Runtime/VM ARM64 syntax-only checks pass.
+The87 original-artwork controls also pass with unchanged source files;
+inspected software previews are explicit
 fixtures, not live Quest health/equipment acceptance. No Android binary/APK was made.
-These results do not satisfy the full-HUD functional acceptance checklist above.
+The separate console control passes65 checks/one expected refusal. The focused
+original world probe retains1308 actors and the same Move266 startup boundary,
+with complete rollback. These results do not satisfy the full-HUD functional
+acceptance checklist above; no APK is authorized by partial slot progress.
+
+The Text constructor owns an empty String instead of Win32 FString heap bytes.
+Button's six original display records, timing/pressed state and Toggle sounds
+are initialized with audited declaration identities. Retail constructor colors
+only establish RGB; defined A0 is an explicit portable policy, not original
+alpha evidence. SetSelectability keeps actual Radio/TabGroup tables and indices,
+focus negotiation still explicitly refuses nonnull focus, and unsupported paths
+roll back the whole unpublished graph. A PC64 integer-dyadic location helper
+preserves X's extended comparison versus Y's earlier Float store;20641 controls,
+including20468 independent host x87 tuples, pass without executing original code.
+
+Additional audited Tile child-alignment/equal-width/equal-height setters are
+implemented with runtime-owned Byte/Bool argument seeds. The current original
+prefix stops before their later information-panel use; unit argument coverage
+is not presented as live information-panel acceptance.
+
+The next1465 declaration is Extension.Window.QueryPreferredSize, flags0x401,
+with two Float OUT parameters (0x180), not ordinary copied inputs. Retail thunk
+10053160 captures each actual output reference, falling back to independent
+initialized Float temporaries; do not add1465 to ordinary-input snapshots.
+QueryPreferredSize1004e710 delegates to1004e790, which has requested-size,
+dirty-query/cache, dynamic QueryDesiredSize and actual background-size fallback
+branches. The current failing receiver is Crosshair, whose InitWindow assigns
+the actual CrossSquare texture, not a requested size. Returning current Width/
+Height or fabricated icon dimensions is not an implementation of that query.
 
 The six-limb presentation clock now follows the original .4s damage flash,
 1s healing and .5s refresh statement order, including retained applied tint when
@@ -97,7 +133,10 @@ argument buffers distinguish initialized defaults from SetTileColor's
 uninitialized four-byte Color destination; absent or partial Color writes are
 refused rather than filled from invented defaults. Tile setters copy each
 initialized Float/Byte input separately; no global default seed is inferred
-from an opcode. The VM passes684788 checks and684 refusal controls.
+from an opcode. The VM passes689939 checks and719 refusal controls, including
+SetSelectability/SetWidth and5126 Tile input-copy/default checks. Byte alignment
+inputs retain all256 values; partial packed-Bool clearing still refuses rather
+than inventing a native memory layout.
 Independent qualified instance storage also preserves
 Actor.Region's PointRegion separately from GameReplicationInfo.Region's Int,
 including save/load. Hidden inherited class-default writes remain unsupported;

@@ -5,6 +5,7 @@
 #include "quest_script_state.h"
 #include "quest_save_bundle.h"
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <filesystem>
@@ -186,9 +187,9 @@ int main(int argc,char** argv) {
         std::cout<<"ORIGINAL root pending graph: "<<pending.execution.function<<':'<<pending.execution.offset<<
             " objects="<<pending.objects.size()<<" writes="<<pending.execution.writes<<" "<<pending.execution.error<<"; inspection="<<pending.inspectionError<<std::endl;
         Require(!pending.execution.passed() && !pending.execution.committed && pending.inspectionError.empty() &&
-            pending.execution.function=="DeusEx.HUDObjectBelt.CreateSlots" && pending.execution.offset==206u &&
-            pending.execution.error=="NewChild native subclass Init is not implemented: extension.togglewindow" &&
-            pending.objects.size()==54u &&
+            pending.execution.function=="DeusEx.DeusExHUD.ConfigurationChanged" && pending.execution.offset==305u &&
+            pending.execution.error=="Unsupported runtime native 1465" && pending.execution.writes==6007u &&
+            pending.objects.size()==84u &&
             pending.rootedWindows==std::vector<std::string>{pending.pawnRootPath},
             "Original root prefix probe did not capture the actual pending native graph: "+pending.inspectionError);
         const auto object=[&](const std::string& path)->const PortableNativeWindowObjectSnapshot& {
@@ -292,13 +293,118 @@ int main(int argc,char** argv) {
         edge(radioView,"Extension.Window.firstChild",slotsView.path);edge(radioView,"Extension.Window.lastChild",slotsView.path);
         edge(slotsView,"Extension.Window.winParent",radioView.path);edge(slotsView,"Extension.Window.parentOwner",radioView.path);
         edge(slotsView,"Extension.Window.prevSibling",{});edge(slotsView,"Extension.Window.nextSibling",{});
-        edge(slotsView,"Extension.Window.firstChild",{});edge(slotsView,"Extension.Window.lastChild",{});
         Require(std::count(rootView.tabGroupWindows.begin(),rootView.tabGroupWindows.end(),radioView.path)==1 &&
             radioView.tabOrderDirty && radioView.rowMajorWindows.empty() && radioView.colMajorWindows.empty() &&
-            radioView.tabGroupWindows.empty() && radioView.toggleButtons.empty() && !radioView.emptyTileRows &&
+            radioView.tabGroupWindows.empty() && radioView.toggleButtons.size()==10u && !radioView.emptyTileRows &&
             slotsView.emptyTileRows && !slotsView.tabOrderDirty && slotsView.rowMajorWindows.empty() &&
             slotsView.colMajorWindows.empty() && slotsView.tabGroupWindows.empty() && slotsView.toggleButtons.empty(),
-            "Native belt constructors fabricated pointer arrays, registered Tile as TabGroup, or retained Toggle entries");
+            "Native belt constructors fabricated pointer arrays, registered Tile as TabGroup, or lost Toggle entries");
+        std::vector<std::string> objectSlots;
+        for(std::uint32_t index=0u;index<10u;++index) {
+            const auto& slot=object(field(beltView,"DeusEx.HUDObjectBelt.objects",index).value.text);
+            Require(slot.classPath=="DeusEx.HUDObjectSlot" && slot.outerPath==slotsView.path &&
+                std::find(objectSlots.begin(),objectSlots.end(),slot.path)==objectSlots.end() &&
+                radioView.toggleButtons[index]==slot.path,
+                "Original belt slot identity, actual Outer or Radio creation-order list differs");
+            const auto& ownedSlot=field(beltView,"DeusEx.HUDObjectBelt.objects",index);
+            Require(ownedSlot.propertyRoots==std::vector<std::string>{slot.path},"Belt fixed-array slot lost its actual GC edge");
+            objectSlots.push_back(slot.path);
+            edge(slot,"Extension.Window.winParent",slotsView.path);edge(slot,"Extension.Window.parentOwner",slotsView.path);
+            edge(slot,"Extension.Window.firstChild",{});edge(slot,"Extension.Window.lastChild",{});
+            edge(slot,"DeusEx.HUDObjectSlot.Player",player);edge(slot,"DeusEx.HUDObjectSlot.Item",{});
+            Require(field(slot,"DeusEx.HUDObjectSlot.objectNum").value.integer==static_cast<std::int32_t>(index) &&
+                field(slot,"DeusEx.HUDObjectSlot.itemTextPosY").value.integer==32 &&
+                field(slot,"DeusEx.HUDObjectSlot.slotFillHeight").value.integer==37 &&
+                field(slot,"DeusEx.HUDObjectSlot.slotIconY").value.integer==3,
+                "Original HUD slot numbering/text geometry did not run its actual script");
+            Require(field(slot,"Extension.Window.bIsVisible").value.boolean &&
+                !field(slot,"Extension.Window.bIsSelectable").value.boolean &&
+                field(slot,"Extension.Window.lockCount").value.integer==0 &&
+                field(slot,"Extension.Window.rowMajorIndex").value.integer==-1 &&
+                field(slot,"Extension.Window.colMajorIndex").value.integer==-1 &&
+                slot.rowMajorWindows.empty() && slot.colMajorWindows.empty() && slot.tabGroupWindows.empty() &&
+                slot.toggleButtons.empty() && !slot.emptyTileRows,
+                "Original slot did not finish native constructor selection insertion/removal and unlock");
+            Require(field(slot,"Extension.Window.Width").value.floating==10.0f && field(slot,"Extension.Window.Height").value.floating==10.0f &&
+                field(slot,"Extension.Window.hardcodedWidth").value.floating==(index==0u?44.0f:51.0f) &&
+                field(slot,"Extension.Window.hardcodedHeight").value.floating==54.0f,
+                "Original first-slot SetWidth or all-slot requested/current size separation differs");
+            for(const auto* font:{"normalFont","boldFont"}) {
+                edge(slot,"Extension.Window."+std::string(font),"DeusExUI.FontTiny");
+                edge(object(field(slot,"Extension.Window.wGc").value.text),"Extension.GC."+std::string(font),"DeusExUI.FontTiny");
+                edge(object(field(slot,"Extension.Window.gGc").value.text),"Extension.GC."+std::string(font),{});
+            }
+            for(const auto* name:{"HAlign","VAlign"})
+                Require(field(slot,"Extension.TextWindow."+std::string(name)).value.integer==1,
+                    "Native Text constructor omitted its original centered alignment");
+            for(const auto* name:{"hMargin","vMargin"})
+                Require(field(slot,"Extension.TextWindow."+std::string(name)).value.floating==3.0f,
+                    "Native Text constructor omitted its original margin");
+            Require(field(slot,"Extension.TextWindow.bWordWrap").value.boolean &&
+                field(slot,"Extension.TextWindow.bTextIsAccelerator").value.boolean &&
+                field(slot,"Extension.TextWindow.MinWidth").value.floating==0.0f &&
+                field(slot,"Extension.TextWindow.minLines").value.integer==-1 &&
+                field(slot,"Extension.TextWindow.MaxLines").value.integer==-1 &&
+                field(slot,"Extension.TextWindow.Text").value.kind==Kind::String &&
+                field(slot,"Extension.TextWindow.Text").value.text.empty() &&
+                field(slot,"Extension.Window.acceleratorKey").value.integer==0,
+                "Native Text constructor/accelerator used invented string, line or key defaults");
+            for(const auto* name:{"bButtonPressed","bMousePressed","bAutoRepeat"})
+                Require(!field(slot,"Extension.ButtonWindow."+std::string(name)).value.boolean,
+                    "Native Button constructor did not clear its original pressed/repeat flags");
+            Require(QuestVr::Vm::Equal(field(slot,"Extension.ButtonWindow.bEnableRightMouseClick").value,
+                ReadPortableClassDefault("DeusEx.HUDObjectSlot","bEnableRightMouseClick")),
+                "Native Button constructor overwrote its preserved right-click CDO flag");
+            for(const auto& [name,value]:{std::pair{"activateDelay",0.3f},std::pair{"initialDelay",0.5f},std::pair{"repeatRate",0.1f}})
+                Require(field(slot,"Extension.ButtonWindow."+std::string(name)).value.floating==value,
+                    "Native Button constructor omitted its original timing");
+            for(const auto* name:{"curTexture","pressSound","clickSound"})
+                edge(slot,"Extension.ButtonWindow."+std::string(name),{});
+            for(const auto* name:{"enableSound","disableSound"})
+                edge(slot,"Extension.ToggleWindow."+std::string(name),{});
+            Require(field(slot,"Extension.ButtonWindow.activateTimer").value.integer==0 &&
+                field(slot,"Extension.ButtonWindow.repeatTime").value.floating==0.0f &&
+                field(slot,"Extension.ButtonWindow.lastInputKey").value.integer==0,
+                "Native Button constructor did not reset its actual timing/key state");
+            const auto rgb=[&](const Value& color,unsigned r,unsigned g,unsigned b,unsigned a) {
+                Require(color.kind==Kind::Struct && color.fields.size()==4u,"Native slot Color lost its authored shape");
+                for(const auto& [name,value]:{std::pair{"r",r},std::pair{"g",g},std::pair{"b",b},std::pair{"a",a}})
+                    Require(color.fields.at(name).kind==Kind::Byte && color.fields.at(name).integer==static_cast<std::int32_t>(value),
+                        "Native slot RGB or explicitly portable A0 storage policy differs");
+            };
+            for(const auto* name:{"curTileColor","curTextColor"})
+                rgb(field(slot,"Extension.ButtonWindow."+std::string(name)).value,255u,255u,255u,0u);
+            for(std::uint32_t record=0u;record<6u;++record) {
+                const auto& info=field(slot,"Extension.ButtonWindow.Info",record);
+                Require(info.value.kind==Kind::Struct && info.value.fields.size()==3u && info.propertyRoots.empty() &&
+                    info.value.fields.at("tx").kind==Kind::Object && info.value.fields.at("tx").text.empty(),
+                    "Native Button did not clear all six actual display records/texture edges");
+                rgb(info.value.fields.at("tlcolor"),255u,255u,255u,0u);
+                rgb(info.value.fields.at("txcolor"),0u,255u,0u,0u);
+            }
+            for(const auto* name:{"colBackground","colObjectNum"})
+                rgb(field(slot,"DeusEx.HUDObjectSlot."+std::string(name)).value,0u,0u,0u,0u);
+            const auto originalSelected=ReadPortableClassDefault("DeusEx.HUDObjectSlot","colSelected");
+            rgb(field(slot,"DeusEx.HUDObjectSlot.colSelected").value,0u,0u,0u,
+                static_cast<unsigned>(originalSelected.fields.at("a").integer));
+            const bool translucent=Declared(player,"DeusEx.DeusExPlayer.bHUDBackgroundTranslucent",Kind::Bool).boolean;
+            Require(field(slot,"DeusEx.HUDObjectSlot.backgroundDrawStyle").value.integer==(translucent?3:2) &&
+                QuestVr::Vm::Equal(field(slot,"DeusEx.HUDObjectSlot.fillMode").value,ReadPortableClassDefault("DeusEx.HUDObjectSlot","fillMode")) &&
+                QuestVr::Vm::Equal(field(slot,"DeusEx.HUDObjectSlot.bAllowDragging").value,ReadPortableClassDefault("DeusEx.HUDObjectSlot","bAllowDragging")),
+                "Original slot theme/settings script changed actual translucency, fill or dragging state");
+        }
+        Require(QuestVr::Vm::Equal(field(beltView,"DeusEx.HUDObjectBelt.KeyRingSlot").value,
+            ReadPortableClassDefault("DeusEx.HUDObjectBelt","KeyRingSlot")) &&
+            Declared(player,"DeusEx.DeusExPlayer.KeyRing",Kind::Object).text.empty(),
+            "Dormant belt prefix fabricated starter-ring ownership or changed original keyring slot");
+        const std::array<std::size_t,10u> siblingOrder{0u,9u,8u,7u,6u,5u,4u,3u,2u,1u};
+        edge(slotsView,"Extension.Window.firstChild",objectSlots[siblingOrder.front()]);
+        edge(slotsView,"Extension.Window.lastChild",objectSlots[siblingOrder.back()]);
+        for(std::size_t index=0u;index<siblingOrder.size();++index) {
+            const auto& slot=object(objectSlots[siblingOrder[index]]);
+            edge(slot,"Extension.Window.prevSibling",index==0u?std::string{}:objectSlots[siblingOrder[index-1u]]);
+            edge(slot,"Extension.Window.nextSibling",index+1u==siblingOrder.size()?std::string{}:objectSlots[siblingOrder[index+1u]]);
+        }
         Require(field(radioView,"Extension.Window.windowType").value.integer==1 &&
             field(slotsView,"Extension.Window.windowType").value.integer==0 &&
             !field(radioView,"Extension.RadioBoxWindow.bOneCheck").value.boolean &&
@@ -336,8 +442,8 @@ int main(int argc,char** argv) {
             "Original Tile setters changed unrelated constructor flags");
         edge(rootView,"Extension.Window.firstChild",display.path);edge(rootView,"Extension.Window.lastChild",hudView.path);
         // Ammo, all health children and Cross completed their original Init,
-        // visibility callbacks and unlocks. The belt containers completed, but
-        // its first Toggle slot is pending: HUD.belt/Root.hud are unassigned.
+        // visibility callbacks and unlocks. All ten slots completed; the belt
+        // Show's parent layout callback is pending: HUD.belt/Root.hud unassigned.
         edge(rootView,"DeusEx.DeusExRootWindow.hud",{});
         edge(hudView,"DeusEx.DeusExHUD.Ammo",ammoView.path);edge(hudView,"DeusEx.DeusExHUD.hit",hitView.path);
         edge(hudView,"DeusEx.DeusExHUD.Cross",crossView.path);edge(hudView,"DeusEx.DeusExHUD.belt",{});
@@ -362,7 +468,7 @@ int main(int argc,char** argv) {
             hitView.outerPath==hudView.path && crossView.outerPath==hudView.path && beltView.outerPath==hudView.path &&
             !field(hudView,"Extension.Window.bIsVisible").value.boolean &&
             field(ammoView,"Extension.Window.bIsVisible").value.boolean && field(hitView,"Extension.Window.bIsVisible").value.boolean &&
-            field(crossView,"Extension.Window.bIsVisible").value.boolean && !field(beltView,"Extension.Window.bIsVisible").value.boolean &&
+            field(crossView,"Extension.Window.bIsVisible").value.boolean && field(beltView,"Extension.Window.bIsVisible").value.boolean &&
             !field(hudView,"Extension.Window.bIsSensitive").value.boolean && field(ammoView,"Extension.Window.bIsSensitive").value.boolean &&
             field(hudView,"Extension.Window.lockCount").value.integer==1 && field(ammoView,"Extension.Window.lockCount").value.integer==0 &&
             field(hitView,"Extension.Window.lockCount").value.integer==0 && field(crossView,"Extension.Window.lockCount").value.integer==0 &&
@@ -574,8 +680,8 @@ int main(int argc,char** argv) {
         const auto rootAttempt=ExecutePortableActorFunction(player,"Extension.PlayerPawnExt.InitRootWindow");
         std::cout<<"ORIGINAL unbound root initialization boundary: "<<rootAttempt.function<<':'<<rootAttempt.offset<<
             " opcode="<<unsigned(rootAttempt.opcode)<<" "<<rootAttempt.error<<std::endl;
-        Require(!rootAttempt.passed() && !rootAttempt.committed && rootAttempt.function=="DeusEx.HUDObjectBelt.CreateSlots" &&
-            rootAttempt.offset==206u && rootAttempt.error=="NewChild native subclass Init is not implemented: extension.togglewindow" &&
+        Require(!rootAttempt.passed() && !rootAttempt.committed && rootAttempt.function=="DeusEx.DeusExHUD.ConfigurationChanged" &&
+            rootAttempt.offset==305u && rootAttempt.error=="Unsupported runtime native 1465" &&
             std::find(rootAttempt.callStack.begin(),rootAttempt.callStack.end(),"DeusEx.DeusExRootWindow.InitWindow")!=rootAttempt.callStack.end(),
             "Native1052 did not construct/dispatch original root without a fabricated client prerequisite");
         const auto windowsAfter=ReadPortableRuntimeNativeWindowSummary();

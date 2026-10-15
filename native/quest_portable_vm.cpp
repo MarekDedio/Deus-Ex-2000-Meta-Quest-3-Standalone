@@ -44,8 +44,9 @@ bool SnapshotNativeInput(const std::uint16_t index, const Function* declaration 
     case 112: case 113: case 124: case 125: case 126: case 127: case 128:
     case 168: case 186: case 187: case 189: case 231: case 234: case 235: case 244: case 245: case 246: case 249: case 250: case 251: case 278:
     case 280: return true; // SetTimer copies rate before evaluating bLoop.
-    case 1410: case 1415: case 1416: case 1421: case 1422: case 1430: case 1431: case 1432: case 1438: case 1454: case 1467:
+    case 1410: case 1415: case 1416: case 1420: case 1421: case 1422: case 1430: case 1431: case 1432: case 1433: case 1438: case 1454: case 1467:
     case 1475: case 1477: case 1510: case 1511: case 1535: case 1538: case 1539: case 1540:
+    case 1541: case 1544: case 1545:
         return true; // Retail window wrappers have no OUT parameters.
     default: return false;
     }
