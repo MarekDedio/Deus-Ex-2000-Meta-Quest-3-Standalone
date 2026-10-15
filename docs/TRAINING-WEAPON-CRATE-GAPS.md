@@ -1,5 +1,39 @@
 # Training weapon and crate gaps (2026-10-13)
 
+## Current follow-up (2026-10-16)
+
+Tracked original keyring/knife/crowbar assemblies and the quiet trigger are now
+accepted by the user; see HELD-ITEM-VISUALS.md. This supersedes the historical
+invisible-hand description below, not the remaining original equip/Fire work.
+
+Native sound264 recipient routing now executes with real UObject indices,
+caller/native Level authority, exact hearing/BSP checks and synchronous original
+ClientHearSound events. Bound-player native audio still requires a prepared
+commit-only consumer. In isolated actual Training damage, None-instigator fatal
+hits pass sound/AI and fail at Engine.Fragment.CalcVelocity:7, missing VRand252;
+the whole checkpoint/revision is restored. Legal nonnull Pawn-instigated damage
+still reaches the earlier MakeNoise512:428 boundary. The generic live damage
+helper has deliberately not been widened to fake decoration health/destruction.
+
+The new owned native279 diagnostic calls genuine Destroy, never Destroyed by
+hand. Explicit isolated bBegunPlay=true/bStartup=true controls prove the actual
+Containers.Destroyed/FastTrace548/super callback prefix (68/65 script instructions
+versus dormant1), repeated-destroy invariance and world removal without fake loot.
+With original Contents=Lockpick retained and bStartup=false, both crates reach
+Containers.Destroyed:681 VRand252, before Spawn278:758, and completely roll back.
+Source bytes/timestamps and GC remain unchanged. These fixtures do not establish
+world startup or a real possessed player. Tests pass257 checks/two expected
+contents refusals, plus152 original damage controls.
+
+Next work includes original VRand rejection/normalization and RNG rollback,
+MakeNoise/native clock/hearing, fragment lifecycle/GetMeshTexture1013, actual
+contents births and landing/Base support. AI713/715, GetPlayerPawn720 and
+SetPhysics3970 already have runtime adapters; storing Physics is still not
+falling simulation. Full melee destruction, loot, gravity and whole committed
+scene publication remain unfinished. No replacement APK for this backend batch.
+
+## Historical initial report / audit
+
 After testing the installed streaming/inventory replacement, the user reports
 freezes basically fixed and browsing working, but an invisible selected crowbar,
 rejected damage on breakable crates and a floating crate stack. These are open

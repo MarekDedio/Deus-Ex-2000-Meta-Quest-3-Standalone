@@ -376,11 +376,12 @@ bool Original(const std::filesystem::path& root) {
             "Original crate damage6 did not preserve authored HitPoints/ResetScaleGlow");
         const auto fatalBefore=checkpoints.Snapshot("FatalBefore"); const auto fatalRevision=GetPortableRuntimeWorldRevision();
         const auto fatal=ExecutePortableActorFunction(actor,"TakeDamage",hit);
-        Require(!fatal.passed()&&!fatal.committed&&fatal.error.find("Unsupported runtime native 264")!=std::string::npos,
-            "Fatal crate probe stopped outside the documented PlaySound prerequisite: "+fatal.error+
+        Require(!fatal.passed()&&!fatal.committed&&fatal.error.find("Unsupported runtime native 252")!=std::string::npos&&
+            fatal.function=="Engine.Fragment.CalcVelocity"&&fatal.offset==7u,
+            "Fatal crate probe stopped outside the documented fragment VRand prerequisite: "+fatal.error+
                 " at "+fatal.function+':'+std::to_string(fatal.offset));
         Require(checkpoints.Snapshot("FatalAfter")==fatalBefore&&GetPortableRuntimeWorldRevision()==fatalRevision,
-            "Fatal original crate damage leaked HP/scale/base/birth/deletion/random writes before unsupported sound");
+            "Fatal original crate damage leaked HP/scale/base/birth/deletion/random writes before unsupported fragment velocity");
         // A real nonnull Pawn argument follows a different earlier branch.
         // This NPC is only a legal isolated test input, never a stand-in for
         // a possessed VR player or permission to skip original world startup.
@@ -397,7 +398,7 @@ bool Original(const std::filesystem::path& root) {
         Require(checkpoints.Snapshot("InstigatedFatalAfter")==fatalBefore&&GetPortableRuntimeWorldRevision()==fatalRevision,
             "MakeNoise refusal leaked crate HP/Instigator or other complete-checkpoint effects");
         Require(LoadPortableRuntimeState(baseline.string()),"Could not restore isolated original crate probe");
-        std::cout<<"PREREQUISITE "<<actor<<": actual Active.TakeDamage6 survives with HP4/ScaleGlow0.46; fatal original hit rolls back at "<<fatal.function<<':'<<fatal.offset<<" native264. Not live VR damage.\n";
+        std::cout<<"PREREQUISITE "<<actor<<": actual Active.TakeDamage6 survives with HP4/ScaleGlow0.46; fatal original hit passes real264 routing and rolls back at "<<fatal.function<<':'<<fatal.offset<<" native252. Not live VR damage.\n";
         std::cout<<"PREREQUISITE "<<actor<<": legal nonnull Pawn-instigated fatal hit rolls back earlier at "
             <<instigated.function<<':'<<instigated.offset<<" native512, complete checkpoint unchanged. Not a possessed player.\n";
     }

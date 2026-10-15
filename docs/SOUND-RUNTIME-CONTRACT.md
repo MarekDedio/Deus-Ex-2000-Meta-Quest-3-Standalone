@@ -7,14 +7,20 @@ or a new Quest build. The accepted NPC APK remains the installed test build.
 
 The two actual Training crates use `DeusExDecoration.Active.TakeDamage`, not
 the port's Pawn-only health helper. An isolated original-script hit of6 takes
-HitPoints from10 to4 and sets ScaleGlow to0.46. A second hit currently rolls
-back at PlaySound264, PC464. That probe passes `EventInstigator=None`.
+HitPoints from10 to4 and sets ScaleGlow to0.46. A second hit previously rolled
+back at PlaySound264, PC464. With the routing checkpoint it reaches the actual
+fragment's CalcVelocity, whose missing VRand252 is the next boundary at PC7.
+That probe passes `EventInstigator=None`.
 Player-instigated fatal damage reaches MakeNoise512 at PC428 first; sound264
-is therefore not the only live gameplay prerequisite.
+is therefore not the only live gameplay prerequisite. The subsequent routing
+checkpoint below supersedes the earlier blanket nonnull264 refusal; the new
+fatal-damage boundary is separate from the earlier observations.
 
 The remaining chain includes AISendEvent713, original fragment Spawn/lifecycle,
 GetMeshTexture1013, Destroy/Containers.Destroyed/FastTrace548, dropped Contents,
-and falling/landing/Base support. The renderer also needs to publish the whole
+and falling/landing/Base support. FastTrace548 is now implemented; AI713/715,
+GetPlayerPawn720 and SetPhysics3970 already have audited runtime adapters, not
+blanket missing-native status. The renderer also needs to publish the whole
 committed change, not merely hide the struck crate. Nothing in this checkpoint
 bypasses those dependencies or substitutes Pawn health for decoration HitPoints.
 
@@ -48,10 +54,14 @@ original packages; native behavior comes from static disassembly.
 Local viewport routing applies when NetMode==3 or the actual calling node is
 a UFunction with FUNC_Simulated0x100. `FFrame.Node` at VA0x103e237b is not the
 called PlaySound declaration, nor a Pawn/bNetOwner/bSimulatedPawn predicate.
-Otherwise routing scans the live LevelInfo.PawnList/nextPawn for bIsPlayer.
+Otherwise routing seeds from the current **source.Level.PawnList**, not the
+native Actors[0] used for NetMode, then scans live nextPawn for bIsPlayer.
 Viewport routing uses ordered registered viewports, nonnull Viewport.Actor,
 and matching source/listener native Level. Recorder/network state is a separate
-native dependency and must not silently be assumed absent.
+native dependency and must not silently be assumed absent. Specifically, a
+nonnull native XLevel.DemoRecDriver with ServerConnection=None and actual
+Actors[0].NetMode!=3 synchronously calls source DemoPlaySound **before** the
+channel calculation. This wrapper does not separately test the regular NetDriver.
 
 `CheckHearSound` (RVA0x2856, VA0x103e1b00) uses a PlayerPawn's nonnull ViewTarget
 location, otherwise listener Location. Initial distance squared is an unrounded
@@ -68,6 +78,8 @@ GetOptimizedRepList at VA0x10362132..0x1036216a and its named-property string
 VA0x1047adf0. Owner is a different field (+0x3c). This corrects the earlier
 owner-named Boolean in the detached scalar helper; its Boolean arithmetic was
 unchanged, and no production recipient adapter consumed the mislabeled input.
+The BSP call order is End=listener/ViewTarget, Start=current source.Location;
+it is not safe to reverse this numerically asymmetric original traversal.
 
 Accepted listeners receive the original `ENGINE_ClientHearSound` event
 synchronously inside the same VM transaction. Only external audio delivery
@@ -90,18 +102,89 @@ must not happen inside a real-time native callback or XR frame.
   caller before input evaluation. Direct top-level entries report no caller.
   It does not infer caller flags from the callee.
 - Runtime264 validates the actual original declaration and sequential defaults.
-  Sound=None completes without writing a result. Nonnull playback still refuses
-  with `Unsupported runtime native 264` and rolls back the entire script.
+  Sound=None completes without writing a result. Nonnull routing now uses the
+  actual calling Core.Function's immutable FUNC_Simulated flag; State wrappers
+  and direct native entries are not invented simulated UFunctions. Native
+  NetMode is read after argument expressions from actual XLevel.Actors[0].
+- Every RuntimeObject owns a move-only UObject-index lease from one engine-wide
+  pool: authored exports, metadata, defaults, births and native session/window
+  objects all share that domain. GC destruction alone releases a slot. Indices
+  are not pointers, exports, world slots, paths or saved IDs. Zero=None and the
+  four-million capacity are explicit portable resource policy, not a claim of
+  identical retail absolute indices. A future audio queue must retain its source
+  UObject until delivery; there is no such queue in this checkpoint.
+- Loading an actual serialized ULevel explicitly establishes this engine's
+  standalone/no-NetDriver/no-DemoRecDriver service ownership. It is not inferred
+  from reflected missing fields or saved pointer-shaped data. Other NetModes
+  refuse until actual network services exist. Hardware standalone is not itself
+  a reason to misinterpret an unknown recorder as absent.
+- Nonlocal routing consumes the real source.Level.PawnList/bIsPlayer and rereads
+  nextPawn after each synchronous callback. Local routing reads ordered actual
+  session Viewport.Actor and native Level membership. No client, a live client
+  with zero viewports or an actual viewport with Actor=None are genuine empty
+  cases and still return the original stable channel. A descriptor lacking its
+  actual UViewport, or a revoked/stale binding, refuses rather than pretending
+  to have no listeners. Client leases are rechecked through root commit.
+- Each listener gets current source Location/Instigator and real PlayerPawn
+  ViewTarget. New quest_sound_hearing.h uses integer dyadic PC64 geometry,
+  z/y/x summation, strict initial range and separate Float spill for inclusive
+  blocked range; no host long-double width supplies runtime authority. Shared
+  bounded original BSP queries precede synchronous actual ClientHearSound
+  ProcessEvent, with the existing begun/deletion/probe/dynamic override gates.
+  Packet/channel stay fixed across recipients; attenuation is per-listener.
+  Native recipient scans and BSP work share bounded root-transaction budgets;
+  no unbounded cyclic nextPawn walk or per-callback budget reset is introduced.
+- Native base ClientHearSound validates its actual five-input d40 packet and
+  legitimately returns for a non-PlayerPawn, Player=None or non-Viewport Player.
+  An actual Viewport audio route still explicitly refuses pending the prepared,
+  bounded commit-only external-audio consumer. It is not silently discarded or
+  replaced by direct lamp/crate PCM playback. A later callback failure rolls
+  back earlier listeners' writes and all enclosing damage/destruction effects.
 - `quest_sound_protocol.h` implements detached scalar packet preparation and
   hearing comparisons only. Its split-distance overload accepts the unrounded
   initial distance and stored Float separately; the Float convenience overload
   proves no original geometric/x87 equivalence. Portable nonfinite/overflow
   refusals are explicit safety policy, not invented retail clamps.
 
-Still required: owned stable UObject indices, engine recorder/network authority,
-actual recipient selection/event delivery, a bounded commit-only external sound
-queue and asynchronous/prepared audio consumer. These are not implemented by a
-pure scalar helper, and audible native effects/crates remain unfinished.
+Still required: actual recorder/network implementations if those modes are used,
+a bounded commit-only external sound queue and asynchronous/prepared audio
+consumer. Native audio delivery to a real bound player, player-instigated noise,
+crate fragments/contents and gravity remain unfinished. Detached scalar or
+generated callback tests alone cannot prove audible native effects or crates.
+
+## Verified routing checkpoint (2026-10-16)
+
+- Engine.dll was rehashed read-only and still matches the SHA256 above.
+  Independent actual Engine.u metadata confirms NetMode's ByteProperty references
+  Engine.LevelInfo.ENetMode. Two independent stack audits confirm the sound BSP
+  End/Start ordering; both differ from the initially proposed reversed call.
+- Object-index leases262188 checks/10 refusal controls; exact hearing111595/25
+  including30000 independent x87 tuples; generated production routing2356/11.
+  The latter covers fixed packet/IDs, live callbacks, complete later failure
+  rollback, source versus caller ownership, State/simulated Function selection,
+  real solid-BSP attenuation and genuine empty/revoked native-client cases.
+- Coherent host build and final CTest:99 passes/114 registered/15 explicit
+  owned-data skips, zero failures61.82s. Strict ARM64 syntax passes the runtime,
+  object indices, hearing/routing, destruction, damage and client fixtures.
+- Separately invoked actual Training: lamp Frob completes once; damage152 now
+  reaches missing VRand252 at Fragment.CalcVelocity:7 with complete checkpoint
+  rollback, while legal nonnull Pawn input retains earlier MakeNoise512:428.
+  Genuine Destroy279257/2 checks exercise the actual callback prefix; unchanged
+  Lockpick Contents still rolls back at Containers.Destroyed:681 VRand252.
+  Owned548250 and NPC280519/26 regressions pass, retaining all18 waiting poses.
+  No new APK, audible bound-player native effects or playable crates are claimed.
+
+Local ignored evidence: artifacts/crate-sound-routing-build-repair-20261016.log,
+crate-sound-routing-fixture-repair-build-20261016.log,
+crate-sound-routing-ctest-final-20261016.log,
+crate-object-indices-20261016.log, crate-sound-hearing-20261016.log,
+crate-sound-routing-generated-repair-20261016.log,
+crate-destruction-owned-initial-20261016.log,
+crate-sound-routing-owned-damage-final-20261016.log,
+crate-sound-routing-lamp-initial-20261016.log,
+crate-sound-routing-owned-fast-trace-20261016.log,
+crate-sound-routing-owned-npc-final-20261016.log and
+crate-sound-routing-ndk-syntax-20261016.log.
 
 ## Player-instigated MakeNoise512 follow-on audit
 

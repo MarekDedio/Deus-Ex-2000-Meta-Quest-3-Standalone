@@ -1,10 +1,12 @@
-# Current Quest test-build handoff (2026-10-15)
+# Current Quest test-build handoff (2026-10-16)
 
-The subsequent crate sound-script and original BSP FastTrace checkpoints are
+The subsequent crate sound-script, original BSP FastTrace and sound-routing checkpoints are
 source/tests only: no replacement APK was built or installed. The NPC APK below
-remains the accepted device build. Final host CTest96/110 passes with14 explicit
-original-data skips; separate actual Training traces and damage/sound rollback
-probes pass too. Destructible crates are not ready for headset acceptance. See
+remains the recorded accepted device build. Final host CTest99/114 passes with15 explicit
+original-data skips; separate actual Training traces, lamp activation, native
+Destroy279 and damage rollback probes pass too. Damage now reaches fragment
+VRand252 rather than sound264; native bound-player audio and destructible crates
+are not ready for headset acceptance. See
 ORIGINAL-FAST-TRACE.md, SOUND-RUNTIME-CONTRACT.md and STATUS.md for explicit limits.
 
 ## Original Training NPC waiting animations (2026-10-15)
@@ -49,10 +51,11 @@ an exact-final-APK screenshot. Steady windows reach72fps/13.89ms, but streaming
 and diagnostic readback still produce slower windows; no full performance,
 AI, full tutorial or campaign acceptance is claimed.
 
-The next crate probe passes138 original-data controls and reproduces both
+At the NPC APK checkpoint, the next crate probe passed138 original-data controls and reproduced both
 crates' true surviving damage6 (HitPoints10 to4/ScaleGlow0.46). Fatal damage
-still rolls back at DeusExDecoration.Active.TakeDamage PC464, unsupported
-PlaySound264, before the destruction chain can complete. No crate fix yet.
+then rolled back at DeusExDecoration.Active.TakeDamage PC464, unsupported
+PlaySound264. The source-only2026-10-16 checkpoint above supersedes that boundary;
+it does not change this APK or complete crate gameplay.
 
 ## Tracked keyring, knife and crowbar / quiet trigger (2026-10-15)
 

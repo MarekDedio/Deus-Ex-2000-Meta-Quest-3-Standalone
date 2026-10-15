@@ -23,18 +23,18 @@ bool Same(const Viewport& a, const Viewport& b) {
         a.swapchainImages == b.swapchainImages && a.eyeCount == b.eyeCount;
 }
 struct Snapshot {
-    bool hasClient{}, hasViewport{};
+    bool hasClient{}, hasViewport{}, bound{};
     std::uint64_t clientIdentity{};
     std::size_t count{};
     std::vector<Viewport> viewports;
 };
 Snapshot Read(const Registry& registry) {
     const auto view = registry.ReadOnlyView();
-    return {registry.HasClient(), registry.HasViewport(), registry.ClientIdentity(),
+    return {registry.HasClient(), registry.HasViewport(), registry.IsBound(), registry.ClientIdentity(),
         registry.Count(), {view.begin(), view.end()}};
 }
 bool Same(const Snapshot& a, const Snapshot& b) {
-    if (a.hasClient != b.hasClient || a.hasViewport != b.hasViewport ||
+    if (a.hasClient != b.hasClient || a.hasViewport != b.hasViewport || a.bound != b.bound ||
         a.clientIdentity != b.clientIdentity || a.count != b.count ||
         a.viewports.size() != b.viewports.size()) return false;
     for (std::size_t index = 0u; index < a.viewports.size(); ++index)
@@ -58,7 +58,7 @@ Viewport View(std::uint64_t identity) { return {identity, 2064u, 2208u, 3u, 2u};
 void EmptyAndIdentity() {
     Registry registry;
     const auto absent = Read(registry);
-    Require(!absent.hasClient && !absent.hasViewport && !absent.clientIdentity &&
+    Require(!absent.hasClient && !absent.hasViewport && !absent.bound && !absent.clientIdentity &&
         !absent.count && absent.viewports.empty(), "Fresh registry is not absent");
     registry.Clear();
     Require(Same(absent, Read(registry)), "Clearing absent registry changed it");
@@ -71,7 +71,7 @@ void EmptyAndIdentity() {
     Reject(registry, [&] { registry.Register(1u, View(1u)); }, "Absent client registered target");
     Reject(registry, [&] { registry.Unregister(1u, 1u); }, "Absent client removed target");
     registry.Bind(live, 11u);
-    Require(registry.HasClient() && registry.ClientIdentity() == 11u &&
+    Require(registry.HasClient() && registry.IsBound() && registry.ClientIdentity() == 11u &&
         !registry.HasViewport() && registry.Count() == 0u && registry.ReadOnlyView().empty(),
         "Bound empty client was conflated with absence");
     Reject(registry, [&] { registry.Bind(live, 11u); }, "Duplicate client binding accepted");
@@ -166,7 +166,7 @@ void Revocation() {
     std::thread renderer([lifetime] { lifetime->Revoke(); lifetime->Revoke(); });
     renderer.join();
     Require(!lifetime->Alive(), "Renderer revocation was not visible to CPU owner");
-    Require(!registry.HasClient() && !registry.HasViewport() && registry.Count() == 0u &&
+    Require(!registry.HasClient() && registry.IsBound() && !registry.HasViewport() && registry.Count() == 0u &&
         registry.ClientIdentity() == 0u && registry.ReadOnlyView().empty(),
         "Revoked client or viewport remained observable");
     Reject(registry, [&] { registry.Register(501u, View(802u)); }, "Revoked session registered target");

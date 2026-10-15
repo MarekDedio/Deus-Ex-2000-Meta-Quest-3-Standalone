@@ -1,5 +1,43 @@
 # Port status
 
+## Original sound routing / crate callbacks (2026-10-16)
+
+- Added one engine-owned RAII UObject-index allocation domain across every
+  RuntimeObject constructor, independent of pointers/exports/world slots/saves.
+  Actual native264 now selects recipients from genuine caller provenance,
+  native slot-zero NetMode, source.Level.PawnList and ordered native viewports.
+  Live callbacks can splice nextPawn/change source Location; all effects remain
+  synchronous and share the enclosing transaction. Explicit standalone/no-driver
+  service ownership is loader-created, not inferred from missing reflection.
+- Sound hearing uses exact integer dyadic PC64 geometry, separate retained and
+  Float distances, original directional BSP queries, per-listener occlusion and
+  Instigator (not Owner) exemption. Genuine empty recipient sets return the
+  original channel. Base ClientHearSound's real non-PlayerPawn/unbound exits work;
+  a valid Viewport audio route still refuses pending commit-only prepared audio.
+- Object indices262188/10 refusal controls, hearing111595/25 and production
+  generated routing2356/11 pass. Routing covers State versus simulated Function,
+  context receiver versus FFrame.Object, all256 Slot bytes/both override values,
+  live recipient/source mutation, solid BSP attenuation, client lifetime and
+  complete later-callback rollback. Coherent host build passes; final CTest99
+  passes/114 registered/15 explicit owned-data skips/zero failures in61.82s.
+  Strict ARM64 syntax passes runtime and all changed/new integration fixtures.
+- Separately invoked owned Training: lamp Frob completes (one lamp, no native
+  bound-player audio/dynamic-BSP-lighting claim); both fatal None-instigator
+  decoration damage probes now pass264 and reach real Fragment.CalcVelocity:7,
+  missing VRand252, with exact complete rollback. Legal nonnull Pawn input still
+  stops earlier at MakeNoise512:428. Damage regression152 checks passes.
+- New genuine Destroy279 diagnostic257/2 passes: explicit isolated begun/startup
+  controls execute Containers.Destroyed/FastTrace/super cleanup, while unchanged
+  Contents=Lockpick rolls back at Containers.Destroyed:681 VRand252. These saved
+  preconditions do not start the original game or manufacture surviving loot.
+  Owned source bytes/timestamps/GC are unchanged. Owned548250 and NPC280519/26
+  retain actual BSP behavior and all18 accepted waiting presentations.
+- Source/tests only: no new APK, no new on-device acceptance. Held-item/NPC APK
+  remains the recorded accepted device build. Crate gameplay/gravity, actual
+  player/world startup, MakeNoise, VRand/debris/contents, bound-player native
+  audio and full tutorial/campaign remain unfinished. See SOUND-RUNTIME-CONTRACT.md
+  and TRAINING-WEAPON-CRATE-GAPS.md for exact scope and next dependencies.
+
 ## Original BSP FastTrace checkpoint (2026-10-15)
 
 - Implemented retail FastTrace548 using the actual native Level's serialized

@@ -28,8 +28,10 @@
 #include "quest_unreal_int_array.h"
 #include "quest_mover_motion.h"
 #include "quest_object_names.h"
+#include "quest_object_indices.h"
 #include "quest_engine_config.h"
 #include "quest_model_fast_line_check.h"
+#include "quest_sound_hearing.h"
 
 #include <memory>
 #include <algorithm>
@@ -54,6 +56,15 @@ namespace {
 class RuntimeObject;
 class RuntimeAIManager;
 class RuntimeMapDecals;
+QuestVr::ObjectIndexPool& RuntimeObjectIndices() {
+    // One engine-owned allocation domain, including metadata, defaults,
+    // authored actors, runtime births and native Client/Viewport/Window objects.
+    // GC destruction releases slots; map removal or transaction rollback alone
+    // must not make a still-live UObject's channel identity reusable. Leases
+    // retain the control block even during static engine shutdown.
+    static QuestVr::ObjectIndexPool pool;
+    return pool;
+}
 struct RuntimeMoverMotion {
     QuestVr::MoverMotionSpec spec;
     QuestVr::MoverMotionState state;
@@ -83,9 +94,10 @@ public:
     RuntimeObject(
         PortableReflectionObject reflection,
         std::size_t* destroyed)
-        : reflection(std::move(reflection)), destroyed_(destroyed) {}
+        : reflection(std::move(reflection)), objectIndex(RuntimeObjectIndices().Acquire()), destroyed_(destroyed) {}
 
     PortableReflectionObject reflection;
+    QuestVr::ObjectIndexPool::Lease objectIndex;
     std::vector<RuntimeObject*> references;
     RuntimeObject* outer{};
     RuntimeObject* base{};
@@ -115,6 +127,11 @@ public:
         std::unordered_map<std::uint32_t,std::vector<RuntimeObject*>>> nativeWindowPropertyRoots;
     std::int32_t uniqueObjectCounter{}; // Concrete UClass, survives map changes.
     RuntimeObject* nativeXLevel{}; // Immutable LinkActorsToLevel baseline, not a script write.
+    // Explicit native loader ownership: this single-player engine creates no
+    // NetDriver or DemoRecDriver. Not inferred from absent reflected fields,
+    // guessed from PawnList, or restored from a save. Network/demo execution
+    // requires a separately implemented native service, never a silent no-op.
+    bool nativeStandaloneLevelServices{};
     RuntimeAIManager* nativeAiManager{}; // LevelInfo-owned native state, not an actor/export.
     std::unique_ptr<PortableScriptBody> script;
     std::unique_ptr<PortablePropertyDescriptor> property;
@@ -1848,6 +1865,7 @@ public:
         beforeWindowRoots_=persistentWindowDomain && persistentWindowDomain->get() ?
             persistentWindowDomain->get()->roots.size() : 0u;
         clientDependent_ = false;
+        soundClientIdentity_ = 0u;
         transaction_ = true;
     }
     void Commit() override {
@@ -1866,6 +1884,7 @@ public:
         }
         if (clientDependent_ && !persistentNativeClient.HasViewport())
             throw std::runtime_error("Native client lifetime revoked during script transaction");
+        ValidateSoundClientLease();
         ValidateStateBudget();
         // AI-manager-only state already has independent checkpoint/journal
         // ownership and is not actor geometry. Preserve that existing path;
@@ -1895,6 +1914,7 @@ public:
         // Recheck the render-owner lease at the actual publication boundary.
         if (clientDependent_ && !persistentNativeClient.HasViewport())
             throw std::runtime_error("Native client lifetime revoked before script publication");
+        ValidateSoundClientLease();
         if (worldChanged) persistentMapTagIndex.swap(tags);
         if (worldChanged) ++persistentWorldRevision;
         beforeCollision_.reset();
@@ -2068,8 +2088,10 @@ public:
         RuntimeObject* object = Object(receiver);
         if (object->defaultOwner)
             throw std::runtime_error("Native execution on a class-default object requires its audited handler");
-        if (index==264u) return PlaySoundArgumentPrerequisite(object,arguments,declaration);
+        if (index==264u) throw std::runtime_error("PlaySound requires its captured VM call-site context");
         if (index==548u) return FastTraceNative(object,arguments,declaration);
+        if (index==0u && declaration && LowerAscii(declaration->path)=="engine.pawn.clienthearsound")
+            return ClientHearSoundNative(object,arguments,*declaration);
         if (index==0u && declaration && LowerAscii(declaration->path)=="engine.playerpawn.consolecommand")
             return PlayerPawnConsoleCommand(object,arguments,*declaration);
         // Native event wrappers have no presentation-active gate. Their actual
@@ -2474,11 +2496,32 @@ public:
         if (index != 113u) return std::nullopt;
         return Value::Text(Kind::Name, TransitionStateName(Object(receiver)));
     }
+    std::optional<Value> CaptureNativeCallSiteContext(const std::uint16_t index,const std::string& receiver,
+        const Function* declaration,const Function* caller) override {
+        if (index!=264u) return CaptureNativeContext(index,receiver,declaration);
+        static_cast<void>(PlaySoundDeclaration(declaration));
+        if (!caller) return Value::Bool(false); // Direct native entry has no FFrame.Node UFunction.
+        auto* node=Object(caller->path);
+        if (caller->source!=node->sourcePath)
+            throw std::runtime_error("PlaySound caller source is not its immutable authored node");
+        const auto& table=Table(node->sourcePath);
+        const auto type=LowerAscii(Qualified(table,table.exports.at(node->exportIndex).ObjClass));
+        if (type=="core.state" && node->stateDescriptor) {
+            if (caller->nativeIndex!=0u || caller->flags!=0u)
+                throw std::runtime_error("PlaySound State caller has invented Function flags");
+            return Value::Bool(false); // A VM Function wrapper is not Cast<UFunction>(Node).
+        }
+        if (type!="core.function" || !node->script || caller->nativeIndex!=node->script->nativeIndex ||
+            caller->flags!=node->script->functionFlags)
+            throw std::runtime_error("PlaySound caller is not its actual authored UFunction");
+        return Value::Bool((node->script->functionFlags&0x100u)!=0u);
+    }
     Evaluation NativeWithContext(const std::uint16_t index, const std::string& receiver,
         const std::vector<Evaluation>& arguments, const Function* declaration, QuestVr::Vm::Execution& execution,
         const std::optional<Value>& context) override {
         if (Object(receiver)->defaultOwner)
             throw std::runtime_error("Native execution on a class-default object requires its audited handler");
+        if (index==264u) return PlaySoundNative(Object(receiver),arguments,declaration,execution,context);
         if (index != 113u) return NativeWithExecution(index, receiver, arguments, declaration, execution);
         auto* actor = Object(receiver);
         if ((!actor->active && !actor->worldRemoved) || !IsDerivedFromPath(actor->cls, "Engine.Actor"))
@@ -2860,9 +2903,64 @@ public:
         if (value.kind!=Kind::Float) throw std::runtime_error("PlaySound default has an invalid Float value");
         return value;
     }
-    Evaluation PlaySoundArgumentPrerequisite(RuntimeObject* actor,const std::vector<Evaluation>& arguments,
-        const Function* declaration) {
+    Value SoundField(RuntimeObject* object,const char* key,const Kind kind,const char* constraint="") {
+        const auto field=DescribeProperty(key);
+        auto* metadata=Object(field.key);
+        const char* type=kind==Kind::Object?"ObjectProperty":kind==Kind::Byte?"ByteProperty":
+            kind==Kind::Bool?"BoolProperty":kind==Kind::Vector?"StructProperty":"";
+        if (!object || !OwnsProperty(object->cls,field) || field.arrayDimension!=1u || field.zero.kind!=kind ||
+            !metadata->property || metadata->property->type!=type ||
+            (kind==Kind::Vector && field.resultLayout!=QuestVr::Vm::ResultLayout::CoreVector12) ||
+            (*constraint && LowerAscii(Qualified(Table(metadata->sourcePath),metadata->property->referencedType))!=LowerAscii(constraint)))
+            throw std::runtime_error("Native sound field is not its actual authored scalar schema");
+        const auto value=Read(object,field,0u);
+        if (value.kind!=kind) throw std::runtime_error("Native sound field value has a different destination type");
+        return value;
+    }
+    RuntimeObject* SoundObjectField(RuntimeObject* object,const char* key,const char* constraint) {
+        const auto value=SoundField(object,key,Kind::Object,constraint);
+        ValidateObjectValue(value,constraint,false);
+        return value.text.empty()?nullptr:Object(value.text);
+    }
+    PortableModelVec3 SoundLocation(RuntimeObject* actor) {
+        const auto value=SoundField(actor,"Engine.Actor.Location",Kind::Vector);
+        return {value.vector[0u],value.vector[1u],value.vector[2u]};
+    }
+    void ValidateSoundClientLease() {
+        if (soundClientIdentity_ && (!persistentNativeClient.HasClient() ||
+            persistentNativeClient.ClientIdentity()!=soundClientIdentity_))
+            throw std::runtime_error("Native sound client lease is revoked or stale");
+    }
+    void CheckHearSoundNative(RuntimeObject* source,RuntimeObject* listener,const Value& sound,
+        const QuestVr::PlaySoundProtocolPacket& packet,QuestVr::Vm::Execution& execution) {
+        LifecycleStep();RequireMapActor(listener);
+        if (!IsDerivedFromPath(listener->cls,"Engine.Pawn"))
+            throw std::runtime_error("CheckHearSound recipient is not an actual Pawn");
+        // Retail reads these afresh for EACH recipient. Earlier synchronous
+        // listeners may change source Location/Instigator or another ViewTarget.
+        auto* target=listener;
+        if (IsDerivedFromPath(listener->cls,"Engine.PlayerPawn")) {
+            if (auto* view=SoundObjectField(listener,"Engine.PlayerPawn.ViewTarget","Engine.Actor")) target=view;
+        }
+        const auto from=SoundLocation(source),to=SoundLocation(target);
+        const auto distance=QuestVr::OriginalSoundDistanceSquared(from,to);
+        if (!QuestVr::OriginalSoundInitialRange(packet,distance)) return;
+        const bool blocked=!NativeFastLine(source,to,from); // End=listener/ViewTarget, Start=source.
+        const auto heard=QuestVr::EvaluateOriginalSoundHearing(packet,distance,blocked,
+            SoundObjectField(source,"Engine.Actor.Instigator","Engine.Pawn")==listener);
+        if (!heard.audible) return;
+        // Original ENGINE_ClientHearSound is synchronous ProcessEvent, with
+        // its actual begun/deletion/probe/dynamic override gates. All script
+        // effects share this root journal. Do not queue a substituted callback.
+        static_cast<void>(execution.CallEvent(listener->reflection.objectPath,"ClientHearSound",true,{
+            {Value::Text(Kind::Object,source->reflection.objectPath),{}},
+            {Value::Integer(packet.channel),{}},{sound,{}},
+            {Value::Vector({from.x,from.y,from.z}),{}},{Value::Vector(heard.parameters),{}}}));
+    }
+    Evaluation PlaySoundNative(RuntimeObject* actor,const std::vector<Evaluation>& arguments,
+        const Function* declaration,QuestVr::Vm::Execution& execution,const std::optional<Value>& context) {
         static_cast<void>(PlaySoundDeclaration(declaration));
+        static_cast<void>(PlaySoundArgumentSeed(actor,0u));
         if (arguments.empty() || arguments.size()>6u)
             throw std::runtime_error("PlaySound requires one to six original inputs");
         std::array<Value,6u> values;
@@ -2885,10 +2983,110 @@ public:
         // a serialized UClass linked through RuntimeObject::cls. Use the
         // existing declaration-aware cast path for its real export identity.
         ValidateObjectValue(values[0u],"Engine.Sound",false);
-        // Nonnull routing/ClientHearSound/audio publication is not implemented
-        // by the argument/result prerequisite. Preserve the exact failure and
-        // the enclosing crate/lamp transaction, never silently drop effects.
-        throw std::runtime_error("Unsupported runtime native 264");
+        if (!context || context->kind!=Kind::Bool)
+            throw std::runtime_error("PlaySound has no actual pre-argument caller provenance");
+        auto* info=NativeLevelInfo(actor);
+        if (!actor->nativeXLevel->nativeStandaloneLevelServices)
+            throw std::runtime_error("PlaySound native Level has no owned engine service configuration");
+        const auto mode=SoundField(info,"Engine.LevelInfo.NetMode",Kind::Byte,"Engine.LevelInfo.ENetMode");
+        // This native engine currently owns standalone/no-driver services.
+        // Reflected NetMode changes cannot invent a client/server/recorder.
+        if (mode.integer!=0)
+            throw std::runtime_error("PlaySound non-standalone native network services are not implemented");
+        // A real native DemoRecDriver is explicitly absent in this engine
+        // configuration, so the retail DemoPlaySound branch is not entered.
+        // A future recorder must implement its synchronous source event BEFORE
+        // this channel calculation; an unknown driver is not an empty branch.
+        const auto packet=QuestVr::PreparePlaySoundProtocolPacket(actor->objectIndex.Index(),
+            static_cast<std::uint8_t>(values[1u].integer),values[2u].floating,values[3u].boolean,
+            values[4u].floating,values[5u].floating);
+        if (context->boolean) {
+            // Source NetMode==3 also selects this retail branch, but requires
+            // the as-yet unsupported native network-client services above.
+            if (persistentNativeClient.IsBound()) {
+                if (!persistentNativeClient.HasClient())
+                    throw std::runtime_error("Native sound client binding was revoked");
+                soundClientIdentity_=persistentNativeClient.ClientIdentity();
+                std::size_t index{};
+                for (;;) {
+                    ValidateSoundClientLease();
+                    const auto viewports=persistentNativeClient.ReadOnlyView();
+                    if (index>=viewports.size()) break;
+                    const auto identity=viewports[index++].identity;
+                    LifecycleStep();
+                    // A descriptor without its actual UViewport is unknown,
+                    // not an invented None Actor. Construction is explicit.
+                    auto* viewport=NativeSessionViewport(identity);
+                    auto* listener=viewport->nativeViewportActor;
+                    if (listener && listener->nativeXLevel==actor->nativeXLevel)
+                        CheckHearSoundNative(actor,listener,values[0u],packet,execution);
+                }
+            }
+        } else {
+            // Retail seeds from source.Level.PawnList, not native Actors[0].
+            // A callback can splice nextPawn; reread it AFTER that callback.
+            auto* level=SoundObjectField(actor,"Engine.Actor.Level","Engine.LevelInfo");
+            if (!level) throw std::runtime_error("PlaySound source has no actual LevelInfo relationship");
+            for (auto* pawn=SoundObjectField(level,"Engine.LevelInfo.PawnList","Engine.Pawn");pawn;
+                pawn=SoundObjectField(pawn,"Engine.Pawn.nextPawn","Engine.Pawn")) {
+                LifecycleStep();RequireMapActor(pawn);
+                if (SoundField(pawn,"Engine.Pawn.bIsPlayer",Kind::Bool).boolean)
+                    CheckHearSoundNative(actor,pawn,values[0u],packet,execution);
+            }
+        }
+        return {Value::Integer(packet.channel),{}}; // Even genuine zero-recipient calls write Id.
+    }
+    Evaluation ClientHearSoundNative(RuntimeObject* pawn,const std::vector<Evaluation>& arguments,
+        const Function& declaration) {
+        const auto authored=FunctionFor(Object("Engine.Pawn.ClientHearSound"));
+        const auto validate=[&](const Function& function) {
+            const std::array<const char*,5u> names{"Actor","Id","S","SoundLocation","Parameters"};
+            const std::array<Kind,5u> kinds{Kind::Object,Kind::Int,Kind::Object,Kind::Vector,Kind::Vector};
+            if (LowerAscii(function.path)!="engine.pawn.clienthearsound" || function.nativeIndex!=0u ||
+                function.flags!=0xd40u || function.variables.size()!=names.size())
+                throw std::runtime_error("ClientHearSound is not its original named native declaration");
+            for (std::size_t slot=0u;slot<names.size();++slot) {
+                const auto& field=function.variables[slot];auto* metadata=Object(field.key);
+                const char* type=slot==0u || slot==2u?"ObjectProperty":slot==1u?"IntProperty":"StructProperty";
+                if (LowerAscii(field.key)!=LowerAscii(std::string("Engine.Pawn.ClientHearSound.")+names[slot]) ||
+                    field.flags!=0x80u || field.arrayDimension!=1u || field.zero.kind!=kinds[slot] ||
+                    !metadata->property || metadata->property->type!=type ||
+                    (slot>=3u && field.resultLayout!=QuestVr::Vm::ResultLayout::CoreVector12) ||
+                    ((slot==0u || slot==2u) && LowerAscii(Qualified(Table(metadata->sourcePath),metadata->property->referencedType))!=
+                        (slot==0u?"engine.actor":"engine.sound")))
+                    throw std::runtime_error("ClientHearSound parameter is not its original packet schema");
+            }
+        };
+        validate(*authored);validate(declaration);
+        if (declaration.source!=authored->source || arguments.size()!=5u)
+            throw std::runtime_error("ClientHearSound source/input count differs from its original declaration");
+        std::array<Value,5u> values;
+        const std::array<Kind,5u> kinds{Kind::Object,Kind::Int,Kind::Object,Kind::Vector,Kind::Vector};
+        for (std::size_t slot=0u;slot<values.size();++slot) {
+            values[slot]=arguments[slot].Load();
+            if (values[slot].kind!=kinds[slot]) throw std::runtime_error("ClientHearSound packet type is invalid");
+            if (slot>=3u) for (const auto component:values[slot].vector)
+                if (!std::isfinite(component)) throw std::runtime_error("ClientHearSound packet must be finite");
+        }
+        ValidateObjectValue(values[0u],"Engine.Actor",false);
+        ValidateObjectValue(values[2u],"Engine.Sound",false);
+        RequireMapActor(pawn);
+        if (!IsDerivedFromPath(pawn->cls,"Engine.Pawn"))
+            throw std::runtime_error("ClientHearSound receiver is not an actual Pawn");
+        if (!IsDerivedFromPath(pawn->cls,"Engine.PlayerPawn")) return {};
+        // Revocation is not a valid retail Player=None branch. Otherwise the
+        // actual native body legitimately returns for None or non-Viewport.
+        if (pawn->nativePlayerBinding && pawn->nativePlayer &&
+            (!persistentNativeClient.HasClient() ||
+             pawn->nativePlayer->nativeClientIdentity!=persistentNativeClient.ClientIdentity()))
+            throw std::runtime_error("ClientHearSound native Player lease is revoked or stale");
+        auto* player=SoundObjectField(pawn,"Engine.PlayerPawn.Player","Engine.Player");
+        if (!player || CastObject("Engine.Viewport",Value::Text(Kind::Object,player->reflection.objectPath),false).text.empty())
+            return {};
+        // No fake audio-disabled success: the port's original Audio subsystem
+        // still needs a bounded commit-only queue/prepared backend. A genuine
+        // Viewport route must roll back until that consumer is implemented.
+        throw std::runtime_error("ClientHearSound original audio publication is not implemented");
     }
 
     std::shared_ptr<const Function> FastTraceDeclaration(const Function* supplied) {
@@ -2964,18 +3162,20 @@ public:
         if (start.kind==Kind::Nothing) start=FastTraceStartSeed(actor);
         if (end.kind!=Kind::Vector || start.kind!=Kind::Vector)
             throw std::runtime_error("FastTrace input is not its original Vector destination");
+        return {Value::Bool(NativeFastLine(actor,{end.vector[0u],end.vector[1u],end.vector[2u]},
+            {start.vector[0u],start.vector[1u],start.vector[2u]})),{}};
+    }
+    bool NativeFastLine(RuntimeObject* actor,const PortableModelVec3& end,const PortableModelVec3& start) {
         EnsureNativeTraceModel(actor);
         QuestVr::ModelFastLineCheckLimits limits;
         if (fastTraceValidationWork_>=limits.validationSteps || fastTraceQueryWork_>=limits.querySteps)
             throw std::runtime_error("FastTrace shared native query budget exhausted");
         limits.validationSteps-=fastTraceValidationWork_;
         limits.querySteps-=fastTraceQueryWork_;
-        const auto result=QuestVr::CheckOriginalModelFastLine(*rootModel_,
-            {end.vector[0u],end.vector[1u],end.vector[2u]},
-            {start.vector[0u],start.vector[1u],start.vector[2u]},limits);
+        const auto result=QuestVr::CheckOriginalModelFastLine(*rootModel_,end,start,limits);
         fastTraceValidationWork_+=result.stats.validationSteps;
         fastTraceQueryWork_+=result.stats.querySteps;
-        return {Value::Bool(result.clear),{}};
+        return result.clear;
     }
     Value CursorColorSeed() {
         auto color=DescribeProperty("Extension.Window.SetDefaultCursor.cursorColor").zero;
@@ -5964,6 +6164,7 @@ private:
     std::vector<GCRoot<RuntimeObject>> provisionalWindows_;
     std::optional<BeforeDecals> beforeDecals_;
     bool clientDependent_{};
+    std::uint64_t soundClientIdentity_{};
     std::optional<QuestVr::ActorCollisionRegistry> beforeCollision_;
     std::size_t lifecycleOperations_{};
     std::size_t fastTraceValidationWork_{},fastTraceQueryWork_{};
@@ -10170,6 +10371,9 @@ static void RelinkAuthoredActorBases(const PortablePackageTables& package, const
                 xlevel = persistentRuntime->get()->exports.at(first+i);
             }
         if (!xlevel) throw std::runtime_error("Map has no linked serialized Level");
+        // Owned standalone engine service configuration, independent of any
+        // reflected NetMode/Level/XLevel overlay and never a serialized pointer.
+        xlevel->nativeStandaloneLevelServices=true;
         const auto order = ReadPortableLevel68ActorOrder(package);
         persistentWorldActors.assign(order.size(), nullptr);
         actorOrder.reserve(order.size());
