@@ -86,7 +86,7 @@ inline constexpr float kCheckHearSoundInitialFactor =
 inline CheckHearSoundProtocolResult EvaluateCheckHearSoundProtocol(
     const std::array<float, 3u>& packedParameters, const float squaredRadius,
     const CheckHearSoundProtocolDistanceSquared distanceSquared,
-    const bool bspBlocked, const bool listenerIsSourceOwner) {
+    const bool bspBlocked, const bool listenerIsSourceInstigator) {
     using SoundProtocolDetail::RequireFinite;
     SoundProtocolDetail::ValidateParameters(packedParameters);
     RequireFinite(squaredRadius, "CheckHearSound squared radius must be finite");
@@ -107,9 +107,9 @@ inline CheckHearSoundProtocolResult EvaluateCheckHearSoundProtocol(
         result.audible = true;
         return result;
     }
-    // Owning the source exempts the listener from secondary range reduction,
+    // Being the source's Instigator exempts the listener from range reduction,
     // NOT from the packed Radius attenuation. Volume/Pitch remain unchanged.
-    if (!listenerIsSourceOwner) {
+    if (!listenerIsSourceInstigator) {
         // A product of two binary32 values is exactly representable in
         // binary64. Do not round to float before comparing the stored
         // distance: retail FLD/FMUL does not store this intermediate.
@@ -123,26 +123,26 @@ inline CheckHearSoundProtocolResult EvaluateCheckHearSoundProtocol(
 
 inline CheckHearSoundProtocolResult EvaluateCheckHearSoundProtocol(
     const std::array<float, 3u>& packedParameters, const float squaredRadius,
-    const float distanceSquared, const bool bspBlocked, const bool listenerIsSourceOwner) {
+    const float distanceSquared, const bool bspBlocked, const bool listenerIsSourceInstigator) {
     // Convenience for an already-rounded caller-owned scalar. It cannot
     // establish equivalence to retail's unrounded initial geometric sum.
     return EvaluateCheckHearSoundProtocol(packedParameters, squaredRadius,
         CheckHearSoundProtocolDistanceSquared{static_cast<long double>(distanceSquared), distanceSquared},
-        bspBlocked, listenerIsSourceOwner);
+        bspBlocked, listenerIsSourceInstigator);
 }
 
 inline CheckHearSoundProtocolResult EvaluateCheckHearSoundProtocol(
     const PlaySoundProtocolPacket& packet, const CheckHearSoundProtocolDistanceSquared distanceSquared,
-    const bool bspBlocked, const bool listenerIsSourceOwner) {
+    const bool bspBlocked, const bool listenerIsSourceInstigator) {
     return EvaluateCheckHearSoundProtocol(packet.parameters, packet.squaredRadius,
-        distanceSquared, bspBlocked, listenerIsSourceOwner);
+        distanceSquared, bspBlocked, listenerIsSourceInstigator);
 }
 
 inline CheckHearSoundProtocolResult EvaluateCheckHearSoundProtocol(
     const PlaySoundProtocolPacket& packet, const float distanceSquared,
-    const bool bspBlocked, const bool listenerIsSourceOwner) {
+    const bool bspBlocked, const bool listenerIsSourceInstigator) {
     return EvaluateCheckHearSoundProtocol(packet.parameters, packet.squaredRadius,
-        distanceSquared, bspBlocked, listenerIsSourceOwner);
+        distanceSquared, bspBlocked, listenerIsSourceInstigator);
 }
 
 } // namespace QuestVr

@@ -1,5 +1,33 @@
 # Port status
 
+## Original BSP FastTrace checkpoint (2026-10-15)
+
+- Implemented retail FastTrace548 using the actual native Level's serialized
+  Model, not render triangles or actor/mover rays. Exact ordinary PC64 arithmetic,
+  Float spill/sign-bit boundaries, NotCsg-only classification and End-first
+  reversed traversal are retained. Query work is bounded/shared per transaction.
+- Added canonical CoreVector12 destination authority, required uninitialized
+  End/full-write handling, sequential Start defaults and immediate548 input
+  copies. Original declaration identity is validated before arguments even for
+  lazy reflected FunctionIdentity records; full authored schema remains required.
+  Warm model-cache comparison correctly distinguishes local export paths from
+  qualified runtime UObject identities. Reflected Level/XLevel cannot redirect it.
+- Pure BSP72081/10 refusal controls, VM695581/838 (new548373/54), generated
+  integration2190/47 and separately invoked owned Training250 pass. Actual map
+  integration covers16 clear/32 blocked supplied paths and16 omitted Starts;
+  save/revision/GC/source bytes/timestamps remain unchanged.
+- Coherent host build and final CTest:96 passes/110 registered,14 explicit
+  original-data skips, zero failures39.54s. Strict ARM64 syntax passes. Separate
+  original NPC regression280519/26 retains all18 accepted waiting presentations;
+  crate152 and lamp rollback checks retain their documented264/512 boundaries.
+- Independent named-property evidence corrects the detached sound helper's
+  range exception to source.Instigator, not Owner. No production recipient/audio
+  adapter consumed the old owner-named Boolean. See SOUND-RUNTIME-CONTRACT.md.
+- This is source/tests only; no new APK or device acceptance is claimed. The
+  accepted NPC APK remains installed. Native sound/noise, original player/world
+  startup, crate breakage/debris/contents and support gravity remain unfinished.
+  See ORIGINAL-FAST-TRACE.md for primary evidence, exact scope and remaining work.
+
 ## Crate sound-script foundation checkpoint (2026-10-15)
 
 - The user accepts all Training NPC poses and resumes destructible crates.

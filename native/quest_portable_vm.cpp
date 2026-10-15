@@ -44,6 +44,7 @@ bool SnapshotNativeInput(const std::uint16_t index, const Function* declaration 
     case 112: case 113: case 124: case 125: case 126: case 127: case 128:
     case 168: case 186: case 187: case 189: case 231: case 234: case 235: case 244: case 245: case 246: case 249: case 250: case 251: case 278:
     case 264: return true; // PlaySound copies each initialized input before the next Step.
+    case 548: return true; // FastTrace copies End before initializing/evaluating Start.
     case 280: return true; // SetTimer copies rate before evaluating bLoop.
     case 1410: case 1415: case 1416: case 1420: case 1421: case 1422: case 1430: case 1431: case 1432: case 1433: case 1438: case 1454: case 1461: case 1467:
     case 1475: case 1477: case 1510: case 1511: case 1535: case 1538: case 1539: case 1540:
@@ -1308,6 +1309,13 @@ private:
     }
     void ValidateResultLayout(const Value& value, const ResultLayout layout) {
         if (layout==ResultLayout::Unknown) return;
+        if (layout==ResultLayout::CoreVector12) {
+            if (value.kind!=Kind::Vector || !value.text.empty() || !value.fields.empty() || !value.intArray.empty())
+                Fail(Status::Invalid,"VM CoreVector12 destination is not canonical Vector storage");
+            for (const float channel:value.vector)
+                if (!std::isfinite(channel)) Fail(Status::Invalid,"VM CoreVector12 destination has a non-finite channel");
+            return;
+        }
         if (layout!=ResultLayout::CoreColor4)
             Fail(Status::Invalid,"VM unknown trusted result layout");
         if (value.kind!=Kind::Struct || value.fields.size()!=4u || !value.text.empty() || !value.intArray.empty())
@@ -1510,7 +1518,7 @@ private:
             if (!layout) continue;
             if (*layout==ResultLayout::Unknown)
                 Fail(Status::Unsupported,"VM uninitialized native argument layout is not established");
-            if (*layout!=ResultLayout::CoreColor4)
+            if (*layout!=ResultLayout::CoreColor4 && *layout!=ResultLayout::CoreVector12)
                 Fail(Status::Invalid,"VM unknown uninitialized native argument layout");
             if (parameters && slot<parameters->size() && (*parameters)[slot].resultLayout!=*layout)
                 Fail(Status::Invalid,"VM uninitialized native argument declaration layout mismatch");
@@ -1527,7 +1535,7 @@ private:
         return layouts;
     }
     Evaluation MaterializeUninitializedNativeArgument(const Evaluation& argument,const ResultLayout layout) {
-        if (layout!=ResultLayout::CoreColor4)
+        if (layout!=ResultLayout::CoreColor4 && layout!=ResultLayout::CoreVector12)
             Fail(Status::Unsupported,"VM uninitialized native argument layout is not established");
         Value value;
         if (argument.disposition==ResultDisposition::Written) {
@@ -1535,11 +1543,15 @@ private:
                 ValidateValue(argument.value,0);RetainNativeSeedCapacity(argument.value);
             }
             value=argument.Load();ValidateValue(value,0);ValidateResultLayout(value,layout);
-        } else if (argument.disposition==ResultDisposition::ZeroFill && argument.zeroFillBytes==4u) {
-            // Construct storage only AFTER a complete four-byte write is known.
+        } else if (argument.disposition==ResultDisposition::ZeroFill &&
+            argument.zeroFillBytes==(layout==ResultLayout::CoreVector12?12u:4u)) {
+            // Construct storage only AFTER a complete full-layout write is known.
             // No declared zero or arbitrary seed initializes an unwritten temp.
-            value.kind=Kind::Struct;
-            for (const auto* channel:{"r","g","b","a"}) value.fields.emplace(channel,Value::Byte(0u));
+            if (layout==ResultLayout::CoreVector12) value=Value::Vector({});
+            else {
+                value.kind=Kind::Struct;
+                for (const auto* channel:{"r","g","b","a"}) value.fields.emplace(channel,Value::Byte(0u));
+            }
             ValidateValue(value,0);ValidateResultLayout(value,layout);
         } else Fail(Status::Unsupported,"VM uninitialized native argument requires a complete result write");
         Retain(ValueBytes(value));RetainNativeSeedCapacity(value);

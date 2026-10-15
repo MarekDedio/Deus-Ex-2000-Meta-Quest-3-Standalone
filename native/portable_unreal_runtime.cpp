@@ -29,6 +29,7 @@
 #include "quest_mover_motion.h"
 #include "quest_object_names.h"
 #include "quest_engine_config.h"
+#include "quest_model_fast_line_check.h"
 
 #include <memory>
 #include <algorithm>
@@ -1838,6 +1839,7 @@ public:
         if (transaction_) throw std::runtime_error("Portable actor VM nested host transaction");
         ValidateStateBudget();
         lifecycleOperations_ = 0u;
+        fastTraceValidationWork_=fastTraceQueryWork_=0u;
         beforeExportCount_ = persistentRuntime->get()->exports.size();
         beforeWorldSlots_ = persistentWorldActors.size();
         beforeRandomSeed_ = persistentScriptRandomSeed;
@@ -2067,6 +2069,7 @@ public:
         if (object->defaultOwner)
             throw std::runtime_error("Native execution on a class-default object requires its audited handler");
         if (index==264u) return PlaySoundArgumentPrerequisite(object,arguments,declaration);
+        if (index==548u) return FastTraceNative(object,arguments,declaration);
         if (index==0u && declaration && LowerAscii(declaration->path)=="engine.playerpawn.consolecommand")
             return PlayerPawnConsoleCommand(object,arguments,*declaration);
         // Native event wrappers have no presentation-active gate. Their actual
@@ -2832,9 +2835,12 @@ public:
         };
         validate(*authored);
         if (supplied) {
-            validate(*supplied);
-            if (supplied->source!=authored->source)
-                throw std::runtime_error("PlaySound declaration has a foreign source");
+            // Pre-argument reflected calls carry a lazy FunctionIdentity;
+            // its fields are prepared later, but its identity is immutable.
+            if (LowerAscii(supplied->path)!=LowerAscii(authored->path) || supplied->nativeIndex!=authored->nativeIndex ||
+                supplied->flags!=authored->flags || supplied->source!=authored->source)
+                throw std::runtime_error("PlaySound declaration has a foreign callable identity");
+            if (!supplied->variables.empty()) validate(*supplied);
         }
         return authored;
     }
@@ -2885,6 +2891,92 @@ public:
         throw std::runtime_error("Unsupported runtime native 264");
     }
 
+    std::shared_ptr<const Function> FastTraceDeclaration(const Function* supplied) {
+        const auto authored=FunctionFor(Object("Engine.Actor.FastTrace"));
+        const auto validate=[&](const Function& function) {
+            if (LowerAscii(function.path)!="engine.actor.fasttrace" || function.nativeIndex!=548u ||
+                function.flags!=0x401u || function.variables.size()!=3u)
+                throw std::runtime_error("FastTrace does not match its original native declaration");
+            const std::array<const char*,3u> names{"TraceEnd","TraceStart","ReturnValue"};
+            for (std::size_t slot=0u;slot<names.size();++slot) {
+                const auto& field=function.variables[slot];auto* metadata=Object(field.key);
+                const auto flags=slot==0u?0x80u:slot==1u?0x90u:0x580u;
+                if (LowerAscii(field.key)!=LowerAscii(std::string("Engine.Actor.FastTrace.")+names[slot]) ||
+                    field.arrayDimension!=1u || field.flags!=flags || !metadata->property ||
+                    metadata->property->type!=(slot<2u?"StructProperty":"BoolProperty") ||
+                    field.zero.kind!=(slot<2u?Kind::Vector:Kind::Bool) ||
+                    (slot<2u && field.resultLayout!=QuestVr::Vm::ResultLayout::CoreVector12))
+                    throw std::runtime_error("FastTrace parameter is not its original native destination");
+            }
+        };
+        validate(*authored);
+        if (supplied) {
+            if (LowerAscii(supplied->path)!=LowerAscii(authored->path) || supplied->nativeIndex!=authored->nativeIndex ||
+                supplied->flags!=authored->flags || supplied->source!=authored->source)
+                throw std::runtime_error("FastTrace declaration has a foreign callable identity");
+            if (!supplied->variables.empty()) validate(*supplied);
+        }
+        return authored;
+    }
+    Value FastTraceStartSeed(RuntimeObject* actor) {
+        RequireMapActor(actor);
+        const auto property=DescribeProperty("Engine.Actor.Location");
+        if (!OwnsProperty(actor->cls,property) || property.arrayDimension!=1u ||
+            property.resultLayout!=QuestVr::Vm::ResultLayout::CoreVector12)
+            throw std::runtime_error("FastTrace default is not its actual Actor.Location Vector");
+        const auto value=Read(actor,property,0u);
+        if (value.kind!=Kind::Vector) throw std::runtime_error("FastTrace Location storage is not a Vector");
+        return value;
+    }
+    void EnsureNativeTraceModel(RuntimeObject* actor) {
+        static_cast<void>(NativeLevelInfo(actor));
+        const auto& map=Table(persistentMapSourcePath);
+        constexpr std::size_t scratch=64u*1024u*1024u;
+        // A genuine native Engine.Level is already established above. The
+        // decoder requires a UNIQUE Level export, so its selected Level must
+        // be this one; an additional foreign leaf-name Level fails ambiguity.
+        const auto index=FindPortableRootModel68Export(map,scratch);
+        const auto path=Qualified(map,static_cast<std::int32_t>(index+1u));
+        if (LowerAscii(CastObjectIdentity(path).classPath)!="engine.model")
+            throw std::runtime_error("FastTrace native Level.Model is not an actual Engine.Model");
+        if (rootModel_) {
+            // PortableModelGeometry retains the package-local export path;
+            // Qualified above is only the runtime UObject identity for Cast.
+            const auto localPath=GetPortableObjectPath(map,static_cast<std::int32_t>(index+1u));
+            if (rootModel_->exportIndex!=index || LowerAscii(rootModel_->objectPath)!=LowerAscii(localPath))
+                throw std::runtime_error("FastTrace cached Model is not the native Level.Model");
+            return;
+        }
+        const auto bytes=map.exports.at(index).ObjSize;
+        if (bytes<=0 || QuestVr::DecalStateDetail::Multiply(static_cast<std::size_t>(bytes),16u)>scratch-1024u)
+            throw std::runtime_error("FastTrace Model scratch budget exceeded");
+        rootModel_=LoadPortableModel68(map,index,scratch);
+    }
+    Evaluation FastTraceNative(RuntimeObject* actor,const std::vector<Evaluation>& arguments,
+        const Function* declaration) {
+        static_cast<void>(FastTraceDeclaration(declaration));
+        RequireMapActor(actor);
+        if (arguments.empty() || arguments.size()>2u) throw std::runtime_error("FastTrace requires one or two original inputs");
+        const auto end=arguments[0u].Load();
+        // Supplied omissions were consumed immediately before their Step.
+        // A trailing optional placeholder is read after the sole End input.
+        auto start=arguments.size()>1u?arguments[1u].Load():Value{};
+        if (start.kind==Kind::Nothing) start=FastTraceStartSeed(actor);
+        if (end.kind!=Kind::Vector || start.kind!=Kind::Vector)
+            throw std::runtime_error("FastTrace input is not its original Vector destination");
+        EnsureNativeTraceModel(actor);
+        QuestVr::ModelFastLineCheckLimits limits;
+        if (fastTraceValidationWork_>=limits.validationSteps || fastTraceQueryWork_>=limits.querySteps)
+            throw std::runtime_error("FastTrace shared native query budget exhausted");
+        limits.validationSteps-=fastTraceValidationWork_;
+        limits.querySteps-=fastTraceQueryWork_;
+        const auto result=QuestVr::CheckOriginalModelFastLine(*rootModel_,
+            {end.vector[0u],end.vector[1u],end.vector[2u]},
+            {start.vector[0u],start.vector[1u],start.vector[2u]},limits);
+        fastTraceValidationWork_+=result.stats.validationSteps;
+        fastTraceQueryWork_+=result.stats.querySteps;
+        return {Value::Bool(result.clear),{}};
+    }
     Value CursorColorSeed() {
         auto color=DescribeProperty("Extension.Window.SetDefaultCursor.cursorColor").zero;
         if(color.kind!=Kind::Struct || color.fields.size()!=4u)
@@ -2922,6 +3014,12 @@ public:
     }
     std::optional<QuestVr::Vm::ResultLayout> NativeArgumentUninitializedLayout(const std::uint16_t index,
         const std::string& receiver,const std::size_t slot,const Function* declaration) override {
+        if (index==548u) {
+            RequireMapActor(Object(receiver));
+            static_cast<void>(FastTraceDeclaration(declaration));
+            if (slot>1u) throw std::runtime_error("FastTrace input exceeds its original schema");
+            return slot==0u?std::optional{QuestVr::Vm::ResultLayout::CoreVector12}:std::nullopt;
+        }
         if(index!=1475u) return std::nullopt;
         RequireNativeWindow(Object(receiver));
         const auto authored=WindowNativeDeclaration(index,declaration);
@@ -2933,6 +3031,11 @@ public:
     }
     bool HasSequentialNativeArgumentSeeds(const std::uint16_t index,const std::string& receiver,
         const Function* declaration) override {
+        if (index==548u) {
+            RequireMapActor(Object(receiver));
+            static_cast<void>(FastTraceDeclaration(declaration));
+            return true;
+        }
         if (index==264u) {
             static_cast<void>(PlaySoundDeclaration(declaration));
             static_cast<void>(PlaySoundArgumentSeed(Object(receiver),0u));
@@ -2945,6 +3048,12 @@ public:
     }
     std::optional<Value> SequentialNativeArgumentSeed(const std::uint16_t index,const std::string& receiver,
         const std::size_t slot,const Function* declaration,const std::vector<Value>& prefix) override {
+        if (index==548u) {
+            static_cast<void>(FastTraceDeclaration(declaration));
+            if (slot>1u || prefix.size()!=slot) throw std::runtime_error("FastTrace default lacks its ordered input prefix");
+            if (slot==0u) return std::nullopt; // Uninitialized required End.
+            return FastTraceStartSeed(Object(receiver));
+        }
         if (index==264u) {
             static_cast<void>(PlaySoundDeclaration(declaration));
             if (slot>=6u || prefix.size()!=slot)
@@ -2965,6 +3074,12 @@ public:
     }
     bool MaterializeNativeArgumentOmission(const std::uint16_t index,const std::string& receiver,
         const std::size_t slot,const Function* declaration) override {
+        if (index==548u) {
+            RequireMapActor(Object(receiver));
+            static_cast<void>(FastTraceDeclaration(declaration));
+            if (slot>1u) throw std::runtime_error("FastTrace omission exceeds its input schema");
+            return slot==1u;
+        }
         if (index!=264u) return false;
         static_cast<void>(PlaySoundDeclaration(declaration));
         if (slot>=6u) throw std::runtime_error("PlaySound omission exceeds its input schema");
@@ -5840,6 +5955,7 @@ private:
     std::set<RuntimeObject*> buildingStructs_;
     std::set<RuntimeObject*> chargedStructDescriptors_;
     RuntimeObject* validatedCoreColorLayout_{};
+    RuntimeObject* validatedCoreVectorLayout_{};
     std::size_t structFields_{};
     std::size_t structSchemaBytes_{};
     std::unordered_map<RuntimeObject*, Before> saved_;
@@ -5850,6 +5966,7 @@ private:
     bool clientDependent_{};
     std::optional<QuestVr::ActorCollisionRegistry> beforeCollision_;
     std::size_t lifecycleOperations_{};
+    std::size_t fastTraceValidationWork_{},fastTraceQueryWork_{};
     std::size_t beforeExportCount_{}, beforeWorldSlots_{};
     std::size_t beforeWindowObjects_{}, beforeWindowRoots_{};
     std::optional<std::uint32_t> beforeRandomSeed_;
@@ -6035,6 +6152,39 @@ private:
         const auto& member = *property->property;
         if (member.type != "StructProperty") return Layout::Unknown;
         auto* structure = Object(Qualified(Table(property->sourcePath), member.referencedType));
+        if (LowerAscii(structure->reflection.objectPath)=="core.object.vector") {
+            const auto& propertyTable=Table(property->sourcePath);
+            if (LowerAscii(Qualified(propertyTable,propertyTable.exports.at(property->exportIndex).ObjClass))!="core.structproperty")
+                throw std::runtime_error("Canonical Vector result requires an actual Core.StructProperty");
+            if (validatedCoreVectorLayout_==structure) return Layout::CoreVector12;
+            const auto& structureTable=Table(structure->sourcePath);
+            if (LowerAscii(Qualified(structureTable,structureTable.exports.at(structure->exportIndex).ObjClass))!="core.struct")
+                throw std::runtime_error("Canonical Vector result requires an actual Core.Struct");
+            const auto& descriptor=StructDescriptor(structure);
+            if (!structure->outer || LowerAscii(structure->outer->reflection.objectPath)!="core.object" ||
+                descriptor.baseField || descriptor.logicalSize || !descriptor.rawBytes.empty() || !descriptor.bytecode.empty())
+                throw std::runtime_error("Canonical Core.Object.Vector result layout has an invalid owner/base/script");
+            const auto schema=StructSchema(structure);
+            if (schema->kind!=Kind::Vector || schema->fields.size()!=3u)
+                throw std::runtime_error("Canonical Core.Object.Vector result schema is not three Floats");
+            constexpr std::array<const char*,3u> channels{"x","y","z"};
+            auto child=descriptor.children;
+            for (std::size_t slot=0u;slot<channels.size();++slot) {
+                if (!child) throw std::runtime_error("Canonical Vector channel chain is truncated");
+                auto* field=Object(Qualified(Table(structure->sourcePath),child));
+                const auto& fieldTable=Table(field->sourcePath);
+                if (field->outer!=structure || !field->property || field->property->type!="FloatProperty" ||
+                    field->property->arrayDimension!=1 || field->property->referencedType ||
+                    LowerAscii(Qualified(fieldTable,fieldTable.exports.at(field->exportIndex).ObjClass))!="core.floatproperty" ||
+                    LowerAscii(field->reflection.objectPath)!=std::string("core.object.vector.")+channels[slot] ||
+                    LowerAscii(schema->fields[slot].key)!=LowerAscii(field->reflection.objectPath) ||
+                    schema->fields[slot].zero.kind!=Kind::Float || schema->fields[slot].nested)
+                    throw std::runtime_error("Canonical Vector channel declaration is invalid");
+                child=field->property->nextField;
+            }
+            if (child) throw std::runtime_error("Canonical Vector has extra native fields");
+            validatedCoreVectorLayout_=structure;return Layout::CoreVector12;
+        }
         if (LowerAscii(structure->reflection.objectPath) != "core.object.color") return Layout::Unknown;
         const auto& propertyTable = Table(property->sourcePath);
         if (LowerAscii(Qualified(propertyTable, propertyTable.exports.at(property->exportIndex).ObjClass)) != "core.structproperty")

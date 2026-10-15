@@ -444,7 +444,7 @@ struct TestHost final:Vm::Host {
         const std::vector<Vm::Evaluation>& arguments,const Vm::Function* declaration,Vm::Execution& execution) override {
         // 1008 belongs only to this generated fixture. Native zero is keyed by
         // its declaration; individual tests provide the host-side observation.
-        if((index==264u || index==1008u || index==0u || index==1410u || index==1415u || index==1416u || index==1420u || index==1421u || index==1422u ||
+        if((index==264u || index==548u || index==1008u || index==0u || index==1410u || index==1415u || index==1416u || index==1420u || index==1421u || index==1422u ||
             index==1430u || index==1431u || index==1432u || index==1433u || index==1438u || index==1454u || index==1461u || index==1465u || index==1467u || index==1475u ||
             index==1535u || index==1538u || index==1539u || index==1540u ||
             index==1541u || index==1544u || index==1545u) && executionNative) {
@@ -3417,6 +3417,256 @@ void NativeCallSiteContextContracts() {
     }
     std::cout<<"Native caller-frame context: "<<checks-initialChecks<<" checks and "<<rejections-initialRejections<<" refusal controls.\n";
 }
+void FastTraceNativeInputContracts() {
+    const auto initialChecks=checks,initialRejections=rejections;
+    const auto layout=Vm::ResultLayout::CoreVector12;
+    const auto zero=Value::Vector({}),endpoint=Value::Vector({101.0f,202.0f,303.0f});
+    const auto entryLocation=Value::Vector({11.0f,22.0f,33.0f});
+    const auto steppedLocation=Value::Vector({44.0f,55.0f,66.0f});
+    const auto laterLocation=Value::Vector({77.0f,88.0f,99.0f});
+    const auto configure=[&](TestHost& host) {
+        auto native=Function("FastTrace",{},"Engine.Actor");native.nativeIndex=548u;native.flags=0x401u;
+        native.variables={{"Engine.Actor.FastTrace.TraceEnd","TraceEnd",zero,0x80u,1u,layout},
+            {"Engine.Actor.FastTrace.TraceStart","TraceStart",zero,0x90u,1u,layout},
+            {"Engine.Actor.FastTrace.ReturnValue","ReturnValue",Value::Bool(false),0x400u,1u}};
+        host.finals[{"Fixture",7}]=std::make_shared<Vm::Function>(native);
+        host.uninitializedArgumentLayout=[layout](std::uint16_t index,const std::string&,std::size_t slot,
+            const Vm::Function*)->std::optional<Vm::ResultLayout> {
+            return index==548u && slot==0u?std::optional<Vm::ResultLayout>{layout}:std::nullopt;
+        };
+        host.hasSequentialSeeds=[](std::uint16_t index,const std::string&,const Vm::Function*) {return index==548u;};
+        host.materializeOmission=[](std::uint16_t index,const std::string&,std::size_t slot,const Vm::Function*) {
+            return index==548u && slot==1u;
+        };
+        return native;
+    };
+    // End's expression can change the opcode receiver's Location. Start's
+    // initialized temporary must sample that changed value at its own Step,
+    // not at native entry or after its expression changes Location again.
+    for(unsigned dispatch=0u;dispatch<3u;++dispatch) for(unsigned startMode=0u;startMode<3u;++startMode) {
+        TestHost host;const auto native=configure(host);
+        auto caller=Function("FastTraceSequentialStart",{});
+        const auto location=host.Property(caller,1,"Location",zero,0u,1u,false,layout);
+        const auto source=host.Property(caller,2,"EndSource",zero,0u,1u,false,layout);
+        host.Store("Self",location,{Value::Vector({-1.0f,-2.0f,-3.0f})});host.Store("Other",location,{entryLocation});
+        host.Store("Self",source,{endpoint});host.Store("Other",source,{Value::Vector({-4.0f,-5.0f,-6.0f})});
+        host.objects[{caller.source,9}]="Other";
+        std::size_t hooks{},nativeCalls{};
+        host.sequentialArgumentSeed=[&](std::uint16_t index,const std::string& receiver,std::size_t slot,
+            const Vm::Function* actual,const std::vector<Value>& prefix)->std::optional<Value> {
+            Require(index==548u && receiver=="Other" && static_cast<bool>(actual)==(dispatch!=0u) && prefix.size()==slot,
+                "548 sequential seed confused caller frame, opcode receiver, native declaration or prefix");
+            ++hooks;
+            if(slot==0u) return std::nullopt;
+            Require(slot==1u && Vm::Equal(prefix[0],endpoint) && Vm::Equal(host.Load("Other",location),steppedLocation),
+                "548 optional Start default did not follow the completed End expression");
+            return host.Load(receiver,location);
+        };
+        host.executionNative=[&](const std::string& receiver,const std::vector<Vm::Evaluation>& inputs,
+            const Vm::Function* actual,Vm::Execution& execution) {
+            ++nativeCalls;Require(receiver=="Other" && static_cast<bool>(actual)==(dispatch!=0u) && inputs.size()==2u,
+                "548 native receiver/declaration/input count changed");
+            Require(hooks==2u && !inputs[0].reference && !inputs[1].reference &&
+                inputs[0].disposition==Vm::ResultDisposition::Written && inputs[1].disposition==Vm::ResultDisposition::Written &&
+                Vm::Equal(inputs[0].Load(),endpoint) && Vm::Equal(inputs[1].Load(),steppedLocation),
+                "548 supplied inputs were not detached complete vectors at their own Step");
+            execution.WriteReference(host.Reference({"Self",Vm::Scope::Instance,source.key},source),laterLocation);
+            execution.WriteReference(host.Reference({"Other",Vm::Scope::Instance,location.key},location),laterLocation);
+            Require(Vm::Equal(inputs[0].Load(),endpoint) && Vm::Equal(inputs[1].Load(),steppedLocation),
+                "548 ordinary input alias changed after the native mutated its source");
+            return Vm::Evaluation{Value::Bool(true),{}};
+        };
+        Vm::Result result;
+        if(dispatch<2u) {
+            auto end=Function("EndExpression",Join({Let(Ref(0x01u,1),Vector(steppedLocation.vector)),Return(Ref(0x01u,2))}),"EndFixture");
+            host.properties[{end.source,1}]=location;host.properties[{end.source,2}]=source;
+            host.finals[{"Fixture",8}]=std::make_shared<Vm::Function>(end);
+            const auto endExpression=Context(Ref(0x20u,9),Call(0x1cu,8));
+            // The nested End call intentionally runs on Other but reads its
+            // caller-independent own source. Supply the desired endpoint there.
+            host.Store("Other",source,{endpoint});
+            Bytes startExpression{0x0bu};
+            if(startMode==1u) startExpression=Context({0x2au},Native(4095u),0u);
+            if(startMode==2u) {
+                auto start=Function("StartExpression",Join({Let(Ref(0x01u,1),Vector(laterLocation.vector)),Return({0x0bu})}),"StartFixture");
+                host.properties[{start.source,1}]=location;host.finals[{"Fixture",10}]=std::make_shared<Vm::Function>(start);
+                startExpression=Context(Ref(0x20u,9),Call(0x1cu,10));
+            }
+            caller.bytecode=Return(Context(Ref(0x20u,9),dispatch==0u?
+                Native(548u,{endExpression,startExpression}):Call(0x1cu,7,{endExpression,startExpression})));
+            result=Vm::Execute(host,caller,"Self");
+        } else {
+            auto end=std::make_shared<Vm::Reference>();end->zero=zero;end->resultLayout=layout;
+            end->read=[&] {host.Store("Other",location,{steppedLocation});return host.Load("Self",source);};
+            Vm::Evaluation start;
+            if(startMode==1u) start={endpoint,{},Vm::ResultDisposition::ZeroFill,0u};
+            if(startMode==2u) {
+                // A NoWrite direct input must not read even an attached stale
+                // alias. Side effects for this supplied slot happened before
+                // its already-evaluated Evaluation reaches Execution.
+                auto stale=std::make_shared<Vm::Reference>();stale->zero=zero;
+                stale->read=[]()->Value {throw std::runtime_error("548 read an unwritten optional Start alias");};
+                start={endpoint,stale,Vm::ResultDisposition::NoWrite};
+            }
+            result=Vm::ExecuteTransaction(host,[&](Vm::Execution& execution) {
+                return execution.CallFunction(native,"Other",{{{},end},start});
+            });
+        }
+        Returned(result,"548 raw/reflected/direct optional Start snapshots receiver Location after End");
+        Require(nativeCalls==1u && hooks==2u && result.value.kind==Vm::Kind::Bool && result.value.boolean &&
+            Vm::Equal(host.Load("Self",location),Value::Vector({-1.0f,-2.0f,-3.0f})),
+            "548 repeated native/hooks, lost its result, or wrote the caller's Location");
+    }
+    // Ordinary argument expressions use FFrame.Object, not the opcode's
+    // different receiver. Start can mutate the earlier End source, but must
+    // not retroactively replace the copied End temporary with its new value.
+    for(unsigned dispatch=0u;dispatch<3u;++dispatch) {
+        TestHost host;const auto native=configure(host);
+        auto caller=Function("FastTraceCallerFrameAndSnapshots",{});
+        const auto source=host.Property(caller,1,"EndSource",zero,0u,1u,false,layout);
+        const auto location=host.Property(caller,2,"Location",zero,0u,1u,false,layout);
+        host.Store("Self",source,{endpoint});host.Store("Other",source,{laterLocation});
+        host.Store("Self",location,{laterLocation});host.Store("Other",location,{entryLocation});
+        host.objects[{caller.source,9}]="Other";
+        host.sequentialArgumentSeed=[&](std::uint16_t,const std::string& receiver,std::size_t slot,const Vm::Function*,
+            const std::vector<Value>& prefix)->std::optional<Value> {
+            Require(receiver=="Other" && prefix.size()==slot,"548 default receiver/prefix changed");
+            if(slot==0u) return std::nullopt;
+            Require(Vm::Equal(prefix[0],endpoint),"548 End read the opcode receiver rather than FFrame.Object");
+            return host.Load(receiver,location);
+        };
+        host.executionNative=[&](const std::string& receiver,const std::vector<Vm::Evaluation>& inputs,const Vm::Function*,Vm::Execution&) {
+            Require(receiver=="Other" && inputs.size()==2u && !inputs[0].reference && !inputs[1].reference &&
+                Vm::Equal(inputs[0].Load(),endpoint) && Vm::Equal(inputs[1].Load(),entryLocation) &&
+                Vm::Equal(host.Load("Self",source),steppedLocation) && Vm::Equal(host.Load("Other",source),laterLocation),
+                "548 Start mutation used wrong frame or changed the previously copied End");
+            return Vm::Evaluation{Value::Bool(true),{}};
+        };
+        Vm::Result result;
+        if(dispatch<2u) {
+            const auto start=Native(1060u,{Ref(0x01u,1),Vector(steppedLocation.vector),Vector(entryLocation.vector)});
+            caller.bytecode=Return(Context(Ref(0x20u,9),dispatch==0u?
+                Native(548u,{Ref(0x01u,1),start}):Call(0x1cu,7,{Ref(0x01u,1),start})));
+            result=Vm::Execute(host,caller,"Self");
+        } else {
+            auto end=host.Reference({"Self",Vm::Scope::Instance,source.key},source);
+            auto start=std::make_shared<Vm::Reference>();start->zero=zero;start->resultLayout=layout;
+            start->read=[&] {host.Store("Self",source,{steppedLocation});return entryLocation;};
+            result=Vm::Execute(host,native,"Other",{{{},end},{{},start}});
+        }
+        Returned(result,"548 snapshots End before a later Start expression mutates its original alias");
+        Require(result.value.boolean,"548 input snapshot controls changed its native Bool result");
+    }
+    // Required End is genuinely uninitialized. NoWrite/EX_Nothing and partial
+    // Context clears cannot manufacture an endpoint from its declaration zero.
+    for(unsigned dispatch=0u;dispatch<3u;++dispatch) for(const int bytes:{-2,-1,0,1,4,8,11,13,255}) {
+        TestHost host;const auto native=configure(host);bool staleRead{},body{};unsigned startSeeds{};
+        host.sequentialArgumentSeed=[&](std::uint16_t,std::string const&,std::size_t slot,const Vm::Function*,
+            const std::vector<Value>&)->std::optional<Value> {
+            if(slot==1u) {++startSeeds;return entryLocation;}return std::nullopt;
+        };
+        host.executionNative=[&](const std::string&,const std::vector<Vm::Evaluation>&,const Vm::Function*,Vm::Execution&) {
+            body=true;return Vm::Evaluation{Value::Bool(true),{}};
+        };
+        const auto end=bytes==-2?Let(Ref(0x01u,1),Int(55)):bytes==-1?Bytes{0x0bu}:
+            Context({0x2au},Native(4095u),static_cast<std::uint8_t>(bytes));
+        const auto caller=Function("FastTraceUnwrittenEnd",Join({Native(1000u),Return(dispatch==1u?
+            Call(0x1cu,7,{end,Native(1000u)}):Native(548u,{end,Native(1000u)}))}));
+        const auto marker=host.Property(caller,1,"Marker",Value::Integer(0));host.Store("Self",marker,{Value::Integer(3)});
+        Vm::Result result;
+        if(dispatch<2u) result=Vm::Execute(host,caller,"Self");
+        else {
+            auto stale=std::make_shared<Vm::Reference>();stale->zero=zero;stale->resultLayout=layout;
+            stale->read=[&] {staleRead=true;return endpoint;};
+            const Vm::Evaluation input{endpoint,stale,bytes<0?Vm::ResultDisposition::NoWrite:Vm::ResultDisposition::ZeroFill,
+                static_cast<std::uint8_t>(bytes<0?0u:bytes)};
+            result=Vm::ExecuteTransaction(host,[&](Vm::Execution& execution) {
+                execution.CallFunction(Function("EarlierEffect",Join({Native(1000u),Return()})),"Self");
+                return execution.CallFunction(native,"Self",{input,{entryLocation,{}}});
+            });
+        }
+        Failed(result,Vm::Status::Unsupported,host,"548 required End refuses incomplete uninitialized Vector12 writes");
+        Require(!staleRead && !body && startSeeds==0u && host.effects==0u && host.rng==12345u &&
+            host.Load("Self",marker).integer==3,"548 incomplete End read stale storage/evaluated Start/committed prefix effects");
+    }
+    for(unsigned dispatch=0u;dispatch<3u;++dispatch) for(const bool zeroEnd:{false,true}) {
+        TestHost host;const auto native=configure(host);bool read{};
+        host.sequentialArgumentSeed=[&](std::uint16_t,const std::string&,std::size_t slot,const Vm::Function*,
+            const std::vector<Value>&)->std::optional<Value> {return slot==1u?std::optional<Value>{entryLocation}:std::nullopt;};
+        host.executionNative=[&](const std::string&,const std::vector<Vm::Evaluation>& inputs,const Vm::Function*,Vm::Execution&) {
+            Require(inputs.size()==2u && !inputs[0].reference && !inputs[1].reference &&
+                Vm::Equal(inputs[0].Load(),zeroEnd?zero:endpoint) && Vm::Equal(inputs[1].Load(),zero),
+                "548 full12 Context clearing did not independently overwrite exact End/Start temporaries");
+            return Vm::Evaluation{Value::Bool(true),{}};
+        };
+        const auto end=zeroEnd?Context({0x2au},Native(4095u),12u):Vector(endpoint.vector);
+        const auto start=Context({0x2au},Native(4095u),12u);
+        const auto caller=Function("FastTraceFullVectorClear",Return(dispatch==1u?Call(0x1cu,7,{end,start}):Native(548u,{end,start})));
+        auto stale=std::make_shared<Vm::Reference>();stale->zero=zero;stale->resultLayout=layout;
+        stale->read=[&] {read=true;return endpoint;};
+        const auto result=dispatch<2u?Vm::Execute(host,caller,"Self"):
+            Vm::Execute(host,native,"Self",{zeroEnd?Vm::Evaluation{endpoint,stale,Vm::ResultDisposition::ZeroFill,12u}:
+                Vm::Evaluation{endpoint,{}},{endpoint,stale,Vm::ResultDisposition::ZeroFill,12u}});
+        Returned(result,"548 complete12-byte clearing initializes uninitialized End and overwrites optional Start");
+        Require(!read && result.value.boolean,"548 full-vector clears read stale aliases or changed native Bool");
+    }
+    for(unsigned dispatch=0u;dispatch<3u;++dispatch) {
+        TestHost host;const auto native=configure(host);bool body{};
+        const auto caller=Function("FastTraceMissingEnd",Return(dispatch==1u?Call(0x1cu,7):Native(548u)));
+        // Raw opcode has no reflected required-parameter check; its handler is
+        // responsible for arity. The synthetic host mirrors that strict gate.
+        host.executionNative=[&](const std::string&,const std::vector<Vm::Evaluation>& inputs,const Vm::Function*,Vm::Execution&) -> Vm::Evaluation {
+            body=true;if(inputs.empty()) throw std::runtime_error("548 requires End");return {Value::Bool(true),{}};
+        };
+        const auto result=dispatch<2u?Vm::Execute(host,caller,"Self"):Vm::Execute(host,native,"Self");
+        Failed(result,dispatch==0u?Vm::Status::Unsupported:Vm::Status::Invalid,host,"548 missing required End never gets declaration zero");
+        Require(dispatch==0u?body:!body,"548 reflected/direct missing End reached body or raw strict arity gate was skipped");
+    }
+    auto vectorWithFields=endpoint;vectorWithFields.fields.emplace("padding",Value::Integer(1));
+    auto vectorWithText=endpoint;vectorWithText.text="untrusted extra storage";
+    for(const auto& invalid:std::vector<Value>{Value::Integer(0),Value::Rotator({1,2,3}),vectorWithFields,vectorWithText,
+        Value::Vector({std::numeric_limits<float>::quiet_NaN(),2.0f,3.0f}),
+        Value::Vector({1.0f,std::numeric_limits<float>::infinity(),3.0f})}) for(unsigned dispatch=0u;dispatch<3u;++dispatch) {
+        TestHost host;const auto native=configure(host);bool body{};
+        host.sequentialArgumentSeed=[&](std::uint16_t,const std::string&,std::size_t slot,const Vm::Function*,
+            const std::vector<Value>&)->std::optional<Value> {return slot==1u?std::optional<Value>{entryLocation}:std::nullopt;};
+        host.executionNative=[&](const std::string&,const std::vector<Vm::Evaluation>&,const Vm::Function*,Vm::Execution&) {
+            body=true;return Vm::Evaluation{Value::Bool(true),{}};
+        };
+        const auto caller=Function("FastTraceMalformedEnd",Return(dispatch==1u?Call(0x1cu,7,{Ref(0x01u,1)}):Native(548u,{Ref(0x01u,1)})));
+        const auto source=host.Property(caller,1,"MalformedEnd",invalid);host.Store("Self",source,{invalid});
+        const auto result=dispatch<2u?Vm::Execute(host,caller,"Self"):Vm::Execute(host,native,"Self",{{invalid,{}}});
+        Failed(result,Vm::Status::Invalid,host,"548 uninitialized Vector12 requires a finite typed Vector, never a same-size scalar/Rotator");
+        Require(!body,"548 malformed/nonfinite required End reached native body");
+    }
+    for(const bool direct:{false,true}) for(const bool sequential:{false,true}) {
+        TestHost host;const auto native=configure(host);bool read{},body{};
+        if(sequential) host.sequentialArgumentSeed=[&](std::uint16_t,const std::string&,std::size_t slot,const Vm::Function*,
+            const std::vector<Value>&)->std::optional<Value> {return slot==0u?std::optional<Value>{endpoint}:std::nullopt;};
+        else host.argumentSeed=[&](std::uint16_t index,const std::string&,std::size_t slot,const Vm::Function*)->std::optional<Value> {
+            return index==548u && slot==0u?std::optional<Value>{endpoint}:std::nullopt;
+        };
+        auto reference=std::make_shared<Vm::Reference>();reference->zero=zero;reference->resultLayout=layout;
+        reference->read=[&] {read=true;return endpoint;};
+        host.executionNative=[&](const std::string&,const std::vector<Vm::Evaluation>&,const Vm::Function*,Vm::Execution&) {
+            body=true;return Vm::Evaluation{Value::Bool(true),{}};
+        };
+        const auto caller=Function("FastTraceEndCannotBeSeeded",Return(Native(548u,{Native(1000u)})));
+        const auto result=direct?Vm::Execute(host,native,"Self",{{{},reference}}):Vm::Execute(host,caller,"Self");
+        Failed(result,Vm::Status::Invalid,host,"548 required End cannot also obtain an initialized entry/sequential seed");
+        Require(!read && !body && host.effects==0u,"548 conflicting End seed evaluated an argument or reached native body");
+    }
+    for(const bool direct:{false,true}) {
+        TestHost host;auto native=configure(host);native.variables[0].resultLayout=Vm::ResultLayout::Unknown;
+        host.finals[{"Fixture",7}]=std::make_shared<Vm::Function>(native);
+        const auto caller=Function("FastTraceEndLayoutAuthority",Return(Call(0x1cu,7,{Native(1000u)})));
+        const auto result=direct?Vm::Execute(host,native,"Self",{{endpoint,{}}}):Vm::Execute(host,caller,"Self");
+        Failed(result,Vm::Status::Invalid,host,"548 canonical Vector value cannot override a conflicting reflected layout declaration");
+        Require(host.effects==0u && host.nativeIndices.empty(),"548 conflicting declaration evaluated End or native body");
+    }
+    std::cout<<"FastTrace548 native argument temporaries: "<<checks-initialChecks<<" checks and "
+        <<rejections-initialRejections<<" refusal controls.\n";
+}
 void WindowInputSnapshotContracts() {
     const auto initialChecks=checks;
     const auto expression=[](std::uint16_t index,bool declared,const std::vector<Bytes>& inputs) {
@@ -5626,6 +5876,7 @@ int main() {
         NativeResultDispositionContracts();
         MaterializedNativeOmissionContracts();
         NativeCallSiteContextContracts();
+        FastTraceNativeInputContracts();
         WindowInputSnapshotContracts();
         TileNativeInputContracts();
         WindowConfigureChildInputContracts();

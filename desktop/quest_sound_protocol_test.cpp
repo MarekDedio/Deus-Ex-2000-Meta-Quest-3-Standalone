@@ -46,7 +46,7 @@ PlaySoundProtocolPacket PacketOracle(const std::uint32_t index, const unsigned s
         {{volume * 100.0f, effectiveRadius, pitch * 100.0f}}, effectiveRadius * effectiveRadius};
 }
 CheckHearSoundProtocolResult HearOracle(const PlaySoundProtocolPacket& packet,
-    const CheckHearSoundProtocolDistanceSquared distance, const bool blocked, const bool owner) {
+    const CheckHearSoundProtocolDistanceSquared distance, const bool blocked, const bool instigator) {
     CheckHearSoundProtocolResult result;
     result.parameters = packet.parameters;
     result.initialThreshold = packet.squaredRadius * 0.7692308f;
@@ -56,7 +56,7 @@ CheckHearSoundProtocolResult HearOracle(const PlaySoundProtocolPacket& packet,
     result.initialRangeAccepted = true;
     if (!blocked) result.audible = true;
     else {
-        if (!owner) {
+        if (!instigator) {
             // Exact two-float product, independent long-double oracle.
             const long double exact = static_cast<long double>(result.initialThreshold) *
                 static_cast<long double>(0.6f);
@@ -70,9 +70,9 @@ CheckHearSoundProtocolResult HearOracle(const PlaySoundProtocolPacket& packet,
     return result;
 }
 CheckHearSoundProtocolResult HearOracle(const PlaySoundProtocolPacket& packet,
-    const float distance, const bool blocked, const bool owner) {
+    const float distance, const bool blocked, const bool instigator) {
     return HearOracle(packet, CheckHearSoundProtocolDistanceSquared{static_cast<long double>(distance), distance},
-        blocked, owner);
+        blocked, instigator);
 }
 void SamePacket(const PlaySoundProtocolPacket& actual, const PlaySoundProtocolPacket& expected) {
     Require(actual.channel == expected.channel, "Channel differs from independent wrapping scalar oracle");
@@ -136,23 +136,23 @@ void HearingEdges() {
         std::nextafter(initial, 0.0f), initial, std::nextafter(initial, std::numeric_limits<float>::infinity()),
         initial * 2.0f, std::numeric_limits<float>::max()}})
         for (const bool blocked : {false, true})
-            for (const bool owner : {false, true})
-                SameHear(QuestVr::EvaluateCheckHearSoundProtocol(packet, distance, blocked, owner),
-                    HearOracle(packet, distance, blocked, owner));
+            for (const bool instigator : {false, true})
+                SameHear(QuestVr::EvaluateCheckHearSoundProtocol(packet, distance, blocked, instigator),
+                    HearOracle(packet, distance, blocked, instigator));
     for (const bool blocked : {false, true})
-        for (const bool owner : {false, true})
-            Require(!QuestVr::EvaluateCheckHearSoundProtocol(packet, initial, blocked, owner).audible,
-                "Equality at initial range must refuse, including source owner and clear BSP");
+        for (const bool instigator : {false, true})
+            Require(!QuestVr::EvaluateCheckHearSoundProtocol(packet, initial, blocked, instigator).audible,
+                "Equality at initial range must refuse, including source instigator and clear BSP");
     Require(QuestVr::EvaluateCheckHearSoundProtocol(packet, secondary, true, false).audible ==
         (static_cast<double>(secondary) <= static_cast<double>(initial) * static_cast<double>(0.6f)),
         "Rounded diagnostic threshold was substituted for exact secondary comparison");
     Require(!QuestVr::EvaluateCheckHearSoundProtocol(packet, std::nextafter(secondary, initial), true, false).audible,
         "One float beyond secondary range was incorrectly accepted");
-    const auto owner = QuestVr::EvaluateCheckHearSoundProtocol(packet, std::nextafter(initial, 0.0f), true, true);
-    Require(owner.audible, "Source owner incorrectly received secondary range reduction");
-    SameFloat(owner.parameters[1u], 800.0f * 0.35f, "Owner exception incorrectly disabled Radius attenuation");
-    SameFloat(owner.parameters[0u], packet.parameters[0u], "Occlusion changed packed Volume");
-    SameFloat(owner.parameters[2u], packet.parameters[2u], "Occlusion changed packed Pitch");
+    const auto instigator = QuestVr::EvaluateCheckHearSoundProtocol(packet, std::nextafter(initial, 0.0f), true, true);
+    Require(instigator.audible, "Source instigator incorrectly received secondary range reduction");
+    SameFloat(instigator.parameters[1u], 800.0f * 0.35f, "Instigator exception incorrectly disabled Radius attenuation");
+    SameFloat(instigator.parameters[0u], packet.parameters[0u], "Occlusion changed packed Volume");
+    SameFloat(instigator.parameters[2u], packet.parameters[2u], "Occlusion changed packed Pitch");
     const auto outside = QuestVr::EvaluateCheckHearSoundProtocol(packet, initial, true, false);
     SameFloat(outside.parameters[1u], packet.parameters[1u],
         "Initial range refusal applied an unexecuted occlusion effect");
@@ -193,15 +193,15 @@ void UnroundedComparisonEdges() {
         static_cast<float>(above) == initial, "Split distance boundary fixture does not differ before float storage");
     for (const auto unrounded : {below, static_cast<long double>(initial), above})
         for (const bool blocked : {false, true})
-            for (const bool owner : {false, true}) {
+            for (const bool instigator : {false, true}) {
                 const CheckHearSoundProtocolDistanceSquared distance{unrounded, initial};
-                SameHear(QuestVr::EvaluateCheckHearSoundProtocol(packet, distance, blocked, owner),
-                    HearOracle(packet, distance, blocked, owner));
+                SameHear(QuestVr::EvaluateCheckHearSoundProtocol(packet, distance, blocked, instigator),
+                    HearOracle(packet, distance, blocked, instigator));
             }
     const auto accepted = QuestVr::EvaluateCheckHearSoundProtocol(packet,
         CheckHearSoundProtocolDistanceSquared{below, initial}, true, true);
     Require(accepted.initialRangeAccepted && accepted.audible,
-        "Strict unrounded initial distance or inclusive stored owner threshold was rounded incorrectly");
+        "Strict unrounded initial distance or inclusive stored instigator threshold was rounded incorrectly");
     Require(!QuestVr::EvaluateCheckHearSoundProtocol(packet, initial, false, true).initialRangeAccepted,
         "Rounded scalar convenience silently fabricated an unrounded geometric distance");
 }
@@ -266,11 +266,11 @@ void DeterministicSweep() {
         SamePacket(actual, expected);
         const float distance = expected.squaredRadius * (static_cast<float>(Next(state) % 2049u) / 1024.0f);
         for (const bool blocked : {false, true})
-            for (const bool owner : {false, true}) {
-                const auto hear = QuestVr::EvaluateCheckHearSoundProtocol(actual, distance, blocked, owner);
-                SameHear(hear, HearOracle(expected, distance, blocked, owner));
+            for (const bool instigator : {false, true}) {
+                const auto hear = QuestVr::EvaluateCheckHearSoundProtocol(actual, distance, blocked, instigator);
+                SameHear(hear, HearOracle(expected, distance, blocked, instigator));
                 SameHear(QuestVr::EvaluateCheckHearSoundProtocol(actual.parameters, actual.squaredRadius,
-                    distance, blocked, owner), hear);
+                    distance, blocked, instigator), hear);
             }
         SamePacket(actual, expected); // Listening must not mutate the shared source packet.
     }
@@ -283,7 +283,7 @@ int main() {
         std::cout << "PASS retail sound packet scalar protocol: " << checks << " checks, " << refusals
             << " portable safety refusals; stable-index DWORD channel, radius normalization, packed Vector,"
                " split unrounded/stored distance, exact secondary product, strict initial/inclusive occluded thresholds,"
-               " owner exception. No geometric x87/native dispatch/audio/crate claim.\n";
+               " instigator exception. No geometric x87/native dispatch/audio/crate claim.\n";
         return 0;
     } catch (const std::exception& error) {
         std::cerr << "Sound protocol test failed: " << error.what() << '\n';

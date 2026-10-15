@@ -58,10 +58,16 @@ location, otherwise listener Location. Initial distance squared is an unrounded
 x87 geometric sum, also stored to Float for the later check. The initial
 threshold is stored Float `radiusSquared * bit_cast<float>(0x3f44ec4f)` and the
 comparison is strict. Blocked BSP FastLineCheck multiplies the secondary
-threshold by Float0.6 unless source.Owner==listener; this product remains
+threshold by Float0.6 unless source.Instigator==listener; this product remains
 unrounded until comparison against the stored Float distance. The secondary
 comparison permits equality. A blocked path multiplies packed Radius by0.35
-even for the owner; it does not attenuate packed Volume instead.
+even for the instigator; it does not attenuate packed Volume instead.
+
+The source+0xbc relationship is independently identified as Instigator by
+GetOptimizedRepList at VA0x10362132..0x1036216a and its named-property string
+VA0x1047adf0. Owner is a different field (+0x3c). This corrects the earlier
+owner-named Boolean in the detached scalar helper; its Boolean arithmetic was
+unchanged, and no production recipient adapter consumed the mislabeled input.
 
 Accepted listeners receive the original `ENGINE_ClientHearSound` event
 synchronously inside the same VM transaction. Only external audio delivery
@@ -155,9 +161,12 @@ is substituted for a real player/native level.
 Ignored local evidence logs are `artifacts/crate-sound-foundation-full-build-resumed-20261015.log`,
 `crate-sound-foundation-ctest-final-20261015.log`, `crate-sound-owned-lamp-final-20261015.log`,
 `crate-sound-owned-crates-final-20261015.log`, `crate-sound-vm-20261015.log`,
-`crate-sound-protocol-20261015.log` and `crate-sound-ndk-syntax-20261015.log`.
+`crate-sound-protocol-20261015.log`. The original successful syntax command
+emitted no text, so its empty Tee pipeline did not create a log. The later
+superset check has an explicit success record in
+`artifacts/crate-fast-trace-ndk-syntax-20261015.log`.
 
-## Next BSP dependency audit
+## BSP dependency audit and subsequent implementation
 
 Original FastTrace548 has TraceEnd:Vector, optional TraceStart:Vector and a
 Bool return, flags0x401. Its thunk RVA0x2103 targets VA0x103e35e0. TraceStart
@@ -173,5 +182,6 @@ epsilon or ordinary nonnegative comparison. Splits visit the end-side segment
 first; middle coordinates are Float stores from the retained extended fraction.
 This is distinct from the existing flags6 Model.LineCheck helper (mask0x27,
 NumVertices and epsilon tests). It must not be replaced by that helper when
-implementing Containers.Destroyed, sound occlusion or CanHear. This paragraph
-records a read-only audit; FastTrace548/FastLineCheck are not implemented here.
+implementing Containers.Destroyed, sound occlusion or CanHear. The subsequent
+FastTrace548/FastLineCheck implementation is documented in ORIGINAL-FAST-TRACE.md;
+it is a genuine BSP/native prerequisite, not completion of sound or crates.

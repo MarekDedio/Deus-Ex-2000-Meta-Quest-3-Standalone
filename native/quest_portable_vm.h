@@ -44,8 +44,9 @@ Value Coerce(const Value& value, const Value& typedZero);
 bool Equal(const Value& a, const Value& b);
 
 // Trusted reflected destination capability, never inferred from Value shape.
-// CoreColor4 denotes the audited Core.Object.Color four packed Byte channels.
-enum class ResultLayout { Unknown, CoreColor4 };
+// CoreColor4 denotes the audited Core.Object.Color four packed Byte channels;
+// CoreVector12 denotes the audited Core.Object.Vector three binary32 channels.
+enum class ResultLayout { Unknown, CoreColor4, CoreVector12 };
 struct Property {
     std::string key; // Stable fully-qualified identity, not a package-local index.
     std::string name;
