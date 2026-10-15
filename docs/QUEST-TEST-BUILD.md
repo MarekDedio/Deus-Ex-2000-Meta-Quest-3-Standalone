@@ -1,6 +1,40 @@
 # Current Quest test-build handoff (2026-10-15)
 
-## Installed: health preview and playable quickbar (2026-10-15)
+## Installed: lowered, left-aligned HUD (2026-10-15)
+
+The user accepts the current artwork but requests less eye strain and less
+central obstruction. This layout-only APK keeps all icons, scales, equipment
+controls and gameplay unchanged. Hand-held item development is temporarily
+deferred in favor of this explicit placement request.
+
+- Health and compass move0.18m down and0.1655m left in the shared1.65m HUD
+  plane. Their left edges now exactly match the quickbar's left edge(-0.8115m).
+- The original four-pixel health/compass gap and artwork aspect ratios remain.
+  Health's top is about19.7 degrees above the eye line, down from25 degrees.
+- The quickbar center moves fromY=-0.49m to-0.84m (about17 to27 degrees down).
+  Its top clears the central24 degrees; its bottom stays just below30 degrees.
+  This is an initial geometric placement, pending the user's comfort test.
+
+Signed ARM64 APK:
+`artifacts/hud-reposition-20261015/DeusExQuestVR-lowered-aligned-hud-20261015.apk`
+(33,806,942 bytes), SHA256
+`37E77DDAE46750672F4161A354D3BFF57DFE4202C314E69BC5A7FBF22A39D89F`.
+Android build succeeds in1m24s and the APK v2 signature verifies. The Quest was
+initially absent from ADB, then reconnected during verification. The build was
+replace-installed on Quest3 `2G0YC5ZG620985` without clearing data, update
+2026-10-15 11:00:02. The installed base.apk checksum matches exactly and the
+game was launched (process8660). Physical comfort acceptance is still pending.
+
+The affected host targets rebuild successfully. Playable presentation/placement
+passes238 controls (including both-eye alignment for52–74mm IPD), compass/view
+passes607, and the focused quickbar/HUD quartet passes. The full CTest run has
+87 passes/101 registered,14 explicit owned-data skips, zero failures (16.58s).
+Only placement headers/tests changed; no original asset or package was modified.
+An inspected original-artwork software rendering uses actual Training equipment
+and these shared projection constants. It confirms the shared left edge and
+clear central view; it is not a headset screenshot or physical comfort pass.
+
+## Previous installed build: health preview and playable quickbar (2026-10-15)
 
 Signed ARM64 APK:
 `artifacts/quickbar-health-20261015/DeusExQuestVR-health-quickbar-20261015.apk`

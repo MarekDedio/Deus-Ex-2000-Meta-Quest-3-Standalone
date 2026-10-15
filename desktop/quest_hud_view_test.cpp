@@ -55,19 +55,22 @@ int main() {
         Require(QuestVr::kHudCompassHalfWidth>0 && QuestVr::kHudCompassCenterX<0 &&
             QuestVr::kHudCompassCenterY>0 && QuestVr::kHudVrDistance>0,"Original HUD placement is invalid");
         const auto angle=[](float offset) {return std::atan2(std::fabs(offset),QuestVr::kHudVrDistance)*180.0f/QuestVr::Pi;};
-        Require(angle(QuestVr::kHudCompassCenterX-QuestVr::kHudCompassHalfWidth)<22.0f &&
-            angle(QuestVr::kHudCompassCenterY+QuestVr::kHudCompassHalfHeight)<22.0f,
-            "Compass is outside the inset central-view comfort bounds");
-        Require(angle(QuestVr::kHudHealthCenterX-QuestVr::kHudHealthHalfWidth)<22.0f &&
-            angle(QuestVr::kHudHealthCenterY+QuestVr::kHudHealthHalfHeight)<26.0f,
-            "Health column is outside the inset central-view comfort bounds");
+        Require(angle(QuestVr::kHudCompassCenterX-QuestVr::kHudCompassHalfWidth)<27.0f &&
+            angle(QuestVr::kHudCompassCenterY+QuestVr::kHudCompassHalfHeight)<6.0f,
+            "Compass is outside the lowered/aligned column bounds");
+        Require(angle(QuestVr::kHudHealthCenterX-QuestVr::kHudHealthHalfWidth)<27.0f &&
+            angle(QuestVr::kHudHealthCenterY+QuestVr::kHudHealthHalfHeight)<20.0f,
+            "Health column is outside the lowered/aligned bounds");
         Require(std::fabs((QuestVr::kHudCompassCenterX-QuestVr::kHudCompassHalfWidth)-
             (QuestVr::kHudHealthCenterX-QuestVr::kHudHealthHalfWidth))<0.00001f,
             "Inset HUD column lost original left-edge alignment");
+        Require(std::fabs((QuestVr::kHudCompassCenterX-QuestVr::kHudCompassHalfWidth)-
+            (QuestVr::kPlayableBeltCenterX-QuestVr::kPlayableBeltHalfWidth))<0.00001f,
+            "Health/compass left edge is not aligned with the quickbar");
         Require(std::fabs((QuestVr::kHudHealthCenterY-QuestVr::kHudHealthHalfHeight)-
             (QuestVr::kHudCompassCenterY+QuestVr::kHudCompassHalfHeight)-4.0f*QuestVr::kHudVrPixelsToMeters)<0.00001f,
             "Inset HUD column lost original four-pixel panel gap");
-        std::cout<<"PASS rendered compass heading: "<<checks<<" checks; map axes, physical yaw, vertical gaze, snap turns, room rebases, Meta recenter and invalid tracking\n";
+        std::cout<<"PASS rendered compass heading: "<<checks<<" checks; map axes, physical yaw, vertical gaze, snap turns, room rebases, Meta recenter, invalid tracking and lowered quickbar-aligned column\n";
         return 0;
     } catch (const std::exception& e) {std::cerr<<e.what()<<'\n';return 1;}
 }

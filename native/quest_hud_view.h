@@ -30,20 +30,28 @@ std::optional<std::uint16_t> HudRenderedViewYaw(const Vector& stageForward,
     return static_cast<std::uint16_t>(static_cast<std::uint32_t>(yaw)&65535u);
 }
 
-// Original left-column arrangement: health (0,0,84,106), compass
-// (0,110,73,40). A literal 640x480 screen-edge translation put the compass
-// about 35 degrees left, which the user found almost outside the Quest FOV.
-// Inset the whole column into the comfortable central view without shrinking
-// its artwork or changing the original relative alignment/proportions.
+// Shared eye-relative HUD plane. Keep original artwork scale/aspect and the
+// four-pixel health/compass gap, but align the column to the quickbar's left
+// edge. User feedback moved the column down/left and the belt substantially
+// below the aim point. These constants also drive offline placement checks;
+// no separate PC-screen or per-eye offsets may move the three panels apart.
 inline constexpr float kHudVrPixelsToMeters=0.004f;
 inline constexpr float kHudVrDistance=1.65f;
-inline constexpr float kHudCompassCenterX=-0.50f;
-inline constexpr float kHudCompassCenterY=0.25f;
+inline constexpr float kPlayableBeltPixelsToMeters=0.003f;
+inline constexpr float kPlayableBeltCenterX=0.0f;
+inline constexpr float kPlayableBeltCenterY=-0.84f;
+inline constexpr float kPlayableBeltCenterZ=-kHudVrDistance;
+inline constexpr float kPlayableBeltHalfWidth=541.0f/2.0f*kPlayableBeltPixelsToMeters;
+inline constexpr float kPlayableBeltHalfHeight=69.0f/2.0f*kPlayableBeltPixelsToMeters;
+inline constexpr float kHudColumnLeftX=kPlayableBeltCenterX-kPlayableBeltHalfWidth;
 inline constexpr float kHudCompassHalfWidth=73.0f/2.0f*kHudVrPixelsToMeters;
 inline constexpr float kHudCompassHalfHeight=40.0f/2.0f*kHudVrPixelsToMeters;
-inline constexpr float kHudHealthCenterX=kHudCompassCenterX+(84.0f-73.0f)/2.0f*kHudVrPixelsToMeters;
-inline constexpr float kHudHealthCenterY=kHudCompassCenterY+(110.0f+40.0f/2.0f-106.0f/2.0f)*kHudVrPixelsToMeters;
 inline constexpr float kHudHealthHalfWidth=84.0f/2.0f*kHudVrPixelsToMeters;
 inline constexpr float kHudHealthHalfHeight=106.0f/2.0f*kHudVrPixelsToMeters;
+inline constexpr float kHudCompassCenterX=kHudColumnLeftX+kHudCompassHalfWidth;
+inline constexpr float kHudCompassCenterY=0.07f;
+inline constexpr float kHudHealthCenterX=kHudColumnLeftX+kHudHealthHalfWidth;
+inline constexpr float kHudHealthCenterY=kHudCompassCenterY+
+    kHudCompassHalfHeight+4.0f*kHudVrPixelsToMeters+kHudHealthHalfHeight;
 
 } // namespace QuestVr

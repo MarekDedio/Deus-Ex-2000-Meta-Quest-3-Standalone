@@ -24,16 +24,8 @@ inline HudHealthSnapshot BuildPlayableHealthSnapshot(float aggregateHealth) {
     return snapshot;
 }
 
-// Keep the original 541x69 object-belt artwork and 1..9/0 ordering, but use a
-// separate VR scale so the complete bar fits the comfortable central view.
-// Original, human-accepted compass/health placement remains unchanged.
-inline constexpr float kPlayableBeltPixelsToMeters=0.003f;
-inline constexpr float kPlayableBeltCenterX=0.0f;
-inline constexpr float kPlayableBeltCenterY=-0.49f;
-inline constexpr float kPlayableBeltCenterZ=-kHudVrDistance;
-inline constexpr float kPlayableBeltHalfWidth=
-    static_cast<float>(kHudBeltWidth)*0.5f*kPlayableBeltPixelsToMeters;
-inline constexpr float kPlayableBeltHalfHeight=
-    static_cast<float>(kHudBeltHeight)*0.5f*kPlayableBeltPixelsToMeters;
+// Shared view geometry retains the original 541x69 artwork and 1..9/0 order.
+// Catch any future artwork-size change before it breaks the aligned HUD edge.
+static_assert(kHudBeltWidth==541u && kHudBeltHeight==69u);
 
 } // namespace QuestVr

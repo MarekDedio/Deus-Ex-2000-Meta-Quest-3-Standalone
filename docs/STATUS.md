@@ -1,5 +1,18 @@
 # Port status
 
+## Installed HUD comfort revision (2026-10-15)
+
+- Per the user's change of plans, pause hand-item work for a layout-only HUD
+  adjustment. Health/compass move down/left and share the quickbar's left edge;
+  the bar moves substantially lower while staying within30 degrees below the
+  eye line. Original artwork scales, heading, health and equipment remain intact.
+- Signed ARM64 APK built successfully and signature verified. Quest reconnected
+  during verification; replace-installed without clearing data, installed hash
+  matched and game launched. See QUEST-TEST-BUILD.md for the exact APK/checksum.
+  Software projection inspected; physical comfort acceptance remains pending.
+- Placement/presentation238, heading/view607 and the focused four-test suite
+  pass. Full CTest:87 passes,14 explicit owned-data skips, zero failures,16.58s.
+
 ## Installed health preview / playable quickbar (2026-10-15)
 
 - The user revised the next test milestone: visible unfinished health plus a

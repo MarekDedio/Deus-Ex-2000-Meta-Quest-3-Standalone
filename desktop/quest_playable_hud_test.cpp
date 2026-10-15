@@ -82,15 +82,45 @@ void Placement() {
     Require(angle(kPlayableBeltCenterX-kPlayableBeltHalfWidth)<27.0 &&
         angle(kPlayableBeltCenterX+kPlayableBeltHalfWidth)<27.0,
         "Quickbar horizontal edges exceed the central-view comfort bounds");
-    Require(angle(kPlayableBeltCenterY-kPlayableBeltHalfHeight)<21.0,
-        "Quickbar bottom exceeds the vertical comfort bounds");
+    Require(angle(kPlayableBeltCenterY-kPlayableBeltHalfHeight)<30.0,
+        "Lowered quickbar bottom exceeds thirty degrees below the eye line");
+    Require(angle(kPlayableBeltCenterY+kPlayableBeltHalfHeight)>24.0 &&
+        angle(kPlayableBeltCenterY+kPlayableBeltHalfHeight)<25.0,
+        "Quickbar top does not clear the central twenty-four degrees");
     Require(kPlayableBeltCenterY+kPlayableBeltHalfHeight<0.0f,
         "Quickbar crosses the forward aim point");
     Require(std::fabs(kPlayableBeltHalfWidth/kPlayableBeltHalfHeight-
         static_cast<float>(kHudBeltWidth)/static_cast<float>(kHudBeltHeight))<0.00001f,
         "Quickbar artwork aspect ratio changed");
-    Require(kHudVrPixelsToMeters==0.004f && kHudCompassCenterX==-0.50f &&
-        kHudCompassCenterY==0.25f,"Playable quickbar changed accepted compass geometry");
+    Require(kHudVrPixelsToMeters==0.004f && kPlayableBeltPixelsToMeters==0.003f &&
+        kPlayableBeltCenterY==-0.84f && kHudCompassCenterY==0.07f,
+        "Requested lower HUD placement or unchanged artwork scale regressed");
+    const auto beltLeft=kPlayableBeltCenterX-kPlayableBeltHalfWidth;
+    Require(std::fabs(kHudHealthCenterX-kHudHealthHalfWidth-beltLeft)<0.00001f &&
+        std::fabs(kHudCompassCenterX-kHudCompassHalfWidth-beltLeft)<0.00001f,
+        "Health, compass and quickbar no longer share their left edge");
+    Require(std::fabs(kHudCompassCenterX-(-0.50f)-(-0.1655f))<0.00001f &&
+        std::fabs(kHudCompassCenterY-0.25f-(-0.18f))<0.00001f,
+        "Column did not move slightly left and down from the accepted baseline");
+    Require(kHudHealthCenterY+kHudHealthHalfHeight<0.60f &&
+        kHudHealthCenterY-kHudHealthHalfHeight>kHudCompassCenterY+kHudCompassHalfHeight,
+        "Lowered health is too high or overlaps the compass");
+    Require(kHudCompassCenterY-kHudCompassHalfHeight>
+        kPlayableBeltCenterY+kPlayableBeltHalfHeight,
+        "Quickbar overlaps the health/compass column");
+    // Both eyes retain the aligned edges on one plane, even at wide IPD.
+    // This is a geometric regression bound, not headset comfort acceptance.
+    for(int ipdMm=52;ipdMm<=74;++ipdMm) for(const float side:{-1.0f,1.0f}) {
+        const float eyeX=side*static_cast<float>(ipdMm)*0.0005f;
+        const auto projected=[&](float x) {return (x-eyeX)/kHudVrDistance;};
+        Require(std::fabs(projected(kHudHealthCenterX-kHudHealthHalfWidth)-
+            projected(beltLeft))<0.00001f &&
+            std::fabs(projected(kHudCompassCenterX-kHudCompassHalfWidth)-projected(beltLeft))<0.00001f,
+            "Binocular projection broke the shared left edge");
+        Require(angle(beltLeft-eyeX)<28.0 &&
+            angle(kPlayableBeltCenterX+kPlayableBeltHalfWidth-eyeX)<28.0,
+            "Lowered HUD horizontal edges exceed binocular inset bounds");
+    }
 }
 } // namespace
 
