@@ -16,6 +16,7 @@
 #include "quest_actor_latent.h"
 #include "quest_actor_timer.h"
 #include "quest_native_window_location.h"
+#include "quest_native_window_query.h"
 #include "quest_actor_state_control.h"
 #include "quest_unreal_string.h"
 #include "quest_decal_checkpoint.h"
@@ -132,6 +133,9 @@ public:
     bool inventoryTableMetadata{}, inventorySerializedClass{}, inventoryClassReferenceValid{}, inventoryBaseReferenceValid{};
     std::uint8_t inventoryNativeClass{}, inventoryNativeBase{};
     std::unique_ptr<InventoryIconClassConstraint> inventoryIconClassConstraint;
+    // Immutable authored bitmap fields prepared before native HUD queries.
+    // No image/mip decoding or package I/O belongs in a sizing callback.
+    std::unique_ptr<std::array<std::int32_t,2u>> bitmapDimensions;
     std::vector<PortableTaggedProperty> instanceProperties;
     std::unordered_map<std::string, std::string> objectPropertyPaths;
     // Name indices are package-local. Decode them while their actual package
@@ -544,6 +548,27 @@ bool IsDerivedFromPath(RuntimeObject* cls, const std::string& path) {
     }
     // An early matching class must not conceal malformed later Super links.
     return matches;
+}
+void CacheRuntimeBitmapDimensions(RuntimeObject* object,const PortablePackageTables& package) {
+    if(object->bitmapDimensions) return;
+    try {
+        if(!IsDerivedFromPath(object->cls,"Engine.Texture") || object->exportIndex>=package.exports.size() ||
+            package.exports[object->exportIndex].ObjSize<=0) return;
+        const auto properties=LoadPortableExportProperties(package,object->exportIndex,64u*1024u*1024u);
+        std::array<std::optional<std::int32_t>,2u> dimensions;
+        for(const auto& property:properties.properties) {
+            const auto slot=property.name=="USize"?0u:property.name=="VSize"?1u:2u;
+            if(slot==2u || property.arrayIndex!=0u) continue;
+            if(property.type!=2u || property.value.size()!=4u) return;
+            std::int32_t value{};std::memcpy(&value,property.value.data(),4u);dimensions[slot]=value;
+        }
+        if(dimensions[0u] && dimensions[1u])
+            object->bitmapDimensions=std::make_unique<std::array<std::int32_t,2u>>(
+                std::array<std::int32_t,2u>{*dimensions[0u],*dimensions[1u]});
+    } catch(const std::exception&) {
+        // Invalid/missing metadata stays unavailable. Do not guess mip sizes
+        // or defer a synchronous asset load into a native query.
+    }
 }
 
 const QuestVr::Vm::Value* FindScriptOverlay(
@@ -2463,6 +2488,7 @@ public:
         if(index==1438u) return WindowAlignmentsNative(Object(receiver),arguments,declaration,execution);
         if(index==1425u) return WindowRootGetterNative(Object(receiver),arguments,declaration);
         if(index==1415u) return WindowVisibilityGetterNative(Object(receiver),arguments,declaration);
+        if(index==1465u) return WindowPreferredSizeNative(Object(receiver),arguments,declaration,execution);
         if(index==1416u) return WindowSensitivityNative(Object(receiver),arguments,declaration,execution);
         if(index==1420u) return WindowSelectabilityNative(Object(receiver),arguments,declaration,execution);
         if(index==1467u) return WindowChildVisibilityNative(Object(receiver),arguments,declaration,execution);
@@ -2683,6 +2709,9 @@ public:
             parameters={{"newSensitivity",Kind::Bool,0x80u,"BoolProperty",""}};break;
         case 1467u:path="Extension.Window.SetChildVisibility";
             parameters={{"bNewVisibility",Kind::Bool,0x80u,"BoolProperty",""}};break;
+        case 1465u:path="Extension.Window.QueryPreferredSize";
+            parameters={{"preferredWidth",Kind::Float,0x180u,"FloatProperty",""},
+                {"preferredHeight",Kind::Float,0x180u,"FloatProperty",""}};break;
         case 1438u:path="Extension.Window.SetWindowAlignments";
             parameters={{"HAlign",Kind::Byte,0x80u,"ByteProperty","Extension.ExtensionObject.EHAlign"},
                 {"VAlign",Kind::Byte,0x80u,"ByteProperty","Extension.ExtensionObject.EVAlign"}};
@@ -2764,7 +2793,7 @@ public:
     std::optional<Value> NativeArgumentSeed(const std::uint16_t index,const std::string& receiver,
         const std::size_t slot,const Function* declaration) override {
         if(index!=1410u && index!=1415u && index!=1416u && index!=1420u && index!=1421u && index!=1422u && index!=1430u && index!=1431u && index!=1432u && index!=1433u &&
-            index!=1454u && index!=1467u && index!=1477u && index!=1510u && index!=1511u &&
+            index!=1454u && index!=1465u && index!=1467u && index!=1477u && index!=1510u && index!=1511u &&
             index!=1535u && index!=1538u && index!=1539u && index!=1540u && index!=1541u && index!=1544u && index!=1545u)
             return std::nullopt;
         auto* window=Object(receiver);
@@ -2818,6 +2847,112 @@ public:
     void RequireNativeWindow(RuntimeObject* window) {
         if(!window || !window->nativeWindowObject || !IsDerivedFromPath(window->cls,"Extension.Window"))
             throw std::runtime_error("Native Window operation requires an actual constructed Window");
+    }
+    void NativeWindowPreferredSizeCallback(RuntimeObject* window,bool widthSpecified,float& width,
+        bool heightSpecified,float& height,QuestVr::Vm::Execution& execution) {
+        // Window vtable+7c10050390 forwards an initialized packet to the most
+        // derived script callback. Text/TabGroup/Tile virtual overrides have
+        // distinct sizing behavior; do not silently treat them as Window.
+        if(NativeWindowAncestor(window->cls)!="extension.window")
+            throw std::runtime_error("Native preferred-size virtual override is not implemented");
+        const auto identity=OptionalNativeWindowEvent(window,"ParentRequestedPreferredSize");
+        if(!identity) return; // Actual ProcessScript(...,checked=false).
+        const auto callback=FunctionFor(Object(identity->path));
+        const auto base=FunctionFor(Object("Extension.Window.ParentRequestedPreferredSize"));
+        const auto validate=[&](const Function& function) {
+            if((function.flags&0x400u) || function.variables.size()!=4u)
+                throw std::runtime_error("Native preferred-size callback lacks its original packet");
+            for(std::size_t slot=0u;slot<4u;++slot) {
+                const auto& field=function.variables[slot];
+                if(field.arrayDimension!=1u || field.zero.kind!=(slot%2u?Kind::Float:Kind::Bool) ||
+                    field.flags!=(slot%2u?0x180u:0x80u))
+                    throw std::runtime_error("Native preferred-size callback has a different declared signature");
+            }
+        };
+        validate(*base);
+        // Script overrides may contain locals following the four parameters.
+        std::vector<Property> parameters;
+        for(const auto& variable:callback->variables)
+            if(variable.flags&0x80u) parameters.push_back(variable);
+        Function packet=*callback;packet.variables=std::move(parameters);validate(packet);
+        auto output=[](const std::shared_ptr<float>& value) {
+            auto reference=std::make_shared<Reference>();reference->zero=Value::Float(0.0f);
+            reference->read=[value] {return Value::Float(*value);};
+            reference->write=[value](const Value& incoming) {
+                if(incoming.kind!=Kind::Float || !std::isfinite(incoming.floating))
+                    throw std::runtime_error("Native preferred-size callback returned a nonfinite/non-Float output");
+                *value=incoming.floating;
+            };
+            return reference;
+        };
+        // OUT references can survive in the transaction's undo journal after
+        // this callback returns. Never capture stack-local float addresses.
+        auto widthStorage=std::make_shared<float>(width),heightStorage=std::make_shared<float>(height);
+        auto widthOutput=output(widthStorage),heightOutput=output(heightStorage);
+        static_cast<void>(execution.CallFunction(*callback,window->reflection.objectPath,
+            {{Value::Bool(widthSpecified),{}},{Value::Float(width),widthOutput},
+                {Value::Bool(heightSpecified),{}},{Value::Float(height),heightOutput}}));
+        width=*widthStorage;height=*heightStorage;
+    }
+    struct NativeWindowQueryOperations {
+        PortableActorVmHost& host;RuntimeObject* window;QuestVr::Vm::Execution& execution;
+        float ReadFloat(const char* name) {
+            const auto key="Extension.Window."+std::string(name);
+            const auto value=host.Read(window,host.DescribeProperty(key),0u);
+            if(value.kind!=Kind::Float) throw std::runtime_error("Native preferred-size field is not Float");
+            return value.floating;
+        }
+        bool ReadBool(const char* name) {
+            const auto value=host.Read(window,host.DescribeProperty("Extension.Window."+std::string(name)),0u);
+            if(value.kind!=Kind::Bool) throw std::runtime_error("Native preferred-size flag is not Bool");
+            return value.boolean;
+        }
+        void WriteFloat(const char* name,float value) {
+            host.NativeWindowWrite(window,("Extension.Window."+std::string(name)).c_str(),Value::Float(value),execution);
+        }
+        void WriteBool(const char* name,bool value) {
+            host.NativeWindowWrite(window,("Extension.Window."+std::string(name)).c_str(),Value::Bool(value),execution);
+        }
+        void ParentRequestedPreferredSize(bool widthSpecified,float& width,bool heightSpecified,float& height) {
+            host.NativeWindowPreferredSizeCallback(window,widthSpecified,width,heightSpecified,height,execution);
+        }
+        float FallbackSize(bool width) {
+            const auto value=host.Read(window,host.DescribeProperty("Extension.Window.Background"),0u);
+            if(value.kind!=Kind::Object) throw std::runtime_error("Native preferred-size background is not Object");
+            if(value.text.empty()) return ReadFloat(width?"Width":"Height");
+            auto* texture=host.Object(value.text);
+            if(!IsDerivedFromPath(texture->cls,"Engine.Texture"))
+                throw std::runtime_error("Native preferred-size background is not an actual Texture");
+            const auto* changed=FindScriptOverlay(texture,width?"USize":"VSize",0u);
+            if(changed) {
+                if(changed->kind!=Kind::Int) throw std::runtime_error("Native bitmap size override is not Int");
+                return static_cast<float>(changed->integer);
+            }
+            if(!texture->bitmapDimensions)
+                throw std::runtime_error("Native preferred-size background bitmap metadata is unavailable");
+            return static_cast<float>((*texture->bitmapDimensions)[width?0u:1u]);
+        }
+    };
+    Evaluation WindowPreferredSizeNative(RuntimeObject* window,const std::vector<Evaluation>& arguments,
+        const Function* declaration,QuestVr::Vm::Execution& execution) {
+        RequireNativeWindow(window);
+        static_cast<void>(WindowNativeDeclaration(1465u,declaration));
+        if(arguments.size()!=2u) throw std::runtime_error("QueryPreferredSize requires its two output expressions");
+        for(const auto& argument:arguments)
+            if((argument.value.kind!=Kind::Float && argument.value.kind!=Kind::Nothing) ||
+                (argument.reference && argument.reference->zero.kind!=Kind::Float))
+                throw std::runtime_error("QueryPreferredSize output expression is not Float storage");
+        NativeWindowQueryOperations operations{*this,window,execution};
+        const auto result=QuestVr::QueryNativeWindowPreferredSize(operations);
+        // Retail passes actual property pointers when provided; temporary
+        // results without an OUT alias are discarded. Writes are width FIRST,
+        // height SECOND, even when both expressions captured the same target.
+        // Native argument aliases already carry Machine::GuardReference.
+        // Writing through that guard journals ONCE; wrapping it again in
+        // Execution::WriteReference would duplicate journal entries/budgets.
+        if(arguments[0u].reference) arguments[0u].reference->write(Value::Float(result.width));
+        if(arguments[1u].reference) arguments[1u].reference->write(Value::Float(result.height));
+        return {};
     }
     Evaluation WindowAlignmentsNative(RuntimeObject* window,const std::vector<Evaluation>& arguments,
         const Function* declaration,QuestVr::Vm::Execution& execution) {
@@ -3280,21 +3415,12 @@ public:
         float originX=0.0f,localX=0.0f,originY=0.0f,localY=0.0f;
         for(auto* window:group->nativeWindowState->rowMajor) {
             LifecycleStep();RequireNativeWindow(window);
-            const auto width=Read(window,DescribeProperty("Extension.Window.Width"),0u);
-            const auto height=Read(window,DescribeProperty("Extension.Window.Height"),0u);
-            if(width.kind!=Kind::Float || height.kind!=Kind::Float ||
-                !std::isfinite(width.floating) || !std::isfinite(height.floating))
-                throw std::runtime_error("Native tab location requires finite current geometry");
-            if(width.floating<=0.0f || height.floating<=0.0f || !WindowTraversableWithoutModal(window)) continue;
             const auto clip=Read(window,DescribeProperty("Extension.Window.winClipRect"),0u);
-            const auto x=Read(window,DescribeProperty("Extension.Window.X"),0u);
-            const auto y=Read(window,DescribeProperty("Extension.Window.Y"),0u);
-            if(clip.kind!=Kind::Struct || !clip.fields.count("originx") || !clip.fields.count("originy") ||
-                clip.fields.at("originx").kind!=Kind::Float || clip.fields.at("originy").kind!=Kind::Float ||
-                x.kind!=Kind::Float || y.kind!=Kind::Float)
-                throw std::runtime_error("Native tab location lacks its original clip/coordinate schema");
-            originX=clip.fields.at("originx").floating;localX=x.floating;
-            originY=clip.fields.at("originy").floating;localY=y.floating;
+            ValidateNativeWindowClipValue(clip);
+            if(clip.fields.at("clipwidth").floating<=0.0f || clip.fields.at("clipheight").floating<=0.0f ||
+                !WindowTraversableWithoutModal(window)) continue;
+            originX=clip.fields.at("originx").floating;localX=clip.fields.at("clipx").floating;
+            originY=clip.fields.at("originy").floating;localY=clip.fields.at("clipy").floating;
             break;
         }
         const auto x=Read(group,DescribeProperty("Extension.TabGroupWindow.firstAbsX"),0u);
@@ -3319,11 +3445,9 @@ public:
             auto& table=row?state.rowMajor:state.colMajor;
             for(std::size_t index=0u;index<table.size();++index) {
                 LifecycleStep();auto* item=table[index];RequireNativeWindow(item);
-                const auto x=Read(item,DescribeProperty("Extension.Window.X"),0u);
-                const auto y=Read(item,DescribeProperty("Extension.Window.Y"),0u);
-                if(x.kind!=Kind::Float || y.kind!=Kind::Float || !std::isfinite(x.floating) || !std::isfinite(y.floating))
-                    throw std::runtime_error("Native selectable table coordinates are not finite Floats");
-                positions[index]={item,x.floating,y.floating};
+                const auto clip=Read(item,DescribeProperty("Extension.Window.winClipRect"),0u);
+                ValidateNativeWindowClipValue(clip);
+                positions[index]={item,clip.fields.at("originx").floating,clip.fields.at("originy").floating};
             }
             std::sort(positions.begin(),positions.begin()+table.size(),[row](const Position& a,const Position& b) {
                 const float firstA=row?a.y:a.x,firstB=row?b.y:b.x;
@@ -3847,6 +3971,15 @@ public:
             if(depth==visited.size() || std::find(visited.begin(),visited.begin()+depth,current)!=visited.begin()+depth)
                 throw std::runtime_error("Native descendant notification ancestry cycles or exceeds its bound");
             visited[depth++]=current;notify(current,"DescendantAdded");
+        }
+    }
+    void ValidateNativeWindowClipValue(const Value& clip) {
+        if(clip.kind!=Kind::Struct || clip.fields.size()!=6u)
+            throw std::runtime_error("Native window clip lacks its original six-Float schema");
+        for(const auto* name:{"originx","originy","clipx","clipy","clipwidth","clipheight"}) {
+            const auto member=clip.fields.find(name);
+            if(member==clip.fields.end() || member->second.kind!=Kind::Float || !std::isfinite(member->second.floating))
+                throw std::runtime_error("Native window clip lacks finite authored Float channels");
         }
     }
     void NativeWindowClip(RuntimeObject* window,QuestVr::Vm::Execution& execution) {
@@ -8245,6 +8378,11 @@ PortableRuntimeSummary InitializePortableRuntime(
             }
         }
     }
+    // All class/base links are resolved now, including Texture subclasses.
+    // Keep immutable size metadata off the XR/interaction query path.
+    for(const PackageSlice& slice:slices)
+        for(std::size_t index=0u;index<slice.package->exports.size();++index)
+            CacheRuntimeBitmapDimensions(persistentRuntime->get()->exports[slice.first+index],*slice.package);
     BuildPersistentDialogueIndex();
     const auto classDefaultObjects=MaterializeClassDefaultObjects(persistentRuntime->get());
     persistentWindowDomain=std::make_unique<GCRoot<RuntimeWindowDomain>>(GC::Alloc<RuntimeWindowDomain>());
@@ -9664,6 +9802,8 @@ PortableMapRuntimeSummary LoadPortableRuntimeMap(
         }
         CacheInventoryTableMetadata(object, package, entry);
     }
+    for(std::size_t index=0u;index<package.exports.size();++index)
+        CacheRuntimeBitmapDimensions(persistentRuntime->get()->exports[first+index],package);
     summary.exports = graph.objects.size();
     persistentMapPackageName = packageName;
     persistentMapSourcePath = package.sourcePath;

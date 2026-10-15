@@ -436,10 +436,10 @@ struct TestHost final:Vm::Host {
         // 1008 belongs only to this generated fixture. Native zero is keyed by
         // its declaration; individual tests provide the host-side observation.
         if((index==1008u || index==0u || index==1410u || index==1415u || index==1416u || index==1420u || index==1421u || index==1422u ||
-            index==1430u || index==1431u || index==1432u || index==1433u || index==1438u || index==1454u || index==1467u || index==1475u ||
+            index==1430u || index==1431u || index==1432u || index==1433u || index==1438u || index==1454u || index==1465u || index==1467u || index==1475u ||
             index==1535u || index==1538u || index==1539u || index==1540u ||
             index==1541u || index==1544u || index==1545u) && executionNative) {
-            std::vector<Value> values;for(const auto& argument:arguments) values.push_back(argument.Load());
+            std::vector<Value> values;for(const auto& argument:arguments) values.push_back(index==1465u?argument.value:argument.Load());
             nativeArguments.push_back(std::move(values));nativeReceivers.push_back(receiver);nativeIndices.push_back(index);
             nativeDeclarations.push_back(declaration ? declaration->path : "");
             return executionNative(receiver,arguments,declaration,execution);
@@ -3153,6 +3153,127 @@ void TileNativeInputContracts() {
     std::cout<<"Audited Tile native input copies/defaults: "<<checks-initialChecks<<" checks and "
         <<rejections-initialRejections<<" refusal controls.\n";
 }
+void WindowPreferredSizeOutContracts() {
+    const auto initialChecks=checks,initialRejections=rejections;
+    const auto configure=[](TestHost& host) {
+        auto native=Function("QueryPreferredSize",{},"Extension.Window");native.nativeIndex=1465u;native.flags=0x401u;
+        native.variables={{"QueryPreferredSize.preferredWidth","preferredWidth",Value::Float(0.0f),0x180u,1u},
+            {"QueryPreferredSize.preferredHeight","preferredHeight",Value::Float(0.0f),0x180u,1u}};
+        host.finals[{"Fixture",7}]=std::make_shared<Vm::Function>(native);
+        host.argumentSeed=[&host](std::uint16_t index,const std::string& receiver,std::size_t slot,
+            const Vm::Function* declaration)->std::optional<Value> {
+            if(index!=1465u) return std::nullopt;
+            Require((receiver=="Self" || receiver=="Other") && slot<2u &&
+                (!declaration || declaration->nativeIndex==1465u),"Preferred-size seed lost its original receiver/OUT slot");
+            host.observations.push_back("query-seed"+std::to_string(slot));return Value::Float(0.0f);
+        };
+        return native;
+    };
+    for(const bool declared:{false,true}) {
+        TestHost host;configure(host);
+        const auto call=declared?Call(0x1c,7,{Ref(0x01,1),Native(1060u,{Ref(0x01,1),Real(99.0f),Real(23.0f)})}):
+            Native(1465u,{Ref(0x01,1),Native(1060u,{Ref(0x01,1),Real(99.0f),Real(23.0f)})});
+        const auto caller=Function("PreferredSizeSourceFrameOut",Join({Context(Ref(0x20,9),call),Return(Ref(0x01,1))}));
+        const auto source=host.Property(caller,1,"WidthSource",Value::Float(0.0f));
+        host.Store("Self",source,{Value::Float(12.0f)});host.Store("Other",source,{Value::Float(8.0f)});
+        host.objects[{caller.source,9}]="Other";
+        host.executionNative=[&](const std::string& receiver,const std::vector<Vm::Evaluation>& arguments,const Vm::Function* function,Vm::Execution& execution) {
+            Require(receiver=="Other" && static_cast<bool>(function)==declared && arguments.size()==2u &&
+                arguments[0].reference && !arguments[1].reference,"Preferred-size OUT pointer was detached or receiver lost");
+            Require(arguments[0].value.kind==Vm::Kind::Float && arguments[0].value.floating==12.0f &&
+                arguments[1].value.floating==23.0f && host.Load("Self",source).floating==99.0f,
+                "Preferred-size wrapper reloaded earlier temporary after later argument evaluation");
+            static_cast<void>(execution);
+            arguments[0].reference->write(Value::Float(42.0f));return Vm::Evaluation{};
+        };
+        const auto result=Vm::Execute(host,caller,"Self");Returned(result,"Preferred-size raw/resolved OUT aliases retain captured source-frame references");
+        Require(result.value.floating==42.0f && host.Load("Self",source).floating==42.0f &&
+            host.Load("Other",source).floating==8.0f && result.writes==2u,
+            "Preferred-size OUT write targeted receiver instead of source expression or lost side effects; result="+
+                std::to_string(result.value.floating)+" self="+std::to_string(host.Load("Self",source).floating)+
+                " other="+std::to_string(host.Load("Other",source).floating)+" writes="+std::to_string(result.writes));
+    }
+    {
+        TestHost host;const auto native=configure(host);float first=12.0f,second=23.0f;unsigned firstReads{},secondReads{};
+        auto width=std::make_shared<Vm::Reference>(),height=std::make_shared<Vm::Reference>();
+        width->zero=height->zero=Value::Float(0.0f);
+        width->read=[&] {++firstReads;return Value::Float(first);};width->write=[&](const Value& value) {first=value.floating;};
+        height->read=[&] {++secondReads;first=99.0f;return Value::Float(second);};height->write=[&](const Value& value) {second=value.floating;};
+        host.executionNative=[&](const std::string&,const std::vector<Vm::Evaluation>& arguments,const Vm::Function*,Vm::Execution& execution) {
+            Require(arguments[0].reference && arguments[1].reference && firstReads==1u && secondReads==1u &&
+                arguments[0].value.floating==12.0f && arguments[1].value.floating==23.0f && first==99.0f,
+                "Direct preferred-size OUT setup read an alias twice or lost sequential copies");
+            static_cast<void>(execution);
+            arguments[0].reference->write(Value::Float(32.0f));
+            arguments[1].reference->write(Value::Float(16.0f));return Vm::Evaluation{};
+        };
+        const auto result=Vm::Execute(host,native,"Self",{{{},width},{{},height}});
+        Returned(result,"Direct preferred-size native receives separate ordinary temporaries and live OUT references");
+        // Journal reads precede each real write; they are distinct from the
+        // expression copies and intentionally see current target state.
+        Require(firstReads==2u && secondReads==2u && second==16.0f && result.writes==2u,
+            "Preferred-size output journaling lost its actual reads/writes");
+    }
+    for(const bool direct:{false,true}) for(const bool declared:{false,true}) for(unsigned selected=0u;selected<2u;++selected)
+        for(const auto bytes:{0u,1u,2u,3u,4u}) {
+        if(direct && !declared) continue;
+        TestHost host;const auto native=configure(host);bool read{};
+        auto stale=std::make_shared<Vm::Reference>();stale->zero=Value::Float(0.0f);
+        stale->read=[&]() ->Value {read=true;throw std::runtime_error("Absent OUT expression read stale alias");};
+        host.executionNative=[&](const std::string&,const std::vector<Vm::Evaluation>& arguments,const Vm::Function*,Vm::Execution&) {
+            Require(!arguments[selected].reference && arguments[selected].value.kind==Vm::Kind::Float &&
+                std::bit_cast<std::uint32_t>(arguments[selected].value.floating)==0u,
+                "Unwritten preferred-size expression fabricated an OUT pointer or lost initialized Float0");
+            return Vm::Evaluation{};
+        };
+        std::vector<Vm::Evaluation> inputs(2u,{Value::Float(9.0f),{}});
+        inputs[selected]={Value::Float(99.0f),stale,Vm::ResultDisposition::ZeroFill,static_cast<std::uint8_t>(bytes)};
+        const auto zero=Context({0x2au},Native(4095u),static_cast<std::uint8_t>(bytes));
+        const auto first=selected==0u?zero:Real(9.0f),second=selected==1u?zero:Real(9.0f);
+        const auto caller=Function("PreferredSizeInitializedOutTemporary",Return(declared?Call(0x1c,7,{first,second}):Native(1465u,{first,second})));
+        const auto result=direct?Vm::Execute(host,native,"Self",inputs):Vm::Execute(host,caller,"Self");
+        Returned(result,"Preferred-size OUT temporary preserves native initialized defaults without inventing aliases");
+        Require(!read && result.writes==0u,"Absent preferred-size result read stale target or wrote a temporary externally");
+    }
+    for(const bool direct:{false,true}) for(const auto bytes:{5u,255u}) {
+        TestHost host;const auto native=configure(host);bool read{};
+        auto stale=std::make_shared<Vm::Reference>();stale->zero=Value::Float(0.0f);stale->read=[&] {read=true;return Value::Float(99.0f);};
+        const auto caller=Function("PreferredSizeOutOverflow",Return(Native(1465u,
+            {Context({0x2au},Native(4095u),static_cast<std::uint8_t>(bytes)),Real(0.0f)})));
+        const auto result=Vm::ExecuteTransaction(host,[&](Vm::Execution& execution) {
+            execution.CallFunction(Function("EarlierOutSetupEffect",Join({Native(1000u),Return()})),"Self");
+            try {
+                if(direct) execution.CallFunction(native,"Self",{{Value::Float(99.0f),stale,Vm::ResultDisposition::ZeroFill,static_cast<std::uint8_t>(bytes)},{Value::Float(0.0f),{}}});
+                else execution.CallFunction(caller,"Self");
+            }catch(const std::exception&){}return Value{};
+        });
+        Failed(result,Vm::Status::Unsupported,host,"Preferred-size OUT temporary refuses overflow and poisons outer transaction");
+        Require(!read && host.effects==0u,"Preferred-size setup overflow read stale alias or escaped rollback");
+    }
+    for(const bool laterFailure:{false,true}) {
+        TestHost host;const auto native=configure(host);float width=1.0f,height=2.0f;
+        auto w=std::make_shared<Vm::Reference>(),h=std::make_shared<Vm::Reference>();w->zero=h->zero=Value::Float(0.0f);
+        w->read=[&] {return Value::Float(width);};w->write=[&](const Value& value) {width=value.floating;};
+        h->read=[&] {return Value::Float(height);};h->write=[&](const Value& value) {height=value.floating;};
+        std::shared_ptr<Vm::Reference> retained;
+        host.executionNative=[&](const std::string&,const std::vector<Vm::Evaluation>& arguments,const Vm::Function*,Vm::Execution& execution) {
+            static_cast<void>(execution);
+            retained=arguments[0].reference;arguments[0].reference->write(Value::Float(32.0f));
+            if(!laterFailure) throw std::runtime_error("Native output failure after first store");
+            arguments[1].reference->write(Value::Float(16.0f));return Vm::Evaluation{};
+        };
+        const auto result=Vm::ExecuteTransaction(host,[&](Vm::Execution& execution) {
+            try {execution.CallFunction(native,"Self",{{{},w},{{},h}});}
+            catch(const std::exception&){}if(laterFailure) execution.CallFunction(Function("LaterOutFailure",Return(Native(4095u))),"Self");return Value{};
+        });
+        Failed(result,Vm::Status::Unsupported,host,"Native preferred-size output failure rolls back earlier target stores");
+        Require(width==1.0f && height==2.0f,"Preferred-size OUT writes escaped failed transaction");
+        bool expired{};try {retained->write(Value::Float(88.0f));}catch(const std::exception&) {expired=true;}
+        Require(expired && width==1.0f,"Preferred-size native retained usable output guard after execution expired");
+    }
+    std::cout<<"Preferred-size native copied OUT temporaries/references: "<<checks-initialChecks<<" checks and "
+        <<rejections-initialRejections<<" refusal controls.\n";
+}
 void WindowWidthInputContracts() {
     const auto initialChecks=checks,initialRejections=rejections;
     const auto configure=[](TestHost& host) {
@@ -4838,6 +4959,7 @@ int main() {
         SequentialNativeArgumentSeedContracts();
         WindowInputSnapshotContracts();
         TileNativeInputContracts();
+        WindowPreferredSizeOutContracts();
         WindowWidthInputContracts();
         WindowSelectabilityInputContracts();
         WindowVisibilityInputContracts();

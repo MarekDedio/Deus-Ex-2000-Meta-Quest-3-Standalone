@@ -51,6 +51,14 @@ bool SnapshotNativeInput(const std::uint16_t index, const Function* declaration 
     default: return false;
     }
 }
+bool CopyNativeOutTemporary(const std::uint16_t index) {
+    // QueryPreferredSize's retail wrapper separately copies each initialized
+    // Float result temporary and captures its GProperty alias after Step.
+    // Keep both: later argument evaluation may mutate an earlier OUT target,
+    // but must not retroactively change that earlier copied input temporary.
+    // Other OUT natives retain their existing declaration/handler semantics.
+    return index == 1465u;
+}
 std::int32_t ParseInteger(const std::string& text) {
     // Match atoi's decimal prefix semantics on defined inputs; fail closed
     // rather than invoking its undefined overflow behavior on hostile scripts.
@@ -548,6 +556,7 @@ public:
         if (directSequentialSeeds) ReserveNativeInputPrefix(directPrefix,incoming.size());
         std::vector<Evaluation> args;
         args.reserve(incoming.size());
+        const bool copiedOutTemporary=(fn.flags&0x400u) && CopyNativeOutTemporary(fn.nativeIndex);
         for (std::size_t slot=0u;slot<incoming.size();++slot) {
             const auto& argument=incoming[slot];
             Evaluation materialized;
@@ -582,11 +591,13 @@ public:
                 input=&materialized;
             }
             if (!input->reference) ValidateValue(input->value, 0);
-            const auto value = input->Load(); ValidateValue(value, 0); Retain(ValueBytes(value));
+            const auto value = copiedOutTemporary && nativeArgumentsMaterialized ? input->value : input->Load();
+            ValidateValue(value, 0); Retain(ValueBytes(value));
             if (directSequentialSeeds) CaptureNativeInput(directPrefix,value,directPrefixBytes,directPrefixNodes);
             // execGotoState consumes each input value before evaluating the
             // next argument. Ordinary native OUT arguments retain aliases.
-            if ((fn.flags & 0x400u) && SnapshotNativeInput(fn.nativeIndex, &fn) &&
+            if (copiedOutTemporary) args.push_back({value,input->reference,input->disposition,input->zeroFillBytes});
+            else if ((fn.flags & 0x400u) && SnapshotNativeInput(fn.nativeIndex, &fn) &&
                 input->disposition==ResultDisposition::Written) args.push_back({value,{}});
             else args.push_back(*input);
         }
@@ -599,7 +610,7 @@ public:
                 args.push_back({});
             }
             if (p.resultLayout!=ResultLayout::Unknown) {
-                const auto value=args[argCount].Load();
+                const auto value=copiedOutTemporary ? args[argCount].value : args[argCount].Load();
                 if (value.kind!=Kind::Nothing) ValidateResultLayout(value,p.resultLayout);
             }
             ++argCount;
@@ -1594,10 +1605,12 @@ private:
                         Fail(Status::Unsupported,"VM context argument result destination layout is unavailable");
                 }
                 const bool snapshotInput = nativeCall && SnapshotNativeInput(index, fn.get());
-                if (snapshotInput || sequentialSeeds) {
+                const bool copiedOutTemporary = nativeCall && CopyNativeOutTemporary(index);
+                if (snapshotInput || sequentialSeeds || copiedOutTemporary) {
                     auto value = argument.Load(); ValidateValue(value, 0); Retain(ValueBytes(value));
                     if (sequentialSeeds) CaptureNativeInput(capturedInputs,value,capturedInputBytes,capturedInputNodes);
                     if (snapshotInput) argument = {std::move(value),{}};
+                    else if (copiedOutTemporary) argument.value=std::move(value);
                 }
                 args.push_back(std::move(argument));
             }

@@ -55,14 +55,15 @@ six health body-part windows now receive their original textures, translucent
 GC styles, requested geometry and colors. The body overlay is lowered beneath
 them with its original armor color. Both energy/breath ProgressBarWindows and
 the crosshair initialize and are assigned to the actual pending HUD. The next
-original boundary is DeusExHUD.ConfigurationChanged PC305: native1465
-QueryPreferredSize is not implemented. All ten HUDObjectSlot Text/Button/Toggle
+original boundary is DeusExHUD.ConfigurationChanged PC327: native1461
+ConfigureChild is not implemented. QueryPreferredSize now executes its original
+cache/callback/texture-fallback path. All ten HUDObjectSlot Text/Button/Toggle
 constructors now execute, including temporary selectable-table insertion/removal,
 original FontTiny, requested size, theme-null colors and sibling lowering.
 The Radio retains Toggle creation order; the Tile sibling order is0,9,8,...,1.
 RadioBox/TileWindow construction, Modal tab registration, hidden visibility and
 Tile margin/spacing/order setters execute. The bounded diagnostic captures84
-objects/6007 writes with no inspection error (128 objects/4MiB capture limits);
+objects/6018 writes with no inspection error (128 objects/4MiB capture limits);
 this is still an unpublished, rolled-back initialization prefix, not live health.
 The belt has completed its script InitWindow and locally shown itself, but its
 parent HUD layout callback has not returned. HUD.belt and Root.hud remain None;
@@ -73,13 +74,13 @@ directly before rollback. This is still a pending construction graph. Full nativ
 window construction, layout, lifecycle/input/rendering, player Login/Possess and
 the remaining HUD behavior still need implementation and integration tests.
 Unsupported callbacks refuse and roll back instead of publishing a partial HUD.
-The coherent host suite passes81 ordinary tests/94 registered,13 explicit
-owned-data skips, zero failures (26.27s alongside original-data probes).
-The separate owned-data control passes4411 checks, including all ten actual
+The coherent host suite passes82 ordinary tests/95 registered,13 explicit
+owned-data skips, zero failures (34.12s alongside original-data probes).
+The separate owned-data control passes4429 checks, including all ten actual
 slots, Radio/Tile hierarchy, native table indices/display records, original
 properties, oxygen sources, repeated initialization, forced-budget rollback
 and warm/cold ring/session ownership. Runtime/VM ARM64 syntax-only checks pass.
-The87 original-artwork controls also pass with unchanged source files;
+The85 non-preview original-artwork controls also pass with unchanged source files;
 inspected software previews are explicit
 fixtures, not live Quest health/equipment acceptance. No Android binary/APK was made.
 The separate console control passes65 checks/one expected refusal. The focused
@@ -102,15 +103,47 @@ implemented with runtime-owned Byte/Bool argument seeds. The current original
 prefix stops before their later information-panel use; unit argument coverage
 is not presented as live information-panel acceptance.
 
-The next1465 declaration is Extension.Window.QueryPreferredSize, flags0x401,
+The implemented1465 declaration is Extension.Window.QueryPreferredSize, flags0x401,
 with two Float OUT parameters (0x180), not ordinary copied inputs. Retail thunk
 10053160 captures each actual output reference, falling back to independent
 initialized Float temporaries; do not add1465 to ordinary-input snapshots.
 QueryPreferredSize1004e710 delegates to1004e790, which has requested-size,
-dirty-query/cache, dynamic QueryDesiredSize and actual background-size fallback
-branches. The current failing receiver is Crosshair, whose InitWindow assigns
-the actual CrossSquare texture, not a requested size. Returning current Width/
-Height or fabricated icon dimensions is not an implementation of that query.
+dirty-query/cache, dynamic ParentRequestedPreferredSize and actual background-size
+fallback branches. Its callback is NOT named QueryDesiredSize. Window's native
+virtual10050390 forwards an initialized Bool/Float-OUT/Bool/Float-OUT packet to
+the most-derived script function. Original-data construction and rollback
+controls verify this query path. Negative cached results retain pre-fallback values;
+each call obtains fallback dimensions from the actual Texture's authored USize/
+VSize, or current Width/Height when Background is None. Callback references own
+their float storage so rollback cannot retain dangling stack pointers.
+Bitmap dimensions are captured from original tagged properties during package/
+map preparation, not by opening packages or decoding images in the query.
+Missing/malformed metadata stays unavailable; current typed runtime overrides
+remain authoritative. The sizing helper passes147 branch/cache/reentrancy,
+signed-zero and nonfinite-refusal checks. Native output aliases are guarded
+exactly once and are kept distinct from copied Float expression temporaries.
+
+A corrected native offset audit also distinguishes Window.X/Y/Width/Height
+(+78/+7c/+80/+84) from the six-Float winClipRect (+d4..+e8). Selectable-table
+sorting uses clip originX/Y; location eligibility uses positive clipWidth/
+clipHeight, and the first visible location adds clip offsets to its origin.
+The previous local-geometry interpretation was incorrect for clipped windows
+and has been replaced; unchanged hidden constructor fixtures alone did not
+prove those visible selection semantics.
+
+The following layout dependency1461 is Extension.Window.ConfigureChild,
+flags0x401 and four mandatory Float inputs (0x80). Its wrapper10052f60 seeds
+each Float0 independently and copies X,Y,width,height in order; no clamp is
+proved. Body1004ec50 locks Self and sets bConfigured before the local visibility
+test. A locally hidden Self skips geometry; a locally visible Self clears
+bNeedsReconfigure and stores current X/Y/Width/Height even under a hidden root.
+Size change or prior bNeedsReconfigure invokes ChangeConfiguration10050f90;
+outermost ConfigureChild (or a TabGroup) clips the actual subtree and resorts
+selection tables. It must not be substituted with SetConfiguration, which
+stores requested geometry only. Original ChangeConfiguration performs dynamic
+script ConfigurationChanged and aligned-child ResizeChild propagation. These
+contracts, clip intersections and deferred-unlock destruction remain to be
+implemented/verified, rather than bypassing callbacks to publish the HUD.
 
 The six-limb presentation clock now follows the original .4s damage flash,
 1s healing and .5s refresh statement order, including retained applied tint when
@@ -133,8 +166,9 @@ argument buffers distinguish initialized defaults from SetTileColor's
 uninitialized four-byte Color destination; absent or partial Color writes are
 refused rather than filled from invented defaults. Tile setters copy each
 initialized Float/Byte input separately; no global default seed is inferred
-from an opcode. The VM passes689939 checks and719 refusal controls, including
-SetSelectability/SetWidth and5126 Tile input-copy/default checks. Byte alignment
+from an opcode. The VM passes690142 checks and725 refusal controls, including
+203 preferred-size OUT-copy/reference controls, SetSelectability/SetWidth and
+5126 Tile input-copy/default checks. Byte alignment
 inputs retain all256 values; partial packed-Bool clearing still refuses rather
 than inventing a native memory layout.
 Independent qualified instance storage also preserves

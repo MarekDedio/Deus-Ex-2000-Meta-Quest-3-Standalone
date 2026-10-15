@@ -187,8 +187,8 @@ int main(int argc,char** argv) {
         std::cout<<"ORIGINAL root pending graph: "<<pending.execution.function<<':'<<pending.execution.offset<<
             " objects="<<pending.objects.size()<<" writes="<<pending.execution.writes<<" "<<pending.execution.error<<"; inspection="<<pending.inspectionError<<std::endl;
         Require(!pending.execution.passed() && !pending.execution.committed && pending.inspectionError.empty() &&
-            pending.execution.function=="DeusEx.DeusExHUD.ConfigurationChanged" && pending.execution.offset==305u &&
-            pending.execution.error=="Unsupported runtime native 1465" && pending.execution.writes==6007u &&
+            pending.execution.function=="DeusEx.DeusExHUD.ConfigurationChanged" && pending.execution.offset==327u &&
+            pending.execution.error=="Unsupported runtime native 1461" && pending.execution.writes==6018u &&
             pending.objects.size()==84u &&
             pending.rootedWindows==std::vector<std::string>{pending.pawnRootPath},
             "Original root prefix probe did not capture the actual pending native graph: "+pending.inspectionError);
@@ -282,6 +282,19 @@ int main(int argc,char** argv) {
             "Original root did not create its actual HUD/ammo/health/crosshair/belt children");
         const auto& hudView=*hudFound;const auto& ammoView=*ammoFound;
         const auto& hitView=*hitFound;const auto& crossView=*crossFound;const auto& beltView=*beltFound;
+        Require(!field(crossView,"Extension.Window.bNeedsQuery").value.boolean &&
+            field(crossView,"Extension.Window.bNeedsReconfigure").value.boolean &&
+            !field(crossView,"Extension.Window.bLastWidthSpecified").value.boolean &&
+            !field(crossView,"Extension.Window.bLastHeightSpecified").value.boolean,
+            "Original crosshair preferred-size query did not update only its query cache flags");
+        for(const auto* name:{"lastSpecifiedWidth","lastSpecifiedHeight","lastQueryWidth","lastQueryHeight"})
+            Require(field(crossView,"Extension.Window."+std::string(name)).value.floating==-1.0f,
+                "Original preferred-size query cached texture fallback instead of the pre-fallback result");
+        Require(field(crossView,"Extension.Window.Width").value.floating==10.0f &&
+            field(crossView,"Extension.Window.Height").value.floating==10.0f &&
+            field(crossView,"Extension.Window.hardcodedWidth").value.floating==-1.0f &&
+            field(crossView,"Extension.Window.hardcodedHeight").value.floating==-1.0f,
+            "Original preferred-size query changed current/requested geometry instead of only returning outputs");
         const auto& radioView=object(field(beltView,"Extension.Window.firstChild").value.text);
         const auto& slotsView=object(field(beltView,"DeusEx.HUDObjectBelt.winSlots").value.text);
         Require(radioView.classPath=="Extension.RadioBoxWindow" && radioView.outerPath==beltView.path &&
@@ -681,7 +694,7 @@ int main(int argc,char** argv) {
         std::cout<<"ORIGINAL unbound root initialization boundary: "<<rootAttempt.function<<':'<<rootAttempt.offset<<
             " opcode="<<unsigned(rootAttempt.opcode)<<" "<<rootAttempt.error<<std::endl;
         Require(!rootAttempt.passed() && !rootAttempt.committed && rootAttempt.function=="DeusEx.DeusExHUD.ConfigurationChanged" &&
-            rootAttempt.offset==305u && rootAttempt.error=="Unsupported runtime native 1465" &&
+            rootAttempt.offset==327u && rootAttempt.error=="Unsupported runtime native 1461" &&
             std::find(rootAttempt.callStack.begin(),rootAttempt.callStack.end(),"DeusEx.DeusExRootWindow.InitWindow")!=rootAttempt.callStack.end(),
             "Native1052 did not construct/dispatch original root without a fabricated client prerequisite");
         const auto windowsAfter=ReadPortableRuntimeNativeWindowSummary();
