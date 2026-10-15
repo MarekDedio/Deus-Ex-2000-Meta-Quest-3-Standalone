@@ -41,6 +41,7 @@
 #include "quest_hud_ui.h"
 #include "quest_hud_view.h"
 #include "quest_playable_hud.h"
+#include "quest_quick_belt_visibility.h"
 #include "quest_hud_health_clock.h"
 #include "quest_hud_oxygen_clock.h"
 #include "quest_persona_view.h"
@@ -344,9 +345,11 @@ class PersonaUiRenderer {
         static const char* fragmentShader = R"glsl(
             precision lowp float;
             uniform sampler2D Texture0;
+            uniform lowp float Opacity;
             varying lowp vec2 oTexCoord;
             void main() {
                 lowp vec4 texel = texture2D(Texture0, oTexCoord);
+                texel.a *= Opacity;
                 if (texel.a < 0.01) discard;
                 // Theme modulation belongs to the neutral background/border
                 // layers, not to the original full-color inventory icons.
@@ -355,14 +358,17 @@ class PersonaUiRenderer {
         )glsl";
         static OVRFW::ovrProgramParm parms[] = {
             {.Name = "Texture0", .Type = OVRFW::ovrProgramParmType::TEXTURE_SAMPLED},
+            {.Name = "Opacity", .Type = OVRFW::ovrProgramParmType::FLOAT},
         };
         program_ = OVRFW::GlProgram::Build(
-            "", vertexShader, "", fragmentShader, parms, 1);
+            "", vertexShader, "", fragmentShader, parms, 2);
         surface_.geo = OVRFW::BuildTesselatedQuad(1, 1, true);
         auto& command = surface_.graphicsCommand;
         command.Program = program_;
         command.Textures[0] = texture;
         command.UniformData[0].Data = &command.Textures[0];
+        opacity_=1.0f;
+        command.UniformData[1].Data = &opacity_;
         command.GpuState.depthEnable = command.GpuState.depthMaskEnable = false;
         command.GpuState.blendEnable = OVRFW::ovrGpuState::BLEND_ENABLE;
         command.GpuState.blendSrc = GL_SRC_ALPHA;
@@ -382,8 +388,12 @@ class PersonaUiRenderer {
             OVR::Matrix4f::Scaling(halfWidth,halfHeight,1.0f);
     }
     void Render(std::vector<OVRFW::ovrDrawSurface>& surfaces) {
-        if (initialized_) surfaces.emplace_back(modelMatrix_, &surface_);
+        if (!initialized_ || opacity_<=0.0f) return;
+        surface_.graphicsCommand.UniformData[0].Data=&surface_.graphicsCommand.Textures[0];
+        surface_.graphicsCommand.UniformData[1].Data=&opacity_;
+        surfaces.emplace_back(modelMatrix_, &surface_);
     }
+    void SetOpacity(float opacity) { opacity_=std::isfinite(opacity)?std::clamp(opacity,0.0f,1.0f):0.0f; }
     bool IsInitialized() const { return initialized_; }
 
    private:
@@ -391,6 +401,7 @@ class PersonaUiRenderer {
     OVRFW::GlProgram program_;
     OVR::Matrix4f modelMatrix_ = OVR::Matrix4f::Identity();
     bool initialized_{};
+    float opacity_{1.0f};
 };
 
 // Original FrobDisplayWindow's Extension.Solid strips, batched into one draw.
@@ -845,6 +856,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         personaPage_ = PersonaPage::Inventory;
         personaOriginalTextReady_ = false;
         SetInventoryMenuOpen(false);
+        quickBeltVisibility_.Reset();
         ClearPendingConversation();
         InvalidateDialogueAudio();
         personaLogEntries_.clear();
@@ -1024,6 +1036,11 @@ class DeusExQuestApp final : public OVRFW::XrApp {
 
     void Update(const OVRFW::ovrApplFrameIn& frame) override {
         healthUiVisible_=beltUiVisible_=false;
+        // Release any stale held input even through tracking/startup returns.
+        // Time is presentation-only and never depends on runtime ownership.
+        quickBeltVisibility_.SetHeld(false);
+        if(std::isfinite(frame.DeltaSeconds) && frame.DeltaSeconds>=0.0f)
+            quickBeltVisibility_.Tick(frame.DeltaSeconds);
         musicPlaybackActive_.store(Focused && runtimeAvailable_ && pendingMapName_.empty() &&
             transitionMapName_.empty(),std::memory_order_release);
         CompleteInitialPreparation();
@@ -1115,6 +1132,8 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             dismissedMenuWithB = true;
         }
         const bool gameplayActive = playerAlive && !mapLoading && !inventoryMenuOpen_;
+        quickBeltVisibility_.SetHeld(gameplayActive && Focused && frame.RightRemoteTracked &&
+            (frame.RightRemoteGripTrigger>0.75f || frame.RightRemoteIndexTrigger>0.75f));
         if (gameplayActive && Focused && !AdvanceRuntimeMoverPublication(frame.DeltaSeconds)) return;
         if (gameplayActive && Focused) PollTouchDataLinks(frame.DeltaSeconds);
         if (!mapLoading && !inventoryMenuOpen_ && frame.LeftRemoteTracked &&
@@ -1265,6 +1284,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             } else {
                 const auto path=inventoryNavigation_.SelectedIdentity();
                 const bool equipped=EquipPortableRuntimeInventoryItem(path);
+                if(equipped) quickBeltVisibility_.Reveal();
                 interactionStatus_ = equipped ? "EQUIPPED " + SelectedInventoryDisplayName() : "ITEM CANNOT BE EQUIPPED";
                 inventoryActionStatus_ = interactionStatus_;
                 hudQuerySeconds_=0.0f;
@@ -1283,6 +1303,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         const bool firePressed = frame.RightRemoteIndexTrigger > 0.75f;
         if (gameplayActive && pendingMapName_.empty() && transitionMapName_.empty() &&
             frame.RightRemoteTracked && firePressed && !fireLatch_) {
+            quickBeltVisibility_.Reveal();
             const std::vector<std::string> inventory = GetPortableRuntimeInventoryItems();
             const float weaponDamage = SelectedWeaponDamage(inventory);
             if (PortableRuntimeKeyRingEquipped()) {
@@ -1308,6 +1329,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         const bool gripPressed = frame.RightRemoteGripTrigger > 0.75f;
         if (gameplayActive && pendingMapName_.empty() && transitionMapName_.empty() &&
             frame.RightRemoteTracked && gripPressed && !inventoryCycleLatch_) {
+            quickBeltVisibility_.Reveal();
             CyclePortableRuntimeQuickBelt(1);
             const auto selected=GetPortableRuntimeEquippedItem();
             EnsureInventoryNavigation(GetPortableRuntimeInventoryItems());
@@ -1318,6 +1340,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         }
         inventoryCycleLatch_ = gripPressed;
         if(gameplayActive && frame.RightRemoteTracked && frame.Clicked(frame.kButtonRightThumbStick)) {
+            quickBeltVisibility_.Reveal();
             const auto belt=ReadPortableRuntimeQuickBelt();
             if(belt.slots[0u]) EquipPortableRuntimeInventoryItem(belt.slots[0u]->actorPath);
             interactionStatus_="EQUIPPED KEY RING";interactionStatusSeconds_=2.0f;hudQuerySeconds_=0.0f;
@@ -1435,6 +1458,15 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             pose.Translation += pose.Rotation.Rotate({0.0f,-0.54f,-1.4f});
             controlHintLabel_->SetLocalPose(pose);
             controlHintLabel_->SetVisible(!mapLoadingNow && !inventoryMenuOpen_ && !debugHudVisible_);
+        }
+        if(hudStateDiagnosticRequested_) {
+            hudStateDiagnosticRequested_=false;
+            ALOG("DeusExQuest: HUD presentation health=%d compass=%d speech=%d belt=%d alpha=%.3f; speech center=(%.4f %.4f) size=(%.4f %.4f); belt centerY=%.3f eyeFacing=true",
+                static_cast<int>(healthUiVisible_),static_cast<int>(compassUiVisible_),
+                static_cast<int>(dataLinkUiVisible_),static_cast<int>(beltUiVisible_),quickBeltVisibility_.Alpha(),
+                QuestVr::kHudDataLinkCenterX,QuestVr::kHudDataLinkCenterY,
+                QuestVr::kHudDataLinkHalfWidth*2.0f,QuestVr::kHudDataLinkHalfHeight*2.0f,
+                QuestVr::kPlayableBeltCenterY);
         }
         ui_.Update(frame);
     }
@@ -3823,6 +3855,16 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             ToggleDebugHud();
             return;
         }
+        if(std::strcmp(requested,"BELT")==0) {
+            quickBeltVisibility_.Reveal();
+            ALOG("DeusExQuest: quickbar presentation revealed; equipment unchanged");
+            return;
+        }
+        if(std::strcmp(requested,"HUDSTATE")==0) {
+            // Report after this frame's UI visibility/poses are resolved.
+            hudStateDiagnosticRequested_=true;
+            return;
+        }
         if (std::strcmp(requested, "SEATED") == 0 || std::strcmp(requested, "STANDING") == 0) {
             SetPlayerPosture(std::strcmp(requested,"SEATED") == 0,true);
             return;
@@ -4273,6 +4315,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                 ? interaction.action + ": " + actorName
                 : "CANNOT USE: " + actorName;
             interactionStatusSeconds_ = 3.0f;
+            if(interaction.handled && interaction.action=="pickup") quickBeltVisibility_.Reveal();
             if (interaction.action == "conversation") ShowDialogue(best->objectPath);
             ALOG(
                 "DeusExQuest: VR use %s on %s (%s) at %.2fm; inventory=%zu",
@@ -4488,11 +4531,11 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         healthPose.Translation+=healthPose.Rotation.Rotate({QuestVr::kHudHealthCenterX,
             QuestVr::kHudHealthCenterY,-QuestVr::kHudVrDistance});
         healthHudRenderer_.SetPose(healthPose,QuestVr::kHudHealthHalfWidth,QuestVr::kHudHealthHalfHeight);
-        auto beltPose=frame.HeadPose;
-        beltPose.Translation+=beltPose.Rotation.Rotate({QuestVr::kPlayableBeltCenterX,
-            QuestVr::kPlayableBeltCenterY,QuestVr::kPlayableBeltCenterZ});
+        const auto beltPose=QuestVr::QuickBeltPanelPose(frame.HeadPose);
         beltHudRenderer_.SetPose(beltPose,QuestVr::kPlayableBeltHalfWidth,QuestVr::kPlayableBeltHalfHeight);
-        healthUiVisible_=!displayedHealthHudPixels_.empty();beltUiVisible_=!displayedBeltHudPixels_.empty();
+        beltHudRenderer_.SetOpacity(quickBeltVisibility_.Alpha());
+        healthUiVisible_=!displayedHealthHudPixels_.empty();
+        beltUiVisible_=!displayedBeltHudPixels_.empty() && quickBeltVisibility_.Visible();
     }
 
     void UpdateOriginalCompassUi(const OVRFW::ovrApplFrameIn& frame,bool mapLoading) {
@@ -4565,13 +4608,12 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                 return;
             }
         }
-        // Preserve the PC artwork/layout, adapting only its screen attachment
-        // to a stable binocular head-relative VR panel above the center ray.
+        // Original portrait/text layout, inset beside the health column with
+        // a shared top edge. The complete panel remains inside binocular FOV.
         auto pose=frame.HeadPose;
-        pose.Translation+=pose.Rotation.Rotate({0.0f,0.36f,-1.65f});
-        // Avoid undersampling the original seven-pixel bitmap glyphs in the
-        // Quest eye buffer: retain >= one eye texel per original canvas pixel.
-        dataLinkRenderer_.SetPose(pose,0.862f,0.228f);
+        pose.Translation+=pose.Rotation.Rotate({QuestVr::kHudDataLinkCenterX,
+            QuestVr::kHudDataLinkCenterY,-QuestVr::kHudVrDistance});
+        dataLinkRenderer_.SetPose(pose,QuestVr::kHudDataLinkHalfWidth,QuestVr::kHudDataLinkHalfHeight);
         dataLinkUiVisible_=true;
     }
 
@@ -5574,6 +5616,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
     }
 
     void SetInventoryMenuOpen(const bool open) {
+        if(inventoryMenuOpen_ && !open) quickBeltVisibility_.Reveal();
         inventoryMenuOpen_ = open;
         inventoryMenuDirty_ = true;
         choiceCycleLatch_ = true;
@@ -7657,6 +7700,8 @@ class DeusExQuestApp final : public OVRFW::XrApp {
     PersonaUiRenderer healthHudRenderer_,beltHudRenderer_;
     GLuint healthHudTextureId_{},beltHudTextureId_{};
     bool healthUiVisible_{},beltUiVisible_{};
+    QuestVr::QuickBeltVisibility quickBeltVisibility_;
+    bool hudStateDiagnosticRequested_{};
     std::optional<PortablePlayerHudSnapshot> cachedPlayerHud_;
     QuestVr::HudHealthClock hudHealthClock_;
     QuestVr::HudOxygenClock hudOxygenClock_;

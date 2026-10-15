@@ -3,6 +3,7 @@
 #include "vr_world_transform.h"
 #include <cstdint>
 #include <optional>
+#include <type_traits>
 
 namespace QuestVr {
 
@@ -55,5 +56,30 @@ inline constexpr float kHudCompassCenterY=0.07f;
 inline constexpr float kHudHealthCenterX=kHudColumnLeftX+kHudHealthHalfWidth;
 inline constexpr float kHudHealthCenterY=kHudCompassCenterY+
     kHudCompassHalfHeight+4.0f*kHudVrPixelsToMeters+kHudHealthHalfHeight;
+
+// Keep original portrait/text canvas proportions, slightly reduced to fit
+// beside (never over) the body-health column in both eyes.
+inline constexpr float kHudDataLinkPixelsToMeters=0.0034f;
+inline constexpr float kHudDataLinkHalfWidth=431.0f*0.5f*kHudDataLinkPixelsToMeters;
+inline constexpr float kHudDataLinkHalfHeight=114.0f*0.5f*kHudDataLinkPixelsToMeters;
+inline constexpr float kHudDataLinkColumnGap=0.04f;
+inline constexpr float kHudDataLinkCenterX=kHudHealthCenterX+kHudHealthHalfWidth+
+    kHudDataLinkColumnGap+kHudDataLinkHalfWidth;
+inline constexpr float kHudDataLinkCenterY=kHudHealthCenterY+kHudHealthHalfHeight-kHudDataLinkHalfHeight;
+
+template<class Pose>
+Pose QuickBeltPanelPose(const Pose& head) {
+    auto pose=head;
+    using Vector=std::remove_cvref_t<decltype(pose.Translation)>;
+    using Rotation=std::remove_cvref_t<decltype(pose.Rotation)>;
+    pose.Translation+=pose.Rotation.Rotate(Vector{kPlayableBeltCenterX,
+        kPlayableBeltCenterY,kPlayableBeltCenterZ});
+    // Translating a forward-parallel quad below the eyes makes its bottom
+    // farther away. Aim the panel normal at the head center instead; top and
+    // bottom then remain equally far away under any tracked head rotation.
+    const float pitch=std::atan2(kPlayableBeltCenterY,-kPlayableBeltCenterZ);
+    pose.Rotation=pose.Rotation*Rotation{std::sin(pitch*0.5f),0.0f,0.0f,std::cos(pitch*0.5f)};
+    return pose;
+}
 
 } // namespace QuestVr

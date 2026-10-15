@@ -1,5 +1,22 @@
 # Port status
 
+## Contextual quickbar, eye-facing tilt and separated speech (2026-10-15)
+
+- New user priority: move original NPC portrait/text beside the health column
+  instead of covering it,15% smaller with a shared top edge and positive gap.
+- Quickbar stays at the requested lower center but now faces the eyes, with
+  equal top/bottom edge distances. It starts hidden; equip/cycle/use/pickup and
+  closing Inventory reveal it, then it fades after three idle seconds. Holding
+  right grip/trigger keeps it visible. Hiding does not change equipment.
+- Layout57930 and visibility405884/24 refusal checks pass; full CTest91 passes,
+  14 explicit owned-data skips, zero failures,19.04s. Device acceptance is separate.
+- Signed APK built, automatically replace-installed with saves preserved,
+  installed checksum matched and game launched. See QUEST-TEST-BUILD.md for
+  the exact artifact/hash and controls. Physical comfort remains unaccepted.
+- Original keyring/knife/crowbar complete hand-and-item CPU assemblies and exact
+  selection helpers are prepared/tested, not yet in the live renderer. See
+  HELD-ITEM-VISUALS.md. Their integration remains deferred for this UI request.
+
 ## Installed HUD comfort revision (2026-10-15)
 
 - Per the user's change of plans, pause hand-item work for a layout-only HUD

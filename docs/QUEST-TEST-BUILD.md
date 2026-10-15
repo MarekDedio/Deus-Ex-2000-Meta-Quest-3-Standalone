@@ -1,6 +1,57 @@
 # Current Quest test-build handoff (2026-10-15)
 
-## Installed: much-lower quickbar correction (2026-10-15)
+## Contextual quickbar and separated speech HUD (2026-10-15)
+
+User-priority changes: Jaime/NPC portrait/text no longer covers health or compass.
+The original431x114 speech canvas is placed immediately to the column's right,
+with a shared top edge and0.04m gap. Scale is reduced15%, retaining original
+artwork, fonts, portrait and text layout; both-eye horizontal bounds stay inset.
+
+The low quickbar now faces the eyes instead of remaining forward-parallel.
+Its center, width and height are unchanged; top/bottom edges are equally far
+from either eye under tracked yaw/pitch/roll. Center-row left alignment with
+health/compass remains. Actual tilted vertical corners occupy about35–41 degrees
+below the eye line, replacing the previous parallel-plane corner approximation.
+
+The bar starts hidden and appears on deliberate equipment actions. It remains
+visible while right grip/trigger is held; after release/action it shows for
+three seconds, fading during the final0.25s. This is presentation-only: hiding
+never unequips or consumes the selected item. Inventory and tracking/loading
+guards still suppress gameplay overlays; health and compass do not auto-hide.
+
+- Right grip cycles occupied shortcuts and reveals the bar; holding keeps it visible.
+- Right stick click selects/reveals the starter keyring.
+- Inventory: browse an item, press A to equip, then close with B/Menu.
+- Right trigger outside Inventory uses the equipped item, even while the bar is hidden.
+- Pickups and closing Inventory briefly reveal the selected shortcut.
+
+Host regression checks: layout57930, visibility405884/24 expected invalid-time
+refusals. Full CTest91 passes/105 registered,14 explicit owned-data skips,
+zero failures in19.04s. The independent held-item preparation is also checked
+but deliberately not activated by this UI-only APK; see HELD-ITEM-VISUALS.md.
+
+Signed ARM64 APK:
+`artifacts/hud-reposition-20261015/DeusExQuestVR-contextual-eye-facing-hud-20261015.apk`
+(33,810,966 bytes), SHA256
+`E65186D5177C54018DEA8847C4E140A1A0D8DD46FE181C4837AB2F56AD0B4356`.
+Final Android build succeeds in1m3s, APK v2 signature verifies, automatically
+replace-installed without clearing data on Quest3 `2G0YC5ZG620985`, update
+2026-10-15 11:25:07. Installed base.apk checksum matches exactly; launched
+process12666. Headset visual/comfort acceptance remains separate from these
+compile, signature and installation checks.
+
+A tracked1680x1760 frame from this exact build was captured and inspected:
+`artifacts/hud-reposition-20261015/quest-contextual-hud-idle-20261015.bmp`.
+It shows the actual Jaime portrait/typewriter speech beside unobscured health
+and compass, with the quickbar hidden. The same frame's HUDSTATE reports
+health1/compass1/speech1/belt0/alpha0. This proves that rendered combination,
+not human comfort or a complete held-item renderer.
+
+Diagnostics: BELT reveals presentation without changing inventory/equipment;
+HUDSTATE reports final per-frame overlay visibility/alpha and layout. Neither
+creates or equips items. These use the existing tracked-app diagnostic mailbox.
+
+## Previous installed build: much-lower quickbar correction (2026-10-15)
 
 The user rejected the27-degree quickbar position as still too high. Move only
 the bar center fromY=-0.84m to-1.28m at the same1.65m depth: about38 degrees
