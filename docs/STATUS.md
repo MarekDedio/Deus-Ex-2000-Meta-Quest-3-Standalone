@@ -13,6 +13,9 @@
 - Signed APK built, automatically replace-installed with saves preserved,
   installed checksum matched and game launched. See QUEST-TEST-BUILD.md for
   the exact artifact/hash and controls. Physical comfort remains unaccepted.
+- Exact-build Quest frames show actual Jaime portrait/text beside unobscured
+  health/compass in both idle and revealed-bar states. Final-frame diagnostics
+  prove belt alpha1 on reveal and alpha0 when idle, with health/compass retained.
 - Original keyring/knife/crowbar complete hand-and-item CPU assemblies and exact
   selection helpers are prepared/tested, not yet in the live renderer. See
   HELD-ITEM-VISUALS.md. Their integration remains deferred for this UI request.

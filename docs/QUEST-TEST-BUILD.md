@@ -47,6 +47,17 @@ and compass, with the quickbar hidden. The same frame's HUDSTATE reports
 health1/compass1/speech1/belt0/alpha0. This proves that rendered combination,
 not human comfort or a complete held-item renderer.
 
+The revealed state was also captured and inspected at
+`artifacts/hud-reposition-20261015/quest-contextual-hud-revealed-20261015.bmp`:
+actual Jaime speech, health and compass remain separate while the eye-facing
+bar is visible. HUDSTATE records health1/compass1/speech1/belt1/alpha1. A later
+idle query records health1/compass1/belt0/alpha0, proving on-device hide/show
+without hiding the other HUD panels. Holding right grip/trigger intentionally
+extends the visible window. Steady windows reach72fps/13.89ms; streaming and
+debug screenshot readback still produce slower windows, not a full performance
+acceptance pass. A normal session reinitialization interrupted the first reveal
+request; it was left intact, consumed after startup, and not overwritten.
+
 Diagnostics: BELT reveals presentation without changing inventory/equipment;
 HUDSTATE reports final per-frame overlay visibility/alpha and layout. Neither
 creates or equips items. These use the existing tracked-app diagnostic mailbox.
