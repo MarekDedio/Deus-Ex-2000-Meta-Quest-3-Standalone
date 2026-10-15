@@ -4,14 +4,18 @@
 
 - Per the user's change of plans, pause hand-item work for a layout-only HUD
   adjustment. Health/compass move down/left and share the quickbar's left edge;
-  the bar moves substantially lower while staying within30 degrees below the
-  eye line. Original artwork scales, heading, health and equipment remain intact.
+  the bar initially moved to27 degrees below the eye line. The user found that
+  still too high, so the follow-up changes only the bar to about38 degrees down
+  (bottom just below40). Original artwork scales, column placement, heading,
+  health and equipment remain intact.
 - Signed ARM64 APK built successfully and signature verified. Quest reconnected
   during verification; replace-installed without clearing data, installed hash
   matched and game launched. See QUEST-TEST-BUILD.md for the exact APK/checksum.
-  Software projection inspected; physical comfort acceptance remains pending.
-- Placement/presentation238, heading/view607 and the focused four-test suite
-  pass. Full CTest:87 passes,14 explicit owned-data skips, zero failures,16.58s.
+  The follow-up APK was also automatically installed/launched without clearing
+  data. Software projection of the first revision was inspected; physical
+  comfort acceptance of the much-lower bar remains pending.
+- Placement/presentation240 and heading/view607 pass. Full CTest:87 passes,
+  14 explicit owned-data skips, zero failures,11.81s.
 
 ## Installed health preview / playable quickbar (2026-10-15)
 

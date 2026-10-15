@@ -82,19 +82,25 @@ void Placement() {
     Require(angle(kPlayableBeltCenterX-kPlayableBeltHalfWidth)<27.0 &&
         angle(kPlayableBeltCenterX+kPlayableBeltHalfWidth)<27.0,
         "Quickbar horizontal edges exceed the central-view comfort bounds");
-    Require(angle(kPlayableBeltCenterY-kPlayableBeltHalfHeight)<30.0,
-        "Lowered quickbar bottom exceeds thirty degrees below the eye line");
-    Require(angle(kPlayableBeltCenterY+kPlayableBeltHalfHeight)>24.0 &&
-        angle(kPlayableBeltCenterY+kPlayableBeltHalfHeight)<25.0,
-        "Quickbar top does not clear the central twenty-four degrees");
+    Require(angle(kPlayableBeltCenterY-kPlayableBeltHalfHeight)<40.0,
+        "Further-lowered quickbar bottom exceeds forty degrees below the eye line");
+    Require(angle(kPlayableBeltCenterY+kPlayableBeltHalfHeight)>35.0 &&
+        angle(kPlayableBeltCenterY+kPlayableBeltHalfHeight)<36.0,
+        "Quickbar top does not clear the central thirty-five degrees");
+    Require(angle(kPlayableBeltCenterY)>37.5 && angle(kPlayableBeltCenterY)<38.5,
+        "Quickbar center did not move substantially below the rejected twenty-seven-degree position");
     Require(kPlayableBeltCenterY+kPlayableBeltHalfHeight<0.0f,
         "Quickbar crosses the forward aim point");
     Require(std::fabs(kPlayableBeltHalfWidth/kPlayableBeltHalfHeight-
         static_cast<float>(kHudBeltWidth)/static_cast<float>(kHudBeltHeight))<0.00001f,
         "Quickbar artwork aspect ratio changed");
     Require(kHudVrPixelsToMeters==0.004f && kPlayableBeltPixelsToMeters==0.003f &&
-        kPlayableBeltCenterY==-0.84f && kHudCompassCenterY==0.07f,
+        kPlayableBeltCenterY==-1.28f && kHudCompassCenterY==0.07f,
         "Requested lower HUD placement or unchanged artwork scale regressed");
+    Require(std::fabs(kHudHealthCenterX-(-0.6435f))<0.00001f &&
+        std::fabs(kHudHealthCenterY-0.378f)<0.00001f &&
+        std::fabs(kHudCompassCenterX-(-0.6655f))<0.00001f,
+        "Bar-only correction moved the health/compass column");
     const auto beltLeft=kPlayableBeltCenterX-kPlayableBeltHalfWidth;
     Require(std::fabs(kHudHealthCenterX-kHudHealthHalfWidth-beltLeft)<0.00001f &&
         std::fabs(kHudCompassCenterX-kHudCompassHalfWidth-beltLeft)<0.00001f,

@@ -1,6 +1,29 @@
 # Current Quest test-build handoff (2026-10-15)
 
-## Installed: lowered, left-aligned HUD (2026-10-15)
+## Installed: much-lower quickbar correction (2026-10-15)
+
+The user rejected the27-degree quickbar position as still too high. Move only
+the bar center fromY=-0.84m to-1.28m at the same1.65m depth: about38 degrees
+below eye level, top about35.5 degrees and bottom just below40 degrees. The
+health/compass column, shared left edge, artwork scales and controls are
+unchanged. This replaces the first repositioning APK below.
+
+Signed ARM64 APK:
+`artifacts/hud-reposition-20261015/DeusExQuestVR-bottom-quickbar-20261015.apk`
+(33,806,942 bytes), SHA256
+`4BB211985F145241C8E87BCEFDB8E9EF92CD3AAF780DC4F4CD9E756F5EE1378F`.
+Android build succeeds in1m3s; APK v2 signature verifies. Automatically
+replace-installed without clearing data on Quest3 `2G0YC5ZG620985`, update
+2026-10-15 11:05:33, then launched (process9786). Installed hash verification
+is recorded with this revision; physical comfort still needs the user's test.
+
+Playable presentation/placement passes240 controls, including unchanged
+health/compass and both-eye alignment; compass/view607. All affected host targets
+rebuild. Full CTest:87 passes/101 registered,14 explicit owned-data skips,
+zero failures in11.81s. The new bounds encode the requested much-lower position,
+not an assertion that an angular threshold alone proves headset comfort.
+
+## Previous installed build: lowered, left-aligned HUD (2026-10-15)
 
 The user accepts the current artwork but requests less eye strain and less
 central obstruction. This layout-only APK keeps all icons, scales, equipment
@@ -13,7 +36,7 @@ deferred in favor of this explicit placement request.
   Health's top is about19.7 degrees above the eye line, down from25 degrees.
 - The quickbar center moves fromY=-0.49m to-0.84m (about17 to27 degrees down).
   Its top clears the central24 degrees; its bottom stays just below30 degrees.
-  This is an initial geometric placement, pending the user's comfort test.
+  The user subsequently rejected this bar position as still too high.
 
 Signed ARM64 APK:
 `artifacts/hud-reposition-20261015/DeusExQuestVR-lowered-aligned-hud-20261015.apk`

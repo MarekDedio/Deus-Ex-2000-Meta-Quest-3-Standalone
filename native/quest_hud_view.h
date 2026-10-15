@@ -39,7 +39,9 @@ inline constexpr float kHudVrPixelsToMeters=0.004f;
 inline constexpr float kHudVrDistance=1.65f;
 inline constexpr float kPlayableBeltPixelsToMeters=0.003f;
 inline constexpr float kPlayableBeltCenterX=0.0f;
-inline constexpr float kPlayableBeltCenterY=-0.84f;
+// The first lowered position (-0.84m / 27deg) still obstructed the user's
+// view. Move only the belt to about38deg down; keep its bottom within40deg.
+inline constexpr float kPlayableBeltCenterY=-1.28f;
 inline constexpr float kPlayableBeltCenterZ=-kHudVrDistance;
 inline constexpr float kPlayableBeltHalfWidth=541.0f/2.0f*kPlayableBeltPixelsToMeters;
 inline constexpr float kPlayableBeltHalfHeight=69.0f/2.0f*kPlayableBeltPixelsToMeters;
