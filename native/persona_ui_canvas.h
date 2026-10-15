@@ -610,7 +610,7 @@ inline void DrawPersonaPageText(PersonaUiImage& canvas,
         case PersonaUiPage::Inventory:
             heading(left, {42u,48u,266u,12u});
             body(right, {370u,60u,238u,218u});
-            body("UP / DOWN: SELECT\nPOINT + TRIGGER: SELECT\nA: USE (CONSUMABLES)\nY: SAVE   X: LOAD", {370u,338u,238u,40u});
+            body("UP / DOWN: SELECT\nPOINT + TRIGGER: SELECT\nA: EQUIP   TRIGGER: USE IN GAME\nY: SAVE   X: LOAD", {370u,338u,238u,40u});
             break;
         case PersonaUiPage::Health:
             heading(left, {34u,42u,266u,12u});

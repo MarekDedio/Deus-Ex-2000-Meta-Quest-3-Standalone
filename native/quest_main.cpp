@@ -40,6 +40,7 @@
 #include "quest_dialogue_ui.h"
 #include "quest_hud_ui.h"
 #include "quest_hud_view.h"
+#include "quest_playable_hud.h"
 #include "quest_hud_health_clock.h"
 #include "quest_hud_oxygen_clock.h"
 #include "quest_persona_view.h"
@@ -1261,14 +1262,13 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             EnsureInventoryNavigation(inventory);
             if (!inventoryNavigation_.SelectedIndex()) {
                 inventoryMenuDirty_ = true;
-            } else if (!UseSelectedConsumable()) {
-                interactionStatus_ = "SELECTED " + SelectedInventoryDisplayName() +
-                    " - EQUIP ACTION NOT IMPLEMENTED";
-                inventoryActionStatus_ = "EQUIP ACTION NOT IMPLEMENTED";
-                interactionStatusSeconds_ = 2.0f;
-                inventoryMenuDirty_ = true;
             } else {
+                const auto path=inventoryNavigation_.SelectedIdentity();
+                const bool equipped=EquipPortableRuntimeInventoryItem(path);
+                interactionStatus_ = equipped ? "EQUIPPED " + SelectedInventoryDisplayName() : "ITEM CANNOT BE EQUIPPED";
                 inventoryActionStatus_ = interactionStatus_;
+                hudQuerySeconds_=0.0f;
+                interactionStatusSeconds_ = 2.0f;
                 inventoryMenuDirty_ = true;
             }
         } else if (gameplayActive &&
@@ -1285,8 +1285,12 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             frame.RightRemoteTracked && firePressed && !fireLatch_) {
             const std::vector<std::string> inventory = GetPortableRuntimeInventoryItems();
             const float weaponDamage = SelectedWeaponDamage(inventory);
-            if (weaponDamage <= 0.0f) {
-                interactionStatus_ = "SELECT A WEAPON";
+            if (PortableRuntimeKeyRingEquipped()) {
+                if(UseTargetedActor(frame.RightRemotePointPose) && pendingMapName_.empty() && transitionMapName_.empty())
+                    if(!TryRebuildRuntimeActorPublication()) return;
+            } else if (weaponDamage <= 0.0f) {
+                const auto selected=GetPortableRuntimeEquippedItem();
+                if(selected.empty() || !UseSelectedConsumable(selected)) interactionStatus_ = "ITEM HAS NO TRIGGER ACTION";
                 interactionStatusSeconds_ = 2.0f;
                 ALOG("DeusExQuest: VR fire ignored; selected inventory item is not a weapon");
             } else if (!SelectedWeaponHasAmmo(inventory)) {
@@ -1304,10 +1308,20 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         const bool gripPressed = frame.RightRemoteGripTrigger > 0.75f;
         if (gameplayActive && pendingMapName_.empty() && transitionMapName_.empty() &&
             frame.RightRemoteTracked && gripPressed && !inventoryCycleLatch_) {
+            CyclePortableRuntimeQuickBelt(1);
+            const auto selected=GetPortableRuntimeEquippedItem();
             EnsureInventoryNavigation(GetPortableRuntimeInventoryItems());
-            MoveInventorySelection(1);
+            if(!inventoryNavigation_.SelectIdentity(selected)) selectedInventoryIndex_=invalidRendererIndex_;
+            else selectedInventoryIndex_=inventoryNavigation_.SelectedIndex().value_or(invalidRendererIndex_);
+            interactionStatus_ = PortableRuntimeKeyRingEquipped() ? "EQUIPPED KEY RING" : "EQUIPPED " + EquippedInventoryLabel();
+            interactionStatusSeconds_=2.0f;hudQuerySeconds_=0.0f;
         }
         inventoryCycleLatch_ = gripPressed;
+        if(gameplayActive && frame.RightRemoteTracked && frame.Clicked(frame.kButtonRightThumbStick)) {
+            const auto belt=ReadPortableRuntimeQuickBelt();
+            if(belt.slots[0u]) EquipPortableRuntimeInventoryItem(belt.slots[0u]->actorPath);
+            interactionStatus_="EQUIPPED KEY RING";interactionStatusSeconds_=2.0f;hudQuerySeconds_=0.0f;
+        }
         if (!mapLoading && pendingMapName_.empty() && transitionMapName_.empty() &&
             (gameplayActive || inventoryMenuOpen_) && frame.Clicked(frame.kButtonY)) {
             if (pendingChoices_.empty()) {
@@ -4280,7 +4294,8 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             }
             return interaction.worldChanged && !best->mover;
         } else {
-            if (UseSelectedConsumable()) return false;
+            const auto equipped=GetPortableRuntimeEquippedItem();
+            if (!equipped.empty() && UseSelectedConsumable(equipped)) return false;
             interactionStatus_ = "NO USABLE TARGET";
             interactionStatusSeconds_ = 2.0f;
             ALOG("DeusExQuest: VR use found no actor within 3m ray");
@@ -4387,47 +4402,58 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                 auto snapshot=ReadPortableRuntimePlayerHud(nativeClientGeneration_);
                 if (!snapshot.available || !snapshot.bound) {
                     cachedPlayerHud_.reset();
-                    hudHealthClock_.Reset();hudOxygenClock_.Reset();displayedHealthHudPixels_.clear();
-                    return; // No pretend player/ring/healthy limbs from defaults.
+                    hudHealthClock_.Reset();hudOxygenClock_.Reset();
+                } else if (!cachedPlayerHud_ || !SamePlayerHudSnapshot(*cachedPlayerHud_,snapshot)) {
+                    cachedPlayerHud_=std::move(snapshot);
                 }
-                if (!cachedPlayerHud_ || !SamePlayerHudSnapshot(*cachedPlayerHud_,snapshot)) {
-                    const auto belt=QuestVr::BuildBoundPlayerHudBelt(snapshot,[&](const std::string& path) -> const QuestVr::PersonaUiImage* {
-                        const auto found=hudIcons_.find(OriginalHudIconKey(path));
-                        return found==hudIcons_.end()?nullptr:&found->second;
-                    });
-                    if (!belt) throw std::runtime_error("Original player HUD lost its genuine viewport binding");
+            } catch(const std::exception&) {
+                // Original possession remains optional for this playable HUD.
+                cachedPlayerHud_.reset();hudHealthClock_.Reset();hudOxygenClock_.Reset();
+            }
+            try {
+                const auto playable=ReadPortableRuntimeQuickBelt();
+                if(playable.available) {
+                    QuestVr::HudBeltSnapshot belt;
+                    for(std::size_t slot=0u;slot<playable.slots.size();++slot) {
+                        const auto& item=playable.slots[slot];if(!item) continue;
+                        const auto found=hudIcons_.find(OriginalHudIconKey(item->iconPath));
+                        const auto* icon=found==hudIcons_.end()?nullptr:&found->second;
+                        if(!icon) throw std::runtime_error("Original quickbar icon was not predecoded: "+item->iconPath);
+                        belt.slots[slot]=QuestVr::HudBeltItem{item->actorPath,icon,item->description,
+                            item->keyRing?std::to_string(playable.collectedKeys)+" KEYS":"",
+                            item->keyRing,item->selected,false};
+                    }
                     const auto glyph=[&](std::uint32_t character) {return GetPortableBitmapGlyph(hudTinyFont_,character);};
-                    auto beltCanvas=QuestVr::BuildHudBeltCanvas(hudBeltArtwork_,*belt);
-                    QuestVr::DrawHudBeltText(beltCanvas,*belt,hudTinyFont_,glyph);
+                    auto beltCanvas=QuestVr::BuildHudBeltCanvas(hudBeltArtwork_,belt);
+                    QuestVr::DrawHudBeltText(beltCanvas,belt,hudTinyFont_,glyph);
                     // Health/oxygen reads may change every query while the
                     // belt is unchanged. Do not upload identical belt pixels.
                     if(beltCanvas.rgba!=displayedBeltHudPixels_) {
                         UpdateOriginalHudTexture(beltHudTextureId_,beltCanvas);
                         displayedBeltHudPixels_=std::move(beltCanvas.rgba);
                     }
-                    cachedPlayerHud_=std::move(snapshot);
-                    playerHudError_.clear();
                 }
+                playerHudError_.clear();
             } catch (const std::exception& error) {
                 cachedPlayerHud_.reset();
-                hudHealthClock_.Reset();hudOxygenClock_.Reset();displayedHealthHudPixels_.clear();
+                hudHealthClock_.Reset();hudOxygenClock_.Reset();
                 if (playerHudError_!=error.what()) {
                     playerHudError_=error.what();
-                    ALOG("DeusExQuest: bound original player HUD unavailable: %s",error.what());
+                    ALOG("DeusExQuest: playable quick inventory HUD unavailable: %s",error.what());
                 }
-                return;
             }
         }
-        if (!cachedPlayerHud_ || !cachedPlayerHud_->available || !cachedPlayerHud_->bound) return;
         try {
             // Health presentation ticks every visible frame, independently of
             // bounded10Hz player/inventory reads. A map/player/unbind resets
-            // only presentation; no default/aggregate gameplay health is used.
+            // only presentation. Until true original possession is ready, the
+            // explicitly unfinished body display reflects aggregate port health.
+            auto health=QuestVr::BuildPlayableHealthSnapshot(GetPortableRuntimePlayerHealth());
+            if(cachedPlayerHud_ && cachedPlayerHud_->available && cachedPlayerHud_->bound) {
             hudHealthClock_.ResetForContext(cachedPlayerHud_->playerPath,currentMapName_);
             QuestVr::HudHealthClockInput actualHealth;
             for(std::size_t part=0u;part<actualHealth.size();++part) actualHealth[part]=cachedPlayerHud_->limbHealth[part];
             const auto colors=hudHealthClock_.Advance(actualHealth,frame.DeltaSeconds);
-            QuestVr::HudHealthSnapshot health;
             for(std::size_t part=0u;part<colors.size();++part) {
                 health.parts[part].displayedHealth=colors[part].displayedHealth;
                 health.parts[part].damageFlashFraction=colors[part].damageFlashFraction;
@@ -4439,6 +4465,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             if(oxygen) {
                 health.underwater=oxygen->underwater;health.breathPercent=oxygen->breathPercent;
                 if(oxygen->swimTimer) health.swimTimer=*oxygen->swimTimer;
+            }
             }
             auto canvas=QuestVr::BuildHudHealthCanvas(hudHealthArtwork_,health);
             QuestVr::DrawHudHealthText(canvas,health,hudTinyFont_,
@@ -4457,16 +4484,15 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             }
             return;
         }
-        constexpr float pixels=QuestVr::kHudVrPixelsToMeters;
         auto healthPose=frame.HeadPose;
         healthPose.Translation+=healthPose.Rotation.Rotate({QuestVr::kHudHealthCenterX,
             QuestVr::kHudHealthCenterY,-QuestVr::kHudVrDistance});
         healthHudRenderer_.SetPose(healthPose,QuestVr::kHudHealthHalfWidth,QuestVr::kHudHealthHalfHeight);
         auto beltPose=frame.HeadPose;
-        beltPose.Translation+=beltPose.Rotation.Rotate({(99.0f+541.0f/2.0f-320.0f)*pixels,
-            (240.0f-411.0f-69.0f/2.0f)*pixels,-QuestVr::kHudVrDistance});
-        beltHudRenderer_.SetPose(beltPose,541.0f/2.0f*pixels,69.0f/2.0f*pixels);
-        healthUiVisible_=beltUiVisible_=true;
+        beltPose.Translation+=beltPose.Rotation.Rotate({QuestVr::kPlayableBeltCenterX,
+            QuestVr::kPlayableBeltCenterY,QuestVr::kPlayableBeltCenterZ});
+        beltHudRenderer_.SetPose(beltPose,QuestVr::kPlayableBeltHalfWidth,QuestVr::kPlayableBeltHalfHeight);
+        healthUiVisible_=!displayedHealthHudPixels_.empty();beltUiVisible_=!displayedBeltHudPixels_.empty();
     }
 
     void UpdateOriginalCompassUi(const OVRFW::ovrApplFrameIn& frame,bool mapLoading) {
@@ -5089,8 +5115,8 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         DestroyOriginalPlayerHudUi();
         if (preparation.playerHudReady) {
             try {
-                // Allocate transparent canvases. Actual health/belt values are
-                // published only after a genuinely bound viewport snapshot.
+                // Fill these from the playable equipment layer and explicitly
+                // unfinished aggregate-health presentation on the first frame.
                 healthHudTextureId_=CreateOriginalHudTexture(QuestVr::EmptyHudCanvas(QuestVr::kHudHealthWidth,QuestVr::kHudHealthHeight));
                 beltHudTextureId_=CreateOriginalHudTexture(QuestVr::EmptyHudCanvas(QuestVr::kHudBeltWidth,QuestVr::kHudBeltHeight));
                 hudBeltArtwork_=std::move(preparation.belt);hudHealthArtwork_=std::move(preparation.health);
@@ -5099,7 +5125,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                     static_cast<int>(QuestVr::kHudHealthWidth),static_cast<int>(QuestVr::kHudHealthHeight)));
                 beltHudRenderer_.Init(OVRFW::GlTexture(beltHudTextureId_,GL_TEXTURE_2D,
                     static_cast<int>(QuestVr::kHudBeltWidth),static_cast<int>(QuestVr::kHudBeltHeight)));
-                ALOG("DeusExQuest: original health/belt GPU artwork ready; hidden until actual viewport.Actor possession");
+                ALOG("DeusExQuest: original health/belt artwork ready; playable quick inventory and aggregate-health preview enabled");
             } catch (const std::exception& error) {
                 DestroyOriginalPlayerHudUi();
                 ALOG("DeusExQuest: original player HUD GPU preparation failed: %s",error.what());
@@ -5416,6 +5442,10 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         const std::string& path = inventory[selectedInventoryIndex_];
         return InventoryItemLabel(path);
     }
+    static std::string EquippedInventoryLabel() {
+        const auto path=GetPortableRuntimeEquippedItem();
+        return path.empty()?"NONE":InventoryItemLabel(path);
+    }
 
     std::array<OVRFW::VRMenuObject*, 4> PersonaLabels() const {
         return {inventoryLabel_, personaTabsLabel_, personaDetailsLabel_, personaFooterLabel_};
@@ -5677,7 +5707,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         }
         const auto& inventoryState = inventoryNavigation_.State();
         std::string footer = personaPage_ == PersonaPage::Inventory
-            ? std::to_string(inventoryState.visibleItems) + " VISIBLE ITEMS   UP / DOWN: SELECT   A: USE\n"
+            ? std::to_string(inventoryState.visibleItems) + " VISIBLE ITEMS   UP / DOWN: SELECT   A: EQUIP\n"
             : "Y: SAVE   X: LOAD\n";
         footer += "LEFT / RIGHT: PAGE   B / MENU: CLOSE";
         if (personaPage_ == PersonaPage::Inventory) {
@@ -5698,14 +5728,19 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         inventoryMenuDirty_ = false;
     }
 
-    bool UseSelectedConsumable() {
+    bool UseSelectedConsumable(const std::string& equippedPath={}) {
         const std::vector<std::string> inventory = GetPortableRuntimeInventoryItems();
         EnsureInventoryNavigation(inventory);
-        const auto selection = inventoryNavigation_.SelectedIndex();
+        auto selection = inventoryNavigation_.SelectedIndex();
+        if(!equippedPath.empty()) {
+            const auto found=std::find(inventory.begin(),inventory.end(),equippedPath);
+            if(found==inventory.end()) return false;
+            selection=static_cast<std::size_t>(std::distance(inventory.begin(),found));
+        }
         if (!selection || *selection >= inventory.size()) return false;
         const std::size_t selected = *selection;
         const std::string& path = inventory[selected];
-        const std::string label = SelectedInventoryLabel(inventory);
+        const std::string label = InventoryItemLabel(path);
         float healing{};
         if (label.find("MedKit") != std::string::npos) {
             healing = 25.0f;
@@ -5730,6 +5765,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         const float after = HealPortableRuntimePlayer(healing);
         const std::size_t remaining = GetPortableRuntimeInventoryCount();
         inventoryLayoutCached_ = false;
+        hudQuerySeconds_=0.0f;
         EnsureInventoryNavigation(GetPortableRuntimeInventoryItems());
         interactionStatus_ = "USED " + label + "  HEALTH " +
             std::to_string(static_cast<int>(after));
@@ -5744,7 +5780,8 @@ class DeusExQuestApp final : public OVRFW::XrApp {
     }
 
     static float SelectedWeaponDamage(const std::vector<std::string>& inventory) {
-        const std::string item = SelectedInventoryLabel(inventory);
+        static_cast<void>(inventory);
+        const std::string item = EquippedInventoryLabel();
         if (item.find("Weapon") == std::string::npos) return 0.0f;
         if (item.find("GEP") != std::string::npos || item.find("LAW") != std::string::npos) return 80.0f;
         if (item.find("Sniper") != std::string::npos) return 40.0f;
@@ -5755,7 +5792,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
     }
 
     static bool SelectedWeaponHasAmmo(const std::vector<std::string>& inventory) {
-        const std::string weapon = SelectedInventoryLabel(inventory);
+        const std::string weapon = EquippedInventoryLabel();
         if (weapon.find("Weapon") == std::string::npos) return false;
         if (weapon.find("Crowbar") != std::string::npos ||
             weapon.find("Baton") != std::string::npos ||
@@ -5786,7 +5823,8 @@ class DeusExQuestApp final : public OVRFW::XrApp {
     }
 
     static float SelectedWeaponRange(const std::vector<std::string>& inventory) {
-        const std::string item = SelectedInventoryLabel(inventory);
+        static_cast<void>(inventory);
+        const std::string item = EquippedInventoryLabel();
         if (item.find("Crowbar") != std::string::npos ||
             item.find("Baton") != std::string::npos ||
             item.find("Knife") != std::string::npos ||

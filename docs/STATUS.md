@@ -1,11 +1,23 @@
 # Port status
 
-## HUD completion gate / source development (2026-10-15)
+## Installed health preview / playable quickbar (2026-10-15)
 
-- The user requires a full working HUD before another game build/APK.
-  Android packaging/installations remain gated. See HUD-COMPLETION.md for
-  actual starter-ring, quick-slot, health/ammo/oxygen, settings and UI acceptance.
-  The HUD is not complete: production health/belt still require real possession.
+- The user revised the next test milestone: visible unfinished health plus a
+  functional playable quick inventory bar/starter keyring, then APK/install.
+  Original Pawn/Window possession is no longer a blocker for that test build.
+  The separate native equipment model supplies real collected-item identities,
+  selected state and persistent slots; its keyring aggregates collected keys.
+  The health preview mirrors aggregate port health across six segments, with
+  placeholder full energy. It is not independent limb/energy integration.
+  The signed APK is installed and launched on the connected Quest; its installed
+  checksum matches the finished build and existing saves were preserved.
+  Pure quickbar205129, health/comfort141 and owned Training314 checks pass.
+  The coherent host build/CTest passes87 tests with14 explicit owned-data skips
+  out of101 registered, zero failures in16.76s; separately invoked original
+  player/HUD6095 and VM694494/778 rejection controls pass.
+  See QUEST-TEST-BUILD.md for the exact APK and controls, and HUD-COMPLETION.md
+  for the broader unfinished original-HUD checklist. Headset acceptance remains
+  the user's next test.
 - The original1052 bridge now constructs its genuine pending Pawn-owned root,
   ActorDisplay, HUD, ammo, health, crosshair and pending belt with two GCs each.
   It executes original font/cursor/sine/alignment, hidden HUD sensitivity,
@@ -14,19 +26,21 @@
   both ProgressBarWindows, crosshair query/layout and belt assignment. All ten
   Text/Button/Toggle quick slots construct with actual FontTiny, native
   selection/display tables and original sibling order. The new boundary is
-  HUDActiveAug.SetKeyNum PC21, unsupported IntToString0x53, after96 objects/6690
-  writes. RadioBox/Tile construction, Modal registration, hidden
+  DamageHUDDisplay.InitWindow PC39, unsupported sIconInfo.DamageType struct-array
+  String access, after132 objects/8783 writes. Audited IntToString0x53 now executes
+  the ten augmentation-key labels. RadioBox/Tile construction, Modal registration, hidden
   visibility and original Tile margin/spacing/order setters now execute.
   A diagnostic checks fonts,
   clip rectangles, constructor flags/preserved CDOs, native modal self-list,
   all255 key/accelerator slots, family/GC edges, hidden-child Show, player binding
   and in-flight child locks before rollback. Expanded original health, Radio/Tile,
-  oxygen-source, session/ring and forced-budget rollback controls pass5145 checks.
+  oxygen-source, session/ring and forced-budget rollback controls pass6095 checks,
+  including all ten F3–F12 augmentation labels and later configured belt geometry.
   ConfigureChild1461 now uses actual local visibility, scoped configuration
   callbacks, aligned-child ResizeChild and ClipTree/wGC propagation. Native
   Radio/Tile/Root configuration overrides and deferred destruction still refuse.
   Three new pure geometry suites pass130745 controls, including82368 independent
-  x87 PC64 oracle tuples. Runtime/VM ARM64 checks are syntax-only, not a new APK.
+  x87 PC64 oracle tuples. The revised playable HUD passes a full ARM64 APK build.
   Native
   window subclasses/layout/lifetime/input/rendering and Login remain unfinished.
 - Original limb-health presentation is connected to the real bound-player

@@ -20,6 +20,7 @@
 #include "quest_native_window_clip.h"
 #include "quest_native_window_resize.h"
 #include "quest_native_window_configure.h"
+#include "quest_quick_belt.h"
 #include "quest_actor_state_control.h"
 #include "quest_unreal_string.h"
 #include "quest_decal_checkpoint.h"
@@ -375,6 +376,7 @@ struct CollectBirthGarbageAtBoundary {
     }
 };
 std::vector<std::string> persistentInventory;
+std::optional<QuestVr::QuickBeltModel> persistentQuickBelt;
 float persistentPlayerHealth{100.0f};
 std::int32_t persistentCredits{};
 std::int32_t persistentSkillPoints{};
@@ -9049,6 +9051,7 @@ void ShutdownPortableRuntime() {
     persistentWorldActors.clear(); persistentAuthoredWorldSlots = 0u; persistentMapSourcePath.clear();
     persistentActorCollision.Clear();
     persistentInventory.clear();
+    persistentQuickBelt.reset();
     persistentCredits = 0;
     persistentSkillPoints = 0;
     persistentConversationFlags.clear();
@@ -9262,7 +9265,10 @@ PortableRootWindowProbeResult ProbePortableRootWindowInitialization(
             if(!domain) throw std::runtime_error("Native window probe has no domain");
             // A fixed bounded construction prefix, never an unbounded graph
             // walk after a failed bytecode instruction.
-            if(domain->objects.size()>128u || domain->roots.size()>16u)
+            // The original ten augmentation icons alone add30 Window/GC
+            // objects beyond the ten belt slots. Admit the full original HUD
+            // graph, retaining the independent4MiB byte and16-root limits.
+            if(domain->objects.size()>512u || domain->roots.size()>16u)
                 throw std::runtime_error("Native window initialization probe exceeds its snapshot bound");
             QuestVr::AuthoredStructLimits bounds;bounds.retainedBytes=4u<<20u;
             QuestVr::AuthoredStructDetail::Budget retained{bounds};
@@ -9365,7 +9371,9 @@ PortableRootWindowProbeResult ProbePortableRootWindowInitialization(
                         for(std::uint32_t slot=0u;slot<16u;++slot) field("DeusEx.ActorDisplayWindow.sinTable",slot);
                     }
                     if(IsDerivedFromPath(object->cls,"DeusEx.DeusExHUD"))
-                        for(const auto* name:{"Ammo","hit","Cross","belt"}) field((std::string("DeusEx.DeusExHUD.")+name).c_str());
+                        for(const auto* name:{"Ammo","hit","Cross","belt","activeItems","damageDisplay","compass","hms","Info",
+                            "msgLog","frobDisplay","augDisplay","startDisplay","barkDisplay","receivedItems"})
+                            field((std::string("DeusEx.DeusExHUD.")+name).c_str());
                     if(IsDerivedFromPath(object->cls,"DeusEx.HUDAmmoDisplay"))
                         field("DeusEx.HUDAmmoDisplay.Player");
                     if(IsDerivedFromPath(object->cls,"DeusEx.HUDObjectBelt")) {
@@ -9386,6 +9394,23 @@ PortableRootWindowProbeResult ProbePortableRootWindowInitialization(
                     if(IsDerivedFromPath(object->cls,"DeusEx.HUDBaseWindow"))
                         for(const auto* name:{"Player","colBackground","colBorder","colText","colHeaderText"})
                             field((std::string("DeusEx.HUDBaseWindow.")+name).c_str());
+                    if(IsDerivedFromPath(object->cls,"DeusEx.HUDActiveItemBase"))
+                        for(const auto* name:{"IconWidth","IconHeight","iconDrawStyle","Icon","texBackground","colItemIcon"})
+                            field((std::string("DeusEx.HUDActiveItemBase.")+name).c_str());
+                    if(IsDerivedFromPath(object->cls,"DeusEx.HUDActiveAug"))
+                        for(const auto* name:{"HotKeyNum","hotKeyString","colBlack","colAugActive","colAugInactive"})
+                            field((std::string("DeusEx.HUDActiveAug.")+name).c_str());
+                    if(IsDerivedFromPath(object->cls,"DeusEx.HUDActiveItemsBorderBase"))
+                        for(const auto* name:{"winIcons","iconCount","texBorderTop","texBorderCenter","texBorderBottom",
+                            "borderTopMargin","borderBottomMargin","borderWidth","topHeight","topOffset","bottomHeight",
+                            "bottomOffset","tilePosX","tilePosY"})
+                            field((std::string("DeusEx.HUDActiveItemsBorderBase.")+name).c_str());
+                    if(IsDerivedFromPath(object->cls,"DeusEx.HUDActiveAugsBorder"))
+                        for(const auto* name:{"FirstKeyNum","LastKeyNum"})
+                            field((std::string("DeusEx.HUDActiveAugsBorder.")+name).c_str());
+                    if(IsDerivedFromPath(object->cls,"DeusEx.HUDActiveItemsDisplay"))
+                        for(const auto* name:{"winAugsContainer","winItemsContainer","editMode","itemAugsOffsetX","itemAugsOffsetY"})
+                            field((std::string("DeusEx.HUDActiveItemsDisplay.")+name).c_str());
                 } else if(IsDerivedFromPath(object->cls,"Extension.GC")) {
                     for(const auto* name:{"Canvas","normalFont","boldFont","gcOwner","Style","PolyFlags","textPolyFlags",
                         "bDrawEnabled","bSmoothed","bMasked","bTranslucent","bModulated","tileColor","tilePlane","gcClipRect"})
@@ -10816,6 +10841,177 @@ std::vector<std::string> GetPortableRuntimeInventoryItems() {
     return persistentInventory;
 }
 
+// The live belt is queried on the render thread. Resolve its small scalar
+// fields from the graph prepared at package/map load; a fresh VM host would
+// reopen source package tables while decoding every Icon object reference.
+static QuestVr::Vm::Value ReadPlayableQuickBeltField(RuntimeObject* object,const char* name,
+    const QuestVr::Vm::Kind kind) {
+    using QuestVr::Vm::Kind;
+    using QuestVr::Vm::Value;
+    if(!object || object->worldRemoved)
+        throw std::runtime_error("Quick inventory property receiver is unavailable");
+    const bool defaults=static_cast<bool>(object->classDescriptor);
+    std::array<RuntimeObject*,128u> ancestry{};
+    std::size_t depth{};
+    RuntimeObject* declaration{};
+    for(auto* cls=defaults?object:object->cls;cls;cls=cls->base) {
+        if(depth==ancestry.size() || std::find(ancestry.begin(),ancestry.begin()+depth,cls)!=ancestry.begin()+depth ||
+            !cls->classDescriptor || !cls->classFieldLinksValid)
+            throw std::runtime_error("Quick inventory class metadata is invalid or cyclic");
+        ancestry[depth++]=cls;
+        const auto field=persistentVmObjects.find(LowerAscii(cls->reflection.objectPath+'.'+name));
+        if(!declaration && field!=persistentVmObjects.end() && field->second && field->second->property &&
+            field->second->linkedClassOwner==cls) declaration=field->second;
+    }
+    if(!declaration || declaration->property->arrayDimension!=1)
+        throw std::runtime_error("Quick inventory scalar property declaration is unavailable");
+    const auto& type=declaration->property->type;
+    if((kind==Kind::Object && type!="ObjectProperty") || (kind==Kind::String && type!="StrProperty") ||
+        (kind==Kind::Name && type!="NameProperty") || (kind==Kind::Bool && type!="BoolProperty") ||
+        (kind!=Kind::Object && kind!=Kind::String && kind!=Kind::Name && kind!=Kind::Bool))
+        throw std::runtime_error("Quick inventory field has the wrong original declared type");
+    const auto checked=[&](const Value& value) {
+        if(value.kind!=kind || value.text.size()>4096u || value.text.find('\0')!=std::string::npos)
+            throw std::runtime_error("Quick inventory field has malformed typed storage");
+        return value;
+    };
+    const auto findValue=[&](const auto& values,const std::string& key) -> const Value* {
+        const auto found=values.find(LowerAscii(key));
+        if(found==values.end()) return nullptr;
+        const auto slot=found->second.find(0u);
+        return slot==found->second.end()?nullptr:&slot->second;
+    };
+    if(defaults) {
+        // Later base-CDO mutations are not inherited into an existing derived
+        // class's copied default block, matching ordinary VM default reads.
+        if(const auto* value=findValue(object->classDefaultValues,name)) return checked(*value);
+    } else {
+        if(const auto* value=findValue(object->scriptValues,declaration->reflection.objectPath)) return checked(*value);
+        if(const auto* value=FindScriptOverlay(object,name)) return checked(*value);
+    }
+    const auto tagValue=[&](RuntimeObject* source,const std::vector<PortableTaggedProperty>& tags)
+        -> std::optional<Value> {
+        for(auto tag=tags.rbegin();tag!=tags.rend();++tag) {
+            if(!SameInventoryIdentity(tag->name.ToString(),name) || tag->arrayIndex!=0u) continue;
+            if(kind==Kind::Bool) {
+                if(tag->type!=3u || !tag->value.empty())
+                    throw std::runtime_error("Quick inventory Bool tag is malformed");
+                return Value::Bool(tag->boolValue);
+            }
+            if(kind==Kind::String) {
+                if(tag->type!=13u) throw std::runtime_error("Quick inventory String tag is malformed");
+                return checked(Value::Text(kind,DecodePortableVmStringProperty(*tag,4096u)));
+            }
+            if(kind==Kind::Object) {
+                if(tag->type!=5u && tag->type!=8u)
+                    throw std::runtime_error("Quick inventory Object tag is malformed");
+                if(DecodePortableObjectReference(*tag)==0) return Value::Text(kind,{});
+                const auto cached=source->objectPropertyPaths.find(tag->name.ToString());
+                if(cached==source->objectPropertyPaths.end())
+                    throw std::runtime_error("Quick inventory Object tag lacks its load-time reference");
+                return checked(Value::Text(kind,cached->second));
+            }
+            if(tag->type!=6u) throw std::runtime_error("Quick inventory Name tag is malformed");
+            const auto cached=source->namePropertyValues.find(LowerAscii(tag->name.ToString()));
+            if(cached==source->namePropertyValues.end() || !cached->second.count(0u))
+                throw std::runtime_error("Quick inventory Name tag lacks its load-time reference");
+            return checked(Value::Text(kind,cached->second.at(0u)));
+        }
+        return std::nullopt;
+    };
+    if(!defaults)
+        if(const auto value=tagValue(object,object->instanceProperties)) return *value;
+    for(std::size_t index=0u;index<depth;++index) {
+        // A parent tag belongs to that parent's nearest field, not to an
+        // unrelated same-name declaration hidden by a descendant.
+        RuntimeObject* selected{};
+        for(std::size_t base=index;base<depth && !selected;++base) {
+            const auto field=persistentVmObjects.find(LowerAscii(ancestry[base]->reflection.objectPath+'.'+name));
+            if(field!=persistentVmObjects.end() && field->second && field->second->property &&
+                field->second->linkedClassOwner==ancestry[base]) selected=field->second;
+        }
+        if(selected!=declaration) continue;
+        if(const auto value=tagValue(ancestry[index],ancestry[index]->classDescriptor->defaults)) return *value;
+    }
+    if(kind==Kind::Bool) return Value::Bool(false);
+    return Value::Text(kind,kind==Kind::Name?"None":std::string{});
+}
+
+static std::vector<QuestVr::QuickBeltItem> PlayableQuickBeltOwned(const std::vector<std::string>& inventory,
+    const std::unordered_map<std::string,RuntimeObject*>* objectView=nullptr) {
+    if(inventory.size()>1023u) throw std::runtime_error("Playable quick inventory exceeds its bound");
+    const auto& objects=objectView?*objectView:persistentVmObjects;
+    // Functional native key aggregation, not an invented original Pawn/ring UObject.
+    std::vector<QuestVr::QuickBeltItem> owned{{QuestVr::kQuickBeltKeyRingIdentity,true,true}};
+    for(const auto& path:inventory) {
+        const auto found=objects.find(LowerAscii(path));
+        if(found==objects.end() || !found->second || found->second->worldRemoved ||
+            !IsDerivedFromPath(found->second->cls,"Engine.Inventory")) continue;
+        auto* actor=found->second;
+        const bool eligible=!IsDerivedFromPath(actor->cls,"DeusEx.NanoKey") &&
+            !IsDerivedFromPath(actor->cls,"Engine.Ammo") &&
+            ReadPlayableQuickBeltField(actor,"bDisplayableInv",QuestVr::Vm::Kind::Bool).boolean;
+        owned.push_back({actor->reflection.objectPath,false,eligible});
+    }
+    return owned;
+}
+static QuestVr::QuickBeltModel& PlayableQuickBelt() {
+    const auto owned=PlayableQuickBeltOwned(persistentInventory);
+    if(!persistentQuickBelt) persistentQuickBelt.emplace();
+    persistentQuickBelt->Reconcile(owned);return *persistentQuickBelt;
+}
+std::string GetPortableRuntimeEquippedItem() {
+    if(!persistentRuntime || !persistentRuntime->get() || persistentMapPackageName.empty()) return {};
+    return PlayableQuickBelt().EquippedActorPath();
+}
+bool PortableRuntimeKeyRingEquipped() {
+    return SameInventoryIdentity(GetPortableRuntimeEquippedItem(),QuestVr::kQuickBeltKeyRingIdentity);
+}
+bool EquipPortableRuntimeInventoryItem(const std::string& actorPath) {
+    if(!persistentRuntime || !persistentRuntime->get() || persistentMapPackageName.empty()) return false;
+    return PlayableQuickBelt().Equip(actorPath);
+}
+bool CyclePortableRuntimeQuickBelt(int direction) {
+    if(!persistentRuntime || !persistentRuntime->get() || persistentMapPackageName.empty()) return false;
+    return PlayableQuickBelt().Cycle(direction);
+}
+PortableQuickBeltSnapshot ReadPortableRuntimeQuickBelt() {
+    PortableQuickBeltSnapshot snapshot;
+    if(!persistentRuntime || !persistentRuntime->get() || persistentMapPackageName.empty()) return snapshot;
+    auto& model=PlayableQuickBelt();snapshot.equippedActorPath=model.EquippedActorPath();
+    for(std::size_t position=0u;position<snapshot.slots.size();++position) {
+        const auto& path=model.State().slots[position];if(path.empty()) continue;
+        PortableQuickBeltItem item;item.actorPath=path;item.keyRing=position==0u;
+        item.selected=SameInventoryIdentity(path,snapshot.equippedActorPath);
+        if(item.keyRing) {
+            item.classPath="DeusEx.NanoKeyRing";
+            const auto found=persistentVmObjects.find(LowerAscii(item.classPath));
+            if(found==persistentVmObjects.end() || !found->second || !found->second->classDescriptor)
+                throw std::runtime_error("Starter keyring original icon/description metadata is unavailable");
+            const auto ringIcon=ReadPlayableQuickBeltField(found->second,"Icon",QuestVr::Vm::Kind::Object);
+            const auto ringDescription=ReadPlayableQuickBeltField(found->second,"BeltDescription",QuestVr::Vm::Kind::String);
+            item.iconPath=ringIcon.text;item.description=ringDescription.text;
+        } else {
+            const auto found=persistentVmObjects.find(LowerAscii(path));
+            if(found==persistentVmObjects.end() || !found->second || !found->second->cls || found->second->worldRemoved)
+                throw std::runtime_error("Quick inventory shortcut actor is unavailable");
+            auto* actor=found->second;item.classPath=actor->cls->reflection.objectPath;
+            item.iconPath=ReadPlayableQuickBeltField(actor,"Icon",QuestVr::Vm::Kind::Object).text;
+            item.description=ReadPlayableQuickBeltField(actor,"BeltDescription",QuestVr::Vm::Kind::String).text;
+        }
+        snapshot.slots[position]=std::move(item);
+    }
+    std::unordered_set<std::string> keys;
+    for(const auto& path:persistentInventory) {
+        const auto found=persistentVmObjects.find(LowerAscii(path));
+        if(found==persistentVmObjects.end() || !found->second || found->second->worldRemoved ||
+            !IsDerivedFromPath(found->second->cls,"DeusEx.NanoKey")) continue;
+        const auto key=LowerAscii(ReadPlayableQuickBeltField(found->second,"KeyID",QuestVr::Vm::Kind::Name).text);
+        if(!key.empty() && key!="none") keys.insert(key);
+    }
+    snapshot.collectedKeys=keys.size();snapshot.available=true;return snapshot;
+}
+
 std::vector<PortableInventoryDescriptor> ReadPortableRuntimeInventoryDescriptors(
     const std::vector<std::string>& actorPaths, const PortableInventoryDescriptorLimits& limits) {
     using Status = PortableInventoryDescriptorStatus;
@@ -11506,6 +11702,19 @@ bool SavePortableRuntimeState(const std::string& path) {
             write32(static_cast<std::uint32_t>(blob.size())); requireBytes(blob.size());
             bytes.insert(bytes.end(), blob.begin(), blob.end());
         }
+        if(persistentQuickBelt) {
+            auto reconciled=*persistentQuickBelt;reconciled.Reconcile(PlayableQuickBeltOwned(persistentInventory));
+            const auto belt=QuestVr::EncodeQuickBeltState(reconciled.State());
+            std::vector<std::uint8_t> wrapped;
+            const auto word=[&](std::uint32_t value) {
+                for(unsigned shift=0u;shift<32u;shift+=8u) wrapped.push_back(static_cast<std::uint8_t>(value>>shift));
+            };
+            if(bytes.size()+belt.size()+20u>QuestVr::kMaximumSaveRuntimeBytes)
+                throw std::runtime_error("Quick inventory checkpoint exceeds its whole-file budget");
+            word(0x53515844u);word(15u);word(static_cast<std::uint32_t>(belt.size()));
+            wrapped.insert(wrapped.end(),belt.begin(),belt.end());word(static_cast<std::uint32_t>(bytes.size()));
+            wrapped.insert(wrapped.end(),bytes.begin(),bytes.end());bytes.swap(wrapped);
+        }
         if (!QuestVr::WriteDurableSaveFile(path, bytes)) {
             __android_log_print(ANDROID_LOG_WARN, "quest_main", "DeusExQuest: runtime checkpoint write failed");
             return false;
@@ -11524,6 +11733,22 @@ static bool ReadPortableRuntimeState(const std::string& path, const bool apply, 
     try {
         std::vector<std::uint8_t> bytes;
         if (!QuestVr::ReadBoundedSaveFile(path, QuestVr::kMaximumSaveRuntimeBytes, bytes)) return false;
+        std::optional<QuestVr::QuickBeltState> savedQuickBelt;
+        const auto headerWord=[&](std::size_t offset) {
+            if(offset>bytes.size() || bytes.size()-offset<4u) throw std::runtime_error("Quick inventory checkpoint header is truncated");
+            std::uint32_t value{};for(unsigned i=0u;i<4u;++i) value|=std::uint32_t(bytes[offset+i])<<(8u*i);return value;
+        };
+        if(bytes.size()>=8u && headerWord(0u)==0x53515844u && headerWord(4u)==15u) {
+            const auto length=headerWord(8u);
+            if(length>45108u || bytes.size()<16u || length>bytes.size()-16u)
+                throw std::runtime_error("Quick inventory checkpoint section is invalid");
+            savedQuickBelt=QuestVr::DecodeQuickBeltState({bytes.begin()+12,bytes.begin()+12+length});
+            const auto innerLength=headerWord(12u+length);
+            if(innerLength!=bytes.size()-16u-length || innerLength<8u ||
+                headerWord(16u+length)!=0x53515844u || headerWord(20u+length)>14u)
+                throw std::runtime_error("Quick inventory checkpoint nested payload is invalid");
+            std::vector<std::uint8_t> inner(bytes.begin()+16+length,bytes.end());bytes.swap(inner);
+        }
         std::size_t cursor{};
         const auto requireBytes = [&](const std::size_t count) {
             if (cursor > bytes.size() || count > bytes.size() - cursor)
@@ -11747,6 +11972,19 @@ static bool ReadPortableRuntimeState(const std::string& path, const bool apply, 
             try { restoredMovers.emplace_back(actor, ReadRuntimeMoverMotion(actor, true)); }
             catch (const std::exception&) { /* Unsupported movers stay visible at their authored pose. */ }
         }
+        std::optional<QuestVr::QuickBeltModel> restoredQuickBelt;
+        if(savedQuickBelt) {
+            std::vector<QuestVr::QuickBeltItem> owned;
+            if(apply) owned=PlayableQuickBeltOwned(inventory,&restoredObjects);
+            else {
+                // A cross-map preflight runs before that map is installed.
+                // Validate saved ownership membership now; actual class/item
+                // eligibility is required again against staged objects on apply.
+                owned.push_back({QuestVr::kQuickBeltKeyRingIdentity,true,true});
+                for(const auto& path:inventory) owned.push_back({path,false,true});
+            }
+            restoredQuickBelt.emplace();restoredQuickBelt->Restore(*savedQuickBelt,owned);
+        }
         if (!apply) return true;
         // Allocate the legacy/native reset before touching live state. All
         // versions replace native topology; absence is not a merge with the
@@ -11829,6 +12067,7 @@ static bool ReadPortableRuntimeState(const std::string& path, const bool apply, 
             object->moverMotion.reset();
         }
         persistentInventory.swap(inventory); persistentPlayerHealth = playerHealth;
+        persistentQuickBelt.swap(restoredQuickBelt);
         persistentCredits = credits; persistentSkillPoints = skillPoints;
         persistentConversationFlags.swap(restoredFlags); persistentGoals.swap(goals); persistentNotes.swap(notes);
         persistentAppliedDialogueEffects.swap(restoredApplied);

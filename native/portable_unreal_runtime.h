@@ -576,6 +576,8 @@ bool SavePortableRuntimeState(const std::string& path);
 // Validation may inspect the target map without replacing the current world.
 // Legacy v1-v3 have no embedded map identity and retain their existing behavior;
 // v14 additionally binds authored mover owners to their single target map.
+// v15 optionally wraps that complete payload with native playable quick-slot
+// assignments/equipment. Uninitialized script-only users retain older formats.
 bool ValidatePortableRuntimeState(const std::string& path, const std::string& expectedMapName = {});
 bool LoadPortableRuntimeState(const std::string& path);
 PortableDamageResult DamagePortableRuntimeActor(
@@ -584,6 +586,24 @@ PortableDamageResult DamagePortableRuntimeActor(
 bool VerifyPortableRuntimeDamage();
 std::size_t GetPortableRuntimeInventoryCount();
 std::vector<std::string> GetPortableRuntimeInventoryItems();
+// Native playable-port equipment, independent of the unfinished original
+// PlayerPawn/Window bootstrap. Slot0 is the functional collected-key ring;
+// ordinary slots contain actual identities from the playable inventory.
+struct PortableQuickBeltItem {
+    std::string actorPath,classPath,iconPath,description;
+    bool keyRing{},selected{};
+};
+struct PortableQuickBeltSnapshot {
+    bool available{};
+    std::array<std::optional<PortableQuickBeltItem>,10u> slots;
+    std::string equippedActorPath;
+    std::size_t collectedKeys{};
+};
+PortableQuickBeltSnapshot ReadPortableRuntimeQuickBelt();
+bool EquipPortableRuntimeInventoryItem(const std::string& actorPath);
+bool CyclePortableRuntimeQuickBelt(int direction);
+std::string GetPortableRuntimeEquippedItem();
+bool PortableRuntimeKeyRingEquipped();
 enum class PortableInventoryDescriptorStatus : std::uint8_t {
     Available, InvalidIdentity, RuntimeUnavailable, UnindexedIdentity,
     NotInventoryActor, MissingPropertyMetadata, MalformedProperty, InvalidLayout,

@@ -1,23 +1,71 @@
-# Current Quest test-build handoff (2026-10-14)
+# Current Quest test-build handoff (2026-10-15)
 
-## Build gate requested by the user
+## Installed: health preview and playable quickbar (2026-10-15)
 
-Do not create or install another APK until the full working HUD is implemented
-and passes offline integration tests: actual starter keyring, functional quick
-slots, health and the remaining original HUD. Source/host development and
-commits may continue; another partial compass/artwork APK is not authorized.
-Final physical acceptance will use the first build satisfying that feature gate.
-The eye-facing Persona adjustment was built/installed before this instruction.
-See HUD-COMPLETION.md for the functional acceptance checklist.
+Signed ARM64 APK:
+`artifacts/quickbar-health-20261015/DeusExQuestVR-health-quickbar-20261015.apk`
+(33,806,910 bytes), SHA256
+`2BA5D4D788EF789A1A9899FF1F70D582A62F92CC3C6524C00E917EBDE6737610`.
+Build succeeded in1m21s; APK v2 signature verifies. Replace-installed on Quest3
+`2G0YC5ZG620985` without clearing data; device update2026-10-15 09:53:23 and
+installed base.apk SHA256 match exactly. Launched process10934. Head tracking
+was not active during the initial verification; physical HUD/controls acceptance
+is the user's next test, not an inferred on-device pass.
+
+The pure quickbar model passes205129 controls, health/comfort141, and the actual
+Training integration314: real pickups, matching locked Train-key door, selected
+equipment, key counting, consumption, warm/cold saves, legacy migration and
+atomic rejection of malformed v15 envelopes. Production quickbar queries use
+indexed original metadata with no package or icon decoding on the render thread.
+The final coherent host build passes; CTest reports87 passes/101 registered,
+14 explicit owned-data skips and zero failures (16.76s). Separately invoked
+original player/HUD controls pass6095 checks; the VM passes694494 checks with
+778 rejection controls. Skipped owned-data tests are not counted as passes.
+
+The original body-health artwork is now visible above the accepted compass.
+Until independent body damage is integrated, all six segments mirror the same
+aggregate port health; energy is a full-scale placeholder, not completed energy
+gameplay. The original541x69 belt is centered and raised into comfortable view.
+
+The starter keyring occupies slot0 and aggregates actual collected NanoKey
+actors. Picked-up usable items fill stable slots1–9; ammunition and loose keys
+do not consume shortcuts. The selected border is actual playable equipment,
+independent of merely browsing the Persona inventory. The native key component
+is not claimed to be an original-script Pawn-owned ring UObject.
+
+- Right grip: cycle through occupied shortcuts, including the keyring.
+- Right stick click: select the keyring directly.
+- Inventory A: equip the browsed item; close Inventory before using it.
+- Right trigger: use the equipped weapon/consumable, or use the keyring on a door.
+- A outside Inventory: interact/pick up/open doors as before.
+- Y/X: save/load, now preserving quick-slot assignments and equipped selection.
+
+No keyring model in the player's hand is required or added by this milestone.
+The new runtime v15 equipment envelope retains its complete original v1–v14
+payload; older saves still load and initialize the functional starter ring.
+
+## Scope change and remaining original-HUD work
+
+Latest override (2026-10-15): the user explicitly requests a visible unfinished
+health display plus the functional quick inventory bar/starter keyring, followed
+by compilation and Quest installation. Held keyring geometry is not required.
+This replaces the previous full-HUD packaging restriction below. The complete
+original player/window/augmentation integration remains future work.
+
+The earlier full-HUD restriction is retained as historical context only.
+The eye-facing Persona adjustment was built/installed before that restriction;
+the current health-preview/quickbar APK follows the latest explicit override.
+See HUD-COMPLETION.md for the remaining full original-HUD acceptance checklist.
 
 Source-only HUD layout progress (2026-10-15): original crosshair preferred-size,
 ConfigureChild, clipping/drawing-GC propagation and belt assignment now execute.
-The pending graph reaches augmentation-key label setup (96 objects/6690 writes)
-before refusing the next missing VM conversion. Native geometry helpers and
-argument-copy tests pass; this is not a completed live HUD or a device build.
-The installed APK below is unchanged. Android packaging/installations remain paused.
+The pending graph now completes augmentation-key label setup through audited
+IntToString0x53, then refuses the unsupported DamageHUDDisplay.sIconInfo.DamageType
+struct-array String access (132 objects/8783 writes). Native geometry helpers and
+argument-copy tests pass; this original graph is not the installed native
+playable quickbar and does not establish completed original player possession.
 
-## Latest installed APK: eye-facing Persona placement
+## Previous installed APK: eye-facing Persona placement
 
 `artifacts/crate-runtime-20261013/DeusExQuestVR-persona-eye-facing-20261014.apk`
 is signed ARM64,33,217,654 bytes, SHA256
@@ -30,7 +78,7 @@ The user's first lowering test was too low and looked tilted. The correction
 uses head-space centerY=-0.16m, shared1.20x0.90m geometry and a pitch that faces
 the eyes. Artwork, text and controller targeting share that placement;207
 generated placement checks pass. Exact corrected-build headset comfort has
-not yet been accepted. No later APK is authorized until the full HUD gate passes.
+not yet been accepted. The later approved milestone is installed as documented above.
 
 ## Previous installed APK: original compass, inward placement and player foundation
 

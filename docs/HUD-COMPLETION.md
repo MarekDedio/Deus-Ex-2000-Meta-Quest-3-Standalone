@@ -1,12 +1,28 @@
-# Working HUD release gate
+# HUD test milestone and remaining integration
 
-The user requested that the complete working HUD precede another game build/APK.
-Android packaging and installation stay paused until the source implementation
-passes the offline integration checks below. Host unit/integration compilation,
-owned-data inspection, source commits and checking the already installed APK are
-still development work; none counts as a completed live HUD.
+## Revised user-approved test milestone (2026-10-15)
 
-## Required before the next APK
+The latest instruction supersedes the full-HUD APK gate below: show the
+original health artwork even while incomplete, finish the playable quick
+inventory bar with its starter keyring (held keyring mesh excluded), then build
+and install that test APK on the connected Quest. Do not wait for unrelated
+original-window/augmentation or full player-possession work for this milestone.
+
+The current playable port uses native inventory ownership and collected NanoKey
+actors. Its functional starter keyring aggregates those keys; it is not claimed
+to be an original-script Pawn-owned UObject. Quick slots/equipped identity and
+saves use that live playable state. The temporary health display mirrors the
+aggregate health across all six segments and shows placeholder full energy;
+independent limb damage, energy and original possession remain unfinished.
+
+## Previous full-HUD gate / remaining integration checklist
+
+The earlier instruction required the complete original HUD before packaging.
+That restriction was superseded by the revised milestone above. The following
+list remains the broader integration target, not a gate for the installed
+health-preview/quickbar test APK.
+
+## Remaining full original-HUD integration
 
 - Accepted original player creation and native viewport pairing. The displayed
   values come from that actual player's state, not a dormant test pawn, health
@@ -32,17 +48,18 @@ still development work; none counts as a completed live HUD.
   repeated initialization do not invent or lose ownership, duplicate windows,
   retain stale actors or leave a half-created HUD after a failure.
 
-Once these pass offline, create the next signed APK, automatically install it
-when the authorized Quest is connected, and verify its exact installed hash.
-Physical comfort and end-to-end HUD/controller acceptance still require that
-build on the headset; offline checks are not claimed as on-device acceptance.
+Physical comfort and end-to-end HUD/controller acceptance still require testing
+the installed build on the headset; offline checks are not on-device acceptance.
 
 ## Current honest boundary
 
 Training music/Jaime and the inset map-relative compass have human acceptance.
-Original health/belt artwork, fonts and icons are decoded, but production
-health/belt remain hidden until genuine player possession works. The isolated
-original CreateKeyRing/GiveTo/AddInventory controls are not a live starter ring.
+The installed milestone shows original health/belt artwork and fonts using the
+live native playable equipment and aggregate-health presentation described above.
+An inspected software preview confirms actual Training pickups, selected slots
+and collected-key count render correctly. This is not headset-view acceptance.
+The isolated original CreateKeyRing/GiveTo/AddInventory controls still do not
+establish original-script live player possession.
 
 The native root bridge currently executes the original InitWindow prefix only.
 Font/cursor setup and native object ownership now pass the actual original
@@ -54,9 +71,10 @@ visibility/layout callback, requested size and assignment now complete. The
 six health body-part windows now receive their original textures, translucent
 GC styles, requested geometry and colors. The body overlay is lowered beneath
 them with its original armor color. Both energy/breath ProgressBarWindows and
-the crosshair initialize and are assigned to the actual pending HUD. The next
-original boundary is HUDActiveAug.SetKeyNum PC21: IntToString conversion0x53
-is not implemented. ConfigureChild1461 now executes the audited Window geometry,
+the crosshair initialize and are assigned to the actual pending HUD. Audited
+IntToString0x53 now allows all ten augmentation key labels to initialize. The next
+original boundary is DamageHUDDisplay.InitWindow PC39: the authored struct-array
+String member sIconInfo.DamageType is unsupported. ConfigureChild1461 now executes the audited Window geometry,
 callback, aligned-child resize, clipping and selectable-resort path; native
 Radio/Tile/Root configuration overrides still refuse. QueryPreferredSize executes its original
 cache/callback/texture-fallback path. All ten HUDObjectSlot Text/Button/Toggle
@@ -64,9 +82,9 @@ constructors now execute, including temporary selectable-table insertion/removal
 original FontTiny, requested size, theme-null colors and sibling lowering.
 The Radio retains Toggle creation order; the Tile sibling order is0,9,8,...,1.
 RadioBox/TileWindow construction, Modal tab registration, hidden visibility and
-Tile margin/spacing/order setters execute. The bounded diagnostic captures96
-objects/6690 writes with no inspection error (128 objects/4MiB capture limits);
-this is still an unpublished, rolled-back initialization prefix, not live health.
+Tile margin/spacing/order setters execute. The bounded diagnostic captures132
+objects/8783 writes with no inspection error (512 objects/4MiB capture limits);
+this remains an unpublished, rolled-back original initialization prefix.
 The belt has completed its script InitWindow, locally shown itself, returned
 from its parent's layout callback and been assigned to HUD.belt. Root.hud remains None;
 this does not establish working equipment or possession. Native Root modal
@@ -76,20 +94,23 @@ directly before rollback. This is still a pending construction graph. Full nativ
 window construction, layout, lifecycle/input/rendering, player Login/Possess and
 the remaining HUD behavior still need implementation and integration tests.
 Unsupported callbacks refuse and roll back instead of publishing a partial HUD.
-The coherent host suite passes85 ordinary tests/98 registered,13 explicit
-owned-data skips, zero failures (25.89s). The separate owned-data control passes
-5145 checks covering all ten actual slots, Radio/Tile hierarchy, native table indices/display records, original
+The coherent host suite passes87 ordinary tests/101 registered,14 explicit
+owned-data skips, zero failures (16.76s). The separate owned-data control passes6095 checks covering
+all ten actual slots, Radio/Tile hierarchy, native table indices/display records, original
 properties, oxygen sources, repeated initialization, forced-budget rollback
-and warm/cold ring/session ownership. It also checks actual crosshair geometry,
-clip offsets, drawing-GC propagation and unchanged constructor/general GCs.
+and warm/cold ring/session ownership. It also checks all ten F3–F12 augmentation
+labels, completed container initialization, actual crosshair geometry, the
+later configured belt clip offsets, drawing-GC propagation and unchanged
+constructor/general GCs.
 Runtime/VM ARM64 syntax-only checks pass.
 The85 non-preview original-artwork controls also pass with unchanged source files;
 inspected software previews are explicit
-fixtures, not live Quest health/equipment acceptance. No Android binary/APK was made.
+fixtures, not live Quest health/equipment acceptance. The revised native playable
+milestone has since been built and installed; see QUEST-TEST-BUILD.md.
 The separate console control passes65 checks/one expected refusal. The focused
 original world probe retains1308 actors and the same Move266 startup boundary,
 with complete rollback. These results do not satisfy the full-HUD functional
-acceptance checklist above; no APK is authorized by partial slot progress.
+acceptance checklist above; the current APK implements the narrower approved milestone.
 
 The Text constructor owns an empty String instead of Win32 FString heap bytes.
 Button's six original display records, timing/pressed state and Toggle sounds
@@ -184,7 +205,7 @@ argument buffers distinguish initialized defaults from SetTileColor's
 uninitialized four-byte Color destination; absent or partial Color writes are
 refused rather than filled from invented defaults. Tile setters copy each
 initialized Float/Byte input separately; no global default seed is inferred
-from an opcode. The VM passes691761 checks and757 refusal controls, including
+from an opcode. The VM passes694494 checks and778 refusal controls, including
 1619 ConfigureChild input-copy/default controls,203 preferred-size OUT-copy/reference controls, SetSelectability/SetWidth and
 5126 Tile input-copy/default checks. Byte alignment
 inputs retain all256 values; partial packed-Bool clearing still refuses rather
@@ -194,5 +215,5 @@ Actor.Region's PointRegion separately from GameReplicationInfo.Region's Int,
 including save/load. Hidden inherited class-default writes remain unsupported;
 instance support must not be presented as completed mutable-CDO shadow support.
 
-NPC poses/animation, general gravity, breakable crates and lamp illumination are
-the following tutorial priorities, not substitutes for finishing this HUD gate.
+NPC poses/animation, general gravity, breakable crates and lamp illumination
+remain tutorial priorities. Further development waits for the user's next direction.

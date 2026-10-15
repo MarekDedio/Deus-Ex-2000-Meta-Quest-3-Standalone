@@ -187,9 +187,9 @@ int main(int argc,char** argv) {
         std::cout<<"ORIGINAL root pending graph: "<<pending.execution.function<<':'<<pending.execution.offset<<
             " objects="<<pending.objects.size()<<" writes="<<pending.execution.writes<<" "<<pending.execution.error<<"; inspection="<<pending.inspectionError<<std::endl;
         Require(!pending.execution.passed() && !pending.execution.committed && pending.inspectionError.empty() &&
-            pending.execution.function=="DeusEx.HUDActiveAug.SetKeyNum" && pending.execution.offset==21u &&
-            pending.execution.error=="Unsupported VM conversion 83" && pending.execution.writes==6690u &&
-            pending.objects.size()==96u &&
+            pending.execution.function=="DeusEx.DamageHUDDisplay.InitWindow" && pending.execution.offset==39u &&
+            pending.execution.error=="Unsupported authored struct array/string member DeusEx.DamageHUDDisplay.sIconInfo.DamageType" &&
+            pending.execution.writes==8783u && pending.objects.size()==132u &&
             pending.rootedWindows==std::vector<std::string>{pending.pawnRootPath},
             "Original root prefix probe did not capture the actual pending native graph: "+pending.inspectionError);
         const auto object=[&](const std::string& path)->const PortableNativeWindowObjectSnapshot& {
@@ -315,12 +315,31 @@ int main(int argc,char** argv) {
         const auto& crossGC=object(field(crossView,"Extension.Window.wGc").value.text);
         Require(QuestVr::Vm::Equal(field(crossGC,"Extension.GC.gcClipRect").value,crossClip),
             "Original ClipTree did not copy all six channels to the drawing GC");
-        for(const auto& view:pending.objects) if(view.classPath=="Extension.GC" && view.path!=crossGC.path)
+        for(const auto& view:pending.objects) if(view.classPath=="Extension.GC" && view.path!=crossGC.path) {
+            const auto& owner=object(view.outerPath);
+            const bool beltDrawing=(owner.path==beltView.path || owner.path.rfind(beltView.path+'.',0u)==0u) &&
+                field(owner,"Extension.Window.wGc").value.text==view.path;
+            // The now-assigned belt is configured by the next HUD callback:
+            // 10-541,10-69 =>(-531,-59). ClipTree preserves negative clipped
+            // extents for the still-unconfigured 10x10 descendants, not zero.
             for(const auto& [name,value]:field(view,"Extension.GC.gcClipRect").value.fields) {
-                static_cast<void>(name);
-                Require(value.kind==Kind::Float && value.floating==0.0f && !std::signbit(value.floating),
-                    "Window construction unexpectedly ran ClipTree or modified another drawing/general GC");
+                float expected{};
+                if(beltDrawing) {
+                    if(name=="originx") expected=-531.0f;
+                    else if(name=="originy") expected=-59.0f;
+                    else if(name=="clipx") expected=531.0f;
+                    else if(name=="clipy") expected=59.0f;
+                    else if(name=="clipwidth") expected=owner.path==beltView.path?10.0f:-521.0f;
+                    else if(name=="clipheight") expected=owner.path==beltView.path?10.0f:-49.0f;
+                    else throw std::runtime_error("Unexpected native GC clip channel");
+                }
+                Require(value.kind==Kind::Float && value.floating==expected &&
+                    (expected!=0.0f || !std::signbit(value.floating)),
+                    "Original callback clipping changed a drawing/general GC: "+view.path+'.'+name);
             }
+            if(beltDrawing) Require(QuestVr::Vm::Equal(field(view,"Extension.GC.gcClipRect").value,
+                field(owner,"Extension.Window.winClipRect").value),"Belt ClipTree window/drawing GC channels disagree");
+        }
         const auto& radioView=object(field(beltView,"Extension.Window.firstChild").value.text);
         const auto& slotsView=object(field(beltView,"DeusEx.HUDObjectBelt.winSlots").value.text);
         Require(radioView.classPath=="Extension.RadioBoxWindow" && radioView.outerPath==beltView.path &&
@@ -453,6 +472,15 @@ int main(int argc,char** argv) {
             field(radioView,"Extension.TabGroupWindow.firstAbsX").value.floating==0.0f &&
             field(radioView,"Extension.TabGroupWindow.firstAbsY").value.floating==0.0f,
             "Native Radio Init/registration or original later bOneCheck=false assignment differs");
+        Require(field(beltView,"Extension.Window.X").value.floating==-531.0f &&
+            field(beltView,"Extension.Window.Y").value.floating==-59.0f &&
+            field(beltView,"Extension.Window.Width").value.floating==541.0f &&
+            field(beltView,"Extension.Window.Height").value.floating==69.0f &&
+            field(beltView,"Extension.Window.bConfigured").value.boolean &&
+            !field(beltView,"Extension.Window.bNeedsReconfigure").value.boolean &&
+            field(radioView,"Extension.Window.bConfigured").value.boolean &&
+            !field(slotsView,"Extension.Window.bConfigured").value.boolean,
+            "Original later HUD callback did not configure the assigned belt while retaining its unconfigured Tile child");
         for(const auto* view:{&radioView,&slotsView}) {
             Require(field(*view,"Extension.Window.bIsVisible").value.boolean &&
                 field(*view,"Extension.Window.lockCount").value.integer==0 &&
@@ -481,8 +509,8 @@ int main(int argc,char** argv) {
             "Original Tile setters changed unrelated constructor flags");
         edge(rootView,"Extension.Window.firstChild",display.path);edge(rootView,"Extension.Window.lastChild",hudView.path);
         // Ammo, all health children and Cross completed their original Init,
-        // visibility callbacks and unlocks. All ten slots completed; the belt
-        // Show's parent layout callback is pending: HUD.belt/Root.hud unassigned.
+        // visibility callbacks and unlocks. The belt and active-item displays
+        // finished; DamageHUDDisplay is now in flight. Root.hud is unassigned.
         edge(rootView,"DeusEx.DeusExRootWindow.hud",{});
         edge(hudView,"DeusEx.DeusExHUD.Ammo",ammoView.path);edge(hudView,"DeusEx.DeusExHUD.hit",hitView.path);
         edge(hudView,"DeusEx.DeusExHUD.Cross",crossView.path);edge(hudView,"DeusEx.DeusExHUD.belt",beltView.path);
@@ -495,9 +523,18 @@ int main(int argc,char** argv) {
         });
         Require(activeItemsFound!=pending.objects.end(),"Layout callback did not return to original active-item construction");
         const auto& activeItems=*activeItemsFound;
-        edge(hudView,"Extension.Window.firstChild",ammoView.path);edge(hudView,"Extension.Window.lastChild",activeItems.path);
+        const auto damageFound=std::find_if(pending.objects.begin(),pending.objects.end(),[](const auto& view) {
+            return view.classPath=="DeusEx.DamageHUDDisplay";
+        });
+        Require(damageFound!=pending.objects.end(),"Original active-item construction did not return to damage-display creation");
+        const auto& damage=*damageFound;
+        edge(hudView,"DeusEx.DeusExHUD.activeItems",activeItems.path);
+        edge(hudView,"DeusEx.DeusExHUD.damageDisplay",{});
+        edge(hudView,"Extension.Window.firstChild",ammoView.path);edge(hudView,"Extension.Window.lastChild",damage.path);
         edge(activeItems,"Extension.Window.winParent",hudView.path);edge(activeItems,"Extension.Window.parentOwner",hudView.path);
-        edge(activeItems,"Extension.Window.prevSibling",beltView.path);edge(activeItems,"Extension.Window.nextSibling",{});
+        edge(activeItems,"Extension.Window.prevSibling",beltView.path);edge(activeItems,"Extension.Window.nextSibling",damage.path);
+        edge(damage,"Extension.Window.winParent",hudView.path);edge(damage,"Extension.Window.parentOwner",hudView.path);
+        edge(damage,"Extension.Window.prevSibling",activeItems.path);edge(damage,"Extension.Window.nextSibling",{});
         edge(ammoView,"Extension.Window.parentOwner",hudView.path);edge(ammoView,"Extension.Window.winParent",hudView.path);
         edge(ammoView,"Extension.Window.prevSibling",{});edge(ammoView,"Extension.Window.nextSibling",hitView.path);
         edge(ammoView,"DeusEx.HUDBaseWindow.Player",player);
@@ -518,8 +555,109 @@ int main(int argc,char** argv) {
             !field(hudView,"Extension.Window.bIsSensitive").value.boolean && field(ammoView,"Extension.Window.bIsSensitive").value.boolean &&
             field(hudView,"Extension.Window.lockCount").value.integer==1 && field(ammoView,"Extension.Window.lockCount").value.integer==0 &&
             field(hitView,"Extension.Window.lockCount").value.integer==0 && field(crossView,"Extension.Window.lockCount").value.integer==0 &&
-            field(beltView,"Extension.Window.lockCount").value.integer==0 && field(activeItems,"Extension.Window.lockCount").value.integer==1,
+            field(beltView,"Extension.Window.lockCount").value.integer==0 && field(activeItems,"Extension.Window.lockCount").value.integer==0 &&
+            field(damage,"Extension.Window.lockCount").value.integer==1 &&
+            field(activeItems,"Extension.Window.bIsVisible").value.boolean && !field(damage,"Extension.Window.bIsVisible").value.boolean,
             "Original hidden HUD sensitivity or in-flight child lock state was skipped/fabricated");
+        edge(activeItems,"DeusEx.HUDBaseWindow.Player",player);
+        const auto& augsBorder=object(field(activeItems,"DeusEx.HUDActiveItemsDisplay.winAugsContainer").value.text);
+        const auto& itemsBorder=object(field(activeItems,"DeusEx.HUDActiveItemsDisplay.winItemsContainer").value.text);
+        Require(augsBorder.classPath=="DeusEx.HUDActiveAugsBorder" && itemsBorder.classPath=="DeusEx.HUDActiveItemsBorder" &&
+            augsBorder.outerPath==activeItems.path && itemsBorder.outerPath==activeItems.path,
+            "Original active-item display did not retain its distinct augmentation/item containers");
+        edge(activeItems,"DeusEx.HUDActiveItemsDisplay.winAugsContainer",augsBorder.path);
+        edge(activeItems,"DeusEx.HUDActiveItemsDisplay.winItemsContainer",itemsBorder.path);
+        edge(activeItems,"Extension.Window.firstChild",augsBorder.path);edge(activeItems,"Extension.Window.lastChild",itemsBorder.path);
+        edge(augsBorder,"Extension.Window.prevSibling",{});edge(augsBorder,"Extension.Window.nextSibling",itemsBorder.path);
+        edge(itemsBorder,"Extension.Window.prevSibling",augsBorder.path);edge(itemsBorder,"Extension.Window.nextSibling",{});
+        for(const auto* border:{&augsBorder,&itemsBorder}) {
+            edge(*border,"Extension.Window.winParent",activeItems.path);edge(*border,"Extension.Window.parentOwner",activeItems.path);
+            edge(*border,"DeusEx.HUDBaseWindow.Player",player);
+            Require(field(*border,"Extension.Window.bIsVisible").value.boolean &&
+                field(*border,"Extension.Window.lockCount").value.integer==0 &&
+                field(*border,"DeusEx.HUDActiveItemsBorderBase.iconCount").value.integer==0,
+                "Original active-item/augmentation NewChild Show did not finish, retained a lock or fabricated an active icon");
+            for(const auto* name:{"texBorderTop","texBorderCenter","texBorderBottom"}) {
+                const auto expected=ReadPortableClassDefault(border->classPath,name);
+                Require(expected.kind==Kind::Object && !expected.text.empty(),"Original active-border texture metadata is absent");
+                const auto& texture=field(*border,"DeusEx.HUDActiveItemsBorderBase."+std::string(name));
+                // Untouched class-default references are owned by the loaded
+                // package graph, not a fabricated native property-write root.
+                Require(QuestVr::Vm::Equal(texture.value,expected) && texture.propertyRoots.empty(),
+                    "Original active-border texture changed its authored CDO value or fabricated a property write");
+            }
+            for(const auto* name:{"borderTopMargin","borderBottomMargin","borderWidth","topHeight","topOffset",
+                "bottomHeight","bottomOffset","tilePosX","tilePosY"})
+                Require(QuestVr::Vm::Equal(field(*border,"DeusEx.HUDActiveItemsBorderBase."+std::string(name)).value,
+                    ReadPortableClassDefault(border->classPath,name)),"Original active-border authored geometry changed");
+            const auto& tile=object(field(*border,"DeusEx.HUDActiveItemsBorderBase.winIcons").value.text);
+            Require(tile.classPath=="Extension.TileWindow" && tile.outerPath==border->path && tile.emptyTileRows,
+                "Original active-border icon child is not its owned TileWindow");
+            edge(*border,"DeusEx.HUDActiveItemsBorderBase.winIcons",tile.path);
+            edge(*border,"Extension.Window.firstChild",tile.path);edge(*border,"Extension.Window.lastChild",tile.path);
+            edge(tile,"Extension.Window.winParent",border->path);edge(tile,"Extension.Window.parentOwner",border->path);
+            edge(tile,"Extension.Window.prevSibling",{});edge(tile,"Extension.Window.nextSibling",{});
+            Require(field(tile,"Extension.Window.lockCount").value.integer==0 &&
+                field(tile,"Extension.Window.bIsVisible").value.boolean &&
+                field(tile,"Extension.TileWindow.hMargin").value.floating==0.0f &&
+                field(tile,"Extension.TileWindow.vMargin").value.floating==0.0f &&
+                field(tile,"Extension.TileWindow.minorSpacing").value.floating==2.0f,
+                "Original active-border tile did not complete its margin/spacing initialization");
+            Require(field(tile,"Extension.Window.hMargin0").value.floating==
+                static_cast<float>(field(*border,"DeusEx.HUDActiveItemsBorderBase.tilePosX").value.integer) &&
+                field(tile,"Extension.Window.vMargin0").value.floating==
+                static_cast<float>(field(*border,"DeusEx.HUDActiveItemsBorderBase.tilePosY").value.integer),
+                "Original active-border tile did not use its authored icon offset");
+        }
+        const auto& augTile=object(field(augsBorder,"DeusEx.HUDActiveItemsBorderBase.winIcons").value.text);
+        const auto& itemTile=object(field(itemsBorder,"DeusEx.HUDActiveItemsBorderBase.winIcons").value.text);
+        edge(itemTile,"Extension.Window.firstChild",{});edge(itemTile,"Extension.Window.lastChild",{});
+        Require(field(augsBorder,"DeusEx.HUDActiveAugsBorder.FirstKeyNum").value.integer==3 &&
+            field(augsBorder,"DeusEx.HUDActiveAugsBorder.LastKeyNum").value.integer==12,
+            "Original active augmentation hotkey bounds are not F3..F12");
+        std::array<bool,10u> seenAugKeys{};
+        std::vector<std::string> augPaths;
+        for(const auto& aug:pending.objects) if(aug.classPath=="DeusEx.HUDActiveAug") {
+            const auto key=field(aug,"DeusEx.HUDActiveAug.HotKeyNum").value.integer;
+            Require(key>=3 && key<=12 && !seenAugKeys[static_cast<std::size_t>(key-3)],
+                "Original augmentation icons lost a unique F3..F12 hotkey");
+            seenAugKeys[static_cast<std::size_t>(key-3)]=true;augPaths.push_back(aug.path);
+            Require(aug.outerPath==augTile.path &&
+                field(aug,"DeusEx.HUDActiveAug.hotKeyString").value.text=="F"+std::to_string(key),
+                "Original IntToString/Concat did not produce the actual augmentation hotkey label");
+            edge(aug,"Extension.Window.winParent",augTile.path);edge(aug,"Extension.Window.parentOwner",augTile.path);
+            edge(aug,"DeusEx.HUDBaseWindow.Player",player);edge(aug,"DeusEx.HUDActiveItemBase.Icon",{});
+            const auto& background=field(aug,"DeusEx.HUDActiveItemBase.texBackground");
+            Require(QuestVr::Vm::Equal(background.value,ReadPortableClassDefault(aug.classPath,"texBackground")) &&
+                background.propertyRoots.empty(),"Original augmentation background changed its CDO reference or fabricated a write");
+            Require(!field(aug,"Extension.Window.bIsVisible").value.boolean &&
+                field(aug,"Extension.Window.lockCount").value.integer==0 &&
+                field(aug,"DeusEx.HUDActiveItemBase.IconWidth").value.integer==34 &&
+                field(aug,"DeusEx.HUDActiveItemBase.IconHeight").value.integer==34 &&
+                field(aug,"Extension.Window.hardcodedWidth").value.floating==34.0f &&
+                field(aug,"Extension.Window.hardcodedHeight").value.floating==34.0f &&
+                field(aug,"Extension.Window.Width").value.floating==10.0f &&
+                field(aug,"Extension.Window.Height").value.floating==10.0f,
+                "Original augmentation icon did not finish hidden 34x34 requested-size initialization");
+            for(const auto* name:{"colBlack","colAugActive","colAugInactive"})
+                Require(QuestVr::Vm::Equal(field(aug,"DeusEx.HUDActiveAug."+std::string(name)).value,
+                    ReadPortableClassDefault(aug.classPath,name)),"Original augmentation icon authored colors changed");
+        }
+        Require(augPaths.size()==10u && std::all_of(seenAugKeys.begin(),seenAugKeys.end(),[](bool seen) {return seen;}),
+            "Original augmentation setup did not create all ten hidden hotkey icons");
+        std::vector<std::string> linkedAugPaths;
+        auto nextAug=field(augTile,"Extension.Window.firstChild").value.text;
+        std::string previousAug;
+        while(!nextAug.empty()) {
+            Require(linkedAugPaths.size()<10u && std::find(augPaths.begin(),augPaths.end(),nextAug)!=augPaths.end() &&
+                std::find(linkedAugPaths.begin(),linkedAugPaths.end(),nextAug)==linkedAugPaths.end(),
+                "Original augmentation tile child chain is cyclic, extra or incomplete");
+            const auto& aug=object(nextAug);edge(aug,"Extension.Window.prevSibling",previousAug);
+            linkedAugPaths.push_back(nextAug);previousAug=nextAug;
+            nextAug=field(aug,"Extension.Window.nextSibling").value.text;
+        }
+        Require(linkedAugPaths.size()==10u,"Original augmentation tile child chain omitted an icon");
+        edge(augTile,"Extension.Window.lastChild",previousAug);
         edge(rootView,"Extension.RootWindow.FocusWindow",{});edge(rootView,"Extension.RootWindow.grabbedWindow",{});
         Require(field(display,"Extension.Window.winHAlign").value.integer==3 && field(display,"Extension.Window.winVAlign").value.integer==3,
             "Original SetWindowAlignments did not apply ActorDisplay's Full/Full alignment");
@@ -681,12 +819,14 @@ int main(int argc,char** argv) {
             edge(child,"Extension.Window.prevSibling",index==0u?std::string{}:healthChildren[index-1u]);
             edge(child,"Extension.Window.nextSibling",index+1u==healthChildren.size()?std::string{}:healthChildren[index+1u]);
         }
-        for(const auto& [view,width,height]:{
-            std::tuple{&ammoView,95.0f,77.0f},std::tuple{&hitView,84.0f,106.0f},std::tuple{&beltView,541.0f,69.0f}})
+        for(const auto& [view,width,height,configured]:{
+            std::tuple{&ammoView,95.0f,77.0f,false},std::tuple{&hitView,84.0f,106.0f,false},
+            std::tuple{&beltView,541.0f,69.0f,true}})
             Require(field(*view,"Extension.Window.hardcodedWidth").value.floating==width &&
                 field(*view,"Extension.Window.hardcodedHeight").value.floating==height &&
-                field(*view,"Extension.Window.Width").value.floating==10.0f && field(*view,"Extension.Window.Height").value.floating==10.0f,
-                "Original ammo/health SetSize did not defer current geometry while storing requested dimensions");
+                field(*view,"Extension.Window.Width").value.floating==(configured?width:10.0f) &&
+                field(*view,"Extension.Window.Height").value.floating==(configured?height:10.0f),
+                "Original HUD requested/current geometry differs from the actual deferred or completed layout callback");
         for(const auto* view:{&rootView,&display}) {
             for(const auto* name:{"bDrawRawBackground","bSpecialText","bLastWidthSpecified","bLastHeightSpecified","bIsSensitive"})
                 Require(field(*view,std::string("Extension.Window.")+name).value.boolean,"Native Window constructor missed a true original flag");
@@ -726,8 +866,9 @@ int main(int argc,char** argv) {
         const auto rootAttempt=ExecutePortableActorFunction(player,"Extension.PlayerPawnExt.InitRootWindow");
         std::cout<<"ORIGINAL unbound root initialization boundary: "<<rootAttempt.function<<':'<<rootAttempt.offset<<
             " opcode="<<unsigned(rootAttempt.opcode)<<" "<<rootAttempt.error<<std::endl;
-        Require(!rootAttempt.passed() && !rootAttempt.committed && rootAttempt.function=="DeusEx.HUDActiveAug.SetKeyNum" &&
-            rootAttempt.offset==21u && rootAttempt.error=="Unsupported VM conversion 83" &&
+        Require(!rootAttempt.passed() && !rootAttempt.committed && rootAttempt.function=="DeusEx.DamageHUDDisplay.InitWindow" &&
+            rootAttempt.offset==39u &&
+            rootAttempt.error=="Unsupported authored struct array/string member DeusEx.DamageHUDDisplay.sIconInfo.DamageType" &&
             std::find(rootAttempt.callStack.begin(),rootAttempt.callStack.end(),"DeusEx.DeusExRootWindow.InitWindow")!=rootAttempt.callStack.end(),
             "Native1052 did not construct/dispatch original root without a fabricated client prerequisite");
         const auto windowsAfter=ReadPortableRuntimeNativeWindowSummary();

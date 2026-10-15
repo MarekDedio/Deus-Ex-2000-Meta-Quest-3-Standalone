@@ -1142,6 +1142,147 @@ void RotatorDirectionContracts() {
         Failed(result,Vm::Status::Invalid,invalid,"RotatorToVector detached result assignment");
     }
 }
+void IntegerToStringContracts() {
+    const auto initialChecks=checks,initialRejections=rejections;
+    const auto conversion=[](const Bytes& child) {return Join({{0x53u},child});};
+    // Independent decimal formatting, including INT_MIN without signed negation.
+    const auto decimal=[](const std::int32_t value) {
+        auto magnitude=value<0 ? 0u-static_cast<std::uint32_t>(value) : static_cast<std::uint32_t>(value);
+        std::string text;
+        do {text.push_back(static_cast<char>('0'+magnitude%10u));magnitude/=10u;} while(magnitude);
+        if(value<0) text.push_back('-');
+        std::reverse(text.begin(),text.end());return text;
+    };
+    const auto check=[&](const Bytes& operand,const std::string& expected) {
+        TestHost host;
+        const auto result=Vm::Execute(host,Function("IntegerText",Return(conversion(operand))),"Self");
+        Returned(result,"Initialized retail IntToString decimal result");
+        Require(result.value.kind==Vm::Kind::String && result.value.text==expected && result.writes==0u &&
+            host.nativeIndices.empty(),"IntToString changed signed decimal formatting or invented a native call/write");
+    };
+    check(Int(std::numeric_limits<std::int32_t>::min()),"-2147483648");
+    check(Int(std::numeric_limits<std::int32_t>::max()),"2147483647");
+    for(const auto value:{-1000000000,-1000000,-65536,-1000,-100,-10,-1,0,1,9,10,99,100,999,1000,
+        65535,65536,16777217,1000000,1000000000}) check(Int(value),decimal(value));
+    std::uint32_t random=0x53a931d7u;
+    for(std::size_t i=0u;i<1024u;++i) {
+        random=random*1664525u+1013904223u;
+        const auto value=std::bit_cast<std::int32_t>(random);check(Int(value),decimal(value));
+    }
+    for(unsigned value=0u;value<256u;++value)
+        check({0x24u,static_cast<std::uint8_t>(value)},decimal(static_cast<std::int32_t>(value)));
+    check({0x25u},"0");check({0x26u},"1");check({0x0bu},"0");
+    // The pinned evaluator also admits defined Float-to-Int truncation. This
+    // tests that bounded typed policy, not arbitrary retail storage type-punning.
+    for(const auto value:{-2147483648.0f,-2147483520.0f,-16777216.0f,-32768.75f,-10.9f,-1.9f,
+        -0.99f,-0.0f,0.0f,0.99f,1.9f,10.9f,32768.75f,16777216.0f,2147483520.0f})
+        check(Real(value),decimal(static_cast<std::int32_t>(value)));
+    for(const auto bytes:{0u,1u,2u,3u,4u}) {
+        TestHost host;
+        const auto function=Function("IntegerTextNull",Return(conversion(
+            Context({0x2au},Native(1000u),static_cast<std::uint8_t>(bytes)))));
+        const auto result=Vm::Execute(host,function,"Self");Returned(result,"Int0 temporary survives absent/partial/full zero result writes");
+        Require(result.value.kind==Vm::Kind::String && result.value.text=="0" && host.effects==0u &&
+            host.nativeIndices.empty(),"IntToString null operand evaluated its skipped child or lost zero initialization");
+    }
+    for(const auto bytes:{5u,8u,12u,255u}) {
+        TestHost host;
+        const auto function=Function("IntegerTextOversizedFill",Join({Native(1000u),Return(conversion(
+            Context({0x2au},Int(1),static_cast<std::uint8_t>(bytes))))}));
+        const auto result=Vm::Execute(host,function,"Self");
+        Failed(result,Vm::Status::Unsupported,host,"IntToString operand cannot overwrite beyond its four-byte temporary");
+        Require(result.opcode==0x53u && host.effects==0u && host.rng==12345u,
+            "Oversized IntToString zero-fill lost converter trace or leaked prior effects");
+    }
+    {
+        TestHost host;
+        auto function=Function("IntegerTextNoWrite",Return(conversion(Let(Ref(0x01u,1),Int(73)))));
+        const auto property=host.Property(function,1,"Counter",Value::Integer(0));host.Store("Self",property,{Value::Integer(5)});
+        const auto result=Vm::Execute(host,function,"Self");Returned(result,"Let evaluates once but does not replace IntToString's initialized operand destination");
+        Require(result.value.text=="0" && result.writes==1u && host.Load("Self",property).integer==73,
+            "IntToString fabricated a result from unwritten Let or skipped its side effect");
+    }
+    {
+        TestHost host;
+        auto function=Function("IntegerTextReceiver",Return(Context(Ref(0x20u,1),conversion(Ref(0x01u,2)))));
+        host.objects[{function.source,1}]="Other";
+        const auto property=host.Property(function,2,"Count",Value::Integer(0));
+        host.Store("Self",property,{Value::Integer(-123)});host.Store("Other",property,{Value::Integer(987)});
+        const auto result=Vm::Execute(host,function,"Self");Returned(result,"IntToString operand uses original FFrame.Object");
+        Require(result.value.text=="-123" && host.observations==std::vector<std::string>{"variable:Self:Count"},
+            "IntToString read changed opcode receiver instead of its frame object");
+        auto callee=Function("IntegerTextCallee",Return(conversion(Ref(0x01u,2))),"Callee");
+        host.properties[{callee.source,2}]=property;host.finals[{function.source,3}]=std::make_shared<Vm::Function>(callee);
+        function.bytecode=Return(Context(Ref(0x20u,1),Call(0x1cu,3)));
+        const auto nested=Vm::Execute(host,function,"Self");Returned(nested,"Nested converter uses callee's actual frame object");
+        Require(nested.value.text=="987" && host.preparations.back()=="Other:"+callee.path,
+            "Nested IntToString kept caller's frame object instead of actual callee receiver");
+    }
+    {
+        TestHost host;
+        auto function=Function("IntegerTextSnapshot",Return(Native(1003u,{conversion(Ref(0x01u,1)),
+            Native(1060u,{Ref(0x01u,1),Int(42)})})));
+        const auto property=host.Property(function,1,"Count",Value::Integer(0));host.Store("Self",property,{Value::Integer(-17)});
+        const auto result=Vm::Execute(host,function,"Self");Returned(result,"IntToString snapshots before later argument mutation");
+        Require(result.value.text=="-17" && host.Load("Self",property).integer==42 && result.writes==1u,
+            "IntToString retained a mutable input alias or reordered later argument evaluation");
+    }
+    {
+        TestHost host;
+        auto function=Function("IntegerTextReplace",Join({Let(Ref(0x01u,1),conversion(Int(-42))),Return(Ref(0x01u,1))}));
+        const auto property=host.Property(function,1,"Text",Value::Text(Vm::Kind::String,{}));
+        host.Store("Self",property,{Value::Text(Vm::Kind::String,"Previous longer destination")});
+        const auto result=Vm::Execute(host,function,"Self");Returned(result,"IntToString replaces an existing FString destination");
+        Require(result.value.text=="-42" && host.Load("Self",property).text=="-42" && result.writes==1u,
+            "IntToString appended to old destination or preserved stale suffix bytes");
+        host.Store("Self",property,{Value::Text(Vm::Kind::String,"changed")});
+        Require(result.value.text=="-42","IntToString's returned String retained a mutable destination alias");
+    }
+    for(const auto& wrong:std::vector<Bytes>{{0x27u},{0x28u},{0x2au},String("123"),Ref(0x21u,1),
+        Vector({1,2,3}),Rotation({1,2,3}),Native(1005u)}) {
+        TestHost host;host.names[{"Fixture",1}]="123";
+        const auto function=Function("IntegerTextWrongType",Join({Native(1000u),Return(conversion(wrong))}));
+        const auto result=Vm::Execute(host,function,"Self");Failed(result,Vm::Status::Unsupported,host,"IntToString rejects unrelated value kinds");
+        Require(result.opcode==0x53u && host.effects==0u && host.rng==12345u,
+            "IntToString type refusal lost converter trace or leaked prior effects");
+    }
+    for(const auto value:{-2147483904.0f,2147483648.0f,std::numeric_limits<float>::max(),-std::numeric_limits<float>::max()}) {
+        TestHost host;
+        const auto function=Function("IntegerTextOverflow",Join({Native(1000u),Return(conversion(Real(value)))}));
+        const auto result=Vm::Execute(host,function,"Self");Failed(result,Vm::Status::Unsupported,host,"IntToString rejects undefined Float-to-Int overflow");
+        Require(result.opcode==0x53u && host.effects==0u,"Float-to-Int overflow leaked converter effects or trace");
+    }
+    for(const auto value:{std::numeric_limits<float>::infinity(),-std::numeric_limits<float>::infinity(),std::numeric_limits<float>::quiet_NaN()}) {
+        TestHost host;
+        const auto function=Function("IntegerTextNonFinite",Join({Native(1000u),Return(conversion(Real(value)))}));
+        const auto result=Vm::Execute(host,function,"Self");Failed(result,Vm::Status::Invalid,host,"IntToString rejects non-finite operand before coercion");
+        Require(host.effects==0u && host.rng==12345u,"Non-finite integer text operand escaped rollback");
+    }
+    for(const bool enough:{false,true}) {
+        TestHost host;Vm::Limits limits;limits.stringBytes=enough?11u:10u;
+        const auto function=Function("I",Join({Native(1000u),Return(conversion(Int(std::numeric_limits<std::int32_t>::min())))}),"I");
+        const auto result=Vm::Execute(host,function,"Self",{},limits);
+        if(enough) {
+            Returned(result,"Eleven-byte minimum signed Int string fits exact limit");
+            Require(result.value.text=="-2147483648" && host.effects==1u,"Exact IntToString string budget rejected valid output");
+        } else {
+            Failed(result,Vm::Status::Budget,host,"IntToString output uses the shared String budget");
+            Require(result.opcode==0x53u && host.effects==0u && host.rng==12345u,
+                "IntToString String budget failed before operand/result or escaped effect rollback");
+        }
+    }
+    {
+        TestHost host;
+        auto function=Function("IntegerTextLateFailure",Join({Let(Ref(0x01u,1),conversion(Int(42))),Native(4095u),Return()}));
+        const auto property=host.Property(function,1,"Text",Value::Text(Vm::Kind::String,{}));
+        host.Store("Self",property,{Value::Text(Vm::Kind::String,"original")});
+        const auto result=Vm::Execute(host,function,"Self");Failed(result,Vm::Status::Unsupported,host,"Later unsupported action restores converted FString destination");
+        Require(result.writes==1u && host.Load("Self",property).text=="original",
+            "Later failure leaked successfully converted String assignment");
+    }
+    std::cout<<"Generated original initialized IntToString decimal, frame receiver, result-write and budget contracts: "
+        <<checks-initialChecks<<" checks and "<<rejections-initialRejections<<" rejection controls passed.\n";
+}
 void ScalarAndLocalContracts() {
     TestHost host;
     auto f=Function("Locals",Join({Let(Ref(0x00,1),Real(7.75f)),Return(Ref(0x00,1))}));
@@ -5136,6 +5277,7 @@ void ProgramAndEligibilityContracts() {
 int main() {
     try {
         NormalizedSerializedContracts();
+        IntegerToStringContracts();
         ExecutionContracts();
         TransactionContracts();
         ProgramAndEligibilityContracts();

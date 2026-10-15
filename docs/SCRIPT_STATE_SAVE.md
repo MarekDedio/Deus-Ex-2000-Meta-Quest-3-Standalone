@@ -1,6 +1,6 @@
 # Scoped script-state saves
 
-Format description updated 2026-10-12. Historical verification results below
+Format description updated 2026-10-15. Historical verification results below
 retain their original scope and dates; they are not final acceptance of the
 current runtime or Quest rendering.
 
@@ -37,6 +37,10 @@ poses, target/return keys, phase and timers, not original Mover script frames.
 Read-only preflight checks the target map's actual exports/Level membership and
 authored motion even when another map is loaded; applying still requires the
 saved map to be current. See [TRAINING-DEMO.md](TRAINING-DEMO.md).
+Version15 wraps a complete unchanged version1–14 checkpoint when the native
+playable quickbar has initialized. It adds ten shortcut identities and the
+equipped identity; the starter keyring remains a native component over actual
+collected NanoKey actors, not an original Pawn-owned UObject. See below.
 None of these versions adds
 automatic NPC startup, AI processing, live animation, or a general UnrealScript savegame.
 Only the current map's supported authored and runtime-born actors are restored.
@@ -64,6 +68,32 @@ allocation against the loader's property/node/retained/encoded-byte limits;
 omitting them from the input cannot bypass those limits.
 
 ## Runtime envelope
+
+When native playable equipment is initialized, version15 takes precedence:
+
+```text
+u32 magic=0x53515844, u32 version=15
+u32 quickbar blob length
+quickbar blob: "QVRBELT" + byte1, then 11 length-prefixed strings
+  ten slot identities (index0 is the keyring), equipped identity
+u32 original checkpoint length
+original checkpoint[complete v1–v14 file, including magic/version]
+```
+
+Lengths are little-endian u32; each quickbar string is at most4096 bytes and
+the equipment blob at most45108 bytes. The whole file remains bounded to16MiB.
+The reader rejects nested v15 wrappers, malformed/truncated/trailing bytes,
+duplicates and identities not owned by the decoded inventory before publication.
+Current-map application also checks actual item eligibility. Equipment and the
+underlying checkpoint publish atomically. Legacy saves still load and reconcile
+the starter ring/eligible owned items on the next equipment query. Saves made
+with v15 require this or a newer reader; older APKs cannot load the new envelope.
+Uninitialized equipment preserves the earlier version-selection/wire format.
+
+The actual Training integration passes314 checks, including warm/cold exact
+equipment restoration, collected Train-key door use, legacy migration and
+malformed-envelope rollback. This is native playable equipment persistence, not
+completion of original-script inventory ownership or campaign travel archives.
 
 The runtime checkpoint still starts with magic `0x53515844`. A checkpoint
 without committed script objects, class defaults, births, native AI managers, RNG

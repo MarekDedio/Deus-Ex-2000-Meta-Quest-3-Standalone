@@ -1617,6 +1617,18 @@ private:
             Locate(frame.function, n.offset, n.op);
             result = fn ? Evaluation{Run(*fn, context, args, capturedContext,nativeCall), {}} :
                 Native(index, context, args, nullptr, *capturedContext);
+        } else if (n.op == 0x53) {
+            // Retail Core.execIntToString10131600 seeds an INT0 temporary and
+            // steps exactly one operand using FFrame.Object, even inside a
+            // different opcode Context. NoWrite/partial null-context fills
+            // affect that temporary, never a stale returned property alias.
+            const auto operand=Eval(frame,n.children.at(0),frame.self);
+            Locate(frame.function,n.offset,n.op);
+            const auto value=ResultValue(operand,Value::Integer(0),ResultLayout::Unknown,true);
+            // The defined pinned evaluator also accepts Byte/Float/Nothing via
+            // ToInt. This bounded portable policy is not retail raw-memory
+            // reinterpretation of malformed typed Float operands.
+            result.value=Value::Text(Kind::String,std::to_string(ToInt(value)));
         } else if (n.op >= 0x39) {
             // Retail ObjectToString explicitly evaluates its operand using
             // FFrame.Object even when the enclosing opcode receiver changed.
