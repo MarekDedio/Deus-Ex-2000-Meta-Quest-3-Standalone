@@ -1,5 +1,26 @@
 # Port status
 
+## Training NPC poses/breathing accepted (2026-10-15)
+
+- User confirms tracked hand models and quiet trigger work, then prioritizes
+  NPCs before breakable crates. Original virtual PlayWaiting is previewed in
+  a complete rollback-only transaction; GPU vertex clips remove the unresolved
+  Fighter/All reference pose without inventing a started original AI/world.
+  Sixteen humans use actual breathing loops and two robots their original Idle.
+  Valid authored poses and subsequent original animation commands are preserved.
+- Strict coherent host build and CTest93 passes/107 registered,14 explicit
+  owned-data skips, zero failures22.77s. NPC synthetic20019/8, actual original
+  Training280531/26, source/GC/checkpoint rollback and pose preservation pass.
+- First exact-APK Quest capture shows an arms-down NPC through the Training
+  window; the user confirms "all npcs are fine." The final preservation-guard
+  APK is automatically replace-installed with saves preserved and launched.
+  See QUEST-TEST-BUILD.md and NPC-WAITING-PRESENTATION.md for exact artifacts,
+  distinct initial/final verification evidence and remaining AI/scheduler work.
+- Crate work resumes. The current original-data probe passes138 controls:
+  damage6 survives with HP4; fatal damage rolls back at original PlaySound264
+  (Active.TakeDamage PC464). Live breakage, contents/fragments and support
+  gravity remain unfinished. Full tutorial/campaign completion is not claimed.
+
 ## Tracked held-item integration / quiet trigger (2026-10-15)
 
 - User accepts the HUD and resumes items in hand. Trigger use no longer reveals

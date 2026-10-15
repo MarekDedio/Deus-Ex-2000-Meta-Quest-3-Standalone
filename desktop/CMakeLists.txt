@@ -58,6 +58,16 @@ if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
 endif()
 
 enable_testing()
+add_executable(quest_npc_animation_test quest_npc_animation_test.cpp visual_renderer.cpp)
+target_compile_features(quest_npc_animation_test PRIVATE cxx_std_20)
+target_link_libraries(quest_npc_animation_test PRIVATE quest_portable_host)
+target_include_directories(quest_npc_animation_test PRIVATE
+    "${CMAKE_CURRENT_LIST_DIR}/../third_party/Meta-OpenXR-SDK/Samples/1stParty/OVR/Include")
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+    target_compile_options(quest_npc_animation_test PRIVATE -Wall -Wextra -Werror)
+    target_link_options(quest_npc_animation_test PRIVATE -static -static-libgcc -static-libstdc++)
+endif()
+add_test(NAME quest_npc_animation COMMAND quest_npc_animation_test)
 add_executable(quest_music_stream_test quest_music_stream_test.cpp)
 # Link the same older Vorbis implementation as the Quest framework as well:
 # this regression must fail at link time if music leaks unprefixed codec APIs.

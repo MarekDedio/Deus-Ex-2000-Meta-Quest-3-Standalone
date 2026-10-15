@@ -3,8 +3,9 @@
 Status: original keyring/knife/crowbar assemblies are wired into the Quest
 renderer, built and replace-installed with saves preserved. Exact-build Quest
 captures show the keyring and crowbar in the tracked right hand; live selection
-logs also resolve the knife. Knife capture, physical alignment/comfort and the
-human quiet-trigger check remain separate acceptance steps. The user accepted
+logs also resolve the knife. Physical alignment/comfort and the
+human quiet-trigger check were subsequently accepted by the user ("everything
+works"). Knife device capture remains absent. The user accepted
 the HUD and resumed this work; trigger use no longer reveals or holds the bar.
 
 `quest_held_item_assets.h` prepares the user's original right-hand-plus-item POV

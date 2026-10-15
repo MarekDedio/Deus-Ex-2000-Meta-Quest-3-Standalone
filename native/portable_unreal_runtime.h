@@ -370,6 +370,20 @@ struct PortableActorAnimationSnapshot {
     std::array<PortableActorBlendAnimationSnapshot, 4u> blends;
 };
 
+// Read-only render bootstrap while original world/AI startup is unavailable.
+// Executes the receiver's actual PlayWaiting helper in a rollback-only VM
+// transaction. Never selects a guessed sequence or starts a state/AI frame.
+// Property, RNG, birth, deletion and revision effects are all discarded; only
+// immutable asset caches and this detached presentation result may survive.
+struct PortableActorWaitingPresentation {
+    bool available{};
+    std::string function, meshPath, error;
+    PortableActorAnimationSnapshot animation;
+    QuestVr::ActorVec3 prePivot;
+};
+PortableActorWaitingPresentation PreviewPortableActorWaitingPresentation(
+    const std::string& actorPath, const QuestVr::Vm::Limits& limits = {});
+
 struct PortableActorSnapshot {
     std::string objectPath;
     std::string classPath;

@@ -1579,6 +1579,12 @@ public:
         return found->second;
     }
     RuntimeObject* RequireNativeLevelInfo(RuntimeObject* actor) { return NativeLevelInfo(actor); }
+    void CaptureWaitingPresentation(RuntimeObject* actor, PortableActorWaitingPresentation& result) {
+        if (transaction_ || !actor || !actor->active || actor->worldRemoved ||
+            !IsDerivedFromPath(actor->cls,"DeusEx.ScriptedPawn"))
+            throw std::runtime_error("Waiting presentation requires an active original ScriptedPawn");
+        waitingPreviewActor_ = actor; waitingPreview_ = &result;
+    }
     Value SetSessionPlayer(const std::uint64_t viewportIdentity,const std::string& actorPath,
         QuestVr::Vm::Execution& execution) {
         if(!transaction_) throw std::runtime_error("SetPlayer requires its outer native/script transaction");
@@ -1843,6 +1849,19 @@ public:
         transaction_ = true;
     }
     void Commit() override {
+        if (waitingPreview_) {
+            ValidateStateBudget();
+            // Capture before rollback, without publishing a partial original
+            // world, persistent animation clock, RNG change or spawned actor.
+            waitingPreview_->animation = ReadRuntimeAnimationSnapshot(waitingPreviewActor_);
+            waitingPreview_->meshPath = ObjectProperty(waitingPreviewActor_,"Mesh");
+            const auto pivot = Read(waitingPreviewActor_,PropertyNamed(waitingPreviewActor_,"PrePivot"),0u);
+            if (pivot.kind != Kind::Vector) throw std::runtime_error("Waiting helper produced an invalid PrePivot");
+            waitingPreview_->prePivot = {pivot.vector[0],pivot.vector[1],pivot.vector[2]};
+            Rollback();
+            waitingPreview_->available = true;
+            return;
+        }
         if (clientDependent_ && !persistentNativeClient.HasViewport())
             throw std::runtime_error("Native client lifetime revoked during script transaction");
         ValidateStateBudget();
@@ -5745,6 +5764,8 @@ private:
     RuntimeObject* nativeConfiguringWindow_{};
     std::optional<PortableModelGeometry> rootModel_;
     bool transaction_{};
+    RuntimeObject* waitingPreviewActor_{};
+    PortableActorWaitingPresentation* waitingPreview_{};
     const PortablePackageTables& Table(const std::string& source) {
         auto found = tables_.find(source);
         if (found == tables_.end()) {
@@ -9562,6 +9583,27 @@ QuestVr::Vm::Result ExecutePortableActorFunction(const std::string& actorPath,
         result.function = functionName; result.error = error.what();
         return result;
     }
+}
+
+PortableActorWaitingPresentation PreviewPortableActorWaitingPresentation(
+    const std::string& actorPath, const QuestVr::Vm::Limits& limits) {
+    CollectBirthGarbageAtBoundary collect;
+    PortableActorWaitingPresentation result;
+    try {
+        PortableActorVmHost host;
+        auto* actor = host.Object(actorPath);
+        host.CaptureWaitingPresentation(actor,result);
+        const auto function = host.Member(actor,"PlayWaiting");
+        result.function = function->path;
+        const auto executed = QuestVr::Vm::Execute(host,*function,actor->reflection.objectPath,{},limits);
+        if (!executed.passed() || !result.available) {
+            result.available = false;
+            result.error = executed.error + " at " + executed.function + ':' + std::to_string(executed.offset);
+        }
+    } catch (const std::exception& error) {
+        result.available = false; result.error = error.what();
+    }
+    return result;
 }
 
 const char* PortableWorldStartupPhaseName(const PortableWorldStartupPhase phase) {

@@ -1,5 +1,52 @@
 # Current Quest test-build handoff (2026-10-15)
 
+## Original Training NPC waiting animations (2026-10-15)
+
+The user accepts the hand models/quiet trigger, then prioritizes NPC T-poses
+before crates. All18 Training mesh NPCs now have original-script-selected
+waiting presentations: humans breathe in their original arms-down pose;
+both robots use their authored Idle. No hardcoded idle-name table or fake
+started AI/state is used. Valid authored map/script poses (sitting/lying/tweens)
+are preserved. See NPC-WAITING-PRESENTATION.md for the renderer-only scope,
+rollback contract, supported cases and outstanding AI/animation work.
+
+Strict coherent host build succeeds. CTest93 passes/107 registered,14 explicit
+owned-data skips, zero failures in22.77s. Synthetic NPC20019/8 refusal controls
+and separate actual Training280531/26 pass, with complete checkpoint/RNG/revision
+rollback, existing original command preservation and original source/GC checks.
+Six software previews were produced; inspected Jaime/doctor/trooper views have
+normal arms-down poses and original materials.
+
+Final signed ARM64 APK:
+`artifacts/npc-waiting-20261015/DeusExQuestVR-training-npc-waiting-final-20261015.apk`
+(34,033,382 bytes), SHA256
+`A56F67A040445E2EEB771D6928E8C32AC781A852FBF4622229C6002C73CCD9CA`.
+Final Android build succeeds in1m22s, v2 signature verifies with one signer.
+Automatically replace-installed without clearing saves on Quest3
+`2G0YC5ZG620985`, update2026-10-15 13:50:27; launched process11881.
+Installed base.apk checksum matches exactly. The final process prepared all18
+NPC presentations, but head tracking is unavailable (flags0), so no final-APK
+render capture is claimed. The accepted first-APK evidence is distinguished below.
+
+The first NPC APK (34,032,926 bytes, SHA256
+`7A67CB1D80A8D175C4A9619A63CCC9E225B17F4BD61D80BC77E05B0B20131130`)
+was installed with matching checksum, launched process9675, and captured at
+`artifacts/npc-waiting-20261015/quest-training-npc-window-20261015.bmp`.
+The inspected1680x1760 frame shows an arms-down NPC through the desk window,
+original speech beside health/compass and tracked keyring. Actual GPU clip
+uploads resolve BreatheLight for GM_Trench_F, GM_Trench and GM_Suit. The user
+confirmed "all npcs are fine" and requested destructible crates next.
+The final APK additionally preserves already-valid original animation poses;
+the same18 Training results pass. The first APK's capture is not mislabeled as
+an exact-final-APK screenshot. Steady windows reach72fps/13.89ms, but streaming
+and diagnostic readback still produce slower windows; no full performance,
+AI, full tutorial or campaign acceptance is claimed.
+
+The next crate probe passes138 original-data controls and reproduces both
+crates' true surviving damage6 (HitPoints10 to4/ScaleGlow0.46). Fatal damage
+still rolls back at DeusExDecoration.Active.TakeDamage PC464, unsupported
+PlaySound264, before the destruction chain can complete. No crate fix yet.
+
 ## Tracked keyring, knife and crowbar / quiet trigger (2026-10-15)
 
 The accepted HUD placement remains. Right trigger now uses the equipped item

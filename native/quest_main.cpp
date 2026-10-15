@@ -65,6 +65,7 @@
 #include "quest_world_material.h"
 #include "portable_model_geometry.h"
 #include "quest_actor_geometry.h"
+#include "quest_npc_animation.h"
 #include "quest_save_metadata.h"
 #include "quest_save_bundle.h"
 #include "async_result_epoch.h"
@@ -80,7 +81,8 @@ class TexturedGeometryRenderer {
         const OVRFW::GlGeometry::Descriptor& descriptor,
         const OVRFW::GlTexture& texture,
         bool cullEnable = true, std::uint32_t polyFlags = 0u,
-        ActorVisibilityMatrices* actorVisibility = nullptr) {
+        ActorVisibilityMatrices* actorVisibility = nullptr,
+        const OVRFW::GlTexture* animationPositions = nullptr) {
         static const char* vertexShader = R"glsl(
             attribute highp vec4 Position;
             attribute highp vec2 TexCoord;
@@ -106,6 +108,34 @@ class TexturedGeometryRenderer {
                 oLight = VertexColor.gba;
             }
         )glsl";
+        static const char* animatedVertexShader = R"glsl(
+            attribute highp vec4 Position;
+            attribute highp vec2 TexCoord;
+            attribute highp vec2 TexCoord1;
+            attribute lowp vec4 VertexColor;
+            uniform highp mat4 ActorVisibility[32];
+            uniform highp sampler2D AnimationPositions;
+            uniform highp vec4 AnimationFrame;
+            uniform highp mat4 AnimationTransform;
+            varying highp vec2 oTexCoord;
+            varying mediump float oLayer;
+            varying lowp vec3 oLight;
+            void main() {
+                highp int source = int(floor(TexCoord1.y + 0.5));
+                highp vec3 a = texelFetch(AnimationPositions, ivec2(source,int(AnimationFrame.x)),0).xyz;
+                highp vec3 b = texelFetch(AnimationPositions, ivec2(source,int(AnimationFrame.y)),0).xyz;
+                gl_Position = TransformVertex(AnimationTransform * vec4(mix(a,b,AnimationFrame.z),1.0));
+                highp int actor = int(floor(TexCoord1.x + 0.5));
+                highp int block = actor / 16;
+                highp int row = (actor - block * 16) / 4;
+                highp int column = actor - block * 16 - row * 4;
+                if (ActorVisibility[block][column][row] < 0.5)
+                    gl_Position = vec4(2.0,2.0,2.0,1.0);
+                oTexCoord = TexCoord;
+                oLayer = VertexColor.r * 255.0;
+                oLight = VertexColor.gba;
+            }
+        )glsl";
         static const char* fragmentShader = R"glsl(
             precision lowp float;
             uniform highp sampler2DArray Texture0;
@@ -125,6 +155,9 @@ class TexturedGeometryRenderer {
             {.Name = "Texture0", .Type = OVRFW::ovrProgramParmType::TEXTURE_SAMPLED},
             {.Name = "Masked", .Type = OVRFW::ovrProgramParmType::FLOAT},
             {.Name = "ActorVisibility[0]", .Type = OVRFW::ovrProgramParmType::FLOAT_MATRIX4},
+            {.Name = "AnimationPositions", .Type = OVRFW::ovrProgramParmType::TEXTURE_SAMPLED},
+            {.Name = "AnimationFrame", .Type = OVRFW::ovrProgramParmType::FLOAT_VECTOR4},
+            {.Name = "AnimationTransform", .Type = OVRFW::ovrProgramParmType::FLOAT_MATRIX4},
         };
         if (!sharedProgram_.IsValid()) {
             sharedProgram_ = OVRFW::GlProgram::Build(
@@ -132,9 +165,14 @@ class TexturedGeometryRenderer {
         }
         if (!sharedProgram_.IsValid())
             throw std::runtime_error("textured geometry shader creation failed");
+        animated_ = animationPositions != nullptr;
+        if (animated_ && !animatedProgram_.IsValid())
+            animatedProgram_ = OVRFW::GlProgram::Build("",animatedVertexShader,"",fragmentShader,uniformParms,6);
+        if (animated_ && (!animatedProgram_.IsValid() || !animationPositions->IsValid()))
+            throw std::runtime_error("NPC vertex animation shader/texture creation failed");
         surface_.geo = OVRFW::GlGeometry(descriptor.attribs, descriptor.indices);
         OVRFW::ovrGraphicsCommand& command = surface_.graphicsCommand;
-        command.Program = sharedProgram_;
+        command.Program = animated_ ? animatedProgram_ : sharedProgram_;
         command.Textures[0] = texture;
         command.UniformData[0].Data = &command.Textures[0];
         if ((polyFlags & 4u) != 0u) polyFlags &= ~2u;
@@ -144,6 +182,12 @@ class TexturedGeometryRenderer {
         actorVisibility_ = actorVisibility ? actorVisibility : &allVisibleActors_;
         command.UniformData[2].Data = actorVisibility_->data();
         command.UniformData[2].Count = static_cast<int>(actorVisibility_->size());
+        if (animated_) {
+            command.Textures[1] = *animationPositions;
+            command.UniformData[3].Data = &command.Textures[1];
+            command.UniformData[4].Data = &animationFrame_;
+            command.UniformData[5].Data = &animationTransform_;
+        }
         command.GpuState.depthEnable = command.GpuState.depthMaskEnable = true;
         command.GpuState.blendEnable = OVRFW::ovrGpuState::BLEND_DISABLE;
         command.GpuState.cullEnable = cullEnable;
@@ -169,6 +213,11 @@ class TexturedGeometryRenderer {
     }
     static void ShutdownSharedProgram() {
         if (sharedProgram_.IsValid()) OVRFW::GlProgram::Free(sharedProgram_);
+        if (animatedProgram_.IsValid()) OVRFW::GlProgram::Free(animatedProgram_);
+    }
+    void SetAnimation(const QuestVr::NpcAnimationFrame& frame,const OVR::Matrix4f& transform) {
+        animationFrame_ = {static_cast<float>(frame.first),static_cast<float>(frame.second),frame.fraction,0.0f};
+        animationTransform_ = transform;
     }
     void SetPose(const OVR::Posef& pose) { pose_ = pose; }
     void SetModelMatrix(const OVR::Matrix4f& matrix) { modelMatrix_ = matrix; }
@@ -185,12 +234,18 @@ class TexturedGeometryRenderer {
             &surface_.graphicsCommand.Textures[0];
         surface_.graphicsCommand.UniformData[1].Data = &masked_;
         surface_.graphicsCommand.UniformData[2].Data = actorVisibility_->data();
+        if (animated_) {
+            surface_.graphicsCommand.UniformData[3].Data = &surface_.graphicsCommand.Textures[1];
+            surface_.graphicsCommand.UniformData[4].Data = &animationFrame_;
+            surface_.graphicsCommand.UniformData[5].Data = &animationTransform_;
+        }
         surfaces.emplace_back(modelMatrix_, &surface_);
     }
 
    private:
     OVRFW::ovrSurfaceDef surface_;
     inline static OVRFW::GlProgram sharedProgram_;
+    inline static OVRFW::GlProgram animatedProgram_;
     inline static ActorVisibilityMatrices allVisibleActors_ = [] {
         ActorVisibilityMatrices matrices;
         for (auto& matrix : matrices)
@@ -200,6 +255,9 @@ class TexturedGeometryRenderer {
     ActorVisibilityMatrices* actorVisibility_{&allVisibleActors_};
     float masked_{};
     bool blended_{};
+    bool animated_{};
+    OVR::Vector4f animationFrame_;
+    OVR::Matrix4f animationTransform_ = OVR::Matrix4f::Identity();
     OVR::Vector3f localCenter_;
     OVR::Posef pose_ = OVR::Posef::Identity();
     OVR::Matrix4f modelMatrix_ = OVR::Matrix4f::Identity();
@@ -1444,6 +1502,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         UpdateOriginalCompassUi(frame,mapLoadingNow);
         UpdateOriginalPlayerHudUi(frame,mapLoadingNow);
         UpdateHeldItemVisualSelection(frame.DeltaSeconds,mapLoadingNow);
+        UpdateNpcWaitingAnimations(frame.DeltaSeconds,mapLoadingNow);
         if (subtitleLabel_ != nullptr) {
             auto pose = frame.HeadPose;
             pose.Translation += pose.Rotation.Rotate({0.0f,-0.35f,-1.4f});
@@ -1670,6 +1729,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         hasTransitionHeadAnchor_ = false;
         ClearPendingPersonaRestore();
         preparedActorSnapshots_.clear();
+        preparedNpcWaiting_.clear();
         preparedSpatialAudioEmitters_.clear();
         preparedMapLights_.clear();
         preparedMapNorth_.reset();activeMapNorth_.reset();
@@ -1796,6 +1856,17 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         ~ActorAtlasGeneration() { if (texture.IsValid()) OVRFW::FreeTexture(texture); }
     };
 
+    struct NpcGpuClip {
+        OVRFW::GlTexture texture;
+        std::shared_ptr<const QuestVr::NpcAnimationClip> clip;
+        ~NpcGpuClip() { if (texture.IsValid()) OVRFW::FreeTexture(texture); }
+    };
+    struct NpcAnimationDraw {
+        std::size_t rendererIndex{};
+        std::shared_ptr<NpcGpuClip> gpu;
+        OVR::Matrix4f transform;
+    };
+
     struct ActorGeometryBank {
         std::deque<OVRFW::GeometryRenderer> world;
         std::deque<TexturedGeometryRenderer> textured;
@@ -1806,6 +1877,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         std::set<std::string> lightingActors;
         TexturedGeometryRenderer::ActorVisibilityMatrices visibilityMatrices;
         std::deque<std::size_t> markerOwners;
+        std::vector<NpcAnimationDraw> npcAnimations;
         OVR::Vector3f streamingCenter;
         bool spatiallyFiltered{};
         std::size_t collisionTriangles{};
@@ -1846,6 +1918,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         std::string moverPath;
         bool collisionOnly{};
         std::size_t actorOrdinal{QuestVr::ActorVisibilityState::MaximumActors};
+        std::shared_ptr<const QuestVr::NpcAnimationClip> npcClip;
     };
 
     struct ActorGeometryBuild {
@@ -1880,6 +1953,9 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         OVRFW::GlGeometry::Descriptor texturedChunk;
         std::uint32_t texturedChunkPolyFlags{};
         std::string texturedChunkMoverPath;
+        std::shared_ptr<const QuestVr::NpcAnimationClip> texturedChunkNpcClip;
+        std::size_t texturedChunkNpcActor{QuestVr::ActorVisibilityState::MaximumActors};
+        OVR::Matrix4f texturedChunkNpcTransform;
         std::size_t markerChunkActor{QuestVr::ActorVisibilityState::MaximumActors};
         std::deque<ActorGeometryPart> parts;
     };
@@ -1941,6 +2017,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         bool rollbackAttempted{};
         std::string error;
         std::vector<PortableActorSnapshot> actors;
+        std::map<std::string,QuestVr::NpcWaitingInstance> npcWaiting;
         PortableTextureArray actorTextures;
         WorldTexturePreparation worldTexture;
         WorldMeshPreparation worldMesh;
@@ -2005,6 +2082,10 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                 std::string(gameRoot_) + "/Maps/00_Training.dx");
             auto& map = preparation.map;
             map.actors = GetPortableRuntimeMapActors();
+            std::vector<std::string> npcErrors;
+            map.npcWaiting = QuestVr::PrepareNpcWaitingPresentations(map.actors,&npcErrors);
+            for (const auto& error:npcErrors) ALOG("DeusExQuest: NPC waiting presentation refused: %s",error.c_str());
+            ALOG("DeusExQuest: prepared %zu original-script NPC waiting presentations (render-only)",map.npcWaiting.size());
             map.mapNorth=PrepareOriginalMapNorth();
             map.worldMesh = LoadWorldMeshCacheCpu();
             if (!map.worldMesh.passed)
@@ -2079,6 +2160,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         CommitPlayerVisuals(std::move(preparation.playerVisuals));
         CommitHeldItemVisuals(std::move(preparation.heldItemVisuals));
         preparedActorSnapshots_ = std::move(preparation.map.actors);
+        preparedNpcWaiting_ = std::move(preparation.map.npcWaiting);
         preparedActorTextures_ = std::move(preparation.map.actorTextures);
         preparedWorldTexture_ = std::move(preparation.map.worldTexture);
         preparedWorldMesh_ = std::move(preparation.map.worldMesh);
@@ -3089,6 +3171,41 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         actorGeometryBuild_->parts.push_back(std::move(part));
     }
 
+    std::shared_ptr<NpcGpuClip> NpcClipForUpload(const std::shared_ptr<const QuestVr::NpcAnimationClip>& clip) {
+        const auto found = npcGpuClips_.find(clip.get());
+        if (found != npcGpuClips_.end()) return found->second;
+        auto gpu = std::make_shared<NpcGpuClip>();
+        gpu->clip = clip;
+        GLint maximum{};glGetIntegerv(GL_MAX_TEXTURE_SIZE,&maximum);
+        if (!clip || clip->vertices>static_cast<std::uint32_t>(maximum) ||
+            clip->frames>static_cast<std::uint32_t>(maximum) ||
+            clip->positionsRgba.size()!=static_cast<std::size_t>(clip->vertices)*clip->frames*4u)
+            throw std::runtime_error("NPC vertex clip exceeds device texture bounds");
+        GLuint texture{};glGenTextures(1,&texture);
+        gpu->texture=OVRFW::GlTexture(texture,GL_TEXTURE_2D,clip->vertices,clip->frames);
+        glBindTexture(GL_TEXTURE_2D,texture);
+        glTexStorage2D(GL_TEXTURE_2D,1,GL_RGBA32F,clip->vertices,clip->frames);
+        glTexSubImage2D(GL_TEXTURE_2D,0,0,0,clip->vertices,clip->frames,GL_RGBA,GL_FLOAT,clip->positionsRgba.data());
+        glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_S,GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_T,GL_CLAMP_TO_EDGE);
+        glBindTexture(GL_TEXTURE_2D,0);
+        if(glGetError()!=GL_NO_ERROR) throw std::runtime_error("Original NPC vertex clip upload failed");
+        npcGpuClips_.emplace(clip.get(),gpu);
+        ALOG("DeusExQuest: NPC clip GPU ready mesh=%s sequence=%s vertices=%u frames=%u bytes=%zu",
+            clip->meshPath.c_str(),clip->sequence.c_str(),clip->vertices,clip->frames,clip->positionsRgba.size()*sizeof(float));
+        return gpu;
+    }
+
+    void UpdateNpcWaitingAnimations(float elapsed,bool mapLoading) {
+        if (mapLoading || !activeActorGeometry_ || !std::isfinite(elapsed) || elapsed<0.0f) return;
+        npcAnimationSeconds_ += static_cast<double>(elapsed);
+        for (const auto& draw:activeActorGeometry_->npcAnimations)
+            activeActorGeometry_->textured.at(draw.rendererIndex).SetAnimation(
+                QuestVr::SampleNpcAnimationFrame(*draw.gpu->clip,npcAnimationSeconds_),draw.transform);
+    }
+
     void ReapRetiredActorPose() {
         if (!actorPoseFuture_.valid()) return;
         // The sole outstanding worker can belong to the current build or to a
@@ -3154,7 +3271,17 @@ class DeusExQuestApp final : public OVRFW::XrApp {
     bool PrepareNextActorGeometry() {
         ActorGeometryBuild& build = *actorGeometryBuild_;
         const std::size_t ordinal = build.nextActor;
-        const auto& actor = actorSnapshots_[build.actorIndices[ordinal]];
+        auto actor = actorSnapshots_[build.actorIndices[ordinal]];
+        std::shared_ptr<const QuestVr::NpcAnimationClip> npcClip;
+        const auto waiting = npcWaiting_.find(actor.objectPath);
+        if (waiting!=npcWaiting_.end() && QuestVr::NpcWaitingMatchesSnapshot(waiting->second,actor)) {
+            npcClip = waiting->second.clip;
+            actor.animation = {};
+            actor.animation.sequence = npcClip->sequence;
+            actor.prePivotX=waiting->second.prePivot.x;
+            actor.prePivotY=waiting->second.prePivot.y;
+            actor.prePivotZ=waiting->second.prePivot.z;
+        }
         auto& staged = *actorGeometryPublication_.Staged();
         if (!staged.visibility.Visible(ordinal)) {
             // A pickup can remove this very actor while its immutable pose
@@ -3241,6 +3368,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                     // Store source flags separately: texture/style bits are shared
                     // across this material but do not identify its source faces.
                     build.parts.back().sourcePolyFlags = sourceFlags;
+                    build.parts.back().npcClip = npcClip;
                     if (brushActor) build.parts.back().moverPath = actor.objectPath;
                     rendered = true;
                 }
@@ -3319,7 +3447,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         }
         ALOG("DeusExQuest: incremental actor geometry complete over %zu frames, %zu GPU chunks; worst slice %.2f ms",
              build.frames, build.uploadedChunks, build.maximumSliceMilliseconds);
-        ALOG("DeusExQuest: sampled %zu authored actor poses; %zu omitted poses; native animation clock/state events not implemented",
+        ALOG("DeusExQuest: sampled %zu authored actor poses; %zu omitted poses; NPC GPU waiting playback separate from unfinished native world animation/events",
              build.sampledActorPoses,build.animationOmissions);
     }
 
@@ -3343,16 +3471,24 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             for (std::size_t triangle = part.nextIndex; triangle < end; triangle += 3u) {
                 const auto& source = part.mesh->triangles[triangle];
                 if (source.material != part.material || source.polyFlags != part.sourcePolyFlags) continue;
-                if (!part.collisionOnly)
-                    for (const auto& vertex : QuestVr::BuildActorTriangle(*part.mesh,triangle,
-                        part.actorTransform,part.meshPose.get())) {
+                if (!part.collisionOnly) {
+                    const auto vertices=QuestVr::BuildActorTriangle(*part.mesh,triangle,
+                        part.actorTransform,part.meshPose.get());
+                    const bool reversed=part.actorTransform.mirrored !=
+                        (part.mesh->scaleX*part.mesh->scaleY*part.mesh->scaleZ<0.0f);
+                    const std::size_t order[3]{0u,reversed?2u:1u,reversed?1u:2u};
+                    for (std::size_t corner=0u;corner<3u;++corner) {
+                        const auto& vertex=vertices[corner];
                         chunk.attribs.position.emplace_back(vertex.position.x,vertex.position.y,vertex.position.z);
                         chunk.attribs.normal.emplace_back(vertex.normal.x,vertex.normal.y,vertex.normal.z);
                         chunk.attribs.uv0.emplace_back(vertex.u,vertex.v);
                         chunk.attribs.color.push_back(part.color);
-                        chunk.attribs.uv1.emplace_back(static_cast<float>(part.actorOrdinal),0.0f);
+                        const float sourceIndex=part.npcClip ? static_cast<float>(
+                            part.mesh->animation->triangleSourceVertexIndices.at(triangle+order[corner])) : 0.0f;
+                        chunk.attribs.uv1.emplace_back(static_cast<float>(part.actorOrdinal),sourceIndex);
                         chunk.indices.push_back(static_cast<OVRFW::TriangleIndex>(chunk.indices.size()));
                     }
+                }
                 // Brush vertices are prepared once. Their collider and GPU
                 // chunks share the same later rigid-motion delta; neither the
                 // static BSP grid nor unrelated actors is rebuilt per tick.
@@ -3402,11 +3538,17 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             if (!staged.atlas || !staged.atlas->texture.IsValid())
                 throw std::runtime_error("actor texture disappeared during geometry upload");
             staged.textured.emplace_back();
+            const auto npcGpu = build.texturedChunkNpcClip ? NpcClipForUpload(build.texturedChunkNpcClip) : nullptr;
             staged.textured.back().Init(chunk, staged.atlas->texture,
                 (build.texturedChunkPolyFlags & 0x100u) == 0u,build.texturedChunkPolyFlags,
-                &staged.visibilityMatrices);
+                &staged.visibilityMatrices,npcGpu ? &npcGpu->texture : nullptr);
             staged.textured.back().SetPose(pose);
             staged.textured.back().Update();
+            if (npcGpu) {
+                staged.npcAnimations.push_back({staged.textured.size()-1u,npcGpu,build.texturedChunkNpcTransform});
+                staged.textured.back().SetAnimation(QuestVr::SampleNpcAnimationFrame(*npcGpu->clip,npcAnimationSeconds_),
+                    build.texturedChunkNpcTransform);
+            }
             if (!build.texturedChunkMoverPath.empty()) {
                 auto& visual = staged.movers.at(build.texturedChunkMoverPath);
                 visual.rendererIndices.push_back(staged.textured.size()-1u);
@@ -3455,7 +3597,9 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             (!build.texturedChunk.indices.empty() && !build.parts.empty() &&
                 build.parts.front().textured &&
                 (build.parts.front().polyFlags != build.texturedChunkPolyFlags ||
-                 build.parts.front().moverPath != build.texturedChunkMoverPath));
+                 build.parts.front().moverPath != build.texturedChunkMoverPath ||
+                 build.parts.front().npcClip != build.texturedChunkNpcClip ||
+                 (build.texturedChunkNpcClip && build.parts.front().actorOrdinal != build.texturedChunkNpcActor)));
         // Keep driver allocation/upload separate from preparation; never issue
         // more than one bounded 6144-vertex GPU upload in a frame.
         if (uploadMarker || uploadTextured) {
@@ -3471,9 +3615,14 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                     auto& chunk = part.textured ? build.texturedChunk : build.markerChunk;
                     if (part.textured) {
                         if (!chunk.indices.empty() && (build.texturedChunkPolyFlags != part.polyFlags ||
-                            build.texturedChunkMoverPath != part.moverPath)) break;
+                            build.texturedChunkMoverPath != part.moverPath ||
+                            build.texturedChunkNpcClip != part.npcClip ||
+                            (part.npcClip && build.texturedChunkNpcActor != part.actorOrdinal))) break;
                         build.texturedChunkPolyFlags = part.polyFlags;
                         build.texturedChunkMoverPath = part.moverPath;
+                        build.texturedChunkNpcClip = part.npcClip;
+                        build.texturedChunkNpcActor = part.actorOrdinal;
+                        build.texturedChunkNpcTransform = ActorTransformMatrix(part.actorTransform);
                     } else {
                         if (!chunk.indices.empty() && build.markerChunkActor != part.actorOrdinal) break;
                         build.markerChunkActor = part.actorOrdinal;
@@ -3568,6 +3717,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
 
     void DestroySceneGeometry() {
         DestroyActorGeometry();
+        npcGpuClips_.clear();npcWaiting_.clear();npcAnimationSeconds_=0.0;
         ResetActorRemovalState();
         if (actorSceneGeneration_ == std::numeric_limits<std::uint64_t>::max())
             throw std::runtime_error("Actor scene generation exceeds its lifetime bound");
@@ -3701,6 +3851,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             } else if (transitionPhase_ == MapTransitionPhase::ActorTextureAllocate) {
                 actorSnapshots_ = preparedActorSnapshots_;
                 preparedActorSnapshots_.clear();
+                npcWaiting_ = std::move(preparedNpcWaiting_);
                 ReplaceSpatialAudioEmitters(std::move(preparedSpatialAudioEmitters_));
                 PublishMapMusic(std::move(preparedMapMusic_));
                 ReconcileSpatialAudioEmitters(actorSnapshots_);
@@ -3773,6 +3924,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             ClearPendingActorTextureUpload();
             pendingWorldMesh_.chunks.clear();
             preparedActorSnapshots_.clear();
+            preparedNpcWaiting_.clear();
             preparedSpatialAudioEmitters_.clear();
             preparedMapLights_.clear();
             preparedWorldMesh_ = {};
@@ -3864,6 +4016,10 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                 // against the complete authored actor list and preserve every
                 // duplicate/inactive static-list ordinal before restoration.
                 const auto authoredActors = GetPortableRuntimeMapActors();
+                std::vector<std::string> npcErrors;
+                preparation.npcWaiting = QuestVr::PrepareNpcWaitingPresentations(authoredActors,&npcErrors);
+                for (const auto& error:npcErrors) ALOG("DeusExQuest: NPC waiting presentation refused: %s",error.c_str());
+                ALOG("DeusExQuest: prepared %zu original-script NPC waiting presentations (render-only)",preparation.npcWaiting.size());
                 PrepareWorldStaticLightmaps(map,authoredActors,preparation.worldMesh);
                 // Retain decoded clips for the complete authored population,
                 // so a same-map checkpoint can revive an emitter without any
@@ -3959,6 +4115,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             return;
         }
         preparedActorSnapshots_ = std::move(preparation.actors);
+        preparedNpcWaiting_ = std::move(preparation.npcWaiting);
         preparedActorTextures_ = std::move(preparation.actorTextures);
         preparedWorldTexture_ = std::move(preparation.worldTexture);
         preparedWorldMesh_ = std::move(preparation.worldMesh);
@@ -7963,6 +8120,9 @@ class DeusExQuestApp final : public OVRFW::XrApp {
     std::string transitionMapName_;
     MapTransitionPhase transitionPhase_{MapTransitionPhase::Idle};
     std::vector<PortableActorSnapshot> preparedActorSnapshots_;
+    std::map<std::string,QuestVr::NpcWaitingInstance> preparedNpcWaiting_,npcWaiting_;
+    std::map<const QuestVr::NpcAnimationClip*,std::shared_ptr<NpcGpuClip>> npcGpuClips_;
+    double npcAnimationSeconds_{};
     std::vector<SpatialAudioEmitter> preparedSpatialAudioEmitters_;
     QuestVr::MapMusicPreparation preparedMapMusic_;
     std::vector<MapLight> preparedMapLights_;
