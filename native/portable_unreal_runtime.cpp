@@ -131,6 +131,8 @@ public:
         std::unordered_map<std::uint32_t,std::vector<RuntimeObject*>>> nativeWindowPropertyRoots;
     std::int32_t uniqueObjectCounter{}; // Concrete UClass, survives map changes.
     RuntimeObject* nativeXLevel{}; // Immutable LinkActorsToLevel baseline, not a script write.
+    RuntimeObject* nativeLevelModel{}; // Serialized ULevel.Model, owned only by its loader.
+    std::uint64_t nativeMapGeneration{}; // Transient loader identity, never a saved script value.
     // Explicit native loader ownership: this single-player engine creates no
     // NetDriver or DemoRecDriver. Not inferred from absent reflected fields,
     // guessed from PawnList, or restored from a save. Network/demo execution
@@ -280,6 +282,7 @@ GCAllocation* RuntimeObject::Mark(GCAllocation* marklist) {
     marklist = GC::MarkObject(marklist, nativePlayer);
     marklist = GC::MarkObject(marklist, nativeViewportActor);
     marklist = GC::MarkObject(marklist, nativeRootWindow);
+    marklist = GC::MarkObject(marklist, nativeLevelModel);
     for (auto* reference : references) marklist = GC::MarkObject(marklist, reference);
     for (const auto& [key,slots] : nativeWindowPropertyRoots) {
         static_cast<void>(key);
@@ -392,6 +395,19 @@ std::uint64_t persistentWorldRevision{};
 std::vector<RuntimeObject*> persistentWorldActors;
 std::size_t persistentAuthoredWorldSlots{};
 std::string persistentMapSourcePath;
+// Immutable source geometry is independent of VM transactions. Only its
+// actual loader-owned ULevel/Model pair may select this one-map cache. Clear
+// raw identity keys before map GC; shared const geometry never owns UObjects.
+struct RuntimeNativeModelCache {
+    std::uint64_t generation{};
+    RuntimeObject* level{};
+    RuntimeObject* model{};
+    std::string sourcePath, objectPath;
+    std::size_t exportIndex{};
+    std::shared_ptr<const PortableModelGeometry> geometry;
+};
+std::optional<RuntimeNativeModelCache> persistentNativeModelCache;
+std::uint64_t persistentMapGenerationCounter{}; // Deliberately not reset/reused by Shutdown.
 QuestVr::ActorCollisionRegistry persistentActorCollision;
 bool pendingBirthGarbage{};
 // Collect only after the outer host/restore staging roots have been destroyed.
@@ -1605,6 +1621,13 @@ public:
         return found->second;
     }
     RuntimeObject* RequireNativeLevelInfo(RuntimeObject* actor) { return NativeLevelInfo(actor); }
+    void ValidateNativeLevelModel(RuntimeObject* level,RuntimeObject* model) {
+        if(!level || !model || level->runtimeBirth || model->runtimeBirth ||
+            level->sourcePath!=persistentMapSourcePath || model->sourcePath!=level->sourcePath ||
+            LowerAscii(CastObjectIdentity(level->reflection.objectPath).classPath)!="engine.level" ||
+            LowerAscii(CastObjectIdentity(model->reflection.objectPath).classPath)!="engine.model")
+            throw std::runtime_error("Native ULevel.Model loader binding is not an actual Engine.Level/Engine.Model pair");
+    }
     RuntimeObject* CurrentClockLevel() {
         if (persistentWorldActors.empty() || !persistentWorldActors.front())
             throw std::runtime_error("Native level clock has no actual slot-zero LevelInfo");
@@ -3545,29 +3568,39 @@ public:
         if (value.kind!=Kind::Vector) throw std::runtime_error("FastTrace Location storage is not a Vector");
         return value;
     }
-    void EnsureNativeTraceModel(RuntimeObject* actor) {
+    const PortableModelGeometry& NativeTraceModel(RuntimeObject* actor) {
         static_cast<void>(NativeLevelInfo(actor));
-        const auto& map=Table(persistentMapSourcePath);
-        constexpr std::size_t scratch=64u*1024u*1024u;
-        // A genuine native Engine.Level is already established above. The
-        // decoder requires a UNIQUE Level export, so its selected Level must
-        // be this one; an additional foreign leaf-name Level fails ambiguity.
-        const auto index=FindPortableRootModel68Export(map,scratch);
-        const auto path=Qualified(map,static_cast<std::int32_t>(index+1u));
-        if (LowerAscii(CastObjectIdentity(path).classPath)!="engine.model")
-            throw std::runtime_error("FastTrace native Level.Model is not an actual Engine.Model");
-        if (rootModel_) {
-            // PortableModelGeometry retains the package-local export path;
-            // Qualified above is only the runtime UObject identity for Cast.
-            const auto localPath=GetPortableObjectPath(map,static_cast<std::int32_t>(index+1u));
-            if (rootModel_->exportIndex!=index || LowerAscii(rootModel_->objectPath)!=LowerAscii(localPath))
-                throw std::runtime_error("FastTrace cached Model is not the native Level.Model");
-            return;
+        auto* level=actor->nativeXLevel;auto* model=level->nativeLevelModel;
+        if(!level->nativeMapGeneration || level->nativeMapGeneration!=persistentMapGenerationCounter ||
+            !model || model->runtimeBirth || model->sourcePath!=level->sourcePath ||
+            model->sourcePath!=persistentMapSourcePath)
+            throw std::runtime_error("FastTrace native ULevel has no current loader-owned Model");
+        if(persistentNativeModelCache) {
+            const auto& cache=*persistentNativeModelCache;
+            if(cache.generation!=level->nativeMapGeneration || cache.level!=level || cache.model!=model ||
+                cache.sourcePath!=model->sourcePath || cache.exportIndex!=model->exportIndex ||
+                cache.objectPath!=model->reflection.objectPath || !cache.geometry)
+                throw std::runtime_error("FastTrace immutable Model cache belongs to another native map identity");
+            return *cache.geometry;
         }
+        const auto& map=Table(model->sourcePath);
+        constexpr std::size_t scratch=64u*1024u*1024u;
+        const auto index=model->exportIndex;
+        if(index>=map.exports.size() ||
+            Qualified(map,static_cast<std::int32_t>(index+1u))!=model->reflection.objectPath ||
+            LowerAscii(CastObjectIdentity(model->reflection.objectPath).classPath)!="engine.model")
+            throw std::runtime_error("FastTrace native Model export identity is invalid");
         const auto bytes=map.exports.at(index).ObjSize;
         if (bytes<=0 || QuestVr::DecalStateDetail::Multiply(static_cast<std::size_t>(bytes),16u)>scratch-1024u)
             throw std::runtime_error("FastTrace Model scratch budget exceeded");
-        rootModel_=LoadPortableModel68(map,index,scratch);
+        auto geometry=std::make_shared<const PortableModelGeometry>(LoadPortableModel68(map,index,scratch));
+        if(geometry->exportIndex!=index || LowerAscii(geometry->objectPath)!=
+            LowerAscii(GetPortableObjectPath(map,static_cast<std::int32_t>(index+1u))))
+            throw std::runtime_error("FastTrace decoded Model is not the loader-owned native Model");
+        RuntimeNativeModelCache prepared{level->nativeMapGeneration,level,model,model->sourcePath,
+            model->reflection.objectPath,index,std::move(geometry)};
+        persistentNativeModelCache.emplace(std::move(prepared));
+        return *persistentNativeModelCache->geometry;
     }
     Evaluation FastTraceNative(RuntimeObject* actor,const std::vector<Evaluation>& arguments,
         const Function* declaration) {
@@ -3585,13 +3618,16 @@ public:
             {start.vector[0u],start.vector[1u],start.vector[2u]})),{}};
     }
     bool NativeFastLine(RuntimeObject* actor,const PortableModelVec3& end,const PortableModelVec3& start) {
-        EnsureNativeTraceModel(actor);
+        const auto& model=NativeTraceModel(actor);
         QuestVr::ModelFastLineCheckLimits limits;
         if (fastTraceValidationWork_>=limits.validationSteps || fastTraceQueryWork_>=limits.querySteps)
             throw std::runtime_error("FastTrace shared native query budget exhausted");
         limits.validationSteps-=fastTraceValidationWork_;
         limits.querySteps-=fastTraceQueryWork_;
-        const auto result=QuestVr::CheckOriginalModelFastLine(*rootModel_,end,start,limits);
+        // Const source geometry may be retained across calls. Full per-kernel
+        // validation remains mandatory and charged to this same VM root; no
+        // mutable Model can acquire a public "already validated" escape hatch.
+        const auto result=QuestVr::CheckOriginalModelFastLine(model,end,start,limits);
         fastTraceValidationWork_+=result.stats.validationSteps;
         fastTraceQueryWork_+=result.stats.querySteps;
         return result.clear;
@@ -9984,6 +10020,7 @@ PortableSound LoadPortableRuntimeSound(const std::string& objectPath) {
 }
 
 void ShutdownPortableRuntime() {
+    persistentNativeModelCache.reset(); // Drop non-owning identity keys before any map GC.
     ClearNativePlayerObjects();
     persistentNativeClient.Clear();
     persistentScriptRandomSeed.reset();
@@ -10850,8 +10887,33 @@ bool GetPortableRuntimeUnsavedScriptState() {
 
 std::uint64_t GetPortableRuntimeWorldRevision() { return persistentWorldRevision; }
 
-static void RelinkAuthoredActorBases(const PortablePackageTables& package, const std::size_t first) {
+PortableNativeModelSnapshot ReadPortableRuntimeNativeModel() {
+    PortableNativeModelSnapshot result;
+    if(!persistentRuntime || !persistentRuntime->get() || persistentWorldActors.empty() ||
+        !persistentWorldActors.front() || !persistentWorldActors.front()->nativeXLevel) return result;
+    auto* level=persistentWorldActors.front()->nativeXLevel;auto* model=level->nativeLevelModel;
+    if(!model || !level->nativeMapGeneration) return result;
+    if(level->nativeMapGeneration!=persistentMapGenerationCounter || level->sourcePath!=persistentMapSourcePath ||
+        model->sourcePath!=level->sourcePath || model->runtimeBirth)
+        throw std::runtime_error("Native Model diagnostic encountered a stale loader binding");
+    result.available=true;result.mapGeneration=level->nativeMapGeneration;
+    result.levelPath=level->reflection.objectPath;result.modelPath=model->reflection.objectPath;
+    result.modelExportIndex=model->exportIndex;
+    if(persistentNativeModelCache) {
+        const auto& cache=*persistentNativeModelCache;
+        if(cache.generation!=result.mapGeneration || cache.level!=level || cache.model!=model ||
+            cache.sourcePath!=model->sourcePath || cache.objectPath!=result.modelPath ||
+            cache.exportIndex!=result.modelExportIndex || !cache.geometry)
+            throw std::runtime_error("Native Model diagnostic encountered a stale geometry cache");
+        result.geometryCached=true;result.cachedNodes=cache.geometry->nodes.size();
+    }
+    return result;
+}
+
+static std::pair<RuntimeObject*,RuntimeObject*> RelinkAuthoredActorBases(
+    const PortablePackageTables& package, const std::size_t first) {
     PortableActorVmHost host;
+    std::pair<RuntimeObject*,RuntimeObject*> pendingModel{};
     const auto property = [](RuntimeObject* actor, const char* name) -> RuntimeObject* {
         for (auto* cls = actor->cls; cls; cls = cls->base) {
             const auto found = persistentVmObjects.find(LowerAscii(cls->reflection.objectPath + '.' + name));
@@ -10873,6 +10935,16 @@ static void RelinkAuthoredActorBases(const PortablePackageTables& package, const
                 xlevel = persistentRuntime->get()->exports.at(first+i);
             }
         if (!xlevel) throw std::runtime_error("Map has no linked serialized Level");
+        // Validate the actual serialized native ULevel.Model pair while all
+        // authored tables/exports are available. A misleading first Model or
+        // script-written Actor.Level/XLevel never redirects this ownership.
+        // Do NOT publish query authority before later slot/collision/Base
+        // checks and the complete map-loader result have succeeded.
+        const auto modelIndex=FindPortableRootModel68Export(package);
+        if(modelIndex>=package.exports.size()) throw std::runtime_error("Native Level.Model export is outside its map");
+        auto* model=persistentRuntime->get()->exports.at(first+modelIndex);
+        host.ValidateNativeLevelModel(xlevel,model);
+        pendingModel={xlevel,model};
         // Owned standalone engine service configuration, independent of any
         // reflected NetMode/Level/XLevel overlay and never a serialized pointer.
         xlevel->nativeStandaloneLevelServices=true;
@@ -10939,6 +11011,7 @@ static void RelinkAuthoredActorBases(const PortablePackageTables& package, const
             throw std::runtime_error("Authored base has no byte StandingCount");
         base->initialStandingCount = static_cast<std::uint8_t>(std::min<std::size_t>(base->basedActors.size(), 255u));
     }
+    return pendingModel;
 }
 
 PortableMapRuntimeSummary LoadPortableRuntimeMap(
@@ -10952,7 +11025,10 @@ PortableMapRuntimeSummary LoadPortableRuntimeMap(
             "DeusExQuest: map replacement refused: script state requires a per-map archive");
         return summary;
     }
+    if(persistentMapGenerationCounter==std::numeric_limits<std::uint64_t>::max())
+        throw std::runtime_error("Native map generation budget exhausted");
     summary.replacedExports = UnloadPortableRuntimeMap();
+    ++persistentMapGenerationCounter;
     persistentMapTagIndex.clear();
     const std::string packageName = PackageStem(package.sourcePath);
     const PortableReflectionGraph graph = BuildPortableReflectionGraph(package);
@@ -11041,18 +11117,26 @@ PortableMapRuntimeSummary LoadPortableRuntimeMap(
     summary.exports = graph.objects.size();
     persistentMapPackageName = packageName;
     persistentMapSourcePath = package.sourcePath;
-    RelinkAuthoredActorBases(package, first);
+    const auto pendingModel=RelinkAuthoredActorBases(package, first);
     ++persistentWorldRevision;
     GC::Collect();
     summary.passed = summary.exports == package.exports.size() &&
         summary.actors != 0 && summary.actorProperties != 0 &&
         summary.resolvedClasses != 0;
+    if(summary.passed && pendingModel.first) {
+        // The last loader publication is nonallocating/nonthrowing. A failed
+        // summary or any preceding exception leaves native Model authority
+        // absent, even if a valid slot-zero LevelInfo was already linked.
+        pendingModel.first->nativeLevelModel=pendingModel.second;
+        pendingModel.first->nativeMapGeneration=persistentMapGenerationCounter;
+    }
     return summary;
 }
 
 std::size_t UnloadPortableRuntimeMap() {
     if (GetPortableRuntimeUnsavedScriptState())
         throw std::runtime_error("Map unload refused: script state requires a per-map archive");
+    persistentNativeModelCache.reset(); // No stale Level/Model keys may outlive their owning map.
     if (!persistentRuntime || !persistentRuntime->get() ||
         persistentRuntime->get()->exports.size() <= persistentScriptExportCount) {
         if (persistentRuntime && persistentRuntime->get()) persistentRuntime->get()->nativeDecals = nullptr;

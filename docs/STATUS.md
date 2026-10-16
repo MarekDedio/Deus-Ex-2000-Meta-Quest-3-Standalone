@@ -1,5 +1,50 @@
 # Port status
 
+## Original actor-cylinder sweeps and loader Model authority (2026-10-16)
+
+- Implemented the complete detached retail UPrimitive cylinder line query,
+  preserving strict cap crossings, initial-overlap directional rule, X-only
+  radial expansion, original backoff, caller-seeded fields and partial Normal
+  writes on genuine clear. Integer PC64 arithmetic retains every audited
+  Float/Double spill, separate normalizer and asymmetric Z interpolation.
+  Null-owner/early clears do not read unused input; finite/domain refusals
+  restore the entire caller packet. No actor hash or Move shortcut is enabled.
+- Independent hardware-x87/deterministic controls pass84664 checks/668 safety
+  refusals,7756 blocked/20011 clear and1699 partial-Normal clears. A shared
+  cap-equality audit mistake was corrected against the original FCOMP masks
+  in production, oracle and tests before acceptance.
+- FastTrace/hearing now use loader-owned GC-marked ULevel.Model and a non-reused
+  transient map generation with one immutable cross-host source-geometry cache.
+  Full kernel validation/shared work charging remains mandatory. Cache keys
+  include actual Level/Model, generation, filename, export and object path;
+  unload/shutdown clear keys before GC. Warm saves preserve native identity,
+  while cold/same-filename reloads rebind independently. Other Model consumers
+  retain their existing behavior.
+- Model authority is published only after the complete successful map load.
+  Late failed actor-slot validation leaves no native Model/cache authority;
+  failed-map query/GC/unload/same-filename recovery are tested. Generated
+  production2399/47 and actual Training252 checks pass, including32 cached
+  cross-host queries and unchanged saved bytes/revision/UObject GC/source data.
+  Strict ARM64 syntax passes for runtime and both test translation units.
+- Coherent full host rebuild succeeds. CTest110 passed /125 registered /
+  15 explicit owned-data skips /zero failures in26.78s. Separately supplied
+  original-data regressions preserve all18 NPC waiting presentations
+  (280519/26) and real Destroy/Contents callbacks with the existing explicit
+  begun fixture (347/2); the latter is not surviving loot or world startup.
+  Both original crates' isolated fatal-fragment/cache/rollback tests also
+  pass626/4 with None and actual Pawn instigators. The38-package original
+  nonpublishing startup probe retains exact repeated rollback at Move266,
+  Engine.Mover.BeginPlay:166, Training slot126; no boundary is bypassed.
+- Full retail Move266 and MultiLineCheck ordering/dependencies are documented,
+  including based actors before parent movement, bTest mutation, original
+  callback direction, hit shortening/mover correction,64-record collector and
+  unstable original CRT tie ordering. The current pinned overlap registry is
+  not the retail swept actor hash. These services, owner/mover transforms,
+  encroachment/Touch, support/Base, startup/player and falling still need real
+  integration before live crates. No new APK or headset crate acceptance.
+  See ORIGINAL-ACTOR-LINE-TRACE.md, ORIGINAL-FAST-TRACE.md,
+  ORIGINAL-ACTOR-MOVE.md and ORIGINAL-MULTI-LINE-TRACE.md.
+
 ## Retail null-owner Model swept extent kernel (2026-10-16)
 
 - Implemented the complete nonzero-extent null-owner Model query on top of

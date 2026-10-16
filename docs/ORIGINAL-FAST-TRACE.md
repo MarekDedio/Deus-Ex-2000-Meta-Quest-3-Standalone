@@ -78,8 +78,22 @@ and serialized ULevel.Model. The decoder requires a unique Level export; this
 must be the already-proven actual Engine.Level. A foreign additional Level is
 ambiguous, not a substitute. Selected Model must be actual Engine.Model even
 when a native asset export legitimately has no serialized UClass pointer.
-The per-host cache must match selected export/path. Reflected Level/XLevel
-overlays and a misleading first brush Model cannot redirect it.
+The loader now publishes a GC-marked native ULevel-to-Model edge only after
+all map slot/collision/Base checks, GC and the final successful map summary.
+Failed or incomplete loads publish no Model authority. Each map load gets a
+monotonic, transient generation which is not reset by Shutdown or serialized.
+Reflected Level/XLevel overlays and a misleading first brush Model cannot
+redirect this edge.
+
+FastTrace/hearing retain one immutable decoded geometry allocation across
+public VM hosts. Cache selection checks generation, actual Level/Model
+identities, source filename, export index and object path; map replacement,
+unload and shutdown clear raw identity keys before GC. A same-filename/export
+reload therefore cannot reuse old geometry. Warm saves retain authored object
+identity; cold loads acquire a fresh generation. Geometry owns no UObjects,
+is not saved or part of gameplay rollback, and grants no validation bypass.
+Every query still performs full kernel validation charged to the same root
+work ledger. Other per-host Model consumers are unchanged by this checkpoint.
 
 Model decode is bounded to64MiB scratch. Validation/query work is shared across
 all548 calls in the same root transaction (8m/16m steps respectively), rather
@@ -138,3 +152,37 @@ Ignored local logs: `artifacts/crate-fast-trace-full-build-final-20261015.log`,
 `crate-fast-trace-ndk-syntax-final-20261015.log`, `crate-fast-trace-fixture-ndk-syntax-final-20261015.log`,
 `crate-fast-trace-npc-regression-20261015.log`, `crate-fast-trace-damage-regression-20261015.log`
 and `crate-fast-trace-lamp-regression-20261015.log`.
+
+## Loader Model authority and cross-host cache (2026-10-16)
+
+The loader-owned edge/generation/cache described above is implemented, not a
+public "validated" flag. Generated integration2399 checks/47 refusal controls
+pass, including32 repeated public-VM queries with identical saved bytes,
+revision and UObject GC usage; rollback without discarding immutable geometry;
+reflected Level/XLevel clearing across hosts; warm/cold save replacement;
+same-filename/same-export plane-to-empty-to-plane reloads; and unload/shutdown.
+
+A read-only native Model snapshot exposes availability, generation, actual
+Level/Model identities, selected export and cached node count. It neither
+populates the cache nor changes gameplay. A late duplicate actor-slot load
+failure is tested before any Shutdown: snapshot unavailable, FastTrace refuses
+without cache/revision changes, GC does not revive authority, explicit unload
+and a valid same-filename reload recover normally. Publication is the final
+nonallocating map-loader action after complete success, not an early Relink
+side effect. This does not claim to retrofit a complete transaction around
+every pre-existing map-loader operation.
+
+Owned Training integration252 checks passes: actual serialized Model binding,
+retained immutable geometry,16 clear/32 blocked supplied rays and receiver
+defaults. Original bytes/timestamps, full saved state, revision and UObject GC
+usage remain unchanged; no commercial executable code is run. Strict NDK
+ARM64 syntax passes for runtime and both new/changed test translation units.
+The coherent full host rebuild passes; CTest110 passed /125 registered /
+15 explicit owned-data skips /zero failures in26.78s.
+Logs are ignored local `artifacts/model-native-cache-*-20261016.log` and
+`artifacts/actor-line-model-cache-*-20261016.log`.
+
+No crate/world startup or physics gate is bypassed. The independent swept
+actor-cylinder primitive and full retail Move/MultiLine audits are recorded
+separately; this cache change does not integrate those services or release a
+new APK.

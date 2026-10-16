@@ -253,7 +253,7 @@ struct Fixture {
     }
     PortablePackageTables Write(Package& package, const bool map = false) {
         const auto path = directory / (map ? "Maps" : "System") / (package.stem + (map ? ".dx" : ".u"));
-        auto bytes = package.Serialize(); WriteBytes(path, bytes); sources.emplace(path, std::move(bytes));
+        auto bytes = package.Serialize(); WriteBytes(path, bytes); sources.insert_or_assign(path, std::move(bytes));
         return LoadPortablePackageTables(path.string());
     }
     Bytes Snapshot(const std::string& label) const {
@@ -269,7 +269,7 @@ struct Tables { std::vector<PortablePackageTables> scripts; PortablePackageTable
 enum class Variant : unsigned {
     Plane, EmptyOutside, EmptyInside, NonCsgInside, NonCsgOutside, OtherFlags,
     WrongFlags, WrongOptional, WrongReturn, WrongVectorConstraint, WrongModelClass,
-    WrongLevelClass, MalformedVector, ExtraParameter, WrongVectorMetaclass
+    WrongLevelClass, MalformedVector, ExtraParameter, WrongVectorMetaclass, DuplicateActorSlot
 };
 std::string Path(const char* name) { return std::string("TraceFixture.") + name; }
 Evaluation Vec(const Point point) { return {Value::Vector(point), {}}; }
@@ -436,7 +436,7 @@ Tables Build(Fixture& fixture, const Variant variant = Variant::Plane) {
         map.ActorBody(reference, std::move(tags));
     }
     Bytes worldBody{0u}; U32(worldBody, 4u); U32(worldBody, 4u);
-    for (const auto reference : {levelActor, driver, 0, other}) Index(worldBody, reference);
+    for (const auto reference : {levelActor, driver, 0, variant==Variant::DuplicateActorSlot?driver:other}) Index(worldBody, reference);
     for (unsigned i = 0u; i < 5u; ++i) Index(worldBody, 0);
     U32(worldBody, 7777u); U32(worldBody, 0u); Index(worldBody, actualModel); Index(worldBody, 0); map.Body(world, std::move(worldBody));
     const bool plane = variant != Variant::EmptyOutside && variant != Variant::EmptyInside;
@@ -534,13 +534,12 @@ void Generated() {
         fixture.Unchanged();
     }
     for (const auto variant : {Variant::WrongFlags, Variant::WrongOptional, Variant::WrongReturn,
-        Variant::WrongVectorConstraint, Variant::WrongModelClass, Variant::ExtraParameter}) {
+        Variant::WrongVectorConstraint, Variant::ExtraParameter}) {
         Fixture fixture; const auto tables = Build(fixture, variant); Initialize(tables);
         Refused(fixture, "FastTrace", {Vec({6, 0, 0}), Vec({5, 0, 0})});
         Refused(fixture, "TraceIndex"); Refused(fixture, "WriteTraceThenFail");
-        if (variant == Variant::WrongModelClass) Refused(fixture, "TraceWarmRegion");
     }
-    for (const auto variant : {Variant::WrongLevelClass, Variant::MalformedVector, Variant::WrongVectorMetaclass}) {
+    for (const auto variant : {Variant::WrongLevelClass, Variant::WrongModelClass, Variant::MalformedVector, Variant::WrongVectorMetaclass}) {
         Fixture fixture; const auto tables = Build(fixture, variant);
         try {
             const auto initialized = InitializePortableRuntime(tables.scripts);
@@ -551,12 +550,103 @@ void Generated() {
         } catch (const std::runtime_error& error) {
             const std::string message=error.what();
             const bool expected=variant==Variant::WrongLevelClass ? message=="Map has no linked serialized Level" :
+                variant==Variant::WrongModelClass ? message=="Native ULevel.Model loader binding is not an actual Engine.Level/Engine.Model pair" :
                 variant==Variant::MalformedVector ? message.find("specialized struct member kind does not match")!=std::string::npos :
                 message.find("Core.Struct")!=std::string::npos;
             Require(expected,"Malformed metadata failed outside its audited schema refusal: "+message);
             ++refusals;fixture.Unchanged();
         }
     }
+}
+
+void NativeModelLifetime() {
+    Fixture fixture;auto tables=Build(fixture);Initialize(tables);
+    const auto original=ReadPortableRuntimeNativeModel();
+    Require(original.available&&!original.geometryCached&&original.mapGeneration!=0u&&
+        original.levelPath==Path("MyLevel")&&original.modelPath==Path("ActualWorld")&&original.modelExportIndex==2u,
+        "Native Model loader edge/generation was not established before first query");
+    const auto baseline=fixture.Snapshot("NativeModelBaseline");
+    const auto revision=GetPortableRuntimeWorldRevision();const auto gc=GC::GetStats();
+    for(unsigned iteration=0u;iteration<32u;++iteration) {
+        Boolean(Call("Driver","FastTrace",{Vec({-6,0,0}),Vec({5,0,0})}),false,"Repeated immutable-Model query");
+        const auto cached=ReadPortableRuntimeNativeModel();
+        Require(cached.available&&cached.geometryCached&&cached.mapGeneration==original.mapGeneration&&
+            cached.levelPath==original.levelPath&&cached.modelPath==original.modelPath&&cached.cachedNodes==1u,
+            "Repeated public VM calls did not retain native-owned immutable geometry");
+    }
+    Require(fixture.Snapshot("NativeModelReadonly")==baseline&&GetPortableRuntimeWorldRevision()==revision&&
+        GC::GetStats().numObjects==gc.numObjects&&GC::GetStats().memoryUsage==gc.memoryUsage,
+        "Immutable Model cache changed gameplay/checkpoint/revision/GC lifetime");
+    Refused(fixture,"WriteTraceThenFail");
+    Require(ReadPortableRuntimeNativeModel().geometryCached&&
+        ReadPortableRuntimeNativeModel().mapGeneration==original.mapGeneration,
+        "Script rollback discarded or redirected its independent immutable source cache");
+    Boolean(Call("Driver","TraceWarmThenClearReflectedLevel"),true,"Native Model ownership after reflected links cleared");
+    Require(ReadPortableActorScriptProperty(Path("Driver"),"Level").text.empty()&&
+        ReadPortableActorScriptProperty(Path("Driver"),"XLevel").text.empty(),"Reflected ownership control did not execute");
+    Boolean(Call("Driver","FastTrace",{Vec({-6,0,0}),Vec({5,0,0})}),false,"Reflected links redirected native Model across VM hosts");
+    Require(LoadPortableRuntimeState((fixture.directory/"NativeModelBaseline.sav").string()),"Warm native Model baseline replacement failed");
+    const auto warm=ReadPortableRuntimeNativeModel();
+    Require(warm.mapGeneration==original.mapGeneration&&warm.geometryCached&&warm.cachedNodes==1u&&
+        fixture.Snapshot("NativeModelWarmRestored")==baseline,"Warm save replaced/serialized native Model cache ownership");
+    Boolean(Call("Driver","FastTrace",{Vec({-6,0,0}),Vec({5,0,0})}),false,"Warm restore changed native Model result");
+    ShutdownPortableRuntime();
+    Require(!ReadPortableRuntimeNativeModel().available,"Shutdown retained native Model diagnostic/cache authority");
+    Initialize(tables);const auto cold=ReadPortableRuntimeNativeModel();
+    Require(cold.available&&!cold.geometryCached&&cold.mapGeneration>original.mapGeneration,"Cold load reused an old native generation/cache");
+    Require(LoadPortableRuntimeState((fixture.directory/"NativeModelBaseline.sav").string()),"Cold native Model baseline restore failed");
+    Require(!ReadPortableRuntimeNativeModel().geometryCached,"Checkpoint recreated a serialized geometry-cache pointer");
+    Boolean(Call("Driver","FastTrace",{Vec({-6,0,0}),Vec({5,0,0})}),false,"Cold restore failed actual native Model rebind");
+    const auto priorReload=ReadPortableRuntimeNativeModel();
+    // Deliberately replace generated contents at the SAME filename, using a
+    // new decoded table. No original/commercial asset is modified. The new
+    // empty outside Model must not inherit the old cached blocking plane.
+    tables=Build(fixture,Variant::EmptyOutside);
+    Require(LoadPortableRuntimeMap(tables.map).passed,"Same-filename Model map replacement failed");
+    const auto empty=ReadPortableRuntimeNativeModel();
+    Require(empty.available&&!empty.geometryCached&&empty.mapGeneration>priorReload.mapGeneration&&
+        empty.modelPath==priorReload.modelPath&&empty.modelExportIndex==priorReload.modelExportIndex,
+        "Same-filename/export replacement reused previous native Model geometry/generation");
+    Boolean(Call("Driver","FastTrace",{Vec({-6,0,0}),Vec({5,0,0})}),true,"Same-filename reload reused stale blocking plane");
+    Require(ReadPortableRuntimeNativeModel().geometryCached&&ReadPortableRuntimeNativeModel().cachedNodes==0u,
+        "Replacement empty Model was not independently retained");
+    Require(UnloadPortableRuntimeMap()!=0u&&!ReadPortableRuntimeNativeModel().available,"Map unload retained native Model cache authority");
+    tables=Build(fixture,Variant::Plane);Require(LoadPortableRuntimeMap(tables.map).passed,"Post-unload Model replacement failed");
+    Require(ReadPortableRuntimeNativeModel().mapGeneration>empty.mapGeneration&&!ReadPortableRuntimeNativeModel().geometryCached,
+        "Post-unload reload revived an old generation/cache");
+    Boolean(Call("Driver","FastTrace",{Vec({-6,0,0}),Vec({5,0,0})}),false,"Post-unload original plane was not rebound");
+    fixture.Unchanged();
+}
+
+void FailedModelPublication() {
+    Fixture fixture;auto tables=Build(fixture,Variant::DuplicateActorSlot);
+    Require(InitializePortableRuntime(tables.scripts).passed,"Late-failure fixture script initialization failed");
+    bool refused{};
+    try {static_cast<void>(LoadPortableRuntimeMap(tables.map));}
+    catch(const std::runtime_error& error) {refused=std::string(error.what())=="Level contains a duplicate actor slot";}
+    Require(refused,"Late malformed Level failed outside exact duplicate-slot boundary");++refusals;
+    const auto failed=ReadPortableRuntimeNativeModel();
+    Require(!failed.available&&!failed.geometryCached&&!failed.mapGeneration,
+        "Late failed map load published native Model query authority");
+    const auto revision=GetPortableRuntimeWorldRevision();
+    const auto trace=ExecutePortableActorFunction(Path("Driver"),"FastTrace",{Vec({-6,0,0}),Vec({5,0,0})});
+    Require(!trace.passed()&&!trace.committed&&trace.error.find("current loader-owned Model")!=std::string::npos,
+        "FastTrace acquired/cached Model from a late failed map load");++refusals;
+    Require(GetPortableRuntimeWorldRevision()==revision&&!ReadPortableRuntimeNativeModel().available&&
+        !ReadPortableRuntimeNativeModel().geometryCached,"Failed-map query published cache or gameplay revision");
+    GC::Collect();
+    Require(!ReadPortableRuntimeNativeModel().available,"GC revived failed native Model authority");
+    Require(UnloadPortableRuntimeMap()!=0u&&!ReadPortableRuntimeNativeModel().available,
+        "Explicit failed-map unload retained native Model authority");
+    // No intervening Shutdown: the same runtime must recover from the failed
+    // map, replacing generated contents at the same source filename/export.
+    tables=Build(fixture);Require(LoadPortableRuntimeMap(tables.map).passed,"Valid same-filename reload after failure did not recover");
+    const auto restored=ReadPortableRuntimeNativeModel();
+    Require(restored.available&&!restored.geometryCached&&restored.mapGeneration!=0u,
+        "Valid replacement did not independently publish native Model authority");
+    Boolean(Call("Driver","FastTrace",{Vec({-6,0,0}),Vec({5,0,0})}),false,"Recovered map did not query its actual Model");
+    Require(ReadPortableRuntimeNativeModel().geometryCached,"Recovered map failed to retain immutable geometry");
+    fixture.Unchanged();
 }
 
 bool Original(const std::filesystem::path& root) {
@@ -597,6 +687,10 @@ bool Original(const std::filesystem::path& root) {
     const auto map = LoadPortablePackageTables(sources.back().string()); const auto model = LoadPortableRootModel68(map);
     Require(InitializePortableRuntime(scripts).passed && LoadPortableRuntimeMap(map).passed,
         "Owned original FastTrace runtime/map failed initialization");
+    const auto nativeModel=ReadPortableRuntimeNativeModel();
+    Require(nativeModel.available&&!nativeModel.geometryCached&&nativeModel.modelExportIndex==model.exportIndex&&
+        nativeModel.modelPath=="00_Training."+model.objectPath,
+        "Owned original loader did not bind its actual serialized native Model");
     Fixture saves; const auto baseline = saves.Snapshot("OwnedBaseline");
     const auto revision = GetPortableRuntimeWorldRevision();
     const auto count = GetPortableRuntimeMapActors(true).size();
@@ -626,6 +720,10 @@ bool Original(const std::filesystem::path& root) {
             }
         }
     Require(clearCount != 0u && blockedCount != 0u, "Owned integration ray set did not cover both outcomes");
+    const auto cachedModel=ReadPortableRuntimeNativeModel();
+    Require(cachedModel.available&&cachedModel.geometryCached&&cachedModel.mapGeneration==nativeModel.mapGeneration&&
+        cachedModel.modelPath==nativeModel.modelPath&&cachedModel.cachedNodes==model.nodes.size(),
+        "Owned original queries lost their immutable native Model identity/cache");
     const auto afterGc = GC::GetStats();
     Require(saves.Snapshot("OwnedAfter") == baseline && GetPortableRuntimeWorldRevision() == revision &&
         GetPortableRuntimeMapActors(true).size() == count && afterGc.numObjects == gc.numObjects &&
@@ -645,7 +743,7 @@ int main(const int argc, char** argv) {
         if (argc > 2) throw std::runtime_error("Usage: portable_fast_trace_test [owned-original-game-root]");
         const auto baseline = GC::GetStats().numObjects;
         if (argc == 2) { if (!Original(argv[1])) return 77; }
-        else Generated();
+        else {Generated();NativeModelLifetime();FailedModelPublication();}
         ShutdownPortableRuntime(); GC::Collect();
         Require(GC::GetStats().numObjects == baseline, "FastTrace tests leaked rooted UObjects");
         std::cout << "PASS FastTrace548 integration: " << checks << " checks, " << refusals

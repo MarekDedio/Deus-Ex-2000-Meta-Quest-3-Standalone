@@ -464,6 +464,17 @@ QuestVr::Vm::Result ExecutePortableActorFunction(
 // Changes only after committed actor writes/map replacement/checkpoint load,
 // never for a rolled-back callback. Consumers must not read during map workers.
 std::uint64_t GetPortableRuntimeWorldRevision();
+// Read-only loader/native-query diagnostics, not a saved UObject pointer or a
+// validation token. Snapshotting never decodes geometry or changes gameplay.
+// A new map load receives a non-reused generation even at the same filename;
+// warm checkpoint replacement retains its original native Level/Model binding.
+struct PortableNativeModelSnapshot {
+    bool available{}, geometryCached{};
+    std::uint64_t mapGeneration{};
+    std::string levelPath,modelPath;
+    std::size_t modelExportIndex{},cachedNodes{};
+};
+PortableNativeModelSnapshot ReadPortableRuntimeNativeModel();
 QuestVr::Vm::Value ReadPortableActorScriptProperty(
     const std::string& actorPath, const std::string& propertyName,
     std::uint32_t arrayIndex = 0u);
