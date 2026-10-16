@@ -46,7 +46,9 @@ work; this audit does not claim them implemented.
 ## Owner coordinates are a captured virtual result
 
 `UModel.LineCheck` is `10303E5E` → `103F3C20`–`103F4184`.
-An empty Model returns RootOutside before checking extents or Owner. The
+An empty Model returns RootOutside before checking extents or Owner, with no
+caller hit writes (`103F3C48..103F3C50` → `103F416E`). Coordinates, endpoints
+and extents are inactive on this original branch. The
 nonzero-extent branch constructs FBoxCheck through `103034EF` →
 `103F18E0`–`103F197F`.
 
@@ -107,9 +109,11 @@ not share one pretransformed plane cache unless both distinct results survive.
 
 At `103F4320`–`103F43A8`, nonnull Owner transforms each current BSP plane:
 
-- Dot authored normal against captured Coords XAxis, YAxis and ZAxis using
-  imported FVector dot (`1059A0AC`, Core `101017AD` → `10117710`). Each
-  returned component is **Float-stored**.
+- Dot authored normal against captured Coords axes using imported FVector dot
+  (`1059A0AC`, Core `101017AD` → `10117710`). Execution order is **ZAxis first**
+  (`103F4331`, Float store `103F4337`), then **YAxis** (`103F4341`, Float store
+  `103F4347`), then **XAxis** (`103F4351`, Float store `103F4371`). The resulting
+  plane still stores its normal in ordinary XYZ field order.
 - That imported dot's retained summation is `(zProduct+yProduct)+xProduct`.
 - Compute captured `Coords.Origin.TransformVectorBy(Coords)` through
   `10599B30` (Core `10102225` → `10119E40`), yielding a Float vector.
@@ -136,9 +140,15 @@ O'   = Float3(Coords.Origin.TransformVectorBy(Coords))
 W'   = Float(W - ((O'.y*N'.y + O'.z*N'.z) + O'.x*N'.x))
 ```
 
-All operations between indicated stores retain original PC64 precision.
-In particular the Y/Z/X ordering differs from traversal's imported Z/Y/X
-dot. Nearly cancelling nonuniform transforms can distinguish the two.
+The normal components execute/store **X, then Y, then Z** in Core
+`1011A000..1011A056`. The transformed Origin then Float-stores XYZ before the
+retained Y/Z/X W calculation (`1011A0B1..1011A0EA`). All operations between
+indicated stores retain original PC64 precision.
+In particular the instruction and component-store schedule differs from
+traversal's imported Z/Y/X dot. The two dot formulas only exchange their first
+two products; for ordinary finite PC64 nearest-even arithmetic that exchange
+alone is commutative and is **not** a finite cancellation witness. Keep the
+audited stages explicit without claiming an unverified numeric distinction.
 
 Only **after** this transform does raw hull reference bit `40000000` invoke
 FPlane.Flip (`1059A114`), negating all four Float coefficients
@@ -148,38 +158,137 @@ may look geometrically equivalent but is not the audited numeric order.
 
 ## Owner hull clipping and outputs
 
+Before the first primary-plane clip, the helper copies, transforms, flips and
+computes sign masks for **all** admitted authored hull planes
+(`103F462D..103F4783`); primary clipping begins at `103F4813`. A later plane's
+transform has therefore already executed even if the first plane will reject
+the interval. Transforming each plane lazily immediately before its clip is
+not the same staging. Sign masks and all pair bevels use these already
+transformed/flipped planes.
+
+The original hull parser stops on literal `-1` or at its64-plane cap. At the
+cap it does not require the following word to be `-1`: the loop's count check
+is at `103F4630..103F4633`. At `103F4789..103F47B2` it selects the six bound
+words starting at `collisionBound + admittedPlaneCount + 1`, skipping one
+word whether it is the actual terminator or the cap's following word. A
+portable bounded format admission can explicitly require a genuine literal
+terminator and reject oversized/nonterminating hulls, but that stricter
+structural validation must not be described as a retail parser check.
+
+Even with nonnull Owner, `103F47BA..103F47DC` **unconditionally copies all six
+bound words** with integer MOV instructions into helper `+5C..70`. The owner
+path therefore needs those words structurally present. Their contents are
+not Float-loaded, compared or used arithmetically on the owner path; NaN,
+infinite or numerically reversed bound words alone are not a reason to reject
+an otherwise supported owner hull. Null-owner bounds clipping separately
+uses and must validate the active numeric values. Structural availability is
+not permission to eagerly apply null-owner numeric validation to owner-unused
+data.
+
 The original owner branch skips the six extra axis-aligned LeafHulls bbox
 planes entirely (`103F495D`–`103F4962` jumps directly to `103F51AF`). They are
 **null-owner only**. World box support/pushout still uses the original world
-Extents against transformed world planes. The ordered original planes,
-64-plane limit, strict interval comparisons and axis bevel chain otherwise
-remain those already audited for the null-owner kernel.
+Extents against transformed world planes. The ordered original planes, strict
+interval comparisons and axis bevel chain otherwise remain those already
+audited for the null-owner kernel. The bevel loop is i outer, j<i inner,
+axis X/Y/Z (`103F51AF..103F5617`); no additional Owner gate is applied there.
+
+For a nonempty Model entering the extent branch, the wrapper writes caller
+**Hit.Time=Float2** at `103F3FA9`, before constructor/captured ToWorld work.
+If no hull is accepted, `103F4032` branches directly to the clear return at
+`103F4111`. Caller Time stays2 and caller Location, Normal, Actor, Primitive,
+Next and Item remain untouched. Original clear is not inferred from Time==1
+on this no-hit branch. The earlier empty-Model branch, by contrast, performs
+no hit writes at all.
 
 On accepted hull, `103F564A`–`103F567F` stores Time, the selected **already
 world-space Normal**, Actor=Owner, Primitive=Model and the helper-hit flag.
 It does not write FCheckResult.Item. The extent wrapper then applies its
-existing backoff and computes world Location from original world Start/End
-and stored Time. It performs **no second normal transformation or direction
+existing backoff, Float-stores Time with FSTP at `103F408A`, and computes world
+Location from original world Start/End and that stored Time. It returns clear
+if the resulting stored Time equals Double1 (`103F40F3..103F410F`), even
+though the accepted-hull packet has already been written. It performs
+**no second normal transformation or direction
 facing correction**. These normal postprocessing operations in the wrapper's
 zero-extent path must not be imported into the extent branch.
 
-Trace flags are copied into FBoxCheck, but the inspected extent traversal's
-CSG test still uses literal `IsCsg(0)`, and its plane clips/bevels do not use
-the incoming flags as a replacement CSG mask. Broader ULevel/actor filtering
+Trace flags are copied into FBoxCheck `+48`, but the complete inspected
+extent traversal/hull body `103F42F0..103F568C` never reads that field. Its CSG
+test uses literal `IsCsg(0)` (push0 at the calls `103F4533` and `103F45B2`),
+and its plane clips/bevels do not use the incoming flags as a replacement CSG
+mask. Broader ULevel/actor filtering
 remains the collector's separately audited responsibility.
+
+## Captured-value implementation and verification (2026-10-16)
+
+The captured-coordinate service uses integer PC64 arithmetic, not host matrix
+operations. PointBy retains Point-Origin differences; VectorBy ignores Origin.
+Traversal planes preserve Z/Y/X component execution and Z/Y/X dots, while hull
+planes preserve X/Y/Z execution and Y/Z/X dots. For finite numbers the first
+Y/Z sum is commutative; a fabricated cancellation difference between those two
+literal schedules is not claimed. Tests instead distinguish the actual YZ/X
+grouping from incorrect XY/Z grouping, premature Float differences and premature
+W-dot spills. Model bounds fold all eight transformed endpoint combinations in
+native X/Y/Z corner order, ignoring source validity and preserving first equal
+Float bits; finite reversed endpoint pairs are legal in this owner operation.
+
+The owner sweep shares the complete bounded BSP/clip/bevel kernel with the
+null-owner sweep. It transforms every primary hull plane before clipping,
+flips afterward, retains world extents, skips six bbox planes and returns the
+already-world-space normal. The detached caller-packet adapter preserves Next
+and Item, leaves empty-model packets untouched, writes only Time2 on misses,
+and publishes accepted packets even when backed-off Time clamps to1 and the
+native return is clear. Explicit safety failures publish no prefix writes.
+The strict finite decoded-geometry admission, literal hull terminator and
+fixed work limits remain explicit portable policies, not claimed retail checks.
+
+Captured scalar tests pass104445 checks/271 deliberate nonfinite or overflow
+refusals,43652 exact independent hardware-x87 comparisons and16832 matching
+finite-store refusals. Owner sweep/packet tests including the owned map pass
+12387 checks/23 deliberate refusals and3062 exact independent recursive-x87
+sweeps (218 accepted hits). Controls include finite singular/zero axes,
+nonuniform/negative/sheared coordinates, all256 CSG flag bytes, a2048-node
+iterative chain, tied competing last-parent hulls, accepted-Time1 packet writes
+and later-plane overflow before an earlier clip would reject.
+
+The actual Training root Model36 (9524 nodes,3183 hulls) supplies24 additional
+captured-fixture-coordinate sweeps,24 exact comparisons and21 hits. This is
+real decoded BSP data with explicit test coordinates, not an assertion that
+these coordinates came from a live Actor.ToWorld provider. Existing null-owner
+regression also passes59971 checks/39 refusals and96/96 exact owned BSP hits.
+Map bytes/mtime and original Engine/Core/Engine.u hashes remain unchanged.
+The coherent host build and strict ARM64 syntax checks pass. CTest116 passed/
+131 registered/15 explicit owned-data skips/zero failures in38.79s. Local
+ignored verification logs are `artifacts/owner-model-*-20261016.log`.
 
 ## Remaining implementation gates
 
-Implement/verify captured native coordinates before adding a Model-owner
-adapter. At minimum test rotation, translation, PrePivot, both scale blocks,
-nonuniform/negative scale, sheer modes, transformed hull flip order, traversal
-versus hull cancellation, null-owner-only bbox planes and unchanged Item.
-Bound and reject nonfinite/singular coordinate arithmetic explicitly; do not
-invent a unit axis or use a fake empty Model on failure.
+The current detached implementation accepts an explicitly supplied, already
+captured `OriginalModelCoords` value. `quest_model_owner_coords.h` provides
+the audited point/vector/plane and model-bounds scalar operations;
+`quest_model_extent_trace.h` now includes the owner sweep, and
+`quest_model_line_hit.h` supplies the caller-seeded extent packet adapter.
+The independent owner test covers supplied translation, rotation,
+nonuniform/negative/shear and finite singular/zero coordinate fixtures,
+transformed hull flips, owner-unused bbox contents, null-owner-only bbox
+clipping, unchanged Next/Item and atomic refusal. Build/test verification above
+does not by itself establish live native object authority or gameplay.
 
-The collision hash may use transformed brush bounding boxes to collect
-candidates; actual owner Model.LineCheck must still perform this narrow phase.
-Owner state and primitive selection must come from current native actor
-identity and actual fields, with world mutation/callbacks sharing the outer
-VM transaction. No source changes, APK, on-device acceptance or completed
-movement/startup behavior are established by this document.
+Actual native **Actor/ABrush/AMover ToWorld coordinate construction remains
+unimplemented in this slice**. The provider must establish actual object and
+UClass/vtable identity and reproduce Location, Rotation, PrePivot, both
+native scale blocks, sheer modes, lookup quantization and original intermediate
+stores. Supplying guessed identity axes, a host inverse, renderer geometry or
+the pinned engine's simpler transform is not that provider. Finite captured
+singular/zero matrices are deliberately accepted: the captured-coordinate
+operations contain no inverse/determinant gate. Refuse active nonfinite or
+overflow arithmetic explicitly, not a merely singular finite captured value.
+
+Runtime integration also remains: the native collision hash must select the
+actual current Brush/Mesh/Cylinder primitive and own the captured ToWorld
+value for the entire query; an owner Model call must perform the real narrow
+phase, not return its registration bounds. Actor/world authority, shared work
+budgets, temporary hit lifetime, callbacks and failure rollback must join the
+same outer VM transaction. This captured-value implementation does not add
+the zero-extent branch, full native Move266/FindBase/falling, world startup,
+an APK or on-device acceptance.

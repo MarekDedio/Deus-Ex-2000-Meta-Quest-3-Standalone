@@ -1,14 +1,16 @@
 #pragma once
 
 #include "quest_model_extent_bevel.h"
+#include "quest_model_owner_coords.h"
 
 #include <vector>
 
 namespace QuestVr {
 
-// Retail UModel.LineCheck's nonzero-extent, null-owner path. Authored UE
-// coordinates only. This is not ULevel.SingleLineCheck, actor collision,
-// mover transforms, Move266, FindBase or a physics/world Tick coordinator.
+// Retail UModel.LineCheck's nonzero-extent traversal, either with no Owner or
+// an already captured Owner.ToWorld FCoords value. World Start/End/Extents
+// remain world-space; this does not construct Actor/Brush coordinates or
+// implement ULevel.SingleLineCheck, Move266, FindBase or a physics Tick.
 struct ModelExtentTraceLimits {
     std::size_t nodes{1'000'000u}, hullWords{2'000'000u};
     std::size_t validationSteps{16'000'000u}, querySteps{16'000'000u}, pending{1'000'000u};
@@ -48,7 +50,8 @@ struct Hull {
     std::size_t count{};
     PortableModelVec3 minimum{},maximum{};
 };
-inline Hull ReadHull(const PortableModelGeometry& model,std::int32_t offset,std::size_t& used,std::size_t maximum) {
+inline Hull ReadHull(const PortableModelGeometry& model,std::int32_t offset,std::size_t& used,std::size_t maximum,
+    bool owned=false,const OriginalModelCoords* coords=nullptr) {
     if(offset<0||static_cast<std::size_t>(offset)>=model.leafHulls.size()) Fail("invalid collision-bound offset");
     Hull hull;auto cursor=static_cast<std::size_t>(offset);
     for(;;) {
@@ -61,17 +64,26 @@ inline Hull ReadHull(const PortableModelGeometry& model,std::int32_t offset,std:
         if(index>=model.nodes.size()) Fail("invalid hull plane-node index");
         const auto& node=model.nodes[index];
         OriginalExtentPlane plane{node.planeX,node.planeY,node.planeZ,node.planeW};
+        // Retail gathers/transforms ALL primary hull planes before the first
+        // clip. Flip comes AFTER the owner transform, not before its W store.
+        if(coords) plane=TransformOriginalHullPlane(plane,*coords);
         if(bits&0x40000000u) plane={-plane.x,-plane.y,-plane.z,-plane.w};
         hull.planes[hull.count++]=plane;
     }
     if(model.leafHulls.size()-cursor<6u) Fail("truncated leaf-hull bounds");
-    const auto next=[&] {Step(used,maximum);const auto value=std::bit_cast<float>(model.leafHulls[cursor++]);Finite(value);return value;};
+    // 103F47BA..47DC copies these six WORDS even for Owner, but Owner skips
+    // their numerical use at495D. Structural availability is still required;
+    // NaN/Inf/reversed unused bounds must not invent an owner-path refusal.
+    const auto next=[&] {Step(used,maximum);const auto value=std::bit_cast<float>(model.leafHulls[cursor++]);
+        if(!owned) Finite(value);
+        return value;};
     hull.minimum={next(),next(),next()};hull.maximum={next(),next(),next()};
-    if(hull.minimum.x>hull.maximum.x||hull.minimum.y>hull.maximum.y||hull.minimum.z>hull.maximum.z)
+    if(!owned&&(hull.minimum.x>hull.maximum.x||hull.minimum.y>hull.maximum.y||hull.minimum.z>hull.maximum.z))
         Fail("reversed leaf-hull bounds");
     return hull;
 }
-inline void Validate(const PortableModelGeometry& model,const ModelExtentTraceLimits& limits,ModelExtentTraceStats& stats) {
+inline void Validate(const PortableModelGeometry& model,const ModelExtentTraceLimits& limits,ModelExtentTraceStats& stats,
+    bool owned=false) {
     if(model.version!=68u||model.licenseeMode!=0u) Fail("unsupported serialized Model layout");
     if(model.rootOutside!=0&&model.rootOutside!=1) Fail("invalid root-outside value");
     if(model.nodes.size()>limits.nodes||model.leafHulls.size()>limits.hullWords) Fail("Model array budget exceeded");
@@ -79,7 +91,7 @@ inline void Validate(const PortableModelGeometry& model,const ModelExtentTraceLi
         Step(stats.validationSteps,limits.validationSteps);
         Finite(node.planeX);Finite(node.planeY);Finite(node.planeZ);Finite(node.planeW);
         Index(node.front,model.nodes.size());Index(node.back,model.nodes.size());
-        if(node.collisionBound!=-1) static_cast<void>(ReadHull(model,node.collisionBound,stats.validationSteps,limits.validationSteps));
+        if(node.collisionBound!=-1) static_cast<void>(ReadHull(model,node.collisionBound,stats.validationSteps,limits.validationSteps,owned));
     }
     // Validate ALL components, including unreachable/pruned ones. Shared DAG
     // children are valid and still incur repeated bounded query visits.
@@ -143,17 +155,17 @@ inline void Finalize(ModelExtentTraceResult& result,const PortableModelVec3& sta
     result.location={component(start.x,delta.x),component(start.y,delta.y),component(start.z,delta.z)};
     result.clear=result.time==1.0f;
 }
-} // namespace ModelExtentTraceDetail
-
-inline ModelExtentTraceResult TraceOriginalModelExtent(const PortableModelGeometry& model,
+inline ModelExtentTraceResult Trace(const PortableModelGeometry& model,
     const PortableModelVec3& start,const PortableModelVec3& end,const PortableModelVec3& extent,
-    const ModelExtentTraceLimits& limits={}) {
-    using namespace ModelExtentTraceDetail;
-    Limits(limits);Finite(start);Finite(end);Finite(extent);
+    const ModelExtentTraceLimits& limits,const OriginalModelCoords* coords) {
+    Limits(limits);ModelExtentTraceResult result;Validate(model,limits,result.stats,coords!=nullptr);
+    // Empty UModel returns RootOutside before it reads endpoints, Extent,
+    // Owner or coordinates. The result Time1 is an abstract default, NOT a
+    // native Hit write; a caller-packet adapter must preserve that packet.
+    if(model.nodes.empty()) {result.clear=model.rootOutside!=0;return result;}
+    Finite(start);Finite(end);Finite(extent);
     if(extent.x<0||extent.y<0||extent.z<0) Fail("negative collision extents");
     if(extent.x==0&&extent.y==0&&extent.z==0) Fail("zero extents require the separate point-trace branch");
-    ModelExtentTraceResult result;Validate(model,limits,result.stats);
-    if(model.nodes.empty()) {result.clear=model.rootOutside!=0;return result;}
     result.time=2.0f;const auto delta=Delta(start,end);const auto size=Size(delta);
     struct Visit {std::int32_t node,parent;bool outside;};
     std::vector<Visit> pending{{0,0,model.rootOutside!=0}};
@@ -162,7 +174,8 @@ inline ModelExtentTraceResult TraceOriginalModelExtent(const PortableModelGeomet
         Step(result.stats.querySteps,limits.querySteps);const auto visit=pending.back();pending.pop_back();
         if(visit.node!=-1) {
             ++result.stats.nodeVisits;const auto& node=model.nodes[static_cast<std::size_t>(visit.node)];
-            const OriginalExtentPlane plane{node.planeX,node.planeY,node.planeZ,node.planeW};
+            OriginalExtentPlane plane{node.planeX,node.planeY,node.planeZ,node.planeW};
+            if(coords) plane=TransformOriginalTraversalPlane(plane,*coords);
             const auto from=Distance(start,plane,true),to=Distance(end,plane,false),radius=Radius(extent,plane);
             const bool back=!(Compare64(from,radius)>0&&Compare64(to,radius)>0),
                 front=!(Compare64(from,Negate(radius))<0&&Compare64(to,Negate(radius))<0);
@@ -176,7 +189,7 @@ inline ModelExtentTraceResult TraceOriginalModelExtent(const PortableModelGeomet
         ++result.stats.leafVisits;if(visit.outside) continue;
         const auto offset=model.nodes[static_cast<std::size_t>(visit.parent)].collisionBound;
         if(offset==-1) continue;
-        ++result.stats.hullVisits;const auto hull=ReadHull(model,offset,result.stats.querySteps,limits.querySteps);
+        ++result.stats.hullVisits;const auto hull=ReadHull(model,offset,result.stats.querySteps,limits.querySteps,coords!=nullptr,coords);
         OriginalExtentClipState interval{-1.0f,result.time,{}};
         const auto clip=[&](const OriginalExtentPlane& plane) {
             Step(result.stats.querySteps,limits.querySteps);++result.stats.planeTests;
@@ -185,7 +198,7 @@ inline ModelExtentTraceResult TraceOriginalModelExtent(const PortableModelGeomet
         bool accepted=true;
         for(std::size_t i=0;i<hull.count;++i) if(!clip(hull.planes[i])) {accepted=false;break;}
         if(!accepted) continue;
-        for(const auto& plane:BuildOriginalExtentBoundsPlanes(hull.minimum,hull.maximum))
+        if(!coords) for(const auto& plane:BuildOriginalExtentBoundsPlanes(hull.minimum,hull.maximum))
             if(!clip(plane)) {accepted=false;break;}
         if(!accepted) continue;
         for(std::size_t i=0;i<hull.count&&accepted;++i) for(std::size_t j=0;j<i&&accepted;++j) {
@@ -204,6 +217,19 @@ inline ModelExtentTraceResult TraceOriginalModelExtent(const PortableModelGeomet
     }
     if(result.hit) Finalize(result,start,delta,size);
     return result;
+}
+} // namespace ModelExtentTraceDetail
+
+inline ModelExtentTraceResult TraceOriginalModelExtent(const PortableModelGeometry& model,
+    const PortableModelVec3& start,const PortableModelVec3& end,const PortableModelVec3& extent,
+    const ModelExtentTraceLimits& limits={}) {
+    return ModelExtentTraceDetail::Trace(model,start,end,extent,limits,nullptr);
+}
+
+inline ModelExtentTraceResult TraceOriginalOwnedModelExtent(const PortableModelGeometry& model,
+    const OriginalModelCoords& capturedCoords,const PortableModelVec3& start,const PortableModelVec3& end,
+    const PortableModelVec3& extent,const ModelExtentTraceLimits& limits={}) {
+    return ModelExtentTraceDetail::Trace(model,start,end,extent,limits,&capturedCoords);
 }
 
 } // namespace QuestVr

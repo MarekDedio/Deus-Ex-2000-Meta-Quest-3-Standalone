@@ -1,5 +1,39 @@
 # Port status
 
+## Captured-owner Model collision sweeps (2026-10-16)
+
+- Implemented native captured-FCoords point/vector/plane/bounds operations with
+  exact PC64 grouping and Float stores. Point-Origin differences stay retained;
+  Vector ignores Origin; traversal and hull plane schedules remain separate.
+  Eight transformed corners preserve native order/first equal Float bits,
+  reversed endpoints and source-validity behavior. Finite singular/zero/negative,
+  nonuniform and shear axes are not rejected by an invented determinant gate.
+- Extended the existing full BSP extent kernel for captured Model owners:
+  transform all primary hull planes before clipping, then flip; keep world
+  extents; omit null-owner bbox planes; preserve already-world normals and the
+  full bevel chain. Six packed bounds words remain structurally required but
+  their unused NaN/Inf/reversed contents do not refuse owner queries.
+- Added a caller-seeded hit adapter: empty Model preserves all fields; nonempty
+  miss writes only Time2; accepted owner/world hits retain Next and Item and
+  publish fields even when finalized Time1 returns clear. Explicit failures
+  publish atomically. This is not a zero-extent/mesh or native runtime bridge.
+- Scalar104445 checks/271 refusals/43652 exact independent x87 comparisons and
+  16832 matching hardware finite-store refusals pass. Sweep/packet12387 checks/
+  23 refusals/3062 exact recursive-x87 comparisons/218 hits pass. Tests cover
+  tied near-first hull winners, all256 flag bytes,2048-node iterative traversal,
+  accepted-clear packet writes, inactive bounds and eager later-plane overflow.
+- Owned Training Model36 (9524 nodes/3183 hulls) passes24 exact captured-fixture
+  sweeps/21 hits. Existing null-owner tests pass59971 checks/39 refusals and
+  96/96 original-map sweeps/hits. Original package bytes/mtime and Engine/Core/
+  Engine.u hashes are unchanged. Full host build and strict ARM64 syntax pass.
+  CTest116 passed/131 registered/15 explicit owned-data skips/zero failures in
+  38.79s. Local logs are ignored `artifacts/owner-model-*-20261016.log`.
+- Actual Actor/ABrush/AMover ToWorld construction (Location/rotator lookup,
+  PrePivot, both native scales/shear), native primitive/hash/RNG lifecycle and
+  outer VM integration remain. Complete Move/callback/support/startup/player/
+  falling are not enabled. No new APK or on-device crate/gravity acceptance.
+  See ORIGINAL-MOVER-LINE-TRACE.md.
+
 ## Original collision-hash scalar/state service (2026-10-16)
 
 - Implemented the detached retail hash math: shifted Float/FISTP nearest-even
