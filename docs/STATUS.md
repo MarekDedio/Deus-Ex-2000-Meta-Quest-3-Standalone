@@ -1,5 +1,45 @@
 # Port status
 
+## Original MultiLine collector and collision-hit ordering (2026-10-16)
+
+- Implemented the complete detached provider-driven MultiLine collector:
+  world-before-actors query order, original world fraction/end shortening,
+  strict nearby-world mover-only admission, coplanar mover correction,
+  repeated temporary-record mutation,64-slot cap and rebuilt Next links.
+  Integer PC64 arithmetic retains all distinct world XYZ, correction mixed
+  retained/Float, final Z/Y/X and asymmetric endpoint interpolation stores.
+  World/actor/class providers remain actual native service dependencies, not
+  render-collider or class-name substitutes. No native Move shortcut is added.
+- Pinned the owned bundled-MSVCRT collision-hit permutation, including unstable
+  equal-Time behavior, <=8 strict maximum selection and >8 middle-pivot
+  partitioning. The44-byte scheduling comparison requires strict index >,
+  not >=. Whole packets move together. Count0/1 leaves Time unread; finite
+  admission and64 cap refuse atomically rather than exporting unsafe results.
+- Sort4461952 checks/143179 independent byte-oracle permutations/250 refusal
+  controls pass. Collector1507683 checks/18 safety controls pass:14000 generated
+  queries,13994 finite x87-matching outcomes,59881 mover corrections and719
+  near-world filters. Tests include broad Float exponents, precise thresholds,
+  inactive NaNs, original class-call/Next order, both64 caps, repeated/skipped
+  cycles, overflow, zero correction and missing native providers.
+- Coherent full host build and strict ARM64 syntax pass. CTest112 passed /
+  127 registered /15 explicit owned-data skips /zero failures in37.75s.
+  Engine/Core/bundled MSVCRT hashes are unchanged; no original executable code
+  is run. Logs are ignored local `artifacts/multi-line-*-20261016.log`.
+- Completed bounded original collision-hash and owner-Model audits. Real hash
+  tables are process-global permutations consuming49152 shared RNG draws once;
+  grid conversion is shifted Float/FISTP nearest-even, registration has +1
+  padding, removal uses CURRENT bounds and query hits reverse encounter order.
+  Owner Model sweeps transform planes into world space with distinct traversal/
+  hull sum orders, preserve world extents, flip AFTER transform and omit the
+  null-owner bbox planes. Both brush scale blocks matter. These are not the
+  current pinned overlap registry or a generic local-space box rotation.
+- Actual hash/RNG lifecycle, captured brush coordinates, primitive query
+  integration and complete Move/callback/support/startup/player/falling remain.
+  The original uninitialized empty-world hit case is documented for explicit
+  future adapter refusal, not given a fabricated packet. No replacement APK or
+  live crate/gravity acceptance. See ORIGINAL-MULTI-LINE-TRACE.md,
+  ORIGINAL-COLLISION-HASH.md and ORIGINAL-MOVER-LINE-TRACE.md.
+
 ## Original actor-cylinder sweeps and loader Model authority (2026-10-16)
 
 - Implemented the complete detached retail UPrimitive cylinder line query,

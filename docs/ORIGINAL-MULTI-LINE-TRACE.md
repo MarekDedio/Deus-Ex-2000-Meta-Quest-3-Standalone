@@ -36,6 +36,17 @@ Actor`+4`, Location`+8..10`, Normal`+14..1C`, Primitive`+20`, Time`+24`,
 Item`+28`. The operation copies whole records; it does not reconstruct Item
 or Primitive from a render triangle identifier.
 
+The entry loop at`0x1039B24C`–`0x1039B261` advances by44 bytes64 times but
+contains no hit-field stores or constructor calls. In particular the first
+world packet is **uninitialized** before Model.LineCheck. An empty Model
+returns RootOutside without writing Hit; RootOutside=false therefore leads
+the retail collector to read undefined Location/Time after writing Actor only.
+A future portable Model adapter must retain per-field provenance and refuse
+undefined observed fields, not seed a fabricated usable packet. Unobserved
+Item/Primitive/Next payload is not permission to claim an authored surface
+index; extent checks do not write Item. The actor hash has its own distinct
+explicit zero-Time seed, documented in ORIGINAL-COLLISION-HASH.md.
+
 ## 1. Optional world Model collision and shortening
 
 At`0x1039B263`–`0x1039B400`, initialize Scale Float1, HasWorldHit=false,
@@ -168,8 +179,9 @@ tie behavior across unidentified CRT versions.
 ## Implementation and evidence boundary
 
 The complete bounded Engine function was read through its terminal return;
-its dependencies were inspected only to the scope stated above. This is not
-a verified implementation. Required work remains:
+its dependencies were inspected only to the scope stated above. The detached
+collector below now implements its arithmetic/admission/ordering, not the
+native primitive/hash services or movement integration. Required work remains:
 
 - native ULevel/Model/CollisionHash identities and memstack lifetime authority;
 - actor hash traversal, original actor-cylinder/brush primitive selection,
@@ -182,3 +194,67 @@ The collector itself does not mutate actors, reflected Location, Base or
 Touching. Mutations to temporary input hit records are not actor-transform
 publication. No fake block/clear result, sorted render collider list, fixed
 rootModel guess or stable sort can establish this native contract.
+
+## Detached collector and pinned-sort checkpoint (2026-10-16)
+
+`native/quest_multi_line_trace.h` implements the complete provider-driven
+collector: world call first, original fraction/end shortening, strict near
+filter, actual-ancestry provider calls in original order, mover correction,
+temporary actor-hit Time mutation before copying,64-record admission,
+bundled-CRT sorting and regenerated output links. The supplied world identity
+labels only the world hit; it is not used as a source-exclusion filter.
+
+Providers remain explicit dependencies. World must query supplied native
+LevelInfo.XLevel.Model with ownerNone and zero-extended byte flags; actors must
+use the receiver's actual CollisionHash and return its complete native order;
+isMover must use actual class ancestry. No stub provider, first-Model guess,
+render ray, class-name match or pin-based overlap registry establishes these
+contracts. Per-provider work and all failures must share the eventual caller's
+VM-root ledger/transaction. The collector itself dispatches no script events
+and writes no UObjects; it owns temporary hit copies and returns no partial
+result on refusal.
+
+Detached arenas use one-based portable Next/first handles, zero=None. They
+are not original byte addresses or saved pointers. Active links alone are
+checked; unvisited tails after64 admitted records remain unread. A repeated
+admitted record is scaled again before each copy, matching temporary native
+aliasing; skipped cycles exhaust the collector work budget. Fixed maximums
+are1048576 temporary actor records and4194304 collector steps; callers may
+only tighten them. Providers must also bound allocation/query work before
+returning an arena. No unbounded fallback, silent truncation or success on
+unsupported primitive/transform data is introduced.
+
+`native/quest_collision_hit_sort.h` pins the owned bundled-MSVCRT permutation
+policy above. Whole packets move with cached immutable Float Times. Count0/1
+does not read Time. Count>=2 validates all Float Times before mutation as an
+explicit finite-domain policy; it does not claim retail's lazy comparator
+input-access behavior for malformed nonfinite data. The64-record cap is
+checked before reads. The44-byte partition-size comparison becomes **strict
+`right-low > high-left`** at index granularity, not >=.
+
+Independent byte-record sort tests pass4461952 checks/143179 permutations/
+250 explicit refusals: exhaustive ternary ties through10, unique permutations
+through8, signed-zero patterns, all counts0..64, finite-bit stress, exact
+8/9/64 tied fixtures and whole-payload preservation. No original CRT code is
+executed. Independent hardware-x87 collector tests pass1507683 checks/
+18 explicit safety refusals:14000 generated queries,13994 finite successful
+comparisons,59881 mover corrections and719 near-world filters. Complete
+packet arithmetic and tied-group payloads match the independent reference;
+the separate byte oracle proves exact tied permutations.
+
+Deterministic controls cover copied native by-value inputs across providers,
+input/provider order/flags, inactive NaNs,
+XYZ short-circuit comparisons, negative unclamped scale, exactly/above1 clamp,
+Double.01 and distance thresholds, equal normals/distance4 boundaries,
+zero-length active/inactive correction, arena ownership, non-storage Next
+order, repeated-record scaling, both64-slot caps, ignored malformed tails,
+skipped cycles, missing/throwing services and tightened budgets. Broad finite
+Float exponents exercise overflow and retained-versus-spilled interpolation.
+This is not an on-device or native world/startup/physics acceptance.
+
+The coherent full host build and strict ARM64 syntax pass. CTest112 passed /
+127 registered /15 explicit owned-data skips /zero failures in37.75s. Engine,
+Core and bundled MSVCRT hashes were rechecked; original executable code is
+never loaded. Ignored local evidence: `artifacts/multi-line-*-20261016.log`.
+The production runtime/accepted NPC APK are unchanged at this checkpoint;
+no fake hash/owner-transform provider is wired into gameplay.
