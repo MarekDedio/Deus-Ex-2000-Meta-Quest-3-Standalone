@@ -1,5 +1,38 @@
 # Port status
 
+## Original Actor/Brush coordinate builders (2026-10-16)
+
+- Implemented supplied-value native Actor and Brush/Mover ToWorld construction:
+  UnitCoords Origin minus Location, sequential yaw/pitch/roll compositions,
+  both complete native scale340/scale32C blocks and final stored negative-
+  PrePivot subtraction. Origin differences and all component/vector Float
+  stores are preserved; no host matrix inverse, DrawScale or identity shortcut.
+- FScale reproduces exact Double-threshold SheerSnap, all256 SheerAxis bytes,
+  full shear composition, all9 componentwise axis products and3 Origin
+  divisions. Finite negative/nonuniform/shear/singular coordinates remain legal;
+  active zero division/nonfinite/Float overflow refuses. Unknown-axis discarded
+  rate/status is explicitly inactive, not a fake invalid-enum rejection.
+- Sine/cosine use an explicit16384-Float table and native wrapped4-unit
+  lookup quantization, not portable libm. Independent original-instruction
+  FSIN table generation on this Intel i5-3470/306A9 has zero final-Float
+  differences between all16384 PC53 and PC64 entries. Original static-init
+  control state/cross-CPU provenance and an actual Android table remain
+  separate dependencies; no native GMath lifecycle is fabricated.
+- Compose/Scale/Snap78481 checks/141 refusals/35409 independent x87 comparisons/
+  7239 matching finite-math refusals pass. Rotation104489 checks/54396 exact
+  x87 Actor cases/768 aliases/12 refusals pass, including all phases on each
+  axis and128 unit-scale brush/pivot cases. Builder wiring42 checks/3 refusals
+  passes both-scale closed forms, shear chains, bounds and owner Model hit
+  integration with explicit fixture coordinates/table values.
+- Coherent full host build and strict ARM64 syntax pass. CTest119 passed/
+  134 registered/15 explicit owned-data skips/zero failures in38.35s.
+  Original Engine/Core/Engine.u hashes unchanged; no commercial executable code called. Local
+  ignored logs are `artifacts/brush-coords-*-20261016.log`.
+- Actual object/UClass/primitive authority, native-offset property mapping,
+  sine-table provenance, collision/RNG lifecycle and shared VM transaction
+  bridge remain. Native Move/callback/support/startup/player/falling and live
+  crates are not enabled; no new APK. See ORIGINAL-BRUSH-COORDINATES.md.
+
 ## Captured-owner Model collision sweeps (2026-10-16)
 
 - Implemented native captured-FCoords point/vector/plane/bounds operations with

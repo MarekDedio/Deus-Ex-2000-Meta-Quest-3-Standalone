@@ -19,6 +19,17 @@ foreach(OBJECT_HELPER quest_object_names quest_object_indices quest_engine_confi
     add_test(NAME ${OBJECT_HELPER} COMMAND ${OBJECT_HELPER}_test)
 endforeach()
 
+foreach(BRUSH_TEST quest_brush_coords quest_brush_rotation quest_brush_builder)
+    add_executable(${BRUSH_TEST}_test ${BRUSH_TEST}_test.cpp)
+    target_compile_features(${BRUSH_TEST}_test PRIVATE cxx_std_20)
+    target_include_directories(${BRUSH_TEST}_test PRIVATE "${PORT_NATIVE}")
+    if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+        target_compile_options(${BRUSH_TEST}_test PRIVATE -Wall -Wextra -Werror)
+        target_link_options(${BRUSH_TEST}_test PRIVATE -static -static-libgcc -static-libstdc++)
+    endif()
+    add_test(NAME ${BRUSH_TEST} COMMAND ${BRUSH_TEST}_test)
+endforeach()
+
 add_library(quest_portable_host STATIC
     "${PORT_NATIVE}/quest_portable_vm.cpp"
     "${PORT_NATIVE}/quest_script_dispatch.cpp"

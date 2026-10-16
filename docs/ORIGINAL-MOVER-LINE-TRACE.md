@@ -1,8 +1,9 @@
 # Retail owner/brush Model line checks
 
 Static, read-only audit of the owned GOTY installation, 2026-10-16. No original
-DLL or EXE was executed. This establishes further collision contracts, not an
-implemented owner sweep, native Move266, FindBase, falling or live crate gameplay.
+DLL or EXE was executed. Captured-value owner sweeps and their verification
+are recorded below; native Move266, FindBase, falling and live crate gameplay
+remain incomplete.
 
 Primary files under `D:/Steam/steamapps/common/Deus Ex/System`:
 
@@ -41,7 +42,8 @@ Consequently an ordinary crate Mesh with a nonzero moving collision extent
 uses the primitive/cylinder path, not animated triangle collision. This does
 not authorize using a cylinder for an actual Brush primitive. The complete
 UMesh zero-extent path and UPrimitive cylinder numeric contract are separate
-work; this audit does not claim them implemented.
+work; UPrimitive cylinder implementation/verification is separately recorded
+in ORIGINAL-ACTOR-LINE-TRACE.md and STATUS.md. The mesh zero-extent path remains.
 
 ## Owner coordinates are a captured virtual result
 
@@ -98,7 +100,9 @@ Relevant imported Core identities are `FCoords*=(FCoords)` at IAT `10599B20`,
 stores between products/divisions, rotation lookup-table quantization and
 piecewise sheer-rate behavior. A collapsed host-double matrix inverse has not
 been demonstrated numerically equivalent. Complete independent numeric tests
-for these coordinate-building operations remain required.
+for these coordinate-building operations are now recorded in
+ORIGINAL-BRUSH-COORDINATES.md. Real native-object/property/LUT integration is
+still distinct from the supplied-value builder service.
 
 ## Two different owner-plane transforms
 
@@ -274,12 +278,14 @@ transformed hull flips, owner-unused bbox contents, null-owner-only bbox
 clipping, unchanged Next/Item and atomic refusal. Build/test verification above
 does not by itself establish live native object authority or gameplay.
 
-Actual native **Actor/ABrush/AMover ToWorld coordinate construction remains
-unimplemented in this slice**. The provider must establish actual object and
-UClass/vtable identity and reproduce Location, Rotation, PrePivot, both
-native scale blocks, sheer modes, lookup quantization and original intermediate
-stores. Supplying guessed identity axes, a host inverse, renderer geometry or
-the pinned engine's simpler transform is not that provider. Finite captured
+Detached native **Actor/ABrush/AMover ToWorld coordinate construction now
+exists in `quest_brush_coords.h`**, using explicit native field values and
+a supplied16384-Float sine table. ORIGINAL-BRUSH-COORDINATES.md records its
+independent numeric/rotation verification. The live provider must still
+establish actual object and UClass/vtable identity, map the two native scale
+offsets to actual runtime fields, and supply genuine lookup table authority.
+Supplying guessed identity axes, a host inverse, renderer geometry or the
+pinned engine's simpler transform is not that provider. Finite captured
 singular/zero matrices are deliberately accepted: the captured-coordinate
 operations contain no inverse/determinant gate. Refuse active nonfinite or
 overflow arithmetic explicitly, not a merely singular finite captured value.
