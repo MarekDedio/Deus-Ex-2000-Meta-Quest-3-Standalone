@@ -93,8 +93,10 @@ Frag/nativeDestroy with six WoodFragments each, original selected Skin and
 bit-exact stored velocity/scale/RNG. Warm/cold replacement, repeated Destroy,
 final-return budget rollback, source bytes/timestamps and GC pass. Dormant
 bBegunPlay=false suppresses Destroyed/Contents normally; do not infer usable
-loot or live VR damage from this fixture. True Pawn-instigated fatal damage
-still refuses MakeNoise512:428, with complete rollback.
+loot or live VR damage from this fixture. At this earlier checkpoint true
+Pawn-instigated fatal damage still refused MakeNoise512:428, with complete
+rollback. The subsequent implementation in ORIGINAL-MAKE-NOISE.md now
+completes that isolated Pawn-instigated path too; it is not a VR-player claim.
 
 The coherent full host build and strict ARM64 syntax checks pass. CTest102
 passes/117 registered/15 explicit owned-data skips/zero failures in42.06s.

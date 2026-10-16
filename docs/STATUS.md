@@ -1,5 +1,41 @@
 # Port status
 
+## Original crate-hit noise/hearing and Pawn-instigated fatal scripts (2026-10-16)
+
+- Implemented original MakeNoise512 and Pawn.CanHear: exact required Float
+  argument/zero seed, native slot-zero NetMode3 early exit, actual ULevel Double
+  time, lazy cache suppression/replacement and retail cache1 replacement quirk.
+  Integer PC64 arithmetic preserves native Double windows, retained x/y/z
+  geometry and quotient, Float distance/q/Stimulus spills and retained threshold.
+- Real live PawnList/nextPawn, current source Location/Instigator, captured
+  initial instigator, UClass ancestry, PlayerPawn exclusion and live HearNoise
+  probing drive synchronous actual script events. CanHear uses native listener
+  GameInfo/PRI/team and directed Model.FastLineCheck. Const native cache writes
+  are typed/budgeted/journaled; ordinary scripts cannot mutate those eight
+  fields. Cache/Stimulus writes do not rebuild unrelated NPC animation clocks.
+- Pure390575 checks/41577 deliberate finite/overflow refusals pass against
+  independent hardware x87 arithmetic. Generated production1669/17 passes
+  required Nothing/NoWrite/partial context, caller-bound input expressions,
+  native clock authority, all cache routes, live callback mutations, team/range/
+  BSP/probe behavior, cyclic work bounds, exact warm/cold continuation and late
+  complete root rollback. NetMode1/2/255 are not blanket-rejected as clients.
+- Actual owned Training diagnostics626/4 pass: both crates' isolated fatal
+  hits now complete MakeNoise/Frag/Destroy with true nonnull Pawn instigators
+  as well as None, six original WoodFragments each, atomic removal/publication,
+  cache writes, NPC animation preservation, unrelated cache fields untouched,
+  warm save replacement and last-return rollback/GC. Original bytes/timestamps
+  are unchanged. Jaime is a legal isolated Pawn input, not a possessed VR player.
+- Coherent full host build and strict ARM64 syntax pass. CTest106 passed out
+  of121 registered,15 explicit owned-data skips, zero failures in61.95s.
+  Separate begun contents347/2 and NPC280519/26 pass. The original38-package
+  nonpublishing startup probe still rolls back exactly at actual Mover.Move266,
+  Engine.Mover.BeginPlay:166, Training slot126. No startup gate is bypassed.
+- No replacement APK. The accepted NPC/held-item build is unchanged. Original
+  world/player startup, live melee, surviving relevant loot, native bound-player
+  audio, falling/landing/Base support, debris lifetime and complete committed
+  render-scene publication remain required; the full campaign goal is unfinished.
+  See ORIGINAL-MAKE-NOISE.md and TRAINING-WEAPON-CRATE-GAPS.md.
+
 ## Native level-clock prerequisite for MakeNoise (2026-10-16)
 
 - Added actual serialized ULevel-owned Double time, separate from mutable

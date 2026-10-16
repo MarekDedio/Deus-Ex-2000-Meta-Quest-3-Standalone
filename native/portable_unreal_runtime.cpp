@@ -16,6 +16,7 @@
 #include "quest_script_random_vector.h"
 #include "quest_mesh_texture_selection.h"
 #include "quest_level_clock.h"
+#include "quest_make_noise.h"
 #include "quest_actor_latent.h"
 #include "quest_actor_timer.h"
 #include "quest_native_window_location.h"
@@ -2115,7 +2116,7 @@ public:
         // explicit port policy narrow; native ReferenceFor remains writable.
         const auto nativeKey=LowerAscii(property.key);
         const bool nativeConst = ((property.flags & 2u) && (property.zero.kind == Kind::IntArray ||
-            nativeKey == "engine.actor.timercounter")) ||
+            nativeKey == "engine.actor.timercounter" || NativeNoiseCacheKey(nativeKey))) ||
             (object->nativeViewportIdentity && nativeKey=="engine.player.actor") ||
             (object->nativePlayerBinding && nativeKey=="engine.playerpawn.player") ||
             nativeKey=="extension.playerpawnext.rootwindow";
@@ -2626,6 +2627,7 @@ public:
         if (index==1013u) return Native(index,receiver,arguments,declaration);
         if (Object(receiver)->defaultOwner)
             throw std::runtime_error("Native execution on a class-default object requires its audited handler");
+        if(index==512u) return MakeNoiseNative(Object(receiver),arguments,declaration,execution);
         if(index==1052u) return InitRootWindowNative(Object(receiver),arguments,declaration,execution);
         if(index==1410u) return NewChildWindowNative(Object(receiver),arguments,declaration,execution);
         if(index==1438u) return WindowAlignmentsNative(Object(receiver),arguments,declaration,execution);
@@ -3099,6 +3101,177 @@ public:
         }
         return authored;
     }
+    static bool NativeNoiseCacheKey(const std::string& key) {
+        return key=="engine.pawn.noise1time" || key=="engine.pawn.noise2time" ||
+            key=="engine.pawn.noise1loudness" || key=="engine.pawn.noise2loudness" ||
+            key=="engine.pawn.noise1spot" || key=="engine.pawn.noise2spot" ||
+            key=="engine.pawn.noise1other" || key=="engine.pawn.noise2other";
+    }
+    std::shared_ptr<const Function> MakeNoiseDeclaration(const Function* supplied) {
+        const auto authored=FunctionFor(Object("Engine.Actor.MakeNoise"));
+        const auto validate=[&](const Function& function) {
+            if (LowerAscii(function.path)!="engine.actor.makenoise" || function.nativeIndex!=512u ||
+                function.flags!=0x401u || function.variables.size()!=1u)
+                throw std::runtime_error("MakeNoise does not match its original native declaration");
+            const auto& field=function.variables[0u];auto* metadata=Object(field.key);
+            if (LowerAscii(field.key)!="engine.actor.makenoise.loudness" || field.zero.kind!=Kind::Float ||
+                field.flags!=0x80u || field.arrayDimension!=1u || !metadata->property ||
+                metadata->property->type!="FloatProperty")
+                throw std::runtime_error("MakeNoise Loudness is not its original required Float");
+        };
+        validate(*authored);
+        if (supplied) {
+            if (LowerAscii(supplied->path)!=LowerAscii(authored->path) || supplied->source!=authored->source ||
+                supplied->nativeIndex!=512u || supplied->flags!=authored->flags)
+                throw std::runtime_error("MakeNoise declaration has a foreign callable identity");
+            if (!supplied->variables.empty()) validate(*supplied);
+        }
+        return authored;
+    }
+    Property NoiseProperty(RuntimeObject* object,const char* key,const Kind kind,const std::uint32_t flags,
+        const char* constraint="") {
+        const auto field=DescribeProperty(key);auto* metadata=Object(field.key);
+        const char* type=kind==Kind::Object?"ObjectProperty":kind==Kind::Byte?"ByteProperty":
+            kind==Kind::Bool?"BoolProperty":kind==Kind::Vector?"StructProperty":
+            kind==Kind::Float?"FloatProperty":"";
+        if (!object || !OwnsProperty(object->cls,field) || field.arrayDimension!=1u ||
+            field.zero.kind!=kind || field.flags!=flags || !metadata->property || metadata->property->type!=type ||
+            (kind==Kind::Vector && field.resultLayout!=QuestVr::Vm::ResultLayout::CoreVector12) ||
+            (*constraint && LowerAscii(Qualified(Table(metadata->sourcePath),metadata->property->referencedType))!=LowerAscii(constraint)))
+            throw std::runtime_error(std::string("Native MakeNoise field is not its actual authored scalar schema: ")+key);
+        return field;
+    }
+    Value NoiseField(RuntimeObject* object,const char* key,const Kind kind,const std::uint32_t flags,
+        const char* constraint="") {
+        const auto value=Read(object,NoiseProperty(object,key,kind,flags,constraint),0u);
+        if (value.kind!=kind) throw std::runtime_error("Native MakeNoise field has a different destination type");
+        return value;
+    }
+    RuntimeObject* NoiseObjectField(RuntimeObject* object,const char* key,const std::uint32_t flags,const char* constraint) {
+        const auto value=NoiseField(object,key,Kind::Object,flags,constraint);
+        ValidateObjectValue(value,constraint,false);
+        return value.text.empty()?nullptr:Object(value.text);
+    }
+    PortableModelVec3 NoiseLocation(RuntimeObject* object) {
+        const auto value=NoiseField(object,"Engine.Actor.Location",Kind::Vector,0x23u,"Core.Object.Vector");
+        return {value.vector[0u],value.vector[1u],value.vector[2u]};
+    }
+    bool NoisePlayer(RuntimeObject* pawn) {
+        return NoiseField(pawn,"Engine.Pawn.bIsPlayer",Kind::Bool,0x20u).boolean;
+    }
+    void HearNoiseDeclaration() {
+        const auto event=FunctionFor(Object("Engine.Pawn.HearNoise"));
+        if (event->nativeIndex!=0u || event->flags!=0x800u || event->variables.size()!=2u)
+            throw std::runtime_error("HearNoise is not its original Pawn event declaration");
+        const auto& loudness=event->variables[0u];const auto& maker=event->variables[1u];
+        auto* loudnessMetadata=Object(loudness.key);auto* makerMetadata=Object(maker.key);
+        if (LowerAscii(loudness.key)!="engine.pawn.hearnoise.loudness" || loudness.zero.kind!=Kind::Float ||
+            loudness.arrayDimension!=1u || loudness.flags!=0x80u || !loudnessMetadata->property ||
+            loudnessMetadata->property->type!="FloatProperty" ||
+            LowerAscii(maker.key)!="engine.pawn.hearnoise.noisemaker" || maker.zero.kind!=Kind::Object ||
+            maker.arrayDimension!=1u || maker.flags!=0x80u || !makerMetadata->property ||
+            makerMetadata->property->type!="ObjectProperty" ||
+            LowerAscii(Qualified(Table(makerMetadata->sourcePath),makerMetadata->property->referencedType))!="engine.actor")
+            throw std::runtime_error("HearNoise inputs are not their original Float/Actor packet");
+    }
+    bool CanHearNoiseNative(RuntimeObject* listener,RuntimeObject* capturedInstigator,
+        const PortableModelVec3& noiseLocation,const float loudness,QuestVr::Vm::Execution& execution) {
+        const auto location=NoiseLocation(listener);
+        // CanHear Float-spills the distance BEFORE its team checks. Do not
+        // silently turn an unsupported overflowing distance into a range miss.
+        QuestVr::OriginalMakeNoiseDetail::Finite(loudness);
+        const auto distance=QuestVr::ActorTimerDetail::Store32(
+            QuestVr::OriginalMakeNoiseDetail::DistanceSquared(location,noiseLocation));
+        bool sameTeam=false;
+        if (NoisePlayer(listener)) {
+            auto* game=NoiseObjectField(NativeLevelInfo(listener),"Engine.LevelInfo.Game",0u,"Engine.GameInfo");
+            if (!game) throw std::runtime_error("CanHear player has no actual native-level GameInfo");
+            if (NoiseField(game,"Engine.GameInfo.bTeamGame",Kind::Bool,1u).boolean && NoisePlayer(capturedInstigator)) {
+                auto* listenerPri=NoiseObjectField(listener,"Engine.Pawn.PlayerReplicationInfo",0x20u,"Engine.PlayerReplicationInfo");
+                if (listenerPri) {
+                    auto* instigatorPri=NoiseObjectField(capturedInstigator,"Engine.Pawn.PlayerReplicationInfo",0x20u,"Engine.PlayerReplicationInfo");
+                    if (instigatorPri) sameTeam=NoiseField(listenerPri,"Engine.PlayerReplicationInfo.Team",Kind::Byte,0x20u).integer==
+                        NoiseField(instigatorPri,"Engine.PlayerReplicationInfo.Team",Kind::Byte,0x20u).integer;
+                }
+            }
+        }
+        // Only general in-range, noncoincident hearing reads these two native
+        // Floats. Team, range-miss and stored-zero branches do not use them.
+        using namespace QuestVr::OriginalMakeNoiseDetail;
+        const auto levelStrength=QuestVr::ActorTimerDetail::Decode(loudness);
+        const auto range=Multiply64(Multiply64(levelStrength,levelStrength),
+            QuestVr::ActorTimerDetail::Decode(sameTeam?16000000.0f:4000000.0f));
+        if (Compare64(QuestVr::ActorTimerDetail::Decode(distance),range)>0) return false;
+        if (!sameTeam && distance==0.0f) return true;
+        if (!sameTeam) {
+            const auto alertness=NoiseField(listener,"Engine.Pawn.Alertness",Kind::Float,0u).floating;
+            const auto threshold=NoiseField(listener,"Engine.Pawn.HearingThreshold",Kind::Float,1u).floating;
+            const auto heard=QuestVr::EvaluateOriginalCanHear(noiseLocation,location,loudness,alertness,threshold,false);
+            execution.WriteReference(ReferenceFor(listener,NoiseProperty(listener,"Engine.Pawn.Stimulus",Kind::Float,0u),0u,false),
+                Value::Float(heard.stimulus));
+            if (!heard.eligible) return false;
+        }
+        return NativeFastLine(listener,noiseLocation,location);
+    }
+    Evaluation MakeNoiseNative(RuntimeObject* source,const std::vector<Evaluation>& arguments,
+        const Function* declaration,QuestVr::Vm::Execution& execution) {
+        static_cast<void>(MakeNoiseDeclaration(declaration));RequireMapActor(source);
+        if (arguments.size()!=1u) throw std::runtime_error("MakeNoise requires its original Loudness input");
+        const auto value=arguments[0u].Load();
+        if (value.kind!=Kind::Float) throw std::runtime_error("MakeNoise requires its initialized Float destination");
+        auto* info=NativeLevelInfo(source);
+        if (NoiseField(info,"Engine.LevelInfo.NetMode",Kind::Byte,0u,"Engine.LevelInfo.ENetMode").integer==3) return {};
+        auto* instigator=NoiseObjectField(source,"Engine.Actor.Instigator",0x20u,"Engine.Pawn");
+        if (!instigator) return {}; // Before native clock/cache reads, exactly as retail.
+        auto* level=source->nativeXLevel;
+        if (!level || !level->nativeTimeSeconds)
+            throw std::runtime_error("MakeNoise has no actual loader-owned native level Double clock");
+        const double now=*level->nativeTimeSeconds;
+        const auto location=NoiseLocation(source);
+        const auto cacheKey=[](const std::size_t i,const char* suffix) {
+            return std::string("Engine.Pawn.noise")+(i==0u?"1":"2")+suffix;
+        };
+        const auto cache=QuestVr::DecideOriginalNoiseCachesLazy(now,value.floating,location,
+            [&](const std::size_t i) {return NoiseField(instigator,cacheKey(i,"time").c_str(),Kind::Float,2u).floating;},
+            [&](const std::size_t i) {
+                const auto spot=NoiseField(instigator,cacheKey(i,"spot").c_str(),Kind::Vector,2u,"Core.Object.Vector");
+                return PortableModelVec3{spot.vector[0u],spot.vector[1u],spot.vector[2u]};
+            },
+            [&](const std::size_t i) {return NoiseField(instigator,cacheKey(i,"loudness").c_str(),Kind::Float,2u).floating;});
+        if (cache.suppressed) return {};
+        if (cache.replacement) {
+            const auto prefix=std::string("Engine.Pawn.noise")+(*cache.replacement==0u?"1":"2");
+            const auto write=[&](const char* suffix,const Kind kind,const Value& next,const char* constraint="") {
+                const auto key=prefix+suffix;
+                execution.WriteReference(ReferenceFor(instigator,NoiseProperty(instigator,key.c_str(),kind,2u,constraint),0u,false),next);
+            };
+            write("time",Kind::Float,Value::Float(QuestVr::ActorTimerDetail::Store32(QuestVr::ScriptRandom::VectorDetail::DecodeDouble(now))));
+            write("spot",Kind::Vector,Value::Vector({location.x,location.y,location.z}),"Core.Object.Vector");
+            write("loudness",Kind::Float,value);
+        }
+        bool playerAware=NoisePlayer(instigator);
+        if (!playerAware) {
+            if (auto* enemy=NoiseObjectField(instigator,"Engine.Pawn.Enemy",0u,"Engine.Pawn")) playerAware=NoisePlayer(enemy);
+        }
+        // Native Actors[0], never source.Level. Read nextPawn only AFTER the
+        // synchronous event: callbacks may splice links and change the source.
+        for (auto* pawn=NoiseObjectField(info,"Engine.LevelInfo.PawnList",2u,"Engine.Pawn");pawn;
+            pawn=NoiseObjectField(pawn,"Engine.Pawn.nextPawn",2u,"Engine.Pawn")) {
+            LifecycleStep();RequireMapActor(pawn);
+            if (playerAware && IsDerivedFromPath(pawn->cls,"Engine.PlayerPawn")) continue;
+            if (pawn==NoiseObjectField(source,"Engine.Actor.Instigator",0x20u,"Engine.Pawn")) continue;
+            const auto context=CurrentDispatchContext(pawn,true);
+            if (!QuestVr::ScriptDispatch::IsEnabled("HearNoise",context.classProbeMask,context.codeMasks,
+                context.disabledNames,context.liveProbeMask)) continue;
+            if (!playerAware && !IsDerivedFromPath(pawn->cls,source->cls->reflection.objectPath) &&
+                !IsDerivedFromPath(source->cls,pawn->cls->reflection.objectPath)) continue;
+            if (!CanHearNoiseNative(pawn,instigator,NoiseLocation(source),value.floating,execution)) continue;
+            HearNoiseDeclaration();
+            static_cast<void>(execution.CallEvent(pawn->reflection.objectPath,"HearNoise",true,
+                {{value,{}},{Value::Text(Kind::Object,source->reflection.objectPath),{}}}));
+        }
+        return {};
+    }
     std::shared_ptr<const Function> PlaySoundDeclaration(const Function* supplied) {
         const auto authored=FunctionFor(Object("Engine.Actor.PlaySound"));
         const std::array<const char*,7u> names{"Sound","Slot","Volume","bNoOverride","Radius","Pitch","ReturnValue"};
@@ -3438,6 +3611,11 @@ public:
     }
     std::optional<Value> NativeArgumentSeed(const std::uint16_t index,const std::string& receiver,
         const std::size_t slot,const Function* declaration) override {
+        if (index==512u) {
+            static_cast<void>(MakeNoiseDeclaration(declaration));RequireMapActor(Object(receiver));
+            if (slot!=0u) throw std::runtime_error("MakeNoise has only one required input slot");
+            return Value::Float(0.0f);
+        }
         if (index==1013u) {
             static_cast<void>(MeshTextureDeclaration(declaration));RequireMeshTextureReceiver(Object(receiver));
             if (slot!=0u) throw std::runtime_error("GetMeshTexture has only one optional input slot");
@@ -3525,6 +3703,11 @@ public:
     }
     bool MaterializeNativeArgumentOmission(const std::uint16_t index,const std::string& receiver,
         const std::size_t slot,const Function* declaration) override {
+        if (index==512u) {
+            static_cast<void>(MakeNoiseDeclaration(declaration));RequireMapActor(Object(receiver));
+            if (slot!=0u) throw std::runtime_error("MakeNoise omission exceeds its input schema");
+            return true;
+        }
         if (index==548u) {
             RequireMapActor(Object(receiver));
             static_cast<void>(FastTraceDeclaration(declaration));
@@ -7084,7 +7267,8 @@ private:
                 // them must not reconstruct/reset an unrelated live animation
                 // clock merely because the reflected-property path is shared.
                 const auto key=LowerAscii(property.key);
-                if (key!="engine.actor.timerrate" && key!="engine.actor.timercounter" && key!="engine.actor.btimerloop")
+                if (key!="engine.actor.timerrate" && key!="engine.actor.timercounter" && key!="engine.actor.btimerloop" &&
+                    !NativeNoiseCacheKey(key) && key!="engine.pawn.stimulus")
                     UpdateClockProperty(target, property.name, index);
                 const auto name=LowerAscii(property.name);
                 if (index==0u && (name=="location" || name=="collisionradius" || name=="collisionheight" ||

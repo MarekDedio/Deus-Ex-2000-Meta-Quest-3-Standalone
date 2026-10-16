@@ -1,10 +1,11 @@
 # Original MakeNoise512 and Pawn.CanHear
 
-Read-only retail audit, 2026-10-16. Native512 is **still unimplemented**.
+Retail audit and portable native implementation, 2026-10-16. Native512 and
+the original Pawn.CanHear path are now implemented in the production VM.
 The separate native ULevel clock phase and continuation are described in
 ORIGINAL-LEVEL-CLOCK.md; final build/test evidence is recorded in STATUS.md.
 This document does not claim a complete world tick, original player possession,
-audible playback, AI hearing or playable crate destruction.
+audible playback, a started original AI world or playable VR crate destruction.
 
 ## Primary evidence and identities
 
@@ -223,3 +224,78 @@ range versus general range; stored-zero shortcut; retained quotient/cap and
 retained Stimulus threshold; directed native BSP; and complete rollback after
 a later sound/fragment/Destroy failure. Generated tests and scalar oracles must
 not be represented as an original possessed-player or on-device playthrough.
+
+## Portable implementation
+
+`native/quest_make_noise.h` implements the two cache windows, strict suppression
+and retail replacement precedence with integer PC64 operations. Its lazy
+readers preserve first-cache return and unused-field short circuits, including
+native schema reads. CanHear retains the x/y/z geometry, Float distance and q
+stores, capped perceived loudness, stored Stimulus and unspilled comparison.
+Float-store overflow and nonfinite active inputs explicitly refuse the root;
+they are never clamped or silently treated as no hearing.
+
+`portable_unreal_runtime.cpp` validates native512/flags401 and its required
+Float80 input, concrete declaring fields, object constraints and actual
+loader-owned native ULevel authority. The initialized zero temporary is seeded
+before expression evaluation, including explicit Nothing and null-context
+partial writes; `quest_portable_vm.cpp` detaches the consumed input. NetMode3
+returns before Instigator/time/cache access. Other numeric modes are not
+mistakenly given PlaySound's standalone-only service restriction.
+
+Native cache/Stimulus changes use budgeted Execution.WriteReference and the
+existing root rollback journal. Ordinary scripts cannot write the eight audited
+const noise-cache fields. These native fields and Stimulus do not reconstruct an
+unrelated NPC animation clock. `noise1other` and `noise2other` are untouched.
+The real native clock is only read: a MakeNoise call never advances it or guesses
+from the reflected Float mirror.
+
+Recipient routing uses native slot-zero PawnList, actual UClass ancestry and
+the live positive HearNoise probe mask. Source.Instigator and Location are
+reread at their original per-listener boundaries; branch selection and CanHear's
+instigator retain the original captured Pawn. Live nextPawn is read after
+synchronous actual HearNoise ProcessEvent. CanHear uses the listener's native
+GameInfo/team relationships and directed native Model.FastLineCheck, not
+ViewTarget, a renderer ray, deferred callback or fabricated AI event. Work
+exhaustion/cyclic lists and late script failures restore every preceding cache,
+Stimulus, callback, fragment, RNG and publication effect.
+
+Cycle-counter/RDTSC profiling remains intentionally omitted. The implementation
+does not grant a possessed VR PlayerPawn, invent a begun GameInfo, run a world
+Tick, bypass original crate startup, preserve relevance-deleted loot or simulate
+debris gravity. Those remain separate gameplay integration obligations.
+
+## Terminal verification (2026-10-16)
+
+- Pure scalar390575 checks/41577 intentional safety refusals pass, including
+  60,000 broad/random independent x87 samples and cap/range neighborhoods,
+  strict cache windows/equalities, lazy read order, replacement1 quirk,
+  stored-distance/quotient effects and retained Stimulus threshold.
+- Genuine generated v68 production VM integration1669 checks/17 refusals pass:
+  original declaration/typed fields, zero/Nothing/NoWrite/partial destinations,
+  caller/source binding, actual native clock versus mutable Float mirror,
+  suppression/replacement/no-write routing, live nextPawn/Location/Instigator
+  changes, class/player/probe gates, captured-instigator team authority, general
+  and team hearing, BSP/coincident branches, zero/negative L, non-client modes,
+  cyclic work refusal, late callback999/write/instruction rollback and exact
+  warm/cold cache/Stimulus/callback/clock checkpoint replacement.
+- Actual Training626 checks/4 refusal controls pass for both original crates.
+  Fatal hits with None and a real nonnull Jaime Pawn input complete original
+  Active.TakeDamage/Frag/Destroy and create six real WoodFragments apiece.
+  Pawn-instigated cases prove native cache1 writes, unchanged noise*other and
+  original NPC animation clock, exact warm replacement, and last-return budget
+  rollback/GC. Original files and timestamps are unchanged. The fixture's
+  bBegunPlay=false legitimately suppresses Destroyed/Contents; it is not a
+  possessed VR player, started AI world, usable loot or live headset evidence.
+- Coherent full host build and strict ARM64 syntax succeed. CTest106 passed /
+  121 registered /15 explicit owned-data skips /zero failures in61.95s.
+  Separate begun-contents347/2, original NPC280519/26 and38-package startup
+  rollback checks pass. Startup still reaches unsupported native Move266 at
+  Engine.Mover.BeginPlay:166, Training slot126; all effects roll back exactly.
+
+Ignored local logs: `artifacts/crate-noise-*-20261016.log`. Initial build
+diagnostics (an ambiguous helper name and Windows near macro) were repaired;
+the original crate test's obsolete expected512-refusal assertion correctly
+failed when that native began succeeding and was replaced with success/cache/
+fragment/rollback controls. Final results above supersede those initial runs.
+No new APK was produced; the accepted installed NPC build remains unchanged.

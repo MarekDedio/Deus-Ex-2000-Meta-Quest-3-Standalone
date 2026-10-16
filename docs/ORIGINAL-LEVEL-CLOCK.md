@@ -99,7 +99,8 @@ probe also runs the phase with original field schemas and restores its complete
 pre-clock baseline before testing both crates.
 
 Terminal verification counts and current build status are recorded in STATUS.md.
-MakeNoise512 remains separate work; its audited cache/hearing/callback contract
+At this clock-phase checkpoint MakeNoise512 remained separate work; its later
+production implementation and audited cache/hearing/callback contract
 is in ORIGINAL-MAKE-NOISE.md.
 
 Final evidence: pure phase418883 checks/85883 safety refusals; codec8385/105;

@@ -2,6 +2,19 @@
 
 ## Current follow-up (2026-10-16)
 
+Original MakeNoise512 and Pawn.CanHear now execute through actual native level
+time, caches, live PawnList/probe routing and synchronous script callbacks.
+Both Training crates' isolated fatal hits now complete with a legal nonnull
+Pawn instigator as well as None, each creating six original wood fragments.
+Owned tests626/4 prove cache writes, NPC animation preservation, exact warm
+replacement and final-return rollback/GC. See ORIGINAL-MAKE-NOISE.md.
+This is not a possessed VR player, begun GameInfo or live melee acceptance.
+Real world/player startup, surviving contents, falling/landing/Base support,
+debris lifetime and complete committed render-scene publication remain required.
+No replacement APK has been produced for this backend checkpoint.
+
+### Earlier prerequisite checkpoints (historical boundaries)
+
 The following native level-clock prerequisite now supplies actual ULevel Double
 ownership, exact retained arithmetic, journaled/budgeted mirror writes and
 codec11/envelope16 continuation, with old-save native reset. It is an explicit
@@ -54,8 +67,9 @@ Source bytes/timestamps and GC remain unchanged. These fixtures do not establish
 world startup or a real possessed player. Tests pass257 checks/two expected
 contents refusals, plus152 original damage controls.
 
-Next work includes MakeNoise/native clock/hearing, fragment lifecycle/GetMeshTexture1013, actual
-contents births and landing/Base support. AI713/715, GetPlayerPawn720 and
+The later checkpoints above implement MakeNoise, native clock/hearing,
+GetMeshTexture1013 and isolated fragment/contents births. Next work remains
+actual world/player startup, surviving contents and landing/Base support. AI713/715, GetPlayerPawn720 and
 SetPhysics3970 already have runtime adapters; storing Physics is still not
 falling simulation. Full melee destruction, loot, gravity and whole committed
 scene publication remain unfinished. No replacement APK for this backend batch.

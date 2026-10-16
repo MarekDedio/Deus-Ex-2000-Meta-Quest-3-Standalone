@@ -378,11 +378,18 @@ bool PublishedOriginal(const std::string& actor) {
 bool SameFloat(const float left,const float right) {
     return std::bit_cast<std::uint32_t>(left)==std::bit_cast<std::uint32_t>(right);
 }
+Bytes SavedActorClock(const QuestVr::ScriptSavedState& state,const std::string& path) {
+    const auto found=std::find_if(state.objects.begin(),state.objects.end(),[&](const auto& object) {return object.path==path;});
+    Require(found!=state.objects.end()&&found->clock.has_value(),"Original noise probe has no established native NPC animation clock");
+    auto record=*found;record.properties.clear();record.state.reset();record.lifecycle.reset();record.latentTimeLeft.reset();
+    QuestVr::ScriptSavedState onlyClock;onlyClock.mapName=state.mapName;onlyClock.objects.push_back(std::move(record));
+    return QuestVr::EncodeScriptSavedState(onlyClock);
+}
 bool Original(const std::filesystem::path& root) {
     std::vector<std::filesystem::path> sources;
     // Dispatch validates the complete loaded class graph. Load the original
     // class dependencies too rather than bypassing unresolved browser/UI bases.
-    for(const auto& name:{"Core","Engine","DeusEx","Extension","ConSys","IpDrv","IpServer","UBrowser","UWindow","Editor","Fire","MPCharacters","DeusExSounds","DeusExDeco","DeusExItems"})
+    for(const auto& name:{"Core","Engine","DeusEx","Extension","ConSys","IpDrv","IpServer","UBrowser","UWindow","Editor","Fire","MPCharacters","DeusExSounds","DeusExDeco","DeusExItems","DeusExCharacters"})
         sources.push_back(root/"System"/(std::string(name)+".u"));
     sources.push_back(root/"Maps"/"00_Training.dx");
     for(const auto& path:sources) if(!std::filesystem::is_regular_file(path)) { std::cout<<"SKIP original BasedActors: missing owned original package "<<path.string()<<'\n'; return false; }
@@ -462,23 +469,57 @@ bool Original(const std::filesystem::path& root) {
         Require(ReadPortableActorScriptProperty(actor,"HitPoints").integer==4 &&
             std::fabs(ReadPortableActorScriptProperty(actor,"ScaleGlow").floating-0.46f)<0.00001f,
             "Original crate damage6 did not preserve authored HitPoints/ResetScaleGlow");
-        const auto fatalBefore=checkpoints.Snapshot("FatalBefore"); const auto fatalRevision=GetPortableRuntimeWorldRevision();
         // A real nonnull Pawn argument follows a different earlier branch.
         // This NPC is only a legal isolated test input, never a stand-in for
         // a possessed VR player or permission to skip original world startup.
         const std::string instigator="00_Training.JaimeReyes0";
         const auto isPawn=ExecutePortableActorFunction(instigator,"IsA",{{Value::Text(Kind::Name,"Pawn"),{}}});
         Require(isPawn.passed()&&QuestVr::Vm::ToBool(isPawn.value),"Original nonnull damage fixture is not an actual Pawn");
+        const auto waiting=PreviewPortableActorWaitingPresentation(instigator);
+        Require(waiting.available,"Cannot inspect original Jaime waiting command: "+waiting.error);
+        const auto animated=ExecutePortableActorFunction(instigator,"LoopAnim",{{Value::Text(Kind::Name,waiting.animation.sequence),{}}});
+        Require(animated.passed(),"Cannot establish original NPC animation for noise-cache preservation: "+animated.error);
+        const auto fatalBefore=checkpoints.Snapshot("FatalBefore");const auto fatalRevision=GetPortableRuntimeWorldRevision();
+        const auto instigatorClock=SavedActorClock(DecodeCrateCheckpoint(fatalBefore),instigator);
+        const auto firstOther=ReadPortableActorDeclaredScriptProperty(instigator,"Engine.Pawn.noise1other");
+        const auto secondOther=ReadPortableActorDeclaredScriptProperty(instigator,"Engine.Pawn.noise2other");
         auto instigatedHit=hit;instigatedHit[1u]={Value::Text(Kind::Object,instigator),{}};
         const auto instigated=ExecutePortableActorFunction(actor,"TakeDamage",instigatedHit);
-        Require(!instigated.passed()&&!instigated.committed&&
-            instigated.error.find("Unsupported runtime native 512")!=std::string::npos&&
-            instigated.function=="DeusEx.DeusExDecoration.Active.TakeDamage"&&instigated.offset==428u,
-            "Nonnull instigated fatal damage bypassed its earlier MakeNoise prerequisite: "+instigated.error+
+        Require(instigated.passed()&&instigated.committed&&
+            instigated.function=="DeusEx.DeusExDecoration.Active.TakeDamage",
+            "Original nonnull Pawn-instigated fatal damage failed: "+instigated.error+
                 " at "+instigated.function+':'+std::to_string(instigated.offset));
-        Require(checkpoints.Snapshot("InstigatedFatalAfter")==fatalBefore&&GetPortableRuntimeWorldRevision()==fatalRevision,
-            "MakeNoise refusal leaked crate HP/Instigator or other complete-checkpoint effects");
+        const auto instigatedAfter=checkpoints.Snapshot("InstigatedFatalAfter");
+        const auto instigatedState=DecodeCrateCheckpoint(instigatedAfter);
+        Require(instigatedState.births.size()==6u&&!PublishedOriginal(actor)&&
+            ReadPortableActorScriptProperty(actor,"HitPoints").integer==-2&&GetPortableRuntimeWorldRevision()==fatalRevision+1u,
+            "Original Pawn-instigated fatal hit failed to atomically remove crate and publish its six fragments");
+        Require(SameFloat(ReadPortableActorDeclaredScriptProperty(instigator,"Engine.Pawn.noise1time").floating,0.0f)&&
+            SameFloat(ReadPortableActorDeclaredScriptProperty(instigator,"Engine.Pawn.noise1loudness").floating,1.0f)&&
+            ReadPortableActorDeclaredScriptProperty(instigator,"Engine.Pawn.noise1spot").vector==hit[2u].value.vector&&
+            ReadPortableActorDeclaredScriptProperty(instigator,"Engine.Pawn.noise1other").text==firstOther.text&&
+            ReadPortableActorDeclaredScriptProperty(instigator,"Engine.Pawn.noise2other").text==secondOther.text&&
+            SavedActorClock(instigatedState,instigator)==instigatorClock,
+            "Original MakeNoise failed cache1 authority or changed cache-other fields/NPC animation clock");
+        Require(LoadPortableRuntimeState((checkpoints.directory/"InstigatedFatalAfter.sav").string())&&
+            checkpoints.Snapshot("InstigatedWarmRestored")==instigatedAfter,
+            "Original Pawn-instigated fragment/noise continuation failed warm replacement");
+        Require(LoadPortableRuntimeState((checkpoints.directory/"FatalBefore.sav").string())&&
+            checkpoints.Snapshot("InstigatedBaselineRestored")==fatalBefore,
+            "Original Pawn-instigated fatal probe failed exact baseline replacement");
+        Require(instigated.instructions>1u,"Original Pawn-instigated damage consumed no measurable instruction budget");
+        QuestVr::Vm::Limits instigatedBudget;instigatedBudget.instructions=instigated.instructions-1u;
+        GC::Collect();
+        const auto instigatedGc=GC::GetStats();const auto restoredRevision=GetPortableRuntimeWorldRevision();
+        const auto instigatedRollback=ExecutePortableActorFunction(actor,"TakeDamage",instigatedHit,instigatedBudget);
+        Require(!instigatedRollback.passed()&&!instigatedRollback.committed&&instigatedRollback.status==QuestVr::Vm::Status::Budget&&
+            checkpoints.Snapshot("InstigatedFatalRollback")==fatalBefore&&GetPortableRuntimeWorldRevision()==restoredRevision,
+            "Late original Pawn-instigated fatal refusal retained noise/cache/fragment/deletion/RNG effects");
+        GC::Collect();Require(GC::GetStats().numObjects==instigatedGc.numObjects&&GC::GetStats().memoryUsage==instigatedGc.memoryUsage,
+            "Late original Pawn-instigated fatal rollback retained provisional fragment UObjects");
         ++refusals;
+        // Restoring a checkpoint deliberately advances the world revision.
+        const auto noneFatalRevision=GetPortableRuntimeWorldRevision();
         const auto level=ReadPortableActorScriptProperty(actor,"Level").text;
         Require(!level.empty()&&!QuestVr::Vm::ToBool(ReadPortableActorScriptProperty(level,"bBegunPlay")),
             "Isolated fatal-damage fixture unexpectedly claims a begun original world");
@@ -515,7 +556,7 @@ bool Original(const std::filesystem::path& root) {
         Require(fatal.passed()&&fatal.committed&&fatal.function=="DeusEx.DeusExDecoration.Active.TakeDamage",
             "Original dormant-world fatal decoration script failed: "+fatal.error+
                 " at "+fatal.function+':'+std::to_string(fatal.offset));
-        Require(GetPortableRuntimeWorldRevision()==fatalRevision+1u&&!PublishedOriginal(actor)&&
+        Require(GetPortableRuntimeWorldRevision()==noneFatalRevision+1u&&!PublishedOriginal(actor)&&
             QuestVr::Vm::ToBool(ReadPortableActorScriptProperty(actor,"bDeleteMe"))&&
             ReadPortableActorScriptProperty(actor,"HitPoints").integer==-2&&
             ReadPortableActorScriptProperty(actor,"Instigator").text.empty()&&
@@ -590,13 +631,12 @@ bool Original(const std::filesystem::path& root) {
         Require(LoadPortableRuntimeState(baseline.string()),"Could not restore isolated original crate probe");
         std::cout<<"PREREQUISITE "<<actor<<": actual Active.TakeDamage6 survives with HP4/ScaleGlow0.46; fatal None-instigator hit commits original Frag/nativeDestroy with "
             <<expectedCount<<" real WoodFragment births/selectedSkins/velocities/RNG and exact save replacement; late budget rolls back. Dormant-world isolated probe: no Destroyed/Contents callback or live VR damage claim.\n";
-        std::cout<<"PREREQUISITE "<<actor<<": legal nonnull Pawn-instigated fatal hit rolls back earlier at "
-            <<instigated.function<<':'<<instigated.offset<<" native512, complete checkpoint unchanged. Not a possessed player.\n";
+        std::cout<<"PREREQUISITE "<<actor<<": legal nonnull Pawn-instigated fatal hit now completes original MakeNoise/cache/Frag/Destroy with six fragments; NPC animation and unrelated cache fields preserved, exact warm replacement and late root rollback/GC pass. Not a possessed player.\n";
     }
     ShutdownPortableRuntime();for(const auto& [path,b]:before)
         Require(ReadBytes(path)==b&&std::filesystem::last_write_time(path)==modifiedBefore.at(path),
             "Original inspection changed source bytes or timestamp");
-    std::cout<<"PASS original BasedActors306 declaration, both crate DropThings scans, isolated surviving/fatal-fragment success and true Pawn-instigator refusal; no DLL/EXE execution, live VR damage, contents loot, physics, equipment or campaign startup claim\n"; return true;
+    std::cout<<"PASS original BasedActors306 declaration, both crate DropThings scans, isolated surviving/fatal-fragment success with None and true Pawn instigators; no DLL/EXE execution, live VR damage, contents loot, physics, equipment or campaign startup claim\n"; return true;
 }
 } // namespace
 int main(int argc,char** argv) {

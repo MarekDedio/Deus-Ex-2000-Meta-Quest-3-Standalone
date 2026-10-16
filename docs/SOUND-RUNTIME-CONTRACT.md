@@ -6,16 +6,21 @@ The subsequent VRand252 and GetMeshTexture1013 checkpoints now complete both
 crates' isolated dormant-world fatal None-instigator scripts, with six actual
 WoodFragments each and full save/rollback. Separate begun destruction executes
 the genuine contents lifecycle (Lockpick birth then Game=None relevance
-deletion). True Pawn-instigated damage still stops at MakeNoise512:428.
+deletion). The following MakeNoise512 checkpoint now also completes both
+crates' isolated fatal hits with a true Pawn instigator, six original fragments,
+exact cache writes, NPC animation preservation and late rollback/GC. It does
+not establish a possessed VR player, begun world, surviving loot or gravity.
 See ORIGINAL-MESH-TEXTURES.md and ORIGINAL-RANDOM-VECTORS.md; the observations
 below identify their own earlier sound-routing checkpoint.
 
 The following native-clock checkpoint supplies actual ULevel Double ownership,
 exact original arithmetic, budgeted journaled Float mirroring and codec11 /
 envelope16 continuation. It is an explicit CPU phase, not a complete Tick or
-noise implementation. See ORIGINAL-LEVEL-CLOCK.md. The complete newer retail
+noise implementation on its own. See ORIGINAL-LEVEL-CLOCK.md. The complete newer retail
 MakeNoise/CanHear audit in ORIGINAL-MAKE-NOISE.md supersedes the compressed
 follow-on summary below, including exact x/y/z geometry and retained Stimulus.
+That newer document now records the production native implementation too;
+the earlier boundaries in the following dated sections are historical.
 
 ## Why sound is part of crate damage
 
@@ -233,8 +238,10 @@ HearingThreshold/BSP refusal; same-team routing skips that Stimulus write.
 Actual Model.FastLineCheck is required. All caches, Stimulus and synchronous
 callback effects must join the enclosing crate rollback, including a later
 sound/fragment/Destroy failure. Native Double clock ownership, explicit audited
-phase and saving now exist separately; the full world Tick coordinator and
-this noise handler remain unimplemented. No arbitrary NPC or reflected clock
+phase and saving now exist separately. At this audit-only checkpoint the full
+world Tick coordinator and noise handler were unimplemented; the later native
+noise implementation is recorded in ORIGINAL-MAKE-NOISE.md, while a complete
+world Tick still remains. No arbitrary NPC or reflected clock
 is substituted for a real player/native level.
 
 ## Verified checkpoint
