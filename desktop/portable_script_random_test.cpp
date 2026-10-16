@@ -2,6 +2,7 @@
 #include "GC/GC.h"
 #include "portable_unreal_runtime.h"
 #include "quest_script_random.h"
+#include "quest_script_random_vector.h"
 #include "quest_script_state.h"
 
 #include <algorithm>
@@ -168,21 +169,31 @@ struct Package {
             U32(body,0);body.resize(body.size()+16u,0u);for(unsigned i=0;i<4u;++i) Index(body,0);Index(body,0);return body;
         };
     }
-    std::int32_t Property(const std::string& name,const std::string& type,std::int32_t owner,std::int32_t core,std::uint32_t flags=0u) {
+    void StructBody(std::int32_t reference) {
+        builders.at(static_cast<std::size_t>(reference-1))=[this,reference](std::int32_t next,std::int32_t child) {
+            Bytes body{0u};Index(body,0);Index(body,next);Index(body,0);Index(body,child);
+            Index(body,exports.at(static_cast<std::size_t>(reference-1)).ObjName);
+            U32(body,0);U32(body,0);U32(body,0);return body;
+        };
+    }
+    std::int32_t Property(const std::string& name,const std::string& type,std::int32_t owner,std::int32_t core,
+        std::uint32_t flags=0u,std::int32_t target=0) {
         const auto reference=Export(name,Import(type,core),0,owner,true);
-        builders.at(static_cast<std::size_t>(reference-1))=[type,flags](std::int32_t next,std::int32_t) {
+        builders.at(static_cast<std::size_t>(reference-1))=[type,flags,target](std::int32_t next,std::int32_t) {
             Bytes body{0u};Index(body,0);Index(body,next);U32(body,1u);U32(body,flags);Index(body,0);
-            if(type=="ByteProperty" || type=="ObjectProperty") Index(body,0);
+            if(type=="ByteProperty" || type=="ObjectProperty" || type=="StructProperty") Index(body,target);
             return body;
         };return reference;
     }
-    std::int32_t Function(const std::string& name,std::int32_t owner,std::int32_t core,Code code={},std::uint16_t native=0u) {
-        const auto reference=Export(name,Import("Function",core),0,owner,true);FunctionCode(reference,std::move(code),native);return reference;
+    std::int32_t Function(const std::string& name,std::int32_t owner,std::int32_t core,Code code={},
+        std::uint16_t native=0u,std::uint32_t flags=0u) {
+        const auto reference=Export(name,Import("Function",core),0,owner,true);FunctionCode(reference,std::move(code),native,flags);return reference;
     }
-    void FunctionCode(std::int32_t reference,Code code,std::uint16_t native=0u) {
-        builders.at(static_cast<std::size_t>(reference-1))=[this,reference,native,code=std::move(code)](std::int32_t next,std::int32_t child) {
+    void FunctionCode(std::int32_t reference,Code code,std::uint16_t native=0u,std::uint32_t flags=0u) {
+        builders.at(static_cast<std::size_t>(reference-1))=[this,reference,native,flags,code=std::move(code)](std::int32_t next,std::int32_t child) {
             Bytes body{0u};Index(body,0);Index(body,next);Index(body,0);Index(body,child);Index(body,exports.at(static_cast<std::size_t>(reference-1)).ObjName);
-            U32(body,0);U32(body,0);U32(body,static_cast<std::uint32_t>(code.logical));Append(body,code.raw);U16(body,native);body.push_back(0u);U32(body,native ? 0x402u : 2u);return body;
+            U32(body,0);U32(body,0);U32(body,static_cast<std::uint32_t>(code.logical));Append(body,code.raw);U16(body,native);body.push_back(0u);
+            U32(body,flags ? flags : native ? 0x402u : 2u);return body;
         };
     }
     void ActorBody(std::int32_t reference) {
@@ -265,8 +276,16 @@ Bytes Envelope(const Bytes& prefixSource,const QuestVr::ScriptSavedState& state,
     return EnvelopeBlob(prefixSource,QuestVr::EncodeScriptSavedState(state),version);
 }
 struct Tables {PortablePackageTables core,engine,classes,map,otherMap;};
-Tables Build(Fixture& fixture) {
+Tables Build(Fixture& fixture,const unsigned vectorVariant=0u) {
     Package core;core.stem="Core";const auto corePackage=core.ImportPackage("Core"),object=core.Export("Object");
+    const auto vector=core.Export("Vector",core.Import("Struct",corePackage),0,object,true);
+    core.Property("X","FloatProperty",vector,corePackage);core.Property("Y","FloatProperty",vector,corePackage);
+    core.Property("Z",vectorVariant==3u ? "IntProperty" : "FloatProperty",vector,corePackage);
+    if(vectorVariant==4u) core.Property("Unexpected","FloatProperty",vector,corePackage);
+    core.StructBody(vector);
+    const auto vrand=core.Function("VRand",object,corePackage,{},252u,vectorVariant==1u ? 0x402u : 0x2401u);
+    core.Property("ReturnValue","StructProperty",vrand,corePackage,vectorVariant==2u ? 0x480u : 0x580u,vector);
+    if(vectorVariant==5u) core.Property("Unexpected","BoolProperty",vrand,corePackage,0x90u);
     const auto rand=core.Function("Rand",object,corePackage,{},167u);
     core.Property("Max","IntProperty",rand,corePackage,0x80u);core.Property("ReturnValue","IntProperty",rand,corePackage,0x480u);
     const auto frand=core.Function("FRand",object,corePackage,{},195u);core.Property("ReturnValue","FloatProperty",frand,corePackage,0x480u);
@@ -278,6 +297,46 @@ Tables Build(Fixture& fixture) {
     const auto count=classes.Property("Count","IntProperty",probe,classesCore);classes.ClassBody(probe);
     const auto drawFloat=classes.Function("DrawFloat",probe,classesCore,Return(Native(195u)));
     const auto classesObject=classes.Import("Object",classesCore),importedFRand=classes.Import("FRand",classesObject,"Function");
+    const auto classesVector=classes.Import("Vector",classesObject,"Struct"),importedVRand=classes.Import("VRand",classesObject,"Function");
+    const auto point=classes.Property("Point","StructProperty",probe,classesCore,0u,classesVector);
+    const auto vectorX=classes.Import("X",classesVector,"FloatProperty");
+    const auto vectorFunction=[&](const std::string& name,Code code) {
+        const auto function=classes.Function(name,probe,classesCore,std::move(code));
+        classes.Property("ReturnValue","StructProperty",function,classesCore,0x580u,classesVector);return function;
+    };
+    const auto drawVector=vectorFunction("DrawVector",Return(Native(252u)));
+    vectorFunction("DrawVectorDeclaration",Return(Call(importedVRand)));
+    vectorFunction("DrawVectorVirtual",Return(Join({Ref(0x1bu,classes.Name("VRand")),Token(0x16u)})));
+    vectorFunction("DrawVectorGlobal",Return(Join({Ref(0x38u,classes.Name("VRand")),Token(0x16u)})));
+    vectorFunction("DrawVectorNested",Return(Call(drawVector)));
+    vectorFunction("MixedVector",Join({Native(167u,{Int(71)}),Native(195u),Return(Native(252u))}));
+    for(const auto& [name,expression]:std::vector<std::pair<std::string,Code>>{
+        {"DrawOtherVectorRaw",Native(252u)},{"DrawOtherVectorDeclaration",Call(importedVRand)},
+        {"DrawOtherVectorNested",Call(drawVector)}}) {
+        const auto function=classes.Function(name,probe,classesCore),target=classes.Property("Target","ObjectProperty",function,classesCore,0x80u);
+        classes.Property("ReturnValue","StructProperty",function,classesCore,0x580u,classesVector);
+        classes.FunctionCode(function,Return(Context(Ref(0x00u,target),expression)));
+    }
+    classes.Function("VRandExcess",probe,classesCore,Return(Native(252u,{Int(99)})));
+    classes.Function("VectorThenFail",probe,classesCore,Join({Native(252u),Native(4095u),Return()}));
+    classes.Function("VectorThenWrite",probe,classesCore,Join({Native(252u),Assign(Ref(0x01u,count),Int(97)),Return()}));
+    classes.Function("VectorWritesThenFail",probe,classesCore,Join({Assign(Ref(0x01u,point),Native(252u)),
+        Assign(Join({Ref(0x36u,vectorX),Ref(0x01u,point)}),Float(123.0f)),
+        Assign(Ref(0x01u,count),Int(98)),Native(4095u),Return()}));
+    const auto vectorOutLeaf=classes.Function("VectorOutLeaf",probe,classesCore);
+    const auto vectorOut=classes.Property("Output","StructProperty",vectorOutLeaf,classesCore,0x180u,classesVector);
+    classes.FunctionCode(vectorOutLeaf,Join({Assign(Ref(0x00u,vectorOut),Native(252u)),
+        Assign(Join({Ref(0x36u,vectorX),Ref(0x00u,vectorOut)}),Float(124.0f)),Return()}));
+    classes.Function("VectorOutThenFail",probe,classesCore,Join({Call(vectorOutLeaf,{Ref(0x01u,point)}),
+        Assign(Ref(0x01u,count),Int(96)),Native(4095u),Return()}));
+    const auto budgetLoop=classes.Function("VectorBudgetLoop",probe,classesCore);
+    const auto iterations=classes.Property("Iterations","IntProperty",budgetLoop,classesCore);
+    auto loop=Assign(Ref(0x00u,iterations),Int(0));const auto loopOffset=loop.logical;
+    loop=Join({loop,Native(252u),Native(165u,{Ref(0x00u,iterations)})});
+    auto condition=Native(150u,{Ref(0x00u,iterations),Int(250000)});
+    auto test=Token(0x07u);U16(test.raw,static_cast<std::uint16_t>(loop.logical+3u+condition.logical+3u));test.logical+=2u;
+    auto back=Token(0x06u);U16(back.raw,static_cast<std::uint16_t>(loopOffset));back.logical+=2u;
+    classes.FunctionCode(budgetLoop,Join({loop,test,condition,back,Return()}));
     for(const auto& [name,expression]:std::vector<std::pair<std::string,Code>>{
         {"DrawOtherRaw",Native(195u)},{"DrawOtherDeclaration",Call(importedFRand)},{"DrawOtherNested",Call(drawFloat)}}) {
         const auto function=classes.Function(name,probe,classesCore),target=classes.Property("Target","ObjectProperty",function,classesCore,0x80u);
@@ -489,11 +548,94 @@ void RuntimeContracts() {
     fixture.UnchangedSources();
     std::cout<<"Generated production RNG transactions, mixed receivers, codec7/envelope10, cold restore and map-lifetime contracts passed.\n";
 }
+void VectorRuntimeContracts() {
+    Fixture fixture;const auto tables=Build(fixture);
+    const auto initialize=[&]() {
+        Require(InitializePortableRuntime({tables.core,tables.engine,tables.classes}).passed &&
+            LoadPortableRuntimeMap(tables.map).passed,"Generated VRand runtime/map failed loading");
+    };
+    const auto same=[&](const Value& actual,const std::array<float,3u>& expected) {
+        Require(actual.kind==Kind::Vector,"VRand native did not return its canonical Vector");
+        for(std::size_t axis=0u;axis<3u;++axis)
+            Require(std::bit_cast<std::uint32_t>(actual.vector[axis])==std::bit_cast<std::uint32_t>(expected[axis]),
+                "Production VRand differs from independently verified pure native arithmetic");
+    };
+    initialize();const auto baseline=fixture.Snapshot("VectorLegacy");
+    Require(!GetPortableRuntimeScriptStatePresent(),"VRand metadata loading consumed random draws");
+    const auto revision=GetPortableRuntimeWorldRevision();
+    RefusedCall(fixture,"VRandExcess");
+    Require(!GetPortableRuntimeScriptStatePresent(),"Rejected VRand inputs created the global stream");
+    auto oracle=Random::InitialSeed;
+    for(unsigned iteration=0u;iteration<70u;++iteration) {
+        const auto receiver=Actor(iteration&1u?"Probe1":"Probe0");
+        const auto name=std::array<const char*,7u>{"VRand","DrawVector","DrawVectorDeclaration",
+            "DrawVectorVirtual","DrawVectorGlobal","DrawVectorNested","MixedVector"}[iteration%7u];
+        if(iteration%7u==6u) {static_cast<void>(Random::Rand(oracle,71));static_cast<void>(Random::FRand(oracle));}
+        const auto expected=Random::VRand(oracle);
+        same(Call(receiver,name).value,expected.vector);
+        Require(DrawInt(receiver,12345)==OracleRand(oracle,12345),"Rand after native VRand consumed a different stream");
+        Require(Decode(fixture.Snapshot("VectorStream")).randomSeed==oracle &&
+            !GetPortableRuntimeUnsavedScriptState() && GetPortableRuntimeWorldRevision()==revision,
+            "VRand-only commit changed actor state/revision or lost exact consumed seed");
+    }
+    for(const auto* name:{"DrawOtherVectorRaw","DrawOtherVectorDeclaration","DrawOtherVectorNested"}) {
+        const auto expected=Random::VRand(oracle);
+        same(Call(Actor(),name,{{Value::Text(Kind::Object,Actor("Probe1")),{}}}).value,expected.vector);
+        Require(Decode(fixture.Snapshot("VectorContext")).randomSeed==oracle && GetPortableRuntimeWorldRevision()==revision,
+            "Context receiver split VRand into a private stream or changed the world revision");
+    }
+    const auto saved=fixture.Snapshot("VectorContinuation");const auto savedSeed=oracle;
+    const auto next=Random::VRand(oracle);const auto following=OracleFRand(oracle);
+    const auto continuation=[&]() {
+        same(Call(Actor("Probe1"),"DrawVectorNested").value,next.vector);
+        Require(std::bit_cast<std::uint32_t>(DrawFloat(Actor()))==std::bit_cast<std::uint32_t>(following),
+            "VRand save/load failed to retain the following mixed Float draw");
+    };
+    continuation();
+    Require(LoadPortableRuntimeState((fixture.directory/"VectorContinuation.sav").string()),"Warm VRand restore failed");continuation();
+    ShutdownPortableRuntime();initialize();
+    Require(LoadPortableRuntimeState((fixture.directory/"VectorContinuation.sav").string()) &&
+        fixture.Snapshot("VectorColdRestored")==saved,"Cold VRand save/seed restore was not exact");continuation();
+    Require(LoadPortableRuntimeState((fixture.directory/"VectorContinuation.sav").string()),"VRand refusal reset failed");
+    for(const auto* name:{"VectorThenFail","VectorWritesThenFail","VectorOutThenFail","VRandExcess"})
+        RefusedCall(fixture,name);
+    QuestVr::Vm::Limits noWrites;noWrites.writes=0u;RefusedCall(fixture,"VectorThenWrite",noWrites);
+    QuestVr::Vm::Limits work;work.instructions=5'000'000u;work.writes=500'000u;
+    const auto bounded=ExecutePortableActorFunction(Actor(),"VectorBudgetLoop",{},work);
+    Require(!bounded.passed() && !bounded.committed && bounded.error.find("VRand")!=std::string::npos &&
+        bounded.error.find("budget")!=std::string::npos && bounded.instructions>100'000u,
+        "Repeated VRand did not reach its shared native work limit: "+bounded.error);
+    ++refusals;
+    Require(fixture.Snapshot("VectorAfterRefusals")==saved &&
+        ReadPortableActorScriptProperty(Actor(),"Point").vector==std::array<float,3u>{} &&
+        ReadPortableActorScriptProperty(Actor(),"Count").integer==0,
+        "VRand later failure retained whole/partial Vector, OUT, scalar writes or RNG continuation");
+    oracle=savedSeed;const auto retried=Random::VRand(oracle);same(Call(Actor(),"DrawVector").value,retried.vector);
+    Require(Decode(fixture.Snapshot("VectorRetry")).randomSeed==oracle,"Failed VRand transaction consumed hidden draws");
+    Require(LoadPortableRuntimeMap(tables.otherMap).passed,"Global-only VRand state blocked map replacement");
+    const auto across=Random::VRand(oracle);same(Call(Actor("Probe0","OtherRandomFixture"),"DrawVector").value,across.vector);
+    Require(Decode(fixture.Snapshot("VectorOtherMap")).randomSeed==oracle,"Map replacement reset shared VRand stream");
+    Require(LoadPortableRuntimeMap(tables.map).passed &&
+        LoadPortableRuntimeState((fixture.directory/"VectorLegacy.sav").string()),"VRand legacy reset failed");
+    Require(fixture.Snapshot("VectorLegacyRestored")==baseline && !GetPortableRuntimeScriptStatePresent(),
+        "Legacy restore retained VRand stream presence");
+    fixture.UnchangedSources();
+    ShutdownPortableRuntime();
+    for(unsigned variant=1u;variant<=5u;++variant) {
+        Fixture malformed;const auto bad=Build(malformed,variant);
+        Require(InitializePortableRuntime({bad.core,bad.engine,bad.classes}).passed && LoadPortableRuntimeMap(bad.map).passed,
+            "Malformed VRand declaration fixture failed before the actual callable boundary");
+        RefusedCall(malformed,"DrawVector");
+        Require(!GetPortableRuntimeScriptStatePresent(),"Malformed VRand metadata consumed RNG before refusal");
+        malformed.UnchangedSources();ShutdownPortableRuntime();
+    }
+    std::cout<<"Production VRand raw/reflected/virtual/global/nested calls, mixed shared stream, saved continuation and complete Vector/OUT rollback passed.\n";
+}
 }
 int main() {
     try {
         const auto gcBefore=GC::GetStats().numObjects;
-        PureContracts();RuntimeContracts();GC::Collect();Require(GC::GetStats().numObjects==gcBefore,"Generated script RNG fixture leaked rooted runtime objects");
+        PureContracts();RuntimeContracts();VectorRuntimeContracts();GC::Collect();Require(GC::GetStats().numObjects==gcBefore,"Generated script RNG fixture leaked rooted runtime objects");
         std::cout<<"Script random: "<<checks<<" checks and "<<refusals<<" rejection controls passed.\n";return 0;
     }
     catch(const std::exception& error) {std::cerr<<error.what()<<'\n';return 1;}

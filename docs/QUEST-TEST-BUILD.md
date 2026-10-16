@@ -1,11 +1,13 @@
 # Current Quest test-build handoff (2026-10-16)
 
-The subsequent crate sound-script, original BSP FastTrace and sound-routing checkpoints are
+The subsequent crate sound-script, original BSP FastTrace, sound-routing and VRand checkpoints are
 source/tests only: no replacement APK was built or installed. The NPC APK below
-remains the recorded accepted device build. Final host CTest99/114 passes with15 explicit
+remains the recorded accepted device build. Final host CTest100/115 passes with15 explicit
 original-data skips; separate actual Training traces, lamp activation, native
 Destroy279 and damage rollback probes pass too. Damage now reaches fragment
-VRand252 rather than sound264; native bound-player audio and destructible crates
+texture selection1013 rather than sound264/VRand252. Direct original destruction
+creates then relevance-deletes a real Lockpick in its isolated Game=None fixture;
+it is not surviving loot or complete startup. Native bound-player audio and destructible crates
 are not ready for headset acceptance. See
 ORIGINAL-FAST-TRACE.md, SOUND-RUNTIME-CONTRACT.md and STATUS.md for explicit limits.
 

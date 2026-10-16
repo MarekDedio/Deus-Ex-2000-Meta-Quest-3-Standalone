@@ -2,6 +2,15 @@
 
 ## Current follow-up (2026-10-16)
 
+The subsequent original VRand252 checkpoint removes the random-vector refusal
+described below. Actual fatal None-instigator damage now reaches original
+GetMeshTexture1013 at DeusExDecoration.Frag:269, retaining complete failure
+rollback. Direct genuine Destroy279 creates one real Lockpick then original
+Actor.PreBeginPlay relevance deletes it because Level.Game=None in the isolated
+begun fixture. That removed birth/RNG state round-trips; repeated Destroy does
+not duplicate it and late-budget refusal restores the whole original graph.
+This is not a working-world/surviving-loot claim. See ORIGINAL-RANDOM-VECTORS.md.
+
 Tracked original keyring/knife/crowbar assemblies and the quiet trigger are now
 accepted by the user; see HELD-ITEM-VISUALS.md. This supersedes the historical
 invisible-hand description below, not the remaining original equip/Fire work.
@@ -25,8 +34,7 @@ Source bytes/timestamps and GC remain unchanged. These fixtures do not establish
 world startup or a real possessed player. Tests pass257 checks/two expected
 contents refusals, plus152 original damage controls.
 
-Next work includes original VRand rejection/normalization and RNG rollback,
-MakeNoise/native clock/hearing, fragment lifecycle/GetMeshTexture1013, actual
+Next work includes MakeNoise/native clock/hearing, fragment lifecycle/GetMeshTexture1013, actual
 contents births and landing/Base support. AI713/715, GetPlayerPawn720 and
 SetPhysics3970 already have runtime adapters; storing Physics is still not
 falling simulation. Full melee destruction, loot, gravity and whole committed

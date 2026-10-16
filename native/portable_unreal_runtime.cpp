@@ -13,6 +13,7 @@
 #include "quest_actor_overlap.h"
 #include "quest_ai_event_state.h"
 #include "quest_script_random.h"
+#include "quest_script_random_vector.h"
 #include "quest_actor_latent.h"
 #include "quest_actor_timer.h"
 #include "quest_native_window_location.h"
@@ -1857,6 +1858,7 @@ public:
         ValidateStateBudget();
         lifecycleOperations_ = 0u;
         fastTraceValidationWork_=fastTraceQueryWork_=0u;
+        vectorRandomDraws_=0u;
         beforeExportCount_ = persistentRuntime->get()->exports.size();
         beforeWorldSlots_ = persistentWorldActors.size();
         beforeRandomSeed_ = persistentScriptRandomSeed;
@@ -2137,6 +2139,23 @@ public:
             if (!persistentScriptRandomSeed) persistentScriptRandomSeed = QuestVr::ScriptRandom::InitialSeed;
             if (index == 167u) return {Value::Integer(QuestVr::ScriptRandom::Rand(*persistentScriptRandomSeed, maximum)), {}};
             return {Value::Float(QuestVr::ScriptRandom::FRand(*persistentScriptRandomSeed)), {}};
+        }
+        if (index==252u) {
+            static_cast<void>(VRandDeclaration(declaration));
+            if (!arguments.empty()) throw std::runtime_error("VRand takes no original inputs");
+            if (!transaction_) throw std::runtime_error("Script random vector outside host transaction");
+            // A rejected candidate consumes three draws of the SAME global
+            // stream. Bound native work across nested calls, not per frame or
+            // receiver. Any exhaustion poisons the root interpreter and rolls
+            // back all RNG/actor/lifecycle effects together.
+            constexpr std::size_t maximumDraws=1'000'000u;
+            if (vectorRandomDraws_>=maximumDraws)
+                throw std::runtime_error("VRand shared native draw budget exhausted");
+            if (!persistentScriptRandomSeed) persistentScriptRandomSeed=QuestVr::ScriptRandom::InitialSeed;
+            const auto result=QuestVr::ScriptRandom::VRand(*persistentScriptRandomSeed,
+                std::min(QuestVr::ScriptRandom::DefaultVRandMaxAttempts,(maximumDraws-vectorRandomDraws_)/3u));
+            vectorRandomDraws_+=result.draws;
+            return {Value::Vector(result.vector),{}};
         }
         if (index == 256u) {
             argumentCount(1u,1u);
@@ -2850,6 +2869,28 @@ public:
             validate(*declaration);
             if(declaration->source!=authored->source)
                 throw std::runtime_error("Native window declaration source is not the owned function");
+        }
+        return authored;
+    }
+    std::shared_ptr<const Function> VRandDeclaration(const Function* supplied) {
+        const auto authored=FunctionFor(Object("Core.Object.VRand"));
+        const auto validate=[&](const Function& function) {
+            if (LowerAscii(function.path)!="core.object.vrand" || function.nativeIndex!=252u ||
+                function.flags!=0x2401u || function.variables.size()!=1u)
+                throw std::runtime_error("VRand does not match its original native declaration");
+            const auto& field=function.variables.front();auto* metadata=Object(field.key);
+            if (LowerAscii(field.key)!="core.object.vrand.returnvalue" || field.arrayDimension!=1u ||
+                field.flags!=0x580u || field.zero.kind!=Kind::Vector ||
+                field.resultLayout!=QuestVr::Vm::ResultLayout::CoreVector12 ||
+                !metadata->property || metadata->property->type!="StructProperty")
+                throw std::runtime_error("VRand result is not its original canonical Vector destination");
+        };
+        validate(*authored);
+        if (supplied) {
+            if (LowerAscii(supplied->path)!=LowerAscii(authored->path) || supplied->nativeIndex!=authored->nativeIndex ||
+                supplied->flags!=authored->flags || supplied->source!=authored->source)
+                throw std::runtime_error("VRand declaration has a foreign callable identity");
+            if (!supplied->variables.empty()) validate(*supplied);
         }
         return authored;
     }
@@ -6168,6 +6209,7 @@ private:
     std::optional<QuestVr::ActorCollisionRegistry> beforeCollision_;
     std::size_t lifecycleOperations_{};
     std::size_t fastTraceValidationWork_{},fastTraceQueryWork_{};
+    std::size_t vectorRandomDraws_{};
     std::size_t beforeExportCount_{}, beforeWorldSlots_{};
     std::size_t beforeWindowObjects_{}, beforeWindowRoots_{};
     std::optional<std::uint32_t> beforeRandomSeed_;

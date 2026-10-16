@@ -1,5 +1,36 @@
 # Port status
 
+## Original VRand / real contents lifecycle checkpoint (2026-10-16)
+
+- Added genuine Core.Object.VRand252 with original schema/canonical Vector
+  authority and the same saved MSVCRT stream as Rand/FRand. Exact retained
+  appFrand/Z rejection arithmetic, Double norm spill and integer correctly
+  rounded PC64 square root/reciprocal avoid host-width dependencies. Native
+  work is bounded per call and across nested calls; exhaustion poisons/rolls
+  back the entire transaction. No arbitrary axis/reseed/partial success.
+- Pure independent x87/native arithmetic350918 checks/16 refusals and generated
+  production RNG61608/49 pass, including mixed receiver/raw/reflected/global/
+  virtual/nested calls, warm/cold/map continuation, malformed canonical metadata,
+  partial Vector/OUT/scalar rollback and the shared one-million-draw work limit.
+- Actual Training fatal None-instigator damage now passes real sound/VRand and
+  stops at GetMeshTexture1013, DeusExDecoration.Frag:269. Both crates' complete
+  state/RNG/provisional fragment/revision rollback passes152 controls. Actual
+  legal nonnull Pawn input still stops at MakeNoise512:428; not a VR-player
+  substitution or permission to skip startup.
+- Genuine Destroy279 diagnostic347/2 passes: unchanged Contents=Lockpick now
+  creates a real Lockpick birth then original Actor.PreBeginPlay relevance
+  deletes it because the isolated begun fixture has Game=None. Both callbacks
+  complete (218/215 instructions); full deleted-birth/RNG save/load, repeated
+  Destroy/no duplication and one-instruction-late forced rollback/GC pass.
+  This is not surviving loot, fake bGameRelevant, inventory grants or a begun
+  original GameInfo/player. Original package bytes/timestamps are unchanged.
+- Strict ARM64 syntax passes runtime/vector/RNG/destruction/damage fixtures.
+  Coherent full host build and CTest100 passes/115 registered/15 explicit
+  owned-data skips/zero failures in30.88s. Separate actual NPC280519/26 retains
+  all18 accepted waiting presentations.
+  Source/tests only, no new APK or live crate/gravity acceptance. See
+  ORIGINAL-RANDOM-VECTORS.md for exact evidence and remaining dependencies.
+
 ## Original sound routing / crate callbacks (2026-10-16)
 
 - Added one engine-owned RAII UObject-index allocation domain across every

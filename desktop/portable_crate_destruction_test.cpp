@@ -227,30 +227,60 @@ bool Original(const std::filesystem::path& root) {
             "Repeated Destroy279 reran callback/effects or changed committed revision");
         LoadFixture(temporary, "BegunContents", baseline, level->objectPath, level->classPath, true, false);
         // All original content fields are retained, including Lockpick and
-        // numThings. VRand252 occurs before Spawn278 in this real callback.
-        // Fail closed at that genuine missing primitive, not at a hand-written
-        // callback shortcut or a suppressed startup branch.
+        // numThings. VRand252 now runs before Spawn278 in this real callback.
+        // Inspect the actual birth/outcome, not merely the absence of a VM error.
         GC::Collect();
-        const auto gcBefore = GC::GetStats();
         const auto before = temporary.Snapshot("ContentsBefore");
         const auto revision = GetPortableRuntimeWorldRevision();
+        const auto inventory=GetPortableRuntimeInventoryItems();
+        Require(ReadPortableActorScriptProperty(level->objectPath,"Game").text.empty(),
+            "Isolated destruction fixture unexpectedly owns a started GameInfo");
         const auto contents = ExecutePortableActorFunction(actor, "Destroy");
-        Require(!contents.passed() && !contents.committed &&
-            contents.error.find("Unsupported runtime native 252") != std::string::npos &&
-            contents.function == "DeusEx.Containers.Destroyed" && contents.offset == 681u,
-            "Actual contents branch stopped outside audited VRand252 prerequisite: " + contents.error +
+        Require(contents.passed() && contents.committed && QuestVr::Vm::ToBool(contents.value) && !Published(actor) &&
+            GetPortableRuntimeWorldRevision()==revision+1u,
+            "Actual contents destruction did not complete/commit exactly once: " + contents.error +
                 " at " + contents.function + ':' + std::to_string(contents.offset));
-        Require(temporary.Snapshot("ContentsAfter") == before && GetPortableRuntimeWorldRevision() == revision &&
-            Published(actor) && !QuestVr::Vm::ToBool(ReadPortableActorScriptProperty(actor, "bDeleteMe")),
-            "Refused native destruction leaked deletion/base/random/birth/collision/state changes");
+        const auto after=temporary.Snapshot("ContentsAfter");const auto state=Decode(after);
+        Require(state.randomSeed && state.births.size()==1u && state.births.front().classPath=="DeusEx.Lockpick",
+            "Actual original contents callback did not create one genuine Lockpick birth with shared RNG");
+        const auto birth=state.births.front().path;
+        const auto overlay=std::find_if(state.objects.begin(),state.objects.end(),[&](const auto& item) {return item.path==birth;});
+        // This is an isolated begun fixture, not a started GameInfo. Actual
+        // Actor.PreBeginPlay queries None Game.IsRelevant, gets false and
+        // destroys the spawned item. Preserve/report that real lifecycle;
+        // never toggle bGameRelevant or directly grant fabricated inventory.
+        Require(!Published(birth) && QuestVr::Vm::ToBool(ReadPortableActorScriptProperty(birth,"bDeleteMe")) &&
+            overlay!=state.objects.end() && overlay->lifecycle && overlay->lifecycle->worldRemoved &&
+            GetPortableRuntimeInventoryItems()==inventory,
+            "Unstarted Game=None relevance path manufactured surviving or collected loot");
+        Require(LoadPortableRuntimeState(temporary.Path("ContentsAfter").string()) &&
+            temporary.Snapshot("ContentsRoundTrip")==after,
+            "Crate removal/deleted original contents birth/RNG did not round-trip exactly");
+        const auto repeatedContentsRevision=GetPortableRuntimeWorldRevision();
+        const auto repeatedContents=ExecutePortableActorFunction(actor,"Destroy");
+        Require(repeatedContents.passed() && QuestVr::Vm::ToBool(repeatedContents.value) &&
+            temporary.Snapshot("ContentsAfterRepeat")==after && GetPortableRuntimeWorldRevision()==repeatedContentsRevision,
+            "Repeated actual crate destruction duplicated a contents birth or consumed RNG");
+        Require(LoadPortableRuntimeState(temporary.Path("ContentsBefore").string()) &&
+            temporary.Snapshot("ContentsRestoredBefore")==before,"Could not restore full pre-birth destruction checkpoint");
         GC::Collect();
-        const auto gcAfter = GC::GetStats();
+        const auto gcBefore=GC::GetStats();const auto rollbackRevision=GetPortableRuntimeWorldRevision();
+        QuestVr::Vm::Limits limit;Require(contents.instructions>1u,"Contents callback had no script budget boundary");
+        limit.instructions=contents.instructions-1u;
+        const auto refused=ExecutePortableActorFunction(actor,"Destroy",{},limit);
+        Require(!refused.passed() && !refused.committed && refused.status==QuestVr::Vm::Status::Budget &&
+            refused.instructions==limit.instructions && temporary.Snapshot("ContentsAfterLateRefusal")==before &&
+            GetPortableRuntimeWorldRevision()==rollbackRevision && Published(actor) &&
+            !QuestVr::Vm::ToBool(ReadPortableActorScriptProperty(actor,"bDeleteMe")),
+            "Late contents callback budget failure retained birth/deletion/RNG/state/publication effects");
+        GC::Collect();const auto gcAfter=GC::GetStats();
         Require(gcAfter.numObjects == gcBefore.numObjects && gcAfter.memoryUsage == gcBefore.memoryUsage,
-            "Rejected crate contents callback changed live GC graph");
+            "Refused late destruction leaked original contents birth in the live GC graph");
         ++refusals;
         std::cout << "ORIGINAL " << actor << ": genuine Destroy279 dispatch passes FastTrace548 and super cleanup "
                   << "with explicit begun/startup fixture (" << begun.instructions << " vs dormant " << dormant.instructions
-                  << " instructions); actual Contents=Lockpick branch rolls back at Containers.Destroyed:681 VRand252.\n";
+                  << " instructions); Contents=Lockpick creates "<<birth<<" then real Game=None relevance deletes it; "
+                  <<contents.instructions<<" instructions, exact deleted-birth save/load/repeat and late rollback. NOT surviving loot/startup.\n";
         Require(LoadPortableRuntimeState(temporary.Path("AuthoredBaseline").string()) &&
             temporary.Snapshot("RestoredAuthoredBaseline") == baseline,
             "Original crate diagnostic did not restore complete authored baseline");

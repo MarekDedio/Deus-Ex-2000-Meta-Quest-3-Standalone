@@ -2,6 +2,11 @@
 
 This is a source-level checkpoint, not a claim of working crate destruction
 or a new Quest build. The accepted NPC APK remains the installed test build.
+The subsequent VRand252 checkpoint advances fatal None-instigator damage from
+fragment velocity to GetMeshTexture1013 at Frag:269 and executes the genuine
+contents lifecycle (Lockpick birth then Game=None relevance deletion). See
+ORIGINAL-RANDOM-VECTORS.md; the observations below identify their own earlier
+sound-routing checkpoint rather than claiming the latest native boundary.
 
 ## Why sound is part of crate damage
 
