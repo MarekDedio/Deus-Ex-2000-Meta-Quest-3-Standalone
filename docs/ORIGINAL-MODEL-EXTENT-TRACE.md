@@ -1,7 +1,8 @@
 # Original Model extent trace audit
 
-This is a static, read-only audit of the retail GOTY Engine.dll, not evidence
-that native Move266, FindBase, falling physics or an on-device crate hit works.
+This contains the retail audit and verified portable null-owner Model extent
+kernel. It is not evidence that native Move266, FindBase, falling physics or an
+on-device crate hit works. Commercial files are only read, never modified.
 The original DLL/EXE was never executed. Engine.dll SHA256 is
 `0C3A8B18239CA98AE132506A1BD966CB5D91C6852E650E179CB15860832C20B4`;
 Engine.u is
@@ -44,7 +45,10 @@ point branch. Any nonzero extent component selects `0x103F3F6E`.
 The extent wrapper sets caller Hit.Time to Float2, constructs the helper with
 Hit/Model/optional owner/extent/flags, and copies the **full** original End and
 Start into it. Size is computed from the Float componentwise End−Start vector
-and stored to Float. Recursion begins at node0, last-parent0, side0, with
+using retained `(x*x+y*y)+z*z`, a Double sum spill, retained PC64 square root
+and a final Float size store. Core.Size is thunk`1010114A`, body
+`10117B30..10117B5C`; appSqrt is`101032BA ->10123290`. Recursion begins at
+node0, last-parent0, side0, with
 Outside=RootOutside. There is no normalized-direction input.
 
 If recursion set its hit flag, the wrapper computes retained
@@ -161,8 +165,8 @@ Float lineDirection. The caller ignores its returned bool. It constructs
 bevelNormal using UnsafeNormal(axis×lineDirection), flips it if its dot with
 normal_i is negative, constructs a plane from linePoint/bevelNormal and uses
 the same exact plane clip above. The exact recovered numeric stages follow;
-they still need implementation and independent numerical tests before claiming
-the entire extent kernel exact. An algebraically similar double bevel must
+the later implementation and independent numerical tests are recorded below.
+An algebraically similar double bevel must
 not be labelled retail parity.
 
 ### Intersection and imported Core numeric stages
@@ -260,9 +264,78 @@ Full coherent host build and strict ARM64 syntax succeed. CTest107 passed /
 122 registered /15 explicit original-data skips /zero failures in23.08s.
 Local ignored logs are `artifacts/model-extent-clip-*-20261016.log`.
 
-This component is not yet called by a complete model sweep or native Move266.
-Remaining kernel work includes exact validated hull/64-plane/cache authority,
-near-first BSP traversal, owner transforms, complete intersection/normalization/
-bevel chain, full query budgets and wrapper hit finalization. Then the actual
-ULevel actor-hit ordering/callback/collision transaction must be integrated.
-No original startup, live damage, falling, loot or new APK is claimed here.
+At that plane-component checkpoint it was not yet called by a complete model
+sweep or native Move266. The following null-owner kernel supersedes the former
+gap, while Move/world physics integration remains unfinished.
+
+## Verified null-owner extent kernel (2026-10-16)
+
+`native/quest_model_extent_bevel.h` now implements the actual sign/projected-dot
+gates, staged two-plane intersection, imported Core cross/dot/normalization,
+normal flip and FPlane construction. It preserves the distinct X/Y/Z, Z/Y/X
+and Y/Z/X orders, Float spills, retained determinant and guarded threshold.
+Rejected intersection does not become a fake gate skip: its zero direction
+continues to the explicit nonfinite UnsafeNormal refusal. Inactive W fields
+are not read before their actual determinant/gate branch.
+
+`native/quest_model_extent_trace.h` implements the complete **null-owner,
+nonzero-extent** Model path: full-segment near-first iterative BSP traversal,
+literal CSG mask0x21, last-parent solid-leaf hulls, original plane order and
+flip bits, six retail bounding planes, ordered i/j/XYZ bevels, strict nearest
+interval/tie handling and actual wrapper finalization. Core.Size and the
+backoff use the audited retained/store boundaries; Time is stored before
+Float offset/location calculation. Empty models report RootOutside with an
+untouched-output baseline; nonempty models initialize Time2 even if no hull
+hit occurs. Debug `node` identifies the accepted hull parent only: it is NOT
+FCheckResult.Item, which the retail extent branch leaves unchanged.
+
+Safety validation checks every front/back component and addressed hull before
+query pruning: malformed cycles/indices/layouts, literal -1 termination,
+over64-plane lists, truncated/reversed/nonfinite packed bounds and array limits
+refuse explicitly. The retail unchecked over64 behavior is not emulated.
+Zero authored normals, partial zero extents and repeated plane references are
+valid. Exact all-zero extents belong to the separate point path and are
+explicitly outside this API. Zero-length motion is not an always-clear shortcut;
+if a helper hit and stored size0 occur, the observable retail +Inf backoff/
+clamp yields Time0 without exporting masked x87 floating status.
+
+Fixed positive limits may only be tightened: nodes1m, hull words2m, validation
+16m, aggregate query16m and pending visits1m. All repeated DAG visits, hull
+scans, plane clips, bevel pairs and axis attempts consume bounded shared query
+work. No recursive production traversal, unbounded quadratic hull expansion or
+renewed budget per candidate is used. There is no actor/world mutation here;
+an eventual native consumer must join refusals to its enclosing VM root.
+
+Terminal evidence:
+
+- Independent staged bevel/Core tests391823 checks/18316 explicit safety
+  refusals,5159 generated bevels and23080 genuine gate skips pass. These include
+  30,000 hardware-x87 samples, separate numeric stages, determinant/normalization/
+  projected-dot boundaries, negative zero and failed-intersection continuation.
+- Decoded v68 kernel fixtures36080 checks/39 deliberate refusals pass:
+  independently serialized/decoded hulls, all256 node-flag values with CSG/root
+  combinations, strict traversal/ties,4096-node depth, empty/zero-length cases,
+  axis/diamond/tetrahedral result-changing bevel contacts, literal/64-plane
+  validation, malformed unreachable geometry and tightened shared budgets.
+  Four thousand independently decoded random boxes compare full results
+  bit-for-bit against scalar hardware-x87 arithmetic and recursive traversal.
+- The owned original Training root Model36 has9524 nodes,3183 distinct collision
+  hulls and independently checked maximum oracle depth53. All96 sampled real
+  BSP sweeps succeeded and hit; all result bits and traversal counts match the
+  independent scalar oracle, with zero finite-math refusals. The owned run
+  totals59971 checks/39 safety controls. Map bytes and timestamp are unchanged;
+  no original DLL/EXE is executed. Engine/Core DLL hashes were rechecked.
+- Coherent full host build and strict ARM64 syntax succeed. CTest109 passed /
+  124 registered /15 explicit owned-data skips /zero failures in23.36s.
+  Local ignored logs: `artifacts/model-extent-*-20261016.log`. Initial strict
+  test-build warnings were repaired; the first bevel expectation was corrected
+  from +0 to the literal -0 produced by the retail normal flip. Production
+  arithmetic was not loosened to pass that test; independent x87 confirms it.
+
+This is a reusable Model geometry kernel, not a native collision world. Owner/
+mover transforms, native ULevel Model/cache authority, swept actor collision,
+hit ordering, Move/callback/encroachment transactions, support/Base, complete
+startup/slot ordering/player possession and falling/debris lifetime still need
+integration. Incoming retail extent flags are not read by the audited native
+helper; a future adapter must not substitute them for the literal CSG mask.
+No new APK or on-headset crate destruction/gravity acceptance is claimed.

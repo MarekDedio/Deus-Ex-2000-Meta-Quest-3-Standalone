@@ -1,5 +1,34 @@
 # Port status
 
+## Retail null-owner Model swept extent kernel (2026-10-16)
+
+- Implemented the complete nonzero-extent null-owner Model query on top of
+  the verified clip: exact staged retail bevel intersection/Core operations,
+  near-first full-segment BSP traversal, original last-parent hull/flip/64-plane
+  semantics, six bbox-plane quirks, strict nearest/ties and wrapper hit stores.
+  Core.Size uses retained X/Y/Z, Double spill and PC64 square root; backoff is
+  MAX(.1,.1/size), and stored Time precedes Float offsets/location. Diagnostic
+  hull parent is not native Hit.Item, which must remain untouched.
+- Full graph/hull validation and fixed aggregate budgets cover pruned malformed
+  components, cycles, repeated DAG visits, hull scans, quadratic bevel pair/axis
+  work and pending visits. Zero normals/partial extents/64 duplicate planes are
+  supported; malformed over64 and nonfinite active math explicitly refuse.
+- Bevel/Core391823 checks/18316 safety refusals pass against independent x87,
+  with5159 generated bevels/23080 true gate skips. Decoded kernel36080/39 passes
+  CSG combinations, deep4096-node iteration, axis/slanted/tetra contacts,
+  result-changing bevels and4000 bit-exact scalar/reference random boxes.
+- Owned00_Training Model36:9524 nodes,3183 collision hulls, independent depth53.
+  All96 sampled sweeps succeed/hit and match independent result bits/traversal
+  counts with zero finite refusals; owned total59971/39. Original map bytes/
+  timestamp unchanged; Engine/Core hashes rechecked. No DLL/EXE execution.
+- Coherent full host build and strict ARM64 syntax pass. CTest109 passed /
+  124 registered /15 explicit owned-data skips /zero failures in23.36s.
+  No runtime movement/startup shortcut, physics enablement or replacement APK.
+  Native Model/cache ownership, mover transforms, actor sweeps/hit ordering,
+  Move callbacks/encroachment, support/Base, slot-order continuation and actual
+  world/player startup still precede live crate damage/gravity. The full
+  campaign goal remains unfinished. See ORIGINAL-MODEL-EXTENT-TRACE.md.
+
 ## Retail swept-collision plane foundation (2026-10-16)
 
 - Traced the live crate gap: Quest still calls a Pawn-only generic damage

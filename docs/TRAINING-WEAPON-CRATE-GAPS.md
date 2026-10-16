@@ -2,6 +2,15 @@
 
 ## Current follow-up (2026-10-16)
 
+The full null-owner/nonzero-extent Model sweep is now implemented and verified
+against independent arithmetic/recursive traversal and96 actual Training BSP
+sweeps. This supplies the world-geometry primitive needed by movement/support,
+not an enabled physics world. ULevel Move266 still needs native Model/cache
+authority, mover transforms, actor sweeps/hit ordering, callback/encroachment
+transactions and support/Base integration. Startup/player and live typed damage
+must follow; no generic Pawn-health widening, forced Active/bGameRelevant or
+single-actor-hide substitute has been added. See ORIGINAL-MODEL-EXTENT-TRACE.md.
+
 Original MakeNoise512 and Pawn.CanHear now execute through actual native level
 time, caches, live PawnList/probe routing and synchronous script callbacks.
 Both Training crates' isolated fatal hits now complete with a legal nonnull
