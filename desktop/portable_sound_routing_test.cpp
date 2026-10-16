@@ -1,16 +1,21 @@
 #include "Precomp.h"
 #include "GC/GC.h"
 #include "portable_unreal_runtime.h"
+#include "quest_level_clock.h"
+#include "quest_script_state.h"
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <functional>
 #include <iostream>
+#include <limits>
 #include <map>
 #include <memory>
 #include <stdexcept>
@@ -142,18 +147,20 @@ struct Package {
         const auto reference=Export(name,Import(type,core),0,owner,true);
         builders.at(static_cast<std::size_t>(reference-1))=[type,target,flags,dimension](std::int32_t next,std::int32_t) {
             Bytes body{0u};Index(body,0);Index(body,next);U32(body,dimension);U32(body,flags);Index(body,0);
+            if(flags&0x20u) U16(body,0u); // CPF_Net replication offset precedes subtype data.
             if(type=="ObjectProperty"||type=="StructProperty"||type=="ByteProperty") Index(body,target);
             else if(type=="ClassProperty") {Index(body,target);Index(body,0);}
             return body;
         };return reference;
     }
-    void ClassBody(std::int32_t reference) {
-        builders.at(static_cast<std::size_t>(reference-1))=[this,reference](std::int32_t next,std::int32_t first) {
+    void ClassBody(std::int32_t reference,Bytes defaults={}) {
+        builders.at(static_cast<std::size_t>(reference-1))=[this,reference,defaults=std::move(defaults)](std::int32_t next,std::int32_t first) {
             Bytes body;Index(body,exports.at(static_cast<std::size_t>(reference-1)).ObjBase);Index(body,next);
             Index(body,0);Index(body,first);Index(body,exports.at(static_cast<std::size_t>(reference-1)).ObjName);
             U32(body,0);U32(body,0);U32(body,0);U64(body,~std::uint64_t{});U64(body,~std::uint64_t{});
             U16(body,0xffffu);U32(body,0);U32(body,0);body.resize(body.size()+16u,0u);
-            for(unsigned i=0;i<5u;++i) {Index(body,0);}
+            for(unsigned i=0;i<4u;++i) {Index(body,0);}
+            Append(body,defaults);Index(body,0);
             return body;
         };
     }
@@ -326,6 +333,7 @@ Tables Build(Fixture& fixture,bool outside=true) {
     const auto volume=engine.Property("TransientSoundVolume","FloatProperty",actor,ec),radius=engine.Property("TransientSoundRadius","FloatProperty",actor,ec);
     const auto modes=engine.Enum("ENetMode",info,ec,{"NM_Standalone","NM_DedicatedServer","NM_ListenServer","NM_Client"});
     const auto netMode=engine.Property("NetMode","ByteProperty",info,ec,modes),head=engine.Property("PawnList","ObjectProperty",info,ec,pawn);
+    const auto timeDilation=engine.Property("TimeDilation","FloatProperty",info,ec,0,0x21u),timeSeconds=engine.Property("TimeSeconds","FloatProperty",info,ec);
     engine.Property("bBegunPlay","BoolProperty",info,ec);engine.Property("bStartup","BoolProperty",info,ec);
     const auto next=engine.Property("nextPawn","ObjectProperty",pawn,ec,pawn),isPlayer=engine.Property("bIsPlayer","BoolProperty",pawn,ec);
     engine.Property("Player","ObjectProperty",playerPawn,ec,player);engine.Property("ViewTarget","ObjectProperty",playerPawn,ec,actor);
@@ -361,7 +369,10 @@ Tables Build(Fixture& fixture,bool outside=true) {
     setter("SetRadius",actor,radius,"FloatProperty");setter("SetHead",info,head,"ObjectProperty",pawn);
     setter("SetNetMode",info,netMode,"ByteProperty");setter("SetNext",pawn,next,"ObjectProperty",pawn);
     setter("SetIsPlayer",pawn,isPlayer,"BoolProperty");
+    setter("SetTimeDilation",info,timeDilation,"FloatProperty");setter("SetTimeSeconds",info,timeSeconds,"FloatProperty");
     for(auto cls:{actor,zone,info,level,model,sound,pawn,playerPawn,player}) engine.ClassBody(cls);
+    Bytes levelDefaults;engine.FloatTag(levelDefaults,"TimeDilation",1.0f);engine.FloatTag(levelDefaults,"TimeSeconds",0.0f);
+    engine.ClassBody(info,std::move(levelDefaults));
     const auto engineTable=fixture.Write(engine);
 
     Package classes;classes.stem="SoundClasses";const auto cc=classes.ImportPackage("Core"),ce=classes.ImportPackage("Engine");
@@ -428,7 +439,10 @@ Tables Build(Fixture& fixture,bool outside=true) {
         map.ObjectTag(tags,"Level",levelActor);map.ObjectTag(tags,"XLevel",world);
         map.VectorTag(tags,"Location",reference==other?Point{10,0,0}:reference==driver?Point{0,0,0}:Point{1,0,0});
         map.FloatTag(tags,"TransientSoundVolume",1.0f);map.FloatTag(tags,"TransientSoundRadius",800.0f);
-        if(reference==levelActor||reference==alternateInfo) {map.BoolTag(tags,"bBegunPlay",true);map.ByteTag(tags,"NetMode",reference==alternateInfo?3u:0u);}
+        if(reference==levelActor||reference==alternateInfo) {
+            map.BoolTag(tags,"bBegunPlay",true);map.ByteTag(tags,"NetMode",reference==alternateInfo?3u:0u);
+            map.FloatTag(tags,"TimeDilation",1.0f);map.FloatTag(tags,"TimeSeconds",0.0f);
+        }
         if(reference==driver||reference==other||reference==orphan) {map.ObjectTag(tags,"TestSound",reference==other?soundB:soundA);map.ObjectTag(tags,"Link",other);}
         map.ActorBody(reference,std::move(tags));
     }
@@ -571,13 +585,155 @@ void BlockedBspHearing() {
     Same(Read("First","Heard"),Value::Integer(1),"Instigator incorrectly bypassed the strict initial hearing range");
     fixture.Unchanged();
 }
+
+struct ScriptEnvelope {
+    Bytes prefix;
+    QuestVr::ScriptSavedState state;
+};
+ScriptEnvelope ClockEnvelope(const Bytes& bytes) {
+    std::size_t cursor{};
+    const auto word=[&]() {
+        Require(cursor<=bytes.size()&&bytes.size()-cursor>=4u,"Clock envelope word exceeds input");
+        std::uint32_t value{};for(unsigned byte=0u;byte<4u;++byte) value|=static_cast<std::uint32_t>(bytes[cursor++])<<(byte*8u);
+        return value;
+    };
+    const auto skip=[&](std::size_t size) {Require(cursor<=bytes.size()&&size<=bytes.size()-cursor,"Clock envelope field exceeds input");cursor+=size;};
+    const auto string=[&]() {const auto size=word();Require(size<=1'048'576u,"Clock envelope string exceeds independent bound");skip(size);};
+    const auto strings=[&]() {const auto count=word();Require(count<=100'000u,"Clock envelope list exceeds independent bound");for(std::uint32_t index=0u;index<count;++index) string();};
+    Require(word()==0x53515844u,"Clock envelope magic differs");
+    Require(word()==16u,"Native level clock did not select exact runtime envelope16");
+    strings();strings();strings();skip(4u);const auto damaged=word();
+    Require(damaged<=100'000u,"Clock damaged-prefix count exceeds independent bound");
+    for(std::uint32_t index=0u;index<damaged;++index) {string();skip(4u);}
+    skip(8u);strings();strings();strings();strings();
+    ScriptEnvelope envelope;envelope.prefix.assign(bytes.begin(),bytes.begin()+static_cast<std::ptrdiff_t>(cursor));
+    const auto length=word();Require(length>=8u&&length==bytes.size()-cursor,"Clock script blob does not cover exact envelope tail");
+    const Bytes blob(bytes.begin()+static_cast<std::ptrdiff_t>(cursor),bytes.end());
+    Require(blob[6u]==11u,"Native level clock did not select exact script codec11");
+    envelope.state=QuestVr::DecodeScriptSavedState(blob);return envelope;
+}
+Bytes WrapClockEnvelope(const ScriptEnvelope& envelope,const QuestVr::ScriptSavedState& state,std::uint32_t version) {
+    Bytes bytes=envelope.prefix;Replace32(bytes,4u,version);const auto blob=QuestVr::EncodeScriptSavedState(state);
+    U32(bytes,static_cast<std::uint32_t>(blob.size()));Append(bytes,blob);return bytes;
+}
+std::uint64_t DoubleBits(double value) {return std::bit_cast<std::uint64_t>(value);}
+std::uint32_t FloatBits(float value) {return std::bit_cast<std::uint32_t>(value);}
+void ClockRefused(Fixture& fixture,float elapsed,const QuestVr::Vm::Limits& limits={}) {
+    const auto before=fixture.Snapshot("ClockBeforeRefusal");const auto time=ReadPortableRuntimeLevelTime();
+    const auto mirror=Read("Level0","TimeSeconds");const auto revision=GetPortableRuntimeWorldRevision();const auto gc=GC::GetStats();
+    const auto result=AdvancePortableRuntimeLevelClock(elapsed,limits);const auto after=GC::GetStats();
+    Require(!result.passed()&&!result.committed,"Invalid native level clock phase committed");
+    Require(DoubleBits(ReadPortableRuntimeLevelTime())==DoubleBits(time)&&QuestVr::Vm::Equal(Read("Level0","TimeSeconds"),mirror)&&
+        GetPortableRuntimeWorldRevision()==revision&&after.numObjects==gc.numObjects&&after.memoryUsage==gc.memoryUsage&&
+        fixture.Snapshot("ClockAfterRefusal")==before,"Clock refusal changed native/mirror/complete save/revision/GC state");++refusals;
+}
+void NativeLevelClock(Fixture& fixture,const Tables& tables) {
+    Initialize(tables);Require(DoubleBits(ReadPortableRuntimeLevelTime())==DoubleBits(0.0),"New actual native ULevel time is not zero");
+    Same(Read("Level0","TimeDilation"),Value::Float(1.0f),"Authored native LevelInfo dilation is not one");
+    const auto gc=GC::GetStats();auto revision=GetPortableRuntimeWorldRevision();
+    auto expected=QuestVr::AdvanceOriginalLevelClock(0.0,.1f,1.0f);
+    const auto first=AdvancePortableRuntimeLevelClock(.1f);
+    Require(first.passed()&&first.committed&&first.writes==1u,"First actual native level clock phase failed/write was unbudgeted: "+first.error);
+    Require(DoubleBits(ReadPortableRuntimeLevelTime())==DoubleBits(expected.timeSeconds)&&
+        FloatBits(Read("Level0","TimeSeconds").floating)==FloatBits(expected.timeMirror),"Native Double/mirror clock differs from exact pure audited phase");
+    Require(GetPortableRuntimeWorldRevision()==revision,"Clock-only phase republished world geometry");
+    const auto baseline=fixture.Snapshot("ClockFirst");const auto envelope=ClockEnvelope(baseline);
+    Require(envelope.state.nativeLevelClock&&envelope.state.nativeLevelClock->levelPath==Path("MyLevel")&&
+        DoubleBits(envelope.state.nativeLevelClock->timeSeconds)==DoubleBits(expected.timeSeconds),"Codec11 native clock owner/bits differ from actual ULevel");
+    // An ordinary script write changes only the reflected mirror. It is never
+    // native double-clock authority, even if the Float value is much larger.
+    Call("Level0","SetTimeSeconds",{{Value::Float(12345.0f),{}}});
+    Require(DoubleBits(ReadPortableRuntimeLevelTime())==DoubleBits(expected.timeSeconds),"Reflected TimeSeconds redirected native Double authority");
+    revision=GetPortableRuntimeWorldRevision();expected=QuestVr::AdvanceOriginalLevelClock(expected.timeSeconds,.03125f,1.0f);
+    const auto second=AdvancePortableRuntimeLevelClock(.03125f);Require(second.passed()&&second.committed,"Second native clock phase failed");
+    Require(DoubleBits(ReadPortableRuntimeLevelTime())==DoubleBits(expected.timeSeconds)&&
+        FloatBits(Read("Level0","TimeSeconds").floating)==FloatBits(expected.timeMirror)&&GetPortableRuntimeWorldRevision()==revision,
+        "Native advance did not replace the script mirror without republishing geometry");
+    Call("Level0","SetTimeDilation",{{Value::Float(1.7f),{}}});
+    Call("Driver","SetLevel",{Object("AlternateInfo")});Call("Driver","SetXLevel",{Object("")});
+    Call("Level0","SetLevel",{Object("AlternateInfo")});Call("Level0","SetXLevel",{Object("")});
+    Call("AlternateInfo","SetTimeDilation",{{Value::Float(33.0f),{}}});
+    for(const auto delta:{0.0f,.0001f,.019f,.11f,.8f}) {
+        const auto previous=expected.timeSeconds;revision=GetPortableRuntimeWorldRevision();
+        expected=QuestVr::AdvanceOriginalLevelClock(previous,delta,1.7f);
+        const auto result=AdvancePortableRuntimeLevelClock(delta);Require(result.passed()&&result.committed,"Dilated native clock phase failed: "+result.error);
+        Require(DoubleBits(ReadPortableRuntimeLevelTime())==DoubleBits(expected.timeSeconds)&&
+            FloatBits(Read("Level0","TimeSeconds").floating)==FloatBits(expected.timeMirror)&&GetPortableRuntimeWorldRevision()==revision,
+            "Native clock used reflected Actor.Level/XLevel or altered audited dilation/clamp ordering");
+    }
+    const auto saved=fixture.Snapshot("ClockWarm");const auto savedTime=ReadPortableRuntimeLevelTime();const auto savedMirror=Read("Level0","TimeSeconds");
+    const auto changed=AdvancePortableRuntimeLevelClock(.25f);Require(changed.passed()&&DoubleBits(ReadPortableRuntimeLevelTime())!=DoubleBits(savedTime),"Clock mutation before warm restore failed");
+    Require(ValidatePortableRuntimeState((fixture.directory/"ClockWarm.sav").string(),"SoundFixture"),"Clock checkpoint read-only validation refused");
+    const auto beforeValidate=fixture.Snapshot("ClockValidationCurrent");
+    Require(ValidatePortableRuntimeState((fixture.directory/"ClockWarm.sav").string(),"SoundFixture")&&
+        fixture.Snapshot("ClockValidationAfter")==beforeValidate,"Clock checkpoint validation published native state");
+    Require(LoadPortableRuntimeState((fixture.directory/"ClockWarm.sav").string())&&DoubleBits(ReadPortableRuntimeLevelTime())==DoubleBits(savedTime)&&
+        QuestVr::Vm::Equal(Read("Level0","TimeSeconds"),savedMirror)&&fixture.Snapshot("ClockWarmRestored")==saved,
+        "Warm checkpoint did not restore exact native Double/mirror state");
+    Initialize(tables);Require(ReadPortableRuntimeLevelTime()==0.0,"Cold fixture did not own a fresh native Level clock");
+    Require(LoadPortableRuntimeState((fixture.directory/"ClockWarm.sav").string())&&DoubleBits(ReadPortableRuntimeLevelTime())==DoubleBits(savedTime)&&
+        fixture.Snapshot("ClockColdRestored")==saved,"Cold checkpoint did not restore complete native clock exactly");
+    const auto withClock=ClockEnvelope(saved);auto legacyState=withClock.state;legacyState.nativeLevelClock.reset();
+    // With no other optional state domains this property-only fixture is exact
+    // pre-clock envelope4/codec1. The reflected mirror intentionally remains.
+    const auto legacy=WrapClockEnvelope(withClock,legacyState,4u);const auto legacyPath=fixture.directory/"ClockLegacy.sav";WriteBytes(legacyPath,legacy);
+    Require(LoadPortableRuntimeState(legacyPath.string())&&DoubleBits(ReadPortableRuntimeLevelTime())==DoubleBits(0.0)&&
+        QuestVr::Vm::Equal(Read("Level0","TimeSeconds"),savedMirror),"Legacy clock absence merged live native time or inferred reflected mirror");
+    Require(LoadPortableRuntimeState((fixture.directory/"ClockWarm.sav").string()),"Clock checkpoint restore after legacy reset failed");
+    for(const auto elapsed:{-.01f,std::numeric_limits<float>::quiet_NaN(),std::numeric_limits<float>::infinity()}) ClockRefused(fixture,elapsed);
+    QuestVr::Vm::Limits noWrites;noWrites.writes=0u;
+    ClockRefused(fixture,.03125f,noWrites); // Native Double changes first, then VM mirror write budget refuses: restore BOTH.
+    // Malformed native-clock values cannot publish anything, including a
+    // valid preceding reflected-property block in the same checkpoint.
+    for(const auto bad:{std::numeric_limits<double>::quiet_NaN(),std::numeric_limits<double>::infinity(),-1.0}) {
+        auto malformed=saved;const auto old=std::bit_cast<std::uint64_t>(savedTime),replacement=std::bit_cast<std::uint64_t>(bad);
+        bool replaced{};for(std::size_t offset=malformed.size();offset>=8u;--offset) {
+            std::uint64_t bits{};for(unsigned byte=0u;byte<8u;++byte) bits|=std::uint64_t(malformed[offset-8u+byte])<<(8u*byte);
+            if(bits!=old) continue;
+            for(unsigned byte=0u;byte<8u;++byte) malformed[offset-8u+byte]=static_cast<std::uint8_t>(replacement>>(8u*byte));
+            replaced=true;break;
+        }
+        Require(replaced,"Could not independently locate native-clock tail Double bits");
+        const auto path=fixture.directory/"ClockInvalid.sav";WriteBytes(path,malformed);const auto current=fixture.Snapshot("ClockBeforeInvalidSave");
+        Require(!ValidatePortableRuntimeState(path.string(),"SoundFixture")&&!LoadPortableRuntimeState(path.string())&&
+            fixture.Snapshot("ClockAfterInvalidSave")==current&&DoubleBits(ReadPortableRuntimeLevelTime())==DoubleBits(savedTime),
+            "Malformed clock checkpoint retained a partial native/reflected restore");++refusals;
+    }
+    auto wrongOwner=withClock.state;wrongOwner.nativeLevelClock->levelPath=Path("Other");
+    const auto wrongOwnerPath=fixture.directory/"ClockWrongOwner.sav";
+    WriteBytes(wrongOwnerPath,WrapClockEnvelope(withClock,wrongOwner,16u));const auto beforeOwnerRefusal=fixture.Snapshot("ClockBeforeWrongOwner");
+    Require(!ValidatePortableRuntimeState(wrongOwnerPath.string(),"SoundFixture")&&!LoadPortableRuntimeState(wrongOwnerPath.string())&&
+        fixture.Snapshot("ClockAfterWrongOwner")==beforeOwnerRefusal&&DoubleBits(ReadPortableRuntimeLevelTime())==DoubleBits(savedTime),
+        "Clock checkpoint owner not the actual serialized native Level was accepted");++refusals;
+    auto doubleRound=withClock.state;
+    const double midpoint=1.0+std::ldexp(1.0,-24);doubleRound.nativeLevelClock->timeSeconds=midpoint;
+    const auto midpointPath=fixture.directory/"ClockMidpoint.sav";
+    WriteBytes(midpointPath,WrapClockEnvelope(withClock,doubleRound,16u));
+    Require(LoadPortableRuntimeState(midpointPath.string()),"Exact midpoint native-clock fixture failed restoration");
+    Call("Level0","SetTimeDilation",{{Value::Float(1.0f),{}}});revision=GetPortableRuntimeWorldRevision();
+    const auto doubleRoundExpected=QuestVr::AdvanceOriginalLevelClock(midpoint,std::ldexp(1.0f,-63),1.0f);
+    const auto midpointAdvance=AdvancePortableRuntimeLevelClock(std::ldexp(1.0f,-63));
+    Require(midpointAdvance.passed()&&midpointAdvance.committed&&DoubleBits(ReadPortableRuntimeLevelTime())==DoubleBits(doubleRoundExpected.timeSeconds)&&
+        FloatBits(Read("Level0","TimeSeconds").floating)==FloatBits(doubleRoundExpected.timeMirror)&&
+        FloatBits(doubleRoundExpected.timeMirror)!=FloatBits(static_cast<float>(doubleRoundExpected.timeSeconds))&&
+        GetPortableRuntimeWorldRevision()==revision,"Native mirror reloaded the Double spill instead of consuming retained PC64 sum");
+    Require(LoadPortableRuntimeState((fixture.directory/"ClockWarm.sav").string()),"Clock restore after retained-mirror boundary failed");
+    auto oversized=withClock.state;oversized.nativeLevelClock->timeSeconds=std::numeric_limits<double>::max();
+    const auto hugePath=fixture.directory/"ClockHuge.sav";WriteBytes(hugePath,WrapClockEnvelope(withClock,oversized,16u));
+    if(LoadPortableRuntimeState(hugePath.string())) {
+        ClockRefused(fixture,.01f); // Float mirror overflow is refused atomically.
+    } else ++refusals; // Preflight may reject an unrepresentable mirror earlier.
+    Require(LoadPortableRuntimeState((fixture.directory/"ClockWarm.sav").string()),"Clock final restore failed");
+    const auto after=GC::GetStats();Require(after.numObjects==gc.numObjects&&after.memoryUsage==gc.memoryUsage,"Native level clock fixture leaked UObject roots");
+    fixture.Unchanged();
+}
 } // namespace
 
 int main() {
     try {
         const auto baseline=GC::GetStats().numObjects;Fixture fixture;const auto tables=Build(fixture);
         ZeroRecipientsAndIdentity(fixture,tables);GenuineRecipientsAndRollback(fixture,tables);CallerAndOwnership(fixture,tables);
-        BlockedBspHearing();
+        BlockedBspHearing();NativeLevelClock(fixture,tables);
         ShutdownPortableRuntime();GC::Collect();Require(GC::GetStats().numObjects==baseline,"Sound routing fixture leaked rooted UObjects");
         std::cout<<"PASS PlaySound264 production routing: "<<checks<<" checks, "<<refusals
             <<" refusal controls; real UObject channels, caller/native Level ownership, live PawnList callbacks and complete rollback."

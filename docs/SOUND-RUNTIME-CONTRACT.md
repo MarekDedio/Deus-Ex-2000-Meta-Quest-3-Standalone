@@ -2,11 +2,20 @@
 
 This is a source-level checkpoint, not a claim of working crate destruction
 or a new Quest build. The accepted NPC APK remains the installed test build.
-The subsequent VRand252 checkpoint advances fatal None-instigator damage from
-fragment velocity to GetMeshTexture1013 at Frag:269 and executes the genuine
-contents lifecycle (Lockpick birth then Game=None relevance deletion). See
-ORIGINAL-RANDOM-VECTORS.md; the observations below identify their own earlier
-sound-routing checkpoint rather than claiming the latest native boundary.
+The subsequent VRand252 and GetMeshTexture1013 checkpoints now complete both
+crates' isolated dormant-world fatal None-instigator scripts, with six actual
+WoodFragments each and full save/rollback. Separate begun destruction executes
+the genuine contents lifecycle (Lockpick birth then Game=None relevance
+deletion). True Pawn-instigated damage still stops at MakeNoise512:428.
+See ORIGINAL-MESH-TEXTURES.md and ORIGINAL-RANDOM-VECTORS.md; the observations
+below identify their own earlier sound-routing checkpoint.
+
+The following native-clock checkpoint supplies actual ULevel Double ownership,
+exact original arithmetic, budgeted journaled Float mirroring and codec11 /
+envelope16 continuation. It is an explicit CPU phase, not a complete Tick or
+noise implementation. See ORIGINAL-LEVEL-CLOCK.md. The complete newer retail
+MakeNoise/CanHear audit in ORIGINAL-MAKE-NOISE.md supersedes the compressed
+follow-on summary below, including exact x/y/z geometry and retained Stimulus.
 
 ## Why sound is part of crate damage
 
@@ -223,8 +232,9 @@ coincident distance returns early. Otherwise Stimulus is written before the
 HearingThreshold/BSP refusal; same-team routing skips that Stimulus write.
 Actual Model.FastLineCheck is required. All caches, Stimulus and synchronous
 callback effects must join the enclosing crate rollback, including a later
-sound/fragment/Destroy failure. Native Double clock ownership/ticking/saving
-and this handler remain unimplemented; no arbitrary NPC or reflected clock
+sound/fragment/Destroy failure. Native Double clock ownership, explicit audited
+phase and saving now exist separately; the full world Tick coordinator and
+this noise handler remain unimplemented. No arbitrary NPC or reflected clock
 is substituted for a real player/native level.
 
 ## Verified checkpoint

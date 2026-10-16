@@ -3,6 +3,7 @@
 #include "portable_unreal_runtime.h"
 #include "portable_model_geometry.h"
 #include "quest_script_random_vector.h"
+#include "quest_level_clock.h"
 #include "quest_script_state.h"
 
 #include <algorithm>
@@ -396,6 +397,18 @@ bool Original(const std::filesystem::path& root) {
     Require(declaration.nativeIndex==306u&&declaration.functionFlags==0x405u,"Original BasedActors native declaration differs from retail audit");
     Require(InitializePortableRuntime(packages).passed&&LoadPortableRuntimeMap(LoadPortablePackageTables(sources.back().string())).passed,"Original read-only runtime/map metadata initialization failed");
     Fixture checkpoints;
+    const auto clockBaseline=checkpoints.Snapshot("OriginalClockBaseline");
+    const auto clockRevision=GetPortableRuntimeWorldRevision();
+    Require(ReadPortableRuntimeLevelTime()==0.0,"Original loaded native Level clock lacks its explicit zero baseline");
+    const auto clockExpected=QuestVr::AdvanceOriginalLevelClock(0.0,.011f,
+        ReadPortableActorDeclaredScriptProperty("00_Training.LevelInfo0","Engine.LevelInfo.TimeDilation").floating);
+    const auto clockPhase=AdvancePortableRuntimeLevelClock(.011f);
+    Require(clockPhase.passed()&&clockPhase.committed&&ReadPortableRuntimeLevelTime()==clockExpected.timeSeconds&&
+        SameFloat(ReadPortableActorDeclaredScriptProperty("00_Training.LevelInfo0","Engine.LevelInfo.TimeSeconds").floating,clockExpected.timeMirror)&&
+        GetPortableRuntimeWorldRevision()==clockRevision,"Original clock phase lost actual schema/precision or republished geometry: "+clockPhase.error);
+    Require(LoadPortableRuntimeState((checkpoints.directory/"OriginalClockBaseline.sav").string())&&
+        ReadPortableRuntimeLevelTime()==0.0&&checkpoints.Snapshot("OriginalClockBaselineRestored")==clockBaseline,
+        "Pre-clock original checkpoint did not reset native time and restore the exact reflected baseline");
     for(const auto& name:{"CrateBreakableMedGeneral2","CrateBreakableMedGeneral1"}) {
         const std::string actor="00_Training."+std::string(name); Require(ReadPortableActorScriptProperty(actor,"Base").text.empty(),"Original crate Base was not authored None");
         // Actual authored mesh and fields, not a hardcoded crate texture or

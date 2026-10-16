@@ -211,6 +211,14 @@ PortableRuntimeSummary InitializePortableRuntime(
 PortableRuntimeSummary InitializePortableRuntime(
     const std::vector<PortablePackageTables>& packages, std::uint32_t initialRandomSeed = 1u);
 void ShutdownPortableRuntime();
+// Actual loader-owned ULevel Double time. The explicit clock phase performs
+// original retained-product accumulation and LevelInfo Float mirroring only;
+// it is not a world Tick, startup, Timer/AI/physics pass or XR-thread entry.
+// realDelta is before TimeDilation and actor-delta clamping. Call once from the
+// exclusive CPU world's future Tick coordinator, never once per actor.
+double ReadPortableRuntimeLevelTime();
+QuestVr::Vm::Result AdvancePortableRuntimeLevelClock(float realDelta,
+    const QuestVr::Vm::Limits& limits = {});
 // Engine-session embedding state, never a map/checkpoint or player binding.
 // These APIs share the runtime's exclusive CPU/script-thread ownership. The
 // renderer may ONLY revoke the shared lifetime token before target teardown.

@@ -2,6 +2,14 @@
 
 ## Current follow-up (2026-10-16)
 
+The following native level-clock prerequisite now supplies actual ULevel Double
+ownership, exact retained arithmetic, journaled/budgeted mirror writes and
+codec11/envelope16 continuation, with old-save native reset. It is an explicit
+CPU phase, not a complete Tick/world startup. Native MakeNoise512 is still the
+true Pawn-instigated damage boundary; its full original cache/hearing/probe/
+callback spec is recorded in ORIGINAL-MAKE-NOISE.md. See ORIGINAL-LEVEL-CLOCK.md
+for verification. No new APK or live crate/gravity acceptance is claimed.
+
 The subsequent GetMeshTexture1013 checkpoint removes the fragment-texture
 refusal. Both actual crates' dormant-world None-instigator fatal hits now
 complete original Frag/nativeDestroy, each producing six genuine WoodFragment

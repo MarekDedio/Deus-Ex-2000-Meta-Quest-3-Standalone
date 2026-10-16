@@ -1,18 +1,19 @@
 # Current Quest test-build handoff (2026-10-16)
 
-The subsequent crate sound-script, original BSP FastTrace, sound-routing, VRand and fragment-texture checkpoints are
+The subsequent crate sound-script, original BSP FastTrace, sound-routing, VRand, fragment-texture and native-clock checkpoints are
 source/tests only: no replacement APK was built or installed. The NPC APK below
-remains the recorded accepted device build. Final host CTest102/117 passes with15 explicit
+remains the recorded accepted device build. Final host CTest104/119 passes with15 explicit
 original-data skips; separate actual Training traces, lamp activation, native
 Destroy279 and damage probes pass too. Both isolated dormant-world fatal hits
 now complete original Frag/nativeDestroy with six actual WoodFragment births,
 selected textures, exact velocity/scale/RNG and whole-checkpoint save/rollback.
-True nonnull Pawn-instigated hits still refuse MakeNoise512; this does not
+Native ULevel Double clock ownership, exact explicit phase and codec11/envelope16
+continuation now pass; this is not a whole-world Tick. True nonnull Pawn-instigated hits still refuse MakeNoise512; this does not
 establish live melee or a started original world. Direct begun destruction
 creates then relevance-deletes a real Lockpick in its isolated Game=None fixture;
 it is not surviving loot or complete startup. Native bound-player audio and destructible crates
 are not ready for headset acceptance. See
-ORIGINAL-MESH-TEXTURES.md, ORIGINAL-FAST-TRACE.md, SOUND-RUNTIME-CONTRACT.md and STATUS.md for explicit limits.
+ORIGINAL-LEVEL-CLOCK.md, ORIGINAL-MAKE-NOISE.md, ORIGINAL-MESH-TEXTURES.md, ORIGINAL-FAST-TRACE.md, SOUND-RUNTIME-CONTRACT.md and STATUS.md for explicit limits.
 
 ## Original Training NPC waiting animations (2026-10-15)
 

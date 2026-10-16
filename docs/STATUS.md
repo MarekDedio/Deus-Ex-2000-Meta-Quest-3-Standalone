@@ -1,5 +1,40 @@
 # Port status
 
+## Native level-clock prerequisite for MakeNoise (2026-10-16)
+
+- Added actual serialized ULevel-owned Double time, separate from mutable
+  LevelInfo.TimeSeconds Float. The explicit CPU phase implements original
+  Tick's retained PC64 delta*dilation product and sum, independent Double/Float
+  stores, and only then actor-delta clamping. Native slot-zero LevelInfo and
+  immutable nativeXLevel establish authority; reflected Level/XLevel/mirror
+  writes cannot redirect the clock. No phase is added to the XR thread.
+- Exact phase418883 checks/85883 deliberate safety refusals pass against
+  independent x87 arithmetic, including retained-product and Double-rounding
+  boundaries. Codec11 tests8385/105 pass with independent legacy1..10 golden
+  bytes, exact Double/signed-zero continuation, malformed identities/times,
+  complete-consumption and two-pass memory budgets. Runtime envelope16 leaves
+  mover14/quickbar15 wrappers intact; old clock-absent saves explicitly reset
+  native time to+0 instead of guessing from the Float mirror or current history.
+- Production sound/clock2605/20 passes: raw/mirrored precision, script writes,
+  native ownership, no geometry revision for clock-only changes, full warm/cold
+  replacement, invalid saves and zero-write-budget rollback of both native and
+  reflected clocks. Mirror writes now use Execution.WriteReference; the fixed
+  native journal restores Double time if a later VM write budget refuses.
+- Actual Training clock phase/schema/legacy reset and both crate diagnostics
+  pass479/4; separate begun contents347/2 and NPC280519/26 pass. Fatal dormant
+  None-instigator hits still create six original fragments each; true Pawn
+  fatal hits still stop at MakeNoise512:428. Original package bytes/timestamps
+  are unchanged. The full MakeNoise/CanHear retail contract is now recorded in
+  ORIGINAL-MAKE-NOISE.md; the handler remains unimplemented.
+- Coherent full host build and strict ARM64 syntax pass. CTest104 passes out
+  of119 registered,15 explicit owned-data skips, zero failures in27.67s.
+  Separate original38-package nonpublishing startup probe passes complete
+  repeated rollback/GC and retains its real Mover.Move266 boundary at
+  Engine.Mover.BeginPlay:166 (Training slot126), not a started world.
+  This is an explicit clock phase/continuation, not the original whole-world
+  Tick/startup/player, usable crate drops, gravity or headset acceptance.
+  No new APK. See ORIGINAL-LEVEL-CLOCK.md and SCRIPT_STATE_SAVE.md.
+
 ## Original fragment textures / fatal crate-script checkpoint (2026-10-16)
 
 - Added original Actor.GetMeshTexture1013: exact native/parameter/property

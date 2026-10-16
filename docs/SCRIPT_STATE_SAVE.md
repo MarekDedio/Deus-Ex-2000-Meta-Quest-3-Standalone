@@ -617,6 +617,31 @@ Current codec10/envelope13 host/original-data verification and remaining
 Attach/render/device scope are tracked in
 [DECAL-CHECKPOINT.md](DECAL-CHECKPOINT.md).
 
+## Native level time: codec11 / envelope16
+
+The actual ULevel-owned Double clock now has an optional native continuation
+record. Script codec11 appends its exact map-qualified Level identity and
+little-endian Double bits after the existing optional domains. It is mandatory
+when codec11 is selected. Both decoder passes validate finite nonnegative time,
+identity, complete consumption and working/byte/string budgets; signed zero is
+preserved. Existing codec1..10 golden bytes remain unchanged.
+
+Runtime envelope16 identifies this codec. Existing envelope14 mover and
+envelope15 quick-inventory wrappers keep their meanings and may contain16.
+The untouched native+0 baseline is omitted so old ordinary saves retain their
+formats. Nonzero and -0 time are explicit. Clock-absent legacy saves reset the
+native Double to the loader+0 baseline, never merge current history or infer
+time from independently mutable LevelInfo.TimeSeconds. This explicit portable
+migration and exact Double persistence differ from the retail ULevel archive's
+Float conversion.
+
+Identity/schema checks and all allocations occur before publication. Warm/cold
+restore stages native time with the complete state; read-only validation does
+not change it. Script writes to the Float mirror cannot redirect the native
+clock. The explicit CPU clock phase and its journal are described in
+[ORIGINAL-LEVEL-CLOCK.md](ORIGINAL-LEVEL-CLOCK.md); it does not establish a full
+world tick, startup, player or the still-missing MakeNoise512 handler.
+
 ## Remaining scope
 
 This is scoped current-map persistence, not a per-map campaign archive. Travel

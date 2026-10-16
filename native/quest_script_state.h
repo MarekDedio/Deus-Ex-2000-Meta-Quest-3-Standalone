@@ -58,6 +58,13 @@ struct ScriptSavedBirth {
     // Empty snapshots are valid; instance overlays are separate copied values.
     std::vector<ScriptSavedProperty> frozenDefaults;
 };
+struct ScriptSavedLevelClock {
+    // Native ULevel time is binary64, distinct from the reflected binary32
+    // LevelInfo.TimeSeconds mirror. The original save archive stored a Float;
+    // this explicit port checkpoint retains the complete native clock bits.
+    std::string levelPath;
+    double timeSeconds{};
+};
 struct ScriptSavedState {
     std::string mapName;
     std::vector<ScriptSavedObject> objects;
@@ -72,6 +79,9 @@ struct ScriptSavedState {
     // Explicit port-only native geometry checkpoint. Absence means the old
     // wire format and an external runtime reset policy, never live-state merge.
     std::optional<ScriptSavedNativeDecals> nativeDecals{};
+    // Absence in legacy formats means reset at runtime restore, never merge
+    // with an unrelated live clock or infer it from a reflected Float overlay.
+    std::optional<ScriptSavedLevelClock> nativeLevelClock{};
 };
 struct ScriptStateLimits {
     std::size_t maxBytes{32u << 20u};
@@ -104,6 +114,7 @@ inline constexpr std::uint8_t RandomStateVersion=7u;
 inline constexpr std::uint8_t SleepStateVersion=8u;
 inline constexpr std::uint8_t StateControlVersion=9u;
 inline constexpr std::uint8_t DecalStateVersion=10u;
+inline constexpr std::uint8_t LevelClockVersion=11u;
 inline constexpr std::uint32_t MaximumWorldActorSlots=1'000'000u;
 inline constexpr std::size_t MaximumIntArrayElements=262'144u;
 // Stable serialized tags deliberately do not depend on Vm::Kind ordinals.
@@ -156,6 +167,18 @@ inline void BirthIndices(std::vector<std::uint32_t>& indices) {
     for (const auto index : indices) if (index>=MaximumWorldActorSlots) Fail("birth world actor index exceeds the fixed slot cap");
     std::sort(indices.begin(),indices.end());
     if (std::adjacent_find(indices.begin(),indices.end())!=indices.end()) Fail("duplicate birth world actor index");
+}
+inline void LevelClockIdentity(const std::string_view path,const std::string_view map) {
+    BirthPath(path,map);
+    // Clock binding is an exact authored UObject identity, not a folded name
+    // alias. Runtime validation additionally proves this is the actual ULevel.
+    if (path.substr(0u,map.size())!=map)
+        Fail("native level clock identity is not canonically qualified by its saved map");
+}
+inline void LevelClockTime(const double value) {
+    // Preserve signed zero and every finite nonnegative binary64 bit pattern.
+    if (!std::isfinite(value) || value<0.0)
+        Fail("native level clock time must be finite and nonnegative");
 }
 struct SavedObjectIdentity { std::string_view path, classPath; };
 template<typename Object,typename Path,typename Class>
@@ -355,8 +378,9 @@ public:
             return object.state && object.state->frame && object.state->frame->control.has_value();
         });
         const bool withDecals=state.nativeDecals.has_value();
+        const bool withLevelClock=state.nativeLevelClock.has_value();
         const bool withIntArrays=HasIntArrays(state,limits_);
-        const auto version=withDecals || withIntArrays ? DecalStateVersion : withControl ? StateControlVersion : withSleep ? SleepStateVersion : withRandom ? RandomStateVersion : withAi ? AiManagerVersion : withBirths ? BirthManifestVersion : withLifecycle ? ActorLifecycleVersion : withDefaults ? ClassDefaultsVersion : withFrames ? StateFrameVersion : Magic[6u];
+        const auto version=withLevelClock ? LevelClockVersion : withDecals || withIntArrays ? DecalStateVersion : withControl ? StateControlVersion : withSleep ? SleepStateVersion : withRandom ? RandomStateVersion : withAi ? AiManagerVersion : withBirths ? BirthManifestVersion : withLifecycle ? ActorLifecycleVersion : withDefaults ? ClassDefaultsVersion : withFrames ? StateFrameVersion : Magic[6u];
         version_=version;
         for (std::size_t i=0; i<Magic.size(); ++i) Byte(i==6u ? version : Magic[i]);
         String(state.mapName,true,false,128u);
@@ -446,6 +470,17 @@ public:
         if (version>=DecalStateVersion) {
             Byte(withDecals ? 1u : 0u);
             if (withDecals) NativeDecals(*state.nativeDecals,state.mapName);
+        }
+        if (version>=LevelClockVersion) {
+            // Mandatory in codec11. No absent-marker variant can accidentally
+            // label a legacy state as a native-clock checkpoint.
+            const auto& clock=*state.nativeLevelClock;
+            budget_.Retain(sizeof(ScriptSavedLevelClock));
+            Text(clock.levelPath,limits_,true);
+            LevelClockIdentity(clock.levelPath,state.mapName);
+            LevelClockTime(clock.timeSeconds);
+            String(clock.levelPath,true);
+            std::uint64_t bits{};std::memcpy(&bits,&clock.timeSeconds,8u);U64(bits);
         }
     }
 private:
@@ -750,7 +785,8 @@ public:
                 version=byte;
                 if (version!=Magic[i] && version!=StateFrameVersion && version!=ClassDefaultsVersion &&
                     version!=ActorLifecycleVersion && version!=BirthManifestVersion && version!=AiManagerVersion &&
-                    version!=RandomStateVersion && version!=SleepStateVersion && version!=StateControlVersion && version!=DecalStateVersion)
+                    version!=RandomStateVersion && version!=SleepStateVersion && version!=StateControlVersion &&
+                    version!=DecalStateVersion && version!=LevelClockVersion)
                     Fail("bad magic or unsupported codec version");
             } else if (byte!=Magic[i]) Fail("bad magic or unsupported codec version");
         }
@@ -876,6 +912,14 @@ public:
         }
         if (version==DecalStateVersion && !hasDecals && !hasIntArrays_)
             Fail("native-decal codec has neither graph nor dynamic integer array");
+        if (version>=LevelClockVersion) {
+            budget_.Retain(sizeof(ScriptSavedLevelClock));
+            const auto level=String(true);
+            LevelClockIdentity(level,map);
+            const auto bits=U64();double time{};std::memcpy(&time,&bits,8u);
+            LevelClockTime(time);
+            if constexpr(Materialize) state.nativeLevelClock=ScriptSavedLevelClock{std::string(level),time};
+        }
         if (Remaining()!=0u) Fail("trailing encoded-state bytes");
         return state;
     }
