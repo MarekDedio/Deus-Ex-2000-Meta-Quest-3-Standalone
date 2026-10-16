@@ -475,6 +475,17 @@ struct PortableNativeModelSnapshot {
     std::size_t modelExportIndex{},cachedNodes{};
 };
 PortableNativeModelSnapshot ReadPortableRuntimeNativeModel();
+// Read-only native ToWorld VALUE for an actual indexed current-map Actor.
+// Native dispatch is selected from the audited nearest RF_Native UClass;
+// current qualified fields include overlays/defaults, never renderer snapshots.
+// No native pointer, Model/hash query authority, movement or startup is exposed.
+// Call only on the runtime-owning thread. Unsupported identity/schema/arithmetic
+// throws without publishing a partial snapshot or changing gameplay state.
+struct PortableActorToWorldSnapshot {
+    std::string actorPath,nativeClassPath,nativeImplementation;
+    std::array<float,3u> origin{},xAxis{},yAxis{},zAxis{};
+};
+PortableActorToWorldSnapshot ReadPortableRuntimeActorToWorld(const std::string& actorPath);
 QuestVr::Vm::Value ReadPortableActorScriptProperty(
     const std::string& actorPath, const std::string& propertyName,
     std::uint32_t arrayIndex = 0u);

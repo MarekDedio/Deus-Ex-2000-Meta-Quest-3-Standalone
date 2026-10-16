@@ -36,6 +36,8 @@
 #include "quest_engine_config.h"
 #include "quest_model_fast_line_check.h"
 #include "quest_sound_hearing.h"
+#include "quest_brush_coords.h"
+#include "quest_original_sine_table.h"
 
 #include <memory>
 #include <algorithm>
@@ -3567,6 +3569,179 @@ public:
         const auto value=Read(actor,property,0u);
         if (value.kind!=Kind::Vector) throw std::runtime_error("FastTrace Location storage is not a Vector");
         return value;
+    }
+    struct NativeActorCoords {
+        QuestVr::OriginalModelCoords coords;
+        std::string nativeClassPath;
+        bool brush{};
+    };
+    RuntimeObject* NativeToWorldClass(RuntimeObject* actor) {
+        if(!actor || actor->classDescriptor || actor->defaultOwner || !actor->cls)
+            throw std::runtime_error("Native ToWorld receiver is not an actual Actor instance");
+        // ORIGINAL-TOWORLD-VTABLES.md resolves every one of these56 actual
+        // native vtables. Only Brush/Mover use ABrush; a nonnull Actor.Brush
+        // primitive does NOT change the owner's virtual implementation.
+        static constexpr const char* audited[]={
+            "engine.actor","engine.brush","engine.buttonmarker","engine.camera","engine.camerapoint",
+            "engine.carcass","engine.decal","engine.decoration","engine.gameinfo","engine.gamereplicationinfo",
+            "engine.hud","engine.info","engine.internetinfo","engine.interpolationpoint","engine.inventory",
+            "engine.inventoryspot","engine.keypoint","engine.levelinfo","engine.liftcenter","engine.liftexit",
+            "engine.light","engine.menu","engine.mover","engine.mutator","engine.navigationpoint","engine.pathnode",
+            "engine.pawn","engine.playerpawn","engine.playerreplicationinfo","engine.playerstart","engine.projectile",
+            "engine.replicationinfo","engine.savedmove","engine.scout","engine.skyzoneinfo","engine.spawnnotify",
+            "engine.statlog","engine.statlogfile","engine.teleporter","engine.trigger","engine.triggermarker",
+            "engine.triggers","engine.warpzoneinfo","engine.warpzonemarker","engine.weapon","engine.zoneinfo",
+            "engine.locationid","deusex.augmentation","deusex.augmentationmanager","deusex.deusexdecoration",
+            "deusex.deusexlevelinfo","deusex.deusexplayer","deusex.scriptedpawn","deusex.skill","deusex.skillmanager",
+            "extension.playerpawnext"};
+        static_assert(std::size(audited)==56u);
+        std::array<RuntimeObject*,128u> visited{};std::size_t depth{};
+        RuntimeObject* selected{};bool actualActor{};
+        for(auto* cls=actor->cls;cls;cls=cls->base) {
+            if(depth==visited.size() || std::find(visited.begin(),visited.begin()+depth,cls)!=visited.begin()+depth ||
+                !cls->classDescriptor || cls->reflection.metaClass!="Class" || !cls->classFieldLinksValid)
+                throw std::runtime_error("Native ToWorld class ancestry is malformed, cyclic or excessive");
+            visited[depth++]=cls;
+            const auto identity=CastClassIdentity(cls->reflection.objectPath);
+            const auto path=LowerAscii(identity.path);
+            actualActor=actualActor || path=="engine.actor";
+            if(!selected && (cls->reflection.flags&0x04000000u)!=0u) {
+                if(std::find(std::begin(audited),std::end(audited),path)==std::end(audited))
+                    throw std::runtime_error("Native ToWorld nearest native virtual implementation is not audited");
+                selected=cls;
+            }
+        }
+        // Continue the full bounded ancestry AFTER selecting the nearest native;
+        // an early known class cannot conceal malformed later Super links.
+        if(!actualActor || !selected || CastObjectIdentity(actor->reflection.objectPath).classObject)
+            throw std::runtime_error("Native ToWorld receiver lacks an actual native Actor ancestry");
+        return selected;
+    }
+    RuntimeObject* NativeCoordsStruct(RuntimeObject* field,const char* expected) {
+        if(!field || !field->property || field->property->type!="StructProperty" ||
+            field->property->arrayDimension!=1 || field->property->baseField ||
+            LowerAscii(Qualified(Table(field->sourcePath),Table(field->sourcePath).exports.at(field->exportIndex).ObjClass))!="core.structproperty")
+            throw std::runtime_error("Native ToWorld field is not an actual scalar Core.StructProperty");
+        auto* structure=Object(Qualified(Table(field->sourcePath),field->property->referencedType));
+        if(LowerAscii(structure->reflection.objectPath)!=expected ||
+            LowerAscii(Qualified(Table(structure->sourcePath),Table(structure->sourcePath).exports.at(structure->exportIndex).ObjClass))!="core.struct")
+            throw std::runtime_error("Native ToWorld field does not reference its canonical Core struct");
+        const auto& declaration=StructDescriptor(structure);
+        if(!structure->outer || LowerAscii(structure->outer->reflection.objectPath)!="core.object" ||
+            declaration.baseField || declaration.logicalSize || !declaration.rawBytes.empty() || !declaration.bytecode.empty())
+            throw std::runtime_error("Native ToWorld Core struct owner/base/script is invalid");
+        return structure;
+    }
+    void NativeCoordsVectorSchema(RuntimeObject* field) {
+        // Existing canonical Vector checker proves actual ordered X/Y/Z Float
+        // properties and exact Core.StructProperty/Core.Struct table classes.
+        static_cast<void>(NativeCoordsStruct(field,"core.object.vector"));
+        if(StructResultLayout(field)!=QuestVr::Vm::ResultLayout::CoreVector12)
+            throw std::runtime_error("Native ToWorld Vector does not have original12-byte layout");
+    }
+    void NativeCoordsRotatorSchema(RuntimeObject* field) {
+        auto* structure=NativeCoordsStruct(field,"core.object.rotator");
+        const auto schema=StructSchema(structure);const auto& declaration=StructDescriptor(structure);
+        if(schema->kind!=Kind::Rotator || schema->fields.size()!=3u)
+            throw std::runtime_error("Native ToWorld Rotator is not three original Int fields");
+        constexpr std::array<const char*,3u> names{"pitch","yaw","roll"};auto child=declaration.children;
+        for(std::size_t i=0u;i<names.size();++i) {
+            if(!child) throw std::runtime_error("Native ToWorld Rotator field chain is truncated");
+            auto* member=Object(Qualified(Table(structure->sourcePath),child));
+            if(member->outer!=structure || !member->property || member->property->type!="IntProperty" ||
+                member->property->arrayDimension!=1 || member->property->baseField || member->property->referencedType ||
+                LowerAscii(Qualified(Table(member->sourcePath),Table(member->sourcePath).exports.at(member->exportIndex).ObjClass))!="core.intproperty" ||
+                LowerAscii(member->reflection.objectPath)!=std::string("core.object.rotator.")+names[i] ||
+                LowerAscii(schema->fields[i].key)!=LowerAscii(member->reflection.objectPath) ||
+                schema->fields[i].zero.kind!=Kind::Int || schema->fields[i].nested)
+                throw std::runtime_error("Native ToWorld Rotator channel schema is invalid");
+            child=member->property->nextField;
+        }
+        if(child) throw std::runtime_error("Native ToWorld Rotator has extra native fields");
+    }
+    Property NativeCoordsProperty(RuntimeObject* actor,const char* key,Kind kind,std::uint32_t flags) {
+        const auto property=DescribeProperty(key);auto* field=Object(property.key);
+        if(LowerAscii(property.key)!=LowerAscii(key) || !OwnsProperty(actor->cls,property) ||
+            property.arrayDimension!=1u || property.zero.kind!=kind || property.flags!=flags)
+            throw std::runtime_error(std::string("Native ToWorld property is not its exact original declaring schema: ")+key);
+        if(kind==Kind::Vector) NativeCoordsVectorSchema(field);
+        else if(kind==Kind::Rotator) NativeCoordsRotatorSchema(field);
+        else if(kind!=Kind::Struct) throw std::runtime_error("Native ToWorld unsupported field kind");
+        return property;
+    }
+    Value NativeCoordsRead(RuntimeObject* actor,const char* key,Kind kind,std::uint32_t flags) {
+        const auto value=Read(actor,NativeCoordsProperty(actor,key,kind,flags),0u);
+        if(value.kind!=kind) throw std::runtime_error("Native ToWorld live value differs from its original field kind");
+        return value;
+    }
+    QuestVr::OriginalBrushScale NativeCoordsScale(RuntimeObject* actor,const char* key) {
+        const auto property=NativeCoordsProperty(actor,key,Kind::Struct,0x1u);auto* field=Object(property.key);
+        auto* structure=NativeCoordsStruct(field,"core.object.scale");
+        const auto schema=StructSchema(structure);
+        if(schema->kind!=Kind::Struct || schema->fields.size()!=3u)
+            throw std::runtime_error("Native ToWorld Scale is not its three original members");
+        constexpr std::array<const char*,3u> names{"scale","sheerrate","sheeraxis"};
+        constexpr std::array<const char*,3u> types{"StructProperty","FloatProperty","ByteProperty"};
+        constexpr std::array<Kind,3u> kinds{Kind::Vector,Kind::Float,Kind::Byte};
+        for(std::size_t i=0u;i<names.size();++i) {
+            auto* member=Object(std::string("Core.Object.Scale.")+names[i]);
+            const auto& entry=schema->fields[i];
+            if(member->outer!=structure || !member->property || member->property->type!=types[i] ||
+                member->property->arrayDimension!=1 || member->property->baseField || member->property->flags!=0x4001u ||
+                LowerAscii(Qualified(Table(member->sourcePath),Table(member->sourcePath).exports.at(member->exportIndex).ObjClass))!=
+                    std::string("core.")+LowerAscii(types[i]) ||
+                LowerAscii(entry.key)!=LowerAscii(member->reflection.objectPath) || entry.zero.kind!=kinds[i])
+                throw std::runtime_error("Native ToWorld Scale member declaration is invalid");
+            if(i==0u) NativeCoordsVectorSchema(member);
+            else if(i==1u) {
+                if(entry.nested || member->property->referencedType)
+                    throw std::runtime_error("Native ToWorld SheerRate is not an original scalar Float");
+            } else {
+                auto* enumeration=Object(Qualified(Table(member->sourcePath),member->property->referencedType));
+                if(entry.nested || enumeration->outer!=structure ||
+                    LowerAscii(enumeration->reflection.objectPath)!="core.object.scale.esheeraxis" ||
+                    LowerAscii(Qualified(Table(enumeration->sourcePath),Table(enumeration->sourcePath).exports.at(enumeration->exportIndex).ObjClass))!="core.enum")
+                    throw std::runtime_error("Native ToWorld SheerAxis lacks the original Scale enum declaration");
+            }
+        }
+        const auto value=Read(actor,property,0u);
+        if(value.kind!=Kind::Struct || value.fields.size()!=3u)
+            throw std::runtime_error("Native ToWorld live Scale has a different member shape");
+        const auto& scale=value.fields.at("scale");const auto& rate=value.fields.at("sheerrate");
+        const auto& axis=value.fields.at("sheeraxis");
+        if(scale.kind!=Kind::Vector || rate.kind!=Kind::Float || axis.kind!=Kind::Byte)
+            throw std::runtime_error("Native ToWorld live Scale member types differ from authored schema");
+        return {{scale.vector[0u],scale.vector[1u],scale.vector[2u]},rate.floating,static_cast<std::uint8_t>(axis.integer)};
+    }
+    NativeActorCoords NativeActorToWorld(RuntimeObject* actor) {
+        auto* native=NativeToWorldClass(actor);const auto path=LowerAscii(native->reflection.objectPath);
+        NativeActorCoords result;result.nativeClassPath=native->reflection.objectPath;
+        result.brush=path=="engine.brush" || path=="engine.mover";
+        const auto location=NativeCoordsRead(actor,"Engine.Actor.Location",Kind::Vector,0x23u);
+        const auto rotation=NativeCoordsRead(actor,"Engine.Actor.Rotation",Kind::Rotator,0x23u);
+        const PortableModelVec3 point{location.vector[0u],location.vector[1u],location.vector[2u]};
+        const QuestVr::OriginalBrushRotation angles{rotation.rotation[0u],rotation.rotation[1u],rotation.rotation[2u]};
+        if(!result.brush) {
+            result.coords=QuestVr::BuildOriginalActorCoords(point,angles,QuestVr::OriginalSineProfile::Table());
+            return result;
+        }
+        const auto pivot=NativeCoordsRead(actor,"Engine.Actor.PrePivot",Kind::Vector,0x20u);
+        // Exact original native layout proof is ORIGINAL-BRUSH-NATIVE-OFFSETS:
+        // +340=PostScale is applied first; +32C=MainScale follows Rotation.
+        const auto post=NativeCoordsScale(actor,"Engine.Brush.PostScale"),main=NativeCoordsScale(actor,"Engine.Brush.MainScale");
+        result.coords=QuestVr::BuildOriginalBrushCoords(point,angles,{pivot.vector[0u],pivot.vector[1u],pivot.vector[2u]},
+            post,main,QuestVr::OriginalSineProfile::Table());
+        return result;
+    }
+    PortableActorToWorldSnapshot ReadActorToWorldSnapshot(RuntimeObject* actor) {
+        RequireMapActor(actor);
+        if(actor->worldActorIndex<0 || static_cast<std::size_t>(actor->worldActorIndex)>=persistentWorldActors.size() ||
+            persistentWorldActors[static_cast<std::size_t>(actor->worldActorIndex)]!=actor)
+            throw std::runtime_error("Native ToWorld diagnostic requires an indexed actual current-map Actor");
+        const auto result=NativeActorToWorld(actor);const auto& c=result.coords;
+        return {actor->reflection.objectPath,result.nativeClassPath,result.brush?"ABrush::ToWorld":"AActor::ToWorld",
+            {c.origin.x,c.origin.y,c.origin.z},{c.xAxis.x,c.xAxis.y,c.xAxis.z},
+            {c.yAxis.x,c.yAxis.y,c.yAxis.z},{c.zAxis.x,c.zAxis.y,c.zAxis.z}};
     }
     const PortableModelGeometry& NativeTraceModel(RuntimeObject* actor) {
         static_cast<void>(NativeLevelInfo(actor));
@@ -10908,6 +11083,13 @@ PortableNativeModelSnapshot ReadPortableRuntimeNativeModel() {
         result.geometryCached=true;result.cachedNodes=cache.geometry->nodes.size();
     }
     return result;
+}
+
+PortableActorToWorldSnapshot ReadPortableRuntimeActorToWorld(const std::string& actorPath) {
+    if(actorPath.empty() || actorPath.size()>4096u || actorPath.find('\0')!=std::string::npos)
+        throw std::invalid_argument("Native ToWorld diagnostic actor identity is invalid");
+    PortableActorVmHost host;
+    return host.ReadActorToWorldSnapshot(host.Object(actorPath));
 }
 
 static std::pair<RuntimeObject*,RuntimeObject*> RelinkAuthoredActorBases(

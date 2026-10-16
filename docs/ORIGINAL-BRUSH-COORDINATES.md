@@ -129,10 +129,11 @@ not a universal cross-CPU FSIN guarantee or an initialized Android table.
 ## Brush ToWorld exact outer order
 
 ABrush.ToWorld `1030F310..1030F4F6` reads Location, Rotation, PrePivot at
-+180/+184/+188 and complete FScale blocks at native+340 and+32C. Their
-MainScale/PostScale property names exist in the original packages, but this
-audit has not independently bound each name to its registered native offset.
-The source/API therefore intentionally names both blocks by **offset**.
++180/+184/+188 and complete FScale blocks at native+340 and+32C.
+ORIGINAL-BRUSH-NATIVE-OFFSETS.md now independently establishes +340 as
+PostScale and +32C as MainScale from authored linking, registered native
+sizes and the original copy constructor. The scalar source/API retains its
+explicit **offset** names; the live provider maps qualified fields accordingly.
 DrawScale is not read in this body.
 
 The complete operation is:
@@ -267,10 +268,12 @@ and keeps the two scale blocks as `scale340` and `scale32c`.
 These results prove the supplied-value coordinate service, not live native
 identity, LUT initialization, world movement or on-device crate physics.
 
-Still required for native runtime integration: genuine object/class/virtual
-dispatch authority; validated native-offset-to-reflected-property mapping;
-the actual original lookup-table lifecycle/provenance; one captured ToWorld
-value for each Model query; current Brush/Mesh/Cylinder primitive selection;
-and shared VM transaction/work/rollback guarantees. These pure coordinate
-values and registration bounds must not be promoted to final brush collision
-or a successful original world-startup claim.
+ORIGINAL-TOWORLD-VTABLES.md establishes all56 native Actor virtual methods;
+ORIGINAL-LIVE-ACTOR-COORDINATES.md describes their current typed-field provider.
+ORIGINAL-SINE-PROFILE.md establishes the explicit target-usable numeric profile,
+including its provenance limits. Still required for collision integration:
+actual engine/primitive/hash lifecycle; one captured ToWorld value for each
+Model query; current Brush/Mesh/Cylinder primitive selection; and shared VM
+transaction/work/rollback guarantees. Coordinates and registration bounds
+must not be promoted to final brush collision or a successful original
+world-startup claim.

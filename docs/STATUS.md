@@ -1,5 +1,39 @@
 # Port status
 
+## Live native Actor/Brush coordinate authority (2026-10-16)
+
+- Connected actual runtime actors to original ToWorld scalar construction.
+  Bounded nearest-RF_Native dispatch admits the verified56 original native
+  Actor classes; only Brush/Mover use ABrush. Full ancestry checks continue
+  after selection; unknown nearest native classes do not fall back silently.
+- Proved native property mapping from original package linking, Actor/Brush
+  registered sizes and exported Brush copy: MainScale+32C, PostScale+340,
+  TempScale+354. Provider reads exact qualified original Location/Rotation,
+  plus brush PrePivot/Post/Main through typed current-value storage, validating
+  actual Vector/Rotator/Scale declarations and the Scale enum/member schema.
+  Render transforms, DrawScale and same-name shadow fields are not authority.
+- Added read-only detached actor coordinate/provenance diagnostic. Generated
+  metadata/VM tests734 checks/17 refusals pass live setters, instance/default/
+  shadow behavior, native dispatch and whole-state/GC immutability. No fake
+  physics flags, BeginPlay or unsupported native success is introduced.
+- Owned dormant Training integration52213 checks/17 refusals passes all1308
+  real actors, including1017 Brushes/25 Movers, all12 Float bits and source-
+  derived nearest-native identities. Complete checkpoint/revision/native time/
+  world slots/GC/Model cache and original file fingerprints/mtimes unchanged.
+  This verifies the live adapter, not native movement or on-device physics.
+- Coherent full host build and strict ARM64 syntax pass. Fresh CTest121 passed/
+  137 registered/16 explicit owned-data skips/zero failures in45.80s. The owned
+  adapter above ran separately with an explicit original game root. Independent
+  read-only provider/test/wiring review found no actionable issues. Local logs are
+  `artifacts/live-actor-coords-*-20261016.log`. Metadata reads may retain immutable
+  decode caches, not saved/gameplay changes or new GC object identity.
+- Actual Engine/Cylinder lifetime and Level.Engine binding are now audited,
+  but not implemented. Primitive selection/query, original hash/RNG lifecycle,
+  caller-shared transactions and complete Move/callback/support/startup/player/
+  falling remain. Crates and APK are not completed by this checkpoint. See
+  ORIGINAL-LIVE-ACTOR-COORDINATES.md, ORIGINAL-TOWORLD-VTABLES.md,
+  ORIGINAL-BRUSH-NATIVE-OFFSETS.md and ORIGINAL-ENGINE-CYLINDER.md.
+
 ## ARM-usable original-instruction sine profile (2026-10-16)
 
 - Added the complete immutable16384-Float profile used explicitly by the

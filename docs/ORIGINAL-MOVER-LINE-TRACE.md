@@ -73,10 +73,10 @@ inherits Brush. A generic Actor rotation matrix is not the AMover transform.
 
 The ABrush ToWorld body reads Location `+114..11C`, Rotation `+120..128`,
 PrePivot `+180..188`, and two complete FScale blocks at `+32C` and `+340`.
-The property identities MainScale/PostScale are present in original Engine.u;
-their exact native-offset-to-name registration is not independently completed
-by this audit. Keep the two native blocks distinct until that mapping is
-verified; do not copy a pinned engine's MainScale-only transform as retail proof.
+The exact native name/offset mapping is now independently established in
+ORIGINAL-BRUSH-NATIVE-OFFSETS.md: +32C=MainScale, +340=PostScale. Keep the two
+blocks distinct; do not copy a pinned engine's MainScale-only transform as
+retail proof.
 DrawScale is not read anywhere in this ABrush ToWorld body.
 
 Recoverable original operation order, retaining the native blocks by offset:
@@ -281,9 +281,12 @@ does not by itself establish live native object authority or gameplay.
 Detached native **Actor/ABrush/AMover ToWorld coordinate construction now
 exists in `quest_brush_coords.h`**, using explicit native field values and
 a supplied16384-Float sine table. ORIGINAL-BRUSH-COORDINATES.md records its
-independent numeric/rotation verification. The live provider must still
-establish actual object and UClass/vtable identity, map the two native scale
-offsets to actual runtime fields, and supply genuine lookup table authority.
+independent numeric/rotation verification. The current live provider and
+separate identity/layout/profile evidence are recorded in
+ORIGINAL-LIVE-ACTOR-COORDINATES.md, ORIGINAL-TOWORLD-VTABLES.md,
+ORIGINAL-BRUSH-NATIVE-OFFSETS.md and ORIGINAL-SINE-PROFILE.md. Collision must
+still establish actual primitive lifetime/ownership and capture that current
+live ToWorld value once per nonempty Model query.
 Supplying guessed identity axes, a host inverse, renderer geometry or the
 pinned engine's simpler transform is not that provider. Finite captured
 singular/zero matrices are deliberately accepted: the captured-coordinate
