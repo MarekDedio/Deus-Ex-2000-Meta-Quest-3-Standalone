@@ -8,7 +8,8 @@ Core.dll SHA256:
 Addresses are preferred PE32 virtual addresses, not portable object layouts.
 
 This establishes native FCollisionHash's AddActor, RemoveActor and
-ActorLineCheck behavior. It is not an implementation, original world startup,
+ActorLineCheck behavior. The detached implementation is recorded below; it
+is not original world startup,
 MoveActor, FindBase, falling physics, or playable crate acceptance. In
 particular, `native/quest_actor_overlap.h` describes a different pinned-engine
 registry and must not be silently reused as the retail hash specification.
@@ -240,7 +241,7 @@ Let that stored Float endpoint box be Min/Max and Q be Extent. The actual
 query grid inputs have asymmetric intermediate stores (`103591F9..10359331`):
 
 ```
-minY = F(Min.y - Q.y); minZ = F(Min.z - Q.z)
+minZ = F(Min.z - Q.z); minY = F(Min.y - Q.y)
 Xmin = gridRetained(Min.x - Q.x)
 Ymin = grid(minY); Zmin = grid(minZ)
 
@@ -265,15 +266,17 @@ not permission to substitute a different spatial algorithm.
 The query visits inclusive X outer/Y middle/Z inner, then each selected
 bucket chain head-to-tail (`1035933C..103594E1`). For every link:
 
-1. Read link.Actor and its native CollisionTag. If equal to the current
-   global CollisionTag, skip this link (`103593A3..103593B3`).
+1. Read link.Actor and its native CollisionTag, then reload the process-global
+   CollisionTag for this link. If equal, skip this link
+   (`103593A3..103593B3`). This is not the query-entry tag captured once.
 2. Compare link.encodedCell to the current cell's shifted-add encoded value.
    Skip on inequality (`103593B9..103593BC`). A mismatched encoded cell does
    **not** tag the Actor.
 3. Create a fresh FCheckResult with Next=None, Actor=None, Location=(0,0,0),
    Normal=(0,0,0), Primitive=None, **Time=+0**, Item=-1.
    Time initialization at10359401 is0, not1.
-4. Write Actor.CollisionTag=current global tag **before** primitive dispatch.
+4. Reload the process-global tag again and write Actor.CollisionTag=current
+   global tag **before** primitive dispatch (`103593F2..1035940F`).
 5. Select live Brush, else Mesh, else actual XLevel.Engine.Cylinder, and call
    its virtual+58 LineCheck(Hit, Actor, End, Start, Extent, flags&255).
 6. If primitive returns clear/nonzero, append nothing. The Actor remains
@@ -288,11 +291,118 @@ exists in ActorLineCheck itself; ULevel.MultiLineCheck's later bounded
 collection/sort contract is separate. The function does not validate that a
 primitive returned Actor==link.Actor before copying its hit in this build.
 
+After primitive dispatch and any hit copy, traversal loads **the current
+link's live Next field** at103594C3. It does not retain the pre-dispatch Next,
+restart from the bucket head, or traverse a snapshotted candidate vector.
+Thus a nested query can change the global tag seen by subsequent outer links;
+a callback's supported removal/reuse can change the Next that the outer walk
+follows. The encoded query cell is restored from the outer stack, but that
+does not freeze the link, Actor tag, process tag or subsequent bucket heads.
+These observable reloads require shared live query/mutation state and a common
+root rollback boundary, not one private deduplication set per query. Unsafe
+link reuse/cycles must explicitly refuse within the portable work budget.
+
 The tag is process-global across hash instances. It increments with native
 32-bit wrap; the owned query body performs no reset scan on wrap. It is not
 a persistent monotonic64-bit actor identifier. A portable detached query may
 model the observed deduplication without native pointers, but lifecycle and
 rollback must be explicit if it mutates authoritative actor tags/global state.
+
+## Native hash lifetime and the real map-load boundary
+
+The original native owner is ULevel.Hash at+F8, not a reflected Actor.Level
+value or a renderer registry. ULevel vtable10428AFC binds SetActorCollision at
+slot+58 to thunk103013C0, body1039D390..1039D498. Its four cases are:
+
+| Requested state | Existing Hash | Native operation |
+| --- | --- | --- |
+| Enable/nonzero | None | Construct, publish Hash, register current actors |
+| Enable/nonzero | Present | No operation |
+| Disable/zero | None | No operation |
+| Disable/zero | Present | Remove current actors, delete Hash, set None |
+
+Enable with no Hash calls exported GNewCollisionHash thunk10301B59 at
+1039D3D1. Its body103579E0..10357A4B allocates0x10014 bytes and invokes the
+default FCollisionHash constructor at10357A23. SetActorCollision stores the
+returned pointer at1039D3D6 **before** registration. Starting at native
+Actors slot0, it rereads Actors.Num at Level+30 and the actor-array pointer
+at+2C, visiting ascending slots. It calls AddActor only for a nonnull Actor
+whose bCollideActors bit1 at+1DC is set (`1039D3DC..1039D404`). There is no
+additional class, hidden, block, pending-delete or primitive-fallback gate
+here; AddActor retains its own pending-delete gate and primitive authority.
+The original allocator can return None; this is not authority for a portable
+allocation failure to become a successful empty hash.
+
+Disable with an existing Hash enumerates current native Actors in the same
+ascending, reread-count order and calls RemoveActor on the same nonnull /
+bCollideActors condition (`1039D447..1039D46B`). It then calls the deleting
+destructor and clears Level+F8 (`1039D46D..1039D483`). This is not an all-bucket
+repair or removal using previously cached actor bounds.
+
+UGameEngine.LoadMap thunk103033A5, body1038C1F0, calls the newly selected
+current Level's virtual SetActorCollision(1) at1038D1ED..1038D1FB. This is
+**before** the64-by-64 zone-distance work at1038D202, GameInfo birth at
+1038D59D, and the later InitExecution / InitGame / startup passes. Therefore,
+if that call creates the first hash of the process, its49152 raw appRand draws
+occur at this real LoadMap boundary, before GameInfo/startup callbacks. They
+do not belong to the first trace, first actor interaction, or an arbitrary
+portable package decode. The audited bodies do not prove that every possible
+engine/editor entry path first creates its hash through this LoadMap call;
+the process-global Inited gate, not an assumed first-map identity, decides.
+
+The inspected ULevel default constructor10345D30..10345E96, public
+ULevel(UEngine*,int) constructor1039CAC0..1039CD6A, and PostLoad body1039D230
+do not themselves call this factory or allocate a hash. This negative
+observation is bounded to those bodies; it is not a substitute audit of
+UObject allocation/zeroing or every native constructor. ULevel.Serialize
+1039D560..1039D7FF and its ULevelBase.Serialize1039C5F0..1039C78E archive the
+level/model/actor graph but do not archive Level.Hash+F8. A native hash must not
+be invented by copying an archived host pointer or by decoding a map alone.
+
+ULevel.Destroy thunk10301488, body1039D900..1039D96B, directly calls the
+existing Hash's deleting destructor at1039D936 and clears Level+F8 at
+1039D938. Unlike SetActorCollision(false), Destroy performs **no** preliminary
+RemoveActor enumeration. FCollisionHash destructor10357C90..10357DAB frees
+its allocated link chunks and chunk array. Neither method resets global
+permutations, Inited or CollisionTag; creating a subsequent hash likewise does
+not reset the tag.
+
+### Process state, actor tags and persistence limits
+
+Inited, CollisionTag and all three permutation arrays lie in the PE .data
+section's virtual-only zero-filled region: RVA179000, raw sizeD000, virtual
+size11F2F4. Their initial process values are consequently zero; this is not a
+map/default-property seed. Only the default constructor references Inited in
+the audited Engine .text; it sets the gate before drawing. All four hash
+query families share the same32-bit CollisionTag global:
+
+| Query | Body | Global increment/read references |
+| --- | --- | --- |
+| ActorPointCheck | 103585B0 | 10358725,1035872E,1035878F |
+| ActorRadiusCheck | 103589E0 | 10358B54,10358B5D,10358BBF |
+| ActorEncroachmentCheck | 10358D50 | 10358E15,10358E24,10358E8F |
+| ActorLineCheck | 10359160 | 10359182,1035919E,103593AD,103593F6 |
+
+Original Engine.u actually declares Actor.CollisionTag: export reference4756,
+IntProperty, dimension1, flags00002002, next field4753. ColLocation is
+StructProperty reference4743, dimension1, flags00000002. These are genuine
+original schema identities, not permission to expose a fabricated tag field
+or to restore process-global query history from an actor record. AActor's
+Serialize body10369AD0..10369B12 delegates UObject.Serialize; the complete
+original UObject property save/load filters are outside this bounded audit.
+No claim of original savegame compatibility or cold/warm tag reconstruction
+is made from the raw property flags alone.
+
+The current portable InitializePortableRuntime constructs the script session
+and owns its explicit shared RNG seed. LoadPortableRuntimeMap links actual
+ULevel / actor slots and separately builds the pinned ActorCollisionRegistry
+in RelinkAuthoredActorBases. Neither operation is evidence that original
+SetActorCollision has run. The non-publishing ProbeWorldStartup currently
+begins GameInfo selection after world validation and does not implement this
+earlier native hash-enable phase. Future integration needs the real native
+level/engine/primitive edges, current slot-order registration, genuine shared
+appRand state at the verified lifecycle boundary, and rollback of the entire
+initialization. A detached hash packet cannot silently supply any of these.
 
 ## Bounded portable foundation and non-substitutions
 
@@ -313,3 +423,106 @@ Every failure must restore authoritative hash membership/free-list, native
 tags, shared RNG draws, partial results and actor writes in the same root
 transaction where relevant. Detached implementation/testing packets must not
 be described as original runtime startup or collision integration.
+
+## Detached scalar and state implementation (2026-10-16)
+
+`native/quest_collision_hash_math.h` now implements shifted grid conversion,
+explicit Float/reload/FISTP nearest-even signed32 conversion before clamp,
+retained-X swept bounds, Start-first signed-zero box folding, the original
++1 primitive box/retained-Y radius, inclusive range products and shifted-ADD
+encoded cells. Nonfinite active inputs, unsafe FISTP/Float storage and exhausted
+work bounds explicitly refuse, not pre-saturate into a plausible grid value.
+
+The explicit `InitializeOriginalCollisionHashTables(sharedSeed,drawBudget)`
+performs the49152 X/Y/Z-order shared CRT draws and fixed-index swaps. Its local
+seed commits only after the complete successful operation. It has no guessed
+initial seed, hidden per-map invocation or implicit initialized gate. The
+owning native lifecycle must still establish when it runs and journal the
+shared RNG plus process initialized state. Independent uint64 CRT recurrence,
+four full-table fingerprints and late draw-budget controls verify this helper.
+
+`native/quest_collision_hash.h` implements a bounded detached process domain
+with immutable validated permutation input, shared32-bit tag, opaque-handle
+actor storage and independent hash instances. Head arrays and1024-slot chunks
+use bounded heap allocations. One-based stable link handles preserve native
+chunk/free reuse order; they are not byte addresses or saved UObject pointers.
+Fresh links track undefined Actor/cell provenance separately from Next. Query
+continuation into never-initialized metadata explicitly refuses rather than
+treating zeroed host memory as a valid native Actor.
+
+Implemented operations preserve duplicate Add/prepend order, current-bound
+Remove/all Actor matches without encoded filtering, stale freed payload,
+LIVE post-bounds Location-to-ColLocation copy, pending-delete short circuits,
+original Time0 hit seed, per-link global-tag reloads, byte flags, reversed
+output links and entire primitive-provided hit packets (even a different
+returned Actor). Query vectors are copied at entry. There is no live collision,
+deletion, class, source or block filtering added to registered query membership.
+
+Nested query and supported registration mutation remain live, including
+current-node reuse. Bounds/cell ranges stay captured while each later bucket
+head and post-callback current-slot Next are reread. Storage generation checks
+refuse destruction/replacement of the active owner/hash, including same-handle
+actor resurrection; pending-delete state alone is not storage destruction.
+Diagnostic Add/Remove/profiling counters and the moved-without-hashing log are
+not modeled as gameplay state. No stale-membership repair is invented.
+
+All transactional operations join one outer owned-state snapshot/work ledger.
+A caught nested operation or invalid diagnostic read poisons that root. Any
+later refusal restores actor live fields/ColLocation/tags, all hash heads,
+chunks/free/stale metadata, new/destroyed storage and global tag. `WithRoot`
+groups a complete caller operation so several successful natives can still
+roll back after its last effect fails. Value results must be non-reference,
+nothrow-movable/destructible, preventing a post-commit return failure. ReadHash
+returns a detached heap-backed copy, not a live borrowed alias; copy-allocation
+failure also poisons an active root.
+
+Fixed maximums are65536 actors,64 hash instances,1048576 total allocated links,
+262144 cells,4194304 work steps,1048576 hit allocations and64 nested operations.
+Callers may only tighten these. Cells, steps, hits and nesting are cumulative
+through the SAME root, not renewed in callbacks. Every visited cell/link,
+including wrong-cell and already-tagged links, is charged. A chunk operation
+also charges all1024 initialized Next slots. Explicit overflow-safe range
+preflight and visit-time cumulative checks cover nested consumption.
+
+External primitive services remain explicit providers: bounds must invoke the
+actor's actual selected native primitive, and line must preserve Brush/Mesh/
+Cylinder priority and actual owner transforms. Provider external script,
+RNG/lifecycle, geometry and publication effects must join the eventual SAME VM
+root; this detached owned-state snapshot does not journal arbitrary external
+callback writes. The current runtime still uses the separately documented
+pinned overlap registry. This checkpoint does not silently replace it, enable
+native SetActorCollision, Move/FindBase/falling or bypass original startup.
+
+## Verification checkpoint (2026-10-16)
+
+- Scalar/table suite175138 checks/11306 explicit safety refusals/81630
+  independent hardware-x87 comparisons passes. Hardware FISTP and staged Float/
+  PC64 math are independent of production integer conversion; no original
+  executable code is called. Dense tie/nextafter/signed-zero and broad finite
+  exponent inputs, whole permutations and atomic seed refusals are covered.
+- State suite10778465 checks/22 root refusals passes600 independent mutation
+  operations and171 vector-oracle queries. The independent oracle uses bucket
+  and free vectors, not production linked-list code. It checks every head,
+  link Next, initialized/stale payload, allocation count and free position.
+  Tests cover duplicate/stale/current-bound removal, encoded aliases, wrong-cell
+  untagged encounters, wrap, nested same/other-hash live tags, follower removal,
+  current-slot reuse and fresh later-cell heads, copied arguments, undefined
+  storage refusal, callback destruction/replacement, late whole-root rollback,
+  caught failure poisoning and shared work/cell/depth/hit/chunk limits.
+- Actual pure cylinder bounds and LineCheck run through the hash for70 distinct
+  actors: all70 dispatch/hits survive with exact standalone geometry packets
+  and reversed encounter links. Feeding that complete hash list to the tested
+  MultiLine collector preserves all70 primitive calls, then admits/sorts only
+  its first64 records. This proves combined detached services, not original
+  loader/VM primitive identity, on-device gameplay or crate acceptance.
+- An initial Windows state-test stack overflow was traced by debugger to large
+  fixture snapshots, then corrected by bounded heap-backed head/table storage.
+  Strict ARM64 checks also identified two x86-only oracle helpers outside their
+  compiler guard; they were moved into that guard without loosening warnings.
+  Production finite/domain semantics were not relaxed to pass these repairs.
+
+The coherent full host build and strict ARM64 syntax pass. CTest114 passed /
+129 registered /15 explicit owned-data skips /zero failures in32.64s.
+Original Engine/Core/Engine.u SHA256 values were rechecked unchanged. Evidence
+logs are ignored local `artifacts/collision-hash-*-20261016.log`. No new APK or
+native world/physics integration is claimed.

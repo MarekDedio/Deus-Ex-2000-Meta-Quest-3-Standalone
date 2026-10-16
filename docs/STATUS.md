@@ -1,5 +1,47 @@
 # Port status
 
+## Original collision-hash scalar/state service (2026-10-16)
+
+- Implemented the detached retail hash math: shifted Float/FISTP nearest-even
+  grid conversion before clamp, retained-X swept bounds, signed-zero Start-first
+  box folding, +1 primitive bounds with retained-Y radius, inclusive products
+  and shifted-ADD encoded-cell aliases. Explicit permutation generation consumes
+  exactly49152 shared CRT draws in original X/Y/Z order, commits seed atomically
+  and assumes no default seed or hidden map lifecycle.
+- Implemented one detached process collision domain with immutable permutation
+  input, shared32-bit tag, actor storage and independent hash instances. Native
+  1024-slot chunk/free order, duplicate Add/prepend, current-bound Remove without
+  encoded filtering, stale membership/payload, live ColLocation copy and original
+  zero-Time primitive seed are preserved. Query returns complete reversed hits
+  without an invented64 cap or live class/delete/block/source filtering.
+- Nested queries reread the LIVE shared tag; registration callbacks preserve
+  current-slot reuse and LIVE post-call Next/later-cell heads. Captured input
+  vectors/ranges remain distinct. Undefined fresh metadata and destroyed/replaced
+  storage refuse, including same-handle owner replacement. Pending deletion
+  alone does not destroy query storage or filter registered membership.
+- One shared root snapshot/ledger restores all owned actor/tag/hash/chunk/free
+  changes on failure, including caught nested refusals. WithRoot groups multiple
+  successful native calls until the complete caller succeeds; result material-
+  ization cannot throw after commit. Cells/steps/hits/depth are shared, not reset
+  per callback. Heap-backed bounded snapshots avoid Windows fixture stack limits.
+- Scalar/table175138 checks/11306 safety refusals/81630 independent x87 comparisons
+  pass. State10778465 checks/22 root refusals pass600 independent vector-oracle
+  mutation operations and171 query comparisons. A70-distinct-actor real pure
+  cylinder integration preserves all70 hash dispatch/hits before MultiLine
+  independently admits/sorts64. Nested same/other-hash queries, removal/reuse,
+  wrap/aliases, late rollback, copied inputs and shared-budget failures are tested.
+- Coherent full host build and strict ARM64 syntax pass. CTest114 passed /
+  129 registered /15 explicit owned-data skips /zero failures in32.64s.
+  Original Engine/Core/Engine.u hashes unchanged; no commercial binary execution.
+  Ignored local logs: `artifacts/collision-hash-*-20261016.log`.
+- Native SetActorCollision/LoadMap lifecycle is independently audited: enable
+  occurs before GameInfo/startup, uses live ascending actor slots, and global
+  tables/tag survive hash/map destruction. Current portable loader/pinned overlap
+  registry does not establish that phase. Actual native primitive/brush-coordinate
+  providers, shared RNG lifecycle, complete VM-root bridge, Move/callback/support,
+  startup/player and falling still need integration. No new APK, on-device crate
+  destruction or gravity acceptance. See ORIGINAL-COLLISION-HASH.md.
+
 ## Original MultiLine collector and collision-hit ordering (2026-10-16)
 
 - Implemented the complete detached provider-driven MultiLine collector:
