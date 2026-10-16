@@ -14,6 +14,7 @@
 #include "quest_ai_event_state.h"
 #include "quest_script_random.h"
 #include "quest_script_random_vector.h"
+#include "quest_mesh_texture_selection.h"
 #include "quest_actor_latent.h"
 #include "quest_actor_timer.h"
 #include "quest_native_window_location.h"
@@ -2088,6 +2089,10 @@ public:
         if (index == 280u)
             throw std::runtime_error("SetTimer requires its budgeted VM execution context");
         RuntimeObject* object = Object(receiver);
+        // This is a read-only UObject query, also valid on an actual CDO or a
+        // retained removed Actor. It does not require a started world, player,
+        // collision or presentation-active receiver.
+        if (index==1013u) return MeshTextureNative(object,arguments,declaration);
         if (object->defaultOwner)
             throw std::runtime_error("Native execution on a class-default object requires its audited handler");
         if (index==264u) throw std::runtime_error("PlaySound requires its captured VM call-site context");
@@ -2538,6 +2543,7 @@ public:
     Evaluation NativeWithContext(const std::uint16_t index, const std::string& receiver,
         const std::vector<Evaluation>& arguments, const Function* declaration, QuestVr::Vm::Execution& execution,
         const std::optional<Value>& context) override {
+        if (index==1013u) return Native(index,receiver,arguments,declaration);
         if (Object(receiver)->defaultOwner)
             throw std::runtime_error("Native execution on a class-default object requires its audited handler");
         if (index==264u) return PlaySoundNative(Object(receiver),arguments,declaration,execution,context);
@@ -2571,6 +2577,7 @@ public:
     }
     Evaluation NativeWithExecution(const std::uint16_t index, const std::string& receiver,
         const std::vector<Evaluation>& arguments, const Function* declaration, QuestVr::Vm::Execution& execution) override {
+        if (index==1013u) return Native(index,receiver,arguments,declaration);
         if (Object(receiver)->defaultOwner)
             throw std::runtime_error("Native execution on a class-default object requires its audited handler");
         if(index==1052u) return InitRootWindowNative(Object(receiver),arguments,declaration,execution);
@@ -2871,6 +2878,158 @@ public:
                 throw std::runtime_error("Native window declaration source is not the owned function");
         }
         return authored;
+    }
+    std::shared_ptr<const Function> MeshTextureDeclaration(const Function* supplied) {
+        const auto authored=FunctionFor(Object("Engine.Actor.GetMeshTexture"));
+        const auto validate=[&](const Function& function) {
+            if (LowerAscii(function.path)!="engine.actor.getmeshtexture" || function.nativeIndex!=1013u ||
+                function.flags!=0x401u || function.variables.size()!=2u)
+                throw std::runtime_error("GetMeshTexture does not match its original native declaration");
+            for (std::size_t slot=0u;slot<2u;++slot) {
+                const auto& field=function.variables[slot];auto* metadata=Object(field.key);
+                if (LowerAscii(field.key)!=(slot==0u?"engine.actor.getmeshtexture.texnum":"engine.actor.getmeshtexture.returnvalue") ||
+                    field.arrayDimension!=1u || field.flags!=(slot==0u?0x90u:0x580u) ||
+                    field.zero.kind!=(slot==0u?Kind::Int:Kind::Object) || !metadata->property ||
+                    metadata->property->type!=(slot==0u?"IntProperty":"ObjectProperty") ||
+                    (slot==1u && LowerAscii(ResolveCastReference(Table(metadata->sourcePath),
+                        metadata->property->referencedType))!="engine.texture"))
+                    throw std::runtime_error("GetMeshTexture parameter/result is not its authored scalar schema");
+            }
+        };
+        validate(*authored);
+        if (supplied) {
+            if (LowerAscii(supplied->path)!=LowerAscii(authored->path) || supplied->nativeIndex!=authored->nativeIndex ||
+                supplied->flags!=authored->flags || supplied->source!=authored->source)
+                throw std::runtime_error("GetMeshTexture declaration has a foreign callable identity");
+            if (!supplied->variables.empty()) validate(*supplied);
+        }
+        return authored;
+    }
+    void RequireMeshTextureReceiver(RuntimeObject* actor,const bool virtualSkin=false) {
+        if (!actor || actor->classDescriptor || !IsDerivedFromPath(actor->cls,"Engine.Actor"))
+            throw std::runtime_error("GetMeshTexture requires an actual Actor receiver");
+        if (!virtualSkin) return;
+        // Audited retail virtual +0x80 GetSkin implementations, NOT a general
+        // Engine.* prefix. Native UClass identity is RF_Native, not CLASS0x80
+        // (RuntimeStatic). Script-only subclasses inherit the nearest native.
+        static constexpr const char* audited[]={
+            "engine.actor","engine.brush","engine.buttonmarker","engine.camera","engine.camerapoint",
+            "engine.carcass","engine.decal","engine.decoration","engine.gameinfo","engine.gamereplicationinfo",
+            "engine.hud","engine.info","engine.internetinfo","engine.interpolationpoint","engine.inventory",
+            "engine.inventoryspot","engine.keypoint","engine.levelinfo","engine.liftcenter","engine.liftexit",
+            "engine.light","engine.menu","engine.mover","engine.mutator","engine.navigationpoint","engine.pathnode",
+            "engine.pawn","engine.playerpawn","engine.playerreplicationinfo","engine.playerstart","engine.projectile",
+            "engine.replicationinfo","engine.savedmove","engine.scout","engine.skyzoneinfo","engine.spawnnotify",
+            "engine.statlog","engine.statlogfile","engine.teleporter","engine.trigger","engine.triggermarker",
+            "engine.triggers","engine.warpzoneinfo","engine.warpzonemarker","engine.weapon","engine.zoneinfo",
+            "engine.locationid","deusex.augmentation","deusex.augmentationmanager","deusex.deusexdecoration",
+            "deusex.deusexlevelinfo","deusex.deusexplayer","deusex.scriptedpawn","deusex.skill","deusex.skillmanager",
+            "extension.playerpawnext"};
+        std::array<RuntimeObject*,128u> visited{};std::size_t depth{};
+        for (auto* cls=actor->cls;cls;cls=cls->base) {
+            LifecycleStep();
+            if (depth==visited.size() || std::find(visited.begin(),visited.begin()+depth,cls)!=visited.begin()+depth ||
+                !cls->classDescriptor || cls->reflection.metaClass!="Class")
+                throw std::runtime_error("GetMeshTexture native class ancestry is malformed, cyclic or excessive");
+            visited[depth++]=cls;
+            if ((cls->reflection.flags&0x04000000u)==0u) continue;
+            const auto path=LowerAscii(cls->reflection.objectPath);
+            if (std::find(std::begin(audited),std::end(audited),path)==std::end(audited))
+                throw std::runtime_error("GetMeshTexture nearest native GetSkin implementation is not audited");
+            return;
+        }
+        throw std::runtime_error("GetMeshTexture receiver lacks an actual native Actor ancestor");
+    }
+    void ValidateMeshTextureObject(const Value& value,const char* expected) {
+        if (value.kind!=Kind::Object) throw std::runtime_error("GetMeshTexture asset is not an Object value");
+        if (value.text.empty()) return;
+        const auto identity=CastObjectIdentity(value.text);
+        if (identity.classObject) throw std::runtime_error("GetMeshTexture asset is a UClass, not an instance");
+        auto path=identity.classPath;std::set<std::string> visited;
+        for (std::size_t depth=0u;!path.empty() && depth<128u;++depth) {
+            const auto key=LowerAscii(path);
+            if (!visited.insert(key).second) throw std::runtime_error("GetMeshTexture asset class hierarchy cycles");
+            if (key==LowerAscii(expected)) return;
+            path=CastClassIdentity(path).basePath;
+        }
+        throw std::runtime_error("GetMeshTexture asset violates its exact native class constraint");
+    }
+    Value MeshTextureField(RuntimeObject* actor,const char* key,const char* constraint,
+        const std::uint32_t dimension=1u,const std::uint32_t slot=0u) {
+        const auto field=DescribeProperty(key);auto* metadata=Object(field.key);
+        if (!OwnsProperty(actor->cls,field) || field.zero.kind!=Kind::Object || field.arrayDimension!=dimension || field.flags!=0x21u ||
+            slot>=dimension || !metadata->property || metadata->property->type!="ObjectProperty" ||
+            LowerAscii(ResolveCastReference(Table(metadata->sourcePath),metadata->property->referencedType))!=LowerAscii(constraint))
+            throw std::runtime_error("GetMeshTexture field is not its exact authored Actor Object schema");
+        auto value=Read(actor,field,slot);
+        ValidateMeshTextureObject(value,constraint);
+        return value;
+    }
+    Evaluation MeshTextureNative(RuntimeObject* actor,const std::vector<Evaluation>& arguments,const Function* supplied) {
+        static_cast<void>(MeshTextureDeclaration(supplied));
+        RequireMeshTextureReceiver(actor);
+        if (arguments.size()>1u) throw std::runtime_error("GetMeshTexture takes one optional Int input");
+        auto input=arguments.empty()?Value::Integer(0):arguments.front().Load();
+        if (input.kind==Kind::Nothing) input=Value::Integer(0);
+        if (input.kind!=Kind::Int) throw std::runtime_error("GetMeshTexture texnum is not an Int");
+        const auto index=input.integer;
+        const auto meshValue=MeshTextureField(actor,"Engine.Actor.Mesh","Engine.Mesh");
+        if (meshValue.text.empty()) return {Value::Text(Kind::Object,{}),{}};
+        RequireMeshTextureReceiver(actor,true);
+        std::array<std::string_view,8u> multi{};Value overrideValue,skinValue;
+        if (index>=0 && index<8) {
+            overrideValue=MeshTextureField(actor,"Engine.Actor.MultiSkins","Engine.Texture",8u,static_cast<std::uint32_t>(index));
+            multi[static_cast<std::size_t>(index)]=overrideValue.text;
+            if (!overrideValue.text.empty())
+                return {Value::Text(Kind::Object,std::string(QuestVr::ChooseOriginalMeshTexture(true,index,multi,{},{}).texture)),{}};
+        }
+        // At index0 or a negative input, a nonnull Skin precedes all mesh data.
+        // Do not decode (or refuse a skeletal payload) on a retail early exit.
+        if (index<=0) {
+            skinValue=MeshTextureField(actor,"Engine.Actor.Skin","Engine.Texture");
+            if (!skinValue.text.empty() || index<0)
+                return {Value::Text(Kind::Object,std::string(QuestVr::ChooseOriginalMeshTexture(true,index,multi,skinValue.text,{}).texture)),{}};
+        }
+        auto* mesh=Object(meshValue.text);
+        const auto meshClass=LowerAscii(CastObjectIdentity(meshValue.text).classPath);
+        if (meshClass!="engine.mesh" && meshClass!="engine.lodmesh")
+            throw std::runtime_error("GetMeshTexture mesh-slot query requires a complete audited Mesh/LodMesh payload");
+        if (!mesh->lodMesh)
+            mesh->lodMesh=LoadCompleteRuntimeLodMesh(Table(mesh->sourcePath),mesh->exportIndex,mesh->sourcePath);
+        const auto& decoded=*mesh->lodMesh;
+        if (decoded.textures.size()!=decoded.texturePaths.size())
+            throw std::runtime_error("GetMeshTexture immutable mesh slot cache is incomplete");
+        const bool validSlot=index>=0 && static_cast<std::size_t>(index)<decoded.textures.size();
+        const auto requested=validSlot?std::string_view(decoded.texturePaths[static_cast<std::size_t>(index)]):std::string_view{};
+        if (validSlot && decoded.textures[static_cast<std::size_t>(index)]!=0 && requested.empty())
+            throw std::runtime_error("GetMeshTexture nonnull mesh slot lost its object identity");
+        // A positive nonnull mesh slot precedes Skin. Read Skin only if the
+        // branch can use it; the renderer's material ordinal/Texture/default
+        // fallbacks are deliberately absent here.
+        if (index>0 && (static_cast<std::size_t>(index)>=decoded.textures.size() ||
+            decoded.textures[static_cast<std::size_t>(index)]==0))
+            skinValue=MeshTextureField(actor,"Engine.Actor.Skin","Engine.Texture");
+        const auto selected=QuestVr::ChooseOriginalMeshTextureSlot(true,index,multi,skinValue.text,decoded.textures.size(),requested);
+        if (selected.source!=QuestVr::MeshTextureSource::MeshTexture)
+            return {Value::Text(Kind::Object,std::string(selected.texture)),{}};
+        // texturePaths is a display/render cache. Resolve the selected RAW
+        // Mesh.Textures reference anew with actual import class provenance,
+        // then check Engine.Texture ancestry; never trust a leaf/path alone.
+        const auto texture=ResolvePortableValueObjectReference(Table(mesh->sourcePath),decoded.textures.at(selected.sourceIndex),
+            [this](const std::string& path,const std::string& importedClass) {
+                const auto identity=CastObjectIdentity(path);if (identity.classObject) return false;
+                auto cls=identity.classPath;std::set<std::string> visited;
+                for (std::size_t depth=0u;!cls.empty() && depth<128u;++depth) {
+                    if (!visited.insert(LowerAscii(cls)).second)
+                        throw std::runtime_error("GetMeshTexture imported texture class hierarchy cycles");
+                    const auto actual=CastClassIdentity(cls);
+                    if (LowerAscii(actual.name)==LowerAscii(importedClass)) return true;
+                    cls=actual.basePath;
+                }
+                return false;
+            });
+        auto result=Value::Text(Kind::Object,texture);ValidateMeshTextureObject(result,"Engine.Texture");
+        return {std::move(result),{}};
     }
     std::shared_ptr<const Function> VRandDeclaration(const Function* supplied) {
         const auto authored=FunctionFor(Object("Core.Object.VRand"));
@@ -3233,6 +3392,11 @@ public:
     }
     std::optional<Value> NativeArgumentSeed(const std::uint16_t index,const std::string& receiver,
         const std::size_t slot,const Function* declaration) override {
+        if (index==1013u) {
+            static_cast<void>(MeshTextureDeclaration(declaration));RequireMeshTextureReceiver(Object(receiver));
+            if (slot!=0u) throw std::runtime_error("GetMeshTexture has only one optional input slot");
+            return Value::Integer(0);
+        }
         if(index!=1410u && index!=1415u && index!=1416u && index!=1420u && index!=1421u && index!=1422u && index!=1430u && index!=1431u && index!=1432u && index!=1433u &&
             index!=1454u && index!=1461u && index!=1465u && index!=1467u && index!=1477u && index!=1510u && index!=1511u &&
             index!=1535u && index!=1538u && index!=1539u && index!=1540u && index!=1541u && index!=1544u && index!=1545u)

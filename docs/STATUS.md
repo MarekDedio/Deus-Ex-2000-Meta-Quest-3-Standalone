@@ -1,5 +1,34 @@
 # Port status
 
+## Original fragment textures / fatal crate-script checkpoint (2026-10-16)
+
+- Added original Actor.GetMeshTexture1013: exact native/parameter/property
+  authority, optional index0, written Object None and audited native GetSkin
+  ancestry. Canonical inherited Mesh/Skin/MultiSkins reads retain explicit None,
+  frozen defaults and hidden native fields. O(1) raw-slot selection has no
+  renderer material remapping or fabricated default texture. Selected assets
+  use actual package/import/class provenance; early overrides avoid decoding.
+- Pure selector12697648 checks and generated production982/32 refusal controls
+  pass, including actual Mesh/LodMesh payloads, raw/material index differences,
+  signed extremes, CDO queries, argument writes and complete rollback.
+- Both actual Training crates now complete isolated fatal None-instigator
+  TakeDamage: HP10->4->-2, six real WoodFragment births apiece, original selected
+  Skin and bit-exact stored velocity/scale/RNG continuation, one atomic native
+  removal/publication revision, warm/cold save replacement, repeated Destroy
+  invariance and final-return budget rollback/GC. Owned diagnostic468/4 passes;
+  original source bytes/timestamps are unchanged. The fixture is dormant:
+  bBegunPlay=false legitimately suppresses Destroyed/Contents callbacks. This
+  is not live VR destruction, a started GameInfo or surviving loot.
+- Legal nonnull Pawn-instigated fatal damage still rolls back at MakeNoise512
+  (Active.TakeDamage:428). Separate begun Destroy279 contents347/2 remains
+  passing: original Lockpick is created then relevance-deleted by Game=None.
+  Real player/native clock/noise/audio, startup, surviving contents, falling/
+  landing/support and complete render-scene publication remain unfinished.
+- Coherent full host build and strict ARM64 syntax pass. CTest102 passes out
+  of117 registered,15 explicit owned-data skips, zero failures,42.06s. Separate
+  actual NPC280519/26 retains all18 accepted waiting presentations. Source/tests
+  only: no new APK. See ORIGINAL-MESH-TEXTURES.md for exact authority/evidence.
+
 ## Original VRand / real contents lifecycle checkpoint (2026-10-16)
 
 - Added genuine Core.Object.VRand252 with original schema/canonical Vector

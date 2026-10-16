@@ -2,6 +2,18 @@
 
 ## Current follow-up (2026-10-16)
 
+The subsequent GetMeshTexture1013 checkpoint removes the fragment-texture
+refusal. Both actual crates' dormant-world None-instigator fatal hits now
+complete original Frag/nativeDestroy, each producing six genuine WoodFragment
+births with original selected Skin and exact stored velocity/scale/RNG order.
+Warm/cold save replacement, repeated Destroy and a last-return budget refusal
+prove complete publication/rollback/GC; owned468/4 passes. bBegunPlay=false
+legitimately suppresses the Destroyed/Contents callback in this isolated probe.
+This is not live melee or usable loot. True Pawn-instigated damage still stops
+at MakeNoise512:428. Falling/support, real player/world startup, surviving
+contents and committed render-scene publication remain required. See
+ORIGINAL-MESH-TEXTURES.md. Source/tests only, no replacement APK.
+
 The subsequent original VRand252 checkpoint removes the random-vector refusal
 described below. Actual fatal None-instigator damage now reaches original
 GetMeshTexture1013 at DeusExDecoration.Frag:269, retaining complete failure

@@ -2,14 +2,19 @@
 #include "GC/GC.h"
 #include "portable_unreal_runtime.h"
 #include "portable_model_geometry.h"
+#include "quest_script_random_vector.h"
+#include "quest_script_state.h"
 
 #include <algorithm>
+#include <array>
+#include <bit>
 #include <chrono>
 #include <cmath>
 #include <filesystem>
 #include <fstream>
 #include <functional>
 #include <iostream>
+#include <limits>
 #include <map>
 #include <stdexcept>
 #include <string>
@@ -341,22 +346,92 @@ void NativeWorkBudget() {
     Require(!result.passed()&&!result.committed&&result.error.find("Native actor lifecycle work budget exceeded")!=std::string::npos,"Nested live scans did not hit shared native work budget");
     Require(fixture.Snapshot("BudgetAfter")==fixture.baseline,"Native scan work refusal retained partial OUT writes"); ++refusals; fixture.Unchanged();
 }
+std::uint32_t SavedWord(const Bytes& bytes,const std::size_t offset) {
+    Require(offset<=bytes.size()&&bytes.size()-offset>=4u,"Owned crate checkpoint word exceeds bound");
+    std::uint32_t value{};for(unsigned i=0u;i<4u;++i) value|=static_cast<std::uint32_t>(bytes[offset+i])<<(8u*i);
+    return value;
+}
+QuestVr::ScriptSavedState DecodeCrateCheckpoint(const Bytes& bytes) {
+    Require(SavedWord(bytes,0u)==0x53515844u&&SavedWord(bytes,4u)>=4u&&SavedWord(bytes,4u)<=13u,
+        "Owned crate checkpoint has an unknown script envelope");
+    std::size_t cursor=8u;
+    const auto word=[&]() { const auto value=SavedWord(bytes,cursor);cursor+=4u;return value; };
+    const auto skip=[&](const std::size_t count) {
+        Require(cursor<=bytes.size()&&count<=bytes.size()-cursor,"Owned crate checkpoint prefix exceeds bound");cursor+=count;
+    };
+    const auto text=[&]() { const auto count=word();Require(count<=1'048'576u,"Owned crate checkpoint string exceeds bound");skip(count); };
+    const auto list=[&]() { const auto count=word();Require(count<=100'000u,"Owned crate checkpoint list exceeds bound");for(std::uint32_t i=0u;i<count;++i) text(); };
+    list();list();list();skip(4u);
+    const auto damaged=word();Require(damaged<=100'000u,"Owned crate checkpoint damage list exceeds bound");
+    for(std::uint32_t i=0u;i<damaged;++i) {text();skip(4u);}
+    skip(8u);list();list();list();list();
+    const auto length=word();Require(cursor<=bytes.size()&&length==bytes.size()-cursor,"Owned crate checkpoint trailer is incomplete");
+    return QuestVr::DecodeScriptSavedState(Bytes(bytes.begin()+static_cast<std::ptrdiff_t>(cursor),bytes.end()));
+}
+std::vector<std::string> WorldPaths() {
+    std::vector<std::string> paths;for(const auto& actor:GetPortableRuntimeMapActors(true)) paths.push_back(actor.objectPath);return paths;
+}
+bool PublishedOriginal(const std::string& actor) {
+    const auto world=WorldPaths();return std::find(world.begin(),world.end(),actor)!=world.end();
+}
+bool SameFloat(const float left,const float right) {
+    return std::bit_cast<std::uint32_t>(left)==std::bit_cast<std::uint32_t>(right);
+}
 bool Original(const std::filesystem::path& root) {
     std::vector<std::filesystem::path> sources;
     // Dispatch validates the complete loaded class graph. Load the original
     // class dependencies too rather than bypassing unresolved browser/UI bases.
-    for(const auto& name:{"Core","Engine","DeusEx","Extension","ConSys","IpDrv","IpServer","UBrowser","UWindow","Editor","Fire","MPCharacters","DeusExSounds"})
+    for(const auto& name:{"Core","Engine","DeusEx","Extension","ConSys","IpDrv","IpServer","UBrowser","UWindow","Editor","Fire","MPCharacters","DeusExSounds","DeusExDeco","DeusExItems"})
         sources.push_back(root/"System"/(std::string(name)+".u"));
     sources.push_back(root/"Maps"/"00_Training.dx");
     for(const auto& path:sources) if(!std::filesystem::is_regular_file(path)) { std::cout<<"SKIP original BasedActors: missing owned original package "<<path.string()<<'\n'; return false; }
-    std::map<std::filesystem::path,Bytes> before; std::vector<PortablePackageTables> packages;
-    for(std::size_t i=0u;i<sources.size();++i) { before.emplace(sources[i],ReadBytes(sources[i])); if(i+1u<sources.size()) packages.push_back(LoadPortablePackageTables(sources[i].string())); }
+    std::map<std::filesystem::path,Bytes> before;
+    std::map<std::filesystem::path,std::filesystem::file_time_type> modifiedBefore;
+    std::vector<PortablePackageTables> packages;
+    for(std::size_t i=0u;i<sources.size();++i) {
+        before.emplace(sources[i],ReadBytes(sources[i]));modifiedBefore.emplace(sources[i],std::filesystem::last_write_time(sources[i]));
+        if(i+1u<sources.size()) packages.push_back(LoadPortablePackageTables(sources[i].string()));
+    }
     const auto& engine=packages.at(1u); const auto declaration=LoadPortableFunctionScript(engine,FindPortableExport(engine,"Actor.BasedActors"));
     Require(declaration.nativeIndex==306u&&declaration.functionFlags==0x405u,"Original BasedActors native declaration differs from retail audit");
     Require(InitializePortableRuntime(packages).passed&&LoadPortableRuntimeMap(LoadPortablePackageTables(sources.back().string())).passed,"Original read-only runtime/map metadata initialization failed");
     Fixture checkpoints;
     for(const auto& name:{"CrateBreakableMedGeneral2","CrateBreakableMedGeneral1"}) {
         const std::string actor="00_Training."+std::string(name); Require(ReadPortableActorScriptProperty(actor,"Base").text.empty(),"Original crate Base was not authored None");
+        // Actual authored mesh and fields, not a hardcoded crate texture or
+        // renderer material ordinal. Cache preparation is read-only and must
+        // leave the complete gameplay checkpoint/revision/UObject graph alone.
+        const auto meshPath=ReadPortableActorScriptProperty(actor,"Mesh").text;
+        const auto dot=meshPath.find('.');Require(dot!=std::string::npos,"Original crate Mesh identity is unqualified");
+        const auto package=std::find_if(packages.begin(),packages.end(),[&](const auto& table) {
+            return std::filesystem::path(table.sourcePath).stem().string()==meshPath.substr(0u,dot);
+        });
+        Require(package!=packages.end(),"Original crate mesh package is not explicitly loaded");
+        const auto decodedMesh=LoadPortableLodMesh(*package,FindPortableExport(*package,meshPath.substr(dot+1u)));
+        const auto meshBefore=checkpoints.Snapshot("MeshBefore");const auto meshRevision=GetPortableRuntimeWorldRevision();
+        const auto meshGc=GC::GetStats();
+        for(const auto index:{std::numeric_limits<std::int32_t>::min(),-1,0,1,7,8,std::numeric_limits<std::int32_t>::max()}) {
+            std::string expected;
+            if(index>=0&&index<8) expected=ReadPortableActorScriptProperty(actor,"MultiSkins",static_cast<std::uint32_t>(index)).text;
+            const auto valid=index>=0&&static_cast<std::size_t>(index)<decodedMesh.textures.size();
+            const auto rawPath=[&]() {
+                const auto reference=decodedMesh.textures.at(static_cast<std::size_t>(index));
+                auto path=GetPortableObjectPath(*package,reference);
+                if(reference>0&&!path.empty()) path=meshPath.substr(0u,dot)+'.'+path;
+                return path;
+            };
+            if(expected.empty()&&index>0&&valid) expected=rawPath();
+            if(expected.empty()) expected=ReadPortableActorScriptProperty(actor,"Skin").text;
+            if(expected.empty()&&valid) expected=rawPath();
+            for(unsigned repeat=0u;repeat<2u;++repeat) {
+                const auto query=ExecutePortableActorFunction(actor,"GetMeshTexture",{{Value::Integer(index),{}}});
+                Require(query.passed()&&query.committed&&query.value.kind==Kind::Object&&query.value.text==expected,
+                    "Original crate GetMeshTexture raw slot/override differs: "+query.error+" got "+query.value.text+" expected "+expected);
+            }
+        }
+        Require(checkpoints.Snapshot("MeshAfter")==meshBefore&&GetPortableRuntimeWorldRevision()==meshRevision&&
+            GC::GetStats().numObjects==meshGc.numObjects&&GC::GetStats().memoryUsage==meshGc.memoryUsage,
+            "Original mesh texture query changed complete actor state/revision/UObject roots");
         const auto result=ExecutePortableActorFunction(actor,"DropThings"); Require(result.passed(),"Original empty-based DropThings failed: "+result.error);
         Require(ReadPortableActorScriptProperty(actor,"HitPoints").integer==10,"DropThings changed original crate HitPoints");
         const auto baseline=checkpoints.directory/"OriginalBefore.sav";
@@ -375,13 +450,6 @@ bool Original(const std::filesystem::path& root) {
             std::fabs(ReadPortableActorScriptProperty(actor,"ScaleGlow").floating-0.46f)<0.00001f,
             "Original crate damage6 did not preserve authored HitPoints/ResetScaleGlow");
         const auto fatalBefore=checkpoints.Snapshot("FatalBefore"); const auto fatalRevision=GetPortableRuntimeWorldRevision();
-        const auto fatal=ExecutePortableActorFunction(actor,"TakeDamage",hit);
-        Require(!fatal.passed()&&!fatal.committed&&fatal.error.find("Unsupported runtime native 1013")!=std::string::npos&&
-            fatal.function=="DeusEx.DeusExDecoration.Frag"&&fatal.offset==269u,
-            "Fatal crate probe stopped outside the documented fragment texture prerequisite: "+fatal.error+
-                " at "+fatal.function+':'+std::to_string(fatal.offset));
-        Require(checkpoints.Snapshot("FatalAfter")==fatalBefore&&GetPortableRuntimeWorldRevision()==fatalRevision,
-            "Fatal original crate damage leaked HP/scale/base/birth/deletion/random writes before unsupported fragment texture selection");
         // A real nonnull Pawn argument follows a different earlier branch.
         // This NPC is only a legal isolated test input, never a stand-in for
         // a possessed VR player or permission to skip original world startup.
@@ -397,13 +465,125 @@ bool Original(const std::filesystem::path& root) {
                 " at "+instigated.function+':'+std::to_string(instigated.offset));
         Require(checkpoints.Snapshot("InstigatedFatalAfter")==fatalBefore&&GetPortableRuntimeWorldRevision()==fatalRevision,
             "MakeNoise refusal leaked crate HP/Instigator or other complete-checkpoint effects");
+        ++refusals;
+        const auto level=ReadPortableActorScriptProperty(actor,"Level").text;
+        Require(!level.empty()&&!QuestVr::Vm::ToBool(ReadPortableActorScriptProperty(level,"bBegunPlay")),
+            "Isolated fatal-damage fixture unexpectedly claims a begun original world");
+        const auto beforeState=DecodeCrateCheckpoint(fatalBefore);
+        Require(beforeState.births.empty(),"Isolated original fatal probe starts with unrelated runtime births");
+        const auto worldBefore=WorldPaths();
+        const auto expectedSkin=ExecutePortableActorFunction(actor,"GetMeshTexture");
+        Require(expectedSkin.passed()&&expectedSkin.value.kind==Kind::Object,
+            "Original fatal crate could not query its actual selected fragment Skin");
+        const auto owner=ReadPortableActorScriptProperty(actor,"Owner").text;
+        const auto average=(ReadPortableActorScriptProperty(actor,"CollisionRadius").floating+
+            ReadPortableActorScriptProperty(actor,"CollisionHeight").floating)/2.0f;
+        Require(std::isfinite(average)&&average>0.0f&&average<10'000.0f,
+            "Original crate has invalid audited fragment-count dimensions");
+        const auto expectedCount=static_cast<std::size_t>(static_cast<std::int32_t>(average/5.0f+1.0f));
+        const auto fragmentSize=average/20.0f;
+        auto expectedSeed=beforeState.randomSeed.value_or(QuestVr::ScriptRandom::InitialSeed);
+        struct ExpectedFragment {std::array<float,3u> velocity;float scale;};
+        std::vector<ExpectedFragment> expectedFragments;
+        for(std::size_t i=0u;i<expectedCount;++i) {
+            // Adapter oracle only: the pure VRand suite independently checks
+            // the retail PC64 arithmetic. Actual Fragment.CalcVelocity draws
+            // VRand, then speed FRand; Frag subsequently draws scale FRand.
+            const auto direction=QuestVr::ScriptRandom::VRand(expectedSeed).vector;
+            const float randomSpeed=QuestVr::ScriptRandom::FRand(expectedSeed)*150.0f;
+            const float speed=(0.0f+randomSpeed)+100.0f;
+            std::array<float,3u> velocity{};
+            for(std::size_t axis=0u;axis<velocity.size();++axis) velocity[axis]=direction[axis]*speed;
+            const float randomScale=QuestVr::ScriptRandom::FRand(expectedSeed);
+            const float first=fragmentSize*0.5f,second=(0.7f*fragmentSize)*randomScale;
+            expectedFragments.push_back({velocity,first+second});
+        }
+        const auto fatal=ExecutePortableActorFunction(actor,"TakeDamage",hit);
+        Require(fatal.passed()&&fatal.committed&&fatal.function=="DeusEx.DeusExDecoration.Active.TakeDamage",
+            "Original dormant-world fatal decoration script failed: "+fatal.error+
+                " at "+fatal.function+':'+std::to_string(fatal.offset));
+        Require(GetPortableRuntimeWorldRevision()==fatalRevision+1u&&!PublishedOriginal(actor)&&
+            QuestVr::Vm::ToBool(ReadPortableActorScriptProperty(actor,"bDeleteMe"))&&
+            ReadPortableActorScriptProperty(actor,"HitPoints").integer==-2&&
+            ReadPortableActorScriptProperty(actor,"Instigator").text.empty()&&
+            ReadPortableActorScriptProperty(actor,"Event").text=="None",
+            "Committed original fatal hit did not atomically publish HP/deletion/world removal");
+        const auto fatalAfter=checkpoints.Snapshot("FatalAfter");auto destroyedState=DecodeCrateCheckpoint(fatalAfter);
+        Require(destroyedState.births.size()==expectedCount&&destroyedState.randomSeed==expectedSeed,
+            "Original fragment births/count/random continuation differs from CalcVelocity/Frag draw order");
+        auto births=destroyedState.births;
+        std::sort(births.begin(),births.end(),[](const auto& left,const auto& right) {return left.worldActorIndex<right.worldActorIndex;});
+        Require(WorldPaths().size()==worldBefore.size()-1u+expectedCount,
+            "Fatal publication did not replace one removed crate with all actual fragments");
+        for(std::size_t i=0u;i<births.size();++i) {
+            const auto& born=births[i];
+            Require(born.classPath=="DeusEx.WoodFragment"&&PublishedOriginal(born.path)&&
+                !QuestVr::Vm::ToBool(ReadPortableActorScriptProperty(born.path,"bDeleteMe")),
+                "Fatal crate manufactured another class or a removed/unpublished fragment");
+            Require(ReadPortableActorScriptProperty(born.path,"Skin").text==expectedSkin.value.text&&
+                ReadPortableActorScriptProperty(born.path,"Owner").text==owner&&
+                ReadPortableActorScriptProperty(born.path,"Instigator").text.empty(),
+                "Original spawned fragment lost actual crate Skin/Owner/Instigator semantics");
+            const auto velocity=ReadPortableActorScriptProperty(born.path,"Velocity");
+            Require(velocity.kind==Kind::Vector&&SameFloat(ReadPortableActorScriptProperty(born.path,"DrawScale").floating,expectedFragments[i].scale),
+                "Original Frag DrawScale differs from its stored arithmetic/random order");
+            for(std::size_t axis=0u;axis<velocity.vector.size();++axis)
+                Require(SameFloat(velocity.vector[axis],expectedFragments[i].velocity[axis]),
+                    "Original Fragment.CalcVelocity component/random order differs");
+            const auto overlay=std::find_if(destroyedState.objects.begin(),destroyedState.objects.end(),
+                [&](const auto& object) {return object.path==born.path;});
+            Require(overlay!=destroyedState.objects.end(),"Committed fragment lacks its real saved property/state overlay");
+        }
+        const auto removed=std::find_if(destroyedState.objects.begin(),destroyedState.objects.end(),
+            [&](const auto& object) {return object.path==actor;});
+        Require(removed!=destroyedState.objects.end()&&removed->lifecycle&&removed->lifecycle->worldRemoved,
+            "Fatal checkpoint omitted native crate world-removal lifecycle");
+        const auto fatalWorld=WorldPaths();GC::Collect();
+        Require(checkpoints.Snapshot("FatalAfterGC")==fatalAfter&&WorldPaths()==fatalWorld,
+            "Committed fragments/deleted crate UObject state lost GC roots");
+        const auto repeatRevision=GetPortableRuntimeWorldRevision();
+        const auto repeated=ExecutePortableActorFunction(actor,"Destroy");
+        Require(repeated.passed()&&QuestVr::Vm::ToBool(repeated.value)&&
+            checkpoints.Snapshot("FatalRepeatedDestroy")==fatalAfter&&GetPortableRuntimeWorldRevision()==repeatRevision,
+            "Repeated genuine Destroy duplicated fragments/effects or changed the checkpoint");
+        Require(LoadPortableRuntimeState((checkpoints.directory/"FatalAfter.sav").string())&&
+            checkpoints.Snapshot("FatalWarmRestore")==fatalAfter&&WorldPaths()==fatalWorld,
+            "Warm replacement failed exact fragment/tombstone/RNG continuation restore");
+        Require(LoadPortableRuntimeState((checkpoints.directory/"FatalBefore.sav").string())&&
+            WorldPaths()==worldBefore&&PublishedOriginal(actor),
+            "Replacing fatal save with its baseline left duplicate births or removed crate");
+        // Fail at the final original-script return, AFTER fragment births,
+        // random draws, Skin writes and native Destroy. Every earlier effect
+        // must roll back together, not leave an invisible crate or orphan loot.
+        Require(fatal.instructions>1u,"Fatal script consumed no measurable instructions for rollback control");
+        QuestVr::Vm::Limits tight;tight.instructions=fatal.instructions-1u;
+        GC::Collect();const auto gcBeforeRollback=GC::GetStats();
+        const auto rollbackRevision=GetPortableRuntimeWorldRevision();
+        const auto rollback=ExecutePortableActorFunction(actor,"TakeDamage",hit,tight);
+        Require(!rollback.passed()&&!rollback.committed&&rollback.status==QuestVr::Vm::Status::Budget&&
+            rollback.instructions==tight.instructions&&rollback.writes>=fatal.writes,
+            "Late fatal rollback did not exhaust its final-return budget after all original writes");
+        Require(checkpoints.Snapshot("FatalBudgetRollback")==fatalBefore&&WorldPaths()==worldBefore&&
+            GetPortableRuntimeWorldRevision()==rollbackRevision,
+            "Late fatal refusal leaked HP/deletion/fragment/collision/RNG/state publication");
+        GC::Collect();const auto gcAfterRollback=GC::GetStats();
+        Require(gcAfterRollback.numObjects==gcBeforeRollback.numObjects&&gcAfterRollback.memoryUsage==gcBeforeRollback.memoryUsage,
+            "Late fatal rollback retained provisional fragment UObjects");++refusals;
+        ShutdownPortableRuntime();
+        Require(InitializePortableRuntime(packages).passed&&LoadPortableRuntimeMap(LoadPortablePackageTables(sources.back().string())).passed&&
+            LoadPortableRuntimeState((checkpoints.directory/"FatalAfter.sav").string())&&
+            checkpoints.Snapshot("FatalColdRestore")==fatalAfter&&WorldPaths()==fatalWorld,
+            "Cold original runtime failed exact fatal-fragment/tombstone/random replacement");
         Require(LoadPortableRuntimeState(baseline.string()),"Could not restore isolated original crate probe");
-        std::cout<<"PREREQUISITE "<<actor<<": actual Active.TakeDamage6 survives with HP4/ScaleGlow0.46; fatal original hit passes real264/252 and rolls back at "<<fatal.function<<':'<<fatal.offset<<" native1013. Not live VR damage.\n";
+        std::cout<<"PREREQUISITE "<<actor<<": actual Active.TakeDamage6 survives with HP4/ScaleGlow0.46; fatal None-instigator hit commits original Frag/nativeDestroy with "
+            <<expectedCount<<" real WoodFragment births/selectedSkins/velocities/RNG and exact save replacement; late budget rolls back. Dormant-world isolated probe: no Destroyed/Contents callback or live VR damage claim.\n";
         std::cout<<"PREREQUISITE "<<actor<<": legal nonnull Pawn-instigated fatal hit rolls back earlier at "
             <<instigated.function<<':'<<instigated.offset<<" native512, complete checkpoint unchanged. Not a possessed player.\n";
     }
-    ShutdownPortableRuntime(); for(const auto& [path,b]:before) Require(ReadBytes(path)==b,"Original inspection changed a source package");
-    std::cout<<"PASS original BasedActors306 declaration, both crate DropThings scans and isolated surviving/fatal-refusal damage probes; no DLL/EXE execution, live VR damage, physics, spawned loot, equipment or campaign startup claim\n"; return true;
+    ShutdownPortableRuntime();for(const auto& [path,b]:before)
+        Require(ReadBytes(path)==b&&std::filesystem::last_write_time(path)==modifiedBefore.at(path),
+            "Original inspection changed source bytes or timestamp");
+    std::cout<<"PASS original BasedActors306 declaration, both crate DropThings scans, isolated surviving/fatal-fragment success and true Pawn-instigator refusal; no DLL/EXE execution, live VR damage, contents loot, physics, equipment or campaign startup claim\n"; return true;
 }
 } // namespace
 int main(int argc,char** argv) {
