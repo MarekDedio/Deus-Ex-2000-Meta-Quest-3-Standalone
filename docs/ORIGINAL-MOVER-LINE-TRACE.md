@@ -32,18 +32,24 @@ The actual returned primitive's virtual LineCheck determines the next path.
 Returning a brush registration bounding box as the final narrow-phase result
 would not reproduce this operation.
 
-`UMesh.LineCheck` thunk `1030259F` reaches `103A6D10`. It compares all three
-Extent Float components with zero. If **any** is nonzero it forwards the exact
-Hit, Owner, End, Start, Extent and flags to `UPrimitive.LineCheck`
-(`10301B9F` → `103D8AF0`), returning that result at `103A6DCE`. Only an exact
-zero-extent call takes the mesh-specific continuation at `103A6DD1`.
+`UMesh.LineCheck` thunk `1030259F` reaches `103A6D10`. The complete wrapper
+was closed by further read-only inspection on2026-10-17: **both branches** call
+`UPrimitive.LineCheck` (`10301B9F` → `103D8AF0`) at103A6DB9. A finite nonzero
+extent forwards all three original extent bits. When all three comparisons
+have x87 C3=1, `103A6DD1..103A6E34` explicitly replaces each extent DWORD with
+literal0 and jumps back to that same call. Thus finite all-zero extents
+canonicalize signed zeros to+0; there is no mesh triangle continuation.
+Unordered/NaN comparisons also set C3=1, so the exact wrapper predicate is
+zero-or-unordered, not ordinary C++ equality or an eager finite check.
 
-Consequently an ordinary crate Mesh with a nonzero moving collision extent
-uses the primitive/cylinder path, not animated triangle collision. This does
-not authorize using a cylinder for an actual Brush primitive. The complete
-UMesh zero-extent path and UPrimitive cylinder numeric contract are separate
-work; UPrimitive cylinder implementation/verification is separately recorded
-in ORIGINAL-ACTOR-LINE-TRACE.md and STATUS.md. The mesh zero-extent path remains.
+Consequently actual Mesh/LodMesh queries use the primitive/cylinder path for
+both extent branches, not animated triangle collision. Their native bounding
+box method also inherits UPrimitive's actor collision bounds, not render/mesh
+frame bounds. This does not authorize a cylinder for an actual Brush Model
+or an unaudited native subclass. UPrimitive numeric verification remains in
+ORIGINAL-ACTOR-LINE-TRACE.md and STATUS.md; actual object/provider integration
+and the Mesh wrapper implementation/tests are still separate work. Full
+virtual/registration/wrapper evidence is ORIGINAL-NATIVE-PRIMITIVE-DISPATCH.md.
 
 ## Owner coordinates are a captured virtual result
 
@@ -299,5 +305,5 @@ value for the entire query; an owner Model call must perform the real narrow
 phase, not return its registration bounds. Actor/world authority, shared work
 budgets, temporary hit lifetime, callbacks and failure rollback must join the
 same outer VM transaction. This captured-value implementation does not add
-the zero-extent branch, full native Move266/FindBase/falling, world startup,
+the Model zero-extent branch, full native Move266/FindBase/falling, world startup,
 an APK or on-device acceptance.

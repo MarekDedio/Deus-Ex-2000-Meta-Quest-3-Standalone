@@ -12,13 +12,14 @@
 
 namespace QuestVr::EngineConfig {
 
-// This is a bounded reader for the owned System/DeusEx.ini Root setting, not
-// a general UE1 config backend. Bounds are port resource limits, not claims
+// This is a bounded reader for the owned System/DeusEx.ini Root and GameEngine
+// settings, not a general UE1 config backend. Bounds are port resource limits, not claims
 // about the original engine's maximum valid INI or FName lengths.
 inline constexpr std::size_t kMaxFileBytes = 1024u * 1024u;
 inline constexpr std::size_t kMaxLineBytes = 16u * 1024u;
 inline constexpr std::size_t kMaxNameBytes = 1024u;
 inline constexpr std::size_t kMaxRootClassBytes = 1024u;
+inline constexpr std::size_t kMaxGameEngineClassBytes = 1024u;
 
 namespace Detail {
 inline unsigned char FoldAscii(const unsigned char value) {
@@ -51,35 +52,42 @@ inline bool IdentifierStart(const unsigned char byte) {
     return (byte >= 'A' && byte <= 'Z') || (byte >= 'a' && byte <= 'z') || byte == '_';
 }
 
-inline void RootClass(const std::string_view path) {
-    if (path.empty() || path.size() > kMaxRootClassBytes)
-        throw std::runtime_error("Original engine INI Root class is empty or oversized");
+inline void ClassPath(const std::string_view path, const std::string_view key, const std::size_t limit) {
+    const std::string prefix = "Original engine INI " + std::string(key) + " class ";
+    if (path.empty() || path.size() > limit)
+        throw std::runtime_error(prefix + "is empty or oversized");
     bool first = true;
     std::size_t separators = 0u;
     for (const unsigned char byte : path) {
         if (byte == '.') {
-            if (first) throw std::runtime_error("Original engine INI Root class has an empty path component");
+            if (first) throw std::runtime_error(prefix + "has an empty path component");
             first = true;
             ++separators;
         } else {
             if (!IdentifierStart(byte) && (first || byte < '0' || byte > '9'))
-                throw std::runtime_error("Original engine INI Root class is not a qualified ASCII identifier path");
+                throw std::runtime_error(prefix + "is not a qualified ASCII identifier path");
             first = false;
         }
     }
     if (first || separators == 0u)
-        throw std::runtime_error("Original engine INI Root class must have package and class components");
+        throw std::runtime_error(prefix + "must have package and class components");
 }
-} // namespace Detail
+
+inline void RootClass(const std::string_view path) {
+    ClassPath(path, "Root", kMaxRootClassBytes);
+}
 
 // Supported whitespace, CR/LF handling, full-line ';'/'//' comments and
 // case-insensitive sections/keys follow pinned Package/IniFile.cpp. In that
 // reference duplicate sections merge and GetValue(index=0) selects the first
 // duplicate key. Retail duplicate precedence has not been established: this
-// reader therefore accepts only same-identity Root duplicates and explicitly
-// refuses conflicts. It does not unwrap quotes, strip inline comments, expand
-// variables, follow includes or substitute a default root class.
-inline std::optional<std::string> ParseRootClass(const std::string_view bytes) {
+// reader therefore accepts only same-identity duplicates of the selected key
+// and explicitly refuses conflicts. It does not unwrap quotes, strip inline comments, expand
+// variables, follow includes or substitute a default class. Only the two public
+// Root and GameEngine entry points below select a setting; this is not a general
+// configuration backend. Invalid values of the other setting remain unrelated.
+inline std::optional<std::string> ParseClass(const std::string_view bytes,
+    const std::string_view selectedKey, const std::size_t classLimit) {
     if (bytes.size() > kMaxFileBytes)
         throw std::runtime_error("Original engine INI exceeds its byte limit");
     if(bytes.starts_with("\xef\xbb\xbf"))
@@ -88,7 +96,7 @@ inline std::optional<std::string> ParseRootClass(const std::string_view bytes) {
         if (byte == 0u || (byte < 32u && byte != '\t' && byte != '\r' && byte != '\n') || byte == 127u)
             throw std::runtime_error("Original engine INI contains a NUL or unsupported control byte");
 
-    std::optional<std::string> rootClass;
+    std::optional<std::string> selectedClass;
     bool engineSection = false;
     std::size_t cursor = 0u;
     while (cursor < bytes.size()) {
@@ -118,14 +126,20 @@ inline std::optional<std::string> ParseRootClass(const std::string_view bytes) {
         const auto key = Detail::Trim(line.substr(0u, equals));
         if (key.empty()) continue; // Reference ignores an empty key.
         Detail::Name(key, "key name");
-        if (!engineSection || !Detail::SameAscii(key, "Root")) continue;
+        if (!engineSection || !Detail::SameAscii(key, selectedKey)) continue;
         const auto value = Detail::Trim(line.substr(equals + 1u));
-        Detail::RootClass(value);
-        if (rootClass && !Detail::SameAscii(*rootClass, value))
-            throw std::runtime_error("Conflicting original engine INI Root values; retail duplicate precedence is unproven");
-        if (!rootClass) rootClass = std::string(value); // Preserve the owned setting's spelling.
+        Detail::ClassPath(value, selectedKey, classLimit);
+        if (selectedClass && !Detail::SameAscii(*selectedClass, value))
+            throw std::runtime_error("Conflicting original engine INI " + std::string(selectedKey) +
+                " values; retail duplicate precedence is unproven");
+        if (!selectedClass) selectedClass = std::string(value); // Preserve the owned setting's spelling.
     }
-    return rootClass;
+    return selectedClass;
+}
+} // namespace Detail
+
+inline std::optional<std::string> ParseRootClass(const std::string_view bytes) {
+    return Detail::ParseClass(bytes, "Root", kMaxRootClassBytes);
 }
 
 inline std::optional<std::string> ParseRootClass(const std::vector<std::uint8_t>& bytes) {
@@ -133,10 +147,21 @@ inline std::optional<std::string> ParseRootClass(const std::vector<std::uint8_t>
     return ParseRootClass(std::string_view(reinterpret_cast<const char*>(bytes.data()), bytes.size()));
 }
 
+inline std::optional<std::string> ParseGameEngineClass(const std::string_view bytes) {
+    return Detail::ParseClass(bytes, "GameEngine", kMaxGameEngineClassBytes);
+}
+
+inline std::optional<std::string> ParseGameEngineClass(const std::vector<std::uint8_t>& bytes) {
+    if (bytes.empty()) return ParseGameEngineClass(std::string_view{});
+    return ParseGameEngineClass(std::string_view(reinterpret_cast<const char*>(bytes.data()), bytes.size()));
+}
+
 // Missing is distinct from unreadable/invalid: a deployment with no INI may
 // defer possession, whereas an existing malformed configuration must not be
 // silently replaced with a hardcoded class. Never writes the owned INI.
-inline std::optional<std::string> ReadRootClassFile(const std::filesystem::path& iniPath) {
+namespace Detail {
+inline std::optional<std::string> ReadClassFile(const std::filesystem::path& iniPath,
+    const std::string_view selectedKey, const std::size_t classLimit) {
     std::error_code error;
     const auto status = std::filesystem::status(iniPath, error);
     if (error == std::errc::no_such_file_or_directory ||
@@ -158,11 +183,24 @@ inline std::optional<std::string> ReadRootClassFile(const std::filesystem::path&
     if (file.peek() != std::char_traits<char>::eof())
         throw std::runtime_error("Original engine INI grew while it was being read");
     if (file.bad()) throw std::runtime_error("Could not finish reading original engine INI");
-    return ParseRootClass(std::string_view(bytes));
+    return ParseClass(std::string_view(bytes), selectedKey, classLimit);
+}
+} // namespace Detail
+
+inline std::optional<std::string> ReadRootClassFile(const std::filesystem::path& iniPath) {
+    return Detail::ReadClassFile(iniPath, "Root", kMaxRootClassBytes);
 }
 
 inline std::optional<std::string> ReadRootClass(const std::filesystem::path& originalGameRoot) {
     return ReadRootClassFile(originalGameRoot / "System" / "DeusEx.ini");
+}
+
+inline std::optional<std::string> ReadGameEngineClassFile(const std::filesystem::path& iniPath) {
+    return Detail::ReadClassFile(iniPath, "GameEngine", kMaxGameEngineClassBytes);
+}
+
+inline std::optional<std::string> ReadGameEngineClass(const std::filesystem::path& originalGameRoot) {
+    return ReadGameEngineClassFile(originalGameRoot / "System" / "DeusEx.ini");
 }
 
 } // namespace QuestVr::EngineConfig

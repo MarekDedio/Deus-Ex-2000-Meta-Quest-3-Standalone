@@ -30,6 +30,13 @@ does not read endpoints/extents or change any caller hit fields
 (`103D8B0D..103D8B32`). Actual runtime primitive selection remains the caller's
 responsibility; do not force every brush or mesh through this cylinder.
 
+Further2026-10-17 audit closes actual UMesh/ULodMesh virtual dispatch: their
+LineCheck wrapper uses this UPrimitive implementation on **both** branches,
+canonicalizing all extent DWORDs to+0 only when every zero/unordered comparison
+has C3=1. This does not apply to UModel or unknown subclasses, and does not
+create a primitive object. See ORIGINAL-NATIVE-PRIMITIVE-DISPATCH.md for full
+vtable/registration and lazy Mesh-versus-Engine fallback evidence.
+
 Use mutation-style detached hit storage to retain partial writes on clear
 returns. The relevant retail FCheckResult fields are Next at0, Actor at4,
 Location at8..10, Normal at14..1C, Primitive at20, Time at24, Item at28.

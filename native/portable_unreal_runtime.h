@@ -211,6 +211,25 @@ PortableRuntimeSummary InitializePortableRuntime(
 PortableRuntimeSummary InitializePortableRuntime(
     const std::vector<PortablePackageTables>& packages, std::uint32_t initialRandomSeed = 1u);
 void ShutdownPortableRuntime();
+struct PortableNativeEngineClassSnapshot {
+    std::string classPath, baseClassPath, withinClassPath;
+    // Original native constructor baseline, not serialized post-load flags or
+    // proof that full UClass.Register/default/config construction has executed.
+    std::uint32_t nativeSize{}, registrationClassFlags{}, registrationObjectFlags{};
+};
+struct PortableNativeEngineClassesSnapshot {
+    std::optional<std::string> configuredGameEngineClass;
+    std::vector<PortableNativeEngineClassSnapshot> classes;
+    bool prepared{};
+};
+// CPU-owner native registration phase, independent of Client/headset and map
+// lifetime. Binds only audited original native-only UClasses and their actual
+// loaded base metadata; never fabricates serialized class descriptors/CDOs.
+// Requires the configured concrete GameEngine identity. Atomic and idempotent;
+// does not allocate an Engine/Primitive instance or claim constructor/Init,
+// Level.Engine, startup, collision, movement or possession success.
+PortableNativeEngineClassesSnapshot PreparePortableRuntimeNativeEngineClasses();
+PortableNativeEngineClassesSnapshot ReadPortableRuntimeNativeEngineClasses();
 // Actual loader-owned ULevel Double time. The explicit clock phase performs
 // original retained-product accumulation and LevelInfo Float mirroring only;
 // it is not a world Tick, startup, Timer/AI/physics pass or XR-thread entry.

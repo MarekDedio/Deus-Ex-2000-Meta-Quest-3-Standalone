@@ -165,10 +165,12 @@ equivalent.
 
 Conversely actual UEngine's native initializer `1037D230..1037D281` passes
 class flags`0xD` at `1037D271`, native size68 and Core.Subsystem superclass.
-Original StaticAllocateObject `101579C0` tests abstract flag bit1 at
-`10157AA8` and rejects abstract classes. A bridge must not instantiate abstract
-Engine.Engine just because it declares Cylinder. It needs the actual configured
-concrete GameEngine/EditorEngine class and a real owned session lifetime.
+Original StaticAllocateObject `101579C0` tests the **current** abstract flag
+bit1 at `10157AA8`, not a remembered constructor argument. Native constructor
+baseline1F is not Engine.Engine's loaded serialized flags11E: loading replaces
+that state as detailed below. A bridge needs the actual configured concrete
+GameEngine/EditorEngine class and real owned session lifetime, not an
+assumption that Cylinder declaration or a constructor flag is allocation authority.
 UEngine's default constructor `1037D5A0` installs its UObject/FExec vtables;
 it does not initialize Cylinder. The Init phase above is distinct from default
 construction, class defaults, viewport binding and loading map package tables.
@@ -183,7 +185,7 @@ corresponding IMAGE_IMPORT_BY_NAME string; it does not load either DLL.
 
 Core's native UClass constructor `1012866F` ORs supplied class flags with12
 hex. Consequently Primitive's supplied0 becomes12, Engine's suppliedD
-becomes1F (still abstract), and GameEngine's suppliedC becomes1E. Confusing
+becomes1F at native construction, and GameEngine's suppliedC becomes1E. Confusing
 supplied constructor arguments with the effective flags would misstate
 admission. UClass+49C is **ClassWithin**, not a default or registration pointer:
 the constructor stores the explicit Within argument at `101286B6..101286D0`.
@@ -257,12 +259,32 @@ Their requested UClass object flags are not Engine instance-allocation flags.
 The launcher's concrete instance allocation/Outer/name/flags remain a separate
 authority boundary; do not substitute the class-registration arguments there.
 
-The existing bounded portable INI reader currently supports only Root, not
-GameEngine. Future concrete engine admission must read and validate the actual
-setting, bind the explicit native-only registered chain and actual inherited
-Engine.Cylinder field, and establish the separate session roots/GC edges.
-Instantiating abstract Engine.Engine or manufacturing serialized UClass
-descriptors to evade that work is not an implementation.
+The bounded portable INI reader now supports Root and GameEngine separately,
+without a hardcoded fallback. The explicit class-registration phase binds the
+audited native-only chain and validates the inherited Engine.Cylinder field;
+it creates no Engine/Primitive instances. Future concrete engine admission
+must establish the separate session instance roots/GC edges and constructor
+state, not treat successful UClass registration as instance initialization.
+Substituting Engine.Engine for the selected concrete GameEngine, or
+manufacturing serialized UClass descriptors to evade that work, is not an
+implementation.
+
+Crucial phase correction verified against original Core.UClass.Serialize:
+`10128123..10128130` passes this+484 and byte count4 directly to the archive's
+Serialize slot4. Loading unconditionally replaces ClassFlags without masking
+or restoring the native constructor flags. Owned Core.Object/Core.Subsystem
+serialized flags are112/112; Engine.Engine is11E, without Abstract bit1.
+The v68 path does not take the <=61 legacy extra-DWORD/object-flags branch.
+The remaining loading/default/config work never restores that abstract bit.
+UClass.Register inheritance `101278F2..1012790C` applies
+`currentFlags |= superclass.currentFlags & 4EC`; the five native-only binding
+baselines12/12/1E/1E/1E remain unchanged for these known bases.
+
+Likewise04084004 is a proven native UClass constructor object-header baseline:
+UClass10128630 through UState10125EF0 reaches UObject1014F4C0, which ORs Native
+04000000 at1014F4F1 and stores ObjectFlags+1C at1014F4F9. The native type-binding
+snapshot labels it registrationObjectFlags, not a claim that full Register/
+defaults/config/post-load or reflected Core.Class header storage is implemented.
 
 Finally the original UEngine.Init prefix also calls FURL.StaticInit:
 `10380765` to export1661 thunk10303328 to103F6C50, reading actual global
@@ -270,3 +292,68 @@ GConfig through import10599F38. Names/localization, memory-stack/cache and URL
 configuration precede the cylinder construction. An explicitly named
 collision-service initialization subphase can implement only that subphase;
 it must not claim full UEngine.Init, GameEngine startup, BeginPlay or possession.
+
+## Constructor and fresh FURL phase (2026-10-17)
+
+Further read-only inspection closes the default-constructor chain. UGameEngine
+internal constructor10347A40 dispatches through10303EE5 to10388F40, which calls
+UEngine constructor10302923 to1037D5A0. The latter calls actual UObject
+constructor10599B58 and installs its UObject/FExec virtual implementations;
+it does not write Cylinder+40 or call Init. UGameEngine then constructs FURL
+at Engine+74 with actual nonnull empty UTF16 input10485C3C through103037A6
+to103F7850 and installs its own two vtables10428DFC/10428DF8.
+
+Extension internal constructor1001BA00 to10026190 calls the named imported
+UGameEngine default constructor through100592FC, then installs its two
+vtables1005C264/1005C260. DeusEx internal constructor100126E0 to1000ECD0
+calls the named imported XGameEngineExt default constructor through10027434,
+then installs10027D90/10027D8C. Neither subclass has a hidden Init/startup call.
+
+FURL construction is substantive native state, not interchangeable with a
+vtable/class label. The complete empty-input path103F7850..103F7A75 captures:
+
+| FURL offset / Engine offset | Native value |
+| --- | --- |
+| 00 / 74 | Copy current global DefaultProtocol1058F3E0 |
+| 0C / 80 | Copy current DefaultHost1058F390 |
+| 18 / 8C | Copy current signed DefaultPort1058F3EC |
+| 1C / 90 | Empty Map from supplied nonnull empty string, not DefaultMap |
+| 28/2C/30 / 9C/A0/A4 | Empty options array |
+| 34 / A8 | Copy current DefaultPortal1058F380 |
+| 40 / B4 | Valid1 |
+
+Engine CRT initializer table10479964..10479984 contains103F68F0,103F6950,
+103F69B0,103F6A10,103F6A70,103F6AD0,103F6B30,103F6B90,103F6BF0. Each calls
+actual FString default constructor import10599A40 to Core101027CF to101072F0,
+setting Data/Num/Max0 for its global string. DefaultPort is in the PE zero-fill
+tail: data sectionVA10479000, rawD000, virtual11F2F4, Port offset1163EC.
+Consequently an explicitly fresh process/session constructor before Init
+captures empty protocol/host/portal/map/options, port0 and Valid1. It must not
+prematurely copy later INI defaults into that already-constructed URL.
+
+FURL.StaticInit103F6C50..103F70D3 updates globals in order Protocol,
+ProtocolDescription,Name,Map,LocalMap,Host,Portal,MapExt,SaveExt,Port. Every
+lookup uses actual GConfig virtual slot14, section URL1048272C, key literal
+and filename0. Returned NUL-terminated UTF16 values are copied without URL
+normalization or local fallback. Port uses appAtoi10599DD8 to Core1010111D to
+101235B0 to named MSVCRT _wtoi102AB514, not strict decimal validation/clamping;
+overflow remains a CRT-profile boundary. The concrete config implementation's
+missing-key, duplicate and filename0 semantics are not established here.
+StaticInit changes global defaults, not the Engine instance URL already made.
+
+UPackage construction is also not vtable-only: Core1015A3E0 installs101753A0
+then calls BindPackage101017E9 to10152FF0. With Transient's zero Outer/handle/
+attempted baseline, it sets Package+2C attempted1 at10153082 and stores the
+platform native-library probe result in Package+28 at1015308D. A portable
+static-native registry binding policy must represent this attempted/binding
+result explicitly; it must not pretend an original DLL was loaded. Package+30
+is PackageFlags; these three native-tail fields are not GC UObject edges.
+
+The owned launcher DeusEx.exe is packed (64000 bytes), SHA256
+E7217090C435C7AE01F875A08FA25C10303CD56203C25A29C6E77FB041B992A2.
+Entry10901000 jumps to unpacker10967CE8; visible imports are only kernel32
+LoadLibraryA/GetProcAddress/VirtualAlloc/VirtualFree. Its original concrete
+Engine instance allocation arguments remain unproven. A documented explicit
+portable embedding construction request is distinct from those unknown
+launcher arguments, and must preserve all implemented constructor effects.
+No commercial executable code was loaded or executed to obtain this evidence.

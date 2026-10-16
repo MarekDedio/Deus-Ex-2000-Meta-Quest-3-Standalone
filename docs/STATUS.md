@@ -1,5 +1,42 @@
 # Port status
 
+## Native-only engine class registration (2026-10-17)
+
+- Added a distinct static native UClass registration phase for Core.Package,
+  Engine.Primitive, Engine.GameEngine, Extension.GameEngineExt and
+  DeusEx.DeusExGameEngine. Sizes/native constructor flag baselines, exact bases and
+  ClassWithin come from the original native registrations, not fabricated
+  serialized descriptors/default blocks or the client-class marker.
+- Added bounded independent GameEngine INI parsing alongside unchanged Root
+  behavior; actual configured concrete identity is required, with no default.
+  Preparation validates original loaded Core.Object/Subsystem/Engine.Engine,
+  exact direct bases and actual typed Engine.Cylinder property. The actual
+  loaded Engine.Engine flags11E are distinct from constructor baseline1F;
+  no nonexistent loaded Abstract bit is added or required.
+  Native classes/root/indexes stage atomically; failed admission publishes none.
+- Static class roots are separate from map exports and headset/client lifetime.
+  Cast/path identity works without fictitious export indexes; unsupported
+  Core.Class reflected/default storage still refuses. Retained domain memory
+  is measured before publication and during VM state-budget checks.
+- Targeted host build/strict ARM64 syntax pass. Config455 checks and original
+  dormant Training registration10041 checks/145 refusals pass, including exact
+  six-object allocation, casts, full state invariance, late-failure cleanup,
+  warm checkpoint restore/client/map/GC lifetime and shutdown. Full host rebuild
+  passes; CTest121 passed/138 registered/17 explicit owned-data skips/zero
+  failures in57.12s. Owned integration ran separately with an explicit game root.
+  Independent read-only review found no blocking issues. Deployment requires DeusEx.ini locally
+  and remotely; local220-package data validation/script syntax pass. No device;
+  see ORIGINAL-NATIVE-ENGINE-CLASSES.md and local ignored
+  `artifacts/native-engine-classes-*-20261017.log`.
+- Additional original audits close Core.Package binding and the concrete
+  GameEngine constructor/FURL chain. Fresh FURL captures empty/zero process
+  globals before later global config initialization; it must not be populated
+  prematurely from the INI. The packed launcher's instance allocation inputs
+  remain unproven, distinct from an explicit portable embedding request.
+- This phase constructs UClasses, not Engine/Package/Primitive instances.
+  Real session constructor/init/GC/map-binding, primitive selection, original
+  hash/RNG/Move/startup/player/falling and crates remain. No replacement APK.
+
 ## Live native Actor/Brush coordinate authority (2026-10-16)
 
 - Connected actual runtime actors to original ToWorld scalar construction.
