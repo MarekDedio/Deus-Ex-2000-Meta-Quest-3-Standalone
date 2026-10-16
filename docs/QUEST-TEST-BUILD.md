@@ -3,7 +3,7 @@
 The subsequent crate sound-script, original BSP FastTrace, sound-routing, VRand,
 fragment-texture, native-clock and MakeNoise/hearing checkpoints are
 source/tests only: no replacement APK was built or installed. The NPC APK below
-remains the recorded accepted device build. Final host CTest106/121 passes with15 explicit
+remains the recorded accepted device build. Final host CTest107/122 passes with15 explicit
 original-data skips; separate actual Training traces, lamp activation, native
 Destroy279 and damage probes pass too. Both isolated dormant-world fatal hits
 now complete original Frag/nativeDestroy with six actual WoodFragment births,
@@ -19,6 +19,12 @@ creates then relevance-deletes a real Lockpick in its isolated Game=None fixture
 it is not surviving loot or complete startup. Native bound-player audio and destructible crates
 are not ready for headset acceptance. See
 ORIGINAL-LEVEL-CLOCK.md, ORIGINAL-MAKE-NOISE.md, ORIGINAL-MESH-TEXTURES.md, ORIGINAL-FAST-TRACE.md, SOUND-RUNTIME-CONTRACT.md and STATUS.md for explicit limits.
+
+The following collision-plane component now passes335711 independent/deterministic
+checks with strict ARM64 syntax and full host regression. It is not a complete
+extent sweep or Move266 and is not yet bound into live gameplay. See
+ORIGINAL-MODEL-EXTENT-TRACE.md for the retail audit and remaining kernel/physics
+work. The accepted APK below is still unchanged.
 
 ## Original Training NPC waiting animations (2026-10-15)
 

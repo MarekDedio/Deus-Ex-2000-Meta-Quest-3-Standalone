@@ -1,5 +1,28 @@
 # Port status
 
+## Retail swept-collision plane foundation (2026-10-16)
+
+- Traced the live crate gap: Quest still calls a Pawn-only generic damage
+  helper without a possessed original owner or typed hit packet. Original
+  crate scripts need genuine world/SetInitialState/player startup, not a
+  widened generic health helper. Current startup still stops at Move266;
+  FindBase/support and actor-slot/save ordering also remain explicit barriers.
+- Audited original Model nonzero-extent collision, which differs from the
+  pinned engine sweep. Documented exact near-first traversal, literal -1/
+  64-plane hull storage, plane clipping, mixed Float/retained geometry,
+  MAX backoff, positive-Z box expansion and staged intersection/Core bevel
+  operations. No commercial DLL/EXE is executed; primary hashes rechecked.
+- Added the reusable retail plane clip and six null-owner bound planes.
+  Independent x87/deterministic controls335711 checks/12176 safety refusals
+  pass. Signed-zero conditional abs, strict interval/threshold behavior,
+  preceding writes on rejection and Double0.1 bbox quirks are preserved.
+- Coherent full host build and strict ARM64 syntax pass. CTest107 passed /
+  122 registered /15 explicit owned-data skips /zero failures in23.08s.
+  Production runtime behavior and accepted NPC APK are unchanged: the complete
+  extent sweep, owner transforms, bevels, Move/callback transaction, support
+  and falling are still required. No zero-delta startup shortcut or new APK.
+  See ORIGINAL-MODEL-EXTENT-TRACE.md. Full campaign goal remains unfinished.
+
 ## Original crate-hit noise/hearing and Pawn-instigated fatal scripts (2026-10-16)
 
 - Implemented original MakeNoise512 and Pawn.CanHear: exact required Float
