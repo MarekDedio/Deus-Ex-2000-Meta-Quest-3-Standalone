@@ -19,7 +19,7 @@ foreach(OBJECT_HELPER quest_object_names quest_object_indices quest_engine_confi
     add_test(NAME ${OBJECT_HELPER} COMMAND ${OBJECT_HELPER}_test)
 endforeach()
 
-foreach(BRUSH_TEST quest_brush_coords quest_brush_rotation quest_brush_builder)
+foreach(BRUSH_TEST quest_brush_coords quest_brush_rotation quest_brush_builder quest_original_sine_table)
     add_executable(${BRUSH_TEST}_test ${BRUSH_TEST}_test.cpp)
     target_compile_features(${BRUSH_TEST}_test PRIVATE cxx_std_20)
     target_include_directories(${BRUSH_TEST}_test PRIVATE "${PORT_NATIVE}")
@@ -29,6 +29,13 @@ foreach(BRUSH_TEST quest_brush_coords quest_brush_rotation quest_brush_builder)
     endif()
     add_test(NAME ${BRUSH_TEST} COMMAND ${BRUSH_TEST}_test)
 endforeach()
+
+add_executable(quest_original_sine_table_generator quest_original_sine_table_generator.cpp)
+target_compile_features(quest_original_sine_table_generator PRIVATE cxx_std_20)
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+    target_compile_options(quest_original_sine_table_generator PRIVATE -Wall -Wextra -Werror)
+    target_link_options(quest_original_sine_table_generator PRIVATE -static -static-libgcc -static-libstdc++)
+endif()
 
 add_library(quest_portable_host STATIC
     "${PORT_NATIVE}/quest_portable_vm.cpp"

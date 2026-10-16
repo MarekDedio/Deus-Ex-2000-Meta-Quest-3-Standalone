@@ -1,5 +1,31 @@
 # Port status
 
+## ARM-usable original-instruction sine profile (2026-10-16)
+
+- Added the complete immutable16384-Float profile used explicitly by the
+  verified native coordinate builders. Constexpr bits/Float/span need no
+  target FSIN, runtime libm, file reads, generator or stack initialization.
+  No default identity axes or forced cardinal/symmetry values are substituted.
+- Standalone owned-instruction generator pins GenuineIntel CPUID306A9 with
+  nearest PC64, preserves exact Double-argument/Float-result stores and
+  compares all entries to PC53 before emitting. Wrong platform returns77;
+  differing profiles refuse. The original static-init control word and
+  universal cross-CPU FSIN identity are not claimed.
+- Complete source collection and independent readback prove16384 words /
+  65536 canonical LE bytes; FNV EFA5F38AF2167897, payload SHA256
+  B8D756044134EFB1BBEDBE2B842138D6B8D8DC970EF1A69EDD0D03CB07ECE10C.
+  A second full generation matches every word. Generator source digest and
+  reproducible32-block CLI are documented, with explicit profile provenance.
+- Consumer test81943 checks/11 platform-independent angle cases pass; all
+  16384 entries match separately written hardware instructions on the pinned
+  CPU, with zero PC53/PC64/profile differences. Full host build and strict
+  ARM64 syntax pass. CTest120 passed/135 registered/15 explicit owned-data
+  skips/zero failures in34.79s. No commercial DLL/EXE code was executed.
+- This removes a target math dependency, not native object/class/property
+  authority or engine/primitive/hash lifecycle. Live Move/callback/support/
+  startup/player/falling/crates remain incomplete. No replacement APK. See
+  ORIGINAL-SINE-PROFILE.md; local ignored `artifacts/original-sine-*` logs.
+
 ## Original Actor/Brush coordinate builders (2026-10-16)
 
 - Implemented supplied-value native Actor and Brush/Mover ToWorld construction:
