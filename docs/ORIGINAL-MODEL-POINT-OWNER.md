@@ -96,7 +96,9 @@ editor actors or omit candidates from the original collision phase. They prove
 that an all-Mesh/Brush-only load cannot stand in for the whole Training actor
 hash; actual Engine.Cylinder fallback remains necessary.
 
-No replacement APK, Quest GPU behavior, weapon Fire/equip, startup, gravity,
-contents or live crate acceptance is implied. Actual configured native defaults,
+The replacement APK was packaged and replace-installed on the verified Quest3
+on2026-10-17; see MODEL-POINT-QUEST-DEPLOYMENT.md for exact artifact provenance.
+Quest GPU behavior, weapon Fire/equip, startup, gravity, contents or live crate
+acceptance is not implied. Actual configured native defaults,
 Engine/session lifetime, hash/collector/Move/support, startup/player and original
 damage/committed graph publication remain required.

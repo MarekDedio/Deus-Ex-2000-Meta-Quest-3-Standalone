@@ -20,8 +20,11 @@
 - Recorded original native metadata/Cpp-property construction and serialized
   load chronology; this audit adds no registration/default capability. Existing
   loaded field chains must not receive destructive native-constructor replay.
-- Quest3 USB is authorized; replacement APK packaging/install is next. This is
-  collision and fragment-rendering groundwork, not completed live crowbar crate
+- Replacement APK built successfully and replace-installed on the authorized
+  Quest3; exact installed/local SHA256 matches66A33C43EFF41405EED7F25263C888F106A1F8588FD481D8247B75B6E9910E60.
+  Save-slot files, posture calibration and INI hashes are unchanged. Activity and
+  process launch are verified; visual acceptance awaits valid head tracking.
+  This is collision and fragment-rendering groundwork, not completed live crowbar crate
   damage, contents, startup, movement/support or falling. See
   ORIGINAL-MODEL-POINT-OWNER.md and ORIGINAL-NATIVE-METADATA-REGISTRATION.md.
 
