@@ -2,6 +2,7 @@
 #include "GC/GC.h"
 #include "portable_unreal_runtime.h"
 #include "quest_actor_line_trace.h"
+#include "quest_model_line_hit.h"
 #include "quest_save_bundle.h"
 
 #include <algorithm>
@@ -14,6 +15,7 @@
 #include <fstream>
 #include <iostream>
 #include <limits>
+#include <map>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -29,7 +31,7 @@ using Kind=QuestVr::Vm::Kind;
 using Value=QuestVr::Vm::Value;
 using Array=std::array<float,3u>;
 using Vec=PortableModelVec3;
-std::size_t checks{},refusals{},actorsSeen{},modelsSeen{},meshesSeen{},fallbacksSeen{},lineQueries{};
+std::size_t checks{},refusals{},actorsSeen{},modelsSeen{},meshesSeen{},fallbacksSeen{},lineQueries{},modelQueries{};
 
 void Require(bool condition,const std::string& reason) {
     ++checks;if(!condition) throw std::runtime_error(reason);
@@ -200,6 +202,29 @@ bool Line(const PortableActorPrimitiveSnapshot& selected,const Cylinder& owner,c
     SameVector(actual.normal,ArrayOf(expected.normal),"Actual Mesh line query changed seeded/partial/result Normal");
     ++lineQueries;return !clear;
 }
+// These are provider/packet adapter oracles. Independent x87/corner/extent
+// tests, not this reuse of the kernels, own the numerical algorithm evidence.
+void ModelQueries(const PortableActorPrimitiveSnapshot& selected,const PortableModelGeometry& model) {
+    const auto packet=ReadPortableRuntimeActorToWorld(selected.actorPath);
+    const QuestVr::OriginalModelCoords coords{Vector(packet.origin),Vector(packet.xAxis),Vector(packet.yAxis),Vector(packet.zAxis)};
+    const auto expectedBounds=QuestVr::TransformOriginalModelBounds(model.bounds.minimum,model.bounds.maximum,coords);
+    const auto bounds=ReadPortableRuntimeActorPrimitiveBounds(selected.actorPath);
+    Require(SamePrimitive(bounds.primitive,selected),"Model bounds changed actual selected asset provenance");
+    SameVector(bounds.minimum,ArrayOf(expectedBounds.minimum),"Selected Model bounds minimum differs from captured native ToWorld adapter");
+    SameVector(bounds.maximum,ArrayOf(expectedBounds.maximum),"Selected Model bounds maximum differs from captured native ToWorld adapter");
+    const auto location=Declared(selected.actorPath,"Engine.Actor.Location",Kind::Vector).vector;
+    const Array start{location[0u]+256.0f,location[1u]+16.0f,location[2u]+8.0f};
+    const Array end{location[0u]-256.0f,location[1u]-16.0f,location[2u]-8.0f},extent{1.0f,1.0f,1.0f};
+    QuestVr::OriginalActorLineHit expected{};
+    const bool clear=QuestVr::CheckOriginalModelExtent(expected,model,1u,2u,&coords,Vector(end),Vector(start),Vector(extent));
+    const auto actual=ProbePortableRuntimeActorPrimitiveLine(selected.actorPath,end,start,extent);
+    Require(SamePrimitive(actual.primitive,selected)&&actual.clear==clear&&actual.hitOwner==(expected.actor==2u)&&
+        actual.hitPrimitiveIsNone==(expected.primitive==0u)&&actual.item==expected.item,"Selected Model line result/token provenance differs");
+    SameFloat(actual.time,expected.time,"Selected Model line Time differs");
+    SameVector(actual.location,ArrayOf(expected.location),"Selected Model line Location differs");
+    SameVector(actual.normal,ArrayOf(expected.normal),"Selected Model line Normal differs");
+    ++modelQueries;
+}
 std::vector<std::string> WorldPaths() {
     std::vector<std::string> paths;
     for(const auto& actor:GetPortableRuntimeMapActors(true)) paths.push_back(actor.objectPath+'|'+actor.classPath);
@@ -227,13 +252,27 @@ void Original(const fs::path& root) {
     const auto actors=GetPortableRuntimeMapActors(true);Require(!actors.empty(),"Owned Training actor registry is empty");
     const auto before=temporary.Snapshot("Before");const auto revision=GetPortableRuntimeWorldRevision();
     const auto gc=GC::GetStats();const auto model=ReadPortableRuntimeNativeModel();const auto world=WorldPaths();
-    std::string firstModel,firstMesh;std::size_t blocked{},explicitCrates{},explicitKnife{},explicitCrowbar{};
+    std::string firstModel,firstMesh,firstNonemptyModel;std::size_t blocked{},explicitCrates{},explicitKnife{},explicitCrowbar{};
+    std::map<std::string,PortableModelGeometry> selectedModels;
+    Require(ReadPortableRuntimePrimitiveModelCache().entries.empty(),"Fresh map already has selected Model geometry cached");
     for(const auto& actor:actors) {
         ++actorsSeen;
         const auto brush=Declared(actor.objectPath,"Engine.Actor.Brush",Kind::Object).text;
         if(!brush.empty()) {
             const auto cls=AssetClass(packages,map,brush);Require(cls=="Engine.Model","Owned Brush is not an exact native Model");
-            PrimitiveIs(ReadPortableRuntimeActorPrimitive(actor.objectPath),actor.objectPath,brush,cls);
+            const auto selected=ReadPortableRuntimeActorPrimitive(actor.objectPath);
+            PrimitiveIs(selected,actor.objectPath,brush,cls);
+            auto found=selectedModels.find(brush);
+            if(found==selectedModels.end()) {
+                const auto dot=brush.find('.');const auto stem=Fold(brush.substr(0u,dot));
+                const PortablePackageTables* source=stem==Fold(fs::path(map.sourcePath).stem().string())?&map:nullptr;
+                for(const auto& table:packages) if(Fold(fs::path(table.sourcePath).stem().string())==stem) source=&table;
+                Require(source!=nullptr,"Selected Model source disappeared");
+                const auto index=FindPortableExport(*source,brush.substr(dot+1u));
+                found=selectedModels.emplace(brush,LoadPortableCollisionModel68(*source,index)).first;
+            }
+            ModelQueries(selected,found->second);
+            if(firstNonemptyModel.empty()&&!found->second.nodes.empty()) firstNonemptyModel=actor.objectPath;
             ++modelsSeen;if(firstModel.empty()) firstModel=actor.objectPath;
             continue; // Selected Brush does not require the Actor.Mesh branch.
         }
@@ -276,9 +315,21 @@ void Original(const fs::path& root) {
         explicitCrates==2u&&explicitKnife>0u&&explicitCrowbar>0u,
         "Owned Training did not exercise Model/Mesh/absent-engine branches and actual crate/knife/crowbar assets");
     const float nan=std::numeric_limits<float>::quiet_NaN();
-    Refused([&] {(void)ReadPortableRuntimeActorPrimitiveBounds(firstModel);},"Model bounds query silently substituted a cylinder");
-    Refused([&] {(void)ProbePortableRuntimeActorPrimitiveLine(firstModel,{nan,nan,nan},{nan,nan,nan});},
-        "Model line query silently substituted Mesh/cylinder or render collision");
+    Require(!firstNonemptyModel.empty(),"Owned fixture has no nonempty selected Model");
+    Refused([&] {(void)ProbePortableRuntimeActorPrimitiveLine(firstNonemptyModel,{nan,nan,nan},{nan,nan,nan},{1,1,1});},
+        "Model line query admitted active nonfinite endpoints");
+    Refused([&] {(void)ProbePortableRuntimeActorPrimitiveLine(firstNonemptyModel,{},{},{});},
+        "Nonempty Model zero-extent query silently substituted extent/Mesh collision");
+    const auto selectedCache=ReadPortableRuntimePrimitiveModelCache();
+    Require(selectedCache.entries.size()==selectedModels.size()&&selectedCache.retainedBytes>0u&&
+        selectedCache.entries.size()<=selectedCache.maximumEntries&&selectedCache.retainedBytes<=selectedCache.maximumRetainedBytes,
+        "Selected Model cache lost exact distinct geometry count or retained budget");
+    for(const auto& entry:selectedCache.entries) {
+        const auto found=selectedModels.find(entry.modelPath);
+        Require(entry.mapGeneration==model.mapGeneration&&entry.levelPath==model.levelPath&&found!=selectedModels.end()&&
+            entry.modelExportIndex==found->second.exportIndex&&entry.cachedNodes==found->second.nodes.size(),
+            "Selected Model cache key/node identity disagrees with actual current map/export");
+    }
     for(const auto& path:{firstModel,firstMesh}) {
         const auto canonical=ReadPortableRuntimeActorPrimitive(path),folded=ReadPortableRuntimeActorPrimitive(Fold(path));
         Require(SamePrimitive(canonical,folded),"Case-insensitive primitive lookup lost canonical actual identity");
@@ -296,7 +347,9 @@ void Original(const fs::path& root) {
         "Primitive diagnostics started the original world");
     SameModel(model);for(const auto& source:sources) source.Unchanged();
     std::cout<<"PASS owned dormant Training primitive provider: "<<actorsSeen<<" actors, "<<modelsSeen<<" Model identities, "
-        <<meshesSeen<<" Mesh/LodMesh queries, "<<fallbacksSeen<<" explicit absent-engine refusals, "<<lineQueries
+        <<meshesSeen<<" Mesh/LodMesh queries, "<<modelQueries<<" Model bounds/extent adapter probes, "
+        <<selectedCache.entries.size()<<" retained Models/"<<selectedCache.retainedBytes<<" accounted bytes, "
+        <<fallbacksSeen<<" explicit absent-engine refusals, "<<lineQueries
         <<" caller-seeded line probes; actual crates/knife/crowbar, qualified fields and source/import class identity, "
         "all packet/bounds Float bits, complete read-only checkpoint/revision/GC/clock/source checks. "
         "Not original startup, Move/FindBase/falling, crate gameplay, render or headset evidence.\n";

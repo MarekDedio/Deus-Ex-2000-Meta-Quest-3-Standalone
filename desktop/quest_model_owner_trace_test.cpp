@@ -172,8 +172,13 @@ void PacketAndSafety() {
         Compare(empty,invalid,{nan,inf,nan},{nan,inf,nan},{0,-1,nan});
     }
     Hit packet=seed;
-    Require(QuestVr::CheckOriginalModelExtent(packet,m,42,43,&c,{-20,0,0},{10,0,0},{1,1,1})==false,
+    QuestVr::ModelExtentTraceStats publishedStats;
+    Require(QuestVr::CheckOriginalModelExtent(packet,m,42,43,&c,{-20,0,0},{10,0,0},{1,1,1},{},&publishedStats)==false,
         "Caller packet adapter lost owner blocking result");
+    const auto directStats=QuestVr::TraceOriginalOwnedModelExtent(m,c,{10,0,0},{-20,0,0},{1,1,1}).stats;
+    Require(publishedStats.validationSteps==directStats.validationSteps&&publishedStats.querySteps==directStats.querySteps&&
+        publishedStats.nodeVisits==directStats.nodeVisits&&publishedStats.hullVisits==directStats.hullVisits&&
+        publishedStats.planeTests==directStats.planeTests,"Packet adapter did not export the same single trace work statistics");
     Require(packet.next==seed.next&&packet.item==seed.item&&packet.actor==43&&packet.primitive==42&&
         Same(packet.normal,{1,0,0})&&std::isfinite(packet.time)&&std::isfinite(packet.location.x),"Accepted owner packet fields are wrong");
     packet=seed;Require(QuestVr::CheckOriginalModelExtent(packet,m,42,0,nullptr,{-20,0,0},{10,0,0},{1,1,1})==false&&packet.actor==0&&packet.primitive==42&&packet.item==seed.item,
@@ -228,8 +233,10 @@ void PacketAndSafety() {
         }
     }
     auto late=Limits{};late.querySteps=2;packet=seed;
-    Refuses([&] {QuestVr::CheckOriginalModelExtent(packet,m,42,43,&c,{-20,0,0},{10,0,0},{1,1,1},late);},"Owner late work budget did not refuse");
+    publishedStats.validationSteps=123456u;publishedStats.querySteps=654321u;
+    Refuses([&] {QuestVr::CheckOriginalModelExtent(packet,m,42,43,&c,{-20,0,0},{10,0,0},{1,1,1},late,&publishedStats);},"Owner late work budget did not refuse");
     Require(Same(packet,seed),"Late owner refusal published prefix packet");
+    Require(publishedStats.validationSteps==123456u&&publishedStats.querySteps==654321u,"Late refusal published partial statistics");
     auto deep=m;deep.nodes.insert(deep.nodes.begin(),2048u,Plane({1,0,0},0,1,0));
     for(auto& w:deep.leafHulls) {if(w==-1) break;w+=2048;}
     for(std::size_t i=0;i<2048;++i) deep.nodes[i].front=static_cast<std::int32_t>(i+1);

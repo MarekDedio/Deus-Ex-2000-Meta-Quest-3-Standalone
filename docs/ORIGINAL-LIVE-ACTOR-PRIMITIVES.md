@@ -125,7 +125,15 @@ The full coherent host rebuild passes. Fresh CTest:123 passed/141 registered/
 `artifacts/live-actor-primitive-*-20261017.log`. No replacement APK or on-device
 acceptance is implied by this checkpoint.
 
-## Next selected-Model bridge constraints
+## Selected-Model follow-up
+
+The following constraints informed the subsequent implemented bridge; see
+ORIGINAL-SELECTED-MODEL-COLLISION.md for its current contract and verification.
+Nonempty zero-extent owner queries and real Engine.Cylinder lifetime remain
+unsupported. The notes below preserve the boundary identified at this earlier
+Mesh-provider checkpoint.
+
+### Original selected-Model bridge constraints
 
 The existing one-record root ULevel.Model cache is not a selected Brush cache.
 The next cache must retain immutable collision geometry under actual current

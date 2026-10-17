@@ -15,6 +15,10 @@ struct PortableModelVec3 { float x{}, y{}, z{}; };
 struct PortableModelBounds {
     PortableModelVec3 minimum, maximum;
     bool valid{};
+    // Exact serialized byte, including values other than 0/1 in collision-only
+    // decode. Appended so existing {minimum,maximum,bool} initializers retain
+    // their meaning. `valid` remains the convenient nonzero projection.
+    std::uint8_t rawValid{};
 };
 struct PortableModelSphere { float x{}, y{}, z{}, radius{}; };
 
@@ -93,11 +97,33 @@ PortableModelGeometry DecodePortableModel68Body(
     std::size_t exportCount,
     std::uint16_t version = 68,
     std::uint16_t licenseeMode = 0);
+// Collision-only structural admission of the SAME serialized v68 layout.
+// Preserves every Float bit (including inactive NaNs), raw box Valid byte and
+// reversed endpoints. Does not validate render/lightmap relationships or
+// numeric/query-index data; the consuming collision kernel validates active
+// fields. Counts, payload, actual object-reference ranges and exact tail stay
+// bounded. decodedWorkingBytes limits retained ARRAY capacities, independently
+// of caller-owned source bytes/property scratch; fixed value/container/string
+// overhead belongs to the caller's aggregate cache ledger.
+PortableModelGeometry DecodePortableCollisionModel68Body(
+    const std::vector<std::uint8_t>& bytes,
+    std::size_t importCount,
+    std::size_t exportCount,
+    std::uint16_t version = 68,
+    std::uint16_t licenseeMode = 0,
+    std::size_t decodedWorkingBytes = 256u * 1024u * 1024u);
 // propertyWorkingBytes bounds property decoding and native body-copy scratch;
 // the native geometry decoder retains its separate fixed decoded-array bounds.
 PortableModelGeometry LoadPortableModel68(
     const PortablePackageTables& package, std::size_t exportIndex,
     std::size_t propertyWorkingBytes = 512u * 1024u * 1024u);
+// Same export/property boundary checks as the rendering loader, then the
+// collision-only body decoder. This is data admission, not UObject identity,
+// native bounds/LineCheck permission or a renderer geometry fallback.
+PortableModelGeometry LoadPortableCollisionModel68(
+    const PortablePackageTables& package, std::size_t exportIndex,
+    std::size_t propertyWorkingBytes = 512u * 1024u * 1024u,
+    std::size_t decodedWorkingBytes = 256u * 1024u * 1024u);
 // Selects ULevel's serialized Model reference, not the first Model export
 // (maps also contain many brush/mover Models).
 std::size_t FindPortableRootModel68Export(const PortablePackageTables& package,

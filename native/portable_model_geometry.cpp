@@ -41,12 +41,14 @@ void ValidateReference(std::int32_t reference, std::size_t imports,
 class Reader {
 public:
     explicit Reader(const std::vector<std::uint8_t>& bytes,
-                    std::size_t decodedLimit = MaxDecodedBytes)
-        : bytes_(bytes), decodedLimit_(std::min(decodedLimit, MaxDecodedBytes)) {
+                    std::size_t decodedLimit = MaxDecodedBytes,
+                    bool collisionOnly = false)
+        : bytes_(bytes), decodedLimit_(std::min(decodedLimit, MaxDecodedBytes)), collisionOnly_(collisionOnly) {
         if (bytes.size() > MaxPayloadBytes) Fail("payload exceeds 256 MiB bound");
     }
     std::size_t Position() const { return position_; }
     std::size_t Remaining() const { return bytes_.size() - position_; }
+    bool CollisionOnly() const { return collisionOnly_; }
     std::uint8_t U8() { Require(1u); return bytes_[position_++]; }
     std::uint16_t U16() {
         const std::uint16_t lo = U8();
@@ -66,7 +68,7 @@ public:
         const std::uint32_t bits = U32();
         float value{};
         std::memcpy(&value, &bits, sizeof(value));
-        if (!std::isfinite(value)) Fail("nonfinite floating-point field");
+        if (!collisionOnly_ && !std::isfinite(value)) Fail("nonfinite floating-point field");
         return value;
     }
     PortableModelVec3 Vector() { return {Float(), Float(), Float()}; }
@@ -111,6 +113,18 @@ public:
         position_ += count;
         return result;
     }
+    template<class T> void Reserve(std::vector<T>& target, std::size_t count, const char* label) {
+        target.reserve(count);
+        // Count already charged count*sizeof(T). Account for any implementation
+        // capacity excess before reading/publishing collision data as well.
+        if (collisionOnly_) CapacityExcess(target.capacity(), count, sizeof(T), label);
+    }
+    void CapacityExcess(std::size_t capacity, std::size_t count, std::size_t size, const char* label) {
+        if (capacity < count) Fail("decoded array capacity is smaller than its count");
+        const auto extra = Multiply(capacity - count, size, label);
+        if (extra > decodedLimit_ - decodedBytes_) Fail("decoded array capacity exceeds working-byte budget");
+        decodedBytes_ += extra;
+    }
     void Skip(std::size_t count) { Require(count); position_ += count; }
     void String() {
         const std::int32_t units = Index();
@@ -133,6 +147,7 @@ private:
     }
     const std::vector<std::uint8_t>& bytes_;
     std::size_t position_{}, decodedBytes_{}, decodedLimit_{};
+    bool collisionOnly_{};
 };
 
 PortableModelBounds ReadBounds(Reader& reader) {
@@ -140,9 +155,10 @@ PortableModelBounds ReadBounds(Reader& reader) {
     bounds.minimum = reader.Vector();
     bounds.maximum = reader.Vector();
     const std::uint8_t valid = reader.U8();
-    if (valid > 1u) Fail("invalid bounding-box validity byte");
+    if (!reader.CollisionOnly() && valid > 1u) Fail("invalid bounding-box validity byte");
     bounds.valid = valid != 0u;
-    if (bounds.valid && (bounds.minimum.x > bounds.maximum.x ||
+    bounds.rawValid = valid;
+    if (!reader.CollisionOnly() && bounds.valid && (bounds.minimum.x > bounds.maximum.x ||
                         bounds.minimum.y > bounds.maximum.y ||
                         bounds.minimum.z > bounds.maximum.z))
         Fail("bounding-box minimum exceeds maximum");
@@ -343,13 +359,15 @@ PortableModelShadowSpan GetPortableModelShadowSpan(const PortableModelGeometry& 
     return span;
 }
 
-PortableModelGeometry DecodePortableModel68Body(const std::vector<std::uint8_t>& bytes,
-                                               std::size_t importCount,
-                                               std::size_t exportCount,
-                                               std::uint16_t version,
-                                               std::uint16_t licenseeMode) {
+namespace {
+PortableModelGeometry DecodeModel68Body(const std::vector<std::uint8_t>& bytes,
+                                      std::size_t importCount,
+                                      std::size_t exportCount,
+                                      std::uint16_t version,
+                                      std::uint16_t licenseeMode,
+                                      bool collisionOnly,std::size_t decodedWorkingBytes) {
     RequireLayout(version, licenseeMode);
-    Reader reader(bytes);
+    Reader reader(bytes,decodedWorkingBytes,collisionOnly);
     PortableModelGeometry model;
     model.version = version;
     model.licenseeMode = licenseeMode;
@@ -357,13 +375,13 @@ PortableModelGeometry DecodePortableModel68Body(const std::vector<std::uint8_t>&
     model.sphere = {reader.Float(), reader.Float(), reader.Float(), reader.Float()};
     const auto vectors = [&](std::vector<PortableModelVec3>& target, const char* label) {
         const std::size_t count = reader.Count(label, MaxRecords, 12u, sizeof(PortableModelVec3));
-        target.reserve(count);
+        reader.Reserve(target,count,label);
         for (std::size_t index = 0; index < count; ++index) target.push_back(reader.Vector());
     };
     vectors(model.vectors, "vector");
     vectors(model.points, "point");
     const std::size_t nodeCount = reader.Count("node", MaxRecords, 43u, sizeof(PortableModelNode));
-    model.nodes.reserve(nodeCount);
+    reader.Reserve(model.nodes,nodeCount,"node");
     for (std::size_t index = 0; index < nodeCount; ++index) {
         PortableModelNode node;
         node.planeX = reader.Float(); node.planeY = reader.Float();
@@ -377,7 +395,7 @@ PortableModelGeometry DecodePortableModel68Body(const std::vector<std::uint8_t>&
         model.nodes.push_back(node);
     }
     const std::size_t surfaceCount = reader.Count("surface", MaxRecords, 16u, sizeof(PortableModelSurface));
-    model.surfaces.reserve(surfaceCount);
+    reader.Reserve(model.surfaces,surfaceCount,"surface");
     for (std::size_t index = 0; index < surfaceCount; ++index) {
         PortableModelSurface surface;
         surface.materialReference = reader.Index();
@@ -391,15 +409,15 @@ PortableModelGeometry DecodePortableModel68Body(const std::vector<std::uint8_t>&
         model.surfaces.push_back(surface);
     }
     const std::size_t vertexCount = reader.Count("vertex", MaxVertices, 2u, sizeof(PortableModelVertex));
-    model.vertices.reserve(vertexCount);
+    reader.Reserve(model.vertices,vertexCount,"vertex");
     for (std::size_t index = 0; index < vertexCount; ++index)
         model.vertices.push_back({reader.Index(), reader.Index()});
     model.sharedSides = reader.I32();
-    if (model.sharedSides < 0) Fail("negative shared-side count");
+    if (!collisionOnly && model.sharedSides < 0) Fail("negative shared-side count");
     const std::int32_t zoneCount = reader.I32(); // int32, NOT a compact count in Load.
     if (zoneCount < 0 || zoneCount > 64) Fail("invalid zone count");
     reader.CheckedCount(static_cast<std::size_t>(zoneCount), "zone", 17u, sizeof(PortableModelZone));
-    model.zones.reserve(static_cast<std::size_t>(zoneCount));
+    reader.Reserve(model.zones,static_cast<std::size_t>(zoneCount),"zone");
     for (std::int32_t index = 0; index < zoneCount; ++index) {
         PortableModelZone zone;
         zone.actorReference = reader.Index();
@@ -410,7 +428,7 @@ PortableModelGeometry DecodePortableModel68Body(const std::vector<std::uint8_t>&
     model.polysReference = reader.Index();
     ValidateReference(model.polysReference, importCount, exportCount);
     const std::size_t lightMapCount = reader.Count("lightmap", MaxRecords, 30u, sizeof(PortableModelLightMapIndex));
-    model.lightMaps.reserve(lightMapCount);
+    reader.Reserve(model.lightMaps,lightMapCount,"lightmap");
     for (std::size_t index = 0; index < lightMapCount; ++index) {
         PortableModelLightMapIndex lm;
         lm.dataOffset = reader.I32(); lm.panX = reader.Float();
@@ -420,21 +438,22 @@ PortableModelGeometry DecodePortableModel68Body(const std::vector<std::uint8_t>&
         model.lightMaps.push_back(lm);
     }
     model.lightBits = reader.Bytes(reader.Count("LightBits", MaxLightBits, 1u, 1u));
+    if(collisionOnly)reader.CapacityExcess(model.lightBits.capacity(),model.lightBits.size(),1u,"LightBits");
     const std::size_t boundCount = reader.Count("render bound", MaxRecords, 25u, sizeof(PortableModelBounds));
-    model.renderBounds.reserve(boundCount);
+    reader.Reserve(model.renderBounds,boundCount,"render bound");
     for (std::size_t index = 0; index < boundCount; ++index) model.renderBounds.push_back(ReadBounds(reader));
     const std::size_t hullCount = reader.Count("leaf hull", MaxVertices, 4u, sizeof(std::int32_t));
-    model.leafHulls.reserve(hullCount);
+    reader.Reserve(model.leafHulls,hullCount,"leaf hull");
     for (std::size_t index = 0; index < hullCount; ++index) model.leafHulls.push_back(reader.I32());
     const std::size_t leafCount = reader.Count("leaf", MaxRecords, 11u, sizeof(PortableModelLeaf));
-    model.leaves.reserve(leafCount);
+    reader.Reserve(model.leaves,leafCount,"leaf");
     for (std::size_t index = 0; index < leafCount; ++index) {
         PortableModelLeaf leaf;
         leaf.zone = reader.Index(); leaf.permeating = reader.Index(); leaf.volumetric = reader.Index();
         leaf.visibleZones = reader.U64(); model.leaves.push_back(leaf);
     }
     const std::size_t lightCount = reader.Count("light reference", MaxVertices, 1u, sizeof(std::int32_t));
-    model.lights.reserve(lightCount);
+    reader.Reserve(model.lights,lightCount,"light reference");
     for (std::size_t index = 0; index < lightCount; ++index) {
         const std::int32_t reference = reader.Index();
         ValidateReference(reference, importCount, exportCount); model.lights.push_back(reference);
@@ -442,8 +461,26 @@ PortableModelGeometry DecodePortableModel68Body(const std::vector<std::uint8_t>&
     model.rootOutside = reader.I32(); model.linked = reader.I32();
     if (reader.Remaining() != 0u) Fail("trailing bytes after model tail");
     model.bodyBytesConsumed = reader.Position();
-    ValidateGeometry(model);
+    if(!collisionOnly)ValidateGeometry(model);
     return model;
+}
+} // namespace
+
+PortableModelGeometry DecodePortableModel68Body(const std::vector<std::uint8_t>& bytes,
+                                               std::size_t importCount,
+                                               std::size_t exportCount,
+                                               std::uint16_t version,
+                                               std::uint16_t licenseeMode) {
+    return DecodeModel68Body(bytes,importCount,exportCount,version,licenseeMode,false,MaxDecodedBytes);
+}
+
+PortableModelGeometry DecodePortableCollisionModel68Body(const std::vector<std::uint8_t>& bytes,
+                                                        std::size_t importCount,
+                                                        std::size_t exportCount,
+                                                        std::uint16_t version,
+                                                        std::uint16_t licenseeMode,
+                                                        std::size_t decodedWorkingBytes) {
+    return DecodeModel68Body(bytes,importCount,exportCount,version,licenseeMode,true,decodedWorkingBytes);
 }
 
 PortableModelGeometry LoadPortableModel68(const PortablePackageTables& package,
@@ -454,6 +491,18 @@ PortableModelGeometry LoadPortableModel68(const PortablePackageTables& package,
                                           package.version, package.licenseeMode);
     model.objectPath = GetPortableObjectPath(package, static_cast<std::int32_t>(exportIndex + 1u));
     model.exportIndex = exportIndex;
+    return model;
+}
+
+PortableModelGeometry LoadPortableCollisionModel68(const PortablePackageTables& package,
+                                                  std::size_t exportIndex,
+                                                  std::size_t propertyWorkingBytes,
+                                                  std::size_t decodedWorkingBytes) {
+    const auto bytes=ReadExportBody(package,exportIndex,"Model",propertyWorkingBytes);
+    auto model=DecodePortableCollisionModel68Body(bytes,package.imports.size(),package.exports.size(),
+        package.version,package.licenseeMode,decodedWorkingBytes);
+    model.objectPath=GetPortableObjectPath(package,static_cast<std::int32_t>(exportIndex+1u));
+    model.exportIndex=exportIndex;
     return model;
 }
 

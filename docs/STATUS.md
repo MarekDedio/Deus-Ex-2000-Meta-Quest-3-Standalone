@@ -1,5 +1,35 @@
 # Port status
 
+## Selected Model collision provider (2026-10-17)
+
+- Added collision-only v68 Model decode/load, preserving inactive raw Float
+  bits, raw box Valid and reversed endpoints under structural/array budgets.
+  Existing render decoder admission remains strict and unchanged.
+- Actual selected Brush Models now support unpadded eight-corner bounds and
+  empty/nonzero-extent LineCheck using one current native owner ToWorld value.
+  Empty queries bypass owner coordinates and inactive endpoint/extent data.
+  Nonempty zero-extent owner queries and genuine Engine.Cylinder lifetime still
+  refuse explicitly; no root Model/cylinder/render fallback is introduced.
+- Separate immutable selected-Model cache keys actual ULevel/generation plus
+  selected UObject/source/export/path, with atomic publication,4096-entry/
+  64 MiB accounted-retained limits and all twelve vector capacities charged.
+  Warm restores retain it; map replacement/unload/shutdown clear native keys
+  before GC. FastLine and extent share a fixed root8M/16M work ledger; returned
+  packet statistics come from one trace, with no warm-validation bypass.
+- Decoder1767 checks/883 refusals and generated live-provider700 checks/6
+  refusals pass. Real dormant Training41435 checks/246 refusals cover1308
+  actors,1017 selected Models/bounds/extent probes,64 Mesh actors, both actual
+  crates and held knife/crowbar. All1017 Models retain700781 accounted host
+  bytes. Checkpoint/revision/world/GC/clock/source bytes/mtime stay unchanged.
+- Existing generated primitive1608/45, FastTrace2399/47 and owner packet12213/
+  23 controls with3038 independent x87 sweeps pass. Strict ARM64 syntax and the
+  full coherent host rebuild pass. Fresh CTest:125 passed/143 registered/18
+  explicit owned-data skips/zero failures in42.12s. Aggregate growth and
+  lifetime are tested, not exhaustion of the cache/shared-work maxima.
+- This remains provider groundwork, not completed Move/FindBase/falling, live
+  crate destruction or headset acceptance. No new APK. See
+  ORIGINAL-SELECTED-MODEL-COLLISION.md.
+
 ## Live Actor primitive identity and Mesh collision (2026-10-17)
 
 - Added actual qualified Brush->Mesh lazy selection and exact loaded native

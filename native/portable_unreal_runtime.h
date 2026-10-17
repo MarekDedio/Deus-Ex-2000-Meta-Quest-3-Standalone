@@ -494,6 +494,18 @@ struct PortableNativeModelSnapshot {
     std::size_t modelExportIndex{},cachedNodes{};
 };
 PortableNativeModelSnapshot ReadPortableRuntimeNativeModel();
+struct PortablePrimitiveModelCacheEntrySnapshot {
+    std::uint64_t mapGeneration{};
+    std::string levelPath,modelPath,sourcePath;
+    std::size_t modelExportIndex{},cachedNodes{};
+};
+struct PortablePrimitiveModelCacheSnapshot {
+    std::size_t retainedBytes{},maximumEntries{},maximumRetainedBytes{};
+    std::vector<PortablePrimitiveModelCacheEntrySnapshot> entries;
+};
+// Copied diagnostics only; never decodes, roots, validates a future query or
+// exports a native pointer. Separate from the one-record root FastTrace cache.
+PortablePrimitiveModelCacheSnapshot ReadPortableRuntimePrimitiveModelCache();
 // Read-only native ToWorld VALUE for an actual indexed current-map Actor.
 // Native dispatch is selected from the audited nearest RF_Native UClass;
 // current qualified fields include overlays/defaults, never renderer snapshots.
@@ -523,8 +535,10 @@ struct PortableActorPrimitiveLineSnapshot {
 // CPU-owner read-only actual selected-primitive diagnostics. Brush precedes
 // Mesh; null/null requires the not-yet-implemented genuine Engine.Cylinder
 // lifetime and refuses. No renderer/DrawType/model availability fallback.
-// Identity selection can report an actual Model; its query adapter is separate
-// and currently refuses. Mesh/LodMesh use their audited native implementations.
+// Model bounds and empty/nonzero-extent LineCheck use the actual selected
+// immutable Model and current native owner coordinates. Nonempty zero-extent
+// Model LineCheck still refuses pending its separate owner point adapter.
+// Mesh/LodMesh use their audited native implementations.
 // The line diagnostic deliberately seeds Next/Actor/Primitive/Location/Normal
 // zero, Time1 and Item-1; it exposes no native pointers or query capability and
 // is not the production hash/collector caller's FCheckResult seed contract.

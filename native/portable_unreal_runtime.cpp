@@ -41,6 +41,7 @@
 #include "quest_native_engine_classes.h"
 #include "quest_collision_hash_math.h"
 #include "quest_mesh_line_trace.h"
+#include "quest_model_line_hit.h"
 
 #include <memory>
 #include <algorithm>
@@ -57,6 +58,7 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
+#include <type_traits>
 #include "Math/coords.h"
 #include "Math/bbox.h"
 
@@ -444,6 +446,51 @@ struct RuntimeNativeModelCache {
     std::shared_ptr<const PortableModelGeometry> geometry;
 };
 std::optional<RuntimeNativeModelCache> persistentNativeModelCache;
+// Selected Brush Models are not ULevel.Model. This separate, bounded immutable
+// cache retains no UObject roots and never redirects the root FastTrace cache.
+// Native map identity is rechecked on every use and dropped before map GC.
+struct RuntimePrimitiveModelCacheEntry {
+    std::uint64_t generation{};
+    RuntimeObject* level{};
+    RuntimeObject* model{};
+    std::string sourcePath,objectPath;
+    std::size_t exportIndex{};
+    std::unique_ptr<const PortableModelGeometry> geometry;
+    std::size_t retainedBytes{};
+};
+struct RuntimePrimitiveModelCache {
+    std::vector<std::unique_ptr<RuntimePrimitiveModelCacheEntry>> entries;
+    std::size_t retainedBytes{};
+    void Clear() noexcept {decltype(entries){}.swap(entries);retainedBytes=0u;}
+};
+RuntimePrimitiveModelCache persistentPrimitiveModelCache;
+constexpr std::size_t MaximumPrimitiveModelEntries=4096u;
+constexpr std::size_t MaximumPrimitiveModelBytes=64u*1024u*1024u;
+// One outer-host cap, independent of whether FastLine or owned extent runs
+// first. Each kernel may only tighten its own positive per-call maxima.
+constexpr std::size_t MaximumNativeModelValidationWork=8'000'000u;
+constexpr std::size_t MaximumNativeModelQueryWork=16'000'000u;
+std::size_t PrimitiveModelAddBytes(std::size_t total,std::size_t count,std::size_t width=1u) {
+    if(!width || total>MaximumPrimitiveModelBytes || count>MaximumPrimitiveModelBytes/width ||
+        count*width>MaximumPrimitiveModelBytes-total)
+        throw std::runtime_error("Selected Model retained-byte budget exceeded");
+    return total+count*width;
+}
+std::size_t PrimitiveModelEntryBytes(const RuntimePrimitiveModelCacheEntry& entry) {
+    if(!entry.geometry) throw std::runtime_error("Selected Model cache entry has no geometry");
+    std::size_t bytes=sizeof(entry)+sizeof(PortableModelGeometry);
+    for(const auto* value:{&entry.sourcePath,&entry.objectPath,&entry.geometry->objectPath}) {
+        bytes=PrimitiveModelAddBytes(bytes,value->capacity());bytes=PrimitiveModelAddBytes(bytes,1u);
+    }
+    const auto& model=*entry.geometry;
+    const auto array=[&](const auto& values) {
+        bytes=PrimitiveModelAddBytes(bytes,values.capacity(),sizeof(typename std::decay_t<decltype(values)>::value_type));
+    };
+    array(model.vectors);array(model.points);array(model.nodes);array(model.surfaces);array(model.vertices);
+    array(model.zones);array(model.lightMaps);array(model.lightBits);array(model.renderBounds);
+    array(model.leafHulls);array(model.leaves);array(model.lights);
+    return bytes;
+}
 std::uint64_t persistentMapGenerationCounter{}; // Deliberately not reset/reused by Shutdown.
 QuestVr::ActorCollisionRegistry persistentActorCollision;
 bool pendingBirthGarbage{};
@@ -3937,8 +3984,15 @@ public:
     }
     QuestVr::OriginalCollisionHashBox NativeActorPrimitiveBounds(RuntimeObject* owner) {
         const auto selected=NativeActorPrimitive(owner);
-        if(selected.kind==NativePrimitiveKind::Model)
-            throw std::runtime_error("Native Model collision bounds require its actual loaded bounding box and ToWorld capture");
+        if(selected.kind==NativePrimitiveKind::Model) {
+            const auto& model=NativeSelectedModel(owner,selected);
+            // Always capture once, including empty BSP; native owner bounds
+            // ignore source Valid and visit all eight unpadded endpoint pairs.
+            const auto coords=NativeActorToWorld(owner);
+            for(unsigned corner=0u;corner<8u;++corner) LifecycleStep();
+            const auto bounds=QuestVr::TransformOriginalModelBounds(model.bounds.minimum,model.bounds.maximum,coords.coords);
+            return {bounds.minimum,bounds.maximum};
+        }
         const auto cylinder=NativePrimitiveOwnerCylinder(owner);
         return QuestVr::OriginalPrimitiveCollisionBounds(cylinder.location,cylinder.radius,cylinder.height);
     }
@@ -3946,8 +4000,28 @@ public:
         const PortableModelVec3& end,const PortableModelVec3& start,const PortableModelVec3& extent,
         const std::uint32_t flags=0u) {
         const auto selected=NativeActorPrimitive(owner);
-        if(selected.kind==NativePrimitiveKind::Model)
-            throw std::runtime_error("Native Model LineCheck requires its actual selected Model query service");
+        if(selected.kind==NativePrimitiveKind::Model) {
+            const auto& model=NativeSelectedModel(owner,selected);
+            QuestVr::ModelExtentTraceLimits limits;
+            if(fastTraceValidationWork_>=MaximumNativeModelValidationWork || fastTraceQueryWork_>=MaximumNativeModelQueryWork)
+                throw std::runtime_error("Selected Model shared native query budget exhausted");
+            limits.validationSteps=std::min(limits.validationSteps,MaximumNativeModelValidationWork-fastTraceValidationWork_);
+            limits.querySteps=std::min(limits.querySteps,MaximumNativeModelQueryWork-fastTraceQueryWork_);
+            // Empty LineCheck must return before inspecting extent/endpoints,
+            // owner coordinates or cylinder fields. Nonempty zero extent still
+            // requires the separately audited owner point-query packet adapter.
+            std::optional<NativeActorCoords> coords;
+            if(!model.nodes.empty()) {
+                if(extent.x==0.0f && extent.y==0.0f && extent.z==0.0f)
+                    throw std::runtime_error("Native Model zero-extent owner point-query adapter is not implemented");
+                coords=NativeActorToWorld(owner);
+            }
+            QuestVr::ModelExtentTraceStats stats;
+            const auto clear=QuestVr::CheckOriginalModelExtent(hit,model,reinterpret_cast<std::uintptr_t>(selected.object),
+                reinterpret_cast<std::uintptr_t>(owner),coords?&coords->coords:nullptr,end,start,extent,limits,&stats);
+            fastTraceValidationWork_+=stats.validationSteps;fastTraceQueryWork_+=stats.querySteps;
+            return clear;
+        }
         const auto cylinder=NativePrimitiveOwnerCylinder(owner);
         // Mesh/LodMesh share the audited wrapper. It discards all-zero-or-NaN
         // extents before the underlying cylinder's active finite-input policy.
@@ -3962,6 +4036,46 @@ public:
     }
     void ValidateEngineClassRegistrationBudget(const RuntimeEngineClassDomain& staged) const {
         ValidateStateBudget(NativeEngineClassRetainedBytes(staged));
+    }
+    const PortableModelGeometry& NativeSelectedModel(RuntimeObject* owner,const NativePrimitiveSelection& selected) {
+        static_cast<void>(NativeLevelInfo(owner));
+        auto* level=owner->nativeXLevel;auto* model=selected.object;
+        if(selected.kind!=NativePrimitiveKind::Model || !level->nativeMapGeneration ||
+            level->nativeMapGeneration!=persistentMapGenerationCounter || level->sourcePath!=persistentMapSourcePath)
+            throw std::runtime_error("Selected Model query has no current loader-owned native Level generation");
+        // The Model may be a different brush/export/package than Level.Model.
+        // Its actual class/export identity was checked by lazy GetPrimitive.
+        for(const auto& stored:persistentPrimitiveModelCache.entries) {
+            if(!stored || stored->generation!=level->nativeMapGeneration || stored->level!=level ||
+                !stored->model || !stored->geometry || stored->sourcePath!=stored->model->sourcePath ||
+                stored->exportIndex!=stored->model->exportIndex || stored->objectPath!=stored->model->reflection.objectPath)
+                throw std::runtime_error("Selected Model cache belongs to another native map/asset identity");
+            if(stored->model==model) return *stored->geometry;
+        }
+        if(persistentPrimitiveModelCache.entries.size()>=MaximumPrimitiveModelEntries)
+            throw std::runtime_error("Selected Model retained-entry budget exceeded");
+        constexpr std::size_t scratch=64u*1024u*1024u,decoded=16u*1024u*1024u;
+        const auto& table=Table(model->sourcePath);const auto index=model->exportIndex;
+        auto prepared=std::make_unique<RuntimePrimitiveModelCacheEntry>();
+        prepared->generation=level->nativeMapGeneration;prepared->level=level;prepared->model=model;
+        prepared->sourcePath=model->sourcePath;prepared->objectPath=model->reflection.objectPath;prepared->exportIndex=index;
+        prepared->geometry=std::make_unique<const PortableModelGeometry>(LoadPortableCollisionModel68(table,index,scratch,decoded));
+        if(prepared->geometry->exportIndex!=index || LowerAscii(prepared->geometry->objectPath)!=
+            LowerAscii(GetPortableObjectPath(table,static_cast<std::int32_t>(index+1u))))
+            throw std::runtime_error("Decoded selected Model disagrees with its actual exported native object");
+        prepared->retainedBytes=PrimitiveModelEntryBytes(*prepared);
+        // Allocate and admit a replacement pointer array BEFORE moving any
+        // published entry. After admission all transfers and the swap are
+        // nonallocating/noexcept, including failure while decoding a new Model.
+        decltype(persistentPrimitiveModelCache.entries) replacement;
+        replacement.reserve(persistentPrimitiveModelCache.entries.size()+1u);
+        auto bytes=PrimitiveModelAddBytes(sizeof(RuntimePrimitiveModelCache),replacement.capacity(),sizeof(decltype(replacement)::value_type));
+        for(const auto& stored:persistentPrimitiveModelCache.entries) bytes=PrimitiveModelAddBytes(bytes,stored->retainedBytes);
+        bytes=PrimitiveModelAddBytes(bytes,prepared->retainedBytes);
+        for(auto& stored:persistentPrimitiveModelCache.entries) replacement.push_back(std::move(stored));
+        replacement.push_back(std::move(prepared));persistentPrimitiveModelCache.entries.swap(replacement);
+        persistentPrimitiveModelCache.retainedBytes=bytes;
+        return *persistentPrimitiveModelCache.entries.back()->geometry;
     }
     const PortableModelGeometry& NativeTraceModel(RuntimeObject* actor) {
         static_cast<void>(NativeLevelInfo(actor));
@@ -4015,10 +4129,10 @@ public:
     bool NativeFastLine(RuntimeObject* actor,const PortableModelVec3& end,const PortableModelVec3& start) {
         const auto& model=NativeTraceModel(actor);
         QuestVr::ModelFastLineCheckLimits limits;
-        if (fastTraceValidationWork_>=limits.validationSteps || fastTraceQueryWork_>=limits.querySteps)
+        if (fastTraceValidationWork_>=MaximumNativeModelValidationWork || fastTraceQueryWork_>=MaximumNativeModelQueryWork)
             throw std::runtime_error("FastTrace shared native query budget exhausted");
-        limits.validationSteps-=fastTraceValidationWork_;
-        limits.querySteps-=fastTraceQueryWork_;
+        limits.validationSteps=std::min(limits.validationSteps,MaximumNativeModelValidationWork-fastTraceValidationWork_);
+        limits.querySteps=std::min(limits.querySteps,MaximumNativeModelQueryWork-fastTraceQueryWork_);
         // Const source geometry may be retained across calls. Full per-kernel
         // validation remains mandatory and charged to this same VM root; no
         // mutable Model can acquire a public "already validated" escape hatch.
@@ -10434,6 +10548,7 @@ PortableSound LoadPortableRuntimeSound(const std::string& objectPath) {
 
 void ShutdownPortableRuntime() {
     persistentNativeModelCache.reset(); // Drop non-owning identity keys before any map GC.
+    persistentPrimitiveModelCache.Clear();
     ClearNativePlayerObjects();
     persistentNativeClient.Clear();
     persistentScriptRandomSeed.reset();
@@ -11443,6 +11558,24 @@ PortableNativeModelSnapshot ReadPortableRuntimeNativeModel() {
     return result;
 }
 
+PortablePrimitiveModelCacheSnapshot ReadPortableRuntimePrimitiveModelCache() {
+    PortablePrimitiveModelCacheSnapshot result;
+    result.maximumEntries=MaximumPrimitiveModelEntries;result.maximumRetainedBytes=MaximumPrimitiveModelBytes;
+    result.retainedBytes=persistentPrimitiveModelCache.retainedBytes;
+    result.entries.reserve(persistentPrimitiveModelCache.entries.size());
+    for(const auto& stored:persistentPrimitiveModelCache.entries) {
+        if(!stored || !stored->level || !stored->model || !stored->geometry ||
+            !stored->generation || stored->generation!=persistentMapGenerationCounter ||
+            stored->level->nativeMapGeneration!=stored->generation || stored->level->sourcePath!=persistentMapSourcePath ||
+            stored->sourcePath!=stored->model->sourcePath || stored->objectPath!=stored->model->reflection.objectPath ||
+            stored->exportIndex!=stored->model->exportIndex)
+            throw std::runtime_error("Selected Model cache diagnostic encountered a stale native identity");
+        result.entries.push_back({stored->generation,stored->level->reflection.objectPath,stored->objectPath,
+            stored->sourcePath,stored->exportIndex,stored->geometry->nodes.size()});
+    }
+    return result;
+}
+
 PortableActorToWorldSnapshot ReadPortableRuntimeActorToWorld(const std::string& actorPath) {
     if(actorPath.empty() || actorPath.size()>4096u || actorPath.find('\0')!=std::string::npos)
         throw std::invalid_argument("Native ToWorld diagnostic actor identity is invalid");
@@ -11722,6 +11855,7 @@ std::size_t UnloadPortableRuntimeMap() {
     if (GetPortableRuntimeUnsavedScriptState())
         throw std::runtime_error("Map unload refused: script state requires a per-map archive");
     persistentNativeModelCache.reset(); // No stale Level/Model keys may outlive their owning map.
+    persistentPrimitiveModelCache.Clear();
     if (!persistentRuntime || !persistentRuntime->get() ||
         persistentRuntime->get()->exports.size() <= persistentScriptExportCount) {
         if (persistentRuntime && persistentRuntime->get()) persistentRuntime->get()->nativeDecals = nullptr;

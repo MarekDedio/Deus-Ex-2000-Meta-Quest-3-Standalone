@@ -357,3 +357,45 @@ Engine instance allocation arguments remain unproven. A documented explicit
 portable embedding construction request is distinct from those unknown
 launcher arguments, and must preserve all implemented constructor effects.
 No commercial executable code was loaded or executed to obtain this evidence.
+
+## Native defaults precede instance allocation (2026-10-17)
+
+Further read-only static review, with the Core/Engine hashes above rechecked,
+closes an important prerequisite to a genuine Engine-instance claim. The five
+portable native class registrations are not full Register/default preparation.
+Copying the native-client embedding's blank RuntimeObject/header pattern would
+not implement original StaticAllocateObject for the configured GameEngine.
+
+Core InitProperties101520D0 selects the actual class default-buffer pointer at
+Class+4D4 and byte count+4D8 at10152123..10152144 when no explicit template is
+supplied. It copies payload after the28-byte UObject header at10152149..176,
+zeroes only the remaining tail at10152185..1A7, then traverses constructor-linked
+properties at101521B1..10152200 for deep copies. StaticAllocateObject calls this
+using actual class/native size and template state at10157EDD..10157EF1.
+
+UClass.Register allocates/resizes the real default block at10127851..1012789F,
+then calls named UObject.InitClassDefaultObject(UClass*) through10101226 at
+101278A2. A distinct staticConstructor+4E4 is invoked at101278A7..101278EA;
+after further class serialization, Register calls named UObject.LoadConfig
+through101023DD at10127983, then UObject.LoadLocalized through1010306C at
+101279B6. These phases are not implied by the native flag baseline or a
+successful class-path/Within registration.
+
+In particular UGameEngine.StaticConstructor10388FC0..10389110 creates actual
+native UArrayProperty declarations for ServerActors at instance offsetB8 and
+ServerPackages atC4, flags4000, each with a StrProperty inner. Their original
+UTF16 names are at1047E658 and1047E614; the inner-name literal is1047E638.
+The array-property allocation/constructor calls are at1038900F/10389031 and
+10389096/103890B8, and each actual Inner pointer is installed at property+5C
+at10389085/10389100. This metadata/default state is not represented by the
+current serialized Engine.Engine fields or the portable five-record registry.
+
+Before publishing a genuine Engine/Cylinder fallback, implement and verify an
+explicit typed native default-preparation phase: audited native property and
+default-buffer authority, inherited actual Engine/Core defaults, applicable
+configuration/default semantics, and frozen per-instance copies. Do not
+fabricate a PortableClassDescriptor/CDO or use property.zero fallthrough to
+stand in for this state. Constructor-tail helpers may be implemented detached
+without granting a live collision capability. The later explicit port
+embedding request remains distinct from unproven original launcher arguments
+and from full retail Register/allocator/UEngine.Init parity.
