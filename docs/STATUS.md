@@ -18,6 +18,9 @@
   late-name atomic rollback. Original crate/fragment regression1116 checks/four
   refusals and strict ARM64 runtime/test syntax plus Android module/link pass.
   Owned Training primitive regression74660 checks/246 refusals also passes.
+  Full coherent host rebuild passes; CTest129 passed/148 registered/19 explicit
+  owned-data skips/zero failures in54.69s. Relevant owned fixtures above ran
+  separately with actual data; the skipped set is not claimed as all executed.
 - This is indexed class/lifetime groundwork, not native default construction or
   a bound Engine/Cylinder instance. Four config constraints, final native field/
   default binding, collision hash/Move/support/startup/player/falling and live

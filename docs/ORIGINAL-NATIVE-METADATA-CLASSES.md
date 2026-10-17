@@ -57,6 +57,10 @@ by an isolated unchanged Core copy; it never alters original package bytes.
 
 The owned test passes 10,994 checks with 94 explicit refusals. The original
 isolated crate/fragment regression passes 1,116 checks with four refusals. Strict
-ARM64 syntax and actual Android native module/link pass. Final full-host/CTest
-results are recorded in STATUS.md when complete. These checks are class/lifetime
-evidence, not playable crates or headset physics acceptance.
+ARM64 syntax and actual Android native module/link pass. The full coherent host
+rebuild passes. CTest ran 148 registered tests: 129 passed, 19 owned-data fixtures
+explicitly skipped, zero failures in 54.69 seconds. Relevant owned fixtures above
+were executed separately against actual data; the full skipped set is not claimed
+as executed. Owned Training primitive regression also passes 74,660 checks with
+246 explicit refusals. These checks are class/lifetime evidence, not playable
+crates or headset physics acceptance.
