@@ -42,6 +42,7 @@
 #include "quest_collision_hash_math.h"
 #include "quest_mesh_line_trace.h"
 #include "quest_model_line_hit.h"
+#include "quest_model_point_line_hit.h"
 
 #include <memory>
 #include <algorithm>
@@ -4007,15 +4008,25 @@ public:
                 throw std::runtime_error("Selected Model shared native query budget exhausted");
             limits.validationSteps=std::min(limits.validationSteps,MaximumNativeModelValidationWork-fastTraceValidationWork_);
             limits.querySteps=std::min(limits.querySteps,MaximumNativeModelQueryWork-fastTraceQueryWork_);
-            // Empty LineCheck must return before inspecting extent/endpoints,
-            // owner coordinates or cylinder fields. Nonempty zero extent still
-            // requires the separately audited owner point-query packet adapter.
-            std::optional<NativeActorCoords> coords;
-            if(!model.nodes.empty()) {
-                if(extent.x==0.0f && extent.y==0.0f && extent.z==0.0f)
-                    throw std::runtime_error("Native Model zero-extent owner point-query adapter is not implemented");
-                coords=NativeActorToWorld(owner);
+            // Empty LineCheck returns before inspecting extent/endpoints or
+            // owner coordinates. Original extent comparisons also choose the
+            // point branch for all-zero-or-unordered components, discarding
+            // their inactive NaN bits rather than rejecting them as extents.
+            if(!model.nodes.empty() && QuestVr::MeshLineTraceDetail::ZeroOrUnordered(extent.x) &&
+                QuestVr::MeshLineTraceDetail::ZeroOrUnordered(extent.y) &&
+                QuestVr::MeshLineTraceDetail::ZeroOrUnordered(extent.z)) {
+                QuestVr::ModelPointTraceLimits pointLimits;
+                pointLimits.validationSteps=std::min(pointLimits.validationSteps,limits.validationSteps);
+                pointLimits.querySteps=std::min(pointLimits.querySteps,limits.querySteps);
+                QuestVr::ModelPointTraceStats stats;
+                const auto clear=QuestVr::CheckOriginalModelPoint(hit,model,reinterpret_cast<std::uintptr_t>(selected.object),
+                    reinterpret_cast<std::uintptr_t>(owner),end,start,flags,
+                    [this,owner]{return NativeActorToWorld(owner).coords;},pointLimits,&stats);
+                fastTraceValidationWork_+=stats.validationSteps;fastTraceQueryWork_+=stats.querySteps;
+                return clear;
             }
+            std::optional<NativeActorCoords> coords;
+            if(!model.nodes.empty()) coords=NativeActorToWorld(owner);
             QuestVr::ModelExtentTraceStats stats;
             const auto clear=QuestVr::CheckOriginalModelExtent(hit,model,reinterpret_cast<std::uintptr_t>(selected.object),
                 reinterpret_cast<std::uintptr_t>(owner),coords?&coords->coords:nullptr,end,start,extent,limits,&stats);

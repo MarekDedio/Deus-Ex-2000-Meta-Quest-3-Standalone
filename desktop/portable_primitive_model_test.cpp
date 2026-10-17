@@ -217,9 +217,21 @@ void Queries() {
         for(unsigned i=0;i<24u;++i){LiteralBox();const auto h=Sweep();Require(!h.clear&&h.hitOwner&&!h.hitPrimitiveIsNone&&h.item==-1&&std::abs(h.time-0.2f)<=0.000003f&&h.primitive.primitivePath==Path("SelectedBox"),"Literal owned Model hull hit differs or selected root/cylinder");Near(h.location,{4,0,0},"Literal backed-off hull hit");Near(h.normal,{1,0,0},"Literal hull hit normal");}
         Require(SameCache(first,ReadPortableRuntimePrimitiveModelCache()),"Repeated warm query accumulated retained entries/bytes");
         const auto miss=ProbePortableRuntimeActorPrimitiveLine(Path("Driver"),{20,30,0},{10,30,0},{1,1,1},0xffffffffu);Require(miss.clear&&miss.time==2.0f&&!miss.hitOwner&&miss.hitPrimitiveIsNone&&miss.item==-1,"Nonempty miss did not write only caller Time2");Near(miss.location,{0,0,0},"Miss location seed");Near(miss.normal,{0,0,0},"Miss normal seed");
-        Refused([&]{(void)ProbePortableRuntimeActorPrimitiveLine(Path("Driver"),{-20,0,0},{10,0,0});},"Unimplemented owner point branch silently approximated an extent/cylinder");
+        const auto point=ProbePortableRuntimeActorPrimitiveLine(Path("Driver"),{-20,0,0},{10,0,0});
+        Require(!point.clear&&point.hitOwner&&!point.hitPrimitiveIsNone&&point.item==0&&
+            std::abs(point.time-0.31666666f)<=0.0000001f,"Literal owned point query lost node/owner/Model/time");
+        Near(point.location,{0.5f,0,0},"Point half-unit backoff");Near(point.normal,{1,0,0},"Owned point normal");
+        const auto pointMiss=ProbePortableRuntimeActorPrimitiveLine(Path("Driver"),{20,30,0},{10,30,0});
+        Require(pointMiss.clear&&pointMiss.time==1.0f&&!pointMiss.hitOwner&&pointMiss.hitPrimitiveIsNone&&pointMiss.item==-1,
+            "Point miss changed full caller seed (extent Time2 semantics leaked)");
+        Near(pointMiss.location,{0,0,0},"Point miss location");Near(pointMiss.normal,{0,0,0},"Point miss normal");
         Refused([&]{(void)ReadPortableRuntimeActorPrimitiveBounds(Path("UnknownBox"));},"Unknown native ToWorld was guessed for Model bounds");Refused([&]{(void)Sweep("UnknownBox");},"Unknown native ToWorld was guessed for nonempty Model query");Require(SameCache(first,ReadPortableRuntimePrimitiveModelCache()),"Failed warm query discarded/published independent immutable cache state");
         const float nan=std::bit_cast<float>(0x7f800001u),inf=std::bit_cast<float>(0x7f800000u);
+        const auto discarded=ProbePortableRuntimeActorPrimitiveLine(Path("Driver"),{-20,0,0},{10,0,0},{nan,-0.0f,nan});
+        Require(discarded.item==point.item&&discarded.clear==point.clear&&discarded.time==point.time&&
+            discarded.location==point.location&&discarded.normal==point.normal,"Point extent branch failed to discard inactive NaNs");
+        Refused([&]{(void)ProbePortableRuntimeActorPrimitiveLine(Path("Driver"),{-20,0,0},{10,0,0},{nan,1,0});},
+            "Active nonzero extent silently discarded earlier NaN");
         for(const auto& [name,clear]:std::vector<std::pair<std::string,bool>>{{"EmptyOutsideActor",true},{"EmptyInsideActor",false},{"UnknownEmpty",true}})
             PacketSeed(ProbePortableRuntimeActorPrimitiveLine(Path(name),{nan,inf,nan},{inf,nan,inf},{nan,-1,inf},0xffffffffu),clear,name);
         PacketSeed(ProbePortableRuntimeActorPrimitiveLine(Path("External"),{nan,inf,nan},{inf,nan,inf},{nan,-1,inf}),true,"External");
@@ -244,6 +256,6 @@ void Lifetime() {
 }
 } // namespace
 int main() {
-    try {ShutdownPortableRuntime();GC::Collect();const auto baseline=GC::GetStats();Queries();InactiveNumbers();Lifetime();ShutdownPortableRuntime();GC::Collect();Require(GC::GetStats().numObjects==baseline.numObjects&&GC::GetStats().memoryUsage==baseline.memoryUsage,"Selected Model tests leaked GC roots");std::cout<<"PASS live selected Model collision provider: "<<checks<<" checks, "<<refusals<<" refusals; literal bounds/extent packets, inactive empty fields, actual Level/export/cache identity, aggregate ledger, source/state invariants and warm/cold lifetime. Not owner point traces, Move/falling, crate gameplay or headset evidence.\n";return 0;}
+    try {ShutdownPortableRuntime();GC::Collect();const auto baseline=GC::GetStats();Queries();InactiveNumbers();Lifetime();ShutdownPortableRuntime();GC::Collect();Require(GC::GetStats().numObjects==baseline.numObjects&&GC::GetStats().memoryUsage==baseline.memoryUsage,"Selected Model tests leaked GC roots");std::cout<<"PASS live selected Model collision provider: "<<checks<<" checks, "<<refusals<<" refusals; literal bounds/extent/point packets, inactive empty fields, actual Level/export/cache identity, aggregate ledger, source/state invariants and warm/cold lifetime. Not Move/falling, crate gameplay or headset evidence.\n";return 0;}
     catch(const std::exception& e){std::cerr<<"FAIL live selected Model provider: "<<e.what()<<'\n';ShutdownPortableRuntime();return 1;}
 }

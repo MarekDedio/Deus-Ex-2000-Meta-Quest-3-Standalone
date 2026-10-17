@@ -535,9 +535,9 @@ struct PortableActorPrimitiveLineSnapshot {
 // CPU-owner read-only actual selected-primitive diagnostics. Brush precedes
 // Mesh; null/null requires the not-yet-implemented genuine Engine.Cylinder
 // lifetime and refuses. No renderer/DrawType/model availability fallback.
-// Model bounds and empty/nonzero-extent LineCheck use the actual selected
-// immutable Model and current native owner coordinates. Nonempty zero-extent
-// Model LineCheck still refuses pending its separate owner point adapter.
+// Model bounds and point/extent LineCheck use the actual selected immutable
+// Model and current native owner coordinates. Point hits capture ToWorld again
+// for the original normal transform; point misses preserve the full hit packet.
 // Mesh/LodMesh use their audited native implementations.
 // The line diagnostic deliberately seeds Next/Actor/Primitive/Location/Normal
 // zero, Time1 and Item-1; it exposes no native pointers or query capability and

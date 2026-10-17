@@ -3,6 +3,7 @@
 #include "portable_unreal_runtime.h"
 #include "quest_actor_line_trace.h"
 #include "quest_model_line_hit.h"
+#include "quest_model_point_line_hit.h"
 #include "quest_save_bundle.h"
 
 #include <algorithm>
@@ -223,6 +224,17 @@ void ModelQueries(const PortableActorPrimitiveSnapshot& selected,const PortableM
     SameFloat(actual.time,expected.time,"Selected Model line Time differs");
     SameVector(actual.location,ArrayOf(expected.location),"Selected Model line Location differs");
     SameVector(actual.normal,ArrayOf(expected.normal),"Selected Model line Normal differs");
+    for(const auto flags:{0u,6u,16u,0xffffffffu}) {
+        QuestVr::OriginalActorLineHit expectedPoint{};
+        const bool pointClear=QuestVr::CheckOriginalModelPoint(expectedPoint,model,1u,2u,Vector(end),Vector(start),flags,[&]{return coords;});
+        const auto point=ProbePortableRuntimeActorPrimitiveLine(selected.actorPath,end,start,{},flags);
+        Require(SamePrimitive(point.primitive,selected)&&point.clear==pointClear&&point.hitOwner==(expectedPoint.actor==2u)&&
+            point.hitPrimitiveIsNone==(expectedPoint.primitive==0u)&&point.item==expectedPoint.item,
+            "Selected Model point packet/flags/token provenance differs");
+        SameFloat(point.time,expectedPoint.time,"Selected Model point Time differs");
+        SameVector(point.location,ArrayOf(expectedPoint.location),"Selected Model point Location differs");
+        SameVector(point.normal,ArrayOf(expectedPoint.normal),"Selected Model point Normal differs");
+    }
     ++modelQueries;
 }
 std::vector<std::string> WorldPaths() {
@@ -253,6 +265,8 @@ void Original(const fs::path& root) {
     const auto before=temporary.Snapshot("Before");const auto revision=GetPortableRuntimeWorldRevision();
     const auto gc=GC::GetStats();const auto model=ReadPortableRuntimeNativeModel();const auto world=WorldPaths();
     std::string firstModel,firstMesh,firstNonemptyModel;std::size_t blocked{},explicitCrates{},explicitKnife{},explicitCrowbar{};
+    std::size_t fallbackCollideActors{},fallbackCollideWorld{};
+    std::map<std::string,std::size_t> collidableFallbackClasses;
     std::map<std::string,PortableModelGeometry> selectedModels;
     Require(ReadPortableRuntimePrimitiveModelCache().entries.empty(),"Fresh map already has selected Model geometry cached");
     for(const auto& actor:actors) {
@@ -278,6 +292,14 @@ void Original(const fs::path& root) {
         }
         const auto mesh=Declared(actor.objectPath,"Engine.Actor.Mesh",Kind::Object).text;
         if(mesh.empty()) {
+            // All null/null actors are not automatically hash participants.
+            // Census actual qualified original fields before deciding which
+            // real Engine.Cylinder fallback services the load phase requires.
+            const bool collides=Declared(actor.objectPath,"Engine.Actor.bCollideActors",Kind::Bool).boolean;
+            const bool worldCollision=Declared(actor.objectPath,"Engine.Actor.bCollideWorld",Kind::Bool).boolean;
+            Require(collides==actor.collideActors,"Qualified fallback collision flag differs from its live snapshot");
+            if(collides) {++fallbackCollideActors;++collidableFallbackClasses[actor.classPath];}
+            if(worldCollision) ++fallbackCollideWorld;
             Refused([&] {(void)ReadPortableRuntimeActorPrimitive(actor.objectPath);},
                 "Null Brush/Mesh fabricated an absent Engine.Cylinder fallback");
             ++fallbacksSeen;continue;
@@ -318,8 +340,8 @@ void Original(const fs::path& root) {
     Require(!firstNonemptyModel.empty(),"Owned fixture has no nonempty selected Model");
     Refused([&] {(void)ProbePortableRuntimeActorPrimitiveLine(firstNonemptyModel,{nan,nan,nan},{nan,nan,nan},{1,1,1});},
         "Model line query admitted active nonfinite endpoints");
-    Refused([&] {(void)ProbePortableRuntimeActorPrimitiveLine(firstNonemptyModel,{},{},{});},
-        "Nonempty Model zero-extent query silently substituted extent/Mesh collision");
+    Refused([&] {(void)ProbePortableRuntimeActorPrimitiveLine(firstNonemptyModel,{nan,nan,nan},{nan,nan,nan},{});},
+        "Model point query admitted active nonfinite endpoints");
     const auto selectedCache=ReadPortableRuntimePrimitiveModelCache();
     Require(selectedCache.entries.size()==selectedModels.size()&&selectedCache.retainedBytes>0u&&
         selectedCache.entries.size()<=selectedCache.maximumEntries&&selectedCache.retainedBytes<=selectedCache.maximumRetainedBytes,
@@ -347,12 +369,15 @@ void Original(const fs::path& root) {
         "Primitive diagnostics started the original world");
     SameModel(model);for(const auto& source:sources) source.Unchanged();
     std::cout<<"PASS owned dormant Training primitive provider: "<<actorsSeen<<" actors, "<<modelsSeen<<" Model identities, "
-        <<meshesSeen<<" Mesh/LodMesh queries, "<<modelQueries<<" Model bounds/extent adapter probes, "
+        <<meshesSeen<<" Mesh/LodMesh queries, "<<modelQueries<<" Model bounds/extent/four-flag point adapter probes, "
         <<selectedCache.entries.size()<<" retained Models/"<<selectedCache.retainedBytes<<" accounted bytes, "
         <<fallbacksSeen<<" explicit absent-engine refusals, "<<lineQueries
         <<" caller-seeded line probes; actual crates/knife/crowbar, qualified fields and source/import class identity, "
         "all packet/bounds Float bits, complete read-only checkpoint/revision/GC/clock/source checks. "
         "Not original startup, Move/FindBase/falling, crate gameplay, render or headset evidence.\n";
+    std::cout<<"FALLBACK-CENSUS nullBrushAndMesh="<<fallbacksSeen<<" bCollideActors="<<fallbackCollideActors
+        <<" bCollideWorld="<<fallbackCollideWorld<<"; actual qualified authored/current fields, no engine fallback constructed\n";
+    for(const auto& [cls,count]:collidableFallbackClasses)std::cout<<"FALLBACK-COLLIDABLE "<<cls<<" count="<<count<<'\n';
 }
 } // namespace
 int main(int argc,char** argv) {

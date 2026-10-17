@@ -1,5 +1,11 @@
 # Selected native Model collision bridge (2026-10-17)
 
+Follow-up: the nonempty owner point branch below is now implemented separately
+with its own exact PC64 kernel, flags/packet contract and two-capture owner-hit
+normal path. The owned fixture also establishes31 collidable null/null actors,
+not227 assumed collidables. See ORIGINAL-MODEL-POINT-OWNER.md. Historical
+verification counts and the original extent-only boundary below are retained.
+
 This is collision-provider groundwork for real crate support, not a completed
 Move/FindBase/falling/destruction implementation or headset acceptance. It does
 not force startup, possession, relevance or actor flags, and does not give

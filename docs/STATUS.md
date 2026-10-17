@@ -1,5 +1,30 @@
 # Port status
 
+## Original selected-Model point collision (2026-10-17)
+
+- Added the missing owner-aware point LineCheck branch for actual selected
+  Brush Models, retaining original CSG/initial-solid rules, caller-seeded hit
+  packets, half-unit backoff and the second owner-coordinate capture on hits.
+  Empty/clear queries preserve inactive data and caller fields. Point/extent
+  queries share bounded validation/work and actual Model identity/cache authority.
+- Commercial-free139308 checks/10 explicit safety refusals include4099 independent
+  recursive hardware-x87 packet comparisons. Generated provider715 checks/six
+  refusals and owned Training74660 checks/246 refusals pass. Training covers
+  all1017 selected Models and64 Mesh actors without changing sources or state.
+  The qualified null-Brush/null-Mesh census finds31 bCollideActors among227;
+  genuine Engine.Cylinder is still required for the complete collision phase.
+- Original crate/fragment regression1116 checks/four refusals, strict ARM64
+  syntax, full coherent host rebuild and Android native module/link all pass.
+  Fresh CTest129 passed/147 registered/18 explicit owned-data skips/zero failures
+  in54.44s. Skipped owned-data fixtures were separately run where listed above.
+- Recorded original native metadata/Cpp-property construction and serialized
+  load chronology; this audit adds no registration/default capability. Existing
+  loaded field chains must not receive destructive native-constructor replay.
+- Quest3 USB is authorized; replacement APK packaging/install is next. This is
+  collision and fragment-rendering groundwork, not completed live crowbar crate
+  damage, contents, startup, movement/support or falling. See
+  ORIGINAL-MODEL-POINT-OWNER.md and ORIGINAL-NATIVE-METADATA-REGISTRATION.md.
+
 ## Original crate fragment scene eligibility (2026-10-17)
 
 - Fixed a direct render omission: both Training crates' original WoodFragment
