@@ -39,6 +39,8 @@
 #include "quest_brush_coords.h"
 #include "quest_original_sine_table.h"
 #include "quest_native_engine_classes.h"
+#include "quest_collision_hash_math.h"
+#include "quest_mesh_line_trace.h"
 
 #include <memory>
 #include <algorithm>
@@ -3776,6 +3778,188 @@ public:
             {c.origin.x,c.origin.y,c.origin.z},{c.xAxis.x,c.xAxis.y,c.xAxis.z},
             {c.yAxis.x,c.yAxis.y,c.yAxis.z},{c.zAxis.x,c.zAxis.y,c.zAxis.z}};
     }
+    struct NativeAuthoredReadOrigin {
+        RuntimeObject* source{};
+        const PortableTaggedProperty* tag{};
+    };
+    enum class NativePrimitiveKind { Model,Mesh,LodMesh };
+    struct NativePrimitiveSelection {
+        RuntimeObject* object{};
+        std::string nativeClassPath;
+        NativePrimitiveKind kind{NativePrimitiveKind::Model};
+    };
+    std::string NativePrimitiveClassReference(const PortablePackageTables& table,const std::int32_t reference) {
+        LifecycleStep();
+        // The original class lookup uses ClassName==Class and the complete
+        // object path, not Import.ClassPackage. Reuse its bounded class-kind
+        // resolver instead of adding a ClassPackage gate absent from the pin.
+        const auto path=ResolveCastReference(table,reference);
+        if(LowerAscii(path)=="engine.model") return "Engine.Model";
+        if(LowerAscii(path)=="engine.mesh") return "Engine.Mesh";
+        if(LowerAscii(path)=="engine.lodmesh") return "Engine.LodMesh";
+        throw std::runtime_error("Native primitive virtual implementation is not an audited Model/Mesh/LodMesh");
+    }
+    void NativePrimitiveLoadedClass(RuntimeObject* cls,const std::string& selectedPath) {
+        std::array<RuntimeObject*,128u> visited{};std::size_t depth{};std::string current=selectedPath;
+        while(!current.empty()) {
+            LifecycleStep();
+            if(depth==visited.size()) throw std::runtime_error("Native primitive class ancestry exceeds its bound");
+            if(cls) {
+                if(std::find(visited.begin(),visited.begin()+depth,cls)!=visited.begin()+depth ||
+                    cls->reflection.metaClass!="Class" || cls->defaultOwner || cls->nativeClientClass ||
+                    (!cls->classDescriptor && !cls->nativeEngineClass) ||
+                    (cls->classDescriptor && !cls->classFieldLinksValid) ||
+                    (cls->reflection.flags&0x04000000u)==0u || Object(cls->reflection.objectPath)!=cls ||
+                    LowerAscii(cls->reflection.objectPath)!=LowerAscii(current))
+                    throw std::runtime_error("Native primitive loaded UClass ancestry is malformed or not actually native");
+            }
+            visited[depth++]=cls;
+            const auto identity=CastClassIdentity(current);const auto path=LowerAscii(identity.path);
+            const char* base=path=="engine.lodmesh"?"engine.mesh":
+                (path=="engine.mesh" || path=="engine.model")?"engine.primitive":
+                path=="engine.primitive"?"core.object":path=="core.object"?"":nullptr;
+            if(!base || LowerAscii(identity.basePath)!=base ||
+                (cls && cls->base && LowerAscii(cls->base->reflection.objectPath)!=base))
+                throw std::runtime_error("Native primitive loaded Class has an unaudited direct native superclass");
+            current=identity.basePath;
+            if(cls && cls->base) cls=cls->base;
+            else {
+                // An absent native-only superclass wrapper is not a missing
+                // class identity. CastClassIdentity above validates the actual
+                // import and the closed native registration without inventing
+                // an UObject, serialized descriptor or default block.
+                const auto found=persistentVmObjects.find(LowerAscii(current));
+                cls=found==persistentVmObjects.end()?nullptr:found->second;
+            }
+        }
+    }
+    NativePrimitiveSelection NativePrimitiveAsset(RuntimeObject* asset) {
+        LifecycleStep();
+        // Owned native asset classes can have no serialized UClass wrapper in
+        // the disk-only runtime. Their actual export's Class reference still
+        // supplies native type. An indexed loaded native UClass, when present,
+        // must agree and retain the complete audited direct native base chain.
+        if(!asset || asset->runtimeBirth || asset->defaultOwner || asset->classDescriptor ||
+            asset->nativeClientClass || asset->nativeEngineClass || asset->nativeClientIdentity ||
+            asset->nativeWindowObject || asset->sourcePath.empty() ||
+            Object(asset->reflection.objectPath)!=asset)
+            throw std::runtime_error("Native primitive is not an actual indexed original asset export");
+        const auto& table=Table(asset->sourcePath);
+        if(asset->exportIndex>=table.exports.size() ||
+            asset->exportIndex>=static_cast<std::size_t>(std::numeric_limits<std::int32_t>::max()) ||
+            LowerAscii(Qualified(table,static_cast<std::int32_t>(asset->exportIndex+1u)))!=LowerAscii(asset->reflection.objectPath))
+            throw std::runtime_error("Native primitive asset has no matching original export identity");
+        const auto& entry=table.exports[asset->exportIndex];
+        const auto path=NativePrimitiveClassReference(table,entry.ObjClass);
+        if(asset->cls) NativePrimitiveLoadedClass(asset->cls,path);
+        else if(const auto found=persistentVmObjects.find(LowerAscii(path));found!=persistentVmObjects.end())
+            NativePrimitiveLoadedClass(found->second,path);
+        const auto identity=CastObjectIdentity(asset->reflection.objectPath);
+        if(identity.classObject || LowerAscii(identity.classPath)!=LowerAscii(path))
+            throw std::runtime_error("Native primitive asset disagrees with its actual exported class");
+        return {asset,path,path=="Engine.Model"?NativePrimitiveKind::Model:
+            path=="Engine.Mesh"?NativePrimitiveKind::Mesh:NativePrimitiveKind::LodMesh};
+    }
+    std::optional<NativePrimitiveSelection> NativePrimitiveField(RuntimeObject* owner,const char* key,
+        const char* constraint,const std::uint32_t flags) {
+        LifecycleStep();
+        const auto property=DescribeProperty(key);auto* field=Object(property.key);
+        if(LowerAscii(property.key)!=LowerAscii(key) || !OwnsProperty(owner->cls,property) ||
+            property.zero.kind!=Kind::Object || property.arrayDimension!=1u || property.flags!=flags ||
+            !field->property || field->property->type!="ObjectProperty" || field->property->baseField ||
+            LowerAscii(Qualified(Table(field->sourcePath),Table(field->sourcePath).exports.at(field->exportIndex).ObjClass))!="core.objectproperty" ||
+            LowerAscii(NativePrimitiveClassReference(Table(field->sourcePath),field->property->referencedType))!=LowerAscii(constraint))
+            throw std::runtime_error("Native primitive field is not its exact qualified original Actor Object schema");
+        NativeAuthoredReadOrigin origin;
+        const auto value=Read(owner,property,0u,false,false,&origin);
+        if(value.kind!=Kind::Object || value.text.size()>4096u || value.text.find('\0')!=std::string::npos)
+            throw std::runtime_error("Native primitive field has an invalid live Object value");
+        if(origin.tag) {
+            // Plain Object Decode intentionally predates this native provider.
+            // Validate the exact chosen authored tag's import declaration here,
+            // without changing unrelated VM reads or reimplementing shadow/CDO/
+            // birth-source selection. Mutable typed overlays have no raw import.
+            if(!origin.source || origin.tag->type!=5u || origin.tag->arrayIndex!=0u)
+                throw std::runtime_error("Native primitive authored field is not an Object-property tag");
+            const auto& source=Table(origin.source->sourcePath);
+            const auto reference=DecodePortableObjectReference(*origin.tag);
+            const auto resolved=ResolvePortableValueObjectReference(source,reference,
+                [&](const std::string& target,const std::string& importedClass) {
+                    const auto actual=NativePrimitiveAsset(Object(target));
+                    // FindObjectReference matches the import's unqualified
+                    // ClassName anywhere in the actual object's ancestry.
+                    // ClassPackage is not consulted by that original lookup.
+                    const auto expected=LowerAscii(importedClass);
+                    std::string current=actual.nativeClassPath;
+                    for(std::size_t depth=0u;!current.empty() && depth<128u;++depth) {
+                        LifecycleStep();
+                        if(LowerAscii(current.substr(current.find_last_of('.')+1u))==expected) return true;
+                        current=CastClassIdentity(current).basePath;
+                    }
+                    return false;
+                });
+            if(LowerAscii(resolved)!=LowerAscii(value.text))
+                throw std::runtime_error("Native primitive authored provenance disagrees with its selected live value");
+        }
+        if(value.text.empty()) return std::nullopt;
+        auto selected=NativePrimitiveAsset(Object(value.text));
+        if(!ClassDerives(selected.nativeClassPath,constraint))
+            throw std::runtime_error("Native primitive asset violates its actual Actor field constraint");
+        return selected;
+    }
+    NativePrimitiveSelection NativeActorPrimitive(RuntimeObject* owner) {
+        if(!owner || owner->defaultOwner || owner->classDescriptor || !owner->cls ||
+            !IsDerivedFromPath(owner->cls,"Engine.Actor") || CastObjectIdentity(owner->reflection.objectPath).classObject)
+            throw std::runtime_error("Native primitive owner is not an actual Actor instance");
+        // Exact original AActor.GetPrimitive lazy precedence. In particular a
+        // malformed nonnull Brush cannot fall through to an otherwise valid
+        // Mesh, and a selected Brush never reads or validates inactive Mesh.
+        if(auto brush=NativePrimitiveField(owner,"Engine.Actor.Brush","Engine.Model",0x2au)) return *brush;
+        if(auto mesh=NativePrimitiveField(owner,"Engine.Actor.Mesh","Engine.Mesh",0x21u)) return *mesh;
+        throw std::runtime_error("Native primitive Engine-owned Cylinder fallback lifetime is not implemented");
+    }
+    QuestVr::OriginalActorCylinder NativePrimitiveOwnerCylinder(RuntimeObject* owner) {
+        const auto location=NativeCoordsRead(owner,"Engine.Actor.Location",Kind::Vector,0x23u);
+        const auto dimension=[&](const char* key) {
+            LifecycleStep();const auto property=DescribeProperty(key);auto* field=Object(property.key);
+            if(LowerAscii(property.key)!=LowerAscii(key) || !OwnsProperty(owner->cls,property) ||
+                property.zero.kind!=Kind::Float || property.arrayDimension!=1u || property.flags!=0x23u ||
+                !field->property || field->property->type!="FloatProperty" || field->property->baseField ||
+                field->property->referencedType ||
+                LowerAscii(Qualified(Table(field->sourcePath),Table(field->sourcePath).exports.at(field->exportIndex).ObjClass))!="core.floatproperty")
+                throw std::runtime_error("Native primitive owner dimension is not its original scalar Actor Float");
+            const auto value=Read(owner,property,0u);
+            if(value.kind!=Kind::Float) throw std::runtime_error("Native primitive owner dimension has a non-Float live value");
+            return value.floating;
+        };
+        return {reinterpret_cast<std::uintptr_t>(owner),{location.vector[0u],location.vector[1u],location.vector[2u]},
+            dimension("Engine.Actor.CollisionRadius"),dimension("Engine.Actor.CollisionHeight")};
+    }
+    QuestVr::OriginalCollisionHashBox NativeActorPrimitiveBounds(RuntimeObject* owner) {
+        const auto selected=NativeActorPrimitive(owner);
+        if(selected.kind==NativePrimitiveKind::Model)
+            throw std::runtime_error("Native Model collision bounds require its actual loaded bounding box and ToWorld capture");
+        const auto cylinder=NativePrimitiveOwnerCylinder(owner);
+        return QuestVr::OriginalPrimitiveCollisionBounds(cylinder.location,cylinder.radius,cylinder.height);
+    }
+    bool NativeActorPrimitiveLineCheck(RuntimeObject* owner,QuestVr::OriginalActorLineHit& hit,
+        const PortableModelVec3& end,const PortableModelVec3& start,const PortableModelVec3& extent,
+        const std::uint32_t flags=0u) {
+        const auto selected=NativeActorPrimitive(owner);
+        if(selected.kind==NativePrimitiveKind::Model)
+            throw std::runtime_error("Native Model LineCheck requires its actual selected Model query service");
+        const auto cylinder=NativePrimitiveOwnerCylinder(owner);
+        // Mesh/LodMesh share the audited wrapper. It discards all-zero-or-NaN
+        // extents before the underlying cylinder's active finite-input policy.
+        // No render mesh/animation decode, ToWorld or Engine fallback is needed.
+        return QuestVr::OriginalMeshLineCheck(hit,cylinder,end,start,extent,flags);
+    }
+    void RequireIndexedPrimitiveDiagnosticOwner(RuntimeObject* owner) {
+        RequireMapActor(owner);
+        if(owner->worldActorIndex<0 || static_cast<std::size_t>(owner->worldActorIndex)>=persistentWorldActors.size() ||
+            persistentWorldActors[static_cast<std::size_t>(owner->worldActorIndex)]!=owner)
+            throw std::runtime_error("Native primitive diagnostic requires an indexed actual current-map Actor");
+    }
     void ValidateEngineClassRegistrationBudget(const RuntimeEngineClassDomain& staged) const {
         ValidateStateBudget(NativeEngineClassRetainedBytes(staged));
     }
@@ -5825,7 +6009,8 @@ public:
         throw std::runtime_error("RootWindow native SetVisibility/init-tree/reconfiguration is not implemented");
     }
     Value Read(RuntimeObject* object, const Property& property, const std::uint32_t index,
-        const bool defaults = false, const bool immutable = false) {
+        const bool defaults = false, const bool immutable = false,NativeAuthoredReadOrigin* origin=nullptr) {
+        if(origin) *origin={};
         if(object->nativeEngineClass)
             throw std::runtime_error("Native UClass reflected/default storage is not established");
         if(object->nativeWindowObject && !defaults && !immutable) {
@@ -5936,6 +6121,7 @@ public:
             if (selectedField(source))
                 for (auto tag = properties.rbegin(); tag != properties.rend(); ++tag) {
                     if (tag->name != property.name || tag->arrayIndex != index) continue;
+                    if(origin) *origin={source,&*tag};
                     return Decode(*source, *tag, property);
                 }
             source = !classDefaults && source == object ? object->cls : source->base;
@@ -11262,6 +11448,51 @@ PortableActorToWorldSnapshot ReadPortableRuntimeActorToWorld(const std::string& 
         throw std::invalid_argument("Native ToWorld diagnostic actor identity is invalid");
     PortableActorVmHost host;
     return host.ReadActorToWorldSnapshot(host.Object(actorPath));
+}
+
+static RuntimeObject* PrimitiveDiagnosticOwner(PortableActorVmHost& host,const std::string& actorPath) {
+    if(actorPath.empty() || actorPath.size()>4096u || actorPath.find('\0')!=std::string::npos)
+        throw std::invalid_argument("Native primitive diagnostic actor identity is invalid");
+    auto* owner=host.Object(actorPath);host.RequireIndexedPrimitiveDiagnosticOwner(owner);return owner;
+}
+static PortableActorPrimitiveSnapshot PrimitiveDiagnosticIdentity(RuntimeObject* owner,
+    const PortableActorVmHost::NativePrimitiveSelection& selected) {
+    const bool model=selected.kind==PortableActorVmHost::NativePrimitiveKind::Model;
+    return {owner->reflection.objectPath,selected.object->reflection.objectPath,selected.nativeClassPath,
+        model?"UModel::LineCheck":"UMesh::LineCheck",
+        model?"UModel::GetCollisionBoundingBox":"UPrimitive::GetCollisionBoundingBox"};
+}
+PortableActorPrimitiveSnapshot ReadPortableRuntimeActorPrimitive(const std::string& actorPath) {
+    PortableActorVmHost host;auto* owner=PrimitiveDiagnosticOwner(host,actorPath);
+    return PrimitiveDiagnosticIdentity(owner,host.NativeActorPrimitive(owner));
+}
+PortableActorPrimitiveBoundsSnapshot ReadPortableRuntimeActorPrimitiveBounds(const std::string& actorPath) {
+    PortableActorVmHost host;auto* owner=PrimitiveDiagnosticOwner(host,actorPath);
+    PortableActorPrimitiveBoundsSnapshot result;
+    result.primitive=PrimitiveDiagnosticIdentity(owner,host.NativeActorPrimitive(owner));
+    const auto bounds=host.NativeActorPrimitiveBounds(owner);
+    result.minimum={bounds.minimum.x,bounds.minimum.y,bounds.minimum.z};
+    result.maximum={bounds.maximum.x,bounds.maximum.y,bounds.maximum.z};
+    return result;
+}
+PortableActorPrimitiveLineSnapshot ProbePortableRuntimeActorPrimitiveLine(const std::string& actorPath,
+    const std::array<float,3u>& end,const std::array<float,3u>& start,
+    const std::array<float,3u>& extent,const std::uint32_t flags) {
+    PortableActorVmHost host;auto* owner=PrimitiveDiagnosticOwner(host,actorPath);
+    PortableActorPrimitiveLineSnapshot result;
+    result.primitive=PrimitiveDiagnosticIdentity(owner,host.NativeActorPrimitive(owner));
+    // This detached diagnostic has an explicitly documented fixed seed. The
+    // internal provider retains the production caller's complete packet and
+    // does not manufacture or reset the hash/collector's FCheckResult seed.
+    QuestVr::OriginalActorLineHit hit{};
+    result.clear=host.NativeActorPrimitiveLineCheck(owner,hit,{end[0u],end[1u],end[2u]},
+        {start[0u],start[1u],start[2u]},{extent[0u],extent[1u],extent[2u]},flags);
+    result.hitOwner=hit.actor==reinterpret_cast<std::uintptr_t>(owner);
+    result.hitPrimitiveIsNone=hit.primitive==0u;
+    result.location={hit.location.x,hit.location.y,hit.location.z};
+    result.normal={hit.normal.x,hit.normal.y,hit.normal.z};
+    result.time=hit.time;result.item=hit.item;
+    return result;
 }
 
 static std::pair<RuntimeObject*,RuntimeObject*> RelinkAuthoredActorBases(

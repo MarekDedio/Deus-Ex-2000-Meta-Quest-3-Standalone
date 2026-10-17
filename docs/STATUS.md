@@ -1,5 +1,34 @@
 # Port status
 
+## Live Actor primitive identity and Mesh collision (2026-10-17)
+
+- Added actual qualified Brush->Mesh lazy selection and exact loaded native
+  Model/Mesh/LodMesh identity/virtual provenance. Value imports retain original
+  unqualified ClassName-ancestry semantics, not renderer leaf guesses. Optional
+  typed Read origin proves the exact selected authored tag without changing
+  existing overlays/shadow/default/birth selection or unrelated VM reads.
+- Mesh/LodMesh bounds and line queries consume current native Actor Location/
+  CollisionRadius/CollisionHeight, not decoded mesh/animation geometry. Exact
+  Mesh extent wrapper canonicalizes only all-zero-or-unordered vectors; numeric
+  core preserves genuine partial writes and atomic supported-domain refusal.
+- Actual selected Model identity is available, but Model query service remains
+  explicit unsupported. Both-null fields still require real Engine.Cylinder
+  lifetime; a failed Brush never falls back to Mesh/cylinder. No startup flags,
+  native Engine instances, rendering cubes or possession are fabricated.
+- Targeted host/ARM builds pass. Mesh adapter138333 checks/9057 safety refusals
+  and real dormant Training23126 checks/246 refusals pass:1308 actors,
+  1017 Models,64 Mesh actors,227 unavailable fallback branches and256 line
+  probes, including both crates/knife/crowbar. Complete source/state/GC/clock/
+  world/Model identities remain unchanged. These are provider checks, not live
+  physics, crate destruction or headset acceptance.
+- Generated1608 checks/45 refusals pass, using separate opaque read-only and
+  valid renderable mutable fixtures through normal commit preparation. Native
+  loaded-class direct-chain, source-import/shadow/default/live values, literal
+  packets/bounds, schema/lazy selection and full rollback are covered. Final
+  ARM syntax and the full coherent host rebuild pass. Fresh CTest:123 passed/
+  141 registered/18 explicit owned-data skips/zero failures in44.20s.
+  See ORIGINAL-LIVE-ACTOR-PRIMITIVES.md; no replacement APK.
+
 ## Native-only engine class registration (2026-10-17)
 
 - Added a distinct static native UClass registration phase for Core.Package,

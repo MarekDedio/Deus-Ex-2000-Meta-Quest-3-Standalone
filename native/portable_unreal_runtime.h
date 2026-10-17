@@ -505,6 +505,34 @@ struct PortableActorToWorldSnapshot {
     std::array<float,3u> origin{},xAxis{},yAxis{},zAxis{};
 };
 PortableActorToWorldSnapshot ReadPortableRuntimeActorToWorld(const std::string& actorPath);
+struct PortableActorPrimitiveSnapshot {
+    std::string actorPath, primitivePath, nativeClassPath;
+    std::string lineImplementation, boundsImplementation;
+};
+struct PortableActorPrimitiveBoundsSnapshot {
+    PortableActorPrimitiveSnapshot primitive;
+    std::array<float,3u> minimum{},maximum{};
+};
+struct PortableActorPrimitiveLineSnapshot {
+    PortableActorPrimitiveSnapshot primitive;
+    bool clear{}, hitOwner{}, hitPrimitiveIsNone{};
+    std::array<float,3u> location{},normal{};
+    float time{1.0f};
+    std::int32_t item{-1};
+};
+// CPU-owner read-only actual selected-primitive diagnostics. Brush precedes
+// Mesh; null/null requires the not-yet-implemented genuine Engine.Cylinder
+// lifetime and refuses. No renderer/DrawType/model availability fallback.
+// Identity selection can report an actual Model; its query adapter is separate
+// and currently refuses. Mesh/LodMesh use their audited native implementations.
+// The line diagnostic deliberately seeds Next/Actor/Primitive/Location/Normal
+// zero, Time1 and Item-1; it exposes no native pointers or query capability and
+// is not the production hash/collector caller's FCheckResult seed contract.
+PortableActorPrimitiveSnapshot ReadPortableRuntimeActorPrimitive(const std::string& actorPath);
+PortableActorPrimitiveBoundsSnapshot ReadPortableRuntimeActorPrimitiveBounds(const std::string& actorPath);
+PortableActorPrimitiveLineSnapshot ProbePortableRuntimeActorPrimitiveLine(const std::string& actorPath,
+    const std::array<float,3u>& end,const std::array<float,3u>& start,
+    const std::array<float,3u>& extent={},std::uint32_t flags=0u);
 QuestVr::Vm::Value ReadPortableActorScriptProperty(
     const std::string& actorPath, const std::string& propertyName,
     std::uint32_t arrayIndex = 0u);
