@@ -408,6 +408,23 @@ foreach(PRIMITIVE_TEST portable_actor_primitive portable_actor_primitive_generat
 endforeach()
 set_tests_properties(portable_actor_primitive PROPERTIES SKIP_RETURN_CODE 77)
 
+add_executable(portable_native_engine_defaults_audit portable_native_engine_defaults_audit.cpp)
+target_compile_features(portable_native_engine_defaults_audit PRIVATE cxx_std_20)
+target_link_libraries(portable_native_engine_defaults_audit PRIVATE quest_portable_host)
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+    target_compile_options(portable_native_engine_defaults_audit PRIVATE -Wall -Wextra -Werror)
+    target_link_options(portable_native_engine_defaults_audit PRIVATE -static -static-libgcc -static-libstdc++)
+endif()
+
+add_executable(quest_native_config_test quest_native_config_test.cpp)
+target_compile_features(quest_native_config_test PRIVATE cxx_std_20)
+target_include_directories(quest_native_config_test PRIVATE "${PORT_NATIVE}")
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+    target_compile_options(quest_native_config_test PRIVATE -Wall -Wextra -Werror)
+    target_link_options(quest_native_config_test PRIVATE -static -static-libgcc -static-libstdc++)
+endif()
+add_test(NAME quest_native_config COMMAND quest_native_config_test)
+
 foreach(ACTOR_COORDS_TEST portable_actor_coords portable_actor_coords_generated)
     add_executable(${ACTOR_COORDS_TEST}_test ${ACTOR_COORDS_TEST}_test.cpp)
     target_compile_features(${ACTOR_COORDS_TEST}_test PRIVATE cxx_std_20)

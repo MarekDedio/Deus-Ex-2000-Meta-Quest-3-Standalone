@@ -86,6 +86,11 @@ not engine initialized. Runtime-owner thread rules apply.
 
 ## Remaining real integration
 
+Follow-up default/config evidence and the bounded ordered data reader are in
+ORIGINAL-NATIVE-DEFAULT-CONFIG.md. These establish data semantics, not native
+class/default-buffer construction; native GameEngine arrays and inherited
+typed defaults/config imports must precede actual instance publication.
+
 No Engine, UPackage or Primitive **instance** is constructed by this phase.
 There is no Engine.Cylinder or Level.Engine edge yet. Actual constructor state
 (including fresh FURL and Transient binding), explicit embedding allocation
