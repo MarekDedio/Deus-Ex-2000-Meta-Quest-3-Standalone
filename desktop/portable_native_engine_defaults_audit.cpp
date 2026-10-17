@@ -1,12 +1,15 @@
 #include "Precomp.h"
 #include "surreal_portable_package_tables.h"
 #include "quest_native_config.h"
+#include "quest_native_config_import.h"
 
 #include <array>
+#include <bit>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <optional>
 #include <set>
 #include <stdexcept>
 #include <string>
@@ -97,11 +100,53 @@ void ConfigInventory(const fs::path& root) {
     Require(fs::file_size(file)==size&&fs::last_write_time(file)==modified&&Hash(file)==before,
         "Native default config inspection changed source bytes/mtime");
 }
+void TypedScalarInventory(const fs::path& root) {
+    // Replay scalar importer data only. This consumes actual tagged baseline
+    // values and per-class config, but does not register fields, construct a
+    // default block or resolve/manufacture a missing native Class UObject.
+    const auto file=fs::canonical(root/"System"/"Engine.u");const auto before=Hash(file);
+    const auto size=fs::file_size(file);const auto modified=fs::last_write_time(file);
+    const auto table=LoadPortablePackageTables(file.string());const auto cls=LoadPortableClassDescriptor(table,FindPortableExport(table,"Engine"));
+    std::optional<std::int32_t> cache;std::optional<bool> sound;
+    for(const auto& tag:cls.defaults) {
+        if(tag.name=="CacheSizeMegs") {
+            Require(tag.type==2u&&tag.arrayIndex==0u&&tag.value.size()==4u,"Cache default tag is not original scalar Int");
+            const auto bits=static_cast<std::uint32_t>(tag.value[0u])|static_cast<std::uint32_t>(tag.value[1u])<<8u|
+                static_cast<std::uint32_t>(tag.value[2u])<<16u|static_cast<std::uint32_t>(tag.value[3u])<<24u;
+            cache=std::bit_cast<std::int32_t>(bits);
+        }else if(tag.name=="UseSound") {
+            Require(tag.type==3u&&tag.arrayIndex==0u&&tag.value.empty(),"Sound default tag is not original scalar Bool");sound=tag.boolValue;
+        }
+    }
+    Require(cache.has_value()&&sound.has_value(),"Engine scalar baseline tags are missing");
+    const auto iniFile=fs::canonical(root/"System"/"DeusEx.ini");const auto iniBefore=Hash(iniFile);
+    const auto iniSize=fs::file_size(iniFile);const auto iniModified=fs::last_write_time(iniFile);
+    const auto doc=QuestVr::NativeConfig::ReadOrderedIni(iniFile);Require(bool(doc),"Owned typed config source missing");
+    for(const auto* path:{"Engine.Engine","Engine.GameEngine","Extension.GameEngineExt","DeusEx.DeusExGameEngine"}) {
+        if(const auto value=doc->PropertyScalar(path,"CacheSizeMegs"))
+            static_cast<void>(QuestVr::NativeConfigImport::Integer(QuestVr::UnrealString::Decode(*value),*cache));
+        if(const auto value=doc->PropertyScalar(path,"UseSound")) {
+            std::uint32_t bits=*sound?1u:0u;
+            static_cast<void>(QuestVr::NativeConfigImport::Boolean(QuestVr::UnrealString::Decode(*value),1u,bits));sound=(bits&1u)!=0u;
+        }
+        std::cout<<"TYPED-SCALAR "<<path<<" CacheSizeMegs="<<*cache<<" UseSound="<<*sound<<'\n';
+        for(const auto* field:{"GameRenderDevice","AudioDevice","Console","NetworkDevice","Language"}) {
+            if(const auto value=doc->PropertyScalar(path,field)) {
+                const auto token=QuestVr::NativeConfigImport::ReadToken(QuestVr::UnrealString::Decode(*value),true);
+                std::cout<<"TYPED-CLASS-REQUEST "<<path<<'.'<<field<<" tokenReturned="<<token.result.returned
+                    <<" tokenUnits="<<token.value.size()<<" requiresActualRegisteredResolver=1\n";
+            }
+        }
+    }
+    Require(fs::file_size(file)==size&&fs::last_write_time(file)==modified&&Hash(file)==before&&
+        fs::file_size(iniFile)==iniSize&&fs::last_write_time(iniFile)==iniModified&&Hash(iniFile)==iniBefore,
+        "Typed scalar inventory changed owned source bytes/mtime");
+}
 }
 int main(int argc,char** argv) {
     try {
         Require(argc==2,"Usage: portable_native_engine_defaults_audit OWNED_GAME_ROOT");
-        const auto root=fs::canonical(argv[1]);Inventory(root,"Core",{"Object","Subsystem"});Inventory(root,"Engine",{"Engine"});ConfigInventory(root);
+        const auto root=fs::canonical(argv[1]);Inventory(root,"Core",{"Object","Subsystem"});Inventory(root,"Engine",{"Engine"});ConfigInventory(root);TypedScalarInventory(root);
         std::cout<<"PASS read-only native engine default metadata inventory; no class/default/instance construction or original execution\n";return 0;
     }catch(const std::exception& error) {std::cerr<<"Native engine default inventory failed: "<<error.what()<<'\n';return 1;}
 }

@@ -1,5 +1,23 @@
 # Port status
 
+## Native typed config imports (2026-10-17)
+
+- Added original private ReadToken and Int/Bool/Class ImportText data semantics,
+  including exact UTF16 cursor/write behavior, failure writes of None, bit-mask
+  preservation and separate actual-object/metaclass/ancestry resolver callbacks.
+  No generic coercion, native DLL loading or fabricated UObject capability.
+- Read-only actual Engine default tags now feed ordered typed scalar imports:
+  CacheSizeMegs2/UseSoundTrue remain inherited until the concrete owned INI
+  overrides cache size to4. Five class fields still explicitly require a real
+  indexed resolver. All source bytes/size/mtime remain unchanged.
+- Commercial-free tests20348 checks/10 explicit safety refusals, targeted host,
+  strict ARM64 and owned inventory pass. Full coherent rebuild passes; fresh
+  CTest127 passed/145 registered/18 explicit owned-data skips/zero failures
+  in38.75s. Signed CRT overflow and out-of-bounds escape reads explicitly refuse.
+- Native property/default storage, live indexed class resolution, Engine lifetime,
+  startup/movement/falling and crate gameplay remain unfinished. No new APK.
+  See ORIGINAL-NATIVE-CONFIG-IMPORT.md.
+
 ## Native default config data and owned inventory (2026-10-17)
 
 - Added an explicit shipped Editor FConfigFile/GetString data profile, separate
