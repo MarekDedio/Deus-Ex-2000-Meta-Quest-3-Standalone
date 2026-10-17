@@ -158,8 +158,16 @@ identity, flags/category/Next; native-only GameEngine arrays and their actual
 inner ownership must be prepared separately. A fabricated PortableClassDescriptor,
 blank CDO or generic property.zero fallthrough does not satisfy this contract.
 
-This audit establishes source evidence only. Actual metadata registration,
-default storage/config class lookup, frozen instance copies and Engine/session/
-Primitive lifetime remain unimplemented, followed by hash/Move/support/startup/
-player/falling and the original live crate damage graph. No APK or headset
-acceptance is implied.
+The following class-only implementation now consumes the eleven audited Core
+records: `PreparePortableRuntimeNativeMetadataClasses` stages actual indexed
+UClasses in a separate domain after the existing five-class Engine phase. It
+binds real superclass/Within/metaclass pointers (including Class's self edge),
+then atomically publishes indexes and existing serialized-UClass metaclasses.
+Later map Class identities and native Client/Viewport classes retain that
+binding. No serialized flags, Children/Next, defaults or package Outers are
+rewritten; native Cpp-property constructors are not replayed.
+
+This does not complete native fields/defaults, config constraint classes or
+class lookup, frozen native instance copies or Engine/session/Primitive lifetime.
+Hash/Move/support/startup/player/falling and the original live crate damage graph
+remain required. No APK or headset acceptance of this class-only phase is implied.

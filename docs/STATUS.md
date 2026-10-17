@@ -1,5 +1,29 @@
 # Port status
 
+## GitHub recovery and indexed Core metadata (2026-10-18)
+
+- Restored the complete tracked project and all 175 prior commits after the
+  remote was replaced by an empty reset commit. Recovery merge202263b preserves
+  both histories without force-pushing; the restored419-file tree exactly
+  matches029e81a. See REPOSITORY-RECOVERY-20261018.md.
+- Added a separate explicit eleven-class native metadata phase, requiring the
+  existing five-class Engine phase. Actual indexed superclass/Within/metaclass
+  links include Core.Class's self edge. Existing serialized UClasses and earlier
+  or later Client/Viewport classes bind that real metaclass atomically. Later
+  map Class identities, even without a script descriptor, preserve the binding.
+- Owned integration10994 checks/94 explicit refusals pass, including actual
+  distinct leases, exactly12 new GC objects, detached reads/idempotence, dormant
+  whole checkpoints/defaults/Children/Next/model/world/revision/clock, warm save
+  replacement, map unload/reload, session lifetimes, missing dependencies and
+  late-name atomic rollback. Original crate/fragment regression1116 checks/four
+  refusals and strict ARM64 runtime/test syntax plus Android module/link pass.
+  Owned Training primitive regression74660 checks/246 refusals also passes.
+- This is indexed class/lifetime groundwork, not native default construction or
+  a bound Engine/Cylinder instance. Four config constraints, final native field/
+  default binding, collision hash/Move/support/startup/player/falling and live
+  crate gameplay remain. No generic health/hide/loot or cosmetic gravity shortcut;
+  no new APK for this CPU-only phase. See ORIGINAL-NATIVE-METADATA-CLASSES.md.
+
 ## Original selected-Model point collision (2026-10-17)
 
 - Added the missing owner-aware point LineCheck branch for actual selected
@@ -23,7 +47,9 @@
 - Replacement APK built successfully and replace-installed on the authorized
   Quest3; exact installed/local SHA256 matches66A33C43EFF41405EED7F25263C888F106A1F8588FD481D8247B75B6E9910E60.
   Save-slot files, posture calibration and INI hashes are unchanged. Activity and
-  process launch are verified; visual acceptance awaits valid head tracking.
+  process launch are verified. Two tracked Quest frames were captured: Training,
+  both hands/keyring, health/compass and a distant non-T Jaime render. Later
+  sampled intervals held72fps; initial uploads still had a291.65ms worst frame.
   This is collision and fragment-rendering groundwork, not completed live crowbar crate
   damage, contents, startup, movement/support or falling. See
   ORIGINAL-MODEL-POINT-OWNER.md and ORIGINAL-NATIVE-METADATA-REGISTRATION.md.

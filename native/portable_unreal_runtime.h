@@ -230,6 +230,25 @@ struct PortableNativeEngineClassesSnapshot {
 // Level.Engine, startup, collision, movement or possession success.
 PortableNativeEngineClassesSnapshot PreparePortableRuntimeNativeEngineClasses();
 PortableNativeEngineClassesSnapshot ReadPortableRuntimeNativeEngineClasses();
+struct PortableNativeMetadataClassSnapshot {
+    std::string classPath, baseClassPath, withinClassPath, metaClassPath;
+    std::uint32_t nativeSize{}, registrationClassFlags{}, registrationObjectFlags{};
+    // Actual process-local UObject allocation indices, never PE addresses,
+    // package/export slots or serialized save identities. Zero means absent.
+    std::uint32_t objectIndex{}, baseClassIndex{}, withinClassIndex{}, metaClassIndex{};
+};
+struct PortableNativeMetadataClassesSnapshot {
+    std::vector<PortableNativeMetadataClassSnapshot> classes;
+    std::size_t boundSerializedClasses{};
+    bool prepared{};
+};
+// Explicit class-only metadata phase, requiring the five native Engine class
+// registrations already prepared. Atomically publishes actual Core.Class
+// metaclass/super/Within relationships and binds existing serialized UClasses.
+// This does not replay native Register/Cpp-field/default constructors, synthesize
+// package Outers, allocate Engine/Cylinder instances or start the world.
+PortableNativeMetadataClassesSnapshot PreparePortableRuntimeNativeMetadataClasses();
+PortableNativeMetadataClassesSnapshot ReadPortableRuntimeNativeMetadataClasses();
 // Actual loader-owned ULevel Double time. The explicit clock phase performs
 // original retained-product accumulation and LevelInfo Float mirroring only;
 // it is not a world Tick, startup, Timer/AI/physics pass or XR-thread entry.

@@ -33,9 +33,23 @@ runtime and Training preparation, actual map-replacement collection and
 pickup/Pawn-damage validation followed by restoration. These are initialization
 diagnostics, not acceptance of live crate gameplay or a bound original player.
 
-Initial OpenXR head pose was unavailable (`xrLocateSpace=0`, flags0). The user
-was asked to wear the headset and return to the app. No rendered screenshot or
-human visual acceptance of this exact replacement is claimed at this stage.
+Initial OpenXR head pose was unavailable (`xrLocateSpace=0`, flags0). After the
+user returned and reconnected USB, two actual1680x1760 in-app eye screenshots
+were captured and inspected:
+
+- `artifacts/model-point-bridge-20261017/quest-regression-20261017.bmp`:
+  textured Training corridor/door, both hands, held starter keyring and the
+  original health/compass artwork are visible. Logged actual eye height1.641m.
+- `artifacts/model-point-bridge-20261017/quest-regression-ready-20261017.bmp`:
+  the adjoining room renders after incremental actor uploads, with Jaime
+  visible through the window in a non-T standing pose. Health/compass remain
+  visible. This is a single distant pose check, not animation acceptance.
+
+The initial upload interval logged65.8fps average/291.65ms worst; it is NOT a
+steady-state performance pass. Later tracked intervals07:48:46..07:49:26 each
+logged72.0fps average/13.89ms worst with32 actor instances. These sampled
+intervals do not establish complete route performance or remove loading hitches.
+No human acceptance of new crate damage/gravity is claimed.
 
 ## Scope
 
@@ -52,3 +66,6 @@ Local evidence logs (ignored build artifacts):
 - `artifacts/model-point-bridge-device-data-before-install-20261017.log`;
 - `artifacts/model-point-bridge-device-data-after-install-20261017.log`;
 - `artifacts/model-point-bridge-device-launch-20261017.log`.
+- `artifacts/model-point-bridge-device-render-20261017.log`;
+- `artifacts/model-point-bridge-capture-20261017.log`;
+- `artifacts/model-point-bridge-ready-capture-20261017.log`.

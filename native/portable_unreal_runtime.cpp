@@ -126,6 +126,8 @@ public:
     // Original static native registration, not a client-class impersonation,
     // serialized descriptor, class-default block or constructed Engine.
     const QuestVr::NativeEngineClassRegistration* nativeEngineClass{};
+    const QuestVr::NativeEngineClassRegistration* nativeMetadataClass{};
+    RuntimeObject* nativeClassWithin{};
     std::uint64_t nativeClientIdentity{}, nativeViewportIdentity{};
     RuntimeObject* nativePlayer{};
     RuntimeObject* nativeViewportActor{};
@@ -288,6 +290,9 @@ std::size_t NativeDecalRetainedBytes(const RuntimeMapDecals& graph) {
 }
 
 GCAllocation* RuntimeObject::Mark(GCAllocation* marklist) {
+    marklist = GC::MarkObject(marklist, cls);
+    marklist = GC::MarkObject(marklist, base);
+    marklist = GC::MarkObject(marklist, nativeClassWithin);
     marklist = GC::MarkObject(marklist, defaultObject);
     marklist = GC::MarkObject(marklist, defaultOwner);
     marklist = GC::MarkObject(marklist, nativePlayer);
@@ -384,13 +389,14 @@ protected:
     }
 };
 std::unique_ptr<GCRoot<RuntimeEngineClassDomain>> persistentEngineClasses;
+std::unique_ptr<GCRoot<RuntimeEngineClassDomain>> persistentMetadataClasses;
 std::optional<std::string> persistentGameEngineClass;
-std::size_t NativeEngineClassRetainedBytes(const RuntimeEngineClassDomain& domain) {
-    // A closed five-type registration phase, not an unbounded missing-class
+std::size_t NativeClassRetainedBytes(const RuntimeEngineClassDomain& domain,const std::size_t expected) {
+    // A closed audited registration phase, not an unbounded missing-class
     // synthesizer. Include owning roots, metadata strings/references and both
     // canonical/folded lookup nodes in the persistent retained-state budget.
-    if(domain.classes.size()!=QuestVr::NativeEngineClasses.size())
-        throw std::runtime_error("Native engine class retained-state domain is incomplete");
+    if(domain.classes.size()!=expected)
+        throw std::runtime_error("Native class retained-state domain is incomplete");
     auto bytes=QuestVr::DecalStateDetail::Add(sizeof(RuntimeEngineClassDomain)+sizeof(GCAllocation),
         QuestVr::DecalStateDetail::Multiply(domain.classes.capacity(),sizeof(RuntimeObject*)));
     for(const auto* cls:domain.classes) {
@@ -403,6 +409,12 @@ std::size_t NativeEngineClassRetainedBytes(const RuntimeEngineClassDomain& domai
         bytes=QuestVr::DecalStateDetail::Add(bytes,2u*(sizeof(std::string)+6u*sizeof(void*)+cls->reflection.objectPath.capacity()+1u));
     }
     return bytes;
+}
+std::size_t NativeEngineClassRetainedBytes(const RuntimeEngineClassDomain& domain) {
+    return NativeClassRetainedBytes(domain,QuestVr::NativeEngineClasses.size());
+}
+std::size_t NativeMetadataClassRetainedBytes(const RuntimeEngineClassDomain& domain) {
+    return NativeClassRetainedBytes(domain,QuestVr::NativeMetadataClasses.size());
 }
 struct RuntimeWindowDomain final : GCObject {
     // Current domain consists only of explicitly rooted windows and their
@@ -2171,7 +2183,7 @@ public:
         // Original initialized default blocks have Name None and Outer null.
         // This display spelling does not replace their distinct nonnull handle.
         if (object->defaultOwner) return "None";
-        if(object->nativeClientIdentity || object->nativeClientClass || object->nativeEngineClass || object->nativeWindowObject)
+        if(object->nativeClientIdentity || object->nativeClientClass || object->nativeEngineClass || object->nativeMetadataClass || object->nativeWindowObject)
             return object->reflection.objectPath;
         // No native Rename/SetOuter exists in this host. Loaded object names
         // and complete package/outer paths are immutable, including nested
@@ -2215,7 +2227,7 @@ public:
         const Property& property, const QuestVr::Vm::Scope scope) override {
         RuntimeObject* object = Object(receiver);
         if (!object->active && !object->worldRemoved) throw std::runtime_error("VM receiver is inactive");
-        if (object->classDescriptor || object->nativeClientClass || object->nativeEngineClass)
+        if (object->classDescriptor || object->nativeClientClass || object->nativeEngineClass || object->nativeMetadataClass)
             throw std::runtime_error("UClass reflected receiver requires its actual Core.Class storage");
         const bool defaults = scope == QuestVr::Vm::Scope::Default;
         auto result = ReferenceFor(object, property, 0u, defaults);
@@ -3888,7 +3900,7 @@ public:
         // supplies native type. An indexed loaded native UClass, when present,
         // must agree and retain the complete audited direct native base chain.
         if(!asset || asset->runtimeBirth || asset->defaultOwner || asset->classDescriptor ||
-            asset->nativeClientClass || asset->nativeEngineClass || asset->nativeClientIdentity ||
+            asset->nativeClientClass || asset->nativeEngineClass || asset->nativeMetadataClass || asset->nativeClientIdentity ||
             asset->nativeWindowObject || asset->sourcePath.empty() ||
             Object(asset->reflection.objectPath)!=asset)
             throw std::runtime_error("Native primitive is not an actual indexed original asset export");
@@ -4047,6 +4059,9 @@ public:
     }
     void ValidateEngineClassRegistrationBudget(const RuntimeEngineClassDomain& staged) const {
         ValidateStateBudget(NativeEngineClassRetainedBytes(staged));
+    }
+    void ValidateMetadataClassRegistrationBudget(const RuntimeEngineClassDomain& staged) const {
+        ValidateStateBudget(NativeMetadataClassRetainedBytes(staged));
     }
     const PortableModelGeometry& NativeSelectedModel(RuntimeObject* owner,const NativePrimitiveSelection& selected) {
         static_cast<void>(NativeLevelInfo(owner));
@@ -6136,7 +6151,7 @@ public:
     Value Read(RuntimeObject* object, const Property& property, const std::uint32_t index,
         const bool defaults = false, const bool immutable = false,NativeAuthoredReadOrigin* origin=nullptr) {
         if(origin) *origin={};
-        if(object->nativeEngineClass)
+        if(object->nativeEngineClass || object->nativeMetadataClass)
             throw std::runtime_error("Native UClass reflected/default storage is not established");
         if(object->nativeWindowObject && !defaults && !immutable) {
             const auto key=LowerAscii(property.key);
@@ -7664,7 +7679,7 @@ private:
             throw std::runtime_error("VM cast class identity unavailable: " + path);
         }
         const auto* object = found->second;
-        if(object->nativeClientClass || object->nativeEngineClass) {
+        if(object->nativeClientClass || object->nativeEngineClass || object->nativeMetadataClass) {
             const auto registered=NativeCastClass(object->reflection.objectPath);
             if(!registered) throw std::runtime_error("Native class is not an audited registration");
             return registered->path;
@@ -7696,7 +7711,7 @@ private:
             throw std::runtime_error("VM cast class identity unavailable: " + path);
         }
         auto* object = found->second;
-        if(object->nativeClientClass || object->nativeEngineClass) {
+        if(object->nativeClientClass || object->nativeEngineClass || object->nativeMetadataClass) {
             const auto registered=NativeCastClass(object->reflection.objectPath);
             if(!registered) throw std::runtime_error("Native class is not an audited registration");
             return *registered;
@@ -7732,7 +7747,7 @@ private:
             throw std::runtime_error("VM cast object identity unavailable: " + path);
         }
         auto* object = found->second;
-        if(object->nativeClientClass || object->nativeEngineClass)
+        if(object->nativeClientClass || object->nativeEngineClass || object->nativeMetadataClass)
             return {object->reflection.objectPath,"Core.Class",true};
         if(object->nativeClientIdentity) {
             object=Object(path); // Reject revoked lease before exposing kind.
@@ -7761,7 +7776,7 @@ private:
             object->reflection.metaClass == "Class" ? "Core.Class" :
             Qualified(Table(object->sourcePath), Table(object->sourcePath).exports.at(object->exportIndex).ObjClass);
         if (classValue) {
-            if (object->defaultOwner || (!object->classDescriptor && !object->nativeClientClass && !object->nativeEngineClass) || LowerAscii(actual) != "core.class" ||
+            if (object->defaultOwner || (!object->classDescriptor && !object->nativeClientClass && !object->nativeEngineClass && !object->nativeMetadataClass) || LowerAscii(actual) != "core.class" ||
                 (!expected.empty() && !ClassDerives(value.text, expected)))
                 throw std::runtime_error("Runtime Class property violates its class constraint");
         } else if (!expected.empty() && !ClassDerives(actual, expected))
@@ -8338,6 +8353,8 @@ private:
         if (persistentScriptRandomSeed) defaults.Retain(sizeof(persistentScriptRandomSeed));
         if(persistentEngineClasses && persistentEngineClasses->get())
             defaults.Retain(NativeEngineClassRetainedBytes(*persistentEngineClasses->get()));
+        if(persistentMetadataClasses && persistentMetadataClasses->get())
+            defaults.Retain(NativeMetadataClassRetainedBytes(*persistentMetadataClasses->get()));
         const auto valueBudget = [&](const auto& self, const Value& value, const std::size_t depth) -> void {
             defaults.Node(depth); defaults.Retain(sizeof(value));
             defaults.IntArrayElements(value.intArray.size());
@@ -10567,6 +10584,7 @@ void ShutdownPortableRuntime() {
     persistentDispatchSummary = {};
     persistentVmObjects.clear();
     persistentWindowDomain.reset();persistentRootWindowClass.reset();
+    persistentMetadataClasses.reset();
     persistentEngineClasses.reset();persistentGameEngineClass.reset();
     persistentPlayerSession.reset();
     persistentRuntime.reset();
@@ -10683,7 +10701,7 @@ PortableNativeEngineClassesSnapshot PreparePortableRuntimeNativeEngineClasses() 
         allocations.emplace_back(GC::Alloc<RuntimeObject>(PortableReflectionObject{
             std::string(entry.path),"Class",{},std::string(entry.base),entry.registrationObjectFlags,0},nullptr));
         auto* cls=allocations.back().get();
-        cls->nativeEngineClass=&entry;cls->base=base->second;
+        cls->nativeEngineClass=&entry;cls->base=base->second;cls->nativeClassWithin=objectClass;
         // No serialized export/source exists for this static native UClass.
         // Inheriting Engine.u's path would falsely label Extension/DeusEx
         // registration provenance and invite accidental export-index lookups.
@@ -10707,6 +10725,131 @@ PortableNativeEngineClassesSnapshot PreparePortableRuntimeNativeEngineClasses() 
     host.ValidateEngineClassRegistrationBudget(*domain);
     persistentQualifiedObjects.swap(nextQualified);persistentVmObjects.swap(nextVm);
     persistentEngineClasses=std::move(owner);
+    return result;
+}
+
+static PortableNativeMetadataClassesSnapshot MetadataClassSnapshot(const RuntimeEngineClassDomain& domain) {
+    if(domain.classes.size()!=QuestVr::NativeMetadataClasses.size())
+        throw std::runtime_error("Native metadata registration domain is incomplete");
+    PortableNativeMetadataClassesSnapshot result;result.prepared=true;
+    for(std::size_t i=0u;i<domain.classes.size();++i) {
+        const auto* cls=domain.classes[i];const auto& entry=QuestVr::NativeMetadataClasses[i];
+        if(!cls || cls->nativeMetadataClass!=&entry || cls->nativeEngineClass || cls->nativeClientClass ||
+            cls->classDescriptor || cls->defaultOwner || cls->defaultObject || !cls->sourcePath.empty() ||
+            cls->exportIndex!=std::numeric_limits<std::size_t>::max() || cls->outer ||
+            cls->reflection.metaClass!="Class" || cls->reflection.objectPath!=entry.path ||
+            cls->reflection.flags!=entry.registrationObjectFlags || !cls->base || !cls->nativeClassWithin ||
+            !cls->cls || LowerAscii(cls->base->reflection.objectPath)!=LowerAscii(std::string(entry.base)) ||
+            LowerAscii(cls->nativeClassWithin->reflection.objectPath)!=LowerAscii(std::string(entry.within)) ||
+            cls->cls->reflection.objectPath!="Core.Class" || !cls->objectIndex ||
+            !cls->base->objectIndex || !cls->nativeClassWithin->objectIndex || !cls->cls->objectIndex)
+            throw std::runtime_error("Native metadata UClass header/relationship authority is invalid");
+        result.classes.push_back({std::string(entry.path),std::string(entry.base),std::string(entry.within),
+            cls->cls->reflection.objectPath,entry.nativeSize,entry.registrationClassFlags,entry.registrationObjectFlags,
+            cls->objectIndex.Index(),cls->base->objectIndex.Index(),cls->nativeClassWithin->objectIndex.Index(),
+            cls->cls->objectIndex.Index()});
+    }
+    return result;
+}
+
+// Cached at load from actual ObjClass==0, not a leaf "Class" spelling or
+// fabricated descriptor. Native wrappers are outside exports and counted
+// separately. No package I/O or default/field construction belongs here.
+static std::vector<RuntimeObject*> SerializedMetadataTargets(RuntimeObject* meta,const bool allowUnbound) {
+    std::vector<RuntimeObject*> result;
+    for(auto* object:persistentRuntime->get()->exports) {
+        if(!object || !object->inventoryTableMetadata || !object->inventorySerializedClass) continue;
+        if(object->reflection.metaClass!="Class" || object->nativeEngineClass || object->nativeMetadataClass ||
+            object->nativeClientClass || object->defaultOwner || object->runtimeBirth ||
+            !object->inventoryClassReferenceValid || object->sourcePath.empty() ||
+            object->exportIndex==std::numeric_limits<std::size_t>::max() ||
+            (object->cls!=meta && (!allowUnbound || object->cls)))
+            throw std::runtime_error("Serialized UClass metaclass binding authority is invalid");
+        result.push_back(object);
+    }
+    return result;
+}
+
+PortableNativeMetadataClassesSnapshot ReadPortableRuntimeNativeMetadataClasses() {
+    if(!persistentMetadataClasses || !persistentMetadataClasses->get()) return {};
+    PortableActorVmHost host;
+    static_cast<void>(ReadPortableRuntimeNativeEngineClasses());
+    const auto& domain=*persistentMetadataClasses->get();
+    auto result=MetadataClassSnapshot(domain);
+    auto* meta=host.Object("Core.Class");
+    if(meta->cls!=meta) throw std::runtime_error("Core.Class does not retain its actual self-metaclass");
+    for(auto* cls:domain.classes) {
+        if(host.Object(cls->reflection.objectPath)!=cls || host.Object(cls->base->reflection.objectPath)!=cls->base ||
+            host.Object(cls->nativeClassWithin->reflection.objectPath)!=cls->nativeClassWithin || cls->cls!=meta)
+            throw std::runtime_error("Native metadata relationship is not its actual indexed UClass");
+    }
+    result.boundSerializedClasses=SerializedMetadataTargets(meta,false).size();
+    for(auto* cls:persistentEngineClasses->get()->classes)
+        if(cls->cls!=meta || cls->nativeClassWithin!=host.Object("Core.Object"))
+            throw std::runtime_error("Native engine UClass lost its metadata binding");
+    if(persistentPlayerSession) for(auto* cls:persistentPlayerSession->get()->classes)
+        if(cls->nativeClientClass && cls->cls!=meta)
+            throw std::runtime_error("Native session UClass lost its actual Core.Class binding");
+    return result;
+}
+
+PortableNativeMetadataClassesSnapshot PreparePortableRuntimeNativeMetadataClasses() {
+    CollectBirthGarbageAtBoundary collect;
+    PortableActorVmHost host;
+    if(persistentMetadataClasses) return ReadPortableRuntimeNativeMetadataClasses();
+    if(!persistentEngineClasses || !ReadPortableRuntimeNativeEngineClasses().prepared)
+        throw std::runtime_error("Native metadata classes require the explicit native engine class phase");
+    if(persistentQualifiedObjects.size()>1'000'000u-QuestVr::NativeMetadataClasses.size() ||
+        persistentVmObjects.size()>1'000'000u-QuestVr::NativeMetadataClasses.size())
+        throw std::runtime_error("Native metadata registration exceeds the object lookup budget");
+    pendingBirthGarbage=true;
+    GCRoot<RuntimeEngineClassDomain> staged(GC::Alloc<RuntimeEngineClassDomain>());
+    auto* domain=staged.get();domain->classes.reserve(QuestVr::NativeMetadataClasses.size());
+    auto nextQualified=persistentQualifiedObjects;auto nextVm=persistentVmObjects;
+    std::vector<GCRoot<RuntimeObject>> allocations;
+    allocations.reserve(QuestVr::NativeMetadataClasses.size());
+    for(const auto& entry:QuestVr::NativeMetadataClasses) {
+        if(nextVm.count(LowerAscii(std::string(entry.path))) || nextQualified.count(std::string(entry.path)))
+            throw std::runtime_error("Native-only metadata class registration collides with an existing UObject/UClass");
+        allocations.emplace_back(GC::Alloc<RuntimeObject>(PortableReflectionObject{
+            std::string(entry.path),"Class",{},std::string(entry.base),entry.registrationObjectFlags,0},nullptr));
+        auto* cls=allocations.back().get();cls->nativeMetadataClass=&entry;
+        cls->exportIndex=std::numeric_limits<std::size_t>::max();domain->classes.push_back(cls);
+        if(!nextQualified.emplace(std::string(entry.path),cls).second ||
+            !nextVm.emplace(LowerAscii(std::string(entry.path)),cls).second)
+            throw std::runtime_error("Native metadata registration identity collision");
+    }
+    const auto indexedClass=[&](const std::string_view path) {
+        const auto found=nextVm.find(LowerAscii(std::string(path)));
+        if(found==nextVm.end() || !found->second || found->second->reflection.metaClass!="Class" ||
+            (!found->second->classDescriptor && !found->second->nativeEngineClass && !found->second->nativeMetadataClass))
+            throw std::runtime_error("Native metadata registration lacks an actual UClass dependency");
+        return found->second;
+    };
+    auto* meta=indexedClass("Core.Class");
+    for(std::size_t i=0u;i<domain->classes.size();++i) {
+        auto* cls=domain->classes[i];const auto& entry=QuestVr::NativeMetadataClasses[i];
+        cls->base=indexedClass(entry.base);cls->nativeClassWithin=indexedClass(entry.within);cls->cls=meta;
+    }
+    auto targets=SerializedMetadataTargets(meta,true);
+    const auto serializedCount=targets.size();
+    const auto stageTarget=[&](RuntimeObject* cls) {
+        if(!cls || cls->reflection.metaClass!="Class" || (cls->cls && cls->cls!=meta))
+            throw std::runtime_error("Existing native UClass has incompatible metaclass authority");
+        targets.push_back(cls);
+    };
+    for(auto* cls:persistentEngineClasses->get()->classes) stageTarget(cls);
+    if(persistentPlayerSession) for(auto* cls:persistentPlayerSession->get()->classes)
+        if(cls->nativeClientClass) stageTarget(cls);
+    auto result=MetadataClassSnapshot(*domain);result.boundSerializedClasses=serializedCount;
+    auto owner=std::make_unique<GCRoot<RuntimeEngineClassDomain>>(domain);
+    host.ValidateMetadataClassRegistrationBudget(*domain);
+    // All allocation, admission and detached snapshot construction has finished.
+    // The caller owns the exclusive CPU phase; no observer sees half the graph.
+    // Existing serialized flags/Children/Next/defaults remain untouched.
+    persistentQualifiedObjects.swap(nextQualified);persistentVmObjects.swap(nextVm);
+    for(auto* cls:targets) cls->cls=meta;
+    persistentMetadataClasses=std::move(owner);
     return result;
 }
 
@@ -10832,6 +10975,7 @@ PortablePlayerSessionSnapshot PreparePortableRuntimePlayerObjects(const std::uin
         }
         auto* cls=allocate(path,std::string(path).substr(std::string(path).find('.')+1u),nullptr,nullptr);
         cls->reflection.metaClass="Class";cls->nativeClientClass=true;cls->base=base;
+        if(persistentMetadataClasses) cls->cls=host.Object("Core.Class");
         cls->references.push_back(base);classes.push_back(cls);index(cls);return cls;
     };
     auto* clientClass=nativeClass("Engine.Client",objectClass);
@@ -11365,6 +11509,8 @@ QuestVr::Vm::Value CastPortableRuntimeObject(const std::string& declaringObjectP
     const std::int32_t targetReference, const QuestVr::Vm::Value& value, const bool meta) {
     PortableActorVmHost host;
     const auto* declaring = host.Object(declaringObjectPath);
+    if(declaring->sourcePath.empty())
+        throw std::runtime_error("VM cast declaring object has no authored package-local references");
     QuestVr::Vm::Function source;
     source.path = declaring->reflection.objectPath;
     source.source = declaring->sourcePath;
@@ -11791,6 +11937,12 @@ PortableMapRuntimeSummary LoadPortableRuntimeMap(
         object->outer = resolve(entry.ObjOuter);
         object->base = resolve(entry.ObjBase);
         object->cls = resolve(entry.ObjClass);
+        if(entry.ObjClass==0 && persistentMetadataClasses) {
+            const auto meta=persistentVmObjects.find("core.class");
+            if(meta==persistentVmObjects.end() || !meta->second || !meta->second->nativeMetadataClass)
+                throw std::runtime_error("Map UClass has no actual registered Core.Class metaclass");
+            object->cls=meta->second;
+        }
         if (object->outer) object->references.push_back(object->outer);
         if (object->base) object->references.push_back(object->base);
         if (object->cls) {

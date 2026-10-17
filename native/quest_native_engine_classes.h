@@ -24,4 +24,22 @@ inline constexpr std::array<NativeEngineClassRegistration,5u> NativeEngineClasse
     {"DeusEx.DeusExGameEngine","Extension.GameEngineExt","Core.Object",0xd0u,0x1eu,0x04084004u}
 }};
 
+// Separate closed metadata registration phase. These are genuine original
+// native UClasses, not default blocks, fabricated serialized descriptors or
+// permission to replay Cpp-property constructors after package loading.
+// See ORIGINAL-NATIVE-METADATA-REGISTRATION.md for each audited native header.
+inline constexpr std::array<NativeEngineClassRegistration,11u> NativeMetadataClasses{{
+    {"Core.Field","Core.Object","Core.Object",0x34u,0x13u,0x04084004u},
+    {"Core.Struct","Core.Field","Core.Object",0x6cu,0x12u,0x04084004u},
+    {"Core.State","Core.Struct","Core.Object",0x484u,0x12u,0x04084004u},
+    {"Core.Class","Core.State","Core.Package",0x4f4u,0x12u,0x04084004u},
+    {"Core.Property","Core.Field","Core.Field",0x5cu,0x13u,0x04084004u},
+    {"Core.ObjectProperty","Core.Property","Core.Field",0x64u,0x12u,0x04084004u},
+    {"Core.ClassProperty","Core.ObjectProperty","Core.Field",0x68u,0x12u,0x04084004u},
+    {"Core.IntProperty","Core.Property","Core.Field",0x5cu,0x12u,0x04084004u},
+    {"Core.BoolProperty","Core.Property","Core.Field",0x60u,0x12u,0x04084004u},
+    {"Core.StrProperty","Core.Property","Core.Field",0x5cu,0x12u,0x04084004u},
+    {"Core.ArrayProperty","Core.Property","Core.Field",0x60u,0x12u,0x04084004u}
+}};
+
 } // namespace QuestVr
