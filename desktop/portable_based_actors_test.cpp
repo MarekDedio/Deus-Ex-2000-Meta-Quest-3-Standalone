@@ -5,6 +5,8 @@
 #include "quest_script_random_vector.h"
 #include "quest_level_clock.h"
 #include "quest_script_state.h"
+#include "quest_actor_geometry.h"
+#include "quest_actor_scene_selection.h"
 
 #include <algorithm>
 #include <array>
@@ -569,6 +571,7 @@ bool Original(const std::filesystem::path& root) {
         std::sort(births.begin(),births.end(),[](const auto& left,const auto& right) {return left.worldActorIndex<right.worldActorIndex;});
         Require(WorldPaths().size()==worldBefore.size()-1u+expectedCount,
             "Fatal publication did not replace one removed crate with all actual fragments");
+        const auto sceneActors=GetPortableRuntimeMapActors();
         for(std::size_t i=0u;i<births.size();++i) {
             const auto& born=births[i];
             Require(born.classPath=="DeusEx.WoodFragment"&&PublishedOriginal(born.path)&&
@@ -587,7 +590,37 @@ bool Original(const std::filesystem::path& root) {
             const auto overlay=std::find_if(destroyedState.objects.begin(),destroyedState.objects.end(),
                 [&](const auto& object) {return object.path==born.path;});
             Require(overlay!=destroyedState.objects.end(),"Committed fragment lacks its real saved property/state overlay");
+            const auto scene=std::find_if(sceneActors.begin(),sceneActors.end(),
+                [&](const auto& candidate) {return candidate.objectPath==born.path;});
+            Require(scene!=sceneActors.end(),"Committed original fragment is absent from the render snapshot");
+            Require(!QuestVr::ActorSceneSelection::HasGameplayRole(*scene)&&
+                QuestVr::ActorSceneSelection::SelectActorSceneGroup(*scene)==
+                    QuestVr::ActorSceneSelection::ActorSceneGroup::Presentation&&
+                QuestVr::ActorSceneSelection::HasVisibleAsset(*scene),
+                "Original WoodFragment did not enter the non-interactive presentation scene group");
+            // Commit must prepare actual birth geometry before publishing its
+            // revision. Do not decode/fabricate a fragment mesh in this probe.
+            const auto& fragmentMesh=GetPortableRuntimeMeshView(scene->meshPath);
+            Require(!fragmentMesh.triangles.empty()&&fragmentMesh.triangles.size()%3u==0u,
+                "Original fragment mesh was not prepared before committed world publication");
+            std::optional<QuestVr::MeshPose> fragmentPose;
+            if(fragmentMesh.animation) {
+                fragmentPose=QuestVr::PrepareMeshPose(fragmentMesh,QuestVr::BuildSnapshotMeshAnimationState(*scene));
+                Require(fragmentPose->drawable,"Original fragment pose cannot enter the shared geometry builder: "+fragmentPose->error);
+            }
+            const auto transform=QuestVr::BuildSnapshotActorTransform(*scene,{});
+            for(std::size_t first=0u;first<fragmentMesh.triangles.size();first+=3u) {
+                const auto triangle=QuestVr::BuildActorTriangle(fragmentMesh,first,transform,
+                    fragmentPose?&*fragmentPose:nullptr);
+                for(const auto& vertex:triangle)
+                    Require(std::isfinite(vertex.position.x)&&std::isfinite(vertex.position.y)&&std::isfinite(vertex.position.z)&&
+                        std::isfinite(vertex.u)&&std::isfinite(vertex.v),
+                        "Original committed fragment produced invalid shared CPU render geometry");
+            }
         }
+        Require(checkpoints.Snapshot("FatalAfterRenderQueries")==fatalAfter&&
+            GetPortableRuntimeWorldRevision()==noneFatalRevision+1u,
+            "Fragment scene/geometry queries changed committed damage/RNG/default/state data");
         const auto removed=std::find_if(destroyedState.objects.begin(),destroyedState.objects.end(),
             [&](const auto& object) {return object.path==actor;});
         Require(removed!=destroyedState.objects.end()&&removed->lifecycle&&removed->lifecycle->worldRemoved,

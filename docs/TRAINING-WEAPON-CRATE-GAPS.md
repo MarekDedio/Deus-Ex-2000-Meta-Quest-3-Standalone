@@ -1,5 +1,16 @@
 # Training weapon and crate gaps (2026-10-13)
 
+## Fragment scene publication follow-up (2026-10-17)
+
+The renderer no longer drops located visible Actors merely because they lack
+interaction-category ancestry. Both Training crates' actual original six-fragment
+births enter the shared presentation-only scene group, with valid prepared
+meshes/poses/CPU triangles and no gameplay-state mutation from render queries.
+Door/interactable priority and interaction behavior stay separate. Owned1116/4,
+generated18706 and full host/Android native builds pass. This fixes a real visual
+prerequisite, not live damage, surviving loot, startup or falling. See
+CRATE-FRAGMENT-SCENE-PUBLICATION.md.
+
 ## Current follow-up (2026-10-16)
 
 The full null-owner/nonzero-extent Model sweep is now implemented and verified

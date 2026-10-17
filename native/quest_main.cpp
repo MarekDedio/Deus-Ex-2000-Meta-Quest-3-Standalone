@@ -71,6 +71,7 @@
 #include "async_result_epoch.h"
 #include "retained_bank_publication.h"
 #include "actor_visibility_state.h"
+#include "quest_actor_scene_selection.h"
 
 #include "portable_mp3_audio.h"
 
@@ -1848,6 +1849,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         bool usable{}, highlight{};
         float collisionRadius{}, collisionHeight{};
         bool pawn{},inventory{},decoration{};
+        bool presentationOnly{}; // Geometry/visibility slot, not a ray-use/fire target.
     };
 
     struct ActorAtlasGeneration {
@@ -2698,21 +2700,17 @@ class DeusExQuestApp final : public OVRFW::XrApp {
             build.textureLayers.emplace(FoldActorAssetPath(actorTexturePaths_[layer]), layer);
         }
         // Targeting/travel metadata is available immediately, independently of
-        // delayed visual chunks. Preserve the exact previous ordering/filter.
+        // delayed visual chunks. Rendering is not limited to usable classes:
+        // original WoodFragment births are Actors, not Decorations/Inventory.
         // Reserve visibility/collider slots for EVERY mover in the retained
         // coverage first. The 512 visual cap must not discard a nearby closed
         // door merely because pickups appeared earlier in export order.
-        for (const bool moversOnly : {true,false}) {
+        for (const auto group : {QuestVr::ActorSceneSelection::ActorSceneGroup::Mover,
+                QuestVr::ActorSceneSelection::ActorSceneGroup::Gameplay,
+                QuestVr::ActorSceneSelection::ActorSceneGroup::Presentation}) {
         for (std::size_t index = 0u; index < actorSnapshots_.size(); ++index) {
             const PortableActorSnapshot& actor = actorSnapshots_[index];
-            if (actor.mover != moversOnly || actorRemovals_.Removed(actor.objectPath)) continue;
-            // Serialized editor cameras are not gameplay characters or targets.
-            if (actor.classPath == "Engine.Camera") continue;
-            if (!actor.hasLocation ||
-                !(actor.pawn || actor.inventory || actor.decoration ||
-                  actor.mover || actor.trigger || actor.travel)) {
-                continue;
-            }
+            if (QuestVr::ActorSceneSelection::SelectActorSceneGroup(actor) != group || actorRemovals_.Removed(actor.objectPath)) continue;
             const OVR::Vector3f position(
                 (actor.y - originY) * unitsToMeters,
                 (actor.z - originZ) * unitsToMeters + 1.0f,
@@ -2723,7 +2721,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                 if (dx * dx + dz * dz > 25.0f * 25.0f) continue;
             }
             if (build.actorIndices.size() >= QuestVr::ActorVisibilityState::MaximumActors) {
-                if (moversOnly) throw std::runtime_error("Complete retained mover coverage exceeds actor visibility budget");
+                if (group == QuestVr::ActorSceneSelection::ActorSceneGroup::Mover) throw std::runtime_error("Complete retained mover coverage exceeds actor visibility budget");
                 break;
             }
             build.actorIndices.push_back(index);
@@ -2750,17 +2748,21 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                 actor.travel || (actor.trigger && actor.drawType != 0u) ||
                 (actor.mover && readBool("bFrobbable",false)));
             const bool highlight = usable && !actor.trigger && readBool("bHighlight",true);
+            // Presentation-only entries share ordinal/visibility ownership but
+            // remain non-usable and non-highlighted; no pickup/target behavior
+            // or physics state is inferred from merely having a visible mesh.
             staged.targets.push_back({position, actor.objectPath, actor.classPath,
                 actor.travel, actor.destinationMap, actor.mover,usable,highlight,
                 readFloat("CollisionRadius"),readFloat("CollisionHeight"),
-                actor.pawn,actor.inventory,actor.decoration});
+                actor.pawn,actor.inventory,actor.decoration,
+                group == QuestVr::ActorSceneSelection::ActorSceneGroup::Presentation});
             if (build.actorIndices.size() >= QuestVr::ActorVisibilityState::MaximumActors) {
-                if (!moversOnly) break;
+                if (group != QuestVr::ActorSceneSelection::ActorSceneGroup::Mover) break;
             }
         }
         if (build.actorIndices.size() >= QuestVr::ActorVisibilityState::MaximumActors) break;
         }
-        ALOG("DeusExQuest: queued incremental geometry for %zu targetable actors; budget %.1f ms/%zu operations/%zu vertices",
+        ALOG("DeusExQuest: queued incremental geometry for %zu scene actors; budget %.1f ms/%zu operations/%zu vertices",
              build.actorIndices.size(), actorGeometryMillisecondsPerFrame_,
              actorGeometryOperationsPerFrame_, actorGeometryChunkVertices_);
         ALOG("DeusExQuest: actor bank snapshot selection %.2f ms; %s refresh, retained gameplay %s",
@@ -3416,7 +3418,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
     void LogActorGeometryBuild() const {
         const ActorGeometryBuild& build = *actorGeometryBuild_;
         ALOG(
-            "DeusExQuest: instantiated %zu targetable actors from %zu live actors (%zu vertex meshes, %zu mover brushes, %zu sprites, %zu cube placeholders, %zu hidden, %zu mesh-bearing, %zu mesh formats, %zu map exits)",
+            "DeusExQuest: instantiated %zu scene actors from %zu live actors (%zu vertex meshes, %zu mover brushes, %zu sprites, %zu cube placeholders, %zu hidden, %zu mesh-bearing, %zu mesh formats, %zu map exits)",
             build.actorIndices.size(),
             actorSnapshots_.size(),
             build.meshInstances,
@@ -6233,6 +6235,7 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         const InteractiveActor* best{};
         float bestDistance = weaponRange;
         for (const InteractiveActor& actor : interactiveActors_) {
+            if (actor.presentationOnly) continue;
             if (!IsPublishedActorVisible(actor.objectPath)) continue;
             if (moverVisuals_.find(actor.objectPath) != moverVisuals_.end()) continue;
             const OVR::Vector3f position =

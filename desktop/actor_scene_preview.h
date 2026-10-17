@@ -3,6 +3,7 @@
 #include "visual_renderer.h"
 #include "quest_actor_geometry.h"
 #include "quest_map_lighting.h"
+#include "quest_actor_scene_selection.h"
 
 #include <map>
 #include <optional>
@@ -79,7 +80,8 @@ inline ActorScenePreview AppendActorScenePreview(Scene& scene,
     };
     ensureStreams();
     for (const auto& actor : actors) {
-        if (!actor.hasLocation || !(actor.pawn || actor.inventory || actor.decoration || actor.mover)) continue;
+        if (QuestVr::ActorSceneSelection::SelectActorSceneGroup(actor) ==
+                QuestVr::ActorSceneSelection::ActorSceneGroup::Excluded) continue;
         ActorPreviewRecord record;
         record.path = actor.objectPath; record.classPath = actor.classPath;
         record.position = {(actor.y-origin.y)/52.5f,(actor.z-origin.z)/52.5f+1.0f,-(actor.x-origin.x)/52.5f};

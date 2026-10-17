@@ -1,5 +1,24 @@
 # Port status
 
+## Original crate fragment scene eligibility (2026-10-17)
+
+- Fixed a direct render omission: both Training crates' original WoodFragment
+  births are visible mesh Actors without Pawn/Inventory/Decoration roles and
+  were excluded by the scene filter. Shared Quest/desktop eligibility now admits
+  supported visible assets independently of interaction roles. Doors and existing
+  gameplay actors keep priority within the bounded scene; debris is not usable,
+  highlighted or point-targeted by the temporary weapon path.
+- Actual original fatal-hit probes now verify all twelve fragments' committed
+  prepared meshes, drawable poses and finite shared CPU triangles, with unchanged
+  damage/RNG/checkpoint/revision after render queries. Owned1116 checks/four
+  expected refusals and generated18706 selector checks pass. Full host and real
+  Android native module/link builds pass; CTest128 passed/146 registered/
+  18 explicit owned-data skips/zero failures in33.73s.
+- This is scene-publication groundwork, not playable crate destruction. Real
+  damage/player/startup, contents, falling/support and ticking remain; no generic
+  health/hide, forced Active/begun or visual settling shortcut. No replacement
+  APK. See CRATE-FRAGMENT-SCENE-PUBLICATION.md.
+
 ## Native typed config imports (2026-10-17)
 
 - Added original private ReadToken and Int/Bool/Class ImportText data semantics,
