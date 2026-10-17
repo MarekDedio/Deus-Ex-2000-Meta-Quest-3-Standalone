@@ -44,6 +44,11 @@ Cylinder instance. Those remain necessary before the original collision hash,
 Move/support/startup/possession, falling and live original crate damage can run.
 No generic crate health/hide or cosmetic falling is substituted.
 
+The separate four-class config phase now establishes the constraint-class
+identities and decoded original Console Within/config authority; see
+ORIGINAL-NATIVE-CONFIG-CLASSES.md. It does not change this eleven-row contract
+or complete package-aware lookup, native defaults or instance construction.
+
 ## Verification
 
 The owned integration test uses independent original header literals, actual

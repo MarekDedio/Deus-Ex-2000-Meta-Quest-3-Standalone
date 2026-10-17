@@ -249,6 +249,19 @@ struct PortableNativeMetadataClassesSnapshot {
 // package Outers, allocate Engine/Cylinder instances or start the world.
 PortableNativeMetadataClassesSnapshot PreparePortableRuntimeNativeMetadataClasses();
 PortableNativeMetadataClassesSnapshot ReadPortableRuntimeNativeMetadataClasses();
+struct PortableNativeConfigClassesSnapshot {
+    std::vector<PortableNativeMetadataClassSnapshot> classes;
+    std::string consoleClassPath;
+    std::uint32_t consoleObjectIndex{}, consoleMetaClassIndex{}, consoleWithinClassIndex{};
+    std::uint32_t consoleClassFlags{}, consoleObjectFlags{};
+    bool prepared{};
+};
+// The four missing native config constraint UClasses plus the actual serialized
+// Engine.Console authority. Requires the explicit Core metadata phase. Does not
+// load configured native subclasses, create package Outers, perform StaticFind,
+// construct native defaults/instances or initialize an Engine/Cylinder.
+PortableNativeConfigClassesSnapshot PreparePortableRuntimeNativeConfigClasses();
+PortableNativeConfigClassesSnapshot ReadPortableRuntimeNativeConfigClasses();
 // Actual loader-owned ULevel Double time. The explicit clock phase performs
 // original retained-product accumulation and LevelInfo Float mirroring only;
 // it is not a world Tick, startup, Timer/AI/physics pass or XR-thread entry.

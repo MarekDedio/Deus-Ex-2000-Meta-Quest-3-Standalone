@@ -9,6 +9,7 @@
 #include <iostream>
 #include <limits>
 #include <map>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -63,9 +64,11 @@ struct Payload {
     Bytes bytes;
     std::array<std::size_t, 4> references{};
     std::size_t friendly{}, logical{}, raw{};
+    std::optional<std::size_t> classSuffix, within, config;
 };
 Payload MakePayload(bool state, std::uint16_t version = 68u, const Bytes& script = Script(),
-    std::uint32_t logicalSize = 28u, std::uint16_t labels = 12u, bool stack = false) {
+    std::uint32_t logicalSize = 28u, std::uint16_t labels = 12u, bool stack = false,
+    std::int32_t within = 0, std::int32_t config = 8) {
     Payload result;
     auto& bytes = result.bytes;
     if (stack) {
@@ -87,11 +90,15 @@ Payload MakePayload(bool state, std::uint16_t version = 68u, const Bytes& script
     U64(bytes, 0x0123456789abcdefull); U64(bytes, 0xfedcba9876543210ull);
     U16(bytes, labels); U32(bytes, 0x80000007u);
     if (!state) {
+        result.classSuffix = bytes.size();
         if (version <= 61u) U32(bytes, 0x12345678u);
         U32(bytes, 0xcafebabeu); bytes.resize(bytes.size() + 16u, 0x3cu);
         Index(bytes, 1); Index(bytes, 2); U32(bytes, 1); U32(bytes, 0xdeadbeefu);
         Index(bytes, 1); Index(bytes, 1);
-        if (version >= 62u) { Index(bytes, 0); Index(bytes, 8); }
+        if (version >= 62u) {
+            result.within = bytes.size(); Index(bytes, within);
+            result.config = bytes.size(); Index(bytes, config);
+        }
         const auto defaults = Properties(); bytes.insert(bytes.end(), defaults.begin(), defaults.end());
     }
     return result;
@@ -184,6 +191,59 @@ void Synthetic() {
         Require(cls.defaults.size() == 2u && cls.defaults[0].name == "Counter" &&
             cls.defaults[0].value == Bytes({0xefu, 0xcdu, 0xabu, 0x89u}) && cls.defaults[1].boolValue,
             "Class defaults changed after shared State header decoding");
+        if (version < 62u) {
+            Require(!cls.classWithinReference && !cls.configName,
+                "Legacy Class invented serialized Within/config fields");
+        } else {
+            Require(cls.classWithinReference && *cls.classWithinReference == 0 &&
+                cls.configName && *cls.configName == "Config",
+                "Serialized null Within or named config was discarded");
+        }
+    }
+    // Within is a raw signed object reference, not a local export ordinal or a
+    // promise that the referenced object is an already resolved runtime Class.
+    for (const auto within : {0, 1, 2, -1, -2, -4}) {
+        fixture.Reset();
+        const auto cls = fixture.Class(MakePayload(false, 68u, Script(), 28u, 12u, false, within));
+        Require(cls.classWithinReference && *cls.classWithinReference == within &&
+            cls.configName && *cls.configName == "Config",
+            "Null/local/imported Within reference was not retained verbatim");
+    }
+    for (const auto within : {130, -130}) {
+        fixture.Reset();
+        fixture.package.exports.resize(130u); fixture.package.imports.resize(130u);
+        fixture.package.names.resize(131u);
+        fixture.package.names.back().Name = NameString("WideConfigIndex");
+        const auto cls = fixture.Class(MakePayload(false, 68u, Script(), 28u, 12u, false, within, 130));
+        Require(cls.classWithinReference && *cls.classWithinReference == within &&
+            cls.configName && *cls.configName == "WideConfigIndex" && cls.defaults.size() == 2u,
+            "Multi-byte Within/config compact indices changed or displaced defaults");
+    }
+    fixture.Reset();
+    const auto noneConfig = fixture.Class(MakePayload(false, 62u, Script(), 28u, 12u, false, 0, 0));
+    Require(noneConfig.classWithinReference && *noneConfig.classWithinReference == 0 &&
+        noneConfig.configName && noneConfig.configName->IsNone(),
+        "Authored null Within/config None was confused with pre-62 absence");
+    for (const auto within : {std::int32_t{3}, std::int32_t{-5},
+        std::numeric_limits<std::int32_t>::max(), std::numeric_limits<std::int32_t>::min()}) {
+        fixture.Reset();
+        fixture.Reject([&] { fixture.Class(MakePayload(false, 68u, Script(), 28u, 12u, false, within)); },
+            "Out-of-range ClassWithin object reference accepted");
+    }
+    for (const auto config : {std::int32_t{-1}, std::int32_t{11}, std::numeric_limits<std::int32_t>::max()}) {
+        fixture.Reset();
+        fixture.Reject([&] { fixture.Class(MakePayload(false, 68u, Script(), 28u, 12u, false, 0, config)); },
+            "Out-of-range Class config FName accepted");
+    }
+    for (const auto version : {std::uint16_t{61u}, std::uint16_t{62u}}) {
+        const auto classPayload = MakePayload(false, version);
+        Require(classPayload.classSuffix && (version < 62u ? !classPayload.within && !classPayload.config :
+            classPayload.within && classPayload.config), "Class fixture did not preserve the version boundary");
+        for (std::size_t length = *classPayload.classSuffix; length < classPayload.bytes.size(); ++length) {
+            fixture.Reset(); fixture.package.version = version;
+            auto truncated = classPayload; truncated.bytes.resize(length);
+            fixture.Reject([&] { fixture.Class(truncated); }, "Truncated Class suffix/defaults accepted");
+        }
     }
     fixture.Reset(); fixture.package.exports[0].ObjFlags = ObjectFlags::HasStack;
     CheckHeader(fixture.State(MakePayload(true, 68u, Script(), 28u, 12u, true)), valid);
@@ -275,7 +335,8 @@ struct AuditReader {
     }
 };
 void CompareOriginal(const PortablePackageTables& package, std::size_t index,
-    const PortableStateDescriptor& descriptor, bool isClass) {
+    const PortableStateDescriptor& descriptor, const PortableClassDescriptor* classDescriptor = nullptr) {
+    const bool isClass = classDescriptor != nullptr;
     const auto& entry = package.exports[index];
     Bytes bytes(static_cast<std::size_t>(entry.ObjSize));
     std::ifstream file(package.sourcePath, std::ios::binary); file.seekg(entry.ObjOffset);
@@ -304,7 +365,38 @@ void CompareOriginal(const PortablePackageTables& package, std::size_t index,
         "Original UState masks/labels/flags changed");
     Require(descriptor.bytecode.size() == descriptor.logicalSize && descriptor.objectPath ==
         GetPortableObjectPath(package, static_cast<std::int32_t>(index + 1u)), "Original state normalized size/object identity changed");
-    if (!isClass) Require(reader.pos == bytes.size(), "Original State payload did not end exactly");
+    if (!isClass) {
+        Require(reader.pos == bytes.size(), "Original State payload did not end exactly");
+        return;
+    }
+    // Decode the suffix independently from the production descriptor reader.
+    // Serialized absence must not be replaced by UClass loader defaults.
+    if (package.version <= 61u) reader.Dword();
+    Require(reader.Dword() == classDescriptor->classFlags, "Original Class flags changed");
+    for (unsigned i = 0u; i < 16u; ++i) reader.Byte();
+    const auto dependencies = reader.Compact();
+    Require(dependencies >= 0 && static_cast<std::size_t>(dependencies) == classDescriptor->dependencyCount,
+        "Original Class dependency count changed");
+    for (std::int32_t i = 0; i < dependencies; ++i) {
+        reader.Compact(); reader.Dword(); reader.Dword();
+    }
+    const auto imports = reader.Compact();
+    Require(imports >= 0 && static_cast<std::size_t>(imports) == classDescriptor->packageImportCount,
+        "Original Class package-import count changed");
+    for (std::int32_t i = 0; i < imports; ++i) reader.Compact();
+    if (package.version >= 62u) {
+        const auto within = reader.Compact();
+        const auto config = reader.Compact();
+        Require(classDescriptor->classWithinReference && *classDescriptor->classWithinReference == within,
+            "Original ClassWithin signed object reference changed");
+        Require(config >= 0 && static_cast<std::size_t>(config) < package.names.size() &&
+            classDescriptor->configName && *classDescriptor->configName == package.names[static_cast<std::size_t>(config)].Name &&
+            classDescriptor->configName->ToString() == package.names[static_cast<std::size_t>(config)].Name.ToString(),
+            "Original Class config FName identity changed");
+    } else {
+        Require(!classDescriptor->classWithinReference && !classDescriptor->configName,
+            "Original legacy Class gained invented serialized Within/config fields");
+    }
 }
 bool ActualState(const PortablePackageTables& package, const ExportTableEntry& entry) {
     auto meta = GetPortableObjectPath(package, entry.ObjClass);
@@ -319,6 +411,7 @@ void AuditOriginal(const std::filesystem::path& root) {
     Require(!packages.empty() && packages.size() <= 256u, "Original System package audit bound exceeded");
     std::size_t states{}, classes{}, emptyClasses{}, scriptedStates{}, scriptedClasses{}, stateSentinels{}, classSentinels{};
     std::size_t rawBytes{}, logicalBytes{}, maximumLogical{}, labelOutOfScript{};
+    std::size_t consoleClasses{};
     std::map<std::uint32_t, std::size_t> stateFlags;
     for (const auto& path : packages) {
         Require(std::filesystem::file_size(path) <= 256u * 1024u * 1024u, "Original System package exceeds audit bound");
@@ -332,13 +425,21 @@ void AuditOriginal(const std::filesystem::path& root) {
                 if (isClass) {
                     const auto cls = LoadPortableClassDescriptor(package, i); descriptor = cls.state;
                     Require(cls.stateBytecode == cls.state.bytecode, "Compatibility Class stateBytecode changed");
+                    CompareOriginal(package, i, descriptor, &cls);
+                    if (path.stem() == "Engine" && cls.objectPath == "Console") {
+                        Require(cls.classFlags == 0x13au && cls.classWithinReference &&
+                            GetPortableObjectPath(package, *cls.classWithinReference) == "Core.Object" &&
+                            cls.configName && *cls.configName == "System",
+                            "Actual Engine.Console Within/config metadata changed");
+                        ++consoleClasses;
+                    }
                     ++classes; scriptedClasses += descriptor.logicalSize != 0u; classSentinels += descriptor.labelTableOffset == 0xffffu;
                 } else {
                     descriptor = LoadPortableStateDescriptor(package, i); ++states;
+                    CompareOriginal(package, i, descriptor);
                     scriptedStates += descriptor.logicalSize != 0u; stateSentinels += descriptor.labelTableOffset == 0xffffu;
                     ++stateFlags[descriptor.stateFlags];
                 }
-                CompareOriginal(package, i, descriptor, isClass);
             } catch (const std::exception& error) {
                 throw std::runtime_error(path.stem().string() + '.' + GetPortableObjectPath(package,
                     static_cast<std::int32_t>(i + 1u)) + ": " + error.what());
@@ -357,6 +458,7 @@ void AuditOriginal(const std::filesystem::path& root) {
         }
     }
     Require(states != 0u && classes != 0u, "Original audit contained no actual State/Class metadata");
+    Require(consoleClasses == 1u, "Original audit did not verify the actual Engine.Console Class");
     std::cout << "AUDIT SystemPackages=" << packages.size() << " actualStates=" << states << " serializedClasses=" << classes <<
         " emptyClasses=" << emptyClasses << " scriptedStates=" << scriptedStates << " scriptedClasses=" << scriptedClasses <<
         " stateLabelSentinels=" << stateSentinels << " classLabelSentinels=" << classSentinels <<

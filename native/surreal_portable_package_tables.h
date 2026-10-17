@@ -179,6 +179,11 @@ struct PortableClassDescriptor {
     std::string objectPath;
     PortableStateDescriptor state;
     std::uint32_t classFlags{};
+    // Serialized only from package version 62 onward. Absence is distinct from
+    // an authored null Within reference or the config FName None; runtime
+    // registration/default fallback is not part of this raw descriptor.
+    std::optional<std::int32_t> classWithinReference;
+    std::optional<NameString> configName;
     std::vector<std::uint8_t> stateBytecode;
     std::vector<PortableTaggedProperty> defaults;
     std::size_t dependencyCount{};

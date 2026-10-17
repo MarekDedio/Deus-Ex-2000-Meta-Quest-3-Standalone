@@ -390,6 +390,7 @@ protected:
 };
 std::unique_ptr<GCRoot<RuntimeEngineClassDomain>> persistentEngineClasses;
 std::unique_ptr<GCRoot<RuntimeEngineClassDomain>> persistentMetadataClasses;
+std::unique_ptr<GCRoot<RuntimeEngineClassDomain>> persistentConfigClasses;
 std::optional<std::string> persistentGameEngineClass;
 std::size_t NativeClassRetainedBytes(const RuntimeEngineClassDomain& domain,const std::size_t expected) {
     // A closed audited registration phase, not an unbounded missing-class
@@ -397,7 +398,8 @@ std::size_t NativeClassRetainedBytes(const RuntimeEngineClassDomain& domain,cons
     // canonical/folded lookup nodes in the persistent retained-state budget.
     if(domain.classes.size()!=expected)
         throw std::runtime_error("Native class retained-state domain is incomplete");
-    auto bytes=QuestVr::DecalStateDetail::Add(sizeof(RuntimeEngineClassDomain)+sizeof(GCAllocation),
+    auto bytes=QuestVr::DecalStateDetail::Add(sizeof(RuntimeEngineClassDomain)+sizeof(GCAllocation)+
+        sizeof(GCRoot<RuntimeEngineClassDomain>)+sizeof(GCRootNode),
         QuestVr::DecalStateDetail::Multiply(domain.classes.capacity(),sizeof(RuntimeObject*)));
     for(const auto* cls:domain.classes) {
         if(!cls) throw std::runtime_error("Native engine registration contains a null UClass");
@@ -415,6 +417,9 @@ std::size_t NativeEngineClassRetainedBytes(const RuntimeEngineClassDomain& domai
 }
 std::size_t NativeMetadataClassRetainedBytes(const RuntimeEngineClassDomain& domain) {
     return NativeClassRetainedBytes(domain,QuestVr::NativeMetadataClasses.size());
+}
+std::size_t NativeConfigClassRetainedBytes(const RuntimeEngineClassDomain& domain) {
+    return NativeClassRetainedBytes(domain,QuestVr::NativeConfigClasses.size());
 }
 struct RuntimeWindowDomain final : GCObject {
     // Current domain consists only of explicitly rooted windows and their
@@ -4063,6 +4068,9 @@ public:
     void ValidateMetadataClassRegistrationBudget(const RuntimeEngineClassDomain& staged) const {
         ValidateStateBudget(NativeMetadataClassRetainedBytes(staged));
     }
+    void ValidateConfigClassRegistrationBudget(const RuntimeEngineClassDomain& staged) const {
+        ValidateStateBudget(NativeConfigClassRetainedBytes(staged));
+    }
     const PortableModelGeometry& NativeSelectedModel(RuntimeObject* owner,const NativePrimitiveSelection& selected) {
         static_cast<void>(NativeLevelInfo(owner));
         auto* level=owner->nativeXLevel;auto* model=selected.object;
@@ -7632,6 +7640,11 @@ private:
                 const std::string canonical(entry.path);
                 return QuestVr::ObjectCastClass{canonical,canonical.substr(canonical.find('.')+1u),std::string(entry.base)};
             }
+        for(const auto& entry:QuestVr::NativeConfigClasses)
+            if(LowerAscii(path)==LowerAscii(std::string(entry.path))) {
+                const std::string canonical(entry.path);
+                return QuestVr::ObjectCastClass{canonical,canonical.substr(canonical.find('.')+1u),std::string(entry.base)};
+            }
         static constexpr std::pair<const char*, const char*> registered[] = {
             {"Core.Object", ""}, {"Core.Package", "Core.Object"},
             {"Core.Field", "Core.Object"}, {"Core.Const", "Core.Field"},
@@ -7646,7 +7659,6 @@ private:
             {"Core.FloatProperty", "Core.Property"}, {"Core.NameProperty", "Core.Property"},
             {"Core.StrProperty", "Core.Property"}, {"Core.StringProperty", "Core.Property"},
             {"Core.TextBuffer", "Core.Object"}, {"Core.Subsystem", "Core.Object"},
-            {"Core.Language", "Core.Object"},
             {"Engine.Palette", "Core.Object"}, {"Engine.Sound", "Core.Object"},
             {"Engine.Music", "Core.Object"}, {"Engine.Primitive", "Core.Object"},
             {"Engine.Mesh", "Engine.Primitive"}, {"Engine.LodMesh", "Engine.Mesh"},
@@ -8355,6 +8367,8 @@ private:
             defaults.Retain(NativeEngineClassRetainedBytes(*persistentEngineClasses->get()));
         if(persistentMetadataClasses && persistentMetadataClasses->get())
             defaults.Retain(NativeMetadataClassRetainedBytes(*persistentMetadataClasses->get()));
+        if(persistentConfigClasses && persistentConfigClasses->get())
+            defaults.Retain(NativeConfigClassRetainedBytes(*persistentConfigClasses->get()));
         const auto valueBudget = [&](const auto& self, const Value& value, const std::size_t depth) -> void {
             defaults.Node(depth); defaults.Retain(sizeof(value));
             defaults.IntArrayElements(value.intArray.size());
@@ -10584,6 +10598,7 @@ void ShutdownPortableRuntime() {
     persistentDispatchSummary = {};
     persistentVmObjects.clear();
     persistentWindowDomain.reset();persistentRootWindowClass.reset();
+    persistentConfigClasses.reset();
     persistentMetadataClasses.reset();
     persistentEngineClasses.reset();persistentGameEngineClass.reset();
     persistentPlayerSession.reset();
@@ -10728,12 +10743,14 @@ PortableNativeEngineClassesSnapshot PreparePortableRuntimeNativeEngineClasses() 
     return result;
 }
 
-static PortableNativeMetadataClassesSnapshot MetadataClassSnapshot(const RuntimeEngineClassDomain& domain) {
-    if(domain.classes.size()!=QuestVr::NativeMetadataClasses.size())
+template<std::size_t N>
+static PortableNativeMetadataClassesSnapshot MetadataClassSnapshot(const RuntimeEngineClassDomain& domain,
+    const std::array<QuestVr::NativeEngineClassRegistration,N>& records) {
+    if(domain.classes.size()!=records.size())
         throw std::runtime_error("Native metadata registration domain is incomplete");
     PortableNativeMetadataClassesSnapshot result;result.prepared=true;
     for(std::size_t i=0u;i<domain.classes.size();++i) {
-        const auto* cls=domain.classes[i];const auto& entry=QuestVr::NativeMetadataClasses[i];
+        const auto* cls=domain.classes[i];const auto& entry=records[i];
         if(!cls || cls->nativeMetadataClass!=&entry || cls->nativeEngineClass || cls->nativeClientClass ||
             cls->classDescriptor || cls->defaultOwner || cls->defaultObject || !cls->sourcePath.empty() ||
             cls->exportIndex!=std::numeric_limits<std::size_t>::max() || cls->outer ||
@@ -10775,7 +10792,7 @@ PortableNativeMetadataClassesSnapshot ReadPortableRuntimeNativeMetadataClasses()
     PortableActorVmHost host;
     static_cast<void>(ReadPortableRuntimeNativeEngineClasses());
     const auto& domain=*persistentMetadataClasses->get();
-    auto result=MetadataClassSnapshot(domain);
+    auto result=MetadataClassSnapshot(domain,QuestVr::NativeMetadataClasses);
     auto* meta=host.Object("Core.Class");
     if(meta->cls!=meta) throw std::runtime_error("Core.Class does not retain its actual self-metaclass");
     for(auto* cls:domain.classes) {
@@ -10841,7 +10858,7 @@ PortableNativeMetadataClassesSnapshot PreparePortableRuntimeNativeMetadataClasse
     for(auto* cls:persistentEngineClasses->get()->classes) stageTarget(cls);
     if(persistentPlayerSession) for(auto* cls:persistentPlayerSession->get()->classes)
         if(cls->nativeClientClass) stageTarget(cls);
-    auto result=MetadataClassSnapshot(*domain);result.boundSerializedClasses=serializedCount;
+    auto result=MetadataClassSnapshot(*domain,QuestVr::NativeMetadataClasses);result.boundSerializedClasses=serializedCount;
     auto owner=std::make_unique<GCRoot<RuntimeEngineClassDomain>>(domain);
     host.ValidateMetadataClassRegistrationBudget(*domain);
     // All allocation, admission and detached snapshot construction has finished.
@@ -10850,6 +10867,101 @@ PortableNativeMetadataClassesSnapshot PreparePortableRuntimeNativeMetadataClasse
     persistentQualifiedObjects.swap(nextQualified);persistentVmObjects.swap(nextVm);
     for(auto* cls:targets) cls->cls=meta;
     persistentMetadataClasses=std::move(owner);
+    return result;
+}
+
+static RuntimeObject* NativeConfigConsole(PortableActorVmHost& host,const bool requireBoundWithin) {
+    auto* console=host.Object("Engine.Console");auto* objectClass=host.Object("Core.Object");
+    auto* meta=host.Object("Core.Class");
+    if(!console->classDescriptor || !console->classFieldLinksValid || !console->inventoryTableMetadata ||
+        !console->inventorySerializedClass || console->nativeEngineClass || console->nativeMetadataClass ||
+        console->nativeClientClass || console->defaultOwner || console->sourcePath.empty() ||
+        console->exportIndex==std::numeric_limits<std::size_t>::max() ||
+        LowerAscii(console->reflection.objectPath)!="engine.console" || console->cls!=meta ||
+        console->base!=objectClass || console->reflection.flags!=0x040f0004u ||
+        console->classDescriptor->classFlags!=0x13au || !console->classDescriptor->classWithinReference ||
+        *console->classDescriptor->classWithinReference==0 || !console->classDescriptor->configName ||
+        *console->classDescriptor->configName!="System")
+        throw std::runtime_error("Native config classes require actual original serialized Engine.Console authority");
+    QuestVr::Vm::Function declaration;declaration.source=console->sourcePath;
+    declaration.path=console->reflection.objectPath;
+    const auto within=host.ResolveCastClass(declaration,*console->classDescriptor->classWithinReference);
+    if(host.Object(within)!=objectClass || (console->nativeClassWithin && console->nativeClassWithin!=objectClass) ||
+        (requireBoundWithin && console->nativeClassWithin!=objectClass))
+        throw std::runtime_error("Engine.Console lacks its actual serialized Core.Object Within relationship");
+    return console;
+}
+
+static PortableNativeConfigClassesSnapshot NativeConfigClassSnapshot(const RuntimeEngineClassDomain& domain,
+    RuntimeObject* console,RuntimeObject* within) {
+    auto metadata=MetadataClassSnapshot(domain,QuestVr::NativeConfigClasses);
+    PortableNativeConfigClassesSnapshot result;
+    result.classes=std::move(metadata.classes);result.consoleClassPath=console->reflection.objectPath;
+    result.consoleObjectIndex=console->objectIndex.Index();result.consoleMetaClassIndex=console->cls->objectIndex.Index();
+    result.consoleWithinClassIndex=within->objectIndex.Index();
+    result.consoleClassFlags=console->classDescriptor->classFlags;result.consoleObjectFlags=console->reflection.flags;
+    result.prepared=true;
+    return result;
+}
+
+PortableNativeConfigClassesSnapshot ReadPortableRuntimeNativeConfigClasses() {
+    if(!persistentConfigClasses || !persistentConfigClasses->get()) return {};
+    PortableActorVmHost host;
+    if(!ReadPortableRuntimeNativeMetadataClasses().prepared)
+        throw std::runtime_error("Native config classes lost their actual Core metadata domain");
+    auto* console=NativeConfigConsole(host,true);auto* meta=host.Object("Core.Class");
+    const auto& domain=*persistentConfigClasses->get();
+    auto result=NativeConfigClassSnapshot(domain,console,console->nativeClassWithin);
+    for(auto* cls:domain.classes)
+        if(host.Object(cls->reflection.objectPath)!=cls || cls->cls!=meta ||
+            host.Object(cls->base->reflection.objectPath)!=cls->base ||
+            host.Object(cls->nativeClassWithin->reflection.objectPath)!=cls->nativeClassWithin)
+            throw std::runtime_error("Native config constraint is not an actual indexed UClass graph");
+    return result;
+}
+
+PortableNativeConfigClassesSnapshot PreparePortableRuntimeNativeConfigClasses() {
+    CollectBirthGarbageAtBoundary collect;
+    PortableActorVmHost host;
+    if(persistentConfigClasses) return ReadPortableRuntimeNativeConfigClasses();
+    if(!persistentMetadataClasses || !ReadPortableRuntimeNativeMetadataClasses().prepared)
+        throw std::runtime_error("Native config classes require the explicit Core metadata phase");
+    auto* console=NativeConfigConsole(host,false);auto* objectClass=host.Object("Core.Object");
+    auto* subsystem=host.Object("Core.Subsystem");auto* meta=host.Object("Core.Class");
+    if(subsystem->base!=objectClass || !subsystem->classDescriptor || subsystem->cls!=meta)
+        throw std::runtime_error("Native config classes lack actual Core.Subsystem superclass authority");
+    if(persistentQualifiedObjects.size()>1'000'000u-QuestVr::NativeConfigClasses.size() ||
+        persistentVmObjects.size()>1'000'000u-QuestVr::NativeConfigClasses.size())
+        throw std::runtime_error("Native config registration exceeds the object lookup budget");
+    pendingBirthGarbage=true;
+    GCRoot<RuntimeEngineClassDomain> staged(GC::Alloc<RuntimeEngineClassDomain>());
+    auto* domain=staged.get();domain->classes.reserve(QuestVr::NativeConfigClasses.size());
+    auto nextQualified=persistentQualifiedObjects;auto nextVm=persistentVmObjects;
+    std::vector<GCRoot<RuntimeObject>> allocations;allocations.reserve(QuestVr::NativeConfigClasses.size());
+    for(const auto& entry:QuestVr::NativeConfigClasses) {
+        if(nextVm.count(LowerAscii(std::string(entry.path))) || nextQualified.count(std::string(entry.path)))
+            throw std::runtime_error("Native-only config class registration collides with an existing UObject/UClass");
+        auto* base=host.Object(std::string(entry.base));
+        if(!base->classDescriptor || base->cls!=meta ||
+            (base!=objectClass && base!=subsystem) || entry.within!="Core.Object")
+            throw std::runtime_error("Native config registration lacks an audited actual base/Within class");
+        allocations.emplace_back(GC::Alloc<RuntimeObject>(PortableReflectionObject{
+            std::string(entry.path),"Class",{},std::string(entry.base),entry.registrationObjectFlags,0},nullptr));
+        auto* cls=allocations.back().get();cls->nativeMetadataClass=&entry;
+        cls->exportIndex=std::numeric_limits<std::size_t>::max();
+        cls->base=base;cls->nativeClassWithin=objectClass;cls->cls=meta;domain->classes.push_back(cls);
+        if(!nextQualified.emplace(std::string(entry.path),cls).second ||
+            !nextVm.emplace(LowerAscii(std::string(entry.path)),cls).second)
+            throw std::runtime_error("Native config registration identity collision");
+    }
+    auto result=NativeConfigClassSnapshot(*domain,console,objectClass);
+    auto owner=std::make_unique<GCRoot<RuntimeEngineClassDomain>>(domain);
+    host.ValidateConfigClassRegistrationBudget(*domain);
+    // Bind only the decoded serialized Within pointer, never replace Console's
+    // actual descriptor/defaults/flags or invent an owning Package from its path.
+    // All allocating work and admission precedes this nonthrowing publication.
+    persistentQualifiedObjects.swap(nextQualified);persistentVmObjects.swap(nextVm);
+    console->nativeClassWithin=objectClass;persistentConfigClasses=std::move(owner);
     return result;
 }
 

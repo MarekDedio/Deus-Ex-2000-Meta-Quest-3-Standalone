@@ -42,4 +42,13 @@ inline constexpr std::array<NativeEngineClassRegistration,11u> NativeMetadataCla
     {"Core.ArrayProperty","Core.Property","Core.Field",0x60u,0x12u,0x04084004u}
 }};
 
+// The actual native bases of Engine's five config ClassProperties. Console
+// is serialized in Engine.u and MUST NOT be replaced with a native wrapper.
+inline constexpr std::array<NativeEngineClassRegistration,4u> NativeConfigClasses{{
+    {"Core.Language","Core.Object","Core.Object",0x2cu,0x1bu,0x04084004u},
+    {"Engine.AudioSubsystem","Core.Subsystem","Core.Object",0x2cu,0x17u,0x04084004u},
+    {"Engine.RenderDevice","Core.Subsystem","Core.Object",0xbcu,0x17u,0x04084004u},
+    {"Engine.NetDriver","Core.Subsystem","Core.Object",0x90u,0x1fu,0x04084004u}
+}};
+
 } // namespace QuestVr

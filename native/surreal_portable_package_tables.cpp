@@ -1593,9 +1593,12 @@ PortableClassDescriptor LoadPortableClassDescriptor(
         reader.ReadIndex();
     }
     if (package.version >= 62) {
-        reader.ReadIndex(); // ClassWithin (package table index, not object reference)
-        const std::int32_t configName = reader.ReadIndex();
-        ValidateNameIndex(configName, package.names.size());
+        // Original UClass.Serialize archives ClassWithin through its object-
+        // reference operator and ClassConfigName through its FName operator.
+        // Retain raw package authority; resolving the referenced object's class
+        // or applying legacy runtime defaults belongs to a later layer.
+        result.classWithinReference = objectReference();
+        result.configName = ReadPayloadName(reader, package);
     }
 
     while (true) {

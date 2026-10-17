@@ -1,5 +1,33 @@
 # Port status
 
+## Native config constraints and serialized Within (2026-10-18)
+
+- Added an explicit four-class config constraint phase after the existing5/11
+  Engine/Core domains: real indexed Language, AudioSubsystem, RenderDevice and
+  NetDriver, with exact audited bases/Within/metaclass and+5 GC objects. Reuses
+  the existing serialized Engine.Console rather than replacing it. Its actual
+  decoded Within reference resolves to Core.Object and config FName is System;
+  Console descriptor/defaults/flags/Children/Next remain unchanged.
+- Class descriptors now retain optional serialized Within/config values,
+  distinguishing pre62 absence from explicit null/None. Within is an object
+  reference, correcting the former ignored-integer comment. Generated704 checks/
+  196 refusals and an independent suffix audit of all1502 Classes/261 States
+  across38 System packages pass. A separate census finds no Class/State exports
+  in88 maps; it is not campaign gameplay acceptance.
+- Owned config integration9971 checks/48 refusals and existing Core metadata
+  regression10994/94 pass. These cover actual allocation indices, static-domain
+  counts, original Console state/defaults, whole dormant checkpoints/world/clock,
+  warm/map/shutdown lifetime and late-name/prerequisite/missing-Console refusal.
+  Shared retained admission now includes each owning GCRoot and GCRootNode.
+  Strict ARM64 syntax and Android native module/link pass.
+- Original lookup/loader evidence now establishes the next real dependency:
+  actual Package instances and Outer ownership. Original export Outer0 binds
+  to linker.Root; native Register creates packages. Qualified StaticFind resolves
+  actual Outer objects, with a distinct global ANY_PACKAGE fallback. No package,
+  full lookup, configured driver subclass/default, Engine/Cylinder, startup,
+  movement/gravity or live crate completion is claimed. No new APK. See
+  ORIGINAL-NATIVE-CONFIG-CLASSES.md and ORIGINAL-PACKAGE-LOOKUP-AUTHORITY.md.
+
 ## GitHub recovery and indexed Core metadata (2026-10-18)
 
 - Restored the complete tracked project and all 175 prior commits after the

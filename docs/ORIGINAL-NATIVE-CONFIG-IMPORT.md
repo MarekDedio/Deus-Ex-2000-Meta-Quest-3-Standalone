@@ -82,7 +82,9 @@ root. A coherent full rebuild passes. Fresh CTest:127 passed/145 registered/
 `artifacts/native-config-import-*-20261017.log` and
 `artifacts/native-defaults-owned-import-inventory-20261017.log`.
 
-Actual native static-property/default storage, exact indexed Core.Class lookup,
+Indexed Core.Class and the four missing native config constraint UClasses are
+now prepared separately; see ORIGINAL-NATIVE-CONFIG-CLASSES.md. Actual native
+static-property/default storage, package/Outer-aware StaticFindObject,
 inherited configured default publication and Engine/Transient/Cylinder lifetime
 remain required before movement/startup/falling and the live crate damage graph.
 No replacement APK or headset acceptance is claimed by this checkpoint.

@@ -167,7 +167,9 @@ Later map Class identities and native Client/Viewport classes retain that
 binding. No serialized flags, Children/Next, defaults or package Outers are
 rewritten; native Cpp-property constructors are not replayed.
 
-This does not complete native fields/defaults, config constraint classes or
-class lookup, frozen native instance copies or Engine/session/Primitive lifetime.
+The four audited config constraint classes and existing serialized Console's
+Within/config authority are now consumed by a separate class-only phase; see
+ORIGINAL-NATIVE-CONFIG-CLASSES.md. This does not complete native fields/defaults,
+actual package-aware class lookup, frozen native instance copies or Engine/session/Primitive lifetime.
 Hash/Move/support/startup/player/falling and the original live crate damage graph
 remain required. No APK or headset acceptance of this class-only phase is implied.
