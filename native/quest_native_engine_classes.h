@@ -14,14 +14,16 @@ namespace QuestVr {
 struct NativeEngineClassRegistration {
     std::string_view path, base, within;
     std::uint32_t nativeSize, registrationClassFlags, registrationObjectFlags;
+    // Audited UObject.Register package literal, not a split display path.
+    std::string_view package;
 };
 
 inline constexpr std::array<NativeEngineClassRegistration,5u> NativeEngineClasses{{
-    {"Core.Package","Core.Object","Core.Object",0x34u,0x12u,0x04084004u},
-    {"Engine.Primitive","Core.Object","Core.Object",0x54u,0x12u,0x04084004u},
-    {"Engine.GameEngine","Engine.Engine","Core.Object",0xd0u,0x1eu,0x04084004u},
-    {"Extension.GameEngineExt","Engine.GameEngine","Core.Object",0xd0u,0x1eu,0x04084004u},
-    {"DeusEx.DeusExGameEngine","Extension.GameEngineExt","Core.Object",0xd0u,0x1eu,0x04084004u}
+    {"Core.Package","Core.Object","Core.Object",0x34u,0x12u,0x04084004u,"Core"},
+    {"Engine.Primitive","Core.Object","Core.Object",0x54u,0x12u,0x04084004u,"Engine"},
+    {"Engine.GameEngine","Engine.Engine","Core.Object",0xd0u,0x1eu,0x04084004u,"Engine"},
+    {"Extension.GameEngineExt","Engine.GameEngine","Core.Object",0xd0u,0x1eu,0x04084004u,"Extension"},
+    {"DeusEx.DeusExGameEngine","Extension.GameEngineExt","Core.Object",0xd0u,0x1eu,0x04084004u,"DeusEx"}
 }};
 
 // Separate closed metadata registration phase. These are genuine original
@@ -29,26 +31,26 @@ inline constexpr std::array<NativeEngineClassRegistration,5u> NativeEngineClasse
 // permission to replay Cpp-property constructors after package loading.
 // See ORIGINAL-NATIVE-METADATA-REGISTRATION.md for each audited native header.
 inline constexpr std::array<NativeEngineClassRegistration,11u> NativeMetadataClasses{{
-    {"Core.Field","Core.Object","Core.Object",0x34u,0x13u,0x04084004u},
-    {"Core.Struct","Core.Field","Core.Object",0x6cu,0x12u,0x04084004u},
-    {"Core.State","Core.Struct","Core.Object",0x484u,0x12u,0x04084004u},
-    {"Core.Class","Core.State","Core.Package",0x4f4u,0x12u,0x04084004u},
-    {"Core.Property","Core.Field","Core.Field",0x5cu,0x13u,0x04084004u},
-    {"Core.ObjectProperty","Core.Property","Core.Field",0x64u,0x12u,0x04084004u},
-    {"Core.ClassProperty","Core.ObjectProperty","Core.Field",0x68u,0x12u,0x04084004u},
-    {"Core.IntProperty","Core.Property","Core.Field",0x5cu,0x12u,0x04084004u},
-    {"Core.BoolProperty","Core.Property","Core.Field",0x60u,0x12u,0x04084004u},
-    {"Core.StrProperty","Core.Property","Core.Field",0x5cu,0x12u,0x04084004u},
-    {"Core.ArrayProperty","Core.Property","Core.Field",0x60u,0x12u,0x04084004u}
+    {"Core.Field","Core.Object","Core.Object",0x34u,0x13u,0x04084004u,"Core"},
+    {"Core.Struct","Core.Field","Core.Object",0x6cu,0x12u,0x04084004u,"Core"},
+    {"Core.State","Core.Struct","Core.Object",0x484u,0x12u,0x04084004u,"Core"},
+    {"Core.Class","Core.State","Core.Package",0x4f4u,0x12u,0x04084004u,"Core"},
+    {"Core.Property","Core.Field","Core.Field",0x5cu,0x13u,0x04084004u,"Core"},
+    {"Core.ObjectProperty","Core.Property","Core.Field",0x64u,0x12u,0x04084004u,"Core"},
+    {"Core.ClassProperty","Core.ObjectProperty","Core.Field",0x68u,0x12u,0x04084004u,"Core"},
+    {"Core.IntProperty","Core.Property","Core.Field",0x5cu,0x12u,0x04084004u,"Core"},
+    {"Core.BoolProperty","Core.Property","Core.Field",0x60u,0x12u,0x04084004u,"Core"},
+    {"Core.StrProperty","Core.Property","Core.Field",0x5cu,0x12u,0x04084004u,"Core"},
+    {"Core.ArrayProperty","Core.Property","Core.Field",0x60u,0x12u,0x04084004u,"Core"}
 }};
 
 // The actual native bases of Engine's five config ClassProperties. Console
 // is serialized in Engine.u and MUST NOT be replaced with a native wrapper.
 inline constexpr std::array<NativeEngineClassRegistration,4u> NativeConfigClasses{{
-    {"Core.Language","Core.Object","Core.Object",0x2cu,0x1bu,0x04084004u},
-    {"Engine.AudioSubsystem","Core.Subsystem","Core.Object",0x2cu,0x17u,0x04084004u},
-    {"Engine.RenderDevice","Core.Subsystem","Core.Object",0xbcu,0x17u,0x04084004u},
-    {"Engine.NetDriver","Core.Subsystem","Core.Object",0x90u,0x1fu,0x04084004u}
+    {"Core.Language","Core.Object","Core.Object",0x2cu,0x1bu,0x04084004u,"Core"},
+    {"Engine.AudioSubsystem","Core.Subsystem","Core.Object",0x2cu,0x17u,0x04084004u,"Engine"},
+    {"Engine.RenderDevice","Core.Subsystem","Core.Object",0xbcu,0x17u,0x04084004u,"Engine"},
+    {"Engine.NetDriver","Core.Subsystem","Core.Object",0x90u,0x1fu,0x04084004u,"Engine"}
 }};
 
 } // namespace QuestVr

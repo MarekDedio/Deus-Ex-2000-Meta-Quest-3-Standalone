@@ -1,5 +1,39 @@
 # Port status
 
+## Actual Packages, defaults and loader ownership (2026-10-18)
+
+- Added an explicit Package phase after actual Core metadata. A genuine
+  class-owned default uses the audited Object28h -> Package34h default-copy
+  profile; real indexed Package instances copy it before the explicit missing
+  legacy-module binding policy. No commercial DLL is loaded or successful module
+  handle/symbol/constructor capability fabricated.
+- Native classes bind their audited registration package literals. Loaded
+  exports cache exact ObjOuter0 provenance and bind their actual source
+  LinkerRoot, while nested/nonzero references keep separate authority. GC traces
+  real Outer edges; map retirement drops loader ownership and removes aliases by
+  actual export identity. Weak package entries disappear only on destruction.
+  Native-owned Packages survive unrelated map retirement. Empty/failed loads,
+  source-name collisions and shutdown/reinitialize cleanup are covered.
+- Fixed missing actual Class pointers on serialized native metadata fields:
+  validated closed Core.Class imports bind genuine registered UClasses, including
+  Engine.Engine.Cylinder's ObjectProperty. A wrong import metaclass package does
+  not gain authority from its display path. Counts remain the same5/11/4 class
+  domains, without invented serialized descriptors or replayed constructors.
+- Owned Package integration passes11377 checks/13 refusals; independent typed
+  defaults/bind policy41356/31. All3347 original Training exports use source-root
+  ownership; nested controls use original Engine fields and synthetic maps.
+  Core metadata10994/94 and config9971/48 regressions pass. Strict ARM64 syntax
+  and actual Android native module/link pass. Original crate/fragment regression
+  also passes1116 checks/four refusals. Full coherent host rebuild passes;
+  fresh CTest130 passed/151 registered/21 explicit owned-data skips/zero failures
+  in33.89s. Relevant owned fixtures above ran separately; the full skipped set
+  is not claimed as executed. Updated FastTrace failure control requires immediate
+  failed-map Actor/GC cleanup, no Model authority and an empty second unload.
+- This phase is not yet called by Quest startup. Original StaticFind/configured
+  driver import, actual Engine/Cylinder construction, begun world, movement/
+  gravity and live original crate Fire remain unfinished. No new APK. See
+  ORIGINAL-NATIVE-PACKAGES.md and ORIGINAL-PACKAGE-LOOKUP-AUTHORITY.md.
+
 ## Native config constraints and serialized Within (2026-10-18)
 
 - Added an explicit four-class config constraint phase after the existing5/11

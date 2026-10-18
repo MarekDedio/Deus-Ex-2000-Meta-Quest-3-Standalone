@@ -621,6 +621,7 @@ void NativeModelLifetime() {
 void FailedModelPublication() {
     Fixture fixture;auto tables=Build(fixture,Variant::DuplicateActorSlot);
     Require(InitializePortableRuntime(tables.scripts).passed,"Late-failure fixture script initialization failed");
+    const auto baselineGc=GC::GetStats();
     bool refused{};
     try {static_cast<void>(LoadPortableRuntimeMap(tables.map));}
     catch(const std::runtime_error& error) {refused=std::string(error.what())=="Level contains a duplicate actor slot";}
@@ -628,16 +629,19 @@ void FailedModelPublication() {
     const auto failed=ReadPortableRuntimeNativeModel();
     Require(!failed.available&&!failed.geometryCached&&!failed.mapGeneration,
         "Late failed map load published native Model query authority");
+    Require(GetPortableRuntimeMapActors(true).empty()&&GC::GetStats().numObjects==baselineGc.numObjects&&
+        GC::GetStats().memoryUsage==baselineGc.memoryUsage,
+        "Late failed map load retained provisional Actors or native loader objects");
     const auto revision=GetPortableRuntimeWorldRevision();
     const auto trace=ExecutePortableActorFunction(Path("Driver"),"FastTrace",{Vec({-6,0,0}),Vec({5,0,0})});
-    Require(!trace.passed()&&!trace.committed&&trace.error.find("current loader-owned Model")!=std::string::npos,
-        "FastTrace acquired/cached Model from a late failed map load");++refusals;
+    Require(!trace.passed()&&!trace.committed&&trace.error=="Portable actor VM object is unavailable: "+Path("Driver"),
+        "FastTrace could still address an Actor retired by failed-map cleanup");++refusals;
     Require(GetPortableRuntimeWorldRevision()==revision&&!ReadPortableRuntimeNativeModel().available&&
         !ReadPortableRuntimeNativeModel().geometryCached,"Failed-map query published cache or gameplay revision");
     GC::Collect();
     Require(!ReadPortableRuntimeNativeModel().available,"GC revived failed native Model authority");
-    Require(UnloadPortableRuntimeMap()!=0u&&!ReadPortableRuntimeNativeModel().available,
-        "Explicit failed-map unload retained native Model authority");
+    Require(UnloadPortableRuntimeMap()==0u&&!ReadPortableRuntimeNativeModel().available,
+        "Failed-map cleanup left exports or Model authority for a second unload");
     // No intervening Shutdown: the same runtime must recover from the failed
     // map, replacing generated contents at the same source filename/export.
     tables=Build(fixture);Require(LoadPortableRuntimeMap(tables.map).passed,"Valid same-filename reload after failure did not recover");

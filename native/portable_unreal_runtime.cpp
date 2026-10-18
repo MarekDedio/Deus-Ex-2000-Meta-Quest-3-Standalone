@@ -39,6 +39,7 @@
 #include "quest_brush_coords.h"
 #include "quest_original_sine_table.h"
 #include "quest_native_engine_classes.h"
+#include "quest_native_package.h"
 #include "quest_collision_hash_math.h"
 #include "quest_mesh_line_trace.h"
 #include "quest_model_line_hit.h"
@@ -66,6 +67,8 @@
 namespace {
 
 class RuntimeObject;
+struct RuntimeNativePackageIndex;
+void RetireRuntimeNativePackage(RuntimeObject*) noexcept;
 class RuntimeAIManager;
 class RuntimeMapDecals;
 QuestVr::ObjectIndexPool& RuntimeObjectIndices() {
@@ -128,6 +131,10 @@ public:
     const QuestVr::NativeEngineClassRegistration* nativeEngineClass{};
     const QuestVr::NativeEngineClassRegistration* nativeMetadataClass{};
     RuntimeObject* nativeClassWithin{};
+    std::unique_ptr<QuestVr::NativePackage::PreparedDefaults> nativePackageDefaults;
+    std::unique_ptr<QuestVr::NativePackage::Instance> nativePackageInstance;
+    std::shared_ptr<RuntimeNativePackageIndex> nativePackageIndex;
+    std::string nativePackageKey;
     std::uint64_t nativeClientIdentity{}, nativeViewportIdentity{};
     RuntimeObject* nativePlayer{};
     RuntimeObject* nativeViewportActor{};
@@ -176,7 +183,9 @@ public:
     // table is already available. A read-only inventory query must not reopen
     // packages or treat reflection's package-stripped metaclass as an IsA proof.
     bool inventoryTableMetadata{}, inventorySerializedClass{}, inventoryClassReferenceValid{}, inventoryBaseReferenceValid{};
+    bool serializedOuterZero{}; // Exact source table provenance, not a null resolved pointer.
     std::uint8_t inventoryNativeClass{}, inventoryNativeBase{};
+    std::uint8_t nativeMetadataClassImport{}; // Validated Class import into the closed eleven-class domain.
     std::unique_ptr<InventoryIconClassConstraint> inventoryIconClassConstraint;
     // Immutable authored bitmap fields prepared before native HUD queries.
     // No image/mip decoding or package I/O belongs in a sizing callback.
@@ -235,6 +244,7 @@ public:
 
 protected:
     ~RuntimeObject() override {
+        if(nativePackageInstance) RetireRuntimeNativePackage(this);
         if (destroyed_ != nullptr) ++*destroyed_;
     }
 
@@ -290,6 +300,7 @@ std::size_t NativeDecalRetainedBytes(const RuntimeMapDecals& graph) {
 }
 
 GCAllocation* RuntimeObject::Mark(GCAllocation* marklist) {
+    marklist = GC::MarkObject(marklist, outer);
     marklist = GC::MarkObject(marklist, cls);
     marklist = GC::MarkObject(marklist, base);
     marklist = GC::MarkObject(marklist, nativeClassWithin);
@@ -325,6 +336,9 @@ public:
     std::vector<RuntimeObject*> exports;
     std::size_t structDescriptorBytes{};
     RuntimeMapDecals* nativeDecals{};
+    struct SourceLinker { std::string name, sourcePath; RuntimeObject* root{}; };
+    std::vector<SourceLinker> sourceLinkers;
+    RuntimeObject* mapLinkerRoot{};
 
 protected:
     ~RuntimePackage() override {
@@ -332,6 +346,8 @@ protected:
     }
 
     GCAllocation* Mark(GCAllocation* marklist) override {
+        for(const auto& source:sourceLinkers) marklist=GC::MarkObject(marklist,source.root);
+        marklist=GC::MarkObject(marklist,mapLinkerRoot);
         for (RuntimeObject* object : exports) {
             marklist = GC::MarkObject(marklist, object);
         }
@@ -443,6 +459,29 @@ std::unordered_map<std::string, RuntimeObject*> persistentQualifiedObjects;
 // runtime index, rather than copying/lowercasing every export for every call.
 // These aliases are not additional GC roots and are removed before collection.
 std::unordered_map<std::string, RuntimeObject*> persistentVmObjects;
+// Weak identity index, NOT a GC root. Actual class Outers and active source
+// linkers own Packages. Cleanup is identity-checked and disabled at shutdown.
+struct RuntimeNativePackageIndex {
+    bool active{};
+    RuntimeObject* packageClass{};
+    RuntimeObject* defaults{};
+    std::unordered_map<std::string,RuntimeObject*> objects;
+};
+std::shared_ptr<RuntimeNativePackageIndex> persistentNativePackages;
+void RetireRuntimeNativePackage(RuntimeObject* object) noexcept {
+    const auto& index=object->nativePackageIndex;
+    if(!index) return;
+    const auto found=index->objects.find(object->nativePackageKey);
+    if(found!=index->objects.end() && found->second==object) index->objects.erase(found);
+    if(!index->active) return;
+    const auto qualified=persistentQualifiedObjects.find(object->reflection.objectPath);
+    if(qualified!=persistentQualifiedObjects.end() && qualified->second==object) persistentQualifiedObjects.erase(qualified);
+    const auto vm=persistentVmObjects.find(object->nativePackageKey);
+    if(vm!=persistentVmObjects.end() && vm->second==object) persistentVmObjects.erase(vm);
+}
+std::size_t NativePackageRetainedBytes(const RuntimeNativePackageIndex& index);
+RuntimeObject* RegisteredNativePackage(std::string_view name);
+bool NativePackageClassDefaultValid(const RuntimeObject* cls);
 std::unique_ptr<QuestVr::ScriptDispatch::Graph> persistentDispatchGraph;
 PortableScriptDispatchSummary persistentDispatchSummary;
 std::unordered_map<std::string, std::vector<RuntimeObject*>> persistentMapTagIndex;
@@ -554,6 +593,7 @@ std::uint8_t InventoryNativeClassBase(const std::uint8_t id) {
     return id < std::size(bases) ? bases[id] : 0u;
 }
 void CacheInventoryTableMetadata(RuntimeObject* object, const PortablePackageTables& table, const ExportTableEntry& entry) {
+    object->serializedOuterZero=entry.ObjOuter==0;
     object->inventoryTableMetadata = true; object->inventorySerializedClass = entry.ObjClass == 0;
     const auto classReference = [&](const std::int32_t reference, bool& valid) {
         valid = false;
@@ -578,6 +618,21 @@ void CacheInventoryTableMetadata(RuntimeObject* object, const PortablePackageTab
         }
     } else {
         const auto path = classReference(entry.ObjClass, object->inventoryClassReferenceValid);
+        if(object->inventoryClassReferenceValid) {
+            for(std::size_t i=0u;i<QuestVr::NativeMetadataClasses.size();++i)
+                if(SameInventoryIdentity(path,QuestVr::NativeMetadataClasses[i].path)) {
+                    // The value resolver callback receives (objectPath,
+                    // ClassName), NOT ClassPackage. Validate the latter from
+                    // the already-bounds-checked actual import record itself.
+                    bool exactKind=true;
+                    if(entry.ObjClass<0) {
+                        const auto& imported=table.imports.at(static_cast<std::size_t>(-static_cast<std::int64_t>(entry.ObjClass)-1));
+                        exactKind=imported.ClassPackage>=0 && static_cast<std::size_t>(imported.ClassPackage)<table.names.size() &&
+                            SameInventoryIdentity(table.names[static_cast<std::size_t>(imported.ClassPackage)].Name.ToString(),"Core");
+                    }
+                    if(exactKind) object->nativeMetadataClassImport=static_cast<std::uint8_t>(i+1u);
+                }
+        }
         if (!object->cls) object->inventoryNativeClass = InventoryNativeClassId(path);
         if (!object->cls && object->inventoryNativeClass == 0u) object->inventoryClassReferenceValid = false;
     }
@@ -1387,6 +1442,76 @@ std::string PackageStem(const std::string& path) {
     return path.substr(begin, end - begin);
 }
 
+RuntimeObject* RegisteredNativePackage(const std::string_view name) {
+    if(!persistentNativePackages) return nullptr;
+    const auto found=persistentNativePackages->objects.find(LowerAscii(std::string(name)));
+    if(found==persistentNativePackages->objects.end() || !found->second ||
+        !found->second->nativePackageInstance || found->second->cls!=persistentNativePackages->packageClass)
+        throw std::runtime_error("Native registration lacks its actual owning Package");
+    return found->second;
+}
+bool NativePackageClassDefaultValid(const RuntimeObject* cls) {
+    return persistentNativePackages && persistentNativePackages->packageClass==cls &&
+        cls->defaultObject==persistentNativePackages->defaults && cls->defaultObject &&
+        cls->defaultObject->defaultOwner==cls && cls->defaultObject->cls==cls &&
+        cls->defaultObject->nativePackageDefaults &&
+        cls->defaultObject->nativePackageDefaults->ClassIndex()==cls->objectIndex.Index();
+}
+std::size_t NativePackageRetainedBytes(const RuntimeNativePackageIndex& index) {
+    if(index.objects.size()>4096u || !index.defaults || !index.defaults->nativePackageDefaults)
+        throw std::runtime_error("Native Package identity/default domain is invalid");
+    auto bytes=sizeof(RuntimeNativePackageIndex)+4u*sizeof(void*)+
+        index.objects.bucket_count()*sizeof(void*)+sizeof(RuntimeObject)+sizeof(GCAllocation)+
+        sizeof(QuestVr::NativePackage::PreparedDefaults);
+    const auto* defaults=index.defaults;
+    for(const auto* text:{&defaults->reflection.objectPath,&defaults->reflection.metaClass,&defaults->reflection.outerPath,
+            &defaults->reflection.basePath,&defaults->sourcePath,&defaults->nativePackageKey})
+        bytes=QuestVr::DecalStateDetail::Add(bytes,text->capacity()+1u);
+    if(persistentRuntime && persistentRuntime->get()) {
+        const auto& sources=persistentRuntime->get()->sourceLinkers;
+        bytes=QuestVr::DecalStateDetail::Add(bytes,QuestVr::DecalStateDetail::Multiply(sources.capacity(),sizeof(RuntimePackage::SourceLinker)));
+        for(const auto& source:sources) {
+            bytes=QuestVr::DecalStateDetail::Add(bytes,source.name.capacity()+1u);
+            bytes=QuestVr::DecalStateDetail::Add(bytes,source.sourcePath.capacity()+1u);
+        }
+    }
+    for(const auto& [key,object]:index.objects) {
+        if(!object || !object->nativePackageInstance)
+            throw std::runtime_error("Native Package index contains a non-Package object");
+        bytes=QuestVr::DecalStateDetail::Add(bytes,sizeof(RuntimeObject)+sizeof(GCAllocation)+
+            sizeof(QuestVr::NativePackage::Instance)+3u*(sizeof(std::string)+6u*sizeof(void*)));
+        const auto* immutable=object;
+        for(const auto* text:{&key,&immutable->nativePackageKey,&immutable->reflection.objectPath,
+                &immutable->reflection.metaClass,&immutable->reflection.outerPath,&immutable->reflection.basePath,&immutable->sourcePath})
+            bytes=QuestVr::DecalStateDetail::Add(bytes,text->capacity()+1u);
+        bytes=QuestVr::DecalStateDetail::Add(bytes,2u*(object->reflection.objectPath.capacity()+1u));
+    }
+    return bytes;
+}
+
+// Detached construction; neither the registry nor canonical aliases root it.
+// The caller holds a staging GCRoot until actual linker/Outer publication.
+void ValidateNativePackageName(const std::string& name) {
+    if(name.empty() || name.size()>1024u || name.find_first_of("./\\:")!=std::string::npos ||
+        name.find('\0')!=std::string::npos || LowerAscii(name)=="none")
+        throw std::runtime_error("Source LinkerRoot has an invalid top-level Package name");
+}
+RuntimeObject* AllocateRuntimeNativePackage(const std::string& name,
+    const std::shared_ptr<RuntimeNativePackageIndex>& index) {
+    ValidateNativePackageName(name);
+    if(!index || !index->packageClass || !index->defaults || !index->defaults->nativePackageDefaults)
+        throw std::runtime_error("Source LinkerRoot lacks prepared actual Package defaults");
+    auto* object=GC::Alloc<RuntimeObject>(PortableReflectionObject{name,"Package",{},{},4u,0},nullptr);
+    GCRoot<RuntimeObject> staged(object);
+    object->cls=index->packageClass;object->exportIndex=std::numeric_limits<std::size_t>::max();
+    object->nativePackageKey=LowerAscii(name);
+    object->nativePackageInstance=std::make_unique<QuestVr::NativePackage::Instance>(QuestVr::NativePackage::Construct(
+        *index->defaults->nativePackageDefaults,0u,QuestVr::NativePackage::AllocationRequest::CreatePackage,
+        QuestVr::NativePackage::NoLegacyModuleProvider{}));
+    object->nativePackageIndex=index;
+    return object;
+}
+
 std::unique_ptr<PortableLodMesh> LoadCompleteRuntimeLodMesh(
     const PortablePackageTables& package, const std::size_t exportIndex, const std::string& sourcePath) {
     auto mesh = std::make_unique<PortableLodMesh>(LoadPortableLodMesh(package, exportIndex));
@@ -1428,6 +1553,7 @@ void PopulateRuntime(
     const PortableReflectionGraph& graph,
     PortableRuntimeSummary& summary,
     std::size_t* destroyedObjects) {
+    runtime->sourceLinkers.push_back({PackageStem(package.sourcePath),package.sourcePath,nullptr});
     runtime->exports.reserve(graph.objects.size());
     for (const PortableReflectionObject& reflection : graph.objects) {
         runtime->exports.push_back(
@@ -2188,7 +2314,8 @@ public:
         // Original initialized default blocks have Name None and Outer null.
         // This display spelling does not replace their distinct nonnull handle.
         if (object->defaultOwner) return "None";
-        if(object->nativeClientIdentity || object->nativeClientClass || object->nativeEngineClass || object->nativeMetadataClass || object->nativeWindowObject)
+        if(object->nativeClientIdentity || object->nativeClientClass || object->nativeEngineClass || object->nativeMetadataClass ||
+            object->nativeWindowObject || object->nativePackageInstance)
             return object->reflection.objectPath;
         // No native Rename/SetOuter exists in this host. Loaded object names
         // and complete package/outer paths are immutable, including nested
@@ -2232,6 +2359,8 @@ public:
         const Property& property, const QuestVr::Vm::Scope scope) override {
         RuntimeObject* object = Object(receiver);
         if (!object->active && !object->worldRemoved) throw std::runtime_error("VM receiver is inactive");
+        if(object->nativePackageInstance || object->nativePackageDefaults)
+            throw std::runtime_error("Native Package mutable reflected storage is not established");
         if (object->classDescriptor || object->nativeClientClass || object->nativeEngineClass || object->nativeMetadataClass)
             throw std::runtime_error("UClass reflected receiver requires its actual Core.Class storage");
         const bool defaults = scope == QuestVr::Vm::Scope::Default;
@@ -4071,6 +4200,10 @@ public:
     void ValidateConfigClassRegistrationBudget(const RuntimeEngineClassDomain& staged) const {
         ValidateStateBudget(NativeConfigClassRetainedBytes(staged));
     }
+    void ValidatePackageRegistrationBudget(const RuntimeNativePackageIndex& staged) const {
+        ValidateStateBudget(NativePackageRetainedBytes(staged));
+    }
+    void ValidateAdditionalPackageBudget(const std::size_t bytes) const {ValidateStateBudget(bytes);}
     const PortableModelGeometry& NativeSelectedModel(RuntimeObject* owner,const NativePrimitiveSelection& selected) {
         static_cast<void>(NativeLevelInfo(owner));
         auto* level=owner->nativeXLevel;auto* model=selected.object;
@@ -6159,6 +6292,8 @@ public:
     Value Read(RuntimeObject* object, const Property& property, const std::uint32_t index,
         const bool defaults = false, const bool immutable = false,NativeAuthoredReadOrigin* origin=nullptr) {
         if(origin) *origin={};
+        if(object->nativePackageInstance || object->nativePackageDefaults)
+            throw std::runtime_error("Native Package reflected/default storage requires its typed native service");
         if(object->nativeEngineClass || object->nativeMetadataClass)
             throw std::runtime_error("Native UClass reflected/default storage is not established");
         if(object->nativeWindowObject && !defaults && !immutable) {
@@ -8369,6 +8504,7 @@ private:
             defaults.Retain(NativeMetadataClassRetainedBytes(*persistentMetadataClasses->get()));
         if(persistentConfigClasses && persistentConfigClasses->get())
             defaults.Retain(NativeConfigClassRetainedBytes(*persistentConfigClasses->get()));
+        if(persistentNativePackages) defaults.Retain(NativePackageRetainedBytes(*persistentNativePackages));
         const auto valueBudget = [&](const auto& self, const Value& value, const std::size_t depth) -> void {
             defaults.Node(depth); defaults.Retain(sizeof(value));
             defaults.IntArrayElements(value.intArray.size());
@@ -9712,6 +9848,7 @@ PreparedScriptState PrepareScriptSavedState(
         auto* actor = prepared.births.back().get(); actor->runtimeBirth = true;
         actor->birthVmKey = LowerAscii(birth.path); actor->sourcePath = schema.MapSource();
         actor->exportIndex = std::numeric_limits<std::size_t>::max(); actor->cls = cls;
+        actor->outer=persistentRuntime->get()->mapLinkerRoot;
         actor->references.push_back(cls); actor->frozenBirthDefaults.swap(frozen);
         actor->worldActorIndex = static_cast<std::int32_t>(birth.worldActorIndex);
         actor->inventoryTableMetadata = true; actor->inventoryClassReferenceValid = true;
@@ -9970,6 +10107,7 @@ PortableRuntimeSummary InitializePortableRuntime(
         slice.package = &package;
         slice.graph = BuildPortableReflectionGraph(package);
         slice.name = PackageStem(package.sourcePath);
+        persistentRuntime->get()->sourceLinkers.push_back({slice.name,package.sourcePath,nullptr});
         slice.first = persistentRuntime->get()->exports.size();
         for (PortableReflectionObject& reflection : slice.graph.objects) {
             reflection.objectPath = slice.name + "." + reflection.objectPath;
@@ -10589,6 +10727,8 @@ PortableSound LoadPortableRuntimeSound(const std::string& objectPath) {
 }
 
 void ShutdownPortableRuntime() {
+    if(persistentNativePackages) persistentNativePackages->active=false;
+    persistentNativePackages.reset();
     persistentNativeModelCache.reset(); // Drop non-owning identity keys before any map GC.
     persistentPrimitiveModelCache.Clear();
     ClearNativePlayerObjects();
@@ -10634,11 +10774,13 @@ PortableNativeEngineClassesSnapshot ReadPortableRuntimeNativeEngineClasses() {
         throw std::runtime_error("Native engine class registration domain is incomplete");
     for(std::size_t i=0u;i<domain->classes.size();++i) {
         auto* cls=domain->classes[i];const auto& entry=QuestVr::NativeEngineClasses[i];
-        if(!cls || cls->nativeEngineClass!=&entry || cls->classDescriptor || cls->defaultObject ||
+        if(!cls || cls->nativeEngineClass!=&entry || cls->classDescriptor ||
+            (cls->defaultObject && !NativePackageClassDefaultValid(cls)) ||
             cls->defaultOwner || cls->nativeClientClass || cls->reflection.metaClass!="Class" ||
             cls->reflection.objectPath!=entry.path || cls->reflection.flags!=entry.registrationObjectFlags ||
             !cls->base || LowerAscii(cls->base->reflection.objectPath)!=LowerAscii(std::string(entry.base)) ||
-            host.Object(cls->reflection.objectPath)!=cls || host.Object(cls->base->reflection.objectPath)!=cls->base)
+            host.Object(cls->reflection.objectPath)!=cls || host.Object(cls->base->reflection.objectPath)!=cls->base ||
+            cls->outer!=RegisteredNativePackage(entry.package))
             throw std::runtime_error("Native engine UClass identity/registration/base lifetime is invalid");
         result.classes.push_back({std::string(entry.path),std::string(entry.base),std::string(entry.within),
             entry.nativeSize,entry.registrationClassFlags,entry.registrationObjectFlags});
@@ -10753,7 +10895,8 @@ static PortableNativeMetadataClassesSnapshot MetadataClassSnapshot(const Runtime
         const auto* cls=domain.classes[i];const auto& entry=records[i];
         if(!cls || cls->nativeMetadataClass!=&entry || cls->nativeEngineClass || cls->nativeClientClass ||
             cls->classDescriptor || cls->defaultOwner || cls->defaultObject || !cls->sourcePath.empty() ||
-            cls->exportIndex!=std::numeric_limits<std::size_t>::max() || cls->outer ||
+            cls->exportIndex!=std::numeric_limits<std::size_t>::max() ||
+            cls->outer!=RegisteredNativePackage(entry.package) ||
             cls->reflection.metaClass!="Class" || cls->reflection.objectPath!=entry.path ||
             cls->reflection.flags!=entry.registrationObjectFlags || !cls->base || !cls->nativeClassWithin ||
             !cls->cls || LowerAscii(cls->base->reflection.objectPath)!=LowerAscii(std::string(entry.base)) ||
@@ -10801,6 +10944,11 @@ PortableNativeMetadataClassesSnapshot ReadPortableRuntimeNativeMetadataClasses()
             throw std::runtime_error("Native metadata relationship is not its actual indexed UClass");
     }
     result.boundSerializedClasses=SerializedMetadataTargets(meta,false).size();
+    for(auto* object:persistentRuntime->get()->exports) if(object && object->nativeMetadataClassImport) {
+        const auto index=static_cast<std::size_t>(object->nativeMetadataClassImport-1u);
+        if(index>=domain.classes.size() || object->cls!=domain.classes[index] || !object->inventoryClassReferenceValid)
+            throw std::runtime_error("Serialized native metadata Class import lost its actual registered UClass");
+    }
     for(auto* cls:persistentEngineClasses->get()->classes)
         if(cls->cls!=meta || cls->nativeClassWithin!=host.Object("Core.Object"))
             throw std::runtime_error("Native engine UClass lost its metadata binding");
@@ -10858,6 +11006,13 @@ PortableNativeMetadataClassesSnapshot PreparePortableRuntimeNativeMetadataClasse
     for(auto* cls:persistentEngineClasses->get()->classes) stageTarget(cls);
     if(persistentPlayerSession) for(auto* cls:persistentPlayerSession->get()->classes)
         if(cls->nativeClientClass) stageTarget(cls);
+    std::vector<std::pair<RuntimeObject*,RuntimeObject*>> importedClasses;
+    for(auto* object:persistentRuntime->get()->exports) if(object && object->nativeMetadataClassImport) {
+        const auto index=static_cast<std::size_t>(object->nativeMetadataClassImport-1u);
+        if(index>=domain->classes.size() || (object->cls && object->cls!=domain->classes[index]))
+            throw std::runtime_error("Serialized native metadata Class import conflicts with its registered UClass");
+        importedClasses.emplace_back(object,domain->classes[index]);
+    }
     auto result=MetadataClassSnapshot(*domain,QuestVr::NativeMetadataClasses);result.boundSerializedClasses=serializedCount;
     auto owner=std::make_unique<GCRoot<RuntimeEngineClassDomain>>(domain);
     host.ValidateMetadataClassRegistrationBudget(*domain);
@@ -10866,6 +11021,7 @@ PortableNativeMetadataClassesSnapshot PreparePortableRuntimeNativeMetadataClasse
     // Existing serialized flags/Children/Next/defaults remain untouched.
     persistentQualifiedObjects.swap(nextQualified);persistentVmObjects.swap(nextVm);
     for(auto* cls:targets) cls->cls=meta;
+    for(const auto& [object,cls]:importedClasses) {object->cls=cls;object->inventoryClassReferenceValid=true;}
     persistentMetadataClasses=std::move(owner);
     return result;
 }
@@ -10949,7 +11105,8 @@ PortableNativeConfigClassesSnapshot PreparePortableRuntimeNativeConfigClasses() 
             std::string(entry.path),"Class",{},std::string(entry.base),entry.registrationObjectFlags,0},nullptr));
         auto* cls=allocations.back().get();cls->nativeMetadataClass=&entry;
         cls->exportIndex=std::numeric_limits<std::size_t>::max();
-        cls->base=base;cls->nativeClassWithin=objectClass;cls->cls=meta;domain->classes.push_back(cls);
+        cls->base=base;cls->nativeClassWithin=objectClass;cls->cls=meta;
+        cls->outer=RegisteredNativePackage(entry.package);domain->classes.push_back(cls);
         if(!nextQualified.emplace(std::string(entry.path),cls).second ||
             !nextVm.emplace(LowerAscii(std::string(entry.path)),cls).second)
             throw std::runtime_error("Native config registration identity collision");
@@ -10962,6 +11119,125 @@ PortableNativeConfigClassesSnapshot PreparePortableRuntimeNativeConfigClasses() 
     // All allocating work and admission precedes this nonthrowing publication.
     persistentQualifiedObjects.swap(nextQualified);persistentVmObjects.swap(nextVm);
     console->nativeClassWithin=objectClass;persistentConfigClasses=std::move(owner);
+    return result;
+}
+
+static PortableNativePackagesSnapshot NativePackagesSnapshot(const RuntimeNativePackageIndex& index) {
+    if(!index.packageClass || !index.defaults || index.defaults->cls!=index.packageClass ||
+        index.defaults->defaultOwner!=index.packageClass || !index.defaults->nativePackageDefaults ||
+        index.defaults->nativePackageDefaults->ClassIndex()!=index.packageClass->objectIndex.Index() ||
+        !index.defaults->nativePackageDefaults->LegacyHandleAbsent() ||
+        index.defaults->nativePackageDefaults->BindingAttempted() || index.defaults->nativePackageDefaults->PackageFlags())
+        throw std::runtime_error("Native Package prepared defaults lost their actual class/copy authority");
+    PortableNativePackagesSnapshot result;result.prepared=true;
+    result.defaultObjectIndex=index.defaults->objectIndex.Index();result.defaultClassIndex=index.packageClass->objectIndex.Index();
+    for(const auto& [key,object]:index.objects) {
+        if(!object || object->nativePackageIndex.get()!=&index || object->nativePackageKey!=key ||
+            !object->nativePackageInstance || object->cls!=index.packageClass || object->outer ||
+            object->reflection.metaClass!="Package" || !object->sourcePath.empty() || object->defaultOwner ||
+            object->nativePackageInstance->ClassIndex()!=result.defaultClassIndex ||
+            object->nativePackageInstance->OuterIndex()!=0u || object->reflection.flags!=object->nativePackageInstance->ObjectFlags())
+            throw std::runtime_error("Native Package instance/header/index authority is invalid");
+        const auto& state=*object->nativePackageInstance;
+        result.packages.push_back({object->reflection.objectPath,object->objectIndex.Index(),
+            object->cls->objectIndex.Index(),0u,object->reflection.flags,state.PackageFlags(),
+            state.LegacyHandleAbsent(),state.BindingAttempted()});
+    }
+    std::sort(result.packages.begin(),result.packages.end(),[](const auto& a,const auto& b) {return a.objectPath<b.objectPath;});
+    return result;
+}
+PortableNativePackagesSnapshot ReadPortableRuntimeNativePackages() {
+    if(!persistentNativePackages) return {};
+    PortableActorVmHost host;const auto& index=*persistentNativePackages;
+    if(!index.active || !NativePackageClassDefaultValid(index.packageClass))
+        throw std::runtime_error("Native Package registration/default owner is not active");
+    auto result=NativePackagesSnapshot(index);
+    for(const auto& row:result.packages) {
+        auto* object=RegisteredNativePackage(row.objectPath);
+        if(host.Object(row.objectPath)!=object || object->objectIndex.Index()!=row.objectIndex)
+            throw std::runtime_error("Native Package identity lost its actual lookup authority");
+    }
+    return result;
+}
+PortableRuntimeObjectOwnershipSnapshot ReadPortableRuntimeObjectOwnership(const std::string& path) {
+    PortableActorVmHost host;const auto* object=host.Object(path);
+    return {object->reflection.objectPath,object->cls?object->cls->reflection.objectPath:std::string{},
+        object->outer?object->outer->reflection.objectPath:std::string{},object->objectIndex.Index(),
+        object->cls?object->cls->objectIndex.Index():0u,object->outer?object->outer->objectIndex.Index():0u,
+        object->inventoryTableMetadata && object->serializedOuterZero};
+}
+PortableNativePackagesSnapshot PreparePortableRuntimeNativePackages() {
+    CollectBirthGarbageAtBoundary collect;PortableActorVmHost host;
+    if(persistentNativePackages) return ReadPortableRuntimeNativePackages();
+    if(!persistentMetadataClasses || !ReadPortableRuntimeNativeMetadataClasses().prepared)
+        throw std::runtime_error("Native Packages require the explicit actual Core metadata phase");
+    auto* packageClass=host.Object("Core.Package");auto* objectClass=host.Object("Core.Object");
+    if(packageClass->nativeEngineClass!=&QuestVr::NativeEngineClasses[0u] || packageClass->defaultObject ||
+        packageClass->base!=objectClass || packageClass->nativeClassWithin!=objectClass ||
+        !objectClass->classDescriptor || objectClass->base || objectClass->cls!=host.Object("Core.Class"))
+        throw std::runtime_error("Native Package default-copy lacks actual original Object/Package authority");
+    pendingBirthGarbage=true;
+    GCRoot<RuntimeObject> defaults(GC::Alloc<RuntimeObject>(PortableReflectionObject{
+        "@ClassDefault:Core.Package","Package",{},{},0u,0},nullptr));
+    defaults->cls=packageClass;defaults->defaultOwner=packageClass;
+    defaults->exportIndex=std::numeric_limits<std::size_t>::max();
+    defaults->nativePackageDefaults=std::make_unique<QuestVr::NativePackage::PreparedDefaults>(QuestVr::NativePackage::PrepareDefaults({
+        objectClass->objectIndex.Index(),packageClass->objectIndex.Index(),packageClass->base->objectIndex.Index(),
+        packageClass->nativeClassWithin->objectIndex.Index(),0x28u,packageClass->nativeEngineClass->nativeSize,
+        QuestVr::NativePackage::StaticConstructorProvenance::ObjectPackageSharedEmptyStaticConstructor}));
+    auto index=std::make_shared<RuntimeNativePackageIndex>();index->packageClass=packageClass;index->defaults=defaults.get();
+    auto nextQualified=persistentQualifiedObjects;auto nextVm=persistentVmObjects;
+    std::vector<GCRoot<RuntimeObject>> allocations;
+    const auto package=[&](const std::string& name) {
+        const auto key=LowerAscii(name);const auto existing=index->objects.find(key);
+        if(existing!=index->objects.end()) return existing->second;
+        if(index->objects.size()>=4096u || nextQualified.size()>=1'000'000u || nextVm.count(key) || nextQualified.count(name))
+            throw std::runtime_error("Native Package name collides with an existing UObject or exceeds its budget");
+        allocations.emplace_back(AllocateRuntimeNativePackage(name,index));auto* object=allocations.back().get();
+        index->objects.emplace(key,object);nextQualified.emplace(name,object);nextVm.emplace(key,object);return object;
+    };
+    std::vector<std::pair<RuntimeObject*,RuntimeObject*>> bindings;
+    const auto nativeBindings=[&](const auto& records,const RuntimeEngineClassDomain& domain) {
+        if(records.size()!=domain.classes.size()) throw std::runtime_error("Native Package registration phase is incomplete");
+        for(std::size_t i=0u;i<records.size();++i) {
+            auto* cls=domain.classes[i];
+            if(cls->outer) throw std::runtime_error("Native UClass already has an unauthorized Package Outer");
+            bindings.emplace_back(cls,package(std::string(records[i].package)));
+        }
+    };
+    nativeBindings(QuestVr::NativeEngineClasses,*persistentEngineClasses->get());
+    nativeBindings(QuestVr::NativeMetadataClasses,*persistentMetadataClasses->get());
+    if(persistentConfigClasses) nativeBindings(QuestVr::NativeConfigClasses,*persistentConfigClasses->get());
+    if(persistentPlayerSession) for(auto* cls:persistentPlayerSession->get()->classes) if(cls->nativeClientClass) {
+        if(cls->outer || (cls->reflection.objectPath!="Engine.Client" && cls->reflection.objectPath!="Engine.Viewport"))
+            throw std::runtime_error("Native session class has unaudited registration package authority");
+        bindings.emplace_back(cls,package("Engine"));
+    }
+    auto& runtime=*persistentRuntime->get();
+    std::vector<RuntimeObject*> sourceRoots;sourceRoots.reserve(runtime.sourceLinkers.size());
+    std::unordered_map<std::string,RuntimeObject*> bySource;
+    for(const auto& source:runtime.sourceLinkers) {
+        if(source.root || !bySource.emplace(source.sourcePath,package(source.name)).second)
+            throw std::runtime_error("Initial source LinkerRoot authority is duplicated or already bound");
+        sourceRoots.push_back(bySource.at(source.sourcePath));
+    }
+    auto* mapRoot=persistentMapPackageName.empty()?nullptr:package(persistentMapPackageName);
+    for(auto* object:runtime.exports) {
+        if(!object || !object->inventoryTableMetadata || !object->serializedOuterZero) continue;
+        if(object->outer) throw std::runtime_error("Serialized top-level export already has an unauthorized Outer");
+        const auto source=bySource.find(object->sourcePath);
+        auto* root=source!=bySource.end()?source->second:object->sourcePath==persistentMapSourcePath?mapRoot:nullptr;
+        if(!root) throw std::runtime_error("Serialized top-level export lacks authenticated source LinkerRoot");
+        bindings.emplace_back(object,root);
+    }
+    auto result=NativePackagesSnapshot(*index);host.ValidatePackageRegistrationBudget(*index);
+    // All allocating validation is complete. Publish actual defaults, native
+    // Register package literals and source ObjOuter0->LinkerRoot edges together.
+    persistentQualifiedObjects.swap(nextQualified);persistentVmObjects.swap(nextVm);
+    packageClass->defaultObject=defaults.get();
+    for(const auto& [object,root]:bindings) object->outer=root;
+    for(std::size_t i=0u;i<sourceRoots.size();++i) runtime.sourceLinkers[i].root=sourceRoots[i];
+    runtime.mapLinkerRoot=mapRoot;index->active=true;persistentNativePackages=std::move(index);
     return result;
 }
 
@@ -11088,6 +11364,7 @@ PortablePlayerSessionSnapshot PreparePortableRuntimePlayerObjects(const std::uin
         auto* cls=allocate(path,std::string(path).substr(std::string(path).find('.')+1u),nullptr,nullptr);
         cls->reflection.metaClass="Class";cls->nativeClientClass=true;cls->base=base;
         if(persistentMetadataClasses) cls->cls=host.Object("Core.Class");
+        cls->outer=RegisteredNativePackage("Engine");
         cls->references.push_back(base);classes.push_back(cls);index(cls);return cls;
     };
     auto* clientClass=nativeClass("Engine.Client",objectClass);
@@ -12003,6 +12280,7 @@ static std::pair<RuntimeObject*,RuntimeObject*> RelinkAuthoredActorBases(
 
 PortableMapRuntimeSummary LoadPortableRuntimeMap(
     const PortablePackageTables& package) {
+    CollectBirthGarbageAtBoundary collect;
     if (!persistentRuntime || !persistentRuntime->get()) {
         throw std::runtime_error("Cannot load a map without an initialized runtime");
     }
@@ -12014,11 +12292,51 @@ PortableMapRuntimeSummary LoadPortableRuntimeMap(
     }
     if(persistentMapGenerationCounter==std::numeric_limits<std::uint64_t>::max())
         throw std::runtime_error("Native map generation budget exhausted");
+    const std::string packageName = PackageStem(package.sourcePath);
+    const PortableReflectionGraph graph = BuildPortableReflectionGraph(package);
+    if(persistentNativePackages) ValidateNativePackageName(packageName);
+    for(const auto& source:persistentRuntime->get()->sourceLinkers)
+        if(LowerAscii(source.name)==LowerAscii(packageName))
+            throw std::runtime_error("Map source name collides with an initial script linker Package");
+    std::unordered_set<RuntimeObject*> oldMap;
+    for(std::size_t i=persistentScriptExportCount;i<persistentRuntime->get()->exports.size();++i)
+        oldMap.insert(persistentRuntime->get()->exports[i]);
+    std::unordered_set<std::string> names;
+    for(const auto& reflection:graph.objects) {
+        const auto key=LowerAscii(packageName+'.'+reflection.objectPath);
+        const auto found=persistentVmObjects.find(key);
+        if(!names.insert(key).second || (found!=persistentVmObjects.end() && !oldMap.count(found->second)))
+            throw std::runtime_error("Map export identity collides with a retained non-map UObject");
+    }
     summary.replacedExports = UnloadPortableRuntimeMap();
     ++persistentMapGenerationCounter;
     persistentMapTagIndex.clear();
-    const std::string packageName = PackageStem(package.sourcePath);
-    const PortableReflectionGraph graph = BuildPortableReflectionGraph(package);
+    pendingBirthGarbage=true;
+    GCRoot<RuntimeObject> stagedPackage;
+    try {
+    if(persistentNativePackages) {
+        auto& index=*persistentNativePackages;const auto key=LowerAscii(packageName);
+        const auto found=index.objects.find(key);
+        auto* root=found==index.objects.end()?nullptr:found->second;
+        if(!root) {
+            if(index.objects.size()>=4096u || persistentQualifiedObjects.size()>=1'000'000u || persistentVmObjects.count(key))
+                throw std::runtime_error("Map LinkerRoot name collides or exceeds Package budget");
+            stagedPackage.set(AllocateRuntimeNativePackage(packageName,persistentNativePackages));root=stagedPackage.get();
+            auto nextObjects=index.objects;nextObjects.emplace(key,root);
+            RuntimeNativePackageIndex budget;budget.defaults=index.defaults;budget.packageClass=index.packageClass;
+            budget.objects=nextObjects;
+            const auto before=NativePackageRetainedBytes(index),after=NativePackageRetainedBytes(budget);
+            PortableActorVmHost host;host.ValidateAdditionalPackageBudget(after>before?after-before:0u);
+            auto nextQualified=persistentQualifiedObjects;auto nextVm=persistentVmObjects;
+            if(!nextQualified.emplace(packageName,root).second || !nextVm.emplace(key,root).second)
+                throw std::runtime_error("Map LinkerRoot identity collision");
+            index.objects.swap(nextObjects);persistentQualifiedObjects.swap(nextQualified);persistentVmObjects.swap(nextVm);
+        }
+        persistentRuntime->get()->mapLinkerRoot=root;
+    }
+    // Name is recorded before export decoding so failure can retire every
+    // newly published map object and its loader ownership, even for empty maps.
+    persistentMapPackageName=packageName;persistentMapSourcePath=package.sourcePath;
     const std::size_t first = persistentRuntime->get()->exports.size();
     persistentRuntime->get()->exports.reserve(first + graph.objects.size());
     for (PortableReflectionObject reflection : graph.objects) {
@@ -12046,7 +12364,7 @@ PortableMapRuntimeSummary LoadPortableRuntimeMap(
     for (std::size_t localIndex = 0; localIndex < package.exports.size(); ++localIndex) {
         RuntimeObject* object = persistentRuntime->get()->exports[first + localIndex];
         const ExportTableEntry& entry = package.exports[localIndex];
-        object->outer = resolve(entry.ObjOuter);
+        object->outer = entry.ObjOuter==0?persistentRuntime->get()->mapLinkerRoot:resolve(entry.ObjOuter);
         object->base = resolve(entry.ObjBase);
         object->cls = resolve(entry.ObjClass);
         if(entry.ObjClass==0 && persistentMetadataClasses) {
@@ -12124,6 +12442,10 @@ PortableMapRuntimeSummary LoadPortableRuntimeMap(
         pendingModel.first->nativeMapGeneration=persistentMapGenerationCounter;
     }
     return summary;
+    } catch(...) {
+        UnloadPortableRuntimeMap();
+        throw;
+    }
 }
 
 std::size_t UnloadPortableRuntimeMap() {
@@ -12133,27 +12455,29 @@ std::size_t UnloadPortableRuntimeMap() {
     persistentPrimitiveModelCache.Clear();
     if (!persistentRuntime || !persistentRuntime->get() ||
         persistentRuntime->get()->exports.size() <= persistentScriptExportCount) {
-        if (persistentRuntime && persistentRuntime->get()) persistentRuntime->get()->nativeDecals = nullptr;
+        if (persistentRuntime && persistentRuntime->get()) {
+            persistentRuntime->get()->nativeDecals = nullptr;
+            persistentRuntime->get()->mapLinkerRoot=nullptr;
+        }
         persistentMapPackageName.clear();
         persistentMapTagIndex.clear();
+        persistentMapSourcePath.clear();
+        GC::Collect();
         return 0;
     }
     const std::size_t removed =
         persistentRuntime->get()->exports.size() - persistentScriptExportCount;
     ClearNativePlayerEdges();
-    if (!persistentMapPackageName.empty()) {
-        const std::string prefix = persistentMapPackageName + ".";
-        for (auto it = persistentQualifiedObjects.begin();
-             it != persistentQualifiedObjects.end();) {
-            if (it->first.compare(0, prefix.size(), prefix) == 0) {
-                persistentVmObjects.erase(LowerAscii(it->first));
-                it = persistentQualifiedObjects.erase(it);
-            } else {
-                ++it;
-            }
-        }
+    for(std::size_t i=persistentScriptExportCount;i<persistentRuntime->get()->exports.size();++i) {
+        auto* object=persistentRuntime->get()->exports[i];if(!object) continue;
+        const auto& path=object->reflection.objectPath;
+        const auto qualified=persistentQualifiedObjects.find(path);
+        if(qualified!=persistentQualifiedObjects.end() && qualified->second==object) persistentQualifiedObjects.erase(qualified);
+        const auto vm=persistentVmObjects.find(LowerAscii(path));
+        if(vm!=persistentVmObjects.end() && vm->second==object) persistentVmObjects.erase(vm);
     }
     persistentRuntime->get()->nativeDecals = nullptr;
+    persistentRuntime->get()->mapLinkerRoot=nullptr;
     persistentRuntime->get()->exports.resize(persistentScriptExportCount);
     ++persistentWorldRevision;
     persistentMapPackageName.clear();

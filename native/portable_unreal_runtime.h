@@ -262,6 +262,27 @@ struct PortableNativeConfigClassesSnapshot {
 // construct native defaults/instances or initialize an Engine/Cylinder.
 PortableNativeConfigClassesSnapshot PreparePortableRuntimeNativeConfigClasses();
 PortableNativeConfigClassesSnapshot ReadPortableRuntimeNativeConfigClasses();
+struct PortableNativePackageSnapshot {
+    std::string objectPath;
+    std::uint32_t objectIndex{}, classIndex{}, outerIndex{}, objectFlags{}, packageFlags{};
+    bool legacyHandleAbsent{}, bindingAttempted{};
+};
+struct PortableNativePackagesSnapshot {
+    std::vector<PortableNativePackageSnapshot> packages;
+    std::uint32_t defaultObjectIndex{}, defaultClassIndex{};
+    bool prepared{};
+};
+// Explicit bounded Package-default/instance and source LinkerRoot phase.
+// Requires actual Core metadata. No legacy module is loaded; missing-module
+// binding grants identity/Outer only, never native symbols or Engine startup.
+PortableNativePackagesSnapshot PreparePortableRuntimeNativePackages();
+PortableNativePackagesSnapshot ReadPortableRuntimeNativePackages();
+struct PortableRuntimeObjectOwnershipSnapshot {
+    std::string objectPath, classPath, outerPath;
+    std::uint32_t objectIndex{}, classIndex{}, outerIndex{};
+    bool serializedOuterZero{};
+};
+PortableRuntimeObjectOwnershipSnapshot ReadPortableRuntimeObjectOwnership(const std::string& objectPath);
 // Actual loader-owned ULevel Double time. The explicit clock phase performs
 // original retained-product accumulation and LevelInfo Float mirroring only;
 // it is not a world Tick, startup, Timer/AI/physics pass or XR-thread entry.
