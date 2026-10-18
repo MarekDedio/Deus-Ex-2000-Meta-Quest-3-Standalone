@@ -1,6 +1,7 @@
 #include "Precomp.h"
 #include "GC/GC.h"
 #include "portable_unreal_runtime.h"
+#include "portable_object_lookup.h"
 #include "portable_model_geometry.h"
 #include "quest_script_random_vector.h"
 #include "quest_level_clock.h"
@@ -387,7 +388,65 @@ Bytes SavedActorClock(const QuestVr::ScriptSavedState& state,const std::string& 
     QuestVr::ScriptSavedState onlyClock;onlyClock.mapName=state.mapName;onlyClock.objects.push_back(std::move(record));
     return QuestVr::EncodeScriptSavedState(onlyClock);
 }
-bool Original(const std::filesystem::path& root) {
+PortableObjectLookupState PrepareCrateLookup() {
+    Require(PreparePortableRuntimeNativeEngineClasses().prepared&&PreparePortableRuntimeNativeMetadataClasses().prepared&&
+        PreparePortableRuntimeNativeConfigClasses().prepared&&PreparePortableRuntimeNativePackages().prepared,
+        "Original crate lookup diagnostic cannot prepare actual native classes/Packages");
+    const auto result=PreparePortableRuntimeObjectLookup();Require(result.prepared&&result.generation,
+        "Original crate lookup diagnostic lacks actual weak lookup authority");
+    return result;
+}
+void SameCrateLookup(const PortableObjectLookupState& before) {
+    const auto after=ReadPortableRuntimeObjectLookup();
+    Require(after.prepared&&after.objects==before.objects&&after.retainedBytes==before.retainedBytes&&
+        after.generation==before.generation,"Original crate transaction/restore changed expected weak lookup membership/session");
+}
+using BirthLookup=std::map<std::string,std::uint32_t>;
+BirthLookup CheckLookupBirths(const QuestVr::ScriptSavedState& saved,const PortableObjectLookupState& baseline,
+    const BirthLookup& retired={}) {
+    Require(saved.births.size()==6u,"Lookup diagnostic expects six original WoodFragment births, not synthetic substitutes");
+    const auto state=ReadPortableRuntimeObjectLookup();
+    Require(state.prepared&&state.objects==baseline.objects+saved.births.size()&&state.generation==baseline.generation&&
+        state.retainedBytes>baseline.retainedBytes,"Original six fragment births did not publish exactly six weak UObject records");
+    const auto mapRoot=ReadPortableRuntimeObjectOwnership("00_Training");
+    const auto fragmentClass=ReadPortableRuntimeObjectOwnership("DeusEx.WoodFragment");
+    BirthLookup current;
+    for(const auto& birth:saved.births) {
+        const auto owner=ReadPortableRuntimeObjectOwnership(birth.path);
+        const auto dot=birth.path.find_last_of('.');Require(dot!=std::string::npos,"Original fragment birth lacks map-qualified actual name");
+        PortableObjectLookupRequest request{birth.path.substr(dot+1u),fragmentClass.objectIndex,mapRoot.objectIndex,false,true};
+        const auto found=FindPortableRuntimeObject(request);
+        Require(found&&found->objectPath==birth.path&&found->objectIndex==owner.objectIndex&&
+            found->classIndex==fragmentClass.objectIndex&&found->outerIndex==mapRoot.objectIndex&&
+            found->generation==baseline.generation&&owner.outerIndex==mapRoot.objectIndex&&
+            owner.classIndex==fragmentClass.objectIndex&&birth.classPath=="DeusEx.WoodFragment",
+            "Original spawned fragment lacks its actual name/Class/source LinkerRoot lookup identity");
+        Require(current.emplace(birth.path,found->objectIndex).second,"Original fragment lookup published duplicate birth paths");
+        for(const auto& [oldPath,oldIndex]:retired) {
+            (void)oldPath;Require(found->objectIndex!=oldIndex,
+                "Warm restore reused a still-live old fragment index instead of staging a fresh actual UObject");
+        }
+    }
+    GC::Collect();const auto after=ReadPortableRuntimeObjectLookup();
+    Require(after.objects==state.objects&&after.retainedBytes==state.retainedBytes&&after.generation==state.generation,
+        "Original live fragments lost their actual graph while weak lookup cleanup collected retired records");
+    return current;
+}
+void CheckLookupBirthsRetired(const BirthLookup& births,const PortableObjectLookupState& baseline) {
+    GC::Collect();SameCrateLookup(baseline);
+    const auto mapRoot=ReadPortableRuntimeObjectOwnership("00_Training");
+    const auto fragmentClass=ReadPortableRuntimeObjectOwnership("DeusEx.WoodFragment");
+    for(const auto& [path,index]:births) {
+        const auto dot=path.find_last_of('.');
+        Require(!FindPortableRuntimeObject({path.substr(dot+1u),fragmentClass.objectIndex,mapRoot.objectIndex,false,true}),
+            "Baseline restore retained a removed fragment's weak lookup alias");
+        bool refused{};
+        try {(void)FindPortableRuntimeObject({"LookupRetiredFragmentOuterProbe",0u,index,false,false});}
+        catch(const std::exception&) {refused=true;}
+        Require(refused,"Retired fragment index remained a usable explicit Outer handle");
+    }
+}
+bool Original(const std::filesystem::path& root,const bool lookup=false) {
     std::vector<std::filesystem::path> sources;
     // Dispatch validates the complete loaded class graph. Load the original
     // class dependencies too rather than bypassing unresolved browser/UI bases.
@@ -405,6 +464,7 @@ bool Original(const std::filesystem::path& root) {
     const auto& engine=packages.at(1u); const auto declaration=LoadPortableFunctionScript(engine,FindPortableExport(engine,"Actor.BasedActors"));
     Require(declaration.nativeIndex==306u&&declaration.functionFlags==0x405u,"Original BasedActors native declaration differs from retail audit");
     Require(InitializePortableRuntime(packages).passed&&LoadPortableRuntimeMap(LoadPortablePackageTables(sources.back().string())).passed,"Original read-only runtime/map metadata initialization failed");
+    if(lookup)static_cast<void>(PrepareCrateLookup());
     Fixture checkpoints;
     const auto clockBaseline=checkpoints.Snapshot("OriginalClockBaseline");
     const auto clockRevision=GetPortableRuntimeWorldRevision();
@@ -482,6 +542,8 @@ bool Original(const std::filesystem::path& root) {
         const auto animated=ExecutePortableActorFunction(instigator,"LoopAnim",{{Value::Text(Kind::Name,waiting.animation.sequence),{}}});
         Require(animated.passed(),"Cannot establish original NPC animation for noise-cache preservation: "+animated.error);
         const auto fatalBefore=checkpoints.Snapshot("FatalBefore");const auto fatalRevision=GetPortableRuntimeWorldRevision();
+        std::optional<PortableObjectLookupState> lookupBaseline;
+        if(lookup)lookupBaseline=ReadPortableRuntimeObjectLookup();
         const auto instigatorClock=SavedActorClock(DecodeCrateCheckpoint(fatalBefore),instigator);
         const auto firstOther=ReadPortableActorDeclaredScriptProperty(instigator,"Engine.Pawn.noise1other");
         const auto secondOther=ReadPortableActorDeclaredScriptProperty(instigator,"Engine.Pawn.noise2other");
@@ -496,6 +558,8 @@ bool Original(const std::filesystem::path& root) {
         Require(instigatedState.births.size()==6u&&!PublishedOriginal(actor)&&
             ReadPortableActorScriptProperty(actor,"HitPoints").integer==-2&&GetPortableRuntimeWorldRevision()==fatalRevision+1u,
             "Original Pawn-instigated fatal hit failed to atomically remove crate and publish its six fragments");
+        BirthLookup instigatedBirths;
+        if(lookup)instigatedBirths=CheckLookupBirths(instigatedState,*lookupBaseline);
         Require(SameFloat(ReadPortableActorDeclaredScriptProperty(instigator,"Engine.Pawn.noise1time").floating,0.0f)&&
             SameFloat(ReadPortableActorDeclaredScriptProperty(instigator,"Engine.Pawn.noise1loudness").floating,1.0f)&&
             ReadPortableActorDeclaredScriptProperty(instigator,"Engine.Pawn.noise1spot").vector==hit[2u].value.vector&&
@@ -506,9 +570,11 @@ bool Original(const std::filesystem::path& root) {
         Require(LoadPortableRuntimeState((checkpoints.directory/"InstigatedFatalAfter.sav").string())&&
             checkpoints.Snapshot("InstigatedWarmRestored")==instigatedAfter,
             "Original Pawn-instigated fragment/noise continuation failed warm replacement");
+        if(lookup)instigatedBirths=CheckLookupBirths(instigatedState,*lookupBaseline,instigatedBirths);
         Require(LoadPortableRuntimeState((checkpoints.directory/"FatalBefore.sav").string())&&
             checkpoints.Snapshot("InstigatedBaselineRestored")==fatalBefore,
             "Original Pawn-instigated fatal probe failed exact baseline replacement");
+        if(lookup)CheckLookupBirthsRetired(instigatedBirths,*lookupBaseline);
         Require(instigated.instructions>1u,"Original Pawn-instigated damage consumed no measurable instruction budget");
         QuestVr::Vm::Limits instigatedBudget;instigatedBudget.instructions=instigated.instructions-1u;
         GC::Collect();
@@ -519,6 +585,7 @@ bool Original(const std::filesystem::path& root) {
             "Late original Pawn-instigated fatal refusal retained noise/cache/fragment/deletion/RNG effects");
         GC::Collect();Require(GC::GetStats().numObjects==instigatedGc.numObjects&&GC::GetStats().memoryUsage==instigatedGc.memoryUsage,
             "Late original Pawn-instigated fatal rollback retained provisional fragment UObjects");
+        if(lookup)SameCrateLookup(*lookupBaseline);
         ++refusals;
         // Restoring a checkpoint deliberately advances the world revision.
         const auto noneFatalRevision=GetPortableRuntimeWorldRevision();
@@ -567,6 +634,8 @@ bool Original(const std::filesystem::path& root) {
         const auto fatalAfter=checkpoints.Snapshot("FatalAfter");auto destroyedState=DecodeCrateCheckpoint(fatalAfter);
         Require(destroyedState.births.size()==expectedCount&&destroyedState.randomSeed==expectedSeed,
             "Original fragment births/count/random continuation differs from CalcVelocity/Frag draw order");
+        BirthLookup fragmentBirths;
+        if(lookup)fragmentBirths=CheckLookupBirths(destroyedState,*lookupBaseline);
         auto births=destroyedState.births;
         std::sort(births.begin(),births.end(),[](const auto& left,const auto& right) {return left.worldActorIndex<right.worldActorIndex;});
         Require(WorldPaths().size()==worldBefore.size()-1u+expectedCount,
@@ -636,9 +705,11 @@ bool Original(const std::filesystem::path& root) {
         Require(LoadPortableRuntimeState((checkpoints.directory/"FatalAfter.sav").string())&&
             checkpoints.Snapshot("FatalWarmRestore")==fatalAfter&&WorldPaths()==fatalWorld,
             "Warm replacement failed exact fragment/tombstone/RNG continuation restore");
+        if(lookup)fragmentBirths=CheckLookupBirths(destroyedState,*lookupBaseline,fragmentBirths);
         Require(LoadPortableRuntimeState((checkpoints.directory/"FatalBefore.sav").string())&&
             WorldPaths()==worldBefore&&PublishedOriginal(actor),
             "Replacing fatal save with its baseline left duplicate births or removed crate");
+        if(lookup)CheckLookupBirthsRetired(fragmentBirths,*lookupBaseline);
         // Fail at the final original-script return, AFTER fragment births,
         // random draws, Skin writes and native Destroy. Every earlier effect
         // must roll back together, not leave an invisible crate or orphan loot.
@@ -656,12 +727,25 @@ bool Original(const std::filesystem::path& root) {
         GC::Collect();const auto gcAfterRollback=GC::GetStats();
         Require(gcAfterRollback.numObjects==gcBeforeRollback.numObjects&&gcAfterRollback.memoryUsage==gcBeforeRollback.memoryUsage,
             "Late fatal rollback retained provisional fragment UObjects");++refusals;
+        if(lookup)SameCrateLookup(*lookupBaseline);
         ShutdownPortableRuntime();
-        Require(InitializePortableRuntime(packages).passed&&LoadPortableRuntimeMap(LoadPortablePackageTables(sources.back().string())).passed&&
-            LoadPortableRuntimeState((checkpoints.directory/"FatalAfter.sav").string())&&
-            checkpoints.Snapshot("FatalColdRestore")==fatalAfter&&WorldPaths()==fatalWorld,
-            "Cold original runtime failed exact fatal-fragment/tombstone/random replacement");
-        Require(LoadPortableRuntimeState(baseline.string()),"Could not restore isolated original crate probe");
+        if(lookup) {
+            Require(InitializePortableRuntime(packages).passed&&LoadPortableRuntimeMap(LoadPortablePackageTables(sources.back().string())).passed,
+                "Cold original lookup diagnostic failed actual runtime/map initialization");
+            const auto coldBaseline=PrepareCrateLookup();
+            Require(LoadPortableRuntimeState((checkpoints.directory/"FatalAfter.sav").string())&&
+                checkpoints.Snapshot("FatalColdRestore")==fatalAfter&&WorldPaths()==fatalWorld,
+                "Cold original lookup diagnostic failed exact fatal-fragment/tombstone/random replacement");
+            const auto coldBirths=CheckLookupBirths(destroyedState,coldBaseline);
+            Require(LoadPortableRuntimeState(baseline.string()),"Could not restore isolated original crate lookup probe");
+            CheckLookupBirthsRetired(coldBirths,coldBaseline);
+        } else {
+            Require(InitializePortableRuntime(packages).passed&&LoadPortableRuntimeMap(LoadPortablePackageTables(sources.back().string())).passed&&
+                LoadPortableRuntimeState((checkpoints.directory/"FatalAfter.sav").string())&&
+                checkpoints.Snapshot("FatalColdRestore")==fatalAfter&&WorldPaths()==fatalWorld,
+                "Cold original runtime failed exact fatal-fragment/tombstone/random replacement");
+            Require(LoadPortableRuntimeState(baseline.string()),"Could not restore isolated original crate probe");
+        }
         std::cout<<"PREREQUISITE "<<actor<<": actual Active.TakeDamage6 survives with HP4/ScaleGlow0.46; fatal None-instigator hit commits original Frag/nativeDestroy with "
             <<expectedCount<<" real WoodFragment births/selectedSkins/velocities/RNG and exact save replacement; late budget rolls back. Dormant-world isolated probe: no Destroyed/Contents callback or live VR damage claim.\n";
         std::cout<<"PREREQUISITE "<<actor<<": legal nonnull Pawn-instigated fatal hit now completes original MakeNoise/cache/Frag/Destroy with six fragments; NPC animation and unrelated cache fields preserved, exact warm replacement and late root rollback/GC pass. Not a possessed player.\n";
@@ -669,14 +753,19 @@ bool Original(const std::filesystem::path& root) {
     ShutdownPortableRuntime();for(const auto& [path,b]:before)
         Require(ReadBytes(path)==b&&std::filesystem::last_write_time(path)==modifiedBefore.at(path),
             "Original inspection changed source bytes or timestamp");
+    if(lookup)std::cout<<"LOOKUP DIAGNOSTIC: original-script fragment Spawn publications, actual name/Class/Package ownership, "
+        "fresh warm/cold replacement identities, weak-record GC, baseline reset and late root budget rollback pass. "
+        "Active state was selected only in this isolated dormant-world test; not original startup, live VR destruction, contents loot or gravity.\n";
     std::cout<<"PASS original BasedActors306 declaration, both crate DropThings scans, isolated surviving/fatal-fragment success with None and true Pawn instigators; no DLL/EXE execution, live VR damage, contents loot, physics, equipment or campaign startup claim\n"; return true;
 }
 } // namespace
 int main(int argc,char** argv) {
     try {
-        if(argc>2) throw std::runtime_error("Usage: portable_based_actors_test [original-game-root]");
+        const bool lookup=argc==3&&std::string(argv[1])=="--lookup";
+        if(argc>3||(argc==3&&!lookup)) throw std::runtime_error("Usage: portable_based_actors_test [--lookup] [original-game-root]");
         const auto gcBefore=GC::GetStats().numObjects;
-        if(argc==2) { if(!Original(argv[1])) return 77; }
+        if(lookup) {if(!Original(argv[2],true))return 77;}
+        else if(argc==2) { if(!Original(argv[1])) return 77; }
         else { Generated(); MalformedDeclarations(); NativeWorkBudget(); }
         ShutdownPortableRuntime(); GC::Collect(); Require(GC::GetStats().numObjects==gcBefore,"BasedActors test leaked rooted objects");
         std::cout<<"PASS retail BasedActors306: "<<checks<<" checks, "<<refusals<<" rejection controls; live Level/direct Base/exact UClass/OUT aliases, mutation/birth/deletion, shared budgets and rollback. No startup bypass.\n"; return 0;

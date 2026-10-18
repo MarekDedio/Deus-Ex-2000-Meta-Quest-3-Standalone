@@ -1,0 +1,44 @@
+# Immediate milestone: complete the first Training map
+
+User priority,2026-10-18: make the first original Training map fully work
+before spending time on other campaign-map integration. The long-term full
+campaign objective remains, but it is not the current acceptance milestone.
+
+## In scope now
+
+- Only the actual `Maps/00_Training.dx` level as the playable content target.
+  Complete its authored tutorial route, not just the opening corridor or an
+  isolated recording scene. Enumerate required interactions from its original
+  map/scripts rather than assuming that a few successful rooms finish it.
+- Next: live held-weapon crate damage, actual destruction/contents callbacks,
+  collectible usable loot, and gravity/support/falling/landing of the crate
+  stack and debris. Preserve the accepted held models, NPC poses, music,
+  speech, comfortable HUD, quickbar and controller behavior.
+- Original world/player startup, shared native services and support packages
+  only as needed for Training's real behavior. A required shared dependency
+  is not another campaign-map integration. Do not replace missing startup with
+  forced begun-play/Active flags, invented loot or cosmetic falling.
+- Verify the entire level from a fresh start: its required items/equipment,
+  doors/locks, NPCs/speech, movement/collision and scripted progression. Check
+  save/reload, repeatable interactions and failure/rollback behavior without
+  breaking the accepted UI and body/hands.
+- Build a meaningful playable APK when ready; automatically replace-install
+  it if the authorized Quest is connected, preserving data. Verify rendered
+  frames and frame timing on the actual Training route before calling it ready
+  for the user's demo recording.
+
+## Deferred
+
+Other campaign levels, per-map integration/polish, a campaign-wide readiness
+matrix, broad map-content sweeps and inter-campaign-map travel acceptance are
+deferred until this Training milestone is working. Keep inexpensive shared-code
+regressions where they protect Training, saves or already accepted features.
+Synthetic map lifecycle fixtures are regression tests, not extra campaign work.
+
+## Current evidence is not a playable-physics claim
+
+Original crate damage/fragment scripts and actual UObject lookup now pass
+isolated Training diagnostics, including six fragment identities, save
+replacement, GC and rollback. The world is deliberately dormant in those tests.
+They do not prove live VR attacks, surviving contents, gravity or completion of
+Training. Those remain the immediate development target.

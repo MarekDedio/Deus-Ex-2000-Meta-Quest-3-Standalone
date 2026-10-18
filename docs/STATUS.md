@@ -1,5 +1,43 @@
 # Port status
 
+## Immediate content priority (2026-10-18)
+
+The user prioritizes fully working `00_Training.dx` before other campaign-map
+integration. Defer other levels and campaign-wide polish/acceptance. Keep shared
+engine work and inexpensive regressions only where they support Training or
+protect accepted features. Next gameplay target remains live crate destruction,
+usable contents and support/falling. See TRAINING-FIRST-PRIORITY.md.
+
+## Actual UObject lookup integration (2026-10-18)
+
+- Added an explicit actual-object lookup phase after Package/metadata setup:
+  source/constructor FNames, real Outer/Class/Super identities, newest-hash
+  exact lookup and separate ascending-index ANY_PACKAGE fallback. Unknown query
+  names do not intern; unsupported ini:/usr: resolution refuses. Default blocks
+  and detached probes are not named candidates. Class imports authenticate the
+  actual source ClassPackage, not just a plausible path.
+- Weak publication/cleanup covers later native classes/client/viewports, maps,
+  transactional births/windows and restored births. An intrusive weak journal
+  preserves publication order for late preparation without rooting all objects.
+  Node-transfer staging and insertion-only rollback avoid copying the whole
+  world index: the larger Training test exposed a32MiB save-restore budget
+  failure in the initial full-copy implementation; that path was replaced,
+  not given a larger budget or silently skipped.
+- Independent kernel195413 checks/43 refusals and non-interning FName135240
+  checks pass. Strict ARM64 runtime/test syntax and actual Android native link
+  pass. Five isolated dependency-patch workflow controls pass. Owned lookup
+  passes440 checks/32 refusals; the full-data original crate lookup diagnostic
+  passes1560/four, including six actual fragment identities per destroyed crate,
+  warm/cold replacement, weak cleanup and late rollback under the unchanged
+  memory budget. The unchanged original crate regression also passes1116/four;
+  Package11377/13, Core metadata10994/94 and config9971/48 regressions pass.
+  Final coherent host rebuild passes. Fresh CTest132 passed/154 registered/
+  22 explicit owned-data skips/zero failures in40.91s. Relevant owned cases
+  above ran separately; other skipped cases are not claimed as executed.
+- Not yet Quest startup/configured-driver import, native Engine/defaults/
+  Transient/Cylinder, full world/player startup, gravity, surviving crate
+  contents or live weapon Fire. No new APK. See ORIGINAL-OBJECT-LOOKUP.md.
+
 ## Actual Packages, defaults and loader ownership (2026-10-18)
 
 - Added an explicit Package phase after actual Core metadata. A genuine

@@ -1,4 +1,5 @@
 #include "portable_unreal_runtime.h"
+#include "portable_object_lookup.h"
 
 #include "GC/GC.h"
 
@@ -40,6 +41,7 @@
 #include "quest_original_sine_table.h"
 #include "quest_native_engine_classes.h"
 #include "quest_native_package.h"
+#include "quest_static_find_object.h"
 #include "quest_collision_hash_math.h"
 #include "quest_mesh_line_trace.h"
 #include "quest_model_line_hit.h"
@@ -67,6 +69,15 @@
 namespace {
 
 class RuntimeObject;
+struct RuntimeObjectLookupControl {
+    bool active{};
+    std::uint64_t generation{};
+    QuestVr::ObjectLookup::Index index;
+    RuntimeObject* objectClass{};
+    RuntimeObject* packageClass{};
+    RuntimeObject* metaClass{};
+};
+void RetireRuntimeLookupObject(RuntimeObject*) noexcept;
 struct RuntimeNativePackageIndex;
 void RetireRuntimeNativePackage(RuntimeObject*) noexcept;
 class RuntimeAIManager;
@@ -117,6 +128,11 @@ public:
     RuntimeObject* outer{};
     RuntimeObject* base{};
     RuntimeObject* cls{};
+    std::optional<NameString> lookupName;
+    std::shared_ptr<RuntimeObjectLookupControl> lookupControl;
+    std::uint64_t lookupPublicationSerial{};
+    RuntimeObject* lookupPrevious{};
+    RuntimeObject* lookupNext{};
     // A class-owned default block has UObject identity but no map/export slot,
     // Actor lifecycle, serialized stack, or runtime-birth identity. Its owner
     // holds the GC edge; mutable reflected data stays on that concrete UClass.
@@ -184,6 +200,7 @@ public:
     // packages or treat reflection's package-stripped metaclass as an IsA proof.
     bool inventoryTableMetadata{}, inventorySerializedClass{}, inventoryClassReferenceValid{}, inventoryBaseReferenceValid{};
     bool serializedOuterZero{}; // Exact source table provenance, not a null resolved pointer.
+    bool serializedBaseZero{};
     std::uint8_t inventoryNativeClass{}, inventoryNativeBase{};
     std::uint8_t nativeMetadataClassImport{}; // Validated Class import into the closed eleven-class domain.
     std::unique_ptr<InventoryIconClassConstraint> inventoryIconClassConstraint;
@@ -244,6 +261,7 @@ public:
 
 protected:
     ~RuntimeObject() override {
+        RetireRuntimeLookupObject(this);
         if(nativePackageInstance) RetireRuntimeNativePackage(this);
         if (destroyed_ != nullptr) ++*destroyed_;
     }
@@ -459,6 +477,72 @@ std::unordered_map<std::string, RuntimeObject*> persistentQualifiedObjects;
 // runtime index, rather than copying/lowercasing every export for every call.
 // These aliases are not additional GC roots and are removed before collection.
 std::unordered_map<std::string, RuntimeObject*> persistentVmObjects;
+std::shared_ptr<RuntimeObjectLookupControl> persistentObjectLookup;
+std::uint64_t persistentObjectLookupGeneration{};
+std::uint64_t persistentObjectPublicationSerial{};
+RuntimeObject* persistentPublishedHead{};
+RuntimeObject* persistentPublishedTail{};
+void ValidateRuntimeLookupPublication(const std::vector<RuntimeObject*>& objects) {
+    if(objects.size()>std::numeric_limits<std::uint64_t>::max()-persistentObjectPublicationSerial)
+        throw std::runtime_error("Actual object hash publication sequence exhausted");
+}
+void RecordRuntimeLookupPublication(RuntimeObject* object) noexcept {
+    if(object->lookupPublicationSerial) return;
+    object->lookupPublicationSerial=++persistentObjectPublicationSerial;
+    object->lookupPrevious=persistentPublishedTail;
+    if(persistentPublishedTail) persistentPublishedTail->lookupNext=object;
+    else persistentPublishedHead=object;
+    persistentPublishedTail=object;
+}
+void RetireRuntimeLookupObject(RuntimeObject* object) noexcept {
+    if(object->lookupControl) static_cast<void>(object->lookupControl->index.Remove(
+        object->objectIndex.Index(),reinterpret_cast<std::uintptr_t>(object)));
+    object->lookupControl.reset();
+    if(!object->lookupPublicationSerial) return;
+    if(object->lookupPrevious) object->lookupPrevious->lookupNext=object->lookupNext;
+    else persistentPublishedHead=object->lookupNext;
+    if(object->lookupNext) object->lookupNext->lookupPrevious=object->lookupPrevious;
+    else persistentPublishedTail=object->lookupPrevious;
+    object->lookupPublicationSerial=0u;object->lookupPrevious=object->lookupNext=nullptr;
+}
+QuestVr::ObjectLookup::Record RuntimeLookupRecord(const RuntimeObject* object) {
+    if(!object || !object->lookupName || object->defaultOwner || !object->objectIndex)
+        throw std::runtime_error("Actual object lookup publication lacks a named non-default UObject");
+    return {reinterpret_cast<std::uintptr_t>(object),reinterpret_cast<std::uintptr_t>(object->outer),
+        object->objectIndex.Index(),object->outer?object->outer->objectIndex.Index():0u,object->lookupName->GetCompareIndex()};
+}
+std::unique_ptr<QuestVr::ObjectLookup::Index> StageRuntimeLookupObjects(const std::vector<RuntimeObject*>& objects) {
+    ValidateRuntimeLookupPublication(objects);
+    if(!persistentObjectLookup || objects.empty()) return {};
+    auto next=std::make_unique<QuestVr::ObjectLookup::Index>();
+    for(auto* object:objects) {
+        const auto record=RuntimeLookupRecord(object);
+        if(const auto* existing=persistentObjectLookup->index.RecordForIdentity(record.identity)) {
+            if(*existing!=record || object->lookupControl!=persistentObjectLookup)
+                throw std::runtime_error("Actual object lookup identity changed without native rehash");
+        } else {
+            if(object->lookupControl) throw std::runtime_error("Object lookup publication belongs to another engine generation");
+            next->Publish(record);
+        }
+    }
+    if(!persistentObjectLookup->index.CanAdopt(*next))
+        throw std::runtime_error("Actual object lookup staged records conflict or exceed the live index bound");
+    return next;
+}
+void PublishRuntimeLookupObjects(std::unique_ptr<QuestVr::ObjectLookup::Index>& next,
+    const std::vector<RuntimeObject*>& objects) noexcept {
+    for(auto* object:objects) RecordRuntimeLookupPublication(object);
+    if(!next) return;
+    if(!persistentObjectLookup->index.Adopt(*next)) std::terminate(); // Validated exclusive-owner publication invariant.
+    for(auto* object:objects) object->lookupControl=persistentObjectLookup;
+}
+NameString NativeRegistrationName(const QuestVr::NativeEngineClassRegistration& entry) {
+    const auto prefix=std::string(entry.package)+'.';
+    if(entry.path.substr(0u,prefix.size())!=prefix || entry.path.size()<=prefix.size() ||
+        entry.path.substr(prefix.size()).find('.')!=std::string_view::npos)
+        throw std::runtime_error("Audited native registration has an invalid explicit package/name pair");
+    return NameString(std::string(entry.path.substr(prefix.size())));
+}
 // Weak identity index, NOT a GC root. Actual class Outers and active source
 // linkers own Packages. Cleanup is identity-checked and disabled at shutdown.
 struct RuntimeNativePackageIndex {
@@ -593,13 +677,23 @@ std::uint8_t InventoryNativeClassBase(const std::uint8_t id) {
     return id < std::size(bases) ? bases[id] : 0u;
 }
 void CacheInventoryTableMetadata(RuntimeObject* object, const PortablePackageTables& table, const ExportTableEntry& entry) {
+    if(entry.ObjName<0 || static_cast<std::size_t>(entry.ObjName)>=table.names.size())
+        throw std::runtime_error("Actual object lookup export FName is outside its source table");
+    object->lookupName=table.names[static_cast<std::size_t>(entry.ObjName)].Name;
     object->serializedOuterZero=entry.ObjOuter==0;
+    object->serializedBaseZero=entry.ObjBase==0;
     object->inventoryTableMetadata = true; object->inventorySerializedClass = entry.ObjClass == 0;
     const auto classReference = [&](const std::int32_t reference, bool& valid) {
         valid = false;
         try {
             if (reference == 0 || (reference > 0 &&
                 table.exports.at(static_cast<std::size_t>(reference - 1)).ObjClass != 0)) return std::string{};
+            if(reference<0) {
+                const auto& imported=table.imports.at(static_cast<std::size_t>(-static_cast<std::int64_t>(reference)-1));
+                if(imported.ClassPackage<0 || static_cast<std::size_t>(imported.ClassPackage)>=table.names.size() ||
+                    !SameInventoryIdentity(table.names[static_cast<std::size_t>(imported.ClassPackage)].Name.ToString(),"Core"))
+                    return std::string{};
+            }
             auto path = ResolvePortableValueObjectReference(table, reference,
                 [](const std::string&, const std::string& importedClass) { return SameInventoryIdentity(importedClass, "Class"); });
             // The value resolver already qualifies same-package exports.
@@ -1504,6 +1598,7 @@ RuntimeObject* AllocateRuntimeNativePackage(const std::string& name,
     auto* object=GC::Alloc<RuntimeObject>(PortableReflectionObject{name,"Package",{},{},4u,0},nullptr);
     GCRoot<RuntimeObject> staged(object);
     object->cls=index->packageClass;object->exportIndex=std::numeric_limits<std::size_t>::max();
+    object->lookupName=NameString(name);
     object->nativePackageKey=LowerAscii(name);
     object->nativePackageInstance=std::make_unique<QuestVr::NativePackage::Instance>(QuestVr::NativePackage::Construct(
         *index->defaults->nativePackageDefaults,0u,QuestVr::NativePackage::AllocationRequest::CreatePackage,
@@ -2218,10 +2313,13 @@ public:
         if (worldChanged) persistentMapTagIndex.swap(tags);
         if (worldChanged) ++persistentWorldRevision;
         beforeCollision_.reset();
+        provisionalLookupObjects_.clear();
         saved_.clear(); savedAi_.clear(); provisionalAi_.clear(); provisionalWindows_.clear(); beforeDecals_.reset(); beforeLevelClock_.reset(); transaction_ = false;
     }
     void Rollback() noexcept override {
         if (!transaction_) return;
+        for(auto* object:provisionalLookupObjects_) RetireRuntimeLookupObject(object);
+        provisionalLookupObjects_.clear();
         persistentScriptRandomSeed = beforeRandomSeed_;
         if (beforeLevelClock_) beforeLevelClock_->first->nativeTimeSeconds=beforeLevelClock_->second;
         // Restore native bindings/edges before provisional actor identities are
@@ -4204,6 +4302,12 @@ public:
         ValidateStateBudget(NativePackageRetainedBytes(staged));
     }
     void ValidateAdditionalPackageBudget(const std::size_t bytes) const {ValidateStateBudget(bytes);}
+    void ValidateLookupStagingBudget(const QuestVr::ObjectLookup::Index& next,const bool newControl=false,
+        const std::size_t extraRetained=0u) const {
+        ValidateStateBudget(QuestVr::DecalStateDetail::Add(extraRetained,
+            QuestVr::DecalStateDetail::Add(next.RetainedBytes(),newControl?
+                sizeof(RuntimeObjectLookupControl)-sizeof(QuestVr::ObjectLookup::Index)+4u*sizeof(void*):0u)));
+    }
     const PortableModelGeometry& NativeSelectedModel(RuntimeObject* owner,const NativePrimitiveSelection& selected) {
         static_cast<void>(NativeLevelInfo(owner));
         auto* level=owner->nativeXLevel;auto* model=selected.object;
@@ -5475,6 +5579,7 @@ public:
         provisionalWindows_.emplace_back(GC::Alloc<RuntimeObject>(PortableReflectionObject{
             path,className,outer->reflection.objectPath,{},0u,0},nullptr));
         auto* object=provisionalWindows_.back().get();
+        object->lookupName=NameString(name);
         object->nativeWindowObject=true;object->cls=cls;object->outer=outer;
         object->sourcePath=cls->sourcePath;object->exportIndex=std::numeric_limits<std::size_t>::max();
         object->references={cls,outer};object->frozenBirthDefaults=cls->classDefaultValues;
@@ -5483,6 +5588,7 @@ public:
         if(!persistentQualifiedObjects.emplace(path,object).second ||
             !persistentVmObjects.emplace(LowerAscii(path),object).second)
             throw std::runtime_error("Native window identity collides with an existing UObject");
+        PublishTransactionalLookupObject(object);
         NativeWindowWrite(object,"Core.Object.Class",Value::Text(Kind::Object,cls->reflection.objectPath),execution);
         NativeWindowWrite(object,"Core.Object.Name",Value::Text(Kind::Name,name),execution);
         NativeWindowWrite(object,"Core.Object.Outer",Value::Text(Kind::Object,outer->reflection.objectPath),execution);
@@ -6907,6 +7013,7 @@ private:
         GCRoot<RuntimeObject> rooted(GC::Alloc<RuntimeObject>(PortableReflectionObject{
             path, className, xlevel->outer ? xlevel->outer->reflection.objectPath : std::string{}, {}, 0x4000u, 0}, nullptr));
         auto* actor = rooted.get(); actor->runtimeBirth = true; actor->birthVmKey = LowerAscii(path);
+        actor->lookupName=NameString(path.substr(persistentMapPackageName.size()+1u));
         actor->sourcePath = persistentMapSourcePath; actor->exportIndex = std::numeric_limits<std::size_t>::max();
         actor->cls = cls; actor->outer = xlevel->outer; actor->nativeXLevel = xlevel;
         actor->inventoryTableMetadata = true; actor->inventoryClassReferenceValid = true;
@@ -6916,6 +7023,7 @@ private:
         persistentRuntime->get()->exports.push_back(actor);
         if (!persistentQualifiedObjects.emplace(path,actor).second || !persistentVmObjects.emplace(actor->birthVmKey,actor).second)
             throw std::runtime_error("Spawn identity collision");
+        PublishTransactionalLookupObject(actor);
         persistentWorldActors.push_back(actor);
         const auto set = [&](const char* name, const Value& value) { ReferenceFor(actor,PropertyNamed(actor,name),0u,false)->write(value); };
         set("Class",Value::Text(Kind::Object,cls->reflection.objectPath));
@@ -7337,6 +7445,7 @@ private:
     std::unordered_map<RuntimeObject*, BeforeAI> savedAi_;
     std::vector<GCRoot<RuntimeAIManager>> provisionalAi_;
     std::vector<GCRoot<RuntimeObject>> provisionalWindows_;
+    std::vector<RuntimeObject*> provisionalLookupObjects_;
     std::optional<BeforeDecals> beforeDecals_;
     std::optional<std::pair<RuntimeObject*,double>> beforeLevelClock_;
     bool clientDependent_{};
@@ -7357,6 +7466,17 @@ private:
     RuntimeObject* nativeConfiguringWindow_{};
     std::optional<PortableModelGeometry> rootModel_;
     bool transaction_{};
+
+    void PublishTransactionalLookupObject(RuntimeObject* object) {
+        if(!transaction_) throw std::runtime_error("Actual lookup publication requires an owned script transaction");
+        if(persistentObjectPublicationSerial==std::numeric_limits<std::uint64_t>::max())
+            throw std::runtime_error("Actual object hash publication sequence exhausted");
+        provisionalLookupObjects_.push_back(object);
+        if(!persistentObjectLookup) {RecordRuntimeLookupPublication(object);return;}
+        persistentObjectLookup->index.Publish(RuntimeLookupRecord(object));
+        object->lookupControl=persistentObjectLookup;
+        RecordRuntimeLookupPublication(object);
+    }
     RuntimeObject* waitingPreviewActor_{};
     PortableActorWaitingPresentation* waitingPreview_{};
     const PortablePackageTables& Table(const std::string& source) {
@@ -8505,6 +8625,9 @@ private:
         if(persistentConfigClasses && persistentConfigClasses->get())
             defaults.Retain(NativeConfigClassRetainedBytes(*persistentConfigClasses->get()));
         if(persistentNativePackages) defaults.Retain(NativePackageRetainedBytes(*persistentNativePackages));
+        if(persistentObjectLookup) defaults.Retain(sizeof(RuntimeObjectLookupControl)-sizeof(QuestVr::ObjectLookup::Index)+
+            4u*sizeof(void*)+persistentObjectLookup->index.RetainedBytes());
+        defaults.Retain(provisionalLookupObjects_.capacity()*sizeof(RuntimeObject*));
         const auto valueBudget = [&](const auto& self, const Value& value, const std::size_t depth) -> void {
             defaults.Node(depth); defaults.Retain(sizeof(value));
             defaults.IntArrayElements(value.intArray.size());
@@ -8925,6 +9048,8 @@ struct PreparedScriptState {
     decltype(persistentVmObjects) vm;
     decltype(persistentMapTagIndex) tags;
     QuestVr::ActorCollisionRegistry collision;
+    std::unique_ptr<QuestVr::ObjectLookup::Index> lookup;
+    std::vector<RuntimeObject*> lookupObjects;
     bool replaceBirths{};
     std::optional<std::pair<RuntimeObject*,double>> levelClock;
 };
@@ -9944,6 +10069,7 @@ PreparedScriptState PrepareScriptSavedState(
             const auto& outer = record->values.at("outer").at(0u);
             actor->outer = outer.text.empty() ? nullptr : target(outer.text);
             actor->reflection.outerPath = outer.text;
+            actor->lookupName=NameString(record->values.at("name").at(0u).text);
             if (actor->outer) actor->references.push_back(actor->outer);
             // Preserve the constructor's actual native Level independently of
             // a later script overlay (which may legitimately contain None).
@@ -10065,6 +10191,8 @@ PortableRuntimeSummary InitializePortableRuntime(
     persistentRuntime = std::make_unique<GCRoot<RuntimePackage>>(
         GC::Alloc<RuntimePackage>(nullptr));
     PopulateRuntime(persistentRuntime->get(), package, graph, summary, nullptr);
+    auto lookup=StageRuntimeLookupObjects(persistentRuntime->get()->exports);
+    PublishRuntimeLookupObjects(lookup,persistentRuntime->get()->exports);
     persistentScriptExportCount = persistentRuntime->get()->exports.size();
     GC::Collect();
     summary.passed = summary.objects == package.exports.size() &&
@@ -10293,6 +10421,8 @@ PortableRuntimeSummary InitializePortableRuntime(
     persistentWindowDomain=std::make_unique<GCRoot<RuntimeWindowDomain>>(GC::Alloc<RuntimeWindowDomain>());
     persistentRootWindowClass=configuredRootClass;
     persistentGameEngineClass=configuredGameEngineClass;
+    auto lookup=StageRuntimeLookupObjects(persistentRuntime->get()->exports);
+    PublishRuntimeLookupObjects(lookup,persistentRuntime->get()->exports);
     summary.objects = persistentRuntime->get()->exports.size();
     persistentScriptExportCount = summary.objects;
     summary.peakGcObjects = GC::GetStats().numObjects;
@@ -10727,6 +10857,9 @@ PortableSound LoadPortableRuntimeSound(const std::string& objectPath) {
 }
 
 void ShutdownPortableRuntime() {
+    if(persistentObjectLookup) persistentObjectLookup->active=false;
+    persistentObjectLookup.reset();
+    while(persistentPublishedHead) RetireRuntimeLookupObject(persistentPublishedHead);
     if(persistentNativePackages) persistentNativePackages->active=false;
     persistentNativePackages.reset();
     persistentNativeModelCache.reset(); // Drop non-owning identity keys before any map GC.
@@ -10858,6 +10991,7 @@ PortableNativeEngineClassesSnapshot PreparePortableRuntimeNativeEngineClasses() 
         allocations.emplace_back(GC::Alloc<RuntimeObject>(PortableReflectionObject{
             std::string(entry.path),"Class",{},std::string(entry.base),entry.registrationObjectFlags,0},nullptr));
         auto* cls=allocations.back().get();
+        cls->lookupName=NativeRegistrationName(entry);
         cls->nativeEngineClass=&entry;cls->base=base->second;cls->nativeClassWithin=objectClass;
         // No serialized export/source exists for this static native UClass.
         // Inheriting Engine.u's path would falsely label Extension/DeusEx
@@ -10880,6 +11014,9 @@ PortableNativeEngineClassesSnapshot PreparePortableRuntimeNativeEngineClasses() 
             entry.nativeSize,entry.registrationClassFlags,entry.registrationObjectFlags});
     auto owner=std::make_unique<GCRoot<RuntimeEngineClassDomain>>(domain);
     host.ValidateEngineClassRegistrationBudget(*domain);
+    auto lookup=StageRuntimeLookupObjects(domain->classes);
+    if(lookup) host.ValidateLookupStagingBudget(*lookup,false,NativeEngineClassRetainedBytes(*domain));
+    PublishRuntimeLookupObjects(lookup,domain->classes);
     persistentQualifiedObjects.swap(nextQualified);persistentVmObjects.swap(nextVm);
     persistentEngineClasses=std::move(owner);
     return result;
@@ -10979,6 +11116,7 @@ PortableNativeMetadataClassesSnapshot PreparePortableRuntimeNativeMetadataClasse
         allocations.emplace_back(GC::Alloc<RuntimeObject>(PortableReflectionObject{
             std::string(entry.path),"Class",{},std::string(entry.base),entry.registrationObjectFlags,0},nullptr));
         auto* cls=allocations.back().get();cls->nativeMetadataClass=&entry;
+        cls->lookupName=NativeRegistrationName(entry);
         cls->exportIndex=std::numeric_limits<std::size_t>::max();domain->classes.push_back(cls);
         if(!nextQualified.emplace(std::string(entry.path),cls).second ||
             !nextVm.emplace(LowerAscii(std::string(entry.path)),cls).second)
@@ -11016,9 +11154,12 @@ PortableNativeMetadataClassesSnapshot PreparePortableRuntimeNativeMetadataClasse
     auto result=MetadataClassSnapshot(*domain,QuestVr::NativeMetadataClasses);result.boundSerializedClasses=serializedCount;
     auto owner=std::make_unique<GCRoot<RuntimeEngineClassDomain>>(domain);
     host.ValidateMetadataClassRegistrationBudget(*domain);
+    auto lookup=StageRuntimeLookupObjects(domain->classes);
+    if(lookup) host.ValidateLookupStagingBudget(*lookup,false,NativeMetadataClassRetainedBytes(*domain));
     // All allocation, admission and detached snapshot construction has finished.
     // The caller owns the exclusive CPU phase; no observer sees half the graph.
     // Existing serialized flags/Children/Next/defaults remain untouched.
+    PublishRuntimeLookupObjects(lookup,domain->classes);
     persistentQualifiedObjects.swap(nextQualified);persistentVmObjects.swap(nextVm);
     for(auto* cls:targets) cls->cls=meta;
     for(const auto& [object,cls]:importedClasses) {object->cls=cls;object->inventoryClassReferenceValid=true;}
@@ -11104,6 +11245,7 @@ PortableNativeConfigClassesSnapshot PreparePortableRuntimeNativeConfigClasses() 
         allocations.emplace_back(GC::Alloc<RuntimeObject>(PortableReflectionObject{
             std::string(entry.path),"Class",{},std::string(entry.base),entry.registrationObjectFlags,0},nullptr));
         auto* cls=allocations.back().get();cls->nativeMetadataClass=&entry;
+        cls->lookupName=NativeRegistrationName(entry);
         cls->exportIndex=std::numeric_limits<std::size_t>::max();
         cls->base=base;cls->nativeClassWithin=objectClass;cls->cls=meta;
         cls->outer=RegisteredNativePackage(entry.package);domain->classes.push_back(cls);
@@ -11114,10 +11256,13 @@ PortableNativeConfigClassesSnapshot PreparePortableRuntimeNativeConfigClasses() 
     auto result=NativeConfigClassSnapshot(*domain,console,objectClass);
     auto owner=std::make_unique<GCRoot<RuntimeEngineClassDomain>>(domain);
     host.ValidateConfigClassRegistrationBudget(*domain);
+    auto lookup=StageRuntimeLookupObjects(domain->classes);
+    if(lookup) host.ValidateLookupStagingBudget(*lookup,false,NativeConfigClassRetainedBytes(*domain));
     // Bind only the decoded serialized Within pointer, never replace Console's
     // actual descriptor/defaults/flags or invent an owning Package from its path.
     // All allocating work and admission precedes this nonthrowing publication.
     persistentQualifiedObjects.swap(nextQualified);persistentVmObjects.swap(nextVm);
+    PublishRuntimeLookupObjects(lookup,domain->classes);
     console->nativeClassWithin=objectClass;persistentConfigClasses=std::move(owner);
     return result;
 }
@@ -11231,14 +11376,132 @@ PortableNativePackagesSnapshot PreparePortableRuntimeNativePackages() {
         bindings.emplace_back(object,root);
     }
     auto result=NativePackagesSnapshot(*index);host.ValidatePackageRegistrationBudget(*index);
+    std::vector<RuntimeObject*> publications;
+    for(const auto& object:allocations) publications.push_back(object.get());
+    for(const auto& binding:bindings) publications.push_back(binding.first);
+    ValidateRuntimeLookupPublication(publications);
     // All allocating validation is complete. Publish actual defaults, native
     // Register package literals and source ObjOuter0->LinkerRoot edges together.
     persistentQualifiedObjects.swap(nextQualified);persistentVmObjects.swap(nextVm);
     packageClass->defaultObject=defaults.get();
     for(const auto& [object,root]:bindings) object->outer=root;
+    // The first Package phase changes real Outer keys. Record these successful
+    // rebindings after prior publications, independently of numeric slot order.
+    for(auto* object:publications) {RetireRuntimeLookupObject(object);RecordRuntimeLookupPublication(object);}
     for(std::size_t i=0u;i<sourceRoots.size();++i) runtime.sourceLinkers[i].root=sourceRoots[i];
     runtime.mapLinkerRoot=mapRoot;index->active=true;persistentNativePackages=std::move(index);
     return result;
+}
+
+PortableObjectLookupState ReadPortableRuntimeObjectLookup() {
+    if(!persistentObjectLookup) return {};
+    const auto& control=*persistentObjectLookup;
+    if(!control.active || !control.generation)
+        throw std::runtime_error("Actual object lookup engine generation is inactive");
+    return {control.index.Size(),sizeof(RuntimeObjectLookupControl)-sizeof(QuestVr::ObjectLookup::Index)+
+        4u*sizeof(void*)+control.index.RetainedBytes(),control.generation,true};
+}
+
+PortableObjectLookupState PreparePortableRuntimeObjectLookup() {
+    if(persistentObjectLookup) return ReadPortableRuntimeObjectLookup();
+    PortableActorVmHost host;
+    if(!persistentNativePackages || !ReadPortableRuntimeNativePackages().prepared)
+        throw std::runtime_error("Actual object lookup requires the explicit Package/metadata phases");
+    if(persistentObjectLookupGeneration==std::numeric_limits<std::uint64_t>::max())
+        throw std::runtime_error("Actual object lookup engine generation exhausted");
+    auto next=std::make_shared<RuntimeObjectLookupControl>();
+    next->objectClass=host.Object("Core.Object");next->packageClass=persistentNativePackages->packageClass;
+    next->metaClass=host.Object("Core.Class");
+    if(next->objectClass->cls!=next->metaClass || next->objectClass->base ||
+        !next->objectClass->inventorySerializedClass || !next->objectClass->serializedBaseZero ||
+        next->packageClass->cls!=next->metaClass || next->packageClass->base!=next->objectClass ||
+        next->metaClass->cls!=next->metaClass)
+        throw std::runtime_error("Actual object lookup lacks original Object/Package/Class relationships");
+    // Intrusive weak publication journal: no reachability edges and no path
+    // aliases. Includes genuinely retained replaced births, but never CDOs or
+    // detached diagnostics. Head-to-tail is actual publication/rehash order.
+    std::uint64_t serial{};
+    for(auto* object=persistentPublishedHead;object;object=object->lookupNext) {
+        if(object->lookupControl || !object->lookupPublicationSerial || object->lookupPublicationSerial<=serial)
+            throw std::runtime_error("Actual object publication journal lost ordering or generation authority");
+        serial=object->lookupPublicationSerial;next->index.Publish(RuntimeLookupRecord(object));
+    }
+    for(auto* cls:{next->objectClass,next->packageClass,next->metaClass})
+        if(!next->index.RecordForIdentity(reinterpret_cast<std::uintptr_t>(cls)))
+            throw std::runtime_error("Actual lookup prerequisite UClass is not published");
+    host.ValidateLookupStagingBudget(next->index,true);
+    next->generation=++persistentObjectLookupGeneration;next->active=true;
+    persistentObjectLookup=std::move(next);
+    for(auto* object=persistentPublishedHead;object;object=object->lookupNext) object->lookupControl=persistentObjectLookup;
+    return ReadPortableRuntimeObjectLookup();
+}
+
+static RuntimeObject* ActualLookupObject(const RuntimeObjectLookupControl& control,const std::uintptr_t identity) {
+    const auto* record=control.index.RecordForIdentity(identity);
+    if(!record) throw std::runtime_error("Object lookup identity is not in the current actual index");
+    auto* object=reinterpret_cast<RuntimeObject*>(identity);
+    if(object->lookupControl.get()!=&control || object->objectIndex.Index()!=record->index)
+        throw std::runtime_error("Object lookup lease belongs to another engine generation");
+    return object;
+}
+static bool ActualLookupClass(const RuntimeObjectLookupControl& control,RuntimeObject* object) {
+    static_cast<void>(ActualLookupObject(control,reinterpret_cast<std::uintptr_t>(object)));
+    return object->cls==control.metaClass && !object->defaultOwner &&
+        ((object->inventoryTableMetadata && object->inventorySerializedClass && object->inventoryClassReferenceValid) ||
+            object->nativeEngineClass || object->nativeMetadataClass || object->nativeClientClass);
+}
+static bool MatchActualLookupClass(const RuntimeObjectLookupControl& control,const std::uintptr_t identity,
+    const std::uintptr_t requestedIdentity,const bool exact) {
+    auto* object=ActualLookupObject(control,identity);
+    auto* requested=ActualLookupObject(control,requestedIdentity);
+    if(!ActualLookupClass(control,requested))
+        throw std::runtime_error("Object lookup requested class is not an actual UClass");
+    if(!object->cls || (object->inventoryTableMetadata && !object->inventoryClassReferenceValid))
+        throw std::runtime_error("Object lookup candidate lacks authenticated actual Class metadata");
+    std::array<RuntimeObject*,256u> visited{};std::size_t depth{};
+    for(auto* cls=object->cls;cls;cls=cls->base) {
+        if(depth==visited.size() || std::find(visited.begin(),visited.begin()+depth,cls)!=visited.begin()+depth)
+            throw std::runtime_error("Object lookup actual Super chain cycles or exceeds its bound");
+        visited[depth++]=cls;
+        if(!ActualLookupClass(control,cls))
+            throw std::runtime_error("Object lookup actual Class/Super is not an admitted UClass");
+        if(cls==requested) return true;
+        if(exact) return false;
+        if(cls->inventoryTableMetadata && (!cls->inventoryBaseReferenceValid ||
+            (!cls->base && !cls->serializedBaseZero)))
+            throw std::runtime_error("Object lookup actual Super metadata is unresolved or invalid");
+        if(!cls->inventoryTableMetadata && !cls->base)
+            throw std::runtime_error("Native object lookup UClass has no actual registered Super");
+    }
+    return false;
+}
+std::optional<PortableObjectLookupResult> FindPortableRuntimeObject(const PortableObjectLookupRequest& request) {
+    if(!persistentObjectLookup || !persistentObjectLookup->active)
+        throw std::runtime_error("Actual object lookup has not been prepared");
+    const auto& control=*persistentObjectLookup;
+    const auto handle=[&](const std::uint32_t index) -> RuntimeObject* {
+        if(!index) return nullptr;
+        const auto* record=control.index.RecordAt(index);
+        if(!record) throw std::runtime_error("Object lookup handle is absent from the current engine generation");
+        return ActualLookupObject(control,record->identity);
+    };
+    auto* requested=handle(request.requestedClassIndex);auto* outer=handle(request.outerIndex);
+    if(requested && !ActualLookupClass(control,requested))
+        throw std::runtime_error("Object lookup class handle is not an actual UClass");
+    const auto identity=QuestVr::ObjectLookup::Find(control.index,
+        QuestVr::ObjectLookup::Query{reinterpret_cast<std::uintptr_t>(requested),reinterpret_cast<std::uintptr_t>(outer),
+            request.outerIndex,request.anyPackage,request.exact,request.name},
+        reinterpret_cast<std::uintptr_t>(control.objectClass),reinterpret_cast<std::uintptr_t>(control.packageClass),
+        [](const std::string_view name){return NameString::FindCompareIndex(name);},
+        [&](const auto object,const auto cls,const bool exact){return MatchActualLookupClass(control,object,cls,exact);});
+    if(!identity) return std::nullopt;
+    auto* object=ActualLookupObject(control,identity);const auto& record=*control.index.RecordForIdentity(identity);
+    // The null-requested-class exact hash branch deliberately needs no IsA.
+    // An unavailable Class is reported as zero, not invented or silently filtered.
+    std::uint32_t classIndex{};
+    if(object->cls) classIndex=ActualLookupObject(control,reinterpret_cast<std::uintptr_t>(object->cls))->objectIndex.Index();
+    return PortableObjectLookupResult{object->reflection.objectPath,record.index,classIndex,record.outerIndex,
+        record.nameIndex,control.generation};
 }
 
 void BindPortableRuntimeClient(std::shared_ptr<QuestVr::NativeClientLifetime> lifetime,
@@ -11344,6 +11607,7 @@ PortablePlayerSessionSnapshot PreparePortableRuntimePlayerObjects(const std::uin
             path,cls ? cls->reflection.objectPath.substr(cls->reflection.objectPath.find_last_of('.')+1u) : name,
             outer ? outer->reflection.objectPath : std::string{}, {},0x4000u,0},nullptr));
         auto* object=allocations.back().get();object->cls=cls;object->outer=outer;
+        object->lookupName=NameString(name);
         object->sourcePath=cls ? cls->sourcePath : objectClass->sourcePath;
         object->exportIndex=std::numeric_limits<std::size_t>::max();
         if(cls) object->references.push_back(cls);
@@ -11395,7 +11659,12 @@ PortablePlayerSessionSnapshot PreparePortableRuntimePlayerObjects(const std::uin
         std::make_unique<GCRoot<RuntimePlayerSession>>(session);
     if(clientIdentity!=persistentNativeClient.ClientIdentity())
         throw std::runtime_error("Native client revoked during player UObject preparation");
+    std::vector<RuntimeObject*> lookupObjects;
+    for(const auto& object:allocations) lookupObjects.push_back(object.get());
+    auto lookup=StageRuntimeLookupObjects(lookupObjects);
+    if(lookup) host.ValidateLookupStagingBudget(*lookup);
     // All allocations/index copies complete before this publication interval.
+    PublishRuntimeLookupObjects(lookup,lookupObjects);
     persistentQualifiedObjects.swap(nextQualified);persistentVmObjects.swap(nextVm);
     session->classes.swap(classes);session->viewports.swap(viewports);session->client=client;
     if(newOwner) persistentPlayerSession=std::move(newOwner);
@@ -12429,6 +12698,13 @@ PortableMapRuntimeSummary LoadPortableRuntimeMap(
     persistentMapPackageName = packageName;
     persistentMapSourcePath = package.sourcePath;
     const auto pendingModel=RelinkAuthoredActorBases(package, first);
+    std::vector<RuntimeObject*> lookupObjects;
+    if(auto* root=persistentRuntime->get()->mapLinkerRoot) lookupObjects.push_back(root);
+    for(std::size_t index=first;index<persistentRuntime->get()->exports.size();++index)
+        lookupObjects.push_back(persistentRuntime->get()->exports[index]);
+    auto lookup=StageRuntimeLookupObjects(lookupObjects);
+    if(lookup) {PortableActorVmHost host;host.ValidateLookupStagingBudget(*lookup);}
+    PublishRuntimeLookupObjects(lookup,lookupObjects);
     ++persistentWorldRevision;
     GC::Collect();
     summary.passed = summary.exports == package.exports.size() &&
@@ -14393,11 +14669,14 @@ static bool ReadPortableRuntimeState(const std::string& path, const bool apply, 
         // versions replace native topology; absence is not a merge with the
         // current session. Initial Base relinks are the map-load baseline.
         std::vector<std::pair<RuntimeObject*, std::vector<RuntimeObject*>>> initialBases;
+        PortableActorVmHost collisionHost;
+        for(const auto& actor:prepared.births) prepared.lookupObjects.push_back(actor.get());
+        prepared.lookup=StageRuntimeLookupObjects(prepared.lookupObjects);
+        if(prepared.lookup) collisionHost.ValidateLookupStagingBudget(*prepared.lookup);
         for (auto* object : persistentRuntime->get()->exports)
             if (!object->runtimeBirth && !object->initialBasedActors.empty()) initialBases.emplace_back(object, object->initialBasedActors);
         // Build the replacement tag index before publishing any registry or
         // field. Omitted overlays use immutable authored names, not live tags.
-        PortableActorVmHost collisionHost;
         std::vector<PortableActorSnapshot> visualAssets;
         for (auto* actor : prepared.worldActors) {
             if (!actor) continue;
@@ -14447,6 +14726,7 @@ static bool ReadPortableRuntimeState(const std::string& path, const bool apply, 
         ClearNativePlayerEdges(); // Checkpoints never restore engine-session UPlayer pointers.
         persistentRuntime->get()->exports.swap(prepared.exports);
         persistentWorldActors.swap(prepared.worldActors);
+        PublishRuntimeLookupObjects(prepared.lookup,prepared.lookupObjects);
         persistentQualifiedObjects.swap(prepared.qualified); persistentVmObjects.swap(prepared.vm);
         persistentMapTagIndex.swap(prepared.tags);
         persistentActorCollision.Swap(prepared.collision);
