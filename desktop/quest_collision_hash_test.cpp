@@ -3,7 +3,40 @@
 
 #include <iostream>
 #include <limits>
+#include <cstdlib>
+#include <new>
 #include <unordered_set>
+
+namespace HashAllocationFault {
+thread_local std::size_t remaining=std::numeric_limits<std::size_t>::max(),attempts{};
+void* Allocate(std::size_t bytes) {
+    ++attempts;
+    if(!remaining) throw std::bad_alloc();
+    if(remaining!=std::numeric_limits<std::size_t>::max()) --remaining;
+    if(auto* memory=std::malloc(bytes?bytes:1u)) return memory;
+    throw std::bad_alloc();
+}
+void Enable(std::size_t successes) noexcept {attempts=0u;remaining=successes;}
+void Disable() noexcept {remaining=std::numeric_limits<std::size_t>::max();}
+}
+void* operator new(std::size_t bytes) {return HashAllocationFault::Allocate(bytes);}
+void* operator new[](std::size_t bytes) {return HashAllocationFault::Allocate(bytes);}
+#if defined(__GNUC__)
+__attribute__((noinline))
+#endif
+void operator delete(void* memory) noexcept {std::free(memory);}
+#if defined(__GNUC__)
+__attribute__((noinline))
+#endif
+void operator delete(void* memory,std::size_t) noexcept {std::free(memory);}
+#if defined(__GNUC__)
+__attribute__((noinline))
+#endif
+void operator delete[](void* memory) noexcept {std::free(memory);}
+#if defined(__GNUC__)
+__attribute__((noinline))
+#endif
+void operator delete[](void* memory,std::size_t) noexcept {std::free(memory);}
 
 namespace {
 using Vec=PortableModelVec3;
@@ -16,7 +49,12 @@ using Queries=QuestVr::OriginalHashQueries;
 using Arena=QuestVr::OriginalLineHitArena;
 using Hit=QuestVr::OriginalActorLineHit;
 using Oracle=QuestVr::CollisionHashOracle::Oracle;
+static_assert(!std::is_copy_constructible_v<World::RootLease>&&!std::is_move_constructible_v<World::RootLease>);
+static_assert(std::is_nothrow_destructible_v<World::RootLease>);
+static_assert(noexcept(std::declval<World::RootLease&>().Rollback())&&noexcept(std::declval<World::RootLease&>().CommitPrepared()));
+static_assert(noexcept(std::declval<const World&>().RetainedBytes())&&noexcept(std::declval<const World&>().AdditionalRootBytes()));
 std::size_t checks{},refusals{},randomOperations{},queryComparisons{};
+std::size_t explicitRoots{},rootAllocationRefusals{};
 void Require(bool value,const char* reason) {++checks;if(!value) throw std::runtime_error(reason);}
 bool Same(float a,float b) {return std::bit_cast<std::uint32_t>(a)==std::bit_cast<std::uint32_t>(b);}
 bool Same(Vec a,Vec b) {return Same(a.x,b.x)&&Same(a.y,b.y)&&Same(a.z,b.z);}
@@ -306,6 +344,179 @@ void Rollback() {
     invalid.Add(1);Refuse([&]{invalid.world->ActorLineCheck(invalid.hash,Point(0),Point(0),{},0,{});});
     const float nan=std::numeric_limits<float>::quiet_NaN();Refuse([&]{invalid.Query({nan,0,0},Point(0));});
 }
+void ExplicitRoots() {
+    Fixture fixture;fixture.Define(1,Bounds(0));fixture.Define(2,Bounds(0));fixture.Add(2);fixture.Add(1);
+    const auto hash=fixture.world->ReadHash(fixture.hash);const auto tag=fixture.world->ReadTag();
+    const auto actor=fixture.world->ReadActor(1),other=fixture.world->ReadActor(2);
+    const auto verify=[&] {
+        Require(fixture.world->ReadHash(fixture.hash)==hash&&fixture.world->ReadTag()==tag&&
+            Same(fixture.world->ReadActor(1),actor)&&Same(fixture.world->ReadActor(2),other),
+            "Explicit outer root retained a native prefix after refusal/destruction");
+    };
+    {
+        const auto bytes=fixture.world->RetainedBytes(),extra=fixture.world->AdditionalRootBytes();
+        auto root=fixture.world->BeginRoot();++explicitRoots;
+        Require(root->Active()&&fixture.world->RetainedBytes()>bytes&&fixture.world->RetainedBytes()<=bytes+extra,
+            "Root snapshot omitted owned bytes or exceeded its conservative preflight envelope");
+        HashAllocationFault::Enable(0u);
+        const auto usage=fixture.world->ReadUsage();
+        const bool membership=fixture.world->ContainsActor(1u)&&!fixture.world->ContainsActor(999u)&&
+            fixture.world->ContainsHash(fixture.hash)&&!fixture.world->ContainsHash(999u);
+        const auto observations=HashAllocationFault::attempts;HashAllocationFault::Disable();
+        Require(membership&&observations==0u&&usage.actors==2u&&usage.hashes==1u&&usage.allocatedLinks==1024u&&
+            usage.activeLinks==2u&&usage.snapshotActors==2u&&usage.snapshotHashes==1u&&
+            usage.snapshotAllocatedLinks==1024u&&usage.depth==1u&&!usage.poisoned&&!usage.prepared,
+            "Nonallocating membership/usage preflight fabricated records, allocated or poisoned an absent identity");
+        fixture.world->Remove(fixture.hash,2,fixture.Provider());
+        fixture.world->WithRoot([&](World& world) {world.SetActorLive(1,{99,88,77},true,false);});
+        fixture.world->ActorLineCheck(fixture.hash,Point(0),Point(0),{},255,fixture.Provider());
+        Require(root->Active(),"A successful native/WithRoot committed the explicit caller root");
+        // Unrelated coordinator validation fails AFTER these native returns.
+        Refuse([] {throw std::runtime_error("Late external publication refusal");});
+    }
+    verify();
+    for(unsigned mode=0u;mode<5u;++mode) {
+        auto root=fixture.world->BeginRoot();++explicitRoots;
+        fixture.world->SetActorLive(1,{9,8,7},true,false);
+        if(mode==0u) Refuse([&] {fixture.world->Add(fixture.hash,999,{});});
+        if(mode==1u) Refuse([&] {static_cast<void>(fixture.world->ReadHash(999));});
+        if(mode==2u) Refuse([&] {static_cast<void>(fixture.world->ReadActor(999));});
+        if(mode==3u) Refuse([&] {static_cast<void>(fixture.world->BeginRoot());});
+        if(mode==4u) Refuse([&] {fixture.world->WithRoot([&](World&) {throw std::runtime_error("External callback failure");});});
+        Refuse([&] {root->PrepareCommit();},"Caught nested failure allowed explicit root preparation");
+        Require(!root->CommitPrepared(),"Poisoned explicit root published without readiness");
+        Require(root->Rollback()&&!root->Active(),"Poisoned explicit root could not roll back");
+        verify();
+    }
+    {
+        auto root=fixture.world->BeginRoot();++explicitRoots;
+        auto provider=fixture.Provider();provider.line=[&](Hit&,std::uintptr_t,const Vec&,const Vec&,const Vec&,std::uint32_t) {
+            Refuse([&] {root->PrepareCommit();},"Live hash child allowed caller root publication");
+            Require(!root->Rollback()&&!root->CommitPrepared(),"Live hash child invalidated its own backing root storage");
+            return true;
+        };
+        Refuse([&] {fixture.world->ActorLineCheck(fixture.hash,Point(0),Point(0),{},255,provider);});
+        Require(root->Rollback(),"Root with unwound child could not restore its snapshot");verify();
+    }
+    {
+        auto root=fixture.world->BeginRoot();++explicitRoots;
+        auto provider=fixture.Provider();provider.line=[&](Hit&,std::uintptr_t,const Vec&,const Vec&,const Vec&,std::uint32_t) {
+            root.reset();return true; // Must defer restoration, not dangle active actor/link references.
+        };
+        Refuse([&] {fixture.world->ActorLineCheck(fixture.hash,Point(0),Point(0),{},255,provider);});verify();
+        auto recovered=fixture.world->BeginRoot();++explicitRoots;
+        recovered->PrepareCommit();Require(recovered->CommitPrepared(),"Abandoned child root retained hidden depth/ownership");
+    }
+    {
+        auto root=fixture.world->BeginRoot();++explicitRoots;
+        fixture.world->SetActorLive(1,{9,8,7},true,false);root->PrepareCommit();
+        Refuse([&] {fixture.world->SetActorLive(1,{6,5,4},true,false);},"Prepared root admitted a later mutating operation");
+        Require(!root->CommitPrepared(),"Caught operation after preparation did not poison the publication ticket");
+        Require(root->Rollback(),"Prepared poisoned root lost rollback ownership");verify();
+    }
+    {
+        auto root=fixture.world->BeginRoot();++explicitRoots;
+        root->PrepareCommit();Refuse([&] {root->PrepareCommit();},"Duplicate root preparation was silently accepted");
+        Require(!root->CommitPrepared()&&root->Rollback(),"Repeated preparation did not preserve a poisoned undo snapshot");verify();
+    }
+    for(bool snapshot:{false,true}) {
+        auto root=fixture.world->BeginRoot();++explicitRoots;root->PrepareCommit();
+        Refuse([&] {if(snapshot) static_cast<void>(fixture.world->ReadHash(fixture.hash));
+            else static_cast<void>(fixture.world->ReadActor(1));},"Prepared root admitted a throwing storage read");
+        Require(!root->CommitPrepared()&&root->Rollback(),"Read after preparation did not preserve poisoned undo ownership");verify();
+    }
+    {
+        auto root=fixture.world->BeginRoot();++explicitRoots;
+        Require(!root->CommitPrepared(),"Unprepared root could publish native state");
+        Refuse([&] {root->PrepareCommit();},"Unprepared commit misuse did not poison the caller root");
+        Require(root->Rollback(),"Unprepared commit misuse lost undo ownership");verify();
+    }
+    {
+        auto root=fixture.world->BeginRoot();++explicitRoots;
+        fixture.world->SetActorLive(1,{7,8,9},true,false);
+        fixture.world->ActorLineCheck(fixture.hash,Point(0),Point(0),{},255,fixture.Provider());
+        const auto committedTag=fixture.world->ReadTag();root->PrepareCommit();
+        bool committed{};HashAllocationFault::Enable(0u);
+        committed=root->CommitPrepared();const auto allocations=HashAllocationFault::attempts;HashAllocationFault::Disable();
+        Require(committed&&!root->Active()&&allocations==0u&&fixture.world->ReadTag()==committedTag&&
+            Same(fixture.world->ReadActor(1).location,Vec{7,8,9}),"Prepared root commit allocated, threw or lost native state");
+        Require(!root->CommitPrepared()&&!root->Rollback(),"Closed root reused its spent publication/undo capability");
+        Refuse([&] {root->PrepareCommit();},"Closed root was prepared again");
+        auto next=fixture.world->BeginRoot();++explicitRoots;
+        Refuse([&] {root->PrepareCommit();},"Stale root lease authorized a different active root");
+        Refuse([&] {next->PrepareCommit();},"Caught stale lease misuse did not poison the actual root");
+        Require(next->Rollback(),"Stale caller token prevented the actual root rollback");
+    }
+    {
+        auto world=std::make_unique<World>(Tables());auto root=world->BeginRoot();++explicitRoots;
+        world.reset();Require(!root->Active()&&!root->CommitPrepared()&&!root->Rollback(),"Lease outliving its world used freed native storage");
+        Refuse([&] {root->PrepareCommit();},"Expired world lifetime authorized root preparation");root.reset();
+    }
+    {
+        QuestVr::OriginalHashLimits limits;limits.steps=2u;
+        auto world=std::make_unique<World>(Tables(),0u,limits);Actor value;value.identity=1;world->DefineActor(value);
+        auto root=world->BeginRoot();++explicitRoots;
+        world->SetActorLive(1,{1,2,3},false,false);world->WithRoot([&](World& joined) {joined.SetActorLive(1,{4,5,6},false,false);});
+        Refuse([&] {world->SetActorLive(1,{7,8,9},false,false);},"Each explicit-root native acquired a fresh work ledger");
+        Require(world->ReadStats().steps==2u&&root->Rollback()&&Same(world->ReadActor(1).location,Vec{}),
+            "Explicit-root cumulative work failure retained native effects or miscounted work");
+    }
+    // Enumerate every allocation position in the first explicit root's full
+    // snapshot/lease creation. Each bad_alloc must leave no hidden root; a new
+    // root can open and commit immediately after the allocation policy clears.
+    bool reachedSuccess{};
+    for(std::size_t allowed=0u;allowed<128u&&!reachedSuccess;++allowed) {
+        Fixture allocation;allocation.Define(1,Bounds(0));allocation.Add(1);
+        const auto before=allocation.world->ReadHash(allocation.hash);const auto beforeActor=allocation.world->ReadActor(1);
+        const auto beforeTag=allocation.world->ReadTag();const auto beforeStats=allocation.world->ReadStats().steps;
+        std::unique_ptr<World::RootLease> root;bool failed{};
+        HashAllocationFault::Enable(allowed);
+        try {root=allocation.world->BeginRoot();} catch(const std::bad_alloc&) {failed=true;}
+        catch(...) {HashAllocationFault::Disable();throw;}
+        HashAllocationFault::Disable();
+        if(failed) {
+            ++rootAllocationRefusals;
+            Require(!root&&allocation.world->ReadHash(allocation.hash)==before&&
+                Same(allocation.world->ReadActor(1),beforeActor)&&allocation.world->ReadTag()==beforeTag&&
+                allocation.world->ReadStats().steps==beforeStats,"Root allocation failure published a partial snapshot/owner/ledger");
+            root=allocation.world->BeginRoot();
+        } else reachedSuccess=true;
+        ++explicitRoots;root->PrepareCommit();Require(root->CommitPrepared(),"Allocation refusal left a hidden active root");
+    }
+    Require(reachedSuccess&&rootAllocationRefusals>=8u,"Allocation fault sweep did not cover complete root snapshot and owning lease storage");
+    {
+        Fixture allocation;allocation.Define(1,Bounds(0));allocation.Add(1);
+        const auto before=allocation.world->ReadHash(allocation.hash);const auto beforeActor=allocation.world->ReadActor(1);
+        auto root=allocation.world->BeginRoot();++explicitRoots;
+        allocation.world->SetActorLive(1,{1,2,3},true,false);
+        HashAllocationFault::Enable(0u);bool failed{};
+        try {static_cast<void>(allocation.world->ReadHash(allocation.hash));} catch(const std::bad_alloc&) {failed=true;}
+        catch(...) {HashAllocationFault::Disable();throw;}
+        HashAllocationFault::Disable();
+        Require(failed,"Diagnostic copy did not observe armed allocation refusal");
+        Refuse([&] {root->PrepareCommit();},"Caught diagnostic allocation failure did not poison shared root");
+        HashAllocationFault::Enable(0u);const bool restored=root->Rollback();
+        const auto attempts=HashAllocationFault::attempts;HashAllocationFault::Disable();
+        Require(restored&&attempts==0u&&allocation.world->ReadHash(allocation.hash)==before&&
+            Same(allocation.world->ReadActor(1),beforeActor),"Noexcept root rollback allocated or retained native state");
+    }
+    bool completedMutation{};
+    for(std::size_t allowed=0u;allowed<32u&&!completedMutation;++allowed) {
+        Fixture allocation;allocation.Define(1,Bounds(0));allocation.Add(1);
+        const auto before=allocation.world->ReadHash(allocation.hash);const auto beforeActor=allocation.world->ReadActor(1);
+        auto root=allocation.world->BeginRoot();++explicitRoots;allocation.world->SetActorLive(1,{1,2,3},true,false);
+        bool failed{};HashAllocationFault::Enable(allowed);
+        try {static_cast<void>(allocation.world->CreateHash());} catch(const std::bad_alloc&) {failed=true;}
+        catch(...) {HashAllocationFault::Disable();throw;}
+        HashAllocationFault::Disable();
+        if(failed) {++rootAllocationRefusals;Refuse([&] {root->PrepareCommit();},"Caught hash-allocation refusal did not poison owning root");}
+        else completedMutation=true;
+        Require(root->Rollback()&&allocation.world->ReadHash(allocation.hash)==before&&
+            Same(allocation.world->ReadActor(1),beforeActor)&&allocation.world->ReadUsage().hashes==1u,
+            "Allocation failure/success rollback retained a hash birth or earlier actor mutation");
+    }
+    Require(completedMutation,"Mutation allocation-fault sweep never reached the whole successful operation");
+}
 std::uint32_t Next(std::uint32_t& seed) {seed^=seed<<13u;seed^=seed>>17u;seed^=seed<<5u;return seed;}
 void Randomized() {
     Fixture fixture;std::uint32_t seed=0x9878abcd;
@@ -368,8 +579,9 @@ void CylinderAndCollector() {
 }
 } // namespace
 int main() {
-    try {Registration();CandidateOrder();Reentrance();Rollback();Randomized();CylinderAndCollector();
+    try {Registration();CandidateOrder();Reentrance();Rollback();ExplicitRoots();Randomized();CylinderAndCollector();
         std::cout<<"PASS original collision hash state "<<checks<<" checks, "<<refusals<<" root refusals, "<<randomOperations
-            <<" independent mutation operations, "<<queryComparisons<<" vector-oracle queries; nested tag/live Next/rollback verified.\n";return 0;}
+            <<" independent mutation operations, "<<queryComparisons<<" vector-oracle queries, "<<explicitRoots<<" explicit roots, "
+            <<rootAllocationRefusals<<" root allocation refusals; nested tag/live Next/rollback verified.\n";return 0;}
     catch(const std::exception& error) {std::cerr<<"Original collision hash state failed: "<<error.what()<<'\n';return 1;}
 }

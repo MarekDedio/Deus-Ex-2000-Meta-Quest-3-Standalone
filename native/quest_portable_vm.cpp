@@ -2245,11 +2245,15 @@ Result Execute(Host& host, const Function& function, const std::string& self,
         Machine machine(host, limits, result);
         result.value = machine.Run(function, self, arguments);
         machine.CheckFailure();
+        // Materialize the success identity while the host and alias journals
+        // can still roll back. String allocation must not fail AFTER native
+        // world/hash publication has irrevocably committed.
+        auto successFunction = function.path;
         host.Commit(); begun = false;
         machine.Accept();
         result.committed = true;
         result.status = Status::Returned;
-        result.function = function.path;
+        result.function.swap(successFunction);
     } catch (const Failure& error) {
         result.status = error.status; result.error = error.what();
     } catch (const std::exception& error) {

@@ -10,15 +10,48 @@
 #include <cctype>
 #include <cmath>
 #include <cstring>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <functional>
 #include <iostream>
 #include <limits>
 #include <map>
+#include <new>
 #include <set>
 #include <stdexcept>
 #include <tuple>
+
+namespace VmPublicationAllocationFault {
+thread_local bool denied{};
+thread_local std::size_t attempts{};
+#if defined(__GNUC__)
+__attribute__((noinline))
+#endif
+void* Allocate(std::size_t bytes) {
+    if(denied) {++attempts;throw std::bad_alloc();}
+    if(auto* memory=std::malloc(bytes?bytes:1u)) return memory;
+    throw std::bad_alloc();
+}
+}
+void* operator new(std::size_t bytes) {return VmPublicationAllocationFault::Allocate(bytes);}
+void* operator new[](std::size_t bytes) {return VmPublicationAllocationFault::Allocate(bytes);}
+#if defined(__GNUC__)
+__attribute__((noinline))
+#endif
+void operator delete(void* memory) noexcept {std::free(memory);}
+#if defined(__GNUC__)
+__attribute__((noinline))
+#endif
+void operator delete(void* memory,std::size_t) noexcept {std::free(memory);}
+#if defined(__GNUC__)
+__attribute__((noinline))
+#endif
+void operator delete[](void* memory) noexcept {std::free(memory);}
+#if defined(__GNUC__)
+__attribute__((noinline))
+#endif
+void operator delete[](void* memory,std::size_t) noexcept {std::free(memory);}
 
 namespace {
 using Bytes = std::vector<std::uint8_t>;
@@ -227,6 +260,7 @@ struct TestHost final:Vm::Host {
     std::uint32_t rng{12345},savedRng{};
     bool active{};
     bool rejectBegin{},rejectCommit{},rejectEvent{};
+    bool denyAllocationsAfterCommit{};
     std::vector<Value> iteratorValues{Value::Integer(1),Value::Integer(2),Value::Integer(3)};
     std::size_t iteratorCreates{},iteratorDestroys{},iteratorNextCalls{},iteratorBytes{128u};
     std::optional<QuestVr::StateObject> state,savedState;
@@ -257,6 +291,9 @@ struct TestHost final:Vm::Host {
         if(!active) throw std::runtime_error("Commit outside transaction");
         if(rejectCommit) throw std::runtime_error("Fixture rejected commit");
         active=false;++commitCount;
+        if(denyAllocationsAfterCommit) {
+            VmPublicationAllocationFault::attempts=0u;VmPublicationAllocationFault::denied=true;
+        }
     }
     void Rollback() noexcept override {
         storage.swap(saved);effects=savedEffects;rng=savedRng;
@@ -4439,6 +4476,19 @@ void OptionalAndReferenceTables() {
     caller.bytecode=Return(Call(0x38,4));r=Vm::Execute(host,caller,"Self");Returned(r,"Global resolution");Require(r.value.integer==2,"Global invocation incorrectly used state override");
 }
 void ControlAndFailureContracts() {
+    {
+        TestHost host;
+        // An ineligible root legitimately returns without entering Locate(),
+        // leaving Result.function with no reserved string storage. The public
+        // Execute success identity must therefore materialize BEFORE commit.
+        const auto function=Function("DisabledRootWithLongSuccessIdentityRequiringHeapStorage",Return(Int(7)));
+        host.disabledFunctions.insert(function.path);host.denyAllocationsAfterCommit=true;
+        const auto result=Vm::Execute(host,function,"Self");
+        const auto allocations=VmPublicationAllocationFault::attempts;VmPublicationAllocationFault::denied=false;
+        Returned(result,"Execute publication tail is allocation-free");
+        Require(result.function==function.path&&result.value.kind==Vm::Kind::Nothing&&host.commitCount==1u&&
+            host.rollbackCount==0u&&allocations==0u,"Execute allocated/threw after committing native host state");
+    }
     {
         TestHost host;Bytes code{0x07,0,0,0x28};const auto skipped=Native(1000);code.insert(code.end(),skipped.begin(),skipped.end());
         PatchU16(code,1,code.size());const auto returned=Return(Int(41));code.insert(code.end(),returned.begin(),returned.end());

@@ -1,6 +1,7 @@
 #include "portable_unreal_runtime.h"
 #include "portable_object_lookup.h"
 #include "portable_engine_collision.h"
+#include "portable_retail_collision.h"
 
 #include "GC/GC.h"
 
@@ -46,6 +47,7 @@
 #include "quest_native_config_import.h"
 #include "quest_static_find_object.h"
 #include "quest_collision_hash_math.h"
+#include "quest_collision_hash.h"
 #include "quest_mesh_line_trace.h"
 #include "quest_model_line_hit.h"
 #include "quest_model_point_line_hit.h"
@@ -222,6 +224,7 @@ public:
     RuntimeObject* nativeXLevel{}; // Immutable LinkActorsToLevel baseline, not a script write.
     RuntimeObject* nativeLevelModel{}; // Serialized ULevel.Model, owned only by its loader.
     RuntimeObject* nativeLevelEngine{}; // Actual collision Engine binding, never a save property.
+    std::uint64_t nativeRetailHash{}; // Actual Level.Hash lease, never an archived pointer.
     std::uint64_t nativeMapGeneration{}; // Transient loader identity, never a saved script value.
     // Explicit native loader ownership: this single-player engine creates no
     // NetDriver or DemoRecDriver. Not inferred from absent reflected fields,
@@ -489,6 +492,10 @@ protected:
     }
 };
 std::unique_ptr<GCRoot<RuntimeEngineCollisionDomain>> persistentEngineCollision;
+// One portable process collision domain. Its tables/tag are independent of a
+// particular hash instance. The current integration is rollback-only; no new
+// publishing world entry or checkpoint compatibility is implied by this owner.
+std::unique_ptr<QuestVr::OriginalCollisionHashWorld> persistentRetailCollision;
 bool PreparedNativeClassDefaultValid(const RuntimeObject* cls);
 std::size_t EngineCollisionRetainedBytes(const RuntimeEngineCollisionDomain& domain);
 std::size_t EngineCollisionRetainedBytes(const RuntimeEngineCollisionDomain& domain) {
@@ -2399,6 +2406,7 @@ public:
     }
     void Begin() override {
         if (transaction_) throw std::runtime_error("Portable actor VM nested host transaction");
+        retailCollisionOutputBytes_=0u;
         ValidateStateBudget();
         lifecycleOperations_ = 0u;
         fastTraceValidationWork_=fastTraceQueryWork_=0u;
@@ -2432,6 +2440,9 @@ public:
         if (clientDependent_ && !persistentNativeClient.HasViewport())
             throw std::runtime_error("Native client lifetime revoked during script transaction");
         ValidateSoundClientLease();
+        if(retailCollisionPreview_) {
+            ValidateStateBudget();Rollback();return;
+        }
         ValidateStateBudget();
         // AI-manager-only state already has independent checkpoint/journal
         // ownership and is not actor geometry. Preserve that existing path;
@@ -2463,14 +2474,27 @@ public:
         if (clientDependent_ && !persistentNativeClient.HasViewport())
             throw std::runtime_error("Native client lifetime revoked before script publication");
         ValidateSoundClientLease();
+        if(retailCollisionRoot_) retailCollisionRoot_->PrepareCommit();
         if (worldChanged) persistentMapTagIndex.swap(tags);
         if (worldChanged) ++persistentWorldRevision;
+        if(retailCollisionRoot_) {
+            if(!retailCollisionRoot_->CommitPrepared()) std::terminate();
+            retailCollisionRoot_.reset();createdRetailCollision_=false;
+        }
         beforeCollision_.reset();
         provisionalLookupObjects_.clear();
         saved_.clear(); savedAi_.clear(); provisionalAi_.clear(); provisionalWindows_.clear(); beforeDecals_.reset(); beforeLevelClock_.reset(); transaction_ = false;
     }
     void Rollback() noexcept override {
         if (!transaction_) return;
+        // Restore weak native hash identities BEFORE birth/lookup retirement.
+        // VM reference undo has already run, but the same hash lease remains
+        // owned until this host root unwinds; no independent native commit.
+        if(retailCollisionRoot_) {
+            if(!retailCollisionRoot_->Rollback()) std::terminate();
+            retailCollisionRoot_.reset();
+        }
+        if(createdRetailCollision_) {persistentRetailCollision.reset();createdRetailCollision_=false;}
         for(auto* object:provisionalLookupObjects_) RetireRuntimeLookupObject(object);
         provisionalLookupObjects_.clear();
         persistentScriptRandomSeed = beforeRandomSeed_;
@@ -2516,6 +2540,7 @@ public:
             entry.first->uniqueObjectCounter=entry.second.uniqueCounter;
             entry.first->nativeWindowPropertyRoots.swap(entry.second.windowPropertyRoots);
             entry.first->nativeWindowState.swap(entry.second.windowState);
+            entry.first->nativeRetailHash=entry.second.retailHash;
         }
         if(persistentWindowDomain && persistentWindowDomain->get()) {
             auto* domain=persistentWindowDomain->get();
@@ -2625,7 +2650,8 @@ public:
         // explicit port policy narrow; native ReferenceFor remains writable.
         const auto nativeKey=LowerAscii(property.key);
         const bool nativeConst = ((property.flags & 2u) && (property.zero.kind == Kind::IntArray ||
-            nativeKey == "engine.actor.timercounter" || NativeNoiseCacheKey(nativeKey))) ||
+            nativeKey == "engine.actor.timercounter" || NativeNoiseCacheKey(nativeKey) ||
+            nativeKey == "engine.actor.collisiontag" || nativeKey == "engine.actor.collocation")) ||
             (object->nativeViewportIdentity && nativeKey=="engine.player.actor") ||
             (object->nativePlayerBinding && nativeKey=="engine.playerpawn.player") ||
             nativeKey=="extension.playerpawnext.rootwindow";
@@ -2771,6 +2797,7 @@ public:
         }
         if (index == 262u) { // Actor.SetCollision, optional arguments preserve current flags.
             argumentCount(0u, 3u); RequireMapActor(object);
+            RequireNoActiveRetailMutation(object,"SetCollision");
             std::array<Value,3u> flags;
             const std::array<const char*,3u> names{"bCollideActors","bBlockActors","bBlockPlayers"};
             for (std::size_t i=0u;i<flags.size();++i) {
@@ -2788,6 +2815,7 @@ public:
             argumentCount(2u, 2u);
             if (!IsDerivedFromPath(object->cls, "Engine.Actor"))
                 throw std::runtime_error("SetCollisionSize receiver is not Engine.Actor");
+            RequireNoActiveRetailMutation(object,"SetCollisionSize");
             const auto numeric = [&](const std::size_t slot) {
                 const auto value = argument(slot);
                 if (value.kind != Kind::Byte && value.kind != Kind::Int && value.kind != Kind::Float)
@@ -4456,6 +4484,7 @@ public:
         // No render mesh/animation decode, ToWorld or Engine fallback is needed.
         return QuestVr::OriginalMeshLineCheck(hit,cylinder,end,start,extent,flags);
     }
+    #include "portable_retail_collision.inl"
     void RequireIndexedPrimitiveDiagnosticOwner(RuntimeObject* owner) {
         RequireMapActor(owner);
         if(owner->worldActorIndex<0 || static_cast<std::size_t>(owner->worldActorIndex)>=persistentWorldActors.size() ||
@@ -6646,6 +6675,20 @@ public:
         // (Spawn/save/public ReadPortableClassDefault). Bytecode Variable rejects
         // a UClass receiver rather than confusing this with its Core.Class data.
         const bool classDefaults = defaults || object->classDescriptor || object->defaultOwner;
+        if(!classDefaults && !immutable && persistentRetailCollision &&
+            persistentRetailCollision->ContainsActor(reinterpret_cast<std::uintptr_t>(object))) {
+            const auto key=LowerAscii(property.key);
+            if(key=="engine.actor.collisiontag" || key=="engine.actor.collocation") {
+                static_cast<void>(RetailCollisionActor(reinterpret_cast<std::uintptr_t>(object)));
+                if(index || property.arrayDimension!=1u)
+                    throw std::runtime_error("Retail collision native mirror requires a scalar declared field");
+                if(key=="engine.actor.collisiontag") static_cast<void>(RetailCollisionTagProperty(object));
+                else static_cast<void>(NativeCoordsProperty(object,"Engine.Actor.ColLocation",Kind::Vector,0x2u));
+                const auto value=persistentRetailCollision->ReadActor(reinterpret_cast<std::uintptr_t>(object));
+                return key=="engine.actor.collisiontag"?Value::Integer(std::bit_cast<std::int32_t>(value.collisionTag)):
+                    Value::Vector({value.colLocation.x,value.colLocation.y,value.colLocation.z});
+            }
+        }
         if(!classDefaults && !immutable && index==0u) {
             const auto key=LowerAscii(property.key);
             if(key=="extension.playerpawnext.rootwindow")
@@ -6935,7 +6978,8 @@ public:
         return StructSchema(Object(Qualified(Table(property->sourcePath), property->property->referencedType)));
     }
     Value ProbeWorldStartup(const PortableWorldStartupProbeOptions& options,
-        PortableWorldStartupProbeResult& result, QuestVr::Vm::Execution& execution) {
+        PortableWorldStartupProbeResult& result, QuestVr::Vm::Execution& execution,
+        PortableRetailCollisionSnapshot* originalCollision=nullptr) {
         if (!transaction_) throw std::runtime_error("World startup probe requires its outer VM transaction");
         struct ProbeScope { bool& active; ~ProbeScope() { active = false; } } scope{worldStartupProbe_};
         worldStartupProbe_ = true;
@@ -6964,6 +7008,12 @@ public:
         // Role swapping is a separate original branch, never silently emulated.
         if (QuestVr::Vm::ToInt(Read(info, PropertyNamed(info, "NetMode"), 0u)) != 0)
             throw std::runtime_error("World startup probe requires original NM_Standalone authority");
+        if(originalCollision) {
+            // Genuine LoadMap virtual SetActorCollision(1) boundary precedes
+            // GameInfo selection/birth. The older isolated callback probe
+            // deliberately remains available for generated script fixtures.
+            SetRetailActorCollision(true);*originalCollision=RetailCollisionSnapshot();
+        }
         visit(Phase::SelectGameInfo, info, 0u);
         auto* game = ActorLink(info, "Game");
         if (!game) {
@@ -7255,6 +7305,16 @@ private:
         set("Tag",Value::Text(Kind::Name,className));
         set("bTicked",Read(spawner,PropertyNamed(spawner,"bTicked"),0u));
         set("Brush",Value::Text(Kind::Object,{})); set("Location",location); set("OldLocation",location); set("Rotation",rotation);
+        // Original ULevel.SpawnActor registers after initial transforms but
+        // before Region/ownership/InitExecution and script birth callbacks.
+        if(xlevel->nativeRetailHash) {
+            TouchRetailCollision();DefineRetailCollisionActor(actor);
+            if(RetailCollisionFlag(actor,"Engine.Actor.bCollideActors")) {
+                RefreshRetailCollisionActor(actor);
+                persistentRetailCollision->Add(xlevel->nativeRetailHash,
+                    reinterpret_cast<std::uintptr_t>(actor),RetailCollisionQueries());
+            }
+        }
         // Native AActor.Region is a fixed declared PointRegion slot. The
         // original GameReplicationInfo also declares an unrelated Int Region;
         // leaf-name lookup must not select that field or fail with map::at.
@@ -7470,6 +7530,9 @@ private:
         const auto flag = [&](const char* name) { return QuestVr::Vm::ToBool(Read(actor, PropertyNamed(actor, name), 0u)); };
         if (flag("bStatic") || flag("bNoDelete")) return {Value::Bool(false), {}};
         if (flag("bDeleteMe")) return {Value::Bool(true), {}};
+        // This older pinned lifecycle marks pending-delete before removal.
+        // Retail removal skips pending-delete, so do not reuse that ordering.
+        RequireNoActiveRetailMutation(actor,"DestroyActor ordering");
         ReferenceFor(actor, PropertyNamed(actor, "bDeleteMe"), 0u, false)->write(Value::Bool(true));
         SetBase(actor, nullptr, true, execution);
         TouchCollision(); persistentActorCollision.Remove(reinterpret_cast<std::uintptr_t>(actor));
@@ -7510,6 +7573,7 @@ private:
         std::int32_t uniqueCounter{};
         decltype(RuntimeObject::nativeWindowPropertyRoots) windowPropertyRoots;
         std::optional<RuntimeNativeWindowState> windowState;
+        std::uint64_t retailHash{};
     };
     template <typename Number> static bool SameBits(const Number& a,const Number& b) {
         return std::memcmp(&a,&b,sizeof(Number))==0;
@@ -7669,6 +7733,9 @@ private:
     std::vector<RuntimeObject*> provisionalLookupObjects_;
     std::optional<BeforeDecals> beforeDecals_;
     std::optional<std::pair<RuntimeObject*,double>> beforeLevelClock_;
+    std::unique_ptr<QuestVr::OriginalCollisionHashWorld::RootLease> retailCollisionRoot_;
+    bool createdRetailCollision_{},retailCollisionPreview_{};
+    std::size_t retailCollisionOutputBytes_{};
     bool clientDependent_{};
     std::uint64_t soundClientIdentity_{};
     std::optional<QuestVr::ActorCollisionRegistry> beforeCollision_;
@@ -8320,6 +8387,22 @@ private:
                     throw std::runtime_error("Class-default UObject header mutation is not established");
             }
             auto* target = defaults || object->defaultOwner ? DefaultOwner(object) : object;
+            const auto nativeKey=LowerAscii(property.key);
+            if(nativeKey=="engine.actor.collisiontag" || nativeKey=="engine.actor.collocation")
+                throw std::runtime_error("Native collision mirrors require their journaled original service");
+            // Until the actual Move/rotation/resize adapters are integrated,
+            // never let a generic property write strand live retail links.
+            // A just-allocated Spawn actor initializes before its native Add.
+            if(persistentRetailCollision && persistentRetailCollision->ContainsActor(reinterpret_cast<std::uintptr_t>(target))) {
+                static constexpr std::array<const char*,15u> shapeKeys{
+                    "engine.actor.location","engine.actor.rotation","engine.actor.collisionradius",
+                    "engine.actor.collisionheight","engine.actor.brush","engine.actor.mesh",
+                    "engine.actor.prepivot","engine.actor.drawscale","engine.brush.mainscale",
+                    "engine.brush.postscale","engine.actor.bcollideactors","engine.actor.bdeleteme",
+                    "engine.actor.bblockactors","engine.actor.bblockplayers","engine.actor.bworldgeometry"};
+                if(std::find(shapeKeys.begin(),shapeKeys.end(),nativeKey)!=shapeKeys.end())
+                    RequireNoActiveRetailMutation(target,"collision-shape property mutation");
+            }
             const auto actual = ClassProperty(target->classDescriptor ? target : target->cls, property.name);
             const bool shadowed=LowerAscii(actual.key) != LowerAscii(property.key);
             if (shadowed && target->classDescriptor)
@@ -8373,7 +8456,8 @@ private:
                 object->stateLocalsRevision, object->stateTransitionFlags, object->committedScriptState, object->childActors, object->basedActors,
                 object->touchEventSent, object->committedLifecycle, object->worldRemoved,
                 object->nativePlayer, object->nativeViewportActor, object->nativePlayerBinding,
-                object->nativeRootWindow,object->uniqueObjectCounter,object->nativeWindowPropertyRoots,object->nativeWindowState});
+                object->nativeRootWindow,object->uniqueObjectCounter,object->nativeWindowPropertyRoots,object->nativeWindowState,
+                object->nativeRetailHash});
         }
     }
     void TouchCollision() {
@@ -8843,7 +8927,9 @@ private:
         limits.maxBytes = QuestVr::kMaximumSaveRuntimeBytes;
         QuestVr::ScriptStateDetail::Writer measured(limits, nullptr);
         QuestVr::ScriptStateDetail::Budget defaults{limits};
+        try {
         defaults.Retain(extraRetained);
+        defaults.Retain(retailCollisionOutputBytes_);
         if (persistentRuntime->get()->nativeDecals)
             defaults.Retain(NativeDecalRetainedBytes(*persistentRuntime->get()->nativeDecals));
         if (beforeDecals_ && beforeDecals_->state) {
@@ -8861,6 +8947,7 @@ private:
             defaults.Retain(NativeConfigClassRetainedBytes(*persistentConfigClasses->get()));
         if(persistentNativePackages) defaults.Retain(NativePackageRetainedBytes(*persistentNativePackages));
         if(persistentEngineCollision) defaults.Retain(EngineCollisionRetainedBytes(*persistentEngineCollision->get()));
+        if(persistentRetailCollision) defaults.Retain(persistentRetailCollision->RetainedBytes());
         if(persistentObjectLookup) defaults.Retain(sizeof(RuntimeObjectLookupControl)-sizeof(QuestVr::ObjectLookup::Index)+
             4u*sizeof(void*)+persistentObjectLookup->index.RetainedBytes());
         defaults.Retain(provisionalLookupObjects_.capacity()*sizeof(RuntimeObject*));
@@ -8975,6 +9062,14 @@ private:
             throw std::runtime_error("Persistent combined default/state byte budget exceeded");
         if (measured.measuredBudget().nodes > limits.totalValueNodes - defaults.nodes)
             throw std::runtime_error("Persistent combined default/state value-node budget exceeded");
+        }catch(const std::exception& error) {
+            if(!persistentRetailCollision) throw;
+            throw std::runtime_error(std::string(error.what())+" [native-state retained="+
+                std::to_string(defaults.retained)+", extra="+std::to_string(extraRetained)+
+                ", retail="+std::to_string(persistentRetailCollision?persistentRetailCollision->RetainedBytes():0u)+
+                ", output="+std::to_string(retailCollisionOutputBytes_)+", lookup="+
+                std::to_string(persistentObjectLookup?persistentObjectLookup->index.RetainedBytes():0u)+"]");
+        }
     }
     bool HasStateFrame(RuntimeObject* object) const {
         return object->stateObject && object->stateObject->frameOverride ?
@@ -9341,6 +9436,8 @@ std::vector<QuestVr::ScriptSavedProperty> ClockProperties(
 }
 
 QuestVr::ScriptSavedState CollectScriptSavedState() {
+    if(persistentRetailCollision)
+        throw std::runtime_error("Active retail collision checkpoint capture is not implemented");
     QuestVr::ScriptSavedState saved;
     saved.mapName = persistentMapPackageName;
     saved.randomSeed = persistentScriptRandomSeed;
@@ -9830,6 +9927,14 @@ public:
             LowerAscii(property.name) != LowerAscii(saved.name) || saved.index >= property.arrayDimension ||
             (instance && !host_.OwnsProperty(cls,property)))
             throw std::runtime_error("Script save property identity or fixed array index is invalid");
+        // Original persistent archives exclude flags2000. The portable
+        // checkpoint deliberately refuses this native query-history record
+        // rather than silently admitting an overlay over the native mirror.
+        if(LowerAscii(property.key)=="engine.actor.collisiontag") {
+            if(property.flags!=0x2002u || property.arrayDimension!=1u || property.zero.kind!=QuestVr::Vm::Kind::Int)
+                throw std::runtime_error("CollisionTag persistent declaration is invalid");
+            throw std::runtime_error("Persistent native CollisionTag overlays are unsupported");
+        }
         return TypedValue(property, saved.value);
     }
     QuestVr::StateObject StateValue(RuntimeObject* cls, const QuestVr::ScriptSavedObject& saved) {
@@ -11095,6 +11200,11 @@ PortableSound LoadPortableRuntimeSound(const std::string& objectPath) {
 }
 
 void ShutdownPortableRuntime() {
+    // CPU-owner shutdown, not a map-travel hash retirement implementation.
+    // Root diagnostics must have unwound before the runtime can be destroyed.
+    if(persistentRetailCollision && persistentRetailCollision->ReadUsage().depth)
+        throw std::runtime_error("Runtime shutdown refused during an active retail collision root");
+    persistentRetailCollision.reset();
     if(persistentObjectLookup) persistentObjectLookup->active=false;
     persistentObjectLookup.reset();
     while(persistentPublishedHead) RetireRuntimeLookupObject(persistentPublishedHead);
@@ -12314,6 +12424,52 @@ PortableWorldStartupProbeResult ProbePortableWorldStartup(
     return result;
 }
 
+PortableRetailCollisionSnapshot ReadPortableRuntimeRetailCollision() {
+    if(!persistentRetailCollision) {
+        PortableRetailCollisionSnapshot result;result.seed=persistentScriptRandomSeed.value_or(1u);return result;
+    }
+    PortableActorVmHost host;
+    return host.RetailCollisionSnapshot();
+}
+
+PortableRetailCollisionProbeResult ProbePortableRuntimeRetailCollision(
+    const std::vector<PortableRetailCollisionCommand>& commands,const QuestVr::Vm::Limits& limits) {
+    CollectBirthGarbageAtBoundary collect;
+    PortableRetailCollisionProbeResult result;
+    try {
+        if(!persistentRuntime || !persistentRuntime->get())
+            throw std::runtime_error("Retail collision diagnostic requires an initialized runtime");
+        PortableActorVmHost host;
+        result.execution=QuestVr::Vm::ExecuteTransaction(host,[&](QuestVr::Vm::Execution&) {
+            return host.ProbeRetailCollision(commands,result);
+        },limits);
+        result.available=result.execution.status==QuestVr::Vm::Status::Returned;
+        // The VM completed the host disposition, but this diagnostic's
+        // Commit deliberately restored its entire root instead of publishing.
+        result.execution.committed=false;
+    }catch(const std::exception& error) {
+        result.execution.status=QuestVr::Vm::Status::Unsupported;result.execution.error=error.what();
+    }
+    return result;
+}
+
+PortableRetailCollisionStartupResult ProbePortableRuntimeRetailCollisionStartup(
+    const PortableWorldStartupProbeOptions& options,const QuestVr::Vm::Limits& limits) {
+    CollectBirthGarbageAtBoundary collect;
+    PortableRetailCollisionStartupResult result;
+    try {
+        if(!persistentRuntime || !persistentRuntime->get())
+            throw std::runtime_error("Retail collision startup requires an initialized runtime");
+        PortableActorVmHost host;
+        result.world.execution=QuestVr::Vm::ExecuteTransaction(host,[&](QuestVr::Vm::Execution& execution) {
+            return host.ProbeWorldStartup(options,result.world,execution,&result.collision);
+        },limits);
+    }catch(const std::exception& error) {
+        result.world.execution.status=QuestVr::Vm::Status::Unsupported;result.world.execution.error=error.what();
+    }
+    return result;
+}
+
 QuestVr::Vm::Value ReadPortableActorScriptProperty(const std::string& actorPath,
     const std::string& propertyName, const std::uint32_t arrayIndex) {
     PortableActorVmHost host;
@@ -12666,9 +12822,9 @@ PortableActorPrimitiveBoundsSnapshot ReadPortableRuntimeActorPrimitiveBounds(con
     result.maximum={bounds.maximum.x,bounds.maximum.y,bounds.maximum.z};
     return result;
 }
-PortableActorPrimitiveLineSnapshot ProbePortableRuntimeActorPrimitiveLine(const std::string& actorPath,
+static PortableActorPrimitiveLineSnapshot ProbeActualActorPrimitiveLine(const std::string& actorPath,
     const std::array<float,3u>& end,const std::array<float,3u>& start,
-    const std::array<float,3u>& extent,const std::uint32_t flags) {
+    const std::array<float,3u>& extent,const std::uint32_t flags,const float timeSeed) {
     PortableActorVmHost host;auto* owner=PrimitiveDiagnosticOwner(host,actorPath);
     PortableActorPrimitiveLineSnapshot result;
     result.primitive=PrimitiveDiagnosticIdentity(owner,host.NativeActorPrimitive(owner));
@@ -12676,6 +12832,7 @@ PortableActorPrimitiveLineSnapshot ProbePortableRuntimeActorPrimitiveLine(const 
     // internal provider retains the production caller's complete packet and
     // does not manufacture or reset the hash/collector's FCheckResult seed.
     QuestVr::OriginalActorLineHit hit{};
+    hit.time=timeSeed;
     result.clear=host.NativeActorPrimitiveLineCheck(owner,hit,{end[0u],end[1u],end[2u]},
         {start[0u],start[1u],start[2u]},{extent[0u],extent[1u],extent[2u]},flags);
     result.hitOwner=hit.actor==reinterpret_cast<std::uintptr_t>(owner);
@@ -12684,6 +12841,18 @@ PortableActorPrimitiveLineSnapshot ProbePortableRuntimeActorPrimitiveLine(const 
     result.normal={hit.normal.x,hit.normal.y,hit.normal.z};
     result.time=hit.time;result.item=hit.item;
     return result;
+}
+
+PortableActorPrimitiveLineSnapshot ProbePortableRuntimeActorPrimitiveLine(const std::string& actorPath,
+    const std::array<float,3u>& end,const std::array<float,3u>& start,
+    const std::array<float,3u>& extent,const std::uint32_t flags) {
+    return ProbeActualActorPrimitiveLine(actorPath,end,start,extent,flags,1.0f);
+}
+
+PortableActorPrimitiveLineSnapshot ProbePortableRuntimeRetailCollisionPrimitiveLine(const std::string& actorPath,
+    const std::array<float,3u>& end,const std::array<float,3u>& start,
+    const std::array<float,3u>& extent,const std::uint32_t flags) {
+    return ProbeActualActorPrimitiveLine(actorPath,end,start,extent,flags,0.0f);
 }
 
 static std::pair<RuntimeObject*,RuntimeObject*> RelinkAuthoredActorBases(
@@ -12973,6 +13142,8 @@ PortableMapRuntimeSummary LoadPortableRuntimeMap(
 }
 
 std::size_t UnloadPortableRuntimeMap() {
+    if(persistentRetailCollision)
+        throw std::runtime_error("Map unload refused: actual retail collision retirement is not implemented");
     if (GetPortableRuntimeUnsavedScriptState())
         throw std::runtime_error("Map unload refused: script state requires a per-map archive");
     if(persistentEngineCollision) {
@@ -14660,6 +14831,8 @@ bool SavePortableRuntimeState(const std::string& path) {
 static bool ReadPortableRuntimeState(const std::string& path, const bool apply, const std::string& expectedMapName) {
     if (!persistentRuntime || !persistentRuntime->get()) return false;
     try {
+        if(persistentRetailCollision)
+            throw std::runtime_error("Active retail collision checkpoint restore is not implemented");
         std::vector<std::uint8_t> bytes;
         if (!QuestVr::ReadBoundedSaveFile(path, QuestVr::kMaximumSaveRuntimeBytes, bytes)) return false;
         std::optional<QuestVr::QuickBeltState> savedQuickBelt;

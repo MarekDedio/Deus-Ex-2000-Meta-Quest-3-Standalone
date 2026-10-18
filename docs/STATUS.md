@@ -20,6 +20,48 @@ usable contents and support/falling. See TRAINING-FIRST-PRIORITY.md.
   playable-physics capability. See ORIGINAL-ENGINE-DEFAULT-LINK.md. Live crate
   destruction, usable loot and gravity remain unfinished.
 
+## First Training actual collision-registration prefix (2026-10-18)
+
+- Connected actual current Level.Hash ownership, native UObject/generation
+  checks, ascending source-slot registration and real Brush/Mesh/Cylinder
+  providers through rollback-only CPU diagnostics. First Training contains1308
+  nonnull Level-slot actors,120 collidable/nondeleted actors and478 registration
+  links. Shared CRT initialization consumes49152 draws once per diagnostic
+  process-domain lifetime, not on each enable, map or query.
+- Kernel roots now remain owned until the complete VM transaction ends.
+  Failure restores native links/tags/ColLocation and Level.Hash before birth
+  lookup retirement, plus RNG/actor effects. Qualified live field reads share
+  that native storage. Native Spawn registers before callbacks; unsupported
+  active-hash shape/Destroy operations refuse before mutation. Save/load/map
+  retirement also refuse until their actual native contract is implemented.
+- Fixed a VM success-string allocation after host publication. Success identity
+  now materializes while rollback is still possible; allocation-denial testing
+  observes zero allocation attempts after commit.
+- Owned exact38-package first-Training test passes122490 checks/12 refusals:
+  independent CRT/vector-bucket registration oracle, genuine Time0 primitive
+  packets/order/links/tags, declared mirrors, repeated enable/disable, late
+  failure, complete save/revision/lookup/GC/RNG rollback and actor/default/
+  frozen-birth transient CollisionTag save rejection with positive controls.
+  Original source hashes/size/timestamps remain unchanged.
+- The stricter native-prefix startup explicitly stops in InitGame at slot1337
+  `00_Training.DeusExGameInfo0`, `Engine.Actor.SetInitialState` offset25/op113:
+  the unchanged16MiB retained-state limit is reached. It does not reach Move266
+  or establish original startup. The diagnostic records native hash487424B,
+  detached output164997B and actual lookup13479480B at that refusal. Reducing
+  genuine retained ownership is the next prerequisite; no forced begun/Active
+  state, guessed damage, invented loot or cosmetic falling is introduced.
+- Kernel10778569 checks/51 refusals and VM695583/838 pass. Strict ARM64 syntax
+  and Android native compilation/link pass. Full coherent host rebuild passes.
+  Final CTest133 executed/157 registered/24 explicit owned-data skips/zero
+  failures in59.64s. Separate exact38-source Engine regression42647/31 passes
+  with the same new runtime, not only an older executable.
+  Existing isolated owned Training crate destruction regression passes347/two;
+  contents are genuinely born and then rejected by the dormant Game=None world,
+  not accepted surviving loot. No new APK or live physics acceptance.
+
+See TRAINING-RETAIL-COLLISION.md and ORIGINAL-COLLISION-HASH-SAVE.md. All new
+content integration remains first Training only; the broader campaign is deferred.
+
 ## First Training collision Engine prerequisite (2026-10-18)
 
 - Added actual typed native Engine defaults/config, native GameEngine array
