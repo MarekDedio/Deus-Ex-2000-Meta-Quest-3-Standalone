@@ -1,0 +1,45 @@
+diff --git a/SurrealEngine/Package/NameString.h b/SurrealEngine/Package/NameString.h
+index 143d029..b7b8e48 100644
+--- a/SurrealEngine/Package/NameString.h
++++ b/SurrealEngine/Package/NameString.h
+@@ -2,6 +2,9 @@
+ 
+ #include <vector>
+ #include <unordered_map>
++#include <optional>
++#include <string>
++#include <string_view>
+ 
+ class NameString
+ {
+@@ -30,6 +33,30 @@ public:
+ 
+ 	int GetCompareIndex() const { return CompareIndex; }
+ 
++	// FNAME_Find: inspect existing compare identities without creating either a
++	// compare entry or a new spelling. None exists logically before initialization.
++	static std::optional<int> FindCompareIndex(std::string_view value)
++	{
++		if (value.empty())
++			return 0;
++
++		// Exactly the existing GetIndex byte table: only ASCII a-z fold to A-Z.
++		// Do not use locale-sensitive case conversion or C-string termination.
++		std::string compareValue(value);
++		for (char& c : compareValue)
++		{
++			const auto byte = static_cast<unsigned char>(c);
++			if (byte >= 0x61 && byte <= 0x7a)
++				c = static_cast<char>(byte - 0x20);
++		}
++		if (compareValue == "NONE")
++			return 0;
++		const auto found = CompareStringToIndex.find(compareValue);
++		if (found == CompareStringToIndex.end())
++			return std::nullopt;
++		return found->second;
++	}
++
+ private:
+ 	int CompareIndex = 0;
+ 	int SpelledIndex = 0;

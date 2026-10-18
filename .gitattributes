@@ -1,0 +1,2 @@
+# Unified patch context intentionally contains blank markers and space+tab.
+patches/surreal-engine/*.patch -whitespace

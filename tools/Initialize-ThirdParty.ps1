@@ -45,8 +45,9 @@ function Get-NormalizedRemote {
 }
 
 $dependencies = @(
-    @{ Key = 'metaOpenXrSdk'; Directory = 'Meta-OpenXR-SDK' },
-    @{ Key = 'surrealEngineEvaluationFork'; Directory = 'SurrealEngine' }
+    @{ Key = 'metaOpenXrSdk'; Directory = 'Meta-OpenXR-SDK'; Patches = @() },
+    @{ Key = 'surrealEngineEvaluationFork'; Directory = 'SurrealEngine';
+        Patches = @('surreal-engine/NameStringFindCompareIndex.patch') }
 )
 
 foreach ($dependency in $dependencies) {
@@ -113,6 +114,26 @@ foreach ($dependency in $dependencies) {
     $verified = Get-GitValue -Checkout $checkout -Arguments @('rev-parse', '--verify', 'HEAD')
     if ($verified.ExitCode -ne 0 -or $verified.Text -ne $commit) {
         throw "Restored dependency failed revision verification: $checkout"
+    }
+    # Project-owned additive APIs must also be reproducible from the pinned
+    # upstream revision. Apply only exact, checked-in patches to the worktree;
+    # never reset, stash, force-checkout or discard existing dependency edits.
+    foreach ($relativePatch in $dependency.Patches) {
+        $patchPath = Join-Path $projectRoot ('patches/' + $relativePatch)
+        if (-not (Test-Path -LiteralPath $patchPath -PathType Leaf)) {
+            throw "Missing checked-in $($dependency.Directory) patch: $patchPath"
+        }
+        $forward = Get-GitValue -Checkout $checkout -Arguments @('apply', '--check', $patchPath)
+        if ($forward.ExitCode -eq 0) {
+            Invoke-CheckedGit -Arguments @('-C', $checkout, 'apply', $patchPath) | Out-Null
+            Write-Host "Applied $($dependency.Directory) patch: $relativePatch"
+        } else {
+            $reverse = Get-GitValue -Checkout $checkout -Arguments @('apply', '--reverse', '--check', $patchPath)
+            if ($reverse.ExitCode -ne 0) {
+                throw "Conflicting edits for $($dependency.Directory) patch $relativePatch. Existing files and edits were preserved.`n$($forward.Text)"
+            }
+            Write-Host "$($dependency.Directory) patch already applied: $relativePatch"
+        }
     }
     if ($restorePending) {
         Invoke-CheckedGit -Arguments @('-C', $checkout, 'config', '--unset', 'questvr.pendingRestore') | Out-Null
