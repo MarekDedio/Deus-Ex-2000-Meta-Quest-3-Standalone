@@ -258,3 +258,23 @@ Core and bundled MSVCRT hashes were rechecked; original executable code is
 never loaded. Ignored local evidence: `artifacts/multi-line-*-20261016.log`.
 The production runtime/accepted NPC APK are unchanged at this checkpoint;
 no fake hash/owner-transform provider is wired into gameplay.
+
+## Actual first-Training service seam (2026-10-18)
+
+The current runtime now binds this collector to actual current-Level Model and
+native hash providers through bounded rollback-only diagnostics. No renderer
+ray or source-exclusion filter replaces those services. The embedding currently
+admits only actual current native slot-zero LevelInfo as world input; retail's
+other-Level supplied-world possibility remains outside that supported domain.
+World extent Item stays explicitly unknown; a deterministic `-1` payload is a
+portable undefined-field policy, not an authored surface index. Blocked empty
+world packets with undefined observed Time/Location refuse.
+
+An optional enclosing-root work hook now charges every admitted collector step,
+including before later failure. Independent shared-ledger controls prove no
+fresh per-call allowance or partial result publication. Real first-map tests
+compare actual loader-Model packets and independently ordered actor packets,
+including genuine crate-anchor admission, world shortening and full rollback.
+See TRAINING-RETAIL-COLLISION.md for current evidence and exact boundaries.
+Move/FindBase/physics/startup publication remain unfinished; no APK or playable
+crate acceptance is claimed for this prerequisite.

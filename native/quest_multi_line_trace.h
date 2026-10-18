@@ -29,6 +29,9 @@ struct OriginalMultiLineQueries {
     std::function<OriginalLineHitArena(const PortableModelVec3&,const PortableModelVec3&,
         const PortableModelVec3&,std::uint8_t)> actors;
     std::function<bool(std::uintptr_t)> isMover; // Actual UClass ancestry, not a name.
+    // Optional enclosing-root ledger. Every collector step charges it, also
+    // when a later provider or collector step fails. Not a fresh per-call cap.
+    std::function<void()> work{};
 };
 struct OriginalMultiLineLimits {
     std::size_t actorRecords{1'048'576u},querySteps{4'194'304u};
@@ -67,8 +70,10 @@ inline void Limits(const OriginalMultiLineLimits& value) {
     if(!value.actorRecords||value.actorRecords>maximum.actorRecords||!value.querySteps||value.querySteps>maximum.querySteps)
         Fail("callers may only tighten fixed positive budgets");
 }
-inline void Step(OriginalMultiLineStats& stats,const OriginalMultiLineLimits& limits) {
+inline void Step(OriginalMultiLineStats& stats,const OriginalMultiLineLimits& limits,
+    const std::function<void()>& work) {
     if(stats.steps>=limits.querySteps) Fail("shared collector work budget exhausted");
+    if(work) work();
     ++stats.steps;
 }
 inline std::array<Dyadic,3u> Difference(const PortableModelVec3& a,const PortableModelVec3& b) {
@@ -130,7 +135,7 @@ inline OriginalMultiLineResult CollectOriginalMultiLineHits(PortableModelVec3 en
     result.hits.records.reserve(64u);
     if(suppliedLevelInfo) {
         if(!query.world) Fail("supplied native LevelInfo has no Model query");
-        Step(result.stats,limits);
+        Step(result.stats,limits,query.work);
         const auto reply=query.world(suppliedLevelInfo,end,start,extent,static_cast<std::uint32_t>(extraNodeFlags));
         if(!reply.clear) {
             auto hit=reply.hit;hit.actor=suppliedLevelInfo;
@@ -147,16 +152,16 @@ inline OriginalMultiLineResult CollectOriginalMultiLineHits(PortableModelVec3 en
         }
     }
     if(checkActors&&query.actors) {
-        Step(result.stats,limits);
+        Step(result.stats,limits,query.work);
         auto arena=query.actors(result.actorQueryEnd,start,extent,extraNodeFlags);
         if(arena.records.size()>limits.actorRecords) Fail("actor temporary record budget exceeded");
         auto current=arena.first;
         while(current&&result.hits.records.size()<64u) {
-            Step(result.stats,limits);++result.stats.actorVisits;
+            Step(result.stats,limits,query.work);++result.stats.actorVisits;
             if(current>arena.records.size()) Fail("active actor hit link is outside its temporary arena");
             auto& hit=arena.records[static_cast<std::size_t>(current-1u)];
             const auto mover=[&] {
-                Step(result.stats,limits);++result.stats.moverTests;
+                Step(result.stats,limits,query.work);++result.stats.moverTests;
                 if(!hit.actor||!query.isMover) Fail("active actor hit has no native class ancestry provider");
                 return query.isMover(hit.actor);
             };

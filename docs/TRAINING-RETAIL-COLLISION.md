@@ -6,6 +6,72 @@ Training UObject/ULevel identities and original primitive providers. It is not
 live crate damage, usable loot, gravity, complete original startup or a new APK.
 Other campaign-map integration remains deferred.
 
+## Current follow-on: bounded initialization and native multi-line service
+
+First table construction now consumes its own fixed49152-draw allowance once
+per outer root, plus one actor-lifecycle entry operation. The initializer still
+performs every original draw/swap and stages the shared seed until success.
+It already rejects any draw allowance above49152 or below its required count.
+Previously each draw was also precharged as an actor/iterator traversal unit,
+using three quarters of that unrelated65536-operation guard. The actor limit is
+unchanged; it is not reset between calls. Detached prefix snapshots separately
+report completed initialization draws and current-root lifecycle operations.
+
+With that separation, strict first-map startup passes PreBeginPlay and reaches
+BeginPlay slot126, `00_Training.DeusExMover16`,
+`Engine.Mover.BeginPlay` offset166/op97: `Unsupported runtime native 266`.
+That is the next actual missing Move service, not successful original startup.
+The earlier PatrolPoint1 work refusal below is superseded.
+
+The current-Level multi-line adapter now binds the verified collector to actual
+loader-owned Level.Model ownerNone queries and the receiving Level's native
+actor hash. It does not use a source-excluding renderer ray. Native primitive
+selection, actual UObject/mover ancestry, original flags, world shortening,
+native actor encounter order, fixed64 admission and pinned sorting are retained.
+Its current supported world domain is the actual current native slot-zero
+LevelInfo; other-level world queries are not silently substituted. Retail permits
+a supplied LevelInfo from another Level; rejecting that domain here is a first-
+Training embedding policy, not a recovered universal native restriction.
+
+Every collector step can charge the enclosing root through an explicit work
+hook. Model validation/query work and hash steps retain their own shared caps.
+Provider refusals conservatively exhaust unpublished partial-stat allowances;
+late collector failures poison the same hash root. Temporary packet/workspace
+peaks are preflighted, and only detached paths/values leave CPU ownership.
+
+The original world packet is uninitialized before Model.LineCheck. A normal
+point hit defines Item, but an extent hit does not. The adapter records
+`worldItemKnown=false` for the latter and uses deterministic `-1` only as an
+explicit portable undefined-word policy, never an authored surface index.
+Blocked empty Models whose observed Time/Location are undefined refuse rather
+than fabricating a usable hit. This provenance must survive future Move/FindBase
+callers. See ORIGINAL-MULTI-LINE-TRACE.md and ORIGINAL-ACTOR-MOVE.md.
+
+This service is exposed only through bounded rollback-only diagnostics so far.
+Full Move/SetRotation, encroachment, original touch/base callbacks, startup
+publication, usable contents and falling remain unfinished. No APK is produced
+for this source-only prerequisite and no original commercial code is executed.
+
+Final owned first-map integration passes602358 checks/34 explicit refusals,
+including18 small multi-line roots and four late-failure roots. Expected world
+packets use the actual loader-selected source Model with the separately tested
+null-owner kernels; an independent vector-bucket/CRT oracle supplies actor
+encounter order into the separately x87-tested collector. Comparisons include
+complete packets/links, shortening, flags, actual crate-anchor admission, absent
+and disabled hashes, Item provenance, inactive NaNs, native tags/mirrors, complete
+save/lookup/revision/GC/RNG rollback and unchanged source fingerprints. This is
+adapter evidence, not an independent second end-to-end numerical implementation
+or headset/gameplay acceptance.
+
+The same-runtime exact38-package Engine42647/31 and isolated crate347/two
+regressions pass. The latter still has Game=None relevance rejecting its born
+contents; it does not prove surviving loot. Coherent host rebuild/CTest pass:
+133 executed/157 registered/24 explicit owned-data skips/zero failures,48.16s.
+Collector1507733/21 includes13994 independent x87 comparisons and shared-work
+success/failure controls. Strict GCC/ARM64 test syntax, native ARM64 syntax and
+Android native link pass. Logs use
+`artifacts/training-retail-multi-line-*20261018.log`.
+
 ## What is connected
 
 - The actual current native Level owns a numeric `Hash` lease; no native pointer
@@ -59,8 +125,8 @@ encounter order before/after unchanged setters, collision toggles, preserved
 world flags, resized primitive hits, height bounds, typed results and late-root
 rollback. No other campaign map is loaded for these tests.
 
-These physical ownership reductions pass the earlier InitGame and SecurityCamera3
-state-budget boundaries. The next observed strict startup refusal is now
+These physical ownership reductions passed the earlier InitGame and SecurityCamera3
+state-budget boundaries. At that checkpoint the next strict startup refusal was
 PreBeginPlay slot759, `00_Training.PatrolPoint1`, in
 `Engine.PatrolPoint.PreBeginPlay` offset39/op47:
 `Native actor lifecycle work budget exceeded`. The shared65536 work limit is

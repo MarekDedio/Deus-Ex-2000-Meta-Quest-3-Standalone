@@ -4,6 +4,9 @@
 #include "portable_object_lookup.h"
 #include "portable_retail_collision.h"
 #include "quest_collision_hash_math.h"
+#include "quest_model_line_hit.h"
+#include "quest_model_point_line_hit.h"
+#include "quest_multi_line_trace.h"
 #include "quest_runtime_script_packages.h"
 #include "quest_save_bundle.h"
 #include "quest_script_state.h"
@@ -513,6 +516,7 @@ void SetterCoverage(const std::vector<Actor>& actors,const std::function<void()>
     std::cout<<"FIRST TRAINING setters: actual "<<selected->path<<" selected "<<primitive.nativeClassPath
         <<"; original262/283 typed returns, unchanged-setter prepend ordering, flag toggles, resized bounds/hits, late rollback/refusals\n";
 }
+#include "portable_retail_multi_line_cases.inl"
 void Run(const fs::path& root) {
     Temporary temporary(root);std::vector<Source> sources;std::vector<PortablePackageTables> scripts;
     sources.reserve(QuestVr::RuntimeScriptPackages.size()+2u);scripts.reserve(QuestVr::RuntimeScriptPackages.size());
@@ -540,7 +544,8 @@ void Run(const fs::path& root) {
     const auto rollback=[&] {
         GC::Collect();SameGc(gc,"Retail collision diagnostic leaked GC/actor/birth state");
         const auto outside=ReadPortableRuntimeRetailCollision();
-        Require(!outside.initialized&&!outside.enabled&&!outside.hashIdentity&&outside.actors.empty()&&outside.seed==InitialSeed,
+        Require(!outside.initialized&&!outside.enabled&&!outside.hashIdentity&&outside.actors.empty()&&outside.seed==InitialSeed&&
+            !outside.initializationDraws&&!outside.lifecycleOperations,
             "Rollback retained process tables/hash/actor mirrors/shared RNG draws");
         const auto current=ReadPortableRuntimeObjectLookup();
         Require(current.generation==lookup.generation&&current.objects==lookup.objects&&
@@ -581,7 +586,17 @@ void Run(const fs::path& root) {
         result.queries.size()==2u&&result.queryHeads.size()==2u,"Complete rollback-only collision sequence failed: "+result.execution.error);
     const auto& first=result.states[1u];const auto& same=result.states[2u];const auto& disabled=result.states[3u];const auto& renewed=result.states[4u];
     std::cout<<"FIRST TRAINING native hash retained="<<first.retainedBytes<<" actors="<<first.actors.size()
-        <<" links="<<first.activeLinks<<" sourceSeed="<<InitialSeed<<" initializedSeed="<<first.seed<<'\n';
+        <<" links="<<first.activeLinks<<" sourceSeed="<<InitialSeed<<" initializedSeed="<<first.seed
+        <<" initializationDraws="<<first.initializationDraws<<" lifecycleOperations="<<first.lifecycleOperations<<'\n';
+    Require(result.states[0u].initializationDraws==0u&&result.states[0u].lifecycleOperations==0u&&
+        first.initializationDraws==49152u&&first.lifecycleOperations>actors.size()&&first.lifecycleOperations<49152u,
+        "Fixed table initialization was skipped, redrawn, or mischarged as actor traversal work");
+    for(std::size_t state=2u;state<result.states.size();++state)
+        Require(result.states[state].initializationDraws==49152u&&
+            result.states[state].lifecycleOperations>=result.states[state-1u].lifecycleOperations,
+            "Nested enable/disable/query reset the shared initialization or actor work ledger");
+    Require(same.lifecycleOperations==first.lifecycleOperations,
+        "Repeated no-op enable charged or replayed native registration");
     Require(!result.states[0u].initialized&&first.initialized&&first.initializedHere&&first.enabled&&first.hashIdentity&&
         first.levelPath==native.levelPath&&first.mapGeneration==native.mapGeneration&&first.seed==oracle.seed&&first.tag==0u&&
         first.hashes==1u&&first.activeLinks==oracle.links&&first.allocatedLinks>=first.activeLinks&&first.allocatedLinks%1024u==0u&&first.retainedBytes,
@@ -600,6 +615,7 @@ void Run(const fs::path& root) {
     SameActors(result.states[5u],actors,missTags);SameActors(result.states[6u],actors,hitTags);SameActors(result.states[7u],actors,hitTags);
     SameHits(result.queries[0u],result.queryHeads[0u],expectedMiss);SameHits(result.queries[1u],result.queryHeads[1u],expectedHit);rollback();
     SetterCoverage(actors,rollback);
+    MultiLineCoverage(map,actors,rollback);
     auto bad=hit;bad.extent[1u]=std::numeric_limits<float>::quiet_NaN();
     for(unsigned repeat=0u;repeat<2u;++repeat) {
         const auto failure=ProbePortableRuntimeRetailCollision({Command{Operation::Enable},hit,bad});
@@ -621,10 +637,10 @@ void Run(const fs::path& root) {
         startup.collision.seed==first.seed&&startup.collision.levelPath==native.levelPath&&
         startup.collision.actors.size()==actors.size()&&!world.execution.passed()&&!world.execution.committed&&
         !world.execution.error.empty(),"Enhanced startup did not capture the actual hash prefix before its next unsupported native");
-    Require(world.phase==PortableWorldStartupPhase::PreBeginPlay&&world.actorSlot==759u&&
-        world.actorPath=="00_Training.PatrolPoint1"&&world.execution.function=="Engine.PatrolPoint.PreBeginPlay"&&
-        world.execution.offset==39u&&world.execution.opcode==47u&&
-        world.execution.error=="Native actor lifecycle work budget exceeded",
+    Require(world.phase==PortableWorldStartupPhase::BeginPlay&&world.actorSlot==126u&&
+        world.actorPath=="00_Training.DeusExMover16"&&world.execution.function=="Engine.Mover.BeginPlay"&&
+        world.execution.offset==166u&&world.execution.opcode==97u&&
+        world.execution.error=="Unsupported runtime native 266",
         "First Training startup boundary changed: inspect real evidence before updating this pin");
     SameActors(startup.collision,actors,sourceTags);rollback();
     const auto again=ProbePortableRuntimeRetailCollisionStartup(options,limits);

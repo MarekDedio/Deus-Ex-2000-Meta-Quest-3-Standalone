@@ -50,8 +50,16 @@
             // appRand uses the existing shared CRT stream; absent means its
             // established unconsumed seed1 baseline, never a new per-map seed.
             auto seed=persistentScriptRandomSeed.value_or(1u);
-            for(std::size_t i=0u;i<QuestVr::OriginalCollisionHashInitializationDraws;++i) LifecycleStep();
+            // Fixed, input-independent table construction has its own draw
+            // budget, not49152 actor/iterator traversal operations. Reserve
+            // its entire allowance once in this outer root; never reset it
+            // between native calls or on a failed creation attempt.
+            LifecycleStep();
+            if(retailCollisionInitializationReserved_)
+                throw std::runtime_error("Retail collision initialization allowance already consumed in this root");
+            retailCollisionInitializationReserved_=true;
             auto tables=QuestVr::InitializeOriginalCollisionHashTables(seed,QuestVr::OriginalCollisionHashInitializationDraws);
+            retailCollisionInitializationDraws_=QuestVr::OriginalCollisionHashInitializationDraws;
             auto staged=std::make_unique<QuestVr::OriginalCollisionHashWorld>(std::move(tables));
             ValidateStateBudget(QuestVr::DecalStateDetail::Add(staged->RetainedBytes(),staged->AdditionalRootBytes()));
             auto root=staged->BeginRoot();
@@ -230,6 +238,8 @@
     }
     PortableRetailCollisionSnapshot RetailCollisionSnapshot() {
         PortableRetailCollisionSnapshot result;result.seed=persistentScriptRandomSeed.value_or(1u);
+        result.initializationDraws=retailCollisionInitializationDraws_;
+        result.lifecycleOperations=lifecycleOperations_;
         if(!persistentRetailCollision) return result;
         auto* level=RetailCollisionLevel();const auto usage=persistentRetailCollision->ReadUsage();
         result.initialized=true;result.initializedHere=createdRetailCollision_;result.enabled=level->nativeRetailHash!=0u;
@@ -264,24 +274,39 @@
         retailCollisionPreview_=true;
         ReserveRetailDiagnosticOutput(QuestVr::DecalStateDetail::Multiply(commands.size(),
             sizeof(PortableRetailCollisionSnapshot)+sizeof(std::vector<PortableRetailCollisionHit>)+sizeof(std::size_t)+
-                sizeof(PortableRetailCollisionMutation)));
+                sizeof(PortableRetailCollisionMutation)+sizeof(PortableRetailMultiLineMetadata)));
         result.states.reserve(commands.size());result.queries.reserve(commands.size());result.queryHeads.reserve(commands.size());
-        result.mutations.reserve(commands.size());
+        result.mutations.reserve(commands.size());result.multiLine.reserve(commands.size());
         for(const auto& command:commands) {
             if(command.operation==PortableRetailCollisionOperation::Enable) SetRetailActorCollision(true);
             else if(command.operation==PortableRetailCollisionOperation::Disable) SetRetailActorCollision(false);
-            else if(command.operation==PortableRetailCollisionOperation::LineCheck) {
+            else if(command.operation==PortableRetailCollisionOperation::LineCheck ||
+                command.operation==PortableRetailCollisionOperation::MultiLineCheck) {
                 auto* level=RetailCollisionLevel();
-                if(!level->nativeRetailHash || !persistentRetailCollision)
-                    throw std::runtime_error("Retail collision query requires an actual enabled Level.Hash");
-                TouchRetailCollision();
-                // Genuine global tags deduplicate each actor in this query.
-                // Preflight vector growth before producing the native arena.
-                ValidateStateBudget(QuestVr::DecalStateDetail::Multiply(persistentRetailCollision->ReadUsage().actors,
-                    2u*sizeof(QuestVr::OriginalActorLineHit)));
                 const auto vector=[](const auto& value) {return PortableModelVec3{value[0u],value[1u],value[2u]};};
-                const auto hits=persistentRetailCollision->ActorLineCheck(level->nativeRetailHash,vector(command.end),
-                    vector(command.start),vector(command.extent),command.flags,RetailCollisionQueries());
+                QuestVr::OriginalLineHitArena hits;
+                if(command.operation==PortableRetailCollisionOperation::LineCheck) {
+                    if(!level->nativeRetailHash || !persistentRetailCollision)
+                        throw std::runtime_error("Retail collision query requires an actual enabled Level.Hash");
+                    TouchRetailCollision();
+                    // Genuine global tags deduplicate each actor in this query.
+                    // Preflight vector growth before producing the native arena.
+                    ValidateStateBudget(QuestVr::DecalStateDetail::Multiply(persistentRetailCollision->ReadUsage().actors,
+                        2u*sizeof(QuestVr::OriginalActorLineHit)));
+                    hits=persistentRetailCollision->ActorLineCheck(level->nativeRetailHash,vector(command.end),
+                        vector(command.start),vector(command.extent),command.flags,RetailCollisionQueries());
+                }else {
+                    if(command.actorPath.size()>8192u || command.actorPath.find('\0')!=std::string::npos)
+                        throw std::runtime_error("Retail MultiLineCheck diagnostic anchor is invalid");
+                    auto* anchor=command.actorPath.empty()?persistentWorldActors.front():Object(command.actorPath);
+                    auto reply=RetailMultiLine(anchor,vector(command.end),vector(command.start),vector(command.extent),
+                        command.checkActors?1:0,command.checkWorld?persistentWorldActors.front():nullptr,command.flags);
+                    const auto& trace=reply.result;const auto& stats=trace.stats;
+                    result.multiLine.push_back({result.queries.size(),stats.steps,stats.actorVisits,stats.moverTests,
+                        stats.skipped,stats.corrected,{trace.actorQueryEnd.x,trace.actorQueryEnd.y,trace.actorQueryEnd.z},
+                        trace.scale,trace.hasWorldHit,trace.nearWorldHit,reply.worldItemKnown});
+                    hits=std::move(reply.result.hits);
+                }
                 const auto path=[&](std::uintptr_t identity) {
                     if(!identity) return std::string{};
                     if(!persistentObjectLookup || !persistentObjectLookup->index.RecordForIdentity(identity))

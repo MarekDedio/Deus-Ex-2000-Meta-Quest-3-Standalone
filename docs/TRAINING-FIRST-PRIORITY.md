@@ -62,8 +62,12 @@ same first Training map:1308 actual actors,120 collidable/nondeleted actors and
 478 links, including real crate primitive packets and save/GC/RNG rollback.
 Original SetCollision/SetCollisionSize now update this same native hash; real
 lookup-storage and native Touching-reset reductions pass the earlier InitGame
-memory refusal. Strict startup next reaches the unchanged native-work limit in
-PreBeginPlay at `00_Training.PatrolPoint1`. This is not publishing physics:
+memory refusal. Separately bounding fixed table initialization avoids charging
+its49152 draws as actor traversals; the65536 actor-work limit is unchanged.
+Strict startup now passes PreBeginPlay and next reaches missing native Move266
+in `00_Training.DeusExMover16` BeginPlay. The actual current-Level world/actor
+multi-line query prerequisite is connected through rollback-only diagnostics.
+This is not publishing physics:
 original Move, support/falling, destruction and surviving usable contents remain
 unfinished. See TRAINING-RETAIL-COLLISION.md. No other-map content integration
 or replacement APK is included in this prerequisite checkpoint.

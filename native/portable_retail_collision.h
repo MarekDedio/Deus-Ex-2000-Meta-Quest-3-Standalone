@@ -22,15 +22,18 @@ struct PortableRetailCollisionSnapshot {
     std::uint64_t mapGeneration{},hashIdentity{};
     std::uint32_t tag{},seed{};
     std::size_t retainedBytes{},hashes{},allocatedLinks{},activeLinks{};
+    // Work completed in this outer host root, not persistent process totals.
+    std::size_t initializationDraws{},lifecycleOperations{};
     std::vector<PortableRetailCollisionActor> actors;
 };
-enum class PortableRetailCollisionOperation { Enable, Disable, LineCheck, SetCollision, SetCollisionSize };
+enum class PortableRetailCollisionOperation { Enable, Disable, LineCheck, SetCollision, SetCollisionSize, MultiLineCheck };
 struct PortableRetailCollisionCommand {
     PortableRetailCollisionOperation operation{PortableRetailCollisionOperation::Enable};
     std::array<float,3u> end{},start{},extent{};
     std::uint8_t flags{};
     std::string actorPath{};
     std::vector<QuestVr::Vm::Value> arguments{};
+    bool checkActors{true},checkWorld{true};
 };
 struct PortableRetailCollisionMutation {
     std::string actorPath;
@@ -45,6 +48,12 @@ struct PortableRetailCollisionHit {
     float time{};
     std::int32_t item{-1};
 };
+struct PortableRetailMultiLineMetadata {
+    std::size_t queryIndex{},collectorSteps{},actorVisits{},moverTests{},skipped{},corrected{};
+    std::array<float,3u> actorQueryEnd{};
+    float scale{1.0f};
+    bool hasWorldHit{},nearWorldHit{},worldItemKnown{true};
+};
 struct PortableRetailCollisionProbeResult {
     QuestVr::Vm::Result execution;
     bool available{};
@@ -52,6 +61,7 @@ struct PortableRetailCollisionProbeResult {
     std::vector<std::vector<PortableRetailCollisionHit>> queries;
     std::vector<std::size_t> queryHeads;
     std::vector<PortableRetailCollisionMutation> mutations;
+    std::vector<PortableRetailMultiLineMetadata> multiLine;
 };
 // Bounded original SetActorCollision four-case and actual primitive-query
 // diagnostic. No native pointer leaves the CPU owner; every state is detached.

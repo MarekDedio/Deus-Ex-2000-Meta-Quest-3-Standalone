@@ -2409,6 +2409,7 @@ public:
         retailCollisionOutputBytes_=0u;
         ValidateStateBudget();
         lifecycleOperations_ = 0u;
+        retailCollisionInitializationReserved_=false;retailCollisionInitializationDraws_=0u;
         fastTraceValidationWork_=fastTraceQueryWork_=0u;
         vectorRandomDraws_=0u;
         beforeExportCount_ = persistentRuntime->get()->exports.size();
@@ -4487,6 +4488,7 @@ public:
         return QuestVr::OriginalMeshLineCheck(hit,cylinder,end,start,extent,flags);
     }
     #include "portable_retail_collision.inl"
+    #include "portable_retail_multi_line.inl"
     void RequireIndexedPrimitiveDiagnosticOwner(RuntimeObject* owner) {
         RequireMapActor(owner);
         if(owner->worldActorIndex<0 || static_cast<std::size_t>(owner->worldActorIndex)>=persistentWorldActors.size() ||
@@ -7765,6 +7767,8 @@ private:
     std::optional<std::pair<RuntimeObject*,double>> beforeLevelClock_;
     std::unique_ptr<QuestVr::OriginalCollisionHashWorld::RootLease> retailCollisionRoot_;
     bool createdRetailCollision_{},retailCollisionPreview_{};
+    bool retailCollisionInitializationReserved_{};
+    std::size_t retailCollisionInitializationDraws_{};
     std::size_t retailCollisionOutputBytes_{};
     bool clientDependent_{};
     std::uint64_t soundClientIdentity_{};

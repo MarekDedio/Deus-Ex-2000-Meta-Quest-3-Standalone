@@ -20,7 +20,40 @@ usable contents and support/falling. See TRAINING-FIRST-PRIORITY.md.
   playable-physics capability. See ORIGINAL-ENGINE-DEFAULT-LINK.md. Live crate
   destruction, usable loot and gravity remain unfinished.
 
-## First Training collision setters and ownership reduction (2026-10-18)
+## Current first Training startup/movement prerequisite (2026-10-18)
+
+- Corrected the work-unit mismatch between fixed collision-table initialization
+  and actor traversal. All49152 original draws remain, under their own exact
+  fixed allowance, once per root. Native actor traversal still has its65536
+  limit, with no nested reset; snapshots expose both counters separately.
+- The actual strict first-map run now passes PreBeginPlay. Its next missing
+  native is266 in BeginPlay slot126, `00_Training.DeusExMover16`,
+  `Engine.Mover.BeginPlay` offset166/op97. No zero-only Move, direct-transform
+  substitute, forced begun/Active state or successful startup is claimed.
+- Added the current-Level world/actor multi-line query seam needed by real
+  Move/support work: actual ownerNone Level.Model, same-root native actor hash,
+  original shortening/encounter/64-packet sorting and genuine mover ancestry.
+  Collector steps share the query ledger. World extent Item remains explicitly
+  unknown; empty blocked world packets with undefined observed fields refuse.
+  Current-Level/slot-zero world admission is a supported-domain policy.
+- Native strict ARM64 syntax and Android compilation/link pass. This remains
+  bounded rollback-only groundwork, not live crate damage/loot/gravity or a new
+  APK. Actual Move/encroachment/touch/base/startup publication remain unfinished.
+- Full coherent host rebuild passes. CTest executes133/157 registered tests,
+  with24 explicit owned-data skips and zero failures in48.16s. The collector
+  passes1507733 checks/21 refusals, including13994 independent x87 comparisons
+  and exact enclosing-ledger charging across repeated/failed calls. Integrated
+  first-map test syntax also passes strict GCC and Android ARM64 Clang.
+- Owned first-Training integration passes602358 checks/34 refusals:18 small
+  world/actor-query roots, four late-failure roots, actual Model/primitive and
+  mover identities, independent actor encounter oracle, flags/shortening,
+  unknown extent Item, inactive NaNs and full save/GC/lookup/RNG rollback.
+  Same-runtime exact38-source Engine42647/31 and isolated crate347/two pass.
+  Source fingerprints remain unchanged. This is not live Move or surviving loot.
+
+## Earlier first Training collision setters and ownership reduction (2026-10-18)
+
+The earlier PatrolPoint1 work refusal below is superseded by the current section.
 
 - Content remains exclusively `00_Training`; no other-map integration or real
   campaign-map test sweep. Shared engine/VM regressions protect this first map.

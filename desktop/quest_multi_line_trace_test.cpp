@@ -169,6 +169,80 @@ void Controls() {
     Refuse([&]{QuestVr::CollectOriginalMultiLineHits({10,0,0},{},{},1,99,0,unavailable);});
 }
 
+void SharedWorkControls() {
+    const auto sameResult=[](const Result& actual,const Result& expected) {
+        Require(actual.hits.first==expected.hits.first&&actual.hits.records.size()==expected.hits.records.size()&&
+            Same(actual.actorQueryEnd,expected.actorQueryEnd)&&Same(actual.scale,expected.scale)&&
+            actual.hasWorldHit==expected.hasWorldHit&&actual.nearWorldHit==expected.nearWorldHit,
+            "Work callback changed collector result metadata");
+        Require(actual.stats.steps==expected.stats.steps&&actual.stats.actorVisits==expected.stats.actorVisits&&
+            actual.stats.moverTests==expected.stats.moverTests&&actual.stats.skipped==expected.stats.skipped&&
+            actual.stats.corrected==expected.stats.corrected,"Work callback changed collector statistics");
+        for(std::size_t index=0u;index<actual.hits.records.size();++index)
+            Require(Same(actual.hits.records[index],expected.hits.records[index]),"Work callback changed a complete hit packet");
+    };
+    Fixture fixture;
+    fixture.world={false,Packet(0,.4f,{4,0,0},{-1,0,0})};
+    fixture.actors=Chain({Packet(2,.45f,{4,1,0},{-1,0,0}),Packet(3,.25f),Packet(4,.8f)});
+    fixture.movers.insert(2u);
+    auto providers=fixture.Providers();
+    const auto collect=[&](const QuestVr::OriginalMultiLineLimits& limits=QuestVr::OriginalMultiLineLimits{}) {
+        return QuestVr::CollectOriginalMultiLineHits({10,0,0},{},{},1,99u,255u,providers,limits);
+    };
+    const auto baseline=collect();
+    Require(baseline.stats.steps>3u&&baseline.stats.corrected==1u,
+        "Shared-work fixture does not exercise a multi-step collector and mover correction");
+    std::size_t calls{};
+    providers.work=[&] {++calls;};
+    const auto charged=collect();
+    Require(calls==charged.stats.steps,"Successful collector callback count differs from every admitted local step");
+    sameResult(charged,baseline);
+    fixture.world.hit.time=.001f;
+    const auto beforeNear=calls;
+    const auto near=collect();
+    Require(calls-beforeNear==near.stats.steps&&near.nearWorldHit&&near.stats.skipped==2u,
+        "Near-world skip/repeated mover tests bypassed shared work accounting");
+    fixture.world.hit.time=.4f;
+    providers.work={};
+    sameResult(collect(),baseline);
+
+    struct SharedRefusal final:std::runtime_error {SharedRefusal():std::runtime_error("Independent shared collector allowance exhausted") {}};
+    const auto allowance=baseline.stats.steps+baseline.stats.steps/2u;
+    std::size_t consumed{},attempts{};
+    providers.work=[&] {
+        ++attempts;
+        if(consumed>=allowance) throw SharedRefusal();
+        ++consumed;
+    };
+    auto published=collect();
+    sameResult(published,baseline);
+    Require(consumed==baseline.stats.steps&&attempts==consumed,
+        "First collector did not consume the shared outer allowance exactly");
+    bool returned{},refused{};
+    try {published=collect();returned=true;} catch(const SharedRefusal&) {refused=true;}
+    Require(refused&&!returned&&consumed==allowance&&attempts==allowance+1u,
+        "Repeated collector reset its shared allowance or swallowed callback refusal");
+    sameResult(published,baseline);++refusals;
+    const auto worlds=fixture.worlds,hashes=fixture.hashes,classes=fixture.classes;
+    refused=false;
+    try {published=collect();} catch(const SharedRefusal&) {refused=true;}
+    Require(refused&&consumed==allowance&&attempts==allowance+2u&&fixture.worlds==worlds&&
+        fixture.hashes==hashes&&fixture.classes==classes,
+        "Failed shared collector work was reset or ran providers after immediate exhausted allowance");
+    sameResult(published,baseline);++refusals;
+
+    // The collector's own tighter bound must reject a step before asking the
+    // enclosing caller to charge it. Neither refusal yields a partial result.
+    calls=0u;providers.work=[&] {++calls;};
+    QuestVr::OriginalMultiLineLimits tight;tight.querySteps=1u;
+    refused=false;
+    try {published=collect(tight);} catch(const std::runtime_error& error) {
+        refused=std::string(error.what())=="Original MultiLineCheck: shared collector work budget exhausted";
+    }
+    Require(refused&&calls==1u,"Local collector refusal invoked shared work before admitting the rejected step");
+    sameResult(published,baseline);++refusals;
+}
+
 #if (defined(__i386__) || defined(__x86_64__)) && defined(__GNUC__)
 namespace Hardware=QuestVr::ActorLineX87Oracle;
 namespace Math=Hardware::Detail;
@@ -268,7 +342,7 @@ void Differential() {std::cout<<"SKIP independent x87 oracle on non-x86 compiler
 #endif
 } // namespace
 int main() {
-    try {Controls();Differential();std::cout<<"PASS original MultiLine collector "<<checks<<" checks, "<<refusals<<" safety refusals, "
+    try {Controls();SharedWorkControls();Differential();std::cout<<"PASS original MultiLine collector "<<checks<<" checks, "<<refusals<<" safety refusals, "
         <<differential<<" independent queries, "<<corrections<<" mover corrections, "<<nearWorld<<" near-world filters.\n";return 0;}
     catch(const std::exception& error) {std::cerr<<"Original MultiLine collector failed: "<<error.what()<<'\n';return 1;}
 }
