@@ -28,9 +28,10 @@ usable contents and support/falling. See TRAINING-FIRST-PRIORITY.md.
   It is not a zero-length LineCheck and has no Mesh extent wrapper. Finite-domain
   refusals stage packet writes atomically; inactive Y extent/flags remain inert.
 - Connected actual source-selected Primitive/Mesh/LodMesh owner fields through
-  a read-only provider diagnostic. Model.PointCheck remains a separate explicit
-  refusal pending its full brush/point/hull implementation. No fake clear result,
-  temporary permanent transform, Move shortcut or other-map integration.
+  a read-only provider diagnostic. The complete separate Model.PointCheck
+  zero/box/owner/null/hull/bevel service and actual selected-Brush provider are
+  now connected too. No fake clear result, permanent temporary transform,
+  Move shortcut or other-map integration.
 - Cylinder unit tests pass212583 checks/23 refusals, with independent x87
   arithmetic and46656 exact-integer overlap classifications. Strict ARM64
   syntax and Android native compilation/link pass. No APK or completed crate
@@ -45,7 +46,26 @@ usable contents and support/falling. See TRAINING-FIRST-PRIORITY.md.
   crate347/two regressions pass; original source fingerprints are unchanged.
   Crate contents still fail dormant Game=None relevance, not surviving loot.
 
-See ORIGINAL-ACTOR-POINT-CHECK.md and ORIGINAL-ACTOR-ENCROACHMENT-CHECK.md.
+The subsequent Model follow-on passes210173 kernel checks/2196 explicit
+finite-domain or budget refusals, including18667 complete independent x87
+packets, both branch orders, XYZ bevels, signed extents, nonorthogonal owner
+coordinates and precision/overflow edges. Strict ARM64 syntax and Android native
+module/link pass. Actual first Training controls census1017 Brush owners and
+query three nonempty selected Models (including DeusExMover16):18 real provider
+packets against192 source/actual-ToWorld kernel predictions, with complete
+source/save/revision/lookup/GC/RNG preservation. The owned suite now passes
+616390 checks/41 explicit refusals. This is wiring evidence; the independent
+numeric proof belongs to the separate unit test, not the adapter comparison.
+Full temporary-pose encroachment, Move266, falling and surviving loot remain
+unfinished; no new APK is produced for this source prerequisite.
+The final coherent rebuild/CTest runs135 of159 registered tests, with24
+explicit owned-data skips and zero failures in56.92s. The three owned runs above
+are separate; other skipped cases are not claimed as executed. Original Engine/
+Core binaries and owned first-map/script fingerprints are unchanged. Evidence:
+`artifacts/training-model-overlap-*20261018.log` (verification completed19Oct).
+
+See ORIGINAL-ACTOR-POINT-CHECK.md, ORIGINAL-MODEL-POINT-CHECK.md and
+ORIGINAL-ACTOR-ENCROACHMENT-CHECK.md.
 The full movement/startup boundary remains the native266 below.
 
 ## Earlier first Training startup/movement prerequisite (2026-10-18)

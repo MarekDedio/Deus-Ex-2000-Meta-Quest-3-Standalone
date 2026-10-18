@@ -53,6 +53,7 @@
 #include "quest_model_line_hit.h"
 #include "quest_model_point_line_hit.h"
 #include "quest_actor_point_check.h"
+#include "quest_model_point_overlap.h"
 
 #include <memory>
 #include <algorithm>
@@ -4492,8 +4493,36 @@ public:
     bool NativeActorPrimitivePointCheck(RuntimeObject* owner,QuestVr::OriginalActorLineHit& hit,
         const PortableModelVec3& location,const PortableModelVec3& extent,const std::uint32_t flags=0u) {
         const auto selected=NativeActorPrimitive(owner);
-        if(selected.kind==NativePrimitiveKind::Model)
-            throw std::runtime_error("Unsupported original UModel.PointCheck provider; line/zero-length sweeps are not overlap checks");
+        if(selected.kind==NativePrimitiveKind::Model) {
+            try {
+                const auto& model=NativeSelectedModel(owner,selected);
+                // Structural admission releases its graph stack before query
+                // traversal starts. Include vector growth overlap and the64
+                // fixed hull-plane slots in this portable peak policy.
+                struct ValidationFrame {std::size_t node;unsigned next;};
+                struct Visit {std::int32_t node,parent;bool outside;};
+                const auto width=std::max(3u*sizeof(ValidationFrame)+sizeof(std::uint8_t),3u*sizeof(Visit));
+                ValidateStateBudget(QuestVr::DecalStateDetail::Add(2048u,
+                    QuestVr::DecalStateDetail::Multiply(model.nodes.size(),width)));
+                if(fastTraceValidationWork_>=MaximumNativeModelValidationWork || fastTraceQueryWork_>=MaximumNativeModelQueryWork)
+                    throw std::runtime_error("Selected Model shared native occupancy budget exhausted");
+                QuestVr::ModelPointOverlapLimits limits;
+                limits.validationSteps=std::min(limits.validationSteps,MaximumNativeModelValidationWork-fastTraceValidationWork_);
+                limits.querySteps=std::min(limits.querySteps,MaximumNativeModelQueryWork-fastTraceQueryWork_);
+                QuestVr::ModelPointOverlapStats stats;
+                const auto clear=QuestVr::CheckOriginalModelPointOverlap(hit,model,reinterpret_cast<std::uintptr_t>(selected.object),
+                    reinterpret_cast<std::uintptr_t>(owner),location,extent,flags,
+                    [this,owner]{return NativeActorToWorld(owner).coords;},limits,&stats);
+                fastTraceValidationWork_+=stats.validationSteps;fastTraceQueryWork_+=stats.querySteps;
+                return clear;
+            }catch(...) {
+                // Statistics publish only on success. A coordinator catching
+                // a refused query must not gain a fresh remaining allowance.
+                fastTraceValidationWork_=MaximumNativeModelValidationWork;
+                fastTraceQueryWork_=MaximumNativeModelQueryWork;
+                throw;
+            }
+        }
         // UMesh and ULodMesh inherit exactly UPrimitive.PointCheck: unlike
         // LineCheck, no Mesh extent canonicalization or wrapper is present.
         return QuestVr::CheckOriginalActorCylinderPoint(hit,NativePrimitiveOwnerCylinder(owner),location,extent,flags);
@@ -12904,13 +12933,17 @@ PortableActorPrimitivePointSnapshot ProbePortableRuntimeActorPrimitivePoint(cons
     const std::array<float,3u>& location,const std::array<float,3u>& extent,const std::uint32_t flags) {
     PortableActorVmHost host;auto* owner=PrimitiveDiagnosticOwner(host,actorPath);
     PortableActorPrimitivePointSnapshot result;
-    result.primitive=PrimitiveDiagnosticIdentity(owner,host.NativeActorPrimitive(owner));
-    result.pointImplementation="UPrimitive::PointCheck";
+    const auto selected=host.NativeActorPrimitive(owner);
+    result.primitive=PrimitiveDiagnosticIdentity(owner,selected);
+    result.pointImplementation=selected.kind==PortableActorVmHost::NativePrimitiveKind::Model?
+        "UModel::PointCheck":"UPrimitive::PointCheck";
     QuestVr::OriginalActorLineHit hit{37u,0u,0u,{101.0f,102.0f,103.0f},{104.0f,105.0f,106.0f},17.0f,73};
     result.clear=host.NativeActorPrimitivePointCheck(owner,hit,{location[0u],location[1u],location[2u]},
         {extent[0u],extent[1u],extent[2u]},flags);
     result.hitOwner=hit.actor==reinterpret_cast<std::uintptr_t>(owner);
     result.hitPrimitiveIsNone=hit.primitive==0u;
+    result.hitSelectedPrimitive=hit.primitive==reinterpret_cast<std::uintptr_t>(selected.object);
+    result.nextPreserved=hit.next==37u;
     result.untouchedCallerFields=hit.next==37u && hit.time==17.0f && hit.item==73 && hit.primitive==0u;
     result.location={hit.location.x,hit.location.y,hit.location.z};
     result.normal={hit.normal.x,hit.normal.y,hit.normal.z};result.time=hit.time;result.item=hit.item;

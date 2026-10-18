@@ -3,12 +3,12 @@
 // qualified owner fields, packet ownership and non-mutating runtime behavior.
 void ActorPointCoverage(const std::vector<Actor>& actors,const std::function<void()>& rollback) {
     std::size_t primitive{},mesh{},lodMesh{},blocked{},clear{},models{};
-    std::string modelActor,positiveActor;
+    std::string positiveActor;
     const float nan=std::numeric_limits<float>::quiet_NaN();
     for(const auto& actor:actors) {
         const auto selected=ReadPortableRuntimeActorPrimitive(actor.path);
         if(selected.nativeClassPath=="Engine.Model") {
-            ++models;if(modelActor.empty())modelActor=actor.path;continue;
+            ++models;continue;
         }
         if(selected.nativeClassPath=="Engine.Primitive")++primitive;
         else if(selected.nativeClassPath=="Engine.Mesh")++mesh;
@@ -31,7 +31,7 @@ void ActorPointCoverage(const std::vector<Actor>& actors,const std::function<voi
             const auto expectedClear=QuestVr::CheckOriginalActorCylinderPoint(expected,cylinder,Vector(points[index]),Vector(extent),flags);
             const auto result=ProbePortableRuntimeActorPrimitivePoint(actor.path,points[index],extent,flags);
             Require(result.clear==expectedClear&&result.hitOwner==(expected.actor==19u)&&result.hitPrimitiveIsNone&&
-                result.untouchedCallerFields&&result.time==17.0f&&result.item==73&&
+                result.untouchedCallerFields&&result.nextPreserved&&!result.hitSelectedPrimitive&&result.time==17.0f&&result.item==73&&
                 result.pointImplementation=="UPrimitive::PointCheck"&&result.primitive.actorPath==actor.path&&
                 result.primitive.primitivePath==selected.primitivePath&&result.primitive.nativeClassPath==selected.nativeClassPath,
                 "Actual source PointCheck selected wrong owner/primitive or changed caller fields: "+actor.path);
@@ -58,9 +58,8 @@ void ActorPointCoverage(const std::vector<Actor>& actors,const std::function<voi
     reject(positiveActor,{found->location[0u],found->location[1u],nan},{});
     reject("00_Training.MissingPointOwner",{},{});
     reject("Engine.Actor",{},{});
-    reject(modelActor,{},{}); // Explicit missing full Model service, not a clear/line substitute.
     rollback();
     std::cout<<"FIRST TRAINING actual PointCheck: "<<primitive<<" Engine.Cylinder, "<<mesh<<" Mesh, "<<lodMesh
-        <<" LodMesh owners; "<<blocked<<" overlaps / "<<clear<<" clear packets; Model remains explicitly unsupported. "
+        <<" LodMesh owners; "<<blocked<<" overlaps / "<<clear<<" clear packets; Model coverage is separate. "
         "No movement, temporary pose, encroachment or playable physics claim.\n";
 }

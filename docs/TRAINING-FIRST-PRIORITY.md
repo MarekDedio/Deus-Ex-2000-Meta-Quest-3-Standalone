@@ -75,8 +75,12 @@ or replacement APK is included in this prerequisite checkpoint.
 The next overlap prerequisite now has the original cylinder PointCheck kernel
 and actual Primitive/Mesh/LodMesh owner-field adapter. Its independent numeric
 and integer tests pass; it is not a line/zero-length sweep substitute. Actual
-Model.PointCheck remains an explicit refusal until all zero/box/owner/null hull
-branches and packet behavior are implemented and independently verified.
+Model.PointCheck now has all zero/box/owner/null hull branches and staged packet
+behavior, independently checked against a separate hardware-x87 occupancy
+oracle. Its actual selected-Brush/ABrush.ToWorld adapter passes clear/overlap
+controls on three nonempty source Models in this first map, including the
+DeusExMover16 at the startup boundary. This is an overlap prerequisite, not a
+temporary-pose scope, completed encroachment, native Move or playable physics.
 Recovered hash encroachment requires temporarily authoritative source pose,
 candidate cylinders, tag-before-gate ordering and tail-linked hits, followed by
 exact normal pose restoration without collision Remove/Add. Full Level

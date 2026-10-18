@@ -14,10 +14,24 @@ owned suite now passes611498 checks/39 refusals, including227 actual constructed
 Cylinder and64 LodMesh owners with582 overlap/582 clear packets. Independent
 kernel212583/23, coherent host/CTest134 executed/158 registered/24 explicit
 owned-data skips/zero failures, strict ARM64 and Android native link pass.
-Model.PointCheck remains an explicit refusal pending its complete separate
-point/box/owner/hull implementation. The native266 startup boundary below is
-unchanged. See ORIGINAL-ACTOR-POINT-CHECK.md, ORIGINAL-MODEL-POINT-CHECK.md and
+That cylinder checkpoint's Model refusal is now superseded by the complete
+separate point/box/owner/null hull/bevel occupancy service. The kernel passes
+210173 checks/2196 explicit finite-domain or budget refusals, including18667
+independent hardware-x87 packets. The actual selected-Brush/ABrush.ToWorld
+provider covers three nonempty first Training Models with zero/box clear and
+overlap controls:18 actual packets against192 kernel predictions, after a
+1017-Brush-owner census. These adapter comparisons establish wiring, not a
+second independent numerical implementation. Owned first-map integration now
+passes616390 checks/41 refusals; source and save/revision/lookup/GC/RNG state are
+unchanged. Same-runtime Engine42647/31 and isolated crate347/two regressions
+still pass; the latter does not retain usable contents. Strict ARM64 syntax
+and Android native compilation/link pass. The native266 startup boundary below
+is unchanged. See ORIGINAL-ACTOR-POINT-CHECK.md, ORIGINAL-MODEL-POINT-CHECK.md and
 ORIGINAL-ACTOR-ENCROACHMENT-CHECK.md. No APK or live crate physics claim.
+Final coherent CTest runs135/159 registered tests,24 explicit owned-data skips,
+zero failures in56.92s. Owned first-map/Engine/crate runs above are separate;
+other skipped cases are not claimed. Evidence uses
+`artifacts/training-model-overlap-*20261018.log`; verification finished19Oct.
 
 ## Current follow-on: bounded initialization and native multi-line service
 

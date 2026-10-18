@@ -93,8 +93,11 @@ LodMesh owners (no plain Mesh instances in this map), with582 overlap and582
 clear packets. They compare declared source dimensions/location and complete
 defined packet outputs against the separately verified cylinder kernel. This
 is adapter/authority evidence, not a second independent arithmetic oracle.
-Active-invalid inputs and unsupported Model owners explicitly refuse; source
-save/revision/lookup/client/GC/RNG checks guard against diagnostic mutation.
+Active-invalid inputs explicitly refuse; source save/revision/lookup/client/GC/
+RNG checks guard against diagnostic mutation. The original cylinder checkpoint
+also refused Model owners. The subsequent full separate Model occupancy service
+and actual selected-brush provider now supersede that refusal; see
+ORIGINAL-MODEL-POINT-CHECK.md. It does not change this raw cylinder contract.
 
 The complete owned exact38-source first-map collision/provider suite passes
 611498 checks/39 refusals. Same-runtime Engine42647/31 and isolated crate347/two

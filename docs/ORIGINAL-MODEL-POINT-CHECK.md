@@ -3,9 +3,10 @@
 Read-only static GOTY audit, 2026-10-18, scoped to the collision dependency
 needed by first `00_Training` mover/crate encroachment. This is **PointCheck**
 (point/box occupancy), not the already implemented **LineCheck** point branch.
-No original commercial EXE/DLL was loaded or executed. No Model occupancy
-kernel, complete encroachment, Move266, gravity or playable crate acceptance is
-established by this document.
+No original commercial EXE/DLL was loaded or executed. The complete portable
+occupancy kernel and actual selected-Model provider are now implemented and
+tested below. Complete encroachment, Move266, gravity and playable crate
+acceptance remain unfinished.
 
 Original SHA256 values, checked before and after the inspection:
 
@@ -149,7 +150,7 @@ Item can therefore remain caller-seeded if no candidate update occurs. Time,
 normal and location nevertheless have defined entry stores. The unsigned
 flags control nonzero traversal CSG; they are not guessed PolyFlags filters.
 
-## Bevel helpers and remaining numerical verification
+## Bevel helpers and independent numerical verification
 
 `103F3050..103F3205` tests a constructed bevel plane against original Extent
 and query Location. It retains its radius and distance through comparisons,
@@ -174,22 +175,73 @@ FVector cross `101176C0..101176F8`, Normalize `10117CF0..10117D61`,
 UnsafeNormal `10117DD0..10117E20`, FPlane(point,normal)
 `10118360..1011839B`, and PlaneDot `10118520..1011853D`. Normalize has its
 own small-length branch; UnsafeNormal does not. Existing audited owner
-coordinate helpers cover TransformVectorBy/TransformPlaneByOrtho, but no
-independent oracle yet proves the **combined occupancy** numeric schedule,
-bevel degeneracies, retained comparisons or packet behavior. This remains
-required implementation/verification, not a passing kernel claim.
+coordinate helpers cover TransformVectorBy/TransformPlaneByOrtho. A separate
+test-only recursive occupancy oracle now uses hardware x87 PC64 arithmetic and
+independently transcribed traversal, primary/bevel comparisons and packet writes;
+it calls no production dyadic, traversal, hull or clipping helper. It reuses only
+the earlier test-only coordinate/bevel transcription, so this is not a second
+independent derivation of those shared oracle helpers.
 
-## Proposed integration seam and retained evidence
+The complete kernel test passes210173 checks/2196 explicit finite-domain or
+budget refusals, including18667 successful independent x87 packet comparisons:
+11172 overlap,7495 clear,2490 candidate-mutating clear. Constructed bevel tests
+cover X/Y/Z8090/8806/8867 times. The cohort includes4096 finite-exponent queries
+(with matching explicit overflow refusals), translated/sheared/singular owner
+coordinates, signed extents, multi-branch shared best-distance and flags, all
+256x256 zero/box CSG flag combinations, exact64 hull slots, malformed65-slot
+refusal,8192-node iterative zero/box traversal and pending/work-limit rollback.
+Four deliberate retained fixtures include positive sub-Float distance, product
+cancellation, an inactive overflowing Float scratch store, and primary positive
+distance rounded to candidate Float0. The unused scratch must not introduce an
+active finite-output refusal. Strict ARM64 test/runtime syntax passes; on
+non-x86 builds the independent x87 cohort explicitly skips, not silently passes.
 
-Use a distinct caller-seeded `CheckOriginalModelPointOverlap` interface with
+## Portable integration seam and retained evidence
+
+The distinct caller-seeded `CheckOriginalModelPointOverlap` interface takes
 Model identity, Owner identity, query Location, Extent, flags, lazy ToWorld
-capture, fixed validation/work limits and returned statistics. Stage packets
-until supported-domain success; preserve Next and untouched Item. Model
-occupancy needs its complete zero/box/owner/null behavior, not a zero-only
-native shortcut or LineCheck substitution. Runtime capture must use the
-actual temporarily posed source in ActorEncroachmentCheck, not candidate
-coordinates or a render mesh. Shared VM/hash-root rollback and failure work
-accounting remain mandatory. No other map integration is needed for this work.
+capture, fixed validation/work limits and returned statistics. It stages packets
+and statistics until supported-domain success, preserving Next and untouched
+Item even when successful clear returns include earlier candidate writes.
+All zero/box/owner/null hull branches are present; neither LineCheck nor its
+clipping interval supplies occupancy. Runtime dispatch authenticates the actual
+selected Brush Model/export/current-Level generation and calls the actual
+owner's NativeActorToWorld, rather than Level.Model or a render mesh. Per-call
+caps tighten the same host validation/query ledgers; Model-path failure
+conservatively consumes both remaining ledgers because partial statistics are
+not published. Graph/pending/fixed-hull workspace peaks are preflighted under
+the existing portable state policy, not claimed as complete process-RSS or undo
+memory accounting.
+
+Eager validation of all graph components and active hull source data, fixed
+budgets, actual nonnull Model identity and atomic exception rollback are portable
+admission policies, not validation performed by retail. Zero containment does
+not inspect inactive collisionBound/hull words; owned box queries copy but do
+not numerically inspect the six inactive bound words. Active nonfinite or unsafe
+normalization results refuse; finite signed extents and finite nonorthogonal or
+singular coordinate values are not arbitrarily clamped/rejected. A future hash
+encroachment caller must still make its proposed source pose temporarily
+authoritative before invoking this provider. That pose scope and full Level
+encroachment/Move are not implemented here. Only first Training real-map
+integration is in scope.
+
+The actual first Training test censuses1017 source Brush owners and queries
+three distinct nonempty Models: DeusExMover16/Model1032, DeusExMover17/Model1033
+and DeusExMover49/Model1382. Each retains actual ABrush.ToWorld authority and
+passes point/box clear and overlap controls. It performs18 provider packet
+comparisons against192 source/captured-owner kernel predictions, plus three
+active-NaN box refusals;106 empty selections precede the bounded nonempty test
+set. Those predictions prove adapter selection/ownership, not independent
+numeric correctness. Original pose/ColLocation/lookup indices/root Model and
+generation, complete save/revision/client/GC/RNG state and source fingerprints
+remain unchanged. The whole owned exact38-package first-map suite passes616390
+checks/41 refusals. Same-runtime Engine42647/31 and isolated crate347/two pass;
+that crate fixture still rejects contents under dormant Game=None relevance.
+Android native module compilation/link passes. No replacement APK is produced
+and the strict BeginPlay/DeusExMover16 missing-native266 boundary is unchanged.
+Final coherent CTest executes135/159 registered tests with24 explicit owned-data
+skips, zero failures in56.92s; the three owned tests above are separate, not
+evidence that all skipped cases ran. Original DLL and source hashes are unchanged.
 
 Ignored evidence directory: `artifacts/training-model-pointcheck-20261018/`.
 Bounded files contain the two thunks, complete Model wrapper, box constructor,
@@ -197,3 +249,4 @@ complete recursive body, bevel test, projection-radius helper, plane
 intersection and scaled-normal helper; metadata records vtable mapped words,
 constants, named import targets and unchanged source hashes. Core helper
 body files are separately bounded. No original executable code is run.
+Implementation evidence uses `artifacts/training-model-overlap-*20261018.log`.
