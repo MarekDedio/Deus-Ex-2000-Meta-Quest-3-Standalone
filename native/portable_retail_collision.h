@@ -24,11 +24,19 @@ struct PortableRetailCollisionSnapshot {
     std::size_t retainedBytes{},hashes{},allocatedLinks{},activeLinks{};
     std::vector<PortableRetailCollisionActor> actors;
 };
-enum class PortableRetailCollisionOperation { Enable, Disable, LineCheck };
+enum class PortableRetailCollisionOperation { Enable, Disable, LineCheck, SetCollision, SetCollisionSize };
 struct PortableRetailCollisionCommand {
     PortableRetailCollisionOperation operation{PortableRetailCollisionOperation::Enable};
     std::array<float,3u> end{},start{},extent{};
     std::uint8_t flags{};
+    std::string actorPath{};
+    std::vector<QuestVr::Vm::Value> arguments{};
+};
+struct PortableRetailCollisionMutation {
+    std::string actorPath;
+    QuestVr::Vm::Value returned;
+    float radius{},height{};
+    bool collideActors{},blockActors{},blockPlayers{},collideWorld{};
 };
 struct PortableRetailCollisionHit {
     std::string actorPath,primitivePath;
@@ -43,6 +51,7 @@ struct PortableRetailCollisionProbeResult {
     std::vector<PortableRetailCollisionSnapshot> states;
     std::vector<std::vector<PortableRetailCollisionHit>> queries;
     std::vector<std::size_t> queryHeads;
+    std::vector<PortableRetailCollisionMutation> mutations;
 };
 // Bounded original SetActorCollision four-case and actual primitive-query
 // diagnostic. No native pointer leaves the CPU owner; every state is detached.

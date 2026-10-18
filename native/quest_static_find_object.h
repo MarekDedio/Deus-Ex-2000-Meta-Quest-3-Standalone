@@ -25,7 +25,6 @@ struct Record {
 class Index {
     struct Node {
         Record record;
-        Node* previous{};
         Node* next{};
         Node* identityNext{};
     };
@@ -47,7 +46,7 @@ public:
             Node* previous{};
             for(auto* old=other.heads_[bucket];old;old=old->next) {
                 auto* current=&slots_.find(old->record.index)->second;
-                current->previous=previous;current->next=nullptr;
+                current->next=nullptr;
                 if(previous)previous->next=current;else heads_[bucket]=current;
                 previous=current;
             }
@@ -88,7 +87,7 @@ public:
         for(std::size_t bucket=0u;bucket<BucketCount;++bucket) {
             if(auto* head=additions.heads_[bucket]) {
                 auto* tail=head;while(tail->next) tail=tail->next;
-                tail->next=heads_[bucket];if(tail->next) tail->next->previous=tail;
+                tail->next=heads_[bucket];
                 heads_[bucket]=head;additions.heads_[bucket]=nullptr;
             }
             if(auto* head=additions.identityHeads_[bucket]) {
@@ -111,7 +110,7 @@ public:
         if(slots_.size()>=maximum_)throw std::length_error("Object lookup capacity exhausted");
         // One allocating operation with the map's strong guarantee. No weak
         // hash chain changes until its stable owning node exists.
-        const auto inserted=slots_.emplace(record.index,Node{record,nullptr,nullptr,nullptr});
+        const auto inserted=slots_.emplace(record.index,Node{record,nullptr,nullptr});
         Prepend(inserted.first->second);PrependIdentity(inserted.first->second);
     }
 
@@ -178,7 +177,9 @@ public:
     }
     [[nodiscard]] std::size_t Size() const noexcept {return slots_.size();}
     // One owning ordered map, with the SAME conservative per-tree-node
-    // allowance for three links, alignment/color slack and allocator metadata.
+    // allowance for the tree's three links, alignment/color slack and allocator
+    // metadata. The name-hash chain is singly linked, so its redundant reverse
+    // pointer is not retained in every live object node.
     // Both weak hash indices are intrusive in that node; there is no secondary
     // identity-map allocation to charge. sizeof(Index) includes both head arrays.
     // No UObject/default/name storage is owned here.
@@ -209,15 +210,17 @@ private:
     }
     void Prepend(Node& node) noexcept {
         const auto bucket=Bucket(node.record.outerIndex,node.record.nameIndex);
-        node.previous=nullptr;node.next=heads_[bucket];
-        if(node.next)node.next->previous=&node;
-        heads_[bucket]=&node;
+        node.next=heads_[bucket];heads_[bucket]=&node;
     }
     void Unlink(Node& node) noexcept {
+        // Cached publication keys only: no UObject/Outer dereference. At most
+        // Size() owned nodes can occur in this bucket, and no provider callback
+        // runs during this nonallocating search. Keep all surviving precedence.
         const auto bucket=Bucket(node.record.outerIndex,node.record.nameIndex);
-        if(node.previous)node.previous->next=node.next;else heads_[bucket]=node.next;
-        if(node.next)node.next->previous=node.previous;
-        node.previous=nullptr;node.next=nullptr;
+        auto** link=&heads_[bucket];
+        while(*link&&*link!=&node) link=&(*link)->next;
+        if(*link) *link=node.next;
+        node.next=nullptr;
     }
     void PrependIdentity(Node& node) noexcept {
         const auto bucket=IdentityBucket(node.record.identity);

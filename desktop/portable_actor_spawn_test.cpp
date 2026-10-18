@@ -470,7 +470,7 @@ Tables Build(Fixture& fixture, unsigned worldModel = 0u, unsigned decalSchema = 
         const auto surfacesInput = engine.IntArrayProperty("Input", writeSurfaces, engineCore, 0x00400080u);
         engine.FunctionCode(writeSurfaces, Join({Assign(Ref(0x01u, surfaces), Ref(0x00u, surfacesInput)), Return()}));
     }
-    engine.Property("Physics", "ByteProperty", actor, engineCore); engine.Property("StandingCount", "ByteProperty", actor, engineCore); engine.Property("Touching", "ObjectProperty", actor, engineCore, 4u, actor);
+    engine.Property("Physics", "ByteProperty", actor, engineCore); engine.Property("StandingCount", "ByteProperty", actor, engineCore); engine.Property("Touching", "ObjectProperty", actor, engineCore, 4u, actor, 2u);
     engine.Property("bWaterZone", "BoolProperty", zone, engineCore); engine.Property("bBegunPlay", "BoolProperty", levelInfo, engineCore);
     engine.Property("bStartup", "BoolProperty", levelInfo, engineCore);
     engine.Property("TimeSeconds", "FloatProperty", levelInfo, engineCore);
@@ -879,6 +879,7 @@ Tables Build(Fixture& fixture, unsigned worldModel = 0u, unsigned decalSchema = 
     const auto worldPassive = classes.Export("WorldPassive", 0, importedActor);
     const auto worldBirth = classes.Export("WorldBirth", 0, probe);
     const auto restoredFixture = classes.Property("RestoredFixture", "BoolProperty", worldProbe, classesCore);
+    const auto touchingWitness = classes.Property("TouchingWitness", "ObjectProperty", worldProbe, classesCore, 1u, importedActor);
     const auto startup = classes.Import("bStartup", importedLevelInfo, "BoolProperty");
     const auto touching = classes.Import("Touching", importedActor, "ObjectProperty");
     const auto physics = classes.Import("Physics", importedActor, "ByteProperty");
@@ -931,10 +932,24 @@ Tables Build(Fixture& fixture, unsigned worldModel = 0u, unsigned decalSchema = 
     assertCode(driverPre, Native(154u, {Native(156u, {Ref(0x01u, importedObjectFlags), Int(0x02000000)}), Int(0x02000000)}), "frame");
     for (std::int32_t slot = 0; slot < 4; ++slot)
         assertCode(driverPre, Native(114u, {Array(touching, slot), Token(0x2au)}), "touch-" + std::to_string(slot));
+    // The same declared Engine.Actor slots on an already-empty actor must
+    // remain readable as None without requiring reset overlays.
+    for (std::int32_t slot = 0; slot < 4; ++slot)
+        assertCode(driverPre, Native(114u, {Context(prop("NestedActor"), Array(touching, slot)), Token(0x2au)}),
+            "empty-touch-" + std::to_string(slot));
+    driverPre.IfNot(Native(114u, {Ref(0x01u, touchingWitness), Token(0x2au)}), "has-touching-witness");
+    driverPre.Add(Token(0x06u)); driverPre.Target("touching-witness-done"); driverPre.Label("has-touching-witness");
+    for (std::int32_t slot = 0; slot < 4; ++slot)
+        assertCode(driverPre, Native(114u, {Context(Ref(0x01u, touchingWitness), Array(touching, slot)), Token(0x2au)}),
+            "frozen-touch-" + std::to_string(slot));
+    driverPre.Label("touching-witness-done");
     driverPre.Add(Context(prop("Link"), Native(279u))); // Delete future slot before its PreBeginPlay.
     driverPre.Add(Native(278u, {Ref(0x20u, worldBirth)})); // Append during live outer pass.
     driverPre.Add(Assign(prop("Counter"), Int(1))); driverPre.Add(Return());
     classes.Function("PreBeginPlay", worldProbe, classesCore, driverPre.Finish());
+    const auto setTouchingWitness = classes.Function("SetTouchingWitness", worldProbe, classesCore);
+    const auto touchingWitnessInput = classes.Property("Input", "ObjectProperty", setTouchingWitness, classesCore, 1u, importedActor, 0x80u);
+    classes.FunctionCode(setTouchingWitness, Join({Assign(Ref(0x01u, touchingWitness), Ref(0x00u, touchingWitnessInput)), Return()}));
     Flow driverBegin;
     assertCode(driverBegin, Native(154u, {prop("Counter"), Int(1)}), "phase-order");
     driverBegin.Add(Assign(prop("Counter"), Int(2)));
@@ -2091,6 +2106,15 @@ void WorldStartupSynthetic() {
         Require(InitializePortableRuntime({tables.core,tables.engine,tables.classes}).passed && LoadPortableRuntimeMap(tables.map).passed,
             "Generated world-startup map failed initialization");
         fixture.legacy=fixture.Snapshot("Legacy");
+        const auto declaredTouching=[](const std::string& actor,std::uint32_t slot) {
+            return ReadPortableActorDeclaredScriptProperty(Path(actor),"Engine.Actor.Touching",slot);
+        };
+        for (std::uint32_t slot=0u;slot<4u;++slot) {
+            Same(declaredTouching("Driver",slot),Object("Owner").value,
+                "World fixture lost authored nonempty declared Touching slot");
+            Same(declaredTouching("Pawn0",slot),Object("").value,
+                "World fixture's already-empty declared Touching slot is not None");
+        }
         const auto regionBefore=fixture.Snapshot("BeforeRegion");
         const auto fallback=Read("Level0","Region");
         Same(fallback.fields.at("zone"),Object("Level0").value,"Slot0 Region did not use its native identity");
@@ -2113,6 +2137,12 @@ void WorldStartupSynthetic() {
         }
         const auto probe=[&](const PortableWorldStartupProbeOptions& options,Phase expected,const QuestVr::Vm::Limits& limits=QuestVr::Vm::Limits{}) {
             const auto before=fixture.Snapshot("BeforeWorldProbe"); const auto paths=ActorPaths(true);
+            std::vector<std::pair<std::string,std::array<Value,4>>> touchingBefore;
+            for (const auto& path:paths) {
+                std::array<Value,4> slots;
+                for (std::uint32_t slot=0u;slot<4u;++slot) slots[slot]=declaredTouching(path,slot);
+                touchingBefore.emplace_back(path,std::move(slots));
+            }
             const auto revision=GetPortableRuntimeWorldRevision(); const auto gc=GC::GetStats();
             const auto result=ProbePortableWorldStartup(options,limits);
             Require(!result.execution.passed() && !result.execution.committed && !result.execution.error.empty(),
@@ -2124,6 +2154,10 @@ void WorldStartupSynthetic() {
                 "World diagnostic retained rolled-back allocation roots");
             Require(fixture.Snapshot("AfterWorldProbe")==before && ActorPaths(true)==paths && GetPortableRuntimeWorldRevision()==revision,
                 "World diagnostic leaked phase writes, frames, births, names, attachments or revision");
+            for (const auto& [path,slots]:touchingBefore)
+                for (std::uint32_t slot=0u;slot<4u;++slot)
+                    Same(declaredTouching(path,slot),slots[slot],
+                        "World diagnostic failed to restore exact declared Touching slot: "+path+":"+std::to_string(slot));
             ++refusals; return result;
         };
         const PortableWorldStartupProbeOptions fallbackOptions{"","SpawnClasses.WorldGame","fixture-options"};
@@ -2163,6 +2197,37 @@ void WorldStartupSynthetic() {
         Require(!QuestVr::Vm::ToBool(Read("Level0","bBegunPlay")) &&
             QuestVr::Vm::ToInt(Read("Level0","TimeSeconds"))==123,"Rolled-back world published begun play or reset time");
         if (model==1u) {
+            // A preexisting runtime-born actor reads its nonempty slots from
+            // frozen typed defaults, not authored map tags or a live overlay.
+            // The existing Driver callback observes this witness after the
+            // native ClearTouching pass, before its deletion/birth mutations.
+            const auto born=Call("Level0","Spawn",{Class("Engine.Actor"),Object(""),Name("None"),
+                Vector({0.0f,0.0f,0.0f}),Rotation({0,0,0})}).value;
+            Require(born.kind==Kind::Object && !born.text.empty(),"Cannot create frozen Touching startup witness");
+            Call("Driver","SetTouchingWitness",{{born,{}}});
+            const auto authored=fixture.Snapshot("BeforeFrozenTouching"); auto saved=Decode(authored);
+            auto& frozen=Birth(saved,born.text).frozenDefaults;
+            for (std::uint32_t slot=0u;slot<4u;++slot)
+                frozen.push_back({"Engine.Actor.Touching","Touching",slot,Object(slot==3u ? "Pawn0" : "Owner").value});
+            const auto savePath=fixture.directory/"FrozenTouching.sav";
+            WriteBytes(savePath,Envelope(authored,saved));
+            Require(ValidatePortableRuntimeState(savePath.string(),"SpawnFixture") && LoadPortableRuntimeState(savePath.string()),
+                "Valid typed frozen Touching defaults failed checkpoint preflight/restore");
+            const auto frozenBefore=fixture.Snapshot("FrozenTouchingCanonical");
+            auto frozenDecoded=Decode(frozenBefore);
+            const auto& frozenBirth=Birth(frozenDecoded,born.text);
+            for (std::uint32_t slot=0u;slot<4u;++slot) {
+                Same(declaredTouching(born.text,slot),Object(slot==3u ? "Pawn0" : "Owner").value,
+                    "Frozen Touching witness did not expose its actual typed source slot");
+                Require(std::any_of(frozenBirth.frozenDefaults.begin(),frozenBirth.frozenDefaults.end(),[&](const auto& property) {
+                    return property.key=="Engine.Actor.Touching" && property.index==slot;
+                }),"Frozen Touching witness normalized away its typed frozen baseline");
+            }
+            const auto frozenProbe=probe(fallbackOptions,terminal);
+            Require(at(frozenProbe,Phase::InitializeExecution)==7u && at(frozenProbe,Phase::PreBeginPlay)==8u &&
+                fixture.Snapshot("AfterFrozenTouchingProbe")==frozenBefore,
+                "Frozen Touching witness skipped real native reset/callback phases or leaked rollback state");
+            resetLocal();
             Call("Pawn0","SetPawnBindings",{Object("MisleadingLevel"),Object("MyLevel")});
             const auto badBinding=probe(fallbackOptions,Phase::InitializeExecution);
             Require(badBinding.actorSlot==4u && badBinding.actorPath==Path("Pawn0") && at(badBinding,Phase::InitGame)==0u,

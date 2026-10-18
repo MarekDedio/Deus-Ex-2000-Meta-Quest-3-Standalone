@@ -25,9 +25,68 @@ Other campaign-map integration remains deferred.
   reads remain separate source-default reads. Generic writes cannot shadow
   these native mirrors.
 - Spawn registers collision after its initial transform and before Region,
-  SetOwner, initialization and callbacks. Unsupported later collision-shape
-  mutation, SetCollision/SetCollisionSize and Destroy explicitly refuse in an
-  active retail hash rather than silently using the older approximate registry.
+  SetOwner, initialization and callbacks. Original native SetCollision262 and
+  SetCollisionSize283 now authenticate their declarations/fields and perform
+  old-bounds removal, typed field writes and new-bounds insertion in the same
+  root. Unsupported generic shape mutation and Destroy still explicitly refuse
+  in an active retail hash rather than using the older approximate registry.
+
+## First Training setter and memory follow-on (2026-10-18)
+
+The actual UObject lookup no longer stores a redundant previous-chain pointer:
+its stable numeric tree records, exact-name precedence and identity lookup are
+unchanged. This removes8 actual bytes per node on64-bit hosts; it does not lower
+the conservative tree-node allowance or omit loaded objects.
+
+Native startup ClearTouching now authenticates the original declared four-slot
+ObjectProperty and only materializes reset overlays for non-None slots. An
+already-None assignment has no callback or property setter to preserve. Authored,
+mutable and frozen-birth non-None values still receive journaled None writes.
+Generated controls check empty/nonempty source slots, typed frozen-birth slots,
+callback observations and exact rollback. This is a narrow native reset change,
+not general script-write elision or forced begun-play state.
+
+SetCollision's optional defaults are sampled separately immediately before each
+argument expression; ordinary input values are copied before later expressions
+can mutate their references. SetCollision returns no value; SetCollisionSize
+requires both scalar inputs and returns Bool true after success, not a guessed
+fit result. Identical setters still remove/reinsert and change hash encounter
+order. Unsafe nonfinite/negative sizes explicitly refuse as portable supported-
+domain policy. See [the static original audit](ORIGINAL-COLLISION-SETTERS.md).
+
+The first-map integration test independently checks real shared-cell crate
+encounter order before/after unchanged setters, collision toggles, preserved
+world flags, resized primitive hits, height bounds, typed results and late-root
+rollback. No other campaign map is loaded for these tests.
+
+These physical ownership reductions pass the earlier InitGame and SecurityCamera3
+state-budget boundaries. The next observed strict startup refusal is now
+PreBeginPlay slot759, `00_Training.PatrolPoint1`, in
+`Engine.PatrolPoint.PreBeginPlay` offset39/op47:
+`Native actor lifecycle work budget exceeded`. The shared65536 work limit is
+unchanged and includes49152 first-initialization CRT draws; no counter is reset
+mid-root. This remains rollback-only startup, not successful world publication
+or live crate physics. Move, support/falling and usable surviving loot are still
+unfinished. No replacement APK is produced for this checkpoint.
+
+The existing state budget is not yet a full physical-memory/undo measurement:
+property accounting remains save-shaped and does not count every Before journal
+allocation. These narrow real-storage reductions must not be described as fixing
+all state/undo memory accounting; any future accounting change must retain the
+whole rollback domain and independent checkpoint limits.
+
+Final coherent host build passes. The owned exact38-package first-map suite
+passes390461 checks/30 explicit refusals with unchanged source fingerprints;
+the stricter startup refusal above is asserted, not counted as successful
+startup. The same-runtime Engine regression passes42647/31 and the isolated
+first-map crate diagnostic347/two (its contents still fail dormant Game=None
+relevance; it is not surviving usable loot). Generated Spawn/reset/rollback
+controls pass9211/144, VM695763/846 and lookup203655/59. CTest executes133 of157
+registered tests with24 explicit owned-data skips, zero failures,54.42s. Owned
+data runs listed here are separate; other skipped tests are not claimed.
+Strict ARM64 syntax and Android native compilation/link pass. Evidence uses
+`artifacts/training-setters-memory-final-*20261018.log` and
+`artifacts/training-sparse-touching-*20261018.log`; no APK is generated.
 
 ## One transaction, not independently committed native subcalls
 
@@ -86,17 +145,18 @@ vector-bucket/CRT oracle compares actual Time0 primitive packets, encounter
 order, result links and native query tags. Repeated enable is a no-op; disabling
 destroys only its hash lease, and re-enabling does not redraw the tables.
 
-The stricter startup currently refuses during InitGame, slot1337
+At the earlier registration-only checkpoint, strict startup refused during InitGame, slot1337
 `00_Training.DeusExGameInfo0`, at `Engine.Actor.SetInitialState` offset25,
 opcode113: the retained-state budget is exceeded. The captured desktop values
 are16776735 bytes already retained before the rejected increment, including
 487424 native hash bytes,164997 detached diagnostic bytes and13479480 actual
 lookup bytes. This is the observed boundary, not successful original startup
 or evidence of reaching Move266. The16MiB state limit is unchanged; diagnose
-and reduce genuine retained ownership before advancing this path. The older
+and reduce genuine retained ownership before advancing this path. That observed
+boundary is superseded by the follow-on above. The older
 isolated startup probe does not include these added native tables/mirrors.
 
-The owned integration suite passes122490 checks/12 explicit refusals, including
+The earlier owned integration suite passed122490 checks/12 explicit refusals, including
 source-file immutability, malformed/late-failing commands, a short VM budget,
 and rejection of actor/default/frozen-birth persistent CollisionTag records with
 accepted positive controls. The kernel passes10778569 checks/51 refusals and the

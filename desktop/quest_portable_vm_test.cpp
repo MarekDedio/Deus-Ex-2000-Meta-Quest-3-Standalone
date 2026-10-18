@@ -481,7 +481,7 @@ struct TestHost final:Vm::Host {
         const std::vector<Vm::Evaluation>& arguments,const Vm::Function* declaration,Vm::Execution& execution) override {
         // 1008 belongs only to this generated fixture. Native zero is keyed by
         // its declaration; individual tests provide the host-side observation.
-        if((index==264u || index==548u || index==1008u || index==0u || index==1410u || index==1415u || index==1416u || index==1420u || index==1421u || index==1422u ||
+        if((index==262u || index==283u || index==264u || index==548u || index==1008u || index==0u || index==1410u || index==1415u || index==1416u || index==1420u || index==1421u || index==1422u ||
             index==1430u || index==1431u || index==1432u || index==1433u || index==1438u || index==1454u || index==1461u || index==1465u || index==1467u || index==1475u ||
             index==1535u || index==1538u || index==1539u || index==1540u ||
             index==1541u || index==1544u || index==1545u) && executionNative) {
@@ -3141,6 +3141,142 @@ void SequentialNativeArgumentSeedContracts() {
     }
     std::cout<<"Sequential native argument result seeds: "<<checks-initialChecks<<" checks and "
         <<rejections-initialRejections<<" refusal controls.\n";
+}
+void CollisionSetterInputContracts() {
+    const auto initialChecks=checks,initialRejections=rejections;
+    const auto configure=[](TestHost& host,std::uint16_t index,const std::array<Vm::Property,3u>& flags) {
+        auto native=Function(index==262u?"SetCollision":"SetCollisionSize",{},"Engine.Actor");native.flags=0x401u;native.nativeIndex=index;
+        const std::array<const char*,3u> names=index==262u?
+            std::array<const char*,3u>{"NewColActors","NewBlockActors","NewBlockPlayers"}:
+            std::array<const char*,3u>{"NewRadius","NewHeight","ReturnValue"};
+        for(std::size_t slot=0u;slot<3u;++slot) native.variables.push_back(host.Property(native,
+            static_cast<std::int32_t>(slot+1u),names[slot],index==262u||slot==2u?Value::Bool(false):Value::Float(0.0f),
+            index==262u?0x90u:slot==2u?0x580u:0x80u,1u,true));
+        host.hasSequentialSeeds=[index](std::uint16_t actual,const std::string&,const Vm::Function*) {return actual==index;};
+        host.materializeOmission=[index](std::uint16_t actual,const std::string&,std::size_t slot,const Vm::Function*) {
+            return actual==index&&slot<(index==262u?3u:2u);
+        };
+        host.sequentialArgumentSeed=[&host,index,flags](std::uint16_t actual,const std::string& receiver,std::size_t slot,
+            const Vm::Function*,const std::vector<Value>& prefix)->std::optional<Value> {
+            Require(actual==index&&prefix.size()==slot&&slot<(index==262u?3u:2u),"Collision setter seed order/schema changed");
+            return index==262u?host.Load(receiver,flags[slot]):Value::Float(0.0f);
+        };
+        return native;
+    };
+    const auto nullResult=[] {return Context(Bytes{0x2a},Int(99),0u);};
+    for(const std::uint16_t index:{262u,283u})for(const bool reflected:{false,true})for(const bool failLater:{false,true}) {
+        TestHost host;auto caller=Function("CollisionSetterCopiesEarlierAlias",{});
+        std::array<Vm::Property,3u> flags;
+        for(std::size_t slot=0u;slot<flags.size();++slot) {
+            flags[slot]=host.Property(caller,static_cast<std::int32_t>(slot+1u),"Flag"+std::to_string(slot),Value::Bool(false));
+            host.Store("Self",flags[slot],{Value::Bool(slot!=1u)});
+        }
+        const auto source=index==262u?flags[0u]:host.Property(caller,4,"RadiusSource",Value::Float(0.0f));
+        if(index==283u) host.Store("Self",source,{Value::Float(17.5f)});
+        const auto native=configure(host,index,flags);
+        host.finals[{caller.source,7}]=std::make_shared<Vm::Function>(native);
+        const auto input=Ref(0x01,index==262u?1:4);
+        const auto changed=index==262u?Bytes{0x28u}:Real(99.0f);
+        const auto second=index==262u?Bytes{0x27u}:Real(23.0f);
+        const auto mutation=Native(1060u,{input,changed,second});
+        const auto call=index==262u?
+            (reflected?Call(0x1c,7,{input,mutation,Bytes{0x0bu}}):Native(index,{input,mutation,Bytes{0x0bu}})):
+            (reflected?Call(0x1c,7,{input,mutation}):Native(index,{input,mutation}));
+        bool called{};host.executionNative=[&](const std::string&,const std::vector<Vm::Evaluation>& arguments,
+            const Vm::Function* declaration,Vm::Execution&) {
+            called=true;Require(static_cast<bool>(declaration)==reflected,"Collision setter reflected/raw identity changed");
+            Require(arguments.size()==(index==262u?3u:2u),"Collision setter copied argument count changed");
+            for(const auto& argument:arguments) Require(!argument.reference,"Collision setter retained an ordinary input alias");
+            Require(Vm::Equal(arguments[0u].Load(),index==262u?Value::Bool(true):Value::Float(17.5f))&&
+                Vm::Equal(arguments[1u].Load(),index==262u?Value::Bool(true):Value::Float(23.0f)),
+                "Later setter argument retroactively replaced an earlier consumed input");
+            if(index==262u) Require(arguments[2u].Load().boolean,"SetCollision omission lost the per-expression current flag seed");
+            return Vm::Evaluation{index==283u?Value::Bool(true):Value{}, {}};
+        };
+        caller.bytecode=failLater?Join({call,Native(4095u),Return()}):Return(call);
+        const auto result=Vm::Execute(host,caller,"Self");
+        if(failLater) Failed(result,Vm::Status::Unsupported,host,"Later failure rolls back collision-setter argument effects");
+        else Returned(result,"Collision setter raw/reflected inputs copy at each Step");
+        Require(called&&result.writes==1u&&Vm::Equal(host.Load("Self",source),failLater?
+            (index==262u?Value::Bool(true):Value::Float(17.5f)):(index==262u?Value::Bool(false):Value::Float(99.0f))),
+            "Collision setter lost real argument mutation or root rollback");
+    }
+    for(const bool reflected:{false,true}) {
+        TestHost host;auto caller=Function("SetCollisionSequentialOptionalDefaults",{});
+        std::array<Vm::Property,3u> flags;
+        for(std::size_t slot=0u;slot<flags.size();++slot) {
+            flags[slot]=host.Property(caller,static_cast<std::int32_t>(slot+1u),"Flag"+std::to_string(slot),Value::Bool(false));
+            host.Store("Self",flags[slot],{Value::Bool(false)});
+        }
+        const auto native=configure(host,262u,flags);host.finals[{caller.source,7}]=std::make_shared<Vm::Function>(native);
+        const auto first=Native(1060u,{Ref(0x01,2),Bytes{0x27u},Bytes{0x28u}});
+        const auto third=Native(1060u,{Ref(0x01,2),Bytes{0x28u},Bytes{0x27u}});
+        caller.bytecode=Return(reflected?Call(0x1c,7,{first,nullResult(),third}):Native(262u,{first,nullResult(),third}));
+        host.executionNative=[&](const std::string&,const std::vector<Vm::Evaluation>& arguments,const Vm::Function*,Vm::Execution&) {
+            Require(arguments.size()==3u&&!arguments[0u].reference&&!arguments[1u].reference&&!arguments[2u].reference&&
+                !arguments[0u].Load().boolean&&arguments[1u].Load().boolean&&arguments[2u].Load().boolean&&
+                !host.Load("Self",flags[1u]).boolean,"SetCollision default was captured before prior expression or reloaded after a later expression");
+            return Vm::Evaluation{};
+        };
+        const auto result=Vm::Execute(host,caller,"Self");Returned(result,"SetCollision optional Bool seed occurs immediately before each expression");
+        Require(result.writes==2u,"SetCollision optional-default fixture did not execute both real input mutations");
+    }
+    for(const std::uint16_t index:{262u,283u})for(const bool failLater:{false,true}) {
+        TestHost host;const auto fixture=Function("DirectCollisionInputFixture",{});
+        std::array<Vm::Property,3u> flags;
+        for(std::size_t slot=0u;slot<flags.size();++slot) {
+            flags[slot]=host.Property(fixture,static_cast<std::int32_t>(slot+1u),"Flag"+std::to_string(slot),Value::Bool(false));
+            host.Store("Self",flags[slot],{Value::Bool(slot!=1u)});
+        }
+        const auto native=configure(host,index,flags);
+        auto first=std::make_shared<Value>(index==262u?Value::Bool(true):Value::Float(17.5f));
+        const auto old=*first;std::size_t firstReads{},secondReads{};
+        auto firstAlias=std::make_shared<Vm::Reference>();firstAlias->zero=index==262u?Value::Bool(false):Value::Float(0.0f);
+        firstAlias->read=[&] {++firstReads;return *first;};firstAlias->write=[first](const Value& value) {*first=value;};
+        auto secondAlias=std::make_shared<Vm::Reference>();secondAlias->zero=firstAlias->zero;
+        secondAlias->read=[&] {++secondReads;*first=index==262u?Value::Bool(false):Value::Float(99.0f);
+            return index==262u?Value::Bool(true):Value::Float(23.0f);};
+        bool called{};host.executionNative=[&](const std::string&,const std::vector<Vm::Evaluation>& arguments,const Vm::Function*,Vm::Execution&) {
+            called=true;Require(!arguments[0u].reference&&!arguments[1u].reference&&Vm::Equal(arguments[0u].Load(),old)&&
+                Vm::Equal(arguments[1u].Load(),index==262u?Value::Bool(true):Value::Float(23.0f)),
+                "Direct Execution setter call reloaded an earlier alias after consuming a later input");
+            return Vm::Evaluation{index==283u?Value::Bool(true):Value{}, {}};
+        };
+        const auto result=Vm::ExecuteTransaction(host,[&](Vm::Execution& execution) {
+            // Establish root-owned undo before the deliberately side-effecting
+            // diagnostic read; direct incoming aliases must still read once.
+            execution.WriteReference(firstAlias,old);firstReads=0u;
+            auto returned=execution.CallFunction(native,"Self",{{{},firstAlias},{{},secondAlias}});
+            if(failLater) throw std::runtime_error("Later direct collision coordinator refusal");
+            return returned;
+        });
+        if(failLater) Failed(result,Vm::Status::Unsupported,host,"Direct setter alias snapshots survive a later root failure");
+        else Returned(result,"Direct Execution collision setter consumes each incoming alias once");
+        Require(called&&firstReads==1u&&secondReads==1u&&result.writes==1u&&Vm::Equal(*first,failLater?old:
+            (index==262u?Value::Bool(false):Value::Float(99.0f))),
+            "Direct setter snapshot repeated an alias read or lost external-alias rollback");
+    }
+    for(unsigned supplied=0u;supplied<3u;++supplied) {
+        TestHost host;std::array<Vm::Property,3u> flags{};const auto native=configure(host,283u,flags);
+        bool called{};host.executionNative=[&](const std::string&,const std::vector<Vm::Evaluation>& arguments,const Vm::Function*,Vm::Execution&) {
+            called=true;Require(arguments.size()==2u&&!arguments[0u].reference&&!arguments[1u].reference&&
+                arguments[0u].Load().kind==Vm::Kind::Float&&arguments[1u].Load().kind==Vm::Kind::Float&&
+                arguments[0u].Load().floating==0.0f&&arguments[1u].Load().floating==0.0f,
+                "SetCollisionSize omitted result buffers did not retain local Float0 seeds");
+            return Vm::Evaluation{Value::Bool(true),{}};
+        };
+        std::vector<Vm::Evaluation> arguments(supplied);
+        const auto result=Vm::Execute(host,native,"Self",arguments);
+        if(supplied<2u) {
+            Failed(result,Vm::Status::Invalid,host,"SetCollisionSize Float0 temporary seed does not make required parameters optional");
+            Require(!called,"Missing required collision size parameter entered native body");
+        }else {
+            Returned(result,"SetCollisionSize supplied NoWrite operands consume their initialized Float0 buffers");
+            Require(called&&result.value.kind==Vm::Kind::Bool&&result.value.boolean,"SetCollisionSize initialized required inputs lost wrapper success");
+        }
+    }
+    std::cout<<"Collision setter262/283 copied inputs and per-expression defaults: "<<checks-initialChecks<<" checks and "
+        <<rejections-initialRejections<<" rejection controls passed.\n";
 }
 void NativeResultDispositionContracts() {
     const auto initialChecks=checks,initialRejections=rejections;
@@ -5923,6 +6059,7 @@ int main() {
         DirectNativeInitializedArgumentContracts();
         IntegerMaximumContracts();
         SequentialNativeArgumentSeedContracts();
+        CollisionSetterInputContracts();
         NativeResultDispositionContracts();
         MaterializedNativeOmissionContracts();
         NativeCallSiteContextContracts();

@@ -3164,6 +3164,8 @@ public:
         if (index==1013u) return Native(index,receiver,arguments,declaration);
         if (Object(receiver)->defaultOwner)
             throw std::runtime_error("Native execution on a class-default object requires its audited handler");
+        if((index==262u || index==283u) && persistentRetailCollision)
+            return RetailCollisionSetterNative(index,Object(receiver),arguments,declaration);
         if(index==512u) return MakeNoiseNative(Object(receiver),arguments,declaration,execution);
         if(index==1052u) return InitRootWindowNative(Object(receiver),arguments,declaration,execution);
         if(index==1410u) return NewChildWindowNative(Object(receiver),arguments,declaration,execution);
@@ -4681,6 +4683,10 @@ public:
     }
     bool HasSequentialNativeArgumentSeeds(const std::uint16_t index,const std::string& receiver,
         const Function* declaration) override {
+        if((index==262u || index==283u) && persistentRetailCollision) {
+            static_cast<void>(RetailCollisionActor(reinterpret_cast<std::uintptr_t>(Object(receiver))));
+            static_cast<void>(RetailCollisionSetterDeclaration(index,declaration));return true;
+        }
         if (index==548u) {
             RequireMapActor(Object(receiver));
             static_cast<void>(FastTraceDeclaration(declaration));
@@ -4698,6 +4704,15 @@ public:
     }
     std::optional<Value> SequentialNativeArgumentSeed(const std::uint16_t index,const std::string& receiver,
         const std::size_t slot,const Function* declaration,const std::vector<Value>& prefix) override {
+        if((index==262u || index==283u) && persistentRetailCollision) {
+            static_cast<void>(RetailCollisionSetterDeclaration(index,declaration));
+            if(prefix.size()!=slot || slot>=(index==262u?3u:2u))
+                throw std::runtime_error("Collision setter seed lacks its ordered original input prefix");
+            if(index==283u) return Value::Float(0.0f);
+            static constexpr std::array<const char*,3u> keys{
+                "Engine.Actor.bCollideActors","Engine.Actor.bBlockActors","Engine.Actor.bBlockPlayers"};
+            return Value::Bool(RetailCollisionFlag(Object(receiver),keys[slot]));
+        }
         if (index==548u) {
             static_cast<void>(FastTraceDeclaration(declaration));
             if (slot>1u || prefix.size()!=slot) throw std::runtime_error("FastTrace default lacks its ordered input prefix");
@@ -4724,6 +4739,12 @@ public:
     }
     bool MaterializeNativeArgumentOmission(const std::uint16_t index,const std::string& receiver,
         const std::size_t slot,const Function* declaration) override {
+        if((index==262u || index==283u) && persistentRetailCollision) {
+            static_cast<void>(RetailCollisionSetterDeclaration(index,declaration));
+            static_cast<void>(RetailCollisionActor(reinterpret_cast<std::uintptr_t>(Object(receiver))));
+            if(slot>=(index==262u?3u:2u)) throw std::runtime_error("Collision setter omission exceeds original input schema");
+            return true;
+        }
         if (index==512u) {
             static_cast<void>(MakeNoiseDeclaration(declaration));RequireMapActor(Object(receiver));
             if (slot!=0u) throw std::runtime_error("MakeNoise omission exceeds its input schema");
@@ -7078,11 +7099,20 @@ public:
             StoreNativeLevelTime(info->nativeXLevel,0.0);
             write(info, "TimeSeconds", Value::Float(0.0f));
             each(Phase::ClearTouching, [&](RuntimeObject* actor) {
-                const auto property = PropertyNamed(actor, "Touching");
-                if (property.zero.kind != Kind::Object || property.arrayDimension != 4u)
+                const auto property = DescribeProperty("Engine.Actor.Touching");
+                if (property.key!="Engine.Actor.Touching" || !OwnsProperty(actor->cls,property) ||
+                    property.zero.kind != Kind::Object || property.arrayDimension != 4u || property.flags!=2u)
                     throw std::runtime_error("Original world Touching reset requires Actor.Touching[4]");
-                for (std::uint32_t slot = 0u; slot < 4u; ++slot)
-                    ReferenceFor(actor, property, slot, false)->write(Value::Text(Kind::Object, {}));
+                for (std::uint32_t slot = 0u; slot < 4u; ++slot) {
+                    const auto current=Read(actor,property,slot);
+                    if(current.kind!=Kind::Object) throw std::runtime_error("Original world Touching slot is not an Actor reference");
+                    // This native reset has no callback/setter side effects.
+                    // An already-None slot needs no heap Value/map overlay to
+                    // represent the same raw assignment. Keep every nonnull
+                    // reset and its journal; do not generally elide script writes.
+                    if(!current.text.empty())
+                        ReferenceFor(actor, property, slot, false)->write(Value::Text(Kind::Object, {}));
+                }
             });
             each(Phase::InitializeExecution, [&](RuntimeObject* actor) { InitializeActorExecution(actor); });
             visit(Phase::PublishStartup, info, 0u);
@@ -12440,8 +12470,8 @@ PortableRetailCollisionProbeResult ProbePortableRuntimeRetailCollision(
         if(!persistentRuntime || !persistentRuntime->get())
             throw std::runtime_error("Retail collision diagnostic requires an initialized runtime");
         PortableActorVmHost host;
-        result.execution=QuestVr::Vm::ExecuteTransaction(host,[&](QuestVr::Vm::Execution&) {
-            return host.ProbeRetailCollision(commands,result);
+        result.execution=QuestVr::Vm::ExecuteTransaction(host,[&](QuestVr::Vm::Execution& execution) {
+            return host.ProbeRetailCollision(commands,result,execution);
         },limits);
         result.available=result.execution.status==QuestVr::Vm::Status::Returned;
         // The VM completed the host disposition, but this diagnostic's

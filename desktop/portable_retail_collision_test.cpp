@@ -12,12 +12,16 @@
 #include <array>
 #include <bit>
 #include <chrono>
+#include <cmath>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <functional>
+#include <iomanip>
 #include <iostream>
 #include <limits>
 #include <memory>
+#include <optional>
 #include <set>
 #include <stdexcept>
 #include <string_view>
@@ -190,6 +194,7 @@ struct Oracle {
     std::array<std::array<std::uint32_t,16384u>,3u> permutations{};
     std::vector<std::vector<Link>> buckets=std::vector<std::vector<Link>>(16384u);
     std::vector<std::uint32_t> tags;
+    std::vector<QuestVr::OriginalCollisionHashRange> ranges;
     std::uint32_t seed{InitialSeed},tag{};
     std::size_t links{};
     explicit Oracle(const std::vector<Actor>& actors) {
@@ -199,17 +204,29 @@ struct Oracle {
             seed=static_cast<std::uint32_t>((std::uint64_t{seed}*214013u+2531011u)&0xffffffffull);
             std::swap(axis[i],axis[((seed>>16u)&32767u)%16384u]);
         }
-        tags.reserve(actors.size());
+        tags.reserve(actors.size());ranges.resize(actors.size());
         for(std::size_t i=0u;i<actors.size();++i) {
             const auto& actor=actors[i];tags.push_back(actor.tag);if(!actor.collide||actor.deleted)continue;
             const auto bounds=ReadPortableRuntimeActorPrimitiveBounds(actor.path);
             Require(bounds.primitive.actorPath==actor.path&&!bounds.primitive.primitivePath.empty(),"Actual registration lacks selected primitive ownership");
-            const auto range=QuestVr::OriginalCollisionHashBoxRange({Vector(bounds.minimum),Vector(bounds.maximum)});
-            Cells(range,[&](std::uint32_t bucket,std::uint32_t cell) {
-                Require(links<1'048'576u,"Training oracle registration exceeded bounded link count");
-                buckets[bucket].push_back({i,cell});++links;
-            });
+            ranges[i]=QuestVr::OriginalCollisionHashBoxRange({Vector(bounds.minimum),Vector(bounds.maximum)});
+            Add(i);
         }
+    }
+    void Add(std::size_t actor) {
+        Cells(ranges.at(actor),[&](std::uint32_t bucket,std::uint32_t cell) {
+            Require(links<1'048'576u,"Training oracle registration exceeded bounded link count");
+            buckets[bucket].push_back({actor,cell});++links;
+        });
+    }
+    void Remove(std::size_t actor) {
+        // Original Remove visits CURRENT bounds and removes every actor match
+        // in each selected bucket, without an encoded-cell predicate.
+        Cells(ranges.at(actor),[&](std::uint32_t bucket,std::uint32_t) {
+            auto& entries=buckets[bucket];const auto before=entries.size();
+            entries.erase(std::remove_if(entries.begin(),entries.end(),[&](const auto& link){return link.actor==actor;}),entries.end());
+            links-=before-entries.size();
+        });
     }
     template<class F>void Cells(const QuestVr::OriginalCollisionHashRange& range,F&& run) {
         const auto count=QuestVr::CheckedOriginalCollisionHashCellCount(range,262144u);if(!count)return;
@@ -223,7 +240,34 @@ struct Oracle {
                     run(bucket,cell);
                 }
     }
-    std::pair<std::vector<PortableRetailCollisionHit>,std::size_t> Query(const Command& command,const std::vector<Actor>& actors) {
+    struct ResizedCylinder {std::size_t actor;float radius,height;};
+    static PortableActorPrimitiveLineSnapshot CenterLine(const Command& command,const Actor& actor,float radius,float height) {
+        // Independent restricted numerical oracle. On this centerline the
+        // actual cylinder quadratic reduces to an exact integer/dyadic root;
+        // only the original final stored Enter minus Double.001 and Float
+        // offset/add stores remain. This is NOT a general cylinder substitute.
+        Require(command.extent[0u]==0.0f&&command.extent[1u]==0.0f&&command.extent[2u]>=0.0f&&
+            command.start[1u]==actor.location[1u]&&command.end[1u]==actor.location[1u]&&
+            command.start[2u]==command.end[2u]&&
+            double(actor.location[0u])-double(command.start[0u])==256.0&&
+            double(command.end[0u])-double(actor.location[0u])==256.0&&
+            radius>0.0f&&radius<256.0f&&radius==std::floor(radius)&&height>0.0f,
+            "Resized-cylinder oracle is outside its independently reduced centerline domain");
+        const float lower=static_cast<float>(double(actor.location[2u])-double(height)-double(command.extent[2u]));
+        const float upper=static_cast<float>(double(actor.location[2u])+double(height)+double(command.extent[2u]));
+        if(command.start[2u]<lower||command.start[2u]>upper) {
+            PortableActorPrimitiveLineSnapshot result;result.clear=true;return result;
+        }
+        const float enter=static_cast<float>((256.0-double(radius))/512.0);
+        const double time=double(enter)-std::bit_cast<double>(std::uint64_t{0x3f50624dd2f1a9fcull});
+        const float offset=static_cast<float>(512.0*time);
+        PortableActorPrimitiveLineSnapshot result;result.clear=false;result.hitOwner=true;result.hitPrimitiveIsNone=true;
+        result.time=static_cast<float>(time);result.item=-1;result.normal={-1.0f,0.0f,0.0f};
+        result.location={static_cast<float>(double(command.start[0u])+double(offset)),actor.location[1u],command.start[2u]};
+        return result;
+    }
+    std::pair<std::vector<PortableRetailCollisionHit>,std::size_t> Query(const Command& command,const std::vector<Actor>& actors,
+        const std::optional<ResizedCylinder>& resized={}) {
         ++tag;std::vector<PortableRetailCollisionHit> hits;std::size_t head{};
         const auto range=QuestVr::OriginalCollisionHashSweptRange(Vector(command.end),Vector(command.start),Vector(command.extent));
         Cells(range,[&](std::uint32_t bucket,std::uint32_t cell) {
@@ -232,7 +276,9 @@ struct Oracle {
             for(auto link=buckets[bucket].rbegin();link!=buckets[bucket].rend();++link) {
                 if(tags[link->actor]==tag||link->cell!=cell)continue;
                 tags[link->actor]=tag;const auto& actor=actors[link->actor];++providerCalls;
-                const auto reply=ProbePortableRuntimeRetailCollisionPrimitiveLine(actor.path,command.end,command.start,command.extent,command.flags);
+                const auto reply=resized&&resized->actor==link->actor?
+                    CenterLine(command,actor,resized->radius,resized->height):
+                    ProbePortableRuntimeRetailCollisionPrimitiveLine(actor.path,command.end,command.start,command.extent,command.flags);
                 if(reply.clear)continue;
                 Require(reply.hitOwner,"Blocked actual primitive diagnostic did not identify its supplied owner");
                 hits.push_back({actor.path,reply.hitPrimitiveIsNone?std::string{}:reply.primitive.primitivePath,
@@ -251,6 +297,221 @@ void SameHits(const std::vector<PortableRetailCollisionHit>& actual,std::size_t 
         SameVector(a.location,b.location,"Actual hash hit Location differs");
         SameVector(a.normal,b.normal,"Actual hash hit Normal differs");SameFloat(a.time,b.time,"Actual hash hit Time differs");
     }
+}
+QuestVr::OriginalCollisionHashRange CylinderRange(const Actor& actor,float radius,float height) {
+    Require(radius>=0.0f&&height>=0.0f&&radius==std::floor(radius)&&height==std::floor(height)&&
+        radius<256.0f&&height<256.0f,"Setter registration oracle requires bounded exact integer dimensions");
+    // Chosen integer dimensions have exact +1 padding; independent Double
+    // endpoint arithmetic rounds once to Float, including the retained-Y path.
+    QuestVr::OriginalCollisionHashBox box;
+    box.minimum={static_cast<float>(double(actor.location[0u])-double(radius)-1.0),
+        static_cast<float>(double(actor.location[1u])-double(radius)-1.0),
+        static_cast<float>(double(actor.location[2u])-double(height)-1.0)};
+    box.maximum={static_cast<float>(double(actor.location[0u])+double(radius)+1.0),
+        static_cast<float>(double(actor.location[1u])+double(radius)+1.0),
+        static_cast<float>(double(actor.location[2u])+double(height)+1.0)};
+    return QuestVr::OriginalCollisionHashBoxRange(box);
+}
+Command SetterOrderQuery(const std::vector<Actor>& actors,std::size_t target) {
+    std::array<std::size_t,2u> pair{};std::size_t count{};
+    for(std::size_t i=0u;i<actors.size();++i)
+        if(actors[i].collide&&!actors[i].deleted&&(actors[i].path=="00_Training.CrateBreakableMedGeneral1"||
+            actors[i].path=="00_Training.CrateBreakableMedGeneral2")) {
+            Require(count<pair.size(),"Original crate encounter-order fixture has duplicate native slots");pair[count++]=i;
+        }
+    Require(count==2u&&pair[0u]==target,"Setter encounter-order test requires both source crates and the earlier native slot");
+    std::array<PortableActorPrimitiveBoundsSnapshot,2u> bounds;
+    std::array<float,2u> radius{},height{};Array center{};
+    for(std::size_t p=0u;p<pair.size();++p) {
+        const auto& actor=actors[pair[p]];bounds[p]=ReadPortableRuntimeActorPrimitiveBounds(actor.path);
+        radius[p]=Declared(actor.path,"Engine.Actor.CollisionRadius",Kind::Float).floating;
+        height[p]=Declared(actor.path,"Engine.Actor.CollisionHeight",Kind::Float).floating;
+        for(std::size_t axis=0u;axis<center.size();++axis)center[axis]+=actor.location[axis]*0.5f;
+        std::cout<<std::setprecision(9)<<"SETTER ORDER SOURCE "<<actor.path<<" Level-census-index="<<pair[p]
+            <<" location=("<<actor.location[0u]<<','<<actor.location[1u]<<','<<actor.location[2u]<<") bounds=("
+            <<bounds[p].minimum[0u]<<','<<bounds[p].minimum[1u]<<','<<bounds[p].minimum[2u]<<")..("
+            <<bounds[p].maximum[0u]<<','<<bounds[p].maximum[1u]<<','<<bounds[p].maximum[2u]<<")\n";
+    }
+    const auto a=QuestVr::OriginalCollisionHashBoxRange({Vector(bounds[0u].minimum),Vector(bounds[0u].maximum)});
+    const auto b=QuestVr::OriginalCollisionHashBoxRange({Vector(bounds[1u].minimum),Vector(bounds[1u].maximum)});
+    std::array<std::int32_t,3u> common{};
+    for(std::size_t axis=0u;axis<common.size();++axis) {
+        common[axis]=std::max(a.minimum[axis],b.minimum[axis]);
+        Require(common[axis]<=std::min(a.maximum[axis],b.maximum[axis]),"Original crate pair has no shared registration cell");
+    }
+    // A long ray discovers/tag-deduplicates actors in earlier neighboring cells
+    // before reaching their shared bucket. Select a genuinely blocked query
+    // entirely inside ONE common source cell, then prove re-prepend changes its
+    // actual-provider encounter list before using it as an order assertion.
+    std::size_t attempts{};
+    const auto original=std::make_unique<Oracle>(actors);
+    for(const std::size_t axis:{0u,1u})for(const float padding:{4.0f,16.0f,32.0f}) {
+        ++attempts;Command command{Operation::LineCheck};command.start=command.end=center;
+        const float span=std::max(radius[0u],radius[1u])+padding;
+        command.start[axis]-=span;command.end[axis]+=span;
+        command.extent[2u]=std::max(0.0f,std::abs(actors[pair[0u]].location[2u]-actors[pair[1u]].location[2u])*0.5f-
+            std::min(height[0u],height[1u])+1.0f);
+        const auto range=QuestVr::OriginalCollisionHashSweptRange(Vector(command.end),Vector(command.start),Vector(command.extent));
+        if(range.minimum!=common||range.maximum!=common)continue;
+        auto query=std::make_unique<Oracle>(*original);const auto before=query->Query(command,actors);
+        const auto contains=[&](const auto& hits,std::size_t index) {
+            return std::any_of(hits.first.begin(),hits.first.end(),[&](const auto& hit){return hit.actorPath==actors[index].path;});
+        };
+        if(!contains(before,pair[0u])||!contains(before,pair[1u]))continue;
+        query->Remove(target);query->Add(target);const auto after=query->Query(command,actors);
+        std::vector<std::string> first,second;
+        for(const auto& hit:before.first)first.push_back(hit.actorPath);
+        for(const auto& hit:after.first)second.push_back(hit.actorPath);
+        if(first==second)continue;
+        std::cout<<"SETTER ORDER QUERY attempts="<<attempts<<" commonCell=("<<common[0u]<<','<<common[1u]<<','<<common[2u]
+            <<") start=("<<command.start[0u]<<','<<command.start[1u]<<','<<command.start[2u]<<") end=("
+            <<command.end[0u]<<','<<command.end[1u]<<','<<command.end[2u]<<") extent=("<<command.extent[0u]<<','
+            <<command.extent[1u]<<','<<command.extent[2u]<<")\nSETTER ORDER ORIGINAL ENCOUNTER";
+        for(const auto& path:first)std::cout<<" -> "<<path;
+        std::cout<<"\nSETTER ORDER REPREPENDED ENCOUNTER";
+        for(const auto& path:second)std::cout<<" -> "<<path;
+        std::cout<<'\n';return command;
+    }
+    Require(attempts==6u,"Setter encounter query search escaped its six-candidate bound");
+    throw std::runtime_error("No bounded actual shared-cell crate query proves setter remove/prepend order");
+}
+void SetterCoverage(const std::vector<Actor>& actors,const std::function<void()>& rollback) {
+    const auto selected=std::find_if(actors.begin(),actors.end(),[](const auto& actor) {
+        return actor.collide&&!actor.deleted&&(actor.path=="00_Training.CrateBreakableMedGeneral1"||
+            actor.path=="00_Training.CrateBreakableMedGeneral2");
+    });
+    Require(selected!=actors.end(),"Original first Training crate pair is unavailable for setter tests");
+    const auto target=static_cast<std::size_t>(selected-actors.begin());const auto primitive=ReadPortableRuntimeActorPrimitive(selected->path);
+    Require((primitive.nativeClassPath=="Engine.Mesh"||primitive.nativeClassPath=="Engine.LodMesh"||
+        primitive.nativeClassPath=="Engine.Primitive")&&
+        Declared(selected->path,"Engine.Actor.Brush",Kind::Object).text.empty(),
+        "Setter fixture would incorrectly use cylinder math for a selected Model");
+    const float originalRadius=Declared(selected->path,"Engine.Actor.CollisionRadius",Kind::Float).floating;
+    const float originalHeight=Declared(selected->path,"Engine.Actor.CollisionHeight",Kind::Float).floating;
+    const bool originalBlockActors=Declared(selected->path,"Engine.Actor.bBlockActors",Kind::Bool).boolean;
+    const bool originalBlockPlayers=Declared(selected->path,"Engine.Actor.bBlockPlayers",Kind::Bool).boolean;
+    const bool originalWorld=Declared(selected->path,"Engine.Actor.bCollideWorld",Kind::Bool).boolean;
+    Command line{Operation::LineCheck};line.start=line.end=selected->location;
+    line.start[0u]-=256.0f;line.end[0u]+=256.0f;line.extent[2u]=128.0f;
+    Command elevated=line;elevated.extent[2u]=0.0f;elevated.start[2u]+=56.0f;elevated.end[2u]=elevated.start[2u];
+    const auto order=SetterOrderQuery(actors,target);
+    const auto setter=[&](Operation operation,std::vector<QuestVr::Vm::Value> values) {
+        Command command{operation};command.actorPath=selected->path;command.arguments=std::move(values);return command;
+    };
+    using Value=QuestVr::Vm::Value;
+    struct Frame {
+        bool collide,blocks,players;float radius,height;std::size_t links;std::uint32_t tag;
+        std::vector<std::uint32_t> tags;
+    };
+    const auto sequence=[&](const std::vector<Command>& commands,bool requireOrderChange) {
+        Require(commands.size()<=16u,"Setter sequence exceeds production command bound");
+        Oracle expected(actors);std::vector<Frame> frames;std::vector<PortableRetailCollisionMutation> mutations;
+        std::vector<std::pair<std::vector<PortableRetailCollisionHit>,std::size_t>> hits;
+        bool collide=true,blocks=originalBlockActors,players=originalBlockPlayers;float radius=originalRadius,height=originalHeight;
+        std::vector<Actor> model=actors;model[target].colLocation=model[target].location;
+        Require(expected.ranges[target].minimum==CylinderRange(*selected,radius,height).minimum&&
+            expected.ranges[target].maximum==CylinderRange(*selected,radius,height).maximum,
+            "Independent source-dimension registration differs from actual selected primitive bounds");
+        for(const auto& command:commands) {
+            if(command.operation==Operation::SetCollision||command.operation==Operation::SetCollisionSize) {
+                if(collide)expected.Remove(target);
+                if(command.operation==Operation::SetCollision) {
+                    const auto flag=[&](std::size_t slot,bool before) {
+                        return slot<command.arguments.size()&&command.arguments[slot].kind!=Kind::Nothing?
+                            command.arguments[slot].boolean:before;
+                    };
+                    collide=flag(0u,collide);blocks=flag(1u,blocks);players=flag(2u,players);
+                }else {
+                    radius=QuestVr::Vm::ToFloat(command.arguments[0u]);height=QuestVr::Vm::ToFloat(command.arguments[1u]);
+                    expected.ranges[target]=CylinderRange(*selected,radius,height);
+                }
+                if(collide)expected.Add(target);
+                mutations.push_back({selected->path,command.operation==Operation::SetCollision?Value{}:Value::Bool(true),
+                    radius,height,collide,blocks,players,originalWorld});
+            }else if(command.operation==Operation::LineCheck) {
+                const bool reduced=command.start[0u]==line.start[0u]&&command.end[0u]==line.end[0u]&&
+                    command.start[1u]==line.start[1u]&&command.end[1u]==line.end[1u];
+                Require(reduced||(radius==originalRadius&&height==originalHeight),
+                    "Actual-provider order query cannot substitute original dimensions for a resized target");
+                hits.push_back(expected.Query(command,actors,reduced?
+                    std::optional<Oracle::ResizedCylinder>{{target,radius,height}}:std::nullopt));
+            }
+            frames.push_back({collide,blocks,players,radius,height,expected.links,expected.tag,expected.tags});
+        }
+        if(requireOrderChange) {
+            Require(hits.size()>=2u&&hits[0u].first.size()>=2u,"Setter encounter-order fixture lacks genuine shared-cell hits");
+            std::vector<std::string> before,after;
+            for(const auto& hit:hits[0u].first)before.push_back(hit.actorPath);
+            for(const auto& hit:hits[1u].first)after.push_back(hit.actorPath);
+            Require(before!=after,"No-op setter fixture cannot observe original remove/prepend encounter-order change");
+        }
+        const auto result=ProbePortableRuntimeRetailCollision(commands);
+        Require(result.available&&result.execution.passed()&&!result.execution.committed&&result.states.size()==frames.size()&&
+            result.mutations.size()==mutations.size()&&result.queries.size()==hits.size()&&result.queryHeads.size()==hits.size(),
+            "Original setter sequence failed: "+result.execution.error);
+        for(std::size_t i=0u;i<frames.size();++i) {
+            const auto& frame=frames[i];const auto& state=result.states[i];model[target].collide=frame.collide;
+            Require(state.initialized&&state.enabled&&state.hashIdentity==result.states.front().hashIdentity&&
+                state.seed==expected.seed&&state.tag==frame.tag&&state.activeLinks==frame.links,
+                "Setter changed native hash lease/RNG/query tag or lost original registration count");
+            SameActors(state,model,frame.tags);
+        }
+        for(std::size_t i=0u;i<mutations.size();++i) {
+            const auto& actual=result.mutations[i];const auto& wanted=mutations[i];
+            Require(actual.actorPath==wanted.actorPath&&QuestVr::Vm::Equal(actual.returned,wanted.returned)&&
+                actual.collideActors==wanted.collideActors&&actual.blockActors==wanted.blockActors&&
+                actual.blockPlayers==wanted.blockPlayers&&actual.collideWorld==originalWorld,
+                "Setter returned wrong type/value or changed unrelated original collision flags");
+            SameFloat(actual.radius,wanted.radius,"Setter did not write actual qualified CollisionRadius");
+            SameFloat(actual.height,wanted.height,"Setter did not write actual qualified CollisionHeight");
+        }
+        for(std::size_t i=0u;i<hits.size();++i)SameHits(result.queries[i],result.queryHeads[i],hits[i]);
+        rollback();
+    };
+    sequence({Command{Operation::Enable},order,setter(Operation::SetCollision,{Value::Bool(true)}),order,
+        setter(Operation::SetCollision,{Value::Bool(false)}),line,setter(Operation::SetCollision,{Value::Bool(true)}),line,
+        setter(Operation::SetCollision,{Value{},Value::Bool(!originalBlockActors),Value::Bool(!originalBlockPlayers)}),line,
+        setter(Operation::SetCollision,{}),line,
+        setter(Operation::SetCollision,{Value::Bool(true),Value::Bool(originalBlockActors),Value::Bool(originalBlockPlayers)}),line},true);
+    sequence({Command{Operation::Enable},order,
+        setter(Operation::SetCollisionSize,{Value::Float(originalRadius),Value::Float(originalHeight)}),order,
+        setter(Operation::SetCollisionSize,{Value::Float(64.0f),Value::Float(32.0f)}),elevated,
+        setter(Operation::SetCollisionSize,{Value::Float(64.0f),Value::Float(32.0f)}),line,
+        setter(Operation::SetCollision,{Value::Bool(false)}),
+        setter(Operation::SetCollisionSize,{Value::Float(16.0f),Value::Float(80.0f)}),line,
+        setter(Operation::SetCollision,{Value::Bool(true)}),elevated,
+        setter(Operation::SetCollisionSize,{Value::Float(originalRadius),Value::Float(originalHeight)}),line},true);
+    std::vector<Command> invalid;
+    for(const auto operation:{Operation::SetCollision,Operation::SetCollisionSize}) {
+        invalid.push_back(setter(operation,operation==Operation::SetCollision?std::vector<Value>{Value::Bool(true)}:
+            std::vector<Value>{Value::Float(16.0f),Value::Float(16.0f)}));
+        auto empty=invalid.back();empty.actorPath.clear();invalid.push_back(empty);
+        auto missing=invalid.front();missing.operation=operation;missing.actorPath="00_Training.NoSuchActor";invalid.push_back(missing);
+        auto foreign=invalid.back();foreign.actorPath="Engine.Actor";invalid.push_back(foreign);
+    }
+    invalid.push_back(setter(Operation::SetCollision,{Value::Integer(1)}));
+    invalid.push_back(setter(Operation::SetCollision,{Value::Bool(true),Value::Bool(true),Value::Bool(true),Value::Bool(true)}));
+    invalid.push_back(setter(Operation::SetCollisionSize,{}));
+    invalid.push_back(setter(Operation::SetCollisionSize,{Value::Float(16.0f)}));
+    invalid.push_back(setter(Operation::SetCollisionSize,{Value::Float(16.0f),Value::Float(16.0f),Value::Float(16.0f)}));
+    invalid.push_back(setter(Operation::SetCollisionSize,{Value::Text(Kind::String,"16"),Value::Float(16.0f)}));
+    invalid.push_back(setter(Operation::SetCollisionSize,{Value::Float(16.0f),Value::Float(std::numeric_limits<float>::quiet_NaN())}));
+    invalid.push_back(setter(Operation::SetCollisionSize,{Value::Float(std::numeric_limits<float>::infinity()),Value::Float(16.0f)}));
+    invalid.push_back(setter(Operation::SetCollisionSize,{Value::Float(-1.0f),Value::Float(16.0f)}));
+    const auto reject=[&](const std::vector<Command>& commands,const std::string& name) {
+        const auto result=ProbePortableRuntimeRetailCollision(commands);
+        Require(!result.available&&!result.execution.passed()&&!result.execution.committed&&!result.execution.error.empty(),
+            "Original collision setter accepted unsupported input: "+name);++refusals;rollback();
+    };
+    reject({invalid[0u]},"SetCollision without native domain");reject({invalid[4u]},"SetCollisionSize without native domain");
+    for(std::size_t i=1u;i<invalid.size();++i)if(i!=4u)
+        reject({Command{Operation::Enable},invalid[i]},"type/count/actor case "+std::to_string(i));
+    auto badSize=setter(Operation::SetCollisionSize,{Value::Float(16.0f),Value::Float(std::numeric_limits<float>::quiet_NaN())});
+    reject({Command{Operation::Enable},setter(Operation::SetCollision,{Value::Bool(false)}),
+        setter(Operation::SetCollisionSize,{Value::Float(64.0f),Value::Float(32.0f)}),
+        setter(Operation::SetCollision,{Value::Bool(true)}),line,badSize},"late bad Float after successful flags/size/query");
+    std::cout<<"FIRST TRAINING setters: actual "<<selected->path<<" selected "<<primitive.nativeClassPath
+        <<"; original262/283 typed returns, unchanged-setter prepend ordering, flag toggles, resized bounds/hits, late rollback/refusals\n";
 }
 void Run(const fs::path& root) {
     Temporary temporary(root);std::vector<Source> sources;std::vector<PortablePackageTables> scripts;
@@ -338,6 +599,7 @@ void Run(const fs::path& root) {
         result.states[7u].initialized&&!result.states[7u].enabled,"Queries/disable did not retain process-global tag history within the root");
     SameActors(result.states[5u],actors,missTags);SameActors(result.states[6u],actors,hitTags);SameActors(result.states[7u],actors,hitTags);
     SameHits(result.queries[0u],result.queryHeads[0u],expectedMiss);SameHits(result.queries[1u],result.queryHeads[1u],expectedHit);rollback();
+    SetterCoverage(actors,rollback);
     auto bad=hit;bad.extent[1u]=std::numeric_limits<float>::quiet_NaN();
     for(unsigned repeat=0u;repeat<2u;++repeat) {
         const auto failure=ProbePortableRuntimeRetailCollision({Command{Operation::Enable},hit,bad});
@@ -359,10 +621,10 @@ void Run(const fs::path& root) {
         startup.collision.seed==first.seed&&startup.collision.levelPath==native.levelPath&&
         startup.collision.actors.size()==actors.size()&&!world.execution.passed()&&!world.execution.committed&&
         !world.execution.error.empty(),"Enhanced startup did not capture the actual hash prefix before its next unsupported native");
-    Require(world.phase==PortableWorldStartupPhase::InitGame&&world.actorSlot==1337u&&
-        world.actorPath=="00_Training.DeusExGameInfo0"&&world.execution.function=="Engine.Actor.SetInitialState"&&
-        world.execution.offset==25u&&world.execution.opcode==113u&&
-        world.execution.error.find("Script saved state: aggregate retained-state budget exceeded [native-state retained=")==0u,
+    Require(world.phase==PortableWorldStartupPhase::PreBeginPlay&&world.actorSlot==759u&&
+        world.actorPath=="00_Training.PatrolPoint1"&&world.execution.function=="Engine.PatrolPoint.PreBeginPlay"&&
+        world.execution.offset==39u&&world.execution.opcode==47u&&
+        world.execution.error=="Native actor lifecycle work budget exceeded",
         "First Training startup boundary changed: inspect real evidence before updating this pin");
     SameActors(startup.collision,actors,sourceTags);rollback();
     const auto again=ProbePortableRuntimeRetailCollisionStartup(options,limits);

@@ -57,11 +57,13 @@ replacement, GC and rollback. The world is deliberately dormant in those tests.
 They do not prove live VR attacks, surviving contents, gravity or completion of
 Training. Those remain the immediate development target.
 
-The actual native collision-registration prefix now has rollback-only tests on
-the same first Training map:1308 actual actors,120 collidable/nondeleted actors,
-478 links and122490 checks/12 refusals, including real crate primitive packets
-and save/GC/RNG rollback. This is not publishing physics. Strict native-prefix
-startup currently reaches the unchanged retained-state budget in InitGame;
-reduce actual ownership before advancing original Move, support/falling and
-surviving usable contents. See TRAINING-RETAIL-COLLISION.md. No other-map content
-integration or replacement APK is included in this prerequisite checkpoint.
+The actual native collision-registration prefix has rollback-only tests on the
+same first Training map:1308 actual actors,120 collidable/nondeleted actors and
+478 links, including real crate primitive packets and save/GC/RNG rollback.
+Original SetCollision/SetCollisionSize now update this same native hash; real
+lookup-storage and native Touching-reset reductions pass the earlier InitGame
+memory refusal. Strict startup next reaches the unchanged native-work limit in
+PreBeginPlay at `00_Training.PatrolPoint1`. This is not publishing physics:
+original Move, support/falling, destruction and surviving usable contents remain
+unfinished. See TRAINING-RETAIL-COLLISION.md. No other-map content integration
+or replacement APK is included in this prerequisite checkpoint.

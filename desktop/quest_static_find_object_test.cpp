@@ -181,8 +181,12 @@ void IntrusiveIdentityCollisions() {
     const auto emptyBytes=index.RetainedBytes();
     // Independently account the actual one-tree representation, retaining the
     // unchanged conservative64B allowance per tree node on a64-bit host.
-    struct StoredNodeModel {Lookup::Record record;void *previous{},*next{},*identityNext{};};
+    struct OldStoredNodeModel {Lookup::Record record;void *previous{},*next{},*identityNext{};};
+    struct StoredNodeModel {Lookup::Record record;void *next{},*identityNext{};};
     constexpr auto stride=sizeof(std::pair<const std::uint32_t,StoredNodeModel>)+8u*sizeof(void*);
+    constexpr auto oldStride=sizeof(std::pair<const std::uint32_t,OldStoredNodeModel>)+8u*sizeof(void*);
+    static_assert(sizeof(void*)!=8u||oldStride-stride==8u,
+        "Singly linked name buckets must remove exactly eight owned bytes per object on64-bit hosts");
     for(std::uint32_t i=1u;i<=count;++i) {
         index.Publish(Object(identity(i),slot(i),17));
         Require(index.RetainedBytes()==emptyBytes+static_cast<std::size_t>(i)*stride,
@@ -460,11 +464,102 @@ void DifferentialSequence() {
         }
     }
 }
+void SinglyLinkedNameBucketContracts() {
+    // All authored name/Outer pairs below deliberately share bucket7. The
+    // oracle is an independent oldest-to-newest publication event vector,
+    // never a read of production links. Identity hashes collide separately.
+    constexpr std::uint32_t count=192u;
+    const auto identity=[](std::uint32_t i) {return static_cast<std::uintptr_t>(i)*4097u;};
+    const auto record=[&](std::uint32_t i) {
+        const auto outer=i%3u,outerIndex=outer?count+outer:0u;
+        return Object(identity(i),(i*137u)%count+1u,
+            static_cast<int>(7u^outerIndex)+(i%2u?4096:0),outer?8000u+outer:0u,outerIndex);
+    };
+    Lookup::Index live(count+16u);std::vector<Lookup::Record> events;
+    for(std::uint32_t i=1u;i<=count;++i) {const auto value=record(i);live.Publish(value);events.push_back(value);}
+    const auto compare=[&](const Lookup::Index& actual,const std::vector<Lookup::Record>& expected) {
+        auto ascending=expected;std::sort(ascending.begin(),ascending.end(),[](const auto& a,const auto& b){return a.index<b.index;});
+        Require(actual.RecordsAscending()==ascending,"Singly linked name bucket lost numeric-index membership order");
+        for(std::uint32_t outer=0u;outer<4u;++outer)for(int name:{4,7,197,198,4100,4103,4293,4294,29}) {
+            std::vector<std::uintptr_t> expectedTrace,actualTrace;
+            std::uintptr_t expectedExact{},expectedAny{};
+            for(auto current=expected.rbegin();current!=expected.rend();++current) {
+                if(current->nameIndex!=name||current->outerIdentity!=(outer?8000u+outer:0u)) continue;
+                expectedTrace.push_back(current->identity);
+                if(current->identity%5u) {expectedExact=current->identity;break;}
+            }
+            const auto found=actual.Exact(outer?8000u+outer:0u,outer?count+outer:0u,name,[&](auto value) {
+                actualTrace.push_back(value);return value%5u!=0u;
+            });
+            Require(found==expectedExact&&actualTrace==expectedTrace,
+                "Singly linked removal/rename/adoption/copy changed exact predicate order or visited a wrong-name/Outer node");
+            expectedTrace.clear();actualTrace.clear();
+            for(const auto& current:ascending) {
+                if(current.nameIndex!=name) continue;
+                expectedTrace.push_back(current.identity);
+                if(current.identity%5u) {expectedAny=current.identity;break;}
+            }
+            const auto any=actual.Any(name,[&](auto value) {actualTrace.push_back(value);return value%5u!=0u;});
+            Require(any==expectedAny&&actualTrace==expectedTrace,
+                "Singly linked changes disturbed ascending fallback or its pre-existing name-first predicate contract");
+        }
+    };
+    compare(live,events);
+    std::vector<const Lookup::Record*> addresses(count+1u);
+    for(std::uint32_t i=1u;i<=count;++i) addresses[i]=live.RecordForIdentity(identity(i));
+    // Descending rehash repeatedly removes a tail/interior node using its OLD
+    // cached bucket keys, then prepends in another bucket/Outer. No allocation
+    // or pointer movement is permitted, even for the longest collision chain.
+    for(std::uint32_t i=count;i>0u;i-=3u) {
+        auto found=std::find_if(events.begin(),events.end(),[&](const auto& item){return item.identity==identity(i);});
+        auto next=*found;events.erase(found);next.outerIdentity=8003u;next.outerIndex=count+3u;next.nameIndex=29;
+        bool changed{};AllocationFault::remaining=0u;
+        changed=live.Rehash(next.index,next.identity,next.outerIdentity,next.outerIndex,next.nameIndex);
+        AllocationFault::Disable();events.push_back(next);
+        Require(changed&&live.RecordForIdentity(identity(i))==addresses[i],"Cached-key singly linked rehash allocated or changed node address");
+        if(i%12u==0u) compare(live,events);
+    }
+    Lookup::Index copy(live);const auto copiedEvents=events;compare(copy,copiedEvents);
+    // Removal order alternates chain tails/heads and crosses name/Outer groups.
+    for(std::uint32_t i=1u;i<=count;i+=2u) {
+        const auto found=std::find_if(events.begin(),events.end(),[&](const auto& item){return item.identity==identity(i);});
+        const auto previous=*found;bool removed{};AllocationFault::remaining=0u;
+        removed=live.Remove(previous.index,previous.identity);AllocationFault::Disable();events.erase(found);
+        Require(removed&&!live.RecordForIdentity(previous.identity),"Singly linked head/middle/tail removal retained identity storage");
+        if(i%16u==1u) compare(live,events);
+    }
+    compare(live,events);compare(copy,copiedEvents);
+    Lookup::Index staged;std::vector<Lookup::Record> stagedEvents;
+    for(std::uint32_t i=1u;i<=count;i+=2u) {
+        auto value=record(i);value.identity+=1'000'000u;staged.Publish(value);stagedEvents.push_back(value);
+    }
+    bool adopted{};AllocationFault::remaining=0u;adopted=live.Adopt(staged);AllocationFault::Disable();
+    Require(adopted&&staged.Size()==0u,"Singly linked staged chains failed allocation-free adoption");
+    events.insert(events.end(),stagedEvents.begin(),stagedEvents.end());compare(live,events);
+    Lookup::Index moved(std::move(live));Require(live.Size()==0u,"Moving singly linked storage left a duplicate owner");compare(moved,events);
+    Lookup::Index swapped;swapped.Swap(moved);Require(moved.Size()==0u,"Swapping singly linked storage left stale chains");compare(swapped,events);
+
+    // Exhaust the complete sixteen-node copy allocation sequence, retaining
+    // destination membership, pointer identity and predicate order on failure.
+    Lookup::Index source,destination;std::vector<Lookup::Record> sourceEvents,destinationEvents;
+    for(std::uint32_t i=1u;i<=16u;++i) {const auto value=record(i);source.Publish(value);sourceEvents.push_back(value);}
+    const auto old=Object(900001u,1001u,7);destination.Publish(old);destinationEvents.push_back(old);
+    const auto* oldAddress=destination.RecordAt(old.index);
+    for(std::size_t allowed=0u;allowed<16u;++allowed) {
+        bool failed{};AllocationFault::remaining=allowed;
+        try {destination=source;}catch(const std::bad_alloc&) {failed=true;}
+        catch(...) {AllocationFault::Disable();throw;}
+        AllocationFault::Disable();Require(failed,"Singly linked copy allocation fault was not observed");++refusals;
+        Require(destination.RecordAt(old.index)==oldAddress,"Failed singly linked copy changed destination node ownership");
+        compare(destination,destinationEvents);compare(source,sourceEvents);
+    }
+    destination=source;compare(destination,sourceEvents);
+}
 }
 
 int main() {
     try {
-        MembershipAndOrder();RefusalAndCapacity();AllocationFailureAtomicity();IntrusiveIdentityCollisions();StagedAdoption();Resolution();MalformedQueries();DifferentialSequence();
+        MembershipAndOrder();RefusalAndCapacity();AllocationFailureAtomicity();IntrusiveIdentityCollisions();StagedAdoption();Resolution();MalformedQueries();DifferentialSequence();SinglyLinkedNameBucketContracts();
         std::cout<<"Actual weak object lookup: "<<checks<<" checks / "<<refusals<<" refusals\n";return 0;
     }catch(const std::exception& error) {std::cerr<<"Object lookup test failed: "<<error.what()<<'\n';return 1;}
 }

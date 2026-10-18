@@ -47,6 +47,7 @@ bool SnapshotNativeInput(const std::uint16_t index, const Function* declaration 
     case 548: return true; // FastTrace copies End before initializing/evaluating Start.
     case 512: return true; // MakeNoise consumes its initialized Loudness Float during Step.
     case 280: return true; // SetTimer copies rate before evaluating bLoop.
+    case 262: case 283: return true; // Collision setters consume each Bool/Float before the next Step.
     case 1410: case 1415: case 1416: case 1420: case 1421: case 1422: case 1430: case 1431: case 1432: case 1433: case 1438: case 1454: case 1461: case 1467:
     case 1475: case 1477: case 1510: case 1511: case 1535: case 1538: case 1539: case 1540:
     case 1541: case 1544: case 1545:

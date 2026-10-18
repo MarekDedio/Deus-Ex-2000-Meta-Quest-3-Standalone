@@ -20,7 +20,39 @@ usable contents and support/falling. See TRAINING-FIRST-PRIORITY.md.
   playable-physics capability. See ORIGINAL-ENGINE-DEFAULT-LINK.md. Live crate
   destruction, usable loot and gravity remain unfinished.
 
-## First Training actual collision-registration prefix (2026-10-18)
+## First Training collision setters and ownership reduction (2026-10-18)
+
+- Content remains exclusively `00_Training`; no other-map integration or real
+  campaign-map test sweep. Shared engine/VM regressions protect this first map.
+- Actual lookup nodes lose one redundant chain pointer, saving8 physical bytes
+  each on64-bit hosts without changing identity/order or removing records.
+  Native ClearTouching avoids only already-None reset overlays, while preserving
+  nonempty authored, mutable and frozen-birth writes and complete rollback.
+- Actual native262/283 setters now retain original Remove/write/Add order,
+  including unchanged setter reinsertion. Optional262 defaults are sampled per
+  expression; ordinary argument values are copied before later expressions can
+  mutate aliases. SetCollision is void; required-input SetCollisionSize returns
+  true after success. No invented fit/touch behavior. Unsafe sizes refuse.
+- Earlier InitGame and SecurityCamera3 state-budget refusals are passed. The next
+  strict startup refusal is PreBeginPlay slot759, `00_Training.PatrolPoint1`,
+  `Engine.PatrolPoint.PreBeginPlay` offset39/op47: native actor lifecycle work
+  budget exceeded. The65536 limit remains unchanged, including49152 original
+  first-table CRT draws. No forced begun/Active state or reset work counter.
+- This remains rollback-only groundwork, not live crate damage, surviving loot,
+  falling or a playable replacement APK. Full physical state/undo memory
+  accounting is also unresolved; current save-shaped accounting is not an RSS
+  measurement. See TRAINING-RETAIL-COLLISION.md and ORIGINAL-COLLISION-SETTERS.md.
+- Final coherent host build and CTest pass:133 executed/157 registered,
+  24 explicit owned-data skips, zero failures,54.42s. Separate owned first-map
+  collision390461/30 and exact38-package Engine42647/31 pass. Isolated crate
+  diagnostic347/two still does not produce surviving loot. Generated Spawn
+  controls9211/144, VM695763/846 and lookup203655/59 pass. Strict ARM64 syntax
+  and Android native compilation/link pass; no APK or headset physics claim.
+
+## Earlier first Training collision-registration prefix (2026-10-18)
+
+The refusal and test totals in this section record the earlier checkpoint;
+the follow-on above supersedes its InitGame boundary.
 
 - Connected actual current Level.Hash ownership, native UObject/generation
   checks, ascending source-slot registration and real Brush/Mesh/Cylinder

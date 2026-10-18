@@ -101,6 +101,92 @@
         if(actor && actor->nativeXLevel && actor->nativeXLevel->nativeRetailHash)
             throw std::runtime_error(std::string("Unsupported original active-hash ")+operation+" contract");
     }
+    std::shared_ptr<const Function> RetailCollisionSetterDeclaration(std::uint16_t index,const Function* declaration) {
+        if(index!=262u && index!=283u) throw std::runtime_error("Unknown original collision setter");
+        const std::string path=index==262u?"Engine.Actor.SetCollision":"Engine.Actor.SetCollisionSize";
+        const auto source=FunctionFor(Object(path));
+        const auto validate=[&](const Function& function) {
+            if(function.path!=path || function.nativeIndex!=index || function.flags!=0x401u || function.variables.size()!=3u)
+                throw std::runtime_error("Collision setter lacks its actual original native declaration");
+            const std::array<const char*,3u> names=index==262u?
+                std::array<const char*,3u>{"NewColActors","NewBlockActors","NewBlockPlayers"}:
+                std::array<const char*,3u>{"NewRadius","NewHeight","ReturnValue"};
+            for(std::size_t slot=0u;slot<3u;++slot) {
+                const auto& property=function.variables[slot];
+                const auto kind=index==262u || slot==2u?Kind::Bool:Kind::Float;
+                const auto flags=index==262u?0x90u:slot==2u?0x580u:0x80u;
+                if(property.key!=path+'.'+names[slot] || property.name!=names[slot] || property.arrayDimension!=1u ||
+                    property.zero.kind!=kind || property.flags!=flags)
+                    throw std::runtime_error("Collision setter has a different original scalar parameter schema");
+            }
+        };
+        validate(*source);if(declaration) validate(*declaration);return source;
+    }
+    Property RetailCollisionSetterField(RuntimeObject* actor,const char* key) {
+        const auto property=DescribeProperty(key);auto* field=Object(property.key);
+        const bool dimension=std::strcmp(key,"Engine.Actor.CollisionRadius")==0 || std::strcmp(key,"Engine.Actor.CollisionHeight")==0;
+        const auto kind=dimension?Kind::Float:Kind::Bool;
+        const auto flags=dimension || std::strcmp(key,"Engine.Actor.bCollideActors")==0?0x23u:0x21u;
+        const auto type=dimension?"FloatProperty":"BoolProperty";
+        if(property.key!=key || !OwnsProperty(actor->cls,property) || property.zero.kind!=kind ||
+            property.arrayDimension!=1u || property.flags!=flags || !field->property || field->property->type!=type ||
+            field->property->baseField || field->property->referencedType || field->outer!=Object("Engine.Actor") ||
+            LowerAscii(Qualified(Table(field->sourcePath),Table(field->sourcePath).exports.at(field->exportIndex).ObjClass))!=
+                std::string("core.")+LowerAscii(type))
+            throw std::runtime_error("Collision setter field lacks its original Actor scalar declaration");
+        return property;
+    }
+    void WriteRetailCollisionSetterField(RuntimeObject* actor,const char* key,const Value& value) {
+        // Narrow original-native authority only; ordinary bytecode retains the
+        // active-hash shape-write guard. Hash Remove/write/Add share this root.
+        const auto property=RetailCollisionSetterField(actor,key);
+        auto normalized=TypedLiveValue(property,value);Touch(actor);
+        actor->scriptValues[InstanceStorageKey(actor->cls,property)][0u]=std::move(normalized);
+        actor->committedScriptState=true;
+    }
+    Evaluation RetailCollisionSetterNative(std::uint16_t index,RuntimeObject* actor,
+        const std::vector<Evaluation>& arguments,const Function* declaration) {
+        static_cast<void>(RetailCollisionSetterDeclaration(index,declaration));
+        static_cast<void>(RetailCollisionActor(reinterpret_cast<std::uintptr_t>(actor)));
+        if((index==262u && arguments.size()>3u) || (index==283u && arguments.size()!=2u))
+            throw std::runtime_error("Collision setter original argument count is invalid");
+        std::array<Value,3u> values;
+        static constexpr std::array<const char*,3u> keys{
+            "Engine.Actor.bCollideActors","Engine.Actor.bBlockActors","Engine.Actor.bBlockPlayers"};
+        for(std::size_t slot=0u;slot<(index==262u?3u:2u);++slot) {
+            auto value=slot<arguments.size()?arguments[slot].Load():Value{};
+            if(index==262u) {
+                if(value.kind==Kind::Nothing) value=Value::Bool(RetailCollisionFlag(actor,keys[slot]));
+                if(value.kind!=Kind::Bool) throw std::runtime_error("SetCollision input is not its original Bool");
+            }else {
+                if(value.kind!=Kind::Float && value.kind!=Kind::Byte && value.kind!=Kind::Int)
+                    throw std::runtime_error("SetCollisionSize input is not numeric");
+                value=Value::Float(QuestVr::Vm::ToFloat(value));
+                if(!std::isfinite(value.floating))
+                    throw std::runtime_error("SetCollisionSize unsupported portable nonfinite dimension");
+            }
+            values[slot]=value;
+        }
+        TouchRetailCollision();DefineRetailCollisionActor(actor);
+        auto* level=RetailCollisionLevel();const auto identity=reinterpret_cast<std::uintptr_t>(actor);
+        if(level->nativeRetailHash && RetailCollisionFlag(actor,"Engine.Actor.bCollideActors")) {
+            RefreshRetailCollisionActor(actor);persistentRetailCollision->Remove(level->nativeRetailHash,identity,RetailCollisionQueries());
+        }
+        // No equality shortcut: unchanged setters still remove and prepend.
+        // Size samples its collide bit after removal, before the field writes.
+        const bool sizeCollides=index==283u && RetailCollisionFlag(actor,"Engine.Actor.bCollideActors");
+        if(index==262u) for(std::size_t slot=0u;slot<3u;++slot) WriteRetailCollisionSetterField(actor,keys[slot],values[slot]);
+        else {
+            WriteRetailCollisionSetterField(actor,"Engine.Actor.CollisionRadius",values[0u]);
+            WriteRetailCollisionSetterField(actor,"Engine.Actor.CollisionHeight",values[1u]);
+        }
+        RefreshRetailCollisionActor(actor);
+        if(level->nativeRetailHash && (index==262u?RetailCollisionFlag(actor,"Engine.Actor.bCollideActors"):sizeCollides))
+            persistentRetailCollision->Add(level->nativeRetailHash,identity,RetailCollisionQueries());
+        ValidateStateBudget();
+        return index==283u?Evaluation{Value::Bool(true),{}}:
+            Evaluation{Value{},{},QuestVr::Vm::ResultDisposition::NoWrite};
+    }
     void ReserveRetailDiagnosticOutput(std::size_t bytes,std::size_t scratch=0u) {
         constexpr std::size_t maximum=8u<<20u;
         if(bytes>maximum || retailCollisionOutputBytes_>maximum-bytes)
@@ -173,12 +259,14 @@
         return result;
     }
     Value ProbeRetailCollision(const std::vector<PortableRetailCollisionCommand>& commands,
-        PortableRetailCollisionProbeResult& result) {
+        PortableRetailCollisionProbeResult& result,QuestVr::Vm::Execution& execution) {
         if(commands.empty() || commands.size()>16u) throw std::runtime_error("Retail collision diagnostic requires one to sixteen commands");
         retailCollisionPreview_=true;
         ReserveRetailDiagnosticOutput(QuestVr::DecalStateDetail::Multiply(commands.size(),
-            sizeof(PortableRetailCollisionSnapshot)+sizeof(std::vector<PortableRetailCollisionHit>)+sizeof(std::size_t)));
+            sizeof(PortableRetailCollisionSnapshot)+sizeof(std::vector<PortableRetailCollisionHit>)+sizeof(std::size_t)+
+                sizeof(PortableRetailCollisionMutation)));
         result.states.reserve(commands.size());result.queries.reserve(commands.size());result.queryHeads.reserve(commands.size());
+        result.mutations.reserve(commands.size());
         for(const auto& command:commands) {
             if(command.operation==PortableRetailCollisionOperation::Enable) SetRetailActorCollision(true);
             else if(command.operation==PortableRetailCollisionOperation::Disable) SetRetailActorCollision(false);
@@ -214,6 +302,33 @@
                 for(const auto& hit:hits.records) converted.push_back({path(hit.actor),path(hit.primitive),hit.next,
                     {hit.location.x,hit.location.y,hit.location.z},{hit.normal.x,hit.normal.y,hit.normal.z},hit.time,hit.item});
                 result.queries.push_back(std::move(converted));result.queryHeads.push_back(hits.first);
+            }else if(command.operation==PortableRetailCollisionOperation::SetCollision ||
+                command.operation==PortableRetailCollisionOperation::SetCollisionSize) {
+                if(command.actorPath.empty() || command.actorPath.size()>8192u || command.arguments.size()>3u)
+                    throw std::runtime_error("Collision setter diagnostic input is unbounded");
+                auto* actor=Object(command.actorPath);
+                static_cast<void>(RetailCollisionActor(reinterpret_cast<std::uintptr_t>(actor)));
+                if(!persistentRetailCollision) throw std::runtime_error("Collision setter diagnostic requires an initialized native domain");
+                const auto index=std::uint16_t(command.operation==PortableRetailCollisionOperation::SetCollision?262u:283u);
+                const auto function=RetailCollisionSetterDeclaration(index,nullptr);
+                for(const auto& value:command.arguments) {
+                    const bool scalar=index==262u?(value.kind==Kind::Bool || value.kind==Kind::Nothing):
+                        (value.kind==Kind::Float || value.kind==Kind::Byte || value.kind==Kind::Int || value.kind==Kind::Nothing);
+                    if(!scalar || !value.text.empty() || !value.intArray.empty() || !value.fields.empty())
+                        throw std::runtime_error("Collision setter diagnostic requires bounded original scalar inputs");
+                }
+                ValidateStateBudget(QuestVr::DecalStateDetail::Multiply(command.arguments.size(),sizeof(Evaluation)+sizeof(Value)));
+                const auto returned=[&] {
+                    std::vector<Evaluation> inputs;inputs.reserve(command.arguments.size());
+                    for(const auto& value:command.arguments) inputs.push_back({value,{}});
+                    return execution.CallFunction(*function,command.actorPath,inputs);
+                }(); // Copied scalar input scratch dies before output/snapshot retention.
+                const auto radius=Read(actor,RetailCollisionSetterField(actor,"Engine.Actor.CollisionRadius"),0u);
+                const auto height=Read(actor,RetailCollisionSetterField(actor,"Engine.Actor.CollisionHeight"),0u);
+                ReserveRetailDiagnosticOutput(command.actorPath.size()+1u+4u*sizeof(void*));
+                result.mutations.push_back({command.actorPath,returned,radius.floating,height.floating,
+                    RetailCollisionFlag(actor,"Engine.Actor.bCollideActors"),RetailCollisionFlag(actor,"Engine.Actor.bBlockActors"),
+                    RetailCollisionFlag(actor,"Engine.Actor.bBlockPlayers"),RetailCollisionFlag(actor,"Engine.Actor.bCollideWorld")});
             }else throw std::runtime_error("Unknown retail collision diagnostic operation");
             ValidateStateBudget();result.states.push_back(RetailCollisionSnapshot());
         }
