@@ -35,6 +35,13 @@ deferred until this Training milestone is working. Keep inexpensive shared-code
 regressions where they protect Training, saves or already accepted features.
 Synthetic map lifecycle fixtures are regression tests, not extra campaign work.
 
+Production startup now retains its first `00_Training` load instead of loading
+`00_TrainingCombat`, `00_TrainingFinal` and `00_Training` again as a map-replacement
+self-test. First-map initialization and subsequent mesh, interaction, save,
+audio and UI preparation remain. The Android native module/link passes; shared
+map-transition, mover and stair regressions pass. No replacement APK or measured
+headset startup-time improvement is claimed for this source-only checkpoint.
+
 ## Current evidence is not a playable-physics claim
 
 Original crate damage/fragment scripts and actual UObject lookup now pass

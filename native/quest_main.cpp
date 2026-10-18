@@ -791,29 +791,10 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                 mapRuntime.actorProperties,
                 mapRuntime.resolvedClasses,
                 mapRuntime.unresolvedClasses);
-            const PortablePackageTables combatMap = LoadPortablePackageTables(
-                "/data/user/0/dev.deusex.questvr.smoketest/files/DeusEx/Maps/00_TrainingCombat.dx");
-            const PortableMapRuntimeSummary combatRuntime =
-                LoadPortableRuntimeMap(combatMap);
-            const PortablePackageTables finalMap = LoadPortablePackageTables(
-                "/data/user/0/dev.deusex.questvr.smoketest/files/DeusEx/Maps/00_TrainingFinal.dx");
-            const PortableMapRuntimeSummary finalRuntime =
-                LoadPortableRuntimeMap(finalMap);
-            const PortableMapRuntimeSummary restoredTraining =
-                LoadPortableRuntimeMap(trainingMap);
-            if (!combatRuntime.passed || !finalRuntime.passed ||
-                !restoredTraining.passed || combatRuntime.replacedExports != mapRuntime.exports ||
-                finalRuntime.replacedExports != combatRuntime.exports ||
-                restoredTraining.replacedExports != finalRuntime.exports) {
-                ALOG("DeusExQuest: training map transition validation failed");
-                return false;
-            }
-            ALOG(
-                "DeusExQuest: runtime map replacement verified: Training(%zu actors) -> Combat(%zu) -> Final(%zu) -> Training(%zu), prior worlds collected",
-                mapRuntime.actors,
-                combatRuntime.actors,
-                finalRuntime.actors,
-                restoredTraining.actors);
+            // The current playable milestone is the first Training level.
+            // Cross-map lifecycle regression belongs in host tests, not in
+            // every player startup (three extra loads and retirement passes).
+            ALOG("DeusExQuest: Training-first startup retained the initial map; cross-map self-test deferred");
             const PortableActorMeshSummary actorMeshes =
                 DecodePortableRuntimeActorMeshes();
             if (!actorMeshes.passed) {

@@ -8,6 +8,18 @@ engine work and inexpensive regressions only where they support Training or
 protect accepted features. Next gameplay target remains live crate destruction,
 usable contents and support/falling. See TRAINING-FIRST-PRIORITY.md.
 
+- Removed the production startup detour through TrainingCombat and TrainingFinal:
+  keep the already loaded first Training map instead of three additional map
+  loads/retirement passes. Its subsequent first-map setup remains unchanged.
+  Android native compilation/link passes; map-transition, mover and stair host
+  regressions pass. The default tutorial-route CTest explicitly skips without
+  owned-data arguments; it is not claimed as executed here. No new APK or
+  headset startup performance measurement for this source-only change.
+- A read-only original Engine/default/native-field audit identifies required
+  shared collision/startup dependencies for Training. It adds no runtime or
+  playable-physics capability. See ORIGINAL-ENGINE-DEFAULT-LINK.md. Live crate
+  destruction, usable loot and gravity remain unfinished.
+
 ## Actual UObject lookup integration (2026-10-18)
 
 - Added an explicit actual-object lookup phase after Package/metadata setup:
