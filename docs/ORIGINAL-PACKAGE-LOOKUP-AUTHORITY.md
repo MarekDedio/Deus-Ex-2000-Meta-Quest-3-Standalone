@@ -27,12 +27,21 @@ null without adding a name. The exact resolved-Outer hash search is first:
 `(Outer.Index xor Name.Index)&0xFFF`, with null Outer contributing0, at
 10151E4C..10151E64. Candidates must match actual Outer pointer and FName, then
 the requested exact concrete class or actual Class/Super ancestry at
-10151E6F..10151EB5. Null requested class imposes no class filter.
+10151E6F..10151EB5. Null requested class imposes no class filter in this exact
+hash phase (direct return at10151E79..10151E7B).
 
 Important ANY_PACKAGE nuance: only after this hash search misses, and only if
 the ORIGINAL InOuter was-1,10151EB7..10151F88 scans nonnull indexed GObjects in
-ascending index order. It matches leaf FName and optional class filter but
-does NOT enforce the resolved Outer. Thus:
+ascending index order. A separate iterator first admits actual
+Core.Object-or-derived objects, even when the requested class is null:
+10151EC0..10151ECE sets the iterator filter to actual Core.Object1029E0D0 and
+index-1;10151EED calls thunk101028AB ->10143EE0, whose first increment follows
+candidate Class+24/Super+28 at10143F04..10143F16. Subsequent increments inline
+the same ancestry admission at10151F6F..10151F88. Null Class is not an admitted
+iterator object. The admitted candidates then match leaf FName and the optional
+requested-class filter, but do NOT enforce the resolved Outer. The null
+requested-class shortcut at10151F15..10151F17 skips only that latter filter.
+See `ORIGINAL-OBJECT-HASH-ORDER.md` for the complete phase distinction. Thus:
 
 - Unqualified ANY_PACKAGE first prefers the matching null-Outer hash entry,
   before ascending global fallback.

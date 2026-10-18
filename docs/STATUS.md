@@ -33,6 +33,12 @@
   driver import, actual Engine/Cylinder construction, begun world, movement/
   gravity and live original crate Fire remain unfinished. No new APK. See
   ORIGINAL-NATIVE-PACKAGES.md and ORIGINAL-PACKAGE-LOOKUP-AUTHORITY.md.
+- Follow-up read-only Core audit establishes exact lookup's newest-hash/rehash
+  precedence, stable unhash, LIFO index reuse, same-name Rename rehash and the
+  distinct ascending-index ANY_PACKAGE iterator. Even a null requested class
+  retains that iterator's actual Core.Object ancestry admission; exact-hash null
+  filtering does not. This evidence is not a lookup/Rename implementation. See
+  ORIGINAL-OBJECT-HASH-ORDER.md.
 
 ## Native config constraints and serialized Within (2026-10-18)
 
