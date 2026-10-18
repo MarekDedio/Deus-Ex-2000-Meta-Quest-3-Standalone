@@ -26,7 +26,8 @@ struct PortableRetailCollisionSnapshot {
     std::size_t initializationDraws{},lifecycleOperations{};
     std::vector<PortableRetailCollisionActor> actors;
 };
-enum class PortableRetailCollisionOperation { Enable, Disable, LineCheck, SetCollision, SetCollisionSize, MultiLineCheck, EncroachmentCheck };
+enum class PortableRetailCollisionOperation { Enable, Disable, LineCheck, SetCollision, SetCollisionSize, MultiLineCheck, EncroachmentCheck,
+    IsBlockedBy, IsBasedOn, LocalPlayerPawn };
 struct PortableRetailCollisionCommand {
     PortableRetailCollisionOperation operation{PortableRetailCollisionOperation::Enable};
     std::array<float,3u> end{},start{},extent{};
@@ -38,6 +39,9 @@ struct PortableRetailCollisionCommand {
     // original unused final DWORD is distinct from LineCheck's byte flags.
     std::array<std::int32_t,3u> rotation{};
     std::uint32_t ignoredEncroachmentFlags{};
+    // Original native predicates only: actorPath is receiver. Empty other is
+    // accepted as None only for IsBasedOn. No collision hash is required.
+    std::string otherActorPath{};
 };
 struct PortableRetailCollisionMutation {
     std::string actorPath;
@@ -58,6 +62,11 @@ struct PortableRetailMultiLineMetadata {
     float scale{1.0f};
     bool hasWorldHit{},nearWorldHit{},worldItemKnown{true};
 };
+struct PortableRetailActorPredicate {
+    std::size_t commandIndex{};
+    bool returned{};
+    std::string localPlayerPath;
+};
 struct PortableRetailCollisionProbeResult {
     QuestVr::Vm::Result execution;
     bool available{};
@@ -66,6 +75,7 @@ struct PortableRetailCollisionProbeResult {
     std::vector<std::size_t> queryHeads;
     std::vector<PortableRetailCollisionMutation> mutations;
     std::vector<PortableRetailMultiLineMetadata> multiLine;
+    std::vector<PortableRetailActorPredicate> predicates;
 };
 // Bounded original SetActorCollision four-case and actual primitive-query
 // diagnostic. No native pointer leaves the CPU owner; every state is detached.

@@ -274,12 +274,43 @@
         retailCollisionPreview_=true;
         ReserveRetailDiagnosticOutput(QuestVr::DecalStateDetail::Multiply(commands.size(),
             sizeof(PortableRetailCollisionSnapshot)+sizeof(std::vector<PortableRetailCollisionHit>)+sizeof(std::size_t)+
-                sizeof(PortableRetailCollisionMutation)+sizeof(PortableRetailMultiLineMetadata)));
+                sizeof(PortableRetailCollisionMutation)+sizeof(PortableRetailMultiLineMetadata)+sizeof(PortableRetailActorPredicate)));
         result.states.reserve(commands.size());result.queries.reserve(commands.size());result.queryHeads.reserve(commands.size());
         result.mutations.reserve(commands.size());result.multiLine.reserve(commands.size());
+        result.predicates.reserve(commands.size());
         for(const auto& command:commands) {
             if(command.operation==PortableRetailCollisionOperation::Enable) SetRetailActorCollision(true);
             else if(command.operation==PortableRetailCollisionOperation::Disable) SetRetailActorCollision(false);
+            else if(command.operation==PortableRetailCollisionOperation::IsBlockedBy ||
+                command.operation==PortableRetailCollisionOperation::IsBasedOn ||
+                command.operation==PortableRetailCollisionOperation::LocalPlayerPawn) {
+                const auto valid=[](const std::string& path) {
+                    return path.size()<=8192u&&path.find('\0')==std::string::npos;
+                };
+                if(command.actorPath.empty() || !valid(command.actorPath) || !valid(command.otherActorPath) ||
+                    (command.operation==PortableRetailCollisionOperation::IsBlockedBy && command.otherActorPath.empty()))
+                    throw std::runtime_error("Original actor predicate diagnostic has invalid bounded actor input");
+                auto* source=Object(command.actorPath);
+                static_cast<void>(RetailCollisionActor(reinterpret_cast<std::uintptr_t>(source)));
+                bool returned{};std::string playerPath;
+                if(command.operation==PortableRetailCollisionOperation::LocalPlayerPawn) {
+                    const auto player=QuestVr::GetOriginalActorLocalPlayerPawn(reinterpret_cast<std::uintptr_t>(source),
+                        RetailActorBlockingQueries());
+                    returned=player!=0u;
+                    // Admit the returned string BEFORE copying it. Predicate
+                    // evaluation itself does not allocate a detached path.
+                    ReserveRetailDiagnosticOutput((player?source->reflection.objectPath.size():0u)+1u+4u*sizeof(void*));
+                    if(player)playerPath=source->reflection.objectPath;
+                }else {
+                    auto* other=command.otherActorPath.empty()?nullptr:Object(command.otherActorPath);
+                    // IsBasedOn reads no target fields, including on self hit.
+                    returned=command.operation==PortableRetailCollisionOperation::IsBlockedBy?
+                        RetailIsBlockedBy(source,other):RetailIsBasedOn(source,other);
+                }
+                if(command.operation!=PortableRetailCollisionOperation::LocalPlayerPawn)
+                    ReserveRetailDiagnosticOutput(1u+4u*sizeof(void*));
+                result.predicates.push_back({result.states.size(),returned,std::move(playerPath)});
+            }
             else if(command.operation==PortableRetailCollisionOperation::LineCheck ||
                 command.operation==PortableRetailCollisionOperation::MultiLineCheck ||
                 command.operation==PortableRetailCollisionOperation::EncroachmentCheck) {

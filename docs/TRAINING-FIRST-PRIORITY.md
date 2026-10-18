@@ -88,3 +88,21 @@ completed higher-level encroachment, native Move or playable physics. Full Level
 encroachment, Move, support/falling and surviving usable contents remain the
 same immediate gameplay target. See ORIGINAL-ACTOR-POINT-CHECK.md,
 ORIGINAL-MODEL-POINT-CHECK.md and ORIGINAL-ACTOR-ENCROACHMENT-CHECK.md.
+
+The next shared prerequisite supplies the complete original lazy IsBlockedBy,
+receiver-local GetPlayerPawn and directional IsBasedOn helpers plus actual
+typed first-map runtime providers. It does not use native720's world scan or
+add a generic collide/self/Owner gate. The higher Level encroachment audit is
+now complete, including push/recheck/veto side effects and original touch-event
+ordering; those higher movement/touch dependencies are still unfinished.
+Predicate tests and static audits are not crate gameplay acceptance. Other-map
+integration and test sweeps remain deferred. See
+ORIGINAL-ACTOR-BLOCKING-PREDICATES.md and ORIGINAL-LEVEL-ENCROACHMENT.md.
+The separate moveSmooth audit pins its complete movement/event/store order
+without implementing an alternative slide or claiming its remaining numeric
+dependencies are solved; see ORIGINAL-ACTOR-MOVE-SMOOTH.md. The predicate
+checkpoint's actual test loads only first Training:1308 local-player controls,
+81 directional pairs and90 Base/self/None cases, with no invented possession
+or Base links. The whole owned first-map suite passes883599/55; original
+startup still reaches missing Move266. No replacement APK is produced for
+these backend-only prerequisites.

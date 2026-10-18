@@ -56,6 +56,7 @@
 #include "quest_model_point_overlap.h"
 #include "quest_native_actor_pose.h"
 #include "quest_native_scratch_scope.h"
+#include "quest_actor_blocking.h"
 
 #include <memory>
 #include <algorithm>
@@ -4532,6 +4533,7 @@ public:
     #include "portable_retail_collision.inl"
     #include "portable_retail_multi_line.inl"
     #include "portable_retail_encroachment.inl"
+    #include "portable_retail_actor_blocking.inl"
     void RequireIndexedPrimitiveDiagnosticOwner(RuntimeObject* owner) {
         RequireMapActor(owner);
         if(owner->worldActorIndex<0 || static_cast<std::size_t>(owner->worldActorIndex)>=persistentWorldActors.size() ||

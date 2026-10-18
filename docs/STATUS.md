@@ -20,7 +20,52 @@ usable contents and support/falling. See TRAINING-FIRST-PRIORITY.md.
   playable-physics capability. See ORIGINAL-ENGINE-DEFAULT-LINK.md. Live crate
   destruction, usable loot and gravity remain unfinished.
 
-## Current first Training proposed-pose hash query (2026-10-19)
+## Current first Training blocking prerequisites (2026-10-19)
+
+The full original IsBlockedBy, receiver-local native GetPlayerPawn and
+IsBasedOn helpers are implemented with live typed runtime providers. Blocking
+preserves the Level/brush/ordinary precedence and player-vs-projectile lazy
+reads. Brush and Player are null tests only; native720's unrelated Level scan
+is not used. Base traversal preserves self/None/direction and uses the same
+host work ledger. Exact declared fields, genuine class identities, lookup and
+current-generation admission remain authoritative, with no movement, class,
+active-hash write or possession shortcut.
+
+The standalone predicate suite passes1900811 checks/127 explicit refusals,
+including1899008 independent matrix cases,32 complete lazy transcripts and
+113 active-provider failure prefixes. Strict ARM64 runtime/test syntax and the
+Android native module/link pass. The coherent desktop rebuild and CTest pass:
+139 executed/163 registered,24 explicit owned-data skips, zero failures in
+52.28s. The exact38-source first-Training Engine regression passes42647/31;
+the isolated crate diagnostic passes347/two and still loses born contents to
+dormant Game=None relevance, not usable loot. The separate exact38-source
+first-Training integration passes883599 checks/55 explicit refusals. Its new
+predicate coverage checks all1308 actual actors' local-player result,81
+directional real-actor pairs (66 blocked/15 clear) across all four matrix
+branches, and90 Base/self/None controls in93 rollback-only batches. Four actors
+have PlayerPawn ancestry but zero have a nonnull Player, and the dormant map
+has zero nonempty Base edges. Positive native-bound Player and nontrivial Base
+chains are therefore NOT claimed from this actual map; the standalone suite
+supplies the separate synthetic controls. Full save/revision/lookup/client/GC/
+RNG/pose/mirror/hash and original-source preservation passes. The same genuine
+startup boundary remains BeginPlay/DeusExMover16, native266 at PC166. These
+results do not prove playable physics. See ORIGINAL-ACTOR-BLOCKING-PREDICATES.md.
+
+The complete higher Level.CheckEncroachment audit now includes the previously
+missing body after1039A4FA, original push/recheck/reverse movement and both
+event passes. An ordinary veto preserves earlier successful pushes/event
+effects; it is not exception rollback. The existing host UnTouch differs from
+the original first-slot native EndTouch and cannot substitute for it. The
+remaining higher encroachment/Move/moveSmooth/touch dependencies are not
+exposed as working natives. The complete moveSmooth body now also pins its
+same-hit reuse, first-call return, live XLevel/Rotation, exact first-slide
+stores/gate and HitWall/TwoWallAdjust/third-move ordering. Its remaining
+TwoWallAdjust numeric proof/adapter is explicit, not a parity claim. See
+ORIGINAL-LEVEL-ENCROACHMENT.md and ORIGINAL-ACTOR-MOVE-SMOOTH.md. No other-map
+content integration or new APK is included in this backend checkpoint.
+Evidence: `artifacts/training-blocking-*20261019.log`.
+
+## Earlier first Training proposed-pose hash query (2026-10-19)
 
 The full native hash ActorEncroachmentCheck dispatcher and typed temporary
 source-pose scope are implemented. Bounds finish before tag increment; moving
