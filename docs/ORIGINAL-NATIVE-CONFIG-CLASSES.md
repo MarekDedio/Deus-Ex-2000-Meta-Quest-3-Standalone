@@ -56,8 +56,13 @@ fallback are recorded in ORIGINAL-PACKAGE-LOOKUP-AUTHORITY.md. The previous
   dormant complete checkpoints/model/world/clock/revision, warm restore and
   map/shutdown lifetime, missing prerequisites/Console and late-name rollback.
 - Existing owned Core metadata regression:10994 checks/94 refusals.
-- Strict ARM64 syntax and actual Android native module/link pass. Full coherent
-  host build/CTest results are recorded in STATUS.md when finished.
+- Strict ARM64 syntax and actual Android native module/link pass. The full
+  coherent host rebuild passes. CTest:129 passed/149 registered/20 explicit
+  owned-data skips/zero failures in53.22s. Relevant owned fixtures above were
+  run separately; the full skipped set is not claimed as executed.
+- Original isolated crate/fragment regression:1116 checks/four refusals, including
+  exact fatal-hit fragments, save continuation and late-budget rollback. This
+  remains an isolated original-script probe, not live VR melee or falling.
 
 The late-name sentinel exists only in an in-memory table with no on-disk export
 slot. Its cast therefore explicitly refuses source provenance; allowing it as

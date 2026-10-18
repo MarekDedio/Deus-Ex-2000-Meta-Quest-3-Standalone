@@ -20,6 +20,10 @@
   warm/map/shutdown lifetime and late-name/prerequisite/missing-Console refusal.
   Shared retained admission now includes each owning GCRoot and GCRootNode.
   Strict ARM64 syntax and Android native module/link pass.
+  Full coherent host rebuild passes; CTest129 passed/149 registered/20 explicit
+  owned-data skips/zero failures in53.22s. Relevant owned fixtures above ran
+  separately; the original crate/fragment regression also passes1116 checks/
+  four refusals. The full skipped set is not claimed as executed.
 - Original lookup/loader evidence now establishes the next real dependency:
   actual Package instances and Outer ownership. Original export Outer0 binds
   to linker.Root; native Register creates packages. Qualified StaticFind resolves
