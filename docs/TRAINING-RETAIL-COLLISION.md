@@ -6,6 +6,19 @@ Training UObject/ULevel identities and original primitive providers. It is not
 live crate damage, usable loot, gravity, complete original startup or a new APK.
 Other campaign-map integration remains deferred.
 
+## Current cylinder PointCheck follow-on
+
+Original cylinder occupancy is now a distinct caller-seeded kernel and actual
+Primitive/Mesh/LodMesh provider, not a zero-length LineCheck. The first-map
+owned suite now passes611498 checks/39 refusals, including227 actual constructed
+Cylinder and64 LodMesh owners with582 overlap/582 clear packets. Independent
+kernel212583/23, coherent host/CTest134 executed/158 registered/24 explicit
+owned-data skips/zero failures, strict ARM64 and Android native link pass.
+Model.PointCheck remains an explicit refusal pending its complete separate
+point/box/owner/hull implementation. The native266 startup boundary below is
+unchanged. See ORIGINAL-ACTOR-POINT-CHECK.md, ORIGINAL-MODEL-POINT-CHECK.md and
+ORIGINAL-ACTOR-ENCROACHMENT-CHECK.md. No APK or live crate physics claim.
+
 ## Current follow-on: bounded initialization and native multi-line service
 
 First table construction now consumes its own fixed49152-draw allowance once

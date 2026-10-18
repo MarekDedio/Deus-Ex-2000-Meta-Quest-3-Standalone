@@ -71,3 +71,15 @@ This is not publishing physics:
 original Move, support/falling, destruction and surviving usable contents remain
 unfinished. See TRAINING-RETAIL-COLLISION.md. No other-map content integration
 or replacement APK is included in this prerequisite checkpoint.
+
+The next overlap prerequisite now has the original cylinder PointCheck kernel
+and actual Primitive/Mesh/LodMesh owner-field adapter. Its independent numeric
+and integer tests pass; it is not a line/zero-length sweep substitute. Actual
+Model.PointCheck remains an explicit refusal until all zero/box/owner/null hull
+branches and packet behavior are implemented and independently verified.
+Recovered hash encroachment requires temporarily authoritative source pose,
+candidate cylinders, tag-before-gate ordering and tail-linked hits, followed by
+exact normal pose restoration without collision Remove/Add. Full Level
+encroachment, Move, support/falling and surviving usable contents remain the
+same immediate gameplay target. See ORIGINAL-ACTOR-POINT-CHECK.md,
+ORIGINAL-MODEL-POINT-CHECK.md and ORIGINAL-ACTOR-ENCROACHMENT-CHECK.md.

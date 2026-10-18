@@ -3,6 +3,8 @@
 #include "portable_engine_collision.h"
 #include "portable_object_lookup.h"
 #include "portable_retail_collision.h"
+#include "portable_actor_point_check.h"
+#include "quest_actor_point_check.h"
 #include "quest_collision_hash_math.h"
 #include "quest_model_line_hit.h"
 #include "quest_model_point_line_hit.h"
@@ -517,6 +519,7 @@ void SetterCoverage(const std::vector<Actor>& actors,const std::function<void()>
         <<"; original262/283 typed returns, unchanged-setter prepend ordering, flag toggles, resized bounds/hits, late rollback/refusals\n";
 }
 #include "portable_retail_multi_line_cases.inl"
+#include "portable_actor_point_cases.inl"
 void Run(const fs::path& root) {
     Temporary temporary(root);std::vector<Source> sources;std::vector<PortablePackageTables> scripts;
     sources.reserve(QuestVr::RuntimeScriptPackages.size()+2u);scripts.reserve(QuestVr::RuntimeScriptPackages.size());
@@ -616,6 +619,7 @@ void Run(const fs::path& root) {
     SameHits(result.queries[0u],result.queryHeads[0u],expectedMiss);SameHits(result.queries[1u],result.queryHeads[1u],expectedHit);rollback();
     SetterCoverage(actors,rollback);
     MultiLineCoverage(map,actors,rollback);
+    ActorPointCoverage(actors,rollback);
     auto bad=hit;bad.extent[1u]=std::numeric_limits<float>::quiet_NaN();
     for(unsigned repeat=0u;repeat<2u;++repeat) {
         const auto failure=ProbePortableRuntimeRetailCollision({Command{Operation::Enable},hit,bad});

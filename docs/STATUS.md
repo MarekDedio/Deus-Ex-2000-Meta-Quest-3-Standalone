@@ -20,7 +20,35 @@ usable contents and support/falling. See TRAINING-FIRST-PRIORITY.md.
   playable-physics capability. See ORIGINAL-ENGINE-DEFAULT-LINK.md. Live crate
   destruction, usable loot and gravity remain unfinished.
 
-## Current first Training startup/movement prerequisite (2026-10-18)
+## Current first Training overlap prerequisite (2026-10-18)
+
+- Implemented the recovered UPrimitive.PointCheck cylinder body, also inherited
+  unchanged by Mesh/LodMesh. Strict overlap, active-read order, original unusual
+  cap/radial output, exact numeric spills and untouched caller fields remain.
+  It is not a zero-length LineCheck and has no Mesh extent wrapper. Finite-domain
+  refusals stage packet writes atomically; inactive Y extent/flags remain inert.
+- Connected actual source-selected Primitive/Mesh/LodMesh owner fields through
+  a read-only provider diagnostic. Model.PointCheck remains a separate explicit
+  refusal pending its full brush/point/hull implementation. No fake clear result,
+  temporary permanent transform, Move shortcut or other-map integration.
+- Cylinder unit tests pass212583 checks/23 refusals, with independent x87
+  arithmetic and46656 exact-integer overlap classifications. Strict ARM64
+  syntax and Android native compilation/link pass. No APK or completed crate
+  damage, surviving loot, falling, encroachment or original startup claim.
+- Coherent host rebuild and CTest pass:134 executed/158 registered,
+  24 explicit owned-data skips and zero failures in75.83s. Owned-data tests
+  run separately; the other skipped cases are not claimed as executed.
+- Owned exact38-source first-map collision/provider integration passes611498
+  checks/39 explicit refusals. Point controls cover227 Engine.Cylinder and64
+  LodMesh owners,582 overlap/582 clear packets, defined caller fields and source
+  state/lookup/GC/RNG preservation. The same-runtime Engine42647/31 and isolated
+  crate347/two regressions pass; original source fingerprints are unchanged.
+  Crate contents still fail dormant Game=None relevance, not surviving loot.
+
+See ORIGINAL-ACTOR-POINT-CHECK.md and ORIGINAL-ACTOR-ENCROACHMENT-CHECK.md.
+The full movement/startup boundary remains the native266 below.
+
+## Earlier first Training startup/movement prerequisite (2026-10-18)
 
 - Corrected the work-unit mismatch between fixed collision-table initialization
   and actor traversal. All49152 original draws remain, under their own exact

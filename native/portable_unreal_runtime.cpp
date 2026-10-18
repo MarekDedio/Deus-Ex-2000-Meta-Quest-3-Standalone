@@ -2,6 +2,7 @@
 #include "portable_object_lookup.h"
 #include "portable_engine_collision.h"
 #include "portable_retail_collision.h"
+#include "portable_actor_point_check.h"
 
 #include "GC/GC.h"
 
@@ -51,6 +52,7 @@
 #include "quest_mesh_line_trace.h"
 #include "quest_model_line_hit.h"
 #include "quest_model_point_line_hit.h"
+#include "quest_actor_point_check.h"
 
 #include <memory>
 #include <algorithm>
@@ -4486,6 +4488,15 @@ public:
         // extents before the underlying cylinder's active finite-input policy.
         // No render mesh/animation decode, ToWorld or Engine fallback is needed.
         return QuestVr::OriginalMeshLineCheck(hit,cylinder,end,start,extent,flags);
+    }
+    bool NativeActorPrimitivePointCheck(RuntimeObject* owner,QuestVr::OriginalActorLineHit& hit,
+        const PortableModelVec3& location,const PortableModelVec3& extent,const std::uint32_t flags=0u) {
+        const auto selected=NativeActorPrimitive(owner);
+        if(selected.kind==NativePrimitiveKind::Model)
+            throw std::runtime_error("Unsupported original UModel.PointCheck provider; line/zero-length sweeps are not overlap checks");
+        // UMesh and ULodMesh inherit exactly UPrimitive.PointCheck: unlike
+        // LineCheck, no Mesh extent canonicalization or wrapper is present.
+        return QuestVr::CheckOriginalActorCylinderPoint(hit,NativePrimitiveOwnerCylinder(owner),location,extent,flags);
     }
     #include "portable_retail_collision.inl"
     #include "portable_retail_multi_line.inl"
@@ -12887,6 +12898,23 @@ PortableActorPrimitiveLineSnapshot ProbePortableRuntimeRetailCollisionPrimitiveL
     const std::array<float,3u>& end,const std::array<float,3u>& start,
     const std::array<float,3u>& extent,const std::uint32_t flags) {
     return ProbeActualActorPrimitiveLine(actorPath,end,start,extent,flags,0.0f);
+}
+
+PortableActorPrimitivePointSnapshot ProbePortableRuntimeActorPrimitivePoint(const std::string& actorPath,
+    const std::array<float,3u>& location,const std::array<float,3u>& extent,const std::uint32_t flags) {
+    PortableActorVmHost host;auto* owner=PrimitiveDiagnosticOwner(host,actorPath);
+    PortableActorPrimitivePointSnapshot result;
+    result.primitive=PrimitiveDiagnosticIdentity(owner,host.NativeActorPrimitive(owner));
+    result.pointImplementation="UPrimitive::PointCheck";
+    QuestVr::OriginalActorLineHit hit{37u,0u,0u,{101.0f,102.0f,103.0f},{104.0f,105.0f,106.0f},17.0f,73};
+    result.clear=host.NativeActorPrimitivePointCheck(owner,hit,{location[0u],location[1u],location[2u]},
+        {extent[0u],extent[1u],extent[2u]},flags);
+    result.hitOwner=hit.actor==reinterpret_cast<std::uintptr_t>(owner);
+    result.hitPrimitiveIsNone=hit.primitive==0u;
+    result.untouchedCallerFields=hit.next==37u && hit.time==17.0f && hit.item==73 && hit.primitive==0u;
+    result.location={hit.location.x,hit.location.y,hit.location.z};
+    result.normal={hit.normal.x,hit.normal.y,hit.normal.z};result.time=hit.time;result.item=hit.item;
+    return result;
 }
 
 static std::pair<RuntimeObject*,RuntimeObject*> RelinkAuthoredActorBases(
