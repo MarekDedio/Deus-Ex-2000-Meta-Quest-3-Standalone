@@ -44,6 +44,13 @@ headset startup-time improvement is claimed for this source-only checkpoint.
 
 ## Current evidence is not a playable-physics claim
 
+The actual Engine-owned Cylinder prerequisite now passes both the focused
+fixture and the Quest bootstrap's exact shared-package set, including a real
+Engine-before-map/Client/Viewport sequence. All227 null Brush/Mesh actors in
+first Training select that same constructed Primitive;31 are collidable. This
+is shared work required by this map, not integration of other map content.
+See TRAINING-ENGINE-COLLISION.md for the memory fixes and verification boundary.
+
 Original crate damage/fragment scripts and actual UObject lookup now pass
 isolated Training diagnostics, including six fragment identities, save
 replacement, GC and rollback. The world is deliberately dormant in those tests.

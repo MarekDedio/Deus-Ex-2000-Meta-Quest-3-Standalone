@@ -149,3 +149,15 @@ unfinished integration. No new APK is produced merely for this CPU-only API.
 Immediate content work is now restricted to completing the actual first
 Training level; see TRAINING-FIRST-PRIORITY.md. Other campaign-map integration
 is deferred rather than included in these shared-engine regression claims.
+
+Follow-up: the exact Quest startup source set exceeded32MiB with two ordered
+trees. The numeric ordered tree remains; its stable nodes now also carry an
+intrusive identity chain with a separate fixed4096-head array. Original exact
+name hashing/order, ascending ANY_PACKAGE order, cached-key removal, stable
+addresses, copy reconstruction and allocation-free adoption are unchanged.
+The same conservative overhead is charged per remaining tree node, plus both
+head arrays. All101433 named source objects now admit at13049088 retained bytes.
+The updated independent kernel passes198496 checks/43 refusals, including512
+deliberately colliding identities, copy/unlink/reuse and allocation denial.
+The actual configured-default/Engine consumer and its38-package regression are
+documented in TRAINING-ENGINE-COLLISION.md; they do not finish live crate physics.

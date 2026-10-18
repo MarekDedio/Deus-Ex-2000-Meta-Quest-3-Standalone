@@ -80,6 +80,125 @@ and native Level.Engine assignment are separately established by LoadMap
 1038D094..1038D09F in ORIGINAL-ENGINE-CYLINDER.md. Those later writes must not
 be simulated merely to claim Engine startup.
 
+## Closed Field/Property/Str/Array/Primitive default profiles
+
+The specific default-copy closure needed to allocate GameEngine's native fields
+and its Engine-owned Primitive does not need a generic blank-CDO fallback.
+The actual native registrations and shared empty static-constructor provenance
+establish a closed, typed set:
+
+| Actual class | Actual Super | Native size | Proven default payload |
+| --- | --- | --- | --- |
+| Core.Field | Core.Object |34 |Zero extension+28..33: SuperField+28, Next+2C, field hash link+30 absent |
+| Core.Property | Core.Field |5C |Copied zero Field payload, zero extension+34..5B, including **ArrayDim0**, ElementSize0, property flags0, CategoryNone, replication words0, offset0 and absent native property links |
+| Core.StrProperty | Core.Property |5C |Exact copied zero Property payload; no additional tail |
+| Core.ArrayProperty | Core.Property |60 |Copied zero Property payload plus absent actual Inner+5C |
+| Engine.Primitive | Core.Object |54 |Zero extension+28..53: min/max bounds, Valid byte, sphere and original padding all zero |
+
+These are native default-block values BEFORE any instance constructor. In
+particular Property/StrProperty/ArrayProperty default ArrayDim is0, not the1
+written by a later UProperty instance constructor. Typed native field creation
+must first consume these actual prepared defaults, then apply its audited
+default/Cpp constructor and Link effects below.
+
+Core native registration sites Field10125E50, Property10165650,
+StrProperty10167BD0 and ArrayProperty10168C10 explicitly pass
+UObject.StaticConstructor10101041 ->1014F690, whose complete body is RET.
+Engine.Primitive registration103D8200..103D8250 passes the named imported
+UObject.StaticConstructor through105999FC (loaded at103D8202, pushed at
+103D820A), native size54, and actual Core.Object Super/Within. Its constructor
+baseline flags12, and Field/Property/Str/Array baselines13/13/12/12, contain
+neither Config4 nor Localized20; superclass inheritance mask4EC does not add
+those flags for this actual chain. Their ordinary config/localized phases are
+therefore gated no-ops, not unknown source values requiring a guessed INI.
+There are no serialized replacement Class exports for these native-only
+registrations, as established in the metadata/engine registration audits.
+
+The actual Field/Property constructor distinction matters:
+
+- Their abstract native registrations use the shared UObject internal
+  constructor101017DA ->1010AAC0..1010AACD, which dispatches to actual UObject
+  default construction through101021C6 ->1014F340 for a nonnull object.
+  This does not authorize allocating abstract Field/Property instances; these
+  profiles are needed as actual superclass/default ancestry.
+- A concrete StrProperty registration supplies InternalConstructor10101AB4
+  ->10114500..1011450D ->default constructor10101A87 ->10114520. That calls
+  the UProperty default constructor and writes its distinct implementation.
+- A concrete ArrayProperty registration supplies InternalConstructor101033DC
+  ->10114C30..10114C3D ->default constructor10101AC3 ->10114C50..10114C61.
+  It likewise calls UProperty default1010283D and writes its implementation.
+  It does not independently initialize/attach Inner or call AddCppProperty;
+  copied ArrayProperty defaults supply the absent Inner.
+- GameEngine's arrays use the separately audited Cpp constructor rather than
+  that ArrayProperty default constructor. Both routes consume the same actual
+  prepared class defaults, but only the Cpp route writes Settings/4000/B8 orC4
+  and prepends the array to actual Class.Children.
+
+Primitive's distinct internal constructor is103023CE ->1031E1F0..1031E1FD,
+which dispatches a nonnull object through10303530 ->1031E210..1031E245.
+The concrete constructor calls actual UObject at1031E213, explicitly writes
+zero min bounds+28/+2C/+30, max bounds+34/+38/+3C, Valid byte+40 and sphere
++44/+48/+4C/+50 at1031E219..1031E239, then installs actual Primitive virtual
+implementation1042655C at1031E23C. It does not initialize a radius/height,
+attach a Level, create an Engine or run collision queries. The corresponding
+UEngine.Init inline construction1038083C..10380865 has the same observed
+constructor effects. Padding+41..43 retains the proven copied default zeros;
+do not confuse that with a wider constructor write to Valid.
+
+A portable equivalent can therefore retain separate immutable typed payloads
+for these actual class IDs, native sizes, actual Super/Within and shared-empty
+static-constructor provenance; copy that payload when constructing concrete
+Str/Array/Primitive objects; then apply only the audited constructor mutations.
+The owner still supplies and validates the actual object header/index/class/
+Outer/name, GC references and lookup publication. No legacy vtable, pointer or
+32-bit memory image should be copied into host storage. This closed profile
+does not grant default/instance authority to another native class merely
+because its path or size resembles one of these five.
+
+## Two remaining native classes for the inherited Engine field chain
+
+The actual inherited field iterator also visits Core.Object.Name, whose actual
+type is Core.NameProperty, and Engine.Engine.CurrentTickRate, whose actual
+type is Core.FloatProperty. Genuine class identity for those fields requires
+these additional closed native registrations; a field type spelling or generic
+Core.Property wrapper is not a substitute. They are distinct from the existing
+eleven-class metadata-domain contract.
+
+| Actual UClass | PrivateStaticClass | Initializer / UClass constructor call | Native size | Supplied ->constructor class flags | Requested UClass UObject flags | Actual Super | Actual Within |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| Core.FloatProperty |102A66F0 |10166A00..10166A5F /10166A4B |5C |0 ->12 |04084004 |Core.Property102A7AF0 |Core.Field101F2B18 |
+| Core.NameProperty |102A57F0 |101675B0..1016760F /101675FB |5C |0 ->12 |04084004 |Core.Property102A7AF0 |Core.Field101F2B18 |
+
+Both supply owning package literal Core101A7EF4, config literal System101A82C8,
+zero16-byte GUID, native constructor enum0 and shared static constructor
+10101041 ->1014F690 RET. Exact UTF16 names are FloatProperty101B13FA and
+NameProperty101B15A2, verified from static bytes. Requested UObject flags are
+the native UClass constructor baseline, not field-instance allocation flags.
+Superclass inheritance of Property's13 through mask4EC does not alter either
+class's12 baseline. No Config4/Localized20 default imports are enabled.
+
+FloatProperty's distinct InternalConstructor101033FA ->10113630..1011363D
+dispatches through default-constructor thunk1010312F ->10113650..10113661.
+NameProperty's InternalConstructor10102153 ->10114170..1011417D dispatches
+through101026BC ->10114190..101141A1. Each concrete default constructor calls
+UProperty default1010283D, which supplies instance ArrayDim1, then installs its
+distinct implementation (Float10175D44, Name10175F84). Neither constructor
+creates another native field, attaches Class.Children or adds an extended tail.
+
+Their CLASS DEFAULT payloads are instead exact same-size copies of the prepared
+Core.Property5C payload: all bytes+28..5B zero, including ArrayDim0. The native
+default-copy/shared-empty-static-constructor evidence above applies without
+running these instance constructors. These two closed profiles grant no
+authority to another unregistered Core metadata class.
+
+Float.Link thunk10102C89 ->101666A0..101666F6 and Name.Link thunk10102BB7
+->10167250..101672A6 each write ElementSize+38=4 and offset+48 aligned to
+actual Outer.GetPropertiesSize; neither body mutates property flags or adds
+the Constructor400000 flag. The enclosing Link0 offset-preservation rule
+above still applies. Existing original serialized Name/CurrentTickRate field
+objects must retain their own flags/category/Next/identity; preparing these
+two UClasses is not permission to recreate the fields.
+
 ## Actual GameEngine array and inner field construction
 
 `UGameEngine.StaticConstructor10388FC0..10389110` creates actual native field
@@ -210,6 +329,24 @@ Get-FileHash -Algorithm SHA256 -LiteralPath $auditCore,$auditEngine
 & $auditObjdump -d -Mintel --start-address=0x10127800 --stop-address=0x101279d0 $auditCore
 & $auditObjdump -d -Mintel --start-address=0x1037d5a0 --stop-address=0x1037d6ed $auditEngine
 & $auditObjdump -d -Mintel --start-address=0x10388f40 --stop-address=0x10389111 $auditEngine
+& $auditObjdump -d -Mintel --start-address=0x103d8200 --stop-address=0x103d8251 $auditEngine
+& $auditObjdump -d -Mintel --start-address=0x1031e1f0 --stop-address=0x1031e246 $auditEngine
+& $auditObjdump -d -Mintel --start-address=0x10380811 --stop-address=0x10380875 $auditEngine
+& $auditObjdump -d -Mintel --start-address=0x10125e50 --stop-address=0x10125ea1 $auditCore
+& $auditObjdump -d -Mintel --start-address=0x10165650 --stop-address=0x101656a1 $auditCore
+& $auditObjdump -d -Mintel --start-address=0x10167bd0 --stop-address=0x10167c20 $auditCore
+& $auditObjdump -d -Mintel --start-address=0x10168c10 --stop-address=0x10168c60 $auditCore
+& $auditObjdump -d -Mintel --start-address=0x10166a00 --stop-address=0x10166a60 $auditCore
+& $auditObjdump -d -Mintel --start-address=0x101675b0 --stop-address=0x10167610 $auditCore
+& $auditObjdump -s --start-address=0x101b13fa --stop-address=0x101b1418 $auditCore
+& $auditObjdump -s --start-address=0x101b15a2 --stop-address=0x101b15be $auditCore
+& $auditObjdump -d -Mintel --start-address=0x10113630 --stop-address=0x10113662 $auditCore
+& $auditObjdump -d -Mintel --start-address=0x10114170 --stop-address=0x101141a2 $auditCore
+& $auditObjdump -d -Mintel --start-address=0x101666a0 --stop-address=0x101666f7 $auditCore
+& $auditObjdump -d -Mintel --start-address=0x10167250 --stop-address=0x101672a7 $auditCore
+& $auditObjdump -d -Mintel --start-address=0x1010aac0 --stop-address=0x1010aace $auditCore
+& $auditObjdump -d -Mintel --start-address=0x10114500 --stop-address=0x10114532 $auditCore
+& $auditObjdump -d -Mintel --start-address=0x10114c30 --stop-address=0x10114ca5 $auditCore
 & $auditObjdump -d -Mintel --start-address=0x10114520 --stop-address=0x10114532 $auditCore
 & $auditObjdump -d -Mintel --start-address=0x10164f80 --stop-address=0x10165011 $auditCore
 & $auditObjdump -d -Mintel --start-address=0x10125ba0 --stop-address=0x10125bb9 $auditCore

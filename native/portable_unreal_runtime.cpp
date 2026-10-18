@@ -1,5 +1,6 @@
 #include "portable_unreal_runtime.h"
 #include "portable_object_lookup.h"
+#include "portable_engine_collision.h"
 
 #include "GC/GC.h"
 
@@ -41,6 +42,8 @@
 #include "quest_original_sine_table.h"
 #include "quest_native_engine_classes.h"
 #include "quest_native_package.h"
+#include "quest_native_config.h"
+#include "quest_native_config_import.h"
 #include "quest_static_find_object.h"
 #include "quest_collision_hash_math.h"
 #include "quest_mesh_line_trace.h"
@@ -69,6 +72,49 @@
 namespace {
 
 class RuntimeObject;
+enum class RuntimeNativeDefaultKind {Object,Subsystem,Field,Property,StrProperty,ArrayProperty,
+    Primitive,Engine,GameEngine,GameEngineExt,DeusExGameEngine};
+struct RuntimeNativeEngineValues {
+    std::array<RuntimeObject*,5u> configuredClasses{};
+    RuntimeObject *cylinder{},*client{},*render{},*audio{};
+    std::int32_t tickCycles{},gameCycles{},clientCycles{},cacheSizeMegs{};
+    bool useSound{};
+    float currentTickRate{};
+    // The complete fresh FURL payload, not a guessed reflected URL property.
+    std::string protocol,host,map,portal;
+    std::int32_t port{};
+    std::vector<std::string> options,serverActors,serverPackages;
+    bool urlValid{};
+};
+struct RuntimePreparedNativeDefaults {
+    RuntimeNativeDefaultKind kind{};
+    RuntimeObject *owner{},*superDefault{};
+    std::uint32_t nativeSize{},classFlags{};
+    RuntimeNativeEngineValues engine;
+    // Audited metadata/Primitive CDO native tails are zero after parent-copy
+    // and extension. UProperty's dimension becomes1 only in its INSTANCE ctor.
+    std::uint32_t propertyDimension{},propertyElementSize{},propertyFlags{},propertyOffset{};
+    std::array<float,10u> primitiveBounds{};
+    bool primitiveBoundsValid{};
+};
+struct RuntimeNativeProperty {
+    RuntimeObject *next{},*inner{};
+    RuntimeObject *propertyNext{},*configNext{},*constructorNext{};
+    std::uint32_t dimension{},elementSize{},flags{},offset{};
+    std::string category;
+};
+struct RuntimeNativeEngineInstance {
+    RuntimeNativeEngineValues values;
+    RuntimeObject* currentLevel{};
+    // Original +6C/+70 remain zero; their role has not been independently
+    // established. Do not label them PendingLevel/Entry without evidence.
+    std::array<RuntimeObject*,2u> reservedLevels{};
+    bool execInstalled{};
+};
+struct RuntimeNativePrimitiveInstance {
+    std::array<float,10u> bounds{};
+    bool boundsValid{};
+};
 struct RuntimeObjectLookupControl {
     bool active{};
     std::uint64_t generation{};
@@ -149,6 +195,13 @@ public:
     RuntimeObject* nativeClassWithin{};
     std::unique_ptr<QuestVr::NativePackage::PreparedDefaults> nativePackageDefaults;
     std::unique_ptr<QuestVr::NativePackage::Instance> nativePackageInstance;
+    std::unique_ptr<const RuntimePreparedNativeDefaults> preparedNativeDefaults;
+    std::unique_ptr<RuntimeNativeProperty> nativeProperty;
+    std::array<RuntimeObject*,3u> nativePropertyNext{};
+    std::array<RuntimeObject*,3u> nativePropertyHeads{};
+    RuntimeObject* nativeChildren{};
+    std::unique_ptr<RuntimeNativeEngineInstance> nativeEngineInstance;
+    std::unique_ptr<RuntimeNativePrimitiveInstance> nativePrimitiveInstance;
     std::shared_ptr<RuntimeNativePackageIndex> nativePackageIndex;
     std::string nativePackageKey;
     std::uint64_t nativeClientIdentity{}, nativeViewportIdentity{};
@@ -168,6 +221,7 @@ public:
     std::int32_t uniqueObjectCounter{}; // Concrete UClass, survives map changes.
     RuntimeObject* nativeXLevel{}; // Immutable LinkActorsToLevel baseline, not a script write.
     RuntimeObject* nativeLevelModel{}; // Serialized ULevel.Model, owned only by its loader.
+    RuntimeObject* nativeLevelEngine{}; // Actual collision Engine binding, never a save property.
     std::uint64_t nativeMapGeneration{}; // Transient loader identity, never a saved script value.
     // Explicit native loader ownership: this single-player engine creates no
     // NetDriver or DemoRecDriver. Not inferred from absent reflected fields,
@@ -328,6 +382,28 @@ GCAllocation* RuntimeObject::Mark(GCAllocation* marklist) {
     marklist = GC::MarkObject(marklist, nativeViewportActor);
     marklist = GC::MarkObject(marklist, nativeRootWindow);
     marklist = GC::MarkObject(marklist, nativeLevelModel);
+    // Level.Engine is a current-generation native binding, not an archived
+    // ownership edge. The collision domain roots the Engine explicitly.
+    marklist = GC::MarkObject(marklist, nativeChildren);
+    for(auto* field:nativePropertyHeads) marklist=GC::MarkObject(marklist,field);
+    for(auto* field:nativePropertyNext) marklist=GC::MarkObject(marklist,field);
+    if(nativeProperty) {
+        for(auto* field:{nativeProperty->next,nativeProperty->inner,nativeProperty->propertyNext,
+            nativeProperty->configNext,nativeProperty->constructorNext}) marklist=GC::MarkObject(marklist,field);
+    }
+    const auto engineEdges=[&](const RuntimeNativeEngineValues& values) {
+        for(auto* cls:values.configuredClasses) marklist=GC::MarkObject(marklist,cls);
+        for(auto* object:{values.cylinder,values.client,values.render,values.audio}) marklist=GC::MarkObject(marklist,object);
+    };
+    if(preparedNativeDefaults) {
+        marklist=GC::MarkObject(marklist,preparedNativeDefaults->superDefault);
+        engineEdges(preparedNativeDefaults->engine);
+    }
+    if(nativeEngineInstance) {
+        engineEdges(nativeEngineInstance->values);
+        marklist=GC::MarkObject(marklist,nativeEngineInstance->currentLevel);
+        for(auto* level:nativeEngineInstance->reservedLevels) marklist=GC::MarkObject(marklist,level);
+    }
     for (auto* reference : references) marklist = GC::MarkObject(marklist, reference);
     for (const auto& [key,slots] : nativeWindowPropertyRoots) {
         static_cast<void>(key);
@@ -399,6 +475,58 @@ std::size_t MaterializeClassDefaultObjects(RuntimePackage* runtime) {
 }
 
 std::unique_ptr<GCRoot<RuntimePackage>> persistentRuntime;
+struct RuntimeEngineCollisionDomain final : GCObject {
+    RuntimeObject *engine{},*transient{};
+    // Inventory for validation/accounting only. UClasses own their defaults
+    // and Children; these vectors must NOT independently root Cylinder/fields.
+    std::vector<RuntimeObject*> defaults,fields,classes;
+    std::string iniPath;
+protected:
+    GCAllocation* Mark(GCAllocation* marklist) override {
+        marklist=GC::MarkObject(marklist,engine);
+        for(auto* cls:classes) marklist=GC::MarkObject(marklist,cls);
+        return GC::MarkObject(marklist,transient);
+    }
+};
+std::unique_ptr<GCRoot<RuntimeEngineCollisionDomain>> persistentEngineCollision;
+bool PreparedNativeClassDefaultValid(const RuntimeObject* cls);
+std::size_t EngineCollisionRetainedBytes(const RuntimeEngineCollisionDomain& domain);
+std::size_t EngineCollisionRetainedBytes(const RuntimeEngineCollisionDomain& domain) {
+    using QuestVr::DecalStateDetail::Add;
+    auto bytes=sizeof(RuntimeEngineCollisionDomain)+sizeof(GCAllocation)+
+        sizeof(GCRoot<RuntimeEngineCollisionDomain>)+sizeof(GCRootNode)+domain.iniPath.capacity()+1u+
+        (domain.defaults.capacity()+domain.fields.capacity()+domain.classes.capacity())*sizeof(RuntimeObject*);
+    const auto values=[&](const RuntimeNativeEngineValues& state) {
+        for(const auto* text:{&state.protocol,&state.host,&state.map,&state.portal}) bytes=Add(bytes,text->capacity()+1u);
+        for(const auto* list:{&state.options,&state.serverActors,&state.serverPackages}) {
+            bytes=Add(bytes,list->capacity()*sizeof(std::string));
+            for(const auto& text:*list) bytes=Add(bytes,text.capacity()+1u);
+        }
+    };
+    const auto object=[&](const RuntimeObject* value) {
+        if(!value) throw std::runtime_error("Native collision retained inventory contains null");
+        bytes=Add(bytes,sizeof(RuntimeObject)+sizeof(GCAllocation)+value->references.capacity()*sizeof(RuntimeObject*));
+        for(const auto* text:{&value->reflection.objectPath,&value->reflection.metaClass,&value->reflection.outerPath,
+            &value->reflection.basePath,&value->sourcePath,&value->nativePackageKey}) bytes=Add(bytes,text->capacity()+1u);
+        if(value->preparedNativeDefaults) {bytes=Add(bytes,sizeof(RuntimePreparedNativeDefaults));values(value->preparedNativeDefaults->engine);}
+        if(value->nativeProperty) bytes=Add(bytes,sizeof(RuntimeNativeProperty)+value->nativeProperty->category.capacity()+1u);
+        if(value->nativeEngineInstance) {bytes=Add(bytes,sizeof(RuntimeNativeEngineInstance));values(value->nativeEngineInstance->values);}
+        if(value->nativePrimitiveInstance) bytes=Add(bytes,sizeof(RuntimeNativePrimitiveInstance));
+    };
+    for(auto* value:domain.defaults) object(value);
+    for(auto* value:domain.fields) object(value);
+    for(auto* value:domain.classes) object(value);
+    object(domain.engine);object(domain.transient);
+    if(!domain.engine->nativeEngineInstance || !domain.engine->nativeEngineInstance->values.cylinder)
+        throw std::runtime_error("Native collision retained inventory lacks its actual Cylinder");
+    object(domain.engine->nativeEngineInstance->values.cylinder);
+    // Qualified and folded aliases for fields and the three actual instances.
+    for(auto* value:domain.fields) bytes=Add(bytes,2u*(sizeof(std::string)+6u*sizeof(void*)+value->reflection.objectPath.capacity()+1u));
+    for(auto* value:domain.classes) bytes=Add(bytes,2u*(sizeof(std::string)+6u*sizeof(void*)+value->reflection.objectPath.capacity()+1u));
+    for(auto* value:{domain.engine,domain.transient,domain.engine->nativeEngineInstance->values.cylinder})
+        bytes=Add(bytes,2u*(sizeof(std::string)+6u*sizeof(void*)+value->reflection.objectPath.capacity()+1u));
+    return bytes;
+}
 // Actual embedding-owned engine client/render-target registrations. No UObject
 // or map actor is synthesized; the render owner revokes only its atomic lease.
 QuestVr::NativeClientRegistry persistentNativeClient;
@@ -1551,6 +1679,31 @@ bool NativePackageClassDefaultValid(const RuntimeObject* cls) {
         cls->defaultObject->nativePackageDefaults &&
         cls->defaultObject->nativePackageDefaults->ClassIndex()==cls->objectIndex.Index();
 }
+bool PreparedNativeClassDefaultValid(const RuntimeObject* cls) {
+    if(!persistentEngineCollision || !cls || !cls->defaultObject) return false;
+    const auto* defaults=cls->defaultObject;
+    const auto& domain=*persistentEngineCollision->get();
+    return std::find(domain.defaults.begin(),domain.defaults.end(),defaults)!=domain.defaults.end() &&
+        defaults->preparedNativeDefaults && defaults->preparedNativeDefaults->owner==cls &&
+        defaults->cls==cls && defaults->defaultOwner==cls && !defaults->outer && !defaults->lookupName &&
+        !defaults->runtimeBirth && !defaults->nativeEngineInstance && !defaults->nativePrimitiveInstance &&
+        defaults->preparedNativeDefaults->superDefault==(cls->base?cls->base->defaultObject:nullptr);
+}
+bool ActualNativeCollisionObjectValid(const RuntimeObject* object) {
+    if(!persistentEngineCollision || !object || object->defaultOwner || object->runtimeBirth ||
+        !object->sourcePath.empty() || !object->cls || !object->lookupControl ||
+        object->lookupControl!=persistentObjectLookup) return false;
+    const auto& domain=*persistentEngineCollision->get();
+    if(object->nativeEngineInstance) return object==domain.engine && object->outer==domain.transient &&
+        PreparedNativeClassDefaultValid(object->cls);
+    if(object->nativePrimitiveInstance) return domain.engine->nativeEngineInstance &&
+        object==domain.engine->nativeEngineInstance->values.cylinder && object->outer==domain.transient &&
+        object->cls->nativeEngineClass==&QuestVr::NativeEngineClasses[1u] && PreparedNativeClassDefaultValid(object->cls);
+    if(object->nativeProperty) return std::find(domain.fields.begin(),domain.fields.end(),object)!=domain.fields.end() &&
+        object->outer && PreparedNativeClassDefaultValid(object->cls) &&
+        (object->cls->reflection.objectPath=="Core.ArrayProperty" || object->cls->reflection.objectPath=="Core.StrProperty");
+    return false;
+}
 std::size_t NativePackageRetainedBytes(const RuntimeNativePackageIndex& index) {
     if(index.objects.size()>4096u || !index.defaults || !index.defaults->nativePackageDefaults)
         throw std::runtime_error("Native Package identity/default domain is invalid");
@@ -1931,7 +2084,7 @@ public:
         if (LowerAscii(path).rfind(LowerAscii(std::string(prefix)),0u)==0u) {
             const auto found=persistentVmObjects.find(LowerAscii(path.substr(prefix.size())));
             if (found==persistentVmObjects.end() || !found->second ||
-                !found->second->classDescriptor || !found->second->defaultObject)
+                (!found->second->classDescriptor && !PreparedNativeClassDefaultValid(found->second)) || !found->second->defaultObject)
                 throw std::runtime_error("Portable class-default identity is unavailable: "+path);
             return found->second->defaultObject;
         }
@@ -2412,6 +2565,10 @@ public:
         // Original initialized default blocks have Name None and Outer null.
         // This display spelling does not replace their distinct nonnull handle.
         if (object->defaultOwner) return "None";
+        if(object->nativeEngineInstance || object->nativePrimitiveInstance || object->nativeProperty) {
+            if(!ActualNativeCollisionObjectValid(object)) throw std::runtime_error("Constructed collision UObject identity is invalid");
+            return object->reflection.objectPath;
+        }
         if(object->nativeClientIdentity || object->nativeClientClass || object->nativeEngineClass || object->nativeMetadataClass ||
             object->nativeWindowObject || object->nativePackageInstance)
             return object->reflection.objectPath;
@@ -4074,7 +4231,7 @@ public:
         RuntimeObject* source{};
         const PortableTaggedProperty* tag{};
     };
-    enum class NativePrimitiveKind { Model,Mesh,LodMesh };
+    enum class NativePrimitiveKind { Model,Mesh,LodMesh,Primitive };
     struct NativePrimitiveSelection {
         RuntimeObject* object{};
         std::string nativeClassPath;
@@ -4208,7 +4365,21 @@ public:
         // Mesh, and a selected Brush never reads or validates inactive Mesh.
         if(auto brush=NativePrimitiveField(owner,"Engine.Actor.Brush","Engine.Model",0x2au)) return *brush;
         if(auto mesh=NativePrimitiveField(owner,"Engine.Actor.Mesh","Engine.Mesh",0x21u)) return *mesh;
-        throw std::runtime_error("Native primitive Engine-owned Cylinder fallback lifetime is not implemented");
+        static_cast<void>(NativeLevelInfo(owner));
+        auto* level=owner->nativeXLevel;
+        auto* engine=level->nativeLevelEngine;
+        if(!persistentEngineCollision || !engine || engine!=persistentEngineCollision->get()->engine ||
+            !engine->nativeEngineInstance || engine->nativeEngineInstance->currentLevel!=level ||
+            !level->nativeMapGeneration || level->nativeMapGeneration!=persistentMapGenerationCounter)
+            throw std::runtime_error("Native primitive requires an actual current Level.Engine collision service");
+        auto* cylinder=engine->nativeEngineInstance->values.cylinder;
+        auto* primitiveClass=Object("Engine.Primitive");
+        if(!cylinder || !cylinder->nativePrimitiveInstance || cylinder->cls!=primitiveClass ||
+            !PreparedNativeClassDefaultValid(primitiveClass) ||
+            cylinder->outer!=persistentEngineCollision->get()->transient ||
+            Object(cylinder->reflection.objectPath)!=cylinder)
+            throw std::runtime_error("Native primitive Engine.Cylinder lost its constructed UObject authority");
+        return {cylinder,"Engine.Primitive",NativePrimitiveKind::Primitive};
     }
     QuestVr::OriginalActorCylinder NativePrimitiveOwnerCylinder(RuntimeObject* owner) {
         const auto location=NativeCoordsRead(owner,"Engine.Actor.Location",Kind::Vector,0x23u);
@@ -4278,6 +4449,8 @@ public:
             return clear;
         }
         const auto cylinder=NativePrimitiveOwnerCylinder(owner);
+        if(selected.kind==NativePrimitiveKind::Primitive)
+            return QuestVr::CheckOriginalActorCylinder(hit,cylinder,end,start,extent);
         // Mesh/LodMesh share the audited wrapper. It discards all-zero-or-NaN
         // extents before the underlying cylinder's active finite-input policy.
         // No render mesh/animation decode, ToWorld or Engine fallback is needed.
@@ -4302,6 +4475,9 @@ public:
         ValidateStateBudget(NativePackageRetainedBytes(staged));
     }
     void ValidateAdditionalPackageBudget(const std::size_t bytes) const {ValidateStateBudget(bytes);}
+    void ValidateEngineCollisionBudget(const RuntimeEngineCollisionDomain& staged,const std::size_t staging=0u) const {
+        ValidateStateBudget(QuestVr::DecalStateDetail::Add(EngineCollisionRetainedBytes(staged),staging));
+    }
     void ValidateLookupStagingBudget(const QuestVr::ObjectLookup::Index& next,const bool newControl=false,
         const std::size_t extraRetained=0u) const {
         ValidateStateBudget(QuestVr::DecalStateDetail::Add(extraRetained,
@@ -6400,14 +6576,34 @@ public:
         if(origin) *origin={};
         if(object->nativePackageInstance || object->nativePackageDefaults)
             throw std::runtime_error("Native Package reflected/default storage requires its typed native service");
-        if(object->nativeEngineClass || object->nativeMetadataClass)
-            throw std::runtime_error("Native UClass reflected/default storage is not established");
+        if(object->nativeEngineClass || object->nativeMetadataClass) {
+            if(!defaults || !PreparedNativeClassDefaultValid(object))
+                throw std::runtime_error("Native UClass reflected/default storage is not established");
+            object=object->defaultObject;
+        }
         if(object->nativeWindowObject && !defaults && !immutable) {
             const auto key=LowerAscii(property.key);
             if(key=="extension.tabgroupwindow.rowmajorwindowlist" || key=="extension.tabgroupwindow.colmajorwindowlist" ||
                 key=="extension.modalwindow.tabgroupwindowlist" || key=="extension.radioboxwindow.togglebuttons" ||
                 key=="extension.tilewindow.rowarray")
                 throw std::runtime_error("Native Window private pointer-array storage is not a script-visible value");
+        }
+        if(object->nativeEngineInstance || object->nativePrimitiveInstance || object->nativeProperty) {
+            if(!ActualNativeCollisionObjectValid(object))
+                throw std::runtime_error("Native collision UObject reflected read lost its actual identity");
+            const auto key=LowerAscii(property.key);
+            if(key.rfind("core.object.",0u)==0u) {
+                if(!OwnsProperty(object->cls,property))
+                    throw std::runtime_error("Native collision UObject header read has no actual declaring schema");
+                if(key=="core.object.objectinternal")
+                    throw std::runtime_error("Native collision UObject raw pointer/index storage is not script-visible");
+                if(index || property.arrayDimension!=1u)
+                    throw std::runtime_error("Native collision UObject header read is not a scalar");
+                if(key=="core.object.class") return Value::Text(Kind::Object,object->cls->reflection.objectPath);
+                if(key=="core.object.name") return Value::Text(Kind::Name,object->lookupName->ToString());
+                if(key=="core.object.outer") return Value::Text(Kind::Object,object->outer?object->outer->reflection.objectPath:std::string{});
+                if(key=="core.object.objectflags") return Value::Integer(std::bit_cast<std::int32_t>(object->reflection.flags));
+            }
         }
         if (object->defaultOwner) {
             const auto key=LowerAscii(property.key);
@@ -6421,6 +6617,30 @@ public:
             if (key=="core.object.name") { scalar(Kind::Name);return Value::Text(Kind::Name,"None"); }
             if (key=="core.object.outer") { scalar(Kind::Object);return Value::Text(Kind::Object,{}); }
             if (key=="core.object.objectflags") { scalar(Kind::Int);return Value::Integer(0); }
+        }
+        const auto* nativeDefaults=object->preparedNativeDefaults?object->preparedNativeDefaults.get():
+            object->classDescriptor && object->defaultObject?object->defaultObject->preparedNativeDefaults.get():nullptr;
+        const auto* nativeValues=object->nativeEngineInstance?&object->nativeEngineInstance->values:
+            nativeDefaults && nativeDefaults->kind>=RuntimeNativeDefaultKind::Engine?&nativeDefaults->engine:nullptr;
+        if(nativeValues && LowerAscii(property.key).rfind("engine.engine.",0u)==0u) {
+            auto* cls=object->defaultOwner?object->defaultOwner:object->classDescriptor?object:object->cls;
+            if(index || property.arrayDimension!=1u || !OwnsProperty(cls,property))
+                throw std::runtime_error("Native Engine typed field lacks its actual scalar declaring schema");
+            const auto name=LowerAscii(property.name);
+            const auto pointer=[](RuntimeObject* value){return Value::Text(Kind::Object,value?value->reflection.objectPath:std::string{});};
+            static constexpr std::array<const char*,5u> keys{"gamerenderdevice","audiodevice","console","networkdevice","language"};
+            for(std::size_t i=0u;i<keys.size();++i) if(name==keys[i]) return pointer(nativeValues->configuredClasses[i]);
+            if(name=="cylinder") return pointer(nativeValues->cylinder);
+            if(name=="client") return pointer(nativeValues->client);
+            if(name=="render") return pointer(nativeValues->render);
+            if(name=="audio") return pointer(nativeValues->audio);
+            if(name=="tickcycles") return Value::Integer(nativeValues->tickCycles);
+            if(name=="gamecycles") return Value::Integer(nativeValues->gameCycles);
+            if(name=="clientcycles") return Value::Integer(nativeValues->clientCycles);
+            if(name=="cachesizemegs") return Value::Integer(nativeValues->cacheSizeMegs);
+            if(name=="usesound") return Value::Bool(nativeValues->useSound);
+            if(name=="currenttickrate") return Value::Float(nativeValues->currentTickRate);
+            throw std::runtime_error("Native Engine typed field has no audited payload slot");
         }
         // Internal selected-UClass reads are explicit default-storage queries
         // (Spawn/save/public ReadPortableClassDefault). Bytecode Variable rejects
@@ -6633,6 +6853,7 @@ public:
         return owns;
     }
     RuntimeObject* DefaultClass(RuntimeObject* object) {
+        if(!object->defaultOwner && object->nativeEngineClass && PreparedNativeClassDefaultValid(object)) return object;
         auto* cls = object->classDescriptor ? object : object->cls;
         if (!cls || !cls->classDescriptor || cls->reflection.metaClass != "Class" ||
             object->defaultOwner || !cls->active ||
@@ -8021,6 +8242,15 @@ private:
             if(!object->cls) throw std::runtime_error("Native player UObject lacks actual class");
             return {object->reflection.objectPath,object->cls->reflection.objectPath,false};
         }
+        if(object->nativeEngineInstance || object->nativePrimitiveInstance || object->nativeProperty) {
+            if(!ActualNativeCollisionObjectValid(object)) throw std::runtime_error("Constructed collision UObject cast identity is invalid");
+            return {object->reflection.objectPath,object->cls->reflection.objectPath,false};
+        }
+        if(object->nativePackageInstance) {
+            if(!NativePackageClassDefaultValid(object->cls) || RegisteredNativePackage(object->reflection.objectPath)!=object)
+                throw std::runtime_error("Constructed native Package cast identity is invalid");
+            return {object->reflection.objectPath,object->cls->reflection.objectPath,false};
+        }
         if (object->runtimeBirth || object->nativeWindowObject) {
             if (!object->cls || !object->cls->classDescriptor)
                 throw std::runtime_error("Runtime birth has no original class identity");
@@ -8078,6 +8308,11 @@ private:
         result->resultLayout = property.resultLayout;
         result->read = [this, object, property, index, defaults]() { return Read(object, property, index, defaults); };
         result->write = [this, object, property, index, defaults](const Value& value) {
+            auto* nativeOwner=object->defaultOwner?object->defaultOwner:object->classDescriptor?object:nullptr;
+            if(object->nativeEngineInstance || object->nativePrimitiveInstance || object->nativeProperty ||
+                (nativeOwner && PreparedNativeClassDefaultValid(nativeOwner) &&
+                    LowerAscii(property.key).rfind("engine.engine.",0u)==0u))
+                throw std::runtime_error("Native collision Engine/default writes require a typed journaled native service");
             if (object->defaultOwner) {
                 const auto key=LowerAscii(property.key);
                 if (key=="core.object.class" || key=="core.object.name" || key=="core.object.outer" ||
@@ -8625,6 +8860,7 @@ private:
         if(persistentConfigClasses && persistentConfigClasses->get())
             defaults.Retain(NativeConfigClassRetainedBytes(*persistentConfigClasses->get()));
         if(persistentNativePackages) defaults.Retain(NativePackageRetainedBytes(*persistentNativePackages));
+        if(persistentEngineCollision) defaults.Retain(EngineCollisionRetainedBytes(*persistentEngineCollision->get()));
         if(persistentObjectLookup) defaults.Retain(sizeof(RuntimeObjectLookupControl)-sizeof(QuestVr::ObjectLookup::Index)+
             4u*sizeof(void*)+persistentObjectLookup->index.RetainedBytes());
         defaults.Retain(provisionalLookupObjects_.capacity()*sizeof(RuntimeObject*));
@@ -9988,6 +10224,8 @@ PreparedScriptState PrepareScriptSavedState(
         if (record.properties.empty() || !defaultClasses.emplace(LowerAscii(record.classPath)).second)
             throw std::runtime_error("Empty or duplicate script save class defaults");
         auto* cls = schema.DefaultClass(record.classPath);
+        if(PreparedNativeClassDefaultValid(cls))
+            throw std::runtime_error("Script save cannot overwrite immutable prepared native class defaults");
         PreparedClassDefaults next;
         if (apply) next.target = cls;
         for (const auto& property : record.properties) {
@@ -10862,6 +11100,7 @@ void ShutdownPortableRuntime() {
     while(persistentPublishedHead) RetireRuntimeLookupObject(persistentPublishedHead);
     if(persistentNativePackages) persistentNativePackages->active=false;
     persistentNativePackages.reset();
+    persistentEngineCollision.reset();
     persistentNativeModelCache.reset(); // Drop non-owning identity keys before any map GC.
     persistentPrimitiveModelCache.Clear();
     ClearNativePlayerObjects();
@@ -10908,7 +11147,7 @@ PortableNativeEngineClassesSnapshot ReadPortableRuntimeNativeEngineClasses() {
     for(std::size_t i=0u;i<domain->classes.size();++i) {
         auto* cls=domain->classes[i];const auto& entry=QuestVr::NativeEngineClasses[i];
         if(!cls || cls->nativeEngineClass!=&entry || cls->classDescriptor ||
-            (cls->defaultObject && !NativePackageClassDefaultValid(cls)) ||
+            (cls->defaultObject && !NativePackageClassDefaultValid(cls) && !PreparedNativeClassDefaultValid(cls)) ||
             cls->defaultOwner || cls->nativeClientClass || cls->reflection.metaClass!="Class" ||
             cls->reflection.objectPath!=entry.path || cls->reflection.flags!=entry.registrationObjectFlags ||
             !cls->base || LowerAscii(cls->base->reflection.objectPath)!=LowerAscii(std::string(entry.base)) ||
@@ -11031,7 +11270,8 @@ static PortableNativeMetadataClassesSnapshot MetadataClassSnapshot(const Runtime
     for(std::size_t i=0u;i<domain.classes.size();++i) {
         const auto* cls=domain.classes[i];const auto& entry=records[i];
         if(!cls || cls->nativeMetadataClass!=&entry || cls->nativeEngineClass || cls->nativeClientClass ||
-            cls->classDescriptor || cls->defaultOwner || cls->defaultObject || !cls->sourcePath.empty() ||
+            cls->classDescriptor || cls->defaultOwner ||
+            (cls->defaultObject && !PreparedNativeClassDefaultValid(cls)) || !cls->sourcePath.empty() ||
             cls->exportIndex!=std::numeric_limits<std::size_t>::max() ||
             cls->outer!=RegisteredNativePackage(entry.package) ||
             cls->reflection.metaClass!="Class" || cls->reflection.objectPath!=entry.path ||
@@ -11503,6 +11743,8 @@ std::optional<PortableObjectLookupResult> FindPortableRuntimeObject(const Portab
     return PortableObjectLookupResult{object->reflection.objectPath,record.index,classIndex,record.outerIndex,
         record.nameIndex,control.generation};
 }
+
+#include "portable_engine_collision.inl"
 
 void BindPortableRuntimeClient(std::shared_ptr<QuestVr::NativeClientLifetime> lifetime,
     const std::uint64_t clientIdentity) {
@@ -12407,7 +12649,8 @@ static PortableActorPrimitiveSnapshot PrimitiveDiagnosticIdentity(RuntimeObject*
     const PortableActorVmHost::NativePrimitiveSelection& selected) {
     const bool model=selected.kind==PortableActorVmHost::NativePrimitiveKind::Model;
     return {owner->reflection.objectPath,selected.object->reflection.objectPath,selected.nativeClassPath,
-        model?"UModel::LineCheck":"UMesh::LineCheck",
+        model?"UModel::LineCheck":selected.kind==PortableActorVmHost::NativePrimitiveKind::Primitive?
+            "UPrimitive::LineCheck":"UMesh::LineCheck",
         model?"UModel::GetCollisionBoundingBox":"UPrimitive::GetCollisionBoundingBox"};
 }
 PortableActorPrimitiveSnapshot ReadPortableRuntimeActorPrimitive(const std::string& actorPath) {
@@ -12716,6 +12959,11 @@ PortableMapRuntimeSummary LoadPortableRuntimeMap(
         // absent, even if a valid slot-zero LevelInfo was already linked.
         pendingModel.first->nativeLevelModel=pendingModel.second;
         pendingModel.first->nativeMapGeneration=persistentMapGenerationCounter;
+        if(persistentEngineCollision) {
+            auto* engine=persistentEngineCollision->get()->engine;
+            pendingModel.first->nativeLevelEngine=engine;
+            engine->nativeEngineInstance->currentLevel=pendingModel.first;
+        }
     }
     return summary;
     } catch(...) {
@@ -12727,6 +12975,11 @@ PortableMapRuntimeSummary LoadPortableRuntimeMap(
 std::size_t UnloadPortableRuntimeMap() {
     if (GetPortableRuntimeUnsavedScriptState())
         throw std::runtime_error("Map unload refused: script state requires a per-map archive");
+    if(persistentEngineCollision) {
+        auto& state=*persistentEngineCollision->get()->engine->nativeEngineInstance;
+        if(state.currentLevel) state.currentLevel->nativeLevelEngine=nullptr;
+        state.currentLevel=nullptr;
+    }
     persistentNativeModelCache.reset(); // No stale Level/Model keys may outlive their owning map.
     persistentPrimitiveModelCache.Clear();
     if (!persistentRuntime || !persistentRuntime->get() ||

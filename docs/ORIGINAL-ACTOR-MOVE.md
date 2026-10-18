@@ -7,6 +7,24 @@ was executed. Engine.dll SHA256:
 Engine.u SHA256:
 `1742D16F49492A02391FA6A9CA25887F0CC4F30EC9964925226217D8858737DA`.
 
+## Immediate first-Training caller and rotation follow-on (2026-10-18)
+
+Read-only inspection of the owned Engine.u bytecode pins the current startup
+failure to Engine.Mover.BeginPlay PC166. Its Move argument is
+`BasePos + KeyPos[clamped KeyNum] - Location`. Do not assume that argument is
+zero from a door's initial rendered position: original AMover.Spawned at
+103AF790..103AF7CA copies Location to BasePos and Rotation to BaseRot, and the
+correct loaded/born chronology still needs its explicit native binding.
+
+After Move, PC195 calls native299 SetRotation with BaseRot plus the selected
+KeyRot. Its native exec thunk103015AA targets103E31B0..103E3275: evaluate the
+required Rotator, finish arguments, prepare zero Delta/fresh Hit and call
+actual XLevel.MoveActor virtual+88 at103E3264 with all four options0. Return
+the native MoveActor Bool. Therefore both wrappers require the same complete
+MoveActor transaction; direct transform writes or a zero-only native266 prefix
+do not complete this Training startup requirement. This is static evidence,
+not a new movement/rotation implementation or successful world-startup probe.
+
 The pinned SurrealEngine revision
 `677ee14c5b83486e6634687953779aafb7973ad6`, UActor_Phys.cpp/TryMove,
 is explanatory reference only. It has materially different mutation,

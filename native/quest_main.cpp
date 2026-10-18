@@ -35,6 +35,9 @@
 #include "Render/SurfaceRender.h"
 #include "XrApp.h"
 #include "portable_unreal_runtime.h"
+#include "portable_object_lookup.h"
+#include "portable_engine_collision.h"
+#include "quest_runtime_script_packages.h"
 #include "quest_native_client.h"
 #include "persona_ui_canvas.h"
 #include "quest_dialogue_ui.h"
@@ -677,48 +680,9 @@ class DeusExQuestApp final : public OVRFW::XrApp {
         const std::shared_ptr<QuestVr::NativeClientLifetime>& clientLifetime,
         std::uint64_t clientIdentity, const QuestVr::NativeViewport& viewport) {
         try {
-            static constexpr const char* packageNames[] = {
-                "ConSys",
-                "Core",
-                "DeusEx",
-                "DeusExCharacters",
-                "DeusExConAudioAIBarks",
-                "DeusExConAudioEndGame",
-                "DeusExConAudioHK_Shared",
-                "DeusExConAudioIntro",
-                "DeusExConAudioMission00",
-                "DeusExConAudioMission01",
-                "DeusExConAudioMission02",
-                "DeusExConAudioMission03",
-                "DeusExConAudioMission04",
-                "DeusExConAudioMission05",
-                "DeusExConAudioMission08",
-                "DeusExConAudioMission09",
-                "DeusExConAudioMission10",
-                "DeusExConAudioMission11",
-                "DeusExConAudioMission12",
-                "DeusExConAudioMission14",
-                "DeusExConAudioMission15",
-                "DeusExConAudioNYShared",
-                "DeusExConText",
-                "DeusExConversations",
-                "DeusExDeco",
-                "DeusExItems",
-                "DeusExSounds",
-                "DeusExText",
-                "DeusExUI",
-                "Editor",
-                "Engine",
-                "Extension",
-                "Fire",
-                "IpDrv",
-                "IpServer",
-                "MPCharacters",
-                "UBrowser",
-                "UWindow"};
             std::vector<PortablePackageTables> scripts;
-            scripts.reserve(sizeof(packageNames) / sizeof(packageNames[0]));
-            for (const char* packageName : packageNames) {
+            scripts.reserve(QuestVr::RuntimeScriptPackages.size());
+            for (const char* packageName : QuestVr::RuntimeScriptPackages) {
                 scripts.push_back(LoadPortablePackageTables(
                     std::string(
                         "/data/user/0/dev.deusex.questvr.smoketest/files/DeusEx/System/") +
@@ -730,6 +694,18 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                 ALOG("DeusExQuest: persistent Unreal runtime validation failed");
                 return false;
             }
+            // Training's null-Brush/null-Mesh colliders require the actual
+            // Engine-owned Primitive. Prepare its defaults/typed config and
+            // native lifetime on this CPU owner, before publishing the map.
+            PreparePortableRuntimeNativeEngineClasses();
+            PreparePortableRuntimeNativeMetadataClasses();
+            PreparePortableRuntimeNativeConfigClasses();
+            PreparePortableRuntimeNativePackages();
+            PreparePortableRuntimeObjectLookup();
+            const auto collisionEngine=PreparePortableRuntimeEngineCollision(
+                "/data/user/0/dev.deusex.questvr.smoketest/files/DeusEx/System/DeusEx.ini");
+            ALOG("DeusExQuest: collision Engine ready class=%s engine=%s primitive=%s; world startup remains separate",
+                collisionEngine.engineClassPath.c_str(),collisionEngine.enginePath.c_str(),collisionEngine.cylinderPath.c_str());
             // This CPU worker receives only an immutable description of the
             // owner's real targets. It must never inspect GL/OpenXR handles.
             BindPortableRuntimeClient(clientLifetime, clientIdentity);

@@ -20,6 +20,47 @@ usable contents and support/falling. See TRAINING-FIRST-PRIORITY.md.
   playable-physics capability. See ORIGINAL-ENGINE-DEFAULT-LINK.md. Live crate
   destruction, usable loot and gravity remain unfinished.
 
+## First Training collision Engine prerequisite (2026-10-18)
+
+- Added actual typed native Engine defaults/config, native GameEngine array
+  fields/inners, Transient/Engine/Primitive construction, Engine-owned Cylinder
+  lifetime and current native Level.Engine binding. Existing source default and
+  field identities remain; immutable native defaults reject saved patches.
+  Null Brush/Mesh actors use the genuine shared Cylinder after the original
+  Brush/Mesh precedence. Its raw LineCheck is distinct from Mesh's NaN wrapper.
+- Quest CPU bootstrap explicitly prepares these phases before loading only the
+  first Training map. The unchanged exact38-package source list is shared with
+  the owned bootstrap regression, not another campaign integration. The complete
+  first Training route remains the content milestone.
+- Exact-set testing exposed two32MiB admission issues not seen with the smaller
+  fixture. A second ordered identity tree became an intrusive identity chain
+  in the same stable numeric-tree node; no objects or original lookup ordering
+  are removed. Delta namespace publication now reuses spare buckets instead of
+  shrinking/rehashing the whole loaded namespace for nine additions. Retained
+  node overhead and the memory limit are unchanged; real expansion overlap is
+  still charged. See TRAINING-ENGINE-COLLISION.md.
+- Owned Engine integration passes15156 checks/31 refusals with16 packages and
+  42647/31 with the exact38-package bootstrap, including Engine-before-map and
+  genuine unpossessed Client/Viewport startup, original self-checks, all227
+  shared-Cylinder actors/31 collidable actors, save rejection/round trips,
+  repeated Training loader/GC lifetime and late rollback. Independent compact
+  lookup198496/43 and concrete delta merge2216287/five pass;91 allocation-denied
+  merges perform zero allocations. Strict ARM64 syntax and Android native link
+  pass. These are CPU/dormant-world checks, not a headset/gameplay acceptance.
+- Final coherent host rebuild passes. Fresh CTest:133 passed/156 registered/
+  23 explicit owned-data skips/zero failures in58.67s. Owned fixtures listed
+  here run separately; the entire skipped set is not claimed as executed.
+- Final same-runtime owned regressions also pass: actual lookup440/32,
+  Package11377/13, Core metadata10994/94, config9971/48 and first Training
+  primitive provider74660/246. Original Training crate lookup/fragment
+  diagnostic1560/four passes, including fresh save-replacement identities,
+  weak cleanup and late rollback. Its isolated Active-state probe is not
+  original startup, surviving contents, live damage or falling acceptance.
+- Live held-weapon crate damage, usable surviving Lockpick contents and real
+  support/falling remain unfinished. Next are the real Level collision hash,
+  Move/SetRotation, original world/player startup and their callbacks. No forced
+  begun/Active flags, invented loot, cosmetic falling or new APK for this phase.
+
 ## Actual UObject lookup integration (2026-10-18)
 
 - Added an explicit actual-object lookup phase after Package/metadata setup:

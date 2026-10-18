@@ -140,7 +140,7 @@ void AllocationFailureAtomicity() {
     Lookup::Index index;index.Publish(Object(101u,1u,1));index.Publish(Object(102u,2u,1));
     Require(index.Rehash(1u,101u,0u,0u,1),"Allocation fixture rehash failed");
     const auto stable=index.RecordsAscending();const auto bytes=index.RetainedBytes();
-    for(std::size_t allowed=0u;allowed<2u;++allowed) {
+    for(std::size_t allowed=0u;allowed<1u;++allowed) {
         bool failed{};AllocationFault::remaining=allowed;
         try {index.Publish(Object(103u,3u,1));}catch(const std::bad_alloc&){failed=true;}
         AllocationFault::Disable();
@@ -148,13 +148,14 @@ void AllocationFailureAtomicity() {
         Require(index.RecordsAscending()==stable&&index.RetainedBytes()==bytes&&
             index.Exact(0u,0u,1,Accept)==101u&&!index.RecordForIdentity(103u),"Publication allocation failure changed weak state");
     }
-    // A subsequent successful publish proves no stale secondary identity entry.
+    // A subsequent successful publish proves no stale intrusive identity entry.
     index.Publish(Object(103u,3u,1));Require(index.Remove(3u,103u),"Failure rollback leaked identity reservation");
     Lookup::Index destination;destination.Publish(Object(500u,5u,5));
     const auto oldDestination=destination.RecordsAscending();
-    // Two records require two slots-tree plus two identities-tree nodes. Each
-    // possible map allocation failure must leave both source and target intact.
-    for(std::size_t allowed=0u;allowed<4u;++allowed) {
+    // Two records require exactly two owning slots-tree nodes. Both weak hash
+    // indices are intrusive; every possible map allocation failure must leave
+    // both source and target intact.
+    for(std::size_t allowed=0u;allowed<2u;++allowed) {
         bool failed{};AllocationFault::remaining=allowed;
         try {destination=index;}catch(const std::bad_alloc&){failed=true;}
         AllocationFault::Disable();
@@ -166,6 +167,112 @@ void AllocationFailureAtomicity() {
     }
     destination=index;
     Require(destination.Exact(0u,0u,1,Accept)==101u,"Copy after allocation failures lost hash ordering");
+}
+
+void IntrusiveIdentityCollisions() {
+    // For the production pointer-bit folding, i*4097 has equal low/next
+    // twelve-bit groups and therefore collides for every i here, on both
+    // 32-bit and 64-bit uintptr_t. These are opaque identities, never pointers
+    // to memory that the lookup may dereference.
+    constexpr std::uint32_t count=512u;
+    const auto identity=[](std::uint32_t i){return static_cast<std::uintptr_t>(i)*4097u;};
+    const auto slot=[](std::uint32_t i){return (i*197u)%count+1u;};
+    Lookup::Index index(count+8u);
+    const auto emptyBytes=index.RetainedBytes();
+    // Independently account the actual one-tree representation, retaining the
+    // unchanged conservative64B allowance per tree node on a64-bit host.
+    struct StoredNodeModel {Lookup::Record record;void *previous{},*next{},*identityNext{};};
+    constexpr auto stride=sizeof(std::pair<const std::uint32_t,StoredNodeModel>)+8u*sizeof(void*);
+    for(std::uint32_t i=1u;i<=count;++i) {
+        index.Publish(Object(identity(i),slot(i),17));
+        Require(index.RetainedBytes()==emptyBytes+static_cast<std::size_t>(i)*stride,
+            "One-tree retained accounting omits stored nodes or retains a removed second tree");
+    }
+    std::vector<const Lookup::Record*> addresses(count+1u);
+    for(std::uint32_t i=1u;i<=count;++i) {
+        addresses[i]=index.RecordForIdentity(identity(i));
+        Require(addresses[i]&&addresses[i]==index.RecordAt(slot(i))&&addresses[i]->identity==identity(i),
+            "Identity-hash collision hid a live actual record");
+    }
+    Require(!index.RecordForIdentity(identity(count+1u))&&!index.RecordForIdentity(0u),
+        "Colliding unknown/None identity returned another live record");
+    const auto stable=index.RecordsAscending();
+    for(const std::uint32_t i:{1u,count/2u,count}) {
+        Refused([&]{index.Publish(Object(identity(i),count+1u,19));},
+            "Colliding identity could be published twice under a different slot");
+        Require(index.RecordsAscending()==stable,"Duplicate colliding identity changed membership");
+    }
+    Lookup::Index copy(index);
+    for(std::uint32_t i=1u;i<=count;++i) {
+        const auto* found=copy.RecordForIdentity(identity(i));
+        Require(found&&found==copy.RecordAt(slot(i))&&found!=addresses[i],
+            "Copied identity hash references the source tree nodes");
+    }
+    Require(copy.Exact(0u,0u,17,Accept)==identity(count)&&copy.Any(17,Accept)==index.Any(17,Accept),
+        "Collision-heavy copy lost exact or numeric-index ordering");
+    // Head/middle/tail identity removal, cached name-key rehash and stale
+    // removal all operate with global allocation disabled.
+    bool removedHead{},removedMiddle{},removedTail{},rehash{},stale{};
+    AllocationFault::remaining=0u;
+    removedHead=index.Remove(slot(count),identity(count));
+    removedMiddle=index.Remove(slot(count/2u),identity(count/2u));
+    removedTail=index.Remove(slot(1u),identity(1u));
+    rehash=index.Rehash(slot(2u),identity(2u),990001u,800u,29);
+    stale=index.Remove(slot(3u),identity(count+1u));
+    AllocationFault::Disable();
+    Require(removedHead&&removedMiddle&&removedTail&&rehash&&!stale,
+        "Cached-key identity-chain removal/rehash failed under allocation denial");
+    for(std::uint32_t i=1u;i<=count;++i) {
+        const auto* actual=index.RecordForIdentity(identity(i));
+        const bool removed=i==1u||i==count/2u||i==count;
+        Require(removed?!actual:actual==addresses[i],"Identity unlink removed an unrelated colliding node or moved its address");
+        Require(copy.RecordForIdentity(identity(i))!=nullptr,"Source unlink damaged copied identity chains");
+    }
+    Require(index.Exact(990001u,800u,29,Accept)==identity(2u)&&index.RecordForIdentity(identity(2u))==addresses[2u],
+        "Name/Outer rehash disturbed immutable identity membership");
+    // Reuse both an old numeric lease and a retired opaque identity. Cleanup
+    // carrying the stale pair cannot remove the new owner of that slot.
+    index.Publish(Object(identity(1u),slot(count),17));
+    Require(!index.Remove(slot(count),identity(count))&&index.RecordForIdentity(identity(1u))->index==slot(count),
+        "Stale cached cleanup removed a reused slot/identity pair");
+    Lookup::Index moved(std::move(index));
+    Require(index.Size()==0u&&!index.RecordForIdentity(identity(1u))&&
+        moved.RecordForIdentity(identity(1u))==moved.RecordAt(slot(count)),
+        "Move retained stale identity heads or lost the transferred tree");
+    Lookup::Index destination;destination.Publish(Object(701u,700u,7));
+    destination.Swap(moved);
+    Require(destination.RecordForIdentity(identity(1u))==destination.RecordAt(slot(count))&&
+        moved.RecordForIdentity(701u)==moved.RecordAt(700u),"Swap failed to transfer identity heads with their owning nodes");
+
+    Lookup::Index live,staged;
+    for(std::uint32_t i=1u;i<=count;++i)
+        (i<=count/2u?live:staged).Publish(Object(identity(i),slot(i),17));
+    const auto* liveAddress=live.RecordForIdentity(identity(1u));
+    const auto* stagedAddress=staged.RecordForIdentity(identity(count));
+    bool adopted{};AllocationFault::remaining=0u;
+    if(live.CanAdopt(staged)) adopted=live.Adopt(staged);
+    AllocationFault::Disable();
+    Require(adopted&&staged.Size()==0u&&live.Size()==count,"Colliding identity-chain adoption refused or allocated");
+    Require(live.RecordForIdentity(identity(1u))==liveAddress&&
+        live.RecordForIdentity(identity(count))==stagedAddress,"Identity adoption changed source/destination node addresses");
+    for(std::uint32_t i=1u;i<=count;++i)
+        Require(live.RecordForIdentity(identity(i))==live.RecordAt(slot(i))&&!staged.RecordForIdentity(identity(i)),
+            "Adoption omitted an identity or left stale identity heads in staging");
+    Require(live.Exact(0u,0u,17,Accept)==identity(count)&&live.Any(17,Accept)==copy.Any(17,Accept),
+        "Identity adoption changed exact publication or ascending numeric order");
+    // The emptied staging identity table must work again, even in the same
+    // bucket whose whole chain was transferred.
+    staged.Publish(Object(identity(count+1u),count+1u,17));
+    Require(staged.RecordForIdentity(identity(count+1u))==staged.RecordAt(count+1u)&&live.Adopt(staged),
+        "Reused identity staging chain lost membership");
+    Lookup::Index conflict;conflict.Publish(Object(identity(count+1u),count+2u,17));
+    const auto beforeConflict=live.RecordsAscending(),beforeStaged=conflict.RecordsAscending();
+    Require(!live.CanAdopt(conflict)&&!live.Adopt(conflict)&&live.RecordsAscending()==beforeConflict&&
+        conflict.RecordsAscending()==beforeStaged,"Identity-colliding adoption bypassed disjointness or mutated either graph");
+    const auto high=std::numeric_limits<std::uintptr_t>::max();
+    live.Publish(Object(high,count+3u,17));
+    Require(live.RecordForIdentity(high)==live.RecordAt(count+3u)&&!live.RecordForIdentity(high-1u),
+        "High pointer-sized identity bits were truncated or alias another identity");
 }
 
 void StagedAdoption() {
@@ -357,7 +464,7 @@ void DifferentialSequence() {
 
 int main() {
     try {
-        MembershipAndOrder();RefusalAndCapacity();AllocationFailureAtomicity();StagedAdoption();Resolution();MalformedQueries();DifferentialSequence();
+        MembershipAndOrder();RefusalAndCapacity();AllocationFailureAtomicity();IntrusiveIdentityCollisions();StagedAdoption();Resolution();MalformedQueries();DifferentialSequence();
         std::cout<<"Actual weak object lookup: "<<checks<<" checks / "<<refusals<<" refusals\n";return 0;
     }catch(const std::exception& error) {std::cerr<<"Object lookup test failed: "<<error.what()<<'\n';return 1;}
 }

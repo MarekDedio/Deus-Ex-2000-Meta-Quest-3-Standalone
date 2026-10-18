@@ -586,12 +586,14 @@ struct PortableActorPrimitiveLineSnapshot {
     std::int32_t item{-1};
 };
 // CPU-owner read-only actual selected-primitive diagnostics. Brush precedes
-// Mesh; null/null requires the not-yet-implemented genuine Engine.Cylinder
-// lifetime and refuses. No renderer/DrawType/model availability fallback.
+// Mesh; null/null requires the explicit genuine Engine.Cylinder collision
+// service and actual current Level.Engine binding (portable_engine_collision.h).
+// Unprepared lifetime refuses. No renderer/DrawType/model availability fallback.
 // Model bounds and point/extent LineCheck use the actual selected immutable
 // Model and current native owner coordinates. Point hits capture ToWorld again
 // for the original normal transform; point misses preserve the full hit packet.
-// Mesh/LodMesh use their audited native implementations.
+// Mesh/LodMesh use their audited wrapper; raw Primitive uses its direct cylinder
+// implementation, without Mesh's all-zero-or-NaN extent canonicalization.
 // The line diagnostic deliberately seeds Next/Actor/Primitive/Location/Normal
 // zero, Time1 and Item-1; it exposes no native pointers or query capability and
 // is not the production hash/collector caller's FCheckResult seed contract.

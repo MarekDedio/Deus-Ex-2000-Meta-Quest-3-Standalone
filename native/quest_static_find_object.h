@@ -27,10 +27,9 @@ class Index {
         Record record;
         Node* previous{};
         Node* next{};
-        std::size_t bucket{};
+        Node* identityNext{};
     };
     using Slots=std::map<std::uint32_t,Node>;
-    using Identities=std::map<std::uintptr_t,std::uint32_t>;
 
 public:
     static constexpr std::uint32_t MaximumObjects=1'000'000u;
@@ -41,7 +40,7 @@ public:
         if(!maximum||maximum>MaximumObjects)
             throw std::invalid_argument("Object lookup capacity exceeds portable policy");
     }
-    Index(const Index& other):maximum_(other.maximum_),slots_(other.slots_),identities_(other.identities_) {
+    Index(const Index& other):maximum_(other.maximum_),slots_(other.slots_) {
         // std::map node addresses differ after a copy. Reconstruct links from
         // the old chains, NOT ascending slot order or object allocation order.
         for(std::size_t bucket=0u;bucket<BucketCount;++bucket) {
@@ -53,6 +52,10 @@ public:
                 previous=current;
             }
         }
+        // The second intrusive index is membership authority only, not object
+        // selection order. Rebuild it from our own stable tree nodes; never
+        // retain the source copy's identity-chain pointers.
+        for(auto& [index,node]:slots_) {(void)index;PrependIdentity(node);}
     }
     Index& operator=(const Index& other) {
         if(this!=&other) {Index replacement(other);Swap(replacement);}
@@ -65,7 +68,7 @@ public:
     }
     void Swap(Index& other) noexcept {
         using std::swap;swap(maximum_,other.maximum_);slots_.swap(other.slots_);
-        identities_.swap(other.identities_);heads_.swap(other.heads_);
+        heads_.swap(other.heads_);identityHeads_.swap(other.identityHeads_);
     }
 
     // Preallocate only the new records in a detached Index. Admission and
@@ -74,19 +77,25 @@ public:
     [[nodiscard]] bool CanAdopt(const Index& additions) const noexcept {
         if(this==&additions || additions.Size()>maximum_-Size()) return false;
         for(const auto& [index,node]:additions.slots_)
-            if(slots_.find(index)!=slots_.end() || identities_.find(node.record.identity)!=identities_.end()) return false;
+            if(slots_.find(index)!=slots_.end() || RecordForIdentity(node.record.identity)) return false;
         return true;
     }
     bool Adopt(Index& additions) noexcept {
         if(!CanAdopt(additions)) return false;
-        // Both maps use fixed integer std::less comparators and equal standard
+        // The sole map uses fixed integer std::less and equal standard
         // allocators; merge only transfers already allocated, unique nodes.
-        slots_.merge(additions.slots_);identities_.merge(additions.identities_);
+        slots_.merge(additions.slots_);
         for(std::size_t bucket=0u;bucket<BucketCount;++bucket) {
-            auto* head=additions.heads_[bucket];if(!head) continue;
-            auto* tail=head;while(tail->next) tail=tail->next;
-            tail->next=heads_[bucket];if(tail->next) tail->next->previous=tail;
-            heads_[bucket]=head;additions.heads_[bucket]=nullptr;
+            if(auto* head=additions.heads_[bucket]) {
+                auto* tail=head;while(tail->next) tail=tail->next;
+                tail->next=heads_[bucket];if(tail->next) tail->next->previous=tail;
+                heads_[bucket]=head;additions.heads_[bucket]=nullptr;
+            }
+            if(auto* head=additions.identityHeads_[bucket]) {
+                auto* tail=head;while(tail->identityNext) tail=tail->identityNext;
+                tail->identityNext=identityHeads_[bucket];
+                identityHeads_[bucket]=head;additions.identityHeads_[bucket]=nullptr;
+            }
         }
         return true;
     }
@@ -97,14 +106,13 @@ public:
     // leave both ordering and membership unchanged.
     void Publish(Record record) {
         if(!Valid(record))throw std::invalid_argument("Invalid object lookup publication");
-        if(slots_.find(record.index)!=slots_.end()||identities_.find(record.identity)!=identities_.end())
+        if(slots_.find(record.index)!=slots_.end()||RecordForIdentity(record.identity))
             throw std::invalid_argument("Object lookup index or identity is already published");
         if(slots_.size()>=maximum_)throw std::length_error("Object lookup capacity exhausted");
-        const auto identity=identities_.emplace(record.identity,record.index);
-        try {
-            const auto inserted=slots_.emplace(record.index,Node{record,nullptr,nullptr,Bucket(record.outerIndex,record.nameIndex)});
-            Prepend(inserted.first->second);
-        }catch(...) {identities_.erase(identity.first);throw;}
+        // One allocating operation with the map's strong guarantee. No weak
+        // hash chain changes until its stable owning node exists.
+        const auto inserted=slots_.emplace(record.index,Node{record,nullptr,nullptr,nullptr});
+        Prepend(inserted.first->second);PrependIdentity(inserted.first->second);
     }
 
     // Cleanup reads only stored publication keys. Never dereference an Outer
@@ -112,7 +120,7 @@ public:
     bool Remove(std::uint32_t index,std::uintptr_t identity) noexcept {
         const auto found=slots_.find(index);
         if(found==slots_.end()||!identity||found->second.record.identity!=identity)return false;
-        Unlink(found->second);identities_.erase(identity);slots_.erase(found);return true;
+        Unlink(found->second);UnlinkIdentity(found->second);slots_.erase(found);return true;
     }
     bool Rehash(std::uint32_t index,std::uintptr_t identity,std::uintptr_t outerIdentity,
         std::uint32_t outerIndex,int nameIndex) noexcept {
@@ -121,7 +129,7 @@ public:
         const auto found=slots_.find(index);
         if(found==slots_.end()||found->second.record.identity!=identity)return false;
         auto& node=found->second;Unlink(node);node.record=replacement;
-        node.bucket=Bucket(outerIndex,nameIndex);Prepend(node);return true;
+        Prepend(node);return true;
     }
 
     template<class Predicate>
@@ -156,7 +164,10 @@ public:
         const auto found=slots_.find(index);return found==slots_.end()?nullptr:&found->second.record;
     }
     [[nodiscard]] const Record* RecordForIdentity(std::uintptr_t identity) const noexcept {
-        const auto found=identities_.find(identity);return found==identities_.end()?nullptr:RecordAt(found->second);
+        if(!identity)return nullptr;
+        for(auto* node=identityHeads_[IdentityBucket(identity)];node;node=node->identityNext)
+            if(node->record.identity==identity)return &node->record;
+        return nullptr;
     }
     template<class Visitor>void ForEachAscending(Visitor&& visitor) const {
         for(const auto& [index,node]:slots_) {(void)index;visitor(node.record);}
@@ -166,13 +177,14 @@ public:
         ForEachAscending([&](const Record& record){result.push_back(record);});return result;
     }
     [[nodiscard]] std::size_t Size() const noexcept {return slots_.size();}
-    // Conservative portable map-node accounting: stored pair, three tree
-    // links, alignment/color slack and allocator metadata for both trees. No
-    // UObject/default/name storage is owned here. sizeof(Index) includes heads.
+    // One owning ordered map, with the SAME conservative per-tree-node
+    // allowance for three links, alignment/color slack and allocator metadata.
+    // Both weak hash indices are intrusive in that node; there is no secondary
+    // identity-map allocation to charge. sizeof(Index) includes both head arrays.
+    // No UObject/default/name storage is owned here.
     [[nodiscard]] std::size_t RetainedBytes() const noexcept {
         constexpr auto nodeOverhead=8u*sizeof(void*);
-        return sizeof(Index)+slots_.size()*(sizeof(typename Slots::value_type)+
-            sizeof(typename Identities::value_type)+2u*nodeOverhead);
+        return sizeof(Index)+slots_.size()*(sizeof(typename Slots::value_type)+nodeOverhead);
     }
 
 private:
@@ -188,20 +200,40 @@ private:
     static std::size_t Bucket(std::uint32_t outerIndex,int nameIndex) noexcept {
         return (outerIndex^static_cast<std::uint32_t>(nameIndex))&(BucketCount-1u);
     }
+    static std::size_t IdentityBucket(std::uintptr_t identity) noexcept {
+        // Fold ALL pointer-sized bits, rather than discarding high address
+        // bits or assuming that aligned object addresses use their low bits.
+        auto folded=identity;
+        for(unsigned shift=12u;shift<sizeof(identity)*8u;shift+=12u) folded^=identity>>shift;
+        return static_cast<std::size_t>(folded)&(BucketCount-1u);
+    }
     void Prepend(Node& node) noexcept {
-        node.previous=nullptr;node.next=heads_[node.bucket];
+        const auto bucket=Bucket(node.record.outerIndex,node.record.nameIndex);
+        node.previous=nullptr;node.next=heads_[bucket];
         if(node.next)node.next->previous=&node;
-        heads_[node.bucket]=&node;
+        heads_[bucket]=&node;
     }
     void Unlink(Node& node) noexcept {
-        if(node.previous)node.previous->next=node.next;else heads_[node.bucket]=node.next;
+        const auto bucket=Bucket(node.record.outerIndex,node.record.nameIndex);
+        if(node.previous)node.previous->next=node.next;else heads_[bucket]=node.next;
         if(node.next)node.next->previous=node.previous;
         node.previous=nullptr;node.next=nullptr;
     }
+    void PrependIdentity(Node& node) noexcept {
+        const auto bucket=IdentityBucket(node.record.identity);
+        node.identityNext=identityHeads_[bucket];identityHeads_[bucket]=&node;
+    }
+    void UnlinkIdentity(Node& node) noexcept {
+        // Cached identity only. Neither the UObject nor its Outer is read.
+        auto** link=&identityHeads_[IdentityBucket(node.record.identity)];
+        while(*link && *link!=&node) link=&(*link)->identityNext;
+        if(*link) *link=node.identityNext;
+        node.identityNext=nullptr;
+    }
     std::uint32_t maximum_;
     Slots slots_;
-    Identities identities_;
     std::array<Node*,BucketCount> heads_{};
+    std::array<Node*,BucketCount> identityHeads_{};
 };
 
 struct Query {
