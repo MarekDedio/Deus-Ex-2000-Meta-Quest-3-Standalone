@@ -79,11 +79,12 @@ Model.PointCheck now has all zero/box/owner/null hull branches and staged packet
 behavior, independently checked against a separate hardware-x87 occupancy
 oracle. Its actual selected-Brush/ABrush.ToWorld adapter passes clear/overlap
 controls on three nonempty source Models in this first map, including the
-DeusExMover16 at the startup boundary. This is an overlap prerequisite, not a
-temporary-pose scope, completed encroachment, native Move or playable physics.
-Recovered hash encroachment requires temporarily authoritative source pose,
-candidate cylinders, tag-before-gate ordering and tail-linked hits, followed by
-exact normal pose restoration without collision Remove/Add. Full Level
+DeusExMover16 at the startup boundary. The subsequent hash encroachment service
+now supplies temporarily authoritative source pose, candidate cylinders,
+tag-before-gate ordering and tail-linked hits, followed by exact scoped pose
+restoration without collision Remove/Add, native hash Location or ColLocation
+updates. Its kernel and scoped raw-word/refusal tests pass. This is not
+completed higher-level encroachment, native Move or playable physics. Full Level
 encroachment, Move, support/falling and surviving usable contents remain the
 same immediate gameplay target. See ORIGINAL-ACTOR-POINT-CHECK.md,
 ORIGINAL-MODEL-POINT-CHECK.md and ORIGINAL-ACTOR-ENCROACHMENT-CHECK.md.

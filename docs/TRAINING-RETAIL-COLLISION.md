@@ -6,7 +6,48 @@ Training UObject/ULevel identities and original primitive providers. It is not
 live crate damage, usable loot, gravity, complete original startup or a new APK.
 Other campaign-map integration remains deferred.
 
-## Current cylinder PointCheck follow-on
+## Current proposed-pose hash encroachment follow-on
+
+The native hash ActorEncroachmentCheck dispatcher is now connected to a bounded
+temporary source-pose view of exact declared live Location/Rotation. Both actual
+source bounds and source PointCheck observe that same view; defaults/immutable
+reads bypass it. The source stays in its original hash buckets with original
+hash Location/ColLocation, and all source property/default/save storage remains
+untouched. Scopes restore exact words on normal completion and exceptions before
+result publication. The same outer VM/hash root owns tags, provider failures,
+and late output refusal; ordinary active-hash script writes remain guarded.
+
+Kernel111493/34,304 independent CRT/vector queries,13 allocation refusals and
+576 raw argument-word packets pass, including24 independent x87 load/store
+words. Pose scopes1165/2 pass. Strict ARM64 syntax and Android native module/link
+pass. Original field packing, bounds-before-tag, moving-brush/self tag gates,
+literal PointCheck flags0, live link Actor/Next and forward hit-tail order remain.
+Caller pose/hit-arena reservations remain in the live scratch ledger through
+every nested Model-workspace admission; independent separate peak checks cannot
+hide the overlap. Exact combined-peak/overflow/refusal restoration tests pass15/4,
+and reservation release precedes actual returned-vector capacity admission.
+Higher ULevel.CheckEncroachment/push/Touch, Move266, SetRotation299, actual startup,
+gravity and surviving usable loot are still unfinished; no APK is produced.
+See ORIGINAL-ACTOR-ENCROACHMENT-CHECK.md.
+
+The final owned exact38-source first-map suite passes841976 checks/46 explicit
+refusals. Its11 proposed source poses produce16 ordered hits,25 Model/nine
+cylinder source PointChecks, three self tags and two moving-brush tags. Actual
+lower/upper crates and the translated/rotated DeusExMover16 use the genuine
+declared fields/primitive/ToWorld authority. A separate vector-bucket/CRT oracle
+supplies order/tags; separately verified kernels supply expected geometry. This
+is adapter evidence, not a second independent end-to-end numeric oracle.
+Late failures restore the same complete root; source pose/ColLocation, membership,
+save/revision/lookup/client/GC/RNG and original fingerprints remain unchanged.
+Engine42647/31 and isolated crate347/two regressions pass. The latter still has
+dormant Game=None relevance deleting its contents; no surviving-loot claim.
+Final coherent CTest executes138/162 registered tests,24 explicit owned-data
+skips, zero failures in75.21s. The three owned runs above are separate, not
+proof that all skipped cases ran. Original startup still reaches the same
+BeginPlay/DeusExMover16 missing native266 boundary.
+Evidence uses `artifacts/training-encroachment-*20261019.log`.
+
+## Earlier cylinder PointCheck follow-on
 
 Original cylinder occupancy is now a distinct caller-seeded kernel and actual
 Primitive/Mesh/LodMesh provider, not a zero-length LineCheck. The first-map

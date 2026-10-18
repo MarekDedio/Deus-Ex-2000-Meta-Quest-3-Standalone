@@ -9,6 +9,8 @@
 #include "quest_model_line_hit.h"
 #include "quest_model_point_line_hit.h"
 #include "quest_model_point_overlap.h"
+#include "quest_brush_coords.h"
+#include "quest_original_sine_table.h"
 #include "quest_multi_line_trace.h"
 #include "quest_runtime_script_packages.h"
 #include "quest_save_bundle.h"
@@ -522,6 +524,7 @@ void SetterCoverage(const std::vector<Actor>& actors,const std::function<void()>
 #include "portable_retail_multi_line_cases.inl"
 #include "portable_actor_point_cases.inl"
 #include "portable_model_point_cases.inl"
+#include "portable_retail_encroachment_cases.inl"
 void Run(const fs::path& root) {
     Temporary temporary(root);std::vector<Source> sources;std::vector<PortablePackageTables> scripts;
     sources.reserve(QuestVr::RuntimeScriptPackages.size()+2u);scripts.reserve(QuestVr::RuntimeScriptPackages.size());
@@ -623,6 +626,7 @@ void Run(const fs::path& root) {
     MultiLineCoverage(map,actors,rollback);
     ActorPointCoverage(actors,rollback);
     ModelPointCoverage(map,actors,rollback);
+    EncroachmentCoverage(map,actors,rollback);
     auto bad=hit;bad.extent[1u]=std::numeric_limits<float>::quiet_NaN();
     for(unsigned repeat=0u;repeat<2u;++repeat) {
         const auto failure=ProbePortableRuntimeRetailCollision({Command{Operation::Enable},hit,bad});

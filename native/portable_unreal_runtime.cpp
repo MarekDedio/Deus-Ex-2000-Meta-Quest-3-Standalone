@@ -54,6 +54,8 @@
 #include "quest_model_point_line_hit.h"
 #include "quest_actor_point_check.h"
 #include "quest_model_point_overlap.h"
+#include "quest_native_actor_pose.h"
+#include "quest_native_scratch_scope.h"
 
 #include <memory>
 #include <algorithm>
@@ -4529,6 +4531,7 @@ public:
     }
     #include "portable_retail_collision.inl"
     #include "portable_retail_multi_line.inl"
+    #include "portable_retail_encroachment.inl"
     void RequireIndexedPrimitiveDiagnosticOwner(RuntimeObject* owner) {
         RequireMapActor(owner);
         if(owner->worldActorIndex<0 || static_cast<std::size_t>(owner->worldActorIndex)>=persistentWorldActors.size() ||
@@ -6738,6 +6741,18 @@ public:
         // (Spawn/save/public ReadPortableClassDefault). Bytecode Variable rejects
         // a UClass receiver rather than confusing this with its Core.Class data.
         const bool classDefaults = defaults || object->classDescriptor || object->defaultOwner;
+        if(!classDefaults&&!immutable&&index==0u) {
+            if(const auto* pose=nativeActorPoses_.Find(reinterpret_cast<std::uintptr_t>(object))) {
+                const auto key=LowerAscii(property.key);
+                if(key=="engine.actor.location" || key=="engine.actor.rotation") {
+                    const auto kind=key=="engine.actor.location"?Kind::Vector:Kind::Rotator;
+                    if(property.arrayDimension!=1u || property.zero.kind!=kind || property.flags!=0x23u ||
+                        !OwnsProperty(object->cls,property))
+                        throw std::runtime_error("Native actor pose read lost its exact original scalar declaring schema");
+                    return kind==Kind::Vector?Value::Vector(pose->location):Value::Rotator(pose->rotation);
+                }
+            }
+        }
         if(!classDefaults && !immutable && persistentRetailCollision &&
             persistentRetailCollision->ContainsActor(reinterpret_cast<std::uintptr_t>(object))) {
             const auto key=LowerAscii(property.key);
@@ -7810,6 +7825,7 @@ private:
     bool retailCollisionInitializationReserved_{};
     std::size_t retailCollisionInitializationDraws_{};
     std::size_t retailCollisionOutputBytes_{};
+    std::size_t nativeQueryScratchBytes_{};
     bool clientDependent_{};
     std::uint64_t soundClientIdentity_{};
     std::optional<QuestVr::ActorCollisionRegistry> beforeCollision_;
@@ -9003,6 +9019,7 @@ private:
         QuestVr::ScriptStateDetail::Budget defaults{limits};
         try {
         defaults.Retain(extraRetained);
+        defaults.Retain(nativeQueryScratchBytes_);
         defaults.Retain(retailCollisionOutputBytes_);
         if (persistentRuntime->get()->nativeDecals)
             defaults.Retain(NativeDecalRetainedBytes(*persistentRuntime->get()->nativeDecals));

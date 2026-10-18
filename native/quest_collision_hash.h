@@ -51,6 +51,21 @@ struct OriginalHashQueries {
     std::function<bool(OriginalActorLineHit&,std::uintptr_t,const PortableModelVec3&,
         const PortableModelVec3&,const PortableModelVec3&,std::uint32_t)> line;
 };
+// Distinct retail ActorEncroachmentCheck providers. The caller owns the actual
+// source's proposed Location/Rotation scope: BOTH bounds and source PointCheck
+// must observe that same authoritative pose, without hash Remove/Add or a
+// ColLocation update. These callbacks do not authorize renderer geometry.
+struct OriginalHashEncroachmentQueries {
+    std::function<OriginalCollisionHashBox(std::uintptr_t)> sourceBounds;
+    // Exact live Brush!=None && Engine.Brush ancestry && !bStatic predicate.
+    std::function<bool(std::uintptr_t)> movingBrush;
+    // Live candidate fields; link.Actor, not this returned identity word, owns
+    // candidate identity. No generic finite/sign gate replaces PointCheck's
+    // own active-field policy (including Model's zero/unordered branch).
+    std::function<OriginalActorCylinder(std::uintptr_t)> candidateCylinder;
+    std::function<bool(OriginalActorLineHit&,std::uintptr_t,const PortableModelVec3&,
+        const PortableModelVec3&,std::uint32_t)> sourcePoint;
+};
 
 // One explicitly owned process collision domain: immutable genuine permutation
 // input, shared32-bit tag, actors and independent hash instances. No guessed RNG
@@ -420,6 +435,81 @@ public:
                 current=Link(hash,current).next;
             }
         });
+        transaction.Commit();return result;
+    }
+    OriginalLineHitArena ActorEncroachmentCheck(std::uint64_t hash,std::uintptr_t source,
+        const OriginalHashEncroachmentQueries& query) {
+        Transaction transaction(*this);Step();
+        const auto hashGeneration=Hash(hash).generation,sourceGeneration=Actor(source).storageGeneration;
+        if(!query.sourceBounds) Fail("actual encroachment source has no collision bounding-box provider");
+        Step();const auto box=query.sourceBounds(source);
+        StillLive(hash,hashGeneration,source,sourceGeneration);
+        // GetActorExtent finishes all six grid conversions BEFORE the shared
+        // tag increments. ActorLineCheck's earlier increment is distinct.
+        const auto range=OriginalCollisionHashBoxRange(box);
+        ++state_.tag; // Native unsigned32 wrap; never reset actor tags on wrap.
+        OriginalLineHitArena result;std::size_t tail{};
+        Cells(range,[&](std::uint32_t bucket,std::uint32_t cell) {
+            auto current=Hash(hash).heads[bucket];
+            while(current) {
+                Step();++stats_.links;const auto link=Link(hash,current);
+                if(!link.initialized) Fail("encroachment query observed undefined fresh link metadata");
+                auto& actor=Actor(link.actor);
+                if(actor.collisionTag!=state_.tag&&link.cell==cell) {
+                    const auto actorGeneration=actor.storageGeneration;
+                    actor.collisionTag=state_.tag; // BEFORE moving-brush and self gates.
+                    OriginalActorLineHit hit; // All zero except Time1 and Item-1.
+                    if(!query.movingBrush) Fail("actual encroachment candidate has no moving-brush provider");
+                    Step();const bool moving=query.movingBrush(link.actor);
+                    StillLive(hash,hashGeneration,source,sourceGeneration);
+                    StillLive(hash,hashGeneration,link.actor,actorGeneration);
+                    if(!moving&&link.actor!=source) {
+                        if(!query.candidateCylinder) Fail("actual encroachment candidate has no live cylinder fields");
+                        Step();const auto candidate=query.candidateCylinder(link.actor);
+                        StillLive(hash,hashGeneration,source,sourceGeneration);
+                        StillLive(hash,hashGeneration,link.actor,actorGeneration);
+                        if(!query.sourcePoint) Fail("actual encroachment source has no PointCheck provider");
+                        //10358F26..44 copies X as a raw radius word; Y/Z
+                        // pass through x87 FLD32/FST32 with masked exceptions.
+                        // Preserve every bit except quieting a signaling NaN
+                        // in those two stored components. No numeric filter.
+                        const auto stored=[](float value) {
+                            auto bits=std::bit_cast<std::uint32_t>(value);
+                            if((bits&0x7f800000u)==0x7f800000u&&(bits&0x007fffffu))bits|=0x00400000u;
+                            return std::bit_cast<float>(bits);
+                        };
+                        const PortableModelVec3 extent{candidate.radius,stored(candidate.radius),stored(candidate.height)};
+                        Step();++stats_.primitiveCalls;
+                        // Query the SOURCE primitive at CANDIDATE Location,
+                        // with candidate Radius/Radius/Height and literal0 flags.
+                        const bool clear=query.sourcePoint(hit,source,candidate.location,extent,0u);
+                        StillLive(hash,hashGeneration,source,sourceGeneration);
+                        StillLive(hash,hashGeneration,link.actor,actorGeneration);
+                        if(!clear) {
+                            if(stats_.hits>=limits_.hits) Fail("shared query hit allocation budget exhausted");
+                            ++stats_.hits;
+                            // Retail10358FA7 reloads this SAME link's Actor
+                            // after PointCheck. Supported removal/reuse can
+                            // change it, just as it can change the live Next.
+                            const auto live=Link(hash,current);
+                            if(!live.initialized) Fail("encroachment hit observed undefined live link metadata");
+                            static_cast<void>(Actor(live.actor));
+                            hit.actor=live.actor;hit.primitive=0u;hit.next=0u;
+                            result.records.push_back(hit);
+                            const auto appended=result.records.size();
+                            if(tail) result.records[tail-1u].next=appended;
+                            else result.first=appended;
+                            tail=appended;
+                        }
+                    }
+                }
+                // No captured Next, restart, private dedup set, sort,64-hit
+                // cap, collision/block/deletion filter, or source-chain gate.
+                current=Link(hash,current).next;
+            }
+        });
+        // Every accepted record's Next is the later encounter, with a final
+        // None tail. Provider packet Next never escapes this complete list.
         transaction.Commit();return result;
     }
 };

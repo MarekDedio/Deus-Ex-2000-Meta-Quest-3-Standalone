@@ -281,7 +281,8 @@
             if(command.operation==PortableRetailCollisionOperation::Enable) SetRetailActorCollision(true);
             else if(command.operation==PortableRetailCollisionOperation::Disable) SetRetailActorCollision(false);
             else if(command.operation==PortableRetailCollisionOperation::LineCheck ||
-                command.operation==PortableRetailCollisionOperation::MultiLineCheck) {
+                command.operation==PortableRetailCollisionOperation::MultiLineCheck ||
+                command.operation==PortableRetailCollisionOperation::EncroachmentCheck) {
                 auto* level=RetailCollisionLevel();
                 const auto vector=[](const auto& value) {return PortableModelVec3{value[0u],value[1u],value[2u]};};
                 QuestVr::OriginalLineHitArena hits;
@@ -295,6 +296,10 @@
                         2u*sizeof(QuestVr::OriginalActorLineHit)));
                     hits=persistentRetailCollision->ActorLineCheck(level->nativeRetailHash,vector(command.end),
                         vector(command.start),vector(command.extent),command.flags,RetailCollisionQueries());
+                }else if(command.operation==PortableRetailCollisionOperation::EncroachmentCheck) {
+                    if(command.actorPath.empty() || command.actorPath.size()>8192u || command.actorPath.find('\0')!=std::string::npos)
+                        throw std::runtime_error("ActorEncroachmentCheck diagnostic source is invalid");
+                    hits=RetailActorEncroachment(Object(command.actorPath),command.end,command.rotation,command.ignoredEncroachmentFlags);
                 }else {
                     if(command.actorPath.size()>8192u || command.actorPath.find('\0')!=std::string::npos)
                         throw std::runtime_error("Retail MultiLineCheck diagnostic anchor is invalid");

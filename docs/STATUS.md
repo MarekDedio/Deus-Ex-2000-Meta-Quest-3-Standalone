@@ -20,7 +20,46 @@ usable contents and support/falling. See TRAINING-FIRST-PRIORITY.md.
   playable-physics capability. See ORIGINAL-ENGINE-DEFAULT-LINK.md. Live crate
   destruction, usable loot and gravity remain unfinished.
 
-## Current first Training overlap prerequisite (2026-10-18)
+## Current first Training proposed-pose hash query (2026-10-19)
+
+The full native hash ActorEncroachmentCheck dispatcher and typed temporary
+source-pose scope are implemented. Bounds finish before tag increment; moving
+brush/self gates retain prior tagging, PointCheck targets the source primitive
+at each candidate cylinder, and hits append in live encounter order. Source
+Location/Rotation are visible through the same exact declared live reads used
+by bounds/ToWorld/PointCheck, then restore without any property-map, native hash
+Location, ColLocation or Remove/Add change. Explicit defaults/immutable reads
+bypass the transient view. No ordinary active-hash mutation guard is relaxed.
+
+The kernel tests pass111493 checks/34 explicit refusals,304 independent
+CRT/vector-bucket queries (300 randomized),13 allocation refusals and576 raw
+argument-word packets, including24 independent hardware-x87 Float load/store
+words. The Y/Z stores quiet signaling NaNs while X retains its raw radius word.
+Pose-scope tests pass1165/2, including exact payload/zero/rotation bits, nesting,
+depth refusal, exception restoration and safe inactive-slot reuse. Live caller
+pose/arena reservations now stay visible to nested Model-workspace admissions
+through a scoped scratch ledger; the combined-peak/overflow/exception controls
+pass15/4. The reservation releases before actual returned-vector admission.
+Strict ARM64 runtime/test syntax and Android native compilation/link pass. The
+final owned exact38-package first-map run passes841976 checks/46 refusals,
+including11 rollback-only proposed source poses,16 ordered hits,25 Model/nine
+cylinder source PointChecks, three self tags and two skipped moving-brush tags.
+It preserves source pose, ColLocation/hash membership, declared mirrors,
+save/revision/lookup/client/GC/RNG state and source-file fingerprints. The
+comparison combines an independent encounter-order oracle with separately
+verified geometry kernels, not a second independent numeric implementation.
+Same-runtime Engine42647/31 and isolated crate347/two regressions pass; the
+crate fixture still rejects born contents under dormant Game=None relevance.
+Higher Level
+encroachment/push/touch, Move266, original startup, falling and surviving usable
+loot remain unfinished; this is not a playable APK or headset acceptance.
+Final coherent CTest executes138/162 registered tests, with24 explicit
+owned-data skips and zero failures in75.21s. The three owned runs above are
+separate; other skipped cases are not claimed as executed. The strict original
+startup boundary remains BeginPlay/DeusExMover16 missing native266.
+Evidence: `artifacts/training-encroachment-*20261019.log`.
+
+## Earlier first Training overlap prerequisite (2026-10-18)
 
 - Implemented the recovered UPrimitive.PointCheck cylinder body, also inherited
   unchanged by Mesh/LodMesh. Strict overlap, active-read order, original unusual
@@ -56,7 +95,7 @@ packets against192 source/actual-ToWorld kernel predictions, with complete
 source/save/revision/lookup/GC/RNG preservation. The owned suite now passes
 616390 checks/41 explicit refusals. This is wiring evidence; the independent
 numeric proof belongs to the separate unit test, not the adapter comparison.
-Full temporary-pose encroachment, Move266, falling and surviving loot remain
+At that checkpoint, full temporary-pose encroachment, Move266, falling and surviving loot remained
 unfinished; no new APK is produced for this source prerequisite.
 The final coherent rebuild/CTest runs135 of159 registered tests, with24
 explicit owned-data skips and zero failures in56.92s. The three owned runs above

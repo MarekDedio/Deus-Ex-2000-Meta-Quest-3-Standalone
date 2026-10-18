@@ -26,7 +26,7 @@ struct PortableRetailCollisionSnapshot {
     std::size_t initializationDraws{},lifecycleOperations{};
     std::vector<PortableRetailCollisionActor> actors;
 };
-enum class PortableRetailCollisionOperation { Enable, Disable, LineCheck, SetCollision, SetCollisionSize, MultiLineCheck };
+enum class PortableRetailCollisionOperation { Enable, Disable, LineCheck, SetCollision, SetCollisionSize, MultiLineCheck, EncroachmentCheck };
 struct PortableRetailCollisionCommand {
     PortableRetailCollisionOperation operation{PortableRetailCollisionOperation::Enable};
     std::array<float,3u> end{},start{},extent{};
@@ -34,6 +34,10 @@ struct PortableRetailCollisionCommand {
     std::string actorPath{};
     std::vector<QuestVr::Vm::Value> arguments{};
     bool checkActors{true},checkWorld{true};
+    // Encroachment only: actorPath is source, end is proposed Location. Its
+    // original unused final DWORD is distinct from LineCheck's byte flags.
+    std::array<std::int32_t,3u> rotation{};
+    std::uint32_t ignoredEncroachmentFlags{};
 };
 struct PortableRetailCollisionMutation {
     std::string actorPath;

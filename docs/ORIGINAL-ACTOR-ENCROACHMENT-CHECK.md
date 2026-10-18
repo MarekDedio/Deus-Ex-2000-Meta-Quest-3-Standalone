@@ -4,15 +4,16 @@ Read-only static audit, 2026-10-18, limited to the prerequisites for the first
 `00_Training` movement path. No commercial DLL/EXE was loaded or executed.
 Engine.dll SHA256 is
 `0C3A8B18239CA98AE132506A1BD966CB5D91C6852E650E179CB15860832C20B4`.
-This is a contract and integration proposal, not an implemented encroachment
-adapter, complete Move266/SetRotation299, gravity, or playable crate acceptance.
+The portable hash query and native source-pose scope are now implemented as
+described below. Higher Level encroachment, complete Move266/SetRotation299,
+gravity and playable crate acceptance remain unfinished.
 
 ## Identity and bounded evidence
 
 Export ordinal794 identifies
 `FCollisionHash::ActorEncroachmentCheck(FMemStack&,AActor*,FVector,FRotator,DWORD)`.
 Thunk `10301497` jumps to `10358D50`; the complete normal body ends at
-`10359051` (`ret 24`). The hash vtable at `1042A044` has this thunk at `+1C`.
+`10359051` (`ret 0x24`). The hash vtable at `1042A044` has this thunk at `+1C`.
 Addresses are preferred PE32 virtual addresses, not portable struct offsets.
 
 Ignored, reproducible static evidence is in
@@ -144,7 +145,9 @@ contracts are separate audits, not established by this dispatcher alone.
 On a nonzero/clear PointCheck return, append nothing. A zero/blocked return
 executes `10358FA7..FD8`:
 
-- Overwrite hit.Actor with the candidate, regardless of the provider's Actor.
+- Reread the current link's live Actor after PointCheck, then overwrite
+  hit.Actor with that candidate, regardless of the provider's Actor. A
+  supported Remove/Add reuse of the same slot can change this identity.
 - Overwrite hit.Primitive with None (the zero return register).
 - Allocate/copy the complete44-byte packet, alignment8, through the actual
   imported global GMem/PushBytes operands `10599BD8`/`10599BD4`.
@@ -176,11 +179,11 @@ handlers, not all possible OS/fault recovery. A portable explicit refusal must
 restore the temporary pose and roll back all tags/hash/RNG/state in its same root;
 it must not imitate native fault leakage or claim that atomicity is original.
 
-## Proposed portable seam, not an implementation
+## Portable hash seam and native-pose implementation
 
-Keep the existing `OriginalCollisionHashWorld` authoritative. A separate
+The existing `OriginalCollisionHashWorld` remains authoritative. A separate
 encroachment-query provider struct avoids changing the meaning or positional
-initialization of existing LineCheck providers. A suitable minimal contract is:
+initialization of existing LineCheck providers. Its contract is:
 
 ```
 sourceBounds(source) -> exact OriginalCollisionHashBox
@@ -195,27 +198,32 @@ It bounds/captures source bounds first, increments the existing shared tag,
 walks existing cells/links, tags before gates, calls these providers in the
 observed order, overrides Actor/Primitive, appends hits, and retains its one
 outer root until the runtime restores the pose and all remaining VM work ends.
-There must be no second root, copied hash, private actor registry, or independent
+There is no second root, copied hash, private actor registry, or independent
 query commit. Provider failures poison that root just as existing hash callbacks
-do. All visited links and fixed/nonfixed work still need explicit admission.
+do. Visited links, cells, provider calls and hit allocations retain the shared
+work/depth/storage limits and generation checks. The original unused final DWORD
+is not a new filter or passed PointCheck flags. Extent X copies radius bits;
+Y/Z emulate original masked FLD32/FST32 stores, including quieting signaling
+NaNs without imposing a generic finite/sign admission rule on the provider.
 
-The runtime scope must resolve the genuine current-generation source and exact
+The runtime scope resolves the genuine current-generation source and exact
 declared `Engine.Actor.Location` and `Engine.Actor.Rotation` schemas. The proposed
-pose must be visible to the same authoritative declared reads used by bounds,
+pose is visible to the same authoritative declared reads used by bounds,
 source PointCheck, owner coordinates, and supported nested providers. A private
 argument passed only to one transformed-box helper is insufficient, and a
 permanent raw transform write is wrong. Ordinary bytecode's active-hash write
-guards must remain intact.
+guards remain intact.
 
-One safe design is a bounded, nested native-pose overlay scoped to these two
-declared fields, read before ordinary live/frozen/default/authored storage only
-for the matching actual actor. It must restore the previous overlay on normal
-return and exceptions without allocating, preserve exact original bits, and
-never serialize or mark the temporary pose as a committed script overlay. An
-alternative uses precharged, noexcept-restorable owned property-map entries;
-absence, frozen/default source, prior values and nesting must all be restored,
-not merely the numerically equal final Float values. Either design needs
-explicit reentrancy/late-failure tests before integration.
+`NativeActorPoseStack` supplies64 fixed owned transient slots. A scope overlays
+only the matching actual actor's exact declared live Location/Rotation, before
+ordinary live/frozen/authored storage. Explicit class-default and immutable
+reads bypass it. Nested scopes shadow and restore exact Float/int words on
+normal return or exceptions; restoration performs no allocation. Fixed owned
+slots avoid dangling linked guard nodes, including out-of-order guard release.
+No property map, frozen birth/default, committed-state bit, native hash Location,
+ColLocation or saved record is patched. The host authenticates both field
+schemas/existing typed live values before introducing the scope. Both bounds
+and source PointCheck use the same authoritative `Read`/NativeToWorld path.
 
 Do not temporarily Remove/Add the source or update native ColLocation merely to
 satisfy existing mutation guards: that changes the original query and can lose
@@ -224,9 +232,62 @@ Location to the proposed pose without equally scoped restoration. Only getters
 that authentically observe the proposed raw pose should see it. The outer root
 still owns all unrelated provider side effects and failure rollback.
 
-Remaining acceptance work includes the real Model PointCheck provider, typed
-source pose visibility/restoration, moving-brush predicate, candidate sampling,
-forward hit-tail ordering, nested tag/link mutation and bounds/point/late-output
-refusal tests. Higher ULevel.CheckEncroachment and its EncroachingOn/EncroachedBy/
-Touch callbacks remain separate. This seam must not be advertised as completed
-MoveActor, native startup, crate gravity/destruction/loot, or a headset build.
+The full Model PointCheck provider is established separately; see
+ORIGINAL-MODEL-POINT-CHECK.md. This hash seam includes typed source pose,
+moving-brush predicate, candidate sampling and forward tail order. Runtime
+providers are actual CPU-owned schema/field/primitive operations, with portable
+identity/admission checks; their unsupported-data error timing is not claimed
+as original native fault behavior. The live caller pose/arena reservation
+remains in the host's native scratch ledger through every nested Model-workspace
+admission; separate preflights do not replace combined peak admission. Nested
+queries add their own arena envelope while reusing fixed pose slots. Reservation
+release precedes final actual returned-vector capacity admission, avoiding double
+charging after return. These are modeled state/work budgets, not complete
+RSS/undo-stack accounting. Higher ULevel.CheckEncroachment and its
+EncroachingOn/EncroachedBy/Touch callbacks remain separate. This seam is not
+completed MoveActor, native startup, crate gravity/destruction/loot, or a headset build.
+
+## Focused verification (2026-10-19)
+
+The standalone hash-dispatch test passes111493 checks/34 explicit refusals,
+304 independent CRT/vector-bucket queries (300 randomized),13 allocation
+refusals, and576 complete argument-word packets. It independently initializes
+the permutation tables with CRT draws, tracks buckets/tags/encounter order, and
+compares every hit field/link without using production grid/bucket helpers.
+Cases include duplicate membership, skipped moving/self tags, tag wrap,
+wrong-cell collisions, more than64 returned hits, nested same/cross-hash tag
+changes, live follower removal, exact-current-slot reuse, callback/generation
+failures, caught sticky refusal, shared work/depth/cell/hit limits and late
+caller rollback.24 hardware-x87 FLD32/FST32 word stores independently establish
+the NaN/Inf/subnormal/zero/sign/payload conversion matrix; the ARM path checks
+literal goldens and does not claim to execute that x87 oracle.
+
+The fixed native-pose scope test passes1165 checks/two refusals, preserving exact
+NaN/rotation/zero bits across normal/exceptional nested scopes, full-depth
+refusal, inactive-slot reuse and out-of-order release without dangling storage.
+The scratch-composition test passes15/four: separate30/40-byte admissions fit
+under a60-byte available budget, but overlapping30+40 properly refuses; exact
+combined capacity, nested exception release, overflow-before-validator and
+throwing-admission rollback also pass. These are tests of the host's modeled
+admission policy, not an assertion about retail's allocator limits.
+
+Strict ARM64 syntax for runtime and tests, and Android native module compilation
+and linking pass. Evidence uses `artifacts/training-encroachment-*20261019.log`.
+
+The final owned first-map suite passes841976 checks/46 explicit refusals with
+the exact38-source Quest package set.11 proposed source poses of the real crate
+pair and DeusExMover16 produce16 forward hits,25 Model/nine cylinder source
+PointChecks, three self tags and two moving-brush tags. Repeated queries vary
+the unused DWORD and compare unchanged packets/order, increasing shared tags,
+restored actual source pose and unchanged hash membership/ColLocation. Late
+NaN/invalid-source/no-hash controls restore the complete save/revision/lookup/
+client/GC/RNG state. Expected bounds/occupancy use independently rebuilt proposed
+ToWorld plus separately verified kernels; candidate order uses the independent
+vector-bucket/CRT oracle. This establishes adapter wiring, not a new independent
+end-to-end geometric oracle. Engine42647/31 and isolated crate347/two pass;
+the crate fixture still rejects contents under dormant Game=None relevance.
+Original Engine/Core and owned source fingerprints are unchanged, and strict
+startup still stops at BeginPlay/DeusExMover16 missing native266.
+The coherent host rebuild and CTest pass:138 executed/162 registered,24 explicit
+owned-data skips, zero failures in75.21s. The three owned tests above run
+separately; other skipped cases are not claimed as executed.
