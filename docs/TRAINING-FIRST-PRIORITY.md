@@ -220,3 +220,15 @@ pass; CTest150 executed/174 registered passes with24 owned-data skips and no
 failures. The actual38-package first-map regression passes1090740 checks/77
 refusals and still reports the unsupported266 startup boundary. No other maps
 or new APK are included.
+
+The subsequent bounded hit-list store now keeps separate query arenas alive
+through nested marks, with global Next rebasing, expired/reused-handle refusal,
+cumulative limits and allocation-free cleanup. Its real coordinator composition
+still has mock lower services; actual native266 binding remains unfinished.
+The already connected first-map queries now retain simultaneous scratch
+reservations through nested Model admissions. No memory limit is raised.
+Host/strict ARM64/Android native builds pass; CTest151 executed/175 registered
+passes with24 owned-data skips, and the separate actual38-package first-map
+suite passes1090740 checks/77 refusals with full rollback/source immutability.
+The startup boundary and unfinished crate/loot/gravity milestone are unchanged.
+See TRAINING-MOVEMENT-HIT-STORAGE.md. No other-map integration or APK is added.

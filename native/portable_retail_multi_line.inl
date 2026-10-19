@@ -47,7 +47,10 @@
         auto temporaryBytes=Multiply(collectorCapacity,sizeof(QuestVr::OriginalActorLineHit));
         if(queryActors) temporaryBytes=Add(temporaryBytes,Multiply(
             persistentRetailCollision->ReadUsage().actors,3u*sizeof(QuestVr::OriginalActorLineHit)));
-        ValidateStateBudget(temporaryBytes);
+        // This ledger survives actor/world providers and their nested Model
+        // admissions. Independent preflights do not bound simultaneous peaks.
+        QuestVr::NativeScratchScope reservation(nativeQueryScratchBytes_,temporaryBytes,
+            [this](std::size_t extra){ValidateStateBudget(extra);});
         bool worldItemKnown=true;
         QuestVr::OriginalMultiLineQueries queries;
         queries.work=[this] {
@@ -55,7 +58,7 @@
                 throw std::runtime_error("Retail MultiLineCheck shared collector/query work budget exhausted");
             ++fastTraceQueryWork_;
         };
-        queries.world=[this,level,suppliedLevelInfo,temporaryBytes,&worldItemKnown](std::uintptr_t identity,
+        queries.world=[this,level,suppliedLevelInfo,&worldItemKnown](std::uintptr_t identity,
             const PortableModelVec3& worldEnd,const PortableModelVec3& worldStart,
             const PortableModelVec3& worldExtent,std::uint32_t flags) {
             if(!suppliedLevelInfo || identity!=reinterpret_cast<std::uintptr_t>(suppliedLevelInfo) ||
@@ -75,7 +78,8 @@
             const auto validationWidth=3u*sizeof(ValidationFrame)+sizeof(std::uint8_t);
             const auto traversalWidth=3u*std::max(sizeof(PointSegment),sizeof(ExtentVisit));
             const auto workspace=Add(128u,Multiply(model.nodes.size(),std::max(validationWidth,traversalWidth)));
-            ValidateStateBudget(Add(temporaryBytes,workspace));
+            QuestVr::NativeScratchScope workspaceReservation(nativeQueryScratchBytes_,workspace,
+                [this](std::size_t extra){ValidateStateBudget(extra);});
             if(fastTraceValidationWork_>=MaximumNativeModelValidationWork || fastTraceQueryWork_>=MaximumNativeModelQueryWork)
                 throw std::runtime_error("Retail MultiLineCheck shared Model query budget exhausted");
             QuestVr::OriginalWorldLineReply reply;
@@ -146,9 +150,10 @@
         const auto collect=[&] {
             auto result=QuestVr::CollectOriginalMultiLineHits(end,start,extent,checkActors,
                 reinterpret_cast<std::uintptr_t>(suppliedLevelInfo),extraNodeFlags,queries);
-            // Provider arenas/workspaces have died here. Charge the one live
-            // returned collector vector, not the preflight peak a second time.
-            ValidateStateBudget(Multiply(result.hits.records.capacity(),sizeof(QuestVr::OriginalActorLineHit)));
+            // Provider arenas/workspaces have died here. The retained peak
+            // already includes the fixed64-packet returned collector. Do not
+            // charge that same vector again while this reservation is active.
+            ValidateStateBudget();
             return RetailMultiLineReply{std::move(result),worldItemKnown};
         };
         // A late collector/sort/output-admission failure must poison the SAME

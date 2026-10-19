@@ -56,6 +56,7 @@
 #include "quest_model_point_overlap.h"
 #include "quest_model_point_region.h"
 #include "quest_native_actor_pose.h"
+#include "quest_native_hit_marks.h"
 #include "quest_native_scratch_scope.h"
 #include "quest_actor_blocking.h"
 // Complete detached slide/push protocol; actual native Move remains refused
@@ -4466,6 +4467,18 @@ public:
         const auto selected=NativeActorPrimitive(owner);
         if(selected.kind==NativePrimitiveKind::Model) {
             const auto& model=NativeSelectedModel(owner,selected);
+            // A retained outer hit list/collector can coexist with this Model
+            // query. Keep its peak reservation visible to ToWorld and every
+            // nested host admission, rather than checking an isolated peak.
+            struct ValidationFrame {std::size_t node;unsigned next;};
+            struct PointSegment {std::int32_t node,last;PortableModelVec3 start,end;bool outside;};
+            struct ExtentVisit {std::int32_t node,parent;bool outside;};
+            const auto width=std::max(3u*sizeof(ValidationFrame)+sizeof(std::uint8_t),
+                3u*std::max(sizeof(PointSegment),sizeof(ExtentVisit)));
+            const auto workspace=QuestVr::DecalStateDetail::Add(128u,
+                QuestVr::DecalStateDetail::Multiply(model.nodes.size(),width));
+            QuestVr::NativeScratchScope reservation(nativeQueryScratchBytes_,workspace,
+                [this](std::size_t extra){ValidateStateBudget(extra);});
             QuestVr::ModelExtentTraceLimits limits;
             if(fastTraceValidationWork_>=MaximumNativeModelValidationWork || fastTraceQueryWork_>=MaximumNativeModelQueryWork)
                 throw std::runtime_error("Selected Model shared native query budget exhausted");
@@ -4516,8 +4529,10 @@ public:
                 struct ValidationFrame {std::size_t node;unsigned next;};
                 struct Visit {std::int32_t node,parent;bool outside;};
                 const auto width=std::max(3u*sizeof(ValidationFrame)+sizeof(std::uint8_t),3u*sizeof(Visit));
-                ValidateStateBudget(QuestVr::DecalStateDetail::Add(2048u,
-                    QuestVr::DecalStateDetail::Multiply(model.nodes.size(),width)));
+                const auto workspace=QuestVr::DecalStateDetail::Add(2048u,
+                    QuestVr::DecalStateDetail::Multiply(model.nodes.size(),width));
+                QuestVr::NativeScratchScope reservation(nativeQueryScratchBytes_,workspace,
+                    [this](std::size_t extra){ValidateStateBudget(extra);});
                 if(fastTraceValidationWork_>=MaximumNativeModelValidationWork || fastTraceQueryWork_>=MaximumNativeModelQueryWork)
                     throw std::runtime_error("Selected Model shared native occupancy budget exhausted");
                 QuestVr::ModelPointOverlapLimits limits;

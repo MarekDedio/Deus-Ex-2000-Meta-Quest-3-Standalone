@@ -20,7 +20,34 @@ usable contents and support/falling. See TRAINING-FIRST-PRIORITY.md.
   playable-physics capability. See ORIGINAL-ENGINE-DEFAULT-LINK.md. Live crate
   destruction, usable loot and gravity remain unfinished.
 
-## First Training complete movement coordinator prerequisite (2026-10-19)
+## First Training retained movement-hit storage prerequisite (2026-10-19)
+
+The bounded host-private hit store now retains independently qualified query
+lists across nested marks, rebases local head/Next words and rejects expired,
+foreign, popped or reused handles. Cumulative ordinals/work are not refreshed
+by cleanup; capacity accounting, refusal atomicity and allocation-free cleanup
+have explicit controls. Its expanded suite passes5185 checks/1277 refusals,
+including composition with the real complete movement coordinator and every
+shared-work denial prefix. Lower world/collision/pose/event services in that
+composition are still mocks. The store itself is not yet bound into native266.
+
+Already connected Model line/point and MultiLine providers now retain their
+simultaneous query-memory reservations across nested admissions instead of
+checking separate peaks. The fixed collector is not charged twice. No memory
+limit is raised. Coherent host, strict ARM64 runtime/test and Android native
+builds pass; CTest151 executed/175 registered passes with24 explicit owned-data
+skips, zero failures in71.18s. See TRAINING-MOVEMENT-HIT-STORAGE.md.
+The separate actual38-package first-map regression passes1090740 checks/77
+refusals with complete provider/save/state/hash/clock/GC/RNG rollback and source
+immutability under the new query accounting. Its original startup still reaches
+DeusExMover16 BeginPlay PC166/opcode97, unsupported native266; it does not invoke
+the new store through an actual movement provider.
+
+This does not complete movement/startup, playable crate destruction, surviving
+loot, support/falling or headset acceptance. First Training remains the only
+real-map target and no new APK is included for this backend prerequisite.
+
+## Earlier first Training complete movement coordinator prerequisite (2026-10-19)
 
 The complete detached ordinary MoveActor coordinator now implements original
 eligibility/small exits, live sweep and blocking selection, child/encroachment

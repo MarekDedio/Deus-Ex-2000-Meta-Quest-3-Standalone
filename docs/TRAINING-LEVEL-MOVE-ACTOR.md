@@ -146,6 +146,11 @@ the combined peak. Query plus adoption/late validation must poison the same
 hash root on failure, and world-only list ownership must not initialize a hash
 or consume CRT draws merely to obtain temporary storage.
 
+The subsequent bounded store and connected query-scratch correction are in
+TRAINING-MOVEMENT-HIT-STORAGE.md. Store/coordinator composition now has tests,
+but actual host ownership, query adoption and native266 routing remain required;
+including the store header is not that binding.
+
 Passing the mock suites does not make first Training startup or crates ready.
 No APK is packaged solely for this backend prerequisite. The last installed
 build remains unchanged until a playable improvement is verified and packaged.
