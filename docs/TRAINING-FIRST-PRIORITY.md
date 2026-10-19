@@ -8,15 +8,18 @@ save time; shared prerequisites needed by this first map remain in scope.
 
 Latest source checkpoint,2026-10-19: original native movement/rotation now runs
 on actual Training actors, and the missing Core Rotator addition is implemented
-with copied-input/initialized-selector correctness. Full actual first-map
-regression passes1164487 checks/97 expected refusals. Repeated original startup
-completes BeginPlay/zone/last-render passes before the shared native-work limit
-refuses a real mover PostBeginPlay scan. That limit remains unchanged; the
-next work is a correctly shared bounded root allowance, then the remaining
-startup/support/falling and live weapon/destruction/usable-loot path. This is
+with copied-input/initialized-selector correctness. A bounded shared native-work
+root allowance now retains default65536 while allowing explicit larger finite
+roots through the same callback/iterator/AI ledger. Full actual first-map
+regression passes1177670 checks/100 expected refusals. Repeated original startup
+with explicit262144 advances past the mover scan and next refuses combined
+persistent storage during the authored Mission00 birth/SetInitialState prefix.
+Memory limits are unchanged. Compact faithful runtime storage is the next
+dependency, then remaining startup/support/falling and live weapon/destruction/
+usable-loot acceptance. This is
 not finished crate physics, a finished tutorial or a replacement APK. The
 older entries below are historical prerequisite checkpoints. See
-ORIGINAL-ROTATOR-ADD.md for current evidence and remaining boundaries.
+TRAINING-NATIVE-WORK.md for current evidence and remaining boundaries.
 
 ## In scope now
 

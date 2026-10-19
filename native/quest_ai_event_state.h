@@ -1,5 +1,7 @@
 #pragma once
 
+#include "quest_native_work.h"
+
 #include <array>
 #include <cmath>
 #include <cstddef>
@@ -21,7 +23,25 @@ inline constexpr std::size_t MaxNodes = 8192;
 inline constexpr std::size_t MaxEventTypes = 1024;
 inline constexpr std::size_t MaxStringBytes = 8192;
 inline constexpr std::size_t MaxStateBytes = 16 * 1024 * 1024;
-inline constexpr std::size_t MaxWork = 65536;
+inline constexpr std::size_t MaxWork = NativeWork::DefaultLimit;
+
+// Borrowed charging authority only. Copies retain the SAME caller counter;
+// they never own/reset an allowance. The legacy scalar overload remains an
+// implicit source-compatible view with its established default cap/error.
+class Work final {
+public:
+    Work(std::size_t& used) noexcept : legacy_(&used) {}
+    Work(NativeWork::Budget& budget) noexcept : shared_(&budget) {}
+    void Step(std::size_t count=1u) const {
+        if(shared_){shared_->Step(count);return;}
+        if(*legacy_>MaxWork || count>MaxWork-*legacy_)
+            throw std::runtime_error("AI event state: work limit exceeded");
+        *legacy_+=count;
+    }
+private:
+    std::size_t* legacy_{};
+    NativeWork::Budget* shared_{};
+};
 
 struct Channels {
     float visibility = 0;
@@ -103,19 +123,19 @@ struct State {
 // Work is charged to the caller's shared native/lifecycle allowance.
 inline Id Register(State&, const std::string& actor, const std::string& eventName,
                    const std::string& callback, const std::string& scoreCallback,
-                   PerceptionFlags, std::size_t& used);
+                   PerceptionFlags, Work used);
 inline bool ClearReceiver(State&, const std::string& actor,
-                          const std::string& eventName, std::size_t& used);
+                          const std::string& eventName, Work used);
 inline Id Emit(State&, const std::string& actor, const std::string& eventName,
                std::uint8_t channel, float value, float radius, bool pulse,
-               bool pendingKill, std::size_t& used);
+               bool pendingKill, Work used);
 inline bool End(State&, const std::string& actor, const std::string& eventName,
-                std::uint8_t channel, std::size_t& used);
+                std::uint8_t channel, Work used);
 inline bool ClearSender(State&, const std::string& actor,
-                        const std::string& eventName, std::size_t& used);
-inline void DestroyActor(State&, const std::string& actor, std::size_t& used);
+                        const std::string& eventName, Work used);
+inline void DestroyActor(State&, const std::string& actor, Work used);
 inline std::size_t RetainedBytes(const State&);
-inline void Validate(const State&, std::size_t& used);
+inline void Validate(const State&, Work used);
 inline void Validate(const State& state) {
     std::size_t used = 0;
     Validate(state, used);
@@ -127,10 +147,7 @@ namespace Detail {
     throw std::runtime_error(std::string("AI event state: ") + message);
 }
 
-inline void Step(std::size_t& used, std::size_t count = 1) {
-    if (used > MaxWork || count > MaxWork - used) Fail("work limit exceeded");
-    used += count;
-}
+inline void Step(Work used, std::size_t count = 1) { used.Step(count); }
 
 inline void Text(std::string_view text, bool required = false) {
     if (text.size() > MaxStringBytes || text.find('\0') != std::string_view::npos ||
@@ -176,7 +193,7 @@ inline void Sample(const Channels& sample) {
     Scalar(sample.smell);
 }
 
-inline void Envelope(const State& state, std::size_t& used) {
+inline void Envelope(const State& state, Work used) {
     if (state.eventTypes.size() > MaxEventTypes ||
         state.senders.size() > MaxNodes ||
         state.receivers.size() > MaxNodes - state.senders.size())
@@ -186,7 +203,7 @@ inline void Envelope(const State& state, std::size_t& used) {
     if (state.historyCursor >= 16) Fail("invalid history cursor");
 }
 
-inline Id FindType(const State& state, std::string_view name, std::size_t& used) {
+inline Id FindType(const State& state, std::string_view name, Work used) {
     for (std::size_t index = 0; index < state.eventTypes.size(); ++index) {
         Step(used);
         if (Equal(state.eventTypes[index].name, name)) return static_cast<Id>(index + 1);
@@ -194,7 +211,7 @@ inline Id FindType(const State& state, std::string_view name, std::size_t& used)
     return 0;
 }
 
-inline Id Type(State& state, const std::string& name, std::size_t& used) {
+inline Id Type(State& state, const std::string& name, Work used) {
     if (const Id id = FindType(state, name, used)) return id;
     if (state.eventTypes.size() >= MaxEventTypes) Fail("event type limit exceeded");
     state.eventTypes.push_back(EventType{name, {}, {}});
@@ -211,7 +228,7 @@ inline Receiver& ReceiverAt(State& state, Id id) {
     return state.receivers[id - 1];
 }
 
-inline Id FindSender(State& state, Id type, std::string_view actor, std::size_t& used) {
+inline Id FindSender(State& state, Id type, std::string_view actor, Work used) {
     for (Id id : state.eventTypes[type - 1].senderIds) {
         Step(used);
         const auto& node = SenderAt(state, id);
@@ -220,7 +237,7 @@ inline Id FindSender(State& state, Id type, std::string_view actor, std::size_t&
     return 0;
 }
 
-inline Id FindReceiver(State& state, Id type, std::string_view actor, std::size_t& used) {
+inline Id FindReceiver(State& state, Id type, std::string_view actor, Work used) {
     for (Id id : state.eventTypes[type - 1].receiverIds) {
         Step(used);
         const auto& node = ReceiverAt(state, id);
@@ -284,7 +301,7 @@ inline std::size_t RetainedBytes(const State& state) {
 
 inline Id Register(State& state, const std::string& actor, const std::string& eventName,
                    const std::string& callback, const std::string& scoreCallback,
-                   PerceptionFlags flags, std::size_t& used) {
+                   PerceptionFlags flags, Work used) {
     Detail::Text(actor);
     Detail::Text(eventName);
     Detail::Text(callback);
@@ -330,7 +347,7 @@ inline Id Register(State& state, const std::string& actor, const std::string& ev
 }
 
 inline bool ClearReceiver(State& state, const std::string& actor,
-                          const std::string& eventName, std::size_t& used) {
+                          const std::string& eventName, Work used) {
     Detail::Text(actor);
     Detail::Text(eventName);
     Detail::Envelope(state, used);
@@ -344,7 +361,7 @@ inline bool ClearReceiver(State& state, const std::string& actor,
 
 inline Id Emit(State& state, const std::string& actor, const std::string& eventName,
                std::uint8_t channel, float value, float radius, bool pulse,
-               bool pendingKill, std::size_t& used) {
+               bool pendingKill, Work used) {
     Detail::Text(actor);
     Detail::Text(eventName);
     Detail::Scalar(value);
@@ -373,7 +390,7 @@ inline Id Emit(State& state, const std::string& actor, const std::string& eventN
 }
 
 inline bool End(State& state, const std::string& actor, const std::string& eventName,
-                std::uint8_t channel, std::size_t& used) {
+                std::uint8_t channel, Work used) {
     Detail::Text(actor);
     Detail::Text(eventName);
     Detail::Envelope(state, used);
@@ -386,7 +403,7 @@ inline bool End(State& state, const std::string& actor, const std::string& event
 }
 
 inline bool ClearSender(State& state, const std::string& actor,
-                        const std::string& eventName, std::size_t& used) {
+                        const std::string& eventName, Work used) {
     Detail::Text(actor);
     Detail::Text(eventName);
     Detail::Envelope(state, used);
@@ -401,7 +418,7 @@ inline bool ClearSender(State& state, const std::string& actor,
     return true;
 }
 
-inline void DestroyActor(State& state, const std::string& actor, std::size_t& used) {
+inline void DestroyActor(State& state, const std::string& actor, Work used) {
     Detail::Text(actor);
     Detail::Envelope(state, used);
     if (actor.empty()) return;
@@ -420,7 +437,7 @@ inline void DestroyActor(State& state, const std::string& actor, std::size_t& us
     }
 }
 
-inline void Validate(const State& state, std::size_t& used) {
+inline void Validate(const State& state, Work used) {
     Detail::Text(state.ownerPath, true);
     Detail::Text(state.levelPath, true);
     Detail::Envelope(state, used);

@@ -239,7 +239,7 @@
     PortableRetailCollisionSnapshot RetailCollisionSnapshot() {
         PortableRetailCollisionSnapshot result;result.seed=persistentScriptRandomSeed.value_or(1u);
         result.initializationDraws=retailCollisionInitializationDraws_;
-        result.lifecycleOperations=lifecycleOperations_;
+        result.lifecycleOperations=nativeWork_.Read().used;
         if(!persistentRetailCollision) return result;
         auto* level=RetailCollisionLevel();const auto usage=persistentRetailCollision->ReadUsage();
         result.initialized=true;result.initializedHere=createdRetailCollision_;result.enabled=level->nativeRetailHash!=0u;

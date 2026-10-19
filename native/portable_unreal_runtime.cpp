@@ -2422,12 +2422,14 @@ public:
         __android_log_print(ANDROID_LOG_WARN, "quest_main", "DeusExQuest: state label %s not found on %s",
             target.c_str(), receiver.c_str());
     }
-    void Begin() override {
+    void Begin() override { BeginRoot(QuestVr::Vm::Limits{}); }
+    std::optional<QuestVr::NativeWork::Usage> ReadNativeWork() const noexcept override { return nativeWork_.Read(); }
+    void BeginRoot(const QuestVr::Vm::Limits& limits) override {
         if (transaction_) throw std::runtime_error("Portable actor VM nested host transaction");
+        nativeWork_.Reset(limits.nativeWork);
         RequireEmptyMoveHits();ClearMoveHits();nativeDurableMoved_.clear();
         retailCollisionOutputBytes_=0u;
         ValidateStateBudget();
-        lifecycleOperations_ = 0u;
         retailCollisionInitializationReserved_=false;retailCollisionInitializationDraws_=0u;
         fastTraceValidationWork_=fastTraceQueryWork_=0u;
         vectorRandomDraws_=0u;
@@ -2444,6 +2446,7 @@ public:
         transaction_ = true;
     }
     void Commit() override {
+        nativeWork_.Check();
         RequireEmptyMoveHits();
         if(nativeMoveDepth_||nativeActorPoses_.Depth())throw std::runtime_error("Native movement scope survives its outer VM execution");
         if (waitingPreview_) {
@@ -7548,8 +7551,7 @@ private:
         return {Value::Text(Kind::Object,actor ? actor->reflection.objectPath : std::string{}),{}};
     }
     void LifecycleStep() {
-        if (++lifecycleOperations_ > 65'536u)
-            throw std::runtime_error("Native actor lifecycle work budget exceeded");
+        nativeWork_.Step();
     }
     void RequireMapActor(RuntimeObject* actor) {
         if (!actor || actor->defaultOwner || !IsDerivedFromPath(actor->cls, "Engine.Actor") ||
@@ -7894,7 +7896,7 @@ private:
     bool clientDependent_{};
     std::uint64_t soundClientIdentity_{};
     std::optional<QuestVr::ActorCollisionRegistry> beforeCollision_;
-    std::size_t lifecycleOperations_{};
+    QuestVr::NativeWork::Budget nativeWork_;
     std::size_t fastTraceValidationWork_{},fastTraceQueryWork_{};
     std::size_t vectorRandomDraws_{};
     std::size_t beforeExportCount_{}, beforeWorldSlots_{};
@@ -9072,16 +9074,16 @@ private:
         if (!manager) return {}; // Original absent-manager branch, after evaluating all arguments.
         TouchAI(manager->owner);
         const auto& path = actor->reflection.objectPath;
-        if (index == 710u) QuestVr::Ai::Register(manager->state, path, event, callback, scoreCallback, flags, lifecycleOperations_);
-        else if (index == 711u) QuestVr::Ai::ClearReceiver(manager->state, path, event, lifecycleOperations_);
-        else if (index == 715u) QuestVr::Ai::End(manager->state, path, event, channel, lifecycleOperations_);
-        else if (index == 716u) QuestVr::Ai::ClearSender(manager->state, path, event, lifecycleOperations_);
+        if (index == 710u) QuestVr::Ai::Register(manager->state, path, event, callback, scoreCallback, flags, nativeWork_);
+        else if (index == 711u) QuestVr::Ai::ClearReceiver(manager->state, path, event, nativeWork_);
+        else if (index == 715u) QuestVr::Ai::End(manager->state, path, event, channel, nativeWork_);
+        else if (index == 716u) QuestVr::Ai::ClearSender(manager->state, path, event, nativeWork_);
         else {
             // Original IsPendingKill reads the same packed bit whose cleanup
             // assertion names ActorToKill->bDeleteMe (Engine.dll 103966bd).
             const bool pendingKill = QuestVr::Vm::ToBool(Read(actor, PropertyNamed(actor, "bDeleteMe"), 0u));
             QuestVr::Ai::Emit(manager->state, path, event, channel, value, radius, index == 713u,
-                pendingKill, lifecycleOperations_);
+                pendingKill, nativeWork_);
         }
         RefreshAIRoots(manager);
         return {};

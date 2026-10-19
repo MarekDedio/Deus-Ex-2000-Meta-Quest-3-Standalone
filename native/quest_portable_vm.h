@@ -1,5 +1,7 @@
 #pragma once
 
+#include "quest_native_work.h"
+
 // Bounded execution of the loader's fixed-width UE1 bytecode. This is not a
 // replacement script language: unsupported opcodes/natives fail transactionally.
 #include <array>
@@ -105,6 +107,10 @@ struct Limits {
     std::size_t operations{100000};
     // Separate from reflected local/fixed-array elements; includes capacity.
     std::size_t intArrayElements{262144};
+    // Shared native/iterator/lifecycle work, separate from VM instructions and
+    // fixed collision-table initialization. Zero is valid for pure roots.
+    // Larger roots opt in explicitly; NativeWork::MaximumLimit is enforced.
+    std::size_t nativeWork{NativeWork::DefaultLimit};
 };
 struct StateLabel {
     std::string name;
@@ -164,6 +170,11 @@ public:
     // Begin/Commit/Rollback cover properties, native commands, RNG and effects
     // across the ENTIRE nested call tree. Unknown operations must throw, not no-op.
     virtual void Begin() = 0;
+    // Delivered once at the outer execution boundary, before any operation.
+    // Legacy hosts retain their original Begin implementation. Hosts owning
+    // native services must share this allowance through the whole call tree.
+    virtual void BeginRoot(const Limits&) { Begin(); }
+    virtual std::optional<NativeWork::Usage> ReadNativeWork() const noexcept { return std::nullopt; }
     virtual void Commit() = 0;
     virtual void Rollback() noexcept = 0;
     // Read-only event/function eligibility, before any callee argument/local/
@@ -341,6 +352,9 @@ struct Result {
     std::vector<std::string> callStack;
     std::string error;
     bool committed{};
+    // Ephemeral final root accounting, including refused/rolled-back roots;
+    // absent for legacy hosts. It is not a persistent/save-state field.
+    std::optional<NativeWork::Usage> nativeWork;
     bool passed() const { return status == Status::Returned ||
         ((status == Status::Stopped || status == Status::Waiting) && committed); }
 };

@@ -2,6 +2,7 @@
 
 #include <functional>
 #include <iostream>
+#include <type_traits>
 
 namespace {
 using namespace QuestVr::Ai;
@@ -324,6 +325,167 @@ void RefusalsAndAccounting() {
     Require(valid == snapshot, "Complete-state rollback did not restore native graph");
     Validate(valid);
 }
+
+enum class WorkOperation { Register,ClearReceiver,Emit,End,ClearSender,Destroy,Validate,
+    RegisterNewType,EmitNewType,RegisterNewReceiver,EmitNewSender };
+constexpr std::array<WorkOperation,11u> WorkOperations{WorkOperation::Register,WorkOperation::ClearReceiver,
+    WorkOperation::Emit,WorkOperation::End,WorkOperation::ClearSender,WorkOperation::Destroy,WorkOperation::Validate,
+    WorkOperation::RegisterNewType,WorkOperation::EmitNewType,WorkOperation::RegisterNewReceiver,WorkOperation::EmitNewSender};
+std::size_t LiteralCost(WorkOperation operation){return operation==WorkOperation::Validate?9u:6u;}
+State WorkFixture(){
+    // Built independently of the mutation helpers. Envelope=4 (manager+type+
+    // sender+receiver), first type/list match costs1 each. Validate additionally
+    // visits both list entries, both nodes and the one-node receiver ring=9.
+    auto state=Empty();state.eventTypes.push_back({"Danger",{1u},{1u}});
+    Sender sender;sender.actor="FixtureMap.Sender";sender.eventType=1u;
+    sender.current={1,2,80,3};sender.history[0u]=sender.current;state.senders.push_back(sender);
+    Receiver receiver;receiver.actor="FixtureMap.Receiver";receiver.eventType=1u;
+    receiver.ringNext=receiver.ringPrev=1u;receiver.previousBestActor="FixtureMap.Sender";
+    receiver.callback="Old";state.receivers.push_back(receiver);state.receiverHead=1u;return state;
+}
+void InvokeWork(WorkOperation operation,State& state,Work work){
+    switch(operation){
+    case WorkOperation::Register:Require(Register(state,"FixtureMap.Receiver","Danger","New","Score",{},work)==1u,
+        "Shared Register changed stable existing identity");break;
+    case WorkOperation::ClearReceiver:Require(ClearReceiver(state,"FixtureMap.Receiver","Danger",work),"Shared ClearReceiver lost existing receiver");break;
+    case WorkOperation::Emit:Require(Emit(state,"FixtureMap.Sender","Danger",1u,9,123,false,false,work)==1u,"Shared Emit changed existing sender identity");break;
+    case WorkOperation::End:Require(End(state,"FixtureMap.Sender","Danger",1u,work),"Shared End lost existing sender");break;
+    case WorkOperation::ClearSender:Require(ClearSender(state,"FixtureMap.Sender","Danger",work),"Shared ClearSender lost existing sender");break;
+    case WorkOperation::Destroy:DestroyActor(state,"FixtureMap.Sender",work);break;
+    case WorkOperation::Validate:Validate(state,work);break;
+    case WorkOperation::RegisterNewType:Require(Register(state,"FixtureMap.NewReceiver","Different","New","Score",{},work)==2u,
+        "Shared new-type Register did not append stable receiver2");break;
+    case WorkOperation::EmitNewType:Require(Emit(state,"FixtureMap.NewSender","Different",1u,9,123,false,false,work)==2u,
+        "Shared new-type Emit did not append stable sender2");break;
+    case WorkOperation::RegisterNewReceiver:Require(Register(state,"FixtureMap.NewReceiver","Danger","New","Score",{},work)==2u,
+        "Shared Register did not append receiver2 in existing type");break;
+    case WorkOperation::EmitNewSender:Require(Emit(state,"FixtureMap.NewSender","Danger",1u,9,123,false,false,work)==2u,
+        "Shared Emit did not append sender2 in existing type");break;
+    }
+}
+void ExpectedWorkMutation(WorkOperation operation,const State& state){
+    switch(operation){
+    case WorkOperation::Register:Require(state.receivers[0u].callback=="New"&&state.receivers[0u].scoreCallback=="Score"&&
+        state.receivers.size()==1u,"Shared Register failed actual callback update");break;
+    case WorkOperation::ClearReceiver:Require(state.receivers[0u].deleted&&state.pendingDeleteCount==1u,
+        "Shared ClearReceiver failed tombstone mutation");break;
+    case WorkOperation::Emit:Require(state.senders[0u].current==Channels{1,9,123,3}&&state.senders[0u].history[0u]==Channels{1,9,123,3},
+        "Shared Emit failed actual channel/history update");break;
+    case WorkOperation::End:Require(state.senders[0u].current==Channels{1,0,0,3}&&state.senders[0u].history[0u]==Channels{1,2,80,3},
+        "Shared End failed current-only channel clear");break;
+    case WorkOperation::ClearSender:Require(state.senders[0u].current==Channels{}&&state.senders[0u].history[0u]==Channels{1,2,80,3},
+        "Shared ClearSender lost history/current separation");break;
+    case WorkOperation::Destroy:Require(state.senders[0u].deleted&&!state.receivers[0u].deleted&&
+        state.receivers[0u].previousBestActor.empty()&&state.pendingDeleteCount==1u,
+        "Shared Destroy lost live-only previous-best/tombstone behavior");break;
+    case WorkOperation::Validate:Require(state==WorkFixture(),"Shared Validate mutated independently authored valid graph");break;
+    case WorkOperation::RegisterNewType:Require(state.eventTypes.size()==2u&&state.eventTypes[1u].name=="Different"&&
+        state.eventTypes[1u].receiverIds==std::vector<Id>{2u}&&state.receivers[1u].eventType==2u,
+        "Shared Register skipped new Type/receiver list linkage");break;
+    case WorkOperation::EmitNewType:Require(state.eventTypes.size()==2u&&state.eventTypes[1u].name=="Different"&&
+        state.eventTypes[1u].senderIds==std::vector<Id>{2u}&&state.senders[1u].eventType==2u&&state.senders[1u].current==Channels{0,9,123,0},
+        "Shared Emit skipped new Type/sender list linkage");break;
+    case WorkOperation::RegisterNewReceiver:Require(state.eventTypes.size()==1u&&state.eventTypes[0u].receiverIds==std::vector<Id>{1u,2u}&&
+        state.receivers[1u].eventType==1u,"Shared Register lost existing-type lookup/append");break;
+    case WorkOperation::EmitNewSender:Require(state.eventTypes.size()==1u&&state.eventTypes[0u].senderIds==std::vector<Id>{1u,2u}&&
+        state.senders[1u].eventType==1u&&state.senders[1u].current==Channels{0,9,123,0},
+        "Shared Emit lost existing-type lookup/append");break;
+    }
+}
+template<class T>concept ResettableWork=requires(T& value){value.Reset(0u);};
+void SharedWorkViews(){
+    using QuestVr::NativeWork::Budget;
+    using QuestVr::NativeWork::Exhausted;
+    static_assert(!std::is_default_constructible_v<Work> && std::is_trivially_copyable_v<Work>);
+    static_assert(!ResettableWork<Work>);
+    constexpr std::size_t prefix=65'536u;
+    std::size_t sharedCases{},boundaryCases{},legacyCases{};
+    for(const auto operation:WorkOperations){
+        const auto cost=LiteralCost(operation);
+        auto state=WorkFixture();Budget budget(prefix+cost);budget.Step(prefix);
+        Work first(budget);const Work borrowed=first;
+        InvokeWork(operation,state,borrowed);
+        Require(budget.Read()==QuestVr::NativeWork::Usage{prefix+cost,prefix+cost,false},
+            "AI helper reset/locally capped shared work or lost exact literal traversal cost");
+        ExpectedWorkMutation(operation,state);budget.Check();++sharedCases;
+        // Each internal cut is a real precharge boundary, not an expectation
+        // cloned from production. Envelope's first4 units are charged atomically.
+        for(std::size_t allowance=0u;allowance<cost;++allowance){
+            auto partial=WorkFixture();const auto snapshot=partial;
+            Budget limited(prefix+allowance);limited.Step(prefix);Work view(limited);const auto copy=view;
+            bool failed{};
+            try{InvokeWork(operation,partial,copy);}catch(const Exhausted& error){
+                failed=true;Require(error.Limit()==prefix+allowance&&error.Used()==prefix+(allowance<4u?0u:allowance)&&
+                    error.Requested()==(allowance<4u?4u:1u),"Shared AI exhaustion packet does not match exact active charge");}
+            Require(failed&&limited.Read().exhausted&&limited.Read().used==prefix+(allowance<4u?0u:allowance),
+                "Shared AI did not refuse exactly at bounded precharge");++rejections;
+            if(operation==WorkOperation::Destroy&&allowance==5u)
+                Require(partial!=snapshot&&partial.senders[0u].deleted&&partial.pendingDeleteCount==1u&&
+                    partial.receivers[0u].previousBestActor=="FixtureMap.Sender",
+                    "Late Destroy refusal fixture never made its earlier tombstone write");
+            // AI helpers intentionally have no nested rollback. The outer
+            // owner's complete-state snapshot restores graph, NOT spent work.
+            partial=snapshot;const auto charged=limited.Read();
+            bool sticky{};try{ClearSender(partial,"FixtureMap.Sender","Danger",view);}catch(const Exhausted&){sticky=true;}
+            Require(sticky&&partial==snapshot&&limited.Read()==charged,
+                "Catching exhausted AI call reset borrowed budget or allowed subsequent mutation");++rejections;
+            sticky=false;try{limited.Check();}catch(const Exhausted&){sticky=true;}
+            Require(sticky&&limited.Read()==charged,"Caller checkpoint failed to retain sticky exhausted authority");++rejections;
+            ++boundaryCases;
+        }
+        // Legacy scalar call expressions retain the original65536 limit and
+        // exact error text, including values already beyond it (no overflow).
+        for(const auto initial:{MaxWork-cost,MaxWork-1u,MaxWork,std::numeric_limits<std::size_t>::max()}){
+            auto legacyState=WorkFixture();const auto snapshot=legacyState;auto used=initial;
+            if(initial==MaxWork-cost){
+                InvokeWork(operation,legacyState,used);Require(used==MaxWork,"Legacy exact-boundary cost changed");
+                ExpectedWorkMutation(operation,legacyState);
+            }else{
+                bool failed{};try{InvokeWork(operation,legacyState,used);}catch(const std::runtime_error& error){
+                    failed=true;Require(std::string(error.what())=="AI event state: work limit exceeded","Legacy AI work refusal text changed");}
+                Require(failed&&used==initial&&legacyState==snapshot,"Legacy work cap overflowed/reset or changed graph before charge");++rejections;
+            }
+            ++legacyCases;
+        }
+    }
+    {
+        auto state=WorkFixture();Budget budget(prefix+45u);budget.Step(prefix);const Work view(budget);
+        // Six6-unit calls followed by9-unit validation: the whole sequence
+        // shares one allowance, across helpers and an independently owned step.
+        std::size_t expected=prefix;
+        for(const auto op:{WorkOperation::Register,WorkOperation::Emit,WorkOperation::End,
+            WorkOperation::ClearSender,WorkOperation::ClearReceiver,WorkOperation::Destroy,WorkOperation::Validate}){
+            InvokeWork(op,state,view);expected+=LiteralCost(op);
+            Require(budget.Read().used==expected&&!budget.Read().exhausted,
+                "Cross-helper sequence created a fresh per-native allowance");
+        }
+        Require(expected==prefix+45u&&state.pendingDeleteCount==2u&&state.receivers[0u].deleted&&state.senders[0u].deleted,
+            "Shared cross65536 graph sequence did not execute all actual mutations");++sharedCases;
+        bool sticky{};try{view.Step();}catch(const Exhausted&){sticky=true;}
+        Require(sticky&&budget.Read().used==expected&&budget.Read().exhausted,"Exact shared boundary allowed an extra borrowed step");++rejections;
+        sticky=false;try{view.Step(0u);}catch(const Exhausted&){sticky=true;}
+        Require(sticky,"Zero-cost borrowed work cleared sticky failure");++rejections;
+    }
+    {
+        std::size_t used=MaxWork-2u;const Work first(used),copy=first;first.Step();copy.Step();
+        Require(used==MaxWork,"Copies of legacy borrowed work do not share actual scalar counter");
+        bool refused{};try{copy.Step(std::numeric_limits<std::size_t>::max());}catch(const std::runtime_error& error){
+            refused=true;Require(std::string(error.what())=="AI event state: work limit exceeded","Legacy bulk overflow refusal text changed");}
+        Require(refused&&used==MaxWork,"Legacy bulk charge overflowed finite allowance");++rejections;++legacyCases;
+    }
+    {
+        Budget exhausted(0u);const Work original(exhausted),copy=original;
+        for(const auto operation:WorkOperations){
+            auto state=WorkFixture();const auto snapshot=state;bool failed{};
+            try{InvokeWork(operation,state,copy);}catch(const Exhausted&){failed=true;}
+            Require(failed&&state==snapshot&&exhausted.Read()==QuestVr::NativeWork::Usage{0u,0u,true},
+                "A public AI helper replaced sticky shared work after caller caught an earlier failure");++rejections;
+        }
+    }
+    std::cout<<"AI shared borrowed work: "<<sharedCases<<" exact cross65536 public-helper cohorts, "<<boundaryCases
+        <<" precharge/caller-snapshot/sticky cuts, "<<legacyCases<<" unchanged legacy-default/overflow controls. "
+        "Graph rollback belongs to caller; borrowed views cannot reset work.\n";
+}
 } // namespace
 
 int main() {
@@ -332,6 +494,7 @@ int main() {
         SenderChannels();
         ReceiverRingAndLifecycle();
         RefusalsAndAccounting();
+        SharedWorkViews();
         std::cout << "AI event mutation state: " << checks << " checks, " << rejections
                   << " explicit refusals passed. Processing remains unsupported.\n";
         return 0;

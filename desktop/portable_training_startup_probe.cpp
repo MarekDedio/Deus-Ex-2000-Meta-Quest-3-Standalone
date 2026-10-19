@@ -3,6 +3,7 @@
 #include "portable_engine_collision.h"
 #include "portable_object_lookup.h"
 #include "portable_retail_collision.h"
+#include "quest_native_work.h"
 #include "quest_runtime_script_packages.h"
 #include "quest_save_bundle.h"
 
@@ -143,7 +144,19 @@ struct Boundary {
             function==world.execution.function&&error==world.execution.error&&opcode==world.execution.opcode;
     }
 };
-int Run(const fs::path& root,const std::optional<std::string>& expected,unsigned repeats) {
+std::size_t NativeWorkLimit(std::string_view text) {
+    Require(!text.empty()&&text.size()<=20u,"Native-work allowance must be a bounded decimal integer");
+    std::size_t value{};
+    for(const char c:text){
+        Require(c>='0'&&c<='9',"Native-work allowance accepts decimal digits only");
+        const auto digit=static_cast<std::size_t>(c-'0');
+        Require(value<=(QuestVr::NativeWork::MaximumLimit-digit)/10u,
+            "Native-work allowance exceeds the portable maximum");
+        value=value*10u+digit;
+    }
+    QuestVr::NativeWork::ValidateLimit(value);return value;
+}
+int Run(const fs::path& root,const std::optional<std::string>& expected,unsigned repeats,std::size_t nativeWork) {
     Temporary temporary(root);std::vector<Source> sources;std::vector<PortablePackageTables> scripts;
     sources.reserve(QuestVr::RuntimeScriptPackages.size()+2u);scripts.reserve(QuestVr::RuntimeScriptPackages.size());
     for(const auto* name:QuestVr::RuntimeScriptPackages){sources.emplace_back(root/"System"/(std::string(name)+".u"));
@@ -202,6 +215,7 @@ int Run(const fs::path& root,const std::optional<std::string>& expected,unsigned
     PortableWorldStartupProbeOptions options;options.defaultGameClass="DeusEx.DeusExGameInfo";
     QuestVr::Vm::Limits limits;limits.instructions=4'000'000u;limits.nodes=1'048'576u;
     limits.writes=1'048'576u;limits.retainedBytes=128u<<20u;
+    limits.nativeWork=nativeWork;
     std::optional<Boundary> boundary;bool completed{};
     for(unsigned attempt=1u;attempt<=repeats;++attempt){
         const auto start=std::chrono::steady_clock::now();
@@ -213,7 +227,11 @@ int Run(const fs::path& root,const std::optional<std::string>& expected,unsigned
             <<" pc="<<world.execution.offset<<" opcode="<<static_cast<unsigned>(world.execution.opcode)
             <<" instructions="<<world.execution.instructions<<" writes="<<world.execution.writes
             <<" vmCommittedDisposition="<<world.execution.committed<<" error="<<world.execution.error<<'\n';
-        std::cout<<"HASH PREFIX initialized="<<result.collision.initialized<<" enabled="<<result.collision.enabled
+        Require(world.execution.nativeWork.has_value(),"Actual startup result omitted its final native-work ledger");
+        const auto usage=*world.execution.nativeWork;
+        Require(usage.limit==nativeWork&&usage.used<=usage.limit,"Startup reported an invalid or different native-work allowance");
+        std::cout<<"FINAL ROOT NATIVE WORK used="<<usage.used<<" limit="<<usage.limit<<" exhausted="<<usage.exhausted<<'\n';
+        std::cout<<"EARLY HASH PREFIX (NOT final root usage) initialized="<<result.collision.initialized<<" enabled="<<result.collision.enabled
             <<" actors="<<result.collision.actors.size()<<" links="<<result.collision.activeLinks
             <<" seed="<<result.collision.seed<<" tag="<<result.collision.tag
             <<" initializationDraws="<<result.collision.initializationDraws
@@ -247,16 +265,18 @@ int main(int argc,char** argv) {
     std::cout.setf(std::ios::unitbuf);
     try {
         fs::path root;std::optional<std::string> expected;unsigned repeats=1u;
+        std::size_t nativeWork=QuestVr::NativeWork::DefaultLimit;
         if(const auto* configured=std::getenv("DEUSEX_GAME_ROOT");configured&&*configured)root=configured;
         for(int i=1;i<argc;++i){const std::string_view option=argv[i];
             if((option=="--owned-source-root"||option=="--game-root")&&i+1<argc)root=argv[++i];
             else if(option=="--expected-error"&&i+1<argc){expected=argv[++i];Require(!expected->empty()&&expected->size()<=8192u,"Expected error must be nonempty and bounded");}
+            else if(option=="--native-work"&&i+1<argc)nativeWork=NativeWorkLimit(argv[++i]);
             else if(option=="--repeat"&&i+1<argc){const std::string_view number=argv[++i];
                 Require(number.size()==1u&&number[0]>='1'&&number[0]<='8',"Repeat count must be1..8");repeats=static_cast<unsigned>(number[0]-'0');}
-            else throw std::runtime_error("Usage: portable_training_startup_probe --owned-source-root OWNED_GAME_ROOT [--expected-error EXACT_TEXT] [--repeat 1..8]");}
+            else throw std::runtime_error("Usage: portable_training_startup_probe --owned-source-root OWNED_GAME_ROOT [--expected-error EXACT_TEXT] [--repeat 1..8] [--native-work 0..16777216]");}
         if(root.empty()){std::cout<<"SKIP owned first Training startup observation: use --owned-source-root or DEUSEX_GAME_ROOT.\n";return 77;}
         ShutdownPortableRuntime();GC::Collect();const auto before=GC::GetStats();
-        const auto result=Run(fs::canonical(root),expected,repeats);ShutdownPortableRuntime();GC::Collect();const auto after=GC::GetStats();
+        const auto result=Run(fs::canonical(root),expected,repeats,nativeWork);ShutdownPortableRuntime();GC::Collect();const auto after=GC::GetStats();
         Require(after.numObjects==before.numObjects&&after.memoryUsage==before.memoryUsage,"Startup observation retained native UObjects after shutdown");
         return result;
     }catch(const std::exception& error){std::cerr<<"FAIL startup observation/rollback/source check: "<<error.what()<<'\n';ShutdownPortableRuntime();return 1;}

@@ -169,6 +169,10 @@ struct Failure : std::runtime_error {
     Status status;
     Failure(Status s, const std::string& text) : std::runtime_error(text), status(s) {}
 };
+void ValidateRootNativeWork(const Limits& limits) {
+    if(limits.nativeWork>NativeWork::MaximumLimit)
+        throw Failure(Status::Invalid,"VM native work limit exceeds the portable maximum");
+}
 struct Node {
     std::uint8_t op{};
     std::uint8_t zeroFillSize{};
@@ -2302,9 +2306,10 @@ ProgramLayout AnalyzeProgram(Host& host, const Function& function, const Limits&
 Result Execute(Host& host, const Function& function, const std::string& self,
     const std::vector<Evaluation>& arguments, const Limits& limits) {
     Result result;
-    bool begun = false;
+    bool begun = false,entered = false;
     try {
-        host.Begin(); begun = true;
+        ValidateRootNativeWork(limits);
+        host.BeginRoot(limits); begun = entered = true;
         Machine machine(host, limits, result);
         result.value = machine.Run(function, self, arguments);
         machine.CheckFailure();
@@ -2319,12 +2324,15 @@ Result Execute(Host& host, const Function& function, const std::string& self,
         result.function.swap(successFunction);
     } catch (const Failure& error) {
         result.status = error.status; result.error = error.what();
+    } catch (const NativeWork::Exhausted& error) {
+        result.status = Status::Budget; result.error = error.what();
     } catch (const std::exception& error) {
         result.status = Status::Unsupported; result.error = error.what();
     } catch (...) {
         result.status = Status::Invalid; result.error = "Unknown VM execution failure";
     }
     if (begun) host.Rollback();
+    if (entered) result.nativeWork=host.ReadNativeWork();
     if (!result.passed()) result.value = {};
     return result;
 }
@@ -2332,9 +2340,10 @@ Result Execute(Host& host, const Function& function, const std::string& self,
 Result ExecuteTransaction(Host& host, const std::function<Value(Execution&)>& operation,
     const Limits& limits) {
     Result result;
-    bool begun{};
+    bool begun{},entered{};
     try {
-        host.Begin(); begun = true;
+        ValidateRootNativeWork(limits);
+        host.BeginRoot(limits); begun = entered = true;
         Machine machine(host, limits, result);
         if (!operation) throw Failure(Status::Invalid, "Missing VM transaction callback");
         try {
@@ -2354,21 +2363,25 @@ Result ExecuteTransaction(Host& host, const std::function<Value(Execution&)>& op
         machine.Accept(); result.committed = true; result.status = Status::Returned;
     } catch (const Failure& error) {
         result.status = error.status; result.error = error.what();
+    } catch (const NativeWork::Exhausted& error) {
+        result.status = Status::Budget; result.error = error.what();
     } catch (const std::exception& error) {
         result.status = Status::Unsupported; result.error = error.what();
     } catch (...) {
         result.status = Status::Invalid; result.error = "Unknown VM transaction failure";
     }
     if (begun) host.Rollback();
+    if (entered) result.nativeWork=host.ReadNativeWork();
     if (!result.passed()) result.value = {};
     return result;
 }
 
 Result ResumeState(Host& host, const std::string& self, const Limits& limits) {
     Result result;
-    bool begun{};
+    bool begun{},entered{};
     try {
-        host.Begin(); begun = true;
+        ValidateRootNativeWork(limits);
+        host.BeginRoot(limits); begun = entered = true;
         Machine machine(host, limits, result);
         result.value = machine.Resume(self);
         machine.CheckFailure();
@@ -2377,12 +2390,15 @@ Result ResumeState(Host& host, const std::string& self, const Limits& limits) {
         if (result.status != Status::Stopped && result.status != Status::Waiting) result.status = Status::Returned;
     } catch (const Failure& error) {
         result.status = error.status; result.error = error.what();
+    } catch (const NativeWork::Exhausted& error) {
+        result.status = Status::Budget; result.error = error.what();
     } catch (const std::exception& error) {
         result.status = Status::Unsupported; result.error = error.what();
     } catch (...) {
         result.status = Status::Invalid; result.error = "Unknown state execution failure";
     }
     if (begun) host.Rollback();
+    if (entered) result.nativeWork=host.ReadNativeWork();
     if (!result.passed()) result.value = {};
     return result;
 }
@@ -2392,9 +2408,10 @@ Result AdvanceState(Host& host, const std::string& self, const float elapsed, co
         result.status = Status::Invalid; result.error = "State elapsed time must be finite and nonnegative";
         return result;
     }
-    bool begun{};
+    bool begun{},entered{};
     try {
-        host.Begin(); begun = true;
+        ValidateRootNativeWork(limits);
+        host.BeginRoot(limits); begun = entered = true;
         Machine machine(host, limits, result);
         std::optional<std::string> selectedBeforePoll;
         const auto* object = host.ReadState(self);
@@ -2413,12 +2430,15 @@ Result AdvanceState(Host& host, const std::string& self, const float elapsed, co
         if (result.status != Status::Stopped && result.status != Status::Waiting) result.status = Status::Returned;
     } catch (const Failure& error) {
         result.status = error.status; result.error = error.what();
+    } catch (const NativeWork::Exhausted& error) {
+        result.status = Status::Budget; result.error = error.what();
     } catch (const std::exception& error) {
         result.status = Status::Unsupported; result.error = error.what();
     } catch (...) {
         result.status = Status::Invalid; result.error = "Unknown state polling failure";
     }
     if (begun) host.Rollback();
+    if (entered) result.nativeWork=host.ReadNativeWork();
     if (!result.passed()) result.value = {};
     return result;
 }

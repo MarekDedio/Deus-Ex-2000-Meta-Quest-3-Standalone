@@ -533,7 +533,8 @@ void SetterCoverage(const std::vector<Actor>& actors,const std::function<void()>
 #include "portable_retail_actor_move_cases.inl"
 #include "portable_actor_move_clock_cases.inl"
 #include "portable_core_rotator_add_cases.inl"
-void Run(const fs::path& root,bool movementOnly) {
+#include "portable_native_work_cases.inl"
+void Run(const fs::path& root,bool movementOnly,bool nativeWorkOnly) {
     Temporary temporary(root);std::vector<Source> sources;std::vector<PortablePackageTables> scripts;
     sources.reserve(QuestVr::RuntimeScriptPackages.size()+2u);scripts.reserve(QuestVr::RuntimeScriptPackages.size());
     for(const auto* name:QuestVr::RuntimeScriptPackages) {
@@ -574,6 +575,13 @@ void Run(const fs::path& root,bool movementOnly) {
     };
     rollback();
     CoreRotatorAddCoverage(rollback);
+    if(nativeWorkOnly){
+        NativeWorkCoverage(map,temporary);
+        for(const auto& source:sources)source.Unchanged();
+        lifetime->Revoke();ClearPortableRuntimeClient();
+        std::cout<<"PASS focused actual first Training native-work controls; not full startup or playable physics.\n";
+        return;
+    }
     if(movementOnly){
         ActorMoveCoverage(map,actors,rollback);
         AnimatedActorMoveRollback(temporary);
@@ -676,6 +684,10 @@ void Run(const fs::path& root,bool movementOnly) {
         world.execution.offset==198u&&world.execution.opcode==49u&&
         world.execution.error=="Native actor lifecycle work budget exceeded",
         "First Training startup boundary changed: inspect real evidence before updating this pin");
+    Require(world.execution.status==QuestVr::Vm::Status::Budget&&world.execution.nativeWork&&
+        world.execution.nativeWork->used==QuestVr::NativeWork::DefaultLimit&&
+        world.execution.nativeWork->limit==QuestVr::NativeWork::DefaultLimit&&world.execution.nativeWork->exhausted,
+        "Default Training startup did not preserve the exact shared native-work allowance/classification");
     for(const auto phase:{PortableWorldStartupPhase::PreBeginPlay,PortableWorldStartupPhase::BeginPlay,
         PortableWorldStartupPhase::SetActorZone,PortableWorldStartupPhase::LastRenderTime})
         Require(world.visited[static_cast<std::size_t>(phase)]==1333u,
@@ -743,6 +755,7 @@ void Run(const fs::path& root,bool movementOnly) {
     AnimatedActorZoneRollback(temporary);
     AnimatedActorMoveRollback(temporary);
     CommittedAnimatedActorMove(temporary);
+    NativeWorkCoverage(map,temporary);
     for(const auto& source:sources)source.Unchanged();
     lifetime->Revoke();ClearPortableRuntimeClient();
     std::cout<<"PASS first Training only:38 exact Quest source packages, "<<actors.size()<<" actual native-slot actors, "
@@ -755,12 +768,13 @@ void Run(const fs::path& root,bool movementOnly) {
 int main(int argc,char** argv) {
     std::cout.setf(std::ios::unitbuf);
     try {
-        fs::path root;bool movementOnly{};if(const auto* configured=std::getenv("DEUSEX_GAME_ROOT");configured&&*configured)root=configured;
+        fs::path root;bool movementOnly{},nativeWorkOnly{};if(const auto* configured=std::getenv("DEUSEX_GAME_ROOT");configured&&*configured)root=configured;
         for(int i=1;i<argc;++i) {
             const std::string_view option=argv[i];
             if((option=="--owned-source-root"||option=="--game-root")&&i+1<argc)root=argv[++i];
             else if(option=="--movement-only")movementOnly=true;
-            else throw std::runtime_error("Usage: portable_retail_collision_test [--owned-source-root OWNED_GAME_ROOT] [--movement-only] (or DEUSEX_GAME_ROOT)");
+            else if(option=="--native-work-only")nativeWorkOnly=true;
+            else throw std::runtime_error("Usage: portable_retail_collision_test [--owned-source-root OWNED_GAME_ROOT] [--movement-only | --native-work-only] (or DEUSEX_GAME_ROOT)");
         }
         if(root.empty()) {std::cout<<"SKIP owned first Training retail collision: use --owned-source-root or DEUSEX_GAME_ROOT.\n";return 77;}
         ShutdownPortableRuntime();GC::Collect();const auto gc=GC::GetStats();
@@ -769,7 +783,8 @@ int main(int argc,char** argv) {
         Require(!absent.available&&!absent.execution.passed()&&!absent.execution.committed&&
             !absentStartup.world.execution.passed()&&!absentStartup.collision.initialized&&
             !ReadPortableRuntimeRetailCollision().initialized,"No-runtime collision diagnostic did not refuse safely");++refusals;
-        Run(fs::canonical(root),movementOnly);
+        Require(!(movementOnly&&nativeWorkOnly),"Choose only one focused first-Training test mode");
+        Run(fs::canonical(root),movementOnly,nativeWorkOnly);
         ShutdownPortableRuntime();GC::Collect();SameGc(gc,"Retail collision test leaked rooted native UObjects after shutdown");
         std::cout<<"PASS retail collision integration "<<checks<<" checks / "<<refusals<<" explicit refusals\n";return 0;
     }catch(const std::exception& error) {std::cerr<<"FAIL: "<<error.what()<<'\n';ShutdownPortableRuntime();return 1;}
