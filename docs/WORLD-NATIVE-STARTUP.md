@@ -240,7 +240,7 @@ refuse unsupported branches. Its rollback controls prove only that supported
 prefix; they do not convert legacy script Spawn approximations into GOTY-native
 behavior or make an incomplete world safe to publish.
 
-## Root PointRegion traversal and current defects
+## Root PointRegion traversal and prior defects
 
 UModel thunk `0x1030391d` reaches body `0x103f5db0`--`0x103f5f38`.
 Fallback is the nonnull caller-provided LevelInfo, leaf `-1`, zone number0.
@@ -264,13 +264,20 @@ distinct. Nonfinite points, cyclic/malformed indexes and allocation/work budgets
 need explicit portable refusals; this audit does not import native unchecked
 memory access or prove x87 rounding equivalence at nearly coplanar points.
 
-The portable Region code inspected before the pending correction had four
+The portable Region code inspected before the initial correction had four
 specific mismatches: leaf0 used with zone1 and leaf1 with zone0; equality could
 take the opposite child; empty BSP leaf initialized0; LevelInfo receiver had
 no slot0 special case. It also selected fallback by a class scan rather than
 the native slot0 identity. Generated tests should isolate each mismatch using
 actual serialized UModel/ULevel data, including an intentionally misleading
 secondary LevelInfo and overridden reflected Level binding.
+
+The subsequent numeric/cache correction is implemented and independently
+tested in ORIGINAL-MODEL-POINT-REGION.md. It removes the later Float X/Y/Z
+arithmetic loop, retains PC64 Z/Y/X comparison without a distance spill and
+uses the current loader-owned native Model/cache rather than a second root
+selection. That PointRegion query is not the complete movement-time
+SetActorZone coordinator or accepted original world startup.
 
 ## FindBase is not an overlap query or direct SetBase
 

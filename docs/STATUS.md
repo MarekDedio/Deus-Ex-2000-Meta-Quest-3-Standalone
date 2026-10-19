@@ -20,7 +20,34 @@ usable contents and support/falling. See TRAINING-FIRST-PRIORITY.md.
   playable-physics capability. See ORIGINAL-ENGINE-DEFAULT-LINK.md. Live crate
   destruction, usable loot and gravity remain unfinished.
 
-## Current first Training higher movement prerequisites (2026-10-19)
+## First Training region-query correction (2026-10-19)
+
+The runtime Region lookup now uses the original retained-PC64 Z/Y/X BSP query
+and the actual loader-owned native Model/cache. It no longer rounds that path
+through Float X/Y/Z arithmetic or selects a second root Model. Exact equality,
+empty BSP, terminal leaves, null zone-slot fallback and bounded active paths
+remain distinct. Qualified Actor.Location prevents leaf-name shadowing.
+
+The independent query test passes201293 checks/35 explicit refusals,52106
+hardware-x87 comparisons,12000 multilevel paths and96 Float/10 Double
+cancellation witnesses. Strict ARM64 runtime/tests, coherent host build and
+Android native link pass; CTest146 executed/170 registered,24 explicit
+owned-data skips and no failures in34.74s on the final cold-cache-guard rerun
+(51.11s before that assertion). The final actual first-map suite passes1043599
+checks/68 explicit refusals. All1308 actor Region tuples agree with a separate
+source/hardware-x87 oracle on cold and warm/GC passes:43442 node visits,
+2566 fallback/50 assigned zone tuples and seven zone numbers. Complete
+save/revision/lookup/client/hash/RNG/GC rollback and source immutability pass.
+Startup still stops at DeusExMover16/Engine.Mover.BeginPlay PC166, unsupported
+native266. This is not movement-time
+SetActorZone, native Move, startup or live crate/gravity/loot acceptance.
+No other real map and no replacement APK is included. See
+ORIGINAL-MODEL-POINT-REGION.md. The next complete static movement-zone audit
+pins live postcallback head/foot sampling, interleaved force-reset fields and
+PRI tail reads without implementing an alternative coordinator; see
+ORIGINAL-MOVEMENT-ZONE.md.
+
+## Earlier first Training higher movement prerequisites (2026-10-19)
 
 The complete detached Level.CheckEncroachment protocol and the original
 MoveActor prequery/backoff numeric service are implemented. The higher protocol

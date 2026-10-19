@@ -54,6 +54,7 @@
 #include "quest_model_point_line_hit.h"
 #include "quest_actor_point_check.h"
 #include "quest_model_point_overlap.h"
+#include "quest_model_point_region.h"
 #include "quest_native_actor_pose.h"
 #include "quest_native_scratch_scope.h"
 #include "quest_actor_blocking.h"
@@ -9412,42 +9413,23 @@ private:
             result.fields.at("zonenumber") = Value::Byte(0u);
             return result;
         }
-        if (!rootModel_) rootModel_ = LoadPortableRootModel68(Table(object->sourcePath));
-        auto location = Read(object, PropertyNamed(object, "Location"), 0u);
+        // Use the loader's native XLevel.Model and its generation-checked
+        // immutable cache, not a separately selected render/root Model.
+        const auto& model=NativeTraceModel(object);
+        // The same qualified Core.Vector layout admission as FastTrace's
+        // default prevents a subclass's leaf-name Location from taking over.
+        auto location = FastTraceStartSeed(object);
         location.vector[2] += verticalOffset;
-        if (location.kind != Kind::Vector || !std::isfinite(location.vector[0]) ||
-            !std::isfinite(location.vector[1]) || !std::isfinite(location.vector[2]))
-            throw std::runtime_error("Actor.Region has an invalid location");
-        std::uint32_t zone{}; std::int32_t leaf{-1};
-        if (!rootModel_->nodes.empty()) {
-            std::int32_t current{}; bool terminal{};
-            for (std::size_t steps = 0u; steps <= rootModel_->nodes.size(); ++steps) {
-                if (current < 0 || static_cast<std::size_t>(current) >= rootModel_->nodes.size())
-                    throw std::runtime_error("Actor.Region BSP reference out of range");
-                const auto& node = rootModel_->nodes[static_cast<std::size_t>(current)];
-                const float side = location.vector[0]*node.planeX + location.vector[1]*node.planeY +
-                    location.vector[2]*node.planeZ - node.planeW;
-                // Equality selects side1. If that child is absent the original
-                // stops here; it never falls through to the other child.
-                const bool front = side >= 0.0f;
-                const auto child = front ? node.front : node.back;
-                if (child >= 0) current = child;
-                else {
-                    zone = static_cast<std::uint32_t>(front ? node.zone1 : node.zone0);
-                    leaf = front ? node.leaf1 : node.leaf0; terminal = true; break;
-                }
-            }
-            if (!terminal) throw std::runtime_error("Actor.Region BSP traversal budget exceeded");
-        }
-        if (rootModel_->zones.empty()) zone = 0u;
-        if (zone >= 64u) throw std::runtime_error("Actor.Region zone number out of range");
+        const auto region=QuestVr::QueryOriginalModelPointRegion(model,
+            {location.vector[0u],location.vector[1u],location.vector[2u]},
+            std::min<std::size_t>(model.nodes.size(),65'536u),[this]{LifecycleStep();});
         RuntimeObject* zoneObject{};
-        if (zone < rootModel_->zones.size() && rootModel_->zones[zone].actorReference != 0)
-            zoneObject = Object(Qualified(Table(object->sourcePath), rootModel_->zones[zone].actorReference));
+        if (region.zoneActorReference != 0)
+            zoneObject = Object(Qualified(Table(object->nativeXLevel->nativeLevelModel->sourcePath),region.zoneActorReference));
         if (zoneObject == nullptr) zoneObject = levelInfo;
         Value result = zero;
         result.fields["zone"] = Value::Text(Kind::Object, zoneObject->reflection.objectPath);
-        result.fields["ileaf"] = Value::Integer(leaf); result.fields["zonenumber"] = Value::Byte(static_cast<std::uint8_t>(zone));
+        result.fields["ileaf"] = Value::Integer(region.leaf); result.fields["zonenumber"] = Value::Byte(region.zoneNumber);
         return result;
     }
 };

@@ -527,6 +527,7 @@ void SetterCoverage(const std::vector<Actor>& actors,const std::function<void()>
 #include "portable_retail_encroachment_cases.inl"
 #include "portable_retail_actor_blocking_cases.inl"
 #include "portable_retail_actor_touch_cases.inl"
+#include "portable_model_point_region_cases.inl"
 void Run(const fs::path& root) {
     Temporary temporary(root);std::vector<Source> sources;std::vector<PortablePackageTables> scripts;
     sources.reserve(QuestVr::RuntimeScriptPackages.size()+2u);scripts.reserve(QuestVr::RuntimeScriptPackages.size());
@@ -567,6 +568,7 @@ void Run(const fs::path& root) {
             "Retail collision diagnostic published dormant world/save/lookup/client state");
     };
     rollback();
+    ModelPointRegionCoverage(map,actors,rollback);
     for(const auto& commands:std::vector<std::vector<Command>>{{},std::vector<Command>(17u),
         {Command{static_cast<Operation>(999)}},{Command{Operation::Enable},Command{static_cast<Operation>(999)}}}) {
         const auto rejected=ProbePortableRuntimeRetailCollision(commands);

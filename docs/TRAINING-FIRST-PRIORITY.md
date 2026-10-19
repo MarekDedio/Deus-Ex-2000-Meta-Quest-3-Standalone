@@ -154,3 +154,21 @@ The rebuilt exact38-source first-map regression passes951463 checks/68 explicit
 refusals with complete rollback/source immutability. The startup boundary stays
 at DeusExMover16/Engine.Mover.BeginPlay PC166, unsupported native266; the new
 detached components are not falsely reported as executed through that call.
+
+The next shared correction replaces Region's approximate Float BSP lookup with
+the original retained-PC64 PointRegion query and the current loader-owned Model
+cache. Its independent numeric/path suite passes201293 checks/35 refusals,
+including52106 hardware-x87 comparisons,12000 multilevel paths and explicit
+Float/Double cancellation witnesses. Host/strict ARM64/Android native builds
+and coherent CTest146 executed/170 registered pass (24 owned-data skips,
+zero failures). Actual map coverage remains ONLY first Training; no other-map
+integration or APK is added. Complete movement-time SetActorZone, native Move,
+startup, support/falling and surviving usable contents still remain. See
+ORIGINAL-MODEL-POINT-REGION.md.
+The final rebuilt38-package first-map suite passes1043599 checks/68 refusals;
+all1308 actors' regions agree on explicit cold and warm/GC passes with43442
+independent source/hardware-x87 node visits. Full rollback/source immutability
+pass and the startup native266 boundary is unchanged. Final coherent CTest
+completes146 executed/170 registered with24 owned-data skips and zero failures.
+The full movement-time zone event/store audit is in ORIGINAL-MOVEMENT-ZONE.md;
+it is not an implemented provider or playable-physics claim.
