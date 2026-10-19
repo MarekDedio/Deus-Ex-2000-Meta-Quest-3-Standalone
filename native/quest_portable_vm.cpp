@@ -48,6 +48,7 @@ bool SnapshotNativeInput(const std::uint16_t index, const Function* declaration 
     case 512: return true; // MakeNoise consumes its initialized Loudness Float during Step.
     case 280: return true; // SetTimer copies rate before evaluating bLoop.
     case 262: case 283: return true; // Collision setters consume each Bool/Float before the next Step.
+    case 316: return true; // Original Core copies Rotator A before evaluating B.
     case 1410: case 1415: case 1416: case 1420: case 1421: case 1422: case 1430: case 1431: case 1432: case 1433: case 1438: case 1454: case 1461: case 1467:
     case 1475: case 1477: case 1510: case 1511: case 1535: case 1538: case 1539: case 1540:
     case 1541: case 1544: case 1545:
@@ -1311,6 +1312,11 @@ private:
     }
     void ValidateResultLayout(const Value& value, const ResultLayout layout) {
         if (layout==ResultLayout::Unknown) return;
+        if (layout==ResultLayout::CoreRotator12) {
+            if (value.kind!=Kind::Rotator || !value.text.empty() || !value.fields.empty() || !value.intArray.empty())
+                Fail(Status::Invalid,"VM CoreRotator12 destination is not canonical Rotator storage");
+            return; // All signed32 channel words are legitimate; no angle mask.
+        }
         if (layout==ResultLayout::CoreVector12) {
             if (value.kind!=Kind::Vector || !value.text.empty() || !value.fields.empty() || !value.intArray.empty())
                 Fail(Status::Invalid,"VM CoreVector12 destination is not canonical Vector storage");
@@ -1514,13 +1520,22 @@ private:
         if (count>limits_.arguments) Fail(Status::Budget,"VM uninitialized native argument count limit");
         std::vector<std::optional<ResultLayout>> layouts;
         for (std::size_t slot=0u;slot<count;++slot) {
-            const auto layout=ReadOnlyNativeSeedOperation([&] {
+            auto layout=ReadOnlyNativeSeedOperation([&] {
                 return host_.NativeArgumentUninitializedLayout(index,receiver,slot,declaration);
             });
+            if(index==316u && slot<2u) {
+                // This builtin's original two stack12 destinations have NO
+                // initialized bytes. Enforce that fact even for a generic Host
+                // so a reflected parameter zero cannot seed NoWrite in Eval.
+                // The runtime hook separately authenticates real Core.u fields.
+                if(layout && *layout!=ResultLayout::CoreRotator12)
+                    Fail(Status::Invalid,"VM rotator addition has a conflicting native input layout");
+                layout=ResultLayout::CoreRotator12;
+            }
             if (!layout) continue;
             if (*layout==ResultLayout::Unknown)
                 Fail(Status::Unsupported,"VM uninitialized native argument layout is not established");
-            if (*layout!=ResultLayout::CoreColor4 && *layout!=ResultLayout::CoreVector12)
+            if (*layout!=ResultLayout::CoreColor4 && *layout!=ResultLayout::CoreVector12 && *layout!=ResultLayout::CoreRotator12)
                 Fail(Status::Invalid,"VM unknown uninitialized native argument layout");
             if (parameters && slot<parameters->size() && (*parameters)[slot].resultLayout!=*layout)
                 Fail(Status::Invalid,"VM uninitialized native argument declaration layout mismatch");
@@ -1537,7 +1552,7 @@ private:
         return layouts;
     }
     Evaluation MaterializeUninitializedNativeArgument(const Evaluation& argument,const ResultLayout layout) {
-        if (layout!=ResultLayout::CoreColor4 && layout!=ResultLayout::CoreVector12)
+        if (layout!=ResultLayout::CoreColor4 && layout!=ResultLayout::CoreVector12 && layout!=ResultLayout::CoreRotator12)
             Fail(Status::Unsupported,"VM uninitialized native argument layout is not established");
         Value value;
         if (argument.disposition==ResultDisposition::Written) {
@@ -1546,10 +1561,11 @@ private:
             }
             value=argument.Load();ValidateValue(value,0);ValidateResultLayout(value,layout);
         } else if (argument.disposition==ResultDisposition::ZeroFill &&
-            argument.zeroFillBytes==(layout==ResultLayout::CoreVector12?12u:4u)) {
+            argument.zeroFillBytes==(layout==ResultLayout::CoreColor4?4u:12u)) {
             // Construct storage only AFTER a complete full-layout write is known.
             // No declared zero or arbitrary seed initializes an unwritten temp.
             if (layout==ResultLayout::CoreVector12) value=Value::Vector({});
+            else if (layout==ResultLayout::CoreRotator12) value=Value::Rotator({});
             else {
                 value.kind=Kind::Struct;
                 for (const auto* channel:{"r","g","b","a"}) value.fields.emplace(channel,Value::Byte(0u));
@@ -1582,12 +1598,18 @@ private:
         default:return std::nullopt;
         }
     }
-    Evaluation Eval(Frame& frame, const Node& n, const std::string& context) {
+    // Native316 supplies a private by-value result destination. Address keeps
+    // lvalue/element capabilities while walking its address expressions; Copy
+    // reads the final source exactly once and detaches before the next Step.
+    // All unrelated expression paths retain their existing validation mode.
+    enum class EvalRead { Validate, Copy, Address };
+    Evaluation Eval(Frame& frame, const Node& n, const std::string& context,
+        EvalRead readMode=EvalRead::Validate) {
         ActiveFunctionScope activeFunction(activeFunction_,frame.function);
         Step(frame.function, n.offset, n.op);
         Evaluation result;
-        const auto child = [&](std::size_t i) {
-            auto value = Eval(frame, n.children.at(i), context);
+        const auto child = [&](std::size_t i,EvalRead childMode=EvalRead::Validate) {
+            auto value = Eval(frame, n.children.at(i), context,childMode);
             Locate(frame.function, n.offset, n.op);
             return value;
         };
@@ -1649,7 +1671,8 @@ private:
                     RetainNativeSeedCapacity(*sequentialSeed);
                     if (i<parameters.size()) ValidateResultLayout(*sequentialSeed,parameters[i].resultLayout);
                 }
-                auto argument = Eval(frame, n.children[i], frame.self);
+                auto argument = Eval(frame, n.children[i], frame.self,
+                    nativeCall&&index==316u?EvalRead::Copy:EvalRead::Validate);
                 // Preserve ordinary optional markers. Audited initialized
                 // wrappers instead consume Nothing at this exact Step, so a
                 // later argument cannot retroactively change this default.
@@ -1805,7 +1828,13 @@ private:
             case 0x12: {
                 // The selector uses FFrame.Object, exactly once; the child uses
                 // a distinct default-block receiver while retaining the frame.
-                const auto selected=Eval(frame,n.children.at(0),frame.self).Load();
+                const auto selector=Eval(frame,n.children.at(0),frame.self,
+                    readMode==EvalRead::Validate?EvalRead::Validate:EvalRead::Copy);
+                // Retail1012EDD1/EDD8 initializes the class-selector pointer
+                // to None before Step. A copied NoWrite result does not make
+                // its stale detached payload a defined object identity.
+                const auto selected=readMode==EvalRead::Validate?selector.Load():
+                    ResultValue(selector,Value::Text(Kind::Object,{}));
                 Locate(frame.function,n.offset,n.op);
                 if (selected.kind!=Kind::Object && selected.kind!=Kind::Nothing) TypeError();
                 if (selected.text.empty()) {
@@ -1818,7 +1847,7 @@ private:
                     Lower(receiver)==Lower(selected.text))
                     Fail(Status::Invalid,"VM ClassContext host returned an invalid default-object identity");
                 if (receiver.size()>limits_.stringBytes) Fail(Status::Budget,"VM class-default identity byte limit");
-                result=Eval(frame,n.children.at(1),receiver);
+                result=Eval(frame,n.children.at(1),receiver,readMode);
                 break;
             }
             case 0x13: case 0x2e: {
@@ -1835,7 +1864,11 @@ private:
                 break;
             }
             case 0x19: {
-                const auto object = child(0).Load();
+                const auto selector=child(0,readMode==EvalRead::Validate?EvalRead::Validate:EvalRead::Copy);
+                // Retail101300D9/E0 likewise seeds the ordinary Context
+                // object pointer with None, not a provider's stale payload.
+                const auto object=readMode==EvalRead::Validate?selector.Load():
+                    ResultValue(selector,Value::Text(Kind::Object,{}));
                 Locate(frame.function, n.offset, n.op);
                 if (object.kind != Kind::Object && object.kind != Kind::Nothing) TypeError();
                 if (object.text.empty()) {
@@ -1843,10 +1876,10 @@ private:
                     result.zeroFillBytes=n.zeroFillSize;
                     break;
                 }
-                result = Eval(frame, n.children.at(1), object.text); break;
+                result = Eval(frame, n.children.at(1), object.text,readMode); break;
             }
             case 0x17: result.value = Value::Text(Kind::Object, context); break;
-            case 0x18: result = child(0); break;
+            case 0x18: result = child(0,readMode); break;
             case 0x2d: {
                 const auto variable=child(0);
                 // BoolVariable evaluates its child with nil Result, using only
@@ -1858,8 +1891,14 @@ private:
             case 0x1a: {
                 // Retail uses FFrame.Object for the index but the incoming
                 // opcode receiver for the array's reflected address.
-                const auto index = ToInt(Eval(frame,n.children.at(0),frame.self).Load());
-                auto array = child(1);
+                const auto indexResult=Eval(frame,n.children.at(0),frame.self,
+                    readMode==EvalRead::Validate?EvalRead::Validate:EvalRead::Copy);
+                // Retail1012EFB2 seeds this INT destination with0 before
+                // Step. The audited little-endian partial-clear protocol is
+                // valid for that scalar, never for an object pointer above.
+                const auto index=ToInt(readMode==EvalRead::Validate?indexResult.Load():
+                    ResultValue(indexResult,Value::Integer(0),ResultLayout::Unknown,true));
+                auto array = child(1,readMode==EvalRead::Validate?EvalRead::Validate:EvalRead::Address);
                 Locate(frame.function, n.offset, n.op);
                 if (!array.reference && array.disposition!=ResultDisposition::Written) {
                     result.disposition=ResultDisposition::NoWrite;
@@ -1889,9 +1928,12 @@ private:
             }
             case 0x36: {
                 const auto p = host_.ResolveProperty(frame.function, n.reference);
-                auto parent = child(0); const auto v = parent.Load();
+                auto parent = child(0,readMode==EvalRead::Validate?EvalRead::Validate:EvalRead::Address);
                 Locate(frame.function, n.offset, n.op);
-                result.value = MemberValue(v, p.name);
+                if(readMode!=EvalRead::Validate && parent.disposition!=ResultDisposition::Written){
+                    result.disposition=ResultDisposition::NoWrite;break;
+                }
+                if(!parent.reference || readMode==EvalRead::Validate)result.value=MemberValue(parent.Load(),p.name);
                 if (parent.reference) {
                     auto ref = std::make_shared<Reference>(); ref->zero = p.zero;
                     ref->resultLayout = p.resultLayout;
@@ -1913,10 +1955,18 @@ private:
             result.disposition==ResultDisposition::Written)
             result.disposition=ResultDisposition::NoWrite;
         if (!result.reference) ValidateValue(result.value, 0);
-        else {
+        else if(readMode!=EvalRead::Validate && result.disposition!=ResultDisposition::Written) {
+            // No result bytes were copied from this alias. In particular,
+            // never read a stale attached reference for NoWrite/ZeroFill.
+            result.reference.reset();
+        } else if(readMode==EvalRead::Address) {
+            ValidateValue(result.reference->zero,0);
+            ValidateResultLayout(result.reference->zero,result.reference->resultLayout);
+        } else {
             const auto value=result.Load();ValidateValue(value, 0);
             ValidateResultLayout(result.reference->zero,result.reference->resultLayout);
             ValidateResultLayout(value,result.reference->resultLayout);
+            if(readMode==EvalRead::Copy){result.value=value;result.reference.reset();}
         }
         return result;
     }
@@ -1946,6 +1996,18 @@ private:
             return v.vector;
         };
         switch (index) {
+        case 316: {
+            // Core.dll10139AD0..10139B43: two copied, fully written Rotators;
+            // plain wrapping32-bit ADDs, then Pitch/Yaw/Roll result stores.
+            count(2);const auto first=a(0u),second=a(1u);
+            ValidateResultLayout(first,ResultLayout::CoreRotator12);
+            ValidateResultLayout(second,ResultLayout::CoreRotator12);
+            std::array<std::int32_t,3u> out;
+            for(std::size_t channel=0u;channel<out.size();++channel)
+                out[channel]=std::bit_cast<std::int32_t>(std::bit_cast<std::uint32_t>(first.rotation[channel])+
+                    std::bit_cast<std::uint32_t>(second.rotation[channel]));
+            return {Value::Rotator(out),{}};
+        }
         case 129: count(1); return {Value::Bool(!ToBool(a(0))), {}};
         case 130: count(2); return {Value::Bool(ToBool(a(0)) && ToBool(a(1))), {}};
         case 131: count(2); return {Value::Bool(ToBool(a(0)) != ToBool(a(1))), {}};

@@ -532,6 +532,7 @@ void SetterCoverage(const std::vector<Actor>& actors,const std::function<void()>
 #include "portable_actor_zone_cases.inl"
 #include "portable_retail_actor_move_cases.inl"
 #include "portable_actor_move_clock_cases.inl"
+#include "portable_core_rotator_add_cases.inl"
 void Run(const fs::path& root,bool movementOnly) {
     Temporary temporary(root);std::vector<Source> sources;std::vector<PortablePackageTables> scripts;
     sources.reserve(QuestVr::RuntimeScriptPackages.size()+2u);scripts.reserve(QuestVr::RuntimeScriptPackages.size());
@@ -572,6 +573,7 @@ void Run(const fs::path& root,bool movementOnly) {
             "Retail collision diagnostic published dormant world/save/lookup/client state");
     };
     rollback();
+    CoreRotatorAddCoverage(rollback);
     if(movementOnly){
         ActorMoveCoverage(map,actors,rollback);
         AnimatedActorMoveRollback(temporary);
@@ -669,11 +671,15 @@ void Run(const fs::path& root,bool movementOnly) {
         startup.collision.seed==first.seed&&startup.collision.levelPath==native.levelPath&&
         startup.collision.actors.size()==actors.size()&&!world.execution.passed()&&!world.execution.committed&&
         !world.execution.error.empty(),"Enhanced startup did not capture the actual hash prefix before its next unsupported native");
-    Require(world.phase==PortableWorldStartupPhase::BeginPlay&&world.actorSlot==126u&&
-        world.actorPath=="00_Training.DeusExMover16"&&world.execution.function=="Engine.Mover.BeginPlay"&&
-        world.execution.offset==197u&&world.execution.opcode==97u&&
-        world.execution.error=="Unsupported runtime native 316",
+    Require(world.phase==PortableWorldStartupPhase::PostBeginPlay&&world.actorSlot==134u&&
+        world.actorPath=="00_Training.DeusExMover49"&&world.execution.function=="Engine.Mover.FindTriggerActor"&&
+        world.execution.offset==198u&&world.execution.opcode==49u&&
+        world.execution.error=="Native actor lifecycle work budget exceeded",
         "First Training startup boundary changed: inspect real evidence before updating this pin");
+    for(const auto phase:{PortableWorldStartupPhase::PreBeginPlay,PortableWorldStartupPhase::BeginPlay,
+        PortableWorldStartupPhase::SetActorZone,PortableWorldStartupPhase::LastRenderTime})
+        Require(world.visited[static_cast<std::size_t>(phase)]==1333u,
+            "Actual first Training did not finish all original BeginPlay/zone/last-render setup slots");
     for(const auto& actual:startup.collision.actors){
         const auto prior=std::find_if(actors.begin(),actors.end(),[&](const auto& a){return a.path==actual.path;});
         if(prior!=actors.end()&&(prior->location!=actual.location||prior->colLocation!=actual.colLocation||prior->tag!=actual.tag))

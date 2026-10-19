@@ -4181,8 +4181,16 @@ public:
     }
     void NativeCoordsRotatorSchema(RuntimeObject* field) {
         auto* structure=NativeCoordsStruct(field,"core.object.rotator");
+        NativeCoordsRotatorTypeSchema(structure);
+    }
+    void NativeCoordsRotatorTypeSchema(RuntimeObject* structure) {
+        if(!structure || LowerAscii(structure->reflection.objectPath)!="core.object.rotator" ||
+            LowerAscii(Qualified(Table(structure->sourcePath),Table(structure->sourcePath).exports.at(structure->exportIndex).ObjClass))!="core.struct")
+            throw std::runtime_error("Native Rotator layout is not the actual canonical Core.Struct");
         const auto schema=StructSchema(structure);const auto& declaration=StructDescriptor(structure);
-        if(schema->kind!=Kind::Rotator || schema->fields.size()!=3u)
+        if(!structure->outer || LowerAscii(structure->outer->reflection.objectPath)!="core.object" ||
+            declaration.baseField || declaration.logicalSize || !declaration.rawBytes.empty() || !declaration.bytecode.empty() ||
+            schema->kind!=Kind::Rotator || schema->fields.size()!=3u)
             throw std::runtime_error("Native ToWorld Rotator is not three original Int fields");
         constexpr std::array<const char*,3u> names{"pitch","yaw","roll"};auto child=declaration.children;
         for(std::size_t i=0u;i<names.size();++i) {
@@ -4574,6 +4582,7 @@ public:
     #include "portable_actor_move_pose.inl"
     #include "portable_actor_move.inl"
     #include "portable_actor_move_probe.inl"
+    #include "portable_core_rotator_add.inl"
     void RequireIndexedPrimitiveDiagnosticOwner(RuntimeObject* owner) {
         RequireMapActor(owner);
         if(owner->worldActorIndex<0 || static_cast<std::size_t>(owner->worldActorIndex)>=persistentWorldActors.size() ||
@@ -4757,6 +4766,11 @@ public:
     }
     std::optional<QuestVr::Vm::ResultLayout> NativeArgumentUninitializedLayout(const std::uint16_t index,
         const std::string& receiver,const std::size_t slot,const Function* declaration) override {
+        if(index==316u) {
+            static_cast<void>(CoreRotatorAddDeclaration(declaration));
+            if(slot>=2u)throw std::runtime_error("Original rotator addition input exceeds its two native temporaries");
+            return QuestVr::Vm::ResultLayout::CoreRotator12;
+        }
         if (index==548u) {
             RequireMapActor(Object(receiver));
             static_cast<void>(FastTraceDeclaration(declaration));
@@ -7861,6 +7875,7 @@ private:
     std::set<RuntimeObject*> chargedStructDescriptors_;
     RuntimeObject* validatedCoreColorLayout_{};
     RuntimeObject* validatedCoreVectorLayout_{};
+    RuntimeObject* validatedCoreRotatorLayout_{};
     std::size_t structFields_{};
     std::size_t structSchemaBytes_{};
     std::unordered_map<RuntimeObject*, Before> saved_;
@@ -8078,6 +8093,15 @@ private:
         const auto& member = *property->property;
         if (member.type != "StructProperty") return Layout::Unknown;
         auto* structure = Object(Qualified(Table(property->sourcePath), member.referencedType));
+        if(LowerAscii(structure->reflection.objectPath)=="core.object.rotator") {
+            const auto& propertyTable=Table(property->sourcePath);
+            if(LowerAscii(Qualified(propertyTable,propertyTable.exports.at(property->exportIndex).ObjClass))!="core.structproperty")
+                throw std::runtime_error("Canonical Rotator result requires an actual Core.StructProperty");
+            // Capability is per ELEMENT; authored KeyRot[8] must not be
+            // confused with one scalar native input or rejected as such.
+            if(validatedCoreRotatorLayout_!=structure){NativeCoordsRotatorTypeSchema(structure);validatedCoreRotatorLayout_=structure;}
+            return Layout::CoreRotator12;
+        }
         if (LowerAscii(structure->reflection.objectPath)=="core.object.vector") {
             const auto& propertyTable=Table(property->sourcePath);
             if (LowerAscii(Qualified(propertyTable,propertyTable.exports.at(property->exportIndex).ObjClass))!="core.structproperty")

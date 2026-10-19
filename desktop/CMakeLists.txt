@@ -35,6 +35,16 @@ foreach(OBJECT_HELPER quest_object_names quest_object_indices quest_engine_confi
     add_test(NAME ${OBJECT_HELPER} COMMAND ${OBJECT_HELPER}_test)
 endforeach()
 
+# Observation tool, deliberately not a CTest acceptance result. Exit2 means
+# a safely rolled-back first-Training startup boundary, not a passing startup.
+add_executable(portable_training_startup_probe portable_training_startup_probe.cpp)
+target_compile_features(portable_training_startup_probe PRIVATE cxx_std_20)
+target_link_libraries(portable_training_startup_probe PRIVATE quest_portable_host)
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+    target_compile_options(portable_training_startup_probe PRIVATE -Wall -Wextra -Werror)
+    target_link_options(portable_training_startup_probe PRIVATE -static -static-libgcc -static-libstdc++)
+endif()
+
 foreach(BRUSH_TEST quest_brush_coords quest_brush_rotation quest_brush_builder quest_original_sine_table)
     add_executable(${BRUSH_TEST}_test ${BRUSH_TEST}_test.cpp)
     target_compile_features(${BRUSH_TEST}_test PRIVATE cxx_std_20)
@@ -657,7 +667,7 @@ if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
     target_link_options(script_bytecode_inspect PRIVATE -static -static-libgcc -static-libstdc++)
 endif()
 
-foreach(test_target IN ITEMS quest_actor_animation_clock_test quest_portable_vm_test
+foreach(test_target IN ITEMS quest_actor_animation_clock_test quest_portable_vm_test quest_rotator_add_test
     quest_script_state_test portable_object_stack_test quest_state_frame_codec_test quest_state_execution_test
     quest_authored_struct_value_test portable_struct_descriptor_test quest_object_cast_test portable_object_cast_test
     portable_buffered_file_test quest_spawn_placement_test portable_class_defaults_test portable_actor_lifecycle_test portable_actor_spawn_test portable_vm_string_test
