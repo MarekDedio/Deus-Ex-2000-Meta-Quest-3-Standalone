@@ -106,3 +106,17 @@ checkpoint's actual test loads only first Training:1308 local-player controls,
 or Base links. The whole owned first-map suite passes883599/55; original
 startup still reaches missing Move266. No replacement APK is produced for
 these backend-only prerequisites.
+
+The subsequent shared dependency now has the complete detached TwoWallAdjust
+numeric adapter and moveSmooth call protocol, including exact aliases,
+retained-vs-stored slide math, same-hit reuse, current native pose/Level reads
+and event ordering. These are not direct native Move replacements or proof
+of physical falling. Their original numeric/protocol tests run without any
+additional real map; the actual current-map regression stays on first Training.
+The remaining genuine movement/startup/gravity/loot acceptance is unchanged.
+Verification passes both new detached helper suites, strict ARM64 runtime/
+test syntax, Android native link and coherent CTest141 executed/165 registered
+(24 explicit owned-data skips, zero failures). Separate actual first-map
+collision883599/55, Engine42647/31 and isolated crate347/two regressions pass.
+The unchanged startup native266 boundary still prevents a playable-physics
+claim; no replacement APK is produced or installed for this helper checkpoint.

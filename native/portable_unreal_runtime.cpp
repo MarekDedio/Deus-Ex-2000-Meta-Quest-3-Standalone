@@ -57,6 +57,9 @@
 #include "quest_native_actor_pose.h"
 #include "quest_native_scratch_scope.h"
 #include "quest_actor_blocking.h"
+// Complete detached slide/push protocol; actual native Move remains refused
+// until its original collision/event/root provider is implemented in full.
+#include "quest_actor_move_smooth.h"
 
 #include <memory>
 #include <algorithm>

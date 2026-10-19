@@ -273,8 +273,9 @@ authority.
   then follows Base until None. A cycle needs a portable shared-budget refusal,
   not retail's unbounded loop.
 - GetPlayerPawn thunk`0x10302E4B` →`0x1034C540`–`0x1034C577` checks actual
-  PlayerPawn ancestry and native Player`+0x5D4` nonnull. The already implemented
-  native720 contract must remain authoritative.
+  PlayerPawn ancestry and native Player`+0x5D4` nonnull, on this receiver only.
+  It is NOT script native720's current-Level scan. The latter must not be used
+  for movement blocking; see ORIGINAL-ACTOR-BLOCKING-PREDICATES.md.
 - IsBlockedBy thunk`0x10301785` →`0x1034C5E0`–`0x1034C828` supplies the
   matrix above; it does not itself require bCollideActors.
 - BeginTouch thunk`0x1030177B` →`0x10369570` invokes one-sided helper
@@ -293,8 +294,10 @@ authority.
   collision rules before sorting and linking. Complete actor-cylinder/brush
   sweeps, ordering and native identities must be integrated separately.
 - CheckEncroachment thunk`0x10302536` →`0x1039A350` has its own swept/overlap,
-  EncroachingOn/EncroachedBy/Touch and rollback semantics. The existing exact
-  early false mask is not proof of the complete operation.
+  push/recheck/EncroachingOn/EncroachedBy/Touch semantics. Ordinary veto
+  preserves earlier successful pushes/events; only portable errors trigger
+  outer rollback. Its complete later source audit is
+  ORIGINAL-LEVEL-ENCROACHMENT.md. The early false mask alone is insufficient.
 
 The verified null-owner Model extent kernel is reusable, but neither it nor
 the simplified render registry proves full MoveActor. Owner/mover transforms,

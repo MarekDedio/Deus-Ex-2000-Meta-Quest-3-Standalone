@@ -186,12 +186,12 @@ non-forward vector. Both paths use `(1-HitTime)`, but their Float spill points
 and comparisons differ. Unordered comparisons follow explicit x87 status
 bits, not an assumed common finite formula.
 
-This audit does NOT yet deliver an independently tested portable
-TwoWallAdjust numeric adapter. Before implementation/parity claims, pin its
-cross-product component/store order, each branch's dot association and factor
-spills, sign/zero/unordered comparisons, and reference alias domain against
-the complete `10323770..103239A0` body. Do not use the high-level equations
-above as an ARM numeric oracle or import a different engine's slide order.
+At this audit's original checkpoint, the TwoWallAdjust numeric adapter was
+still absent. The follow-on `ORIGINAL-TWO-WALL-ADJUST.md` now pins its full
+cross-product/store/association/factor/alias contract and supplies the detached
+kernel. Its independent numerical validation is recorded there and in STATUS;
+the high-level equations above are not an ARM numeric oracle or permission to
+import a different engine's slide order.
 
 ## Root, exceptions and remaining first-Training seam
 
@@ -210,9 +210,89 @@ admission remain deliberate stronger safety requirements. Normal native
 return false is not itself authorization to discard successful earlier moves.
 
 Next complete integration still needs full current-XLevel MoveActor used by266/299,
-the remaining TwoWallAdjust numeric proof/kernel, actual HitWall dispatch,
+verified TwoWallAdjust arithmetic, actual HitWall dispatch,
 same-root nested native scratch and generation/rollback controls. The higher
 encroachment forward/reverse calls ignore moveSmooth's result, as pinned in
 `ORIGINAL-LEVEL-ENCROACHMENT.md`. None of these source contracts authorizes a
 zero-only Move success, a direct pose-write replacement or another map's
 integration as a substitute for first-Training acceptance.
+
+## Detached complete protocol implementation (2026-10-19)
+
+`native/quest_actor_move_smooth.h` now implements the complete bounded
+moveSmooth call protocol and original first-slide numeric schedule. It owns
+the by-value original Delta, constructs exactly one fresh hit record, reuses
+that record through all attempts, preserves call1's exact signed native int,
+and samples current Rotation/XLevel for every real movement attempt. It does
+not collapse native results to Bool, reset the packet, clamp Time, suppress
+zero slides or manufacture a native movement implementation.
+
+The provider seam exposes each Rotation channel and native XLevel read. The
+source load order is R0/Level/R1/R2/Level for call1,
+Level/R0/R1/R2/Level for call2, and R0/Level/R1/R2 for call3. Calls1/2 retain
+the first Level's virtual-dispatch identity and the second Level as receiver;
+call3 uses one Level for both. There is no original synchronous callback
+between these raw loads. A real adapter must authenticate the actual native
+Level dispatch class and generation, not treat detached integer tokens as
+native pointers or silently redirect dispatch to another Level. All four
+MoveActor options stay literal0.
+
+First-slide calculation keeps the X projection and subtraction retained,
+stores/reloads Y/Z projections/residuals, retains (1-Time) and slideX through
+the forward gate, and passes separately Float-stored XYZ to call2. It invokes
+the existing exact Core.SafeNormal(originalDelta) only after that gate passes.
+HitWall receives copied raw Normal/Actor parameters (including Actor=None).
+The helper then reads the same hit record's current Normal/Time and uses the
+full TwoWallAdjust adapter before sampling the third move. No fourth move or
+postvalidation of the unused final hit packet is introduced.
+
+FCOMP/C0 control is preserved for Time: ordered >=1 returns immediately,
+including positive infinity; unordered continues. An unordered second Time
+can reach HitWall and be repaired by the enclosing synchronous provider before
+TwoWallAdjust reads it numerically. Active unsafe arithmetic still refuses.
+Delta/Normal are not eagerly checked on a first clear-return path. Negative
+finite Time remains valid; no [0,1] clamp is added. The portable numeric domain
+requires finite active operands and finite required Float stores; unavailable
+active providers, null actual XLevel, unsafe numeric operations or shared work
+failure throw. Inactive providers are not required.
+
+This is a detached protocol, not a publishing runtime adapter. Its supplied
+MoveActor provider must implement the COMPLETE original movement operation,
+and its HitWall provider must supply actual override/event dispatch. Both must
+join the caller's existing native/hash/VM root and work/memory/generation
+guards. The kernel propagates refusals; it cannot atomically restore external
+provider side effects by itself. Normal native return0 is not a rollback
+signal. No script native266/299 is enabled by including this header in the
+runtime build. Actual first-Training startup, higher encroachment/pushing,
+support/falling, live destruction and surviving usable loot remain unfinished.
+
+## Detached numeric/protocol verification (2026-10-19)
+
+`desktop/quest_actor_move_smooth_test.cpp` passes79005 checks/5968 explicit
+refusals. Its separate hardware-x87 projection protocol compares36100
+successful first-slide outputs and forward gates (17560 forward/18540
+rejected). It does not use production dyadic/projection/trace helpers to
+predict those values. The cohort includes broad finite exponents, subnormals,
+signed zeros, nonunit normals, Time outside[0,1] and raw-word boundary grids.
+Three explicit retained-X cancellation fixtures first demonstrate a different
+decision from the deliberately wrong Float-reloaded-X gate, then verify the
+production wrapper actually executes or omits MoveActor2 accordingly.
+
+Twenty-four protocol controls verify exact first integer return, same live
+hit-record address/untouched fields, owned original Delta despite callback
+changes to the caller's input, all field-read transcripts, distinct dispatch/
+receiver Level tokens, copied HitWall parameters/Actor=None, second unordered
+Time repaired by the event, postevent Normal/Time, zero-distance attempts2/3
+and an ignored final unsafe packet. Both null dispatch-Level and separately
+reread receiver-Level cases refuse at their active boundary. Eighteen injected
+active-provider prefixes stop at the exact refused read/callback.
+
+Three explicit MOCK caller-root tests verify propagated errors can poison and
+roll back coupled provider effects, normal native zero does not imply rollback,
+and nested calls cannot reset the caller's shared work allowance. They do not
+supply or prove the actual runtime's full MoveActor transaction. Strict ARM64
+test syntax passes; on non-x86 hosts the independent hardware oracle is
+explicitly skipped while portable protocol controls remain. Host/Android
+compilation/link and full coherent regressions are recorded in STATUS. No
+original commercial code was executed and no gameplay native was enabled.
+Evidence: `artifacts/training-smooth-*20261019.log`.

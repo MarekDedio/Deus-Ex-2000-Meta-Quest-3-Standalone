@@ -20,7 +20,53 @@ usable contents and support/falling. See TRAINING-FIRST-PRIORITY.md.
   playable-physics capability. See ORIGINAL-ENGINE-DEFAULT-LINK.md. Live crate
   destruction, usable loot and gravity remain unfinished.
 
-## Current first Training blocking prerequisites (2026-10-19)
+## Current first Training slide/push prerequisites (2026-10-19)
+
+The complete detached TwoWallAdjust numeric adapter and moveSmooth protocol
+are implemented for the first-map movement dependency. TwoWallAdjust retains
+the original different corner/face spill schedules, postwrite Desired read,
+all15 exact-reference alias partitions and atomic portable refusal. The
+moveSmooth protocol retains its by-value original Delta, one reused hit packet,
+first native integer return, exact first-slide/forward-gate arithmetic, current
+Rotation/native-XLevel sampling for each of at most three real moves, copied
+HitWall parameters and postevent collision inputs. There is no zero-slide skip,
+time clamp, generic normalization or direct transform-write substitute.
+
+The separate optimized-GCC TwoWallAdjust test passes64827 checks/3544 explicit
+refusals, including28853 independent hardware-x87 packets,24000 alias packets,
+all15 partitions, three retained-gate fixtures and791 factor-spill witnesses.
+The moveSmooth suite passes79005 checks/5968 explicit refusals, including36100
+independent x87 first slides,24 protocol controls,18 active-provider failure
+prefixes and three explicitly MOCK caller-root tests. Three retained-X
+fixtures distinguish the wrong Float-reloaded forward gate and verify actual
+mock movement-call counts. Null dispatch/receiver Level, copied event inputs,
+postevent collision data, exact first return and zero-distance retries are
+covered without claiming a real runtime provider.
+
+Strict ARM64 runtime/test syntax, host compilation and Android native
+compilation/link pass. The coherent rebuild and CTest pass141 executed/165
+registered with24 explicit owned-data skips and zero failures in78.72s. The
+separate exact38-source first-Training Engine regression passes42647/31.
+The owned first-map collision regression passes883599/55 and the isolated
+crate diagnostic347/two. The latter still loses actual born contents under
+dormant Game=None relevance: not surviving usable loot. Complete collision/
+pose/hash/save/revision/lookup/client/GC/RNG rollback and original-source
+immutability pass. Startup still reaches the same genuine BeginPlay slot126,
+DeusExMover16/Engine.Mover.BeginPlay PC166, unsupported native266. The new
+slide providers are not exercised by that unsupported runtime call, and these
+regressions do not establish actual runtime movement. Other default skipped
+owned-data cases are not claimed as executed.
+
+These helpers are not a publishing MoveActor/HitWall adapter: original native
+Move266/SetRotation299, higher Level encroachment/touch, startup, support/falling,
+live destruction and surviving usable contents remain unfinished. Only a
+complete real movement provider can connect the protocol to those services;
+its mock test providers are not gameplay evidence. No other-map integration
+or new APK. See ORIGINAL-TWO-WALL-ADJUST.md and ORIGINAL-ACTOR-MOVE-SMOOTH.md.
+Evidence: `artifacts/training-smooth-*20261019.log` and
+`artifacts/training-two-wall-*20261019.log`.
+
+## Earlier first Training blocking prerequisites (2026-10-19)
 
 The full original IsBlockedBy, receiver-local native GetPlayerPawn and
 IsBasedOn helpers are implemented with live typed runtime providers. Blocking
