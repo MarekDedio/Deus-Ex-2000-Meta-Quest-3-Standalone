@@ -2424,6 +2424,7 @@ public:
     }
     void Begin() override {
         if (transaction_) throw std::runtime_error("Portable actor VM nested host transaction");
+        RequireEmptyMoveHits();ClearMoveHits();nativeDurableMoved_.clear();
         retailCollisionOutputBytes_=0u;
         ValidateStateBudget();
         lifecycleOperations_ = 0u;
@@ -2443,6 +2444,8 @@ public:
         transaction_ = true;
     }
     void Commit() override {
+        RequireEmptyMoveHits();
+        if(nativeMoveDepth_||nativeActorPoses_.Depth())throw std::runtime_error("Native movement scope survives its outer VM execution");
         if (waitingPreview_) {
             ValidateStateBudget();
             // Capture before rollback, without publishing a partial original
@@ -2462,6 +2465,7 @@ public:
         if(retailCollisionPreview_) {
             ValidateStateBudget();Rollback();return;
         }
+        SynchronizeNativeMoveMirror();
         ValidateStateBudget();
         // AI-manager-only state already has independent checkpoint/journal
         // ownership and is not actor geometry. Preserve that existing path;
@@ -2502,10 +2506,12 @@ public:
         }
         beforeCollision_.reset();
         provisionalLookupObjects_.clear();
+        ClearMoveHits();nativeDurableMoved_.clear();
         saved_.clear(); savedAi_.clear(); provisionalAi_.clear(); provisionalWindows_.clear(); beforeDecals_.reset(); beforeLevelClock_.reset(); transaction_ = false;
     }
     void Rollback() noexcept override {
         if (!transaction_) return;
+        ClearMoveHits();nativeDurableMoved_.clear();
         // Restore weak native hash identities BEFORE birth/lookup retirement.
         // VM reference undo has already run, but the same hash lease remains
         // owned until this host root unwinds; no independent native commit.
@@ -3183,6 +3189,7 @@ public:
         if (index==1013u) return Native(index,receiver,arguments,declaration);
         if (Object(receiver)->defaultOwner)
             throw std::runtime_error("Native execution on a class-default object requires its audited handler");
+        if(index==266u||index==299u)return MoveNative(index,Object(receiver),arguments,declaration,execution);
         if((index==262u || index==283u) && persistentRetailCollision)
             return RetailCollisionSetterNative(index,Object(receiver),arguments,declaration);
         if(index==512u) return MakeNoiseNative(Object(receiver),arguments,declaration,execution);
@@ -4562,6 +4569,11 @@ public:
     #include "portable_retail_actor_blocking.inl"
     #include "portable_retail_actor_touch.inl"
     #include "portable_actor_zone.inl"
+    #include "portable_actor_move_hits.inl"
+    #include "portable_actor_move_events.inl"
+    #include "portable_actor_move_pose.inl"
+    #include "portable_actor_move.inl"
+    #include "portable_actor_move_probe.inl"
     void RequireIndexedPrimitiveDiagnosticOwner(RuntimeObject* owner) {
         RequireMapActor(owner);
         if(owner->worldActorIndex<0 || static_cast<std::size_t>(owner->worldActorIndex)>=persistentWorldActors.size() ||
@@ -7323,6 +7335,8 @@ private:
         if (physical && !ActorLink(actor, "Base") &&
             QuestVr::Vm::ToBool(Read(actor, PropertyNamed(actor, "bCollideWorld"), 0u)) &&
             (physics == 0 || physics == 5)) {
+            if(nativeMoveDepth_||!nativeDurableMoved_.empty())
+                throw std::runtime_error("Legacy spawned FindBase cannot consume a native movement root's unsynchronized derived cache");
             if (worldStartupProbe_)
                 throw std::runtime_error("Unsupported original spawned FindBase during world startup probe: extent SingleLineCheck / SupportActor contract is not implemented");
             const auto record=CollisionRecord(actor);
@@ -8516,6 +8530,9 @@ private:
             const auto nativeKey=LowerAscii(property.key);
             if(nativeKey=="engine.actor.collisiontag" || nativeKey=="engine.actor.collocation")
                 throw std::runtime_error("Native collision mirrors require their journaled original service");
+            if((nativeKey=="engine.actor.location"&&nativeActorPoses_.FindLocation(reinterpret_cast<std::uintptr_t>(target)))||
+                (nativeKey=="engine.actor.rotation"&&nativeActorPoses_.FindRotation(reinterpret_cast<std::uintptr_t>(target))))
+                throw std::runtime_error("Generic script pose mutation cannot bypass an active native field authority");
             // Until the actual Move/rotation/resize adapters are integrated,
             // never let a generic property write strand live retail links.
             // A just-allocated Spawn actor initializes before its native Add.
@@ -9058,6 +9075,9 @@ private:
         try {
         defaults.Retain(extraRetained);
         defaults.Retain(nativeQueryScratchBytes_);
+        defaults.Retain(sizeof(nativeActorPoses_)+sizeof(nativeMoveUnitCoords_));
+        defaults.Retain(QuestVr::DecalStateDetail::Multiply(nativeDurableMoved_.capacity(),sizeof(RuntimeObject*)));
+        if(nativeMoveHits_)defaults.Retain(nativeMoveHits_->RetainedBytes());
         defaults.Retain(retailCollisionOutputBytes_);
         if (persistentRuntime->get()->nativeDecals)
             defaults.Retain(NativeDecalRetainedBytes(*persistentRuntime->get()->nativeDecals));

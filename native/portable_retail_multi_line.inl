@@ -22,11 +22,23 @@
         // source actor to exclude from either provider's returned hits.
         if(!anchor->active || anchor->worldRemoved || anchor->nativeXLevel!=level)
             throw std::runtime_error("Retail MultiLineCheck has no live current-Level anchor");
+        if(suppliedLevelInfo&&(!suppliedLevelInfo->active||suppliedLevelInfo->worldRemoved))
+            throw std::runtime_error("Retail MultiLineCheck diagnostic world anchor is inactive");
+        return RetailMultiLineLevel(level,end,start,extent,checkActors,suppliedLevelInfo,extraNodeFlags);
+    }
+    // Actual ULevel service: unlike the public dormant diagnostic wrapper,
+    // MoveActor has no source-anchor/render-active/deletion admission here.
+    // It also has no source argument to filter out of the result list.
+    RetailMultiLineReply RetailMultiLineLevel(RuntimeObject* level,
+        PortableModelVec3 end,PortableModelVec3 start,PortableModelVec3 extent,
+        std::int32_t checkActors,RuntimeObject* suppliedLevelInfo,std::uint8_t extraNodeFlags) {
+        if(!transaction_||level!=RetailCollisionLevel())
+            throw std::runtime_error("Retail MultiLineCheck requires the same actual native Level/VM root");
         if(suppliedLevelInfo) {
             static_cast<void>(RetailCollisionActor(reinterpret_cast<std::uintptr_t>(suppliedLevelInfo)));
             if(suppliedLevelInfo!=persistentWorldActors.front() ||
                 !IsDerivedFromPath(suppliedLevelInfo->cls,"Engine.LevelInfo") ||
-                suppliedLevelInfo->nativeXLevel!=level || !suppliedLevelInfo->active || suppliedLevelInfo->worldRemoved)
+                suppliedLevelInfo->nativeXLevel!=level)
                 throw std::runtime_error("Retail MultiLineCheck world is not actual current native slot-zero LevelInfo");
         }
         // Preserve the native short circuit: CheckActors==0 does not consult

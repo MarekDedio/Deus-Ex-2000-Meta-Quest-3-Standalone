@@ -38,8 +38,8 @@
         // including Model workspace checks. Separate preflights alone would
         // miss an overlapping arena+workspace peak. Nested scopes reuse the
         // same fixed pose slots, but own separate hit-vector growth envelopes.
-        const auto scratchBytes=QuestVr::DecalStateDetail::Add(nativeActorPoses_.Depth()?0u:sizeof(nativeActorPoses_),
-            Multiply(persistentRetailCollision->ReadUsage().actors,3u*sizeof(QuestVr::OriginalActorLineHit)));
+        // Fixed pose slots are now charged once by the host's shared validator.
+        const auto scratchBytes=Multiply(persistentRetailCollision->ReadUsage().actors,3u*sizeof(QuestVr::OriginalActorLineHit));
         QuestVr::OriginalHashEncroachmentQueries queries;
         queries.sourceBounds=[this](std::uintptr_t identity) {
             LifecycleStep();return NativeActorPrimitiveBounds(RetailCollisionActor(identity));

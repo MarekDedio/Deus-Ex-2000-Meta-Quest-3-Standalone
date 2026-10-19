@@ -360,7 +360,13 @@ The complete detached coordinator is now implemented in
 remaining real-service boundary are recorded in TRAINING-LEVEL-MOVE-ACTOR.md.
 It does not by itself route native266/299 or publish a Training move.
 
-Still required before routing native266/299:
+The actual first-Training bridge now connects these providers and routes
+native266/299; its real nonzero movement/rollback evidence and remaining
+startup/gameplay limits are in TRAINING-NATIVE-MOVEMENT.md. The following is
+the historical integration checklist for this audit, not a claim that each
+bound provider's begun-world interaction has already been accepted on-device.
+
+Original integration requirements before routing native266/299:
 
 - Bind that coordinator to actual native eligibility/editor authority, exact
   qualified scalar writes and native retained Level/list/hash identities.

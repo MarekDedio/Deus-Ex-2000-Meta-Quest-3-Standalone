@@ -20,7 +20,34 @@ usable contents and support/falling. See TRAINING-FIRST-PRIORITY.md.
   playable-physics capability. See ORIGINAL-ENGINE-DEFAULT-LINK.md. Live crate
   destruction, usable loot and gravity remain unfinished.
 
-## First Training retained movement-hit storage prerequisite (2026-10-19)
+## First Training actual native movement integration (2026-10-19)
+
+The complete movement coordinator is now bound to the actual current-Level
+providers and native266/299, including recursive Move/Smooth, retained hit
+lists, typed per-field pose writes, higher encroachment, selected events,
+child carrying, original hash Remove/Add and movement-time zone updates. No
+direct transform stand-in, zero-only route or forced world/player startup is
+used. See TRAINING-NATIVE-MOVEMENT.md for authorities and remaining boundaries.
+
+Strict ARM64 runtime/test syntax, coherent desktop and Android native builds
+pass. Focused actual38-package first-map movement tests pass122541 checks/seven
+refusals, including the real upper/lower crate cap collision with independent
+hardware-x87 stopping/time expectations. Actual Doctor1.PlayWaiting clock
+preservation passes inside movement and across a committed native Move with
+exact render/durable pose and one revision. Complete save/hash/lookup/clock/
+GC/RNG rollback and checkpoint restoration are checked separately. The shared
+CTest passes151 executed/175 registered,24 owned-data skips, zero failures
+in66.83s. The final full actual first-map regression passes1164319 checks/83
+explicit refusals with complete rollback, source immutability and repeatable
+startup boundary. Its cold-geometry oracle runs before movement warms caches.
+
+An initial actual startup observation gets beyond Move266 at DeusExMover16
+BeginPlay PC166 and reaches missing Core.Object.Add_RotatorRotator316 at PC197,
+before SetRotation299's argument completes. This does not finish startup or
+prove live gravity, crate destruction or surviving usable loot. First Training
+remains the only real-map target; no replacement APK for backend-only work.
+
+## Earlier first Training retained movement-hit storage prerequisite (2026-10-19)
 
 The bounded host-private hit store now retains independently qualified query
 lists across nested marks, rebases local head/Next words and rejects expired,

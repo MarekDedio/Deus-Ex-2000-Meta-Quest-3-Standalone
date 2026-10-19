@@ -27,7 +27,8 @@ struct PortableRetailCollisionSnapshot {
     std::vector<PortableRetailCollisionActor> actors;
 };
 enum class PortableRetailCollisionOperation { Enable, Disable, LineCheck, SetCollision, SetCollisionSize, MultiLineCheck, EncroachmentCheck,
-    IsBlockedBy, IsBasedOn, LocalPlayerPawn, IsOverlapping, BeginTouch, EndTouch, TouchSide, SetActorZone };
+    IsBlockedBy, IsBasedOn, LocalPlayerPawn, IsOverlapping, BeginTouch, EndTouch, TouchSide, SetActorZone,
+    LevelMoveActor, ActorMove, ActorSetRotation, ActorMoveSmooth, LevelCheckEncroachment };
 struct PortableRetailCollisionCommand {
     PortableRetailCollisionOperation operation{PortableRetailCollisionOperation::Enable};
     std::array<float,3u> end{},start{},extent{};
@@ -49,6 +50,11 @@ struct PortableRetailCollisionCommand {
     // Location view, with original Rotation retained. Never a committed Move,
     // hash relocation, startup bypass or claim about live callback mutation.
     bool zoneUsePose{};
+    // Original native movement diagnostics: end is Delta (or proposed Location
+    // for LevelCheckEncroachment), rotation is by-value requested rotation.
+    // Full native flags, not a read-only preview: the enclosing root rolls back.
+    std::array<std::int32_t,4u> moveOptions{};
+    std::int32_t moveTouch{};
 };
 struct PortableRetailCollisionMutation {
     std::string actorPath;
@@ -95,6 +101,20 @@ struct PortableRetailZoneSnapshot {
     // Empty means no actual native clock, not a fabricated pose/idle seed.
     std::vector<std::uint8_t> clockBefore,clockAfter;
 };
+struct PortableRetailMoveSnapshot {
+    std::size_t commandIndex{};
+    std::string actorPath;
+    std::int32_t returned{};
+    std::array<float,3u> locationBefore{},locationAfter{},colLocationBefore{},colLocationAfter{};
+    std::array<std::int32_t,3u> rotationBefore{},rotationAfter{};
+    // Only LevelMoveActor has a caller-visible hit. Its direct diagnostic seed
+    // is Time.375/Item127/Location(11,12,13)/Normal(-1,0,0), with null pointers.
+    // No live native opaque handle/address crosses the CPU-owner boundary.
+    bool hitAvailable{},hitNextPresent{};
+    PortableRetailCollisionHit hit;
+    std::size_t marksAfter{},arenasAfter{};
+    std::vector<std::uint8_t> clockBefore,clockAfter;
+};
 struct PortableRetailCollisionProbeResult {
     QuestVr::Vm::Result execution;
     bool available{};
@@ -106,6 +126,7 @@ struct PortableRetailCollisionProbeResult {
     std::vector<PortableRetailActorPredicate> predicates;
     std::vector<PortableRetailTouchSnapshot> touches;
     std::vector<PortableRetailZoneSnapshot> zones;
+    std::vector<PortableRetailMoveSnapshot> moves;
 };
 // Bounded original SetActorCollision four-case and actual primitive-query
 // diagnostic. No native pointer leaves the CPU owner; every state is detached.

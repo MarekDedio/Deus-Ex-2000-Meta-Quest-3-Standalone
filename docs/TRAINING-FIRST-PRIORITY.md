@@ -232,3 +232,17 @@ passes with24 owned-data skips, and the separate actual38-package first-map
 suite passes1090740 checks/77 refusals with full rollback/source immutability.
 The startup boundary and unfinished crate/loot/gravity milestone are unchanged.
 See TRAINING-MOVEMENT-HIT-STORAGE.md. No other-map integration or APK is added.
+
+The subsequent actual movement bridge now connects the complete coordinator
+to the first map's real native Level/hash, retained lists, recursive Move/Smooth,
+typed scalar writes, higher encroachment, child/event/touch/zone services and
+native266/299. Focused owned-data tests pass122541/seven refusals with genuine
+nonzero upper/lower crate collision and real NPC-clock/commit controls. The
+coherent host/strict ARM64/Android native builds and shared CTest pass. Actual
+startup advances past Move266 and next stops at Core rotator addition316,
+before SetRotation's argument finishes. The final full actual first-map
+regression passes1164319 checks/83 refusals, with complete rollback/source
+immutability and the repeatable new startup boundary. This is still not automatic falling/support, live crate
+destruction, surviving loot or a finished tutorial. Those remain the same
+immediate gameplay target; no other map and no APK is added. See
+TRAINING-NATIVE-MOVEMENT.md and ORIGINAL-ROTATOR-ADD.md.

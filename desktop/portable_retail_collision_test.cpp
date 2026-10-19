@@ -530,7 +530,9 @@ void SetterCoverage(const std::vector<Actor>& actors,const std::function<void()>
 #include "portable_retail_actor_touch_cases.inl"
 #include "portable_model_point_region_cases.inl"
 #include "portable_actor_zone_cases.inl"
-void Run(const fs::path& root) {
+#include "portable_retail_actor_move_cases.inl"
+#include "portable_actor_move_clock_cases.inl"
+void Run(const fs::path& root,bool movementOnly) {
     Temporary temporary(root);std::vector<Source> sources;std::vector<PortablePackageTables> scripts;
     sources.reserve(QuestVr::RuntimeScriptPackages.size()+2u);scripts.reserve(QuestVr::RuntimeScriptPackages.size());
     for(const auto* name:QuestVr::RuntimeScriptPackages) {
@@ -570,8 +572,18 @@ void Run(const fs::path& root) {
             "Retail collision diagnostic published dormant world/save/lookup/client state");
     };
     rollback();
+    if(movementOnly){
+        ActorMoveCoverage(map,actors,rollback);
+        AnimatedActorMoveRollback(temporary);
+        CommittedAnimatedActorMove(temporary);
+        for(const auto& source:sources)source.Unchanged();
+        lifetime->Revoke();ClearPortableRuntimeClient();
+        std::cout<<"PASS focused actual first Training native movement/clock/publication controls; not startup or playable physics.\n";
+        return;
+    }
     ModelPointRegionCoverage(map,actors,rollback);
     ActorZoneCases(map,actors,rollback);
+    ActorMoveCoverage(map,actors,rollback);
     for(const auto& commands:std::vector<std::vector<Command>>{{},std::vector<Command>(17u),
         {Command{static_cast<Operation>(999)}},{Command{Operation::Enable},Command{static_cast<Operation>(999)}}}) {
         const auto rejected=ProbePortableRuntimeRetailCollision(commands);
@@ -659,9 +671,15 @@ void Run(const fs::path& root) {
         !world.execution.error.empty(),"Enhanced startup did not capture the actual hash prefix before its next unsupported native");
     Require(world.phase==PortableWorldStartupPhase::BeginPlay&&world.actorSlot==126u&&
         world.actorPath=="00_Training.DeusExMover16"&&world.execution.function=="Engine.Mover.BeginPlay"&&
-        world.execution.offset==166u&&world.execution.opcode==97u&&
-        world.execution.error=="Unsupported runtime native 266",
+        world.execution.offset==197u&&world.execution.opcode==97u&&
+        world.execution.error=="Unsupported runtime native 316",
         "First Training startup boundary changed: inspect real evidence before updating this pin");
+    for(const auto& actual:startup.collision.actors){
+        const auto prior=std::find_if(actors.begin(),actors.end(),[&](const auto& a){return a.path==actual.path;});
+        if(prior!=actors.end()&&(prior->location!=actual.location||prior->colLocation!=actual.colLocation||prior->tag!=actual.tag))
+            std::cout<<"STARTUP MOVE PREFIX "<<actual.path<<" location=("<<actual.location[0u]<<','<<actual.location[1u]<<','<<actual.location[2u]
+                <<") col=("<<actual.colLocation[0u]<<','<<actual.colLocation[1u]<<','<<actual.colLocation[2u]<<") tag="<<actual.tag<<'\n';
+    }
     SameActors(startup.collision,actors,sourceTags);rollback();
     const auto again=ProbePortableRuntimeRetailCollisionStartup(options,limits);
     Require(again.world.phase==world.phase&&again.world.actorSlot==world.actorSlot&&again.world.actorPath==world.actorPath&&
@@ -717,23 +735,26 @@ void Run(const fs::path& root) {
         "Frozen-birth injection control changed dormant first Training state");
     AnimatedActorTouchRollback(temporary,targetPath);
     AnimatedActorZoneRollback(temporary);
+    AnimatedActorMoveRollback(temporary);
+    CommittedAnimatedActorMove(temporary);
     for(const auto& source:sources)source.Unchanged();
     lifetime->Revoke();ClearPortableRuntimeClient();
     std::cout<<"PASS first Training only:38 exact Quest source packages, "<<actors.size()<<" actual native-slot actors, "
         <<collidable<<" collidable nondeleted actors, "<<oracle.links<<" registration links, "<<providerCalls
         <<" independent-order actual primitive calls; full snapshot/save/revision/GC/RNG rollback. "
-        "NOT publishing world startup, Move, gravity, live crate destruction/loot or headset evidence.\n";
+        "NOT complete world startup, automatic gravity, live crate destruction/loot or headset evidence.\n";
 }
 } // namespace
 
 int main(int argc,char** argv) {
     std::cout.setf(std::ios::unitbuf);
     try {
-        fs::path root;if(const auto* configured=std::getenv("DEUSEX_GAME_ROOT");configured&&*configured)root=configured;
+        fs::path root;bool movementOnly{};if(const auto* configured=std::getenv("DEUSEX_GAME_ROOT");configured&&*configured)root=configured;
         for(int i=1;i<argc;++i) {
             const std::string_view option=argv[i];
             if((option=="--owned-source-root"||option=="--game-root")&&i+1<argc)root=argv[++i];
-            else throw std::runtime_error("Usage: portable_retail_collision_test [--owned-source-root OWNED_GAME_ROOT] (or DEUSEX_GAME_ROOT)");
+            else if(option=="--movement-only")movementOnly=true;
+            else throw std::runtime_error("Usage: portable_retail_collision_test [--owned-source-root OWNED_GAME_ROOT] [--movement-only] (or DEUSEX_GAME_ROOT)");
         }
         if(root.empty()) {std::cout<<"SKIP owned first Training retail collision: use --owned-source-root or DEUSEX_GAME_ROOT.\n";return 77;}
         ShutdownPortableRuntime();GC::Collect();const auto gc=GC::GetStats();
@@ -742,7 +763,7 @@ int main(int argc,char** argv) {
         Require(!absent.available&&!absent.execution.passed()&&!absent.execution.committed&&
             !absentStartup.world.execution.passed()&&!absentStartup.collision.initialized&&
             !ReadPortableRuntimeRetailCollision().initialized,"No-runtime collision diagnostic did not refuse safely");++refusals;
-        Run(fs::canonical(root));
+        Run(fs::canonical(root),movementOnly);
         ShutdownPortableRuntime();GC::Collect();SameGc(gc,"Retail collision test leaked rooted native UObjects after shutdown");
         std::cout<<"PASS retail collision integration "<<checks<<" checks / "<<refusals<<" explicit refusals\n";return 0;
     }catch(const std::exception& error) {std::cerr<<"FAIL: "<<error.what()<<'\n';ShutdownPortableRuntime();return 1;}

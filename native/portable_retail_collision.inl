@@ -275,15 +275,23 @@
         ReserveRetailDiagnosticOutput(QuestVr::DecalStateDetail::Multiply(commands.size(),
             sizeof(PortableRetailCollisionSnapshot)+sizeof(std::vector<PortableRetailCollisionHit>)+sizeof(std::size_t)+
                 sizeof(PortableRetailCollisionMutation)+sizeof(PortableRetailMultiLineMetadata)+sizeof(PortableRetailActorPredicate)+
-                sizeof(PortableRetailTouchSnapshot)+sizeof(PortableRetailZoneSnapshot)));
+                sizeof(PortableRetailTouchSnapshot)+sizeof(PortableRetailZoneSnapshot)+sizeof(PortableRetailMoveSnapshot)));
         result.states.reserve(commands.size());result.queries.reserve(commands.size());result.queryHeads.reserve(commands.size());
         result.mutations.reserve(commands.size());result.multiLine.reserve(commands.size());
         result.predicates.reserve(commands.size());
         result.touches.reserve(commands.size());
         result.zones.reserve(commands.size());
+        result.moves.reserve(commands.size());
         for(const auto& command:commands) {
             if(command.operation==PortableRetailCollisionOperation::Enable) SetRetailActorCollision(true);
             else if(command.operation==PortableRetailCollisionOperation::Disable) SetRetailActorCollision(false);
+            else if(command.operation==PortableRetailCollisionOperation::LevelMoveActor||
+                command.operation==PortableRetailCollisionOperation::ActorMove||
+                command.operation==PortableRetailCollisionOperation::ActorSetRotation||
+                command.operation==PortableRetailCollisionOperation::ActorMoveSmooth||
+                command.operation==PortableRetailCollisionOperation::LevelCheckEncroachment) {
+                ProbeNativeMoveCommand(command,result.states.size(),result,execution);
+            }
             else if(command.operation==PortableRetailCollisionOperation::SetActorZone) {
                 if(command.actorPath.empty()||command.actorPath.size()>8192u||command.actorPath.find('\0')!=std::string::npos)
                     throw std::runtime_error("Original zone diagnostic requires one bounded actor path");
@@ -297,8 +305,7 @@
                         throw std::runtime_error("Zone posed-input fixture is restricted to an authentic dormant world");
                     static_cast<void>(NativeCoordsProperty(actor,"Engine.Actor.Location",Kind::Vector,0x23u));
                     const auto rotation=NativeCoordsRead(actor,"Engine.Actor.Rotation",Kind::Rotator,0x23u).rotation;
-                    QuestVr::NativeScratchScope scratch(nativeQueryScratchBytes_,nativeActorPoses_.Depth()?0u:sizeof(nativeActorPoses_),
-                        [this](std::size_t extra){ValidateStateBudget(extra);});
+                    // Fixed native pose slots are charged once by the host.
                     QuestVr::NativeActorPoseStack::Scope pose(nativeActorPoses_,reinterpret_cast<std::uintptr_t>(actor),{command.end,rotation});
                     run();
                 }else run(); // Scope is restored BEFORE output/hash snapshots.
