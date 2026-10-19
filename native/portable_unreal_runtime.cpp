@@ -64,6 +64,7 @@
 #include "quest_actor_touch.h"
 #include "quest_actor_overlap_original.h"
 #include "quest_actor_zone.h"
+#include "quest_actor_child_carry.h"
 #include "quest_actor_move_geometry.h"
 #include "quest_level_encroachment.h"
 

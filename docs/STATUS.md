@@ -20,7 +20,32 @@ usable contents and support/falling. See TRAINING-FIRST-PRIORITY.md.
   playable-physics capability. See ORIGINAL-ENGINE-DEFAULT-LINK.md. Live crate
   destruction, usable loot and gravity remain unfinished.
 
-## First Training actor-zone service (2026-10-19)
+## First Training based-child carrying prerequisite (2026-10-19)
+
+The complete detached based-child MoveActor segment now retains the original
+live Level scan, lazy source rotation reads, two distinct wrapping yaw deltas,
+UnitCoords construction, exact Float boundaries, fresh hit packet, retained
+child identity and postrecursive Pawn.ViewRotation writes. It does not supply
+the required real recursive MoveActor provider; tests label that provider MOCK.
+No live movement, gravity, startup or crate/loot acceptance is inferred.
+
+The expanded independent provider/hardware-x87 suite passes140257 checks/115
+explicit refusals,3884 interpreter cases,104 failure prefixes,12000 arithmetic
+comparisons and67 callback-mutation executions. Endless appends/self-Base
+recursion share bounded work rather than returning truncated success; arbitrary
+UnitCoords and inactive/active numeric branches are covered. See
+TRAINING-CHILD-CARRY.md and ORIGINAL-CHILD-MOVE-CARRY.md. No other-map integration
+or APK is included. Coherent host/strict ARM64/Android native builds pass;
+CTest148 executed/172 registered passes with24 explicit owned-data skips,
+zero failures in63.17s.
+The rebuilt actual first-map regression passes1090740 checks/77 explicit
+refusals with complete state/save/revision/lookup/hash/client/GC/RNG rollback
+and source immutability. Actual startup still reaches DeusExMover16's
+Engine.Mover.BeginPlay PC166/opcode97, unsupported native266. The real-map
+regression does not falsely claim to invoke the detached carrying helper
+through that unsupported native call.
+
+## Earlier first Training actor-zone service (2026-10-19)
 
 The complete ordinary SetActorZone kernel and real typed runtime providers
 now supply the movement-time zone dependency through rollback-only diagnostics.

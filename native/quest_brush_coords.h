@@ -81,6 +81,14 @@ inline OriginalModelCoords Rotate(OriginalModelCoords coords,OriginalBrushRotati
 }
 } // namespace BrushCoordsDetail
 
+// The complete native FCoords*=FRotator value operation, including Origin and
+// all three yaw/pitch/roll stages. Unlike Actor.ToWorld this does NOT prepend
+// a Location translation or manufacture identity UnitCoords for its caller.
+inline OriginalModelCoords RotateOriginalModelCoords(OriginalModelCoords coords,OriginalBrushRotation rotation,
+    OriginalBrushSinTable table) {
+    return BrushCoordsDetail::Rotate(coords,rotation,table);
+}
+
 inline float SnapOriginalBrushSheer(float value) {return ActorTimerDetail::Store32(BrushCoordsDetail::Snap(value));}
 
 inline OriginalModelCoords ScaleOriginalModelCoords(OriginalModelCoords coords,const OriginalBrushScale& value) {

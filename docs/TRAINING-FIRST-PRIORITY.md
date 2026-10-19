@@ -190,3 +190,20 @@ verified. Coherent CTest147 executed/171 registered passes with24 owned-data
 skips and no failures; strict ARM64 and Android native link pass. Original
 startup still reaches the same unsupported Move266 boundary; these results
 do not complete live crate destruction/loot/gravity or produce a new APK.
+
+The next shared dependency implements the complete detached based-child carry
+segment, including live list changes, lazy per-child source pose reads,
+quantize-before-subtract yaw, exact coordinate/Float stores, fresh child hit
+packets, ignored ordinary child results and retained postcall Pawn.ViewRotation.
+Its independent suite passes140257 checks/115 refusals; recursive Move is
+explicitly MOCK, not a fake transform setter or native266 publishing shortcut.
+Actual recursive movement/root/hash integration, genuine startup, support/
+falling and usable loot remain the immediate unfinished target. No campaign
+map beyond first Training is integrated, and no APK is made for this helper.
+See TRAINING-CHILD-CARRY.md. Coherent host, strict ARM64 and Android native
+builds pass; CTest148 executed/172 registered passes with24 owned-data skips
+and no failures. Those skips are not claimed as actual-map or headset evidence.
+The separate rebuilt actual38-package first-map regression passes1090740
+checks/77 explicit refusals with complete rollback/source immutability.
+Startup still reaches the same DeusExMover16 Move266 boundary. It does not
+exercise the detached child-carry helper through a real recursive move provider.

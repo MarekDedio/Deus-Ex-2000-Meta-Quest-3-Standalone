@@ -4,7 +4,9 @@ Static source audit, 2026-10-19. Scope is the prerequisite for first
 `00_Training` movement only. No commercial DLL/EXE was loaded or executed;
 no map was loaded or integrated. This document establishes the complete
 child-carry segment, not a working native MoveActor, player movement,
-platform physics, crate gravity or headset acceptance.
+platform physics, crate gravity or headset acceptance. The subsequent complete
+detached implementation and independent tests are in TRAINING-CHILD-CARRY.md;
+their recursive Move providers are explicitly MOCK, not real movement evidence.
 
 ## Authority and bounded evidence
 
@@ -262,10 +264,11 @@ wrapping32, not clamped angles, floating degrees or signed C++ overflow.
 The exact reusable arithmetic is already present in `quest_brush_coords.h`
 and `quest_model_owner_coords.h`:
 
-- `BrushCoordsDetail::Rotate(IdentityOriginalModelCoords(),
+- `RotateOriginalModelCoords(actualUnitCoords,
   {0,quantizedYaw,0}, explicitTable)` is the direct existing ordered
-  FCoords*=FRotator value service for known UnitCoords. A public wrapper may
-  expose that service; a new closed-form yaw implementation is unnecessary.
+  FCoords*=FRotator value service. Its public wrapper now exposes the verified
+  operation without manufacturing UnitCoords or prepending translation; a new
+  closed-form yaw implementation is unnecessary.
 - `TransformOriginalVector(offset, coords)` has exactly the inline row-axis
   retained `(X+Y)+Z` and final Float storage schedule. Do NOT use PointBy.
 - PC64 Load/Sub/Add64/Store32 value primitives supply the surrounding offset,

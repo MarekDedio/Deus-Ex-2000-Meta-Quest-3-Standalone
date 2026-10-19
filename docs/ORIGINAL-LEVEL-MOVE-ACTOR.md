@@ -128,8 +128,8 @@ stored size Float+0 and raw Float3 D as direction. Otherwise:
 4. At `103993BC..406`, ExtendedDelta=Float3(D+2*direction). Doubled X/Y are
    Float-spilled before addition; doubled Z stays retained through its sum.
 
-ActualDelta starts as raw requested D. The full numeric helper currently
-being implemented is a value service, not an authorization to skip the rest
+ActualDelta starts as raw requested D. The implemented full numeric helper
+(ORIGINAL-ACTOR-MOVE-GEOMETRY.md) is a value service, not authorization to skip the rest
 of this operation. Source-backed numeric dependencies for this section are
 only the original appSqrt and plain FVector constructor; no libm normalize,
 epsilon expansion or target-double reassociation is evidenced.
@@ -237,9 +237,12 @@ FCoords*=FRotator, UnitCoords, original sine-table policy and retained vector
 math have their separate ORIGINAL-BRUSH-COORDINATES/ORIGINAL-SINE-PROFILE
 audits. The child inline transform is `103999D0..9A24`; its output components
 are `(offset.x*Axis.x + offset.y*Axis.y) + offset.z*Axis.z`, PC64 until each
-Float XYZ store. A child-carry adapter still needs wiring/read-order and
-independent branch/rounding/recursive-callback tests; renderer matrices do
-not establish it. Pitch/roll changes still enter this yaw-only construction.
+Float XYZ store. The subsequent complete detached carrying protocol and its
+independent branch/rounding/live-list/recursive-callback tests are documented
+in TRAINING-CHILD-CARRY.md. Its recursive Move providers are explicitly MOCK;
+actual runtime wiring and same-root movement/hash integration remain. Renderer
+matrices do not establish this contract. Pitch/roll changes still enter this
+yaw-only construction.
 
 ## 6. Higher encroachment and its veto asymmetry
 
@@ -320,9 +323,10 @@ after zone callbacks, not immediately after backoff.
 Movement-time `(bTest,0)` is not the existing startup `(1,1)` zone adapter.
 The latter's audit records old-zone ActorLeaving, S.ZoneChange, new-zone
 ActorEntered, Pawn FootZoneChange/HeadZoneChange, native deletion handling
-and PRI updates, but ordinary moving-zone mutation/callback/reentrancy needs
-its own complete adapter and tests. Birth force-refresh must not be silently
-substituted here.
+and PRI updates. The subsequent complete ordinary SetActorZone protocol and
+typed rollback-only runtime providers are in TRAINING-ACTOR-ZONES.md; actual
+movement-root wiring/live callback execution remains separate. Birth
+force-refresh must not be silently substituted here.
 
 EH stub `10420500` selects metadata `10447478`. Its two unwind-map entries
 at `10447498` and `104474A0` have zero action pointers. Catch tail
@@ -338,7 +342,8 @@ actual Level.Hash lifecycle/CRT initialization and line/encroachment queries;
 raw Cylinder/Model/Mover providers and source-pose scopes; exact MultiLine
 collector/order; original receiver-local blocking/Base/LocalPlayer helpers;
 qualified Touching/Overlap and dispatch; supplied-value PC64 coordinates,
-TwoWallAdjust, moveSmooth protocol, and the new movement numeric packet.
+TwoWallAdjust, moveSmooth protocol, the movement numeric packet, ordinary zone
+protocol/typed diagnostic providers and detached complete based-child carry.
 The detached higher Level encroachment protocol likewise still requires its
 real collision-aware moveSmooth provider. Check current code/tests for each
 component's stated supported domain rather than treating this list as a
