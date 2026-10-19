@@ -264,3 +264,12 @@ Neither returning false for zero delta nor refusing only nonzero translation
 provides this contract. The full native Move/SetRotation callers and remaining
 movement dependencies require their own source audit/integration. No other map
 was loaded or integrated by this audit.
+
+The subsequent complete detached higher protocol now exists in
+`native/quest_level_encroachment.h`, with independent control-flow/provider/
+callback/refusal tests. It does not supply the real collision-aware MoveActor
+provider or a publishing runtime entry. See
+ORIGINAL-LEVEL-ENCROACHMENT-PROTOCOL.md. The separate complete MoveActor audit
+is ORIGINAL-LEVEL-MOVE-ACTOR.md; its numeric prequery/backoff value service is
+ORIGINAL-ACTOR-MOVE-GEOMETRY.md. None of those standalone results establishes
+first-map support/falling, live destruction or surviving loot.

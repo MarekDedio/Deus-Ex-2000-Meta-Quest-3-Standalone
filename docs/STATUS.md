@@ -20,7 +20,57 @@ usable contents and support/falling. See TRAINING-FIRST-PRIORITY.md.
   playable-physics capability. See ORIGINAL-ENGINE-DEFAULT-LINK.md. Live crate
   destruction, usable loot and gravity remain unfinished.
 
-## Current first Training touching/overlap prerequisites (2026-10-19)
+## Current first Training higher movement prerequisites (2026-10-19)
+
+The complete detached Level.CheckEncroachment protocol and the original
+MoveActor prequery/backoff numeric service are implemented. The higher protocol
+preserves both pass-specific slot0 read orders, live hit Actor/Next rereads,
+the original list across all push requeries, ordinary-veto side effects,
+selected events/touches and source Location-only reverse-push scope. One mark
+and cumulative linked-hit bound cover both passes and all requeries; nested
+providers retain the same enclosing work allowance. Mark and raw pose cleanup
+on errors are explicit stronger portable safety, not attributed to retail EH.
+
+MoveActor geometry retains the strict Double small threshold, Z/Y/X squared
+sum, Double sqrt argument, PC64 root (not Float size) as reciprocal input,
+extended-Delta spills, retained distance gate and separately stored-distance
+Time correction. It stages values only; there is no actor transform setter,
+fake collision result or zero-motion-only native266 success path.
+
+The independent higher protocol suite passes35378 checks/407 explicit refusals,
+1707 interpreter cases,14 callback mutations,356 provider/work failure prefixes
+and three explicitly MOCK caller roots. Separate reentrant-kernel controls
+verify nested mark success/refusal and shared work preservation. The movement
+arithmetic suite passes
+213020 checks/489 explicit refusals, with53342 independent hardware-x87
+preparations and52901 corrections, including11044 retained-root,10214
+stored-distance and5999 retained-gate witnesses. Strict ARM64 runtime/tests,
+coherent host build and Android native compilation/link pass. Final CTest
+passes145 executed/169 registered,24 explicit owned-data skips and no failures
+in45.78s on the final nested-mark rerun (56.03s before that test addition).
+Actual first-map integration results remain separate from those
+detached providers; there is still no real collision-aware MoveActor adapter.
+The rebuilt exact38-source first-map collision regression passes951463 checks/
+68 explicit refusals. Original startup still reaches BeginPlay slot126,
+00_Training.DeusExMover16 / Engine.Mover.BeginPlay PC166, opcode97:
+unsupported native266. Complete native slot/hash/pose/tag/save/revision/lookup/
+client/GC/RNG rollback and source immutability remain verified. That run does
+not invoke the new detached higher protocol through a real MoveActor provider.
+
+The full original MoveActor/child-carry audit also corrects two old readings:
+BumpWall receives Location then Normal, and the original encroachment-veto
+return does not pop MoveActor's mark. Neither finding authorizes bypassing
+original callbacks, live children or movement-time SetActorZone. Loaded/born
+mover chronology and ordinary zone/foot/head/PRI behavior must also be matched
+before routing native266/299. No other-map integration or replacement APK.
+Live Training destruction, surviving usable loot, support/falling and the
+whole authored route remain unfinished. See ORIGINAL-ACTOR-MOVE-GEOMETRY.md,
+ORIGINAL-LEVEL-ENCROACHMENT-PROTOCOL.md, ORIGINAL-LEVEL-MOVE-ACTOR.md and
+ORIGINAL-CHILD-MOVE-CARRY.md. Evidence:
+`artifacts/training-level-protocol-*20261019.log` and
+`artifacts/training-move-geometry-*20261019.log`.
+
+## Earlier first Training touching/overlap prerequisites (2026-10-19)
 
 The full original BeginTouch/EndTouch/four-slot replacement protocol and
 IsOverlapping predicate now have typed actual-runtime providers. Touching uses

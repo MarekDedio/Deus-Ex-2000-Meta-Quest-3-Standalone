@@ -138,3 +138,19 @@ The final owned first-map collision regression passes951463/68, including a
 real Doctor1.PlayWaiting animation-clock rollback control. Its cold-world
 success/refusal tests are not an in-root clock or begun-callback witness.
 Startup still reaches unsupported Move266, and no new APK is produced.
+
+The next shared checkpoint supplies the COMPLETE detached higher Level
+encroachment protocol and source-backed MoveActor numeric prequery/backoff.
+Their independent protocol/hardware-x87 tests pass; strict ARM64 runtime/tests,
+host compilation, Android native link and coherent CTest145 executed/169
+registered pass (24 explicit owned-data skips, no failures). These are the
+remaining real movement dependency's parts, not a fake publishing provider:
+native266/299, movement-time zone/carry/callback integration and genuine
+startup remain required before live crate/loot/support/falling acceptance.
+Other-map content/integration/tests remain deferred. No new APK for this
+backend-only checkpoint. See ORIGINAL-LEVEL-ENCROACHMENT-PROTOCOL.md,
+ORIGINAL-ACTOR-MOVE-GEOMETRY.md and ORIGINAL-LEVEL-MOVE-ACTOR.md.
+The rebuilt exact38-source first-map regression passes951463 checks/68 explicit
+refusals with complete rollback/source immutability. The startup boundary stays
+at DeusExMover16/Engine.Mover.BeginPlay PC166, unsupported native266; the new
+detached components are not falsely reported as executed through that call.

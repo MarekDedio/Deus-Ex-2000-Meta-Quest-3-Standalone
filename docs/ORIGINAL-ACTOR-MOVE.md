@@ -233,7 +233,8 @@ callbacks, but writes transforms/hash and still calls SetActorZone.
 Unless bTest, at`0x10399D17`–`0x10399F03`:
 
 - If nonnull Hit.Actor equals actual XLevel.Actors[0], invoke source.BumpWall
-  with (Hit.Normal,Hit.Location), not HitWall.
+  with (Hit.Location,Hit.Normal), not HitWall. The full10399D94..E0C audit and
+  original Engine.u child order correct the earlier reversed packet description.
 - Otherwise if nonnull Hit.Actor and !source.IsBasedOn(Hit.Actor), invoke
   Hit.Actor.Bump(source) first, then source.Bump(current Hit.Actor).
   This source-based-on-hit direction differs from the pinned implementation.
@@ -254,7 +255,7 @@ Canonical Engine.Actor event schemas (all flags`0x800`, native0):
 
 | Event | Inputs (each dim1 flags`0x80`) | Return |
 | --- | --- | --- |
-| BumpWall | HitNormal Vector, HitLocation Vector | none |
+| BumpWall | HitLocation Vector, HitNormal Vector | none |
 | Bump | Other Actor | none |
 | Touch / UnTouch | Other Actor | none |
 | EncroachingOn | Other Actor | Bool flags`0x580` |
@@ -263,8 +264,11 @@ Canonical Engine.Actor event schemas (all flags`0x800`, native0):
 ### 9. Zone and native return
 
 Call native SetActorZone virtual`+0xAC` with `(source,bTest,0)`, even for
-bTest. Pop native memmark, then return `Hit.Time>Double0` (strict). A partial
-move can therefore return true. Profiling counters/RDTSC are not the return
+bTest. On this final path pop native memmark, then return `Hit.Time>Double0`
+(strict, unordered false). The earlier encroachment-veto return10399C97 does
+NOT pop that mark; do not infer universal original normal-return cleanup.
+A portable whole-root/RAII guarantee must be documented as stronger safety.
+A partial move can therefore return true. Profiling counters/RDTSC are not the return
 authority.
 
 ## Native helper details and remaining dependencies
