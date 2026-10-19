@@ -207,3 +207,16 @@ The separate rebuilt actual38-package first-map regression passes1090740
 checks/77 explicit refusals with complete rollback/source immutability.
 Startup still reaches the same DeusExMover16 Move266 boundary. It does not
 exercise the detached child-carry helper through a real recursive move provider.
+
+The complete ordinary detached MoveActor coordinator now supplies the original
+outer protocol, verified by independent provider/hardware tests and an actual
+child-helper composition suite. The native pose-read seam now resolves
+temporary Location separately from Rotation, with mutable Location-only
+authority and generation-safe delayed undo. Full query scopes remain readonly;
+trusted durable writes and real recursive movement are not wired yet. These
+are first-map prerequisites, not live crate physics. See
+TRAINING-LEVEL-MOVE-ACTOR.md. Coherent host/strict ARM64/Android native builds
+pass; CTest150 executed/174 registered passes with24 owned-data skips and no
+failures. The actual38-package first-map regression passes1090740 checks/77
+refusals and still reports the unsupported266 startup boundary. No other maps
+or new APK are included.

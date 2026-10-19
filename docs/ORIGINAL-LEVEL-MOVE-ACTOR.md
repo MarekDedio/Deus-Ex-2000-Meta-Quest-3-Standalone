@@ -150,9 +150,13 @@ worldAnchor is actual L.Actors[0], asserted nonnull and actual LevelInfo,
 only when current bCollideWorld and !dynamicBrush; otherwise None.
 actorCheck is 1 only when current bCollideActors and !dynamicBrush, else0.
 Those dynamic-brush predicates are separately evaluated at their source
-sites, not one cached earlier result. Height/radius/Location reads are live;
-endpoint arithmetic Float-stores XYZ, then the start's three raw Location
-words are read. There is no source-actor argument and no prequery self filter.
+sites, not one cached earlier result. Height/radius/Location reads are live.
+Read Height, radius for Y, then radius again for X; X is copied raw while Y/Z
+pass through Float stores. Endpoint arithmetic first samples Location Z/Y/X
+and retains each sum. Read start's raw Location X before endpoint's X Float
+store, then start Y before endpoint Y, then start Z before endpoint Z. Do not
+cache one pose/radius snapshot or move all endpoint stores ahead of start
+reads. There is no source-actor argument and no prequery self filter.
 
 Store the returned head even if no blocking scan will occur. Scan only when
 current S flag mask0E is nonzero. Walk the linked result order and its live
@@ -295,14 +299,16 @@ ProcessEvent. Engine.Actor.Bump has one Actor Other, dim1 flags80,
 flags800/native0. There is no outer begun/deletion gate around these calls.
 
 At `10399E65..ED0`, enter the original query list when potentialTouch!=0 OR
-either current S.bBlockActors or S.bBlockPlayers is false. For each live link
-whose Time is **strictly** below current H.Time:
+either current S.bBlockActors or S.bBlockPlayers is false. For each live link,
+the x87 C0 test admits Time **strictly** below current H.Time **or unordered**.
+Ordered equality/greater stops the entire scan; a callback-created NaN in
+current H.Time continues it. For each admitted link:
 
 1. Skip candidate.IsBasedOn(S).
 2. When bIgnoreBases, skip S.IsBasedOn(candidate).
 3. Apply live S.IsBlockedBy(candidate); if false, call S.BeginTouch(candidate).
-4. Read link.Next after those calls and continue. The first link failing the
-   strict Time comparison terminates the entire scan, not just that link.
+4. Read link.Next after those calls and continue. The first link failing that
+   comparison terminates the entire scan, not just that link.
 
 Do not reapply bIgnorePawns here, cache the pre-callback blocking flags, sort
 the list again or replace native Touching storage with event-history bits.
@@ -349,11 +355,15 @@ real collision-aware moveSmooth provider. Check current code/tests for each
 component's stated supported domain rather than treating this list as a
 publishing runtime integration claim.
 
+The complete detached coordinator is now implemented in
+`native/quest_level_move_actor.h`. Its independent-provider/hardware tests and
+remaining real-service boundary are recorded in TRAINING-LEVEL-MOVE-ACTOR.md.
+It does not by itself route native266/299 or publish a Training move.
+
 Still required before routing native266/299:
 
-- One COMPLETE MoveActor coordinator with the returns, gates, live field/
-  array/link schedule, child carrying, source hash mutation and event packets
-  above; native eligibility/editor policy and exact qualified scalar writes.
+- Bind that coordinator to actual native eligibility/editor authority, exact
+  qualified scalar writes and native retained Level/list/hash identities.
 - Recursive real MoveActor and moveSmooth in that same root; no direct
   transform stand-in, no zero-delta-only success and no forced begun state.
 - Real higher CheckEncroachment binding, including push/recheck/reverse-push,

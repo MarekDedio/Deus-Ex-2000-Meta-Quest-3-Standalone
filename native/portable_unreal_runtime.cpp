@@ -67,6 +67,7 @@
 #include "quest_actor_child_carry.h"
 #include "quest_actor_move_geometry.h"
 #include "quest_level_encroachment.h"
+#include "quest_level_move_actor.h"
 
 #include <memory>
 #include <algorithm>
@@ -6761,15 +6762,16 @@ public:
         // a UClass receiver rather than confusing this with its Core.Class data.
         const bool classDefaults = defaults || object->classDescriptor || object->defaultOwner;
         if(!classDefaults&&!immutable&&index==0u) {
-            if(const auto* pose=nativeActorPoses_.Find(reinterpret_cast<std::uintptr_t>(object))) {
-                const auto key=LowerAscii(property.key);
-                if(key=="engine.actor.location" || key=="engine.actor.rotation") {
-                    const auto kind=key=="engine.actor.location"?Kind::Vector:Kind::Rotator;
-                    if(property.arrayDimension!=1u || property.zero.kind!=kind || property.flags!=0x23u ||
-                        !OwnsProperty(object->cls,property))
-                        throw std::runtime_error("Native actor pose read lost its exact original scalar declaring schema");
-                    return kind==Kind::Vector?Value::Vector(pose->location):Value::Rotator(pose->rotation);
-                }
+            const auto key=LowerAscii(property.key);
+            const auto identity=reinterpret_cast<std::uintptr_t>(object);
+            const auto* location=key=="engine.actor.location"?nativeActorPoses_.FindLocation(identity):nullptr;
+            const auto* rotation=key=="engine.actor.rotation"?nativeActorPoses_.FindRotation(identity):nullptr;
+            if(location||rotation) {
+                const auto kind=location?Kind::Vector:Kind::Rotator;
+                if(property.arrayDimension!=1u || property.zero.kind!=kind || property.flags!=0x23u ||
+                    !OwnsProperty(object->cls,property))
+                    throw std::runtime_error("Native actor pose read lost its exact original scalar declaring schema");
+                return location?Value::Vector(*location):Value::Rotator(*rotation);
             }
         }
         if(!classDefaults && !immutable && persistentRetailCollision &&

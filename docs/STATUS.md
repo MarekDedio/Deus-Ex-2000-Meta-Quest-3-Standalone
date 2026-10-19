@@ -20,7 +20,38 @@ usable contents and support/falling. See TRAINING-FIRST-PRIORITY.md.
   playable-physics capability. See ORIGINAL-ENGINE-DEFAULT-LINK.md. Live crate
   destruction, usable loot and gravity remain unfinished.
 
-## First Training based-child carrying prerequisite (2026-10-19)
+## First Training complete movement coordinator prerequisite (2026-10-19)
+
+The complete detached ordinary MoveActor coordinator now implements original
+eligibility/small exits, live sweep and blocking selection, child/encroachment
+calls, Remove/pose/Add, BumpWall/Bump, touching and movement-time zone tail.
+Its independent suite passes144728 checks/217 explicit refusals with3828
+provider/hardware cases,184 failure prefixes, three nested controls and seven
+literal state-changing read-order controls. A separate real coordinator/real
+child-helper composition suite passes265 checks/eight cases/one shared-work
+refusal; its lower collision/world services are explicitly mocks.
+
+The actual runtime pose-read seam now resolves temporary Location and Rotation
+independently. Mutable Location-only authority preserves live durable Rotation,
+and generation-qualified delayed undo cannot write a reused slot. Full query
+scopes remain read-only to the new trusted-write API. Pose scope tests pass4621
+checks/1044 refusals, including raw words and allocation-forbidden cleanup.
+Trusted durable movement writers are not connected yet and generic active-hash
+shape guards remain unchanged.
+
+No native266/299 route, publishing startup, playable crate destruction, surviving
+loot, support/falling or headset acceptance follows from these mock tests.
+Actual-provider integration remains required. See TRAINING-LEVEL-MOVE-ACTOR.md.
+No other maps or new APK are included in this backend checkpoint.
+Coherent host, strict ARM64 runtime/new helper tests and Android native builds
+pass. Default CTest150 executed/174 registered passes with24 owned-data skips,
+zero failures in51.89s; those skips are not actual-map/headset evidence.
+The separate actual38-package first-map regression passes1090740 checks/77
+explicit refusals with complete rollback and source immutability. Startup
+remains at DeusExMover16 BeginPlay PC166/opcode97, unsupported native266;
+the real-map test does not claim to call the new detached coordinator.
+
+## Earlier first Training based-child carrying prerequisite (2026-10-19)
 
 The complete detached based-child MoveActor segment now retains the original
 live Level scan, lazy source rotation reads, two distinct wrapping yaw deltas,
