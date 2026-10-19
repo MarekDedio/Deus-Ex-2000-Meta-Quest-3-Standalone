@@ -15,6 +15,7 @@
 #include "quest_runtime_script_packages.h"
 #include "quest_save_bundle.h"
 #include "quest_script_state.h"
+#include "quest_authored_struct_value.h"
 
 #include <algorithm>
 #include <array>
@@ -528,6 +529,7 @@ void SetterCoverage(const std::vector<Actor>& actors,const std::function<void()>
 #include "portable_retail_actor_blocking_cases.inl"
 #include "portable_retail_actor_touch_cases.inl"
 #include "portable_model_point_region_cases.inl"
+#include "portable_actor_zone_cases.inl"
 void Run(const fs::path& root) {
     Temporary temporary(root);std::vector<Source> sources;std::vector<PortablePackageTables> scripts;
     sources.reserve(QuestVr::RuntimeScriptPackages.size()+2u);scripts.reserve(QuestVr::RuntimeScriptPackages.size());
@@ -569,6 +571,7 @@ void Run(const fs::path& root) {
     };
     rollback();
     ModelPointRegionCoverage(map,actors,rollback);
+    ActorZoneCases(map,actors,rollback);
     for(const auto& commands:std::vector<std::vector<Command>>{{},std::vector<Command>(17u),
         {Command{static_cast<Operation>(999)}},{Command{Operation::Enable},Command{static_cast<Operation>(999)}}}) {
         const auto rejected=ProbePortableRuntimeRetailCollision(commands);
@@ -713,6 +716,7 @@ void Run(const fs::path& root) {
     GC::Collect();Require(temporary.Save("RestoredAfterBirth")==before&&GetPortableRuntimeMapActors(true).size()==actors.size(),
         "Frozen-birth injection control changed dormant first Training state");
     AnimatedActorTouchRollback(temporary,targetPath);
+    AnimatedActorZoneRollback(temporary);
     for(const auto& source:sources)source.Unchanged();
     lifetime->Revoke();ClearPortableRuntimeClient();
     std::cout<<"PASS first Training only:38 exact Quest source packages, "<<actors.size()<<" actual native-slot actors, "

@@ -27,7 +27,7 @@ struct PortableRetailCollisionSnapshot {
     std::vector<PortableRetailCollisionActor> actors;
 };
 enum class PortableRetailCollisionOperation { Enable, Disable, LineCheck, SetCollision, SetCollisionSize, MultiLineCheck, EncroachmentCheck,
-    IsBlockedBy, IsBasedOn, LocalPlayerPawn, IsOverlapping, BeginTouch, EndTouch, TouchSide };
+    IsBlockedBy, IsBasedOn, LocalPlayerPawn, IsOverlapping, BeginTouch, EndTouch, TouchSide, SetActorZone };
 struct PortableRetailCollisionCommand {
     PortableRetailCollisionOperation operation{PortableRetailCollisionOperation::Enable};
     std::array<float,3u> end{},start{},extent{};
@@ -43,6 +43,12 @@ struct PortableRetailCollisionCommand {
     // accepted as None only for IsBasedOn. No collision hash is required.
     std::string otherActorPath{};
     std::int32_t touchSuppressSelf{};
+    // Original SetActorZone only. Any-nonzero native signed integer flags.
+    std::int32_t zoneTest{},zoneForce{};
+    // Explicit dormant diagnostic fixture ONLY: end is a temporary native
+    // Location view, with original Rotation retained. Never a committed Move,
+    // hash relocation, startup bypass or claim about live callback mutation.
+    bool zoneUsePose{};
 };
 struct PortableRetailCollisionMutation {
     std::string actorPath;
@@ -74,6 +80,21 @@ struct PortableRetailTouchSnapshot {
     bool sideAccepted{};
     std::array<std::string,4u> source,other;
 };
+struct PortableRetailActorRegion {
+    std::string zonePath;
+    std::int32_t leaf{-1};
+    std::uint8_t number{};
+};
+struct PortableRetailZoneSnapshot {
+    std::size_t commandIndex{};
+    std::string actorPath;
+    bool pawn{};
+    std::array<PortableRetailActorRegion,3u> regions;
+    // Optional original clock snapshots encoded with the SAME canonical save
+    // codec, taken inside this root before/after the native zone operation.
+    // Empty means no actual native clock, not a fabricated pose/idle seed.
+    std::vector<std::uint8_t> clockBefore,clockAfter;
+};
 struct PortableRetailCollisionProbeResult {
     QuestVr::Vm::Result execution;
     bool available{};
@@ -84,6 +105,7 @@ struct PortableRetailCollisionProbeResult {
     std::vector<PortableRetailMultiLineMetadata> multiLine;
     std::vector<PortableRetailActorPredicate> predicates;
     std::vector<PortableRetailTouchSnapshot> touches;
+    std::vector<PortableRetailZoneSnapshot> zones;
 };
 // Bounded original SetActorCollision four-case and actual primitive-query
 // diagnostic. No native pointer leaves the CPU owner; every state is detached.

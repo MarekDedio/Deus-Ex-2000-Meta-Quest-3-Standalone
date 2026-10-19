@@ -172,3 +172,21 @@ pass and the startup native266 boundary is unchanged. Final coherent CTest
 completes146 executed/170 registered with24 owned-data skips and zero failures.
 The full movement-time zone event/store audit is in ORIGINAL-MOVEMENT-ZONE.md;
 it is not an implemented provider or playable-physics claim.
+
+The subsequent ordinary actor-zone service now has its complete kernel and
+real typed runtime providers, tested only through rollback-only first-map
+diagnostics. All22 Training Pawns are included among26 representatives with
+78 native operations and210 independently predicted main/foot/head tuples.
+Temporary posed-input controls distinguish the old authored region from the
+calculated facade and restore the scope before the next command in the SAME
+root. No pose is committed, no actor is relocated in its hash, and the fixture
+is forbidden in a begun world. This is not native Move, original startup or
+live crate/gravity/usable-loot acceptance. Other maps remain deferred and no
+APK is packaged for these prerequisites. See TRAINING-ACTOR-ZONES.md.
+The final actual38-package first-map regression passes1090740 checks/77
+refusals. Doctor1.PlayWaiting's real native clock is byte-identical INSIDE the
+successful zone root, with late refusal/full state/save/GC rollback separately
+verified. Coherent CTest147 executed/171 registered passes with24 owned-data
+skips and no failures; strict ARM64 and Android native link pass. Original
+startup still reaches the same unsupported Move266 boundary; these results
+do not complete live crate destruction/loot/gravity or produce a new APK.

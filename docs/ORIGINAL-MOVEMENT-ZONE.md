@@ -1,8 +1,11 @@
 # Movement-time ULevel.SetActorZone contract (2026-10-19)
 
 Static audit for the native movement path required by first `00_Training`.
-This document does **not** implement SetActorZone, Move266/299, world startup,
-support/falling or playable crate destruction/loot. The implemented
+This static audit does **not** itself implement Move266/299, world startup,
+support/falling or playable crate destruction/loot. The subsequent complete
+ordinary SetActorZone kernel and actual typed rollback-only providers are
+documented in TRAINING-ACTOR-ZONES.md; they are not falsely published through
+the still-unsupported movement call. The implemented
 PointRegion query is documented separately in ORIGINAL-MODEL-POINT-REGION.md.
 The existing world/birth `(actor,1,1)` helper must not be substituted for the
 movement call `(actor,bTest,0)`.
@@ -113,7 +116,7 @@ Full FPointRegion copies include only the declared Byte's meaningful low byte;
 native stack padding/uninitialized upper Byte-storage bits are not a portable
 value contract. Defined leaf and actor identities remain exact.
 
-## Runtime integration requirements still outstanding
+## Provider contract and remaining integration
 
 Use exact declared Region/FootRegion/HeadRegion storage, not the convenient
 read-only Region fallback as a substitute for old native tuples. Providers must
@@ -126,7 +129,9 @@ complete root rollback; that stronger safety is not retail EH behavior.
 
 There is no native SetBase, direct bWaterZone-to-Physics assignment, support
 search or falling step in this body. Existing SpawnZone's additional behavior
-does not establish this movement contract. A future adapter needs independent
-event/store-order and callback-mutation tests, late shared-budget refusal,
-reentrant-root coverage and actual first-map integration before it can be used
-as a real MoveActor provider. Other campaign-map integration remains deferred.
+does not establish this movement contract. The subsequent kernel has independent
+event/store-order, callback-mutation, shared-budget and reentrant controls; its
+typed diagnostic providers are tested on the actual first map. Those dormant
+world probes do not execute live zone-change bytecode or prove MoveActor,
+startup, support/falling or surviving contents. Other campaign-map integration
+remains deferred.

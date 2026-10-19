@@ -20,7 +20,39 @@ usable contents and support/falling. See TRAINING-FIRST-PRIORITY.md.
   playable-physics capability. See ORIGINAL-ENGINE-DEFAULT-LINK.md. Live crate
   destruction, usable loot and gravity remain unfinished.
 
-## First Training region-query correction (2026-10-19)
+## First Training actor-zone service (2026-10-19)
+
+The complete ordinary SetActorZone kernel and real typed runtime providers
+now supply the movement-time zone dependency through rollback-only diagnostics.
+They preserve separate stored main/foot/head tuples, force-reset ordering,
+postcallback pose/height sampling, selected original event packets and live PRI
+tail reads. No begun-play, role, possession or physical movement is invented.
+The prior world/birth zone approximations are not relabeled as this service.
+
+The independent suite passes75635 checks/296 refusals,867 provider-interpreter
+cases,128 callback-mutation cases,281 provider/work failure prefixes, two
+reentrant controls and60000 numeric comparisons. Actual first-map controls
+pass on26 representatives including all22 Pawns:78 operations in seven
+rollback-only batches (three with active hash),210 independent source/hardware
+tuples and66 Pawn operations. Authored old-zone/temporary posed-input controls
+and same-root scope restoration, real suppressed event entry and partial/late
+write refusal pass. Actual source region tags were inspected, not assumed
+empty. The final shared CTest passes147 executed/171 registered,24 explicit
+owned-data skips, no failures in45.82s. Host, strict ARM64 and Android native
+builds pass. See TRAINING-ACTOR-ZONES.md and ORIGINAL-MOVEMENT-ZONE.md.
+
+The final actual first-map suite passes1090740 checks/77 explicit refusals,
+including canonical full-clock snapshots proving Doctor1.PlayWaiting's actual
+native clock remains identical INSIDE successful zone execution. Complete
+save/revision/lookup/client/hash/GC/RNG rollback and source immutability pass.
+The real startup boundary remains BeginPlay slot126, DeusExMover16,
+Engine.Mover.BeginPlay PC166/opcode97, unsupported native266.
+
+This is not complete native Move, actual startup, live zone-change bytecode,
+support/falling or playable crate destruction/loot. No replacement APK or
+other-map integration is included.
+
+## Earlier first Training region-query correction (2026-10-19)
 
 The runtime Region lookup now uses the original retained-PC64 Z/Y/X BSP query
 and the actual loader-owned native Model/cache. It no longer rounds that path

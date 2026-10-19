@@ -63,6 +63,7 @@
 #include "quest_actor_move_smooth.h"
 #include "quest_actor_touch.h"
 #include "quest_actor_overlap_original.h"
+#include "quest_actor_zone.h"
 #include "quest_actor_move_geometry.h"
 #include "quest_level_encroachment.h"
 
@@ -4543,6 +4544,7 @@ public:
     #include "portable_retail_encroachment.inl"
     #include "portable_retail_actor_blocking.inl"
     #include "portable_retail_actor_touch.inl"
+    #include "portable_actor_zone.inl"
     void RequireIndexedPrimitiveDiagnosticOwner(RuntimeObject* owner) {
         RequireMapActor(owner);
         if(owner->worldActorIndex<0 || static_cast<std::size_t>(owner->worldActorIndex)>=persistentWorldActors.size() ||
@@ -4613,7 +4615,11 @@ public:
     }
     const PortableModelGeometry& NativeTraceModel(RuntimeObject* actor) {
         static_cast<void>(NativeLevelInfo(actor));
-        auto* level=actor->nativeXLevel;auto* model=level->nativeLevelModel;
+        return NativeLevelTraceModel(actor->nativeXLevel);
+    }
+    const PortableModelGeometry& NativeLevelTraceModel(RuntimeObject* level) {
+        if(!level)throw std::runtime_error("Native Model query has no supplied ULevel");
+        auto* model=level->nativeLevelModel;
         if(!level->nativeMapGeneration || level->nativeMapGeneration!=persistentMapGenerationCounter ||
             !model || model->runtimeBirth || model->sourcePath!=level->sourcePath ||
             model->sourcePath!=persistentMapSourcePath)
@@ -6678,7 +6684,8 @@ public:
         throw std::runtime_error("RootWindow native SetVisibility/init-tree/reconfiguration is not implemented");
     }
     Value Read(RuntimeObject* object, const Property& property, const std::uint32_t index,
-        const bool defaults = false, const bool immutable = false,NativeAuthoredReadOrigin* origin=nullptr) {
+        const bool defaults = false, const bool immutable = false,NativeAuthoredReadOrigin* origin=nullptr,
+        const bool nativeRegionStorage=false) {
         if(origin) *origin={};
         if(object->nativePackageInstance || object->nativePackageDefaults)
             throw std::runtime_error("Native Package reflected/default storage requires its typed native service");
@@ -6847,7 +6854,7 @@ public:
                 return Value::Text(Kind::Object, object->nativeXLevel->reflection.objectPath);
             if (LowerAscii(property.key) == "engine.actor.standingcount" && index == 0u && object->initialStandingCount)
                 return Value::Byte(*object->initialStandingCount);
-            if (LowerAscii(property.key) == "engine.actor.region" && property.zero.kind == Kind::Struct)
+            if (!nativeRegionStorage && LowerAscii(property.key) == "engine.actor.region" && property.zero.kind == Kind::Struct)
                 return Region(object, property.zero);
         }
         // The instance adds one storage source before the bounded class chain.
@@ -8538,7 +8545,9 @@ private:
                 // clock merely because the reflected-property path is shared.
                 const auto key=LowerAscii(property.key);
                 if (key!="engine.actor.timerrate" && key!="engine.actor.timercounter" && key!="engine.actor.btimerloop" &&
-                    !NativeNoiseCacheKey(key) && key!="engine.pawn.stimulus" && key!="engine.actor.touching")
+                    !NativeNoiseCacheKey(key) && key!="engine.pawn.stimulus" && key!="engine.actor.touching" &&
+                    key!="engine.actor.region" && key!="engine.pawn.footregion" && key!="engine.pawn.headregion" &&
+                    key!="engine.playerreplicationinfo.playerzone")
                     UpdateClockProperty(target, property.name, index);
                 const auto name=LowerAscii(property.name);
                 if (index==0u && (name=="location" || name=="collisionradius" || name=="collisionheight" ||
