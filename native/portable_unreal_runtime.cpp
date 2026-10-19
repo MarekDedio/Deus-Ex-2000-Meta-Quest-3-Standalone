@@ -60,6 +60,8 @@
 // Complete detached slide/push protocol; actual native Move remains refused
 // until its original collision/event/root provider is implemented in full.
 #include "quest_actor_move_smooth.h"
+#include "quest_actor_touch.h"
+#include "quest_actor_overlap_original.h"
 
 #include <memory>
 #include <algorithm>
@@ -4537,6 +4539,7 @@ public:
     #include "portable_retail_multi_line.inl"
     #include "portable_retail_encroachment.inl"
     #include "portable_retail_actor_blocking.inl"
+    #include "portable_retail_actor_touch.inl"
     void RequireIndexedPrimitiveDiagnosticOwner(RuntimeObject* owner) {
         RequireMapActor(owner);
         if(owner->worldActorIndex<0 || static_cast<std::size_t>(owner->worldActorIndex)>=persistentWorldActors.size() ||
@@ -8532,7 +8535,7 @@ private:
                 // clock merely because the reflected-property path is shared.
                 const auto key=LowerAscii(property.key);
                 if (key!="engine.actor.timerrate" && key!="engine.actor.timercounter" && key!="engine.actor.btimerloop" &&
-                    !NativeNoiseCacheKey(key) && key!="engine.pawn.stimulus")
+                    !NativeNoiseCacheKey(key) && key!="engine.pawn.stimulus" && key!="engine.actor.touching")
                     UpdateClockProperty(target, property.name, index);
                 const auto name=LowerAscii(property.name);
                 if (index==0u && (name=="location" || name=="collisionradius" || name=="collisionheight" ||

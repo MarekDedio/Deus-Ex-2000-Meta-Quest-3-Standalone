@@ -3,6 +3,8 @@
 User priority,2026-10-18: make the first original Training map fully work
 before spending time on other campaign-map integration. The long-term full
 campaign objective remains, but it is not the current acceptance milestone.
+Reconfirmed2026-10-19: skip other-map chest/physics integration and testing to
+save time; shared prerequisites needed by this first map remain in scope.
 
 ## In scope now
 
@@ -120,3 +122,19 @@ test syntax, Android native link and coherent CTest141 executed/165 registered
 collision883599/55, Engine42647/31 and isolated crate347/two regressions pass.
 The unchanged startup native266 boundary still prevents a playable-physics
 claim; no replacement APK is produced or installed for this helper checkpoint.
+
+The next dependency implements the original four-slot BeginTouch/EndTouch
+protocol and strict signed-cylinder IsOverlapping, with actual current-Level
+identity/qualified-property/event providers. They remain rollback-only entries;
+no original startup flag, role or possession is forced. Independent touch
+interpreter and hardware-x87 overlap tests pass; the Android native link,
+strict ARM64 syntax and coherent CTest143 executed/167 registered also pass
+(24 explicit owned-data skips, no failures). This work still targets only
+first Training's movement/destruction prerequisites. It does not integrate or
+test chest physics on the other campaign maps. Original native Move, support/
+falling and surviving usable loot remain unfinished. See
+ORIGINAL-ACTOR-TOUCH.md and ORIGINAL-ACTOR-OVERLAP.md.
+The final owned first-map collision regression passes951463/68, including a
+real Doctor1.PlayWaiting animation-clock rollback control. Its cold-world
+success/refusal tests are not an in-root clock or begun-callback witness.
+Startup still reaches unsupported Move266, and no new APK is produced.

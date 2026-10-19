@@ -1,8 +1,10 @@
 # Training recording milestone
 
-The next acceptance target is a short, repeatable Quest recording route through
-the beginning of `00_Training`. This is not a claim that the full tutorial or
-original campaign startup is complete.
+Current priority,2026-10-19: complete the entire first `00_Training` map before
+other campaign-map integration/testing; see TRAINING-FIRST-PRIORITY.md.
+The short recording route below is the earlier introductory checkpoint, not
+the full current acceptance target. Neither the full tutorial nor original
+campaign startup is claimed complete.
 
 ## First recording route
 
@@ -115,3 +117,5 @@ The authored exits lead from Training to `00_TrainingCombat#combat`, then to
 weapons/targets, NPC AI, demolition tasks and inventory transfers; Final needs
 stealth/detection and its own scripted progression. A successful introductory
 recording is therefore a useful milestone, not completion of all three maps.
+Those later-map integrations/tests are deferred until the first Training map
+fully works; the exit names here are source context, not the current work order.

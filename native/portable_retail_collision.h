@@ -27,7 +27,7 @@ struct PortableRetailCollisionSnapshot {
     std::vector<PortableRetailCollisionActor> actors;
 };
 enum class PortableRetailCollisionOperation { Enable, Disable, LineCheck, SetCollision, SetCollisionSize, MultiLineCheck, EncroachmentCheck,
-    IsBlockedBy, IsBasedOn, LocalPlayerPawn };
+    IsBlockedBy, IsBasedOn, LocalPlayerPawn, IsOverlapping, BeginTouch, EndTouch, TouchSide };
 struct PortableRetailCollisionCommand {
     PortableRetailCollisionOperation operation{PortableRetailCollisionOperation::Enable};
     std::array<float,3u> end{},start{},extent{};
@@ -42,6 +42,7 @@ struct PortableRetailCollisionCommand {
     // Original native predicates only: actorPath is receiver. Empty other is
     // accepted as None only for IsBasedOn. No collision hash is required.
     std::string otherActorPath{};
+    std::int32_t touchSuppressSelf{};
 };
 struct PortableRetailCollisionMutation {
     std::string actorPath;
@@ -67,6 +68,12 @@ struct PortableRetailActorPredicate {
     bool returned{};
     std::string localPlayerPath;
 };
+struct PortableRetailTouchSnapshot {
+    std::size_t commandIndex{};
+    // Native Bool only for TouchSide; BeginTouch/EndTouch are void operations.
+    bool sideAccepted{};
+    std::array<std::string,4u> source,other;
+};
 struct PortableRetailCollisionProbeResult {
     QuestVr::Vm::Result execution;
     bool available{};
@@ -76,6 +83,7 @@ struct PortableRetailCollisionProbeResult {
     std::vector<PortableRetailCollisionMutation> mutations;
     std::vector<PortableRetailMultiLineMetadata> multiLine;
     std::vector<PortableRetailActorPredicate> predicates;
+    std::vector<PortableRetailTouchSnapshot> touches;
 };
 // Bounded original SetActorCollision four-case and actual primitive-query
 // diagnostic. No native pointer leaves the CPU owner; every state is detached.

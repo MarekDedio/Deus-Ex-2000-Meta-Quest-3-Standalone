@@ -274,13 +274,41 @@
         retailCollisionPreview_=true;
         ReserveRetailDiagnosticOutput(QuestVr::DecalStateDetail::Multiply(commands.size(),
             sizeof(PortableRetailCollisionSnapshot)+sizeof(std::vector<PortableRetailCollisionHit>)+sizeof(std::size_t)+
-                sizeof(PortableRetailCollisionMutation)+sizeof(PortableRetailMultiLineMetadata)+sizeof(PortableRetailActorPredicate)));
+                sizeof(PortableRetailCollisionMutation)+sizeof(PortableRetailMultiLineMetadata)+sizeof(PortableRetailActorPredicate)+
+                sizeof(PortableRetailTouchSnapshot)));
         result.states.reserve(commands.size());result.queries.reserve(commands.size());result.queryHeads.reserve(commands.size());
         result.mutations.reserve(commands.size());result.multiLine.reserve(commands.size());
         result.predicates.reserve(commands.size());
+        result.touches.reserve(commands.size());
         for(const auto& command:commands) {
             if(command.operation==PortableRetailCollisionOperation::Enable) SetRetailActorCollision(true);
             else if(command.operation==PortableRetailCollisionOperation::Disable) SetRetailActorCollision(false);
+            else if(command.operation==PortableRetailCollisionOperation::BeginTouch ||
+                command.operation==PortableRetailCollisionOperation::EndTouch ||
+                command.operation==PortableRetailCollisionOperation::TouchSide ||
+                command.operation==PortableRetailCollisionOperation::IsOverlapping) {
+                const auto valid=[](const std::string& path) {
+                    return !path.empty()&&path.size()<=8192u&&path.find('\0')==std::string::npos;
+                };
+                if(!valid(command.actorPath)||!valid(command.otherActorPath))
+                    throw std::runtime_error("Original native touching diagnostic requires two bounded actor paths");
+                auto* source=RetailCollisionActor(reinterpret_cast<std::uintptr_t>(Object(command.actorPath)));
+                auto* other=RetailCollisionActor(reinterpret_cast<std::uintptr_t>(Object(command.otherActorPath)));
+                const auto a=reinterpret_cast<std::uintptr_t>(source),b=reinterpret_cast<std::uintptr_t>(other);
+                if(command.operation==PortableRetailCollisionOperation::IsOverlapping) {
+                    const bool returned=QuestVr::IsOriginalActorOverlapping(a,b,RetailActorOverlapQueries());
+                    ReserveRetailDiagnosticOutput(1u+4u*sizeof(void*));
+                    result.predicates.push_back({result.states.size(),returned,{}});
+                }else {
+                    auto queries=RetailActorTouchQueries(execution);bool accepted{};
+                    if(command.operation==PortableRetailCollisionOperation::BeginTouch)
+                        QuestVr::BeginOriginalActorTouch(a,b,queries);
+                    else if(command.operation==PortableRetailCollisionOperation::EndTouch)
+                        QuestVr::EndOriginalActorTouch(a,b,command.touchSuppressSelf,queries);
+                    else accepted=QuestVr::AddOriginalActorTouchSide(a,b,queries);
+                    result.touches.push_back(RetailTouchSnapshot(source,other,result.states.size(),accepted));
+                }
+            }
             else if(command.operation==PortableRetailCollisionOperation::IsBlockedBy ||
                 command.operation==PortableRetailCollisionOperation::IsBasedOn ||
                 command.operation==PortableRetailCollisionOperation::LocalPlayerPawn) {

@@ -200,9 +200,10 @@ strict cylinder inequalities: horizontal squared separation < squared summed
 radii, and squared Z separation < squared summed heights. Tangency is false;
 both comparisons use the recovered retained x87 operations, not a newly
 introduced epsilon, absolute-Z approximation or brush PointCheck. No collide,
-delete, Owner/Base or self gate is present in this helper. Exact portable
-numeric implementation still needs its own tests; these equations alone are
-not an ARM rounding oracle.
+delete, Owner/Base or self gate is present in this helper. The separately
+implemented retained-arithmetic kernel and actual first-map typed provider
+are documented in ORIGINAL-ACTOR-OVERLAP.md; these equations alone are not an
+ARM rounding oracle.
 
 BeginTouch thunk `1030177B` reaches `10369570..103695C5`. It first executes the
 one-sided helper `(S,C)` at `10369630..103698B4`, and only if that returns true
@@ -228,6 +229,11 @@ flag and regardless of whether a first-side match existed. No bDeleteMe gate,
 touchEventSent bit, all-duplicates loop or automatic slot compaction occurs.
 The older portable host UnTouch has different guards/history semantics; it is
 not this original native helper and cannot be reused without an exact adapter.
+
+The separate complete protocol and qualified-slot/event runtime adapter are
+now implemented; see ORIGINAL-ACTOR-TOUCH.md. Their actual first-map entry is
+rollback-only and respects cold-world event suppression. They are not yet a
+publishing integration of this higher Level encroachment operation.
 
 ## Memory marks, exceptions and smallest faithful remaining integration
 

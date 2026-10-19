@@ -20,7 +20,54 @@ usable contents and support/falling. See TRAINING-FIRST-PRIORITY.md.
   playable-physics capability. See ORIGINAL-ENGINE-DEFAULT-LINK.md. Live crate
   destruction, usable loot and gravity remain unfinished.
 
-## Current first Training slide/push prerequisites (2026-10-19)
+## Current first Training touching/overlap prerequisites (2026-10-19)
+
+The full original BeginTouch/EndTouch/four-slot replacement protocol and
+IsOverlapping predicate now have typed actual-runtime providers. Touching uses
+the real qualified Actor Object[4] storage and existing VM journal, not the old
+touchEventSent relationship helper. It preserves live slot rereads, Role0 and
+Pawn/bIsPlayer replacement priorities, first-match removal, signed self-event
+suppression, callback lookup/parameter packets and the same outer work/write/
+memory budgets. Dormant-world callback entry is attempted but genuine event
+suppression is not bypassed. Qualified Touching-only writes no longer request
+unrelated generic animation-clock reconstruction.
+
+IsOverlapping preserves the original brush/declared-Level gates, per-field
+live read order, signed dimension sums, strict contact comparisons and retained
+x87 arithmetic. Its standalone suite passes131723 checks/92 explicit refusals,
+including131561 independent hardware-x87 comparisons. The independent touch
+interpreter suite passes127578 checks,24609 protocol cases,20308 slot layouts,
+3888 role/class policies,18 callback mutations,360 failure prefixes and380
+explicit refusals. Its three caller-root controls are explicitly mocks, not
+actual gameplay evidence.
+
+Strict ARM64 runtime/test syntax, host compilation and Android native
+compilation/link pass. The coherent rebuild/CTest passes143 executed/167
+registered,24 explicit owned-data skips, zero failures in37.33s on the final
+rerun (73.93s on the earlier concurrent owned-test run). The separate
+exact38-source first-Training Engine regression passes42647/31; the isolated
+crate diagnostic passes347/two but still deletes born contents under dormant
+Game=None relevance. These are not surviving usable loot or live destruction.
+The final extended owned collision regression passes951463 checks/68 explicit
+refusals. Its seven touch batches execute34 commands/14 overlaps on genuine
+Training actors, including native Pawn and bIsPlayer replacements. There are
+zero authored Role0 peers, so that branch is not claimed on real map data.
+An actual Doctor1.PlayWaiting command supplies a real animation-clock rollback
+control: one successful cold preview and two late/partial-write refusals restore
+the complete seeded clock/save/lookup/revision/GC state. This proves rollback
+with animation present, not unchanged clock state during an in-root write or
+executed callback bodies in a begun world.
+Startup remains at BeginPlay slot126, DeusExMover16/Engine.Mover.BeginPlay
+PC166, unsupported native266. No other campaign-map integration or new APK.
+
+The remaining gameplay boundary is unchanged: authentic publishing MoveActor/
+HitWall, full higher Level encroachment, native266/299, original startup,
+support/falling, live held-weapon destruction and surviving usable contents.
+See ORIGINAL-ACTOR-TOUCH.md and ORIGINAL-ACTOR-OVERLAP.md. Evidence:
+`artifacts/training-touch-*20261019.log` and
+`artifacts/training-overlap-unit-20261019.log`.
+
+## Earlier first Training slide/push prerequisites (2026-10-19)
 
 The complete detached TwoWallAdjust numeric adapter and moveSmooth protocol
 are implemented for the first-map movement dependency. TwoWallAdjust retains
