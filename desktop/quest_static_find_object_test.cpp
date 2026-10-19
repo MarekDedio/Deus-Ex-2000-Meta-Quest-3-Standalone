@@ -181,12 +181,12 @@ void IntrusiveIdentityCollisions() {
     const auto emptyBytes=index.RetainedBytes();
     // Independently account the actual one-tree representation, retaining the
     // unchanged conservative64B allowance per tree node on a64-bit host.
-    struct OldStoredNodeModel {Lookup::Record record;void *previous{},*next{},*identityNext{};};
-    struct StoredNodeModel {Lookup::Record record;void *next{},*identityNext{};};
+    struct OldStoredNodeModel {Lookup::Record record;void *next{},*identityNext{};};
+    struct StoredNodeModel {Lookup::Record record;std::uint32_t next{},identityNext{};};
     constexpr auto stride=sizeof(std::pair<const std::uint32_t,StoredNodeModel>)+8u*sizeof(void*);
     constexpr auto oldStride=sizeof(std::pair<const std::uint32_t,OldStoredNodeModel>)+8u*sizeof(void*);
     static_assert(sizeof(void*)!=8u||oldStride-stride==8u,
-        "Singly linked name buckets must remove exactly eight owned bytes per object on64-bit hosts");
+        "Index-linked buckets must remove exactly eight owned bytes per object on64-bit hosts");
     for(std::uint32_t i=1u;i<=count;++i) {
         index.Publish(Object(identity(i),slot(i),17));
         Require(index.RetainedBytes()==emptyBytes+static_cast<std::size_t>(i)*stride,

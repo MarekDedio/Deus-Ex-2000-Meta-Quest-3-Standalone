@@ -10,16 +10,18 @@ Latest source checkpoint,2026-10-19: original native movement/rotation now runs
 on actual Training actors, and the missing Core Rotator addition is implemented
 with copied-input/initialized-selector correctness. A bounded shared native-work
 root allowance now retains default65536 while allowing explicit larger finite
-roots through the same callback/iterator/AI ledger. Full actual first-map
-regression passes1177670 checks/100 expected refusals. Repeated original startup
-with explicit262144 advances past the mover scan and next refuses combined
-persistent storage during the authored Mission00 birth/SetInitialState prefix.
-Memory limits are unchanged. Compact faithful runtime storage is the next
-dependency, then remaining startup/support/falling and live weapon/destruction/
-usable-loot acceptance. This is
+roots through the same callback/iterator/AI ledger. The subsequent compact weak
+lookup keeps all objects/ordering with smaller32-bit chain links. Repeated
+original startup with explicit262144 now passes the earlier combined storage
+refusal, completes the authored Mission00 birth and all PostBeginPlay visits,
+then reaches the key's original Mesh assignment during BecomePickup. Memory
+limits are unchanged. The next dependency is the original raw collision-shape
+store/hash contract, then remaining startup/support/falling and live weapon/
+destruction/usable-loot acceptance. This is
 not finished crate physics, a finished tutorial or a replacement APK. The
 older entries below are historical prerequisite checkpoints. See
-TRAINING-NATIVE-WORK.md for current evidence and remaining boundaries.
+TRAINING-COMPACT-LOOKUP.md and TRAINING-NATIVE-WORK.md for current evidence and
+remaining boundaries.
 
 ## In scope now
 

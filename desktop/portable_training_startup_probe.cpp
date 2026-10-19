@@ -187,6 +187,7 @@ int Run(const fs::path& root,const std::optional<std::string>& expected,unsigned
     const bool statePresent=GetPortableRuntimeScriptStatePresent(),unsaved=GetPortableRuntimeUnsavedScriptState();
     const auto time=ReadPortableRuntimeLevelTime();const auto lookup=ReadPortableRuntimeObjectLookup();
     GC::Collect();const auto gc=GC::GetStats();
+    std::cout<<"INITIAL LOOKUP objects="<<lookup.objects<<" retainedBytes="<<lookup.retainedBytes<<'\n';
     const auto rollback=[&] {
         Require(temporary.Save("AfterStartup")==saved,"Startup diagnostic changed the full checkpoint/property/clock/RNG state");
         Require(GetPortableRuntimeWorldRevision()==revision&&GetPortableRuntimeScriptStatePresent()==statePresent&&
@@ -195,7 +196,8 @@ int Run(const fs::path& root,const std::optional<std::string>& expected,unsigned
             "Startup diagnostic published revision/dirty/native clock state");
         Require(SameHash(hash,ReadPortableRuntimeRetailCollision()),"Startup diagnostic retained native hash/tags/RNG/initialization work");
         const auto current=ReadPortableRuntimeObjectLookup();
-        Require(current.prepared==lookup.prepared&&current.generation==lookup.generation&&current.objects==lookup.objects,
+        Require(current.prepared==lookup.prepared&&current.generation==lookup.generation&&current.objects==lookup.objects&&
+            current.retainedBytes==lookup.retainedBytes,
             "Startup diagnostic changed actual UObject lookup root/generation/census");
         Require(SameActors(actors,ActorIdentities()),"Startup diagnostic changed Actor slots/classes/native object indices");
         const auto model=ReadPortableRuntimeNativeModel();

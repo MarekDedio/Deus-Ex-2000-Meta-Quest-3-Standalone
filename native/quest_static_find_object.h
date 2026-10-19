@@ -25,8 +25,8 @@ struct Record {
 class Index {
     struct Node {
         Record record;
-        Node* next{};
-        Node* identityNext{};
+        std::uint32_t next{};
+        std::uint32_t identityNext{};
     };
     using Slots=std::map<std::uint32_t,Node>;
 
@@ -39,22 +39,10 @@ public:
         if(!maximum||maximum>MaximumObjects)
             throw std::invalid_argument("Object lookup capacity exceeds portable policy");
     }
-    Index(const Index& other):maximum_(other.maximum_),slots_(other.slots_) {
-        // std::map node addresses differ after a copy. Reconstruct links from
-        // the old chains, NOT ascending slot order or object allocation order.
-        for(std::size_t bucket=0u;bucket<BucketCount;++bucket) {
-            Node* previous{};
-            for(auto* old=other.heads_[bucket];old;old=old->next) {
-                auto* current=&slots_.find(old->record.index)->second;
-                current->next=nullptr;
-                if(previous)previous->next=current;else heads_[bucket]=current;
-                previous=current;
-            }
-        }
-        // The second intrusive index is membership authority only, not object
-        // selection order. Rebuild it from our own stable tree nodes; never
-        // retain the source copy's identity-chain pointers.
-        for(auto& [index,node]:slots_) {(void)index;PrependIdentity(node);}
+    Index(const Index& other):maximum_(other.maximum_),slots_(other.slots_),
+        heads_(other.heads_),identityHeads_(other.identityHeads_) {
+        // Links are bounded numeric indices, not addresses into the source
+        // map. Its copied nodes therefore preserve both chains verbatim.
     }
     Index& operator=(const Index& other) {
         if(this!=&other) {Index replacement(other);Swap(replacement);}
@@ -85,15 +73,17 @@ public:
         // allocators; merge only transfers already allocated, unique nodes.
         slots_.merge(additions.slots_);
         for(std::size_t bucket=0u;bucket<BucketCount;++bucket) {
-            if(auto* head=additions.heads_[bucket]) {
-                auto* tail=head;while(tail->next) tail=tail->next;
+            // All staged nodes now belong to this map. Resolve their numeric
+            // links here, not through the emptied additions map.
+            if(const auto head=additions.heads_[bucket]) {
+                auto* tail=&NodeAt(head);while(tail->next) tail=&NodeAt(tail->next);
                 tail->next=heads_[bucket];
-                heads_[bucket]=head;additions.heads_[bucket]=nullptr;
+                heads_[bucket]=head;additions.heads_[bucket]=0u;
             }
-            if(auto* head=additions.identityHeads_[bucket]) {
-                auto* tail=head;while(tail->identityNext) tail=tail->identityNext;
+            if(const auto head=additions.identityHeads_[bucket]) {
+                auto* tail=&NodeAt(head);while(tail->identityNext) tail=&NodeAt(tail->identityNext);
                 tail->identityNext=identityHeads_[bucket];
-                identityHeads_[bucket]=head;additions.identityHeads_[bucket]=nullptr;
+                identityHeads_[bucket]=head;additions.identityHeads_[bucket]=0u;
             }
         }
         return true;
@@ -110,7 +100,7 @@ public:
         if(slots_.size()>=maximum_)throw std::length_error("Object lookup capacity exhausted");
         // One allocating operation with the map's strong guarantee. No weak
         // hash chain changes until its stable owning node exists.
-        const auto inserted=slots_.emplace(record.index,Node{record,nullptr,nullptr});
+        const auto inserted=slots_.emplace(record.index,Node{record,0u,0u});
         Prepend(inserted.first->second);PrependIdentity(inserted.first->second);
     }
 
@@ -136,10 +126,11 @@ public:
         int nameIndex,Predicate&& predicate) const {
         ValidateKey(outerIdentity,outerIndex,nameIndex);
         if(!nameIndex)return 0u;
-        for(auto* node=heads_[Bucket(outerIndex,nameIndex)];node;node=node->next) {
-            const auto& record=node->record;
+        for(auto link=heads_[Bucket(outerIndex,nameIndex)];link;) {
+            const auto& node=NodeAt(link);const auto& record=node.record;
             if(record.outerIdentity==outerIdentity&&record.nameIndex==nameIndex&&predicate(record.identity))
                 return record.identity;
+            link=node.next;
         }
         return 0u;
     }
@@ -164,8 +155,11 @@ public:
     }
     [[nodiscard]] const Record* RecordForIdentity(std::uintptr_t identity) const noexcept {
         if(!identity)return nullptr;
-        for(auto* node=identityHeads_[IdentityBucket(identity)];node;node=node->identityNext)
-            if(node->record.identity==identity)return &node->record;
+        for(auto link=identityHeads_[IdentityBucket(identity)];link;) {
+            const auto& node=NodeAt(link);
+            if(node.record.identity==identity)return &node.record;
+            link=node.identityNext;
+        }
         return nullptr;
     }
     template<class Visitor>void ForEachAscending(Visitor&& visitor) const {
@@ -180,8 +174,10 @@ public:
     // allowance for the tree's three links, alignment/color slack and allocator
     // metadata. The name-hash chain is singly linked, so its redundant reverse
     // pointer is not retained in every live object node.
-    // Both weak hash indices are intrusive in that node; there is no secondary
-    // identity-map allocation to charge. sizeof(Index) includes both head arrays.
+    // Both weak hash indices use bounded 32-bit object indices in that node;
+    // there is no secondary identity-map allocation to charge. sizeof(Index)
+    // includes both compact head arrays. Each chain hop resolves through the
+    // owning map, trading a nonallocating logarithmic search for pointer space.
     // No UObject/default/name storage is owned here.
     [[nodiscard]] std::size_t RetainedBytes() const noexcept {
         constexpr auto nodeOverhead=8u*sizeof(void*);
@@ -189,6 +185,15 @@ public:
     }
 
 private:
+    // Zero is the chain sentinel; every nonzero link names a node in this
+    // owning map. Publication, unlink and node transfer preserve that invariant.
+    // The object-index policy is independent of actual pointer-sized identity.
+    [[nodiscard]] Node& NodeAt(std::uint32_t index) noexcept {
+        return slots_.find(index)->second;
+    }
+    [[nodiscard]] const Node& NodeAt(std::uint32_t index) const noexcept {
+        return slots_.find(index)->second;
+    }
     [[nodiscard]] bool Valid(const Record& record) const noexcept {
         return record.identity&&record.index&&record.index<=MaximumObjectIndex&&record.outerIndex<=MaximumObjectIndex&&
             record.nameIndex>=0&&((record.outerIdentity==0u)==(record.outerIndex==0u))&&
@@ -210,33 +215,33 @@ private:
     }
     void Prepend(Node& node) noexcept {
         const auto bucket=Bucket(node.record.outerIndex,node.record.nameIndex);
-        node.next=heads_[bucket];heads_[bucket]=&node;
+        node.next=heads_[bucket];heads_[bucket]=node.record.index;
     }
     void Unlink(Node& node) noexcept {
         // Cached publication keys only: no UObject/Outer dereference. At most
         // Size() owned nodes can occur in this bucket, and no provider callback
         // runs during this nonallocating search. Keep all surviving precedence.
         const auto bucket=Bucket(node.record.outerIndex,node.record.nameIndex);
-        auto** link=&heads_[bucket];
-        while(*link&&*link!=&node) link=&(*link)->next;
+        auto* link=&heads_[bucket];
+        while(*link&&*link!=node.record.index) link=&NodeAt(*link).next;
         if(*link) *link=node.next;
-        node.next=nullptr;
+        node.next=0u;
     }
     void PrependIdentity(Node& node) noexcept {
         const auto bucket=IdentityBucket(node.record.identity);
-        node.identityNext=identityHeads_[bucket];identityHeads_[bucket]=&node;
+        node.identityNext=identityHeads_[bucket];identityHeads_[bucket]=node.record.index;
     }
     void UnlinkIdentity(Node& node) noexcept {
         // Cached identity only. Neither the UObject nor its Outer is read.
-        auto** link=&identityHeads_[IdentityBucket(node.record.identity)];
-        while(*link && *link!=&node) link=&(*link)->identityNext;
+        auto* link=&identityHeads_[IdentityBucket(node.record.identity)];
+        while(*link && *link!=node.record.index) link=&NodeAt(*link).identityNext;
         if(*link) *link=node.identityNext;
-        node.identityNext=nullptr;
+        node.identityNext=0u;
     }
     std::uint32_t maximum_;
     Slots slots_;
-    std::array<Node*,BucketCount> heads_{};
-    std::array<Node*,BucketCount> identityHeads_{};
+    std::array<std::uint32_t,BucketCount> heads_{};
+    std::array<std::uint32_t,BucketCount> identityHeads_{};
 };
 
 struct Query {

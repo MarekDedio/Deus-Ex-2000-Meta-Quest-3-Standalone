@@ -558,6 +558,8 @@ void Run(const fs::path& root,bool movementOnly,bool nativeWorkOnly) {
     const auto actors=Census(map);Oracle oracle(actors);
     const auto before=temporary.Save("BeforeRetailHash");const auto revision=GetPortableRuntimeWorldRevision();
     const auto gc=GC::GetStats();const auto lookup=ReadPortableRuntimeObjectLookup();
+    std::cout<<"FIRST TRAINING lookup storage: objects="<<lookup.objects<<" retainedBytes="<<lookup.retainedBytes
+        <<"; real weak index, not a map Actor count or save byte estimate\n";
     const auto rollback=[&] {
         GC::Collect();SameGc(gc,"Retail collision diagnostic leaked GC/actor/birth state");
         const auto outside=ReadPortableRuntimeRetailCollision();
@@ -565,7 +567,8 @@ void Run(const fs::path& root,bool movementOnly,bool nativeWorkOnly) {
             !outside.initializationDraws&&!outside.lifecycleOperations,
             "Rollback retained process tables/hash/actor mirrors/shared RNG draws");
         const auto current=ReadPortableRuntimeObjectLookup();
-        Require(current.generation==lookup.generation&&current.objects==lookup.objects&&
+        Require(current.prepared==lookup.prepared&&current.generation==lookup.generation&&current.objects==lookup.objects&&
+            current.retainedBytes==lookup.retainedBytes&&
             GetPortableRuntimeWorldRevision()==revision&&!GetPortableRuntimeUnsavedScriptState()&&
             temporary.Save("AfterRetailHash")==before&&GetPortableRuntimeMapActors(true).size()==actors.size()&&
             !Declared("00_Training.LevelInfo0","Engine.LevelInfo.bBegunPlay",Kind::Bool).boolean&&
