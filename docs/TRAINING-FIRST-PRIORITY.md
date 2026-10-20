@@ -14,14 +14,17 @@ roots through the same callback/iterator/AI ledger. The subsequent compact weak
 lookup keeps all objects/ordering with smaller32-bit chain links. Repeated
 original startup with explicit262144 now passes the earlier combined storage
 refusal, completes the authored Mission00 birth and all PostBeginPlay visits,
-then reaches the key's original Mesh assignment during BecomePickup. Memory
-limits are unchanged. The next dependency is the original raw collision-shape
-store/hash contract, then remaining startup/support/falling and live weapon/
-destruction/usable-loot acceptance. This is
+then reaches the key's original Mesh assignment during BecomePickup. The next
+source increment admits the exact original raw Mesh/DrawScale stores without
+extra collision/animation side effects. Repeated startup now completes all
+SetInitialState visits and reaches the original WorldBases/FindBase support
+query on LightSwitch0. Memory limits are unchanged. The next dependency is
+that original support-query contract, then remaining startup/support/falling
+and live weapon/destruction/usable-loot acceptance. This is
 not finished crate physics, a finished tutorial or a replacement APK. The
 older entries below are historical prerequisite checkpoints. See
-TRAINING-COMPACT-LOOKUP.md and TRAINING-NATIVE-WORK.md for current evidence and
-remaining boundaries.
+TRAINING-RAW-SHAPE-STORES.md, TRAINING-COMPACT-LOOKUP.md and
+TRAINING-NATIVE-WORK.md for current evidence and remaining boundaries.
 
 ## In scope now
 

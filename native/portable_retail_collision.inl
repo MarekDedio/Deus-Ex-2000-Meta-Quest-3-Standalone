@@ -275,16 +275,55 @@
         ReserveRetailDiagnosticOutput(QuestVr::DecalStateDetail::Multiply(commands.size(),
             sizeof(PortableRetailCollisionSnapshot)+sizeof(std::vector<PortableRetailCollisionHit>)+sizeof(std::size_t)+
                 sizeof(PortableRetailCollisionMutation)+sizeof(PortableRetailMultiLineMetadata)+sizeof(PortableRetailActorPredicate)+
-                sizeof(PortableRetailTouchSnapshot)+sizeof(PortableRetailZoneSnapshot)+sizeof(PortableRetailMoveSnapshot)));
+                sizeof(PortableRetailTouchSnapshot)+sizeof(PortableRetailZoneSnapshot)+sizeof(PortableRetailMoveSnapshot)+
+                sizeof(PortableRetailRawShapeSnapshot)));
         result.states.reserve(commands.size());result.queries.reserve(commands.size());result.queryHeads.reserve(commands.size());
         result.mutations.reserve(commands.size());result.multiLine.reserve(commands.size());
         result.predicates.reserve(commands.size());
         result.touches.reserve(commands.size());
         result.zones.reserve(commands.size());
         result.moves.reserve(commands.size());
+        result.rawShapes.reserve(commands.size());
         for(const auto& command:commands) {
             if(command.operation==PortableRetailCollisionOperation::Enable) SetRetailActorCollision(true);
             else if(command.operation==PortableRetailCollisionOperation::Disable) SetRetailActorCollision(false);
+            else if(command.operation==PortableRetailCollisionOperation::RawMeshWrite ||
+                command.operation==PortableRetailCollisionOperation::RawDrawScaleWrite ||
+                command.operation==PortableRetailCollisionOperation::OriginalBecomePickup) {
+                const bool pickup=command.operation==PortableRetailCollisionOperation::OriginalBecomePickup;
+                if(command.actorPath.empty()||command.actorPath.size()>4096u||command.actorPath.find('\0')!=std::string::npos||
+                    command.arguments.size()!=(pickup?0u:1u))
+                    throw std::runtime_error("Raw Actor shape diagnostic requires bounded original inputs");
+                auto* actor=RetailCollisionActor(reinterpret_cast<std::uintptr_t>(Object(command.actorPath)));
+                if(!pickup) {
+                    const auto& value=command.arguments.front();
+                    if(value.text.size()>4096u||value.text.find('\0')!=std::string::npos||
+                        !value.intArray.empty()||!value.fields.empty())
+                        throw std::runtime_error("Raw Actor shape diagnostic input is not a bounded scalar");
+                }
+                auto clockBefore=ZoneClockSnapshot(actor);
+                if(pickup) {
+                    if(!IsDerivedFromPath(actor->cls,"Engine.Inventory"))
+                        throw std::runtime_error("Original BecomePickup requires an actual Inventory receiver");
+                    const auto function=FunctionFor(Object("Engine.Inventory.BecomePickup"));
+                    static_cast<void>(execution.CallFunction(*function,command.actorPath,{}));
+                }else {
+                    const auto property=DescribeProperty(command.operation==PortableRetailCollisionOperation::RawMeshWrite?
+                        "Engine.Actor.Mesh":"Engine.Actor.DrawScale");
+                    execution.WriteReference(ReferenceFor(actor,property,0u,false),command.arguments.front());
+                }
+                const auto mesh=Read(actor,DescribeProperty("Engine.Actor.Mesh"),0u);
+                const auto scale=Read(actor,DescribeProperty("Engine.Actor.DrawScale"),0u);
+                if(mesh.kind!=Kind::Object||scale.kind!=Kind::Float)
+                    throw std::runtime_error("Raw Actor shape diagnostic lost its scalar field schema");
+                const auto selected=NativeActorPrimitive(actor);
+                std::size_t bytes=actor->reflection.objectPath.size()+mesh.text.size()+
+                    selected.object->reflection.objectPath.size()+selected.nativeClassPath.size()+4u+16u*sizeof(void*);
+                ReserveRetailDiagnosticOutput(bytes);
+                result.rawShapes.push_back({result.states.size(),actor->reflection.objectPath,mesh.text,
+                    selected.object->reflection.objectPath,selected.nativeClassPath,scale.floating,
+                    std::move(clockBefore),ZoneClockSnapshot(actor)});
+            }
             else if(command.operation==PortableRetailCollisionOperation::LevelMoveActor||
                 command.operation==PortableRetailCollisionOperation::ActorMove||
                 command.operation==PortableRetailCollisionOperation::ActorSetRotation||

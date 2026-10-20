@@ -28,7 +28,8 @@ struct PortableRetailCollisionSnapshot {
 };
 enum class PortableRetailCollisionOperation { Enable, Disable, LineCheck, SetCollision, SetCollisionSize, MultiLineCheck, EncroachmentCheck,
     IsBlockedBy, IsBasedOn, LocalPlayerPawn, IsOverlapping, BeginTouch, EndTouch, TouchSide, SetActorZone,
-    LevelMoveActor, ActorMove, ActorSetRotation, ActorMoveSmooth, LevelCheckEncroachment };
+    LevelMoveActor, ActorMove, ActorSetRotation, ActorMoveSmooth, LevelCheckEncroachment,
+    RawMeshWrite, RawDrawScaleWrite, OriginalBecomePickup };
 struct PortableRetailCollisionCommand {
     PortableRetailCollisionOperation operation{PortableRetailCollisionOperation::Enable};
     std::array<float,3u> end{},start{},extent{};
@@ -115,6 +116,15 @@ struct PortableRetailMoveSnapshot {
     std::size_t marksAfter{},arenasAfter{};
     std::vector<std::uint8_t> clockBefore,clockAfter;
 };
+// Closed rollback-only script-store controls, not new setters or gameplay
+// commands. Primitive selection is sampled through the SAME host/root after
+// the store; a UPrimitive hit's null Primitive field cannot identify the mesh.
+struct PortableRetailRawShapeSnapshot {
+    std::size_t commandIndex{};
+    std::string actorPath,meshPath,primitivePath,nativeClassPath;
+    float drawScale{};
+    std::vector<std::uint8_t> clockBefore,clockAfter;
+};
 struct PortableRetailCollisionProbeResult {
     QuestVr::Vm::Result execution;
     bool available{};
@@ -127,6 +137,7 @@ struct PortableRetailCollisionProbeResult {
     std::vector<PortableRetailTouchSnapshot> touches;
     std::vector<PortableRetailZoneSnapshot> zones;
     std::vector<PortableRetailMoveSnapshot> moves;
+    std::vector<PortableRetailRawShapeSnapshot> rawShapes;
 };
 // Bounded original SetActorCollision four-case and actual primitive-query
 // diagnostic. No native pointer leaves the CPU owner; every state is detached.

@@ -8527,6 +8527,26 @@ private:
         }
         return normalized;
     }
+    void RequireOriginalActorRawShapeField(RuntimeObject* target,const Property& property,
+        const std::uint32_t index) {
+        const bool mesh=property.key=="Engine.Actor.Mesh";
+        const bool scale=property.key=="Engine.Actor.DrawScale";
+        auto* field=Object(property.key);
+        if((!mesh && !scale) || index || property.arrayDimension!=1u || property.flags!=0x21u ||
+            property.zero.kind!=(mesh?Kind::Object:Kind::Float) ||
+            !OwnsProperty(target->classDescriptor?target:target->cls,property) ||
+            !field->property || field->property->type!=(mesh?"ObjectProperty":"FloatProperty") ||
+            field->property->baseField || field->outer!=Object("Engine.Actor") ||
+            LowerAscii(Qualified(Table(field->sourcePath),Table(field->sourcePath).exports.at(field->exportIndex).ObjClass))!=
+                (mesh?"core.objectproperty":"core.floatproperty"))
+            throw std::runtime_error("Raw actor shape store lacks its exact original scalar declaration");
+        if(mesh) {
+            if(!field->property->referencedType ||
+                LowerAscii(Qualified(Table(field->sourcePath),field->property->referencedType))!="engine.mesh")
+                throw std::runtime_error("Raw actor Mesh store lacks its original Mesh constraint");
+        }else if(field->property->referencedType)
+            throw std::runtime_error("Raw actor DrawScale store has an unexpected referenced subtype");
+    }
     std::shared_ptr<Reference> ReferenceFor(RuntimeObject* object, const Property& property,
         const std::uint32_t index, const bool defaults) {
         // A qualified property reference is not interchangeable with another
@@ -8554,22 +8574,28 @@ private:
             }
             auto* target = defaults || object->defaultOwner ? DefaultOwner(object) : object;
             const auto nativeKey=LowerAscii(property.key);
+            const bool rawActorShapeStore=nativeKey=="engine.actor.mesh" || nativeKey=="engine.actor.drawscale";
             if(nativeKey=="engine.actor.collisiontag" || nativeKey=="engine.actor.collocation")
                 throw std::runtime_error("Native collision mirrors require their journaled original service");
             if((nativeKey=="engine.actor.location"&&nativeActorPoses_.FindLocation(reinterpret_cast<std::uintptr_t>(target)))||
                 (nativeKey=="engine.actor.rotation"&&nativeActorPoses_.FindRotation(reinterpret_cast<std::uintptr_t>(target))))
                 throw std::runtime_error("Generic script pose mutation cannot bypass an active native field authority");
-            // Until the actual Move/rotation/resize adapters are integrated,
-            // never let a generic property write strand live retail links.
-            // A just-allocated Spawn actor initializes before its native Add.
+            // Original Let copies Mesh/DrawScale directly; it does not call a
+            // collision setter or rebuild links. BecomePickup explicitly calls
+            // SetCollision only AFTER those stores. Other raw shape contracts
+            // remain unsupported while live retail links exist. A just-allocated
+            // Spawn actor initializes before its native Add.
             if(persistentRetailCollision && persistentRetailCollision->ContainsActor(reinterpret_cast<std::uintptr_t>(target))) {
+                // Authenticate the special live-hash admission here, not every
+                // ordinary reflected store in runtimes without this domain.
+                if(rawActorShapeStore) RequireOriginalActorRawShapeField(target,property,index);
                 static constexpr std::array<const char*,15u> shapeKeys{
                     "engine.actor.location","engine.actor.rotation","engine.actor.collisionradius",
                     "engine.actor.collisionheight","engine.actor.brush","engine.actor.mesh",
                     "engine.actor.prepivot","engine.actor.drawscale","engine.brush.mainscale",
                     "engine.brush.postscale","engine.actor.bcollideactors","engine.actor.bdeleteme",
                     "engine.actor.bblockactors","engine.actor.bblockplayers","engine.actor.bworldgeometry"};
-                if(std::find(shapeKeys.begin(),shapeKeys.end(),nativeKey)!=shapeKeys.end())
+                if(!rawActorShapeStore && std::find(shapeKeys.begin(),shapeKeys.end(),nativeKey)!=shapeKeys.end())
                     RequireNoActiveRetailMutation(target,"collision-shape property mutation");
             }
             const auto actual = ClassProperty(target->classDescriptor ? target : target->cls, property.name);
@@ -8604,8 +8630,10 @@ private:
                 // Actor timer fields are independent native storage. Updating
                 // them must not reconstruct/reset an unrelated live animation
                 // clock merely because the reflected-property path is shared.
+                // The exact raw Mesh/DrawScale copies likewise have no native
+                // animation-clock callback, even when their value is unchanged.
                 const auto key=LowerAscii(property.key);
-                if (key!="engine.actor.timerrate" && key!="engine.actor.timercounter" && key!="engine.actor.btimerloop" &&
+                if (!rawActorShapeStore && key!="engine.actor.timerrate" && key!="engine.actor.timercounter" && key!="engine.actor.btimerloop" &&
                     !NativeNoiseCacheKey(key) && key!="engine.pawn.stimulus" && key!="engine.actor.touching" &&
                     key!="engine.actor.region" && key!="engine.pawn.footregion" && key!="engine.pawn.headregion" &&
                     key!="engine.playerreplicationinfo.playerzone")

@@ -534,7 +534,8 @@ void SetterCoverage(const std::vector<Actor>& actors,const std::function<void()>
 #include "portable_actor_move_clock_cases.inl"
 #include "portable_core_rotator_add_cases.inl"
 #include "portable_native_work_cases.inl"
-void Run(const fs::path& root,bool movementOnly,bool nativeWorkOnly) {
+#include "portable_actor_raw_shape_cases.inl"
+void Run(const fs::path& root,bool movementOnly,bool nativeWorkOnly,bool rawShapeOnly) {
     Temporary temporary(root);std::vector<Source> sources;std::vector<PortablePackageTables> scripts;
     sources.reserve(QuestVr::RuntimeScriptPackages.size()+2u);scripts.reserve(QuestVr::RuntimeScriptPackages.size());
     for(const auto* name:QuestVr::RuntimeScriptPackages) {
@@ -578,6 +579,14 @@ void Run(const fs::path& root,bool movementOnly,bool nativeWorkOnly) {
     };
     rollback();
     CoreRotatorAddCoverage(rollback);
+    if(rawShapeOnly){
+        RawShapeCoverage(actors,rollback);
+        AnimatedRawShapeCoverage(temporary);
+        for(const auto& source:sources)source.Unchanged();
+        lifetime->Revoke();ClearPortableRuntimeClient();
+        std::cout<<"PASS focused actual first Training raw Mesh/DrawScale and original BecomePickup controls; not playable physics.\n";
+        return;
+    }
     if(nativeWorkOnly){
         NativeWorkCoverage(map,temporary);
         for(const auto& source:sources)source.Unchanged();
@@ -655,6 +664,7 @@ void Run(const fs::path& root,bool movementOnly,bool nativeWorkOnly) {
     SameActors(result.states[5u],actors,missTags);SameActors(result.states[6u],actors,hitTags);SameActors(result.states[7u],actors,hitTags);
     SameHits(result.queries[0u],result.queryHeads[0u],expectedMiss);SameHits(result.queries[1u],result.queryHeads[1u],expectedHit);rollback();
     SetterCoverage(actors,rollback);
+    RawShapeCoverage(actors,rollback);
     MultiLineCoverage(map,actors,rollback);
     ActorPointCoverage(actors,rollback);
     ModelPointCoverage(map,actors,rollback);
@@ -759,6 +769,7 @@ void Run(const fs::path& root,bool movementOnly,bool nativeWorkOnly) {
     AnimatedActorMoveRollback(temporary);
     CommittedAnimatedActorMove(temporary);
     NativeWorkCoverage(map,temporary);
+    AnimatedRawShapeCoverage(temporary);
     for(const auto& source:sources)source.Unchanged();
     lifetime->Revoke();ClearPortableRuntimeClient();
     std::cout<<"PASS first Training only:38 exact Quest source packages, "<<actors.size()<<" actual native-slot actors, "
@@ -771,13 +782,14 @@ void Run(const fs::path& root,bool movementOnly,bool nativeWorkOnly) {
 int main(int argc,char** argv) {
     std::cout.setf(std::ios::unitbuf);
     try {
-        fs::path root;bool movementOnly{},nativeWorkOnly{};if(const auto* configured=std::getenv("DEUSEX_GAME_ROOT");configured&&*configured)root=configured;
+        fs::path root;bool movementOnly{},nativeWorkOnly{},rawShapeOnly{};if(const auto* configured=std::getenv("DEUSEX_GAME_ROOT");configured&&*configured)root=configured;
         for(int i=1;i<argc;++i) {
             const std::string_view option=argv[i];
             if((option=="--owned-source-root"||option=="--game-root")&&i+1<argc)root=argv[++i];
             else if(option=="--movement-only")movementOnly=true;
             else if(option=="--native-work-only")nativeWorkOnly=true;
-            else throw std::runtime_error("Usage: portable_retail_collision_test [--owned-source-root OWNED_GAME_ROOT] [--movement-only | --native-work-only] (or DEUSEX_GAME_ROOT)");
+            else if(option=="--raw-shape-only")rawShapeOnly=true;
+            else throw std::runtime_error("Usage: portable_retail_collision_test [--owned-source-root OWNED_GAME_ROOT] [--movement-only | --native-work-only | --raw-shape-only] (or DEUSEX_GAME_ROOT)");
         }
         if(root.empty()) {std::cout<<"SKIP owned first Training retail collision: use --owned-source-root or DEUSEX_GAME_ROOT.\n";return 77;}
         ShutdownPortableRuntime();GC::Collect();const auto gc=GC::GetStats();
@@ -786,8 +798,8 @@ int main(int argc,char** argv) {
         Require(!absent.available&&!absent.execution.passed()&&!absent.execution.committed&&
             !absentStartup.world.execution.passed()&&!absentStartup.collision.initialized&&
             !ReadPortableRuntimeRetailCollision().initialized,"No-runtime collision diagnostic did not refuse safely");++refusals;
-        Require(!(movementOnly&&nativeWorkOnly),"Choose only one focused first-Training test mode");
-        Run(fs::canonical(root),movementOnly,nativeWorkOnly);
+        Require(unsigned(movementOnly)+unsigned(nativeWorkOnly)+unsigned(rawShapeOnly)<=1u,"Choose only one focused first-Training test mode");
+        Run(fs::canonical(root),movementOnly,nativeWorkOnly,rawShapeOnly);
         ShutdownPortableRuntime();GC::Collect();SameGc(gc,"Retail collision test leaked rooted native UObjects after shutdown");
         std::cout<<"PASS retail collision integration "<<checks<<" checks / "<<refusals<<" explicit refusals\n";return 0;
     }catch(const std::exception& error) {std::cerr<<"FAIL: "<<error.what()<<'\n';ShutdownPortableRuntime();return 1;}
