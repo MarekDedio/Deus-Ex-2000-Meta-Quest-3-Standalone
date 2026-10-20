@@ -59,6 +59,7 @@
 #include "quest_native_actor_pose.h"
 #include "quest_native_hit_marks.h"
 #include "quest_native_scratch_scope.h"
+#include "quest_model_line_scratch.h"
 #include "quest_actor_blocking.h"
 // Complete detached slide/push protocol; actual native Move remains refused
 // until its original collision/event/root provider is implemented in full.
@@ -4486,13 +4487,9 @@ public:
             // A retained outer hit list/collector can coexist with this Model
             // query. Keep its peak reservation visible to ToWorld and every
             // nested host admission, rather than checking an isolated peak.
-            struct ValidationFrame {std::size_t node;unsigned next;};
-            struct PointSegment {std::int32_t node,last;PortableModelVec3 start,end;bool outside;};
-            struct ExtentVisit {std::int32_t node,parent;bool outside;};
-            const auto width=std::max(3u*sizeof(ValidationFrame)+sizeof(std::uint8_t),
-                3u*std::max(sizeof(PointSegment),sizeof(ExtentVisit)));
-            const auto workspace=QuestVr::DecalStateDetail::Add(128u,
-                QuestVr::DecalStateDetail::Multiply(model.nodes.size(),width));
+            const bool point=!model.nodes.empty() && QuestVr::MeshLineTraceDetail::ZeroOrUnordered(extent.x) &&
+                QuestVr::MeshLineTraceDetail::ZeroOrUnordered(extent.y) && QuestVr::MeshLineTraceDetail::ZeroOrUnordered(extent.z);
+            const auto workspace=QuestVr::OriginalModelLineScratchBytes(model.nodes.size(),point);
             QuestVr::NativeScratchScope reservation(nativeQueryScratchBytes_,workspace,
                 [this](std::size_t extra){ValidateStateBudget(extra);});
             QuestVr::ModelExtentTraceLimits limits;
@@ -4504,9 +4501,7 @@ public:
             // owner coordinates. Original extent comparisons also choose the
             // point branch for all-zero-or-unordered components, discarding
             // their inactive NaN bits rather than rejecting them as extents.
-            if(!model.nodes.empty() && QuestVr::MeshLineTraceDetail::ZeroOrUnordered(extent.x) &&
-                QuestVr::MeshLineTraceDetail::ZeroOrUnordered(extent.y) &&
-                QuestVr::MeshLineTraceDetail::ZeroOrUnordered(extent.z)) {
+            if(point) {
                 QuestVr::ModelPointTraceLimits pointLimits;
                 pointLimits.validationSteps=std::min(pointLimits.validationSteps,limits.validationSteps);
                 pointLimits.querySteps=std::min(pointLimits.querySteps,limits.querySteps);
@@ -4580,6 +4575,7 @@ public:
     #include "portable_actor_zone.inl"
     #include "portable_actor_move_hits.inl"
     #include "portable_retail_single_line.inl"
+    #include "portable_actor_find_base.inl"
     #include "portable_actor_move_events.inl"
     #include "portable_actor_move_pose.inl"
     #include "portable_actor_move.inl"
@@ -7277,8 +7273,13 @@ public:
                 const auto physics = QuestVr::Vm::ToInt(Read(actor, PropertyNamed(actor, "Physics"), 0u));
                 if (physical && !ActorLink(actor, "Base") &&
                     QuestVr::Vm::ToBool(Read(actor, PropertyNamed(actor, "bCollideWorld"), 0u)) &&
-                    (physics == 0 || physics == 5))
-                    throw std::runtime_error("Unsupported original world FindBase: extent SingleLineCheck flags0x17 / SupportActor contract is not implemented");
+                    (physics == 0 || physics == 5)) {
+                    static_cast<void>(RetailFindBase(actor,execution));
+                    // Only LoadMap clears native world geometry support, and
+                    // compares the current actual slot0, not mutable Actor.Level.
+                    if(ActorLink(actor,"Base")==NativeLevelInfo(actor))
+                        SetBase(actor,nullptr,false,execution);
+                }
             });
             visit(Phase::ClearStartup, info, 0u);
             write(info, "bStartup", Value::Bool(false));
@@ -7349,16 +7350,7 @@ private:
         if (physical && !ActorLink(actor, "Base") &&
             QuestVr::Vm::ToBool(Read(actor, PropertyNamed(actor, "bCollideWorld"), 0u)) &&
             (physics == 0 || physics == 5)) {
-            if(nativeMoveDepth_||!nativeDurableMoved_.empty())
-                throw std::runtime_error("Legacy spawned FindBase cannot consume a native movement root's unsynchronized derived cache");
-            if (worldStartupProbe_)
-                throw std::runtime_error("Unsupported original spawned FindBase during world startup probe: extent SingleLineCheck / SupportActor contract is not implemented");
-            const auto record=CollisionRecord(actor);
-            const auto overlap=persistentActorCollision.Query(record.location,record.height,record.radius);
-            std::vector<RuntimeObject*> hits;
-            for (const auto identity : overlap.actors) hits.push_back(reinterpret_cast<RuntimeObject*>(identity));
-            std::stable_sort(hits.begin(),hits.end(),std::less<RuntimeObject*>{});
-            if (!hits.empty()) SetBase(actor,hits.front(),true,execution);
+            static_cast<void>(RetailFindBase(actor,execution));
         }
     }
     Evaluation SpawnNative(const std::string& receiver, const std::vector<Evaluation>& arguments,
@@ -7511,8 +7503,8 @@ private:
         } else {
             SpawnZone(actor,execution);
             for (const auto* event : {"PostBeginPlay","SetInitialState"}) static_cast<void>(execution.CallEvent(path,event,true,{}));
-            static_cast<void>(execution.CallEvent(path,"PostPostBeginPlay",false,{}));
             SpawnBase(actor,execution);
+            static_cast<void>(execution.CallEvent(path,"PostPostBeginPlay",false,{}));
         }
         if (!spawnNotificationLocked_) {
             struct Unlock { bool& flag; ~Unlock() { flag = false; } } unlock{spawnNotificationLocked_};

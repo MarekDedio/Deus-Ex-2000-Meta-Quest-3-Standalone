@@ -315,6 +315,38 @@ void CsgAndTraversal() {
     Require(result.clear&&!result.hit&&result.stats.nodeVisits==4097u,"Iterative extent traversal lost deep front chain or recursed on host stack");
 }
 
+void CompactWorkspaceTraversal() {
+    // Both branches remain eligible. Visiting the front chain first keeps a
+    // deferred back leaf at every depth, reaching the exact N+1 frontier bound.
+    // This is not the shallower one-sided-pruning control above.
+    constexpr std::size_t count=8192u;
+    Model chain;chain.rootOutside=1;chain.nodes.assign(count,Plane({1,0,0},0,1,0));
+    for(std::size_t i=0;i+1u<count;++i) chain.nodes[i].front=static_cast<std::int32_t>(i+1u);
+    auto exact=Limits{};exact.validationSteps=count*4u;exact.querySteps=count*2u+1u;exact.pending=count+1u;
+    const auto result=Trace(chain,{},{},{1,1,1},exact);
+    Require(result.clear&&!result.hit&&result.stats.nodeVisits==count&&result.stats.leafVisits==count+1u&&
+        result.stats.validationSteps==count*4u&&result.stats.querySteps==count*2u+1u,
+        "Compact workspace changed complete validation/DFS order or exact work accounting");
+    auto tight=exact;--tight.pending;
+    Refuses([&]{Trace(chain,{},{},{1,1,1},tight);},"Compact frontier hid the exact pending limit refusal");
+    tight=exact;--tight.validationSteps;
+    Refuses([&]{Trace(chain,{},{},{1,1,1},tight);},"Packed validation skipped a complete DFS work step");
+    tight=exact;--tight.querySteps;
+    Refuses([&]{Trace(chain,{},{},{1,1,1},tight);},"Fixed pending array skipped the final query work step");
+    auto cyclic=chain;cyclic.nodes.back().back=static_cast<std::int32_t>(count/2u);
+    Refuses([&]{Trace(cyclic,{},{},{1,1,1});},"High-index packed validation missed a deep cycle");
+    // Unreachable components still receive complete graph validation.
+    cyclic.nodes.front().front=-1;
+    Refuses([&]{Trace(cyclic,{},{},{1,1,1});},"Packed validation ignored an unreachable deep cycle");
+    Model dag;dag.rootOutside=1;dag.nodes.assign(12u,Plane({1,0,0},0,1,0));
+    for(std::size_t i=0;i+1u<dag.nodes.size();++i)
+        dag.nodes[i].front=dag.nodes[i].back=static_cast<std::int32_t>(i+1u);
+    const auto shared=Trace(dag,{},{},{1,1,1});
+    Require(shared.stats.validationSteps==48u&&shared.stats.nodeVisits==4095u&&shared.stats.leafVisits==4096u,
+        "Compact workspace deduplicated legal repeated shared-DAG query visits");
+    Compare(dag,{},{},{1,1,1});
+}
+
 void SlantedAndBevels() {
     // A convex diamond in XY. Opposite X signs with a positive projected
     // cross-dot produce actual edge bevels; axis boxes alone cannot cover it.
@@ -510,7 +542,7 @@ int main(int argc,char** argv) {
 #if (defined(__i386__) || defined(__x86_64__)) && defined(__GNUC__)
         Precision precision;
 #endif
-        Basics();CsgAndTraversal();SlantedAndBevels();Safety();
+        Basics();CsgAndTraversal();CompactWorkspaceTraversal();SlantedAndBevels();Safety();
 #if (defined(__i386__) || defined(__x86_64__)) && defined(__GNUC__)
         RandomOracle();
 #endif

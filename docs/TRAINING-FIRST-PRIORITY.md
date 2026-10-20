@@ -22,10 +22,15 @@ query on LightSwitch0. The current native SingleLine query service has actual
 first-Training provider/selection/arena tests. Original SetBase now uses actual
 qualified fields, wrapping independent counts and same-root VM writes/events;
 the legacy reverse-list/count authority is removed. Focused actual first-map
-checks pass409929/31, with genuine Doctor animation-clock preservation. FindBase
-is not yet wired: original support-event dispatch and the downward sweep are
-next. Current shared CTest passes156 executed/180 listed with24 explicit
-owned-data skips; the full actual first-map regression is still running.
+checks pass409929/31, with genuine Doctor animation-clock preservation. The
+subsequent FindBase source connects the original downward sweep
+and selected SupportActor dispatch. Compact extent-query storage and sequential
+world/actor workspace lifetimes pass the previous memory refusal. Repeated
+startup now completes all1334 WorldBases visits, clears startup, and next
+refuses unsupported native2101/ConBindEvents at Plant2 PostPostBeginPlay.
+Actual focused FindBase tests pass168495/25; final full first-map regression
+passes2016309/153 and shared CTest passes156 executed/180 listed with24 explicit
+owned-data skips and zero failures. See TRAINING-FIND-BASE.md for proof boundaries.
 Memory limits are unchanged. Remaining startup/support/falling and live
 weapon/destruction/usable-loot acceptance still follow. This is
 not finished crate physics, a finished tutorial or a replacement APK. The
@@ -39,6 +44,8 @@ TRAINING-NATIVE-WORK.md for current evidence and remaining boundaries.
   Complete its authored tutorial route, not just the opening corridor or an
   isolated recording scene. Enumerate required interactions from its original
   map/scripts rather than assuming that a few successful rooms finish it.
+  TRAINING-FIRST-MAP-ACCEPTANCE.md records the source-joined minimum exercises
+  and outstanding full-census details; the old opening route test is a subset.
 - Next: live held-weapon crate damage, actual destruction/contents callbacks,
   collectible usable loot, and gravity/support/falling/landing of the crate
   stack and debris. Preserve the accepted held models, NPC poses, music,

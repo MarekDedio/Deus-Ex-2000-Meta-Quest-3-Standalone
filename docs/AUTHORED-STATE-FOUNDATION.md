@@ -95,6 +95,13 @@ Primary references under `third_party/SurrealEngine/SurrealEngine/`:
 
 ## Startup is a level-wide sequence
 
+Historical pinned-guide description below, NOT the current original-GOTY
+ordering contract. The subsequent static native audit in
+WORLD-BOOTSTRAP-CONTRACT.md establishes world bases and startup-clear BEFORE
+PostPostBeginPlay, live-loop details, and Spawn bases BEFORE its named final
+callback. Current runtime/first-Training evidence is in TRAINING-FIND-BASE.md.
+Do not reintroduce the older order or overlap support from this foundation note.
+
 For a fresh level, the pinned engine sets TimeSeconds to zero and bBegunPlay to
 true, freezes the loaded actor count, sets bStartup, and calls GameInfo.InitGame.
 It then performs separate actor-array passes:

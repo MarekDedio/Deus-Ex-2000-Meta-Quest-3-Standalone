@@ -30,7 +30,7 @@ struct PortableRetailCollisionSnapshot {
 enum class PortableRetailCollisionOperation { Enable, Disable, LineCheck, SetCollision, SetCollisionSize, MultiLineCheck, EncroachmentCheck,
     IsBlockedBy, IsBasedOn, LocalPlayerPawn, IsOverlapping, BeginTouch, EndTouch, TouchSide, SetActorZone,
     LevelMoveActor, ActorMove, ActorSetRotation, ActorMoveSmooth, LevelCheckEncroachment,
-    RawMeshWrite, RawDrawScaleWrite, OriginalBecomePickup, SingleLineCheck, ActorSetBase };
+    RawMeshWrite, RawDrawScaleWrite, OriginalBecomePickup, SingleLineCheck, ActorSetBase, ActorFindBase };
 struct PortableRetailCollisionCommand {
     PortableRetailCollisionOperation operation{PortableRetailCollisionOperation::Enable};
     std::array<float,3u> end{},start{},extent{};
@@ -147,6 +147,14 @@ struct PortableRetailBaseSnapshot {
     std::array<PortableRetailBaseFields,3u> before,after;
     std::vector<std::uint8_t> clockBefore,clockAfter;
 };
+struct PortableRetailFindBaseSnapshot {
+    std::size_t commandIndex{};
+    std::string actorPath,baseBefore,baseAfter,hitActor,baseAtDecision,selectedSupportFunction;
+    std::array<float,3u> start{},end{},extent{};
+    bool clear{},unchanged{},basedOnSelf{},supportAttempted{};
+    std::size_t marksBefore{},marksAfterQuery{},arenasBefore{},arenasAfterQuery{};
+    std::vector<std::uint8_t> clockBefore,clockAfter;
+};
 struct PortableRetailCollisionProbeResult {
     QuestVr::Vm::Result execution;
     bool available{};
@@ -162,6 +170,7 @@ struct PortableRetailCollisionProbeResult {
     std::vector<PortableRetailRawShapeSnapshot> rawShapes;
     std::vector<PortableRetailSingleLineSnapshot> singles;
     std::vector<PortableRetailBaseSnapshot> bases;
+    std::vector<PortableRetailFindBaseSnapshot> findBases;
 };
 // Bounded original SetActorCollision four-case and actual primitive-query
 // diagnostic. No native pointer leaves the CPU owner; every state is detached.

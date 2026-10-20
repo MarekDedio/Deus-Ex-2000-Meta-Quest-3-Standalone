@@ -91,7 +91,10 @@ Strict NDK27 ARM64 runtime checking and Android native compilation/link pass.
 The coherent host build passes. Corrected shared CTest passes156 executed/
 180 listed,24 explicit owned-data skips, zero failures,53.56s. Skips are not
 actual-map/headset evidence. The complete actual first-Training regression
-remains running and is not yet accepted as passed. The final owned
+also passes1896941 checks/143 explicit refusals:1308 actual native-slot actors,
+120 collidable nondeleted actors,478 registration links and214 independent
+primitive-provider predictions. Full snapshot/save/revision/GC/RNG rollback
+passes. The final owned
 executable is preserved as `artifacts/training-set-base-final-20261020.exe`;
 the earlier preview executable predates the support-scan Level-identity fix
 and is not final verification.
@@ -103,4 +106,5 @@ all1334 PostBeginPlay/SetInitialState visits, execute529945 instructions and
 full root rollback and all40 owned sources unchanged. CLI exit2 means startup
 did NOT finish. Durations43.5899s/88.9579s were observed alongside compilation;
 they are not frame times or controlled performance measurements. No other map
-is loaded and no new APK is packaged.
+is loaded and no new APK is packaged. The subsequent FindBase integration is
+separate work and does not inherit this checkpoint's acceptance automatically.

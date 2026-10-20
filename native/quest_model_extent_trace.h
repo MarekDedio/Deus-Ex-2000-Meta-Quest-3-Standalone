@@ -2,7 +2,9 @@
 
 #include "quest_model_extent_bevel.h"
 #include "quest_model_owner_coords.h"
+#include "quest_model_line_scratch.h"
 
+#include <memory>
 #include <vector>
 
 namespace QuestVr {
@@ -95,19 +97,30 @@ inline void Validate(const PortableModelGeometry& model,const ModelExtentTraceLi
     }
     // Validate ALL components, including unreachable/pruned ones. Shared DAG
     // children are valid and still incur repeated bounded query visits.
-    struct Frame {std::size_t node;unsigned next;};
-    std::vector<unsigned char> colors(model.nodes.size());std::vector<Frame> stack;
+    // Fixed arrays avoid vector growth's simultaneous old/new allocations.
+    // The fixed node cap fits a 30-bit node index and two next-child bits.
+    static_assert(ModelExtentTraceLimits{}.nodes<=std::numeric_limits<std::uint32_t>::max()/4u);
+    std::vector<unsigned char> colors(model.nodes.size());
+    std::unique_ptr<std::uint32_t[]> stack(new std::uint32_t[model.nodes.size()]);
+    std::size_t depth{};
+    const auto push=[&](std::size_t node) {
+        if(depth>=model.nodes.size()) Fail("validation stack invariant exceeded");
+        stack[depth++]=static_cast<std::uint32_t>(node)<<2u;
+    };
     for(std::size_t root=0;root<model.nodes.size();++root) {
         if(colors[root]) continue;
-        colors[root]=1;stack.push_back({root,0});
-        while(!stack.empty()) {
-            Step(stats.validationSteps,limits.validationSteps);auto& frame=stack.back();
-            if(frame.next==2u) {colors[frame.node]=2;stack.pop_back();continue;}
-            const auto& node=model.nodes[frame.node];const auto child=frame.next++?node.back:node.front;
+        colors[root]=1;push(root);
+        while(depth) {
+            Step(stats.validationSteps,limits.validationSteps);auto& frame=stack[depth-1u];
+            const auto index=static_cast<std::size_t>(frame>>2u);
+            const auto next=frame&3u;
+            if(next==2u) {colors[index]=2;--depth;continue;}
+            ++frame;
+            const auto& node=model.nodes[index];const auto child=next?node.back:node.front;
             if(child==-1) continue;
-            const auto index=static_cast<std::size_t>(child);
-            if(colors[index]==1) Fail("cyclic BSP front/back graph");
-            if(!colors[index]) {colors[index]=1;stack.push_back({index,0});}
+            const auto childIndex=static_cast<std::size_t>(child);
+            if(colors[childIndex]==1) Fail("cyclic BSP front/back graph");
+            if(!colors[childIndex]) {colors[childIndex]=1;push(childIndex);}
         }
     }
 }
@@ -167,11 +180,17 @@ inline ModelExtentTraceResult Trace(const PortableModelGeometry& model,
     if(extent.x<0||extent.y<0||extent.z<0) Fail("negative collision extents");
     if(extent.x==0&&extent.y==0&&extent.z==0) Fail("zero extents require the separate point-trace branch");
     result.time=2.0f;const auto delta=Delta(start,end);const auto size=Size(delta);
-    struct Visit {std::int32_t node,parent;bool outside;};
-    std::vector<Visit> pending{{0,0,model.rootOutside!=0}};
-    const auto push=[&](Visit visit) {if(pending.size()>=limits.pending) Fail("pending BSP budget exceeded");pending.push_back(visit);};
-    while(!pending.empty()) {
-        Step(result.stats.querySteps,limits.querySteps);const auto visit=pending.back();pending.pop_back();
+    using Visit=ModelLineScratchDetail::ExtentVisit;
+    const auto capacity=ModelLineScratchDetail::ExtentPendingCapacity(model.nodes.size(),limits.pending);
+    std::unique_ptr<Visit[]> pending(new Visit[capacity]);std::size_t count=1u;
+    pending[0]={0,0,model.rootOutside!=0};
+    const auto push=[&](Visit visit) {
+        if(count>=limits.pending) Fail("pending BSP budget exceeded");
+        if(count>=capacity) Fail("pending BSP depth invariant exceeded");
+        pending[count++]=visit;
+    };
+    while(count) {
+        Step(result.stats.querySteps,limits.querySteps);const auto visit=pending[--count];
         if(visit.node!=-1) {
             ++result.stats.nodeVisits;const auto& node=model.nodes[static_cast<std::size_t>(visit.node)];
             OriginalExtentPlane plane{node.planeX,node.planeY,node.planeZ,node.planeW};

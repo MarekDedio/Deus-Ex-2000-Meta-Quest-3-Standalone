@@ -49,20 +49,18 @@
                 throw std::runtime_error("Retail MultiLineCheck Level.Hash lost its owned native storage");
             TouchRetailCollision();
         }
-        using QuestVr::DecalStateDetail::Add;
         using QuestVr::DecalStateDetail::Multiply;
         constexpr std::size_t collectorCapacity=64u;
-        // The collector always reserves its fixed64 packets. The actor arena
-        // owns a separate growable vector: at most one hit per actual native
-        // actor, with headroom for capacity growth and its old allocation.
-        // Primitive-query workspaces remain subject to their own kernel caps.
-        auto temporaryBytes=Multiply(collectorCapacity,sizeof(QuestVr::OriginalActorLineHit));
-        if(queryActors) temporaryBytes=Add(temporaryBytes,Multiply(
-            persistentRetailCollision->ReadUsage().actors,3u*sizeof(QuestVr::OriginalActorLineHit)));
-        // This ledger survives actor/world providers and their nested Model
-        // admissions. Independent preflights do not bound simultaneous peaks.
+        // The collector's fixed64 packets coexist with either provider. The
+        // actor arena is allocated only AFTER the world query has returned,
+        // so it must not be charged against that already-dead Model workspace.
+        const auto temporaryBytes=Multiply(collectorCapacity,sizeof(QuestVr::OriginalActorLineHit));
         QuestVr::NativeScratchScope reservation(nativeQueryScratchBytes_,temporaryBytes,
             [this](std::size_t extra){ValidateStateBudget(extra);});
+        // Declared before query/result owners: this full arena envelope stays
+        // live across actor primitives, the collector's arena traversal and
+        // late admission, and unwinds before the fixed collector reservation.
+        std::optional<QuestVr::NativeScratchScope> actorArenaReservation;
         bool worldItemKnown=true;
         QuestVr::OriginalMultiLineQueries queries;
         queries.work=[this] {
@@ -84,12 +82,11 @@
             // Both null-owner trace kernels validate the BSP and then release
             // that validation workspace before allocating traversal storage.
             // Bound the larger peak including geometric vector-growth overlap.
-            struct ValidationFrame {std::size_t node;unsigned next;};
-            struct PointSegment {std::int32_t node,last;PortableModelVec3 start,end;bool outside;};
-            struct ExtentVisit {std::int32_t node,parent;bool outside;};
-            const auto validationWidth=3u*sizeof(ValidationFrame)+sizeof(std::uint8_t);
-            const auto traversalWidth=3u*std::max(sizeof(PointSegment),sizeof(ExtentVisit));
-            const auto workspace=Add(128u,Multiply(model.nodes.size(),std::max(validationWidth,traversalWidth)));
+            const bool point=!model.nodes.empty() &&
+                QuestVr::MeshLineTraceDetail::ZeroOrUnordered(worldExtent.x) &&
+                QuestVr::MeshLineTraceDetail::ZeroOrUnordered(worldExtent.y) &&
+                QuestVr::MeshLineTraceDetail::ZeroOrUnordered(worldExtent.z);
+            const auto workspace=QuestVr::OriginalModelLineScratchBytes(model.nodes.size(),point);
             QuestVr::NativeScratchScope workspaceReservation(nativeQueryScratchBytes_,workspace,
                 [this](std::size_t extra){ValidateStateBudget(extra);});
             if(fastTraceValidationWork_>=MaximumNativeModelValidationWork || fastTraceQueryWork_>=MaximumNativeModelQueryWork)
@@ -100,10 +97,6 @@
             // Model outputs may be consumed below; the collector replaces Next.
             reply.hit={};
             try {
-                const bool point=!model.nodes.empty() &&
-                    QuestVr::MeshLineTraceDetail::ZeroOrUnordered(worldExtent.x) &&
-                    QuestVr::MeshLineTraceDetail::ZeroOrUnordered(worldExtent.y) &&
-                    QuestVr::MeshLineTraceDetail::ZeroOrUnordered(worldExtent.z);
                 if(point) {
                     QuestVr::ModelPointTraceLimits limits;
                     limits.validationSteps=std::min(limits.validationSteps,MaximumNativeModelValidationWork-fastTraceValidationWork_);
@@ -139,12 +132,21 @@
             return reply;
         };
         if(queryActors) {
-            queries.actors=[this,level](const PortableModelVec3& actorEnd,const PortableModelVec3& actorStart,
+            queries.actors=[this,level,&actorArenaReservation](const PortableModelVec3& actorEnd,const PortableModelVec3& actorStart,
                 const PortableModelVec3& actorExtent,std::uint8_t flags) {
                 if(level!=RetailCollisionLevel() || !level->nativeRetailHash || !persistentRetailCollision ||
                     !persistentRetailCollision->ContainsHash(level->nativeRetailHash))
                     throw std::runtime_error("Retail MultiLineCheck receiving native hash changed");
                 try {
+                    if(actorArenaReservation)
+                        throw std::runtime_error("Retail MultiLineCheck repeated its one owning actor arena query");
+                    // Still permit one hit per CURRENT actual native actor,
+                    // including vector capacity growth's old/new overlap.
+                    // Do not cap candidates or substitute collidable/link counts.
+                    const auto arenaBytes=Multiply(persistentRetailCollision->ReadUsage().actors,
+                        3u*sizeof(QuestVr::OriginalActorLineHit));
+                    actorArenaReservation.emplace(nativeQueryScratchBytes_,arenaBytes,
+                        [this](std::size_t extra){ValidateStateBudget(extra);});
                     return persistentRetailCollision->ActorLineCheck(level->nativeRetailHash,
                         actorEnd,actorStart,actorExtent,flags,RetailCollisionQueries());
                 }catch(...) {

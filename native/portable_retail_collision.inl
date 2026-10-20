@@ -276,7 +276,8 @@
             sizeof(PortableRetailCollisionSnapshot)+sizeof(std::vector<PortableRetailCollisionHit>)+sizeof(std::size_t)+
                 sizeof(PortableRetailCollisionMutation)+sizeof(PortableRetailMultiLineMetadata)+sizeof(PortableRetailActorPredicate)+
                 sizeof(PortableRetailTouchSnapshot)+sizeof(PortableRetailZoneSnapshot)+sizeof(PortableRetailMoveSnapshot)+
-                sizeof(PortableRetailRawShapeSnapshot)+sizeof(PortableRetailSingleLineSnapshot)+sizeof(PortableRetailBaseSnapshot)));
+                sizeof(PortableRetailRawShapeSnapshot)+sizeof(PortableRetailSingleLineSnapshot)+sizeof(PortableRetailBaseSnapshot)+
+                sizeof(PortableRetailFindBaseSnapshot)));
         result.states.reserve(commands.size());result.queries.reserve(commands.size());result.queryHeads.reserve(commands.size());
         result.mutations.reserve(commands.size());result.multiLine.reserve(commands.size());
         result.predicates.reserve(commands.size());
@@ -286,6 +287,7 @@
         result.rawShapes.reserve(commands.size());
         result.singles.reserve(commands.size());
         result.bases.reserve(commands.size());
+        result.findBases.reserve(commands.size());
         for(const auto& command:commands) {
             if(command.operation==PortableRetailCollisionOperation::Enable) SetRetailActorCollision(true);
             else if(command.operation==PortableRetailCollisionOperation::Disable) SetRetailActorCollision(false);
@@ -318,6 +320,34 @@
                     {path(packet.actor),path(packet.primitive),0u,{packet.location.x,packet.location.y,packet.location.z},
                         {packet.normal.x,packet.normal.y,packet.normal.z},packet.time,packet.item},
                     nativeMoveHits_?nativeMoveHits_->MarkDepth():0u,nativeMoveHits_?nativeMoveHits_->ArenaCount():0u,reply.stats});
+            }
+            else if(command.operation==PortableRetailCollisionOperation::ActorFindBase) {
+                if(command.actorPath.empty() || command.actorPath.size()>4096u ||
+                    command.actorPath.find('\0')!=std::string::npos || !command.arguments.empty())
+                    throw std::runtime_error("Original FindBase diagnostic requires one bounded Actor receiver without arguments");
+                auto* actor=RetailCollisionActor(reinterpret_cast<std::uintptr_t>(Object(command.actorPath)));
+                PortableRetailFindBaseSnapshot snapshot;snapshot.commandIndex=result.states.size();
+                const auto before=RetailPredicatePointerRead(actor,"Engine.Actor.Base","Engine.Actor",0x22u);
+                ReserveRetailDiagnosticOutput(actor->reflection.objectPath.size()+before.text.size()+2u);
+                snapshot.actorPath=actor->reflection.objectPath;snapshot.baseBefore=before.text;
+                snapshot.clockBefore=ZoneClockSnapshot(actor);
+                const auto reply=RetailFindBase(actor,execution);
+                const auto after=RetailPredicatePointerRead(actor,"Engine.Actor.Base","Engine.Actor",0x22u);
+                std::size_t bytes=after.text.size()+5u;
+                for(auto* object:{reply.hitActor,reply.baseAtDecision,reply.selectedSupportFunction})
+                    if(object)bytes=QuestVr::DecalStateDetail::Add(bytes,object->reflection.objectPath.size());
+                ReserveRetailDiagnosticOutput(bytes);
+                snapshot.baseAfter=after.text;
+                if(reply.hitActor)snapshot.hitActor=reply.hitActor->reflection.objectPath;
+                if(reply.baseAtDecision)snapshot.baseAtDecision=reply.baseAtDecision->reflection.objectPath;
+                if(reply.selectedSupportFunction)snapshot.selectedSupportFunction=reply.selectedSupportFunction->reflection.objectPath;
+                const auto vector=[](PortableModelVec3 value){return std::array<float,3u>{value.x,value.y,value.z};};
+                snapshot.start=vector(reply.start);snapshot.end=vector(reply.end);snapshot.extent=vector(reply.extent);
+                snapshot.clear=reply.line.clear;snapshot.unchanged=reply.unchanged;snapshot.basedOnSelf=reply.basedOnSelf;
+                snapshot.supportAttempted=reply.supportAttempted;snapshot.marksBefore=reply.marksBefore;
+                snapshot.marksAfterQuery=reply.marksAfterQuery;snapshot.arenasBefore=reply.arenasBefore;
+                snapshot.arenasAfterQuery=reply.arenasAfterQuery;snapshot.clockAfter=ZoneClockSnapshot(actor);
+                result.findBases.push_back(std::move(snapshot));
             }
             else if(command.operation==PortableRetailCollisionOperation::ActorSetBase) {
                 if(command.actorPath.empty() || command.actorPath.size()>4096u ||

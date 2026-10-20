@@ -79,17 +79,23 @@ The surviving actor initializes its actual BSP Region. A non-Projectile in a
 water zone changes to swimming and clears its base with the original event
 policy. Pawn initialization also computes FootRegion/HeadRegion and updates an
 existing PlayerReplicationInfo.PlayerZone. Enum PostBeginPlay and SetInitialState
-follow, then the Deus Ex named PostPostBeginPlay event, InitBase and SpawnNotify.
+follow, then the original native support pass, the Deus Ex named
+PostPostBeginPlay event and SpawnNotify. This corrects the pinned guide's
+PostPostBeginPlay-before-bases ordering against the original GOTY native body.
 No extra deletion checks or ZoneChange callbacks are invented between these
 steps.
 
 Original SpawnActor has no AttachTag scan. That is a separate world-startup
 rule, where the tagged actor bases itself on the first matching candidate;
 see [WORLD-BOOTSTRAP-CONTRACT.md](WORLD-BOOTSTRAP-CONTRACT.md).
-The current SpawnBase branch queries actor overlap for unbased Decoration/Inventory/Pawn
-actors with bCollideWorld and Physics None/Rotating. Hits retain the pin's final
-stable actor-pointer ordering. The query does not discard Self; SetBase's normal
-cycle refusal still applies.
+The current SpawnBase branch calls actual-Level FindBase for unbased
+Decoration/Inventory/Pawn actors with bCollideWorld and Physics None/Rotating.
+This replaces the old actor-overlap/stable-pointer-sort approximation; that
+approximation no longer supplies support. Original downward SingleLine flags,
+source/Owner filtering, live Base decisions and selected SupportActor dispatch
+are documented in TRAINING-FIND-BASE.md. Missing actual lookup/Model metadata
+refuses transactionally; generated metadata-only tests must not report their
+old fake floor attachments as proof of support or falling.
 
 SpawnNotify uses actual ActorClass ancestry by case-insensitive short name,
 the original enum event and a nested-notification lock. The pin casts a

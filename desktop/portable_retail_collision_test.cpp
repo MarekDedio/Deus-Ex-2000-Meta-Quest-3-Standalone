@@ -537,7 +537,8 @@ void SetterCoverage(const std::vector<Actor>& actors,const std::function<void()>
 #include "portable_actor_raw_shape_cases.inl"
 #include "portable_retail_single_line_cases.inl"
 #include "portable_actor_base_cases.inl"
-void Run(const fs::path& root,bool movementOnly,bool nativeWorkOnly,bool rawShapeOnly,bool singleLineOnly,bool baseOnly) {
+#include "portable_actor_find_base_cases.inl"
+void Run(const fs::path& root,bool movementOnly,bool nativeWorkOnly,bool rawShapeOnly,bool singleLineOnly,bool baseOnly,bool findBaseOnly) {
     Temporary temporary(root);std::vector<Source> sources;std::vector<PortablePackageTables> scripts;
     sources.reserve(QuestVr::RuntimeScriptPackages.size()+2u);scripts.reserve(QuestVr::RuntimeScriptPackages.size());
     for(const auto* name:QuestVr::RuntimeScriptPackages) {
@@ -581,6 +582,13 @@ void Run(const fs::path& root,bool movementOnly,bool nativeWorkOnly,bool rawShap
     };
     rollback();
     CoreRotatorAddCoverage(rollback);
+    if(findBaseOnly){
+        ActorFindBaseCoverage(actors,rollback);
+        for(const auto& source:sources)source.Unchanged();
+        lifetime->Revoke();ClearPortableRuntimeClient();
+        std::cout<<"PASS focused actual first Training FindBase/guard/root controls; not begun-world callbacks or playable physics.\n";
+        return;
+    }
     if(baseOnly){
         ActorBaseCoverage(actors,rollback);
         AnimatedActorBaseCoverage(temporary);
@@ -625,6 +633,7 @@ void Run(const fs::path& root,bool movementOnly,bool nativeWorkOnly,bool rawShap
     ActorZoneCases(map,actors,rollback);
     ActorMoveCoverage(map,actors,rollback);
     ActorBaseCoverage(actors,rollback);
+    ActorFindBaseCoverage(actors,rollback);
     for(const auto& commands:std::vector<std::vector<Command>>{{},std::vector<Command>(17u),
         {Command{static_cast<Operation>(999)}},{Command{Operation::Enable},Command{static_cast<Operation>(999)}}}) {
         const auto rejected=ProbePortableRuntimeRetailCollision(commands);
@@ -804,7 +813,7 @@ void Run(const fs::path& root,bool movementOnly,bool nativeWorkOnly,bool rawShap
 int main(int argc,char** argv) {
     std::cout.setf(std::ios::unitbuf);
     try {
-        fs::path root;bool movementOnly{},nativeWorkOnly{},rawShapeOnly{},singleLineOnly{},baseOnly{};if(const auto* configured=std::getenv("DEUSEX_GAME_ROOT");configured&&*configured)root=configured;
+        fs::path root;bool movementOnly{},nativeWorkOnly{},rawShapeOnly{},singleLineOnly{},baseOnly{},findBaseOnly{};if(const auto* configured=std::getenv("DEUSEX_GAME_ROOT");configured&&*configured)root=configured;
         for(int i=1;i<argc;++i) {
             const std::string_view option=argv[i];
             if((option=="--owned-source-root"||option=="--game-root")&&i+1<argc)root=argv[++i];
@@ -813,7 +822,8 @@ int main(int argc,char** argv) {
             else if(option=="--raw-shape-only")rawShapeOnly=true;
             else if(option=="--single-line-only")singleLineOnly=true;
             else if(option=="--base-only")baseOnly=true;
-            else throw std::runtime_error("Usage: portable_retail_collision_test [--owned-source-root OWNED_GAME_ROOT] [--movement-only | --native-work-only | --raw-shape-only | --single-line-only | --base-only] (or DEUSEX_GAME_ROOT)");
+            else if(option=="--find-base-only")findBaseOnly=true;
+            else throw std::runtime_error("Usage: portable_retail_collision_test [--owned-source-root OWNED_GAME_ROOT] [--movement-only | --native-work-only | --raw-shape-only | --single-line-only | --base-only | --find-base-only] (or DEUSEX_GAME_ROOT)");
         }
         if(root.empty()) {std::cout<<"SKIP owned first Training retail collision: use --owned-source-root or DEUSEX_GAME_ROOT.\n";return 77;}
         ShutdownPortableRuntime();GC::Collect();const auto gc=GC::GetStats();
@@ -822,8 +832,8 @@ int main(int argc,char** argv) {
         Require(!absent.available&&!absent.execution.passed()&&!absent.execution.committed&&
             !absentStartup.world.execution.passed()&&!absentStartup.collision.initialized&&
             !ReadPortableRuntimeRetailCollision().initialized,"No-runtime collision diagnostic did not refuse safely");++refusals;
-        Require(unsigned(movementOnly)+unsigned(nativeWorkOnly)+unsigned(rawShapeOnly)+unsigned(singleLineOnly)+unsigned(baseOnly)<=1u,"Choose only one focused first-Training test mode");
-        Run(fs::canonical(root),movementOnly,nativeWorkOnly,rawShapeOnly,singleLineOnly,baseOnly);
+        Require(unsigned(movementOnly)+unsigned(nativeWorkOnly)+unsigned(rawShapeOnly)+unsigned(singleLineOnly)+unsigned(baseOnly)+unsigned(findBaseOnly)<=1u,"Choose only one focused first-Training test mode");
+        Run(fs::canonical(root),movementOnly,nativeWorkOnly,rawShapeOnly,singleLineOnly,baseOnly,findBaseOnly);
         ShutdownPortableRuntime();GC::Collect();SameGc(gc,"Retail collision test leaked rooted native UObjects after shutdown");
         std::cout<<"PASS retail collision integration "<<checks<<" checks / "<<refusals<<" explicit refusals\n";return 0;
     }catch(const std::exception& error) {std::cerr<<"FAIL: "<<error.what()<<'\n';ShutdownPortableRuntime();return 1;}

@@ -1395,15 +1395,32 @@ void PersistenceTests(Fixture& fixture) {
 }
 void CollisionIntegrationTests(Fixture& fixture) {
     const auto boolean = [](bool value) { return Evaluation{Value::Bool(value), {}}; };
-    const auto pointAt = [&](std::array<float, 3> location, const std::string& expectedBase) {
-        // This is a real Decoration spawn with bCollideWorld=true and PHYS_None.
-        // Exact zero extents use the pin's CheckLocation world bypass, while
-        // SpawnZone, begun callbacks and actor-hash InitBase actually execute.
-        const auto point = Spawn("MakeAt", {Class("PointBase"), Object(""), Name("None"), Vector(location), Rotation({0, 0, 0})});
-        Same(Read(point, "Base"), Object(expectedBase).value, "Point spawn chose wrong actual cached-registry InitBase target");
-        Require(Integer(point, "BegunEvents") == 1 && Integer(point, "BaseEvents") == (expectedBase.empty() ? 0 : 1),
-            "Point spawn skipped BeginPlay/native BaseChange callbacks or invented a base");
-        return point;
+    const auto missingFindBase = [&](const std::string& function,const std::vector<Evaluation>& arguments,
+        const std::string& receiver="Driver") {
+        const auto before=fixture.Snapshot("BeforeMissingFindBase");
+        const auto paths=ActorPaths(true);const auto revision=GetPortableRuntimeWorldRevision();
+        const auto beforeGc=GC::GetStats();
+        const auto result=ExecutePortableActorFunction(Path(receiver),function,arguments);
+        // This generated fixture has no prepared actual UObject lookup or
+        // Level/Engine/Model collision service. A physical Spawn must refuse
+        // instead of reviving the removed cached-overlap/pointer-sort base.
+        Require(!result.passed()&&!result.committed&&result.status==QuestVr::Vm::Status::Unsupported&&
+            result.error=="Retail collision actor requires actual object lookup authority"&&result.writes>0u,
+            "Unprepared physical Spawn did not refuse its genuine FindBase provider boundary: "+result.error);
+        const auto afterGc=GC::GetStats(); // Inspect before any save can collect.
+        Require(afterGc.numObjects==beforeGc.numObjects&&afterGc.memoryUsage==beforeGc.memoryUsage,
+            "Missing FindBase retained physical birth/callback allocation roots");
+        Require(fixture.Snapshot("AfterMissingFindBase")==before&&ActorPaths(true)==paths&&
+            GetPortableRuntimeWorldRevision()==revision,
+            "Missing FindBase leaked callback writes, birth/name state, collision fields or revision");
+        ++refusals;
+    };
+    const auto pointAt = [&](std::array<float, 3> location) {
+        // The real generated Decoration has bCollideWorld=true, PHYS_None
+        // and zero dimensions. Placement bypass is not FindBase authority.
+        // Full original support selection is covered by actual first Training,
+        // not by inferring a floor from this fixture's cached overlap boxes.
+        missingFindBase("MakeAt",{Class("PointBase"),Object(""),Name("None"),Vector(location),Rotation({0,0,0})});
     };
     fixture.Reset();
     // Original SpawnActor has no AttachTag scan. An authored BeginPlay may
@@ -1434,66 +1451,71 @@ void CollisionIntegrationTests(Fixture& fixture) {
         LoadPortableRuntimeState((fixture.directory / "DisabledNegativeCollision.sav").string()) &&
         fixture.Snapshot("DisabledNegativeCollisionRestore") == negative,
         "Disabled negative dimensions failed typed save/fresh-registry restore");
-    pointAt({0.0f, 0.0f, 0.0f}, "");
+    pointAt({0.0f, 0.0f, 0.0f});
     Same(Call("Owner", "SetCollisionSize", {{Value::Float(12.0f), {}}, {Value::Float(20.0f), {}}}).value,
         Value::Bool(true), "Cannot restore positive dimensions before collision enable");
     Call("Owner", "SetCollision", {boolean(true), boolean(true), boolean(false)});
     Require(QuestVr::Vm::ToBool(Read("Owner", "bCollideActors")) && QuestVr::Vm::ToBool(Read("Owner", "bBlockActors")) &&
         !QuestVr::Vm::ToBool(Read("Owner", "bBlockPlayers")), "Actual native262 did not publish all requested collision flags");
-    pointAt({0.0f, 0.0f, 0.0f}, "Owner");
+    pointAt({0.0f, 0.0f, 0.0f});
     Call("Owner", "SetCollision", {{Value{}, {}}, {Value{}, {}}, boolean(true)});
     Call("Owner", "SetCollision");
     Require(QuestVr::Vm::ToBool(Read("Owner", "bCollideActors")) && QuestVr::Vm::ToBool(Read("Owner", "bBlockActors")) &&
         QuestVr::Vm::ToBool(Read("Owner", "bBlockPlayers")), "Native262 omitted arguments did not preserve current flags");
 
     RefusedCall(fixture, "MoveDirectThenFail", {Vector({512.0f, 0.0f, 0.0f})}, {}, "Owner");
-    pointAt({0.0f, 0.0f, 0.0f}, "Owner"); pointAt({512.0f, 0.0f, 0.0f}, "");
+    pointAt({0.0f, 0.0f, 0.0f}); pointAt({512.0f, 0.0f, 0.0f});
     RefusedCall(fixture, "ResizeThenFail", {}, {}, "Owner");
-    pointAt({8.0f, 0.0f, 0.0f}, "Owner");
+    pointAt({8.0f, 0.0f, 0.0f});
     RefusedCall(fixture, "DisableThenFail", {}, {}, "Owner");
-    pointAt({0.0f, 0.0f, 0.0f}, "Owner");
+    pointAt({0.0f, 0.0f, 0.0f});
     RefusedCall(fixture, "DestroyThenFail", {}, {}, "Owner");
-    pointAt({0.0f, 0.0f, 0.0f}, "Owner");
+    pointAt({0.0f, 0.0f, 0.0f});
     Same(Read("Owner", "NestedActor"), Object("").value, "Rolled-back Destroy retained callback-spawned child reference");
     Require(!QuestVr::Vm::ToBool(Read("Owner", "bDeleteMe")), "Rolled-back Destroy retained deletion flag");
 
     Call("Owner", "MoveDirect", {Vector({512.0f, 0.0f, 0.0f})});
-    pointAt({512.0f, 0.0f, 0.0f}, ""); pointAt({0.0f, 0.0f, 0.0f}, "");
+    pointAt({512.0f, 0.0f, 0.0f}); pointAt({0.0f, 0.0f, 0.0f});
     Same(Call("Owner", "SetCollisionSize", {{Value::Float(12.0f), {}}, {Value::Float(20.0f), {}}}).value,
         Value::Bool(true), "Native283 failed Remove/assign/Add success");
-    pointAt({512.0f, 0.0f, 0.0f}, "Owner");
+    pointAt({512.0f, 0.0f, 0.0f});
     Call("Owner", "SetCollision", {boolean(false)});
     Require(!QuestVr::Vm::ToBool(Read("Owner", "bCollideActors")) && QuestVr::Vm::ToBool(Read("Owner", "bBlockActors")) &&
         QuestVr::Vm::ToBool(Read("Owner", "bBlockPlayers")), "Native262 false/omitted flags were conflated");
-    pointAt({512.0f, 0.0f, 0.0f}, ""); Call("Owner", "SetCollision", {boolean(true)});
-    pointAt({512.0f, 0.0f, 0.0f}, "Owner");
-    Require(QuestVr::Vm::ToBool(Call("Owner", "Die").value), "Registered support native Destroy refused");
-    const auto duringDestroy = Read("Owner", "NestedActor").text;
-    Require(!duringDestroy.empty() && Published(duringDestroy) && Integer(duringDestroy, "BegunEvents") == 1,
-        "Support Destroyed callback did not really spawn a begun PointBase actor");
-    Same(Read(duringDestroy, "Base"), Object("").value, "Destroy removed registration after, not before, Destroyed callback's Spawn");
-    Require(Integer(duringDestroy, "BaseEvents") == 0, "Destroy callback's point unexpectedly based on removed support");
-    pointAt({512.0f, 0.0f, 0.0f}, "");
-    const auto dead = fixture.Snapshot("CollisionDeadSupport"); fixture.Reset();
-    Require(LoadPortableRuntimeState((fixture.directory / "CollisionDeadSupport.sav").string()) && fixture.Snapshot("CollisionDeadSupportRestore") == dead,
-        "Destroyed support native topology failed cold fresh-registry restore");
-    pointAt({512.0f, 0.0f, 0.0f}, "");
+    pointAt({512.0f, 0.0f, 0.0f}); Call("Owner", "SetCollision", {boolean(true)});
+    pointAt({512.0f, 0.0f, 0.0f});
+    // Support.Destroyed really spawns PointBase. The child's missing FindBase
+    // must roll back the WHOLE enclosing Destroy, not commit a fake supported
+    // child or leave its original support deleted. Nonphysical native Destroy
+    // success/removal/save controls remain in the other lifecycle tests.
+    missingFindBase("Die",{},"Owner");
+    Require(!QuestVr::Vm::ToBool(Read("Owner","bDeleteMe"))&&Published("Owner"),
+        "Nested missing FindBase retained the enclosing support deletion");
+    Same(Read("Owner","NestedActor"),Object("").value,"Nested missing FindBase retained the callback child");
+    pointAt({512.0f, 0.0f, 0.0f});
+    const auto live = fixture.Snapshot("CollisionLiveSupportAfterRefusal"); fixture.Reset();
+    Require(LoadPortableRuntimeState((fixture.directory / "CollisionLiveSupportAfterRefusal.sav").string()) &&
+        fixture.Snapshot("CollisionLiveSupportAfterRefusalRestore") == live,
+        "Live collision fields after nested refusal failed cold canonical restore");
+    Require(!QuestVr::Vm::ToBool(Read("Owner","bDeleteMe"))&&Published("Owner"),
+        "Cold restore invented a committed support deletion from its refused Destroy");
+    pointAt({512.0f, 0.0f, 0.0f});
 
     fixture.Reset(); Call("Owner", "SetCollision", {boolean(true)});
-    Call("Owner", "MoveDirect", {Vector({512.0f, 0.0f, 0.0f})}); pointAt({512.0f, 0.0f, 0.0f}, "");
+    Call("Owner", "MoveDirect", {Vector({512.0f, 0.0f, 0.0f})}); pointAt({512.0f, 0.0f, 0.0f});
     const auto stale = fixture.Snapshot("StaleCollisionRegistration");
-    // The pin does not save native cached hash state; LinkActorsToLevel rebuilds
-    // it from saved reflected fields. Cold/repeated loads must do the same,
-    // replacing both old memberships and old runtime-born pointers atomically.
+    // Cold/repeated loads must replace saved reflected collision fields and
+    // runtime-born identities atomically. Their save equality does not prove
+    // actual retail hash membership or turn unavailable FindBase into overlap.
     fixture.Reset();
     for (unsigned iteration = 0u; iteration < 3u; ++iteration) {
         Require(LoadPortableRuntimeState((fixture.directory / "StaleCollisionRegistration.sav").string()) &&
             fixture.Snapshot("FreshCollisionRegistrationRestore") == stale,
             "Fresh save registry normalization changed serialized script/birth state");
-        pointAt({512.0f, 0.0f, 0.0f}, "Owner");
+        pointAt({512.0f, 0.0f, 0.0f});
         Call("Owner", "SetCollision", {boolean(false)});
     }
-    fixture.Reset(); pointAt({0.0f, 0.0f, 0.0f}, ""); fixture.Reset();
+    fixture.Reset(); pointAt({0.0f, 0.0f, 0.0f}); fixture.Reset();
 }
 void AliasAndBoundaryGcTests(Fixture& fixture) {
     const auto first = Spawn(), second = Spawn();
@@ -2193,8 +2215,10 @@ void WorldStartupSynthetic() {
             at(full,Phase::PostBeginPlay)==7u && at(full,Phase::SetInitialState)==7u,
             "World loops captured actor count, failed nested callbacks/live births, or called deleted future slot");
         if (model==4u) {
-            Require(full.actorPath==Path("Pawn0") && full.actorSlot==4u && at(full,Phase::PostPostBeginPlay)==0u,
-                "Physical FindBase gap lost exact native receiver/slot or ran later phases");
+            Require(full.actorPath==Path("Pawn0") && full.actorSlot==4u && at(full,Phase::PostPostBeginPlay)==0u &&
+                full.execution.status==QuestVr::Vm::Status::Unsupported &&
+                full.execution.error=="Retail collision actor requires actual object lookup authority",
+                "Physical world FindBase did not refuse its exact missing-actual-provider receiver/slot boundary");
         } else Require(at(full,Phase::PostPostBeginPlay)==7u,"World final callbacks did not observe cleared startup and first-match attachment");
         Require(!QuestVr::Vm::ToBool(Read("Level0","bBegunPlay")) &&
             QuestVr::Vm::ToInt(Read("Level0","TimeSeconds"))==123,"Rolled-back world published begun play or reset time");

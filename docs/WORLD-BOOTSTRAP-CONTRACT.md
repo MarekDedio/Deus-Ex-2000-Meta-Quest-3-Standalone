@@ -157,9 +157,14 @@ receiver/target direction. Generated birth regression establishes matching
 tags in actual BeginPlay and checks that neither the fresh actor nor its owner
 is attached by that world-only rule, including cold save/restore.
 
-The existing portable overlap-based FindBase is not proof of original BSP,
-slope, standing-count or moving-base physics fidelity. Do not mark the native
-base phase complete merely because the AttachTag correction passes.
+The former portable overlap-based FindBase was not proof of original BSP,
+slope, standing-count or moving-base physics fidelity. The current source
+replaces it with the actual-Level downward SingleLine/selected SupportActor
+path, with original Spawn-before-PostPostBeginPlay ordering. Its cold first-map
+tests do not prove begun support callbacks, completed startup or falling.
+See TRAINING-FIND-BASE.md for current acceptance and memory-admission evidence.
+Do not mark the native base phase complete merely because the AttachTag or
+isolated support corrections pass.
 
 ## Next implementation and proof boundary
 
