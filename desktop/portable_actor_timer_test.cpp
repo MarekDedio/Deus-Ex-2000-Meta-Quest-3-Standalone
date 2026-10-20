@@ -133,6 +133,7 @@ struct Package {
         const auto reference = Export(name, Import(type, core), 0, owner, true);
         builders.at(static_cast<std::size_t>(reference - 1)) = [type, target, flags, dimension](std::int32_t next, std::int32_t) {
             Bytes body{0u}; Index(body, 0); Index(body, next); U32(body, dimension); U32(body, flags); Index(body, 0);
+            if(flags&0x20u)U16(body,0u);
             if (type == "ObjectProperty" || type == "StructProperty" || type == "ByteProperty") Index(body, target);
             else if (type == "ClassProperty") { Index(body, target); Index(body, 0); }
             return body;
@@ -237,12 +238,14 @@ Tables Build(Fixture& fixture, unsigned schema = 0u) {
     const auto actor = engine.Export("Actor", 0, eo), zone = engine.Export("ZoneInfo", 0, actor), levelInfo = engine.Export("LevelInfo", 0, zone), level = engine.Export("Level", 0, eo), model = engine.Export("Model", 0, eo);
     const auto pointRegion=engine.Export("PointRegion",engine.Import("Struct",ec),0,actor);
     engine.Property("Zone","ObjectProperty",pointRegion,ec,zone);engine.Property("iLeaf","IntProperty",pointRegion,ec);engine.Property("ZoneNumber","ByteProperty",pointRegion,ec);engine.StructBody(pointRegion);
-    for (const auto* name : {"Owner", "Base", "Instigator"}) engine.Property(name, "ObjectProperty", actor, ec, actor);
+    for (const auto* name : {"Owner", "Instigator"}) engine.Property(name, "ObjectProperty", actor, ec, actor);
+    engine.Property("Base", "ObjectProperty", actor, ec, actor, 0x22u);
+    engine.Property("StandingCount", "ByteProperty", actor, ec, 0, 0x2u);
     engine.Property("Touching","ObjectProperty",actor,ec,actor,0u,4u);
     engine.Property("Brush","ObjectProperty",actor,ec,actor);engine.Property("Region","StructProperty",actor,ec,pointRegion);engine.Property("OldLocation","StructProperty",actor,ec,ev);
     for(const auto* name:{"bTicked","bCollideWorld","bCollideWhenPlacing","bCollideActors","bBlockActors","bBlockPlayers"})engine.Property(name,"BoolProperty",actor,ec);
     for(const auto* name:{"CollisionRadius","CollisionHeight"})engine.Property(name,"FloatProperty",actor,ec);
-    engine.Property("Level", "ObjectProperty", actor, ec, levelInfo); engine.Property("XLevel", "ObjectProperty", actor, ec, level);
+    engine.Property("Level", "ObjectProperty", actor, ec, levelInfo, 0x2u); engine.Property("XLevel", "ObjectProperty", actor, ec, level);
     const auto location = engine.Property("Location", "StructProperty", actor, ec, ev);
     engine.Property("Rotation", "StructProperty", actor, ec, er); engine.Property("Tag", "NameProperty", actor, ec);
     const auto deleted = engine.Property("bDeleteMe", "BoolProperty", actor, ec); engine.Property("bNoDelete", "BoolProperty", actor, ec); engine.Property("bStatic", "BoolProperty", actor, ec);
@@ -413,7 +416,10 @@ void Synthetic() {
     fixture.Reset(); Call("Driver","GotoState",{Name("First")}); arm(1,false);
     for(unsigned kind=0u;kind<4u;++kind) { QuestVr::Vm::Limits limit; if(kind==0u) limit.instructions=0u; if(kind==1u) limit.writes=2u; if(kind==2u) limit.callDepth=1u; if(kind==3u) limit.retainedBytes=0u; Refusal(fixture,"shared timer callback budget "+std::to_string(kind),[&]{return AdvancePortableActorTimer(Path("Driver"),1.25f,limit);},Status::Budget); }
     fixture.Reset(); arm(std::numeric_limits<float>::min(),true); Refusal(fixture,"unsafe whole-period count",[&]{return AdvancePortableActorTimer(Path("Driver"),std::numeric_limits<float>::max());});
-    fixture.Reset(); arm(1,false); Call("Driver","SetMode",{{Value::Integer(5),{}}}); Require(AdvancePortableActorTimer(Path("Driver"),1.25f).passed(),"Timer destruction callback failed"); Require(QuestVr::Vm::ToBool(Read("Driver","bDeleteMe")),"Timer Destroy lost pending-kill mutation");
+    fixture.Reset(); arm(1,false); Call("Driver","SetMode",{{Value::Integer(5),{}}});
+    const auto destruction=AdvancePortableActorTimer(Path("Driver"),1.25f);
+    Require(destruction.passed(),"Timer destruction callback failed: "+destruction.error);
+    Require(QuestVr::Vm::ToBool(Read("Driver","bDeleteMe")),"Timer Destroy lost pending-kill mutation");
     fixture.Reset();arm(1,false);Call("Driver","SetMode",{{Value::Integer(9),{}}});const auto actorsBeforeBirth=GetPortableRuntimeMapActors(true).size();Require(AdvancePortableActorTimer(Path("Driver"),1.25f).passed(),"Timer birth callback failed");Require(GetPortableRuntimeMapActors(true).size()==actorsBeforeBirth+1u && Decode(fixture.Snapshot("TimerBirth")).births.size()==1u && QuestVr::Vm::ToBool(Read("Level0","bBegunPlay")),"Timer callback lost born actor, Level mutation or birth persistence");
     fixture.Reset(); arm(1,true); Require(AdvancePortableActorTimer(Path("Driver"),.25f).passed(),"Cold live timer preparation failed"); const auto cold=fixture.Snapshot("Cold");
     Require(!LoadPortableRuntimeMap(tables.map).passed && fixture.Snapshot("RefusedMapReplacement")==cold,"Map replacement discarded unsaved native timer");

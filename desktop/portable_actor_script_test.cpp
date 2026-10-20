@@ -1812,8 +1812,8 @@ void VerifyOriginalInventoryTransactions(const std::string& actor,const std::fil
     });
     Require(pawnRecord!=inventoryState.objects.end() && pawnRecord->lifecycle &&
         pawnRecord->lifecycle->children==std::vector<std::string>{weapon,ammo} &&
-        pawnRecord->lifecycle->basedActors==std::vector<std::string>{weapon,ammo},
-        "Original inventory owner/base operations did not retain their actual ordered native reverse lists");
+        pawnRecord->lifecycle->basedActors.empty(),
+        "Original inventory Owner children or deprecated Base-list capture is incorrect");
     Require(ValidatePortableRuntimeState(inventorySaved.string()),"Original initialized inventory v8 graph failed read-only validation");
     unchanged(inventoryBytes,"Original initialized inventory read-only validation");
     GC::Collect();verifyInventoryGraph();unchanged(inventoryBytes,"Original initialized inventory GC rooting");

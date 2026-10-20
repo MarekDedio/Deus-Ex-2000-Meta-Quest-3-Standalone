@@ -170,6 +170,7 @@ struct Package {
         const auto reference = Export(name, Import(type, core), 0, owner, true);
         builders.at(static_cast<std::size_t>(reference - 1)) = [type, dimension, target, flags, secondary](std::int32_t next, std::int32_t) {
             Bytes body{0u}; Index(body, 0); Index(body, next); U32(body, dimension); U32(body, flags); Index(body, 0);
+            if(flags&0x20u)U16(body,0u);
             if (type == "ClassProperty") { Index(body, target); Index(body, secondary); }
             else if (type == "ObjectProperty" || type == "ByteProperty" || type == "StructProperty" || type == "ArrayProperty") Index(body, target);
             return body;
@@ -396,8 +397,9 @@ Tables Build(Fixture& fixture, unsigned worldModel = 0u, unsigned decalSchema = 
     const auto notify = engine.Export("SpawnNotify", 0, actor), pointRegion = engine.Export("PointRegion", engine.Import("Struct", engineCore), 0, actor);
     engine.Property("Zone", "ObjectProperty", pointRegion, engineCore, 1u, zone); engine.Property("iLeaf", "IntProperty", pointRegion, engineCore); engine.Property("ZoneNumber", "ByteProperty", pointRegion, engineCore);
     engine.StructBody(pointRegion);
-    for (const auto& name : {"Owner", "Base"}) engine.Property(name, "ObjectProperty", actor, engineCore, 1u, actor);
-    const auto actorLevelField = engine.Property("Level", "ObjectProperty", actor, engineCore, 1u, levelInfo);
+    engine.Property("Owner", "ObjectProperty", actor, engineCore, 1u, actor);
+    engine.Property("Base", "ObjectProperty", actor, engineCore, 1u, actor, 0x22u);
+    const auto actorLevelField = engine.Property("Level", "ObjectProperty", actor, engineCore, 1u, levelInfo, 0x2u);
     const auto actorXLevelField = engine.Property("XLevel", "ObjectProperty", actor, engineCore, 1u, level);
     const auto loadedObjectPath = engine.Function("LoadedObjectPath",actor,engineCore);
     engine.Property("ReturnValue","StrProperty",loadedObjectPath,engineCore,1u,0,0x580u);
@@ -470,7 +472,7 @@ Tables Build(Fixture& fixture, unsigned worldModel = 0u, unsigned decalSchema = 
         const auto surfacesInput = engine.IntArrayProperty("Input", writeSurfaces, engineCore, 0x00400080u);
         engine.FunctionCode(writeSurfaces, Join({Assign(Ref(0x01u, surfaces), Ref(0x00u, surfacesInput)), Return()}));
     }
-    engine.Property("Physics", "ByteProperty", actor, engineCore); engine.Property("StandingCount", "ByteProperty", actor, engineCore); engine.Property("Touching", "ObjectProperty", actor, engineCore, 4u, actor, 2u);
+    engine.Property("Physics", "ByteProperty", actor, engineCore); engine.Property("StandingCount", "ByteProperty", actor, engineCore, 1u, 0, 0x2u); engine.Property("Touching", "ObjectProperty", actor, engineCore, 4u, actor, 2u);
     engine.Property("bWaterZone", "BoolProperty", zone, engineCore); engine.Property("bBegunPlay", "BoolProperty", levelInfo, engineCore);
     engine.Property("bStartup", "BoolProperty", levelInfo, engineCore);
     engine.Property("TimeSeconds", "FloatProperty", levelInfo, engineCore);

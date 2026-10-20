@@ -15,6 +15,7 @@
 #include <map>
 #include <stdexcept>
 #include <string>
+#include <tuple>
 #include <vector>
 
 // Actual generated UE1 metadata and bytecode through the production runtime.
@@ -136,6 +137,9 @@ struct Package {
     void IntTag(Bytes& bytes, const std::string& name, std::int32_t value) {
         Bytes data; U32(data, static_cast<std::uint32_t>(value)); Tag(bytes, name, 2u, data);
     }
+    void ByteTag(Bytes& bytes, const std::string& name, std::uint8_t value) {
+        Tag(bytes, name, 1u, Bytes{value});
+    }
     void BoolTag(Bytes& bytes, const std::string& name, bool value) {
         Index(bytes, Name(name)); bytes.push_back(static_cast<std::uint8_t>(3u | (value ? 0x80u : 0u)));
     }
@@ -156,6 +160,7 @@ struct Package {
         const auto reference = Export(name, Import(type, core), 0, owner, true);
         builders.at(static_cast<std::size_t>(reference - 1)) = [type, dimension, target, flags](std::int32_t next, std::int32_t) {
             Bytes body{0u}; Index(body, 0); Index(body, next); U32(body, dimension); U32(body, flags); Index(body, 0);
+            if(flags&0x20u)U16(body,0u); // Original Net field replication offset.
             if (type == "ObjectProperty" || type == "ByteProperty" || type == "StructProperty") Index(body, target);
             return body;
         }; return reference;
@@ -248,6 +253,7 @@ struct Fixture {
 std::string Path(const std::string& actor) { return "LifecycleFixture." + actor; }
 Evaluation Object(const std::string& actor) { return {Value::Text(Kind::Object, actor.empty() ? std::string{} : Path(actor)), {}}; }
 Evaluation Integer(std::int32_t value) { return {Value::Integer(value), {}}; }
+Evaluation Byte(std::uint8_t value) { return {Value::Byte(value), {}}; }
 Evaluation Boolean(bool value) { return {Value::Bool(value), {}}; }
 Evaluation Name(const std::string& value) { return {Value::Text(Kind::Name, value), {}}; }
 QuestVr::Vm::Result Call(const std::string& actor, const std::string& function,
@@ -280,6 +286,9 @@ void RefusedCall(const Fixture& fixture, const std::string& actor, const std::st
     Require(!result.passed() && !result.committed, "Invalid lifecycle call silently committed: " + actor + '.' + function);
     Require(fixture.Snapshot("AfterRefusal") == before, "Failed lifecycle call changed canonical state: " + actor + '.' + function);
     Require(GetPortableRuntimeWorldRevision() == revision, "Failed lifecycle call advanced world publication revision: " + actor + '.' + function);
+    GC::Collect();
+    Require(fixture.Snapshot("AfterRefusalGC") == before && GetPortableRuntimeWorldRevision() == revision,
+        "Failed lifecycle call changed state/revision across GC: " + actor + '.' + function);
     ++refusals;
 }
 std::uint32_t Read32(const Bytes& bytes, std::size_t& cursor) {
@@ -341,6 +350,11 @@ bool EmptyChildren(const QuestVr::ScriptSavedState& state, const std::string& ac
     // no-op need not invent a lifecycle record merely to describe an empty list.
     return found == state.objects.end() || !found->lifecycle || found->lifecycle->children.empty();
 }
+void EmptyLegacyBases(const QuestVr::ScriptSavedState& state) {
+    for (const auto& object : state.objects)
+        Require(!object.lifecycle || object.lifecycle->basedActors.empty(),
+            "Canonical capture revived retired reverse Base authority: " + object.path);
+}
 void SetSavedProperty(QuestVr::ScriptSavedObject& object, const std::string& name, const std::string& key,
     Value value, std::uint32_t slot = 0u) {
     const auto found = std::find_if(object.properties.begin(), object.properties.end(), [&](const auto& property) { return property.name == name && property.index == slot; });
@@ -395,9 +409,11 @@ Tables Build(Fixture& fixture) {
     Package engine; engine.stem = "Engine";
     const auto engineCore = engine.ImportPackage("Core"), importedObject = engine.Import("Object", engineCore);
     const auto actor = engine.Export("Actor", 0, importedObject), levelInfo = engine.Export("LevelInfo", 0, actor);
-    for (const auto& name : {"Owner", "Base", "Level", "Instigator"}) engine.Property(name, "ObjectProperty", actor, engineCore, 1u, actor);
+    for (const auto& name : {"Owner", "Instigator"}) engine.Property(name, "ObjectProperty", actor, engineCore, 1u, actor);
+    engine.Property("Base", "ObjectProperty", actor, engineCore, 1u, actor, 0x22u);
+    engine.Property("Level", "ObjectProperty", actor, engineCore, 1u, levelInfo, 0x2u);
     engine.Property("Touching", "ObjectProperty", actor, engineCore, 4u, actor);
-    engine.Property("StandingCount", "ByteProperty", actor, engineCore);
+    engine.Property("StandingCount", "ByteProperty", actor, engineCore, 1u, 0, 0x2u);
     for (const auto& name : {"bStatic", "bNoDelete", "bDeleteMe"}) engine.Property(name, "BoolProperty", actor, engineCore);
     engine.Property("bBegunPlay", "BoolProperty", levelInfo, engineCore);
     const auto ownerNative = engine.Function("SetOwner", actor, engineCore, {}, 272u);
@@ -415,13 +431,17 @@ Tables Build(Fixture& fixture) {
     const auto recursive = classes.Export("Recursive", 0, probe), failOwner = classes.Export("FailOwner", 0, probe);
     const auto failBase = classes.Export("FailBase", 0, probe), failDestroy = classes.Export("FailDestroy", 0, probe);
     const auto failUnTouch = classes.Export("FailUnTouch", 0, probe);
+    const auto countDefault = classes.Export("CountDefault", 0, probe);
+    const auto countInherited = classes.Export("CountInherited", 0, countDefault);
     std::map<std::string, std::int32_t> properties;
     for (const auto& name : {"Trace", "Gained", "Lost", "Attached", "Detached", "BaseChanges", "DestroyedCalls", "Untouched", "Ticks", "StateValue"})
         properties.emplace(name, classes.Property(name, "IntProperty", probe, classesCore));
-    for (const auto& name : {"Journal", "RedirectOwner", "ObservedOwner", "ObservedBase", "LastArgument", "Link"})
+    for (const auto& name : {"Journal", "RedirectOwner", "ObservedOwner", "ObservedBase", "LastArgument", "Link", "RedirectBase"})
         properties.emplace(name, classes.Property(name, "ObjectProperty", probe, classesCore, 1u, importedActor));
+    properties.emplace("RedirectLevel", classes.Property("RedirectLevel", "ObjectProperty", probe, classesCore, 1u, importedLevel));
     properties.emplace("ObservedStanding", classes.Property("ObservedStanding", "ByteProperty", probe, classesCore));
-    for (const auto& name : {"RedirectOnce", "ObservedDeleted"}) properties.emplace(name, classes.Property(name, "BoolProperty", probe, classesCore));
+    for (const auto& name : {"RedirectOnce", "ObservedDeleted", "RedirectBaseOnce", "ReenterBaseOnce", "RedirectLevelOnce"})
+        properties.emplace(name, classes.Property(name, "BoolProperty", probe, classesCore));
     const auto ownerProperty = classes.Import("Owner", importedActor, "ObjectProperty");
     const auto baseProperty = classes.Import("Base", importedActor, "ObjectProperty");
     const auto levelProperty = classes.Import("Level", importedActor, "ObjectProperty");
@@ -447,7 +467,18 @@ Tables Build(Fixture& fixture) {
             const auto redirect = Join({Assign(property("RedirectOnce"), Token(0x28u)), Context(argument, Native(272u, {property("RedirectOwner")}))});
             code = Join({code, If(property("RedirectOnce"), redirect, code.logical)});
         }
-        if (name == "Attach" || name == "Detach") code = Join({code, Assign(property("ObservedStanding"), Ref(0x01u, standingProperty))});
+        if (name == "Attach" || name == "Detach") {
+            code = Join({code, Assign(property("ObservedStanding"), Ref(0x01u, standingProperty))});
+            const auto rawRedirect = Join({Assign(property("RedirectBaseOnce"), Token(0x28u)),
+                Assign(Context(argument, Ref(0x01u, baseProperty)), property("RedirectBase"))});
+            code = Join({code, If(property("RedirectBaseOnce"), rawRedirect, code.logical)});
+            const auto levelRedirect = Join({Assign(property("RedirectLevelOnce"), Token(0x28u)),
+                Assign(Context(argument, Ref(0x01u, levelProperty)), property("RedirectLevel"))});
+            code = Join({code, If(property("RedirectLevelOnce"), levelRedirect, code.logical)});
+            const auto reenter = Join({Assign(property("ReenterBaseOnce"), Token(0x28u)),
+                Context(argument, Native(298u, {property("RedirectBase")}))});
+            code = Join({code, If(property("ReenterBaseOnce"), reenter, code.logical)});
+        }
         classes.FunctionCode(function, Join({code, Return()})); return function;
     };
     event("GainedChild", "Gained", 1, ownerProperty); event("LostChild", "Lost", 2, ownerProperty);
@@ -475,6 +506,24 @@ Tables Build(Fixture& fixture) {
     classes.FunctionCode(begun, Join({Assign(Context(Ref(0x01u, levelProperty), Ref(0x01u, begunProperty)), Ref(0x00u, begunParameter)), Return()}));
     const auto redirect = classes.Function("RedirectNext", probe, classesCore), redirectParameter = classes.Property("Target", "ObjectProperty", redirect, classesCore, 1u, importedActor, 0x80u);
     classes.FunctionCode(redirect, Join({Assign(property("RedirectOwner"), Ref(0x00u, redirectParameter)), Assign(property("RedirectOnce"), Token(0x27u)), Return()}));
+    for (const auto& [name, key, type, target] : std::vector<std::tuple<std::string, std::int32_t, std::string, std::int32_t>>{
+        {"SetRawBase", baseProperty, "ObjectProperty", importedActor},
+        {"SetRawLevel", levelProperty, "ObjectProperty", importedLevel},
+        {"SetStanding", standingProperty, "ByteProperty", 0}}) {
+        const auto function = classes.Function(name, probe, classesCore);
+        const auto input = classes.Property("Input", type, function, classesCore, 1u, target, 0x80u);
+        classes.FunctionCode(function, Join({Assign(Ref(0x01u, key), Ref(0x00u, input)), Return()}));
+    }
+    for (const auto& [name, flag] : std::vector<std::pair<std::string, std::string>>{
+        {"RawRedirectBaseNext", "RedirectBaseOnce"}, {"ReenterBaseNext", "ReenterBaseOnce"},
+        {"RedirectLevelNext", "RedirectLevelOnce"}}) {
+        const bool level = name == "RedirectLevelNext";
+        const auto function = classes.Function(name, probe, classesCore);
+        const auto input = classes.Property("Input", "ObjectProperty", function, classesCore, 1u,
+            level ? importedLevel : importedActor, 0x80u);
+        classes.FunctionCode(function, Join({Assign(property(level ? "RedirectLevel" : "RedirectBase"), Ref(0x00u, input)),
+            Assign(property(flag), Token(0x27u)), Return()}));
+    }
     for (const auto& [name, native] : std::vector<std::pair<std::string, std::uint16_t>>{{"DisableEvent", 118u}, {"EnableEvent", 117u}}) {
         const auto function = classes.Function(name, probe, classesCore), parameter = classes.Property("Event", "NameProperty", function, classesCore, 1u, 0, 0x80u);
         classes.FunctionCode(function, Join({Native(native, {Ref(0x00u, parameter)}), Return()}));
@@ -491,23 +540,28 @@ Tables Build(Fixture& fixture) {
     }
     classes.Function("Destroyed", failDestroy, classesCore, Join({Assign(property("StateValue"), Int(321)), Native(999u), Return()}));
     for (const auto cls : {probe, recursive, failOwner, failBase, failDestroy, failUnTouch}) classes.ClassBody(cls);
+    Bytes countDefaults; classes.ByteTag(countDefaults, "StandingCount", 19u);
+    classes.ClassBody(countDefault, countDefaults); classes.ClassBody(countInherited);
     const auto classesTable = fixture.Write(classes);
 
     Package map; map.stem = "LifecycleFixture";
     const auto mapClasses = map.ImportPackage("LifecycleClasses"), mapEngine = map.ImportPackage("Engine");
     std::map<std::string, std::int32_t> actors;
     actors.emplace("Level0", map.Export("Level0", map.Import("LevelInfo", mapEngine)));
+    actors.emplace("Level1", map.Export("Level1", map.Import("LevelInfo", mapEngine)));
     for (const auto& [name, cls] : std::vector<std::pair<std::string, std::string>>{
         {"Recorder", "Probe"}, {"ParentA", "Probe"}, {"ParentB", "Probe"}, {"Child", "Probe"},
         {"BaseA", "Probe"}, {"BaseB", "Probe"}, {"BasedChild", "Probe"}, {"Victim", "Probe"},
         {"OwnedChild", "Probe"}, {"BasedOnVictim", "Probe"}, {"Peer", "Probe"}, {"Static", "Probe"},
         {"Protected", "Probe"}, {"RecursiveParent", "Recursive"}, {"FailParent", "FailOwner"},
-        {"FailBase", "FailBase"}, {"FailVictim", "FailDestroy"}, {"FailPeer", "FailUnTouch"}})
+        {"FailBase", "FailBase"}, {"FailVictim", "FailDestroy"}, {"FailPeer", "FailUnTouch"},
+        {"DefaultCount", "CountDefault"}, {"InheritedCount", "CountInherited"}})
         actors.emplace(name, map.Export(name, map.Import(cls, mapClasses)));
     for (const auto& [name, reference] : actors) {
         Bytes propertiesBytes; map.ObjectTag(propertiesBytes, "Level", actors.at("Level0"));
-        if (name == "Level0") map.BoolTag(propertiesBytes, "bBegunPlay", true);
+        if (name == "Level0" || name == "Level1") map.BoolTag(propertiesBytes, "bBegunPlay", true);
         else map.ObjectTag(propertiesBytes, "Journal", actors.at("Recorder"));
+        if (name == "BaseA") map.ByteTag(propertiesBytes, "StandingCount", 7u);
         if (name == "BasedChild") map.ObjectTag(propertiesBytes, "Base", actors.at("BaseA"));
         if (name == "Static") map.BoolTag(propertiesBytes, "bStatic", true);
         if (name == "Protected") map.BoolTag(propertiesBytes, "bNoDelete", true);
@@ -555,19 +609,20 @@ void OwnerTests(Fixture& fixture) {
     Require(GetPortableRuntimeWorldRevision() == validatedRevision, "Read-only lifecycle validation advanced world publication revision");
     Require(LoadPortableRuntimeState((fixture.directory / "ReentrantCanonical.sav").string()) && fixture.Snapshot("ReentrantRestore") == reentrant,
         "Reentrant duplicate native relations failed canonical restore");
-    // The structural codec sees only serialized links. Runtime replacement
-    // must also count omitted actors' immutable map-load BasedActors baseline,
-    // including in read-only validation, before allocating/publishing state.
-    auto overTotal = Decode(reentrant);
-    overTotal.objects.erase(std::remove_if(overTotal.objects.begin(), overTotal.objects.end(),
-        [](const auto& object) { return object.path == Path("BaseA"); }), overTotal.objects.end());
-    auto& maximumChildren = Record(overTotal, "ParentB");
+    // Only genuine serialized child links count. There is no inferred reverse
+    // Base baseline to add to the exact codec maximum during replacement.
+    auto maximum = Decode(reentrant);
+    auto& maximumChildren = Record(maximum, "ParentB");
     maximumChildren.lifecycle->children.assign(65'536u, Path("Child"));
     maximumChildren.lifecycle->basedActors.clear();
-    const auto structuralMaximum = QuestVr::EncodeScriptSavedState(overTotal);
-    Require(QuestVr::DecodeScriptSavedState(structuralMaximum).objects.size() == overTotal.objects.size(),
-        "Exact codec actor-link limit should be structurally valid before runtime baseline accounting");
-    RefusedScript(fixture, reentrant, std::move(overTotal), "SerializedMaxPlusInitialBasedLink");
+    const auto structuralMaximum = QuestVr::EncodeScriptSavedState(maximum);
+    Require(QuestVr::DecodeScriptSavedState(structuralMaximum).objects.size() == maximum.objects.size(),
+        "Exact codec actor-link maximum is structurally invalid");
+    LoadScript(fixture, reentrant, maximum, "SerializedExactChildMaximum");
+    const auto maximumSaved = Decode(fixture.Snapshot("ExactChildMaximumCapture"));
+    Require(Life(maximumSaved, "ParentB").children.size() == 65'536u,
+        "Runtime invented inferred Base links or discarded exact maximum child links");
+    EmptyLegacyBases(maximumSaved);
     fixture.Reset(); QuestVr::Vm::Limits limits; limits.callDepth = 8u;
     RefusedCall(fixture, "Child", "Own", {Object("RecursiveParent")}, limits);
     Require(Count("RecursiveParent", "Gained") == 0 && Count("Recorder", "Trace") == 0, "Recursive callback refusal retained intermediate writes");
@@ -595,7 +650,10 @@ void OwnerTests(Fixture& fixture) {
 }
 
 void BaseTests(Fixture& fixture) {
-    Require(Count("BaseA", "StandingCount") == 1, "Authored Base initial native relink did not set StandingCount");
+    Require(Count("BaseA", "StandingCount") == 7, "Map load reconstructed StandingCount from one authored Base edge");
+    Require(Count("DefaultCount", "StandingCount") == 19 && Count("InheritedCount", "StandingCount") == 19,
+        "Map load lost independent class-default/inherited StandingCount bytes");
+    HasObject("BasedChild", "Base", "BaseA", "Authored Base edge was lost while preserving independent count");
     const auto baseRevision = GetPortableRuntimeWorldRevision();
     Call("Child", "BaseOn", {Object("BaseB")});
     Require(GetPortableRuntimeWorldRevision() > baseRevision, "Committed SetBase/callback writes did not advance world publication revision");
@@ -609,11 +667,10 @@ void BaseTests(Fixture& fixture) {
     Require(GetPortableRuntimeWorldRevision() == sameRevision, "Same-base native no-op advanced world publication revision");
     Call("Child", "BaseOn", {Object("BaseA")});
     HasObject("BaseB", "ObservedBase", "BaseB", "Detach did not observe old Base before assignment");
-    Require(Count("BaseB", "StandingCount") == 0 && Count("BaseB", "ObservedStanding") == 0 && Count("BaseA", "StandingCount") == 2,
-        "Base transfer updated counts at the wrong time or dropped authored relation");
+    Require(Count("BaseB", "StandingCount") == 0 && Count("BaseB", "ObservedStanding") == 0 && Count("BaseA", "StandingCount") == 8,
+        "Base transfer reconstructed count or updated its raw byte at the wrong time");
     auto saved = Decode(fixture.Snapshot("BaseTransfer"));
-    Require(Life(saved, "BaseA").basedActors == std::vector<std::string>{Path("BasedChild"), Path("Child")} && Life(saved, "BaseB").basedActors.empty(),
-        "Base transfer did not preserve native based actor order");
+    EmptyLegacyBases(saved);
     const auto selfBefore = fixture.Snapshot("BeforeSelfBase"); Call("Child", "BaseOn", {Object("Child")});
     Require(fixture.Snapshot("AfterSelfBase") == selfBefore, "SetBase allowed self base or changed state on rejected cycle");
     Call("BaseB", "BaseOn", {Object("Child")});
@@ -621,7 +678,7 @@ void BaseTests(Fixture& fixture) {
     Require(fixture.Snapshot("AfterBaseCycle") == cycleBefore, "SetBase allowed an indirect base cycle");
     Call("Child", "BaseOn", {Object("Level0")});
     HasObject("Child", "Base", "Level0", "LevelInfo Base assignment was rejected");
-    Require(Count("Level0", "StandingCount") == 0 && Count("BaseA", "StandingCount") == 1,
+    Require(Count("Level0", "StandingCount") == 0 && Count("BaseA", "StandingCount") == 7,
         "LevelInfo Base received normal based actor counts or old base did not detach");
     saved = Decode(fixture.Snapshot("LevelBase"));
     const auto level = std::find_if(saved.objects.begin(), saved.objects.end(), [&](const auto& value) { return value.path == Path("Level0"); });
@@ -629,6 +686,110 @@ void BaseTests(Fixture& fixture) {
     Call("Child", "BaseOn", {Object("")}); HasObject("Child", "Base", "", "SetBase(None) did not clear reflected Base");
     RefusedCall(fixture, "Child", "BaseOnThenFail", {Object("BaseB")});
     RefusedCall(fixture, "Child", "BaseOn", {Object("FailBase")}); RefusedCall(fixture, "Child", "BadBaseType");
+    // Historical valid wire payloads remain schema-checked but never recreate
+    // a reverse Base simulation authority, including duplicate entries.
+    fixture.Reset(); Call("Child", "SetValue", {Integer(1)});
+    const auto historicalPrefix = fixture.Snapshot("HistoricalBasePrefix");
+    auto historical = Decode(historicalPrefix);
+    auto& historicalChild = Record(historical, "Child"); historicalChild.lifecycle.emplace();
+    historicalChild.lifecycle->basedActors = {Path("Peer"), Path("Peer"), Path("Victim")};
+    LoadScript(fixture, historicalPrefix, historical, "HistoricalIgnoredBaseLinks");
+    EmptyLegacyBases(Decode(fixture.Snapshot("HistoricalBaseCanonical")));
+    Require(Count("BaseA", "StandingCount") == 7 && Count("Child", "StandingCount") == 0,
+        "Historical reverse Base wire entries reconstructed StandingCount");
+    HasObject("Peer", "Base", "", "Historical reverse Base wire entries changed direct Base");
+    GC::Collect(); EmptyLegacyBases(Decode(fixture.Snapshot("HistoricalBaseCanonicalGC")));
+
+    // Native byte operations wrap independently of direct Base topology.
+    fixture.Reset(); Call("BaseB", "SetStanding", {Byte(255u)});
+    Call("Child", "BaseOn", {Object("BaseB")});
+    Require(Count("BaseB", "StandingCount") == 0 && Count("BaseB", "ObservedStanding") == 0,
+        "Attach count did not wrap 255 to zero before callback");
+    Call("Child", "BaseOn", {Object("")});
+    Require(Count("BaseB", "StandingCount") == 255 && Count("BaseB", "ObservedStanding") == 255,
+        "Detach count did not wrap zero to 255 before callback");
+    fixture.Reset(); Call("Child", "SetRawBase", {Object("BaseB")});
+    Call("Child", "BaseOn", {Object("")});
+    Require(Count("BaseB", "StandingCount") == 255, "An inconsistent authored/raw Base count was normalized before decrement");
+
+    // The prospective traversal precedes same-base equality. An unrelated
+    // cycle must exhaust this root's finite native budget, not silently pass.
+    fixture.Reset(); Call("Child", "SetRawBase", {Object("BaseA")});
+    Call("BaseA", "SetRawBase", {Object("BaseB")}); Call("BaseB", "SetRawBase", {Object("BaseA")});
+    QuestVr::Vm::Limits cycleLimits; cycleLimits.nativeWork = 64u;
+    RefusedCall(fixture, "Child", "BaseOn", {Object("BaseA")}, cycleLimits);
+
+    // Detach reentrancy must not replace the captured by-value new Base. Counts
+    // target captured pointers, even when the final direct links disagree.
+    fixture.Reset(); Call("Child", "BaseOn", {Object("BaseA")});
+    Call("BaseA", "ReenterBaseNext", {Object("Peer")});
+    Call("Child", "BaseOn", {Object("BaseB")});
+    HasObject("Child", "Base", "BaseB", "Outer SetBase lost its captured new Base after reentrant Detach");
+    Require(Count("BaseA", "StandingCount") == 6 && Count("BaseA", "Detached") == 2 &&
+        Count("Peer", "StandingCount") == 1 && Count("BaseB", "StandingCount") == 1 && Count("Child", "BaseChanges") == 3,
+        "Reentrant Detach used list counts, stale fields or deferred callback execution");
+    const auto reentrantBase = fixture.Snapshot("ReentrantBaseCanonical");
+    Require(LoadPortableRuntimeState((fixture.directory / "ReentrantBaseCanonical.sav").string()) &&
+        fixture.Snapshot("ReentrantBaseRestore") == reentrantBase,
+        "Independent reentrant Base/count fields did not round-trip canonically");
+    GC::Collect(); Require(fixture.Snapshot("ReentrantBaseGC") == reentrantBase, "Reentrant Base/count fields were not rooted across GC");
+    EmptyLegacyBases(Decode(reentrantBase));
+
+    fixture.Reset(); Call("BaseB", "ReenterBaseNext", {Object("Peer")});
+    Call("Child", "BaseOn", {Object("BaseB")});
+    HasObject("Child", "Base", "Peer", "Outer SetBase rewrote Base after reentrant Attach");
+    HasObject("Child", "ObservedBase", "Peer", "Final BaseChange did not observe fresh callback-mutated Base");
+    Require(Count("BaseB", "StandingCount") == 0 && Count("Peer", "StandingCount") == 1 && Count("Child", "BaseChanges") == 2,
+        "Reentrant Attach count/callback sequence is wrong");
+
+    fixture.Reset(); Call("Child", "BaseOn", {Object("BaseA")});
+    Call("BaseA", "RawRedirectBaseNext", {Object("Peer")}); Call("Child", "BaseOn", {Object("BaseB")});
+    HasObject("Child", "Base", "BaseB", "Raw Detach callback Base overwrite replaced captured new Base");
+    Require(Count("BaseA", "StandingCount") == 7 && Count("BaseB", "StandingCount") == 1 && Count("Peer", "StandingCount") == 0,
+        "Raw Detach Base overwrite invented relationship/count repair");
+    fixture.Reset(); Call("BaseB", "RawRedirectBaseNext", {Object("Peer")}); Call("Child", "BaseOn", {Object("BaseB")});
+    HasObject("Child", "Base", "Peer", "Raw Attach callback Base overwrite was lost");
+    HasObject("Child", "ObservedBase", "Peer", "BaseChange did not freshly read raw Attach-mutated Base");
+    Require(Count("BaseB", "StandingCount") == 1 && Count("Peer", "StandingCount") == 0,
+        "Raw Attach Base overwrite derived counts from final topology");
+
+    fixture.Reset(); Call("Child", "BaseOn", {Object("BaseA")});
+    Call("BaseA", "RedirectLevelNext", {Object("Level1")}); Call("Child", "BaseOn", {Object("Level0")});
+    HasObject("Child", "Level", "Level1", "Detach callback Level overwrite was lost");
+    HasObject("Child", "Base", "Level0", "Original LevelInfo pointer could not become an ordinary new Base after Level changed");
+    Require(Count("Level0", "StandingCount") == 1 && Count("BaseA", "StandingCount") == 7,
+        "SetBase cached Level across Detach instead of rereading the raw field");
+
+    // With callbacks ineligible, each native Base/count write is independently
+    // constrained by the SAME VM write limit and rolls back at every prefix.
+    for (const std::size_t allowed : {0u, 1u}) {
+        fixture.Reset(); Call("Child", "SetBegun", {Boolean(false)});
+        QuestVr::Vm::Limits writes; writes.writes = allowed;
+        RefusedCall(fixture, "Child", "BaseOn", {Object("BaseB")}, writes);
+        Call("Child", "BaseOn", {Object("BaseB")});
+        RefusedCall(fixture, "Child", "BaseOn", {Object("")}, writes);
+    }
+    fixture.Reset(); Call("Child", "SetBegun", {Boolean(false)});
+    QuestVr::Vm::Limits twoWrites; twoWrites.writes = 2u;
+    const auto exactWrites = ExecutePortableActorFunction(Path("Child"), "BaseOn", {Object("BaseB")}, twoWrites);
+    Require(exactWrites.passed() && exactWrites.committed && exactWrites.writes == 2u,
+        "Native Base/count stores did not consume exactly two shared VM writes with callbacks ineligible");
+    HasObject("Child", "Base", "BaseB", "Exact native write-budget success did not commit Base");
+    Require(Count("BaseB", "StandingCount") == 1 && Count("BaseB", "Attached") == 0,
+        "Exact native write-budget success lost count or invented an ineligible callback");
+    // Count and Base stores plus every callback's own writes share one outer
+    // limit. Refuse both early callback prefixes and the late BaseChange edge.
+    for (const std::size_t allowed : {2u, 3u, 9u}) {
+        fixture.Reset(); QuestVr::Vm::Limits writes; writes.writes = allowed;
+        RefusedCall(fixture, "Child", "BaseOn", {Object("BaseB")}, writes);
+    }
+    fixture.Reset(); Call("Child", "BaseOn", {Object("BaseA")});
+    Call("BaseA", "ReenterBaseNext", {Object("Peer")});
+    QuestVr::Vm::Limits nestedWrites; nestedWrites.writes = 12u;
+    RefusedCall(fixture, "Child", "BaseOn", {Object("BaseB")}, nestedWrites);
+    fixture.Reset(); QuestVr::Vm::Limits noWrites; noWrites.writes = 0u;
+    RefusedCall(fixture, "Child", "SetRawBase", {Object("BaseB")}, noWrites);
+    RefusedCall(fixture, "BaseB", "SetStanding", {Byte(255u)}, noWrites);
     fixture.Reset(); Call("Child", "SetBegun", {Boolean(false)}); Call("Child", "BaseOn", {Object("BaseB")});
     Require(Count("BaseB", "Attached") == 0 && Count("Child", "BaseChanges") == 0 && Count("BaseB", "StandingCount") == 1,
         "Before-BeginPlay base callback gate suppressed native relation or emitted callbacks");
@@ -651,6 +812,23 @@ void InjectTouch(Fixture& fixture, const std::string& actor, const std::string& 
     LoadScript(fixture, current, saved, label);
 }
 void DestroyTests(Fixture& fixture) {
+    // Support-detach coverage only. The outer legacy Destroy still has its
+    // older delete/event ordering and refuses the active retail hash.
+    fixture.Reset(); Call("BasedOnVictim", "SetRawBase", {Object("Victim")});
+    Require(Count("Victim", "StandingCount") == 0, "Raw Base setup inferred a standing count");
+    Require(QuestVr::Vm::ToBool(Call("Victim", "Die").value), "Zero-count support teardown failed");
+    HasObject("BasedOnVictim", "Base", "Victim", "Support teardown ignored its initial zero-count gate");
+    fixture.Reset(); Call("BasedOnVictim", "SetRawBase", {Object("Victim")});
+    Call("Peer", "SetRawBase", {Object("Victim")}); Call("Victim", "SetStanding", {Byte(1u)});
+    Require(QuestVr::Vm::ToBool(Call("Victim", "Die").value), "Live-slot support teardown failed");
+    HasObject("BasedOnVictim", "Base", "", "Support teardown missed its first direct dependent");
+    HasObject("Peer", "Base", "", "Support teardown stopped scanning when the independent count reached zero");
+    Require(Count("Victim", "StandingCount") == 255, "Support scan normalized an inconsistent count instead of wrapping twice");
+    fixture.Reset(); Call("BasedOnVictim", "BaseOn", {Object("Victim")});
+    RefusedCall(fixture, "Victim", "DieThenFail");
+    HasObject("BasedOnVictim", "Base", "Victim", "Late failure retained support-detach mutations");
+    Require(Count("Victim", "StandingCount") == 1, "Late failure lost the support count");
+    fixture.Reset();
     Require(!QuestVr::Vm::ToBool(Call("Static", "Die").value) && !QuestVr::Vm::ToBool(Call("Protected", "Die").value),
         "Destroy ignored bStatic/bNoDelete protection");
     Require(Published("Static") && Published("Protected") && !QuestVr::Vm::ToBool(Read("Static", "bDeleteMe")) && !QuestVr::Vm::ToBool(Read("Protected", "bDeleteMe")),
@@ -696,14 +874,13 @@ void DestroyTests(Fixture& fixture) {
     Require(fixture.Snapshot("AfterDeletedValidation") == canonical, "Read-only deleted actor save validation mutated runtime");
     Require(GetPortableRuntimeWorldRevision() == deletedValidationRevision, "Read-only deleted actor validation advanced world revision");
     GC::Collect(); Require(fixture.Snapshot("AfterDeletedGC") == canonical, "Deleted actor/property/native references were not rooted across GC");
-    fixture.Reset(); Require(Published("Victim") && !QuestVr::Vm::ToBool(Read("Victim", "bDeleteMe")) && Count("BaseA", "StandingCount") == 1,
-        "Legacy checkpoint failed to restore deleted actor/initial based relation");
+    fixture.Reset(); Require(Published("Victim") && !QuestVr::Vm::ToBool(Read("Victim", "bDeleteMe")) && Count("BaseA", "StandingCount") == 7,
+        "Legacy checkpoint failed to restore deleted actor/authored independent count");
     Require(LoadPortableRuntimeState((fixture.directory / "DeletedCallable.sav").string()) && fixture.Snapshot("DeletedRestore") == canonical,
         "Deleted actor/native topology v7 save failed canonical replacement restore");
     Require(!Published("Victim") && Count("Victim", "StateValue") == 88 && Count("Peer", "Untouched") == 1, "v7 restore lost deletion/native callback state");
-    // Every prior envelope replaces, rather than merges, native topology. The
-    // older implementations had no SetBase lifecycle payload, so their absence
-    // restores immutable map-load relinks, not inferred script overlay lists.
+    // Every prior envelope replaces rather than merges fields and genuine
+    // child/touch/removal state. No old reverse Base list becomes authority.
     for (std::uint32_t version = 1u; version <= 6u; ++version) {
         Bytes older;
         if (version <= 3u) older = OldEmptyEnvelope(version);
@@ -725,8 +902,8 @@ void DestroyTests(Fixture& fixture) {
         Require(GetPortableRuntimeWorldRevision() == oldValidationRevision && fixture.Snapshot("AfterOldValidation") == canonical,
             "Read-only old-envelope validation reset native topology/revision: " + std::to_string(version));
         Require(LoadPortableRuntimeState(path.string()), "Old envelope failed native topology replacement: " + std::to_string(version));
-        Require(Published("Victim") && !QuestVr::Vm::ToBool(Read("Victim", "bDeleteMe")) && Count("BaseA", "StandingCount") == 1,
-            "Old envelope retained deletion or omitted initial BasedActors relink: " + std::to_string(version));
+        Require(Published("Victim") && !QuestVr::Vm::ToBool(Read("Victim", "bDeleteMe")) && Count("BaseA", "StandingCount") == 7,
+            "Old envelope retained deletion or reconstructed authored StandingCount: " + std::to_string(version));
         HasObject("Peer", "Touching", "", "Old envelope retained peer Touching native/script state", 2u);
         HasObject("Victim", "Owner", "", "Old envelope retained deleted actor Owner");
         Require(Count("Victim", "StateValue") == (version >= 4u ? 99 : 0), "Old envelope failed supported instance overlay replacement");
@@ -757,7 +934,9 @@ void DestroyTests(Fixture& fixture) {
     Require(!Published("Victim") && !QuestVr::Vm::ToBool(Read("Victim", "bDeleteMe")), "Restore normalized script flag/native world slot relationship");
     auto bad = Decode(canonical); Record(bad, "ParentA").lifecycle->children.push_back("LifecycleFixture.Missing");
     RefusedScript(fixture, canonical, bad, "MissingNativeChild");
-    bad = Decode(canonical); Record(bad, "BaseB").lifecycle->basedActors.push_back("LifecycleClasses.Probe");
+    bad = Decode(canonical); auto& badBase = Record(bad, "BaseB");
+    if (!badBase.lifecycle) badBase.lifecycle.emplace();
+    badBase.lifecycle->basedActors.push_back("LifecycleClasses.Probe");
     RefusedScript(fixture, canonical, bad, "ClassNotNativeBasedActor");
     fixture.Reset(); InjectTouch(fixture, "Victim", "FailPeer", "TouchRollbackSetup");
     RefusedCall(fixture, "Victim", "Die"); Require(Published("Victim") && !QuestVr::Vm::ToBool(Read("Victim", "bDeleteMe")),
@@ -790,7 +969,7 @@ void Synthetic() {
     OwnerTests(fixture); BaseTests(fixture); DestroyTests(fixture); fixture.UnchangedSources();
     Require(InitializePortableRuntime({tables.core, tables.engine, tables.classes}).passed && LoadPortableRuntimeMap(tables.map).passed,
         "Explicit lifecycle runtime reinitialization failed");
-    Require(fixture.Snapshot("Reinitialized") == fixture.legacy && Published("Victim") && Count("BaseA", "StandingCount") == 1,
+    Require(fixture.Snapshot("Reinitialized") == fixture.legacy && Published("Victim") && Count("BaseA", "StandingCount") == 7,
         "Explicit runtime reinitialization retained old lifecycle state");
     fixture.UnchangedSources();
 }
@@ -801,7 +980,7 @@ int main() {
         Synthetic(); GC::Collect();
         Require(GC::GetStats().numObjects == gcBefore, "Generated lifecycle test leaked rooted objects after shutdown");
         std::cout << "Generated actor lifecycle integration: " << checks << " checks, " << refusals
-                  << " rejection controls; actual Owner272/Base298/Destroy279 callbacks, reentrancy, native topology, deletion lifetime, v7/legacy replacement and GC. No Spawn or campaign startup claim.\n";
+                  << " rejection controls; actual Owner272/Base298 callbacks, independent wrapping counts, callback reentrancy, retired reverse-Base wire migration, write budgets, deletion lifetime, v7/legacy replacement and GC. Older Destroy279 coverage is not complete retail removal parity; no Spawn or campaign startup claim.\n";
         return 0;
     } catch (const std::exception& error) { std::cerr << "Actor lifecycle integration failed: " << error.what() << '\n'; return 1; }
 }

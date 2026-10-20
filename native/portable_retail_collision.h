@@ -30,7 +30,7 @@ struct PortableRetailCollisionSnapshot {
 enum class PortableRetailCollisionOperation { Enable, Disable, LineCheck, SetCollision, SetCollisionSize, MultiLineCheck, EncroachmentCheck,
     IsBlockedBy, IsBasedOn, LocalPlayerPawn, IsOverlapping, BeginTouch, EndTouch, TouchSide, SetActorZone,
     LevelMoveActor, ActorMove, ActorSetRotation, ActorMoveSmooth, LevelCheckEncroachment,
-    RawMeshWrite, RawDrawScaleWrite, OriginalBecomePickup, SingleLineCheck };
+    RawMeshWrite, RawDrawScaleWrite, OriginalBecomePickup, SingleLineCheck, ActorSetBase };
 struct PortableRetailCollisionCommand {
     PortableRetailCollisionOperation operation{PortableRetailCollisionOperation::Enable};
     std::array<float,3u> end{},start{},extent{};
@@ -136,6 +136,17 @@ struct PortableRetailSingleLineSnapshot {
     std::size_t marksAfter{},arenasAfter{};
     QuestVr::OriginalSingleLineStats stats;
 };
+struct PortableRetailBaseFields {
+    std::string actorPath,basePath;
+    std::uint8_t standingCount{};
+};
+struct PortableRetailBaseSnapshot {
+    std::size_t commandIndex{};
+    // Fixed identities: source, captured original Base (or None), requested
+    // new Base (or None). Duplicate identities deliberately remain duplicated.
+    std::array<PortableRetailBaseFields,3u> before,after;
+    std::vector<std::uint8_t> clockBefore,clockAfter;
+};
 struct PortableRetailCollisionProbeResult {
     QuestVr::Vm::Result execution;
     bool available{};
@@ -150,6 +161,7 @@ struct PortableRetailCollisionProbeResult {
     std::vector<PortableRetailMoveSnapshot> moves;
     std::vector<PortableRetailRawShapeSnapshot> rawShapes;
     std::vector<PortableRetailSingleLineSnapshot> singles;
+    std::vector<PortableRetailBaseSnapshot> bases;
 };
 // Bounded original SetActorCollision four-case and actual primitive-query
 // diagnostic. No native pointer leaves the CPU owner; every state is detached.

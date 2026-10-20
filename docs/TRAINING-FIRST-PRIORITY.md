@@ -6,7 +6,7 @@ campaign objective remains, but it is not the current acceptance milestone.
 Reconfirmed2026-10-20: skip other-map chest/physics integration and testing to
 save time; shared prerequisites needed by this first map remain in scope.
 
-Latest source checkpoint,2026-10-19: original native movement/rotation now runs
+Latest source checkpoint,2026-10-20: original native movement/rotation now runs
 on actual Training actors, and the missing Core Rotator addition is implemented
 with copied-input/initialized-selector correctness. A bounded shared native-work
 root allowance now retains default65536 while allowing explicit larger finite
@@ -19,14 +19,18 @@ source increment admits the exact original raw Mesh/DrawScale stores without
 extra collision/animation side effects. Repeated startup now completes all
 SetInitialState visits and reaches the original WorldBases/FindBase support
 query on LightSwitch0. The current native SingleLine query service has actual
-first-Training provider/selection/arena tests, and the original SetBase protocol
-has independent generated controls. FindBase is not yet wired: support-event
-dispatch and replacement of legacy reverse-list/count authority are next.
+first-Training provider/selection/arena tests. Original SetBase now uses actual
+qualified fields, wrapping independent counts and same-root VM writes/events;
+the legacy reverse-list/count authority is removed. Focused actual first-map
+checks pass409929/31, with genuine Doctor animation-clock preservation. FindBase
+is not yet wired: original support-event dispatch and the downward sweep are
+next. Current shared CTest passes156 executed/180 listed with24 explicit
+owned-data skips; the full actual first-map regression is still running.
 Memory limits are unchanged. Remaining startup/support/falling and live
 weapon/destruction/usable-loot acceptance still follow. This is
 not finished crate physics, a finished tutorial or a replacement APK. The
 older entries below are historical prerequisite checkpoints. See
-TRAINING-SINGLE-LINE.md, TRAINING-RAW-SHAPE-STORES.md, TRAINING-COMPACT-LOOKUP.md and
+TRAINING-ACTOR-BASE.md, TRAINING-SINGLE-LINE.md, TRAINING-RAW-SHAPE-STORES.md, TRAINING-COMPACT-LOOKUP.md and
 TRAINING-NATIVE-WORK.md for current evidence and remaining boundaries.
 
 ## In scope now

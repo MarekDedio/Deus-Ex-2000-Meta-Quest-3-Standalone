@@ -114,8 +114,10 @@ and independent wrapping StandingCount bytes, not port reverse-list counts.
 Those lifecycle changes and live support/falling/destruction/usable contents
 remain required before a playable-physics APK or tutorial completion claim.
 
-The detached `quest_actor_base.h` protocol is implemented as preparation, not
-yet the runtime SetBase replacement. Fresh static review distinguishes captured
+At this SingleLine checkpoint, `quest_actor_base.h` was implemented as
+preparation. The subsequent runtime replacement and retirement of inferred
+reverse-list/count authority are documented in TRAINING-ACTOR-BASE.md; FindBase
+remains unwired. Fresh static review distinguishes captured
 counter targets from reloaded event receivers: decrement captured oldBase, then
 reread self.Base for Detach; write captured newBase after Detach; compare that
 captured newBase with freshly reread self.Level; increment the captured target,

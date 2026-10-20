@@ -276,7 +276,7 @@
             sizeof(PortableRetailCollisionSnapshot)+sizeof(std::vector<PortableRetailCollisionHit>)+sizeof(std::size_t)+
                 sizeof(PortableRetailCollisionMutation)+sizeof(PortableRetailMultiLineMetadata)+sizeof(PortableRetailActorPredicate)+
                 sizeof(PortableRetailTouchSnapshot)+sizeof(PortableRetailZoneSnapshot)+sizeof(PortableRetailMoveSnapshot)+
-                sizeof(PortableRetailRawShapeSnapshot)+sizeof(PortableRetailSingleLineSnapshot)));
+                sizeof(PortableRetailRawShapeSnapshot)+sizeof(PortableRetailSingleLineSnapshot)+sizeof(PortableRetailBaseSnapshot)));
         result.states.reserve(commands.size());result.queries.reserve(commands.size());result.queryHeads.reserve(commands.size());
         result.mutations.reserve(commands.size());result.multiLine.reserve(commands.size());
         result.predicates.reserve(commands.size());
@@ -285,6 +285,7 @@
         result.moves.reserve(commands.size());
         result.rawShapes.reserve(commands.size());
         result.singles.reserve(commands.size());
+        result.bases.reserve(commands.size());
         for(const auto& command:commands) {
             if(command.operation==PortableRetailCollisionOperation::Enable) SetRetailActorCollision(true);
             else if(command.operation==PortableRetailCollisionOperation::Disable) SetRetailActorCollision(false);
@@ -317,6 +318,36 @@
                     {path(packet.actor),path(packet.primitive),0u,{packet.location.x,packet.location.y,packet.location.z},
                         {packet.normal.x,packet.normal.y,packet.normal.z},packet.time,packet.item},
                     nativeMoveHits_?nativeMoveHits_->MarkDepth():0u,nativeMoveHits_?nativeMoveHits_->ArenaCount():0u,reply.stats});
+            }
+            else if(command.operation==PortableRetailCollisionOperation::ActorSetBase) {
+                if(command.actorPath.empty() || command.actorPath.size()>4096u ||
+                    command.actorPath.find('\0')!=std::string::npos || command.arguments.size()!=1u)
+                    throw std::runtime_error("Original SetBase diagnostic requires one bounded Actor receiver and target");
+                const auto& value=command.arguments.front();
+                if(value.kind!=Kind::Object || value.text.size()>4096u || value.text.find('\0')!=std::string::npos ||
+                    !value.intArray.empty() || !value.fields.empty())
+                    throw std::runtime_error("Original SetBase diagnostic target is not a bounded Actor or None");
+                auto* actor=RetailCollisionActor(reinterpret_cast<std::uintptr_t>(Object(command.actorPath)));
+                auto* target=value.text.empty()?nullptr:RetailCollisionActor(reinterpret_cast<std::uintptr_t>(Object(value.text)));
+                const auto original=RetailPredicatePointerRead(actor,"Engine.Actor.Base","Engine.Actor",0x22u);
+                auto* old=original.text.empty()?nullptr:RetailCollisionActor(reinterpret_cast<std::uintptr_t>(Object(original.text)));
+                const std::array<RuntimeObject*,3u> tracked{actor,old,target};
+                const auto fields=[this](RuntimeObject* object) {
+                    PortableRetailBaseFields snapshot;
+                    if(!object)return snapshot;
+                    const auto base=RetailPredicatePointerRead(object,"Engine.Actor.Base","Engine.Actor",0x22u);
+                    ReserveRetailDiagnosticOutput(object->reflection.objectPath.size()+base.text.size()+2u+8u*sizeof(void*));
+                    snapshot.actorPath=object->reflection.objectPath;snapshot.basePath=base.text;
+                    snapshot.standingCount=ActorBaseCount(object);return snapshot;
+                };
+                PortableRetailBaseSnapshot snapshot;snapshot.commandIndex=result.states.size();
+                for(std::size_t i=0u;i<tracked.size();++i)snapshot.before[i]=fields(tracked[i]);
+                snapshot.clockBefore=ZoneClockSnapshot(actor);
+                const auto function=FunctionFor(Object("Engine.Actor.SetBase"));
+                static_cast<void>(execution.CallFunction(*function,command.actorPath,{{value,{}}}));
+                for(std::size_t i=0u;i<tracked.size();++i)snapshot.after[i]=fields(tracked[i]);
+                snapshot.clockAfter=ZoneClockSnapshot(actor);
+                result.bases.push_back(std::move(snapshot));
             }
             else if(command.operation==PortableRetailCollisionOperation::RawMeshWrite ||
                 command.operation==PortableRetailCollisionOperation::RawDrawScaleWrite ||
