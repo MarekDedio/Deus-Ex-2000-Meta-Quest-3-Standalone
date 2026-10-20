@@ -667,7 +667,7 @@ if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
     target_link_options(script_bytecode_inspect PRIVATE -static -static-libgcc -static-libstdc++)
 endif()
 
-foreach(test_target IN ITEMS quest_actor_animation_clock_test quest_portable_vm_test quest_rotator_add_test quest_native_work_test quest_lookup_compact_test
+foreach(test_target IN ITEMS quest_actor_animation_clock_test quest_portable_vm_test quest_rotator_add_test quest_native_work_test quest_lookup_compact_test quest_single_line_trace_test quest_actor_base_test
     quest_script_state_test portable_object_stack_test quest_state_frame_codec_test quest_state_execution_test
     quest_authored_struct_value_test portable_struct_descriptor_test quest_object_cast_test portable_object_cast_test
     portable_buffered_file_test quest_spawn_placement_test portable_class_defaults_test portable_actor_lifecycle_test portable_actor_spawn_test portable_vm_string_test

@@ -276,7 +276,7 @@
             sizeof(PortableRetailCollisionSnapshot)+sizeof(std::vector<PortableRetailCollisionHit>)+sizeof(std::size_t)+
                 sizeof(PortableRetailCollisionMutation)+sizeof(PortableRetailMultiLineMetadata)+sizeof(PortableRetailActorPredicate)+
                 sizeof(PortableRetailTouchSnapshot)+sizeof(PortableRetailZoneSnapshot)+sizeof(PortableRetailMoveSnapshot)+
-                sizeof(PortableRetailRawShapeSnapshot)));
+                sizeof(PortableRetailRawShapeSnapshot)+sizeof(PortableRetailSingleLineSnapshot)));
         result.states.reserve(commands.size());result.queries.reserve(commands.size());result.queryHeads.reserve(commands.size());
         result.mutations.reserve(commands.size());result.multiLine.reserve(commands.size());
         result.predicates.reserve(commands.size());
@@ -284,9 +284,40 @@
         result.zones.reserve(commands.size());
         result.moves.reserve(commands.size());
         result.rawShapes.reserve(commands.size());
+        result.singles.reserve(commands.size());
         for(const auto& command:commands) {
             if(command.operation==PortableRetailCollisionOperation::Enable) SetRetailActorCollision(true);
             else if(command.operation==PortableRetailCollisionOperation::Disable) SetRetailActorCollision(false);
+            else if(command.operation==PortableRetailCollisionOperation::SingleLineCheck) {
+                if(command.actorPath.size()>4096u||command.actorPath.find('\0')!=std::string::npos||!command.arguments.empty())
+                    throw std::runtime_error("SingleLine diagnostic requires a bounded optional Actor source and no arguments");
+                auto* level=RetailCollisionLevel();
+                auto* source=command.actorPath.empty()?nullptr:RetailCollisionActor(reinterpret_cast<std::uintptr_t>(Object(command.actorPath)));
+                QuestVr::OriginalActorLineHit packet{0u,0u,0u,{11.0f,12.0f,13.0f},{-1.0f,0.0f,0.0f},0.375f,127};
+                const auto vector=[](const auto& value){return PortableModelVec3{value[0u],value[1u],value[2u]};};
+                const auto reply=RetailSingleLineLevel(level,source,packet,vector(command.end),vector(command.start),
+                    vector(command.extent),command.flags,command.singleExtraFlags);
+                const auto path=[&](std::uintptr_t identity)->std::string {
+                    if(!identity)return {};
+                    if(!persistentObjectLookup||!persistentObjectLookup->index.RecordForIdentity(identity))
+                        throw std::runtime_error("SingleLine diagnostic selected a retired native object");
+                    return reinterpret_cast<RuntimeObject*>(identity)->reflection.objectPath;
+                };
+                // Both identities are authenticated by the same-root adapter;
+                // reserve detached string storage before their owning copies.
+                std::size_t bytes=2u+8u*sizeof(void*);
+                for(const auto identity:{packet.actor,packet.primitive}) {
+                    if(!identity)continue;
+                    if(!persistentObjectLookup||!persistentObjectLookup->index.RecordForIdentity(identity))
+                        throw std::runtime_error("SingleLine diagnostic lost its selected native object");
+                    bytes=QuestVr::DecalStateDetail::Add(bytes,reinterpret_cast<RuntimeObject*>(identity)->reflection.objectPath.size());
+                }
+                ReserveRetailDiagnosticOutput(bytes);
+                result.singles.push_back({result.states.size(),reply.clear,packet.next!=0u,reply.worldItemKnown,
+                    {path(packet.actor),path(packet.primitive),0u,{packet.location.x,packet.location.y,packet.location.z},
+                        {packet.normal.x,packet.normal.y,packet.normal.z},packet.time,packet.item},
+                    nativeMoveHits_?nativeMoveHits_->MarkDepth():0u,nativeMoveHits_?nativeMoveHits_->ArenaCount():0u,reply.stats});
+            }
             else if(command.operation==PortableRetailCollisionOperation::RawMeshWrite ||
                 command.operation==PortableRetailCollisionOperation::RawDrawScaleWrite ||
                 command.operation==PortableRetailCollisionOperation::OriginalBecomePickup) {

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "portable_unreal_runtime.h"
+#include "quest_single_line_trace.h"
 
 #include <array>
 #include <cstdint>
@@ -29,7 +30,7 @@ struct PortableRetailCollisionSnapshot {
 enum class PortableRetailCollisionOperation { Enable, Disable, LineCheck, SetCollision, SetCollisionSize, MultiLineCheck, EncroachmentCheck,
     IsBlockedBy, IsBasedOn, LocalPlayerPawn, IsOverlapping, BeginTouch, EndTouch, TouchSide, SetActorZone,
     LevelMoveActor, ActorMove, ActorSetRotation, ActorMoveSmooth, LevelCheckEncroachment,
-    RawMeshWrite, RawDrawScaleWrite, OriginalBecomePickup };
+    RawMeshWrite, RawDrawScaleWrite, OriginalBecomePickup, SingleLineCheck };
 struct PortableRetailCollisionCommand {
     PortableRetailCollisionOperation operation{PortableRetailCollisionOperation::Enable};
     std::array<float,3u> end{},start{},extent{};
@@ -56,6 +57,9 @@ struct PortableRetailCollisionCommand {
     // Full native flags, not a read-only preview: the enclosing root rolls back.
     std::array<std::int32_t,4u> moveOptions{};
     std::int32_t moveTouch{};
+    // SingleLineCheck only: flags is the original trace-category byte above;
+    // this separate byte is forwarded unchanged to the native Model collector.
+    std::uint8_t singleExtraFlags{};
 };
 struct PortableRetailCollisionMutation {
     std::string actorPath;
@@ -125,6 +129,13 @@ struct PortableRetailRawShapeSnapshot {
     float drawScale{};
     std::vector<std::uint8_t> clockBefore,clockAfter;
 };
+struct PortableRetailSingleLineSnapshot {
+    std::size_t commandIndex{};
+    bool clear{},hitNextPresent{},worldItemKnown{true};
+    PortableRetailCollisionHit hit;
+    std::size_t marksAfter{},arenasAfter{};
+    QuestVr::OriginalSingleLineStats stats;
+};
 struct PortableRetailCollisionProbeResult {
     QuestVr::Vm::Result execution;
     bool available{};
@@ -138,6 +149,7 @@ struct PortableRetailCollisionProbeResult {
     std::vector<PortableRetailZoneSnapshot> zones;
     std::vector<PortableRetailMoveSnapshot> moves;
     std::vector<PortableRetailRawShapeSnapshot> rawShapes;
+    std::vector<PortableRetailSingleLineSnapshot> singles;
 };
 // Bounded original SetActorCollision four-case and actual primitive-query
 // diagnostic. No native pointer leaves the CPU owner; every state is detached.

@@ -3,7 +3,7 @@
 User priority,2026-10-18: make the first original Training map fully work
 before spending time on other campaign-map integration. The long-term full
 campaign objective remains, but it is not the current acceptance milestone.
-Reconfirmed2026-10-19: skip other-map chest/physics integration and testing to
+Reconfirmed2026-10-20: skip other-map chest/physics integration and testing to
 save time; shared prerequisites needed by this first map remain in scope.
 
 Latest source checkpoint,2026-10-19: original native movement/rotation now runs
@@ -18,12 +18,15 @@ then reaches the key's original Mesh assignment during BecomePickup. The next
 source increment admits the exact original raw Mesh/DrawScale stores without
 extra collision/animation side effects. Repeated startup now completes all
 SetInitialState visits and reaches the original WorldBases/FindBase support
-query on LightSwitch0. Memory limits are unchanged. The next dependency is
-that original support-query contract, then remaining startup/support/falling
-and live weapon/destruction/usable-loot acceptance. This is
+query on LightSwitch0. The current native SingleLine query service has actual
+first-Training provider/selection/arena tests, and the original SetBase protocol
+has independent generated controls. FindBase is not yet wired: support-event
+dispatch and replacement of legacy reverse-list/count authority are next.
+Memory limits are unchanged. Remaining startup/support/falling and live
+weapon/destruction/usable-loot acceptance still follow. This is
 not finished crate physics, a finished tutorial or a replacement APK. The
 older entries below are historical prerequisite checkpoints. See
-TRAINING-RAW-SHAPE-STORES.md, TRAINING-COMPACT-LOOKUP.md and
+TRAINING-SINGLE-LINE.md, TRAINING-RAW-SHAPE-STORES.md, TRAINING-COMPACT-LOOKUP.md and
 TRAINING-NATIVE-WORK.md for current evidence and remaining boundaries.
 
 ## In scope now

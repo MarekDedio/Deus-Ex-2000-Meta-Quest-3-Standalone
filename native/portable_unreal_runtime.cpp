@@ -4581,6 +4581,7 @@ public:
     #include "portable_retail_actor_touch.inl"
     #include "portable_actor_zone.inl"
     #include "portable_actor_move_hits.inl"
+    #include "portable_retail_single_line.inl"
     #include "portable_actor_move_events.inl"
     #include "portable_actor_move_pose.inl"
     #include "portable_actor_move.inl"
