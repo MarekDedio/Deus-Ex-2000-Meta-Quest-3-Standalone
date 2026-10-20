@@ -71,6 +71,7 @@
 #include "quest_actor_move_geometry.h"
 #include "quest_level_encroachment.h"
 #include "quest_level_move_actor.h"
+#include "quest_conversation_bind.h"
 
 #include <memory>
 #include <algorithm>
@@ -182,6 +183,15 @@ struct RuntimeNativeWindowState {
     // an explicitly empty opaque rowArray, never reflected pointer-shaped data.
     bool emptyTileRows{};
 };
+// Native conversation links are physical mutable UObject edges, not string
+// overlays or Actor/Window births. A retired node is a transaction before-image
+// until the outer boundary; its lookup/index identity is already destroyed.
+struct RuntimeNativeConversationState {
+    RuntimeObject *head{},*con{},*next{};
+    std::optional<std::int32_t> ownerRefCount;
+    bool headWritten{},node{},retired{};
+};
+void RetireRuntimeConversationObject(RuntimeObject*) noexcept;
 
 class RuntimeObject : public GCObject {
 public:
@@ -241,6 +251,7 @@ public:
     std::unordered_map<std::string,
         std::unordered_map<std::uint32_t,std::vector<RuntimeObject*>>> nativeWindowPropertyRoots;
     std::int32_t uniqueObjectCounter{}; // Concrete UClass, survives map changes.
+    std::unique_ptr<RuntimeNativeConversationState> nativeConversation;
     RuntimeObject* nativeXLevel{}; // Immutable LinkActorsToLevel baseline, not a script write.
     RuntimeObject* nativeLevelModel{}; // Serialized ULevel.Model, owned only by its loader.
     RuntimeObject* nativeLevelEngine{}; // Actual collision Engine binding, never a save property.
@@ -338,6 +349,7 @@ public:
 protected:
     ~RuntimeObject() override {
         RetireRuntimeLookupObject(this);
+        if(nativeConversation && nativeConversation->node) RetireRuntimeConversationObject(this);
         if(nativePackageInstance) RetireRuntimeNativePackage(this);
         if (destroyed_ != nullptr) ++*destroyed_;
     }
@@ -397,6 +409,11 @@ GCAllocation* RuntimeObject::Mark(GCAllocation* marklist) {
     marklist = GC::MarkObject(marklist, outer);
     marklist = GC::MarkObject(marklist, cls);
     marklist = GC::MarkObject(marklist, base);
+    if(nativeConversation && !nativeConversation->retired) {
+        marklist=GC::MarkObject(marklist,nativeConversation->head);
+        marklist=GC::MarkObject(marklist,nativeConversation->con);
+        marklist=GC::MarkObject(marklist,nativeConversation->next);
+    }
     marklist = GC::MarkObject(marklist, nativeClassWithin);
     marklist = GC::MarkObject(marklist, defaultObject);
     marklist = GC::MarkObject(marklist, defaultOwner);
@@ -630,6 +647,27 @@ std::unordered_map<std::string, RuntimeObject*> persistentQualifiedObjects;
 // runtime index, rather than copying/lowercasing every export for every call.
 // These aliases are not additional GC roots and are removed before collection.
 std::unordered_map<std::string, RuntimeObject*> persistentVmObjects;
+// Weak inventory only. Actor.ConListItems owns live chains through Mark above.
+// Package Outer is an outward edge, not reverse package ownership.
+std::vector<RuntimeObject*> persistentConversationNodes;
+void RetireRuntimeConversationObject(RuntimeObject* object) noexcept {
+    const auto canonical=persistentQualifiedObjects.find(object->reflection.objectPath);
+    if(canonical!=persistentQualifiedObjects.end() && canonical->second==object)
+        persistentQualifiedObjects.erase(canonical);
+    // Store the folded alias at construction: destructor/rollback may not allocate.
+    const auto alias=persistentVmObjects.find(object->birthVmKey);
+    if(alias!=persistentVmObjects.end() && alias->second==object) persistentVmObjects.erase(alias);
+    const auto found=std::find(persistentConversationNodes.begin(),persistentConversationNodes.end(),object);
+    if(found!=persistentConversationNodes.end()) persistentConversationNodes.erase(found);
+}
+bool HasNativeConversationBindings() noexcept {
+    if(!persistentConversationNodes.empty()) return true;
+    if(persistentRuntime && persistentRuntime->get())
+        for(const auto* object:persistentRuntime->get()->exports)
+            if(object->nativeConversation && (object->nativeConversation->ownerRefCount ||
+                (object->nativeConversation->headWritten && object->nativeConversation->head))) return true;
+    return false;
+}
 std::shared_ptr<RuntimeObjectLookupControl> persistentObjectLookup;
 std::uint64_t persistentObjectLookupGeneration{};
 std::uint64_t persistentObjectPublicationSerial{};
@@ -648,8 +686,12 @@ void RecordRuntimeLookupPublication(RuntimeObject* object) noexcept {
     persistentPublishedTail=object;
 }
 void RetireRuntimeLookupObject(RuntimeObject* object) noexcept {
-    if(object->lookupControl) static_cast<void>(object->lookupControl->index.Remove(
-        object->objectIndex.Index(),reinterpret_cast<std::uintptr_t>(object)));
+    if(object->lookupControl) {
+        auto& index=object->lookupControl->index;
+        const auto identity=reinterpret_cast<std::uintptr_t>(object);
+        if(const auto* record=index.RecordForIdentity(identity))
+            static_cast<void>(index.Remove(record->index,identity));
+    }
     object->lookupControl.reset();
     if(!object->lookupPublicationSerial) return;
     if(object->lookupPrevious) object->lookupPrevious->lookupNext=object->lookupNext;
@@ -2440,6 +2482,7 @@ public:
             persistentWindowDomain->get()->objects.size() : 0u;
         beforeWindowRoots_=persistentWindowDomain && persistentWindowDomain->get() ?
             persistentWindowDomain->get()->roots.size() : 0u;
+        beforeConversationNodes_=persistentConversationNodes.size();
         clientDependent_ = false;
         soundClientIdentity_ = 0u;
         beforeLevelClock_.reset();
@@ -2508,6 +2551,7 @@ public:
             retailCollisionRoot_.reset();createdRetailCollision_=false;
         }
         beforeCollision_.reset();
+        CommitConversationObjects();
         provisionalLookupObjects_.clear();
         ClearMoveHits();nativeDurableMoved_.clear();
         saved_.clear(); savedAi_.clear(); provisionalAi_.clear(); provisionalWindows_.clear(); beforeDecals_.reset(); beforeLevelClock_.reset(); transaction_ = false;
@@ -2523,8 +2567,7 @@ public:
             retailCollisionRoot_.reset();
         }
         if(createdRetailCollision_) {persistentRetailCollision.reset();createdRetailCollision_=false;}
-        for(auto* object:provisionalLookupObjects_) RetireRuntimeLookupObject(object);
-        provisionalLookupObjects_.clear();
+        RollbackConversationLookup();
         persistentScriptRandomSeed = beforeRandomSeed_;
         if (beforeLevelClock_) beforeLevelClock_->first->nativeTimeSeconds=beforeLevelClock_->second;
         // Restore native bindings/edges before provisional actor identities are
@@ -2568,6 +2611,11 @@ public:
             entry.first->nativeWindowPropertyRoots.swap(entry.second.windowPropertyRoots);
             entry.first->nativeWindowState.swap(entry.second.windowState);
             entry.first->nativeRetailHash=entry.second.retailHash;
+            if(entry.second.conversation) {
+                if(!entry.first->nativeConversation) std::terminate();
+                *entry.first->nativeConversation=*entry.second.conversation;
+            } else entry.first->nativeConversation.reset();
+            entry.first->reflection.flags=entry.second.objectFlags;
         }
         if(persistentWindowDomain && persistentWindowDomain->get()) {
             auto* domain=persistentWindowDomain->get();
@@ -2589,6 +2637,7 @@ public:
         }
         persistentRuntime->get()->exports.resize(beforeExportCount_);
         persistentWorldActors.resize(beforeWorldSlots_);
+        RollbackConversationObjects();
         beforeCollision_.reset(); saved_.clear(); savedAi_.clear(); provisionalAi_.clear(); provisionalWindows_.clear(); beforeDecals_.reset(); beforeLevelClock_.reset(); transaction_ = false;
     }
     Property ResolveProperty(const Function& function, const std::int32_t reference) override {
@@ -2622,7 +2671,7 @@ public:
             return object->reflection.objectPath;
         }
         if(object->nativeClientIdentity || object->nativeClientClass || object->nativeEngineClass || object->nativeMetadataClass ||
-            object->nativeWindowObject || object->nativePackageInstance)
+            object->nativeWindowObject || object->nativePackageInstance || IsNativeConversationNode(object))
             return object->reflection.objectPath;
         // No native Rename/SetOuter exists in this host. Loaded object names
         // and complete package/outer paths are immutable, including nested
@@ -3195,6 +3244,8 @@ public:
         if((index==262u || index==283u) && persistentRetailCollision)
             return RetailCollisionSetterNative(index,Object(receiver),arguments,declaration);
         if(index==512u) return MakeNoiseNative(Object(receiver),arguments,declaration,execution);
+        if(index==2100u || index==2101u || index==2102u)
+            return ConversationBindNative(index,Object(receiver),arguments,declaration,execution);
         if(index==1052u) return InitRootWindowNative(Object(receiver),arguments,declaration,execution);
         if(index==1410u) return NewChildWindowNative(Object(receiver),arguments,declaration,execution);
         if(index==1438u) return WindowAlignmentsNative(Object(receiver),arguments,declaration,execution);
@@ -5910,6 +5961,7 @@ public:
         auto* object=provisionalWindows_.back().get();
         object->lookupName=NameString(name);
         object->nativeWindowObject=true;object->cls=cls;object->outer=outer;
+        object->birthVmKey=LowerAscii(path); // Precomputed nonallocating rollback alias.
         object->sourcePath=cls->sourcePath;object->exportIndex=std::numeric_limits<std::size_t>::max();
         object->references={cls,outer};object->frozenBirthDefaults=cls->classDefaultValues;
         // Register in rollback-owned domain before either index can throw.
@@ -6724,10 +6776,12 @@ public:
         // successful Bool write while those contracts remain unimplemented.
         throw std::runtime_error("RootWindow native SetVisibility/init-tree/reconfiguration is not implemented");
     }
+#include "portable_conversation_bind.inl"
     Value Read(RuntimeObject* object, const Property& property, const std::uint32_t index,
         const bool defaults = false, const bool immutable = false,NativeAuthoredReadOrigin* origin=nullptr,
         const bool nativeRegionStorage=false) {
         if(origin) *origin={};
+        if(const auto native=ReadNativeConversationValue(object,property,index,defaults,immutable)) return *native;
         if(object->nativePackageInstance || object->nativePackageDefaults)
             throw std::runtime_error("Native Package reflected/default storage requires its typed native service");
         if(object->nativeEngineClass || object->nativeMetadataClass) {
@@ -7757,6 +7811,8 @@ private:
         decltype(RuntimeObject::nativeWindowPropertyRoots) windowPropertyRoots;
         std::optional<RuntimeNativeWindowState> windowState;
         std::uint64_t retailHash{};
+        std::optional<RuntimeNativeConversationState> conversation;
+        std::uint32_t objectFlags{};
     };
     template <typename Number> static bool SameBits(const Number& a,const Number& b) {
         return std::memcmp(&a,&b,sizeof(Number))==0;
@@ -7915,6 +7971,21 @@ private:
     std::vector<GCRoot<RuntimeAIManager>> provisionalAi_;
     std::vector<GCRoot<RuntimeObject>> provisionalWindows_;
     std::vector<RuntimeObject*> provisionalLookupObjects_;
+    struct RetiredConversationObject {
+        GCRoot<RuntimeObject> object;
+        QuestVr::ObjectLookup::Index::Retirement lookup;
+        decltype(persistentQualifiedObjects)::node_type canonical;
+        decltype(persistentVmObjects)::node_type alias;
+        std::shared_ptr<RuntimeObjectLookupControl> control;
+        RuntimeObject *previous{},*next{};
+        std::uint64_t serial{};
+        std::size_t publications{};
+        bool unpublished{};
+    };
+    std::vector<GCRoot<RuntimeObject>> provisionalConversations_;
+    std::vector<RetiredConversationObject> retiredConversations_;
+    std::optional<QuestVr::ObjectIndexPool::Transaction> conversationIndices_;
+    std::size_t beforeConversationNodes_{};
     std::optional<BeforeDecals> beforeDecals_;
     std::optional<std::pair<RuntimeObject*,double>> beforeLevelClock_;
     std::unique_ptr<QuestVr::OriginalCollisionHashWorld::RootLease> retailCollisionRoot_;
@@ -8467,7 +8538,8 @@ private:
             if(!registered) throw std::runtime_error("Native class is not an audited registration");
             return *registered;
         }
-        if (object->runtimeBirth || object->nativeWindowObject) throw std::runtime_error("Constructed instance is not a UClass");
+        if (object->runtimeBirth || object->nativeWindowObject || IsNativeConversationNode(object))
+            throw std::runtime_error("Constructed instance is not a UClass");
         const auto& table = Table(object->sourcePath);
         const auto& entry = table.exports.at(object->exportIndex);
         if (entry.ObjClass != 0 || object->reflection.metaClass != "Class")
@@ -8514,7 +8586,7 @@ private:
                 throw std::runtime_error("Constructed native Package cast identity is invalid");
             return {object->reflection.objectPath,object->cls->reflection.objectPath,false};
         }
-        if (object->runtimeBirth || object->nativeWindowObject) {
+        if (object->runtimeBirth || object->nativeWindowObject || IsNativeConversationNode(object)) {
             if (!object->cls || !object->cls->classDescriptor)
                 throw std::runtime_error("Runtime birth has no original class identity");
             return {object->reflection.objectPath, object->cls->reflection.objectPath, false};
@@ -8591,6 +8663,7 @@ private:
         result->resultLayout = property.resultLayout;
         result->read = [this, object, property, index, defaults]() { return Read(object, property, index, defaults); };
         result->write = [this, object, property, index, defaults](const Value& value) {
+            if(WriteNativeConversationValue(object,property,index,defaults,value)) return;
             auto* nativeOwner=object->defaultOwner?object->defaultOwner:object->classDescriptor?object:nullptr;
             if(object->nativeEngineInstance || object->nativePrimitiveInstance || object->nativeProperty ||
                 (nativeOwner && PreparedNativeClassDefaultValid(nativeOwner) &&
@@ -8687,7 +8760,9 @@ private:
                 object->touchEventSent, object->committedLifecycle, object->worldRemoved,
                 object->nativePlayer, object->nativeViewportActor, object->nativePlayerBinding,
                 object->nativeRootWindow,object->uniqueObjectCounter,object->nativeWindowPropertyRoots,object->nativeWindowState,
-                object->nativeRetailHash});
+                object->nativeRetailHash,object->nativeConversation?
+                    std::optional<RuntimeNativeConversationState>{*object->nativeConversation}:std::nullopt,
+                object->reflection.flags});
         }
     }
     void TouchCollision() {
@@ -9185,6 +9260,21 @@ private:
         if(persistentObjectLookup) defaults.Retain(sizeof(RuntimeObjectLookupControl)-sizeof(QuestVr::ObjectLookup::Index)+
             4u*sizeof(void*)+persistentObjectLookup->index.RetainedBytes());
         defaults.Retain(provisionalLookupObjects_.capacity()*sizeof(RuntimeObject*));
+        defaults.Retain(persistentConversationNodes.capacity()*sizeof(RuntimeObject*));
+        defaults.Retain(provisionalConversations_.capacity()*sizeof(GCRoot<RuntimeObject>)+
+            provisionalConversations_.size()*sizeof(GCRootNode));
+        defaults.Retain(retiredConversations_.capacity()*sizeof(RetiredConversationObject));
+        if(conversationIndices_) defaults.Retain(conversationIndices_->RetainedBytes());
+        for(const auto& entry:retiredConversations_) {
+            defaults.Retain(sizeof(GCRootNode)+entry.lookup.RetainedBytes()-sizeof(entry.lookup));
+            for(const auto* node:{&entry.canonical,&entry.alias})
+                if(!node->empty()) defaults.Retain(sizeof(decltype(persistentVmObjects)::value_type)+
+                    6u*sizeof(void*)+node->key().capacity()+1u);
+        }
+        for(const auto& [object,before]:saved_) {
+            static_cast<void>(object);
+            if(before.conversation) defaults.Retain(sizeof(RuntimeNativeConversationState));
+        }
         const auto valueBudget = [&](const auto& self, const Value& value, const std::size_t depth) -> void {
             defaults.Node(depth); defaults.Retain(sizeof(value));
             defaults.IntArrayElements(value.intArray.size());
@@ -9213,9 +9303,18 @@ private:
         std::size_t objects{}, totalNativeLinks{};
         const auto& exports=persistentRuntime->get()->exports;
         const auto* windows=persistentWindowDomain && persistentWindowDomain->get() ? persistentWindowDomain->get() : nullptr;
-        const auto totalObjects=exports.size()+(windows?windows->objects.size():0u);
+        const auto windowObjects=windows?windows->objects.size():0u;
+        const auto totalObjects=exports.size()+windowObjects+persistentConversationNodes.size();
         for(std::size_t objectIndex=0u;objectIndex<totalObjects;++objectIndex) {
-            const auto* object=objectIndex<exports.size()?exports[objectIndex]:windows->objects[objectIndex-exports.size()];
+            const auto* object=objectIndex<exports.size()?exports[objectIndex]:objectIndex<exports.size()+windowObjects?
+                windows->objects[objectIndex-exports.size()]:persistentConversationNodes[objectIndex-exports.size()-windowObjects];
+            if(object->nativeConversation) defaults.Retain(sizeof(RuntimeNativeConversationState));
+            if(IsNativeConversationNode(object)) {
+                defaults.Retain(sizeof(RuntimeObject)+sizeof(GCAllocation)+
+                    object->reflection.objectPath.capacity()+object->reflection.metaClass.capacity()+
+                    object->reflection.outerPath.capacity()+object->sourcePath.capacity()+object->birthVmKey.capacity()+5u);
+                defaults.Retain(2u*(sizeof(std::string)+6u*sizeof(void*)+object->reflection.objectPath.capacity()+1u));
+            }
             if(object->nativeWindowObject) defaults.Retain(sizeof(RuntimeObject)+sizeof(GCAllocation)+
                 object->reflection.objectPath.size()+object->references.capacity()*sizeof(RuntimeObject*));
             if(object->nativeWindowState) {
@@ -9651,6 +9750,8 @@ std::vector<QuestVr::ScriptSavedProperty> ClockProperties(
 }
 
 QuestVr::ScriptSavedState CollectScriptSavedState() {
+    if(HasNativeConversationBindings())
+        throw std::runtime_error("Native conversation checkpoint/rebind capture is not implemented");
     if(persistentRetailCollision)
         throw std::runtime_error("Active retail collision checkpoint capture is not implemented");
     QuestVr::ScriptSavedState saved;
@@ -10790,6 +10891,7 @@ PortableRuntimeSummary InitializePortableRuntime(
     std::vector<PackageSlice> slices;
     persistentQualifiedObjects.clear();
     persistentVmObjects.clear();
+    persistentConversationNodes.clear();
     for (const PortablePackageTables& package : packages) {
         PackageSlice slice;
         slice.package = &package;
@@ -11436,6 +11538,7 @@ void ShutdownPortableRuntime() {
     persistentDispatchGraph.reset();
     persistentDispatchSummary = {};
     persistentVmObjects.clear();
+    persistentConversationNodes.clear();
     persistentWindowDomain.reset();persistentRootWindowClass.reset();
     persistentConfigClasses.reset();
     persistentMetadataClasses.reset();
@@ -12742,6 +12845,20 @@ QuestVr::Vm::Value ReadPortableActorDeclaredScriptProperty(const std::string& ac
     return host.Read(actor,property,arrayIndex);
 }
 
+QuestVr::Vm::Value ReadPortableRuntimeDeclaredScriptProperty(const std::string& objectPath,
+    const std::string& propertyPath,const std::uint32_t arrayIndex) {
+    for(const auto* identity:{&objectPath,&propertyPath})
+        if(identity->empty() || identity->size()>4096u || identity->find('\0')!=std::string::npos)
+            throw std::runtime_error("Declared UObject property identity is invalid");
+    PortableActorVmHost host;auto* object=host.Object(objectPath);
+    if(!object->cls || object->classDescriptor || object->defaultOwner)
+        throw std::runtime_error("Declared UObject read requires an actual instance identity");
+    const auto property=host.DescribeProperty(propertyPath);
+    if(!host.OwnsProperty(object->cls,property) || arrayIndex>=property.arrayDimension)
+        throw std::runtime_error("Declared UObject property is not a valid concrete receiver slot");
+    return host.Read(object,property,arrayIndex);
+}
+
 QuestVr::Vm::Value ReadPortableClassDefault(const std::string& classPath,
     const std::string& propertyName, const std::uint32_t arrayIndex) {
     PortableActorVmHost host;
@@ -12956,6 +13073,7 @@ bool GetPortableRuntimeScriptStatePresent() {
 
 bool GetPortableRuntimeUnsavedScriptState() {
     if (!persistentRuntime || !persistentRuntime->get()) return false;
+    if(HasNativeConversationBindings()) return true;
     if (persistentRuntime->get()->nativeDecals) return true;
     for (const auto* object : persistentRuntime->get()->exports)
         if (object->committedScriptState || !object->classDefaultValues.empty() || object->nativeAiManager ||
@@ -13351,6 +13469,8 @@ PortableMapRuntimeSummary LoadPortableRuntimeMap(
 }
 
 std::size_t UnloadPortableRuntimeMap() {
+    if(HasNativeConversationBindings())
+        throw std::runtime_error("Map unload refused: native conversation purge/archiving is not implemented");
     if(persistentRetailCollision)
         throw std::runtime_error("Map unload refused: actual retail collision retirement is not implemented");
     if (GetPortableRuntimeUnsavedScriptState())
@@ -15424,5 +15544,9 @@ bool ValidatePortableRuntimeState(const std::string& path, const std::string& ex
 
 bool LoadPortableRuntimeState(const std::string& path) {
     CollectBirthGarbageAtBoundary collect;
+    if(HasNativeConversationBindings()) {
+        __android_log_print(ANDROID_LOG_WARN,"quest_main","Native conversation checkpoint/rebind restoration is not implemented");
+        return false;
+    }
     return ReadPortableRuntimeState(path, true, {});
 }

@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <exception>
 #include <memory>
 #include <stdexcept>
 #include <utility>
@@ -15,17 +16,40 @@ namespace QuestVr {
 // not a claim about the retail UObject array's capacity or absolute indices.
 // All access is serialized by the owning engine; this is not a concurrent pool.
 class ObjectIndexPool {
+public:
+    class Lease;
+    class Transaction;
+    static constexpr std::uint32_t MaximumSlots = 4'000'000u;
+
+private:
+    static constexpr std::uint32_t RetiredEntry = 0x80000000u;
+    static_assert(MaximumSlots<RetiredEntry);
+    struct JournalEntry {
+        Lease* owner{};
+        std::uint32_t index{};
+        // Free links are bounded below RetiredEntry, so the otherwise unused
+        // high bit carries the entry kind without growing every journal row.
+        std::uint32_t previousLinkAndKind{};
+        [[nodiscard]] bool Retired() const noexcept { return (previousLinkAndKind&RetiredEntry)!=0u; }
+        [[nodiscard]] std::uint32_t PreviousLink() const noexcept { return previousLinkAndKind&~RetiredEntry; }
+    };
+    struct TransactionState {
+        TransactionState(std::uint32_t maximum,std::uint32_t first,std::uint32_t live,std::uint32_t slots)
+            : entries(std::make_unique<JournalEntry[]>(maximum)),maximum(maximum),
+              initialFirst(first),initialLive(live),initialSlots(slots) {}
+        std::unique_ptr<JournalEntry[]> entries;
+        std::uint32_t maximum{},count{},initialFirst{},initialLive{},initialSlots{};
+    };
     struct Control {
         explicit Control(std::uint32_t maximum) : maximum(maximum) {}
         std::vector<std::uint32_t> nextFree;
         std::uint32_t maximum;
         std::uint32_t firstFree{};
         std::uint32_t live{};
+        TransactionState* transaction{};
     };
 
 public:
-    static constexpr std::uint32_t MaximumSlots = 4'000'000u;
-
     // Only Acquire creates a lease, and only its private release path can
     // return an index. Move transfers that authority; no public numeric release
     // API can accidentally free a stale, duplicate or foreign object's index.
@@ -34,13 +58,11 @@ public:
         Lease() noexcept = default;
         Lease(const Lease&) = delete;
         Lease& operator=(const Lease&) = delete;
-        Lease(Lease&& other) noexcept
-            : control_(std::move(other.control_)), index_(std::exchange(other.index_,0u)) {}
+        Lease(Lease&& other) noexcept { Take(other); }
         Lease& operator=(Lease&& other) noexcept {
             if (this!=&other) {
                 Release();
-                control_=std::move(other.control_);
-                index_=std::exchange(other.index_,0u);
+                Take(other);
             }
             return *this;
         }
@@ -51,9 +73,45 @@ public:
 
     private:
         friend class ObjectIndexPool;
-        Lease(std::shared_ptr<Control> control,std::uint32_t index) noexcept
-            : control_(std::move(control)), index_(index) {}
+        friend class Transaction;
+        Lease(std::shared_ptr<Control> control,std::uint32_t index,std::uint32_t journalEntry=0u) noexcept
+            : control_(std::move(control)), index_(index),journalEntry_(journalEntry) {
+            if (journalEntry_!=0u) Registration().owner=this;
+        }
+        [[nodiscard]] JournalEntry& Registration() const noexcept {
+            if (!control_ || !control_->transaction || journalEntry_==0u ||
+                journalEntry_>control_->transaction->count) std::terminate();
+            return control_->transaction->entries[journalEntry_-1u];
+        }
+        void Take(Lease& other) noexcept {
+            // A live pre-root owner's field is part of the retained object
+            // state, not a new provisional constructor temporary. Moving that
+            // unregistered owner would bypass the rollback address journal.
+            if (other.index_!=0u && other.journalEntry_==0u && other.control_->transaction) std::terminate();
+            control_=std::move(other.control_);
+            index_=std::exchange(other.index_,0u);
+            journalEntry_=std::exchange(other.journalEntry_,0u);
+            if (journalEntry_!=0u) {
+                auto& entry=Registration();
+                if (entry.owner!=&other) std::terminate();
+                entry.owner=this;
+            }
+        }
         void Release() noexcept {
+            if (journalEntry_!=0u) {
+                auto& entry=Registration();
+                // A retired pre-root UObject must remain alive, retaining this
+                // undo authority until commit/rollback. Destroying/overwriting
+                // it cannot be made reversible by any numeric index journal.
+                if (entry.owner!=this || entry.Retired() || index_!=entry.index) std::terminate();
+                entry.owner=nullptr;
+                journalEntry_=0u;
+            } else if (index_!=0u && control_->transaction) {
+                // Existing objects cannot be destructed inside a reversible
+                // root. Explicit Retire, with retained object lifetime, is the
+                // only reversible release of a pre-root allocation authority.
+                std::terminate();
+            }
             if (index_==0u) return;
             // The slot's existing link storage is the free list. Destruction
             // never allocates, throws or depends on the pool wrapper's lifetime.
@@ -66,7 +124,125 @@ public:
         }
         std::shared_ptr<Control> control_;
         std::uint32_t index_{};
+        // On the supported 64-bit targets this uses Lease's former tail
+        // padding. An ordinal, not an allocation or independently owned lease.
+        std::uint32_t journalEntry_{};
     };
+
+    // Pool-local reversible allocation domain. All Acquires in the domain are
+    // registered, including unrelated Actor/Window construction. Provisional
+    // leases may move or destruct on constructor unwind. Pre-root leases may
+    // be explicitly retired and moved into empty leases, but must remain alive
+    // and must not be overwritten until this transaction ends. Engine GC must
+    // therefore stay outside the root. No rollback operation allocates.
+    class Transaction {
+    public:
+        Transaction(const Transaction&)=delete;
+        Transaction& operator=(const Transaction&)=delete;
+        Transaction(Transaction&& other) noexcept
+            : control_(std::move(other.control_)),state_(std::move(other.state_)) {}
+        Transaction& operator=(Transaction&& other) noexcept {
+            if (this!=&other) {
+                Rollback();control_=std::move(other.control_);state_=std::move(other.state_);
+            }
+            return *this;
+        }
+        ~Transaction() { Rollback(); }
+
+        [[nodiscard]] bool Active() const noexcept { return state_!=nullptr; }
+        [[nodiscard]] std::uint32_t EntryCount() const noexcept { return state_?state_->count:0u; }
+        [[nodiscard]] std::uint32_t EntryCapacity() const noexcept { return state_?state_->maximum:0u; }
+        [[nodiscard]] std::size_t RetainedBytes() const noexcept {
+            return state_?sizeof(TransactionState)+static_cast<std::size_t>(state_->maximum)*sizeof(JournalEntry):0u;
+        }
+
+        void Retire(Lease& lease) {
+            if (!state_) throw std::logic_error("Cannot retire through an inactive UObject index transaction");
+            if (lease.control_.get()!=control_.get() || lease.index_==0u)
+                throw std::invalid_argument("UObject index retirement requires this pool's live lease");
+            if (lease.journalEntry_!=0u) {
+                // A new object's Acquire already captured its link; retirement
+                // needs no second journal row and must never resurrect it.
+                lease.Release();return;
+            }
+            if (state_->count==state_->maximum)
+                throw std::length_error("UObject index transaction journal exhausted");
+            const auto index=lease.index_;
+            state_->entries[state_->count++]={&lease,index,
+                control_->nextFree[static_cast<std::size_t>(index-1u)]|RetiredEntry};
+            lease.journalEntry_=state_->count;
+            control_->nextFree[static_cast<std::size_t>(index-1u)]=control_->firstFree;
+            control_->firstFree=index;--control_->live;lease.index_=0u;
+        }
+
+        void Commit() noexcept {
+            if (!state_) return;
+            for (std::uint32_t ordinal=1u;ordinal<=state_->count;++ordinal) {
+                auto& entry=state_->entries[ordinal-1u];
+                if (!entry.owner) continue;
+                auto& lease=*entry.owner;
+                ValidateOwner(lease,entry,ordinal);
+                lease.journalEntry_=0u;
+                if (entry.Retired()) lease.control_.reset();
+            }
+            Finish();
+        }
+        void Rollback() noexcept {
+            if (!state_) return;
+            // Invalidate all surviving provisional owners before restoring old
+            // leases: the same numeric slot can legitimately have both rows.
+            for (std::uint32_t ordinal=1u;ordinal<=state_->count;++ordinal) {
+                auto& entry=state_->entries[ordinal-1u];
+                if (!entry.owner) continue;
+                auto& lease=*entry.owner;
+                ValidateOwner(lease,entry,ordinal);
+                lease.journalEntry_=0u;
+                if (entry.Retired()) lease.index_=entry.index;
+                else {lease.index_=0u;lease.control_.reset();}
+            }
+            for (auto remaining=state_->count;remaining!=0u;--remaining) {
+                const auto& entry=state_->entries[remaining-1u];
+                control_->nextFree[static_cast<std::size_t>(entry.index-1u)]=entry.PreviousLink();
+            }
+            control_->nextFree.resize(state_->initialSlots);
+            control_->firstFree=state_->initialFirst;control_->live=state_->initialLive;
+            Finish();
+        }
+
+    private:
+        friend class ObjectIndexPool;
+        Transaction(std::shared_ptr<Control> control,std::uint32_t maximum)
+            : control_(std::move(control)) {
+            if (control_->transaction)
+                throw std::logic_error("Nested UObject index transactions are not supported");
+            // Allocate the complete bounded journal before publishing its
+            // pointer or touching any pool/lease state.
+            state_=std::make_unique<TransactionState>(maximum,control_->firstFree,
+                control_->live,static_cast<std::uint32_t>(control_->nextFree.size()));
+            control_->transaction=state_.get();
+        }
+        void ValidateOwner(const Lease& lease,const JournalEntry& entry,std::uint32_t ordinal) const noexcept {
+            if (control_->transaction!=state_.get() || lease.control_.get()!=control_.get() ||
+                lease.journalEntry_!=ordinal || lease.index_!=(entry.Retired()?0u:entry.index)) std::terminate();
+        }
+        void Finish() noexcept {
+            control_->transaction=nullptr;state_.reset();control_.reset();
+        }
+        std::shared_ptr<Control> control_;
+        std::unique_ptr<TransactionState> state_;
+    };
+
+    [[nodiscard]] static std::size_t TransactionRetainedBytes(std::uint32_t maximumEntries) {
+        if (maximumEntries==0u || maximumEntries>MaximumSlots)
+            throw std::invalid_argument("UObject index journal capacity is outside portable policy");
+        return sizeof(TransactionState)+static_cast<std::size_t>(maximumEntries)*sizeof(JournalEntry);
+    }
+
+    [[nodiscard]] Transaction BeginTransaction(std::uint32_t maximumEntries) {
+        if (!control_) throw std::logic_error("Cannot transact a moved-from UObject index pool");
+        static_cast<void>(TransactionRetainedBytes(maximumEntries));
+        return Transaction(control_,maximumEntries);
+    }
 
     explicit ObjectIndexPool(std::uint32_t maximum=MaximumSlots) {
         if (maximum==0u || maximum>MaximumSlots)
@@ -81,10 +257,12 @@ public:
     [[nodiscard]] Lease Acquire() {
         if (!control_) throw std::logic_error("Cannot acquire from a moved-from UObject index pool");
         auto& control=*control_;
+        auto* transaction=control.transaction;
+        if (transaction && transaction->count==transaction->maximum)
+            throw std::length_error("UObject index transaction journal exhausted");
         std::uint32_t index;
         if (control.firstFree!=0u) {
             index=control.firstFree;
-            control.firstFree=control.nextFree[static_cast<std::size_t>(index-1u)];
         } else {
             if (control.nextFree.size()>=control.maximum)
                 throw std::length_error("UObject index pool capacity exhausted");
@@ -94,8 +272,16 @@ public:
             control.nextFree.push_back(0u);
             index=static_cast<std::uint32_t>(control.nextFree.size());
         }
+        std::uint32_t journalEntry{};
+        if (transaction) {
+            transaction->entries[transaction->count++]={nullptr,index,
+                control.nextFree[static_cast<std::size_t>(index-1u)]};
+            journalEntry=transaction->count;
+        }
+        if (control.firstFree!=0u)
+            control.firstFree=control.nextFree[static_cast<std::size_t>(index-1u)];
         ++control.live;
-        return Lease(control_,index);
+        return Lease(control_,index,journalEntry);
     }
 
     [[nodiscard]] std::uint32_t LiveCount() const noexcept { return control_?control_->live:0u; }

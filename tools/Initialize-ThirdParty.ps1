@@ -47,7 +47,8 @@ function Get-NormalizedRemote {
 $dependencies = @(
     @{ Key = 'metaOpenXrSdk'; Directory = 'Meta-OpenXR-SDK'; Patches = @() },
     @{ Key = 'surrealEngineEvaluationFork'; Directory = 'SurrealEngine';
-        Patches = @('surreal-engine/NameStringFindCompareIndex.patch') }
+        Patches = @('surreal-engine/NameStringFindCompareIndex.patch',
+            'surreal-engine/GCConstructorRollback.patch') }
 )
 
 foreach ($dependency in $dependencies) {

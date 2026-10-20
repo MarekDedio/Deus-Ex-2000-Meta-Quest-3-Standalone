@@ -17,20 +17,30 @@
 
 namespace AllocationFixture {
 bool refuse{};
+std::size_t remaining=std::numeric_limits<std::size_t>::max();
 }
 
 // This standalone test denies allocation at precise scope boundaries. The
 // production pool has no test allocator hook and no mutable numeric release API.
-void* operator new(std::size_t bytes) {
-    if (AllocationFixture::refuse) throw std::bad_alloc();
+#if defined(__GNUC__)
+#define INDEX_TEST_ALLOCATION_NOINLINE __attribute__((noinline))
+#else
+#define INDEX_TEST_ALLOCATION_NOINLINE
+#endif
+// Keep the matching malloc/free replacement pair opaque to GCC's optimized
+// mismatched-new-delete heuristic; these are deliberate global replacements.
+INDEX_TEST_ALLOCATION_NOINLINE void* operator new(std::size_t bytes) {
+    if (AllocationFixture::refuse || AllocationFixture::remaining==0u) throw std::bad_alloc();
+    if (AllocationFixture::remaining!=std::numeric_limits<std::size_t>::max()) --AllocationFixture::remaining;
     if (void* memory=std::malloc(bytes==0u?1u:bytes)) return memory;
     throw std::bad_alloc();
 }
-void* operator new[](std::size_t bytes) { return ::operator new(bytes); }
-void operator delete(void* memory) noexcept { std::free(memory); }
-void operator delete[](void* memory) noexcept { std::free(memory); }
-void operator delete(void* memory,std::size_t) noexcept { std::free(memory); }
-void operator delete[](void* memory,std::size_t) noexcept { std::free(memory); }
+INDEX_TEST_ALLOCATION_NOINLINE void* operator new[](std::size_t bytes) { return ::operator new(bytes); }
+INDEX_TEST_ALLOCATION_NOINLINE void operator delete(void* memory) noexcept { std::free(memory); }
+INDEX_TEST_ALLOCATION_NOINLINE void operator delete[](void* memory) noexcept { std::free(memory); }
+INDEX_TEST_ALLOCATION_NOINLINE void operator delete(void* memory,std::size_t) noexcept { std::free(memory); }
+INDEX_TEST_ALLOCATION_NOINLINE void operator delete[](void* memory,std::size_t) noexcept { std::free(memory); }
+#undef INDEX_TEST_ALLOCATION_NOINLINE
 
 namespace {
 using Pool=QuestVr::ObjectIndexPool;
@@ -53,6 +63,11 @@ struct DenyAllocation {
     DenyAllocation(const DenyAllocation&)=delete;
     DenyAllocation& operator=(const DenyAllocation&)=delete;
     ~DenyAllocation() { AllocationFixture::refuse=previous; }
+};
+struct FailAllocationAfter {
+    std::size_t previous=AllocationFixture::remaining;
+    explicit FailAllocationAfter(std::size_t successful) {AllocationFixture::remaining=successful;}
+    ~FailAllocationAfter() {AllocationFixture::remaining=previous;}
 };
 void MoveAssign(Lease& destination,Lease& source) {
     destination=std::move(source);
@@ -235,11 +250,316 @@ void AllocationFailuresAndExceptionUnwind() {
     Require(pool.LiveCount()==before+1u && after.Index()!=retry.Index(),
         "Exception unwind through a relocated lease container leaked or double-released indices");
 }
+
+void TransactionRetirementAndExactRollback() {
+    static_assert(!std::is_copy_constructible_v<Pool::Transaction>);
+    static_assert(std::is_nothrow_move_constructible_v<Pool::Transaction>);
+    static_assert(std::is_nothrow_move_assignable_v<Pool::Transaction>);
+    static_assert(std::is_nothrow_destructible_v<Pool::Transaction>);
+    Pool pool(32u);
+    std::array<Lease,8u> originals;
+    for (auto& object:originals) object=pool.Acquire();
+    originals[2]=Lease{};originals[5]=Lease{};originals[0]=Lease{};
+    auto transaction=pool.BeginTransaction(32u);
+    Require(transaction.Active() && transaction.EntryCount()==0u && transaction.EntryCapacity()==32u &&
+        transaction.RetainedBytes()==Pool::TransactionRetainedBytes(32u),
+        "Index transaction did not report its complete fixed bounded journal storage");
+    transaction.Retire(originals[1]);
+    Require(!originals[1] && pool.LiveCount()==4u && transaction.EntryCount()==1u,
+        "Pre-root retirement retained a live numeric index or failed to journal ownership");
+    auto replacement=pool.Acquire();
+    Require(replacement.Index()==2u,"Retirement did not immediately release its exact slot for same-root allocation");
+    auto priorFree=pool.Acquire();
+    Require(priorFree.Index()==1u,"Same-root reuse changed the pre-root free-list ordering");
+    transaction.Retire(replacement);
+    Require(!replacement && transaction.EntryCount()==3u,
+        "Retiring a provisional lease added a redundant undo row or retained its index");
+    replacement=pool.Acquire();
+    Require(replacement.Index()==2u,"Repeated same-root deletion did not reuse its numeric slot");
+    auto reusedFree=pool.Acquire();auto lastFree=pool.Acquire();auto appended=pool.Acquire();
+    Require(reusedFree.Index()==6u && lastFree.Index()==3u && appended.Index()==9u && pool.AllocatedSlots()==9u,
+        "Transaction fixture did not exercise existing free links and appended slots");
+    Lease relocatedOld(std::move(originals[1]));
+    Require(!originals[1] && !relocatedOld,"Moving a retired lease exposed its numeric slot before rollback");
+    Lease relocatedNew(std::move(appended));
+    {
+        DenyAllocation deny;
+        transaction.Rollback();
+    }
+    Require(!transaction.Active() && transaction.RetainedBytes()==0u && relocatedOld.Index()==2u &&
+        !replacement && !priorFree && !reusedFree && !lastFree && !appended && !relocatedNew,
+        "Rollback failed to restore relocated old ownership or invalidate all surviving provisional leases");
+    Require(pool.LiveCount()==5u && pool.AllocatedSlots()==8u,
+        "Rollback retained appended slots or changed the original live count");
+    auto first=pool.Acquire();auto second=pool.Acquire();auto third=pool.Acquire();auto fresh=pool.Acquire();
+    Require(first.Index()==1u && second.Index()==6u && third.Index()==3u && fresh.Index()==9u,
+        "Rollback did not restore the exact original free-list order and allocated-slot frontier");
+    {
+        DenyAllocation deny;
+        transaction.Rollback();transaction.Commit();
+    }
+    Refuse<std::logic_error>([&] {transaction.Retire(first);},"Inactive transaction retired a surviving lease");
+}
+
+void TransactionCommitMovesAndLifetime() {
+    Pool pool(16u);
+    auto original=pool.Acquire();const auto oldIndex=original.Index();
+    auto transaction=pool.BeginTransaction(16u);
+    transaction.Retire(original);
+    std::vector<Lease> provisional;
+    for (unsigned index=0u;index<8u;++index) provisional.push_back(pool.Acquire());
+    Require(provisional.front().Index()==oldIndex && pool.LiveCount()==8u,
+        "Transaction did not track provisional leases through container relocations");
+    auto movedTransaction=std::move(transaction);
+    Require(!transaction.Active() && movedTransaction.Active(),"Moving a transaction lost its active control domain");
+    provisional[1]=std::move(provisional[2]);
+    Require(!provisional[2] && pool.LiveCount()==7u,
+        "Provisional lease move assignment retained overwritten allocation ownership");
+    Lease retiredOwner;
+    retiredOwner=std::move(original);
+    auto replacement=pool.Acquire();
+    Require(replacement.Index()==2u,"Provisional overwrite did not return its slot within the transaction");
+    {
+        DenyAllocation deny;
+        movedTransaction.Commit();
+    }
+    Require(!retiredOwner && !original && !movedTransaction.Active() && pool.LiveCount()==8u &&
+        provisional.front().Index()==oldIndex && replacement.Index()==2u,
+        "Commit restored a deleted old lease or invalidated a new allocation");
+    {
+        DenyAllocation deny;
+        provisional.clear();replacement=Lease{};retiredOwner=Lease{};
+    }
+    Require(pool.LiveCount()==0u,"Committed lease destruction retained transaction registration or leaked a live slot");
+
+    Lease survivor;
+    std::optional<Pool::Transaction> survivingTransaction;
+    {
+        Pool temporary(2u);
+        survivor=temporary.Acquire();
+        survivingTransaction.emplace(temporary.BeginTransaction(2u));
+        survivingTransaction->Retire(survivor);
+        Pool movedPool(std::move(temporary));
+        Require(!temporary.LiveCount() && movedPool.LiveCount()==0u,
+            "Moving a pool wrapper invalidated an active retirement domain");
+    }
+    {
+        DenyAllocation deny;
+        survivingTransaction.reset();
+    }
+    Require(survivor.Index()==1u,"Transaction rollback after pool-wrapper destruction lost retained old lease authority");
+    {
+        DenyAllocation deny;
+        survivor=Lease{};
+    }
+
+    Pool firstPool(2u),secondPool(2u);
+    auto firstOld=firstPool.Acquire();auto secondOld=secondPool.Acquire();
+    auto firstTransaction=firstPool.BeginTransaction(2u);
+    auto secondTransaction=secondPool.BeginTransaction(2u);
+    firstTransaction.Retire(firstOld);secondTransaction.Retire(secondOld);
+    firstTransaction=std::move(secondTransaction);
+    Require(firstOld.Index()==1u && !secondOld && firstTransaction.Active() && !secondTransaction.Active(),
+        "Transaction move assignment did not rollback its former domain before transferring the new one");
+    firstTransaction.Rollback();
+    Require(secondOld.Index()==1u,"Moved transaction no longer restored its original control domain");
+}
+
+void TransactionFailuresAndConstructorUnwind() {
+    Pool pool(8u),foreign(1u);
+    auto original=pool.Acquire();auto foreignLease=foreign.Acquire();
+    Refuse<std::invalid_argument>([&] {static_cast<void>(pool.BeginTransaction(0u));},
+        "Index transaction accepted an empty journal bound");
+    Refuse<std::invalid_argument>([&] {static_cast<void>(pool.BeginTransaction(Pool::MaximumSlots+1u));},
+        "Index transaction accepted an unbounded journal");
+    bool failed{};
+    {
+        DenyAllocation deny;
+        try {static_cast<void>(pool.BeginTransaction(2u));} catch(const std::bad_alloc&) {failed=true;}
+    }
+    Require(failed && original.Index()==1u && pool.LiveCount()==1u && pool.AllocatedSlots()==1u,
+        "Failed journal admission activated a transaction or changed live pool state");++refusals;
+    failed=false;
+    {
+        FailAllocationAfter secondAllocation(1u);
+        try {static_cast<void>(pool.BeginTransaction(2u));} catch(const std::bad_alloc&) {failed=true;}
+    }
+    Require(failed && original.Index()==1u && pool.LiveCount()==1u && pool.AllocatedSlots()==1u,
+        "Failed fixed-journal allocation published a partial transaction or changed pool state");++refusals;
+    auto tight=pool.BeginTransaction(1u);
+    Refuse<std::logic_error>([&] {static_cast<void>(pool.BeginTransaction(1u));},
+        "Nested transaction replaced the active root's journal");
+    Refuse<std::invalid_argument>([&] {tight.Retire(foreignLease);},
+        "Transaction accepted another pool's allocation authority");
+    Lease empty;
+    Refuse<std::invalid_argument>([&] {tight.Retire(empty);},"Transaction retired a nonexistent lease");
+    tight.Retire(original);
+    Refuse<std::invalid_argument>([&] {tight.Retire(original);},"Transaction retired the same old ownership twice");
+    Refuse<std::length_error>([&] {static_cast<void>(pool.Acquire());},
+        "Journal overflow allocated an untracked UObject index");
+    Require(pool.LiveCount()==0u && pool.AllocatedSlots()==1u && tight.EntryCount()==1u,
+        "Journal overflow modified the free-list or allocation frontier");
+    {
+        DenyAllocation deny;tight.Rollback();
+    }
+    Require(original.Index()==1u && pool.LiveCount()==1u,"Tight-journal failure did not restore retired ownership");
+
+    auto transaction=pool.BeginTransaction(16u);
+    struct ThrowingObject {
+        Lease index;
+        explicit ThrowingObject(Pool& source):index(source.Acquire()) {throw std::runtime_error("Constructor failure in root");}
+    };
+    Refuse<std::runtime_error>([&] {ThrowingObject object(pool);},
+        "Provisional constructor fixture did not exercise lease destruction during unwind");
+    Require(pool.LiveCount()==1u && transaction.EntryCount()==1u,
+        "Constructor unwind leaked or removed an untracked live lease");
+    auto after=pool.Acquire();
+    Require(after.Index()==2u,"Constructor unwind did not immediately release the provisional object's slot");
+    transaction.Retire(original);
+    auto reused=pool.Acquire();
+    Require(reused.Index()==1u,"Pre-root retirement did not remain available after provisional constructor unwind");
+    {
+        DenyAllocation deny;
+        after=Lease{};transaction.Rollback();
+    }
+    Require(original.Index()==1u && !after && !reused && pool.LiveCount()==1u && pool.AllocatedSlots()==1u,
+        "Constructor unwind plus later failure lost exact root allocation state");
+
+    auto growth=pool.BeginTransaction(16u);
+    std::array<Lease,8u> retained;
+    std::uint32_t priorLive{},priorSlots{},priorEntries{};std::size_t retainedCount{};
+    failed=false;
+    {
+        DenyAllocation deny;
+        while(retainedCount<retained.size()) {
+            priorLive=pool.LiveCount();priorSlots=pool.AllocatedSlots();priorEntries=growth.EntryCount();
+            try {retained[retainedCount]=pool.Acquire();++retainedCount;}
+            catch(const std::bad_alloc&) {failed=true;break;}
+        }
+    }
+    Require(failed && pool.LiveCount()==priorLive && pool.AllocatedSlots()==priorSlots && growth.EntryCount()==priorEntries,
+        "Failed slot growth during an active transaction consumed a journal row or changed pool state");++refusals;
+    {
+        DenyAllocation deny;growth.Rollback();
+    }
+    Require(pool.LiveCount()==1u && pool.AllocatedSlots()==1u && original.Index()==1u,
+        "Active slot-growth failure changed the exact root allocation frontier");
+
+    auto secondOld=pool.Acquire();
+    auto retireOverflow=pool.BeginTransaction(1u);
+    auto onlyProvisional=pool.Acquire();
+    Refuse<std::length_error>([&] {retireOverflow.Retire(secondOld);},
+        "Journal overflow retired an old object without preserving its undo authority");
+    Require(secondOld.Index()==2u && pool.LiveCount()==3u && retireOverflow.EntryCount()==1u,
+        "Failed old-lease retirement changed existing ownership or live count");
+    retireOverflow.Rollback();
+    Require(!onlyProvisional && original.Index()==1u && secondOld.Index()==2u && pool.LiveCount()==2u,
+        "Late retirement admission failure prevented complete root rollback");
+}
+
+void RepeatedTransactionsAndSlotReuse() {
+    // Independent numeric oracle: reserve eight live slots, free 3/6/1, then
+    // retire one live slot. Every rollback must recover the same LIFO chain,
+    // regardless of repeated releases and moves of a reused numeric slot.
+    for (std::uint32_t repeat=0u;repeat<96u;++repeat) {
+        Pool pool(32u);std::array<Lease,8u> originals;
+        for (auto& lease:originals) lease=pool.Acquire();
+        originals[2]=Lease{};originals[5]=Lease{};originals[0]=Lease{};
+        Lease current;
+        {
+            auto transaction=pool.BeginTransaction(128u);
+            transaction.Retire(originals[1]);
+            for (std::uint32_t turn=0u;turn<=repeat;++turn) {
+                current=pool.Acquire();
+                Require(current.Index()==2u,"Repeated same-root release/reacquire changed the retired native slot");
+                if (turn!=repeat) {
+                    Lease intermediate(std::move(current));
+                    transaction.Retire(intermediate);
+                }
+            }
+            Require(transaction.EntryCount()==repeat+2u,"Repeated reuse omitted an Acquire from the active journal");
+            if ((repeat&1u)!=0u) {
+                DenyAllocation deny;transaction.Rollback();
+            }
+        }
+        Require(!current && originals[1].Index()==2u && pool.LiveCount()==5u && pool.AllocatedSlots()==8u,
+            "Explicit/RAII rollback after repeated reuse lost old ownership or retained a provisional lease");
+        auto first=pool.Acquire();auto second=pool.Acquire();auto third=pool.Acquire();
+        Require(first.Index()==1u && second.Index()==6u && third.Index()==3u,
+            "Repeated reuse rollback changed an unrelated pre-root free-list link");
+    }
+}
+
+void MixedTransactionOracle() {
+    // This oracle stores only abstract live identities and a LIFO vector; it
+    // does not reproduce the pool's link journal or owner-registration logic.
+    for (std::uint32_t seed=1u;seed<=128u;++seed) {
+        Pool pool(64u);std::array<Lease,16u> originals;std::array<Lease,32u> provisional;
+        std::array<std::uint32_t,16u> originalIndices{};
+        for (std::size_t index=0u;index<originals.size();++index) {
+            originals[index]=pool.Acquire();originalIndices[index]=originals[index].Index();
+        }
+        std::vector<std::uint32_t> free;
+        for (const auto index:{2u,5u,0u}) {
+            free.push_back(originals[index].Index());originals[index]=Lease{};originalIndices[index]=0u;
+        }
+        std::uint32_t oracleLive=13u,oracleSlots=16u,random=seed;
+        auto transaction=pool.BeginTransaction(512u);
+        for (unsigned step=0u;step<192u;++step) {
+            random=random*1664525u+1013904223u;
+            const auto slot=static_cast<std::size_t>((random>>8u)%provisional.size());
+            switch((random>>24u)%4u) {
+            case 0u:
+                if (!provisional[slot]) {
+                    const auto expected=free.empty()?++oracleSlots:free.back();
+                    if (!free.empty()) free.pop_back();
+                    provisional[slot]=pool.Acquire();++oracleLive;
+                    Require(provisional[slot].Index()==expected,"Mixed root allocation disagreed with independent LIFO identity oracle");
+                }
+                break;
+            case 1u:
+                if (provisional[slot]) {
+                    free.push_back(provisional[slot].Index());provisional[slot]=Lease{};--oracleLive;
+                }
+                break;
+            case 2u: {
+                const auto oldSlot=static_cast<std::size_t>((random>>12u)%originals.size());
+                if (originals[oldSlot]) {
+                    free.push_back(originals[oldSlot].Index());transaction.Retire(originals[oldSlot]);--oracleLive;
+                }
+                break;
+            }
+            case 3u: {
+                const auto destination=(slot+1u)%provisional.size();
+                if (provisional[destination]) {
+                    free.push_back(provisional[destination].Index());--oracleLive;
+                }
+                provisional[destination]=std::move(provisional[slot]);
+                break;
+            }
+            }
+            Require(pool.LiveCount()==oracleLive && pool.AllocatedSlots()==oracleSlots,
+                "Mixed retire/release/move root changed live ownership or allocated slots relative to independent oracle");
+        }
+        {
+            DenyAllocation deny;transaction.Rollback();
+        }
+        for (std::size_t index=0u;index<originals.size();++index)
+            Require(originals[index].Index()==originalIndices[index],"Mixed root rollback did not restore every exact original lease");
+        for (const auto& lease:provisional) Require(!lease,"Mixed root rollback left a provisional identity live");
+        Require(pool.LiveCount()==13u && pool.AllocatedSlots()==16u,"Mixed root rollback did not restore original scalar pool state");
+        auto first=pool.Acquire();auto second=pool.Acquire();auto third=pool.Acquire();auto appended=pool.Acquire();
+        Require(first.Index()==1u && second.Index()==6u && third.Index()==3u && appended.Index()==17u,
+            "Mixed root rollback did not restore original free-list sequence and slot frontier");
+    }
+}
 }
 
 int main() {
     try {
         LifecycleAndBounds();MoveAndPoolLifetime();ManyObjectsAndContainerMoves();AllocationFailuresAndExceptionUnwind();
+        TransactionRetirementAndExactRollback();TransactionCommitMovesAndLifetime();
+        TransactionFailuresAndConstructorUnwind();RepeatedTransactionsAndSlotReuse();MixedTransactionOracle();
         std::cout<<"Engine-owned UObject index leases: "<<checks<<" checks and "<<refusals<<" refusal controls passed.\n";
         return 0;
     } catch(const std::exception& error) {

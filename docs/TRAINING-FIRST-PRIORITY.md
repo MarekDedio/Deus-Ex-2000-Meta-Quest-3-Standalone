@@ -28,12 +28,21 @@ and selected SupportActor dispatch. Compact extent-query storage and sequential
 world/actor workspace lifetimes pass the previous memory refusal. Repeated
 startup now completes all1334 WorldBases visits, clears startup, and next
 refuses unsupported native2101/ConBindEvents at Plant2 PostPostBeginPlay.
-The subsequent original conversation-binding wrapper/list protocol and static
-first-map audit are implemented; actual ConListItem allocation/deletion/GC/save
-integration and native registration remain required. See
-ORIGINAL-CONVERSATION-BIND.md. No conversation no-op is substituted for startup.
-Its protocol tests pass15314/63; current shared CTest passes157 executed/
-181 listed with24 explicit owned-data skips and zero failures.
+The subsequent original conversation-binding native providers now construct
+actual ConListItems, retire their identities with same-root index reuse, own
+mutable GC edges and restore the exact graph/counts/names on refusal. Actual
+first-map2101/2102 tests pass156871/17;2100 player coverage and native archives
+remain unfinished, with explicit save/load/unload safeguards. Repeated startup
+now reaches PickupDistributor0/PostPostBeginPlay slot1195, then refuses the
+original spawned CheckEncroachment at Engine.Inventory.PostBeginPlay PC60.
+Both attempts fully roll back and preserve all40 source files. This advances
+the live-pickup prerequisite, not usable loot/gravity or a complete startup.
+See ORIGINAL-CONVERSATION-BIND.md. No conversation no-op is substituted.
+Detached protocol tests remain15314/63. Earlier shared CTest at the protocol
+checkpoint passed157 executed/181 listed with24 owned-data skips; updated
+runtime checkpoint passes158 executed/183 listed with25 owned-data skips and
+zero failures; skipped owned tests are not claimed as executed. See
+ORIGINAL-CONVERSATION-BIND.md for exact actual-source and proof boundaries.
 Actual focused FindBase tests pass168495/25; final full first-map regression
 passes2016309/153 and shared CTest passes156 executed/180 listed with24 explicit
 owned-data skips and zero failures. See TRAINING-FIND-BASE.md for proof boundaries.

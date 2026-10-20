@@ -168,11 +168,21 @@ struct Oracle {
 // an unmeasured reduction in accounting policy.
 struct CompactNodeModel {Record record;std::uint32_t next{},identityNext{};};
 struct PointerNodeModel {Record record;void *next{},*identityNext{};};
+struct PreRetirementCompactOwnerModel {
+    std::uint32_t maximum{};std::map<std::uint32_t,CompactNodeModel> slots;
+    std::array<std::uint32_t,4096u> heads{},identityHeads{};
+};
 struct CompactOwnerModel {
+    // One fixed owner identity authenticates detached rollback tokens. It is
+    // not another map, pointer-head table or a per-live-node allocation.
+    std::uint64_t retirementAuthority{};
     std::uint32_t maximum{};std::map<std::uint32_t,CompactNodeModel> slots;
     std::array<std::uint32_t,4096u> heads{},identityHeads{};
 };
 struct PointerOwnerModel {
+    // Compare the SAME retirement feature when checking compact-head savings;
+    // its explicit fixed cost is checked independently below.
+    std::uint64_t retirementAuthority{};
     std::uint32_t maximum{};std::map<std::uint32_t,PointerNodeModel> slots;
     std::array<void*,4096u> heads{},identityHeads{};
 };
@@ -218,7 +228,10 @@ void Rehash(Lookup::Index& actual,Oracle& expected,std::uint32_t index) {
 void RepresentationAndSparseIndices() {
     static_assert(Lookup::Index::MaximumObjectIndex==4'000'000u&&Lookup::Index::MaximumObjects==1'000'000u&&Lookup::Index::BucketCount==4096u);
     Require(sizeof(Lookup::Index)==sizeof(CompactOwnerModel),"Object lookup still owns pointer-sized heads or unaccounted representation fields");
+    static_assert(sizeof(decltype(CompactOwnerModel::retirementAuthority))==8u);
     if (sizeof(void*)==8u) {
+        Require(sizeof(CompactOwnerModel)==sizeof(PreRetirementCompactOwnerModel)+8u,
+            "Retirement authentication added more than its explicit fixed eight-byte owner identity");
         Require(sizeof(PointerOwnerModel)-sizeof(CompactOwnerModel)==32'768u&&PointerStride-CompactStride==8u,
             "Compact representation did not physically remove32768 head bytes and8 bytes per live node on64-bit");
         Require(8u*sizeof(void*)==64u,"Tree allowance changed during representation compaction");

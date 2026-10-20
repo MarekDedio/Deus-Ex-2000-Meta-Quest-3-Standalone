@@ -611,6 +611,11 @@ QuestVr::Vm::Value ReadPortableActorScriptProperty(
 QuestVr::Vm::Value ReadPortableActorDeclaredScriptProperty(
     const std::string& actorPath, const std::string& propertyPath,
     std::uint32_t arrayIndex = 0u);
+// Read-only exact declared field of a live UObject instance, including native
+// non-Actor ConListItems. No construction, lifecycle dispatch or mutation.
+QuestVr::Vm::Value ReadPortableRuntimeDeclaredScriptProperty(
+    const std::string& objectPath,const std::string& propertyPath,
+    std::uint32_t arrayIndex = 0u);
 // Read-only concrete loaded Actor UClass default block. Later CDO writes do
 // not change already-loaded instances or derived/sibling default blocks.
 QuestVr::Vm::Value ReadPortableClassDefault(

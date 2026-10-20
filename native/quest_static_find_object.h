@@ -1,8 +1,10 @@
 #pragma once
 
 #include <array>
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <exception>
 #include <map>
 #include <optional>
 #include <stdexcept>
@@ -29,11 +31,40 @@ class Index {
         std::uint32_t identityNext{};
     };
     using Slots=std::map<std::uint32_t,Node>;
+    struct LinkPosition {
+        std::uint32_t previous{},next{};
+        std::uintptr_t previousIdentity{},nextIdentity{};
+    };
+    static constexpr auto StoredNodeBytes=sizeof(typename Slots::value_type)+8u*sizeof(void*);
 
 public:
     static constexpr std::uint32_t MaximumObjects=1'000'000u;
     static constexpr std::uint32_t MaximumObjectIndex=4'000'000u;
     static constexpr std::size_t BucketCount=4096u;
+
+    // A detached owning tree node, not another weak publication. Destroying a
+    // token commits that retirement; moving it transfers the sole restoration
+    // right. No UObject is owned or kept alive by the token.
+    class Retirement {
+    public:
+        Retirement() noexcept=default;
+        Retirement(const Retirement&)=delete;
+        Retirement& operator=(const Retirement&)=delete;
+        Retirement(Retirement&&) noexcept=default;
+        Retirement& operator=(Retirement&&) noexcept=default;
+        [[nodiscard]] explicit operator bool() const noexcept {return !node_.empty();}
+        [[nodiscard]] const Record* GetRecord() const noexcept {
+            return node_.empty()?nullptr:&node_.mapped().record;
+        }
+        [[nodiscard]] std::size_t RetainedBytes() const noexcept {
+            return sizeof(Retirement)+(node_.empty()?0u:StoredNodeBytes);
+        }
+    private:
+        friend class Index;
+        typename Slots::node_type node_;
+        std::uint64_t authority_{};
+        LinkPosition name_,identity_;
+    };
 
     explicit Index(std::uint32_t maximum=MaximumObjects):maximum_(maximum) {
         if(!maximum||maximum>MaximumObjects)
@@ -54,8 +85,12 @@ public:
         return *this;
     }
     void Swap(Index& other) noexcept {
+        if(this==&other)return;
         using std::swap;swap(maximum_,other.maximum_);slots_.swap(other.slots_);
         heads_.swap(other.heads_);identityHeads_.swap(other.identityHeads_);
+        // Outstanding retirement rights are tied to one exclusive owner and
+        // state, not transferable through copy/move/assignment/swap.
+        authority_=NewAuthority();other.authority_=NewAuthority();
     }
 
     // Preallocate only the new records in a detached Index. Admission and
@@ -110,6 +145,42 @@ public:
         const auto found=slots_.find(index);
         if(found==slots_.end()||!identity||found->second.record.identity!=identity)return false;
         Unlink(found->second);UnlinkIdentity(found->second);slots_.erase(found);return true;
+    }
+
+    // Transactional retirement: immediately absent from EVERY lookup, while
+    // retaining the existing tree allocation for a possible rollback. The
+    // caller exclusively owns this Index throughout the transaction and must
+    // reverse later publications/rehashes/retirements before restoring tokens
+    // in LIFO order. This is not a general concurrent or arbitrary-order undo.
+    // Copying/moving/swapping/assigning the Index invalidates its old tokens.
+    [[nodiscard]] Retirement Extract(std::uint32_t index,std::uintptr_t identity) noexcept {
+        const auto found=slots_.find(index);
+        if(found==slots_.end()||!identity||found->second.record.identity!=identity)return {};
+        Retirement token;
+        token.authority_=authority_;
+        token.name_=Position(found->second,false);
+        token.identity_=Position(found->second,true);
+        Unlink(found->second);UnlinkIdentity(found->second);
+        token.node_=slots_.extract(found);
+        return token;
+    }
+    // All checks precede the nonallocating map-node transfer and link writes.
+    // A stale/foreign/conflicting token or unreversed neighbor mutation leaves
+    // BOTH token and Index unchanged, so the legitimate owner may retry later.
+    bool Restore(Retirement& token) noexcept {
+        if(token.node_.empty()||token.authority_!=authority_||slots_.size()>=maximum_)return false;
+        const auto& record=token.node_.mapped().record;
+        if(slots_.find(record.index)!=slots_.end()||RecordForIdentity(record.identity)||
+            !PositionMatches(token.name_,Bucket(record.outerIndex,record.nameIndex),false)||
+            !PositionMatches(token.identity_,IdentityBucket(record.identity),true))return false;
+        auto inserted=slots_.insert(std::move(token.node_));
+        if(!inserted.inserted) {token.node_=std::move(inserted.node);return false;}
+        auto& node=inserted.position->second;
+        node.next=token.name_.next;node.identityNext=token.identity_.next;
+        Relink(node.record.index,token.name_,Bucket(node.record.outerIndex,node.record.nameIndex),false);
+        Relink(node.record.index,token.identity_,IdentityBucket(node.record.identity),true);
+        token.authority_=0u;token.name_={};token.identity_={};
+        return true;
     }
     bool Rehash(std::uint32_t index,std::uintptr_t identity,std::uintptr_t outerIdentity,
         std::uint32_t outerIndex,int nameIndex) noexcept {
@@ -180,11 +251,51 @@ public:
     // owning map, trading a nonallocating logarithmic search for pointer space.
     // No UObject/default/name storage is owned here.
     [[nodiscard]] std::size_t RetainedBytes() const noexcept {
-        constexpr auto nodeOverhead=8u*sizeof(void*);
-        return sizeof(Index)+slots_.size()*(sizeof(typename Slots::value_type)+nodeOverhead);
+        return sizeof(Index)+slots_.size()*StoredNodeBytes;
     }
 
 private:
+    [[nodiscard]] static std::uint64_t NewAuthority() noexcept {
+        // An address alone would accept a foreign token after owner lifetime
+        // reuse. These process-local, nonallocating identities never transfer
+        // with tree storage. Exhaustion must not silently reuse an authority.
+        static std::atomic<std::uint64_t> next{1u};
+        const auto result=next.fetch_add(1u,std::memory_order_relaxed);
+        if(!result)std::terminate();
+        return result;
+    }
+    [[nodiscard]] LinkPosition Position(const Node& node,bool identity) const noexcept {
+        const auto bucket=identity?IdentityBucket(node.record.identity):Bucket(node.record.outerIndex,node.record.nameIndex);
+        auto link=identity?identityHeads_[bucket]:heads_[bucket];
+        std::uint32_t previous{};
+        while(link!=node.record.index) {
+            previous=link;const auto& current=NodeAt(link);
+            link=identity?current.identityNext:current.next;
+        }
+        const auto next=identity?node.identityNext:node.next;
+        return {previous,next,previous?NodeAt(previous).record.identity:0u,next?NodeAt(next).record.identity:0u};
+    }
+    [[nodiscard]] bool PositionMatches(const LinkPosition& position,std::size_t bucket,bool identity) const noexcept {
+        const auto matches=[&](std::uint32_t index,std::uintptr_t opaque) {
+            const auto found=slots_.find(index);
+            if(found==slots_.end()||found->second.record.identity!=opaque)return false;
+            const auto& record=found->second.record;
+            return (identity?IdentityBucket(record.identity):Bucket(record.outerIndex,record.nameIndex))==bucket;
+        };
+        if(position.next&&!matches(position.next,position.nextIdentity))return false;
+        if(position.previous) {
+            if(!matches(position.previous,position.previousIdentity))return false;
+            const auto& previous=NodeAt(position.previous);
+            return (identity?previous.identityNext:previous.next)==position.next;
+        }
+        return (identity?identityHeads_[bucket]:heads_[bucket])==position.next;
+    }
+    void Relink(std::uint32_t index,const LinkPosition& position,std::size_t bucket,bool identity) noexcept {
+        if(position.previous) {
+            auto& previous=NodeAt(position.previous);
+            (identity?previous.identityNext:previous.next)=index;
+        }else (identity?identityHeads_[bucket]:heads_[bucket])=index;
+    }
     // Zero is the chain sentinel; every nonzero link names a node in this
     // owning map. Publication, unlink and node transfer preserve that invariant.
     // The object-index policy is independent of actual pointer-sized identity.
@@ -238,6 +349,7 @@ private:
         if(*link) *link=node.identityNext;
         node.identityNext=0u;
     }
+    std::uint64_t authority_{NewAuthority()};
     std::uint32_t maximum_;
     Slots slots_;
     std::array<std::uint32_t,BucketCount> heads_{};

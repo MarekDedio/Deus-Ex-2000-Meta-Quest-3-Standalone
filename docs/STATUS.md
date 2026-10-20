@@ -1,5 +1,25 @@
 # Port status
 
+## First Training conversation runtime lifecycle (2026-10-20)
+
+Actual native conversation binding now constructs real non-Actor ConListItems
+with original class/package/names/counts/flags and mutable GC edges. Purge
+retires lookup aliases/indices immediately, permits same-root slot reuse and
+supports allocation-free root rollback without cloning the live object index.
+Actual first-map tests pass156871/17; strict ARM64 and Android native link pass.
+Shared CTest passes158 executed/183 listed,25 explicit owned-data skips and
+zero failures. Actual owned conversation/FindBase/crate fixtures run separately;
+none is a headset gameplay acceptance result.
+Checkpoint/rebind and map retirement remain explicit unsupported safeguards,
+not completed save/travel. See ORIGINAL-CONVERSATION-BIND.md.
+
+Original first Training startup now passes the Plant2/native2101 boundary and
+reaches PickupDistributor0 at PPP slot1195. Its spawned inventory stops at
+the still-unconnected original CheckEncroachment path. Two attempts restore
+the full native/VM/save/GC state and all40 source files. This is concrete
+startup progress, not playable crate destruction, surviving loot or falling.
+Only the first map is integrated/tested; no backend-only replacement APK.
+
 ## Immediate content priority (2026-10-18)
 
 The user prioritizes fully working `00_Training.dx` before other campaign-map

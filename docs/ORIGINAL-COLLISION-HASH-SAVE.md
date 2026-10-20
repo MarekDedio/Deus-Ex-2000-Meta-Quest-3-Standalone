@@ -176,7 +176,7 @@ The following additional static evidence prevents an active native hash from
 silently losing born or destroyed actors. It does not complete SpawnActor or
 DestroyActor gameplay semantics.
 
-`ULevel.SpawnActor` body `10394E50` publishes the newly allocated Actor in its
+`ULevel.SpawnActor` body `10394F60` (export thunk103016DB) publishes the newly allocated Actor in its
 actual native Level slot, then initializes Tag, Level/XLevel, tick/role fields,
 clears Brush and writes Location/OldLocation/Rotation. At `103953B7..103953CF`
 it tests born bCollideActors mask1 and actual Level.Hash+F8 nonnull, then calls

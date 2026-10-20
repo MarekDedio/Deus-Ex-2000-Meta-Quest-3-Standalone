@@ -1,11 +1,125 @@
 # Original conversation binding: first Training prerequisite
 
-Source checkpoint2026-10-20. This implements the complete detached original
-wrapper and list-binding protocol plus a static first-map source audit. It does
-NOT yet register native2100/2101/2102 or construct actual new ConListItem
-UObjects. The real startup boundary remains Plant2/PostPostBeginPlay/native2101
-observed in TRAINING-FIND-BASE.md. No replacement APK or finished crate-physics
-claim follows from these protocol tests.
+Source checkpoint2026-10-20. The original wrapper/list protocol now has actual
+native2100/2101/2102 runtime providers, non-Actor ConListItem construction,
+typed mutable GC edges and transactional deletion/index/lookup retirement.
+Actual first-map positive/rebind/rollback tests cover2101/2102; possessed-player
+2100 is not yet exercised. First Training startup passes the previous Plant2
+native2101 boundary and next refuses the spawned CheckEncroachment at
+PickupDistributor0. Startup and playable crates are still incomplete. No new
+APK or headset acceptance is claimed for this source/runtime prerequisite.
+
+## Actual runtime lifecycle checkpoint
+
+`native/portable_conversation_bind.inl` supplies the original providers in the
+same PortableActorVmHost/Execution root. It admits the real preloaded source
+linker's ConversationList, including actual class subclasses; it is NOT a new
+general package-loading implementation. An unavailable source linker refuses;
+an absent/wrong-class object in an existing linker yields original null-load
+behavior. The native Level slot scan retains live counts and no bDeleteMe
+filter. The original function declarations/qualified scalar field schemas are
+validated before their corresponding operations.
+
+ConListItem is neither an Actor birth, Window nor runtime export. Its actual
+class flags/Within, source/default copy, package Outer, concrete-class unique
+counter, zero constructor fields, Name and native index are retained. Initial
+flags0 become RF_Public4 through the protocol. Actor head, node con/Next and
+Conversation.ownerRefCount use physical native storage with root snapshots;
+they do not become script overlays, serialize dangling node paths or reset an
+unrelated NPC animation clock. Mutable GC edges replace old links rather than
+accumulating in the immutable authored reference graph. The node inventory is
+weak, not an accidental package/root ownership list.
+
+Purge immediately removes node path aliases and both native weak-index chains,
+retires its real allocation-slot lease, clears native links and makes the slot
+available to subsequent allocations in the SAME root. The physically retained
+old object is exclusively a rooted transaction before-image, not a live node
+waiting for ordinary GC identity retirement. At the outer boundary GC reclaims
+committed retired before-images. Rollback restores old aliases/hash precedence,
+publication links, physical fields/counts/flags and actual leases; provisional
+objects/indices are invalidated. Native deletion has no script destructor.
+
+`ObjectIndexPool::Transaction` uses a finite4096-entry root journal (65568 bytes
+on64-bit), tracks all subsequent pool Acquires, permits constructor unwind and
+restores free-list links/head/live count/slot frontier without allocation. It
+does not copy the104k-slot object pool or increase capacity policy. Existing
+pre-root objects must stay alive until the transaction ends; GC is forbidden
+inside roots. The pool may retain ordinary vector backing capacity after a
+refused growth; slot identity/state, not allocator capacity, is rolled back.
+
+`ObjectLookup::Index::Extract/Restore` retains detached map nodes and original
+name/identity neighbor positions. Tokens authenticate an exclusive owner and
+require reverse mutation/LIFO restoration, including later publications using
+the same numeric slot. Canonical/folded aliases use extracted owning map nodes.
+The host reverses later publications before each retirement, preserving exact
+precedence without allocating or copying the approximately12MB live index.
+The new owner authority costs one fixed uint64 per index, not per object.
+
+Constructor refusal also uncovered a dependency GC bug: GC::Alloc had linked
+and counted memory before constructing, but its exception cleanup only freed
+the memory. The checked-in GCConstructorRollback.patch now unlinks the exact
+failed allocation and restores statistics even if successful nested children
+precede it. No incomplete object's destructor is invoked. Dependency setup
+applies the patch with forward/reverse checks and preserves unrelated edits.
+
+Checkpoint/rebind and per-map purge/archive are NOT finished. Capture, applying
+a checkpoint and map unload explicitly refuse while live native bindings/count
+contributions exist. State-presence/dirty queries report them. Empty bindings
+write no serialized invented state. Shutdown retires weak identities and drops
+the inventory before collection. These safeguards are not save/travel support.
+
+Actual source test `portable_conversation_bind_test` passes156871 checks/17
+refusal controls with all39 source packages/map bytes and timestamps unchanged.
+An independent470-entry source oracle predicts Jaime's4 bindings and two
+troopers' separate2-node chains sharing the SAME conversations. Tests cover
+actual class/package/flags/header/indices/lookup, repeated fresh-name purge,
+balanced counts, late write/native-work refusal restoring exact old graph,
+names/lookup/revision/GC and a real Doctor native clock. Archive/load/unload
+refusals preserve the live graph. Only Maps/00_Training.dx is loaded.
+
+Independent helper tests pass302701/23 for index leases,216422/59 for weak
+lookup and1905/69 for GC construction; detached protocol remains15314/63.
+Strict ARM64 syntax and coherent Android native compilation/link pass.
+Final coherent shared CTest passes158 executed/183 listed with25 explicit
+owned-data skips and zero failures in45.54s. The new owned conversation test
+is one such default skip and is executed separately above; skipped tests are
+not gameplay/headset evidence. The independent compact-layout regression
+passes686275 checks, including the explicit fixed8-byte authority cost and
+unchanged32-bit head/per-node savings. First-map FindBase regression passes
+168495/25; the isolated original crate-destruction fixture remains347/two,
+not live melee or surviving loot.
+Repeated original startup with explicit1048576 native-work allowance reaches
+PostPostBeginPlay slot1195/PickupDistributor0, Engine.Inventory.PostBeginPlay
+PC60/opcode11, then refuses unsupported original spawned CheckEncroachment.
+It completes1193 PPP visits, uses436956 native work,532910 instructions and
+39672 writes. Both attempts restore the complete save/hash/clock/RNG/client/
+lookup/Actor/GC state and preserve all40 sources. Exit2 is an observed refused
+startup, NOT successful startup. The default native-work allowance is unchanged.
+
+Evidence: artifacts/training-conversation-runtime-final-owned-20261020.log,
+training-conversation-runtime-primitives-20261020.log,
+training-conversation-runtime-startup-20261020.log and
+training-conversation-runtime-final-arm-20261020.log. Final host/Android/shared
+suite logs use the same prefix with final-host/final-android/final-ctest.
+
+## Next first-map startup dependency
+
+Original SpawnActor export thunk103016DB jumps to body10394F60; static evidence
+is artifacts/spawn-frame-audit-20261011/original-level-spawnactor-disassembly.log
+and verification.md. The native+34 input is zero for current script/direct-world
+births. After PostBeginPlay, copy CURRENT Rotation first and CURRENT Location
+second, then call retained native Level.CheckEncroachment(birth,pose,0). Do not
+prefilter using the old three-flag guard or reuse the initial Spawn arguments.
+The complete real provider already exists as MoveLevelEncroachment in
+portable_actor_move.inl and owns its original admission/callback/touch policy.
+
+The false result continues SetInitialState, eligible FindBase and PPP. True
+calls real Level.DestroyActor(birth,0), ignores that return and returns None.
+The old native279 path still refuses active retail Destroy ordering, so a true
+result cannot be faked as deleted/None or skipped. Connect the same original
+check in the ordinary begun-world branch too: eventual crate contents use it,
+not just the startup probe. Native Mover Spawned, SpawnNotify and birth-tick
+queue behavior remain separately unsupported where encountered.
 
 ## Primary evidence
 
@@ -154,22 +268,15 @@ Evidence logs: `artifacts/training-conversation-bind-final-host-20261020.log`,
 `training-conversation-bind-actual-source-20261020.log` and
 `training-conversation-bind-final-ctest-20261020.log`.
 
-## Required before native registration/publication
+## Remaining acceptance
 
-- An exact non-Actor ConListItem allocation domain: real class/defaults,
-  package Outer, original naming counter, native object indices/weak lookup,
-  initialized fields/flags, memory accounting and full root undo. Actor Spawn
-  or the Extension Window allocator must not impersonate this type.
-- Original deletion/identity retirement at purge, while still permitting full
-  outer rollback. Rebinding must not leak dead chains or retain old indices.
-- Real qualified mutable head/con/Next GC edges. String-valued Object overlays
-  alone are not GC roots; appending stale links to immutable roots is incorrect.
-- Explicit transient-property, ownerRefCount, package-object lifetime, map
-  unload and save/restore/rebind policy. Do not save dangling constructed paths
-  or let package-owned nodes survive map teardown accidentally.
-- Actual first-Training positive runtime bindings, repeated purge/rebind,
-  allocation/write/work/name refusal and GC/save/lookup/clock/RNG rollback,
-  followed by real complete startup and live crate/usable-loot/gravity tests.
+- Actual runtime allocation/memory-bound refusal coverage and possessed-player
+  native2100 execution. Synthetic allocator/GC failures do not prove these.
+- Checkpoint/rebind and per-map purge/archive of actual bindings and count
+  contributions; never save dangling constructed paths or retain dead chains.
+- Complete genuine first-map world/player startup, then live held-weapon crate
+  destruction, surviving usable contents, support/falling and whole-map route
+  acceptance on Quest. The explicit guards above are not completed features.
 
 These are the next implementation steps, not a reason to skip conversations
 or force startup flags. The long-term campaign objective stays intact; other

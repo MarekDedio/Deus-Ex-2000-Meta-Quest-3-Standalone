@@ -1,0 +1,27 @@
+diff --git a/SurrealEngine/GC/GC.cpp b/SurrealEngine/GC/GC.cpp
+index afa9774..005255f 100644
+--- a/SurrealEngine/GC/GC.cpp
++++ b/SurrealEngine/GC/GC.cpp
+@@ -54,6 +54,22 @@ GCAllocation* GC::AllocMemory(size_t size)
+ 
+ void GC::FreeMemory(GCAllocation* allocation)
+ {
++	// AllocMemory publishes its list node and accounting before construction.
++	// A throwing constructor can already have allocated successful children,
++	// so its own allocation need not remain the head of the list. Unlink that
++	// exact node without touching any fully constructed nested allocations.
++	GCAllocation** link = &allocations;
++	while (*link != allocation)
++	{
++		if (*link == nullptr)
++			std::terminate(); // An internal allocation authority was lost.
++		link = &(*link)->allocklistNext;
++	}
++	*link = allocation->allocklistNext;
++	stats.memoryUsage -= allocation->memsize;
++	stats.numObjects--;
++	// C++ has already unwound constructed members and bases. The incomplete
++	// object's virtual destructor must not be invoked by the garbage collector.
+ 	free(allocation);
+ }
+ 

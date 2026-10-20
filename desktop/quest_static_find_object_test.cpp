@@ -8,6 +8,7 @@
 #include <new>
 #include <stdexcept>
 #include <string>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -309,6 +310,198 @@ void StagedAdoption() {
     Lookup::Index empty;Require(live.Adopt(empty)&&live.RecordsAscending()==stable,"Empty adoption changed weak state");
 }
 
+std::vector<std::uintptr_t> ExactTrace(const Lookup::Index& index,int name=7) {
+    std::vector<std::uintptr_t> trace;
+    Require(index.Exact(0u,0u,name,[&](auto identity){trace.push_back(identity);return false;})==0u,
+        "Exhaustive retirement trace unexpectedly selected an object");
+    return trace;
+}
+void ReversibleRetirement() {
+    static_assert(!std::is_copy_constructible_v<Lookup::Index::Retirement>);
+    static_assert(!std::is_copy_assignable_v<Lookup::Index::Retirement>);
+    static_assert(std::is_nothrow_move_constructible_v<Lookup::Index::Retirement>);
+    static_assert(std::is_nothrow_move_assignable_v<Lookup::Index::Retirement>);
+    static_assert(noexcept(std::declval<Lookup::Index&>().Extract(1u,1u)));
+    static_assert(noexcept(std::declval<Lookup::Index&>().Restore(std::declval<Lookup::Index::Retirement&>())));
+    // Each pointer-sized identity hashes into the same identity bucket. Name
+    // hash order is deliberately DIFFERENT after rehash; no chain may borrow
+    // the other chain's predecessor when restoring its retained tree node.
+    constexpr std::array<std::uint32_t,5u> slots{20u,3u,10u,7u,40u};
+    const auto opaque=[](std::uint32_t i){return static_cast<std::uintptr_t>(i)*4097u;};
+    for(std::uint32_t selected=1u;selected<=slots.size();++selected) {
+        Lookup::Index index;
+        for(std::uint32_t i=1u;i<=slots.size();++i)index.Publish(Object(opaque(i),slots[i-1u],7));
+        Require(index.Rehash(slots[1u],opaque(2u),0u,0u,7),"Retirement setup rehash failed");
+        const auto trace=ExactTrace(index);const auto ascending=index.RecordsAscending();
+        const auto oldBytes=index.RetainedBytes();const auto* address=index.RecordForIdentity(opaque(selected));
+        Lookup::Index::Retirement token;
+        AllocationFault::remaining=0u;token=index.Extract(slots[selected-1u],opaque(selected));AllocationFault::Disable();
+        Require(static_cast<bool>(token)&&token.GetRecord()==address,"Retirement allocated, moved or lost its retained node");
+        Require(!index.RecordAt(slots[selected-1u])&&!index.RecordForIdentity(opaque(selected)),
+            "Retired node remains in numeric or colliding identity lookup");
+        const auto remaining=ExactTrace(index);
+        auto expected=trace;expected.erase(std::find(expected.begin(),expected.end(),opaque(selected)));
+        Require(remaining==expected,"Retirement changed surviving name-hash order");
+        auto remainingAscending=ascending;
+        remainingAscending.erase(std::find_if(remainingAscending.begin(),remainingAscending.end(),[&](const auto& value){return value.identity==opaque(selected);}));
+        Require(index.RecordsAscending()==remainingAscending&&index.Any(7,Accept)==remainingAscending.front().identity,
+            "Retirement changed ascending fallback or retained removed record");
+        Require(index.RetainedBytes()+token.RetainedBytes()-sizeof(token)==oldBytes,
+            "Retirement accounting lost or double-counted its retained tree allocation");
+        bool restored{};AllocationFault::remaining=0u;restored=index.Restore(token);AllocationFault::Disable();
+        Require(restored&&!token&&!token.GetRecord()&&token.RetainedBytes()==sizeof(token),
+            "Allocation-free restoration did not consume exactly one token");
+        Require(index.RecordAt(slots[selected-1u])==address&&index.RecordForIdentity(opaque(selected))==address&&
+            index.RetainedBytes()==oldBytes&&index.RecordsAscending()==ascending&&ExactTrace(index)==trace,
+            "Head/middle/tail restoration changed allocation address, membership or exact precedence");
+        Require(!index.Restore(token),"Consumed retirement token restored twice");
+        AllocationFault::remaining=0u;
+        auto stale=index.Extract(slots[selected-1u],opaque(selected+100u));
+        auto absent=index.Extract(999u,opaque(selected));auto none=index.Extract(slots[selected-1u],0u);
+        AllocationFault::Disable();
+        Require(!stale&&!absent&&!none&&!index.Restore(stale)&&index.RecordsAscending()==ascending,
+            "Stale, absent or None retirement altered live membership");
+    }
+    {
+        Lookup::Index index;
+        for(std::uint32_t i=1u;i<=5u;++i)index.Publish(Object(opaque(i),i,7));
+        const auto original=ExactTrace(index);const auto ascending=index.RecordsAscending();
+        auto middle=index.Extract(3u,opaque(3u));auto previous=index.Extract(4u,opaque(4u));
+        const auto before=index.RecordsAscending();const auto bytes=middle.RetainedBytes();
+        Require(!index.Restore(middle)&&middle&&middle.RetainedBytes()==bytes&&index.RecordsAscending()==before,
+            "Out-of-order rollback accepted an absent original predecessor or consumed its token");
+        bool restoredPrevious{},restoredMiddle{};AllocationFault::remaining=0u;
+        restoredPrevious=index.Restore(previous);restoredMiddle=index.Restore(middle);AllocationFault::Disable();
+        Require(restoredPrevious&&restoredMiddle&&index.RecordsAscending()==ascending&&ExactTrace(index)==original,
+            "Adjacent nested retirement did not restore exact original chains in LIFO order");
+    }
+    {
+        // Different name buckets isolate the second restoration preflight:
+        // these conflicts exist ONLY in the independently colliding identity
+        // chain, so passing the name-edge test cannot hide a broken identity
+        // predecessor or successor.
+        Lookup::Index index;
+        for(std::uint32_t i=1u;i<=3u;++i)index.Publish(Object(opaque(i),i,static_cast<int>(i)));
+        const auto original=index.RecordsAscending();
+        auto middle=index.Extract(2u,opaque(2u));auto previous=index.Extract(3u,opaque(3u));
+        Require(!index.Restore(middle)&&middle,"Missing identity-only predecessor was not authenticated");
+        Require(index.Restore(previous)&&index.Restore(middle)&&index.RecordsAscending()==original,
+            "Independent identity predecessor rollback failed");
+        middle=index.Extract(2u,opaque(2u));auto next=index.Extract(1u,opaque(1u));
+        Require(!index.Restore(middle)&&middle,"Missing identity-only successor was not authenticated");
+        Require(index.Restore(next)&&index.Restore(middle)&&index.RecordsAscending()==original,
+            "Independent identity successor rollback failed");
+        auto unnamed=index.Extract(2u,opaque(2u));
+        Require(index.Restore(unnamed)&&index.Rehash(2u,opaque(2u),901u,900u,0),"Unnamed/Outer retirement setup failed");
+        auto noneName=index.Extract(2u,opaque(2u));
+        Require(index.Restore(noneName)&&index.RecordForIdentity(opaque(2u))->outerIdentity==901u&&
+            index.Exact(901u,900u,0,Accept)==0u,"Unnamed actual-Outer restoration changed membership or None-name semantics");
+    }
+    {
+        Lookup::Index index(3u);
+        index.Publish(Object(opaque(1u),1u,7));index.Publish(Object(opaque(2u),2u,7));index.Publish(Object(opaque(3u),3u,7));
+        const auto original=index.RecordsAscending();const auto trace=ExactTrace(index);
+        auto token=index.Extract(2u,opaque(2u));const auto* address=token.GetRecord();
+        index.Publish(Object(opaque(9u),2u,7));const auto replacement=index.RecordsAscending();
+        Require(!index.Restore(token)&&token.GetRecord()==address&&index.RecordsAscending()==replacement,
+            "Occupied reused numeric index was overwritten by rollback");
+        Require(!index.Remove(2u,opaque(2u))&&index.Remove(2u,opaque(9u)),"Stale cleanup removed numeric-slot replacement");
+        index.Publish(Object(opaque(2u),9u,7));
+        Require(!index.Restore(token)&&token.GetRecord()==address,"Reused opaque identity was published twice during rollback");
+        Require(index.Remove(9u,opaque(2u)),"Opaque-identity replacement removal failed");
+        bool restored{};AllocationFault::remaining=0u;restored=index.Restore(token);AllocationFault::Disable();
+        Require(restored&&index.RecordAt(2u)==address&&index.RecordsAscending()==original&&ExactTrace(index)==trace,
+            "Removing later replacements did not permit exact original numeric-index reuse");
+        auto head=index.Extract(3u,opaque(3u));index.Publish(Object(opaque(8u),8u,7));
+        Require(!index.Restore(head)&&head,"Unreversed head publication was silently reordered by rollback");
+        Require(index.Remove(8u,opaque(8u))&&index.Restore(head)&&ExactTrace(index)==trace,
+            "Head restoration failed after reversing later publication");
+    }
+    {
+        Lookup::Index owner;owner.Publish(Object(11u,1u,7));owner.Publish(Object(12u,2u,7));
+        auto token=owner.Extract(1u,11u);Lookup::Index foreign(owner);
+        const auto stable=foreign.RecordsAscending();
+        Require(!foreign.Restore(token)&&token&&foreign.RecordsAscending()==stable,
+            "A structurally identical foreign Index accepted a retirement right");
+        auto movedToken=std::move(token);
+        Require(!token&&movedToken&&!owner.Restore(token)&&owner.Restore(movedToken),
+            "Moving a retirement token duplicated or lost restoration ownership");
+        auto first=owner.Extract(1u,11u);auto second=owner.Extract(2u,12u);
+        first=std::move(second);
+        Require(!second&&first&&first.GetRecord()->identity==12u&&owner.Restore(first)&&!owner.RecordAt(1u),
+            "Move assignment failed to commit discarded retirement or transfer the new right");
+    }
+    {
+        Lookup::Index owner;owner.Publish(Object(11u,1u,7));auto token=owner.Extract(1u,11u);
+        Lookup::Index moved(std::move(owner));
+        Require(!owner.Restore(token)&&!moved.Restore(token)&&token,
+            "Moving an Index transferred or retained a stale retirement authority");
+        Lookup::Index swapped;swapped.Publish(Object(12u,2u,7));auto swappedToken=swapped.Extract(2u,12u);
+        swapped.Swap(moved);
+        Require(!swapped.Restore(swappedToken)&&!moved.Restore(swappedToken)&&swappedToken,
+            "Swapping Index storage transferred a retirement right to another state");
+        Lookup::Index assigned;assigned.Publish(Object(13u,3u,7));auto assignedToken=assigned.Extract(3u,13u);
+        assigned=owner;
+        Require(!assigned.Restore(assignedToken)&&assignedToken,"Copy assignment retained a stale restoration authority");
+    }
+    {
+        // A node handle remains independently destructible after its original
+        // Index dies. A new owner at exactly the same address must stay foreign.
+        alignas(Lookup::Index) std::byte storage[sizeof(Lookup::Index)];
+        auto* owner=new(storage) Lookup::Index;
+        owner->Publish(Object(11u,1u,7));auto token=owner->Extract(1u,11u);owner->~Index();
+        owner=new(storage) Lookup::Index;
+        Require(!owner->Restore(token)&&token&&owner->Size()==0u,"Index address reuse revived an expired retirement authority");
+        owner->~Index();
+    }
+    {
+        Lookup::Index owner(1u);owner.Publish(Object(11u,1u,7));auto token=owner.Extract(1u,11u);
+        owner.Publish(Object(12u,2u,9));const auto stable=owner.RecordsAscending();
+        Require(!owner.Restore(token)&&token&&owner.RecordsAscending()==stable,"Rollback exceeded live object capacity");
+        Require(owner.Remove(2u,12u)&&owner.Restore(token),"Capacity restoration refused after later publication removal");
+    }
+}
+
+void RetirementRollbackSequences() {
+    // Independent snapshots and callback traces, with nested retirement of
+    // earlier transaction publications as well as old nodes. All identities
+    // and both names collide, numeric slots are reused immediately, and every
+    // extraction/removal/restore executes under complete allocation denial.
+    constexpr std::uint32_t count=64u,depth=16u;
+    Lookup::Index index(count);
+    for(std::uint32_t i=1u;i<=count;++i)index.Publish(Object(static_cast<std::uintptr_t>(i)*4097u,i,7));
+    const auto original=index.RecordsAscending();const auto originalTrace=ExactTrace(index);
+    const auto bytes=index.RetainedBytes();std::array<const Lookup::Record*,count> addresses{};
+    for(std::uint32_t i=1u;i<=count;++i)addresses[i-1u]=index.RecordAt(i);
+    std::uint32_t random=0x7193ba24u;
+    for(std::uint32_t round=0u;round<128u;++round) {
+        std::vector<Lookup::Index::Retirement> journal;journal.reserve(depth);
+        std::array<Lookup::Record,depth> replacements{};
+        for(std::uint32_t stage=0u;stage<depth;++stage) {
+            random=random*1664525u+1013904223u;
+            const auto live=index.RecordsAscending();const auto selected=live[random%live.size()];
+            AllocationFault::remaining=0u;journal.push_back(index.Extract(selected.index,selected.identity));AllocationFault::Disable();
+            Require(journal.back()&&!index.RecordForIdentity(selected.identity)&&!index.RecordAt(selected.index),
+                "Nested retirement failed or retained old membership");
+            const auto value=Object(static_cast<std::uintptr_t>(1000u+round*depth+stage)*4097u,
+                selected.index,stage%2u?7:4103);
+            replacements[stage]=value;index.Publish(value);
+        }
+        for(std::uint32_t stage=depth;stage>0u;--stage) {
+            const auto& value=replacements[stage-1u];bool removed{},restored{};
+            AllocationFault::remaining=0u;
+            removed=index.Remove(value.index,value.identity);restored=index.Restore(journal[stage-1u]);
+            AllocationFault::Disable();
+            Require(removed&&restored&&!journal[stage-1u],"Allocation-free nested LIFO rollback failed");
+        }
+        Require(index.RecordsAscending()==original&&ExactTrace(index)==originalTrace&&ExactTrace(index,4103).empty()&&
+            index.RetainedBytes()==bytes,"Rollback sequence changed original membership, hash precedence or retained allocation charge");
+        for(std::uint32_t i=1u;i<=count;++i)
+            Require(index.RecordAt(i)==addresses[i-1u]&&index.RecordForIdentity(original[i-1u].identity)==addresses[i-1u],
+                "Rollback sequence rebuilt original tree nodes or damaged colliding identity links");
+    }
+}
+
 struct Fixture {
     static constexpr std::uintptr_t objectClass=100u,packageClass=101u,packageSubclass=102u,
         itemClass=103u,childItemClass=104u;
@@ -559,7 +752,7 @@ void SinglyLinkedNameBucketContracts() {
 
 int main() {
     try {
-        MembershipAndOrder();RefusalAndCapacity();AllocationFailureAtomicity();IntrusiveIdentityCollisions();StagedAdoption();Resolution();MalformedQueries();DifferentialSequence();SinglyLinkedNameBucketContracts();
+        MembershipAndOrder();RefusalAndCapacity();AllocationFailureAtomicity();IntrusiveIdentityCollisions();StagedAdoption();ReversibleRetirement();RetirementRollbackSequences();Resolution();MalformedQueries();DifferentialSequence();SinglyLinkedNameBucketContracts();
         std::cout<<"Actual weak object lookup: "<<checks<<" checks / "<<refusals<<" refusals\n";return 0;
     }catch(const std::exception& error) {std::cerr<<"Object lookup test failed: "<<error.what()<<'\n';return 1;}
 }
