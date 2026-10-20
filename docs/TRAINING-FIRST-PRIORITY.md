@@ -28,6 +28,12 @@ and selected SupportActor dispatch. Compact extent-query storage and sequential
 world/actor workspace lifetimes pass the previous memory refusal. Repeated
 startup now completes all1334 WorldBases visits, clears startup, and next
 refuses unsupported native2101/ConBindEvents at Plant2 PostPostBeginPlay.
+The subsequent original conversation-binding wrapper/list protocol and static
+first-map audit are implemented; actual ConListItem allocation/deletion/GC/save
+integration and native registration remain required. See
+ORIGINAL-CONVERSATION-BIND.md. No conversation no-op is substituted for startup.
+Its protocol tests pass15314/63; current shared CTest passes157 executed/
+181 listed with24 explicit owned-data skips and zero failures.
 Actual focused FindBase tests pass168495/25; final full first-map regression
 passes2016309/153 and shared CTest passes156 executed/180 listed with24 explicit
 owned-data skips and zero failures. See TRAINING-FIND-BASE.md for proof boundaries.

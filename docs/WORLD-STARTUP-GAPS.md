@@ -59,6 +59,11 @@ dependencies; original executables were not run for this audit:
   unimplemented.
 - ConBindEvents2102 is absent. The existing conversation subset does not
   supply original player/conversation bindings.
+  The subsequent ORIGINAL-CONVERSATION-BIND.md audits all2100/2101/2102
+  original wrappers and implements their complete detached protocol. Real
+  non-Actor allocation/deletion/root/save integration is still required;
+  native registration remains absent and the accepted presentation speech
+  subset is not passed off as original binding authority.
 
 ## Required shared actor-control correction
 

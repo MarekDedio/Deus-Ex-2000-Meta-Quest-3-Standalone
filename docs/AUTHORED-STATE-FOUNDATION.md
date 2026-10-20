@@ -169,6 +169,9 @@ bStatic/bNoDelete, sets bDeleteMe, sends destruction/untouch/ownership events,
 detaches relationships and clears the actor slot without immediate deallocation.
 ConBindEvents matches mission conversation owners against BindName and
 BarkBindName, creates transient ConSys.ConListItem links and sets ConListItems.
+This is the pinned guide's historical description, not the actual GOTY native
+contract. ORIGINAL-CONVERSATION-BIND.md supersedes its mission selection,
+matching passes, deletion/reference counts, Outer and object-transience claims.
 
 AISetEventCallback, AIClearEventCallback and AIEndEvent are especially important
 limits of this reference: their pinned bodies are only LogUnimplemented stubs.
