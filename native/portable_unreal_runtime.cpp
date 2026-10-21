@@ -73,6 +73,8 @@
 #include "quest_level_move_actor.h"
 #include "quest_conversation_bind.h"
 #include "quest_spawn_encroachment.h"
+#include "quest_actor_owner.h"
+#include "quest_destroy_actor.h"
 
 #include <memory>
 #include <algorithm>
@@ -2478,6 +2480,7 @@ public:
         vectorRandomDraws_=0u;
         beforeExportCount_ = persistentRuntime->get()->exports.size();
         beforeWorldSlots_ = persistentWorldActors.size();
+        beforeWorldSlotItems_.clear();
         beforeRandomSeed_ = persistentScriptRandomSeed;
         beforeWindowObjects_=persistentWindowDomain && persistentWindowDomain->get() ?
             persistentWindowDomain->get()->objects.size() : 0u;
@@ -2555,7 +2558,7 @@ public:
         CommitConversationObjects();
         provisionalLookupObjects_.clear();
         ClearMoveHits();nativeDurableMoved_.clear();
-        saved_.clear(); savedAi_.clear(); provisionalAi_.clear(); provisionalWindows_.clear(); beforeDecals_.reset(); beforeLevelClock_.reset(); transaction_ = false;
+        saved_.clear(); savedAi_.clear(); provisionalAi_.clear(); provisionalWindows_.clear(); beforeDecals_.reset(); beforeLevelClock_.reset(); beforeWorldSlotItems_.clear(); transaction_ = false;
     }
     void Rollback() noexcept override {
         if (!transaction_) return;
@@ -2638,6 +2641,11 @@ public:
         }
         persistentRuntime->get()->exports.resize(beforeExportCount_);
         persistentWorldActors.resize(beforeWorldSlots_);
+        for(const auto& item:beforeWorldSlotItems_) {
+            if(item.first>=persistentWorldActors.size())std::terminate();
+            persistentWorldActors[item.first]=item.second;
+        }
+        beforeWorldSlotItems_.clear();
         RollbackConversationObjects();
         beforeCollision_.reset(); saved_.clear(); savedAi_.clear(); provisionalAi_.clear(); provisionalWindows_.clear(); beforeDecals_.reset(); beforeLevelClock_.reset(); transaction_ = false;
     }
@@ -7471,10 +7479,9 @@ private:
             }
             return blocked?1:0;
         };
-        query.destroy=[](std::uintptr_t,std::uintptr_t,std::int32_t)->std::int32_t {
-            // Do not convert a veto into a successful None without original
-            // DestroyActor's hash/callback/conditional-destruction semantics.
-            throw std::runtime_error("Original blocked Spawn requires complete native DestroyActor lifecycle");
+        query.destroy=[this,&execution](std::uintptr_t level,std::uintptr_t identity,std::int32_t force)->std::int32_t {
+            auto* retained=ZoneLevel(level);
+            return DestroyNativeActor(retained,ZoneActor(identity,retained),force,execution);
         };
         query.work=[this]{LifecycleStep();};
         return QuestVr::CheckOriginalSpawnEncroachment(reinterpret_cast<std::uintptr_t>(retainedLevel),
@@ -7722,27 +7729,27 @@ private:
         static_cast<void>(execution.CallEvent(target->reflection.objectPath, name, true,
             {{Value::Text(Kind::Object, actor->reflection.objectPath), {}}}));
     }
+#include "portable_actor_lifecycle_events.inl"
     void SetOwner(RuntimeObject* actor, RuntimeObject* newOwner, QuestVr::Vm::Execution& execution) {
-        LifecycleStep(); RequireMapActor(actor);
-        if (newOwner) RequireMapActor(newOwner);
-        if (auto* owner = ActorLink(actor, "Owner")) {
-            RelationshipEvent(execution, owner, "LostChild", actor);
-            // The original native deliberately rereads Owner after script.
-            // A callback that nulls it would dereference null in the pin. Fail
-            // the complete transaction instead of inventing snapshot semantics.
-            owner = ActorLink(actor, "Owner");
-            if (!owner) throw std::runtime_error("LostChild cleared Owner during native SetOwner");
-            TouchLifecycle(owner); RemoveFirst(owner->childActors, actor);
-        }
-        WriteActorLink(actor, "Owner", newOwner);
-        if (auto* owner = ActorLink(actor, "Owner")) {
-            RelationshipEvent(execution, owner, "GainedChild", actor);
-            owner = ActorLink(actor, "Owner");
-            if (!owner) throw std::runtime_error("GainedChild cleared Owner during native SetOwner");
-            TouchLifecycle(owner);
-            if (owner->childActors.size() >= 65'536u) throw std::runtime_error("Native child count budget exceeded");
-            owner->childActors.push_back(actor);
-        }
+        LifecycleActor(reinterpret_cast<std::uintptr_t>(actor));
+        if(newOwner)LifecycleActor(reinterpret_cast<std::uintptr_t>(newOwner));
+        QuestVr::OriginalActorOwnerQueries queries;
+        queries.owner=[this](std::uintptr_t identity) {
+            auto* source=LifecycleActor(identity);
+            const auto value=RetailPredicatePointerRead(source,"Engine.Actor.Owner","Engine.Actor",0x22u);
+            return value.text.empty()?std::uintptr_t{}:reinterpret_cast<std::uintptr_t>(Object(value.text));
+        };
+        queries.writeOwner=[this,&execution](std::uintptr_t identity,std::uintptr_t target) {
+            auto* source=LifecycleActor(identity);auto* owner=target?LifecycleActor(target):nullptr;
+            const auto field=RetailPredicatePointerField(source,"Engine.Actor.Owner","Engine.Actor","Engine.Actor",0x22u);
+            LifecycleRawActorStore(source,field,Value::Text(Kind::Object,owner?owner->reflection.objectPath:std::string{}),execution);
+        };
+        queries.event=[this,&execution](std::uintptr_t identity,QuestVr::OriginalActorOwnerEvent event,std::uintptr_t other) {
+            LifecycleEvent(LifecycleActor(identity),event==QuestVr::OriginalActorOwnerEvent::LostChild?
+                LifecycleEventKind::LostChild:LifecycleEventKind::GainedChild,LifecycleActor(other),execution);
+        };
+        queries.work=[this]{LifecycleStep();};
+        QuestVr::SetOriginalActorOwner(reinterpret_cast<std::uintptr_t>(actor),reinterpret_cast<std::uintptr_t>(newOwner),queries);
     }
     void SetBase(RuntimeObject* actor, RuntimeObject* newBase, const bool sendEvent,
         QuestVr::Vm::Execution& execution) {
@@ -7793,6 +7800,7 @@ private:
         static_cast<void>(QuestVr::SetOriginalActorBase(reinterpret_cast<std::uintptr_t>(actor),
             reinterpret_cast<std::uintptr_t>(newBase),sendEvent?1:0,query));
     }
+#include "portable_actor_destroy.inl"
     void UnTouch(RuntimeObject* actor, RuntimeObject* other, QuestVr::Vm::Execution& execution) {
         RequireMapActor(other);
         const auto unlink = [&](RuntimeObject* side, RuntimeObject* peer) {
@@ -7815,7 +7823,6 @@ private:
     Evaluation LifecycleNative(const std::uint16_t index, const std::string& receiver,
         const std::vector<Evaluation>& arguments, QuestVr::Vm::Execution& execution) {
         auto* actor = Object(receiver); RequireMapActor(actor); LifecycleStep();
-        if (index!=298u && !actor->active && !actor->worldRemoved) throw std::runtime_error("Native lifecycle receiver is inactive");
         if (index != 279u) {
             if (arguments.size() != 1u) throw std::runtime_error("SetOwner/SetBase requires one Actor or None");
             const auto value = arguments[0].Load();
@@ -7827,6 +7834,8 @@ private:
             return {};
         }
         if (!arguments.empty()) throw std::runtime_error("Destroy takes no arguments");
+        if(actor->nativeXLevel&&actor->nativeXLevel->nativeLevelEngine)
+            return {Value::Bool(DestroyNativeActor(actor->nativeXLevel,actor,0,execution)!=0),{}};
         const auto flag = [&](const char* name) { return QuestVr::Vm::ToBool(Read(actor, PropertyNamed(actor, name), 0u)); };
         if (flag("bStatic") || flag("bNoDelete")) return {Value::Bool(false), {}};
         if (flag("bDeleteMe")) return {Value::Bool(true), {}};
@@ -7859,8 +7868,12 @@ private:
         for (std::uint32_t slot = 0u; slot < 4u; ++slot)
             if (auto* other = ActorLink(actor, "Touching", slot)) UnTouch(actor, other, execution);
         SetOwner(actor, nullptr, execution);
-        while (!actor->childActors.empty()) {
-            LifecycleStep(); SetOwner(actor->childActors.back(), nullptr, execution);
+        // Historical serialized child lists are not original SetOwner's native
+        // ownership authority. Even this older metadata-only destruction path
+        // must not loop on a list which original SetOwner never mutates.
+        for(std::size_t slot=0u;slot<persistentWorldActors.size();++slot) {
+            LifecycleStep();auto* child=persistentWorldActors[slot];
+            if(child && !child->worldRemoved && ActorLink(child,"Owner")==actor)SetOwner(child,nullptr,execution);
         }
         if (actor->worldActorIndex < 0) throw std::runtime_error("Actor index was never set");
         TouchLifecycle(actor); actor->worldRemoved = true;
@@ -8077,6 +8090,10 @@ private:
     std::size_t fastTraceValidationWork_{},fastTraceQueryWork_{};
     std::size_t vectorRandomDraws_{};
     std::size_t beforeExportCount_{}, beforeWorldSlots_{};
+    // First before-image of replaced original Level items. Appended births
+    // roll back by truncation; clearing an authored slot requires a real hole
+    // journal, not worldRemoved alone or a copy/compaction of the whole array.
+    std::vector<std::pair<std::size_t,RuntimeObject*>> beforeWorldSlotItems_;
     std::size_t beforeWindowObjects_{}, beforeWindowRoots_{};
     std::optional<std::uint32_t> beforeRandomSeed_;
     bool spawnNotificationLocked_{};
@@ -9316,6 +9333,7 @@ private:
         defaults.Retain(QuestVr::DecalStateDetail::Multiply(nativeDurableMoved_.capacity(),sizeof(RuntimeObject*)));
         if(nativeMoveHits_)defaults.Retain(nativeMoveHits_->RetainedBytes());
         defaults.Retain(retailCollisionOutputBytes_);
+        defaults.Retain(beforeWorldSlotItems_.capacity()*sizeof(decltype(beforeWorldSlotItems_)::value_type));
         if (persistentRuntime->get()->nativeDecals)
             defaults.Retain(NativeDecalRetainedBytes(*persistentRuntime->get()->nativeDecals));
         if (beforeDecals_ && beforeDecals_->state) {

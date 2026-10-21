@@ -1,6 +1,25 @@
 # Port status
 
-## First Training spawned-pickup collision (2026-10-21)
+## First Training native destruction prefix (2026-10-21)
+
+Real DestroyActor now binds original selected callbacks, hash removal, live
+ownership/touch scans, an actual saved-slot hole and the late pending-delete
+store under the same VM/native transaction. Original SetOwner no longer uses
+the old pin-specific Owner rereads or reverse child-list mutation. Exact native
+field/event packets and raw clock-neutral stores preserve callback ordering.
+
+Two actual first-map startup attempts now reach the explicit missing native
+ConditionalDestroy/property/linker teardown boundary in PickupDistributor0.
+Full rollback and all40 immutable owned source fingerprints pass. Startup,
+live crate destruction, surviving loot and gravity are still unfinished. Only
+the first Training map is integrated/tested; no backend-only replacement APK.
+Desktop/strict ARM64/Android native builds pass. Shared CTest executes161/186
+with25 explicit owned-data skips and zero failures. Actual first-map movement,
+conversation and isolated crate regressions pass separately; no skipped test
+or isolated fixture is claimed as playable loot/gravity or headset acceptance.
+See TRAINING-ACTOR-DESTRUCTION.md and ORIGINAL-CONDITIONAL-DESTROY.md.
+
+## Previous first Training spawned-pickup collision (2026-10-21)
 
 Original Spawn now connects its post-PostBeginPlay collision fragment to the
 actual current-Level encroachment service, then preserves the state/base/PPP

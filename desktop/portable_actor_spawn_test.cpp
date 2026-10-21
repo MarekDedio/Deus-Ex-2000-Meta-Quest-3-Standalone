@@ -397,7 +397,11 @@ Tables Build(Fixture& fixture, unsigned worldModel = 0u, unsigned decalSchema = 
     const auto notify = engine.Export("SpawnNotify", 0, actor), pointRegion = engine.Export("PointRegion", engine.Import("Struct", engineCore), 0, actor);
     engine.Property("Zone", "ObjectProperty", pointRegion, engineCore, 1u, zone); engine.Property("iLeaf", "IntProperty", pointRegion, engineCore); engine.Property("ZoneNumber", "ByteProperty", pointRegion, engineCore);
     engine.StructBody(pointRegion);
-    engine.Property("Owner", "ObjectProperty", actor, engineCore, 1u, actor);
+    engine.Property("Owner", "ObjectProperty", actor, engineCore, 1u, actor, 0x22u);
+    for (const auto& name : {"LostChild", "GainedChild"}) {
+        const auto event = engine.Function(name, actor, engineCore, Return(), 0u, 0x800u);
+        engine.Property("Other", "ObjectProperty", event, engineCore, 1u, actor, 0x80u);
+    }
     engine.Property("Base", "ObjectProperty", actor, engineCore, 1u, actor, 0x22u);
     const auto actorLevelField = engine.Property("Level", "ObjectProperty", actor, engineCore, 1u, levelInfo, 0x2u);
     const auto actorXLevelField = engine.Property("XLevel", "ObjectProperty", actor, engineCore, 1u, level);

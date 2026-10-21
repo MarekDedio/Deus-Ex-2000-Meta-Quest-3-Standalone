@@ -5,8 +5,24 @@ before spending time on other campaign-map integration. The long-term full
 campaign objective remains, but it is not the current acceptance milestone.
 Reconfirmed2026-10-20: skip other-map chest/physics integration and testing to
 save time; shared prerequisites needed by this first map remain in scope.
+Reconfirmed2026-10-21: the WHOLE first Training map is the short-term milestone;
+do not spend time on other-map integration or map-content test sweeps.
 
-Latest source checkpoint,2026-10-21: original post-PostBeginPlay Spawn collision
+Latest destruction source increment,2026-10-21: real DestroyActor callbacks,
+native hash removal, live Owner/Touching scans, saved-slot hole and late pending
+store now execute under the original caller transaction. Original SetOwner
+captures its old Owner once and stores the retained new Owner without reverse
+child-list mutations. Two actual first-map startup attempts advance to the
+explicit missing ConditionalDestroy/property/linker cleanup boundary and restore
+the full state plus all40 source fingerprints. This is NOT completed destruction,
+usable loot, gravity, startup or a new playable APK. See
+TRAINING-ACTOR-DESTRUCTION.md for exact evidence and remaining prerequisites.
+Coherent desktop/strict ARM64/Android native checks pass; final shared CTest
+executes161/186 with25 explicit owned-data skips and zero failures. Actual
+movement122706/21, conversation156871/17 and isolated crate347/two regressions
+pass separately, loading only first Training. None proves live loot/gravity.
+
+Previous source checkpoint,2026-10-21: original post-PostBeginPlay Spawn collision
 now uses the actual retained native Level/hash and current post-callback pose.
 Actual-capacity hit storage passes the old all-actor envelope's memory refusal
 without raising limits or skipping collision. The real first-map NanoKey now

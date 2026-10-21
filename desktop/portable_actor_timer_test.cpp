@@ -238,7 +238,12 @@ Tables Build(Fixture& fixture, unsigned schema = 0u) {
     const auto actor = engine.Export("Actor", 0, eo), zone = engine.Export("ZoneInfo", 0, actor), levelInfo = engine.Export("LevelInfo", 0, zone), level = engine.Export("Level", 0, eo), model = engine.Export("Model", 0, eo);
     const auto pointRegion=engine.Export("PointRegion",engine.Import("Struct",ec),0,actor);
     engine.Property("Zone","ObjectProperty",pointRegion,ec,zone);engine.Property("iLeaf","IntProperty",pointRegion,ec);engine.Property("ZoneNumber","ByteProperty",pointRegion,ec);engine.StructBody(pointRegion);
-    for (const auto* name : {"Owner", "Instigator"}) engine.Property(name, "ObjectProperty", actor, ec, actor);
+    engine.Property("Owner", "ObjectProperty", actor, ec, actor, 0x22u);
+    engine.Property("Instigator", "ObjectProperty", actor, ec, actor);
+    for (const auto* name : {"LostChild", "GainedChild"}) {
+        const auto event = engine.Function(name, actor, ec, Return(), 0u, 0x800u);
+        engine.Property("Other", "ObjectProperty", event, ec, actor, 0x80u);
+    }
     engine.Property("Base", "ObjectProperty", actor, ec, actor, 0x22u);
     engine.Property("StandingCount", "ByteProperty", actor, ec, 0, 0x2u);
     engine.Property("Touching","ObjectProperty",actor,ec,actor,0u,4u);

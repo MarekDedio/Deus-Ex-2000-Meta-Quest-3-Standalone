@@ -204,7 +204,12 @@ Tables Build(Fixture& fixture,unsigned schema=0u,unsigned extras=0u) {
     const auto ev=engine.Import("Vector",eo,"Struct"),er=engine.Import("Rotator",eo,"Struct");
     const auto actor=engine.Export("Actor",0,eo),zone=engine.Export("ZoneInfo",0,actor),info=engine.Export("LevelInfo",0,zone),level=engine.Export("Level",0,eo),pawn=engine.Export("Pawn",0,actor),model=engine.Export("Model",0,eo);
     const auto region=engine.Export("PointRegion",engine.Import("Struct",ec),0,actor); engine.Property("Zone","ObjectProperty",region,ec,1u,zone); engine.Property("iLeaf","IntProperty",region,ec); engine.Property("ZoneNumber","ByteProperty",region,ec); engine.StructBody(region);
-    for(const auto& s:{"Owner","Instigator","Brush"}) engine.Property(s,"ObjectProperty",actor,ec,1u,actor);
+    engine.Property("Owner","ObjectProperty",actor,ec,1u,actor,0x22u);
+    for(const auto& s:{"Instigator","Brush"}) engine.Property(s,"ObjectProperty",actor,ec,1u,actor);
+    for(const auto& s:{"LostChild","GainedChild"}) {
+        const auto event=engine.Function(s,actor,ec,Return(),0u,0x800u);
+        engine.Property("Other","ObjectProperty",event,ec,1u,actor,0x80u);
+    }
     engine.Property("Base","ObjectProperty",actor,ec,1u,actor,0x22u);
     engine.Property("Level","ObjectProperty",actor,ec,1u,info,0x2u); engine.Property("XLevel","ObjectProperty",actor,ec,1u,level);
     engine.Property("Touching","ObjectProperty",actor,ec,4u,actor); engine.Property("StandingCount","ByteProperty",actor,ec,1u,0,0x2u); engine.Property("Physics","ByteProperty",actor,ec);

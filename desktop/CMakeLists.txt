@@ -705,6 +705,17 @@ if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
 endif()
 add_test(NAME quest_spawn_encroachment COMMAND quest_spawn_encroachment_test)
 
+foreach(LIFECYCLE_PROTOCOL quest_actor_owner quest_destroy_actor)
+    add_executable(${LIFECYCLE_PROTOCOL}_test ${LIFECYCLE_PROTOCOL}_test.cpp)
+    target_compile_features(${LIFECYCLE_PROTOCOL}_test PRIVATE cxx_std_20)
+    target_include_directories(${LIFECYCLE_PROTOCOL}_test PRIVATE "${PORT_NATIVE}")
+    if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+        target_compile_options(${LIFECYCLE_PROTOCOL}_test PRIVATE -Wall -Wextra -Werror)
+        target_link_options(${LIFECYCLE_PROTOCOL}_test PRIVATE -static -static-libgcc -static-libstdc++)
+    endif()
+    add_test(NAME ${LIFECYCLE_PROTOCOL} COMMAND ${LIFECYCLE_PROTOCOL}_test)
+endforeach()
+
 # Static original-data inventory, not runtime/startup acceptance or a CTest.
 add_executable(conversation_binding_inspect conversation_binding_inspect.cpp)
 target_compile_features(conversation_binding_inspect PRIVATE cxx_std_20)

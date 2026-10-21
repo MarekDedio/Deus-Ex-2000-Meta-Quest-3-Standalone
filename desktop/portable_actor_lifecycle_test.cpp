@@ -166,16 +166,16 @@ struct Package {
         }; return reference;
     }
     std::int32_t Function(const std::string& name, std::int32_t owner, std::int32_t core,
-        Code code = {}, std::uint16_t native = 0u) {
+        Code code = {}, std::uint16_t native = 0u, std::uint32_t flags = 0u) {
         const auto reference = Export(name, Import("Function", core), 0, owner, true);
-        FunctionCode(reference, std::move(code), native); return reference;
+        FunctionCode(reference, std::move(code), native, flags); return reference;
     }
-    void FunctionCode(std::int32_t reference, Code code, std::uint16_t native = 0u) {
-        builders.at(static_cast<std::size_t>(reference - 1)) = [this, reference, native, code = std::move(code)](std::int32_t next, std::int32_t child) {
+    void FunctionCode(std::int32_t reference, Code code, std::uint16_t native = 0u, std::uint32_t flags = 0u) {
+        builders.at(static_cast<std::size_t>(reference - 1)) = [this, reference, native, flags, code = std::move(code)](std::int32_t next, std::int32_t child) {
             Bytes body{0u}; Index(body, 0); Index(body, next); Index(body, 0); Index(body, child);
             Index(body, exports.at(static_cast<std::size_t>(reference - 1)).ObjName); U32(body, 0); U32(body, 0);
             U32(body, static_cast<std::uint32_t>(code.logical)); Append(body, code.raw); U16(body, native); body.push_back(0u);
-            U32(body, native ? 0x402u : 2u); return body;
+            U32(body, flags ? flags : native ? 0x402u : 2u); return body;
         };
     }
     void ActorBody(std::int32_t reference, Bytes properties = {}) {
@@ -409,7 +409,8 @@ Tables Build(Fixture& fixture) {
     Package engine; engine.stem = "Engine";
     const auto engineCore = engine.ImportPackage("Core"), importedObject = engine.Import("Object", engineCore);
     const auto actor = engine.Export("Actor", 0, importedObject), levelInfo = engine.Export("LevelInfo", 0, actor);
-    for (const auto& name : {"Owner", "Instigator"}) engine.Property(name, "ObjectProperty", actor, engineCore, 1u, actor);
+    engine.Property("Owner", "ObjectProperty", actor, engineCore, 1u, actor, 0x22u);
+    engine.Property("Instigator", "ObjectProperty", actor, engineCore, 1u, actor);
     engine.Property("Base", "ObjectProperty", actor, engineCore, 1u, actor, 0x22u);
     engine.Property("Level", "ObjectProperty", actor, engineCore, 1u, levelInfo, 0x2u);
     engine.Property("Touching", "ObjectProperty", actor, engineCore, 4u, actor);
@@ -418,6 +419,10 @@ Tables Build(Fixture& fixture) {
     engine.Property("bBegunPlay", "BoolProperty", levelInfo, engineCore);
     const auto ownerNative = engine.Function("SetOwner", actor, engineCore, {}, 272u);
     engine.Property("NewOwner", "ObjectProperty", ownerNative, engineCore, 1u, actor, 0x80u);
+    for (const auto& name : {"LostChild", "GainedChild"}) {
+        const auto event = engine.Function(name, actor, engineCore, Return(), 0u, 0x800u);
+        engine.Property("Other", "ObjectProperty", event, engineCore, 1u, actor, 0x80u);
+    }
     const auto baseNative = engine.Function("SetBase", actor, engineCore, {}, 298u);
     engine.Property("NewBase", "ObjectProperty", baseNative, engineCore, 1u, actor, 0x80u);
     const auto destroyNative = engine.Function("Destroy", actor, engineCore, {}, 279u);
@@ -440,7 +445,7 @@ Tables Build(Fixture& fixture) {
         properties.emplace(name, classes.Property(name, "ObjectProperty", probe, classesCore, 1u, importedActor));
     properties.emplace("RedirectLevel", classes.Property("RedirectLevel", "ObjectProperty", probe, classesCore, 1u, importedLevel));
     properties.emplace("ObservedStanding", classes.Property("ObservedStanding", "ByteProperty", probe, classesCore));
-    for (const auto& name : {"RedirectOnce", "ObservedDeleted", "RedirectBaseOnce", "ReenterBaseOnce", "RedirectLevelOnce"})
+    for (const auto& name : {"RedirectOnce", "RedirectLostOnce", "ObservedDeleted", "RedirectBaseOnce", "ReenterBaseOnce", "RedirectLevelOnce"})
         properties.emplace(name, classes.Property(name, "BoolProperty", probe, classesCore));
     const auto ownerProperty = classes.Import("Owner", importedActor, "ObjectProperty");
     const auto baseProperty = classes.Import("Base", importedActor, "ObjectProperty");
@@ -466,6 +471,11 @@ Tables Build(Fixture& fixture) {
         if (name == "GainedChild") {
             const auto redirect = Join({Assign(property("RedirectOnce"), Token(0x28u)), Context(argument, Native(272u, {property("RedirectOwner")}))});
             code = Join({code, If(property("RedirectOnce"), redirect, code.logical)});
+        }
+        if (name == "LostChild") {
+            const auto redirect = Join({Assign(property("RedirectLostOnce"), Token(0x28u)),
+                Assign(Context(argument, Ref(0x01u, ownerProperty)), property("RedirectOwner"))});
+            code = Join({code, If(property("RedirectLostOnce"), redirect, code.logical)});
         }
         if (name == "Attach" || name == "Detach") {
             code = Join({code, Assign(property("ObservedStanding"), Ref(0x01u, standingProperty))});
@@ -506,6 +516,10 @@ Tables Build(Fixture& fixture) {
     classes.FunctionCode(begun, Join({Assign(Context(Ref(0x01u, levelProperty), Ref(0x01u, begunProperty)), Ref(0x00u, begunParameter)), Return()}));
     const auto redirect = classes.Function("RedirectNext", probe, classesCore), redirectParameter = classes.Property("Target", "ObjectProperty", redirect, classesCore, 1u, importedActor, 0x80u);
     classes.FunctionCode(redirect, Join({Assign(property("RedirectOwner"), Ref(0x00u, redirectParameter)), Assign(property("RedirectOnce"), Token(0x27u)), Return()}));
+    const auto redirectLost = classes.Function("RawRedirectLostNext", probe, classesCore);
+    const auto redirectLostParameter = classes.Property("Target", "ObjectProperty", redirectLost, classesCore, 1u, importedActor, 0x80u);
+    classes.FunctionCode(redirectLost, Join({Assign(property("RedirectOwner"), Ref(0x00u, redirectLostParameter)),
+        Assign(property("RedirectLostOnce"), Token(0x27u)), Return()}));
     for (const auto& [name, key, type, target] : std::vector<std::tuple<std::string, std::int32_t, std::string, std::int32_t>>{
         {"SetRawBase", baseProperty, "ObjectProperty", importedActor},
         {"SetRawLevel", levelProperty, "ObjectProperty", importedLevel},
@@ -579,7 +593,7 @@ void OwnerTests(Fixture& fixture) {
     HasObject("ParentA", "LastArgument", "Child", "GainedChild argument is not the actual child identity");
     Require(Count("ParentA", "Gained") == 1 && Count("Recorder", "Trace") == 1, "SetOwner omitted its first GainedChild callback");
     auto saved = Decode(fixture.Snapshot("OwnerFirst"));
-    Require(Life(saved, "ParentA").children == std::vector<std::string>{Path("Child")}, "SetOwner did not preserve ordered native child list");
+    Require(EmptyChildren(saved, "ParentA"), "SetOwner invented a reverse child-list authority");
     Call("Child", "Own", {Object("ParentA")});
     Require(Count("ParentA", "Lost") == 1 && Count("ParentA", "Gained") == 2 && Count("Recorder", "Trace") == 121,
         "Same-owner SetOwner incorrectly skipped LostChild/GainedChild or reversed them");
@@ -587,32 +601,32 @@ void OwnerTests(Fixture& fixture) {
     HasObject("ParentA", "ObservedOwner", "ParentA", "LostChild did not observe the old Owner before assignment");
     HasObject("ParentB", "ObservedOwner", "ParentB", "New GainedChild did not observe assigned Owner");
     saved = Decode(fixture.Snapshot("OwnerTransfer"));
-    Require(Life(saved, "ParentA").children.empty() && Life(saved, "ParentB").children == std::vector<std::string>{Path("Child")},
-        "Owner transfer did not remove old list member/add new list member");
+    Require(EmptyChildren(saved, "ParentA") && EmptyChildren(saved, "ParentB"),
+        "Owner transfer mutated a reverse child list absent from the original operation");
     Call("Child", "Own", {Object("")}); HasObject("Child", "Owner", "", "SetOwner(None) did not clear reflected Owner");
-    Require(Life(Decode(fixture.Snapshot("OwnerClear")), "ParentB").children.empty(), "SetOwner(None) retained native child relation");
+    Require(EmptyChildren(Decode(fixture.Snapshot("OwnerClear")), "ParentB"), "SetOwner(None) invented native reverse ownership");
     RefusedCall(fixture, "Child", "OwnThenFail", {Object("ParentA")});
     RefusedCall(fixture, "Child", "Own", {Object("FailParent")}); RefusedCall(fixture, "Child", "BadOwnerType");
     fixture.Reset();
     Call("ParentA", "RedirectNext", {Object("ParentB")}); Call("Child", "Own", {Object("ParentA")});
     HasObject("Child", "Owner", "ParentB", "GainedChild reentrant SetOwner was overwritten by outer operation");
     saved = Decode(fixture.Snapshot("OwnerReentrant"));
-    Require(EmptyChildren(saved, "ParentA") &&
-        Life(saved, "ParentB").children == std::vector<std::string>{Path("Child"), Path("Child")},
-        "SetOwner did not re-read callback-mutated Owner or normalized duplicate pin relations");
+    Require(EmptyChildren(saved, "ParentA") && EmptyChildren(saved, "ParentB"),
+        "GainedChild reentrancy invented reverse ownership or duplicate relations");
     Require(Count("ParentA", "Gained") == 1 && Count("ParentA", "Lost") == 1 && Count("ParentB", "Gained") == 1,
         "Reentrant Owner callbacks did not execute synchronously in one interpreter");
     const auto reentrant = fixture.Snapshot("ReentrantCanonical");
     const auto validatedRevision = GetPortableRuntimeWorldRevision();
-    Require(ValidatePortableRuntimeState((fixture.directory / "ReentrantCanonical.sav").string(), "LifecycleFixture"), "Duplicate native relations failed nonmutating save validation");
-    Require(fixture.Snapshot("AfterReentrantValidation") == reentrant, "Read-only lifecycle validation mutated native relations");
+    Require(ValidatePortableRuntimeState((fixture.directory / "ReentrantCanonical.sav").string(), "LifecycleFixture"), "Reentrant Owner callback state failed nonmutating save validation");
+    Require(fixture.Snapshot("AfterReentrantValidation") == reentrant, "Read-only lifecycle validation mutated Owner callback state");
     Require(GetPortableRuntimeWorldRevision() == validatedRevision, "Read-only lifecycle validation advanced world publication revision");
     Require(LoadPortableRuntimeState((fixture.directory / "ReentrantCanonical.sav").string()) && fixture.Snapshot("ReentrantRestore") == reentrant,
-        "Reentrant duplicate native relations failed canonical restore");
-    // Only genuine serialized child links count. There is no inferred reverse
-    // Base baseline to add to the exact codec maximum during replacement.
+        "Reentrant Owner callback state failed canonical restore");
+    // Historical serialized child links remain a round-trip fixture, not
+    // authority for native SetOwner or an inferred reverse Base relation.
     auto maximum = Decode(reentrant);
     auto& maximumChildren = Record(maximum, "ParentB");
+    if (!maximumChildren.lifecycle) maximumChildren.lifecycle.emplace();
     maximumChildren.lifecycle->children.assign(65'536u, Path("Child"));
     maximumChildren.lifecycle->basedActors.clear();
     const auto structuralMaximum = QuestVr::EncodeScriptSavedState(maximum);
@@ -623,6 +637,20 @@ void OwnerTests(Fixture& fixture) {
     Require(Life(maximumSaved, "ParentB").children.size() == 65'536u,
         "Runtime invented inferred Base links or discarded exact maximum child links");
     EmptyLegacyBases(maximumSaved);
+    fixture.Reset(); Call("Child", "Own", {Object("ParentA")});
+    Call("ParentA", "RawRedirectLostNext", {Object("RecursiveParent")});
+    Call("Child", "Own", {Object("ParentB")});
+    HasObject("Child", "Owner", "ParentB", "LostChild Owner mutation replaced the retained native NewOwner argument");
+    Require(Count("ParentA", "Lost") == 1 && Count("ParentB", "Gained") == 1 && Count("RecursiveParent", "Gained") == 0,
+        "SetOwner reread callback-mutated Owner or notified a receiver other than the retained NewOwner");
+    HasObject("ParentA", "ObservedOwner", "ParentA", "LostChild did not receive the captured old-owner relationship");
+    HasObject("ParentB", "ObservedOwner", "ParentB", "Retained NewOwner was not stored before GainedChild");
+    fixture.Reset(); Call("Static", "Own", {Object("Protected")});
+    HasObject("Static", "Owner", "Protected", "SetOwner invented bStatic/bNoDelete ownership guards");
+    Call("Protected", "Own", {Object("Static")});
+    HasObject("Protected", "Owner", "Static", "SetOwner invented an ownership-cycle guard");
+    Call("Child", "Own", {Object("Child")});
+    HasObject("Child", "Owner", "Child", "SetOwner invented a self-owner guard");
     fixture.Reset(); QuestVr::Vm::Limits limits; limits.callDepth = 8u;
     RefusedCall(fixture, "Child", "Own", {Object("RecursiveParent")}, limits);
     Require(Count("RecursiveParent", "Gained") == 0 && Count("Recorder", "Trace") == 0, "Recursive callback refusal retained intermediate writes");
@@ -636,12 +664,14 @@ void OwnerTests(Fixture& fixture) {
     Require(fixture.Snapshot("FramelessOwnerAfterProbeNoops") == frameless && GetPortableRuntimeWorldRevision() == framelessRevision &&
         !ReadPortableActorStateObject(Path("ParentA")), "Recognized probe Enable/Disable fabricated a frame or state on a frameless receiver");
     Call("ParentA", "DisableEvent", {Name("GainedChild")}); Call("Child", "Own", {Object("ParentA")});
-    Require(Count("ParentA", "Gained") == 1 && Life(Decode(fixture.Snapshot("FramelessOwnerCallback")), "ParentA").children.size() == 1u &&
+    HasObject("Child", "Owner", "ParentA", "Frameless probe Disable suppressed native Owner storage");
+    Require(Count("ParentA", "Gained") == 1 && EmptyChildren(Decode(fixture.Snapshot("FramelessOwnerCallback")), "ParentA") &&
         !ReadPortableActorStateObject(Path("ParentA")), "Frameless recognized-probe Disable suppressed the actual owner relation/callback");
     fixture.Reset(); OwnNullCodeFrame(fixture, "ParentA"); Call("ParentA", "DisableEvent", {Name("gAiNeDcHiLd")});
     Require(!ProbeEnabled("ParentA", "GainedChild"), "Owned-frame Disable did not clear its actual positive probe bit");
     Call("Child", "Own", {Object("ParentA")});
-    Require(Count("ParentA", "Gained") == 0 && Life(Decode(fixture.Snapshot("OwnerDisabled")), "ParentA").children.size() == 1u,
+    HasObject("Child", "Owner", "ParentA", "Disabled GainedChild suppressed native Owner storage");
+    Require(Count("ParentA", "Gained") == 0 && EmptyChildren(Decode(fixture.Snapshot("OwnerDisabled")), "ParentA"),
         "Disabled GainedChild suppressed the owner relation itself or ignored event eligibility");
     Call("ParentA", "EnableEvent", {Name("GAINEDCHILD")}); Call("Child", "Own", {Object("ParentA")});
     Require(Count("ParentA", "Gained") == 1 && ProbeEnabled("ParentA", "GainedChild"),
@@ -932,7 +962,9 @@ void DestroyTests(Fixture& fixture) {
     fixture.Reset(); Require(LoadPortableRuntimeState((fixture.directory / "RemovedWithClearedFlag.sav").string()) && fixture.Snapshot("ClearedFlagRestore") == cleared,
         "Removed actor with script-cleared flag did not restore canonically");
     Require(!Published("Victim") && !QuestVr::Vm::ToBool(Read("Victim", "bDeleteMe")), "Restore normalized script flag/native world slot relationship");
-    auto bad = Decode(canonical); Record(bad, "ParentA").lifecycle->children.push_back("LifecycleFixture.Missing");
+    auto bad = Decode(canonical); auto& badChild = Record(bad, "ParentA");
+    if (!badChild.lifecycle) badChild.lifecycle.emplace();
+    badChild.lifecycle->children.push_back("LifecycleFixture.Missing");
     RefusedScript(fixture, canonical, bad, "MissingNativeChild");
     bad = Decode(canonical); auto& badBase = Record(bad, "BaseB");
     if (!badBase.lifecycle) badBase.lifecycle.emplace();

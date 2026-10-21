@@ -152,6 +152,12 @@ at `I`, with the native serializer/destructor arguments (`10395D28..55`).
 Call source virtual `Modify` at `10395D5C`. The original AActor vtable's `+1C`
 entry `1040C734` jumps through Core's UObject.Modify IAT slot `10599AE8`.
 Editor/undo state is native authority, not an inferred UnrealScript property.
+Follow-up primary audit,2026-10-21: AKeypoint has that same `Modify` entry.
+Core thunk101014D8 reaches normal body10150170..101501C2. It reads exported
+GUndo101E3318 and calls its virtual+0(source) only when that pointer is nonnull
+AND source.ObjectFlags bit1 is set. With authentic GUndoNone it returns without
+any object/flag writes; no dirty/lifecycle flag or synthetic editor journal is
+introduced. See ORIGINAL-CONDITIONAL-DESTROY.md.
 
 At `10395D65..D90`, continue to EndState only when the actual StateFrame is
 nonnull, its Code pointer at frame`+18` is nonnull, and actual
@@ -249,9 +255,12 @@ result. This is neither an ordinary script Destroyed call nor the UObject
 destructor/free-index/unhash operation.
 
 - Core thunk `10102270` reaches `1014FDB0`. If native index is-1 or
-  RF_Destroyed00800000 is already set, return false. Otherwise set that flag,
-  invoke selected native virtual Destroy at vtable`+24`, check the base-destroy
-  debug marker, and return true.
+  RF_Destroyed00800000 is already set, return false. Otherwise write
+  `(oldFlags & 7F7FFFFF) | 00800000`, explicitly clearing the old
+  RF_DebugDestroy80000000 marker as well as setting RF_Destroyed. Invoke
+  selected native virtual Destroy at vtable`+24`, then inspect the base-destroy
+  debug marker. An absent marker logs through Logf and STILL returns true;
+  that diagnostic is not an assertion or a native false result.
 - Base AActor.Destroy thunk `10301F8C` reaches `10368F60..10368FBC`.
   If auxiliary UObject pointer `S+314` is nonnull, call its ConditionalDestroy
   and then clear that field. Next call Core UObject.Destroy via `10599AE0`.
@@ -261,11 +270,18 @@ destructor/free-index/unhash operation.
 - UObject.Destroy thunk `101025F4` reaches `1014FA50`. It sets
   RF_DebugDestroy80000000, calls ExitProperties(S,actual Class), detaches the
   linker with `(None,-1)`, and caches actual Outer's object index (or0) in its
-  later unhash field. ExitProperties is real dynamic-property teardown, not
-  permission to clear arbitrary reflected scalar fields or class defaults.
+  later unhash field. ExitProperties follows actual Class.ConstructorLink+68
+  and property.ConstructorLinkNext+54, calling selected DestroyValue+94 for
+  each reached property at its native Offset. It is not an all-field clear.
+  SetLinker first verifies and nulls the old live ExportMap[index].Object
+  attachment, when a linker exists, then writes None/-1. Immutable source
+  provenance is not that live attachment. Full details and actual first-map
+  constructor-field census are in ORIGINAL-CONDITIONAL-DESTROY.md.
 
 Static exported-vtable checks show Engine Actor, Brush, Decoration, Inventory
-and Pawn all use `10301F8C` at slot`+24`. DeusExDecoration and ScriptedPawn use
+and Pawn all use `10301F8C` at slot`+24`. A later bounded PE read confirms
+Keypoint also uses10301F8C, covering PickupDistributor's native ancestor.
+DeusExDecoration and ScriptedPawn use
 `1001AFA4`, a thunk through IAT `1002727C` whose import is Engine AActor.Destroy.
 DeusExPlayer instead uses its own `100141F0` override. This is finite evidence
 for those native ancestries, not permission to bypass every subclass override.
@@ -283,6 +299,14 @@ index; see ORIGINAL-OBJECT-HASH-ORDER.md. ConListItem scalar deleting-destructor
 retirement is **not** an appropriate replacement for Actor destruction.
 
 ## Required runtime integration and current non-claims
+
+Runtime checkpoint2026-10-21: the genuine current native-Level path now uses
+`quest_destroy_actor.h` and `portable_actor_destroy.inl` through the callback/
+hash/slot/pending prefix, with original SetOwner ordering. It explicitly refuses
+ConditionalDestroy/property/linker teardown and deferred ownership. Repeated
+actual first-map startup reaches that later boundary with full rollback. See
+TRAINING-ACTOR-DESTRUCTION.md. The legacy metadata-only path described below
+is retained separately and is not the current native-Level implementation.
 
 The existing legacy LifecycleNative279 marks bDeleteMe before support/hash and
 Destroyed callbacks, scans different relationships, and refuses active retail
