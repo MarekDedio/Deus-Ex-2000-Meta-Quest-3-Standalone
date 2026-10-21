@@ -74,6 +74,24 @@ struct PortableObjectDestroyProbeResult {
 PortableObjectDestroyProbeResult ProbePortableActorConditionalDestroy(
     const std::string& actorPath,const QuestVr::Vm::Limits& limits={});
 
+struct PortableDeferredOwnershipSnapshot {
+    bool available{};
+    std::string levelPath,firstDeletedPath;
+    std::vector<std::pair<std::string,std::string>> actorLinks;
+    bool operator==(const PortableDeferredOwnershipSnapshot&)const=default;
+};
+PortableDeferredOwnershipSnapshot ReadPortableRuntimeDeferredOwnership();
+struct PortableActorDestroyProbeResult {
+    QuestVr::Vm::Result execution;
+    bool completed{},captureRefused{},restoreRefused{},travelRefused{};
+    std::vector<std::int32_t> returned;
+    PortableDeferredOwnershipSnapshot before,after;
+};
+// Actual full native DestroyActor in a single rollback-only caller root.
+// Original dormant events stay dormant; no begun/startup flags are fabricated.
+PortableActorDestroyProbeResult ProbePortableActorNativeDestroy(
+    const std::vector<std::string>& actorPaths,const QuestVr::Vm::Limits& limits={});
+
 struct PortableConversationSummary {
     std::size_t objects{};
     std::size_t conversations{};

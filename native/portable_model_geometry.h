@@ -135,6 +135,19 @@ PortableModelGeometry LoadPortableRootModel68(const PortablePackageTables& packa
 std::vector<std::int32_t> ReadPortableLevel68ActorOrder(const PortablePackageTables& package,
     std::size_t propertyWorkingBytes = 512u * 1024u * 1024u);
 
+// Actual native ULevel.Serialize prefix AFTER Model/ReachSpecs, not reflected
+// tag absence or a fabricated transient zero. firstDeletedOffset is the
+// absolute source-file position of its compact object reference, for audits.
+// Reference bounds are checked here; actual Actor identity belongs to the
+// runtime loader. No world startup/deletion or native clock is initialized.
+struct PortableLevel68DeferredState {
+    std::int32_t firstDeleted{};
+    float serializedTime{};
+    std::size_t reachSpecs{},firstDeletedOffset{};
+};
+PortableLevel68DeferredState ReadPortableLevel68DeferredState(const PortablePackageTables& package,
+    std::size_t propertyWorkingBytes = 512u * 1024u * 1024u);
+
 // These validate the requested list/span even if callers modified the public
 // records after decoding. Widths not divisible by eight retain padded row pitch.
 std::size_t GetPortableModelStaticLightCount(

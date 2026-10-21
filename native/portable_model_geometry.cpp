@@ -287,7 +287,8 @@ bool LeafClassEquals(const PortablePackageTables& package,
 }
 std::vector<std::uint8_t> ReadExportBody(const PortablePackageTables& package,
                                        std::size_t exportIndex, const char* className,
-                                       std::size_t propertyWorkingBytes) {
+                                       std::size_t propertyWorkingBytes,
+                                       std::size_t* bodyFileOffset = nullptr) {
     RequireLayout(package.version, package.licenseeMode);
     if (exportIndex >= package.exports.size()) Fail("export index is outside table");
     const auto& entry = package.exports[exportIndex];
@@ -314,6 +315,7 @@ std::vector<std::uint8_t> ReadExportBody(const PortablePackageTables& package,
     std::vector<std::uint8_t> bytes(remaining);
     if (bytes.capacity() > propertyWorkingBytes - bodyOverhead)
         Fail("export body capacity exceeds working-byte budget");
+    if (bodyFileOffset) *bodyFileOffset = static_cast<std::size_t>(entry.ObjOffset) + propertyBytes;
     file->seek(static_cast<std::int64_t>(entry.ObjOffset) + propertyBytes);
     if (!bytes.empty()) file->read(bytes.data(), bytes.size());
     return bytes;
@@ -510,9 +512,10 @@ namespace {
 struct LevelSelection {
     std::size_t modelIndex{};
     std::vector<std::int32_t> actorOrder;
+    PortableLevel68DeferredState deferred;
 };
 LevelSelection ReadLevelSelection(const PortablePackageTables& package,
-                                 std::size_t propertyWorkingBytes) {
+                                 std::size_t propertyWorkingBytes,bool readDeferred = false) {
     RequireLayout(package.version, package.licenseeMode);
     std::size_t levelIndex = std::numeric_limits<std::size_t>::max();
     for (std::size_t index = 0; index < package.exports.size(); ++index) {
@@ -521,7 +524,8 @@ LevelSelection ReadLevelSelection(const PortablePackageTables& package,
         levelIndex = index;
     }
     if (levelIndex == std::numeric_limits<std::size_t>::max()) Fail("map has no Level export");
-    const auto bytes = ReadExportBody(package, levelIndex, "Level", propertyWorkingBytes);
+    std::size_t bodyFileOffset{};
+    const auto bytes = ReadExportBody(package, levelIndex, "Level", propertyWorkingBytes,&bodyFileOffset);
     constexpr std::size_t levelOverhead = sizeof(Reader) + sizeof(LevelSelection) + sizeof(bytes);
     if (propertyWorkingBytes < levelOverhead || bytes.capacity() > propertyWorkingBytes - levelOverhead)
         Fail("Level body exceeds working-byte budget");
@@ -551,9 +555,28 @@ LevelSelection ReadLevelSelection(const PortablePackageTables& package,
     const std::size_t modelIndex = static_cast<std::size_t>(modelReference - 1);
     if (!LeafClassEquals(package, package.exports[modelIndex].ObjClass, "Model"))
         Fail("Level Model reference is not a Model");
-    // ULevel has reach-spec data after this reference; it belongs to ULevel,
-    // not UModel, and is deliberately left to the level decoder.
     selection.modelIndex = modelIndex;
+    if (readDeferred) {
+        // Original ULevel.Serialize1039D5AB..5D3, with FReachSpec selected
+        // serializer103A1990. Native size1C is NOT serialized record size:
+        // each of its two object references uses compact package encoding.
+        selection.deferred.reachSpecs=reader.Count("Level ReachSpec",MaxRecords,19u,0u);
+        for(std::size_t index=0u;index<selection.deferred.reachSpecs;++index) {
+            static_cast<void>(reader.I32()); // distance
+            ValidateReference(reader.Index(),package.imports.size(),package.exports.size()); // Start
+            ValidateReference(reader.Index(),package.imports.size(),package.exports.size()); // End
+            static_cast<void>(reader.I32()); // collision radius
+            static_cast<void>(reader.I32()); // collision height
+            static_cast<void>(reader.I32()); // reach flags
+            static_cast<void>(reader.U8()); // pruned (preserve native nonzero semantics)
+        }
+        selection.deferred.serializedTime=reader.Float(); // finite original Float, NOT live Double reset
+        selection.deferred.firstDeletedOffset=bodyFileOffset+reader.Position();
+        selection.deferred.firstDeleted=reader.Index();
+        ValidateReference(selection.deferred.firstDeleted,package.imports.size(),package.exports.size());
+        // Text references and later Level maps belong to their own decoder.
+        // This API authenticates the requested prefix, not the entire body.
+    }
     return selection;
 }
 }
@@ -569,4 +592,8 @@ PortableModelGeometry LoadPortableRootModel68(const PortablePackageTables& packa
 std::vector<std::int32_t> ReadPortableLevel68ActorOrder(const PortablePackageTables& package,
                                                     std::size_t propertyWorkingBytes) {
     return ReadLevelSelection(package, propertyWorkingBytes).actorOrder;
+}
+PortableLevel68DeferredState ReadPortableLevel68DeferredState(const PortablePackageTables& package,
+                                                            std::size_t propertyWorkingBytes) {
+    return ReadLevelSelection(package,propertyWorkingBytes,true).deferred;
 }

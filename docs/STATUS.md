@@ -1,6 +1,24 @@
 # Port status
 
-## First Training live loader detachment (2026-10-21)
+## First Training native deferred queue checkpoint (2026-10-21)
+
+The native Level queue head is now decoded from the original ReachSpecs/time/
+FirstDeleted stream. Typed Actor.Deleted storage and original LIFO insertion
+have mutable GC edges, compact same-root before-images and archive/travel
+fences. Actual two-crate native removals pass429 checks/21 refusal prefixes
+with18 writes and20563 work steps; all40 originals and full rollback pass.
+The diagnostic uses genuine InitExecution on dormant actors, not forced begun
+flags. It proves queue/lifetime ordering, NOT live weapon damage, usable loot,
+falling or later CleanupDestroyed.
+
+Original Training decoder checks pass824/90 (generated275/90). Two startup
+attempts now get beyond PickupDistributor destruction to UNATCOTroop0's later
+PPP callback at slot1254/PC6, then explicitly refuse the unchanged combined
+memory limit. Full rollback/all40 source fingerprints pass; startup remains
+unfinished. Strict ARM64 and Android native link pass; broader desktop rebuild/
+CTest are still pending. No backend-only APK. See TRAINING-DEFERRED-OWNERSHIP.md.
+
+## Previous first Training live loader detachment (2026-10-21)
 
 Actual native ConditionalDestroy now completes the supported Actor/base
 property teardown, exact live source-export detachment and current-Outer index

@@ -8,7 +8,18 @@ save time; shared prerequisites needed by this first map remain in scope.
 Reconfirmed2026-10-21: the WHOLE first Training map is the short-term milestone;
 do not spend time on other-map integration or map-content test sweeps.
 
-Latest live-linker increment,2026-10-21: actual ConditionalDestroy now completes
+Latest native-queue increment,2026-10-21: actual serialized FirstDeleted and
+typed Actor.Deleted now support the original ordinary-game deferred insertion,
+with compact rollback and native archive/travel fences. Actual dormant,
+InitExecution-prepared two-crate native removals pass429/21; decoder824/90.
+Repeated first-map startup gets beyond PickupDistributor deletion and next
+refuses combined memory at UNATCOTroop0 PPP slot1254/PC6. Full rollback and all40
+originals pass. Strict ARM64/Android native link pass; broad desktop rebuild/
+CTest remain pending. This is NOT completed startup, cleanup, live weapon
+destruction, surviving usable loot, gravity or a replacement APK. Only whole
+first Training is in scope; see TRAINING-DEFERRED-OWNERSHIP.md.
+
+Previous live-linker increment,2026-10-21: actual ConditionalDestroy now completes
 the supported Actor/base property cleanup, source-export detach and real Outer
 index cache without retiring UObject identities. Compact lossless attachment
 storage fixes the initial dense-storage memory regression without raising any

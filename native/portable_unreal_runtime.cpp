@@ -286,6 +286,9 @@ public:
     // from this bound native storage, NEVER an absent reflected property tag.
     RuntimeObject* nativeRenderInterface{};
     bool nativeRenderInterfaceBound{};
+    RuntimeObject* nativeDeleted{}; // Typed Actor.Deleted, initialized from actual payload.
+    RuntimeObject* nativeFirstDeleted{}; // Serialized native ULevel.FirstDeleted.
+    bool nativeDeletedBound{},nativeFirstDeletedBound{},nativeDeferredChanged{};
     RuntimeObject* nativeLevelModel{}; // Serialized ULevel.Model, owned only by its loader.
     RuntimeObject* nativeLevelEngine{}; // Actual collision Engine binding, never a save property.
     std::uint64_t nativeRetailHash{}; // Actual Level.Hash lease, never an archived pointer.
@@ -493,6 +496,8 @@ GCAllocation* RuntimeObject::Mark(GCAllocation* marklist) {
             for(auto* window:*list) marklist=GC::MarkObject(marklist,window);
     }
     marklist=GC::MarkObject(marklist,nativeRenderInterface);
+    marklist=GC::MarkObject(marklist,nativeDeleted);
+    marklist=GC::MarkObject(marklist,nativeFirstDeleted);
     for (auto* actor : childActors) marklist = GC::MarkObject(marklist, actor);
     return GC::MarkObject(marklist, nativeAiManager);
 }
@@ -1943,6 +1948,21 @@ bool HasNativeLinkerChanges() {
         std::any_of(persistentRuntime->get()->exports.begin(),persistentRuntime->get()->exports.end(),
             [](const auto* object){return object&&object->nativeLinkerChanged;});
 }
+bool HasNativeDeferredOwnership() {
+    return persistentRuntime&&persistentRuntime->get()&&
+        std::any_of(persistentRuntime->get()->exports.begin(),persistentRuntime->get()->exports.end(),
+            [](const auto* object){
+                if(!object)return false;
+                if(object->nativeDeferredChanged)return true;
+                // Authored bindings become authoritative only at successful
+                // native Model/map-generation publication. A failed loader
+                // must still retire its staged graph, including nonempty
+                // payload edges, without tripping the committed-state fence.
+                const auto* level=object->nativeXLevel?object->nativeXLevel:object;
+                return level->nativeMapGeneration&&level->nativeMapGeneration==persistentMapGenerationCounter&&
+                    (object->nativeDeleted||object->nativeFirstDeleted);
+            });
+}
 void PopulateRuntime(
     RuntimePackage* runtime,
     const PortablePackageTables& package,
@@ -2266,6 +2286,39 @@ public:
     }
     PortableObjectLinkerSnapshot ObjectLinkerSnapshot(const std::string& path) {
         return NativeLinkerSnapshot(Object(path));
+    }
+    void BindNativeActorDeferred(RuntimeObject* actor){BindNativeDeleted(actor);}
+    PortableDeferredOwnershipSnapshot DeferredOwnershipSnapshot(){return DeferredSnapshot();}
+    Value ProbeNativeActorDestroy(const std::vector<std::string>& paths,PortableActorDestroyProbeResult& result,
+        QuestVr::Vm::Execution& execution) {
+        if(paths.empty()||paths.size()>16u)throw std::runtime_error("Native actor destruction diagnostic exceeds bounded actor count");
+        objectDestroyPreview_=true;result.before=DeferredSnapshot();
+        if(!result.before.available)throw std::runtime_error("Native actor destruction diagnostic lacks serialized deferred storage");
+        const auto previous=nativeQueryScratchBytes_;
+        struct Restore {std::size_t& value;std::size_t before;~Restore(){value=before;}} restore{nativeQueryScratchBytes_,previous};
+        const auto measure=[&] {
+            std::size_t bytes=result.returned.capacity()*sizeof(std::int32_t);
+            for(const auto* row:{&result.before,&result.after}) {
+                bytes=QuestVr::DecalStateDetail::Add(bytes,sizeof(*row)+row->levelPath.capacity()+row->firstDeletedPath.capacity()+
+                    row->actorLinks.capacity()*sizeof(decltype(row->actorLinks)::value_type));
+                for(const auto& link:row->actorLinks)bytes=QuestVr::DecalStateDetail::Add(bytes,link.first.capacity()+link.second.capacity()+2u);
+            }
+            nativeQueryScratchBytes_=previous;ValidateStateBudget(bytes);nativeQueryScratchBytes_+=bytes;
+        };
+        measure();const auto after=[&]{result.after=DeferredSnapshot();measure();};
+        try {
+            for(const auto& path:paths) {
+                auto* actor=LifecycleActor(reinterpret_cast<std::uintptr_t>(Object(path)));
+                // This diagnostic loads a dormant original map. Materialize
+                // its genuine InitExecution frame before the native operation,
+                // exactly as startup does; never force begun/startup/probe
+                // flags or invent a running state. Already live frames remain.
+                if(!actor->stateObject||!actor->stateObject->frameOverride)InitializeActorExecution(actor);
+                result.returned.push_back(DestroyNativeActor(actor->nativeXLevel,actor,0,execution));measure();
+            }
+            result.completed=true;
+        }catch(...){after();throw;}
+        after();return Value::Bool(true);
     }
     Value ProbeObjectConditionalDestroy(const std::string& path,PortableObjectDestroyProbeResult& result,
         QuestVr::Vm::Execution& execution) {
@@ -2620,6 +2673,7 @@ public:
         beforeWorldSlots_ = persistentWorldActors.size();
         beforeWorldSlotItems_.clear();
         beforeLinkerSlots_.clear();
+        beforeDeferred_.clear();
         nativeDestroyReferenceBytes_=0u;
         beforeRandomSeed_ = persistentScriptRandomSeed;
         beforeWindowObjects_=persistentWindowDomain && persistentWindowDomain->get() ?
@@ -2698,6 +2752,7 @@ public:
         CommitConversationObjects();
         provisionalLookupObjects_.clear();
         beforeLinkerSlots_.clear();
+        beforeDeferred_.clear();
         ClearMoveHits();nativeDurableMoved_.clear();
         saved_.clear(); savedAi_.clear(); provisionalAi_.clear(); provisionalWindows_.clear(); beforeDecals_.reset(); beforeLevelClock_.reset(); beforeWorldSlotItems_.clear(); nativeDestroyReferenceBytes_=0u; transaction_ = false;
     }
@@ -2743,6 +2798,11 @@ public:
             }else slot.linker->changed.erase(slot.index);
         }
         beforeLinkerSlots_.clear();
+        for(const auto& row:beforeDeferred_) {
+            row.object->nativeDeleted=row.deleted;row.object->nativeFirstDeleted=row.firstDeleted;
+            row.object->nativeDeferredChanged=row.changed;
+        }
+        beforeDeferred_.clear();
         for (auto& entry : saved_) {
             entry.first->scriptValues.swap(entry.second.values);
             entry.first->classDefaultValues.swap(entry.second.defaults);
@@ -7051,6 +7111,8 @@ public:
                 return Value::Text(Kind::Object,object->nativeRenderInterface?
                     object->nativeRenderInterface->reflection.objectPath:std::string{});
             }
+            if(key=="engine.actor.deleted"&&object->nativeDeletedBound)
+                return Value::Text(Kind::Object,object->nativeDeleted?object->nativeDeleted->reflection.objectPath:std::string{});
             if(key=="extension.playerpawnext.rootwindow")
                 return Value::Text(Kind::Object,object->nativeRootWindow ?
                     object->nativeRootWindow->reflection.objectPath : std::string{});
@@ -7743,6 +7805,7 @@ private:
             throw std::runtime_error("Spawn identity collision");
         PublishTransactionalLookupObject(actor);
         persistentWorldActors.push_back(actor);
+        BindNativeDeleted(actor);
         const auto set = [&](const char* name, const Value& value) { ReferenceFor(actor,PropertyNamed(actor,name),0u,false)->write(value); };
         set("Class",Value::Text(Kind::Object,cls->reflection.objectPath));
         set("Name",Value::Text(Kind::Name,path.substr(path.find_last_of('.') + 1u)));
@@ -7903,6 +7966,7 @@ private:
 #include "portable_object_properties.inl"
 #include "portable_object_linker.inl"
 #include "portable_object_destroy.inl"
+#include "portable_deferred_actors.inl"
     void SetOwner(RuntimeObject* actor, RuntimeObject* newOwner, QuestVr::Vm::Execution& execution) {
         LifecycleActor(reinterpret_cast<std::uintptr_t>(actor));
         if(newOwner)LifecycleActor(reinterpret_cast<std::uintptr_t>(newOwner));
@@ -8166,6 +8230,7 @@ private:
         return true;
     }
     bool OnlyActorTimerChanged(RuntimeObject* actor,const Before& before) {
+        if(!beforeDeferred_.empty())return false;
         bool hasTimer{};
         const std::array<const decltype(RuntimeObject::scriptValues)*,2u> timerStates{
             &before.values,&actor->scriptValues};
@@ -8197,6 +8262,7 @@ private:
         return true;
     }
     bool OnlyNativeLevelClockChanged(RuntimeObject* actor,const Before& before) {
+        if(!beforeDeferred_.empty())return false;
         if (!beforeLevelClock_ || persistentWorldActors.empty() || actor!=persistentWorldActors.front() ||
             actor->nativeXLevel!=beforeLevelClock_->first || !actor->committedScriptState) return false;
         const auto field=DescribeProperty("Engine.LevelInfo.TimeSeconds");
@@ -8283,6 +8349,13 @@ private:
         bool overridden{};
     };
     std::vector<BeforeLinkerSlot> beforeLinkerSlots_;
+    struct BeforeDeferred {
+        RuntimeObject* object{};
+        RuntimeObject* deleted{};
+        RuntimeObject* firstDeleted{};
+        bool changed{};
+    };
+    std::vector<BeforeDeferred> beforeDeferred_;
     // Typed destructor write references remain in the VM's undo journal until
     // the outer boundary, so their owned schema/zero payload is not lexical.
     std::size_t nativeDestroyReferenceBytes_{};
@@ -8969,6 +9042,8 @@ private:
             const auto nativeKey=LowerAscii(property.key);
             if(nativeKey=="engine.actor.renderinterface"&&target->nativeRenderInterfaceBound)
                 throw std::runtime_error("Native Actor RenderInterface writes require the typed RenderIterator ownership service");
+            if(nativeKey=="engine.actor.deleted"&&target->nativeDeletedBound)
+                throw std::runtime_error("Native Actor.Deleted writes require the deferred ownership service");
             const bool rawActorShapeStore=nativeKey=="engine.actor.mesh" || nativeKey=="engine.actor.drawscale";
             if(nativeKey=="engine.actor.collisiontag" || nativeKey=="engine.actor.collocation")
                 throw std::runtime_error("Native collision mirrors require their journaled original service");
@@ -9536,6 +9611,7 @@ private:
         defaults.Retain(nativeDestroyReferenceBytes_);
         defaults.Retain(NativeLinkersRetainedBytes());
         defaults.Retain(beforeLinkerSlots_.capacity()*sizeof(BeforeLinkerSlot));
+        defaults.Retain(beforeDeferred_.capacity()*sizeof(BeforeDeferred));
         if (persistentRuntime->get()->nativeDecals)
             defaults.Retain(NativeDecalRetainedBytes(*persistentRuntime->get()->nativeDecals));
         if (beforeDecals_ && beforeDecals_->state) {
@@ -10048,6 +10124,8 @@ std::vector<QuestVr::ScriptSavedProperty> ClockProperties(
 }
 
 QuestVr::ScriptSavedState CollectScriptSavedState() {
+    if(HasNativeDeferredOwnership())
+        throw std::runtime_error("Native deferred Actor checkpoint/rebind capture is not implemented");
     if(HasNativeLinkerChanges())
         throw std::runtime_error("Native linker attachment checkpoint/rebind capture is not implemented");
     if(HasNativeConversationBindings())
@@ -10891,6 +10969,8 @@ void MeasureLegacySimBlendImports(const QuestVr::ScriptSavedState& saved,
 
 PreparedScriptState PrepareScriptSavedState(
     const QuestVr::ScriptSavedState& saved, const bool apply, const QuestVr::ScriptStateLimits& limits) {
+    if(apply&&HasNativeDeferredOwnership())
+        throw std::runtime_error("Native deferred Actor checkpoint/rebind restoration is not implemented");
     if(apply&&HasNativeLinkerChanges())
         throw std::runtime_error("Native linker attachment checkpoint/rebind restoration is not implemented");
     if (apply && LowerAscii(saved.mapName) != LowerAscii(persistentMapPackageName))
@@ -10973,6 +11053,9 @@ PreparedScriptState PrepareScriptSavedState(
         }
         for (const auto& property : record.properties) {
             auto value = schema.PropertyValue(cls, property,true);
+            if(LowerAscii(property.key)=="engine.actor.deleted"&&
+                (value.kind!=QuestVr::Vm::Kind::Object||!value.text.empty()))
+                throw std::runtime_error("Saved nonempty native Actor.Deleted ownership restoration is not implemented");
             const auto declared=schema.Host().DescribeProperty(property.key);
             if (!next.values[schema.Host().InstanceStorageKey(cls,declared)].emplace(property.index, std::move(value)).second)
                 throw std::runtime_error("Duplicate script save property alias/index");
@@ -11039,6 +11122,16 @@ PreparedScriptState PrepareScriptSavedState(
             actor->nativeXLevel = target(schema.NativeLevelPath());
             actor->nativeLinkerBound=true; // Reconstructed runtime birth, never a source export.
             actor->nativeRenderInterfaceBound=true;
+            if(persistentVmObjects.contains("engine.actor.deleted")) {
+                const auto field=schema.Host().DescribeProperty("Engine.Actor.Deleted");
+                const auto key=schema.Host().InstanceStorageKey(actor->cls,field);
+                auto value=schema.Host().Read(actor,field,0u);
+                if(const auto found=record->values.find(key);found!=record->values.end())
+                    if(const auto slot=found->second.find(0u);slot!=found->second.end())value=slot->second;
+                if(value.kind!=QuestVr::Vm::Kind::Object||!value.text.empty())
+                    throw std::runtime_error("Restored birth native Deleted ownership cannot be represented by this archive");
+                schema.Host().BindNativeActorDeferred(actor);
+            }
         }
     }
     for (const auto& state : saved.aiManagers) {
@@ -13077,6 +13170,31 @@ PortablePropertyTeardownProbeResult ProbePortableActorPropertyTeardown(
 PortableObjectLinkerSnapshot ReadPortableRuntimeObjectLinker(const std::string& objectPath) {
     PortableActorVmHost host;return host.ObjectLinkerSnapshot(objectPath);
 }
+PortableDeferredOwnershipSnapshot ReadPortableRuntimeDeferredOwnership() {
+    PortableActorVmHost host;return host.DeferredOwnershipSnapshot();
+}
+PortableActorDestroyProbeResult ProbePortableActorNativeDestroy(
+    const std::vector<std::string>& actorPaths,const QuestVr::Vm::Limits& limits) {
+    CollectBirthGarbageAtBoundary collect;PortableActorDestroyProbeResult result;
+    try {
+        PortableActorVmHost host;
+        result.execution=QuestVr::Vm::ExecuteTransaction(host,[&](QuestVr::Vm::Execution& execution) {
+            const auto value=host.ProbeNativeActorDestroy(actorPaths,result,execution);
+            const auto refuses=[&](const auto& operation,const char* message) {
+                try{operation();}catch(const std::exception& error){return std::string(error.what()).find(message)!=std::string::npos;}
+                return false;
+            };
+            result.captureRefused=refuses([]{static_cast<void>(CollectScriptSavedState());},"Native deferred Actor checkpoint/rebind capture");
+            result.restoreRefused=refuses([]{static_cast<void>(PrepareScriptSavedState({},true,{}));},"Native deferred Actor checkpoint/rebind restoration");
+            result.travelRefused=refuses([]{static_cast<void>(UnloadPortableRuntimeMap());},"native deferred Actor");
+            return value;
+        },limits);
+        result.execution.committed=false;
+    }catch(const std::exception& error) {
+        result.execution.status=QuestVr::Vm::Status::Unsupported;result.execution.error=error.what();
+    }
+    return result;
+}
 PortableObjectDestroyProbeResult ProbePortableActorConditionalDestroy(
     const std::string& actorPath,const QuestVr::Vm::Limits& limits) {
     CollectBirthGarbageAtBoundary collect;PortableObjectDestroyProbeResult result;
@@ -13415,6 +13533,7 @@ bool GetPortableRuntimeUnsavedScriptState() {
     if (!persistentRuntime || !persistentRuntime->get()) return false;
     if(HasNativeConversationBindings()) return true;
     if(HasNativeLinkerChanges()) return true;
+    if(HasNativeDeferredOwnership()) return true;
     if (persistentRuntime->get()->nativeDecals) return true;
     for (const auto* object : persistentRuntime->get()->exports)
         if (object->committedScriptState || !object->classDefaultValues.empty() || object->nativeAiManager ||
@@ -13579,6 +13698,10 @@ static std::pair<RuntimeObject*,RuntimeObject*> BindAuthoredActorSlots(
         if(modelIndex>=package.exports.size()) throw std::runtime_error("Native Level.Model export is outside its map");
         auto* model=persistentRuntime->get()->exports.at(first+modelIndex);
         host.ValidateNativeLevelModel(xlevel,model);
+        const auto deferred=ReadPortableLevel68DeferredState(package);
+        if(deferred.firstDeleted)
+            throw std::runtime_error("Authored nonempty native FirstDeleted queue loading/cleanup is not implemented");
+        xlevel->nativeFirstDeleted=nullptr;xlevel->nativeFirstDeletedBound=true;
         pendingModel={xlevel,model};
         // Owned standalone engine service configuration, independent of any
         // reflected NetMode/Level/XLevel overlay and never a serialized pointer.
@@ -13606,6 +13729,7 @@ static std::pair<RuntimeObject*,RuntimeObject*> BindAuthoredActorSlots(
             persistentWorldActors[slot] = actor;
             actorOrder.push_back(actor);
         }
+        for(auto* actor:actorOrder)host.BindNativeActorDeferred(actor);
     } else {
         persistentWorldActors.clear();
         // Generated metadata-only maps deliberately omit serialized ULevel.
@@ -13813,6 +13937,8 @@ PortableMapRuntimeSummary LoadPortableRuntimeMap(
 }
 
 std::size_t UnloadPortableRuntimeMap() {
+    if(HasNativeDeferredOwnership())
+        throw std::runtime_error("Map unload refused: native deferred Actor archiving/cleanup is not implemented");
     if(HasNativeConversationBindings())
         throw std::runtime_error("Map unload refused: native conversation purge/archiving is not implemented");
     if(persistentRetailCollision)

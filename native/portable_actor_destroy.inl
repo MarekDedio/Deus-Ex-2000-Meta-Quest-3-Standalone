@@ -208,8 +208,17 @@
         q.conditionalDestroy=[this,resolve,&execution](std::uintptr_t identity)->std::int32_t {
             return ConditionalDestroyObject(resolve(identity),execution);
         };
-        q.firstDeleted=[](std::uintptr_t)->std::uintptr_t {
-            throw std::runtime_error("Original DestroyActor deferred deletion ownership is not implemented");
+        q.firstDeleted=[this,retainLevel](std::uintptr_t identity) {
+            return FirstDeleted(retainLevel(identity));
+        };
+        q.writeDeleted=[this,resolve,level](std::uintptr_t identity,std::uintptr_t target) {
+            StoreDeleted(resolve(identity),target?resolve(target):nullptr,level);
+        };
+        q.writeFirstDeleted=[this,retainLevel,resolve](std::uintptr_t identity,std::uintptr_t target) {
+            StoreFirstDeleted(retainLevel(identity),target?resolve(target):nullptr);
+        };
+        q.cleanupDestroyed=[](std::uintptr_t,std::int32_t) {
+            throw std::runtime_error("Original DestroyActor editor CleanupDestroyed is not implemented");
         };
         q.work=[this]{LifecycleStep();};
         return QuestVr::DestroyOriginalLevelActor(levelId,source,force,q);
