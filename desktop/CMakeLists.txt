@@ -726,6 +726,16 @@ endif()
 add_test(NAME portable_property_teardown COMMAND portable_property_teardown_test)
 set_tests_properties(portable_property_teardown PROPERTIES SKIP_RETURN_CODE 77)
 
+add_executable(portable_object_destroy_test portable_object_destroy_test.cpp)
+target_compile_features(portable_object_destroy_test PRIVATE cxx_std_20)
+target_link_libraries(portable_object_destroy_test PRIVATE quest_portable_host)
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+    target_compile_options(portable_object_destroy_test PRIVATE -Wall -Wextra -Werror)
+    target_link_options(portable_object_destroy_test PRIVATE -static -static-libgcc -static-libstdc++)
+endif()
+add_test(NAME portable_object_destroy COMMAND portable_object_destroy_test)
+set_tests_properties(portable_object_destroy PROPERTIES SKIP_RETURN_CODE 77)
+
 # Static original-data inventory, not runtime/startup acceptance or a CTest.
 add_executable(conversation_binding_inspect conversation_binding_inspect.cpp)
 target_compile_features(conversation_binding_inspect PRIVATE cxx_std_20)

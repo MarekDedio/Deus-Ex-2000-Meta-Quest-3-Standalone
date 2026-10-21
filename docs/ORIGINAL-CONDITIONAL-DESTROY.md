@@ -12,6 +12,11 @@ baseline, not a claim that this subsequent source work is absent. Live linker
 detachment and deferred deletion remain unfinished; no complete DestroyActor,
 usable loot, gravity or new playable APK is claimed.
 
+Subsequent live-linker source work is now recorded in TRAINING-LIVE-LINKER.md:
+the base-destruction detach/cache path has real loader storage and rollback.
+Deferred actor ownership/cleanup remains unfinished. The original authority
+below is unchanged; historical missing-provider notes describe audit-time state.
+
 Owned originals under `D:/Steam/steamapps/common/Deus Ex/System` retain:
 
 - Core.dll SHA256 `8BF3039E14F849942EE70A95BDF26CF1F636245926E30106BBE58B7097EBA7E4`.

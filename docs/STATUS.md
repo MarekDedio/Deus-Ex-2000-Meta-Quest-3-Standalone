@@ -1,6 +1,28 @@
 # Port status
 
-## First Training property teardown checkpoint (2026-10-21)
+## First Training live loader detachment (2026-10-21)
+
+Actual native ConditionalDestroy now completes the supported Actor/base
+property teardown, exact live source-export detachment and current-Outer index
+cache. Source provenance, UObject identity/lookup and unrelated clocks remain
+intact. A compact lossless baseline view plus explicit changed slots replaces
+the rejected dense pointer duplicate, preserving all objects within the same
+16MiB state bound. Native archive/travel remains explicitly guarded.
+
+Actual first-map tests pass38456/160, including every native-work interruption
+and the repeated ConditionalDestroy return0 path; the earlier property tests
+remain1164/33. Two actual startup attempts now stop at deferred deletion rather
+than linker detachment, with full rollback and all40 originals unchanged.
+Startup, live crate destruction, surviving loot and gravity remain unfinished.
+Only first Training is integrated/tested; no backend-only APK. See
+TRAINING-LIVE-LINKER.md and ORIGINAL-DEFERRED-ACTOR-OWNERSHIP.md.
+Final coherent desktop/strict ARM64/Android native builds pass. Shared CTest
+executes162/189 with27 explicit owned-data skips and zero failures. Actual
+first-map movement122706/21 and metadata/config/conversation/isolated-crate
+regressions pass separately; no skipped tests or backend build is claimed as
+headset gameplay acceptance.
+
+## Previous first Training property teardown checkpoint (2026-10-21)
 
 Only the entire first `00_Training.dx` is the current playable-content target;
 other-map integration and actual-map test sweeps remain deferred. Shared engine

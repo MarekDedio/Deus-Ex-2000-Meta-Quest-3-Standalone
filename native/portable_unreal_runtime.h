@@ -50,6 +50,30 @@ struct PortablePropertyTeardownProbeResult {
 PortablePropertyTeardownProbeResult ProbePortableActorPropertyTeardown(
     const std::string& actorPath,const QuestVr::Vm::Limits& limits={});
 
+// Loader-owned live attachment, separate from immutable file provenance and
+// UObject identity. Opaque linker identities are session-only, not save data.
+struct PortableObjectLinkerSnapshot {
+    bool bound{},attached{},sourceExport{};
+    std::uintptr_t linkerIdentity{},sourceLinkerIdentity{};
+    std::int32_t nativeIndex{-1};
+    std::string sourcePath;
+    std::size_t sourceExportIndex{};
+    std::string exportObjectPath;
+    std::uint32_t objectIndex{},outerIndex{},flags{};
+    bool operator==(const PortableObjectLinkerSnapshot&)const=default;
+};
+PortableObjectLinkerSnapshot ReadPortableRuntimeObjectLinker(const std::string& objectPath);
+struct PortableObjectDestroyProbeResult {
+    QuestVr::Vm::Result execution;
+    bool completed{};
+    std::int32_t returned{},repeated{};
+    PortableObjectLinkerSnapshot before,after;
+};
+// Real native ConditionalDestroy, repeated inside one rollback-only root.
+// Does not publish actor deletion or substitute for deferred Level cleanup.
+PortableObjectDestroyProbeResult ProbePortableActorConditionalDestroy(
+    const std::string& actorPath,const QuestVr::Vm::Limits& limits={});
+
 struct PortableConversationSummary {
     std::size_t objects{};
     std::size_t conversations{};

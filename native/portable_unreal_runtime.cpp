@@ -197,6 +197,27 @@ struct RuntimeNativeConversationState {
 };
 void RetireRuntimeConversationObject(RuntimeObject*) noexcept;
 
+// Actual portable loader service. Its stable identity and mutable ExportMap
+// are NOT the Package root UObject, combined runtime export array or immutable
+// source table. No original ULinker class/vtable construction is claimed.
+struct RuntimeNativeLinker {
+    std::string sourcePath;
+    // The loader already owns every materialized baseline pointer. Address
+    // the vector OBJECT (stable across reallocation), never its data buffer.
+    // Explicit changed slots preserve null as a value, not baseline fallback.
+    const std::vector<RuntimeObject*>* baseline{};
+    std::size_t first{},count{};
+    std::map<std::size_t,RuntimeObject*> changed;
+    bool active{true};
+    RuntimeObject* Read(std::size_t index)const {
+        if(!active||!baseline||index>=count||first>baseline->size()||index>=baseline->size()-first)
+            throw std::runtime_error("Live source export slot has no current loader backing");
+        const auto found=changed.find(index);
+        return found==changed.end()?(*baseline)[first+index]:found->second;
+    }
+    void Retire()noexcept{active=false;baseline=nullptr;changed.clear();}
+};
+
 class RuntimeObject : public GCObject {
 public:
     RuntimeObject(
@@ -206,6 +227,9 @@ public:
 
     PortableReflectionObject reflection;
     QuestVr::ObjectIndexPool::Lease objectIndex;
+    std::shared_ptr<RuntimeNativeLinker> nativeLinker;
+    std::int32_t nativeLinkerIndex{-1}; // Later reused as cached Outer index.
+    bool nativeLinkerBound{},nativeLinkerChanged{};
     std::vector<RuntimeObject*> references;
     RuntimeObject* outer{};
     RuntimeObject* base{};
@@ -481,17 +505,31 @@ public:
     std::vector<RuntimeObject*> exports;
     std::size_t structDescriptorBytes{};
     RuntimeMapDecals* nativeDecals{};
-    struct SourceLinker { std::string name, sourcePath; RuntimeObject* root{}; };
+    struct SourceLinker {
+        std::string name, sourcePath; RuntimeObject* root{};
+        std::shared_ptr<RuntimeNativeLinker> live;
+    };
     std::vector<SourceLinker> sourceLinkers;
     RuntimeObject* mapLinkerRoot{};
+    std::shared_ptr<RuntimeNativeLinker> mapLinker;
 
 protected:
     ~RuntimePackage() override {
+        for(auto& source:sourceLinkers)if(source.live)source.live->Retire();
+        if(mapLinker)mapLinker->Retire();
         if (destroyedPackage_ != nullptr) ++*destroyedPackage_;
     }
 
     GCAllocation* Mark(GCAllocation* marklist) override {
-        for(const auto& source:sourceLinkers) marklist=GC::MarkObject(marklist,source.root);
+        const auto linker=[&](const auto& live) {
+            // Baseline pointers are already rooted by exports below. Preserve
+            // independent changed-slot edges as real live loader ownership.
+            if(live&&live->active)for(const auto& [index,object]:live->changed) {
+                static_cast<void>(index);marklist=GC::MarkObject(marklist,object);
+            }
+        };
+        for(const auto& source:sourceLinkers) {marklist=GC::MarkObject(marklist,source.root);linker(source.live);}
+        linker(mapLinker);
         marklist=GC::MarkObject(marklist,mapLinkerRoot);
         for (RuntimeObject* object : exports) {
             marklist = GC::MarkObject(marklist, object);
@@ -1875,17 +1913,49 @@ std::string ResolveRuntimePackagePath(
     return {};
 }
 
+std::shared_ptr<RuntimeNativeLinker> MakeRuntimeLinker(const PortablePackageTables& package,
+    const std::vector<RuntimeObject*>& baseline,std::size_t first) {
+    if(package.exports.size()>static_cast<std::size_t>(std::numeric_limits<std::int32_t>::max()))
+        throw std::runtime_error("Source linker export count exceeds signed native indices");
+    auto result=std::make_shared<RuntimeNativeLinker>();result->sourcePath=package.sourcePath;
+    result->baseline=&baseline;result->first=first;result->count=package.exports.size();return result;
+}
+void BindRuntimeLinkerExport(const std::shared_ptr<RuntimeNativeLinker>& linker,
+    RuntimeObject* object,std::size_t index) {
+    if(!linker||!linker->active||!object||object->nativeLinkerBound||index>=linker->count||
+        linker->Read(index)!=object||object->sourcePath!=linker->sourcePath||object->exportIndex!=index)
+        throw std::runtime_error("Source linker cannot bind a different or duplicate export identity");
+    object->nativeLinker=linker;
+    object->nativeLinkerIndex=static_cast<std::int32_t>(index);object->nativeLinkerBound=true;
+}
+std::size_t NativeLinkersRetainedBytes() {
+    if(!persistentRuntime||!persistentRuntime->get())return 0u;
+    std::size_t bytes{};const auto count=[&](const auto& linker) {
+        if(linker)bytes=QuestVr::DecalStateDetail::Add(bytes,sizeof(RuntimeNativeLinker)+32u+
+            linker->sourcePath.capacity()+1u+linker->changed.size()*
+                (sizeof(std::pair<const std::size_t,RuntimeObject*>)+6u*sizeof(void*)));
+    };
+    for(const auto& source:persistentRuntime->get()->sourceLinkers)count(source.live);
+    count(persistentRuntime->get()->mapLinker);return bytes;
+}
+bool HasNativeLinkerChanges() {
+    return persistentRuntime&&persistentRuntime->get()&&
+        std::any_of(persistentRuntime->get()->exports.begin(),persistentRuntime->get()->exports.end(),
+            [](const auto* object){return object&&object->nativeLinkerChanged;});
+}
 void PopulateRuntime(
     RuntimePackage* runtime,
     const PortablePackageTables& package,
     const PortableReflectionGraph& graph,
     PortableRuntimeSummary& summary,
     std::size_t* destroyedObjects) {
-    runtime->sourceLinkers.push_back({PackageStem(package.sourcePath),package.sourcePath,nullptr});
+    runtime->sourceLinkers.push_back({PackageStem(package.sourcePath),package.sourcePath,nullptr,{}});
+    auto& linker=runtime->sourceLinkers.back().live;linker=MakeRuntimeLinker(package,runtime->exports,0u);
     runtime->exports.reserve(graph.objects.size());
     for (const PortableReflectionObject& reflection : graph.objects) {
-        runtime->exports.push_back(
-            GC::Alloc<RuntimeObject>(reflection, destroyedObjects));
+        auto* object=GC::Alloc<RuntimeObject>(reflection,destroyedObjects);
+        object->sourcePath=package.sourcePath;object->exportIndex=runtime->exports.size();
+        runtime->exports.push_back(object);BindRuntimeLinkerExport(linker,object,object->exportIndex);
     }
 
     for (std::size_t index = 0; index < runtime->exports.size(); ++index) {
@@ -2193,6 +2263,29 @@ public:
         try {ExitObjectProperties(actor,actor->cls,execution);result.completed=true;}
         catch(...) {after();throw;}
         after();return Value::Bool(true);
+    }
+    PortableObjectLinkerSnapshot ObjectLinkerSnapshot(const std::string& path) {
+        return NativeLinkerSnapshot(Object(path));
+    }
+    Value ProbeObjectConditionalDestroy(const std::string& path,PortableObjectDestroyProbeResult& result,
+        QuestVr::Vm::Execution& execution) {
+        objectDestroyPreview_=true;
+        auto* actor=LifecycleActor(reinterpret_cast<std::uintptr_t>(Object(path)));
+        const auto previous=nativeQueryScratchBytes_;
+        struct Restore {std::size_t& value;std::size_t before;~Restore(){value=before;}} restore{nativeQueryScratchBytes_,previous};
+        const auto measure=[&] {
+            std::size_t bytes=2u*sizeof(PortableObjectLinkerSnapshot);
+            for(const auto* row:{&result.before,&result.after})
+                bytes=QuestVr::DecalStateDetail::Add(bytes,row->sourcePath.capacity()+row->exportObjectPath.capacity()+2u);
+            nativeQueryScratchBytes_=previous;ValidateStateBudget(bytes);nativeQueryScratchBytes_+=bytes;
+        };
+        result.before=NativeLinkerSnapshot(actor);measure();
+        const auto after=[&]{result.after=NativeLinkerSnapshot(actor);measure();};
+        try {
+            result.returned=ConditionalDestroyObject(actor,execution);
+            result.repeated=ConditionalDestroyObject(actor,execution);result.completed=true;
+        }catch(...){after();throw;}
+        after();return Value::Integer(result.returned);
     }
     RuntimeObject* Object(const std::string& path) const {
         static constexpr std::string_view prefix="@ClassDefault:";
@@ -2526,6 +2619,7 @@ public:
         beforeExportCount_ = persistentRuntime->get()->exports.size();
         beforeWorldSlots_ = persistentWorldActors.size();
         beforeWorldSlotItems_.clear();
+        beforeLinkerSlots_.clear();
         nativeDestroyReferenceBytes_=0u;
         beforeRandomSeed_ = persistentScriptRandomSeed;
         beforeWindowObjects_=persistentWindowDomain && persistentWindowDomain->get() ?
@@ -2558,7 +2652,7 @@ public:
         if (clientDependent_ && !persistentNativeClient.HasViewport())
             throw std::runtime_error("Native client lifetime revoked during script transaction");
         ValidateSoundClientLease();
-        if(retailCollisionPreview_||propertyTeardownPreview_) {
+        if(retailCollisionPreview_||propertyTeardownPreview_||objectDestroyPreview_) {
             ValidateStateBudget();Rollback();return;
         }
         SynchronizeNativeMoveMirror();
@@ -2603,6 +2697,7 @@ public:
         beforeCollision_.reset();
         CommitConversationObjects();
         provisionalLookupObjects_.clear();
+        beforeLinkerSlots_.clear();
         ClearMoveHits();nativeDurableMoved_.clear();
         saved_.clear(); savedAi_.clear(); provisionalAi_.clear(); provisionalWindows_.clear(); beforeDecals_.reset(); beforeLevelClock_.reset(); beforeWorldSlotItems_.clear(); nativeDestroyReferenceBytes_=0u; transaction_ = false;
     }
@@ -2639,6 +2734,15 @@ public:
             owner->nativeAiManager = manager;
         }
         if (beforeCollision_) persistentActorCollision.Swap(*beforeCollision_);
+        for(const auto& slot:beforeLinkerSlots_) {
+            if(!slot.linker||!slot.linker->active||slot.index>=slot.linker->count)std::terminate();
+            if(slot.overridden) {
+                const auto found=slot.linker->changed.find(slot.index);
+                if(found==slot.linker->changed.end())std::terminate();
+                found->second=slot.object;
+            }else slot.linker->changed.erase(slot.index);
+        }
+        beforeLinkerSlots_.clear();
         for (auto& entry : saved_) {
             entry.first->scriptValues.swap(entry.second.values);
             entry.first->classDefaultValues.swap(entry.second.defaults);
@@ -2666,6 +2770,9 @@ public:
                 *entry.first->nativeConversation=*entry.second.conversation;
             } else entry.first->nativeConversation.reset();
             entry.first->reflection.flags=entry.second.objectFlags;
+            entry.first->nativeLinker=std::move(entry.second.linker);
+            entry.first->nativeLinkerIndex=entry.second.linkerIndex;
+            entry.first->nativeLinkerChanged=entry.second.linkerChanged;
         }
         if(persistentWindowDomain && persistentWindowDomain->get()) {
             auto* domain=persistentWindowDomain->get();
@@ -7625,6 +7732,7 @@ private:
         actor->lookupName=NameString(path.substr(persistentMapPackageName.size()+1u));
         actor->sourcePath = persistentMapSourcePath; actor->exportIndex = std::numeric_limits<std::size_t>::max();
         actor->cls = cls; actor->outer = xlevel->outer; actor->nativeXLevel = xlevel;
+        actor->nativeLinkerBound=true; // Genuine fresh construction: Linker=None, index=-1.
         actor->nativeRenderInterfaceBound=true; // Fresh host-owned transient Actor payload.
         actor->inventoryTableMetadata = true; actor->inventoryClassReferenceValid = true;
         actor->references.push_back(cls); if (actor->outer) actor->references.push_back(actor->outer);
@@ -7793,6 +7901,7 @@ private:
     }
 #include "portable_actor_lifecycle_events.inl"
 #include "portable_object_properties.inl"
+#include "portable_object_linker.inl"
 #include "portable_object_destroy.inl"
     void SetOwner(RuntimeObject* actor, RuntimeObject* newOwner, QuestVr::Vm::Execution& execution) {
         LifecycleActor(reinterpret_cast<std::uintptr_t>(actor));
@@ -7966,7 +8075,14 @@ private:
         std::uint64_t retailHash{};
         std::optional<RuntimeNativeConversationState> conversation;
         std::uint32_t objectFlags{};
+        std::shared_ptr<RuntimeNativeLinker> linker;
+        std::int32_t linkerIndex{-1};
+        bool linkerChanged{};
     };
+    // Additional owned header bytes in each caller before-image, including
+    // worst alignment padding. The shared loader itself is counted once.
+    static constexpr std::size_t NativeLinkerBeforeBytes=sizeof(std::shared_ptr<RuntimeNativeLinker>)+
+        sizeof(std::int32_t)+sizeof(bool)+alignof(std::shared_ptr<RuntimeNativeLinker>)-1u;
     template <typename Number> static bool SameBits(const Number& a,const Number& b) {
         return std::memcmp(&a,&b,sizeof(Number))==0;
     }
@@ -8070,7 +8186,9 @@ private:
             !SameOptionalFloat(before.lastRenderTime,actor->lastRenderTime) ||
             before.revision!=actor->stateLocalsRevision || before.transitionFlags!=actor->stateTransitionFlags ||
             before.children!=actor->childActors || before.touchSent!=actor->touchEventSent ||
-            before.lifecycle!=actor->committedLifecycle || before.removed!=actor->worldRemoved) return false;
+            before.lifecycle!=actor->committedLifecycle || before.removed!=actor->worldRemoved ||
+            before.objectFlags!=actor->reflection.flags || before.linker!=actor->nativeLinker ||
+            before.linkerIndex!=actor->nativeLinkerIndex || before.linkerChanged!=actor->nativeLinkerChanged) return false;
         // No optimistic general simulation-property whitelist: only the exact
         // three original fields, plus their persistent committed-state marker,
         // may bypass expensive geometry/tag publication. All other deltas keep
@@ -8097,7 +8215,9 @@ private:
             before.playerBinding==actor->nativePlayerBinding && before.player==actor->nativePlayer &&
             before.viewportActor==actor->nativeViewportActor && before.rootWindow==actor->nativeRootWindow &&
             before.uniqueCounter==actor->uniqueObjectCounter && before.windowPropertyRoots==actor->nativeWindowPropertyRoots &&
-            !actor->nativeWindowState && !before.windowState;
+            !actor->nativeWindowState && !before.windowState && before.objectFlags==actor->reflection.flags &&
+            before.linker==actor->nativeLinker && before.linkerIndex==actor->nativeLinkerIndex &&
+            before.linkerChanged==actor->nativeLinkerChanged;
     }
     struct BeforeAI {
         GCRoot<RuntimeAIManager> manager;
@@ -8155,6 +8275,14 @@ private:
     std::size_t vectorRandomDraws_{};
     std::size_t beforeExportCount_{}, beforeWorldSlots_{};
     bool propertyTeardownPreview_{};
+    bool objectDestroyPreview_{};
+    struct BeforeLinkerSlot {
+        std::shared_ptr<RuntimeNativeLinker> linker;
+        std::size_t index{};
+        RuntimeObject* object{};
+        bool overridden{};
+    };
+    std::vector<BeforeLinkerSlot> beforeLinkerSlots_;
     // Typed destructor write references remain in the VM's undo journal until
     // the outer boundary, so their owned schema/zero payload is not lexical.
     std::size_t nativeDestroyReferenceBytes_{};
@@ -8919,6 +9047,7 @@ private:
         if (!transaction_) throw std::runtime_error("VM mutation outside a transaction");
         if (saved_.find(object) == saved_.end()) {
             if (saved_.size() >= 4096u) throw std::runtime_error("VM touched actor budget exceeded");
+            ValidateStateBudget(NativeLinkerBeforeBytes);
             saved_.emplace(object, Before{object->scriptValues, object->classDefaultValues, object->animationClock, object->stateObject, object->latentTimeLeft, object->lastRenderTime,
                 object->stateLocalsRevision, object->stateTransitionFlags, object->committedScriptState, object->childActors,
                 object->touchEventSent, object->committedLifecycle, object->worldRemoved,
@@ -8926,7 +9055,7 @@ private:
                 object->nativeRootWindow,object->uniqueObjectCounter,object->nativeWindowPropertyRoots,object->nativeWindowState,
                 object->nativeRetailHash,object->nativeConversation?
                     std::optional<RuntimeNativeConversationState>{*object->nativeConversation}:std::nullopt,
-                object->reflection.flags});
+                object->reflection.flags,object->nativeLinker,object->nativeLinkerIndex,object->nativeLinkerChanged});
         }
     }
     void TouchCollision() {
@@ -9405,6 +9534,8 @@ private:
         defaults.Retain(retailCollisionOutputBytes_);
         defaults.Retain(beforeWorldSlotItems_.capacity()*sizeof(decltype(beforeWorldSlotItems_)::value_type));
         defaults.Retain(nativeDestroyReferenceBytes_);
+        defaults.Retain(NativeLinkersRetainedBytes());
+        defaults.Retain(beforeLinkerSlots_.capacity()*sizeof(BeforeLinkerSlot));
         if (persistentRuntime->get()->nativeDecals)
             defaults.Retain(NativeDecalRetainedBytes(*persistentRuntime->get()->nativeDecals));
         if (beforeDecals_ && beforeDecals_->state) {
@@ -9439,6 +9570,7 @@ private:
         }
         for(const auto& [object,before]:saved_) {
             static_cast<void>(object);
+            defaults.Retain(NativeLinkerBeforeBytes);
             if(before.conversation) defaults.Retain(sizeof(RuntimeNativeConversationState));
         }
         const auto valueBudget = [&](const auto& self, const Value& value, const std::size_t depth) -> void {
@@ -9916,6 +10048,8 @@ std::vector<QuestVr::ScriptSavedProperty> ClockProperties(
 }
 
 QuestVr::ScriptSavedState CollectScriptSavedState() {
+    if(HasNativeLinkerChanges())
+        throw std::runtime_error("Native linker attachment checkpoint/rebind capture is not implemented");
     if(HasNativeConversationBindings())
         throw std::runtime_error("Native conversation checkpoint/rebind capture is not implemented");
     if(persistentRetailCollision)
@@ -10757,6 +10891,8 @@ void MeasureLegacySimBlendImports(const QuestVr::ScriptSavedState& saved,
 
 PreparedScriptState PrepareScriptSavedState(
     const QuestVr::ScriptSavedState& saved, const bool apply, const QuestVr::ScriptStateLimits& limits) {
+    if(apply&&HasNativeLinkerChanges())
+        throw std::runtime_error("Native linker attachment checkpoint/rebind restoration is not implemented");
     if (apply && LowerAscii(saved.mapName) != LowerAscii(persistentMapPackageName))
         throw std::runtime_error("Script save can only restore into its authored map");
     ScriptSaveSchema schema(saved.mapName);
@@ -10901,6 +11037,7 @@ PreparedScriptState PrepareScriptSavedState(
             // Preserve the constructor's actual native Level independently of
             // a later script overlay (which may legitimately contain None).
             actor->nativeXLevel = target(schema.NativeLevelPath());
+            actor->nativeLinkerBound=true; // Reconstructed runtime birth, never a source export.
             actor->nativeRenderInterfaceBound=true;
         }
     }
@@ -11064,7 +11201,9 @@ PortableRuntimeSummary InitializePortableRuntime(
         slice.package = &package;
         slice.graph = BuildPortableReflectionGraph(package);
         slice.name = PackageStem(package.sourcePath);
-        persistentRuntime->get()->sourceLinkers.push_back({slice.name,package.sourcePath,nullptr});
+        persistentRuntime->get()->sourceLinkers.push_back({slice.name,package.sourcePath,nullptr,{}});
+        auto& linker=persistentRuntime->get()->sourceLinkers.back().live;
+        linker=MakeRuntimeLinker(package,persistentRuntime->get()->exports,persistentRuntime->get()->exports.size());
         slice.first = persistentRuntime->get()->exports.size();
         for (PortableReflectionObject& reflection : slice.graph.objects) {
             reflection.objectPath = slice.name + "." + reflection.objectPath;
@@ -11073,6 +11212,7 @@ PortableRuntimeSummary InitializePortableRuntime(
             object->exportIndex =
                 persistentRuntime->get()->exports.size() - slice.first;
             persistentRuntime->get()->exports.push_back(object);
+            BindRuntimeLinkerExport(linker,object,object->exportIndex);
             persistentQualifiedObjects[reflection.objectPath] = object;
             IndexRuntimeVmObject(reflection.objectPath, object);
         }
@@ -12934,6 +13074,24 @@ PortablePropertyTeardownProbeResult ProbePortableActorPropertyTeardown(
     return result;
 }
 
+PortableObjectLinkerSnapshot ReadPortableRuntimeObjectLinker(const std::string& objectPath) {
+    PortableActorVmHost host;return host.ObjectLinkerSnapshot(objectPath);
+}
+PortableObjectDestroyProbeResult ProbePortableActorConditionalDestroy(
+    const std::string& actorPath,const QuestVr::Vm::Limits& limits) {
+    CollectBirthGarbageAtBoundary collect;PortableObjectDestroyProbeResult result;
+    try {
+        PortableActorVmHost host;
+        result.execution=QuestVr::Vm::ExecuteTransaction(host,[&](QuestVr::Vm::Execution& execution) {
+            return host.ProbeObjectConditionalDestroy(actorPath,result,execution);
+        },limits);
+        result.execution.committed=false;
+    }catch(const std::exception& error) {
+        result.execution.status=QuestVr::Vm::Status::Unsupported;result.execution.error=error.what();
+    }
+    return result;
+}
+
 PortableRetailCollisionProbeResult ProbePortableRuntimeRetailCollision(
     const std::vector<PortableRetailCollisionCommand>& commands,const QuestVr::Vm::Limits& limits) {
     CollectBirthGarbageAtBoundary collect;
@@ -13256,6 +13414,7 @@ bool GetPortableRuntimeScriptStatePresent() {
 bool GetPortableRuntimeUnsavedScriptState() {
     if (!persistentRuntime || !persistentRuntime->get()) return false;
     if(HasNativeConversationBindings()) return true;
+    if(HasNativeLinkerChanges()) return true;
     if (persistentRuntime->get()->nativeDecals) return true;
     for (const auto* object : persistentRuntime->get()->exports)
         if (object->committedScriptState || !object->classDefaultValues.empty() || object->nativeAiManager ||
@@ -13529,6 +13688,7 @@ PortableMapRuntimeSummary LoadPortableRuntimeMap(
     // newly published map object and its loader ownership, even for empty maps.
     persistentMapPackageName=packageName;persistentMapSourcePath=package.sourcePath;
     const std::size_t first = persistentRuntime->get()->exports.size();
+    persistentRuntime->get()->mapLinker=MakeRuntimeLinker(package,persistentRuntime->get()->exports,first);
     persistentRuntime->get()->exports.reserve(first + graph.objects.size());
     for (PortableReflectionObject reflection : graph.objects) {
         reflection.objectPath = packageName + "." + reflection.objectPath;
@@ -13536,6 +13696,7 @@ PortableMapRuntimeSummary LoadPortableRuntimeMap(
         object->sourcePath = package.sourcePath;
         object->exportIndex = persistentRuntime->get()->exports.size() - first;
         persistentRuntime->get()->exports.push_back(object);
+        BindRuntimeLinkerExport(persistentRuntime->get()->mapLinker,object,object->exportIndex);
         persistentQualifiedObjects[reflection.objectPath] = object;
         IndexRuntimeVmObject(reflection.objectPath, object);
     }
@@ -13658,6 +13819,10 @@ std::size_t UnloadPortableRuntimeMap() {
         throw std::runtime_error("Map unload refused: actual retail collision retirement is not implemented");
     if (GetPortableRuntimeUnsavedScriptState())
         throw std::runtime_error("Map unload refused: script state requires a per-map archive");
+    if(persistentRuntime&&persistentRuntime->get()&&persistentRuntime->get()->mapLinker) {
+        auto& linker=persistentRuntime->get()->mapLinker;
+        linker->Retire();linker.reset();
+    }
     if(persistentEngineCollision) {
         auto& state=*persistentEngineCollision->get()->engine->nativeEngineInstance;
         if(state.currentLevel) state.currentLevel->nativeLevelEngine=nullptr;

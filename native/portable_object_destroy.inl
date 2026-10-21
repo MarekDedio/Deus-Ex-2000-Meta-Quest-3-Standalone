@@ -86,12 +86,21 @@
                 base.exitProperties=[this,resolve,&execution](std::uintptr_t target,std::uintptr_t cls) {
                     ExitObjectProperties(resolve(target),reinterpret_cast<RuntimeObject*>(cls),execution);
                 };
-                base.setLinker=[](std::uintptr_t,std::uintptr_t,std::int32_t) {
-                    throw std::runtime_error("Original UObject.Destroy live SetLinker export detachment is not implemented");
+                base.setLinker=[this,resolve](std::uintptr_t target,std::uintptr_t linker,std::int32_t index) {
+                    SetNativeObjectLinker(resolve(target),linker,index);
+                };
+                base.outer=[resolve](std::uintptr_t target){return reinterpret_cast<std::uintptr_t>(resolve(target)->outer);};
+                base.objectIndex=[this](std::uintptr_t target) {
+                    auto* outer=reinterpret_cast<RuntimeObject*>(target);
+                    if(!outer||Object(outer->reflection.objectPath)!=outer||!outer->objectIndex||
+                        outer->objectIndex.Index()>static_cast<std::uint32_t>(std::numeric_limits<std::int32_t>::max()))
+                        throw std::runtime_error("UObject.Destroy cached Outer has no actual native object index");
+                    return static_cast<std::int32_t>(outer->objectIndex.Index());
+                };
+                base.writeLinkerIndex=[this,resolve](std::uintptr_t target,std::int32_t index) {
+                    NativeLinkerIndexStore(resolve(target),index);
                 };
                 base.work=[this]{LifecycleStep();};
-                // Outer-index caching remains unreachable until authentic live
-                // linker/index storage is implemented; no invented None branch.
                 QuestVr::DestroyOriginalObject(receiver,base);
             };
             actor.work=[this]{LifecycleStep();};QuestVr::DestroyOriginalActor(identity,actor);

@@ -8,7 +8,22 @@ save time; shared prerequisites needed by this first map remain in scope.
 Reconfirmed2026-10-21: the WHOLE first Training map is the short-term milestone;
 do not spend time on other-map integration or map-content test sweeps.
 
-Latest property teardown increment,2026-10-21: actual ConditionalDestroy now
+Latest live-linker increment,2026-10-21: actual ConditionalDestroy now completes
+the supported Actor/base property cleanup, source-export detach and real Outer
+index cache without retiring UObject identities. Compact lossless attachment
+storage fixes the initial dense-storage memory regression without raising any
+limit or dropping objects. Actual first-map checks pass38456/160; repeated
+startup now reaches explicit deferred deletion ownership, restoring full state
+and all40 originals. See TRAINING-LIVE-LINKER.md. The next head must be decoded
+from the original serialized ULevel payload, not invented as absent; see
+ORIGINAL-DEFERRED-ACTOR-OWNERSHIP.md. This is not completed destruction, startup,
+usable loot, gravity or a new APK. Other-map integration/testing stays deferred.
+Final shared CTest executes162/189 with27 owned-data skips and zero failures;
+actual first-map movement122706/21 and focused regressions pass separately.
+Desktop/strict ARM64/Android native builds pass; headset gameplay remains
+unproven for this source-only prerequisite.
+
+Previous property teardown increment,2026-10-21: actual ConditionalDestroy now
 reaches native ConstructorLink/selected StrProperty/StructProperty payload
 cleanup, preserving nonconstructor members and original native header flags.
 The new registered StructProperty identity does not fabricate a default block.
