@@ -8,7 +8,20 @@ save time; shared prerequisites needed by this first map remain in scope.
 Reconfirmed2026-10-21: the WHOLE first Training map is the short-term milestone;
 do not spend time on other-map integration or map-content test sweeps.
 
-Latest native-queue increment,2026-10-21: actual serialized FirstDeleted and
+Latest lossless storage work,2026-10-21: native linker header undo is sparse and
+conversation index undo uses actual admitted pages with unchanged identities,
+limits and callback order. Both startup observations now complete1335PPP
+visits and reach the explicit native actor-slot ordering/save boundary, with
+full rollback and all40 originals unchanged.
+Level decoder final-alias correction uses actual4370511, not preliminary4370509;
+generated/owned decoder and index/focused/strict/Android checks pass. Full
+desktop/CTest passes163 executed/192 registered with29 owned-data skips, zero
+failures in65.79s; actual first-map lifetime/conversation/movement/isolatedcrate
+and property regressions pass. Whole first Training
+is still unfinished; no live crate/usable loot/gravity or new APK claim. See
+TRAINING-STARTUP-STORAGE.md. Other actual maps remain out of this milestone.
+
+Previous native-queue increment,2026-10-21: actual serialized FirstDeleted and
 typed Actor.Deleted now support the original ordinary-game deferred insertion,
 with compact rollback and native archive/travel fences. Actual dormant,
 InitExecution-prepared two-crate native removals pass429/21; decoder824/90.

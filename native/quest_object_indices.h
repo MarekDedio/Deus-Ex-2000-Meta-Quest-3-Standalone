@@ -20,6 +20,13 @@ public:
     class Lease;
     class Transaction;
     static constexpr std::uint32_t MaximumSlots = 4'000'000u;
+    // Borrowed from the owning execution root. It admits additional live
+    // allocation bytes, not a private budget, and must not mutate this pool.
+    // The context must outlive the transaction; undo never invokes it.
+    struct JournalAllocationAdmission {
+        void* context{};
+        void (*reserve)(void*,std::size_t){};
+    };
 
 private:
     static constexpr std::uint32_t RetiredEntry = 0x80000000u;
@@ -34,11 +41,55 @@ private:
         [[nodiscard]] std::uint32_t PreviousLink() const noexcept { return previousLinkAndKind&~RetiredEntry; }
     };
     struct TransactionState {
+        static constexpr std::uint32_t PageEntries=64u;
+        static constexpr std::uint32_t PageCount(std::uint32_t maximum) noexcept {
+            return (maximum+PageEntries-1u)/PageEntries;
+        }
         TransactionState(std::uint32_t maximum,std::uint32_t first,std::uint32_t live,std::uint32_t slots)
             : entries(std::make_unique<JournalEntry[]>(maximum)),maximum(maximum),
-              initialFirst(first),initialLive(live),initialSlots(slots) {}
+              initialFirst(first),initialLive(live),initialSlots(slots),allocatedEntries(maximum) {}
+        TransactionState(std::uint32_t maximum,std::uint32_t first,std::uint32_t live,std::uint32_t slots,
+            JournalAllocationAdmission borrowed)
+            : pages(std::make_unique<JournalEntry*[]>(PageCount(maximum))),
+              admission(borrowed),maximum(maximum),initialFirst(first),initialLive(live),initialSlots(slots) {}
+        ~TransactionState() {
+            if(pages)for(std::uint32_t i=0u;i<PageCount(maximum);++i)delete[] pages[i];
+        }
+        [[nodiscard]] JournalEntry& EntryAt(std::uint32_t index) noexcept {
+            if(index>=count)std::terminate();
+            if(entries)return entries[index];
+            const auto& page=pages[index/PageEntries];
+            if(!page)std::terminate();
+            return page[index%PageEntries];
+        }
+        // Admission and page allocation precede all pool/lease/count writes.
+        // A later slot-vector failure may retain this capacity, but it cannot
+        // consume an ordinal or alter the free list and is fully measured.
+        void PrepareNextEntry() {
+            if(count==maximum)throw std::length_error("UObject index transaction journal exhausted");
+            if(entries)return; // Existing fixed mode retains its eager contract.
+            if(admitting)throw std::logic_error("Reentrant UObject index journal allocation admission");
+            const auto pageIndex=count/PageEntries;
+            if(pages[pageIndex])return;
+            const auto remaining=maximum-pageIndex*PageEntries;
+            const auto capacity=remaining<PageEntries?remaining:PageEntries;
+            struct Scope {bool& active;~Scope(){active=false;}} scope{admitting};
+            admitting=true;
+            admission.reserve(admission.context,static_cast<std::size_t>(capacity)*sizeof(JournalEntry));
+            auto page=std::make_unique<JournalEntry[]>(capacity);
+            pages[pageIndex]=page.release();allocatedEntries+=capacity;
+        }
+        [[nodiscard]] std::size_t RetainedBytes() const noexcept {
+            return sizeof(TransactionState)+static_cast<std::size_t>(allocatedEntries)*sizeof(JournalEntry)+
+                (pages?static_cast<std::size_t>(PageCount(maximum))*sizeof(JournalEntry*):0u);
+        }
         std::unique_ptr<JournalEntry[]> entries;
-        std::uint32_t maximum{},count{},initialFirst{},initialLive{},initialSlots{};
+        // Trivial pointer elements avoid a nontrivial-array cookie. This state
+        // owns every nonnull page; the explicit destructor frees them all.
+        std::unique_ptr<JournalEntry*[]> pages;
+        JournalAllocationAdmission admission;
+        std::uint32_t maximum{},count{},initialFirst{},initialLive{},initialSlots{},allocatedEntries{};
+        bool admitting{};
     };
     struct Control {
         explicit Control(std::uint32_t maximum) : maximum(maximum) {}
@@ -81,7 +132,7 @@ public:
         [[nodiscard]] JournalEntry& Registration() const noexcept {
             if (!control_ || !control_->transaction || journalEntry_==0u ||
                 journalEntry_>control_->transaction->count) std::terminate();
-            return control_->transaction->entries[journalEntry_-1u];
+            return control_->transaction->EntryAt(journalEntry_-1u);
         }
         void Take(Lease& other) noexcept {
             // A live pre-root owner's field is part of the retained object
@@ -151,9 +202,19 @@ public:
 
         [[nodiscard]] bool Active() const noexcept { return state_!=nullptr; }
         [[nodiscard]] std::uint32_t EntryCount() const noexcept { return state_?state_->count:0u; }
+        // The operation ceiling stays independent of paged owning capacity.
         [[nodiscard]] std::uint32_t EntryCapacity() const noexcept { return state_?state_->maximum:0u; }
+        [[nodiscard]] std::uint32_t AllocatedEntryCapacity() const noexcept { return state_?state_->allocatedEntries:0u; }
         [[nodiscard]] std::size_t RetainedBytes() const noexcept {
-            return state_?sizeof(TransactionState)+static_cast<std::size_t>(state_->maximum)*sizeof(JournalEntry):0u;
+            return state_?state_->RetainedBytes():0u;
+        }
+        // Pre-admit the next row before a caller admits/allocates an owning
+        // UObject. This exposes the combined page+object peak to that same
+        // root budget without consuming an ordinal or mutating pool/leases.
+        // Acquire and old-lease Retire still self-prepare for every caller.
+        void PrepareNextEntryCapacity() {
+            if(!state_)throw std::logic_error("Cannot prepare an inactive UObject index transaction");
+            state_->PrepareNextEntry();
         }
 
         void Retire(Lease& lease) {
@@ -165,10 +226,10 @@ public:
                 // needs no second journal row and must never resurrect it.
                 lease.Release();return;
             }
-            if (state_->count==state_->maximum)
-                throw std::length_error("UObject index transaction journal exhausted");
+            state_->PrepareNextEntry();
             const auto index=lease.index_;
-            state_->entries[state_->count++]={&lease,index,
+            const auto ordinal=state_->count++;
+            state_->EntryAt(ordinal)={&lease,index,
                 control_->nextFree[static_cast<std::size_t>(index-1u)]|RetiredEntry};
             lease.journalEntry_=state_->count;
             control_->nextFree[static_cast<std::size_t>(index-1u)]=control_->firstFree;
@@ -178,7 +239,7 @@ public:
         void Commit() noexcept {
             if (!state_) return;
             for (std::uint32_t ordinal=1u;ordinal<=state_->count;++ordinal) {
-                auto& entry=state_->entries[ordinal-1u];
+                auto& entry=state_->EntryAt(ordinal-1u);
                 if (!entry.owner) continue;
                 auto& lease=*entry.owner;
                 ValidateOwner(lease,entry,ordinal);
@@ -192,7 +253,7 @@ public:
             // Invalidate all surviving provisional owners before restoring old
             // leases: the same numeric slot can legitimately have both rows.
             for (std::uint32_t ordinal=1u;ordinal<=state_->count;++ordinal) {
-                auto& entry=state_->entries[ordinal-1u];
+                auto& entry=state_->EntryAt(ordinal-1u);
                 if (!entry.owner) continue;
                 auto& lease=*entry.owner;
                 ValidateOwner(lease,entry,ordinal);
@@ -201,7 +262,7 @@ public:
                 else {lease.index_=0u;lease.control_.reset();}
             }
             for (auto remaining=state_->count;remaining!=0u;--remaining) {
-                const auto& entry=state_->entries[remaining-1u];
+                const auto& entry=state_->EntryAt(remaining-1u);
                 control_->nextFree[static_cast<std::size_t>(entry.index-1u)]=entry.PreviousLink();
             }
             control_->nextFree.resize(state_->initialSlots);
@@ -219,6 +280,19 @@ public:
             // pointer or touching any pool/lease state.
             state_=std::make_unique<TransactionState>(maximum,control_->firstFree,
                 control_->live,static_cast<std::uint32_t>(control_->nextFree.size()));
+            control_->transaction=state_.get();
+        }
+        Transaction(std::shared_ptr<Control> control,std::uint32_t maximum,JournalAllocationAdmission admission)
+            : control_(std::move(control)) {
+            if(control_->transaction)
+                throw std::logic_error("Nested UObject index transactions are not supported");
+            if(!admission.reserve)
+                throw std::invalid_argument("Paged UObject index journal lacks owning-root allocation admission");
+            // No active transaction is published until both header/table
+            // allocations succeed. The table never grows or relocates pages.
+            admission.reserve(admission.context,PagedTransactionInitialRetainedBytes(maximum));
+            state_=std::make_unique<TransactionState>(maximum,control_->firstFree,control_->live,
+                static_cast<std::uint32_t>(control_->nextFree.size()),admission);
             control_->transaction=state_.get();
         }
         void ValidateOwner(const Lease& lease,const JournalEntry& entry,std::uint32_t ordinal) const noexcept {
@@ -244,6 +318,20 @@ public:
         return Transaction(control_,maximumEntries);
     }
 
+    [[nodiscard]] static std::size_t PagedTransactionInitialRetainedBytes(std::uint32_t maximumEntries) {
+        static_cast<void>(TransactionRetainedBytes(maximumEntries));
+        return sizeof(TransactionState)+static_cast<std::size_t>(TransactionState::PageCount(maximumEntries))*
+            sizeof(JournalEntry*);
+    }
+    // Optional representation only: the SAME maximum operation count and
+    // identity/free-list/undo semantics, with actual pages admitted on demand.
+    // BeginTransaction above deliberately keeps its complete-upfront contract.
+    [[nodiscard]] Transaction BeginPagedTransaction(std::uint32_t maximumEntries,JournalAllocationAdmission admission) {
+        if(!control_)throw std::logic_error("Cannot transact a moved-from UObject index pool");
+        static_cast<void>(PagedTransactionInitialRetainedBytes(maximumEntries));
+        return Transaction(control_,maximumEntries,admission);
+    }
+
     explicit ObjectIndexPool(std::uint32_t maximum=MaximumSlots) {
         if (maximum==0u || maximum>MaximumSlots)
             throw std::invalid_argument("UObject index pool capacity is outside portable policy");
@@ -260,6 +348,9 @@ public:
         auto* transaction=control.transaction;
         if (transaction && transaction->count==transaction->maximum)
             throw std::length_error("UObject index transaction journal exhausted");
+        if(control.firstFree==0u && control.nextFree.size()>=control.maximum)
+            throw std::length_error("UObject index pool capacity exhausted");
+        if(transaction)transaction->PrepareNextEntry();
         std::uint32_t index;
         if (control.firstFree!=0u) {
             index=control.firstFree;
@@ -274,7 +365,8 @@ public:
         }
         std::uint32_t journalEntry{};
         if (transaction) {
-            transaction->entries[transaction->count++]={nullptr,index,
+            const auto ordinal=transaction->count++;
+            transaction->EntryAt(ordinal)={nullptr,index,
                 control.nextFree[static_cast<std::size_t>(index-1u)]};
             journalEntry=transaction->count;
         }

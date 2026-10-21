@@ -1,6 +1,25 @@
 # Port status
 
-## First Training native deferred queue checkpoint (2026-10-21)
+## First Training lossless startup storage (2026-10-21)
+
+Sparse linker-header undo and on-demand bounded conversation-index journal
+pages preserve all identities/callbacks and the existing16MiB/operation limits.
+Training now passes its previous NPC allocation failure: two observed attempts
+complete1335 PPP visits and reach the same explicit original actor-slot
+ordering/save boundary, with full rollback and all40 originals unchanged.
+Startup is still non-publishing and unfinished.
+
+Level decoding also now follows the original second `+100` archive store,
+validating all16 following references; Training's final head witness is4370511,
+not its preliminary4370509. Decoder986/141 and index338395/40 checks pass;
+focused CTest9/9, strict ARM64 and Android native link pass. Full desktop build
+and shared CTest pass:163 executed/192 registered,29 explicit owned-data skips,
+zero failures in65.79s. Actual linker/deferred/conversation/movement/isolated
+crate/property regressions pass. Crate
+gameplay, surviving usable loot/gravity and a new APK remain unfinished.
+See TRAINING-STARTUP-STORAGE.md. No other-map integration/test sweep is added.
+
+## Previous first Training native deferred queue checkpoint (2026-10-21)
 
 The native Level queue head is now decoded from the original ReachSpecs/time/
 FirstDeleted stream. Typed Actor.Deleted storage and original LIFO insertion

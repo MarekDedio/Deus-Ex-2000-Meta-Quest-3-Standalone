@@ -318,7 +318,10 @@ Tables Build(Fixture& fixture, unsigned schema = 0u) {
         map.ObjectTag(properties,"Level",levelActor); map.ObjectTag(properties,"XLevel",world); if(reference==levelActor) map.BoolTag(properties,"bBegunPlay",true); if(reference==driver) map.ObjectTag(properties,"Link",receiver); map.ActorBody(reference,std::move(properties));
     }
     map.ActorBody(nonactor,{});
-    Bytes worldBytes; Index(worldBytes,0); U32(worldBytes,3u); U32(worldBytes,3u); for(const auto reference:{levelActor,driver,receiver}) Index(worldBytes,reference); for(unsigned i=0u;i<5u;++i) Index(worldBytes,0); U32(worldBytes,7777u); U32(worldBytes,0u); Index(worldBytes,worldModel); Index(worldBytes,0); map.Body(world,std::move(worldBytes));
+    Bytes worldBytes; Index(worldBytes,0); U32(worldBytes,3u); U32(worldBytes,3u); for(const auto reference:{levelActor,driver,receiver}) Index(worldBytes,reference); for(unsigned i=0u;i<5u;++i) Index(worldBytes,0); U32(worldBytes,7777u); U32(worldBytes,0u); Index(worldBytes,worldModel); Index(worldBytes,0);
+    U32(worldBytes,0u); Index(worldBytes,0); // Original serialized Float time and preliminary +100.
+    for(unsigned i=0u;i<16u;++i)Index(worldBytes,0); // +9C pointer sequence, including final +100 alias.
+    map.Body(world,std::move(worldBytes));
     Bytes modelBytes; Index(modelBytes,0); for(unsigned i=0u;i<6u;++i) FloatBytes(modelBytes,0); modelBytes.push_back(0); for(unsigned i=0u;i<4u;++i) FloatBytes(modelBytes,0); for(unsigned i=0u;i<5u;++i) Index(modelBytes,0); U32(modelBytes,0); U32(modelBytes,1); Index(modelBytes,levelActor); U64(modelBytes,0); U64(modelBytes,0); for(unsigned i=0u;i<7u;++i) Index(modelBytes,0); U32(modelBytes,1); U32(modelBytes,0); map.Body(worldModel,std::move(modelBytes));
     (void)location;
     return {{coreTable,engineTable,classTable},fixture.Write(map,true)};

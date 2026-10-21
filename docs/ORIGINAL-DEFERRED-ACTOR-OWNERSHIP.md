@@ -41,12 +41,19 @@ normal prefix is:
 | `1039D5AB..5B3` | Archive ReachSpecs array `+8C` through `10303A80 -> 103A1320` |
 | `1039D5BD..5C5` | Archive the Float time temporary with four raw bytes |
 | `1039D5C8..5D3` | Pass address `Level+100` to archive virtual `+18` |
-| `1039D5D6..5EA` | Archive sixteen successive UObject-reference slots beginning `Level+9C` |
+| `1039D5D6..5EA` | Archive sixteen successive UObject-reference slots beginning `Level+9C`; slot1 archives `+100` again |
 
 The `+100` address operation is not guarded by IsLoading/IsSaving or by an
 absent reflected property. A map loader must decode the actual object reference
 in this native body and bind the corresponding live identity. An unsupported
-nonnull queue cannot safely be replaced by None. A future archive/rebind phase
+nonnull queue cannot safely be replaced by None. The later sixteen-reference
+loop revisits the SAME native address at zero-based index1: `9C + 1*4 = 100`.
+EDI retains Level at `1039D584`, ESI starts at zero at `1039D586`, and
+`1039D5DD` selects `[EDI+ESI*4+9C]`. Therefore the second serialized value is
+the final loaded FirstDeleted authority. The original does not assert equality
+between these two encodings; a loader must validate both and preserve the last
+store, including conflicting valid references. It must also read/validate the
+remaining fifteen references rather than accept a truncated prefix. A future archive/rebind phase
 must represent the queue, rather than reconstructing it from `bDeleteMe` flags.
 
 The ReachSpecs decoder needed to reach that reference is independently tied to
@@ -73,8 +80,9 @@ Class import-179, Outer0, flags00070001, serialized offset4366622 and size3906.
 | Model reference | `1180`, actual Model36 export |
 | ReachSpecs count | `60`; each Start/End reference verified within local export range |
 | Serialized Float time | `4370505`, bytes `0D EE 24 43`, approximately164.9299 |
-| **FirstDeleted** | **`4370509`, compact byte `00`, actual None** |
-| Sixteen text references | zero except zero-based slot6 =3145 |
+| Preliminary FirstDeleted archive | `4370509`, compact byte `00`, None |
+| **Final FirstDeleted archive (loop slot1)** | **`4370511`, compact byte `00`, actual loaded None** |
+| Sixteen following references | zero except zero-based slot6 =3145; slot1 aliases FirstDeleted |
 | Remaining map count / exact export end | zero at4370527; end4370528 |
 
 Thus a first-Training loader may establish an actually decoded None head from

@@ -325,7 +325,10 @@ Tables Build(Fixture& fixture, const unsigned malformed = 0u) {
     Bytes worldBytes; Index(worldBytes, 0); U32(worldBytes, 3u); U32(worldBytes, 3u);
     for (const auto ref : {info, camera, otherActor}) Index(worldBytes, ref);
     for (unsigned i = 0u; i < 5u; ++i) Index(worldBytes, 0);
-    U32(worldBytes, 7777u); U32(worldBytes, 0u); Index(worldBytes, worldModel); Index(worldBytes, 0); map.Body(world, std::move(worldBytes));
+    U32(worldBytes, 7777u); U32(worldBytes, 0u); Index(worldBytes, worldModel); Index(worldBytes, 0);
+    U32(worldBytes,0u); Index(worldBytes,0); // Original serialized Float time and preliminary +100.
+    for(unsigned i=0u;i<16u;++i)Index(worldBytes,0); // +9C pointer sequence, including final +100 alias.
+    map.Body(world, std::move(worldBytes));
     Bytes modelBytes; Index(modelBytes, 0); for (unsigned i = 0u; i < 6u; ++i) U32(modelBytes, 0u);
     modelBytes.push_back(0u); for (unsigned i = 0u; i < 4u; ++i) U32(modelBytes, 0u);
     for (unsigned i = 0u; i < 5u; ++i) Index(modelBytes, 0);

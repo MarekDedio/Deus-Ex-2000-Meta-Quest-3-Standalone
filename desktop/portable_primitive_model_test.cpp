@@ -178,7 +178,10 @@ Tables Build(Fixture& fixture,bool replacement=false,bool inactiveGarbage=false,
     }
     Bytes wb{0u};U32(wb,static_cast<std::uint32_t>(order.size()));U32(wb,static_cast<std::uint32_t>(order.size()));for(auto ref:order)Index(wb,ref);
     for(unsigned i=0;i<5u;++i) {Index(wb,0);}
-    U32(wb,7777);U32(wb,0);Index(wb,root);Index(wb,0);map.Body(world,std::move(wb));
+    U32(wb,7777);U32(wb,0);Index(wb,root);Index(wb,0);
+    U32(wb,0u);Index(wb,0); // Original serialized Float time and preliminary +100.
+    for(unsigned i=0u;i<16u;++i)Index(wb,0); // +9C pointer sequence, including final +100 alias.
+    map.Body(world,std::move(wb));
     return {{ct,et,at,st},fixture.Write(map,true)};
 }
 std::string Path(const std::string& n) {return "PrimitiveModelFixture."+n;}

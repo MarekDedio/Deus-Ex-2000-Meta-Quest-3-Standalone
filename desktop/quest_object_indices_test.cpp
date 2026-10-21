@@ -72,6 +72,19 @@ struct FailAllocationAfter {
 void MoveAssign(Lease& destination,Lease& source) {
     destination=std::move(source);
 }
+struct AdmissionRejected {};
+struct PagedAdmission {
+    std::array<std::size_t,128u> requests{};
+    std::size_t calls{},approved{},rejectCall=std::numeric_limits<std::size_t>::max();
+    static void Reserve(void* context,std::size_t bytes) {
+        auto& self=*static_cast<PagedAdmission*>(context);
+        if(self.calls>=self.requests.size())throw std::logic_error("Generated journal admission trace exceeded bound");
+        self.requests[self.calls++]=bytes;
+        if(self.calls==self.rejectCall)throw AdmissionRejected{};
+        self.approved+=bytes;
+    }
+    Pool::JournalAllocationAdmission Borrow(){return {this,&Reserve};}
+};
 
 void LifecycleAndBounds() {
     static_assert(!std::is_copy_constructible_v<Lease> && !std::is_copy_assignable_v<Lease>);
@@ -490,7 +503,171 @@ void RepeatedTransactionsAndSlotReuse() {
     }
 }
 
-void MixedTransactionOracle() {
+void PagedBoundariesMovesAndExactRollback() {
+    Pool pool(128u);auto original=pool.Acquire();const auto originalIndex=original.Index();
+    PagedAdmission admission;auto transaction=pool.BeginPagedTransaction(65u,admission.Borrow());
+    Require(transaction.Active()&&transaction.EntryCapacity()==65u&&transaction.EntryCount()==0u&&
+        transaction.AllocatedEntryCapacity()==0u&&transaction.RetainedBytes()==Pool::PagedTransactionInitialRetainedBytes(65u)&&
+        admission.calls==1u&&admission.approved==transaction.RetainedBytes(),
+        "Paged transaction did not admit only actual initial state/pointer table");
+    transaction.PrepareNextEntryCapacity();transaction.PrepareNextEntryCapacity();
+    Require(transaction.EntryCount()==0u&&transaction.AllocatedEntryCapacity()==64u&&admission.calls==2u&&
+        admission.approved==transaction.RetainedBytes()&&original.Index()==originalIndex&&pool.LiveCount()==1u,
+        "Explicit next-row capacity preparation consumed an ordinal/identity or repeated its admission");
+    transaction.Retire(original);std::array<Lease,64u> provisional;
+    for(std::size_t i=0;i<provisional.size();++i){
+        provisional[i]=pool.Acquire();
+        const auto entries=static_cast<std::uint32_t>(i+2u);
+        Require(transaction.EntryCount()==entries&&transaction.EntryCapacity()==65u&&
+            transaction.AllocatedEntryCapacity()==(entries<=64u?64u:65u)&&
+            transaction.RetainedBytes()==admission.approved,
+            "Paged journal changed operation ceiling, owning page capacity or retained-byte admission");
+    }
+    Require(admission.calls==3u&&admission.requests[1u]==64u*admission.requests[2u]&&
+        transaction.RetainedBytes()<Pool::TransactionRetainedBytes(65u)+3u*sizeof(void*),
+        "Final partial page allocated a full extra page or duplicated hidden journal storage");
+    const auto beforeCalls=admission.calls;
+    Refuse<std::length_error>([&]{static_cast<void>(pool.Acquire());},"Paged operation ceiling silently grew");
+    Require(admission.calls==beforeCalls&&transaction.EntryCount()==65u,
+        "Exhausted paged journal invoked allocation admission or consumed an ordinal");
+    {DenyAllocation deny;transaction.Retire(provisional.front());}
+    Require(transaction.EntryCount()==65u,"Provisional retirement added a paged undo row");
+    Lease movedOld(std::move(original));Lease movedNew(std::move(provisional.back()));
+    auto moved=std::move(transaction);
+    Require(!transaction.Active()&&moved.Active(),"Moving paged transaction lost the stable row domain");
+    {DenyAllocation deny;moved.Rollback();}
+    Require(admission.calls==beforeCalls&&movedOld.Index()==originalIndex&&!movedNew&&
+        !moved.Active()&&!moved.RetainedBytes()&&pool.LiveCount()==1u&&pool.AllocatedSlots()==1u,
+        "Paged allocation-free rollback lost moved old identity or retained provisional slots");
+    for(const auto& lease:provisional)Require(!lease,"Paged rollback left a provisional lease alive");
+    Refuse<std::logic_error>([&]{moved.PrepareNextEntryCapacity();},"Inactive paged capacity preparation succeeded");
+
+    PagedAdmission commitAdmission;auto committed=pool.BeginPagedTransaction(130u,commitAdmission.Borrow());
+    committed.Retire(movedOld);std::vector<Lease> survivors;
+    for(unsigned i=0u;i<70u;++i)survivors.push_back(pool.Acquire());
+    Require(survivors.front().Index()==originalIndex&&committed.AllocatedEntryCapacity()==128u,
+        "Paged commit fixture did not exercise stable rows across page and lease-container growth");
+    Lease finalOld(std::move(movedOld));const auto calls=commitAdmission.calls;
+    {DenyAllocation deny;committed.Commit();}
+    Require(!finalOld&&pool.LiveCount()==70u&&commitAdmission.calls==calls,
+        "Paged commit restored retired ownership or called allocation admission");
+    {DenyAllocation deny;survivors.clear();finalOld=Lease{};}
+    Require(pool.LiveCount()==0u,"Committed paged rows remained registered during lease destruction");
+}
+
+void PagedAdmissionAndAllocationFailures() {
+    Pool pool(256u);auto original=pool.Acquire();const auto initial=original.Index();
+    PagedAdmission invalid;
+    Refuse<std::invalid_argument>([&]{static_cast<void>(pool.BeginPagedTransaction(0u,invalid.Borrow()));},
+        "Paged transaction admitted zero operation ceiling");
+    Refuse<std::invalid_argument>([&]{static_cast<void>(pool.BeginPagedTransaction(Pool::MaximumSlots+1u,invalid.Borrow()));},
+        "Paged transaction admitted an unbounded operation ceiling");
+    Refuse<std::invalid_argument>([&]{static_cast<void>(pool.BeginPagedTransaction(65u,{}));},
+        "Paged transaction silently omitted owning-root allocation admission");
+    Require(invalid.calls==0u,"Invalid paged request reached allocation admission");
+    PagedAdmission denied;denied.rejectCall=1u;
+    Refuse<AdmissionRejected>([&]{static_cast<void>(pool.BeginPagedTransaction(65u,denied.Borrow()));},
+        "Initial paged header/table bypassed borrowed admission");
+    for(const auto allocation:{0u,1u}){
+        PagedAdmission allowed;bool failed{};
+        {FailAllocationAfter failure(allocation);try{static_cast<void>(pool.BeginPagedTransaction(65u,allowed.Borrow()));}
+            catch(const std::bad_alloc&){failed=true;}}
+        Require(failed&&original.Index()==initial&&pool.LiveCount()==1u&&pool.AllocatedSlots()==1u,
+            "Failed paged header/pointer-table allocation published a partial transaction");++refusals;
+    }
+    PagedAdmission admission;auto transaction=pool.BeginPagedTransaction(130u,admission.Borrow());
+    const auto base=transaction.RetainedBytes();
+    Refuse<std::logic_error>([&]{static_cast<void>(pool.BeginPagedTransaction(1u,admission.Borrow()));},
+        "Nested paged root replaced the active ownership journal");
+    admission.rejectCall=admission.calls+1u;
+    Refuse<AdmissionRejected>([&]{static_cast<void>(pool.Acquire());},"First page bypassed allocation admission");
+    admission.rejectCall=admission.calls+1u;
+    Refuse<AdmissionRejected>([&]{transaction.Retire(original);},"First retired-owner page bypassed admission");
+    Require(original.Index()==initial&&pool.LiveCount()==1u&&pool.AllocatedSlots()==1u&&
+        transaction.EntryCount()==0u&&transaction.AllocatedEntryCapacity()==0u&&transaction.RetainedBytes()==base,
+        "First-page admission failure mutated pool/lease/ordinal or owning capacity");
+    admission.rejectCall=std::numeric_limits<std::size_t>::max();bool failed{};
+    {DenyAllocation deny;try{static_cast<void>(pool.Acquire());}catch(const std::bad_alloc&){failed=true;}}
+    Require(failed&&transaction.EntryCount()==0u&&transaction.RetainedBytes()==base&&pool.AllocatedSlots()==1u,
+        "First-page allocator failure consumed an index or retained unowned capacity");++refusals;
+    auto first=pool.Acquire();
+    for(unsigned i=1u;i<64u;++i){auto temporary=pool.Acquire();}
+    Require(transaction.EntryCount()==64u&&transaction.AllocatedEntryCapacity()==64u,
+        "Paged failure fixture did not stop at the exact first-page boundary");
+    const auto live=pool.LiveCount(),slots=pool.AllocatedSlots();const auto bytes=transaction.RetainedBytes();
+    admission.rejectCall=admission.calls+1u;
+    Refuse<AdmissionRejected>([&]{static_cast<void>(pool.Acquire());},"Second-page acquisition bypassed admission");
+    admission.rejectCall=admission.calls+1u;
+    Refuse<AdmissionRejected>([&]{transaction.Retire(original);},"Second-page retirement bypassed admission");
+    admission.rejectCall=std::numeric_limits<std::size_t>::max();failed=false;
+    {DenyAllocation deny;try{transaction.Retire(original);}catch(const std::bad_alloc&){failed=true;}}
+    Require(failed&&original.Index()==initial&&pool.LiveCount()==live&&pool.AllocatedSlots()==slots&&
+        transaction.EntryCount()==64u&&transaction.RetainedBytes()==bytes,
+        "Later-page admission/allocation failure changed old ownership or exact pool state");++refusals;
+    for(unsigned i=64u;i<128u;++i){auto temporary=pool.Acquire();}
+    const auto beforeLast=admission.calls;
+    transaction.Retire(original);auto reused=pool.Acquire();
+    Require(transaction.EntryCount()==130u&&transaction.AllocatedEntryCapacity()==130u&&reused.Index()==initial&&
+        admission.calls==beforeLast+1u&&admission.requests[beforeLast]*32u==admission.requests[1u],
+        "Last two-row page used full-page storage or changed immediate retired-slot reuse");
+    transaction.Retire(reused);const auto calls=admission.calls;
+    {DenyAllocation deny;transaction.Rollback();}
+    Require(original.Index()==initial&&!first&&!reused&&pool.LiveCount()==1u&&pool.AllocatedSlots()==1u&&admission.calls==calls,
+        "Late paged failures/retirement prevented allocation-free exact root rollback");
+
+    PagedAdmission growthAdmission;auto growth=pool.BeginPagedTransaction(256u,growthAdmission.Borrow());
+    {auto warm=pool.Acquire();}
+    std::array<Lease,128u> retained;std::size_t count{};failed=false;
+    std::uint32_t priorLive{},priorSlots{},priorEntries{};
+    {DenyAllocation deny;while(count<retained.size()){
+        priorLive=pool.LiveCount();priorSlots=pool.AllocatedSlots();priorEntries=growth.EntryCount();
+        try{retained[count]=pool.Acquire();++count;}catch(const std::bad_alloc&){failed=true;break;}}}
+    Require(failed&&pool.LiveCount()==priorLive&&pool.AllocatedSlots()==priorSlots&&growth.EntryCount()==priorEntries,
+        "Slot-vector failure with admitted paged capacity consumed an undo ordinal or index");++refusals;
+    {DenyAllocation deny;growth.Rollback();}
+    Require(original.Index()==initial&&pool.LiveCount()==1u&&pool.AllocatedSlots()==1u,
+        "Paged slot-vector failure did not restore the allocation frontier");
+}
+
+void PagedConstructorUnwindAndDomainMoves() {
+    Pool pool(16u);auto original=pool.Acquire();PagedAdmission admission;
+    auto transaction=pool.BeginPagedTransaction(16u,admission.Borrow());
+    struct ThrowingObject {
+        Lease lease;
+        explicit ThrowingObject(Pool& owner):lease(owner.Acquire()) {throw std::runtime_error("Paged constructor unwind");}
+    };
+    Refuse<std::runtime_error>([&]{ThrowingObject value(pool);},"Paged constructor did not unwind its provisional lease");
+    Require(transaction.EntryCount()==1u&&pool.LiveCount()==1u,"Paged constructor unwind lost its row or leaked ownership");
+    transaction.Retire(original);auto reused=pool.Acquire();
+    Require(reused.Index()==1u,"Paged constructor unwind changed subsequent retired-slot reuse");
+    const auto calls=admission.calls;
+    {DenyAllocation deny;transaction.Rollback();}
+    Require(original.Index()==1u&&!reused&&pool.LiveCount()==1u&&pool.AllocatedSlots()==1u&&admission.calls==calls,
+        "Paged constructor unwind prevented allocation-free full rollback");
+
+    PagedAdmission lifetimeAdmission;Lease survivor;std::optional<Pool::Transaction> surviving;
+    {Pool temporary(2u);survivor=temporary.Acquire();
+        surviving.emplace(temporary.BeginPagedTransaction(2u,lifetimeAdmission.Borrow()));surviving->Retire(survivor);
+        Pool movedPool(std::move(temporary));Require(movedPool.LiveCount()==0u,"Moved pool wrapper changed paged retired state");}
+    {DenyAllocation deny;surviving.reset();}
+    Require(survivor.Index()==1u,"Paged transaction outliving pool wrapper lost its old lease");
+    {DenyAllocation deny;survivor=Lease{};}
+
+    Pool first(2u),second(2u);auto oldFirst=first.Acquire();auto oldSecond=second.Acquire();
+    PagedAdmission firstAdmission,secondAdmission;
+    auto firstRoot=first.BeginPagedTransaction(2u,firstAdmission.Borrow());
+    auto secondRoot=second.BeginPagedTransaction(2u,secondAdmission.Borrow());
+    firstRoot.Retire(oldFirst);secondRoot.Retire(oldSecond);
+    const auto firstCalls=firstAdmission.calls,secondCalls=secondAdmission.calls;
+    {DenyAllocation deny;firstRoot=std::move(secondRoot);}
+    Require(oldFirst.Index()==1u&&!oldSecond&&firstRoot.Active()&&!secondRoot.Active(),
+        "Paged move assignment did not restore former domain before transferring the new root");
+    {DenyAllocation deny;firstRoot.Rollback();}
+    Require(oldSecond.Index()==1u&&firstAdmission.calls==firstCalls&&secondAdmission.calls==secondCalls,
+        "Paged moved-root undo invoked admission or lost original ownership");
+}
+
+void MixedTransactionOracle(bool paged=false) {
     // This oracle stores only abstract live identities and a LIFO vector; it
     // does not reproduce the pool's link journal or owner-registration logic.
     for (std::uint32_t seed=1u;seed<=128u;++seed) {
@@ -504,7 +681,8 @@ void MixedTransactionOracle() {
             free.push_back(originals[index].Index());originals[index]=Lease{};originalIndices[index]=0u;
         }
         std::uint32_t oracleLive=13u,oracleSlots=16u,random=seed;
-        auto transaction=pool.BeginTransaction(512u);
+        PagedAdmission admission;
+        auto transaction=paged?pool.BeginPagedTransaction(512u,admission.Borrow()):pool.BeginTransaction(512u);
         for (unsigned step=0u;step<192u;++step) {
             random=random*1664525u+1013904223u;
             const auto slot=static_cast<std::size_t>((random>>8u)%provisional.size());
@@ -560,6 +738,8 @@ int main() {
         LifecycleAndBounds();MoveAndPoolLifetime();ManyObjectsAndContainerMoves();AllocationFailuresAndExceptionUnwind();
         TransactionRetirementAndExactRollback();TransactionCommitMovesAndLifetime();
         TransactionFailuresAndConstructorUnwind();RepeatedTransactionsAndSlotReuse();MixedTransactionOracle();
+        PagedBoundariesMovesAndExactRollback();PagedAdmissionAndAllocationFailures();
+        PagedConstructorUnwindAndDomainMoves();MixedTransactionOracle(true);
         std::cout<<"Engine-owned UObject index leases: "<<checks<<" checks and "<<refusals<<" refusal controls passed.\n";
         return 0;
     } catch(const std::exception& error) {

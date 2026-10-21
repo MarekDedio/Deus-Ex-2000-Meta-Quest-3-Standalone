@@ -2673,6 +2673,7 @@ public:
         beforeWorldSlots_ = persistentWorldActors.size();
         beforeWorldSlotItems_.clear();
         beforeLinkerSlots_.clear();
+        beforeLinkerHeaders_.clear();
         beforeDeferred_.clear();
         nativeDestroyReferenceBytes_=0u;
         beforeRandomSeed_ = persistentScriptRandomSeed;
@@ -2752,6 +2753,7 @@ public:
         CommitConversationObjects();
         provisionalLookupObjects_.clear();
         beforeLinkerSlots_.clear();
+        beforeLinkerHeaders_.clear();
         beforeDeferred_.clear();
         ClearMoveHits();nativeDurableMoved_.clear();
         saved_.clear(); savedAi_.clear(); provisionalAi_.clear(); provisionalWindows_.clear(); beforeDecals_.reset(); beforeLevelClock_.reset(); beforeWorldSlotItems_.clear(); nativeDestroyReferenceBytes_=0u; transaction_ = false;
@@ -2798,6 +2800,12 @@ public:
             }else slot.linker->changed.erase(slot.index);
         }
         beforeLinkerSlots_.clear();
+        for(auto& row:beforeLinkerHeaders_) {
+            row.object->nativeLinker=std::move(row.linker);
+            row.object->nativeLinkerIndex=row.index;
+            row.object->nativeLinkerChanged=row.changed;
+        }
+        beforeLinkerHeaders_.clear();
         for(const auto& row:beforeDeferred_) {
             row.object->nativeDeleted=row.deleted;row.object->nativeFirstDeleted=row.firstDeleted;
             row.object->nativeDeferredChanged=row.changed;
@@ -2830,9 +2838,6 @@ public:
                 *entry.first->nativeConversation=*entry.second.conversation;
             } else entry.first->nativeConversation.reset();
             entry.first->reflection.flags=entry.second.objectFlags;
-            entry.first->nativeLinker=std::move(entry.second.linker);
-            entry.first->nativeLinkerIndex=entry.second.linkerIndex;
-            entry.first->nativeLinkerChanged=entry.second.linkerChanged;
         }
         if(persistentWindowDomain && persistentWindowDomain->get()) {
             auto* domain=persistentWindowDomain->get();
@@ -6176,6 +6181,7 @@ public:
         const auto path=outer->reflection.objectPath+'.'+name;
         // Charge the copied CDO block before allocation, not only after a
         // potentially large window/default graph has already been duplicated.
+        if(conversationIndices_)conversationIndices_->PrepareNextEntryCapacity();
         ValidateStateBudget(sizeof(RuntimeObject)+path.size()+sizeof(GCAllocation),cls);
         pendingBirthGarbage=true;
         provisionalWindows_.emplace_back(GC::Alloc<RuntimeObject>(PortableReflectionObject{
@@ -7787,6 +7793,9 @@ private:
             if (!persistentVmObjects.count(LowerAscii(path))) break;
             if (suffix == 1'000'000u) throw std::runtime_error("Spawn name budget exceeded");
         }
+        // A preceding conversation bind may have opened the same index domain.
+        // Admit its next journal page before constructing another native object.
+        if(conversationIndices_)conversationIndices_->PrepareNextEntryCapacity();
         pendingBirthGarbage = true;
         GCRoot<RuntimeObject> rooted(GC::Alloc<RuntimeObject>(PortableReflectionObject{
             path, className, xlevel->outer ? xlevel->outer->reflection.objectPath : std::string{}, {}, 0x4000u, 0}, nullptr));
@@ -8139,14 +8148,7 @@ private:
         std::uint64_t retailHash{};
         std::optional<RuntimeNativeConversationState> conversation;
         std::uint32_t objectFlags{};
-        std::shared_ptr<RuntimeNativeLinker> linker;
-        std::int32_t linkerIndex{-1};
-        bool linkerChanged{};
     };
-    // Additional owned header bytes in each caller before-image, including
-    // worst alignment padding. The shared loader itself is counted once.
-    static constexpr std::size_t NativeLinkerBeforeBytes=sizeof(std::shared_ptr<RuntimeNativeLinker>)+
-        sizeof(std::int32_t)+sizeof(bool)+alignof(std::shared_ptr<RuntimeNativeLinker>)-1u;
     template <typename Number> static bool SameBits(const Number& a,const Number& b) {
         return std::memcmp(&a,&b,sizeof(Number))==0;
     }
@@ -8252,8 +8254,7 @@ private:
             before.revision!=actor->stateLocalsRevision || before.transitionFlags!=actor->stateTransitionFlags ||
             before.children!=actor->childActors || before.touchSent!=actor->touchEventSent ||
             before.lifecycle!=actor->committedLifecycle || before.removed!=actor->worldRemoved ||
-            before.objectFlags!=actor->reflection.flags || before.linker!=actor->nativeLinker ||
-            before.linkerIndex!=actor->nativeLinkerIndex || before.linkerChanged!=actor->nativeLinkerChanged) return false;
+            before.objectFlags!=actor->reflection.flags || !SameNativeLinkerHeader(actor)) return false;
         // No optimistic general simulation-property whitelist: only the exact
         // three original fields, plus their persistent committed-state marker,
         // may bypass expensive geometry/tag publication. All other deltas keep
@@ -8282,8 +8283,7 @@ private:
             before.viewportActor==actor->nativeViewportActor && before.rootWindow==actor->nativeRootWindow &&
             before.uniqueCounter==actor->uniqueObjectCounter && before.windowPropertyRoots==actor->nativeWindowPropertyRoots &&
             !actor->nativeWindowState && !before.windowState && before.objectFlags==actor->reflection.flags &&
-            before.linker==actor->nativeLinker && before.linkerIndex==actor->nativeLinkerIndex &&
-            before.linkerChanged==actor->nativeLinkerChanged;
+            SameNativeLinkerHeader(actor);
     }
     struct BeforeAI {
         GCRoot<RuntimeAIManager> manager;
@@ -8349,6 +8349,15 @@ private:
         bool overridden{};
     };
     std::vector<BeforeLinkerSlot> beforeLinkerSlots_;
+    // Header ownership is retained only for objects whose live linker/cache
+    // actually changes. Ordinary script/clock writes need no duplicate owner.
+    struct BeforeLinkerHeader {
+        RuntimeObject* object{};
+        std::shared_ptr<RuntimeNativeLinker> linker;
+        std::int32_t index{-1};
+        bool changed{};
+    };
+    std::vector<BeforeLinkerHeader> beforeLinkerHeaders_;
     struct BeforeDeferred {
         RuntimeObject* object{};
         RuntimeObject* deleted{};
@@ -9122,7 +9131,7 @@ private:
         if (!transaction_) throw std::runtime_error("VM mutation outside a transaction");
         if (saved_.find(object) == saved_.end()) {
             if (saved_.size() >= 4096u) throw std::runtime_error("VM touched actor budget exceeded");
-            ValidateStateBudget(NativeLinkerBeforeBytes);
+            ValidateStateBudget();
             saved_.emplace(object, Before{object->scriptValues, object->classDefaultValues, object->animationClock, object->stateObject, object->latentTimeLeft, object->lastRenderTime,
                 object->stateLocalsRevision, object->stateTransitionFlags, object->committedScriptState, object->childActors,
                 object->touchEventSent, object->committedLifecycle, object->worldRemoved,
@@ -9130,7 +9139,7 @@ private:
                 object->nativeRootWindow,object->uniqueObjectCounter,object->nativeWindowPropertyRoots,object->nativeWindowState,
                 object->nativeRetailHash,object->nativeConversation?
                     std::optional<RuntimeNativeConversationState>{*object->nativeConversation}:std::nullopt,
-                object->reflection.flags,object->nativeLinker,object->nativeLinkerIndex,object->nativeLinkerChanged});
+                object->reflection.flags});
         }
     }
     void TouchCollision() {
@@ -9611,6 +9620,7 @@ private:
         defaults.Retain(nativeDestroyReferenceBytes_);
         defaults.Retain(NativeLinkersRetainedBytes());
         defaults.Retain(beforeLinkerSlots_.capacity()*sizeof(BeforeLinkerSlot));
+        defaults.Retain(beforeLinkerHeaders_.capacity()*sizeof(BeforeLinkerHeader));
         defaults.Retain(beforeDeferred_.capacity()*sizeof(BeforeDeferred));
         if (persistentRuntime->get()->nativeDecals)
             defaults.Retain(NativeDecalRetainedBytes(*persistentRuntime->get()->nativeDecals));
@@ -9646,7 +9656,6 @@ private:
         }
         for(const auto& [object,before]:saved_) {
             static_cast<void>(object);
-            defaults.Retain(NativeLinkerBeforeBytes);
             if(before.conversation) defaults.Retain(sizeof(RuntimeNativeConversationState));
         }
         const auto valueBudget = [&](const auto& self, const Value& value, const std::size_t depth) -> void {

@@ -449,7 +449,10 @@ Tables Build(Fixture& fixture,bool outside=true) {
     Bytes worldBody{0u};U32(worldBody,static_cast<std::uint32_t>(actors.size()));U32(worldBody,static_cast<std::uint32_t>(actors.size()));
     for(auto actorRef:actors) {Index(worldBody,actorRef);}
     for(unsigned i=0u;i<5u;++i) {Index(worldBody,0);}
-    U32(worldBody,7777u);U32(worldBody,0);Index(worldBody,worldModel);Index(worldBody,0);map.Body(world,std::move(worldBody));
+    U32(worldBody,7777u);U32(worldBody,0);Index(worldBody,worldModel);Index(worldBody,0);
+    U32(worldBody,0u);Index(worldBody,0); // Original serialized Float time and preliminary +100.
+    for(unsigned i=0u;i<16u;++i)Index(worldBody,0); // +9C pointer sequence, including final +100 alias.
+    map.Body(world,std::move(worldBody));
     map.Body(worldModel,EmptyModel(outside));return {{coreTable,engineTable,classesTable},fixture.Write(map,true)};
 }
 

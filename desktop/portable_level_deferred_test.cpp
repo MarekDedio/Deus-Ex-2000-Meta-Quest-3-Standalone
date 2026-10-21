@@ -9,6 +9,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <optional>
 #include <stdexcept>
 #include <vector>
 
@@ -57,15 +58,22 @@ struct Fixture {
         package.exports[0].ObjOffset=0;package.exports[0].ObjSize=static_cast<std::int32_t>(bytes.size());}
 };
 struct Body {
-    Bytes bytes;std::size_t prefix{},reachCount{},start{},end{},time{},head{};
-    explicit Body(std::int32_t first=3,std::uint32_t timeBits=0xc0200000u){
+    Bytes bytes;std::size_t prefix{},reachCount{},start{},end{},time{},preliminary{},head{};
+    std::array<std::size_t,16u> tail{};
+    explicit Body(std::int32_t first=3,std::uint32_t timeBits=0xc0200000u,
+        std::optional<std::int32_t> initial={},std::int32_t slotZero=0){
         Index(bytes,0);U32(bytes,3u);U32(bytes,4u);Index(bytes,3);Index(bytes,0);Index(bytes,3);
         for(unsigned i=0;i<4u;++i)Index(bytes,0);
         Index(bytes,0);U32(bytes,7777u);U32(bytes,0u);Index(bytes,2);prefix=bytes.size();
         reachCount=bytes.size();Index(bytes,2);
         for(unsigned i=0;i<2u;++i){U32(bytes,100u+i);if(!i)start=bytes.size();Index(bytes,i?-4:3);if(!i)end=bytes.size();Index(bytes,i?0:3);
             U32(bytes,40u);U32(bytes,70u);U32(bytes,0x100020u+i);bytes.push_back(i?0xffu:0u);}
-        time=bytes.size();U32(bytes,timeBits);head=bytes.size();Index(bytes,first);
+        time=bytes.size();U32(bytes,timeBits);preliminary=bytes.size();Index(bytes,initial.value_or(first));
+        for(std::size_t index=0u;index<tail.size();++index) {
+            tail[index]=bytes.size();
+            if(index==1u)head=bytes.size();
+            Index(bytes,index==0u?slotZero:index==1u?first:0);
+        }
     }
 };
 void Generated(const fs::path& original){
@@ -76,6 +84,19 @@ void Generated(const fs::path& original){
     for(const auto first:{0,-4,2}){const Body body(first,0x80000000u);fixture.Write(body.bytes);const auto result=read();
         Require(result.firstDeleted==first&&std::bit_cast<std::uint32_t>(result.serializedTime)==0x80000000u,
             "Decoder discarded valid compact reference or signed-zero time");}
+    for(const auto pair:{std::array<std::int32_t,2u>{0,3},std::array<std::int32_t,2u>{3,0}}) {
+        const Body body(pair[1u],0xc0200000u,pair[0u]);fixture.Write(body.bytes);const auto result=read();
+        Require(result.firstDeleted==pair[1u]&&result.firstDeletedOffset==body.head,
+            "Serialized +100 alias asserted equality or retained the preliminary value instead of last store");
+    }
+    // Source-table reference ranges admit these longer compact imports without
+    // inventing a runtime UObject. The final offset must follow encoded lengths.
+    const auto smallImports=fixture.package.imports;
+    fixture.package.imports.resize(8192u,smallImports.front());
+    const Body variable(3,0xc0200000u,-65,-8192);fixture.Write(variable.bytes);const auto moved=read();
+    Require(moved.firstDeleted==3&&moved.firstDeletedOffset==good.preliminary+5u&&moved.firstDeletedOffset==variable.head,
+        "Final alias offset ignored two-byte preliminary/three-byte preceding compact reference");
+    fixture.package.imports=smallImports;
     for(std::size_t size=0u;size<good.bytes.size();++size){fixture.Write(Bytes(good.bytes.begin(),good.bytes.begin()+size));
         Refused(read,"Truncated Level native deferred prefix was accepted");}
     fixture.Write(Bytes(good.bytes.begin(),good.bytes.begin()+good.prefix));
@@ -86,9 +107,18 @@ void Generated(const fs::path& original){
     for(const auto count:{std::uint8_t{0x81u},std::uint8_t{63u}}){auto bytes=good.bytes;bytes[good.reachCount]=count;fixture.Write(bytes);
         Refused(read,"Negative/oversized remaining ReachSpec count was accepted");}
     for(const auto first:{4,-5}){const Body body(first);fixture.Write(body.bytes);Refused(read,"FirstDeleted outside actual export/import tables was accepted");}
+    for(const auto first:{4,-5}){const Body body(0,0xc0200000u,first);fixture.Write(body.bytes);
+        Refused(read,"Invalid preliminary reference was hidden by a valid later alias");}
+    for(const auto offset:good.tail)for(const auto invalid:{std::uint8_t{4u},std::uint8_t{0x85u}}) {
+        auto invalidTail=good.bytes;invalidTail[offset]=invalid;fixture.Write(invalidTail);
+        Refused(read,"One of sixteen native pointer references escaped source-table bounds");
+    }
     for(const auto bits:{0x7f800000u,0xff800000u,0x7fc00001u}){const Body body(0,bits);fixture.Write(body.bytes);Refused(read,"Nonfinite serialized Level time was accepted");}
-    auto bytes=good.bytes;bytes.resize(good.head);bytes.insert(bytes.end(),{0x7fu,0xffu,0xffu,0xffu,0x7fu});fixture.Write(bytes);
-    Refused(read,"Overflowing compact deferred reference was accepted");
+    for(const auto offset:{good.preliminary,good.head}) {
+        Bytes bytes(good.bytes.begin(),good.bytes.begin()+offset);bytes.insert(bytes.end(),{0x7fu,0xffu,0xffu,0xffu,0x7fu});
+        bytes.insert(bytes.end(),good.bytes.begin()+offset+1u,good.bytes.end());fixture.Write(bytes);
+        Refused(read,"Overflowing preliminary/final compact deferred reference was accepted");
+    }
     fixture.Write(good.bytes);const auto baseline=fixture.package;
     fixture.package.version=69u;Refused(read,"Unsupported Level version accepted");fixture.package=baseline;
     fixture.package.licenseeMode=1u;Refused(read,"Unsupported Level licensee accepted");fixture.package=baseline;
@@ -103,13 +133,13 @@ void Owned(const fs::path& root){
     const auto map=LoadPortablePackageTables(path.string());const auto result=ReadPortableLevel68DeferredState(map,65536u);
     // Independent literal witnesses from static ORIGINAL-DEFERRED-ACTOR-OWNERSHIP.md,
     // NOT expected values produced by a production table/decoder.
-    Require(result.firstDeleted==0&&result.reachSpecs==60u&&result.firstDeletedOffset==4370509u&&
+    Require(result.firstDeleted==0&&result.reachSpecs==60u&&result.firstDeletedOffset==4370511u&&
         std::bit_cast<std::uint32_t>(result.serializedTime)==0x4324ee0du,"First Training differs from original deferred-state witnesses");
-    std::ifstream file(path,std::ios::binary);file.seekg(4370505);std::array<unsigned char,5u> witness{};
-    file.read(reinterpret_cast<char*>(witness.data()),witness.size());Require(bool(file)&&witness==std::array<unsigned char,5u>{0x0du,0xeeu,0x24u,0x43u,0u},
-        "Independent raw time/FirstDeleted source bytes changed");
+    std::ifstream file(path,std::ios::binary);file.seekg(4370505);std::array<unsigned char,7u> witness{};
+    file.read(reinterpret_cast<char*>(witness.data()),witness.size());Require(bool(file)&&witness==std::array<unsigned char,7u>{0x0du,0xeeu,0x24u,0x43u,0u,0u,0u},
+        "Independent raw time/preliminary/final FirstDeleted source bytes changed");
     Require(fs::file_size(path)==size&&fs::last_write_time(path)==modified&&Hash(path)==hash,"Original Training bytes/size/mtime changed");
-    std::cout<<"PASS ONLY first Training serialized deferred head: None / 60 ReachSpecs / absolute4370509 / Float4324EE0D; original unchanged. No runtime/startup/cleanup/physics claim.\n";
+    std::cout<<"PASS ONLY first Training final serialized deferred head: None / 60 ReachSpecs / absolute4370511 (preliminary4370509) / Float4324EE0D; original unchanged. No runtime/startup/cleanup/physics claim.\n";
 }
 }
 int main(int argc,char** argv){try{

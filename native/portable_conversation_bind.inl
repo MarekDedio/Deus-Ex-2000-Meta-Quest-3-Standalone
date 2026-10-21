@@ -121,8 +121,8 @@
         // All subsequent pool acquisitions (including nested Actor Spawn) join
         // this journal; no deleted index remains reserved by a GC tombstone.
         constexpr std::size_t entries=4096u;
-        ValidateStateBudget(QuestVr::ObjectIndexPool::TransactionRetainedBytes(entries));
-        conversationIndices_.emplace(RuntimeObjectIndices().BeginTransaction(entries));
+        conversationIndices_.emplace(RuntimeObjectIndices().BeginPagedTransaction(entries,{this,
+            [](void* owner,std::size_t bytes){static_cast<PortableActorVmHost*>(owner)->ValidateStateBudget(bytes);}}));
     }
     RuntimeObject* ConstructConversationNode(RuntimeObject* outer,std::uint32_t flags) {
         if(!transaction_ || !outer || flags || persistentConversationNodes.size()>=65536u)
@@ -139,6 +139,7 @@
         });
         const auto path=outer->reflection.objectPath+'.'+name;
         EnsureConversationIndexTransaction();
+        conversationIndices_->PrepareNextEntryCapacity();
         // The journal is already retained here, so this admission proves the
         // combined journal + new object/default-copy peak, not separate peaks.
         ValidateStateBudget(sizeof(RuntimeObject)+sizeof(GCAllocation)+sizeof(RuntimeNativeConversationState)+

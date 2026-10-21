@@ -50,8 +50,27 @@
             beforeLinkerSlots_.push_back({linker,index,linker->Read(index),linker->changed.contains(index)});
         }
     }
+    void JournalNativeLinkerHeader(RuntimeObject* object) {
+        if(!transaction_)throw std::runtime_error("Native linker header mutation lacks its caller-owned root");
+        RequireNativeLinkerStorage(object);
+        if(std::none_of(beforeLinkerHeaders_.begin(),beforeLinkerHeaders_.end(),[&](const auto& row){return row.object==object;})) {
+            if(beforeLinkerHeaders_.size()>=4096u)throw std::runtime_error("Native linker header journal exceeds caller bound");
+            if(beforeLinkerHeaders_.size()==beforeLinkerHeaders_.capacity()) {
+                const auto next=std::min<std::size_t>(4096u,std::max<std::size_t>(8u,beforeLinkerHeaders_.capacity()*2u));
+                // Existing capacity is already charged: admit the complete
+                // additional allocation before reserve can replace that owner.
+                ValidateStateBudget(next*sizeof(BeforeLinkerHeader));beforeLinkerHeaders_.reserve(next);
+            }
+            beforeLinkerHeaders_.push_back({object,object->nativeLinker,object->nativeLinkerIndex,object->nativeLinkerChanged});
+        }
+    }
+    bool SameNativeLinkerHeader(const RuntimeObject* object) const noexcept {
+        const auto row=std::find_if(beforeLinkerHeaders_.begin(),beforeLinkerHeaders_.end(),[&](const auto& item){return item.object==object;});
+        return row==beforeLinkerHeaders_.end() || (row->linker==object->nativeLinker &&
+            row->index==object->nativeLinkerIndex && row->changed==object->nativeLinkerChanged);
+    }
     void NativeLinkerIndexStore(RuntimeObject* object,std::int32_t index) {
-        RequireNativeLinkerStorage(object);Touch(object);
+        RequireNativeLinkerStorage(object);JournalNativeLinkerHeader(object);Touch(object);
         object->nativeLinkerIndex=index;object->nativeLinkerChanged=true;ValidateStateBudget();
     }
     void SetNativeObjectLinker(RuntimeObject* object,std::uintptr_t newLinker,std::int32_t newIndex) {
@@ -74,7 +93,8 @@
         query.linkerIndex=[receiver](std::uintptr_t identity){return receiver(identity)->nativeLinkerIndex;};
         query.exportObject=[slot](std::uintptr_t identity,std::int32_t index){return reinterpret_cast<std::uintptr_t>(slot(identity,index));};
         query.clearExportObject=[this,retained,slot,object](std::uintptr_t identity,std::int32_t index) {
-            static_cast<void>(slot(identity,index));JournalNativeExportSlot(retained,static_cast<std::size_t>(index));Touch(object);
+            static_cast<void>(slot(identity,index));JournalNativeExportSlot(retained,static_cast<std::size_t>(index));
+            JournalNativeLinkerHeader(object);Touch(object);
             if(!retained->changed.contains(static_cast<std::size_t>(index)))
                 ValidateStateBudget(sizeof(std::pair<const std::size_t,RuntimeObject*>)+6u*sizeof(void*));
             retained->changed[static_cast<std::size_t>(index)]=nullptr;
@@ -82,7 +102,7 @@
         };
         query.writeLinker=[this,receiver](std::uintptr_t identity,std::uintptr_t linker) {
             if(linker)throw std::runtime_error("Native SetLinker unexpected nonnull target");
-            auto* target=receiver(identity);Touch(target);target->nativeLinker.reset();
+            auto* target=receiver(identity);JournalNativeLinkerHeader(target);Touch(target);target->nativeLinker.reset();
             target->nativeLinkerChanged=true;ValidateStateBudget();
         };
         query.writeLinkerIndex=[this,receiver](std::uintptr_t identity,std::int32_t index){NativeLinkerIndexStore(receiver(identity),index);};

@@ -1166,7 +1166,10 @@ Tables Build(Fixture& fixture, unsigned worldModel = 0u, unsigned decalSchema = 
     if (decalSchema) Index(levelBody, decalActor);
     if (decalMover) Index(levelBody, surfaceMoverActor);
     for (unsigned i = 0u; i < 4u; ++i) Index(levelBody, 0);
-    Index(levelBody, 0); U32(levelBody, 7777u); U32(levelBody, 0u); Index(levelBody, mapModel); Index(levelBody, 0); map.Body(world, std::move(levelBody));
+    Index(levelBody, 0); U32(levelBody, 7777u); U32(levelBody, 0u); Index(levelBody, mapModel); Index(levelBody, 0);
+    U32(levelBody,0u); Index(levelBody,0); // Original serialized Float time and preliminary +100.
+    for(unsigned i=0u;i<16u;++i)Index(levelBody,0); // +9C pointer sequence, including final +100 alias.
+    map.Body(world, std::move(levelBody));
     Bytes modelBody; Index(modelBody, 0); for (unsigned i = 0u; i < 6u; ++i) FloatBytes(modelBody, 0.0f); modelBody.push_back(0u);
     for (unsigned i = 0u; i < 4u; ++i) FloatBytes(modelBody, 0.0f);
     const bool nodes = worldModel==2u || worldModel==3u;

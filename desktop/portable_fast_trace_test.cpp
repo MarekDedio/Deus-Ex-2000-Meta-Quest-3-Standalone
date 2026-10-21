@@ -438,7 +438,10 @@ Tables Build(Fixture& fixture, const Variant variant = Variant::Plane) {
     Bytes worldBody{0u}; U32(worldBody, 4u); U32(worldBody, 4u);
     for (const auto reference : {levelActor, driver, 0, variant==Variant::DuplicateActorSlot?driver:other}) Index(worldBody, reference);
     for (unsigned i = 0u; i < 5u; ++i) Index(worldBody, 0);
-    U32(worldBody, 7777u); U32(worldBody, 0u); Index(worldBody, actualModel); Index(worldBody, 0); map.Body(world, std::move(worldBody));
+    U32(worldBody, 7777u); U32(worldBody, 0u); Index(worldBody, actualModel); Index(worldBody, 0);
+    U32(worldBody,0u); Index(worldBody,0); // Original serialized Float time and preliminary +100.
+    for(unsigned i=0u;i<16u;++i)Index(worldBody,0); // +9C pointer sequence, including final +100 alias.
+    map.Body(world, std::move(worldBody));
     const bool plane = variant != Variant::EmptyOutside && variant != Variant::EmptyInside;
     const bool outside = variant != Variant::EmptyInside && variant != Variant::NonCsgInside;
     const std::uint8_t flags = variant == Variant::NonCsgInside || variant == Variant::NonCsgOutside ? 1u :
