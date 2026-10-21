@@ -696,6 +696,15 @@ if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
 endif()
 add_test(NAME quest_gc_allocation COMMAND quest_gc_allocation_test)
 
+add_executable(quest_spawn_encroachment_test quest_spawn_encroachment_test.cpp)
+target_compile_features(quest_spawn_encroachment_test PRIVATE cxx_std_20)
+target_include_directories(quest_spawn_encroachment_test PRIVATE "${PORT_NATIVE}")
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+    target_compile_options(quest_spawn_encroachment_test PRIVATE -Wall -Wextra -Werror)
+    target_link_options(quest_spawn_encroachment_test PRIVATE -static -static-libgcc -static-libstdc++)
+endif()
+add_test(NAME quest_spawn_encroachment COMMAND quest_spawn_encroachment_test)
+
 # Static original-data inventory, not runtime/startup acceptance or a CTest.
 add_executable(conversation_binding_inspect conversation_binding_inspect.cpp)
 target_compile_features(conversation_binding_inspect PRIVATE cxx_std_20)

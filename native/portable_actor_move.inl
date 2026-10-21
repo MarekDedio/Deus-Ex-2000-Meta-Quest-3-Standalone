@@ -113,10 +113,27 @@
     }
     bool MoveLevelEncroachment(std::uintptr_t level,std::uintptr_t source,PortableModelVec3 proposed,
         std::array<std::int32_t,3u> rotation,std::int32_t touch,QuestVr::Vm::Execution& execution) {
+        // Admission precedes mark/hash access in the original. Authenticating
+        // a native Actor/Level binding must not eagerly demand an Engine or
+        // Cylinder when the complete mask0D/moving-brush gate returns false.
+        // Sources here are trusted same-host calls; actual query/hit providers
+        // below retain their stronger live lookup/hash identity admission.
+        auto* admitted=reinterpret_cast<RuntimeObject*>(source);
+        if(!admitted || !level) throw std::runtime_error("Original encroachment has null native arguments");
+        RequireMapActor(admitted);
+        if(Object(admitted->reflection.objectPath)!=admitted ||
+            reinterpret_cast<std::uintptr_t>(admitted->nativeXLevel)!=level)
+            throw std::runtime_error("Original encroachment source belongs to another native Level");
+        const auto admission=[&](std::uintptr_t identity) {
+            if(identity!=source) throw std::runtime_error("Original encroachment admission changed its retained source");
+            return admitted;
+        };
         QuestVr::OriginalLevelEncroachmentQueries q;
         std::optional<QuestVr::NativeActorPoseStack::LocationScope> temporary;
-        q.admissionFlags=[this](std::uintptr_t a){return MoveCollisionFlags(RetailCollisionActor(a));};
-        q.movingBrush=[this](std::uintptr_t a){return RetailMovingBrush(RetailCollisionActor(a));};
+        q.admissionFlags=[this,&admission](std::uintptr_t a){return MoveCollisionFlags(admission(a));};
+        q.movingBrush=[this,&admission,source](std::uintptr_t a){
+            return RetailMovingBrush(a==source?admission(a):RetailCollisionActor(a));
+        };
         q.levelHash=[this](std::uintptr_t l){return ZoneLevel(l)->nativeRetailHash;};
         q.mark=[this,level]{return MoveHitMark(level);};q.popMark=[this](std::uintptr_t m)noexcept{MoveHitPop(m);};
         q.hashEncroachment=[this](std::uintptr_t hash,std::uintptr_t a,PortableModelVec3 p,std::array<std::int32_t,3u> r,std::uint32_t flags){

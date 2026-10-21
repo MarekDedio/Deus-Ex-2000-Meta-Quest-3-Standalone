@@ -536,6 +536,144 @@ void LimitsAndAllocation() {
     }
     Require(complete&&allocationRefusals>=8u,"Encroachment allocation sweep did not reach full snapshot and hit storage");
 }
+struct HitStorageLedger {
+    std::size_t live{},peak{},limit{std::numeric_limits<std::size_t>::max()};
+};
+struct HitStorageTrace {
+    using Phase=QuestVr::OriginalHashHitStoragePhase;
+    HitStorageLedger& ledger;
+    std::size_t retained{},requested{},calls{},growths{};
+    bool pending{};
+    explicit HitStorageTrace(HitStorageLedger& owner):ledger(owner){}
+    ~HitStorageTrace() noexcept {if(ledger.live<retained)std::terminate();ledger.live-=retained;}
+    void Observe(Phase phase,std::size_t old,std::size_t next) {
+        Require(old<=std::numeric_limits<std::size_t>::max()/sizeof(Hit)&&
+            next<=std::numeric_limits<std::size_t>::max()/sizeof(Hit),"Hit storage callback overflowed its owning capacity");
+        Require(old*sizeof(Hit)==retained&&next>old,"Hit storage callback changed its retained collector capacity");
+        if(phase==Phase::BeforeReserve) {
+            Require(!pending,"Hit storage began another reserve before completing the current allocation");
+            pending=true;requested=next;++growths;
+        }else Require(pending&&next>=requested,"Hit storage did not report actual post-reserve owning capacity");
+        Require(next*sizeof(Hit)<=std::numeric_limits<std::size_t>::max()-ledger.live,
+            "Hit storage reallocation peak overflowed its shared ledger");
+        const auto peak=ledger.live+next*sizeof(Hit);
+        if(peak>ledger.limit)throw std::runtime_error("Explicit shared hit-storage byte allowance exhausted");
+        ledger.peak=std::max(ledger.peak,peak);++calls;
+        if(phase==Phase::AfterReserve) {
+            ledger.live=ledger.live-retained+next*sizeof(Hit);retained=next*sizeof(Hit);pending=false;
+        }
+    }
+    void Bind(Queries& query) {
+        query.hitStorage=[this](Phase phase,std::size_t old,std::size_t next){Observe(phase,old,next);};
+    }
+};
+void HitStorageAccounting() {
+    using Phase=QuestVr::OriginalHashHitStoragePhase;
+    {
+        Fixture empty;auto query=empty.Provider();
+        query.hitStorage=[](Phase,std::size_t,std::size_t){throw std::runtime_error("Inactive hit storage was requested");};
+        const auto zero=empty.Query(query);
+        Require(zero.records.empty()&&zero.records.capacity()==0u,"Empty encroachment preallocated hit storage");
+        for(std::uintptr_t id=1u;id<=9u;++id){empty.Define(id,Cell(0));empty.Add(id);empty.clear[id]=true;}
+        const auto clear=empty.Query(query);
+        Require(clear.records.empty()&&clear.records.capacity()==0u,"Clear PointChecks allocated a no-hit collector");
+    }
+    {
+        QuestVr::OriginalHashLimits limits;limits.hits=17u;Fixture fixture(0u,limits);
+        for(std::uintptr_t id=1u;id<=17u;++id){fixture.Define(id,Cell(0));fixture.Add(id);}
+        HitStorageLedger ledger;
+        {
+            HitStorageTrace trace(ledger);auto query=fixture.Provider();trace.Bind(query);
+            const auto point=query.sourcePoint;std::size_t points{};
+            query.sourcePoint=[&](Hit& hit,std::uintptr_t id,const Vec& location,const Vec& extent,std::uint32_t flags){
+                Require(ledger.live==trace.retained,"PointCheck cannot observe its live hit-vector reservation");
+                Require(points==0u?trace.retained==0u:trace.retained>=points*sizeof(Hit),
+                    "Hit storage charged all-world capacity or forgot preceding accepted records");
+                ++points;return point(hit,id,location,extent,flags);
+            };
+            const auto result=fixture.Query(query);
+            Require(result.records.size()==17u&&result.records.capacity()==17u&&trace.retained==17u*sizeof(Hit),
+                "Hit storage does not correspond to actual returned owning capacity or existing hit-limit clamp");
+            Require(points==17u&&trace.growths==6u&&trace.calls==12u&&!trace.pending,
+                "Hit storage growth callbacks do not cover exactly1/2/4/8/16/17 owning allocations");
+            Require(ledger.live==17u*sizeof(Hit)&&ledger.peak==33u*sizeof(Hit),
+                "Hit storage omitted the simultaneous old16/new17 reallocation peak");
+        }
+        Require(ledger.live==0u,"Hit storage scope did not release its retained capacity");
+    }
+    {
+        Fixture fixture;
+        for(std::uintptr_t id=1u;id<=9u;++id){fixture.Define(id,Cell(0));fixture.Add(id);}
+        const auto second=fixture.world->CreateHash();
+        for(std::uintptr_t id=101u;id<=102u;++id){fixture.Define(id,Cell(0));fixture.world->Add(second,id,fixture.Registration());}
+        HitStorageLedger ledger;bool nested{};
+        {
+            HitStorageTrace outer(ledger);auto query=fixture.Provider();outer.Bind(query);const auto point=query.sourcePoint;
+            query.sourcePoint=[&](Hit& hit,std::uintptr_t id,const Vec& location,const Vec& extent,std::uint32_t flags){
+                const auto clear=point(hit,id,location,extent,flags);
+                if(!nested&&outer.retained) {
+                    nested=true;const auto outerBytes=outer.retained;
+                    {
+                        HitStorageTrace inner(ledger);auto nestedQuery=fixture.Provider();inner.Bind(nestedQuery);
+                        const auto innerPoint=nestedQuery.sourcePoint;bool retainedInner{};
+                        nestedQuery.sourcePoint=[&](Hit& packet,std::uintptr_t actor,const Vec& at,const Vec& size,std::uint32_t mask){
+                            Require(ledger.live==outerBytes+inner.retained,"Nested PointCheck lost simultaneous outer/inner hit storage");
+                            retainedInner|=inner.retained!=0u;return innerPoint(packet,actor,at,size,mask);
+                        };
+                        const auto result=fixture.world->ActorEncroachmentCheck(second,fixture.source,nestedQuery);
+                        Require(retainedInner&&result.records.size()==2u&&inner.retained==result.records.capacity()*sizeof(Hit),
+                            "Nested encroachment did not retain its actual nonempty collector");
+                    }
+                    Require(ledger.live==outerBytes,"Nested hit storage cleanup discarded its caller's live collector");
+                }
+                return clear;
+            };
+            const auto result=fixture.Query(query);
+            Require(nested&&result.records.size()==9u&&outer.retained==result.records.capacity()*sizeof(Hit),
+                "Nested storage accounting changed complete original query traversal");
+        }
+        Require(ledger.live==0u,"Nested hit storage leaked a lexical reservation");
+    }
+    for(std::size_t fail=0u;fail<10u;++fail) {
+        Fixture fixture;for(std::uintptr_t id=1u;id<=9u;++id){fixture.Define(id,Cell(0));fixture.Add(id);}
+        const Snapshot before(fixture);HitStorageLedger ledger;
+        {
+            HitStorageTrace trace(ledger);auto query=fixture.Provider();std::size_t calls{};
+            query.hitStorage=[&](Phase phase,std::size_t old,std::size_t next){
+                trace.Observe(phase,old,next);if(calls++==fail)throw std::runtime_error("Injected hit-storage admission refusal");
+            };
+            Refuse([&]{fixture.Query(query);},"Hit-storage callback refusal silently published an encroachment query");
+        }
+        Require(ledger.live==0u,"Refused hit storage leaked its currently retained vector capacity");before.Check(fixture);
+    }
+    for(const bool enough:{false,true}) {
+        Fixture fixture;for(std::uintptr_t id=1u;id<=9u;++id){fixture.Define(id,Cell(0));fixture.Add(id);}
+        const Snapshot before(fixture);HitStorageLedger ledger;ledger.limit=24u*sizeof(Hit)-(enough?0u:1u);
+        {
+            HitStorageTrace trace(ledger);auto query=fixture.Provider();trace.Bind(query);
+            if(enough) {
+                const auto result=fixture.Query(query);
+                Require(result.records.size()==9u&&ledger.peak==24u*sizeof(Hit),"Exact hit-vector reallocation allowance did not succeed");
+            }else Refuse([&]{fixture.Query(query);},"N-1 shared byte allowance accepted the last hit-vector reallocation");
+        }
+        Require(ledger.live==0u,"Byte-budget refusal/success leaked a hit-vector reservation");if(!enough)before.Check(fixture);
+    }
+    {
+        Fixture fixture;fixture.Define(1u,Cell(0));fixture.Add(1u);const Snapshot before(fixture);
+        auto root=fixture.world->BeginRoot();HitStorageLedger ledger;
+        {
+            HitStorageTrace trace(ledger);auto query=fixture.Provider();
+            query.hitStorage=[&](Phase phase,std::size_t old,std::size_t next){
+                trace.Observe(phase,old,next);
+                if(phase==Phase::AfterReserve)throw std::runtime_error("Caught post-allocation admission refusal");
+            };
+            Refuse([&]{fixture.Query(query);});
+        }
+        Require(ledger.live==0u,"Caught post-allocation failure retained native scratch memory");
+        Refuse([&]{root->PrepareCommit();},"Caught hit-storage failure allowed enclosing root publication");
+        Require(!root->CommitPrepared()&&root->Rollback(),"Poisoned storage admission lost the original root rollback");before.Check(fixture);
+    }
+}
 std::uint32_t Next(std::uint32_t& value) {value^=value<<13u;value^=value>>17u;value^=value<<5u;return value;}
 void Randomized() {
     Fixture fixture;std::uint32_t rng=0x39b81aa7u;
@@ -558,7 +696,7 @@ void Randomized() {
 }
 } // namespace
 int main() {
-    try {CandidateArgumentWordStores();DirectionSeedsAndOrder();BoundsTagsAndInactiveProviders();ReentranceAndLiveLinks();RollbackAndGenerations();LimitsAndAllocation();Randomized();
+    try {CandidateArgumentWordStores();DirectionSeedsAndOrder();BoundsTagsAndInactiveProviders();ReentranceAndLiveLinks();RollbackAndGenerations();LimitsAndAllocation();HitStorageAccounting();Randomized();
         std::cout<<"PASS original ActorEncroachmentCheck "<<checks<<" checks, "<<refusals<<" explicit refusals, "
             <<comparisons<<" independent CRT/vector queries ("<<randomQueries<<" randomized), "<<allocationRefusals
             <<" allocation refusals, "<<argumentWordPackets<<" argument-word packets ("<<hardwareWordStores

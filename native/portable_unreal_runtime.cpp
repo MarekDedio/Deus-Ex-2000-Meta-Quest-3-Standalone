@@ -72,6 +72,7 @@
 #include "quest_level_encroachment.h"
 #include "quest_level_move_actor.h"
 #include "quest_conversation_bind.h"
+#include "quest_spawn_encroachment.h"
 
 #include <memory>
 #include <algorithm>
@@ -7171,8 +7172,12 @@ public:
         PortableWorldStartupProbeResult& result, QuestVr::Vm::Execution& execution,
         PortableRetailCollisionSnapshot* originalCollision=nullptr) {
         if (!transaction_) throw std::runtime_error("World startup probe requires its outer VM transaction");
-        struct ProbeScope { bool& active; ~ProbeScope() { active = false; } } scope{worldStartupProbe_};
+        struct ProbeScope {
+            bool& active;PortableWorldStartupProbeResult*& observation;
+            ~ProbeScope() { active = false;observation=nullptr; }
+        } scope{worldStartupProbe_,worldStartupResult_};
         worldStartupProbe_ = true;
+        worldStartupResult_=&result;
         using Phase = PortableWorldStartupPhase;
         const auto visit = [&](const Phase phase, RuntimeObject* actor, const std::size_t slot) {
             LifecycleStep();
@@ -7407,6 +7412,74 @@ private:
             static_cast<void>(RetailFindBase(actor,execution));
         }
     }
+    std::optional<std::size_t> BeginSpawnEncroachmentObservation(RuntimeObject* actor) {
+        if(!worldStartupResult_) return {};
+        auto& output=worldStartupResult_->spawnedEncroachment;
+        if(output.size()>=4096u) throw std::runtime_error("Startup native Spawn observation bound exceeded");
+        using QuestVr::DecalStateDetail::Add;
+        using QuestVr::DecalStateDetail::Multiply;
+        const auto strings=Add(Add(actor->reflection.objectPath.size(),actor->cls->reflection.objectPath.size()),2u);
+        if(output.size()==output.capacity()) {
+            const auto old=output.capacity();
+            const auto next=std::min<std::size_t>(4096u,std::max<std::size_t>(8u,output.size()*2u));
+            // Charge owning capacity, plus the old vector simultaneously live
+            // during reserve. Strings are moved, not cloned by vector growth.
+            ReserveRetailDiagnosticOutput(Add(Multiply(next-old,sizeof(PortableSpawnEncroachmentSnapshot)),strings),
+                Multiply(old,sizeof(PortableSpawnEncroachmentSnapshot)));
+            output.reserve(next);
+            if(output.capacity()>next)
+                ReserveRetailDiagnosticOutput(Multiply(output.capacity()-next,sizeof(PortableSpawnEncroachmentSnapshot)),
+                    Multiply(old,sizeof(PortableSpawnEncroachmentSnapshot)));
+        } else ReserveRetailDiagnosticOutput(strings);
+        output.emplace_back();auto& value=output.back();
+        value.actorPath=actor->reflection.objectPath;value.classPath=actor->cls->reflection.objectPath;
+        if(nativeMoveHits_) {value.marksBefore=nativeMoveHits_->MarkDepth();value.arenasBefore=nativeMoveHits_->ArenaCount();}
+        return output.size()-1u;
+    }
+    bool SpawnCheckEncroachment(RuntimeObject* actor,RuntimeObject* retainedLevel,
+        std::optional<std::size_t> observation,QuestVr::Vm::Execution& execution) {
+        QuestVr::OriginalSpawnEncroachmentQueries query;
+        const auto requireActor=[&](std::uintptr_t source) {
+            if(source!=reinterpret_cast<std::uintptr_t>(actor))
+                throw std::runtime_error("Spawn encroachment changed its retained birth identity");
+        };
+        query.rotationChannel=[&](std::uintptr_t source,unsigned channel) {
+            requireActor(source);
+            if(channel>=3u) throw std::runtime_error("Spawn encroachment Rotation channel is invalid");
+            return NativeCoordsRead(actor,"Engine.Actor.Rotation",Kind::Rotator,0x23u).rotation[channel];
+        };
+        query.locationChannel=[&](std::uintptr_t source,unsigned channel) {
+            requireActor(source);
+            if(channel>=3u) throw std::runtime_error("Spawn encroachment Location channel is invalid");
+            return NativeCoordsRead(actor,"Engine.Actor.Location",Kind::Vector,0x23u).vector[channel];
+        };
+        query.check=[&](std::uintptr_t level,std::uintptr_t source,PortableModelVec3 location,
+            std::array<std::int32_t,3u> rotation,std::int32_t touch) {
+            requireActor(source);
+            if(level!=reinterpret_cast<std::uintptr_t>(retainedLevel) || touch)
+                throw std::runtime_error("Spawn encroachment changed its retained native Level/literal touch0");
+            if(observation) {
+                auto& snapshot=worldStartupResult_->spawnedEncroachment.at(*observation);
+                snapshot.location={location.x,location.y,location.z};snapshot.rotation=rotation;
+                snapshot.touch=touch;snapshot.attempted=true;
+            }
+            const bool blocked=MoveLevelEncroachment(level,source,location,rotation,0,execution);
+            if(observation) {
+                auto& snapshot=worldStartupResult_->spawnedEncroachment.at(*observation);
+                snapshot.completed=true;snapshot.blocked=blocked;
+                if(nativeMoveHits_) {snapshot.marksAfter=nativeMoveHits_->MarkDepth();snapshot.arenasAfter=nativeMoveHits_->ArenaCount();}
+            }
+            return blocked?1:0;
+        };
+        query.destroy=[](std::uintptr_t,std::uintptr_t,std::int32_t)->std::int32_t {
+            // Do not convert a veto into a successful None without original
+            // DestroyActor's hash/callback/conditional-destruction semantics.
+            throw std::runtime_error("Original blocked Spawn requires complete native DestroyActor lifecycle");
+        };
+        query.work=[this]{LifecycleStep();};
+        return QuestVr::CheckOriginalSpawnEncroachment(reinterpret_cast<std::uintptr_t>(retainedLevel),
+            reinterpret_cast<std::uintptr_t>(actor),0,query)==QuestVr::OriginalSpawnEncroachmentOutcome::ReturnNone;
+    }
     Evaluation SpawnNative(const std::string& receiver, const std::vector<Evaluation>& arguments,
         QuestVr::Vm::Execution& execution, const bool worldGameInfo = false) {
         LifecycleStep();
@@ -7547,16 +7620,19 @@ private:
             InitializeWorldZone(actor, level);
             Touch(actor); actor->lastRenderTime = -10.0f;
             static_cast<void>(execution.CallEvent(path, "PostBeginPlay", true, {}));
-            if (QuestVr::Vm::ToBool(Read(actor, PropertyNamed(actor, "bCollideActors"), 0u)) ||
-                QuestVr::Vm::ToBool(Read(actor, PropertyNamed(actor, "bBlockActors"), 0u)) ||
-                QuestVr::Vm::ToBool(Read(actor, PropertyNamed(actor, "bBlockPlayers"), 0u)))
-                throw std::runtime_error("Unsupported original spawned CheckEncroachment during world startup probe");
+            const auto observation=BeginSpawnEncroachmentObservation(actor);
+            if(SpawnCheckEncroachment(actor,xlevel,observation,execution)) return none();
             static_cast<void>(execution.CallEvent(path, "SetInitialState", true, {}));
+            if(observation)worldStartupResult_->spawnedEncroachment.at(*observation).initialStateReached=true;
             SpawnBase(actor, execution); // Original native base pass precedes PPP.
+            if(observation)worldStartupResult_->spawnedEncroachment.at(*observation).baseReached=true;
             static_cast<void>(execution.CallEvent(path, "PostPostBeginPlay", false, {}));
+            if(observation)worldStartupResult_->spawnedEncroachment.at(*observation).postPostBeginReached=true;
         } else {
             SpawnZone(actor,execution);
-            for (const auto* event : {"PostBeginPlay","SetInitialState"}) static_cast<void>(execution.CallEvent(path,event,true,{}));
+            static_cast<void>(execution.CallEvent(path,"PostBeginPlay",true,{}));
+            if(SpawnCheckEncroachment(actor,xlevel,{},execution)) return none();
+            static_cast<void>(execution.CallEvent(path,"SetInitialState",true,{}));
             SpawnBase(actor,execution);
             static_cast<void>(execution.CallEvent(path,"PostPostBeginPlay",false,{}));
         }
@@ -8005,6 +8081,7 @@ private:
     std::optional<std::uint32_t> beforeRandomSeed_;
     bool spawnNotificationLocked_{};
     bool worldStartupProbe_{};
+    PortableWorldStartupProbeResult* worldStartupResult_{};
     // Original Extension global layout-call bookkeeping is transient, scoped
     // to this VM host. Exception guards restore it; UObject writes journal in
     // the outer transaction. It is never persisted as guessed script fields.

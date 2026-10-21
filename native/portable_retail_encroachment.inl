@@ -34,12 +34,6 @@
         static_cast<void>(NativeCoordsRead(source,"Engine.Actor.Location",Kind::Vector,0x23u));
         static_cast<void>(NativeCoordsRead(source,"Engine.Actor.Rotation",Kind::Rotator,0x23u));
         using QuestVr::DecalStateDetail::Multiply;
-        // Retain the live caller reservation through every nested admission,
-        // including Model workspace checks. Separate preflights alone would
-        // miss an overlapping arena+workspace peak. Nested scopes reuse the
-        // same fixed pose slots, but own separate hit-vector growth envelopes.
-        // Fixed pose slots are now charged once by the host's shared validator.
-        const auto scratchBytes=Multiply(persistentRetailCollision->ReadUsage().actors,3u*sizeof(QuestVr::OriginalActorLineHit));
         QuestVr::OriginalHashEncroachmentQueries queries;
         queries.sourceBounds=[this](std::uintptr_t identity) {
             LifecycleStep();return NativeActorPrimitiveBounds(RetailCollisionActor(identity));
@@ -55,16 +49,45 @@
             LifecycleStep();return NativeActorPrimitivePointCheck(RetailCollisionActor(identity),hit,point,extent,flags);
         };
         return persistentRetailCollision->WithRoot([&](QuestVr::OriginalCollisionHashWorld& domain) {
+            // Track the actual collector allocation, not three hit records for
+            // every Actor in the Level. Its current capacity remains visible
+            // during every nested primitive/Model admission; only reserve has
+            // an overlapping old+new allocation peak. No hit/work cap changes.
+            QuestVr::NativeScratchScope scratch(nativeQueryScratchBytes_,0u,
+                [this](std::size_t extra){ValidateStateBudget(extra);});
+            const auto baseline=nativeQueryScratchBytes_;
+            std::size_t retainedCapacity{},requestedCapacity{};
+            queries.hitStorage=[&](QuestVr::OriginalHashHitStoragePhase phase,std::size_t oldCapacity,std::size_t newCapacity) {
+                const auto oldBytes=Multiply(oldCapacity,sizeof(QuestVr::OriginalActorLineHit));
+                const auto newBytes=Multiply(newCapacity,sizeof(QuestVr::OriginalActorLineHit));
+                if(oldCapacity!=retainedCapacity || newCapacity<=oldCapacity ||
+                    nativeQueryScratchBytes_!=QuestVr::DecalStateDetail::Add(baseline,oldBytes))
+                    throw std::runtime_error("Encroachment collector lost its actual owning capacity/lexical scratch scope");
+                if(phase==QuestVr::OriginalHashHitStoragePhase::BeforeReserve) {
+                    if(requestedCapacity)throw std::runtime_error("Encroachment collector nested its pure reserve admission");
+                    ValidateStateBudget(newBytes); // Existing ledger still owns oldBytes.
+                    requestedCapacity=newCapacity;
+                } else if(phase==QuestVr::OriginalHashHitStoragePhase::AfterReserve) {
+                    if(!requestedCapacity || newCapacity<requestedCapacity)
+                        throw std::runtime_error("Encroachment collector reported capacity without its reserve admission");
+                    // Also check the ACTUAL old+new peak if the STL supplied
+                    // more capacity than requested. No provider runs between
+                    // reserve and this admission/publication of new ownership.
+                    ValidateStateBudget(newBytes);
+                    nativeQueryScratchBytes_=QuestVr::DecalStateDetail::Add(baseline,newBytes);
+                    retainedCapacity=newCapacity;requestedCapacity=0u;
+                } else throw std::runtime_error("Encroachment collector used an unknown storage phase");
+            };
             // Both scopes join the existing outer hash/VM root. Restore the
             // raw pose BEFORE this query's result/admission/publication tail.
             auto hits=[&] {
-                QuestVr::NativeScratchScope scratch(nativeQueryScratchBytes_,scratchBytes,
-                    [this](std::size_t extra){ValidateStateBudget(extra);});
                 QuestVr::NativeActorPoseStack::Scope pose(nativeActorPoses_,reinterpret_cast<std::uintptr_t>(source),
                     {location,rotation});
                 return domain.ActorEncroachmentCheck(level->nativeRetailHash,reinterpret_cast<std::uintptr_t>(source),queries);
             }();
-            ValidateStateBudget(Multiply(hits.records.capacity(),sizeof(QuestVr::OriginalActorLineHit)));
+            if(requestedCapacity || retainedCapacity!=hits.records.capacity())
+                throw std::runtime_error("Encroachment collector returned unaccounted owning storage");
+            ValidateStateBudget();
             return hits;
         });
     }

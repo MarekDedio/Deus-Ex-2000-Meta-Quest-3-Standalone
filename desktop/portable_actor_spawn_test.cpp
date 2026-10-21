@@ -404,13 +404,20 @@ Tables Build(Fixture& fixture, unsigned worldModel = 0u, unsigned decalSchema = 
     const auto loadedObjectPath = engine.Function("LoadedObjectPath",actor,engineCore);
     engine.Property("ReturnValue","StrProperty",loadedObjectPath,engineCore,1u,0,0x580u);
     engine.FunctionCode(loadedObjectPath,Join({Token(0x04u),Token(0x56u),Ref(0x20u,actorLevelField)}));
-    engine.Property("Instigator", "ObjectProperty", actor, engineCore, 1u, pawn); engine.Property("Brush", "ObjectProperty", actor, engineCore, 1u, brush);
-    for (const auto& name : {"Location", "OldLocation"}) engine.Property(name, "StructProperty", actor, engineCore, 1u, importedVector);
-    engine.Property("Rotation", "StructProperty", actor, engineCore, 1u, importedRotator); engine.Property("Region", "StructProperty", actor, engineCore, 1u, pointRegion);
+    engine.Property("Instigator", "ObjectProperty", actor, engineCore, 1u, pawn);
+    // Exact original declarations are needed even for CheckEncroachment's
+    // inactive false path. A Brush is an Actor, not Actor.Brush's Model type.
+    engine.Property("Brush", "ObjectProperty", actor, engineCore, 1u, model, 0x2au);
+    engine.Property("Location", "StructProperty", actor, engineCore, 1u, importedVector, 0x23u);
+    engine.Property("OldLocation", "StructProperty", actor, engineCore, 1u, importedVector);
+    engine.Property("Rotation", "StructProperty", actor, engineCore, 1u, importedRotator, 0x23u);
+    engine.Property("Region", "StructProperty", actor, engineCore, 1u, pointRegion);
     for (const auto& name : {"Tag", "AttachTag"}) engine.Property(name, "NameProperty", actor, engineCore);
     std::int32_t deleteFlag{};
     for (const auto& name : {"bTicked", "bCollideActors", "bBlockActors", "bBlockPlayers", "bCollideWorld", "bCollideWhenPlacing", "bStatic", "bNoDelete", "bDeleteMe", "bAnimByOwner"}) {
-        const auto field = engine.Property(name, "BoolProperty", actor, engineCore);
+        const auto flags=std::string(name)=="bCollideActors"?0x23u:
+            (std::string(name)=="bCollideWorld"||std::string(name)=="bBlockActors"||std::string(name)=="bBlockPlayers")?0x21u:0u;
+        const auto field = engine.Property(name, "BoolProperty", actor, engineCore, 1u, 0, flags);
         if (std::string(name) == "bDeleteMe") deleteFlag = field;
     }
     for (const auto& name : {"CollisionRadius", "CollisionHeight"}) engine.Property(name, "FloatProperty", actor, engineCore);
@@ -906,13 +913,50 @@ Tables Build(Fixture& fixture, unsigned worldModel = 0u, unsigned decalSchema = 
     }
     const auto birthPreCount = classes.Property("PreCount", "IntProperty", worldBirth, classesCore);
     const auto birthBeginCount = classes.Property("BeginCount", "IntProperty", worldBirth, classesCore);
+    const auto birthPostCount = classes.Property("PostCount", "IntProperty", worldBirth, classesCore);
+    const auto birthStateCount = classes.Property("StateCount", "IntProperty", worldBirth, classesCore);
+    const auto birthPostLocation = classes.Property("PostLocation", "StructProperty", worldBirth, classesCore, 1u, classesVector);
+    const auto birthPostRotation = classes.Property("PostRotation", "StructProperty", worldBirth, classesCore, 1u, classesRotator);
+    const auto birthStateLocation = classes.Property("StateLocation", "StructProperty", worldBirth, classesCore, 1u, classesVector);
+    const auto birthStateRotation = classes.Property("StateRotation", "StructProperty", worldBirth, classesCore, 1u, classesRotator);
     const auto birthPre = Ref(0x01u, birthPreCount), birthBegin = Ref(0x01u, birthBeginCount);
     classes.Function("PreBeginPlay", worldBirth, classesCore, Join({Assign(birthPre, Native(146u, {birthPre, Int(1)})), Return()}));
     classes.Function("BeginPlay", worldBirth, classesCore, Join({Assign(birthBegin, Native(146u, {birthBegin, Int(1)})), Return()}));
+    // This birth occurs inside the genuine PublishStartup/InitGame path, not a
+    // SetBegun fixture. Its PostBeginPlay replaces both initial Spawn arguments
+    // with distinctive finite values before the native check. State/PPP retain
+    // the observable poses on both nested-birth and later world-pass callbacks.
+    classes.Function("PostBeginPlay",worldBirth,classesCore,Join({callbackTrace(4),
+        Assign(Ref(0x01u,importedRotation),RotatorLiteral({-913,27123,157})),
+        Assign(Ref(0x01u,importedLocation),VectorLiteral({17.25f,-31.5f,77.0f})),
+        Assign(Ref(0x01u,birthPostRotation),Ref(0x01u,importedRotation)),
+        Assign(Ref(0x01u,birthPostLocation),Ref(0x01u,importedLocation)),
+        Assign(Ref(0x01u,birthPostCount),Native(146u,{Ref(0x01u,birthPostCount),Int(1)})),Return()}));
+    Flow birthState;
+    assertCode(birthState,Native(154u,{Ref(0x01u,birthPostCount),Native(146u,{Ref(0x01u,birthStateCount),Int(1)})}),"post-before-state");
+    birthState.Add(callbackTrace(5));
+    birthState.Add(Assign(Ref(0x01u,birthStateRotation),Ref(0x01u,importedRotation)));
+    birthState.Add(Assign(Ref(0x01u,birthStateLocation),Ref(0x01u,importedLocation)));
+    birthState.Add(Assign(Ref(0x01u,birthStateCount),Native(146u,{Ref(0x01u,birthStateCount),Int(1)})));
+    birthState.Add(Return());classes.Function("SetInitialState",worldBirth,classesCore,birthState.Finish());
     Flow birthFinal;
     birthFinal.IfNot(levelValue(startup), "world-final"); birthFinal.Add(Return()); birthFinal.Label("world-final");
     assertCode(birthFinal, Native(154u, {birthPre, Int(2)}), "pre-twice");
     assertCode(birthFinal, Native(154u, {birthBegin, Int(2)}), "begin-twice");
+    assertCode(birthFinal,Native(154u,{Ref(0x01u,birthPostCount),Int(2)}),"post-twice");
+    assertCode(birthFinal,Native(154u,{Ref(0x01u,birthStateCount),Int(2)}),"state-twice");
+    for(const auto& [name,value]:std::vector<std::pair<const char*,float>>{{"X",17.25f},{"Y",-31.5f},{"Z",77.0f}}) {
+        const auto field=classes.Import(name,classesVector,"FloatProperty");
+        for(const auto property:{importedLocation,birthPostLocation,birthStateLocation})
+            assertCode(birthFinal,Native(180u,{StructMember(field,property),Number(value)}),
+                std::string("current-post-state-location-")+name+'-'+std::to_string(property));
+    }
+    for(const auto& [name,value]:std::vector<std::pair<const char*,std::int32_t>>{{"Pitch",-913},{"Yaw",27123},{"Roll",157}}) {
+        const auto field=classes.Import(name,classesRotator,"IntProperty");
+        for(const auto property:{importedRotation,birthPostRotation,birthStateRotation})
+            assertCode(birthFinal,Native(154u,{StructMember(field,property),Int(value)}),
+                std::string("current-post-state-rotation-")+name+'-'+std::to_string(property));
+    }
     birthFinal.Add(Return()); classes.Function("PostPostBeginPlay", worldBirth, classesCore, birthFinal.Finish());
     for (const auto cls : {worldGame, failingWorldGame}) {
         const auto init = classes.Function("InitGame", cls, classesCore);
@@ -2206,6 +2250,21 @@ void WorldStartupSynthetic() {
         const auto resetLocal=[&]() { fixture.Reset(); bindLocalClient(); };
         bindLocalClient();
         const auto full=probe(fallbackOptions,terminal);
+        std::size_t observedWorldBirths{};
+        for(const auto& birth:full.spawnedEncroachment)if(birth.classPath=="SpawnClasses.WorldBirth") {
+            Require(birth.actorPath.starts_with("SpawnFixture.WorldBirth")&&birth.attempted&&birth.completed&&!birth.blocked&&
+                birth.touch==0&&birth.location==std::array<float,3u>{17.25f,-31.5f,77.0f}&&
+                birth.rotation==std::array<std::int32_t,3u>{-913,27123,157},
+                "Genuine startup birth check did not sample CURRENT post-PostBeginPlay pose/literal touch0");
+            Require(birth.initialStateReached&&birth.baseReached&&birth.postPostBeginReached&&
+                birth.marksBefore==birth.marksAfter&&birth.arenasBefore==birth.arenasAfter,
+                "Clear original birth check skipped the ordered lifecycle tail or retained native hit storage");
+            ++observedWorldBirths;
+        }
+        Require(observedWorldBirths>0u,"Genuine startup diagnostic omitted native WorldBirth encroachment observations");
+        // These generated actors retain mask0D clear and Brush=None. This
+        // proves the real shared coordinator/current-pose/early-false adapter,
+        // not active hash overlap, moving-brush push or a blocking destruction.
         Require(full.execution.function.empty() && full.execution.callStack.empty() && full.execution.offset==0u && full.execution.opcode==0u,
             "Native world terminal gap retained an unrelated successful script PC");
         Require(full.gameInfoPath==Path("WorldGame0") && !full.restoredWorld &&

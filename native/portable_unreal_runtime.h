@@ -141,6 +141,14 @@ struct PortableWorldStartupProbeOptions {
     // Omission refuses that missing configuration rather than using DefaultGame.
     std::string defaultServerGameClass{};
 };
+struct PortableSpawnEncroachmentSnapshot {
+    std::string actorPath,classPath;
+    std::array<float,3u> location{};
+    std::array<std::int32_t,3u> rotation{};
+    std::int32_t touch{}; // Original literal0, not a configurable diagnostic input.
+    bool attempted{},completed{},blocked{},initialStateReached{},baseReached{},postPostBeginReached{};
+    std::size_t marksBefore{},arenasBefore{},marksAfter{},arenasAfter{};
+};
 struct PortableWorldStartupProbeResult {
     QuestVr::Vm::Result execution;
     PortableWorldStartupPhase phase{PortableWorldStartupPhase::ValidateWorld};
@@ -149,6 +157,9 @@ struct PortableWorldStartupProbeResult {
     std::array<std::size_t, static_cast<std::size_t>(PortableWorldStartupPhase::Count)> visited{};
     bool restoredWorld{};
     float worldTime{}; // Staged native clock; never published by this probe.
+    // Detached bounded observation of actual native Spawn calls in this SAME
+    // original startup root. No pose setters, begun-play override or publication.
+    std::vector<PortableSpawnEncroachmentSnapshot> spawnedEncroachment;
 };
 const char* PortableWorldStartupPhaseName(PortableWorldStartupPhase phase);
 // Non-publishing diagnostic over actual Level slots and original callbacks.

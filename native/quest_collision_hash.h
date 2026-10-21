@@ -55,6 +55,7 @@ struct OriginalHashQueries {
 // source's proposed Location/Rotation scope: BOTH bounds and source PointCheck
 // must observe that same authoritative pose, without hash Remove/Add or a
 // ColLocation update. These callbacks do not authorize renderer geometry.
+enum class OriginalHashHitStoragePhase { BeforeReserve,AfterReserve };
 struct OriginalHashEncroachmentQueries {
     std::function<OriginalCollisionHashBox(std::uintptr_t)> sourceBounds;
     // Exact live Brush!=None && Engine.Brush ancestry && !bStatic predicate.
@@ -65,6 +66,13 @@ struct OriginalHashEncroachmentQueries {
     std::function<OriginalActorCylinder(std::uintptr_t)> candidateCylinder;
     std::function<bool(OriginalActorLineHit&,std::uintptr_t,const PortableModelVec3&,
         const PortableModelVec3&,std::uint32_t)> sourcePoint;
+    // Optional pure host-memory admission, NOT a native/gameplay callback.
+    // BeforeReserve sees old owning capacity and requested new capacity, which
+    // coexist during vector growth. AfterReserve supplies actual new capacity;
+    // keep it charged through every later primitive/nested-query provider.
+    // No allocation or notification is needed for an empty/no-hit collector.
+    // Refusal propagates through the SAME hash/caller transaction as queries.
+    std::function<void(OriginalHashHitStoragePhase,std::size_t,std::size_t)> hitStorage;
 };
 
 // One explicitly owned process collision domain: immutable genuine permutation
@@ -495,6 +503,18 @@ public:
                             if(!live.initialized) Fail("encroachment hit observed undefined live link metadata");
                             static_cast<void>(Actor(live.actor));
                             hit.actor=live.actor;hit.primitive=0u;hit.next=0u;
+                            if(result.records.size()==result.records.capacity()) {
+                                const auto old=result.records.capacity();
+                                if(old>=limits_.hits) Fail("encroachment hit storage exceeds shared allocation budget");
+                                const auto next=old?old+std::min(old,limits_.hits-old):1u;
+                                if(next<=old || next>result.records.max_size())
+                                    Fail("encroachment hit storage capacity overflow");
+                                if(query.hitStorage)
+                                    query.hitStorage(OriginalHashHitStoragePhase::BeforeReserve,old,next);
+                                result.records.reserve(next);
+                                if(query.hitStorage)
+                                    query.hitStorage(OriginalHashHitStoragePhase::AfterReserve,old,result.records.capacity());
+                            }
                             result.records.push_back(hit);
                             const auto appended=result.records.size();
                             if(tail) result.records[tail-1u].next=appended;

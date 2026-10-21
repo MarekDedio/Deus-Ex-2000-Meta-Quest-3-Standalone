@@ -14,6 +14,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <iomanip>
 #include <iostream>
 #include <memory>
 #include <optional>
@@ -144,6 +145,57 @@ struct Boundary {
             function==world.execution.function&&error==world.execution.error&&opcode==world.execution.opcode;
     }
 };
+bool SameSpawnPackets(const std::vector<PortableSpawnEncroachmentSnapshot>& a,
+    const std::vector<PortableSpawnEncroachmentSnapshot>& b) {
+    if(a.size()!=b.size())return false;
+    for(std::size_t i=0u;i<a.size();++i) {
+        const auto& x=a[i];const auto& y=b[i];
+        if(x.actorPath!=y.actorPath||x.classPath!=y.classPath||x.rotation!=y.rotation||x.touch!=y.touch||
+            x.attempted!=y.attempted||x.completed!=y.completed||x.blocked!=y.blocked||
+            x.initialStateReached!=y.initialStateReached||x.baseReached!=y.baseReached||
+            x.postPostBeginReached!=y.postPostBeginReached||x.marksBefore!=y.marksBefore||
+            x.marksAfter!=y.marksAfter||x.arenasBefore!=y.arenasBefore||x.arenasAfter!=y.arenasAfter)return false;
+        for(unsigned c=0u;c<3u;++c)
+            if(std::bit_cast<std::uint32_t>(x.location[c])!=std::bit_cast<std::uint32_t>(y.location[c]))return false;
+    }
+    return true;
+}
+void ObserveSpawnPackets(const PortableWorldStartupProbeResult& world,bool requireSpawnEncroachment) {
+    const auto& packets=world.spawnedEncroachment;
+    Require(packets.size()<=4096u,"Spawn observation exceeds its bounded native packet count");
+    bool nanoKeyClear{};
+    for(std::size_t i=0u;i<packets.size();++i) {
+        const auto& packet=packets[i];
+        const auto valid=[](const std::string& text){return !text.empty()&&text.size()<=8192u&&text.find('\0')==std::string::npos;};
+        Require(valid(packet.actorPath)&&valid(packet.classPath),"Spawn observation has an invalid/unbounded identity");
+        Require(packet.touch==0,"Original Spawn did not retain its literal encroachment touch0");
+        Require(!packet.completed||packet.attempted,"Spawn check completed without a genuine query attempt");
+        Require(!packet.blocked||packet.completed,"Spawn observation fabricated a blocking result before query completion");
+        Require(!packet.baseReached||packet.initialStateReached,"Spawn base tail ran before SetInitialState returned");
+        Require(!packet.postPostBeginReached||packet.baseReached,"Spawn PPP tail ran before its original base pass returned");
+        if(packet.initialStateReached||packet.baseReached||packet.postPostBeginReached)
+            Require(packet.completed&&!packet.blocked,"Spawn tail advanced after a refused or blocking native query");
+        if(packet.completed&&!packet.blocked)
+            Require(packet.marksBefore==packet.marksAfter&&packet.arenasBefore==packet.arenasAfter,
+                "Completed clear Spawn encroachment retained native hit marks/arenas");
+        if(packet.blocked)
+            Require(!world.execution.passed()&&!world.execution.committed&&world.execution.error.find("DestroyActor")!=std::string::npos,
+                "Blocked Spawn fabricated a successful destruction/None instead of the explicit native DestroyActor refusal");
+        if(packet.classPath=="DeusEx.NanoKey"&&packet.actorPath.starts_with("00_Training.NanoKey")&&
+            packet.attempted&&packet.completed&&!packet.blocked)nanoKeyClear=true;
+        std::cout<<std::setprecision(9)<<"SPAWN ENCROACHMENT index="<<i<<" actor="<<std::quoted(packet.actorPath)
+            <<" class="<<std::quoted(packet.classPath)<<" currentLocation=("<<packet.location[0u]<<','<<packet.location[1u]<<','<<packet.location[2u]
+            <<") currentRotation=("<<packet.rotation[0u]<<','<<packet.rotation[1u]<<','<<packet.rotation[2u]
+            <<") attempted="<<packet.attempted<<" completed="<<packet.completed<<" blocked="<<packet.blocked<<" touch="<<packet.touch
+            <<" initialStateReached="<<packet.initialStateReached<<" baseReached="<<packet.baseReached
+            <<" postPostBeginReached="<<packet.postPostBeginReached<<" marksBefore="<<packet.marksBefore
+            <<" marksAfter="<<packet.marksAfter<<" arenasBefore="<<packet.arenasBefore<<" arenasAfter="<<packet.arenasAfter<<'\n';
+    }
+    if(requireSpawnEncroachment)Require(nanoKeyClear,
+        "Required actual first-Training NanoKey did not complete its real clear native Spawn encroachment check");
+    std::cout<<"SPAWN OBSERVATIONS count="<<packets.size()<<" actualTrainingNanoKeyClear="<<nanoKeyClear
+        <<"; detached original same-root prefix, NOT a published birth, surviving usable loot or completed startup\n";
+}
 std::size_t NativeWorkLimit(std::string_view text) {
     Require(!text.empty()&&text.size()<=20u,"Native-work allowance must be a bounded decimal integer");
     std::size_t value{};
@@ -156,7 +208,8 @@ std::size_t NativeWorkLimit(std::string_view text) {
     }
     QuestVr::NativeWork::ValidateLimit(value);return value;
 }
-int Run(const fs::path& root,const std::optional<std::string>& expected,unsigned repeats,std::size_t nativeWork) {
+int Run(const fs::path& root,const std::optional<std::string>& expected,unsigned repeats,std::size_t nativeWork,
+    bool requireSpawnEncroachment) {
     Temporary temporary(root);std::vector<Source> sources;std::vector<PortablePackageTables> scripts;
     sources.reserve(QuestVr::RuntimeScriptPackages.size()+2u);scripts.reserve(QuestVr::RuntimeScriptPackages.size());
     for(const auto* name:QuestVr::RuntimeScriptPackages){sources.emplace_back(root/"System"/(std::string(name)+".u"));
@@ -218,7 +271,7 @@ int Run(const fs::path& root,const std::optional<std::string>& expected,unsigned
     QuestVr::Vm::Limits limits;limits.instructions=4'000'000u;limits.nodes=1'048'576u;
     limits.writes=1'048'576u;limits.retainedBytes=128u<<20u;
     limits.nativeWork=nativeWork;
-    std::optional<Boundary> boundary;bool completed{};
+    std::optional<Boundary> boundary;std::optional<std::vector<PortableSpawnEncroachmentSnapshot>> spawnPackets;bool completed{};
     for(unsigned attempt=1u;attempt<=repeats;++attempt){
         const auto start=std::chrono::steady_clock::now();
         const auto result=ProbePortableRuntimeRetailCollisionStartup(options,limits);const auto& world=result.world;
@@ -241,6 +294,10 @@ int Run(const fs::path& root,const std::optional<std::string>& expected,unsigned
         for(std::size_t i=0u;i<world.visited.size();++i)if(world.visited[i])
             std::cout<<"VISITED "<<PortableWorldStartupPhaseName(static_cast<PortableWorldStartupPhase>(i))<<'='<<world.visited[i]<<'\n';
         for(const auto& call:world.execution.callStack)std::cout<<"CALL "<<call<<'\n';
+        ObserveSpawnPackets(world,requireSpawnEncroachment);
+        if(spawnPackets)Require(SameSpawnPackets(*spawnPackets,world.spawnedEncroachment),
+            "Repeated startup changed detached Spawn identities, exact pose words, query result/storage or lifecycle tail");
+        else spawnPackets=world.spawnedEncroachment;
         rollback();
         completed=world.execution.status==QuestVr::Vm::Status::Returned&&world.execution.error.empty();
         if(completed)Require(world.phase==PortableWorldStartupPhase::CompactActorSlots&&
@@ -266,19 +323,20 @@ int Run(const fs::path& root,const std::optional<std::string>& expected,unsigned
 int main(int argc,char** argv) {
     std::cout.setf(std::ios::unitbuf);
     try {
-        fs::path root;std::optional<std::string> expected;unsigned repeats=1u;
+        fs::path root;std::optional<std::string> expected;unsigned repeats=1u;bool requireSpawnEncroachment{};
         std::size_t nativeWork=QuestVr::NativeWork::DefaultLimit;
         if(const auto* configured=std::getenv("DEUSEX_GAME_ROOT");configured&&*configured)root=configured;
         for(int i=1;i<argc;++i){const std::string_view option=argv[i];
             if((option=="--owned-source-root"||option=="--game-root")&&i+1<argc)root=argv[++i];
             else if(option=="--expected-error"&&i+1<argc){expected=argv[++i];Require(!expected->empty()&&expected->size()<=8192u,"Expected error must be nonempty and bounded");}
             else if(option=="--native-work"&&i+1<argc)nativeWork=NativeWorkLimit(argv[++i]);
+            else if(option=="--require-spawn-encroachment")requireSpawnEncroachment=true;
             else if(option=="--repeat"&&i+1<argc){const std::string_view number=argv[++i];
                 Require(number.size()==1u&&number[0]>='1'&&number[0]<='8',"Repeat count must be1..8");repeats=static_cast<unsigned>(number[0]-'0');}
-            else throw std::runtime_error("Usage: portable_training_startup_probe --owned-source-root OWNED_GAME_ROOT [--expected-error EXACT_TEXT] [--repeat 1..8] [--native-work 0..16777216]");}
+            else throw std::runtime_error("Usage: portable_training_startup_probe --owned-source-root OWNED_GAME_ROOT [--expected-error EXACT_TEXT] [--repeat 1..8] [--native-work 0..16777216] [--require-spawn-encroachment]");}
         if(root.empty()){std::cout<<"SKIP owned first Training startup observation: use --owned-source-root or DEUSEX_GAME_ROOT.\n";return 77;}
         ShutdownPortableRuntime();GC::Collect();const auto before=GC::GetStats();
-        const auto result=Run(fs::canonical(root),expected,repeats,nativeWork);ShutdownPortableRuntime();GC::Collect();const auto after=GC::GetStats();
+        const auto result=Run(fs::canonical(root),expected,repeats,nativeWork,requireSpawnEncroachment);ShutdownPortableRuntime();GC::Collect();const auto after=GC::GetStats();
         Require(after.numObjects==before.numObjects&&after.memoryUsage==before.memoryUsage,"Startup observation retained native UObjects after shutdown");
         return result;
     }catch(const std::exception& error){std::cerr<<"FAIL startup observation/rollback/source check: "<<error.what()<<'\n';ShutdownPortableRuntime();return 1;}

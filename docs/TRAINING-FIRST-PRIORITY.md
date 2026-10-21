@@ -6,7 +6,23 @@ campaign objective remains, but it is not the current acceptance milestone.
 Reconfirmed2026-10-20: skip other-map chest/physics integration and testing to
 save time; shared prerequisites needed by this first map remain in scope.
 
-Latest source checkpoint,2026-10-20: original native movement/rotation now runs
+Latest source checkpoint,2026-10-21: original post-PostBeginPlay Spawn collision
+now uses the actual retained native Level/hash and current post-callback pose.
+Actual-capacity hit storage passes the old all-actor envelope's memory refusal
+without raising limits or skipping collision. The real first-map NanoKey now
+completes its collision/state/base/PPP path, and startup next reaches original
+PickupDistributor.Destroy279 at PC244. The full native DestroyActor lifecycle
+remains required, with an explicit active-hash ordering refusal rather than a
+successful no-op. This is startup progress, not finished destruction, surviving
+usable loot, falling, complete Training or a new APK. See
+TRAINING-SPAWN-ENCROACHMENT.md and ORIGINAL-DESTROY-ACTOR.md. Repeated actual
+startup restores the full state and all40 originals; focused first-map
+movement122706/21, conversation156871/17 and isolated crates347/two regressions
+pass. Coherent desktop/strict ARM64/Android native builds pass; shared CTest
+executes159/184 with25 owned-data skips and zero failures. Those skips are not
+map/headset evidence, and isolated Game=None crate contents still do not survive.
+
+Previous source checkpoint,2026-10-20: original native movement/rotation now runs
 on actual Training actors, and the missing Core Rotator addition is implemented
 with copied-input/initialized-selector correctness. A bounded shared native-work
 root allowance now retains default65536 while allowing explicit larger finite

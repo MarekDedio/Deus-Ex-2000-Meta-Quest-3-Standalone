@@ -1,6 +1,30 @@
 # Port status
 
-## First Training conversation runtime lifecycle (2026-10-20)
+## First Training spawned-pickup collision (2026-10-21)
+
+Original Spawn now connects its post-PostBeginPlay collision fragment to the
+actual current-Level encroachment service, then preserves the state/base/PPP
+order on the clear path. The real Training NanoKey completes that path, moving
+startup beyond Inventory.PostBeginPlay PC60 to PickupDistributor's Destroy279
+at PC244. The remaining native actor-destruction service is not bypassed.
+The active-hash DestroyActor ordering refusal remains explicit; crate/loot/
+gravity gameplay and complete world/player startup are still unfinished.
+
+Actual-capacity hit storage replaces the all-actor allocation envelope without
+raising the16MiB state limit or lowering hit/work limits. Two actual startup
+attempts reproduce that new boundary and all26 Spawn packets, including a
+completed NanoKey collision/state/base/PPP path. Full rollback and all40 owned
+source fingerprints pass; exit2 still reports unfinished startup. Desktop
+generated Spawn controls and strict ARM64 runtime/tests pass; Android native link passes.
+The coherent desktop build and shared CTest pass159 executed/184 listed with25
+explicit owned-data skips, zero failures in71.56s. Actual first-map movement,
+conversation and isolated crate regressions pass separately; none proves live
+crate loot/gravity or headset acceptance.
+See TRAINING-SPAWN-ENCROACHMENT.md and ORIGINAL-DESTROY-ACTOR.md for authorities,
+evidence and remaining boundaries. Only first Training is integrated; no new
+backend-only APK is packaged or installed.
+
+## Previous first Training conversation runtime lifecycle (2026-10-20)
 
 Actual native conversation binding now constructs real non-Actor ConListItems
 with original class/package/names/counts/flags and mutable GC edges. Purge
