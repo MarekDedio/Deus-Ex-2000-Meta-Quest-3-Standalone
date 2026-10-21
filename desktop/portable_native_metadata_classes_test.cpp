@@ -104,21 +104,22 @@ struct Temporary {
     }
 };
 
-// Independent literal evidence from ORIGINAL-NATIVE-METADATA-REGISTRATION.md,
+// Independent literal evidence from ORIGINAL-NATIVE-METADATA-REGISTRATION.md
+// and ORIGINAL-STRUCT-PROPERTY-REGISTRATION.md,
 // not a copy of a production registration table or a path-hash pseudo-index.
-constexpr std::array<const char*,11u> Paths{
+constexpr std::array<const char*,12u> Paths{
     "Core.Field","Core.Struct","Core.State","Core.Class","Core.Property","Core.ObjectProperty",
-    "Core.ClassProperty","Core.IntProperty","Core.BoolProperty","Core.StrProperty","Core.ArrayProperty"};
-constexpr std::array<const char*,11u> Bases{
+    "Core.ClassProperty","Core.IntProperty","Core.BoolProperty","Core.StrProperty","Core.ArrayProperty","Core.StructProperty"};
+constexpr std::array<const char*,12u> Bases{
     "Core.Object","Core.Field","Core.Struct","Core.State","Core.Field","Core.Property",
-    "Core.ObjectProperty","Core.Property","Core.Property","Core.Property","Core.Property"};
-constexpr std::array<const char*,11u> Withins{
+    "Core.ObjectProperty","Core.Property","Core.Property","Core.Property","Core.Property","Core.Property"};
+constexpr std::array<const char*,12u> Withins{
     "Core.Object","Core.Object","Core.Object","Core.Package","Core.Field","Core.Field",
-    "Core.Field","Core.Field","Core.Field","Core.Field","Core.Field"};
-constexpr std::array<std::uint32_t,11u> Sizes{0x34u,0x6cu,0x484u,0x4f4u,0x5cu,0x64u,0x68u,0x5cu,0x60u,0x5cu,0x60u};
-constexpr std::array<std::uint32_t,11u> Flags{0x13u,0x12u,0x12u,0x12u,0x13u,0x12u,0x12u,0x12u,0x12u,0x12u,0x12u};
+    "Core.Field","Core.Field","Core.Field","Core.Field","Core.Field","Core.Field"};
+constexpr std::array<std::uint32_t,12u> Sizes{0x34u,0x6cu,0x484u,0x4f4u,0x5cu,0x64u,0x68u,0x5cu,0x60u,0x5cu,0x60u,0x64u};
+constexpr std::array<std::uint32_t,12u> Flags{0x13u,0x12u,0x12u,0x12u,0x13u,0x12u,0x12u,0x12u,0x12u,0x12u,0x12u,0x12u};
 void SnapshotIs(const PortableNativeMetadataClassesSnapshot& value,bool prepared,std::size_t serialized=0u) {
-    Require(value.prepared==prepared&&value.classes.size()==(prepared?Paths.size():0u),"Metadata preparation state/count differs from eleven-class contract");
+    Require(value.prepared==prepared&&value.classes.size()==(prepared?Paths.size():0u),"Metadata preparation state/count differs from twelve-class contract");
     Require(value.boundSerializedClasses==(prepared?serialized:0u),"Metadata binding count differs from actual loaded serialized UClasses");
     if(!prepared)return;
     std::set<std::uint32_t> indices;
@@ -134,7 +135,7 @@ void SnapshotIs(const PortableNativeMetadataClassesSnapshot& value,bool prepared
     const auto object=value.classes[0u].baseClassIndex,package=value.classes[3u].withinClassIndex;
     Require(object!=package&&indices.count(object)==0u&&indices.count(package)==0u,
         "Original Object/Package dependencies alias metadata class allocation slots");
-    constexpr std::array<int,11u> baseSlots{-1,0,1,2,0,4,5,4,4,4,4};
+    constexpr std::array<int,12u> baseSlots{-1,0,1,2,0,4,5,4,4,4,4,4};
     for(std::size_t i=0u;i<Paths.size();++i) {
         const auto base=baseSlots[i]<0?object:value.classes[static_cast<std::size_t>(baseSlots[i])].objectIndex;
         const auto within=i<3u?object:i==3u?package:value.classes[0u].objectIndex;
@@ -222,8 +223,8 @@ void Original(const std::vector<PortablePackageTables>& packages,const PortableP
     std::vector<PortableStateDescriptor> states;
     for(const auto* path:originalPaths)states.push_back(ReadPortableRuntimeAuthoredStateDescriptor(path));
     const auto prepared=PreparePortableRuntimeNativeMetadataClasses();SnapshotIs(prepared,true,serialized);
-    const auto preparedGc=GC::GetStats();Require(preparedGc.numObjects==gc.numObjects+12u&&preparedGc.memoryUsage>gc.memoryUsage,
-        "Metadata phase did not allocate exactly eleven UClasses plus one owning domain (no defaults/instances)");
+    const auto preparedGc=GC::GetStats();Require(preparedGc.numObjects==gc.numObjects+13u&&preparedGc.memoryUsage>gc.memoryUsage,
+        "Metadata phase did not allocate exactly twelve UClasses plus one owning domain (no defaults/instances)");
     Headers(packages[0u],packages[1u]);
     for(unsigned repeat=0u;repeat<4u;++repeat) {
         SameSnapshot(prepared,PreparePortableRuntimeNativeMetadataClasses());SameSnapshot(prepared,ReadPortableRuntimeNativeMetadataClasses());
@@ -250,7 +251,7 @@ void Original(const std::vector<PortablePackageTables>& packages,const PortableP
         "Warm checkpoint replacement contaminated dormant world");Dormant();
     Require(UnloadPortableRuntimeMap()>0u&&WorldPaths().empty(),"Cannot unload metadata Training fixture");GC::Collect();
     SameSnapshot(prepared,PreparePortableRuntimeNativeMetadataClasses());
-    Require(GC::GetStats().numObjects==scriptGc.numObjects+12u,"Map unload did not retain exactly the static metadata registration domain");
+    Require(GC::GetStats().numObjects==scriptGc.numObjects+13u,"Map unload did not retain exactly the static metadata registration domain");
     Require(LoadPortableRuntimeMap(map).passed,"Cannot reload Training with existing indexed metadata classes");
     const auto reloadGc=GC::GetStats();SameSnapshot(prepared,ReadPortableRuntimeNativeMetadataClasses());
     SameSnapshot(prepared,PreparePortableRuntimeNativeMetadataClasses());GC::Collect();SameGc(reloadGc,"Map reload lost/duplicated static metadata roots");
@@ -325,7 +326,7 @@ void RefusalFixtures(const fs::path& root,const std::vector<PortablePackageTable
     // Add a tables-only ordinary Object under the LAST native metadata name.
     // Its payload is never read; all original package bytes remain untouched.
     ExportTableEntry extra{};extra.ObjName=static_cast<std::int32_t>(core.names.size());
-    core.names.push_back({NameString("ArrayProperty"),0u});
+    core.names.push_back({NameString("StructProperty"),0u});
     extra.ObjClass=ExportClass(core,"Core.Object");core.exports.push_back(extra);
     Require(InitializePortableRuntime(std::vector<PortablePackageTables>{core,packages[1u]}).passed,"Cannot initialize late metadata-name collision fixture");
     Require(PreparePortableRuntimeNativeEngineClasses().prepared,"Late metadata collision prevents unrelated prerequisite Engine class phase");
@@ -335,7 +336,7 @@ void RefusalFixtures(const fs::path& root,const std::vector<PortablePackageTable
     Require(ReadPortableRuntimeNativeEngineClasses().prepared&&ReadPortableRuntimeNativeEngineClasses().classes.size()==5u,
         "Failed metadata phase removed/changed its preexisting Engine registration dependency");
     for(std::size_t i=0u;i+1u<Paths.size();++i)Unavailable([&] {(void)ReadPortableRuntimeAuthoredStateDescriptor(Paths[i]);},Paths[i]);
-    Refused([&] {(void)ReadPortableRuntimeAuthoredStateDescriptor("Core.ArrayProperty");},"Existing ordinary collision object acquired authored UClass metadata");
+    Refused([&] {(void)ReadPortableRuntimeAuthoredStateDescriptor("Core.StructProperty");},"Existing ordinary collision object acquired authored UClass metadata");
     Require(temporary.Snapshot("CollisionAfter")==collisionBefore&&GetPortableRuntimeWorldRevision()==revision&&WorldPaths().empty(),
         "Late metadata-name refusal published partial gameplay/index/checkpoint state");
     copy.Unchanged();ShutdownPortableRuntime();
@@ -364,7 +365,7 @@ int main(int argc,char** argv) {
         GC::Collect();SameGc(baseline,"No-runtime metadata preparation leaked native objects");
         for(const auto& source:sources)source.Unchanged();
         std::cout<<"PASS owned native metadata-class integration: "<<checks<<" checks, "<<refusals
-            <<" refusals; exact eleven registration records/+12 GC graph, real distinct object-index/Super/Within/self-metaclass relationships, "
+            <<" refusals; exact twelve registration records/+13 GC graph, real distinct object-index/Super/Within/self-metaclass relationships, "
               "serialized-UClass binding count including later map Class without descriptor, native session classes before/after preparation, "
               "dormant whole checkpoints/default/state/model preservation, warm restore/map/GC/shutdown lifetime, "
               "missing-phase/dependency and late-name atomic refusal. Not defaults, Engine/Cylinder instances, startup, physics or VR rendering.\n";

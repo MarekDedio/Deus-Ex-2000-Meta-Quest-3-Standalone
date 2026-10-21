@@ -205,8 +205,8 @@
         q.audioActorDestroyed=[](std::uintptr_t,std::uintptr_t) {
             throw std::runtime_error("Original DestroyActor nonnull Audio notification is not implemented");
         };
-        q.conditionalDestroy=[](std::uintptr_t)->std::int32_t {
-            throw std::runtime_error("Original DestroyActor ConditionalDestroy/property/linker teardown is not implemented");
+        q.conditionalDestroy=[this,resolve,&execution](std::uintptr_t identity)->std::int32_t {
+            return ConditionalDestroyObject(resolve(identity),execution);
         };
         q.firstDeleted=[](std::uintptr_t)->std::uintptr_t {
             throw std::runtime_error("Original DestroyActor deferred deletion ownership is not implemented");

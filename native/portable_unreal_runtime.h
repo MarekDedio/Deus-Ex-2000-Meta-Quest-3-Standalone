@@ -35,6 +35,21 @@ struct PortableRuntimeSummary {
     std::size_t destroyedObjects{};
 };
 
+// Rollback-only native payload diagnostic. Values are captured inside the
+// genuine caller root (including partial refusal prefixes), never published.
+// This is not full ConditionalDestroy/linker/deferred deletion or gameplay.
+struct PortablePropertyTeardownEntry {
+    std::string propertyPath;std::uint32_t arrayIndex{};
+    QuestVr::Vm::Value before,after;
+};
+struct PortablePropertyTeardownProbeResult {
+    QuestVr::Vm::Result execution;
+    bool completed{};
+    std::vector<PortablePropertyTeardownEntry> values;
+};
+PortablePropertyTeardownProbeResult ProbePortableActorPropertyTeardown(
+    const std::string& actorPath,const QuestVr::Vm::Limits& limits={});
+
 struct PortableConversationSummary {
     std::size_t objects{};
     std::size_t conversations{};

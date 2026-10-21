@@ -579,9 +579,10 @@ PortableEngineCollisionSnapshot PreparePortableRuntimeEngineCollision(const std:
     for(const auto& binding:classBindings) {
         binding.first->cls=binding.second;binding.first->inventoryClassReferenceValid=true;
     }
-    for(const auto& [cls,head]:heads) cls->nativePropertyHeads=head;
+    for(const auto& [cls,head]:heads) {cls->nativePropertyHeads=head;cls->nativeConstructorLinksPrepared=true;}
     for(const auto& [field,next]:nextLinks) {
         field->nativePropertyNext=next;
+        field->nativeConstructorLinksPrepared=true;
         if(field->nativeProperty) {
             field->nativeProperty->propertyNext=next[0u];field->nativeProperty->configNext=next[1u];field->nativeProperty->constructorNext=next[2u];
         }

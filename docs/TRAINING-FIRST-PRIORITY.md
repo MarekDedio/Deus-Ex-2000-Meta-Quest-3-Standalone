@@ -8,7 +8,22 @@ save time; shared prerequisites needed by this first map remain in scope.
 Reconfirmed2026-10-21: the WHOLE first Training map is the short-term milestone;
 do not spend time on other-map integration or map-content test sweeps.
 
-Latest destruction source increment,2026-10-21: real DestroyActor callbacks,
+Latest property teardown increment,2026-10-21: actual ConditionalDestroy now
+reaches native ConstructorLink/selected StrProperty/StructProperty payload
+cleanup, preserving nonconstructor members and original native header flags.
+The new registered StructProperty identity does not fabricate a default block.
+Native RenderInterface has explicitly bound transient storage, not an absent
+tag inferred as None. Actual first-map tests pass1164/33; metadata/config
+checks pass11130/102 and9977/48. Repeated original startup now stops at the next
+explicit live linker export-detachment boundary, with full rollback and all40
+sources unchanged. This is not completed startup, destruction, surviving loot,
+gravity or a new playable APK. See TRAINING-PROPERTY-TEARDOWN.md. Other-map
+integrations/test sweeps remain deferred; whole first Training remains the goal.
+Coherent desktop/strict ARM64/Android native checks pass; shared CTest executes
+162/188 with26 owned-data skips and zero failures. Actual owned checks run
+separately and do not prove live loot/gravity or headset acceptance.
+
+Previous destruction source increment,2026-10-21: real DestroyActor callbacks,
 native hash removal, live Owner/Touching scans, saved-slot hole and late pending
 store now execute under the original caller transaction. Original SetOwner
 captures its old Owner once and stores the retained new Owner without reverse

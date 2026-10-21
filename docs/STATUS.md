@@ -1,6 +1,32 @@
 # Port status
 
-## First Training native destruction prefix (2026-10-21)
+## First Training property teardown checkpoint (2026-10-21)
+
+Only the entire first `00_Training.dx` is the current playable-content target;
+other-map integration and actual-map test sweeps remain deferred. Shared engine
+prerequisites and regressions remain in scope where Training needs them.
+
+ConditionalDestroy now reaches actual ConstructorLink/selected string and
+nested-struct payload teardown, with separately owned native RenderInterface
+storage and original ObjectFlags preservation. The appended authenticated
+Core.StructProperty registration leaves the previous metadata indices and
+eleven closed default profiles unchanged. Actual first-map tests pass1164/33;
+every payload write prefix restores full state and all39 originals remain
+unchanged. Independent metadata/config regressions pass11130/102 and9977/48.
+
+Two exact-build first-map startup attempts now stop explicitly at live linker
+export detachment, after533311 instructions/39754 writes. Both preserve all26
+Spawn observations, including NanoKey, restore the full state and leave all40
+originals unchanged. This is NOT completed startup, crate destruction, surviving
+usable loot or gravity. Native linker/deferred ownership and eventual cleanup
+remain required. No backend-only APK is packaged. See
+TRAINING-PROPERTY-TEARDOWN.md and ORIGINAL-STRUCT-PROPERTY-REGISTRATION.md.
+Coherent desktop/strict ARM64/Android native checks pass. Shared CTest executes
+162/188 with26 explicit owned-data skips, zero failures in50.20s. Actual owned
+tests run separately as recorded in the teardown document; skipped tests are
+not claimed as executed or as headset acceptance.
+
+## Previous first Training native destruction prefix (2026-10-21)
 
 Real DestroyActor now binds original selected callbacks, hash removal, live
 ownership/touch scans, an actual saved-slot hole and the late pending-delete

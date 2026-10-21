@@ -30,7 +30,7 @@ inline constexpr std::array<NativeEngineClassRegistration,5u> NativeEngineClasse
 // native UClasses, not default blocks, fabricated serialized descriptors or
 // permission to replay Cpp-property constructors after package loading.
 // See ORIGINAL-NATIVE-METADATA-REGISTRATION.md for each audited native header.
-inline constexpr std::array<NativeEngineClassRegistration,11u> NativeMetadataClasses{{
+inline constexpr std::array<NativeEngineClassRegistration,12u> NativeMetadataClasses{{
     {"Core.Field","Core.Object","Core.Object",0x34u,0x13u,0x04084004u,"Core"},
     {"Core.Struct","Core.Field","Core.Object",0x6cu,0x12u,0x04084004u,"Core"},
     {"Core.State","Core.Struct","Core.Object",0x484u,0x12u,0x04084004u,"Core"},
@@ -41,7 +41,11 @@ inline constexpr std::array<NativeEngineClassRegistration,11u> NativeMetadataCla
     {"Core.IntProperty","Core.Property","Core.Field",0x5cu,0x12u,0x04084004u,"Core"},
     {"Core.BoolProperty","Core.Property","Core.Field",0x60u,0x12u,0x04084004u,"Core"},
     {"Core.StrProperty","Core.Property","Core.Field",0x5cu,0x12u,0x04084004u,"Core"},
-    {"Core.ArrayProperty","Core.Property","Core.Field",0x60u,0x12u,0x04084004u,"Core"}
+    {"Core.ArrayProperty","Core.Property","Core.Field",0x60u,0x12u,0x04084004u,"Core"},
+    // Required by first Training's original nested NanoKeyData destruction.
+    // Actual native size64, not the Struct pointer's offset5C plus4 guess.
+    // See ORIGINAL-STRUCT-PROPERTY-REGISTRATION.md. No instance/CDO is implied.
+    {"Core.StructProperty","Core.Property","Core.Field",0x64u,0x12u,0x04084004u,"Core"}
 }};
 
 // The actual native bases of Engine's five config ClassProperties. Console

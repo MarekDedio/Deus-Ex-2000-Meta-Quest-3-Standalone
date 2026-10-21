@@ -5,6 +5,13 @@ Read-only primary-source audit,2026-10-21. Prerequisite for the real first
 successful startup, surviving usable loot, gravity or headset result. No other
 map is loaded. Original commercial DLL/EXE files are never loaded/executed.
 
+Implementation checkpoint: TRAINING-PROPERTY-TEARDOWN.md now records actual
+prepared ConstructorLink/selected payload teardown and native ObjectFlags/
+RenderInterface storage. The storage-gap discussion below is the audit-time
+baseline, not a claim that this subsequent source work is absent. Live linker
+detachment and deferred deletion remain unfinished; no complete DestroyActor,
+usable loot, gravity or new playable APK is claimed.
+
 Owned originals under `D:/Steam/steamapps/common/Deus Ex/System` retain:
 
 - Core.dll SHA256 `8BF3039E14F849942EE70A95BDF26CF1F636245926E30106BBE58B7097EBA7E4`.

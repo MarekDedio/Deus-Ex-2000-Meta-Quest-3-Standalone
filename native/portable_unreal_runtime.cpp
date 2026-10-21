@@ -75,6 +75,7 @@
 #include "quest_spawn_encroachment.h"
 #include "quest_actor_owner.h"
 #include "quest_destroy_actor.h"
+#include "quest_object_destroy.h"
 
 #include <memory>
 #include <algorithm>
@@ -256,6 +257,11 @@ public:
     std::int32_t uniqueObjectCounter{}; // Concrete UClass, survives map changes.
     std::unique_ptr<RuntimeNativeConversationState> nativeConversation;
     RuntimeObject* nativeXLevel{}; // Immutable LinkActorsToLevel baseline, not a script write.
+    // Explicit loader/Spawn-owned transient native Actor slot. The portable
+    // renderer does not allocate an original RenderIterator. Absence comes
+    // from this bound native storage, NEVER an absent reflected property tag.
+    RuntimeObject* nativeRenderInterface{};
+    bool nativeRenderInterfaceBound{};
     RuntimeObject* nativeLevelModel{}; // Serialized ULevel.Model, owned only by its loader.
     RuntimeObject* nativeLevelEngine{}; // Actual collision Engine binding, never a save property.
     std::uint64_t nativeRetailHash{}; // Actual Level.Hash lease, never an archived pointer.
@@ -286,6 +292,9 @@ public:
     // linkedClassOwner aliases the already GC-linked immutable Outer.
     RuntimeObject* linkedClassOwner{};
     bool classFieldLinksValid{};
+    // Immutable original ConstructorLink has been prepared/authenticated. Null
+    // alone never means an ordinary class/struct has no dynamic properties.
+    bool nativeConstructorLinksPrepared{};
     // Exact immutable table identities, captured only at load while its source
     // table is already available. A read-only inventory query must not reopen
     // packages or treat reflection's package-stripped metaclass as an IsA proof.
@@ -293,7 +302,7 @@ public:
     bool serializedOuterZero{}; // Exact source table provenance, not a null resolved pointer.
     bool serializedBaseZero{};
     std::uint8_t inventoryNativeClass{}, inventoryNativeBase{};
-    std::uint8_t nativeMetadataClassImport{}; // Validated Class import into the closed eleven-class domain.
+    std::uint8_t nativeMetadataClassImport{}; // Validated Class import into the closed native metadata domain.
     std::unique_ptr<InventoryIconClassConstraint> inventoryIconClassConstraint;
     // Immutable authored bitmap fields prepared before native HUD queries.
     // No image/mip decoding or package I/O belongs in a sizing callback.
@@ -459,6 +468,7 @@ GCAllocation* RuntimeObject::Mark(GCAllocation* marklist) {
             &nativeWindowState->tabGroups,&nativeWindowState->toggleButtons})
             for(auto* window:*list) marklist=GC::MarkObject(marklist,window);
     }
+    marklist=GC::MarkObject(marklist,nativeRenderInterface);
     for (auto* actor : childActors) marklist = GC::MarkObject(marklist, actor);
     return GC::MarkObject(marklist, nativeAiManager);
 }
@@ -2149,6 +2159,41 @@ public:
         if (persistentQualifiedObjects.size() > 1'000'000u)
             throw std::runtime_error("Portable actor VM object lookup budget exceeded");
     }
+    Value ProbeObjectPropertyTeardown(const std::string& path,PortablePropertyTeardownProbeResult& result,
+        QuestVr::Vm::Execution& execution) {
+        propertyTeardownPreview_=true;
+        auto* actor=LifecycleActor(reinterpret_cast<std::uintptr_t>(Object(path)));
+        const auto previous=nativeQueryScratchBytes_;
+        struct Restore {std::size_t& value;std::size_t before;~Restore(){value=before;}} restore{nativeQueryScratchBytes_,previous};
+        const auto measure=[&] {
+            QuestVr::AuthoredStructLimits limits;QuestVr::AuthoredStructDetail::Budget budget{limits};
+            budget.Retain(result.values.capacity()*sizeof(PortablePropertyTeardownEntry));
+            for(const auto& row:result.values) {
+                budget.Retain(row.propertyPath.capacity());
+                budget.Retain(DestroyRetainedValue(row.before));
+                budget.Retain(DestroyRetainedValue(row.after));
+            }
+            nativeQueryScratchBytes_=previous;
+            ValidateStateBudget(budget.retained);nativeQueryScratchBytes_+=budget.retained;
+        };
+        for(auto* field=ConstructorHead(actor->cls);field;field=field->nativePropertyNext[2u]) {
+            const auto property=Describe(field);
+            if(property.arrayDimension>65536u||result.values.size()>65536u-property.arrayDimension)
+                throw std::runtime_error("Property teardown observation exceeds its owning value bound");
+            for(std::size_t index=0u;index<property.arrayDimension;++index) {
+                result.values.push_back({property.key,static_cast<std::uint32_t>(index),
+                    Read(actor,property,static_cast<std::uint32_t>(index)),{}});measure();
+            }
+        }
+        const auto after=[&] {
+            for(auto& row:result.values) {
+                row.after=Read(actor,DescribeProperty(row.propertyPath),row.arrayIndex);measure();
+            }
+        };
+        try {ExitObjectProperties(actor,actor->cls,execution);result.completed=true;}
+        catch(...) {after();throw;}
+        after();return Value::Bool(true);
+    }
     RuntimeObject* Object(const std::string& path) const {
         static constexpr std::string_view prefix="@ClassDefault:";
         if (LowerAscii(path).rfind(LowerAscii(std::string(prefix)),0u)==0u) {
@@ -2481,6 +2526,7 @@ public:
         beforeExportCount_ = persistentRuntime->get()->exports.size();
         beforeWorldSlots_ = persistentWorldActors.size();
         beforeWorldSlotItems_.clear();
+        nativeDestroyReferenceBytes_=0u;
         beforeRandomSeed_ = persistentScriptRandomSeed;
         beforeWindowObjects_=persistentWindowDomain && persistentWindowDomain->get() ?
             persistentWindowDomain->get()->objects.size() : 0u;
@@ -2512,7 +2558,7 @@ public:
         if (clientDependent_ && !persistentNativeClient.HasViewport())
             throw std::runtime_error("Native client lifetime revoked during script transaction");
         ValidateSoundClientLease();
-        if(retailCollisionPreview_) {
+        if(retailCollisionPreview_||propertyTeardownPreview_) {
             ValidateStateBudget();Rollback();return;
         }
         SynchronizeNativeMoveMirror();
@@ -2558,7 +2604,7 @@ public:
         CommitConversationObjects();
         provisionalLookupObjects_.clear();
         ClearMoveHits();nativeDurableMoved_.clear();
-        saved_.clear(); savedAi_.clear(); provisionalAi_.clear(); provisionalWindows_.clear(); beforeDecals_.reset(); beforeLevelClock_.reset(); beforeWorldSlotItems_.clear(); transaction_ = false;
+        saved_.clear(); savedAi_.clear(); provisionalAi_.clear(); provisionalWindows_.clear(); beforeDecals_.reset(); beforeLevelClock_.reset(); beforeWorldSlotItems_.clear(); nativeDestroyReferenceBytes_=0u; transaction_ = false;
     }
     void Rollback() noexcept override {
         if (!transaction_) return;
@@ -2647,7 +2693,7 @@ public:
         }
         beforeWorldSlotItems_.clear();
         RollbackConversationObjects();
-        beforeCollision_.reset(); saved_.clear(); savedAi_.clear(); provisionalAi_.clear(); provisionalWindows_.clear(); beforeDecals_.reset(); beforeLevelClock_.reset(); transaction_ = false;
+        beforeCollision_.reset(); saved_.clear(); savedAi_.clear(); provisionalAi_.clear(); provisionalWindows_.clear(); beforeDecals_.reset(); beforeLevelClock_.reset(); nativeDestroyReferenceBytes_=0u; transaction_ = false;
     }
     Property ResolveProperty(const Function& function, const std::int32_t reference) override {
         RuntimeObject* object = Object(ResolveObject(function, reference));
@@ -6892,6 +6938,12 @@ public:
         }
         if(!classDefaults && !immutable && index==0u) {
             const auto key=LowerAscii(property.key);
+            if(key=="engine.actor.renderinterface"&&object->nativeRenderInterfaceBound) {
+                if(property.zero.kind!=Kind::Object||property.arrayDimension!=1u||property.flags!=0x2000u||!OwnsProperty(object->cls,property))
+                    throw std::runtime_error("Native Actor RenderInterface read lacks its exact transient declaration");
+                return Value::Text(Kind::Object,object->nativeRenderInterface?
+                    object->nativeRenderInterface->reflection.objectPath:std::string{});
+            }
             if(key=="extension.playerpawnext.rootwindow")
                 return Value::Text(Kind::Object,object->nativeRootWindow ?
                     object->nativeRootWindow->reflection.objectPath : std::string{});
@@ -6954,6 +7006,15 @@ public:
                     const auto slot=values->second.find(index);
                     if (slot!=values->second.end()) return slot->second;
                 }
+            }
+            // UObject flags are native header storage, not a zero/default
+            // script tag. Exact live overlays above remain authoritative for
+            // InitExecution and VM header writes. Without one, retain the
+            // actual loader's flags, including unrelated original bits.
+            if(!immutable&&index==0u&&LowerAscii(property.key)=="core.object.objectflags") {
+                if(property.zero.kind!=Kind::Int||property.arrayDimension!=1u||!OwnsProperty(object->cls,property))
+                    throw std::runtime_error("UObject ObjectFlags read lacks its actual scalar header declaration");
+                return Value::Integer(std::bit_cast<std::int32_t>(object->reflection.flags));
             }
             if (LowerAscii(property.key) == "engine.actor.xlevel" && index == 0u && object->nativeXLevel)
                 return Value::Text(Kind::Object, object->nativeXLevel->reflection.objectPath);
@@ -7564,6 +7625,7 @@ private:
         actor->lookupName=NameString(path.substr(persistentMapPackageName.size()+1u));
         actor->sourcePath = persistentMapSourcePath; actor->exportIndex = std::numeric_limits<std::size_t>::max();
         actor->cls = cls; actor->outer = xlevel->outer; actor->nativeXLevel = xlevel;
+        actor->nativeRenderInterfaceBound=true; // Fresh host-owned transient Actor payload.
         actor->inventoryTableMetadata = true; actor->inventoryClassReferenceValid = true;
         actor->references.push_back(cls); if (actor->outer) actor->references.push_back(actor->outer);
         actor->frozenBirthDefaults = cls->classDefaultValues;
@@ -7730,6 +7792,8 @@ private:
             {{Value::Text(Kind::Object, actor->reflection.objectPath), {}}}));
     }
 #include "portable_actor_lifecycle_events.inl"
+#include "portable_object_properties.inl"
+#include "portable_object_destroy.inl"
     void SetOwner(RuntimeObject* actor, RuntimeObject* newOwner, QuestVr::Vm::Execution& execution) {
         LifecycleActor(reinterpret_cast<std::uintptr_t>(actor));
         if(newOwner)LifecycleActor(reinterpret_cast<std::uintptr_t>(newOwner));
@@ -8090,6 +8154,10 @@ private:
     std::size_t fastTraceValidationWork_{},fastTraceQueryWork_{};
     std::size_t vectorRandomDraws_{};
     std::size_t beforeExportCount_{}, beforeWorldSlots_{};
+    bool propertyTeardownPreview_{};
+    // Typed destructor write references remain in the VM's undo journal until
+    // the outer boundary, so their owned schema/zero payload is not lexical.
+    std::size_t nativeDestroyReferenceBytes_{};
     // First before-image of replaced original Level items. Appended births
     // roll back by truncation; clearing an authored slot requires a real hole
     // journal, not worldRemoved alone or a copy/compaction of the whole array.
@@ -8771,6 +8839,8 @@ private:
             }
             auto* target = defaults || object->defaultOwner ? DefaultOwner(object) : object;
             const auto nativeKey=LowerAscii(property.key);
+            if(nativeKey=="engine.actor.renderinterface"&&target->nativeRenderInterfaceBound)
+                throw std::runtime_error("Native Actor RenderInterface writes require the typed RenderIterator ownership service");
             const bool rawActorShapeStore=nativeKey=="engine.actor.mesh" || nativeKey=="engine.actor.drawscale";
             if(nativeKey=="engine.actor.collisiontag" || nativeKey=="engine.actor.collocation")
                 throw std::runtime_error("Native collision mirrors require their journaled original service");
@@ -9334,6 +9404,7 @@ private:
         if(nativeMoveHits_)defaults.Retain(nativeMoveHits_->RetainedBytes());
         defaults.Retain(retailCollisionOutputBytes_);
         defaults.Retain(beforeWorldSlotItems_.capacity()*sizeof(decltype(beforeWorldSlotItems_)::value_type));
+        defaults.Retain(nativeDestroyReferenceBytes_);
         if (persistentRuntime->get()->nativeDecals)
             defaults.Retain(NativeDecalRetainedBytes(*persistentRuntime->get()->nativeDecals));
         if (beforeDecals_ && beforeDecals_->state) {
@@ -10830,6 +10901,7 @@ PreparedScriptState PrepareScriptSavedState(
             // Preserve the constructor's actual native Level independently of
             // a later script overlay (which may legitimately contain None).
             actor->nativeXLevel = target(schema.NativeLevelPath());
+            actor->nativeRenderInterfaceBound=true;
         }
     }
     for (const auto& state : saved.aiManagers) {
@@ -12847,6 +12919,21 @@ PortableRetailCollisionSnapshot ReadPortableRuntimeRetailCollision() {
     return host.RetailCollisionSnapshot();
 }
 
+PortablePropertyTeardownProbeResult ProbePortableActorPropertyTeardown(
+    const std::string& actorPath,const QuestVr::Vm::Limits& limits) {
+    CollectBirthGarbageAtBoundary collect;PortablePropertyTeardownProbeResult result;
+    try {
+        PortableActorVmHost host;
+        result.execution=QuestVr::Vm::ExecuteTransaction(host,[&](QuestVr::Vm::Execution& execution) {
+            return host.ProbeObjectPropertyTeardown(actorPath,result,execution);
+        },limits);
+        result.execution.committed=false; // Completed host disposition restored its real root.
+    }catch(const std::exception& error) {
+        result.execution.status=QuestVr::Vm::Status::Unsupported;result.execution.error=error.what();
+    }
+    return result;
+}
+
 PortableRetailCollisionProbeResult ProbePortableRuntimeRetailCollision(
     const std::vector<PortableRetailCollisionCommand>& commands,const QuestVr::Vm::Limits& limits) {
     CollectBirthGarbageAtBoundary collect;
@@ -13356,6 +13443,7 @@ static std::pair<RuntimeObject*,RuntimeObject*> BindAuthoredActorSlots(
             if (actor->worldActorIndex >= 0) throw std::runtime_error("Level contains a duplicate actor slot");
             actor->worldActorIndex = static_cast<std::int32_t>(slot);
             actor->nativeXLevel = xlevel;
+            actor->nativeRenderInterfaceBound=true; // Original transient slot is not package/save data.
             persistentWorldActors[slot] = actor;
             actorOrder.push_back(actor);
         }
