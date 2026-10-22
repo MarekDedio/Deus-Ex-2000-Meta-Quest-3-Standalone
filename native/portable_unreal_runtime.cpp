@@ -8,6 +8,7 @@
 
 #include "portable_log.h"
 #include "quest_script_state.h"
+#include "quest_runtime_state_budget.h"
 #include "quest_save_bundle.h"
 #include "portable_model_geometry.h"
 #include "quest_actor_animation_clock.h"
@@ -9862,8 +9863,7 @@ private:
         // State/default storage is bounded without copying live values. The
         // save path additionally applies combined gameplay/property/clock/
         // state/default capture and envelope budgets.
-        QuestVr::ScriptStateLimits limits;
-        limits.maxBytes = QuestVr::kMaximumSaveRuntimeBytes;
+        const auto limits = QuestVr::LiveRuntimeStateLimits();
         QuestVr::ScriptStateDetail::Writer measured(limits, nullptr);
         QuestVr::ScriptStateDetail::Budget defaults{limits};
         try {
@@ -10070,14 +10070,14 @@ private:
             if (!object->stateObject) continue;
             measured.MeasureStateObject(*object->stateObject);
         }
-        if (measured.measuredBudget().retained > limits.maxBytes - defaults.retained)
-            throw std::runtime_error("Persistent combined default/state byte budget exceeded");
-        if (measured.measuredBudget().nodes > limits.totalValueNodes - defaults.nodes)
-            throw std::runtime_error("Persistent combined default/state value-node budget exceeded");
+        QuestVr::ValidateRuntimeStateCombinedBudget(limits, defaults, measured.measuredBudget());
         }catch(const std::exception& error) {
             if(!persistentRetailCollision) throw;
             throw std::runtime_error(std::string(error.what())+" [native-state retained="+
                 std::to_string(defaults.retained)+", extra="+std::to_string(extraRetained)+
+                ", state="+std::to_string(measured.measuredBudget().retained)+", limit="+std::to_string(limits.maxBytes)+
+                ", windows="+std::to_string(persistentWindowDomain&&persistentWindowDomain->get()?
+                    persistentWindowDomain->get()->objects.size():0u)+
                 ", retail="+std::to_string(persistentRetailCollision?persistentRetailCollision->RetainedBytes():0u)+
                 ", output="+std::to_string(retailCollisionOutputBytes_)+", lookup="+
                 std::to_string(persistentObjectLookup?persistentObjectLookup->index.RetainedBytes():0u)+"]");

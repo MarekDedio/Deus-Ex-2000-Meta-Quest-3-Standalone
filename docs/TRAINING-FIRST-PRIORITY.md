@@ -10,6 +10,14 @@ do not spend time on other-map integration or map-content test sweeps.
 Reconfirmed2026-10-22: skip other-map crate/physics integration and testing;
 the WHOLE first Training map remains the current content acceptance target.
 
+Later live-memory correction,2026-10-22: a distinct bounded32MiB live-state
+ledger replaces the incorrect16MiB encoded-save cap at native admission only.
+Save policies/structural/work bounds remain unchanged. Both actual Training
+startup attempts now pass Ammo and reach original ToggleWindow.SetToggle1611
+at HUDObjectSlot.SetItem PC69, with full rollback/all41 originals unchanged.
+No completed startup, live crate/usable loot/gravity or APK. See
+TRAINING-RUNTIME-MEMORY.md. Other actual maps remain deferred.
+
 Latest placement increment,2026-10-22: original native267 FarMove now uses real
 placement, encroachment, hash and zone services under the caller's root. Actual
 first-map native267 checks18317 and41 original fingerprints pass; point storage

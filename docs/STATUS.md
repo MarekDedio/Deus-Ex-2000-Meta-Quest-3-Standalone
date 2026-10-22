@@ -1,5 +1,27 @@
 # Port status
 
+## First Training live-state/save-budget separation (2026-10-22)
+
+The live native/script accounting no longer incorrectly uses the 16MiB
+encoded-save cap. It has a distinct fixed32MiB allowance, consistent with the
+existing structural/VM retained defaults; save capture/file/codec policies and
+all count/depth/work bounds remain unchanged. This is not total process RAM.
+Production combined admission passes22 checks/nine refusal controls, including
+overflow, exact limits, scratch unwind and unchanged real save encode/decode.
+Six focused CTests, strict ARM64 and Android native compilation/link pass.
+Coherent full desktop build and shared CTest pass172 executed/204 registered,
+32 explicit owned-data skips, zero failures in105.60s. Separately invoked
+first-Training isolated crate347/two contents-refusal regression passes.
+Separately invoked owned original-player/HUD6095 controls pass; the isolated
+pending132-window graph still stops at DamageHUD's fixed-Name-array boundary.
+Actual first Training repeat2 now passes the former Ammo memory failure and
+reaches HUDObjectSlot.SetItem PC69/native1611 ToggleWindow.SetToggle, executing
+209469 instructions/20928 writes, native work480589cold/480047warm of1048576.
+Both attempts fully roll back and all41 original sources remain unchanged.
+This is not completed startup/possession, live crate damage, surviving loot,
+gravity or a new APK. Only first Training is the actual-map target. See
+TRAINING-RUNTIME-MEMORY.md; earlier memory boundaries below are historical.
+
 ## First Training original player placement (2026-10-22)
 
 Native267 now binds the original absolute FarMove/FindSpot/point-query path
