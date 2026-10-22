@@ -76,6 +76,7 @@
 #include "quest_actor_owner.h"
 #include "quest_destroy_actor.h"
 #include "quest_object_destroy.h"
+#include "quest_world_actor_order.h"
 
 #include <memory>
 #include <algorithm>
@@ -302,6 +303,10 @@ public:
     // XLevel overlay or the lossy LevelInfo.TimeSeconds Float. Only serialized
     // native Levels receive this loader baseline; metadata-only maps do not.
     std::optional<double> nativeTimeSeconds;
+    // Native Level+110 becomes bound only through the original LoadMap
+    // partition or an explicit checkpoint, never a guessed ctor zero.
+    std::optional<std::uint32_t> nativeFirstDynamic;
+    bool nativeActorOrderChanged{};
     RuntimeAIManager* nativeAiManager{}; // LevelInfo-owned native state, not an actor/export.
     std::unique_ptr<PortableScriptBody> script;
     std::unique_ptr<PortablePropertyDescriptor> property;
@@ -2675,6 +2680,8 @@ public:
         beforeLinkerSlots_.clear();
         beforeLinkerHeaders_.clear();
         beforeDeferred_.clear();
+        beforeActorOrder_.reset();
+        nativeActorOrderObservationBytes_=0u;
         nativeDestroyReferenceBytes_=0u;
         beforeRandomSeed_ = persistentScriptRandomSeed;
         beforeWindowObjects_=persistentWindowDomain && persistentWindowDomain->get() ?
@@ -2707,7 +2714,7 @@ public:
         if (clientDependent_ && !persistentNativeClient.HasViewport())
             throw std::runtime_error("Native client lifetime revoked during script transaction");
         ValidateSoundClientLease();
-        if(retailCollisionPreview_||propertyTeardownPreview_||objectDestroyPreview_) {
+        if(retailCollisionPreview_||propertyTeardownPreview_||objectDestroyPreview_||actorOrderPreview_) {
             ValidateStateBudget();Rollback();return;
         }
         SynchronizeNativeMoveMirror();
@@ -2715,7 +2722,7 @@ public:
         // AI-manager-only state already has independent checkpoint/journal
         // ownership and is not actor geometry. Preserve that existing path;
         // coupled AI effects still disqualify the narrow timer-only fast path.
-        const bool worldChanged = beforeDecals_.has_value() || beforeCollision_.has_value() ||
+        const bool worldChanged = beforeDecals_.has_value() || beforeCollision_.has_value() || beforeActorOrder_.has_value() ||
             persistentRuntime->get()->exports.size() != beforeExportCount_ ||
             std::any_of(saved_.begin(), saved_.end(), [this](const auto& entry) {
             return !entry.first->classDescriptor && IsDerivedFromPath(entry.first->cls, "Engine.Actor") &&
@@ -2755,6 +2762,8 @@ public:
         beforeLinkerSlots_.clear();
         beforeLinkerHeaders_.clear();
         beforeDeferred_.clear();
+        beforeActorOrder_.reset();
+        nativeActorOrderObservationBytes_=0u;
         ClearMoveHits();nativeDurableMoved_.clear();
         saved_.clear(); savedAi_.clear(); provisionalAi_.clear(); provisionalWindows_.clear(); beforeDecals_.reset(); beforeLevelClock_.reset(); beforeWorldSlotItems_.clear(); nativeDestroyReferenceBytes_=0u; transaction_ = false;
     }
@@ -2791,6 +2800,13 @@ public:
             owner->nativeAiManager = manager;
         }
         if (beforeCollision_) persistentActorCollision.Swap(*beforeCollision_);
+        if(beforeActorOrder_) {
+            persistentWorldActors.swap(beforeActorOrder_->slots);
+            for(const auto& row:beforeActorOrder_->indices)row.first->worldActorIndex=row.second;
+            beforeActorOrder_->level->nativeFirstDynamic=beforeActorOrder_->firstDynamic;
+            beforeActorOrder_->level->nativeActorOrderChanged=beforeActorOrder_->changed;
+            beforeActorOrder_.reset();
+        }
         for(const auto& slot:beforeLinkerSlots_) {
             if(!slot.linker||!slot.linker->active||slot.index>=slot.linker->count)std::terminate();
             if(slot.overridden) {
@@ -2811,6 +2827,7 @@ public:
             row.object->nativeDeferredChanged=row.changed;
         }
         beforeDeferred_.clear();
+        nativeActorOrderObservationBytes_=0u;
         for (auto& entry : saved_) {
             entry.first->scriptValues.swap(entry.second.values);
             entry.first->classDefaultValues.swap(entry.second.defaults);
@@ -7594,11 +7611,52 @@ public:
         }
         events(Phase::PostPostBeginPlay, "PostPostBeginPlay", false);
         visit(Phase::CompactActorSlots, info, 0u);
-        // The current save/birth manifest assumes an authored-slot prefix and
-        // appended births. Original static/dynamic compaction needs a genuine
-        // persistent ordering format before it can be published. Always fail
-        // this probe, rolling back ALL phases, rather than accept half a world.
-        throw std::runtime_error("Unsupported original world slot compaction/save ordering; non-publishing startup probe rolled back");
+        result.beforeActorOrder=CaptureNativeActorOrder(info->nativeXLevel,true);
+        ReorderNativeWorldActors(info->nativeXLevel);
+        result.afterActorOrder=CaptureNativeActorOrder(info->nativeXLevel,true);
+        visit(Phase::ClientSetup, info, 0u);
+        // Native client/player/detail providers after the original partition
+        // still require their own integration. This root remains nonpublishing.
+        throw std::runtime_error("Unsupported original post-partition client/player/detail setup; non-publishing startup probe rolled back");
+    }
+    PortableWorldActorOrderSnapshot ReadWorldActorOrder() {
+        return CaptureNativeActorOrder(CurrentClockLevel(),false);
+    }
+    void ProbeWorldActorPartition(PortableWorldActorPartitionProbeResult& result) {
+        actorOrderPreview_=true;auto* level=CurrentClockLevel();
+        result.before=CaptureNativeActorOrder(level,true);
+        ReorderNativeWorldActors(level);
+        result.after=CaptureNativeActorOrder(level,true);
+    }
+    void ProbeWorldActorPartitionThenDestroy(const std::vector<std::string>& paths,
+        PortableWorldActorPartitionDestroyProbeResult& result,QuestVr::Vm::Execution& execution) {
+        if(paths.empty()||paths.size()>16u)throw std::runtime_error("Partition/deletion diagnostic exceeds its actor bound");
+        actorOrderPreview_=true;auto* level=CurrentClockLevel();
+        const auto linkers=[&](std::vector<PortableObjectLinkerSnapshot>& rows) {
+            ValidateStateBudget(paths.size()*sizeof(PortableObjectLinkerSnapshot));rows.reserve(paths.size());
+            ValidateStateBudget(rows.capacity()*sizeof(PortableObjectLinkerSnapshot));
+            nativeActorOrderObservationBytes_+=rows.capacity()*sizeof(PortableObjectLinkerSnapshot);
+            for(const auto& path:paths) {
+                LifecycleStep();auto* object=Object(path);
+                ValidateStateBudget(object->sourcePath.size()+object->reflection.objectPath.size()+2u);
+                auto row=NativeLinkerSnapshot(object);
+                const auto bytes=row.sourcePath.capacity()+row.exportObjectPath.capacity()+2u;
+                ValidateStateBudget(bytes);nativeActorOrderObservationBytes_+=bytes;rows.push_back(std::move(row));
+            }
+        };
+        result.before=CaptureNativeActorOrder(level,true);linkers(result.linkersBefore);
+        ReorderNativeWorldActors(level);result.partitioned=CaptureNativeActorOrder(level,true);
+        static_cast<void>(ProbeNativeActorDestroy(paths,result.destruction,execution));
+        // ProbeNativeActorDestroy owns its scratch reservation through its
+        // call. Retain the detached output before subsequent observations.
+        std::size_t bytes=result.destruction.returned.capacity()*sizeof(std::int32_t);
+        for(const auto* row:{&result.destruction.before,&result.destruction.after}) {
+            bytes=QuestVr::DecalStateDetail::Add(bytes,sizeof(*row)+row->levelPath.capacity()+row->firstDeletedPath.capacity()+
+                row->actorLinks.capacity()*sizeof(decltype(row->actorLinks)::value_type));
+            for(const auto& link:row->actorLinks)bytes=QuestVr::DecalStateDetail::Add(bytes,link.first.capacity()+link.second.capacity()+2u);
+        }
+        ValidateStateBudget(bytes);nativeActorOrderObservationBytes_+=bytes;
+        result.afterDestroy=CaptureNativeActorOrder(level,true);linkers(result.linkersAfter);
     }
 private:
     void InitializeWorldZone(RuntimeObject* actor, RuntimeObject* info) {
@@ -7974,6 +8032,7 @@ private:
 #include "portable_actor_lifecycle_events.inl"
 #include "portable_object_properties.inl"
 #include "portable_object_linker.inl"
+#include "portable_world_actor_order.inl"
 #include "portable_object_destroy.inl"
 #include "portable_deferred_actors.inl"
     void SetOwner(RuntimeObject* actor, RuntimeObject* newOwner, QuestVr::Vm::Execution& execution) {
@@ -8232,7 +8291,7 @@ private:
         return true;
     }
     bool OnlyActorTimerChanged(RuntimeObject* actor,const Before& before) {
-        if(!beforeDeferred_.empty())return false;
+        if(!beforeDeferred_.empty()||beforeActorOrder_)return false;
         bool hasTimer{};
         const std::array<const decltype(RuntimeObject::scriptValues)*,2u> timerStates{
             &before.values,&actor->scriptValues};
@@ -8263,7 +8322,7 @@ private:
         return true;
     }
     bool OnlyNativeLevelClockChanged(RuntimeObject* actor,const Before& before) {
-        if(!beforeDeferred_.empty())return false;
+        if(!beforeDeferred_.empty()||beforeActorOrder_)return false;
         if (!beforeLevelClock_ || persistentWorldActors.empty() || actor!=persistentWorldActors.front() ||
             actor->nativeXLevel!=beforeLevelClock_->first || !actor->committedScriptState) return false;
         const auto field=DescribeProperty("Engine.LevelInfo.TimeSeconds");
@@ -8342,6 +8401,8 @@ private:
     std::size_t beforeExportCount_{}, beforeWorldSlots_{};
     bool propertyTeardownPreview_{};
     bool objectDestroyPreview_{};
+    bool actorOrderPreview_{};
+    std::size_t nativeActorOrderObservationBytes_{};
     struct BeforeLinkerSlot {
         std::shared_ptr<RuntimeNativeLinker> linker;
         std::size_t index{};
@@ -8365,6 +8426,14 @@ private:
         bool changed{};
     };
     std::vector<BeforeDeferred> beforeDeferred_;
+    struct BeforeActorOrder {
+        RuntimeObject* level{};
+        std::vector<RuntimeObject*> slots;
+        std::vector<std::pair<RuntimeObject*,std::int32_t>> indices;
+        std::optional<std::uint32_t> firstDynamic;
+        bool changed{};
+    };
+    std::optional<BeforeActorOrder> beforeActorOrder_;
     // Typed destructor write references remain in the VM's undo journal until
     // the outer boundary, so their owned schema/zero payload is not lexical.
     std::size_t nativeDestroyReferenceBytes_{};
@@ -9618,10 +9687,17 @@ private:
         defaults.Retain(retailCollisionOutputBytes_);
         defaults.Retain(beforeWorldSlotItems_.capacity()*sizeof(decltype(beforeWorldSlotItems_)::value_type));
         defaults.Retain(nativeDestroyReferenceBytes_);
+        defaults.Retain(nativeActorOrderObservationBytes_);
+        if(!persistentWorldActors.empty()&&persistentWorldActors.front()&&persistentWorldActors.front()->nativeXLevel&&
+            persistentWorldActors.front()->nativeXLevel->nativeActorOrderChanged)
+            defaults.Retain(persistentWorldActors.capacity()*sizeof(RuntimeObject*));
         defaults.Retain(NativeLinkersRetainedBytes());
         defaults.Retain(beforeLinkerSlots_.capacity()*sizeof(BeforeLinkerSlot));
         defaults.Retain(beforeLinkerHeaders_.capacity()*sizeof(BeforeLinkerHeader));
         defaults.Retain(beforeDeferred_.capacity()*sizeof(BeforeDeferred));
+        if(beforeActorOrder_)defaults.Retain(sizeof(BeforeActorOrder)+
+            beforeActorOrder_->slots.capacity()*sizeof(RuntimeObject*)+
+            beforeActorOrder_->indices.capacity()*sizeof(decltype(beforeActorOrder_->indices)::value_type));
         if (persistentRuntime->get()->nativeDecals)
             defaults.Retain(NativeDecalRetainedBytes(*persistentRuntime->get()->nativeDecals));
         if (beforeDecals_ && beforeDecals_->state) {
@@ -10049,8 +10125,9 @@ private:
 };
 
 
-// Runtime saves carry stable authored identities, never process pointers or
-// package-local references. Prepare every schema/value before touching actors.
+// Runtime saves carry stable authored identities, never process pointers.
+// Native slot records may name an authenticated source-local export ordinal.
+// Prepare every schema/value before touching actors.
 struct PreparedScriptObject {
     RuntimeObject* target{};
     decltype(RuntimeObject::scriptValues) values;
@@ -10080,30 +10157,15 @@ struct PreparedScriptState {
     std::vector<RuntimeObject*> lookupObjects;
     bool replaceBirths{};
     std::optional<std::pair<RuntimeObject*,double>> levelClock;
+    std::optional<std::pair<RuntimeObject*,std::optional<std::uint32_t>>> actorOrder;
+    bool actorOrderExplicit{};
+    // Read-only preflight has no staged live objects. Retain the already
+    // source-validated names instead of consulting the currently loaded slots.
+    std::vector<std::string> symbolicActorSlots;
+    std::vector<std::pair<RuntimeObject*,std::int32_t>> worldIndices;
 };
 
-void StageRuntimeBirthReplacement(PreparedScriptState& prepared) {
-    prepared.replaceBirths = true;
-    prepared.qualified = persistentQualifiedObjects; prepared.vm = persistentVmObjects;
-    for (auto* object : persistentRuntime->get()->exports) {
-        if (object->runtimeBirth) {
-            pendingBirthGarbage = true;
-            prepared.qualified.erase(object->reflection.objectPath); prepared.vm.erase(object->birthVmKey);
-        } else prepared.exports.push_back(object);
-    }
-    prepared.worldActors.assign(persistentWorldActors.begin(),
-        persistentWorldActors.begin()+static_cast<std::ptrdiff_t>(persistentAuthoredWorldSlots));
-    prepared.worldActors.resize(persistentAuthoredWorldSlots+prepared.births.size(),nullptr);
-    std::vector<RuntimeObject*> ordered;
-    for (const auto& root : prepared.births) ordered.push_back(root.get());
-    std::sort(ordered.begin(),ordered.end(),[](const auto* a,const auto* b) {return a->worldActorIndex<b->worldActorIndex;});
-    for (auto* actor : ordered) {
-        if (!prepared.qualified.emplace(actor->reflection.objectPath,actor).second ||
-            !prepared.vm.emplace(actor->birthVmKey,actor).second)
-            throw std::runtime_error("Restored birth identity publication collision");
-        prepared.exports.push_back(actor); prepared.worldActors.at(static_cast<std::size_t>(actor->worldActorIndex))=actor;
-    }
-}
+void StageRuntimeBirthReplacement(PreparedScriptState& prepared,const QuestVr::ScriptSavedState* saved=nullptr);
 
 std::vector<QuestVr::ScriptSavedProperty> ClockProperties(
     const QuestVr::ActorAnimationClock& clock) {
@@ -10150,6 +10212,38 @@ QuestVr::ScriptSavedState CollectScriptSavedState() {
     QuestVr::ScriptStateLimits limits;
     limits.maxBytes = QuestVr::kMaximumSaveRuntimeBytes;
     QuestVr::ScriptStateDetail::Budget capture{limits};
+    if(!persistentWorldActors.empty()&&persistentWorldActors.front()&&persistentWorldActors.front()->nativeXLevel) {
+        auto* level=persistentWorldActors.front()->nativeXLevel;
+        if(level->nativeFirstDynamic||level->nativeActorOrderChanged) {
+            if(persistentWorldActors.size()>QuestVr::ScriptStateDetail::MaximumWorldActorSlots)
+                throw std::runtime_error("Native Actor order capture exceeds its slot bound");
+            QuestVr::ScriptSavedNativeActorOrder order;
+            capture.Retain(sizeof(order)+level->reflection.objectPath.size()+1u);
+            capture.Array(persistentWorldActors.size(),sizeof(QuestVr::ScriptSavedNativeActorSlot));
+            order.levelPath=level->reflection.objectPath;order.firstDynamic=level->nativeFirstDynamic;
+            order.slots.reserve(persistentWorldActors.size());
+            if(order.slots.capacity()>persistentWorldActors.size())
+                capture.Retain((order.slots.capacity()-persistentWorldActors.size())*sizeof(QuestVr::ScriptSavedNativeActorSlot));
+            for(std::size_t index=0u;index<persistentWorldActors.size();++index) {
+                QuestVr::ScriptSavedNativeActorSlot slot;auto* actor=persistentWorldActors[index];
+                if(actor) {
+                    if(actor->nativeXLevel!=level||actor->worldActorIndex!=static_cast<std::int32_t>(index))
+                        throw std::runtime_error("Native Actor capture slot/cache/Level disagrees");
+                    if(actor->runtimeBirth) {
+                        slot.kind=QuestVr::ScriptSavedNativeActorSlotKind::Birth;
+                        capture.Retain(actor->reflection.objectPath.size()+1u);slot.birthPath=actor->reflection.objectPath;
+                    }else {
+                        if(actor->sourcePath!=persistentMapSourcePath||actor->exportIndex>=std::numeric_limits<std::uint32_t>::max())
+                            throw std::runtime_error("Native Actor capture is not a source-local authored export");
+                        slot.kind=QuestVr::ScriptSavedNativeActorSlotKind::AuthoredExport;
+                        slot.authoredExport=static_cast<std::uint32_t>(actor->exportIndex);
+                    }
+                }
+                order.slots.push_back(std::move(slot));
+            }
+            saved.nativeActorOrder=std::move(order);
+        }
+    }
     for (auto* object:persistentRuntime->get()->exports) {
         if (!object->nativeTimeSeconds || std::bit_cast<std::uint64_t>(*object->nativeTimeSeconds)==0u) continue;
         if (saved.nativeLevelClock) throw std::runtime_error("Script save has multiple native level clocks");
@@ -10218,7 +10312,11 @@ QuestVr::ScriptSavedState CollectScriptSavedState() {
         if (object->runtimeBirth) {
             QuestVr::ScriptSavedBirth birth;
             birth.path = object->reflection.objectPath; birth.classPath = object->cls->reflection.objectPath;
-            birth.worldActorIndex = static_cast<std::uint32_t>(object->worldActorIndex);
+            const auto member=object->worldActorIndex>=0&&
+                static_cast<std::size_t>(object->worldActorIndex)<persistentWorldActors.size()&&
+                persistentWorldActors[static_cast<std::size_t>(object->worldActorIndex)]==object;
+            birth.worldActorIndex = saved.nativeActorOrder&&!member?std::numeric_limits<std::uint32_t>::max():
+                static_cast<std::uint32_t>(object->worldActorIndex);
             capture.Retain(sizeof(birth) + birth.path.size() + birth.classPath.size() + 2u);
             for (const auto& [name, slots] : object->frozenBirthDefaults) {
                 const auto property = host.PropertyNamed(object, name);
@@ -10338,7 +10436,16 @@ public:
         if (path.empty() || LowerAscii(std::filesystem::path(path).extension().string()) != ".dx")
             throw std::runtime_error("Script save map is unavailable");
         mapPath_ = path;
-        const auto& map = Table(path);
+        if(!persistentMapSourcePath.empty() && LowerAscii(mapName_)==LowerAscii(persistentMapPackageName)) {
+            // Windows permits mixed slash/case spellings of the same file.
+            // Reuse the loader's exact source identity only after proving file
+            // equivalence; a same-named export from another file is not enough.
+            std::error_code error;
+            if(!std::filesystem::equivalent(path,persistentMapSourcePath,error) || error)
+                throw std::runtime_error("Script save resolved map is not the loaded source file");
+            mapPath_=persistentMapSourcePath;
+        }
+        const auto& map = Table(mapPath_);
         if (map.exports.size() > 1'000'000u) throw std::runtime_error("Script save map export budget exceeded");
         for (std::size_t i = 0u; i < map.exports.size(); ++i) {
             const auto objectPath = Qualified(map, static_cast<std::int32_t>(i + 1u));
@@ -10407,6 +10514,7 @@ public:
         nativeLevelPath_ = std::move(path);
         return nativeLevelPath_;
     }
+#include "portable_saved_actor_order.inl"
     void ValidateAI(const QuestVr::Ai::State& state) {
         QuestVr::Ai::Validate(state);
         if (state.processDepth != 0u)
@@ -10444,7 +10552,8 @@ public:
             actor(receiver.actor); actor(receiver.previousBestActor, true); actor(receiver.params.bestActor, true);
         }
     }
-    void RegisterBirths(const std::vector<QuestVr::ScriptSavedBirth>& births) {
+    void RegisterBirths(const std::vector<QuestVr::ScriptSavedBirth>& births,
+        const QuestVr::ScriptSavedNativeActorOrder* order=nullptr) {
         const auto& map = Table(mapPath_);
         const bool realLevel = std::any_of(map.exports.begin(),map.exports.end(),[&](const auto& entry) {
             return LowerAscii(Qualified(map,entry.ObjClass)) == "engine.level";
@@ -10458,9 +10567,12 @@ public:
         std::set<std::uint32_t> indices;
         for (const auto& birth : births) {
             auto* cls = DefaultClass(birth.classPath);
+            const bool slotValid=order ? (birth.worldActorIndex==std::numeric_limits<std::uint32_t>::max()||
+                birth.worldActorIndex<order->slots.size()) : (birth.worldActorIndex>=baseline&&
+                birth.worldActorIndex-baseline<births.size());
             if (!IsDerivedFromPath(cls,"Engine.Actor") || (cls->classDescriptor->classFlags & 1u) ||
-                birth.worldActorIndex < baseline || birth.worldActorIndex - baseline >= births.size() ||
-                !indices.emplace(birth.worldActorIndex).second)
+                !slotValid || (birth.worldActorIndex!=std::numeric_limits<std::uint32_t>::max()&&
+                    !indices.emplace(birth.worldActorIndex).second))
                 throw std::runtime_error("Script save birth class or appended Level slot is invalid");
             const auto key = LowerAscii(birth.path);
             Retain(2u * key.size() + cls->reflection.objectPath.size() +
@@ -10932,6 +11044,8 @@ private:
     }
 };
 
+#include "portable_stage_actor_order.inl"
+
 void MeasureLegacySimBlendImports(const QuestVr::ScriptSavedState& saved,
     const QuestVr::ScriptStateLimits& limits, ScriptSaveSchema& schema) {
     const auto needsImport = [](const QuestVr::ScriptSavedObject& object) {
@@ -10987,12 +11101,17 @@ PreparedScriptState PrepareScriptSavedState(
     ScriptSaveSchema schema(saved.mapName);
     // Register the entire symbolic graph before validating a single property:
     // valid references can point to births not present in the running session.
-    schema.RegisterBirths(saved.births);
+    schema.RegisterBirths(saved.births,saved.nativeActorOrder?&*saved.nativeActorOrder:nullptr);
+    PreparedScriptState prepared;
+    prepared.actorOrderExplicit=saved.nativeActorOrder.has_value();
+    if(saved.nativeActorOrder) {
+        auto slots=schema.ValidateNativeActorOrder(saved);
+        if(!apply)prepared.symbolicActorSlots=std::move(slots);
+    }
     MeasureLegacySimBlendImports(saved, limits, schema);
     // Check the complete symbolic graph before allocating staged GC objects.
     for (const auto& state : saved.aiManagers) schema.ValidateAI(state);
     schema.ValidateNativeDecals(saved);
-    PreparedScriptState prepared;
     if (saved.nativeLevelClock) {
         if (LowerAscii(saved.nativeLevelClock->levelPath)!=LowerAscii(schema.NativeLevelPath()) ||
             !std::isfinite(saved.nativeLevelClock->timeSeconds) || saved.nativeLevelClock->timeSeconds<0.0)
@@ -11025,7 +11144,8 @@ PreparedScriptState PrepareScriptSavedState(
         actor->exportIndex = std::numeric_limits<std::size_t>::max(); actor->cls = cls;
         actor->outer=persistentRuntime->get()->mapLinkerRoot;
         actor->references.push_back(cls); actor->frozenBirthDefaults.swap(frozen);
-        actor->worldActorIndex = static_cast<std::int32_t>(birth.worldActorIndex);
+        actor->worldActorIndex = birth.worldActorIndex==std::numeric_limits<std::uint32_t>::max()?-1:
+            static_cast<std::int32_t>(birth.worldActorIndex);
         actor->inventoryTableMetadata = true; actor->inventoryClassReferenceValid = true;
         birthTargets.emplace(actor->birthVmKey,actor);
     }
@@ -11216,7 +11336,7 @@ PreparedScriptState PrepareScriptSavedState(
         }
     }
     if (apply) {
-        StageRuntimeBirthReplacement(prepared);
+        StageRuntimeBirthReplacement(prepared,&saved);
     }
     return prepared;
 }
@@ -13133,10 +13253,42 @@ const char* PortableWorldStartupPhaseName(const PortableWorldStartupPhase phase)
     case PortableWorldStartupPhase::ClearStartup: return "ClearStartup";
     case PortableWorldStartupPhase::PostPostBeginPlay: return "PostPostBeginPlay";
     case PortableWorldStartupPhase::CompactActorSlots: return "CompactActorSlots";
+    case PortableWorldStartupPhase::ClientSetup: return "ClientSetup";
     default: return "InvalidPhase";
     }
 }
 
+PortableWorldActorOrderSnapshot ReadPortableWorldActorOrder() {
+    if(persistentWorldActors.empty()||!persistentWorldActors.front()||!persistentWorldActors.front()->nativeXLevel)return {};
+    PortableActorVmHost host;return host.ReadWorldActorOrder();
+}
+PortableWorldActorPartitionProbeResult ProbePortableWorldActorPartition(const QuestVr::Vm::Limits& limits) {
+    CollectBirthGarbageAtBoundary collect;PortableWorldActorPartitionProbeResult result;
+    try {
+        PortableActorVmHost host;
+        result.execution=QuestVr::Vm::ExecuteTransaction(host,[&](QuestVr::Vm::Execution&)->QuestVr::Vm::Value {
+            host.ProbeWorldActorPartition(result);return {};
+        },limits);
+        result.execution.committed=false;
+    }catch(const std::exception& error) {
+        result.execution.status=QuestVr::Vm::Status::Unsupported;result.execution.error=error.what();
+    }
+    return result;
+}
+PortableWorldActorPartitionDestroyProbeResult ProbePortableWorldActorPartitionThenDestroy(
+    const std::vector<std::string>& actorPaths,const QuestVr::Vm::Limits& limits) {
+    CollectBirthGarbageAtBoundary collect;PortableWorldActorPartitionDestroyProbeResult result;
+    try {
+        PortableActorVmHost host;
+        result.execution=QuestVr::Vm::ExecuteTransaction(host,[&](QuestVr::Vm::Execution& execution)->QuestVr::Vm::Value {
+            host.ProbeWorldActorPartitionThenDestroy(actorPaths,result,execution);return {};
+        },limits);
+        result.execution.committed=false;
+    }catch(const std::exception& error) {
+        result.execution.status=QuestVr::Vm::Status::Unsupported;result.execution.error=error.what();
+    }
+    return result;
+}
 PortableWorldStartupProbeResult ProbePortableWorldStartup(
     const PortableWorldStartupProbeOptions& options, const QuestVr::Vm::Limits& limits) {
     CollectBirthGarbageAtBoundary collect;
@@ -13546,6 +13698,7 @@ bool GetPortableRuntimeUnsavedScriptState() {
     if (persistentRuntime->get()->nativeDecals) return true;
     for (const auto* object : persistentRuntime->get()->exports)
         if (object->committedScriptState || !object->classDefaultValues.empty() || object->nativeAiManager ||
+            object->nativeFirstDynamic || object->nativeActorOrderChanged ||
             (object->nativeTimeSeconds && std::bit_cast<std::uint64_t>(*object->nativeTimeSeconds)!=0u)) return true;
     return false;
 }
@@ -14849,19 +15002,48 @@ static QuestVr::Vm::Value ReadPlayableQuickBeltField(RuntimeObject* object,const
 }
 
 static std::vector<QuestVr::QuickBeltItem> PlayableQuickBeltOwned(const std::vector<std::string>& inventory,
-    const std::unordered_map<std::string,RuntimeObject*>* objectView=nullptr) {
+    const std::unordered_map<std::string,RuntimeObject*>* objectView=nullptr,
+    const PreparedScriptState* staged=nullptr) {
     if(inventory.size()>1023u) throw std::runtime_error("Playable quick inventory exceeds its bound");
     const auto& objects=objectView?*objectView:persistentVmObjects;
     // Functional native key aggregation, not an invented original Pawn/ring UObject.
     std::vector<QuestVr::QuickBeltItem> owned{{QuestVr::kQuickBeltKeyRingIdentity,true,true}};
+    std::optional<PortableActorVmHost> restoreHost;
+    if(staged)restoreHost.emplace();
     for(const auto& path:inventory) {
         const auto found=objects.find(LowerAscii(path));
-        if(found==objects.end() || !found->second || found->second->worldRemoved ||
+        if(found==objects.end() || !found->second ||
             !IsDerivedFromPath(found->second->cls,"Engine.Inventory")) continue;
         auto* actor=found->second;
+        const PreparedScriptObject* saved{};
+        if(staged) {
+            const auto record=std::find_if(staged->objects.begin(),staged->objects.end(),[&](const auto& value) {
+                return value.target==actor;
+            });
+            if(record!=staged->objects.end())saved=&*record;
+            if(saved && saved->removed)continue;
+        } else if(actor->worldRemoved)continue;
+        const auto displayable=[&] {
+            if(!restoreHost)return ReadPlayableQuickBeltField(actor,"bDisplayableInv",QuestVr::Vm::Kind::Bool).boolean;
+            const auto property=restoreHost->PropertyNamed(actor,"bDisplayableInv");
+            if(property.arrayDimension!=1u || property.zero.kind!=QuestVr::Vm::Kind::Bool)
+                throw std::runtime_error("Restored quick inventory eligibility is not a scalar Bool");
+            auto value=restoreHost->Read(actor,property,0u,false,true);
+            if(saved) {
+                const auto key=restoreHost->InstanceStorageKey(actor->cls,property);
+                const auto values=saved->values.find(key);
+                if(values!=saved->values.end()) {
+                    const auto slot=values->second.find(0u);
+                    if(slot!=values->second.end())value=slot->second;
+                }
+            }
+            if(value.kind!=QuestVr::Vm::Kind::Bool)
+                throw std::runtime_error("Restored quick inventory eligibility has malformed Bool storage");
+            return value.boolean;
+        };
         const bool eligible=!IsDerivedFromPath(actor->cls,"DeusEx.NanoKey") &&
             !IsDerivedFromPath(actor->cls,"Engine.Ammo") &&
-            ReadPlayableQuickBeltField(actor,"bDisplayableInv",QuestVr::Vm::Kind::Bool).boolean;
+            displayable();
         owned.push_back({actor->reflection.objectPath,false,eligible});
     }
     return owned;
@@ -15516,7 +15698,8 @@ bool SavePortableRuntimeState(const std::string& path) {
             [](const auto& object) { return object.state && object.state->frame && object.state->frame->control; });
         const bool hasDecals = scriptState.nativeDecals.has_value() || QuestVr::ScriptStateDetail::HasIntArrays(scriptState);
         const bool hasLevelClock=scriptState.nativeLevelClock.has_value();
-        const bool hasScript = !scriptState.objects.empty() || hasDefaults || hasBirths || hasAiManagers || hasRandom || hasDecals || hasLevelClock;
+        const bool hasActorOrder=scriptState.nativeActorOrder.has_value();
+        const bool hasScript = !scriptState.objects.empty() || hasDefaults || hasBirths || hasAiManagers || hasRandom || hasDecals || hasLevelClock || hasActorOrder;
         const bool hasState = std::any_of(scriptState.objects.begin(), scriptState.objects.end(),
             [](const auto& object) { return object.state.has_value(); });
         const bool hasLifecycle = std::any_of(scriptState.objects.begin(), scriptState.objects.end(),
@@ -15575,9 +15758,9 @@ bool SavePortableRuntimeState(const std::string& path) {
             persistentCredits < 0 || persistentSkillPoints < 0 || damaged.size() > 100'000u)
             throw std::runtime_error("Runtime checkpoint gameplay values are outside their valid ranges");
         // This is exactly the v3 prefix, including list order and field widths.
-        // Only the version word and appended trailer differ for v4-v13/v16. Pure
+        // Only the version word and appended trailer differ for v4-v13/v16-v17. Pure
         // property/clock captures retain the byte-exact original v4 format.
-        const auto scriptVersion = hasLevelClock ? 16u : hasDecals ? 13u : hasControl ? 12u : hasSleep ? 11u : hasRandom ? 10u : hasAiManagers ? 9u : hasBirths ? 8u : hasLifecycle ? 7u : hasDefaults ? 6u : hasState ? 5u : hasScript ? 4u : 3u;
+        const auto scriptVersion = hasActorOrder ? 17u : hasLevelClock ? 16u : hasDecals ? 13u : hasControl ? 12u : hasSleep ? 11u : hasRandom ? 10u : hasAiManagers ? 9u : hasBirths ? 8u : hasLifecycle ? 7u : hasDefaults ? 6u : hasState ? 5u : hasScript ? 4u : 3u;
         write32(0x53515844u); write32(movers.empty() ? scriptVersion : 14u);
         if (!movers.empty()) write32(scriptVersion);
         writeStrings(persistentInventory); writeStrings(inactive); writeStrings(activated); writeFloat(persistentPlayerHealth);
@@ -15659,7 +15842,7 @@ static bool ReadPortableRuntimeState(const std::string& path, const bool apply, 
             savedQuickBelt=QuestVr::DecodeQuickBeltState({bytes.begin()+12,bytes.begin()+12+length});
             const auto innerLength=headerWord(12u+length);
             if(innerLength!=bytes.size()-16u-length || innerLength<8u ||
-                headerWord(16u+length)!=0x53515844u || headerWord(20u+length)>16u || headerWord(20u+length)==15u)
+                headerWord(16u+length)!=0x53515844u || headerWord(20u+length)>17u || headerWord(20u+length)==15u)
                 throw std::runtime_error("Quick inventory checkpoint nested payload is invalid");
             std::vector<std::uint8_t> inner(bytes.begin()+16+length,bytes.end());bytes.swap(inner);
         }
@@ -15696,7 +15879,7 @@ static bool ReadPortableRuntimeState(const std::string& path, const bool apply, 
         if (read32() != 0x53515844u) throw std::runtime_error("Runtime checkpoint magic is invalid");
         const auto formatVersion = read32();
         const auto version = formatVersion == 14u ? read32() : formatVersion;
-        const bool scriptEnvelope=(version>=1u && version<=13u) || version==16u;
+        const bool scriptEnvelope=(version>=1u && version<=13u) || version==16u || version==17u;
         if ((formatVersion!=14u && !scriptEnvelope) || !scriptEnvelope ||
             (formatVersion == 14u && version < 3u)) throw std::runtime_error("Runtime checkpoint version is unsupported");
         auto inventory = readStrings(); auto inactive = readStrings(); auto activated = readStrings();
@@ -15788,6 +15971,7 @@ static bool ReadPortableRuntimeState(const std::string& path, const bool apply, 
                 [](const auto& object) { return object.state && object.state->frame && object.state->frame->control; });
             const bool hasDecals = scriptState.nativeDecals.has_value() || QuestVr::ScriptStateDetail::HasIntArrays(scriptState, limits);
             const bool hasLevelClock=scriptState.nativeLevelClock.has_value();
+            const bool hasActorOrder=scriptState.nativeActorOrder.has_value();
             restoredRandomSeed = scriptState.randomSeed;
             for (const auto& birth : scriptState.births) savedBirthKeys.emplace(LowerAscii(birth.path));
             const bool hasLifecycle = std::any_of(scriptState.objects.begin(), scriptState.objects.end(),
@@ -15802,12 +15986,21 @@ static bool ReadPortableRuntimeState(const std::string& path, const bool apply, 
                 (version == 11u && (blob.at(6u) != QuestVr::ScriptStateDetail::SleepStateVersion || !hasSleep)) ||
                 (version == 12u && (blob.at(6u) != QuestVr::ScriptStateDetail::StateControlVersion || !hasControl)) ||
                 (version == 13u && (blob.at(6u) != QuestVr::ScriptStateDetail::DecalStateVersion || !hasDecals)) ||
-                (version == 16u && (blob.at(6u) != QuestVr::ScriptStateDetail::LevelClockVersion || !hasLevelClock)))
+                (version == 16u && (blob.at(6u) != QuestVr::ScriptStateDetail::LevelClockVersion || !hasLevelClock)) ||
+                (version == 17u && (blob.at(6u) != QuestVr::ScriptStateDetail::NativeActorOrderVersion || !hasActorOrder)))
                 throw std::runtime_error("Runtime checkpoint state trailer does not match its envelope version");
             if (!expectedMapName.empty() && LowerAscii(expectedMapName) != LowerAscii(scriptState.mapName))
                 throw std::runtime_error("Runtime checkpoint script map does not match save metadata");
             if (!moverMapName.empty() && LowerAscii(moverMapName) != LowerAscii(scriptState.mapName))
                 throw std::runtime_error("Runtime checkpoint script and mover maps disagree");
+            for(const auto& [path,state]:savedMovers) {
+                static_cast<void>(state);
+                const auto record=std::find_if(scriptState.objects.begin(),scriptState.objects.end(),[&](const auto& value) {
+                    return LowerAscii(value.path)==LowerAscii(path);
+                });
+                if(record!=scriptState.objects.end() && record->lifecycle && record->lifecycle->worldRemoved)
+                    throw std::runtime_error("Mover checkpoint motion belongs to a saved removed actor");
+            }
             prepared = PrepareScriptSavedState(scriptState, apply, limits);
             cursor += length;
         }
@@ -15850,37 +16043,37 @@ static bool ReadPortableRuntimeState(const std::string& path, const bool apply, 
         std::vector<std::pair<RuntimeObject*, RuntimeMoverMotion>> restoredMovers;
         restoredMovers.reserve(savedMovers.size());
         std::unique_ptr<ScriptSaveSchema> moverSchema;
-        if (!savedMovers.empty() && LowerAscii(moverMapName) != LowerAscii(persistentMapPackageName))
+        if (!savedMovers.empty())
             moverSchema = std::make_unique<ScriptSaveSchema>(moverMapName);
         for (const auto& [path, state] : savedMovers) {
-            if (moverSchema) {
-                // Read-only preflight must work before a cross-map load worker
-                // starts. This temporary receiver is neither GC-allocated nor
-                // registered in any live map, tag, collision or VM index.
-                struct DetachedMover final : RuntimeObject {
-                    DetachedMover() : RuntimeObject({}, nullptr) {}
-                    ~DetachedMover() override = default;
-                } actor;
-                moverSchema->ReadAuthoredMover(path, actor);
-                const auto motion = ReadRuntimeMoverMotion(&actor, false, &moverSchema->Host());
-                QuestVr::ValidateMoverMotionState(motion.spec, state);
-                const bool isActivated = std::any_of(activated.begin(), activated.end(), [&](const auto& value) {
-                    return LowerAscii(value) == LowerAscii(path);
-                });
-                if (isActivated != (state.targetKey != 0u))
-                    throw std::runtime_error("Mover checkpoint activation and motion disagree");
-                continue;
+            RuntimeObject* target{};
+            if(apply) {
+                target=prefixTarget(path);
+                if (!target || target->runtimeBirth ||
+                    std::find(prepared.worldActors.begin(),prepared.worldActors.end(),target)==prepared.worldActors.end() ||
+                    target->reflection.objectPath != path || !IsDerivedFromPath(target->cls,"Engine.Mover"))
+                    throw std::runtime_error("Mover checkpoint has an invalid map actor identity");
+            } else if(prepared.actorOrderExplicit &&
+                std::find(prepared.symbolicActorSlots.begin(),prepared.symbolicActorSlots.end(),path)==prepared.symbolicActorSlots.end()) {
+                throw std::runtime_error("Mover checkpoint is absent from its saved native actor slots");
             }
-            auto* actor = prefixTarget(path);
-            if (!actor || actor->runtimeBirth || actor->worldActorIndex < 0 || actor->reflection.objectPath != path ||
-                !IsDerivedFromPath(actor->cls, "Engine.Mover"))
-                throw std::runtime_error("Mover checkpoint has an invalid map actor identity");
-            auto motion = ReadRuntimeMoverMotion(actor);
+            // Authored keys are immutable. Neither preflight nor restoration
+            // may depend on the old live world's removed flag/slot layout.
+            // This receiver is not GC-allocated or published in live indexes.
+            struct DetachedMover final : RuntimeObject {
+                DetachedMover() : RuntimeObject({}, nullptr) {}
+                ~DetachedMover() override = default;
+            } actor;
+            moverSchema->ReadAuthoredMover(path,actor);
+            auto motion=ReadRuntimeMoverMotion(&actor,false,&moverSchema->Host());
             QuestVr::ValidateMoverMotionState(motion.spec, state);
-            const bool activated = std::find(activatedTargets.begin(), activatedTargets.end(), actor) != activatedTargets.end();
-            if (activated != (state.targetKey != 0u)) throw std::runtime_error("Mover checkpoint activation and motion disagree");
+            const bool isActivated=std::any_of(activated.begin(),activated.end(),[&](const auto& value) {
+                return LowerAscii(value)==LowerAscii(path);
+            });
+            if (isActivated != (state.targetKey != 0u)) throw std::runtime_error("Mover checkpoint activation and motion disagree");
+            if(!apply)continue;
             motion.state = state;
-            restoredMovers.emplace_back(actor, std::move(motion));
+            restoredMovers.emplace_back(target, std::move(motion));
         }
         // Old saves contain a boolean open state only. Migrate it to an actual
         // authored endpoint so the brush no longer vanishes after quick-load.
@@ -15892,7 +16085,7 @@ static bool ReadPortableRuntimeState(const std::string& path, const bool apply, 
         std::optional<QuestVr::QuickBeltModel> restoredQuickBelt;
         if(savedQuickBelt) {
             std::vector<QuestVr::QuickBeltItem> owned;
-            if(apply) owned=PlayableQuickBeltOwned(inventory,&restoredObjects);
+            if(apply) owned=PlayableQuickBeltOwned(inventory,&restoredObjects,&prepared);
             else {
                 // A cross-map preflight runs before that map is installed.
                 // Validate saved ownership membership now; actual class/item
@@ -15974,6 +16167,8 @@ static bool ReadPortableRuntimeState(const std::string& path, const bool apply, 
             // baseline. Never merge the current history or guess it from a
             // mutable/lossy reflected Float. New records publish after staging.
             if (object->nativeTimeSeconds) object->nativeTimeSeconds=0.0;
+            object->nativeFirstDynamic.reset();object->nativeActorOrderChanged=false;
+            if(object->nativeXLevel||object->runtimeBirth)object->worldActorIndex=-1;
             object->scriptValues.clear(); object->classDefaultValues.clear();
             object->animationClock.reset(); object->stateObject.reset(); object->committedScriptState = false;
             object->stateTransitionFlags = 0u;
@@ -16009,6 +16204,11 @@ static bool ReadPortableRuntimeState(const std::string& path, const bool apply, 
         }
         for (const auto& root : prepared.aiManagers) root.get()->owner->nativeAiManager = root.get();
         if (prepared.levelClock) prepared.levelClock->first->nativeTimeSeconds=prepared.levelClock->second;
+        for(const auto& row:prepared.worldIndices)row.first->worldActorIndex=row.second;
+        if(prepared.actorOrder) {
+            prepared.actorOrder->first->nativeFirstDynamic=prepared.actorOrder->second;
+            prepared.actorOrder->first->nativeActorOrderChanged=prepared.actorOrderExplicit;
+        }
         ++persistentWorldRevision;
         return true;
     } catch (const std::exception& error) {

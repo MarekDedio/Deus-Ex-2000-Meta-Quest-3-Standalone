@@ -1642,6 +1642,233 @@ void DecalSnapshotImportAndCapacity() {
     ScriptSavedState capacityState{"Map",{}};capacityState.nativeDecals=capacity;
     Require(EncodeScriptSavedState(capacityState)==before,"Reserved capacities altered canonical checkpoint bytes");
 }
+
+void NativeOrderU64(Bytes& bytes,std::uint64_t value) {
+    for (unsigned i=0u;i<8u;++i) bytes.push_back(static_cast<std::uint8_t>(value>>(8u*i)));
+}
+void NativeOrderPut32(Bytes& bytes,std::size_t offset,std::uint32_t value) {
+    for (unsigned i=0u;i<4u;++i) bytes.at(offset+i)=static_cast<std::uint8_t>(value>>(8u*i));
+}
+struct NativeOrderOffsets {
+    std::size_t goneIndex{},liveIndex{},clockPresence{},levelCharacters{},splitPresence{},splitValue{},count{};
+    std::size_t firstTag{},firstExport{},secondExport{},birthTag{},birthCharacters{},lastTag{};
+};
+// An independent wire oracle: authored export order is deliberately not sorted,
+// export zero is valid, and the birth manifest retains a nonmember sentinel.
+Bytes NativeOrderLiteral(bool clock=true,bool bound=true,NativeOrderOffsets* offsets=nullptr) {
+    NativeOrderOffsets positions;
+    auto bytes=Prefix(0u);bytes[6]=12u;U32(bytes,0u);U32(bytes,2u);
+    String(bytes,"Map.Gone");String(bytes,"Fixture.Actor");positions.goneIndex=bytes.size();U32(bytes,0xffffffffu);U32(bytes,0u);
+    String(bytes,"Map.Live");String(bytes,"Fixture.Actor");positions.liveIndex=bytes.size();U32(bytes,3u);U32(bytes,0u);
+    U32(bytes,0u);bytes.push_back(0u);bytes.push_back(0u);
+    positions.clockPresence=bytes.size();bytes.push_back(clock ? 1u : 0u);
+    if (clock) {String(bytes,"Map.MyLevel");NativeOrderU64(bytes,0x8000000000000000ull);}
+    positions.levelCharacters=bytes.size()+4u;String(bytes,"Map.MyLevel");
+    positions.splitPresence=bytes.size();bytes.push_back(bound ? 1u : 0u);
+    if (bound) {positions.splitValue=bytes.size();U32(bytes,3u);}
+    positions.count=bytes.size();U32(bytes,6u);
+    positions.firstTag=bytes.size();bytes.push_back(1u);positions.firstExport=bytes.size();U32(bytes,0u);
+    bytes.push_back(1u);positions.secondExport=bytes.size();U32(bytes,0x12345678u);
+    bytes.push_back(0u);positions.birthTag=bytes.size();bytes.push_back(2u);
+    positions.birthCharacters=bytes.size()+4u;String(bytes,"Map.Live");
+    bytes.push_back(0u);positions.lastTag=bytes.size();bytes.push_back(1u);U32(bytes,9u);
+    if (offsets) *offsets=positions;
+    return bytes;
+}
+ScriptSavedState NativeOrderState(bool clock=true,bool bound=true) {
+    ScriptSavedState state;state.mapName="Map";
+    state.births={{"Map.Live","Fixture.Actor",3u,{}},{"Map.Gone","Fixture.Actor",0xffffffffu,{}}};
+    if (clock) state.nativeLevelClock=ScriptSavedLevelClock{"Map.MyLevel",-0.0};
+    ScriptSavedNativeActorOrder order;order.levelPath="Map.MyLevel";
+    if (bound) order.firstDynamic=3u;
+    using Kind=ScriptSavedNativeActorSlotKind;
+    order.slots={{Kind::AuthoredExport,0u,{}},{Kind::AuthoredExport,0x12345678u,{}},{},
+        {Kind::Birth,0u,"Map.Live"},{},{Kind::AuthoredExport,9u,{}}};
+    state.nativeActorOrder=std::move(order);return state;
+}
+void SameNativeOrder(const ScriptSavedNativeActorOrder& a,const ScriptSavedNativeActorOrder& b) {
+    Require(a.levelPath==b.levelPath && a.firstDynamic==b.firstDynamic && a.slots.size()==b.slots.size(),
+        "Native actor owner/partition/slot count changed");
+    for (std::size_t i=0u;i<a.slots.size();++i)
+        Require(a.slots[i].kind==b.slots[i].kind && a.slots[i].authoredExport==b.slots[i].authoredExport &&
+            a.slots[i].birthPath==b.slots[i].birthPath,"Native actor exact slot order or inactive payload changed");
+}
+void RejectNativeOrderBytes(const Bytes& bytes,const std::string& reason,const ScriptStateLimits& limits={}) {
+    Reject([&] {ScriptStateDetail::Reader<false> verifier(bytes,limits);verifier.State();},reason+" (verifier)");
+    Reject([&] {ScriptStateDetail::Reader<true> materializer(bytes,limits);materializer.State();},reason+" (materializer)");
+    Reject([&] {DecodeScriptSavedState(bytes,limits);},reason+" (public decoder)");
+}
+void NativeOrderRoundtripAndLegacy() {
+    for (const bool clock : {false,true}) for (const bool bound : {false,true}) {
+        const auto state=NativeOrderState(clock,bound);const auto expected=NativeOrderLiteral(clock,bound);
+        const auto encoded=EncodeScriptSavedState(state);const auto decoded=DecodeScriptSavedState(expected);
+        Require(encoded==expected && encoded[6]==12u,"Codec12 independent tag/little-endian/optional wire order changed");
+        Require(decoded.nativeActorOrder && decoded.nativeLevelClock.has_value()==clock,
+            "Codec12 invented or lost optional native state");
+        SameNativeOrder(*state.nativeActorOrder,*decoded.nativeActorOrder);
+        Require(decoded.births.size()==2u && decoded.births[0].path=="Map.Gone" &&
+            decoded.births[0].worldActorIndex==0xffffffffu && decoded.births[1].worldActorIndex==3u,
+            "Codec12 birth manifest sorting rewrote membership or nonmember sentinel");
+        if (clock) Require(std::signbit(decoded.nativeLevelClock->timeSeconds),"Codec12 native clock lost signed zero");
+        for (unsigned repeat=0u;repeat<4u;++repeat)
+            Require(EncodeScriptSavedState(DecodeScriptSavedState(encoded))==expected,"Repeated codec12 bytes changed");
+        auto permuted=state;std::reverse(permuted.births.begin(),permuted.births.end());
+        Require(EncodeScriptSavedState(permuted)==expected,"Birth manifest input order changed native slot bytes");
+        std::swap(permuted.nativeActorOrder->slots[0],permuted.nativeActorOrder->slots[1]);
+        const auto different=EncodeScriptSavedState(permuted);
+        Require(different!=expected,"Native slots were silently sorted instead of retained");
+        SameNativeOrder(*permuted.nativeActorOrder,*DecodeScriptSavedState(different).nativeActorOrder);
+    }
+    auto unbound=NativeOrderState(false,false);unbound.births.clear();unbound.nativeActorOrder->slots={{},{}};
+    Require(DecodeScriptSavedState(EncodeScriptSavedState(unbound)).nativeActorOrder->slots.size()==2u,
+        "Unbound minimum native slot array was rejected or fabricated authored identities");
+    for (const std::uint32_t split : {2u,6u}) {
+        auto state=NativeOrderState();state.nativeActorOrder->firstDynamic=split;
+        Require(DecodeScriptSavedState(EncodeScriptSavedState(state)).nativeActorOrder->firstDynamic==split,
+            "Valid inclusive partition boundary changed");
+    }
+    auto sourceBound=NativeOrderState();sourceBound.nativeActorOrder->slots[1].authoredExport=0xffffffffu;
+    SameNativeOrder(*sourceBound.nativeActorOrder,*DecodeScriptSavedState(EncodeScriptSavedState(sourceBound)).nativeActorOrder);
+    auto nonmembers=NativeOrderState();nonmembers.births.push_back({"Map.GoneAgain","Fixture.Actor",0xffffffffu,{}});
+    Require(DecodeScriptSavedState(EncodeScriptSavedState(nonmembers)).births.size()==3u,
+        "Distinct retained nonmember births cannot share their explicit sentinel");
+    // Exercise membership independently of sorted manifest position, authored
+    // order, null holes, and either side of an arbitrary partition boundary.
+    for (std::uint32_t trial=0u;trial<48u;++trial) {
+        ScriptSavedState permuted;permuted.mapName="Map";
+        ScriptSavedNativeActorOrder order;order.levelPath="Map.MyLevel";order.slots.resize(10u);
+        if (trial%3u!=0u) order.firstDynamic=2u+trial%9u;
+        const auto a=trial%10u,b=(a+3u)%10u,c=(a+7u)%10u;
+        order.slots[a]={ScriptSavedNativeActorSlotKind::Birth,0u,"Map.Z"};
+        order.slots[b]={ScriptSavedNativeActorSlotKind::Birth,0u,"Map.A"};
+        order.slots[c]={ScriptSavedNativeActorSlotKind::AuthoredExport,trial,{}};
+        permuted.births={{"Map.Z","Fixture.Actor",a,{}},{"Map.Removed","Fixture.Actor",0xffffffffu,{}},
+            {"Map.A","Fixture.Actor",b,{}}};
+        permuted.nativeActorOrder=order;
+        const auto encoded=EncodeScriptSavedState(permuted);const auto decoded=DecodeScriptSavedState(encoded);
+        SameNativeOrder(order,*decoded.nativeActorOrder);
+        Require(decoded.births[0].path=="Map.A" && decoded.births[0].worldActorIndex==b &&
+            decoded.births[1].path=="Map.Removed" && decoded.births[1].worldActorIndex==0xffffffffu &&
+            decoded.births[2].path=="Map.Z" && decoded.births[2].worldActorIndex==a,
+            "Independent native membership oracle disagrees with retained manifest indices");
+        Require(EncodeScriptSavedState(decoded)==encoded,"Permuted actor order was not byte deterministic");
+    }
+
+    // Existing codecs remain byte-identical when the new optional section is
+    // absent. Their original non-sentinel birth indices remain mandatory.
+    for (unsigned version=1u;version<=11u;++version) {
+        ScriptSavedState legacy;legacy.mapName="Map";
+        ScriptSavedObject actor;actor.path="Map.A";actor.classPath="Fixture.Actor";
+        if (version==2u) {actor.state.emplace();legacy.objects.push_back(actor);}
+        if (version==3u) legacy.classDefaults.push_back({"Fixture.Actor",{{"Fixture.Actor.X","X",0u,Integer(1)}}});
+        if (version==4u) {actor.lifecycle.emplace();legacy.objects.push_back(actor);}
+        if (version==5u) legacy.births.push_back({"Map.Born","Fixture.Actor",7u,{}});
+        if (version==6u) {Ai::State ai;ai.ownerPath="Map.Info";ai.levelPath="Map.MyLevel";legacy.aiManagers.push_back(ai);}
+        if (version==7u) legacy.randomSeed=7u;
+        if (version==8u) {actor.latentTimeLeft=.25f;legacy.objects.push_back(actor);}
+        if (version==9u) {
+            actor.state.emplace();actor.state->hasStack=true;actor.state->frameOverride=true;actor.state->frame.emplace();
+            actor.state->frame->codePath="Fixture.Actor.Active";actor.state->frame->localsCodePath="Fixture.Actor.Active";
+            actor.state->frame->control=StateControl{"Fixture.Actor.Active",true,1ull};legacy.objects.push_back(actor);
+        }
+        if (version==10u) {actor.properties.push_back({"Fixture.Actor.Array","Array",0u,IntArray({1,-2})});legacy.objects.push_back(actor);}
+        if (version==11u) legacy.nativeLevelClock=ScriptSavedLevelClock{"Map.MyLevel",-0.0};
+        const auto before=EncodeScriptSavedState(legacy);
+        Require(before[6]==version && !DecodeScriptSavedState(before).nativeActorOrder,"Legacy codec selected/created actor order");
+        if (version==11u) {
+            auto literal=Prefix(0u);literal[6]=11u;for (unsigned i=0u;i<3u;++i) U32(literal,0u);
+            literal.push_back(0u);literal.push_back(0u);String(literal,"Map.MyLevel");NativeOrderU64(literal,0x8000000000000000ull);
+            Require(before==literal,"Codec12 changed mandatory codec11 clock bytes");
+        }
+        legacy.nativeActorOrder=ScriptSavedNativeActorOrder{"Map.MyLevel",{},{{},{}}};
+        if (!legacy.births.empty()) {legacy.births[0].worldActorIndex=2u;legacy.nativeActorOrder->slots.push_back({ScriptSavedNativeActorSlotKind::Birth,0u,"Map.Born"});}
+        const auto upgraded=EncodeScriptSavedState(legacy);
+        Require(upgraded[6]==12u && EncodeScriptSavedState(DecodeScriptSavedState(upgraded))==upgraded,
+            "Codec12 cannot coexist with a legacy optional section");
+        legacy.nativeActorOrder.reset();if (!legacy.births.empty()) legacy.births[0].worldActorIndex=7u;
+        Require(EncodeScriptSavedState(legacy)==before,"Removing actor order changed legacy codec bytes");
+        Require(EncodeScriptSavedState(DecodeScriptSavedState(before))==before,"Codec12 changed legacy decode/reencode bytes");
+    }
+    auto old=BirthLiteral();NativeOrderPut32(old,old.size()-8u,0xffffffffu);
+    RejectNativeOrderBytes(old,"Legacy birth sentinel was accepted without explicit codec12 membership");
+}
+void NativeOrderMalformedAndBudgets() {
+    NativeOrderOffsets offsets;const auto bytes=NativeOrderLiteral(true,true,&offsets);
+    for (std::size_t length=0u;length<bytes.size();++length)
+        RejectNativeOrderBytes(Bytes(bytes.begin(),bytes.begin()+static_cast<std::ptrdiff_t>(length)),"Truncated codec12 payload accepted");
+    for (const auto version : {0u,11u,13u,255u}) {
+        auto broken=bytes;broken[6]=static_cast<std::uint8_t>(version);
+        RejectNativeOrderBytes(broken,"Codec12 data accepted under incompatible version");
+    }
+    auto broken=bytes;broken.push_back(0u);RejectNativeOrderBytes(broken,"Trailing codec12 bytes accepted");
+    for (const auto offset : {offsets.clockPresence,offsets.splitPresence}) {
+        broken=bytes;broken[offset]=2u;RejectNativeOrderBytes(broken,"Invalid codec12 optional discriminator accepted");
+    }
+    for (const auto count : {0u,1u,1'000'001u,0xffffffffu}) {
+        broken=bytes;NativeOrderPut32(broken,offsets.count,count);RejectNativeOrderBytes(broken,"Invalid native slot count accepted");
+    }
+    for (const auto split : {0u,1u,7u,0xffffffffu}) {
+        broken=bytes;NativeOrderPut32(broken,offsets.splitValue,split);RejectNativeOrderBytes(broken,"Invalid native partition boundary accepted");
+    }
+    for (const auto tag : {3u,127u,255u}) {
+        broken=bytes;broken[offsets.firstTag]=static_cast<std::uint8_t>(tag);RejectNativeOrderBytes(broken,"Unknown native slot tag accepted");
+    }
+    broken=bytes;NativeOrderPut32(broken,offsets.secondExport,0u);RejectNativeOrderBytes(broken,"Duplicate authored native export accepted");
+    for (const auto index : {2u,4u,0xffffffffu}) {
+        broken=bytes;NativeOrderPut32(broken,offsets.liveIndex,index);RejectNativeOrderBytes(broken,"Birth manifest/index disagreement accepted");
+    }
+    broken=bytes;NativeOrderPut32(broken,offsets.goneIndex,5u);RejectNativeOrderBytes(broken,"Missing birth member accepted");
+    for (const auto character : {'X','m','\0'}) {
+        broken=bytes;broken[offsets.birthCharacters]=static_cast<std::uint8_t>(character);
+        RejectNativeOrderBytes(broken,"Unknown/aliased/malformed native birth slot identity accepted");
+    }
+    broken=bytes;broken[offsets.lastTag]=2u;broken.resize(offsets.lastTag+1u);String(broken,"map.live");
+    RejectNativeOrderBytes(broken,"Case-colliding repeated birth slot accepted");
+    broken=bytes;broken[offsets.lastTag]=2u;broken.resize(offsets.lastTag+1u);String(broken,"Map.Live");
+    RejectNativeOrderBytes(broken,"Repeated birth slot accepted");
+    for (const auto character : {'X','m','\0'}) {
+        broken=bytes;broken[offsets.levelCharacters]=static_cast<std::uint8_t>(character);
+        RejectNativeOrderBytes(broken,"Noncanonical native actor level owner accepted");
+    }
+    const auto saved=NativeOrderState();
+    const auto invalid=[&](const std::function<void(ScriptSavedState&)>& mutate,const std::string& reason) {
+        auto value=saved;mutate(value);Reject([&] {EncodeScriptSavedState(value);},reason);
+    };
+    invalid([](auto& value) {value.nativeActorOrder->slots[2].authoredExport=1u;},"Null native slot inactive export accepted");
+    invalid([](auto& value) {value.nativeActorOrder->slots[2].birthPath="Map.Live";},"Null native slot inactive birth accepted");
+    invalid([](auto& value) {value.nativeActorOrder->slots[0].birthPath="Map.Live";},"Authored native slot inactive birth accepted");
+    invalid([](auto& value) {value.nativeActorOrder->slots[3].authoredExport=1u;},"Birth native slot inactive export accepted");
+    invalid([](auto& value) {value.nativeActorOrder->slots[3].birthPath.clear();},"Empty native birth identity accepted");
+    invalid([](auto& value) {value.nativeActorOrder->slots[3].kind=static_cast<ScriptSavedNativeActorSlotKind>(255u);},"Unknown live native tag accepted");
+    invalid([](auto& value) {value.nativeActorOrder->slots[3].birthPath="map.live";},"Noncanonical live native birth alias accepted");
+    invalid([](auto& value) {value.births.push_back({"map.live","Fixture.Actor",3u,{}});},"Case-colliding birth manifest accepted");
+    invalid([](auto& value) {value.nativeActorOrder->slots[5]=value.nativeActorOrder->slots[0];},"Duplicate live authored export accepted");
+    invalid([](auto& value) {value.nativeActorOrder->slots[5]=value.nativeActorOrder->slots[3];},"Duplicate live birth accepted");
+    invalid([](auto& value) {value.nativeActorOrder->firstDynamic=1u;},"Invalid live partition accepted");
+    invalid([](auto& value) {value.nativeActorOrder->slots.resize(1u);value.nativeActorOrder->firstDynamic.reset();},"Short unbound actor order accepted");
+    for (const auto& path : {std::string{},std::string("map.MyLevel"),std::string("Other.MyLevel"),std::string("Map..Level"),std::string("Map/A")})
+        invalid([&](auto& value) {value.nativeActorOrder->levelPath=path;},"Invalid live actor-order owner accepted");
+
+    ScriptStateLimits limits;ScriptStateDetail::Writer measured(limits,nullptr);measured.State(saved);
+    auto exact=limits;exact.maxBytes=measured.measuredBudget().retained;exact.maxNativeActorSlots=6u;
+    exact.maxObjects=2u;exact.maxProperties=0u;exact.totalValueNodes=0u;
+    Require(EncodeScriptSavedState(saved,exact)==bytes && EncodeScriptSavedState(DecodeScriptSavedState(bytes,exact),exact)==bytes,
+        "Exact native slot/retained/manifest budgets failed");
+    for (const auto which : {0u,1u,2u,3u}) {
+        auto small=exact;if (which==0u) --small.maxBytes;else if (which==1u) --small.maxNativeActorSlots;
+        else if (which==2u) --small.maxObjects;else small.maxStringBytes=10u;
+        Reject([&] {EncodeScriptSavedState(saved,small);},"Native order encode exceeded aggregate admission");
+        RejectNativeOrderBytes(bytes,"Native order decode exceeded aggregate admission",small);
+    }
+    auto limit=exact;limit.maxNativeActorSlots=0u;
+    RejectNativeOrderBytes(bytes,"Zero native slot cap accepted",limit);
+    auto forged=bytes;NativeOrderPut32(forged,offsets.count,1'000'001u);limit.maxNativeActorSlots=2'000'000u;
+    RejectNativeOrderBytes(forged,"Caller cap bypassed fixed native slot ceiling",limit);
+    auto noClock=NativeOrderState(false,false);noClock.nativeActorOrder->slots.resize(4000u);
+    const auto longBytes=EncodeScriptSavedState(noClock);limit={};limit.maxBytes=longBytes.size()+1u;
+    Reject([&] {EncodeScriptSavedState(noClock,limit);},"Compact null wire bypassed retained slot-array admission");
+    RejectNativeOrderBytes(longBytes,"Compact null wire bypassed retained decode admission",limit);
+}
 }
 
 int main() {
@@ -1654,7 +1881,8 @@ int main() {
         RandomRoundtripAndLegacy();InvalidRandomStateAndBudgets();
         SleepRoundtripAndLegacy();LandingSharedTimerWire();InvalidSleepStateAndBudgets();
         IntArrayAndDecalRoundtrip();InvalidIntArrayAndDecalData();IntArrayAndDecalBudgets();DecalSnapshotImportAndCapacity();
+        NativeOrderRoundtripAndLegacy();NativeOrderMalformedAndBudgets();
         std::cout<<"PASS script-state codec controls="<<checks<<" rejection controls="<<rejections
-            <<"; legacy bytes, signed timers, codec10 native decals/Tag11 integer arrays, structural codec only\n";return 0;
+            <<"; legacy bytes, signed timers, codec10 native decals/Tag11 integer arrays, codec12 native actor order, structural codec only\n";return 0;
     }catch(const std::exception& error) {std::cerr<<"FAIL script-state codec: "<<error.what()<<" after "<<checks<<" controls\n";return 1;}
 }

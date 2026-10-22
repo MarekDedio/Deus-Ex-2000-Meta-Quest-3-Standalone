@@ -5,7 +5,10 @@
         if(!transaction_||index<0||static_cast<std::size_t>(index)>=persistentWorldActors.size())
             throw std::runtime_error("Original DestroyActor cannot clear an invalid native Level item");
         const auto slot=static_cast<std::size_t>(index);
-        if(slot<beforeWorldSlots_&&std::none_of(beforeWorldSlotItems_.begin(),beforeWorldSlotItems_.end(),
+        // A full native-order before-image supersedes later per-slot undo.
+        // Logging a post-partition identity at its new numeric slot would
+        // corrupt the original order when sparse undo follows the full swap.
+        if(!beforeActorOrder_&&slot<beforeWorldSlots_&&std::none_of(beforeWorldSlotItems_.begin(),beforeWorldSlotItems_.end(),
             [slot](const auto& item){return item.first==slot;})) {
             if(beforeWorldSlotItems_.size()>=4096u)throw std::runtime_error("DestroyActor slot journal exceeds caller bound");
             if(beforeWorldSlotItems_.size()==beforeWorldSlotItems_.capacity()) {

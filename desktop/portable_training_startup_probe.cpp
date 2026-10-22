@@ -196,6 +196,30 @@ void ObserveSpawnPackets(const PortableWorldStartupProbeResult& world,bool requi
     std::cout<<"SPAWN OBSERVATIONS count="<<packets.size()<<" actualTrainingNanoKeyClear="<<nanoKeyClear
         <<"; detached original same-root prefix, NOT a published birth, surviving usable loot or completed startup\n";
 }
+void ObserveActorOrder(const PortableWorldStartupProbeResult& world) {
+    const auto& before=world.beforeActorOrder;const auto& after=world.afterActorOrder;
+    if(!after.available) {
+        Require(world.visited[static_cast<std::size_t>(PortableWorldStartupPhase::ClientSetup)]==0u,
+            "Post-partition client boundary lacks a completed native order observation");return;
+    }
+    Require(before.available&&before.actorIndices.size()>=2u&&
+        before.actorIndices.size()==before.staticFlags.size()&&after.actorIndices.size()==after.staticFlags.size()&&
+        before.levelPath==after.levelPath,"Native partition observations lack matching actual Level/slot authority");
+    // Independent standard-library stable partition, not the production two
+    // source-array scans or a source-export ordering substituted for live slots.
+    std::vector<std::pair<std::uint32_t,std::uint8_t>> members;
+    for(std::size_t i=2u;i<before.actorIndices.size();++i)
+        if(before.actorIndices[i])members.emplace_back(before.actorIndices[i],before.staticFlags[i]);
+    const auto boundary=std::stable_partition(members.begin(),members.end(),[](const auto& item){return item.second!=0u;});
+    const auto split=2u+static_cast<std::size_t>(boundary-members.begin());
+    std::vector<std::uint32_t> expected{before.actorIndices[0u],before.actorIndices[1u]};
+    std::vector<std::uint8_t> flags{before.staticFlags[0u],before.staticFlags[1u]};
+    for(const auto& item:members){expected.push_back(item.first);flags.push_back(item.second);}
+    Require(after.actorIndices==expected&&after.staticFlags==flags&&after.firstDynamic&&*after.firstDynamic==split,
+        "Actual original startup partition differs from independent live-slot/static-value oracle");
+    std::cout<<"NATIVE ACTOR ORDER originalSlots="<<before.actorIndices.size()<<" finalSlots="<<after.actorIndices.size()
+        <<" firstDynamic="<<split<<"; exact reserved slots/stable static+dynamic identity oracle, NOT player setup/publication\n";
+}
 std::size_t NativeWorkLimit(std::string_view text) {
     Require(!text.empty()&&text.size()<=20u,"Native-work allowance must be a bounded decimal integer");
     std::size_t value{};
@@ -295,12 +319,13 @@ int Run(const fs::path& root,const std::optional<std::string>& expected,unsigned
             std::cout<<"VISITED "<<PortableWorldStartupPhaseName(static_cast<PortableWorldStartupPhase>(i))<<'='<<world.visited[i]<<'\n';
         for(const auto& call:world.execution.callStack)std::cout<<"CALL "<<call<<'\n';
         ObserveSpawnPackets(world,requireSpawnEncroachment);
+        ObserveActorOrder(world);
         if(spawnPackets)Require(SameSpawnPackets(*spawnPackets,world.spawnedEncroachment),
             "Repeated startup changed detached Spawn identities, exact pose words, query result/storage or lifecycle tail");
         else spawnPackets=world.spawnedEncroachment;
         rollback();
         completed=world.execution.status==QuestVr::Vm::Status::Returned&&world.execution.error.empty();
-        if(completed)Require(world.phase==PortableWorldStartupPhase::CompactActorSlots&&
+        if(completed)Require(world.phase==PortableWorldStartupPhase::ClientSetup&&
             world.visited[static_cast<std::size_t>(PortableWorldStartupPhase::CompactActorSlots)]>0u,
             "Returned startup diagnostic did not reach its authentic final phase");
         if(!completed)Require(!world.execution.passed()&&!world.execution.committed&&!world.execution.error.empty(),

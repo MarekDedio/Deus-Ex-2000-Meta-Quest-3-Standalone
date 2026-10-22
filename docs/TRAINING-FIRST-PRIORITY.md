@@ -7,6 +7,22 @@ Reconfirmed2026-10-20: skip other-map chest/physics integration and testing to
 save time; shared prerequisites needed by this first map remain in scope.
 Reconfirmed2026-10-21: the WHOLE first Training map is the short-term milestone;
 do not spend time on other-map integration or map-content test sweeps.
+Reconfirmed2026-10-22: skip other-map crate/physics integration and testing;
+the WHOLE first Training map remains the current content acceptance target.
+
+Latest native-order checkpoint,2026-10-22: exact LoadMap static/dynamic native
+partition and owning portable runtime17/codec12 continuation now preserve
+authored/birth/null slots, split and cold replacement. Actual Training
+ordering/save/deletion rollback passes211113/28; generated Spawn with real
+explicit birth restoration passes10217/169. Both actual startup attempts
+complete1335 PPP visits and exact ordering, then explicitly refuse original
+client/player/detail setup with complete rollback/all40 originals intact.
+Desktop/strict ARM64/Android native builds pass; final shared CTest164/194
+passes with30 owned-data skips, zero failures in49.98s. Actual first-map
+linker/deferred/movement/isolated-crate regressions pass separately. This
+does NOT finish live combat, surviving usable loot, gravity, world Tick or a
+new playable APK. See TRAINING-WORLD-ACTOR-ORDER.md and the original next
+player-setup evidence in ORIGINAL-POST-PARTITION-CLIENT-SETUP.md.
 
 Latest lossless storage work,2026-10-21: native linker header undo is sparse and
 conversation index undo uses actual admitted pages with unchanged identities,

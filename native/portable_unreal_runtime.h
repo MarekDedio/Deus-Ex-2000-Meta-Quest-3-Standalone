@@ -185,7 +185,7 @@ enum class PortableWorldStartupPhase : std::uint8_t {
     ValidateWorld, SelectGameInfo, ResetTime, RestoreTime, ClearTouching,
     InitializeExecution, PublishStartup, InitGame, PreBeginPlay, BeginPlay,
     SetActorZone, LastRenderTime, PostBeginPlay, SetInitialState, WorldBases,
-    ClearStartup, PostPostBeginPlay, CompactActorSlots, Count
+    ClearStartup, PostPostBeginPlay, CompactActorSlots, ClientSetup, Count
 };
 struct PortableWorldStartupProbeOptions {
     // Already decoded URL GAME= class and the configured local client's
@@ -206,6 +206,34 @@ struct PortableSpawnEncroachmentSnapshot {
     bool attempted{},completed{},blocked{},initialStateReached{},baseReached{},postPostBeginReached{};
     std::size_t marksBefore{},arenasBefore{},marksAfter{},arenasAfter{};
 };
+struct PortableWorldActorOrderSnapshot {
+    bool available{};
+    std::string levelPath;
+    std::optional<std::uint32_t> firstDynamic;
+    // Actual process-local UObject indices; zero is a native null slot.
+    std::vector<std::uint32_t> actorIndices;
+    std::vector<std::uint8_t> staticFlags;
+    bool operator==(const PortableWorldActorOrderSnapshot&) const = default;
+};
+struct PortableWorldActorPartitionProbeResult {
+    QuestVr::Vm::Result execution;
+    PortableWorldActorOrderSnapshot before,after;
+};
+struct PortableWorldActorPartitionDestroyProbeResult {
+    QuestVr::Vm::Result execution;
+    PortableWorldActorOrderSnapshot before,partitioned,afterDestroy;
+    PortableActorDestroyProbeResult destruction;
+    std::vector<PortableObjectLinkerSnapshot> linkersBefore,linkersAfter;
+};
+// Real partition followed by real native DestroyActor in ONE rollback root.
+// Used to verify permutation/deletion undo composition, not begun gameplay.
+PortableWorldActorPartitionDestroyProbeResult ProbePortableWorldActorPartitionThenDestroy(
+    const std::vector<std::string>& actorPaths,const QuestVr::Vm::Limits& limits = {});
+PortableWorldActorOrderSnapshot ReadPortableWorldActorOrder();
+// The real native partition under one rollback-only root. No startup bits,
+// flags, client/player possession or native cleanup are fabricated.
+PortableWorldActorPartitionProbeResult ProbePortableWorldActorPartition(
+    const QuestVr::Vm::Limits& limits = {});
 struct PortableWorldStartupProbeResult {
     QuestVr::Vm::Result execution;
     PortableWorldStartupPhase phase{PortableWorldStartupPhase::ValidateWorld};
@@ -217,11 +245,12 @@ struct PortableWorldStartupProbeResult {
     // Detached bounded observation of actual native Spawn calls in this SAME
     // original startup root. No pose setters, begun-play override or publication.
     std::vector<PortableSpawnEncroachmentSnapshot> spawnedEncroachment;
+    PortableWorldActorOrderSnapshot beforeActorOrder,afterActorOrder;
 };
 const char* PortableWorldStartupPhaseName(PortableWorldStartupPhase phase);
 // Non-publishing diagnostic over actual Level slots and original callbacks.
 // One shared VM/host transaction is ALWAYS rolled back, including a prefix
-// that reaches the current native FindBase/slot-compaction implementation gap.
+// that reaches native actor ordering and the later client/player/detail gap.
 // This neither starts a playable world nor binds/logs in a player. Exact first
 // VM failure and phase/slot/receiver are retained without accepting partial work.
 PortableWorldStartupProbeResult ProbePortableWorldStartup(

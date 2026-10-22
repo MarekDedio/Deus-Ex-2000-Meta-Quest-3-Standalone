@@ -419,7 +419,7 @@ Tables Build(Fixture& fixture, unsigned worldModel = 0u, unsigned decalSchema = 
     for (const auto& name : {"Tag", "AttachTag"}) engine.Property(name, "NameProperty", actor, engineCore);
     std::int32_t deleteFlag{};
     for (const auto& name : {"bTicked", "bCollideActors", "bBlockActors", "bBlockPlayers", "bCollideWorld", "bCollideWhenPlacing", "bStatic", "bNoDelete", "bDeleteMe", "bAnimByOwner"}) {
-        const auto flags=std::string(name)=="bCollideActors"?0x23u:
+        const auto flags=std::string(name)=="bStatic"?3u:std::string(name)=="bCollideActors"?0x23u:
             (std::string(name)=="bCollideWorld"||std::string(name)=="bBlockActors"||std::string(name)=="bBlockPlayers")?0x21u:0u;
         const auto field = engine.Property(name, "BoolProperty", actor, engineCore, 1u, 0, flags);
         if (std::string(name) == "bDeleteMe") deleteFlag = field;
@@ -2236,7 +2236,7 @@ void WorldStartupSynthetic() {
             ++refusals; return result;
         };
         const PortableWorldStartupProbeOptions fallbackOptions{"","SpawnClasses.WorldGame","fixture-options"};
-        const auto terminal=model==4u ? Phase::WorldBases : Phase::CompactActorSlots;
+        const auto terminal=model==4u ? Phase::WorldBases : Phase::ClientSetup;
         if (model==1u) {
             Require(!HasPortableRuntimeClient(), "Fresh world fixture unexpectedly bound a native client");
             probe(fallbackOptions,Phase::SelectGameInfo);
@@ -2364,7 +2364,7 @@ void WorldStartupSynthetic() {
             Call("Driver","SetWorldGame",{{restoredGame,{}}});
             Call("Driver","PrepareRestoredWorld"); Call("Driver","SetBegun",{{Value::Bool(true),{}}});
             ClearPortableRuntimeClient();
-            const auto restored=probe(fallbackOptions,Phase::CompactActorSlots);
+            const auto restored=probe(fallbackOptions,Phase::ClientSetup);
             Require(restored.restoredWorld && at(restored,Phase::InitializeExecution)==0u && at(restored,Phase::InitGame)==0u &&
                 at(restored,Phase::PreBeginPlay)==0u && at(restored,Phase::SetActorZone)==0u &&
                 at(restored,Phase::WorldBases)==0u && at(restored,Phase::PostPostBeginPlay)==6u,
@@ -2715,6 +2715,7 @@ void DecalNativeSynthetic() {
         fixture.Reset(); fixture.UnchangedSources();
     }
 }
+#include "portable_actor_order_birth_cases.inl"
 void Synthetic() {
     Fixture fixture; const auto tables = Build(fixture);
     Require(InitializePortableRuntime({tables.core, tables.engine, tables.classes}).passed && LoadPortableRuntimeMap(tables.map).passed, "Generated spawn runtime/map metadata initialization failed");
@@ -2723,6 +2724,7 @@ void Synthetic() {
     Require(nestedPath.passed() && nestedPath.value.kind==Kind::String && nestedPath.value.text=="Engine.Actor.Level" &&
         fixture.Snapshot("ReadonlyObjectString")==fixture.legacy,"ObjectToString lost a loaded property's complete nested path or changed state");
     ArgumentTests(fixture); SpawnTagTests(fixture); DefaultsTests(fixture); CallbackTests(fixture); OrderingTests(fixture); PersistenceTests(fixture);
+    ActorOrderBirthTests(fixture,tables);
     CollisionIntegrationTests(fixture); AliasAndBoundaryGcTests(fixture); GetPlayerPawnTests(fixture); PawnListTests(fixture); AllActorsTests(fixture); AiIntegrationTests(fixture); fixture.UnchangedSources();
     Require(InitializePortableRuntime({tables.core, tables.engine, tables.classes}).passed && LoadPortableRuntimeMap(tables.map).passed && fixture.Snapshot("Reinitialized") == fixture.legacy, "Runtime reinitialization retained born objects/frozen defaults"); fixture.UnchangedSources();
 }

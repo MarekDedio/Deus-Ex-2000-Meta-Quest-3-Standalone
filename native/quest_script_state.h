@@ -52,6 +52,9 @@ struct ScriptSavedClassDefaults {
 };
 struct ScriptSavedBirth {
     std::string path, classPath;
+    // Codec12 uses the exact native slot, or UINT32_MAX when this retained
+    // birth is not a member of the saved native actor array. Older codecs
+    // retain their original bounded, unique actor-index policy.
     std::uint32_t worldActorIndex{};
     // Freeze the concrete CDO's mutable patch block at birth. Unchanged slots
     // retain the immutable authored baseline, never later mutable CDO patches.
@@ -64,6 +67,22 @@ struct ScriptSavedLevelClock {
     // this explicit port checkpoint retains the complete native clock bits.
     std::string levelPath;
     double timeSeconds{};
+};
+enum class ScriptSavedNativeActorSlotKind : std::uint8_t {
+    None=0, AuthoredExport=1, Birth=2
+};
+struct ScriptSavedNativeActorSlot {
+    ScriptSavedNativeActorSlotKind kind{};
+    // Zero-based export-table identity, not an actor slot or package index.
+    std::uint32_t authoredExport{};
+    std::string birthPath;
+};
+struct ScriptSavedNativeActorOrder {
+    std::string levelPath;
+    // Unbound before the native static/dynamic partition has actually run.
+    std::optional<std::uint32_t> firstDynamic;
+    // Native array order and null holes are data; never sort or compact them.
+    std::vector<ScriptSavedNativeActorSlot> slots;
 };
 struct ScriptSavedState {
     std::string mapName;
@@ -82,6 +101,9 @@ struct ScriptSavedState {
     // Absence in legacy formats means reset at runtime restore, never merge
     // with an unrelated live clock or infer it from a reflected Float overlay.
     std::optional<ScriptSavedLevelClock> nativeLevelClock{};
+    // Explicit port checkpoint, authenticated against actual loaded exports
+    // and births by the runtime rather than inferred from mutable actor flags.
+    std::optional<ScriptSavedNativeActorOrder> nativeActorOrder{};
 };
 struct ScriptStateLimits {
     std::size_t maxBytes{32u << 20u};
@@ -98,6 +120,7 @@ struct ScriptStateLimits {
     std::size_t maxDecalSurfaces{1'000'000u}, maxDecalNodes{1'000'000u};
     std::size_t maxDecalOwners{65'536u}, maxDecalRecords{262'144u};
     std::size_t maxDecalMembership{1'048'576u}, maxDecalSurfListEntries{262'144u};
+    std::size_t maxNativeActorSlots{1'000'000u};
 };
 
 namespace ScriptStateDetail {
@@ -115,6 +138,7 @@ inline constexpr std::uint8_t SleepStateVersion=8u;
 inline constexpr std::uint8_t StateControlVersion=9u;
 inline constexpr std::uint8_t DecalStateVersion=10u;
 inline constexpr std::uint8_t LevelClockVersion=11u;
+inline constexpr std::uint8_t NativeActorOrderVersion=12u;
 inline constexpr std::uint32_t MaximumWorldActorSlots=1'000'000u;
 inline constexpr std::size_t MaximumIntArrayElements=262'144u;
 // Stable serialized tags deliberately do not depend on Vm::Kind ordinals.
@@ -180,6 +204,62 @@ inline void LevelClockTime(const double value) {
     if (!std::isfinite(value) || value<0.0)
         Fail("native level clock time must be finite and nonnegative");
 }
+struct SavedNativeActorBirthIdentity {
+    std::string_view path;
+    std::uint32_t worldActorIndex{};
+};
+inline void NativeActorOrderBounds(const std::optional<std::uint32_t> firstDynamic,
+    const std::size_t slots,const ScriptStateLimits& limits) {
+    if (slots<2u || slots>std::min(limits.maxNativeActorSlots,
+        static_cast<std::size_t>(MaximumWorldActorSlots)))
+        Fail("native actor slot count exceeds bounds");
+    if (firstDynamic && (*firstDynamic<2u || *firstDynamic>slots))
+        Fail("native actor first-dynamic boundary exceeds slot bounds");
+}
+class NativeActorOrderValidation {
+public:
+    // The caller admits the complete scratch array before this allocation.
+    NativeActorOrderValidation(const std::vector<SavedNativeActorBirthIdentity>& births,
+        const std::size_t slots) : births_(births) { exports_.reserve(slots); }
+    void Slot(const ScriptSavedNativeActorSlotKind kind,const std::uint32_t authoredExport,
+        const std::string_view birthPath,const std::uint32_t index) {
+        switch (kind) {
+        case ScriptSavedNativeActorSlotKind::None:
+            if (authoredExport!=0u || !birthPath.empty()) Fail("null native actor slot has inactive payload");
+            break;
+        case ScriptSavedNativeActorSlotKind::AuthoredExport:
+            if (!birthPath.empty()) Fail("authored native actor slot has inactive birth payload");
+            exports_.push_back(authoredExport);
+            break;
+        case ScriptSavedNativeActorSlotKind::Birth: {
+            if (authoredExport!=0u) Fail("birth native actor slot has inactive export payload");
+            const auto found=std::lower_bound(births_.begin(),births_.end(),birthPath,
+                [](const auto& birth,const auto path) { return Compare(birth.path,path)<0; });
+            if (found==births_.end() || Compare(found->path,birthPath)!=0 || found->path!=birthPath)
+                Fail("native actor birth slot has no exact manifest identity");
+            if (found->worldActorIndex!=index)
+                Fail("native actor birth slot disagrees with manifest membership/index");
+            ++birthSlots_;
+            break;
+        }
+        default: Fail("unrecognized native actor slot tag");
+        }
+    }
+    void Finish() {
+        std::sort(exports_.begin(),exports_.end());
+        if (std::adjacent_find(exports_.begin(),exports_.end())!=exports_.end())
+            Fail("duplicate native actor authored export");
+        const auto members=std::count_if(births_.begin(),births_.end(),[](const auto& birth) {
+            return birth.worldActorIndex!=std::numeric_limits<std::uint32_t>::max();
+        });
+        if (static_cast<std::size_t>(members)!=birthSlots_)
+            Fail("birth manifest membership is absent from native actor slots");
+    }
+private:
+    const std::vector<SavedNativeActorBirthIdentity>& births_;
+    std::vector<std::uint32_t> exports_;
+    std::size_t birthSlots_{};
+};
 struct SavedObjectIdentity { std::string_view path, classPath; };
 template<typename Object,typename Path,typename Class>
 inline bool BirthOverlay(const std::string_view path,const std::string_view cls,
@@ -379,8 +459,9 @@ public:
         });
         const bool withDecals=state.nativeDecals.has_value();
         const bool withLevelClock=state.nativeLevelClock.has_value();
+        const bool withNativeActorOrder=state.nativeActorOrder.has_value();
         const bool withIntArrays=HasIntArrays(state,limits_);
-        const auto version=withLevelClock ? LevelClockVersion : withDecals || withIntArrays ? DecalStateVersion : withControl ? StateControlVersion : withSleep ? SleepStateVersion : withRandom ? RandomStateVersion : withAi ? AiManagerVersion : withBirths ? BirthManifestVersion : withLifecycle ? ActorLifecycleVersion : withDefaults ? ClassDefaultsVersion : withFrames ? StateFrameVersion : Magic[6u];
+        const auto version=withNativeActorOrder ? NativeActorOrderVersion : withLevelClock ? LevelClockVersion : withDecals || withIntArrays ? DecalStateVersion : withControl ? StateControlVersion : withSleep ? SleepStateVersion : withRandom ? RandomStateVersion : withAi ? AiManagerVersion : withBirths ? BirthManifestVersion : withLifecycle ? ActorLifecycleVersion : withDefaults ? ClassDefaultsVersion : withFrames ? StateFrameVersion : Magic[6u];
         version_=version;
         for (std::size_t i=0; i<Magic.size(); ++i) Byte(i==6u ? version : Magic[i]);
         String(state.mapName,true,false,128u);
@@ -428,22 +509,30 @@ public:
                 String(defaults.classPath,true); Properties(defaults.properties,true);
             }
         }
+        std::vector<SavedNativeActorBirthIdentity> birthIdentities;
         if (version>=BirthManifestVersion) {
             budget_.Array(state.births.size(),sizeof(ScriptSavedBirth)+sizeof(void*));
-            budget_.Array(state.births.size(),sizeof(std::uint32_t));
-            std::vector<std::uint32_t> indices; indices.reserve(state.births.size());
+            std::vector<std::uint32_t> indices;
+            if (version>=NativeActorOrderVersion) {
+                budget_.Array(state.births.size(),sizeof(SavedNativeActorBirthIdentity));
+                birthIdentities.reserve(state.births.size());
+            } else {
+                budget_.Array(state.births.size(),sizeof(std::uint32_t));
+                indices.reserve(state.births.size());
+            }
             Count(state.births.size());
             for (const auto& birth : state.births) {
                 Text(birth.path,limits_,true); Text(birth.classPath,limits_,true); BirthPath(birth.path,state.mapName);
-                indices.push_back(birth.worldActorIndex);
+                if (version<NativeActorOrderVersion) indices.push_back(birth.worldActorIndex);
             }
-            BirthIndices(indices);
+            if (version<NativeActorOrderVersion) BirthIndices(indices);
             const auto births=Sorted(state.births,[](const auto& birth) -> const std::string& { return birth.path; });
             auto identities=state.objects.size()+state.classDefaults.size();
             for (std::size_t i=0u; i<births.size(); ++i) {
                 const auto& birth=*births[i];
                 if (i!=0u && Compare(births[i-1u]->path,birth.path)==0)
                     Fail("duplicate or case-colliding birth identity");
+                if (version>=NativeActorOrderVersion) birthIdentities.push_back({birth.path,birth.worldActorIndex});
                 BirthClassAlias(birth.path,classes,[](const auto* cls) -> const std::string& { return cls->classPath; });
                 if (!BirthOverlay(birth.path,birth.classPath,objects,
                     [](const auto* object) -> const std::string& { return object->path; },
@@ -471,7 +560,8 @@ public:
             Byte(withDecals ? 1u : 0u);
             if (withDecals) NativeDecals(*state.nativeDecals,state.mapName);
         }
-        if (version>=LevelClockVersion) {
+        if (version>=NativeActorOrderVersion) Byte(withLevelClock ? 1u : 0u);
+        if (withLevelClock) {
             // Mandatory in codec11. No absent-marker variant can accidentally
             // label a legacy state as a native-clock checkpoint.
             const auto& clock=*state.nativeLevelClock;
@@ -482,6 +572,7 @@ public:
             String(clock.levelPath,true);
             std::uint64_t bits{};std::memcpy(&bits,&clock.timeSeconds,8u);U64(bits);
         }
+        if (withNativeActorOrder) NativeActorOrder(*state.nativeActorOrder,state.mapName,birthIdentities);
     }
 private:
     std::uint8_t version_{Magic[6u]};
@@ -504,6 +595,25 @@ private:
     void String(const std::string& value,bool identity,bool empty=false,std::size_t cap=0) {
         Text(value,limits_,identity,empty,cap); budget_.Retain(value.size()+1u);
         Count(value.size()); for (const unsigned char c : value) Byte(c);
+    }
+    void NativeActorOrder(const ScriptSavedNativeActorOrder& saved,const std::string& map,
+        const std::vector<SavedNativeActorBirthIdentity>& births) {
+        NativeActorOrderBounds(saved.firstDynamic,saved.slots.size(),limits_);
+        budget_.Retain(sizeof(ScriptSavedNativeActorOrder));
+        String(saved.levelPath,true); LevelClockIdentity(saved.levelPath,map);
+        Byte(saved.firstDynamic ? 1u : 0u);
+        if (saved.firstDynamic) U32(*saved.firstDynamic);
+        Count(saved.slots.size());
+        budget_.Array(saved.slots.size(),sizeof(ScriptSavedNativeActorSlot)+sizeof(std::uint32_t));
+        NativeActorOrderValidation validate(births,saved.slots.size());
+        for (std::size_t i=0u;i<saved.slots.size();++i) {
+            const auto& slot=saved.slots[i];
+            validate.Slot(slot.kind,slot.authoredExport,slot.birthPath,static_cast<std::uint32_t>(i));
+            Byte(static_cast<std::uint8_t>(slot.kind));
+            if (slot.kind==ScriptSavedNativeActorSlotKind::AuthoredExport) U32(slot.authoredExport);
+            else if (slot.kind==ScriptSavedNativeActorSlotKind::Birth) String(slot.birthPath,true);
+        }
+        validate.Finish();
     }
     void NativeDecals(const ScriptSavedNativeDecals& saved,const std::string& map) {
         if (Compare(saved.mapName,map)!=0) Fail("native decal graph map differs from saved map");
@@ -786,7 +896,7 @@ public:
                 if (version!=Magic[i] && version!=StateFrameVersion && version!=ClassDefaultsVersion &&
                     version!=ActorLifecycleVersion && version!=BirthManifestVersion && version!=AiManagerVersion &&
                     version!=RandomStateVersion && version!=SleepStateVersion && version!=StateControlVersion &&
-                    version!=DecalStateVersion && version!=LevelClockVersion)
+                    version!=DecalStateVersion && version!=LevelClockVersion && version!=NativeActorOrderVersion)
                     Fail("bad magic or unsupported codec version");
             } else if (byte!=Magic[i]) Fail("bad magic or unsupported codec version");
         }
@@ -798,6 +908,7 @@ public:
         if constexpr(Materialize) state.objects.reserve(count);
         std::vector<SavedObjectIdentity> objectIdentities;
         std::vector<std::string_view> classIdentities;
+        std::vector<SavedNativeActorBirthIdentity> birthIdentities;
         if (version>=BirthManifestVersion) {
             budget_.Array(count,sizeof(SavedObjectIdentity)); objectIdentities.reserve(count);
         }
@@ -858,13 +969,19 @@ public:
             if ((version==BirthManifestVersion && births==0u) || births>limits_.maxObjects || births>Remaining()/18u)
                 Fail("birth count is empty or exceeds budget/payload");
             budget_.Array(births,sizeof(ScriptSavedBirth)+sizeof(void*));
-            budget_.Array(births,sizeof(std::uint32_t));
-            std::vector<std::uint32_t> indices; indices.reserve(births);
+            std::vector<std::uint32_t> indices;
+            if (version>=NativeActorOrderVersion) {
+                budget_.Array(births,sizeof(SavedNativeActorBirthIdentity)); birthIdentities.reserve(births);
+            } else {
+                budget_.Array(births,sizeof(std::uint32_t)); indices.reserve(births);
+            }
             if constexpr(Materialize) state.births.reserve(births);
             previous={}; std::size_t identities=static_cast<std::size_t>(count)+classes;
             for (std::uint32_t i=0u; i<births; ++i) {
                 ScriptSavedBirth birth; const auto path=String(true),cls=String(true); BirthPath(path,map);
-                const auto worldActorIndex=U32(); indices.push_back(worldActorIndex);
+                const auto worldActorIndex=U32();
+                if (version>=NativeActorOrderVersion) birthIdentities.push_back({path,worldActorIndex});
+                else indices.push_back(worldActorIndex);
                 if (i!=0u && Compare(previous,path)>=0) Fail("birth identities are not canonical and unique");
                 previous=path;
                 BirthClassAlias(path,classIdentities,[](const auto value) { return value; });
@@ -876,7 +993,7 @@ public:
                 Properties(birth.frozenDefaults,true,true);
                 if constexpr(Materialize) state.births.push_back(std::move(birth));
             }
-            BirthIndices(indices);
+            if (version<NativeActorOrderVersion) BirthIndices(indices);
         }
         if (version>=AiManagerVersion) {
             const auto managers=U32(); budget_.AiManagers(managers);
@@ -912,13 +1029,18 @@ public:
         }
         if (version==DecalStateVersion && !hasDecals && !hasIntArrays_)
             Fail("native-decal codec has neither graph nor dynamic integer array");
-        if (version>=LevelClockVersion) {
+        const bool withLevelClock=version>=NativeActorOrderVersion ? Boolean() : version>=LevelClockVersion;
+        if (withLevelClock) {
             budget_.Retain(sizeof(ScriptSavedLevelClock));
             const auto level=String(true);
             LevelClockIdentity(level,map);
             const auto bits=U64();double time{};std::memcpy(&time,&bits,8u);
             LevelClockTime(time);
             if constexpr(Materialize) state.nativeLevelClock=ScriptSavedLevelClock{std::string(level),time};
+        }
+        if (version>=NativeActorOrderVersion) {
+            auto order=NativeActorOrder(map,birthIdentities);
+            if constexpr(Materialize) state.nativeActorOrder=std::move(order);
         }
         if (Remaining()!=0u) Fail("trailing encoded-state bytes");
         return state;
@@ -944,6 +1066,32 @@ private:
         const std::string_view value(reinterpret_cast<const char*>(bytes_.data()+cursor_),size);
         Text(value,limits_,identity,empty,cap); budget_.Retain(static_cast<std::size_t>(size)+1u);
         cursor_+=size; return value;
+    }
+    ScriptSavedNativeActorOrder NativeActorOrder(const std::string_view map,
+        const std::vector<SavedNativeActorBirthIdentity>& births) {
+        ScriptSavedNativeActorOrder saved;
+        budget_.Retain(sizeof(ScriptSavedNativeActorOrder));
+        const auto level=String(true); LevelClockIdentity(level,map);
+        if (Boolean()) saved.firstDynamic=U32();
+        const auto count=U32(); NativeActorOrderBounds(saved.firstDynamic,count,limits_);
+        if (count>Remaining()) Fail("native actor slot count exceeds encoded payload");
+        budget_.Array(count,sizeof(ScriptSavedNativeActorSlot)+sizeof(std::uint32_t));
+        NativeActorOrderValidation validate(births,count);
+        if constexpr(Materialize) { saved.levelPath=level; saved.slots.reserve(count); }
+        for (std::uint32_t i=0u;i<count;++i) {
+            ScriptSavedNativeActorSlot slot;
+            slot.kind=static_cast<ScriptSavedNativeActorSlotKind>(Byte());
+            std::string_view birthPath;
+            if (slot.kind==ScriptSavedNativeActorSlotKind::AuthoredExport) slot.authoredExport=U32();
+            else if (slot.kind==ScriptSavedNativeActorSlotKind::Birth) birthPath=String(true);
+            validate.Slot(slot.kind,slot.authoredExport,birthPath,i);
+            if constexpr(Materialize) {
+                if (slot.kind==ScriptSavedNativeActorSlotKind::Birth) slot.birthPath=birthPath;
+                saved.slots.push_back(std::move(slot));
+            }
+        }
+        validate.Finish();
+        return saved;
     }
     ScriptSavedNativeDecals NativeDecals(const std::string_view map) {
         ScriptSavedNativeDecals saved;

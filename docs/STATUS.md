@@ -1,5 +1,33 @@
 # Port status
 
+## First Training native Actor ordering and cold restoration (2026-10-22)
+
+Only the entire first `00_Training.dx` is the current actual-map target.
+Other-map crate/physics integrations and map test sweeps remain deferred.
+The original LoadMap stable static/dynamic native-slot partition now runs in
+the caller's bounded root, with exact split, full rollback and unchanged
+UObject/export/hash identities. Codec12/runtime17 retain ordered null,
+authored and birth slots; legacy saves restore immutable source membership.
+Same-root partition then real crate deletion fixes the sparse/full undo
+composition bug. Cold door and selected-crowbar restoration no longer consult
+the old world's removed flags or inventory overlays.
+
+Actual first-Training ordering/save tests pass211113 checks/28 refusals,
+including moved crate deletion and warm/cold door/crowbar checks. Both exact
+startup attempts complete1335 PPP visits and the exact1364-to1334 partition,
+split1183, then explicitly refuse original player/client/detail setup. Full
+rollback and all40 originals pass; this is NOT successful startup. Generated
+coordinator1166/69369 and codec8824/7176 pass. Desktop, strict ARM64 and
+Android native builds pass; shared CTest164 executed/194 registered passes
+with30 explicit owned-data skips, zero failures. Expanded generated runtime
+coverage passes10217/169, including real static/live/removed-birth cold/warm
+native ordering and allocator continuation. Actual first-map linker38456/160,
+deferred429/21, movement122706/21 and isolated crate347/two pass separately.
+The final shared CTest includes that addition and passes in49.98s.
+Live crate weapon damage, surviving usable loot/gravity and a new playable
+APK remain unfinished. See TRAINING-WORLD-ACTOR-ORDER.md and the static next
+step in ORIGINAL-POST-PARTITION-CLIENT-SETUP.md.
+
 ## First Training lossless startup storage (2026-10-21)
 
 Sparse linker-header undo and on-demand bounded conversation-index journal
