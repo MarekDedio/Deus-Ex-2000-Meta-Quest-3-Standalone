@@ -5,6 +5,7 @@
 #include <cmath>
 #include <cstring>
 #include <limits>
+#include <optional>
 #include <set>
 #include <string_view>
 #include <utility>
@@ -47,6 +48,11 @@ struct AuthoredStructResolvers {
     // Optional conversion from bounded original code-page bytes. If absent,
     // preserve them verbatim; this codec does not guess UTF-8 or a code page.
     std::function<std::string(std::string_view)> decodeString;
+    // Alternative loader-aware object resolver. A successful nullopt is an
+    // authoritative CreateExport None, not a missing/wrong-type reference;
+    // those still throw. Engaged empty strings remain malformed. Never bind
+    // this together with the historical non-null string resolver above.
+    std::function<std::optional<std::string>(std::int32_t,const AuthoredStructField&)> resolveObjectOrNone;
 };
 
 namespace AuthoredStructDetail {
@@ -172,6 +178,7 @@ public:
            const AuthoredStructResolvers& resolvers,const AuthoredStructLimits& limits)
         : data_(data),size_(size),version_(version),resolvers_(resolvers),limits_(limits) {
         if (size>limits.inputBytes || (size!=0u && data==nullptr)) Fail("invalid input or input budget exceeded");
+        if(resolvers.resolveObject && resolvers.resolveObjectOrNone) Fail("ambiguous object resolvers");
     }
     Vm::Value Read(const AuthoredStructSchema& schema) {
         auto result=ReadStruct(schema);
@@ -268,8 +275,13 @@ private:
         case Vm::Kind::Object: {
             const auto index=Index();
             if (index!=0) {
-                if (!resolvers_.resolveObject) Fail("missing object resolver");
-                result.text=CheckedText(resolvers_.resolveObject(index,field),true);
+                if(resolvers_.resolveObjectOrNone) {
+                    const auto path=resolvers_.resolveObjectOrNone(index,field);
+                    if(path)result.text=CheckedText(*path,true);
+                } else {
+                    if (!resolvers_.resolveObject) Fail("missing object resolver");
+                    result.text=CheckedText(resolvers_.resolveObject(index,field),true);
+                }
             }
             break;
         }

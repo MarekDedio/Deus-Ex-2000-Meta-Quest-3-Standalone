@@ -55,7 +55,7 @@
         const auto& exports=persistentRuntime->get()->exports;
         if(persistentScriptExportCount>exports.size())throw std::runtime_error("Native Actor journal lacks its map export suffix");
         for(std::size_t i=persistentScriptExportCount;i<exports.size();++i) {
-            LifecycleStep();if(exports[i]->nativeXLevel==level)++actors;
+            LifecycleStep();if(exports[i]&&exports[i]->nativeXLevel==level)++actors;
         }
         if(actors>QuestVr::WorldActorOrderDetail::MaximumSlots)
             throw std::runtime_error("Native Actor reverse-index journal exceeds policy");
@@ -67,7 +67,7 @@
         for(auto* actor:persistentWorldActors){LifecycleStep();before.slots.push_back(actor);}
         for(std::size_t i=persistentScriptExportCount;i<exports.size();++i) {
             LifecycleStep();auto* actor=exports[i];
-            if(actor->nativeXLevel==level)before.indices.emplace_back(actor,actor->worldActorIndex);
+            if(actor&&actor->nativeXLevel==level)before.indices.emplace_back(actor,actor->worldActorIndex);
         }
         beforeActorOrder_.emplace(std::move(before));
     }

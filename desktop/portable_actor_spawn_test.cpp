@@ -5,6 +5,7 @@
 #include "quest_script_state.h"
 #include "quest_decal_primary_quad.h"
 #include "quest_script_random.h"
+#include "quest_load_context_save.h"
 
 #include <algorithm>
 #include <chrono>
@@ -366,9 +367,14 @@ struct Tables { PortablePackageTables core, engine, classes, map; std::size_t in
 // native function flags; 4 malformed return flags; 5 malformed optional flags;
 // 6 malformed signed Bitmap.USize declaration. World models5/6 are a real
 // finite floor; model6 also binds its surface to an authored Mover.
-Tables Build(Fixture& fixture, unsigned worldModel = 0u, unsigned decalSchema = 0u, unsigned loginVariant = 0u) {
+Tables Build(Fixture& fixture, unsigned worldModel = 0u, unsigned decalSchema = 0u, unsigned loginVariant = 0u,
+    bool contextVariant = false) {
     const bool decalFloor = worldModel == 5u || worldModel == 6u;
     const bool decalMover = worldModel == 6u;
+    const auto contextFlags=[&](Package& package) {
+        if(contextVariant) for(auto& entry:package.exports)
+            entry.ObjFlags=static_cast<ObjectFlags>(static_cast<std::uint32_t>(entry.ObjFlags)|0x00070000u);
+    };
     Package core; core.stem = "Core"; const auto corePackage = core.ImportPackage("Core"), object = core.Export("Object"), metaclass = core.Export("Class", 0, object);
     const auto vector = core.Export("Vector", core.Import("Struct", corePackage), 0, object), rotator = core.Export("Rotator", core.Import("Struct", corePackage), 0, object);
     for (const auto& name : {"X", "Y", "Z"}) core.Property(name, "FloatProperty", vector, corePackage);
@@ -379,8 +385,13 @@ Tables Build(Fixture& fixture, unsigned worldModel = 0u, unsigned decalSchema = 
     const auto recordTarget = core.Property("Target", "ObjectProperty", record, corePackage, 1u, coreActor);
     core.Property("Class", "ClassProperty", object, corePackage, 1u, metaclass, 0u, object);
     core.Property("Name", "NameProperty", object, corePackage); core.Property("Outer", "ObjectProperty", object, corePackage, 1u, object);
-    core.Property("ObjectFlags", "IntProperty", object, corePackage);
-    core.ClassBody(object); core.ClassBody(metaclass); core.StructBody(vector); core.StructBody(rotator); core.StructBody(record); const auto coreTable = fixture.Write(core);
+    core.Property("ObjectFlags", "IntProperty", object, corePackage,1u,0,contextVariant?0x1002u:0u);
+    core.ClassBody(object); core.ClassBody(metaclass); core.StructBody(vector); core.StructBody(rotator); core.StructBody(record);
+    const auto coreExcluded=contextVariant ? core.Export("ContextSourceOnly",object) : 0;
+    if(contextVariant)core.ActorBody(coreExcluded,{});
+    contextFlags(core);
+    if(contextVariant)core.exports.at(static_cast<std::size_t>(coreExcluded-1)).ObjFlags=static_cast<ObjectFlags>(0x00340000u);
+    const auto coreTable = fixture.Write(core);
 
     Package engine; engine.stem = "Engine"; const auto engineCore = engine.ImportPackage("Core"), importedObject = engine.Import("Object", engineCore), importedClass = engine.Import("Class", engineCore);
     const auto importedVector = engine.Import("Vector", importedObject, "Struct"), importedRotator = engine.Import("Rotator", importedObject, "Struct");
@@ -388,6 +399,7 @@ Tables Build(Fixture& fixture, unsigned worldModel = 0u, unsigned decalSchema = 
     const auto level = engine.Export("Level", 0, importedObject), model = engine.Export("Model", 0, importedObject), brush = engine.Export("Brush", 0, actor), pawn = engine.Export("Pawn", 0, actor);
     const auto player = engine.Export("Player", 0, importedObject), viewport = engine.Export("Viewport", 0, player);
     const auto playerPawn = engine.Export("PlayerPawn", 0, pawn);
+    const auto contextCamera=contextVariant ? engine.Export("Camera",0,playerPawn) : 0;
     const auto decoration = engine.Export("Decoration", 0, actor);
     const auto gameInfo = engine.Export("GameInfo", 0, actor);
     const auto bitmap = decalSchema ? engine.Export("Bitmap", 0, importedObject) : 0;
@@ -583,6 +595,10 @@ Tables Build(Fixture& fixture, unsigned worldModel = 0u, unsigned decalSchema = 
         engine.ClassBody(bitmap); engine.ClassBody(texture); engine.ClassBody(mover);
         Bytes defaults; engine.IntTag(defaults, "MultiDecalLevel", 4); engine.ClassBody(decal, defaults);
     }
+    const auto engineExcluded=contextVariant ? engine.Export("ContextSourceOnly",importedObject) : 0;
+    if(contextVariant) {engine.ClassBody(contextCamera);engine.ActorBody(engineExcluded,{});}
+    contextFlags(engine);
+    if(contextVariant)engine.exports.at(static_cast<std::size_t>(engineExcluded-1)).ObjFlags=static_cast<ObjectFlags>(0x00340000u);
     const auto engineTable = fixture.Write(engine);
 
     Package classes; classes.stem = "SpawnClasses"; const auto classesCore = classes.ImportPackage("Core"), classesEngine = classes.ImportPackage("Engine");
@@ -1125,6 +1141,18 @@ Tables Build(Fixture& fixture, unsigned worldModel = 0u, unsigned decalSchema = 
         Bytes ownerDefaults; classes.IntTag(ownerDefaults, "CallbackMode", 1);
         classes.ClassBody(decalOwnerClass, std::move(ownerDefaults)); classes.ClassBody(decalProbeClass);
     }
+    if(contextVariant) {
+        for(const auto& [name,type]:std::vector<std::pair<std::string,std::string>>{
+            {"ContextValidImportedObject","Object"},{"ContextWrongImportedObject","Actor"}}) {
+            const auto target=classes.Import("ContextSourceOnly",classesCore,type);
+            const auto function=classes.Function(name,probe,classesCore,Return(Ref(0x20u,target)));
+            classes.Property("ReturnValue","ObjectProperty",function,classesCore,1u,classesObject,0x580u);
+        }
+    }
+    const auto classesExcluded=contextVariant ? classes.Export("ContextSourceOnly",classesObject) : 0;
+    if(contextVariant)classes.ActorBody(classesExcluded,{});
+    contextFlags(classes);
+    if(contextVariant)classes.exports.at(static_cast<std::size_t>(classesExcluded-1)).ObjFlags=static_cast<ObjectFlags>(0x00340000u);
     const auto classesTable = fixture.Write(classes);
     Require(GetPortableObjectPath(coreTable, recordCount) == "Object.Record.Count" && GetPortableObjectPath(coreTable, recordTarget) == "Object.Record.Target", "Generated frozen-struct metadata identity is wrong");
 
@@ -1137,6 +1165,10 @@ Tables Build(Fixture& fixture, unsigned worldModel = 0u, unsigned decalSchema = 
     const auto collision = map.Export("Leaf0", map.Import("Probe", mapClasses)); // Deliberate authored birth-name collision.
     const auto playerObject = map.Export("BindingPlayer", map.Import("Player", mapEngine));
     const auto viewportObject = map.Export("BindingViewport", map.Import("Viewport", mapEngine));
+    const auto contextActor=contextVariant ? map.Export("OrdinaryLookingOne",map.Import("Actor",mapEngine)) : 0;
+    const auto contextBrush=contextVariant ? map.Export("OrdinaryLookingTwo",map.Import("Brush",mapEngine)) : 0;
+    const auto contextView=contextVariant ? map.Export("OrdinaryLookingThree",map.Import("Camera",mapEngine)) : 0;
+    const auto contextPawn=contextVariant ? map.Export("AdmittedPlayer",map.Import("PlayerPawn",mapEngine)) : 0;
     const auto decalActor = decalSchema ? map.Export("Decal0", map.Import(decalMover ? "DecalProbe" : "Decal", decalMover ? mapClasses : mapEngine)) : 0;
     const auto surfaceMoverActor = decalMover ? map.Export("SurfaceMover", map.Import("Mover", mapEngine)) : 0;
     std::int32_t replacementTexture{};
@@ -1182,8 +1214,13 @@ Tables Build(Fixture& fixture, unsigned worldModel = 0u, unsigned decalSchema = 
             map.VectorTag(properties, "Location", worldModel ? std::array<float,3>{0.0f,0.0f,40.0f} : std::array<float,3>{12.0f,-25.0f,40.0f});
             map.RotatorTag(properties, "Rotation", {128, 16384, -512}); map.BoolTag(properties, "bTicked", true); map.ObjectTag(properties, "Instigator", instigator);
             if (worldModel) {
-                map.ObjectTag(properties, "Link", owner); map.ObjectTag(properties, "NestedActor", instigator);
+                map.ObjectTag(properties, "Link", contextVariant ? contextActor : owner);
+                map.ObjectTag(properties, "NestedActor", contextVariant ? contextPawn : instigator);
                 for (std::uint8_t slot=0u;slot<4u;++slot) { Bytes value; Index(value,owner); map.Tag(properties,"Touching",5u,value,slot); }
+            }
+            if(contextVariant) {
+                Bytes recordValue;U32(recordValue,29u);Index(recordValue,contextBrush);
+                map.Tag(properties,"Payload",10u,recordValue,0u,"Record");
             }
         }
         if (worldModel && (reference==instigator || reference==collision)) map.NameTag(properties,"Tag","WorldTarget");
@@ -1194,11 +1231,16 @@ Tables Build(Fixture& fixture, unsigned worldModel = 0u, unsigned decalSchema = 
         if (worldModel==4u && reference==instigator) map.BoolTag(properties,"bCollideWorld",true);
         map.ActorBody(reference, std::move(properties));
     }
-    const auto levelSlotCount = (decalSchema ? 8u : 7u) + (decalMover ? 1u : 0u);
+    if(contextVariant) for(const auto reference:{contextActor,contextBrush,contextView,contextPawn}) {
+        Bytes properties;map.ObjectTag(properties,"Level",levelActor);map.ObjectTag(properties,"XLevel",world);
+        map.ActorBody(reference,std::move(properties));
+    }
+    const auto levelSlotCount = (decalSchema ? 8u : 7u) + (decalMover ? 1u : 0u) + (contextVariant ? 5u : 0u);
     Bytes levelBody; Index(levelBody, 0); U32(levelBody, levelSlotCount); U32(levelBody, levelSlotCount);
     for (const auto reference : {levelActor, driver, 0, owner, instigator, collision, 0}) Index(levelBody, reference);
     if (decalSchema) Index(levelBody, decalActor);
     if (decalMover) Index(levelBody, surfaceMoverActor);
+    if(contextVariant)for(const auto reference:{contextActor,contextPawn,0,contextBrush,contextView})Index(levelBody,reference);
     for (unsigned i = 0u; i < 4u; ++i) Index(levelBody, 0);
     Index(levelBody, 0); U32(levelBody, 7777u); U32(levelBody, 0u); Index(levelBody, mapModel); Index(levelBody, 0);
     U32(levelBody,0u); Index(levelBody,0); // Original serialized Float time and preliminary +100.
@@ -1253,6 +1295,9 @@ Tables Build(Fixture& fixture, unsigned worldModel = 0u, unsigned decalSchema = 
     Index(modelBody,0); // Lights.
     }
     U32(modelBody, 1u); U32(modelBody, 0u); map.Body(mapModel, std::move(modelBody));
+    contextFlags(map);
+    if(contextVariant)for(const auto reference:{contextActor,contextBrush,contextView})
+        map.exports.at(static_cast<std::size_t>(reference-1)).ObjFlags=static_cast<ObjectFlags>(0x00340000u);
     const auto mapTable = fixture.Write(map, true); const auto decodedModel = LoadPortableModel68(mapTable, static_cast<std::size_t>(mapModel - 1));
     Require(decodedModel.nodes.size()==(decalFloor ? 1u : nodes ? 2u : 0u) && decodedModel.zones.size()==zoneCount &&
         (nodes || decodedModel.zones[0].actorReference==levelActor), "Genuine generated map model is not decoded correctly");
@@ -1263,9 +1308,11 @@ Tables Build(Fixture& fixture, unsigned worldModel = 0u, unsigned decalSchema = 
     auto expectedOrder = std::vector<std::int32_t>{levelActor, driver, 0, owner, instigator, collision, 0};
     if (decalSchema) expectedOrder.push_back(decalActor);
     if (decalMover) expectedOrder.push_back(surfaceMoverActor);
+    if(contextVariant)for(const auto reference:{contextActor,contextPawn,0,contextBrush,contextView})expectedOrder.push_back(reference);
     Require(ReadPortableLevel68ActorOrder(mapTable) == expectedOrder, "Genuine Level actor ordering/holes were lost");
     Require(FindPortableRootModel68Export(mapTable) == static_cast<std::size_t>(mapModel - 1), "Genuine Level root model selection was lost");
-    return {coreTable, engineTable, classesTable, mapTable, (decalSchema ? 6u : 5u) + (decalMover ? 1u : 0u)};
+    return {coreTable, engineTable, classesTable, mapTable, (decalSchema ? 6u : 5u) + (decalMover ? 1u : 0u) +
+        (contextVariant ? 4u : 0u)};
 }
 
 void ArgumentTests(Fixture& fixture) {
@@ -2539,6 +2586,218 @@ void PlayerLoginSynthetic() {
     }
     std::cout<<"Generated actual startup Login: prepared native Viewport, exact PlayerPawn declaration/secondary constraint, ordered CLASS/user/INI selection, real Game event/None, growing owned OUT copyback and late same-root rollback; NOT player completion or playable startup\n";
 }
+void LoadContextSynthetic() {
+    // Actual generated runtime/cache/save integration, not another real map.
+    // These fixtures do not prepare the independent native weak-hash service;
+    // ownership/VM lookup and live native Actor slots must still exclude None.
+    using Profile=QuestVr::OriginalLinkerLoadProfile;
+    const Profile game{false,true,true},clientOnly{false,true,false},editor{true,false,false};
+    Fixture fixture;const auto tables=Build(fixture,2u,0u,0u,true);
+    const std::vector<PortablePackageTables> packages{tables.core,tables.engine,tables.classes};
+    const auto sourceOrder=ReadPortableLevel68ActorOrder(tables.map);
+    Require(sourceOrder.size()==12u,"Explicit-context fixture lost its source slots/interleaved holes");
+    const std::vector<std::string> excluded{"Core.ContextSourceOnly","Engine.ContextSourceOnly",
+        "SpawnClasses.ContextSourceOnly",Path("OrdinaryLookingOne"),Path("OrdinaryLookingTwo"),Path("OrdinaryLookingThree")};
+    const auto boot=[&](const std::optional<Profile>& profile) {
+        const auto initialized=InitializePortableRuntime(packages,1u,profile);
+        Require(initialized.passed && ReadPortableRuntimeLoadProfile()==profile,
+            "Runtime did not retain its explicit profile/raw inspection distinction");
+        const auto loaded=LoadPortableRuntimeMap(tables.map);
+        Require(loaded.passed,"Context-profile generated map did not load");
+        const auto absent=profile&&!profile->editor;
+        Require(initialized.contextExcludedExports==(absent?3u:0u) && loaded.contextExcludedExports==(absent?3u:0u),
+            "Initial-script/map context exclusions lost source-aligned cache accounting");
+        Require(ReadPortableLevel68ActorOrder(tables.map)==sourceOrder,
+            "Runtime context admission rewrote raw source Level references");
+        GC::Collect();return GC::GetStats();
+    };
+    const auto verify=[&](bool filtered) {
+        const auto actual=ReadPortableWorldActorOrder();
+        Require(actual.available && actual.actorIndices.size()==sourceOrder.size() && !actual.firstDynamic,
+            "Context loading compacted original slots or invented a native static/dynamic split");
+        std::vector<std::string> expected;
+        for(std::size_t slot=0u;slot<sourceOrder.size();++slot) {
+            const auto ref=sourceOrder[slot];
+            if(!ref) {Require(actual.actorIndices[slot]==0u,"Serialized None became a runtime Actor");continue;}
+            const auto path=Path(GetPortableObjectPath(tables.map,ref));
+            const auto rejected=filtered && (tables.map.exports.at(static_cast<std::size_t>(ref-1)).ObjFlags&
+                static_cast<ObjectFlags>(0x00030000u))==static_cast<ObjectFlags>(0u);
+            if(rejected) {
+                Require(actual.actorIndices[slot]==0u && actual.staticFlags[slot]==0u,
+                    "Excluded source export received a native Actor slot/static flag");continue;
+            }
+            expected.push_back(path);const auto ownership=ReadPortableRuntimeObjectOwnership(path);
+            const auto linker=ReadPortableRuntimeObjectLinker(path);
+            Require(actual.actorIndices[slot]==ownership.objectIndex && linker.attached &&
+                linker.nativeIndex==ref-1 && linker.sourceExportIndex==static_cast<std::size_t>(ref-1),
+                "Source-aligned cache hole shifted a later admitted Actor/export index");
+        }
+        // Public render snapshots use retained export order; native Level
+        // slots above deliberately interleave the admitted Pawn and exclusions
+        // in a different order. Compare membership here, not those two orders.
+        auto actualPaths=ActorPaths(true);std::sort(actualPaths.begin(),actualPaths.end());
+        std::sort(expected.begin(),expected.end());
+        Require(actualPaths==expected && expected.size()==tables.initialActors-(filtered?3u:0u),
+            "Context loading leaked editor-only Actors into public runtime enumeration");
+        for(const auto& path:excluded) {
+            bool ownershipMissing{},linkerMissing{};
+            try {static_cast<void>(ReadPortableRuntimeObjectOwnership(path));}
+            catch(const std::exception&) {ownershipMissing=true;}
+            try {static_cast<void>(ReadPortableRuntimeObjectLinker(path));}
+            catch(const std::exception&) {linkerMissing=true;}
+            Require(ownershipMissing==filtered && linkerMissing==filtered,
+                "Excluded reflection metadata masqueraded as an actual indexed UObject/linker cache entry");
+        }
+        const auto direct=Read("Driver","Link");
+        const auto nested=Read("Driver","Payload");
+        Same(direct,Object(filtered?"":"OrdinaryLookingOne").value,"Direct excluded source Object reference did not resolve to actual None");
+        Require(nested.kind==Kind::Struct && nested.fields.at("count").integer==29,
+            "Nested reference filtering erased nonreference Struct payload");
+        Same(nested.fields.at("target"),Object(filtered?"":"OrdinaryLookingTwo").value,
+            "Nested Struct Object reference bypassed loader context None resolution");
+        Same(Read("Driver","NestedActor"),Object("AdmittedPlayer").value,
+            "Context loader removed an admitted PlayerPawn by type/name");
+        Same(Call("Driver","ContextValidImportedObject").value,Object(filtered?"":"Core.ContextSourceOnly").value,
+            "Valid typed import of an excluded same-package-class Object did not resolve to None");
+        if(filtered)RefusedCall(fixture,"ContextWrongImportedObject");
+        Require(ReadPortableRuntimeObjectOwnership(Path("AdmittedPlayer")).classPath=="Engine.PlayerPawn" &&
+            ReadPortableRuntimeNativeModel().available,"Admitted PlayerPawn/native Model authority was lost");
+        const auto model=LoadPortableModel68(tables.map,FindPortableRootModel68Export(tables.map));
+        Require(model.nodes.size()==2u && model.zones.size()==2u,
+            "Context exclusion erased required independently decoded BSP source geometry");
+        fixture.UnchangedSources();
+    };
+    const auto rawGc=boot(std::nullopt);verify(false);
+    const auto raw=fixture.Snapshot("ContextRawPristine");
+    Require(raw.size()>4u && !(raw[0]=='D'&&raw[1]=='X'&&raw[2]=='L'&&raw[3]=='C'),
+        "Historical raw inspection save was silently wrapped");
+    const auto gameGc=boot(game);verify(true);
+    Require(rawGc.numObjects==gameGc.numObjects+6u,
+        "Context-excluded script/map exports were allocated/rooted behind hidden wrappers");
+    const auto pristine=fixture.Snapshot("ContextGamePristine");
+    Require(pristine.size()>20u && pristine[0]=='D'&&pristine[1]=='X'&&pristine[2]=='L'&&pristine[3]=='C',
+        "Explicit runtime profile checkpoint lacks its distinct DXLC envelope");
+    const auto unchanged=[&](const Bytes& before,const std::vector<std::string>& paths,
+        const PortableWorldActorOrderSnapshot& order,std::uint64_t revision,const GCStats& gc) {
+        Require(fixture.Snapshot("ContextUnchanged")==before && ActorPaths(true)==paths &&
+            ReadPortableWorldActorOrder()==order && GetPortableRuntimeWorldRevision()==revision,
+            "Rejected context checkpoint mutated save/slots/identities/revision");
+        GC::Collect();const auto after=GC::GetStats();
+        Require(after.numObjects==gc.numObjects && after.memoryUsage==gc.memoryUsage,
+            "Rejected context checkpoint changed native UObject/GC ownership");
+        fixture.UnchangedSources();
+    };
+    const auto reject=[&](const std::filesystem::path& path) {
+        const auto before=fixture.Snapshot("ContextBeforeRejected");const auto file=ReadBytes(path);
+        const auto paths=ActorPaths(true);const auto order=ReadPortableWorldActorOrder();
+        const auto revision=GetPortableRuntimeWorldRevision();GC::Collect();const auto gc=GC::GetStats();
+        Require(!ValidatePortableRuntimeState(path.string(),"SpawnFixture") && !LoadPortableRuntimeState(path.string()),
+            "Checkpoint admitted incompatible loader profile or context-excluded gameplay identity");
+        Require(ReadBytes(path)==file,"Rejected context checkpoint overwrote its original input file");
+        unchanged(before,paths,order,revision,gc);++refusals;
+    };
+    reject(fixture.directory/"ContextRawPristine.sav");
+    const auto prefixCheckpoint=[&](const unsigned section,const std::string& target) {
+        // Independent minimal valid legacy v3 inner payload, under a freshly
+        // checksummed SAME-profile envelope. Exclusion must reject its actual
+        // identity, not merely a bad CRC/profile or malformed script trailer.
+        Bytes inner;U32(inner,0x53515844u);U32(inner,3u);
+        const auto pathString=[&] {
+            U32(inner,static_cast<std::uint32_t>(target.size()));
+            inner.insert(inner.end(),target.begin(),target.end());
+        };
+        for(unsigned list=0u;list<3u;++list) {
+            U32(inner,list==section?1u:0u);if(list==section)pathString();
+        }
+        FloatBytes(inner,100.0f);U32(inner,section==3u?1u:0u);
+        if(section==3u){pathString();FloatBytes(inner,25.0f);}
+        U32(inner,0u);U32(inner,0u); // Credits/skill points.
+        for(unsigned list=0u;list<4u;++list)U32(inner,0u); // Flags/goals/notes/applied.
+        return QuestVr::EncodeLoadContextSave(game,inner);
+    };
+    for(unsigned section=0u;section<4u;++section) {
+        unsigned ordinal{};
+        for(const auto& target:excluded) {
+            const auto path=fixture.directory/("ContextExcludedPrefix"+std::to_string(section)+'-'+std::to_string(ordinal++)+".sav");
+            WriteBytes(path,prefixCheckpoint(section,target));reject(path);
+        }
+        const auto path=fixture.directory/("ContextExcludedFoldedPrefix"+std::to_string(section)+".sav");
+        WriteBytes(path,prefixCheckpoint(section,Fold(Path("OrdinaryLookingTwo"))));reject(path);
+    }
+    // Remove all map lookup/exclusion entries. These validate-only calls must
+    // now use the intended map's immutable source schema, without loading its
+    // UObjects or publishing a replacement world merely to inspect the save.
+    Require(UnloadPortableRuntimeMap()!=0u && ActorPaths(true).empty() &&
+        !ReadPortableWorldActorOrder().available && !ReadPortableRuntimeNativeModel().available,
+        "Cold context-prefix fixture retained a loaded map/actor registry");
+    const auto unloaded=fixture.Snapshot("ContextUnloaded");
+    const auto unloadedOrder=ReadPortableWorldActorOrder();const auto unloadedRevision=GetPortableRuntimeWorldRevision();
+    GC::Collect();const auto unloadedGc=GC::GetStats();
+    for(unsigned section=0u;section<4u;++section) {
+        const auto path=fixture.directory/("ContextExcludedFoldedPrefix"+std::to_string(section)+".sav");
+        const auto originalFile=ReadBytes(path);
+        Require(!ValidatePortableRuntimeState(path.string(),"SpawnFixture"),
+            "Cold checkpoint validation admitted an excluded intended-map gameplay prefix");
+        Require(ReadBytes(path)==originalFile,"Cold excluded-prefix validation rewrote its input file");
+        unchanged(unloaded,{},unloadedOrder,unloadedRevision,unloadedGc);++refusals;
+    }
+    Require(ValidatePortableRuntimeState((fixture.directory/"ContextGamePristine.sav").string(),"SpawnFixture"),
+        "Cold context-prefix validation rejected an otherwise valid same-profile checkpoint");
+    unchanged(unloaded,{},unloadedOrder,unloadedRevision,unloadedGc);
+    boot(game);verify(true);
+    Require(fixture.Snapshot("ContextRebootAfterColdPrefix")==pristine,
+        "Cold read-only validation changed subsequent pristine source reconstruction");
+    // Existing legacy campaign inventory may name an object from a previous
+    // map which is not loaded now. Do not replace source-proved exclusion with
+    // a blanket refusal of every currently absent lookup identity.
+    const auto previousMap=std::string("PreviousFixture.OldInventory");
+    const auto previousPath=fixture.directory/"ContextPreviousMapPrefix.sav";
+    WriteBytes(previousPath,prefixCheckpoint(0u,previousMap));
+    Require(ValidatePortableRuntimeState(previousPath.string(),"SpawnFixture") &&
+        LoadPortableRuntimeState(previousPath.string()) &&
+        GetPortableRuntimeInventoryItems()==std::vector<std::string>{previousMap},
+        "Context exclusion rejected tolerant legacy inventory from an unrelated prior map");
+    Require(LoadPortableRuntimeState((fixture.directory/"ContextGamePristine.sav").string()) &&
+        fixture.Snapshot("ContextAfterPreviousMapPrefix")==pristine,
+        "Legacy prior-map prefix control did not restore the original sparse checkpoint");
+    verify(true);
+    const auto changedPawn=ReadPortableRuntimeObjectOwnership(Path("AdmittedPlayer")).objectIndex;
+    Call("Driver","StoreReference",{Object("AdmittedPlayer")});
+    const auto birth=Spawn();const auto changedPaths=ActorPaths(true);
+    const auto changed=fixture.Snapshot("ContextGameChanged");
+    Require(changed!=pristine && Published(birth) && Read("Driver","Link").text==Path("AdmittedPlayer"),
+        "Explicit-profile changed checkpoint lacks genuine script/birth state");
+    Require(ValidatePortableRuntimeState((fixture.directory/"ContextGameChanged.sav").string(),"SpawnFixture"),
+        "Same-profile changed save refused read-only preflight");
+    Require(LoadPortableRuntimeState((fixture.directory/"ContextGamePristine.sav").string()),
+        "Same-profile pristine checkpoint refused warm restore");
+    verify(true);
+    Require(fixture.Snapshot("ContextGameWarmPristine")==pristine && !Published(birth),
+        "Warm pristine context restore retained births or shifted sparse export storage");
+    Require(LoadPortableRuntimeState((fixture.directory/"ContextGameChanged.sav").string()) &&
+        fixture.Snapshot("ContextGameWarmChanged")==changed && ActorPaths(true)==changedPaths &&
+        ReadPortableRuntimeObjectOwnership(Path("AdmittedPlayer")).objectIndex==changedPawn,
+        "Warm context replacement shifted original export identity or lost appended birth/save bytes");
+    boot(game);
+    Require(ValidatePortableRuntimeState((fixture.directory/"ContextGameChanged.sav").string(),"SpawnFixture") &&
+        LoadPortableRuntimeState((fixture.directory/"ContextGameChanged.sav").string()) &&
+        fixture.Snapshot("ContextGameColdChanged")==changed && ActorPaths(true)==changedPaths,
+        "Cold same-profile restore lost sparse source indices, genuine birth tail or exact checkpoint");
+    boot(clientOnly);verify(true);reject(fixture.directory/"ContextGameChanged.sav");
+    const auto client=fixture.Snapshot("ContextClientPristine");
+    Require(client!=pristine,"Distinct explicit profiles produced an identical profile-bound checkpoint");
+    boot(editor);verify(false);reject(fixture.directory/"ContextGameChanged.sav");
+    const auto editorSave=fixture.Snapshot("ContextEditorPristine");
+    Require(editorSave!=raw,"Explicit editor profile was conflated with unfiltered raw inspection");
+    boot(std::nullopt);verify(false);reject(fixture.directory/"ContextGameChanged.sav");
+    reject(fixture.directory/"ContextEditorPristine.sav");
+    Require(ValidatePortableRuntimeState((fixture.directory/"ContextRawPristine.sav").string(),"SpawnFixture") &&
+        LoadPortableRuntimeState((fixture.directory/"ContextRawPristine.sav").string()) &&
+        fixture.Snapshot("ContextRawRestored")==raw,
+        "Legacy raw save stopped working after explicit-profile initialization/teardown");
+    fixture.UnchangedSources();
+    std::cout<<"Generated actual load-context runtime: sparse script/map export caches, arbitrary-name editor-only Actor/Brush/Camera exclusions, direct/nested None, preserved source slots/indices/geometry, GC and same/warm/cold profile-bound checkpoint replacement; NOT actual Training/player completion\n";
+}
 void DecalGuardSynthetic() {
     // Real generated reflection, native Level slots and valid empty root BSP.
     // After the exact entry guards, this BSP genuinely has no geometry. The
@@ -2897,7 +3156,7 @@ void Synthetic() {
 } // namespace
 int main() {
     try {
-        const auto before = GC::GetStats().numObjects; Synthetic(); WorldStartupSynthetic(); PlayerLoginSynthetic(); DecalGuardSynthetic(); DecalNativeSynthetic(); GC::Collect(); Require(GC::GetStats().numObjects == before, "Generated Spawn test leaked rooted UObjects after shutdown");
+        const auto before = GC::GetStats().numObjects; Synthetic(); WorldStartupSynthetic(); PlayerLoginSynthetic(); LoadContextSynthetic(); DecalGuardSynthetic(); DecalNativeSynthetic(); GC::Collect(); Require(GC::GetStats().numObjects == before, "Generated Spawn test leaked rooted UObjects after shutdown");
         std::cout << "Generated actor Spawn integration: " << checks << " checks, " << refusals << " rejection controls; actual natives278/262/283/304/529/530/650/710/711/713/714/715/716/720, serialized Level/model, native PawnList and AI graph rollback, frozen defaults, callbacks/live foreach, birth/save/GC, read-only BSP region side/fallback controls, non-publishing world startup prefix/live-growth/deletion/order/attachment rollback, native AttachDecal exact guards/real finite polygon/provisional SurfList/ordered records/postcallback radius and RNG/mover Rotation/Detach/checkpoint/GC/late rollback. No rendered decal, AI processing or accepted campaign startup claim.\n"; return 0;
     } catch (const std::exception& error) { std::cerr << "Actor Spawn integration failed: " << error.what() << '\n'; return 1; }
 }

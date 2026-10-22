@@ -7,6 +7,7 @@
 #include "quest_state_frame.h"
 #include "quest_native_client.h"
 #include "quest_held_item_visual.h"
+#include "quest_linker_load_context.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -33,6 +34,7 @@ struct PortableRuntimeSummary {
     std::size_t conversationLoadFailures{};
     std::size_t peakGcObjects{};
     std::size_t destroyedObjects{};
+    std::size_t contextExcludedExports{};
 };
 
 // Rollback-only native payload diagnostic. Values are captured inside the
@@ -179,6 +181,7 @@ struct PortableMapRuntimeSummary {
     std::size_t resolvedClasses{};
     std::size_t unresolvedClasses{};
     std::size_t replacedExports{};
+    std::size_t contextExcludedExports{};
 };
 
 enum class PortableWorldStartupPhase : std::uint8_t {
@@ -322,9 +325,14 @@ PortableRuntimeSummary BuildAndVerifyPortableRuntime(
 // time(nullptr) once at engine initialization, matching the original Core policy.
 // Nonbaseline seeds are saved immediately, including before the first draw.
 PortableRuntimeSummary InitializePortableRuntime(
-    const PortablePackageTables& package, std::uint32_t initialRandomSeed = 1u);
+    const PortablePackageTables& package, std::uint32_t initialRandomSeed = 1u,
+    std::optional<QuestVr::OriginalLinkerLoadProfile> loadProfile = {});
 PortableRuntimeSummary InitializePortableRuntime(
-    const std::vector<PortablePackageTables>& packages, std::uint32_t initialRandomSeed = 1u);
+    const std::vector<PortablePackageTables>& packages, std::uint32_t initialRandomSeed = 1u,
+    std::optional<QuestVr::OriginalLinkerLoadProfile> loadProfile = {});
+// Omission retains the historical UNFILTERED inspection/test mode. Standalone
+// gameplay must select its explicit noneditor profile BEFORE object creation.
+std::optional<QuestVr::OriginalLinkerLoadProfile> ReadPortableRuntimeLoadProfile();
 void ShutdownPortableRuntime();
 struct PortableNativeEngineClassSnapshot {
     std::string classPath, baseClassPath, withinClassPath;

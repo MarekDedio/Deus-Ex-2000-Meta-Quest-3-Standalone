@@ -1,5 +1,13 @@
 # First Training: original player Login prefix
 
+Later noneditor-loader evidence,2026-10-22: the former Camera7 reuse below is
+fixed by source-context admission, not a name blacklist. Actual first Training
+now creates original JCDentonMale and reaches Login PC133/native3015
+CreateDumpLocationObject in both full-rollback attempts (201628 instructions,
+14642 writes,117 detached Spawn observations). Login still does not return
+or possess a published player. See ORIGINAL-TRAINING-DUMP-LOCATION.md and
+TRAINING-LOAD-CONTEXT-SAVE-PLAN.md; earlier all-export counts below are historical.
+
 2026-10-22. Only `Maps/00_Training.dx` is the actual-map integration target.
 This prerequisite does not finish crates, usable loot, gravity, world Tick or
 the entire first Training map, and does not produce a replacement APK.

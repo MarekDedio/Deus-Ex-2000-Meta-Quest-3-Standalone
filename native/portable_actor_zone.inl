@@ -154,7 +154,10 @@
             auto* actual=ZoneLevel(l);auto* zone=actor(fallback);
             const auto& model=NativeLevelTraceModel(actual);
             const auto found=QuestVr::QueryOriginalModelPointRegion(model,point,std::min<std::size_t>(model.nodes.size(),65'536u),[this]{LifecycleStep();});
-            if(found.zoneActorReference)zone=Object(Qualified(Table(actual->nativeLevelModel->sourcePath),found.zoneActorReference));
+            if(found.zoneActorReference) {
+                const auto path=ContextValuePath(Qualified(Table(actual->nativeLevelModel->sourcePath),found.zoneActorReference));
+                if(!path.empty())zone=Object(path);
+            }
             static_cast<void>(ZoneActor(reinterpret_cast<std::uintptr_t>(zone),actual));
             return QuestVr::OriginalActorRegion{reinterpret_cast<std::uintptr_t>(zone),found.leaf,found.zoneNumber};
         };

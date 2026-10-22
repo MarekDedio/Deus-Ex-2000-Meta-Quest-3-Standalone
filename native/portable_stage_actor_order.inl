@@ -43,18 +43,23 @@ void StageRuntimeBirthReplacement(PreparedScriptState& prepared,const QuestVr::S
     };
     std::size_t authoredExports{},qualified{},vm{};bool birthTail{};
     for (auto* object:persistentRuntime->get()->exports) {
-        if (!object) throw std::runtime_error("Native actor restore encountered a missing retained export object");
-        if (object->runtimeBirth) {pendingBirthGarbage=true;birthTail=true;}
+        if (object && object->runtimeBirth) {pendingBirthGarbage=true;birthTail=true;}
         else {
             if (birthTail) throw std::runtime_error("Native actor restore cannot shift authored export storage past interleaved births");
+            // Source-aligned None cells still occupy their authored linker
+            // ordinal. They must survive verbatim; only actual births append.
             ++authoredExports;
         }
     }
     for (const auto& [key,object]:persistentQualifiedObjects) {
-        static_cast<void>(key);if (!object || !object->runtimeBirth) ++qualified;
+        static_cast<void>(key);
+        if (!object) throw std::runtime_error("Native actor restore qualified lookup contains a null placeholder");
+        if (!object->runtimeBirth) ++qualified;
     }
     for (const auto& [key,object]:persistentVmObjects) {
-        static_cast<void>(key);if (!object || !object->runtimeBirth) ++vm;
+        static_cast<void>(key);
+        if (!object) throw std::runtime_error("Native actor restore VM lookup contains a null placeholder");
+        if (!object->runtimeBirth) ++vm;
     }
     const auto births=prepared.births.size();
     if ((!saved && births!=0u) || (saved && births!=saved->births.size()))
@@ -63,11 +68,11 @@ void StageRuntimeBirthReplacement(PreparedScriptState& prepared,const QuestVr::S
     prepareMap(prepared.qualified,QuestVr::DecalStateDetail::Add(qualified,births));
     prepareMap(prepared.vm,QuestVr::DecalStateDetail::Add(vm,births));
     for (const auto& [key,object]:persistentQualifiedObjects)
-        if (!object || !object->runtimeBirth) insertMap(prepared.qualified,key,object);
+        if (!object->runtimeBirth) insertMap(prepared.qualified,key,object);
     for (const auto& [key,object]:persistentVmObjects)
-        if (!object || !object->runtimeBirth) insertMap(prepared.vm,key,object);
+        if (!object->runtimeBirth) insertMap(prepared.vm,key,object);
     for (auto* object:persistentRuntime->get()->exports)
-        if (!object->runtimeBirth) prepared.exports.push_back(object);
+        if (!object || !object->runtimeBirth) prepared.exports.push_back(object);
 
     std::vector<RuntimeObject*> orderedBirths;
     reserveVector(orderedBirths,births);
@@ -122,15 +127,23 @@ void StageRuntimeBirthReplacement(PreparedScriptState& prepared,const QuestVr::S
     for (auto* actor:orderedBirths) validateActor(actor,true);
     std::size_t sourceCount{};
     for (auto* object:prepared.exports)
-        if (!object->runtimeBirth && object->sourcePath==schema.MapSource()) ++sourceCount;
+        if (object && !object->runtimeBirth && object->sourcePath==schema.MapSource()) ++sourceCount;
     std::vector<RuntimeObject*> sourceExports;reserveVector(sourceExports,sourceCount);
     for (auto* object:prepared.exports)
-        if (!object->runtimeBirth && object->sourcePath==schema.MapSource()) sourceExports.push_back(object);
+        if (object && !object->runtimeBirth && object->sourcePath==schema.MapSource()) {
+            if (!schema.SourceExportAdmitted(object->exportIndex))
+                throw std::runtime_error("Native actor restore context-excluded source export was materialized");
+            sourceExports.push_back(object);
+        }
     std::sort(sourceExports.begin(),sourceExports.end(),[](const auto* a,const auto* b) {return a->exportIndex<b->exportIndex;});
     for (std::size_t i=1u;i<sourceExports.size();++i)
         if (sourceExports[i-1u]->exportIndex==sourceExports[i]->exportIndex)
             throw std::runtime_error("Native actor restore source export storage has duplicate identities");
     const auto sourceExport=[&](const std::size_t index) -> RuntimeObject* {
+        // SourceExportAdmitted checks the source bound as well as the exact
+        // retained loader profile. Only an authoritative excluded ordinal is
+        // a legitimate None; an admitted-but-missing export still refuses.
+        if (!schema.SourceExportAdmitted(index)) return nullptr;
         const auto found=std::lower_bound(sourceExports.begin(),sourceExports.end(),index,
             [](const auto* actor,const auto value) {return actor->exportIndex<value;});
         if (found==sourceExports.end() || (*found)->exportIndex!=index)
@@ -140,6 +153,7 @@ void StageRuntimeBirthReplacement(PreparedScriptState& prepared,const QuestVr::S
     for (const auto reference:original) {
         if (reference==0) continue;
         auto* actor=sourceExport(static_cast<std::size_t>(reference-1));
+        if (!actor) continue;
         if (!actor->cls && !explicitOrder) continue; // The real loader's unresolved-class null slot.
         validateActor(actor,false);
     }
@@ -154,7 +168,8 @@ void StageRuntimeBirthReplacement(PreparedScriptState& prepared,const QuestVr::S
             const auto& identity=saved->nativeActorOrder->slots[i];
             const bool born=identity.kind==QuestVr::ScriptSavedNativeActorSlotKind::Birth;
             validateActor(actor,born);
-            if (!born && (actor->exportIndex!=identity.authoredExport || sourceExport(identity.authoredExport)!=actor))
+            if (!born && (!schema.SourceExportAdmitted(identity.authoredExport) ||
+                actor->exportIndex!=identity.authoredExport || sourceExport(identity.authoredExport)!=actor))
                 throw std::runtime_error("Native actor restore source export identity does not match its staged object");
             prepared.worldActors[i]=actor;
         }
@@ -167,7 +182,7 @@ void StageRuntimeBirthReplacement(PreparedScriptState& prepared,const QuestVr::S
             auto* actor=sourceExport(index);
             // The real loader explicitly leaves an unresolved source-class
             // slot null. Preserve that fact, rather than inventing an Actor.
-            if (!actor->cls) continue;
+            if (!actor || !actor->cls) continue;
             validateActor(actor,false);prepared.worldActors[i]=actor;
         }
         for (auto* actor:orderedBirths) {
@@ -181,10 +196,10 @@ void StageRuntimeBirthReplacement(PreparedScriptState& prepared,const QuestVr::S
     }
     std::size_t actors{};
     for (auto* object:prepared.exports)
-        if (object->sourcePath==schema.MapSource() && object->cls && IsDerivedFromPath(object->cls,"Engine.Actor")) ++actors;
+        if (object && object->sourcePath==schema.MapSource() && object->cls && IsDerivedFromPath(object->cls,"Engine.Actor")) ++actors;
     reserveVector(prepared.worldIndices,actors);
     for (auto* object:prepared.exports)
-        if (object->sourcePath==schema.MapSource() && object->cls && IsDerivedFromPath(object->cls,"Engine.Actor"))
+        if (object && object->sourcePath==schema.MapSource() && object->cls && IsDerivedFromPath(object->cls,"Engine.Actor"))
             prepared.worldIndices.emplace_back(object,-1);
     const auto less=[](const auto& a,const auto& b) {return std::less<RuntimeObject*>{}(a.first,b.first);};
     std::sort(prepared.worldIndices.begin(),prepared.worldIndices.end(),less);

@@ -57,7 +57,7 @@
         if(level->nativeFirstDeleted)result.firstDeletedPath=level->nativeFirstDeleted->reflection.objectPath;
         for(std::size_t index=persistentScriptExportCount;index<persistentRuntime->get()->exports.size();++index) {
             auto* actor=persistentRuntime->get()->exports[index];
-            if(actor->nativeXLevel!=level||!actor->nativeDeletedBound)continue;
+            if(!actor||actor->nativeXLevel!=level||!actor->nativeDeletedBound)continue;
             result.actorLinks.emplace_back(actor->reflection.objectPath,actor->nativeDeleted?
                 actor->nativeDeleted->reflection.objectPath:std::string{});
         }

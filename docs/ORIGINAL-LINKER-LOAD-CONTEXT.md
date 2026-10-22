@@ -1,5 +1,12 @@
 # Original linker load context: first Training prerequisite
 
+Later implementation checkpoint,2026-10-22: the source-context gate and
+sparse runtime/save integration below are now implemented and tested; see
+TRAINING-LOAD-CONTEXT-SAVE-PLAN.md. The proposed seams/line numbers below
+remain the historical pre-integration audit, not current implementation status.
+Actual first Training now creates JCDentonMale and next refuses native3015;
+this is still not completed Login, startup, usable crate loot or gravity.
+
 Static-only audit,2026-10-22, for ONLY the owned `Maps/00_Training.dx`.
 No commercial DLL/EXE was loaded or executed, no other actual map was read,
 and no runtime/compiler input was changed by this audit. This document records

@@ -24,7 +24,9 @@ std::vector<std::int32_t> OriginalActorOrderReferences() {
         // Explicit metadata-only fixture compatibility, identical to loading:
         // export-order membership only for an actual loaded Actor UClass.
         std::size_t count{};
-        for (const auto& entry:map.exports) {
+        for (std::size_t index=0u;index<map.exports.size();++index) {
+            if (!SourceExportAdmitted(index)) continue;
+            const auto& entry=map.exports[index];
             const auto found=persistentVmObjects.find(LowerAscii(Qualified(map,entry.ObjClass)));
             if (found!=persistentVmObjects.end() && found->second &&
                 IsDerivedFromPath(found->second,"Engine.Actor")) ++count;
@@ -34,6 +36,7 @@ std::vector<std::int32_t> OriginalActorOrderReferences() {
         if (order.capacity()>count)
             Retain(QuestVr::DecalStateDetail::Multiply(order.capacity()-count,sizeof(std::int32_t)));
         for (std::size_t i=0u;i<map.exports.size();++i) {
+            if (!SourceExportAdmitted(i)) continue;
             const auto found=persistentVmObjects.find(LowerAscii(Qualified(map,map.exports[i].ObjClass)));
             if (found!=persistentVmObjects.end() && found->second &&
                 IsDerivedFromPath(found->second,"Engine.Actor")) order.push_back(static_cast<std::int32_t>(i+1u));
@@ -44,12 +47,16 @@ std::vector<std::int32_t> OriginalActorOrderReferences() {
     Retain(map.exports.size());
     std::vector<std::uint8_t> seen(map.exports.size(),0u);
     if (seen.capacity()>map.exports.size()) Retain(seen.capacity()-map.exports.size());
-    for (const auto reference:order) {
+    for (auto& reference:order) {
         if (reference==0) continue;
         if (reference<0 || static_cast<std::size_t>(reference)>map.exports.size())
             throw std::runtime_error("Script save original Level slot is not a local export");
         const auto index=static_cast<std::size_t>(reference-1);
         if (seen[index]++) throw std::runtime_error("Script save original Level has duplicate actor membership");
+        // ULevel source references remain unchanged on disk. The explicit
+        // loader profile's excluded exports resolve to native None at their
+        // original slots, without allocating or indexing a placeholder UObject.
+        if (!SourceExportAdmitted(index)) reference=0;
     }
     return order;
 }
@@ -117,7 +124,8 @@ std::vector<std::string> ValidateNativeActorOrder(const QuestVr::ScriptSavedStat
             break;
         case QuestVr::ScriptSavedNativeActorSlotKind::AuthoredExport: {
             const auto index=static_cast<std::size_t>(slot.authoredExport);
-            if (!slot.birthPath.empty() || index>=map.exports.size() || membership[index]!=1u)
+            if (!slot.birthPath.empty() || index>=map.exports.size() ||
+                !SourceExportAdmitted(index) || membership[index]!=1u)
                 throw std::runtime_error("Script save native slot is duplicate, foreign or not an original Level member");
             auto* cls=host_.Object(Qualified(map,map.exports[index].ObjClass));
             if (!cls || cls->reflection.metaClass!="Class" || !IsDerivedFromPath(cls,"Engine.Actor"))

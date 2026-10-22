@@ -1,5 +1,40 @@
 # Port status
 
+## First Training noneditor loader integration (2026-10-22)
+
+The explicit standalone client/server load profile now gates fresh source
+exports before UObject construction. Excluded exports retain null cells at
+their original source ordinals, have no UObject/index/lookup identity, and
+resolve to None in original Level slots. Compiled BSP remains available.
+Quest and the owned startup probe select this profile explicitly; omitted
+profiles retain historical unfiltered inspection mode. Profile-bound DXLC
+checkpoints reject implicit raw/profile conversion and excluded identities.
+
+Actual first Training loads1356 exports, excludes1991 and retains312 Actors
+in1337 original slots. Both repeated startup diagnostics now create the real
+JCDentonMale and reach the later native3015 CreateDumpLocationObject at
+DeusExGameInfo.Login PC133:201628 instructions/14642 writes,117 Spawn
+observations,335 PPP visits and native partition1360-to335/split192. Native
+work459538 cold/458996 warm is within1048576. Full save/order/hash/RNG/client/
+lookup/Actor/GC rollback and all41 original source fingerprints pass.
+This is an expected-boundary diagnostic, NOT successful Login or startup.
+
+Focused context/structural-save helpers pass2/2. Generated runtime integration
+passes13586 checks/223 rejection controls, covering actual sparse caches,
+source indices/slots, direct/nested/imported None, GC absence, mismatched
+profiles,32 excluded gameplay-prefix refusals including unloaded preflight,
+and same-profile pristine/changed warm/cold replacement. Authored struct
+decoding passes511 checks/160 rejections; explicit loader-authorized None does
+not relax historical malformed/unresolved-reference or budget rejection.
+Android native compilation/link and strict runtime/test checks pass. The full
+desktop rebuild and shared CTest pass167 executed/197 registered,30 explicit
+owned-data skips, zero failures in66.18s. Separate actual first-Training
+movement122706/21 and isolated crate347/two contents-refusal regressions pass.
+No APK was made. Live crate weapon destruction, surviving usable loot,
+gravity, world Tick and headset acceptance remain unfinished. Only the WHOLE
+first Training map is the current actual-map target. See
+TRAINING-LOAD-CONTEXT-SAVE-PLAN.md and ORIGINAL-TRAINING-DUMP-LOCATION.md.
+
 ## First Training original Login prefix (2026-10-22)
 
 Only the WHOLE first Training map remains the actual-map acceptance target;

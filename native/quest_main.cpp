@@ -689,7 +689,8 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                     packageName + ".u"));
             }
             const PortableRuntimeSummary runtime = InitializePortableRuntime(
-                scripts, static_cast<std::uint32_t>(std::time(nullptr)));
+                scripts, static_cast<std::uint32_t>(std::time(nullptr)),
+                QuestVr::OriginalLinkerLoadProfile{false,true,true});
             if (!runtime.passed) {
                 ALOG("DeusExQuest: persistent Unreal runtime validation failed");
                 return false;

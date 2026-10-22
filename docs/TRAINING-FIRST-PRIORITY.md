@@ -10,7 +10,21 @@ do not spend time on other-map integration or map-content test sweeps.
 Reconfirmed2026-10-22: skip other-map crate/physics integration and testing;
 the WHOLE first Training map remains the current content acceptance target.
 
-Latest player increment,2026-10-22: post-partition original class selection
+Latest noneditor loader increment,2026-10-22: source context admission now
+prevents editor Camera/Brush UObject allocation without rewriting source slots
+or erasing compiled BSP. Actual first Training has1356 admitted exports,
+1991 excluded and312 Actors. Two full-rollback startup observations create
+original JCDentonMale and starter objects, then explicitly stop at
+CreateDumpLocationObject native3015/Login PC133. This is NOT completed Login,
+surviving crate loot, gravity or a new APK. Android native link and focused
+helpers pass; generated runtime13586/223 and authored struct511/160 pass.
+Full desktop/shared verification passes167 executed/197 registered with30
+owned-data skips, zero failures in66.18s; strict ARM64 checks pass. Separate
+first-Training movement122706/21 and isolated crate347/two regressions pass.
+The next original native prerequisite is recorded in
+ORIGINAL-TRAINING-DUMP-LOCATION.md. No other real map is in this increment.
+
+Previous player increment,2026-10-22: post-partition original class selection
 and actual GameInfo.Login execute in the same rollback root. Generated
 runtime11476/181 and coordinator1871/174 pass; actual repeat2 returnsNone
 with complete rollback and41 originals unchanged. A diagnostic trace proves

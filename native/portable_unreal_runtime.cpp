@@ -78,6 +78,7 @@
 #include "quest_object_destroy.h"
 #include "quest_world_actor_order.h"
 #include "quest_spawn_play_actor_login.h"
+#include "quest_load_context_save.h"
 
 #include <memory>
 #include <algorithm>
@@ -204,6 +205,7 @@ void RetireRuntimeConversationObject(RuntimeObject*) noexcept;
 // source table. No original ULinker class/vtable construction is claimed.
 struct RuntimeNativeLinker {
     std::string sourcePath;
+    std::optional<QuestVr::OriginalLinkerLoadProfile> loadProfile;
     // The loader already owns every materialized baseline pointer. Address
     // the vector OBJECT (stable across reallocation), never its data buffer.
     // Explicit changed slots preserve null as a value, not baseline fallback.
@@ -514,6 +516,7 @@ public:
         : destroyedPackage_(destroyedPackage) {}
 
     std::vector<RuntimeObject*> exports;
+    std::optional<QuestVr::OriginalLinkerLoadProfile> loadProfile;
     std::size_t structDescriptorBytes{};
     RuntimeMapDecals* nativeDecals{};
     struct SourceLinker {
@@ -709,6 +712,62 @@ std::unordered_map<std::string, RuntimeObject*> persistentQualifiedObjects;
 // runtime index, rather than copying/lowercasing every export for every call.
 // These aliases are not additional GC roots and are removed before collection.
 std::unordered_map<std::string, RuntimeObject*> persistentVmObjects;
+// Immutable source-admission evidence, NOT UObject/cache entries. Excluded
+// exports own no native ObjectIndex, GC object, lookup or actor identity.
+struct RuntimeExcludedExport {
+    std::shared_ptr<RuntimeNativeLinker> linker;
+    std::size_t index{};
+    std::uint32_t flags{};
+    std::string classPath;
+    bool classExport{};
+};
+std::unordered_map<std::string,RuntimeExcludedExport> persistentContextExcluded;
+std::string LowerAscii(std::string);
+bool IsContextExcludedPath(const std::string& path) {
+    const auto found=persistentContextExcluded.find(LowerAscii(path));
+    if(found==persistentContextExcluded.end())return false;
+    const auto& row=found->second;
+    if(!row.linker || !row.linker->active || !row.linker->loadProfile ||
+        QuestVr::OriginalLinkerCreateExportDecision(*row.linker->loadProfile,row.flags,
+            row.linker->Read(row.index)!=nullptr)!=QuestVr::OriginalLinkerCreateExportAction::Exclude)
+        throw std::runtime_error("Context exclusion lost its actual fresh source/linker authority");
+    return true;
+}
+std::string ContextValuePath(std::string path) {
+    return IsContextExcludedPath(path)?std::string{}:std::move(path);
+}
+bool ContextExcludedImportMatches(const std::string& path,const std::string& importedClass) {
+    if(!IsContextExcludedPath(path))throw std::runtime_error("Excluded import has no source admission evidence");
+    const auto& row=persistentContextExcluded.at(LowerAscii(path));
+    if(NameString(importedClass)=="Class")return row.classExport;
+    if(row.classExport)return false;
+    const auto found=persistentVmObjects.find(LowerAscii(row.classPath));
+    if(found==persistentVmObjects.end() || !found->second)
+        throw std::runtime_error("Excluded import class metadata is not materialized: "+row.classPath);
+    std::array<RuntimeObject*,128u> visited{};std::size_t count{};
+    for(auto* cls=found->second;cls;cls=cls->base) {
+        if(count==visited.size() || std::find(visited.begin(),visited.begin()+count,cls)!=visited.begin()+count)
+            throw std::runtime_error("Excluded import class metadata ancestry cycles or exceeds bound");
+        visited[count++]=cls;
+        const auto leaf=cls->reflection.objectPath.substr(cls->reflection.objectPath.find_last_of('.')+1u);
+        if(NameString(leaf)==NameString(importedClass))return true;
+    }
+    return false;
+}
+template<class Validator>
+std::string ResolveRuntimeValueObjectReference(const PortablePackageTables& table,std::int32_t reference,Validator&& validator) {
+    const auto path=ResolvePortableValueObjectReference(table,reference,[&](const auto& resolved,const auto& type) {
+        return IsContextExcludedPath(resolved)?ContextExcludedImportMatches(resolved,type):validator(resolved,type);
+    });
+    return ContextValuePath(path);
+}
+std::string ContextSourceValuePath(const PortablePackageTables& table,const std::int32_t reference,std::string path) {
+    if(!IsContextExcludedPath(path))return path;
+    // Do not let None normalization hide a malformed imported ClassName.
+    // This path is only for an independently proven source exclusion; other
+    // source references retain their ordinary resolver/validation contract.
+    return ResolveRuntimeValueObjectReference(table,reference,[](const auto&,const auto&){return false;});
+}
 // Weak inventory only. Actor.ConListItems owns live chains through Mark above.
 // Package Outer is an outward edge, not reverse package ownership.
 std::vector<RuntimeObject*> persistentConversationNodes;
@@ -726,7 +785,7 @@ bool HasNativeConversationBindings() noexcept {
     if(!persistentConversationNodes.empty()) return true;
     if(persistentRuntime && persistentRuntime->get())
         for(const auto* object:persistentRuntime->get()->exports)
-            if(object->nativeConversation && (object->nativeConversation->ownerRefCount ||
+            if(object && object->nativeConversation && (object->nativeConversation->ownerRefCount ||
                 (object->nativeConversation->headWritten && object->nativeConversation->head))) return true;
     return false;
 }
@@ -773,6 +832,7 @@ std::unique_ptr<QuestVr::ObjectLookup::Index> StageRuntimeLookupObjects(const st
     if(!persistentObjectLookup || objects.empty()) return {};
     auto next=std::make_unique<QuestVr::ObjectLookup::Index>();
     for(auto* object:objects) {
+        if(!object)continue;
         const auto record=RuntimeLookupRecord(object);
         if(const auto* existing=persistentObjectLookup->index.RecordForIdentity(record.identity)) {
             if(*existing!=record || object->lookupControl!=persistentObjectLookup)
@@ -788,10 +848,10 @@ std::unique_ptr<QuestVr::ObjectLookup::Index> StageRuntimeLookupObjects(const st
 }
 void PublishRuntimeLookupObjects(std::unique_ptr<QuestVr::ObjectLookup::Index>& next,
     const std::vector<RuntimeObject*>& objects) noexcept {
-    for(auto* object:objects) RecordRuntimeLookupPublication(object);
+    for(auto* object:objects) if(object)RecordRuntimeLookupPublication(object);
     if(!next) return;
     if(!persistentObjectLookup->index.Adopt(*next)) std::terminate(); // Validated exclusive-owner publication invariant.
-    for(auto* object:objects) object->lookupControl=persistentObjectLookup;
+    for(auto* object:objects) if(object)object->lookupControl=persistentObjectLookup;
 }
 NameString NativeRegistrationName(const QuestVr::NativeEngineClassRegistration& entry) {
     const auto prefix=std::string(entry.package)+'.';
@@ -951,7 +1011,7 @@ void CacheInventoryTableMetadata(RuntimeObject* object, const PortablePackageTab
                     !SameInventoryIdentity(table.names[static_cast<std::size_t>(imported.ClassPackage)].Name.ToString(),"Core"))
                     return std::string{};
             }
-            auto path = ResolvePortableValueObjectReference(table, reference,
+            auto path = ResolveRuntimeValueObjectReference(table, reference,
                 [](const std::string&, const std::string& importedClass) { return SameInventoryIdentity(importedClass, "Class"); });
             // The value resolver already qualifies same-package exports.
             // Prefixing again would turn Engine.Texture into Engine.Engine.Texture.
@@ -1044,6 +1104,7 @@ RuntimeObject* NativeSessionViewport(const std::uint64_t identity) {
 void ClearNativePlayerEdges() noexcept {
     if (persistentRuntime && persistentRuntime->get())
         for(auto* object:persistentRuntime->get()->exports) {
+            if(!object)continue;
             object->nativePlayer=nullptr;
             // Keep an established native-None view authoritative over any
             // older authored patch; clearing a session is not re-possession.
@@ -1105,6 +1166,7 @@ bool IsDerivedFromPath(RuntimeObject* cls, const std::string& path) {
     return matches;
 }
 void CacheRuntimeBitmapDimensions(RuntimeObject* object,const PortablePackageTables& package) {
+    if(!object)return;
     if(object->bitmapDimensions) return;
     try {
         if(!IsDerivedFromPath(object->cls,"Engine.Texture") || object->exportIndex>=package.exports.size() ||
@@ -1925,11 +1987,34 @@ std::string ResolveRuntimePackagePath(
 }
 
 std::shared_ptr<RuntimeNativeLinker> MakeRuntimeLinker(const PortablePackageTables& package,
-    const std::vector<RuntimeObject*>& baseline,std::size_t first) {
+    const std::vector<RuntimeObject*>& baseline,std::size_t first,
+    std::optional<QuestVr::OriginalLinkerLoadProfile> profile={}) {
     if(package.exports.size()>static_cast<std::size_t>(std::numeric_limits<std::int32_t>::max()))
         throw std::runtime_error("Source linker export count exceeds signed native indices");
     auto result=std::make_shared<RuntimeNativeLinker>();result->sourcePath=package.sourcePath;
+    result->loadProfile=profile;
     result->baseline=&baseline;result->first=first;result->count=package.exports.size();return result;
+}
+bool ExcludeFreshSourceExport(const std::shared_ptr<RuntimeNativeLinker>& linker,
+    const PortablePackageTables& table,std::size_t index) {
+    if(index>=table.exports.size() || !linker || !linker->active || linker->sourcePath!=table.sourcePath)
+        throw std::runtime_error("Source admission lacks actual export/linker authority");
+    if(!linker->loadProfile)return false; // Historical unfiltered inspection mode.
+    const auto& entry=table.exports[index];
+    if(QuestVr::OriginalLinkerCreateExportDecision(*linker->loadProfile,
+            static_cast<std::uint32_t>(entry.ObjFlags),false)!=QuestVr::OriginalLinkerCreateExportAction::Exclude)return false;
+    if(persistentContextExcluded.size()>=1'000'000u)throw std::runtime_error("Source exclusion inventory exceeds fixed export bound");
+    const auto path=PackageStem(table.sourcePath)+'.'+GetPortableObjectPath(table,static_cast<std::int32_t>(index+1u));
+    auto classPath=GetPortableObjectPath(table,entry.ObjClass);
+    if(entry.ObjClass>0)classPath=PackageStem(table.sourcePath)+'.'+classPath;
+    if(!persistentContextExcluded.emplace(LowerAscii(path),RuntimeExcludedExport{linker,index,
+            static_cast<std::uint32_t>(entry.ObjFlags),std::move(classPath),entry.ObjClass==0}).second)
+        throw std::runtime_error("Excluded source export identity is ambiguous");
+    return true;
+}
+void RetireContextExclusions(const std::shared_ptr<RuntimeNativeLinker>& linker) {
+    for(auto it=persistentContextExcluded.begin();it!=persistentContextExcluded.end();)
+        if(it->second.linker==linker)it=persistentContextExcluded.erase(it);else ++it;
 }
 void BindRuntimeLinkerExport(const std::shared_ptr<RuntimeNativeLinker>& linker,
     RuntimeObject* object,std::size_t index) {
@@ -1947,7 +2032,13 @@ std::size_t NativeLinkersRetainedBytes() {
                 (sizeof(std::pair<const std::size_t,RuntimeObject*>)+6u*sizeof(void*)));
     };
     for(const auto& source:persistentRuntime->get()->sourceLinkers)count(source.live);
-    count(persistentRuntime->get()->mapLinker);return bytes;
+    count(persistentRuntime->get()->mapLinker);
+    bytes=QuestVr::DecalStateDetail::Add(bytes,sizeof(persistentContextExcluded)+
+        persistentContextExcluded.bucket_count()*sizeof(void*));
+    for(const auto& [name,row]:persistentContextExcluded)
+        bytes=QuestVr::DecalStateDetail::Add(bytes,sizeof(decltype(persistentContextExcluded)::value_type)+
+            6u*sizeof(void*)+name.capacity()+row.classPath.capacity()+2u);
+    return bytes;
 }
 bool HasNativeLinkerChanges() {
     return persistentRuntime&&persistentRuntime->get()&&
@@ -1976,9 +2067,12 @@ void PopulateRuntime(
     PortableRuntimeSummary& summary,
     std::size_t* destroyedObjects) {
     runtime->sourceLinkers.push_back({PackageStem(package.sourcePath),package.sourcePath,nullptr,{}});
-    auto& linker=runtime->sourceLinkers.back().live;linker=MakeRuntimeLinker(package,runtime->exports,0u);
+    auto& linker=runtime->sourceLinkers.back().live;linker=MakeRuntimeLinker(package,runtime->exports,0u,runtime->loadProfile);
     runtime->exports.reserve(graph.objects.size());
     for (const PortableReflectionObject& reflection : graph.objects) {
+        if(ExcludeFreshSourceExport(linker,package,runtime->exports.size())) {
+            runtime->exports.push_back(nullptr);++summary.contextExcludedExports;continue;
+        }
         auto* object=GC::Alloc<RuntimeObject>(reflection,destroyedObjects);
         object->sourcePath=package.sourcePath;object->exportIndex=runtime->exports.size();
         runtime->exports.push_back(object);BindRuntimeLinkerExport(linker,object,object->exportIndex);
@@ -1986,6 +2080,7 @@ void PopulateRuntime(
 
     for (std::size_t index = 0; index < runtime->exports.size(); ++index) {
         RuntimeObject* object = runtime->exports[index];
+        if(!object)continue;
         const ExportTableEntry& entry = package.exports[index];
         if (RuntimeObject* outer = ResolveLocal(entry.ObjOuter, runtime->exports, summary)) {
             object->outer = outer;
@@ -2034,7 +2129,7 @@ void PopulateRuntime(
         CacheInventoryTableMetadata(object, package, entry);
         if (object->reflection.metaClass == "Class") ++summary.classes;
     }
-    summary.objects = runtime->exports.size();
+    summary.objects = runtime->exports.size()-summary.contextExcludedExports;
     summary.peakGcObjects = GC::GetStats().numObjects;
 }
 
@@ -2095,7 +2190,7 @@ const QuestVr::ScriptDispatch::Graph& DispatchGraph() {
     std::vector<QuestVr::ScriptDispatch::Class> classes;
     for (std::size_t index = 0; index < persistentScriptExportCount; ++index) {
         auto* object = persistentRuntime->get()->exports[index];
-        if (!object->classDescriptor) continue;
+        if (!object || !object->classDescriptor) continue;
         QuestVr::ScriptDispatch::Class cls;
         cls.path = object->reflection.objectPath;
         cls.parentPath = object->base ? object->base->reflection.objectPath : std::string{};
@@ -2904,7 +2999,7 @@ public:
         const auto& table = Table(function.source);
         const auto path = GetPortableObjectPath(table, reference);
         if (path.empty()) throw std::runtime_error("VM function-local object reference is out of range");
-        return reference > 0 ? PackageStem(table.sourcePath) + '.' + path : path;
+        return ContextSourceValuePath(table,reference,reference > 0 ? PackageStem(table.sourcePath) + '.' + path : path);
     }
     std::string ResolveCastClass(const Function& function, const std::int32_t reference) override {
         return ResolveCastReference(Table(function.source), reference);
@@ -3929,7 +4024,7 @@ public:
         // texturePaths is a display/render cache. Resolve the selected RAW
         // Mesh.Textures reference anew with actual import class provenance,
         // then check Engine.Texture ancestry; never trust a leaf/path alone.
-        const auto texture=ResolvePortableValueObjectReference(Table(mesh->sourcePath),decoded.textures.at(selected.sourceIndex),
+        const auto texture=ResolveRuntimeValueObjectReference(Table(mesh->sourcePath),decoded.textures.at(selected.sourceIndex),
             [this](const std::string& path,const std::string& importedClass) {
                 const auto identity=CastObjectIdentity(path);if (identity.classObject) return false;
                 auto cls=identity.classPath;std::set<std::string> visited;
@@ -4697,7 +4792,7 @@ public:
                 throw std::runtime_error("Native primitive authored field is not an Object-property tag");
             const auto& source=Table(origin.source->sourcePath);
             const auto reference=DecodePortableObjectReference(*origin.tag);
-            const auto resolved=ResolvePortableValueObjectReference(source,reference,
+            const auto resolved=ResolveRuntimeValueObjectReference(source,reference,
                 [&](const std::string& target,const std::string& importedClass) {
                     const auto actual=NativePrimitiveAsset(Object(target));
                     // FindObjectReference matches the import's unqualified
@@ -8799,8 +8894,9 @@ private:
                     throw std::runtime_error("Authored struct name reference is out of range");
                 return table.names[static_cast<std::size_t>(index)].Name.ToString();
             };
-            resolvers.resolveObject = [this, &table](const std::int32_t index, const QuestVr::AuthoredStructField& field) {
-                const auto path = ResolvePortableValueObjectReference(table, index,
+            resolvers.resolveObjectOrNone = [this, &table](const std::int32_t index,
+                const QuestVr::AuthoredStructField& field) -> std::optional<std::string> {
+                const auto path = ResolveRuntimeValueObjectReference(table, index,
                     [this](const std::string& resolved, const std::string& importedClass) {
                         auto* object = Object(resolved);
                         auto actual = object->cls ? object->cls->reflection.objectPath :
@@ -8844,7 +8940,7 @@ private:
                         return false;
                     });
                 ValidateObjectValue(Value::Text(Kind::Object, path), field.referenceClassPath, field.classReference);
-                return path;
+                return path.empty()?std::nullopt:std::optional<std::string>{path};
             };
             return QuestVr::DecodeAuthoredStructValue(*schema, tag.value, table.version, resolvers);
         }
@@ -8868,7 +8964,8 @@ private:
                 break;
             case Kind::Object:
                 if (tag.type == 5u || tag.type == 8u) return Value::Text(Kind::Object,
-                    Qualified(Table(source.sourcePath), DecodePortableObjectReference(tag)));
+                    ContextSourceValuePath(Table(source.sourcePath),DecodePortableObjectReference(tag),
+                        Qualified(Table(source.sourcePath), DecodePortableObjectReference(tag))));
                 break;
             case Kind::String:
                 if (tag.type == 13u) return Value::Text(Kind::String, DecodePortableVmStringProperty(tag));
@@ -8881,6 +8978,7 @@ private:
         const auto target = LowerAscii(expected);
         std::set<std::string> visited;
         for (std::size_t depth = 0u; depth < 128u && !actual.empty(); ++depth) {
+            if(IsContextExcludedPath(actual))throw std::runtime_error("Runtime class ancestry is context-excluded: "+actual);
             const auto key = LowerAscii(actual);
             if (key == target) return true;
             if (!visited.insert(key).second) throw std::runtime_error("Runtime value class hierarchy cycles");
@@ -8912,6 +9010,7 @@ private:
     // metadata and Engine asset registrations supply an absent class identity.
     // Serialized UClasses always take precedence and use their actual ObjBase.
     std::optional<QuestVr::ObjectCastClass> NativeCastClass(const std::string& path) {
+        if(IsContextExcludedPath(path))throw std::runtime_error("Native class fallback is context-excluded: "+path);
         // Static linked type identity exists before a RuntimeObject wrapper is
         // materialized; as with native asset classes below this is not an
         // allocation/root/default/constructor capability. Typed stored Object
@@ -8966,6 +9065,7 @@ private:
         return QuestVr::ObjectCastClass{canonical, canonical.substr(canonical.find('.') + 1u), found->second};
     }
     std::string CastClassPath(const std::string& path) {
+        if(IsContextExcludedPath(path))throw std::runtime_error("Cast class is context-excluded by its source linker: "+path);
         const auto found = persistentVmObjects.find(LowerAscii(path));
         if (found == persistentVmObjects.end()) {
             if (const auto registered = NativeCastClass(path)) return registered->path;
@@ -8998,6 +9098,7 @@ private:
         return CastClassPath(path);
     }
     QuestVr::ObjectCastClass CastClassIdentity(const std::string& path) {
+        if(IsContextExcludedPath(path))throw std::runtime_error("Class identity is context-excluded by its source linker: "+path);
         const auto found = persistentVmObjects.find(LowerAscii(path));
         if (found == persistentVmObjects.end()) {
             if (const auto registered = NativeCastClass(path)) return *registered;
@@ -9030,6 +9131,7 @@ private:
         return {object->reflection.objectPath, name.ToString(), std::move(base)};
     }
     QuestVr::ObjectCastObject CastObjectIdentity(const std::string& path) {
+        if(IsContextExcludedPath(path))throw std::runtime_error("Object identity is context-excluded by its source linker: "+path);
         if (LowerAscii(path).rfind("@classdefault:",0u)==0u) {
             auto* object=Object(path);
             return {object->reflection.objectPath,object->defaultOwner->reflection.objectPath,false};
@@ -9422,8 +9524,9 @@ private:
         QuestVr::DecalStateRotation moverRotation;
         const auto reference = rootModel_->surfaces.at(static_cast<std::size_t>(primary.surface)).brushActorReference;
         if (reference) {
-            auto* surfaceActor = Object(Qualified(Table(persistentMapSourcePath), reference));
-            if (IsDerivedFromPath(surfaceActor->cls, "Engine.Mover")) {
+            const auto surfacePath=ContextValuePath(Qualified(Table(persistentMapSourcePath),reference));
+            auto* surfaceActor=surfacePath.empty()?nullptr:Object(surfacePath);
+            if (surfaceActor && IsDerivedFromPath(surfaceActor->cls, "Engine.Mover")) {
                 RequireMapActor(surfaceActor); mover = surfaceActor;
                 const auto value = Read(mover, PropertyNamed(mover, "Rotation"), 0u);
                 if (value.kind != Kind::Rotator) throw std::runtime_error("Decal mover Rotation is not a Rotator");
@@ -9805,6 +9908,7 @@ private:
         for(std::size_t objectIndex=0u;objectIndex<totalObjects;++objectIndex) {
             const auto* object=objectIndex<exports.size()?exports[objectIndex]:objectIndex<exports.size()+windowObjects?
                 windows->objects[objectIndex-exports.size()]:persistentConversationNodes[objectIndex-exports.size()-windowObjects];
+            if(!object)continue;
             if(object->nativeConversation) defaults.Retain(sizeof(RuntimeNativeConversationState));
             if(IsNativeConversationNode(object)) {
                 defaults.Retain(sizeof(RuntimeObject)+sizeof(GCAllocation)+
@@ -10152,8 +10256,10 @@ private:
             {location.vector[0u],location.vector[1u],location.vector[2u]},
             std::min<std::size_t>(model.nodes.size(),65'536u),[this]{LifecycleStep();});
         RuntimeObject* zoneObject{};
-        if (region.zoneActorReference != 0)
-            zoneObject = Object(Qualified(Table(object->nativeXLevel->nativeLevelModel->sourcePath),region.zoneActorReference));
+        if (region.zoneActorReference != 0) {
+            const auto path=ContextValuePath(Qualified(Table(object->nativeXLevel->nativeLevelModel->sourcePath),region.zoneActorReference));
+            zoneObject=path.empty()?nullptr:Object(path);
+        }
         if (zoneObject == nullptr) zoneObject = levelInfo;
         Value result = zero;
         result.fields["zone"] = Value::Text(Kind::Object, zoneObject->reflection.objectPath);
@@ -10283,7 +10389,7 @@ QuestVr::ScriptSavedState CollectScriptSavedState() {
         }
     }
     for (auto* object:persistentRuntime->get()->exports) {
-        if (!object->nativeTimeSeconds || std::bit_cast<std::uint64_t>(*object->nativeTimeSeconds)==0u) continue;
+        if (!object || !object->nativeTimeSeconds || std::bit_cast<std::uint64_t>(*object->nativeTimeSeconds)==0u) continue;
         if (saved.nativeLevelClock) throw std::runtime_error("Script save has multiple native level clocks");
         QuestVr::ScriptStateDetail::Text(object->reflection.objectPath,limits,true);
         capture.Retain(sizeof(QuestVr::ScriptSavedLevelClock)+object->reflection.objectPath.size()+1u);
@@ -10320,6 +10426,7 @@ QuestVr::ScriptSavedState CollectScriptSavedState() {
         }
     };
     for (auto* object : persistentRuntime->get()->exports) {
+        if(!object)continue;
         if (object->nativeAiManager) {
             const auto& state = object->nativeAiManager->state;
             // Measure the complete graph before its first snapshot copy.
@@ -10466,7 +10573,7 @@ QuestVr::ScriptSavedState CollectScriptSavedState() {
 
 class ScriptSaveSchema {
 public:
-    explicit ScriptSaveSchema(const std::string& mapName) : mapName_(mapName) {
+    explicit ScriptSaveSchema(const std::string& mapName) : mapName_(mapName),loadProfile_(ReadPortableRuntimeLoadProfile()) {
         SafePackage(mapName_);
         auto* actor = host_.Object("Engine.Actor");
         gameRoot_ = std::filesystem::path(actor->sourcePath).parent_path().parent_path().string();
@@ -10487,6 +10594,12 @@ public:
         if (map.exports.size() > 1'000'000u) throw std::runtime_error("Script save map export budget exceeded");
         for (std::size_t i = 0u; i < map.exports.size(); ++i) {
             const auto objectPath = Qualified(map, static_cast<std::int32_t>(i + 1u));
+            if(!SourceExportAdmitted(i)) {
+                Retain(objectPath.size()+1u+sizeof(std::string)+6u*sizeof(void*));
+                if(!contextExcludedPaths_.emplace(LowerAscii(objectPath)).second)
+                    throw std::runtime_error("Script save excluded source identity is ambiguous");
+                continue;
+            }
             const auto classPath = Qualified(map, map.exports[i].ObjClass);
             Retain(2u * objectPath.size() + classPath.size() + 3u * sizeof(std::string) + sizeof(std::size_t) + 10u * sizeof(void*));
             if (!mapClasses_.emplace(LowerAscii(objectPath), classPath).second)
@@ -10495,6 +10608,15 @@ public:
         }
     }
     const std::string& MapSource() const { return mapPath_; }
+    bool ContextExcludedSourcePath(const std::string& path) const {
+        return contextExcludedPaths_.contains(LowerAscii(path));
+    }
+    bool SourceExportAdmitted(const std::size_t index) {
+        const auto& table=Table(mapPath_);
+        if(index>=table.exports.size())throw std::runtime_error("Save source admission index is out of bounds");
+        return !loadProfile_ || QuestVr::OriginalLinkerCreateExportDecision(*loadProfile_,
+            static_cast<std::uint32_t>(table.exports[index].ObjFlags),false)!=QuestVr::OriginalLinkerCreateExportAction::Exclude;
+    }
     static std::string MoverMapName(const std::string& path) {
         const auto separator = path.find('.');
         if (separator == std::string::npos || separator + 1u == path.size())
@@ -10510,7 +10632,7 @@ public:
             path != Qualified(map, static_cast<std::int32_t>(found->second + 1u)))
             throw std::runtime_error("Mover checkpoint owner is not a canonical authored map export");
         if (!nativeActorOrder_) {
-            auto order = ReadPortableLevel68ActorOrder(map, SchemaScratchBytes);
+            auto order = OriginalActorOrderReferences();
             Retain(order.size() * sizeof(std::int32_t));
             for (const auto reference : order)
                 if (reference < 0 || static_cast<std::size_t>(reference) > map.exports.size())
@@ -10544,6 +10666,7 @@ public:
         std::string path;
         for (std::size_t i = 0u; i < map.exports.size(); ++i) {
             if (LowerAscii(Qualified(map, map.exports[i].ObjClass)) != "engine.level") continue;
+            if(!SourceExportAdmitted(i))continue;
             if (!path.empty()) throw std::runtime_error("Script save map has multiple native Levels");
             path = Qualified(map, static_cast<std::int32_t>(i + 1u));
         }
@@ -10563,7 +10686,7 @@ public:
         if (owner == mapClasses_.end() || !ClassDerives(owner->second, "Engine.LevelInfo"))
             throw std::runtime_error("Script save AI manager owner is not a map LevelInfo");
         if (!nativeActorOrder_) {
-            auto order = ReadPortableLevel68ActorOrder(Table(mapPath_), SchemaScratchBytes);
+            auto order = OriginalActorOrderReferences();
             Retain(order.size() * sizeof(std::int32_t));
             for (const auto reference : order)
                 if (reference < 0 || static_cast<std::size_t>(reference) > Table(mapPath_).exports.size())
@@ -10597,8 +10720,10 @@ public:
             return LowerAscii(Qualified(map,entry.ObjClass)) == "engine.level";
         });
         std::size_t baseline{};
-        if (realLevel) baseline = ReadPortableLevel68ActorOrder(map, SchemaScratchBytes).size();
-        else for (const auto& entry : map.exports) {
+        if (realLevel) baseline = OriginalActorOrderReferences().size();
+        else for (std::size_t index=0u;index<map.exports.size();++index) {
+            if(!SourceExportAdmitted(index))continue;
+            const auto& entry=map.exports[index];
             const auto found = persistentVmObjects.find(LowerAscii(Qualified(map,entry.ObjClass)));
             if (found != persistentVmObjects.end() && IsDerivedFromPath(found->second,"Engine.Actor")) ++baseline;
         }
@@ -10644,7 +10769,7 @@ public:
         if (graph.surfaceCount != model.surfaces.size() || graph.nodeCount != model.nodes.size())
             throw std::runtime_error("Script save native decal Model counts disagree with authored geometry");
         if (!nativeActorOrder_) {
-            auto order = ReadPortableLevel68ActorOrder(map, SchemaScratchBytes);
+            auto order = OriginalActorOrderReferences();
             Retain(order.size() * sizeof(std::int32_t));
             for (const auto ref : order)
                 if (ref < 0 || static_cast<std::size_t>(ref) > map.exports.size())
@@ -10909,9 +11034,11 @@ public:
 private:
     PortableActorVmHost host_;
     std::string mapName_, gameRoot_, mapPath_;
+    const std::optional<QuestVr::OriginalLinkerLoadProfile> loadProfile_;
     std::unordered_map<std::string, PortablePackageTables> tables_;
     std::unordered_map<std::string, std::string> mapClasses_;
     std::unordered_map<std::string, std::size_t> mapExports_;
+    std::unordered_set<std::string> contextExcludedPaths_;
     std::unordered_map<std::string, RuntimeObject*> birthClasses_;
     std::optional<std::vector<std::int32_t>> nativeActorOrder_;
     std::string nativeLevelPath_;
@@ -10983,6 +11110,7 @@ private:
         return value;
     }
     std::string ObjectClass(const std::string& path, const bool assetAllowed) {
+        if(IsContextExcludedPath(path))throw std::runtime_error("Script save object is context-excluded: "+path);
         const auto key = LowerAscii(path);
         if (key.rfind("@classdefault:",0u)==0u) {
             const auto selected=path.substr(std::string_view("@ClassDefault:").size());
@@ -11015,6 +11143,9 @@ private:
             throw std::runtime_error("Script save reference is unavailable or belongs to another map");
         const auto& table = Table(source);
         const auto index = FindPortableExport(table, path.substr(dot + 1u));
+        if(loadProfile_ && QuestVr::OriginalLinkerCreateExportDecision(*loadProfile_,
+                static_cast<std::uint32_t>(table.exports[index].ObjFlags),false)==QuestVr::OriginalLinkerCreateExportAction::Exclude)
+            throw std::runtime_error("Script save asset is excluded by its source load context");
         const auto reference = table.exports[index].ObjClass;
         return reference == 0 ? "Core.Class" : Qualified(table, reference);
     }
@@ -11022,6 +11153,7 @@ private:
         const auto target = LowerAscii(expected);
         std::unordered_set<std::string> visited;
         for (std::size_t depth = 0u; depth < 128u && !actual.empty(); ++depth) {
+            if(IsContextExcludedPath(actual))throw std::runtime_error("Script save class ancestry is context-excluded: "+actual);
             const auto key = LowerAscii(actual);
             if (key == target) return true;
             if (!visited.emplace(key).second) throw std::runtime_error("Script save class hierarchy cycles");
@@ -11359,7 +11491,7 @@ PreparedScriptState PrepareScriptSavedState(
         std::size_t links{};
         for (std::size_t index = persistentScriptExportCount; index < persistentRuntime->get()->exports.size(); ++index) {
             const auto* actor = persistentRuntime->get()->exports[index];
-            if (actor->runtimeBirth) continue;
+            if (!actor || actor->runtimeBirth) continue;
             const auto found = replacements.find(LowerAscii(actor->reflection.objectPath));
             const auto count = found == replacements.end() ? 0u : found->second;
             if (count > 65'536u || links > 65'536u - count)
@@ -11407,7 +11539,8 @@ PortableRuntimeSummary BuildAndVerifyPortableRuntime(
 }
 
 PortableRuntimeSummary InitializePortableRuntime(
-    const PortablePackageTables& package, const std::uint32_t initialRandomSeed) {
+    const PortablePackageTables& package, const std::uint32_t initialRandomSeed,
+    const std::optional<QuestVr::OriginalLinkerLoadProfile> loadProfile) {
     ShutdownPortableRuntime();
     if (initialRandomSeed != QuestVr::ScriptRandom::InitialSeed) persistentScriptRandomSeed = initialRandomSeed;
     PortableRuntimeSummary summary;
@@ -11415,23 +11548,24 @@ PortableRuntimeSummary InitializePortableRuntime(
     const PortableReflectionGraph graph = BuildPortableReflectionGraph(package);
     persistentRuntime = std::make_unique<GCRoot<RuntimePackage>>(
         GC::Alloc<RuntimePackage>(nullptr));
+    persistentRuntime->get()->loadProfile=loadProfile;
     PopulateRuntime(persistentRuntime->get(), package, graph, summary, nullptr);
     auto lookup=StageRuntimeLookupObjects(persistentRuntime->get()->exports);
     PublishRuntimeLookupObjects(lookup,persistentRuntime->get()->exports);
     persistentScriptExportCount = persistentRuntime->get()->exports.size();
     GC::Collect();
-    summary.passed = summary.objects == package.exports.size() &&
-        summary.classes == graph.classCount &&
+    summary.passed = summary.objects+summary.contextExcludedExports == package.exports.size() &&
+        (loadProfile || (summary.classes == graph.classCount &&
         summary.functions == graph.functionCount &&
-        summary.states == graph.stateCount &&
-        summary.properties == graph.propertyCount &&
+        summary.states == graph.stateCount && summary.properties == graph.propertyCount)) &&
         summary.normalizedBytecodeBytes != 0 &&
         GC::GetStats().numObjects == baseline + summary.objects + 1;
     return summary;
 }
 
 PortableRuntimeSummary InitializePortableRuntime(
-    const std::vector<PortablePackageTables>& packages, const std::uint32_t initialRandomSeed) {
+    const std::vector<PortablePackageTables>& packages, const std::uint32_t initialRandomSeed,
+    const std::optional<QuestVr::OriginalLinkerLoadProfile> loadProfile) {
     ShutdownPortableRuntime();
     // Read configuration before allocating/publishing runtime objects. Missing
     // is retained as unavailable; malformed owned input cannot leave a half
@@ -11445,6 +11579,7 @@ PortableRuntimeSummary InitializePortableRuntime(
     const std::size_t baseline = GC::GetStats().numObjects;
     persistentRuntime = std::make_unique<GCRoot<RuntimePackage>>(
         GC::Alloc<RuntimePackage>(nullptr));
+    persistentRuntime->get()->loadProfile=loadProfile;
 
     struct PackageSlice {
         const PortablePackageTables* package{};
@@ -11456,6 +11591,7 @@ PortableRuntimeSummary InitializePortableRuntime(
     persistentQualifiedObjects.clear();
     persistentVmObjects.clear();
     persistentConversationNodes.clear();
+    persistentContextExcluded.clear();
     for (const PortablePackageTables& package : packages) {
         PackageSlice slice;
         slice.package = &package;
@@ -11463,9 +11599,12 @@ PortableRuntimeSummary InitializePortableRuntime(
         slice.name = PackageStem(package.sourcePath);
         persistentRuntime->get()->sourceLinkers.push_back({slice.name,package.sourcePath,nullptr,{}});
         auto& linker=persistentRuntime->get()->sourceLinkers.back().live;
-        linker=MakeRuntimeLinker(package,persistentRuntime->get()->exports,persistentRuntime->get()->exports.size());
+        linker=MakeRuntimeLinker(package,persistentRuntime->get()->exports,persistentRuntime->get()->exports.size(),loadProfile);
         slice.first = persistentRuntime->get()->exports.size();
         for (PortableReflectionObject& reflection : slice.graph.objects) {
+            if(ExcludeFreshSourceExport(linker,package,persistentRuntime->get()->exports.size()-slice.first)) {
+                persistentRuntime->get()->exports.push_back(nullptr);++summary.contextExcludedExports;continue;
+            }
             reflection.objectPath = slice.name + "." + reflection.objectPath;
             RuntimeObject* object = GC::Alloc<RuntimeObject>(reflection, nullptr);
             object->sourcePath = package.sourcePath;
@@ -11503,6 +11642,7 @@ PortableRuntimeSummary InitializePortableRuntime(
              ++localIndex) {
             const std::size_t globalIndex = slice.first + localIndex;
             RuntimeObject* object = persistentRuntime->get()->exports[globalIndex];
+            if(!object)continue;
             const ExportTableEntry& entry = slice.package->exports[localIndex];
             object->outer = resolve(slice, entry.ObjOuter);
             object->base = resolve(slice, entry.ObjBase);
@@ -11537,10 +11677,10 @@ PortableRuntimeSummary InitializePortableRuntime(
                     if ((property.type != 5u && property.type != 8u) ||
                         property.value.empty()) continue;
                     const std::int32_t reference = DecodePortableObjectReference(property);
-                    const std::string path = reference == 0 ? std::string() : reference > 0
+                    const std::string path = ContextSourceValuePath(*slice.package,reference,reference == 0 ? std::string() : reference > 0
                         ? slice.name + "." +
                             GetPortableObjectPath(*slice.package, reference)
-                        : GetPortableObjectPath(*slice.package, reference);
+                        : GetPortableObjectPath(*slice.package, reference));
                     if (property.type == 5u) QuestVr::SetActorTextureOverride(
                         object->textureOverrides, property.name.ToString(), property.arrayIndex, path);
                     object->objectPropertyPaths[property.name.ToString()] = path;
@@ -11574,7 +11714,7 @@ PortableRuntimeSummary InitializePortableRuntime(
     for (const PackageSlice& slice : slices) {
         for (std::size_t localIndex = 0u; localIndex < slice.package->exports.size(); ++localIndex) {
             auto* owner = persistentRuntime->get()->exports[slice.first+localIndex];
-            if (!owner->classDescriptor) continue;
+            if (!owner || !owner->classDescriptor) continue;
             std::vector<RuntimeObject*> fields;
             std::unordered_set<RuntimeObject*> visited;
             bool valid = true;
@@ -11611,7 +11751,7 @@ PortableRuntimeSummary InitializePortableRuntime(
              ++localIndex) {
             RuntimeObject* object =
                 persistentRuntime->get()->exports[slice.first + localIndex];
-            if (!IsDerivedFromPath(object->cls, "ConSys.ConObject") ||
+            if (!object || !IsDerivedFromPath(object->cls, "ConSys.ConObject") ||
                 slice.package->exports[localIndex].ObjSize <= 0) {
                 continue;
             }
@@ -11626,10 +11766,10 @@ PortableRuntimeSummary InitializePortableRuntime(
                         property.value.empty()) continue;
                     const std::int32_t reference = DecodePortableObjectReference(property);
                     if (reference == 0) continue;
-                    const std::string path = reference > 0
+                    const std::string path = ContextSourceValuePath(*slice.package,reference,reference > 0
                         ? slice.name + "." +
                             GetPortableObjectPath(*slice.package, reference)
-                        : GetPortableObjectPath(*slice.package, reference);
+                        : GetPortableObjectPath(*slice.package, reference));
                     object->objectPropertyPaths[property.name.ToString()] = path;
                     if (RuntimeObject* target = resolve(slice, reference)) {
                         object->references.push_back(target);
@@ -11652,8 +11792,8 @@ PortableRuntimeSummary InitializePortableRuntime(
     persistentGameEngineClass=configuredGameEngineClass;
     auto lookup=StageRuntimeLookupObjects(persistentRuntime->get()->exports);
     PublishRuntimeLookupObjects(lookup,persistentRuntime->get()->exports);
-    summary.objects = persistentRuntime->get()->exports.size();
-    persistentScriptExportCount = summary.objects;
+    persistentScriptExportCount = persistentRuntime->get()->exports.size();
+    summary.objects = persistentScriptExportCount-summary.contextExcludedExports;
     summary.peakGcObjects = GC::GetStats().numObjects;
     GC::Collect();
     summary.passed = !packages.empty() && summary.objects != 0 &&
@@ -11661,6 +11801,10 @@ PortableRuntimeSummary InitializePortableRuntime(
         summary.normalizedBytecodeBytes != 0 &&
         GC::GetStats().numObjects == baseline + summary.objects + classDefaultObjects + 2;
     return summary;
+}
+
+std::optional<QuestVr::OriginalLinkerLoadProfile> ReadPortableRuntimeLoadProfile() {
+    return persistentRuntime&&persistentRuntime->get()?persistentRuntime->get()->loadProfile:std::nullopt;
 }
 
 static RuntimeMoverMotion ReadRuntimeMoverMotion(RuntimeObject* actor, const bool legacyActivated = false,
@@ -12105,6 +12249,7 @@ void ShutdownPortableRuntime() {
     persistentDispatchGraph.reset();
     persistentDispatchSummary = {};
     persistentVmObjects.clear();
+    persistentContextExcluded.clear();
     persistentConversationNodes.clear();
     persistentWindowDomain.reset();persistentRootWindowClass.reset();
     persistentConfigClasses.reset();
@@ -12218,6 +12363,8 @@ PortableNativeEngineClassesSnapshot PreparePortableRuntimeNativeEngineClasses() 
     std::vector<GCRoot<RuntimeObject>> allocations;
     allocations.reserve(QuestVr::NativeEngineClasses.size());
     for(const auto& entry:QuestVr::NativeEngineClasses) {
+        if(IsContextExcludedPath(std::string(entry.path)))
+            throw std::runtime_error("Native engine registration cannot replace a context-excluded source UClass");
         if(nextVm.count(LowerAscii(std::string(entry.path))) || nextQualified.count(std::string(entry.path)))
             throw std::runtime_error("Native-only engine class registration collides with an existing UObject/UClass");
         const auto base=nextVm.find(LowerAscii(std::string(entry.base)));
@@ -12348,6 +12495,8 @@ PortableNativeMetadataClassesSnapshot PreparePortableRuntimeNativeMetadataClasse
     std::vector<GCRoot<RuntimeObject>> allocations;
     allocations.reserve(QuestVr::NativeMetadataClasses.size());
     for(const auto& entry:QuestVr::NativeMetadataClasses) {
+        if(IsContextExcludedPath(std::string(entry.path)))
+            throw std::runtime_error("Native metadata registration cannot replace a context-excluded source UClass");
         if(nextVm.count(LowerAscii(std::string(entry.path))) || nextQualified.count(std::string(entry.path)))
             throw std::runtime_error("Native-only metadata class registration collides with an existing UObject/UClass");
         allocations.emplace_back(GC::Alloc<RuntimeObject>(PortableReflectionObject{
@@ -12473,6 +12622,8 @@ PortableNativeConfigClassesSnapshot PreparePortableRuntimeNativeConfigClasses() 
     auto nextQualified=persistentQualifiedObjects;auto nextVm=persistentVmObjects;
     std::vector<GCRoot<RuntimeObject>> allocations;allocations.reserve(QuestVr::NativeConfigClasses.size());
     for(const auto& entry:QuestVr::NativeConfigClasses) {
+        if(IsContextExcludedPath(std::string(entry.path)))
+            throw std::runtime_error("Native config registration cannot replace a context-excluded source UClass");
         if(nextVm.count(LowerAscii(std::string(entry.path))) || nextQualified.count(std::string(entry.path)))
             throw std::runtime_error("Native-only config class registration collides with an existing UObject/UClass");
         auto* base=host.Object(std::string(entry.base));
@@ -12855,6 +13006,8 @@ PortablePlayerSessionSnapshot PreparePortableRuntimePlayerObjects(const std::uin
     };
     auto classes=session->classes;auto viewports=session->viewports;
     const auto nativeClass=[&](const char* path,RuntimeObject* base) {
+        if(IsContextExcludedPath(path))
+            throw std::runtime_error("Native player registration cannot replace a context-excluded source UClass");
         const auto found=nextVm.find(LowerAscii(path));
         if(found!=nextVm.end()) {
             auto* cls=found->second;
@@ -13209,6 +13362,7 @@ PortableVmValue ExecutePortableFunction(const std::string& objectPath) {
     }
     RuntimeObject* function = nullptr;
     for (RuntimeObject* object : persistentRuntime->get()->exports) {
+        if(!object)continue;
         if ((object->reflection.objectPath == objectPath ||
              (object->reflection.objectPath.size() > objectPath.size() &&
               object->reflection.objectPath.compare(
@@ -13735,9 +13889,9 @@ bool GetPortableRuntimeUnsavedScriptState() {
     if(HasNativeDeferredOwnership()) return true;
     if (persistentRuntime->get()->nativeDecals) return true;
     for (const auto* object : persistentRuntime->get()->exports)
-        if (object->committedScriptState || !object->classDefaultValues.empty() || object->nativeAiManager ||
+        if (object && (object->committedScriptState || !object->classDefaultValues.empty() || object->nativeAiManager ||
             object->nativeFirstDynamic || object->nativeActorOrderChanged ||
-            (object->nativeTimeSeconds && std::bit_cast<std::uint64_t>(*object->nativeTimeSeconds)!=0u)) return true;
+            (object->nativeTimeSeconds && std::bit_cast<std::uint64_t>(*object->nativeTimeSeconds)!=0u))) return true;
     return false;
 }
 
@@ -13916,6 +14070,7 @@ static std::pair<RuntimeObject*,RuntimeObject*> BindAuthoredActorSlots(
             if (reference < 0 || static_cast<std::size_t>(reference) > package.exports.size())
                 throw std::runtime_error("Level actor slot is not a local map export");
             auto* actor = persistentRuntime->get()->exports.at(first + static_cast<std::size_t>(reference - 1));
+            if(!actor)continue; // Original CreateExport returned None; preserve its source slot.
             if (!IsDerivedFromPath(actor->cls, "Engine.Actor")) {
                 // Existing reflection retains unresolved external types. A
                 // missing wrapper must not fabricate actor native behavior.
@@ -13936,7 +14091,7 @@ static std::pair<RuntimeObject*,RuntimeObject*> BindAuthoredActorSlots(
         // Only that explicit fixture shape uses export-order membership.
         for (std::size_t index = first; index < persistentRuntime->get()->exports.size(); ++index) {
             auto* actor = persistentRuntime->get()->exports[index];
-            if (!IsDerivedFromPath(actor->cls, "Engine.Actor")) continue;
+            if (!actor || !IsDerivedFromPath(actor->cls, "Engine.Actor")) continue;
             actor->worldActorIndex = static_cast<std::int32_t>(actorOrder.size());
             actorOrder.push_back(actor);
             persistentWorldActors.push_back(actor);
@@ -14013,8 +14168,12 @@ PortableMapRuntimeSummary LoadPortableRuntimeMap(
     persistentMapPackageName=packageName;persistentMapSourcePath=package.sourcePath;
     const std::size_t first = persistentRuntime->get()->exports.size();
     persistentRuntime->get()->mapLinker=MakeRuntimeLinker(package,persistentRuntime->get()->exports,first);
+    persistentRuntime->get()->mapLinker->loadProfile=persistentRuntime->get()->loadProfile;
     persistentRuntime->get()->exports.reserve(first + graph.objects.size());
     for (PortableReflectionObject reflection : graph.objects) {
+        if(ExcludeFreshSourceExport(persistentRuntime->get()->mapLinker,package,persistentRuntime->get()->exports.size()-first)) {
+            persistentRuntime->get()->exports.push_back(nullptr);++summary.contextExcludedExports;continue;
+        }
         reflection.objectPath = packageName + "." + reflection.objectPath;
         RuntimeObject* object = GC::Alloc<RuntimeObject>(reflection, nullptr);
         object->sourcePath = package.sourcePath;
@@ -14039,6 +14198,7 @@ PortableMapRuntimeSummary LoadPortableRuntimeMap(
 
     for (std::size_t localIndex = 0; localIndex < package.exports.size(); ++localIndex) {
         RuntimeObject* object = persistentRuntime->get()->exports[first + localIndex];
+        if(!object)continue;
         const ExportTableEntry& entry = package.exports[localIndex];
         object->outer = entry.ObjOuter==0?persistentRuntime->get()->mapLinkerRoot:resolve(entry.ObjOuter);
         object->base = resolve(entry.ObjBase);
@@ -14083,9 +14243,9 @@ PortableMapRuntimeSummary LoadPortableRuntimeMap(
                 if ((property.type != 5u && property.type != 8u) ||
                     property.value.empty()) continue;
                 const std::int32_t reference = DecodePortableObjectReference(property);
-                const std::string path = reference == 0 ? std::string() : reference > 0
+                const std::string path = ContextSourceValuePath(package,reference,reference == 0 ? std::string() : reference > 0
                     ? packageName + "." + GetPortableObjectPath(package, reference)
-                    : GetPortableObjectPath(package, reference);
+                    : GetPortableObjectPath(package, reference));
                 if (property.type == 5u) QuestVr::SetActorTextureOverride(
                     object->textureOverrides, property.name.ToString(), property.arrayIndex, path);
                 object->objectPropertyPaths[property.name.ToString()] = path;
@@ -14101,7 +14261,7 @@ PortableMapRuntimeSummary LoadPortableRuntimeMap(
     }
     for(std::size_t index=0u;index<package.exports.size();++index)
         CacheRuntimeBitmapDimensions(persistentRuntime->get()->exports[first+index],package);
-    summary.exports = graph.objects.size();
+    summary.exports = graph.objects.size()-summary.contextExcludedExports;
     persistentMapPackageName = packageName;
     persistentMapSourcePath = package.sourcePath;
     const auto pendingModel=BindAuthoredActorSlots(package, first);
@@ -14114,7 +14274,7 @@ PortableMapRuntimeSummary LoadPortableRuntimeMap(
     PublishRuntimeLookupObjects(lookup,lookupObjects);
     ++persistentWorldRevision;
     GC::Collect();
-    summary.passed = summary.exports == package.exports.size() &&
+    summary.passed = summary.exports+summary.contextExcludedExports == package.exports.size() &&
         summary.actors != 0 && summary.actorProperties != 0 &&
         summary.resolvedClasses != 0;
     if(summary.passed && pendingModel.first) {
@@ -14147,6 +14307,7 @@ std::size_t UnloadPortableRuntimeMap() {
         throw std::runtime_error("Map unload refused: script state requires a per-map archive");
     if(persistentRuntime&&persistentRuntime->get()&&persistentRuntime->get()->mapLinker) {
         auto& linker=persistentRuntime->get()->mapLinker;
+        RetireContextExclusions(linker);
         linker->Retire();linker.reset();
     }
     if(persistentEngineCollision) {
@@ -14604,8 +14765,8 @@ PortableTextureArray BuildPortableRuntimeActorTextureArray(
     result.rgba.reserve(initialBytes);
     std::unordered_map<std::string, PortablePackageTables> packages;
     std::string gameRoot;
-    if (persistentRuntime && !persistentRuntime->get()->exports.empty()) {
-        const std::string& source = persistentRuntime->get()->exports.front()->sourcePath;
+    if (persistentRuntime && !persistentRuntime->get()->sourceLinkers.empty()) {
+        const std::string& source = persistentRuntime->get()->sourceLinkers.front().sourcePath;
         const std::size_t systemSlash = source.find_last_of("/\\");
         const std::size_t rootSlash = systemSlash == std::string::npos
             ? std::string::npos
@@ -14916,7 +15077,7 @@ bool VerifyPortableRuntimeDamage() {
     for (std::size_t index = persistentScriptExportCount;
          index < persistentRuntime->get()->exports.size(); ++index) {
         RuntimeObject* object = persistentRuntime->get()->exports[index];
-        if (object->active && IsDerivedFromPath(object->cls, "Engine.Pawn")) {
+        if (object && object->active && IsDerivedFromPath(object->cls, "Engine.Pawn")) {
             pawn = object;
             break;
         }
@@ -15701,7 +15862,7 @@ bool VerifyPortableRuntimeInteraction() {
     for (std::size_t index = persistentScriptExportCount;
          index < persistentRuntime->get()->exports.size(); ++index) {
         RuntimeObject* object = persistentRuntime->get()->exports[index];
-        if (object->active && !object->worldRemoved && IsDerivedFromPath(object->cls, "Engine.Inventory")) {
+        if (object && object->active && !object->worldRemoved && IsDerivedFromPath(object->cls, "Engine.Inventory")) {
             inventoryActor = object;
             break;
         }
@@ -15754,6 +15915,7 @@ bool SavePortableRuntimeState(const std::string& path) {
         for (std::size_t index = persistentScriptExportCount;
              index < persistentRuntime->get()->exports.size(); ++index) {
             RuntimeObject* object = persistentRuntime->get()->exports[index];
+            if(!object)continue;
             if (!object->active) inactive.push_back(object->reflection.objectPath);
             if (object->activated) activated.push_back(object->reflection.objectPath);
             if (object->healthInitialized) damaged.emplace_back(object->reflection.objectPath, object->health);
@@ -15848,6 +16010,8 @@ bool SavePortableRuntimeState(const std::string& path) {
             wrapped.insert(wrapped.end(),belt.begin(),belt.end());word(static_cast<std::uint32_t>(bytes.size()));
             wrapped.insert(wrapped.end(),bytes.begin(),bytes.end());bytes.swap(wrapped);
         }
+        if(const auto profile=ReadPortableRuntimeLoadProfile())
+            bytes=QuestVr::EncodeLoadContextSave(*profile,bytes);
         if (!QuestVr::WriteDurableSaveFile(path, bytes)) {
             __android_log_print(ANDROID_LOG_WARN, "quest_main", "DeusExQuest: runtime checkpoint write failed");
             return false;
@@ -15868,6 +16032,14 @@ static bool ReadPortableRuntimeState(const std::string& path, const bool apply, 
             throw std::runtime_error("Active retail collision checkpoint restore is not implemented");
         std::vector<std::uint8_t> bytes;
         if (!QuestVr::ReadBoundedSaveFile(path, QuestVr::kMaximumSaveRuntimeBytes, bytes)) return false;
+        const auto contextSave=QuestVr::DecodeLoadContextSave(bytes);
+        if(contextSave.profile!=ReadPortableRuntimeLoadProfile())
+            throw std::runtime_error("Runtime save loader profile differs from the explicitly initialized engine");
+        if(contextSave.status==QuestVr::LoadContextSaveStatus::Wrapped) {
+            const auto begin=static_cast<std::size_t>(contextSave.inner.data()-bytes.data());
+            const auto end=begin+contextSave.inner.size();
+            bytes.erase(bytes.begin()+end,bytes.end());bytes.erase(bytes.begin(),bytes.begin()+begin);
+        }
         std::optional<QuestVr::QuickBeltState> savedQuickBelt;
         const auto headerWord=[&](std::size_t offset) {
             if(offset>bytes.size() || bytes.size()-offset<4u) throw std::runtime_error("Quick inventory checkpoint header is truncated");
@@ -15986,6 +16158,8 @@ static bool ReadPortableRuntimeState(const std::string& path, const bool apply, 
                 throw std::runtime_error("Mover checkpoint map is not the loaded map");
         }
         PreparedScriptState prepared;
+        std::string prefixMapName=!expectedMapName.empty()?expectedMapName:
+            !moverMapName.empty()?moverMapName:persistentMapPackageName;
         std::optional<std::uint32_t> restoredRandomSeed;
         std::unordered_set<std::string> savedBirthKeys;
         if (version >= 4u) {
@@ -15997,6 +16171,7 @@ static bool ReadPortableRuntimeState(const std::string& path, const bool apply, 
             limits.maxBytes = QuestVr::kMaximumSaveRuntimeBytes - prefixBytes - 4u;
             const std::vector<std::uint8_t> blob(bytes.begin() + static_cast<std::ptrdiff_t>(cursor), bytes.end());
             const auto scriptState = QuestVr::DecodeScriptSavedState(blob, limits);
+            prefixMapName=scriptState.mapName;
             const bool hasState = std::any_of(scriptState.objects.begin(), scriptState.objects.end(),
                 [](const auto& object) { return object.state.has_value(); });
             const bool hasDefaults = !scriptState.classDefaults.empty();
@@ -16044,8 +16219,16 @@ static bool ReadPortableRuntimeState(const std::string& path, const bool apply, 
         }
         if (cursor != bytes.size()) throw std::runtime_error("Runtime checkpoint has trailing bytes");
         if (apply && !prepared.replaceBirths) StageRuntimeBirthReplacement(prepared);
+        std::unique_ptr<ScriptSaveSchema> prefixSchema;
+        if(ReadPortableRuntimeLoadProfile() && !prefixMapName.empty() &&
+            LowerAscii(prefixMapName)!=LowerAscii(persistentMapPackageName))
+            prefixSchema=std::make_unique<ScriptSaveSchema>(prefixMapName);
         const auto& restoredObjects = apply ? prepared.vm : persistentVmObjects;
         const auto prefixTarget = [&](const std::string& path) -> RuntimeObject* {
+            // Legacy references to previously visited maps may be unavailable,
+            // but a known source exclusion is not such an unresolved reference.
+            if(IsContextExcludedPath(path) || (prefixSchema && prefixSchema->ContextExcludedSourcePath(path)))
+                throw std::runtime_error("Checkpoint gameplay prefix references a context-excluded source export");
             const auto old = persistentVmObjects.find(LowerAscii(path));
             if (old != persistentVmObjects.end() && old->second->runtimeBirth &&
                 !savedBirthKeys.count(old->second->birthVmKey))
@@ -16185,6 +16368,7 @@ static bool ReadPortableRuntimeState(const std::string& path, const bool apply, 
         if (persistentRuntime->get()->nativeDecals) pendingBirthGarbage = true;
         persistentRuntime->get()->nativeDecals = prepared.nativeDecals.get();
         for (auto* object : persistentRuntime->get()->exports) {
+            if(!object)continue;
             if (object->nativeAiManager) pendingBirthGarbage = true;
             object->nativeAiManager = nullptr;
         }
@@ -16201,6 +16385,7 @@ static bool ReadPortableRuntimeState(const std::string& path, const bool apply, 
         // Pre-RNG portable formats contain no stream evidence. Their explicit
         // migration baseline is CRT seed1, never the current random history.
         for (RuntimeObject* object : persistentRuntime->get()->exports) {
+            if(!object)continue;
             // Old portable saves explicitly reset native time to the loader
             // baseline. Never merge the current history or guess it from a
             // mutable/lossy reflected Float. New records publish after staging.
@@ -16216,6 +16401,7 @@ static bool ReadPortableRuntimeState(const std::string& path, const bool apply, 
         }
         for (std::size_t index = persistentScriptExportCount; index < persistentRuntime->get()->exports.size(); ++index) {
             RuntimeObject* object = persistentRuntime->get()->exports[index];
+            if(!object)continue;
             object->active = true; object->activated = false; object->healthInitialized = false; object->health = 100.0f;
             object->moverMotion.reset();
         }

@@ -143,6 +143,97 @@ void CompactReferences() {
     Reject([&] { DecodeAuthoredStructValue(names,none,69,resolver); },"NUL in name resolver output accepted");
 }
 
+void LoaderAuthorizedNone() {
+    auto target=Field("Target",Kind::Object);target.classReference=true;
+    target.referenceClassPath="Engine.Inventory";
+    const auto schema=Schema({target,Field("Count",Kind::Int)});
+    const auto payload=[](const std::int32_t reference) {
+        Bytes bytes;Index(bytes,reference);I32(bytes,-73);return bytes;
+    };
+    std::size_t calls{};std::int32_t observed{};
+    AuthoredStructResolvers resolver;
+    resolver.resolveObjectOrNone=[&](const std::int32_t reference,const AuthoredStructField& field)
+        ->std::optional<std::string> {
+        ++calls;observed=reference;
+        Require(field.key==target.key && field.classReference &&
+            field.referenceClassPath=="Engine.Inventory","Loader-aware resolver lost authored object constraints");
+        if(reference==1)return "ValuePackage.AdmittedExport";
+        if(reference==-1)return "ValuePackage.AdmittedImport";
+        if(reference==2 || reference==-2)return std::nullopt; // Source-proved exclusion, not failure.
+        throw std::runtime_error("Missing or wrongly typed source reference");
+    };
+    for(const auto reference:{1,-1,2,-2}) {
+        const auto bytes=payload(reference);const auto value=DecodeAuthoredStructValue(schema,bytes,69,resolver);
+        const auto expected=reference==1?std::string("ValuePackage.AdmittedExport"):
+            reference==-1?std::string("ValuePackage.AdmittedImport"):std::string{};
+        Require(observed==reference && value.fields.at("target").kind==Kind::Object &&
+            value.fields.at("target").text==expected && value.fields.at("count").integer==-73,
+            "Loader-aware signed import/export path/None changed the following member boundary");
+        for(std::size_t length=0u;length<bytes.size();++length) {
+            const Bytes truncated(bytes.begin(),bytes.begin()+static_cast<std::ptrdiff_t>(length));
+            Reject([&]{DecodeAuthoredStructValue(schema,truncated,69,resolver);},
+                "Loader-authorized None bypassed truncated member rejection");
+        }
+        auto trailing=bytes;trailing.push_back(0u);
+        Reject([&]{DecodeAuthoredStructValue(schema,trailing,69,resolver);},
+            "Loader-aware resolver bypassed trailing byte rejection");
+    }
+    const auto beforeZero=calls;
+    for(const Bytes& index:std::vector<Bytes>{{0u},{0x80u},{0x40u,0u}}) {
+        auto bytes=index;I32(bytes,-73);const auto value=DecodeAuthoredStructValue(schema,bytes,69,resolver);
+        Require(value.fields.at("target").text.empty() && value.fields.at("count").integer==-73 && calls==beforeZero,
+            "Serialized zero called the loader resolver or lost its None/member boundary");
+    }
+    for(const auto reference:{3,-3})
+        Reject([&]{DecodeAuthoredStructValue(schema,payload(reference),69,resolver);},
+            "Loader-aware resolver failure was silently converted to None");
+    resolver.resolveObjectOrNone=[](std::int32_t,const AuthoredStructField&)->std::optional<std::string> {
+        return std::string{};
+    };
+    for(const auto reference:{1,-1})
+        Reject([&]{DecodeAuthoredStructValue(schema,payload(reference),69,resolver);},
+            "Engaged empty optional object identity was mistaken for authorized None");
+    resolver.resolveObjectOrNone=[](std::int32_t,const AuthoredStructField&)->std::optional<std::string> {
+        return std::nullopt;
+    };
+    resolver.resolveObject=[](std::int32_t,const AuthoredStructField&) {return std::string("ValuePackage.Object");};
+    for(const auto reference:{0,1,-1})
+        Reject([&]{DecodeAuthoredStructValue(schema,payload(reference),69,resolver);},
+            "Ambiguous historical and loader-aware resolvers were accepted");
+    resolver={};
+    for(const auto reference:{1,-1})
+        Reject([&]{DecodeAuthoredStructValue(schema,payload(reference),69,resolver);},
+            "Missing resolver became implicit loader-authorized None");
+    resolver.resolveObject=[](std::int32_t,const AuthoredStructField&) {return std::string{};};
+    for(const auto reference:{1,-1})
+        Reject([&]{DecodeAuthoredStructValue(schema,payload(reference),69,resolver);},
+            "Historical empty-string resolver stopped rejecting unresolved source identities");
+
+    resolver={};const auto largePath=std::string(1000u,'x');
+    resolver.resolveObjectOrNone=[&](std::int32_t,const AuthoredStructField&)->std::optional<std::string> {return largePath;};
+    AuthoredStructLimits limits;limits.identityBytes=128u;
+    Reject([&]{DecodeAuthoredStructValue(schema,payload(1),69,resolver,limits);},
+        "Loader-aware nonempty object identity bypassed its unchanged identity limit");
+    limits={};AuthoredStructDetail::Budget measured{limits};std::vector<const AuthoredStructSchema*> stack;
+    AuthoredStructDetail::Validate(schema,measured,0u,stack);
+    limits.retainedBytes=measured.retained+largePath.size()-1u;
+    Reject([&]{DecodeAuthoredStructValue(schema,payload(-1),69,resolver,limits);},
+        "Loader-aware optional object identity bypassed retained text accounting");
+    limits.retainedBytes=measured.retained+largePath.size();
+    Require(DecodeAuthoredStructValue(schema,payload(-1),69,resolver,limits).fields.at("target").text==largePath,
+        "Exact retained loader-aware object identity bound was rejected");
+    resolver.resolveObjectOrNone=[](std::int32_t,const AuthoredStructField&)->std::optional<std::string> {return std::nullopt;};
+    limits.retainedBytes=measured.retained;
+    Require(DecodeAuthoredStructValue(schema,payload(2),69,resolver,limits).fields.at("target").text.empty(),
+        "Authorized None charged a fabricated nonempty object identity");
+    limits.inputBytes=payload(2).size()-1u;
+    Reject([&]{DecodeAuthoredStructValue(schema,payload(2),69,resolver,limits);},
+        "Authorized None raised the unchanged input byte limit");
+    limits={};limits.valueNodes=2u;
+    Reject([&]{DecodeAuthoredStructValue(schema,payload(-2),69,resolver,limits);},
+        "Authorized None raised the unchanged structural node limit");
+}
+
 void ScalarsAndNested() {
     auto vector=std::make_shared<AuthoredStructSchema>(Schema({Field("Z",Kind::Float),Field("X",Kind::Float),
         Field("Y",Kind::Float)},Kind::Vector,"Core.Object.Vector"));
@@ -359,7 +450,7 @@ void RetainedReadBudgets() {
 
 int main() {
     try {
-        InventoryMembers(); CompactReferences(); ScalarsAndNested(); Strings(); InvalidSchemasAndBudgets();
+        InventoryMembers(); CompactReferences(); LoaderAuthorizedNone(); ScalarsAndNested(); Strings(); InvalidSchemasAndBudgets();
         DeclarationTagNames();
         RetainedReadBudgets();
         std::cout << "Authored struct value tests passed: " << checks << " checks, " << rejections << " rejections\n";

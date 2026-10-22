@@ -261,7 +261,8 @@ int Run(const fs::path& root,const std::optional<std::string>& expected,unsigned
     sources.emplace_back(root/"System"/"User.ini");const auto userIni=sources.back().path;
     sources.emplace_back(root/"Maps"/"00_Training.dx");const auto map=LoadPortablePackageTables(sources.back().path.string());
     Require(scripts.size()==38u,"Startup diagnostic differs from exact Quest script package list");
-    Require(InitializePortableRuntime(scripts,InitialSeed).passed,"Cannot initialize original Quest source set");
+    const auto initialized=InitializePortableRuntime(scripts,InitialSeed,QuestVr::OriginalLinkerLoadProfile{false,true,true});
+    Require(initialized.passed,"Cannot initialize original Quest source set under the actual standalone load context");
     Require(PreparePortableRuntimeNativeEngineClasses().prepared&&PreparePortableRuntimeNativeMetadataClasses().prepared&&
         PreparePortableRuntimeNativeConfigClasses().prepared&&PreparePortableRuntimeNativePackages().prepared&&
         PreparePortableRuntimeObjectLookup().prepared&&PreparePortableRuntimeEngineCollision(ini).prepared,
@@ -269,7 +270,18 @@ int Run(const fs::path& root,const std::optional<std::string>& expected,unsigned
     auto lifetime=std::make_shared<QuestVr::NativeClientLifetime>();BindPortableRuntimeClient(lifetime,Client);
     RegisterPortableRuntimeViewport(Client,{Viewport,1024u,1152u,3u,2u});
     Require(!PreparePortableRuntimePlayerObjects(Viewport).bound,"Startup diagnostic forced player possession");
-    Require(LoadPortableRuntimeMap(map).passed,"Cannot load actual first Training map");
+    const auto loaded=LoadPortableRuntimeMap(map);
+    Require(loaded.passed,"Cannot load actual first Training map");
+    Require(loaded.exports==1356u&&loaded.contextExcludedExports==1991u&&loaded.actors==312u,
+        "First Training source-context census differs from independent original flag/table oracle");
+    const auto initialOrder=ReadPortableWorldActorOrder();
+    Require(initialOrder.available&&initialOrder.actorIndices.size()==1337u&&initialOrder.actorIndices[0u]!=0u&&
+        initialOrder.actorIndices[1u]==0u&&initialOrder.actorIndices[1331u]==0u&&initialOrder.actorIndices[1332u]==0u&&
+        initialOrder.actorIndices[1333u]==0u&&initialOrder.actorIndices[1334u]==0u,
+        "Fresh first Training did not preserve original excluded source Actor slots as native None");
+    std::cout<<"LOAD CONTEXT client|server=0x30000 admitted="<<loaded.exports<<" excluded="<<loaded.contextExcludedExports
+        <<" actors="<<loaded.actors<<" sourceSlots="<<initialOrder.actorIndices.size()
+        <<"; actual loader-created objects only, editor Camera/Brush refs None, compiled BSP retained\n";
     const auto native=ReadPortableRuntimeNativeModel();const auto engine=ReadPortableRuntimeEngineCollision();
     Require(native.available&&native.mapGeneration&&engine.boundLevelPath==native.levelPath,
         "First Training has no actual current native Level/Model/Engine binding");
