@@ -187,6 +187,15 @@ enum class PortableWorldStartupPhase : std::uint8_t {
     SetActorZone, LastRenderTime, PostBeginPlay, SetInitialState, WorldBases,
     ClearStartup, PostPostBeginPlay, CompactActorSlots, ClientSetup, Count
 };
+struct PortablePlayerLoginSource {
+    // Decoded original FURL portal/options, preserving native option order.
+    // Not a new URL parser or permission to synthesize a PlayerPawn.
+    std::u16string portal;
+    std::vector<std::u16string> urlOptions;
+    // Explicit owned-file alias resolution; absence is a failed alias load,
+    // never a hardcoded replacement class. Loading still checks the real UClass.
+    std::optional<std::u16string> userDefaultPlayerClass,iniUrlClass;
+};
 struct PortableWorldStartupProbeOptions {
     // Already decoded URL GAME= class and the configured local client's
     // DefaultGame class. Empty URL selects the map's actual DefaultGameType
@@ -197,6 +206,13 @@ struct PortableWorldStartupProbeOptions {
     // Used only without an actual native client (viewport count is irrelevant).
     // Omission refuses that missing configuration rather than using DefaultGame.
     std::string defaultServerGameClass{};
+    std::optional<PortablePlayerLoginSource> playerLogin{};
+};
+struct PortablePlayerLoginObservation {
+    std::uint64_t viewportIdentity{};
+    std::string selectedClass,gamePath,functionPath,playerPath,error;
+    bool attempted{},loginEntered{},loginReturned{},paired{};
+    bool operator==(const PortablePlayerLoginObservation&) const = default;
 };
 struct PortableSpawnEncroachmentSnapshot {
     std::string actorPath,classPath;
@@ -246,12 +262,14 @@ struct PortableWorldStartupProbeResult {
     // original startup root. No pose setters, begun-play override or publication.
     std::vector<PortableSpawnEncroachmentSnapshot> spawnedEncroachment;
     PortableWorldActorOrderSnapshot beforeActorOrder,afterActorOrder;
+    std::vector<PortablePlayerLoginObservation> playerLogins;
 };
 const char* PortableWorldStartupPhaseName(PortableWorldStartupPhase phase);
 // Non-publishing diagnostic over actual Level slots and original callbacks.
 // One shared VM/host transaction is ALWAYS rolled back, including a prefix
 // that reaches native actor ordering and the later client/player/detail gap.
-// This neither starts a playable world nor binds/logs in a player. Exact first
+// This never publishes a playable world or player; reached genuine Login/
+// possession is staged in that same rollback root. Exact first
 // VM failure and phase/slot/receiver are retained without accepting partial work.
 PortableWorldStartupProbeResult ProbePortableWorldStartup(
     const PortableWorldStartupProbeOptions& options,

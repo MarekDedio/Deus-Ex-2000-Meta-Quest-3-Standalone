@@ -4,6 +4,7 @@
 #include "portable_object_lookup.h"
 #include "portable_retail_collision.h"
 #include "quest_native_work.h"
+#include "quest_native_config.h"
 #include "quest_runtime_script_packages.h"
 #include "quest_save_bundle.h"
 
@@ -220,6 +221,24 @@ void ObserveActorOrder(const PortableWorldStartupProbeResult& world) {
     std::cout<<"NATIVE ACTOR ORDER originalSlots="<<before.actorIndices.size()<<" finalSlots="<<after.actorIndices.size()
         <<" firstDynamic="<<split<<"; exact reserved slots/stable static+dynamic identity oracle, NOT player setup/publication\n";
 }
+void ObservePlayerLogins(const PortableWorldStartupProbeResult& world) {
+    Require(world.playerLogins.size()<=QuestVr::NativeClientRegistry::MaximumViewports,
+        "Player Login observation exceeds registered viewport bound");
+    for(const auto& login:world.playerLogins) {
+        Require(login.viewportIdentity==Viewport&&login.attempted,"Player Login did not use the actual prepared Viewport");
+        Require(!login.loginEntered||(!login.selectedClass.empty()&&!login.gamePath.empty()&&!login.functionPath.empty()),
+            "Original Login entry lacks actual class/GameInfo/function authority");
+        Require(!login.loginReturned||login.loginEntered,"Original Login returned without dispatch");
+        Require(!login.paired||(login.loginReturned&&!login.playerPath.empty()),"Possession preceded an actual returned PlayerPawn");
+        std::cout<<"PLAYER LOGIN viewport="<<login.viewportIdentity<<" attempted="<<login.attempted
+            <<" class="<<std::quoted(login.selectedClass)<<" game="<<std::quoted(login.gamePath)
+            <<" function="<<std::quoted(login.functionPath)<<" entered="<<login.loginEntered
+            <<" returned="<<login.loginReturned<<" pawn="<<std::quoted(login.playerPath)
+            <<" paired="<<login.paired<<" outError="<<std::quoted(login.error)<<'\n';
+    }
+    std::cout<<"PLAYER LOGIN OBSERVATIONS count="<<world.playerLogins.size()
+        <<"; same rollback root, NOT published possession or completed startup\n";
+}
 std::size_t NativeWorkLimit(std::string_view text) {
     Require(!text.empty()&&text.size()<=20u,"Native-work allowance must be a bounded decimal integer");
     std::size_t value{};
@@ -235,10 +254,11 @@ std::size_t NativeWorkLimit(std::string_view text) {
 int Run(const fs::path& root,const std::optional<std::string>& expected,unsigned repeats,std::size_t nativeWork,
     bool requireSpawnEncroachment) {
     Temporary temporary(root);std::vector<Source> sources;std::vector<PortablePackageTables> scripts;
-    sources.reserve(QuestVr::RuntimeScriptPackages.size()+2u);scripts.reserve(QuestVr::RuntimeScriptPackages.size());
+    sources.reserve(QuestVr::RuntimeScriptPackages.size()+3u);scripts.reserve(QuestVr::RuntimeScriptPackages.size());
     for(const auto* name:QuestVr::RuntimeScriptPackages){sources.emplace_back(root/"System"/(std::string(name)+".u"));
         scripts.push_back(LoadPortablePackageTables(sources.back().path.string()));}
     sources.emplace_back(root/"System"/"DeusEx.ini");const auto ini=sources.back().path.string();
+    sources.emplace_back(root/"System"/"User.ini");const auto userIni=sources.back().path;
     sources.emplace_back(root/"Maps"/"00_Training.dx");const auto map=LoadPortablePackageTables(sources.back().path.string());
     Require(scripts.size()==38u,"Startup diagnostic differs from exact Quest script package list");
     Require(InitializePortableRuntime(scripts,InitialSeed).passed,"Cannot initialize original Quest source set");
@@ -292,10 +312,26 @@ int Run(const fs::path& root,const std::optional<std::string>& expected,unsigned
     };
     rollback();
     PortableWorldStartupProbeOptions options;options.defaultGameClass="DeusEx.DeusExGameInfo";
+    // Explicit diagnostic binding of already-decoded plain-map FURL fields.
+    // This is NOT the original FURL constructor/default-options parser. Only
+    // Portal and Op are read by the reached SpawnPlayActor Login prefix.
+    options.playerLogin.emplace();
+    const auto userConfig=QuestVr::NativeConfig::ReadOrderedIni(userIni);
+    const auto iniConfig=QuestVr::NativeConfig::ReadOrderedIni(fs::path(ini));
+    Require(userConfig.has_value()&&iniConfig.has_value(),"Cannot read explicit original Login class configuration sources");
+    if(const auto value=userConfig->Scalar("DefaultPlayer","Class"))
+        options.playerLogin->userDefaultPlayerClass=QuestVr::UnrealString::Decode(*value);
+    if(const auto value=iniConfig->Scalar("URL","Class"))
+        options.playerLogin->iniUrlClass=QuestVr::UnrealString::Decode(*value);
+    std::cout<<"PLAYER LOGIN SOURCE explicit decoded diagnostic Portal=empty/Op=empty; owned User.ini DefaultPlayer.Class="
+        <<std::quoted(options.playerLogin->userDefaultPlayerClass?QuestVr::UnrealString::Encode(*options.playerLogin->userDefaultPlayerClass):"<absent>")
+        <<" DeusEx.ini URL.Class="<<std::quoted(options.playerLogin->iniUrlClass?QuestVr::UnrealString::Encode(*options.playerLogin->iniUrlClass):"<absent>")
+        <<"; NOT full FURL default construction\n";
     QuestVr::Vm::Limits limits;limits.instructions=4'000'000u;limits.nodes=1'048'576u;
     limits.writes=1'048'576u;limits.retainedBytes=128u<<20u;
     limits.nativeWork=nativeWork;
     std::optional<Boundary> boundary;std::optional<std::vector<PortableSpawnEncroachmentSnapshot>> spawnPackets;bool completed{};
+    std::optional<std::vector<PortablePlayerLoginObservation>> playerLogins;
     for(unsigned attempt=1u;attempt<=repeats;++attempt){
         const auto start=std::chrono::steady_clock::now();
         const auto result=ProbePortableRuntimeRetailCollisionStartup(options,limits);const auto& world=result.world;
@@ -320,6 +356,9 @@ int Run(const fs::path& root,const std::optional<std::string>& expected,unsigned
         for(const auto& call:world.execution.callStack)std::cout<<"CALL "<<call<<'\n';
         ObserveSpawnPackets(world,requireSpawnEncroachment);
         ObserveActorOrder(world);
+        ObservePlayerLogins(world);
+        if(playerLogins)Require(*playerLogins==world.playerLogins,"Repeated original player Login observations differ");
+        else playerLogins=world.playerLogins;
         if(spawnPackets)Require(SameSpawnPackets(*spawnPackets,world.spawnedEncroachment),
             "Repeated startup changed detached Spawn identities, exact pose words, query result/storage or lifecycle tail");
         else spawnPackets=world.spawnedEncroachment;

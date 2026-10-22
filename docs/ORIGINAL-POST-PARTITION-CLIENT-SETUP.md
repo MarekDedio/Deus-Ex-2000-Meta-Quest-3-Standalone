@@ -111,9 +111,21 @@ HUD does not execute this native call sequence.
 
 Fresh static observations in the existing complete body artifact:
 
-1. `10396C69..10396C8F` authenticates a supplied UPlayer as the actual Viewport
-   class and, for that class, retains its `+A8` package-map/sandbox argument for
-   the ensuing class loads. Its complete sandbox semantics were not audited.
+1. **Corrected class identity:** `10396C69..10396C8F` tests the supplied UPlayer
+   against **UNetConnection**, not UViewport. The earlier Viewport label was
+   incorrect. Export `UNetConnection::PrivateStaticClass` is ordinal1424,
+   RVA`290C40` (`10590C40`, the literal pushed at `10396C75`). Registration
+   `10402E30` supplies class-name literal `104837B6` (`NetConnection`, after the
+   leading native `U` at `104837B4`), native
+   size`3EB8`, and constructs that exact class storage at `10402E7C..10402E84`.
+   The distinct UViewport class export is ordinal1439, RVA`281068`
+   (`10581068`); its StaticClass thunk `10302C98 ->103484A0` and registration
+   `10372370` are separate authority. The original initializes sandbox to None,
+   reads player`+A8` **only for an actual NetConnection-derived player**, and
+   passes that captured value to all ensuing class loads. An actual standalone
+   Quest Viewport is a Player, not a NetConnection, so this positive type
+   predicate leaves sandbox None; no Viewport sandbox field or fake service is
+   required. Complete NetConnection sandbox semantics remain unaudited.
 2. `10396C94..10396CC8` queries FURL `CLASS=`. When present it attempts that
    PlayerPawn-derived class load; failure falls through to the default chain.
 3. `10396CD0..10396CEB` tries UTF-16 `usr:DefaultPlayer.Class` at `1047FB58`.

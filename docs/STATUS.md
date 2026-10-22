@@ -1,5 +1,30 @@
 # Port status
 
+## First Training original Login prefix (2026-10-22)
+
+Only the WHOLE first Training map remains the actual-map acceptance target;
+other-map integration and physics test sweeps are deferred. Its post-partition
+native viewport loop now calls the authentic most-derived GameInfo.Login in
+the same rollback root, using ordered original class fallback and explicit
+decoded diagnostic URL/owned config sources. OUT strings have owning,
+pre-admitted growth-only storage safe through VM rollback; frame/observation
+capacities retain combined budget ownership. No synthetic Pawn is accepted.
+
+Coordinator mocks1871/174 and expanded generated runtime11476/181 pass. Actual
+first Training repeat2 executes534158 instructions/39825 writes and returns
+Login None, with full save/state/hash/RNG/client/lookup/Actor/GC rollback and
+all41 originals unchanged. A removed temporary trace proves the authored
+PlayerStart1 is found, but Engine.GameInfo.Login reuses editor Camera7, whose
+DeusExPlayer cast fails. Independent raw flags confirm Camera4..7 are
+editor-only; the original Core linker load-context gate has been statically
+located and is the next integration task. Do not filter by camera name or
+manufacture JC Denton. See TRAINING-PLAYER-LOGIN.md and
+ORIGINAL-LINKER-LOAD-CONTEXT.md. Strict ARM64 and Android native link pass;
+the coherent full desktop build/shared CTest pass165 executed/195 registered,
+30 owned-data skips, zero failures in47.75s. Separate actual first-map isolated
+crate checks347/two contents refusals and rebuilt movement122706/21 pass. This does NOT
+complete startup, live crate combat, surviving usable loot, gravity or an APK.
+
 ## First Training native Actor ordering and cold restoration (2026-10-22)
 
 Only the entire first `00_Training.dx` is the current actual-map target.

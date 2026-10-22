@@ -366,7 +366,7 @@ struct Tables { PortablePackageTables core, engine, classes, map; std::size_t in
 // native function flags; 4 malformed return flags; 5 malformed optional flags;
 // 6 malformed signed Bitmap.USize declaration. World models5/6 are a real
 // finite floor; model6 also binds its surface to an authored Mover.
-Tables Build(Fixture& fixture, unsigned worldModel = 0u, unsigned decalSchema = 0u) {
+Tables Build(Fixture& fixture, unsigned worldModel = 0u, unsigned decalSchema = 0u, unsigned loginVariant = 0u) {
     const bool decalFloor = worldModel == 5u || worldModel == 6u;
     const bool decalMover = worldModel == 6u;
     Package core; core.stem = "Core"; const auto corePackage = core.ImportPackage("Core"), object = core.Export("Object"), metaclass = core.Export("Class", 0, object);
@@ -523,6 +523,9 @@ Tables Build(Fixture& fixture, unsigned worldModel = 0u, unsigned decalSchema = 
     engine.Property("PlayerReplicationInfo", "ObjectProperty", pawn, engineCore, 1u, actor);
     const auto hiddenFlag = engine.Property("bHidden", "BoolProperty", actor, engineCore);
     const auto boundPlayer = engine.Property("Player", "ObjectProperty", playerPawn, engineCore, 1u, player);
+    // Only the Login fixture prepares an actual native Client/Viewport. Keep
+    // existing generated schemas/identities unchanged in all older variants.
+    if (loginVariant) engine.Property("Actor", "ObjectProperty", player, engineCore, 1u, actor);
     const auto bindPlayer = engine.Function("BindPlayer", playerPawn, engineCore);
     const auto playerInput = engine.Property("Input", "ObjectProperty", bindPlayer, engineCore, 1u, player, 0x80u);
     engine.FunctionCode(bindPlayer, Join({Assign(Ref(0x01u, boundPlayer), Ref(0x00u, playerInput)), Return()}));
@@ -907,6 +910,37 @@ Tables Build(Fixture& fixture, unsigned worldModel = 0u, unsigned decalSchema = 
     const auto assertCode = [&](Flow& flow, Code condition, const std::string& label) {
         flow.IfNot(Native(129u, {condition}), label); flow.Add(Native(999u)); flow.Label(label);
     };
+    if (loginVariant) {
+        const auto loginPawn = classes.Export("LoginPawn", 0, importedPlayerPawn);
+        classes.ClassBody(loginPawn);
+        const auto seenClass = classes.Property("LoginClass", "ClassProperty", worldGame, classesCore,
+            1u, classesClass, 0u, importedPlayerPawn);
+        const auto loginDraw = classes.Property("LoginDraw", "IntProperty", worldGame, classesCore);
+        const auto login = classes.Function("Login", worldGame, classesCore, {}, 0u, 0x802u);
+        const auto portal = classes.Property("Portal", "StrProperty", login, classesCore, 1u, 0, 0x400080u);
+        const auto options = classes.Property("Options", "StrProperty", login, classesCore, 1u, 0, 0x400080u);
+        const auto error = classes.Property("Error", "StrProperty", login, classesCore, 1u, 0, 0x400180u);
+        const auto selected = classes.Property("SpawnClass", "ClassProperty", login, classesCore,
+            1u, classesClass, 0x80u, loginVariant == 3u ? importedActor : importedPlayerPawn);
+        classes.Property("ReturnValue", "ObjectProperty", login, classesCore, 1u, importedPlayerPawn, 0x580u);
+        Flow flow;
+        assertCode(flow, levelValue(begun), "login-real-begun-world");
+        assertCode(flow, Native(129u, {levelValue(startup)}), "login-startup-cleared");
+        flow.Add(Assign(Ref(0x01u, seenClass), Ref(0x00u, selected)));
+        flow.Add(Assign(Ref(0x01u, loginDraw), Native(167u, {Int(1000)})));
+        flow.Add(Assign(Ref(0x00u, error), Text("small")));
+        // Original EX_StringConst appFromAnsi truncates each literal to1023
+        // WCHARs. Build the long OUT via genuine concatenation of short
+        // literals, rather than assuming a4096-byte literal survives intact.
+        flow.Add(Assign(Ref(0x00u, error), Text(std::string(512u, 'L'))));
+        for(unsigned piece=1u;piece<8u;++piece)
+            flow.Add(Assign(Ref(0x00u, error), Native(112u, {Ref(0x00u, error),Text(std::string(512u, 'L'))})));
+        flow.Add(Assign(Ref(0x00u, error), Native(112u, {Ref(0x00u, error), Ref(0x00u, portal)})));
+        flow.Add(Assign(Ref(0x00u, error), Native(112u, {Ref(0x00u, error), Ref(0x00u, options)})));
+        if (loginVariant == 2u) flow.Add(Native(999u));
+        flow.Add(Return(Token(0x2au))); // Actual scripted PlayerPawn None, not a fabricated player.
+        classes.FunctionCode(login, flow.Finish(), 0u, 0x802u);
+    }
     for (const auto& [name, field, type, target] : std::vector<std::tuple<std::string, std::int32_t, std::string, std::int32_t>>{
         {"SetWorldGameType", defaultGame, "ClassProperty", importedGameInfo},
         {"SetWorldGame", game, "ObjectProperty", importedGameInfo}}) {
@@ -2373,6 +2407,138 @@ void WorldStartupSynthetic() {
         fixture.UnchangedSources();
     }
 }
+void PlayerLoginSynthetic() {
+    using Phase=PortableWorldStartupPhase;
+    const std::string terminal="Unsupported original post-partition client/player/detail setup; non-publishing startup probe rolled back";
+    for (const unsigned variant : {1u,2u,3u}) {
+        Fixture fixture; const auto tables=Build(fixture,1u,0u,variant);
+        const auto loginBody=LoadPortableFunctionScript(tables.classes,
+            FindPortableExport(tables.classes,"WorldGame.Login"));
+        Require(InitializePortableRuntime({tables.core,tables.engine,tables.classes}).passed &&
+            LoadPortableRuntimeMap(tables.map).passed,"Generated Login fixture failed initialization");
+        auto lifetime=std::make_shared<QuestVr::NativeClientLifetime>();
+        BindPortableRuntimeClient(lifetime,5101u);RegisterPortableRuntimeViewport(5101u,{5102u,1024u,1152u,3u,2u});
+        const auto session=PreparePortableRuntimePlayerObjects(5102u);
+        Require(!session.bound && session.playerPath.empty() && session.viewportClassPath=="Engine.Viewport" &&
+            session.viewportOuterPath==session.clientPath,"Generated Login did not prepare an actual unpaired native Viewport");
+        fixture.legacy=fixture.Snapshot("Legacy");
+        const auto order=ReadPortableWorldActorOrder();
+        const auto paths=ActorPaths(true);const auto revision=GetPortableRuntimeWorldRevision();
+        GC::Collect();const auto gc=GC::GetStats();
+        const auto unchanged=[&] {
+            const auto immediate=GC::GetStats();
+            Require(immediate.numObjects==gc.numObjects && immediate.memoryUsage==gc.memoryUsage,
+                "Login root retained allocations before another public boundary could collect them");
+            Require(fixture.Snapshot("AfterLogin")==fixture.legacy && ActorPaths(true)==paths &&
+                ReadPortableWorldActorOrder()==order && GetPortableRuntimeWorldRevision()==revision &&
+                !GetPortableRuntimeUnsavedScriptState(),
+                "Login root retained OUT/script/RNG/birth/native order/revision state");
+            const auto actual=ReadPortableRuntimePlayerSession(5102u);
+            Require(lifetime->Alive() && HasPortableRuntimeClient() && actual.clientIdentity==session.clientIdentity &&
+                actual.viewportIdentity==session.viewportIdentity && actual.clientPath==session.clientPath &&
+                actual.viewportPath==session.viewportPath && actual.viewportClassPath==session.viewportClassPath &&
+                actual.viewportOuterPath==session.viewportOuterPath && actual.clientObjectFlags==session.clientObjectFlags &&
+                actual.viewportObjectFlags==session.viewportObjectFlags && !actual.bound && actual.playerPath.empty(),
+                "Refused Login replaced/revoked or paired its actual native session");
+            GC::Collect();const auto after=GC::GetStats();
+            Require(after.numObjects==gc.numObjects && after.memoryUsage==gc.memoryUsage,
+                "Login rollback lost native session roots or retained provisional objects");
+            fixture.UnchangedSources();
+        };
+        const auto probe=[&](const PortableWorldStartupProbeOptions& options,const QuestVr::Vm::Limits& limits=QuestVr::Vm::Limits{}) {
+            const auto result=ProbePortableWorldStartup(options,limits);
+            Require(!result.execution.passed() && !result.execution.committed && !result.execution.error.empty(),
+                "Generated Login accepted or published incomplete startup");
+            unchanged();++refusals;return result;
+        };
+        PortableWorldStartupProbeOptions options{"","SpawnClasses.WorldGame","fixture-options"};
+        const auto missing=probe(options);
+        Require(missing.phase==Phase::ClientSetup && missing.playerLogins.empty() &&
+            missing.execution.error=="Original SpawnPlayActor requires explicit decoded URL/config sources",
+            "Actual viewport skipped the missing explicit Login URL/config source refusal");
+        options.playerLogin.emplace();auto& source=*options.playerLogin;
+        source.portal=u"generated-portal";
+        source.urlOptions={u"class=SpawnClasses.LoginPawn",u"X=one",u"X=two"};
+        source.userDefaultPlayerClass=u"Engine.PlayerPawn";source.iniUrlClass=u"Engine.PlayerPawn";
+        const auto entered=probe(options);
+        Require(entered.phase==Phase::ClientSetup && entered.playerLogins.size()==1u,
+            "Generated Login did not reach the actual startup client boundary once");
+        const auto& login=entered.playerLogins.front();
+        Require(login.attempted && login.viewportIdentity==5102u && login.selectedClass=="SpawnClasses.LoginPawn" &&
+            !login.paired && login.playerPath.empty(),"Login lost original class precedence, actual viewport or scripted None");
+        if (variant==3u) {
+            Require(!login.loginEntered && !login.loginReturned && login.error.empty() &&
+                entered.execution.error=="SpawnPlayActor Login class/result constraints are not PlayerPawn",
+                "Generated malformed Login ClassProperty secondary constraint reached script dispatch");
+            continue;
+        }
+        Require(login.loginEntered && login.gamePath==Path("WorldGame0") &&
+            login.functionPath=="SpawnClasses.WorldGame.Login","Login did not dispatch the real most-derived generated Game event");
+        if (variant==2u) {
+            // Native999 plus EndFunctionParms is three logical bytes, followed
+            // by Return NoObject. Distinguish this deliberate late failure
+            // from any of the earlier generated assertion natives.
+            Require(loginBody.logicalSize>=5u,"Generated late Login fixture lost its final native/return");
+            Require(!login.loginReturned && login.error.empty() &&
+                entered.execution.function=="SpawnClasses.WorldGame.Login" && entered.execution.opcode==0x63u &&
+                entered.execution.offset==loginBody.logicalSize-5u &&
+                entered.execution.error.find("999")!=std::string::npos,
+                "Late Login failure copied unfinished local OUT storage or lost its genuine script failure");
+            continue;
+        }
+        const auto expectedError=[&](const PortablePlayerLoginSource& input) {
+            std::string text(4096u,'L');text+="generated-portal";
+            for(const auto& option:input.urlOptions) {
+                text+='?';for(const auto unit:option) {
+                    Require(unit<128u,"Generated Login oracle requires ASCII options");text+=static_cast<char>(unit);
+                }
+            }
+            return text;
+        };
+        Require(login.loginReturned && login.error==expectedError(source) && entered.execution.error==terminal,
+            "Login None/growing OUT copyback did not preserve exact Portal/ordered native Options before outer refusal: returned="+
+            std::to_string(login.loginReturned)+" actualOutBytes="+std::to_string(login.error.size())+
+            " expectedOutBytes="+std::to_string(expectedError(source).size())+" outTail="+
+            login.error.substr(login.error.size()>100u?login.error.size()-100u:0u)+" failure="+entered.execution.error);
+        const auto repeated=probe(options);
+        Require(repeated.playerLogins==entered.playerLogins && repeated.execution.writes==entered.execution.writes,
+            "Warm Login rollback changed class/event/None/OUT observations or deterministic write count");
+        // The last VM write is the scripted OUT copyback after Return None.
+        // Cutting exactly there fails AFTER all local string growth/RNG/stores,
+        // while the native caller's owned Error is still its initial empty value.
+        Require(entered.execution.writes>1u,"Generated Login has no final OUT write witness");
+        QuestVr::Vm::Limits tight;tight.writes=entered.execution.writes-1u;
+        const auto copyback=probe(options,tight);
+        Require(copyback.execution.status==QuestVr::Vm::Status::Budget &&
+            copyback.execution.function=="SpawnClasses.WorldGame.Login" && copyback.execution.opcode==0x2au &&
+            copyback.execution.offset==loginBody.logicalSize-1u &&
+            copyback.playerLogins.size()==1u && copyback.playerLogins.front().loginEntered &&
+            !copyback.playerLogins.front().loginReturned && copyback.playerLogins.front().error.empty(),
+            "Final growing OUT copyback budget did not fail at the actual Login return under the same outer root");
+        source.urlOptions={u"CLASS=Engine.Actor",u"X=fallback"};
+        const auto nonPawn=probe(options);
+        Require(nonPawn.playerLogins.size()==1u && nonPawn.playerLogins.front().selectedClass=="Engine.PlayerPawn" &&
+            nonPawn.playerLogins.front().loginReturned && nonPawn.playerLogins.front().error==expectedError(source),
+            "Present non-Pawn CLASS did not fall through to the actual valid user class");
+        source.urlOptions={u"CLASS=",u"X=ini-fallback"};source.userDefaultPlayerClass=u"Engine.Actor";
+        const auto empty=probe(options);
+        Require(empty.playerLogins.size()==1u && empty.playerLogins.front().selectedClass=="Engine.PlayerPawn" &&
+            empty.playerLogins.front().loginReturned && empty.playerLogins.front().error==expectedError(source),
+            "Present-empty CLASS/wrong-base user class skipped the ordered valid INI fallback");
+        source.urlOptions={u"CLASS=Missing.Player"};
+        const auto unknown=probe(options);
+        Require(unknown.playerLogins.size()==1u && !unknown.playerLogins.front().loginEntered &&
+            unknown.playerLogins.front().selectedClass.empty() &&
+            unknown.execution.error.find("StaticLoadClass of an unmaterialized class/package is not implemented")!=std::string::npos,
+            "Unknown class load was silently treated as a proven failure/fallback");
+        source.urlOptions.clear();source.userDefaultPlayerClass.reset();source.iniUrlClass.reset();
+        const auto noClass=probe(options);
+        Require(noClass.playerLogins.size()==1u && !noClass.playerLogins.front().loginEntered &&
+            noClass.execution.error=="Original SpawnPlayActor fatal LoadPlayerClass: no valid PlayerPawn class",
+            "Absent class sources manufactured a player class or entered Login");
+    }
+    std::cout<<"Generated actual startup Login: prepared native Viewport, exact PlayerPawn declaration/secondary constraint, ordered CLASS/user/INI selection, real Game event/None, growing owned OUT copyback and late same-root rollback; NOT player completion or playable startup\n";
+}
 void DecalGuardSynthetic() {
     // Real generated reflection, native Level slots and valid empty root BSP.
     // After the exact entry guards, this BSP genuinely has no geometry. The
@@ -2731,7 +2897,7 @@ void Synthetic() {
 } // namespace
 int main() {
     try {
-        const auto before = GC::GetStats().numObjects; Synthetic(); WorldStartupSynthetic(); DecalGuardSynthetic(); DecalNativeSynthetic(); GC::Collect(); Require(GC::GetStats().numObjects == before, "Generated Spawn test leaked rooted UObjects after shutdown");
+        const auto before = GC::GetStats().numObjects; Synthetic(); WorldStartupSynthetic(); PlayerLoginSynthetic(); DecalGuardSynthetic(); DecalNativeSynthetic(); GC::Collect(); Require(GC::GetStats().numObjects == before, "Generated Spawn test leaked rooted UObjects after shutdown");
         std::cout << "Generated actor Spawn integration: " << checks << " checks, " << refusals << " rejection controls; actual natives278/262/283/304/529/530/650/710/711/713/714/715/716/720, serialized Level/model, native PawnList and AI graph rollback, frozen defaults, callbacks/live foreach, birth/save/GC, read-only BSP region side/fallback controls, non-publishing world startup prefix/live-growth/deletion/order/attachment rollback, native AttachDecal exact guards/real finite polygon/provisional SurfList/ordered records/postcallback radius and RNG/mover Rotation/Detach/checkpoint/GC/late rollback. No rendered decal, AI processing or accepted campaign startup claim.\n"; return 0;
     } catch (const std::exception& error) { std::cerr << "Actor Spawn integration failed: " << error.what() << '\n'; return 1; }
 }

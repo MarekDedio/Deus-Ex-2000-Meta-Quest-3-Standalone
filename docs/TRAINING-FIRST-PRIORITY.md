@@ -10,6 +10,20 @@ do not spend time on other-map integration or map-content test sweeps.
 Reconfirmed2026-10-22: skip other-map crate/physics integration and testing;
 the WHOLE first Training map remains the current content acceptance target.
 
+Latest player increment,2026-10-22: post-partition original class selection
+and actual GameInfo.Login execute in the same rollback root. Generated
+runtime11476/181 and coordinator1871/174 pass; actual repeat2 returnsNone
+with complete rollback and41 originals unchanged. A diagnostic trace proves
+PlayerStart1 is found, but original base Login reuses Camera7 and DeusEx's
+player cast rejects it. Camera4..7 are actual source editor-only exports;
+the authenticated original linker load-context selection must now be wired,
+not a camera-name exclusion or forced player birth. Full desktop/shared
+verification passes165/195 with30 owned-data skips, zero failures in47.75s;
+strict ARM64 and Android native link pass. Actual isolated crate347/two and
+rebuilt movement122706/21 pass. This is
+still NOT live crate weapon damage, collectible loot, gravity or a new APK.
+See TRAINING-PLAYER-LOGIN.md and ORIGINAL-LINKER-LOAD-CONTEXT.md.
+
 Latest native-order checkpoint,2026-10-22: exact LoadMap static/dynamic native
 partition and owning portable runtime17/codec12 continuation now preserve
 authored/birth/null slots, split and cold replacement. Actual Training

@@ -77,6 +77,7 @@
 #include "quest_destroy_actor.h"
 #include "quest_object_destroy.h"
 #include "quest_world_actor_order.h"
+#include "quest_spawn_play_actor_login.h"
 
 #include <memory>
 #include <algorithm>
@@ -2682,6 +2683,7 @@ public:
         beforeDeferred_.clear();
         beforeActorOrder_.reset();
         nativeActorOrderObservationBytes_=0u;
+        nativeStartupOut_.clear();
         nativeDestroyReferenceBytes_=0u;
         beforeRandomSeed_ = persistentScriptRandomSeed;
         beforeWindowObjects_=persistentWindowDomain && persistentWindowDomain->get() ?
@@ -2764,6 +2766,7 @@ public:
         beforeDeferred_.clear();
         beforeActorOrder_.reset();
         nativeActorOrderObservationBytes_=0u;
+        nativeStartupOut_.clear();
         ClearMoveHits();nativeDurableMoved_.clear();
         saved_.clear(); savedAi_.clear(); provisionalAi_.clear(); provisionalWindows_.clear(); beforeDecals_.reset(); beforeLevelClock_.reset(); beforeWorldSlotItems_.clear(); nativeDestroyReferenceBytes_=0u; transaction_ = false;
     }
@@ -2828,6 +2831,7 @@ public:
         }
         beforeDeferred_.clear();
         nativeActorOrderObservationBytes_=0u;
+        nativeStartupOut_.clear();
         for (auto& entry : saved_) {
             entry.first->scriptValues.swap(entry.second.values);
             entry.first->classDefaultValues.swap(entry.second.defaults);
@@ -7429,6 +7433,7 @@ public:
             throw std::runtime_error("Runtime property is not an authored StructProperty");
         return StructSchema(Object(Qualified(Table(property->sourcePath), property->property->referencedType)));
     }
+#include "portable_player_login.inl"
     Value ProbeWorldStartup(const PortableWorldStartupProbeOptions& options,
         PortableWorldStartupProbeResult& result, QuestVr::Vm::Execution& execution,
         PortableRetailCollisionSnapshot* originalCollision=nullptr) {
@@ -7554,12 +7559,7 @@ public:
             write(info, "bBegunPlay", Value::Bool(true));
             write(info, "bStartup", Value::Bool(true));
             visit(Phase::InitGame, game, static_cast<std::size_t>(game->worldActorIndex));
-            auto error = std::make_shared<Value>(Value::Text(Kind::String, {}));
-            auto out = std::make_shared<Reference>(); out->zero = *error;
-            // Owned OUT storage stays alive through the outer Machine's
-            // rollback, including after this coordinator callback unwinds.
-            out->read = [error] { return *error; };
-            out->write = [error](const Value& value) { *error = value; };
+            const auto [error,out]=StartupOutString();
             static_cast<void>(execution.CallEvent(game->reflection.objectPath, "InitGame", false,
                 {{Value::Text(Kind::String, options.initGameOptions), {}}, {*error, out}}));
             if (error->kind != Kind::String) throw std::runtime_error("InitGame OUT Error did not remain a String");
@@ -7615,6 +7615,34 @@ public:
         ReorderNativeWorldActors(info->nativeXLevel);
         result.afterActorOrder=CaptureNativeActorOrder(info->nativeXLevel,true);
         visit(Phase::ClientSetup, info, 0u);
+        // Original helper1038BF10 rereads the live ascending viewport array.
+        // A client is not proof of a Pawn, and tracking is not a predicate.
+        if(persistentNativeClient.HasClient()) {
+            clientDependent_=true;
+            const auto clientIdentity=persistentNativeClient.ClientIdentity();
+            for(std::size_t slot=0u;;++slot) {
+                LifecycleStep();
+                if(!persistentNativeClient.HasClient() || persistentNativeClient.ClientIdentity()!=clientIdentity)
+                    throw std::runtime_error("Native client lifetime changed during original player setup");
+                const auto viewports=persistentNativeClient.ReadOnlyView();
+                if(slot>=viewports.size())break;
+                if(!options.playerLogin)
+                    throw std::runtime_error("Original SpawnPlayActor requires explicit decoded URL/config sources");
+                if(result.playerLogins.empty()) {
+                    ValidateStateBudget(QuestVr::NativeClientRegistry::MaximumViewports*sizeof(PortablePlayerLoginObservation));
+                    result.playerLogins.reserve(QuestVr::NativeClientRegistry::MaximumViewports);
+                    const auto bytes=result.playerLogins.capacity()*sizeof(PortablePlayerLoginObservation);
+                    ValidateStateBudget(bytes);nativeActorOrderObservationBytes_+=bytes;
+                }
+                if(result.playerLogins.size()==QuestVr::NativeClientRegistry::MaximumViewports)
+                    throw std::runtime_error("Original player setup exceeds the native viewport registry bound");
+                auto& login=result.playerLogins.emplace_back();login.viewportIdentity=viewports[slot].identity;
+                const auto stringBytes=login.selectedClass.capacity()+login.gamePath.capacity()+
+                    login.functionPath.capacity()+login.playerPath.capacity()+login.error.capacity()+5u;
+                ValidateStateBudget(stringBytes);nativeActorOrderObservationBytes_+=stringBytes;
+                StartupPlayerLogin(login.viewportIdentity,*options.playerLogin,login,execution);
+            }
+        }
         // Native client/player/detail providers after the original partition
         // still require their own integration. This root remains nonpublishing.
         throw std::runtime_error("Unsupported original post-partition client/player/detail setup; non-publishing startup probe rolled back");
@@ -8403,6 +8431,8 @@ private:
     bool objectDestroyPreview_{};
     bool actorOrderPreview_{};
     std::size_t nativeActorOrderObservationBytes_{};
+    struct StartupOutStorage {std::shared_ptr<Value> value;std::shared_ptr<Reference> reference;};
+    std::vector<StartupOutStorage> nativeStartupOut_;
     struct BeforeLinkerSlot {
         std::shared_ptr<RuntimeNativeLinker> linker;
         std::size_t index{};
@@ -9688,6 +9718,14 @@ private:
         defaults.Retain(beforeWorldSlotItems_.capacity()*sizeof(decltype(beforeWorldSlotItems_)::value_type));
         defaults.Retain(nativeDestroyReferenceBytes_);
         defaults.Retain(nativeActorOrderObservationBytes_);
+        defaults.Retain(sizeof(nativeStartupOut_)+nativeStartupOut_.capacity()*sizeof(StartupOutStorage));
+        for(const auto& cell:nativeStartupOut_) {
+            // OUT references are also retained by the outer VM undo journal.
+            // Measure current payload through nested Login calls, not a stale
+            // estimate taken before the script writes its OUT error string.
+            defaults.Retain(sizeof(Value)+sizeof(Reference)+8u*sizeof(void*)+
+                cell.value->text.capacity()+cell.reference->zero.text.capacity()+2u);
+        }
         if(!persistentWorldActors.empty()&&persistentWorldActors.front()&&persistentWorldActors.front()->nativeXLevel&&
             persistentWorldActors.front()->nativeXLevel->nativeActorOrderChanged)
             defaults.Retain(persistentWorldActors.capacity()*sizeof(RuntimeObject*));
