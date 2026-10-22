@@ -20,8 +20,9 @@ inline std::size_t ExtentPendingCapacity(std::size_t nodes,std::size_t limit) {
 }
 } // namespace ModelLineScratchDetail
 // Peak envelope for Model line kernels. Structural validation dies before
-// traversal; point and extent traversals are mutually exclusive. Point vectors
-// still include growth's old/new overlap. Extent validation uses one packed
+// traversal; point and extent traversals are mutually exclusive. Point graph
+// validation still includes vector growth's overlap, but point traversal uses
+// one fixed Segment per node. Extent validation uses one packed
 // uint32 frame and one color byte per node, and traversal one fixed Visit array.
 // Fixed headroom covers hull/plane scratch alongside those arrays. The host
 // must compose this with its other live scopes, not release it before querying.
@@ -31,7 +32,7 @@ inline std::size_t OriginalModelLineScratchBytes(std::size_t nodes,bool point) {
     constexpr std::size_t headroom=2048u;
     const auto validation=point?3u*sizeof(ValidationFrame)+sizeof(std::uint8_t):
         sizeof(std::uint32_t)+sizeof(std::uint8_t);
-    const auto traversal=point?3u*sizeof(PointSegment):sizeof(ModelLineScratchDetail::ExtentVisit);
+    const auto traversal=point?sizeof(PointSegment):sizeof(ModelLineScratchDetail::ExtentVisit);
     const auto width=std::max(validation,traversal);
     const auto extra=point?0u:sizeof(ModelLineScratchDetail::ExtentVisit);
     if(nodes>(std::numeric_limits<std::size_t>::max()-headroom-extra)/width)

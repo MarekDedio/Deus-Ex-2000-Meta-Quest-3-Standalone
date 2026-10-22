@@ -3,6 +3,7 @@
 #include "quest_model_line_hit.h"
 
 #include <optional>
+#include <memory>
 #include <vector>
 
 namespace QuestVr {
@@ -83,8 +84,11 @@ inline Result Trace(const PortableModelGeometry& model,const PortableModelVec3& 
     if(model.nodes.empty()) return result;
     Finite(start);Finite(end);
     struct Segment {std::int32_t node{},last{};PortableModelVec3 start,end;bool outside{};};
-    Segment current{0,0,start,end,result.clear};std::vector<Segment> pending;
-    pending.reserve(std::min<std::size_t>(model.nodes.size(),64u));
+    Segment current{0,0,start,end,result.clear};
+    // Validated acyclic binary DFS retains at most one sibling per ancestor.
+    // Fixed storage removes vector growth's old/new overlap without changing
+    // the node allowance, traversal order, split arithmetic or query budget.
+    std::unique_ptr<Segment[]> pending(new Segment[model.nodes.size()]);std::size_t pendingCount{};
     bool beenOutside{}; // Original query-local global1058F34C, reset by wrapper.
     for(;;) {
         ModelPointTraceDetail::Step(result.stats.querySteps,limits.querySteps);
@@ -96,8 +100,8 @@ inline Result Trace(const PortableModelGeometry& model,const PortableModelVec3& 
                 result.normal={plane.planeX,plane.planeY,plane.planeZ};Finish(result,start,end,coords!=nullptr);return result;
             }
             if(current.outside) beenOutside=true;
-            if(pending.empty()) {result.clear=true;return result;}
-            current=pending.back();pending.pop_back();continue;
+            if(!pendingCount) {result.clear=true;return result;}
+            current=pending[--pendingCount];continue;
         }
         ++result.stats.nodeVisits;const auto& node=model.nodes.at(static_cast<std::size_t>(current.node));
         const float from=Distance(current.start,node,coords),to=Distance(current.end,node,coords);
@@ -108,9 +112,9 @@ inline Result Trace(const PortableModelGeometry& model,const PortableModelVec3& 
         }else {
             const auto middle=Middle(current.start,current.end,from,to);const bool front=from>0.0f;
             const bool csg=Csg(node,flags,false);
-            if(pending.size()>=limits.nodes) ModelPointTraceDetail::Fail("pending branch budget exceeded");
-            pending.push_back({front?node.back:node.front,current.node,middle,current.end,
-                front?current.outside&&!csg:current.outside||csg});
+            if(pendingCount>=limits.nodes || pendingCount>=model.nodes.size()) ModelPointTraceDetail::Fail("pending branch budget exceeded");
+            pending[pendingCount++]={front?node.back:node.front,current.node,middle,current.end,
+                front?current.outside&&!csg:current.outside||csg};
             current.node=front?node.front:node.back;current.end=middle;
             current.outside=front?current.outside||csg:current.outside&&!csg;
         }

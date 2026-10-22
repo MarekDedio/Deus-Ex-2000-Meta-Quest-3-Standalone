@@ -1,5 +1,12 @@
 # First Training: original player Login prefix
 
+Latest original placement evidence,2026-10-22: native267 integration now lets
+the original GameInfo.Login return actual JCDentonMale0 and enter same-root
+Possess/root/HUD initialization. It next refuses combined retained memory at
+DeusExHUD.InitWindow PC68; no possession/startup is published. Actual native267
+checks18317 and41 source fingerprints pass. See TRAINING-SET-LOCATION.md;
+earlier boundaries below are historical.
+
 Latest saved-position runtime evidence,2026-10-22: genuine native3015
 construction and3039 false getter now complete in original Training Login.
 Both rollback-only startup attempts reach PC442/native267 SetLocation,

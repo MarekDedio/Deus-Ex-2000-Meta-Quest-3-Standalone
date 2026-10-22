@@ -80,12 +80,13 @@ void Run() {
     }catch(const std::runtime_error&) {}
     Require(!ledger,"Late sequential-provider refusal retained an arena reservation");
     // Independent 64-bit supported-host layouts: point DFS16B/frame and
-    // pending36B/segment retain conservative vector growth. Extent uses
+    // validation retains conservative vector growth; pending is one fixed
+    // 36B/segment array. Extent uses
     // fixed packed4B frames/colors and a fixed12B/visit array of N+1.
     static_assert(sizeof(std::size_t)==8u);
     for(const std::size_t nodes:{0u,1u,64u,9524u,1'000'000u}) {
-        Require(QuestVr::OriginalModelLineScratchBytes(nodes,true)==2048u+nodes*108u,
-            "Point query scratch lost validation/traversal growth envelope");
+        Require(QuestVr::OriginalModelLineScratchBytes(nodes,true)==2048u+nodes*49u,
+            "Point query scratch lost fixed-traversal/validation envelope");
         Require(QuestVr::OriginalModelLineScratchBytes(nodes,false)==2048u+(nodes+1u)*12u,
             "Extent query scratch incorrectly charges inactive point storage");
     }
@@ -93,7 +94,11 @@ void Run() {
     const auto memory=[&](std::size_t extra) {
         if(extra>16'777'216u-base-ledger)throw std::runtime_error("Fixed retained cap exceeded");
     };
-    Refuse([&]{QuestVr::NativeScratchScope old(ledger,QuestVr::OriginalModelLineScratchBytes(9524u,true),memory);});
+    Refuse([&]{QuestVr::NativeScratchScope old(ledger,2048u+9524u*108u,memory);});
+    {
+        QuestVr::NativeScratchScope actual(ledger,QuestVr::OriginalModelLineScratchBytes(9524u,true),memory);
+        Require(ledger==468'724u,"Point branch did not account fixed traversal and graph validation peak");
+    }
     {
         QuestVr::NativeScratchScope actual(ledger,QuestVr::OriginalModelLineScratchBytes(9524u,false),memory);
         Require(ledger==116'348u,"Extent branch admission does not match its actual conservative peak");

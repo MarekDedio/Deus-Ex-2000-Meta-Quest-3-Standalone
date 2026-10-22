@@ -4,8 +4,17 @@
 
 int main(int argc,char** argv) {
     try {
-        if(argc!=2)throw std::runtime_error("Usage: dump_location_inspect OWNED_DeusEx.u");
+        if(argc!=2 && argc!=3)throw std::runtime_error("Usage: dump_location_inspect OWNED_DeusEx.u | OWNED_Engine.u --actor-placement");
         const auto table=LoadPortablePackageTables(argv[1]);
+        if(argc==3) {
+            if(std::string(argv[2])!="--actor-placement")throw std::runtime_error("Unknown inspection mode");
+            for(const auto* path:{"Actor.OldLocation","Actor.bJustTeleported","Actor.bCollideWhenPlacing","LevelInfo.NetMode"}) {
+                const auto field=LoadPortablePropertyDescriptor(table,FindPortableExport(table,path));
+                std::cout<<path<<" type="<<field.type<<" flags="<<std::hex<<field.flags<<std::dec
+                    <<" dimension="<<field.arrayDimension<<" ref="<<GetPortableObjectPath(table,field.referencedType)<<'\n';
+            }
+            return 0;
+        }
         const auto index=FindPortableExport(table,"DumpLocation");
         const auto cls=LoadPortableClassDescriptor(table,index);
         std::cout<<"DumpLocation flags="<<std::hex<<static_cast<std::uint32_t>(table.exports[index].ObjFlags)

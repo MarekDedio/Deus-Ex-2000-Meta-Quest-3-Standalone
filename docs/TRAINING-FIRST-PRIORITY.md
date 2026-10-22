@@ -10,6 +10,18 @@ do not spend time on other-map integration or map-content test sweeps.
 Reconfirmed2026-10-22: skip other-map crate/physics integration and testing;
 the WHOLE first Training map remains the current content acceptance target.
 
+Latest placement increment,2026-10-22: original native267 FarMove now uses real
+placement, encroachment, hash and zone services under the caller's root. Actual
+first-map native267 checks18317 and41 original fingerprints pass; point storage
+is losslessly reduced without raising limits or skipping checks. Original
+Training now returns real JCDentonMale0 from Login and enters possession/root
+HUD initialization, then refuses combined retained memory at HUD PC68 in both
+repeated attempts. Full rollback passes; this is not published possession/
+startup or live crates/loot/gravity. Full desktop/shared CTest passes171 executed/
+203 registered with32 explicit skips, zero failures in65.38s; isolated crate347/
+two contents refusals and final movement122706/21 pass. No APK. Other actual
+maps stay deferred. See TRAINING-SET-LOCATION.md for exact evidence/scope.
+
 Latest saved-position increment,2026-10-22: actual native3015/3037/3038/3039
 constructor/session integration passes18486/16 on the first Training map;
 helper mocks70/12 pass separately. Both original startup attempts now continue

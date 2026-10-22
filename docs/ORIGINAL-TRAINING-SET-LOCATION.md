@@ -1,5 +1,12 @@
 # First Training: the next original SetLocation boundary
 
+Later implementation evidence: TRAINING-SET-LOCATION.md records native267
+integration, actual first-map checks and the original Login now returning JC
+and reaching possession/HUD initialization. The missing-service statements
+below describe the earlier static-audit boundary. Generic hash ActorPointCheck
+for broader CheckActors queries remains unsupported; native267's authentic
+point queries use CheckActors0, while AdjustSpot uses the real line service.
+
 2026-10-22. Read-only original-binary audit; native267 is NOT implemented by
 this increment. Only the whole first `Maps/00_Training.dx` is the actual-map
 target. No original EXE/DLL was executed or loaded.

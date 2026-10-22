@@ -1,5 +1,29 @@
 # Port status
 
+## First Training original player placement (2026-10-22)
+
+Native267 now binds the original absolute FarMove/FindSpot/point-query path
+into existing hash, encroachment, raw coordinate, SetBase and zone services.
+Actual first-map native267 checks pass18317 with41 original sources unchanged.
+Detached search/point/FarMove tests pass55/2,23/4 and84/2. Lossless fixed point
+traversal storage removes the previous vector-growth peak without changing the
+16MiB/node/work limits;139309 point bridge checks/10 refusals and4099 independent
+x87 comparisons pass, including deep pending siblings. Scratch tests42/9 pass.
+
+The original Training startup now returns real JCDentonMale0 from GameInfo.Login
+and enters Possess/root-window/HUD initialization. It next refuses combined
+native/default/state memory at DeusExHUD.InitWindow PC68 (native1410 first Ammo
+child). Both repeated attempts execute202474 instructions/15765 writes;
+native work463730 cold/463188 warm is within1048576. Complete root rollback/
+all41 sources unchanged pass. This is not published possession, completed
+startup/HUD, live crate damage, surviving loot or gravity. Android native link
+and strict checks pass. The coherent full desktop/shared CTest pass171
+executed/203 registered with32 explicit owned-data skips, zero failures in65.38s.
+Separate isolated crate347/two contents refusals and movement122706/21 pass;
+neither certifies live weapon damage, surviving loot or gravity.
+No APK was made. Only the whole first Training map is the actual-map target.
+See TRAINING-SET-LOCATION.md and ORIGINAL-TRAINING-SET-LOCATION.md.
+
 ## First Training saved-position native services (2026-10-22)
 
 Actual native3015 now creates an indexed non-Actor DumpLocation with the

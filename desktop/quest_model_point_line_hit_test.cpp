@@ -177,6 +177,13 @@ void CapturesAndRefusals() {
     for(std::size_t i=0;i+1u<deep.nodes.size();++i)deep.nodes[i].front=static_cast<std::int32_t>(i+1u);
     h=Seed();QuestVr::ModelPointTraceStats used;Require(Trace(h,deep,{10,0,0},{20,0,0},0,nullptr,{},&used)&&
         Same(h,Seed())&&used.nodeVisits==8192u&&used.leafVisits==1u,"Deep iterative point walk lost nodes/packet or required native recursion");
+    Model branching;branching.rootOutside=1;branching.nodes.resize(192u,Plane());
+    for(std::size_t i=0;i<branching.nodes.size();++i) {
+        auto& node=branching.nodes[i];node.nodeFlags=1u;node.planeW=std::ldexp(1.f,120-static_cast<int>(i));
+        if(i+1u<branching.nodes.size())node.back=static_cast<std::int32_t>(i+1u);
+    }
+    h=Seed();Require(Trace(h,branching,{0,0,0},{std::ldexp(1.f,121),0,0},0,nullptr,{},&used)&&Same(h,Seed())&&
+        used.nodeVisits>100u&&used.leafVisits>100u,"Fixed point pending storage lost a deep deferred-sibling frontier");
 }
 }
 int main() {

@@ -71,6 +71,9 @@
 #include "quest_actor_move_geometry.h"
 #include "quest_level_encroachment.h"
 #include "quest_level_move_actor.h"
+#include "quest_level_point_check.h"
+#include "quest_level_find_spot.h"
+#include "quest_level_far_move.h"
 #include "quest_conversation_bind.h"
 #include "quest_spawn_encroachment.h"
 #include "quest_actor_owner.h"
@@ -3613,6 +3616,7 @@ public:
         if (index==1013u) return Native(index,receiver,arguments,declaration);
         if (Object(receiver)->defaultOwner)
             throw std::runtime_error("Native execution on a class-default object requires its audited handler");
+        if(index==267u)return FarMoveNative(Object(receiver),arguments,declaration,execution);
         if(index==266u||index==299u)return MoveNative(index,Object(receiver),arguments,declaration,execution);
         if((index==262u || index==283u) && persistentRetailCollision)
             return RetailCollisionSetterNative(index,Object(receiver),arguments,declaration);
@@ -5005,6 +5009,7 @@ public:
     #include "portable_actor_move_events.inl"
     #include "portable_actor_move_pose.inl"
     #include "portable_actor_move.inl"
+    #include "portable_actor_far_move.inl"
     #include "portable_actor_move_probe.inl"
     #include "portable_core_rotator_add.inl"
     void RequireIndexedPrimitiveDiagnosticOwner(RuntimeObject* owner) {
