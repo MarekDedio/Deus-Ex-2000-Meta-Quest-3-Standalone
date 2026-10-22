@@ -1,5 +1,14 @@
 # First Training: original player Login prefix
 
+Latest saved-position runtime evidence,2026-10-22: genuine native3015
+construction and3039 false getter now complete in original Training Login.
+Both rollback-only startup attempts reach PC442/native267 SetLocation,
+201716 instructions/14649 writes, with full rollback and41 originals unchanged.
+Separate actual-declaration3037/3038/3039 integration passes18486/16, including
+session mutation/undo and engine reset; it does not prove completed Login or
+native file/archive support. See TRAINING-DUMP-LOCATION.md and
+ORIGINAL-TRAINING-SET-LOCATION.md. Earlier boundaries below are historical.
+
 Later noneditor-loader evidence,2026-10-22: the former Camera7 reuse below is
 fixed by source-context admission, not a name blacklist. Actual first Training
 now creates original JCDentonMale and reaches Login PC133/native3015

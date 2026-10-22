@@ -253,6 +253,32 @@ PortableWorldActorOrderSnapshot ReadPortableWorldActorOrder();
 // flags, client/player possession or native cleanup are fabricated.
 PortableWorldActorPartitionProbeResult ProbePortableWorldActorPartition(
     const QuestVr::Vm::Limits& limits = {});
+struct PortableDumpLocationObservation {
+    std::string path,outerPath,classPath,currentUser;
+    std::vector<std::string> directory;
+    std::uint32_t objectIndex{},flags{};
+    std::int32_t fileIndex{},locationIndex{},locationCount{};
+    bool saved{},nonActor{},noExport{},noActorSlot{};
+    bool operator==(const PortableDumpLocationObservation&) const = default;
+};
+// Isolated native-service diagnostic, not original Login/Possess or startup.
+// The constructed UObject lives only inside the real caller-owned VM root;
+// observations are detached before weak-object GC at the public boundary.
+enum class PortableDumpLocationAction { Inspect, Save, Load };
+struct PortableDumpLocationProbeOptions {
+    std::string playerPath;
+    PortableDumpLocationAction action{PortableDumpLocationAction::Inspect};
+    std::optional<QuestVr::Vm::Value> currentLocation;
+    bool rollbackOnly{true};
+};
+struct PortableDumpLocationProbeResult {
+    QuestVr::Vm::Result execution;
+    PortableDumpLocationObservation object;
+    QuestVr::Vm::Value before,after;
+    bool savedBefore{},savedAfter{},available{};
+};
+PortableDumpLocationProbeResult ProbePortableDumpLocationSession(
+    const PortableDumpLocationProbeOptions& options,const QuestVr::Vm::Limits& limits = {});
 struct PortableWorldStartupProbeResult {
     QuestVr::Vm::Result execution;
     PortableWorldStartupPhase phase{PortableWorldStartupPhase::ValidateWorld};
@@ -266,6 +292,7 @@ struct PortableWorldStartupProbeResult {
     std::vector<PortableSpawnEncroachmentSnapshot> spawnedEncroachment;
     PortableWorldActorOrderSnapshot beforeActorOrder,afterActorOrder;
     std::vector<PortablePlayerLoginObservation> playerLogins;
+    std::vector<PortableDumpLocationObservation> dumpLocations;
 };
 const char* PortableWorldStartupPhaseName(PortableWorldStartupPhase phase);
 // Non-publishing diagnostic over actual Level slots and original callbacks.
@@ -334,6 +361,9 @@ PortableRuntimeSummary InitializePortableRuntime(
 // gameplay must select its explicit noneditor profile BEFORE object creation.
 std::optional<QuestVr::OriginalLinkerLoadProfile> ReadPortableRuntimeLoadProfile();
 void ShutdownPortableRuntime();
+// Explicit read-only config/file-manager bindings for native DumpLocation.
+// They are engine-session-owned; no process CWD change or original DLL call.
+void PreparePortableRuntimeDumpLocationServices(const std::string& userIniPath,const std::string& searchDirectory);
 struct PortableNativeEngineClassSnapshot {
     std::string classPath, baseClassPath, withinClassPath;
     // Original native constructor baseline, not serialized post-load flags or

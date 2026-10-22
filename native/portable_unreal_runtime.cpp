@@ -79,6 +79,7 @@
 #include "quest_world_actor_order.h"
 #include "quest_spawn_play_actor_login.h"
 #include "quest_load_context_save.h"
+#include "quest_dump_location.h"
 
 #include <memory>
 #include <algorithm>
@@ -102,6 +103,14 @@
 namespace {
 
 class RuntimeObject;
+void RetireRuntimeDumpObject(RuntimeObject*) noexcept;
+struct RuntimeNativeDumpState {
+    QuestVr::DumpLocation::ConstructorData data;
+    QuestVr::Vm::Value initialLocation;
+    // Original constructor reserves uninitialized helper storage; no file is
+    // open yet. Unsupported file operations never interpret these raw bytes.
+    std::unique_ptr<std::byte[]> helper;
+};
 enum class RuntimeNativeDefaultKind {Object,Subsystem,Field,Property,StrProperty,ArrayProperty,
     Primitive,Engine,GameEngine,GameEngineExt,DeusExGameEngine};
 struct RuntimeNativeEngineValues {
@@ -284,6 +293,7 @@ public:
         std::unordered_map<std::uint32_t,std::vector<RuntimeObject*>>> nativeWindowPropertyRoots;
     std::int32_t uniqueObjectCounter{}; // Concrete UClass, survives map changes.
     std::unique_ptr<RuntimeNativeConversationState> nativeConversation;
+    std::unique_ptr<RuntimeNativeDumpState> nativeDump;
     RuntimeObject* nativeXLevel{}; // Immutable LinkActorsToLevel baseline, not a script write.
     // Explicit loader/Spawn-owned transient native Actor slot. The portable
     // renderer does not allocate an original RenderIterator. Absence comes
@@ -397,6 +407,7 @@ protected:
     ~RuntimeObject() override {
         RetireRuntimeLookupObject(this);
         if(nativeConversation && nativeConversation->node) RetireRuntimeConversationObject(this);
+        if(nativeDump)RetireRuntimeDumpObject(this);
         if(nativePackageInstance) RetireRuntimeNativePackage(this);
         if (destroyed_ != nullptr) ++*destroyed_;
     }
@@ -712,6 +723,21 @@ std::unordered_map<std::string, RuntimeObject*> persistentQualifiedObjects;
 // runtime index, rather than copying/lowercasing every export for every call.
 // These aliases are not additional GC roots and are removed before collection.
 std::unordered_map<std::string, RuntimeObject*> persistentVmObjects;
+struct RuntimeDumpServices {
+    std::string userIni,searchDirectory;
+    QuestVr::NativeConfig::OrderedIni config;
+};
+std::optional<RuntimeDumpServices> persistentDumpServices;
+QuestVr::DumpLocation::Session persistentDumpSession;
+std::vector<RuntimeObject*> persistentDumpObjects; // Weak, not a hidden AddToRoot.
+void RetireRuntimeDumpObject(RuntimeObject* object) noexcept {
+    const auto found=persistentQualifiedObjects.find(object->reflection.objectPath);
+    if(found!=persistentQualifiedObjects.end() && found->second==object)persistentQualifiedObjects.erase(found);
+    const auto alias=persistentVmObjects.find(object->birthVmKey);
+    if(alias!=persistentVmObjects.end() && alias->second==object)persistentVmObjects.erase(alias);
+    const auto slot=std::find(persistentDumpObjects.begin(),persistentDumpObjects.end(),object);
+    if(slot!=persistentDumpObjects.end())persistentDumpObjects.erase(slot);
+}
 // Immutable source-admission evidence, NOT UObject/cache entries. Excluded
 // exports own no native ObjectIndex, GC object, lookup or actor identity.
 struct RuntimeExcludedExport {
@@ -2786,6 +2812,7 @@ public:
         beforeWindowRoots_=persistentWindowDomain && persistentWindowDomain->get() ?
             persistentWindowDomain->get()->roots.size() : 0u;
         beforeConversationNodes_=persistentConversationNodes.size();
+        beforeDumpSession_=persistentDumpSession;
         clientDependent_ = false;
         soundClientIdentity_ = 0u;
         beforeLevelClock_.reset();
@@ -2811,7 +2838,7 @@ public:
         if (clientDependent_ && !persistentNativeClient.HasViewport())
             throw std::runtime_error("Native client lifetime revoked during script transaction");
         ValidateSoundClientLease();
-        if(retailCollisionPreview_||propertyTeardownPreview_||objectDestroyPreview_||actorOrderPreview_) {
+        if(retailCollisionPreview_||propertyTeardownPreview_||objectDestroyPreview_||actorOrderPreview_||dumpLocationPreview_) {
             ValidateStateBudget();Rollback();return;
         }
         SynchronizeNativeMoveMirror();
@@ -2855,6 +2882,7 @@ public:
         }
         beforeCollision_.reset();
         CommitConversationObjects();
+        provisionalDumps_.clear();
         provisionalLookupObjects_.clear();
         beforeLinkerSlots_.clear();
         beforeLinkerHeaders_.clear();
@@ -2981,6 +3009,8 @@ public:
         }
         beforeWorldSlotItems_.clear();
         RollbackConversationObjects();
+        for(auto& root:provisionalDumps_)RetireRuntimeDumpObject(root.get());
+        provisionalDumps_.clear();persistentDumpSession=beforeDumpSession_;
         beforeCollision_.reset(); saved_.clear(); savedAi_.clear(); provisionalAi_.clear(); provisionalWindows_.clear(); beforeDecals_.reset(); beforeLevelClock_.reset(); nativeDestroyReferenceBytes_=0u; transaction_ = false;
     }
     Property ResolveProperty(const Function& function, const std::int32_t reference) override {
@@ -3014,7 +3044,7 @@ public:
             return object->reflection.objectPath;
         }
         if(object->nativeClientIdentity || object->nativeClientClass || object->nativeEngineClass || object->nativeMetadataClass ||
-            object->nativeWindowObject || object->nativePackageInstance || IsNativeConversationNode(object))
+            object->nativeWindowObject || object->nativePackageInstance || object->nativeDump || IsNativeConversationNode(object))
             return object->reflection.objectPath;
         // No native Rename/SetOuter exists in this host. Loaded object names
         // and complete package/outer paths are immutable, including nested
@@ -3589,6 +3619,8 @@ public:
         if(index==512u) return MakeNoiseNative(Object(receiver),arguments,declaration,execution);
         if(index==2100u || index==2101u || index==2102u)
             return ConversationBindNative(index,Object(receiver),arguments,declaration,execution);
+        if(index==3015u || index==3037u || index==3038u || index==3039u)
+            return DumpLocationNative(index,Object(receiver),arguments,declaration,execution);
         if(index==1052u) return InitRootWindowNative(Object(receiver),arguments,declaration,execution);
         if(index==1410u) return NewChildWindowNative(Object(receiver),arguments,declaration,execution);
         if(index==1438u) return WindowAlignmentsNative(Object(receiver),arguments,declaration,execution);
@@ -7121,10 +7153,12 @@ public:
         throw std::runtime_error("RootWindow native SetVisibility/init-tree/reconfiguration is not implemented");
     }
 #include "portable_conversation_bind.inl"
+#include "portable_dump_location.inl"
     Value Read(RuntimeObject* object, const Property& property, const std::uint32_t index,
         const bool defaults = false, const bool immutable = false,NativeAuthoredReadOrigin* origin=nullptr,
         const bool nativeRegionStorage=false) {
         if(origin) *origin={};
+        if(object->nativeDump && !defaults && !immutable)return ReadDumpLocationValue(object,property,index);
         if(const auto native=ReadNativeConversationValue(object,property,index,defaults,immutable)) return *native;
         if(object->nativePackageInstance || object->nativePackageDefaults)
             throw std::runtime_error("Native Package reflected/default storage requires its typed native service");
@@ -8504,6 +8538,8 @@ private:
         bool unpublished{};
     };
     std::vector<GCRoot<RuntimeObject>> provisionalConversations_;
+    std::vector<GCRoot<RuntimeObject>> provisionalDumps_;
+    QuestVr::DumpLocation::Session beforeDumpSession_;
     std::vector<RetiredConversationObject> retiredConversations_;
     std::optional<QuestVr::ObjectIndexPool::Transaction> conversationIndices_;
     std::size_t beforeConversationNodes_{};
@@ -8525,6 +8561,7 @@ private:
     bool propertyTeardownPreview_{};
     bool objectDestroyPreview_{};
     bool actorOrderPreview_{};
+    bool dumpLocationPreview_{};
     std::size_t nativeActorOrderObservationBytes_{};
     struct StartupOutStorage {std::shared_ptr<Value> value;std::shared_ptr<Reference> reference;};
     std::vector<StartupOutStorage> nativeStartupOut_;
@@ -9110,7 +9147,7 @@ private:
             if(!registered) throw std::runtime_error("Native class is not an audited registration");
             return *registered;
         }
-        if (object->runtimeBirth || object->nativeWindowObject || IsNativeConversationNode(object))
+        if (object->runtimeBirth || object->nativeWindowObject || object->nativeDump || IsNativeConversationNode(object))
             throw std::runtime_error("Constructed instance is not a UClass");
         const auto& table = Table(object->sourcePath);
         const auto& entry = table.exports.at(object->exportIndex);
@@ -9159,7 +9196,7 @@ private:
                 throw std::runtime_error("Constructed native Package cast identity is invalid");
             return {object->reflection.objectPath,object->cls->reflection.objectPath,false};
         }
-        if (object->runtimeBirth || object->nativeWindowObject || IsNativeConversationNode(object)) {
+        if (object->runtimeBirth || object->nativeWindowObject || object->nativeDump || IsNativeConversationNode(object)) {
             if (!object->cls || !object->cls->classDescriptor)
                 throw std::runtime_error("Runtime birth has no original class identity");
             return {object->reflection.objectPath, object->cls->reflection.objectPath, false};
@@ -9236,6 +9273,13 @@ private:
         result->resultLayout = property.resultLayout;
         result->read = [this, object, property, index, defaults]() { return Read(object, property, index, defaults); };
         result->write = [this, object, property, index, defaults](const Value& value) {
+            if(object->nativeDump) {
+                if(defaults || index || LowerAscii(property.key)!="deusex.dumplocation.currentdumplocation")
+                    throw std::runtime_error("DumpLocation field write needs its typed native service");
+                auto normalized=TypedLiveValue(property,value);Touch(object);
+                object->scriptValues["currentdumplocation"][0u]=std::move(normalized);
+                object->committedScriptState=true;return;
+            }
             if(WriteNativeConversationValue(object,property,index,defaults,value)) return;
             auto* nativeOwner=object->defaultOwner?object->defaultOwner:object->classDescriptor?object:nullptr;
             if(object->nativeEngineInstance || object->nativePrimitiveInstance || object->nativeProperty ||
@@ -9285,6 +9329,12 @@ private:
             if(index >= property.arrayDimension || !OwnsProperty(target->classDescriptor?target:target->cls,property))
                 throw std::runtime_error("VM property is not owned by its concrete receiver class");
             auto normalized = TypedLiveValue(property, value);
+            const auto rejectDumpEscape=[&](const auto& self,const Value& member)->void {
+                if(member.kind==Kind::Object && !member.text.empty() && Object(member.text)->nativeDump)
+                    throw std::runtime_error("Persistent DumpLocation reference storage needs native GC/archive ownership");
+                for(const auto& [key,field]:member.fields){static_cast<void>(key);self(self,field);}
+            };
+            rejectDumpEscape(rejectDumpEscape,normalized);
             std::vector<RuntimeObject*> windowRoots;
             if(target->nativeWindowObject) {
                 const auto collect=[&](const auto& self,const Value& member,const std::size_t depth)->void {
@@ -9861,6 +9911,26 @@ private:
             4u*sizeof(void*)+persistentObjectLookup->index.RetainedBytes());
         defaults.Retain(provisionalLookupObjects_.capacity()*sizeof(RuntimeObject*));
         defaults.Retain(persistentConversationNodes.capacity()*sizeof(RuntimeObject*));
+        defaults.Retain(persistentDumpObjects.capacity()*sizeof(RuntimeObject*)+
+            provisionalDumps_.capacity()*sizeof(GCRoot<RuntimeObject>)+provisionalDumps_.size()*sizeof(GCRootNode));
+        if(persistentDumpServices)defaults.Retain(sizeof(RuntimeDumpServices)+persistentDumpServices->userIni.capacity()+
+            persistentDumpServices->searchDirectory.capacity()+persistentDumpServices->config.RetainedBytes()+2u);
+        for(const auto* object:persistentDumpObjects) {
+            if(!object || !object->nativeDump)throw std::runtime_error("DumpLocation weak inventory is invalid");
+            const auto& data=object->nativeDump->data;
+            defaults.Retain(sizeof(RuntimeObject)+sizeof(GCAllocation)+sizeof(RuntimeNativeDumpState)+
+                QuestVr::DumpLocation::OriginalHelperBytes+object->reflection.objectPath.capacity()+
+                object->reflection.metaClass.capacity()+object->reflection.outerPath.capacity()+
+                object->reflection.basePath.capacity()+object->sourcePath.capacity()+object->birthVmKey.capacity()+
+                data.currentUser.capacity()+7u+
+                data.directory.capacity()*sizeof(std::string)+object->references.capacity()*sizeof(RuntimeObject*));
+            for(const auto& file:data.directory)defaults.Retain(file.capacity()+1u);
+            for(const auto* aliases:{&persistentQualifiedObjects,&persistentVmObjects}) {
+                const auto alias=aliases->find(aliases==&persistentQualifiedObjects?object->reflection.objectPath:object->birthVmKey);
+                if(alias!=aliases->end() && alias->second==object)
+                    defaults.Retain(sizeof(decltype(persistentVmObjects)::value_type)+6u*sizeof(void*)+alias->first.capacity()+1u);
+            }
+        }
         defaults.Retain(provisionalConversations_.capacity()*sizeof(GCRoot<RuntimeObject>)+
             provisionalConversations_.size()*sizeof(GCRootNode));
         defaults.Retain(retiredConversations_.capacity()*sizeof(RetiredConversationObject));
@@ -9904,11 +9974,14 @@ private:
         const auto& exports=persistentRuntime->get()->exports;
         const auto* windows=persistentWindowDomain && persistentWindowDomain->get() ? persistentWindowDomain->get() : nullptr;
         const auto windowObjects=windows?windows->objects.size():0u;
-        const auto totalObjects=exports.size()+windowObjects+persistentConversationNodes.size();
+        const auto totalObjects=exports.size()+windowObjects+persistentConversationNodes.size()+persistentDumpObjects.size();
         for(std::size_t objectIndex=0u;objectIndex<totalObjects;++objectIndex) {
             const auto* object=objectIndex<exports.size()?exports[objectIndex]:objectIndex<exports.size()+windowObjects?
-                windows->objects[objectIndex-exports.size()]:persistentConversationNodes[objectIndex-exports.size()-windowObjects];
+                windows->objects[objectIndex-exports.size()]:objectIndex<exports.size()+windowObjects+persistentConversationNodes.size()?
+                persistentConversationNodes[objectIndex-exports.size()-windowObjects]:
+                persistentDumpObjects[objectIndex-exports.size()-windowObjects-persistentConversationNodes.size()];
             if(!object)continue;
+            if(object->nativeDump)valueBudget(valueBudget,object->nativeDump->initialLocation,0u);
             if(object->nativeConversation) defaults.Retain(sizeof(RuntimeNativeConversationState));
             if(IsNativeConversationNode(object)) {
                 defaults.Retain(sizeof(RuntimeObject)+sizeof(GCAllocation)+
@@ -10339,6 +10412,8 @@ std::vector<QuestVr::ScriptSavedProperty> ClockProperties(
 }
 
 QuestVr::ScriptSavedState CollectScriptSavedState() {
+    if(persistentDumpSession.saved || !persistentDumpObjects.empty())
+        throw std::runtime_error("Live DumpLocation/session checkpoint capture needs its native archive service");
     if(HasNativeDeferredOwnership())
         throw std::runtime_error("Native deferred Actor checkpoint/rebind capture is not implemented");
     if(HasNativeLinkerChanges())
@@ -12229,6 +12304,23 @@ PortableSound LoadPortableRuntimeSound(const std::string& objectPath) {
     return LoadPortableSound(package, FindPortableExport(package, exportPath));
 }
 
+void PreparePortableRuntimeDumpLocationServices(const std::string& userIniPath,const std::string& searchDirectory) {
+    if(!persistentRuntime || !persistentRuntime->get())throw std::runtime_error("DumpLocation binding requires an initialized engine");
+    const auto directory=std::filesystem::canonical(searchDirectory);
+    if(!std::filesystem::is_directory(directory))throw std::runtime_error("DumpLocation search binding is not a directory");
+    const auto ini=std::filesystem::weakly_canonical(userIniPath).string();
+    if(persistentDumpServices) {
+        if(persistentDumpServices->userIni!=ini || persistentDumpServices->searchDirectory!=directory.string())
+            throw std::runtime_error("DumpLocation engine bindings cannot be silently replaced");
+        return;
+    }
+    if(!persistentDumpObjects.empty() || persistentDumpSession.saved)
+        throw std::runtime_error("DumpLocation binding cannot replace live session ownership");
+    const auto config=QuestVr::NativeConfig::ReadOrderedIni(ini);
+    RuntimeDumpServices services{ini,directory.string(),config?*config:QuestVr::NativeConfig::OrderedIni::Parse("")};
+    persistentDumpServices.emplace(std::move(services));
+}
+
 void ShutdownPortableRuntime() {
     // CPU-owner shutdown, not a map-travel hash retirement implementation.
     // Root diagnostics must have unwound before the runtime can be destroyed.
@@ -12251,6 +12343,7 @@ void ShutdownPortableRuntime() {
     persistentVmObjects.clear();
     persistentContextExcluded.clear();
     persistentConversationNodes.clear();
+    persistentDumpObjects.clear();persistentDumpServices.reset();persistentDumpSession={};
     persistentWindowDomain.reset();persistentRootWindowClass.reset();
     persistentConfigClasses.reset();
     persistentMetadataClasses.reset();
@@ -13481,6 +13574,20 @@ PortableWorldActorPartitionDestroyProbeResult ProbePortableWorldActorPartitionTh
     }
     return result;
 }
+PortableDumpLocationProbeResult ProbePortableDumpLocationSession(
+    const PortableDumpLocationProbeOptions& options,const QuestVr::Vm::Limits& limits) {
+    CollectBirthGarbageAtBoundary collect;PortableDumpLocationProbeResult result;
+    try {
+        PortableActorVmHost host;
+        result.execution=QuestVr::Vm::ExecuteTransaction(host,[&](QuestVr::Vm::Execution& execution) {
+            return host.ProbeDumpLocationSession(options,result,execution);
+        },limits);
+        if(options.rollbackOnly)result.execution.committed=false;
+    }catch(const std::exception& error) {
+        result.execution.status=QuestVr::Vm::Status::Unsupported;result.execution.error=error.what();
+    }
+    return result;
+}
 PortableWorldStartupProbeResult ProbePortableWorldStartup(
     const PortableWorldStartupProbeOptions& options, const QuestVr::Vm::Limits& limits) {
     CollectBirthGarbageAtBoundary collect;
@@ -13883,6 +13990,7 @@ bool GetPortableRuntimeScriptStatePresent() {
 }
 
 bool GetPortableRuntimeUnsavedScriptState() {
+    if(persistentDumpSession.saved || !persistentDumpObjects.empty())return true;
     if (!persistentRuntime || !persistentRuntime->get()) return false;
     if(HasNativeConversationBindings()) return true;
     if(HasNativeLinkerChanges()) return true;
@@ -14297,6 +14405,7 @@ PortableMapRuntimeSummary LoadPortableRuntimeMap(
 }
 
 std::size_t UnloadPortableRuntimeMap() {
+    if(!persistentDumpObjects.empty())throw std::runtime_error("Map travel requires live DumpLocation ownership retirement");
     if(HasNativeDeferredOwnership())
         throw std::runtime_error("Map unload refused: native deferred Actor archiving/cleanup is not implemented");
     if(HasNativeConversationBindings())
@@ -16028,6 +16137,8 @@ bool SavePortableRuntimeState(const std::string& path) {
 static bool ReadPortableRuntimeState(const std::string& path, const bool apply, const std::string& expectedMapName) {
     if (!persistentRuntime || !persistentRuntime->get()) return false;
     try {
+        if(persistentDumpSession.saved || !persistentDumpObjects.empty())
+            throw std::runtime_error("Live DumpLocation/session checkpoint restore needs its native archive service");
         if(persistentRetailCollision)
             throw std::runtime_error("Active retail collision checkpoint restore is not implemented");
         std::vector<std::uint8_t> bytes;

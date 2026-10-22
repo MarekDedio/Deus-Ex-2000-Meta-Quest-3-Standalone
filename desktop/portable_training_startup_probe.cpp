@@ -263,6 +263,7 @@ int Run(const fs::path& root,const std::optional<std::string>& expected,unsigned
     Require(scripts.size()==38u,"Startup diagnostic differs from exact Quest script package list");
     const auto initialized=InitializePortableRuntime(scripts,InitialSeed,QuestVr::OriginalLinkerLoadProfile{false,true,true});
     Require(initialized.passed,"Cannot initialize original Quest source set under the actual standalone load context");
+    PreparePortableRuntimeDumpLocationServices(userIni.string(),(root/"System").string());
     Require(PreparePortableRuntimeNativeEngineClasses().prepared&&PreparePortableRuntimeNativeMetadataClasses().prepared&&
         PreparePortableRuntimeNativeConfigClasses().prepared&&PreparePortableRuntimeNativePackages().prepared&&
         PreparePortableRuntimeObjectLookup().prepared&&PreparePortableRuntimeEngineCollision(ini).prepared,
@@ -344,6 +345,7 @@ int Run(const fs::path& root,const std::optional<std::string>& expected,unsigned
     limits.nativeWork=nativeWork;
     std::optional<Boundary> boundary;std::optional<std::vector<PortableSpawnEncroachmentSnapshot>> spawnPackets;bool completed{};
     std::optional<std::vector<PortablePlayerLoginObservation>> playerLogins;
+    std::optional<std::vector<PortableDumpLocationObservation>> dumpLocations;
     for(unsigned attempt=1u;attempt<=repeats;++attempt){
         const auto start=std::chrono::steady_clock::now();
         const auto result=ProbePortableRuntimeRetailCollisionStartup(options,limits);const auto& world=result.world;
@@ -369,6 +371,18 @@ int Run(const fs::path& root,const std::optional<std::string>& expected,unsigned
         ObserveSpawnPackets(world,requireSpawnEncroachment);
         ObserveActorOrder(world);
         ObservePlayerLogins(world);
+        for(const auto& dump:world.dumpLocations) {
+            Require(dump.classPath=="DeusEx.DumpLocation" && dump.outerPath=="00_Training" && dump.objectIndex &&
+                dump.flags==0u && dump.fileIndex==-1 && dump.locationIndex==-1 && dump.locationCount==0 &&
+                !dump.saved && dump.nonActor && dump.noExport && dump.noActorSlot,
+                "Original DumpLocation constructor lost its actual class/Outer/flags/native non-Actor state");
+            std::cout<<"DUMP CONSTRUCTOR path="<<std::quoted(dump.path)<<" outer="<<std::quoted(dump.outerPath)
+                <<" currentUser="<<std::quoted(dump.currentUser)<<" files="<<dump.directory.size()
+                <<" saved="<<dump.saved<<" objectIndex="<<dump.objectIndex<<" flags="<<dump.flags
+                <<"; authentic native non-Actor constructor, NOT completed Login or a saved DMP file\n";
+        }
+        if(dumpLocations)Require(*dumpLocations==world.dumpLocations,"Repeated DumpLocation construction/session observations differ");
+        else dumpLocations=world.dumpLocations;
         if(playerLogins)Require(*playerLogins==world.playerLogins,"Repeated original player Login observations differ");
         else playerLogins=world.playerLogins;
         if(spawnPackets)Require(SameSpawnPackets(*spawnPackets,world.spawnedEncroachment),

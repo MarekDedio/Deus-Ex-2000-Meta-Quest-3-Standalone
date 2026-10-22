@@ -695,6 +695,9 @@ class DeusExQuestApp final : public OVRFW::XrApp {
                 ALOG("DeusExQuest: persistent Unreal runtime validation failed");
                 return false;
             }
+            PreparePortableRuntimeDumpLocationServices(
+                "/data/user/0/dev.deusex.questvr.smoketest/files/DeusEx/System/User.ini",
+                "/data/user/0/dev.deusex.questvr.smoketest/files/DeusEx/System");
             // Training's null-Brush/null-Mesh colliders require the actual
             // Engine-owned Primitive. Prepare its defaults/typed config and
             // native lifetime on this CPU owner, before publishing the map.

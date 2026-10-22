@@ -1,5 +1,36 @@
 # Port status
 
+## First Training saved-position native services (2026-10-22)
+
+Actual native3015 now creates an indexed non-Actor DumpLocation with the
+original class/Outer/name/flags/constructor fields and explicit read-only
+config/file providers. Original3037/3038/3039 use engine-session six-word pose
+state with caller-root rollback. Shutdown resets both bindings and session for
+both initializer overloads; native aliases/headers have retained-budget owners.
+Canonical struct/Vector/Rotator declarations are checked before allocation.
+
+Actual first-Training native integration passes18486 checks/16 refusals,
+including exact pose/nonpose preservation, zero/one-shot Load, commit/rollback,
+native3038 write-budget refusal, archive overwrite protection, weak lookup/GC
+cleanup and single-package engine reset. Pure provider/session helpers pass
+70/12. Original Training repeat2 now passes the genuine constructor/false
+getter and reaches Login PC442, native267 SetLocation:201716 instructions/
+14649 writes,117 Spawn observations,335 PPP visits and1360-to335/split192
+native partition. Native work459547 cold/459005 warm is within1048576. Full
+rollback and all41 original source fingerprints pass. This is NOT successful
+Login, completed startup or usable crate loot/gravity.
+
+Strict ARM64 and Android native build/link pass. The coherent full desktop
+build/shared CTest pass168 executed/199 registered,31 explicit owned-data
+skips and zero failures in44.64s. Separate first-map movement122706/21 and
+isolated crate347/two contents-refusal regressions pass; neither certifies live
+falling/landing, melee or surviving loot. No APK was made; headset gameplay
+acceptance and native file/archive/persistent Dump-reference support remain unfinished. Only
+the WHOLE first Training map is the actual-map target. See
+TRAINING-DUMP-LOCATION.md and ORIGINAL-TRAINING-SET-LOCATION.md. Native267 needs
+real FarMove/FindSpot placement, not a direct Location assignment or ordinary
+delta movement substituted for the original call.
+
 ## First Training noneditor loader integration (2026-10-22)
 
 The explicit standalone client/server load profile now gates fresh source

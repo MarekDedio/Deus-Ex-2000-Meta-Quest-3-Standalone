@@ -10,6 +10,19 @@ do not spend time on other-map integration or map-content test sweeps.
 Reconfirmed2026-10-22: skip other-map crate/physics integration and testing;
 the WHOLE first Training map remains the current content acceptance target.
 
+Latest saved-position increment,2026-10-22: actual native3015/3037/3038/3039
+constructor/session integration passes18486/16 on the first Training map;
+helper mocks70/12 pass separately. Both original startup attempts now continue
+past the real constructor/false getter to Login PC442/native267 SetLocation,
+with identical201716 instructions/14649 writes and complete rollback/all41
+originals unchanged. Strict ARM64 and Android native link pass; coherent full
+desktop/shared CTest passes168 executed/199 registered with31 explicit
+owned-data skips, zero failures in44.64s. Separate first-map movement122706/21
+and isolated crate347/two contents refusals pass. This is NOT completed Login, live weapon crate
+destruction, surviving loot/gravity or a new APK. Next authentic placement
+scope is recorded in ORIGINAL-TRAINING-SET-LOCATION.md. Other real maps remain
+out of this increment; whole first Training remains unfinished.
+
 Latest noneditor loader increment,2026-10-22: source context admission now
 prevents editor Camera/Brush UObject allocation without rewriting source slots
 or erasing compiled BSP. Actual first Training has1356 admitted exports,

@@ -128,3 +128,45 @@ Actor substitute, unconditional None/false or a hidden startup branch bypass.
 Constructor helper/file services, destruction (`10015120` closes/frees owned
 resources then calls UObject.Destroy), cold/warm state and native3037/3038
 mutation are not implemented or accepted by this static audit.
+
+Runtime follow-up,2026-10-22: TRAINING-DUMP-LOCATION.md records the later
+implemented constructor/session subset and actual tests. The earlier missing
+runtime statements above describe the static-audit checkpoint, not current
+implementation status. DMP file/archive and persistent reflected native-object
+ownership remain explicitly unsupported. Original Training now reaches the
+later SetLocation267 boundary without replacing its Login branches.
+
+## Constructor providers: further static evidence (2026-10-22)
+
+The owned `Editor.dll` SHA256 is
+`93E31B3E401880AB17AB4561C3FD4D2BAA530FBE25CCB5154911EBAD60FFF035`.
+Under the existing explicitly selected Editor config profile, GetString at
+`1021B620` writes a zero WCHAR to destination[0] at `1021B651`, before the
+missing-file/section/key branches. The Dump constructor's missing CurrentUser
+therefore yields empty text under that profile, not an invented username or
+uninitialized buffer. Its supplied count64 retains at most63 UTF16 code units.
+This is an embedding profile, not proof of the packed launcher's GConfig factory.
+
+Editor FindFiles at `10215200` uses the caller's unchanged wildcard with
+FindFirstFileW (`10215255`) and FindNextFileW (`1021535A`). It excludes `.` and
+`..` (`10215269..1021529B`), selects Files versus Directories from attribute
+bit0x10 (`102152A1..102152B2`), and appends filenames in OS enumeration order.
+There is no sorting, recursion or implicit System/current-user prefix. The
+portable binding uses an explicitly supplied directory and never changes CWD.
+Windows uses real FindFirstFileW/FindNextFileW; Android has an explicitly
+documented platform file-manager implementation, not an alleged Win32 factory.
+
+The `0x1220` helper is a raw allocator reservation at `100150EE..10015105`:
+there is no helper constructor call before PopulateDumpDirectory. The portable
+fresh closed state reserves uninitialized storage but does not interpret it;
+file-open/write operations remain unsupported. All commercial accesses in this
+follow-up were read-only bytes/objdump, never library loading or execution.
+
+The new read-only `dump_location_inspect` tool independently reads actual
+DeusEx.u metadata: source object flags`0x040F0004`, class flags`0x112`, direct
+base/Within Core.Object. Direct fields carry`0x1000`: currentDumpLocation
+(DumpLocationStruct), currentUser (String), currentDumpFileLocation/index,
+currentDumpLocationIndex, dumpFile, dumpLocationCount (Int), dumpFileDirectory
+(Array with String inner) and Player (DeusExPlayer Object). The actual nested
+pose types are Core.Object.Vector Location and Core.Object.Rotator ViewRotation;
+the original native copies their three32-bit words without arithmetic.
