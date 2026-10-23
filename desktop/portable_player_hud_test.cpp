@@ -117,6 +117,26 @@ void VerifyRing(const std::string& player,const std::string& ring) {
     else Require(hud.headInWater && *hud.headInWater==Declared(zone.text,"Engine.ZoneInfo.bWaterZone",Kind::Bool).boolean,
         "HUD oxygen did not use the actual declared head-region water flag");
 }
+void VerifyToggleAppearance(const std::array<Value,3u>& appearance,bool pressed) {
+    const auto channel=pressed?21:11;
+    Require(appearance[1u].kind==Kind::Object && appearance[1u].text.empty(),
+        "Original Toggle appearance invented a texture in the explicit None-texture control");
+    for(const auto index:{0u,2u}) {
+        const auto& color=appearance[index];
+        Require(color.kind==Kind::Struct && color.fields.size()==4u,
+            "Original Toggle appearance lost its typed text/tile Color");
+        for(const auto& [name,expected]:{std::pair{"r",channel},std::pair{"g",channel+1},
+            std::pair{"b",channel+2},std::pair{"a",0}}) {
+            const auto found=color.fields.find(name);
+            Require(found!=color.fields.end() && found->second.kind==Kind::Byte &&
+                found->second.integer==expected,
+                "Original Toggle appearance did not select the actual normal/pressed Info record");
+        }
+    }
+}
+bool SameToggleAppearance(const std::array<Value,3u>& left,const std::array<Value,3u>& right) {
+    return std::equal(left.begin(),left.end(),right.begin(),QuestVr::Vm::Equal);
+}
 }
 
 int main(int argc,char** argv) {
@@ -863,6 +883,134 @@ int main(int argc,char** argv) {
             GC::GetStats().numObjects==windowStats.numObjects && GC::GetStats().memoryUsage==windowStats.memoryUsage &&
             SavePortableRuntimeState(inspectPath.string()) && Bytes(inspectPath)==baseline,
             "Original root prefix probe published its pending root/GC state");
+        // These controls construct a separate actual native Root/Radio/Toggle
+        // graph in one rollback-only VM transaction. They NEVER resume the
+        // poisoned DamageHUD callback above, patch owned scripts, or establish
+        // successful original HUD startup. Distinct explicit test-only Info
+        // colors make the real native appearance choice observable.
+        const auto toggleStats=GC::GetStats();
+        const auto toggleRollback=[&] {
+            const auto summary=ReadPortableRuntimeNativeWindowSummary();
+            Require(summary.objects==0u && summary.roots==0u &&
+                summary.configuredRootNameCounter==windowBaseline.configuredRootNameCounter &&
+                summary.graphicsContextNameCounter==windowBaseline.graphicsContextNameCounter &&
+                Declared(player,"Extension.PlayerPawnExt.RootWindow",Kind::Object).text.empty() &&
+                GetPortableRuntimeWorldRevision()==windowRevision && GetPortableRuntimeMapActors(true).size()==count &&
+                GC::GetStats().numObjects==toggleStats.numObjects && GC::GetStats().memoryUsage==toggleStats.memoryUsage &&
+                SavePortableRuntimeState(inspectPath.string()) && Bytes(inspectPath)==baseline,
+                "Toggle callback/budget refusal retained roots, lists, names, GC, Actor/player state or checkpoint bytes");
+        };
+        const auto toggleRun=[&](PortableToggleProbeMode mode) {
+            auto result=ProbePortableNativeWindowToggle(player,mode);
+            Require(!result.execution.passed() && !result.execution.committed &&
+                result.execution.error=="Native toggle diagnostic complete; rollback required",
+                "Original Toggle diagnostic failed before its genuine final rollback: "+
+                result.execution.function+':'+std::to_string(result.execution.offset)+" "+result.execution.error);
+            Require(!result.rootPath.empty() && !result.radioPath.empty() && !result.firstPath.empty() &&
+                !result.secondPath.empty() && result.rootPath!=result.radioPath && result.firstPath!=result.secondPath &&
+                result.registeredToggles==std::vector<std::string>{result.firstPath,result.secondPath},
+                "Original Toggle control lacks actual distinct windows and native Radio creation-order registration");
+            Require(result.execution.nativeWork && result.execution.nativeWork->used>0u &&
+                !result.execution.nativeWork->exhausted,"Original Toggle calls lost the caller's native-work ledger");
+            toggleRollback();return result;
+        };
+        const auto toggleNames=[&](const PortableToggleProbeResult& result,
+            const std::vector<std::string>& expected) {
+            Require(result.stages.size()==expected.size(),"Original Toggle control omitted actual call observations");
+            for(std::size_t index=0u;index<expected.size();++index) {
+                Require(result.stages[index].name==expected[index],"Original Toggle callback order differs");
+                if(index) Require(result.stages[index].writes>=result.stages[index-1u].writes,
+                    "Original Toggle nested call reset the actual shared VM write ledger");
+            }
+        };
+        const auto toggleRoundTrip=[&](const PortableToggleProbeResult& result,bool oneCheck) {
+            toggleNames(result,{"initial","equal-false","first-on","equal-true","second-on","second-off"});
+            const auto& initial=result.stages[0u];const auto& equalFalse=result.stages[1u];
+            const auto& first=result.stages[2u];const auto& equalTrue=result.stages[3u];
+            const auto& replacement=result.stages[4u];const auto& last=result.stages[5u];
+            Require(!initial.firstPressed && !initial.secondPressed && initial.selection.empty(),
+                "Native Radio/Toggle constructor fabricated an initial selection");
+            Require(!equalFalse.firstPressed && !equalFalse.secondPressed && equalFalse.selection.empty() &&
+                equalFalse.writes==initial.writes && SameToggleAppearance(equalFalse.firstAppearance,initial.firstAppearance) &&
+                SameToggleAppearance(equalFalse.secondAppearance,initial.secondAppearance),
+                "Equal-false SetToggle performed a write, appearance refresh or Radio selection");
+            Require(first.firstPressed && !first.secondPressed && first.selection==result.firstPath &&
+                first.writes>equalFalse.writes,"Native Toggle true did not select its actual registered source");
+            Require(equalTrue.firstPressed && !equalTrue.secondPressed && equalTrue.selection==result.firstPath &&
+                equalTrue.writes==first.writes && SameToggleAppearance(equalTrue.firstAppearance,first.firstAppearance) &&
+                SameToggleAppearance(equalTrue.secondAppearance,first.secondAppearance),
+                "Equal-true SetToggle performed a write or repeated its notification");
+            Require(!replacement.firstPressed && replacement.secondPressed && replacement.selection==result.secondPath &&
+                replacement.writes>equalTrue.writes,
+                "Native Radio replacement did not reentrantly reset the former Toggle in the caller root");
+            Require(!last.firstPressed && last.secondPressed==oneCheck &&
+                last.selection==(oneCheck?result.secondPath:std::string{}) && last.writes>replacement.writes,
+                "Original Radio false branch did not preserve one-check or clear optional selection");
+            for(const auto& stage:result.stages) {
+                Require(stage.oneCheck==oneCheck,"SetToggle changed native Radio one-check policy");
+                VerifyToggleAppearance(stage.firstAppearance,stage.firstPressed);
+                VerifyToggleAppearance(stage.secondAppearance,stage.secondPressed);
+            }
+        };
+        const auto toggleCold=toggleRun(PortableToggleProbeMode::RoundTrip);
+        toggleRoundTrip(toggleCold,false);
+        const auto toggleWarm=toggleRun(PortableToggleProbeMode::RoundTrip);
+        toggleRoundTrip(toggleWarm,false);
+        Require(toggleCold.rootPath==toggleWarm.rootPath && toggleCold.radioPath==toggleWarm.radioPath &&
+            toggleCold.firstPath==toggleWarm.firstPath && toggleCold.secondPath==toggleWarm.secondPath &&
+            toggleCold.registeredToggles==toggleWarm.registeredToggles,
+            "Rolled-back Toggle diagnostic retained a root/child name or native registration");
+        toggleRoundTrip(toggleRun(PortableToggleProbeMode::OneCheck),true);
+        const auto emptyToggle=toggleRun(PortableToggleProbeMode::EmptySlot);
+        toggleNames(emptyToggle,{"initial","equal-false","rejected-empty"});
+        Require(emptyToggle.stages[0u].writes==emptyToggle.stages[1u].writes &&
+            emptyToggle.stages[2u].writes==emptyToggle.stages[1u].writes+8u,
+            "Actual HUDObjectSlot empty rejection did not share both four-store native SetToggle calls");
+        for(const auto& stage:emptyToggle.stages) {
+            Require(!stage.firstPressed && !stage.secondPressed && stage.selection.empty(),
+                "Original HUDObjectSlot.ToggleChanged failed to reject an empty selected slot");
+            VerifyToggleAppearance(stage.firstAppearance,false);
+            VerifyToggleAppearance(stage.secondAppearance,false);
+        }
+        const auto noResultToggle=toggleRun(PortableToggleProbeMode::NoResult);
+        toggleNames(noResultToggle,{"initial","first-on","no-result"});
+        Require(noResultToggle.stages[1u].firstPressed &&
+            noResultToggle.stages[1u].selection==noResultToggle.firstPath &&
+            !noResultToggle.stages[2u].firstPressed && !noResultToggle.stages[2u].secondPressed &&
+            noResultToggle.stages[2u].selection.empty() &&
+            noResultToggle.stages[2u].writes>noResultToggle.stages[1u].writes,
+            "Original native1611 thunk did not use its initialized-false seed for a no-result argument");
+        VerifyToggleAppearance(noResultToggle.stages[2u].firstAppearance,false);
+        for(const auto mode:{PortableToggleProbeMode::WrongReceiver,PortableToggleProbeMode::WrongArgument}) {
+            const auto invalid=ProbePortableNativeWindowToggle(player,mode);
+            Require(!invalid.execution.passed() && !invalid.execution.committed &&
+                !invalid.execution.error.empty() &&
+                invalid.execution.error!="Native toggle diagnostic complete; rollback required",
+                "Native1611 accepted a non-Toggle receiver or non-Bool argument");
+            toggleRollback();
+        }
+        // The last two prefixes fail AFTER successful earlier toggles. Their
+        // whole root must still undo the old-selection reset, appearance,
+        // selection pointer, native list and newly constructed identities.
+        for(const auto prefix:std::vector<std::size_t>{0u,1u,toggleWarm.stages[2u].writes+1u,
+            toggleWarm.stages[4u].writes+1u,toggleWarm.execution.writes-1u}) {
+            QuestVr::Vm::Limits bounded;bounded.writes=prefix;
+            const auto partial=ProbePortableNativeWindowToggle(player,PortableToggleProbeMode::RoundTrip,bounded);
+            Require(partial.execution.status==QuestVr::Vm::Status::Budget && !partial.execution.committed,
+                "Native Toggle/Radio reset the caller write budget: "+std::to_string(prefix)+" "+partial.execution.error);
+            toggleRollback();
+        }
+        for(const auto prefix:{std::size_t{0u},toggleWarm.execution.nativeWork->used/2u,
+            toggleWarm.execution.nativeWork->used-1u}) {
+            QuestVr::Vm::Limits bounded;bounded.nativeWork=prefix;
+            const auto partial=ProbePortableNativeWindowToggle(player,PortableToggleProbeMode::RoundTrip,bounded);
+            Require(!partial.execution.passed() && !partial.execution.committed && partial.execution.nativeWork &&
+                partial.execution.nativeWork->exhausted,
+                "Native Toggle notifications reset/ignored shared constructor/callback work: "+std::to_string(prefix));
+            toggleRollback();
+        }
+        std::cout<<"ORIGINAL native1611 controls: equality no-op, typed appearance, registered Radio replacement/one-check, "
+            "reentrant empty HUD slot, initialized-false no-result, malformed ingress and late whole-root rollback\n";
         const auto rootAttempt=ExecutePortableActorFunction(player,"Extension.PlayerPawnExt.InitRootWindow");
         std::cout<<"ORIGINAL unbound root initialization boundary: "<<rootAttempt.function<<':'<<rootAttempt.offset<<
             " opcode="<<unsigned(rootAttempt.opcode)<<" "<<rootAttempt.error<<std::endl;

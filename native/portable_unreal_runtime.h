@@ -532,6 +532,26 @@ struct PortableRootWindowProbeResult {
 // substitutes an InitWindow script or runs extra callbacks after a failure.
 PortableRootWindowProbeResult ProbePortableRootWindowInitialization(
     const std::string& playerActorPath,const QuestVr::Vm::Limits& limits = {});
+enum class PortableToggleProbeMode { RoundTrip, OneCheck, EmptySlot, NoResult, WrongReceiver, WrongArgument };
+struct PortableToggleProbeStage {
+    std::string name;
+    std::size_t writes{};
+    bool firstPressed{},secondPressed{},oneCheck{};
+    std::string selection;
+    // Original store order: text, texture, tile. Typed detached values only.
+    std::array<QuestVr::Vm::Value,3u> firstAppearance,secondAppearance;
+};
+struct PortableToggleProbeResult {
+    QuestVr::Vm::Result execution;
+    std::string rootPath,radioPath,firstPath,secondPath;
+    std::vector<std::string> registeredToggles;
+    std::vector<PortableToggleProbeStage> stages;
+};
+// Isolated real native Root/Radio/Toggle constructors and original VM calls,
+// ALWAYS rolled back. Explicit base-Root fixture, not configured game HUD or
+// player startup, and never additional callbacks after a poisoned HUD failure.
+PortableToggleProbeResult ProbePortableNativeWindowToggle(const std::string& playerActorPath,
+    PortableToggleProbeMode mode,const QuestVr::Vm::Limits& limits = {});
 struct PortableMapNorthSnapshot {
     bool found{};
     std::string actorPath;

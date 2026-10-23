@@ -138,6 +138,10 @@ struct ProgramLayout {
 class Execution {
 public:
     virtual ~Execution() = default;
+    // Read-only root usage, including bytecode, native and nested callback
+    // writes. Diagnostics can observe admissions without maintaining a second
+    // counter or opening a detached execution/transaction.
+    virtual std::size_t WriteCount() const noexcept = 0;
     // Synchronous callbacks reuse the caller's interpreter, budgets and host
     // transaction. Never enter public Execute from a host native callback.
     virtual Value CallEvent(const std::string& receiver, const std::string& eventName,

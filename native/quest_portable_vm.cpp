@@ -453,6 +453,7 @@ void SetMember(Value& v, const std::string& name, const Value& member) {
 class Machine final : public Execution {
 public:
     Machine(Host& host, const Limits& limits, Result& result) : host_(host), limits_(limits), result_(result) {}
+    std::size_t WriteCount() const noexcept override { return result_.writes; }
     ~Machine() {
         *alive_ = false;
         if (accepted_) return;

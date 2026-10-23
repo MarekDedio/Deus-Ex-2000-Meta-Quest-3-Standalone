@@ -10,6 +10,17 @@ do not spend time on other-map integration or map-content test sweeps.
 Reconfirmed2026-10-22: skip other-map crate/physics integration and testing;
 the WHOLE first Training map remains the current content acceptance target.
 
+Reconfirmed2026-10-23: internal GameInfo.Login is engine player spawning, not
+an account screen/character creator. Do not wait for unrelated HUD completion
+before testing original crate damage in the initialized world with the real
+returned JC. Continue normal possession afterward and preserve its failure/
+whole-root rollback; never publish partial startup or force relevance flags.
+Native ToggleWindow1611 is verified (full desktop/shared CTest173 executed,
+32 explicit skips, owned player/HUD6758). Actual first Training reaches the
+fixed Name DamageType[3] HUD boundary. Crate damage, surviving usable loot,
+falling/stacking and pickup remain the next direct gameplay scope; no new APK.
+See TRAINING-NATIVE-TOGGLE.md for the exact nonpublishing evidence.
+
 Later live-memory correction,2026-10-22: a distinct bounded32MiB live-state
 ledger replaces the incorrect16MiB encoded-save cap at native admission only.
 Save policies/structural/work bounds remain unchanged. Both actual Training

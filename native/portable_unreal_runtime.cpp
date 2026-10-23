@@ -30,6 +30,7 @@
 #include "quest_native_window_clip.h"
 #include "quest_native_window_resize.h"
 #include "quest_native_window_configure.h"
+#include "quest_native_window_toggle.h"
 #include "quest_quick_belt.h"
 #include "quest_actor_state_control.h"
 #include "quest_unreal_string.h"
@@ -3635,6 +3636,7 @@ public:
         if(index==1461u) return WindowConfigureChildNative(Object(receiver),arguments,declaration,execution);
         if(index==1416u) return WindowSensitivityNative(Object(receiver),arguments,declaration,execution);
         if(index==1420u) return WindowSelectabilityNative(Object(receiver),arguments,declaration,execution);
+        if(index==1611u) return WindowToggleNative(Object(receiver),arguments,declaration,execution);
         if(index==1467u) return WindowChildVisibilityNative(Object(receiver),arguments,declaration,execution);
         if(index==1431u) return WindowSizeNative(Object(receiver),arguments,declaration,execution);
         if(index==1433u) return WindowWidthNative(Object(receiver),arguments,declaration,execution);
@@ -3831,6 +3833,8 @@ public:
                 {"ReturnValue",Kind::Bool,0x580u,"BoolProperty",""}};break;
         case 1420u:path="Extension.Window.SetSelectability";
             parameters={{"newSelectability",Kind::Bool,0x80u,"BoolProperty",""}};break;
+        case 1611u:path="Extension.ToggleWindow.SetToggle";
+            parameters={{"bNewToggle",Kind::Bool,0x80u,"BoolProperty",""}};break;
         case 1421u:path="Extension.Window.SetBackground";
             parameters={{"newBackground",Kind::Object,0x80u,"ObjectProperty","Engine.Texture"}};break;
         case 1422u:path="Extension.Window.SetBackgroundStyle";
@@ -5176,14 +5180,19 @@ public:
         }
         if(index!=1410u && index!=1415u && index!=1416u && index!=1420u && index!=1421u && index!=1422u && index!=1430u && index!=1431u && index!=1432u && index!=1433u &&
             index!=1454u && index!=1461u && index!=1465u && index!=1467u && index!=1477u && index!=1510u && index!=1511u &&
-            index!=1535u && index!=1538u && index!=1539u && index!=1540u && index!=1541u && index!=1544u && index!=1545u)
+            index!=1535u && index!=1538u && index!=1539u && index!=1540u && index!=1541u && index!=1544u && index!=1545u && index!=1611u)
             return std::nullopt;
         auto* window=Object(receiver);
         if(!window->nativeWindowObject || !IsDerivedFromPath(window->cls,"Extension.Window"))
             throw std::runtime_error("Native window argument seed requires an actual native Window");
         if(index>=1535u && index<=1545u && !IsDerivedFromPath(window->cls,"Extension.TileWindow"))
             throw std::runtime_error("Tile argument seed requires an actual constructed TileWindow");
+        if(index==1611u) RequireNativeToggleWindow(window);
         const auto authored=index==1410u?NewChildWindowDeclaration(declaration):WindowNativeDeclaration(index,declaration);
+        if(index==1611u) {
+            if(slot!=0u) throw std::runtime_error("SetToggle has only one original input");
+            return Value::Bool(false); // execSetToggle10049D18 initializes INT0 before Step.
+        }
         if(index==1415u) {
             if(slot!=0u) throw std::runtime_error("IsVisible has only one optional input slot");
             return Value::Bool(true); // Native wrapper default, not declaration zero.
@@ -6921,8 +6930,6 @@ public:
     }
     void ChangeNativeButtonAppearance(RuntimeObject* window,QuestVr::Vm::Execution& execution) {
         const auto info=NativeButtonInfoProperty(window);
-        const auto pressed=Read(window,DescribeProperty("Extension.ButtonWindow.bButtonPressed"),0u);
-        if(pressed.kind!=Kind::Bool) throw std::runtime_error("Native button pressed flag is not Bool");
         std::size_t mode=2u;
         if(WindowEffectiveSensitivity(window)) {
             mode=0u;
@@ -6932,6 +6939,8 @@ public:
                 if(!focus.text.empty() && Object(focus.text)==window) mode=1u;
             }
         }
+        const auto pressed=Read(window,DescribeProperty("Extension.ButtonWindow.bButtonPressed"),0u);
+        if(pressed.kind!=Kind::Bool) throw std::runtime_error("Native button pressed flag is not Bool");
         const auto selected=Read(window,info,static_cast<std::uint32_t>(2u*mode+(pressed.boolean?1u:0u)));
         if(selected.kind!=Kind::Struct || selected.fields.size()!=3u || selected.fields.at("tx").kind!=Kind::Object)
             throw std::runtime_error("Native button appearance record lacks its original schema");
@@ -6940,10 +6949,11 @@ public:
             if(pressed.boolean) texture=Read(window,info,1u).fields.at("tx");
             if(texture.text.empty()) texture=Read(window,info,0u).fields.at("tx");
         }
+        NativeWindowWrite(window,"Extension.ButtonWindow.curTextColor",selected.fields.at("txcolor"),execution);
         NativeWindowWrite(window,"Extension.ButtonWindow.curTexture",texture,execution);
         NativeWindowWrite(window,"Extension.ButtonWindow.curTileColor",selected.fields.at("tlcolor"),execution);
-        NativeWindowWrite(window,"Extension.ButtonWindow.curTextColor",selected.fields.at("txcolor"),execution);
     }
+#include "portable_window_toggle.inl"
     void InitializeChildRadioBox(RuntimeObject* window,QuestVr::Vm::Execution& execution) {
         RequireNativeWindow(window);
         if(!IsDerivedFromPath(window->cls,"Extension.RadioBoxWindow") || !window->nativeWindowState)
@@ -7091,22 +7101,10 @@ public:
             NativeWindowWrite(object,planeKey.c_str(),plane,execution);
         }
     }
-    Evaluation InitRootWindowNative(RuntimeObject* pawn,const std::vector<Evaluation>& arguments,
-        const Function* declaration,QuestVr::Vm::Execution& execution) {
-        if(!arguments.empty()) throw std::runtime_error("InitRootWindow takes no arguments");
-        const auto authored=FunctionFor(Object("Extension.PlayerPawnExt.InitRootWindow"));
-        if(authored->nativeIndex!=1052u || !(authored->flags&0x400u) ||
-            (declaration && (LowerAscii(declaration->path)!=LowerAscii(authored->path) || declaration->source!=authored->source)))
-            throw std::runtime_error("InitRootWindow native does not match its original declaration");
-        RequireMapActor(pawn);
-        if(!IsDerivedFromPath(pawn->cls,"Extension.PlayerPawnExt"))
-            throw std::runtime_error("InitRootWindow receiver is not an actual PlayerPawnExt");
-        if(pawn->nativeRootWindow) return {}; // Retail idempotence before config.
-        if(!persistentRootWindowClass)
-            throw std::runtime_error("InitRootWindow has no owned Engine.Engine.Root configuration");
-        auto* cls=DefaultClass(Object(*persistentRootWindowClass));
-        if(!IsDerivedFromPath(cls,"Extension.RootWindow"))
-            throw std::runtime_error("Configured Engine.Engine.Root is not an actual RootWindow class");
+    // Shared native constructor only. Production still resolves its configured
+    // class, calls its original InitWindow and refuses unfinished visibility.
+    RuntimeObject* ConstructNativeRootWindow(RuntimeObject* pawn,RuntimeObject* cls,
+        QuestVr::Vm::Execution& execution) {
         const auto pawnField=DescribeProperty("Extension.PlayerPawnExt.RootWindow");
         if(pawnField.zero.kind!=Kind::Object || pawnField.arrayDimension!=1u || !OwnsProperty(pawn->cls,pawnField))
             throw std::runtime_error("Player RootWindow has no original scalar schema");
@@ -7150,6 +7148,25 @@ public:
         pointer->read=[pawn] {return Value::Text(Kind::Object,pawn->nativeRootWindow?pawn->nativeRootWindow->reflection.objectPath:std::string{});};
         pointer->write=[this,pawn](const Value& value) {Touch(pawn);pawn->nativeRootWindow=value.text.empty()?nullptr:Object(value.text);};
         execution.WriteReference(pointer,Value::Text(Kind::Object,root->reflection.objectPath));
+        return root;
+    }
+    Evaluation InitRootWindowNative(RuntimeObject* pawn,const std::vector<Evaluation>& arguments,
+        const Function* declaration,QuestVr::Vm::Execution& execution) {
+        if(!arguments.empty()) throw std::runtime_error("InitRootWindow takes no arguments");
+        const auto authored=FunctionFor(Object("Extension.PlayerPawnExt.InitRootWindow"));
+        if(authored->nativeIndex!=1052u || !(authored->flags&0x400u) ||
+            (declaration && (LowerAscii(declaration->path)!=LowerAscii(authored->path) || declaration->source!=authored->source)))
+            throw std::runtime_error("InitRootWindow native does not match its original declaration");
+        RequireMapActor(pawn);
+        if(!IsDerivedFromPath(pawn->cls,"Extension.PlayerPawnExt"))
+            throw std::runtime_error("InitRootWindow receiver is not an actual PlayerPawnExt");
+        if(pawn->nativeRootWindow) return {}; // Retail idempotence before config.
+        if(!persistentRootWindowClass)
+            throw std::runtime_error("InitRootWindow has no owned Engine.Engine.Root configuration");
+        auto* cls=DefaultClass(Object(*persistentRootWindowClass));
+        if(!IsDerivedFromPath(cls,"Extension.RootWindow"))
+            throw std::runtime_error("Configured Engine.Engine.Root is not an actual RootWindow class");
+        auto* root=ConstructNativeRootWindow(pawn,cls,execution);
         const auto init=Member(root,"InitWindow");
         if(!init) throw std::runtime_error("Native root FindFunctionChecked InitWindow is unavailable");
         static_cast<void>(execution.CallFunction(*init,root->reflection.objectPath,{}));
@@ -8558,6 +8575,7 @@ private:
     std::size_t retailCollisionOutputBytes_{};
     std::size_t nativeQueryScratchBytes_{};
     bool clientDependent_{};
+    std::size_t nativeToggleDepth_{};
     std::uint64_t soundClientIdentity_{};
     std::optional<QuestVr::ActorCollisionRegistry> beforeCollision_;
     QuestVr::NativeWork::Budget nativeWork_;
@@ -13365,6 +13383,21 @@ PortableRootWindowProbeResult ProbePortableRootWindowInitialization(
             }
             capture();
             throw std::runtime_error("Non-publishing native root initialization probe completed; rollback required");
+        },limits);
+    } catch(const std::exception& error) {
+        result.execution.status=QuestVr::Vm::Status::Unsupported;result.execution.error=error.what();
+    }
+    return result;
+}
+
+PortableToggleProbeResult ProbePortableNativeWindowToggle(const std::string& playerActorPath,
+    PortableToggleProbeMode mode,const QuestVr::Vm::Limits& limits) {
+    CollectBirthGarbageAtBoundary collect;
+    PortableToggleProbeResult result;
+    try {
+        PortableActorVmHost host;
+        result.execution=QuestVr::Vm::ExecuteTransaction(host,[&](QuestVr::Vm::Execution& execution) {
+            return host.ProbeNativeWindowToggle(playerActorPath,mode,result,execution);
         },limits);
     } catch(const std::exception& error) {
         result.execution.status=QuestVr::Vm::Status::Unsupported;result.execution.error=error.what();

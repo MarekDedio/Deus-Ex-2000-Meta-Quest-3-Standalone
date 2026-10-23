@@ -1,5 +1,22 @@
 # Port status
 
+## First Training original native ToggleWindow (2026-10-23)
+
+Original native1611 now implements raw-INT equality/low-bit assignment,
+appearance, live-parent notifications and Radio selection/reentrant callbacks
+under the same VM transaction. Standalone70/eight refusal controls, owned
+player/HUD6758 controls, strict ARM64 and Android native link pass. The full
+desktop build and shared CTest pass173 executed/205 registered,32 explicit
+owned-data skips, zero failures in76.64s. Separate isolated crate347/two genuine
+contents-refusal regression passes. Actual first Training repeat2 advances
+through quickbar population to DamageHUDDisplay.InitWindow PC39's unsupported
+fixed Name DamageType[3] member. Full rollback/all41 originals unchanged pass.
+This is not completed startup/possession, live crates/usable loot/gravity or
+a new APK. Next is direct original crate damage in the initialized Training
+context before possession, retaining normal possession and its later rollback.
+Unrelated HUD completion and other-map integration are not that checkpoint's
+prerequisites. See TRAINING-NATIVE-TOGGLE.md.
+
 ## First Training live-state/save-budget separation (2026-10-22)
 
 The live native/script accounting no longer incorrectly uses the 16MiB

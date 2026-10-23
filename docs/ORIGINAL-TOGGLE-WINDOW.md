@@ -1,5 +1,9 @@
 # Original ToggleWindow setter and notifications
 
+Later implementation and verification: see
+[TRAINING-NATIVE-TOGGLE.md](TRAINING-NATIVE-TOGGLE.md). The unimplemented
+statements below describe the original static-audit checkpoint.
+
 2026-10-22. Static audit for the actual first `Maps/00_Training.dx` startup
 boundary, not a completed implementation. Native1611 is **not implemented**
 at this checkpoint. Original Windows executables/DLLs were never executed or
