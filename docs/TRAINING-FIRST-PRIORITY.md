@@ -10,7 +10,23 @@ do not spend time on other-map integration or map-content test sweeps.
 Reconfirmed2026-10-22: skip other-map crate/physics integration and testing;
 the WHOLE first Training map remains the current content acceptance target.
 
-Latest direct loot increment,2026-10-23: the actual two crate-born Lockpicks
+Latest follow-up,2026-10-23: supplied actual FrobTarget plus original player
+ParseRightClick now proves Lockpick transfer, genuine first-fit grid placement,
+Pickup animation/Base, and second-item merge with unchanged grid/clock in two
+repeats. Repeated interruption in the second action undoes the accepted first
+placement and all pending crate/loot changes; all41 originals unchanged. The
+callback-driven ordinary Decoration landing coordinator separately passes
+10241 fixture checks/112 refusal controls and ARM64 syntax. It is not yet
+runtime-bound; neither this coordinator nor the supplied-target probe is live
+VR input/falling acceptance. No new APK. See TRAINING-STARTUP-LOOT.md and
+ORIGINAL-DECORATION-LANDING.md. Next physics work is authentic native landing
+binding and swept falling, not manual placement or a new account/profile UI.
+Final coherent full desktop/shared CTest passes175 executed/207 registered,
+32 explicit owned-data skips, zero failures in76.35s; separate owned first-map
+crate destruction347/two contents refusals passes as well. These do not prove
+the still-missing live integration or completed first Training acceptance.
+
+Earlier direct loot increment,2026-10-23: the actual two crate-born Lockpicks
 execute original state-aware Frob in the genuine initialized Training world
 with the real Login-returned JC. Both repeats transfer the first actual item
 into JC's Inventory ahead of the unchanged starter Keyring, then merge the
@@ -22,9 +38,9 @@ This is NOT controller input/grid placement, paired audio or falling/settling.
 No new APK. See TRAINING-STARTUP-LOOT.md; whole first Training stays unfinished.
 Full desktop/shared CTest passes174 executed/206 registered,32 explicit skips,
 zero failures in95.91s; isolated crate347/two contents refusals and normal
-no-command startup/full rollback pass separately. Next stronger input proof is
-original ParseRightClick on the actual member FrobTarget, including grid slots;
-bare Frob transfer/merge is not controller or slot-placement acceptance.
+no-command startup/full rollback pass separately. The stronger supplied-target
+ParseRightClick/grid proof is recorded in the follow-up above; bare Frob
+transfer/merge is not controller or slot-placement acceptance.
 
 Latest support increment,2026-10-23: full original SetPhysics3970 is bound to
 the actual same-root support/FindBase/Base services, not the old byte-only

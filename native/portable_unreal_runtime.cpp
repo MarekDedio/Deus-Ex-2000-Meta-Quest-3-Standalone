@@ -7625,6 +7625,7 @@ public:
         return StructSchema(Object(Qualified(Table(property->sourcePath), property->property->referencedType)));
     }
 #include "portable_startup_damage.inl"
+#include "portable_startup_loot_input.inl"
 #include "portable_startup_loot.inl"
 #include "portable_player_login.inl"
     Value ProbeWorldStartup(const PortableWorldStartupProbeOptions& options,
@@ -7834,7 +7835,8 @@ public:
                 const auto stringBytes=login.selectedClass.capacity()+login.gamePath.capacity()+
                     login.functionPath.capacity()+login.playerPath.capacity()+login.error.capacity()+5u;
                 ValidateStateBudget(stringBytes);nativeActorOrderObservationBytes_+=stringBytes;
-                StartupPlayerLogin(login.viewportIdentity,*options.playerLogin,login,options.damageCommands,options.collectDamageLoot,execution);
+                StartupPlayerLogin(login.viewportIdentity,*options.playerLogin,login,options.damageCommands,options.collectDamageLoot,
+                    options.collectDamageLootViaPlayer,execution);
             }
         }
         // Native client/player/detail providers after the original partition

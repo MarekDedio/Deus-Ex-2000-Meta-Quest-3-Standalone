@@ -7,6 +7,7 @@
 #include "quest_native_config.h"
 #include "quest_runtime_script_packages.h"
 #include "quest_save_bundle.h"
+#include "quest_script_state.h"
 
 #include <algorithm>
 #include <array>
@@ -24,6 +25,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 // Observation CLI, not an acceptance test or a startup publication path.
@@ -373,7 +375,8 @@ std::size_t DamageWriteLimit(std::string_view text) {
     return value;
 }
 int Run(const fs::path& root,const std::optional<std::string>& expected,unsigned repeats,std::size_t nativeWork,
-    bool requireSpawnEncroachment,bool damageTrainingCrates,bool collectTrainingLoot,const std::optional<std::size_t>& damageWriteLimit) {
+    bool requireSpawnEncroachment,bool damageTrainingCrates,bool collectTrainingLoot,bool collectTrainingLootViaPlayer,
+    const std::optional<std::size_t>& damageWriteLimit) {
     Temporary temporary(root);std::vector<Source> sources;std::vector<PortablePackageTables> scripts;
     sources.reserve(QuestVr::RuntimeScriptPackages.size()+3u);scripts.reserve(QuestVr::RuntimeScriptPackages.size());
     for(const auto* name:QuestVr::RuntimeScriptPackages){sources.emplace_back(root/"System"/(std::string(name)+".u"));
@@ -453,6 +456,7 @@ int Run(const fs::path& root,const std::optional<std::string>& expected,unsigned
         options.damageCommands.push_back(std::move(command));
     }
     options.collectDamageLoot=collectTrainingLoot;
+    options.collectDamageLootViaPlayer=collectTrainingLootViaPlayer;
     // Explicit diagnostic binding of already-decoded plain-map FURL fields.
     // This is NOT the original FURL constructor/default-options parser. Only
     // Portal and Op are read by the reached SpawnPlayActor Login prefix.
@@ -502,7 +506,7 @@ int Run(const fs::path& root,const std::optional<std::string>& expected,unsigned
         ObserveActorOrder(world);
         ObservePlayerLogins(world);
         ObserveTrainingDamage(world,damageTrainingCrates,limits.writes);
-        ObserveTrainingLoot(world,collectTrainingLoot,limits.writes);
+        ObserveTrainingLoot(world,collectTrainingLoot,collectTrainingLootViaPlayer,limits.writes);
         for(const auto& dump:world.dumpLocations) {
             Require(dump.classPath=="DeusEx.DumpLocation" && dump.outerPath=="00_Training" && dump.objectIndex &&
                 dump.flags==0u && dump.fileIndex==-1 && dump.locationIndex==-1 && dump.locationCount==0 &&
@@ -521,7 +525,7 @@ int Run(const fs::path& root,const std::optional<std::string>& expected,unsigned
             "Repeated original Training damage/birth/write-prefix observations differ");
         else damageObservations=world.damageObservations;
         if(lootObservations)Require(*lootObservations==world.lootObservations,
-            "Repeated original Training Frob/inventory/copy-count/write-prefix observations differ");
+            "Repeated original Training loot/target/grid/clock/inventory/copy-count/write-prefix observations differ");
         else lootObservations=world.lootObservations;
         if(spawnPackets)Require(SameSpawnPackets(*spawnPackets,world.spawnedEncroachment),
             "Repeated startup changed detached Spawn identities, exact pose words, query result/storage or lifecycle tail");
@@ -551,7 +555,8 @@ int Run(const fs::path& root,const std::optional<std::string>& expected,unsigned
 int main(int argc,char** argv) {
     std::cout.setf(std::ios::unitbuf);
     try {
-        fs::path root;std::optional<std::string> expected;unsigned repeats=1u;bool requireSpawnEncroachment{},damageTrainingCrates{},collectTrainingLoot{};
+        fs::path root;std::optional<std::string> expected;unsigned repeats=1u;
+        bool requireSpawnEncroachment{},damageTrainingCrates{},collectTrainingLoot{},collectTrainingLootViaPlayer{};
         std::optional<std::size_t> damageWriteLimit;
         std::size_t nativeWork=QuestVr::NativeWork::DefaultLimit;
         if(const auto* configured=std::getenv("DEUSEX_GAME_ROOT");configured&&*configured)root=configured;
@@ -562,14 +567,18 @@ int main(int argc,char** argv) {
             else if(option=="--require-spawn-encroachment")requireSpawnEncroachment=true;
             else if(option=="--damage-training-crates")damageTrainingCrates=true;
             else if(option=="--collect-training-loot"){collectTrainingLoot=true;damageTrainingCrates=true;}
+            else if(option=="--collect-training-loot-via-player") {
+                collectTrainingLootViaPlayer=true;collectTrainingLoot=true;damageTrainingCrates=true;
+            }
             else if(option=="--damage-write-limit"&&i+1<argc)damageWriteLimit=DamageWriteLimit(argv[++i]);
             else if(option=="--repeat"&&i+1<argc){const std::string_view number=argv[++i];
                 Require(number.size()==1u&&number[0]>='1'&&number[0]<='8',"Repeat count must be1..8");repeats=static_cast<unsigned>(number[0]-'0');}
-            else throw std::runtime_error("Usage: portable_training_startup_probe --owned-source-root OWNED_GAME_ROOT [--expected-error EXACT_TEXT] [--repeat 1..8] [--native-work 0..16777216] [--require-spawn-encroachment] [--damage-training-crates | --collect-training-loot] [--damage-write-limit 0..1048576]");}
+            else throw std::runtime_error("Usage: portable_training_startup_probe --owned-source-root OWNED_GAME_ROOT [--expected-error EXACT_TEXT] [--repeat 1..8] [--native-work 0..16777216] [--require-spawn-encroachment] [--damage-training-crates | --collect-training-loot | --collect-training-loot-via-player] [--damage-write-limit 0..1048576]");}
         Require(!damageWriteLimit||damageTrainingCrates,"--damage-write-limit requires --damage-training-crates");
         if(root.empty()){std::cout<<"SKIP owned first Training startup observation: use --owned-source-root or DEUSEX_GAME_ROOT.\n";return 77;}
         ShutdownPortableRuntime();GC::Collect();const auto before=GC::GetStats();
-        const auto result=Run(fs::canonical(root),expected,repeats,nativeWork,requireSpawnEncroachment,damageTrainingCrates,collectTrainingLoot,damageWriteLimit);
+        const auto result=Run(fs::canonical(root),expected,repeats,nativeWork,requireSpawnEncroachment,damageTrainingCrates,
+            collectTrainingLoot,collectTrainingLootViaPlayer,damageWriteLimit);
         ShutdownPortableRuntime();GC::Collect();const auto after=GC::GetStats();
         Require(after.numObjects==before.numObjects&&after.memoryUsage==before.memoryUsage,"Startup observation retained native UObjects after shutdown");
         return result;

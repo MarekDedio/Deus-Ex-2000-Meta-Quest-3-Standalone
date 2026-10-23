@@ -1,5 +1,39 @@
 # Port status
 
+## First Training original player loot action and landing prerequisite (2026-10-23)
+
+The stronger optional crate-loot diagnostic now dispatches original
+DeusExPlayer.ParseRightClick against the actual crate-born FrobTarget member.
+Two repeats prove first Lockpick transfer/Base=JC, original Pickup animation
+and first-fit(0,0) placement in the genuine6x5 Byte grid, then second-item
+NumCopies1->2 merge/deletion without changing grid/position/player clock.
+Shared writes15068->15138->15176 match. Repeated write15150 interruption during
+the second action fully undoes the first placement/clock/ownership plus crate
+deaths/births and incomplete action. All41 originals remain unchanged. Legacy
+direct-Frob and normal no-command startup regressions retain their exact prior
+boundaries and complete rollback. Strict ARM64, focused host and warning-free
+Android native compile/link pass. See TRAINING-STARTUP-LOOT.md.
+
+The new callback-driven ordinary Decoration landing coordinator passes10241
+fixture checks/112 refusal controls and strict ARM64 syntax. It preserves real
+trace packets/order, live fit/recovery fields, wrapped counter/directions,
+selected Landed then fresh Physics/SetPhysics support, and original by-value
+normal capture across query reentry. Unsupported receiver/numeric paths refuse.
+It is not yet bound to the runtime and does not advance falling; see
+ORIGINAL-DECORATION-LANDING.md for exact scope and remaining integration.
+
+Both increments are source/backend work, not a finished Quest crate feature.
+No new APK. Live controller targeting/equipped weapon progression, actual
+inventory authority, committed world/player startup, paired sound, swept falling/
+settling/support loss and headset acceptance remain unfinished. No other actual
+map integration was performed; the whole first Training map remains priority.
+The final coherent full desktop build and shared CTest pass175 executed/207
+registered with32 explicit owned-data skips, zero failures in76.35s. Separate
+owned first-Training crate destruction passes347 checks/two genuine contents
+refusals. Evidence: training-player-loot-full-build-20261023.log,
+training-player-loot-full-tests-20261023.log and
+training-player-loot-crate-regression-20261023.log in artifacts/.
+
 ## First Training original crate-loot transfer/merge (2026-10-23)
 
 The optional real-startup diagnostic now dispatches original state-aware

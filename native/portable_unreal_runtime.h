@@ -231,9 +231,15 @@ struct PortableStartupLootItem {
     std::string actorPath,classPath,statePath,ownerPath,basePath,inventoryPath,instigatorPath;
     std::int32_t physics{},remoteRole{};
     std::optional<std::int32_t> numCopies,maxCopies;
+    std::int32_t invPosX{},invPosY{},invSlotsX{},invSlotsY{};
     bool removed{},deleteMe{},heldItem{},hidden{},carriedItem{},onlyOwnerSee{},sleepTouch{};
     bool collideActors{},collideWorld{},blockActors{},blockPlayers{};
     bool operator==(const PortableStartupLootItem&) const = default;
+};
+struct PortableStartupLootGrid {
+    std::int32_t rows{},columns{};
+    std::vector<std::uint8_t> cells;
+    bool operator==(const PortableStartupLootGrid&) const = default;
 };
 struct PortableStartupLootObservation {
     std::size_t commandIndex{},damageCommandIndex{},birthIndex{},writesBefore{},writesAfter{};
@@ -242,6 +248,10 @@ struct PortableStartupLootObservation {
     std::int32_t playerHealth{};
     PortableStartupLootItem before,after;
     std::vector<PortableStartupLootItem> inventoryBefore,inventoryAfter;
+    bool playerRightClick{};
+    std::string targetBefore,targetAfter;
+    PortableStartupLootGrid gridBefore,gridAfter;
+    std::vector<std::uint8_t> playerClockBefore,playerClockAfter;
     bool operator==(const PortableStartupLootObservation&) const = default;
 };
 struct PortableWorldStartupProbeOptions {
@@ -262,6 +272,10 @@ struct PortableWorldStartupProbeOptions {
     // Requires damageCommands and one real Login viewport; at most eight live
     // births/128 inventory links per observation. Normal startup leaves false.
     bool collectDamageLoot{};
+    // Stronger rollback-only input proof: bind actual birth to the real
+    // FrobTarget member, then invoke original ParseRightClick instead of Frob.
+    // This supplies a diagnostic target, not controller reach/occlusion proof.
+    bool collectDamageLootViaPlayer{};
 };
 struct PortablePlayerLoginObservation {
     std::uint64_t viewportIdentity{};

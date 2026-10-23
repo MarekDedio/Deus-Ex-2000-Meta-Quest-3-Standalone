@@ -1,5 +1,71 @@
 # First Training original crate-loot collection checkpoint
 
+## Player-action and original inventory-grid follow-up (2026-10-23)
+
+The optional `--collect-training-loot-via-player` diagnostic now supplies the
+actual crate-born item as JC's authenticated original `FrobTarget` member and
+calls original `DeusExPlayer.ParseRightClick`. It does not manually choose an
+inventory slot, grant an item, invoke a replacement pickup animation, or bypass
+the normal later SetPlayer/Possess continuation. Original declarations and fixed
+Byte-grid storage are authenticated; snapshots retain the actual item footprint,
+position, target, inventory chain and full canonical player animation clock.
+
+The first observation reaches both original actions before the unchanged later
+HUD refusal. Lockpick0 becomes the same actual Inventory head ahead of the
+unchanged starter NanoKeyRing1, gets Base=JC and position(0,0), and fills only the
+first Byte of the genuine6x5 grid. Its original Pickup animation is captured
+(normalized frame-0.142857149, rate/tweenRate1.42857146). Lockpick1 then merges
+NumCopies1->2 into that existing node and is deleted; grid, item position and
+the entire player clock remain unchanged. The consumed second target remains in
+FrobTarget as original code leaves it; the diagnostic does not fabricate a clear.
+
+Shared writes are15068->15138 for transfer/placement and15138->15176 for merge.
+The unchanged normal startup then refuses at DamageHUDDisplay.InitWindow PC39
+opcode1, unsupported authored sIconInfo.DamageType fixed-Name-array access:
+223926 instructions/24608 writes. Complete root rollback and all41 unchanged
+owned source fingerprints pass. Exit2 is that genuine startup boundary, not a
+successful startup or published pickup. Discovery evidence is
+artifacts/training-player-loot-discovery-20261023.log.
+
+Two final repeats reproduce both complete rows exactly, including every grid
+Byte, item field, target and canonical clock; native work is511459cold/510832warm
+of1048576, not exhausted. A separate repeated shared-write15150 interruption
+stops in Engine.Pawn.FindInventoryType PC0 opcode15 during the second action,
+after the first transfer/slot/animation has completed at15138. Only that first
+pickup is captured; the second is returned=false/captured=false, NOT a proven
+merge. Both repeats stop at208174 instructions/15150 writes with native work
+478900cold/478276warm. Whole-root undo restores the first grid placement, clock,
+ownership, crate deaths/births and partial second action; all41 sources stay
+unchanged. Evidence: training-player-loot-repeat-20261023.log and
+training-player-loot-late-20261023.log.
+
+Legacy direct-Frob regression retains15068->15100->15128 and the old exact
+222885-instruction/24560-write boundary, native work507410. Normal startup with
+neither damage nor collection still produces no diagnostic rows and reaches
+218253 instructions/24192 writes, native work491158; both fully roll back and
+preserve all41 sources. See training-player-loot-legacy-20261023.log and
+training-player-loot-normal-20261023.log. Strict ARM64 checking of the runtime
+and CLI, focused host build, and warning-free Android native compile/link pass.
+No replacement APK is packaged by these library/source checks.
+The final coherent full desktop build passes; shared CTest passes175 executed/
+207 registered,32 explicit owned-data skips, zero failures in76.35s. The separate
+owned first-Training crate regression passes347 checks/two genuine contents
+refusals. Evidence: training-player-loot-full-build-20261023.log,
+training-player-loot-full-tests-20261023.log and
+training-player-loot-crate-regression-20261023.log.
+
+```powershell
+& artifacts/prerequisites-20261009/build/portable_training_startup_probe.exe --owned-source-root 'D:/Steam/steamapps/common/Deus Ex' --collect-training-loot-via-player --repeat 2 --native-work 1048576
+& artifacts/prerequisites-20261009/build/portable_training_startup_probe.exe --owned-source-root 'D:/Steam/steamapps/common/Deus Ex' --collect-training-loot-via-player --damage-write-limit 15150 --repeat 2 --native-work 1048576
+```
+
+Only first Training is loaded. This stronger supplied-target proof is still NOT
+controller reach/occlusion, paired pickup audio, committed save/render publication
+or on-headset loot/gravity acceptance. The legacy direct-Frob checkpoint below
+remains distinct: bare Frob does not place a slot or set the pickup Base to JC.
+
+## Earlier direct-Frob checkpoint
+
 2026-10-23. Actual original-script pickup/ownership/merge diagnostic inside the
 real initialized first Training startup root. This is NOT published gameplay,
 controller targeting, inventory-grid placement or headset acceptance. Only
@@ -106,8 +172,9 @@ destruction and loot falling remain unfinished. Save continuation/render
 publication of these diagnostic changes is NOT claimed: the entire startup
 root is undone at its real later gap.
 
-The next stronger input proof needs genuine selected FrobTarget and original
-ParseRightClick, including slots/animations/Base; bare Frob success does not
-prove that contract. Swept falling/selected Landed must use real native motion/
+The supplied-member ParseRightClick proof above now covers original slot,
+animation and Base effects; it does not establish controller selection or a
+committed possessed player's action. Bare Frob alone never proved that contract.
+Swept falling/selected Landed must use real native motion/
 support, not hardcoded coordinates or floor snaps. Unrelated HUD completion
 and other actual maps are not prerequisites for these Training diagnostics.

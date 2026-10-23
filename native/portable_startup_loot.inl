@@ -26,7 +26,7 @@
         if(slot!=2u)throw std::runtime_error("Startup loot Frob lacks its complete original input packet");
         // Inherited state Frob overrides legitimately use flags2, not Event800.
     }
-    void ProbeStartupLoot(RuntimeObject* player,QuestVr::Vm::Execution& execution) {
+    void ProbeStartupLoot(RuntimeObject* player,bool viaPlayer,QuestVr::Vm::Execution& execution) {
         if(!transaction_ || !worldStartupProbe_ || !worldStartupResult_ ||
             !worldStartupResult_->lootObservations.empty())
             throw std::runtime_error("Startup loot requires its one actual caller-owned startup root");
@@ -76,6 +76,8 @@
             text(out.ownerPath,link(object,"Owner"));text(out.basePath,link(object,"Base"));
             text(out.inventoryPath,link(object,"Inventory"));text(out.instigatorPath,link(object,"Instigator"));
             out.physics=integer(object,"Physics");out.remoteRole=integer(object,"RemoteRole");
+            out.invPosX=integer(object,"invPosX");out.invPosY=integer(object,"invPosY");
+            out.invSlotsX=integer(object,"invSlotsX");out.invSlotsY=integer(object,"invSlotsY");
             if(IsDerivedFromPath(object->cls,"Engine.Pickup"))out.numCopies=integer(object,"NumCopies");
             if(IsDerivedFromPath(object->cls,"DeusEx.DeusExPickup"))out.maxCopies=integer(object,"maxCopies");
             out.removed=object->worldRemoved;out.deleteMe=flag(object,"bDeleteMe");out.heldItem=flag(object,"bHeldItem");
@@ -123,21 +125,50 @@
                 staged.worldBegun=flag(info,"bBegunPlay");staged.worldStartup=flag(info,"bStartup");
                 staged.playerPaired=!link(player,"Player").empty();staged.isPawn=flag(player,"bIsPawn");
                 staged.isPlayer=flag(player,"bIsPlayer");staged.playerHealth=integer(player,"Health");
+                staged.playerRightClick=viaPlayer;
                 item(actor,staged.before);inventory(staged.inventoryBefore);
-                const auto identity=ResolveEvent(actor->reflection.objectPath,"Frob",true);
-                if(!identity)throw std::runtime_error("Startup loot has no eligible original state-aware Frob");
-                const auto selected=FunctionFor(Object(identity->path));ValidateOriginalLootFrobPacket(*selected,false);
+                std::shared_ptr<const Function> selected;std::optional<Property> targetField;
+                if(viaPlayer) {
+                    selected=StartupLootInputFunction(player);
+                    // Authentic actual member, not HandleItemPickup's shadowing
+                    // local argument. The diagnostic supplies target identity;
+                    // original code alone chooses eligibility, slot and effects.
+                    targetField=StartupLootInputProperty(player,"DeusEx.DeusExPlayer.FrobTarget",Kind::Object,
+                        0x20u,1u,"Engine.Actor");
+                    text(staged.targetBefore,Read(player,*targetField,0u).text);
+                    retained.Retain(60u);staged.gridBefore=StartupLootInputGrid(player);
+                    retained.Retain(staged.gridBefore.cells.capacity());
+                    staged.playerClockBefore=ZoneClockSnapshot(player);
+                }else {
+                    const auto identity=ResolveEvent(actor->reflection.objectPath,"Frob",true);
+                    if(!identity)throw std::runtime_error("Startup loot has no eligible original state-aware Frob");
+                    selected=FunctionFor(Object(identity->path));ValidateOriginalLootFrobPacket(*selected,false);
+                }
                 text(staged.functionPath,selected->path);
                 staged.writesBefore=staged.writesAfter=execution.WriteCount();output.push_back(std::move(staged));
                 auto& row=output.back();row.entered=true;
                 Value result;
                 try {
-                    result=execution.CallEvent(actor->reflection.objectPath,"Frob",true,
+                    if(viaPlayer) {
+                        const auto& field=*targetField;
+                        const auto referenceBytes=2u*(sizeof(Property)+field.key.capacity()+field.name.capacity()+
+                            field.zero.text.capacity()+4u*sizeof(void*))+sizeof(Reference)+256u;
+                        ValidateStateBudget(referenceBytes);
+                        nativeActorOrderObservationBytes_=QuestVr::DecalStateDetail::Add(nativeActorOrderObservationBytes_,referenceBytes);
+                        execution.WriteReference(ReferenceFor(player,field,0u,false),Value::Text(Kind::Object,actor->reflection.objectPath));
+                        result=execution.CallFunction(*selected,player->reflection.objectPath,{});
+                    }else result=execution.CallEvent(actor->reflection.objectPath,"Frob",true,
                         {{Value::Text(Kind::Object,player->reflection.objectPath),{}},{Value::Text(Kind::Object,{}),{}}});
                 }catch(...) {row.writesAfter=execution.WriteCount();throw;}
                 row.returned=true;row.writesAfter=execution.WriteCount();
-                if(result.kind!=Kind::Nothing)throw std::runtime_error("Original loot Frob unexpectedly returned a value");
-                item(actor,row.after);inventory(row.inventoryAfter);row.captured=true;
+                if(result.kind!=Kind::Nothing)throw std::runtime_error("Original loot action unexpectedly returned a value");
+                item(actor,row.after);inventory(row.inventoryAfter);
+                if(viaPlayer) {
+                    text(row.targetAfter,Read(player,*targetField,0u).text);
+                    row.gridAfter=StartupLootInputGrid(player);retained.Retain(row.gridAfter.cells.capacity());
+                    row.playerClockAfter=ZoneClockSnapshot(player);
+                }
+                row.captured=true;
             }
         }
         // No gameplay publication or manual item grant. Normal SetPlayer and
