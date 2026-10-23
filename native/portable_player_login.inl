@@ -94,7 +94,8 @@
         return cls;
     }
     void StartupPlayerLogin(std::uint64_t viewportIdentity,const PortablePlayerLoginSource& source,
-        PortablePlayerLoginObservation& observation,const std::vector<PortableStartupDamageCommand>& damageCommands,
+        PortablePlayerLoginObservation& observation,const std::vector<PortableStartupLandingCommand>& landingCommands,
+        const std::vector<PortableStartupDamageCommand>& damageCommands,
         bool collectDamageLoot,bool collectDamageLootViaPlayer,QuestVr::Vm::Execution& execution) {
         if(!transaction_ || !worldStartupProbe_)
             throw std::runtime_error("SpawnPlayActor continuation requires its actual startup root");
@@ -214,6 +215,7 @@
                 reinterpret_cast<std::uintptr_t>(viewport),{source.portal,options},q,nativeQueryScratchBytes_);
             if(result.player) {
                 auto* player=reinterpret_cast<RuntimeObject*>(result.player);
+                ProbeStartupLandings(player,landingCommands,execution);
                 ProbeStartupDamage(player,damageCommands,execution);
                 if(collectDamageLoot)ProbeStartupLoot(player,collectDamageLootViaPlayer,execution);
                 static_cast<void>(SetSessionPlayer(viewportIdentity,player->reflection.objectPath,execution));

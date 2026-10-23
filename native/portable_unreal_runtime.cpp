@@ -26,6 +26,7 @@
 #include "quest_actor_timer.h"
 #include "quest_actor_base.h"
 #include "quest_actor_set_physics.h"
+#include "quest_decoration_landing.h"
 #include "quest_native_window_location.h"
 #include "quest_native_window_query.h"
 #include "quest_native_window_clip.h"
@@ -5035,6 +5036,7 @@ public:
     #include "portable_retail_single_line.inl"
     #include "portable_actor_find_base.inl"
     #include "portable_actor_set_physics.inl"
+    #include "portable_decoration_landing.inl"
     #include "portable_actor_move_events.inl"
     #include "portable_actor_move_pose.inl"
     #include "portable_actor_move.inl"
@@ -7213,10 +7215,16 @@ public:
 #include "portable_dump_location.inl"
     Value Read(RuntimeObject* object, const Property& property, const std::uint32_t index,
         const bool defaults = false, const bool immutable = false,NativeAuthoredReadOrigin* origin=nullptr,
-        const bool nativeRegionStorage=false,const bool nativePhysicsVectorStorage=false) {
+        const bool nativeRegionStorage=false,const bool nativePhysicsVectorStorage=false,
+        const bool nativeLandingZoneVelocityStorage=false) {
         if(nativePhysicsVectorStorage) {
             if(defaults || immutable || index || ActorPhysicsVectorProperty(object,property.key.c_str()).key!=property.key)
                 throw std::runtime_error("Raw physics Vector read has no actual native field authority");
+        }
+        if(nativeLandingZoneVelocityStorage) {
+            if(nativePhysicsVectorStorage || defaults || immutable || index ||
+                LandingZoneVelocityProperty(object).key!=property.key)
+                throw std::runtime_error("Raw landing ZoneVelocity read has no actual native field authority");
         }
         if(origin) *origin={};
         if(object->nativeDump && !defaults && !immutable)return ReadDumpLocationValue(object,property,index);
@@ -7421,6 +7429,7 @@ public:
                     if (tag->name != property.name || tag->arrayIndex != index) continue;
                     if(origin) *origin={source,&*tag};
                     if(nativePhysicsVectorStorage)return DecodeActorPhysicsVector(*tag,property);
+                    if(nativeLandingZoneVelocityStorage)return DecodeLandingZoneVelocity(*tag,property);
                     return Decode(*source, *tag, property);
                 }
             source = !classDefaults && source == object ? object->cls : source->base;
@@ -7625,6 +7634,7 @@ public:
         return StructSchema(Object(Qualified(Table(property->sourcePath), property->property->referencedType)));
     }
 #include "portable_startup_damage.inl"
+#include "portable_startup_landing.inl"
 #include "portable_startup_loot_input.inl"
 #include "portable_startup_loot.inl"
 #include "portable_player_login.inl"
@@ -7633,6 +7643,7 @@ public:
         PortableRetailCollisionSnapshot* originalCollision=nullptr) {
         if (!transaction_) throw std::runtime_error("World startup probe requires its outer VM transaction");
         ValidateStartupDamageCommands(options);
+        ValidateStartupLandingCommands(options);
         struct ProbeScope {
             bool& active;PortableWorldStartupProbeResult*& observation;
             ~ProbeScope() { active = false;observation=nullptr; }
@@ -7835,7 +7846,7 @@ public:
                 const auto stringBytes=login.selectedClass.capacity()+login.gamePath.capacity()+
                     login.functionPath.capacity()+login.playerPath.capacity()+login.error.capacity()+5u;
                 ValidateStateBudget(stringBytes);nativeActorOrderObservationBytes_+=stringBytes;
-                StartupPlayerLogin(login.viewportIdentity,*options.playerLogin,login,options.damageCommands,options.collectDamageLoot,
+                StartupPlayerLogin(login.viewportIdentity,*options.playerLogin,login,options.landingCommands,options.damageCommands,options.collectDamageLoot,
                     options.collectDamageLootViaPlayer,execution);
             }
         }

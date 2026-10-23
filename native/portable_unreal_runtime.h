@@ -208,6 +208,26 @@ struct PortableStartupDamageCommand {
     std::array<float,3u> momentum{};
     std::string damageType{"shot"};
 };
+// Explicit collision-to-landing diagnostic, NOT a gravity integration step.
+// Only a real swept MoveActor floor hit can reach the landing adapter.
+struct PortableStartupLandingCommand {
+    std::string actorPath;
+    std::array<float,3u> delta{};
+};
+struct PortableStartupLandingObservation {
+    std::size_t commandIndex{},writesBefore{},writesAfter{};
+    std::string actorPath,gameInfoPath,zoneBefore,zoneAfter,floorPath,selectedLanded,baseBefore,baseAfter;
+    std::array<float,3u> locationBefore{},locationAfter{},velocityBefore{},velocityAfter{},normal{};
+    std::uint8_t physicsBefore{},physicsAfter{};
+    std::int32_t counterBefore{},counterAfter{};
+    float hitTime{1.0f};
+    bool entered{},moved{},landingEntered{},returned{},captured{},removed{},deleteMe{};
+    std::size_t traceCalls{},counterWrites{},velocityWords{},landedCalls{},setPhysicsCalls{};
+    bool recovery{},zoneBounce{};
+    std::array<std::int32_t,4u> clear{};
+    std::vector<std::uint8_t> clockBefore,clockAfter;
+    bool operator==(const PortableStartupLandingObservation&) const = default;
+};
 struct PortableStartupDamageBirth {
     std::string actorPath,classPath,statePath,ownerPath,basePath;
     std::array<float,3u> location{},velocity{};
@@ -218,8 +238,9 @@ struct PortableStartupDamageBirth {
 struct PortableStartupDamageObservation {
     std::size_t commandIndex{};
     std::size_t writesBefore{},writesAfter{};
-    std::string actorPath,playerPath,gameInfoPath,functionPath,stateBefore,stateAfter,contentsBefore;
+    std::string actorPath,playerPath,gameInfoPath,functionPath,stateBefore,stateAfter,contentsBefore,baseBefore,baseAfter;
     std::int32_t hitPointsBefore{},hitPointsAfter{};
+    std::uint8_t physicsBefore{},physicsAfter{};
     bool entered{},returned{},captured{},worldBegun{},worldStartup{},playerPaired{},removed{},deleteMe{};
     std::vector<PortableStartupDamageBirth> births;
     bool operator==(const PortableStartupDamageObservation&) const = default;
@@ -268,6 +289,9 @@ struct PortableWorldStartupProbeOptions {
     // At most eight commands, single actual viewport only. Empty is normal
     // startup. The entire startup still rolls back at its genuine later gap.
     std::vector<PortableStartupDamageCommand> damageCommands{};
+    // At most eight explicit sweeps after real Login and before damage. Empty
+    // is normal startup. Does not synthesize a velocity, floor or Landed event.
+    std::vector<PortableStartupLandingCommand> landingCommands{};
     // Follow actual surviving Inventory births with state-aware Frob(JC,None).
     // Requires damageCommands and one real Login viewport; at most eight live
     // births/128 inventory links per observation. Normal startup leaves false.
@@ -363,6 +387,7 @@ struct PortableWorldStartupProbeResult {
     std::vector<PortablePlayerLoginObservation> playerLogins;
     std::vector<PortableDumpLocationObservation> dumpLocations;
     std::vector<PortableStartupDamageObservation> damageObservations;
+    std::vector<PortableStartupLandingObservation> landingObservations;
     std::vector<PortableStartupLootObservation> lootObservations;
 };
 const char* PortableWorldStartupPhaseName(PortableWorldStartupPhase phase);

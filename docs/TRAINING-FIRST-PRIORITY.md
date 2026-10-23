@@ -10,6 +10,22 @@ do not spend time on other-map integration or map-content test sweeps.
 Reconfirmed2026-10-22: skip other-map crate/physics integration and testing;
 the WHOLE first Training map remains the current content acceptance target.
 
+Latest native landing increment,2026-10-23: actual stored fields, native traces,
+selected Landed and original SetPhysics are bound to the same caller root.
+Two explicit real-contact sweeps establish lower-world/upper-lower support;
+combined repeated original destruction then releases the upper into Falling2
+and leaves genuine loot with working original player grid transfer/merge.
+Repeated late upper-BaseChange write interruption undoes completed lower and
+partial upper movement/support; all41 originals/fullroot rollback pass. These
+are explicit swept deltas, NOT automatic gravity timesteps or a published Quest
+feature. No other actual maps; no new APK. See ORIGINAL-DECORATION-LANDING.md.
+Coherent full desktop/shared CTest passes175 executed/207 registered,32 explicit
+owned-data skips, zero failures in49.62s; isolated owned crate regression passes
+347 checks/two genuine contents refusals. These remain backend prerequisites,
+not whole first-Training completion or automatic falling acceptance.
+Separate owned first-Training SetPhysics regression passes172882 checks/53
+explicit refusals, including19 partial-write cuts and real clock preservation.
+
 Latest follow-up,2026-10-23: supplied actual FrobTarget plus original player
 ParseRightClick now proves Lockpick transfer, genuine first-fit grid placement,
 Pickup animation/Base, and second-item merge with unchanged grid/clock in two

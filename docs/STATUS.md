@@ -1,5 +1,40 @@
 # Port status
 
+## First Training native landing, stacking and support loss (2026-10-23)
+
+Original ordinary Decoration landing is now bound to actual stored zones,
+qualified native fields, current-Level collision queries, selected original
+Landed and native3970 on the same VM journal. Native counter/Velocity stores
+preserve no-clock-rebuild/raw-word semantics; private raw ZoneVelocity reads
+do not weaken ordinary VM/save finite validation. Explicit first-Training
+MoveActor sweeps (not gravity timesteps) prove lower world support and upper
+support on the lower crate, both Physics2->0 through original callbacks.
+
+Two combined repeats prove lower-crate destruction releases the actual based
+upper crate into Physics2/Base=None through original DropThings/3970; both
+deaths still leave12 genuine WoodFragments/two surviving Lockpicks, followed
+by original player grid pickup and copy merging. Repeated write14812 cutoff
+inside upper BaseChange undoes the completed first landing and partial second
+movement/support. Exact repeated observations, full-root rollback and all41
+unchanged sources pass. Normal no-command startup is unchanged. Strict ARM64,
+focused host and Android native link pass; see ORIGINAL-DECORATION-LANDING.md.
+
+This does NOT advance automatic falling/loot settling, commit partial startup,
+bind live controller attacks, implement paired audio or establish on-headset
+crate acceptance. Later genuine HUD refusal is retained; no new APK. First
+Training only; other actual-map integrations remain deferred.
+Final coherent full desktop build/shared CTest pass175 executed/207 registered,
+32 explicit owned-data skips, zero failures in49.62s. Separate owned original
+crate destruction347/two contents refusals passes. Evidence in artifacts/:
+training-native-landing-full-build-20261023.log,
+training-native-landing-full-tests-20261023.log and
+training-native-landing-crate-regression-20261023.log.
+The separate owned first-Training SetPhysics regression passes172882 checks/
+53 explicit refusals, including19 partial-write cuts and full real Doctor
+animation-clock preservation; see
+training-native-landing-physics-regression-20261023.log.
+This does not replace the missing falling phase.
+
 ## First Training original player loot action and landing prerequisite (2026-10-23)
 
 The stronger optional crate-loot diagnostic now dispatches original

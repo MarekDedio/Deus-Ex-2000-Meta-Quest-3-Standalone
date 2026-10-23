@@ -117,6 +117,8 @@
             text(staged.gameInfoPath,game->reflection.objectPath);
             text(staged.stateBefore,CurrentDispatchContext(actor).selectedPath);
             text(staged.contentsBefore,link(actor,"contents"));
+            text(staged.baseBefore,RetailPredicatePointerRead(actor,"Engine.Actor.Base","Engine.Actor",0x22u).text);
+            staged.physicsBefore=static_cast<std::uint8_t>(Read(actor,ActorPhysicsProperty(actor),0u).integer);
             staged.worldBegun=flag(info,"bBegunPlay");staged.worldStartup=flag(info,"bStartup");
             staged.playerPaired=!link(player,"Player").empty();
             staged.hitPointsBefore=integer(actor,"HitPoints");staged.hitPointsAfter=staged.hitPointsBefore;
@@ -135,6 +137,8 @@
             row.returned=true;row.writesAfter=execution.WriteCount();
             if(result.kind!=Kind::Nothing)throw std::runtime_error("Original TakeDamage unexpectedly returned a value");
             row.hitPointsAfter=integer(actor,"HitPoints");row.removed=actor->worldRemoved;row.deleteMe=flag(actor,"bDeleteMe");
+            text(row.baseAfter,RetailPredicatePointerRead(actor,"Engine.Actor.Base","Engine.Actor",0x22u).text);
+            row.physicsAfter=static_cast<std::uint8_t>(Read(actor,ActorPhysicsProperty(actor),0u).integer);
             text(row.stateAfter,CurrentDispatchContext(actor).selectedPath);
             const auto& exports=persistentRuntime->get()->exports;
             if(exports.size()<birthBoundary || exports.size()-birthBoundary>64u)
