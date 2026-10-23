@@ -159,6 +159,12 @@ stopped before Login/physics; it is not gravity evidence.
 
 ## Still required
 
+Follow-up actual released-crate/Inventory stepping and pickup evidence is in
+TRAINING-RELEASED-FALLING.md. Both dropped Lockpicks now settle through actual
+timesteps and remain collectible. Released upper contact with an unadvanced
+airborne Lockpick demonstrates the remaining interleaving/support-carry gap;
+it is not final stack/world settling or an automatic scheduler.
+
 Automatic world dispatch, rotation/PendingTouch, remaining reached physics
 branches, falling after actual support destruction, dropped loot's full
 fall/settle path, original equipped-weapon/controller interaction and committed

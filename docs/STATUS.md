@@ -1,5 +1,39 @@
 # Port status
 
+## First Training released crate and dropped loot (2026-10-23)
+
+The same-root falling diagnostic now advances actual surviving damage-born
+Inventory, with exact birth/class/phase authority and no nonexistent crate
+counter reads. Two repeated original-map runs prove both genuine Lockpicks
+fall with their original3D velocities, land on LevelInfo0 through selected
+DeusExPickup.Pickup.Landed, stop on real support, then transfer/merge through
+original player ParseRightClick and the actual inventory grid/full clock.
+Nine rows/sixteen sweeps complete, with full-root undo/all41 originals unchanged.
+
+A separate repeated lower-only destruction sequence proves the surviving
+upper crate detaches, falls and hits the **new airborne Lockpick0**. This is
+real contact, not final world-floor settling: the separate sequence did not
+step that item. Do not suppress its collision or claim a settled floor stack.
+Interleaved original physics and based-child carry remain necessary follow-up.
+Observers now reject skipped/still-falling commands after reaching actual
+Possess; a later HUD gap cannot count as command completion. See
+TRAINING-RELEASED-FALLING.md for exact scope, commands and result metrics.
+Repeated late cuts15248 (released BaseChange) and15445 (second Inventory
+Landed) fully undo completed earlier steps/death/loot support and partial
+callbacks. Direct settled Frob and normal no-command regressions also pass.
+
+Strict ARM64, focused desktop and Android native linking pass. No new APK,
+automatic world scheduler, live controller weapon bridge or startup/headset
+completion claim; first Training and the full campaign remain unfinished.
+Final coherent full desktop build/shared CTest pass176 executed/208 registered,
+32 explicit owned-data skips, zero failures in42.22s; fresh owned crate347/two
+contents refusals passes separately. Genuine falling/pickup/source/rollback
+probes above are separate actual runs, not claimed by those owned-data skips.
+Fresh post-build owned SetPhysics172882/53 controls also pass, including19
+partial-write cuts and full actual Doctor animation-clock preservation.
+Original bounce and performPhysics epilogue prerequisites are now recorded in
+ORIGINAL-ACTOR-PHYSICS-EPILOGUE.md as static evidence, not implemented physics.
+
 ## First Training original gravity timesteps (2026-10-23)
 
 Actual finite dry non-Pawn physFalling is implemented and runtime-bound,

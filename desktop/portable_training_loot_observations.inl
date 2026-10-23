@@ -117,12 +117,20 @@ void ObserveTrainingLoot(const PortableWorldStartupProbeResult& world,bool reque
             Require(row.functionPath==(viaPlayer?"DeusEx.DeusExPlayer.ParseRightClick":"Engine.Pickup.Pickup.Frob"),
                 "Training loot did not select the requested actual original state-aware action");
             item(row.before,"before");chain(row.inventoryBefore,row.playerPath,"inventory-before");
+            const PortableStartupFallingObservation* settled{};
+            for(const auto& fall:world.fallingObservations)
+                if(fall.actorPath==row.actorPath&&fall.captured&&fall.physicsAfter==0u)settled=&fall;
+            if(settled)Require(settled->classPath=="DeusEx.Lockpick"&&!settled->hasLandingCounter&&
+                settled->landingEntered&&settled->landedCalls==1u&&settled->setPhysicsCalls==1u&&
+                settled->baseAfter==settled->floorPath&&settled->writesAfter<=row.writesBefore,
+                "Settled loot pickup lacks its prior original falling/landing/support observation");
             Require(row.before.actorPath==row.actorPath&&row.before.classPath=="DeusEx.Lockpick"&&
                 row.before.statePath=="DeusEx.DeusExPickup.Pickup"&&!row.before.removed&&!row.before.deleteMe&&
-                row.before.physics==2&&row.before.ownerPath.empty()&&row.before.basePath.empty()&&
+                row.before.physics==(settled?static_cast<std::int32_t>(settled->physicsAfter):2)&&row.before.ownerPath.empty()&&
+                row.before.basePath==(settled?settled->baseAfter:std::string{})&&
                 row.before.numCopies.has_value()&&row.before.maxCopies.has_value()&&
                 *row.before.numCopies>0&&*row.before.maxCopies>0&&*row.before.numCopies<=*row.before.maxCopies,
-                "Loot before snapshot does not describe the genuine untouched surviving Lockpick");
+                "Loot before snapshot does not describe the genuine surviving Lockpick and its actual falling/support state");
             printItem(row.before,"before",i);
             for(std::size_t n=0u;n<row.inventoryBefore.size();++n)printItem(row.inventoryBefore[n],"inventory-before",i,n);
             if(viaPlayer) {
@@ -159,7 +167,7 @@ void ObserveTrainingLoot(const PortableWorldStartupProbeResult& world,bool reque
                     !row.after.collideWorld&&!row.after.blockActors&&!row.after.blockPlayers&&
                     row.after.instigatorPath==row.playerPath&&row.after.statePath=="Engine.Inventory.Idle2"&&
                     row.after.numCopies==row.before.numCopies&&row.after.maxCopies==row.before.maxCopies&&
-                    row.after.basePath==(viaPlayer?row.playerPath:std::string{})&&
+                    row.after.basePath==(viaPlayer?row.playerPath:row.before.basePath)&&
                     row.after.invSlotsX==row.before.invSlotsX&&row.after.invSlotsY==row.before.invSlotsY,
                     "Transferred lockpick lacks original BecomeItem/GiveTo/Idle2 state or changed its copy count");
                 if(viaPlayer) {
@@ -240,7 +248,9 @@ void ObserveTrainingLoot(const PortableWorldStartupProbeResult& world,bool reque
             <<" inventoryBefore="<<row.inventoryBefore.size()<<" inventoryAfter="<<row.inventoryAfter.size()
             <<" writesBefore="<<row.writesBefore<<" writesAfter="<<row.writesAfter<<" outcome="<<outcome<<'\n';
     }
-    if(observations.size()<births.size())Require(!world.execution.passed()&&!world.execution.committed,
+    if(ReachedTrainingPossess(world))Require(observations.size()==births.size()&&captured==births.size()&&
+        transferred+merged==births.size(),"Original Possess was reached without collecting all requested genuine loot births");
+    else if(observations.size()<births.size())Require(!world.execution.passed()&&!world.execution.committed,
         "Startup skipped requested surviving loot Frob attempts and reported completion");
     std::cout<<"TRAINING LOOT OBSERVATIONS commands="<<observations.size()<<" entered="<<entered<<" returned="<<returned
         <<" captured="<<captured<<" transferred="<<transferred<<" merged="<<merged<<" otherReturned="<<other

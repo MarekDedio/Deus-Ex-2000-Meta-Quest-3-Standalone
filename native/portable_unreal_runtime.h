@@ -237,9 +237,10 @@ struct PortableStartupFallingCommand {
     bool afterDamage{};
 };
 struct PortableStartupFallingObservation : PortableStartupLandingObservation {
+    std::string classPath;
     std::size_t stepIndex{},substeps{},moveCalls{},apexSplits{},oldLocationWords{},accelerationWords{},teleportWrites{};
     float deltaSeconds{};
-    bool afterDamage{},teleportedBefore{},teleportedAfter{};
+    bool afterDamage{},teleportedBefore{},teleportedAfter{},hasLandingCounter{};
     std::array<float,3u> accelerationBefore{},accelerationAfter{},oldLocationBefore{},oldLocationAfter{};
     bool operator==(const PortableStartupFallingObservation&) const = default;
 };
@@ -308,6 +309,7 @@ struct PortableWorldStartupProbeOptions {
     // is normal startup. Does not synthesize a velocity, floor or Landed event.
     std::vector<PortableStartupLandingCommand> landingCommands{};
     // At most eight bounded commands/64 total steps in this same root.
+    // Inventory targets must be captured surviving original damage births.
     std::vector<PortableStartupFallingCommand> fallingCommands{};
     // Follow actual surviving Inventory births with state-aware Frob(JC,None).
     // Requires damageCommands and one real Login viewport; at most eight live

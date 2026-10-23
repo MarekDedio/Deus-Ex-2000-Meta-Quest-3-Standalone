@@ -10,6 +10,25 @@ do not spend time on other-map integration or map-content test sweeps.
 Reconfirmed2026-10-22: skip other-map crate/physics integration and testing;
 the WHOLE first Training map remains the current content acceptance target.
 
+Latest released/loot increment,2026-10-23: original dropped Inventory now has
+same-root timestep admission tied to captured surviving genuine damage births.
+Two actual-map repeats prove both Lockpicks fall/land on LevelInfo0 through
+their original Pickup-state Landed, then original player grid transfer/merge.
+A separate lower-only destruction run releases and falls the actual upper,
+which hits the still-airborne born Lockpick0. This is NOT a floor-settled stack;
+interleaving item/crate updates and based-child carry remain next. No other
+actual map, forced flags/poses/floor, collision suppression or partial startup
+publication. No new APK. See TRAINING-RELEASED-FALLING.md. Original later HUD
+refusal/all41 unchanged sources/full-root undo remain explicit.
+Repeated late cuts15248/15445, direct settled Frob and unchanged normal startup
+also pass. See ORIGINAL-ACTOR-PHYSICS-EPILOGUE.md for the next original cohort/
+bounce/rotation/PendingTouch prerequisites; that audit is not implemented work.
+Final coherent full desktop build/shared CTest pass176 executed/208 registered,
+32 explicit owned-data skips, zero failures in42.22s. Fresh owned crate347/two
+contents refusals passes separately; actual falling/pickup probes are above.
+Fresh post-build owned SetPhysics172882/53 controls pass too, including19
+partial-write cuts and full real animation-clock preservation.
+
 Latest gravity increment,2026-10-23: actual original dry nonPawn physFalling
 timesteps now use stored zone gravity/drift, exact adaptive/apex Float stores,
 real MoveActor, selected Landed and original support setter. The lower lands

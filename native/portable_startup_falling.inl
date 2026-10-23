@@ -57,8 +57,9 @@
                 ActorPhysicsVectorProperty(actor,"Engine.Actor.Acceleration")).vector;
             (after?row.oldLocationAfter:row.oldLocationBefore)=ReadFallingOldLocation(actor,FallingOldLocationProperty(actor)).vector;
             (after?row.physicsAfter:row.physicsBefore)=static_cast<std::uint8_t>(Read(actor,ActorPhysicsProperty(actor),0u).integer);
-            (after?row.counterAfter:row.counterBefore)=Read(actor,LandingScalarProperty(actor,
-                "Engine.Decoration.numLandings","Engine.Decoration",Kind::Int,0x2u),0u).integer;
+            if(row.hasLandingCounter)
+                (after?row.counterAfter:row.counterBefore)=Read(actor,LandingScalarProperty(actor,
+                    "Engine.Decoration.numLandings","Engine.Decoration",Kind::Int,0x2u),0u).integer;
             (after?row.teleportedAfter:row.teleportedBefore)=flag(actor,"Engine.Actor.bJustTeleported");
             text(after?row.baseAfter:row.baseBefore,
                 RetailPredicatePointerRead(actor,"Engine.Actor.Base","Engine.Actor",0x22u).text);
@@ -69,9 +70,25 @@
         for(std::size_t commandIndex=0u;commandIndex<commands.size();++commandIndex) {
             const auto& command=commands[commandIndex];if(command.afterDamage!=afterDamage)continue;
             auto* actor=RetailCollisionActor(reinterpret_cast<std::uintptr_t>(Object(command.actorPath)));
-            if(!RetailTouchClass(reinterpret_cast<std::uintptr_t>(actor),"Engine.Decoration") || actor->worldRemoved ||
+            const auto identity=reinterpret_cast<std::uintptr_t>(actor);
+            const bool decoration=RetailTouchClass(identity,"Engine.Decoration");
+            const bool inventory=RetailTouchClass(identity,"Engine.Inventory");
+            if((!decoration && !inventory) || actor->worldRemoved ||
                 flag(actor,"Engine.Actor.bDeleteMe") || Read(actor,ActorPhysicsProperty(actor),0u).integer!=2)
-                throw std::runtime_error("Startup falling requires an actual live Falling Decoration");
+                throw std::runtime_error("Startup falling requires an actual live Falling Decoration or Inventory");
+            if(inventory) {
+                bool born{};
+                for(const auto& damage:worldStartupResult_->damageObservations) {
+                    LifecycleStep();if(!damage.captured)continue;
+                    for(const auto& birth:damage.births) {
+                        LifecycleStep();
+                        if(birth.actorPath==actor->reflection.objectPath && birth.classPath==actor->cls->reflection.objectPath &&
+                            birth.pickup && !birth.removed && !birth.deleteMe)born=true;
+                    }
+                }
+                if(!afterDamage || !actor->runtimeBirth || !born)
+                    throw std::runtime_error("Startup falling Inventory is not a captured genuine surviving damage birth");
+            }
             for(std::size_t step=0u;step<command.steps;++step) {
                 // Only a successfully observed earlier native step may make a
                 // later requested step unnecessary by stopping/deleting itself.
@@ -79,6 +96,7 @@
                     Read(actor,ActorPhysicsProperty(actor),0u).integer!=2))break;
                 PortableStartupFallingObservation staged;staged.commandIndex=commandIndex;staged.stepIndex=step;
                 staged.deltaSeconds=command.deltaSeconds;staged.afterDamage=afterDamage;
+                staged.hasLandingCounter=decoration;text(staged.classPath,actor->cls->reflection.objectPath);
                 text(staged.actorPath,actor->reflection.objectPath);text(staged.gameInfoPath,game->reflection.objectPath);
                 snapshot(actor,staged,false);staged.writesBefore=staged.writesAfter=execution.WriteCount();
                 if(output.size()>=64u)throw std::runtime_error("Startup falling detached rows exceeded the admitted bound");

@@ -1,15 +1,19 @@
 // Detached actual native timestep observations. These are not acceptance of a
 // world scheduler, an equipped weapon path or committed/on-headset gameplay.
-void ObserveTrainingFalling(const PortableWorldStartupProbeResult& world,bool requested) {
+void ObserveTrainingFalling(const PortableWorldStartupProbeResult& world,bool requested,bool afterLowerBreak=false) {
     const auto& rows=world.fallingObservations;
+    Require(!afterLowerBreak||requested,"Post-destruction falling requires the initial gravity commands");
     if(!requested){Require(rows.empty(),"Normal startup manufactured falling commands");return;}
-    Require(rows.size()<=16u,"Training falling exceeded its two eight-step command bounds");
+    const std::size_t requestedCount=afterLowerBreak?3u:2u;
+    Require(rows.size()<=8u*requestedCount,"Training falling exceeded its requested eight-step command bounds");
     std::size_t captured{},landed{},moves{},previousWrites{};
+    std::array<const PortableStartupFallingObservation*,3u> first{},last{};
     const PortableStartupFallingObservation* previous{};
     for(std::size_t i=0u;i<rows.size();++i) {
         const auto& row=rows[i];
-        Require(row.commandIndex<2u&&row.stepIndex<8u&&row.deltaSeconds==0.1f&&!row.afterDamage&&
-            row.actorPath==std::string("00_Training.CrateBreakableMedGeneral")+std::to_string(row.commandIndex+1u)&&
+        Require(row.commandIndex<requestedCount&&row.stepIndex<8u&&row.deltaSeconds==0.1f&&row.afterDamage==(row.commandIndex==2u)&&
+            row.actorPath==std::string("00_Training.CrateBreakableMedGeneral")+std::to_string(row.commandIndex==0u?1u:2u)&&
+            row.classPath=="DeusEx.CrateBreakableMedGeneral"&&row.hasLandingCounter&&
             row.gameInfoPath==world.gameInfoPath&&row.entered&&(!row.returned||row.entered)&&(!row.captured||row.returned)&&
             row.writesBefore>=previousWrites&&row.writesBefore<=row.writesAfter&&row.writesAfter<=world.execution.writes,
             "Training falling lost actual crate/root/timestep/write-prefix identity");
@@ -33,6 +37,24 @@ void ObserveTrainingFalling(const PortableWorldStartupProbeResult& world,bool re
                 "Training falling changed the original first-step profile or skipped a command");
             if(previous)Require(previous->captured&&(previous->physicsAfter!=2u||previous->stepIndex==7u||
                 previous->removed||previous->deleteMe),"Training falling skipped remaining live Falling steps");
+            first[row.commandIndex]=&row;
+            if(row.commandIndex==2u) {
+                Require(last[0u]&&last[1u]&&last[0u]->captured&&last[1u]->captured&&
+                    last[0u]->landingEntered&&!last[0u]->recovery&&!last[0u]->zoneBounce&&last[0u]->physicsAfter==0u&&
+                    last[1u]->landingEntered&&!last[1u]->recovery&&!last[1u]->zoneBounce&&last[1u]->physicsAfter==0u&&
+                    last[1u]->baseAfter==TrainingDamageActors[0u]&&
+                    world.damageObservations.size()==2u&&world.damageObservations[0u].captured&&world.damageObservations[1u].captured,
+                    "Post-destruction falling lacks completed original initial support and lower-crate damage");
+                const auto& nonfatal=world.damageObservations[0u];const auto& fatal=world.damageObservations[1u];
+                Require(nonfatal.actorPath==TrainingDamageActors[0u]&&nonfatal.physicsBefore==0u&&
+                    nonfatal.baseBefore==last[0u]->baseAfter&&nonfatal.writesBefore>=last[1u]->writesAfter&&
+                    fatal.actorPath==TrainingDamageActors[0u]&&fatal.removed&&fatal.deleteMe&&fatal.hitPointsAfter==-2&&
+                    row.writesBefore>=fatal.writesAfter&&row.physicsBefore==2u&&row.baseBefore.empty()&&
+                    row.locationBefore==last[1u]->locationAfter&&row.oldLocationBefore==last[1u]->oldLocationAfter&&
+                    row.velocityBefore==last[1u]->velocityAfter&&row.accelerationBefore==last[1u]->accelerationAfter&&
+                    row.zoneBefore==last[1u]->zoneAfter&&!row.teleportedBefore,
+                    "Post-destruction upper crate did not genuinely lose its destroyed support while preserving its settled pose");
+            }
         }
         Require(row.physicsBefore==2u&&row.counterBefore==0,
             "Training falling did not enter the actual original Falling crate");
@@ -59,7 +81,8 @@ void ObserveTrainingFalling(const PortableWorldStartupProbeResult& world,bool re
         }else Require(i+1u==rows.size()&&!world.execution.passed()&&!world.execution.committed,
             "Training continued after an incomplete falling timestep");
         std::cout<<std::setprecision(9)<<"TRAINING FALLING command="<<row.commandIndex<<" step="<<row.stepIndex
-            <<" actor="<<std::quoted(row.actorPath)<<" dt="<<row.deltaSeconds<<" entered="<<row.entered
+            <<" actor="<<std::quoted(row.actorPath)<<" class="<<std::quoted(row.classPath)
+            <<" hasLandingCounter="<<row.hasLandingCounter<<" dt="<<row.deltaSeconds<<" afterDamage="<<row.afterDamage<<" entered="<<row.entered
             <<" returned="<<row.returned<<" captured="<<row.captured<<" moved="<<row.moved
             <<" substeps="<<row.substeps<<" moves="<<row.moveCalls<<" apexSplits="<<row.apexSplits
             <<" zBefore="<<row.locationBefore[2u]<<" zAfter="<<row.locationAfter[2u]
@@ -74,9 +97,18 @@ void ObserveTrainingFalling(const PortableWorldStartupProbeResult& world,bool re
             <<" landedCalls="<<row.landedCalls<<" setterCalls="<<row.setPhysicsCalls
             <<" recovery="<<row.recovery<<" zoneBounce="<<row.zoneBounce
             <<" writesBefore="<<row.writesBefore<<" writesAfter="<<row.writesAfter<<'\n';
-        previousWrites=row.writesAfter;previous=&row;
+        previousWrites=row.writesAfter;previous=&row;last[row.commandIndex]=&row;
     }
-    if(!previous || !previous->captured || previous->commandIndex!=1u ||
+    if(ReachedTrainingPossess(world)) {
+        for(std::size_t command=0u;command<requestedCount;++command)
+            Require(first[command]&&last[command]&&last[command]->captured&&last[command]->landingEntered&&
+                !last[command]->recovery&&!last[command]->zoneBounce&&last[command]->physicsAfter==0u&&
+                !last[command]->removed&&!last[command]->deleteMe,
+                "Original Possess was reached without every requested Training gravity command settling on real support");
+        if(afterLowerBreak)Require(last[2u]->locationAfter[2u]<first[2u]->locationBefore[2u]&&
+            last[2u]->baseAfter==last[2u]->floorPath&&!last[2u]->floorPath.empty()&&last[2u]->floorPath!=TrainingDamageActors[0u],
+            "Released upper crate did not actually fall and settle on a surviving real collision support");
+    }else if(!previous || !previous->captured || previous->commandIndex+1u!=requestedCount ||
         (previous->physicsAfter==2u&&previous->stepIndex!=7u&&!previous->removed&&!previous->deleteMe))
         Require(!world.execution.passed()&&!world.execution.committed,
             "Training startup skipped requested falling timesteps and fabricated success");
