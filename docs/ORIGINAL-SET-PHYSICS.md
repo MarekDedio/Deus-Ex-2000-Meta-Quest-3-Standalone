@@ -1,9 +1,10 @@
 # Original Actor.SetPhysics3970
 
-Read-only audit, 2026-10-23. Only original Engine.u/Engine.dll and current
+Original audit and runtime integration, 2026-10-23. Only original Engine.u/Engine.dll and current
 port/pinned source were inspected. No commercial binary was loaded/executed;
 our package inspector, objdump, strings and byte reads are the evidence.
-This audit did not change runtime providers or execute commercial code.
+The initial audit changed no providers; the integration checkpoint below
+records the subsequent port changes. No commercial code was executed.
 
 ## Authority
 
@@ -128,9 +129,9 @@ preserve their effects until a genuine shared-root error requires rollback.
 
 ## Current port / pinned-source distinction
 
-Current native3970 in portable_unreal_runtime.cpp:3297 validates a numeric
+Before this correction, native3970 in portable_unreal_runtime.cpp validated a numeric
 input, accepts an optional Object floor, then only writes Physics. Its comment
-explicitly follows the pinned NActor::SetPhysics_Deus TODO. It currently lacks
+explicitly followed the pinned NActor::SetPhysics_Deus TODO. It lacked
 the equality early return, real support/detach branch, post-callback Physics
 reread, and original vector resets above. Those are concrete missing original
 semantics, not a request to invent physics as a setter side effect.
@@ -148,9 +149,9 @@ falling integration. quest_main calls only the separate demo mover-motion
 publication; that is not general Actor physics. Setting Physics2 and retaining
 spawned velocities cannot settle either first-Training crate.
 
-## Recommended next bounded increment, not a completion claim
+## Integration scope, not a completion claim
 
-First recover/implement this complete small original3970/setPhysics contract
+Implement the complete small original3970/setPhysics contract
 using the existing support providers. Exercise same-mode/different-floor,
 None/new/same floor, all exact mode predicates, reentrant Physics replacement,
 old+new Base/StandingCount, six exact zero words, and every shared-write/work
@@ -176,11 +177,81 @@ manual Landed/SupportActor calls for the missing native phase.
 
 
 
-## Detached implementation checkpoint
+## Runtime integration checkpoint
 
 The new asset-free coordinator in quest_actor_set_physics.h passes3112 checks/
 21 refusal controls in an isolated strict-g++ test. It covers every byte mode,
 same/new/None floors, exact interleaved raw zero stores, callback replacement/
 nested reentry, inactive nonfinite words, missing-provider propagation and
-caller-owned partial work/write undo. It is now registered in the shared build,
-but NOT bound to native3970 yet; runtime correction and actual-map checks remain.
+caller-owned partial work/write undo. It is registered in the shared build
+and now bound to native3970 by portable_actor_set_physics.inl. The adapter
+authenticates actual Core.Function/ByteProperty/ObjectProperty identities,
+declaring Actor ownership, flags, dimensions and referenced enum/Actor types.
+It seeds the original Byte0/ActorNone argument destinations before evaluation,
+then reuses the caller's real SetSupportBase/FindBase/SetBase services and
+shared work/write/undo root. Bare native entry without that root refuses.
+
+Physics stores do not reconstruct animation clocks. The six Vector words use
+INT DWORD undo proxies, preserving inactive old IEEE bits while ordinary VM
+Vector operands/save validation remain finite-only. A narrow private reader
+admits only canonical authored12-byte Velocity/Acceleration tags and their
+actual selected declaring schema. It is not a public raw Vector capability.
+All proxy copies and command scratch/output are charged to the same bounded
+root, including partial stores and callback refusals.
+
+The generated production-adapter fixture passes2514 combined ToWorld/SetPhysics
+checks and137 refusal controls. Its SetPhysics cases cover two exact7-store
+clears of authored signed-zero/NaN/Inf/subnormal words, all14 partial-write
+cuts, two late-root failures and12 qualified metadata/Vector schema refusals.
+Ordinary declared Vector reads still reject the original nonfinite tags;
+only a successful native overwrite makes the resulting live overlay/save
+finite. No original installation bytes are patched to construct these tests.
+
+The generated callback fixture also executes an actual class-selected Detach
+ProcessEvent that reenters native3970 while Base still names the support.
+The inner call changes Physics to5 and clears vectors; the outer native must
+reread5 and run the zero block again, not reuse requested2. Its exact16 stores,
+all16 write cuts, late failure and throwing-callback failure preserve complete
+same-root undo. Synthetic event eligibility is source-authored in test data,
+never forced on an original map, and no query/provider is bypassed.
+
+Strict ARM64 syntax and Android native compilation/link pass. Actual
+first-Training collision integration passes172882 checks/53 explicit refusals:
+15 dormant roots/29 native snapshots, all19 shared-write cuts, all five support
+modes, same-mode/different-floor no-op, real Base/count detachment and both
+actor-hash/world-only FindBase witnesses. Its animated Doctor1.PlayWaiting
+control preserves the complete clock in the same root across Falling and both
+zero blocks. The focused original script/native/save test also passes using
+authentic Engine/metadata/config/Package/lookup/Cylinder preparation; it does
+not bypass support when that authority is absent. Both tests load only the
+first original Training map.
+
+The coherent full desktop build passes. Final shared CTest executes174 of206
+registered tests,32 explicit owned-data skips, zero failures in79.23s; the
+separately invoked isolated original crate regression passes347/two contents
+refusals. See artifacts/training-physics-binding-full-build-20261023.log,
+training-physics-binding-full-tests-20261023.log and
+training-physics-binding-crate-regression-20261023.log. The generated callback
+include was subsequently rebuilt and passed before that final CTest; no runtime
+source changed after the successful Android/strict builds.
+
+The repeated initialized first-Training damage diagnostic still completes both crates,
+six fragments and one surviving Lockpick each, then reaches the unchanged
+normal DamageHUD fixed-Name-array refusal with complete whole-root rollback.
+With this adapter its exact observations are222239 instructions/24498 writes,
+native work503677cold/503053warm of1048576. A separate write-limit14978 run
+fails inside original DeusExDecoration.Frag PC254 after the complete first
+crate and third damage callback; both repeats fully undo/all41 originals
+remain unchanged. This is expected bounded refusal, not accepted startup.
+
+Evidence logs: artifacts/training-physics-binding-generated-final-20261023.log,
+training-physics-binding-kernel-20261023.log,
+training-physics-binding-owned-pass-20261023.log,
+training-physics-binding-script-final-20261023.log,
+training-physics-binding-android-20261023.log,
+training-physics-binding-damage-20261023.log and
+training-physics-binding-damage-late-20261023.log.
+
+Actual automatic falling/settling, collectible loot and headset weapon input
+are still unverified. The next original landing/falling audit is recorded in
+ORIGINAL-TRAINING-CRATE-FALLING.md; this setter is not a physics scheduler.

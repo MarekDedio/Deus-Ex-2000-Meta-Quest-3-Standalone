@@ -1,6 +1,8 @@
 #include "Precomp.h"
 #include "GC/GC.h"
 #include "portable_unreal_runtime.h"
+#include "portable_engine_collision.h"
+#include "portable_object_lookup.h"
 #include "portable_model_geometry.h"
 #include "quest_actor_geometry.h"
 #include "quest_mesh_animation.h"
@@ -2521,8 +2523,16 @@ void VerifyModernStateControl(const std::filesystem::path& root,const std::vecto
         "; production same-state/missing-label/true-transition mask and Locals invariants verified\n";
 }
 
-void VerifyOriginalStateExecution(const std::string& actor, const std::filesystem::path& legacy,
-    const std::filesystem::path& directory) {
+void VerifyOriginalStateExecution(const std::filesystem::path& root,const std::string& actor, const std::filesystem::path& legacy,
+    const std::filesystem::path& directory,const bool physicsOnly=false) {
+    // The original setter reaches actual SetSupportBase/SupportActor now.
+    // Establish the real lookup/Level.Engine/Cylinder authority instead of
+    // treating an unprepared fixture as permission to skip those services.
+    Require(PreparePortableRuntimeNativeEngineClasses().prepared&&PreparePortableRuntimeNativeMetadataClasses().prepared&&
+        PreparePortableRuntimeNativeConfigClasses().prepared&&PreparePortableRuntimeNativePackages().prepared&&
+        PreparePortableRuntimeObjectLookup().prepared&&
+        PreparePortableRuntimeEngineCollision((root/"System"/"DeusEx.ini").string()).prepared,
+        "Original SetPhysics controls cannot prepare genuine native support services");
     const auto saved = directory / "original-state-v5.sav";
     const auto inspect = directory / "state-unchanged-v5.sav";
     const auto generated = directory / "generated-state-v5.sav";
@@ -2535,31 +2545,55 @@ void VerifyOriginalStateExecution(const std::string& actor, const std::filesyste
     const auto authored = ReadPortableActorDispatchContext(actor);
     const auto authoredPhysics=ReadPortableActorScriptProperty(actor,"Physics");
     const auto authoredVelocity=ReadPortableActorScriptProperty(actor,"Velocity");
+    const auto authoredAcceleration=ReadPortableActorScriptProperty(actor,"Acceleration");
     const auto authoredBase=ReadPortableActorScriptProperty(actor,"Base");
-    Require(authoredPhysics.kind==Kind::Byte,"Original Actor.Physics is not a byte");
+    const auto physicsLevel=ReadPortableActorScriptProperty(actor,"Level");
+    Require(authoredPhysics.kind==Kind::Byte && authoredBase.kind==Kind::Object &&
+        physicsLevel.kind==Kind::Object && !physicsLevel.text.empty() &&
+        !QuestVr::Vm::ToBool(ReadPortableActorScriptProperty(physicsLevel.text,"bBegunPlay")),
+        "Original SetPhysics fixture lacks its byte/Base schema or cold Level");
+    // The retail mode3 branch detaches an existing Base, unless the initial
+    // same-mode check returns before any store. It does not clear vectors.
+    const auto modeThreeBase=authoredPhysics.integer!=3 && !authoredBase.text.empty()?
+        Value::Text(Kind::Object,{}):authoredBase;
     Call(actor,"SetPhysics",{{Value::Byte(3u),{}}});
     Require(ReadPortableActorScriptProperty(actor,"Physics").integer==3 &&
         QuestVr::Vm::Equal(ReadPortableActorScriptProperty(actor,"Velocity"),authoredVelocity) &&
-        QuestVr::Vm::Equal(ReadPortableActorScriptProperty(actor,"Base"),authoredBase) && !ReadPortableActorStateObject(actor),
-        "Pinned SetPhysics assignment reset velocity/base or fabricated a state frame");
+        QuestVr::Vm::Equal(ReadPortableActorScriptProperty(actor,"Acceleration"),authoredAcceleration) &&
+        QuestVr::Vm::Equal(ReadPortableActorScriptProperty(actor,"Base"),modeThreeBase) && !ReadPortableActorStateObject(actor),
+        "Original SetPhysics mode3 detachment/vector preservation or cold state gate diverged");
+    // Integer257 is converted to the declared BYTE1. The explicit floor is
+    // dispatched through original SetSupportBase/SupportActor, not ignored;
+    // this fixture's pre-begun-play ProcessEvent legitimately suppresses its
+    // script body, leaving the post-mode3 Base unchanged.
     Call(actor,"SetPhysics",{{Value::Integer(257),{}},{Value::Text(Kind::Object,actor),{}}});
     Require(ReadPortableActorScriptProperty(actor,"Physics").integer==1 &&
-        QuestVr::Vm::Equal(ReadPortableActorScriptProperty(actor,"Base"),authoredBase) && SavePortableRuntimeState(saved.string()),
-        "SetPhysics byte conversion or pinned optional-floor behavior diverged");
+        QuestVr::Vm::Equal(ReadPortableActorScriptProperty(actor,"Base"),modeThreeBase) &&
+        QuestVr::Vm::Equal(ReadPortableActorScriptProperty(actor,"Velocity"),authoredVelocity) &&
+        QuestVr::Vm::Equal(ReadPortableActorScriptProperty(actor,"Acceleration"),authoredAcceleration) &&
+        !ReadPortableActorStateObject(actor) && SavePortableRuntimeState(saved.string()),
+        "Original SetPhysics BYTE conversion or cold explicit-floor dispatch diverged");
     const auto physicsBytes=CheckpointBytes(saved);
     Require(Word(physicsBytes,4)==4u,"Physics-only property change fabricated state/clock storage");
     const auto badPhysics=ExecutePortableActorFunction(actor,"SetPhysics",{Name("InvalidPhysics")});
     const auto badFloor=ExecutePortableActorFunction(actor,"SetPhysics",{{Value::Byte(2u),{}},Name("InvalidFloor")});
     Require(!badPhysics.passed() && !badFloor.passed(),"Malformed SetPhysics arguments were accepted");
     unchanged(physicsBytes,"Malformed SetPhysics native argument rollback");
-    Call(actor,"SetPhysics",{{Value::Byte(0u),{}}});
+    // A same-mode request must not enter FindBase even when floor is None.
+    // Do not fabricate a clear trace to make this dormant fixture simulate
+    // settling. Actual first-Training FindBase/gravity is tested separately.
+    const auto samePhysics=Call(actor,"SetPhysics",{{Value::Byte(1u),{}}});
+    Require(samePhysics.writes==0u,"Original same-mode SetPhysics performed a store");
+    unchanged(physicsBytes,"Original same-mode SetPhysics no-op");
+    Call(actor,"SetPhysics",{{Value::Byte(3u),{}}});
     Require(LoadPortableRuntimeState(saved.string()) && ReadPortableActorScriptProperty(actor,"Physics").integer==1,
         "Physics byte overlay did not restore from v4");
     unchanged(physicsBytes,"Physics-only v4 roundtrip");
     Require(LoadPortableRuntimeState(legacy.string()) &&
         QuestVr::Vm::Equal(ReadPortableActorScriptProperty(actor,"Physics"),authoredPhysics) && !GetPortableRuntimeScriptStatePresent(),
         "Legacy restore did not clear the Physics byte overlay");
-    std::cout<<"ORIGINAL SETPHYSICS byte assignment/conversion/optional-floor/native argument rollback/v4/legacy passed; no simulation implied\n";
+    std::cout<<"ORIGINAL SETPHYSICS mode3 Base detachment/vector preservation/BYTE conversion/cold explicit-floor dispatch/same-mode no-op/native argument rollback/v4/legacy passed; no gravity simulation implied\n";
+    if(physicsOnly)return;
     Call(actor,"Disable",{Name("Tick")});
     auto dynamic = ReadPortableActorStateObject(actor);
     Require(dynamic && !dynamic->frameOverride && !dynamic->frame && dynamic->hasStack &&
@@ -3172,7 +3206,7 @@ void VerifyOriginalWorldStartupProbe(const std::filesystem::path& legacy,
 void TestOriginal(const std::filesystem::path& root, const bool inventoryOnly = false,
     const bool switchOnly = false, const bool randomOnly = false, const bool sleepOnly = false,
     const bool landingOnly = false, const bool dispatchOnly = false, const bool startupOnly = false,
-    const bool worldStartupOnly = false) {
+    const bool worldStartupOnly = false,const bool physicsOnly = false) {
     static constexpr const char* packages[] = {
         "ConSys", "Core", "DeusEx", "DeusExCharacters", "DeusExConAudioAIBarks",
         "DeusExConAudioEndGame", "DeusExConAudioHK_Shared", "DeusExConAudioIntro",
@@ -3194,7 +3228,7 @@ void TestOriginal(const std::filesystem::path& root, const bool inventoryOnly = 
         "Original script runtime initialization/state metadata failed");
     std::cout << "ORIGINAL RUNTIME indexed objects=" << runtime.objects << " classes=" << runtime.classes <<
         " states=" << runtime.states << '\n';
-    if (!inventoryOnly) {
+    if (!inventoryOnly && !physicsOnly) {
         VerifyAuthoredStateMetadata(root);
         VerifyOriginalDispatchMetadata(tables,runtime);
         VerifyOriginalDispatchPrograms(tables,runtime);
@@ -3213,6 +3247,12 @@ void TestOriginal(const std::filesystem::path& root, const bool inventoryOnly = 
         const auto checkpointBytes = std::filesystem::file_size(checkpoint);
         Require(Word(CheckpointBytes(checkpoint),4)==3u,"Untouched runtime unexpectedly changed legacy v3 save format");
         const auto actors = GetPortableRuntimeMapActors();
+        if(physicsOnly) {
+            VerifyOriginalStateExecution(root,"00_Training.Doctor1",checkpoint,temporary.directory,true);
+            UnloadPortableRuntimeMap();
+            Require(!GetPortableRuntimeScriptStatePresent(),"Focused first-Training SetPhysics suite leaked state");
+            return;
+        }
         if (worldStartupOnly) {
             VerifyOriginalModelPointTrace(root,checkpoint,temporary.directory);
             VerifyOriginalShadowDecalGeometry(root,checkpoint,temporary.directory);
@@ -3411,7 +3451,7 @@ void TestOriginal(const std::filesystem::path& root, const bool inventoryOnly = 
                         "Rejected wrong-current-map v4 load changed current actors");
                 Require(LoadPortableRuntimeMap(LoadPortablePackageTables((root/"Maps"/(std::string(map)+".dx")).string())).passed &&
                     LoadPortableRuntimeState(checkpoint),"Could not reset original map after readonly cross-map preflight");
-                VerifyOriginalStateExecution(actor.objectPath,checkpoint,temporary.directory);
+                VerifyOriginalStateExecution(root,actor.objectPath,checkpoint,temporary.directory);
                 Require(SameStack(authoredStack, ReadPortableActorSerializedStack(actor.objectPath)),
                     "Portable state execution changed immutable authored stack metadata");
                 ++humanTests;
@@ -3472,8 +3512,8 @@ int main(int argc, char** argv) {
             return 77;
         }
         Require(argc == 2 || (argc == 3 && (std::string(argv[2]) == "--inventory-only" ||
-                std::string(argv[2]) == "--switch-only" || std::string(argv[2]) == "--random-only" || std::string(argv[2]) == "--sleep-only" || std::string(argv[2]) == "--landing-only" || std::string(argv[2]) == "--dispatch-only" || std::string(argv[2]) == "--startup-only" || std::string(argv[2]) == "--world-startup-only")),
-            "Usage: portable_actor_script_test GAME_ROOT [--inventory-only|--switch-only|--random-only|--sleep-only|--landing-only|--dispatch-only|--startup-only|--world-startup-only]");
+                std::string(argv[2]) == "--switch-only" || std::string(argv[2]) == "--random-only" || std::string(argv[2]) == "--sleep-only" || std::string(argv[2]) == "--landing-only" || std::string(argv[2]) == "--dispatch-only" || std::string(argv[2]) == "--startup-only" || std::string(argv[2]) == "--world-startup-only" || std::string(argv[2]) == "--physics-only")),
+            "Usage: portable_actor_script_test GAME_ROOT [--inventory-only|--switch-only|--random-only|--sleep-only|--landing-only|--dispatch-only|--startup-only|--world-startup-only|--physics-only]");
         const bool switchOnly = argc == 3 && std::string(argv[2]) == "--switch-only";
         const bool randomOnly = argc == 3 && std::string(argv[2]) == "--random-only";
         const bool sleepOnly = argc == 3 && std::string(argv[2]) == "--sleep-only";
@@ -3481,8 +3521,10 @@ int main(int argc, char** argv) {
         const bool dispatchOnly = argc == 3 && std::string(argv[2]) == "--dispatch-only";
         const bool startupOnly = argc == 3 && std::string(argv[2]) == "--startup-only";
         const bool worldStartupOnly = argc == 3 && std::string(argv[2]) == "--world-startup-only";
-        TestOriginal(std::filesystem::path(argv[1]), argc == 3 && !switchOnly && !randomOnly && !sleepOnly && !landingOnly && !dispatchOnly && !startupOnly && !worldStartupOnly,
-            switchOnly,randomOnly,sleepOnly,landingOnly,dispatchOnly,startupOnly,worldStartupOnly);
+        const bool physicsOnly = argc == 3 && std::string(argv[2]) == "--physics-only";
+        TestOriginal(std::filesystem::path(argv[1]), argc == 3 && !switchOnly && !randomOnly && !sleepOnly && !landingOnly && !dispatchOnly && !startupOnly && !worldStartupOnly && !physicsOnly,
+            switchOnly,randomOnly,sleepOnly,landingOnly,dispatchOnly,startupOnly,worldStartupOnly,physicsOnly);
+        if(physicsOnly){std::cout<<"PASS focused first-Training SetPhysics byte/Base/vector/save and rollback suite\n";return 0;}
         if (worldStartupOnly) {std::cout<<"PASS focused original non-publishing world startup/rollback probe\n";return 0;}
         if (startupOnly) {std::cout<<"PASS focused original InitGame startup primitive suite\n";return 0;}
         if (dispatchOnly) {std::cout<<"PASS focused original readonly dispatch/source-program audit\n";return 0;}

@@ -277,7 +277,7 @@
                 sizeof(PortableRetailCollisionMutation)+sizeof(PortableRetailMultiLineMetadata)+sizeof(PortableRetailActorPredicate)+
                 sizeof(PortableRetailTouchSnapshot)+sizeof(PortableRetailZoneSnapshot)+sizeof(PortableRetailMoveSnapshot)+
                 sizeof(PortableRetailRawShapeSnapshot)+sizeof(PortableRetailSingleLineSnapshot)+sizeof(PortableRetailBaseSnapshot)+
-                sizeof(PortableRetailFindBaseSnapshot)));
+                sizeof(PortableRetailFindBaseSnapshot)+sizeof(PortableActorPhysicsSnapshot)));
         result.states.reserve(commands.size());result.queries.reserve(commands.size());result.queryHeads.reserve(commands.size());
         result.mutations.reserve(commands.size());result.multiLine.reserve(commands.size());
         result.predicates.reserve(commands.size());
@@ -288,6 +288,7 @@
         result.singles.reserve(commands.size());
         result.bases.reserve(commands.size());
         result.findBases.reserve(commands.size());
+        result.physics.reserve(commands.size());
         for(const auto& command:commands) {
             if(command.operation==PortableRetailCollisionOperation::Enable) SetRetailActorCollision(true);
             else if(command.operation==PortableRetailCollisionOperation::Disable) SetRetailActorCollision(false);
@@ -348,6 +349,54 @@
                 snapshot.marksAfterQuery=reply.marksAfterQuery;snapshot.arenasBefore=reply.arenasBefore;
                 snapshot.arenasAfterQuery=reply.arenasAfterQuery;snapshot.clockAfter=ZoneClockSnapshot(actor);
                 result.findBases.push_back(std::move(snapshot));
+            }
+            else if(command.operation==PortableRetailCollisionOperation::ActorSetPhysics) {
+                if(command.actorPath.empty() || command.actorPath.size()>4096u || command.actorPath.find('\0')!=std::string::npos ||
+                    command.arguments.empty() || command.arguments.size()>2u)
+                    throw std::runtime_error("Original SetPhysics diagnostic requires its bounded Actor and input packet");
+                const auto& mode=command.arguments.front();
+                if((mode.kind!=Kind::Byte && mode.kind!=Kind::Int && mode.kind!=Kind::Float) ||
+                    !mode.text.empty() || !mode.fields.empty() || !mode.intArray.empty() ||
+                    (mode.kind==Kind::Float && !std::isfinite(mode.floating)))
+                    throw std::runtime_error("Original SetPhysics diagnostic mode is not a finite numeric scalar");
+                if(command.arguments.size()==2u) {
+                    const auto& floor=command.arguments[1u];
+                    if(floor.kind!=Kind::Object || floor.text.size()>4096u || floor.text.find('\0')!=std::string::npos ||
+                        !floor.fields.empty() || !floor.intArray.empty())
+                        throw std::runtime_error("Original SetPhysics diagnostic floor is not bounded Actor/None");
+                }
+                auto* actor=RetailCollisionActor(reinterpret_cast<std::uintptr_t>(Object(command.actorPath)));
+                auto packetBytes=QuestVr::DecalStateDetail::Multiply(command.arguments.size(),sizeof(Evaluation)+sizeof(Value)+256u);
+                for(const auto& value:command.arguments)
+                    packetBytes=QuestVr::DecalStateDetail::Add(packetBytes,
+                        QuestVr::DecalStateDetail::Multiply(value.text.size()+1u,2u));
+                // Own the command packet and transient schema/snapshot reads
+                // before allocating their copies, for the complete native call.
+                QuestVr::NativeScratchScope packetScratch(nativeQueryScratchBytes_,
+                    QuestVr::DecalStateDetail::Add(packetBytes,8192u),[this](auto bytes){ValidateStateBudget(bytes);});
+                PortableActorPhysicsSnapshot row;row.commandIndex=result.states.size();
+                const auto physicsField=ActorPhysicsProperty(actor);
+                const auto velocity=ActorPhysicsVectorProperty(actor,"Engine.Actor.Velocity");
+                const auto acceleration=ActorPhysicsVectorProperty(actor,"Engine.Actor.Acceleration");
+                row.physicsBefore=static_cast<std::uint8_t>(Read(actor,physicsField,0u).integer);
+                const auto beforeBase=RetailPredicatePointerRead(actor,"Engine.Actor.Base","Engine.Actor",0x22u);
+                ReserveRetailDiagnosticOutput(actor->reflection.objectPath.size()+beforeBase.text.size()+2u+8u*sizeof(void*));
+                row.actorPath=actor->reflection.objectPath;row.baseBefore=beforeBase.text;
+                row.velocityBefore=ReadActorPhysicsVector(actor,velocity).vector;
+                row.accelerationBefore=ReadActorPhysicsVector(actor,acceleration).vector;
+                row.writesBefore=execution.WriteCount();
+                std::vector<Evaluation> arguments;arguments.reserve(command.arguments.size());
+                for(const auto& value:command.arguments)arguments.push_back({value,{}});
+                const auto function=ActorSetPhysicsDeclaration(nullptr);
+                static_cast<void>(execution.CallFunction(*function,command.actorPath,arguments));
+                row.writesAfter=execution.WriteCount();
+                row.physicsAfter=static_cast<std::uint8_t>(Read(actor,physicsField,0u).integer);
+                const auto afterBase=RetailPredicatePointerRead(actor,"Engine.Actor.Base","Engine.Actor",0x22u);
+                ReserveRetailDiagnosticOutput(afterBase.text.size()+1u+4u*sizeof(void*));
+                row.baseAfter=afterBase.text;
+                row.velocityAfter=ReadActorPhysicsVector(actor,velocity).vector;
+                row.accelerationAfter=ReadActorPhysicsVector(actor,acceleration).vector;
+                result.physics.push_back(std::move(row));
             }
             else if(command.operation==PortableRetailCollisionOperation::ActorSetBase) {
                 if(command.actorPath.empty() || command.actorPath.size()>4096u ||

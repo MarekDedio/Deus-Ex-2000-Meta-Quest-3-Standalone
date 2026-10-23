@@ -1,5 +1,36 @@
 # Port status
 
+## First Training original SetPhysics support/detachment (2026-10-23)
+
+Native3970 now implements the complete audited setter instead of only assigning
+the Physics byte. It preserves equal-mode no-ops, real support/FindBase/Base
+callbacks, post-callback mode rereads and six exact raw zero stores under the
+same shared transaction/budgets, without animation-clock reconstruction.
+Strict ARM64 and Android native compilation/link pass. Actual first-Training
+integration passes172882 checks/53 explicit refusals, including all19 shared
+write-prefix cuts, genuine Base/StandingCount changes, hash-enabled/world-only
+support queries, full rollback and unchanged real Doctor animation clocks.
+Focused original first-map script/native/save checks pass separately. Generated
+combined ToWorld/SetPhysics tests pass2514/137, including raw authored IEEE-word
+overwrite/undo, qualified metadata refusals and actual nested Detach callbacks
+with post-callback mode rereads/all16 shared-write cuts; the detached coordinator passes
+3112/21. No owned source file is changed and no other actual map is tested.
+The coherent full desktop build passes; final shared CTest executes174 of206
+registered tests with32 explicit owned-data skips, zero failures in79.23s.
+Separate isolated original crate destruction passes347/two contents refusals.
+
+Both initialized Training damage repeats still break the two actual crates,
+leave six fragments/one surviving Lockpick each, and then retain the genuine
+DamageHUD fixed-Name-array refusal/full-root rollback. Separate repeated late
+write-limit14978 rollback/all41 unchanged originals pass. Automatic falling,
+settling/stacking, loot collection and live held-weapon input are NOT completed
+by this setter. Next is the original Decoration landing/swept-falling path,
+not accounts/character creation, unrelated HUD work or another map. No new APK
+was produced or installed in this source-only increment. See ORIGINAL-SET-PHYSICS.md and
+ORIGINAL-TRAINING-CRATE-FALLING.md for exact evidence and remaining scope.
+ORIGINAL-TRAINING-LOOT-COLLECTION.md identifies the next genuine Lockpick
+Frob/ownership/merge proof; collection itself has not yet been executed there.
+
 ## First Training actual initialized-world crate damage (2026-10-23)
 
 Direct original damage is now exercised before possession, using real
@@ -14,8 +45,9 @@ asset-free production random tests pass86188 checks/67 rejection controls.
 Strict ARM64, Android native link, coherent full desktop build and shared
 CTest pass174 executed/206 registered,32 explicit owned-data skips, zero
 failures in64.23s. Separate isolated crate347/two genuine contents-refusal
-and owned original-player/HUD6758 controls pass. The future SetPhysics coordinator passes3112/21 but is NOT
-bound to native3970 yet. Normal startup without commands keeps its previous exact
+and owned original-player/HUD6758 controls pass. At that checkpoint the future
+SetPhysics coordinator passed3112/21 but was not bound to native3970 yet;
+the newer section above records integration. Normal startup without commands kept its previous exact
 DamageHUD fixed-Name-array boundary. This is NOT live headset weapon damage,
 collection, falling/stacking, completed possession or a new APK. Next direct
 crate prerequisite is full original SetPhysics support/detachment behavior,

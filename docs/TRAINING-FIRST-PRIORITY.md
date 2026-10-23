@@ -10,6 +10,26 @@ do not spend time on other-map integration or map-content test sweeps.
 Reconfirmed2026-10-22: skip other-map crate/physics integration and testing;
 the WHOLE first Training map remains the current content acceptance target.
 
+Latest support increment,2026-10-23: full original SetPhysics3970 is bound to
+the actual same-root support/FindBase/Base services, not the old byte-only
+assignment. Actual first-map integration passes172882/53 with19 shared-write
+cuts, real Base/count detachment, hash/world-only queries and unchanged full
+animation clocks. Focused original script/native/save checks, generated raw
+IEEE/schema/reentrant-callback controls2514/137, pure coordinator3112/21, strict ARM64 and Android
+native link pass. Both real initialized-world crate damage repeats still leave
+two surviving Lockpicks and12 WoodFragments, then fully roll back at the genuine
+later HUD refusal; late partial-destruction rollback also passes/all41 sources
+unchanged. Falling/settling/stacking, actual loot collection and paired headset
+weapon input remain unfinished. No new APK. Next is genuine Decoration landing
+and swept falling, without publishing incomplete startup or changing other maps.
+See ORIGINAL-SET-PHYSICS.md and ORIGINAL-TRAINING-CRATE-FALLING.md.
+Coherent full desktop/shared CTest verification passes174 executed/206
+registered,32 explicit owned-data skips, zero failures in79.23s; isolated
+first-map crate destruction regression347/two contents refusals passes.
+The next direct original Lockpick Frob/ownership/merge diagnostic is specified
+in ORIGINAL-TRAINING-LOOT-COLLECTION.md, without claiming controller/grid/audio
+completion from a pre-pair direct call.
+
 Latest direct crate checkpoint,2026-10-23: real GameInfo/begun-world/Login-JC
 damage before pairing now completes both crates10->4->-2, original deletion,
 six fragments and one surviving original Lockpick per crate on both repeats.
@@ -18,8 +38,9 @@ pass. Original RotRand320 was the actual fragment blocker and is implemented;
 random tests86188/67 and strict/Android native checks pass. Final full build/
 shared CTest pass174 executed/206 registered,32 explicit skips, zero failures
 in64.23s; separate isolated crate347/two refusals and original-player/HUD6758
-controls pass. The detached original
-SetPhysics coordinator passes3112/21 but is not bound to native3970 yet.
+controls pass. At that checkpoint the detached original
+SetPhysics coordinator passed3112/21 but was not bound to native3970 yet;
+the newer support increment above records integration.
 This is not paired/equipped headset damage, collection or gravity.
 Next is full original SetPhysics support/detachment, then genuine falling;
 unrelated HUD completion/other maps are not prerequisites for this work. No APK.

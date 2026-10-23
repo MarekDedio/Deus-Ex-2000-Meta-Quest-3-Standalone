@@ -30,7 +30,7 @@ struct PortableRetailCollisionSnapshot {
 enum class PortableRetailCollisionOperation { Enable, Disable, LineCheck, SetCollision, SetCollisionSize, MultiLineCheck, EncroachmentCheck,
     IsBlockedBy, IsBasedOn, LocalPlayerPawn, IsOverlapping, BeginTouch, EndTouch, TouchSide, SetActorZone,
     LevelMoveActor, ActorMove, ActorSetRotation, ActorMoveSmooth, LevelCheckEncroachment,
-    RawMeshWrite, RawDrawScaleWrite, OriginalBecomePickup, SingleLineCheck, ActorSetBase, ActorFindBase };
+    RawMeshWrite, RawDrawScaleWrite, OriginalBecomePickup, SingleLineCheck, ActorSetBase, ActorFindBase, ActorSetPhysics };
 struct PortableRetailCollisionCommand {
     PortableRetailCollisionOperation operation{PortableRetailCollisionOperation::Enable};
     std::array<float,3u> end{},start{},extent{};
@@ -66,6 +66,12 @@ struct PortableRetailCollisionMutation {
     QuestVr::Vm::Value returned;
     float radius{},height{};
     bool collideActors{},blockActors{},blockPlayers{},collideWorld{};
+};
+struct PortableActorPhysicsSnapshot {
+    std::size_t commandIndex{},writesBefore{},writesAfter{};
+    std::string actorPath,baseBefore,baseAfter;
+    std::uint8_t physicsBefore{},physicsAfter{};
+    std::array<float,3u> velocityBefore{},velocityAfter{},accelerationBefore{},accelerationAfter{};
 };
 struct PortableRetailCollisionHit {
     std::string actorPath,primitivePath;
@@ -171,6 +177,7 @@ struct PortableRetailCollisionProbeResult {
     std::vector<PortableRetailSingleLineSnapshot> singles;
     std::vector<PortableRetailBaseSnapshot> bases;
     std::vector<PortableRetailFindBaseSnapshot> findBases;
+    std::vector<PortableActorPhysicsSnapshot> physics;
 };
 // Bounded original SetActorCollision four-case and actual primitive-query
 // diagnostic. No native pointer leaves the CPU owner; every state is detached.

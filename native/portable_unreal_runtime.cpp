@@ -25,6 +25,7 @@
 #include "quest_actor_latent.h"
 #include "quest_actor_timer.h"
 #include "quest_actor_base.h"
+#include "quest_actor_set_physics.h"
 #include "quest_native_window_location.h"
 #include "quest_native_window_query.h"
 #include "quest_native_window_clip.h"
@@ -2811,6 +2812,7 @@ public:
         nativeActorOrderObservationBytes_=0u;
         nativeStartupOut_.clear();
         nativeDestroyReferenceBytes_=0u;
+        nativePhysicsReferenceBytes_=0u;
         beforeRandomSeed_ = persistentScriptRandomSeed;
         beforeWindowObjects_=persistentWindowDomain && persistentWindowDomain->get() ?
             persistentWindowDomain->get()->objects.size() : 0u;
@@ -2896,7 +2898,7 @@ public:
         nativeActorOrderObservationBytes_=0u;
         nativeStartupOut_.clear();
         ClearMoveHits();nativeDurableMoved_.clear();
-        saved_.clear(); savedAi_.clear(); provisionalAi_.clear(); provisionalWindows_.clear(); beforeDecals_.reset(); beforeLevelClock_.reset(); beforeWorldSlotItems_.clear(); nativeDestroyReferenceBytes_=0u; transaction_ = false;
+        saved_.clear(); savedAi_.clear(); provisionalAi_.clear(); provisionalWindows_.clear(); beforeDecals_.reset(); beforeLevelClock_.reset(); beforeWorldSlotItems_.clear(); nativeDestroyReferenceBytes_=0u; nativePhysicsReferenceBytes_=0u; transaction_ = false;
     }
     void Rollback() noexcept override {
         if (!transaction_) return;
@@ -3016,7 +3018,7 @@ public:
         RollbackConversationObjects();
         for(auto& root:provisionalDumps_)RetireRuntimeDumpObject(root.get());
         provisionalDumps_.clear();persistentDumpSession=beforeDumpSession_;
-        beforeCollision_.reset(); saved_.clear(); savedAi_.clear(); provisionalAi_.clear(); provisionalWindows_.clear(); beforeDecals_.reset(); beforeLevelClock_.reset(); nativeDestroyReferenceBytes_=0u; transaction_ = false;
+        beforeCollision_.reset(); saved_.clear(); savedAi_.clear(); provisionalAi_.clear(); provisionalWindows_.clear(); beforeDecals_.reset(); beforeLevelClock_.reset(); nativeDestroyReferenceBytes_=0u; nativePhysicsReferenceBytes_=0u; transaction_ = false;
     }
     Property ResolveProperty(const Function& function, const std::int32_t reference) override {
         RuntimeObject* object = Object(ResolveObject(function, reference));
@@ -3304,24 +3306,7 @@ public:
             RegisterCollisionActor(object,persistentActorCollision);
             return {Value::Bool(true), {}};
         }
-        if (index == 3970u) { // Actor.SetPhysics, pinned UActor_Phys.cpp.
-            argumentCount(1u, 2u);
-            if (!IsDerivedFromPath(object->cls, "Engine.Actor"))
-                throw std::runtime_error("SetPhysics receiver is not Engine.Actor");
-            const auto physics = argument(0u);
-            if (physics.kind != Kind::Byte && physics.kind != Kind::Int && physics.kind != Kind::Float)
-                throw std::runtime_error("SetPhysics requires a numeric physics byte");
-            const auto floor = argument(1u);
-            if (floor.kind != Kind::Nothing && floor.kind != Kind::Object)
-                throw std::runtime_error("SetPhysics optional floor requires an Object");
-            // Pinned SetPhysics_Deus leaves the optional floor unused/TODO.
-            // Do not invent SetBase, velocity reset or a physics simulation.
-            const auto property = PropertyNamed(object, "Physics");
-            if (property.zero.kind != Kind::Byte || property.arrayDimension != 1u)
-                throw std::runtime_error("SetPhysics authored Physics schema is not a scalar byte");
-            ReferenceFor(object, property, 0u, false)->write(QuestVr::Vm::Coerce(physics, property.zero));
-            return {};
-        }
+        if(index==3970u)throw std::runtime_error("SetPhysics requires its same-root VM execution context");
         if (index == 284u || index == 281u) {
             argumentCount(index == 284u ? 0u : 1u, index == 284u ? 0u : 1u);
             const auto context = CurrentDispatchContext(object);
@@ -3629,6 +3614,7 @@ public:
         if (Object(receiver)->defaultOwner)
             throw std::runtime_error("Native execution on a class-default object requires its audited handler");
         if(index==267u)return FarMoveNative(Object(receiver),arguments,declaration,execution);
+        if(index==3970u)return ActorSetPhysicsNative(Object(receiver),arguments,declaration,execution);
         if(index==266u||index==299u)return MoveNative(index,Object(receiver),arguments,declaration,execution);
         if((index==262u || index==283u) && persistentRetailCollision)
             return RetailCollisionSetterNative(index,Object(receiver),arguments,declaration);
@@ -5048,6 +5034,7 @@ public:
     #include "portable_actor_move_hits.inl"
     #include "portable_retail_single_line.inl"
     #include "portable_actor_find_base.inl"
+    #include "portable_actor_set_physics.inl"
     #include "portable_actor_move_events.inl"
     #include "portable_actor_move_pose.inl"
     #include "portable_actor_move.inl"
@@ -5205,6 +5192,11 @@ public:
     }
     std::optional<Value> NativeArgumentSeed(const std::uint16_t index,const std::string& receiver,
         const std::size_t slot,const Function* declaration) override {
+        if(index==3970u) {
+            static_cast<void>(ActorSetPhysicsDeclaration(declaration));RequireMapActor(Object(receiver));
+            if(slot>1u)throw std::runtime_error("SetPhysics has only its original two input slots");
+            return slot==0u?Value::Byte(0u):Value::Text(Kind::Object,{});
+        }
         if(index==320u) {
             static_cast<void>(RotRandDeclaration(declaration));
             if(slot!=0u)throw std::runtime_error("RotRand has only one optional input slot");
@@ -7221,7 +7213,11 @@ public:
 #include "portable_dump_location.inl"
     Value Read(RuntimeObject* object, const Property& property, const std::uint32_t index,
         const bool defaults = false, const bool immutable = false,NativeAuthoredReadOrigin* origin=nullptr,
-        const bool nativeRegionStorage=false) {
+        const bool nativeRegionStorage=false,const bool nativePhysicsVectorStorage=false) {
+        if(nativePhysicsVectorStorage) {
+            if(defaults || immutable || index || ActorPhysicsVectorProperty(object,property.key.c_str()).key!=property.key)
+                throw std::runtime_error("Raw physics Vector read has no actual native field authority");
+        }
         if(origin) *origin={};
         if(object->nativeDump && !defaults && !immutable)return ReadDumpLocationValue(object,property,index);
         if(const auto native=ReadNativeConversationValue(object,property,index,defaults,immutable)) return *native;
@@ -7424,6 +7420,7 @@ public:
                 for (auto tag = properties.rbegin(); tag != properties.rend(); ++tag) {
                     if (tag->name != property.name || tag->arrayIndex != index) continue;
                     if(origin) *origin={source,&*tag};
+                    if(nativePhysicsVectorStorage)return DecodeActorPhysicsVector(*tag,property);
                     return Decode(*source, *tag, property);
                 }
             source = !classDefaults && source == object ? object->cls : source->base;
@@ -8669,6 +8666,7 @@ private:
     // Typed destructor write references remain in the VM's undo journal until
     // the outer boundary, so their owned schema/zero payload is not lexical.
     std::size_t nativeDestroyReferenceBytes_{};
+    std::size_t nativePhysicsReferenceBytes_{};
     // First before-image of replaced original Level items. Appended births
     // roll back by truncation; clearing an authored slot requires a real hole
     // journal, not worldRemoved alone or a copy/compaction of the whole array.
@@ -9939,6 +9937,7 @@ private:
         defaults.Retain(retailCollisionOutputBytes_);
         defaults.Retain(beforeWorldSlotItems_.capacity()*sizeof(decltype(beforeWorldSlotItems_)::value_type));
         defaults.Retain(nativeDestroyReferenceBytes_);
+        defaults.Retain(nativePhysicsReferenceBytes_);
         defaults.Retain(nativeActorOrderObservationBytes_);
         defaults.Retain(sizeof(nativeStartupOut_)+nativeStartupOut_.capacity()*sizeof(StartupOutStorage));
         for(const auto& cell:nativeStartupOut_) {
