@@ -199,6 +199,31 @@ struct PortablePlayerLoginSource {
     // never a hardcoded replacement class. Loading still checks the real UClass.
     std::optional<std::u16string> userDefaultPlayerClass,iniUrlClass;
 };
+// Optional diagnostic commands inside genuine startup, AFTER original Login
+// returns a real Pawn and BEFORE pairing/Possess. Not a live weapon bridge.
+struct PortableStartupDamageCommand {
+    std::string actorPath;
+    std::int32_t damage{};
+    std::optional<std::array<float,3u>> hitLocation;
+    std::array<float,3u> momentum{};
+    std::string damageType{"shot"};
+};
+struct PortableStartupDamageBirth {
+    std::string actorPath,classPath,statePath,ownerPath,basePath;
+    std::array<float,3u> location{},velocity{};
+    std::int32_t physics{},remoteRole{};
+    bool removed{},deleteMe{},pickup{};
+    bool operator==(const PortableStartupDamageBirth&) const = default;
+};
+struct PortableStartupDamageObservation {
+    std::size_t commandIndex{};
+    std::size_t writesBefore{},writesAfter{};
+    std::string actorPath,playerPath,gameInfoPath,functionPath,stateBefore,stateAfter,contentsBefore;
+    std::int32_t hitPointsBefore{},hitPointsAfter{};
+    bool entered{},returned{},captured{},worldBegun{},worldStartup{},playerPaired{},removed{},deleteMe{};
+    std::vector<PortableStartupDamageBirth> births;
+    bool operator==(const PortableStartupDamageObservation&) const = default;
+};
 struct PortableWorldStartupProbeOptions {
     // Already decoded URL GAME= class and the configured local client's
     // DefaultGame class. Empty URL selects the map's actual DefaultGameType
@@ -210,6 +235,9 @@ struct PortableWorldStartupProbeOptions {
     // Omission refuses that missing configuration rather than using DefaultGame.
     std::string defaultServerGameClass{};
     std::optional<PortablePlayerLoginSource> playerLogin{};
+    // At most eight commands, single actual viewport only. Empty is normal
+    // startup. The entire startup still rolls back at its genuine later gap.
+    std::vector<PortableStartupDamageCommand> damageCommands{};
 };
 struct PortablePlayerLoginObservation {
     std::uint64_t viewportIdentity{};
@@ -223,6 +251,9 @@ struct PortableSpawnEncroachmentSnapshot {
     std::array<std::int32_t,3u> rotation{};
     std::int32_t touch{}; // Original literal0, not a configurable diagnostic input.
     bool attempted{},completed{},blocked{},initialStateReached{},baseReached{},postPostBeginReached{};
+    // A blocked query really calls native DestroyActor(Actor,0). Its return
+    // is ignored by original Spawn, but distinguished from a refused call.
+    std::optional<std::int32_t> destroyReturn;
     std::size_t marksBefore{},arenasBefore{},marksAfter{},arenasAfter{};
 };
 struct PortableWorldActorOrderSnapshot {
@@ -293,6 +324,7 @@ struct PortableWorldStartupProbeResult {
     PortableWorldActorOrderSnapshot beforeActorOrder,afterActorOrder;
     std::vector<PortablePlayerLoginObservation> playerLogins;
     std::vector<PortableDumpLocationObservation> dumpLocations;
+    std::vector<PortableStartupDamageObservation> damageObservations;
 };
 const char* PortableWorldStartupPhaseName(PortableWorldStartupPhase phase);
 // Non-publishing diagnostic over actual Level slots and original callbacks.

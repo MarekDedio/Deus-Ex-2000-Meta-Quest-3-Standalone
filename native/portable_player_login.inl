@@ -94,7 +94,8 @@
         return cls;
     }
     void StartupPlayerLogin(std::uint64_t viewportIdentity,const PortablePlayerLoginSource& source,
-        PortablePlayerLoginObservation& observation,QuestVr::Vm::Execution& execution) {
+        PortablePlayerLoginObservation& observation,const std::vector<PortableStartupDamageCommand>& damageCommands,
+        QuestVr::Vm::Execution& execution) {
         if(!transaction_ || !worldStartupProbe_)
             throw std::runtime_error("SpawnPlayActor continuation requires its actual startup root");
         auto* level=CurrentClockLevel();auto* viewport=NativeSessionViewport(viewportIdentity);
@@ -213,6 +214,7 @@
                 reinterpret_cast<std::uintptr_t>(viewport),{source.portal,options},q,nativeQueryScratchBytes_);
             if(result.player) {
                 auto* player=reinterpret_cast<RuntimeObject*>(result.player);
+                ProbeStartupDamage(player,damageCommands,execution);
                 static_cast<void>(SetSessionPlayer(viewportIdentity,player->reflection.objectPath,execution));
                 observation.paired=true;
                 throw std::runtime_error("Original SpawnPlayActor post-Possess role/travel continuation is not implemented");

@@ -48,6 +48,12 @@ float OracleFRand(std::uint32_t& seed) {
     const auto numerator=static_cast<std::uint64_t>(OracleDraw(seed))*32769ull;
     return static_cast<float>(std::ldexp(static_cast<double>(numerator),-30));
 }
+std::array<std::int32_t,3u> OracleRotRand(std::uint32_t& seed,const bool roll) {
+    const auto yaw=static_cast<std::int32_t>((OracleDraw(seed)*2ull)%65535ull);
+    const auto pitch=static_cast<std::int32_t>((OracleDraw(seed)*2ull)%65535ull);
+    const auto bank=roll?static_cast<std::int32_t>((OracleDraw(seed)*2ull)%65535ull):0;
+    return {pitch,yaw,bank};
+}
 std::uint32_t EndpointSeed(std::uint32_t sample) {
     for(std::uint32_t candidate=0;candidate<1'000'000u;++candidate) {
         auto state=candidate;
@@ -92,6 +98,28 @@ void PureContracts() {
             static_cast<std::uint64_t>(initial)*214013ull+2531011ull),"FRand closed endpoint or seed transition changed");
         Require(std::bit_cast<std::uint32_t>(result)==std::bit_cast<std::uint32_t>(OracleFRand(oracle)),"Independent FRand endpoint oracle differs");
         actual=initial;Require(Random::Rand(actual,1'000'000)==static_cast<std::int32_t>(sample),"Large positive Rand bound was clamped or resampled");
+    }
+    for(const bool roll:{false,true}) {
+        auto actual=1u;const auto result=Random::RotRand(actual,roll);
+        Require(result==std::array<std::int32_t,3u>{36934,82,roll?12668:0} && actual==(roll?415139642u:3357800067u),
+            "RotRand seed1 changed original Yaw/Pitch/Roll order or conditional draw count");
+    }
+    for(const auto initial:std::array<std::uint32_t,7>{0u,1u,17u,0x7fffffffu,0x80000000u,0xfffffffeu,0xffffffffu}) {
+        auto actual=initial,oracle=initial;
+        for(unsigned i=0u;i<1024u;++i) {
+            const auto result=Random::RotRand(actual,(i&1u)!=0u);
+            Require(result==OracleRotRand(oracle,(i&1u)!=0u) && actual==oracle,
+                "RotRand differs from independent modulo/draw-order oracle");
+            Require(std::all_of(result.begin(),result.end(),[](std::int32_t channel) {return channel>=0 && channel<=65534 && channel%2==0;}),
+                "RotRand invented negative, odd or65535 channel values");
+            Require(Random::Rand(actual,71)==OracleRand(oracle,71) &&
+                std::bit_cast<std::uint32_t>(Random::FRand(actual))==std::bit_cast<std::uint32_t>(OracleFRand(oracle)),
+                "RotRand split the mixed global random stream");
+        }
+    }
+    for(const auto sample:{0u,32767u}) {
+        auto actual=EndpointSeed(sample);const auto value=Random::RotRand(actual,false);
+        Require(value[1]==static_cast<std::int32_t>(sample*2u),"RotRand raw endpoint was scaled, clamped or resampled");
     }
     std::cout<<"Pure MSVCRT stream, mixed draw-count and binary32 endpoint contracts passed.\n";
 }
@@ -276,7 +304,7 @@ Bytes Envelope(const Bytes& prefixSource,const QuestVr::ScriptSavedState& state,
     return EnvelopeBlob(prefixSource,QuestVr::EncodeScriptSavedState(state),version);
 }
 struct Tables {PortablePackageTables core,engine,classes,map,otherMap;};
-Tables Build(Fixture& fixture,const unsigned vectorVariant=0u) {
+Tables Build(Fixture& fixture,const unsigned vectorVariant=0u,const unsigned rotatorVariant=0u) {
     Package core;core.stem="Core";const auto corePackage=core.ImportPackage("Core"),object=core.Export("Object");
     const auto vector=core.Export("Vector",core.Import("Struct",corePackage),0,object,true);
     core.Property("X","FloatProperty",vector,corePackage);core.Property("Y","FloatProperty",vector,corePackage);
@@ -286,6 +314,13 @@ Tables Build(Fixture& fixture,const unsigned vectorVariant=0u) {
     const auto vrand=core.Function("VRand",object,corePackage,{},252u,vectorVariant==1u ? 0x402u : 0x2401u);
     core.Property("ReturnValue","StructProperty",vrand,corePackage,vectorVariant==2u ? 0x480u : 0x580u,vector);
     if(vectorVariant==5u) core.Property("Unexpected","BoolProperty",vrand,corePackage,0x90u);
+    const auto rotator=core.Export("Rotator",core.Import("Struct",corePackage),0,object,true);
+    core.Property("Pitch","IntProperty",rotator,corePackage);core.Property("Yaw","IntProperty",rotator,corePackage);
+    core.Property("Roll",rotatorVariant==4u?"FloatProperty":"IntProperty",rotator,corePackage);core.StructBody(rotator);
+    const auto rotRand=core.Function("RotRand",object,corePackage,{},320u,rotatorVariant==1u?0x401u:0x2401u);
+    core.Property("bRoll","BoolProperty",rotRand,corePackage,rotatorVariant==2u?0x80u:0x90u);
+    core.Property("ReturnValue","StructProperty",rotRand,corePackage,rotatorVariant==3u?0x480u:0x580u,rotatorVariant==6u?vector:rotator);
+    if(rotatorVariant==5u) core.Property("Unexpected","BoolProperty",rotRand,corePackage,0x90u);
     const auto rand=core.Function("Rand",object,corePackage,{},167u);
     core.Property("Max","IntProperty",rand,corePackage,0x80u);core.Property("ReturnValue","IntProperty",rand,corePackage,0x480u);
     const auto frand=core.Function("FRand",object,corePackage,{},195u);core.Property("ReturnValue","FloatProperty",frand,corePackage,0x480u);
@@ -300,6 +335,44 @@ Tables Build(Fixture& fixture,const unsigned vectorVariant=0u) {
     const auto classesVector=classes.Import("Vector",classesObject,"Struct"),importedVRand=classes.Import("VRand",classesObject,"Function");
     const auto point=classes.Property("Point","StructProperty",probe,classesCore,0u,classesVector);
     const auto vectorX=classes.Import("X",classesVector,"FloatProperty");
+    const auto classesRotator=classes.Import("Rotator",classesObject,"Struct"),importedRotRand=classes.Import("RotRand",classesObject,"Function");
+    const auto angle=classes.Property("Angle","StructProperty",probe,classesCore,0u,classesRotator);
+    const auto rotatorPitch=classes.Import("Pitch",classesRotator,"IntProperty");
+    const auto rotatorFunction=[&](const std::string& name,Code code) {
+        const auto function=classes.Function(name,probe,classesCore,std::move(code));
+        classes.Property("ReturnValue","StructProperty",function,classesCore,0x580u,classesRotator);return function;
+    };
+    const auto drawRotation=rotatorFunction("DrawRotation",Return(Native(320u)));
+    rotatorFunction("DrawRotationFalse",Return(Native(320u,{Token(0x28u)})));
+    rotatorFunction("DrawRotationNothing",Return(Native(320u,{Token(0x0bu)})));
+    rotatorFunction("DrawRotationTrue",Return(Native(320u,{Token(0x27u)})));
+    rotatorFunction("DrawRotationDeclaration",Return(Call(importedRotRand)));
+    rotatorFunction("DrawRotationVirtual",Return(Join({Ref(0x1bu,classes.Name("RotRand")),Token(0x16u)})));
+    rotatorFunction("DrawRotationGlobal",Return(Join({Ref(0x38u,classes.Name("RotRand")),Token(0x16u)})));
+    rotatorFunction("DrawRotationNested",Return(Call(drawRotation)));
+    rotatorFunction("MixedRotation",Join({Native(167u,{Int(71)}),Native(195u),Return(Native(320u,{Token(0x27u)}))}));
+    for(const auto& [name,expression]:std::vector<std::pair<std::string,Code>>{
+        {"DrawOtherRotationRaw",Native(320u)},{"DrawOtherRotationDeclaration",Call(importedRotRand)},
+        {"DrawOtherRotationNested",Call(drawRotation)}}) {
+        const auto function=classes.Function(name,probe,classesCore),target=classes.Property("Target","ObjectProperty",function,classesCore,0x80u);
+        classes.Property("ReturnValue","StructProperty",function,classesCore,0x580u,classesRotator);
+        classes.FunctionCode(function,Return(Context(Ref(0x00u,target),expression)));
+    }
+    classes.Function("RotRandExcess",probe,classesCore,Return(Native(320u,{Token(0x27u),Token(0x28u)})));
+    classes.Function("RotRandInt",probe,classesCore,Return(Native(320u,{Int(1)})));
+    classes.Function("RotRandName",probe,classesCore,Return(Native(320u,{Ref(0x21u,classes.Name("BadRoll"))})));
+    classes.Function("RotRandString",probe,classesCore,Return(Native(320u,{Text("true")})));
+    classes.Function("RotRandFloat",probe,classesCore,Return(Native(320u,{Float(1.0f)})));
+    classes.Function("RotationThenFail",probe,classesCore,Join({Native(320u,{Token(0x27u)}),Native(4095u),Return()}));
+    classes.Function("RotationThenWrite",probe,classesCore,Join({Native(320u),Assign(Ref(0x01u,count),Int(95)),Return()}));
+    classes.Function("RotationWritesThenFail",probe,classesCore,Join({Assign(Ref(0x01u,angle),Native(320u,{Token(0x27u)})),
+        Assign(Join({Ref(0x36u,rotatorPitch),Ref(0x01u,angle)}),Int(76543)),
+        Assign(Ref(0x01u,count),Int(94)),Native(4095u),Return()}));
+    const auto rotationOutLeaf=classes.Function("RotationOutLeaf",probe,classesCore);
+    const auto rotationOut=classes.Property("Output","StructProperty",rotationOutLeaf,classesCore,0x180u,classesRotator);
+    classes.FunctionCode(rotationOutLeaf,Join({Assign(Ref(0x00u,rotationOut),Native(320u,{Token(0x27u)})),
+        Assign(Join({Ref(0x36u,rotatorPitch),Ref(0x00u,rotationOut)}),Int(76544)),Return()}));
+    classes.Function("RotationOutThenFail",probe,classesCore,Join({Call(rotationOutLeaf,{Ref(0x01u,angle)}),Native(4095u),Return()}));
     const auto vectorFunction=[&](const std::string& name,Code code) {
         const auto function=classes.Function(name,probe,classesCore,std::move(code));
         classes.Property("ReturnValue","StructProperty",function,classesCore,0x580u,classesVector);return function;
@@ -631,11 +704,123 @@ void VectorRuntimeContracts() {
     }
     std::cout<<"Production VRand raw/reflected/virtual/global/nested calls, mixed shared stream, saved continuation and complete Vector/OUT rollback passed.\n";
 }
+void RotatorRuntimeContracts() {
+    Fixture fixture;const auto tables=Build(fixture);
+    const auto initialize=[&]() {
+        Require(InitializePortableRuntime({tables.core,tables.engine,tables.classes}).passed &&
+            LoadPortableRuntimeMap(tables.map).passed,"Generated RotRand runtime/map failed loading");
+    };
+    const auto same=[](const Value& actual,const std::array<std::int32_t,3u>& expected) {
+        Require(actual.kind==Kind::Rotator && actual.rotation==expected,
+            "Production RotRand changed the canonical Pitch/Yaw/Roll result or original raw draw arithmetic");
+    };
+    initialize();const auto baseline=fixture.Snapshot("RotationLegacy");
+    for(const auto* name:{"RotRandExcess","RotRandInt","RotRandName","RotRandString","RotRandFloat"})
+        RefusedCall(fixture,name);
+    Require(!GetPortableRuntimeScriptStatePresent() && fixture.Snapshot("RotationBeforeDraw")==baseline,
+        "Invalid RotRand packet consumed or fabricated a global seed");
+    for(const auto* name:{"RotRand","DrawRotation","DrawRotationFalse","DrawRotationNothing","DrawRotationDeclaration"}) {
+        Require(LoadPortableRuntimeState((fixture.directory/"RotationLegacy.sav").string()),"Cannot reset omitted/false RotRand seed");
+        same(Call(Actor(),name).value,{36934,82,0});
+        Require(Decode(fixture.Snapshot("RotationDefault")).randomSeed==3357800067u,
+            "Omitted/false/Nothing RotRand consumed other than two draws");
+    }
+    for(const auto& incoming:std::vector<std::vector<Evaluation>>{
+        {{Value::Bool(false),{}}},{{Value{},{}}},{{Value::Bool(true),{},QuestVr::Vm::ResultDisposition::NoWrite}}}) {
+        Require(LoadPortableRuntimeState((fixture.directory/"RotationLegacy.sav").string()),"Cannot reset direct RotRand default seed");
+        same(Call(Actor(),"RotRand",incoming).value,{36934,82,0});
+        Require(Decode(fixture.Snapshot("RotationDirectDefault")).randomSeed==3357800067u,
+            "Direct false/Nothing/no-result RotRand failed its initializedfalse native temporary");
+    }
+    for(const auto disposition:{QuestVr::Vm::ResultDisposition::NoWrite,QuestVr::Vm::ResultDisposition::ZeroFill}) {
+        Require(LoadPortableRuntimeState((fixture.directory/"RotationLegacy.sav").string()),"Cannot reset RotRand unwritten alias control");
+        std::size_t reads{};auto stale=std::make_shared<QuestVr::Vm::Reference>();stale->zero=Value::Bool(false);
+        stale->read=[&]() {++reads;return Value::Bool(true);};
+        same(Call(Actor(),"RotRand",{{Value::Bool(true),stale,disposition,
+            static_cast<std::uint8_t>(disposition==QuestVr::Vm::ResultDisposition::ZeroFill?4u:0u)}}).value,{36934,82,0});
+        Require(reads==0u && Decode(fixture.Snapshot("RotationUnwritten")).randomSeed==3357800067u,
+            "RotRand read stale true alias bytes instead of its original initializedfalse temporary");
+    }
+    {
+        const auto before=fixture.Snapshot("RotationBeforePartialBool");
+        const auto result=ExecutePortableActorFunction(Actor(),"RotRand",{
+            {Value::Bool(true),{},QuestVr::Vm::ResultDisposition::ZeroFill,1u}});
+        Require(!result.passed()&&!result.committed&&result.error.find("partial context zero-fill")!=std::string::npos&&
+            fixture.Snapshot("RotationAfterPartialBool")==before,
+            "Unaudited partial native Bool zero-fill was accepted or consumed RNG");++refusals;
+    }
+    Require(LoadPortableRuntimeState((fixture.directory/"RotationLegacy.sav").string()),"Cannot reset true RotRand seed");
+    same(Call(Actor(),"RotRand",{{Value::Bool(true),{}}}).value,{36934,82,12668});
+    Require(Decode(fixture.Snapshot("RotationTrue")).randomSeed==415139642u,
+        "True RotRand did not consume exactly three original stream draws");
+    Require(LoadPortableRuntimeState((fixture.directory/"RotationLegacy.sav").string()),"Cannot reset mixed RotRand stream");
+    // Successful save restoration publishes its own world revision. Compare
+    // RNG-only calls against this current revision, not the pre-load world.
+    const auto revision=GetPortableRuntimeWorldRevision();
+    auto oracle=Random::InitialSeed;
+    const std::array<const char*,10u> entries{"RotRand","DrawRotation","DrawRotationFalse","DrawRotationNothing",
+        "DrawRotationTrue","DrawRotationDeclaration","DrawRotationVirtual","DrawRotationGlobal","DrawRotationNested","MixedRotation"};
+    for(unsigned iteration=0u;iteration<70u;++iteration) {
+        const auto receiver=Actor(iteration&1u?"Probe1":"Probe0");const auto which=iteration%entries.size();
+        if(which==9u) {static_cast<void>(OracleRand(oracle,71));static_cast<void>(OracleFRand(oracle));}
+        const auto expected=OracleRotRand(oracle,which==4u || which==9u);
+        same(Call(receiver,entries[which]).value,expected);
+        Require(DrawInt(receiver,12345)==OracleRand(oracle,12345) &&
+            std::bit_cast<std::uint32_t>(DrawFloat(receiver))==std::bit_cast<std::uint32_t>(OracleFRand(oracle)),
+            "RotRand split the shared Rand/FRand stream or consumed the wrong conditional draws");
+        Require(Decode(fixture.Snapshot("RotationMixed")).randomSeed==oracle,
+            "RotRand-only commit lost the exact shared global seed");
+        Require(!GetPortableRuntimeUnsavedScriptState() && GetPortableRuntimeWorldRevision()==revision,
+            "RotRand-only commit changed actor state/revision after the save-restoration baseline");
+    }
+    for(const auto* name:{"DrawOtherRotationRaw","DrawOtherRotationDeclaration","DrawOtherRotationNested"}) {
+        const auto expected=OracleRotRand(oracle,false);
+        same(Call(Actor(),name,{{Value::Text(Kind::Object,Actor("Probe1")),{}}}).value,expected);
+        Require(Decode(fixture.Snapshot("RotationContext")).randomSeed==oracle,
+            "Nested Context receiver used a private RotRand stream");
+    }
+    const auto saved=fixture.Snapshot("RotationContinuation");const auto savedSeed=oracle;
+    const auto next=OracleRotRand(oracle,true),after=OracleRotRand(oracle,false);const auto following=OracleFRand(oracle);
+    const auto continuation=[&]() {
+        same(Call(Actor("Probe1"),"DrawRotationTrue").value,next);
+        same(Call(Actor(),"DrawRotationNested").value,after);
+        Require(std::bit_cast<std::uint32_t>(DrawFloat(Actor()))==std::bit_cast<std::uint32_t>(following),
+            "RotRand saved continuation lost a following shared Float draw");
+    };
+    continuation();
+    Require(LoadPortableRuntimeState((fixture.directory/"RotationContinuation.sav").string()),"Warm RotRand restore failed");continuation();
+    ShutdownPortableRuntime();initialize();
+    Require(LoadPortableRuntimeState((fixture.directory/"RotationContinuation.sav").string()) &&
+        fixture.Snapshot("RotationColdRestored")==saved,"Cold RotRand checkpoint failed exact restoration");continuation();
+    Require(LoadPortableRuntimeState((fixture.directory/"RotationContinuation.sav").string()),"Cannot reset RotRand rollback controls");
+    for(const auto* name:{"RotationThenFail","RotationWritesThenFail","RotationOutThenFail","RotRandExcess","RotRandInt"})
+        RefusedCall(fixture,name);
+    QuestVr::Vm::Limits noWrites;noWrites.writes=0u;RefusedCall(fixture,"RotationThenWrite",noWrites);
+    Require(fixture.Snapshot("RotationAfterRefusals")==saved &&
+        ReadPortableActorScriptProperty(Actor(),"Angle").rotation==std::array<std::int32_t,3u>{} &&
+        ReadPortableActorScriptProperty(Actor(),"Count").integer==0,
+        "Failed RotRand path retained whole/member/OUT/scalar writes or consumed seed");
+    oracle=savedSeed;same(Call(Actor(),"DrawRotationTrue").value,OracleRotRand(oracle,true));
+    Require(Decode(fixture.Snapshot("RotationRetry")).randomSeed==oracle,"Failed RotRand root consumed hidden draws");
+    Require(LoadPortableRuntimeMap(tables.otherMap).passed,"Global-only RotRand state blocked map replacement");
+    same(Call(Actor("Probe0","OtherRandomFixture"),"DrawRotation").value,OracleRotRand(oracle,false));
+    Require(Decode(fixture.Snapshot("RotationOtherMap")).randomSeed==oracle,"Map replacement reseeded RotRand");
+    fixture.UnchangedSources();ShutdownPortableRuntime();
+    for(unsigned variant=1u;variant<=6u;++variant) {
+        Fixture malformed;const auto bad=Build(malformed,0u,variant);
+        Require(InitializePortableRuntime({bad.core,bad.engine,bad.classes}).passed && LoadPortableRuntimeMap(bad.map).passed,
+            "Malformed RotRand metadata fixture failed before the actual native boundary");
+        RefusedCall(malformed,"DrawRotation");
+        Require(!GetPortableRuntimeScriptStatePresent(),"Malformed RotRand declaration consumed RNG before refusal");
+        malformed.UnchangedSources();ShutdownPortableRuntime();
+    }
+    std::cout<<"Production RotRand defaults, stale no-result inputs, raw/reflected/virtual/global/nested calls, mixed saved stream and full Rotator/OUT rollback passed.\n";
+}
 }
 int main() {
     try {
         const auto gcBefore=GC::GetStats().numObjects;
-        PureContracts();RuntimeContracts();VectorRuntimeContracts();GC::Collect();Require(GC::GetStats().numObjects==gcBefore,"Generated script RNG fixture leaked rooted runtime objects");
+        PureContracts();RuntimeContracts();VectorRuntimeContracts();RotatorRuntimeContracts();GC::Collect();Require(GC::GetStats().numObjects==gcBefore,"Generated script RNG fixture leaked rooted runtime objects");
         std::cout<<"Script random: "<<checks<<" checks and "<<refusals<<" rejection controls passed.\n";return 0;
     }
     catch(const std::exception& error) {std::cerr<<error.what()<<'\n';return 1;}

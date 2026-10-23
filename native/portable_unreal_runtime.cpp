@@ -3181,6 +3181,16 @@ public:
             if (index == 167u) return {Value::Integer(QuestVr::ScriptRandom::Rand(*persistentScriptRandomSeed, maximum)), {}};
             return {Value::Float(QuestVr::ScriptRandom::FRand(*persistentScriptRandomSeed)), {}};
         }
+        if(index==320u) {
+            static_cast<void>(RotRandDeclaration(declaration));argumentCount(0u,1u);
+            const auto input=argument(0u);
+            if(input.kind!=Kind::Nothing && input.kind!=Kind::Bool)
+                throw std::runtime_error("RotRand requires its original optional Bool input");
+            if(!transaction_)throw std::runtime_error("Script random rotator outside host transaction");
+            if(!persistentScriptRandomSeed)persistentScriptRandomSeed=QuestVr::ScriptRandom::InitialSeed;
+            return {Value::Rotator(QuestVr::ScriptRandom::RotRand(*persistentScriptRandomSeed,
+                input.kind==Kind::Bool && input.boolean)),{}};
+        }
         if (index==252u) {
             static_cast<void>(VRandDeclaration(declaration));
             if (!arguments.empty()) throw std::runtime_error("VRand takes no original inputs");
@@ -4080,6 +4090,33 @@ public:
             });
         auto result=Value::Text(Kind::Object,texture);ValidateMeshTextureObject(result,"Engine.Texture");
         return {std::move(result),{}};
+    }
+    std::shared_ptr<const Function> RotRandDeclaration(const Function* supplied) {
+        const auto authored=FunctionFor(Object("Core.Object.RotRand"));
+        const auto validate=[&](const Function& function) {
+            if(LowerAscii(function.path)!="core.object.rotrand" || function.nativeIndex!=320u ||
+                function.flags!=0x2401u || function.variables.size()!=2u)
+                throw std::runtime_error("RotRand does not match its original native declaration");
+            for(std::size_t slot=0u;slot<2u;++slot) {
+                const auto& field=function.variables[slot];auto* metadata=Object(field.key);
+                if(LowerAscii(field.key)!=(slot==0u?"core.object.rotrand.broll":"core.object.rotrand.returnvalue") ||
+                    field.arrayDimension!=1u || field.flags!=(slot==0u?0x90u:0x580u) ||
+                    field.zero.kind!=(slot==0u?Kind::Bool:Kind::Rotator) ||
+                    metadata->outer!=Object(function.path) || !metadata->property ||
+                    metadata->property->type!=(slot==0u?"BoolProperty":"StructProperty") ||
+                    (slot==1u && (field.resultLayout!=QuestVr::Vm::ResultLayout::CoreRotator12 ||
+                    LowerAscii(Qualified(Table(metadata->sourcePath),metadata->property->referencedType))!="core.object.rotator")))
+                    throw std::runtime_error("RotRand lacks its original optional Bool/canonical Rotator packet");
+            }
+        };
+        validate(*authored);
+        if(supplied) {
+            if(LowerAscii(supplied->path)!=LowerAscii(authored->path) || supplied->nativeIndex!=authored->nativeIndex ||
+                supplied->flags!=authored->flags || supplied->source!=authored->source)
+                throw std::runtime_error("RotRand declaration has a foreign callable identity");
+            if(!supplied->variables.empty())validate(*supplied);
+        }
+        return authored;
     }
     std::shared_ptr<const Function> VRandDeclaration(const Function* supplied) {
         const auto authored=FunctionFor(Object("Core.Object.VRand"));
@@ -5168,6 +5205,11 @@ public:
     }
     std::optional<Value> NativeArgumentSeed(const std::uint16_t index,const std::string& receiver,
         const std::size_t slot,const Function* declaration) override {
+        if(index==320u) {
+            static_cast<void>(RotRandDeclaration(declaration));
+            if(slot!=0u)throw std::runtime_error("RotRand has only one optional input slot");
+            return Value::Bool(false); // Original Core101391B8 initializes INT0 before Step.
+        }
         if (index==512u) {
             static_cast<void>(MakeNoiseDeclaration(declaration));RequireMapActor(Object(receiver));
             if (slot!=0u) throw std::runtime_error("MakeNoise has only one required input slot");
@@ -7585,11 +7627,13 @@ public:
             throw std::runtime_error("Runtime property is not an authored StructProperty");
         return StructSchema(Object(Qualified(Table(property->sourcePath), property->property->referencedType)));
     }
+#include "portable_startup_damage.inl"
 #include "portable_player_login.inl"
     Value ProbeWorldStartup(const PortableWorldStartupProbeOptions& options,
         PortableWorldStartupProbeResult& result, QuestVr::Vm::Execution& execution,
         PortableRetailCollisionSnapshot* originalCollision=nullptr) {
         if (!transaction_) throw std::runtime_error("World startup probe requires its outer VM transaction");
+        ValidateStartupDamageCommands(options);
         struct ProbeScope {
             bool& active;PortableWorldStartupProbeResult*& observation;
             ~ProbeScope() { active = false;observation=nullptr; }
@@ -7792,7 +7836,7 @@ public:
                 const auto stringBytes=login.selectedClass.capacity()+login.gamePath.capacity()+
                     login.functionPath.capacity()+login.playerPath.capacity()+login.error.capacity()+5u;
                 ValidateStateBudget(stringBytes);nativeActorOrderObservationBytes_+=stringBytes;
-                StartupPlayerLogin(login.viewportIdentity,*options.playerLogin,login,execution);
+                StartupPlayerLogin(login.viewportIdentity,*options.playerLogin,login,options.damageCommands,execution);
             }
         }
         // Native client/player/detail providers after the original partition
@@ -7953,9 +7997,11 @@ private:
             }
             return blocked?1:0;
         };
-        query.destroy=[this,&execution](std::uintptr_t level,std::uintptr_t identity,std::int32_t force)->std::int32_t {
+        query.destroy=[this,&execution,observation](std::uintptr_t level,std::uintptr_t identity,std::int32_t force)->std::int32_t {
             auto* retained=ZoneLevel(level);
-            return DestroyNativeActor(retained,ZoneActor(identity,retained),force,execution);
+            const auto result=DestroyNativeActor(retained,ZoneActor(identity,retained),force,execution);
+            if(observation)worldStartupResult_->spawnedEncroachment.at(*observation).destroyReturn=result;
+            return result;
         };
         query.work=[this]{LifecycleStep();};
         return QuestVr::CheckOriginalSpawnEncroachment(reinterpret_cast<std::uintptr_t>(retainedLevel),

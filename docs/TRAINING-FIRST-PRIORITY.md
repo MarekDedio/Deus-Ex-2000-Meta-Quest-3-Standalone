@@ -10,6 +10,21 @@ do not spend time on other-map integration or map-content test sweeps.
 Reconfirmed2026-10-22: skip other-map crate/physics integration and testing;
 the WHOLE first Training map remains the current content acceptance target.
 
+Latest direct crate checkpoint,2026-10-23: real GameInfo/begun-world/Login-JC
+damage before pairing now completes both crates10->4->-2, original deletion,
+six fragments and one surviving original Lockpick per crate on both repeats.
+Full rollback/all41 unchanged sources and late fatal write-budget rollback
+pass. Original RotRand320 was the actual fragment blocker and is implemented;
+random tests86188/67 and strict/Android native checks pass. Final full build/
+shared CTest pass174 executed/206 registered,32 explicit skips, zero failures
+in64.23s; separate isolated crate347/two refusals and original-player/HUD6758
+controls pass. The detached original
+SetPhysics coordinator passes3112/21 but is not bound to native3970 yet.
+This is not paired/equipped headset damage, collection or gravity.
+Next is full original SetPhysics support/detachment, then genuine falling;
+unrelated HUD completion/other maps are not prerequisites for this work. No APK.
+See TRAINING-STARTUP-CRATE-DAMAGE.md for exact scope and evidence.
+
 Reconfirmed2026-10-23: internal GameInfo.Login is engine player spawning, not
 an account screen/character creator. Do not wait for unrelated HUD completion
 before testing original crate damage in the initialized world with the real

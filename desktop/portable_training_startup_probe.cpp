@@ -12,6 +12,7 @@
 #include <array>
 #include <bit>
 #include <chrono>
+#include <cmath>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -33,6 +34,10 @@ using Bytes=std::vector<std::uint8_t>;
 using Kind=QuestVr::Vm::Kind;
 constexpr std::uint32_t InitialSeed=0x13579bdfu;
 constexpr std::uint64_t Client=2801u,Viewport=2802u;
+constexpr std::size_t StartupWriteLimit=1'048'576u;
+constexpr std::array<std::string_view,4u> TrainingDamageActors{
+    "00_Training.CrateBreakableMedGeneral1","00_Training.CrateBreakableMedGeneral1",
+    "00_Training.CrateBreakableMedGeneral2","00_Training.CrateBreakableMedGeneral2"};
 
 void Require(bool value,const std::string& why) {
     if(!value)throw std::runtime_error(why);
@@ -152,7 +157,7 @@ bool SameSpawnPackets(const std::vector<PortableSpawnEncroachmentSnapshot>& a,
     for(std::size_t i=0u;i<a.size();++i) {
         const auto& x=a[i];const auto& y=b[i];
         if(x.actorPath!=y.actorPath||x.classPath!=y.classPath||x.rotation!=y.rotation||x.touch!=y.touch||
-            x.attempted!=y.attempted||x.completed!=y.completed||x.blocked!=y.blocked||
+            x.attempted!=y.attempted||x.completed!=y.completed||x.blocked!=y.blocked||x.destroyReturn!=y.destroyReturn||
             x.initialStateReached!=y.initialStateReached||x.baseReached!=y.baseReached||
             x.postPostBeginReached!=y.postPostBeginReached||x.marksBefore!=y.marksBefore||
             x.marksAfter!=y.marksAfter||x.arenasBefore!=y.arenasBefore||x.arenasAfter!=y.arenasAfter)return false;
@@ -179,15 +184,18 @@ void ObserveSpawnPackets(const PortableWorldStartupProbeResult& world,bool requi
         if(packet.completed&&!packet.blocked)
             Require(packet.marksBefore==packet.marksAfter&&packet.arenasBefore==packet.arenasAfter,
                 "Completed clear Spawn encroachment retained native hit marks/arenas");
-        if(packet.blocked)
-            Require(!world.execution.passed()&&!world.execution.committed&&world.execution.error.find("DestroyActor")!=std::string::npos,
-                "Blocked Spawn fabricated a successful destruction/None instead of the explicit native DestroyActor refusal");
+        if(packet.destroyReturn)Require(packet.completed&&packet.blocked,
+            "Spawn fabricated a DestroyActor return without a genuine blocking query");
+        if(packet.blocked&&!packet.destroyReturn)
+            Require(!world.execution.passed()&&!world.execution.committed&&!world.execution.error.empty(),
+                "Blocked Spawn omitted both its original DestroyActor outcome and a genuine refusal");
         if(packet.classPath=="DeusEx.NanoKey"&&packet.actorPath.starts_with("00_Training.NanoKey")&&
             packet.attempted&&packet.completed&&!packet.blocked)nanoKeyClear=true;
         std::cout<<std::setprecision(9)<<"SPAWN ENCROACHMENT index="<<i<<" actor="<<std::quoted(packet.actorPath)
             <<" class="<<std::quoted(packet.classPath)<<" currentLocation=("<<packet.location[0u]<<','<<packet.location[1u]<<','<<packet.location[2u]
             <<") currentRotation=("<<packet.rotation[0u]<<','<<packet.rotation[1u]<<','<<packet.rotation[2u]
-            <<") attempted="<<packet.attempted<<" completed="<<packet.completed<<" blocked="<<packet.blocked<<" touch="<<packet.touch
+            <<") attempted="<<packet.attempted<<" completed="<<packet.completed<<" blocked="<<packet.blocked
+            <<" destroyReturned="<<packet.destroyReturn.has_value()<<" destroyResult="<<packet.destroyReturn.value_or(0)<<" touch="<<packet.touch
             <<" initialStateReached="<<packet.initialStateReached<<" baseReached="<<packet.baseReached
             <<" postPostBeginReached="<<packet.postPostBeginReached<<" marksBefore="<<packet.marksBefore
             <<" marksAfter="<<packet.marksAfter<<" arenasBefore="<<packet.arenasBefore<<" arenasAfter="<<packet.arenasAfter<<'\n';
@@ -239,6 +247,106 @@ void ObservePlayerLogins(const PortableWorldStartupProbeResult& world) {
     std::cout<<"PLAYER LOGIN OBSERVATIONS count="<<world.playerLogins.size()
         <<"; same rollback root, NOT published possession or completed startup\n";
 }
+bool CanonicalIdentity(const std::string& text,bool allowEmpty=false) {
+    if(text.empty())return allowEmpty;
+    if(text.size()>1024u||text.front()=='.'||text.back()=='.')return false;
+    bool dot{};
+    for(const char c:text) {
+        if(c=='.'){if(dot)return false;dot=true;continue;}
+        if(!((c>='A'&&c<='Z')||(c>='a'&&c<='z')||(c>='0'&&c<='9')||c=='_'))return false;
+        dot=false;
+    }
+    return true;
+}
+void ObserveTrainingDamage(const PortableWorldStartupProbeResult& world,bool requested,std::size_t writeLimit) {
+    const auto& observations=world.damageObservations;
+    Require(observations.size()<=TrainingDamageActors.size(),"Training damage exceeded its exact four-command bound");
+    if(!requested) {
+        Require(observations.empty(),"Normal startup executed unrequested diagnostic crate damage");return;
+    }
+    Require(world.execution.writes<=writeLimit,"Startup exceeded its selected damage write allowance");
+    std::vector<std::string> bornPaths;
+    std::size_t returned{},captured{},lockpicks{},survivingLockpicks{},previousWrites{};
+    for(std::size_t i=0u;i<observations.size();++i) {
+        const auto& observation=observations[i];
+        Require(observation.commandIndex==i&&observation.actorPath==TrainingDamageActors[i],
+            "Training damage observations are not the actual requested command prefix");
+        Require(CanonicalIdentity(observation.actorPath)&&CanonicalIdentity(observation.playerPath)&&
+            CanonicalIdentity(observation.gameInfoPath)&&CanonicalIdentity(observation.functionPath,!observation.entered)&&
+            CanonicalIdentity(observation.stateBefore)&&CanonicalIdentity(observation.stateAfter,true)&&
+            CanonicalIdentity(observation.contentsBefore),"Training damage has an invalid/unbounded canonical identity");
+        Require(observation.worldBegun&&!observation.worldStartup&&!observation.playerPaired,
+            "Training damage did not run in the genuine begun/nonstartup world before player pairing");
+        Require(observation.gameInfoPath==world.gameInfoPath&&observation.playerPath=="00_Training.JCDentonMale0"&&
+            std::any_of(world.playerLogins.begin(),world.playerLogins.end(),[&](const auto& login) {
+                return login.loginReturned&&login.playerPath==observation.playerPath&&login.gamePath==observation.gameInfoPath;
+            }),"Training damage did not use the actual returned original Login Pawn/GameInfo");
+        Require(observation.contentsBefore=="DeusEx.Lockpick"&&observation.hitPointsBefore==(i%2u==0u?10:4),
+            "Training damage changed original crate contents or did not retain the previous six-point hit");
+        Require((!observation.returned||observation.entered)&&(!observation.captured||observation.returned),
+            "Training damage returned/captured without the actual preceding event entry/return");
+        if(observation.entered)Require(observation.functionPath=="DeusEx.DeusExDecoration.Active.TakeDamage",
+            "Training damage did not dispatch the original state-aware TakeDamage override");
+        Require(observation.writesBefore>=previousWrites&&observation.writesAfter>=observation.writesBefore&&
+            observation.writesAfter<=world.execution.writes,"Training damage reported an inconsistent shared root write prefix");
+        previousWrites=observation.writesAfter;
+        Require(observation.births.size()<=64u,"Training damage birth observation exceeds its bounded packet count");
+        std::size_t commandLockpicks{},commandSurvivingLockpicks{};
+        // A post-callback observation may itself hit the shared native/storage
+        // allowance. Partial after-values/birth slots are then NOT evidence.
+        if(observation.captured)for(const auto& birth:observation.births) {
+            Require(CanonicalIdentity(birth.actorPath)&&birth.actorPath.starts_with("00_Training.")&&
+                CanonicalIdentity(birth.classPath)&&birth.classPath.find('.')!=std::string::npos&&
+                CanonicalIdentity(birth.statePath,true)&&CanonicalIdentity(birth.ownerPath,true)&&CanonicalIdentity(birth.basePath,true),
+                "Training damage birth has an invalid/unbounded canonical identity");
+            Require(std::find(bornPaths.begin(),bornPaths.end(),birth.actorPath)==bornPaths.end(),
+                "Training damage reported an old or duplicate object as a new birth");
+            bornPaths.push_back(birth.actorPath);
+            for(unsigned c=0u;c<3u;++c)Require(std::isfinite(birth.location[c])&&std::isfinite(birth.velocity[c]),
+                "Training damage birth has a nonfinite actual pose/velocity");
+            const bool lockpick=birth.classPath=="DeusEx.Lockpick";
+            const bool surviving=lockpick&&!birth.removed&&!birth.deleteMe;
+            if(lockpick){++commandLockpicks;++lockpicks;Require(birth.pickup,"Genuine Lockpick birth lost its Pickup identity");}
+            if(surviving) {
+                ++commandSurvivingLockpicks;++survivingLockpicks;
+                Require(birth.physics==2&&birth.remoteRole==1&&birth.statePath=="DeusEx.DeusExPickup.Pickup",
+                    "Surviving original Lockpick lost Containers.Destroyed's Falling/RemoteRole/Pickup state");
+            }
+            std::cout<<std::setprecision(9)<<"TRAINING DAMAGE BIRTH command="<<i<<" actor="<<std::quoted(birth.actorPath)
+                <<" class="<<std::quoted(birth.classPath)<<" state="<<std::quoted(birth.statePath)
+                <<" owner="<<std::quoted(birth.ownerPath)<<" base="<<std::quoted(birth.basePath)
+                <<" location=("<<birth.location[0u]<<','<<birth.location[1u]<<','<<birth.location[2u]
+                <<") velocity=("<<birth.velocity[0u]<<','<<birth.velocity[1u]<<','<<birth.velocity[2u]
+                <<") physics="<<birth.physics<<" remoteRole="<<birth.remoteRole<<" removed="<<birth.removed
+                <<" deleteMe="<<birth.deleteMe<<" pickup="<<birth.pickup<<" survivingLockpick="<<surviving<<'\n';
+        }
+        if(observation.returned)++returned;
+        if(observation.captured) {
+            ++captured;
+            if(i%2u==0u)Require(observation.hitPointsAfter==4&&!observation.removed&&!observation.deleteMe&&observation.births.empty(),
+                "Original nonfatal six-point hit did not preserve the crate at four HP with no births");
+            else Require(observation.hitPointsAfter==-2&&observation.removed&&observation.deleteMe&&
+                    commandLockpicks==1u&&commandSurvivingLockpicks==1u,
+                "Original fatal six-point hit did not delete the crate and leave exactly one genuine surviving Lockpick");
+        } else Require(i+1u==observations.size()&&!world.execution.passed()&&!world.execution.committed,
+            "Training damage continued after an incomplete event/observation or fabricated success");
+        std::cout<<"TRAINING DAMAGE command="<<i<<" actor="<<std::quoted(observation.actorPath)
+            <<" player="<<std::quoted(observation.playerPath)<<" game="<<std::quoted(observation.gameInfoPath)
+            <<" function="<<std::quoted(observation.functionPath)<<" entered="<<observation.entered<<" returned="<<observation.returned
+            <<" captured="<<observation.captured
+            <<" stateBefore="<<std::quoted(observation.stateBefore)<<" stateAfter="<<std::quoted(observation.stateAfter)
+            <<" hpBefore="<<observation.hitPointsBefore<<" hpAfter="<<observation.hitPointsAfter
+            <<" contentsBefore="<<std::quoted(observation.contentsBefore)<<" begun="<<observation.worldBegun
+            <<" startup="<<observation.worldStartup<<" paired="<<observation.playerPaired
+            <<" removed="<<observation.removed<<" deleteMe="<<observation.deleteMe<<" births="<<observation.births.size()
+            <<" writesBefore="<<observation.writesBefore<<" writesAfter="<<observation.writesAfter<<'\n';
+    }
+    if(observations.size()<TrainingDamageActors.size())Require(!world.execution.passed()&&!world.execution.committed,
+        "Startup skipped requested Training damage commands and reported success");
+    std::cout<<"TRAINING DAMAGE OBSERVATIONS commands="<<observations.size()<<" returned="<<returned<<" captured="<<captured
+        <<" births="<<bornPaths.size()<<" lockpicks="<<lockpicks<<" survivingLockpicks="<<survivingLockpicks
+        <<"; actual pre-pairing original event prefix, NOT live equipped-weapon input, collection, falling simulation or published gameplay.\n";
+}
 std::size_t NativeWorkLimit(std::string_view text) {
     Require(!text.empty()&&text.size()<=20u,"Native-work allowance must be a bounded decimal integer");
     std::size_t value{};
@@ -251,8 +359,19 @@ std::size_t NativeWorkLimit(std::string_view text) {
     }
     QuestVr::NativeWork::ValidateLimit(value);return value;
 }
+std::size_t DamageWriteLimit(std::string_view text) {
+    Require(!text.empty()&&text.size()<=20u,"Damage write allowance must be a bounded decimal integer");
+    std::size_t value{};
+    for(const char c:text) {
+        Require(c>='0'&&c<='9',"Damage write allowance accepts decimal digits only");
+        const auto digit=static_cast<std::size_t>(c-'0');
+        Require(value<=(StartupWriteLimit-digit)/10u,"Damage write allowance exceeds the existing startup write maximum");
+        value=value*10u+digit;
+    }
+    return value;
+}
 int Run(const fs::path& root,const std::optional<std::string>& expected,unsigned repeats,std::size_t nativeWork,
-    bool requireSpawnEncroachment) {
+    bool requireSpawnEncroachment,bool damageTrainingCrates,const std::optional<std::size_t>& damageWriteLimit) {
     Temporary temporary(root);std::vector<Source> sources;std::vector<PortablePackageTables> scripts;
     sources.reserve(QuestVr::RuntimeScriptPackages.size()+3u);scripts.reserve(QuestVr::RuntimeScriptPackages.size());
     for(const auto* name:QuestVr::RuntimeScriptPackages){sources.emplace_back(root/"System"/(std::string(name)+".u"));
@@ -325,6 +444,12 @@ int Run(const fs::path& root,const std::optional<std::string>& expected,unsigned
     };
     rollback();
     PortableWorldStartupProbeOptions options;options.defaultGameClass="DeusEx.DeusExGameInfo";
+    if(damageTrainingCrates)for(const auto actor:TrainingDamageActors) {
+        PortableStartupDamageCommand command;command.actorPath=actor;command.damage=6;
+        // Omitted HitLocation reads the original target's actual Location;
+        // default shot/zero Momentum retains the audited original packet.
+        options.damageCommands.push_back(std::move(command));
+    }
     // Explicit diagnostic binding of already-decoded plain-map FURL fields.
     // This is NOT the original FURL constructor/default-options parser. Only
     // Portal and Op are read by the reached SpawnPlayActor Login prefix.
@@ -341,11 +466,12 @@ int Run(const fs::path& root,const std::optional<std::string>& expected,unsigned
         <<" DeusEx.ini URL.Class="<<std::quoted(options.playerLogin->iniUrlClass?QuestVr::UnrealString::Encode(*options.playerLogin->iniUrlClass):"<absent>")
         <<"; NOT full FURL default construction\n";
     QuestVr::Vm::Limits limits;limits.instructions=4'000'000u;limits.nodes=1'048'576u;
-    limits.writes=1'048'576u;limits.retainedBytes=128u<<20u;
+    limits.writes=damageWriteLimit.value_or(StartupWriteLimit);limits.retainedBytes=128u<<20u;
     limits.nativeWork=nativeWork;
     std::optional<Boundary> boundary;std::optional<std::vector<PortableSpawnEncroachmentSnapshot>> spawnPackets;bool completed{};
     std::optional<std::vector<PortablePlayerLoginObservation>> playerLogins;
     std::optional<std::vector<PortableDumpLocationObservation>> dumpLocations;
+    std::optional<std::vector<PortableStartupDamageObservation>> damageObservations;
     for(unsigned attempt=1u;attempt<=repeats;++attempt){
         const auto start=std::chrono::steady_clock::now();
         const auto result=ProbePortableRuntimeRetailCollisionStartup(options,limits);const auto& world=result.world;
@@ -371,6 +497,7 @@ int Run(const fs::path& root,const std::optional<std::string>& expected,unsigned
         ObserveSpawnPackets(world,requireSpawnEncroachment);
         ObserveActorOrder(world);
         ObservePlayerLogins(world);
+        ObserveTrainingDamage(world,damageTrainingCrates,limits.writes);
         for(const auto& dump:world.dumpLocations) {
             Require(dump.classPath=="DeusEx.DumpLocation" && dump.outerPath=="00_Training" && dump.objectIndex &&
                 dump.flags==0u && dump.fileIndex==-1 && dump.locationIndex==-1 && dump.locationCount==0 &&
@@ -385,6 +512,9 @@ int Run(const fs::path& root,const std::optional<std::string>& expected,unsigned
         else dumpLocations=world.dumpLocations;
         if(playerLogins)Require(*playerLogins==world.playerLogins,"Repeated original player Login observations differ");
         else playerLogins=world.playerLogins;
+        if(damageObservations)Require(*damageObservations==world.damageObservations,
+            "Repeated original Training damage/birth/write-prefix observations differ");
+        else damageObservations=world.damageObservations;
         if(spawnPackets)Require(SameSpawnPackets(*spawnPackets,world.spawnedEncroachment),
             "Repeated startup changed detached Spawn identities, exact pose words, query result/storage or lifecycle tail");
         else spawnPackets=world.spawnedEncroachment;
@@ -413,7 +543,8 @@ int Run(const fs::path& root,const std::optional<std::string>& expected,unsigned
 int main(int argc,char** argv) {
     std::cout.setf(std::ios::unitbuf);
     try {
-        fs::path root;std::optional<std::string> expected;unsigned repeats=1u;bool requireSpawnEncroachment{};
+        fs::path root;std::optional<std::string> expected;unsigned repeats=1u;bool requireSpawnEncroachment{},damageTrainingCrates{};
+        std::optional<std::size_t> damageWriteLimit;
         std::size_t nativeWork=QuestVr::NativeWork::DefaultLimit;
         if(const auto* configured=std::getenv("DEUSEX_GAME_ROOT");configured&&*configured)root=configured;
         for(int i=1;i<argc;++i){const std::string_view option=argv[i];
@@ -421,12 +552,16 @@ int main(int argc,char** argv) {
             else if(option=="--expected-error"&&i+1<argc){expected=argv[++i];Require(!expected->empty()&&expected->size()<=8192u,"Expected error must be nonempty and bounded");}
             else if(option=="--native-work"&&i+1<argc)nativeWork=NativeWorkLimit(argv[++i]);
             else if(option=="--require-spawn-encroachment")requireSpawnEncroachment=true;
+            else if(option=="--damage-training-crates")damageTrainingCrates=true;
+            else if(option=="--damage-write-limit"&&i+1<argc)damageWriteLimit=DamageWriteLimit(argv[++i]);
             else if(option=="--repeat"&&i+1<argc){const std::string_view number=argv[++i];
                 Require(number.size()==1u&&number[0]>='1'&&number[0]<='8',"Repeat count must be1..8");repeats=static_cast<unsigned>(number[0]-'0');}
-            else throw std::runtime_error("Usage: portable_training_startup_probe --owned-source-root OWNED_GAME_ROOT [--expected-error EXACT_TEXT] [--repeat 1..8] [--native-work 0..16777216] [--require-spawn-encroachment]");}
+            else throw std::runtime_error("Usage: portable_training_startup_probe --owned-source-root OWNED_GAME_ROOT [--expected-error EXACT_TEXT] [--repeat 1..8] [--native-work 0..16777216] [--require-spawn-encroachment] [--damage-training-crates [--damage-write-limit 0..1048576]]");}
+        Require(!damageWriteLimit||damageTrainingCrates,"--damage-write-limit requires --damage-training-crates");
         if(root.empty()){std::cout<<"SKIP owned first Training startup observation: use --owned-source-root or DEUSEX_GAME_ROOT.\n";return 77;}
         ShutdownPortableRuntime();GC::Collect();const auto before=GC::GetStats();
-        const auto result=Run(fs::canonical(root),expected,repeats,nativeWork,requireSpawnEncroachment);ShutdownPortableRuntime();GC::Collect();const auto after=GC::GetStats();
+        const auto result=Run(fs::canonical(root),expected,repeats,nativeWork,requireSpawnEncroachment,damageTrainingCrates,damageWriteLimit);
+        ShutdownPortableRuntime();GC::Collect();const auto after=GC::GetStats();
         Require(after.numObjects==before.numObjects&&after.memoryUsage==before.memoryUsage,"Startup observation retained native UObjects after shutdown");
         return result;
     }catch(const std::exception& error){std::cerr<<"FAIL startup observation/rollback/source check: "<<error.what()<<'\n';ShutdownPortableRuntime();return 1;}

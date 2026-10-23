@@ -1,5 +1,27 @@
 # Port status
 
+## First Training actual initialized-world crate damage (2026-10-23)
+
+Direct original damage is now exercised before possession, using real
+GameInfo.Login's returned JC in the genuine begun/nonstartup Training world.
+Two repeated runs complete both original crates'10->4->-2 damage, native
+deletion, six WoodFragments each and exactly one surviving Lockpick each with
+asserted original Falling2/RemoteRole1/DeusExPickup.Pickup state. Full-root
+rollback/all41 unchanged source fingerprints pass, including repeated late
+write-limit14978 refusals in the second fatal callback. The direct blocker was
+original RotRand320 in fragment RandSpin; its audited shared-stream adapter and
+asset-free production random tests pass86188 checks/67 rejection controls.
+Strict ARM64, Android native link, coherent full desktop build and shared
+CTest pass174 executed/206 registered,32 explicit owned-data skips, zero
+failures in64.23s. Separate isolated crate347/two genuine contents-refusal
+and owned original-player/HUD6758 controls pass. The future SetPhysics coordinator passes3112/21 but is NOT
+bound to native3970 yet. Normal startup without commands keeps its previous exact
+DamageHUD fixed-Name-array boundary. This is NOT live headset weapon damage,
+collection, falling/stacking, completed possession or a new APK. Next direct
+crate prerequisite is full original SetPhysics support/detachment behavior,
+then real falling, not unrelated HUD completion or other-map integration.
+See TRAINING-STARTUP-CRATE-DAMAGE.md and ORIGINAL-ROT-RAND.md.
+
 ## First Training original native ToggleWindow (2026-10-23)
 
 Original native1611 now implements raw-INT equality/low-bit assignment,

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <bit>
 #include <cstdint>
 
@@ -26,6 +27,16 @@ inline float FRand(std::uint32_t& seed) noexcept {
     // Exact binary32 constant loaded by original appFrand (bits 0x38000100).
     // After the result is stored as a float, sample 32767 yields exactly 1.0.
     return static_cast<float>(Draw15(seed)) * std::bit_cast<float>(0x38000100u);
+}
+
+inline std::array<std::int32_t,3u> RotRand(std::uint32_t& seed,const bool roll) noexcept {
+    // Retail Core.dll101391dd..10139235 draws Yaw BEFORE Pitch, then Roll
+    // only if requested. (appRand()<<1)%65535 is exactly draw*2 for Draw15's
+    // complete0..32767 range, not scaled Float randomness or signed16 wrap.
+    const auto yaw=static_cast<std::int32_t>(Draw15(seed)*2u);
+    const auto pitch=static_cast<std::int32_t>(Draw15(seed)*2u);
+    const auto bank=roll?static_cast<std::int32_t>(Draw15(seed)*2u):0;
+    return {pitch,yaw,bank};
 }
 
 } // namespace QuestVr::ScriptRandom
