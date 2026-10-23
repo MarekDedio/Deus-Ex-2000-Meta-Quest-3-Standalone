@@ -1,5 +1,30 @@
 # Port status
 
+## First Training original crate-loot transfer/merge (2026-10-23)
+
+The optional real-startup diagnostic now dispatches original state-aware
+Frob(JC,None) on the actual surviving lockpicks from both crate deaths. In two
+repeated observations, Lockpick0 genuinely transfers to JC's Inventory head
+ahead of the unchanged starter NanoKeyRing1; Lockpick1 then merges NumCopies1
+to2 on Lockpick0 and is deleted. Original ownership, held/carried/hidden flags,
+Physics0, Idle2 and collision changes are asserted, not manually assigned.
+Full-root rollback/all41 unchanged originals pass. A repeated shared-write15110
+cut inside the second pickup's Inventory.Destroyed also restores the first
+transfer and partial merge/deletion. Normal later Possess retains the genuine
+DamageHUD fixed-Name-array refusal; no partial startup is published.
+
+Strict ARM64 and Android native compile/link pass. This proves pre-pair
+original Frob/ownership/merge only: live VR targeting/ParseRightClick/grid,
+paired pickup audio, save/render publication and falling/settling are still
+unfinished. No new APK is packaged or installed in this source-only increment.
+Only the first original Training map is tested. See TRAINING-STARTUP-LOOT.md
+for exact commands, observations and bounded-failure evidence.
+Coherent full desktop/shared CTest passes174 executed/206 registered,32
+explicit owned-data skips, zero failures in95.91s; isolated original crate
+regression347/two contents refusals passes. Normal startup with no diagnostic
+commands retains no damage/loot observations and fully rolls back at the same
+genuine HUD boundary/all41 sources unchanged.
+
 ## First Training original SetPhysics support/detachment (2026-10-23)
 
 Native3970 now implements the complete audited setter instead of only assigning
@@ -28,8 +53,9 @@ by this setter. Next is the original Decoration landing/swept-falling path,
 not accounts/character creation, unrelated HUD work or another map. No new APK
 was produced or installed in this source-only increment. See ORIGINAL-SET-PHYSICS.md and
 ORIGINAL-TRAINING-CRATE-FALLING.md for exact evidence and remaining scope.
-ORIGINAL-TRAINING-LOOT-COLLECTION.md identifies the next genuine Lockpick
-Frob/ownership/merge proof; collection itself has not yet been executed there.
+At this earlier checkpoint, ORIGINAL-TRAINING-LOOT-COLLECTION.md identified the
+next Lockpick Frob/ownership/merge proof; the newer section above records its
+actual execution, without claiming the stronger live player/grid contract.
 
 ## First Training actual initialized-world crate damage (2026-10-23)
 

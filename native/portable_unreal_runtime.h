@@ -224,6 +224,26 @@ struct PortableStartupDamageObservation {
     std::vector<PortableStartupDamageBirth> births;
     bool operator==(const PortableStartupDamageObservation&) const = default;
 };
+// Detached observations of genuine original Frob on actual surviving damage
+// births. No fabricated grant, selected-player input, grid placement or audio
+// acceptance is implied by this pre-pair rollback-only diagnostic.
+struct PortableStartupLootItem {
+    std::string actorPath,classPath,statePath,ownerPath,basePath,inventoryPath,instigatorPath;
+    std::int32_t physics{},remoteRole{};
+    std::optional<std::int32_t> numCopies,maxCopies;
+    bool removed{},deleteMe{},heldItem{},hidden{},carriedItem{},onlyOwnerSee{},sleepTouch{};
+    bool collideActors{},collideWorld{},blockActors{},blockPlayers{};
+    bool operator==(const PortableStartupLootItem&) const = default;
+};
+struct PortableStartupLootObservation {
+    std::size_t commandIndex{},damageCommandIndex{},birthIndex{},writesBefore{},writesAfter{};
+    std::string actorPath,playerPath,gameInfoPath,functionPath,playerStatePath;
+    bool entered{},returned{},captured{},worldBegun{},worldStartup{},playerPaired{},isPawn{},isPlayer{};
+    std::int32_t playerHealth{};
+    PortableStartupLootItem before,after;
+    std::vector<PortableStartupLootItem> inventoryBefore,inventoryAfter;
+    bool operator==(const PortableStartupLootObservation&) const = default;
+};
 struct PortableWorldStartupProbeOptions {
     // Already decoded URL GAME= class and the configured local client's
     // DefaultGame class. Empty URL selects the map's actual DefaultGameType
@@ -238,6 +258,10 @@ struct PortableWorldStartupProbeOptions {
     // At most eight commands, single actual viewport only. Empty is normal
     // startup. The entire startup still rolls back at its genuine later gap.
     std::vector<PortableStartupDamageCommand> damageCommands{};
+    // Follow actual surviving Inventory births with state-aware Frob(JC,None).
+    // Requires damageCommands and one real Login viewport; at most eight live
+    // births/128 inventory links per observation. Normal startup leaves false.
+    bool collectDamageLoot{};
 };
 struct PortablePlayerLoginObservation {
     std::uint64_t viewportIdentity{};
@@ -325,6 +349,7 @@ struct PortableWorldStartupProbeResult {
     std::vector<PortablePlayerLoginObservation> playerLogins;
     std::vector<PortableDumpLocationObservation> dumpLocations;
     std::vector<PortableStartupDamageObservation> damageObservations;
+    std::vector<PortableStartupLootObservation> lootObservations;
 };
 const char* PortableWorldStartupPhaseName(PortableWorldStartupPhase phase);
 // Non-publishing diagnostic over actual Level slots and original callbacks.

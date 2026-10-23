@@ -30,6 +30,8 @@
         // The actual state-aware ResolveEvent identity supplies dispatch.
     }
     void ValidateStartupDamageCommands(const PortableWorldStartupProbeOptions& options) {
+        if(options.collectDamageLoot && options.damageCommands.empty())
+            throw std::runtime_error("Startup loot diagnostic requires actual damage-birth commands");
         if(options.damageCommands.empty())return;
         if(options.damageCommands.size()>8u || !options.playerLogin ||
             !persistentNativeClient.HasClient() || persistentNativeClient.ReadOnlyView().size()!=1u)

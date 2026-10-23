@@ -10,6 +10,22 @@ do not spend time on other-map integration or map-content test sweeps.
 Reconfirmed2026-10-22: skip other-map crate/physics integration and testing;
 the WHOLE first Training map remains the current content acceptance target.
 
+Latest direct loot increment,2026-10-23: the actual two crate-born Lockpicks
+execute original state-aware Frob in the genuine initialized Training world
+with the real Login-returned JC. Both repeats transfer the first actual item
+into JC's Inventory ahead of the unchanged starter Keyring, then merge the
+second into NumCopies2 and genuinely delete its world actor. Repeated late
+write15110 failures in the second pickup undo all births/deaths/ownership and
+partial merge; all41 source fingerprints/fullroot rollback pass. Original
+normal Possess/HUD refusal remains. Strict ARM64/Android native link pass.
+This is NOT controller input/grid placement, paired audio or falling/settling.
+No new APK. See TRAINING-STARTUP-LOOT.md; whole first Training stays unfinished.
+Full desktop/shared CTest passes174 executed/206 registered,32 explicit skips,
+zero failures in95.91s; isolated crate347/two contents refusals and normal
+no-command startup/full rollback pass separately. Next stronger input proof is
+original ParseRightClick on the actual member FrobTarget, including grid slots;
+bare Frob transfer/merge is not controller or slot-placement acceptance.
+
 Latest support increment,2026-10-23: full original SetPhysics3970 is bound to
 the actual same-root support/FindBase/Base services, not the old byte-only
 assignment. Actual first-map integration passes172882/53 with19 shared-write

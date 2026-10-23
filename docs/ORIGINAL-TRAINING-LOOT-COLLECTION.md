@@ -2,8 +2,10 @@
 
 Read-only source audit, 2026-10-23. Scope is the actual surviving `Lockpick`
 birth from either destructible crate in `Maps/00_Training.dx`, not other maps.
-This document identifies the next original gameplay call chain; it does **not**
-claim that collection has run successfully in the portable VM or on Quest.
+This document records the original call-chain audit. Its initial read-only
+conclusions did not claim successful collection. The subsequent actual same-root
+Frob/ownership/merge proof is recorded in TRAINING-STARTUP-LOOT.md; on-Quest
+input/grid/audio/gravity remain unverified.
 
 ## Authority and current boundary
 
@@ -171,7 +173,9 @@ to carry `FUNC_Event`. The relevant `SetCollision`, `SetPhysics`, `SetOwner`,
 state transition and PlaySound handlers are present in current source. This
 audit has not found a proven additional missing native on the first direct
 pre-pair Frob path. Only actually running the original call in the existing
-root can establish its next reached refusal or completion.
+root can establish its next reached refusal or completion. The subsequent
+TRAINING-STARTUP-LOOT.md checkpoint does so for the direct pre-pair Frob path,
+not the stronger player-input/grid contract below.
 
 ## Full player control, inventory slots and VR limits
 
