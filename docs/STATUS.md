@@ -1,5 +1,35 @@
 # Port status
 
+## First Training original gravity timesteps (2026-10-23)
+
+Actual finite dry non-Pawn physFalling is implemented and runtime-bound,
+including original adaptive subdivision/apex/velocity reconstruction/terminal
+clamp, actual stored zone fields, shared-journal native word stores and genuine
+MoveActor-to-selected-Landed support. The landing coordinator also admits the
+original basic non-Decoration inventory branch without touching inactive crate
+counter/fit fields. Fixtures pass26892/457 falling and10462/129 landing checks/
+refusal controls; strict ARM64 and Android native linking pass.
+
+Actual first-Training timesteps now stop the lower crate on the world and fall
+the upper across three0.1f steps onto the lower, with seven real sweeps, unchanged
+animation clocks and original Physics0/Base support. Two combined repeats retain
+the exact timestep observations, both original crate deaths/genuine contents,
+upper support detachment and player first-fit grid pickup/copy merging.
+Repeated late write14946 failure inside upper BaseChange fully undoes the prior
+landings/motion plus partial support. Normal no-command startup remains at its
+unchanged original HUD boundary; full-root rollback/all41 originals pass.
+See ORIGINAL-ACTOR-FALLING.md for exact commands, scope and result metrics.
+
+This is NOT an automatic world scheduler, support-loss fall/loot settling test,
+live equipped-weapon/controller bridge, completed startup or headset feature.
+The later genuine HUD gap is retained; no new APK. Only the first actual Training
+map is integrated. The whole first-map milestone and full campaign remain open.
+Coherent full desktop build/shared CTest pass176 executed/208 registered,
+32 explicit owned-data skips, zero failures in44.83s. Actual first-map gravity/
+destruction/loot repeats and rollback controls were run separately, not skipped.
+Separate owned crate347/two contents refusals and SetPhysics172882/53 controls
+also pass, including19 exact partial-write cuts and full real animation clocks.
+
 ## First Training native landing, stacking and support loss (2026-10-23)
 
 Original ordinary Decoration landing is now bound to actual stored zones,

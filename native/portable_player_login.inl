@@ -95,6 +95,7 @@
     }
     void StartupPlayerLogin(std::uint64_t viewportIdentity,const PortablePlayerLoginSource& source,
         PortablePlayerLoginObservation& observation,const std::vector<PortableStartupLandingCommand>& landingCommands,
+        const std::vector<PortableStartupFallingCommand>& fallingCommands,
         const std::vector<PortableStartupDamageCommand>& damageCommands,
         bool collectDamageLoot,bool collectDamageLootViaPlayer,QuestVr::Vm::Execution& execution) {
         if(!transaction_ || !worldStartupProbe_)
@@ -216,7 +217,9 @@
             if(result.player) {
                 auto* player=reinterpret_cast<RuntimeObject*>(result.player);
                 ProbeStartupLandings(player,landingCommands,execution);
+                ProbeStartupFalling(player,fallingCommands,false,execution);
                 ProbeStartupDamage(player,damageCommands,execution);
+                ProbeStartupFalling(player,fallingCommands,true,execution);
                 if(collectDamageLoot)ProbeStartupLoot(player,collectDamageLootViaPlayer,execution);
                 static_cast<void>(SetSessionPlayer(viewportIdentity,player->reflection.objectPath,execution));
                 observation.paired=true;

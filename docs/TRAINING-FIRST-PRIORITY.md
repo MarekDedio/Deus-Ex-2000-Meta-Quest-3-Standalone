@@ -10,6 +10,25 @@ do not spend time on other-map integration or map-content test sweeps.
 Reconfirmed2026-10-22: skip other-map crate/physics integration and testing;
 the WHOLE first Training map remains the current content acceptance target.
 
+Latest gravity increment,2026-10-23: actual original dry nonPawn physFalling
+timesteps now use stored zone gravity/drift, exact adaptive/apex Float stores,
+real MoveActor, selected Landed and original support setter. The lower lands
+on the world; the upper falls across three0.1f steps onto it. Two combined
+repeats retain exact motion/clock/write observations, genuine destruction/loot,
+upper support release and original player grid transfer/merge. Repeated late
+write14946 interruption inside upper BaseChange undoes all completed motion
+and partial support; normal no-command startup/all41 originals/full undo pass.
+Fixtures falling26892/457 and landing10462/129, strict ARM64/Android link pass.
+This is explicit timestep integration, NOT automatic scheduling, support-loss
+fall/loot settling, a live VR weapon bridge or committed startup. No new APK or
+other-map integration. See ORIGINAL-ACTOR-FALLING.md. First Training remains
+unfinished, with actual further fall/settle and live integration still required.
+Coherent full desktop build/shared CTest pass176 executed/208 registered,
+32 explicit owned-data skips, zero failures in44.83s. Actual owned first-map
+gravity/destruction/loot/rollback probes above are separate observed runs.
+Owned crate347/two contents refusals and SetPhysics172882/53 (19 write cuts,
+real full animation-clock preservation) regressions pass separately as well.
+
 Latest native landing increment,2026-10-23: actual stored fields, native traces,
 selected Landed and original SetPhysics are bound to the same caller root.
 Two explicit real-contact sweeps establish lower-world/upper-lower support;

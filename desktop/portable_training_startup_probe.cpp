@@ -361,6 +361,7 @@ void ObserveTrainingDamage(const PortableWorldStartupProbeResult& world,bool req
 }
 #include "portable_training_loot_observations.inl"
 #include "portable_training_landing_observations.inl"
+#include "portable_training_falling_observations.inl"
 std::size_t NativeWorkLimit(std::string_view text) {
     Require(!text.empty()&&text.size()<=20u,"Native-work allowance must be a bounded decimal integer");
     std::size_t value{};
@@ -386,6 +387,7 @@ std::size_t DamageWriteLimit(std::string_view text) {
 }
 int Run(const fs::path& root,const std::optional<std::string>& expected,unsigned repeats,std::size_t nativeWork,
     bool requireSpawnEncroachment,bool damageTrainingCrates,bool collectTrainingLoot,bool collectTrainingLootViaPlayer,bool sweepTrainingCrates,
+    bool fallTrainingCrates,
     const std::optional<std::size_t>& damageWriteLimit) {
     Temporary temporary(root);std::vector<Source> sources;std::vector<PortablePackageTables> scripts;
     sources.reserve(QuestVr::RuntimeScriptPackages.size()+3u);scripts.reserve(QuestVr::RuntimeScriptPackages.size());
@@ -469,6 +471,8 @@ int Run(const fs::path& root,const std::optional<std::string>& expected,unsigned
     options.collectDamageLootViaPlayer=collectTrainingLootViaPlayer;
     if(sweepTrainingCrates)for(const auto* actor:{"00_Training.CrateBreakableMedGeneral1","00_Training.CrateBreakableMedGeneral2"})
         options.landingCommands.push_back({actor,{0.0f,0.0f,-128.0f}});
+    if(fallTrainingCrates)for(const auto* actor:{"00_Training.CrateBreakableMedGeneral1","00_Training.CrateBreakableMedGeneral2"})
+        options.fallingCommands.push_back({actor,0.1f,8u,false});
     // Explicit diagnostic binding of already-decoded plain-map FURL fields.
     // This is NOT the original FURL constructor/default-options parser. Only
     // Portal and Op are read by the reached SpawnPlayActor Login prefix.
@@ -493,6 +497,7 @@ int Run(const fs::path& root,const std::optional<std::string>& expected,unsigned
     std::optional<std::vector<PortableStartupDamageObservation>> damageObservations;
     std::optional<std::vector<PortableStartupLootObservation>> lootObservations;
     std::optional<std::vector<PortableStartupLandingObservation>> landingObservations;
+    std::optional<std::vector<PortableStartupFallingObservation>> fallingObservations;
     for(unsigned attempt=1u;attempt<=repeats;++attempt){
         const auto start=std::chrono::steady_clock::now();
         const auto result=ProbePortableRuntimeRetailCollisionStartup(options,limits);const auto& world=result.world;
@@ -519,6 +524,7 @@ int Run(const fs::path& root,const std::optional<std::string>& expected,unsigned
         ObserveActorOrder(world);
         ObservePlayerLogins(world);
         ObserveTrainingLandings(world,sweepTrainingCrates);
+        ObserveTrainingFalling(world,fallTrainingCrates);
         ObserveTrainingDamage(world,damageTrainingCrates,limits.writes);
         ObserveTrainingLoot(world,collectTrainingLoot,collectTrainingLootViaPlayer,limits.writes);
         for(const auto& dump:world.dumpLocations) {
@@ -544,6 +550,9 @@ int Run(const fs::path& root,const std::optional<std::string>& expected,unsigned
         if(landingObservations)Require(*landingObservations==world.landingObservations,
             "Repeated original Training swept-contact/landing observations differ");
         else landingObservations=world.landingObservations;
+        if(fallingObservations)Require(*fallingObservations==world.fallingObservations,
+            "Repeated original Training native-falling/store/clock/write-prefix observations differ");
+        else fallingObservations=world.fallingObservations;
         if(spawnPackets)Require(SameSpawnPackets(*spawnPackets,world.spawnedEncroachment),
             "Repeated startup changed detached Spawn identities, exact pose words, query result/storage or lifecycle tail");
         else spawnPackets=world.spawnedEncroachment;
@@ -573,7 +582,7 @@ int main(int argc,char** argv) {
     std::cout.setf(std::ios::unitbuf);
     try {
         fs::path root;std::optional<std::string> expected;unsigned repeats=1u;
-        bool requireSpawnEncroachment{},damageTrainingCrates{},collectTrainingLoot{},collectTrainingLootViaPlayer{},sweepTrainingCrates{};
+        bool requireSpawnEncroachment{},damageTrainingCrates{},collectTrainingLoot{},collectTrainingLootViaPlayer{},sweepTrainingCrates{},fallTrainingCrates{};
         std::optional<std::size_t> damageWriteLimit;
         std::size_t nativeWork=QuestVr::NativeWork::DefaultLimit;
         if(const auto* configured=std::getenv("DEUSEX_GAME_ROOT");configured&&*configured)root=configured;
@@ -588,16 +597,18 @@ int main(int argc,char** argv) {
                 collectTrainingLootViaPlayer=true;collectTrainingLoot=true;damageTrainingCrates=true;
             }
             else if(option=="--sweep-training-crates")sweepTrainingCrates=true;
+            else if(option=="--fall-training-crates")fallTrainingCrates=true;
             else if(option=="--damage-write-limit"&&i+1<argc)damageWriteLimit=DamageWriteLimit(argv[++i]);
             else if(option=="--repeat"&&i+1<argc){const std::string_view number=argv[++i];
                 Require(number.size()==1u&&number[0]>='1'&&number[0]<='8',"Repeat count must be1..8");repeats=static_cast<unsigned>(number[0]-'0');}
-            else throw std::runtime_error("Usage: portable_training_startup_probe --owned-source-root OWNED_GAME_ROOT [--expected-error EXACT_TEXT] [--repeat 1..8] [--native-work 0..16777216] [--require-spawn-encroachment] [--damage-training-crates | --collect-training-loot | --collect-training-loot-via-player] [--sweep-training-crates] [--damage-write-limit 0..1048576]");}
-        Require(!damageWriteLimit||damageTrainingCrates||sweepTrainingCrates,
-            "--damage-write-limit requires crate damage or explicit crate sweep commands");
+            else throw std::runtime_error("Usage: portable_training_startup_probe --owned-source-root OWNED_GAME_ROOT [--expected-error EXACT_TEXT] [--repeat 1..8] [--native-work 0..16777216] [--require-spawn-encroachment] [--damage-training-crates | --collect-training-loot | --collect-training-loot-via-player] [--sweep-training-crates | --fall-training-crates] [--damage-write-limit 0..1048576]");}
+        Require(!(sweepTrainingCrates&&fallTrainingCrates),"Explicit swept-delta and gravity-timestep crate diagnostics are mutually exclusive");
+        Require(!damageWriteLimit||damageTrainingCrates||sweepTrainingCrates||fallTrainingCrates,
+            "--damage-write-limit requires crate damage, explicit sweeps or falling timestep commands");
         if(root.empty()){std::cout<<"SKIP owned first Training startup observation: use --owned-source-root or DEUSEX_GAME_ROOT.\n";return 77;}
         ShutdownPortableRuntime();GC::Collect();const auto before=GC::GetStats();
         const auto result=Run(fs::canonical(root),expected,repeats,nativeWork,requireSpawnEncroachment,damageTrainingCrates,
-            collectTrainingLoot,collectTrainingLootViaPlayer,sweepTrainingCrates,damageWriteLimit);
+            collectTrainingLoot,collectTrainingLootViaPlayer,sweepTrainingCrates,fallTrainingCrates,damageWriteLimit);
         ShutdownPortableRuntime();GC::Collect();const auto after=GC::GetStats();
         Require(after.numObjects==before.numObjects&&after.memoryUsage==before.memoryUsage,"Startup observation retained native UObjects after shutdown");
         return result;

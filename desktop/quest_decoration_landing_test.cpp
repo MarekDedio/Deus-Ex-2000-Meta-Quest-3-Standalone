@@ -135,6 +135,112 @@ void BasicContracts() {
         Require(f.Direct(q).landedCalls==1u&&f.zoneReads==0u,"bIsPawn flag did not bypass entire zone shortcut before actual class test");
     }
 }
+void BasicNonDecorationContracts() {
+    const auto inactive=[](OriginalDecorationLandingQueries& q) {
+        q.isCarcassClass={};q.numLandings={};q.writeNumLandings={};
+        q.level={};q.singleLineCheck={};q.location={};q.radius={};q.height={};
+        q.velocity={};q.writeVelocityWord={};
+    };
+    {
+        Fixture f;f.decorationClass=false;f.carcassClass=true;f.state.counter=17;
+        const auto before=f.state;auto q=f.Queries();inactive(q);q.zoneVelocity={};
+        const auto result=f.Direct(q);
+        const std::vector<std::string> expected{"pawn-flag","zone","zone-bounce","pawn-class","decoration-class","landed","physics","set-physics"};
+        Require(f.order==expected&&f.traces.empty()&&result.traceCalls==0u&&result.counterWrites==0u&&
+            result.velocityWords==0u&&!result.zoneBounce&&!result.recovery&&result.landedCalls==1u&&
+            result.physicsReads==1u&&result.setPhysicsCalls==1u&&result.steps==f.work,
+            "Basic non-Decoration landing reached inactive counter/fit/Carcass providers or reordered selected callback");
+        Require(f.state.counter==17&&Equal(f.state.location,before.location)&&Equal(f.state.velocity,before.velocity)&&
+            f.state.physics==0u&&f.state.base==7u&&f.writes==1u,
+            "Basic non-Decoration landing reset a nonexistent counter, moved an item or bypassed original support setter");
+    }
+    {
+        Fixture f;f.decorationClass=false;f.pawnFlag=true;auto q=f.Queries();inactive(q);
+        q.zone={};q.zoneBounceVelocity={};q.zoneVelocity={};
+        const auto result=f.Direct(q);
+        Require(result.landedCalls==1u&&f.zoneReads==0u&&f.order[1u]=="pawn-class",
+            "Basic non-Decoration landing replaced actual Pawn ancestry with bIsPawn flag or preflighted inactive zone providers");
+    }
+    for(const auto mode:{0u,1u,2u,5u,255u}) {
+        Fixture f;f.decorationClass=false;f.state.counter=17;
+        f.onLanded=[&]{f.Write();f.state.physics=static_cast<std::uint8_t>(mode);f.state.base=19u;f.state.deleted=true;};
+        const auto result=f.Run();
+        Require(result.traceCalls==0u&&result.counterWrites==0u&&result.physicsReads==1u&&
+            result.setPhysicsCalls==(mode==2u?1u:0u)&&f.state.physics==(mode==2u?0u:mode)&&
+            f.state.base==(mode==2u?7u:19u)&&f.state.deleted&&f.state.counter==17,
+            "Basic non-Decoration landing overwrote callback mode/deletion/Base or skipped fresh Physics after selected event");
+    }
+    {
+        Fixture f;f.decorationClass=false;auto q=f.Queries();inactive(q);q.setPhysics={};
+        f.onLanded=[&]{f.state.physics=5u;};
+        const auto result=f.Direct(q);
+        Require(result.physicsReads==1u&&result.setPhysicsCalls==0u&&f.state.physics==5u&&f.writes==0u,
+            "Basic non-Decoration landing preflighted an inactive setter after selected event changed Physics");
+    }
+    {
+        Fixture f;f.decorationClass=false;
+        f.onSetPhysics=[&]{f.Write();f.state.physics=5u;f.state.base=23u;f.state.deleted=true;};
+        const auto result=f.Run();
+        Require(result.setPhysicsCalls==1u&&f.state.physics==5u&&f.state.base==23u&&f.state.deleted&&f.writes==2u,
+            "Basic non-Decoration landing overwrote reentrant setter changes");
+    }
+    {
+        Fixture f;f.decorationClass=false;PortableModelVec3 normal{0.25f,-0.5f,1.0f};std::uintptr_t floor=7u;
+        auto q=f.Queries();inactive(q);const auto cast=q.isDecorationClass;
+        q.isDecorationClass=[&,cast](auto self){const bool result=cast(self);normal={9,8,7};floor=29u;return result;};
+        f.onLanded=[&]{normal={6,5,4};floor=31u;};
+        const auto result=QuestVr::ProcessOriginalDecorationLanded(1u,normal,floor,q);
+        Require(result.landedCalls==1u&&result.setPhysicsCalls==1u&&Equal(normal,{6,5,4})&&floor==31u&&f.state.base==7u,
+            "Basic non-Decoration landing did not retain by-value normal and original floor across provider/script reentry");
+    }
+    for(const auto missing:{0u,1u,2u,3u,4u}) {
+        Fixture f;f.decorationClass=false;auto q=f.Queries();inactive(q);
+        if(missing==0u)q.isPawnClass={};
+        else if(missing==1u)q.isDecorationClass={};
+        else if(missing==2u)q.landed={};
+        else if(missing==3u)q.physics={};
+        else q.setPhysics={};
+        const auto before=f.state;bool refused{};
+        try{static_cast<void>(f.Direct(q));}catch(const std::invalid_argument&){refused=true;}
+        Require(refused&&f.state==before&&f.writes==0u,
+            "Basic non-Decoration landing silently accepted a missing active provider");++refusals;
+    }
+    const auto initialize=[](Fixture& f) {
+        f.decorationClass=false;f.state.counter=17;
+        f.onLanded=[&f]{f.Write();f.state.counter=19;f.state.velocity={4,5,6};f.state.deleted=true;};
+        f.onSetPhysics=[&f]{f.Write();f.state.base=23u;};
+    };
+    Fixture full;initialize(full);const auto usage=full.Run();
+    Require(full.writes==3u&&full.state.counter==19&&full.state.deleted&&full.state.base==23u,
+        "Basic non-Decoration cutoff oracle failed to reach callback and setter writes");
+    for(std::size_t limit=0u;limit<usage.steps;++limit) {
+        Fixture f;initialize(f);f.workLimit=limit;const auto before=f.state;bool refused{};
+        try{static_cast<void>(f.Run());}catch(const std::runtime_error& e){refused=std::string(e.what())=="work";}
+        Require(refused&&f.state==before&&f.work==limit,
+            "Basic non-Decoration shared-work cutoff reset/swallowed prefix or escaped caller rollback");++refusals;
+    }
+    for(std::size_t limit=0u;limit<full.writes;++limit) {
+        Fixture f;initialize(f);f.writeLimit=limit;const auto before=f.state;bool refused{};
+        try{static_cast<void>(f.Run());}catch(const std::runtime_error& e){refused=std::string(e.what())=="write";}
+        Require(refused&&f.state==before&&f.writes==limit,
+            "Basic non-Decoration shared-write cutoff reset/swallowed prefix or escaped caller rollback");++refusals;
+    }
+    {
+        Fixture f;f.decorationClass=false;f.workLimit=7u;
+        f.onLanded=[&]{f.Write();f.state.counter=19;f.state.deleted=true;};
+        bool refused{};try{static_cast<void>(f.Direct(f.Queries()));}catch(const std::runtime_error& e){refused=std::string(e.what())=="work";}
+        Require(refused&&f.writes==1u&&f.state.counter==19&&f.state.deleted&&f.state.physics==2u&&f.state.base==4u,
+            "Basic non-Decoration coordinator locally erased pending selected-event writes before caller undo");++refusals;
+    }
+    {
+        Fixture f;f.decorationClass=false;
+        f.onLanded=[&]{f.Write();f.state.counter=19;f.state.deleted=true;throw std::runtime_error("callback");};
+        const auto before=f.state;bool refused{};
+        try{static_cast<void>(f.Run());}catch(const std::runtime_error& e){refused=std::string(e.what())=="callback";}
+        Require(refused&&f.state==before&&f.writes==1u&&f.order.back()=="landed",
+            "Basic non-Decoration callback failure reached Physics/setter or escaped caller rollback");++refusals;
+    }
+}
 void RecoveryContracts() {
     for(unsigned mask=0u;mask<16u;++mask) {
         Fixture f;f.firstHit=0u;
@@ -229,11 +335,11 @@ void BounceAndNumericContracts() {
         "Original FILD-to-binary32 rounded signed INT incorrectly");
 }
 void RefusalAndRootContracts() {
-    for(unsigned kind=0u;kind<3u;++kind) {
-        Fixture f;f.pawnClass=kind==0u;f.decorationClass=kind!=1u;f.carcassClass=kind==2u;
+    for(const bool carcass:{false,true}) {
+        Fixture f;f.pawnClass=!carcass;f.carcassClass=carcass;
         const auto before=f.state;bool refused{};try{static_cast<void>(f.Run());}catch(const std::invalid_argument&){refused=true;}
-        Require(refused&&f.state==before&&f.writes==0u&&f.traces.size()==(kind==2u?1u:0u),
-            "Unsupported Pawn/non-Decoration/Carcass path was treated as complete ordinary landing");++refusals;
+        Require(refused&&f.state==before&&f.writes==0u&&f.traces.size()==(carcass?1u:0u),
+            "Unsupported Pawn/Carcass path was treated as complete ordinary landing");++refusals;
     }
     {
         Fixture f;f.state.counter=3;auto q=f.Queries();q.landed={};bool refused{};
@@ -268,7 +374,7 @@ void RefusalAndRootContracts() {
 
 int main() {
     try {
-        BasicContracts();RecoveryContracts();BounceAndNumericContracts();RefusalAndRootContracts();
+        BasicContracts();BasicNonDecorationContracts();RecoveryContracts();BounceAndNumericContracts();RefusalAndRootContracts();
         std::cout<<"Original Decoration landing coordinator: "<<checks<<" checks, "<<refusals
             <<" refusal controls. NOT integrated falling, world Tick or on-headset gravity.\n";return 0;
     } catch(const std::exception& e){std::cerr<<e.what()<<'\n';return 1;}

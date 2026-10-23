@@ -90,9 +90,10 @@ inline float Product(float a,float b) {
 }
 } // namespace DecorationLandingDetail
 
-// Owned GOTY processLanded103CEF60..103D04DF: zone shortcut and ordinary
-// non-Pawn/non-Carcass Decoration fit/recovery/selected-event path only.
-// Pawn/non-Decoration/Carcass branches explicitly refuse WHEN encountered.
+// Owned GOTY processLanded103CEF60..103D04DF: zone shortcut, basic non-Pawn/
+// non-Decoration selected-event path, and ordinary non-Carcass Decoration
+// fit/recovery/selected-event path. The existing API name is retained.
+// Pawn/Carcass branches explicitly refuse WHEN encountered.
 // Class reads are not replaced with bIsPawn, spelling or a detached preset.
 // Finite active arithmetic uses x87 PC64 dyadics and every original Float
 // store. Nonfinite active arithmetic/Float overflow is not implemented and
@@ -134,11 +135,14 @@ inline OriginalDecorationLandingStats ProcessOriginalDecorationLanded(std::uintp
         }
     }
     if(read(queries.isPawnClass,actor))throw std::invalid_argument("Original Pawn processLanded is not implemented by Decoration coordinator");
-    if(!read(queries.isDecorationClass,actor))throw std::invalid_argument("Original non-Decoration processLanded is not implemented by Decoration coordinator");
-    if(read(queries.numLandings,actor)>=5) {
+    const bool decoration=read(queries.isDecorationClass,actor);
+    // Failed original Decoration ancestry jumps directly to selected Landed
+    // at103D02AB. Inventory actors have no Decoration counter/fit providers;
+    // do not preflight, read or reset those inactive fields on this branch.
+    if(decoration&&read(queries.numLandings,actor)>=5) {
         // This native branch precedes all queries AND the later Carcass cast.
         writeCounter(0);
-    } else {
+    } else if(decoration) {
         OriginalActorLineHit hit;
         const float startDrop=Scale(read(queries.height,actor),0.8);
         PortableModelVec3 start;

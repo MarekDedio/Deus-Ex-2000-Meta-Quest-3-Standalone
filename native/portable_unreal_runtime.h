@@ -228,6 +228,21 @@ struct PortableStartupLandingObservation {
     std::vector<std::uint8_t> clockBefore,clockAfter;
     bool operator==(const PortableStartupLandingObservation&) const = default;
 };
+// Explicit original physFalling diagnostics, not a world Tick/performPhysics
+// scheduler or a way to commit a partially initialized player.
+struct PortableStartupFallingCommand {
+    std::string actorPath;
+    float deltaSeconds{0.1f};
+    std::uint8_t steps{1u};
+    bool afterDamage{};
+};
+struct PortableStartupFallingObservation : PortableStartupLandingObservation {
+    std::size_t stepIndex{},substeps{},moveCalls{},apexSplits{},oldLocationWords{},accelerationWords{},teleportWrites{};
+    float deltaSeconds{};
+    bool afterDamage{},teleportedBefore{},teleportedAfter{};
+    std::array<float,3u> accelerationBefore{},accelerationAfter{},oldLocationBefore{},oldLocationAfter{};
+    bool operator==(const PortableStartupFallingObservation&) const = default;
+};
 struct PortableStartupDamageBirth {
     std::string actorPath,classPath,statePath,ownerPath,basePath;
     std::array<float,3u> location{},velocity{};
@@ -292,6 +307,8 @@ struct PortableWorldStartupProbeOptions {
     // At most eight explicit sweeps after real Login and before damage. Empty
     // is normal startup. Does not synthesize a velocity, floor or Landed event.
     std::vector<PortableStartupLandingCommand> landingCommands{};
+    // At most eight bounded commands/64 total steps in this same root.
+    std::vector<PortableStartupFallingCommand> fallingCommands{};
     // Follow actual surviving Inventory births with state-aware Frob(JC,None).
     // Requires damageCommands and one real Login viewport; at most eight live
     // births/128 inventory links per observation. Normal startup leaves false.
@@ -388,6 +405,7 @@ struct PortableWorldStartupProbeResult {
     std::vector<PortableDumpLocationObservation> dumpLocations;
     std::vector<PortableStartupDamageObservation> damageObservations;
     std::vector<PortableStartupLandingObservation> landingObservations;
+    std::vector<PortableStartupFallingObservation> fallingObservations;
     std::vector<PortableStartupLootObservation> lootObservations;
 };
 const char* PortableWorldStartupPhaseName(PortableWorldStartupPhase phase);

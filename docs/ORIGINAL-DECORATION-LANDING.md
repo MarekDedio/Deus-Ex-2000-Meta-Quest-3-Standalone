@@ -5,6 +5,15 @@ falling or a headset fix. The original instruction/field audit is recorded in
 [ORIGINAL-TRAINING-CRATE-FALLING.md](ORIGINAL-TRAINING-CRATE-FALLING.md).
 No commercial executable or DLL is executed or loaded.
 
+Follow-up: the same coordinator now includes original basic non-Pawn/
+non-Decoration landing (failed Decoration cast103CF5F1 ->103D02AB). It skips
+counter/reset/fit/Carcass providers, invokes selected Landed, rereads Physics
+and uses SetPhysics0(original floor) if still2. This enables the correct native
+branch for dropped Inventory without pretending it is a crate. Fixture gates
+now pass10462 checks/129 refusal controls. Original explicit physFalling is
+also runtime-bound; see ORIGINAL-ACTOR-FALLING.md for actual first-Training
+gravity evidence, distinct from the earlier explicit sweeps recorded below.
+
 `native/quest_decoration_landing.h` implements the recovered ordinary
 non-Pawn/non-Carcass Decoration path of processLanded103CEF60..103D04DF using
 caller-supplied live native fields, real Level.SingleLineCheck, selected Landed
