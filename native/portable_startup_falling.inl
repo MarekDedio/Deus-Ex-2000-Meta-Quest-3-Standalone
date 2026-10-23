@@ -61,6 +61,11 @@
                 (after?row.counterAfter:row.counterBefore)=Read(actor,LandingScalarProperty(actor,
                     "Engine.Decoration.numLandings","Engine.Decoration",Kind::Int,0x2u),0u).integer;
             (after?row.teleportedAfter:row.teleportedBefore)=flag(actor,"Engine.Actor.bJustTeleported");
+            (after?row.bounceAfter:row.bounceBefore)=Read(actor,LandingScalarProperty(actor,
+                "Engine.Actor.bBounce","Engine.Actor",Kind::Bool,0x21u),0u).boolean;
+            (after?row.rotationAfter:row.rotationBefore)=NativeCoordsRead(actor,"Engine.Actor.Rotation",Kind::Rotator,0x23u).rotation;
+            (after?row.rotationRateAfter:row.rotationRateBefore)=NativeCoordsRead(actor,"Engine.Actor.RotationRate",Kind::Rotator,0x21u).rotation;
+            text(after?row.stateAfter:row.stateBefore,CurrentDispatchContext(actor).selectedPath);
             text(after?row.baseAfter:row.baseBefore,
                 RetailPredicatePointerRead(actor,"Engine.Actor.Base","Engine.Actor",0x22u).text);
             const auto region=ZoneStoredRegion(actor,ZoneRegionProperty(actor,QuestVr::OriginalActorRegionSlot::Main));
@@ -73,21 +78,22 @@
             const auto identity=reinterpret_cast<std::uintptr_t>(actor);
             const bool decoration=RetailTouchClass(identity,"Engine.Decoration");
             const bool inventory=RetailTouchClass(identity,"Engine.Inventory");
-            if((!decoration && !inventory) || actor->worldRemoved ||
+            const bool fragment=RetailTouchClass(identity,"Engine.Fragment");
+            if((!decoration && !inventory && !fragment) || actor->worldRemoved ||
                 flag(actor,"Engine.Actor.bDeleteMe") || Read(actor,ActorPhysicsProperty(actor),0u).integer!=2)
-                throw std::runtime_error("Startup falling requires an actual live Falling Decoration or Inventory");
-            if(inventory) {
+                throw std::runtime_error("Startup falling requires an actual live Falling Decoration, Inventory or Fragment");
+            if(inventory || fragment) {
                 bool born{};
                 for(const auto& damage:worldStartupResult_->damageObservations) {
                     LifecycleStep();if(!damage.captured)continue;
                     for(const auto& birth:damage.births) {
                         LifecycleStep();
                         if(birth.actorPath==actor->reflection.objectPath && birth.classPath==actor->cls->reflection.objectPath &&
-                            birth.pickup && !birth.removed && !birth.deleteMe)born=true;
+                            (!inventory || birth.pickup) && !birth.removed && !birth.deleteMe)born=true;
                     }
                 }
                 if(!afterDamage || !actor->runtimeBirth || !born)
-                    throw std::runtime_error("Startup falling Inventory is not a captured genuine surviving damage birth");
+                    throw std::runtime_error("Startup falling Inventory/Fragment is not a captured genuine surviving damage birth");
             }
             for(std::size_t step=0u;step<command.steps;++step) {
                 // Only a successfully observed earlier native step may make a

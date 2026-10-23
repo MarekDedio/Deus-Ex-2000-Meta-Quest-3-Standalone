@@ -1,5 +1,37 @@
 # Port status
 
+## First Training original fragment bouncing (2026-10-23)
+
+The actual dry nonPawn falling bounce branch now delivers original selected
+HitWall, preserving by-value Normal/Actor, fresh Physics0 early return,
+first-two unused-time refunds and live bounce/teleport tail semantics. It
+does not replace the fragment script with a reflection stub. The new bounded
+first-map diagnostic matches genuine damage-born fragments and observes
+state/rotation/rates/support/clock/write continuity without Decoration counters.
+Two original-map runs complete all six lower-crate fragments:31 captured rows,
+63 sweeps,12 original DeusExFragment.HitWall calls and six world-supported
+Physics0/Dying stops. Repeated late write16502 in original SupportActor undoes
+five completed stops plus the sixth partial support operation and all prior
+destruction/births. Full-root rollback and all41 unchanged original sources pass.
+See TRAINING-FRAGMENT-BOUNCE.md for commands, results and exact limitations.
+
+The detached original performPhysics coordinator passes4223 checks/37 refusals;
+falling controls pass59951/979. A mistaken new rounding-test expectation was
+corrected with independently verified discriminating cases, not altered native
+arithmetic. Strict ARM64 and Android native linking pass. Complete static
+rotation evidence is recorded in ORIGINAL-PHYSICS-ROTATION.md; native rotation,
+PendingTouch binding/ownership and ordered whole-cohort simulation remain next.
+This does NOT publish partial startup, complete the controller weapon bridge,
+produce a new APK, establish on-headset physics or integrate any other map.
+Final coherent full desktop/shared CTest passes177 executed/209 registered,
+32 explicit owned-data skips, zero failures in52.36s. Separate fresh original
+crate347/two dormant contents refusals and first-map SetPhysics172882/53
+controls pass, including19 partial-write cuts/full real clock preservation.
+Released-upper, falling-loot/player-pickup and normal no-command regressions
+also pass with full-root undo/all41 sources unchanged. The upper's separate
+airborne-item contact still does not prove combined floor settling. No APK;
+USB device list is empty at the final check.
+
 ## First Training released crate and dropped loot (2026-10-23)
 
 The same-root falling diagnostic now advances actual surviving damage-born

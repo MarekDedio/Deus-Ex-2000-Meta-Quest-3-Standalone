@@ -222,12 +222,14 @@ established independently of the pinned PendingTouch implementation.
 
 ## Next bounded implementation and verification
 
-Current native/quest_actor_falling.h deliberately refuses reached bounce
-collisions, water, bobbing, Pawn and wall/slide branches. Adding the bounded
-bounce coordinator above can reuse original HitWall, Physics, random, sound,
-state and support services; it is not by itself complete performPhysics.
-Rotation remains partially audited/unimplemented, and PendingTouch's proven
-protocol still needs its native ownership/binding and reentry tests. The
+At this audit's initial checkpoint, native/quest_actor_falling.h refused
+reached bounce collisions. The subsequent integration is recorded in
+TRAINING-FRAGMENT-BOUNCE.md: it uses original HitWall, Physics, random, sound,
+state and support services, but is not by itself complete performPhysics.
+The complete static rotation audit is now in ORIGINAL-PHYSICS-ROTATION.md;
+runtime rotation remains unimplemented. The detached performPhysics
+coordinator has reentry tests, but PendingTouch still needs native ownership
+and event/store binding. The
 automatic ordered cohort frame phase and broader world scheduler remain
 unimplemented by these explicit diagnostics.
 

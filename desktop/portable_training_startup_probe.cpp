@@ -372,6 +372,7 @@ void ObserveTrainingDamage(const PortableWorldStartupProbeResult& world,bool req
 #include "portable_training_landing_observations.inl"
 #include "portable_training_falling_observations.inl"
 #include "portable_training_loot_falling_observations.inl"
+#include "portable_training_fragment_observations.inl"
 std::size_t NativeWorkLimit(std::string_view text) {
     Require(!text.empty()&&text.size()<=20u,"Native-work allowance must be a bounded decimal integer");
     std::size_t value{};
@@ -397,7 +398,7 @@ std::size_t DamageWriteLimit(std::string_view text) {
 }
 int Run(const fs::path& root,const std::optional<std::string>& expected,unsigned repeats,std::size_t nativeWork,
     bool requireSpawnEncroachment,bool damageTrainingCrates,bool collectTrainingLoot,bool collectTrainingLootViaPlayer,bool sweepTrainingCrates,
-    bool fallTrainingCrates,bool fallAfterLowerBreak,bool fallTrainingLoot,
+    bool fallTrainingCrates,bool fallAfterLowerBreak,bool fallTrainingLoot,bool fallTrainingFragments,
     const std::optional<std::size_t>& damageWriteLimit) {
     Temporary temporary(root);std::vector<Source> sources;std::vector<PortablePackageTables> scripts;
     sources.reserve(QuestVr::RuntimeScriptPackages.size()+3u);scripts.reserve(QuestVr::RuntimeScriptPackages.size());
@@ -471,7 +472,7 @@ int Run(const fs::path& root,const std::optional<std::string>& expected,unsigned
     };
     rollback();
     PortableWorldStartupProbeOptions options;options.defaultGameClass="DeusEx.DeusExGameInfo";
-    const std::size_t requestedDamageCount=fallAfterLowerBreak?2u:TrainingDamageActors.size();
+    const std::size_t requestedDamageCount=(fallAfterLowerBreak||fallTrainingFragments)?2u:TrainingDamageActors.size();
     if(damageTrainingCrates)for(std::size_t i=0u;i<requestedDamageCount;++i) {
         const auto actor=TrainingDamageActors[i];
         PortableStartupDamageCommand command;command.actorPath=actor;command.damage=6;
@@ -488,6 +489,8 @@ int Run(const fs::path& root,const std::optional<std::string>& expected,unsigned
     if(fallAfterLowerBreak)options.fallingCommands.push_back({"00_Training.CrateBreakableMedGeneral2",0.1f,8u,true});
     if(fallTrainingLoot)for(const auto* actor:{"00_Training.Lockpick0","00_Training.Lockpick1"})
         options.fallingCommands.push_back({actor,0.1f,8u,true});
+    if(fallTrainingFragments)for(unsigned i=0u;i<6u;++i)
+        options.fallingCommands.push_back({"00_Training.WoodFragment"+std::to_string(i),0.1f,8u,true});
     // Explicit diagnostic binding of already-decoded plain-map FURL fields.
     // This is NOT the original FURL constructor/default-options parser. Only
     // Portal and Op are read by the reached SpawnPlayActor Login prefix.
@@ -539,7 +542,8 @@ int Run(const fs::path& root,const std::optional<std::string>& expected,unsigned
         ObserveActorOrder(world);
         ObservePlayerLogins(world);
         ObserveTrainingLandings(world,sweepTrainingCrates);
-        if(fallTrainingCrates)ObserveTrainingFalling(world,true,fallAfterLowerBreak);
+        if(fallTrainingFragments)ObserveTrainingFragments(world);
+        else if(fallTrainingCrates)ObserveTrainingFalling(world,true,fallAfterLowerBreak);
         else ObserveTrainingLootFalling(world,fallTrainingLoot);
         ObserveTrainingDamage(world,damageTrainingCrates,limits.writes,requestedDamageCount);
         ObserveTrainingLoot(world,collectTrainingLoot,collectTrainingLootViaPlayer,limits.writes);
@@ -598,7 +602,7 @@ int main(int argc,char** argv) {
     std::cout.setf(std::ios::unitbuf);
     try {
         fs::path root;std::optional<std::string> expected;unsigned repeats=1u;
-        bool requireSpawnEncroachment{},damageTrainingCrates{},collectTrainingLoot{},collectTrainingLootViaPlayer{},sweepTrainingCrates{},fallTrainingCrates{},fallAfterLowerBreak{},fallTrainingLoot{};
+        bool requireSpawnEncroachment{},damageTrainingCrates{},collectTrainingLoot{},collectTrainingLootViaPlayer{},sweepTrainingCrates{},fallTrainingCrates{},fallAfterLowerBreak{},fallTrainingLoot{},fallTrainingFragments{};
         std::optional<std::size_t> damageWriteLimit;
         std::size_t nativeWork=QuestVr::NativeWork::DefaultLimit;
         if(const auto* configured=std::getenv("DEUSEX_GAME_ROOT");configured&&*configured)root=configured;
@@ -618,21 +622,24 @@ int main(int argc,char** argv) {
                 fallAfterLowerBreak=true;fallTrainingCrates=true;damageTrainingCrates=true;
             }
             else if(option=="--fall-training-loot"){fallTrainingLoot=true;damageTrainingCrates=true;}
+            else if(option=="--fall-training-fragments"){fallTrainingFragments=true;damageTrainingCrates=true;}
             else if(option=="--damage-write-limit"&&i+1<argc)damageWriteLimit=DamageWriteLimit(argv[++i]);
             else if(option=="--repeat"&&i+1<argc){const std::string_view number=argv[++i];
                 Require(number.size()==1u&&number[0]>='1'&&number[0]<='8',"Repeat count must be1..8");repeats=static_cast<unsigned>(number[0]-'0');}
-            else throw std::runtime_error("Usage: portable_training_startup_probe --owned-source-root OWNED_GAME_ROOT [--expected-error EXACT_TEXT] [--repeat 1..8] [--native-work 0..16777216] [--require-spawn-encroachment] [--damage-training-crates | --collect-training-loot | --collect-training-loot-via-player] [--sweep-training-crates | --fall-training-crates | --fall-after-lower-break | --fall-training-loot] [--damage-write-limit 0..1048576]");}
+            else throw std::runtime_error("Usage: portable_training_startup_probe --owned-source-root OWNED_GAME_ROOT [--expected-error EXACT_TEXT] [--repeat 1..8] [--native-work 0..16777216] [--require-spawn-encroachment] [--damage-training-crates | --collect-training-loot | --collect-training-loot-via-player] [--sweep-training-crates | --fall-training-crates | --fall-after-lower-break | --fall-training-loot | --fall-training-fragments] [--damage-write-limit 0..1048576]");}
         Require(!(sweepTrainingCrates&&fallTrainingCrates),"Explicit swept-delta and gravity-timestep crate diagnostics are mutually exclusive");
         Require(!fallAfterLowerBreak||(!collectTrainingLoot&&!collectTrainingLootViaPlayer&&!sweepTrainingCrates),
             "--fall-after-lower-break cannot be combined with loot collection or explicit sweep commands");
         Require(!fallTrainingLoot||(!fallTrainingCrates&&!sweepTrainingCrates),
             "--fall-training-loot is a separate falling diagnostic from crate settling/support-loss and explicit sweeps");
+        Require(!fallTrainingFragments||(!fallTrainingCrates&&!sweepTrainingCrates&&!fallTrainingLoot&&!collectTrainingLoot),
+            "--fall-training-fragments is a separate lower-crate debris diagnostic, without pickup or other falling commands");
         Require(!damageWriteLimit||damageTrainingCrates||sweepTrainingCrates||fallTrainingCrates,
             "--damage-write-limit requires crate damage, explicit sweeps or falling timestep commands");
         if(root.empty()){std::cout<<"SKIP owned first Training startup observation: use --owned-source-root or DEUSEX_GAME_ROOT.\n";return 77;}
         ShutdownPortableRuntime();GC::Collect();const auto before=GC::GetStats();
         const auto result=Run(fs::canonical(root),expected,repeats,nativeWork,requireSpawnEncroachment,damageTrainingCrates,
-            collectTrainingLoot,collectTrainingLootViaPlayer,sweepTrainingCrates,fallTrainingCrates,fallAfterLowerBreak,fallTrainingLoot,damageWriteLimit);
+            collectTrainingLoot,collectTrainingLootViaPlayer,sweepTrainingCrates,fallTrainingCrates,fallAfterLowerBreak,fallTrainingLoot,fallTrainingFragments,damageWriteLimit);
         ShutdownPortableRuntime();GC::Collect();const auto after=GC::GetStats();
         Require(after.numObjects==before.numObjects&&after.memoryUsage==before.memoryUsage,"Startup observation retained native UObjects after shutdown");
         return result;

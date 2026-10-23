@@ -59,8 +59,13 @@ Additional original static evidence recovered for this implementation:
 ledger. It preserves original binary32 constructor spills with existing exact
 x87-PC64 dyadic helpers, adaptive subdivisions, apex resplitting, actual sweep,
 landing handoff and terminal clamp. There is no local undo or fixed map gravity.
-Active unimplemented Pawn, water, bobbing, bounce-collision and wall/slide
+Active unimplemented Pawn, water, bobbing and non-bounce wall/slide
 branches explicitly refuse and propagate to the outer rollback.
+
+The subsequent original selected-HitWall bounce integration and genuine
+first-Training debris diagnostic are recorded in TRAINING-FRAGMENT-BOUNCE.md.
+They retain the same dry timestep and caller-owned rollback contracts; they
+do not add the performPhysics rotation/PendingTouch epilogue or world scheduler.
 
 `native/portable_actor_falling.inl` binds the coordinator to actual same-Level
 objects, stored Region.Zone, real zone properties, MoveLevelActor, selected

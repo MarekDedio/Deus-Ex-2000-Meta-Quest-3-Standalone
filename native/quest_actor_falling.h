@@ -31,14 +31,16 @@ struct OriginalActorFallingQueries {
     std::function<std::int32_t(std::uintptr_t,std::uintptr_t,PortableModelVec3,
         std::array<std::int32_t,3u>,OriginalActorLineHit&,std::array<std::int32_t,4u>)> moveActor;
     std::function<void(std::uintptr_t,PortableModelVec3,std::uintptr_t,float,std::int32_t)> processLanded;
+    std::function<void(std::uintptr_t,PortableModelVec3,std::uintptr_t)> hitWall;
+    std::function<std::uint8_t(std::uintptr_t)> physics;
     std::function<void(std::uintptr_t)> fellOutOfWorld;
     std::function<void()> work;
 };
 
 struct OriginalActorFallingStats {
     std::size_t steps{},substeps{},apexSplits{},moveCalls{},oldLocationWords{},velocityWords{},
-        accelerationWords{},teleportWrites{},counterWrites{},landedCalls{},outOfWorldCalls{};
-    bool landed{},deleted{},outOfWorld{};
+        accelerationWords{},teleportWrites{},counterWrites{},landedCalls{},hitWallCalls{},outOfWorldCalls{};
+    bool landed{},deleted{},outOfWorld{},stoppedByBounce{};
     float remaining{};
     std::int32_t iterations{};
 };
@@ -78,11 +80,12 @@ inline void Channel(PortableModelVec3& value,unsigned channel,float scalar) {
 // Owned GOTY AActor::physFalling103D0A50..103D248E. This coordinator implements
 // the finite dry non-Pawn/non-bobbing branch, including adaptive subdivision,
 // apex resplitting, actual swept movement, Decoration collision-counter edits,
-// ordinary landing and final velocity/terminal-speed correction. Core PC64
+// selected bounce HitWall, ordinary landing and final velocity/terminal-speed
+// correction. Core PC64
 // arithmetic and EVERY original Float spill are retained. Active nonfinite
 // arithmetic/Float overflow explicitly refuses through the caller's root.
 //
-// The reached Pawn, water, bobbing, bounce-collision and wall/slide branches
+// The reached Pawn, water, bobbing and non-bounce wall/slide branches
 // explicitly refuse; they are not empty implementations. There is no forced
 // floor, local transaction/rollback, world scheduler, performPhysics rotation
 // or PendingTouch epilogue here. Selected callbacks may mutate/delete/reenter
@@ -122,6 +125,7 @@ inline OriginalActorFallingStats StepOriginalActorFalling(std::uintptr_t actor,f
     const auto originalAcceleration=readVector(queries.acceleration,actor,false);
     OriginalActorLineHit hit;
     bool apexFlag{};
+    std::int32_t bounceCount{};
     float delta=suppliedDelta;
     while(Compare64(Load(stats.remaining),Decode(0.0f))>0&&stats.iterations<8) {
         stats.iterations=AddInt(stats.iterations,1);++stats.substeps;
@@ -221,26 +225,38 @@ inline OriginalActorFallingStats StepOriginalActorFalling(std::uintptr_t actor,f
                 if(count<=0)count=0;
                 ++stats.counterWrites;Call(queries,stats,queries.writeNumLandings,actor,count);
             }
-            if(read(queries.bounce,actor))throw std::invalid_argument("Original bounce-collision physFalling is not implemented");
-            if(Compare64(Load(hit.normal.z),DecodeDouble(0.7))<=0)
-                throw std::invalid_argument("Original wall/slide physFalling is not implemented");
-            stats.remaining=Store32(Add64(Multiply64(Sub(DecodeDouble(1.0),Load(hit.time)),Load(delta)),Load(stats.remaining)));
-            if(!read(queries.justTeleported,actor)&&Compare64(Load(hit.time),DecodeDouble(0.1))>0&&
-                Compare64(Multiply64(Load(hit.time),Load(delta)),Decode(0.003f))>0) {
-                PortableModelVec3 displacement,value;
-                for(unsigned i=3u;i>0u;--i) {
-                    const unsigned channel=i-1u;
-                    const auto position=Load(read(queries.location,actor,channel));
-                    const auto old=Load(read(queries.oldLocation,actor,channel));
-                    Channel(displacement,channel,Store32(Sub(position,old)));
+            if(read(queries.bounce,actor)) {
+                // Original packet owns the raw normal/floor before selected
+                // ProcessEvent reentry; this is NOT an inline reflection law.
+                const PortableModelVec3 normal=hit.normal;
+                const auto wall=hit.actor;
+                ++stats.hitWallCalls;Call(queries,stats,queries.hitWall,actor,normal,wall);
+                // No post-callback deletion guard or Physics2 requirement.
+                if(read(queries.physics,actor)==0u){stats.stoppedByBounce=true;return stats;}
+                if(bounceCount<2)
+                    stats.remaining=Store32(Add64(Multiply64(Sub(DecodeDouble(1.0),Load(hit.time)),Load(delta)),Load(stats.remaining)));
+                bounceCount=AddInt(bounceCount,1);
+            }else {
+                if(Compare64(Load(hit.normal.z),DecodeDouble(0.7))<=0)
+                    throw std::invalid_argument("Original wall/slide physFalling is not implemented");
+                stats.remaining=Store32(Add64(Multiply64(Sub(DecodeDouble(1.0),Load(hit.time)),Load(delta)),Load(stats.remaining)));
+                if(!read(queries.justTeleported,actor)&&Compare64(Load(hit.time),DecodeDouble(0.1))>0&&
+                    Compare64(Multiply64(Load(hit.time),Load(delta)),Decode(0.003f))>0) {
+                    PortableModelVec3 displacement,value;
+                    for(unsigned i=3u;i>0u;--i) {
+                        const unsigned channel=i-1u;
+                        const auto position=Load(read(queries.location,actor,channel));
+                        const auto old=Load(read(queries.oldLocation,actor,channel));
+                        Channel(displacement,channel,Store32(Sub(position,old)));
+                    }
+                    const auto inverse=ModelFastLineDetail::Divide64(DecodeDouble(1.0),Multiply64(Load(hit.time),Load(delta)));
+                    for(unsigned i=3u;i>0u;--i)Channel(value,i-1u,Store32(Multiply64(Load(Channel(displacement,i-1u)),inverse)));
+                    words(queries.writeVelocityWord,value,stats.velocityWords);
                 }
-                const auto inverse=ModelFastLineDetail::Divide64(DecodeDouble(1.0),Multiply64(Load(hit.time),Load(delta)));
-                for(unsigned i=3u;i>0u;--i)Channel(value,i-1u,Store32(Multiply64(Load(Channel(displacement,i-1u)),inverse)));
-                words(queries.writeVelocityWord,value,stats.velocityWords);
+                ++stats.landedCalls;
+                Call(queries,stats,queries.processLanded,actor,hit.normal,hit.actor,stats.remaining,stats.iterations);
+                stats.landed=true;return stats;
             }
-            ++stats.landedCalls;
-            Call(queries,stats,queries.processLanded,actor,hit.normal,hit.actor,stats.remaining,stats.iterations);
-            stats.landed=true;return stats;
         }
 
         // Original common tail, including independent live flag rereads after

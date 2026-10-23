@@ -237,10 +237,13 @@ struct PortableStartupFallingCommand {
     bool afterDamage{};
 };
 struct PortableStartupFallingObservation : PortableStartupLandingObservation {
-    std::string classPath;
+    std::string classPath,selectedHitWall,stateBefore,stateAfter;
     std::size_t stepIndex{},substeps{},moveCalls{},apexSplits{},oldLocationWords{},accelerationWords{},teleportWrites{};
+    std::size_t hitWallCalls{};
     float deltaSeconds{};
     bool afterDamage{},teleportedBefore{},teleportedAfter{},hasLandingCounter{};
+    bool bounceBefore{},bounceAfter{},stoppedByBounce{};
+    std::array<std::int32_t,3u> rotationBefore{},rotationAfter{},rotationRateBefore{},rotationRateAfter{};
     std::array<float,3u> accelerationBefore{},accelerationAfter{},oldLocationBefore{},oldLocationAfter{};
     bool operator==(const PortableStartupFallingObservation&) const = default;
 };

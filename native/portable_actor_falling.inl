@@ -164,6 +164,17 @@
         q.numLandings=[&](auto a){requireSource(a);return Read(actor,counter(),0u).integer;};
         q.writeNumLandings=[&](auto a,std::int32_t value){requireSource(a);WriteFallingScalar(actor,counter(),Value::Integer(value),execution);};
         q.currentRotation=[&](auto a){requireSource(a);return NativeCoordsRead(actor,"Engine.Actor.Rotation",Kind::Rotator,0x23u).rotation;};
+        q.physics=[&](auto a){requireSource(a);return static_cast<std::uint8_t>(Read(actor,ActorPhysicsProperty(actor),0u).integer);};
+        q.hitWall=[&](auto a,PortableModelVec3 normal,auto wall) {
+            requireSource(a);
+            if(observation) {
+                const auto selected=Member(actor,"HitWall");
+                if(!selected)throw std::runtime_error("Original bouncing actor has no selected HitWall");
+                text(observation->selectedHitWall,selected->path);
+            }
+            static_cast<void>(MoveSelectedEvent(actor,MoveSelectedEventKind::HitWall,normal,{},
+                wall?ZoneActor(wall,level):nullptr,execution));
+        };
         q.moveActor=[&](auto l,auto a,auto delta,auto rotation,auto& hit,auto options) {
             requireSource(a);if(l!=reinterpret_cast<std::uintptr_t>(level) || options!=std::array<std::int32_t,4u>{})
                 throw std::runtime_error("Original falling changed its actual MoveActor packet");
@@ -206,6 +217,7 @@
             observation->oldLocationWords=stats.oldLocationWords;observation->velocityWords+=stats.velocityWords;
             observation->accelerationWords=stats.accelerationWords;observation->teleportWrites=stats.teleportWrites;
             observation->counterWrites+=stats.counterWrites;
+            observation->hitWallCalls=stats.hitWallCalls;observation->stoppedByBounce=stats.stoppedByBounce;
         }
         ValidateStateBudget();return stats;
     }

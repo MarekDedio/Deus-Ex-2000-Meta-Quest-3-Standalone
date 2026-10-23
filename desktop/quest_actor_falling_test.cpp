@@ -30,12 +30,12 @@ float FloatMultiply(float a,float b){return static_cast<float>(static_cast<doubl
 struct State {
     Vec location{},oldLocation{9,8,7},velocity{0,0,-16},acceleration{},gravity{0,0,-512},drift{};
     Rotation rotation{1,2,3};Id zone{3u};float terminal{10000.0f};std::int32_t counter{5};
-    std::uint8_t zoneNumber{1u};bool teleported{true},deleted{},bounce{},water{},bobbing{},pawnFlag{};
+    std::uint8_t zoneNumber{1u},physics{2u};bool teleported{true},deleted{},bounce{},water{},bobbing{},pawnFlag{};
     bool operator==(const State& other)const {
         return Equal(location,other.location)&&Equal(oldLocation,other.oldLocation)&&Equal(velocity,other.velocity)&&
             Equal(acceleration,other.acceleration)&&Equal(gravity,other.gravity)&&Equal(drift,other.drift)&&
             rotation==other.rotation&&zone==other.zone&&Bits(terminal)==Bits(other.terminal)&&counter==other.counter&&
-            zoneNumber==other.zoneNumber&&teleported==other.teleported&&deleted==other.deleted&&bounce==other.bounce&&
+            zoneNumber==other.zoneNumber&&physics==other.physics&&teleported==other.teleported&&deleted==other.deleted&&bounce==other.bounce&&
             water==other.water&&bobbing==other.bobbing&&pawnFlag==other.pawnFlag;
     }
 };
@@ -43,13 +43,15 @@ struct Move {
     Vec delta{},before{},oldLocation{},velocity{},acceleration{};Rotation rotation{};OriginalActorLineHit hitBefore{};
 };
 struct Landing {Vec normal{},velocity{};Id floor{};float remaining{};std::int32_t iterations{};};
+struct Wall {Vec normal{},velocity{};Id actor{};};
 struct Fixture {
     State state;
     bool pawnClass{},playerPawnClass{},decorationClass{},hitPlayerPawn{};
     float hitTime{1.0f};Vec hitNormal{0,0,1};Id hitFloor{7u};
-    std::vector<Move> moves;std::vector<Landing> landings;std::vector<std::string> order;
+    std::vector<Move> moves;std::vector<Landing> landings;std::vector<Wall> walls;std::vector<std::string> order;
     std::function<void(std::size_t,OriginalActorLineHit&)> onMove;
     std::function<void()> onLanded,onOutOfWorld;
+    std::function<void(Vec,Id)> onHitWall;
     std::size_t work{},workLimit{65536u},writes{},writeLimit{65536u},accelerationRestores{};
     OriginalActorLineHit* hitPacket{};
     void Write(){if(writes>=writeLimit)throw std::runtime_error("write");++writes;}
@@ -109,6 +111,10 @@ struct Fixture {
         q.processLanded=[&](Id actor,Vec normal,Id floor,float remaining,std::int32_t iterations) {
             Actor(actor);order.push_back("landed");landings.push_back({normal,state.velocity,floor,remaining,iterations});if(onLanded)onLanded();
         };
+        q.hitWall=[&](Id actor,Vec normal,Id wall) {
+            Actor(actor);order.push_back("hit-wall");walls.push_back({normal,state.velocity,wall});if(onHitWall)onHitWall(normal,wall);
+        };
+        q.physics=[&](Id actor){Actor(actor);order.push_back("physics");return state.physics;};
         q.fellOutOfWorld=[&](Id actor){Actor(actor);order.push_back("out-of-world");if(onOutOfWorld)onOutOfWorld();};
         return q;
     }
@@ -269,13 +275,174 @@ void LandingAndFreshReadContracts() {
             "Decoration collision with actual PlayerPawn failed to decrement live landing counter before selected landing");
     }
 }
-void ActiveBranchesAndRootContracts() {
+void BounceContracts() {
+    {
+        Fixture f;f.hitTime=0.5f;f.state.bounce=true;f.state.acceleration={8,16,24};
+        const Vec supplied{std::bit_cast<float>(0x7f812345u),-0.0f,1.0f};f.hitNormal=supplied;
+        auto q=f.Queries();
+        f.onHitWall=[&](Vec normal,Id wall) {
+            Require(Equal(normal,supplied)&&wall==7u,"Selected HitWall lost raw by-value Normal or original hit Actor");
+            // Reentrant changes to the shared native hit packet cannot alias
+            // the event's already copied Vector/Actor arguments.
+            f.hitPacket->normal={99,88,77};f.hitPacket->actor=99u;
+            Require(Equal(normal,supplied)&&wall==7u,"HitWall event packet aliased the shared native hit result");
+            normal={-3,-2,-1};wall=55u;
+            Require(Equal(normal,{-3,-2,-1})&&wall==55u&&Equal(f.hitPacket->normal,{99,88,77})&&f.hitPacket->actor==99u,
+                "Mutating by-value event locals changed the original native hit packet");
+            f.Store(f.state.acceleration,0u,Bits(77.0f));
+            const auto nested=f.Direct(0.0f,8,q);
+            Require(nested.substeps==0u&&nested.accelerationWords==3u&&f.state.acceleration.x==77.0f,
+                "HitWall reentry lost same live Actor fields or the nested raw acceleration restoration");
+            f.Write();f.state.physics=0u;f.Write();f.state.deleted=true;
+        };
+        q.processLanded={};q.terminal={};q.justTeleported={};
+        const auto result=f.Direct(0.0625f,0,q);
+        Require(result.hitWallCalls==1u&&result.stoppedByBounce&&!result.deleted&&!result.landed&&
+            result.remaining==0.0f&&result.accelerationWords==0u&&f.accelerationRestores==3u&&
+            f.walls.size()==1u&&Equal(f.walls[0].normal,supplied)&&f.walls[0].actor==7u&&
+            f.state.acceleration.x==77.0f&&f.state.deleted&&f.order.back()=="physics",
+            "Bounce Physics0 failed its fresh early return, restored outer acceleration, reread deletion or reached inactive tail providers");
+        Require(std::count(f.order.begin(),f.order.end(),"deleted")==1,
+            "Bounce introduced a post-HitWall deletion guard absent from original physFalling");
+    }
+    for(const auto mode:std::array<std::uint8_t,4u>{1u,2u,3u,255u}) {
+        Fixture f;f.hitTime=0.5f;f.state.bounce=true;f.state.gravity={};f.state.velocity={8,0,-16};
+        f.onHitWall=[&](Vec,Id){f.Write();f.state.physics=mode;};
+        auto q=f.Queries();q.processLanded={};q.justTeleported={};q.terminal={};
+        const auto result=f.Direct(0.0625f,0,q);
+        Require(result.hitWallCalls==3u&&result.substeps==3u&&result.moveCalls==3u&&result.iterations==3&&
+            result.remaining==0.0f&&!result.stoppedByBounce&&!result.deleted&&!result.landed&&f.state.physics==mode&&
+            f.moves[0].delta.x==0.5f&&f.moves[1].delta.x==0.25f&&f.moves[2].delta.x==0.125f&&
+            Equal(f.state.location,{0.4375f,0,-0.875f})&&Equal(f.state.velocity,{8,0,-16})&&
+            result.velocityWords==9u&&result.accelerationWords==3u,
+            "Bounce rejected a nonzero live mode, restored unused time after its first two hits or failed the fresh bounce/collision tail skip");
+        Require(std::count(f.order.begin(),f.order.end(),"physics")==3&&
+            std::count(f.order.begin(),f.order.end(),"teleported")==0&&std::count(f.order.begin(),f.order.end(),"terminal")==0,
+            "Live bounce tail consulted teleport/clamp providers before its original collision short-circuit");
+    }
+    {
+        Fixture f;f.hitTime=std::bit_cast<float>(0x33000000u);f.state.bounce=true;f.state.gravity={};
+        const auto result=f.Run(0.09f,7);
+        // This small hit.Time is NOT a subtraction-spill discriminator: the
+        // exact loss is less than half a Float ulp at the original 0.09f.
+        Require(result.hitWallCalls==1u&&result.iterations==8&&Bits(result.remaining)==0x3db851ecu,
+            "Bounce near-zero hit time incorrectly forced a downward Float rounding step");
+    }
+    {
+        Fixture f;f.hitTime=std::bit_cast<float>(0x3e00000bu);f.state.bounce=true;f.state.gravity={};
+        const auto result=f.Run(0.09f,7);
+        // Exact original product 709316836621020*2^-53 fits retained PC64.
+        // Premature Float(1-hit.Time) would instead produce 0x3da147ac.
+        Require(result.hitWallCalls==1u&&result.iterations==8&&Bits(result.remaining)==0x3da147adu,
+            "Bounce unused time spilled Double1-hit.Time to Float before multiplying by the current timestep");
+    }
+    {
+        Fixture f;f.hitTime=std::bit_cast<float>(0x3e000033u);f.state.bounce=true;f.state.gravity={};
+        const auto result=f.Run(0.25f,7);
+        // Delta 0x3dcccccd, remaining 0x3e19999a: exact combined numerator
+        // 2139209203921705*2^-53; a product Float spill gives 0x3e73332e.
+        Require(result.hitWallCalls==1u&&result.iterations==8&&Bits(result.remaining)==0x3e73332fu,
+            "Bounce unused time spilled its product to Float before adding the existing remaining duration");
+    }
+    {
+        Fixture f;f.hitTime=0.5f;f.state.bounce=true;f.state.gravity={};
+        f.onHitWall=[&](Vec,Id){f.Write();f.state.bounce=false;f.hitTime=1.0f;};
+        const auto result=f.Run();
+        Require(result.hitWallCalls==1u&&result.moveCalls==2u&&!result.stoppedByBounce&&result.landedCalls==0u&&
+            Equal(f.state.velocity,{0,0,-8})&&std::count(f.order.begin(),f.order.end(),"terminal")==2&&
+            std::count(f.order.begin(),f.order.end(),"teleported")==2,
+            "HitWall clearing bBounce failed the fresh common-tail correction and terminal/teleport reads");
+    }
+    {
+        Fixture f;f.hitTime=0.5f;f.state.bounce=true;f.state.gravity={};
+        f.onHitWall=[&](Vec,Id){f.Write();f.state.bounce=false;f.Write();f.state.teleported=true;
+            f.Store(f.state.velocity,0u,Bits(64.0f));};
+        auto q=f.Queries();q.terminal={};q.processLanded={};
+        const auto result=f.Direct(0.0625f,7,q);
+        Require(result.hitWallCalls==1u&&result.remaining==0.03125f&&result.iterations==8&&
+            f.state.velocity.x==64.0f&&result.velocityWords==3u&&result.accelerationWords==3u&&
+            std::count(f.order.begin(),f.order.end(),"teleported")==1,
+            "Fresh callback bJustTeleported failed to skip displacement correction and terminal clamp after bBounce was cleared");
+    }
+    {
+        Fixture f;f.hitTime=0.5f;f.state.gravity={};
+        f.onMove=[&](std::size_t,OriginalActorLineHit&){f.Write();f.state.bounce=true;};
+        f.onHitWall=[&](Vec,Id){f.Write();f.state.physics=0u;};
+        const auto result=f.Run();
+        Require(result.hitWallCalls==1u&&result.stoppedByBounce&&result.landedCalls==0u,
+            "Falling cached bBounce before movement callback reentry instead of selecting the live post-sweep branch");
+    }
+    {
+        Fixture f;f.hitTime=0.5f;f.state.bounce=true;f.state.acceleration={8,16,24};
+        f.onHitWall=[&](Vec,Id){f.Write();f.state.deleted=true;f.Write();f.state.physics=3u;
+            f.Store(f.state.acceleration,0u,Bits(99.0f));};
+        auto q=f.Queries();q.justTeleported={};q.terminal={};q.processLanded={};
+        const auto result=f.Direct(0.0625f,7,q);
+        Require(!result.deleted&&!result.stoppedByBounce&&result.hitWallCalls==1u&&result.accelerationWords==3u&&
+            f.state.deleted&&f.state.physics==3u&&Equal(f.state.acceleration,{8,16,24})&&
+            std::count(f.order.begin(),f.order.end(),"deleted")==1,
+            "Nonzero bounce callback deletion introduced an early return or bypassed normal loop-completion acceleration restoration");
+    }
+    for(unsigned missing=0u;missing<2u;++missing) {
+        Fixture f;f.hitTime=0.5f;f.state.bounce=true;auto q=f.Queries();
+        if(missing==0u)q.hitWall={};else q.physics={};
+        const auto before=f.state;bool refused{};
+        try{static_cast<void>(f.RunWith(0.0625f,0,q));}catch(const std::invalid_argument&){refused=true;}
+        Require(refused&&f.state==before&&f.moves.size()==1u&&f.walls.size()==missing&&f.accelerationRestores==0u,
+            "Missing reached HitWall/Physics provider was swallowed, preflighted before its real prefix or escaped root rollback");++refusals;
+    }
+    {
+        Fixture f;f.hitTime=0.5f;f.state.bounce=true;
+        f.onHitWall=[&](Vec,Id){f.Store(f.state.acceleration,0u,Bits(77.0f));throw std::runtime_error("wall-callback");};
+        const auto before=f.state;bool refused{};
+        try{static_cast<void>(f.Run());}catch(const std::runtime_error& e){refused=std::string(e.what())=="wall-callback";}
+        Require(refused&&f.state==before&&f.walls.size()==1u&&f.accelerationRestores==0u&&
+            std::count(f.order.begin(),f.order.end(),"physics")==0,
+            "Selected HitWall failure was hidden, reached a later mode test or escaped same-root rollback");++refusals;
+    }
+    {
+        Fixture f;f.hitTime=0.5f;f.state.bounce=true;f.writeLimit=11u;
+        f.onHitWall=[&](Vec,Id){f.Store(f.state.acceleration,0u,Bits(77.0f));f.Write();f.state.physics=0u;};
+        bool refused{};
+        try{static_cast<void>(f.Direct(0.0625f,0,f.Queries()));}catch(const std::runtime_error& e){refused=std::string(e.what())=="write";}
+        Require(refused&&f.writes==11u&&f.walls.size()==1u&&f.state.acceleration.x==77.0f&&f.state.physics==2u&&
+            Equal(f.state.oldLocation,{})&&!f.state.teleported&&f.accelerationRestores==0u,
+            "Bounce coordinator locally erased the selected callback's late pending write prefix");++refusals;
+    }
+    const auto initialize=[](Fixture& f,unsigned branch) {
+        f.hitTime=0.5f;f.state.bounce=true;f.state.acceleration={8,16,24};
+        f.onMove=[&f,branch](std::size_t,OriginalActorLineHit&){f.Store(f.state.acceleration,0u,Bits(77.0f));
+            if(branch==3u){f.Write();f.state.teleported=true;}};
+        f.onHitWall=[&f,branch](Vec,Id) {
+            f.Store(f.state.acceleration,1u,Bits(88.0f));f.Write();f.state.physics=branch==0u?0u:255u;
+            if(branch>=2u){f.Write();f.state.bounce=false;f.hitTime=1.0f;}
+            if(branch==3u){f.Write();f.state.teleported=true;}
+        };
+    };
     for(unsigned branch=0u;branch<4u;++branch) {
+        Fixture full;initialize(full,branch);const auto usage=full.Run();
+        Require(usage.steps==full.work&&usage.hitWallCalls>0u&&usage.stoppedByBounce==(branch==0u),
+            "Bounce root controls did not actually reach their selected stop/continue branch or shared work ledger");
+        for(std::size_t limit=0u;limit<usage.steps;++limit) {
+            Fixture f;initialize(f,branch);f.workLimit=limit;const auto before=f.state;bool refused{};
+            try{static_cast<void>(f.Run());}catch(const std::runtime_error& e){refused=std::string(e.what())=="work";}
+            Require(refused&&f.work==limit&&f.state==before,
+                "Shared bounce work cutoff was reset/swallowed or escaped caller-owned whole-root rollback");++refusals;
+        }
+        for(std::size_t limit=0u;limit<full.writes;++limit) {
+            Fixture f;initialize(f,branch);f.writeLimit=limit;const auto before=f.state;bool refused{};
+            try{static_cast<void>(f.Run());}catch(const std::runtime_error& e){refused=std::string(e.what())=="write";}
+            Require(refused&&f.writes==limit&&f.state==before,
+                "Shared bounce write cutoff was reset/swallowed or escaped caller-owned whole-root rollback");++refusals;
+        }
+    }
+}
+void ActiveBranchesAndRootContracts() {
+    for(unsigned branch=0u;branch<3u;++branch) {
         Fixture f;if(branch==0u)f.pawnClass=true;else if(branch==1u)f.state.water=true;
-        else if(branch==2u){f.decorationClass=true;f.state.bobbing=true;}
-        else {f.hitTime=0.5f;f.state.bounce=true;}
+        else {f.decorationClass=true;f.state.bobbing=true;}
         const auto before=f.state;bool refused{};try{static_cast<void>(f.Run());}catch(const std::invalid_argument&){refused=true;}
-        Require(refused&&f.state==before,"Active unsupported Pawn/water/bobbing/bounce branch silently succeeded or escaped caller root rollback");++refusals;
+        Require(refused&&f.state==before,"Active unsupported Pawn/water/bobbing branch silently succeeded or escaped caller root rollback");++refusals;
     }
     {
         Fixture f;f.hitTime=0.5f;f.hitNormal={1,0,0};const auto before=f.state;bool refused{};
@@ -285,7 +452,13 @@ void ActiveBranchesAndRootContracts() {
     }
     {
         Fixture f;auto q=f.Queries();q.bobbing={};q.numLandings={};q.writeNumLandings={};q.processLanded={};q.fellOutOfWorld={};
+        q.hitWall={};q.physics={};
         Require(f.Direct(0.0625f,0,q).moveCalls==1u,"Dry nonDecoration/no-hit falling preflighted inactive branch providers");
+    }
+    {
+        Fixture f;f.hitTime=0.5f;auto q=f.Queries();q.hitWall={};q.physics={};
+        Require(f.Direct(0.0625f,0,q).landedCalls==1u,
+            "Ordinary non-bounce landing preflighted inactive HitWall/Physics providers");
     }
     for(unsigned missing=0u;missing<6u;++missing) {
         Fixture f;auto q=f.Queries();
@@ -368,7 +541,7 @@ void ActiveBranchesAndRootContracts() {
 
 int main() {
     try {
-        DryArithmeticContracts();AdaptiveAndApexContracts();LandingAndFreshReadContracts();ActiveBranchesAndRootContracts();
+        DryArithmeticContracts();AdaptiveAndApexContracts();LandingAndFreshReadContracts();BounceContracts();ActiveBranchesAndRootContracts();
         std::cout<<"Original dry non-Pawn falling coordinator: "<<checks<<" checks, "<<refusals
             <<" refusal controls. Synthetic native providers; NOT a world Tick or on-headset gravity acceptance.\n";return 0;
     }catch(const std::exception& e){std::cerr<<e.what()<<'\n';return 1;}

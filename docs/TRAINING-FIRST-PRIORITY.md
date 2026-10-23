@@ -10,6 +10,23 @@ do not spend time on other-map integration or map-content test sweeps.
 Reconfirmed2026-10-22: skip other-map crate/physics integration and testing;
 the WHOLE first Training map remains the current content acceptance target.
 
+Latest debris increment,2026-10-23: original dry nonPawn physFalling now calls
+selected HitWall for bouncing fragments with original packet, timing and live
+flag/mode semantics. Two actual first-map runs advance all six genuine
+lower-crate WoodFragments to real world support/Dying:31 captured rows,
+63 moves,12 hits,six stops. Repeated late SupportActor write16502 interruption
+fully undoes five completed stops and the sixth partial support callback,
+along with the original death/births; all41 sources remain unchanged. A new
+detached performPhysics coordinator passes4223/37 but is not runtime-bound;
+full static rotation evidence is now recorded, not implemented. Falling tests
+pass59951/979. Whole-cohort interleaving/rotation/PendingTouch and live headset
+interaction remain unfinished. No new APK or other-map integration. See
+TRAINING-FRAGMENT-BOUNCE.md for scope and final verification.
+Coherent full desktop/shared CTest passes177 executed/209 registered,
+32 explicit owned-data skips, zero failures in52.36s. Fresh original crate347/
+two dormant contents refusals and first-map SetPhysics172882/53 pass separately;
+released-upper, loot/player pickup and normal no-command regressions pass too.
+
 Latest released/loot increment,2026-10-23: original dropped Inventory now has
 same-root timestep admission tied to captured surviving genuine damage births.
 Two actual-map repeats prove both Lockpicks fall/land on LevelInfo0 through
