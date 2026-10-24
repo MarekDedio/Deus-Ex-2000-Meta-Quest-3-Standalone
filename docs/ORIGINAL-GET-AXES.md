@@ -1,5 +1,52 @@
 # Original Core.GetAxes native229
 
+## Implemented first-Training boundary, 2026-10-24
+
+The static audit below is now implemented by `quest_original_get_axes.h`,
+`portable_core_get_axes.inl` and explicitly opted-in mixed VM argument modes.
+All immutable modes are captured before arguments. A is fully copied at its
+own Step; X/Y/Z retain only typed guarded addresses or disposable outputs.
+Raw opcode, selected/final native declaration and direct entries use the same
+semantics without early OUT loads. Identity preparation does not recapture
+argument modes. Existing unrelated natives retain their default behavior.
+The production adapter authenticates the real four-property/NativeParm20
+declaration and canonical layouts before selecting its numerical providers.
+It computes all axes detached, then calls the already guarded X/Y/Z writes in
+order. No Actor/Level/possession/begun gate is added inside Core229.
+
+Pure math passes53651 checks/29 refusals, including16384 low-angle buckets and
+4361 independent hardware x87 PC64 comparisons. Mixed VM packets pass233/13:
+Frame.Object, A changed by a later OUT-address expression, exact aliases,
+full/partial null-Context fills, discard outputs, direct/final/raw calls,
+capability conflicts, every write prefix, late failure and caught read-only
+hook write poisoning. Existing full VM regression remains696084/897.
+Actual owned first-Training Core229 controls pass232/25, including exact
+production outputs, no pre-native OUT reads, all-equal aliases,15 shared-work
+steps/all15 work cutoffs, all output write prefixes, source-level false begun
+gate and full save/revision/GC/external-output undo. This is numeric runtime
+proof, not combat acceptance. Strict ARM64 syntax and Android native link pass.
+
+The genuine crowbar attack now passes GetAxes and original
+ComputeProjectileStart, next refusing native277 inside
+`Engine.PlayerPawn.AdjustAim` atPC18:206046 instructions/14978 writes.
+Two crowbar repeats match; the genuine knife reaches that same new location
+with205971/14973. Full-root rollback/all41 unchanged owned sources pass.
+Two actual crowbar14973-write cutoffs fail INSIDE GetAxes229 at TraceFire149,
+after the first axis write; both undo the partial axes and all earlier
+pickup/equip/attack state. Normal no-command startup repeats retain the exact
+old1463 boundary/218693 instructions/24284 writes. Fresh dormant original
+crate regression remains347 checks/two explicit contents refusals.
+The final coherent full desktop build/shared CTest gate passes184 executed /
+218 registered,34 explicit owned-data skips, zero failures in53.42s. Fresh
+actual Doctor main-animation regression remains70 checks/six prefix refusals.
+Skipped owned tests are not actual-map acceptance; the Core229/crate/Doctor
+owned controls above were run separately with the real first Training map.
+See TRAINING-WEAPON-FIRE.md for the earlier229 boundary and logs
+`training-get-axes-*20261024.log` for these controls. No APK, collision trace,
+hit, TakeDamage or completed attack cycle is claimed.
+
+## Original static audit
+
 Read-only first-Training melee prerequisite audit, 2026-10-24. This records the
 owned native ABI and scalar operation, not an implemented binding or evidence
 that the new attack diagnostic has reached it. No original DLL/EXE was loaded

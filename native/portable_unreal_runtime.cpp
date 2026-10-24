@@ -1,4 +1,5 @@
 #include "portable_unreal_runtime.h"
+#include "portable_startup_weapon_fire_probe.h"
 #include "portable_object_lookup.h"
 #include "portable_engine_collision.h"
 #include "portable_retail_collision.h"
@@ -53,6 +54,7 @@
 #include "quest_sound_hearing.h"
 #include "quest_brush_coords.h"
 #include "quest_original_sine_table.h"
+#include "quest_original_get_axes.h"
 #include "quest_native_engine_classes.h"
 #include "quest_native_package.h"
 #include "quest_native_config.h"
@@ -3599,6 +3601,7 @@ public:
     Evaluation NativeWithContext(const std::uint16_t index, const std::string& receiver,
         const std::vector<Evaluation>& arguments, const Function* declaration, QuestVr::Vm::Execution& execution,
         const std::optional<Value>& context) override {
+        if (index==229u) return CoreGetAxesNative(arguments,declaration);
         if (index==1013u) return Native(index,receiver,arguments,declaration);
         if (Object(receiver)->defaultOwner)
             throw std::runtime_error("Native execution on a class-default object requires its audited handler");
@@ -3633,6 +3636,7 @@ public:
     }
     Evaluation NativeWithExecution(const std::uint16_t index, const std::string& receiver,
         const std::vector<Evaluation>& arguments, const Function* declaration, QuestVr::Vm::Execution& execution) override {
+        if(index==229u) return CoreGetAxesNative(arguments,declaration);
         if(index==261u) {
             if(!arguments.empty())throw std::runtime_error("Original FinishAnim takes no parameters or result");
             OriginalFinishAnimNative(Object(receiver),declaration,execution);return {};
@@ -5071,6 +5075,7 @@ public:
     #include "portable_actor_perform_physics.inl"
     #include "portable_actor_move_probe.inl"
     #include "portable_core_rotator_add.inl"
+    #include "portable_core_get_axes.inl"
     void RequireIndexedPrimitiveDiagnosticOwner(RuntimeObject* owner) {
         RequireMapActor(owner);
         if(owner->worldActorIndex<0 || static_cast<std::size_t>(owner->worldActorIndex)>=persistentWorldActors.size() ||
@@ -5269,6 +5274,11 @@ public:
     }
     std::optional<QuestVr::Vm::ResultLayout> NativeArgumentUninitializedLayout(const std::uint16_t index,
         const std::string& receiver,const std::size_t slot,const Function* declaration) override {
+        if(index==229u) {
+            static_cast<void>(CoreGetAxesDeclaration(declaration));
+            if(slot>=4u)throw std::runtime_error("GetAxes229 input exceeds its original four slots");
+            return slot==0u?std::optional{QuestVr::Vm::ResultLayout::CoreRotator12}:std::nullopt;
+        }
         if(index==316u) {
             static_cast<void>(CoreRotatorAddDeclaration(declaration));
             if(slot>=2u)throw std::runtime_error("Original rotator addition input exceeds its two native temporaries");
@@ -5288,6 +5298,13 @@ public:
         // Retail10053ad0 does not initialize this stack temporary. Do not
         // register a zero/white argument seed or infer identity from a Value.
         return QuestVr::Vm::ResultLayout::CoreColor4;
+    }
+    std::optional<QuestVr::Vm::ResultLayout> NativeArgumentAddressOnlyLayout(const std::uint16_t index,
+        const std::string&,const std::size_t slot,const Function* declaration) override {
+        if(index!=229u)return std::nullopt;
+        static_cast<void>(CoreGetAxesDeclaration(declaration));
+        if(slot>=4u)throw std::runtime_error("GetAxes229 output exceeds its original four slots");
+        return slot==0u?std::nullopt:std::optional{QuestVr::Vm::ResultLayout::CoreVector12};
     }
     bool HasSequentialNativeArgumentSeeds(const std::uint16_t index,const std::string& receiver,
         const Function* declaration) override {
@@ -7701,16 +7718,23 @@ public:
 #include "portable_startup_loot_input.inl"
 #include "portable_startup_loot.inl"
 #include "portable_startup_weapon.inl"
+#include "portable_startup_weapon_fire.inl"
 #include "portable_player_login.inl"
     Value ProbeWorldStartup(const PortableWorldStartupProbeOptions& options,
         PortableWorldStartupProbeResult& result, QuestVr::Vm::Execution& execution,
-        PortableRetailCollisionSnapshot* originalCollision=nullptr) {
+        PortableRetailCollisionSnapshot* originalCollision=nullptr,
+        const PortableStartupWeaponFireCommand* fireCommand=nullptr,
+        std::vector<PortableStartupWeaponFireObservation>* fireOutput=nullptr) {
         if (!transaction_) throw std::runtime_error("World startup probe requires its outer VM transaction");
+        if(bool(fireCommand)!=bool(fireOutput)||(fireOutput&&!fireOutput->empty()))
+            throw std::runtime_error("Startup Fire command/output must be paired with an initially empty synchronous sink");
         ValidateStartupDamageCommands(options);
         ValidateStartupLandingCommands(options);
         ValidateStartupFallingCommands(options);
         ValidateStartupPhysicsCohort(options);
         ValidateStartupWeapon(options,options.weapon);
+        ValidateStartupWeaponFire(fireCommand?std::optional<PortableStartupWeaponFireCommand>(*fireCommand):std::nullopt,
+            options.weapon);
         struct ProbeScope {
             bool& active;PortableWorldStartupProbeResult*& observation;
             ~ProbeScope() { active = false;observation=nullptr; }
@@ -7914,7 +7938,7 @@ public:
                     login.functionPath.capacity()+login.playerPath.capacity()+login.error.capacity()+5u;
                 ValidateStateBudget(stringBytes);nativeActorOrderObservationBytes_+=stringBytes;
                 StartupPlayerLogin(login.viewportIdentity,*options.playerLogin,login,options.landingCommands,options.fallingCommands,options.damageCommands,options.collectDamageLoot,
-                    options.collectDamageLootViaPlayer,options.physicsCohort,options.weapon,execution);
+                    options.collectDamageLootViaPlayer,options.physicsCohort,options.weapon,fireCommand,fireOutput,execution);
             }
         }
         // Native client/player/detail providers after the original partition
@@ -13922,8 +13946,10 @@ PortableRetailCollisionProbeResult ProbePortableRuntimeRetailCollision(
     return result;
 }
 
-PortableRetailCollisionStartupResult ProbePortableRuntimeRetailCollisionStartup(
-    const PortableWorldStartupProbeOptions& options,const QuestVr::Vm::Limits& limits) {
+static PortableRetailCollisionStartupResult ProbeRetailCollisionStartupRoot(
+    const PortableWorldStartupProbeOptions& options,const QuestVr::Vm::Limits& limits,
+    const PortableStartupWeaponFireCommand* fireCommand,
+    std::vector<PortableStartupWeaponFireObservation>* fireOutput) {
     CollectBirthGarbageAtBoundary collect;
     PortableRetailCollisionStartupResult result;
     try {
@@ -13931,11 +13957,25 @@ PortableRetailCollisionStartupResult ProbePortableRuntimeRetailCollisionStartup(
             throw std::runtime_error("Retail collision startup requires an initialized runtime");
         PortableActorVmHost host;
         result.world.execution=QuestVr::Vm::ExecuteTransaction(host,[&](QuestVr::Vm::Execution& execution) {
-            return host.ProbeWorldStartup(options,result.world,execution,&result.collision);
+            return host.ProbeWorldStartup(options,result.world,execution,&result.collision,fireCommand,fireOutput);
         },limits);
     }catch(const std::exception& error) {
         result.world.execution.status=QuestVr::Vm::Status::Unsupported;result.world.execution.error=error.what();
     }
+    return result;
+}
+
+PortableRetailCollisionStartupResult ProbePortableRuntimeRetailCollisionStartup(
+    const PortableWorldStartupProbeOptions& options,const QuestVr::Vm::Limits& limits) {
+    return ProbeRetailCollisionStartupRoot(options,limits,nullptr,nullptr);
+}
+PortableTrainingWeaponFireProbeResult ProbePortableTrainingWeaponFire(
+    const PortableWorldStartupProbeOptions& options,const PortableStartupWeaponFireCommand& command,
+    const QuestVr::Vm::Limits& limits) {
+    PortableTrainingWeaponFireProbeResult result;
+    // Both borrowed inputs live through this one synchronous host/root. No
+    // persistent hook, public nested Execute or detached partial world exists.
+    result.startup=ProbeRetailCollisionStartupRoot(options,limits,&command,&result.observations);
     return result;
 }
 

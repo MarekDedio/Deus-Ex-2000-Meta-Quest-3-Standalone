@@ -1,5 +1,24 @@
 # Port status
 
+## Original Training attack reaches collision trace (2026-10-24)
+
+The new same-root original player-Fire/weapon-notify diagnostic reaches actual
+HandToHandAttack and TraceFire for the authored knife/crowbar. The initially
+missing Core.GetAxes229 is now implemented: exact original inverse-order math,
+mixed copied-input/address-only OUT VM packets, real declaration/layout checks,
+bounded native work and journaled ordered outputs. Pure53651/29, mixed VM233/13,
+full VM696084/897 and actual owned first-Training production232/25 pass;
+strict ARM64 and Android native link pass. Two crowbar repeats and one knife
+run now reach the next missing native277 in PlayerPawn.AdjustAim atPC18, with
+full-root undo/all41 unchanged sources. No successful trace/hit/crate damage,
+committed player, live trigger or new APK is implied. Other maps remain
+deferred. See ORIGINAL-GET-AXES.md and TRAINING-WEAPON-FIRE.md.
+Final coherent shared gate passes184 executed/218 registered,34 explicit owned
+skips, zero failures in53.42s. Two mid-GetAxes14973 write-cut runs fully undo
+partial axes and earlier attack/equip state. Default startup repeat2 retains
+exact native1463/218693 instructions/24284 writes. Fresh original crate347/two
+contents refusals and Doctor animation70/six prefix controls pass separately.
+
 ## Original Training weapon equip diagnostic (2026-10-24)
 
 New actual-map diagnostics complete genuine pickup/equip for both authored

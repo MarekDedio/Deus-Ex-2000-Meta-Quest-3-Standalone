@@ -231,6 +231,15 @@ public:
     // or host mutations are permitted. No capability preserves legacy behavior.
     virtual std::optional<ResultLayout> NativeArgumentUninitializedLayout(std::uint16_t,
         const std::string&, std::size_t, const Function*) { return std::nullopt; }
+    // Narrow audited OUT-only Step capability. Capture ALL slots read-only
+    // before evaluating ANY argument. An engaged known layout requests only
+    // the expression's address/side effects, never its preexisting contents.
+    // Written lvalues retain guarded aliases; non-lvalues/NoWrite/null Context
+    // discard that output. No seed or uninitialized-input mode may overlap.
+    // The native must compute every output before writing aliases in its own
+    // original order. Unknown layouts, callbacks and host mutations fail closed.
+    virtual std::optional<ResultLayout> NativeArgumentAddressOnlyLayout(std::uint16_t,
+        const std::string&, std::size_t, const Function*) { return std::nullopt; }
     // Opt-in for wrappers that initialize a later temporary from an already
     // evaluated ordinary input. Queried before argument expressions; only
     // opted-in natives allocate detached prefix snapshots or call the hook.

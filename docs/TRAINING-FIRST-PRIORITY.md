@@ -1,5 +1,19 @@
 # Immediate milestone: complete the first Training map
 
+Latest live-melee prerequisite,2026-10-24: actual knife/crowbar selected Fire
+now reaches original HandToHandAttack/TraceFire. The reached missing229
+direction function is implemented with original math and mixed input/OUT
+semantics; pure, full VM and actual production first-Training controls pass.
+Strict ARM64/Android native link pass. Both weapons next refuse original
+Actor.Trace277 inside PlayerPawn.AdjustAim atPC18; two crowbar repeats match,
+with full-root undo/all41 unchanged sources. Implement that collision wrapper
+next, not account/player-creation UI, other-map integration or a crate-health
+shortcut. No trace/hit/TakeDamage, live melee or APK acceptance yet. See
+ORIGINAL-GET-AXES.md and TRAINING-WEAPON-FIRE.md.
+Final coherent desktop/shared CTest gate:184 executed/218 registered,34 owned
+skips,0 failures in53.42s. Mid-axes write-cut repeat2/default-startup repeat2,
+fresh actual Core229232/25, crate347/two and Doctor70/six controls pass.
+
 Latest live-melee prerequisite,2026-10-24: both actual authored knife/crowbar
 now complete original pickup/equip in one genuine Login diagnostic root.
 Real ownership, grid, AmmoNone, six animation/state phases and final original

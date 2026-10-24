@@ -99,7 +99,9 @@
         const std::vector<PortableStartupDamageCommand>& damageCommands,
         bool collectDamageLoot,bool collectDamageLootViaPlayer,
         const std::optional<PortableStartupPhysicsCohortCommand>& cohort,
-        const std::optional<PortableStartupWeaponCommand>& weapon,QuestVr::Vm::Execution& execution) {
+        const std::optional<PortableStartupWeaponCommand>& weapon,
+        const PortableStartupWeaponFireCommand* fireCommand,
+        std::vector<PortableStartupWeaponFireObservation>* fireOutput,QuestVr::Vm::Execution& execution) {
         if(!transaction_ || !worldStartupProbe_)
             throw std::runtime_error("SpawnPlayActor continuation requires its actual startup root");
         auto* level=CurrentClockLevel();auto* viewport=NativeSessionViewport(viewportIdentity);
@@ -225,6 +227,10 @@
                 if(cohort)ProbeStartupPhysicsCohort(player,*cohort,execution);
                 if(collectDamageLoot)ProbeStartupLoot(player,collectDamageLootViaPlayer,execution);
                 if(weapon)ProbeStartupWeapon(player,*weapon,execution);
+                if(fireCommand) {
+                    if(!weapon||!fireOutput)throw std::runtime_error("Startup Fire lost its genuine equip command/output");
+                    ProbeStartupWeaponFire(player,Object(weapon->actorPath),*fireCommand,*fireOutput,execution);
+                }
                 static_cast<void>(SetSessionPlayer(viewportIdentity,player->reflection.objectPath,execution));
                 observation.paired=true;
                 throw std::runtime_error("Original SpawnPlayActor post-Possess role/travel continuation is not implemented");
