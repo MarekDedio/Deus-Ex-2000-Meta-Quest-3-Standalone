@@ -98,7 +98,8 @@
         const std::vector<PortableStartupFallingCommand>& fallingCommands,
         const std::vector<PortableStartupDamageCommand>& damageCommands,
         bool collectDamageLoot,bool collectDamageLootViaPlayer,
-        const std::optional<PortableStartupPhysicsCohortCommand>& cohort,QuestVr::Vm::Execution& execution) {
+        const std::optional<PortableStartupPhysicsCohortCommand>& cohort,
+        const std::optional<PortableStartupWeaponCommand>& weapon,QuestVr::Vm::Execution& execution) {
         if(!transaction_ || !worldStartupProbe_)
             throw std::runtime_error("SpawnPlayActor continuation requires its actual startup root");
         auto* level=CurrentClockLevel();auto* viewport=NativeSessionViewport(viewportIdentity);
@@ -223,6 +224,7 @@
                 ProbeStartupFalling(player,fallingCommands,true,execution);
                 if(cohort)ProbeStartupPhysicsCohort(player,*cohort,execution);
                 if(collectDamageLoot)ProbeStartupLoot(player,collectDamageLootViaPlayer,execution);
+                if(weapon)ProbeStartupWeapon(player,*weapon,execution);
                 static_cast<void>(SetSessionPlayer(viewportIdentity,player->reflection.objectPath,execution));
                 observation.paired=true;
                 throw std::runtime_error("Original SpawnPlayActor post-Possess role/travel continuation is not implemented");

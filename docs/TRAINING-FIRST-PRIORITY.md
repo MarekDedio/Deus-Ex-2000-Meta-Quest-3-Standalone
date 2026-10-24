@@ -1,5 +1,17 @@
 # Immediate milestone: complete the first Training map
 
+Latest live-melee prerequisite,2026-10-24: both actual authored knife/crowbar
+now complete original pickup/equip in one genuine Login diagnostic root.
+Real ownership, grid, AmmoNone, six animation/state phases and final original
+hand-transition clear are observed; no state/weapon grant is forced. Two crowbar
+repeats match; two final-transition14929 cutoffs fully undo earlier equip/Idle
+progress. Shared182 executed/215 registered,33 owned skips,0 failures in61.24s,
+strict ARM64/Android native link and fresh Training crate/Doctor regressions
+pass. Later original1463 still rolls the whole startup back/all41 sources
+unchanged. This is not committed player/trigger/trace/crate damage or an APK.
+Next is selected original Fire/attack-notify progression, with no guessed aim
+or instant damage. See TRAINING-WEAPON-EQUIP.md. Other maps remain deferred.
+
 Latest weapon prerequisite,2026-10-24: genuine FinishAnim261/poll385 and shared
 same-Execution state phases pass pure/VM/generated-runtime/save/rollback tests.
 Full coherent shared gate182 executed/215 registered,33 explicit owned skips,

@@ -8,6 +8,7 @@
 #include "quest_native_client.h"
 #include "quest_held_item_visual.h"
 #include "quest_linker_load_context.h"
+#include "portable_startup_weapon_types.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -379,6 +380,9 @@ struct PortableWorldStartupProbeOptions {
     // FrobTarget member, then invoke original ParseRightClick instead of Frob.
     // This supplies a diagnostic target, not controller reach/occlusion proof.
     bool collectDamageLootViaPlayer{};
+    // Isolated original authored knife/crowbar pickup/equip diagnostic, in
+    // this same Login root. No grant, Fire, trace or startup publication.
+    std::optional<PortableStartupWeaponCommand> weapon{};
 };
 struct PortablePlayerLoginObservation {
     std::uint64_t viewportIdentity{};
@@ -470,6 +474,7 @@ struct PortableWorldStartupProbeResult {
     std::vector<PortableStartupFallingObservation> fallingObservations;
     std::vector<PortableStartupPhysicsCohortObservation> physicsCohortObservations;
     std::vector<PortableStartupLootObservation> lootObservations;
+    std::vector<PortableStartupWeaponObservation> weaponObservations;
 };
 const char* PortableWorldStartupPhaseName(PortableWorldStartupPhase phase);
 // Non-publishing diagnostic over actual Level slots and original callbacks.

@@ -134,7 +134,13 @@ part of completing a usable original attack cycle, not merely the first hit.
    equip/state progression and reached native services. The original FinishAnim
    command261/poll385 and same-Execution state phase now pass focused native,
    VM and generated-production tests (ORIGINAL-FINISHANIM-LATENT.md). Actual
-   pickup/equip integration remains to be run. One real attack must select one authored sequence,
+   actual-map pickup/equip now completes for both authored knife/crowbar in
+   the rollback-only Login diagnostic: actual ownership/grid/AmmoNone, six
+   animation/state slices, original Idle and final transition clear. See
+   TRAINING-WEAPON-EQUIP.md; repeat2, final-transition write14929 cutoff2 and
+   shared182/215(33 skips,0 failures) gates pass.
+   Committed input and genuine player Fire eligibility remain unproven.
+   One real attack must select one authored sequence,
    cross its0.5 boundary once, call original HandToHandAttack once, trace the
    actual target and reach original crate TakeDamage. An interrupt/replacement
    before the boundary must not leave a fabricated pending hit.

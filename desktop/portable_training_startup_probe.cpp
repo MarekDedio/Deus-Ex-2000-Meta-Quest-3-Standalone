@@ -45,6 +45,7 @@ constexpr std::array<std::string_view,4u> TrainingDamageActors{
 void Require(bool value,const std::string& why) {
     if(!value)throw std::runtime_error(why);
 }
+#include "portable_training_weapon_observation.inl"
 std::string Fold(std::string text) {
     for(auto& c:text)if(c>='A'&&c<='Z')c=static_cast<char>(c-'A'+'a');
     return text;
@@ -400,7 +401,7 @@ std::size_t DamageWriteLimit(std::string_view text) {
 int Run(const fs::path& root,const std::optional<std::string>& expected,unsigned repeats,std::size_t nativeWork,
     bool requireSpawnEncroachment,bool damageTrainingCrates,bool collectTrainingLoot,bool collectTrainingLootViaPlayer,bool sweepTrainingCrates,
     bool fallTrainingCrates,bool fallAfterLowerBreak,bool fallTrainingLoot,bool fallTrainingFragments,bool performTrainingFragments,bool performTrainingCohort,
-    const std::optional<std::size_t>& damageWriteLimit) {
+    const std::optional<std::size_t>& damageWriteLimit,const std::optional<PortableStartupWeaponCommand>& weapon) {
     Temporary temporary(root);std::vector<Source> sources;std::vector<PortablePackageTables> scripts;
     sources.reserve(QuestVr::RuntimeScriptPackages.size()+3u);scripts.reserve(QuestVr::RuntimeScriptPackages.size());
     for(const auto* name:QuestVr::RuntimeScriptPackages){sources.emplace_back(root/"System"/(std::string(name)+".u"));
@@ -473,6 +474,7 @@ int Run(const fs::path& root,const std::optional<std::string>& expected,unsigned
     };
     rollback();
     PortableWorldStartupProbeOptions options;options.defaultGameClass="DeusEx.DeusExGameInfo";
+    options.weapon=weapon;
     const std::size_t requestedDamageCount=(fallAfterLowerBreak||fallTrainingFragments||performTrainingCohort)?2u:TrainingDamageActors.size();
     if(damageTrainingCrates)for(std::size_t i=0u;i<requestedDamageCount;++i) {
         const auto actor=TrainingDamageActors[i];
@@ -520,6 +522,7 @@ int Run(const fs::path& root,const std::optional<std::string>& expected,unsigned
     std::optional<std::vector<PortableStartupLandingObservation>> landingObservations;
     std::optional<std::vector<PortableStartupFallingObservation>> fallingObservations;
     std::optional<std::vector<PortableStartupPhysicsCohortObservation>> cohortObservations;
+    std::optional<std::vector<PortableStartupWeaponObservation>> weaponObservations;
     for(unsigned attempt=1u;attempt<=repeats;++attempt){
         const auto start=std::chrono::steady_clock::now();
         const auto result=ProbePortableRuntimeRetailCollisionStartup(options,limits);const auto& world=result.world;
@@ -552,6 +555,7 @@ int Run(const fs::path& root,const std::optional<std::string>& expected,unsigned
         ObserveTrainingPhysicsCohort(world,performTrainingCohort);
         ObserveTrainingDamage(world,damageTrainingCrates,limits.writes,requestedDamageCount);
         ObserveTrainingLoot(world,collectTrainingLoot,collectTrainingLootViaPlayer,limits.writes);
+        ObserveTrainingWeapon(world,weapon);
         for(const auto& dump:world.dumpLocations) {
             Require(dump.classPath=="DeusEx.DumpLocation" && dump.outerPath=="00_Training" && dump.objectIndex &&
                 dump.flags==0u && dump.fileIndex==-1 && dump.locationIndex==-1 && dump.locationCount==0 &&
@@ -581,6 +585,9 @@ int Run(const fs::path& root,const std::optional<std::string>& expected,unsigned
         if(cohortObservations)Require(*cohortObservations==world.physicsCohortObservations,
             "Repeated original Training frame-major cohort/state/carry/write-prefix observations differ");
         else cohortObservations=world.physicsCohortObservations;
+        if(weaponObservations)Require(*weaponObservations==world.weaponObservations,
+            "Repeated original Training weapon pickup/equip/frame/ownership observations differ");
+        else weaponObservations=world.weaponObservations;
         if(spawnPackets)Require(SameSpawnPackets(*spawnPackets,world.spawnedEncroachment),
             "Repeated startup changed detached Spawn identities, exact pose words, query result/storage or lifecycle tail");
         else spawnPackets=world.spawnedEncroachment;
@@ -612,12 +619,19 @@ int main(int argc,char** argv) {
         fs::path root;std::optional<std::string> expected;unsigned repeats=1u;
         bool requireSpawnEncroachment{},damageTrainingCrates{},collectTrainingLoot{},collectTrainingLootViaPlayer{},sweepTrainingCrates{},fallTrainingCrates{},fallAfterLowerBreak{},fallTrainingLoot{},fallTrainingFragments{},performTrainingFragments{},performTrainingCohort{};
         std::optional<std::size_t> damageWriteLimit;
+        std::optional<PortableStartupWeaponCommand> weapon;
         std::size_t nativeWork=QuestVr::NativeWork::DefaultLimit;
         if(const auto* configured=std::getenv("DEUSEX_GAME_ROOT");configured&&*configured)root=configured;
         for(int i=1;i<argc;++i){const std::string_view option=argv[i];
             if((option=="--owned-source-root"||option=="--game-root")&&i+1<argc)root=argv[++i];
             else if(option=="--expected-error"&&i+1<argc){expected=argv[++i];Require(!expected->empty()&&expected->size()<=8192u,"Expected error must be nonempty and bounded");}
             else if(option=="--native-work"&&i+1<argc)nativeWork=NativeWorkLimit(argv[++i]);
+            else if(option=="--exercise-training-weapon"&&i+1<argc) {
+                Require(!weapon,"Only one authored Training weapon may be exercised per diagnostic");
+                weapon=PortableStartupWeaponCommand{argv[++i]};
+                Require(weapon->actorPath=="00_Training.WeaponCrowbar1"||weapon->actorPath=="00_Training.WeaponCombatKnife0",
+                    "Weapon diagnostic requires the actual first-Training crowbar or knife identity");
+            }
             else if(option=="--require-spawn-encroachment")requireSpawnEncroachment=true;
             else if(option=="--damage-training-crates")damageTrainingCrates=true;
             else if(option=="--collect-training-loot"){collectTrainingLoot=true;damageTrainingCrates=true;}
@@ -636,7 +650,10 @@ int main(int argc,char** argv) {
             else if(option=="--damage-write-limit"&&i+1<argc)damageWriteLimit=DamageWriteLimit(argv[++i]);
             else if(option=="--repeat"&&i+1<argc){const std::string_view number=argv[++i];
                 Require(number.size()==1u&&number[0]>='1'&&number[0]<='8',"Repeat count must be1..8");repeats=static_cast<unsigned>(number[0]-'0');}
-            else throw std::runtime_error("Usage: portable_training_startup_probe --owned-source-root OWNED_GAME_ROOT [--expected-error EXACT_TEXT] [--repeat 1..8] [--native-work 0..16777216] [--require-spawn-encroachment] [--damage-training-crates | --collect-training-loot | --collect-training-loot-via-player] [--sweep-training-crates | --fall-training-crates | --fall-after-lower-break | --fall-training-loot | --fall-training-fragments | --perform-training-fragments | --perform-training-cohort] [--damage-write-limit 0..1048576]");}
+            else throw std::runtime_error("Usage: portable_training_startup_probe --owned-source-root OWNED_GAME_ROOT [--expected-error EXACT_TEXT] [--repeat 1..8] [--native-work 0..16777216] [--require-spawn-encroachment] [--exercise-training-weapon ACTOR_PATH | --damage-training-crates | --collect-training-loot | --collect-training-loot-via-player] [--sweep-training-crates | --fall-training-crates | --fall-after-lower-break | --fall-training-loot | --fall-training-fragments | --perform-training-fragments | --perform-training-cohort] [--damage-write-limit 0..1048576]");}
+        Require(!weapon||(!damageTrainingCrates&&!collectTrainingLoot&&!collectTrainingLootViaPlayer&&!sweepTrainingCrates&&
+            !fallTrainingCrates&&!fallAfterLowerBreak&&!fallTrainingLoot&&!fallTrainingFragments&&!performTrainingFragments&&!performTrainingCohort),
+            "Weapon pickup/equip is isolated from direct-damage/loot/physics diagnostics");
         Require(!(sweepTrainingCrates&&fallTrainingCrates),"Explicit swept-delta and gravity-timestep crate diagnostics are mutually exclusive");
         Require(!fallAfterLowerBreak||(!collectTrainingLoot&&!collectTrainingLootViaPlayer&&!sweepTrainingCrates),
             "--fall-after-lower-break cannot be combined with loot collection or explicit sweep commands");
@@ -647,12 +664,12 @@ int main(int argc,char** argv) {
         Require(!performTrainingCohort||(!fallAfterLowerBreak&&!fallTrainingLoot&&!fallTrainingFragments&&
             !performTrainingFragments&&!collectTrainingLoot&&!collectTrainingLootViaPlayer&&!sweepTrainingCrates),
             "--perform-training-cohort is a separate frame-major physics suffix, without pickup or actor-major after-damage commands");
-        Require(!damageWriteLimit||damageTrainingCrates||sweepTrainingCrates||fallTrainingCrates,
-            "--damage-write-limit requires crate damage, explicit sweeps or falling timestep commands");
+        Require(!damageWriteLimit||damageTrainingCrates||sweepTrainingCrates||fallTrainingCrates||weapon,
+            "--damage-write-limit requires crate damage, explicit sweeps, falling or weapon timestep commands");
         if(root.empty()){std::cout<<"SKIP owned first Training startup observation: use --owned-source-root or DEUSEX_GAME_ROOT.\n";return 77;}
         ShutdownPortableRuntime();GC::Collect();const auto before=GC::GetStats();
         const auto result=Run(fs::canonical(root),expected,repeats,nativeWork,requireSpawnEncroachment,damageTrainingCrates,
-            collectTrainingLoot,collectTrainingLootViaPlayer,sweepTrainingCrates,fallTrainingCrates,fallAfterLowerBreak,fallTrainingLoot,fallTrainingFragments,performTrainingFragments,performTrainingCohort,damageWriteLimit);
+            collectTrainingLoot,collectTrainingLootViaPlayer,sweepTrainingCrates,fallTrainingCrates,fallAfterLowerBreak,fallTrainingLoot,fallTrainingFragments,performTrainingFragments,performTrainingCohort,damageWriteLimit,weapon);
         ShutdownPortableRuntime();GC::Collect();const auto after=GC::GetStats();
         Require(after.numObjects==before.numObjects&&after.memoryUsage==before.memoryUsage,"Startup observation retained native UObjects after shutdown");
         return result;

@@ -1,5 +1,18 @@
 # Port status
 
+## Original Training weapon equip diagnostic (2026-10-24)
+
+New actual-map diagnostics complete genuine pickup/equip for both authored
+knife and crowbar: real ownership/grid/AmmoNone, six original animation/state
+slices, FinishAnim385 wait, selected Idle and final pending-transition clear.
+Both later hit unchanged native1463 and fully undo all earlier effects/all41
+source fingerprints. This is staged same-root proof, not live committed input
+or crate damage. Desktop/strict ARM64/Android native build pass; two crowbar
+repeats retain exact observations and two final-transition14929 write cutoffs
+fully undo earlier pickup/equip/Idle progress. Coherent desktop/shared gate
+passes182 executed/215 registered,33 explicit owned skips, zero failures in
+61.24s. No new APK or live melee claim. See TRAINING-WEAPON-EQUIP.md.
+
 ## Original weapon animation waits (2026-10-24)
 
 FinishAnim261 and native poll385 now use real actor fields/existing modern

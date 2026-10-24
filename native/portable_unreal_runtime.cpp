@@ -7700,6 +7700,7 @@ public:
 #include "portable_startup_physics_cohort.inl"
 #include "portable_startup_loot_input.inl"
 #include "portable_startup_loot.inl"
+#include "portable_startup_weapon.inl"
 #include "portable_player_login.inl"
     Value ProbeWorldStartup(const PortableWorldStartupProbeOptions& options,
         PortableWorldStartupProbeResult& result, QuestVr::Vm::Execution& execution,
@@ -7709,6 +7710,7 @@ public:
         ValidateStartupLandingCommands(options);
         ValidateStartupFallingCommands(options);
         ValidateStartupPhysicsCohort(options);
+        ValidateStartupWeapon(options,options.weapon);
         struct ProbeScope {
             bool& active;PortableWorldStartupProbeResult*& observation;
             ~ProbeScope() { active = false;observation=nullptr; }
@@ -7912,7 +7914,7 @@ public:
                     login.functionPath.capacity()+login.playerPath.capacity()+login.error.capacity()+5u;
                 ValidateStateBudget(stringBytes);nativeActorOrderObservationBytes_+=stringBytes;
                 StartupPlayerLogin(login.viewportIdentity,*options.playerLogin,login,options.landingCommands,options.fallingCommands,options.damageCommands,options.collectDamageLoot,
-                    options.collectDamageLootViaPlayer,options.physicsCohort,execution);
+                    options.collectDamageLootViaPlayer,options.physicsCohort,options.weapon,execution);
             }
         }
         // Native client/player/detail providers after the original partition
