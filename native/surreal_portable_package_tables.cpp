@@ -1763,6 +1763,7 @@ PortableLodMesh LoadPortableLodMesh(
         sequence.notifies.reserve(notifications);
         for (std::size_t notify = 0; notify < notifications; ++notify) {
             PortableMeshAnimationNotify notification;
+            notification.serializedIndex=static_cast<std::uint32_t>(notify);
             notification.time = reader.ReadFloat();
             if (!std::isfinite(notification.time))
                 throw std::runtime_error("UE1 mesh animation notification time is non-finite");

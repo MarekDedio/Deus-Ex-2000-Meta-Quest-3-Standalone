@@ -420,7 +420,7 @@ Data ReadOriginal(const PortablePackageTables& package,std::size_t exportIndex,b
     for(std::size_t i=0;i<legacyFaces;++i) {const auto a=reader.U16(),b=reader.U16(),c=reader.U16();legacyTopology.push_back({a,b,c});reader.Skip(14);}lazyEnd(trianglesEnd);
     const auto sequences=reader.Count();
     for(std::size_t i=0;i<sequences;++i) {PortableMeshAnimationSequence seq;seq.name=name();seq.group=name();seq.startFrame=reader.I32();seq.numFrames=reader.I32();
-        const auto notifications=reader.Count();for(std::size_t j=0;j<notifications;++j) {const float time=reader.Float();seq.notifies.push_back({time,name()});}
+        const auto notifications=reader.Count();for(std::size_t j=0;j<notifications;++j) {const float time=reader.Float();seq.notifies.push_back({time,name(),static_cast<std::uint32_t>(j)});}
         seq.rate=reader.Float();std::stable_sort(seq.notifies.begin(),seq.notifies.end(),[](const auto& a,const auto& b){return a.time<b.time;});data.sequences.push_back(std::move(seq));}
     const auto connectsEnd=reader.U32();reader.Skip(reader.Count(8)*8);lazyEnd(connectsEnd);reader.Skip(41);
     const auto linksEnd=reader.U32();reader.Skip(reader.Count(4)*4);lazyEnd(linksEnd);
@@ -470,7 +470,8 @@ void CompareRetained(const Data& data,const Data& source,const std::string& cont
         Require(UsableSpan(data,a)==UsableSpan(source,b),context+": legacy sequence availability classification changed");
         Require(a.invalidOriginalSpan==b.invalidOriginalSpan && a.invalidOriginalSpan==!UsableSpan(source,b),
             context+": original unavailable-span metadata flag changed");
-        for(std::size_t n=0;n<a.notifies.size();++n) Require(a.notifies[n].time==b.notifies[n].time && a.notifies[n].function==b.notifies[n].function,
+        for(std::size_t n=0;n<a.notifies.size();++n) Require(a.notifies[n].time==b.notifies[n].time && a.notifies[n].function==b.notifies[n].function &&
+            a.notifies[n].serializedIndex==b.notifies[n].serializedIndex,
             context+": notify time/function/stable order changed");
     }
     Near(data.scale,source.scale,context+": retained Scale changed",0);Near(data.origin,source.origin,context+": retained Origin changed",0);

@@ -1,5 +1,15 @@
 # Immediate milestone: complete the first Training map
 
+Current melee prerequisite,2026-10-24: original main-animation event delivery
+now has a same-Execution runtime adapter,225385/102 pure controls/7680 x87
+oracle cases and70/six actual dormant Doctor prefix controls. Original notify
+order/fields/rollback are retained; no automatic weapon/world driver is implied.
+Full shared gate180 executed/213 registered,33 explicit owned-data skips passes;
+strict ARM64/Android native link and exact normal startup rollback pass. Next
+is genuine FinishAnim261/poll385 and same-Execution state progression, needed
+for real equip/NormalFire rather than forcing Active's empty Fire override.
+No other map integration or new APK. See ORIGINAL-ACTOR-MAIN-ANIMATION.md.
+
 User priority,2026-10-18: make the first original Training map fully work
 before spending time on other campaign-map integration. The long-term full
 campaign objective remains, but it is not the current acceptance milestone.

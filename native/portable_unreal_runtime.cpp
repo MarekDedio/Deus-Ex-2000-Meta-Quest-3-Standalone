@@ -12,6 +12,7 @@
 #include "quest_save_bundle.h"
 #include "portable_model_geometry.h"
 #include "quest_actor_animation_clock.h"
+#include "quest_actor_animation_phase.h"
 #include "quest_authored_struct_value.h"
 #include "quest_object_cast.h"
 #include "quest_spawn_placement.h"
@@ -603,6 +604,10 @@ std::size_t MaterializeClassDefaultObjects(RuntimePackage* runtime) {
 }
 
 std::unique_ptr<GCRoot<RuntimePackage>> persistentRuntime;
+// Portable launcher game-process mode, equivalent to the original exported
+// Core.GIsScriptable gate. It authorizes script ProcessEvent, not begun play,
+// player creation or successful startup. Never mutated within an Execution.
+bool persistentGameScriptsEnabled{};
 struct RuntimeEngineCollisionDomain final : GCObject {
     RuntimeObject *engine{},*transient{};
     // Inventory for validation/accounting only. UClasses own their defaults
@@ -2855,7 +2860,7 @@ public:
         if (clientDependent_ && !persistentNativeClient.HasViewport())
             throw std::runtime_error("Native client lifetime revoked during script transaction");
         ValidateSoundClientLease();
-        if(retailCollisionPreview_||propertyTeardownPreview_||objectDestroyPreview_||actorOrderPreview_||dumpLocationPreview_||actorPhysicsPreview_) {
+        if(retailCollisionPreview_||propertyTeardownPreview_||objectDestroyPreview_||actorOrderPreview_||dumpLocationPreview_||actorPhysicsPreview_||actorAnimationPreview_) {
             ValidateStateBudget();Rollback();return;
         }
         SynchronizeNativeMoveMirror();
@@ -7657,6 +7662,28 @@ public:
             throw std::runtime_error("Runtime property is not an authored StructProperty");
         return StructSchema(Object(Qualified(Table(property->sourcePath), property->property->referencedType)));
     }
+#include "portable_actor_animation_phase.inl"
+    Value ProbeOriginalMainAnimation(const std::string& path,float elapsed,
+        PortableActorMainAnimationProbeResult& result,QuestVr::Vm::Execution& execution) {
+        if(!transaction_)throw std::runtime_error("Original animation observation requires its existing caller root");
+        actorAnimationPreview_=true;
+        auto* actor=Object(path);RequireMapActor(actor);
+        const auto before=OriginalAnimationFloatField(actor,QuestVr::OriginalActorAnimationFloat::Frame);
+        result.frameBefore=OriginalAnimationRead(actor,before,Kind::Float).floating;
+        // Capture the original outer Tick's bIsPawn/actual APawn/Role2 gate;
+        // this observation does not execute or claim the surrounding Tick.
+        const auto pawnFlag=OriginalAnimationField(actor,"Engine.Actor","bIsPawn",Kind::Bool,2u,"BoolProperty");
+        const bool suppress=OriginalAnimationRead(actor,pawnFlag,Kind::Bool).boolean &&
+            IsDerivedFromPath(actor->cls,"Engine.Pawn") && OriginalAnimationRead(actor,
+                OriginalAnimationField(actor,"Engine.Actor","Role",Kind::Byte,0x20u,"ByteProperty"),Kind::Byte).integer==2;
+        const auto stats=AdvanceOriginalMainAnimation(actor,elapsed,suppress,execution);
+        result.iterations=stats.iterations;result.floatWrites=stats.floatWrites;result.finishedWrites=stats.finishedWrites;
+        result.notifyEvents=stats.notifyEvents;result.animEndEvents=stats.animEndEvents;result.missingHandlers=stats.missingHandlers;
+        result.notifySearches=stats.notifySearches;result.inactive=stats.inactive;result.iterationCap=stats.iterationCap;
+        result.remainingSeconds=stats.remainingSeconds;
+        result.frameAfter=OriginalAnimationRead(actor,before,Kind::Float).floating;result.completed=true;
+        return Value{};
+    }
 #include "portable_startup_damage.inl"
 #include "portable_startup_landing.inl"
 #include "portable_startup_falling.inl"
@@ -8673,6 +8700,7 @@ private:
     bool actorOrderPreview_{};
     bool dumpLocationPreview_{};
     bool actorPhysicsPreview_{};
+    bool actorAnimationPreview_{};
     std::size_t nativeActorOrderObservationBytes_{};
     struct StartupOutStorage {std::shared_ptr<Value> value;std::shared_ptr<Reference> reference;};
     std::vector<StartupOutStorage> nativeStartupOut_;
@@ -10401,6 +10429,11 @@ private:
         }
         return clock;
     }
+    bool OriginalGameScriptsEnabled() const {
+        if(!persistentRuntime || !persistentRuntime->get())
+            throw std::runtime_error("Original scriptability gate requires the initialized portable game process");
+        return persistentGameScriptsEnabled;
+    }
     void Put(RuntimeObject* object, const char* name, const Value& value, const std::uint32_t index = 0u) {
         object->scriptValues[LowerAscii(name)][index] = value;
     }
@@ -11782,6 +11815,7 @@ PortableRuntimeSummary InitializePortableRuntime(
         summary.states == graph.stateCount && summary.properties == graph.propertyCount)) &&
         summary.normalizedBytecodeBytes != 0 &&
         GC::GetStats().numObjects == baseline + summary.objects + 1;
+    persistentGameScriptsEnabled=summary.passed;
     return summary;
 }
 
@@ -12022,6 +12056,7 @@ PortableRuntimeSummary InitializePortableRuntime(
         summary.classes != 0 && summary.functions != 0 &&
         summary.normalizedBytecodeBytes != 0 &&
         GC::GetStats().numObjects == baseline + summary.objects + classDefaultObjects + 2;
+    persistentGameScriptsEnabled=summary.passed;
     return summary;
 }
 
@@ -12473,6 +12508,7 @@ void ShutdownPortableRuntime() {
     // Root diagnostics must have unwound before the runtime can be destroyed.
     if(persistentRetailCollision && persistentRetailCollision->ReadUsage().depth)
         throw std::runtime_error("Runtime shutdown refused during an active retail collision root");
+    persistentGameScriptsEnabled=false;
     persistentRetailCollision.reset();
     if(persistentObjectLookup) persistentObjectLookup->active=false;
     persistentObjectLookup.reset();
@@ -14067,6 +14103,21 @@ QuestVr::Vm::Result AdvancePortableActorState(const std::string& actorPath, cons
         QuestVr::Vm::Result result;
         result.status = QuestVr::Vm::Status::Unsupported; result.function = actorPath; result.error = error.what(); return result;
     }
+}
+
+PortableActorMainAnimationProbeResult ProbePortableActorMainAnimation(
+    const std::string& actorPath,float elapsed,const QuestVr::Vm::Limits& limits) {
+    CollectBirthGarbageAtBoundary collect;PortableActorMainAnimationProbeResult result;
+    try {
+        PortableActorVmHost host;
+        result.execution=QuestVr::Vm::ExecuteTransaction(host,[&](QuestVr::Vm::Execution& execution) {
+            return host.ProbeOriginalMainAnimation(actorPath,elapsed,result,execution);
+        },limits);
+        result.execution.committed=false; // The host restored the real root, including completed calls.
+    }catch(const std::exception& error) {
+        result.execution.status=QuestVr::Vm::Status::Unsupported;result.execution.error=error.what();
+    }
+    return result;
 }
 
 QuestVr::Vm::Result AdvancePortableActorTimer(const std::string& actorPath,const float elapsed,

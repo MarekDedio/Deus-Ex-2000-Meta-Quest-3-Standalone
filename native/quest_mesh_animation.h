@@ -22,6 +22,10 @@ static_assert(sizeof(PortablePackedMeshVertex) == 6u, "Packed animation vertex m
 struct PortableMeshAnimationNotify {
     float time{};
     std::string function;
+    // The presentation/pinned clock list is stable-sorted by time. Retail
+    // Actor Tick scans the original serialized order, which can affect its
+    // Float-spilled best-distance comparison. Preserve both contracts.
+    std::uint32_t serializedIndex{0xffffffffu};
 };
 
 struct PortableMeshAnimationSequence {

@@ -1032,6 +1032,17 @@ QuestVr::Vm::Result AdvancePortableActorState(const std::string& actorPath, floa
 // Signed finite reflected counters/rates persist through ordinary actor saves.
 QuestVr::Vm::Result AdvancePortableActorTimer(const std::string& actorPath, float elapsed,
     const QuestVr::Vm::Limits& limits = {});
+
+// Rollback-only observation of the original ordinary MAIN animation phase.
+// Not a complete Tick, begun world, weapon attack or gameplay publication.
+struct PortableActorMainAnimationProbeResult {
+    QuestVr::Vm::Result execution;
+    bool completed{},inactive{},iterationCap{};
+    std::size_t iterations{},floatWrites{},finishedWrites{},notifyEvents{},animEndEvents{},missingHandlers{},notifySearches{};
+    float frameBefore{},frameAfter{},remainingSeconds{};
+};
+PortableActorMainAnimationProbeResult ProbePortableActorMainAnimation(
+    const std::string& actorPath,float elapsed,const QuestVr::Vm::Limits& limits={});
 std::optional<float> ReadPortableActorLatentTimeLeft(const std::string& actorPath);
 std::optional<std::string> ResolvePortableActorState(const std::string& actorPath,
     const std::string& stateName);

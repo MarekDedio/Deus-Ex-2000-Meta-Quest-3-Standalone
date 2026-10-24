@@ -1,5 +1,26 @@
 # Port status
 
+## Original main-animation event delivery (2026-10-24)
+
+The retail ordinary main-animation phase now binds real live Actor/mesh fields
+and selected notify/AnimEnd declarations to the same runtime Execution. It
+preserves original serialized notify order, PC64 arithmetic/Float spills,
+missing-handler boundary consumption, four-iteration cap, callback refresh and
+native ProcessEvent gates. This is a missing melee prerequisite, not a live
+trigger/weapon bridge or complete Actor/Level Tick. Genuine equip still needs
+FinishAnim261/poll385 and same-Execution state continuation; no forced Idle or
+class-Fire bypass is accepted. See ORIGINAL-ACTOR-MAIN-ANIMATION.md and
+ORIGINAL-FINISHANIM-LATENT.md.
+
+Pure tests pass225385/102, including7680 independent x87 cases. Actual dormant
+Training Doctor1 Walk/PlayFootStep boundary0.1 passes70 checks/six prefix
+refusals with full save/revision/GC undo; actual begun=false correctly suppresses
+the script callback. Strict ARM64/final Android native link pass. Full shared
+CTest passes180 executed/213 registered,33 explicit owned-data skips, zero
+failures in134.67s. Fresh original crate347/two dormant contents refusals passes
+separately. Both no-command startup repeats retain exact native1463 and all41
+source fingerprints/full-root undo. No APK or headset acceptance is claimed.
+
 ## Original nested fixed-array storage (2026-10-24)
 
 Shared authored-struct storage, VM member addresses, live assignment, checkpoint

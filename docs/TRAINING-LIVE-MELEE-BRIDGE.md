@@ -28,7 +28,10 @@ compiler input/build was changed or commercial DLL/EXE executed or loaded.
   call** of `AdvanceMainAnimationBoundary`, `AdvanceActorAnimationClock` or
   `AdvanceBlendAnimationClock`: their only native call sites are inside
   `quest_actor_animation_clock.h` itself. Tests drive those helpers separately.
-  There is no current boundary-to-notify dispatch in the live VM Execution.
+  Those older corrected-policy helpers are still not the live driver. The new
+  original main-animation phase now has a private same-Execution runtime
+  binding and rollback-only original Training probe, but no automatic world/
+  held-weapon driver. See ORIGINAL-ACTOR-MAIN-ANIMATION.md for its exact scope.
 
 The isolated original startup-damage/cohort path is a different, useful proof:
 `portable_startup_damage.inl:125..138` authenticates original TakeDamage and
@@ -104,7 +107,7 @@ at103A1BF9 without ProcessEvent; a present function invokes source virtual+10
 ProcessEvent with null parameter/result pointers at103A1DA6..103A1DAF, then
 loops and rereads live state.
 
-The pure helper currently filters candidates with `hasNotifyFunction` before
+The older pure clock helper filters candidates with `hasNotifyFunction` before
 committing a notify boundary, and documents other pinned-clock corrections.
 It is therefore not already an exact retail Tick implementation. A genuine
 wrapper needs an explicit retail arithmetic/order audit, callback-aware
@@ -113,7 +116,10 @@ commit clock/property changes through the existing journal, then synchronously
 dispatch the selected original function in the **same Execution/root**, before
 continuing remaining time. Calling public ExecutePortableActorEvent for each
 boundary would construct another host/root rather than supply this contract.
-NormalFire's Sleep/FinishAnim/state continuation and selected AnimEnd remain
+The new retail phase implements this separate boundary/provider contract;
+its runtime observation currently proves a dormant original Doctor lookup and
+stores, not active weapon callbacks. NormalFire's Sleep/FinishAnim/state
+continuation and selected AnimEnd remain
 part of completing a usable original attack cycle, not merely the first hit.
 
 ## Prioritized implementation and acceptance
@@ -124,8 +130,10 @@ part of completing a usable original attack cycle, not merely the first hit.
 2. Bridge trigger/release input to the genuine currently equipped weapon's
    selected Fire/state path. Keep the existing presentation path separate
    until that bridge succeeds; do not also apply its instant damage.
-3. Implement/audit the bounded original animation notify phase and reached
-   state/native services. One real attack must select one authored sequence,
+3. Connect the newly implemented original main-animation notify phase to real
+   equip/state progression and reached native services. The original FinishAnim
+   command261/poll385 and same-Execution state phase are the next concrete
+   prerequisites (ORIGINAL-FINISHANIM-LATENT.md). One real attack must select one authored sequence,
    cross its0.5 boundary once, call original HandToHandAttack once, trace the
    actual target and reach original crate TakeDamage. An interrupt/replacement
    before the boundary must not leave a fabricated pending hit.
