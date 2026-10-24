@@ -1,5 +1,40 @@
 # Port status
 
+## First Training per-Actor rotation and queued touches (2026-10-24)
+
+Original Actor performPhysics now binds the implemented Falling branch and
+common rotation/PendingTouch epilogue into the same runtime execution. Native
+rotation retains original integer conversion/fixedTurn/live-field behavior,
+real zero-translation MoveActor and probe-gated selected EndedRotation. Queued
+touches deliver actual selected PostTouch, reread the live head and unlink
+exactly one node. No fake native script index or local transaction is added.
+
+PendingTouch now has a replaceable marked native Actor edge and first-write
+receiver/prior-target roots, synchronized with script/native reflected stores
+without animation reconstruction. Checkpoint replacement stages every retained
+map Actor, including omitted records, using the staged replacement-birth index;
+its edge-table allocation shares the existing aggregate restore budget.
+The generated production coordinate/SetPhysics/PendingTouch suite passes4358/
+179 controls, including all23 new partial-write cutoffs and omitted/explicit
+checkpoint pointer reset. Replacement-birth-specific pointer/GC restoration is
+not yet separately witnessed. Independent rotation controls pass40981754/220.
+
+The bounded actual first-map discovery completes48 per-Actor fragment updates,
+63 falling sweeps/12 original HitWall calls/six stops,48 rotation calls and
+38 rotation MoveActor calls. No actual-map EndedRotation/PostTouch occurs in
+this sample. Whole-root rollback/all41 unchanged source fingerprints pass at
+the same genuine later HUD gap. This remains actor-major, not interleaved world
+Tick, automatic scene settling or live controller combat. See
+TRAINING-PER-ACTOR-PHYSICS.md for scope and final repeat/regression evidence.
+Strict ARM64 and final Android native compile/link pass; no APK/headset claim.
+The coherent full desktop/shared gate passes178 executed/210 registered,
+32 explicit owned-data skips, zero failures in56.82s. Fresh owned crate347/two
+dormant contents refusals and released-upper/loot-player/normal-startup
+regressions pass separately. Repeated48-row actual fragment updates and the
+late16626 partial final rotation both preserve full-root undo/all41 sources.
+Fresh owned first-map SetPhysics passes172882/53, including19 write cuts and
+unchanged real full animation clocks.
+
 ## First Training original fragment bouncing (2026-10-23)
 
 The actual dry nonPawn falling bounce branch now delivers original selected

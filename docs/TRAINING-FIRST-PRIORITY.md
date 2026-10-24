@@ -10,6 +10,24 @@ do not spend time on other-map integration or map-content test sweeps.
 Reconfirmed2026-10-22: skip other-map crate/physics integration and testing;
 the WHOLE first Training map remains the current content acceptance target.
 
+Latest per-Actor increment,2026-10-24: genuine fragment steps now include the
+runtime-bound original rotation/PendingTouch epilogue. Actual-map discovery
+captures48 steps/63 sweeps/12 hits/six stops,48 rotation calls/38 real rotational
+MoveActor calls, with full-root undo/all41 source fingerprints unchanged at
+the genuine later HUD boundary. Queued-touch typed ownership/journal/save reset
+is production-tested in generated data (4358 combined checks/179 refusals);
+independent rotation controls pass40981754/220. This is NOT world Tick,
+frame-major crate/loot/debris settling, live weapon input, a new APK or
+first-map completion. Other-map integration remains deferred. See
+TRAINING-PER-ACTOR-PHYSICS.md for exact boundaries/final verification.
+Coherent full desktop/shared verification passes178 executed/210 registered,
+32 explicit owned-data skips, zero failures in56.82s. Fresh owned crate347/two
+contents refusals and released-upper/loot-player/normal regressions pass;
+repeat2 fragment observations and late16626 rotation interruption retain full
+undo/all41 unchanged sources. This remains backend work, not a new APK.
+Fresh owned first-map SetPhysics172882/53 passes separately, including19
+partial-write cuts and real full animation-clock preservation.
+
 Latest debris increment,2026-10-23: original dry nonPawn physFalling now calls
 selected HitWall for bouncing fragments with original packet, timing and live
 flag/mode semantics. Two actual first-map runs advance all six genuine

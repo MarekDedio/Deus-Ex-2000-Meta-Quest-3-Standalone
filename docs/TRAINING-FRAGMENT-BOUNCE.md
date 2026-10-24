@@ -6,6 +6,10 @@ Only `Maps/00_Training.dx` is used for original-map integration. This is not
 complete `performPhysics`, interleaved world physics, live controller combat,
 completed player startup or on-headset acceptance. No new APK is implied.
 
+Subsequent increment: TRAINING-PER-ACTOR-PHYSICS.md records runtime-bound
+original per-Actor rotation/PendingTouch and its final verification. Statements
+below about unimplemented epilogue work describe this earlier checkpoint.
+
 ## Runtime behavior
 
 `native/quest_actor_falling.h` retains the original by-value Normal/Actor

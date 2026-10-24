@@ -5,6 +5,11 @@ for advancing the complete first-Training crate/loot/fragment cohort. It adds no
 runtime implementation and does not establish a world scheduler, complete
 fragment simulation, committed startup or headset acceptance.
 
+Subsequent implementation: TRAINING-FRAGMENT-BOUNCE.md and
+TRAINING-PER-ACTOR-PHYSICS.md record the later runtime-bound bounce and
+per-Actor rotation/PendingTouch work. This original audit remains historical;
+it is not evidence of a world scheduler or complete interleaved settling.
+
 The owned installation is `D:\Steam\steamapps\common\Deus Ex`. Rechecked SHA256:
 
 - `System/Engine.dll`:

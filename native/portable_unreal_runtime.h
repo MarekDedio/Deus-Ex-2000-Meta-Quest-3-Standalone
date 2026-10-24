@@ -94,6 +94,22 @@ struct PortableActorDestroyProbeResult {
 PortableActorDestroyProbeResult ProbePortableActorNativeDestroy(
     const std::vector<std::string>& actorPaths,const QuestVr::Vm::Limits& limits={});
 
+// Original qualified AActor::performPhysics BASE method, not APawn virtual
+// dispatch, in a caller-owned rollback-only root.
+// No invented script native index, world scheduler or partial startup commit.
+struct PortableActorPhysicsObservation {
+    std::string actorPath;
+    bool entered{},returned{};
+    std::size_t fallingCalls{},rotationCalls{},rotationMoveCalls{},endedRotationCalls{},postTouchCalls{},pendingWrites{};
+    std::vector<std::pair<std::string,std::string>> pendingBefore,pendingAfter;
+};
+struct PortableActorPhysicsProbeResult {
+    QuestVr::Vm::Result execution;
+    std::vector<PortableActorPhysicsObservation> actors;
+};
+PortableActorPhysicsProbeResult ProbePortableActorNativePhysics(
+    const std::vector<std::string>& actorPaths,float deltaSeconds,const QuestVr::Vm::Limits& limits={});
+
 struct PortableConversationSummary {
     std::size_t objects{};
     std::size_t conversations{};
@@ -235,6 +251,7 @@ struct PortableStartupFallingCommand {
     float deltaSeconds{0.1f};
     std::uint8_t steps{1u};
     bool afterDamage{};
+    bool performPhysics{};
 };
 struct PortableStartupFallingObservation : PortableStartupLandingObservation {
     std::string classPath,selectedHitWall,stateBefore,stateAfter;
@@ -243,6 +260,8 @@ struct PortableStartupFallingObservation : PortableStartupLandingObservation {
     float deltaSeconds{};
     bool afterDamage{},teleportedBefore{},teleportedAfter{},hasLandingCounter{};
     bool bounceBefore{},bounceAfter{},stoppedByBounce{};
+    bool performPhysics{};
+    std::size_t physicsRotationCalls{},rotationMoveCalls{},endedRotationCalls{},postTouchCalls{},pendingWrites{};
     std::array<std::int32_t,3u> rotationBefore{},rotationAfter{},rotationRateBefore{},rotationRateAfter{};
     std::array<float,3u> accelerationBefore{},accelerationAfter{},oldLocationBefore{},oldLocationAfter{};
     bool operator==(const PortableStartupFallingObservation&) const = default;

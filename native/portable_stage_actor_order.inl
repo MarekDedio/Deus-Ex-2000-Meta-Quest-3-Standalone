@@ -217,5 +217,38 @@ void StageRuntimeBirthReplacement(PreparedScriptState& prepared,const QuestVr::S
     prepared.actorOrder.reset();
     if (level) prepared.actorOrder=std::pair{level,explicitOrder ? saved->nativeActorOrder->firstDynamic : std::optional<std::uint32_t>{}};
     prepared.actorOrderExplicit=explicitOrder;
+    if(prepared.vm.contains("engine.actor.pendingtouch")) {
+        // Include omitted records and legacy checkpoints. Stage all retained
+        // map Actors, not just current Level slots or explicitly saved objects.
+        // This shares the existing aggregate restore ledger and preadmission.
+        if(prepared.worldIndices.size()>65536u)
+            throw std::runtime_error("Checkpoint PendingTouch Actor-edge staging exceeds its bound");
+        reserveVector(prepared.pendingTouches,prepared.worldIndices.size());
+        retain(sizeof(QuestVr::Vm::Value)+8192u); // One bounded live temporary, not per-Actor retained copies.
+        auto& pendingHost=schema.Host();
+        for(const auto& [actor,index]:prepared.worldIndices) {
+            static_cast<void>(index);
+            const auto field=pendingHost.PendingTouchField(actor);
+            const auto key=pendingHost.InstanceStorageKey(actor->cls,field);
+            auto value=pendingHost.Read(actor,field,0u,false,true);
+            const auto record=std::find_if(prepared.objects.begin(),prepared.objects.end(),
+                [&](const auto& row){return row.target==actor;});
+            if(record!=prepared.objects.end()) {
+                const auto found=record->values.find(key);
+                if(found!=record->values.end())if(const auto slot=found->second.find(0u);slot!=found->second.end())value=slot->second;
+            }
+            if(value.kind!=QuestVr::Vm::Kind::Object||value.text.size()>1024u)
+                throw std::runtime_error("Checkpoint PendingTouch value is not a bounded Actor Object");
+            RuntimeObject* target{};
+            if(!value.text.empty()) {
+                const auto found=prepared.vm.find(LowerAscii(value.text));
+                if(found==prepared.vm.end()||!found->second||found->second->classDescriptor||found->second->defaultOwner||
+                    !IsDerivedFromPath(found->second->cls,"Engine.Actor"))
+                    throw std::runtime_error("Checkpoint PendingTouch target is not a retained staged Actor");
+                target=found->second;
+            }
+            prepared.pendingTouches.emplace_back(actor,target);
+        }
+    }
     prepared.replaceBirths=true;
 }

@@ -269,8 +269,9 @@ void NegativeSchemas() {
 }
 #include "portable_actor_physics_generated_cases.inl"
 #include "portable_actor_physics_reentry_cases.inl"
+#include "portable_actor_pending_touch_cases.inl"
 } // namespace
 int main() {
-    try{Positive();NegativeSchemas();PhysicsGeneratedCoverage();PhysicsReentryCoverage();std::cout<<"PASS generated live native Actor/Brush ToWorld and SetPhysics: "<<checks<<" checks, "<<refusals<<" refusals; qualified original fields, frozen defaults, live overlays, native dispatch and nonmutating complete snapshots.\n";return 0;}
+    try{Positive();NegativeSchemas();PhysicsGeneratedCoverage();PhysicsReentryCoverage();PendingTouchGeneratedCoverage();std::cout<<"PASS generated live native Actor/Brush ToWorld, SetPhysics and PendingTouch: "<<checks<<" checks, "<<refusals<<" refusals; qualified original fields, frozen defaults, live overlays, native dispatch and nonmutating complete snapshots.\n";return 0;}
     catch(const std::exception& error){std::cerr<<"FAIL generated live native ToWorld: "<<error.what()<<'\n';return 1;}
 }

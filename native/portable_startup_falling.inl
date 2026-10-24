@@ -99,16 +99,25 @@
                 // Only a successfully observed earlier native step may make a
                 // later requested step unnecessary by stopping/deleting itself.
                 if(step && (actor->worldRemoved || flag(actor,"Engine.Actor.bDeleteMe") ||
-                    Read(actor,ActorPhysicsProperty(actor),0u).integer!=2))break;
+                    (!command.performPhysics&&Read(actor,ActorPhysicsProperty(actor),0u).integer!=2)))break;
                 PortableStartupFallingObservation staged;staged.commandIndex=commandIndex;staged.stepIndex=step;
                 staged.deltaSeconds=command.deltaSeconds;staged.afterDamage=afterDamage;
+                staged.performPhysics=command.performPhysics;
                 staged.hasLandingCounter=decoration;text(staged.classPath,actor->cls->reflection.objectPath);
                 text(staged.actorPath,actor->reflection.objectPath);text(staged.gameInfoPath,game->reflection.objectPath);
                 snapshot(actor,staged,false);staged.writesBefore=staged.writesAfter=execution.WriteCount();
                 if(output.size()>=64u)throw std::runtime_error("Startup falling detached rows exceeded the admitted bound");
                 output.push_back(std::move(staged));auto& row=output.back();row.entered=true;
                 try {
-                    static_cast<void>(RetailStepActorFalling(actor,command.deltaSeconds,execution,&row));
+                    if(command.performPhysics) {
+                        PortableActorPhysicsObservation physics;
+                        const auto capture=[&] {
+                            row.physicsRotationCalls=physics.rotationCalls;row.rotationMoveCalls=physics.rotationMoveCalls;
+                            row.endedRotationCalls=physics.endedRotationCalls;row.postTouchCalls=physics.postTouchCalls;row.pendingWrites=physics.pendingWrites;
+                        };
+                        try{static_cast<void>(RetailPerformActorPhysics(actor,command.deltaSeconds,execution,&physics,&row));capture();}
+                        catch(...){capture();throw;}
+                    }else static_cast<void>(RetailStepActorFalling(actor,command.deltaSeconds,execution,&row));
                     row.returned=true;row.writesAfter=execution.WriteCount();snapshot(actor,row,true);
                     row.removed=actor->worldRemoved;row.deleteMe=flag(actor,"Engine.Actor.bDeleteMe");row.captured=true;
                 }catch(...) {row.writesAfter=execution.WriteCount();throw;}

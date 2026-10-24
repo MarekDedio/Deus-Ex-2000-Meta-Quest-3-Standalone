@@ -28,6 +28,8 @@
 #include "quest_actor_set_physics.h"
 #include "quest_decoration_landing.h"
 #include "quest_actor_falling.h"
+#include "quest_actor_rotation.h"
+#include "quest_actor_perform_physics.h"
 #include "quest_native_window_location.h"
 #include "quest_native_window_query.h"
 #include "quest_native_window_clip.h"
@@ -311,6 +313,8 @@ public:
     RuntimeObject* nativeDeleted{}; // Typed Actor.Deleted, initialized from actual payload.
     RuntimeObject* nativeFirstDeleted{}; // Serialized native ULevel.FirstDeleted.
     bool nativeDeletedBound{},nativeFirstDeletedBound{},nativeDeferredChanged{};
+    RuntimeObject* nativePendingTouch{}; // Replaceable reflected Actor edge, not a symbolic GC root.
+    bool nativePendingTouchBound{};
     RuntimeObject* nativeLevelModel{}; // Serialized ULevel.Model, owned only by its loader.
     RuntimeObject* nativeLevelEngine{}; // Actual collision Engine binding, never a save property.
     std::uint64_t nativeRetailHash{}; // Actual Level.Hash lease, never an archived pointer.
@@ -525,6 +529,7 @@ GCAllocation* RuntimeObject::Mark(GCAllocation* marklist) {
     marklist=GC::MarkObject(marklist,nativeRenderInterface);
     marklist=GC::MarkObject(marklist,nativeDeleted);
     marklist=GC::MarkObject(marklist,nativeFirstDeleted);
+    marklist=GC::MarkObject(marklist,nativePendingTouch);
     for (auto* actor : childActors) marklist = GC::MarkObject(marklist, actor);
     return GC::MarkObject(marklist, nativeAiManager);
 }
@@ -2423,6 +2428,7 @@ public:
         return NativeLinkerSnapshot(Object(path));
     }
     void BindNativeActorDeferred(RuntimeObject* actor){BindNativeDeleted(actor);}
+    void BindNativeActorPendingTouch(RuntimeObject* actor){BindNativePendingTouch(actor);}
     PortableDeferredOwnershipSnapshot DeferredOwnershipSnapshot(){return DeferredSnapshot();}
     Value ProbeNativeActorDestroy(const std::vector<std::string>& paths,PortableActorDestroyProbeResult& result,
         QuestVr::Vm::Execution& execution) {
@@ -2810,6 +2816,7 @@ public:
         beforeLinkerSlots_.clear();
         beforeLinkerHeaders_.clear();
         beforeDeferred_.clear();
+        beforePendingTouch_.clear();
         beforeActorOrder_.reset();
         nativeActorOrderObservationBytes_=0u;
         nativeStartupOut_.clear();
@@ -2847,7 +2854,7 @@ public:
         if (clientDependent_ && !persistentNativeClient.HasViewport())
             throw std::runtime_error("Native client lifetime revoked during script transaction");
         ValidateSoundClientLease();
-        if(retailCollisionPreview_||propertyTeardownPreview_||objectDestroyPreview_||actorOrderPreview_||dumpLocationPreview_) {
+        if(retailCollisionPreview_||propertyTeardownPreview_||objectDestroyPreview_||actorOrderPreview_||dumpLocationPreview_||actorPhysicsPreview_) {
             ValidateStateBudget();Rollback();return;
         }
         SynchronizeNativeMoveMirror();
@@ -2896,6 +2903,7 @@ public:
         beforeLinkerSlots_.clear();
         beforeLinkerHeaders_.clear();
         beforeDeferred_.clear();
+        beforePendingTouch_.clear();
         beforeActorOrder_.reset();
         nativeActorOrderObservationBytes_=0u;
         nativeStartupOut_.clear();
@@ -2962,6 +2970,8 @@ public:
             row.object->nativeDeferredChanged=row.changed;
         }
         beforeDeferred_.clear();
+        for(const auto& row:beforePendingTouch_)row.actor.get()->nativePendingTouch=row.value.get();
+        beforePendingTouch_.clear();
         nativeActorOrderObservationBytes_=0u;
         nativeStartupOut_.clear();
         for (auto& entry : saved_) {
@@ -5043,6 +5053,7 @@ public:
     #include "portable_actor_move.inl"
     #include "portable_actor_far_move.inl"
     #include "portable_actor_falling.inl"
+    #include "portable_actor_perform_physics.inl"
     #include "portable_actor_move_probe.inl"
     #include "portable_core_rotator_add.inl"
     void RequireIndexedPrimitiveDiagnosticOwner(RuntimeObject* owner) {
@@ -7345,6 +7356,10 @@ public:
             }
             if(key=="engine.actor.deleted"&&object->nativeDeletedBound)
                 return Value::Text(Kind::Object,object->nativeDeleted?object->nativeDeleted->reflection.objectPath:std::string{});
+            if(key=="engine.actor.pendingtouch"&&object->nativePendingTouchBound) {
+                static_cast<void>(PendingTouchField(object));
+                return Value::Text(Kind::Object,object->nativePendingTouch?object->nativePendingTouch->reflection.objectPath:std::string{});
+            }
             if(key=="extension.playerpawnext.rootwindow")
                 return Value::Text(Kind::Object,object->nativeRootWindow ?
                     object->nativeRootWindow->reflection.objectPath : std::string{});
@@ -8120,6 +8135,7 @@ private:
         PublishTransactionalLookupObject(actor);
         persistentWorldActors.push_back(actor);
         BindNativeDeleted(actor);
+        BindNativePendingTouch(actor);
         const auto set = [&](const char* name, const Value& value) { ReferenceFor(actor,PropertyNamed(actor,name),0u,false)->write(value); };
         set("Class",Value::Text(Kind::Object,cls->reflection.objectPath));
         set("Name",Value::Text(Kind::Name,path.substr(path.find_last_of('.') + 1u)));
@@ -8538,7 +8554,7 @@ private:
         return true;
     }
     bool OnlyActorTimerChanged(RuntimeObject* actor,const Before& before) {
-        if(!beforeDeferred_.empty()||beforeActorOrder_)return false;
+        if(!beforeDeferred_.empty()||!beforePendingTouch_.empty()||beforeActorOrder_)return false;
         bool hasTimer{};
         const std::array<const decltype(RuntimeObject::scriptValues)*,2u> timerStates{
             &before.values,&actor->scriptValues};
@@ -8569,7 +8585,7 @@ private:
         return true;
     }
     bool OnlyNativeLevelClockChanged(RuntimeObject* actor,const Before& before) {
-        if(!beforeDeferred_.empty()||beforeActorOrder_)return false;
+        if(!beforeDeferred_.empty()||!beforePendingTouch_.empty()||beforeActorOrder_)return false;
         if (!beforeLevelClock_ || persistentWorldActors.empty() || actor!=persistentWorldActors.front() ||
             actor->nativeXLevel!=beforeLevelClock_->first || !actor->committedScriptState) return false;
         const auto field=DescribeProperty("Engine.LevelInfo.TimeSeconds");
@@ -8653,6 +8669,7 @@ private:
     bool objectDestroyPreview_{};
     bool actorOrderPreview_{};
     bool dumpLocationPreview_{};
+    bool actorPhysicsPreview_{};
     std::size_t nativeActorOrderObservationBytes_{};
     struct StartupOutStorage {std::shared_ptr<Value> value;std::shared_ptr<Reference> reference;};
     std::vector<StartupOutStorage> nativeStartupOut_;
@@ -8679,6 +8696,8 @@ private:
         bool changed{};
     };
     std::vector<BeforeDeferred> beforeDeferred_;
+    struct BeforePendingTouch {GCRoot<RuntimeObject> actor,value;};
+    std::vector<BeforePendingTouch> beforePendingTouch_;
     struct BeforeActorOrder {
         RuntimeObject* level{};
         std::vector<RuntimeObject*> slots;
@@ -9386,6 +9405,10 @@ private:
             }
             auto* target = defaults || object->defaultOwner ? DefaultOwner(object) : object;
             const auto nativeKey=LowerAscii(property.key);
+            if(nativeKey=="engine.actor.pendingtouch"&&!defaults&&!object->defaultOwner&&!target->classDescriptor) {
+                if(index)throw std::runtime_error("Original PendingTouch store is not scalar");
+                StoreNativePendingTouch(target,property,value);return;
+            }
             if(nativeKey=="engine.actor.renderinterface"&&target->nativeRenderInterfaceBound)
                 throw std::runtime_error("Native Actor RenderInterface writes require the typed RenderIterator ownership service");
             if(nativeKey=="engine.actor.deleted"&&target->nativeDeletedBound)
@@ -9978,6 +10001,8 @@ private:
         defaults.Retain(beforeLinkerSlots_.capacity()*sizeof(BeforeLinkerSlot));
         defaults.Retain(beforeLinkerHeaders_.capacity()*sizeof(BeforeLinkerHeader));
         defaults.Retain(beforeDeferred_.capacity()*sizeof(BeforeDeferred));
+        defaults.Retain(beforePendingTouch_.capacity()*sizeof(BeforePendingTouch)+
+            beforePendingTouch_.size()*2u*sizeof(GCRootNode));
         if(beforeActorOrder_)defaults.Retain(sizeof(BeforeActorOrder)+
             beforeActorOrder_->slots.capacity()*sizeof(RuntimeObject*)+
             beforeActorOrder_->indices.capacity()*sizeof(decltype(beforeActorOrder_->indices)::value_type));
@@ -10472,6 +10497,7 @@ struct PreparedScriptState {
     // source-validated names instead of consulting the currently loaded slots.
     std::vector<std::string> symbolicActorSlots;
     std::vector<std::pair<RuntimeObject*,std::int32_t>> worldIndices;
+    std::vector<std::pair<RuntimeObject*,RuntimeObject*>> pendingTouches;
 };
 
 void StageRuntimeBirthReplacement(PreparedScriptState& prepared,const QuestVr::ScriptSavedState* saved=nullptr);
@@ -13762,6 +13788,20 @@ PortableActorDestroyProbeResult ProbePortableActorNativeDestroy(
     }
     return result;
 }
+PortableActorPhysicsProbeResult ProbePortableActorNativePhysics(
+    const std::vector<std::string>& actorPaths,float deltaSeconds,const QuestVr::Vm::Limits& limits) {
+    CollectBirthGarbageAtBoundary collect;PortableActorPhysicsProbeResult result;
+    try {
+        PortableActorVmHost host;
+        result.execution=QuestVr::Vm::ExecuteTransaction(host,[&](QuestVr::Vm::Execution& execution) {
+            return host.ProbeNativeActorPhysics(actorPaths,deltaSeconds,result,execution);
+        },limits);
+        result.execution.committed=false;
+    }catch(const std::exception& error) {
+        result.execution.status=QuestVr::Vm::Status::Unsupported;result.execution.error=error.what();
+    }
+    return result;
+}
 PortableObjectDestroyProbeResult ProbePortableActorConditionalDestroy(
     const std::string& actorPath,const QuestVr::Vm::Limits& limits) {
     CollectBirthGarbageAtBoundary collect;PortableObjectDestroyProbeResult result;
@@ -14299,7 +14339,9 @@ static std::pair<RuntimeObject*,RuntimeObject*> BindAuthoredActorSlots(
             persistentWorldActors[slot] = actor;
             actorOrder.push_back(actor);
         }
-        for(auto* actor:actorOrder)host.BindNativeActorDeferred(actor);
+        for(auto* actor:actorOrder) {
+            host.BindNativeActorDeferred(actor);host.BindNativeActorPendingTouch(actor);
+        }
     } else {
         persistentWorldActors.clear();
         // Generated metadata-only maps deliberately omit serialized ULevel.
@@ -14310,6 +14352,7 @@ static std::pair<RuntimeObject*,RuntimeObject*> BindAuthoredActorSlots(
             actor->worldActorIndex = static_cast<std::int32_t>(actorOrder.size());
             actorOrder.push_back(actor);
             persistentWorldActors.push_back(actor);
+            host.BindNativeActorPendingTouch(actor);
         }
     }
     persistentAuthoredWorldSlots = persistentWorldActors.size();
@@ -16643,6 +16686,9 @@ static bool ReadPortableRuntimeState(const std::string& path, const bool apply, 
                 object.target->touchEventSent = object.touchSent; object.target->worldRemoved = object.removed;
                 object.target->committedLifecycle = true;
             }
+        }
+        for(const auto& [actor,target]:prepared.pendingTouches) {
+            actor->nativePendingTouch=target;actor->nativePendingTouchBound=true;
         }
         for (const auto& root : prepared.aiManagers) root.get()->owner->nativeAiManager = root.get();
         if (prepared.levelClock) prepared.levelClock->first->nativeTimeSeconds=prepared.levelClock->second;

@@ -6,6 +6,12 @@ Actor rotation algorithm that was left partial in
 It is evidence for a future original-runtime implementation, not evidence that
 rotation, the full crate/loot/fragment cohort, startup or a headset build works.
 
+Subsequent implementation: TRAINING-PER-ACTOR-PHYSICS.md records the bounded
+rotation coordinator, runtime binding, independent tests and actual first-map
+per-Actor fragment observations. This static audit remains the original-code
+authority; its initial unimplemented status is historical, not a scheduler or
+headset completion claim.
+
 ## Sources and reproduction
 
 Owned installation: `D:\Steam\steamapps\common\Deus Ex`. Rechecked SHA256:
