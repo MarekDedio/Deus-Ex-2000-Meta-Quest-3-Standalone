@@ -38,7 +38,7 @@ endforeach()
 # Observation tool, deliberately not a CTest acceptance result. Exit2 means
 # a safely rolled-back first-Training startup boundary, not a passing startup.
 add_executable(portable_training_startup_probe portable_training_startup_probe.cpp)
-foreach(PLACEMENT_TEST quest_level_find_spot quest_level_point_check quest_level_far_move quest_runtime_state_budget quest_native_window_toggle quest_actor_set_physics quest_decoration_landing quest_actor_falling quest_actor_perform_physics quest_actor_rotation)
+foreach(PLACEMENT_TEST quest_level_find_spot quest_level_point_check quest_level_far_move quest_runtime_state_budget quest_native_window_toggle quest_actor_set_physics quest_decoration_landing quest_actor_falling quest_actor_perform_physics quest_actor_rotation quest_actor_physics_phase)
     add_executable(${PLACEMENT_TEST}_test ${PLACEMENT_TEST}_test.cpp)
     target_compile_features(${PLACEMENT_TEST}_test PRIVATE cxx_std_20)
     target_include_directories(${PLACEMENT_TEST}_test PRIVATE "${PORT_NATIVE}")

@@ -87,8 +87,8 @@
             if(math!=reinterpret_cast<std::uintptr_t>(&nativeMoveUnitCoords_))throw std::runtime_error("Native child carry math VALUE authority changed");
             return nativeMoveUnitCoords_;
         };
-        q.moveActor=[this,&execution](QuestVr::OriginalActorChildMove move,QuestVr::OriginalActorLineHit& hit){
-            return MoveLevelActor(move.level,move.actor,move.delta,move.rotation,hit,move.options,execution)?1:0;
+        q.moveActor=[this,&execution,source](QuestVr::OriginalActorChildMove move,QuestVr::OriginalActorLineHit& hit){
+            return CohortObserveChildMove(source,move,hit,execution);
         };
         q.pawn=[this](std::uintptr_t a){return RetailTouchClass(a,"Engine.Pawn");};
         q.viewRotation=[this](std::uintptr_t a,unsigned c){return MoveRotation(a,c,true);};

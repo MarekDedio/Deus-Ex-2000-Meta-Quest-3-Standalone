@@ -23,6 +23,10 @@ Rechecked owned `D:\Steam\steamapps\common\Deus Ex` SHA256:
   `0C3A8B18239CA98AE132506A1BD966CB5D91C6852E650E179CB15860832C20B4`.
 - `System/Engine.u`:
   `1742D16F49492A02391FA6A9CA25887F0CC4F30EC9964925226217D8858737DA`.
+- `System/DeusEx.dll`:
+  `B91002F3E7658C0562D28BCCC887CF9DB79A47A19F5E09E8BE460C9D0C0BEE04`.
+- `System/DeusEx.u`:
+  `257F5C166739B3D13884A8B8E98A47DDA458B325FA929B3B3B99BE056CB74480`.
 
 The exported native `AActor.Tick(Float,ELevelTick)` is export-table index1667,
 ordinal1668, thunk10303DAA, body103A1AA0 onward. The ordinary non-Pawn paths
@@ -38,11 +42,101 @@ Static reads of exported vtables give:
 | ADecoration | 104282F0 | 10303DAA | 10303242 |
 | AInventory | 104286F8 | 10303DAA | 10303242 |
 | AProjectile | 10428850 | 10303DAA | 10303242 |
+| ADeusExDecoration | 10027744 | 1001AF50 | 1001AFAA |
 
 This authenticates these native base implementations, not arbitrary subclasses
 or a guessed complete native virtual table for every generated actor. The
-binding still needs the actual nearest native implementation/ancestry for its
-real crate, Inventory and Fragment instances. APawn paths remain different.
+bounded real cohort ancestry is authenticated below. APawn paths remain
+different.
+
+### Actual first-Training cohort native dispatch
+
+The owned serialized Class exports have the following exact case-sensitive
+paths and object flags. Export numbers below are one-based original package
+references, not portable class indices. Every row has ObjClass0 and a genuine
+serialized Class payload. **RF_Native0x04000000 on that export**, not inherited
+ClassFlags bits or an English class name, determines a native Class boundary.
+
+| Package.Class | Export | ObjFlags | Direct superclass |
+| --- | --- | --- | --- |
+| DeusEx.CrateBreakableMedGeneral | 20445 | 000F0004 | DeusEx.Containers |
+| DeusEx.Containers | 116 | 000F0004 | DeusEx.DeusExDecoration |
+| DeusEx.DeusExDecoration | 14 | 040F0004 | Engine.Decoration |
+| Engine.Decoration | 45 | 040F0004 | Engine.Actor |
+| DeusEx.Lockpick | 1082 | 000F0004 | DeusEx.SkilledTool |
+| DeusEx.SkilledTool | 683 | 000F0004 | DeusEx.DeusExPickup |
+| DeusEx.DeusExPickup | 17 | 000F0004 | Engine.Pickup |
+| Engine.Pickup | 606 | 000F0004 | Engine.Inventory |
+| Engine.Inventory | 6 | 040F0004 | Engine.Actor |
+| DeusEx.WoodFragment | 255 | 000F0004 | DeusEx.DeusExFragment |
+| DeusEx.DeusExFragment | 138 | 000F0004 | Engine.Fragment |
+| Engine.Fragment | 316 | 000F0004 | Engine.Projectile |
+| Engine.Projectile | 193 | 040F0004 | Engine.Actor |
+| Engine.Actor | 2 | 040F0004 | Core.Object |
+
+In particular, **Engine.Fragment is not a native Class**. Its nearest native
+ancestor is Engine.Projectile; no native Fragment vtable override should be
+invented. Engine.Fragment, DeusEx.DeusExFragment and DeusEx.WoodFragment each
+have ClassFlags0x32 and logical Class script length0 in the owned payload.
+Engine.Projectile has ClassFlags0x33 and logical Class script length0. This
+does not mean these classes lack selected state/function bytecode: those
+declarations are separate exports and remain real callbacks.
+
+For these three exact surviving cohorts, the nearest actual native paths are:
+
+- CrateBreakableMedGeneral: **DeusEx.DeusExDecoration**.
+- Lockpick: **Engine.Inventory**, not DeusEx.DeusExPickup.
+- WoodFragment: **Engine.Projectile**, not Engine.Fragment.
+
+Their actual native Tick/performPhysics dispatch is AActor, including the
+DeusExDecoration case. Static bytes at1001AF50 are
+`FF 25 38 72 02 10`: jump through IAT10027238. That unbound original IAT cell
+contains Hint/Name RVA0002CDBA, importing
+`?Tick@AActor@@UAEHMW4ELevelTick@@@Z` from Engine.dll. Static bytes at1001AFAA
+are `FF 25 94 72 02 10`: jump through IAT10027294. Its Hint/Name RVA0002D122
+imports `?performPhysics@AActor@@UAEXM@Z` from Engine.dll. These are import
+thunks, not native DeusExDecoration override bodies. Engine's vtable values
+already match the exported AActor thunks10303DAA and10303242 for ADecoration,
+AInventory and AProjectile.
+
+A future adapter should resolve each actual actor's genuine nearest native
+Class using RF_Native and authorize only these proven native paths for this
+bounded cohort dispatch. A derived class can have inherited ClassFlags while
+still being non-native. Do not allow an arbitrary Decoration/Inventory/Fragment
+subclass merely because it passes IsA; another actual nearest native Class
+could override a virtual method. None of this selects, replaces or skips the
+original state/class script callbacks used inside performPhysics.
+
+Metadata reproduction uses the existing read-only
+`LoadPortablePackageTables` implementation in
+`native/surreal_portable_package_tables.cpp`: select each exact table export
+above, require ObjClass0, retain ObjFlags and follow ObjBase through actual
+positive exports/negative imports with `GetPortableObjectPath`. The existing
+table-only audit executable
+`artifacts/conditional-destroy-audit-20261021/class_export_flags.exe` also
+reproduces the crate/Containers/DeusExDecoration/Decoration/Actor rows and
+ClassFlags, without constructing any UObject. The additional Lockpick and
+WoodFragment chains were independently read from immutable package bytes in
+PowerShell using the same table layout: header name/export/import count-offset
+pairs at12/16,20/24,28/32; names are version68 compact-length strings plus
+UInt32 flags; exports are compact ObjClass, compact ObjBase, Int32 ObjOuter,
+compact ObjName, UInt32 ObjFlags, compact ObjSize and conditional compact
+ObjOffset; imports are compact ClassPackage/ClassName, Int32 ObjOuter and
+compact ObjName. No class-default/runtime fallback is involved. ClassFlags
+for the four zero-script classes were read after UField/UStruct/UState's
+actual serialized header, refusing to skip a nonzero script by its logical
+length. Nonzero-script ClassFlags are not inferred by this raw-byte check.
+
+Additional static-byte reproduction:
+
+```powershell
+& objdump -p 'D:\Steam\steamapps\common\Deus Ex\System\DeusEx.dll'
+& objdump -s --start-address=0x100277A8 --stop-address=0x100277D4 'D:\Steam\steamapps\common\Deus Ex\System\DeusEx.dll'
+& objdump -d --start-address=0x1001AF50 --stop-address=0x1001AF56 'D:\Steam\steamapps\common\Deus Ex\System\DeusEx.dll'
+& objdump -d --start-address=0x1001AFAA --stop-address=0x1001AFB0 'D:\Steam\steamapps\common\Deus Ex\System\DeusEx.dll'
+& objdump -s --start-address=0x10027238 --stop-address=0x1002723C 'D:\Steam\steamapps\common\Deus Ex\System\DeusEx.dll'
+& objdump -s --start-address=0x10027294 --stop-address=0x10027298 'D:\Steam\steamapps\common\Deus Ex\System\DeusEx.dll'
+```
 
 Reproduction from the port directory:
 

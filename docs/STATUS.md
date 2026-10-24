@@ -1,5 +1,37 @@
 # Port status
 
+## First Training frame-major crate/loot/debris physics (2026-10-24)
+
+The new physics-suffix cohort retains the real upper crate plus ALL surviving
+lower-crate damage births and scans actual live native slots frame-major.
+Nearest RF_Native ancestry/vtable/import evidence authenticates the three real
+native physics implementations; actual role/remote-role/Physics eligibility
+skips stopped objects on later frames without inventing extra delete gates.
+
+Original-map discovery and two complete repeats capture64 rows,11 eligible
+calls/53 skips,48 sweeps/13 HitWall calls/two ordinary landings, nine real
+rotational moves and three native child carries. Both Lockpick translation
+and the already-stopped upper's child movement occur in the same frame.
+Final genuine support is upper->Lockpick->world; all six fragments stop on
+world support. No source objects, debris, collisions or poses are fabricated.
+Repeated mid-third-carry write16105 failures undo both earlier completed
+carries and the partial third, all destruction/births/physics and source state.
+The later original HUD failure remains explicit/nonpublishing in full runs.
+See TRAINING-PHYSICS-COHORT.md for exact scope, evidence and verification state.
+
+Focused desktop,16777668 eligibility controls, strict ARM64 and Android native
+compile/link pass. Repeated later write16414 failures also undo all three
+carries/earlier landings and the partial final active fragment update. Coherent
+full desktop/shared verification passes179 executed/211 registered,32 explicit
+owned-data skips, zero failures in96.65s. Fresh owned crate347/two dormant
+contents refusals and first-map SetPhysics172882/53 pass separately; normal
+no-command startup retains its exact HUD boundary/full-root undo/all41 sources.
+No APK/headset
+acceptance, Actor/Level Tick, live melee or finished first Training is claimed.
+TRAINING-LIVE-MELEE-BRIDGE.md records why current trigger/presentation inventory
+does not yet reach the genuine weapon Fire->animation notify->crate damage
+chain; the original knife/crowbar hit notify is HandToHandAttack at frame0.5.
+
 ## First Training per-Actor rotation and queued touches (2026-10-24)
 
 Original Actor performPhysics now binds the implemented Falling branch and

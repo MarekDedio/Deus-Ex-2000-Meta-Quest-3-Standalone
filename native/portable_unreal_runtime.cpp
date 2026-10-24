@@ -30,6 +30,7 @@
 #include "quest_actor_falling.h"
 #include "quest_actor_rotation.h"
 #include "quest_actor_perform_physics.h"
+#include "quest_actor_physics_phase.h"
 #include "quest_native_window_location.h"
 #include "quest_native_window_query.h"
 #include "quest_native_window_clip.h"
@@ -7659,6 +7660,7 @@ public:
 #include "portable_startup_damage.inl"
 #include "portable_startup_landing.inl"
 #include "portable_startup_falling.inl"
+#include "portable_startup_physics_cohort.inl"
 #include "portable_startup_loot_input.inl"
 #include "portable_startup_loot.inl"
 #include "portable_player_login.inl"
@@ -7669,6 +7671,7 @@ public:
         ValidateStartupDamageCommands(options);
         ValidateStartupLandingCommands(options);
         ValidateStartupFallingCommands(options);
+        ValidateStartupPhysicsCohort(options);
         struct ProbeScope {
             bool& active;PortableWorldStartupProbeResult*& observation;
             ~ProbeScope() { active = false;observation=nullptr; }
@@ -7872,7 +7875,7 @@ public:
                     login.functionPath.capacity()+login.playerPath.capacity()+login.error.capacity()+5u;
                 ValidateStateBudget(stringBytes);nativeActorOrderObservationBytes_+=stringBytes;
                 StartupPlayerLogin(login.viewportIdentity,*options.playerLogin,login,options.landingCommands,options.fallingCommands,options.damageCommands,options.collectDamageLoot,
-                    options.collectDamageLootViaPlayer,execution);
+                    options.collectDamageLootViaPlayer,options.physicsCohort,execution);
             }
         }
         // Native client/player/detail providers after the original partition

@@ -266,6 +266,41 @@ struct PortableStartupFallingObservation : PortableStartupLandingObservation {
     std::array<float,3u> accelerationBefore{},accelerationAfter{},oldLocationBefore{},oldLocationAfter{};
     bool operator==(const PortableStartupFallingObservation&) const = default;
 };
+// Explicit frame-major physics suffix diagnostic, NOT Actor/Level Tick. The
+// placed survivors plus ALL surviving Actor births of one captured damage
+// command remain collidable and update in actual live native slot order.
+struct PortableStartupPhysicsCohortCommand {
+    std::vector<std::string> placedActors;
+    std::size_t damageCommandIndex{};
+    float deltaSeconds{0.1f};
+    std::uint8_t frames{8u};
+};
+struct PortableStartupPhysicsCohortState {
+    std::string actorPath,classPath,basePath,statePath;
+    std::array<float,3u> location{},velocity{};
+    std::array<std::int32_t,3u> rotation{};
+    std::uint8_t physics{},role{},remoteRole{};
+    bool removed{},deleteMe{};
+    bool operator==(const PortableStartupPhysicsCohortState&) const = default;
+};
+struct PortableStartupPhysicsCarryObservation {
+    std::string sourcePath,childPath,baseBefore,baseAfter;
+    std::array<float,3u> locationBefore{},locationAfter{},delta{};
+    std::array<std::int32_t,3u> rotation{};
+    std::array<std::int32_t,4u> options{};
+    std::size_t writesBefore{},writesAfter{};
+    bool entered{},returned{},captured{},moved{};
+    bool operator==(const PortableStartupPhysicsCarryObservation&) const = default;
+};
+struct PortableStartupPhysicsCohortObservation {
+    std::size_t frameIndex{},actorSlot{};
+    std::uint8_t role{},remoteRole{};
+    bool eligible{},captured{};
+    PortableStartupFallingObservation physics;
+    std::vector<PortableStartupPhysicsCohortState> before,after;
+    std::vector<PortableStartupPhysicsCarryObservation> carries;
+    bool operator==(const PortableStartupPhysicsCohortObservation&) const = default;
+};
 struct PortableStartupDamageBirth {
     std::string actorPath,classPath,statePath,ownerPath,basePath;
     std::array<float,3u> location{},velocity{};
@@ -333,6 +368,9 @@ struct PortableWorldStartupProbeOptions {
     // At most eight bounded commands/64 total steps in this same root.
     // Inventory targets must be captured surviving original damage births.
     std::vector<PortableStartupFallingCommand> fallingCommands{};
+    // One bounded physics-only cohort, after damage/before pickup. This does
+    // not run Tick/state/timer/lifespan/stasis/owner deferral or publish startup.
+    std::optional<PortableStartupPhysicsCohortCommand> physicsCohort{};
     // Follow actual surviving Inventory births with state-aware Frob(JC,None).
     // Requires damageCommands and one real Login viewport; at most eight live
     // births/128 inventory links per observation. Normal startup leaves false.
@@ -430,6 +468,7 @@ struct PortableWorldStartupProbeResult {
     std::vector<PortableStartupDamageObservation> damageObservations;
     std::vector<PortableStartupLandingObservation> landingObservations;
     std::vector<PortableStartupFallingObservation> fallingObservations;
+    std::vector<PortableStartupPhysicsCohortObservation> physicsCohortObservations;
     std::vector<PortableStartupLootObservation> lootObservations;
 };
 const char* PortableWorldStartupPhaseName(PortableWorldStartupPhase phase);

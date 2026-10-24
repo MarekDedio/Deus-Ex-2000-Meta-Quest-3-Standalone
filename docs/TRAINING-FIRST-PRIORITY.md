@@ -10,6 +10,26 @@ do not spend time on other-map integration or map-content test sweeps.
 Reconfirmed2026-10-22: skip other-map crate/physics integration and testing;
 the WHOLE first Training map remains the current content acceptance target.
 
+Latest ordered-cohort increment,2026-10-24: the real surviving upper crate,
+all six original fragments and dropped Lockpick now advance frame-major in
+actual native slots with authentic native implementation/role/mode admission.
+Complete original-map repeats retain64 equal rows,48 sweeps/13 hits/two ordinary
+landings, nine rotational moves and three child carries. Lockpick and upper
+both genuinely translate; final upper->Lockpick->world support is retained,
+not normalized to a fake floor. All six fragments stop; later Physics0 frames
+skip physics. Repeated partial third-carry cutoff16105 fully undoes both earlier
+carries plus partial movement/death/births; all41 sources remain unchanged.
+Repeated later cutoff16414 also undoes the three carries, earlier landings and
+partial final active fragment update. Full desktop/shared verification passes
+179 executed/211 registered,32 explicit owned-data skips, zero failures in96.65s.
+Fresh owned crate347/two contents refusals and first-map SetPhysics172882/53
+pass separately; normal no-command startup retains the same HUD boundary,
+full-root undo/all41 unchanged source fingerprints.
+No new APK/live controller combat/Tick/first-map completion is claimed. See
+TRAINING-PHYSICS-COHORT.md and TRAINING-LIVE-MELEE-BRIDGE.md. Other maps remain
+deferred; genuine weapon pickup/equip/Fire/notify/damage is the live bridge,
+not widening the old NPC presentation-health shortcut to crates.
+
 Latest per-Actor increment,2026-10-24: genuine fragment steps now include the
 runtime-bound original rotation/PendingTouch epilogue. Actual-map discovery
 captures48 steps/63 sweeps/12 hits/six stops,48 rotation calls/38 real rotational

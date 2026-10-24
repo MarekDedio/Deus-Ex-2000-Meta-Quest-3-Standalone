@@ -97,7 +97,8 @@
         PortablePlayerLoginObservation& observation,const std::vector<PortableStartupLandingCommand>& landingCommands,
         const std::vector<PortableStartupFallingCommand>& fallingCommands,
         const std::vector<PortableStartupDamageCommand>& damageCommands,
-        bool collectDamageLoot,bool collectDamageLootViaPlayer,QuestVr::Vm::Execution& execution) {
+        bool collectDamageLoot,bool collectDamageLootViaPlayer,
+        const std::optional<PortableStartupPhysicsCohortCommand>& cohort,QuestVr::Vm::Execution& execution) {
         if(!transaction_ || !worldStartupProbe_)
             throw std::runtime_error("SpawnPlayActor continuation requires its actual startup root");
         auto* level=CurrentClockLevel();auto* viewport=NativeSessionViewport(viewportIdentity);
@@ -220,6 +221,7 @@
                 ProbeStartupFalling(player,fallingCommands,false,execution);
                 ProbeStartupDamage(player,damageCommands,execution);
                 ProbeStartupFalling(player,fallingCommands,true,execution);
+                if(cohort)ProbeStartupPhysicsCohort(player,*cohort,execution);
                 if(collectDamageLoot)ProbeStartupLoot(player,collectDamageLootViaPlayer,execution);
                 static_cast<void>(SetSessionPlayer(viewportIdentity,player->reflection.objectPath,execution));
                 observation.paired=true;
