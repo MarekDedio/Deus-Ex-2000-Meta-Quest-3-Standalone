@@ -1003,7 +1003,12 @@ void PreparationAfterArguments() {
 void StateRejectionControls() {
     Host host;
     host.Program("State.A",{0x08}); host.Install("State.A");
-    for (const auto latent : {StateLatent::FinishAnim,StateLatent::MoveTo}) {
+    host.states.at("Actor").frame->latent = StateLatent::FinishAnim;
+    const auto finishReads = host.mutableReads;
+    const auto finish = Vm::ResumeState(host,"Actor");
+    Check(finish.passed() && finish.status == Vm::Status::Waiting && host.mutableReads == finishReads,
+        "FinishAnim wait resumed without its native finished poll or changed frame storage");
+    for (const auto latent : {StateLatent::MoveTo}) {
         host.states.at("Actor").frame->latent = latent;
         const auto before = host.mutableReads;
         const auto result = Vm::ResumeState(host,"Actor");

@@ -1,10 +1,11 @@
 # Original FinishAnim261 and native latent poll385
 
-Read-only owned GOTY audit, 2026-10-24. Immediate integration scope is the
-first `00_Training.dx` and its actual knife/crowbar, not other maps. This file
-records the next genuine equip/state prerequisite. It adds no implementation,
-changes no compiler input, runs no build and proves neither complete Actor.Tick
-nor live Quest combat. No commercial EXE/DLL was executed or loaded.
+Owned GOTY audit and implementation checkpoint, 2026-10-24. Immediate
+integration scope is the first `00_Training.dx` and its actual knife/crowbar,
+not other maps. The original read-only audit is preserved below; the subsequent
+implementation and its verification limits are recorded in the final section.
+Neither establishes complete Actor.Tick or live Quest combat. No commercial
+EXE/DLL was executed or loaded.
 
 Read alongside [main animation and live melee](TRAINING-LIVE-MELEE-BRIDGE.md),
 [Actor Tick ordering](ORIGINAL-ACTOR-TICK-PHYSICS-PHASE.md),
@@ -135,7 +136,7 @@ latentAction, maps only already supported Sleep384/WaitForLanding528, and
 refuses ambiguous modern Continue lazily. Native261 should add an authenticated
 modern FinishAnim ->385 mapping, not make all modern frames claim native0.
 
-## Current implementation gaps and minimal faithful changes
+## Gaps found by the original audit and required faithful changes
 
 This audit found the following concrete current-source boundaries:
 
@@ -276,5 +277,59 @@ crate destruction.
 & artifacts/prerequisites-20261009/build/script_bytecode_inspect.exe 'D:\Steam\steamapps\common\Deus Ex' 'Engine.Actor.FinishAnim' 'DeusEx.DeusExPlayer.PutInHand' 'DeusEx.DeusExPlayer.SetInHandPending' 'DeusEx.DeusExPlayer.UpdateInHand' 'Engine.PlayerPawn.SwitchWeapon' 'Engine.Pawn.ChangedWeapon' 'DeusEx.DeusExWeapon.BringUp' 'DeusEx.DeusExWeapon.Active' 'Engine.Weapon.Active.Fire' 'DeusEx.DeusExPlayer.Fire' 'Engine.PlayerPawn.Fire' 'DeusEx.DeusExWeapon.NormalFire'
 ```
 
-Only this documentation file was written by this audit. Frozen native/core
-compiler inputs and current build jobs were left untouched.
+The initial audit wrote only this documentation file and left its then-frozen
+native/core compiler inputs and current build jobs untouched.
+
+## Implemented native wait and shared state-phase checkpoint
+
+`quest_actor_finish_anim.h` now implements the audited lazy finite comparison
+subset of command261 and poll385. `portable_actor_finish_anim.inl` binds actual
+declaring fields, the exact native409 declaration and the actor's existing
+modern frame to the caller's Execution. It journals the two typed leaves of
+the packed loop/finished clear with no intervening callback/publication, then
+only the reached latent store. Poll reads fresh bAnimFinished, does not advance
+animation or consume elapsed time, and preserves an absent or stale Sleep timer.
+Missing/raw frame storage is refused only when an actual latent store is reached.
+
+Modern FinishAnim maps explicitly to native385 in the main animation adapter.
+The save schema admits this wait only with real modern state control, without
+requiring a timer. It refuses ambiguous legacy ordinal3 replacements without
+changing the existing structural wire format. General modern Continue still
+does not establish native0; this increment does not resolve that separate
+native-latent provenance boundary.
+
+`Execution::RunStatePhase` now shares the public ResumeState/AdvanceState core,
+interpreter, operation/script/native budgets, local views, first-failure state
+and rollback journal. Child Waiting/Stopped is separate from root disposition.
+Successful nested calls restore the real caller's diagnostic location; caught
+phase failures still poison the entire root. Newly installed waits yield after
+their complete statement and are not immediately polled again.
+
+Focused verification passes:
+
+- Pure native helper:113775 checks/37 refusals/7680 finite comparison cases.
+- VM:696084 checks/897 refusals overall, including148/17 shared state-phase
+  controls and51/13 exact FinishAnim declaration controls.
+- Persistent state execution:555 checks/70 refusals.
+- Generated real-package production runtime:1035 checks/19 refusals, including
+  real GotoState/raw/final/direct261, both385 outcomes, exact PC continuation,
+  warm/cold byte-equal saves, absent/stale timers, every command-write prefix,
+  sampled native-work cutoffs, later failure undo, and malformed declarations
+  or legacy saves. Bootstrap uses actual Engine/metadata/Package registration
+  and object lookup, not a serialized Core.Class shim.
+- Strict ARM64 core/test syntax and Android native library compilation/link.
+
+Logs are `artifacts/training-finishanim-*20261024.log`. The coherent full
+desktop build and shared CTest gate pass182 executed/215 registered,33 explicit
+owned-data skips, zero failures in84.76s. Fresh owned first-Training crate
+controls pass347/two dormant contents refusals; the actual dormant Doctor
+animation regression passes70/six refusal prefixes separately. Both normal
+startup repeats retain exact native1463 at218693 instructions/24284 writes,
+native work492818 cold/492276 warm and full-root undo/all41 unchanged owned
+source fingerprints. The first discovery invocation exhausted the unchanged
+default65536 work allowance; the final comparison explicitly uses16777216,
+not a modified runtime default. The generated runtime test does not itself exercise the production
+same-Execution coordinator or animation/AnimEnd-to-poll replacement; the VM
+fixtures cover the phase API separately. Real first-Training pickup/equip,
+Fire/notify/trace/damage, live committed inventory, full Tick and Quest rendering
+remain separate required evidence. No APK was produced by this native increment.

@@ -264,7 +264,13 @@ struct TestHost final:Vm::Host {
     std::vector<Value> iteratorValues{Value::Integer(1),Value::Integer(2),Value::Integer(3)};
     std::size_t iteratorCreates{},iteratorDestroys{},iteratorNextCalls{},iteratorBytes{128u};
     std::optional<QuestVr::StateObject> state,savedState;
+    std::map<std::string,QuestVr::StateObject> phaseStates,savedPhaseStates;
     std::map<std::string,Vm::Function> statePrograms;
+    std::vector<std::string> stateProgramReads;
+    std::function<bool(const std::string&,float,Vm::Execution&)> statePoll;
+    std::function<bool(const std::string&)> stateDeleted;
+    QuestVr::NativeWork::Budget phaseWork;
+    bool trackPhaseWork{};
     std::uint64_t stateRevision{},savedStateRevision{};
     std::set<std::string> disabledFunctions;
     bool CanCall(const Vm::Function& fn, const std::string&) override {
@@ -285,7 +291,14 @@ struct TestHost final:Vm::Host {
         if(active) throw std::runtime_error("Nested host transaction");
         if(rejectBegin) throw std::runtime_error("Fixture rejected begin");
         active=true;saved=storage;savedEffects=effects;savedRng=rng;
-        savedState=state;savedStateRevision=stateRevision;++beginCount;
+        savedState=state;savedPhaseStates=phaseStates;savedStateRevision=stateRevision;++beginCount;
+    }
+    void BeginRoot(const Vm::Limits& limits) override {
+        if(trackPhaseWork)phaseWork.Reset(limits.nativeWork);
+        Begin();
+    }
+    std::optional<QuestVr::NativeWork::Usage> ReadNativeWork() const noexcept override {
+        return trackPhaseWork?std::optional<QuestVr::NativeWork::Usage>(phaseWork.Read()):std::nullopt;
     }
     void Commit() override {
         if(!active) throw std::runtime_error("Commit outside transaction");
@@ -297,12 +310,23 @@ struct TestHost final:Vm::Host {
     }
     void Rollback() noexcept override {
         storage.swap(saved);effects=savedEffects;rng=savedRng;
-        state.swap(savedState);stateRevision=savedStateRevision;active=false;++rollbackCount;
+        state.swap(savedState);phaseStates.swap(savedPhaseStates);stateRevision=savedStateRevision;active=false;++rollbackCount;
     }
-    const QuestVr::StateObject* ReadState(const std::string&) override {return state ? &*state : nullptr;}
-    QuestVr::StateObject* MutableState(const std::string&) override {return state ? &*state : nullptr;}
+    const QuestVr::StateObject* ReadState(const std::string& receiver) override {
+        const auto found=phaseStates.find(receiver);
+        return found!=phaseStates.end()?&found->second:state?&*state:nullptr;
+    }
+    QuestVr::StateObject* MutableState(const std::string& receiver) override {
+        const auto found=phaseStates.find(receiver);
+        return found!=phaseStates.end()?&found->second:state?&*state:nullptr;
+    }
+    bool IsStateDeleted(const std::string& receiver) override {return stateDeleted&&stateDeleted(receiver);}
+    bool PollState(const std::string& receiver,float elapsed,Vm::Execution& execution) override {
+        return statePoll?statePoll(receiver,elapsed,execution):false;
+    }
     std::uint64_t StateLocalRevision(const std::string&) override {return stateRevision;}
     std::shared_ptr<const Vm::Function> StateProgram(const std::string&,const std::string& path) override {
+        stateProgramReads.push_back(path);
         return std::make_shared<Vm::Function>(statePrograms.at(path));
     }
     std::shared_ptr<Vm::Reference> StateVariable(const std::string& receiver,const Vm::Property& property) override {
@@ -481,7 +505,7 @@ struct TestHost final:Vm::Host {
         const std::vector<Vm::Evaluation>& arguments,const Vm::Function* declaration,Vm::Execution& execution) override {
         // 1008 belongs only to this generated fixture. Native zero is keyed by
         // its declaration; individual tests provide the host-side observation.
-        if((index==262u || index==283u || index==264u || index==548u || index==1008u || index==0u || index==1410u || index==1415u || index==1416u || index==1420u || index==1421u || index==1422u ||
+        if((index==261u || index==262u || index==283u || index==264u || index==548u || index==1008u || index==0u || index==1410u || index==1415u || index==1416u || index==1420u || index==1421u || index==1422u ||
             index==1430u || index==1431u || index==1432u || index==1433u || index==1438u || index==1454u || index==1461u || index==1465u || index==1467u || index==1475u ||
             index==1535u || index==1538u || index==1539u || index==1540u ||
             index==1541u || index==1544u || index==1545u) && executionNative) {
@@ -6205,6 +6229,335 @@ void TransactionContracts() {
     std::cout<<"Generated multi-operation VM transactions, shared budgets and callback rollback: "
         <<checks-initialChecks<<" checks and "<<rejections-initialRejections<<" rejection controls passed.\n";
 }
+void StatePhaseContracts() {
+    using Phase=Vm::StatePhaseStatus;
+    using Latent=QuestVr::StateLatent;
+    const auto initialChecks=checks,initialRejections=rejections;
+    const auto install=[](TestHost& host,const Vm::Function& program,const std::string& receiver="Self") {
+        QuestVr::StateFrame frame;frame.codePath=frame.localsCodePath=program.path;
+        frame.control=QuestVr::StateControl{program.path,true,~std::uint64_t{0}};
+        if(receiver=="Self")host.state=QuestVr::StateObject{true,true,frame,{}};
+        else host.phaseStates[receiver]=QuestVr::StateObject{true,true,frame,{}};
+        host.statePrograms[program.path]=program;
+    };
+    const auto sameFrame=[](const QuestVr::StateFrame& a,const QuestVr::StateFrame& b) {
+        return a.codePath==b.codePath && a.localsCodePath==b.localsCodePath &&
+            a.statementIndex==b.statementIndex && a.latent==b.latent && a.control && b.control &&
+            a.control->selectedPath==b.control->selectedPath && a.control->codePresent==b.control->codePresent &&
+            a.control->liveProbeMask==b.control->liveProbeMask;
+    };
+    const auto phaseStatus=[](Vm::Status status) {
+        return status==Vm::Status::Waiting?Phase::Waiting:status==Vm::Status::Stopped?Phase::Stopped:Phase::Returned;
+    };
+    // Both public routes enter exactly the same core as a child phase. Waiting,
+    // stopped/null Code, returned values and ineligible polls stay distinct.
+    for(const bool poll:{false,true})for(unsigned scenario=0u;scenario<5u;++scenario) {
+        TestHost standalone,coordinated;std::size_t publicPolls{},childPolls{};
+        const auto program=Function("PhaseEquivalence",scenario==2u?Return(Int(31)):Bytes{0x08u});
+        for(auto* host:{&standalone,&coordinated}) {
+            install(*host,program);
+            if(scenario==0u)host->state->frame->latent=Latent::FinishAnim;
+            if(scenario==4u)host->state->frame->control->codePresent=false;
+        }
+        standalone.statePoll=[&](const std::string&,float elapsed,Vm::Execution&) {++publicPolls;Require(elapsed==0.125f,"Public phase changed elapsed");return scenario!=3u;};
+        coordinated.statePoll=[&](const std::string&,float elapsed,Vm::Execution&) {++childPolls;Require(elapsed==0.125f,"Child phase changed elapsed");return scenario!=3u;};
+        const auto publicResult=poll?Vm::AdvanceState(standalone,"Self",0.125f):Vm::ResumeState(standalone,"Self");
+        Vm::StatePhaseResult child;
+        const auto root=Vm::ExecuteTransaction(coordinated,[&](Vm::Execution& execution) {
+            child=execution.RunStatePhase("Self",poll?std::optional<float>(0.125f):std::nullopt);
+            return Value::Integer(77);
+        });
+        Returned(publicResult,"Public/shared state core equivalence");Returned(root,"Child state phase shares outer acceptance");
+        Require(root.status==Vm::Status::Returned && root.value.integer==77 && child.status==phaseStatus(publicResult.status) &&
+            Vm::Equal(child.value,publicResult.value) && root.instructions==publicResult.instructions && root.writes==publicResult.writes &&
+            publicPolls==childPolls && sameFrame(*standalone.state->frame,*coordinated.state->frame),
+            "Public and child state phases diverged or child disposition leaked into root");
+        Require(coordinated.beginCount==1u && coordinated.commitCount==1u && coordinated.rollbackCount==0u,
+            "Child phase opened/committed a nested host transaction");
+    }
+    // A waiting/stopped child invoked by an executing parent must not stop the
+    // parent statement stream, nor poison a later independent child result.
+    for(const bool waiting:{false,true}) {
+        TestHost host;const auto child=Function("ChildState",{0x08u});
+        install(host,child,"Child");if(waiting)host.phaseStates.at("Child").frame->latent=Latent::FinishAnim;
+        const auto parent=Function("ParentState",Join({Native(1008u),Native(1000u),Return(Int(19))}));install(host,parent);
+        host.executionNative=[&](const std::string& receiver,const std::vector<Vm::Evaluation>&,
+            const Vm::Function*,Vm::Execution& execution) {
+            Require(receiver=="Self","Parent native receiver changed");
+            const auto result=execution.RunStatePhase("Child");
+            Require(result.status==(waiting?Phase::Waiting:Phase::Stopped),"Child phase lost its own disposition");
+            return Vm::Evaluation{};
+        };
+        const auto result=Vm::ResumeState(host,"Self");Returned(result,"Nested state child leaves parent running");
+        Require(result.status==Vm::Status::Returned && result.value.integer==19 && host.effects==1u &&
+            host.state->frame->statementIndex==3u,"Child Waiting/Stopped leaked into parent state outcome");
+    }
+    // FinishAnim newly installed by a native expression yields only after its
+    // entire enclosing statement. A no-time resume never invokes its poll.
+    {
+        TestHost host;const auto program=Function("FinishAnimStatement",Join({
+            Native(1003u,{Native(261u),Native(1000u)}),Native(1000u),{0x08u}}));install(host,program);
+        std::size_t polls{},finishes{};
+        host.statePoll=[&](const std::string&,float,Vm::Execution&) {++polls;return true;};
+        host.executionNative=[&](const std::string&,const std::vector<Vm::Evaluation>& arguments,
+            const Vm::Function* declaration,Vm::Execution&) {
+            Require(!declaration && arguments.empty(),"Raw FinishAnim acquired a fake declaration/argument");
+            ++finishes;host.state->frame->latent=Latent::FinishAnim;return Vm::Evaluation{};
+        };
+        const auto result=Vm::ExecuteTransaction(host,[&](Vm::Execution& execution) {
+            const auto first=execution.RunStatePhase("Self",0.0f);
+            Require(first.status==Phase::Waiting && host.effects==1u && host.state->frame->statementIndex==1u,
+                "New FinishAnim wait interrupted a nested expression or ran the following statement");
+            const auto again=execution.RunStatePhase("Self");
+            Require(again.status==Phase::Waiting && host.effects==1u && polls==1u,
+                "No-time child resume polled/reexecuted a FinishAnim wait");
+            return Value{};
+        });
+        Returned(result,"FinishAnim statement boundary preserves root");
+        Require(result.status==Vm::Status::Returned && finishes==1u && polls==1u,"Child wait was polled twice or changed root status");
+    }
+    // Initial null Code/deletion gates must avoid native polling. Role and
+    // selected-state simulated eligibility remain the host's initial poll gate.
+    for(unsigned scenario=0u;scenario<4u;++scenario) {
+        TestHost host;install(host,Function("PhaseInactive",{0x08u}));std::size_t polls{},deletionReads{};
+        if(scenario==0u)host.state->frame->control->codePresent=false;
+        if(scenario==3u)host.state.reset();
+        host.stateDeleted=[&](const std::string&) {++deletionReads;return scenario==1u;};
+        host.statePoll=[&](const std::string&,float,Vm::Execution&) {++polls;return false;};
+        const auto result=Vm::ExecuteTransaction(host,[&](Vm::Execution& execution) {
+            const auto phase=execution.RunStatePhase("Self",0.1f);
+            Require(phase.status==(scenario<2u?Phase::Stopped:Phase::Returned),"Inactive state phase manufactured a wait/continuation");
+            return Value{};
+        });
+        Returned(result,"Inactive child state poll");
+        Require(polls==(scenario<2u?0u:1u) && host.stateProgramReads.empty() &&
+            (scenario!=0u || deletionReads==0u),"Inactive phase eagerly polled/prepared/deletion-tested null Code");
+    }
+    // Poll callbacks can replace every part of the frame. Continue only using
+    // that replacement; do not restore the old pending wait/cursor afterward.
+    for(unsigned replacement=0u;replacement<4u;++replacement) {
+        TestHost host;const auto old=Function("BeforePoll",Join({Native(4095u),{0x08u}}));install(host,old);
+        host.state->frame->latent=Latent::FinishAnim;
+        const auto next=Function("AfterPoll",Join({Native(1000u),Return(Int(51))}));host.statePrograms[next.path]=next;
+        host.stateDeleted=[&](const std::string&) {return host.effects==9u;};
+        host.statePoll=[&](const std::string&,float,Vm::Execution&) {
+            QuestVr::StateFrame frame;frame.codePath=frame.localsCodePath=next.path;
+            frame.control=QuestVr::StateControl{next.path,replacement!=1u,~std::uint64_t{0}};
+            if(replacement==2u)frame.latent=Latent::FinishAnim;
+            host.state->frame=frame;++host.stateRevision;
+            if(replacement==3u)host.effects=9u;
+            return true;
+        };
+        const auto result=Vm::ExecuteTransaction(host,[&](Vm::Execution& execution) {
+            const auto phase=execution.RunStatePhase("Self",0.25f);
+            Require(phase.status==(replacement==0u?Phase::Returned:replacement==2u?Phase::Waiting:Phase::Stopped),
+                "Post-poll replacement Code/deletion/latent gate was not reread");
+            if(replacement==0u)Require(phase.value.integer==51,"Replacement state returned old program value");
+            return Value{};
+        });
+        Returned(result,"Synchronous poll replacement stays in same state phase");
+        Require(host.state->frame->codePath==next.path && host.state->frame->latent==(replacement==2u?Latent::FinishAnim:Latent::Continue) &&
+            host.effects==(replacement==0u?1u:replacement==3u?9u:0u),"Poll replacement was overwritten by captured frame state");
+    }
+    for(const bool child:{false,true}) {
+        TestHost host;Bytes code=Native(1008u);Append(code,{0x06u,0u,0u});
+        install(host,Function("SelectedChangeSlice",code));std::size_t calls{};
+        host.statePoll=[&](const std::string&,float,Vm::Execution&) {
+            host.state->frame->control->selectedPath="Fixture.SelectedAfterPoll";return true;
+        };
+        host.executionNative=[&](const std::string&,const std::vector<Vm::Evaluation>&,const Vm::Function*,Vm::Execution&) {
+            if(calls++)host.state->frame->control->selectedPath="Fixture.Selected"+std::to_string(calls);
+            return Vm::Evaluation{};
+        };
+        const auto result=child?Vm::ExecuteTransaction(host,[&](Vm::Execution& execution) {
+            const auto phase=execution.RunStatePhase("Self",0.0f);
+            Require(phase.status==Phase::Returned,"Selected-change cap invented a stop/wait");return phase.value;
+        }):Vm::AdvanceState(host,"Self",0.0f);
+        Returned(result,"Public/child state phase retains selected node before poll");
+        Require(calls==5u && host.state->frame->statementIndex==1u && host.state->frame->control->codePresent,
+            "Poll-selected replacement was not counted toward original fifth observed selected change");
+    }
+    // A late ordinary call must undo earlier actions, all state phases and the
+    // native poll's writes/effects in the same root, including external aliases.
+    for(unsigned fail=0u;fail<3u;++fail) {
+        TestHost host;const auto program=Function("PhaseRollback",Join({Let(Ref(0x01u,1),Int(22)),Native(1000u),{0x08u}}));install(host,program);
+        const auto marker=host.Property(program,1,"PhaseMarker",Value::Integer(0));host.Store("Self",marker,{Value::Integer(3)});
+        const auto before=*host.state->frame;
+        Value outside=Value::Integer(5);auto alias=std::make_shared<Vm::Reference>();alias->zero=Value::Integer(0);
+        alias->read=[&] {return outside;};alias->write=[&](const Value& value) {outside=value;};
+        host.statePoll=[&](const std::string&,float,Vm::Execution& execution) {
+            execution.WriteReference(alias,Value::Integer(88));return true;
+        };
+        Vm::Limits limits;if(fail==1u)limits.writes=2u;if(fail==2u)limits.instructions=5u;
+        const auto result=Vm::ExecuteTransaction(host,[&](Vm::Execution& execution) {
+            execution.WriteReference(host.Reference({"Self",Vm::Scope::Instance,marker.key},marker),Value::Integer(11));
+            static_cast<void>(execution.RunStatePhase("Self",0.1f));
+            return execution.CallFunction(Function("LaterFailure",Return(Native(4095u))),"Self");
+        },limits);
+        Failed(result,fail==0u?Vm::Status::Unsupported:Vm::Status::Budget,host,"Late state-phase failure rolls back entire prefix");
+        Require(outside.integer==5 && host.Load("Self",marker).integer==3 && sameFrame(before,*host.state->frame) &&
+            host.effects==0u && host.rng==12345u,"State phase committed native/script/cursor/OUT prefix independently");
+    }
+    // Invalid nested phase input is a poisoned execution entry, not an empty
+    // success that the coordinator can catch and continue committing.
+    for(unsigned invalid=0u;invalid<3u;++invalid) {
+        TestHost host;const auto first=Function("BeforeInvalidPhase",Join({Native(1000u),Return()}));
+        Vm::Limits limits;if(invalid==2u)limits.stringBytes=32u;
+        bool caught{},rejectedLater{};
+        const auto result=Vm::ExecuteTransaction(host,[&](Vm::Execution& execution) {
+            execution.CallFunction(first,"Self");
+            try {static_cast<void>(execution.RunStatePhase(invalid==2u?std::string(33u,'R'):"Self",
+                invalid==0u?-1.0f:invalid==1u?std::numeric_limits<float>::quiet_NaN():0.0f));}
+            catch(const std::exception&) {caught=true;}
+            try {execution.CallFunction(Function("Later",Return(Native(1000u))),"Self");}
+            catch(const std::exception&) {rejectedLater=true;}
+            return Value{};
+        },limits);
+        Failed(result,invalid==2u?Vm::Status::Budget:Vm::Status::Invalid,host,"Caught invalid phase cannot commit earlier root prefix");
+        Require(caught && rejectedLater && host.effects==0u && result.function.empty() && result.callStack.empty(),
+            "Invalid coordinator phase reset poison, retained effects or blamed a stale prior script");
+    }
+    // Native polling errors keep the active real caller, whereas a failure in
+    // state code adds its actual state frame. A swallowed child error retains
+    // the FIRST responsible location even if a later call/host error follows.
+    for(const bool duringState:{false,true}) {
+        TestHost host;install(host,Function("FailingPhase",Return(Native(4095u))));
+        const auto caller=Function("PhaseNativeCaller",Return(Native(1008u)));
+        host.statePoll=[&](const std::string&,float,Vm::Execution&) {
+            if(!duringState)throw std::runtime_error("original phase poll failed");
+            return true;
+        };
+        host.executionNative=[&](const std::string&,const std::vector<Vm::Evaluation>&,const Vm::Function*,Vm::Execution& execution) {
+            try {static_cast<void>(execution.RunStatePhase("Self",0.1f));}catch(const std::exception&) {}
+            return Vm::Evaluation{};
+        };
+        const auto result=Vm::ExecuteTransaction(host,[&](Vm::Execution& execution) -> Value {
+            try {execution.CallFunction(caller,"Self");}catch(const std::exception&) {}
+            throw std::runtime_error("later unrelated coordinator failure");
+        });
+        Failed(result,Vm::Status::Unsupported,host,"Child state phase preserves first error location");
+        Require(result.function==(duringState?"Fixture.FailingPhase":caller.path) &&
+            result.callStack==std::vector<std::string>(duringState?std::vector<std::string>{caller.path,"Fixture.FailingPhase"}:
+                std::vector<std::string>{caller.path}) &&
+            result.error.find(duringState?"4095":"original phase poll failed")!=std::string::npos,
+            "Nested phase error lost active caller/state identity or preferred later coordinator failure");
+    }
+    {
+        TestHost host;install(host,Function("CompletedChild",Return(Int(9))));
+        const auto caller=Function("RepeatedPhaseCaller",Return(Native(1008u)));
+        host.executionNative=[&](const std::string&,const std::vector<Vm::Evaluation>&,const Vm::Function*,Vm::Execution& execution) {
+            const auto first=execution.RunStatePhase("Self");Require(first.value.integer==9,"Initial child phase did not return");
+            try {static_cast<void>(execution.RunStatePhase("Self",-1.0f));}catch(const std::exception&) {}
+            return Vm::Evaluation{};
+        };
+        const auto result=Vm::Execute(host,caller,"Self");
+        Failed(result,Vm::Status::Invalid,host,"Later pre-entry phase failure belongs to restored actual caller");
+        Require(result.function==caller.path && result.callStack==std::vector<std::string>{caller.path} && result.offset==1u,
+            "Successful child left its stale diagnostic PC for a later pre-entry failure");
+    }
+    for(const float elapsed:{-1.0f,std::numeric_limits<float>::quiet_NaN(),std::numeric_limits<float>::infinity()}) {
+        TestHost host;const auto result=Vm::AdvanceState(host,"Self",elapsed);
+        Require(result.status==Vm::Status::Invalid && !result.committed && !host.beginCount && !host.rollbackCount,
+            "Public invalid state elapsed no longer rejects before opening a root");++rejections;
+    }
+    // Unchanged views are reused across slices; recreating locals under the
+    // same code identity gets a NEW view and never escapes root allowances.
+    {
+        TestHost host;auto program=Function("PhaseCachedView",Join({Native(165u,{Ref(0x00u,1)}),{0x08u}}));
+        const auto local=host.Property(program,1,"Counter",Value::Integer(0),0u,1u,true);program.variables={local};
+        install(host,program);host.Store("Self",local,{Value::Integer(1)});
+        const auto result=Vm::ExecuteTransaction(host,[&](Vm::Execution& execution) {
+            for(unsigned slice=0u;slice<3u;++slice) {
+                auto& frame=*host.state->frame;frame.control->codePresent=true;frame.statementIndex=0u;
+                if(slice==2u) {++host.stateRevision;host.Store("Self",local,{Value::Integer(100)});}
+                const auto phase=execution.RunStatePhase("Self");
+                Require(phase.status==Phase::Stopped && host.Load("Self",local).integer==(slice==2u?101:2+static_cast<int>(slice)),
+                    "Repeated state view used stale/recreated locals or reset continuation");
+            }
+            return Value{};
+        });
+        Returned(result,"State views retained across same-Execution phases");
+        Require(host.stateProgramReads==std::vector<std::string>{program.path,program.path} && result.writes==3u,
+            "State view cache was cleared between child phases or reused across local storage revision");
+    }
+    // Operation, script and native budgets are one root allowance even when
+    // phases finish or do no work. No child is allowed to reset the ledger.
+    for(unsigned budget=0u;budget<4u;++budget) {
+        TestHost host;install(host,Function("SharedPhaseBudget",Join({Native(1000u),{0x08u}})));
+        host.trackPhaseWork=budget==3u;
+        host.statePoll=[&](const std::string&,float,Vm::Execution&) {if(host.trackPhaseWork)host.phaseWork.Step();return true;};
+        Vm::Limits limits;if(budget==0u)limits.operations=1u;if(budget==1u)limits.instructions=3u;
+        if(budget==2u)limits.localElements=1u;
+        if(budget==3u)limits.nativeWork=1u;
+        if(budget==2u) {
+            auto& program=host.statePrograms.at(host.state->frame->codePath);
+            const auto local=host.Property(program,1,"RetainedLocal",Value::Integer(0),0u,1u,true);program.variables={local};
+            host.Store("Self",local,{Value::Integer(0)});
+        }
+        const auto result=Vm::ExecuteTransaction(host,[&](Vm::Execution& execution) {
+            static_cast<void>(execution.RunStatePhase("Self",0.1f));
+            host.state->frame->control->codePresent=true;host.state->frame->statementIndex=0u;
+            if(budget==2u)++host.stateRevision;
+            return execution.RunStatePhase("Self",0.1f).value;
+        },limits);
+        Failed(result,Vm::Status::Budget,host,"State phases share operation/instruction/local/native limits");
+        Require(host.effects==0u && host.stateRevision==0u && host.state->frame->statementIndex==0u,
+            "Budget-refused child phase retained earlier slice effects/cursor");
+        if(budget==3u)Require(result.nativeWork && result.nativeWork->used==1u && result.nativeWork->limit==1u,
+            "State phase reset or lost terminal native work allowance");
+    }
+    // A zero-operation root cannot smuggle even an inactive/no-frame child.
+    {
+        TestHost host;Vm::Limits limits;limits.operations=0u;
+        const auto result=Vm::ExecuteTransaction(host,[&](Vm::Execution& execution) {return execution.RunStatePhase("Missing").value;},limits);
+        Failed(result,Vm::Status::Budget,host,"Inactive child state entry still consumes operation admission");
+    }
+    std::cout<<"Same-Execution state phases: "<<checks-initialChecks<<" checks / "
+        <<rejections-initialRejections<<" refusal controls.\n";
+}
+void FinishAnimDeclarationContracts() {
+    const auto initialChecks=checks,initialRejections=rejections;
+    const auto declaration=[] {
+        auto method=Function("FinishAnim",{},"Engine.Actor");method.flags=0x409u;method.nativeIndex=261u;return method;
+    };
+    for(unsigned route=0u;route<4u;++route) {
+        TestHost host;const auto method=declaration();std::size_t calls{};
+        host.executionNative=[&](const std::string& receiver,const std::vector<Vm::Evaluation>& arguments,
+            const Vm::Function* actual,Vm::Execution&) {
+            ++calls;Require(receiver=="Self" && arguments.empty() && static_cast<bool>(actual)==(route!=3u),
+                "FinishAnim direct/reflected/raw packet changed declaration/inputs");return Vm::Evaluation{};
+        };
+        host.finals[{"Fixture",1}]=std::make_shared<Vm::Function>(method);
+        const auto result=route==0u?Vm::Execute(host,method,"Self"):
+            route==1u?Vm::ExecuteTransaction(host,[&](Vm::Execution& execution) {return execution.CallFunction(method,"Self");}):
+            Vm::Execute(host,Function("FinishAnimCaller",Return(route==2u?Call(0x1cu,1):Native(261u))),"Self");
+        Returned(result,"Exact latent native261 declaration is admitted");
+        Require(calls==1u && result.value.kind==Vm::Kind::Nothing,"FinishAnim invented a return value or repeated its native entry");
+    }
+    for(unsigned malformed=0u;malformed<5u;++malformed)for(const bool reflected:{false,true}) {
+        TestHost host;auto method=declaration();
+        if(malformed==0u)method.flags=0x408u;
+        if(malformed==1u)method.flags=0x401u;
+        if(malformed==2u)method.variables={host.Property(method,1,"UnexpectedLocal",Value::Integer(0),0u,1u,true)};
+        if(malformed==3u)method.variables={host.Property(method,1,"ReturnValue",Value::Integer(0),0x580u,1u,true)};
+        if(malformed==4u)method.bytecode=Return();
+        host.finals[{"Fixture",1}]=std::make_shared<Vm::Function>(method);
+        const auto result=reflected?Vm::Execute(host,Function("MalformedFinishAnimCaller",Return(Call(0x1cu,1))),"Self"):
+            Vm::Execute(host,method,"Self");
+        Failed(result,Vm::Status::Unsupported,host,"Native261 needs exact flags409/empty declaration");
+        Require(host.nativeIndices.empty(),"Malformed FinishAnim declaration reached native body");
+    }
+    for(unsigned route=0u;route<3u;++route) {
+        TestHost host;const auto method=declaration();host.finals[{"Fixture",1}]=std::make_shared<Vm::Function>(method);
+        const auto result=route==0u?Vm::Execute(host,method,"Self",{{Value::Integer(1),{}}}):
+            Vm::Execute(host,Function("UnexpectedFinishAnimArgument",Return(route==1u?Call(0x1cu,1,{Native(1000u)}):
+                Native(261u,{Native(1000u)}))),"Self");
+        Failed(result,Vm::Status::Unsupported,host,"FinishAnim cannot evaluate an invented argument expression");
+        Require(host.nativeIndices.empty() && host.effects==0u,"Zero-argument FinishAnim evaluated extra argument effects");
+    }
+    std::cout<<"FinishAnim declaration admission: "<<checks-initialChecks<<" checks / "
+        <<rejections-initialRejections<<" refusal controls.\n";
+}
 void ProgramAndEligibilityContracts() {
     TestHost host;
     host.names[{"Fixture",0}] = "None";
@@ -6270,6 +6623,8 @@ int main() {
         IntegerToStringContracts();
         ExecutionContracts();
         TransactionContracts();
+        StatePhaseContracts();
+        FinishAnimDeclarationContracts();
         ProgramAndEligibilityContracts();
         NativeArgumentSeedContracts();
         CoreColorResultLayoutContracts();

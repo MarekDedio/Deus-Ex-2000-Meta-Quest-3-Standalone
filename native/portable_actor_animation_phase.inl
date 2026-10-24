@@ -165,6 +165,7 @@
                 throw std::runtime_error("Original main animation native latent action is unrepresented by this portable frame");
             if(state.frame->latent==QuestVr::StateLatent::Sleep)return 384u;
             if(state.frame->latent==QuestVr::StateLatent::WaitForLanding)return 528u;
+            if(state.frame->latent==QuestVr::StateLatent::FinishAnim)return 385u;
             throw std::runtime_error("Original main animation modern native latent slot is unknown; Continue/Code presence cannot supply zero");
         }
         if(!actor->serializedStack)

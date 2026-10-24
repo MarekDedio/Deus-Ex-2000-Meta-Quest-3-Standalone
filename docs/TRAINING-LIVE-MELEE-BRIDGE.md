@@ -132,8 +132,9 @@ part of completing a usable original attack cycle, not merely the first hit.
    until that bridge succeeds; do not also apply its instant damage.
 3. Connect the newly implemented original main-animation notify phase to real
    equip/state progression and reached native services. The original FinishAnim
-   command261/poll385 and same-Execution state phase are the next concrete
-   prerequisites (ORIGINAL-FINISHANIM-LATENT.md). One real attack must select one authored sequence,
+   command261/poll385 and same-Execution state phase now pass focused native,
+   VM and generated-production tests (ORIGINAL-FINISHANIM-LATENT.md). Actual
+   pickup/equip integration remains to be run. One real attack must select one authored sequence,
    cross its0.5 boundary once, call original HandToHandAttack once, trace the
    actual target and reach original crate TakeDamage. An interrupt/replacement
    before the boundary must not leave a fabricated pending hit.

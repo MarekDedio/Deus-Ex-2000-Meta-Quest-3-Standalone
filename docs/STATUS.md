@@ -1,5 +1,24 @@
 # Port status
 
+## Original weapon animation waits (2026-10-24)
+
+FinishAnim261 and native poll385 now use real actor fields/existing modern
+state frames in the caller's Execution. Public state Resume/Advance and the
+new internal RunStatePhase share one implementation, budgets and failure
+journal; a child wait does not independently commit or stop its parent.
+Native helper113775/37, VM696084/897, state555/70 and generated production
+runtime1035/19 pass. Warm/cold wait saves retain exact PC without a new timer;
+sampled work limits/all command-write prefixes and later failures fully undo.
+Strict ARM64/Android native link pass. Full desktop/shared CTest passes182
+executed/215 registered,33 explicit owned-data skips, zero failures in84.76s;
+fresh actual Training crate347/two dormant contents refusals and Doctor
+animation70/six prefix controls pass separately. Both normal startup repeats
+retain exact native1463/218693 instructions/24284 writes, full-root undo and
+all41 unchanged owned source fingerprints.
+This enables the next genuine Training weapon equip test; it is not a live
+trigger/trace/damage bridge, committed player or replacement APK. No account or
+character-creation UI is being added. See ORIGINAL-FINISHANIM-LATENT.md.
+
 ## Original main-animation event delivery (2026-10-24)
 
 The retail ordinary main-animation phase now binds real live Actor/mesh fields

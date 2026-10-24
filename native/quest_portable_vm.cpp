@@ -528,6 +528,24 @@ public:
             return Value{};
         }));
     }
+    StatePhaseResult RunStatePhase(const std::string& self,std::optional<float> elapsed) override {
+        if (result_.callStack.empty() && !failure_) {
+            result_.function.clear(); result_.offset=0; result_.opcode=0;
+        }
+        return DirectOperation([&]() -> StatePhaseResult {
+            // A successful child returns to its real caller location. Otherwise
+            // a second phase's pre-entry/poll error could blame the first
+            // child's stale PC after that child's call frame was popped.
+            const bool nested=!result_.callStack.empty();
+            auto callerFunction=nested?result_.function:std::string{};
+            const auto callerOffset=result_.offset;const auto callerOpcode=result_.opcode;
+            auto phase=RunStatePhaseCore(self,elapsed);
+            if (nested) {
+                result_.function.swap(callerFunction);result_.offset=callerOffset;result_.opcode=callerOpcode;
+            }
+            return phase;
+        });
+    }
     Value Run(const Function& identity, const std::string& self, const std::vector<Evaluation>& incoming) {
         const auto result=RunEvaluation(identity,self,incoming);
         // This API has no caller-owned result destination. Unwritten native
@@ -552,8 +570,12 @@ public:
         ActiveFunctionScope activeFunction(activeFunction_,fn);
         result_.callStack.push_back(fn.path);
         result_.function = fn.path; result_.offset = 0; result_.opcode = 0;
+        // FinishAnim is the audited zero-input/no-result native261 packet.
+        // A similarly numbered declaration with different flags/locals is not
+        // permission to bypass the ordinary latent-function refusal.
+        ValidateFinishAnimDeclaration(fn,incoming.size());
         if ((fn.flags & 0x8) && !((fn.flags & 0x400) &&
-            (fn.nativeIndex == 256u || fn.nativeIndex == 527u)))
+            (fn.nativeIndex == 256u || fn.nativeIndex == 527u || fn.nativeIndex == 261u)))
             Fail(Status::Unsupported, "Latent VM function requires its runtime handler");
         if (incoming.size() > limits_.arguments) Fail(Status::Budget, "VM argument limit");
         const bool directNative=(fn.flags&0x400u) && !nativeArgumentsMaterialized;
@@ -744,8 +766,32 @@ public:
         result_.callStack.pop_back();
         return {value,{},value.kind==Kind::Nothing ? ResultDisposition::NoWrite : ResultDisposition::Written};
     }
-    Value Resume(const std::string& self, std::optional<std::string> priorSelected = {}) {
+    StatePhaseResult RunStatePhaseCore(const std::string& self,std::optional<float> elapsed) {
         if (self.size() > limits_.stringBytes) Fail(Status::Budget, "VM state receiver identity limit");
+        if (!elapsed) return ResumeStateCore(self);
+        if (!std::isfinite(*elapsed) || *elapsed < 0.0f)
+            Fail(Status::Invalid, "State elapsed time must be finite and nonnegative");
+        // Capture the initial selected node BEFORE a synchronous native poll
+        // can replace the frame. Resume owns subsequent live Code/deletion/
+        // latent/statement and selected-change checks, on these same budgets.
+        std::optional<std::string> selectedBeforePoll;
+        const auto* object=host_.ReadState(self);
+        const auto* control=object && object->frameOverride && object->frame && object->frame->control ?
+            &*object->frame->control : nullptr;
+        if (control) {
+            if (control->selectedPath.size() > limits_.stringBytes)
+                Fail(Status::Budget, "VM selected state identity limit");
+            selectedBeforePoll=control->selectedPath;
+            if (!control->codePresent || host_.IsStateDeleted(self))
+                return {StatePhaseStatus::Stopped,{}};
+        }
+        const bool eligible=host_.PollState(self,*elapsed,*this);
+        CheckFailure();
+        return eligible ? ResumeStateCore(self,std::move(selectedBeforePoll)) : StatePhaseResult{};
+    }
+    StatePhaseResult ResumeStateCore(const std::string& self, std::optional<std::string> priorSelected = {}) {
+        if (self.size() > limits_.stringBytes) Fail(Status::Budget, "VM state receiver identity limit");
+        StatePhaseStatus status{StatePhaseStatus::Returned};
         bool active{};
         std::size_t selectedChanges{};
         IteratorStack iterators;
@@ -753,7 +799,7 @@ public:
             if (!iterators.empty())
                 Fail(Status::Unsupported, "State continuation with live iterators requires persistent iterator storage");
             if (active) result_.callStack.pop_back();
-            return value;
+            return StatePhaseResult{status,std::move(value)};
         };
         for (;;) {
             const auto* object = host_.ReadState(self);
@@ -764,7 +810,7 @@ public:
                     Fail(Status::Budget, "VM selected state identity limit");
                 if (!priorSelected) priorSelected = control->selectedPath;
                 if (!control->codePresent || host_.IsStateDeleted(self)) {
-                    result_.status = Status::Stopped; return finish();
+                    status = StatePhaseStatus::Stopped; return finish();
                 }
                 if (object->frame->codePath.empty() || control->selectedPath.empty())
                     Fail(Status::Invalid, "Modern state continuation has an empty node identity");
@@ -779,10 +825,10 @@ public:
             const auto localRevision = host_.StateLocalRevision(self);
             if (latent == StateLatent::Stop) {
                 if (control) Fail(Status::Unsupported, "Modern state frame cannot use a synthetic Stop latent action");
-                result_.status = Status::Stopped; return finish();
+                status = StatePhaseStatus::Stopped; return finish();
             }
-            if (latent == StateLatent::Sleep || latent == StateLatent::WaitForLanding) {
-                result_.status = Status::Waiting; return finish();
+            if (latent == StateLatent::Sleep || latent == StateLatent::WaitForLanding || latent == StateLatent::FinishAnim) {
+                status = StatePhaseStatus::Waiting; return finish();
             }
             if (latent != StateLatent::Continue)
                 Fail(Status::Unsupported, "State latent action requires its runtime handler");
@@ -844,7 +890,7 @@ public:
             object = host_.ReadState(self);
             if (!object || !object->frameOverride || !object->frame) return finish(value);
             if (!HasStateCode(*object->frame)) {
-                if (object->frame->control) result_.status = Status::Stopped;
+                if (object->frame->control) status = StatePhaseStatus::Stopped;
                 return finish(value);
             }
             if (!iterators.empty() && (object->frame->codePath != code ||
@@ -872,25 +918,26 @@ public:
                     // Node, selected node, live mask, locals and latent remain.
                     frame.control->codePresent = false;
                 } else frame.latent = StateLatent::Stop;
-                result_.status = Status::Stopped; return finish();
+                status = StatePhaseStatus::Stopped; return finish();
             } else if (statement.op == 0x04) {
                 ValidateValue(value, 0); return finish(value);
             }
             object = host_.ReadState(self);
             if (!object || !object->frameOverride || !object->frame) return finish();
             if (!HasStateCode(*object->frame)) {
-                if (object->frame->control) result_.status = Status::Stopped;
+                if (object->frame->control) status = StatePhaseStatus::Stopped;
                 return finish();
             }
             if (object->frame->latent != StateLatent::Continue) {
                 if (object->frame->latent == StateLatent::Stop) {
                     if (object->frame->control)
                         Fail(Status::Unsupported, "Modern state frame cannot use a synthetic Stop latent action");
-                    result_.status = Status::Stopped; return finish();
+                    status = StatePhaseStatus::Stopped; return finish();
                 }
                 if (object->frame->latent == StateLatent::Sleep ||
-                    object->frame->latent == StateLatent::WaitForLanding) {
-                    result_.status = Status::Waiting; return finish();
+                    object->frame->latent == StateLatent::WaitForLanding ||
+                    object->frame->latent == StateLatent::FinishAnim) {
+                    status = StatePhaseStatus::Waiting; return finish();
                 }
                 Fail(Status::Unsupported, "State latent action requires its runtime handler");
             }
@@ -912,6 +959,11 @@ public:
         }
     }
 private:
+    void ValidateFinishAnimDeclaration(const Function& function,std::size_t arguments) {
+        if (function.nativeIndex == 261u && (function.flags != 0x409u ||
+            !function.variables.empty() || !function.bytecode.empty() || arguments != 0u))
+            Fail(Status::Unsupported, "FinishAnim requires its exact native409 zero-input declaration");
+    }
     static bool HasStateCode(const StateFrame& frame) {
         return frame.control ? frame.control->codePresent : !frame.codePath.empty();
     }
@@ -1225,7 +1277,7 @@ private:
             failure_ = std::current_exception();
         }
     }
-    template<class Operation> Value DirectOperation(Operation&& operation) {
+    template<class Operation> auto DirectOperation(Operation&& operation) -> decltype(operation()) {
         CheckFailure();
         try {
             if (nativeSeedHookActive_)
@@ -1685,6 +1737,9 @@ private:
                 if (!fn) Fail(Status::Unsupported, "Unresolved VM function call " + call.name);
                 if (fn->flags & 0x400) index = fn->nativeIndex;
             }
+            if (fn) ValidateFinishAnimDeclaration(*fn,n.children.size());
+            if ((!fn || (fn->flags&0x400u)) && index == 261u && !n.children.empty())
+                Fail(Status::Unsupported, "FinishAnim native261 takes no argument expressions");
             std::optional<std::optional<Value>> capturedContext;
             capturedContext.emplace(!fn || (fn->flags & 0x400u) ?
                 CaptureNativeContext(index, context, fn.get(),&frame.function) : std::nullopt);
@@ -2456,11 +2511,13 @@ Result ResumeState(Host& host, const std::string& self, const Limits& limits) {
         ValidateRootNativeWork(limits);
         host.BeginRoot(limits); begun = entered = true;
         Machine machine(host, limits, result);
-        result.value = machine.Resume(self);
+        auto phase=machine.RunStatePhase(self,std::nullopt);
+        result.value=std::move(phase.value);
         machine.CheckFailure();
         host.Commit(); begun = false;
         machine.Accept(); result.committed = true;
-        if (result.status != Status::Stopped && result.status != Status::Waiting) result.status = Status::Returned;
+        result.status=phase.status==StatePhaseStatus::Waiting ? Status::Waiting :
+            phase.status==StatePhaseStatus::Stopped ? Status::Stopped : Status::Returned;
     } catch (const Failure& error) {
         result.status = error.status; result.error = error.what();
     } catch (const NativeWork::Exhausted& error) {
@@ -2486,21 +2543,13 @@ Result AdvanceState(Host& host, const std::string& self, const float elapsed, co
         ValidateRootNativeWork(limits);
         host.BeginRoot(limits); begun = entered = true;
         Machine machine(host, limits, result);
-        std::optional<std::string> selectedBeforePoll;
-        const auto* object = host.ReadState(self);
-        const auto* control = object && object->frameOverride && object->frame && object->frame->control
-            ? &*object->frame->control : nullptr;
-        if (control) selectedBeforePoll = control->selectedPath;
-        if (control && (!control->codePresent || host.IsStateDeleted(self))) result.status = Status::Stopped;
-        else {
-            const bool eligible = host.PollState(self, elapsed, machine);
-            machine.CheckFailure();
-            if (eligible) result.value = machine.Resume(self, selectedBeforePoll);
-        }
+        auto phase=machine.RunStatePhase(self,elapsed);
+        result.value=std::move(phase.value);
         machine.CheckFailure();
         host.Commit(); begun = false;
         machine.Accept(); result.committed = true;
-        if (result.status != Status::Stopped && result.status != Status::Waiting) result.status = Status::Returned;
+        result.status=phase.status==StatePhaseStatus::Waiting ? Status::Waiting :
+            phase.status==StatePhaseStatus::Stopped ? Status::Stopped : Status::Returned;
     } catch (const Failure& error) {
         result.status = error.status; result.error = error.what();
     } catch (const NativeWork::Exhausted& error) {

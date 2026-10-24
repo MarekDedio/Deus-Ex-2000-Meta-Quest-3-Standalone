@@ -1,5 +1,17 @@
 # Immediate milestone: complete the first Training map
 
+Latest weapon prerequisite,2026-10-24: genuine FinishAnim261/poll385 and shared
+same-Execution state phases pass pure/VM/generated-runtime/save/rollback tests.
+Full coherent shared gate182 executed/215 registered,33 explicit owned skips,
+zero failures in84.76s; strict ARM64/Android native link and fresh actual first
+map crate/Doctor-animation regressions pass. Both normal startup repeats retain
+the exact native1463 boundary/full-root undo/all41 unchanged sources. Next is
+actual authored knife/crowbar pickup/equip before original
+Fire/notify/trace/crate damage. No forced weapon state, partial player session,
+account/character UI, other-map integration or new APK. The player's internal
+Login spawn is used only where genuine ownership/inventory requires it; gravity
+itself does not depend on a login UI. See ORIGINAL-FINISHANIM-LATENT.md.
+
 Current melee prerequisite,2026-10-24: original main-animation event delivery
 now has a same-Execution runtime adapter,225385/102 pure controls/7680 x87
 oracle cases and70/six actual dormant Doctor prefix controls. Original notify

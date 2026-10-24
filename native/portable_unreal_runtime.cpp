@@ -13,6 +13,7 @@
 #include "portable_model_geometry.h"
 #include "quest_actor_animation_clock.h"
 #include "quest_actor_animation_phase.h"
+#include "quest_actor_finish_anim.h"
 #include "quest_authored_struct_value.h"
 #include "quest_object_cast.h"
 #include "quest_spawn_placement.h"
@@ -2712,6 +2713,10 @@ public:
                     if (QuestVr::Vm::ToBool(Read(actor,PropertyNamed(actor,"bDeleteMe"),0u))) return false;
                 }
             }
+        } else if (state->frame->latent == QuestVr::StateLatent::FinishAnim) {
+            // Native385 polls fresh bAnimFinished only; it does not advance
+            // animation, inspect a mesh or touch the shared Sleep timer.
+            static_cast<void>(PollOriginalFinishAnim(actor,execution));
         } else if (state->frame->latent != QuestVr::StateLatent::Continue &&
                    state->frame->latent != QuestVr::StateLatent::Stop)
             throw std::runtime_error("State latent action requires its runtime handler");
@@ -3628,6 +3633,10 @@ public:
     }
     Evaluation NativeWithExecution(const std::uint16_t index, const std::string& receiver,
         const std::vector<Evaluation>& arguments, const Function* declaration, QuestVr::Vm::Execution& execution) override {
+        if(index==261u) {
+            if(!arguments.empty())throw std::runtime_error("Original FinishAnim takes no parameters or result");
+            OriginalFinishAnimNative(Object(receiver),declaration,execution);return {};
+        }
         if (index==1013u) return Native(index,receiver,arguments,declaration);
         if (Object(receiver)->defaultOwner)
             throw std::runtime_error("Native execution on a class-default object requires its audited handler");
@@ -7663,6 +7672,7 @@ public:
         return StructSchema(Object(Qualified(Table(property->sourcePath), property->property->referencedType)));
     }
 #include "portable_actor_animation_phase.inl"
+#include "portable_actor_finish_anim.inl"
     Value ProbeOriginalMainAnimation(const std::string& path,float elapsed,
         PortableActorMainAnimationProbeResult& result,QuestVr::Vm::Execution& execution) {
         if(!transaction_)throw std::runtime_error("Original animation observation requires its existing caller root");
@@ -11193,8 +11203,11 @@ public:
             frame.latent == QuestVr::StateLatent::Stop))
             throw std::runtime_error("Script save modern control conflicts with legacy frame data");
         if (frame.latent != QuestVr::StateLatent::Continue && frame.latent != QuestVr::StateLatent::Stop &&
-            frame.latent != QuestVr::StateLatent::Sleep && frame.latent != QuestVr::StateLatent::WaitForLanding)
+            frame.latent != QuestVr::StateLatent::Sleep && frame.latent != QuestVr::StateLatent::WaitForLanding &&
+            frame.latent != QuestVr::StateLatent::FinishAnim)
             throw std::runtime_error("Script save state latent action is not implemented by this runtime");
+        if (frame.latent == QuestVr::StateLatent::FinishAnim && !modern)
+            throw std::runtime_error("Script save FinishAnim requires an authenticated modern native-wait model");
         if (frame.latent == QuestVr::StateLatent::WaitForLanding && !IsDerivedFromPath(cls,"Engine.Pawn"))
             throw std::runtime_error("Script save landing receiver is not Engine.Pawn");
         if ((frame.latent == QuestVr::StateLatent::Sleep || frame.latent == QuestVr::StateLatent::WaitForLanding) && !saved.latentTimeLeft)

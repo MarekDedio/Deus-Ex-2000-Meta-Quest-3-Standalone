@@ -135,6 +135,14 @@ struct ProgramLayout {
     std::vector<StateLabel> labels;
     bool terminalLabelTable{};
 };
+// A state slice is a child operation, not an independently accepted root.
+// Waiting/Stopped describe only that receiver's continuation and must not leak
+// into the enclosing function, state phase or transaction's disposition.
+enum class StatePhaseStatus { Returned, Stopped, Waiting };
+struct StatePhaseResult {
+    StatePhaseStatus status{StatePhaseStatus::Returned};
+    Value value;
+};
 class Execution {
 public:
     virtual ~Execution() = default;
@@ -159,6 +167,14 @@ public:
     // must survive through transaction rollback, just like external OUT aliases.
     virtual void WriteReference(const std::shared_ptr<Reference>& reference,
         const Value& value) = 0;
+    // SAME interpreter/transaction state phase. An elapsed value performs the
+    // original poll boundary followed by eligible continuation; nullopt resumes
+    // without polling or advancing time. Public AdvanceState/ResumeState share
+    // this implementation. All entries, script/native work and writes use the
+    // existing root's allowances and first-failure journal. A caught failure
+    // still poisons that root. The child result carries no commit authority.
+    virtual StatePhaseResult RunStatePhase(const std::string& receiver,
+        std::optional<float> elapsed = std::nullopt) = 0;
 };
 class Iterator {
 public:
@@ -377,8 +393,8 @@ Result Execute(Host& host, const Function& function, const std::string& self,
 // its exception. The original failure is reported and cannot become a commit.
 Result ExecuteTransaction(Host& host, const std::function<Value(Execution&)>& operation,
     const Limits& limits = {});
-// Executes one persistent state slice. Sleep yields Waiting without advancing
-// elapsed time; other unsupported waits still fail explicitly. No
+// Executes one persistent state slice. Supported latent waits yield Waiting
+// without advancing elapsed time; other waits still fail explicitly. No
 // actor tick, elapsed-time advance or world startup is implied by this call.
 Result ResumeState(Host& host, const std::string& self, const Limits& limits = {});
 // Poll + resume share one transaction/interpreter budget. This is the explicit
