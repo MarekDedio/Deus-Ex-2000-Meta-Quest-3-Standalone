@@ -86,7 +86,19 @@ Equip-only repeat2 retains native1463/221615 instructions/24458 writes.
 The final coherent shared gate passes184 executed/219 registered,35 owned
 skips, zero failures in87.99s; final strict ARM64 and Android native link pass.
 
-The next required service is the actually reached original PickTarget531,
+## Subsequent original target-selection prefix
+
+Native531 now enters its actual PawnList/team/scalar-selection prefix with
+copied Vector inputs, initialized Float temporaries and guarded live OUT
+aliases. Crowbar repeat2 and knife reach its internal C++
+Pawn.LineOfSightTo(candidate,0,false) service at the same AdjustAim180,
+206070/14982 and205995/14977 respectively. Full-root undo/all41 sources pass;
+visibility is not invented or replaced with selected script514. Actual dormant
+map controls separately pass181 calls/277720 checks/90 refusals, including
+authentic AddPawn/cycle fixtures and original checkpoint restoration; these
+are not visible-target/weapon-hit evidence. See ORIGINAL-PAWN-PICK-TARGET.md.
+
+The next required service is the actually reached internal Pawn LOS,
 not an account/player-creation UI or a guessed direct crate-health shortcut.
 No controller aim, TraceShot, crate TakeDamage, surviving debris/loot physics
 or collection has yet been connected to committed gameplay by this diagnostic.

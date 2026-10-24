@@ -61,8 +61,11 @@ bool CopyNativeOutTemporary(const std::uint16_t index) {
     // Float result temporary and captures its GProperty alias after Step.
     // Keep both: later argument evaluation may mutate an earlier OUT target,
     // but must not retroactively change that earlier copied input temporary.
-    // Other OUT natives retain their existing declaration/handler semantics.
-    return index == 1465u;
+    // PickTarget likewise keeps each Float Step temporary and its live alias;
+    // unlike QueryPreferredSize, it subsequently rereads a live bestAim alias
+    // for candidate thresholds and publishes aim then distance immediately.
+    // The host, not this argument capture, owns those later live accesses.
+    return index == 1465u || index == 531u;
 }
 std::int32_t ParseInteger(const std::string& text) {
     // Match atoi's decimal prefix semantics on defined inputs; fail closed
@@ -1783,12 +1786,16 @@ private:
     // lvalue/element capabilities while walking its address expressions; Copy
     // reads the final source exactly once and detaches before the next Step.
     // All unrelated expression paths retain their existing validation mode.
-    enum class EvalRead { Validate, Copy, Address };
+    enum class EvalRead { Validate, Copy, Address, Capture };
     Evaluation Eval(Frame& frame, const Node& n, const std::string& context,
         EvalRead readMode=EvalRead::Validate) {
         ActiveFunctionScope activeFunction(activeFunction_,frame.function);
         Step(frame.function, n.offset, n.op);
         Evaluation result;
+        // Capture keeps both the child's detached Step value and its live
+        // alias. Forwarding opcodes must not reload that alias at each outer
+        // layer: the innermost result-producing Step already copied it once.
+        bool forwardedCapture{};
         const auto child = [&](std::size_t i,EvalRead childMode=EvalRead::Validate) {
             auto value = Eval(frame, n.children.at(i), context,childMode);
             Locate(frame.function, n.offset, n.op);
@@ -1864,8 +1871,10 @@ private:
                 }
                 const bool addressOnly=!addressLayouts.empty()&&addressLayouts[i].has_value();
                 const bool copiedInput=!uninitializedLayouts.empty()&&uninitializedLayouts[i].has_value();
+                const bool capturedOut=nativeCall&&index==531u&&i<2u;
                 auto argument = Eval(frame, n.children[i], frame.self,
-                    addressOnly?EvalRead::Address:(copiedInput || (sequentialSeeds && !addressLayouts.empty()))?
+                    addressOnly?EvalRead::Address:capturedOut?EvalRead::Capture:
+                    (copiedInput || (sequentialSeeds && !addressLayouts.empty()))?
                         EvalRead::Copy:EvalRead::Validate);
                 if(addressOnly) {
                     args.push_back(AddressOnlyNativeArgument(argument,*addressLayouts[i]));
@@ -1898,7 +1907,8 @@ private:
                     (sequentialSeeds && !addressLayouts.empty()));
                 const bool copiedOutTemporary = nativeCall && CopyNativeOutTemporary(index);
                 if (snapshotInput || sequentialSeeds || copiedOutTemporary) {
-                    auto value = argument.Load(); ValidateValue(value, 0); Retain(ValueBytes(value));
+                    auto value = capturedOut ? argument.value : argument.Load();
+                    ValidateValue(value, 0); Retain(ValueBytes(value));
                     if (sequentialSeeds) CaptureNativeInput(capturedInputs,value,capturedInputBytes,capturedInputNodes);
                     if (snapshotInput) argument = {std::move(value),{}};
                     else if (copiedOutTemporary) argument.value=std::move(value);
@@ -2048,6 +2058,7 @@ private:
                     Fail(Status::Invalid,"VM ClassContext host returned an invalid default-object identity");
                 if (receiver.size()>limits_.stringBytes) Fail(Status::Budget,"VM class-default identity byte limit");
                 result=Eval(frame,n.children.at(1),receiver,readMode);
+                forwardedCapture=readMode==EvalRead::Capture;
                 break;
             }
             case 0x13: case 0x2e: {
@@ -2076,10 +2087,12 @@ private:
                     result.zeroFillBytes=n.zeroFillSize;
                     break;
                 }
-                result = Eval(frame, n.children.at(1), object.text,readMode); break;
+                result = Eval(frame, n.children.at(1), object.text,readMode);
+                forwardedCapture=readMode==EvalRead::Capture;break;
             }
             case 0x17: result.value = Value::Text(Kind::Object, context); break;
-            case 0x18: result = child(0,readMode); break;
+            case 0x18:
+                result = child(0,readMode);forwardedCapture=readMode==EvalRead::Capture;break;
             case 0x2d: {
                 const auto variable=child(0);
                 // BoolVariable evaluates its child with nil Result, using only
@@ -2180,10 +2193,11 @@ private:
             ValidateValue(result.reference->zero,0);
             ValidateResultLayout(result.reference->zero,result.reference->resultLayout);
         } else {
-            const auto value=result.Load();ValidateValue(value, 0);
+            const auto value=forwardedCapture?result.value:result.Load();ValidateValue(value, 0);
             ValidateResultLayout(result.reference->zero,result.reference->resultLayout);
             ValidateResultLayout(value,result.reference->resultLayout);
-            if(readMode==EvalRead::Copy){result.value=value;result.reference.reset();}
+            if(readMode==EvalRead::Copy || readMode==EvalRead::Capture)result.value=value;
+            if(readMode==EvalRead::Copy)result.reference.reset();
         }
         return result;
     }

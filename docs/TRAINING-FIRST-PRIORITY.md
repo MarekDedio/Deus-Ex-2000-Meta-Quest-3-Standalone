@@ -1,5 +1,20 @@
 # Immediate milestone: complete the first Training map
 
+Latest first-map attack prerequisite,2026-10-25: original Pawn.PickTarget531
+now authenticates its packet, live PawnList/team gates and scalar aim. Pure
+157625/55014 x87, mixed1338/21 and actual first-map181 calls/277720 checks/90
+refusals pass, including real AddPawn/cycle fixtures and exact original save
+restoration. Both weapons now reach the real internal LOS dependency; crowbar
+repeat2/full-root undo/all41 sources pass. That visibility service is next,
+not an account/player-creation screen, other maps or direct crate-health
+shortcuts. Crates/loot/gravity are not complete in live gameplay; no new APK.
+See ORIGINAL-PAWN-PICK-TARGET.md.
+Final coherent desktop/shared gate186 executed/222 registered,36 owned-data
+skips,0 failures in43.95s. Actual Trace27743calls/37063checks/23refusals and9
+native-work cutoffs pass again on the same first map.
+Fresh crate347/two and dormant Doctor70/six controls pass without implying
+surviving loot or active combat/physics acceptance.
+
 Latest live-melee prerequisite,2026-10-24: original Actor.Trace277 is bound to
 the actual Level collision service. Genuine crowbar/knife attacks now pass it
 and next refuse PickTarget531 at AdjustAim180; no hit/damage is fabricated.

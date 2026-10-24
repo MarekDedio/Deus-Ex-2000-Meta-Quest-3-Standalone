@@ -55,6 +55,7 @@
 #include "quest_brush_coords.h"
 #include "quest_original_sine_table.h"
 #include "quest_original_get_axes.h"
+#include "quest_pawn_pick_target.h"
 #include "quest_native_engine_classes.h"
 #include "quest_native_package.h"
 #include "quest_native_config.h"
@@ -3638,6 +3639,7 @@ public:
         const std::vector<Evaluation>& arguments, const Function* declaration, QuestVr::Vm::Execution& execution) override {
         if(index==229u) return CoreGetAxesNative(arguments,declaration);
         if(index==277u) return ActorTraceNative(receiver,arguments,declaration);
+        if(index==531u) return PawnPickTargetNative(receiver,arguments,declaration);
         if(index==261u) {
             if(!arguments.empty())throw std::runtime_error("Original FinishAnim takes no parameters or result");
             OriginalFinishAnimNative(Object(receiver),declaration,execution);return {};
@@ -5078,6 +5080,7 @@ public:
     #include "portable_core_rotator_add.inl"
     #include "portable_core_get_axes.inl"
     #include "portable_actor_trace.inl"
+    #include "portable_pawn_pick_target.inl"
     void RequireIndexedPrimitiveDiagnosticOwner(RuntimeObject* owner) {
         RequireMapActor(owner);
         if(owner->worldActorIndex<0 || static_cast<std::size_t>(owner->worldActorIndex)>=persistentWorldActors.size() ||
@@ -5229,6 +5232,11 @@ public:
     }
     std::optional<Value> NativeArgumentSeed(const std::uint16_t index,const std::string& receiver,
         const std::size_t slot,const Function* declaration) override {
+        if(index==531u) {
+            static_cast<void>(PawnPickTargetDeclaration(declaration));static_cast<void>(PawnPickTargetSource(receiver));
+            if(slot>=4u)throw std::runtime_error("PickTarget531 input exceeds its original four slots");
+            return slot<2u?std::optional{Value::Float(0.0f)}:std::nullopt;
+        }
         if(index==3970u) {
             static_cast<void>(ActorSetPhysicsDeclaration(declaration));RequireMapActor(Object(receiver));
             if(slot>1u)throw std::runtime_error("SetPhysics has only its original two input slots");
@@ -5276,6 +5284,11 @@ public:
     }
     std::optional<QuestVr::Vm::ResultLayout> NativeArgumentUninitializedLayout(const std::uint16_t index,
         const std::string& receiver,const std::size_t slot,const Function* declaration) override {
+        if(index==531u) {
+            static_cast<void>(PawnPickTargetDeclaration(declaration));static_cast<void>(PawnPickTargetSource(receiver));
+            if(slot>=4u)throw std::runtime_error("PickTarget531 input exceeds its original four slots");
+            return slot>=2u?std::optional{QuestVr::Vm::ResultLayout::CoreVector12}:std::nullopt;
+        }
         if(index==277u) {
             static_cast<void>(ActorTraceDeclaration(declaration));static_cast<void>(ActorTraceSource(receiver));
             if(slot>=6u)throw std::runtime_error("Trace277 argument exceeds original six slots");
@@ -5384,6 +5397,11 @@ public:
     }
     bool MaterializeNativeArgumentOmission(const std::uint16_t index,const std::string& receiver,
         const std::size_t slot,const Function* declaration) override {
+        if(index==531u) {
+            static_cast<void>(PawnPickTargetDeclaration(declaration));static_cast<void>(PawnPickTargetSource(receiver));
+            if(slot>=4u)throw std::runtime_error("PickTarget531 omission exceeds original four slots");
+            return slot<2u;
+        }
         if(index==277u) {
             static_cast<void>(ActorTraceDeclaration(declaration));static_cast<void>(ActorTraceSource(receiver));
             if(slot>=6u)throw std::runtime_error("Trace277 omission exceeds original six slots");

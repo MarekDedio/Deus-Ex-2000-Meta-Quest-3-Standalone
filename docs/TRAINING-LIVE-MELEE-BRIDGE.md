@@ -8,6 +8,12 @@ compiler input/build was changed or commercial DLL/EXE executed or loaded.
 
 ## Current production disconnect
 
+Latest2026-10-25 follow-on:531 now enters its actual list/team/scalar prefix;
+both real weapon probes reach internal Pawn.LineOfSightTo(candidate,0,false)
+with whole-root undo. Pure, mixed VM and real dormant first-map prefix/cycle
+tests pass. This is still not live player publication, visibility, hit or crate
+damage. See ORIGINAL-PAWN-PICK-TARGET.md; the original disconnect remains.
+
 Latest diagnostic checkpoint,2026-10-24: genuine knife/crowbar pickup/equip,
 selected player Fire, original Attack notify, GetAxes229 and Actor.Trace277
 now run in one rollback-only root. Both weapons next refuse actual

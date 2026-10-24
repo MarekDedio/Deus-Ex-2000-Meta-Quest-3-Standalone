@@ -1,5 +1,26 @@
 # Port status
 
+## Original Training target-selection prefix (2026-10-25)
+
+The original attack now enters Pawn.PickTarget531 through authenticated Float
+Step temporaries/live OUT aliases, copied Vectors, actual PawnList/team gates
+and exact scalar aiming math. Pure157625/55014 independent x87 cases, mixed
+packet1338/21, existing VM696084/897 and actual first-map181 calls/277720 checks/
+90 refusals pass. Empty/self/nonself Game=None lists and authentic duplicate-
+AddPawn cycle controls preserve their complete fixtures; final original save
+restoration/all40 used sources pass. Corrected crowbar repeat2 and knife now
+reach internal Pawn.LineOfSightTo(candidate,0,false), not a fabricated target,
+at the same AdjustAim180 boundary/full-root undo/all41 sources. Strict ARM64
+and Android native link pass. Default startup repeat2 retains exact1463/
+218693 instructions/24284 writes. Full internal LOS, live attack/crate damage
+and committed gameplay remain unfinished; no new APK. Other maps stay deferred.
+See ORIGINAL-PAWN-PICK-TARGET.md.
+Final coherent desktop/shared gate186 executed/222 registered,36 explicit
+owned-data skips,0 failures in43.95s. Fresh actual Trace277 retains43 production
+calls/37063 checks/23 refusals and all9 shared native-work cutoffs.
+Fresh actual crate347/two genuine contents refusals and dormant Doctor70/six
+animation controls retain their documented non-gameplay limits.
+
 ## Original Training collision-trace wrapper (2026-10-24)
 
 Actor.Trace277 now uses real current-Level collision, original sequential

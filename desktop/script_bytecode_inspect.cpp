@@ -205,7 +205,7 @@ void Parameters(const PortablePackageTables& package, const std::size_t index) {
 
 int main(int argc, char** argv) {
     try {
-        if (argc < 3) throw std::runtime_error("Usage: script_bytecode_inspect GAME_ROOT PACKAGE.FunctionOrStatePath [...]");
+        if (argc < 3) throw std::runtime_error("Usage: script_bytecode_inspect GAME_ROOT PACKAGE.FunctionStateOrPropertyPath [...]");
         const std::filesystem::path root(argv[1]);
         std::map<std::string,PortablePackageTables> packages;
         std::map<unsigned,std::string> natives;
@@ -232,6 +232,15 @@ int main(int argc, char** argv) {
             const auto index=FindPortableExport(package,requested.substr(dot+1u));
             auto scriptClass = GetPortableObjectPath(package, package.exports[index].ObjClass);
             scriptClass = scriptClass.substr(scriptClass.find_last_of('.') + 1u);
+            if (scriptClass.ends_with("Property")) {
+                const auto property=LoadPortablePropertyDescriptor(package,index);
+                std::cout << "\nPROPERTY " << requested << " type=" << property.type <<
+                    " metaclass=" << scriptClass << " outer=" << property.outerPath <<
+                    " dim=" << property.arrayDimension << " flags=0x" << std::hex << property.flags <<
+                    std::dec << " base=" << property.baseField << " refType=" <<
+                    GetPortableObjectPath(package,property.referencedType) << '\n';
+                continue;
+            }
             PortableScriptBody script;
             if (scriptClass == "State") {
                 const auto state = LoadPortableStateDescriptor(package, index);
