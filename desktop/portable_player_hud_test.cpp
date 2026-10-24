@@ -1,5 +1,7 @@
 #include "Precomp.h"
 #include "GC/GC.h"
+#include "portable_engine_collision.h"
+#include "portable_object_lookup.h"
 #include "portable_unreal_runtime.h"
 #include "portable_model_geometry.h"
 #include "quest_script_state.h"
@@ -146,6 +148,15 @@ int main(int argc,char** argv) {
         if(argc==1) {std::cout<<"SKIP: supply owned Deus Ex installation for original player/keyring execution\n";return 77;}
         if(argc!=2) throw std::runtime_error("Usage: portable_player_hud_test GAME_ROOT");
         const auto root=std::filesystem::path(argv[1]);
+        const auto prepareServices=[&] {
+            Require(PreparePortableRuntimeNativeEngineClasses().prepared &&
+                PreparePortableRuntimeNativeMetadataClasses().prepared &&
+                PreparePortableRuntimeNativeConfigClasses().prepared &&
+                PreparePortableRuntimeNativePackages().prepared &&
+                PreparePortableRuntimeObjectLookup().prepared &&
+                PreparePortableRuntimeEngineCollision((root/"System"/"DeusEx.ini").string()).prepared,
+                "Original player controls lack genuine native lookup/Engine collision services");
+        };
         std::vector<PortablePackageTables> scripts;
         // Match the production runtime's owned package graph. A deliberately
         // missing mesh package must not masquerade as a possession/keyring gap.
@@ -161,6 +172,7 @@ int main(int argc,char** argv) {
             "MPCharacters","UBrowser","UWindow"})
             scripts.push_back(LoadPortablePackageTables((root/"System"/(std::string(name)+".u")).string()));
         Require(InitializePortableRuntime(scripts).passed,"Original player runtime initialization failed");
+        prepareServices();
         const auto map=LoadPortablePackageTables((root/"Maps"/"00_Training.dx").string());
         Require(LoadPortableRuntimeMap(map).passed,"Original player Training map failed");
         const auto north=ReadPortableRuntimeMapNorth();
@@ -207,9 +219,9 @@ int main(int argc,char** argv) {
         std::cout<<"ORIGINAL root pending graph: "<<pending.execution.function<<':'<<pending.execution.offset<<
             " objects="<<pending.objects.size()<<" writes="<<pending.execution.writes<<" "<<pending.execution.error<<"; inspection="<<pending.inspectionError<<std::endl;
         Require(!pending.execution.passed() && !pending.execution.committed && pending.inspectionError.empty() &&
-            pending.execution.function=="DeusEx.DamageHUDDisplay.InitWindow" && pending.execution.offset==39u &&
-            pending.execution.error=="Unsupported authored struct array/string member DeusEx.DamageHUDDisplay.sIconInfo.DamageType" &&
-            pending.execution.writes==8783u && pending.objects.size()==132u &&
+            pending.execution.function=="DeusEx.DeusExHUD.ConfigurationChanged" && pending.execution.offset==606u &&
+            pending.execution.opcode==101u && pending.execution.error=="Unsupported runtime native 1463" &&
+            pending.execution.writes==8875u && pending.objects.size()==132u &&
             pending.rootedWindows==std::vector<std::string>{pending.pawnRootPath},
             "Original root prefix probe did not capture the actual pending native graph: "+pending.inspectionError);
         const auto object=[&](const std::string& path)->const PortableNativeWindowObjectSnapshot& {
@@ -529,8 +541,12 @@ int main(int argc,char** argv) {
             "Original Tile setters changed unrelated constructor flags");
         edge(rootView,"Extension.Window.firstChild",display.path);edge(rootView,"Extension.Window.lastChild",hudView.path);
         // Ammo, all health children and Cross completed their original Init,
-        // visibility callbacks and unlocks. The belt and active-item displays
-        // finished; DamageHUDDisplay is now in flight. Root.hud is unassigned.
+        // visibility callbacks and unlocks. DamageHUDDisplay.InitWindow has
+        // now initialized all seven original records and returned through Hide.
+        // Its default NewChild Show invokes HUD.ChildRequestedVisibilityChange:
+        // SetChildVisibility(true) precedes ConfigurationChanged's native1463.
+        // NewChild has not returned/unlocked, so its outer damageDisplay
+        // assignment (and later Root.hud assignment) is still unexecuted.
         edge(rootView,"DeusEx.DeusExRootWindow.hud",{});
         edge(hudView,"DeusEx.DeusExHUD.Ammo",ammoView.path);edge(hudView,"DeusEx.DeusExHUD.hit",hitView.path);
         edge(hudView,"DeusEx.DeusExHUD.Cross",crossView.path);edge(hudView,"DeusEx.DeusExHUD.belt",beltView.path);
@@ -550,6 +566,66 @@ int main(int argc,char** argv) {
         const auto& damage=*damageFound;
         edge(hudView,"DeusEx.DeusExHUD.activeItems",activeItems.path);
         edge(hudView,"DeusEx.DeusExHUD.damageDisplay",{});
+        edge(damage,"DeusEx.DamageHUDDisplay.Player",player);
+        // Original DamageHUDDisplay.InitWindow PC29..848 assigns each of the
+        // seven sIconInfo records, including every authored DamageType[3]
+        // Name slot. Unassigned names retain typed None; the nested Icon is a
+        // real owning property edge, not merely a presentation texture string.
+        const std::array<std::array<const char*,3u>,7u> damageTypes{{
+            {{"Shocked","None","None"}},{{"EMP","None","None"}},{{"Burned","Flamed","exploded"}},
+            {{"PoisonGas","TearGas","None"}},{{"Drowned","HalonGas","None"}},
+            {{"Radiation","None","None"}},{{"shot","Sabot","None"}}
+        }};
+        const std::array<const char*,7u> damageIcons{{"DamageIconElectricity","DamageIconEMP","DamageIconFire",
+            "DamageIconGas","DamageIconOxygen","DamageIconRadiation",""}};
+        const std::array<std::array<int,3u>,7u> damageColors{{
+            {{0,196,255}},{{0,196,255}},{{255,96,0}},{{0,196,0}},{{0,128,255}},{{255,255,0}},{{255,0,0}}
+        }};
+        Require(std::count_if(damage.fields.begin(),damage.fields.end(),[](const auto& entry) {
+            return entry.declaration=="DeusEx.DamageHUDDisplay.iconInfo";
+        })==7,"Original damage display snapshot did not retain exactly seven authored iconInfo elements");
+        for(std::uint32_t slot=0u;slot<7u;++slot) {
+            const auto& captured=field(damage,"DeusEx.DamageHUDDisplay.iconInfo",slot);const auto& value=captured.value;
+            Require(value.kind==Kind::Struct && value.fields.size()==7u && value.text.empty() && value.intArray.empty(),
+                "Original iconInfo element lacks its canonical seven-field Struct: "+std::to_string(slot));
+            const auto& names=value.fields.at("damagetype");
+            Require(names.kind==Kind::Struct && names.fields.size()==3u && names.text.empty() && names.intArray.empty(),
+                "Original iconInfo DamageType[3] is not its canonical fixed-member envelope: "+std::to_string(slot));
+            for(std::size_t index=0u;index<3u;++index) {
+                const auto& name=names.fields.at(std::to_string(index));
+                Require(name.kind==Kind::Name && name.fields.empty() && name.intArray.empty() &&
+                    name.text==damageTypes[slot][index],
+                    "Original iconInfo lost a typed assigned/default DamageType slot: "+std::to_string(slot)+'.'+std::to_string(index));
+            }
+            const std::string texture=*damageIcons[slot]?"DeusExUI.Icons."+std::string(damageIcons[slot]):std::string{};
+            const auto& icon=value.fields.at("icon");
+            Require(icon.kind==Kind::Object && icon.fields.empty() && icon.intArray.empty() && icon.text==texture &&
+                captured.propertyRoots==(texture.empty()?std::vector<std::string>{}:std::vector<std::string>{texture}),
+                "Original iconInfo nested Icon value/actual owning GC edge differs: "+std::to_string(slot));
+            const auto& color=value.fields.at("color");
+            Require(color.kind==Kind::Struct && color.fields.size()==4u && color.text.empty() && color.intArray.empty(),
+                "Original iconInfo Color lacks canonical RGBA storage: "+std::to_string(slot));
+            for(const auto& [channel,expected]:{
+                std::pair{"r",damageColors[slot][0]},std::pair{"g",damageColors[slot][1]},
+                std::pair{"b",damageColors[slot][2]},std::pair{"a",0}}) {
+                const auto& component=color.fields.at(channel);
+                Require(component.kind==Kind::Byte && component.integer==expected && component.fields.empty() &&
+                    component.text.empty() && component.intArray.empty(),
+                    "Original iconInfo RGB writes/unchanged alpha0 differ: "+std::to_string(slot)+'.'+channel);
+            }
+            for(const auto* flag:{"bactive","bhitcenter"}) {
+                const auto& unchanged=value.fields.at(flag);
+                Require(unchanged.kind==Kind::Bool && !unchanged.boolean && unchanged.text.empty() &&
+                    unchanged.fields.empty() && unchanged.intArray.empty(),"Original iconInfo fabricated an active/hit flag");
+            }
+            for(const auto* counter:{"inittime","hitdir"}) {
+                const auto& unchanged=value.fields.at(counter);
+                Require(unchanged.kind==Kind::Float && unchanged.floating==0.0f && !std::signbit(unchanged.floating) &&
+                    unchanged.text.empty() && unchanged.fields.empty() && unchanged.intArray.empty(),
+                    "Original iconInfo fabricated a timer/direction or lost positive-zero default");
+            }
+        }
+        std::cout<<"ORIGINAL DamageHUDDisplay: all7 iconInfo records, all21 typed DamageType slots, six nested texture GC edges and colors verified\n";
         edge(hudView,"Extension.Window.firstChild",ammoView.path);edge(hudView,"Extension.Window.lastChild",damage.path);
         edge(activeItems,"Extension.Window.winParent",hudView.path);edge(activeItems,"Extension.Window.parentOwner",hudView.path);
         edge(activeItems,"Extension.Window.prevSibling",beltView.path);edge(activeItems,"Extension.Window.nextSibling",damage.path);
@@ -577,7 +653,7 @@ int main(int argc,char** argv) {
             field(hitView,"Extension.Window.lockCount").value.integer==0 && field(crossView,"Extension.Window.lockCount").value.integer==0 &&
             field(beltView,"Extension.Window.lockCount").value.integer==0 && field(activeItems,"Extension.Window.lockCount").value.integer==0 &&
             field(damage,"Extension.Window.lockCount").value.integer==1 &&
-            field(activeItems,"Extension.Window.bIsVisible").value.boolean && !field(damage,"Extension.Window.bIsVisible").value.boolean,
+            field(activeItems,"Extension.Window.bIsVisible").value.boolean && field(damage,"Extension.Window.bIsVisible").value.boolean,
             "Original hidden HUD sensitivity or in-flight child lock state was skipped/fabricated");
         edge(activeItems,"DeusEx.HUDBaseWindow.Player",player);
         const auto& augsBorder=object(field(activeItems,"DeusEx.HUDActiveItemsDisplay.winAugsContainer").value.text);
@@ -885,7 +961,7 @@ int main(int argc,char** argv) {
             "Original root prefix probe published its pending root/GC state");
         // These controls construct a separate actual native Root/Radio/Toggle
         // graph in one rollback-only VM transaction. They NEVER resume the
-        // poisoned DamageHUD callback above, patch owned scripts, or establish
+        // poisoned HUD layout callback above, patch owned scripts, or establish
         // successful original HUD startup. Distinct explicit test-only Info
         // colors make the real native appearance choice observable.
         const auto toggleStats=GC::GetStats();
@@ -1014,9 +1090,9 @@ int main(int argc,char** argv) {
         const auto rootAttempt=ExecutePortableActorFunction(player,"Extension.PlayerPawnExt.InitRootWindow");
         std::cout<<"ORIGINAL unbound root initialization boundary: "<<rootAttempt.function<<':'<<rootAttempt.offset<<
             " opcode="<<unsigned(rootAttempt.opcode)<<" "<<rootAttempt.error<<std::endl;
-        Require(!rootAttempt.passed() && !rootAttempt.committed && rootAttempt.function=="DeusEx.DamageHUDDisplay.InitWindow" &&
-            rootAttempt.offset==39u &&
-            rootAttempt.error=="Unsupported authored struct array/string member DeusEx.DamageHUDDisplay.sIconInfo.DamageType" &&
+        Require(!rootAttempt.passed() && !rootAttempt.committed && rootAttempt.function=="DeusEx.DeusExHUD.ConfigurationChanged" &&
+            rootAttempt.offset==606u && rootAttempt.opcode==101u && rootAttempt.writes==8875u &&
+            rootAttempt.error=="Unsupported runtime native 1463" &&
             std::find(rootAttempt.callStack.begin(),rootAttempt.callStack.end(),"DeusEx.DeusExRootWindow.InitWindow")!=rootAttempt.callStack.end(),
             "Native1052 did not construct/dispatch original root without a fabricated client prerequisite");
         const auto windowsAfter=ReadPortableRuntimeNativeWindowSummary();
@@ -1144,7 +1220,9 @@ int main(int argc,char** argv) {
             Bytes(inspectPath)==ringBytes,"Repeated original CreateKeyRing duplicated or changed its ring");
         GC::Collect();VerifyRing(player,ring);
         ShutdownPortableRuntime();
-        Require(InitializePortableRuntime(scripts).passed && LoadPortableRuntimeMap(map).passed &&
+        Require(InitializePortableRuntime(scripts).passed,"Cold original player runtime initialization failed");
+        prepareServices();
+        Require(LoadPortableRuntimeMap(map).passed &&
             LoadPortableRuntimeState(ringPath.string()),"Cold original ring graph restore failed");
         Require(!HasPortableRuntimeClient(),"Cold actor checkpoint fabricated a native client/session");
         VerifyRing(player,ring);
@@ -1152,12 +1230,18 @@ int main(int argc,char** argv) {
             "Cold original ring graph did not restore byte-identically");
         ShutdownPortableRuntime();
         Require(InitializePortableRuntime(scripts).passed,"Compass map-replacement runtime failed");
-        const auto replacement=LoadPortablePackageTables((root/"Maps"/"01_NYC_UNATCOIsland.dx").string());
-        Require(LoadPortableRuntimeMap(replacement).passed,"Compass replacement map failed");
+        // Only first Training is in scope. A genuine unload/reload invalidates
+        // the native map generation without sweeping another campaign map.
+        Require(LoadPortableRuntimeMap(map).passed,"Compass Training reload failed");
+        const auto compassGeneration=ReadPortableRuntimeNativeModel().mapGeneration;
+        Require(compassGeneration!=0u && UnloadPortableRuntimeMap()!=0u && LoadPortableRuntimeMap(map).passed &&
+            ReadPortableRuntimeNativeModel().mapGeneration!=compassGeneration,
+            "Compass Training reload retained the retired native map generation");
         const auto replacementNorth=ReadPortableRuntimeMapNorth();
-        Require(replacementNorth.found && replacementNorth.actorPath.rfind("01_NYC_UNATCOIsland.",0u)==0u &&
+        Require(replacementNorth.found && replacementNorth.actorPath==north.actorPath &&
+            replacementNorth.trueNorth==north.trueNorth &&
             Declared(replacementNorth.actorPath,"DeusEx.DeusExLevelInfo.TrueNorth",Kind::Int).integer==replacementNorth.trueNorth,
-            "Compass retained Training identity/north after actual map replacement");
+            "Compass lost the actual first Training identity/north after native map replacement");
         Require(UnloadPortableRuntimeMap()!=0u,"Compass replacement map did not unload");
         bool noMapRefused{};
         try {static_cast<void>(ReadPortableRuntimeMapNorth());} catch(const std::exception&) {noMapRefused=true;}

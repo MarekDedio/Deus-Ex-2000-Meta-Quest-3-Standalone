@@ -1,6 +1,9 @@
 #include "Precomp.h"
 #include "surreal_portable_package_tables.h"
 #include "quest_authored_struct_value.h"
+#include "portable_unreal_runtime.h"
+#include "quest_script_state.h"
+#include "GC/GC.h"
 
 #include <algorithm>
 #include <array>
@@ -9,6 +12,7 @@
 #include <fstream>
 #include <iostream>
 #include <limits>
+#include <map>
 #include <set>
 #include <stdexcept>
 #include <string>
@@ -506,6 +510,8 @@ void AuditOriginal(const std::filesystem::path& root) {
         region[2].type == "ByteProperty", "Original PointRegion members changed");
     std::cout << "PASS original InventoryItem/Vector/PointRegion raw metadata and ordered member audit\n";
 }
+#include "portable_struct_array_generated_cases.inl"
+#include "portable_struct_array_teardown_cases.inl"
 } // namespace
 
 int main(int argc, char** argv) {
@@ -513,6 +519,8 @@ int main(int argc, char** argv) {
     try {
         Synthetic();
         ImportedReferenceProvenance();
+        StructArrayGenerated::Run();
+        StructArrayTeardown::Run();
         if (argc == 3 && std::string(argv[1]) == "--audit-original") AuditOriginal(argv[2]);
         else Require(argc == 1, "Usage: portable_struct_descriptor_test [--audit-original GAME_ROOT]");
         return 0;

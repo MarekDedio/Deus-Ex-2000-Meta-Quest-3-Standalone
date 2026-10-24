@@ -1591,6 +1591,224 @@ void AssignmentArraysAndStructs() {
     expired([&] {host.retainedNativeElement->read();},"Expired derived native element read did not fail cleanly");
     Require(host.Load("Self",counter).integer==2,"Expired native reference mutated committed storage");
 }
+void FixedStructArrayMemberContracts() {
+    const auto initialChecks=checks,initialRejections=rejections;
+    const auto envelope=[](const std::vector<Value>& values) {
+        Value result;result.kind=Vm::Kind::Struct;
+        for(std::size_t i=0u;i<values.size();++i)result.fields.emplace(std::to_string(i),values[i]);
+        return result;
+    };
+    const auto structure=[&](const std::vector<Value>& values,std::int32_t sibling=0) {
+        Value result;result.kind=Vm::Kind::Struct;result.fields["slots"]=envelope(values);
+        result.fields["sibling"]=Value::Integer(sibling);return result;
+    };
+    const auto nested=[](std::int32_t count) {
+        Value result;result.kind=Vm::Kind::Struct;result.fields["count"]=Value::Integer(count);
+        result.fields["label"]=Value::Text(Vm::Kind::Name,count?"Present":"None");return result;
+    };
+    for(const auto& [kind,zero,values,replacement]:std::vector<std::tuple<std::string,Value,std::vector<Value>,Value>>{
+        {"Int",Value::Integer(0),{Value::Integer(1),Value::Integer(2),Value::Integer(3)},Value::Integer(44)},
+        {"Name",Value::Text(Vm::Kind::Name,{}),{Value::Text(Vm::Kind::Name,"A"),Value::Text(Vm::Kind::Name,"B"),Value::Text(Vm::Kind::Name,"C")},Value::Text(Vm::Kind::Name,"D")},
+        {"Object",Value::Text(Vm::Kind::Object,{}),{Value::Text(Vm::Kind::Object,"Map.A"),Value::Text(Vm::Kind::Object,"Map.B"),Value::Text(Vm::Kind::Object,"Map.C")},Value::Text(Vm::Kind::Object,"Map.D")},
+        {"Struct",nested(0),{nested(1),nested(2),nested(3)},nested(44)}}) {
+        TestHost host;const auto zeroParent=structure({zero,zero,zero});
+        const auto function=Function("FixedMember"+kind,Join({
+            Let(Element(Int(-100),Member(2,Ref(0x01,1))),Native(1008u)),
+            Let(Element(Int(100),Member(2,Ref(0x01,1))),Native(1008u)),
+            Let(Member(2,Ref(0x01,1)),Native(1008u)),Return(Member(2,Ref(0x01,1)))}));
+        const auto parent=host.Property(function,1,"Root",zeroParent);
+        host.Property(function,2,"SLOTS",zero,0u,3u);host.Store("Self",parent,{structure(values,17)});
+        host.executionNative=[&](const std::string&,const std::vector<Vm::Evaluation>&,const Vm::Function*,Vm::Execution&) {
+            return Vm::Evaluation{replacement,{}};
+        };
+        const auto result=Vm::Execute(host,function,"Self");Returned(result,"General fixed StructMember "+kind);
+        const auto stored=host.Load("Self",parent);
+        Require(Vm::Equal(result.value,replacement) && Vm::Equal(stored.fields.at("slots").fields.at("0"),replacement) &&
+            Vm::Equal(stored.fields.at("slots").fields.at("1"),values[1]) &&
+            Vm::Equal(stored.fields.at("slots").fields.at("2"),replacement) && stored.fields.at("sibling").integer==17 && result.writes==3u,
+            "Fixed StructMember lost reflected element zero, first/last clamp, field casing or sibling values");
+    }
+    {
+        TestHost host;const auto zero=structure({Value::Integer(0),Value::Integer(0),Value::Integer(0)});
+        auto function=Function("OuterArrayThenMemberArray",Return(Element(Native(1001u),Member(2,Element(Native(1002u),Ref(0x01,1))))));
+        const auto parent=host.Property(function,1,"Roots",zero,0u,2u);host.Property(function,2,"Slots",Value::Integer(0),0u,3u);
+        const auto first=structure({Value::Integer(1),Value::Integer(2),Value::Integer(3)},10);
+        const auto second=structure({Value::Integer(4),Value::Integer(5),Value::Integer(6)},20);
+        host.Store("Self",parent,{first,second});auto result=Vm::Execute(host,function,"Self");Returned(result,"Nested fixed-array address order");
+        Require(result.value.integer==4 && host.observations==std::vector<std::string>{"lhs","rhs","variable:Self:Roots"},
+            "Member-array index did not precede parent-array index/address evaluation");
+        function.bytecode=Join({Let(Element(Int(1),Member(2,Element(Int(0),Ref(0x01,1)))),Int(99)),Return(Ref(0x01,1))});
+        result=Vm::Execute(host,function,"Self");Returned(result,"Outer fixed Struct array/member fixed array write");
+        Require(host.Load("Self",parent,0u).fields.at("slots").fields.at("1").integer==99 &&
+            host.Load("Self",parent,0u).fields.at("sibling").integer==10 && Vm::Equal(host.Load("Self",parent,1u),second),
+            "Nested member-array write replaced another outer element or unrelated field");
+    }
+    for(const unsigned failure:{0u,1u,2u}) {
+        TestHost host;const auto zero=structure({Value::Integer(0),Value::Integer(0)});
+        const auto original=structure({Value::Integer(1),Value::Integer(2)},10);
+        const auto assignment=Let(Element(Int(1),Member(2,Ref(0x01,1))),Native(1008u,{Ref(0x01,1)}));
+        const auto function=Function("FreshMemberParent",failure==1u?Join({assignment,Native(4095u),Return()}):Join({assignment,Return(Ref(0x01,1))}));
+        const auto parent=host.Property(function,1,"Root",zero);host.Property(function,2,"Slots",Value::Integer(0),0u,2u);
+        host.Store("Self",parent,{original});
+        host.executionNative=[&](const std::string&,const std::vector<Vm::Evaluation>& arguments,const Vm::Function*,Vm::Execution&) {
+            auto changed=arguments.at(0).Load();changed.fields.at("sibling")=Value::Integer(20);
+            changed.fields.at("slots").fields.at("0")=Value::Integer(33);
+            arguments.at(0).reference->write(changed);return Vm::Evaluation{Value::Integer(77),{}};
+        };
+        auto limits=Vm::Limits{};if(failure==2u)limits.writes=1u;
+        const auto result=Vm::Execute(host,function,"Self",{},limits);
+        if(failure) {
+            Failed(result,failure==1u?Vm::Status::Unsupported:Vm::Status::Budget,host,"Member-array late refusal/write-budget rollback");
+            Require(Vm::Equal(host.Load("Self",parent),original),"Failed member-array write retained RHS parent/sibling mutations");
+        } else {
+            Returned(result,"Member-array fresh parent after RHS callback");const auto stored=host.Load("Self",parent);
+            Require(stored.fields.at("sibling").integer==20 && stored.fields.at("slots").fields.at("0").integer==33 &&
+                stored.fields.at("slots").fields.at("1").integer==77 && result.writes==2u,
+                "Captured member-array address restored a stale parent over RHS sibling changes");
+        }
+    }
+    for(const std::size_t cutoff:{0u,1u,2u,3u}) {
+        TestHost host;const auto zero=structure({Value::Integer(0),Value::Integer(0)});
+        const auto original=structure({Value::Integer(1),Value::Integer(2)},17);
+        const auto function=Function("EveryMemberWriteCutoff",Join({Native(1000u),
+            Let(Element(Int(0),Member(2,Ref(0x01,1))),Int(40)),Let(Element(Int(1),Member(2,Ref(0x01,1))),Int(50)),
+            Let(Member(2,Ref(0x01,1)),Int(60)),Native(4095u),Return()}));
+        const auto parent=host.Property(function,1,"Root",zero);host.Property(function,2,"Slots",Value::Integer(0),0u,2u);
+        host.Store("Self",parent,{original});auto limits=Vm::Limits{};limits.writes=cutoff;
+        const auto result=Vm::Execute(host,function,"Self",{},limits);
+        Failed(result,cutoff<3u?Vm::Status::Budget:Vm::Status::Unsupported,host,"Every member-array write cutoff and post-last-slot refusal");
+        Require(Vm::Equal(host.Load("Self",parent),original) && !host.effects && host.rng==12345u,
+            "Member-array cutoff retained selected slots, sibling values or earlier native effects");
+    }
+    for(const bool wholeStruct:{false,true}) {
+        TestHost host;const auto zero=structure({Value::Integer(0),Value::Integer(0)});
+        const auto original=structure({Value::Integer(1),Value::Integer(2)},10);
+        auto callee=Function("MemberOut",{},"MemberCallee");auto caller=Function("MemberOutCaller",{},"MemberCaller");
+        const auto parent=host.Property(caller,1,"Root",zero);host.Store("Self",parent,{original});
+        host.Property(caller,2,"Slots",Value::Integer(0),0u,2u);host.Property(callee,1,"Root",zero);
+        host.Property(callee,2,"Slots",Value::Integer(0),0u,2u);
+        callee.variables={host.Property(callee,4,"Output",wholeStruct?zero:Value::Integer(0),0x180u,1u,true)};
+        const auto outTarget=wholeStruct?Element(Int(1),Member(2,Ref(0x00,4))):Ref(0x00,4);
+        callee.bytecode=Join({Native(1008u,{wholeStruct?Ref(0x00,4):Ref(0x01,1)}),Let(outTarget,Int(88)),Return()});
+        host.finals[{caller.source,7}]=std::make_shared<Vm::Function>(callee);
+        caller.bytecode=Join({Call(0x1c,7,{wholeStruct?Ref(0x01,1):Element(Int(1),Member(2,Ref(0x01,1)))}),Return(Ref(0x01,1))});
+        host.executionNative=[&](const std::string&,const std::vector<Vm::Evaluation>& arguments,const Vm::Function*,Vm::Execution&) {
+            auto changed=arguments.at(0).Load();changed.fields.at("sibling")=Value::Integer(30);
+            changed.fields.at("slots").fields.at("0")=Value::Integer(55);arguments.at(0).reference->write(changed);return Vm::Evaluation{};
+        };
+        auto result=Vm::Execute(host,caller,"Self");Returned(result,"Fixed member element/whole Struct OUT writeback");
+        const auto stored=host.Load("Self",parent);
+        Require(stored.fields.at("sibling").integer==30 && stored.fields.at("slots").fields.at("0").integer==55 &&
+            stored.fields.at("slots").fields.at("1").integer==88,"OUT member/whole Struct writeback lost fresh parent changes");
+        host.Store("Self",parent,{original});
+        caller.bytecode=Join({Call(0x1c,7,{wholeStruct?Ref(0x01,1):Element(Int(1),Member(2,Ref(0x01,1)))}),Native(4095u),Return()});
+        const auto counts=std::array<std::size_t,3u>{host.beginCount,host.commitCount,host.rollbackCount};
+        result=Vm::Execute(host,caller,"Self");
+        Require(result.status==Vm::Status::Unsupported&&!result.error.empty()&&
+            host.beginCount==counts[0u]+1u&&host.commitCount==counts[1u]&&host.rollbackCount==counts[2u]+1u&&!host.active,
+            "OUT member-array enclosing rollback did not undo exactly the new root");++rejections;
+        Require(Vm::Equal(host.Load("Self",parent),original),"OUT member-array callback/copyback escaped enclosing rollback");
+    }
+    {
+        TestHost host;const auto parentValue=structure({nested(1),nested(2)});
+        auto function=Function("TemporaryMemberArray",Return(Member(3,Element(Int(1),Member(2,Native(1008u))))));
+        host.Property(function,2,"Slots",nested(0),0u,2u);host.Property(function,3,"Count",Value::Integer(0));
+        host.executionNative=[&](const std::string&,const std::vector<Vm::Evaluation>&,const Vm::Function*,Vm::Execution&) {
+            return Vm::Evaluation{parentValue,{}};
+        };
+        auto result=Vm::Execute(host,function,"Self");Returned(result,"Owned temporary member-array/nested scalar load");
+        Require(result.value.integer==2 && !result.writes,"Temporary array member address dangled or returned its envelope");
+        function.bytecode=Let(Member(3,Element(Int(1),Member(2,Native(1008u)))),Int(99));
+        function.bytecode=Join({function.bytecode,Return()});
+        const auto counts=std::array<std::size_t,3u>{host.beginCount,host.commitCount,host.rollbackCount};
+        result=Vm::Execute(host,function,"Self");
+        Require(result.status==Vm::Status::Invalid&&!result.error.empty()&&
+            host.beginCount==counts[0u]+1u&&host.commitCount==counts[1u]&&host.rollbackCount==counts[2u]+1u&&!host.active,
+            "Temporary member-array references acquired a writable alias or failed outside their new root");++rejections;
+    }
+    for(const bool noWrite:{false,true}) {
+        TestHost host;const auto parentValue=structure({Value::Integer(1),Value::Integer(2)});
+        const auto parentExpression=noWrite?Native(1008u):Context({0x2au},Native(4095u),12u);
+        const auto function=Function("AbsentMemberArray",Return(Element(Int(1),Member(2,parentExpression))));
+        host.Property(function,2,"Slots",Value::Integer(0),0u,2u);
+        host.executionNative=[&](const std::string&,const std::vector<Vm::Evaluation>&,const Vm::Function*,Vm::Execution&) {
+            return Vm::Evaluation{parentValue,{},Vm::ResultDisposition::NoWrite};
+        };
+        const auto result=Vm::Execute(host,function,"Self");Returned(result,"Absent StructMember array retains no-result disposition");
+        Require(result.value.kind==Vm::Kind::Nothing && !result.writes,"Absent member-array parent fabricated an envelope/element/zero-fill result");
+    }
+    {
+        TestHost host;const auto zero=structure({Value::Integer(0),Value::Integer(0)});
+        const auto original=structure({Value::Integer(1),Value::Integer(2)});
+        const auto function=Function("MemberArrayExpiredGuard",Return(Native(1007u,{Element(Int(1),Member(2,Ref(0x01,1)))})));
+        const auto parent=host.Property(function,1,"Root",zero);host.Property(function,2,"Slots",Value::Integer(0),0u,2u);
+        host.Store("Self",parent,{original});const auto result=Vm::Execute(host,function,"Self");Returned(result,"Member-array guarded OUT address lifetime");
+        Require(result.value.integer==2 && host.retainedNativeReference && host.retainedNativeElement,"Member-array native reference fixture lost its selected element");
+        for(const unsigned operation:{0u,1u,2u,3u}) {
+            bool refused{};try {
+                if(operation==0u)host.retainedNativeReference->read();
+                if(operation==1u)host.retainedNativeReference->write(Value::Integer(99));
+                if(operation==2u)host.retainedNativeReference->element(0u);
+                if(operation==3u)host.retainedNativeElement->read();
+            }catch(const std::runtime_error&){refused=true;}
+            Require(refused,"Expired member-array native address escaped its execution guard");
+        }
+        Require(Vm::Equal(host.Load("Self",parent),original),"Expired member-array OUT address mutated committed storage");
+    }
+    {
+        TestHost host;const auto zero=structure({Value::Rotator({}),Value::Rotator({})});
+        const auto original=structure({Value::Rotator({1,2,3}),Value::Rotator({10,20,30})});
+        const auto function=Function("MemberArrayNative316Copy",Return(Native(316u,{Element(Int(1),Member(2,Ref(0x01,1))),Native(1008u)})));
+        const auto parent=host.Property(function,1,"Root",zero);host.Property(function,2,"Slots",Value::Rotator({}),0u,2u,false,Vm::ResultLayout::CoreRotator12);
+        host.Store("Self",parent,{original});
+        host.executionNative=[&](const std::string&,const std::vector<Vm::Evaluation>&,const Vm::Function*,Vm::Execution& execution) {
+            Require(host.referenceReads==1u,"Native316 member-array Address/Copy path loaded parent before its final selected element");
+            const auto raw=host.Reference({"Self",Vm::Scope::Instance,parent.key},parent);
+            execution.WriteReference(raw,structure({Value::Rotator({9,9,9}),Value::Rotator({99,99,99})}));
+            return Vm::Evaluation{Value::Rotator({4,5,6}),{}};
+        };
+        const auto result=Vm::Execute(host,function,"Self");Returned(result,"Member-array native316 detached typed element snapshot");
+        Require(result.value.rotation==std::array<std::int32_t,3u>{14,25,36},"Native316 member-array copy changed after a later operand mutated the parent");
+    }
+    {
+        TestHost host;const auto function=Function("AbsentMemberArray316Address",Return(Native(316u,{
+            Element(Int(1),Member(2,Context({0x2au},Native(4095u),12u))),Rotation({1,2,3})})));
+        host.Property(function,2,"Slots",Value::Rotator({}),0u,std::numeric_limits<std::size_t>::max(),false,Vm::ResultLayout::CoreRotator12);
+        const auto result=Vm::Execute(host,function,"Self");
+        Failed(result,Vm::Status::Unsupported,host,"Native316 missing member-array address retains unwritten operand refusal");
+        Require(result.error.find("dimension")==std::string::npos && host.nativeIndices.empty(),
+            "Inactive native316 member-array address consumed metadata shape/dimension or executed suppressed operands");
+    }
+    for(unsigned malformed=0u;malformed<9u;++malformed) {
+        TestHost host;const auto zero=structure({Value::Integer(0),Value::Integer(0)});
+        auto original=structure({Value::Integer(1),Value::Integer(2)});auto dimension=std::size_t{2u};
+        if(malformed==0u)original.fields.at("slots")=Value::Integer(1);
+        if(malformed==1u)original.fields.at("slots").fields.erase("1");
+        if(malformed==2u){original.fields.at("slots").fields["01"]=Value::Integer(2);original.fields.at("slots").fields.erase("1");}
+        if(malformed==3u)original.fields.at("slots").fields["1"]=Value::Float(2.0f);
+        if(malformed==4u)original.fields.at("slots").fields["extra"]=Value::Integer(3);
+        if(malformed==5u)original.fields.at("slots").text="not an authored envelope";
+        if(malformed==6u)original.fields.at("slots").fields.at("0").fields["extra"]=Value::Integer(1);
+        if(malformed==7u)dimension=0u;
+        if(malformed==8u)dimension=std::numeric_limits<std::size_t>::max();
+        const auto function=Function("MalformedMemberArray",Join({Native(1000u),Return(Element(Int(1),Member(2,Ref(0x01,1))))}));
+        const auto parent=host.Property(function,1,"Root",zero);host.Property(function,2,"Slots",Value::Integer(0),0u,dimension);
+        host.Store("Self",parent,{original});const auto result=Vm::Execute(host,function,"Self");
+        Failed(result,malformed==8u?Vm::Status::Budget:Vm::Status::Invalid,host,"Malformed reflected member array fails closed");
+        Require(Vm::Equal(host.Load("Self",parent),original) && !host.effects && host.rng==12345u,
+            "Malformed member-array refusal retained an earlier effect or changed stored data");
+    }
+    for(const unsigned budget:{0u,1u}) {
+        TestHost host;const auto zero=structure({Value::Integer(0),Value::Integer(0)});
+        const auto function=Function("MemberArrayBudgets",Return(Element(Int(1),Member(2,Ref(0x01,1)))));
+        const auto parent=host.Property(function,1,"Root",zero);host.Property(function,2,"Slots",Value::Integer(0),0u,2u);host.Store("Self",parent,{zero});
+        auto limits=Vm::Limits{};if(budget)limits.retainedBytes=sizeof(Vm::Reference);else limits.localElements=1u;
+        const auto result=Vm::Execute(host,function,"Self",{},limits);Failed(result,Vm::Status::Budget,host,"Member-array metadata/envelope/reference storage bounds");
+        Require(!result.writes,"Member-array storage-budget refusal wrote a parent");
+    }
+    std::cout<<"General reflected fixed-array StructMember addresses: "<<checks-initialChecks<<" checks and "
+        <<rejections-initialRejections<<" refusal controls.\n";
+}
 void LazyAndContextContracts() {
     for(const auto& test:std::vector<std::tuple<std::uint16_t,bool,bool,std::size_t>>{
         {130,false,false,0},{130,true,true,1},{132,true,true,0},{132,false,true,1}}) {
@@ -5560,7 +5778,7 @@ void DynamicIntArrayContracts() {
         <<checks-initialChecks<<" checks and "<<rejections-initialRejections<<" rejection controls passed.\n";
 }
 void ExecutionContracts() {
-    RotatorDirectionContracts();ScalarAndLocalContracts();ParametersAndReturns();DecalNativeInputContracts();AssignmentArraysAndStructs();LazyAndContextContracts();ReceiverAndContextMetadataContracts();ClassContextContracts();
+    RotatorDirectionContracts();ScalarAndLocalContracts();ParametersAndReturns();DecalNativeInputContracts();AssignmentArraysAndStructs();FixedStructArrayMemberContracts();LazyAndContextContracts();ReceiverAndContextMetadataContracts();ClassContextContracts();
     OptionalAndReferenceTables();ControlAndFailureContracts();BudgetAndNestedRollback();IntegerIncrementContracts();CastContracts();SwitchContracts();DynamicIntArrayContracts();
 }
 void TransactionContracts() {

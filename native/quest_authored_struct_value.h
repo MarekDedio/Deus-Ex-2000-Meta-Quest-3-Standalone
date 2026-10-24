@@ -120,10 +120,10 @@ inline void Validate(const AuthoredStructSchema& schema, Budget& budget,
     for (const auto& field : schema.fields) {
         Text(field.key,budget.limits,true); Text(field.name,budget.limits,true);
         Text(field.referenceClassPath,budget.limits,true,true);
-        // Value.fields has scalar members, not array values. Top-level fixed
-        // array slots are the host's responsibility; nested arrays are explicit
-        // failures rather than consuming one element and silently discarding it.
-        if (field.arrayDimension!=1u) Fail("nested array members are not representable");
+        if (field.arrayDimension==0u || field.arrayDimension>budget.limits.valueNodes)
+            Fail("invalid fixed-array dimension or node budget exceeded");
+        if (schema.kind!=Vm::Kind::Struct && field.arrayDimension!=1u)
+            Fail("specialized struct requires scalar members");
         if (!names.insert(Fold(field.name)).second || !keys.insert(Fold(field.key)).second)
             Fail("duplicate canonical struct field identity");
         budget.Retain(sizeof(AuthoredStructField)+field.name.size()+field.key.size()+
@@ -131,20 +131,36 @@ inline void Validate(const AuthoredStructSchema& schema, Budget& budget,
         if (field.zero.kind!=Vm::Kind::Object &&
             (field.classReference || !field.referenceClassPath.empty()))
             Fail("object reference constraint on a non-object member");
-        if (Aggregate(field.zero.kind)) {
-            if (!field.nested || field.nested->kind!=field.zero.kind)
-                Fail("missing or mismatched nested schema");
-            Validate(*field.nested,budget,depth+1u,stack);
-        } else {
-            if (field.nested) Fail("nested schema on a scalar member");
-            budget.Node(depth+1u);
-            switch (field.zero.kind) {
-            case Vm::Kind::Byte: case Vm::Kind::Int: case Vm::Kind::Float:
-            case Vm::Kind::Bool: case Vm::Kind::Name: case Vm::Kind::Object:
-            case Vm::Kind::String: break;
-            default: Fail("unsupported struct member kind");
+        // An ArrayDim>1 member owns one internal Struct envelope with exact
+        // decimal slot keys. Its kind does NOT grant script array semantics:
+        // only the real field declaration supplies dimension/element aliases.
+        auto elementDepth=depth+1u;
+        if (field.arrayDimension>1u) {
+            budget.Node(elementDepth++);
+            if (field.arrayDimension>budget.limits.valueNodes-budget.nodes)
+                Fail("fixed-array elements exceed remaining node budget");
+        }
+        for (std::size_t index=0u; index<field.arrayDimension; ++index) {
+            if (field.arrayDimension>1u) {
+                const auto slot=std::to_string(index);
+                Text(slot,budget.limits,true);
+                budget.Retain(sizeof(std::string)+slot.capacity()+64u);
             }
-            if (field.zero.kind==Vm::Kind::Name) budget.Retain(4u); // "None" in typed zero.
+            if (Aggregate(field.zero.kind)) {
+                if (!field.nested || field.nested->kind!=field.zero.kind)
+                    Fail("missing or mismatched nested schema");
+                Validate(*field.nested,budget,elementDepth,stack);
+            } else {
+                if (field.nested) Fail("nested schema on a scalar member");
+                budget.Node(elementDepth);
+                switch (field.zero.kind) {
+                case Vm::Kind::Byte: case Vm::Kind::Int: case Vm::Kind::Float:
+                case Vm::Kind::Bool: case Vm::Kind::Name: case Vm::Kind::Object:
+                case Vm::Kind::String: break;
+                default: Fail("unsupported struct member kind");
+                }
+                if (field.zero.kind==Vm::Kind::Name) budget.Retain(4u); // "None" in every typed-zero slot.
+            }
         }
     }
     if (schema.kind==Vm::Kind::Vector || schema.kind==Vm::Kind::Rotator) {
@@ -164,11 +180,23 @@ inline Vm::Value Scalar(Vm::Kind kind) {
     if (kind==Vm::Kind::Name) result.text="None";
     return result;
 }
+inline Vm::Value Zero(const AuthoredStructSchema& schema);
+// Like Zero, this construction helper requires the complete owning schema to
+// have passed Validate with the caller's cumulative budget first. ArrayDim1
+// stays an ordinary element; fixed envelopes never flatten authored names.
+inline Vm::Value FieldZero(const AuthoredStructField& field) {
+    if (field.arrayDimension==1u)
+        return field.nested ? Zero(*field.nested) : Scalar(field.zero.kind);
+    auto result=Scalar(Vm::Kind::Struct);
+    for (std::size_t index=0u; index<field.arrayDimension; ++index)
+        result.fields.emplace(std::to_string(index),field.nested ? Zero(*field.nested) : Scalar(field.zero.kind));
+    return result;
+}
 inline Vm::Value Zero(const AuthoredStructSchema& schema) {
     auto result=Scalar(schema.kind);
     if (schema.kind==Vm::Kind::Struct)
         for (const auto& field : schema.fields)
-            result.fields.emplace(Fold(field.name),field.nested ? Zero(*field.nested) : Scalar(field.zero.kind));
+            result.fields.emplace(Fold(field.name),FieldZero(field));
     return result;
 }
 
@@ -257,7 +285,7 @@ private:
         if (resolvers_.decodeString) return CheckedText(resolvers_.decodeString(raw),false,true);
         return CheckedText(std::string(raw),false,true);
     }
-    Vm::Value ReadField(const AuthoredStructField& field) {
+    Vm::Value ReadElement(const AuthoredStructField& field) {
         if (field.nested) return ReadStruct(*field.nested);
         auto result=Scalar(field.zero.kind);
         switch (field.zero.kind) {
@@ -288,6 +316,16 @@ private:
         case Vm::Kind::String: result.text=String(); break;
         default: Fail("unsupported struct member kind");
         }
+        return result;
+    }
+    Vm::Value ReadField(const AuthoredStructField& field) {
+        if (field.arrayDimension==1u) return ReadElement(field);
+        auto result=Scalar(Vm::Kind::Struct);
+        // Actual Core.dll UStruct::SerializeBin10126683..101266A6 visits
+        // every ArrayDim element before the next property. No length prefix
+        // or per-slot property tag is present in this member stream.
+        for (std::size_t index=0u; index<field.arrayDimension; ++index)
+            result.fields.emplace(std::to_string(index),ReadElement(field));
         return result;
     }
     Vm::Value ReadStruct(const AuthoredStructSchema& schema) {

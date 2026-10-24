@@ -284,6 +284,172 @@ void ScalarsAndNested() {
     }
 }
 
+void FixedArrayMembers() {
+    auto names=Field("Names",Kind::Name);names.arrayDimension=3u;
+    auto numbers=Field("Numbers",Kind::Int);numbers.arrayDimension=12u;
+    auto objects=Field("Objects",Kind::Object);objects.arrayDimension=3u;
+    objects.referenceClassPath="Engine.Actor";
+    auto childNumbers=Field("Values",Kind::Int,"Fixture.Child");childNumbers.arrayDimension=2u;
+    auto child=std::make_shared<AuthoredStructSchema>(Schema(
+        {Field("Label",Kind::Name,"Fixture.Child"),childNumbers},Kind::Struct,"Fixture.Child"));
+    auto children=Field("Children",Kind::Struct);children.nested=child;children.arrayDimension=2u;
+    // Deliberately not map/name order. Twelve slots distinguish ascending wire
+    // indexing from the envelope map's canonical lexicographic key ordering.
+    const auto schema=Schema({numbers,names,objects,children,Field("After",Kind::Int)});
+    Bytes bytes;
+    for(std::int32_t index=0;index<12;++index)I32(bytes,100*index+7);
+    for(const auto index:{1,2,0})Index(bytes,index);
+    for(const auto reference:{-3,0,7})Index(bytes,reference);
+    Index(bytes,4);I32(bytes,1000);I32(bytes,1001);
+    Index(bytes,5);I32(bytes,2000);I32(bytes,2001);I32(bytes,-91);
+    const std::string source="ActualValuePackage";
+    std::vector<std::int32_t> nameReads,objectReads;
+    AuthoredStructResolvers resolver;
+    resolver.resolveName=[&](std::int32_t index) {
+        nameReads.push_back(index);
+        if(index==0)return std::string("None");
+        if(index<0||index>5)throw std::runtime_error("Unresolved source-package name");
+        return source+".Name"+std::to_string(index);
+    };
+    resolver.resolveObject=[&](std::int32_t reference,const AuthoredStructField& field) {
+        Require(field.key==objects.key&&field.arrayDimension==3u&&!field.classReference&&
+            field.referenceClassPath=="Engine.Actor","Fixed-array resolver lost its original element declaration");
+        objectReads.push_back(reference);
+        if(reference!=-3&&reference!=7)throw std::runtime_error("Unresolved source-package object");
+        return source+(reference<0?".ImportedActor":".ExportedActor");
+    };
+    const auto decoded=DecodeAuthoredStructValue(schema,bytes,69,resolver);
+    Require(nameReads==std::vector<std::int32_t>{1,2,0,4,5}&&objectReads==std::vector<std::int32_t>{-3,7},
+        "ArrayDim member stream changed field-major/ascending slot order or called resolver for Object None");
+    for(std::size_t index=0u;index<12u;++index) {
+        const auto& number=decoded.fields.at("numbers").fields.at(std::to_string(index));
+        Require(number.kind==Kind::Int&&number.integer==static_cast<std::int32_t>(100u*index+7u),
+            "Fixed INT array consumed a length prefix or followed map order instead of actual wire slots");
+    }
+    Require(decoded.fields.at("names").kind==Kind::Struct&&decoded.fields.at("names").fields.size()==3u&&
+        decoded.fields.at("names").fields.at("0").text==source+".Name1"&&
+        decoded.fields.at("names").fields.at("1").text==source+".Name2"&&
+        decoded.fields.at("names").fields.at("2").text=="None","Name ArrayDim slots were flattened, dropped or fabricated");
+    const auto& decodedObjects=decoded.fields.at("objects").fields;
+    Require(decodedObjects.at("0").text==source+".ImportedActor"&&decodedObjects.at("1").text.empty()&&
+        decodedObjects.at("2").text==source+".ExportedActor","Fixed Object array lost signed reference/source resolver semantics");
+    const auto& decodedChildren=decoded.fields.at("children").fields;
+    Require(decodedChildren.at("0").fields.at("label").text==source+".Name4"&&
+        decodedChildren.at("0").fields.at("values").fields.at("1").integer==1001&&
+        decodedChildren.at("1").fields.at("label").text==source+".Name5"&&
+        decodedChildren.at("1").fields.at("values").fields.at("0").integer==2000&&
+        decoded.fields.at("after").integer==-91,"Nested Struct arrays lost repeated substreams or following member boundary");
+    auto zero=MakeAuthoredStructZero(schema);
+    for(const auto* field:{&names,&numbers,&objects,&children}) {
+        const auto& envelope=zero.fields.at(AuthoredStructDetail::Fold(field->name));
+        Require(envelope.kind==Kind::Struct&&envelope.fields.size()==field->arrayDimension,
+            "Fixed-array typed zero did not preserve exact authored dimension");
+        Require(Vm::Equal(envelope,AuthoredStructDetail::FieldZero(*field)),
+            "Validated per-field zero helper disagrees with complete struct construction");
+        for(std::size_t index=0u;index<field->arrayDimension;++index)
+            Require(envelope.fields.count(std::to_string(index))==1u,"Fixed-array envelope omitted a canonical decimal slot");
+    }
+    Require(zero.fields.at("names").fields.at("2").text=="None"&&zero.fields.at("objects").fields.at("1").text.empty()&&
+        zero.fields.at("after").kind==Kind::Int&&zero.fields.at("after").fields.empty(),
+        "Array slots did not receive element typed zero or ArrayDim1 gained an envelope");
+    Require(Vm::Equal(Vm::Coerce(decoded,zero),decoded),
+        "Whole struct coercion/comparison did not preserve all fixed-array slots");
+    auto malformed=decoded;malformed.fields.at("names").fields.erase("1");
+    Reject([&]{Vm::Coerce(malformed,zero);},"Missing fixed-array slot passed existing recursive value shape validation");
+    malformed=decoded;malformed.fields.at("names").fields.emplace("01",malformed.fields.at("names").fields.at("1"));
+    malformed.fields.at("names").fields.erase("1");
+    Reject([&]{Vm::Coerce(malformed,zero);},"Noncanonical fixed-array slot spelling passed recursive shape validation");
+    malformed=decoded;malformed.fields.at("names").fields.at("1")=Vm::Value::Integer(7);
+    Reject([&]{Vm::Coerce(malformed,zero);},"Wrong fixed-array element kind passed recursive shape validation");
+    zero.fields.at("children").fields.at("0").fields.at("values").fields.at("1").integer=88;
+    Require(zero.fields.at("children").fields.at("1").fields.at("values").fields.at("1").integer==0,
+        "Repeated nested array zeros share mutable element storage");
+    for(std::size_t length=0u;length<bytes.size();++length) {
+        const Bytes truncated(bytes.begin(),bytes.begin()+static_cast<std::ptrdiff_t>(length));
+        Reject([&]{DecodeAuthoredStructValue(schema,truncated,69,resolver);},"Truncated ArrayDim member stream was accepted");
+    }
+    auto trailing=bytes;trailing.push_back(0u);
+    Reject([&]{DecodeAuthoredStructValue(schema,trailing,69,resolver);},"Trailing bytes after complete fixed-array member stream were accepted");
+    resolver.resolveObject={};
+    resolver.resolveObjectOrNone=[&](std::int32_t reference,const AuthoredStructField& field)->std::optional<std::string> {
+        Require(field.key==objects.key&&field.arrayDimension==3u,"Optional array resolver lost real declaration identity");
+        if(reference==-3)return std::nullopt;
+        if(reference==7)return source+".ExportedActor";
+        throw std::runtime_error("Unresolved optional source-package object");
+    };
+    const auto excluded=DecodeAuthoredStructValue(schema,bytes,69,resolver);
+    Require(excluded.fields.at("objects").fields.at("0").text.empty()&&
+        excluded.fields.at("objects").fields.at("2").text==source+".ExportedActor"&&
+        excluded.fields.at("after").integer==-91,"Loader-authorized array None shifted later slots or field boundary");
+}
+
+void FixedArrayBudgets() {
+    auto names=Field("Names",Kind::Name);names.arrayDimension=3u;
+    const auto schema=Schema({names});
+    AuthoredStructLimits limits;
+    AuthoredStructDetail::Budget measured{limits};std::vector<const AuthoredStructSchema*> stack;
+    AuthoredStructDetail::Validate(schema,measured,0u,stack);
+    Require(measured.nodes==5u,"Fixed-array schema did not preaccount root, envelope and every element node");
+    std::size_t calls{};AuthoredStructResolvers resolver;
+    resolver.resolveName=[&](std::int32_t){++calls;return std::string(1000u,'x');};
+    Bytes bytes{1u,1u,1u};
+    limits.valueNodes=4u;
+    Reject([&]{DecodeAuthoredStructValue(schema,bytes,69,resolver,limits);},"Fixed-array zero/read preallocation ignored repeated element nodes");
+    Require(calls==0u,"Invalid structural budget reached array input callbacks before admission");
+    limits.valueNodes=5u;limits.depth=2u;
+    Reject([&]{MakeAuthoredStructZero(schema,limits);},"Fixed-array envelope level was absent from depth accounting");
+    limits.depth=3u;
+    Require(MakeAuthoredStructZero(schema,limits).fields.at("names").fields.at("2").text=="None",
+        "Exact fixed-array node/depth boundary was rejected");
+    limits={};limits.retainedBytes=measured.retained-1u;
+    Reject([&]{MakeAuthoredStructZero(schema,limits);},"Fixed-array preallocation ignored envelope/slot retained storage");
+    limits.retainedBytes=measured.retained;
+    const auto zero=MakeAuthoredStructZero(schema,limits);
+    Require(zero.fields.at("names").fields.size()==3u,"Exact fixed-array structural retained boundary was rejected");
+    limits.retainedBytes=measured.retained+2999u;
+    Reject([&]{DecodeAuthoredStructValue(schema,bytes,69,resolver,limits);},"Fixed-array resolved strings did not share one cumulative retained allowance");
+    limits.retainedBytes=measured.retained+3000u;
+    Require(DecodeAuthoredStructValue(schema,bytes,69,resolver,limits).fields.at("names").fields.at("2").text.size()==1000u,
+        "Exact repeated resolved-string retained boundary was rejected");
+    auto invalid=schema;invalid.fields.front().arrayDimension=0u;
+    Reject([&]{MakeAuthoredStructZero(invalid);},"Fixed-array zero dimension was accepted");
+    invalid.fields.front().arrayDimension=std::numeric_limits<std::size_t>::max();
+    Reject([&]{MakeAuthoredStructZero(invalid);},"Huge fixed dimension was multiplied or allocated before admission");
+    invalid.fields.front().arrayDimension=3u;invalid.fields.front().zero.kind=Kind::IntArray;
+    Reject([&]{MakeAuthoredStructZero(invalid);},"Fixed envelope implicitly enabled dynamic INT-array member support");
+    auto shortKey=Field("C",Kind::Int,"X");shortKey.key="B";shortKey.arrayDimension=12u;
+    limits={};limits.identityBytes=1u;
+    const auto keys=Schema({shortKey},Kind::Struct,"A");
+    Reject([&]{MakeAuthoredStructZero(keys,limits);},"Two-digit canonical slot key bypassed identity admission");
+    for(const auto specialized:{Kind::Vector,Kind::Rotator}) {
+        auto first=Field(specialized==Kind::Vector?"X":"Pitch",specialized==Kind::Vector?Kind::Float:Kind::Int);
+        first.arrayDimension=2u;
+        const auto invalidSpecial=Schema({first,Field(specialized==Kind::Vector?"Y":"Yaw",first.zero.kind),
+            Field(specialized==Kind::Vector?"Z":"Roll",first.zero.kind)},specialized);
+        Reject([&]{MakeAuthoredStructZero(invalidSpecial);},"Specialized Vector/Rotator admitted a nonscalar channel envelope");
+    }
+    auto values=Field("Values",Kind::Int,"Fixture.Child");values.arrayDimension=2u;
+    auto child=std::make_shared<AuthoredStructSchema>(Schema({values},Kind::Struct,"Fixture.Child"));
+    auto repeated=Field("Children",Kind::Struct);repeated.nested=child;repeated.arrayDimension=2u;
+    const auto nested=Schema({repeated});
+    limits={};AuthoredStructDetail::Budget nestedSize{limits};stack.clear();
+    AuthoredStructDetail::Validate(nested,nestedSize,0u,stack);
+    Require(nestedSize.nodes==10u,"Repeated nested schemas were charged once instead of for every constructed occurrence");
+    limits.valueNodes=9u;
+    Reject([&]{MakeAuthoredStructZero(nested,limits);},"Nested fixed-array aggregate node multiplication was skipped");
+    limits.valueNodes=10u;limits.depth=4u;
+    Reject([&]{MakeAuthoredStructZero(nested,limits);},"Nested fixed-array envelope depth was skipped");
+    limits.depth=5u;
+    Require(MakeAuthoredStructZero(nested,limits).fields.at("children").fields.at("1").fields.at("values").fields.size()==2u,
+        "Exact nested fixed-array node/depth boundary was rejected");
+    auto cycle=std::make_shared<AuthoredStructSchema>();cycle->path="Fixture.Cycle";cycle->name="Cycle";
+    auto self=Field("Self",Kind::Struct,"Fixture.Cycle");self.nested=cycle;self.arrayDimension=2u;cycle->fields.push_back(self);
+    Reject([&]{MakeAuthoredStructZero(*cycle);},"Fixed-array envelope concealed a recursive nested schema");
+    cycle->fields.clear();
+    limits={};AuthoredStructDetail::Budget retained{limits};AuthoredStructDetail::RetainedValue(zero,retained);
+    Require(retained.nodes==5u,"Batched retained-value walk omitted fixed-array envelope slots");
+}
+
 void Strings() {
     const auto schema=Schema({Field("Text",Kind::String),Field("After",Kind::Int)});
     Bytes bytes; String(bytes,"Cafe: \xe9"); I32(bytes,-3);
@@ -340,7 +506,7 @@ void InvalidSchemasAndBudgets() {
     AuthoredStructLimits shortIdentity; shortIdentity.identityBytes=3u;
     Reject([&] { MakeAuthoredStructZero(scalar,shortIdentity); },"Independent metadata identity budget ignored");
     invalid=scalar; invalid.fields.front().arrayDimension=2u;
-    Reject([&] { DecodeAuthoredStructValue(invalid,four,69); },"Nested fixed array was silently truncated");
+    Reject([&] { DecodeAuthoredStructValue(invalid,four,69); },"Truncated nested fixed array was silently accepted");
     invalid.fields.front().arrayDimension=0u;
     Reject([&] { MakeAuthoredStructZero(invalid); },"Zero array dimension accepted");
     invalid=scalar; invalid.fields.front().zero.kind=Kind::Nothing;
@@ -450,7 +616,8 @@ void RetainedReadBudgets() {
 
 int main() {
     try {
-        InventoryMembers(); CompactReferences(); LoaderAuthorizedNone(); ScalarsAndNested(); Strings(); InvalidSchemasAndBudgets();
+        InventoryMembers(); CompactReferences(); LoaderAuthorizedNone(); ScalarsAndNested(); FixedArrayMembers(); FixedArrayBudgets();
+        Strings(); InvalidSchemasAndBudgets();
         DeclarationTagNames();
         RetainedReadBudgets();
         std::cout << "Authored struct value tests passed: " << checks << " checks, " << rejections << " rejections\n";

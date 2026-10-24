@@ -10,6 +10,20 @@ do not spend time on other-map integration or map-content test sweeps.
 Reconfirmed2026-10-22: skip other-map crate/physics integration and testing;
 the WHOLE first Training map remains the current content acceptance target.
 
+Reconfirmed2026-10-24: focus on crates/loot/gravity, not unrelated Login UI or
+HUD polish. Login is internal original player spawning; no account or character
+creation screen is being added. The nested fixed-array compatibility increment
+closes its real Name[3] storage boundary, retains whole-root refusal at native1463
+and passes codec/VM/live/save/native cleanup plus actual Training regressions.
+Fresh player controls pass6877 including all7 original icon records,21 names
+and6 nested texture GC edges. All content checks remain Training-only; an old
+compass other-map sweep was replaced by genuine Training unload/reload generation
+controls. Final coherent shared gate:179 executed/211 registered,32 explicit
+owned-data skips, zero failures; strict ARM64/Android native link pass. This is
+not a new APK or complete live crate path. Next crate prerequisite is same-root
+original weapon animation-notify delivery, not inventing immediate trigger
+damage or a published partial Login player. See TRAINING-STRUCT-MEMBER-ARRAYS.md.
+
 Latest ordered-cohort increment,2026-10-24: the real surviving upper crate,
 all six original fragments and dropped Lockpick now advance frame-major in
 actual native slots with authentic native implementation/role/mode admission.

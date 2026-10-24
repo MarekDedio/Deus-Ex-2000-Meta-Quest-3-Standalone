@@ -8840,14 +8840,17 @@ private:
                 throw std::runtime_error("Runtime struct Children/Next ownership/cycle budget failed");
             if (field->property) {
                 const auto& member = *field->property;
-                if (member.arrayDimension != 1 || member.type == "StringProperty")
-                    throw std::runtime_error("Unsupported authored struct array/string member " + field->reflection.objectPath);
+                if (member.type == "StringProperty")
+                    throw std::runtime_error("Unsupported authored legacy StringProperty struct member " + field->reflection.objectPath);
+                if (member.arrayDimension < 1 || member.arrayDimension > 32768)
+                    throw std::runtime_error("Runtime authored struct fixed-array dimension exceeds its bound");
                 if (structFields_ >= 32768u) throw std::runtime_error("Runtime struct field budget exceeded");
                 ++structFields_;
                 const auto dot = field->reflection.objectPath.find_last_of('.');
                 QuestVr::AuthoredStructField value;
                 value.key = field->reflection.objectPath;
                 value.name = value.key.substr(dot + 1u);
+                value.arrayDimension = static_cast<std::size_t>(member.arrayDimension);
                 if (!names.insert(LowerAscii(value.name)).second)
                     throw std::runtime_error("Runtime struct has duplicate canonical field names");
                 if (member.type == "StructProperty") {
@@ -9347,9 +9350,21 @@ private:
                 descriptor.secondaryType : descriptor.referencedType);
             ValidateObjectValue(normalized, expected, descriptor.type == "ClassProperty");
         } else if (normalized.kind == Kind::Struct) {
-            for (const auto& field : StructPropertySchema(property.key)->fields)
-                normalized.fields.at(LowerAscii(field.name)) =
-                    TypedLiveValue(DescribeProperty(field.key), normalized.fields.at(LowerAscii(field.name)));
+            for (const auto& field : StructPropertySchema(property.key)->fields) {
+                const auto member=DescribeProperty(field.key);
+                auto& stored=normalized.fields.at(LowerAscii(field.name));
+                if(field.arrayDimension==1u)stored=TypedLiveValue(member,stored);
+                else {
+                    // Coerce above authenticates the complete canonical slot
+                    // envelope against the schema-owned zero. Each actual
+                    // element still needs its declaring Object/Struct type
+                    // constraint; the internal envelope is never that element.
+                    for(std::size_t slot=0u;slot<field.arrayDimension;++slot) {
+                        auto& element=stored.fields.at(std::to_string(slot));
+                        element=TypedLiveValue(member,element);
+                    }
+                }
+            }
         }
         return normalized;
     }
@@ -11299,9 +11314,20 @@ private:
                 descriptor.secondaryType : descriptor.referencedType);
             ObjectValue(value, expected, descriptor.type == "ClassProperty");
         } else if (value.kind == QuestVr::Vm::Kind::Struct) {
-            for (const auto& field : host_.StructPropertySchema(property.key)->fields)
-                value.fields.at(LowerAscii(field.name)) =
-                    TypedValue(host_.DescribeProperty(field.key), value.fields.at(LowerAscii(field.name)));
+            for (const auto& field : host_.StructPropertySchema(property.key)->fields) {
+                const auto member=host_.DescribeProperty(field.key);
+                auto& stored=value.fields.at(LowerAscii(field.name));
+                if(field.arrayDimension==1u)stored=TypedValue(member,stored);
+                else {
+                    // Shape already enforces exact slot names/count/kinds,
+                    // including nested arrays. Resolve every element's real
+                    // declaring constraint before replacement publication.
+                    for(std::size_t slot=0u;slot<field.arrayDimension;++slot) {
+                        auto& element=stored.fields.at(std::to_string(slot));
+                        element=TypedValue(member,element);
+                    }
+                }
+            }
         }
         return value;
     }
@@ -13464,6 +13490,10 @@ PortableRootWindowProbeResult ProbePortableRootWindowInitialization(
                     if(IsDerivedFromPath(object->cls,"DeusEx.HUDActiveItemsDisplay"))
                         for(const auto* name:{"winAugsContainer","winItemsContainer","editMode","itemAugsOffsetX","itemAugsOffsetY"})
                             field((std::string("DeusEx.HUDActiveItemsDisplay.")+name).c_str());
+                    if(IsDerivedFromPath(object->cls,"DeusEx.DamageHUDDisplay")) {
+                        field("DeusEx.DamageHUDDisplay.Player");
+                        for(std::uint32_t slot=0u;slot<7u;++slot) field("DeusEx.DamageHUDDisplay.iconInfo",slot);
+                    }
                 } else if(IsDerivedFromPath(object->cls,"Extension.GC")) {
                     for(const auto* name:{"Canvas","normalFont","boldFont","gcOwner","Style","PolyFlags","textPolyFlags",
                         "bDrawEnabled","bSmoothed","bMasked","bTranslucent","bModulated","tileColor","tilePlane","gcClipRect"})

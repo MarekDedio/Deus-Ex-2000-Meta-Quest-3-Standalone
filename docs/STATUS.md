@@ -1,5 +1,25 @@
 # Port status
 
+## Original nested fixed-array storage (2026-10-24)
+
+Shared authored-struct storage, VM member addresses, live assignment, checkpoint
+validation and native owning-payload cleanup now preserve every fixed member
+array slot. This closes the genuine first-Training DamageType Name[3] storage
+gap without replacing original scripts or publishing partial player startup.
+Codec712/253, VM695885/867, generated production737/21 and registered-native
+nested cleanup259/11 pass. Fresh owned player controls pass6877, including all
+seven original icon records/21 names/six texture GC edges and late root undo;
+the fixture now prepares real lookup/collision services and loads Training only.
+Actual first-map cleanup1164/33, crate347/two dormant contents refusals and
+focused original SetPhysics regressions pass separately. Both startup and the
+64-row frame-major crate/loot/debris cohort repeat with full-root rollback at
+the new explicit native1463 boundary. Strict ARM64 and Android native link pass.
+Coherent final desktop/shared CTest passes179 executed/211 registered,
+32 explicit owned-data skips, zero failures in138.13s. No new APK, committed
+player startup, world Tick or live melee completion is claimed. See
+TRAINING-STRUCT-MEMBER-ARRAYS.md and TRAINING-LIVE-MELEE-BRIDGE.md. Current
+crate priority is original weapon animation-notify delivery, not HUD polish.
+
 ## First Training frame-major crate/loot/debris physics (2026-10-24)
 
 The new physics-suffix cohort retains the real upper crate plus ALL surviving

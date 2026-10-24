@@ -99,11 +99,18 @@
     }
     struct DestroyValueAddress {
         RuntimeObject* root{};std::uint32_t slot{};
-        std::array<RuntimeObject*,32u> members{};std::size_t depth{};
+        std::array<RuntimeObject*,32u> members{};
+        std::array<std::uint32_t,32u> memberSlots{};std::size_t depth{};
     };
     DestroyValueAddress DestroyElement(DestroyValueAddress address,std::uint32_t index) {
         if(address.depth) {
-            if(index)throw std::runtime_error("DestroyValue nested fixed-array storage is not representable");
+            auto* field=address.members[address.depth-1u];
+            if(!field||!field->property||field->property->arrayDimension<1||
+                index>=static_cast<std::uint32_t>(field->property->arrayDimension)||
+                address.memberSlots[address.depth-1u]>
+                    static_cast<std::uint32_t>(field->property->arrayDimension)-1u-index)
+                throw std::runtime_error("DestroyValue nested fixed-array index is outside its actual field");
+            address.memberSlots[address.depth-1u]+=index;
         }else {
             if(index>std::numeric_limits<std::uint32_t>::max()-address.slot)
                 throw std::runtime_error("DestroyValue root array index overflows");
@@ -130,6 +137,16 @@
             const auto found=selected->fields.find(LowerAscii(name.substr(name.find_last_of('.')+1u)));
             if(found==selected->fields.end())throw std::runtime_error("DestroyValue member data is absent");
             selected=&found->second;
+            const auto dimension=address.members[i]->property->arrayDimension;
+            if(dimension<1||address.memberSlots[i]>=static_cast<std::uint32_t>(dimension))
+                throw std::runtime_error("DestroyValue member element lacks its actual dimension");
+            if(dimension>1) {
+                if(selected->kind!=Kind::Struct||selected->fields.size()!=static_cast<std::size_t>(dimension))
+                    throw std::runtime_error("DestroyValue nested fixed-array envelope has the wrong shape");
+                const auto element=selected->fields.find(std::to_string(address.memberSlots[i]));
+                if(element==selected->fields.end())throw std::runtime_error("DestroyValue nested fixed-array slot is absent");
+                selected=&element->second;
+            }
         }
         if(selected->kind!=kind)throw std::runtime_error("DestroyValue owning payload has the wrong native type");
         *selected=kind==Kind::String?Value::Text(Kind::String,{}):Value::IntArray({});
@@ -163,7 +180,7 @@
                 for(std::int32_t index=0;index<descriptor.arrayDimension;++index) {
                     auto element=DestroyElement(address,static_cast<std::uint32_t>(index));
                     if(element.depth==element.members.size())throw std::runtime_error("DestroyValue Struct nesting exceeds its bound");
-                    element.members[element.depth++]=inner;
+                    element.memberSlots[element.depth]=0u;element.members[element.depth++]=inner;
                     DestroyPropertyValue(object,inner,element,execution);
                 }
             }

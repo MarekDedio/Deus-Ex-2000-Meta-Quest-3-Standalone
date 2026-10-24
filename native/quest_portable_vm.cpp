@@ -449,6 +449,17 @@ void SetMember(Value& v, const std::string& name, const Value& member) {
         v.rotation[key == "pitch" ? 0 : key == "yaw" ? 1 : 2] = ToInt(member);
     else throw std::runtime_error("VM struct member write unavailable: " + name);
 }
+bool StoredMemberShape(const Value& value,const Value& zero) {
+    // Shape is supplied by an actual reflected element zero, never inferred
+    // from decimal-looking Struct fields. Stored values must already have
+    // their declared kinds; Coerce is only for an incoming assignment.
+    if(value.kind!=zero.kind || value.fields.size()!=zero.fields.size())return false;
+    for(const auto& [key,field]:zero.fields) {
+        const auto found=value.fields.find(key);
+        if(found==value.fields.end() || !StoredMemberShape(found->second,field))return false;
+    }
+    return true;
+}
 
 class Machine final : public Execution {
 public:
@@ -1350,6 +1361,50 @@ private:
         auto bound=std::make_shared<Reference>(*reference);bound->resultLayout=layout;
         return bound;
     }
+    const Value& FixedStructMemberEnvelope(const Value& parent,const Property& property) {
+        ValidateValue(parent,0);
+        if(parent.kind!=Kind::Struct)Fail(Status::Invalid,"VM fixed-array member parent is not a Struct");
+        const auto found=parent.fields.find(Lower(property.name));
+        if(found==parent.fields.end())Fail(Status::Invalid,"VM fixed-array member is unavailable");
+        const auto& envelope=found->second;
+        if(envelope.kind!=Kind::Struct || envelope.fields.size()!=property.arrayDimension ||
+            !envelope.text.empty() || !envelope.intArray.empty())
+            Fail(Status::Invalid,"VM fixed-array member has a malformed authored envelope");
+        for(std::size_t i=0u;i<property.arrayDimension;++i) {
+            const auto slot=envelope.fields.find(std::to_string(i));
+            if(slot==envelope.fields.end() || !StoredMemberShape(slot->second,property.zero))
+                Fail(Status::Invalid,"VM fixed-array member has a malformed authored element");
+            ValidateResultLayout(slot->second,property.resultLayout);
+        }
+        return envelope;
+    }
+    std::shared_ptr<Reference> FixedStructMemberReference(const std::shared_ptr<const Property>& property,
+        const std::shared_ptr<Reference>& base,const std::shared_ptr<const Value>& temporary,std::size_t index=0u) {
+        if(index>=property->arrayDimension)Fail(Status::Invalid,"VM fixed-array member address is outside its declaration");
+        // The shared schema/temporary is retained once; derived addresses do
+        // not capture copies of an entire parent or its array envelope.
+        Retain(2u*sizeof(Reference));Retain(ValueBytes(property->zero));
+        auto reference=std::make_shared<Reference>();
+        reference->zero=property->zero;reference->dimension=property->arrayDimension;
+        reference->resultLayout=property->resultLayout;
+        reference->read=[this,property,base,temporary,index] {
+            const auto parent=base?base->read():*temporary;
+            const auto& envelope=FixedStructMemberEnvelope(parent,*property);
+            return envelope.fields.at(std::to_string(index));
+        };
+        if(base && base->write)reference->write=[this,property,base,index](const Value& member) {
+            // RHS evaluation, OUT callbacks and sibling aliases may have
+            // replaced the parent since this address was captured. Re-read it
+            // and replace ONLY this selected element before writing it back.
+            auto parent=base->read();static_cast<void>(FixedStructMemberEnvelope(parent,*property));
+            parent.fields.at(Lower(property->name)).fields.at(std::to_string(index))=member;
+            base->write(parent);
+        };
+        reference->element=[this,property,base,temporary](std::size_t selected) {
+            return FixedStructMemberReference(property,base,temporary,selected);
+        };
+        return reference;
+    }
     void Write(const std::shared_ptr<Reference>& reference, const Value& value) {
         if (nativeSeedHookActive_) {
             try { Fail(Status::Invalid, "VM write during read-only native seed capture"); }
@@ -1938,12 +1993,29 @@ private:
                 if(readMode!=EvalRead::Validate && parent.disposition!=ResultDisposition::Written){
                     result.disposition=ResultDisposition::NoWrite;break;
                 }
+                if(!p.arrayDimension)Fail(Status::Invalid,"VM struct member has a zero reflected dimension");
+                if(p.arrayDimension>limits_.localElements)Fail(Status::Budget,"VM struct member dimension limit");
+                if(p.arrayDimension>1u) {
+                    if(parent.disposition!=ResultDisposition::Written){result.disposition=ResultDisposition::NoWrite;break;}
+                    ValidateValue(p.zero,0);ValidateResultLayout(p.zero,p.resultLayout);
+                    if(p.key.size()>limits_.stringBytes || p.name.size()>limits_.stringBytes)
+                        Fail(Status::Budget,"VM fixed-array member identity limit");
+                    Retain(sizeof(Property));Retain(p.key.size());Retain(p.name.size());Retain(ValueBytes(p.zero));
+                    const auto property=std::make_shared<const Property>(p);
+                    std::shared_ptr<const Value> temporary;
+                    if(!parent.reference) {
+                        ValidateValue(parent.value,0);Retain(ValueBytes(parent.value));Retain(sizeof(Value));
+                        temporary=std::make_shared<const Value>(std::move(parent.value));
+                    }
+                    result.reference=FixedStructMemberReference(property,parent.reference,temporary);
+                    break; // An unindexed fixed member means element0, not its envelope.
+                }
                 if(!parent.reference || readMode==EvalRead::Validate)result.value=MemberValue(parent.Load(),p.name);
                 if (parent.reference) {
                     auto ref = std::make_shared<Reference>(); ref->zero = p.zero;
                     ref->resultLayout = p.resultLayout;
                     ref->read = [base = parent.reference, name = p.name] { return MemberValue(base->read(), name); };
-                    ref->write = [base = parent.reference, name = p.name](const Value& member) {
+                    if(parent.reference->write)ref->write = [base = parent.reference, name = p.name](const Value& member) {
                         auto value = base->read(); SetMember(value, name, member); base->write(value);
                     };
                     result.reference = std::move(ref);
