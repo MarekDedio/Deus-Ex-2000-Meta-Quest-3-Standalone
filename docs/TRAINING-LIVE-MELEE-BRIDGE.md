@@ -8,6 +8,15 @@ compiler input/build was changed or commercial DLL/EXE executed or loaded.
 
 ## Current production disconnect
 
+Latest diagnostic checkpoint,2026-10-24: genuine knife/crowbar pickup/equip,
+selected player Fire, original Attack notify, GetAxes229 and Actor.Trace277
+now run in one rollback-only root. Both weapons next refuse actual
+PickTarget531 at PlayerPawn.AdjustAim180. Shared184 executed/219 registered,
+35 owned skips,0 failures; strict ARM64/Android native link pass. Crowbar
+repeat2 and partial-Trace14979 write-cut repeat2 verify full undo/all41 sources.
+See TRAINING-WEAPON-FIRE.md and ORIGINAL-ACTOR-TRACE-WRAPPER.md. None of this
+closes the live publication/input gap below or proves a successful crate hit.
+
 - `native/quest_main.cpp:1334`: trigger input reads presentation equipment and
   an audited damage/range profile, then calls `FireTargetedActor` at6185. That
   function point-tests detached interactive targets and calls

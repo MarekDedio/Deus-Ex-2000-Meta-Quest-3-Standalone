@@ -77,7 +77,13 @@
             !StartupWeaponRead(info,"bBegunPlay",Kind::Bool).boolean || StartupWeaponRead(info,"bStartup",Kind::Bool).boolean ||
             !StartupWeaponLink(player,"Player").empty())
             throw std::runtime_error("Startup weapon Fire lacks the actual authored weapon and genuine begun unpaired Login-player authority");
-        constexpr std::size_t outputBound=8u<<20u,scratchBound=64u<<10u;
+        // This detached diagnostic holds at most65 bounded weapon/player rows.
+        // Keep its entire (still conservatively admitted) observation allowance
+        // capped at4MiB; reserving8MiB here unnecessarily crowded the genuine
+        // Trace query's scratch under the unchanged32MiB combined state limit.
+        // Snapshot Budget enforces the tighter cap; no query/state budget is
+        // raised and no retained allocation becomes unaccounted.
+        constexpr std::size_t outputBound=4u<<20u,scratchBound=64u<<10u;
         ValidateStateBudget(outputBound);
         nativeActorOrderObservationBytes_=QuestVr::DecalStateDetail::Add(nativeActorOrderObservationBytes_,outputBound);
         QuestVr::NativeScratchScope scratch(nativeQueryScratchBytes_,scratchBound,[this](auto bytes){ValidateStateBudget(bytes);});

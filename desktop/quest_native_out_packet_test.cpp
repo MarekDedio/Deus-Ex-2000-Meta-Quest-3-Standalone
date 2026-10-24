@@ -1,8 +1,10 @@
 #include "quest_portable_vm.h"
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <iostream>
+#include <limits>
 #include <map>
 #include <memory>
 #include <optional>
@@ -37,21 +39,45 @@ Vm::Function Declaration(){
     for(const auto* name:{"X","Y","Z"})f.variables.push_back({name,name,Value::Vector({}),0x180u,1u,ResultLayout::CoreVector12});
     return f;
 }
+Vm::Function TraceDeclaration(){
+    Vm::Function f;f.path="Engine.Actor.Trace";f.source="Engine";f.flags=0x401u;f.nativeIndex=277u;
+    for(const auto* name:{"HitLocation","HitNormal"})
+        f.variables.push_back({name,name,Value::Vector({}),0x180u,1u,ResultLayout::CoreVector12});
+    f.variables.push_back({"TraceEnd","TraceEnd",Value::Vector({}),0x80u,1u,ResultLayout::CoreVector12});
+    f.variables.push_back({"TraceStart","TraceStart",Value::Vector({}),0x90u,1u,ResultLayout::CoreVector12});
+    f.variables.push_back({"bTraceActors","bTraceActors",Value::Bool(false),0x90u,1u,ResultLayout::Unknown});
+    f.variables.push_back({"Extent","Extent",Value::Vector({}),0x90u,1u,ResultLayout::CoreVector12});
+    f.variables.push_back({"ReturnValue","ReturnValue",Value::Text(Kind::Object,{}),0x580u,1u,ResultLayout::Unknown});
+    return f;
+}
 struct Host final:Vm::Host {
     std::map<std::string,std::vector<Value>> data,saved;
     std::map<std::int32_t,Vm::Property> properties;
     std::vector<std::string> addresses,receivers,writes;
     std::size_t axesCalls{},sideCalls{},outReads{},rotationReads{},captures{},capturedAtEntry{};
     bool entered{},active{},conflict{},unknown{},badInputLayout{},tryHookWrite{};
+    bool trace{},sequentialConflict{},sequentialThrow{},sequentialTryWrite{};
+    std::size_t traceCalls{};
+    std::vector<std::size_t> seedSlots;
+    std::vector<Value> traceInputs;
+    std::shared_ptr<Vm::Reference> retainedOut;
     Vm::Execution* current{};
     Host(){
         properties[1]={"A","A",Value::Rotator({}),0u,1u,ResultLayout::CoreRotator12};
         properties[2]={"V","V",Value::Vector({}),0u,3u,ResultLayout::CoreVector12};
         properties[3]={"O","O",Value::Text(Kind::Object,{}),0u,1u,ResultLayout::Unknown};
+        properties[4]={"E","E",Value::Vector({}),0u,1u,ResultLayout::CoreVector12};
+        properties[5]={"S","S",Value::Vector({}),0u,1u,ResultLayout::CoreVector12};
+        properties[6]={"B","B",Value::Bool(false),0u,1u,ResultLayout::Unknown};
+        properties[7]={"Q","Q",Value::Vector({}),0u,1u,ResultLayout::CoreVector12};
         for(const auto* receiver:{"Self","Other"}){
             data[std::string(receiver)+".A"]={Value::Rotator({1,2,3})};
             data[std::string(receiver)+".V"]={Value::Vector({-1,-1,-1}),Value::Vector({-2,-2,-2}),Value::Vector({-3,-3,-3})};
             data[std::string(receiver)+".O"]={Value::Text(Kind::Object,"Other")};
+            data[std::string(receiver)+".E"]={Value::Vector({10,20,30})};
+            data[std::string(receiver)+".S"]={Value::Vector({1,2,3})};
+            data[std::string(receiver)+".B"]={Value::Bool(true)};
+            data[std::string(receiver)+".Q"]={Value::Vector({4,5,6})};
         }
     }
     void Begin()override{Require(!active,"Nested packet root");saved=data;active=true;entered=false;}
@@ -61,12 +87,14 @@ struct Host final:Vm::Host {
     std::string ResolveName(const Vm::Function&,std::int32_t)override{throw std::runtime_error("Unexpected name");}
     std::string ResolveObject(const Vm::Function&,std::int32_t)override{throw std::runtime_error("Unexpected object");}
     std::shared_ptr<const Vm::Function> ResolveFunction(const Vm::Function&,const std::string&,const Vm::Invocation&)override{
-        return std::make_shared<Vm::Function>(Declaration());
+        return std::make_shared<Vm::Function>(trace?TraceDeclaration():Declaration());
     }
     std::shared_ptr<Vm::Reference> Address(const std::string& key,std::size_t slot=0u){
         const bool rot=key.ends_with(".A"),vec=key.ends_with(".V");
-        auto r=std::make_shared<Vm::Reference>();r->zero=rot?Value::Rotator({}):vec?Value::Vector({}):Value::Text(Kind::Object,{});
-        r->dimension=vec?3u:1u;r->resultLayout=rot?ResultLayout::CoreRotator12:vec?ResultLayout::CoreVector12:ResultLayout::Unknown;
+        const bool vector=vec||key.ends_with(".E")||key.ends_with(".S")||key.ends_with(".Q");
+        auto r=std::make_shared<Vm::Reference>();r->zero=rot?Value::Rotator({}):vector?Value::Vector({}):
+            key.ends_with(".B")?Value::Bool(false):Value::Text(Kind::Object,{});
+        r->dimension=vec?3u:1u;r->resultLayout=rot?ResultLayout::CoreRotator12:vector?ResultLayout::CoreVector12:ResultLayout::Unknown;
         r->read=[this,key,slot,rot,vec]{
             if(rot)++rotationReads;
             if(vec){++outReads;Require(entered,"Old OUT contents read before native entry");}
@@ -79,18 +107,41 @@ struct Host final:Vm::Host {
         addresses.push_back(receiver+'.'+p.key);return Address(receiver+'.'+p.key);
     }
     std::optional<ResultLayout> NativeArgumentUninitializedLayout(std::uint16_t n,const std::string&,std::size_t slot,const Vm::Function*)override{
+        if(n==277u){++captures;return slot==2u?std::optional{ResultLayout::CoreVector12}:std::nullopt;}
         if(n!=229u)return std::nullopt;
         ++captures;
         return slot==0u?std::optional{badInputLayout?ResultLayout::CoreVector12:ResultLayout::CoreRotator12}:std::nullopt;
     }
     std::optional<ResultLayout> NativeArgumentAddressOnlyLayout(std::uint16_t n,const std::string&,std::size_t slot,const Vm::Function*)override{
+        if(n==277u){++captures;return slot<2u?std::optional{ResultLayout::CoreVector12}:std::nullopt;}
         if(n!=229u)return std::nullopt;
         ++captures;
         if(tryHookWrite&&current)current->WriteReference(Address("Self.A"),Value::Rotator({9,9,9}));
         return slot?std::optional{unknown?ResultLayout::Unknown:ResultLayout::CoreVector12}:std::nullopt;
     }
     std::optional<Value> NativeArgumentSeed(std::uint16_t n,const std::string&,std::size_t slot,const Vm::Function*)override{
-        return conflict&&n==229u&&slot==1u?std::optional{Value::Vector({})}:std::nullopt;
+        return conflict&&((n==229u&&slot==1u)||(n==277u&&slot==0u))?std::optional{Value::Vector({})}:std::nullopt;
+    }
+    bool HasSequentialNativeArgumentSeeds(std::uint16_t n,const std::string&,const Vm::Function*)override{return n==277u;}
+    bool MaterializeNativeArgumentOmission(std::uint16_t n,const std::string&,std::size_t slot,const Vm::Function*)override{
+        return n==277u&&slot>=3u;
+    }
+    std::optional<Value> SequentialNativeArgumentSeed(std::uint16_t n,const std::string& receiver,std::size_t slot,
+        const Vm::Function*,const std::vector<Value>& prefix)override{
+        Require(n==277u&&prefix.size()==slot,"Mixed sequential prefix lost its slot positions");
+        seedSlots.push_back(slot);
+        for(std::size_t i=0u;i<std::min<std::size_t>(slot,2u);++i)
+            Require(prefix[i].kind==Kind::Nothing,"Mixed prefix loaded an OUT instead of a disposable marker");
+        if(slot<2u){
+            if(sequentialTryWrite&&current){try{current->WriteReference(Address("Self.E"),Value::Vector({9,9,9}));}catch(...) {}}
+            if(sequentialThrow&&slot==1u)throw std::runtime_error("Mixed sequential OUT seed failure");
+            if(sequentialConflict)return Value::Vector({});
+            return std::nullopt;
+        }
+        if(slot==2u)return std::nullopt;
+        if(slot==3u)return data.at(receiver+".S").front();
+        if(slot==4u)return data.at(receiver+".B").front();
+        Require(slot==5u,"Unexpected mixed seed slot");return Value::Vector({});
     }
     Evaluation Native(std::uint16_t,const std::string&,const std::vector<Evaluation>&,const Vm::Function*)override{
         throw std::runtime_error("Missing same-root packet execution");
@@ -98,6 +149,26 @@ struct Host final:Vm::Host {
     Evaluation NativeWithExecution(std::uint16_t n,const std::string& receiver,const std::vector<Evaluation>& args,
         const Vm::Function*,Vm::Execution& execution)override{
         if(n==900u){++sideCalls;execution.WriteReference(Address("Self.A"),Value::Rotator({9,8,7}));return {Value::Integer(0),{}};}
+        if(n>=910u&&n<=913u){
+            Require(receiver=="Self","Trace argument side effect did not use Frame.Object");++sideCalls;
+            if(n==910u){execution.WriteReference(Address("Self.E"),Value::Vector({12,22,32}));return {Value::Integer(0),{}};}
+            if(n==911u){execution.WriteReference(Address("Self.E"),Value::Vector({99,99,99}));
+                execution.WriteReference(Address("Self.S"),Value::Vector({7,8,9}));
+                execution.WriteReference(Address("Self.B"),Value::Bool(false));}
+            if(n==912u){execution.WriteReference(Address("Self.S"),Value::Vector({88,88,88}));
+                execution.WriteReference(Address("Self.B"),Value::Bool(true));}
+            if(n==913u)execution.WriteReference(Address("Self.Q"),Value::Vector({77,77,77}));
+            return {};
+        }
+        if(n==277u){
+            ++traceCalls;entered=true;capturedAtEntry=captures;receivers.push_back(receiver);
+            Require(args.size()==6u,"Trace fixture lost explicit six-slot packet");
+            for(std::size_t i=2u;i<6u;++i){Require(!args[i].reference,"Mixed ordinary input retained an alias");traceInputs.push_back(args[i].Load());}
+            retainedOut=args[0u].reference;
+            if(args[0u].reference)args[0u].reference->write(Value::Vector({1,2,3}));
+            if(args[1u].reference)args[1u].reference->write(Value::Vector({4,5,6}));
+            return {Value::Text(Kind::Object,"HitActor"),{}};
+        }
         if(n!=229u)throw std::runtime_error("Late packet failure");
         ++axesCalls;entered=true;capturedAtEntry=captures;receivers.push_back(receiver);
         Require(args.size()==4u&&!args[0].reference&&args[0].value.kind==Kind::Rotator,"Rotation was not detached before native entry");
@@ -169,6 +240,125 @@ void Run(){
         Require(!result.passed()&&!result.committed&&host.data.at("Self.A")[0].rotation==std::array<std::int32_t,3u>{1,2,3},"Caught read-only mode hook write did not poison/undo root");++refusals;
     }
 }
+void TraceRun(){
+    for(bool final:{false,true}){
+        Host host;host.trace=true;
+        const auto args=std::initializer_list<Bytes>{Element(Native(910u)),Element(Small(1u)),Ref(0x01u,4),
+            Native(911u),Native(912u),Native(913u)};
+        Passed(Vm::Execute(host,Wrapper(final?Final(args):Native(277u,args)),"Self"));
+        Require(host.traceCalls==1u&&host.sideCalls==4u&&host.outReads==2u&&host.capturedAtEntry==12u,
+            "Mixed sequential packet repeated side effects, read old OUTs or recaptured authority");
+        Require(host.seedSlots==std::vector<std::size_t>{0u,1u,2u,3u,4u,5u},"Mixed per-slot seed order changed");
+        Require(Vm::Equal(host.traceInputs.at(0u),Value::Vector({12,22,32}))&&
+            Vm::Equal(host.traceInputs.at(1u),Value::Vector({1,2,3}))&&
+            Vm::Equal(host.traceInputs.at(2u),Value::Bool(false))&&
+            Vm::Equal(host.traceInputs.at(3u),Value::Vector({})),
+            "Later expressions changed copied TraceEnd, TraceStart, Bool or Extent defaults");
+        Require(host.data.at("Self.E").front().vector[0u]==99&&host.data.at("Self.S").front().vector[0u]==88,
+            "Mixed packet suppressed original argument side effects");
+    }
+    for(bool final:{false,true}){
+        Host host;host.trace=true;
+        const auto args=std::initializer_list<Bytes>{Ref(0x01u,2),{0x0bu},Ref(0x01u,4),Ref(0x01u,5),Native(912u),Native(913u)};
+        Passed(Vm::Execute(host,Wrapper(final?Final(args):Native(277u,args)),"Self"));
+        Require(Vm::Equal(host.traceInputs.at(1u),Value::Vector({1,2,3}))&&
+            Vm::Equal(host.traceInputs.at(2u),Value::Bool(true))&&host.data.at("Self.S").front().vector[0u]==88,
+            "Later supplied expression changed an initialized ordinary input's own Step copy");
+    }
+    for(bool final:{false,true}){
+        Host host;host.trace=true;host.data.at("Other.S").front()=Value::Vector({30,40,50});
+        host.data.at("Other.B").front()=Value::Bool(false);
+        const auto args=std::initializer_list<Bytes>{Ref(0x01u,2),{0x0bu},Ref(0x01u,4),{0x0bu},{0x0bu},{0x0bu}};
+        Passed(Vm::Execute(host,Wrapper(Context(Ref(0x01u,3),final?Final(args):Native(277u,args))),"Self"));
+        Require(host.receivers==std::vector<std::string>{"Other"}&&host.outReads==1u&&
+            host.data.at("Self.V").front().vector==std::array<float,3u>{1,2,3}&&
+            host.data.at("Other.V").front().vector==std::array<float,3u>{-1,-1,-1},
+            "Trace mixed OUT address used receiver rather than Frame.Object");
+        Require(Vm::Equal(host.traceInputs.at(0u),Value::Vector({10,20,30}))&&
+            Vm::Equal(host.traceInputs.at(1u),Value::Vector({30,40,50}))&&
+            Vm::Equal(host.traceInputs.at(2u),Value::Bool(false)),
+            "Trace default seed used Frame.Object rather than actual wrapper receiver");
+    }
+    for(bool final:{false,true})for(std::uint8_t fill:{0u,4u,8u,11u,12u,13u}){
+        Host host;host.trace=true;
+        const auto args=std::initializer_list<Bytes>{Ref(0x01u,2),Ref(0x01u,2),
+            Context({0x2au},Ref(0x01u,4),fill),{0x0bu},{0x0bu},{0x0bu}};
+        const auto f=Wrapper(final?Final(args):Native(277u,args));
+        if(fill==12u){Passed(Vm::Execute(host,f,"Self"));Require(Vm::Equal(host.traceInputs.front(),Value::Vector({})),"Full TraceEnd fill changed");}
+        else{Refused(host,[&]{return Vm::Execute(host,f,"Self");});Require(!host.traceCalls,"Undefined TraceEnd reached native body");}
+    }
+    {
+        Host host;host.trace=true;
+        const auto result=Vm::ExecuteTransaction(host,[&](Vm::Execution& execution){
+            host.current=&execution;
+            return execution.CallFunction(TraceDeclaration(),"Self",{{{},host.Address("Self.V")},{},
+                {{},host.Address("Self.E")},{},{},{}});
+        });
+        Passed(result);Require(result.value.kind==Kind::Object&&result.value.text=="HitActor"&&host.outReads==1u,
+            "Direct mixed sequential packet eagerly read OUT or changed detached return");
+        Require(host.seedSlots==std::vector<std::size_t>{0u,1u,2u,3u,4u,5u}&&
+            Vm::Equal(host.traceInputs.at(1u),Value::Vector({1,2,3})),"Direct prefix/default capture differs");
+        bool expired{};try{host.retainedOut->write(Value::Vector({9,9,9}));}catch(const std::exception&){expired=true;}
+        Require(expired&&host.data.at("Self.V").front().vector==std::array<float,3u>{1,2,3},"Mixed OUT guard survived execution");
+    }
+    for(const auto disposition:{Vm::ResultDisposition::NoWrite,Vm::ResultDisposition::ZeroFill}){
+        Host host;host.trace=true;
+        const auto stale=Value::Vector({std::numeric_limits<float>::quiet_NaN(),0,0});
+        const std::vector<Evaluation> args{{stale,host.Address("Self.V"),disposition,4u},{stale,{}},
+            {Value::Vector({1,2,3}),{}},{},{},{}};
+        Passed(Vm::Execute(host,TraceDeclaration(),"Self",args));
+        Require(!host.outReads&&host.data.at("Self.V").front().vector==std::array<float,3u>{-1,-1,-1},
+            "Mixed direct non-lvalue/NoWrite OUT loaded stale unused data");
+    }
+    for(bool final:{false,true}){
+        Host host;host.trace=true;
+        const auto args=std::initializer_list<Bytes>{Ref(0x01u,2),Ref(0x01u,2),Ref(0x01u,4),Ref(0x01u,5),Ref(0x01u,6),Ref(0x01u,7)};
+        Passed(Vm::Execute(host,Wrapper(final?Final(args):Native(277u,args)),"Self"));
+        Require(host.outReads==2u&&host.data.at("Self.V").front().vector==std::array<float,3u>{4,5,6},
+            "Mixed aliased OUT final-copy order changed");
+        Require(Vm::Equal(host.traceInputs.at(1u),Value::Vector({1,2,3}))&&
+            Vm::Equal(host.traceInputs.at(2u),Value::Bool(true))&&Vm::Equal(host.traceInputs.at(3u),Value::Vector({4,5,6})),
+            "Mixed initialized explicit inputs changed their own Step copies");
+    }
+    for(unsigned cut=0u;cut<2u;++cut){
+        Host host;host.trace=true;Vm::Limits limits;limits.writes=cut;
+        auto f=Wrapper(Native(277u,{Ref(0x01u,2),Element(Small(1u)),Ref(0x01u,4),{0x0bu},{0x0bu},{0x0bu}}));
+        Refused(host,[&]{return Vm::Execute(host,f,"Self",{},limits);});
+    }
+    {
+        Host host;host.trace=true;
+        auto f=Wrapper(Join({Native(277u,{Ref(0x01u,2),Ref(0x01u,2),Ref(0x01u,4),{0x0bu},{0x0bu},{0x0bu}}),Native(999u)}));
+        Refused(host,[&]{return Vm::Execute(host,f,"Self");});Require(host.traceCalls==1u&&host.outReads==2u,"Late mixed failure skipped output journal");
+    }
+    for(bool final:{false,true})for(unsigned mode=0u;mode<2u;++mode){
+        Host host;host.trace=true;host.conflict=mode==0u;host.sequentialConflict=mode==1u;
+        auto args=std::initializer_list<Bytes>{Element(Native(910u)),{0x0bu},Ref(0x01u,4),{0x0bu},{0x0bu},{0x0bu}};
+        auto f=Wrapper(final?Final(args):Native(277u,args));
+        Refused(host,[&]{return Vm::Execute(host,f,"Self");});
+        Require(!host.sideCalls&&!host.traceCalls&&!host.outReads,"Conflicting OUT seed evaluated its argument or native body");
+    }
+    {
+        Host host;host.trace=true;host.sequentialThrow=true;
+        auto f=Wrapper(Native(277u,{Element(Native(910u)),{0x0bu},Ref(0x01u,4),{0x0bu},{0x0bu},{0x0bu}}));
+        const auto result=Vm::ExecuteTransaction(host,[&](Vm::Execution& execution){
+            try{execution.CallFunction(f,"Self");}catch(...){}
+            try{execution.CallFunction(Declaration(),"Self",{{Value::Rotator({}),{}},{},{},{}});}catch(...){}
+            return Value{};
+        });
+        Require(!result.passed()&&!result.committed&&result.error=="Mixed sequential OUT seed failure"&&host.sideCalls==1u&&
+            host.data.at("Self.E").front().vector==std::array<float,3u>{10,20,30}&&!host.axesCalls&&!host.traceCalls,
+            "Caught mixed OUT seed failure lost first-error poison or prior side-effect undo");++refusals;
+    }
+    {
+        Host host;host.trace=true;host.sequentialTryWrite=true;
+        const auto result=Vm::ExecuteTransaction(host,[&](Vm::Execution& execution){
+            host.current=&execution;try{execution.CallFunction(TraceDeclaration(),"Self",{{},{},{Value::Vector({}),{}},{},{},{}});}catch(...){}
+            host.current=nullptr;return Value{};
+        });
+        Require(!result.passed()&&!result.committed&&!host.traceCalls&&
+            host.data.at("Self.E").front().vector==std::array<float,3u>{10,20,30},"Caught mixed sequential hook write did not poison root");++refusals;
+    }
 }
-int main(){try{Run();std::cout<<"PASS mixed native OUT packet checks="<<checks<<" refusals="<<refusals<<'\n';return 0;}
+}
+int main(){try{Run();TraceRun();std::cout<<"PASS mixed native OUT packet checks="<<checks<<" refusals="<<refusals<<'\n';return 0;}
 catch(const std::exception& e){std::cerr<<"FAIL mixed native OUT packet: "<<e.what()<<'\n';return 1;}}

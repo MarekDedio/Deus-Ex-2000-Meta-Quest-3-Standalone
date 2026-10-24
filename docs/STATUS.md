@@ -1,5 +1,27 @@
 # Port status
 
+## Original Training collision-trace wrapper (2026-10-24)
+
+Actor.Trace277 now uses real current-Level collision, original sequential
+defaults and typed ordered OUT writes. Mixed VM1205/32, existing VM696084/897,
+and actual dormant first-Training production37063/23 pass, including43 real
+native calls/all9 shared-work cutoffs and complete save/revision/lookup/GC/hash/
+RNG/source preservation. Both genuine weapon attack probes pass277 and next
+refuse native531 PickTarget at AdjustAim180, retaining full-root undo/all41
+unchanged sources. Observations no longer allocate128 inventory rows for a
+three-item chain; Fire's cap is tightened8→4MiB without raising the32MiB state
+limit or bypassing collision admission. No actor-hash hit, damage, live trigger,
+finished crate/loot/gravity sequence or new APK is implied. See
+ORIGINAL-ACTOR-TRACE-WRAPPER.md; other-map integration remains deferred.
+Final coherent shared gate:184 executed/219 registered,35 owned skips, zero
+failures in87.99s; strict final ARM64 syntax/Android native link pass. Two
+crowbar repeats retain531; two14979 partial-Trace write cutoffs completely
+undo earlier attack/equip and output stores. Equip-only repeat2 retains its
+exact1463/221615 instructions/24458 writes boundary.
+Fresh no-command startup repeat2 retains1463/218693 instructions/24284 writes;
+first-map crate347/two and Doctor70/six controls pass with their original
+dormant/deleted-loot limits, not a finished live sequence.
+
 ## Original Training attack reaches collision trace (2026-10-24)
 
 The new same-root original player-Fire/weapon-notify diagnostic reaches actual

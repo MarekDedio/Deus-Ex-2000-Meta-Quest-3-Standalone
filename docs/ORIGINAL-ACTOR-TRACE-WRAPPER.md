@@ -1,5 +1,62 @@
 # Reached Actor.Trace277 wrapper
 
+## Implemented query checkpoint,2026-10-24
+
+`portable_actor_trace.inl` now binds the actual seven-property declaration,
+six NativeParm30-byte body, source/Level identity and original SingleLine
+service. VM mixed packets preserve address-only OUTs as disposable prefix
+markers while copying ordinary inputs at their own Step. Sequential defaults
+and supplied omissions retain native order; absent trailing placeholders are
+materialized in order with no intervening expression. The public VM header is
+unchanged. Returned hit identities are Actor instances, not UClass values;
+Location/Normal writes reuse the existing guarded journal in that order.
+
+Mixed VM controls pass1205 checks/32 refusals; the existing VM suite remains
+696084/897. Actual owned first-Training native277 controls pass43 production
+calls,37063 checks/23 refusals, including all9 warm query native-work cutoffs,
+exactN success, eight genuine BSP point/extent/actorflag hits, a clear miss,
+defaults, aliases/discards, output-write cutoffs and late external faults.
+Full save/revision/lookup/GC/no-hash/RNG/dormant-Level checks and all40 used
+source fingerprints/mtimes remain unchanged. These dormant controls do NOT
+prove an actor-hash hit, melee damage, startup or headset gameplay.
+
+Actual begun Training attacks separately pass277 through their original
+HandToHandAttack/TraceFire/PlayerPawn.AdjustAim path, next refusing native531
+PickTarget at AdjustAim180/opcode98. Crowbar206070 instructions/14982 writes;
+knife205995/14977. Full root undo/all41 original source checks pass. No hit,
+TakeDamage or returned/completed animation phase is inferred from that prefix.
+Logs: `training-actor-trace-corrected-*20261024.log`.
+
+The first attempts exposed an overly conservative diagnostic memory precharge:
+Fire reserved8MiB, while every inventory snapshot reserved128 link records
+despite actual chains of three. The snapshot now first authenticates the
+bounded chain into its fixed128-pointer array, reserves only the actual count,
+then copies with separately charged work and chain-stability checks. Fire's
+fully admitted observation cap is tightened to4MiB. No query/state budget is
+raised; the32MiB combined limit and all native-work/write checks remain intact.
+This changes detached diagnostics, not the original player's inventory or UI.
+Final coherent desktop build/shared CTest passes184 executed/219 registered,
+35 explicit owned-data skips, zero failures in87.99s. Strict ARM64 syntax for
+the final runtime/VM/mixed-packet/owned-Trace sources and Android native link
+pass. Crowbar repeat2 reaches the exact531 boundary above. Two write-limit14979
+runs stop after the first Trace output store at AdjustAim18/opcode97:
+206046 instructions/14979 writes, VM write limit; both restore partial outputs
+and all earlier pickup/equip/attack state, with full-root undo/all41 sources
+unchanged. Equip-only repeat2 retains native1463 at ConfigurationChanged606,
+221615 instructions/24458 writes. No replacement APK is made for this checkpoint.
+
+Logs: `training-actor-trace-{full-build,ctest,final-syntax,crowbar-repeat,
+crowbar-output-writecut,equip-regression}-20261024.log`.
+
+Fresh2026-10-25 no-command startup repeat2 retains original HUD1463 at
+ConfigurationChanged606/opcode101,218693 instructions/24284 writes, full-root
+undo/all41 unchanged sources. Fresh crate controls347/two genuine contents
+refusals and Doctor animation70/six dormant prefix refusals pass. Those
+controls retain their documented limits: they do not prove surviving loot,
+active combat callbacks, full Tick or playable startup.
+
+## Original static audit
+
 Read-only first-Training follow-on audit,2026-10-24. Actual knife/crowbar
 attacks now reach native277 at `Engine.PlayerPawn.AdjustAim` logicalPC18,
 after original GetAxes229 and ComputeProjectileStart. This is the next missing

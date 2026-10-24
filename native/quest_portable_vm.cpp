@@ -612,7 +612,7 @@ public:
         const auto nativeSeeds=directNative ? CaptureNativeArgumentSeeds(fn.nativeIndex,self,
             incoming.size(),&fn,uninitializedLayouts) : std::vector<std::optional<Value>>{};
         ValidateAddressOnlyNativeModes(fn.nativeIndex,&fn,addressLayouts,uninitializedLayouts,
-            nativeSeeds,materializedOmissions,directSequentialSeeds);
+            nativeSeeds,materializedOmissions);
         std::vector<Value> directPrefix;
         std::size_t directPrefixBytes{},directPrefixNodes{};
         if (directSequentialSeeds) ReserveNativeInputPrefix(directPrefix,incoming.size());
@@ -621,19 +621,26 @@ public:
         const bool copiedOutTemporary=(fn.flags&0x400u) && CopyNativeOutTemporary(fn.nativeIndex);
         for (std::size_t slot=0u;slot<incoming.size();++slot) {
             const auto& argument=incoming[slot];
-            if (!addressLayouts.empty() && addressLayouts[slot]) {
-                args.push_back(AddressOnlyNativeArgument(argument,*addressLayouts[slot]));continue;
-            }
             Evaluation materialized;
             const Evaluation* input=&argument;
             const auto sequentialSeed=directSequentialSeeds ? ReadOnlyNativeSeedOperation([&] {
                 return host_.SequentialNativeArgumentSeed(fn.nativeIndex,self,slot,&fn,directPrefix);
             }) : std::optional<Value>{};
             if (sequentialSeed) {
+                if (!addressLayouts.empty() && addressLayouts[slot])
+                    Fail(Status::Invalid,"VM address-only native argument conflicts with an initialized seed");
                 if (!uninitializedLayouts.empty() && uninitializedLayouts[slot])
                     Fail(Status::Invalid,"VM uninitialized native argument conflicts with an initialized seed");
                 ValidateValue(*sequentialSeed,0);Retain(ValueBytes(*sequentialSeed));RetainNativeSeedCapacity(*sequentialSeed);
                 ValidateResultLayout(*sequentialSeed,NativeParameterLayout(&fn,slot));
+            }
+            if (!addressLayouts.empty() && addressLayouts[slot]) {
+                args.push_back(AddressOnlyNativeArgument(argument,*addressLayouts[slot]));
+                // Prefix positions describe Steps, not input defaults. OUT
+                // slots contribute only a detached disposable marker; their
+                // previous contents are never an input to a later seed.
+                if(directSequentialSeeds)CaptureNativeInput(directPrefix,Value{},directPrefixBytes,directPrefixNodes);
+                continue;
             }
             if (!uninitializedLayouts.empty() && uninitializedLayouts[slot]) {
                 materialized=MaterializeUninitializedNativeArgument(argument,*uninitializedLayouts[slot]);input=&materialized;
@@ -671,7 +678,8 @@ public:
             // execGotoState consumes each input value before evaluating the
             // next argument. Ordinary native OUT arguments retain aliases.
             if (copiedOutTemporary) args.push_back({value,input->reference,input->disposition,input->zeroFillBytes});
-            else if ((fn.flags & 0x400u) && SnapshotNativeInput(fn.nativeIndex, &fn) &&
+            else if ((fn.flags & 0x400u) && (SnapshotNativeInput(fn.nativeIndex, &fn) ||
+                (directSequentialSeeds && !addressLayouts.empty())) &&
                 input->disposition==ResultDisposition::Written) args.push_back({value,{}});
             else args.push_back(*input);
         }
@@ -1731,9 +1739,9 @@ private:
     void ValidateAddressOnlyNativeModes(std::uint16_t index,const Function* declaration,
         const std::vector<std::optional<ResultLayout>>& addresses,
         const std::vector<std::optional<ResultLayout>>& inputs,
-        const std::vector<std::optional<Value>>& seeds,const std::vector<std::uint8_t>& omissions,bool sequential) {
+        const std::vector<std::optional<Value>>& seeds,const std::vector<std::uint8_t>& omissions) {
         for(std::size_t slot=0u;slot<addresses.size();++slot)if(addresses[slot] &&
-            (sequential || SnapshotNativeInput(index,declaration) || CopyNativeOutTemporary(index) ||
+            (SnapshotNativeInput(index,declaration) || CopyNativeOutTemporary(index) ||
                 (!inputs.empty()&&inputs[slot]) || (!seeds.empty()&&seeds[slot]) ||
                 (!omissions.empty()&&omissions[slot])))
             Fail(Status::Invalid,"VM address-only native argument conflicts with an input capture mode");
@@ -1827,7 +1835,7 @@ private:
             const auto nativeSeeds=nativeCall ? CaptureNativeArgumentSeeds(index,context,n.children.size(),
                 fn.get(),uninitializedLayouts,&parameters) : std::vector<std::optional<Value>>{};
             ValidateAddressOnlyNativeModes(index,fn.get(),addressLayouts,uninitializedLayouts,
-                nativeSeeds,materializedOmissions,sequentialSeeds);
+                nativeSeeds,materializedOmissions);
             std::vector<Value> capturedInputs;
             std::size_t capturedInputBytes{}, capturedInputNodes{};
             if (sequentialSeeds) ReserveNativeInputPrefix(capturedInputs,n.children.size());
@@ -1846,6 +1854,8 @@ private:
                     return host_.SequentialNativeArgumentSeed(index, context, i, fn.get(), capturedInputs);
                 }) : std::optional<Value>{};
                 if (sequentialSeed) {
+                    if (!addressLayouts.empty() && addressLayouts[i])
+                        Fail(Status::Invalid,"VM address-only native argument conflicts with an initialized seed");
                     if (!uninitializedLayouts.empty() && uninitializedLayouts[i])
                         Fail(Status::Invalid,"VM uninitialized native argument conflicts with an initialized seed");
                     ValidateValue(*sequentialSeed,0); Retain(ValueBytes(*sequentialSeed));
@@ -1855,9 +1865,12 @@ private:
                 const bool addressOnly=!addressLayouts.empty()&&addressLayouts[i].has_value();
                 const bool copiedInput=!uninitializedLayouts.empty()&&uninitializedLayouts[i].has_value();
                 auto argument = Eval(frame, n.children[i], frame.self,
-                    addressOnly?EvalRead::Address:copiedInput?EvalRead::Copy:EvalRead::Validate);
+                    addressOnly?EvalRead::Address:(copiedInput || (sequentialSeeds && !addressLayouts.empty()))?
+                        EvalRead::Copy:EvalRead::Validate);
                 if(addressOnly) {
-                    args.push_back(AddressOnlyNativeArgument(argument,*addressLayouts[i]));continue;
+                    args.push_back(AddressOnlyNativeArgument(argument,*addressLayouts[i]));
+                    if(sequentialSeeds)CaptureNativeInput(capturedInputs,Value{},capturedInputBytes,capturedInputNodes);
+                    continue;
                 }
                 // Preserve ordinary optional markers. Audited initialized
                 // wrappers instead consume Nothing at this exact Step, so a
@@ -1881,7 +1894,8 @@ private:
                     } else if (argument.disposition==ResultDisposition::ZeroFill && argument.zeroFillBytes!=0u)
                         Fail(Status::Unsupported,"VM context argument result destination layout is unavailable");
                 }
-                const bool snapshotInput = nativeCall && SnapshotNativeInput(index, fn.get());
+                const bool snapshotInput = nativeCall && (SnapshotNativeInput(index, fn.get()) ||
+                    (sequentialSeeds && !addressLayouts.empty()));
                 const bool copiedOutTemporary = nativeCall && CopyNativeOutTemporary(index);
                 if (snapshotInput || sequentialSeeds || copiedOutTemporary) {
                     auto value = argument.Load(); ValidateValue(value, 0); Retain(ValueBytes(value));

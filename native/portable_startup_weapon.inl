@@ -68,15 +68,21 @@
         std::vector<PortableStartupWeaponInventoryLink>& out,QuestVr::AuthoredStructDetail::Budget& retained) {
         constexpr std::size_t maximumLinks=128u;
         std::array<RuntimeObject*,maximumLinks> visited{};std::size_t count{};
-        retained.Retain(maximumLinks*sizeof(PortableStartupWeaponInventoryLink));out.reserve(maximumLinks);
-        retained.Retain(out.capacity()*sizeof(PortableStartupWeaponInventoryLink));
         auto next=StartupWeaponLink(player,"Inventory");
         while(!next.empty()) {
             LifecycleStep();auto* actor=Object(next);RequireMapActor(actor);
             if(count==maximumLinks || std::find(visited.begin(),visited.begin()+count,actor)!=visited.begin()+count ||
                 !IsDerivedFromPath(actor->cls,"Engine.Inventory") || NativeLevelInfo(actor)!=info)
                 throw std::runtime_error("Startup weapon actual inventory chain cycles, exceeds its bound or leaves the player's Level");
-            visited[count++]=actor;auto& row=out.emplace_back();
+            visited[count++]=actor;next=StartupWeaponLink(actor,"Inventory");
+        }
+        // The fixed pointer walk retains the full safety bound without
+        // allocating128 detached records for every three-item snapshot. No
+        // VM callback occurs between counting and copying the live chain.
+        retained.Retain(count*sizeof(PortableStartupWeaponInventoryLink));out.reserve(count);
+        retained.Retain(out.capacity()*sizeof(PortableStartupWeaponInventoryLink));
+        for(std::size_t slot=0u;slot<count;++slot) {
+            LifecycleStep();auto* actor=visited[slot];auto& row=out.emplace_back();
             StartupWeaponText(row.actorPath,actor->reflection.objectPath,retained);
             StartupWeaponText(row.classPath,actor->cls->reflection.objectPath,retained);
             StartupWeaponText(row.ownerPath,StartupWeaponLink(actor,"Owner"),retained);
@@ -84,7 +90,9 @@
             StartupWeaponText(row.statePath,CurrentDispatchContext(actor).selectedPath,retained);
             row.runtimeBirth=actor->runtimeBirth;row.removed=actor->worldRemoved;
             row.deleteMe=StartupWeaponRead(actor,"bDeleteMe",Kind::Bool).boolean;
-            next=row.inventoryPath;
+            const auto expected=slot+1u<count?std::string_view(visited[slot+1u]->reflection.objectPath):std::string_view{};
+            if(row.inventoryPath!=expected)
+                throw std::runtime_error("Startup weapon actual inventory chain changed during its read-only snapshot");
         }
     }
     void StartupWeaponPlayer(RuntimeObject* player,RuntimeObject* info,PortableStartupWeaponPlayerSnapshot& out,

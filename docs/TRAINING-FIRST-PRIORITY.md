@@ -1,5 +1,21 @@
 # Immediate milestone: complete the first Training map
 
+Latest live-melee prerequisite,2026-10-24: original Actor.Trace277 is bound to
+the actual Level collision service. Genuine crowbar/knife attacks now pass it
+and next refuse PickTarget531 at AdjustAim180; no hit/damage is fabricated.
+Mixed VM1205/32 and actual first-map world-query37063/23 controls pass. Detached
+inventory observations allocate actual link count while retaining128 safety
+guards; Fire cap4MiB keeps original query/state budgets unchanged. Next is
+the actually reached original target-selection service, not account UI, other
+maps or cosmetic crate health. No new APK/live crate acceptance yet. See
+ORIGINAL-ACTOR-TRACE-WRAPPER.md.
+Final coherent shared gate184 executed/219 registered,35 owned skips, zero
+failures in87.99s; final strict ARM64/Android native link pass. Crowbar repeat2,
+partial-Trace14979 output-cut repeat2 and equip-only repeat2 retain exact
+observations/full-root undo/all41 sources unchanged.
+Fresh no-command startup repeat2 retains1463/218693 instructions/24284 writes;
+actual first-map crate347/two and dormant Doctor70/six controls pass separately.
+
 Latest live-melee prerequisite,2026-10-24: actual knife/crowbar selected Fire
 now reaches original HandToHandAttack/TraceFire. The reached missing229
 direction function is implemented with original math and mixed input/OUT

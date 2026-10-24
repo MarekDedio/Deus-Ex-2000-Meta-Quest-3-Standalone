@@ -69,7 +69,24 @@ No-command startup repeat2 still stops at the exact old HUD1463 location,
 complete original rollback/source checks. This protects the default startup
 entry rather than declaring that unsupported startup successful.
 
-The next required bridge is the original Actor.Trace277 wrapper over the
-existing real collision query services. No controller aim, successful trace,
-TraceShot, crate TakeDamage, surviving debris/loot physics or collection has
-yet been connected to committed gameplay by this diagnostic.
+## Subsequent original collision-trace integration
+
+The original Actor.Trace277 wrapper now uses the existing real current-Level
+query services, preserving ordered OUT writes, live sequential defaults and
+copied ordinary inputs. See ORIGINAL-ACTOR-TRACE-WRAPPER.md. Actual crowbar
+repeat2 now reaches PickTarget531 at AdjustAim180/opcode98,206070 instructions/
+14982 writes; knife reaches the same operation at205995/14977. Full-root undo
+and all41 unchanged sources still pass. This is a passed trace-call prefix,
+not evidence that an actual melee target was hit or damaged.
+
+Two crowbar runs with `--damage-write-limit 14979` stop inside Trace277 after
+its first output store: AdjustAim18/opcode97,206046 instructions/14979 writes,
+VM write limit, complete earlier state/output undo and41 unchanged sources.
+Equip-only repeat2 retains native1463/221615 instructions/24458 writes.
+The final coherent shared gate passes184 executed/219 registered,35 owned
+skips, zero failures in87.99s; final strict ARM64 and Android native link pass.
+
+The next required service is the actually reached original PickTarget531,
+not an account/player-creation UI or a guessed direct crate-health shortcut.
+No controller aim, TraceShot, crate TakeDamage, surviving debris/loot physics
+or collection has yet been connected to committed gameplay by this diagnostic.
