@@ -8,6 +8,15 @@ compiler input/build was changed or commercial DLL/EXE executed or loaded.
 
 ## Current production disconnect
 
+Latest2026-10-25 LOS checkpoint: both real authored weapons now complete the
+original notify/NormalFire/Idle cycle in the rollback-only genuine Login root.
+This does not close the production disconnect below. The real starting JC is
+about2434 horizontal UU from the lower crate;80UU melee cannot hit it there.
+Pawn-only PickTarget531 is auto-aim; actual Pawn.TraceShot277 and subsequent
+ProcessTraceHit already admit non-Pawn Actors. A faithful next hit requires
+real movement/aim authority, not forcing a selected target or widening531.
+See ORIGINAL-PAWN-LINE-OF-SIGHT.md for the cycle and rollback controls.
+
 Latest2026-10-25 follow-on:531 now enters its actual list/team/scalar prefix;
 both real weapon probes reach internal Pawn.LineOfSightTo(candidate,0,false)
 with whole-root undo. Pure, mixed VM and real dormant first-map prefix/cycle
@@ -138,6 +147,25 @@ continuation and selected AnimEnd remain
 part of completing a usable original attack cycle, not merely the first hit.
 
 ## Prioritized implementation and acceptance
+
+Immediate nonpublishing crate-hit test after the completed attack checkpoint:
+extend only the explicit Fire diagnostic with supplied pose input. Use original
+Actor.SetLocation267 (require true and observe the actual adjusted Location),
+then selected Pawn.ClientSetRotation (sets ViewRotation before its body-only
+pitch/roll cleanup and SetRotation299), then unchanged original Fire. Determine
+a free approach from actual Model floor and genuine JC/crate collision bounds;
+do not patch Location, ViewRotation, FrobTarget, Enemy or bProjTarget. Record
+actual trace results/range and crate HitPoints before/after in bounded detached
+observations. The crate identity can be a test assertion, never Fire/Trace input.
+This can test real weapon-to-crate damage before the separate HUD1463 service
+is implemented, while still continuing ordinary possession and undoing the
+entire root at its genuine boundary. It is not live controller input or a
+permission to publish an unpaired InvalidState player. ClientSetRotation is
+original script flags0xC2/logical45; SetLocation267 and SetRotation299 are actual
+native0x401/logical5 declarations with required Core Vector/Rotator inputs and
+Bool0x580 results. Existing FarMove/Move adapters preserve real collision/hash/
+zone/encroachment authority. A controller-hand trace origin is a distinct VR
+contract; original instant-hit Fire begins at the genuine player's eye.
 
 1. Complete genuine startup/player pairing and real Training pickup/equip
    ownership. Do not publish the diagnostic Login prefix or fabricate a JC,

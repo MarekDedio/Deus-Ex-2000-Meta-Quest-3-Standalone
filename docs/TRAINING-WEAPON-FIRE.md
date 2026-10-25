@@ -102,3 +102,27 @@ The next required service is the actually reached internal Pawn LOS,
 not an account/player-creation UI or a guessed direct crate-health shortcut.
 No controller aim, TraceShot, crate TakeDamage, surviving debris/loot physics
 or collection has yet been connected to committed gameplay by this diagnostic.
+
+## Subsequent original internal LOS and completed cycle
+
+Both weapons now pass the actual reached internal Pawn LOS and complete one
+NormalFire attack, including one returned original HandToHandAttack notify and
+return to ready/up Idle. Each has22 captured phase rows. This does not prove a
+hit: the genuine JC start is about2434 horizontal UU from the lower crate,
+whereas both weapons have80UU melee range. No aim/target/damage was supplied.
+The general Actor TraceShot/ProcessTraceHit path already admits crates;
+PickTarget531 remains the original Pawn-only auto-aim service.
+
+Crowbar repeat2 matches at the later HUD CreateIcons diagnostic-memory boundary;
+both fully undo/all41 sources remain unchanged. Partial-output write-cut repeat2
+at14983 stops in TraceFire212/opcode15,206100 instructions,14 rows, no returned
+notify or cycle. Normal startup repeat2 remains exact native1463/218693/24284.
+Shared189 executed/225 registered,36 owned skips,0 failures; independent math,
+protocol, mock-host VM and actual first-map target/trace controls pass. See
+ORIGINAL-PAWN-LINE-OF-SIGHT.md for exact results and final memory accounting.
+
+Completed Fire now retains its cumulative actual detached capacities instead
+of its whole conservative4MiB admission. Only unused observation allowance is
+released, only after final success checks/snapshots. Failure keeps full
+admission; shared callback observations and query/undo/RNG charges are not
+refunded. The32MiB state limit is unchanged. No live input, publication or APK.

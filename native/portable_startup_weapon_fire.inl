@@ -153,6 +153,14 @@
                     throw std::runtime_error("Original startup attack phases lost or replaced the actual owned weapon");
                 if(row.weaponAfter.state.selectedPath=="DeusEx.DeusExWeapon.Idle" && row.weaponAfter.weaponUp && row.weaponAfter.readyToFire) {
                     if(!notifyEvents)throw std::runtime_error("Original attack returned Idle without a returned notify phase; no hit is inferred");
+                    // All detached rows, full reserved capacities and notify
+                    // strings are now final. Keep their cumulative charge,
+                    // but release only the unused part of our own allowance;
+                    // callbacks may have added other observations meanwhile.
+                    // Failure paths retain the entire conservative admission.
+                    if(retained.retained>outputBound || nativeActorOrderObservationBytes_<outputBound)
+                        throw std::runtime_error("Completed startup weapon Fire observation accounting is inconsistent");
+                    nativeActorOrderObservationBytes_-=outputBound-retained.retained;
                     row.attackCycleComplete=true;return;
                 }
             }catch(...) {failed(row);throw;}

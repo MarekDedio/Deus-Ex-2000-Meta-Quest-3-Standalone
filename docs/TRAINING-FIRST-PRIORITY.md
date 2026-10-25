@@ -1,5 +1,19 @@
 # Immediate milestone: complete the first Training map
 
+Latest first-map attack checkpoint,2026-10-25: authentic internal Pawn LOS now
+lets both authored weapons complete one original attack cycle (22 rows, one
+returned notify, ready Idle) in the same rollback-only pickup/equip/Fire root.
+This is not a crate hit: real spawn-to-lower-crate distance is about2434UU,
+versus80UU melee range. The general TraceShot path already admits crates;
+Pawn-only PickTarget is auto-aim, not a reason to fake crate health or targets.
+Next requirements remain genuine published startup/player, actual movement/
+controller aim, original crate TakeDamage, automatic physics and committed
+loot/save/render/audio. Internal Login is engine spawning, not account UI.
+LOS math/protocol/VM controls and coherent189 executed/225 registered shared
+tests pass (36 owned skips,0 failures); actual first-map targeting/collision
+controls pass separately. See ORIGINAL-PAWN-LINE-OF-SIGHT.md for exact evidence
+and final successful-output accounting regressions. No new APK or other maps.
+
 Latest first-map attack prerequisite,2026-10-25: original Pawn.PickTarget531
 now authenticates its packet, live PawnList/team gates and scalar aim. Pure
 157625/55014 x87, mixed1338/21 and actual first-map181 calls/277720 checks/90

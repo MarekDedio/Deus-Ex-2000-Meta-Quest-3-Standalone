@@ -1,6 +1,5 @@
 // Included inside PortableActorVmHost. Original Pawn.PickTarget531 selection
-// prefix; a qualifying visibility query still explicitly refuses until the
-// internal retail Pawn.LineOfSightTo(candidate,0,false) service is bound.
+// and its internal retail Pawn.LineOfSightTo(candidate,0,false) service.
     std::shared_ptr<const Function> PawnPickTargetDeclaration(const Function* supplied) {
         const std::string path="Engine.Pawn.PickTarget";auto* method=Object(path);const auto authored=FunctionFor(method);
         const auto validate=[&](const Function& function) {
@@ -73,15 +72,8 @@
         if(value.kind!=Kind::Int)throw std::runtime_error("PickTarget531 live Health is not Int");
         return value.integer;
     }
-    bool PawnPickTargetLineOfSight(RuntimeObject* source,RuntimeObject* candidate) {
-        static_cast<void>(source);static_cast<void>(candidate);
-        // This is the internal C++ helper, NOT selected script/native514.
-        // It has visibility/range/eye/enemy/corner rays and possible writes.
-        // A simple FastTrace or false result would silently change autoaim.
-        throw std::runtime_error("Original PickTarget531 requires internal Pawn.LineOfSightTo(candidate,0,false)");
-    }
     Evaluation PawnPickTargetNative(const std::string& receiver,const std::vector<Evaluation>& arguments,
-        const Function* declaration) {
+        const Function* declaration,QuestVr::Vm::Execution& execution) {
         static_cast<void>(PawnPickTargetDeclaration(declaration));auto* source=PawnPickTargetSource(receiver);
         if(arguments.size()!=4u)throw std::runtime_error("PickTarget531 requires all four original expressions");
         std::array<float,2u> temporary{};
@@ -129,7 +121,7 @@
                     NoiseField(theirs,"Engine.PlayerReplicationInfo.Team",Kind::Byte,0x20u).integer)continue;
             }
             const auto candidate=QuestVr::EvaluateOriginalPawnPickTargetCandidate(NoiseLocation(pawn),start,direction,readAim);
-            if(!candidate || !PawnPickTargetLineOfSight(source,pawn))continue;
+            if(!candidate || !PawnPickTargetLineOfSight(source,pawn,execution))continue;
             best=pawn;write(0u,candidate->aim);write(1u,candidate->distance);
         }
         auto result=Value::Text(Kind::Object,best?best->reflection.objectPath:std::string{});

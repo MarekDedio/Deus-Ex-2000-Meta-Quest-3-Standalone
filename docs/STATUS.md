@@ -1,5 +1,36 @@
 # Port status
 
+## Original Training attack visibility and cycle (2026-10-25)
+
+Internal Pawn LOS reached by PickTarget531 now uses authentic live Pawn fields,
+shared RNG, actual Level BSP queries and the same VM Execution/journal. Both
+authored knife/crowbar complete one original attack cycle:22 phase rows, one
+returned HandToHandAttack notify and original ready Idle. This is a rollback-only
+diagnostic at the real starting position, NOT a controller-aimed crate hit.
+The lower crate is about2434 horizontal Unreal units from that position while
+both weapons have80-unit melee range. PickTarget's Pawn-only auto-aim must not
+be widened to crates; the actual TraceShot/ProcessTraceHit path admits Actors.
+
+Pure LOS math326589 checks/170820 independent test-owned x87 cases; ordered
+protocol70 calls/264 checks/22 refusals; explicitly mock-host real-VM controls
+193 checks/31 refusals/44 roots pass. Coherent desktop/shared gate189 executed/
+225 registered,36 owned-data skips,0 failures in70.54s after final accounting.
+Fresh actual first-map
+PickTarget181 calls/277720 checks/90 refusals and Trace43 calls/37063 checks/23
+refusals pass, including their4/9 native-work cuts. Default startup repeat2
+retains native1463/218693 instructions/24284 writes and complete undo/all41
+sources. Two attack write cuts14983 stop at TraceFire212 with206100 instructions,
+14 rows/no completed notify and complete undo. See ORIGINAL-PAWN-LINE-OF-SIGHT.md.
+The successful Fire diagnostic now releases only its unused conservative output
+reservation after all snapshots finish; actual capacities remain charged and
+the32MiB state limit is unchanged. Final accounting regressions are recorded in
+the LOS document. Live crate destruction/loot/gravity and startup publication
+remain incomplete; no APK is produced. Other-map integration stays deferred.
+Final separate owned regressions retain crate347/two, PickTarget277720/90 and
+Trace37063/23. Initialized physics-cohort repeat2 retains64 rows/three carries;
+loot repeat2 retains9 falling rows/two settled items and original transfer/merge.
+These are rollback-only mechanics controls, not live headset crate acceptance.
+
 ## Original Training target-selection prefix (2026-10-25)
 
 The original attack now enters Pawn.PickTarget531 through authenticated Float

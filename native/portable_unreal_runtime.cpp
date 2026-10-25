@@ -56,6 +56,7 @@
 #include "quest_original_sine_table.h"
 #include "quest_original_get_axes.h"
 #include "quest_pawn_pick_target.h"
+#include "quest_pawn_line_of_sight_protocol.h"
 #include "quest_native_engine_classes.h"
 #include "quest_native_package.h"
 #include "quest_native_config.h"
@@ -3639,7 +3640,7 @@ public:
         const std::vector<Evaluation>& arguments, const Function* declaration, QuestVr::Vm::Execution& execution) override {
         if(index==229u) return CoreGetAxesNative(arguments,declaration);
         if(index==277u) return ActorTraceNative(receiver,arguments,declaration);
-        if(index==531u) return PawnPickTargetNative(receiver,arguments,declaration);
+        if(index==531u) return PawnPickTargetNative(receiver,arguments,declaration,execution);
         if(index==261u) {
             if(!arguments.empty())throw std::runtime_error("Original FinishAnim takes no parameters or result");
             OriginalFinishAnimNative(Object(receiver),declaration,execution);return {};
@@ -5080,6 +5081,7 @@ public:
     #include "portable_core_rotator_add.inl"
     #include "portable_core_get_axes.inl"
     #include "portable_actor_trace.inl"
+    #include "portable_pawn_line_of_sight.inl"
     #include "portable_pawn_pick_target.inl"
     void RequireIndexedPrimitiveDiagnosticOwner(RuntimeObject* owner) {
         RequireMapActor(owner);
