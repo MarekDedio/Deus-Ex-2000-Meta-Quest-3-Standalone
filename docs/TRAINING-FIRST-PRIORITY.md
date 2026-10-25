@@ -1,5 +1,21 @@
 # Immediate milestone: complete the first Training map
 
+Latest2026-10-25: original Level player-distance phase now uses actual native
+Engine.Client/first viewport/paired JC and captured Location, native partition,
+live source/destination slots and correct PC64/sqrt spills. It updates237
+actors in the actual Training rollback diagnostic; crates' stale6376/6371
+measurements become2434.82324/2435.43677. Both repeats/full undo pass. This is
+an explicit pre-Possess diagnostic insertion, NOT the completed frame schedule.
+Helper2678/50; owned animation588/24, crate415/5, Engine15156/31 and timestamp/
+stasis fixture pass. Final desktop/strict ARM64/Android native and shared suite
+202 executed/241 registered/39 explicit skips/zero failures pass; all45 checked
+originals unchanged. Separate two-Fire repeat2 retains original counts and
+crate/Lockpick births under rollback. No APK/account UI/other-map work.
+Next is actual renderer timing and owner/parity/pending/newborn scheduling,
+not another map or character screen. Live crate destruction, collectible
+usable loot and automatic gravity still require completion/integration. See
+ORIGINAL-LEVEL-PLAYER-DISTANCE.md.
+
 Latest2026-10-25: original InStasis query now binds native Level Double time,
 Actor Float time, stored Region/distance, current Model64 timestamps and actual
 Actor.Level.NetMode. Native/reflected/saved LastRenderTime ownership is joined

@@ -1,5 +1,34 @@
 # Port status
 
+## Original player-distance prepass and Engine.Client edge (2026-10-25)
+
+The native distance phase before Actor.Tick is now a same-root committing
+service: actual slot0 NetMode, actual Level.Engine/Engine.Client/first viewport
+Actor/Player pointer, FirstDynamic before captured Pawn.Location, live source
+and destination slots, original PC64 sum/FSQRT spills and journaled Float
+DistanceFromPlayer stores. Native Engine.Client joins the embedding's actual
+session UObject and clears on teardown; no session pointer is saved.
+
+Helper2678 checks/50 refusals and actual first-Training repeat2 pass. The real
+paired JC's captured spawn location updates237 native actors across238 slots
+(one null), FirstDynamic192. Crates' old6376.48926/6371.33154 distances become
+2434.82324/2435.43677, with exact repeat stability and full enclosing startup
+undo. This diagnostic runs explicitly before original Possess, not through
+automatic Level.Tick. It still stops at known ConsoleCommand FExec refusal.
+
+Full desktop, strict ARM64 and Android native builds pass; final shared suite
+202 executed/241 registered/39 explicit owned-data skips/zero failures69.56s.
+Owned animation588/24, crate415/5, Engine collision/config15156/31 and timestamp/
+stasis/save fixture pass separately. Aimed two-Fire repeat2 retains228837/
+26047 and original crate removal/surviving Lockpick birth under full rollback.
+All45 checked script/config/map originals are unchanged. Every process is
+terminal. See ORIGINAL-LEVEL-PLAYER-DISTANCE.md.
+
+This does not complete automatic world/Actor scheduling, renderer timing,
+owner/parity/pending/newborn order, cleanup or live weapon/loot publication.
+First Training remains the gameplay priority; no account/character UI,
+other-map integration, new APK or on-headset crate/gravity acceptance.
+
 ## First-Training native stasis and timestamp ownership (2026-10-25)
 
 Original AActor.InStasis now has a shared-root native binding: exact PC64

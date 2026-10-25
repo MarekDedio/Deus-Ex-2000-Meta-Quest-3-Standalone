@@ -126,7 +126,7 @@ Final verification, after every compiler process finished:
 ## Remaining first-Training work
 
 The helper and native binding do not skip these missing integration services:
-the original captured-player DistanceFromPlayer prepass, real renderer actor/
+real renderer actor/
 zone timestamps, owner/parity/pending ordering, complete native Actor/Level
 Tick, newborn scheduling and deferred cleanup, player weapon/inventory input
 and render/save/audio publication. Original complete startup still refuses at
@@ -134,3 +134,9 @@ the unimplemented bound-player ConsoleCommand FExec route. This increment
 does not establish playable crate destruction, usable surviving loot,
 automatic gravity, a replacement APK or headset acceptance. No other map is
 integrated or used as a substitute for first-Training gameplay verification.
+
+Following implementation2026-10-25: the original captured-player distance
+prepass is now implemented as its own shared-root service in
+ORIGINAL-LEVEL-PLAYER-DISTANCE.md. It still needs its real automatic frame
+schedule with these remaining services; the diagnostic insertion before
+Possess is not that schedule.

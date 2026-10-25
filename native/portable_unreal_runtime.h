@@ -360,6 +360,27 @@ struct PortableActorStasisResult {
     QuestVr::Vm::Result execution;
     PortableActorStasisObservation actor;
 };
+struct PortableActorDistanceSample {
+    std::string actorPath;
+    float before{},after{};
+    bool operator==(const PortableActorDistanceSample&) const = default;
+};
+struct PortableLevelPlayerDistanceObservation {
+    bool completed{},networkSkipped{},noActor{},notPlayerPawn{},noPlayer{};
+    std::size_t steps{},visits{},nullSlots{},writes{};
+    std::int32_t firstDynamic{};
+    std::array<float,3u> capturedLocation{};
+    std::string playerPath;
+    std::vector<PortableActorDistanceSample> samples;
+    bool operator==(const PortableLevelPlayerDistanceObservation&) const = default;
+};
+struct PortableLevelPlayerDistanceResult {
+    QuestVr::Vm::Result execution;
+    PortableLevelPlayerDistanceObservation pass;
+};
+// Actual native distance prepass only. Missing active native client/viewport
+// services refuse; a genuine unpossessed viewport skips without any store.
+PortableLevelPlayerDistanceResult AdvancePortableLevelPlayerDistance(const QuestVr::Vm::Limits& limits = {});
 // Read-only native InStasis, NOT Actor.Tick or a world/renderer update. An
 // uninitialized native LastRenderTime refuses instead of reading a facade.
 PortableActorStasisResult ReadPortableActorStasis(const std::string& actorPath,
@@ -401,6 +422,10 @@ struct PortableWorldStartupProbeOptions {
     // At most16 read-only observations after genuine world startup/partition,
     // before client/player setup, in the same ALWAYS-rolled-back startup root.
     std::vector<std::string> observeStasisActors{};
+    // Explicit diagnostic only: run the real prepass after genuine SetPlayer
+    // pairing and before original Possess in the ALWAYS-rolled-back startup
+    // root. This is not the original frame schedule or partial startup success.
+    std::vector<std::string> observePlayerDistanceActors{};
 };
 struct PortablePlayerLoginObservation {
     std::uint64_t viewportIdentity{};
@@ -494,6 +519,7 @@ struct PortableWorldStartupProbeResult {
     std::vector<PortableStartupLootObservation> lootObservations;
     std::vector<PortableStartupWeaponObservation> weaponObservations;
     std::vector<PortableActorStasisObservation> stasisObservations;
+    std::optional<PortableLevelPlayerDistanceObservation> playerDistance;
 };
 const char* PortableWorldStartupPhaseName(PortableWorldStartupPhase phase);
 // Non-publishing diagnostic over actual Level slots and original callbacks.

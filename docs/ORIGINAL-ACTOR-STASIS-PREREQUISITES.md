@@ -13,8 +13,9 @@ now independently closed in
 [Model timestamp initialization](ORIGINAL-MODEL-ZONE-TIMESTAMP-INITIALIZATION.md).
 Fresh exact native Engine.Model timestamps start at Float+0. The portable
 loader now retains that64-slot transient baseline and the original InStasis
-query has a same-root runtime binding. Original renderer publications,
-distance prepass and complete Actor/Level Tick are still unfinished. See
+query has a same-root runtime binding. The separately implemented native
+distance phase is recorded in ORIGINAL-LEVEL-PLAYER-DISTANCE.md. Original
+renderer publications and complete Actor/Level Tick are still unfinished. See
 ORIGINAL-ACTOR-STASIS.md for the implemented scope and verification.
 
 Read alongside [the wider Tick audit](ORIGINAL-ACTOR-TICK-PHYSICS-PHASE.md),
@@ -248,8 +249,8 @@ following branch at `103A55C1..5696`:
    `103A55F1` is to `Engine.APlayerPawn.PrivateStaticClass` at1058C160,
    independently authenticated by the export table. Require that Pawn's
    actual Player pointer(+5D4) to be nonnull; otherwise skip the pass.
-4. Copy that PlayerPawn.Location(+114/+118/+11C) once into locals, then
-   initialize the index from native FirstDynamic(+110).
+4. Load native FirstDynamic(+110) at103A5620, then copy that
+   PlayerPawn.Location(+114/+118/+11C) once into X/Y/Z locals at5626..5634.
 5. In ascending order, compare the index against **live** Actors.Num on
    each iteration and read the live slot. Null skips to the next slot. No
    bDeleteMe/active/IsA cohort filter is present in this loop.
@@ -262,7 +263,13 @@ following branch at `103A55C1..5696`:
    thunk `101032BA`, enters `10123290..96`: load the binary64 argument,
    x87 FSQRT, return the extended result. Level then FSTs an otherwise-local
    Double at `103A5689`, without popping/reloading it, and FSTPs the retained
-   result to the actor's DistanceFromPlayer Float at `103A5692`.
+   result to DistanceFromPlayer Float at `103A5692`. The destination Actor is
+   freshly reloaded from the live native Actors data/index at568C..568F; it is
+   not assumed to remain the source Actor loaded before the arithmetic.
+
+Implementation update2026-10-25: the exact native phase and actual Engine.Client
+edge are now bound separately; see ORIGINAL-LEVEL-PLAYER-DISTANCE.md. This does
+not complete the surrounding Level.Tick schedule or renderer publications.
 
 Neither VR head pose, camera/view target nor a per-actor lazy current-distance
 query replaces this captured-Pawn-location pass. Reordering it into actor
@@ -276,7 +283,8 @@ changing the ordinary source ordering.
 At this static audit's initial checkpoint no production equivalent of the
 native distance prepass or complete stasis provider was found. The subsequent
 same-root InStasis query is recorded in the implementation update above;
-distance prepass/render publication and scheduler remain missing. The genuine falling Physics2 cohort can
+The distance phase is subsequently implemented separately as linked above;
+render publication and automatic scheduling remain missing. The genuine falling Physics2 cohort can
 avoid a zone-time read through the original Physics short circuit, but this
 does not establish that its flags are always eligible or that landed actors
 can run indefinitely without renderer-time integration.

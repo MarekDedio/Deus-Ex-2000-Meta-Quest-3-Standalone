@@ -38,6 +38,7 @@
 #include "quest_actor_physics_phase.h"
 #include "quest_actor_tick_tail.h"
 #include "quest_actor_stasis.h"
+#include "quest_level_player_distance.h"
 #include "quest_native_window_location.h"
 #include "quest_native_window_query.h"
 #include "quest_native_window_clip.h"
@@ -1218,6 +1219,9 @@ void ClearNativePlayerEdges() noexcept {
 
 void ClearNativePlayerObjects() noexcept {
     ClearNativePlayerEdges();
+    if(persistentEngineCollision&&persistentEngineCollision->get()&&persistentEngineCollision->get()->engine&&
+        persistentEngineCollision->get()->engine->nativeEngineInstance)
+        persistentEngineCollision->get()->engine->nativeEngineInstance->values.client=nullptr;
     if(!persistentPlayerSession || !persistentPlayerSession->get()) return;
     const auto unindex=[](RuntimeObject* object) {
         if(!object) return;
@@ -2658,6 +2662,21 @@ public:
         }
         execution.WriteReference(pointer(actor,false),Value::Text(Kind::Object,viewport->reflection.objectPath));
         execution.WriteReference(pointer(viewport,true),Value::Text(Kind::Object,actor->reflection.objectPath));
+        if(worldStartupProbe_&&worldStartupResult_&&worldStartupDistanceActors_) {
+            PortableLevelPlayerDistanceObservation observed;
+            for(const auto& path:*worldStartupDistanceActors_) {
+                LifecycleStep();auto* sample=LifecycleActor(reinterpret_cast<std::uintptr_t>(Object(path)));
+                const auto field=OriginalAnimationField(sample,"Engine.Actor","DistanceFromPlayer",Kind::Float,0u,"FloatProperty");
+                observed.samples.push_back({path,OriginalAnimationRead(sample,field,Kind::Float).floating,0.0f});
+            }
+            AdvanceOriginalPlayerDistance(observed,execution);
+            for(auto& sample:observed.samples) {
+                auto* target=Object(sample.actorPath);
+                sample.after=OriginalAnimationRead(target,OriginalAnimationField(target,"Engine.Actor",
+                    "DistanceFromPlayer",Kind::Float,0u,"FloatProperty"),Kind::Float).floating;
+            }
+            worldStartupResult_->playerDistance=std::move(observed);
+        }
         static_cast<void>(execution.CallEvent(actor->reflection.objectPath,"Possess",false,{}));
         static_cast<void>(NativeSessionViewport(viewportIdentity));
         return Value::Text(Kind::Object,actor->reflection.objectPath);
@@ -7839,6 +7858,7 @@ public:
 #include "portable_actor_finish_anim.inl"
 #include "portable_actor_tick_tail.inl"
 #include "portable_actor_stasis.inl"
+#include "portable_level_player_distance.inl"
     Value ProbeOriginalMainAnimation(const std::string& path,float elapsed,
         PortableActorMainAnimationProbeResult& result,QuestVr::Vm::Execution& execution) {
         if(!transaction_)throw std::runtime_error("Original animation observation requires its existing caller root");
@@ -7882,6 +7902,15 @@ public:
         ValidateStartupFallingCommands(options);
         ValidateStartupPhysicsCohort(options);
         ValidateStartupWeapon(options,options.weapon);
+        if(options.observePlayerDistanceActors.size()>16u)
+            throw std::runtime_error("Startup distance observation exceeds16 retained Actors");
+        for(const auto& path:options.observePlayerDistanceActors)
+            if(path.empty()||path.size()>4096u||path.find('\0')!=std::string::npos)
+                throw std::runtime_error("Startup distance observation has an invalid bounded Actor path");
+        if(!options.observePlayerDistanceActors.empty()) {
+            ValidateStateBudget(options.observePlayerDistanceActors.size()*(sizeof(PortableActorDistanceSample)+4097u));
+            nativeActorOrderObservationBytes_+=options.observePlayerDistanceActors.size()*(sizeof(PortableActorDistanceSample)+4097u);
+        }
         if(options.observeStasisActors.size()>16u)
             throw std::runtime_error("Startup InStasis observation exceeds16 retained Actors");
         for(const auto& path:options.observeStasisActors)
@@ -7891,10 +7920,12 @@ public:
             options.weapon);
         struct ProbeScope {
             bool& active;PortableWorldStartupProbeResult*& observation;
-            ~ProbeScope() { active = false;observation=nullptr; }
-        } scope{worldStartupProbe_,worldStartupResult_};
+            const std::vector<std::string>*& distance;
+            ~ProbeScope() { active = false;observation=nullptr;distance=nullptr; }
+        } scope{worldStartupProbe_,worldStartupResult_,worldStartupDistanceActors_};
         worldStartupProbe_ = true;
         worldStartupResult_=&result;
+        worldStartupDistanceActors_=options.observePlayerDistanceActors.empty()?nullptr:&options.observePlayerDistanceActors;
         using Phase = PortableWorldStartupPhase;
         const auto visit = [&](const Phase phase, RuntimeObject* actor, const std::size_t slot) {
             LifecycleStep();
@@ -8949,6 +8980,7 @@ private:
     bool spawnNotificationLocked_{};
     bool worldStartupProbe_{};
     PortableWorldStartupProbeResult* worldStartupResult_{};
+    const std::vector<std::string>* worldStartupDistanceActors_{};
     // Original Extension global layout-call bookkeeping is transient, scoped
     // to this VM host. Exception guards restore it; UObject writes journal in
     // the outer transaction. It is never persisted as guessed script fields.
@@ -9733,7 +9765,8 @@ private:
                     key!="engine.actor.timerrate" && key!="engine.actor.timercounter" && key!="engine.actor.btimerloop" &&
                     !NativeNoiseCacheKey(key) && key!="engine.pawn.stimulus" && key!="engine.actor.touching" &&
                     key!="engine.actor.region" && key!="engine.pawn.footregion" && key!="engine.pawn.headregion" &&
-                    key!="engine.playerreplicationinfo.playerzone" && key!="engine.actor.lastrendertime")
+                    key!="engine.playerreplicationinfo.playerzone" && key!="engine.actor.lastrendertime" &&
+                    key!="engine.actor.distancefromplayer")
                     UpdateClockProperty(target, property.name, index);
                 const auto name=LowerAscii(property.name);
                 if (index==0u && (name=="location" || name=="collisionradius" || name=="collisionheight" ||
@@ -13581,11 +13614,20 @@ PortablePlayerSessionSnapshot PreparePortableRuntimePlayerObjects(const std::uin
     for(const auto& object:allocations) lookupObjects.push_back(object.get());
     auto lookup=StageRuntimeLookupObjects(lookupObjects);
     if(lookup) host.ValidateLookupStagingBudget(*lookup);
+    RuntimeObject* engineClientOwner{};
+    if(persistentEngineCollision) {
+        engineClientOwner=persistentEngineCollision->get()->engine;
+        if(!engineClientOwner||!engineClientOwner->nativeEngineInstance||
+            (engineClientOwner->nativeEngineInstance->values.client&&
+             engineClientOwner->nativeEngineInstance->values.client!=session->client))
+            throw std::runtime_error("Native Engine.Client already belongs to another session");
+    }
     // All allocations/index copies complete before this publication interval.
     PublishRuntimeLookupObjects(lookup,lookupObjects);
     persistentQualifiedObjects.swap(nextQualified);persistentVmObjects.swap(nextVm);
     session->classes.swap(classes);session->viewports.swap(viewports);session->client=client;
     if(newOwner) persistentPlayerSession=std::move(newOwner);
+    if(engineClientOwner)engineClientOwner->nativeEngineInstance->values.client=client;
     return ReadPortableRuntimePlayerSession(viewportIdentity);
 }
 
@@ -14028,6 +14070,19 @@ const char* PortableWorldStartupPhaseName(const PortableWorldStartupPhase phase)
     }
 }
 
+PortableLevelPlayerDistanceResult AdvancePortableLevelPlayerDistance(const QuestVr::Vm::Limits& limits) {
+    CollectBirthGarbageAtBoundary collect;PortableLevelPlayerDistanceResult result;
+    try {
+        PortableActorVmHost host;
+        result.execution=QuestVr::Vm::ExecuteTransaction(host,[&](QuestVr::Vm::Execution& execution)->QuestVr::Vm::Value {
+            host.AdvanceOriginalPlayerDistance(result.pass,execution);return {};
+        },limits);
+        if(!result.execution.passed())result.pass.completed=false;
+    }catch(const std::exception& error) {
+        result.execution.status=QuestVr::Vm::Status::Unsupported;result.execution.error=error.what();result.pass.completed=false;
+    }
+    return result;
+}
 PortableActorStasisResult ReadPortableActorStasis(const std::string& actorPath,const QuestVr::Vm::Limits& limits) {
     CollectBirthGarbageAtBoundary collect;PortableActorStasisResult result;
     try {

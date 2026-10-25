@@ -449,7 +449,7 @@ int Run(const fs::path& root,const std::optional<std::string>& expected,unsigned
     bool requireSpawnEncroachment,bool damageTrainingCrates,bool collectTrainingLoot,bool collectTrainingLootViaPlayer,bool sweepTrainingCrates,
     bool fallTrainingCrates,bool fallAfterLowerBreak,bool fallTrainingLoot,bool fallTrainingFragments,bool performTrainingFragments,bool performTrainingCohort,
     const std::optional<std::size_t>& damageWriteLimit,const std::optional<PortableStartupWeaponCommand>& weapon,
-    const std::optional<PortableStartupWeaponFireCommand>& fire,bool observeTrainingStasis) {
+    const std::optional<PortableStartupWeaponFireCommand>& fire,bool observeTrainingStasis,bool observePlayerDistance) {
     Temporary temporary(root);std::vector<Source> sources;std::vector<PortablePackageTables> scripts;
     sources.reserve(QuestVr::RuntimeScriptPackages.size()+3u);scripts.reserve(QuestVr::RuntimeScriptPackages.size());
     for(const auto* name:QuestVr::RuntimeScriptPackages){sources.emplace_back(root/"System"/(std::string(name)+".u"));
@@ -490,6 +490,13 @@ int Run(const fs::path& root,const std::optional<std::string>& expected,unsigned
         "Fresh Training unexpectedly owns a native collision hash or a consumed shared RNG stream");
     const auto client=ReadPortableRuntimeClientView();const auto session=ReadPortableRuntimePlayerSession(Viewport);
     Require(HasPortableRuntimeClient()&&client.size()==1u&&!session.bound,"Actual client/viewport preparation is inconsistent");
+    const auto engineClient=ReadPortableRuntimeDeclaredScriptProperty(engine.enginePath,"Engine.Engine.Client");
+    Require(engineClient.kind==Kind::Object&&engineClient.text==session.clientPath,
+        "Actual Engine.Client is not the prepared native Client UObject");
+    const auto unpossessed=AdvancePortableLevelPlayerDistance();
+    Require(unpossessed.execution.passed()&&unpossessed.pass.completed&&unpossessed.pass.noActor&&
+        unpossessed.execution.writes==0u&&unpossessed.pass.writes==0u&&unpossessed.pass.steps==2u,
+        "Original distance prepass fabricated a possessed player or eagerly required the partition: "+unpossessed.execution.error);
     const auto saved=temporary.Save("BeforeStartup");const auto revision=GetPortableRuntimeWorldRevision();
     const bool statePresent=GetPortableRuntimeScriptStatePresent(),unsaved=GetPortableRuntimeUnsavedScriptState();
     const auto time=ReadPortableRuntimeLevelTime();const auto lookup=ReadPortableRuntimeObjectLookup();
@@ -525,6 +532,8 @@ int Run(const fs::path& root,const std::optional<std::string>& expected,unsigned
     options.weapon=weapon;
     if(observeTrainingStasis)for(const auto actor:TrainingStasisActors)
         options.observeStasisActors.emplace_back(actor);
+    if(observePlayerDistance)for(const auto* actor:{"00_Training.CrateBreakableMedGeneral1","00_Training.CrateBreakableMedGeneral2"})
+        options.observePlayerDistanceActors.emplace_back(actor);
     const std::size_t requestedDamageCount=(fallAfterLowerBreak||fallTrainingFragments||performTrainingCohort)?2u:TrainingDamageActors.size();
     if(damageTrainingCrates)for(std::size_t i=0u;i<requestedDamageCount;++i) {
         const auto actor=TrainingDamageActors[i];
@@ -575,6 +584,7 @@ int Run(const fs::path& root,const std::optional<std::string>& expected,unsigned
     std::optional<std::vector<PortableStartupWeaponObservation>> weaponObservations;
     std::optional<std::vector<PortableStartupWeaponFireObservation>> fireObservations;
     std::optional<std::vector<PortableActorStasisObservation>> stasisObservations;
+    std::optional<PortableLevelPlayerDistanceObservation> distanceObservation;
     for(unsigned attempt=1u;attempt<=repeats;++attempt){
         const auto start=std::chrono::steady_clock::now();
         PortableRetailCollisionStartupResult result;std::vector<PortableStartupWeaponFireObservation> fireRows;
@@ -615,6 +625,26 @@ int Run(const fs::path& root,const std::optional<std::string>& expected,unsigned
         ObserveTrainingWeapon(world,weapon);
         ObserveTrainingWeaponFire(world,fireRows,weapon,fire);
         ObserveTrainingStasis(world,observeTrainingStasis);
+        if(observePlayerDistance) {
+            Require(world.playerDistance&&world.playerDistance->completed,
+                "Requested real player-distance pass did not complete before original Possess");
+            const auto& pass=*world.playerDistance;
+            Require(!pass.networkSkipped&&!pass.noActor&&!pass.notPlayerPawn&&!pass.noPlayer&&
+                pass.playerPath=="00_Training.JCDentonMale0"&&pass.writes>100u&&
+                pass.visits==pass.writes+pass.nullSlots&&pass.samples.size()==2u,
+                "Original distance prepass did not use actual paired JC/live dynamic slots");
+            std::cout<<"PLAYER DISTANCE player="<<std::quoted(pass.playerPath)<<" firstDynamic="<<pass.firstDynamic
+                <<" captured=("<<pass.capturedLocation[0u]<<','<<pass.capturedLocation[1u]<<','<<pass.capturedLocation[2u]
+                <<") visits="<<pass.visits<<" nulls="<<pass.nullSlots<<" writes="<<pass.writes<<" steps="<<pass.steps<<'\n';
+            for(const auto& sample:pass.samples) {
+                Require(std::isfinite(sample.before)&&std::isfinite(sample.after)&&sample.after>=0.0f&&sample.before!=sample.after,
+                    "Actual Training crate retained stale editor-distance data");
+                std::cout<<"PLAYER DISTANCE SAMPLE actor="<<std::quoted(sample.actorPath)<<" before="<<sample.before
+                    <<" after="<<sample.after<<"; explicit same-root diagnostic, NOT automatic Level.Tick or live gravity\n";
+            }
+            if(distanceObservation)Require(*distanceObservation==pass,"Repeated genuine distance prepass changed native results");
+            else distanceObservation=pass;
+        }else Require(!world.playerDistance,"Unrequested player-distance phase was executed");
         for(const auto& dump:world.dumpLocations) {
             Require(dump.classPath=="DeusEx.DumpLocation" && dump.outerPath=="00_Training" && dump.objectIndex &&
                 dump.flags==0u && dump.fileIndex==-1 && dump.locationIndex==-1 && dump.locationCount==0 &&
@@ -671,7 +701,13 @@ int Run(const fs::path& root,const std::optional<std::string>& expected,unsigned
     for(const auto& source:sources)source.Unchanged();
     std::cout<<"ROLLBACK VERIFIED full save/state/revision/hash/RNG/client/lookup/Actor/GC; "<<sources.size()
         <<" owned sources unchanged. No other map loaded; no renderer, startup bypass or gameplay publication.\n";
-    lifetime->Revoke();ClearPortableRuntimeClient();
+    lifetime->Revoke();
+    const auto revokedDistance=AdvancePortableLevelPlayerDistance();
+    Require(!revokedDistance.execution.passed()&&!revokedDistance.pass.completed&&revokedDistance.execution.writes==0u,
+        "Revoked client was silently treated as a valid unpossessed viewport");
+    ClearPortableRuntimeClient();
+    Require(ReadPortableRuntimeDeclaredScriptProperty(engine.enginePath,"Engine.Engine.Client").text.empty(),
+        "Client teardown retained an Engine.Client GC edge");
     if(expected){std::cout<<"EXPECTED-BOUNDARY DIAGNOSTIC ONLY: exact error matched; NOT successful or playable startup.\n";return 0;}
     if(completed){std::cout<<"COMPLETED ROLLBACK-ONLY STARTUP DIAGNOSTIC: NOT published world/gameplay/headset acceptance.\n";return 0;}
     std::cout<<"OBSERVED UNSUPPORTED/REFUSED STARTUP BOUNDARY: rollback/source checks passed, startup did NOT complete.\n";return 2;
@@ -682,7 +718,7 @@ int main(int argc,char** argv) {
     std::cout.setf(std::ios::unitbuf);
     try {
         fs::path root;std::optional<std::string> expected;unsigned repeats=1u;
-        bool requireSpawnEncroachment{},damageTrainingCrates{},collectTrainingLoot{},collectTrainingLootViaPlayer{},sweepTrainingCrates{},fallTrainingCrates{},fallAfterLowerBreak{},fallTrainingLoot{},fallTrainingFragments{},performTrainingFragments{},performTrainingCohort{},observeTrainingStasis{};
+        bool requireSpawnEncroachment{},damageTrainingCrates{},collectTrainingLoot{},collectTrainingLootViaPlayer{},sweepTrainingCrates{},fallTrainingCrates{},fallAfterLowerBreak{},fallTrainingLoot{},fallTrainingFragments{},performTrainingFragments{},performTrainingCohort{},observeTrainingStasis{},observePlayerDistance{};
         std::optional<std::size_t> damageWriteLimit;
         std::optional<PortableStartupWeaponCommand> weapon;
         std::optional<PortableStartupWeaponFireCommand> fire;
@@ -696,6 +732,7 @@ int main(int argc,char** argv) {
             else if(option=="--expected-error"&&i+1<argc){expected=argv[++i];Require(!expected->empty()&&expected->size()<=8192u,"Expected error must be nonempty and bounded");}
             else if(option=="--native-work"&&i+1<argc)nativeWork=NativeWorkLimit(argv[++i]);
             else if(option=="--observe-training-stasis")observeTrainingStasis=true;
+            else if(option=="--observe-player-distance")observePlayerDistance=true;
             else if(option=="--fire-location") {
                 Require(!fireLocation&&i+3<argc,"--fire-location requires exactly one X Y Z packet");
                 std::array<float,3u> value{};for(auto& component:value)component=FireLocationComponent(argv[++i]);
@@ -760,7 +797,7 @@ int main(int argc,char** argv) {
         if(root.empty()){std::cout<<"SKIP owned first Training startup observation: use --owned-source-root or DEUSEX_GAME_ROOT.\n";return 77;}
         ShutdownPortableRuntime();GC::Collect();const auto before=GC::GetStats();
         const auto result=Run(fs::canonical(root),expected,repeats,nativeWork,requireSpawnEncroachment,damageTrainingCrates,
-            collectTrainingLoot,collectTrainingLootViaPlayer,sweepTrainingCrates,fallTrainingCrates,fallAfterLowerBreak,fallTrainingLoot,fallTrainingFragments,performTrainingFragments,performTrainingCohort,damageWriteLimit,weapon,fire,observeTrainingStasis);
+            collectTrainingLoot,collectTrainingLootViaPlayer,sweepTrainingCrates,fallTrainingCrates,fallAfterLowerBreak,fallTrainingLoot,fallTrainingFragments,performTrainingFragments,performTrainingCohort,damageWriteLimit,weapon,fire,observeTrainingStasis,observePlayerDistance);
         ShutdownPortableRuntime();GC::Collect();const auto after=GC::GetStats();
         Require(after.numObjects==before.numObjects&&after.memoryUsage==before.memoryUsage,"Startup observation retained native UObjects after shutdown");
         return result;

@@ -506,6 +506,15 @@ PortableEngineCollisionSnapshot PreparePortableRuntimeEngineCollision(const std:
     // Actual Primitive constructor writes min/max/Valid/sphere zero.
     cylinder->nativePrimitiveInstance->bounds.fill(0.0f);cylinder->nativePrimitiveInstance->boundsValid=false;
     engine.values.cylinder=cylinder;
+    // Engine may be prepared before OR after the embedding's native client.
+    // Join its actual UObject edge, never a registry descriptor or saved patch.
+    if(persistentPlayerSession&&persistentPlayerSession->get()&&persistentPlayerSession->get()->client) {
+        auto* client=persistentPlayerSession->get()->client;
+        if(!persistentNativeClient.HasClient()||client->nativeClientIdentity!=persistentNativeClient.ClientIdentity()||
+            host.Object(client->reflection.objectPath)!=client)
+            throw std::runtime_error("Native Engine construction encountered a revoked or stale client session");
+        engine.values.client=client;
+    }
     RuntimeObject* loadedLevel{};
     if(!persistentWorldActors.empty() && persistentWorldActors.front()) {
         loadedLevel=persistentWorldActors.front()->nativeXLevel;
