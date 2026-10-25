@@ -8,6 +8,16 @@ compiler input/build was changed or commercial DLL/EXE executed or loaded.
 
 ## Current production disconnect
 
+Latest aimed diagnostic,2026-10-25: original SetLocation/ClientSetRotation move
+and aim the genuine equipped JC beside the lower Training crate. Actual trace
+hits it and original damage changes HP10->4. The notify then refuses missing
+VectorToRotator0x50 in SpawnEffects131; no complete damaging cycle, second
+swing, fatal break or births are claimed. Hit/away/blocked-pose and pre/post-
+damage-cut repeat2 controls pass complete undo/all41 sources. The production
+disconnect below remains; implement this reached impact conversion next, not
+unrelated UI or a direct-health shortcut. See TRAINING-WEAPON-HIT-PROBE.md and
+ORIGINAL-VECTOR-TO-ROTATOR.md for exact observed boundaries and original math.
+
 Latest2026-10-25 LOS checkpoint: both real authored weapons now complete the
 original notify/NormalFire/Idle cycle in the rollback-only genuine Login root.
 This does not close the production disconnect below. The real starting JC is

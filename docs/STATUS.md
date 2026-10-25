@@ -1,5 +1,24 @@
 # Port status
 
+## First original weapon-to-crate hit (2026-10-25)
+
+The rollback-only Fire diagnostic now accepts explicit pose through original
+SetLocation/ClientSetRotation and records actual Trace277 replies, crate HP and
+real births. East-side input(1100,-275,-65),view(-8192,32768,0) is accepted;
+both real rays hit lower CrateBreakableMedGeneral1, and original damage changes
+HP10->4. No direct damage command or hit target is supplied. The notify then
+refuses missing VectorToRotator0x50 in SpawnEffects131 (206966 instructions/
+15057 writes), so no returned notify, second swing, fatal break or loot birth
+is claimed. Real input/collision authority and complete undo/all41 sources
+are retained. See TRAINING-WEAPON-HIT-PROBE.md and ORIGINAL-VECTOR-TO-ROTATOR.md.
+This actually reached impact conversion is next, not unrelated HUD completion.
+Shared190 executed/226 registered,36 owned skips,0 failures in55.89s; host,
+Android native link and final strict ARM64 sources pass. Input1692 checks/32
+refusals and eight invalid CLI packets pass. Default crowbar repeat2 and actual
+Trace43 calls/37063 checks/23 refusals preserve their original boundaries.
+Live controller-to-crate damage, automatic physics, committed loot/save/render/
+audio, startup publication and on-device acceptance remain unfinished. No APK.
+
 ## Original Training attack visibility and cycle (2026-10-25)
 
 Internal Pawn LOS reached by PickTarget531 now uses authentic live Pawn fields,

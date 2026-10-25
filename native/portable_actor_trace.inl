@@ -61,7 +61,8 @@
         if(slot==5u)return Value::Vector({});
         throw std::runtime_error("Trace277 has no initialized temporary at that slot");
     }
-    Evaluation ActorTraceNative(const std::string& receiver,const std::vector<Evaluation>& arguments,const Function* declaration) {
+    Evaluation ActorTraceNative(const std::string& receiver,const std::vector<Evaluation>& arguments,const Function* declaration,
+        QuestVr::Vm::Execution& execution) {
         static_cast<void>(ActorTraceDeclaration(declaration));auto* source=ActorTraceSource(receiver);
         if(arguments.size()<3u || arguments.size()>6u || arguments[2u].reference ||
             arguments[2u].disposition!=QuestVr::Vm::ResultDisposition::Written || arguments[2u].value.kind!=Kind::Vector)
@@ -91,14 +92,23 @@
         auto* actor=hit.actor?ZoneActor(hit.actor,level):nullptr;
         auto result=Value::Text(Kind::Object,actor?actor->reflection.objectPath:std::string{});
         ValidateObjectValue(result,"Engine.Actor",false); // Actor instance, not a UClass value
+        const auto observation=RecordStartupWeaponFireTrace(source,actor,vector(optional[0u]),vector(end),
+            vector(optional[2u]),optional[1u].boolean,hit,execution.WriteCount());
         const std::array<PortableModelVec3,2u> outputs{hit.location,hit.normal};
-        for(std::size_t slot=0u;slot<outputs.size();++slot) {
+        try { for(std::size_t slot=0u;slot<outputs.size();++slot) {
             const auto& argument=arguments[slot];if(!argument.reference)continue;
             if(argument.disposition!=QuestVr::Vm::ResultDisposition::Written ||
                 argument.reference->resultLayout!=QuestVr::Vm::ResultLayout::CoreVector12 || !argument.reference->write)
                 throw std::runtime_error("Trace277 output lacks its typed writable destination");
             const auto& v=outputs[slot];
             argument.reference->write(Value::Vector({v.x,v.y,v.z})); // already guarded/journaled, Location then Normal
+        }} catch(...) {
+            if(observation)startupFireTraceRow_->traces.at(*observation).writesAfterOutputs=execution.WriteCount();
+            throw;
+        }
+        if(observation) {
+            auto& recorded=startupFireTraceRow_->traces.at(*observation);
+            recorded.writesAfterOutputs=execution.WriteCount();recorded.outputsComplete=true;
         }
         return {std::move(result),{}};
     }

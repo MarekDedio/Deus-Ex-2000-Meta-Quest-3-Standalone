@@ -1,5 +1,6 @@
 #include "portable_unreal_runtime.h"
 #include "portable_startup_weapon_fire_probe.h"
+#include "portable_startup_weapon_fire_input.h"
 #include "portable_object_lookup.h"
 #include "portable_engine_collision.h"
 #include "portable_retail_collision.h"
@@ -3639,7 +3640,7 @@ public:
     Evaluation NativeWithExecution(const std::uint16_t index, const std::string& receiver,
         const std::vector<Evaluation>& arguments, const Function* declaration, QuestVr::Vm::Execution& execution) override {
         if(index==229u) return CoreGetAxesNative(arguments,declaration);
-        if(index==277u) return ActorTraceNative(receiver,arguments,declaration);
+        if(index==277u) return ActorTraceNative(receiver,arguments,declaration,execution);
         if(index==531u) return PawnPickTargetNative(receiver,arguments,declaration,execution);
         if(index==261u) {
             if(!arguments.empty())throw std::runtime_error("Original FinishAnim takes no parameters or result");

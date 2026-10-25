@@ -14,6 +14,7 @@
 #include <array>
 #include <bit>
 #include <chrono>
+#include <charconv>
 #include <cmath>
 #include <cstdlib>
 #include <filesystem>
@@ -21,8 +22,10 @@
 #include <iomanip>
 #include <iostream>
 #include <limits>
+#include <locale>
 #include <memory>
 #include <optional>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -400,6 +403,25 @@ std::size_t DamageWriteLimit(std::string_view text) {
     }
     return value;
 }
+float FireLocationComponent(std::string_view text) {
+    Require(!text.empty()&&text.size()<=64u,"Fire location must be a bounded finite decimal Float");
+    float value{};std::istringstream input{std::string(text)};input.imbue(std::locale::classic());
+    input>>std::noskipws>>value;
+    Require(!input.fail()&&input.eof()&&std::isfinite(value),
+        "Fire location requires a complete finite decimal Float without whitespace/trailing bytes");
+    return value;
+}
+std::int32_t FireRotationComponent(std::string_view text) {
+    Require(!text.empty()&&text.size()<=12u,"Fire rotation must be a bounded signed32 decimal integer");
+    std::int32_t value{};const auto parsed=std::from_chars(text.data(),text.data()+text.size(),value,10);
+    Require(parsed.ec==std::errc{}&&parsed.ptr==text.data()+text.size(),
+        "Fire rotation requires a complete signed32 decimal integer without whitespace/trailing bytes");
+    return value;
+}
+std::uint32_t FireAttackCount(std::string_view text) {
+    Require(text.size()==1u&&text[0]>='1'&&text[0]<='4',"Fire attack count must be1..4");
+    return static_cast<std::uint32_t>(text[0]-'0');
+}
 int Run(const fs::path& root,const std::optional<std::string>& expected,unsigned repeats,std::size_t nativeWork,
     bool requireSpawnEncroachment,bool damageTrainingCrates,bool collectTrainingLoot,bool collectTrainingLootViaPlayer,bool sweepTrainingCrates,
     bool fallTrainingCrates,bool fallAfterLowerBreak,bool fallTrainingLoot,bool fallTrainingFragments,bool performTrainingFragments,bool performTrainingCohort,
@@ -634,12 +656,29 @@ int main(int argc,char** argv) {
         std::optional<std::size_t> damageWriteLimit;
         std::optional<PortableStartupWeaponCommand> weapon;
         std::optional<PortableStartupWeaponFireCommand> fire;
+        std::optional<std::array<float,3u>> fireLocation;
+        std::optional<std::array<std::int32_t,3u>> fireRotation;
+        std::optional<std::uint32_t> fireAttacks;
         std::size_t nativeWork=QuestVr::NativeWork::DefaultLimit;
         if(const auto* configured=std::getenv("DEUSEX_GAME_ROOT");configured&&*configured)root=configured;
         for(int i=1;i<argc;++i){const std::string_view option=argv[i];
             if((option=="--owned-source-root"||option=="--game-root")&&i+1<argc)root=argv[++i];
             else if(option=="--expected-error"&&i+1<argc){expected=argv[++i];Require(!expected->empty()&&expected->size()<=8192u,"Expected error must be nonempty and bounded");}
             else if(option=="--native-work"&&i+1<argc)nativeWork=NativeWorkLimit(argv[++i]);
+            else if(option=="--fire-location") {
+                Require(!fireLocation&&i+3<argc,"--fire-location requires exactly one X Y Z packet");
+                std::array<float,3u> value{};for(auto& component:value)component=FireLocationComponent(argv[++i]);
+                fireLocation=value;
+            }
+            else if(option=="--fire-rotation") {
+                Require(!fireRotation&&i+3<argc,"--fire-rotation requires exactly one Pitch Yaw Roll packet");
+                std::array<std::int32_t,3u> value{};for(auto& component:value)component=FireRotationComponent(argv[++i]);
+                fireRotation=value;
+            }
+            else if(option=="--fire-attacks") {
+                Require(!fireAttacks&&i+1<argc,"--fire-attacks requires exactly one count1..4");
+                fireAttacks=FireAttackCount(argv[++i]);
+            }
             else if((option=="--exercise-training-weapon"||option=="--fire-training-weapon")&&i+1<argc) {
                 Require(!weapon,"Only one authored Training weapon may be exercised per diagnostic");
                 weapon=PortableStartupWeaponCommand{argv[++i]};
@@ -665,7 +704,13 @@ int main(int argc,char** argv) {
             else if(option=="--damage-write-limit"&&i+1<argc)damageWriteLimit=DamageWriteLimit(argv[++i]);
             else if(option=="--repeat"&&i+1<argc){const std::string_view number=argv[++i];
                 Require(number.size()==1u&&number[0]>='1'&&number[0]<='8',"Repeat count must be1..8");repeats=static_cast<unsigned>(number[0]-'0');}
-            else throw std::runtime_error("Usage: portable_training_startup_probe --owned-source-root OWNED_GAME_ROOT [--expected-error EXACT_TEXT] [--repeat 1..8] [--native-work 0..16777216] [--require-spawn-encroachment] [--exercise-training-weapon ACTOR_PATH | --fire-training-weapon ACTOR_PATH | --damage-training-crates | --collect-training-loot | --collect-training-loot-via-player] [--sweep-training-crates | --fall-training-crates | --fall-after-lower-break | --fall-training-loot | --fall-training-fragments | --perform-training-fragments | --perform-training-cohort] [--damage-write-limit 0..1048576]");}
+            else throw std::runtime_error("Usage: portable_training_startup_probe --owned-source-root OWNED_GAME_ROOT [--expected-error EXACT_TEXT] [--repeat 1..8] [--native-work 0..16777216] [--require-spawn-encroachment] [--exercise-training-weapon ACTOR_PATH | --fire-training-weapon ACTOR_PATH | --damage-training-crates | --collect-training-loot | --collect-training-loot-via-player] [--fire-location X Y Z --fire-rotation Pitch Yaw Roll] [--fire-attacks 1..4] [--sweep-training-crates | --fall-training-crates | --fall-after-lower-break | --fall-training-loot | --fall-training-fragments | --perform-training-fragments | --perform-training-cohort] [--damage-write-limit 0..1048576]");}
+        Require(fireLocation.has_value()==fireRotation.has_value(),"Diagnostic Fire pose requires both --fire-location and --fire-rotation");
+        Require(fire||(!fireLocation&&!fireRotation&&!fireAttacks),"Fire pose/attack switches require --fire-training-weapon");
+        if(fire) {
+            if(fireAttacks)fire->attacks=*fireAttacks;
+            if(fireLocation)fire->pose=PortableStartupWeaponFirePose{*fireLocation,*fireRotation};
+        }
         Require(!weapon||(!damageTrainingCrates&&!collectTrainingLoot&&!collectTrainingLootViaPlayer&&!sweepTrainingCrates&&
             !fallTrainingCrates&&!fallAfterLowerBreak&&!fallTrainingLoot&&!fallTrainingFragments&&!performTrainingFragments&&!performTrainingCohort),
             "Weapon pickup/equip is isolated from direct-damage/loot/physics diagnostics");

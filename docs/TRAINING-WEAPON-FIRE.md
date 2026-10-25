@@ -4,6 +4,15 @@ Scope: first `00_Training.dx`, authored `WeaponCrowbar1` and
 `WeaponCombatKnife0`. This diagnostic is not a committed player, live Quest
 trigger, successful hit or playable crate sequence.
 
+Latest2026-10-25: optional genuine movement/view inputs and repeated Fire
+groups now record actual traces, crate HP and real births. An accepted east-
+side pose hits lower Training crate and applies original10->4 damage; then
+the actual impact effect refuses missing VectorToRotator0x50. Complete damaging
+attack/fatal break remain unproven. Hit/away/blocked-pose and pre/post-damage
+write-cut repeats retain full rollback/all41 sources. See
+TRAINING-WEAPON-HIT-PROBE.md; this supersedes the no-hit diagnostic boundary
+without claiming live controller input, published startup or an APK.
+
 `--fire-training-weapon ACTOR_PATH` extends the proven pickup/equip diagnostic
 with one selected original `DeusExPlayer.Fire(0)` and bounded ordinary main
 animation followed by original state continuation. All calls share one Host,

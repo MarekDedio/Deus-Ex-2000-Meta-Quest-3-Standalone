@@ -1,5 +1,14 @@
 # Immediate milestone: complete the first Training map
 
+Latest direct melee checkpoint,2026-10-25: a genuinely moved/aimed original JC
+now hits the actual lower Training crate with its equipped crowbar; real trace
+and original HP10->4 are observed. The impact effect then reaches missing
+VectorToRotator0x50 in SpawnEffects131; complete failure undo/all41 sources
+pass. No second swing/fatal crate/loot birth is invented. Implement this reached
+conversion next (actual65535 Double scale, not pinned Float65536 conversion),
+then repeat the original weapon-to-crate sequence. See TRAINING-WEAPON-HIT-PROBE.md
+and ORIGINAL-VECTOR-TO-ROTATOR.md. Other maps remain deferred; no new APK.
+
 Latest first-map attack checkpoint,2026-10-25: authentic internal Pawn LOS now
 lets both authored weapons complete one original attack cycle (22 rows, one
 returned notify, ready Idle) in the same rollback-only pickup/equip/Fire root.
