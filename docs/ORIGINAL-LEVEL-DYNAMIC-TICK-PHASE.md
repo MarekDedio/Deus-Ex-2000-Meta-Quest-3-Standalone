@@ -38,7 +38,7 @@ public per-actor APIs, which would create independent roots/publications.
 
 The selected native Tick implementation is authenticated using the nearest
 actual RF_Native Class boundary and the audited native vtable/import thunks.
-Only Engine.Actor/Decoration/Inventory/Projectile and DeusEx.DeusExDecoration
+Only Engine.Actor/Decoration/Inventory/Projectile/Mover and DeusEx.DeusExDecoration
 are currently supported. An unsupported native class/Pawn is a reached whole
 root failure, not an actor skipped from the scene.
 
@@ -124,7 +124,7 @@ changes and9 births, with full enclosing rollback at the unchanged bound-player
 ConsoleCommand FExec refusal. All45 checked original script/config/map files
 retain exact SHA256/length/modification time. No APK was packaged.
 
-The real first-Training dynamic observation repeat2 reaches9 slots/8 admitted
+The initial first-Training dynamic observation repeat2 reaches9 slots/8 admitted
 actor calls and stops at the closed native-implementation allowlist's
 Engine.Mover boundary. Each attempt uses203983 instructions/15281 writes,
 retains parity0 and verifies whole-root undo, including client/lookup/Actor/GC
@@ -149,3 +149,44 @@ service remains a failure and identifies the next real integration boundary.
 
 Only first Training gameplay is prioritized. No account UI, other-map gameplay
 integration or new APK is introduced by this backend phase.
+
+## Exact Mover admission follow-up (verified2026-10-25)
+
+The subsequent implementation admits the exact Engine.Mover native boundary
+using the source cells above. Independent review also confirms its inherited
+ProcessEvent+10=10302D74 and ProcessState+14=10301F00 match AActor. No broad
+Actor-derived allowlist or class-specific invented Tick body is introduced.
+AMover has a different destructor; this does not authorize high-count generic
+teardown. Reached Physics9 moving-brush services remain explicitly unsupported.
+
+A generated actual native-Mover class/control now joins the production loop
+with inactive Physics0 through literal tick-type1 and the ordinary suffix.
+This checks admission without calling it moving-door physics. The existing
+unrelated-native rejection remains. Runtime capture and restore now share an
+all-export active-context guard, independent of potentially absent slot0;
+this hardens the inactive-boundary contract without changing save bytes.
+
+Full desktop/Android native builds and strict ARM64 changed-test syntax checks
+pass. The generated driver retains510/17 initial controls and now passes616
+cumulative checks including exact native Mover admission through both literal1
+and ordinary Physics0 suffixes. Final shared CTest:242 registered,203 executed,
+39 explicit owned-data skips,zero failures,116.35s. Original crate415/5,
+deferred429/21 and animation588/24 pass separately. All jobs are terminal;
+all45 checked original script/config/map files retain exact bytes/size/mtime.
+
+The NEW actual Training repeat2 reaches9 slots/9 admitted actor calls, then
+refuses `Original Actor performPhysics lacks an active native provider`.
+Both attempts retain204021 instructions/15282 writes and full enclosing
+save/state/revision/hash/RNG/client/lookup/Actor/GC undo, including all41
+fixture sources. This advances beyond closed-Mover admission, not beyond the
+still-missing movement service. Physics9's entire original selected dispatch
+block is the next implementation audit, alongside capture of the exact live
+actor/mode/interpolation flag (the generic error alone does not prove them).
+Even an idle inner moving-brush return does not eliminate the
+outer OldLocation/displacement-derived Velocity stores or rotation/PendingTouch
+tail. Do not install an empty successful provider, skip movers or publish a
+partial world frame. No new APK or on-headset physics acceptance.
+
+See ORIGINAL-MOVING-BRUSH-PHYSICS-PREREQUISITES.md for exact local-only KeyNum
+clamping, inner gates, outer PC64/Float spill asymmetry and required active
+movement work. That audit adds no physics provider or successful frame.

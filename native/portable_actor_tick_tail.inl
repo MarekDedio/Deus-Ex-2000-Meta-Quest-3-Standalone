@@ -10,7 +10,7 @@
             const auto& path=cls->reflection.objectPath;
             // Owned native vtables/IAT, ORIGINAL-ACTOR-TICK-PHYSICS-PHASE.md.
             if(path=="DeusEx.DeusExDecoration"||path=="Engine.Projectile"||path=="Engine.Inventory"||
-                path=="Engine.Actor"||path=="Engine.Decoration")return;
+                path=="Engine.Actor"||path=="Engine.Decoration"||path=="Engine.Mover")return;
             throw std::runtime_error("Original Actor Tick reached an unimplemented native virtual override: "+path);
         }
         throw std::runtime_error("Original Actor Tick has no authenticated native implementation");

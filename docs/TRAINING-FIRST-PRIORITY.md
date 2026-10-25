@@ -1,5 +1,19 @@
 # Immediate milestone: complete the first Training map
 
+Latest2026-10-25: exact Engine.Mover Tick/physics dispatch is admitted after
+independent native-table proof; no arbitrary Actor-derived allowance or
+destructor implication. Generated driver616/17, original crate415/5,
+deferred429/21 and animation588/24 pass. Full desktop/strict ARM64/Android
+native and final shared suite203 executed/242 registered/39 explicit skips/
+zero failures116.35s pass; all45 checked originals unchanged; all jobs terminal.
+Actual Training repeat2 now enters the9th Actor call then reaches absent
+native performPhysics provider, with exact204021 instructions/15282 writes
+and whole undo. Next is capturing exact live actor/mode and joining the real
+physics block; MovingBrush Physics9 outer/inner behavior is audited separately,
+not a successful empty provider, skipped door, other map or account screen.
+Complete first-map world Tick/live crates/usable loot/gravity remain unfinished.
+No APK. See ORIGINAL-LEVEL-DYNAMIC-TICK-PHASE.md.
+
 Latest2026-10-25: production normal Level dynamic-actor phase now joins actual
 stasis, owner/parity, MAIN/BLEND and non-Pawn tail in one root, with live slots,
 GC-rooted pending batches, same-frame Spawn insertion, context undo/parity save

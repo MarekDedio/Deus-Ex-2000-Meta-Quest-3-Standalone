@@ -1,5 +1,30 @@
 # Port status
 
+## Exact native Mover Tick admission (2026-10-25)
+
+Engine.Mover now joins the normal actor phase through its independently
+authenticated AActor Tick/performPhysics and event/state entry points, not
+through a guessed mover-specific Tick or broader Actor-derived allowlist.
+Its different destructor is NOT admitted by this proof. Capture/restore now
+share an all-export active-frame guard rather than relying on capture's slot0.
+
+Generated driver616 cumulative checks/17 refusals passes, including native
+Mover Physics0 through literal1/ordinary suffixes and retained unknown-native
+refusal. Full desktop/strict ARM64/Android native and final shared CTest203
+executed/242 registered/39 explicit owned-data skips/zero failures116.35s pass.
+Original crate415/5, deferred429/21 and animation588/24 pass; all45 checked
+original files unchanged. All processes terminal; no new APK/headset result.
+
+New actual first-Training actor-phase repeat2 advances from8 to9 admitted
+calls, then reaches absent native performPhysics provider; exact204021/15282
+and full enclosing undo repeat. Next is capturing the exact reached actor/mode
+and joining the genuine dispatch service. Physics9 is audited in
+ORIGINAL-MOVING-BRUSH-PHYSICS-PREREQUISITES.md (including OldLocation/Velocity
+outer stores), not implemented or proved live by the generic error. No empty
+provider or a filtered mover. Complete world Tick, live crate attacks/usable
+loot/gravity remain unfinished; only first Training gameplay is prioritized.
+See ORIGINAL-LEVEL-DYNAMIC-TICK-PHASE.md.
+
 ## Joined normal Level dynamic-actor phase (2026-10-25)
 
 The production Level actor phase now joins real stasis, owner deferral/parity,

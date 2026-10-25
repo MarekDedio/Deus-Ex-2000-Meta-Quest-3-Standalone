@@ -256,7 +256,7 @@ void Property(QuestVr::ScriptSavedState& state,const std::string& actor,const st
     if(found==object.properties.end())object.properties.push_back({key,name,index,value});else found->value=value;
 }
 struct Tables {std::vector<PortablePackageTables> packages;PortablePackageTables map;std::map<std::string,std::uint32_t> actorExports;};
-Tables Build(Fixture& fixture) {
+Tables Build(Fixture& fixture,bool moverControl=false) {
     const std::string ini="[Engine.Engine]\nGameEngine=Engine.GameEngine\n";
     const auto iniPath=fixture.directory/"System"/"DeusEx.ini";
     WriteBytes(iniPath,Bytes(ini.begin(),ini.end()));fixture.sources.emplace(iniPath,Bytes(ini.begin(),ini.end()));
@@ -283,6 +283,11 @@ Tables Build(Fixture& fixture) {
     const auto enginePackage=engine.ImportPackage("Engine");
     engine.Property("Cylinder","ObjectProperty",engineClass,ec,engine.Import("Primitive",enginePackage));
     const auto info=engine.Export("LevelInfo",0,zone),brush=engine.Export("Brush",0,actor);
+    const auto mover=moverControl?engine.Export("Mover",0,brush):0;
+    if(moverControl) {
+        engine.exports.at(static_cast<std::size_t>(mover-1)).ObjFlags=static_cast<ObjectFlags>(0x04000000u);
+        engine.ClassBody(mover);
+    }
     const auto level=engine.Export("Level",0,eo),model=engine.Export("Model",0,eo);
     engine.exports.at(static_cast<std::size_t>(actor-1)).ObjFlags=static_cast<ObjectFlags>(0x04000000u);
     const auto enumeration=[&](const std::string& name,std::vector<std::string> values) {
@@ -355,7 +360,7 @@ Tables Build(Fixture& fixture) {
     std::map<std::string,std::int32_t> actors;
     actors["Level0"]=map.Export("Level0",map.Import("LevelInfo",me));
     actors["Brush0"]=map.Export("Brush0",map.Import("Brush",me));
-    actors["Bad0"]=map.Export("Bad0",map.Import("BadNative",mt));
+    actors["Bad0"]=map.Export("Bad0",moverControl?map.Import("Mover",me):map.Import("BadNative",mt));
     for(const auto* name:{"Static0","A","B","C"})actors[name]=map.Export(name,map.Import("TestActor",mt));
     for(const auto& [name,ref]:actors) {
         Bytes properties;map.ObjectTag(properties,"Level",actors.at("Level0"));map.ObjectTag(properties,"XLevel",world);
@@ -536,8 +541,31 @@ void Synthetic() {
           " dynamic-only compaction and shared-root late/write/work rollback. NOT active Spawn/GC callbacks,"
           " active animation/physics, full paused/network/Pawn Level.Tick, original Training gameplay or headset acceptance.\n";
 }
+void MoverControl() {
+    Fixture fixture;const auto tables=Build(fixture,true);
+    Require(InitializePortableRuntime(tables.packages).passed,"Mover control package initialization failed");
+    Require(PreparePortableRuntimeNativeEngineClasses().prepared&&PreparePortableRuntimeNativeMetadataClasses().prepared&&
+        PreparePortableRuntimeNativePackages().prepared,"Mover control native metadata/Package preparation failed");
+    Require(LoadPortableRuntimeMap(tables.map).passed&&PreparePortableRuntimeObjectLookup().prepared,
+        "Mover control lacks native map/lookup ownership");
+    const auto legacy=fixture.Save("MoverLegacy");auto state=Seed(tables);
+    auto& slots=state.nativeActorOrder->slots;const auto mover=slots.at(2u);
+    slots.erase(slots.begin()+2);slots.push_back(mover);state.nativeActorOrder->firstDynamic=3u;
+    state.objects.push_back({Path("Bad0"),"Engine.Mover",{
+        {"Engine.Actor.LastRenderTime","LastRenderTime",0u,Value::Float(0.0f)}},{},{},{}});
+    fixture.Restore(Envelope(legacy,state));
+    auto tick=AdvancePortableLevelDynamicActors(0.01f,1);RequirePass(tick);
+    Require(tick.actorCalls==4u&&tick.slotsVisited==4u&&tick.parityAfter==1&&Count("Static0")==0,
+        "Audited native Mover was skipped or changed the reserved/static prefix");
+    tick=AdvancePortableLevelDynamicActors(0.01f,0);RequirePass(tick);
+    Require(tick.actorCalls==4u&&tick.parityBefore==1&&tick.parityAfter==0&&Count("A")==1&&Count("B")==1&&Count("C")==1,
+        "Audited native Mover did not join the ordinary same-root Actor suffix");
+    fixture.Unchanged();
+    std::cout<<"PASS exact Engine.Mover native Tick/physics admission: "<<checks<<" cumulative checks; "
+        "generated inactive Physics0 only, NOT moving-brush interpolation or original-map acceptance.\n";
+}
 } // namespace
 int main() {
-    try {Synthetic();return 0;}catch(const std::exception& error){std::cerr<<"FAIL "<<error.what()<<'\n';ShutdownPortableRuntime();return 1;}
+    try {Synthetic();MoverControl();return 0;}catch(const std::exception& error){std::cerr<<"FAIL "<<error.what()<<'\n';ShutdownPortableRuntime();return 1;}
 }
 

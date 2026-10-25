@@ -54,12 +54,21 @@ Static reads of exported vtables give:
 | ADecoration | 104282F0 | 10303DAA | 10303242 |
 | AInventory | 104286F8 | 10303DAA | 10303242 |
 | AProjectile | 10428850 | 10303DAA | 10303242 |
+| AMover | 10426E08 | 10303DAA | 10303242 |
 | ADeusExDecoration | 10027744 | 1001AF50 | 1001AFAA |
 
 This authenticates these native base implementations, not arbitrary subclasses
 or a guessed complete native virtual table for every generated actor. The
 bounded real cohort ancestry is authenticated below. APawn paths remain
 different.
+
+Mover admission follow-up2026-10-25: independently checked Engine export
+name-table/EAT index658, RVA126E08, gives actual AMover vtable10426E08.
+Tick+64 at10426E6C and performPhysics+8C at10426E94 point to the same AActor
+thunks/bodies. ProcessEvent+10=10302D74 and ProcessState+14=10301F00 likewise
+match AActor. This authorizes that exact native Tick/physics dispatch boundary,
+not an arbitrary Actor-derived class or moving-brush Physics9 implementation.
+AMover's destructor differs; this is NOT a scalar-teardown authorization.
 
 ### Actual first-Training cohort native dispatch
 

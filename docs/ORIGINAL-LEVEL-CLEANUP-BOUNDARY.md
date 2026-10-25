@@ -104,10 +104,13 @@ cleanup method's nonempty/128-node paths. Final full desktop/shared regression
 passes203 executed/242 registered/39 explicit owned-data skips/zero failures
 124.33s. All45 checked originals are unchanged; all jobs are terminal.
 
-The actual first-Training frame observation currently stops before cleanup at
-the closed Engine.Mover native-dispatch allowlist, with whole-root undo. See
-ORIGINAL-LEVEL-DYNAMIC-TICK-PHASE.md, including the subsequent static evidence
-that Mover's Tick/physics entries use the same AActor thunks. Nonempty queue,
+The initial first-Training frame observation stopped before cleanup at the
+closed Engine.Mover native-dispatch allowlist. Exact admission now passes616
+cumulative generated controls; the new actual repeat2 enters that mover and
+stops at the absent native performPhysics provider, still before cleanup, with
+whole-root undo. Final follow-up desktop/ARM64/Android native and shared gate
+203/242/39 skips/zero failures116.35s pass. See
+ORIGINAL-LEVEL-DYNAMIC-TICK-PHASE.md for exact old/new boundaries. Nonempty queue,
 threshold/scalar teardown and live frame integration still need verification/
 completion. No standalone helper result is claimed as a complete Level frame,
 live crate/loot gravity or a playable APK.

@@ -2155,6 +2155,11 @@ bool HasNativeLinkerChanges() {
         std::any_of(persistentRuntime->get()->exports.begin(),persistentRuntime->get()->exports.end(),
             [](const auto* object){return object&&object->nativeLinkerChanged;});
 }
+bool HasActiveNativeLevelTick() {
+    return persistentRuntime&&persistentRuntime->get()&&
+        std::any_of(persistentRuntime->get()->exports.begin(),persistentRuntime->get()->exports.end(),
+            [](const auto* object){return object&&object->nativeLevelTickContext&&object->nativeLevelTickContext->inTick;});
+}
 bool HasNativeDeferredOwnership() {
     return persistentRuntime&&persistentRuntime->get()&&
         std::any_of(persistentRuntime->get()->exports.begin(),persistentRuntime->get()->exports.end(),
@@ -10887,6 +10892,8 @@ std::vector<QuestVr::ScriptSavedProperty> ClockProperties(
 }
 
 QuestVr::ScriptSavedState CollectScriptSavedState() {
+    if(HasActiveNativeLevelTick())
+        throw std::runtime_error("Cannot capture native Level state during an active Tick");
     if(persistentDumpSession.saved || !persistentDumpObjects.empty())
         throw std::runtime_error("Live DumpLocation/session checkpoint capture needs its native archive service");
     if(HasNativeDeferredOwnership())
@@ -11845,10 +11852,8 @@ void MeasureLegacySimBlendImports(const QuestVr::ScriptSavedState& saved,
 
 PreparedScriptState PrepareScriptSavedState(
     const QuestVr::ScriptSavedState& saved, const bool apply, const QuestVr::ScriptStateLimits& limits) {
-    if(apply&&persistentRuntime&&persistentRuntime->get())
-        for(const auto* object:persistentRuntime->get()->exports)
-            if(object&&object->nativeLevelTickContext&&object->nativeLevelTickContext->inTick)
-                throw std::runtime_error("Cannot restore native Level state during an active Tick");
+    if(apply&&HasActiveNativeLevelTick())
+        throw std::runtime_error("Cannot restore native Level state during an active Tick");
     if(apply&&HasNativeDeferredOwnership())
         throw std::runtime_error("Native deferred Actor checkpoint/rebind restoration is not implemented");
     if(apply&&HasNativeLinkerChanges())
@@ -16909,9 +16914,8 @@ bool SavePortableRuntimeState(const std::string& path) {
 static bool ReadPortableRuntimeState(const std::string& path, const bool apply, const std::string& expectedMapName) {
     if (!persistentRuntime || !persistentRuntime->get()) return false;
     try {
-        if(apply)for(const auto* object:persistentRuntime->get()->exports)
-            if(object&&object->nativeLevelTickContext&&object->nativeLevelTickContext->inTick)
-                throw std::runtime_error("Cannot restore native Level state during an active Tick");
+        if(apply&&HasActiveNativeLevelTick())
+            throw std::runtime_error("Cannot restore native Level state during an active Tick");
         if(persistentDumpSession.saved || !persistentDumpObjects.empty())
             throw std::runtime_error("Live DumpLocation/session checkpoint restore needs its native archive service");
         if(persistentRetailCollision)
