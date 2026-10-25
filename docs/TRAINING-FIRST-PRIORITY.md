@@ -1,5 +1,21 @@
 # Immediate milestone: complete the first Training map
 
+Latest2026-10-25: original InStasis query now binds native Level Double time,
+Actor Float time, stored Region/distance, current Model64 timestamps and actual
+Actor.Level.NetMode. Native/reflected/saved LastRenderTime ownership is joined
+with full undo and old-checkpoint reset. Fresh Model timestamp+0 initialization
+has independent original allocation/default-copy proof. Actual lower-crate
+distance6376.48926 is retained, not silently reset to zero by production.
+Helper29390/211; owned timestamp far/near/aged-zone/save fixture; animation
+588/24; crate415/5 and Engine15156/31 pass. Desktop/strict ARM64/Android native
+and final shared suite201 executed/240 registered/39 explicit skips/zero
+failures pass. Normal/four-stasis and aimed two-Fire repeat2 retain exact
+prior instruction/write counts and whole undo at the known FExec refusal;
+all45 checked originals are unchanged. No APK, account UI or other-map work.
+Live crate destruction/usable loot/automatic gravity remain unfinished:
+next is real render/distance timing and owner/parity/pending world scheduling,
+not a character-creation screen. See ORIGINAL-ACTOR-STASIS.md.
+
 Latest2026-10-25: genuine MAIN-to-four-BLEND continuation now shares the
 original remaining delta/native counter in one committing runtime root.
 Helper2658/60 refusals and actual dormant Training animation576/22 pass,

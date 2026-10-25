@@ -319,6 +319,18 @@ void Original(const fs::path& root) {
         const auto stats=GC::GetStats();Require(stats.numObjects==gc.numObjects&&stats.memoryUsage==gc.memoryUsage,
             "Animation phase retained native roots");
     };
+    const auto uninitializedStasis=ReadPortableActorStasis(actor);
+    Require(!uninitializedStasis.execution.passed()&&!uninitializedStasis.actor.completed&&
+        uninitializedStasis.execution.writes==0u&&
+        uninitializedStasis.execution.error=="Original InStasis native Actor.LastRenderTime is not initialized",
+        "Dormant InStasis substituted a reflected default for uninitialized native render time");
+    ++refusals;undo();
+    QuestVr::Vm::Limits stasisCut;stasisCut.nativeWork=0u;
+    const auto refusedStasis=ReadPortableActorStasis(actor,stasisCut);
+    Require(!refusedStasis.execution.passed()&&!refusedStasis.actor.completed&&
+        refusedStasis.execution.writes==0u&&refusedStasis.execution.nativeWork&&refusedStasis.execution.nativeWork->exhausted,
+        "Read-only InStasis bypassed the shared root native-work allowance");
+    ++refusals;undo();
     const auto full=ProbePortableActorMainAnimation(actor,delta);
     Require(full.execution.passed()&&!full.execution.committed&&full.completed,
         "Original main animation phase failed: "+full.execution.error);

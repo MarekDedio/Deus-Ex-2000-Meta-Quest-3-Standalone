@@ -1,5 +1,37 @@
 # Port status
 
+## First-Training native stasis and timestamp ownership (2026-10-25)
+
+Original AActor.InStasis now has a shared-root native binding: exact PC64
+Double-minus-Float ages, captured flags, Physics0/5/force gate, stored Region,
+current Model's64 timestamps, actual stored distance and named Actor.Level's
+NetMode. A fresh exact native Model's positive-zero timestamp baseline is
+independently proven through native registration/default-copy/allocation, not
+guessed from missing archive data. Original renderer timestamp publication is
+still not implemented; the new Model table is immutable baseline storage.
+
+Native startup/Spawn initialization, script stores, reflected reads and save
+records now share Actor.LastRenderTime. Exact declaring field/mirror bits,
+rollback, staged restore and legacy absence reset are enforced without a new
+wire codec or unrelated animation-clock refresh. Owned lower-crate distance
+is6376.48926 before the missing Level distance prepass: tests preserve that
+source input, then explicitly control zero only in a separate near fixture.
+
+Helper29390/211 refusals; owned timestamp far/near/aged-zone/save fixture;
+actual dormant animation588/24; actual crate415/5 and Engine collision/config
+15156/31 pass. Full desktop/final affected-test builds, strict ARM64 and
+Android native link pass. Final shared CTest201 executed/240 registered/39
+explicit owned-data skips/zero failures (34.04s). Normal stasis-observation
+and aimed two-Fire repeat2 retain original exact counts and whole undo at the
+known bound-player ConsoleCommand FExec refusal. All45 checked original
+script/config/map files are unchanged. All processes are terminal.
+
+This does NOT complete Actor/Level Tick, automatic gravity, live controller
+crate destruction or usable loot. Real distance prepass, renderer timing,
+owner/parity/pending scheduling, deferred cleanup and player/input/publication
+remain. No account UI, other-map integration or new APK. See
+ORIGINAL-ACTOR-STASIS.md and ORIGINAL-MODEL-ZONE-TIMESTAMP-INITIALIZATION.md.
+
 ## Original shared MAIN-to-BLEND update (2026-10-25)
 
 The original four-slot blend-animation continuation now consumes the actual

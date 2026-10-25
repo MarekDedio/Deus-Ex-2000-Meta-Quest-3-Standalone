@@ -14,6 +14,7 @@
 #include "quest_script_random.h"
 
 #include <algorithm>
+#include <bit>
 #include <chrono>
 #include <cmath>
 #include <cstring>
@@ -3203,10 +3204,203 @@ void VerifyOriginalWorldStartupProbe(const std::filesystem::path& legacy,
         << "; actual GameInfo.DefaultPlayerName, unbound Camera5 ConsoleCommand, FMax245, qualified Actor.Region/GRI Int Region and Clamp251 passed; next original Mover Move266 boundary; owned synthetic client/viewport, exact repeated failure, all state/GC/birth/revision bytes rolled back; NOT world/player completion\n";
 }
 
+void VerifyOriginalLastRenderCheckpoint(const std::filesystem::path& root,
+    const std::filesystem::path& legacy,const std::filesystem::path& directory) {
+    // Explicit saved-property fixtures on a genuine owned Actor. No startup,
+    // visible rendering, gravity, account UI or playable-world proof follows.
+    Require(PreparePortableRuntimeNativeEngineClasses().prepared&&PreparePortableRuntimeNativeMetadataClasses().prepared&&
+        PreparePortableRuntimeNativeConfigClasses().prepared&&PreparePortableRuntimeNativePackages().prepared&&
+        PreparePortableRuntimeObjectLookup().prepared&&
+        PreparePortableRuntimeEngineCollision((root/"System"/"DeusEx.ini").string()).prepared,
+        "LastRenderTime fixture cannot prepare actual native identity services");
+    Require(LoadPortableRuntimeState(legacy.string())&&!GetPortableRuntimeScriptStatePresent(),
+        "LastRenderTime fixture did not begin from untouched first Training");
+    const std::string actor="00_Training.CrateBreakableMedGeneral1";
+    const auto original=CheckpointBytes(legacy);
+    Require(Word(original,4u)==3u&&ReadPortableRuntimeLevelTime()==0.0,
+        "LastRenderTime fixture requires original dormant v3/native time zero");
+    const auto fixture=directory/"last-render-generated-v4.sav";
+    const auto first=directory/"last-render-first-v4.sav";
+    const auto inspect=directory/"last-render-inspect.sav";
+    const auto initial=ReadPortableActorStasis(actor);
+    Require(!initial.execution.passed()&&!initial.actor.completed&&
+        initial.execution.error.find("LastRenderTime")!=std::string::npos,
+        "Dormant first Training invented initialized native LastRenderTime");
+    QuestVr::ScriptSavedState baseline;baseline.mapName="00_Training";
+    QuestVr::ScriptSavedObject object;object.path=actor;object.classPath=Snapshot(actor).classPath;
+    object.properties.push_back({"Engine.Actor.LastRenderTime","LastRenderTime",0u,Value::Float(-1.0f)});
+    // The false flag is an explicit test control: an old actor age reads just
+    // the real flag storage and exits, so no region/zone/physics is fabricated.
+    object.properties.push_back({"Engine.Actor.bStasis","bStasis",0u,Value::Bool(false)});
+    baseline.objects.push_back(std::move(object));
+    const auto compose=[&](const QuestVr::ScriptSavedState& state) {
+        const auto blob=QuestVr::EncodeScriptSavedState(state);
+        Require(blob.at(6u)==1u,"LastRenderTime fixture unexpectedly required a new save codec");
+        auto bytes=original;PutWord(bytes,4u,4u);
+        const auto offset=bytes.size();bytes.resize(offset+4u);
+        PutWord(bytes,offset,static_cast<std::uint32_t>(blob.size()));
+        bytes.insert(bytes.end(),blob.begin(),blob.end());return bytes;
+    };
+    const auto unchanged=[&](const std::vector<std::uint8_t>& expected,const std::string& why) {
+        Require(SavePortableRuntimeState(inspect.string())&&CheckpointBytes(inspect)==expected,
+            why+" changed complete checkpoint state");
+    };
+    const auto check=[&](float value,std::size_t steps,const std::vector<std::uint8_t>& bytes,
+        const std::string& why) {
+        for(const auto* field:{"LastRenderTime","Engine.Actor.LastRenderTime"}) {
+            const auto read=std::string_view(field)=="LastRenderTime"?
+                ReadPortableActorScriptProperty(actor,field):ReadPortableActorDeclaredScriptProperty(actor,field);
+            Require(read.kind==Kind::Float&&std::bit_cast<std::uint32_t>(read.floating)==std::bit_cast<std::uint32_t>(value),
+                why+" changed native/reflected LastRenderTime bits");
+        }
+        const auto revision=GetPortableRuntimeWorldRevision();
+        const auto result=ReadPortableActorStasis(actor);
+        Require(result.execution.passed()&&result.execution.status==Status::Returned&&
+            result.execution.writes==0u&&result.actor.completed&&!result.actor.inStasis&&
+            result.actor.actorPath==actor&&result.actor.steps==steps&&result.actor.nativeTimeReads==1u&&
+            !result.actor.physicsRead&&!result.actor.zoneRead&&!result.actor.distanceRead&&!result.actor.netModeRead&&
+            GetPortableRuntimeWorldRevision()==revision&&ReadPortableRuntimeLevelTime()==0.0,
+            why+" did not consume the restored native timestamp through its exact lazy stasis path: "+result.execution.error);
+        unchanged(bytes,why+" readonly query");
+    };
+    const auto firstBytes=compose(baseline);
+    Require(QuestVr::WriteDurableSaveFile(first.string(),firstBytes)&&
+        ValidatePortableRuntimeState(first.string())&&LoadPortableRuntimeState(first.string()),
+        "Exact LastRenderTime Float fixture failed preflight/restore");
+    check(-1.0f,2u,firstBytes,"First timestamp");
+    auto second=baseline;second.objects[0u].properties[0u].value=Value::Float(-6.0f);
+    const auto secondBytes=compose(second);
+    Require(QuestVr::WriteDurableSaveFile(fixture.string(),secondBytes)&&LoadPortableRuntimeState(fixture.string()),
+        "Second timestamp did not overwrite the current native/reflected value");
+    check(-6.0f,3u,secondBytes,"Overwritten timestamp");
+    Require(ValidatePortableRuntimeState(first.string()),"First timestamp failed readonly preflight while second is live");
+    check(-6.0f,3u,secondBytes,"Readonly first-value preflight");
+    const auto reject=[&](const QuestVr::ScriptSavedState& graph,const std::string& why) {
+        const auto bytes=compose(graph);const auto revision=GetPortableRuntimeWorldRevision();
+        GC::Collect();const auto gc=GC::GetStats();
+        Require(QuestVr::WriteDurableSaveFile(fixture.string(),bytes)&&
+            !ValidatePortableRuntimeState(fixture.string())&&!LoadPortableRuntimeState(fixture.string())&&
+            GetPortableRuntimeWorldRevision()==revision,
+            why+" was accepted or published a partial native timestamp");
+        GC::Collect();const auto after=GC::GetStats();
+        Require(after.numObjects==gc.numObjects&&after.memoryUsage==gc.memoryUsage,
+            why+" leaked GC/native identity ownership");
+        check(-6.0f,3u,secondBytes,why+" atomic refusal");
+    };
+    auto invalid=baseline;invalid.objects[0u].properties[0u].value=Value::Integer(-1);
+    reject(invalid,"Wrong LastRenderTime value kind");
+    invalid=baseline;invalid.objects[0u].properties[0u].index=1u;
+    reject(invalid,"Out-of-range LastRenderTime array index");
+    invalid=baseline;invalid.objects[0u].properties[0u].name="TimerRate";
+    reject(invalid,"Wrong LastRenderTime declaring-name association");
+    auto noWork=QuestVr::Vm::Limits{};noWork.nativeWork=0u;
+    const auto bounded=ReadPortableActorStasis(actor,noWork);
+    Require(!bounded.execution.passed()&&!bounded.actor.completed&&!bounded.execution.error.empty(),
+        "Restored native timestamp query ignored its shared native-work limit");
+    check(-6.0f,3u,secondBytes,"Native-work refusal");
+    Require(LoadPortableRuntimeState(first.string()),"Could not reload the earlier native timestamp");
+    check(-1.0f,2u,firstBytes,"Reloaded first timestamp");
+    for(const float value:{-0.0f,0.0f,1.0f}) {
+        auto graph=baseline;graph.objects[0u].properties[0u].value=Value::Float(value);
+        const auto bytes=compose(graph);
+        Require(QuestVr::WriteDurableSaveFile(fixture.string(),bytes)&&LoadPortableRuntimeState(fixture.string()),
+            "Signed-zero/positive LastRenderTime fixture failed restore");
+        check(value,2u,bytes,"Signed-zero/positive timestamp");
+    }
+    // Separately admit the real native Model/Region/NetMode providers with
+    // explicit saved flags/Physics, not a claim that gameplay landed a crate.
+    auto zoneGraph=baseline;
+    zoneGraph.objects[0u].properties[0u].value=Value::Float(-6.0f);
+    zoneGraph.objects[0u].properties[1u].value=Value::Bool(true);
+    zoneGraph.objects[0u].properties.push_back({"Engine.Actor.bForceStasis","bForceStasis",0u,Value::Bool(false)});
+    zoneGraph.objects[0u].properties.push_back({"Engine.Actor.Physics","Physics",0u,Value::Byte(0u)});
+    const auto originalDistance=ReadPortableActorDeclaredScriptProperty(actor,"Engine.Actor.DistanceFromPlayer");
+    Require(originalDistance.kind==Kind::Float&&std::isfinite(originalDistance.floating)&&originalDistance.floating>1200.0f,
+        "Actual Training crate no longer has its independently observed serialized far DistanceFromPlayer");
+    std::cout<<"STASIS FIXTURE ORIGINAL DistanceFromPlayer="<<std::setprecision(9)<<originalDistance.floating
+        <<"; original serialized map value, NOT a completed player-distance prepass\n";
+    const auto farBytes=compose(zoneGraph);
+    Require(QuestVr::WriteDurableSaveFile(fixture.string(),farBytes)&&LoadPortableRuntimeState(fixture.string()),
+        "Explicit old-actor stasis fixture failed restore with actual authored distance");
+    const auto farRevision=GetPortableRuntimeWorldRevision();
+    const auto farZone=ReadPortableActorStasis(actor);
+    Require(farZone.execution.passed()&&farZone.execution.writes==0u&&farZone.actor.completed&&
+        farZone.actor.inStasis&&farZone.actor.physicsRead&&farZone.actor.zoneRead&&
+        farZone.actor.distanceRead&&farZone.actor.netModeRead&&farZone.actor.nativeTimeReads==2u&&
+        farZone.actor.steps==9u&&ReadPortableRuntimeLevelTime()==0.0&&GetPortableRuntimeWorldRevision()==farRevision,
+        "Native zero-zone timestamp/far authored distance did not reach actual Actor.Level.NetMode: "+farZone.execution.error);
+    unchanged(farBytes,"Actual authored-distance native-zone readonly query");
+    // The untouched map stores an editor-era distance above1200. Vary only
+    // this exact saved field to exercise the near-distance false branch;
+    // never clear it in production or pretend a player prepass has run.
+    zoneGraph.objects[0u].properties.push_back({"Engine.Actor.DistanceFromPlayer","DistanceFromPlayer",0u,Value::Float(0.0f)});
+    const auto zoneBytes=compose(zoneGraph);
+    Require(QuestVr::WriteDurableSaveFile(fixture.string(),zoneBytes)&&LoadPortableRuntimeState(fixture.string()),
+        "Explicit native-zone stasis fixture failed restore");
+    const auto level=ReadPortableActorDeclaredScriptProperty(actor,"Engine.Actor.Level");
+    Require(level.kind==Kind::Object&&level.text=="00_Training.LevelInfo0",
+        "Native-zone fixture changed actual named Actor.Level: "+level.text);
+    const auto mode=ReadPortableActorDeclaredScriptProperty(level.text,"Engine.LevelInfo.NetMode");
+    const auto dilation=ReadPortableActorDeclaredScriptProperty(level.text,"Engine.LevelInfo.TimeDilation");
+    const auto distance=ReadPortableActorDeclaredScriptProperty(actor,"Engine.Actor.DistanceFromPlayer");
+    std::cout<<"STASIS FIXTURE NEAR level="<<std::quoted(level.text)<<" netMode="<<mode.integer
+        <<" timeDilation="<<dilation.floating<<" explicitDistance="<<distance.floating<<'\n';
+    Require(mode.kind==Kind::Byte&&mode.integer==0&&dilation.kind==Kind::Float&&dilation.floating==1.0f&&
+        distance.kind==Kind::Float&&distance.floating==0.0f,
+        "Native-zone fixture lost its genuine LevelInfo clock defaults or explicit near-distance control");
+    const auto zeroRevision=GetPortableRuntimeWorldRevision();
+    const auto zeroZone=ReadPortableActorStasis(actor);
+    Require(zeroZone.execution.passed()&&zeroZone.execution.writes==0u&&zeroZone.actor.completed&&
+        !zeroZone.actor.inStasis&&zeroZone.actor.physicsRead&&zeroZone.actor.zoneRead&&
+        zeroZone.actor.distanceRead&&!zeroZone.actor.netModeRead&&zeroZone.actor.nativeTimeReads==2u&&
+        zeroZone.actor.steps==8u&&ReadPortableRuntimeLevelTime()==0.0&&GetPortableRuntimeWorldRevision()==zeroRevision,
+        "Time-zero stasis did not read its actual stored Region/native Model zero timestamp/distance: "+zeroZone.execution.error);
+    unchanged(zoneBytes,"Time-zero native-zone readonly query");
+    const auto clock=AdvancePortableRuntimeLevelClock(6.0f);
+    Require(clock.passed()&&clock.committed&&ReadPortableRuntimeLevelTime()==6.0&&
+        ReadPortableActorDeclaredScriptProperty(level.text,"Engine.LevelInfo.TimeSeconds").floating==6.0f&&
+        SavePortableRuntimeState(inspect.string()),
+        "Original native Level clock phase did not advance the isolated fixture by six seconds: "+clock.error);
+    const auto advancedBytes=CheckpointBytes(inspect);
+    const auto advancedRevision=GetPortableRuntimeWorldRevision();
+    const auto oldZone=ReadPortableActorStasis(actor);
+    Require(oldZone.execution.passed()&&oldZone.execution.writes==0u&&oldZone.actor.completed&&
+        oldZone.actor.inStasis&&oldZone.actor.physicsRead&&oldZone.actor.zoneRead&&
+        !oldZone.actor.distanceRead&&oldZone.actor.netModeRead&&oldZone.actor.nativeTimeReads==2u&&
+        oldZone.actor.steps==8u&&ReadPortableRuntimeLevelTime()==6.0&&GetPortableRuntimeWorldRevision()==advancedRevision,
+        "Old native zone timestamp did not reach actual Actor.Level.NetMode without a distance read: "+oldZone.execution.error);
+    unchanged(advancedBytes,"Old native-zone readonly query");
+    Require(LoadPortableRuntimeState(first.string())&&ReadPortableRuntimeLevelTime()==0.0,
+        "Earlier timestamp checkpoint did not clear the staged native Level clock");
+    check(-1.0f,2u,firstBytes,"Native-zone fixture reset");
+    auto omitted=baseline;omitted.objects[0u].properties.erase(omitted.objects[0u].properties.begin());
+    const auto omittedBytes=compose(omitted);
+    Require(QuestVr::WriteDurableSaveFile(fixture.string(),omittedBytes)&&LoadPortableRuntimeState(fixture.string()),
+        "Older v4 checkpoint without LastRenderTime failed restore");
+    const auto reset=ReadPortableActorStasis(actor);
+    Require(!reset.execution.passed()&&!reset.actor.completed&&
+        reset.execution.error.find("LastRenderTime")!=std::string::npos,
+        "Older v4 checkpoint retained a stale native timestamp absent from its properties");
+    unchanged(omittedBytes,"Older v4 timestamp reset");
+    Require(LoadPortableRuntimeState(first.string()),"Could not restage a native timestamp before v3 reset");
+    check(-1.0f,2u,firstBytes,"Restaged timestamp before v3 reset");
+    Require(LoadPortableRuntimeState(legacy.string())&&!GetPortableRuntimeScriptStatePresent(),
+        "Legacy v3 reset retained LastRenderTime script/native publication");
+    const auto legacyReset=ReadPortableActorStasis(actor);
+    Require(!legacyReset.execution.passed()&&!legacyReset.actor.completed&&
+        legacyReset.execution.error.find("LastRenderTime")!=std::string::npos,
+        "Legacy v3 reset retained a stale bound native timestamp");
+    unchanged(original,"Legacy v3 timestamp reset");
+    std::cout<<"GENERATED first-Training LastRenderTime Float/native join: v4 codec1, overwrite/reload, readonly preflight, "
+        "signed-zero bits, kind/index/name atomic refusals, native-work undo, actual stored Region/Model timestamp/distance/NetMode "
+        "with original Level-clock advance/reset, older-v4/v3 absence reset; "
+        "explicit saved-property fixtures, NOT startup, renderer publication, physics or live Quest acceptance\n";
+}
+
 void TestOriginal(const std::filesystem::path& root, const bool inventoryOnly = false,
     const bool switchOnly = false, const bool randomOnly = false, const bool sleepOnly = false,
     const bool landingOnly = false, const bool dispatchOnly = false, const bool startupOnly = false,
-    const bool worldStartupOnly = false,const bool physicsOnly = false) {
+    const bool worldStartupOnly = false,const bool physicsOnly = false,const bool lastRenderOnly = false) {
     static constexpr const char* packages[] = {
         "ConSys", "Core", "DeusEx", "DeusExCharacters", "DeusExConAudioAIBarks",
         "DeusExConAudioEndGame", "DeusExConAudioHK_Shared", "DeusExConAudioIntro",
@@ -3228,7 +3422,7 @@ void TestOriginal(const std::filesystem::path& root, const bool inventoryOnly = 
         "Original script runtime initialization/state metadata failed");
     std::cout << "ORIGINAL RUNTIME indexed objects=" << runtime.objects << " classes=" << runtime.classes <<
         " states=" << runtime.states << '\n';
-    if (!inventoryOnly && !physicsOnly) {
+    if (!inventoryOnly && !physicsOnly && !lastRenderOnly) {
         VerifyAuthoredStateMetadata(root);
         VerifyOriginalDispatchMetadata(tables,runtime);
         VerifyOriginalDispatchPrograms(tables,runtime);
@@ -3247,6 +3441,12 @@ void TestOriginal(const std::filesystem::path& root, const bool inventoryOnly = 
         const auto checkpointBytes = std::filesystem::file_size(checkpoint);
         Require(Word(CheckpointBytes(checkpoint),4)==3u,"Untouched runtime unexpectedly changed legacy v3 save format");
         const auto actors = GetPortableRuntimeMapActors();
+        if(lastRenderOnly) {
+            VerifyOriginalLastRenderCheckpoint(root,checkpoint,temporary.directory);
+            UnloadPortableRuntimeMap();
+            Require(!GetPortableRuntimeScriptStatePresent(),"Focused first-Training LastRenderTime suite leaked state");
+            return;
+        }
         if(physicsOnly) {
             VerifyOriginalStateExecution(root,"00_Training.Doctor1",checkpoint,temporary.directory,true);
             UnloadPortableRuntimeMap();
@@ -3512,8 +3712,8 @@ int main(int argc, char** argv) {
             return 77;
         }
         Require(argc == 2 || (argc == 3 && (std::string(argv[2]) == "--inventory-only" ||
-                std::string(argv[2]) == "--switch-only" || std::string(argv[2]) == "--random-only" || std::string(argv[2]) == "--sleep-only" || std::string(argv[2]) == "--landing-only" || std::string(argv[2]) == "--dispatch-only" || std::string(argv[2]) == "--startup-only" || std::string(argv[2]) == "--world-startup-only" || std::string(argv[2]) == "--physics-only")),
-            "Usage: portable_actor_script_test GAME_ROOT [--inventory-only|--switch-only|--random-only|--sleep-only|--landing-only|--dispatch-only|--startup-only|--world-startup-only|--physics-only]");
+                std::string(argv[2]) == "--switch-only" || std::string(argv[2]) == "--random-only" || std::string(argv[2]) == "--sleep-only" || std::string(argv[2]) == "--landing-only" || std::string(argv[2]) == "--dispatch-only" || std::string(argv[2]) == "--startup-only" || std::string(argv[2]) == "--world-startup-only" || std::string(argv[2]) == "--physics-only" || std::string(argv[2]) == "--last-render-only")),
+            "Usage: portable_actor_script_test GAME_ROOT [--inventory-only|--switch-only|--random-only|--sleep-only|--landing-only|--dispatch-only|--startup-only|--world-startup-only|--physics-only|--last-render-only]");
         const bool switchOnly = argc == 3 && std::string(argv[2]) == "--switch-only";
         const bool randomOnly = argc == 3 && std::string(argv[2]) == "--random-only";
         const bool sleepOnly = argc == 3 && std::string(argv[2]) == "--sleep-only";
@@ -3522,8 +3722,10 @@ int main(int argc, char** argv) {
         const bool startupOnly = argc == 3 && std::string(argv[2]) == "--startup-only";
         const bool worldStartupOnly = argc == 3 && std::string(argv[2]) == "--world-startup-only";
         const bool physicsOnly = argc == 3 && std::string(argv[2]) == "--physics-only";
-        TestOriginal(std::filesystem::path(argv[1]), argc == 3 && !switchOnly && !randomOnly && !sleepOnly && !landingOnly && !dispatchOnly && !startupOnly && !worldStartupOnly && !physicsOnly,
-            switchOnly,randomOnly,sleepOnly,landingOnly,dispatchOnly,startupOnly,worldStartupOnly,physicsOnly);
+        const bool lastRenderOnly = argc == 3 && std::string(argv[2]) == "--last-render-only";
+        TestOriginal(std::filesystem::path(argv[1]), argc == 3 && !switchOnly && !randomOnly && !sleepOnly && !landingOnly && !dispatchOnly && !startupOnly && !worldStartupOnly && !physicsOnly && !lastRenderOnly,
+            switchOnly,randomOnly,sleepOnly,landingOnly,dispatchOnly,startupOnly,worldStartupOnly,physicsOnly,lastRenderOnly);
+        if(lastRenderOnly){std::cout<<"PASS focused first-Training LastRenderTime checkpoint/native stasis fixture suite\n";return 0;}
         if(physicsOnly){std::cout<<"PASS focused first-Training SetPhysics byte/Base/vector/save and rollback suite\n";return 0;}
         if (worldStartupOnly) {std::cout<<"PASS focused original non-publishing world startup/rollback probe\n";return 0;}
         if (startupOnly) {std::cout<<"PASS focused original InitGame startup primitive suite\n";return 0;}

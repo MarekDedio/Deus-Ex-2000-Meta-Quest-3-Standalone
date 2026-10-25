@@ -8,6 +8,15 @@ not establish completed Actor/Level Tick, collectible loot, automatic gravity
 or a playable Quest build. It follows the genuine main/blend animation work;
 it is not another player-menu/Input integration task.
 
+Implementation update2026-10-25: the native allocation/default-copy chain is
+now independently closed in
+[Model timestamp initialization](ORIGINAL-MODEL-ZONE-TIMESTAMP-INITIALIZATION.md).
+Fresh exact native Engine.Model timestamps start at Float+0. The portable
+loader now retains that64-slot transient baseline and the original InStasis
+query has a same-root runtime binding. Original renderer publications,
+distance prepass and complete Actor/Level Tick are still unfinished. See
+ORIGINAL-ACTOR-STASIS.md for the implemented scope and verification.
+
 Read alongside [the wider Tick audit](ORIGINAL-ACTOR-TICK-PHYSICS-PHASE.md),
 [the implemented post-animation phase](ORIGINAL-NONPAWN-TICK-TAIL.md),
 [the native level clock](ORIGINAL-LEVEL-CLOCK.md),
@@ -186,8 +195,10 @@ is `103AD3E0..690`. Its64-zone initialization at `103AD60F..64E` clears
 actors, initializes connectivity/visibility, but does **not** store zone+4.
 PostLoad thunk `10301F0A` to `103ACE90..F2E` rebuilds node/surface links
 and delegates to its base; this bounded body also supplies no timestamp
-initialization. Full native allocation/default-copy authority for that
-timestamp remains to be established before admitting an initial value.
+initialization. These witnesses alone do not establish initialization. The
+later independent native registration/default-copy/fresh-CreateExport audit
+linked above proves Float+0 for all64 entries of a newly constructed exact
+Model; it does not authorize resetting an already live Model.
 
 Do not manufacture that value from a missing package field, allocate a zeroed
 array and call it original initialization, or equate it with actor render time.
@@ -262,8 +273,10 @@ changing the ordinary source ordering.
 
 ## Remaining implementation boundary
 
-No production equivalent of the native distance prepass or complete stasis
-provider was found by this audit. The genuine falling Physics2 cohort can
+At this static audit's initial checkpoint no production equivalent of the
+native distance prepass or complete stasis provider was found. The subsequent
+same-root InStasis query is recorded in the implementation update above;
+distance prepass/render publication and scheduler remain missing. The genuine falling Physics2 cohort can
 avoid a zone-time read through the original Physics short circuit, but this
 does not establish that its flags are always eligible or that landed actors
 can run indefinitely without renderer-time integration.

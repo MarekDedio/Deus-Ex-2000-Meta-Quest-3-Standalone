@@ -15,6 +15,9 @@ the historical audit below is not a claim of a completed Actor/Level Tick.
 The original four-slot blend continuation is implemented separately in
 ORIGINAL-ACTOR-BLEND-PHASE.md; exact remaining stasis/time ownership is recorded
 in ORIGINAL-ACTOR-STASIS-PREREQUISITES.md.
+The native stasis query and Actor.LastRenderTime reflected/save ownership are
+now implemented separately in ORIGINAL-ACTOR-STASIS.md. This still does not
+provide the real renderer/distance publications or the surrounding scheduler.
 
 Read alongside [native Actor order](TRAINING-WORLD-ACTOR-ORDER.md),
 [performPhysics epilogue](ORIGINAL-ACTOR-PHYSICS-EPILOGUE.md),

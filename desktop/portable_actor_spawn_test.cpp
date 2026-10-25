@@ -437,6 +437,9 @@ Tables Build(Fixture& fixture, unsigned worldModel = 0u, unsigned decalSchema = 
         if (std::string(name) == "bDeleteMe") deleteFlag = field;
     }
     for (const auto& name : {"CollisionRadius", "CollisionHeight"}) engine.Property(name, "FloatProperty", actor, engineCore);
+    // Native startup/Spawn now joins this genuine scalar Float to its saved
+    // property mirror. The generated Engine schema must declare it too.
+    engine.Property("LastRenderTime", "FloatProperty", actor, engineCore);
     if (decalSchema) {
         engine.Property("USize", decalSchema == 6u ? "FloatProperty" : "IntProperty", bitmap, engineCore);
         const auto textureField = engine.Property("Texture", "ObjectProperty", actor, engineCore, 1u, decalSchema == 2u ? actor : texture);

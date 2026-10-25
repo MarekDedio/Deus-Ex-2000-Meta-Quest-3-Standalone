@@ -45,6 +45,9 @@ constexpr std::size_t StartupWriteLimit=1'048'576u;
 constexpr std::array<std::string_view,4u> TrainingDamageActors{
     "00_Training.CrateBreakableMedGeneral1","00_Training.CrateBreakableMedGeneral1",
     "00_Training.CrateBreakableMedGeneral2","00_Training.CrateBreakableMedGeneral2"};
+constexpr std::array<std::string_view,4u> TrainingStasisActors{
+    "00_Training.CrateBreakableMedGeneral1","00_Training.CrateBreakableMedGeneral2",
+    "00_Training.Doctor1","00_Training.Lamp2"};
 
 void Require(bool value,const std::string& why) {
     if(!value)throw std::runtime_error(why);
@@ -422,11 +425,31 @@ std::uint32_t FireAttackCount(std::string_view text) {
     Require(text.size()==1u&&text[0]>='1'&&text[0]<='4',"Fire attack count must be1..4");
     return static_cast<std::uint32_t>(text[0]-'0');
 }
+void ObserveTrainingStasis(const PortableWorldStartupProbeResult& world,bool requested) {
+    if(!requested) {
+        Require(world.stasisObservations.empty(),"Unrequested Training stasis observations were executed");
+        return;
+    }
+    Require(world.stasisObservations.size()==TrainingStasisActors.size(),
+        "Requested native Training stasis observations did not all complete after genuine world startup");
+    for(std::size_t i=0u;i<TrainingStasisActors.size();++i) {
+        const auto& row=world.stasisObservations[i];
+        Require(row.actorPath==TrainingStasisActors[i]&&row.completed&&row.steps>=2u&&
+            row.nativeTimeReads==(row.zoneRead?2u:1u)&&(!row.distanceRead||row.zoneRead)&&
+            (!row.netModeRead||row.zoneRead)&&(!row.inStasis||row.netModeRead),
+            "Native Training stasis observation changed its retained actor or lazy provider path");
+        std::cout<<"STASIS actor="<<std::quoted(row.actorPath)<<" value="<<row.inStasis
+            <<" physicsRead="<<row.physicsRead<<" zoneRead="<<row.zoneRead
+            <<" distanceRead="<<row.distanceRead<<" netModeRead="<<row.netModeRead
+            <<" steps="<<row.steps<<" nativeTimeReads="<<row.nativeTimeReads
+            <<"; original read-only gate, NOT Tick, physics scheduling or live Quest acceptance\n";
+    }
+}
 int Run(const fs::path& root,const std::optional<std::string>& expected,unsigned repeats,std::size_t nativeWork,
     bool requireSpawnEncroachment,bool damageTrainingCrates,bool collectTrainingLoot,bool collectTrainingLootViaPlayer,bool sweepTrainingCrates,
     bool fallTrainingCrates,bool fallAfterLowerBreak,bool fallTrainingLoot,bool fallTrainingFragments,bool performTrainingFragments,bool performTrainingCohort,
     const std::optional<std::size_t>& damageWriteLimit,const std::optional<PortableStartupWeaponCommand>& weapon,
-    const std::optional<PortableStartupWeaponFireCommand>& fire) {
+    const std::optional<PortableStartupWeaponFireCommand>& fire,bool observeTrainingStasis) {
     Temporary temporary(root);std::vector<Source> sources;std::vector<PortablePackageTables> scripts;
     sources.reserve(QuestVr::RuntimeScriptPackages.size()+3u);scripts.reserve(QuestVr::RuntimeScriptPackages.size());
     for(const auto* name:QuestVr::RuntimeScriptPackages){sources.emplace_back(root/"System"/(std::string(name)+".u"));
@@ -500,6 +523,8 @@ int Run(const fs::path& root,const std::optional<std::string>& expected,unsigned
     rollback();
     PortableWorldStartupProbeOptions options;options.defaultGameClass="DeusEx.DeusExGameInfo";
     options.weapon=weapon;
+    if(observeTrainingStasis)for(const auto actor:TrainingStasisActors)
+        options.observeStasisActors.emplace_back(actor);
     const std::size_t requestedDamageCount=(fallAfterLowerBreak||fallTrainingFragments||performTrainingCohort)?2u:TrainingDamageActors.size();
     if(damageTrainingCrates)for(std::size_t i=0u;i<requestedDamageCount;++i) {
         const auto actor=TrainingDamageActors[i];
@@ -549,6 +574,7 @@ int Run(const fs::path& root,const std::optional<std::string>& expected,unsigned
     std::optional<std::vector<PortableStartupPhysicsCohortObservation>> cohortObservations;
     std::optional<std::vector<PortableStartupWeaponObservation>> weaponObservations;
     std::optional<std::vector<PortableStartupWeaponFireObservation>> fireObservations;
+    std::optional<std::vector<PortableActorStasisObservation>> stasisObservations;
     for(unsigned attempt=1u;attempt<=repeats;++attempt){
         const auto start=std::chrono::steady_clock::now();
         PortableRetailCollisionStartupResult result;std::vector<PortableStartupWeaponFireObservation> fireRows;
@@ -588,6 +614,7 @@ int Run(const fs::path& root,const std::optional<std::string>& expected,unsigned
         ObserveTrainingLoot(world,collectTrainingLoot,collectTrainingLootViaPlayer,limits.writes);
         ObserveTrainingWeapon(world,weapon);
         ObserveTrainingWeaponFire(world,fireRows,weapon,fire);
+        ObserveTrainingStasis(world,observeTrainingStasis);
         for(const auto& dump:world.dumpLocations) {
             Require(dump.classPath=="DeusEx.DumpLocation" && dump.outerPath=="00_Training" && dump.objectIndex &&
                 dump.flags==0u && dump.fileIndex==-1 && dump.locationIndex==-1 && dump.locationCount==0 &&
@@ -623,6 +650,9 @@ int Run(const fs::path& root,const std::optional<std::string>& expected,unsigned
         if(fireObservations)Require(*fireObservations==fireRows,
             "Repeated original Training Fire/attack/partial-notify/refusal observations differ");
         else fireObservations=fireRows;
+        if(stasisObservations)Require(*stasisObservations==world.stasisObservations,
+            "Repeated original Training stasis/zone/native-time provider observations differ");
+        else stasisObservations=world.stasisObservations;
         if(spawnPackets)Require(SameSpawnPackets(*spawnPackets,world.spawnedEncroachment),
             "Repeated startup changed detached Spawn identities, exact pose words, query result/storage or lifecycle tail");
         else spawnPackets=world.spawnedEncroachment;
@@ -652,7 +682,7 @@ int main(int argc,char** argv) {
     std::cout.setf(std::ios::unitbuf);
     try {
         fs::path root;std::optional<std::string> expected;unsigned repeats=1u;
-        bool requireSpawnEncroachment{},damageTrainingCrates{},collectTrainingLoot{},collectTrainingLootViaPlayer{},sweepTrainingCrates{},fallTrainingCrates{},fallAfterLowerBreak{},fallTrainingLoot{},fallTrainingFragments{},performTrainingFragments{},performTrainingCohort{};
+        bool requireSpawnEncroachment{},damageTrainingCrates{},collectTrainingLoot{},collectTrainingLootViaPlayer{},sweepTrainingCrates{},fallTrainingCrates{},fallAfterLowerBreak{},fallTrainingLoot{},fallTrainingFragments{},performTrainingFragments{},performTrainingCohort{},observeTrainingStasis{};
         std::optional<std::size_t> damageWriteLimit;
         std::optional<PortableStartupWeaponCommand> weapon;
         std::optional<PortableStartupWeaponFireCommand> fire;
@@ -665,6 +695,7 @@ int main(int argc,char** argv) {
             if((option=="--owned-source-root"||option=="--game-root")&&i+1<argc)root=argv[++i];
             else if(option=="--expected-error"&&i+1<argc){expected=argv[++i];Require(!expected->empty()&&expected->size()<=8192u,"Expected error must be nonempty and bounded");}
             else if(option=="--native-work"&&i+1<argc)nativeWork=NativeWorkLimit(argv[++i]);
+            else if(option=="--observe-training-stasis")observeTrainingStasis=true;
             else if(option=="--fire-location") {
                 Require(!fireLocation&&i+3<argc,"--fire-location requires exactly one X Y Z packet");
                 std::array<float,3u> value{};for(auto& component:value)component=FireLocationComponent(argv[++i]);
@@ -704,7 +735,7 @@ int main(int argc,char** argv) {
             else if(option=="--damage-write-limit"&&i+1<argc)damageWriteLimit=DamageWriteLimit(argv[++i]);
             else if(option=="--repeat"&&i+1<argc){const std::string_view number=argv[++i];
                 Require(number.size()==1u&&number[0]>='1'&&number[0]<='8',"Repeat count must be1..8");repeats=static_cast<unsigned>(number[0]-'0');}
-            else throw std::runtime_error("Usage: portable_training_startup_probe --owned-source-root OWNED_GAME_ROOT [--expected-error EXACT_TEXT] [--repeat 1..8] [--native-work 0..16777216] [--require-spawn-encroachment] [--exercise-training-weapon ACTOR_PATH | --fire-training-weapon ACTOR_PATH | --damage-training-crates | --collect-training-loot | --collect-training-loot-via-player] [--fire-location X Y Z --fire-rotation Pitch Yaw Roll] [--fire-attacks 1..4] [--sweep-training-crates | --fall-training-crates | --fall-after-lower-break | --fall-training-loot | --fall-training-fragments | --perform-training-fragments | --perform-training-cohort] [--damage-write-limit 0..1048576]");}
+            else throw std::runtime_error("Usage: portable_training_startup_probe --owned-source-root OWNED_GAME_ROOT [--expected-error EXACT_TEXT] [--repeat 1..8] [--native-work 0..16777216] [--observe-training-stasis] [--require-spawn-encroachment] [--exercise-training-weapon ACTOR_PATH | --fire-training-weapon ACTOR_PATH | --damage-training-crates | --collect-training-loot | --collect-training-loot-via-player] [--fire-location X Y Z --fire-rotation Pitch Yaw Roll] [--fire-attacks 1..4] [--sweep-training-crates | --fall-training-crates | --fall-after-lower-break | --fall-training-loot | --fall-training-fragments | --perform-training-fragments | --perform-training-cohort] [--damage-write-limit 0..1048576]");}
         Require(fireLocation.has_value()==fireRotation.has_value(),"Diagnostic Fire pose requires both --fire-location and --fire-rotation");
         Require(fire||(!fireLocation&&!fireRotation&&!fireAttacks),"Fire pose/attack switches require --fire-training-weapon");
         if(fire) {
@@ -729,7 +760,7 @@ int main(int argc,char** argv) {
         if(root.empty()){std::cout<<"SKIP owned first Training startup observation: use --owned-source-root or DEUSEX_GAME_ROOT.\n";return 77;}
         ShutdownPortableRuntime();GC::Collect();const auto before=GC::GetStats();
         const auto result=Run(fs::canonical(root),expected,repeats,nativeWork,requireSpawnEncroachment,damageTrainingCrates,
-            collectTrainingLoot,collectTrainingLootViaPlayer,sweepTrainingCrates,fallTrainingCrates,fallAfterLowerBreak,fallTrainingLoot,fallTrainingFragments,performTrainingFragments,performTrainingCohort,damageWriteLimit,weapon,fire);
+            collectTrainingLoot,collectTrainingLootViaPlayer,sweepTrainingCrates,fallTrainingCrates,fallAfterLowerBreak,fallTrainingLoot,fallTrainingFragments,performTrainingFragments,performTrainingCohort,damageWriteLimit,weapon,fire,observeTrainingStasis);
         ShutdownPortableRuntime();GC::Collect();const auto after=GC::GetStats();
         Require(after.numObjects==before.numObjects&&after.memoryUsage==before.memoryUsage,"Startup observation retained native UObjects after shutdown");
         return result;

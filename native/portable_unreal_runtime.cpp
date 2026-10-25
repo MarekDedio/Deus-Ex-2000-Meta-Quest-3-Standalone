@@ -37,6 +37,7 @@
 #include "quest_actor_perform_physics.h"
 #include "quest_actor_physics_phase.h"
 #include "quest_actor_tick_tail.h"
+#include "quest_actor_stasis.h"
 #include "quest_native_window_location.h"
 #include "quest_native_window_query.h"
 #include "quest_native_window_clip.h"
@@ -339,6 +340,11 @@ public:
     RuntimeObject* nativePendingTouch{}; // Replaceable reflected Actor edge, not a symbolic GC root.
     bool nativePendingTouchBound{};
     RuntimeObject* nativeLevelModel{}; // Serialized ULevel.Model, owned only by its loader.
+    // Actual freshly loaded exact native Model: its prepared native CDO zero-
+    // extension initializes all64 transient timestamp Floats, not its archive.
+    // No renderer write API is exposed yet; this baseline is immutable until
+    // original render-publication journaling/checkpoint ownership is added.
+    std::unique_ptr<std::array<float,64u>> nativeModelZoneRenderTimes;
     RuntimeObject* nativeLevelEngine{}; // Actual collision Engine binding, never a save property.
     std::uint64_t nativeRetailHash{}; // Actual Level.Hash lease, never an archived pointer.
     std::uint64_t nativeMapGeneration{}; // Transient loader identity, never a saved script value.
@@ -7516,6 +7522,10 @@ public:
         }
         if(!classDefaults && !immutable && index==0u) {
             const auto key=LowerAscii(property.key);
+            if(key=="engine.actor.lastrendertime"&&object->lastRenderTime) {
+                static_cast<void>(OriginalAnimationField(object,"Engine.Actor","LastRenderTime",Kind::Float,0u,"FloatProperty"));
+                return Value::Float(*object->lastRenderTime);
+            }
             if(key=="engine.actor.renderinterface"&&object->nativeRenderInterfaceBound) {
                 if(property.zero.kind!=Kind::Object||property.arrayDimension!=1u||property.flags!=0x2000u||!OwnsProperty(object->cls,property))
                     throw std::runtime_error("Native Actor RenderInterface read lacks its exact transient declaration");
@@ -7828,6 +7838,7 @@ public:
 #include "portable_actor_blend_phase.inl"
 #include "portable_actor_finish_anim.inl"
 #include "portable_actor_tick_tail.inl"
+#include "portable_actor_stasis.inl"
     Value ProbeOriginalMainAnimation(const std::string& path,float elapsed,
         PortableActorMainAnimationProbeResult& result,QuestVr::Vm::Execution& execution) {
         if(!transaction_)throw std::runtime_error("Original animation observation requires its existing caller root");
@@ -7871,6 +7882,11 @@ public:
         ValidateStartupFallingCommands(options);
         ValidateStartupPhysicsCohort(options);
         ValidateStartupWeapon(options,options.weapon);
+        if(options.observeStasisActors.size()>16u)
+            throw std::runtime_error("Startup InStasis observation exceeds16 retained Actors");
+        for(const auto& path:options.observeStasisActors)
+            if(path.empty()||path.size()>4096u||path.find('\0')!=std::string::npos)
+                throw std::runtime_error("Startup InStasis observation has an invalid bounded Actor path");
         ValidateStartupWeaponFire(fireCommand?std::optional<PortableStartupWeaponFireCommand>(*fireCommand):std::nullopt,
             options.weapon);
         struct ProbeScope {
@@ -8004,7 +8020,7 @@ public:
             events(Phase::PreBeginPlay, "PreBeginPlay", true);
             events(Phase::BeginPlay, "BeginPlay", true);
             each(Phase::SetActorZone, [&](RuntimeObject* actor) { InitializeWorldZone(actor, info); });
-            each(Phase::LastRenderTime, [&](RuntimeObject* actor) { Touch(actor); actor->lastRenderTime = -10.0f; });
+            each(Phase::LastRenderTime, [&](RuntimeObject* actor) { StoreOriginalActorLastRenderTime(actor,-10.0f); });
             events(Phase::PostBeginPlay, "PostBeginPlay", true);
             events(Phase::SetInitialState, "SetInitialState", true);
             each(Phase::WorldBases, [&](RuntimeObject* actor) {
@@ -8049,6 +8065,14 @@ public:
         result.beforeActorOrder=CaptureNativeActorOrder(info->nativeXLevel,true);
         ReorderNativeWorldActors(info->nativeXLevel);
         result.afterActorOrder=CaptureNativeActorOrder(info->nativeXLevel,true);
+        if(!options.observeStasisActors.empty()) {
+            const auto bytes=options.observeStasisActors.size()*(sizeof(PortableActorStasisObservation)+4097u);
+            ValidateStateBudget(bytes);nativeActorOrderObservationBytes_+=bytes;
+            result.stasisObservations.reserve(options.observeStasisActors.size());
+            for(const auto& path:options.observeStasisActors) {
+                LifecycleStep();result.stasisObservations.push_back(ObserveOriginalActorStasis(path));
+            }
+        }
         visit(Phase::ClientSetup, info, 0u);
         // Original helper1038BF10 rereads the live ascending viewport array.
         // A client is not proof of a Pawn, and tracking is not a predicate.
@@ -8379,7 +8403,7 @@ private:
                 // but zone(1,1) and LastRenderTime still initialize. No Pawn /
                 // Decoration / Inventory FindBase branch applies to GameInfo.
                 InitializeWorldZone(actor, level);
-                Touch(actor); actor->lastRenderTime = -10.0f;
+                StoreOriginalActorLastRenderTime(actor,-10.0f);
                 if (QuestVr::Vm::ToBool(Read(actor, PropertyNamed(actor, "bCollideActors"), 0u)) ||
                     QuestVr::Vm::ToBool(Read(actor, PropertyNamed(actor, "bBlockActors"), 0u)) ||
                     QuestVr::Vm::ToBool(Read(actor, PropertyNamed(actor, "bBlockPlayers"), 0u)))
@@ -8392,7 +8416,7 @@ private:
         if (QuestVr::Vm::ToBool(Read(actor,PropertyNamed(actor,"bDeleteMe"),0u))) return none();
         if (worldStartupProbe_) {
             InitializeWorldZone(actor, level);
-            Touch(actor); actor->lastRenderTime = -10.0f;
+            StoreOriginalActorLastRenderTime(actor,-10.0f);
             static_cast<void>(execution.CallEvent(path, "PostBeginPlay", true, {}));
             const auto observation=BeginSpawnEncroachmentObservation(actor);
             if(SpawnCheckEncroachment(actor,xlevel,observation,execution)) return none();
@@ -9686,6 +9710,12 @@ private:
                 collect(collect,normalized,0u);
             }
             Touch(target);
+            if(!target->classDescriptor&&nativeKey=="engine.actor.lastrendertime") {
+                static_cast<void>(OriginalAnimationField(target,"Engine.Actor","LastRenderTime",Kind::Float,0u,"FloatProperty"));
+                if(index||normalized.kind!=Kind::Float)
+                    throw std::runtime_error("Native Actor.LastRenderTime store changed its scalar Float kind");
+                target->lastRenderTime=normalized.floating;
+            }
             if (target->classDescriptor) {
                 target->classDefaultValues[LowerAscii(property.name)][index] = std::move(normalized);
             } else {
@@ -9703,7 +9733,7 @@ private:
                     key!="engine.actor.timerrate" && key!="engine.actor.timercounter" && key!="engine.actor.btimerloop" &&
                     !NativeNoiseCacheKey(key) && key!="engine.pawn.stimulus" && key!="engine.actor.touching" &&
                     key!="engine.actor.region" && key!="engine.pawn.footregion" && key!="engine.pawn.headregion" &&
-                    key!="engine.playerreplicationinfo.playerzone")
+                    key!="engine.playerreplicationinfo.playerzone" && key!="engine.actor.lastrendertime")
                     UpdateClockProperty(target, property.name, index);
                 const auto name=LowerAscii(property.name);
                 if (index==0u && (name=="location" || name=="collisionradius" || name=="collisionheight" ||
@@ -10250,6 +10280,10 @@ private:
         if(persistentNativePackages) defaults.Retain(NativePackageRetainedBytes(*persistentNativePackages));
         if(persistentEngineCollision) defaults.Retain(EngineCollisionRetainedBytes(*persistentEngineCollision->get()));
         if(persistentRetailCollision) defaults.Retain(persistentRetailCollision->RetainedBytes());
+        if(!persistentWorldActors.empty()&&persistentWorldActors.front()&&persistentWorldActors.front()->nativeXLevel) {
+            auto* model=persistentWorldActors.front()->nativeXLevel->nativeLevelModel;
+            if(model&&model->nativeModelZoneRenderTimes)defaults.Retain(sizeof(*model->nativeModelZoneRenderTimes));
+        }
         if(persistentObjectLookup) defaults.Retain(sizeof(RuntimeObjectLookupControl)-sizeof(QuestVr::ObjectLookup::Index)+
             4u*sizeof(void*)+persistentObjectLookup->index.RetainedBytes());
         defaults.Retain(provisionalLookupObjects_.capacity()*sizeof(RuntimeObject*));
@@ -10696,6 +10730,7 @@ struct PreparedScriptObject {
     std::optional<QuestVr::ActorAnimationClock> clock;
     std::optional<QuestVr::StateObject> state;
     std::optional<float> latentTimeLeft;
+    std::optional<float> lastRenderTime;
     std::vector<RuntimeObject*> children;
     std::array<bool, 4u> touchSent{};
     bool lifecycle{}, removed{};
@@ -10894,6 +10929,14 @@ QuestVr::ScriptSavedState CollectScriptSavedState() {
                 }
             }
             saved.births.push_back(std::move(birth));
+        }
+        if(object->lastRenderTime) {
+            const auto field=host.OriginalAnimationField(object,"Engine.Actor","LastRenderTime",QuestVr::Vm::Kind::Float,0u,"FloatProperty");
+            const auto values=object->scriptValues.find(host.InstanceStorageKey(object->cls,field));
+            if(!object->committedScriptState||values==object->scriptValues.end()||!values->second.contains(0u)||
+                values->second.at(0u).kind!=QuestVr::Vm::Kind::Float||
+                std::bit_cast<std::uint32_t>(values->second.at(0u).floating)!=std::bit_cast<std::uint32_t>(*object->lastRenderTime))
+                throw std::runtime_error("Native Actor.LastRenderTime and its saved property mirror disagree");
         }
         if (!object->committedScriptState) continue;
         if (saved.objects.size() + saved.classDefaults.size() >= limits.maxObjects || object->cls == nullptr)
@@ -11791,6 +11834,12 @@ PreparedScriptState PrepareScriptSavedState(
                 (value.kind!=QuestVr::Vm::Kind::Object||!value.text.empty()))
                 throw std::runtime_error("Saved nonempty native Actor.Deleted ownership restoration is not implemented");
             const auto declared=schema.Host().DescribeProperty(property.key);
+            if(LowerAscii(declared.key)=="engine.actor.lastrendertime") {
+                if(property.index||declared.arrayDimension!=1u||declared.flags||
+                    declared.zero.kind!=QuestVr::Vm::Kind::Float||value.kind!=QuestVr::Vm::Kind::Float)
+                    throw std::runtime_error("Saved native Actor.LastRenderTime is not its actual scalar Float");
+                next.lastRenderTime=value.floating;
+            }
             if (!next.values[schema.Host().InstanceStorageKey(cls,declared)].emplace(property.index, std::move(value)).second)
                 throw std::runtime_error("Duplicate script save property alias/index");
         }
@@ -13979,6 +14028,21 @@ const char* PortableWorldStartupPhaseName(const PortableWorldStartupPhase phase)
     }
 }
 
+PortableActorStasisResult ReadPortableActorStasis(const std::string& actorPath,const QuestVr::Vm::Limits& limits) {
+    CollectBirthGarbageAtBoundary collect;PortableActorStasisResult result;
+    try {
+        if(actorPath.empty()||actorPath.size()>4096u||actorPath.find('\0')!=std::string::npos)
+            throw std::runtime_error("Original InStasis requires a bounded actual Actor path");
+        PortableActorVmHost host;
+        result.execution=QuestVr::Vm::ExecuteTransaction(host,[&](QuestVr::Vm::Execution&)->QuestVr::Vm::Value {
+            result.actor=host.ObserveOriginalActorStasis(actorPath);return QuestVr::Vm::Value::Bool(result.actor.inStasis);
+        },limits);
+        if(result.execution.status!=QuestVr::Vm::Status::Returned)result.actor.completed=false;
+    }catch(const std::exception& error) {
+        result.execution.status=QuestVr::Vm::Status::Unsupported;result.execution.error=error.what();result.actor.completed=false;
+    }
+    return result;
+}
 PortableWorldActorOrderSnapshot ReadPortableWorldActorOrder() {
     if(persistentWorldActors.empty()||!persistentWorldActors.front()||!persistentWorldActors.front()->nativeXLevel)return {};
     PortableActorVmHost host;return host.ReadWorldActorOrder();
@@ -14676,6 +14740,9 @@ static std::pair<RuntimeObject*,RuntimeObject*> BindAuthoredActorSlots(
         if(modelIndex>=package.exports.size()) throw std::runtime_error("Native Level.Model export is outside its map");
         auto* model=persistentRuntime->get()->exports.at(first+modelIndex);
         host.ValidateNativeLevelModel(xlevel,model);
+        // Core native Class default preparation + fresh template0 CreateExport,
+        // not serialized zero: ORIGINAL-MODEL-ZONE-TIMESTAMP-INITIALIZATION.md.
+        model->nativeModelZoneRenderTimes=std::make_unique<std::array<float,64u>>();
         const auto deferred=ReadPortableLevel68DeferredState(package);
         if(deferred.firstDeleted)
             throw std::runtime_error("Authored nonempty native FirstDeleted queue loading/cleanup is not implemented");
@@ -17039,6 +17106,7 @@ static bool ReadPortableRuntimeState(const std::string& path, const bool apply, 
             object->animationClock.reset(); object->stateObject.reset(); object->committedScriptState = false;
             object->stateTransitionFlags = 0u;
             object->latentTimeLeft.reset();
+            object->lastRenderTime.reset();
             object->childActors.clear(); object->touchEventSent = {};
             object->committedLifecycle = false; object->worldRemoved = false;
         }
@@ -17062,6 +17130,7 @@ static bool ReadPortableRuntimeState(const std::string& path, const bool apply, 
             object.target->scriptValues.swap(object.values); object.target->animationClock.swap(object.clock);
             object.target->stateObject.swap(object.state);
             object.target->latentTimeLeft.swap(object.latentTimeLeft);
+            object.target->lastRenderTime.swap(object.lastRenderTime);
             object.target->committedScriptState = true;
             if (object.lifecycle) {
                 object.target->childActors.swap(object.children);

@@ -350,6 +350,20 @@ struct PortableStartupLootObservation {
     std::vector<std::uint8_t> playerClockBefore,playerClockAfter;
     bool operator==(const PortableStartupLootObservation&) const = default;
 };
+struct PortableActorStasisObservation {
+    std::string actorPath;
+    bool completed{},inStasis{},physicsRead{},zoneRead{},distanceRead{},netModeRead{};
+    std::size_t steps{},nativeTimeReads{};
+    bool operator==(const PortableActorStasisObservation&) const = default;
+};
+struct PortableActorStasisResult {
+    QuestVr::Vm::Result execution;
+    PortableActorStasisObservation actor;
+};
+// Read-only native InStasis, NOT Actor.Tick or a world/renderer update. An
+// uninitialized native LastRenderTime refuses instead of reading a facade.
+PortableActorStasisResult ReadPortableActorStasis(const std::string& actorPath,
+    const QuestVr::Vm::Limits& limits = {});
 struct PortableWorldStartupProbeOptions {
     // Already decoded URL GAME= class and the configured local client's
     // DefaultGame class. Empty URL selects the map's actual DefaultGameType
@@ -384,6 +398,9 @@ struct PortableWorldStartupProbeOptions {
     // Isolated original authored knife/crowbar pickup/equip diagnostic, in
     // this same Login root. No grant, Fire, trace or startup publication.
     std::optional<PortableStartupWeaponCommand> weapon{};
+    // At most16 read-only observations after genuine world startup/partition,
+    // before client/player setup, in the same ALWAYS-rolled-back startup root.
+    std::vector<std::string> observeStasisActors{};
 };
 struct PortablePlayerLoginObservation {
     std::uint64_t viewportIdentity{};
@@ -476,6 +493,7 @@ struct PortableWorldStartupProbeResult {
     std::vector<PortableStartupPhysicsCohortObservation> physicsCohortObservations;
     std::vector<PortableStartupLootObservation> lootObservations;
     std::vector<PortableStartupWeaponObservation> weaponObservations;
+    std::vector<PortableActorStasisObservation> stasisObservations;
 };
 const char* PortableWorldStartupPhaseName(PortableWorldStartupPhase phase);
 // Non-publishing diagnostic over actual Level slots and original callbacks.
