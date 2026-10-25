@@ -8,6 +8,20 @@ compiler input/build was changed or commercial DLL/EXE executed or loaded.
 
 ## Current production disconnect
 
+Latest 2026-10-25: full general Tile preferred sizing/held placement and real
+typed rows are implemented. The original two-swing crate break/Lockpick birth
+continues unchanged; startup now reaches bound PlayerPawn.ConsoleCommand's
+unimplemented FExec service during HUDMultiSkills.RefreshKey (actual script
+asks KEYNAME, then KEYBINDING for nonempty names). Initial run is 228837
+instructions/26047 writes, with all 48 observations/two cycles/four traces/nine
+births and complete root undo/all 41 sources. The separate unbound-player HUD
+passes that command's actual None-player empty-return branch and now reaches
+TextLogWindow construction at HUDLogDisplay.CreateControls:110 (159 objects,
+11280 writes). Do not confuse these two paths or return fabricated key names
+to skip the genuine bound-player dependency. These are startup prerequisites,
+not a completed live trigger/player/world-physics/collection bridge. See
+ORIGINAL-TILE-PREFERRED-SIZE.md for exact implemented scope and tests.
+
 Latest2026-10-25 startup prerequisite: genuine scalar preferred-size1463/1464
 now execute through common cache and actual selected script callbacks. The
 same two-swing crate destruction/Lockpick birth still completes, then reaches

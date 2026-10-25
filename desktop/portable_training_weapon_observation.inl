@@ -144,7 +144,8 @@ void ObserveTrainingWeapon(const PortableWorldStartupProbeResult& world,
         PrintWeaponPlayer("after",row.playerAfter);PrintWeaponItem("after",row.weaponAfter);
     }
     if(world.execution.error=="Unsupported runtime native 1463" ||
-        world.execution.error=="Native preferred-size virtual override is not implemented")
+        world.execution.error=="Native preferred-size virtual override is not implemented" ||
+        world.execution.error=="Bound PlayerPawn ConsoleCommand native FExec is not implemented")
         Require(completed>=1u&&!rows.empty()&&rows.back().equipComplete,
             "Later HUD boundary was reached without completing the requested real weapon equip");
     std::cout<<"WEAPON OBSERVATIONS rows="<<rows.size()<<" completeSnapshots="<<completed

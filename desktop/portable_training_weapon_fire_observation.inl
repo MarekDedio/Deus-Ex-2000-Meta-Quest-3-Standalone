@@ -135,7 +135,8 @@ void ObserveTrainingWeaponFire(const PortableWorldStartupProbeResult& world,
         }
     }
     if(world.execution.error=="Unsupported runtime native 1463" ||
-        world.execution.error=="Native preferred-size virtual override is not implemented")
+        world.execution.error=="Native preferred-size virtual override is not implemented" ||
+        world.execution.error=="Bound PlayerPawn ConsoleCommand native FExec is not implemented")
         Require(completeCycles==command->attacks&&!rows.empty()&&rows.back().attackCycleComplete,
             "Ordinary startup reached without all requested attacks completing");
     std::cout<<"WEAPON FIRE OBSERVATIONS rows="<<rows.size()<<" cycles="<<completeCycles<<" returnedNotifies="<<returnedNotifies

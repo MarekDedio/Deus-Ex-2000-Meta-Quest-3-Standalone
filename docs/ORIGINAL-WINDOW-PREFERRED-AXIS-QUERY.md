@@ -1,5 +1,11 @@
 # Original Window preferred-width/height queries
 
+Subsequent2026-10-25 checkpoint: the general native Tile provider is implemented
+and verified in ORIGINAL-TILE-PREFERRED-SIZE.md. Actual bound Training now
+reaches the next ConsoleCommand/Input dependency, not the earlier Tile refusal.
+The scalar-query audit/implementation evidence below retains its original
+checkpoint boundary; it is not a claim that live startup/gameplay is complete.
+
 Owned GOTY static audit,2026-10-24; next genuine first-Training startup boundary.
 No commercial DLL/EXE was loaded/executed; our existing script inspector reads
 owned package metadata/bytecode and objdump reads static DLL bytes. This adds

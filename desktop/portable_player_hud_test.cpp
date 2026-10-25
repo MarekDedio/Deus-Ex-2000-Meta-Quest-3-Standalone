@@ -6,6 +6,7 @@
 #include "portable_model_geometry.h"
 #include "quest_script_state.h"
 #include "quest_save_bundle.h"
+#include "quest_native_window_clip.h"
 #include <algorithm>
 #include <array>
 #include <chrono>
@@ -217,11 +218,12 @@ int main(int argc,char** argv) {
         const auto windowStats=GC::GetStats();
         const auto pending=ProbePortableRootWindowInitialization(player);
         std::cout<<"ORIGINAL root pending graph: "<<pending.execution.function<<':'<<pending.execution.offset<<
-            " objects="<<pending.objects.size()<<" writes="<<pending.execution.writes<<" "<<pending.execution.error<<"; inspection="<<pending.inspectionError<<std::endl;
+            " opcode="<<unsigned(pending.execution.opcode)<<" objects="<<pending.objects.size()<<
+            " writes="<<pending.execution.writes<<" "<<pending.execution.error<<"; inspection="<<pending.inspectionError<<std::endl;
         Require(!pending.execution.passed() && !pending.execution.committed && pending.inspectionError.empty() &&
-            pending.execution.function=="DeusEx.HUDActiveItemsBorderBase.ParentRequestedPreferredSize" && pending.execution.offset==9u &&
-            pending.execution.opcode==101u && pending.execution.error=="Native preferred-size virtual override is not implemented" &&
-            pending.execution.writes==8890u && pending.objects.size()==132u &&
+            pending.execution.function=="DeusEx.HUDLogDisplay.CreateControls" && pending.execution.offset==110u &&
+            pending.execution.opcode==101u && pending.execution.error=="NewChild native subclass Init is not implemented: extension.textlogwindow" &&
+            pending.execution.writes==11280u && pending.objects.size()==159u &&
             pending.rootedWindows==std::vector<std::string>{pending.pawnRootPath},
             "Original root prefix probe did not capture the actual pending native graph: "+pending.inspectionError);
         const auto object=[&](const std::string& path)->const PortableNativeWindowObjectSnapshot& {
@@ -314,6 +316,18 @@ int main(int argc,char** argv) {
             "Original root did not create its actual HUD/ammo/health/crosshair/belt children");
         const auto& hudView=*hudFound;const auto& ammoView=*ammoFound;
         const auto& hitView=*hitFound;const auto& crossView=*crossFound;const auto& beltView=*beltFound;
+        const auto classView=[&](const char* name)->const PortableNativeWindowObjectSnapshot& {
+            const auto found=std::find_if(pending.objects.begin(),pending.objects.end(),[&](const auto& view) {
+                return view.classPath==name;
+            });
+            Require(found!=pending.objects.end(),"Original later HUD construction omitted "+std::string(name));return *found;
+        };
+        const auto& activeItems=classView("DeusEx.HUDActiveItemsDisplay");
+        const auto& damage=classView("DeusEx.DamageHUDDisplay");
+        const auto& compass=classView("DeusEx.HUDCompassDisplay");
+        const auto& multiSkills=classView("DeusEx.HUDMultiSkills");
+        const auto& information=classView("DeusEx.HUDInformationDisplay");
+        const auto& logDisplay=classView("DeusEx.HUDLogDisplay");
         for(const auto& view:pending.objects) {
             if(view.classPath=="Extension.GC") continue;
             std::cout<<"PENDING layout "<<view.classPath<<" "<<view.path;
@@ -321,7 +335,18 @@ int main(int argc,char** argv) {
                 std::cout<<" "<<name<<"="<<field(view,"Extension.Window."+std::string(name)).value.floating;
             for(const auto* name:{"bIsVisible","bConfigured","bNeedsReconfigure"})
                 std::cout<<" "<<name<<"="<<field(view,"Extension.Window."+std::string(name)).value.boolean;
-            std::cout<<" lock="<<field(view,"Extension.Window.lockCount").value.integer<<'\n';
+            std::cout<<" lock="<<field(view,"Extension.Window.lockCount").value.integer;
+            if(view.classPath=="DeusEx.HUDActiveItemsDisplay" || view.classPath=="DeusEx.HUDActiveAugsBorder" ||
+                view.classPath=="DeusEx.HUDActiveItemsBorder" || view.classPath=="Extension.TileWindow" ||
+                view.classPath=="DeusEx.HUDActiveAug") {
+                for(const auto* name:{"lastSpecifiedWidth","lastSpecifiedHeight","lastQueryWidth","lastQueryHeight",
+                    "holdX","holdY","holdWidth","holdHeight"})
+                    std::cout<<" "<<name<<"="<<field(view,"Extension.Window."+std::string(name)).value.floating;
+                for(const auto* name:{"bNeedsQuery","bLastWidthSpecified","bLastHeightSpecified"})
+                    std::cout<<" "<<name<<"="<<field(view,"Extension.Window."+std::string(name)).value.boolean;
+                std::cout<<" tileInitialized="<<view.tileRowsInitialized<<" tileRows="<<view.tileRows.size();
+            }
+            std::cout<<'\n';
         }
         Require(!field(crossView,"Extension.Window.bNeedsQuery").value.boolean &&
             !field(crossView,"Extension.Window.bNeedsReconfigure").value.boolean &&
@@ -347,10 +372,43 @@ int main(int argc,char** argv) {
         const auto& crossGC=object(field(crossView,"Extension.Window.wGc").value.text);
         Require(QuestVr::Vm::Equal(field(crossGC,"Extension.GC.gcClipRect").value,crossClip),
             "Original ClipTree did not copy all six channels to the drawing GC");
+        // These exact dimensions were captured at the new TextLog refusal.
+        // Retain independent literal negative intersections as well as using
+        // the separately x87-audited clip helper for the native propagation.
+        const QuestVr::NativeWindowClip hudClip{0,0,0,0,10,10};
+        const auto activeClip=QuestVr::ComputeNativeWindowClip(&hudClip,-100,0,110,-59);
+        const auto augClip=QuestVr::ComputeNativeWindowClip(&activeClip,0,0,10,10);
+        const auto itemClip=QuestVr::ComputeNativeWindowClip(&activeClip,14,6,48,13);
+        const auto itemTileClip=QuestVr::ComputeNativeWindowClip(&itemClip,0,0,10,10);
+        const auto damageClip=QuestVr::ComputeNativeWindowClip(&hudClip,0,44,66,246);
+        const auto compassClip=QuestVr::ComputeNativeWindowClip(&hudClip,0,4,73,40);
+        const auto channels=[](const QuestVr::NativeWindowClip& clip) {
+            return std::array<float,6u>{clip.originX,clip.originY,clip.clipX,clip.clipY,clip.clipWidth,clip.clipHeight};
+        };
+        Require(channels(activeClip)==std::array<float,6u>{-100,0,100,0,10,-59} &&
+            channels(augClip)==std::array<float,6u>{-100,0,100,0,-90,-59} &&
+            channels(itemClip)==std::array<float,6u>{-86,6,86,0,-38,-65} &&
+            channels(itemTileClip)==std::array<float,6u>{-86,6,86,0,-76,-65} &&
+            channels(damageClip)==std::array<float,6u>{0,44,0,0,10,-34} &&
+            channels(compassClip)==std::array<float,6u>{0,4,0,0,10,6},
+            "Later HUD negative clip derivation differs from independent literal intersections");
         for(const auto& view:pending.objects) if(view.classPath=="Extension.GC" && view.path!=crossGC.path) {
             const auto& owner=object(view.outerPath);
-            const bool beltDrawing=(owner.path==beltView.path || owner.path.rfind(beltView.path+'.',0u)==0u) &&
-                field(owner,"Extension.Window.wGc").value.text==view.path;
+            const bool drawing=field(owner,"Extension.Window.wGc").value.text==view.path;
+            const bool beltDrawing=drawing && (owner.path==beltView.path || owner.path.rfind(beltView.path+'.',0u)==0u);
+            const bool activeDrawing=drawing && (owner.path==activeItems.path || owner.path.rfind(activeItems.path+'.',0u)==0u);
+            const bool damageDrawing=drawing && owner.path==damage.path;
+            const bool compassDrawing=drawing && (owner.path==compass.path || owner.path.rfind(compass.path+'.',0u)==0u);
+            auto expectedClip=QuestVr::NativeWindowClip{};
+            if(activeDrawing) {
+                if(owner.path==activeItems.path)expectedClip=activeClip;
+                else if(owner.classPath=="DeusEx.HUDActiveItemsBorder")expectedClip=itemClip;
+                else if(owner.classPath=="Extension.TileWindow" &&
+                    object(field(owner,"Extension.Window.winParent").value.text).classPath=="DeusEx.HUDActiveItemsBorder")
+                    expectedClip=itemTileClip;
+                else expectedClip=augClip;
+            } else if(damageDrawing)expectedClip=damageClip;
+            else if(compassDrawing)expectedClip=compassClip;
             // The now-assigned belt is configured by the next HUD callback:
             // 10-541,10-69 =>(-531,-59). ClipTree preserves negative clipped
             // extents for the still-unconfigured 10x10 descendants, not zero.
@@ -364,13 +422,20 @@ int main(int argc,char** argv) {
                     else if(name=="clipwidth") expected=owner.path==beltView.path?10.0f:-521.0f;
                     else if(name=="clipheight") expected=owner.path==beltView.path?10.0f:-49.0f;
                     else throw std::runtime_error("Unexpected native GC clip channel");
+                } else {
+                    const std::array<const char*,6u> names{"originx","originy","clipx","clipy","clipwidth","clipheight"};
+                    const auto found=std::find(names.begin(),names.end(),name);
+                    Require(found!=names.end(),"Unexpected later HUD GC clip channel");
+                    expected=channels(expectedClip)[static_cast<std::size_t>(found-names.begin())];
                 }
                 Require(value.kind==Kind::Float && value.floating==expected &&
                     (expected!=0.0f || !std::signbit(value.floating)),
-                    "Original callback clipping changed a drawing/general GC: "+view.path+'.'+name);
+                    "Original callback clipping changed a drawing/general GC: "+view.path+'.'+name+
+                    " actual="+std::to_string(value.floating)+" expected="+std::to_string(expected));
             }
-            if(beltDrawing) Require(QuestVr::Vm::Equal(field(view,"Extension.GC.gcClipRect").value,
-                field(owner,"Extension.Window.winClipRect").value),"Belt ClipTree window/drawing GC channels disagree");
+            if(beltDrawing || activeDrawing || damageDrawing || compassDrawing)
+                Require(QuestVr::Vm::Equal(field(view,"Extension.GC.gcClipRect").value,
+                    field(owner,"Extension.Window.winClipRect").value),"Original ClipTree window/drawing GC channels disagree");
         }
         const auto& radioView=object(field(beltView,"Extension.Window.firstChild").value.text);
         const auto& slotsView=object(field(beltView,"DeusEx.HUDObjectBelt.winSlots").value.text);
@@ -386,7 +451,8 @@ int main(int argc,char** argv) {
         Require(std::count(rootView.tabGroupWindows.begin(),rootView.tabGroupWindows.end(),radioView.path)==1 &&
             radioView.tabOrderDirty && radioView.rowMajorWindows.empty() && radioView.colMajorWindows.empty() &&
             radioView.tabGroupWindows.empty() && radioView.toggleButtons.size()==10u && !radioView.emptyTileRows &&
-            slotsView.emptyTileRows && !slotsView.tabOrderDirty && slotsView.rowMajorWindows.empty() &&
+            slotsView.emptyTileRows && slotsView.tileRowsInitialized && slotsView.tileRows.empty() &&
+            !slotsView.tabOrderDirty && slotsView.rowMajorWindows.empty() &&
             slotsView.colMajorWindows.empty() && slotsView.tabGroupWindows.empty() && slotsView.toggleButtons.empty(),
             "Native belt constructors fabricated pointer arrays, registered Tile as TabGroup, or lost Toggle entries");
         std::vector<std::string> objectSlots;
@@ -540,15 +606,11 @@ int main(int argc,char** argv) {
             !field(slotsView,"Extension.TileWindow.bEqualWidth").value.boolean && field(slotsView,"Extension.TileWindow.bEqualHeight").value.boolean,
             "Original Tile setters changed unrelated constructor flags");
         edge(rootView,"Extension.Window.firstChild",display.path);edge(rootView,"Extension.Window.lastChild",hudView.path);
-        // Ammo, all health children and Cross completed their original Init,
-        // visibility callbacks and unlocks. DamageHUDDisplay.InitWindow has
-        // now initialized all seven original records and returned through Hide.
-        // Its default NewChild Show invokes HUD.ChildRequestedVisibilityChange:
-        // SetChildVisibility(true) precedes ConfigurationChanged's native1463,
-        // which now enters actual active-item/border callbacks before the
-        // icon TileWindow's missing native preferred-size virtual override.
-        // NewChild has not returned/unlocked, so its outer damageDisplay
-        // assignment (and later Root.hud assignment) is still unexecuted.
+        // The original Tile callbacks have now returned. Damage, compass,
+        // multi-skills and information children completed construction. The
+        // later hidden HUDLogDisplay is locked inside CreateControls before
+        // TextLogWindow's unsupported native constructor. Its msgLog and the
+        // later Root.hud assignment are consequently still unexecuted.
         edge(rootView,"DeusEx.DeusExRootWindow.hud",{});
         edge(hudView,"DeusEx.DeusExHUD.Ammo",ammoView.path);edge(hudView,"DeusEx.DeusExHUD.hit",hitView.path);
         edge(hudView,"DeusEx.DeusExHUD.Cross",crossView.path);edge(hudView,"DeusEx.DeusExHUD.belt",beltView.path);
@@ -556,18 +618,14 @@ int main(int argc,char** argv) {
         edge(display,"Extension.Window.prevSibling",{});edge(display,"Extension.Window.nextSibling",hudView.path);
         edge(hudView,"Extension.Window.parentOwner",rootView.path);edge(hudView,"Extension.Window.winParent",rootView.path);
         edge(hudView,"Extension.Window.prevSibling",display.path);edge(hudView,"Extension.Window.nextSibling",{});
-        const auto activeItemsFound=std::find_if(pending.objects.begin(),pending.objects.end(),[](const auto& view) {
-            return view.classPath=="DeusEx.HUDActiveItemsDisplay";
-        });
-        Require(activeItemsFound!=pending.objects.end(),"Layout callback did not return to original active-item construction");
-        const auto& activeItems=*activeItemsFound;
-        const auto damageFound=std::find_if(pending.objects.begin(),pending.objects.end(),[](const auto& view) {
-            return view.classPath=="DeusEx.DamageHUDDisplay";
-        });
-        Require(damageFound!=pending.objects.end(),"Original active-item construction did not return to damage-display creation");
-        const auto& damage=*damageFound;
         edge(hudView,"DeusEx.DeusExHUD.activeItems",activeItems.path);
-        edge(hudView,"DeusEx.DeusExHUD.damageDisplay",{});
+        edge(hudView,"DeusEx.DeusExHUD.damageDisplay",damage.path);
+        edge(hudView,"DeusEx.DeusExHUD.compass",compass.path);
+        edge(hudView,"DeusEx.DeusExHUD.hms",multiSkills.path);
+        edge(hudView,"DeusEx.DeusExHUD.Info",information.path);
+        edge(hudView,"DeusEx.DeusExHUD.msgLog",{});
+        for(const auto* name:{"frobDisplay","augDisplay","startDisplay","barkDisplay","receivedItems"})
+            edge(hudView,"DeusEx.DeusExHUD."+std::string(name),{});
         edge(damage,"DeusEx.DamageHUDDisplay.Player",player);
         // Original DamageHUDDisplay.InitWindow PC29..848 assigns each of the
         // seven sIconInfo records, including every authored DamageType[3]
@@ -628,11 +686,23 @@ int main(int argc,char** argv) {
             }
         }
         std::cout<<"ORIGINAL DamageHUDDisplay: all7 iconInfo records, all21 typed DamageType slots, six nested texture GC edges and colors verified\n";
-        edge(hudView,"Extension.Window.firstChild",ammoView.path);edge(hudView,"Extension.Window.lastChild",damage.path);
+        edge(hudView,"Extension.Window.firstChild",ammoView.path);edge(hudView,"Extension.Window.lastChild",logDisplay.path);
         edge(activeItems,"Extension.Window.winParent",hudView.path);edge(activeItems,"Extension.Window.parentOwner",hudView.path);
         edge(activeItems,"Extension.Window.prevSibling",beltView.path);edge(activeItems,"Extension.Window.nextSibling",damage.path);
         edge(damage,"Extension.Window.winParent",hudView.path);edge(damage,"Extension.Window.parentOwner",hudView.path);
-        edge(damage,"Extension.Window.prevSibling",activeItems.path);edge(damage,"Extension.Window.nextSibling",{});
+        edge(damage,"Extension.Window.prevSibling",activeItems.path);edge(damage,"Extension.Window.nextSibling",compass.path);
+        const std::array<const PortableNativeWindowObjectSnapshot*,5u> laterChildren{
+            &damage,&compass,&multiSkills,&information,&logDisplay};
+        for(std::size_t index=1u;index<laterChildren.size();++index) {
+            const auto& view=*laterChildren[index];
+            Require(view.outerPath==hudView.path,"Original later HUD child lost its actual Outer");
+            edge(view,"Extension.Window.winParent",hudView.path);edge(view,"Extension.Window.parentOwner",hudView.path);
+            edge(view,"Extension.Window.prevSibling",laterChildren[index-1u]->path);
+            edge(view,"Extension.Window.nextSibling",index+1u==laterChildren.size()?std::string{}:laterChildren[index+1u]->path);
+            Require(field(view,"Extension.Window.lockCount").value.integer==(index==4u?1:0) &&
+                field(view,"Extension.Window.bIsVisible").value.boolean==(index<3u),
+                "Original later HUD NewChild visibility/lock prefix differs");
+        }
         edge(ammoView,"Extension.Window.parentOwner",hudView.path);edge(ammoView,"Extension.Window.winParent",hudView.path);
         edge(ammoView,"Extension.Window.prevSibling",{});edge(ammoView,"Extension.Window.nextSibling",hitView.path);
         edge(ammoView,"DeusEx.HUDBaseWindow.Player",player);
@@ -654,7 +724,7 @@ int main(int argc,char** argv) {
             field(hudView,"Extension.Window.lockCount").value.integer==1 && field(ammoView,"Extension.Window.lockCount").value.integer==0 &&
             field(hitView,"Extension.Window.lockCount").value.integer==0 && field(crossView,"Extension.Window.lockCount").value.integer==0 &&
             field(beltView,"Extension.Window.lockCount").value.integer==0 && field(activeItems,"Extension.Window.lockCount").value.integer==0 &&
-            field(damage,"Extension.Window.lockCount").value.integer==1 &&
+            field(damage,"Extension.Window.lockCount").value.integer==0 &&
             field(activeItems,"Extension.Window.bIsVisible").value.boolean && field(damage,"Extension.Window.bIsVisible").value.boolean,
             "Original hidden HUD sensitivity or in-flight child lock state was skipped/fabricated");
         edge(activeItems,"DeusEx.HUDBaseWindow.Player",player);
@@ -689,7 +759,8 @@ int main(int argc,char** argv) {
                 Require(QuestVr::Vm::Equal(field(*border,"DeusEx.HUDActiveItemsBorderBase."+std::string(name)).value,
                     ReadPortableClassDefault(border->classPath,name)),"Original active-border authored geometry changed");
             const auto& tile=object(field(*border,"DeusEx.HUDActiveItemsBorderBase.winIcons").value.text);
-            Require(tile.classPath=="Extension.TileWindow" && tile.outerPath==border->path && tile.emptyTileRows,
+            Require(tile.classPath=="Extension.TileWindow" && tile.outerPath==border->path && tile.emptyTileRows &&
+                tile.tileRowsInitialized && tile.tileRows.empty(),
                 "Original active-border icon child is not its owned TileWindow");
             edge(*border,"DeusEx.HUDActiveItemsBorderBase.winIcons",tile.path);
             edge(*border,"Extension.Window.firstChild",tile.path);edge(*border,"Extension.Window.lastChild",tile.path);
@@ -709,8 +780,9 @@ int main(int argc,char** argv) {
         }
         const auto& augTile=object(field(augsBorder,"DeusEx.HUDActiveItemsBorderBase.winIcons").value.text);
         const auto& itemTile=object(field(itemsBorder,"DeusEx.HUDActiveItemsBorderBase.winIcons").value.text);
-        // Three REAL query cache prefixes completed before the first Tile
-        // virtual callback refused. None may fabricate its post-query cache.
+        // Both original border callbacks and their actual native Tile sizing
+        // returned, including the augmentation Tile's ten hidden children.
+        // The supplied negative height remains specified, not a cached sum.
         Require(!field(activeItems,"Extension.Window.bNeedsQuery").value.boolean &&
             !field(activeItems,"Extension.Window.bLastWidthSpecified").value.boolean &&
             field(activeItems,"Extension.Window.bLastHeightSpecified").value.boolean &&
@@ -718,15 +790,33 @@ int main(int argc,char** argv) {
             field(activeItems,"Extension.Window.lastSpecifiedHeight").value.floating==
                 field(hudView,"Extension.Window.Height").value.floating-field(beltView,"Extension.Window.Height").value.floating,
             "Original1463 did not cache its actual height constraint before the selected active-item callback");
-        for(const auto* view:{&activeItems,&augsBorder,&augTile}) {
+        Require(field(activeItems,"Extension.Window.lastQueryWidth").value.floating==110.0f &&
+            field(activeItems,"Extension.Window.lastQueryHeight").value.floating==-59.0f &&
+            field(activeItems,"Extension.Window.X").value.floating==-100.0f &&
+            field(activeItems,"Extension.Window.Y").value.floating==0.0f &&
+            field(activeItems,"Extension.Window.Width").value.floating==110.0f &&
+            field(activeItems,"Extension.Window.Height").value.floating==-59.0f &&
+            field(activeItems,"Extension.Window.bConfigured").value.boolean,
+            "Original active-item callback did not complete its actual post-query/ConfigureChild result");
+        for(const auto& [view,width,height]:{
+            std::tuple{&augsBorder,62.0f,22.0f},std::tuple{&itemsBorder,48.0f,13.0f},
+            std::tuple{&augTile,0.0f,0.0f},std::tuple{&itemTile,0.0f,0.0f}}) {
             Require(!field(*view,"Extension.Window.bNeedsQuery").value.boolean &&
-                field(*view,"Extension.Window.lastQueryWidth").value.floating==0.0f &&
-                field(*view,"Extension.Window.lastQueryHeight").value.floating==0.0f,
-                "Failed selected preferred-size callback skipped its pre-cache or fabricated post-cache results");
+                !field(*view,"Extension.Window.bLastWidthSpecified").value.boolean &&
+                !field(*view,"Extension.Window.bLastHeightSpecified").value.boolean &&
+                field(*view,"Extension.Window.lastSpecifiedWidth").value.floating==-1.0f &&
+                field(*view,"Extension.Window.lastSpecifiedHeight").value.floating==-1.0f &&
+                field(*view,"Extension.Window.lastQueryWidth").value.floating==width &&
+                field(*view,"Extension.Window.lastQueryHeight").value.floating==height,
+                "Original preferred-size Tile/border callback lost its completed pre/post cache values: "+view->path);
         }
-        Require(field(itemsBorder,"Extension.Window.bNeedsQuery").value.boolean &&
-            field(itemTile,"Extension.Window.bNeedsQuery").value.boolean,
-            "Failed first augmentation query incorrectly continued into the later item container");
+        Require(field(itemsBorder,"Extension.Window.X").value.floating==14.0f &&
+            field(itemsBorder,"Extension.Window.Y").value.floating==6.0f &&
+            field(itemsBorder,"Extension.Window.Width").value.floating==48.0f &&
+            field(itemsBorder,"Extension.Window.Height").value.floating==13.0f &&
+            field(itemsBorder,"Extension.Window.bConfigured").value.boolean &&
+            field(itemTile,"Extension.Window.bConfigured").value.boolean,
+            "Original later item border did not complete its actual configuration callback");
         edge(itemTile,"Extension.Window.firstChild",{});edge(itemTile,"Extension.Window.lastChild",{});
         Require(field(augsBorder,"DeusEx.HUDActiveAugsBorder.FirstKeyNum").value.integer==3 &&
             field(augsBorder,"DeusEx.HUDActiveAugsBorder.LastKeyNum").value.integer==12,
@@ -755,6 +845,18 @@ int main(int argc,char** argv) {
                 field(aug,"Extension.Window.Width").value.floating==10.0f &&
                 field(aug,"Extension.Window.Height").value.floating==10.0f,
                 "Original augmentation icon did not finish hidden 34x34 requested-size initialization");
+            for(const auto* name:{"holdWidth","holdHeight","holdX","holdY"}) {
+                const auto& held=field(aug,"Extension.Window."+std::string(name)).value;
+                Require(held.kind==Kind::Float && held.floating==0.0f && !std::signbit(held.floating),
+                    "Original native Tile hidden-child pass lost a held-geometry +0 store: "+aug.path+'.'+name);
+            }
+            Require(field(aug,"Extension.Window.bNeedsQuery").value.boolean &&
+                field(aug,"Extension.Window.bLastWidthSpecified").value.boolean &&
+                field(aug,"Extension.Window.bLastHeightSpecified").value.boolean,
+                "Native Tile incorrectly queried a hidden augmentation child");
+            for(const auto* name:{"lastSpecifiedWidth","lastSpecifiedHeight","lastQueryWidth","lastQueryHeight"})
+                Require(field(aug,"Extension.Window."+std::string(name)).value.floating==0.0f,
+                    "Native Tile changed a hidden augmentation query-cache field");
             for(const auto* name:{"colBlack","colAugActive","colAugInactive"})
                 Require(QuestVr::Vm::Equal(field(aug,"DeusEx.HUDActiveAug."+std::string(name)).value,
                     ReadPortableClassDefault(aug.classPath,name)),"Original augmentation icon authored colors changed");
@@ -1110,9 +1212,9 @@ int main(int argc,char** argv) {
         const auto rootAttempt=ExecutePortableActorFunction(player,"Extension.PlayerPawnExt.InitRootWindow");
         std::cout<<"ORIGINAL unbound root initialization boundary: "<<rootAttempt.function<<':'<<rootAttempt.offset<<
             " opcode="<<unsigned(rootAttempt.opcode)<<" "<<rootAttempt.error<<std::endl;
-        Require(!rootAttempt.passed() && !rootAttempt.committed && rootAttempt.function=="DeusEx.HUDActiveItemsBorderBase.ParentRequestedPreferredSize" &&
-            rootAttempt.offset==9u && rootAttempt.opcode==101u && rootAttempt.writes==8890u &&
-            rootAttempt.error=="Native preferred-size virtual override is not implemented" &&
+        Require(!rootAttempt.passed() && !rootAttempt.committed && rootAttempt.function=="DeusEx.HUDLogDisplay.CreateControls" &&
+            rootAttempt.offset==110u && rootAttempt.opcode==101u && rootAttempt.writes==11280u &&
+            rootAttempt.error=="NewChild native subclass Init is not implemented: extension.textlogwindow" &&
             std::find(rootAttempt.callStack.begin(),rootAttempt.callStack.end(),"DeusEx.DeusExRootWindow.InitWindow")!=rootAttempt.callStack.end(),
             "Native1052 did not construct/dispatch original root without a fabricated client prerequisite");
         const auto windowsAfter=ReadPortableRuntimeNativeWindowSummary();

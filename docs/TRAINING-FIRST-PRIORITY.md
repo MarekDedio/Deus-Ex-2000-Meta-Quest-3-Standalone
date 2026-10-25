@@ -1,5 +1,23 @@
 # Immediate milestone: complete the first Training map
 
+Current 2026-10-25: complete general native Tile sizing/held-placement is now
+implemented with typed journaled rows and actual child queries, not a cosmetic
+UI addition. Math, mock layout, real owned-window fixture, strict ARM64 and
+Android native link pass. Actual first Training two-crowbar destruction and
+Lockpick birth remain intact; startup now reaches bound-player ConsoleCommand
+key-name/binding lookup, while the separate unbound HUD reaches TextLogWindow
+construction. Both normal startup and aimed two-Fire repeat2 checks match their
+snapshots/instruction/write counts and complete undo/all 41 sources. Final HUD
+8301, owned Tile603/19, full desktop/shared gate195 executed/233 registered/
+38 explicit skips/zero failures and final Android native/strict ARM64 pass.
+Final post-correction startup/Fire repeat2 checks match with complete undo/all
+41 sources; all jobs are terminal. No live gravity/collection or
+Quest acceptance is claimed.
+See ORIGINAL-TILE-PREFERRED-SIZE.md; keep working only on first Training's
+genuine startup/live input/automatic world physics, not other-map integrations.
+
+Previous scalar-query checkpoint:
+
 Latest2026-10-25 startup prerequisite: actual1463/1464 scalar queries now reuse
 the genuine common cache/callback/fallback service. Packet2566/148 and owned
 baseWindow409/15 rollback controls pass; native Android link/strict ARM64 pass.

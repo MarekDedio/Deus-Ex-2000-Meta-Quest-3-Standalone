@@ -41,6 +41,7 @@
 #include "quest_native_window_resize.h"
 #include "quest_native_window_configure.h"
 #include "quest_native_window_toggle.h"
+#include "quest_native_tile_layout.h"
 #include "quest_quick_belt.h"
 #include "quest_actor_state_control.h"
 #include "quest_unreal_string.h"
@@ -215,8 +216,20 @@ struct RuntimeNativeWindowState {
     bool dirtyTabOrder{}; // Native TabGroup +164 bit4, no script declaration.
     // Tile row elements have not been audited. Constructor-only support owns
     // an explicitly empty opaque rowArray, never reflected pointer-shaped data.
-    bool emptyTileRows{};
+    std::vector<QuestVr::NativeTileRow> tileRows;
+    bool tileRowsInitialized{};
 };
+std::size_t NativeWindowStorageBytes(const RuntimeNativeWindowState& state,bool capacity) {
+    std::size_t bytes{};
+    for(const auto* list:{&state.rowMajor,&state.colMajor,&state.tabGroups,&state.toggleButtons}) {
+        if(list->size()>4096u)throw std::runtime_error("Native window list exceeds its bound");
+        bytes+=QuestVr::DecalStateDetail::Multiply(capacity?list->capacity():list->size(),sizeof(RuntimeObject*));
+    }
+    if(state.tileRows.size()>4096u)throw std::runtime_error("Native Tile rows exceed their bound");
+    bytes+=QuestVr::DecalStateDetail::Multiply(capacity?state.tileRows.capacity():state.tileRows.size(),
+        sizeof(QuestVr::NativeTileRow));
+    return bytes;
+}
 // Native conversation links are physical mutable UObject edges, not string
 // overlays or Actor/Window births. A retired node is a transaction before-image
 // until the outer boundary; its lookup/index identity is already destroyed.
@@ -2838,6 +2851,7 @@ public:
         nativeStartupOut_.clear();
         nativeDestroyReferenceBytes_=0u;
         nativePhysicsReferenceBytes_=0u;
+        nativeTileReferenceBytes_=0u;
         beforeRandomSeed_ = persistentScriptRandomSeed;
         beforeWindowObjects_=persistentWindowDomain && persistentWindowDomain->get() ?
             persistentWindowDomain->get()->objects.size() : 0u;
@@ -2924,7 +2938,7 @@ public:
         nativeActorOrderObservationBytes_=0u;
         nativeStartupOut_.clear();
         ClearMoveHits();nativeDurableMoved_.clear();
-        saved_.clear(); savedAi_.clear(); provisionalAi_.clear(); provisionalWindows_.clear(); beforeDecals_.reset(); beforeLevelClock_.reset(); beforeWorldSlotItems_.clear(); nativeDestroyReferenceBytes_=0u; nativePhysicsReferenceBytes_=0u; transaction_ = false;
+        saved_.clear(); savedAi_.clear(); provisionalAi_.clear(); provisionalWindows_.clear(); beforeDecals_.reset(); beforeLevelClock_.reset(); beforeWorldSlotItems_.clear(); nativeDestroyReferenceBytes_=0u; nativePhysicsReferenceBytes_=0u; nativeTileReferenceBytes_=0u; transaction_ = false;
     }
     void Rollback() noexcept override {
         if (!transaction_) return;
@@ -3046,7 +3060,7 @@ public:
         RollbackConversationObjects();
         for(auto& root:provisionalDumps_)RetireRuntimeDumpObject(root.get());
         provisionalDumps_.clear();persistentDumpSession=beforeDumpSession_;
-        beforeCollision_.reset(); saved_.clear(); savedAi_.clear(); provisionalAi_.clear(); provisionalWindows_.clear(); beforeDecals_.reset(); beforeLevelClock_.reset(); nativeDestroyReferenceBytes_=0u; nativePhysicsReferenceBytes_=0u; transaction_ = false;
+        beforeCollision_.reset(); saved_.clear(); savedAi_.clear(); provisionalAi_.clear(); provisionalWindows_.clear(); beforeDecals_.reset(); beforeLevelClock_.reset(); nativeDestroyReferenceBytes_=0u; nativePhysicsReferenceBytes_=0u; nativeTileReferenceBytes_=0u; transaction_ = false;
     }
     Property ResolveProperty(const Function& function, const std::int32_t reference) override {
         RuntimeObject* object = Object(ResolveObject(function, reference));
@@ -5454,7 +5468,11 @@ public:
         // Window vtable+7c10050390 forwards an initialized packet to the most
         // derived script callback. Text/TabGroup/Tile virtual overrides have
         // distinct sizing behavior; do not silently treat them as Window.
-        if(NativeWindowAncestor(window->cls)!="extension.window")
+        const auto native=NativeWindowAncestor(window->cls);
+        if(native=="extension.tilewindow") {
+            NativeWindowTileSize(window,widthSpecified,width,heightSpecified,height,execution);return;
+        }
+        if(native!="extension.window")
             throw std::runtime_error("Native preferred-size virtual override is not implemented");
         const auto identity=OptionalNativeWindowEvent(window,"ParentRequestedPreferredSize");
         if(!identity) return; // Actual ProcessScript(...,checked=false).
@@ -5945,7 +5963,7 @@ public:
         const std::vector<Evaluation>& arguments,const Function* declaration,QuestVr::Vm::Execution& execution) {
         RequireNativeWindow(window);
         if(!IsDerivedFromPath(window->cls,"Extension.TileWindow") || !window->nativeWindowState ||
-            !window->nativeWindowState->emptyTileRows)
+            !window->nativeWindowState->tileRowsInitialized)
             throw std::runtime_error("Tile setter requires its actual constructed native TileWindow");
         const auto authored=WindowNativeDeclaration(index,declaration);
         if(arguments.size()!=authored->variables.size())
@@ -6914,8 +6932,7 @@ public:
     }
     void InitializeChildNativeWindowStorage(RuntimeObject* window,const std::string& native) {
         // Native TArray constructors precede Window.Init's parent callbacks.
-        // Tile row element layout is not claimed: only the constructor's empty
-        // state is represented until actual row-layout support is implemented.
+        // Tile's native INT rows are separate from script DynamicArray bytes.
         if(native=="extension.window" || native=="extension.textwindow" ||
             native=="extension.buttonwindow" || native=="extension.togglewindow") return;
         if(native=="extension.radioboxwindow") {
@@ -6925,7 +6942,7 @@ public:
         } else if(native=="extension.tilewindow") ValidateNativeTileFields(window);
         else throw std::runtime_error("Native child constructor storage is not registered");
         Touch(window);window->nativeWindowState.emplace();
-        window->nativeWindowState->emptyTileRows=native=="extension.tilewindow";
+        window->nativeWindowState->tileRowsInitialized=native=="extension.tilewindow";
         ValidateStateBudget();
     }
     void AppendNativeWindowList(RuntimeObject* owner,std::vector<RuntimeObject*>& list,RuntimeObject* window) {
@@ -7116,6 +7133,8 @@ public:
     }
 #include "portable_window_toggle.inl"
 #include "portable_window_axis_probe.inl"
+#include "portable_window_tile_layout.inl"
+#include "portable_window_tile_probe.inl"
     void InitializeChildRadioBox(RuntimeObject* window,QuestVr::Vm::Execution& execution) {
         RequireNativeWindow(window);
         if(!IsDerivedFromPath(window->cls,"Extension.RadioBoxWindow") || !window->nativeWindowState)
@@ -7145,18 +7164,21 @@ public:
     }
     void InitializeChildTileWindow(RuntimeObject* window,QuestVr::Vm::Execution& execution) {
         RequireNativeWindow(window);ValidateNativeTileFields(window);
-        if(!window->nativeWindowState || !window->nativeWindowState->emptyTileRows)
-            throw std::runtime_error("Native Tile constructor has no empty row storage");
+        if(!window->nativeWindowState || !window->nativeWindowState->tileRowsInitialized)
+            throw std::runtime_error("Native Tile constructor has no initialized row storage");
         // Tile.Init10048360 calls only Window.Init, never TabGroup.Init.
-        for(const auto& [name,value]:{std::pair{"orientation",0u},std::pair{"hDirection",0u},
-            std::pair{"vDirection",0u},std::pair{"hChildAlign",3u},std::pair{"vChildAlign",3u}})
-            NativeWindowWrite(window,("Extension.TileWindow."+std::string(name)).c_str(),Value::Byte(value),execution);
+        // Window.Init's parent callbacks may already have populated row state.
+        // Original10048391..100483E2 never tests/clears those rows: its suffix
+        // writes Float defaults, packed flag defaults, then the Byte fields.
         for(const auto& [name,value]:{std::pair{"hMargin",3.0f},std::pair{"vMargin",3.0f},
             std::pair{"minorSpacing",1.0f},std::pair{"majorSpacing",1.0f}})
             NativeWindowWrite(window,("Extension.TileWindow."+std::string(name)).c_str(),Value::Float(value),execution);
         for(const auto& [name,value]:{std::pair{"bWrap",true},std::pair{"bFillParent",true},
             std::pair{"bEqualWidth",false},std::pair{"bEqualHeight",true}})
             NativeWindowWrite(window,("Extension.TileWindow."+std::string(name)).c_str(),Value::Bool(value),execution);
+        for(const auto& [name,value]:{std::pair{"orientation",0u},std::pair{"hDirection",0u},
+            std::pair{"vDirection",0u},std::pair{"hChildAlign",3u},std::pair{"vChildAlign",3u}})
+            NativeWindowWrite(window,("Extension.TileWindow."+std::string(name)).c_str(),Value::Byte(value),execution);
     }
     void NativeRadioDescendantAdded(RuntimeObject* receiver,RuntimeObject* descendant) {
         // Radio10038b90 invokes script in LinkNewWindowChild FIRST. Only
@@ -8858,6 +8880,7 @@ private:
     // the outer boundary, so their owned schema/zero payload is not lexical.
     std::size_t nativeDestroyReferenceBytes_{};
     std::size_t nativePhysicsReferenceBytes_{};
+    std::size_t nativeTileReferenceBytes_{};
     // First before-image of replaced original Level items. Appended births
     // roll back by truncation; clearing an authored slot requires a real hole
     // journal, not worldRemoved alone or a copy/compaction of the whole array.
@@ -8870,7 +8893,7 @@ private:
     // Original Extension global layout-call bookkeeping is transient, scoped
     // to this VM host. Exception guards restore it; UObject writes journal in
     // the outer transaction. It is never persisted as guessed script fields.
-    std::size_t nativeConfigureChildDepth_{},nativeConfigurationDepth_{};
+    std::size_t nativeConfigureChildDepth_{},nativeConfigurationDepth_{},nativeTileSizeDepth_{};
     RuntimeObject* nativeConfiguringWindow_{};
     std::optional<PortableModelGeometry> rootModel_;
     bool transaction_{};
@@ -9660,7 +9683,11 @@ private:
         if (!transaction_) throw std::runtime_error("VM mutation outside a transaction");
         if (saved_.find(object) == saved_.end()) {
             if (saved_.size() >= 4096u) throw std::runtime_error("VM touched actor budget exceeded");
-            ValidateStateBudget();
+            // Admit the native Window before-image BEFORE copying its vectors.
+            // Rollback uses optional/vector swaps and never allocates.
+            const auto windowBytes=object->nativeWindowState?
+                NativeWindowStorageBytes(*object->nativeWindowState,false):0u;
+            ValidateStateBudget(windowBytes);
             saved_.emplace(object, Before{object->scriptValues, object->classDefaultValues, object->animationClock, object->stateObject, object->latentTimeLeft, object->lastRenderTime,
                 object->stateLocalsRevision, object->stateTransitionFlags, object->committedScriptState, object->childActors,
                 object->touchEventSent, object->committedLifecycle, object->worldRemoved,
@@ -10148,6 +10175,7 @@ private:
         defaults.Retain(beforeWorldSlotItems_.capacity()*sizeof(decltype(beforeWorldSlotItems_)::value_type));
         defaults.Retain(nativeDestroyReferenceBytes_);
         defaults.Retain(nativePhysicsReferenceBytes_);
+        defaults.Retain(nativeTileReferenceBytes_);
         defaults.Retain(nativeActorOrderObservationBytes_);
         defaults.Retain(sizeof(nativeStartupOut_)+nativeStartupOut_.capacity()*sizeof(StartupOutStorage));
         for(const auto& cell:nativeStartupOut_) {
@@ -10224,6 +10252,7 @@ private:
         for(const auto& [object,before]:saved_) {
             static_cast<void>(object);
             if(before.conversation) defaults.Retain(sizeof(RuntimeNativeConversationState));
+            if(before.windowState) defaults.Retain(NativeWindowStorageBytes(*before.windowState,true));
         }
         const auto valueBudget = [&](const auto& self, const Value& value, const std::size_t depth) -> void {
             defaults.Node(depth); defaults.Retain(sizeof(value));
@@ -10272,11 +10301,7 @@ private:
             if(object->nativeWindowObject) defaults.Retain(sizeof(RuntimeObject)+sizeof(GCAllocation)+
                 object->reflection.objectPath.size()+object->references.capacity()*sizeof(RuntimeObject*));
             if(object->nativeWindowState) {
-                for(const auto* list:{&object->nativeWindowState->rowMajor,&object->nativeWindowState->colMajor,
-                    &object->nativeWindowState->tabGroups,&object->nativeWindowState->toggleButtons}) {
-                    if(list->size()>4096u) throw std::runtime_error("Native window list exceeds its bound");
-                    defaults.Retain(QuestVr::DecalStateDetail::Multiply(list->capacity(),sizeof(RuntimeObject*)));
-                }
+                defaults.Retain(NativeWindowStorageBytes(*object->nativeWindowState,true));
             }
             for(const auto& [key,slots]:object->nativeWindowPropertyRoots) {
                 defaults.Retain(sizeof(std::string)+5u*sizeof(void*)+key.capacity());
@@ -13533,7 +13558,10 @@ PortableRootWindowProbeResult ProbePortableRootWindowInitialization(
                 };
                 if(object->nativeWindowState) {
                     view.tabOrderDirty=object->nativeWindowState->dirtyTabOrder;
-                    view.emptyTileRows=object->nativeWindowState->emptyTileRows;
+                    view.tileRowsInitialized=object->nativeWindowState->tileRowsInitialized;
+                    view.emptyTileRows=view.tileRowsInitialized && object->nativeWindowState->tileRows.empty();
+                    retained.Retain(object->nativeWindowState->tileRows.size()*sizeof(QuestVr::NativeTileRow));
+                    view.tileRows=object->nativeWindowState->tileRows;
                     for(const auto& [source,target]:{
                         std::pair{&object->nativeWindowState->rowMajor,&view.rowMajorWindows},
                         std::pair{&object->nativeWindowState->colMajor,&view.colMajorWindows},
@@ -13697,6 +13725,21 @@ PortableWindowAxisProbeResult ProbePortableNativeWindowAxisQuery(const std::stri
         PortableActorVmHost host;
         result.execution=QuestVr::Vm::ExecuteTransaction(host,[&](QuestVr::Vm::Execution& execution) {
             return host.ProbeNativeWindowAxisQuery(playerActorPath,mode,result,execution);
+        },limits);
+    } catch(const std::exception& error) {
+        result.execution.status=QuestVr::Vm::Status::Unsupported;result.execution.error=error.what();
+    }
+    return result;
+}
+
+PortableWindowTileProbeResult ProbePortableNativeWindowTileQuery(const std::string& playerActorPath,
+    PortableWindowTileProbeMode mode,const QuestVr::Vm::Limits& limits) {
+    CollectBirthGarbageAtBoundary collect;
+    PortableWindowTileProbeResult result;
+    try {
+        PortableActorVmHost host;
+        result.execution=QuestVr::Vm::ExecuteTransaction(host,[&](QuestVr::Vm::Execution& execution) {
+            return host.ProbeNativeWindowTileQuery(playerActorPath,mode,result,execution);
         },limits);
     } catch(const std::exception& error) {
         result.execution.status=QuestVr::Vm::Status::Unsupported;result.execution.error=error.what();

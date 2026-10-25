@@ -4,6 +4,16 @@ Only Maps/00_Training.dx. This extends the rollback-only genuine original
 pickup/equip/Fire probe; it is not a published player or Quest input bridge.
 The default command still performs one attack at the actual starting pose.
 
+Subsequent general Tile integration,2026-10-25: both aimed original attacks,
+all48 observations/two notifies/four traces/nine births remain intact. Startup
+now passes Tile and reaches bound PlayerPawn.ConsoleCommand/FExec during
+HUDMultiSkills.RefreshKey, at228837 instructions/26047writes. Normal startup
+is220285/25439. Exact repeat2/whole-root undo/all41 sources passes; final
+post-constructor-correction repeats match exactly with full root/source undo.
+This is not automatic gravity,
+loot collection, published gameplay or Quest acceptance. See
+ORIGINAL-TILE-PREFERRED-SIZE.md and ORIGINAL-PLAYER-INPUT-CONSOLE.md.
+
 Latest2026-10-25: portable0x50 now lets two aimed crowbar swings finish.
 Actual crate HP10->4->-2, removal, six WoodFragments and a surviving Lockpick
 are observed; see the final section below. This supersedes the initial

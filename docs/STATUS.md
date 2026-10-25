@@ -1,5 +1,46 @@
 # Port status
 
+## Native Tile sizing implemented; Training startup advances (2026-10-25)
+
+General native Tile preferred sizing and raw held placement now use audited
+PC64/Float/INT arithmetic, live child traversal, actual recursive query wrappers
+and journaled typed rows. Initialized storage is distinct from row emptiness;
+live/before-image capacities, allocation peaks and retained aliases are bounded.
+No empty-only stub, account interface or presentation-HUD replacement was added.
+
+Arithmetic passes 664315 checks/235081 independent x87 cases; explicit mock
+layout passes 7813 checks/1973 transactions/119 refusals. Actual owned native
+Root/Tile/Window integration passes 603 checks/19 rollback controls. Strict
+ARM64 runtime/new tests and Android native links pass. See
+ORIGINAL-TILE-PREFERRED-SIZE.md for source addresses and acceptance limits.
+
+Initial real Training two-swing crowbar run still completes 48 observations,
+two original cycles/notifies, four crate traces, HP10->4->-2/removal and nine
+births, including a surviving Lockpick. Startup passes the previous Tile
+failure, reaching bound PlayerPawn.ConsoleCommand/FExec in HUDMultiSkills's
+key-binding refresh at 228837 instructions/26047 writes. Complete undo/all
+41 owned sources passes. Separate unbound-player HUD now reaches native
+TextLogWindow construction at HUDLogDisplay.CreateControls:110, with
+159 objects/11280 writes. These are different authentic startup paths.
+
+Normal startup repeat2 matches 220285 instructions/25439 writes; aimed Fire
+repeat2 matches 228837/26047 with all 48 observations/two cycles/two notifies/
+four traces/nine births. Both retain complete root undo/all 41 source checks.
+The final original-player/HUD regression passes 8301 controls, including
+completed Tile/border cache results, forty hidden held-field +0 stores, later
+HUD graph/GC/clipping and exact newer boundaries. The constructor-tail/real
+setter populated-row control passes in the final owned fixture (603/19).
+Final full desktop build and shared CTest gate pass: 195 executed/233 registered,
+38 explicit owned-source skips, zero failures in 88.43s. Final Android native
+link and strict ARM64 runtime, new tests, HUD and diagnostic checks pass.
+This is not live controller damage, automatic world physics/gravity, collectible
+loot publication or complete possession. First Training only; no APK generated.
+Final post-correction normal and aimed-Fire repeat2 checks retain the same
+counts/snapshots and complete rollback/all 41 unchanged sources. Every build
+and test job is terminal. The next reached bound-player service is audited in
+ORIGINAL-PLAYER-INPUT-CONSOLE.md, including configured InputExt/native enum/
+config/viewport authority; no hardcoded key-name list or empty success is used.
+
 ## Original player startup advances through scalar sizing queries (2026-10-25)
 
 Native1463/1464 now use their real original one-Float wrappers and the existing

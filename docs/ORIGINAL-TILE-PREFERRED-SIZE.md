@@ -1,5 +1,68 @@
 # Original native Tile preferred-size/layout audit
 
+## Portable implementation checkpoint (2026-10-25)
+
+The complete general sizing/held-placement protocol is now implemented in
+`native/quest_native_tile_layout.h`, using `quest_native_tile_math.h` for
+portable PC64/Float/INT operations. The runtime adapter is
+`native/portable_window_tile_layout.inl`: actual native Tile virtual selection,
+live child links/local visibility, same-Execution 1463/1464/1465 child queries,
+real held-property OUT aliases and typed signed-INT rows. It is not an
+empty-only fallback or a new presentation HUD implementation.
+
+Row clears, appends and count/word stores participate in the VM write budget.
+Native Window before-images restore rows by swap after reverse VM alias undo.
+Row capacity is retained during the transaction so undo resizes allocate
+nothing; both live and before-image capacities, reserve peaks and retained
+row/held-OUT reference closures are admitted to the native memory ledger.
+Initialized row storage is distinct from row emptiness, preserving later Tile
+setters. Shared native work and recursive-query depth bounds remain active.
+
+The original Tile.Init10048360..100483F5 calls Window.Init at1004838C, including
+its parent notifications, before writing Tile scalar defaults. Its suffix
+never checks or clears native rows: callbacks can already have populated them.
+The provider therefore requires initialized storage, not late emptiness, and
+retains that state. The suffix follows original Float->flags->Byte store order.
+The owned fixture additionally exercises that actual scalar suffix on a
+populated Tile, restores explicit fixture settings, then invokes real1535
+SetMargins with populated rows. This is a scalar-tail/real-setter control,
+not a claim that an authored script parent-callback reentry has been executed.
+
+Independent test-owned x87 arithmetic: 664315 checks, 66 portable controls,
+235081 hardware cases, 16180 explicit refusals pass. The explicit mock protocol
+passes 7813 checks/1973 transactions/119 refusals. Strict ARM64 runtime and all
+three new test translation units pass; Android native libraries link.
+
+The actual owned base Root/Tile/Window fixture passes 603 checks/19 rollback
+controls: eight stages cover all-hidden geometry, genuine child callbacks,
+cache hit, wrap/fill, both-specified/reversed placement, consumed/replaced row
+state, invalid links/lifetime, shared write/work/VM-retained cuts and full
+save/GC/lookup/model/player/name/source undo (40 sources). These are explicit
+fixture settings, not substituted game HUD values.
+
+The initial authored Training run passes the former Tile failure. Two original
+crowbar attacks still break the lower crate and spawn nine actual actors,
+including its surviving Lockpick: 48 rows, two cycles/notifies, four traces,
+two HP changes. At 228837 instructions/26047 writes, normal startup now refuses
+the bound-player ConsoleCommand/FExec service in HUDMultiSkills.RefreshKey.
+Whole-root undo/all 41 sources passes. The separate unbound-player HUD probe
+reaches HUDLogDisplay.CreateControls:110, with 159 objects/11280 writes, then
+refuses the native TextLogWindow constructor. These are distinct real paths.
+Normal startup repeat2 matches 220285 instructions/25439 writes; aimed Fire
+repeat2 matches 228837/26047, with all original observations/births and complete
+root/source undo. Final original-player/HUD 8301 controls and the final owned
+603/19 fixture (including populated scalar-tail/setter control) pass. Full
+desktop/shared gate passes 195 executed/233 registered/38 explicit owned-source
+skips, zero failures in 88.43s; final Android native link and strict ARM64 pass.
+Final post-constructor-correction normal and aimed-Fire repeat2 checks match
+these counts and snapshots with complete undo/all 41 sources. Every build/test
+job is terminal. None proves a published
+player, automatic physics, live Quest crate damage or loot pickup.
+
+The original audit below is retained as the address-level source contract.
+
+## Original audit and implementation requirements
+
 Read-only owned GOTY audit, 2026-10-25. This document is **not an
 implementation or a completed HUD/startup claim**. No commercial EXE/DLL was
 loaded or executed. Desktop/Android compiler inputs remained frozen during
@@ -296,8 +359,10 @@ Minimum controls should include:
   changing exact-boundary assertions. Passing this provider is not accepted
   Root visibility, window destruction, input/rendering or player possession.
 
-Not yet proved/implemented here: a portable general Tile provider, native row
-publication, Tile ConfigurationChanged integration, complete destructive window
-reentry/lifecycle behavior, other native preferred-size virtuals, full CRT
-exceptional conversions, and any on-headset acceptance. Existing explicit
-refusals for those services must not be removed by this documentation.
+At the original read-only audit, the provider and native row storage were not
+implemented; the checkpoint above records their subsequent implementation.
+Still not proved/implemented: live Window graph publication, Tile
+ConfigurationChanged integration, complete destructive window reentry/lifecycle
+behavior, other native preferred-size virtuals, full CRT exceptional
+conversions and any on-headset acceptance. Existing explicit refusals for those
+services must not be removed by this documentation.

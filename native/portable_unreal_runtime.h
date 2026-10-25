@@ -9,6 +9,7 @@
 #include "quest_held_item_visual.h"
 #include "quest_linker_load_context.h"
 #include "portable_startup_weapon_types.h"
+#include "quest_native_tile_layout.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -701,6 +702,8 @@ struct PortableNativeWindowObjectSnapshot {
     std::vector<std::string> rowMajorWindows,colMajorWindows,tabGroupWindows,toggleButtons;
     bool tabOrderDirty{};
     bool emptyTileRows{};
+    bool tileRowsInitialized{};
+    std::vector<QuestVr::NativeTileRow> tileRows;
 };
 struct PortableRootWindowProbeResult {
     QuestVr::Vm::Result execution;
@@ -752,6 +755,30 @@ struct PortableWindowAxisProbeResult {
 // configured HUD, player startup, live renderer or arbitrary saved Window.
 PortableWindowAxisProbeResult ProbePortableNativeWindowAxisQuery(const std::string& playerActorPath,
     PortableWindowAxisProbeMode mode,const QuestVr::Vm::Limits& limits = {});
+
+enum class PortableWindowTileProbeMode { RoundTrip,LateFailure,BadGraph,DeadChild };
+struct PortableWindowTileProbeChild {
+    float holdX{},holdY{},holdWidth{},holdHeight{},lastQueryWidth{},lastQueryHeight{};
+    bool visible{},needsQuery{};
+};
+struct PortableWindowTileProbeRow {std::int32_t crossSize{},mainExtent{},childCount{};};
+struct PortableWindowTileProbeStage {
+    std::string name;std::uint16_t nativeIndex{};
+    float width{},height{},lastSpecifiedWidth{},lastSpecifiedHeight{},lastQueryWidth{},lastQueryHeight{};
+    bool lastWidthSpecified{},lastHeightSpecified{},needsQuery{};
+    std::size_t writes{},rowCount{};
+    std::array<PortableWindowTileProbeRow,3u> rows;
+    std::array<PortableWindowTileProbeChild,3u> children;
+};
+struct PortableWindowTileProbeResult {
+    QuestVr::Vm::Result execution;std::string rootPath,tilePath;
+    std::array<std::string,3u> childPaths;
+    std::vector<PortableWindowTileProbeStage> stages;
+};
+// Actual native constructors/query wrappers, explicit fixture settings, and
+// complete root rollback. This is not a published game HUD/player session.
+PortableWindowTileProbeResult ProbePortableNativeWindowTileQuery(const std::string& playerActorPath,
+    PortableWindowTileProbeMode mode,const QuestVr::Vm::Limits& limits = {});
 struct PortableMapNorthSnapshot {
     bool found{};
     std::string actorPath;
