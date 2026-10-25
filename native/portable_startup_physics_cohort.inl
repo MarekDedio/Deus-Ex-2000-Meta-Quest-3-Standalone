@@ -19,22 +19,6 @@
     bool CohortFlag(RuntimeObject* actor,const char* key,std::uint32_t flags=0x2u) {
         return Read(actor,LandingScalarProperty(actor,key,"Engine.Actor",Kind::Bool,flags),0u).boolean;
     }
-    void RequireCohortActorPhysicsImplementation(RuntimeObject* actor) {
-        // Owned metadata RF_Native, not inherited ClassFlags or a broad IsA.
-        // Static original vtable/IAT evidence for these three native classes
-        // is recorded in ORIGINAL-ACTOR-TICK-PHYSICS-PHASE.md. Unproven native
-        // overrides must not silently receive a qualified Actor base call.
-        auto* cls=actor->cls;
-        for(std::size_t depth=0u;cls&&depth<64u;++depth,cls=cls->base) {
-            LifecycleStep();
-            if(!cls->classDescriptor)throw std::runtime_error("Physics cohort native ancestry lacks authored Class metadata");
-            if(!(cls->reflection.flags&0x04000000u))continue;
-            const auto& path=cls->reflection.objectPath;
-            if(path=="DeusEx.DeusExDecoration"||path=="Engine.Projectile"||path=="Engine.Inventory")return;
-            throw std::runtime_error("Physics cohort reached an unproven original native physics override: "+path);
-        }
-        throw std::runtime_error("Physics cohort has no bounded authentic native Actor implementation");
-    }
     void ValidateStartupPhysicsCohort(const PortableWorldStartupProbeOptions& options) {
         if(!options.physicsCohort)return;
         const auto& command=*options.physicsCohort;
@@ -142,7 +126,7 @@
                 RetailTouchClass(identity,"Engine.Pawn")||std::find(members.begin(),members.end(),actor)!=members.end()||members.size()>=8u)
                 throw std::runtime_error("Physics cohort member is not an actual distinct supported live survivor");
             members.push_back(actor);
-            RequireCohortActorPhysicsImplementation(actor);
+            RequireOriginalActorTickPhysicsImplementation(actor);
         };
         for(const auto& path:command.placedActors)append(Object(path),false);
         const auto& damage=worldStartupResult_->damageObservations;

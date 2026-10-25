@@ -8,7 +8,7 @@
             throw std::runtime_error("Original lifecycle retained Actor identity is unavailable");
         return actor; // No pending-delete, active, slot0 or Engine gate.
     }
-    enum class LifecycleEventKind { EndState,Destroyed,LostChild,GainedChild,PostTouch,EndedRotation };
+    enum class LifecycleEventKind { EndState,Destroyed,LostChild,GainedChild,PostTouch,EndedRotation,Expired };
     const char* LifecycleEventName(LifecycleEventKind kind) {
         switch(kind) {
         case LifecycleEventKind::EndState:return "EndState";
@@ -17,6 +17,7 @@
         case LifecycleEventKind::GainedChild:return "GainedChild";
         case LifecycleEventKind::PostTouch:return "PostTouch";
         case LifecycleEventKind::EndedRotation:return "EndedRotation";
+        case LifecycleEventKind::Expired:return "Expired";
         }
         throw std::runtime_error("Unknown original lifecycle event");
     }

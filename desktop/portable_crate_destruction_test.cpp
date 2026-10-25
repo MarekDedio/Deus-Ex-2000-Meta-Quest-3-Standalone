@@ -1,6 +1,8 @@
 #include "Precomp.h"
 #include "GC/GC.h"
 #include "portable_unreal_runtime.h"
+#include "portable_engine_collision.h"
+#include "portable_object_lookup.h"
 #include "quest_save_bundle.h"
 #include "quest_script_dispatch.h"
 #include "quest_script_state.h"
@@ -127,13 +129,15 @@ Bytes Envelope(const Bytes& baseline, const QuestVr::ScriptSavedState& state) {
     return bytes;
 }
 void LoadFixture(const Temporary& temporary, const std::string& name, const Bytes& baseline,
-    const std::string& level, const std::string& levelClass, const bool begun, const bool startup) {
+    const std::string& level, const std::string& levelClass, const bool begun, const bool startup,
+    const std::vector<QuestVr::ScriptSavedObject>& extra = {}) {
     QuestVr::ScriptSavedState state;
     state.mapName = "00_Training";
     state.objects.push_back({level, levelClass,
         {{"Engine.LevelInfo.bBegunPlay", "bBegunPlay", 0u, Value::Bool(begun)},
          {"Engine.LevelInfo.bStartup", "bStartup", 0u, Value::Bool(startup)},
          {"Engine.LevelInfo.NetMode", "NetMode", 0u, Value::Byte(0u)}}, {}});
+    state.objects.insert(state.objects.end(),extra.begin(),extra.end());
     const auto path = temporary.Path(name);
     Require(QuestVr::WriteDurableSaveFile(path.string(), Envelope(baseline, state)) &&
         ValidatePortableRuntimeState(path.string(), "00_Training") && LoadPortableRuntimeState(path.string()),
@@ -142,6 +146,95 @@ void LoadFixture(const Temporary& temporary, const std::string& name, const Byte
 bool Published(const std::string& actor) {
     const auto world = GetPortableRuntimeMapActors(true);
     return std::any_of(world.begin(), world.end(), [&](const auto& item) { return item.objectPath == actor; });
+}
+void TickTail(const Temporary& temporary,const Bytes& baseline,const std::string& level,const std::string& levelClass,
+    const std::string& ini,const std::vector<PortablePackageTables>& packages,const std::string& mapSource) {
+    const auto prepare=[&] {
+        Require(PreparePortableRuntimeNativeEngineClasses().prepared&&PreparePortableRuntimeNativeMetadataClasses().prepared&&
+            PreparePortableRuntimeNativeConfigClasses().prepared&&PreparePortableRuntimeNativePackages().prepared&&
+            PreparePortableRuntimeObjectLookup().prepared&&PreparePortableRuntimeEngineCollision(ini).prepared,
+            "Actual Tick expiry fixture could not establish its genuine Engine/Level/native lookup services");
+    };
+    prepare();
+    const std::string actor="00_Training.CrateBreakableMedGeneral1";
+    const auto load=[&](const std::string& name,float lifespan) {
+        LoadFixture(temporary,name,baseline,level,levelClass,true,false,
+            {{actor,"DeusEx.CrateBreakableMedGeneral",
+                {{"Engine.Actor.LifeSpan","LifeSpan",0u,Value::Float(lifespan)},
+                 {"Engine.Actor.Physics","Physics",0u,Value::Byte(0u)}},{}}});
+        const auto state=ExecutePortableActorFunction(actor,"GotoState",{{Value::Text(Kind::Name,"None"),{}}});
+        Require(state.passed()&&state.committed,
+            "Actual Tick fixture could not initialize the existing Actor frame through original GotoState(None): "+state.error);
+    };
+    load("TickTailBegin",1.0f);
+    const auto before=temporary.Snapshot("TickTailBefore");
+    const auto revision=GetPortableRuntimeWorldRevision();
+    const auto skip=AdvancePortableActorNonPawnTickTail(actor,0.125f,1);
+    Require(skip.passed()&&skip.committed&&skip.value.integer==1&&temporary.Snapshot("TickTailSkipped")==before&&
+        GetPortableRuntimeWorldRevision()==revision,"Original tickType1 tail did not preserve the complete actual crate root");
+    const auto step=AdvancePortableActorNonPawnTickTail(actor,0.125f,0);
+    Require(step.passed()&&step.committed&&step.value.integer==1&&Published(actor)&&
+        ReadPortableActorScriptProperty(actor,"LifeSpan").floating==0.875f,
+        "Original actual-crate post-animation Tick tail failed: "+step.error);
+    const auto after=temporary.Snapshot("TickTailAfter");
+    Require(before!=after&&LoadPortableRuntimeState(temporary.Path("TickTailAfter").string())&&
+        temporary.Snapshot("TickTailReloaded")==after&&ReadPortableActorScriptProperty(actor,"LifeSpan").floating==0.875f,
+        "Actual-crate LifeSpan Tick update did not round-trip its authoritative save");
+    Require(LoadPortableRuntimeState(temporary.Path("TickTailBefore").string()),"Could not restore actual-crate Tick prefix");
+    const auto rollbackRevision=GetPortableRuntimeWorldRevision();
+    QuestVr::Vm::Limits cutoff;cutoff.writes=0u;
+    const auto refused=AdvancePortableActorNonPawnTickTail(actor,0.125f,0,cutoff);
+    Require(!refused.passed()&&!refused.committed&&refused.status==QuestVr::Vm::Status::Budget&&
+        temporary.Snapshot("TickTailRefused")==before&&GetPortableRuntimeWorldRevision()==rollbackRevision,
+        "Actual-crate Tick write cutoff did not restore the entire caller root");
+    ++refusals;
+    load("TickTailExpiryBegin",0.125f);
+    const auto expiryBefore=temporary.Snapshot("TickTailExpiryBefore");
+    const auto ownershipBefore=ReadPortableRuntimeDeferredOwnership();
+    QuestVr::Vm::Limits late;late.instructions=step.instructions+8u;const auto revisionBefore=GetPortableRuntimeWorldRevision();
+    GC::Collect();const auto gcBefore=GC::GetStats();
+    const auto lateRefusal=AdvancePortableActorNonPawnTickTail(actor,0.125f,0,late);
+    Require(!lateRefusal.passed()&&!lateRefusal.committed&&lateRefusal.status==QuestVr::Vm::Status::Budget&&
+        lateRefusal.instructions==late.instructions&&lateRefusal.writes>0u&&
+        temporary.Snapshot("TickTailExpiryRefused")==expiryBefore&&GetPortableRuntimeWorldRevision()==revisionBefore&&Published(actor)&&
+        ReadPortableRuntimeDeferredOwnership()==ownershipBefore,
+        "Late original expiry refusal leaked countdown/deletion/native ownership or missed its actual budget boundary: "+lateRefusal.error);
+    ++refusals;GC::Collect();const auto gcAfter=GC::GetStats();
+    Require(gcBefore.numObjects==gcAfter.numObjects&&gcBefore.memoryUsage==gcAfter.memoryUsage,
+        "Refused original Tick expiry retained GC-owned actor births");
+    const auto expiry=AdvancePortableActorNonPawnTickTail(actor,0.125f,0);
+    Require(expiry.passed()&&expiry.committed&&!Published(actor)&&
+        QuestVr::Vm::ToBool(ReadPortableActorScriptProperty(actor,"bDeleteMe"))&&
+        ReadPortableActorScriptProperty(actor,"LifeSpan").floating==0.0f,
+        "Actual-crate Tick expiry failed original Expired -> DestroyActor -> Containers.Destroyed: "+expiry.error);
+    const auto ownership=ReadPortableRuntimeDeferredOwnership();
+    Require(ownership.available&&!ownership.firstDeletedPath.empty()&&ownership!=ownershipBefore,
+        "Actual expiry did not retain original deferred native Actor ownership");
+    Require(!SavePortableRuntimeState(temporary.Path("TickTailDeferredCaptureRefused").string()),
+        "Native deferred deletion was serialized without a supported checkpoint/cleanup protocol");
+    // Recreate the CPU fixture, rather than bypassing the real native deferred
+    // capture/rebind guard, to test failure one instruction before completion.
+    ShutdownPortableRuntime();GC::Collect();
+    Require(InitializePortableRuntime(packages).passed&&LoadPortableRuntimeMap(LoadPortablePackageTables(mapSource)).passed,
+        "Could not recreate the exact owned Training fixture for late native expiry undo");
+    prepare();load("TickTailLateExpiryBegin",0.125f);
+    const auto replayBefore=temporary.Snapshot("TickTailLateExpiryBefore");
+    const auto replayOwnership=ReadPortableRuntimeDeferredOwnership();const auto replayRevision=GetPortableRuntimeWorldRevision();
+    GC::Collect();const auto replayGc=GC::GetStats();
+    QuestVr::Vm::Limits last;Require(expiry.instructions>1u,"Original expiry ran no callback instructions");
+    last.instructions=expiry.instructions-1u;
+    const auto lastRefusal=AdvancePortableActorNonPawnTickTail(actor,0.125f,0,last);
+    Require(!lastRefusal.passed()&&!lastRefusal.committed&&lastRefusal.status==QuestVr::Vm::Status::Budget&&
+        lastRefusal.instructions==last.instructions&&lastRefusal.writes>lateRefusal.writes&&
+        temporary.Snapshot("TickTailLastInstructionRefused")==replayBefore&&
+        GetPortableRuntimeWorldRevision()==replayRevision&&ReadPortableRuntimeDeferredOwnership()==replayOwnership&&Published(actor),
+        "Last-instruction native expiry refusal leaked countdown, contents birth/deletion, native ownership, RNG or map publication: "+lastRefusal.error);
+    ++refusals;GC::Collect();const auto replayAfter=GC::GetStats();
+    Require(replayGc.numObjects==replayAfter.numObjects&&replayGc.memoryUsage==replayAfter.memoryUsage,
+        "Last-instruction original expiry refusal retained native/deleted actor objects");
+    std::cout<<"ORIGINAL actual-crate Tick tail: committed state/timer/countdown, Expired/native destruction, save/reload and early/late rollback; "
+        <<step.instructions<<"/"<<expiry.instructions<<" script instructions. Countdown saves, deferred-deletion capture explicitly refuses; "
+        <<"explicit saved preconditions, NOT full Tick/startup/live gravity.\n";
 }
 void SourceContracts(const PortablePackageTables& engine, const PortablePackageTables& deusex) {
     const auto destroy = LoadPortableFunctionScript(engine, FindPortableExport(engine, "Actor.Destroy"));
@@ -174,6 +267,9 @@ bool Original(const std::filesystem::path& root) {
         originals.emplace(sources[i], Source{ReadBytes(sources[i]), std::filesystem::last_write_time(sources[i])});
         if (i + 1u < sources.size()) packages.push_back(LoadPortablePackageTables(sources[i].string()));
     }
+    const auto ini=root/"System"/"DeusEx.ini";
+    Require(std::filesystem::is_regular_file(ini),"Original Tick fixture requires the owned explicit DeusEx.ini");
+    originals.emplace(ini,Source{ReadBytes(ini),std::filesystem::last_write_time(ini)});
     SourceContracts(packages.at(1u), packages.at(2u));
     Require(InitializePortableRuntime(packages).passed &&
         LoadPortableRuntimeMap(LoadPortablePackageTables(sources.back().string())).passed,
@@ -285,6 +381,7 @@ bool Original(const std::filesystem::path& root) {
             temporary.Snapshot("RestoredAuthoredBaseline") == baseline,
             "Original crate diagnostic did not restore complete authored baseline");
     }
+    TickTail(temporary,baseline,level->objectPath,level->classPath,ini.string(),packages,sources.back().string());
     ShutdownPortableRuntime();
     for (const auto& [path, source] : originals)
         Require(ReadBytes(path) == source.bytes && std::filesystem::last_write_time(path) == source.modified,

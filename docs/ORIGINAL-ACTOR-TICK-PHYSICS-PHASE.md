@@ -7,6 +7,12 @@ needed for a frame-major diagnostic and eventual real world Tick. It adds no
 runtime implementation, proves no completed world scheduler and is not
 headset acceptance.
 
+Update2026-10-25: the post-animation non-Pawn control flow and real committing
+phase binding are now implemented and tested separately. See
+[the implementation and exact expiry arithmetic](ORIGINAL-NONPAWN-TICK-TAIL.md).
+The surrounding stasis/owner/animation/world scheduler is still unfinished;
+the historical audit below is not a claim of a completed Actor/Level Tick.
+
 Read alongside [native Actor order](TRAINING-WORLD-ACTOR-ORDER.md),
 [performPhysics epilogue](ORIGINAL-ACTOR-PHYSICS-EPILOGUE.md),
 [rotation](ORIGINAL-PHYSICS-ROTATION.md),
@@ -250,8 +256,10 @@ physics. Other values follow:
 3. Execute the original timer block103A269B..103A2709, including counter
    reduction/one-shot rate clear before the selected Timer callback. See the
    separate exact timer contract; never synthesize catch-up Timer callbacks.
-4. Read actual LifeSpan at103A270B. Exact Float0 skips expiry work. Otherwise
-   subtract whole deltaSeconds and store Float, then compare against
+4. Read actual LifeSpan at103A270B. Exact Float0 and unordered NaN skip expiry
+   work (the branch tests C3). Otherwise subtract whole deltaSeconds in PC64
+   and FST Float at103A2721 without popping the extended result; compare that
+   still-live PC64 result, NOT its rounded stored Float, against
    Double0.0001 (1042AC40). A reached finite result<=0.0001 selects actual
    Expired and calls real ProcessEvent with no parameters, then invokes
    Level.DestroyActor(source,force0), then returns1. There is no new test of

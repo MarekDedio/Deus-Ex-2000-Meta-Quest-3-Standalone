@@ -1,5 +1,20 @@
 # Immediate milestone: complete the first Training map
 
+Latest actor-update work,2026-10-25: the original non-Pawn post-animation Tick
+phase now has a real committing runtime binding: selected Tick, ProcessState,
+Timer, PC64 LifeSpan/Expired/native DestroyActor and fresh physics dispatch.
+Helper3714760 checks/26 refusals and actual Training crate415/5 pass, including
+countdown save/reload and last-instruction native deletion/contents undo.
+Successful native deletion still correctly refuses unsupported deferred-list
+checkpoint capture. This is NOT full Actor/Level Tick, live controller damage,
+collectible loot or automatic gravity. See ORIGINAL-NONPAWN-TICK-TAIL.md.
+Next first-map integration is the real preceding actor phases and world
+scheduling/publication, not other maps or account/character-creation screens.
+Full desktop/shared gate199/238/39 skips/zero failures, strict ARM64 and Android
+native link pass. Owned Engine collision/config15156/31 and normal/two-Fire
+repeat2 retain their complete undo/exact counts/all41 unchanged sources. All
+jobs are terminal; no APK or completed live crate/loot/gravity claim.
+
 Latest native Input config prerequisite2026-10-25: general Name/String/Struct
 imports are implemented; all40 actual User.ini Alias values pass an explicit
 schema-fixture data test. Actual Engine native array config uses the new

@@ -1092,6 +1092,14 @@ QuestVr::Vm::Result AdvancePortableActorState(const std::string& actorPath, floa
 // Signed finite reflected counters/rates persist through ordinary actor saves.
 QuestVr::Vm::Result AdvancePortableActorTimer(const std::string& actorPath, float elapsed,
     const QuestVr::Vm::Limits& limits = {});
+// Original non-Pawn post-animation Tick phase, committed in ONE caller root:
+// selected Tick -> ProcessState -> Timer -> LifeSpan/Expired/Destroy -> fresh
+// performPhysics, with the actual RemoteRole/Role/ELevelTick branch ordering.
+// Like the explicit state/timer APIs this is NOT complete Actor/Level Tick:
+// no stasis/owner/parity, main/blend animation prefix, clock or world scheduler.
+// The nearest native class must have the audited Actor Tick/physics vtables.
+QuestVr::Vm::Result AdvancePortableActorNonPawnTickTail(const std::string& actorPath,
+    float elapsed, std::int32_t tickType, const QuestVr::Vm::Limits& limits = {});
 
 // Rollback-only observation of the original ordinary MAIN animation phase.
 // Not a complete Tick, begun world, weapon attack or gameplay publication.

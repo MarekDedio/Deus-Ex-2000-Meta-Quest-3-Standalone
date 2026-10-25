@@ -1,5 +1,27 @@
 # Port status
 
+## First-Training actor update phase (2026-10-25)
+
+The original non-Pawn post-animation Tick phase is implemented and bound to
+real reflected fields, selected Tick/Expired packets, same-root state/timer
+execution and native destruction/physics. This advances the first-map
+crate/loot/gravity integration without adding other maps or account UI.
+The helper passes3714760 checks/26 refusals. The actual Training crate test
+passes415/5 with countdown save/reload, successful native expiry and complete
+last-instruction contents/deletion/RNG/ownership/GC rollback. All18 owned
+fixture sources remain unchanged. Native deferred deletion checkpoint capture
+still explicitly refuses; its cleanup/save protocol is not implemented.
+
+This is a reusable committing phase, NOT full Actor/Level Tick or automatic
+Quest physics. The stasis/owner/parity/main+blend animation prefix, real world
+schedule, live weapon/inventory bridge and publication remain unfinished.
+Full desktop build and final shared gate199 executed/238 registered/39 explicit
+skips/zero failures pass, as do strict ARM64 and the Android native link. Owned
+Engine collision/config15156/31 and normal/aimed two-Fire Training repeat2
+regressions pass with their exact prior counts/whole undo/all41 source files.
+All jobs are terminal. See ORIGINAL-NONPAWN-TICK-TAIL.md; no new APK is produced
+for this backend-only change.
+
 ## Native Name/String/Struct config imports (2026-10-25)
 
 The native config import protocols required by Input's forty Alias records are

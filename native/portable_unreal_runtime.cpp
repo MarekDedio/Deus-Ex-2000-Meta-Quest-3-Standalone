@@ -35,6 +35,7 @@
 #include "quest_actor_rotation.h"
 #include "quest_actor_perform_physics.h"
 #include "quest_actor_physics_phase.h"
+#include "quest_actor_tick_tail.h"
 #include "quest_native_window_location.h"
 #include "quest_native_window_query.h"
 #include "quest_native_window_clip.h"
@@ -7824,6 +7825,7 @@ public:
     }
 #include "portable_actor_animation_phase.inl"
 #include "portable_actor_finish_anim.inl"
+#include "portable_actor_tick_tail.inl"
     Value ProbeOriginalMainAnimation(const std::string& path,float elapsed,
         PortableActorMainAnimationProbeResult& result,QuestVr::Vm::Execution& execution) {
         if(!transaction_)throw std::runtime_error("Original animation observation requires its existing caller root");
@@ -14385,6 +14387,26 @@ QuestVr::Vm::Result AdvancePortableActorTimer(const std::string& actorPath,const
         QuestVr::Vm::Result result;
         result.status=QuestVr::Vm::Status::Unsupported; result.function=actorPath;
         result.error=error.what(); return result;
+    }
+}
+
+QuestVr::Vm::Result AdvancePortableActorNonPawnTickTail(const std::string& actorPath,const float elapsed,
+    const std::int32_t tickType,const QuestVr::Vm::Limits& limits) {
+    CollectBirthGarbageAtBoundary collect;
+    if(!std::isfinite(elapsed)||elapsed<0.0f) {
+        QuestVr::Vm::Result result;result.status=QuestVr::Vm::Status::Invalid;
+        result.function=actorPath;result.error="Actor Tick tail elapsed time must be finite and nonnegative";
+        return result;
+    }
+    try {
+        PortableActorVmHost host;
+        return QuestVr::Vm::ExecuteTransaction(host,[&](QuestVr::Vm::Execution& execution) {
+            static_cast<void>(host.AdvanceOriginalTickTail(host.Object(actorPath),elapsed,tickType,execution));
+            return QuestVr::Vm::Value::Integer(1);
+        },limits);
+    }catch(const std::exception& error) {
+        QuestVr::Vm::Result result;result.status=QuestVr::Vm::Status::Unsupported;
+        result.function=actorPath;result.error=error.what();return result;
     }
 }
 
