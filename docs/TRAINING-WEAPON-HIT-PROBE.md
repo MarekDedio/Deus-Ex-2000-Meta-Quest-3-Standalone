@@ -4,6 +4,11 @@ Only Maps/00_Training.dx. This extends the rollback-only genuine original
 pickup/equip/Fire probe; it is not a published player or Quest input bridge.
 The default command still performs one attack at the actual starting pose.
 
+Latest2026-10-25: portable0x50 now lets two aimed crowbar swings finish.
+Actual crate HP10->4->-2, removal, six WoodFragments and a surviving Lockpick
+are observed; see the final section below. This supersedes the initial
+missing-conversion boundary, not the live-publication limitation.
+
 ## Explicit input, not a forced hit
 
 The optional paired CLI packets `--fire-location X Y Z` and
@@ -147,3 +152,79 @@ checkpoint is restored on both attempts, including the already-applied original
 damage, with all41 owned sources unchanged. Log:training-weapon-hit-postdamage-
 cut-20261025.log. Final dedicated strict ARM64 runtime check also returns0;
 all compiler/test jobs are terminal before committing this checkpoint.
+
+## Completed original damaging cycles,2026-10-25
+
+After general portable VectorToRotator0x50 implementation, the SAME east-side
+pose/aim and two original selected player Fire calls complete two genuine
+weapon attack cycles. The original script chooses Attack then Attack3, returns
+both HandToHandAttack notifies and restores the weapon's ready/up Idle state.
+All four actual trace replies hit the lower authored crate; no direct damage,
+forced hit actor, state patch or supplied health value is involved.
+
+The lower crate changes10->4->-2 and becomes removed/deleteMe. The untouched
+upper crate remains HP10. Real births are six WoodFragments in Flying/Physics2,
+Lockpick0 in DeusExPickup.Pickup/Physics2 with no owner and removed/deleteMe=false,
+and two tracehithandnonpenspawner Actors oriented(16383,0,0). The Lockpick spawns
+at(1000.01221,-286.9953,-103.899864). It survives the destruction callback;
+falling/settling/collection are NOT run by this Fire diagnostic.
+
+Discovery:48 observation rows,two complete cycles/two returned notifies,four
+actual traces,two crate-health changes,nine births. Later ordinary client setup
+still refuses native1463 at DeusExHUD.ConfigurationChanged606, after227245
+instructions/24892 writes. Whole-root state/save/revision/hash/RNG/client/
+lookup/Actor/GC undo and all41 unchanged owned sources pass. Discovery exits2
+because original startup is still unsupported, not because Fire failed.
+Log:vector-to-rotator-crate-discovery-20261025.log.
+
+This is an actual original weapon-to-crate-to-surviving-loot diagnostic, not
+live controller authority, automatic world physics, committed loot/save/render/
+audio or on-device acceptance. Other map integration remains deferred.
+
+Repeat2 matches the complete discovery exactly:227245 instructions/24892
+writes and48 rows/two cycles/two returned notifies/four traces/two HP changes/
+nine births. Detached source/pose/trace/birth/weapon snapshots agree; full root
+undo/all41 sources pass. Log:vector-to-rotator-crate-repeat-20261025.log.
+
+A forced shared write cut at15343 occurs AFTER the second damaging notify
+returns and all nine births exist, on its next animation phase. Repeat2 matches
+210822 instructions/15343 writes,40 rows/one completed cycle/two returned
+notifies/four traces/two HP changes/nine births. The lower crate is genuinely
+removed with HP-2 before the failure. Whole-root undo restores it, removes the
+new loot/fragments/effects and restores all original state/source fingerprints.
+This is an explicit failed cycle, not falsely reported as two complete cycles.
+Log:vector-to-rotator-fatal-writecut-20261025.log.
+
+Away/world-hit discovery now passes0x50 and creates an actual impact spawner,
+then reaches original GetWallMaterial42,iterator native1000/TraceTexture.
+It records207017 instructions/15061 writes,16 rows/no completed cycles/no
+returned notify,two actual LevelInfo0 traces,zero crate changes/one birth.
+Complete undo/all41 sources passes. That reached surface-material dependency
+is still unsupported; no wall-hit sound/effect completion is claimed. Log:
+vector-to-rotator-away-discovery-20261025.log.
+
+Away repeat2 matches that exact iterator1000 boundary and every detached
+observation; crate HP remains unchanged and whole undo/all41 sources pass.
+Log:vector-to-rotator-away-repeat-20261025.log. Fresh original bytecode confirms
+native1000 is Engine.Actor.TraceTexture,flags0x405/logical50: required Class,
+OUT Actor/Name/Name/Int/Vector/Vector,required End Vector,optional Start/Extent
+Vectors. GetWallMaterial41/42 invokes it with eight expressions (implicit
+receiver Start and zero Extent); its body seeks LevelInfo/Mover texture group.
+This declaration evidence does not establish original iterator implementation;
+the pinned TraceTextureIterator is not silently substituted for retail logic.
+Static package logs:training-hit-{wall-material-script,trace-texture-declaration}-
+20261025.log. No commercial DLL/EXE is loaded or executed.
+
+Unposed default Fire regression still completes one cycle/notify without
+crate damage:22 rows/two distant mover traces/no births, later HUD1463 at
+222711 instructions/24542 writes, complete undo/all41 sources. Log:
+vector-to-rotator-default-regression-20261025.log. Fresh actual uninstrumented
+Trace277 controls pass43 calls/37063 checks/23 refusals/nine work cuts;
+original native279 crate controls pass347/two explicit dormant-contents
+refusals. Logs:vector-to-rotator-owned-{trace,crate}-20261025.log. These separate
+controls do not claim live startup or surviving loot in a dormant fixture.
+
+Final coherent full desktop build/shared CTest:192 executed/228 registered,
+36 explicit owned-data skips,zero failures in57.80s. Android native library
+link and strict ARM64 VM/new-test compilation pass. All build/test processes
+are terminal before commit; no new APK or installed-headset change is made.

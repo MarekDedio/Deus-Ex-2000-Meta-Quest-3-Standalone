@@ -1,5 +1,36 @@
 # Port status
 
+## Original Training crowbar breaks a crate and releases loot (2026-10-25)
+
+Portable VectorToRotator0x50 now lets two genuine selected player-Fire/weapon-
+notify cycles finish at the accepted east-side pose. Actual traces hit the
+lower authored crate; original HP10->4->-2 removes it and spawns six real
+WoodFragments,a surviving Lockpick and two impact spawners. Two repeated runs
+match48 rows/two cycles/two returned notifies/four traces/two HP changes/nine
+births,227245 instructions/24892 writes. Both continue to the pre-existing
+HUD1463 boundary; complete root undo/all41 owned sources pass. No direct damage,
+forced target or partial startup is published. See TRAINING-WEAPON-HIT-PROBE.md.
+
+Math153684 checks/30723 independent test-owned x87 cases certify30717 outputs
+and explicitly refuse six ambiguous near-bin cases. VM368 checks/85 cases/26
+refusals prove copied Frame.Object operands, initialized12-byte local handling,
+typed results and same-root undo. Full desktop build/shared gate192 executed/
+228 registered,36 explicit owned skips,zero failures in57.80s; strict ARM64
+and Android native link pass. The conversion's general numerical admission
+certificate is not all-finite support; see ORIGINAL-VECTOR-TO-ROTATOR.md.
+
+This is stronger actual-map backend evidence, NOT live Quest crate acceptance.
+The Fire probe does not advance the dropped loot/upper crate's gravity or
+collect it. Genuine startup/publication, live controller/player authority,
+automatic physics and committed loot/save/render/audio remain. Native1463 is
+an actual startup size-query dependency, not new account/character UI. Only
+first Training is integrated; no APK is generated for this backend increment.
+Fatal post-notify write-cut repeat2 restores the removed crate and all nine
+births; away/world-hit repeat2 leaves crate HP untouched and now reaches
+TraceTexture iterator1000 in GetWallMaterial42. Default Fire, fresh owned
+Trace27737063/23 and native279crate347/two regressions pass. These reached
+boundaries are recorded without silently bypassing surface-material lookup.
+
 ## First original weapon-to-crate hit (2026-10-25)
 
 The rollback-only Fire diagnostic now accepts explicit pose through original

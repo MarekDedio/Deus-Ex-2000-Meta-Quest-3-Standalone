@@ -4,6 +4,13 @@ Scope: first `00_Training.dx`, authored `WeaponCrowbar1` and
 `WeaponCombatKnife0`. This diagnostic is not a committed player, live Quest
 trigger, successful hit or playable crate sequence.
 
+Latest2026-10-25: the aimed two-swing crowbar diagnostic now passes0x50 and
+completes both original cycles/notifies: real lower crate HP10->4->-2/removal,
+six WoodFragments,a surviving Lockpick and two impact spawners. Repeat2/full
+undo/all41 sources pass at the later ordinary HUD1463 boundary. This supersedes
+the initial no-hit and missing-conversion observations below, not the live
+publication/gravity/controller limitations. See TRAINING-WEAPON-HIT-PROBE.md.
+
 Latest2026-10-25: optional genuine movement/view inputs and repeated Fire
 groups now record actual traces, crate HP and real births. An accepted east-
 side pose hits lower Training crate and applies original10->4 damage; then

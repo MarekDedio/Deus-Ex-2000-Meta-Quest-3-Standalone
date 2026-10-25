@@ -1,5 +1,19 @@
 # Immediate milestone: complete the first Training map
 
+Latest2026-10-25: the reached impact conversion0x50 is implemented. Two real
+crowbar attacks now complete, changing lower-crate HP10->4->-2/removing it and
+releasing six WoodFragments,a surviving Lockpick and two impact spawners.
+Repeat2 matches48 rows/two cycles/two returned notifies/four actual traces/nine
+births with full root undo/all41 sources. This is original weapon-driven
+destruction, not a direct-health shortcut. The same root later refuses genuine
+startup native1463; no partial session is published. The next integration gap
+is committed player/world startup and live input/automatic physics/loot, not
+additional maps or account/character-creation UI. Full desktop gate192executed/
+228registered/36owned skips/zero failures, strict ARM64 and Android native link
+pass. General conversion has explicit rare ambiguity refusals, not all-finite
+support. No APK; first Training remains the only actual-map target. See
+TRAINING-WEAPON-HIT-PROBE.md and ORIGINAL-VECTOR-TO-ROTATOR.md.
+
 Latest direct melee checkpoint,2026-10-25: a genuinely moved/aimed original JC
 now hits the actual lower Training crate with its equipped crowbar; real trace
 and original HP10->4 are observed. The impact effect then reaches missing

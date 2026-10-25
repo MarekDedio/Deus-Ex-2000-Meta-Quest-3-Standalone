@@ -8,6 +8,16 @@ compiler input/build was changed or commercial DLL/EXE executed or loaded.
 
 ## Current production disconnect
 
+Latest2026-10-25: portable0x50 removes the aimed diagnostic interruption. Two
+genuine selected Fire cycles now return two attack notifies, trace the lower
+crate four times, apply original10->4->-2/removal and spawn six WoodFragments,
+a surviving Lockpick and two impact spawners. Repeat2 matches48 rows/nine
+births and later ordinary HUD1463 failure, with complete undo/all41 sources.
+This does NOT close the live disconnect below, advance dropped-loot gravity,
+or publish partial startup. Next is authentic startup/player publication,
+controller authority and automatic same-root world/physics updates, not direct
+crate health changes. See TRAINING-WEAPON-HIT-PROBE.md for exact evidence.
+
 Latest aimed diagnostic,2026-10-25: original SetLocation/ClientSetRotation move
 and aim the genuine equipped JC beside the lower Training crate. Actual trace
 hits it and original damage changes HP10->4. The notify then refuses missing

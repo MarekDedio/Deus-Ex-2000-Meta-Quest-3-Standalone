@@ -1,6 +1,7 @@
 #include "quest_portable_vm.h"
 #include "quest_state_frame.h"
 #include "quest_unreal_string.h"
+#include "quest_vector_to_rotator.h"
 
 #include <algorithm>
 #include <bit>
@@ -1918,6 +1919,24 @@ private:
             Locate(frame.function, n.offset, n.op);
             result = fn ? RunEvaluation(*fn, context, args, capturedContext,nativeCall,&addressLayouts) :
                 Native(index, context, args, nullptr, *capturedContext);
+        } else if (n.op == 0x50) {
+            // Original Core.execVectorToRotator10136F90 initializes a local
+            // FVector to +0, then Steps its operand once using FFrame.Object.
+            // Copy detaches the Step value; do not reload a returned alias.
+            const auto operand=Eval(frame,n.children.at(0),frame.self,EvalRead::Copy);
+            Locate(frame.function,n.offset,n.op);
+            Value value;
+            if (operand.disposition==ResultDisposition::ZeroFill) {
+                // Any in-bounds prefix clear leaves this already-zero local
+                // unchanged. This does not authorize partial Vector writes to
+                // ordinary script destinations or other native temporaries.
+                if (operand.zeroFillBytes>12u)
+                    Fail(Status::Unsupported,"VM VectorToRotator local context clear exceeds twelve bytes");
+                value=Value::Vector({});
+            } else value=ResultValue(operand,Value::Vector({}),ResultLayout::CoreVector12,true);
+            if (value.kind!=Kind::Vector && value.kind!=Kind::Nothing) TypeError();
+            result.value=Value::Rotator(OriginalVectorToRotator(
+                value.kind==Kind::Nothing?std::array<float,3u>{}:value.vector));
         } else if (n.op == 0x53) {
             // Retail Core.execIntToString10131600 seeds an INT0 temporary and
             // steps exactly one operand using FFrame.Object, even inside a
