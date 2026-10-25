@@ -1,5 +1,17 @@
 # Immediate milestone: complete the first Training map
 
+Latest2026-10-25: fixed wrong deferred queue-head decoding discovered during
+native scheduler audit. Level+0x100 FirstDeleted is separate from16 references
+at0x9C..0xD8;0xA0 must not override0x100. Training's correct witness is4370509,
+not4370511. Independent generated/all16-slot and actual-map copy controls
+pass1507/141, native ownership429/21 and crate415/5 pass. Full desktop/strict
+ARM64/Android native and shared suite202 executed/241 registered/39 explicit
+skips/zero failures pass. Startup/distance repeat2 retains exact counts,
+237 stores and full undo; all45 checked originals are unchanged. No APK or
+other-map/account work. Owner/parity/pending/newborn scheduling and live
+crate/usable loot/gravity remain unfinished. See the corrected original LEA
+evidence in ORIGINAL-DEFERRED-ACTOR-OWNERSHIP.md.
+
 Latest2026-10-25: original Level player-distance phase now uses actual native
 Engine.Client/first viewport/paired JC and captured Location, native partition,
 live source/destination slots and correct PC64/sqrt spills. It updates237
@@ -537,7 +549,9 @@ conversation index undo uses actual admitted pages with unchanged identities,
 limits and callback order. Both startup observations now complete1335PPP
 visits and reach the explicit native actor-slot ordering/save boundary, with
 full rollback and all40 originals unchanged.
-Level decoder final-alias correction uses actual4370511, not preliminary4370509;
+Historical Level alias claim is superseded2026-10-25: actual FirstDeleted is
+4370509;4370511 belongs to unrelated0xA0, not0x100. See the corrected native
+LEA evidence in ORIGINAL-DEFERRED-ACTOR-OWNERSHIP.md;
 generated/owned decoder and index/focused/strict/Android checks pass. Full
 desktop/CTest passes163 executed/192 registered with29 owned-data skips, zero
 failures in65.79s; actual first-map lifetime/conversation/movement/isolatedcrate

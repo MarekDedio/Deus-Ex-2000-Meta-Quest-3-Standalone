@@ -574,20 +574,15 @@ LevelSelection ReadLevelSelection(const PortablePackageTables& package,
         selection.deferred.firstDeletedOffset=bodyFileOffset+reader.Position();
         selection.deferred.firstDeleted=reader.Index();
         ValidateReference(selection.deferred.firstDeleted,package.imports.size(),package.exports.size());
-        // Original1039D5D6..5EB subsequently archives16 pointers at +9C+i*4.
-        // i==1 aliases +100 AGAIN. Actual load semantics are last-store wins,
-        // not an equality assertion with the preliminary reference above.
+        // Original1039D5D6..5EB subsequently archives16 DIFFERENT pointers
+        // at hexadecimal +0x9C+i*4: 0x9C..0xD8. Slot1 is +0xA0, NOT +0x100.
+        // None of these writes can replace the actual FirstDeleted at0x100.
         for(std::size_t index=0u;index<16u;++index) {
-            const auto offset=bodyFileOffset+reader.Position();
             const auto reference=reader.Index();
             ValidateReference(reference,package.imports.size(),package.exports.size());
-            if(index==1u) {
-                selection.deferred.firstDeleted=reference;
-                selection.deferred.firstDeletedOffset=offset;
-            }
         }
         // Later Level maps belong to their own decoder. This API authenticates
-        // the entire pointer prefix needed for the FINAL +100 value, not all
+        // the actual FirstDeleted and entire following pointer prefix, not all
         // remaining Level serialization or startup/cleanup service ownership.
     }
     return selection;

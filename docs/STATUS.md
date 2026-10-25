@@ -1,5 +1,32 @@
 # Port status
 
+## Corrected native deferred-head archive address (2026-10-25)
+
+Scheduler preparation exposed and fixed a real loader bug: the native
+FirstDeleted archive targets Level+0x100. The subsequent16 UObject-reference
+stores target0x9C..0xD8; slot1 is0xA0, not0x100. An earlier audit/decoder/test
+incorrectly treated that unrelated reference as a later queue-head override.
+Direct original LEA byte encodings now anchor the corrected decoder and
+independent16-address oracle. Training's actual witness is file4370509, not
+unrelated4370511. Both happen to be None in the untouched map, so the earlier
+actual-Training result hid this bug; conflicting-reference fixtures expose it.
+
+Generated949 checks/141 malformed/truncated refusals and combined actual
+Training admission1507/141 pass, including isolated copies of the actual map
+with independently varied head/unrelated references. Native deletion ownership
+429/21 and actual crate415/5 pass. Full desktop/strict ARM64/Android native
+builds and shared CTest202 executed/241 registered/39 explicit owned-data
+skips/zero failures66.42s pass. Both original startup/distance repeats retain
+220285 instructions/25676 writes,237 distance stores and full undo at the
+known bound-player FExec refusal. All45 checked script/config/map originals
+retain exact bytes/length/timestamp. All processes are terminal.
+
+No new APK or headset result. This fixes queue admission; it does not complete
+native cleanup, owner/parity/pending scheduling, world Tick, live crate attacks,
+collectible loot or automatic gravity. First Training remains the priority;
+no account UI or other-map gameplay integration. See the correction and
+original byte addresses in ORIGINAL-DEFERRED-ACTOR-OWNERSHIP.md.
+
 ## Original player-distance prepass and Engine.Client edge (2026-10-25)
 
 The native distance phase before Actor.Tick is now a same-root committing
@@ -976,9 +1003,12 @@ complete1335 PPP visits and reach the same explicit original actor-slot
 ordering/save boundary, with full rollback and all40 originals unchanged.
 Startup is still non-publishing and unfinished.
 
-Level decoding also now follows the original second `+100` archive store,
-validating all16 following references; Training's final head witness is4370511,
-not its preliminary4370509. Decoder986/141 and index338395/40 checks pass;
+The historical Level decoder followed a supposed second `+100` archive store,
+while validating all16 following references. Correction2026-10-25: the earlier
+claimed final-head4370511 alias was wrong (0xA0 is not0x100); actual head is
+4370509, as directly corrected in ORIGINAL-DEFERRED-ACTOR-OWNERSHIP.md.
+The historical decoder986/141 and index338395/40 checks passed that earlier
+fixture, not the corrected address oracle;
 focused CTest9/9, strict ARM64 and Android native link pass. Full desktop build
 and shared CTest pass:163 executed/192 registered,29 explicit owned-data skips,
 zero failures in65.79s. Actual linker/deferred/conversation/movement/isolated

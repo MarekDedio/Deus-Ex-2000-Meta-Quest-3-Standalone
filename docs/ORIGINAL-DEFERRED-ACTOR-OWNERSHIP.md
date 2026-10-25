@@ -1,5 +1,11 @@
 # Original deferred Actor ownership (2026-10-21)
 
+Correction2026-10-25: an earlier revision confused hexadecimal0xA0 with0x100
+and incorrectly treated the second pointer in the later16-entry array as a
+second FirstDeleted archive. Directly rechecked native LEA encodings prove
+that no alias exists. Decoder/tests and the exact source witness below now
+retain the actual0x100 reference at file4370509, not unrelated4370511.
+
 Static-only audit for the first `Maps/00_Training.dx` destruction path. No
 commercial DLL/EXE was loaded or executed, no runtime was initialized, and no
 other map was inspected. Original PE32 addresses/offsets below are evidence,
@@ -41,19 +47,20 @@ normal prefix is:
 | `1039D5AB..5B3` | Archive ReachSpecs array `+8C` through `10303A80 -> 103A1320` |
 | `1039D5BD..5C5` | Archive the Float time temporary with four raw bytes |
 | `1039D5C8..5D3` | Pass address `Level+100` to archive virtual `+18` |
-| `1039D5D6..5EA` | Archive sixteen successive UObject-reference slots beginning `Level+9C`; slot1 archives `+100` again |
+| `1039D5D6..5EA` | Archive sixteen separate UObject-reference slots `Level+0x9C..0xD8`; slot1 is `+0xA0`, NOT `+0x100` |
 
 The `+100` address operation is not guarded by IsLoading/IsSaving or by an
 absent reflected property. A map loader must decode the actual object reference
 in this native body and bind the corresponding live identity. An unsupported
 nonnull queue cannot safely be replaced by None. The later sixteen-reference
-loop revisits the SAME native address at zero-based index1: `9C + 1*4 = 100`.
-EDI retains Level at `1039D584`, ESI starts at zero at `1039D586`, and
-`1039D5DD` selects `[EDI+ESI*4+9C]`. Therefore the second serialized value is
-the final loaded FirstDeleted authority. The original does not assert equality
-between these two encodings; a loader must validate both and preserve the last
-store, including conflicting valid references. It must also read/validate the
-remaining fifteen references rather than accept a truncated prefix. A future archive/rebind phase
+loop does NOT revisit this address: hexadecimal `0x9C + 1*4 = 0xA0`, while
+its last index15 addresses0xD8. EDI retains Level at `1039D584`, ESI starts
+at zero at `1039D586`, and `1039D5DD` selects `[EDI+ESI*4+0x9C]`; the earlier
+`1039D5CA` selects `[EDI+0x100]`. Their actual LEA bytes are respectively
+`8D 84 B7 9C 00 00 00` and `8D 87 00 01 00 00`. No later array slot
+may override the real serialized FirstDeleted value or its file offset. All16
+unrelated references must still be read/validated rather than accepting a
+truncated or malformed prefix. A future archive/rebind phase
 must represent the queue, rather than reconstructing it from `bDeleteMe` flags.
 
 The ReachSpecs decoder needed to reach that reference is independently tied to
@@ -80,9 +87,9 @@ Class import-179, Outer0, flags00070001, serialized offset4366622 and size3906.
 | Model reference | `1180`, actual Model36 export |
 | ReachSpecs count | `60`; each Start/End reference verified within local export range |
 | Serialized Float time | `4370505`, bytes `0D EE 24 43`, approximately164.9299 |
-| Preliminary FirstDeleted archive | `4370509`, compact byte `00`, None |
-| **Final FirstDeleted archive (loop slot1)** | **`4370511`, compact byte `00`, actual loaded None** |
-| Sixteen following references | zero except zero-based slot6 =3145; slot1 aliases FirstDeleted |
+| **Actual FirstDeleted archive (`Level+0x100`)** | **`4370509`, compact byte `00`, loaded None** |
+| Unrelated subsequent array slot1 (`Level+0xA0`) | `4370511`, compact byte `00`; NOT FirstDeleted |
+| Sixteen following references (`0x9C..0xD8`) | zero except zero-based slot6 =3145; none aliases FirstDeleted |
 | Remaining map count / exact export end | zero at4370527; end4370528 |
 
 Thus a first-Training loader may establish an actually decoded None head from
@@ -127,6 +134,18 @@ and its initialized typed value, preserving applicable authored/template data;
 neither a missing tag nor the default-constructor body justifies a fabricated
 None. The source Actor constructor result is finite evidence, not permission
 to bypass an unaudited subclass constructor override.
+
+Correction verification2026-10-25: generated decoder949 checks/141 explicit
+malformed/truncated refusals and combined owned Training admission1507/141
+pass. Tests independently enumerate all16 original native addresses and
+different valid references, then repeat both conflicting-head cases on
+isolated data-only copies of the actual first map. The source is never edited.
+Native deletion ownership429/21 and actual crate415/5 regressions pass. Full
+desktop/strict ARM64/Android native and shared suite202 executed/241 registered/
+39 explicit owned-data skips/zero failures pass. Original startup/distance
+repeat2 retains exact220285 instructions/25676 writes and full rollback at
+the known FExec refusal. These are decoder/ownership regressions, not live
+cleanup, startup, crates/loot/gravity or headset acceptance.
 
 ## Exact deferred insertion and later cleanup boundary
 

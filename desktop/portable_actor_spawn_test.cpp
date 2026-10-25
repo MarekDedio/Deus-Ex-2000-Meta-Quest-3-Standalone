@@ -1246,8 +1246,8 @@ Tables Build(Fixture& fixture, unsigned worldModel = 0u, unsigned decalSchema = 
     if(contextVariant)for(const auto reference:{contextActor,contextPawn,0,contextBrush,contextView})Index(levelBody,reference);
     for (unsigned i = 0u; i < 4u; ++i) Index(levelBody, 0);
     Index(levelBody, 0); U32(levelBody, 7777u); U32(levelBody, 0u); Index(levelBody, mapModel); Index(levelBody, 0);
-    U32(levelBody,0u); Index(levelBody,0); // Original serialized Float time and preliminary +100.
-    for(unsigned i=0u;i<16u;++i)Index(levelBody,0); // +9C pointer sequence, including final +100 alias.
+    U32(levelBody,0u); Index(levelBody,0); // Original serialized Float time and actual +0x100 FirstDeleted.
+    for(unsigned i=0u;i<16u;++i)Index(levelBody,0); // Separate +0x9C..+0xD8 pointer sequence; no +0x100 alias.
     map.Body(world, std::move(levelBody));
     Bytes modelBody; Index(modelBody, 0); for (unsigned i = 0u; i < 6u; ++i) FloatBytes(modelBody, 0.0f); modelBody.push_back(0u);
     for (unsigned i = 0u; i < 4u; ++i) FloatBytes(modelBody, 0.0f);
