@@ -1111,6 +1111,17 @@ struct PortableActorMainAnimationProbeResult {
 };
 PortableActorMainAnimationProbeResult ProbePortableActorMainAnimation(
     const std::string& actorPath,float elapsed,const QuestVr::Vm::Limits& limits={});
+// Committing ordinary MAIN plus four-channel BLEND phases in one VM root,
+// retaining the original shared remaining time/counter. Not Actor/Level Tick,
+// Pawn look/network preprocessing, state/timer/physics or automatic scheduling.
+struct PortableActorAnimationStepResult {
+    QuestVr::Vm::Result execution;
+    bool completed{};
+    std::size_t mainIterations{},blendIterations{},blendWrites{};
+    float mainRemainingSeconds{},remainingSeconds{};
+};
+PortableActorAnimationStepResult AdvancePortableActorAnimationChannels(
+    const std::string& actorPath,float elapsed,const QuestVr::Vm::Limits& limits={});
 std::optional<float> ReadPortableActorLatentTimeLeft(const std::string& actorPath);
 std::optional<std::string> ResolvePortableActorState(const std::string& actorPath,
     const std::string& stateName);

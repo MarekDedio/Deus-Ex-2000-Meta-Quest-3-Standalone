@@ -12,6 +12,9 @@ phase binding are now implemented and tested separately. See
 [the implementation and exact expiry arithmetic](ORIGINAL-NONPAWN-TICK-TAIL.md).
 The surrounding stasis/owner/animation/world scheduler is still unfinished;
 the historical audit below is not a claim of a completed Actor/Level Tick.
+The original four-slot blend continuation is implemented separately in
+ORIGINAL-ACTOR-BLEND-PHASE.md; exact remaining stasis/time ownership is recorded
+in ORIGINAL-ACTOR-STASIS-PREREQUISITES.md.
 
 Read alongside [native Actor order](TRAINING-WORLD-ACTOR-ORDER.md),
 [performPhysics epilogue](ORIGINAL-ACTOR-PHYSICS-EPILOGUE.md),
@@ -228,7 +231,8 @@ Actor.LastRenderTime Float and requires a strict result>Double5
 Physics0/5 (1036BFFC..1036C016). It reads the region zone-number byte+ D0 and
 an entry in native Level.Model's +98 table, requiring the corresponding last
 render timing to be old enough or DistanceFromPlayer>Double1200
-(1042AD98), before finally requiring Actor.Level's byte+518==0
+(1042AD98), before finally requiring NetMode0 through actual Actor.Level's
+LevelInfo pointer (+A8, then +518), NOT native ULevel or its slot-zero facade
 (1036C054..1036C06C). The raw native table access is not yet an independently
 typed portable Model timing service here. Do not replace it with a rendered
 mesh list or claim every old invisible actor is in stasis. Exceptional active

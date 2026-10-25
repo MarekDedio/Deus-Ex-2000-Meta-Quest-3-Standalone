@@ -1,5 +1,19 @@
 # Immediate milestone: complete the first Training map
 
+Latest2026-10-25: genuine MAIN-to-four-BLEND continuation now shares the
+original remaining delta/native counter in one committing runtime root.
+Helper2658/60 refusals and actual dormant Training animation576/22 pass,
+including original commands, all channels, saved/render clocks and full
+write/work rollback. Actual crate415/5 and Engine collision/config15156/31
+also pass. Final desktop/strict ARM64/Android native and shared suite200
+executed/239 registered/39 explicit skips/zero failures pass. Both normal
+and aimed two-Fire repeat2 retain exact counts/full undo at the known
+ConsoleCommand FExec refusal;45 checked original sources are unchanged.
+Not full Tick, live crate attacks, usable loot or automatic gravity. Next
+is genuine stasis/native timing and owner/parity/pending world scheduling,
+not other maps, account UI or a character-creation screen. No APK. See
+ORIGINAL-ACTOR-BLEND-PHASE.md and ORIGINAL-ACTOR-STASIS-PREREQUISITES.md.
+
 Latest actor-update work,2026-10-25: the original non-Pawn post-animation Tick
 phase now has a real committing runtime binding: selected Tick, ProcessState,
 Timer, PC64 LifeSpan/Expired/native DestroyActor and fresh physics dispatch.

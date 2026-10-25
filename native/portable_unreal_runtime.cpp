@@ -15,6 +15,7 @@
 #include "portable_model_geometry.h"
 #include "quest_actor_animation_clock.h"
 #include "quest_actor_animation_phase.h"
+#include "quest_actor_blend_phase.h"
 #include "quest_actor_finish_anim.h"
 #include "quest_authored_struct_value.h"
 #include "quest_object_cast.h"
@@ -7824,6 +7825,7 @@ public:
         return StructSchema(Object(Qualified(Table(property->sourcePath), property->property->referencedType)));
     }
 #include "portable_actor_animation_phase.inl"
+#include "portable_actor_blend_phase.inl"
 #include "portable_actor_finish_anim.inl"
 #include "portable_actor_tick_tail.inl"
     Value ProbeOriginalMainAnimation(const std::string& path,float elapsed,
@@ -14364,6 +14366,21 @@ PortableActorMainAnimationProbeResult ProbePortableActorMainAnimation(
         result.execution.committed=false; // The host restored the real root, including completed calls.
     }catch(const std::exception& error) {
         result.execution.status=QuestVr::Vm::Status::Unsupported;result.execution.error=error.what();
+    }
+    return result;
+}
+
+PortableActorAnimationStepResult AdvancePortableActorAnimationChannels(const std::string& actorPath,float elapsed,
+    const QuestVr::Vm::Limits& limits) {
+    CollectBirthGarbageAtBoundary collect;PortableActorAnimationStepResult result;
+    try {
+        PortableActorVmHost host;
+        result.execution=QuestVr::Vm::ExecuteTransaction(host,[&](QuestVr::Vm::Execution& execution) {
+            return host.AdvanceOriginalAnimationChannels(actorPath,elapsed,result,execution);
+        },limits);
+        if(!result.execution.passed())result.completed=false;
+    }catch(const std::exception& error) {
+        result.completed=false;result.execution.status=QuestVr::Vm::Status::Unsupported;result.execution.error=error.what();
     }
     return result;
 }

@@ -1,5 +1,32 @@
 # Port status
 
+## Original shared MAIN-to-BLEND update (2026-10-25)
+
+The original four-slot blend-animation continuation now consumes the actual
+MAIN phase's remaining delta and native iteration counter in one committing
+runtime root. It preserves repeated scans, endpoint/tween residual carry,
+original floating-point spills and role/Weapon-dependent simulation fields.
+Actual Engine.Actor array fields/Core.Object.Plane identities and same-root
+write/native-work rollback are authenticated. This is another first-Training
+world-update prerequisite, not a login/account or character-creation UI.
+
+Helper2658 checks/60 refusals and actual dormant Training animation576/22
+pass, including all four original command-created channels, live/native/
+render clock agreement, save roundtrip and rollback. Existing actual crate
+415/5 and Engine collision/config15156/31 regressions pass separately. Final
+desktop build, strict ARM64, Android native link and shared CTest200 executed/
+239 registered/39 explicit owned-data skips/zero failures pass. Normal and
+aimed two-Fire startup repeat2 retain exact prior counts and full undo at the
+known bound-player ConsoleCommand FExec refusal. All45 checked original
+script/config/map sources are unchanged.
+
+This does NOT complete Actor/Level Tick, live controller crate attacks,
+collectible loot or automatic gravity. Stasis/render timestamps, captured
+player-distance prepass, owner/parity/pending scheduling, original player/
+inventory input and deferred cleanup/publication remain unfinished. No APK
+is produced for this backend-only change. See ORIGINAL-ACTOR-BLEND-PHASE.md
+and ORIGINAL-ACTOR-STASIS-PREREQUISITES.md.
+
 ## First-Training actor update phase (2026-10-25)
 
 The original non-Pawn post-animation Tick phase is implemented and bound to
