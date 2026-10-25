@@ -219,9 +219,9 @@ int main(int argc,char** argv) {
         std::cout<<"ORIGINAL root pending graph: "<<pending.execution.function<<':'<<pending.execution.offset<<
             " objects="<<pending.objects.size()<<" writes="<<pending.execution.writes<<" "<<pending.execution.error<<"; inspection="<<pending.inspectionError<<std::endl;
         Require(!pending.execution.passed() && !pending.execution.committed && pending.inspectionError.empty() &&
-            pending.execution.function=="DeusEx.DeusExHUD.ConfigurationChanged" && pending.execution.offset==606u &&
-            pending.execution.opcode==101u && pending.execution.error=="Unsupported runtime native 1463" &&
-            pending.execution.writes==8875u && pending.objects.size()==132u &&
+            pending.execution.function=="DeusEx.HUDActiveItemsBorderBase.ParentRequestedPreferredSize" && pending.execution.offset==9u &&
+            pending.execution.opcode==101u && pending.execution.error=="Native preferred-size virtual override is not implemented" &&
+            pending.execution.writes==8890u && pending.objects.size()==132u &&
             pending.rootedWindows==std::vector<std::string>{pending.pawnRootPath},
             "Original root prefix probe did not capture the actual pending native graph: "+pending.inspectionError);
         const auto object=[&](const std::string& path)->const PortableNativeWindowObjectSnapshot& {
@@ -544,7 +544,9 @@ int main(int argc,char** argv) {
         // visibility callbacks and unlocks. DamageHUDDisplay.InitWindow has
         // now initialized all seven original records and returned through Hide.
         // Its default NewChild Show invokes HUD.ChildRequestedVisibilityChange:
-        // SetChildVisibility(true) precedes ConfigurationChanged's native1463.
+        // SetChildVisibility(true) precedes ConfigurationChanged's native1463,
+        // which now enters actual active-item/border callbacks before the
+        // icon TileWindow's missing native preferred-size virtual override.
         // NewChild has not returned/unlocked, so its outer damageDisplay
         // assignment (and later Root.hud assignment) is still unexecuted.
         edge(rootView,"DeusEx.DeusExRootWindow.hud",{});
@@ -707,6 +709,24 @@ int main(int argc,char** argv) {
         }
         const auto& augTile=object(field(augsBorder,"DeusEx.HUDActiveItemsBorderBase.winIcons").value.text);
         const auto& itemTile=object(field(itemsBorder,"DeusEx.HUDActiveItemsBorderBase.winIcons").value.text);
+        // Three REAL query cache prefixes completed before the first Tile
+        // virtual callback refused. None may fabricate its post-query cache.
+        Require(!field(activeItems,"Extension.Window.bNeedsQuery").value.boolean &&
+            !field(activeItems,"Extension.Window.bLastWidthSpecified").value.boolean &&
+            field(activeItems,"Extension.Window.bLastHeightSpecified").value.boolean &&
+            field(activeItems,"Extension.Window.lastSpecifiedWidth").value.floating==-1.0f &&
+            field(activeItems,"Extension.Window.lastSpecifiedHeight").value.floating==
+                field(hudView,"Extension.Window.Height").value.floating-field(beltView,"Extension.Window.Height").value.floating,
+            "Original1463 did not cache its actual height constraint before the selected active-item callback");
+        for(const auto* view:{&activeItems,&augsBorder,&augTile}) {
+            Require(!field(*view,"Extension.Window.bNeedsQuery").value.boolean &&
+                field(*view,"Extension.Window.lastQueryWidth").value.floating==0.0f &&
+                field(*view,"Extension.Window.lastQueryHeight").value.floating==0.0f,
+                "Failed selected preferred-size callback skipped its pre-cache or fabricated post-cache results");
+        }
+        Require(field(itemsBorder,"Extension.Window.bNeedsQuery").value.boolean &&
+            field(itemTile,"Extension.Window.bNeedsQuery").value.boolean,
+            "Failed first augmentation query incorrectly continued into the later item container");
         edge(itemTile,"Extension.Window.firstChild",{});edge(itemTile,"Extension.Window.lastChild",{});
         Require(field(augsBorder,"DeusEx.HUDActiveAugsBorder.FirstKeyNum").value.integer==3 &&
             field(augsBorder,"DeusEx.HUDActiveAugsBorder.LastKeyNum").value.integer==12,
@@ -1090,9 +1110,9 @@ int main(int argc,char** argv) {
         const auto rootAttempt=ExecutePortableActorFunction(player,"Extension.PlayerPawnExt.InitRootWindow");
         std::cout<<"ORIGINAL unbound root initialization boundary: "<<rootAttempt.function<<':'<<rootAttempt.offset<<
             " opcode="<<unsigned(rootAttempt.opcode)<<" "<<rootAttempt.error<<std::endl;
-        Require(!rootAttempt.passed() && !rootAttempt.committed && rootAttempt.function=="DeusEx.DeusExHUD.ConfigurationChanged" &&
-            rootAttempt.offset==606u && rootAttempt.opcode==101u && rootAttempt.writes==8875u &&
-            rootAttempt.error=="Unsupported runtime native 1463" &&
+        Require(!rootAttempt.passed() && !rootAttempt.committed && rootAttempt.function=="DeusEx.HUDActiveItemsBorderBase.ParentRequestedPreferredSize" &&
+            rootAttempt.offset==9u && rootAttempt.opcode==101u && rootAttempt.writes==8890u &&
+            rootAttempt.error=="Native preferred-size virtual override is not implemented" &&
             std::find(rootAttempt.callStack.begin(),rootAttempt.callStack.end(),"DeusEx.DeusExRootWindow.InitWindow")!=rootAttempt.callStack.end(),
             "Native1052 did not construct/dispatch original root without a fabricated client prerequisite");
         const auto windowsAfter=ReadPortableRuntimeNativeWindowSummary();

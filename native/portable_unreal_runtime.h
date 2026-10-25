@@ -734,6 +734,24 @@ struct PortableToggleProbeResult {
 // player startup, and never additional callbacks after a poisoned HUD failure.
 PortableToggleProbeResult ProbePortableNativeWindowToggle(const std::string& playerActorPath,
     PortableToggleProbeMode mode,const QuestVr::Vm::Limits& limits = {});
+enum class PortableWindowAxisProbeMode { RoundTrip, LateFailure, WrongReceiver, WrongArgument, MissingArgument };
+struct PortableWindowAxisProbeStage {
+    std::string name;
+    std::uint16_t nativeIndex{};
+    float input{},result{},lastSpecifiedWidth{},lastSpecifiedHeight{},lastQueryWidth{},lastQueryHeight{};
+    bool lastWidthSpecified{},lastHeightSpecified{},needsQuery{};
+    std::size_t writes{};
+};
+struct PortableWindowAxisProbeResult {
+    QuestVr::Vm::Result execution;
+    std::string rootPath,windowPath;
+    std::vector<PortableWindowAxisProbeStage> stages;
+};
+// Explicit base-Root/Window fixture with real native constructors and original
+// width/height query calls in one root, ALWAYS rolled back. It is not a partial
+// configured HUD, player startup, live renderer or arbitrary saved Window.
+PortableWindowAxisProbeResult ProbePortableNativeWindowAxisQuery(const std::string& playerActorPath,
+    PortableWindowAxisProbeMode mode,const QuestVr::Vm::Limits& limits = {});
 struct PortableMapNorthSnapshot {
     bool found{};
     std::string actorPath;

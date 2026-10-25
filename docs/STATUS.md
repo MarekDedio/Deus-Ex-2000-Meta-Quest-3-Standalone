@@ -1,5 +1,35 @@
 # Port status
 
+## Original player startup advances through scalar sizing queries (2026-10-25)
+
+Native1463/1464 now use their real original one-Float wrappers and the existing
+complete query/cache/selected-callback/fallback service. The VM copies each
+operand once using FFrame.Object; initialized Float0/NoWrite/partial-null
+handling is retained, not an input OUT alias. Mock-host2566 checks/298cases/
+148refusals and actual baseRoot/Window409checks/15rollback controls pass;
+Android native link and strict ARM64 pass. No configured HUD is substituted by
+the isolated fixture. See ORIGINAL-WINDOW-PREFERRED-AXIS-QUERY.md.
+
+Actual authored Training startup passes the former1463 boundary, entering the
+active-items and augmentation-border script callbacks. It now reaches the
+explicit native TileWindow preferred-size override refusal at
+HUDActiveItemsBorderBase.ParentRequestedPreferredSize9/opcode101. The actual
+unbound-player/HUD snapshot remains132 objects with8890 writes (three real
+five-write pre-cache prefixes), not a completed graph. The two-crowbar test
+still completes both cycles/notifies, HP10->4->-2/removal and nine real births,
+then reaches the new boundary at227257 instructions/24907writes. Complete
+undo/all41 sources passes. No live controller/world scheduler/loot publication
+or on-device crate/gravity acceptance follows; no APK is generated. Only the
+first Training map is integrated. The next genuine dependency is Tile sizing,
+not account UI, cosmetic menus or other-map work.
+Final original-player/HUD6900 controls pass. Normal startup repeat2 matches
+218705/24299; aimed Fire repeat2 matches227257/24907 and all48 rows/two cycles/
+two notifies/four traces/nine births. Both retain complete undo/all41 sources.
+Final full desktop/shared gate193 executed/230 registered,37 explicit owned
+skips,zero failures in49.35s. All compiler/test jobs are terminal; native Android
+link and strict ARM64 stages pass. The next general Tile provider is audited
+in ORIGINAL-TILE-PREFERRED-SIZE.md, not implemented or silently bypassed.
+
 ## Original Training crowbar breaks a crate and releases loot (2026-10-25)
 
 Portable VectorToRotator0x50 now lets two genuine selected player-Fire/weapon-

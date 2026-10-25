@@ -8,6 +8,15 @@ compiler input/build was changed or commercial DLL/EXE executed or loaded.
 
 ## Current production disconnect
 
+Latest2026-10-25 startup prerequisite: genuine scalar preferred-size1463/1464
+now execute through common cache and actual selected script callbacks. The
+same two-swing crate destruction/Lockpick birth still completes, then reaches
+the native TileWindow override refusal in HUDActiveItemsBorderBase.
+ParentRequestedPreferredSize9 at227257 instructions/24907writes. Complete
+undo/all41 sources passes. This advances the genuine startup dependency; it
+does not publish a partial player or close the live disconnect below. See
+ORIGINAL-WINDOW-PREFERRED-AXIS-QUERY.md.
+
 Latest2026-10-25: portable0x50 removes the aimed diagnostic interruption. Two
 genuine selected Fire cycles now return two attack notifies, trace the lower
 crate four times, apply original10->4->-2/removal and spawn six WoodFragments,

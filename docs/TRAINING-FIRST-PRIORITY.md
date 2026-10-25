@@ -1,5 +1,21 @@
 # Immediate milestone: complete the first Training map
 
+Latest2026-10-25 startup prerequisite: actual1463/1464 scalar queries now reuse
+the genuine common cache/callback/fallback service. Packet2566/148 and owned
+baseWindow409/15 rollback controls pass; native Android link/strict ARM64 pass.
+Configured Training HUD now enters real active-item/augmentation-border
+callbacks and stops at the missing TileWindow preferred-size virtual override
+(HUDActiveItemsBorderBase.ParentRequestedPreferredSize9). The actual aimed
+two-swing crate break/Lockpick birth still completes before that later refusal,
+with whole undo/all41 sources. Next is this reached native Tile sizing and
+eventual genuine startup/live authority/automatic physics, not new UI features,
+account creation, direct-health shortcuts or other maps. No APK. See
+ORIGINAL-WINDOW-PREFERRED-AXIS-QUERY.md.
+Final full desktop/shared gate193executed/230registered/37owned skips/zero
+failures passes; actual owned HUD6900 controls and normal/aimed-Fire repeats
+also pass separately. See ORIGINAL-TILE-PREFERRED-SIZE.md for the next audited
+general native dependency, not a claim that Tile layout or startup is complete.
+
 Latest2026-10-25: the reached impact conversion0x50 is implemented. Two real
 crowbar attacks now complete, changing lower-crate HP10->4->-2/removing it and
 releasing six WoodFragments,a surviving Lockpick and two impact spawners.

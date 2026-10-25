@@ -9,6 +9,14 @@ Actual crate HP10->4->-2, removal, six WoodFragments and a surviving Lockpick
 are observed; see the final section below. This supersedes the initial
 missing-conversion boundary, not the live-publication limitation.
 
+Subsequent scalar-window integration,2026-10-25: the same complete two-swing
+destruction/loot-birth diagnostic now passes original1463 and reaches the next
+TileWindow native preferred-size override refusal at original augmentation-
+border callbackPC9. Discovery remains48rows/two cycles/two notifies/four traces/
+nine births, now227257instructions/24907writes; complete undo/all41 sources
+passes. No live publication or automatic falling follows. See
+ORIGINAL-WINDOW-PREFERRED-AXIS-QUERY.md for the distinct startup dependency.
+
 ## Explicit input, not a forced hit
 
 The optional paired CLI packets `--fire-location X Y Z` and

@@ -3664,6 +3664,8 @@ public:
         if(index==1438u) return WindowAlignmentsNative(Object(receiver),arguments,declaration,execution);
         if(index==1425u) return WindowRootGetterNative(Object(receiver),arguments,declaration);
         if(index==1415u) return WindowVisibilityGetterNative(Object(receiver),arguments,declaration);
+        if(index==1463u || index==1464u)
+            return WindowPreferredAxisNative(index,Object(receiver),arguments,declaration,execution);
         if(index==1465u) return WindowPreferredSizeNative(Object(receiver),arguments,declaration,execution);
         if(index==1461u) return WindowConfigureChildNative(Object(receiver),arguments,declaration,execution);
         if(index==1416u) return WindowSensitivityNative(Object(receiver),arguments,declaration,execution);
@@ -3892,6 +3894,12 @@ public:
         case 1465u:path="Extension.Window.QueryPreferredSize";
             parameters={{"preferredWidth",Kind::Float,0x180u,"FloatProperty",""},
                 {"preferredHeight",Kind::Float,0x180u,"FloatProperty",""}};break;
+        case 1463u:path="Extension.Window.QueryPreferredWidth";
+            parameters={{"queryHeight",Kind::Float,0x80u,"FloatProperty",""},
+                {"ReturnValue",Kind::Float,0x580u,"FloatProperty",""}};break;
+        case 1464u:path="Extension.Window.QueryPreferredHeight";
+            parameters={{"queryWidth",Kind::Float,0x80u,"FloatProperty",""},
+                {"ReturnValue",Kind::Float,0x580u,"FloatProperty",""}};break;
         case 1461u:path="Extension.Window.ConfigureChild";
             for(const auto* name:{"newX","newY","newWidth","NewHeight"})
                 parameters.push_back({name,Kind::Float,0x80u,"FloatProperty",""});
@@ -5261,7 +5269,7 @@ public:
             return Value::Integer(0);
         }
         if(index!=1410u && index!=1415u && index!=1416u && index!=1420u && index!=1421u && index!=1422u && index!=1430u && index!=1431u && index!=1432u && index!=1433u &&
-            index!=1454u && index!=1461u && index!=1465u && index!=1467u && index!=1477u && index!=1510u && index!=1511u &&
+            index!=1454u && index!=1461u && index!=1463u && index!=1464u && index!=1465u && index!=1467u && index!=1477u && index!=1510u && index!=1511u &&
             index!=1535u && index!=1538u && index!=1539u && index!=1540u && index!=1541u && index!=1544u && index!=1545u && index!=1611u)
             return std::nullopt;
         auto* window=Object(receiver);
@@ -5278,6 +5286,10 @@ public:
         if(index==1415u) {
             if(slot!=0u) throw std::runtime_error("IsVisible has only one optional input slot");
             return Value::Bool(true); // Native wrapper default, not declaration zero.
+        }
+        if(index==1463u || index==1464u) {
+            if(slot!=0u) throw std::runtime_error("Preferred-axis query has only one required input slot");
+            return Value::Float(0.0f); // Original10053080/100530F0 initialize before Step.
         }
         if(slot>=authored->variables.size()) throw std::runtime_error("Native window argument seed slot exceeds its schema");
         if(index==1410u) return slot==1u?Value::Bool(true):authored->variables[slot].zero;
@@ -5522,6 +5534,28 @@ public:
             return static_cast<float>((*texture->bitmapDimensions)[width?0u:1u]);
         }
     };
+    Evaluation WindowPreferredAxisNative(const std::uint16_t index,RuntimeObject* window,
+        const std::vector<Evaluation>& arguments,const Function* declaration,QuestVr::Vm::Execution& execution) {
+        RequireNativeWindow(window);
+        const auto authored=WindowNativeDeclaration(index,declaration);
+        auto* method=Object(authored->path);
+        if(!method->script || method->script->logicalSize!=5u || method->script->nativeIndex!=index ||
+            method->script->functionFlags!=0x401u || method->outer!=Object("Extension.Window"))
+            throw std::runtime_error("Preferred-axis query lacks its actual original Window wrapper");
+        if(arguments.size()!=1u) throw std::runtime_error("Preferred-axis query requires one Float expression");
+        auto value=arguments.front().Load();
+        if(value.kind==Kind::Nothing)value=Value::Float(0.0f);
+        if(value.kind!=Kind::Float || !std::isfinite(value.floating))
+            throw std::runtime_error("Preferred-axis query requires its copied finite Float input");
+        NativeWindowQueryOperations operations{*this,window,execution};
+        const bool width=index==1463u;
+        // Original1004E5F0/1004E680 share the COMPLETE query/cache/callback/
+        // fallback routine, including the dimension with no result pointer.
+        // A signed negative supplied constraint is still explicitly specified.
+        const auto result=QuestVr::QueryNativeWindowPreferredSize(operations,
+            !width,width?0.0f:value.floating,width,width?value.floating:0.0f);
+        return {Value::Float(width?result.width:result.height),{}};
+    }
     Evaluation WindowPreferredSizeNative(RuntimeObject* window,const std::vector<Evaluation>& arguments,
         const Function* declaration,QuestVr::Vm::Execution& execution) {
         RequireNativeWindow(window);
@@ -7081,6 +7115,7 @@ public:
         NativeWindowWrite(window,"Extension.ButtonWindow.curTileColor",selected.fields.at("tlcolor"),execution);
     }
 #include "portable_window_toggle.inl"
+#include "portable_window_axis_probe.inl"
     void InitializeChildRadioBox(RuntimeObject* window,QuestVr::Vm::Execution& execution) {
         RequireNativeWindow(window);
         if(!IsDerivedFromPath(window->cls,"Extension.RadioBoxWindow") || !window->nativeWindowState)
@@ -13647,6 +13682,21 @@ PortableToggleProbeResult ProbePortableNativeWindowToggle(const std::string& pla
         PortableActorVmHost host;
         result.execution=QuestVr::Vm::ExecuteTransaction(host,[&](QuestVr::Vm::Execution& execution) {
             return host.ProbeNativeWindowToggle(playerActorPath,mode,result,execution);
+        },limits);
+    } catch(const std::exception& error) {
+        result.execution.status=QuestVr::Vm::Status::Unsupported;result.execution.error=error.what();
+    }
+    return result;
+}
+
+PortableWindowAxisProbeResult ProbePortableNativeWindowAxisQuery(const std::string& playerActorPath,
+    PortableWindowAxisProbeMode mode,const QuestVr::Vm::Limits& limits) {
+    CollectBirthGarbageAtBoundary collect;
+    PortableWindowAxisProbeResult result;
+    try {
+        PortableActorVmHost host;
+        result.execution=QuestVr::Vm::ExecuteTransaction(host,[&](QuestVr::Vm::Execution& execution) {
+            return host.ProbeNativeWindowAxisQuery(playerActorPath,mode,result,execution);
         },limits);
     } catch(const std::exception& error) {
         result.execution.status=QuestVr::Vm::Status::Unsupported;result.execution.error=error.what();
