@@ -1,5 +1,52 @@
 # Port status
 
+## Exact Trigger and actual original door movement (2026-10-25)
+
+Exact native Engine.Trigger now enters the existing AActor Tick/physics/
+event/state bodies through independently authenticated native slots. Its
+actual Trigger-to-native-Triggers-to-Actor ancestry is retained; neither
+Engine.Triggers nor an unknown nearer native child is newly admitted. No
+destructor, generic Actor-derived allowance or skipped-actor path is added.
+
+A bounded, preview-only Training command now calls original
+Engine.Mover.InterpolateTo through the same Execution immediately before the
+unfiltered actor phase. Original script sets all movement fields; no fake
+pose/Physics/alpha store or presentation-door motion is used. Snapshots and
+bitwise repeat/whole-root rollback controls distinguish partial script/frame
+failure from completed calls. A preview guard prevents publication even if
+a later startup continuation should return normally.
+
+Actual first-door proof now exists: panel16,key1,seconds0.25 moves its Y from
+800 to799.500671 through real MoveActor, with alpha0.055555556. Both panels at
+seconds0.005 move56 units apart to Y744/919.998535 and run2 selected original
+InterpolateEnd events; the original script resets alpha to0. Both active cases
+repeat twice with identical snapshots/counts and full undo. A forced473000
+work budget exhausts AFTER both moves/events and still verifies complete
+rollback while preserving the real budget error. This is not controller
+interaction, paired Trigger/Bump linking, a published frame or headset proof.
+
+The ordinary actual Training phase now reaches48 slots/47 admitted calls,
+14 idle Physics9 blocks,205885 instructions/15721 writes (repeat2/full undo).
+Partial-door and completed-pair roots retain205990/15747 and206221/15789.
+All stop later at the exact DeusEx.DeusExLevelInfo native gate. Its actual
+Info ancestry/imported AActor slots are audited for a later exact admission;
+no new DeusExLevelInfo or blanket Info/LevelInfo allowance is added here.
+
+Generated production Trigger controls pass1268 cumulative checks/33 refusals;
+the extended Mover/Physics9 controls log2375/59 before the final passing
+malformed-schema case. Full desktop, strict ARM64 syntax and Android-native
+builds pass. Final CTest205 executed/244 registered/39 explicit owned-data
+skips/zero failures53.89s passes. Separate original crate415/5, deferred429/21
+and animation588/24 pass; two-Fire repeat2 retains228837/26047, removal/loot/
+debris observations and full undo. All45 checked original files retain exact
+SHA256/length/UTC-mtime. All build/probe/test jobs are terminal.
+
+No APK is packaged; Quest is not detected. Only first Training gameplay
+integration is prioritized. Original world/Pawn/frame/startup publication,
+live crate attacks, collectible surviving loot, automatic gravity and headset
+acceptance remain unfinished. See TRAINING-ORIGINAL-MOVER-OBSERVATION.md and
+ORIGINAL-DEUSEX-LEVELINFO-TICK-PREREQUISITES.md.
+
 ## Original Physics9 MovingBrush service (2026-10-25)
 
 The real Physics9 dispatch now supplies its raw OldLocation prefix, genuine

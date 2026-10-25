@@ -303,6 +303,34 @@ struct PortableStartupPhysicsCohortObservation {
     std::vector<PortableStartupPhysicsCarryObservation> carries;
     bool operator==(const PortableStartupPhysicsCohortObservation&) const = default;
 };
+// Explicit first-Training diagnostic input, not presentation-layer motion.
+// Original InterpolateTo and the unfiltered actor phase share startup's one
+// ALWAYS-rolled-back Execution; this does not publish a playable world.
+struct PortableStartupMoverCommand {
+    std::string actorPath;
+    std::uint8_t keyNum{1u};
+    float seconds{2.0f};
+    bool operator==(const PortableStartupMoverCommand&) const = default;
+};
+struct PortableStartupMoverState {
+    std::array<float,3u> location{},oldLocation{},velocity{};
+    std::array<std::int32_t,3u> rotation{};
+    std::uint8_t physics{},keyNum{},glideType{};
+    bool bInterpolating{};
+    float physAlpha{},physRate{};
+    bool operator==(const PortableStartupMoverState&) const = default;
+};
+struct PortableStartupMoverObservation {
+    std::size_t commandIndex{},writesBefore{},writesAfterCall{},writesAfterFrame{};
+    std::string actorPath,classPath,functionPath;
+    std::uint8_t keyNum{};
+    float seconds{};
+    bool entered{},returned{},callCaptured{},frameEntered{},frameReturned{},frameCaptured{};
+    PortableStartupMoverState before,afterCall,afterFrame;
+    // IEEE payloads are retained verbatim. Consumers requiring deterministic
+    // identity must compare Float words, not the default arithmetic equality.
+    bool operator==(const PortableStartupMoverObservation&) const = default;
+};
 struct PortableStartupDamageBirth {
     std::string actorPath,classPath,statePath,ownerPath,basePath;
     std::array<float,3u> location{},velocity{};
@@ -441,6 +469,10 @@ struct PortableWorldStartupProbeOptions {
     // Explicit rollback-only scheduling observation after genuine SetPlayer,
     // before Possess, not the original Level frame schedule/startup success.
     std::optional<float> observeDynamicActorDelta{};
+    // At most eight isolated original InterpolateTo calls on the authored
+    // first-door panels, immediately before the requested full actor phase.
+    // Empty is ordinary startup. Never assigns movement fields directly.
+    std::vector<PortableStartupMoverCommand> moverCommands{};
 };
 struct PortablePlayerLoginObservation {
     std::uint64_t viewportIdentity{};
@@ -536,6 +568,7 @@ struct PortableWorldStartupProbeResult {
     std::vector<PortableActorStasisObservation> stasisObservations;
     std::optional<PortableLevelPlayerDistanceObservation> playerDistance;
     std::optional<PortableLevelDynamicTickResult> dynamicActors;
+    std::vector<PortableStartupMoverObservation> movers;
 };
 const char* PortableWorldStartupPhaseName(PortableWorldStartupPhase phase);
 // Non-publishing diagnostic over actual Level slots and original callbacks.

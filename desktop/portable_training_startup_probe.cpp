@@ -48,6 +48,8 @@ constexpr std::array<std::string_view,4u> TrainingDamageActors{
 constexpr std::array<std::string_view,4u> TrainingStasisActors{
     "00_Training.CrateBreakableMedGeneral1","00_Training.CrateBreakableMedGeneral2",
     "00_Training.Doctor1","00_Training.Lamp2"};
+constexpr std::array<std::string_view,2u> TrainingMoverActors{
+    "00_Training.DeusExMover16","00_Training.DeusExMover17"};
 
 void Require(bool value,const std::string& why) {
     if(!value)throw std::runtime_error(why);
@@ -425,6 +427,127 @@ std::uint32_t FireAttackCount(std::string_view text) {
     Require(text.size()==1u&&text[0]>='1'&&text[0]<='4',"Fire attack count must be1..4");
     return static_cast<std::uint32_t>(text[0]-'0');
 }
+std::uint8_t MoverKey(std::string_view text) {
+    Require(text.size()==1u&&text[0]>='0'&&text[0]<='7',"Training mover key must be an authored array index0..7");
+    return static_cast<std::uint8_t>(text[0]-'0');
+}
+float MoverSeconds(std::string_view text) {
+    Require(!text.empty()&&text.size()<=64u,"Training mover seconds must be a bounded positive finite decimal Float");
+    float value{};std::istringstream input{std::string(text)};input.imbue(std::locale::classic());
+    input>>std::noskipws>>value;
+    Require(!input.fail()&&input.eof()&&std::isfinite(value)&&value>0.0f&&value<=60.0f,
+        "Training mover seconds require a complete finite decimal Float0<seconds<=60 without whitespace/trailing bytes");
+    return value;
+}
+bool SameMoverState(const PortableStartupMoverState& a,const PortableStartupMoverState& b) {
+    if(a.rotation!=b.rotation||a.physics!=b.physics||a.keyNum!=b.keyNum||a.glideType!=b.glideType||
+        a.bInterpolating!=b.bInterpolating||std::bit_cast<std::uint32_t>(a.physAlpha)!=std::bit_cast<std::uint32_t>(b.physAlpha)||
+        std::bit_cast<std::uint32_t>(a.physRate)!=std::bit_cast<std::uint32_t>(b.physRate))return false;
+    for(unsigned c=0u;c<3u;++c)if(
+        std::bit_cast<std::uint32_t>(a.location[c])!=std::bit_cast<std::uint32_t>(b.location[c])||
+        std::bit_cast<std::uint32_t>(a.oldLocation[c])!=std::bit_cast<std::uint32_t>(b.oldLocation[c])||
+        std::bit_cast<std::uint32_t>(a.velocity[c])!=std::bit_cast<std::uint32_t>(b.velocity[c]))return false;
+    return true;
+}
+bool SameMoverObservations(const std::vector<PortableStartupMoverObservation>& a,
+    const std::vector<PortableStartupMoverObservation>& b) {
+    if(a.size()!=b.size())return false;
+    for(std::size_t i=0u;i<a.size();++i) {
+        const auto& x=a[i];const auto& y=b[i];
+        if(x.commandIndex!=y.commandIndex||x.actorPath!=y.actorPath||x.classPath!=y.classPath||x.functionPath!=y.functionPath||
+            x.keyNum!=y.keyNum||std::bit_cast<std::uint32_t>(x.seconds)!=std::bit_cast<std::uint32_t>(y.seconds)||
+            x.entered!=y.entered||x.returned!=y.returned||x.callCaptured!=y.callCaptured||
+            x.frameEntered!=y.frameEntered||x.frameReturned!=y.frameReturned||x.frameCaptured!=y.frameCaptured||
+            x.writesBefore!=y.writesBefore||x.writesAfterCall!=y.writesAfterCall||x.writesAfterFrame!=y.writesAfterFrame||
+            !SameMoverState(x.before,y.before)||!SameMoverState(x.afterCall,y.afterCall)||
+            !SameMoverState(x.afterFrame,y.afterFrame))return false;
+    }
+    return true;
+}
+PortableStartupMoverState ReadTrainingMoverState(const std::string& actorPath) {
+    const auto read=[&](const char* field,Kind kind) {
+        const auto value=ReadPortableActorDeclaredScriptProperty(actorPath,field);
+        Require(value.kind==kind,std::string("Native Training mover rollback field changed kind: ")+field);return value;
+    };
+    PortableStartupMoverState state;
+    state.location=read("Engine.Actor.Location",Kind::Vector).vector;
+    state.oldLocation=read("Engine.Actor.OldLocation",Kind::Vector).vector;
+    state.velocity=read("Engine.Actor.Velocity",Kind::Vector).vector;
+    state.rotation=read("Engine.Actor.Rotation",Kind::Rotator).rotation;
+    state.physics=static_cast<std::uint8_t>(read("Engine.Actor.Physics",Kind::Byte).integer);
+    state.keyNum=static_cast<std::uint8_t>(read("Engine.Mover.KeyNum",Kind::Byte).integer);
+    state.glideType=static_cast<std::uint8_t>(read("Engine.Mover.MoverGlideType",Kind::Byte).integer);
+    state.bInterpolating=read("Engine.Actor.bInterpolating",Kind::Bool).boolean;
+    state.physAlpha=read("Engine.Actor.PhysAlpha",Kind::Float).floating;
+    state.physRate=read("Engine.Actor.PhysRate",Kind::Float).floating;
+    return state;
+}
+void PrintMoverState(const char* stage,const PortableStartupMoverState& state) {
+    std::cout<<std::setprecision(9)<<"TRAINING MOVER STATE stage="<<stage
+        <<" location=("<<state.location[0u]<<','<<state.location[1u]<<','<<state.location[2u]
+        <<") oldLocation=("<<state.oldLocation[0u]<<','<<state.oldLocation[1u]<<','<<state.oldLocation[2u]
+        <<") velocity=("<<state.velocity[0u]<<','<<state.velocity[1u]<<','<<state.velocity[2u]
+        <<") rotation=("<<state.rotation[0u]<<','<<state.rotation[1u]<<','<<state.rotation[2u]
+        <<") physics="<<unsigned(state.physics)<<" key="<<unsigned(state.keyNum)<<" glide="<<unsigned(state.glideType)
+        <<" interpolating="<<state.bInterpolating<<" alpha="<<state.physAlpha<<" rate="<<state.physRate<<'\n';
+}
+bool ObserveTrainingMovers(const PortableWorldStartupProbeResult& world,
+    const std::vector<PortableStartupMoverCommand>& commands,std::size_t writeLimit) {
+    const auto& rows=world.movers;
+    Require(rows.size()<=commands.size()&&commands.size()<=8u,"Training mover observation exceeded requested command bounds");
+    if(commands.empty()) {
+        Require(rows.empty(),"Startup executed unrequested Training mover commands");return false;
+    }
+    if(!rows.empty()) {
+        Require(world.playerLogins.size()==1u,"Training mover diagnostic did not use exactly one original Login viewport");
+        const auto& login=world.playerLogins.front();
+        // paired is published by Login only AFTER SetSessionPlayer returns.
+        // This diagnostic runs inside that call, after the actual native pair
+        // exists and before Possess; the runtime validates that genuine pair.
+        Require(login.viewportIdentity==Viewport&&login.attempted&&login.loginEntered&&login.loginReturned&&
+            login.playerPath=="00_Training.JCDentonMale0",
+            "Training mover command lacks the genuine returned Login player/registered viewport");
+    }
+    for(std::size_t i=0u;i<rows.size();++i) {
+        const auto& row=rows[i];const auto& command=commands[i];
+        Require(row.commandIndex==i&&row.actorPath==command.actorPath&&row.keyNum==command.keyNum&&
+            std::bit_cast<std::uint32_t>(row.seconds)==std::bit_cast<std::uint32_t>(command.seconds)&&
+            row.classPath=="DeusEx.DeusExMover"&&row.functionPath=="Engine.Mover.InterpolateTo",
+            "Training mover command lost its exact source actor/class/original Function packet");
+        Require(row.entered&&(!row.frameEntered||(row.returned&&row.callCaptured))&&(!row.frameReturned||row.frameEntered)&&
+            (!row.frameCaptured||row.frameEntered),"Training mover observation fabricated an unentered call/frame prefix");
+        Require(row.writesBefore<=writeLimit&&row.writesAfterCall<=writeLimit&&row.writesAfterFrame<=writeLimit,
+            "Training mover observation exceeded the startup write allowance");
+        if(row.callCaptured)Require(row.writesAfterCall>=row.writesBefore,
+            "Training mover call write observation regressed before rollback");
+        if(row.frameCaptured)Require(row.writesAfterFrame>=row.writesAfterCall,
+            "Training mover frame write observation regressed before rollback");
+        if(!row.returned)Require(i+1u==rows.size()&&!row.frameEntered&&!world.execution.passed()&&
+            !world.execution.committed&&!world.execution.error.empty(),
+            "Training mover command continued after a genuine original InterpolateTo refusal");
+        std::cout<<"TRAINING MOVER command="<<row.commandIndex<<" actor="<<std::quoted(row.actorPath)
+            <<" class="<<std::quoted(row.classPath)<<" function="<<std::quoted(row.functionPath)
+            <<" requestedKey="<<unsigned(row.keyNum)<<" requestedSeconds="<<std::setprecision(9)<<row.seconds
+            <<" entered="<<row.entered<<" returned="<<row.returned<<" callCaptured="<<row.callCaptured
+            <<" frameEntered="<<row.frameEntered<<" frameReturned="<<row.frameReturned<<" frameCaptured="<<row.frameCaptured
+            <<" writesBefore="<<row.writesBefore<<" writesAfterCall="<<row.writesAfterCall
+            <<" writesAfterFrame="<<row.writesAfterFrame<<'\n';
+        PrintMoverState("before",row.before);
+        if(row.callCaptured)PrintMoverState("afterCall",row.afterCall);
+        if(row.frameCaptured)PrintMoverState("afterFrame",row.afterFrame);
+    }
+    if(world.dynamicActors)Require(rows.size()==commands.size()&&
+        std::all_of(rows.begin(),rows.end(),[](const auto& row){return row.returned&&row.callCaptured&&row.frameEntered;}),
+        "Native dynamic phase ran before every requested original Training mover call returned");
+    std::cout<<"TRAINING MOVER OBSERVATIONS commands="<<rows.size()<<" requested="<<commands.size()
+        <<"; original InterpolateTo followed by unfiltered native dynamic phase in one rollback-only root, "
+        <<"NOT presentation door motion, published startup or Quest acceptance\n";
+    // The only narrower-than-frame failure accepted by the dynamic observer is
+    // an actual entered original InterpolateTo refusal. Other missing-frame
+    // paths retain the existing strict diagnostic failure checks below.
+    return !rows.empty()&&rows.back().entered&&!rows.back().returned&&!rows.back().frameEntered&&
+        !world.execution.passed()&&!world.execution.committed&&!world.execution.error.empty();
+}
 void ObserveTrainingStasis(const PortableWorldStartupProbeResult& world,bool requested) {
     if(!requested) {
         Require(world.stasisObservations.empty(),"Unrequested Training stasis observations were executed");
@@ -449,7 +572,8 @@ int Run(const fs::path& root,const std::optional<std::string>& expected,unsigned
     bool requireSpawnEncroachment,bool damageTrainingCrates,bool collectTrainingLoot,bool collectTrainingLootViaPlayer,bool sweepTrainingCrates,
     bool fallTrainingCrates,bool fallAfterLowerBreak,bool fallTrainingLoot,bool fallTrainingFragments,bool performTrainingFragments,bool performTrainingCohort,
     const std::optional<std::size_t>& damageWriteLimit,const std::optional<PortableStartupWeaponCommand>& weapon,
-    const std::optional<PortableStartupWeaponFireCommand>& fire,bool observeTrainingStasis,bool observePlayerDistance,bool observeDynamicActors) {
+    const std::optional<PortableStartupWeaponFireCommand>& fire,bool observeTrainingStasis,bool observePlayerDistance,bool observeDynamicActors,
+    const std::vector<PortableStartupMoverCommand>& moverCommands) {
     Temporary temporary(root);std::vector<Source> sources;std::vector<PortablePackageTables> scripts;
     sources.reserve(QuestVr::RuntimeScriptPackages.size()+3u);scripts.reserve(QuestVr::RuntimeScriptPackages.size());
     for(const auto* name:QuestVr::RuntimeScriptPackages){sources.emplace_back(root/"System"/(std::string(name)+".u"));
@@ -486,6 +610,12 @@ int Run(const fs::path& root,const std::optional<std::string>& expected,unsigned
     Require(!Declared("Engine.LevelInfo.bBegunPlay",Kind::Bool).boolean&&
         Declared("Engine.LevelInfo.Game",Kind::Object).text.empty(),"Fresh Training is not authentically dormant");
     const auto actors=ActorIdentities();Require(!actors.empty(),"First Training has no actual actors");
+    std::vector<PortableStartupMoverState> moverStates;
+    for(const auto& command:moverCommands) {
+        Require(ReadPortableRuntimeObjectOwnership(command.actorPath).classPath=="DeusEx.DeusExMover",
+            "Requested first Training mover lacks its actual authored DeusExMover class");
+        moverStates.push_back(ReadTrainingMoverState(command.actorPath));
+    }
     const auto hash=ReadPortableRuntimeRetailCollision();Require(!hash.initialized&&!hash.enabled&&hash.seed==InitialSeed,
         "Fresh Training unexpectedly owns a native collision hash or a consumed shared RNG stream");
     const auto client=ReadPortableRuntimeClientView();const auto session=ReadPortableRuntimePlayerSession(Viewport);
@@ -514,6 +644,9 @@ int Run(const fs::path& root,const std::optional<std::string>& expected,unsigned
             current.retainedBytes==lookup.retainedBytes,
             "Startup diagnostic changed actual UObject lookup root/generation/census");
         Require(SameActors(actors,ActorIdentities()),"Startup diagnostic changed Actor slots/classes/native object indices");
+        for(std::size_t i=0u;i<moverCommands.size();++i)
+            Require(SameMoverState(moverStates[i],ReadTrainingMoverState(moverCommands[i].actorPath)),
+                "Startup diagnostic retained native Training mover state after full rollback");
         const auto model=ReadPortableRuntimeNativeModel();
         Require(model.available==native.available&&model.mapGeneration==native.mapGeneration&&model.levelPath==native.levelPath&&
             model.modelPath==native.modelPath&&model.modelExportIndex==native.modelExportIndex,
@@ -530,6 +663,7 @@ int Run(const fs::path& root,const std::optional<std::string>& expected,unsigned
     rollback();
     PortableWorldStartupProbeOptions options;options.defaultGameClass="DeusEx.DeusExGameInfo";
     options.weapon=weapon;
+    options.moverCommands=moverCommands;
     if(observeDynamicActors)options.observeDynamicActorDelta=1.0f/72.0f;
     if(observeTrainingStasis)for(const auto actor:TrainingStasisActors)
         options.observeStasisActors.emplace_back(actor);
@@ -585,6 +719,7 @@ int Run(const fs::path& root,const std::optional<std::string>& expected,unsigned
     std::optional<std::vector<PortableStartupWeaponObservation>> weaponObservations;
     std::optional<std::vector<PortableStartupWeaponFireObservation>> fireObservations;
     std::optional<std::vector<PortableActorStasisObservation>> stasisObservations;
+    std::optional<std::vector<PortableStartupMoverObservation>> moverObservations;
     std::optional<PortableLevelPlayerDistanceObservation> distanceObservation;
     for(unsigned attempt=1u;attempt<=repeats;++attempt){
         const auto start=std::chrono::steady_clock::now();
@@ -616,6 +751,7 @@ int Run(const fs::path& root,const std::optional<std::string>& expected,unsigned
         ObserveSpawnPackets(world,requireSpawnEncroachment);
         ObserveActorOrder(world);
         ObservePlayerLogins(world);
+        const bool moverCallRefused=ObserveTrainingMovers(world,moverCommands,limits.writes);
         ObserveTrainingLandings(world,sweepTrainingCrates);
         if(fallTrainingFragments)ObserveTrainingFragments(world,performTrainingFragments);
         else if(fallTrainingCrates)ObserveTrainingFalling(world,true,fallAfterLowerBreak);
@@ -647,20 +783,22 @@ int Run(const fs::path& root,const std::optional<std::string>& expected,unsigned
             else distanceObservation=pass;
         }else Require(!world.playerDistance,"Unrequested player-distance phase was executed");
         if(observeDynamicActors) {
-            Require(world.dynamicActors.has_value(),"Requested native dynamic-actor phase was not reached");
-            const auto& tick=*world.dynamicActors;
-            std::cout<<"LEVEL DYNAMIC ACTORS completed="<<tick.completed<<" parity="<<tick.parityBefore<<"->"<<tick.parityAfter
-                <<" slots="<<tick.slotsVisited<<" calls="<<tick.actorCalls<<" stasis="<<tick.stasisReturns
-                <<" deferred="<<tick.deferredPushes<<" passes="<<tick.pendingPasses<<" skipped="<<tick.pendingSkips
-                <<"; same-root rollback-only normal actor phase, NOT published Level.Tick or headset gameplay\n";
-            if(tick.movingBrushCalls) {
-                std::cout<<"MOVING BRUSH mode=9 calls="<<tick.movingBrushCalls<<" lastActor="<<std::quoted(tick.lastMovingBrushActor)
-                    <<" moverClass="<<(tick.lastMovingBrushClass?(*tick.lastMovingBrushClass?"yes":"no"):"unread")
-                    <<" interpolating="<<(tick.lastMovingBrushInterpolating?(*tick.lastMovingBrushInterpolating?"yes":"no"):"unread")
-                    <<" key="<<(tick.lastMovingBrushKey?std::to_string(*tick.lastMovingBrushKey):"unread")
-                    <<" moves="<<tick.movingBrushMoves<<" ends="<<tick.movingBrushEnds<<'\n';
+            Require(world.dynamicActors.has_value()||moverCallRefused,"Requested native dynamic-actor phase was not reached");
+            if(world.dynamicActors) {
+                const auto& tick=*world.dynamicActors;
+                std::cout<<"LEVEL DYNAMIC ACTORS completed="<<tick.completed<<" parity="<<tick.parityBefore<<"->"<<tick.parityAfter
+                    <<" slots="<<tick.slotsVisited<<" calls="<<tick.actorCalls<<" stasis="<<tick.stasisReturns
+                    <<" deferred="<<tick.deferredPushes<<" passes="<<tick.pendingPasses<<" skipped="<<tick.pendingSkips
+                    <<"; same-root rollback-only normal actor phase, NOT published Level.Tick or headset gameplay\n";
+                if(tick.movingBrushCalls) {
+                    std::cout<<"MOVING BRUSH mode=9 calls="<<tick.movingBrushCalls<<" lastActor="<<std::quoted(tick.lastMovingBrushActor)
+                        <<" moverClass="<<(tick.lastMovingBrushClass?(*tick.lastMovingBrushClass?"yes":"no"):"unread")
+                        <<" interpolating="<<(tick.lastMovingBrushInterpolating?(*tick.lastMovingBrushInterpolating?"yes":"no"):"unread")
+                        <<" key="<<(tick.lastMovingBrushKey?std::to_string(*tick.lastMovingBrushKey):"unread")
+                        <<" moves="<<tick.movingBrushMoves<<" ends="<<tick.movingBrushEnds<<'\n';
+                }
+                Require(ReadPortableRuntimeLevelTickParity()==0,"Failed startup retained native frame parity");
             }
-            Require(ReadPortableRuntimeLevelTickParity()==0,"Failed startup retained native frame parity");
         }else Require(!world.dynamicActors,"Unrequested dynamic-actor phase was executed");
         for(const auto& dump:world.dumpLocations) {
             Require(dump.classPath=="DeusEx.DumpLocation" && dump.outerPath=="00_Training" && dump.objectIndex &&
@@ -700,6 +838,9 @@ int Run(const fs::path& root,const std::optional<std::string>& expected,unsigned
         if(stasisObservations)Require(*stasisObservations==world.stasisObservations,
             "Repeated original Training stasis/zone/native-time provider observations differ");
         else stasisObservations=world.stasisObservations;
+        if(moverObservations)Require(SameMoverObservations(*moverObservations,world.movers),
+            "Repeated original Training InterpolateTo/native-frame state/write-prefix observations differ bitwise");
+        else moverObservations=world.movers;
         if(spawnPackets)Require(SameSpawnPackets(*spawnPackets,world.spawnedEncroachment),
             "Repeated startup changed detached Spawn identities, exact pose words, query result/storage or lifecycle tail");
         else spawnPackets=world.spawnedEncroachment;
@@ -739,6 +880,7 @@ int main(int argc,char** argv) {
         std::optional<std::size_t> damageWriteLimit;
         std::optional<PortableStartupWeaponCommand> weapon;
         std::optional<PortableStartupWeaponFireCommand> fire;
+        std::vector<PortableStartupMoverCommand> moverCommands;
         std::optional<std::array<float,3u>> fireLocation;
         std::optional<std::array<std::int32_t,3u>> fireRotation;
         std::optional<std::uint32_t> fireAttacks;
@@ -751,6 +893,15 @@ int main(int argc,char** argv) {
             else if(option=="--observe-training-stasis")observeTrainingStasis=true;
             else if(option=="--observe-player-distance")observePlayerDistance=true;
             else if(option=="--observe-dynamic-actors"){observeDynamicActors=true;observePlayerDistance=true;}
+            else if(option=="--interpolate-training-mover") {
+                Require(i+3<argc&&moverCommands.size()<8u,
+                    "--interpolate-training-mover requires PATH KEY SECONDS, at most eight commands");
+                PortableStartupMoverCommand command;command.actorPath=argv[++i];
+                Require(std::find(TrainingMoverActors.begin(),TrainingMoverActors.end(),command.actorPath)!=TrainingMoverActors.end(),
+                    "Training mover diagnostic requires 00_Training.DeusExMover16 or 00_Training.DeusExMover17");
+                command.keyNum=MoverKey(argv[++i]);command.seconds=MoverSeconds(argv[++i]);
+                moverCommands.push_back(std::move(command));observeDynamicActors=true;observePlayerDistance=true;
+            }
             else if(option=="--fire-location") {
                 Require(!fireLocation&&i+3<argc,"--fire-location requires exactly one X Y Z packet");
                 std::array<float,3u> value{};for(auto& component:value)component=FireLocationComponent(argv[++i]);
@@ -790,7 +941,7 @@ int main(int argc,char** argv) {
             else if(option=="--damage-write-limit"&&i+1<argc)damageWriteLimit=DamageWriteLimit(argv[++i]);
             else if(option=="--repeat"&&i+1<argc){const std::string_view number=argv[++i];
                 Require(number.size()==1u&&number[0]>='1'&&number[0]<='8',"Repeat count must be1..8");repeats=static_cast<unsigned>(number[0]-'0');}
-            else throw std::runtime_error("Usage: portable_training_startup_probe --owned-source-root OWNED_GAME_ROOT [--expected-error EXACT_TEXT] [--repeat 1..8] [--native-work 0..16777216] [--observe-training-stasis] [--require-spawn-encroachment] [--exercise-training-weapon ACTOR_PATH | --fire-training-weapon ACTOR_PATH | --damage-training-crates | --collect-training-loot | --collect-training-loot-via-player] [--fire-location X Y Z --fire-rotation Pitch Yaw Roll] [--fire-attacks 1..4] [--sweep-training-crates | --fall-training-crates | --fall-after-lower-break | --fall-training-loot | --fall-training-fragments | --perform-training-fragments | --perform-training-cohort] [--damage-write-limit 0..1048576]");}
+            else throw std::runtime_error("Usage: portable_training_startup_probe --owned-source-root OWNED_GAME_ROOT [--expected-error EXACT_TEXT] [--repeat 1..8] [--native-work 0..16777216] [--observe-training-stasis] [--observe-player-distance] [--observe-dynamic-actors] [--require-spawn-encroachment] [--interpolate-training-mover PATH KEY0..7 SECONDS0<..60 (at most8; isolated from damage/weapon commands)] [--exercise-training-weapon ACTOR_PATH | --fire-training-weapon ACTOR_PATH | --damage-training-crates | --collect-training-loot | --collect-training-loot-via-player] [--fire-location X Y Z --fire-rotation Pitch Yaw Roll] [--fire-attacks 1..4] [--sweep-training-crates | --fall-training-crates | --fall-after-lower-break | --fall-training-loot | --fall-training-fragments | --perform-training-fragments | --perform-training-cohort] [--damage-write-limit 0..1048576]");}
         Require(fireLocation.has_value()==fireRotation.has_value(),"Diagnostic Fire pose requires both --fire-location and --fire-rotation");
         Require(fire||(!fireLocation&&!fireRotation&&!fireAttacks),"Fire pose/attack switches require --fire-training-weapon");
         if(fire) {
@@ -800,6 +951,10 @@ int main(int argc,char** argv) {
         Require(!weapon||(!damageTrainingCrates&&!collectTrainingLoot&&!collectTrainingLootViaPlayer&&!sweepTrainingCrates&&
             !fallTrainingCrates&&!fallAfterLowerBreak&&!fallTrainingLoot&&!fallTrainingFragments&&!performTrainingFragments&&!performTrainingCohort),
             "Weapon pickup/equip is isolated from direct-damage/loot/physics diagnostics");
+        Require(moverCommands.empty()||(!weapon&&!fire&&!damageTrainingCrates&&!collectTrainingLoot&&!collectTrainingLootViaPlayer&&
+            !sweepTrainingCrates&&!fallTrainingCrates&&!fallAfterLowerBreak&&!fallTrainingLoot&&!fallTrainingFragments&&
+            !performTrainingFragments&&!performTrainingCohort&&!damageWriteLimit),
+            "Original Training mover commands are isolated from damage/loot/falling/weapon and damage-write-limit diagnostics");
         Require(!(sweepTrainingCrates&&fallTrainingCrates),"Explicit swept-delta and gravity-timestep crate diagnostics are mutually exclusive");
         Require(!fallAfterLowerBreak||(!collectTrainingLoot&&!collectTrainingLootViaPlayer&&!sweepTrainingCrates),
             "--fall-after-lower-break cannot be combined with loot collection or explicit sweep commands");
@@ -815,7 +970,7 @@ int main(int argc,char** argv) {
         if(root.empty()){std::cout<<"SKIP owned first Training startup observation: use --owned-source-root or DEUSEX_GAME_ROOT.\n";return 77;}
         ShutdownPortableRuntime();GC::Collect();const auto before=GC::GetStats();
         const auto result=Run(fs::canonical(root),expected,repeats,nativeWork,requireSpawnEncroachment,damageTrainingCrates,
-            collectTrainingLoot,collectTrainingLootViaPlayer,sweepTrainingCrates,fallTrainingCrates,fallAfterLowerBreak,fallTrainingLoot,fallTrainingFragments,performTrainingFragments,performTrainingCohort,damageWriteLimit,weapon,fire,observeTrainingStasis,observePlayerDistance,observeDynamicActors);
+            collectTrainingLoot,collectTrainingLootViaPlayer,sweepTrainingCrates,fallTrainingCrates,fallAfterLowerBreak,fallTrainingLoot,fallTrainingFragments,performTrainingFragments,performTrainingCohort,damageWriteLimit,weapon,fire,observeTrainingStasis,observePlayerDistance,observeDynamicActors,moverCommands);
         ShutdownPortableRuntime();GC::Collect();const auto after=GC::GetStats();
         Require(after.numObjects==before.numObjects&&after.memoryUsage==before.memoryUsage,"Startup observation retained native UObjects after shutdown");
         return result;

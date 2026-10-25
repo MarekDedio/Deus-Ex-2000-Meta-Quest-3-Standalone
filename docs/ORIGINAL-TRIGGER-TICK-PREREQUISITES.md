@@ -115,3 +115,29 @@ The immediate scope remains the whole first `00_Training.dx` dynamic phase
 and its crates/loot/gravity, not other maps or any account/login interface.
 The current build freeze is preserved; native-boundary admission and exact
 serialized-fixture/regression checks belong to a separately thawed increment.
+
+## Subsequent implementation increment
+
+After the prior builds/tests were terminal and source freeze was lifted,
+`RequireOriginalActorTickPhysicsImplementation` was extended with exact
+`Engine.Trigger` only. Neither Engine.Triggers nor arbitrary nearer native
+classes were added, and no deletion/teardown guard was relaxed.
+
+The generated serialized production Level fixture now constructs actual
+native Trigger to native Triggers to Actor ancestry and checks selected script
+Tick with explicit Physics0, late script failure, every write-budget prefix,
+representative native-work cuts, unknown native Trigger-derived refusal and
+explicit Engine.Triggers refusal with complete same-root rollback. These are
+added test controls, not a claim that they have built/passed; the root's final
+verification records that separately. This still does not establish complete
+first Training gameplay, active physics or a tested headset build.
+
+Final subsequent verification: generated exact-Trigger controls pass1268
+cumulative checks/33 refusals; the full extended driver exits0. Full desktop,
+strict ARM64 syntax and Android-native builds pass; final CTest205 executed/
+244 registered/39 explicit owned-data skips/zero failures53.89s passes.
+Actual unfiltered Training repeat2 now reaches48 slots/47 admitted calls,
+205885 instructions/15721 writes and full undo at the later exact
+DeusEx.DeusExLevelInfo gate. Separate original InterpolateTo-driven actual
+door movement/completion and late-budget undo are documented in
+TRAINING-ORIGINAL-MOVER-OBSERVATION.md, not inferred from this vtable proof.

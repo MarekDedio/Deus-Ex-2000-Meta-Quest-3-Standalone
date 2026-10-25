@@ -2689,11 +2689,20 @@ public:
             worldStartupResult_->playerDistance=std::move(observed);
         }
         if(worldStartupProbe_&&worldStartupResult_&&worldStartupDynamicActorDelta_) {
+            if(worldStartupMoverCommands_)
+                ProbeStartupMovers(viewportIdentity,actor,*worldStartupMoverCommands_,execution);
             ValidateStateBudget(sizeof(PortableLevelDynamicTickResult));
             nativeActorOrderObservationBytes_+=sizeof(PortableLevelDynamicTickResult);
             worldStartupResult_->dynamicActors.emplace();
-            static_cast<void>(AdvanceOriginalLevelDynamicActors(**worldStartupDynamicActorDelta_,0,
-                *worldStartupResult_->dynamicActors,execution));
+            BeginStartupMoverFrame();
+            try {
+                static_cast<void>(AdvanceOriginalLevelDynamicActors(**worldStartupDynamicActorDelta_,0,
+                    *worldStartupResult_->dynamicActors,execution));
+            }catch(...) {
+                try {CaptureStartupMoverFrame(false,execution);}catch(...) {}
+                throw; // Preserve the actual frame refusal, including budget errors.
+            }
+            CaptureStartupMoverFrame(true,execution);
         }
         static_cast<void>(execution.CallEvent(actor->reflection.objectPath,"Possess",false,{}));
         static_cast<void>(NativeSessionViewport(viewportIdentity));
@@ -2924,6 +2933,7 @@ public:
         beforePendingTouch_.clear();
         beforeActorOrder_.reset();
         nativeActorOrderObservationBytes_=0u;
+        startupMoverPreview_=false;
         nativeStartupOut_.clear();
         nativeDestroyReferenceBytes_=0u;
         nativePhysicsReferenceBytes_=0u;
@@ -2964,7 +2974,7 @@ public:
         if (clientDependent_ && !persistentNativeClient.HasViewport())
             throw std::runtime_error("Native client lifetime revoked during script transaction");
         ValidateSoundClientLease();
-        if(retailCollisionPreview_||propertyTeardownPreview_||objectDestroyPreview_||actorOrderPreview_||dumpLocationPreview_||actorPhysicsPreview_||actorAnimationPreview_) {
+        if(retailCollisionPreview_||propertyTeardownPreview_||objectDestroyPreview_||actorOrderPreview_||dumpLocationPreview_||actorPhysicsPreview_||actorAnimationPreview_||startupMoverPreview_) {
             ValidateStateBudget();Rollback();return;
         }
         SynchronizeNativeMoveMirror();
@@ -7930,6 +7940,7 @@ public:
 #include "portable_startup_loot.inl"
 #include "portable_startup_weapon.inl"
 #include "portable_startup_weapon_fire.inl"
+#include "portable_startup_mover.inl"
 #include "portable_player_login.inl"
     Value ProbeWorldStartup(const PortableWorldStartupProbeOptions& options,
         PortableWorldStartupProbeResult& result, QuestVr::Vm::Execution& execution,
@@ -7944,6 +7955,9 @@ public:
         ValidateStartupFallingCommands(options);
         ValidateStartupPhysicsCohort(options);
         ValidateStartupWeapon(options,options.weapon);
+        ValidateStartupMoverCommands(options);
+        if(!options.moverCommands.empty()&&fireCommand)
+            throw std::runtime_error("Startup mover commands cannot share a weapon Fire diagnostic");
         if(options.observePlayerDistanceActors.size()>16u)
             throw std::runtime_error("Startup distance observation exceeds16 retained Actors");
         for(const auto& path:options.observePlayerDistanceActors)
@@ -7964,14 +7978,17 @@ public:
             bool& active;PortableWorldStartupProbeResult*& observation;
             const std::vector<std::string>*& distance;
             const std::optional<float>*& dynamic;
-            ~ProbeScope() { active = false;observation=nullptr;distance=nullptr;dynamic=nullptr; }
-        } scope{worldStartupProbe_,worldStartupResult_,worldStartupDistanceActors_,worldStartupDynamicActorDelta_};
+            const std::vector<PortableStartupMoverCommand>*& movers;
+            ~ProbeScope() { active = false;observation=nullptr;distance=nullptr;dynamic=nullptr;movers=nullptr; }
+        } scope{worldStartupProbe_,worldStartupResult_,worldStartupDistanceActors_,worldStartupDynamicActorDelta_,worldStartupMoverCommands_};
         worldStartupProbe_ = true;
         worldStartupResult_=&result;
         worldStartupDistanceActors_=options.observePlayerDistanceActors.empty()?nullptr:&options.observePlayerDistanceActors;
         if(options.observeDynamicActorDelta&&(!std::isfinite(*options.observeDynamicActorDelta)||*options.observeDynamicActorDelta<0.0f))
             throw std::runtime_error("Startup dynamic-actor observation delta is invalid");
         worldStartupDynamicActorDelta_=options.observeDynamicActorDelta?&options.observeDynamicActorDelta:nullptr;
+        worldStartupMoverCommands_=options.moverCommands.empty()?nullptr:&options.moverCommands;
+        startupMoverPreview_=!options.moverCommands.empty();
         using Phase = PortableWorldStartupPhase;
         const auto visit = [&](const Phase phase, RuntimeObject* actor, const std::size_t slot) {
             LifecycleStep();
@@ -9000,6 +9017,7 @@ private:
     bool dumpLocationPreview_{};
     bool actorPhysicsPreview_{};
     bool actorAnimationPreview_{};
+    bool startupMoverPreview_{};
     std::size_t nativeActorOrderObservationBytes_{};
     struct StartupOutStorage {std::shared_ptr<Value> value;std::shared_ptr<Reference> reference;};
     std::vector<StartupOutStorage> nativeStartupOut_;
@@ -9052,6 +9070,7 @@ private:
     PortableWorldStartupProbeResult* worldStartupResult_{};
     const std::vector<std::string>* worldStartupDistanceActors_{};
     const std::optional<float>* worldStartupDynamicActorDelta_{};
+    const std::vector<PortableStartupMoverCommand>* worldStartupMoverCommands_{};
     // Original Extension global layout-call bookkeeping is transient, scoped
     // to this VM host. Exception guards restore it; UObject writes journal in
     // the outer transaction. It is never persisted as guessed script fields.

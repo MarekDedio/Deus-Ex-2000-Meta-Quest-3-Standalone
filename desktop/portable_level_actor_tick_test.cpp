@@ -256,7 +256,9 @@ void Property(QuestVr::ScriptSavedState& state,const std::string& actor,const st
     if(found==object.properties.end())object.properties.push_back({key,name,index,value});else found->value=value;
 }
 struct Tables {std::vector<PortablePackageTables> packages;PortablePackageTables map;std::map<std::string,std::uint32_t> actorExports;};
-Tables Build(Fixture& fixture,bool moverControl=false,std::uint32_t oldLocationFlags=2u) {
+enum class TriggerControlKind {None,Exact,Parent};
+Tables Build(Fixture& fixture,bool moverControl=false,std::uint32_t oldLocationFlags=2u,
+    TriggerControlKind triggerControl=TriggerControlKind::None) {
     const std::string ini="[Engine.Engine]\nGameEngine=Engine.GameEngine\n";
     const auto iniPath=fixture.directory/"System"/"DeusEx.ini";
     WriteBytes(iniPath,Bytes(ini.begin(),ini.end()));fixture.sources.emplace(iniPath,Bytes(ini.begin(),ini.end()));
@@ -287,6 +289,16 @@ Tables Build(Fixture& fixture,bool moverControl=false,std::uint32_t oldLocationF
     if(moverControl) {
         engine.exports.at(static_cast<std::size_t>(mover-1)).ObjFlags=static_cast<ObjectFlags>(0x04000000u);
         engine.ClassBody(mover);
+    }
+    std::int32_t triggers{},trigger{};
+    if(triggerControl!=TriggerControlKind::None) {
+        // Owned Engine.u ancestry is Trigger -> native Triggers -> Actor,
+        // not a fixture-only direct Trigger -> Actor substitute.
+        triggers=engine.Export("Triggers",0,actor);trigger=engine.Export("Trigger",0,triggers);
+        for(const auto ref:{triggers,trigger}) {
+            engine.exports.at(static_cast<std::size_t>(ref-1)).ObjFlags=static_cast<ObjectFlags>(0x040f0004u);
+            engine.ClassBody(ref);
+        }
     }
     const auto level=engine.Export("Level",0,eo),model=engine.Export("Model",0,eo);
     engine.exports.at(static_cast<std::size_t>(actor-1)).ObjFlags=static_cast<ObjectFlags>(0x04000000u);
@@ -359,7 +371,8 @@ Tables Build(Fixture& fixture,bool moverControl=false,std::uint32_t oldLocationF
     const auto engineTable=fixture.Write(engine);
     Package classes;classes.stem="TickClasses";const auto cc=classes.ImportPackage("Core"),ce=classes.ImportPackage("Engine");
     const auto ca=classes.Import("Actor",ce),ci=classes.Import("LevelInfo",ce);
-    const auto test=classes.Export("TestActor",0,ca),bad=classes.Export("BadNative",0,ca);
+    const auto testBase=triggerControl==TriggerControlKind::None?ca:classes.Import("Trigger",ce);
+    const auto test=classes.Export("TestActor",0,testBase),bad=classes.Export("BadNative",0,testBase);
     classes.exports.at(static_cast<std::size_t>(bad-1)).ObjFlags=static_cast<ObjectFlags>(0x04000000u);
     const auto count=classes.Property("Count","IntProperty",test,cc),stamp=classes.Property("Stamp","IntProperty",test,cc);
     const auto mode=classes.Property("Mode","IntProperty",test,cc);
@@ -379,7 +392,8 @@ Tables Build(Fixture& fixture,bool moverControl=false,std::uint32_t oldLocationF
     std::map<std::string,std::int32_t> actors;
     actors["Level0"]=map.Export("Level0",map.Import("LevelInfo",me));
     actors["Brush0"]=map.Export("Brush0",map.Import("Brush",me));
-    actors["Bad0"]=map.Export("Bad0",moverControl?map.Import("Mover",me):map.Import("BadNative",mt));
+    actors["Bad0"]=map.Export("Bad0",moverControl?map.Import("Mover",me):
+        triggerControl==TriggerControlKind::Parent?map.Import("Triggers",me):map.Import("BadNative",mt));
     for(const auto* name:{"Static0","A","B","C"})actors[name]=map.Export(name,map.Import("TestActor",mt));
     for(const auto& [name,ref]:actors) {
         Bytes properties;map.ObjectTag(properties,"Level",actors.at("Level0"));map.ObjectTag(properties,"XLevel",world);
@@ -560,6 +574,92 @@ void Synthetic() {
           " dynamic-only compaction and shared-root late/write/work rollback. NOT active Spawn/GC callbacks,"
           " active animation/physics, full paused/network/Pawn Level.Tick, original Training gameplay or headset acceptance.\n";
 }
+void TriggerControl() {
+    for(const auto kind:{TriggerControlKind::Exact,TriggerControlKind::Parent}) {
+        Fixture fixture;const auto tables=Build(fixture,false,2u,kind);
+        const auto& engine=tables.packages.at(1u);
+        const auto trigger=FindPortableExport(engine,"Trigger"),triggers=FindPortableExport(engine,"Triggers"),
+            actor=FindPortableExport(engine,"Actor");
+        Require(engine.exports.at(trigger).ObjClass==0&&engine.exports.at(triggers).ObjClass==0&&
+            static_cast<std::uint32_t>(engine.exports.at(trigger).ObjFlags)==0x040f0004u&&
+            static_cast<std::uint32_t>(engine.exports.at(triggers).ObjFlags)==0x040f0004u&&
+            engine.exports.at(trigger).ObjBase==static_cast<std::int32_t>(triggers+1u)&&
+            engine.exports.at(triggers).ObjBase==static_cast<std::int32_t>(actor+1u)&&
+            LoadPortableClassDescriptor(engine,trigger).state.baseField==static_cast<std::int32_t>(triggers+1u)&&
+            LoadPortableClassDescriptor(engine,triggers).state.baseField==static_cast<std::int32_t>(actor+1u),
+            "Trigger fixture lost actual serialized native Trigger -> Triggers -> Actor ancestry");
+        Require(InitializePortableRuntime(tables.packages).passed,"Trigger control package initialization failed");
+        Require(PreparePortableRuntimeNativeEngineClasses().prepared&&PreparePortableRuntimeNativeMetadataClasses().prepared&&
+            PreparePortableRuntimeNativePackages().prepared,"Trigger control native metadata/Package preparation failed");
+        Require(LoadPortableRuntimeMap(tables.map).passed&&PreparePortableRuntimeObjectLookup().prepared,
+            "Trigger control lacks native map/lookup ownership");
+        Require(ReadPortableRuntimeDispatchClass("TickClasses.TestActor").parentPath=="Engine.Trigger"&&
+            ReadPortableRuntimeDispatchClass("Engine.Trigger").parentPath=="Engine.Triggers"&&
+            ReadPortableRuntimeDispatchClass("Engine.Triggers").parentPath=="Engine.Actor",
+            "Production dispatch flattened genuine Trigger native ancestry");
+        const auto legacy=fixture.Save("TriggerLegacy");
+        const auto makeSeed=[&] {
+            auto state=Seed(tables);
+            for(const auto* name:{"A","B","C"}) {
+                Property(state,name,"Engine.Actor.Physics",Value::Byte(0));
+                Property(state,name,"Engine.Actor.bTicked",Value::Bool(true));
+            }
+            return state;
+        };
+        const auto seed=[&](const QuestVr::ScriptSavedState& state){fixture.Restore(Envelope(legacy,state));};
+        const auto state=makeSeed();seed(state);
+        const auto successful=AdvancePortableLevelDynamicActors(0.01f,0);RequirePass(successful);
+        Require(successful.actorCalls==3u&&successful.slotsVisited==3u&&successful.movingBrushCalls==0u&&
+            successful.parityBefore==0&&successful.parityAfter==1&&ReadPortableRuntimeLevelTickParity()==1&&
+            Count("A")==1&&Count("B")==1&&Count("C")==1&&Count("Static0")==0&&
+            Count("A","Stamp")==1&&Count("B","Stamp")==2&&Count("C","Stamp")==3&&Count("Level0","Ledger")==3,
+            "Exact native Trigger did not execute the real selected script Tick in live order with Physics0");
+        for(const auto* name:{"A","B","C"}) {
+            const auto physics=ReadPortableActorScriptProperty(Path(name),"Physics");
+            Require(physics.kind==Kind::Byte&&physics.integer==0,"Trigger admission invented active physics");
+        }
+        Require(successful.execution.writes>0u&&successful.execution.nativeWork&&successful.execution.nativeWork->used>0u,
+            "Trigger phase lacks shared write/work accounting");
+        const auto refusal=[&](const QuestVr::ScriptSavedState& input,const QuestVr::Vm::Limits& limits,
+            const std::string& label,const std::string& reached={}) {
+            seed(input);const auto before=fixture.Save("TriggerBefore");const auto revision=GetPortableRuntimeWorldRevision();
+            const auto gc=GC::GetStats();const auto failed=AdvancePortableLevelDynamicActors(0.01f,0,limits);
+            Require(!failed.execution.passed()&&!failed.execution.committed&&!failed.completed,"Trigger admitted "+label);
+            if(!reached.empty())Require(failed.execution.error.find(reached)!=std::string::npos,
+                "Trigger "+label+" failed before its genuine boundary: "+failed.execution.error);
+            Require(fixture.Save("TriggerAfter")==before&&ReadPortableRuntimeLevelTickParity()==0&&
+                GetPortableRuntimeWorldRevision()==revision,"Trigger failure retained a partial shared root: "+label);
+            const auto afterGc=GC::GetStats();Require(afterGc.numObjects==gc.numObjects&&afterGc.memoryUsage==gc.memoryUsage,
+                "Trigger failure retained UObject allocations: "+label);++refusals;
+        };
+        auto late=makeSeed();Property(late,"C","TickClasses.TestActor.Mode",Value::Integer(2));
+        refusal(late,{},"late selected script Tick failure");
+        // Exact admission must not cross a nearer unknown native class, even
+        // when it derives from the newly audited Trigger. Its native parent
+        // Triggers is separately left refused by this bounded increment.
+        auto boundary=makeSeed();auto& slots=boundary.nativeActorOrder->slots;
+        const auto bad=slots.at(2u);slots.erase(slots.begin()+2);slots.push_back(bad);boundary.nativeActorOrder->firstDynamic=3u;
+        const auto classPath=kind==TriggerControlKind::Parent?"Engine.Triggers":"TickClasses.BadNative";
+        boundary.objects.push_back({Path("Bad0"),classPath,{},{},{},{}});
+        Property(boundary,"Bad0","Engine.Actor.LastRenderTime",Value::Float(0));
+        Property(boundary,"Bad0","Engine.Actor.bStatic",Value::Bool(false));
+        Property(boundary,"Bad0","Engine.Actor.Physics",Value::Byte(0));
+        refusal(boundary,{},"unaudmitted nearest native class",std::string("unimplemented native virtual override: ")+classPath);
+        if(kind==TriggerControlKind::Exact) {
+            for(std::size_t cut=0u;cut<successful.execution.writes;++cut) {
+                QuestVr::Vm::Limits limits;limits.writes=cut;refusal(state,limits,"write prefix "+std::to_string(cut));
+            }
+            for(const auto cut:{std::size_t{0u},successful.execution.nativeWork->used/2u,successful.execution.nativeWork->used-1u}) {
+                QuestVr::Vm::Limits limits;limits.nativeWork=cut;refusal(state,limits,"native-work prefix");
+            }
+        }
+        fixture.Unchanged();
+    }
+    std::cout<<"PASS exact Engine.Trigger native admission: "<<checks<<" cumulative checks / "<<refusals
+        <<" refusals; actual native Trigger/Triggers ancestry, selected script Tick with Physics0, "
+          "late/write/work shared-root undo, unknown-nearer-native and Engine.Triggers refusal. "
+          "NOT active Trigger physics, teardown, original Training completion or headset acceptance.\n";
+}
 void MoverControl() {
     Fixture fixture;const auto tables=Build(fixture,true);
     Require(InitializePortableRuntime(tables.packages).passed,"Mover control package initialization failed");
@@ -706,6 +806,6 @@ void MovingBrushSchemaRefusal() {
 }
 } // namespace
 int main() {
-    try {Synthetic();MoverControl();MovingBrushPhysics();MovingBrushSchemaRefusal();return 0;}catch(const std::exception& error){std::cerr<<"FAIL "<<error.what()<<'\n';ShutdownPortableRuntime();return 1;}
+    try {Synthetic();TriggerControl();MoverControl();MovingBrushPhysics();MovingBrushSchemaRefusal();return 0;}catch(const std::exception& error){std::cerr<<"FAIL "<<error.what()<<'\n';ShutdownPortableRuntime();return 1;}
 }
 

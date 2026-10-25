@@ -1,5 +1,25 @@
 # Immediate milestone: complete the first Training map
 
+Latest2026-10-25: exact native Trigger now joins the genuine actor phase with
+serialized ancestry/selected-script/native-boundary/rollback controls, not a
+generic allowance. Actual original InterpolateTo-driven movement is verified
+inside the unfiltered startup/frame root: partial panel16 movement, both
+panels56 units apart,2 original completion events, repeat2 identical native
+snapshots and complete undo. A late473000-work exhaustion AFTER both moves/
+events also rolls back completely. Ordinary phase reaches48 slots/47 calls,
+205885/15721, then the exact DeusEx.DeusExLevelInfo native gate; active partial/
+pair cases reach205990/15747 and206221/15789 at that same later gate. No actor
+is skipped. Exact next-class native identity is independently audited, not
+admitted here. Generated Trigger1268/33 and extended Physics9 controls2375/59
+plus malformed-schema control pass. Full desktop/strict ARM64/Android-native
+and CTest205 executed/244 registered/39 explicit skips/zero failures53.89s
+pass. Original crate415/5, deferred429/21, animation588/24 and two-Fire repeat2
+228837/26047 pass with full undo; all45 checked originals unchanged. Jobs are
+terminal; no Quest detected or APK packaged. Full world/Pawn update, startup
+publication and live crate destruction/usable loot/gravity remain unfinished.
+No account/player-creation UI or other-map gameplay integration is added.
+See TRAINING-ORIGINAL-MOVER-OBSERVATION.md.
+
 Latest2026-10-25: real Physics9 outer+inner services now join the same-root
 actor phase. Raw copies, captured-key/residual/glide/pose arithmetic, actual
 MoveActor, selected InterpolateEnd and fresh Velocity are implemented, not a
