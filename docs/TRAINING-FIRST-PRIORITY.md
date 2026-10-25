@@ -1,5 +1,23 @@
 # Immediate milestone: complete the first Training map
 
+Latest2026-10-25: real Physics9 outer+inner services now join the same-root
+actor phase. Raw copies, captured-key/residual/glide/pose arithmetic, actual
+MoveActor, selected InterpolateEnd and fresh Velocity are implemented, not a
+presentation clock or empty callback. Helpers31,057/226,020 checks pass;
+production controls1,617 cumulative/43 refusals plus malformed-schema control
+pass. Full desktop/strict ARM64/Android native and final CTest205 executed/
+244 registered/39 explicit skips/zero failures64.80s pass. Original crate415/5,
+deferred429/21 and animation588/24 pass. Actual Training repeat2 now reaches
+28 slots/27 admitted calls and4 real idle Physics9 blocks,205505/15651 and full
+undo, then the exact Engine.Trigger native gate. Its requested native slots
+are independently proven AActor aliases for the next exact-admission increment.
+Final two-Fire repeat2 retains228837/26047 and full undo; all45 checked owned
+sources retain SHA256/length/UTC-mtime. All jobs terminal; no Quest detected.
+Active real door movement/completion, full world Tick, live crate destruction,
+usable surviving loot and automatic gravity remain unfinished. No APK,
+account/player-creation UI or other-map gameplay work. See
+ORIGINAL-MOVING-BRUSH-INTEGRATION.md.
+
 Latest2026-10-25: exact Engine.Mover Tick/physics dispatch is admitted after
 independent native-table proof; no arbitrary Actor-derived allowance or
 destructor implication. Generated driver616/17, original crate415/5,

@@ -8,7 +8,7 @@
             throw std::runtime_error("Original lifecycle retained Actor identity is unavailable");
         return actor; // No pending-delete, active, slot0 or Engine gate.
     }
-    enum class LifecycleEventKind { EndState,Destroyed,LostChild,GainedChild,PostTouch,EndedRotation,Expired };
+    enum class LifecycleEventKind { EndState,Destroyed,LostChild,GainedChild,PostTouch,EndedRotation,Expired,InterpolateEnd };
     const char* LifecycleEventName(LifecycleEventKind kind) {
         switch(kind) {
         case LifecycleEventKind::EndState:return "EndState";
@@ -18,6 +18,7 @@
         case LifecycleEventKind::PostTouch:return "PostTouch";
         case LifecycleEventKind::EndedRotation:return "EndedRotation";
         case LifecycleEventKind::Expired:return "Expired";
+        case LifecycleEventKind::InterpolateEnd:return "InterpolateEnd";
         }
         throw std::runtime_error("Unknown original lifecycle event");
     }
@@ -31,7 +32,8 @@
         auto* ownerClass=owner->stateDescriptor?owner->outer:owner;
         if(!ownerClass||!ownerClass->classDescriptor||!IsDerivedFromPath(receiver->cls,ownerClass->reflection.objectPath))
             throw std::runtime_error("Selected lifecycle event belongs to another receiver ancestry");
-        const bool actorParameter=kind==LifecycleEventKind::LostChild||kind==LifecycleEventKind::GainedChild||kind==LifecycleEventKind::PostTouch;
+        const bool actorParameter=kind==LifecycleEventKind::LostChild||kind==LifecycleEventKind::GainedChild||
+            kind==LifecycleEventKind::PostTouch||kind==LifecycleEventKind::InterpolateEnd;
         if(base&&(function.path!=expected||function.nativeIndex||function.flags!=0x800u||
             function.variables.size()!=(actorParameter?1u:0u)))
             throw std::runtime_error("Original lifecycle base event has a different native packet");
@@ -66,7 +68,8 @@
         if(!transaction_)throw std::runtime_error("Original lifecycle event has no caller transaction");
         LifecycleActor(reinterpret_cast<std::uintptr_t>(receiver));
         LifecycleEventDeclaration(receiver,*FunctionFor(function),kind,false);
-        const bool actorParameter=kind==LifecycleEventKind::LostChild||kind==LifecycleEventKind::GainedChild||kind==LifecycleEventKind::PostTouch;
+        const bool actorParameter=kind==LifecycleEventKind::LostChild||kind==LifecycleEventKind::GainedChild||
+            kind==LifecycleEventKind::PostTouch||kind==LifecycleEventKind::InterpolateEnd;
         if(actorParameter&&other)LifecycleActor(reinterpret_cast<std::uintptr_t>(other));
         if(!actorParameter&&other)throw std::runtime_error("Original lifecycle no-parameter event received an Actor");
         const auto bytes=QuestVr::DecalStateDetail::Add(1024u+sizeof(Evaluation),

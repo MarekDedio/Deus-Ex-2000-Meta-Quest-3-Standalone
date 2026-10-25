@@ -35,6 +35,8 @@
 #include "quest_actor_falling.h"
 #include "quest_actor_rotation.h"
 #include "quest_actor_perform_physics.h"
+#include "quest_actor_moving_brush.h"
+#include "quest_actor_mover_interpolation.h"
 #include "quest_actor_physics_phase.h"
 #include "quest_actor_tick_tail.h"
 #include "quest_actor_stasis.h"
@@ -5183,6 +5185,7 @@ public:
     #include "portable_actor_move.inl"
     #include "portable_actor_far_move.inl"
     #include "portable_actor_falling.inl"
+    #include "portable_actor_moving_brush.inl"
     #include "portable_actor_perform_physics.inl"
     #include "portable_actor_move_probe.inl"
     #include "portable_core_rotator_add.inl"
@@ -7448,7 +7451,8 @@ public:
     Value Read(RuntimeObject* object, const Property& property, const std::uint32_t index,
         const bool defaults = false, const bool immutable = false,NativeAuthoredReadOrigin* origin=nullptr,
         const bool nativeRegionStorage=false,const bool nativePhysicsVectorStorage=false,
-        const bool nativeLandingZoneVelocityStorage=false,const bool nativeFallingOldLocationStorage=false) {
+        const bool nativeLandingZoneVelocityStorage=false,const bool nativeFallingOldLocationStorage=false,
+        const bool nativeMovingBrushVectorStorage=false) {
         if(nativePhysicsVectorStorage) {
             if(defaults || immutable || index || ActorPhysicsVectorProperty(object,property.key.c_str()).key!=property.key)
                 throw std::runtime_error("Raw physics Vector read has no actual native field authority");
@@ -7462,6 +7466,12 @@ public:
             if(nativePhysicsVectorStorage || nativeLandingZoneVelocityStorage || nativeRegionStorage ||
                 defaults || immutable || index || FallingOldLocationProperty(object).key!=property.key)
                 throw std::runtime_error("Raw falling OldLocation read has no actual native field authority");
+        }
+        if(nativeMovingBrushVectorStorage) {
+            if(nativePhysicsVectorStorage || nativeLandingZoneVelocityStorage || nativeRegionStorage ||
+                nativeFallingOldLocationStorage || defaults || immutable ||
+                MovingBrushVectorField(object,property.key.c_str()).key!=property.key||index>=property.arrayDimension)
+                throw std::runtime_error("Raw MovingBrush Vector read has no actual native field authority");
         }
         if(origin) *origin={};
         if(object->nativeDump && !defaults && !immutable)return ReadDumpLocationValue(object,property,index);
@@ -7676,6 +7686,7 @@ public:
                     if(nativePhysicsVectorStorage)return DecodeActorPhysicsVector(*tag,property);
                     if(nativeLandingZoneVelocityStorage)return DecodeLandingZoneVelocity(*tag,property);
                     if(nativeFallingOldLocationStorage)return DecodeActorPhysicsVector(*tag,property);
+                    if(nativeMovingBrushVectorStorage)return DecodeMovingBrushVector(*tag,property,index);
                     return Decode(*source, *tag, property);
                 }
             source = !classDefaults && source == object ? object->cls : source->base;

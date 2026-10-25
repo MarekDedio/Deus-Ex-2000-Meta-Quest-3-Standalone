@@ -256,7 +256,7 @@ void Property(QuestVr::ScriptSavedState& state,const std::string& actor,const st
     if(found==object.properties.end())object.properties.push_back({key,name,index,value});else found->value=value;
 }
 struct Tables {std::vector<PortablePackageTables> packages;PortablePackageTables map;std::map<std::string,std::uint32_t> actorExports;};
-Tables Build(Fixture& fixture,bool moverControl=false) {
+Tables Build(Fixture& fixture,bool moverControl=false,std::uint32_t oldLocationFlags=2u) {
     const std::string ini="[Engine.Engine]\nGameEngine=Engine.GameEngine\n";
     const auto iniPath=fixture.directory/"System"/"DeusEx.ini";
     WriteBytes(iniPath,Bytes(ini.begin(),ini.end()));fixture.sources.emplace(iniPath,Bytes(ini.begin(),ini.end()));
@@ -290,16 +290,16 @@ Tables Build(Fixture& fixture,bool moverControl=false) {
     }
     const auto level=engine.Export("Level",0,eo),model=engine.Export("Model",0,eo);
     engine.exports.at(static_cast<std::size_t>(actor-1)).ObjFlags=static_cast<ObjectFlags>(0x04000000u);
-    const auto enumeration=[&](const std::string& name,std::vector<std::string> values) {
-        const auto ref=engine.Export(name,engine.Import("Enum",ec),0,actor,true);
+    const auto enumeration=[&](const std::string& name,std::vector<std::string> values,std::int32_t owner) {
+        const auto ref=engine.Export(name,engine.Import("Enum",ec),0,owner,true);
         engine.builders.at(static_cast<std::size_t>(ref-1))=[&,values](std::int32_t next,std::int32_t){
             Bytes bytes{0u};Index(bytes,0);Index(bytes,next);Index(bytes,static_cast<std::int32_t>(values.size()));
             for(const auto& value:values) {Index(bytes,engine.Name(value));}
             return bytes;
         };return ref;
     };
-    const auto roleEnum=enumeration("ENetRole",{"ROLE_None","ROLE_DumbProxy","ROLE_SimulatedProxy","ROLE_AutonomousProxy","ROLE_Authority","ROLE_MAX"});
-    const auto physicsEnum=enumeration("EPhysics",{"PHYS_None","PHYS_Walking","PHYS_Falling","PHYS_Swimming","PHYS_Flying","PHYS_Rotating","PHYS_Projectile","PHYS_Rolling","PHYS_Interpolating","PHYS_MovingBrush","PHYS_Spider","PHYS_Trailer","PHYS_MAX"});
+    const auto roleEnum=enumeration("ENetRole",{"ROLE_None","ROLE_DumbProxy","ROLE_SimulatedProxy","ROLE_AutonomousProxy","ROLE_Authority","ROLE_MAX"},actor);
+    const auto physicsEnum=enumeration("EPhysics",{"PHYS_None","PHYS_Walking","PHYS_Falling","PHYS_Swimming","PHYS_Flying","PHYS_Rotating","PHYS_Projectile","PHYS_Rolling","PHYS_Interpolating","PHYS_MovingBrush","PHYS_Spider","PHYS_Trailer","PHYS_MAX"},actor);
     engine.Property("Role","ByteProperty",actor,ec,roleEnum,0x20u);
     engine.Property("RemoteRole","ByteProperty",actor,ec,roleEnum,0x21u);
     engine.Property("Physics","ByteProperty",actor,ec,physicsEnum,0x23u);
@@ -313,6 +313,23 @@ Tables Build(Fixture& fixture,bool moverControl=false) {
     engine.Property("Brush","ObjectProperty",actor,ec,model,0x2au);
     engine.Property("Level","ObjectProperty",actor,ec,info,2u);engine.Property("XLevel","ObjectProperty",actor,ec,level);
     engine.Property("Location","StructProperty",actor,ec,ev,0x23u);engine.Property("Rotation","StructProperty",actor,ec,er,0x23u);
+    // Exact native moving-brush declarations, not a fixture-only host branch.
+    // PendingTouch is initialized by the production native actor loader.
+    engine.Property("OldLocation","StructProperty",actor,ec,ev,oldLocationFlags);
+    engine.Property("Velocity","StructProperty",actor,ec,ev,0x21u);
+    engine.Property("RotationRate","StructProperty",actor,ec,er,0x21u);
+    engine.Property("PendingTouch","ObjectProperty",actor,ec,actor);
+    engine.Property("bInterpolating","BoolProperty",actor,ec);
+    engine.Property("PhysAlpha","FloatProperty",actor,ec);engine.Property("PhysRate","FloatProperty",actor,ec);
+    if(moverControl) {
+        const auto glide=enumeration("EMoverGlideType",{"MV_MoveByTime","MV_GlideByTime"},mover);
+        engine.Property("KeyNum","ByteProperty",mover,ec,0,1u);
+        engine.Property("MoverGlideType","ByteProperty",mover,ec,glide,1u);
+        engine.Property("KeyPos","StructProperty",mover,ec,ev,0u,8u);
+        engine.Property("KeyRot","StructProperty",mover,ec,er,0u,8u);
+        for(const auto* name:{"BasePos","OldPos"})engine.Property(name,"StructProperty",mover,ec,ev);
+        for(const auto* name:{"BaseRot","OldRot"})engine.Property(name,"StructProperty",mover,ec,er);
+    }
     engine.Property("Tag","NameProperty",actor,ec);engine.Property("AnimSequence","NameProperty",actor,ec,0,0x21u);
     engine.Property("Fatness","ByteProperty",actor,ec);
     for(const auto* name:{"bAnimLoop","bAnimNotify","bAnimFinished"})engine.Property(name,"BoolProperty",actor,ec);
@@ -333,6 +350,8 @@ Tables Build(Fixture& fixture,bool moverControl=false) {
     const auto baseTick=engine.Function("Tick",actor,ec,Return(),0u,0x800u);
     engine.Property("DeltaTime","FloatProperty",baseTick,ec,0,0x80u);
     engine.Function("Timer",actor,ec,Return(),0u,0x800u);
+    const auto interpolateEnd=engine.Function("InterpolateEnd",actor,ec,Return(),0u,0x800u);
+    engine.Property("Other","ObjectProperty",interpolateEnd,ec,actor,0x80u);
     Bytes actorDefaults;engine.Tag(actorDefaults,"Role",1u,Bytes{4u});
     engine.ClassBody(actor); // Individual instance Role tags avoid any unproven fixture CDO policy.
     for(const auto ref:{zone,info,brush,level,model,engineClass})engine.ClassBody(ref);
@@ -564,8 +583,129 @@ void MoverControl() {
     std::cout<<"PASS exact Engine.Mover native Tick/physics admission: "<<checks<<" cumulative checks; "
         "generated inactive Physics0 only, NOT moving-brush interpolation or original-map acceptance.\n";
 }
+QuestVr::ScriptSavedState MovingBrushSeed(const Tables& tables) {
+    auto state=Seed(tables);
+    auto& slots=state.nativeActorOrder->slots;const auto mover=slots.at(2u);
+    slots.erase(slots.begin()+2);state.nativeActorOrder->firstDynamic=3u;
+    // Run the mover before the script actors so a later callback can test undo
+    // of the exact native OldLocation/Velocity words in the same frame root.
+    slots.insert(slots.begin()+3,mover);
+    state.objects.push_back({Path("Bad0"),"Engine.Mover",{},{},{},{}});
+    Property(state,"Bad0","Engine.Actor.LastRenderTime",Value::Float(0));
+    Property(state,"Bad0","Engine.Actor.bStatic",Value::Bool(false));
+    Property(state,"Bad0","Engine.Actor.Physics",Value::Byte(9));
+    Property(state,"Bad0","Engine.Actor.Location",Value::Vector({-0.0f,123.75f,-98.125f}));
+    Property(state,"Bad0","Engine.Actor.OldLocation",Value::Vector({19,21,23}));
+    Property(state,"Bad0","Engine.Actor.Velocity",Value::Vector({31,37,41}));
+    Property(state,"Bad0","Engine.Actor.RotationRate",Value::Rotator({0,0,0}));
+    Property(state,"Bad0","Engine.Actor.bInterpolating",Value::Bool(false));
+    Property(state,"Bad0","Engine.Actor.PhysAlpha",Value::Float(0));
+    Property(state,"Bad0","Engine.Actor.PhysRate",Value::Float(1));
+    Property(state,"Bad0","Engine.Mover.KeyNum",Value::Byte(255));
+    Property(state,"Bad0","Engine.Mover.MoverGlideType",Value::Byte(0));
+    for(const auto* name:{"BasePos","OldPos"})Property(state,"Bad0",std::string("Engine.Mover.")+name,Value::Vector({0,0,0}));
+    for(const auto* name:{"BaseRot","OldRot"})Property(state,"Bad0",std::string("Engine.Mover.")+name,Value::Rotator({0,0,0}));
+    for(std::uint32_t key=0u;key<8u;++key) {
+        Property(state,"Bad0","Engine.Mover.KeyPos",Value::Vector({10,20,30}),key);
+        Property(state,"Bad0","Engine.Mover.KeyRot",Value::Rotator({0,0,0}),key);
+    }
+    return state;
+}
+void RequireVectorWords(const std::string& actor,const std::string& property,const std::array<float,3>& expected) {
+    const auto value=ReadPortableActorScriptProperty(Path(actor),property);
+    Require(value.kind==Kind::Vector&&std::memcmp(value.vector.data(),expected.data(),sizeof(expected))==0,
+        "Moving-brush "+actor+'.'+property+" did not retain the exact source float words");
+}
+void MovingBrushPhysics() {
+    Fixture fixture;const auto tables=Build(fixture,true);
+    Require(InitializePortableRuntime(tables.packages).passed,"Moving-brush fixture package initialization failed");
+    Require(PreparePortableRuntimeNativeEngineClasses().prepared&&PreparePortableRuntimeNativeMetadataClasses().prepared&&
+        PreparePortableRuntimeNativePackages().prepared,"Moving-brush native metadata/Package preparation failed");
+    Require(LoadPortableRuntimeMap(tables.map).passed&&PreparePortableRuntimeObjectLookup().prepared,
+        "Moving-brush fixture lacks native map/lookup ownership");
+    const auto legacy=fixture.Save("MovingBrushLegacy");
+    const auto seed=[&](const QuestVr::ScriptSavedState& state){fixture.Restore(Envelope(legacy,state));};
+    auto state=MovingBrushSeed(tables);seed(state);
+    const auto successful=AdvancePortableLevelDynamicActors(0.125f,0);RequirePass(successful);
+    Require(successful.actorCalls==4u&&Count("A")==1&&Count("B")==1&&Count("C")==1,
+        "Physics9 idle mover did not join the genuine ordinary actor phase");
+    RequireVectorWords("Bad0","Location",{-0.0f,123.75f,-98.125f});
+    RequireVectorWords("Bad0","OldLocation",{-0.0f,123.75f,-98.125f});
+    RequireVectorWords("Bad0","Velocity",{0,0,0});
+    const auto key=ReadPortableActorScriptProperty(Path("Bad0"),"KeyNum");
+    Require(key.kind==Kind::Byte&&key.integer==255,"Native local KeyNum clamp incorrectly rewrote its source field");
+    Require(successful.execution.writes>=6u&&successful.execution.nativeWork&&successful.execution.nativeWork->used>0u,
+        "Physics9 outer stores lack shared write/work accounting");
+    const auto refusal=[&](const QuestVr::ScriptSavedState& input,float elapsed,const QuestVr::Vm::Limits& limits,
+        const std::string& label,const std::string& reached={}) {
+        seed(input);const auto before=fixture.Save("MovingBrushBefore");const auto revision=GetPortableRuntimeWorldRevision();
+        const auto gc=GC::GetStats();const auto tick=AdvancePortableLevelDynamicActors(elapsed,0,limits);
+        Require(!tick.execution.passed()&&!tick.execution.committed&&!tick.completed,"Physics9 admitted "+label);
+        if(!reached.empty())Require(tick.execution.error.find(reached)!=std::string::npos,
+            "Physics9 "+label+" failed before its genuine service boundary: "+tick.execution.error);
+        Require(ReadPortableRuntimeLevelTickParity()==0&&fixture.Save("MovingBrushAfter")==before&&
+            GetPortableRuntimeWorldRevision()==revision,"Physics9 failure retained frame/source effects: "+label);
+        const auto afterGc=GC::GetStats();Require(afterGc.numObjects==gc.numObjects&&afterGc.memoryUsage==gc.memoryUsage,
+            "Physics9 failure retained UObject allocations: "+label);++refusals;
+    };
+    // The inner Mover cast may return, but the Actor outer envelope must still
+    // copy OldLocation and derive Velocity for a non-Mover with Physics9.
+    state=MovingBrushSeed(tables);Property(state,"Bad0","Engine.Actor.Physics",Value::Byte(0));
+    Property(state,"A","Engine.Actor.Physics",Value::Byte(9));
+    Property(state,"A","Engine.Actor.Location",Value::Vector({17,-0.0f,-29}));
+    Property(state,"A","Engine.Actor.OldLocation",Value::Vector({1,2,3}));
+    Property(state,"A","Engine.Actor.Velocity",Value::Vector({5,7,11}));
+    Property(state,"A","Engine.Actor.bInterpolating",Value::Bool(true));
+    seed(state);RequirePass(AdvancePortableLevelDynamicActors(0.125f,0));
+    RequireVectorWords("A","OldLocation",{17,-0.0f,-29});RequireVectorWords("A","Velocity",{0,0,0});
+    // Source outer division still executes for an idle inner return. Zero
+    // delta cannot quietly become a successful zero-velocity replacement.
+    state=MovingBrushSeed(tables);refusal(state,0.0f,{},"zero-delta outer arithmetic");
+    state=MovingBrushSeed(tables);Property(state,"C","TickClasses.TestActor.Mode",Value::Integer(2));
+    refusal(state,0.125f,{},"late selected Tick exception");
+    state=MovingBrushSeed(tables);
+    for(std::size_t cut=0u;cut<successful.execution.writes;++cut) {
+        QuestVr::Vm::Limits limits;limits.writes=cut;
+        refusal(state,0.125f,limits,"write prefix "+std::to_string(cut));
+    }
+    for(const auto cut:{std::size_t{0u},successful.execution.nativeWork->used/2u,successful.execution.nativeWork->used-1u}) {
+        QuestVr::Vm::Limits limits;limits.nativeWork=cut;refusal(state,0.125f,limits,"native-work prefix");
+    }
+    // This generated Level deliberately does not install an Engine/Cylinder
+    // collision authority. Both real interpolation modes must reach actual
+    // MoveActor and refuse there, atomically, not claim a stubbed move success.
+    for(const auto glide:{std::uint8_t{0u},std::uint8_t{1u}})
+    for(const auto key:{std::uint8_t{0u},std::uint8_t{8u},std::uint8_t{255u}}) {
+        state=MovingBrushSeed(tables);Property(state,"Bad0","Engine.Actor.bInterpolating",Value::Bool(true));
+        Property(state,"Bad0","Engine.Mover.KeyNum",Value::Byte(key));
+        Property(state,"Bad0","Engine.Mover.MoverGlideType",Value::Byte(glide));
+        refusal(state,0.25f,{},glide?"active glide collision boundary":"active linear collision boundary",
+            "Retail collision requires actual current Level/Engine/Cylinder preparation");
+    }
+    fixture.Unchanged();
+    std::cout<<"PASS generated production Physics9 outer/idle/cast controls: "<<checks<<" cumulative checks / "<<refusals
+        <<" refusals; raw OldLocation, derived idle Velocity, native slot loading and same-root late/write/work undo. "
+          "Active linear/glide reach actual missing Engine/Cylinder collision authority; NOT active movement-success, "
+          "full physics, Training crate gameplay or headset acceptance.\n";
+}
+void MovingBrushSchemaRefusal() {
+    Fixture fixture;const auto tables=Build(fixture,true,1u);
+    Require(InitializePortableRuntime(tables.packages).passed,"Malformed moving-brush package initialization failed");
+    Require(PreparePortableRuntimeNativeEngineClasses().prepared&&PreparePortableRuntimeNativeMetadataClasses().prepared&&
+        PreparePortableRuntimeNativePackages().prepared,"Malformed moving-brush metadata preparation failed");
+    Require(LoadPortableRuntimeMap(tables.map).passed&&PreparePortableRuntimeObjectLookup().prepared,
+        "Malformed moving-brush fixture lacks native Level/lookup");
+    const auto legacy=fixture.Save("MalformedLegacy");fixture.Restore(Envelope(legacy,MovingBrushSeed(tables)));
+    const auto before=fixture.Save("MalformedBefore");const auto revision=GetPortableRuntimeWorldRevision();
+    const auto tick=AdvancePortableLevelDynamicActors(0.125f,0);
+    Require(!tick.execution.passed()&&!tick.execution.committed&&!tick.completed&&
+        tick.execution.error.find("OldLocation")!=std::string::npos,"Physics9 accepted mismatched actual OldLocation declaration: "+tick.execution.error);
+    Require(ReadPortableRuntimeLevelTickParity()==0&&fixture.Save("MalformedAfter")==before&&
+        GetPortableRuntimeWorldRevision()==revision,"Physics9 schema refusal retained a partial root");++refusals;
+    fixture.Unchanged();
+}
 } // namespace
 int main() {
-    try {Synthetic();MoverControl();return 0;}catch(const std::exception& error){std::cerr<<"FAIL "<<error.what()<<'\n';ShutdownPortableRuntime();return 1;}
+    try {Synthetic();MoverControl();MovingBrushPhysics();MovingBrushSchemaRefusal();return 0;}catch(const std::exception& error){std::cerr<<"FAIL "<<error.what()<<'\n';ShutdownPortableRuntime();return 1;}
 }
 

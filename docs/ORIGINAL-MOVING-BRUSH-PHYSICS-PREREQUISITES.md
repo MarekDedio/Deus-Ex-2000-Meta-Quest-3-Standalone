@@ -1,5 +1,10 @@
 # Original Physics9 MovingBrush prerequisites
 
+Historical prerequisite audit. The later complete active contract and
+production adapter are documented in ORIGINAL-MOVING-BRUSH-ACTIVE-CONTRACT.md
+and ORIGINAL-MOVING-BRUSH-INTEGRATION.md; the implementation-gap statements
+below describe this audit's original baseline, not the later source state.
+
 Read-only owned GOTY audit,2026-10-25. This audits the Physics9 service after
 the generic dispatch gap exposed by exact Engine.Mover admission; the live
 mode/actor/interpolation flag still require capture as noted below. It adds

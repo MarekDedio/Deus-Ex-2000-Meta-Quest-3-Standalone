@@ -383,6 +383,12 @@ struct PortableLevelDynamicTickResult {
     bool completed{};
     std::int32_t parityBefore{},parityAfter{};
     std::size_t slotsVisited{},actorCalls{},stasisReturns{},deferredPushes{},pendingPasses{},pendingSkips{};
+    // Detached diagnostics from ALREADY reached native queries, not extra
+    // actor reads or a gameplay provider. Survive rollback for gap attribution.
+    std::string lastMovingBrushActor;
+    std::size_t movingBrushCalls{},movingBrushMoves{},movingBrushEnds{};
+    std::optional<bool> lastMovingBrushClass,lastMovingBrushInterpolating;
+    std::optional<unsigned> lastMovingBrushKey;
 };
 // Actual native distance prepass only. Missing active native client/viewport
 // services refuse; a genuine unpossessed viewport skips without any store.

@@ -653,6 +653,13 @@ int Run(const fs::path& root,const std::optional<std::string>& expected,unsigned
                 <<" slots="<<tick.slotsVisited<<" calls="<<tick.actorCalls<<" stasis="<<tick.stasisReturns
                 <<" deferred="<<tick.deferredPushes<<" passes="<<tick.pendingPasses<<" skipped="<<tick.pendingSkips
                 <<"; same-root rollback-only normal actor phase, NOT published Level.Tick or headset gameplay\n";
+            if(tick.movingBrushCalls) {
+                std::cout<<"MOVING BRUSH mode=9 calls="<<tick.movingBrushCalls<<" lastActor="<<std::quoted(tick.lastMovingBrushActor)
+                    <<" moverClass="<<(tick.lastMovingBrushClass?(*tick.lastMovingBrushClass?"yes":"no"):"unread")
+                    <<" interpolating="<<(tick.lastMovingBrushInterpolating?(*tick.lastMovingBrushInterpolating?"yes":"no"):"unread")
+                    <<" key="<<(tick.lastMovingBrushKey?std::to_string(*tick.lastMovingBrushKey):"unread")
+                    <<" moves="<<tick.movingBrushMoves<<" ends="<<tick.movingBrushEnds<<'\n';
+            }
             Require(ReadPortableRuntimeLevelTickParity()==0,"Failed startup retained native frame parity");
         }else Require(!world.dynamicActors,"Unrequested dynamic-actor phase was executed");
         for(const auto& dump:world.dumpLocations) {

@@ -1,5 +1,46 @@
 # Port status
 
+## Original Physics9 MovingBrush service (2026-10-25)
+
+The real Physics9 dispatch now supplies its raw OldLocation prefix, genuine
+Mover interpolation and fresh asymmetric PC64/Float Velocity suffix in the
+current Execution. Captured-key/remainder/glide, native rotation conversion,
+all position spills, actual MoveLevelActor and selected InterpolateEnd share
+the caller's journals/budgets. Key8 uses proven native adjacent-field aliases;
+no presentation-door clock, forced Physics, skipped actor or empty provider.
+The inner class cast correctly requires no collision capability while idle.
+
+Outer helper31,057 checks and inner helper226,020 checks pass, with independent
+x87 arithmetic corpora. These deliberately use fixture inner/movement/event
+providers, not proof of active production collision. Generated production
+Physics9 controls log1,617 cumulative checks/43 refusals, followed by a passing
+malformed-declaration control. Idle/cast behavior and full late/write/work undo
+pass; active linear/glide keys0/8/255 reach the real missing Engine/Cylinder
+service in that fixture, not fabricated movement success.
+
+Final full desktop, strict ARM64 syntax and Android native builds pass. Final
+CTest205 executed/244 registered/39 explicit owned-data skips/zero failures
+64.80s passes. Separately run owned crate415/5, deferred429/21 and animation
+588/24 regressions pass. Final two-Fire repeat2 retains228837/26047, real
+crate/loot/debris observations and whole undo at FExec. All45 checked original
+files retain SHA256/length/UTC-mtime; all jobs terminal. No Quest detected.
+No APK or headset result is produced by this backend
+increment. Only first Training gameplay integration is in scope.
+
+Actual Training repeat2 advances from9 to27 admitted actor calls, visits28
+slots and executes4 real Physics9 blocks. Last mover is DeusExMover32,
+class=true/key0/interpolating=false; no active movement/event call occurs in
+this observation. Both repeats retain205505 instructions/15651 writes and
+verify full save/state/revision/hash/RNG/client/lookup/Actor/GC rollback. The
+next explicit gate is Engine.Trigger native Tick admission, not completed
+startup/world Tick. Its exact AActor virtual identities are audited for the
+next increment; no Trigger admission/destructor allowance is added here.
+
+Active production movement/selected completion callbacks still need direct
+original InterpolateTo-driven observation. Live controller crate destruction,
+collectible surviving loot and automatic gravity remain unfinished. See
+ORIGINAL-MOVING-BRUSH-INTEGRATION.md and ORIGINAL-TRIGGER-TICK-PREREQUISITES.md.
+
 ## Exact native Mover Tick admission (2026-10-25)
 
 Engine.Mover now joins the normal actor phase through its independently

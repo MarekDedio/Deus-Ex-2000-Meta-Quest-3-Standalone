@@ -102,8 +102,14 @@
             if(observation)++observation->fallingCalls;
             static_cast<void>(RetailStepActorFalling(actor,dt,execution,falling));
         };
-        // Other reached original movement blocks are not yet implemented.
-        // Leaving the provider absent makes their selection explicitly refuse.
+        q.otherPhysicsBlock=[&](auto a,QuestVr::OriginalActorPhysicsDispatch mode,float dt) {
+            auto* receiver=require(a);
+            if(mode==QuestVr::OriginalActorPhysicsDispatch::MovingBrush) {
+                RetailPerformMovingBrush(receiver,dt,execution);return;
+            }
+            throw std::runtime_error("Original Actor performPhysics unsupported dispatch actor="+
+                receiver->reflection.objectPath+" mode="+std::to_string(static_cast<unsigned>(mode)));
+        };
         q.rotationRate=[&](auto a,unsigned axis){return PhysicsRotatorChannel(require(a),"Engine.Actor.RotationRate",0x21u,axis);};
         q.physicsRotation=[&](auto a,float dt) {
             require(a);if(observation)++observation->rotationCalls;
