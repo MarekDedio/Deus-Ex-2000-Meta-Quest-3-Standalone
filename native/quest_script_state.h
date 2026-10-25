@@ -68,6 +68,12 @@ struct ScriptSavedLevelClock {
     std::string levelPath;
     double timeSeconds{};
 };
+struct ScriptSavedLevelTickParity {
+    // Port checkpoint continuation at an inactive Level frame boundary.
+    // Native scratch pending records and the in-Tick lease are never saved.
+    std::string levelPath;
+    std::int32_t parity{};
+};
 enum class ScriptSavedNativeActorSlotKind : std::uint8_t {
     None=0, AuthoredExport=1, Birth=2
 };
@@ -104,6 +110,9 @@ struct ScriptSavedState {
     // Explicit port checkpoint, authenticated against actual loaded exports
     // and births by the runtime rather than inferred from mutable actor flags.
     std::optional<ScriptSavedNativeActorOrder> nativeActorOrder{};
+    // Legacy absence means restore the proven fresh native Level counter0,
+    // not retain the running session's frame history.
+    std::optional<ScriptSavedLevelTickParity> nativeLevelTickParity{};
 };
 struct ScriptStateLimits {
     std::size_t maxBytes{32u << 20u};
@@ -139,6 +148,7 @@ inline constexpr std::uint8_t StateControlVersion=9u;
 inline constexpr std::uint8_t DecalStateVersion=10u;
 inline constexpr std::uint8_t LevelClockVersion=11u;
 inline constexpr std::uint8_t NativeActorOrderVersion=12u;
+inline constexpr std::uint8_t LevelTickParityVersion=13u;
 inline constexpr std::uint32_t MaximumWorldActorSlots=1'000'000u;
 inline constexpr std::size_t MaximumIntArrayElements=262'144u;
 // Stable serialized tags deliberately do not depend on Vm::Kind ordinals.
@@ -203,6 +213,9 @@ inline void LevelClockTime(const double value) {
     // Preserve signed zero and every finite nonnegative binary64 bit pattern.
     if (!std::isfinite(value) || value<0.0)
         Fail("native level clock time must be finite and nonnegative");
+}
+inline void LevelTickParity(const std::int32_t value) {
+    if (value!=0 && value!=1) Fail("native level tick parity must be zero or one");
 }
 struct SavedNativeActorBirthIdentity {
     std::string_view path;
@@ -460,8 +473,9 @@ public:
         const bool withDecals=state.nativeDecals.has_value();
         const bool withLevelClock=state.nativeLevelClock.has_value();
         const bool withNativeActorOrder=state.nativeActorOrder.has_value();
+        const bool withLevelTickParity=state.nativeLevelTickParity.has_value();
         const bool withIntArrays=HasIntArrays(state,limits_);
-        const auto version=withNativeActorOrder ? NativeActorOrderVersion : withLevelClock ? LevelClockVersion : withDecals || withIntArrays ? DecalStateVersion : withControl ? StateControlVersion : withSleep ? SleepStateVersion : withRandom ? RandomStateVersion : withAi ? AiManagerVersion : withBirths ? BirthManifestVersion : withLifecycle ? ActorLifecycleVersion : withDefaults ? ClassDefaultsVersion : withFrames ? StateFrameVersion : Magic[6u];
+        const auto version=withLevelTickParity ? LevelTickParityVersion : withNativeActorOrder ? NativeActorOrderVersion : withLevelClock ? LevelClockVersion : withDecals || withIntArrays ? DecalStateVersion : withControl ? StateControlVersion : withSleep ? SleepStateVersion : withRandom ? RandomStateVersion : withAi ? AiManagerVersion : withBirths ? BirthManifestVersion : withLifecycle ? ActorLifecycleVersion : withDefaults ? ClassDefaultsVersion : withFrames ? StateFrameVersion : Magic[6u];
         version_=version;
         for (std::size_t i=0; i<Magic.size(); ++i) Byte(i==6u ? version : Magic[i]);
         String(state.mapName,true,false,128u);
@@ -572,7 +586,25 @@ public:
             String(clock.levelPath,true);
             std::uint64_t bits{};std::memcpy(&bits,&clock.timeSeconds,8u);U64(bits);
         }
+        // Codec12 always has native order. Codec13 may carry parity alone,
+        // so it explicitly marks order presence without changing old bytes.
+        if (version>=LevelTickParityVersion) Byte(withNativeActorOrder ? 1u : 0u);
         if (withNativeActorOrder) NativeActorOrder(*state.nativeActorOrder,state.mapName,birthIdentities);
+        else if (version>=LevelTickParityVersion) {
+            // Without an explicit slot array, retain the old unique/bounded
+            // birth-index policy; a parity record must not admit UINT32_MAX
+            // detached births or duplicate indices by selecting a newer codec.
+            budget_.Array(birthIdentities.size(),sizeof(std::uint32_t));
+            std::vector<std::uint32_t> indices;indices.reserve(birthIdentities.size());
+            for (const auto& birth:birthIdentities) indices.push_back(birth.worldActorIndex);
+            BirthIndices(indices);
+        }
+        if (withLevelTickParity) {
+            const auto& tick=*state.nativeLevelTickParity;
+            budget_.Retain(sizeof(ScriptSavedLevelTickParity));
+            LevelClockIdentity(tick.levelPath,state.mapName);LevelTickParity(tick.parity);
+            String(tick.levelPath,true);U32(static_cast<std::uint32_t>(tick.parity));
+        }
     }
 private:
     std::uint8_t version_{Magic[6u]};
@@ -896,7 +928,8 @@ public:
                 if (version!=Magic[i] && version!=StateFrameVersion && version!=ClassDefaultsVersion &&
                     version!=ActorLifecycleVersion && version!=BirthManifestVersion && version!=AiManagerVersion &&
                     version!=RandomStateVersion && version!=SleepStateVersion && version!=StateControlVersion &&
-                    version!=DecalStateVersion && version!=LevelClockVersion && version!=NativeActorOrderVersion)
+                    version!=DecalStateVersion && version!=LevelClockVersion && version!=NativeActorOrderVersion &&
+                    version!=LevelTickParityVersion)
                     Fail("bad magic or unsupported codec version");
             } else if (byte!=Magic[i]) Fail("bad magic or unsupported codec version");
         }
@@ -1038,9 +1071,21 @@ public:
             LevelClockTime(time);
             if constexpr(Materialize) state.nativeLevelClock=ScriptSavedLevelClock{std::string(level),time};
         }
-        if (version>=NativeActorOrderVersion) {
+        const bool withNativeActorOrder=version>=LevelTickParityVersion ? Boolean() : version>=NativeActorOrderVersion;
+        if (withNativeActorOrder) {
             auto order=NativeActorOrder(map,birthIdentities);
             if constexpr(Materialize) state.nativeActorOrder=std::move(order);
+        } else if (version>=LevelTickParityVersion) {
+            budget_.Array(birthIdentities.size(),sizeof(std::uint32_t));
+            std::vector<std::uint32_t> indices;indices.reserve(birthIdentities.size());
+            for (const auto& birth:birthIdentities) indices.push_back(birth.worldActorIndex);
+            BirthIndices(indices);
+        }
+        if (version>=LevelTickParityVersion) {
+            budget_.Retain(sizeof(ScriptSavedLevelTickParity));
+            const auto level=String(true);LevelClockIdentity(level,map);
+            const auto parity=I32();LevelTickParity(parity);
+            if constexpr(Materialize) state.nativeLevelTickParity=ScriptSavedLevelTickParity{std::string(level),parity};
         }
         if (Remaining()!=0u) Fail("trailing encoded-state bytes");
         return state;

@@ -378,6 +378,12 @@ struct PortableLevelPlayerDistanceResult {
     QuestVr::Vm::Result execution;
     PortableLevelPlayerDistanceObservation pass;
 };
+struct PortableLevelDynamicTickResult {
+    QuestVr::Vm::Result execution;
+    bool completed{};
+    std::int32_t parityBefore{},parityAfter{};
+    std::size_t slotsVisited{},actorCalls{},stasisReturns{},deferredPushes{},pendingPasses{},pendingSkips{};
+};
 // Actual native distance prepass only. Missing active native client/viewport
 // services refuse; a genuine unpossessed viewport skips without any store.
 PortableLevelPlayerDistanceResult AdvancePortableLevelPlayerDistance(const QuestVr::Vm::Limits& limits = {});
@@ -426,6 +432,9 @@ struct PortableWorldStartupProbeOptions {
     // pairing and before original Possess in the ALWAYS-rolled-back startup
     // root. This is not the original frame schedule or partial startup success.
     std::vector<std::string> observePlayerDistanceActors{};
+    // Explicit rollback-only scheduling observation after genuine SetPlayer,
+    // before Possess, not the original Level frame schedule/startup success.
+    std::optional<float> observeDynamicActorDelta{};
 };
 struct PortablePlayerLoginObservation {
     std::uint64_t viewportIdentity{};
@@ -520,6 +529,7 @@ struct PortableWorldStartupProbeResult {
     std::vector<PortableStartupWeaponObservation> weaponObservations;
     std::vector<PortableActorStasisObservation> stasisObservations;
     std::optional<PortableLevelPlayerDistanceObservation> playerDistance;
+    std::optional<PortableLevelDynamicTickResult> dynamicActors;
 };
 const char* PortableWorldStartupPhaseName(PortableWorldStartupPhase phase);
 // Non-publishing diagnostic over actual Level slots and original callbacks.
@@ -1144,6 +1154,16 @@ QuestVr::Vm::Result AdvancePortableActorTimer(const std::string& actorPath, floa
 // The nearest native class must have the audited Actor Tick/physics vtables.
 QuestVr::Vm::Result AdvancePortableActorNonPawnTickTail(const std::string& actorPath,
     float elapsed, std::int32_t tickType, const QuestVr::Vm::Limits& limits = {});
+
+// Original NORMAL dynamic-actor phase in one root: live ascending slots,
+// owner/newborn pending batches, joined Actor entry/MAIN/BLEND/non-Pawn tail,
+// frame toggle and ordinary CleanupDestroyed boundary. elapsed is the already
+// dilated/clamped Actor delta. This does not implement the surrounding Level
+// pause/network/clock/distance prepasses, or unsupported Pawn/native overrides.
+// A reached unsupported service rolls back the whole phase, never skips actors.
+PortableLevelDynamicTickResult AdvancePortableLevelDynamicActors(float elapsed,
+    std::int32_t tickType, const QuestVr::Vm::Limits& limits = {});
+std::int32_t ReadPortableRuntimeLevelTickParity();
 
 // Rollback-only observation of the original ordinary MAIN animation phase.
 // Not a complete Tick, begun world, weapon attack or gameplay publication.

@@ -267,7 +267,7 @@ struct RuntimeNativeLinker {
 };
 
 // Fresh exact ULevel allocation/default-copy baseline (native size0x1150,
-// Super LevelBase0x8C). No scheduler writer is exposed in this increment.
+// Super LevelBase0x8C). Mutations belong to the shared Level/Actor root.
 struct RuntimeNativeLevelTickContext { std::int32_t parity{},inTick{}; };
 class RuntimeObject : public GCObject {
 public:
@@ -2681,6 +2681,13 @@ public:
             }
             worldStartupResult_->playerDistance=std::move(observed);
         }
+        if(worldStartupProbe_&&worldStartupResult_&&worldStartupDynamicActorDelta_) {
+            ValidateStateBudget(sizeof(PortableLevelDynamicTickResult));
+            nativeActorOrderObservationBytes_+=sizeof(PortableLevelDynamicTickResult);
+            worldStartupResult_->dynamicActors.emplace();
+            static_cast<void>(AdvanceOriginalLevelDynamicActors(**worldStartupDynamicActorDelta_,0,
+                *worldStartupResult_->dynamicActors,execution));
+        }
         static_cast<void>(execution.CallEvent(actor->reflection.objectPath,"Possess",false,{}));
         static_cast<void>(NativeSessionViewport(viewportIdentity));
         return Value::Text(Kind::Object,actor->reflection.objectPath);
@@ -2924,11 +2931,15 @@ public:
         clientDependent_ = false;
         soundClientIdentity_ = 0u;
         beforeLevelClock_.reset();
+        beforeLevelTickContext_.reset();
+        RetireOriginalTickLease();
         transaction_ = true;
     }
     void Commit() override {
         nativeWork_.Check();
         RequireEmptyMoveHits();
+        if(activeTickLevel_||!nativePendingTicks_.empty())
+            throw std::runtime_error("Native Level Tick scratch lease survived its phase");
         if(nativeMoveDepth_||nativeActorPoses_.Depth())throw std::runtime_error("Native movement scope survives its outer VM execution");
         if (waitingPreview_) {
             ValidateStateBudget();
@@ -3000,7 +3011,7 @@ public:
         nativeActorOrderObservationBytes_=0u;
         nativeStartupOut_.clear();
         ClearMoveHits();nativeDurableMoved_.clear();
-        saved_.clear(); savedAi_.clear(); provisionalAi_.clear(); provisionalWindows_.clear(); beforeDecals_.reset(); beforeLevelClock_.reset(); beforeWorldSlotItems_.clear(); nativeDestroyReferenceBytes_=0u; nativePhysicsReferenceBytes_=0u; nativeTileReferenceBytes_=0u; transaction_ = false;
+        saved_.clear(); savedAi_.clear(); provisionalAi_.clear(); provisionalWindows_.clear(); beforeDecals_.reset(); beforeLevelClock_.reset(); beforeLevelTickContext_.reset(); beforeWorldSlotItems_.clear(); nativeDestroyReferenceBytes_=0u; nativePhysicsReferenceBytes_=0u; nativeTileReferenceBytes_=0u; transaction_ = false;
     }
     void Rollback() noexcept override {
         if (!transaction_) return;
@@ -3016,6 +3027,12 @@ public:
         RollbackConversationLookup();
         persistentScriptRandomSeed = beforeRandomSeed_;
         if (beforeLevelClock_) beforeLevelClock_->first->nativeTimeSeconds=beforeLevelClock_->second;
+        // Drop scratch Actor roots before provisional birth identities retire.
+        // Restoring this small before-image is nonallocating and invokes no
+        // game scripts, even when a pending batch was detached by a callback.
+        RetireOriginalTickLease();
+        if(beforeLevelTickContext_)
+            *beforeLevelTickContext_->first->nativeLevelTickContext=beforeLevelTickContext_->second;
         // Restore native bindings/edges before provisional actor identities are
         // retired. Swap-only rollback cannot allocate or invoke game scripts.
         if (beforeDecals_) {
@@ -3122,7 +3139,7 @@ public:
         RollbackConversationObjects();
         for(auto& root:provisionalDumps_)RetireRuntimeDumpObject(root.get());
         provisionalDumps_.clear();persistentDumpSession=beforeDumpSession_;
-        beforeCollision_.reset(); saved_.clear(); savedAi_.clear(); provisionalAi_.clear(); provisionalWindows_.clear(); beforeDecals_.reset(); beforeLevelClock_.reset(); nativeDestroyReferenceBytes_=0u; nativePhysicsReferenceBytes_=0u; nativeTileReferenceBytes_=0u; transaction_ = false;
+        beforeCollision_.reset(); saved_.clear(); savedAi_.clear(); provisionalAi_.clear(); provisionalWindows_.clear(); beforeDecals_.reset(); beforeLevelClock_.reset(); beforeLevelTickContext_.reset(); nativeDestroyReferenceBytes_=0u; nativePhysicsReferenceBytes_=0u; nativeTileReferenceBytes_=0u; transaction_ = false;
     }
     Property ResolveProperty(const Function& function, const std::int32_t reference) override {
         RuntimeObject* object = Object(ResolveObject(function, reference));
@@ -7863,6 +7880,11 @@ public:
 #include "portable_actor_tick_tail.inl"
 #include "portable_actor_stasis.inl"
 #include "portable_level_player_distance.inl"
+    Value RunOriginalLevelDynamicActorPhase(float elapsed,std::int32_t tickType,
+        PortableLevelDynamicTickResult& result,QuestVr::Vm::Execution& execution) {
+        return AdvanceOriginalLevelDynamicActors(elapsed,tickType,result,execution);
+    }
+    std::int32_t OriginalLevelTickParity() {return OriginalTickLevel()->nativeLevelTickContext->parity;}
     Value ProbeOriginalMainAnimation(const std::string& path,float elapsed,
         PortableActorMainAnimationProbeResult& result,QuestVr::Vm::Execution& execution) {
         if(!transaction_)throw std::runtime_error("Original animation observation requires its existing caller root");
@@ -7925,11 +7947,15 @@ public:
         struct ProbeScope {
             bool& active;PortableWorldStartupProbeResult*& observation;
             const std::vector<std::string>*& distance;
-            ~ProbeScope() { active = false;observation=nullptr;distance=nullptr; }
-        } scope{worldStartupProbe_,worldStartupResult_,worldStartupDistanceActors_};
+            const std::optional<float>*& dynamic;
+            ~ProbeScope() { active = false;observation=nullptr;distance=nullptr;dynamic=nullptr; }
+        } scope{worldStartupProbe_,worldStartupResult_,worldStartupDistanceActors_,worldStartupDynamicActorDelta_};
         worldStartupProbe_ = true;
         worldStartupResult_=&result;
         worldStartupDistanceActors_=options.observePlayerDistanceActors.empty()?nullptr:&options.observePlayerDistanceActors;
+        if(options.observeDynamicActorDelta&&(!std::isfinite(*options.observeDynamicActorDelta)||*options.observeDynamicActorDelta<0.0f))
+            throw std::runtime_error("Startup dynamic-actor observation delta is invalid");
+        worldStartupDynamicActorDelta_=options.observeDynamicActorDelta?&options.observeDynamicActorDelta:nullptr;
         using Phase = PortableWorldStartupPhase;
         const auto visit = [&](const Phase phase, RuntimeObject* actor, const std::size_t slot) {
             LifecycleStep();
@@ -8411,8 +8437,8 @@ private:
         if(!xlevel->nativeLevelTickContext||!xlevel->nativeLevelModel||!xlevel->nativeMapGeneration||
             xlevel->nativeMapGeneration!=persistentMapGenerationCounter)
             throw std::runtime_error("Original Spawn bTicked lacks initialized native Level tick context");
-        if(xlevel->nativeLevelTickContext->inTick)
-            throw std::runtime_error("Original active-Tick Spawn pending queue integration is not implemented");
+        if(xlevel->nativeLevelTickContext->inTick&&activeTickLevel_!=xlevel)
+            throw std::runtime_error("Original active-Tick Spawn has no caller-owned Level scratch lease");
         const auto ticked=OriginalAnimationField(actor,"Engine.Actor","bTicked",Kind::Bool,0x2002u,"BoolProperty");
         ReferenceFor(actor,ticked,0u,false)->write(Value::Bool(xlevel->nativeLevelTickContext->parity==0));
         set("Brush",Value::Text(Kind::Object,{})); set("Location",location); set("OldLocation",location); set("Rotation",rotation);
@@ -8477,6 +8503,9 @@ private:
             SpawnBase(actor,execution);
             static_cast<void>(execution.CallEvent(path,"PostPostBeginPlay",false,{}));
         }
+        // Source103956B9..F3: after PostPostBeginPlay, BEFORE SpawnNotify.
+        // Enqueue the actual birth, not a later notification replacement.
+        if(xlevel->nativeLevelTickContext->inTick)EnqueueOriginalTickActor(xlevel,actor);
         if (!spawnNotificationLocked_) {
             struct Unlock { bool& flag; ~Unlock() { flag = false; } } unlock{spawnNotificationLocked_};
             spawnNotificationLocked_ = true;
@@ -8569,6 +8598,8 @@ private:
 #include "portable_world_actor_order.inl"
 #include "portable_object_destroy.inl"
 #include "portable_deferred_actors.inl"
+#include "portable_level_cleanup.inl"
+#include "portable_level_actor_tick.inl"
     void SetOwner(RuntimeObject* actor, RuntimeObject* newOwner, QuestVr::Vm::Execution& execution) {
         LifecycleActor(reinterpret_cast<std::uintptr_t>(actor));
         if(newOwner)LifecycleActor(reinterpret_cast<std::uintptr_t>(newOwner));
@@ -8922,6 +8953,17 @@ private:
     std::size_t beforeConversationNodes_{};
     std::optional<BeforeDecals> beforeDecals_;
     std::optional<std::pair<RuntimeObject*,double>> beforeLevelClock_;
+    std::optional<std::pair<RuntimeObject*,RuntimeNativeLevelTickContext>> beforeLevelTickContext_;
+    struct NativePendingTick {
+        GCRoot<RuntimeObject> actor;
+        std::size_t next{};
+        NativePendingTick(RuntimeObject* value,std::size_t link):actor(value),next(link){}
+    };
+    static constexpr std::size_t NoPendingTick=std::numeric_limits<std::size_t>::max();
+    std::vector<NativePendingTick> nativePendingTicks_;
+    RuntimeObject* activeTickLevel_{};
+    PortableLevelDynamicTickResult* activeTickStats_{};
+    std::size_t nativePendingTickHead_{NoPendingTick};
     std::unique_ptr<QuestVr::OriginalCollisionHashWorld::RootLease> retailCollisionRoot_;
     bool createdRetailCollision_{},retailCollisionPreview_{};
     bool retailCollisionInitializationReserved_{};
@@ -8993,6 +9035,7 @@ private:
     bool worldStartupProbe_{};
     PortableWorldStartupProbeResult* worldStartupResult_{};
     const std::vector<std::string>* worldStartupDistanceActors_{};
+    const std::optional<float>* worldStartupDynamicActorDelta_{};
     // Original Extension global layout-call bookkeeping is transient, scoped
     // to this VM host. Exception guards restore it; UObject writes journal in
     // the outer transaction. It is never persisted as guessed script fields.
@@ -9778,7 +9821,7 @@ private:
                     !NativeNoiseCacheKey(key) && key!="engine.pawn.stimulus" && key!="engine.actor.touching" &&
                     key!="engine.actor.region" && key!="engine.pawn.footregion" && key!="engine.pawn.headregion" &&
                     key!="engine.playerreplicationinfo.playerzone" && key!="engine.actor.lastrendertime" &&
-                    key!="engine.actor.distancefromplayer")
+                    key!="engine.actor.distancefromplayer" && key!="engine.actor.bticked")
                     UpdateClockProperty(target, property.name, index);
                 const auto name=LowerAscii(property.name);
                 if (index==0u && (name=="location" || name=="collisionradius" || name=="collisionheight" ||
@@ -10304,6 +10347,9 @@ private:
         defaults.Retain(beforeDeferred_.capacity()*sizeof(BeforeDeferred));
         defaults.Retain(beforePendingTouch_.capacity()*sizeof(BeforePendingTouch)+
             beforePendingTouch_.size()*2u*sizeof(GCRootNode));
+        if(beforeLevelTickContext_)defaults.Retain(sizeof(*beforeLevelTickContext_));
+        defaults.Retain(nativePendingTicks_.capacity()*sizeof(NativePendingTick)+
+            nativePendingTicks_.size()*sizeof(GCRootNode));
         if(beforeActorOrder_)defaults.Retain(sizeof(BeforeActorOrder)+
             beforeActorOrder_->slots.capacity()*sizeof(RuntimeObject*)+
             beforeActorOrder_->indices.capacity()*sizeof(decltype(beforeActorOrder_->indices)::value_type));
@@ -10801,6 +10847,7 @@ struct PreparedScriptState {
     std::vector<RuntimeObject*> lookupObjects;
     bool replaceBirths{};
     std::optional<std::pair<RuntimeObject*,double>> levelClock;
+    std::optional<std::pair<RuntimeObject*,std::int32_t>> levelTickParity;
     std::optional<std::pair<RuntimeObject*,std::optional<std::uint32_t>>> actorOrder;
     bool actorOrderExplicit{};
     // Read-only preflight has no staged live objects. Retain the already
@@ -10861,6 +10908,17 @@ QuestVr::ScriptSavedState CollectScriptSavedState() {
     QuestVr::ScriptStateDetail::Budget capture{limits};
     if(!persistentWorldActors.empty()&&persistentWorldActors.front()&&persistentWorldActors.front()->nativeXLevel) {
         auto* level=persistentWorldActors.front()->nativeXLevel;
+        if(level->nativeLevelTickContext) {
+            const auto& tick=*level->nativeLevelTickContext;
+            if(tick.inTick)throw std::runtime_error("Cannot capture native Level state during an active Tick");
+            if(tick.parity!=0&&tick.parity!=1)throw std::runtime_error("Native Level parity is outside its initialized continuation");
+            // Zero is exactly the legacy reset baseline; keep old captures
+            // byte-identical until actual frame history needs a new record.
+            if(tick.parity) {
+                capture.Retain(sizeof(QuestVr::ScriptSavedLevelTickParity)+level->reflection.objectPath.size()+1u);
+                saved.nativeLevelTickParity=QuestVr::ScriptSavedLevelTickParity{level->reflection.objectPath,tick.parity};
+            }
+        }
         if(level->nativeFirstDynamic||level->nativeActorOrderChanged) {
             if(persistentWorldActors.size()>QuestVr::ScriptStateDetail::MaximumWorldActorSlots)
                 throw std::runtime_error("Native Actor order capture exceeds its slot bound");
@@ -11787,6 +11845,10 @@ void MeasureLegacySimBlendImports(const QuestVr::ScriptSavedState& saved,
 
 PreparedScriptState PrepareScriptSavedState(
     const QuestVr::ScriptSavedState& saved, const bool apply, const QuestVr::ScriptStateLimits& limits) {
+    if(apply&&persistentRuntime&&persistentRuntime->get())
+        for(const auto* object:persistentRuntime->get()->exports)
+            if(object&&object->nativeLevelTickContext&&object->nativeLevelTickContext->inTick)
+                throw std::runtime_error("Cannot restore native Level state during an active Tick");
     if(apply&&HasNativeDeferredOwnership())
         throw std::runtime_error("Native deferred Actor checkpoint/rebind restoration is not implemented");
     if(apply&&HasNativeLinkerChanges())
@@ -11816,6 +11878,17 @@ PreparedScriptState PrepareScriptSavedState(
             if (!level->nativeTimeSeconds || !level->nativeStandaloneLevelServices)
                 throw std::runtime_error("Script save native clock target is not a loader-owned ULevel");
             prepared.levelClock=std::pair{level,saved.nativeLevelClock->timeSeconds};
+        }
+    }
+    if(saved.nativeLevelTickParity) {
+        const auto& tick=*saved.nativeLevelTickParity;
+        if(tick.levelPath!=schema.NativeLevelPath()||(tick.parity!=0&&tick.parity!=1))
+            throw std::runtime_error("Script save native Level parity does not match its actual ULevel");
+        if(apply) {
+            auto* level=schema.Host().Object(schema.NativeLevelPath());
+            if(!level->nativeLevelTickContext||!level->nativeStandaloneLevelServices||level->nativeLevelTickContext->inTick)
+                throw std::runtime_error("Script save native parity target is not an inactive loader-owned ULevel");
+            prepared.levelTickParity=std::pair{level,tick.parity};
         }
     }
     prepared.objects.reserve(saved.objects.size());
@@ -14560,6 +14633,32 @@ QuestVr::Vm::Result AdvancePortableActorNonPawnTickTail(const std::string& actor
     }
 }
 
+PortableLevelDynamicTickResult AdvancePortableLevelDynamicActors(const float elapsed,
+    const std::int32_t tickType,const QuestVr::Vm::Limits& limits) {
+    CollectBirthGarbageAtBoundary collect;
+    PortableLevelDynamicTickResult result;
+    if(!std::isfinite(elapsed)||elapsed<0.0f) {
+        result.execution.status=QuestVr::Vm::Status::Invalid;
+        result.execution.error="Level actor delta must be finite and nonnegative";return result;
+    }
+    try {
+        PortableActorVmHost host;
+        result.execution=QuestVr::Vm::ExecuteTransaction(host,[&](QuestVr::Vm::Execution& execution) {
+            return host.RunOriginalLevelDynamicActorPhase(elapsed,tickType,result,execution);
+        },limits);
+        if(!result.execution.passed()||!result.execution.committed)result.completed=false;
+    }catch(const std::exception& error) {
+        result.completed=false;result.execution.status=QuestVr::Vm::Status::Unsupported;
+        result.execution.error=error.what();
+    }
+    return result;
+}
+
+std::int32_t ReadPortableRuntimeLevelTickParity() {
+    PortableActorVmHost host;
+    return host.OriginalLevelTickParity();
+}
+
 double ReadPortableRuntimeLevelTime() {
     PortableActorVmHost host;
     return *host.CurrentClockLevel()->nativeTimeSeconds;
@@ -14648,6 +14747,7 @@ bool GetPortableRuntimeUnsavedScriptState() {
     for (const auto* object : persistentRuntime->get()->exports)
         if (object && (object->committedScriptState || !object->classDefaultValues.empty() || object->nativeAiManager ||
             object->nativeFirstDynamic || object->nativeActorOrderChanged ||
+            (object->nativeLevelTickContext&&(object->nativeLevelTickContext->parity||object->nativeLevelTickContext->inTick)) ||
             (object->nativeTimeSeconds && std::bit_cast<std::uint64_t>(*object->nativeTimeSeconds)!=0u))) return true;
     return false;
 }
@@ -16678,7 +16778,8 @@ bool SavePortableRuntimeState(const std::string& path) {
         const bool hasDecals = scriptState.nativeDecals.has_value() || QuestVr::ScriptStateDetail::HasIntArrays(scriptState);
         const bool hasLevelClock=scriptState.nativeLevelClock.has_value();
         const bool hasActorOrder=scriptState.nativeActorOrder.has_value();
-        const bool hasScript = !scriptState.objects.empty() || hasDefaults || hasBirths || hasAiManagers || hasRandom || hasDecals || hasLevelClock || hasActorOrder;
+        const bool hasLevelTickParity=scriptState.nativeLevelTickParity.has_value();
+        const bool hasScript = !scriptState.objects.empty() || hasDefaults || hasBirths || hasAiManagers || hasRandom || hasDecals || hasLevelClock || hasActorOrder || hasLevelTickParity;
         const bool hasState = std::any_of(scriptState.objects.begin(), scriptState.objects.end(),
             [](const auto& object) { return object.state.has_value(); });
         const bool hasLifecycle = std::any_of(scriptState.objects.begin(), scriptState.objects.end(),
@@ -16738,9 +16839,9 @@ bool SavePortableRuntimeState(const std::string& path) {
             persistentCredits < 0 || persistentSkillPoints < 0 || damaged.size() > 100'000u)
             throw std::runtime_error("Runtime checkpoint gameplay values are outside their valid ranges");
         // This is exactly the v3 prefix, including list order and field widths.
-        // Only the version word and appended trailer differ for v4-v13/v16-v17. Pure
+        // Only the version word and appended trailer differ for v4-v13/v16-v18. Pure
         // property/clock captures retain the byte-exact original v4 format.
-        const auto scriptVersion = hasActorOrder ? 17u : hasLevelClock ? 16u : hasDecals ? 13u : hasControl ? 12u : hasSleep ? 11u : hasRandom ? 10u : hasAiManagers ? 9u : hasBirths ? 8u : hasLifecycle ? 7u : hasDefaults ? 6u : hasState ? 5u : hasScript ? 4u : 3u;
+        const auto scriptVersion = hasLevelTickParity ? 18u : hasActorOrder ? 17u : hasLevelClock ? 16u : hasDecals ? 13u : hasControl ? 12u : hasSleep ? 11u : hasRandom ? 10u : hasAiManagers ? 9u : hasBirths ? 8u : hasLifecycle ? 7u : hasDefaults ? 6u : hasState ? 5u : hasScript ? 4u : 3u;
         write32(0x53515844u); write32(movers.empty() ? scriptVersion : 14u);
         if (!movers.empty()) write32(scriptVersion);
         writeStrings(persistentInventory); writeStrings(inactive); writeStrings(activated); writeFloat(persistentPlayerHealth);
@@ -16808,6 +16909,9 @@ bool SavePortableRuntimeState(const std::string& path) {
 static bool ReadPortableRuntimeState(const std::string& path, const bool apply, const std::string& expectedMapName) {
     if (!persistentRuntime || !persistentRuntime->get()) return false;
     try {
+        if(apply)for(const auto* object:persistentRuntime->get()->exports)
+            if(object&&object->nativeLevelTickContext&&object->nativeLevelTickContext->inTick)
+                throw std::runtime_error("Cannot restore native Level state during an active Tick");
         if(persistentDumpSession.saved || !persistentDumpObjects.empty())
             throw std::runtime_error("Live DumpLocation/session checkpoint restore needs its native archive service");
         if(persistentRetailCollision)
@@ -16834,7 +16938,7 @@ static bool ReadPortableRuntimeState(const std::string& path, const bool apply, 
             savedQuickBelt=QuestVr::DecodeQuickBeltState({bytes.begin()+12,bytes.begin()+12+length});
             const auto innerLength=headerWord(12u+length);
             if(innerLength!=bytes.size()-16u-length || innerLength<8u ||
-                headerWord(16u+length)!=0x53515844u || headerWord(20u+length)>17u || headerWord(20u+length)==15u)
+                headerWord(16u+length)!=0x53515844u || headerWord(20u+length)>18u || headerWord(20u+length)==15u)
                 throw std::runtime_error("Quick inventory checkpoint nested payload is invalid");
             std::vector<std::uint8_t> inner(bytes.begin()+16+length,bytes.end());bytes.swap(inner);
         }
@@ -16871,7 +16975,7 @@ static bool ReadPortableRuntimeState(const std::string& path, const bool apply, 
         if (read32() != 0x53515844u) throw std::runtime_error("Runtime checkpoint magic is invalid");
         const auto formatVersion = read32();
         const auto version = formatVersion == 14u ? read32() : formatVersion;
-        const bool scriptEnvelope=(version>=1u && version<=13u) || version==16u || version==17u;
+        const bool scriptEnvelope=(version>=1u && version<=13u) || version==16u || version==17u || version==18u;
         if ((formatVersion!=14u && !scriptEnvelope) || !scriptEnvelope ||
             (formatVersion == 14u && version < 3u)) throw std::runtime_error("Runtime checkpoint version is unsupported");
         auto inventory = readStrings(); auto inactive = readStrings(); auto activated = readStrings();
@@ -16967,6 +17071,7 @@ static bool ReadPortableRuntimeState(const std::string& path, const bool apply, 
             const bool hasDecals = scriptState.nativeDecals.has_value() || QuestVr::ScriptStateDetail::HasIntArrays(scriptState, limits);
             const bool hasLevelClock=scriptState.nativeLevelClock.has_value();
             const bool hasActorOrder=scriptState.nativeActorOrder.has_value();
+            const bool hasLevelTickParity=scriptState.nativeLevelTickParity.has_value();
             restoredRandomSeed = scriptState.randomSeed;
             for (const auto& birth : scriptState.births) savedBirthKeys.emplace(LowerAscii(birth.path));
             const bool hasLifecycle = std::any_of(scriptState.objects.begin(), scriptState.objects.end(),
@@ -16982,7 +17087,8 @@ static bool ReadPortableRuntimeState(const std::string& path, const bool apply, 
                 (version == 12u && (blob.at(6u) != QuestVr::ScriptStateDetail::StateControlVersion || !hasControl)) ||
                 (version == 13u && (blob.at(6u) != QuestVr::ScriptStateDetail::DecalStateVersion || !hasDecals)) ||
                 (version == 16u && (blob.at(6u) != QuestVr::ScriptStateDetail::LevelClockVersion || !hasLevelClock)) ||
-                (version == 17u && (blob.at(6u) != QuestVr::ScriptStateDetail::NativeActorOrderVersion || !hasActorOrder)))
+                (version == 17u && (blob.at(6u) != QuestVr::ScriptStateDetail::NativeActorOrderVersion || !hasActorOrder)) ||
+                (version == 18u && (blob.at(6u) != QuestVr::ScriptStateDetail::LevelTickParityVersion || !hasLevelTickParity)))
                 throw std::runtime_error("Runtime checkpoint state trailer does not match its envelope version");
             if (!expectedMapName.empty() && LowerAscii(expectedMapName) != LowerAscii(scriptState.mapName))
                 throw std::runtime_error("Runtime checkpoint script map does not match save metadata");
@@ -17172,6 +17278,7 @@ static bool ReadPortableRuntimeState(const std::string& path, const bool apply, 
             // baseline. Never merge the current history or guess it from a
             // mutable/lossy reflected Float. New records publish after staging.
             if (object->nativeTimeSeconds) object->nativeTimeSeconds=0.0;
+            if(object->nativeLevelTickContext)*object->nativeLevelTickContext=RuntimeNativeLevelTickContext{};
             object->nativeFirstDynamic.reset();object->nativeActorOrderChanged=false;
             if(object->nativeXLevel||object->runtimeBirth)object->worldActorIndex=-1;
             object->scriptValues.clear(); object->classDefaultValues.clear();
@@ -17215,6 +17322,7 @@ static bool ReadPortableRuntimeState(const std::string& path, const bool apply, 
         }
         for (const auto& root : prepared.aiManagers) root.get()->owner->nativeAiManager = root.get();
         if (prepared.levelClock) prepared.levelClock->first->nativeTimeSeconds=prepared.levelClock->second;
+        if(prepared.levelTickParity)prepared.levelTickParity->first->nativeLevelTickContext->parity=prepared.levelTickParity->second;
         for(const auto& row:prepared.worldIndices)row.first->worldActorIndex=row.second;
         if(prepared.actorOrder) {
             prepared.actorOrder->first->nativeFirstDynamic=prepared.actorOrder->second;

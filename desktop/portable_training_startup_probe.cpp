@@ -449,7 +449,7 @@ int Run(const fs::path& root,const std::optional<std::string>& expected,unsigned
     bool requireSpawnEncroachment,bool damageTrainingCrates,bool collectTrainingLoot,bool collectTrainingLootViaPlayer,bool sweepTrainingCrates,
     bool fallTrainingCrates,bool fallAfterLowerBreak,bool fallTrainingLoot,bool fallTrainingFragments,bool performTrainingFragments,bool performTrainingCohort,
     const std::optional<std::size_t>& damageWriteLimit,const std::optional<PortableStartupWeaponCommand>& weapon,
-    const std::optional<PortableStartupWeaponFireCommand>& fire,bool observeTrainingStasis,bool observePlayerDistance) {
+    const std::optional<PortableStartupWeaponFireCommand>& fire,bool observeTrainingStasis,bool observePlayerDistance,bool observeDynamicActors) {
     Temporary temporary(root);std::vector<Source> sources;std::vector<PortablePackageTables> scripts;
     sources.reserve(QuestVr::RuntimeScriptPackages.size()+3u);scripts.reserve(QuestVr::RuntimeScriptPackages.size());
     for(const auto* name:QuestVr::RuntimeScriptPackages){sources.emplace_back(root/"System"/(std::string(name)+".u"));
@@ -530,6 +530,7 @@ int Run(const fs::path& root,const std::optional<std::string>& expected,unsigned
     rollback();
     PortableWorldStartupProbeOptions options;options.defaultGameClass="DeusEx.DeusExGameInfo";
     options.weapon=weapon;
+    if(observeDynamicActors)options.observeDynamicActorDelta=1.0f/72.0f;
     if(observeTrainingStasis)for(const auto actor:TrainingStasisActors)
         options.observeStasisActors.emplace_back(actor);
     if(observePlayerDistance)for(const auto* actor:{"00_Training.CrateBreakableMedGeneral1","00_Training.CrateBreakableMedGeneral2"})
@@ -645,6 +646,15 @@ int Run(const fs::path& root,const std::optional<std::string>& expected,unsigned
             if(distanceObservation)Require(*distanceObservation==pass,"Repeated genuine distance prepass changed native results");
             else distanceObservation=pass;
         }else Require(!world.playerDistance,"Unrequested player-distance phase was executed");
+        if(observeDynamicActors) {
+            Require(world.dynamicActors.has_value(),"Requested native dynamic-actor phase was not reached");
+            const auto& tick=*world.dynamicActors;
+            std::cout<<"LEVEL DYNAMIC ACTORS completed="<<tick.completed<<" parity="<<tick.parityBefore<<"->"<<tick.parityAfter
+                <<" slots="<<tick.slotsVisited<<" calls="<<tick.actorCalls<<" stasis="<<tick.stasisReturns
+                <<" deferred="<<tick.deferredPushes<<" passes="<<tick.pendingPasses<<" skipped="<<tick.pendingSkips
+                <<"; same-root rollback-only normal actor phase, NOT published Level.Tick or headset gameplay\n";
+            Require(ReadPortableRuntimeLevelTickParity()==0,"Failed startup retained native frame parity");
+        }else Require(!world.dynamicActors,"Unrequested dynamic-actor phase was executed");
         for(const auto& dump:world.dumpLocations) {
             Require(dump.classPath=="DeusEx.DumpLocation" && dump.outerPath=="00_Training" && dump.objectIndex &&
                 dump.flags==0u && dump.fileIndex==-1 && dump.locationIndex==-1 && dump.locationCount==0 &&
@@ -718,7 +728,7 @@ int main(int argc,char** argv) {
     std::cout.setf(std::ios::unitbuf);
     try {
         fs::path root;std::optional<std::string> expected;unsigned repeats=1u;
-        bool requireSpawnEncroachment{},damageTrainingCrates{},collectTrainingLoot{},collectTrainingLootViaPlayer{},sweepTrainingCrates{},fallTrainingCrates{},fallAfterLowerBreak{},fallTrainingLoot{},fallTrainingFragments{},performTrainingFragments{},performTrainingCohort{},observeTrainingStasis{},observePlayerDistance{};
+        bool requireSpawnEncroachment{},damageTrainingCrates{},collectTrainingLoot{},collectTrainingLootViaPlayer{},sweepTrainingCrates{},fallTrainingCrates{},fallAfterLowerBreak{},fallTrainingLoot{},fallTrainingFragments{},performTrainingFragments{},performTrainingCohort{},observeTrainingStasis{},observePlayerDistance{},observeDynamicActors{};
         std::optional<std::size_t> damageWriteLimit;
         std::optional<PortableStartupWeaponCommand> weapon;
         std::optional<PortableStartupWeaponFireCommand> fire;
@@ -733,6 +743,7 @@ int main(int argc,char** argv) {
             else if(option=="--native-work"&&i+1<argc)nativeWork=NativeWorkLimit(argv[++i]);
             else if(option=="--observe-training-stasis")observeTrainingStasis=true;
             else if(option=="--observe-player-distance")observePlayerDistance=true;
+            else if(option=="--observe-dynamic-actors"){observeDynamicActors=true;observePlayerDistance=true;}
             else if(option=="--fire-location") {
                 Require(!fireLocation&&i+3<argc,"--fire-location requires exactly one X Y Z packet");
                 std::array<float,3u> value{};for(auto& component:value)component=FireLocationComponent(argv[++i]);
@@ -797,7 +808,7 @@ int main(int argc,char** argv) {
         if(root.empty()){std::cout<<"SKIP owned first Training startup observation: use --owned-source-root or DEUSEX_GAME_ROOT.\n";return 77;}
         ShutdownPortableRuntime();GC::Collect();const auto before=GC::GetStats();
         const auto result=Run(fs::canonical(root),expected,repeats,nativeWork,requireSpawnEncroachment,damageTrainingCrates,
-            collectTrainingLoot,collectTrainingLootViaPlayer,sweepTrainingCrates,fallTrainingCrates,fallAfterLowerBreak,fallTrainingLoot,fallTrainingFragments,performTrainingFragments,performTrainingCohort,damageWriteLimit,weapon,fire,observeTrainingStasis,observePlayerDistance);
+            collectTrainingLoot,collectTrainingLootViaPlayer,sweepTrainingCrates,fallTrainingCrates,fallAfterLowerBreak,fallTrainingLoot,fallTrainingFragments,performTrainingFragments,performTrainingCohort,damageWriteLimit,weapon,fire,observeTrainingStasis,observePlayerDistance,observeDynamicActors);
         ShutdownPortableRuntime();GC::Collect();const auto after=GC::GetStats();
         Require(after.numObjects==before.numObjects&&after.memoryUsage==before.memoryUsage,"Startup observation retained native UObjects after shutdown");
         return result;

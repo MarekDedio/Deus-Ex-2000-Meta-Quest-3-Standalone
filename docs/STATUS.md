@@ -1,5 +1,37 @@
 # Port status
 
+## Joined normal Level dynamic-actor phase (2026-10-25)
+
+The production Level actor phase now joins real stasis, owner deferral/parity,
+MAIN/four-BLEND and non-Pawn Tick/state/timer/lifespan/physics in ONE shared
+transaction. Live ascending slots/count, LIFO detached batches, no-progress
+termination and active-Spawn insertion share a budgeted GC-rooted scratch
+arena. Native context has first-write undo; inactive parity continuation uses
+codec13/envelope18 with explicit legacy reset. Native bTicked no longer
+refreshes an unrelated animation clock. Ordinary cleanup stably compacts the
+dynamic suffix and retains original small deletion queues; reached>=128
+reference/scalar teardown still refuses rather than discarding native edges.
+
+Generated production-driver510/17, clock/parity codec8737/362, original crate
+415/5, deferred ownership429/21 and animation588/24 pass. Full desktop/strict
+ARM64/Android native builds pass. Final shared suite203 executed/242 registered/
+39 explicit owned-data skips/zero failures124.33s passes. Original two-Fire
+repeat2 retains228837/26047, removal/loot/debris births and complete undo at the
+known FExec refusal. All45 checked original script/config/map files are unchanged;
+all build/test processes are terminal. No new APK or headset result.
+
+The opt-in actual Training actor-phase repeat2 reaches9 slots/8 admitted calls
+then refuses the closed Engine.Mover native allowlist;203983 instructions/15281
+writes and full enclosing undo repeat exactly. Subsequent static evidence shows
+Mover's Tick/physics slots use the same AActor thunks, so exact admission/testing
+is next, not a distinct invented Mover Tick or skipped door. Active Spawn/GC,
+active animation/physics, nonempty/threshold cleanup and the surrounding Level
+pause/network/player/clock/render integration still require completion and
+broader verification. This is NOT complete world Tick, playable startup, live
+crate attacks, usable loot or automatic gravity. First Training remains the
+gameplay priority. See ORIGINAL-LEVEL-DYNAMIC-TICK-PHASE.md and
+ORIGINAL-LEVEL-CLEANUP-BOUNDARY.md.
+
 ## First-Training native Spawn frame marker (2026-10-25)
 
 Original Spawn now sets newborn Actor.bTicked from the logical opposite of

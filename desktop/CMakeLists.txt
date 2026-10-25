@@ -1332,3 +1332,13 @@ if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
     target_link_options(quest_native_alias_merge_test PRIVATE -static -static-libgcc -static-libstdc++)
 endif()
 add_test(NAME quest_native_alias_merge COMMAND quest_native_alias_merge_test)
+
+# Production same-root normal dynamic actor phase, generated source packages.
+add_executable(portable_level_actor_tick_test portable_level_actor_tick_test.cpp)
+target_compile_features(portable_level_actor_tick_test PRIVATE cxx_std_20)
+target_link_libraries(portable_level_actor_tick_test PRIVATE quest_portable_host)
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+    target_compile_options(portable_level_actor_tick_test PRIVATE -Wall -Wextra -Werror)
+    target_link_options(portable_level_actor_tick_test PRIVATE -static -static-libgcc -static-libstdc++)
+endif()
+add_test(NAME portable_level_actor_tick COMMAND portable_level_actor_tick_test)

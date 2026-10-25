@@ -1,5 +1,12 @@
 # Original native Level tick baseline and newborn marker
 
+Update2026-10-25: the subsequent normal dynamic-actor phase now supplies the
+shared-root native context journal, GC-rooted owner/newborn pending arena and
+inactive-boundary parity checkpoint continuation. The historical increment
+below correctly describes the earlier immutable baseline, not the current
+complete scheduler status. See ORIGINAL-LEVEL-DYNAMIC-TICK-PHASE.md for its
+production tests and remaining Mover/native/Pawn/full-Level integration limits.
+
 First-Training prerequisite,2026-10-25. This corrects Spawn's native bTicked
 initialization and establishes the freshly constructed native Level context.
 It is not complete Actor/Level Tick, an active pending/newborn scheduler,

@@ -1,5 +1,21 @@
 # Immediate milestone: complete the first Training map
 
+Latest2026-10-25: production normal Level dynamic-actor phase now joins actual
+stasis, owner/parity, MAIN/BLEND and non-Pawn tail in one root, with live slots,
+GC-rooted pending batches, same-frame Spawn insertion, context undo/parity save
+and ordinary suffix compaction. Generated510/17 and codec8737/362 pass; original
+crate415/5, deferred429/21 and animation588/24 pass. Full desktop/strict ARM64/
+Android native and final CTest203 executed/242 registered/39 explicit skips/
+zero failures124.33s pass. Two-Fire repeat2 retains228837/26047 and full undo;
+all45 checked originals unchanged. All jobs terminal; no APK or headset claim.
+Actual actor-phase repeat2 stops after9 slots/8 calls at closed Mover admission,
+with exact203983/15281 and whole undo. Its native Tick/physics slots are now
+independently proven identical to AActor, so exact admission/testing is next.
+Do not skip doors, add account UI or integrate another gameplay map. Full
+surrounding Level/Pawn work, active Spawn/physics/GC checks, native high-count
+cleanup and live first-map crate/usable loot/gravity remain unfinished. See
+ORIGINAL-LEVEL-DYNAMIC-TICK-PHASE.md.
+
 Latest2026-10-25: corrected original Spawn newborn bTicked to oppose the native
 Level counter, not copy the spawner. Fresh native Level counter0 has independent
 allocation/default-copy/constructor/archive proof. Generated false-spawner and
