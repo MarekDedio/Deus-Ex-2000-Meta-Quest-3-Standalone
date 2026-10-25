@@ -1469,7 +1469,7 @@ PortablePropertyDescriptor LoadPortablePropertyDescriptor(
 
 PortableFieldLinks LoadPortableFieldLinks(const PortablePackageTables& package,
     const std::size_t exportIndex) {
-    const auto bytes = ReadDescriptorPayload(package, exportIndex);
+    if(exportIndex>=package.exports.size())throw std::runtime_error("UE1 field export index is outside the table");
     const auto& entry = package.exports[exportIndex];
     auto metaClass = ResolveDescriptorObjectPath(entry.ObjClass, package);
     if (entry.ObjClass > 0)
@@ -1477,11 +1477,51 @@ PortableFieldLinks LoadPortableFieldLinks(const PortablePackageTables& package,
     if (NameString(metaClass) != "Core.Struct" && NameString(metaClass) != "Core.Enum" && NameString(metaClass) != "Core.Const")
         throw std::runtime_error("UE1 field-link export is not Core.Struct/Enum/Const: " +
             ResolveDescriptorObjectPath(static_cast<std::int32_t>(exportIndex + 1u), package) + " (" + metaClass + ")");
+    if(NameString(metaClass)=="Core.Enum") {
+        // Existing production field-chain traversal must not accept a valid
+        // UField prefix with a malformed/unbounded Enum tail.
+        const auto enumeration=LoadPortableEnumDescriptor(package,exportIndex);
+        return {enumeration.baseField,enumeration.nextField};
+    }
+    const auto bytes = ReadDescriptorPayload(package, exportIndex);
     PayloadReader reader(bytes);
     reader.Skip(LoadPortableExportProperties(package, exportIndex).bytesConsumed);
     PortableFieldLinks result{reader.ReadIndex(), reader.ReadIndex()};
     ResolveDescriptorObjectPath(result.baseField, package);
     ResolveDescriptorObjectPath(result.nextField, package);
+    return result;
+}
+
+PortableEnumDescriptor LoadPortableEnumDescriptor(const PortablePackageTables& package,
+    const std::size_t exportIndex,const std::size_t retainedByteBudget) {
+    if(exportIndex>=package.exports.size())throw std::runtime_error("UE1 Enum export index is outside the table");
+    const auto& entry=package.exports[exportIndex];
+    auto metaclass=ResolveDescriptorObjectPath(entry.ObjClass,package);
+    if(entry.ObjClass>0)metaclass=std::filesystem::path(package.sourcePath).stem().string()+'.'+metaclass;
+    if(NameString(metaclass)!="Core.Enum")throw std::runtime_error("UE1 Enum export is not actual Core.Enum");
+    // Complete UObject property parsing finishes and releases its own bounded
+    // scratch before the separate Enum body reader is allocated.
+    const auto prefix=LoadPortableExportProperties(package,exportIndex,retainedByteBudget).bytesConsumed;
+    PayloadReader reader(ReadDescriptorPayload(package,exportIndex,retainedByteBudget));
+    reader.Skip(prefix);
+    PortableEnumDescriptor result;
+    result.objectPath=ResolveDescriptorObjectPath(static_cast<std::int32_t>(exportIndex+1u),package);
+    result.baseField=reader.ReadIndex();result.nextField=reader.ReadIndex();
+    ResolveDescriptorObjectPath(result.baseField,package);ResolveDescriptorObjectPath(result.nextField,package);
+    const auto count=reader.ReadIndex();
+    if(count<0||count>65536)throw std::runtime_error("UE1 Enum name count exceeds its portable bound");
+    const auto names=static_cast<std::size_t>(count);
+    // Every compact name index consumes at least one byte. Admit the peak raw
+    // reader, result vector and path BEFORE reserve, not afterward.
+    if(names>reader.Size()-reader.Tell())throw std::runtime_error("UE1 Enum name count exceeds its payload");
+    const auto fixed=sizeof(result)+reader.Size()+sizeof(PayloadReader)+result.objectPath.capacity()+1u;
+    if(fixed>retainedByteBudget||names>(retainedByteBudget-fixed)/sizeof(NameString))
+        throw std::runtime_error("UE1 Enum retained-byte budget exceeded");
+    result.names.reserve(names);
+    if(result.names.capacity()>(retainedByteBudget-fixed)/sizeof(NameString))
+        throw std::runtime_error("UE1 Enum retained capacity exceeds its budget");
+    for(std::size_t index=0u;index<names;++index)result.names.push_back(ReadPayloadName(reader,package));
+    if(reader.Tell()!=reader.Size())throw std::runtime_error("UE1 Enum payload has trailing bytes");
     return result;
 }
 

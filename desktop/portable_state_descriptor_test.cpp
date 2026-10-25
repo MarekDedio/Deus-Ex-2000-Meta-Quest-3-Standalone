@@ -305,10 +305,19 @@ void Synthetic() {
     fixture.Reset(); auto extraClass = MakePayload(false); extraClass.bytes.push_back(0u);
     fixture.Reject([&] { fixture.Class(extraClass); }, "Class trailing bytes accepted");
     for (const auto* name : {"Enum", "Struct", "Const"}) {
-        fixture.Reset(); fixture.package.names[2].Name = NameString(name); fixture.Write(valid.bytes);
+        fixture.Reset(); fixture.package.names[2].Name = NameString(name);
+        auto fieldBody = valid.bytes;
+        if (std::string_view(name) == "Enum") {
+            // Enum field traversal now validates its complete body. Preserve
+            // the actual UObject/UField prefix, then encode a real empty Names
+            // array instead of relabeling a UState's unrelated trailing bytes.
+            fieldBody.resize(valid.references[2]);
+            Index(fieldBody, 0);
+        }
+        fixture.Write(fieldBody);
         const auto links = LoadPortableFieldLinks(fixture.package, 0u);
         Require(links.baseField == -2 && links.nextField == 2, "Common Enum/Struct field prefix was not retained");
-        auto truncated = valid; truncated.bytes.resize(valid.references[1]); fixture.Write(truncated.bytes);
+        auto truncated = fieldBody; truncated.resize(valid.references[1]); fixture.Write(truncated);
         fixture.Reject([&] { LoadPortableFieldLinks(fixture.package, 0u); }, "Truncated common field prefix accepted");
     }
     fixture.Reset(); fixture.Write(valid.bytes);

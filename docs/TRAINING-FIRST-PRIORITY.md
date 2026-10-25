@@ -1,5 +1,18 @@
 # Immediate milestone: complete the first Training map
 
+Current input prerequisite,2026-10-25: complete Enum decoding is wired into
+production field traversal; general original KEYNAME/KEYBINDING routines and
+owned key-data tests pass. Native configured InputExt construction/config/
+instance integration remains missing, so actual bound startup retains its
+honest ConsoleCommand refusal. Full desktop/shared gate197 executed/236
+registered/39 explicit skips/zero failures, strict ARM64 and Android native
+link pass. Normal and aimed two-Fire repeat2 retain prior counts, the complete
+crate break/Lockpick birth, whole undo and all41 unchanged sources. No other
+map integration, account UI, new APK or live gravity/loot acceptance is claimed.
+See ORIGINAL-INPUT-KEY-QUERIES.md. Construction precedes the reached key query;
+the separate later LoadMap input reset must not be moved before Possess merely
+as a shortcut. Continue toward real first-map live authority and world physics.
+
 Current 2026-10-25: complete general native Tile sizing/held-placement is now
 implemented with typed journaled rows and actual child queries, not a cosmetic
 UI addition. Math, mock layout, real owned-window fixture, strict ARM64 and

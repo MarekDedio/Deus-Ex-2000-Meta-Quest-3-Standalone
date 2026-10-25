@@ -1,5 +1,32 @@
 # Port status
 
+## Original Input key-query routines and Enum data prerequisite (2026-10-25)
+
+Complete bounded Core.Enum decoding is now used by production field-chain
+traversal. The original general KEYNAME/KEYBINDING routines are implemented,
+with non-interning FName lookup and real Enum identities, not a hardcoded key
+list. They still need genuine configured native InputExt metadata/defaults/
+config/instance ownership before the bound player ConsoleCommand can use them.
+No account or character-creation UI was added. First Training only.
+
+Mock query20430/123, complete descriptor48/27 and read-only owned data947
+controls (131 enums/510 key commands) pass. Coherent desktop/shared gate197
+executed/236 registered/39 explicit skips/zero failures passes in53.36s;
+strict ARM64 decoder/new or changed tests and Android native link pass.
+Original normal startup and aimed two-Fire repeat2 match the prior220285/25439
+and228837/26047 instruction/write counts, complete undo/all41 unchanged
+sources. The actual crate break and Lockpick birth remain intact; bound startup
+still explicitly refuses the missing native Input FExec integration.
+
+Separate actual owned controls pass: player/HUD8301, isolated crate347/two
+dormant-contents refusals, Trace27737063/23 with43 real calls/nine work cuts,
+and PlayerPawn.ConsoleCommand65/one refusal. All build/test jobs are terminal.
+
+See ORIGINAL-INPUT-KEY-QUERIES.md for exact scope, corrected synthetic fixture,
+diagnostic work-budget option and constructor/reset ordering evidence. Live
+crate damage/loot collection/automatic gravity, complete startup and Quest
+acceptance remain unfinished; no new APK was generated.
+
 ## Native Tile sizing implemented; Training startup advances (2026-10-25)
 
 General native Tile preferred sizing and raw held placement now use audited

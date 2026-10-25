@@ -175,6 +175,16 @@ struct PortableFieldLinks {
 PortableFieldLinks LoadPortableFieldLinks(const PortablePackageTables& package,
     std::size_t exportIndex);
 
+// Complete original UEnum body, not a guessed platform key-name table. Names
+// preserve package FName identities, order, duplicates and None entries.
+struct PortableEnumDescriptor {
+    std::string objectPath;
+    std::int32_t baseField{},nextField{};
+    std::vector<NameString> names;
+};
+PortableEnumDescriptor LoadPortableEnumDescriptor(const PortablePackageTables& package,
+    std::size_t exportIndex,std::size_t retainedByteBudget=8u<<20u);
+
 struct PortableClassDescriptor {
     std::string objectPath;
     PortableStateDescriptor state;
