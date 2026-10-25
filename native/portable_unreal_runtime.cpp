@@ -365,6 +365,9 @@ public:
     RuntimeObject* serializedStateCode{}; // Outward GC-linked authored identity only.
     RuntimeObject* serializedFunctionCode{};
     std::optional<PortableFieldLinks> commonFieldLinks;
+    // Immutable source UEnum Names, prepared while its package is available.
+    // Actual Core.Enum class/Within identity is bound by the metadata phase.
+    std::unique_ptr<const PortableEnumDescriptor> enumDescriptor;
     // Validated once while the original tables are available. Outer/path
     // coincidence alone cannot authorize a compiled class-property alias.
     // linkedClassOwner aliases the already GC-linked immutable Outer.
@@ -563,6 +566,7 @@ public:
     std::vector<RuntimeObject*> exports;
     std::optional<QuestVr::OriginalLinkerLoadProfile> loadProfile;
     std::size_t structDescriptorBytes{};
+    std::size_t enumDescriptorBytes{}; // Independently bounded immutable source cache.
     RuntimeMapDecals* nativeDecals{};
     struct SourceLinker {
         std::string name, sourcePath; RuntimeObject* root{};
@@ -1127,6 +1131,32 @@ void CacheInventoryTableMetadata(RuntimeObject* object, const PortablePackageTab
     if (target != persistentVmObjects.end()) constraint.indexedClass = target->second;
     else constraint.nativeClass = InventoryNativeClassId(path);
     if (!constraint.indexedClass && constraint.nativeClass == 0u) constraint.valid = false;
+}
+
+constexpr std::size_t MaximumRuntimeEnumBytes=8u<<20u;
+std::size_t RuntimeEnumRetainedBytes(const PortableEnumDescriptor& descriptor) {
+    return QuestVr::DecalStateDetail::Add(sizeof(PortableEnumDescriptor),
+        QuestVr::DecalStateDetail::Add(descriptor.objectPath.capacity()+1u,
+            QuestVr::DecalStateDetail::Multiply(descriptor.names.capacity(),sizeof(NameString))));
+}
+void CacheRuntimeEnumDescriptor(RuntimePackage& runtime,RuntimeObject* object,const PortablePackageTables& package,
+    const bool qualified=true) {
+    const auto index=object->nativeMetadataClassImport;
+    if(!index || QuestVr::NativeMetadataClasses.at(index-1u).path!="Core.Enum")return;
+    if(object->enumDescriptor || runtime.enumDescriptorBytes>MaximumRuntimeEnumBytes)
+        throw std::runtime_error("Runtime Enum source cache is already prepared or exceeds its budget");
+    const auto available=MaximumRuntimeEnumBytes-runtime.enumDescriptorBytes;
+    // The decoder admits raw scratch and retained capacities together against
+    // the remaining aggregate budget before reserving the name vector.
+    auto descriptor=LoadPortableEnumDescriptor(package,object->exportIndex,available);
+    const auto expected=qualified?std::filesystem::path(package.sourcePath).stem().string()+'.'+descriptor.objectPath:descriptor.objectPath;
+    if(expected!=object->reflection.objectPath)
+        throw std::runtime_error("Runtime Enum descriptor disagrees with its actual export identity");
+    const auto bytes=RuntimeEnumRetainedBytes(descriptor);
+    if(bytes>available)throw std::runtime_error("Runtime Enum aggregate source cache budget exceeded");
+    auto owned=std::make_unique<const PortableEnumDescriptor>(std::move(descriptor));
+    object->commonFieldLinks=PortableFieldLinks{owned->baseField,owned->nextField};
+    object->enumDescriptor=std::move(owned);runtime.enumDescriptorBytes+=bytes;
 }
 
 struct IndexedDialogueLine {
@@ -2191,6 +2221,7 @@ void PopulateRuntime(
             ++summary.properties;
         }
         CacheInventoryTableMetadata(object, package, entry);
+        CacheRuntimeEnumDescriptor(*runtime,object,package,false);
         if (object->reflection.metaClass == "Class") ++summary.classes;
     }
     summary.objects = runtime->exports.size()-summary.contextExcludedExports;
@@ -12105,6 +12136,7 @@ PortableRuntimeSummary InitializePortableRuntime(
                 ++summary.properties;
             }
             CacheInventoryTableMetadata(object, *slice.package, entry);
+            CacheRuntimeEnumDescriptor(*persistentRuntime->get(),object,*slice.package);
             if (object->reflection.metaClass == "Class") ++summary.classes;
         }
     }
@@ -12972,6 +13004,26 @@ PortableNativeMetadataClassesSnapshot PreparePortableRuntimeNativeMetadataClasse
     for(const auto& [object,cls]:importedClasses) {object->cls=cls;object->inventoryClassReferenceValid=true;}
     persistentMetadataClasses=std::move(owner);
     return result;
+}
+
+PortableRuntimeEnumSnapshot ReadPortableRuntimeEnum(const std::string& objectPath) {
+    if(!persistentRuntime || !persistentMetadataClasses)
+        throw std::runtime_error("Runtime Enum query requires the actual registered Core.Enum class");
+    PortableActorVmHost host;auto* object=host.Object(objectPath);auto* cls=host.Object("Core.Enum");
+    auto* within=host.Object("Core.Struct");
+    const auto imported=object->nativeMetadataClassImport;
+    if(!imported || imported>QuestVr::NativeMetadataClasses.size() ||
+        QuestVr::NativeMetadataClasses[imported-1u].path!="Core.Enum" ||
+        cls->nativeMetadataClass!=&QuestVr::NativeMetadataClasses[imported-1u] ||
+        object->cls!=cls || cls->nativeClassWithin!=within ||
+        !object->inventoryTableMetadata || !object->inventoryClassReferenceValid ||
+        object->defaultOwner || object->runtimeBirth || !object->enumDescriptor ||
+        !object->outer || !IsDerivedFromPath(object->outer->cls,"Core.Struct") ||
+        !object->objectIndex || !object->outer->objectIndex || !cls->objectIndex)
+        throw std::runtime_error("Runtime Enum query lacks genuine source/Class/UStruct Outer authority");
+    return {object->reflection.objectPath,object->outer->reflection.objectPath,cls->reflection.objectPath,
+        object->objectIndex.Index(),object->outer->objectIndex.Index(),cls->objectIndex.Index(),
+        object->enumDescriptor->names};
 }
 
 static RuntimeObject* NativeConfigConsole(PortableActorVmHost& host,const bool requireBoundWithin) {
@@ -14794,6 +14846,7 @@ PortableMapRuntimeSummary LoadPortableRuntimeMap(
             ++summary.actors;
         }
         CacheInventoryTableMetadata(object, package, entry);
+        CacheRuntimeEnumDescriptor(*persistentRuntime->get(),object,package);
     }
     for(std::size_t index=0u;index<package.exports.size();++index)
         CacheRuntimeBitmapDimensions(persistentRuntime->get()->exports[first+index],package);
@@ -14842,6 +14895,17 @@ std::size_t UnloadPortableRuntimeMap() {
         throw std::runtime_error("Map unload refused: actual retail collision retirement is not implemented");
     if (GetPortableRuntimeUnsavedScriptState())
         throw std::runtime_error("Map unload refused: script state requires a per-map archive");
+    std::size_t survivingEnumBytes{};
+    if(persistentRuntime && persistentRuntime->get()) {
+        survivingEnumBytes=persistentRuntime->get()->enumDescriptorBytes;
+        for(std::size_t index=persistentScriptExportCount;index<persistentRuntime->get()->exports.size();++index) {
+            const auto* object=persistentRuntime->get()->exports[index];
+            if(!object || !object->enumDescriptor)continue;
+            const auto bytes=RuntimeEnumRetainedBytes(*object->enumDescriptor);
+            if(bytes>survivingEnumBytes)throw std::runtime_error("Map Enum cache retirement accounting is inconsistent");
+            survivingEnumBytes-=bytes;
+        }
+    }
     if(persistentRuntime&&persistentRuntime->get()&&persistentRuntime->get()->mapLinker) {
         auto& linker=persistentRuntime->get()->mapLinker;
         RetireContextExclusions(linker);
@@ -14880,6 +14944,7 @@ std::size_t UnloadPortableRuntimeMap() {
     persistentRuntime->get()->nativeDecals = nullptr;
     persistentRuntime->get()->mapLinkerRoot=nullptr;
     persistentRuntime->get()->exports.resize(persistentScriptExportCount);
+    persistentRuntime->get()->enumDescriptorBytes=survivingEnumBytes;
     ++persistentWorldRevision;
     persistentMapPackageName.clear();
     persistentMapTagIndex.clear();

@@ -77,8 +77,8 @@ void Run(const fs::path& root){
     Require(InitializePortableRuntime(packages,0x13579bdfu).passed,"Cannot initialize real original scripts");
     Require(PreparePortableRuntimeNativeEngineClasses().prepared,"Cannot prepare actual Engine classes");
     const auto metadata=PreparePortableRuntimeNativeMetadataClasses();
-    Require(metadata.prepared&&metadata.classes.size()==12u&&metadata.classes.back().classPath=="Core.StructProperty"&&
-        metadata.classes.back().nativeSize==0x64u,"Missing actual registered native StructProperty Class authority");
+    Require(metadata.prepared&&metadata.classes.size()==13u&&metadata.classes[11u].classPath=="Core.StructProperty"&&
+        metadata.classes[11u].nativeSize==0x64u,"Missing actual registered native StructProperty Class authority");
     Require(LoadPortableRuntimeMap(map).passed,"Cannot load ONLY first Training map");
     const auto original=temporary.Save("Authored");
     // An authentic live animation clock is an unrelated payload and must not

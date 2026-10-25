@@ -585,6 +585,16 @@ struct PortableNativeMetadataClassesSnapshot {
 // package Outers, allocate Engine/Cylinder instances or start the world.
 PortableNativeMetadataClassesSnapshot PreparePortableRuntimeNativeMetadataClasses();
 PortableNativeMetadataClassesSnapshot ReadPortableRuntimeNativeMetadataClasses();
+struct PortableRuntimeEnumSnapshot {
+    std::string objectPath, outerPath, classPath;
+    std::uint32_t objectIndex{}, outerIndex{}, classIndex{};
+    std::vector<NameString> names;
+    bool operator==(const PortableRuntimeEnumSnapshot&) const = default;
+};
+// Detached diagnostic of an actual source Enum and its registered Core.Enum
+// Class/UStruct Outer. Names are cached at load, never read/interned from disk
+// by this query. No native Input instance, config or reset is implied.
+PortableRuntimeEnumSnapshot ReadPortableRuntimeEnum(const std::string& objectPath);
 struct PortableNativeConfigClassesSnapshot {
     std::vector<PortableNativeMetadataClassSnapshot> classes;
     std::string consoleClassPath;

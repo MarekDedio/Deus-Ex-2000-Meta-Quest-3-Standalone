@@ -1,5 +1,30 @@
 # Port status
 
+## Actual input Enum identity and cached source names (2026-10-25)
+
+Core.Enum is now a genuinely indexed native metadata UClass (Field base,
+Struct Within, original size40 hex). Actual source Enums bind to it, and their
+complete ordered FName vectors are cached during load under an independent
+eight-MiB aggregate source budget. Read-only queries use actual class/Outer
+identities and no file I/O/name interning. Map Enum retirement/reload preserves
+the static Engine.Actor key enum. Configured InputExt is still not constructed
+or connected to FExec; no fake bindings/account UI or startup bypass was added.
+
+Owned metadata11619/117 verifies159 original enums and class/source/GC/map/
+checkpoint lifetime, including reads without an isolated backing file. Actual
+lookup577/32 verifies the original non-exact UEnum/Actor-Outer query and two
+real first-Training warm restores with a retained native viewport. Config
+classes9983/48 and actual crate/distributor payload teardown1164/33 pass.
+Coherent desktop/shared gate197 executed/236 registered/39 explicit skips/
+zero failures in58.24s, strict ARM64 and Android native links pass.
+Normal startup and aimed two-Fire repeat2 retain the prior220285/25439 and
+228837/26047 instruction/write counts, complete undo/all41 unchanged sources.
+The two-hit crate break/surviving Lockpick diagnostic is unchanged; live input,
+automatic world physics, collectible loot and completed startup remain open.
+See ORIGINAL-INPUT-ENUM-IDENTITY.md. Only first Training was integrated/tested;
+no APK or headset acceptance is claimed. Final owned player/HUD8301 passes;
+all build/test jobs are terminal before commit.
+
 ## Original Input key-query routines and Enum data prerequisite (2026-10-25)
 
 Complete bounded Core.Enum decoding is now used by production field-chain

@@ -30,7 +30,7 @@ inline constexpr std::array<NativeEngineClassRegistration,5u> NativeEngineClasse
 // native UClasses, not default blocks, fabricated serialized descriptors or
 // permission to replay Cpp-property constructors after package loading.
 // See ORIGINAL-NATIVE-METADATA-REGISTRATION.md for each audited native header.
-inline constexpr std::array<NativeEngineClassRegistration,12u> NativeMetadataClasses{{
+inline constexpr std::array<NativeEngineClassRegistration,13u> NativeMetadataClasses{{
     {"Core.Field","Core.Object","Core.Object",0x34u,0x13u,0x04084004u,"Core"},
     {"Core.Struct","Core.Field","Core.Object",0x6cu,0x12u,0x04084004u,"Core"},
     {"Core.State","Core.Struct","Core.Object",0x484u,0x12u,0x04084004u,"Core"},
@@ -45,7 +45,10 @@ inline constexpr std::array<NativeEngineClassRegistration,12u> NativeMetadataCla
     // Required by first Training's original nested NanoKeyData destruction.
     // Actual native size64, not the Struct pointer's offset5C plus4 guess.
     // See ORIGINAL-STRUCT-PROPERTY-REGISTRATION.md. No instance/CDO is implied.
-    {"Core.StructProperty","Core.Property","Core.Field",0x64u,0x12u,0x04084004u,"Core"}
+    {"Core.StructProperty","Core.Property","Core.Field",0x64u,0x12u,0x04084004u,"Core"},
+    // UInput's EInputKey is a real indexed UEnum with UStruct Within, not a
+    // table selected by basename. Core10159AC0/10159B0B; static class1029D6D0.
+    {"Core.Enum","Core.Field","Core.Struct",0x40u,0x12u,0x04084004u,"Core"}
 }};
 
 // The actual native bases of Engine's five config ClassProperties. Console

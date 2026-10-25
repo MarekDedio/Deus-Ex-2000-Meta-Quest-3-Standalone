@@ -174,9 +174,10 @@ void MapLifetime(Temporary& temporary,const PortableObjectLookupState& staticSta
     Require(GetPortableRuntimeWorldRevision()==mapRevision,"Refused source-name collision advanced world revision");
     Found(Request("LookupMap.LookupOwnerProbe",objectClass),"LookupMap.LookupOwnerProbe",state.generation);
     const auto bytes=temporary.Snapshot("LookupMapWarm");const auto beforeRestore=ReadPortableRuntimeObjectLookup();
-    Require(LoadPortableRuntimeState((temporary.directory/"LookupMapWarm.sav").string()),"Cannot warm-restore map lookup fixture");
+    Require(!LoadPortableRuntimeState((temporary.directory/"LookupMapWarm.sav").string()),
+        "Tables-only map restore fabricated an unavailable source/native Level");
     SameState(beforeRestore,ReadPortableRuntimeObjectLookup());
-    Require(temporary.Snapshot("LookupMapRestored")==bytes,"Lookup warm restore changed whole checkpoint");
+    Require(temporary.Snapshot("LookupMapRefusedRestore")==bytes,"Refused tables-only restore changed whole checkpoint");
     Found(Request("LookupMap.LookupOwnerProbe.Child",objectClass),"LookupMap.LookupOwnerProbe.Child",state.generation);
     Require(UnloadPortableRuntimeMap()==map.exports.size(),"Cannot unload weak lookup map exports");GC::Collect();
     SameState(staticState,ReadPortableRuntimeObjectLookup());SameGc(gc,"Weak lookup retained unloaded map graph");
@@ -272,7 +273,9 @@ std::uint64_t Original(const std::vector<PortablePackageTables>& packages,Tempor
     Unprepared();Refused([] {(void)FindPortableRuntimeObject(Request("Core.Object"));},"Package phase silently enabled UObject lookup");
     const auto before=temporary.Snapshot("BeforeLookup");const auto revision=GetPortableRuntimeWorldRevision();const auto gc=GC::GetStats();
     const auto state=PreparePortableRuntimeObjectLookup();
-    Require(state.prepared&&state.generation&&state.retainedBytes>0u&&state.objects==summary.objects+20u+4u,
+    std::cout<<"LOOKUP population: source="<<summary.objects<<" indexed="<<state.objects
+        <<" packages="<<packagesState.packages.size()<<"; expected22 native UClasses\n";
+    Require(state.prepared&&state.generation&&state.retainedBytes>0u&&state.objects==summary.objects+22u+packagesState.packages.size(),
         "Lookup count includes defaults, omits real indexed objects or duplicates actual Packages/native UClasses");
     SameGc(gc,"Weak lookup preparation allocated a GC/root-owned object");
     const auto classClass=ReadPortableRuntimeObjectOwnership("Core.Class").objectIndex;
@@ -285,6 +288,18 @@ std::uint64_t Original(const std::vector<PortablePackageTables>& packages,Tempor
     Found(Request("Console",classClass,engine,false,true),"Engine.Console",state.generation);
     Found(Request("Core.Language",classClass,0u,true,true),"Core.Language",state.generation);
     Found(Request("Core.Object",objectClass),"Core.Object",state.generation);
+    const auto actorKeys=ReadPortableRuntimeEnum("Engine.Actor.EInputKey");
+    const auto consoleKeys=ReadPortableRuntimeEnum("Engine.Console.EInputKey");
+    // The native UInput ctor uses actual UEnum class + actual AActor Outer,
+    // never an ANY_PACKAGE basename or the different Console enum.
+    const auto actorKeyFound=Found(Request("EInputKey",actorKeys.classIndex,actorKeys.outerIndex,false,false),
+        actorKeys.objectPath,state.generation);
+    const auto consoleKeyFound=Found(Request("EInputKey",consoleKeys.classIndex,consoleKeys.outerIndex,false,false),
+        consoleKeys.objectPath,state.generation);
+    Require(actorKeyFound.objectIndex==actorKeys.objectIndex&&consoleKeyFound.objectIndex==consoleKeys.objectIndex&&
+        actorKeyFound.objectIndex!=consoleKeyFound.objectIndex,"Native input Enum lookup substituted a matching basename");
+    Missing(Request("EInputKey",actorKeys.classIndex,core,false,true),"UEnum lookup escaped its explicit Struct Outer");
+    Missing(Request("EInputKey",classClass,actorKeys.outerIndex,false),"Enum instance was admitted as a UClass");
     Missing(Request("Core.Object",objectClass,0u,true,true),"Exact Core.Object filter admitted actual Core.Class instance");
     Found(Request("Engine",packagesState.defaultClassIndex,0u,false,true),"Engine",state.generation);
     Found(Request("Engine",objectClass,0u,false,false),"Engine",state.generation);
@@ -317,10 +332,10 @@ std::uint64_t Original(const std::vector<PortablePackageTables>& packages,Tempor
     Found(Request("Core.Object.Class",property.classIndex,0u,true,true),"Core.Object.Class",state.generation);
     Found(Request("Class",property.classIndex,objectClass,false,true),"Core.Object.Class",state.generation);
     Missing(Request("Core.Object.Class",classClass,0u,false),"Property object was admitted as UClass merely because its leaf is Class");
-    constexpr std::array<const char*,20u> nativeClasses{
+    constexpr std::array<const char*,22u> nativeClasses{
         "Core.Package","Engine.Primitive","Engine.GameEngine","Extension.GameEngineExt","DeusEx.DeusExGameEngine",
         "Core.Field","Core.Struct","Core.State","Core.Class","Core.Property","Core.ObjectProperty","Core.ClassProperty",
-        "Core.IntProperty","Core.BoolProperty","Core.StrProperty","Core.ArrayProperty",
+        "Core.IntProperty","Core.BoolProperty","Core.StrProperty","Core.ArrayProperty","Core.StructProperty","Core.Enum",
         "Core.Language","Engine.AudioSubsystem","Engine.RenderDevice","Engine.NetDriver"};
     for(const auto* path:nativeClasses)Found(Request(path,classClass,0u,true,true),path,state.generation);
     for(unsigned i=0u;i<3u;++i) {
@@ -336,14 +351,56 @@ std::uint64_t Original(const std::vector<PortablePackageTables>& packages,Tempor
     Require(temporary.Snapshot("AfterLookup")==before&&GetPortableRuntimeWorldRevision()==revision&&
         GetPortableRuntimeMapActors(true).empty()&&!GetPortableRuntimeUnsavedScriptState(),
         "Lookup mutated dormant saved script/world/revision state");
-    Require(LoadPortableRuntimeState((temporary.directory/"AfterLookup.sav").string()),"Cannot warm-restore dormant lookup fixture");
-    SameState(state,ReadPortableRuntimeObjectLookup());GC::Collect();SameGc(gc,"Warm restore replaced lookup objects");
-    Require(temporary.Snapshot("RestoredLookup")==before,"Dormant lookup restore changed whole checkpoint");
+    // A checkpoint containing native Actor state requires an actual loaded
+    // Level. Do not fake successful restore in this no-map metadata fixture;
+    // LoadedTrainingRestore below verifies the real positive restore case.
+    Require(!LoadPortableRuntimeState((temporary.directory/"AfterLookup.sav").string()),"No-map restore fabricated native Level authority");
+    SameState(state,ReadPortableRuntimeObjectLookup());GC::Collect();SameGc(gc,"Refused no-map restore replaced lookup objects");
+    Require(temporary.Snapshot("RefusedLookupRestore")==before,"Refused no-map restore changed whole checkpoint");
     MapLifetime(temporary,state,objectClass);
     ShutdownPortableRuntime();Unprepared();GC::Collect();
     Refused([&] {(void)FindPortableRuntimeObject(Request("Console",classClass,engine,false));},
         "Retired session handles retained lookup authority after shutdown");
     return state.generation;
+}
+void LoadedTrainingRestore(const fs::path& root,Temporary& temporary) {
+    std::vector<PortablePackageTables> packages;std::vector<Source> sources;
+    // Real source root, not the earlier System-only copied-package fixture:
+    // restore must resolve the actual Maps/00_Training.dx backing file.
+    for(const auto* name:{"Core","Engine","DeusEx","Extension","ConSys","IpDrv","IpServer","UBrowser","UWindow",
+        "Editor","Fire","MPCharacters","DeusExSounds","DeusExDeco","DeusExItems","DeusExCharacters"}) {
+        sources.emplace_back(root/"System"/(std::string(name)+".u"));
+        packages.push_back(LoadPortablePackageTables(sources.back().path.string()));
+    }
+    sources.emplace_back(root/"Maps"/"00_Training.dx");const auto map=LoadPortablePackageTables(sources.back().path.string());
+    Require(InitializePortableRuntime(packages).passed&&PreparePortableRuntimeNativeEngineClasses().prepared&&
+        PreparePortableRuntimeNativeMetadataClasses().prepared&&PreparePortableRuntimeNativeConfigClasses().prepared&&
+        PreparePortableRuntimeNativePackages().prepared,"Cannot prepare actual first-Training lookup restore fixture");
+    Require(PreparePortableRuntimeObjectLookup().prepared&&LoadPortableRuntimeMap(map).passed,
+        "Cannot load only actual first Training with live object lookup");
+    auto lifetime=std::make_shared<QuestVr::NativeClientLifetime>();
+    BindPortableRuntimeClient(lifetime,1401u);RegisterPortableRuntimeViewport(1401u,{1402u,1440u,1440u,3u,2u});
+    const auto viewport=PreparePortableRuntimePlayerObjects(1402u);
+    const auto lookup=ReadPortableRuntimeObjectLookup();const auto input=ReadPortableRuntimeEnum("Engine.Actor.EInputKey");
+    const auto before=temporary.Snapshot("TrainingLookupBefore");const auto gc=GC::GetStats();
+    for(unsigned repeat=0;repeat<2u;++repeat) {
+        const auto revision=GetPortableRuntimeWorldRevision();
+        Require(LoadPortableRuntimeState((temporary.directory/"TrainingLookupBefore.sav").string()),
+            "Actual loaded first-Training native checkpoint restore failed");
+        Require(GetPortableRuntimeWorldRevision()==revision+1u,"Actual warm restore did not advance world revision once");
+        SameState(lookup,ReadPortableRuntimeObjectLookup());
+        Require(ReadPortableRuntimePlayerSession(1402u).viewportPath==viewport.viewportPath&&
+            !ReadPortableRuntimePlayerSession(1402u).bound,"Actual warm restore replaced or fabricated viewport possession");
+        const auto found=Found(Request("EInputKey",input.classIndex,input.outerIndex,false,false),input.objectPath,lookup.generation);
+        Require(found.objectIndex==input.objectIndex&&ReadPortableRuntimeEnum(input.objectPath)==input,
+            "Warm first-Training restore replaced original indexed input Enum authority");
+        Require(temporary.Snapshot("TrainingLookupAfter")==before,"Actual warm restore changed complete dormant checkpoint");
+        GC::Collect();SameGc(gc,"Actual warm first-Training restore changed rooted source/map/lookup graph");
+    }
+    Require(UnloadPortableRuntimeMap()>0u,"Cannot retire first-Training lookup restore fixture");
+    Require(ReadPortableRuntimeEnum(input.objectPath)==input,"Map retirement removed static input Enum authority");
+    lifetime->Revoke();ClearPortableRuntimeClient();
+    ShutdownPortableRuntime();for(const auto& source:sources)source.Unchanged();
 }
 void LateRegistration(const std::vector<PortablePackageTables>& packages,Temporary& temporary) {
     const auto summary=InitializePortableRuntime(packages);Require(summary.objects>0u,"Cannot initialize late-registration lookup session");
@@ -352,7 +409,7 @@ void LateRegistration(const std::vector<PortablePackageTables>& packages,Tempora
     const auto nativePackages=PreparePortableRuntimeNativePackages();Require(nativePackages.prepared,"Cannot prepare late-registration actual Packages");
     Require(!ReadPortableRuntimeNativeConfigClasses().prepared,"Fresh late-registration session already has config UClasses");
     const auto gc=GC::GetStats();const auto state=PreparePortableRuntimeObjectLookup();
-    Require(state.prepared&&state.objects==summary.objects+16u+4u,"Pre-config lookup indexed absent config classes or default aliases");
+    Require(state.prepared&&state.objects==summary.objects+18u+nativePackages.packages.size(),"Pre-config lookup indexed absent config classes or default aliases");
     SameGc(gc,"Pre-config weak lookup allocated a GC object");
     const auto classClass=ReadPortableRuntimeObjectOwnership("Core.Class").objectIndex;
     const auto engine=ReadPortableRuntimeObjectOwnership("Engine").objectIndex;
@@ -417,11 +474,12 @@ void LateRegistration(const std::vector<PortablePackageTables>& packages,Tempora
         "Second logical viewport did not publish exactly one actual UObject");
     Found(Request(other.viewportPath,viewportClass.objectIndex,0u,true,true),other.viewportPath,state.generation);
     const auto saved=temporary.Snapshot("LiveLookupSession");
-    Require(LoadPortableRuntimeState((temporary.directory/"LiveLookupSession.sav").string()),"Cannot warm-restore live native lookup session");
+    Require(!LoadPortableRuntimeState((temporary.directory/"LiveLookupSession.sav").string()),
+        "No-map native session restore fabricated a native Level");
     SameState(stereo,ReadPortableRuntimeObjectLookup());
     Require(ReadPortableRuntimePlayerSession(firstViewport).viewportPath==session.viewportPath&&
         ReadPortableRuntimePlayerSession(secondViewport).viewportPath==other.viewportPath&&
-        temporary.Snapshot("LiveLookupSessionRestored")==saved,"Warm restore replaced live native viewport identities or saved state");
+        temporary.Snapshot("LiveLookupSessionRefusedRestore")==saved,"Refused no-map restore replaced live native viewport identities or saved state");
     Found(Request(session.viewportPath,viewportClass.objectIndex),session.viewportPath,state.generation);
     lifetime->Revoke();
     Refused([&] {(void)ReadPortableRuntimePlayerSession(firstViewport);},"Revoked native client retained usable viewport/session lease");
@@ -482,6 +540,7 @@ int main(int argc,char** argv) {
         Found(Request("Core.Object"),"Core.Object",fresh.generation);
         ShutdownPortableRuntime();Unprepared();GC::Collect();SameGc(baseline,"Reinitialized weak lookup session survived shutdown");
         LateRegistration(packages,temporary);SameGc(baseline,"Late config/client registration lookup graph survived shutdown");
+        LoadedTrainingRestore(root,temporary);SameGc(baseline,"Actual first-Training lookup restore graph survived shutdown");
         for(const auto& source:sources)source.Unchanged();
         std::cout<<"PASS owned actual UObject lookup integration: "<<checks<<" checks, "<<refusals
             <<" refusals; real Class/Super/Outer handles, exact and derived filters, native and serialized objects, "

@@ -117,7 +117,7 @@ void SnapshotIs(const PortableNativeConfigClassesSnapshot& value,bool prepared,
             value.consoleWithinClassIndex==0u&&value.consoleClassFlags==0u&&value.consoleObjectFlags==0u,
             "Unprepared config-class snapshot exposed a partial Console binding");return;
     }
-    Require(metadata&&metadata->prepared&&metadata->classes.size()==12u,"Config-class fixture lacks its explicit twelve-class dependency");
+    Require(metadata&&metadata->prepared&&metadata->classes.size()==13u,"Config-class fixture lacks its explicit thirteen-class dependency");
     const auto objectIndex=metadata->classes[0u].baseClassIndex,metaIndex=metadata->classes[3u].objectIndex;
     Require(value.consoleClassPath=="Engine.Console"&&value.consoleObjectIndex!=0u&&value.consoleMetaClassIndex==metaIndex&&
         value.consoleWithinClassIndex==objectIndex&&value.consoleClassFlags==0x13au&&value.consoleObjectFlags==0x040f0004u,
@@ -158,8 +158,8 @@ void SameSnapshot(const PortableNativeConfigClassesSnapshot& expected,const Port
 }
 void SameMetadata(const PortableNativeMetadataClassesSnapshot& expected) {
     const auto actual=ReadPortableRuntimeNativeMetadataClasses();
-    Require(actual.prepared&&actual.classes.size()==12u&&actual.boundSerializedClasses==expected.boundSerializedClasses,
-        "Config-class registration changed the closed twelve-class metadata count");
+    Require(actual.prepared&&actual.classes.size()==13u&&actual.boundSerializedClasses==expected.boundSerializedClasses,
+        "Config-class registration changed the closed thirteen-class metadata count");
     for(std::size_t i=0u;i<expected.classes.size();++i) {
         const auto& a=expected.classes[i];const auto& b=actual.classes[i];
         Require(a.classPath==b.classPath&&a.objectIndex==b.objectIndex&&a.baseClassIndex==b.baseClassIndex&&
@@ -398,7 +398,7 @@ int main(int argc,char** argv) {
         for(const auto& source:sources)source.Unchanged();
         std::cout<<"PASS owned native config-class integration: "<<checks<<" checks, "<<refusals
             <<" refusals; exact four registration records/+5 GC graph, real Super/Within/metaclass indices, original serialized Console reuse, "
-              "unchanged five/twelve prerequisite domains, dormant checkpoints/default/state/model preservation, warm restore/map/GC/shutdown lifetime, "
+              "unchanged five/thirteen prerequisite domains, dormant checkpoints/default/state/model preservation, warm restore/map/GC/shutdown lifetime, "
               "missing-phase/dependency/Console and late-NetDriver-name atomic refusals. Not StaticFindObject/package Outers, configured subclasses, "
               "native defaults, Engine/Cylinder instances, startup, physics or VR rendering.\n";
         return 0;

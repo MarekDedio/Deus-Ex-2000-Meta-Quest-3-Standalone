@@ -1,5 +1,16 @@
 # Immediate milestone: complete the first Training map
 
+Latest2026-10-25: original Core.Enum Class/Struct-Within identities and cached
+source Names now exist for the Input constructor's real Actor.EInputKey lookup.
+Owned metadata11619/117, lookup577/32 with real Training/viewport warm restores,
+config9983/48 and payload teardown1164/33 pass. Full desktop/shared gate197/
+236/39 explicit skips/zero failures, strict ARM64 and Android native link pass.
+Normal and aimed two-Fire repeat2 retain previous counts and the complete
+crate break/Lockpick birth, whole undo/all41 sources. Configured InputExt
+construction/default/config/FExec integration is still next; no unrelated
+account UI, other-map integration, APK or live gravity/loot claim. See
+ORIGINAL-INPUT-ENUM-IDENTITY.md for exact source and testing scope.
+
 Current input prerequisite,2026-10-25: complete Enum decoding is wired into
 production field traversal; general original KEYNAME/KEYBINDING routines and
 owned key-data tests pass. Native configured InputExt construction/config/
