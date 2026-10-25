@@ -1,5 +1,21 @@
 # Immediate milestone: complete the first Training map
 
+Latest2026-10-25: corrected original Spawn newborn bTicked to oppose the native
+Level counter, not copy the spawner. Fresh native Level counter0 has independent
+allocation/default-copy/constructor/archive proof. Generated false-spawner and
+save/reset regression passes within13614/223 Spawn controls. Actual crate415/5,
+deferred ownership429/21 and animation588/24 pass. Final desktop/strict ARM64/
+Android native and fresh shared CTest202 executed/241 registered/39 explicit
+skips/zero failures60.80s pass. Original startup/distance and two-crowbar-Fire
+repeat2 preserve exact counts/full undo; all45 checked originals are unchanged.
+No APK/account UI/other-map work. This baseline is currently immutable, not a
+completed frame scheduler. Active-Tick Spawn refuses the missing pending queue.
+Next is one shared-root Level/Actor update operation with real owner/pending
+ordering, context/queue lifetime and rollback, parity continuation and native
+cleanup; no per-actor public-root loop or silently skipped Pawn/native classes.
+Live destruction, usable loot and automatic gravity remain uncompleted. See
+ORIGINAL-LEVEL-TICK-CONTEXT.md.
+
 Latest2026-10-25: fixed wrong deferred queue-head decoding discovered during
 native scheduler audit. Level+0x100 FirstDeleted is separate from16 references
 at0x9C..0xD8;0xA0 must not override0x100. Training's correct witness is4370509,

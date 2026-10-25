@@ -248,7 +248,7 @@ Tables Build(Fixture& fixture, unsigned schema = 0u) {
     engine.Property("StandingCount", "ByteProperty", actor, ec, 0, 0x2u);
     engine.Property("Touching","ObjectProperty",actor,ec,actor,0u,4u);
     engine.Property("Brush","ObjectProperty",actor,ec,actor);engine.Property("Region","StructProperty",actor,ec,pointRegion);engine.Property("OldLocation","StructProperty",actor,ec,ev);
-    for(const auto* name:{"bTicked","bCollideWorld","bCollideWhenPlacing","bCollideActors","bBlockActors","bBlockPlayers"})engine.Property(name,"BoolProperty",actor,ec);
+    for(const auto* name:{"bTicked","bCollideWorld","bCollideWhenPlacing","bCollideActors","bBlockActors","bBlockPlayers"})engine.Property(name,"BoolProperty",actor,ec,0,std::string(name)=="bTicked"?0x2002u:0u);
     for(const auto* name:{"CollisionRadius","CollisionHeight"})engine.Property(name,"FloatProperty",actor,ec);
     engine.Property("Level", "ObjectProperty", actor, ec, levelInfo, 0x2u); engine.Property("XLevel", "ObjectProperty", actor, ec, level);
     const auto location = engine.Property("Location", "StructProperty", actor, ec, ev);

@@ -266,6 +266,9 @@ struct RuntimeNativeLinker {
     void Retire()noexcept{active=false;baseline=nullptr;changed.clear();}
 };
 
+// Fresh exact ULevel allocation/default-copy baseline (native size0x1150,
+// Super LevelBase0x8C). No scheduler writer is exposed in this increment.
+struct RuntimeNativeLevelTickContext { std::int32_t parity{},inTick{}; };
 class RuntimeObject : public GCObject {
 public:
     RuntimeObject(
@@ -358,6 +361,7 @@ public:
     // XLevel overlay or the lossy LevelInfo.TimeSeconds Float. Only serialized
     // native Levels receive this loader baseline; metadata-only maps do not.
     std::optional<double> nativeTimeSeconds;
+    std::unique_ptr<RuntimeNativeLevelTickContext> nativeLevelTickContext;
     // Native Level+110 becomes bound only through the original LoadMap
     // partition or an explicit checkpoint, never a guessed ctor zero.
     std::optional<std::uint32_t> nativeFirstDynamic;
@@ -8402,7 +8406,15 @@ private:
         set("Outer",Value::Text(Kind::Object,actor->reflection.outerPath));
         set("XLevel",xlevelValue); set("Level",Value::Text(Kind::Object,level->reflection.objectPath));
         set("Tag",Value::Text(Kind::Name,className));
-        set("bTicked",Read(spawner,PropertyNamed(spawner,"bTicked"),0u));
+        // Original103952FD..1039531C reads the native LEVEL counter, not the
+        // spawner's marker. The nonzero counter test is logical, not bitwise.
+        if(!xlevel->nativeLevelTickContext||!xlevel->nativeLevelModel||!xlevel->nativeMapGeneration||
+            xlevel->nativeMapGeneration!=persistentMapGenerationCounter)
+            throw std::runtime_error("Original Spawn bTicked lacks initialized native Level tick context");
+        if(xlevel->nativeLevelTickContext->inTick)
+            throw std::runtime_error("Original active-Tick Spawn pending queue integration is not implemented");
+        const auto ticked=OriginalAnimationField(actor,"Engine.Actor","bTicked",Kind::Bool,0x2002u,"BoolProperty");
+        ReferenceFor(actor,ticked,0u,false)->write(Value::Bool(xlevel->nativeLevelTickContext->parity==0));
         set("Brush",Value::Text(Kind::Object,{})); set("Location",location); set("OldLocation",location); set("Rotation",rotation);
         // Original ULevel.SpawnActor registers after initial transforms but
         // before Region/ownership/InitExecution and script birth callbacks.
@@ -10316,6 +10328,8 @@ private:
         if(!persistentWorldActors.empty()&&persistentWorldActors.front()&&persistentWorldActors.front()->nativeXLevel) {
             auto* model=persistentWorldActors.front()->nativeXLevel->nativeLevelModel;
             if(model&&model->nativeModelZoneRenderTimes)defaults.Retain(sizeof(*model->nativeModelZoneRenderTimes));
+            const auto* tick=persistentWorldActors.front()->nativeXLevel->nativeLevelTickContext.get();
+            if(tick)defaults.Retain(sizeof(*tick));
         }
         if(persistentObjectLookup) defaults.Retain(sizeof(RuntimeObjectLookupControl)-sizeof(QuestVr::ObjectLookup::Index)+
             4u*sizeof(void*)+persistentObjectLookup->index.RetainedBytes());
@@ -14807,6 +14821,9 @@ static std::pair<RuntimeObject*,RuntimeObject*> BindAuthoredActorSlots(
         // reflected NetMode/Level/XLevel overlay and never a serialized pointer.
         xlevel->nativeStandaloneLevelServices=true;
         xlevel->nativeTimeSeconds=0.0;
+        // Actual Level registration/default-copy/constructor/serializer proof,
+        // not absent reflected tags: ORIGINAL-LEVEL-TICK-CONTEXT.md.
+        xlevel->nativeLevelTickContext=std::make_unique<RuntimeNativeLevelTickContext>();
         const auto order = ReadPortableLevel68ActorOrder(package);
         persistentWorldActors.assign(order.size(), nullptr);
         actorOrder.reserve(order.size());

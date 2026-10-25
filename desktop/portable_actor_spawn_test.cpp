@@ -429,13 +429,17 @@ Tables Build(Fixture& fixture, unsigned worldModel = 0u, unsigned decalSchema = 
     engine.Property("Rotation", "StructProperty", actor, engineCore, 1u, importedRotator, 0x23u);
     engine.Property("Region", "StructProperty", actor, engineCore, 1u, pointRegion);
     for (const auto& name : {"Tag", "AttachTag"}) engine.Property(name, "NameProperty", actor, engineCore);
-    std::int32_t deleteFlag{};
+    std::int32_t deleteFlag{},tickedFlag{};
     for (const auto& name : {"bTicked", "bCollideActors", "bBlockActors", "bBlockPlayers", "bCollideWorld", "bCollideWhenPlacing", "bStatic", "bNoDelete", "bDeleteMe", "bAnimByOwner"}) {
-        const auto flags=std::string(name)=="bStatic"?3u:std::string(name)=="bCollideActors"?0x23u:
+        const auto flags=std::string(name)=="bTicked"?0x2002u:std::string(name)=="bStatic"?3u:std::string(name)=="bCollideActors"?0x23u:
             (std::string(name)=="bCollideWorld"||std::string(name)=="bBlockActors"||std::string(name)=="bBlockPlayers")?0x21u:0u;
         const auto field = engine.Property(name, "BoolProperty", actor, engineCore, 1u, 0, flags);
         if (std::string(name) == "bDeleteMe") deleteFlag = field;
+        if (std::string(name) == "bTicked") tickedFlag = field;
     }
+    const auto setTicked=engine.Function("SetFixtureTicked",actor,engineCore);
+    const auto tickedInput=engine.Property("Input","BoolProperty",setTicked,engineCore,1u,0,0x80u);
+    engine.FunctionCode(setTicked,Join({Assign(Ref(0x01u,tickedFlag),Ref(0x00u,tickedInput)),Return()}));
     for (const auto& name : {"CollisionRadius", "CollisionHeight"}) engine.Property(name, "FloatProperty", actor, engineCore);
     // Native startup/Spawn now joins this genuine scalar Float to its saved
     // property mirror. The generated Engine schema must declare it too.
@@ -1331,7 +1335,7 @@ void ArgumentTests(Fixture& fixture) {
     Same(Read(first, "Rotation"), Read("Driver", "Rotation"), "Omitted Spawn Rotation did not use spawner");
     Same(Read(first, "Owner"), Object("").value, "Omitted SpawnOwner did not mean None"); Same(Read(first, "Tag"), Name("None").value, "Omitted SpawnTag did not overwrite native Class.Name after return");
     Same(Read(first, "Level"), Object("Level0").value, "Spawn did not bind actual LevelInfo"); Same(Read(first, "XLevel"), Object("MyLevel").value, "Spawn did not bind actual ULevel");
-    Same(Read(first, "Instigator"), Object("Pawn0").value, "Spawn did not copy spawner Instigator"); Same(Read(first, "bTicked"), Value::Bool(true), "Spawn did not copy bTicked");
+    Same(Read(first, "Instigator"), Object("Pawn0").value, "Spawn did not copy spawner Instigator"); Same(Read(first, "bTicked"), Value::Bool(true), "Spawn did not oppose fresh native Level parity0");
     Same(Read(first, "Brush"), Object("").value, "Spawn did not clear Brush"); Same(Read(first, "Class"), Class("Leaf").value, "Spawn UObject.Class not initialized");
     Same(Read(first, "Name"), Name(first.substr(first.find_last_of('.') + 1u)).value, "Spawn UObject.Name not initialized from unique identity");
     Same(Read(first, "ObjectFlags"), Value::Integer(0x02004000), "Spawn UObject.ObjectFlags did not retain Transient and InitExecution HasStack");
@@ -1346,6 +1350,16 @@ void ArgumentTests(Fixture& fixture) {
     Same(Read(noneTag, "Location"), Vector({0.0f, 0.0f, 0.0f}).value, "Explicit zero location was incorrectly treated as omitted");
     RefusedCall(fixture, "MakeAt", {Class("Leaf"), Object("Owner"), Name("BadLocation"), Vector({std::numeric_limits<float>::quiet_NaN(), 0.0f, 0.0f}), Rotation({0, 0, 0})});
     fixture.Reset(); const auto resetBirth = Spawn(); Require(resetBirth == first, "Legacy reset did not restore deterministic name allocation/collision skipping"); fixture.Reset();
+    Call("Driver","SetFixtureTicked",{{Value::Bool(false),{}}});
+    Same(Read("Driver","bTicked"),Value::Bool(false),"Explicit generated spawner marker control was not written");
+    const auto opposite=Spawn();
+    Same(Read(opposite,"bTicked"),Value::Bool(true),"Newborn copied the deliberately false spawner marker instead of opposing Level0");
+    const auto savedOpposite=fixture.Snapshot("NativeLevelParityBirth");
+    fixture.Reset();WriteBytes(fixture.directory/"ParityReload.sav",savedOpposite);
+    Require(LoadPortableRuntimeState((fixture.directory/"ParityReload.sav").string()),"Cannot restore native-parity birth checkpoint");
+    Same(Read(opposite,"bTicked"),Value::Bool(true),"Checkpoint lost genuine newborn bTicked field");
+    const auto following=Spawn();Same(Read(following,"bTicked"),Value::Bool(true),"Legacy/checkpoint load changed immutable native Level parity baseline");
+    fixture.Reset();
 }
 void SpawnTagTests(Fixture& fixture) {
     const auto callbackTags = [&](const std::string& actor, const std::string& cls) {

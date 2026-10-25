@@ -213,7 +213,7 @@ Tables Build(Fixture& fixture,unsigned schema=0u,unsigned extras=0u) {
     engine.Property("Base","ObjectProperty",actor,ec,1u,actor,0x22u);
     engine.Property("Level","ObjectProperty",actor,ec,1u,info,0x2u); engine.Property("XLevel","ObjectProperty",actor,ec,1u,level);
     engine.Property("Touching","ObjectProperty",actor,ec,4u,actor); engine.Property("StandingCount","ByteProperty",actor,ec,1u,0,0x2u); engine.Property("Physics","ByteProperty",actor,ec);
-    for(const auto& s:{"bDeleteMe","bStatic","bNoDelete","bHidden","bTicked","bCollideWorld","bCollideWhenPlacing","bCollideActors","bBlockActors","bBlockPlayers"}) engine.Property(s,"BoolProperty",actor,ec);
+    for(const auto& s:{"bDeleteMe","bStatic","bNoDelete","bHidden","bTicked","bCollideWorld","bCollideWhenPlacing","bCollideActors","bBlockActors","bBlockPlayers"}) engine.Property(s,"BoolProperty",actor,ec,1u,0,std::string(s)=="bTicked"?0x2002u:0u);
     for(const auto& s:{"CollisionHeight","CollisionRadius"}) engine.Property(s,"FloatProperty",actor,ec);
     for(const auto& s:{"Location","OldLocation"}) engine.Property(s,"StructProperty",actor,ec,1u,ev);
     engine.Property("Rotation","StructProperty",actor,ec,1u,er); engine.Property("Region","StructProperty",actor,ec,1u,region);

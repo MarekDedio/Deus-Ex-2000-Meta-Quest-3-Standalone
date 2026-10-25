@@ -1,5 +1,30 @@
 # Port status
 
+## First-Training native Spawn frame marker (2026-10-25)
+
+Original Spawn now sets newborn Actor.bTicked from the logical opposite of
+the actual native Level counter, rather than copying the spawning Actor.
+The fresh Level0 baseline has independent registration/default-copy/native
+constructor/serializer proof. Its loader-owned current-generation context is
+budgeted and currently immutable; active-Tick Spawn explicitly refuses the
+pending-queue integration that is not implemented yet. No account/login UI.
+
+Generated Spawn13614 checks/223 rejections, actual crate415/5, native deferred
+ownership429/21 and animation588/24 pass. Final desktop/strict ARM64/Android
+native builds pass. After resolving an initial Windows executable lock, the
+fresh final shared suite passes202 executed/241 registered/39 explicit owned
+skips/zero failures60.80s. Startup/distance repeat2 retains220285/25676 and237
+stores; aimed original two-crowbar-Fire repeat2 retains228837/26047 and the
+same removal/loot/debris births under full rollback. All45 checked original
+script/config/map files are unchanged; all jobs are terminal.
+
+No new APK or on-headset acceptance. This fixes newborn scheduling input,
+not the still-missing owner/pending frame driver, cleanup, live controller
+attacks, usable loot or automatic gravity. The next driver must join existing
+internal phases in one transaction, not loop independent public phase roots.
+First Training alone remains the gameplay target. See
+ORIGINAL-LEVEL-TICK-CONTEXT.md for evidence, tests and remaining boundaries.
+
 ## Corrected native deferred-head archive address (2026-10-25)
 
 Scheduler preparation exposed and fixed a real loader bug: the native

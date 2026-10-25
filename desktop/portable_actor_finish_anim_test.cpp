@@ -231,7 +231,7 @@ Tables Build(Fixture& fixture,unsigned malformed=0u) {
     engine.Property("Region","StructProperty",actor,ec,region);engine.Property("OldLocation","StructProperty",actor,ec,ev);
     engine.Property("Owner","ObjectProperty",actor,ec,actor,0x22u);engine.Property("Base","ObjectProperty",actor,ec,actor,0x22u);engine.Property("StandingCount","ByteProperty",actor,ec,0,2u);
     engine.Property("Brush","ObjectProperty",actor,ec,actor);engine.Property("Touching","ObjectProperty",actor,ec,actor,0u,4u);
-    for(const auto* name:{"bTicked","bNoDelete","bStatic","bCollideActors","bCollideWorld","bCollideWhenPlacing","bBlockActors","bBlockPlayers"})engine.Property(name,"BoolProperty",actor,ec);
+    for(const auto* name:{"bTicked","bNoDelete","bStatic","bCollideActors","bCollideWorld","bCollideWhenPlacing","bBlockActors","bBlockPlayers"})engine.Property(name,"BoolProperty",actor,ec,0,std::string(name)=="bTicked"?0x2002u:0u);
     for(const auto* name:{"CollisionRadius","CollisionHeight"})engine.Property(name,"FloatProperty",actor,ec);
     engine.Property("bDeleteMe","BoolProperty",actor,ec,0,2u);engine.Property("Role","ByteProperty",actor,ec,0,0x20u);engine.Property("bBegunPlay","BoolProperty",info,ec);
     const auto sequence=engine.Property("AnimSequence","NameProperty",actor,ec,0,0x21u);
