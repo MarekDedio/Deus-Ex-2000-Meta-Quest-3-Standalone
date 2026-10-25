@@ -14,6 +14,7 @@
 #include <iostream>
 #include <limits>
 #include <map>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <tuple>
@@ -257,8 +258,13 @@ void Property(QuestVr::ScriptSavedState& state,const std::string& actor,const st
 }
 struct Tables {std::vector<PortablePackageTables> packages;PortablePackageTables map;std::map<std::string,std::uint32_t> actorExports;};
 enum class TriggerControlKind {None,Exact,Parent};
+enum class DeusExLevelInfoControlKind {None,Exact,Parent};
 Tables Build(Fixture& fixture,bool moverControl=false,std::uint32_t oldLocationFlags=2u,
-    TriggerControlKind triggerControl=TriggerControlKind::None) {
+    TriggerControlKind triggerControl=TriggerControlKind::None,
+    DeusExLevelInfoControlKind levelInfoControl=DeusExLevelInfoControlKind::None,bool lightControl=false) {
+    Require(unsigned(triggerControl!=TriggerControlKind::None)+unsigned(levelInfoControl!=DeusExLevelInfoControlKind::None)+
+        unsigned(lightControl)<=1u,
+        "Fixture native-boundary controls must retain distinct ancestry proofs");
     const std::string ini="[Engine.Engine]\nGameEngine=Engine.GameEngine\n";
     const auto iniPath=fixture.directory/"System"/"DeusEx.ini";
     WriteBytes(iniPath,Bytes(ini.begin(),ini.end()));fixture.sources.emplace(iniPath,Bytes(ini.begin(),ini.end()));
@@ -299,6 +305,16 @@ Tables Build(Fixture& fixture,bool moverControl=false,std::uint32_t oldLocationF
             engine.exports.at(static_cast<std::size_t>(ref-1)).ObjFlags=static_cast<ObjectFlags>(0x040f0004u);
             engine.ClassBody(ref);
         }
+    }
+    if(levelInfoControl!=DeusExLevelInfoControlKind::None) {
+        const auto nativeInfo=engine.Export("Info",0,actor);
+        engine.exports.at(static_cast<std::size_t>(nativeInfo-1)).ObjFlags=static_cast<ObjectFlags>(0x040f0004u);
+        engine.ClassBody(nativeInfo);
+    }
+    if(lightControl) {
+        const auto light=engine.Export("Light",0,actor);
+        engine.exports.at(static_cast<std::size_t>(light-1)).ObjFlags=static_cast<ObjectFlags>(0x040f0004u);
+        engine.ClassBody(light);
     }
     const auto level=engine.Export("Level",0,eo),model=engine.Export("Model",0,eo);
     engine.exports.at(static_cast<std::size_t>(actor-1)).ObjFlags=static_cast<ObjectFlags>(0x04000000u);
@@ -369,9 +385,20 @@ Tables Build(Fixture& fixture,bool moverControl=false,std::uint32_t oldLocationF
     for(const auto ref:{zone,info,brush,level,model,engineClass})engine.ClassBody(ref);
     static_cast<void>(ledger);
     const auto engineTable=fixture.Write(engine);
+    std::optional<PortablePackageTables> deusExTable;
+    if(levelInfoControl!=DeusExLevelInfoControlKind::None) {
+        // The owned native class crosses packages and extends Engine.Info,
+        // not Engine.LevelInfo. Keep that real nearest-native boundary.
+        Package deusex;deusex.stem="DeusEx";const auto de=deusex.ImportPackage("Engine");
+        const auto dxInfo=deusex.Export("DeusExLevelInfo",0,deusex.Import("Info",de));
+        deusex.exports.at(static_cast<std::size_t>(dxInfo-1)).ObjFlags=static_cast<ObjectFlags>(0x040f0004u);
+        deusex.ClassBody(dxInfo);deusExTable=fixture.Write(deusex);
+    }
     Package classes;classes.stem="TickClasses";const auto cc=classes.ImportPackage("Core"),ce=classes.ImportPackage("Engine");
     const auto ca=classes.Import("Actor",ce),ci=classes.Import("LevelInfo",ce);
-    const auto testBase=triggerControl==TriggerControlKind::None?ca:classes.Import("Trigger",ce);
+    const auto testBase=lightControl?classes.Import("Light",ce):levelInfoControl!=DeusExLevelInfoControlKind::None?
+        classes.Import("DeusExLevelInfo",classes.ImportPackage("DeusEx")):
+        triggerControl==TriggerControlKind::None?ca:classes.Import("Trigger",ce);
     const auto test=classes.Export("TestActor",0,testBase),bad=classes.Export("BadNative",0,testBase);
     classes.exports.at(static_cast<std::size_t>(bad-1)).ObjFlags=static_cast<ObjectFlags>(0x04000000u);
     const auto count=classes.Property("Count","IntProperty",test,cc),stamp=classes.Property("Stamp","IntProperty",test,cc);
@@ -393,6 +420,7 @@ Tables Build(Fixture& fixture,bool moverControl=false,std::uint32_t oldLocationF
     actors["Level0"]=map.Export("Level0",map.Import("LevelInfo",me));
     actors["Brush0"]=map.Export("Brush0",map.Import("Brush",me));
     actors["Bad0"]=map.Export("Bad0",moverControl?map.Import("Mover",me):
+        levelInfoControl==DeusExLevelInfoControlKind::Parent?map.Import("Info",me):
         triggerControl==TriggerControlKind::Parent?map.Import("Triggers",me):map.Import("BadNative",mt));
     for(const auto* name:{"Static0","A","B","C"})actors[name]=map.Export(name,map.Import("TestActor",mt));
     for(const auto& [name,ref]:actors) {
@@ -414,7 +442,9 @@ Tables Build(Fixture& fixture,bool moverControl=false,std::uint32_t oldLocationF
     U32(modelBytes,0u);U32(modelBytes,1u);Index(modelBytes,actors.at("Level0"));U64(modelBytes,0u);U64(modelBytes,0u);
     for(unsigned i=0u;i<7u;++i) {Index(modelBytes,0);}
     U32(modelBytes,1u);U32(modelBytes,0u);map.Body(worldModel,std::move(modelBytes));
-    Tables result{{coreTable,engineTable,classTable},fixture.Write(map,true),{}};
+    Tables result{{coreTable,engineTable},fixture.Write(map,true),{}};
+    if(deusExTable)result.packages.push_back(*deusExTable);
+    result.packages.push_back(classTable);
     for(const auto& [name,ref]:actors)result.actorExports.emplace(name,static_cast<std::uint32_t>(ref-1));
     return result;
 }
@@ -660,6 +690,168 @@ void TriggerControl() {
           "late/write/work shared-root undo, unknown-nearer-native and Engine.Triggers refusal. "
           "NOT active Trigger physics, teardown, original Training completion or headset acceptance.\n";
 }
+void DeusExLevelInfoControl() {
+    for(const auto kind:{DeusExLevelInfoControlKind::Exact,DeusExLevelInfoControlKind::Parent}) {
+        Fixture fixture;const auto tables=Build(fixture,false,2u,TriggerControlKind::None,kind);
+        Require(tables.packages.size()==4u,"Cross-package LevelInfo fixture lost its separate DeusEx package");
+        const auto& engine=tables.packages.at(1u);const auto& deusex=tables.packages.at(2u);
+        const auto info=FindPortableExport(engine,"Info"),actor=FindPortableExport(engine,"Actor"),
+            dxInfo=FindPortableExport(deusex,"DeusExLevelInfo");
+        const auto& entry=deusex.exports.at(dxInfo);
+        Require(entry.ObjClass==0&&entry.ObjOuter==0&&static_cast<std::uint32_t>(entry.ObjFlags)==0x040f0004u&&
+            entry.ObjBase<0&&LoadPortableClassDescriptor(deusex,dxInfo).state.baseField==entry.ObjBase&&
+            GetPortableObjectPath(deusex,entry.ObjBase)=="Engine.Info"&&
+            engine.exports.at(info).ObjClass==0&&engine.exports.at(info).ObjOuter==0&&
+            static_cast<std::uint32_t>(engine.exports.at(info).ObjFlags)==0x040f0004u&&
+            engine.exports.at(info).ObjBase==static_cast<std::int32_t>(actor+1u)&&
+            LoadPortableClassDescriptor(engine,info).state.baseField==static_cast<std::int32_t>(actor+1u),
+            "LevelInfo fixture lost actual cross-package native DeusExLevelInfo -> Engine.Info -> Actor metadata");
+        const auto& imported=deusex.imports.at(static_cast<std::size_t>(-entry.ObjBase-1));
+        Require(deusex.names.at(static_cast<std::size_t>(imported.ClassPackage)).Name=="Core"&&
+            deusex.names.at(static_cast<std::size_t>(imported.ClassName)).Name=="Class"&&
+            imported.ObjOuter<0&&deusex.names.at(static_cast<std::size_t>(
+                deusex.imports.at(static_cast<std::size_t>(-imported.ObjOuter-1)).ObjName)).Name=="Engine",
+            "DeusExLevelInfo superclass is not an actual serialized Core.Class import owned by Engine");
+        Require(InitializePortableRuntime(tables.packages).passed,"DeusExLevelInfo control package initialization failed");
+        Require(PreparePortableRuntimeNativeEngineClasses().prepared&&PreparePortableRuntimeNativeMetadataClasses().prepared&&
+            PreparePortableRuntimeNativePackages().prepared,"DeusExLevelInfo control native preparation failed");
+        Require(LoadPortableRuntimeMap(tables.map).passed&&PreparePortableRuntimeObjectLookup().prepared,
+            "DeusExLevelInfo control lacks native map/lookup ownership");
+        Require(ReadPortableRuntimeDispatchClass("TickClasses.TestActor").parentPath=="DeusEx.DeusExLevelInfo"&&
+            ReadPortableRuntimeDispatchClass("DeusEx.DeusExLevelInfo").parentPath=="Engine.Info"&&
+            ReadPortableRuntimeDispatchClass("Engine.Info").parentPath=="Engine.Actor",
+            "Production dispatch flattened or replaced genuine cross-package DeusExLevelInfo ancestry");
+        const auto legacy=fixture.Save("DeusExLevelInfoLegacy");
+        const auto makeSeed=[&] {
+            auto state=Seed(tables);for(const auto* name:{"A","B","C"}) {
+                Property(state,name,"Engine.Actor.Physics",Value::Byte(0));
+                Property(state,name,"Engine.Actor.bTicked",Value::Bool(true));
+            }return state;
+        };
+        const auto seed=[&](const QuestVr::ScriptSavedState& state){fixture.Restore(Envelope(legacy,state));};
+        const auto state=makeSeed();seed(state);
+        const auto successful=AdvancePortableLevelDynamicActors(0.01f,0);RequirePass(successful);
+        Require(successful.actorCalls==3u&&successful.slotsVisited==3u&&successful.movingBrushCalls==0u&&
+            successful.parityBefore==0&&successful.parityAfter==1&&ReadPortableRuntimeLevelTickParity()==1&&
+            Count("A")==1&&Count("B")==1&&Count("C")==1&&Count("Static0")==0&&
+            Count("A","Stamp")==1&&Count("B","Stamp")==2&&Count("C","Stamp")==3&&Count("Level0","Ledger")==3,
+            "Exact native DeusExLevelInfo did not run the real selected script Tick with Physics0 in live order");
+        for(const auto* name:{"A","B","C"}) {
+            const auto physics=ReadPortableActorScriptProperty(Path(name),"Physics");
+            Require(physics.kind==Kind::Byte&&physics.integer==0,"DeusExLevelInfo admission invented active physics");
+        }
+        Require(successful.execution.writes>0u&&successful.execution.nativeWork&&successful.execution.nativeWork->used>0u,
+            "DeusExLevelInfo phase lacks shared write/work accounting");
+        const auto refusal=[&](const QuestVr::ScriptSavedState& input,const QuestVr::Vm::Limits& limits,
+            const std::string& label,const std::string& reached={}) {
+            seed(input);const auto before=fixture.Save("DeusExLevelInfoBefore");const auto revision=GetPortableRuntimeWorldRevision();
+            const auto gc=GC::GetStats();const auto failed=AdvancePortableLevelDynamicActors(0.01f,0,limits);
+            Require(!failed.execution.passed()&&!failed.execution.committed&&!failed.completed,"DeusExLevelInfo admitted "+label);
+            if(!reached.empty())Require(failed.execution.error.find(reached)!=std::string::npos,
+                "DeusExLevelInfo "+label+" failed before its genuine boundary: "+failed.execution.error);
+            Require(fixture.Save("DeusExLevelInfoAfter")==before&&ReadPortableRuntimeLevelTickParity()==0&&
+                GetPortableRuntimeWorldRevision()==revision,"DeusExLevelInfo failure retained a partial shared root: "+label);
+            const auto afterGc=GC::GetStats();Require(afterGc.numObjects==gc.numObjects&&afterGc.memoryUsage==gc.memoryUsage,
+                "DeusExLevelInfo failure retained UObject allocations: "+label);++refusals;
+        };
+        auto late=makeSeed();Property(late,"C","TickClasses.TestActor.Mode",Value::Integer(2));
+        refusal(late,{},"late selected script Tick failure");
+        auto boundary=makeSeed();auto& slots=boundary.nativeActorOrder->slots;const auto bad=slots.at(2u);
+        slots.erase(slots.begin()+2);slots.push_back(bad);boundary.nativeActorOrder->firstDynamic=3u;
+        const auto classPath=kind==DeusExLevelInfoControlKind::Parent?"Engine.Info":"TickClasses.BadNative";
+        boundary.objects.push_back({Path("Bad0"),classPath,{},{},{},{}});
+        Property(boundary,"Bad0","Engine.Actor.LastRenderTime",Value::Float(0));
+        Property(boundary,"Bad0","Engine.Actor.bStatic",Value::Bool(false));
+        Property(boundary,"Bad0","Engine.Actor.Physics",Value::Byte(0));
+        refusal(boundary,{},"unadmitted nearest native class",std::string("unimplemented native virtual override: ")+classPath);
+        if(kind==DeusExLevelInfoControlKind::Exact) {
+            for(std::size_t cut=0u;cut<successful.execution.writes;++cut) {
+                QuestVr::Vm::Limits limits;limits.writes=cut;refusal(state,limits,"write prefix "+std::to_string(cut));
+            }
+            for(const auto cut:{std::size_t{0u},successful.execution.nativeWork->used/2u,successful.execution.nativeWork->used-1u}) {
+                QuestVr::Vm::Limits limits;limits.nativeWork=cut;refusal(state,limits,"native-work prefix");
+            }
+        }
+        fixture.Unchanged();
+    }
+    std::cout<<"PASS exact DeusEx.DeusExLevelInfo native admission: "<<checks<<" cumulative checks / "<<refusals
+        <<" refusals; authored cross-package native Info ancestry, selected script Tick/Physics0, "
+          "late/write/work whole-root undo, unknown-nearer-native and Engine.Info refusal. "
+          "NOT blanket Info/LevelInfo, active physics, teardown, original Training completion or headset acceptance.\n";
+}
+void LightControl() {
+    Fixture fixture;const auto tables=Build(fixture,false,2u,TriggerControlKind::None,DeusExLevelInfoControlKind::None,true);
+    const auto& engine=tables.packages.at(1u);
+    const auto light=FindPortableExport(engine,"Light"),actor=FindPortableExport(engine,"Actor");
+    Require(engine.exports.at(light).ObjClass==0&&engine.exports.at(light).ObjOuter==0&&
+        static_cast<std::uint32_t>(engine.exports.at(light).ObjFlags)==0x040f0004u&&
+        engine.exports.at(light).ObjBase==static_cast<std::int32_t>(actor+1u)&&
+        LoadPortableClassDescriptor(engine,light).state.baseField==static_cast<std::int32_t>(actor+1u),
+        "Light fixture lost actual serialized native Light -> Actor Class/RF_Native ancestry");
+    Require(InitializePortableRuntime(tables.packages).passed,"Light control package initialization failed");
+    Require(PreparePortableRuntimeNativeEngineClasses().prepared&&PreparePortableRuntimeNativeMetadataClasses().prepared&&
+        PreparePortableRuntimeNativePackages().prepared,"Light control native metadata preparation failed");
+    Require(LoadPortableRuntimeMap(tables.map).passed&&PreparePortableRuntimeObjectLookup().prepared,
+        "Light control lacks native map/lookup ownership");
+    Require(ReadPortableRuntimeDispatchClass("TickClasses.TestActor").parentPath=="Engine.Light"&&
+        ReadPortableRuntimeDispatchClass("Engine.Light").parentPath=="Engine.Actor",
+        "Production dispatch flattened or replaced genuine Light ancestry");
+    const auto legacy=fixture.Save("LightLegacy");
+    const auto makeSeed=[&] {
+        auto state=Seed(tables);for(const auto* name:{"A","B","C"}) {
+            Property(state,name,"Engine.Actor.Physics",Value::Byte(0));
+            Property(state,name,"Engine.Actor.bTicked",Value::Bool(true));
+        }return state;
+    };
+    const auto seed=[&](const QuestVr::ScriptSavedState& state){fixture.Restore(Envelope(legacy,state));};
+    const auto state=makeSeed();seed(state);
+    const auto successful=AdvancePortableLevelDynamicActors(0.01f,0);RequirePass(successful);
+    Require(successful.actorCalls==3u&&successful.slotsVisited==3u&&successful.movingBrushCalls==0u&&
+        successful.parityBefore==0&&successful.parityAfter==1&&ReadPortableRuntimeLevelTickParity()==1&&
+        Count("A")==1&&Count("B")==1&&Count("C")==1&&Count("Static0")==0&&
+        Count("A","Stamp")==1&&Count("B","Stamp")==2&&Count("C","Stamp")==3&&Count("Level0","Ledger")==3,
+        "Exact native Light did not execute real selected script Tick/Physics0 in live order");
+    for(const auto* name:{"A","B","C"}) {
+        const auto physics=ReadPortableActorScriptProperty(Path(name),"Physics");
+        Require(physics.kind==Kind::Byte&&physics.integer==0,"Light admission invented active physics");
+    }
+    Require(successful.execution.writes>0u&&successful.execution.nativeWork&&successful.execution.nativeWork->used>0u,
+        "Light phase lacks shared write/work accounting");
+    const auto refusal=[&](const QuestVr::ScriptSavedState& input,const QuestVr::Vm::Limits& limits,
+        const std::string& label,const std::string& reached={}) {
+        seed(input);const auto before=fixture.Save("LightBefore");const auto revision=GetPortableRuntimeWorldRevision();
+        const auto gc=GC::GetStats();const auto failed=AdvancePortableLevelDynamicActors(0.01f,0,limits);
+        Require(!failed.execution.passed()&&!failed.execution.committed&&!failed.completed,"Light admitted "+label);
+        if(!reached.empty())Require(failed.execution.error.find(reached)!=std::string::npos,
+            "Light "+label+" failed before its genuine boundary: "+failed.execution.error);
+        Require(fixture.Save("LightAfter")==before&&ReadPortableRuntimeLevelTickParity()==0&&
+            GetPortableRuntimeWorldRevision()==revision,"Light failure retained a partial shared root: "+label);
+        const auto afterGc=GC::GetStats();Require(afterGc.numObjects==gc.numObjects&&afterGc.memoryUsage==gc.memoryUsage,
+            "Light failure retained UObject allocations: "+label);++refusals;
+    };
+    auto late=makeSeed();Property(late,"C","TickClasses.TestActor.Mode",Value::Integer(2));
+    refusal(late,{},"late selected script Tick failure");
+    // An unknown native Light-derived child is still the nearest native
+    // boundary. The newly proven Light ancestor must not bypass its refusal.
+    auto boundary=makeSeed();auto& slots=boundary.nativeActorOrder->slots;const auto bad=slots.at(2u);
+    slots.erase(slots.begin()+2);slots.push_back(bad);boundary.nativeActorOrder->firstDynamic=3u;
+    boundary.objects.push_back({Path("Bad0"),"TickClasses.BadNative",{},{},{},{}});
+    Property(boundary,"Bad0","Engine.Actor.LastRenderTime",Value::Float(0));
+    Property(boundary,"Bad0","Engine.Actor.bStatic",Value::Bool(false));
+    Property(boundary,"Bad0","Engine.Actor.Physics",Value::Byte(0));
+    refusal(boundary,{},"unadmitted nearer native Light-derived class","unimplemented native virtual override: TickClasses.BadNative");
+    for(std::size_t cut=0u;cut<successful.execution.writes;++cut) {
+        QuestVr::Vm::Limits limits;limits.writes=cut;refusal(state,limits,"write prefix "+std::to_string(cut));
+    }
+    for(const auto cut:{std::size_t{0u},successful.execution.nativeWork->used/2u,successful.execution.nativeWork->used-1u}) {
+        QuestVr::Vm::Limits limits;limits.nativeWork=cut;refusal(state,limits,"native-work prefix");
+    }
+    fixture.Unchanged();
+    std::cout<<"PASS exact Engine.Light native admission: "<<checks<<" cumulative checks / "<<refusals
+        <<" refusals; authored native Light ancestry, selected script Tick/Physics0, late/write/work whole-root undo "
+          "and unknown-nearer-native refusal. NOT lighting rendering, brightness, teardown, active physics, "
+          "original Training completion or headset acceptance.\n";
+}
 void MoverControl() {
     Fixture fixture;const auto tables=Build(fixture,true);
     Require(InitializePortableRuntime(tables.packages).passed,"Mover control package initialization failed");
@@ -806,6 +998,6 @@ void MovingBrushSchemaRefusal() {
 }
 } // namespace
 int main() {
-    try {Synthetic();TriggerControl();MoverControl();MovingBrushPhysics();MovingBrushSchemaRefusal();return 0;}catch(const std::exception& error){std::cerr<<"FAIL "<<error.what()<<'\n';ShutdownPortableRuntime();return 1;}
+    try {Synthetic();TriggerControl();DeusExLevelInfoControl();LightControl();MoverControl();MovingBrushPhysics();MovingBrushSchemaRefusal();return 0;}catch(const std::exception& error){std::cerr<<"FAIL "<<error.what()<<'\n';ShutdownPortableRuntime();return 1;}
 }
 

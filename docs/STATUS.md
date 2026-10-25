@@ -1,5 +1,55 @@
 # Port status
 
+## Exact LevelInfo/Light admission and the real Training light boundary (2026-10-26)
+
+Exact native DeusEx.DeusExLevelInfo and Engine.Light now enter the existing
+AActor Tick/physics/event/state bodies after independent Class, constructor,
+vtable and IAT proof. The original cross-package DeusExLevelInfo -> Engine.Info
+ancestry is retained. Engine.Info, unknown nearer native subclasses, native
+teardown and unrelated services are not newly admitted; no actor is skipped.
+
+Serialized production controls verify both actual ancestry shapes, selected
+script Tick/Physics0, live order/parity, late failure, every write prefix and
+representative work cuts with whole-root/save/revision/GC undo. The complete
+driver exits0; LevelInfo controls log2053 cumulative checks/49 refusals, Light
+2631/63, and subsequent Physics9 controls3740/89 before the final passing
+malformed-schema control. Full desktop, strict ARM64 syntax and Android-native
+builds pass. CTest205 executed/244 registered/39 explicit owned-data skips/zero
+failures65.03s passes. Separate owned crate415/5, deferred429/21 and animation
+588/24 regressions pass.
+
+Separate two-crowbar-Fire repeat2 retains228837 instructions/26047 writes,
+48 observation rows across2 attack cycles,4 actual traces,2 crate changes
+and9 births, followed by the same later FExec refusal and full undo. The
+probes verify41 directly consumed owned sources unchanged; a subsequent
+independent45-file SHA256/length/UTC-mtime comparison also remains identical
+across the final regression interval. All build/test/probe jobs are terminal.
+
+The unfiltered actual Training phase now reaches52 slots/52 actor calls and8
+stasis returns, with14 real idle Physics9 blocks. Both repeats retain205893
+instructions/15721 writes and full rollback, then fail at original
+Engine.TriggerLight.Tick, pc6/native172, with Non-finite VM float. The paired
+original-door diagnostic still moves both panels56 units and dispatches both
+original completion events before that same later failure; both repeats retain
+206229/15789 and full undo. These are rollback-only observations, not a
+completed frame, published startup or headset gameplay.
+
+Owned data and static Core/Engine evidence identify a real scalar-VM mismatch:
+all four Training TriggerLights select TriggerToggle, have ChangeTime0 and
+BeginPlay's Alpha0/Direction-1. Original GotoState legitimately rebuilds the
+Tick probe mask; native172 performs unguarded Float division. The script must
+be allowed to carry its original intermediate infinity and then reset Alpha,
+not have its light skipped, ChangeTime clamped or Disable artificially retained.
+That scalar capability remains unimplemented in this increment. See
+ORIGINAL-DEUSEX-LEVELINFO-TICK-PREREQUISITES.md,
+ORIGINAL-LIGHT-TICK-PREREQUISITES.md and TRAINING-TRIGGER-LIGHT-TICK-GAP.md.
+
+Only first Training gameplay integration remains prioritized. No account or
+player-creation UI, other-map gameplay integration or new APK is added. Full
+world/Pawn update, startup publication, live equipped crate destruction,
+collectible surviving loot, automatic gravity and Quest acceptance remain
+unfinished. The connected-device check currently lists no Quest.
+
 ## Exact Trigger and actual original door movement (2026-10-25)
 
 Exact native Engine.Trigger now enters the existing AActor Tick/physics/

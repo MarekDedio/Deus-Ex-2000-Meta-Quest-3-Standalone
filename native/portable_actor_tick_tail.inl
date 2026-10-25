@@ -9,11 +9,13 @@
             if(!(cls->reflection.flags&0x04000000u))continue;
             const auto& path=cls->reflection.objectPath;
             // Owned native vtables/IAT, ORIGINAL-ACTOR-TICK-PHYSICS-PHASE.md
-            // and ORIGINAL-TRIGGER-TICK-PREREQUISITES.md. Exact nearest native
-            // boundaries only: Trigger does not authorize native Triggers or
-            // an unknown nearer native subclass, nor scalar teardown.
-            if(path=="DeusEx.DeusExDecoration"||path=="Engine.Projectile"||path=="Engine.Inventory"||
-                path=="Engine.Actor"||path=="Engine.Decoration"||path=="Engine.Mover"||path=="Engine.Trigger")return;
+            // plus ORIGINAL-TRIGGER-TICK-PREREQUISITES.md and
+            // ORIGINAL-DEUSEX-LEVELINFO-TICK-PREREQUISITES.md and
+            // ORIGINAL-LIGHT-TICK-PREREQUISITES.md. Exact nearest native
+            // boundaries only: neither parent Info/Triggers, unknown nearer
+            // native children nor scalar teardown are authorized here.
+            if(path=="DeusEx.DeusExDecoration"||path=="DeusEx.DeusExLevelInfo"||path=="Engine.Projectile"||path=="Engine.Inventory"||
+                path=="Engine.Actor"||path=="Engine.Decoration"||path=="Engine.Mover"||path=="Engine.Trigger"||path=="Engine.Light")return;
             throw std::runtime_error("Original Actor Tick reached an unimplemented native virtual override: "+path);
         }
         throw std::runtime_error("Original Actor Tick has no authenticated native implementation");

@@ -140,3 +140,44 @@ and another unfiltered first Training observation. The current audit changes
 only this new document. Full dynamic phase completion, active mover success,
 crate/loot/gravity gameplay, original-map visual acceptance and device testing
 remain separate evidence, not implied by vtable equivalence.
+
+## Subsequent exact-class implementation increment
+
+After the prior build processes were terminal and source freeze was lifted,
+the native Tick boundary gate was extended with exact
+`DeusEx.DeusExLevelInfo` only. Engine.Info/Engine.LevelInfo, arbitrary nearer
+native children, scalar teardown and deletion rules were not broadened.
+
+The serialized production Level fixture now supplies a separate DeusEx.u
+with the actual cross-package native DeusExLevelInfo to native Engine.Info
+to Actor ancestry. It checks real Class import/ObjFlags/SuperField metadata,
+selected script Tick with explicit Physics0, late selected failure, every
+write-budget prefix, representative native-work cuts, complete-root/revision/GC
+undo, unknown nearer native refusal and explicit Engine.Info refusal. Existing
+Trigger controls retain their separate native ancestry proof. These are added
+implementation/test controls, not a claim that their build/tests have passed;
+the root's final verification records actual results separately.
+
+Intermediate exact-DeusExLevelInfo-only verification passed full desktop,
+strict ARM64 syntax and Android-native builds. Its generated controls logged
+2053 cumulative checks/49 refusals; the subsequent complete driver exited0
+after Physics9 controls3162/75 and the malformed-schema check. Actual first
+Training repeated twice with52 slots/51 admitted calls/8 stasis returns,
+205885 instructions/15721 writes and complete undo at the next Engine.Light
+native gate. Original paired-door movement/completion repeated twice with
+206221/15789, both56-unit movements and2 events, then that same later gate.
+No complete world/frame or headset claim follows. The subsequently audited
+exact Light entry is implemented/tested in this same increment; final combined
+verification is recorded separately, not inferred from these intermediate runs.
+
+Final combined verification2026-10-26 passed full desktop, strict ARM64 syntax
+and Android-native builds. The complete production driver exits0, with the
+LevelInfo controls2053 cumulative/49 refusals, Light2631/63 and Physics93740/89
+before its final passing malformed-schema case. CTest205 executed/244
+registered/39 explicit skips/zero failures65.03s passes. Actual Training reaches
+52 slots/52 calls and original TriggerLight.Tick's pc6/native172 nonfinite
+Float, with repeat2 identical205893/15721 and full undo. Paired original doors
+still move56 units each and dispatch2 completion events before the same later
+failure, repeat2 identical206229/15789 and full undo. This admits the audited
+classes; it does not complete the frame or fix the scalar behavior described
+in TRAINING-TRIGGER-LIGHT-TICK-GAP.md.

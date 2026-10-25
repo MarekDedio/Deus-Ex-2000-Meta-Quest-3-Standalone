@@ -1,5 +1,29 @@
 # Immediate milestone: complete the first Training map
 
+Latest2026-10-26: exact native DeusExLevelInfo and Light now join the genuine
+actor phase through independently proven original slots, not generic native
+allowances. Serialized ancestry/selected Tick/Physics0, late/write/work full
+undo and unknown-nearer-native controls pass; complete generated driver exits0
+with3740 cumulative checks/89 refusals before its final malformed-schema case.
+Full desktop/strict ARM64/Android-native builds and CTest205 executed/244
+registered/39 explicit skips/zero failures65.03s pass. Owned crate415/5,
+deferred429/21 and animation588/24 regressions pass. Actual Training repeat2
+now reaches52 slots/52 calls,205893/15721, then original TriggerLight.Tick's
+nonfinite Float; paired original door movement/events repeat before the same
+later failure at206229/15789, with complete root undo. Static/data evidence
+proves authentic ChangeTime0, GotoState probe-mask reset and original unguarded
+Float division, so the next fix is faithful scalar VM behavior, not skipping
+lights or modifying map defaults. Full world/Pawn/startup publication and live
+crate destruction, collectible loot and gravity remain unfinished. No new APK,
+account/player-creation UI or other-map gameplay work; no Quest detected. See
+TRAINING-TRIGGER-LIGHT-TICK-GAP.md and the exact-class prerequisite audits.
+
+Final separate two-Fire repeat2 remains228837/26047 with4 traces,2 crate
+changes,9 births and full rollback at the known later FExec refusal. Both
+actual-map diagnostic sets verify41 owned sources unchanged; the additional
+45-file snapshot is also unchanged across the final regression interval.
+All build/probe/test jobs are terminal. No live melee/loot/gravity claim.
+
 Latest2026-10-25: exact native Trigger now joins the genuine actor phase with
 serialized ancestry/selected-script/native-boundary/rollback controls, not a
 generic allowance. Actual original InterpolateTo-driven movement is verified
