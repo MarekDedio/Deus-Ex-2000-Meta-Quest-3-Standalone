@@ -399,8 +399,22 @@ PortableEngineCollisionSnapshot PreparePortableRuntimeEngineCollision(const std:
                 static_cast<void>(QuestVr::NativeConfigImport::Boolean(QuestVr::UnrealString::Decode(*value),1u,bits));values.useSound=(bits&1u)!=0u;
             }
             if(profile.kind!=RuntimeNativeDefaultKind::Engine) {
-                if(auto value=ini->StringArray(profile.path,"ServerActors")) values.serverActors=std::move(*value);
-                if(auto value=ini->StringArray(profile.path,"ServerPackages")) values.serverPackages=std::move(*value);
+                const auto importStrings=[&](const char* key,std::vector<std::string>& destination) {
+                    if(auto configured=ini->StringArray(profile.path,key)) {
+                        // Original array LoadConfig calls the actual StrProperty
+                        // inner ImportText with flags0 for every source value.
+                        for(auto& text:*configured) {
+                            std::u16string imported;
+                            const auto result=QuestVr::NativeConfigImport::String(QuestVr::UnrealString::Decode(text),0u,imported);
+                            if(!result.returned || result.nextUnit)
+                                throw std::runtime_error("Native Engine StrProperty config import lost its raw CString contract");
+                            text=QuestVr::UnrealString::Encode(imported);
+                        }
+                        destination=std::move(*configured);
+                    }
+                };
+                importStrings("ServerActors",values.serverActors);
+                importStrings("ServerPackages",values.serverPackages);
             }
         }
         domain->defaults.push_back(defaults);defaultsByClass.emplace(cls,defaults);

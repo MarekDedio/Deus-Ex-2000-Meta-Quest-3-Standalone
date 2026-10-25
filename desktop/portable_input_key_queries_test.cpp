@@ -2,6 +2,7 @@
 #include "surreal_portable_package_tables.h"
 #include "quest_input_key_queries.h"
 #include "quest_native_config.h"
+#include "quest_native_struct_import.h"
 
 #include <array>
 #include <filesystem>
@@ -34,6 +35,26 @@ struct Operations {
     std::u16string Binding(std::size_t index){return bindings.at(index);}
     void Log(std::u16string_view text){output.append(text);}
 };
+// Explicit audited Alias schema fixture, NOT registered UStruct/UProperty
+// objects. Real FName arena + real supplied INI exercise the import protocol;
+// the configured native Input/default/metadata phase remains separate.
+struct AliasOperations {
+    using Name=int;using StructureType=unsigned;using Field=unsigned;
+    Name commandName=NameString("Command").GetCompareIndex(),aliasName=NameString("Alias").GetCompareIndex(),alias{};
+    std::u16string command;std::size_t work{},imports{};
+    void Step(){if(++work>100000u)throw std::runtime_error("Owned Alias import work bound exceeded");}
+    void Warning(QuestVr::NativeConfigImport::StructImportWarning){throw std::runtime_error("Owned Alias source produced native struct warning");}
+    Name FindName(std::u16string_view text){return NameString::FindCompareIndex(QuestVr::UnrealString::Encode(text)).value_or(0);}
+    StructureType Structure(){return 1u;}StructureType Super(StructureType){return 0u;}
+    Field Child(StructureType){return 1u;}Field Next(Field field){return field==1u?2u:0u;}
+    bool IsProperty(Field){return true;}Name FieldName(Field field){return field==1u?commandName:aliasName;}
+    int Dimension(Field){return 1;}int ElementSize(Field field){return field==1u?12:4;}bool Port(Field){return true;}
+    QuestVr::NativeConfigImport::Result Import(Field field,unsigned index,std::u16string_view value,std::uint32_t flags){
+        Require(index==0u&&flags==2u,"Owned Alias import used invented inner index/flags");++imports;
+        if(field==1u)return QuestVr::NativeConfigImport::String(value,flags,command);
+        return QuestVr::NativeConfigImport::Name(value,alias,[](std::u16string_view text){return NameString(QuestVr::UnrealString::Encode(text)).GetCompareIndex();});
+    }
+};
 }
 int main(int argc,char** argv){try{
     if(argc==1){std::cout<<"SKIP owned Input query data: supply GOTY root\n";return 77;}
@@ -57,6 +78,18 @@ int main(int argc,char** argv){try{
         actor.names[112]=="IK_F1"&&actor.names[254]=="IK_OEMClear","Owned Actor.EInputKey source identity differs");
     const auto userPath=root/"System"/"User.ini";sources.push_back(Source(userPath));
     const auto ini=QuestVr::NativeConfig::ReadOrderedIni(userPath);Require(bool(ini),"Owned User.ini is missing");
+    std::size_t aliases{};
+    for(std::size_t index=0;index<40u;++index) {
+        const auto value=ini->PropertyScalar("Engine.Input","Aliases["+std::to_string(index)+']');
+        if(!value)continue;
+        AliasOperations alias;const auto text=QuestVr::UnrealString::Decode(*value);
+        const auto parsed=QuestVr::NativeConfigImport::Struct(text,0u,alias);
+        Require(parsed.returned&&parsed.nextUnit==text.size()&&alias.imports==2u,"Owned fixed Alias source did not completely import both actual field types");
+        if(index==0u)Require(alias.command==u"Button bFire | Fire"&&alias.alias==NameString("Fire").GetCompareIndex(),"Owned first Alias literal differs");
+        if(index==39u)Require(alias.command.empty()&&alias.alias==0,"Owned final empty/None Alias differs");
+        ++aliases;
+    }
+    Require(aliases==40u,"Owned source does not contain expected40 fixed Alias values");
     Operations operations{actor,{}, {},0u};
     // Inventory both concrete inheritance sections explicitly; this does NOT
     // claim native CDO preparation, alias import, defaults or LoadConfig itself.
@@ -84,5 +117,5 @@ int main(int argc,char** argv){try{
     Require(!NameString::FindCompareIndex(QuestVr::UnrealString::Encode(unknown)),"FNAME_Find lookup interned unknown key");
     for(const auto& before:sources){const auto after=Source(before.path);Require(before.size==after.size&&before.modified==after.modified&&before.hash==after.hash,"Input data checks changed owned source");}
     std::cout<<"PASS owned Input key data: "<<checks<<" checks / "<<enumCount<<" complete Enums / "<<commands
-        <<" key queries; actual Actor.EInputKey and explicit User.ini inventory unchanged. NOT native Input instance/config initialization or live startup\n";return 0;
+        <<" key queries / "<<aliases<<" Alias config imports; actual Actor.EInputKey and explicit User.ini inventory unchanged. NOT native Input instance/config initialization or live startup\n";return 0;
 }catch(const std::exception& error){std::cerr<<"FAIL owned Input key data: "<<error.what()<<'\n';return 1;}}

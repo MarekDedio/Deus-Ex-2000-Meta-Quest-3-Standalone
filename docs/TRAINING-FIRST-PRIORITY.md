@@ -1,5 +1,15 @@
 # Immediate milestone: complete the first Training map
 
+Latest native Input config prerequisite2026-10-25: general Name/String/Struct
+imports are implemented; all40 actual User.ini Alias values pass an explicit
+schema-fixture data test. Actual Engine native array config uses the new
+flags0 String path. Mock96/26, previous20348/10, owned data1070 and actual
+Engine collision/config15156/31 pass. Full desktop/shared gate198/237/39 skips/
+zero failures and Android native/strict ARM64 pass. Native InputExt object/
+metadata/default/config/FExec integration and live first-Training crate/loot/
+gravity remain unfinished. No other-map integration, account UI or APK.
+See ORIGINAL-INPUT-CONFIG-STRUCT-IMPORT.md for exact implemented scope.
+
 Latest2026-10-25: original Core.Enum Class/Struct-Within identities and cached
 source Names now exist for the Input constructor's real Actor.EInputKey lookup.
 Owned metadata11619/117, lookup577/32 with real Training/viewport warm restores,

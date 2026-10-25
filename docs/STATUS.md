@@ -1,5 +1,29 @@
 # Port status
 
+## Native Name/String/Struct config imports (2026-10-25)
+
+The native config import protocols required by Input's forty Alias records are
+implemented with actual callback-supplied metadata/name/write authority, live
+inherited traversal, original UTF16 cursor/partial-write behavior and explicit
+bounds. This does not construct InputExt or fake aliases as registered native
+properties. The flags0 String importer is connected to the genuine existing
+Engine ServerActors/ServerPackages default-config path. No account UI or
+replacement APK was added.
+
+Mock imports96/26 and previous typed imports20348/10 pass. Owned data1070
+verifies131 enums/510 key queries/all40 Alias values with originals unchanged,
+explicitly a schema fixture rather than initialized Input. Native Engine
+collision/config15156/31, coherent desktop/shared gate198 executed/237
+registered/39 explicit skips/zero failures in70.13s, strict ARM64 and Android
+native links pass. Configured InputExt metadata/default/config/constructor and
+FExec integration still remain before completed player startup and live
+crate/loot/gravity. See ORIGINAL-INPUT-CONFIG-STRUCT-IMPORT.md.
+
+Final normal and aimed two-Fire repeat2 preserve220285/25439 and228837/26047
+instruction/write counts, actual crate break/Lockpick birth, complete undo/all
+41 owned sources. Every build/test job is terminal before commit. The current
+bound FExec refusal is unchanged; no live gameplay completion is claimed.
+
 ## Actual input Enum identity and cached source names (2026-10-25)
 
 Core.Enum is now a genuinely indexed native metadata UClass (Field base,

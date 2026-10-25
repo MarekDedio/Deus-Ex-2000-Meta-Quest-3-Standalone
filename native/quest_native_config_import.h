@@ -37,14 +37,15 @@ inline char16_t At(std::u16string_view text,std::size_t i) {return i<text.size()
 inline bool Equal(std::u16string_view a,std::u16string_view b) {return UnrealString::EqualInsensitive(a,b);}
 }
 
-inline Token ReadToken(std::u16string_view input,bool dotted=false,std::size_t offset=0u) {
+inline Token ReadToken(std::u16string_view input,bool dotted=false,std::size_t offset=0u,std::size_t capacity=TokenCapacity) {
     using namespace Detail;input=Input(input);
+    if(capacity<2u||capacity>4096u)Fail("token capacity is outside audited buffers");
     if(offset>input.size())Fail("token cursor is outside input");
     Token result;auto cursor=offset;const auto first=At(input,cursor);
     if(first==u'"') {
         ++cursor;
         while(At(input,cursor)!=u'\0'&&At(input,cursor)!=u'"'&&At(input,cursor)!=u'\r'&&At(input,cursor)!=u'\n') {
-            if(result.value.size()>=TokenCapacity-1u)return result;
+            if(result.value.size()>=capacity-1u)return result;
             if(input[cursor]!=u'\\')result.value.push_back(input[cursor++]);
             else {
                 ++cursor;
@@ -61,16 +62,16 @@ inline Token ReadToken(std::u16string_view input,bool dotted=false,std::size_t o
             }
         }
         // Native rejects a token at exactly capacity-1 even if a quote follows.
-        if(result.value.size()==TokenCapacity-1u||At(input,cursor)!=u'"')return result;
+        if(result.value.size()==capacity-1u||At(input,cursor)!=u'"')return result;
         result.result={true,cursor+1u};return result;
     }
     if(Letter(first)||Digit(first)) {
         while(Letter(At(input,cursor))||Digit(At(input,cursor))||At(input,cursor)==u'_'||At(input,cursor)==u'-'||
             (dotted&&At(input,cursor)==u'.')) {
-            if(result.value.size()==TokenCapacity-1u)return result;
+            if(result.value.size()==capacity-1u)return result;
             result.value.push_back(input[cursor++]);
         }
-        if(result.value.size()==TokenCapacity-1u)return result;
+        if(result.value.size()==capacity-1u)return result;
         result.result={true,cursor};return result;
     }
     // Retail copies one nonalphanumeric unit but DOES NOT advance the input
@@ -103,6 +104,26 @@ inline Result Boolean(std::u16string_view input,std::uint32_t bitMask,std::uint3
     else if(Detail::Equal(token.value,u"0")||Detail::Equal(token.value,u"False"))destination&=~bitMask;
     else return {};
     return token.result;
+}
+
+// Core101674D0..1016755B: names always ReadToken(1024, dotted0), then
+// FNAME_Add1. The callback supplies the real FName arena, not a string map.
+template<class NameId,class AddName>
+Result Name(std::u16string_view input,NameId& destination,AddName&& addName) {
+    const auto token=ReadToken(input);if(!token.result.returned)return {};
+    const auto value=addName(UnrealString::CString(token.value));
+    destination=value;return token.result;
+}
+
+// Core10167980..10167AE0. Bit2 selects ReadToken(4096,dotted0); flags0
+// copies the ENTIRE CString and returns its original pointer, not end-of-text.
+inline Result String(std::u16string_view input,std::uint32_t flags,std::u16string& destination) {
+    input=Detail::Input(input);
+    if(flags&2u) {
+        const auto token=ReadToken(input,false,0u,4096u);if(!token.result.returned)return {};
+        destination=std::u16string(UnrealString::CString(token.value));return token.result;
+    }
+    destination=std::u16string(input);return {true,0u};
 }
 
 // Find must implement StaticFindObject(class,ANY_PACKAGE,path,Exact0) using
