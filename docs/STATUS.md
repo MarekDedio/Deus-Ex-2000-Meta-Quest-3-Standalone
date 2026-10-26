@@ -1,5 +1,34 @@
 # Port status
 
+## Training shadow update and script InStasis adapter verified (2026-10-26)
+
+Exact native Decal -> Actor admission now preserves the selected original
+Shadow.Tick, with the separately proven inherited state/Tick/physics and
+animation callbacks. Script-native721 now authenticates the original no-input
+Bool InStasis declaration and calls the existing native query; no shadow skip,
+forced physics/stasis, default change or replacement algorithm was added.
+
+Generated Decal and numeric/final/direct721 controls add3,190 checks/50 refusals.
+The complete production driver reaches15,645/295 before its final schema
+control and exits0. Full desktop, Android native link and strict GNU/ARM64
+checks pass. CTest:256 registered,217 executed,39 explicit owned-data skips,
+zero failures in248.89s. Separate owned crate415/5, deferred429/21,
+animation588/24 and FastTrace252/0 controls pass.
+
+Cold/warm first Training repeat2 now reaches GameReplicationInfo0's exact
+Engine.GameReplicationInfo guard at239,200 instructions/19,362 writes,
+141 slots/140 calls. The paired original doors retain both56-unit moves/two
+ends at239,536/19,430. Two actual crowbar Fire calls retain228,837/26,047,
+48 rows/two cycles/two returned notifies/four traces, lower-crate removal and
+nine births before the later ConsoleCommand FExec boundary. Whole-root undo,
+immutable-model cold/warm proof and same-filename cold replacement pass.
+
+All45 original files and6 frozen compiler inputs retain exact length, mtime
+and SHA256; all jobs are terminal. See ORIGINAL-TRAINING-DECAL-TICK-GAP.md,
+ORIGINAL-ACTOR-STASIS.md and the next ORIGINAL-TRAINING-GRI-TICK-GAP.md.
+Live published gameplay, collectible loot and automatic stacked-crate gravity
+remain unfinished. First Training only; no new APK from this backend checkpoint.
+
 ## Original GameInfo and Mutator updates run in Training (2026-10-26)
 
 Exact canonical native GameInfo/Mutator -> native Info -> Actor ancestry now

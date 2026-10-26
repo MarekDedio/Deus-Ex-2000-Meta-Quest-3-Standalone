@@ -5,6 +5,42 @@ InStasis query, not Actor.Tick, a world scheduler, renderer publication or
 automatic gravity. It adds no account, login screen or character-creation UI.
 The immediate target remains Training's crates, surviving loot and debris.
 
+## Script-call adapter reached by Shadow, 2026-10-26
+
+After exact native Decal admission, the real first-Training Shadow.Tick reaches
+its Owner.InStasis call at bytecode PC40. The query below already serves native
+world updates, but its script-native721 route was not bound. That is an adapter
+gap, not permission to make the shadow static, skip it or force stasis false.
+
+Original Engine.u declares Engine.Actor.InStasis native721/flags401 with no
+inputs and one scalar Bool ReturnValue flags580. Independent Engine.dll export
+name/EAT1941 (ordinal1942) execInStasis thunk1030372E bytesE9ED9B0600 jumps to
+1036D320. The body increments FFrame.Code, calls AActor.InStasis thunk10302013
+(EAT1131/ordinal1132, bytesE9C89F0600 ->1036BFE0), writes the returned INT to
+the result slot and returns8. There is no argument evaluation or new stasis
+algorithm in that exec wrapper.
+
+The script adapter authenticates the actual canonical Function/Class/Bool
+metadata, native index/flags and single return packet for numeric and named
+call forms, rejects extra inputs or changed result declarations, then returns
+the existing native query's Bool. It borrows the same transaction, actor/Level/
+Model authority and work ledger; it does not alter the timestamp, distance,
+flags, Physics, NetMode or native clock to force an answer. The established
+lazy PC64 query below remains the only source of the result.
+
+Final adapter verification: generated production tests cover numeric, named
+final-import and direct call forms across eleven true/false boundary cases,
+including exact age5/nextafter5, force-stasis, Physics, zone age/distance,
+NetMode and NaN LastRenderTime. Results preserve the native Double clock and
+LastRenderTime, round-trip checkpoints and use the shared work allowance.
+Extra inputs, changed Bool return schema and missing native timestamps refuse;
+late native999 and write/work cutoffs undo preceding stores and native state.
+These controls add1,487 checks/10 refusals. The final complete driver exits0;
+desktop/Android-native/strict GNU+ARM64 and CTest217 executed/39 skips/zero
+failures pass. See ORIGINAL-TRAINING-DECAL-TICK-GAP.md for the combined final
+audit and exact logs. Actual cold/warm first-Training updates now pass721 and
+reach the next native GameReplicationInfo guard, not completed gameplay.
+
 ## Original authority and arithmetic
 
 Engine.dll1036BFE0..1036C06C and the exact declaring fields are recorded in

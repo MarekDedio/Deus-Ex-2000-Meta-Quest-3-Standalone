@@ -85,6 +85,37 @@
         };
         return QuestVr::QueryOriginalActorStasis(source,q);
     }
+    Evaluation OriginalInStasisNative(RuntimeObject* actor,const std::vector<Evaluation>& arguments,
+        const Function* declaration) {
+        if(!transaction_)throw std::runtime_error("Original InStasis lacks its caller root");
+        if(!arguments.empty())throw std::runtime_error("Original InStasis takes no input parameters");
+        // Numeric exec721 has no UFunction pointer. Named/native calls can
+        // carry a lazy declaration, so authenticate the actual original
+        // no-input Bool-return packet in either form, not a caller fake.
+        const auto authored=FunctionFor(Object("Engine.Actor.InStasis"));
+        const auto validate=[&](const Function& function) {
+            if(LowerAscii(function.path)!="engine.actor.instasis"||function.nativeIndex!=721u||
+                function.flags!=0x401u||function.variables.size()!=1u)
+                throw std::runtime_error("Original InStasis lacks its actual native721 declaration");
+            auto* method=Object(function.path);const auto& result=function.variables.front();auto* field=Object(result.key);
+            if(!method->script||method->outer!=Object("Engine.Actor")||method->sourcePath!=function.source||
+                method->script->nativeIndex!=721u||method->script->functionFlags!=0x401u||
+                LowerAscii(Qualified(Table(method->sourcePath),Table(method->sourcePath).exports.at(method->exportIndex).ObjClass))!="core.function"||
+                result.key!="Engine.Actor.InStasis.ReturnValue"||result.zero.kind!=Kind::Bool||result.arrayDimension!=1u||result.flags!=0x580u||
+                field->outer!=method||!field->property||field->property->type!="BoolProperty"||field->property->arrayDimension!=1||
+                field->property->flags!=0x580u||field->property->baseField||field->property->referencedType||
+                LowerAscii(Qualified(Table(field->sourcePath),Table(field->sourcePath).exports.at(field->exportIndex).ObjClass))!="core.boolproperty")
+                throw std::runtime_error("Original InStasis has a different actual Bool result packet");
+        };
+        validate(*authored);
+        if(declaration) {
+            if(declaration->path!=authored->path||declaration->source!=authored->source||
+                declaration->nativeIndex!=authored->nativeIndex||declaration->flags!=authored->flags)
+                throw std::runtime_error("Original InStasis has a foreign callable identity");
+            if(!declaration->variables.empty())validate(*declaration);
+        }
+        return {Value::Bool(OriginalActorStasis(actor).inStasis),{}};
+    }
     PortableActorStasisObservation ObserveOriginalActorStasis(const std::string& path) {
         auto* actor=Object(path);
         const auto stats=OriginalActorStasis(actor);

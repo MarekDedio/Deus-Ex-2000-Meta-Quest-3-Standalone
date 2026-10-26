@@ -264,18 +264,20 @@ enum class TriggerControlKind {None,Exact,Parent};
 enum class DeusExLevelInfoControlKind {None,Exact,Parent};
 enum class WeaponControlKind {None,Exact,NonNativeInventory,DirectActor};
 enum class GameInfoControlKind {None,Exact,NonNativeInfo,DirectActor,Parent};
+enum class DecalControlKind {None,Exact,WrongNativeBase,WrongScriptBase};
 Tables Build(Fixture& fixture,bool moverControl=false,std::uint32_t oldLocationFlags=2u,
     TriggerControlKind triggerControl=TriggerControlKind::None,
     DeusExLevelInfoControlKind levelInfoControl=DeusExLevelInfoControlKind::None,bool lightControl=false,
     bool scalarLightControl=false,bool scriptedPawnBoundary=false,bool omitScriptedPawnAlarm=false,
     std::uint32_t lastRenderedReturnFlags=0x580u,WeaponControlKind weaponControl=WeaponControlKind::None,
-    GameInfoControlKind gameInfoControl=GameInfoControlKind::None,bool mutatorControl=false) {
+    GameInfoControlKind gameInfoControl=GameInfoControlKind::None,bool mutatorControl=false,
+    DecalControlKind decalControl=DecalControlKind::None,std::uint32_t inStasisReturnFlags=0x580u) {
     Require(!scalarLightControl||lightControl,"Scalar-Light fixture must retain its genuine native Light ancestry");
     if(mutatorControl)Require(gameInfoControl!=GameInfoControlKind::None,
         "Mutator fixture mode requires its explicit rules-control ancestry");
     Require(unsigned(triggerControl!=TriggerControlKind::None)+unsigned(levelInfoControl!=DeusExLevelInfoControlKind::None)+
         unsigned(lightControl)+unsigned(scriptedPawnBoundary)+unsigned(weaponControl!=WeaponControlKind::None)+
-        unsigned(gameInfoControl!=GameInfoControlKind::None)<=1u,
+        unsigned(gameInfoControl!=GameInfoControlKind::None)+unsigned(decalControl!=DecalControlKind::None)<=1u,
         "Fixture native-boundary controls must retain distinct ancestry proofs");
     const std::string ini="[Engine.Engine]\nGameEngine=Engine.GameEngine\n";
     const auto iniPath=fixture.directory/"System"/"DeusEx.ini";
@@ -318,10 +320,13 @@ Tables Build(Fixture& fixture,bool moverControl=false,std::uint32_t oldLocationF
             engine.ClassBody(ref);
         }
     }
-    if(levelInfoControl!=DeusExLevelInfoControlKind::None||gameInfoControl!=GameInfoControlKind::None) {
-        const auto nativeInfo=engine.Export("Info",0,actor);
+    std::int32_t nativeInfo{};
+    if(levelInfoControl!=DeusExLevelInfoControlKind::None||gameInfoControl!=GameInfoControlKind::None||
+        decalControl==DecalControlKind::WrongNativeBase||decalControl==DecalControlKind::WrongScriptBase) {
+        nativeInfo=engine.Export("Info",0,actor);
         engine.exports.at(static_cast<std::size_t>(nativeInfo-1)).ObjFlags=static_cast<ObjectFlags>(
-            gameInfoControl==GameInfoControlKind::NonNativeInfo?0x000f0004u:0x040f0004u);
+            gameInfoControl==GameInfoControlKind::NonNativeInfo||decalControl==DecalControlKind::WrongScriptBase?
+                0x000f0004u:0x040f0004u);
         engine.ClassBody(nativeInfo);
         if(gameInfoControl!=GameInfoControlKind::None) {
             const auto nativeRules=engine.Export(mutatorControl?"Mutator":"GameInfo",0,
@@ -329,6 +334,12 @@ Tables Build(Fixture& fixture,bool moverControl=false,std::uint32_t oldLocationF
             engine.exports.at(static_cast<std::size_t>(nativeRules-1)).ObjFlags=static_cast<ObjectFlags>(0x040f0004u);
             engine.ClassBody(nativeRules);
         }
+    }
+    if(decalControl!=DecalControlKind::None) {
+        // Actual Engine.u ref809 has immediate Actor, not an Info/rules chain.
+        const auto nativeDecal=engine.Export("Decal",0,decalControl==DecalControlKind::Exact?actor:nativeInfo);
+        engine.exports.at(static_cast<std::size_t>(nativeDecal-1)).ObjFlags=static_cast<ObjectFlags>(0x040f0004u);
+        engine.ClassBody(nativeDecal);
     }
     if(lightControl) {
         const auto light=engine.Export("Light",0,actor);
@@ -447,6 +458,10 @@ Tables Build(Fixture& fixture,bool moverControl=false,std::uint32_t oldLocationF
         engine.Property("Other","ObjectProperty",postTouch,ec,actor,0x80u);
         const auto lastRendered=engine.Function("LastRendered",actor,ec,{},723u,0x401u);
         engine.Property("ReturnValue","FloatProperty",lastRendered,ec,0,lastRenderedReturnFlags);
+        const auto inStasis=engine.Function("InStasis",actor,ec,{},721u,0x401u);
+        engine.Property("ReturnValue","BoolProperty",inStasis,ec,0,inStasisReturnFlags);
+        const auto netMode=enumeration("ENetMode",{"NM_Standalone","NM_DedicatedServer","NM_ListenServer","NM_Client"},info);
+        engine.Property("NetMode","ByteProperty",info,ec,netMode);
     }
     const auto interpolateEnd=engine.Function("InterpolateEnd",actor,ec,Return(),0u,0x800u);
     engine.Property("Other","ObjectProperty",interpolateEnd,ec,actor,0x80u);
@@ -572,11 +587,24 @@ Tables Build(Fixture& fixture,bool moverControl=false,std::uint32_t oldLocationF
             Assign(Ref(0x01u,observedAge),Native(723u)),Return(Ref(0x01u,observedAge))}));
         deusex.Property("ReturnValue","FloatProperty",captureAge,dc,0,0x580u);
         deusex.Function("MalformedLastRendered",pawn,dc,Join({increment(tickCount),Native(723u,{Real(1.0f)}),Return()}));
+        const auto observedStasis=deusex.Property("ObservedStasis","BoolProperty",pawn,dc);
+        const auto captureStasis=deusex.Function("CaptureInStasis",pawn,dc,Join({
+            Assign(Ref(0x01u,observedStasis),Native(721u)),Return(Ref(0x01u,observedStasis))}));
+        deusex.Property("ReturnValue","BoolProperty",captureStasis,dc,0,0x580u);
+        const auto inStasisImport=deusex.Import("InStasis",actorImport,"Function");
+        const auto finalStasis=deusex.Function("CaptureInStasisFinal",pawn,dc,Join({
+            Assign(Ref(0x01u,observedStasis),Final(inStasisImport)),Return(Ref(0x01u,observedStasis))}));
+        deusex.Property("ReturnValue","BoolProperty",finalStasis,dc,0,0x580u);
+        deusex.Function("MalformedInStasis",pawn,dc,Join({increment(tickCount),Native(721u,{Real(1.0f)}),Return()}));
+        deusex.Function("MalformedInStasisFinal",pawn,dc,Join({increment(tickCount),Final(inStasisImport,{Real(1.0f)}),Return()}));
+        deusex.Function("InStasisThenFail",pawn,dc,Join({increment(tickCount),
+            Assign(Ref(0x01u,observedStasis),Native(721u)),Native(999u),Return()}));
         deusex.ClassBody(pawn);deusExTable=fixture.Write(deusex);
     }
     Package classes;classes.stem="TickClasses";const auto cc=classes.ImportPackage("Core"),ce=classes.ImportPackage("Engine");
     const auto ca=classes.Import("Actor",ce),ci=classes.Import("LevelInfo",ce);
-    const auto testBase=gameInfoControl!=GameInfoControlKind::None?
+    const auto testBase=decalControl!=DecalControlKind::None?classes.Import("Decal",ce):
+        gameInfoControl!=GameInfoControlKind::None?
         classes.Import(gameInfoControl==GameInfoControlKind::Parent?"Info":mutatorControl?"Mutator":"GameInfo",ce):
         weaponControl!=WeaponControlKind::None?classes.Import("Weapon",ce):
         lightControl?classes.Import("Light",ce):levelInfoControl!=DeusExLevelInfoControlKind::None?
@@ -593,7 +621,7 @@ Tables Build(Fixture& fixture,bool moverControl=false,std::uint32_t oldLocationF
     const auto atLedger=[&]{return Context(Ref(0x01u,lv),Ref(0x01u,counter));};
     Flow body;body.Add(Assign(Ref(0x01u,count),Native(146u,{Ref(0x01u,count),Int(1)})));
     body.Add(Assign(atLedger(),Native(146u,{atLedger(),Int(1)})));body.Add(Assign(Ref(0x01u,stamp),atLedger()));
-    if(weaponControl!=WeaponControlKind::None||gameInfoControl!=GameInfoControlKind::None) {
+    if(weaponControl!=WeaponControlKind::None||gameInfoControl!=GameInfoControlKind::None||decalControl!=DecalControlKind::None) {
         const auto observedDelta=classes.Property("ObservedDelta","FloatProperty",test,cc);
         body.Add(Assign(Ref(0x01u,observedDelta),Ref(0x00u,delta)));
     }
@@ -617,8 +645,8 @@ Tables Build(Fixture& fixture,bool moverControl=false,std::uint32_t oldLocationF
     }
     body.IfNot(Native(154u,{Ref(0x01u,mode),Int(2)}),"no-fault");body.Add(Native(999u));body.Label("no-fault");
     body.Add(Return());classes.FunctionCode(tick,body.Finish(),0u,0x800u);
-    if(gameInfoControl!=GameInfoControlKind::None) {
-        classes.Name(mutatorControl?"MutatorTween":"GameInfoTween");
+    if(gameInfoControl!=GameInfoControlKind::None||decalControl!=DecalControlKind::None) {
+        classes.Name(decalControl!=DecalControlKind::None?"DecalTween":mutatorControl?"MutatorTween":"GameInfoTween");
         const auto animEnds=classes.Property("AnimEnds","IntProperty",test,cc);
         Flow end;end.Add(Assign(Ref(0x01u,animEnds),Native(146u,{Ref(0x01u,animEnds),Int(1)})));
         end.IfNot(Native(154u,{Ref(0x01u,mode),Int(2)}),"anim-pass");
@@ -1269,6 +1297,101 @@ void ScriptedPawnBoundaryControl() {
         "Native723 silently read a default/synthetic timestamp instead of refusing absent native history: "+absentRender.error);
     undo(noRenderBefore,noRenderRevision,noRenderGc,"uninitialized actual LastRenderTime");++refusals;
 
+    // Native721 uses the same original stasis service as the scheduler,
+    // entered here through actual numeric and named/final UE1 packets.
+    // All zone timestamps belong to the genuine loader-created native Model;
+    // no camera/fake boolean query provider determines these expected values.
+    struct StasisCase {
+        double now;float last;bool stasis,force;std::uint8_t physics;float distance;std::uint8_t mode;bool expected;
+    };
+    const std::array<StasisCase,11u> stasisCases{{
+        {5.0,0.0f,true,false,0u,0.0f,0u,false},
+        {6.0,0.0f,false,false,0u,0.0f,0u,false},
+        {6.0,0.0f,true,false,2u,0.0f,0u,false},
+        {6.0,0.0f,true,true,2u,0.0f,0u,true},
+        {6.0,0.0f,true,false,0u,0.0f,0u,true},
+        {4.0,-10.0f,true,false,0u,1200.0f,0u,false},
+        {4.0,-10.0f,true,false,0u,1201.0f,0u,true},
+        {4.0,-10.0f,true,false,0u,1201.0f,1u,false},
+        {4.0,-10.0f,true,false,5u,1201.0f,0u,true},
+        {std::nextafter(5.0,6.0),0.0f,true,false,0u,0.0f,0u,true},
+        {6.0,std::bit_cast<float>(0x7fc12345u),true,false,0u,0.0f,0u,false}}};
+    const auto stasisSeed=[&](const StasisCase& test) {
+        auto input=state;input.nativeLevelClock=QuestVr::ScriptSavedLevelClock{Path("MyLevel"),test.now};
+        Property(input,"Bad0","Engine.Actor.LastRenderTime",Value::Float(test.last));
+        Property(input,"Bad0","Engine.Actor.bStasis",Value::Bool(test.stasis));
+        Property(input,"Bad0","Engine.Actor.bForceStasis",Value::Bool(test.force));
+        Property(input,"Bad0","Engine.Actor.Physics",Value::Byte(test.physics));
+        Property(input,"Bad0","Engine.Actor.DistanceFromPlayer",Value::Float(test.distance));
+        Property(input,"Bad0","Engine.Actor.Region",storedRegion);
+        Property(input,"Level0","Engine.LevelInfo.NetMode",Value::Byte(test.mode));
+        Property(input,"Level0","Engine.LevelInfo.TimeSeconds",Value::Float(99.0f));return input;
+    };
+    for(const auto& test:stasisCases)for(const auto* method:{"CaptureInStasis","CaptureInStasisFinal","InStasis"}) {
+        fixture.Restore(Envelope(legacy,stasisSeed(test)));const auto beforeClock=ReadPortableRuntimeLevelTime();
+        const auto result=ExecutePortableActorFunction(Path("Bad0"),method);
+        Require(result.passed()&&result.committed&&result.value.kind==Kind::Bool&&result.value.boolean==test.expected,
+            "Bound native721 numeric/named/final result disagrees with actual clock/flags/physics/zone/distance/net mode: "+result.error);
+        const bool captured=std::string(method)!="InStasis";
+        if(captured) {
+            const auto observed=ReadPortableActorScriptProperty(Path("Bad0"),"ObservedStasis");
+            Require(observed.kind==Kind::Bool&&observed.boolean==test.expected,"Native721 lost its actual Bool observation store");
+        }
+        Require(result.writes==(captured?1u:0u)&&result.nativeWork&&result.nativeWork->used>0u&&
+            ReadPortableRuntimeLevelTime()==beforeClock&&
+            std::bit_cast<std::uint32_t>(readFloat("LastRenderTime"))==std::bit_cast<std::uint32_t>(test.last)&&
+            ReadPortableActorScriptProperty(Path("Level0"),"TimeSeconds").floating==99.0f,
+            "InStasis mutated timestamps/native clock or used the unrelated Float mirror");
+    }
+    const auto trueStasis=stasisSeed(stasisCases.at(4u));
+    fixture.Restore(Envelope(legacy,trueStasis));
+    const auto stasisSuccessful=ExecutePortableActorFunction(Path("Bad0"),"CaptureInStasis");
+    Require(stasisSuccessful.passed()&&stasisSuccessful.committed&&stasisSuccessful.value.kind==Kind::Bool&&
+        stasisSuccessful.value.boolean&&stasisSuccessful.nativeWork&&stasisSuccessful.nativeWork->used>0u,
+        "Native721 successful rollback-control baseline did not reach true stasis");
+    const auto stasisCheckpoint=fixture.Save("InStasisCommitted");fixture.Restore(legacy);fixture.Restore(stasisCheckpoint);
+    Require(ReadPortableActorScriptProperty(Path("Bad0"),"ObservedStasis").boolean&&
+        fixture.Save("InStasisReloaded")==stasisCheckpoint,"Native721 Bool result/native clock checkpoint did not round-trip");
+    for(const auto* method:{"MalformedInStasis","MalformedInStasisFinal","InStasisThenFail"}) {
+        fixture.Restore(Envelope(legacy,trueStasis));const auto before=fixture.Save("InStasisPacketBefore");
+        const auto revision=GetPortableRuntimeWorldRevision();const auto gc=GC::GetStats();
+        const auto result=ExecutePortableActorFunction(Path("Bad0"),method);
+        const bool late=std::string(method)=="InStasisThenFail";
+        const bool namedExtra=std::string(method)=="MalformedInStasisFinal";
+        // A declared final call is rejected by ordinary VM arity admission
+        // before native721; a numeric packet reaches the native wrapper.
+        Require(!result.passed()&&!result.committed&&result.writes>0u&&
+            (namedExtra?result.status==Status::Invalid&&result.error=="Excess VM arguments":
+                result.status==Status::Unsupported&&(late?result.error.find("999")!=std::string::npos:
+                    result.error=="Original InStasis takes no input parameters")),
+            "Native721 admitted malformed input or did not reach the expected late selected fault: "+result.error);
+        undo(before,revision,gc,"native721 packet or late selected fault");
+        Require(Count("Bad0","TickCount")==0,"Native721 refusal retained its preceding real selected script write");++refusals;
+    }
+    for(const auto* method:{"CaptureInStasis","CaptureInStasisFinal"}) {
+        fixture.Restore(Envelope(legacy,uninitializedRender));const auto before=fixture.Save("InStasisUninitializedBefore");
+        const auto revision=GetPortableRuntimeWorldRevision();const auto gc=GC::GetStats();
+        const auto result=ExecutePortableActorFunction(Path("Bad0"),method);
+        Require(!result.passed()&&!result.committed&&result.status==Status::Unsupported&&
+            result.error.find("LastRenderTime")!=std::string::npos,
+            "Native721 silently fabricated absent native timestamp history: "+result.error);
+        undo(before,revision,gc,"native721 uninitialized timestamp");++refusals;
+    }
+    for(bool workCut:{false,true}) {
+        const std::vector<std::size_t> cuts=workCut?
+            std::vector<std::size_t>{0u,stasisSuccessful.nativeWork->used/2u,stasisSuccessful.nativeWork->used-1u}:
+            std::vector<std::size_t>{0u};
+        for(const auto cut:cuts) {
+            fixture.Restore(Envelope(legacy,trueStasis));const auto before=fixture.Save("InStasisBudgetBefore");
+            const auto revision=GetPortableRuntimeWorldRevision();const auto gc=GC::GetStats();QuestVr::Vm::Limits limits;
+            if(workCut)limits.nativeWork=cut;else limits.writes=cut;
+            const auto result=ExecutePortableActorFunction(Path("Bad0"),"CaptureInStasis",{},limits);
+            Require(!result.passed()&&!result.committed&&result.status==Status::Budget,
+                "Native721 ignored shared write/work refusal: "+result.error);
+            undo(before,revision,gc,"native721 write/work prefix");++refusals;
+        }
+    }
+
     // With no owner cycle and Physics1, actual selected Tick/timer/LifeSpan
     // now precede the still-unimplemented real Pawn virtual physics service.
     const std::string expected="Original Pawn performPhysics mode 1 is not implemented";
@@ -1384,10 +1507,31 @@ void ScriptedPawnBoundaryControl() {
             "Malformed native723 declaration retained allocations");
         malformed.Unchanged();++refusals;
     }
+    {
+        Fixture malformed;
+        const auto badReturn=Build(malformed,false,2u,TriggerControlKind::None,DeusExLevelInfoControlKind::None,
+            false,false,true,false,0x580u,WeaponControlKind::None,GameInfoControlKind::None,false,DecalControlKind::None,0x80u);
+        Require(InitializePortableRuntime(badReturn.packages).passed&&PreparePortableRuntimeNativeEngineClasses().prepared&&
+            PreparePortableRuntimeNativeMetadataClasses().prepared&&PreparePortableRuntimeNativePackages().prepared&&
+            LoadPortableRuntimeMap(badReturn.map).passed&&PreparePortableRuntimeObjectLookup().prepared,
+            "Malformed actual InStasis return schema fixture could not initialize");
+        const auto malformedLegacy=malformed.Save("InStasisSchemaLegacy");
+        malformed.Restore(Envelope(malformedLegacy,trueStasis));const auto before=malformed.Save("InStasisSchemaBefore");
+        const auto revision=GetPortableRuntimeWorldRevision();const auto gc=GC::GetStats();
+        const auto result=ExecutePortableActorFunction(Path("Bad0"),"CaptureInStasis");
+        Require(!result.passed()&&!result.committed&&result.status==Status::Unsupported&&
+            result.error.find("InStasis")!=std::string::npos,
+            "Native721 accepted changed actual Bool ReturnValue flags/schema: "+result.error);
+        const auto afterGc=GC::GetStats();
+        Require(malformed.Save("InStasisSchemaAfter")==before&&ReadPortableRuntimeLevelTickParity()==0&&
+            GetPortableRuntimeWorldRevision()==revision&&afterGc.numObjects==gc.numObjects&&afterGc.memoryUsage==gc.memoryUsage,
+            "Malformed native721 declaration retained partial root state or allocations");
+        malformed.Unchanged();++refusals;
+    }
     std::cout<<"PASS generated production ScriptedPawn native prefix: "<<checks<<" cumulative checks / "<<refusals
         <<" refusals; actual typed cross-package wrapper/decay/vector/Name stores, live fixed alliance-array decay/clamp/protected siblings/flag-clear/rollback, selected EnableCloak true/false Bool packets, genuine base return0 owner-cycle control, "
           "Physics0 actual selected Tick/ProcessState/Timer/LifeSpan/short-Pawn continuation, unconditional timer stores, "
-          "bound native723 Float/PC64/native-clock/malformed-schema/packet controls, actual APawn timers/PostTouch and Pawn rotation delta0/single-word/sibling/same-bit/checkpoint/late undo controls, genuine later movement/destroy refusals, "
+          "bound native723 Float/PC64/native-clock/malformed-schema/packet controls, bound native721 numeric/named/final Bool/clock/flags/physics/zone/distance/net-mode/schema/packet and whole-root undo controls, actual APawn timers/PostTouch and Pawn rotation delta0/single-word/sibling/same-bit/checkpoint/late undo controls, genuine later movement/destroy refusals, "
           "repeat identity and shared-root work/write/save/revision/parity/GC undo. Equipped-Weapon FarMove coverage deferred; "
           "NOT NPC movement/Pawn physics, original Training completion or headset acceptance.\n";
 }
@@ -1538,11 +1682,15 @@ void WeaponControl() {
           "owner-deferred LIFO/checkpoint continuation, late/write/work whole-root undo and nearer-native/malformed-base refusal. "
           "NOT blanket Inventory descendants, active weapon physics, original Training completion or headset acceptance.\n";
 }
-void RulesControl(bool mutatorControl) {
-    const std::string rulesClass=mutatorControl?"Mutator":"GameInfo";
-    const auto build=[mutatorControl](Fixture& fixture,GameInfoControlKind kind) {
+void RulesControl(bool mutatorControl,bool decalControl=false) {
+    const std::string rulesClass=decalControl?"Decal":mutatorControl?"Mutator":"GameInfo";
+    const auto build=[mutatorControl,decalControl](Fixture& fixture,GameInfoControlKind kind) {
+        const auto decalKind=!decalControl?DecalControlKind::None:
+            kind==GameInfoControlKind::Exact?DecalControlKind::Exact:
+            kind==GameInfoControlKind::NonNativeInfo?DecalControlKind::WrongScriptBase:DecalControlKind::WrongNativeBase;
         return Build(fixture,false,2u,TriggerControlKind::None,DeusExLevelInfoControlKind::None,
-            false,false,false,false,0x580u,WeaponControlKind::None,kind,mutatorControl);
+            false,false,false,false,0x580u,WeaponControlKind::None,
+            decalControl?GameInfoControlKind::None:kind,mutatorControl,decalKind);
     };
     const auto initialize=[&](const Tables& tables) {
         Require(InitializePortableRuntime(tables.packages).passed,rulesClass+" package initialization failed");
@@ -1560,14 +1708,16 @@ void RulesControl(bool mutatorControl) {
     {
         Fixture fixture;const auto tables=build(fixture,GameInfoControlKind::Exact);
         const auto& engine=tables.packages.at(1u);const auto& classes=tables.packages.back();
-        const auto actor=FindPortableExport(engine,"Actor"),info=FindPortableExport(engine,"Info"),
+        const auto actor=FindPortableExport(engine,"Actor"),info=decalControl?actor:FindPortableExport(engine,"Info"),
             game=FindPortableExport(engine,rulesClass),test=FindPortableExport(classes,"TestActor");
-        for(const auto& [child,parent]:{std::pair{info,actor},std::pair{game,info}}) {
+        const auto ancestry=decalControl?std::vector<std::pair<std::size_t,std::size_t>>{{game,actor}}:
+            std::vector<std::pair<std::size_t,std::size_t>>{{info,actor},{game,info}};
+        for(const auto& [child,parent]:ancestry) {
             const auto& entry=engine.exports.at(child);
             Require(entry.ObjClass==0&&entry.ObjOuter==0&&static_cast<std::uint32_t>(entry.ObjFlags)==0x040f0004u&&
                 entry.ObjBase==static_cast<std::int32_t>(parent+1u)&&
                 LoadPortableClassDescriptor(engine,child).state.baseField==entry.ObjBase,
-                rulesClass+" fixture lost serialized native "+rulesClass+" -> Info -> Actor ancestry");
+                rulesClass+" fixture lost its actual serialized immediate native ancestry");
         }
         const auto& testEntry=classes.exports.at(test);
         Require(testEntry.ObjClass==0&&testEntry.ObjOuter==0&&testEntry.ObjBase<0&&
@@ -1582,9 +1732,9 @@ void RulesControl(bool mutatorControl) {
             rulesClass+" superclass is not a real serialized Core.Class import owned by Engine");
         initialize(tables);
         Require(ReadPortableRuntimeDispatchClass("TickClasses.TestActor").parentPath=="Engine."+rulesClass&&
-            ReadPortableRuntimeDispatchClass("Engine."+rulesClass).parentPath=="Engine.Info"&&
-            ReadPortableRuntimeDispatchClass("Engine.Info").parentPath=="Engine.Actor",
-            "Production dispatch flattened the actual "+rulesClass+"/Info/Actor ancestry");
+            ReadPortableRuntimeDispatchClass("Engine."+rulesClass).parentPath==(decalControl?"Engine.Actor":"Engine.Info")&&
+            (decalControl||ReadPortableRuntimeDispatchClass("Engine.Info").parentPath=="Engine.Actor"),
+            "Production dispatch changed the actual immediate "+rulesClass+" native ancestry");
         const auto legacy=fixture.Save(rulesClass+"Legacy");
         const auto seed=[&](const QuestVr::ScriptSavedState& state){fixture.Restore(Envelope(legacy,state));};
         const auto delta=[&](float expected) {
@@ -1700,11 +1850,13 @@ void RulesControl(bool mutatorControl) {
         fixture.Unchanged();
     }
     for(const auto kind:{GameInfoControlKind::NonNativeInfo,GameInfoControlKind::DirectActor,GameInfoControlKind::Parent}) {
+        if(decalControl&&kind==GameInfoControlKind::Parent)continue;
         Fixture fixture;const auto tables=build(fixture,kind);initialize(tables);
         const auto legacy=fixture.Save("Malformed"+rulesClass+"Legacy");fixture.Restore(Envelope(legacy,makeSeed(tables)));
         const auto before=fixture.Save("Malformed"+rulesClass+"Before");const auto revision=GetPortableRuntimeWorldRevision();const auto gc=GC::GetStats();
         const auto failed=AdvancePortableLevelDynamicActors(0.015625f,0);const auto afterGc=GC::GetStats();
-        const std::string expected=kind==GameInfoControlKind::Parent?
+        const std::string expected=decalControl?"Original Decal Tick lost its actual native Decal/Actor ancestry":
+            kind==GameInfoControlKind::Parent?
             "Original Actor Tick reached an unimplemented native virtual override: Engine.Info":
             "Original "+rulesClass+" Tick lost its actual native "+rulesClass+"/Info/Actor ancestry";
         Require(!failed.execution.passed()&&!failed.execution.committed&&!failed.completed&&failed.execution.error==expected,
@@ -1717,12 +1869,14 @@ void RulesControl(bool mutatorControl) {
         fixture.Unchanged();
     }
     std::cout<<"PASS exact Engine."+rulesClass+" native admission: "<<checks<<" cumulative checks / "<<refusals
-        <<" refusals; serialized cross-package native Info ancestry, selected Tick/Float delta/Physics0, "
+        <<" refusals; serialized cross-package "<<(decalControl?"direct Actor":"native Info")
+        <<" ancestry, selected Tick/Float delta/Physics0, "
           "real MAIN tween/checked ProcessEvent/IsPendingKill/selected AnimEnd, owner-deferred LIFO/checkpoint continuation, "
-          "late/write/work shared-root undo and malformed/nearer-native/Info refusals. "
-          "NOT blanket Info subclasses, active physics, completed Training startup or headset acceptance.\n";
+          "late/write/work shared-root undo and malformed/nearer-native refusals. "
+          "NOT blanket native subclasses, active physics, completed original Shadow/Training startup or headset acceptance.\n";
 }
 void GameInfoControl() {RulesControl(false);RulesControl(true);}
+void DecalControl() {RulesControl(false,true);}
 void TriggerControl() {
     for(const auto kind:{TriggerControlKind::Exact,TriggerControlKind::Parent}) {
         Fixture fixture;const auto tables=Build(fixture,false,2u,kind);
@@ -2281,6 +2435,6 @@ void MovingBrushSchemaRefusal() {
 }
 } // namespace
 int main() {
-    try {Synthetic();ScriptedPawnBoundaryControl();WeaponControl();GameInfoControl();TriggerControl();DeusExLevelInfoControl();LightControl();ScalarLightControl();MoverControl();MovingBrushPhysics();MovingBrushSchemaRefusal();return 0;}catch(const std::exception& error){std::cerr<<"FAIL "<<error.what()<<'\n';ShutdownPortableRuntime();return 1;}
+    try {Synthetic();ScriptedPawnBoundaryControl();WeaponControl();GameInfoControl();DecalControl();TriggerControl();DeusExLevelInfoControl();LightControl();ScalarLightControl();MoverControl();MovingBrushPhysics();MovingBrushSchemaRefusal();return 0;}catch(const std::exception& error){std::cerr<<"FAIL "<<error.what()<<'\n';ShutdownPortableRuntime();return 1;}
 }
 

@@ -1,5 +1,23 @@
 # Immediate milestone: complete the first Training map
 
+Latest2026-10-26: exact native Decal/Actor update and checked animation
+callbacks now enter actual Shadow.Tick; original script-native721 is bound to
+the existing fully authenticated InStasis query. No actor skip or forced
+stasis/physics/defaults. Generated Decal and numeric/final/direct721 controls
+add3,190/50; full production15,645/295 before final schema control exits0.
+Full desktop/Android native/strict GNU+ARM64 and CTest217 executed/256
+registered/39 skips/zero failures248.89s pass; separate crate415/5,
+deferred429/21, animation588/24 and FastTrace252/0 remain green.
+
+Cold/warm actual Training repeat2 reaches the next exact native
+Engine.GameReplicationInfo guard at239,200/19,362,141 slots/140 calls.
+Doors retain both56-unit moves/two ends at239,536/19,430; two-Fire repeat2
+retains228,837/26,047,48 rows/two cycles/two notifies/four traces/two crate
+changes/nine births before later FExec. Full undo, cold/warm Model proof,
+cold same-filename replacement, all45 originals and6 frozen inputs pass.
+All jobs terminal. Next: ORIGINAL-TRAINING-GRI-TICK-GAP.md. No other maps
+or new APK. Live collectible loot and automatic gravity remain unfinished.
+
 Latest2026-10-26: both original native GameInfo and Mutator updates now run
 through their proven inherited Actor methods. Canonical native rule/Info/Actor
 ancestry and matching animation callbacks are checked; unknown children/base

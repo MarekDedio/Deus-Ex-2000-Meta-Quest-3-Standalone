@@ -68,6 +68,16 @@
         RequireOriginalInfoRulesAncestry(selected,"Engine.Mutator",
             "Original Mutator Tick lost its actual native Mutator/Info/Actor ancestry");
     }
+    void RequireOriginalDecalAncestry(RuntimeObject* selected) {
+        LifecycleStep();
+        // Owned Engine.u native Decal ref809 -> canonical Actor ref2;
+        // the original vtable10426F74 inherits the five audited Actor slots.
+        // A Decal is not Info-derived and cannot borrow the rule-class proof.
+        if(selected!=Object("Engine.Decal")||!selected->classDescriptor||selected->defaultOwner||
+            !selected->classFieldLinksValid||selected->reflection.metaClass!="Class"||
+            !(selected->reflection.flags&0x04000000u)||selected->base!=Object("Engine.Actor"))
+            throw std::runtime_error("Original Decal Tick lost its actual native Decal/Actor ancestry");
+    }
     void RequireOriginalActorTickPhysicsImplementation(RuntimeObject* actor) {
         auto* selected=OriginalActorTickNativeClass(actor);const auto& path=selected->reflection.objectPath;
         // Owned native vtables/IAT, ORIGINAL-ACTOR-TICK-PHYSICS-PHASE.md
@@ -77,6 +87,12 @@
         // boundaries only: neither parent Info/Triggers, unknown nearer
         // native children nor scalar teardown are authorized here. Native
         // ScriptedPawn Tick's separate wrapper does NOT admit Pawn physics.
+        if(path=="Engine.Decal") {
+            // Exact native Decal +14/+64/+8C are Actor state/Tick/physics.
+            // Preserve actual selected Shadow script and later dependencies;
+            // this is not permission for arbitrary native Decal descendants.
+            RequireOriginalDecalAncestry(selected);return;
+        }
         if(path=="Engine.GameInfo") {
             // GameInfo10427AE0 slots+14/+64/+8C are the original Actor
             // ProcessState/Tick/performPhysics, not a new guessed override.

@@ -3769,6 +3769,7 @@ public:
         if (Object(receiver)->defaultOwner)
             throw std::runtime_error("Native execution on a class-default object requires its audited handler");
         if(index==267u)return FarMoveNative(Object(receiver),arguments,declaration,execution);
+        if(index==721u)return OriginalInStasisNative(Object(receiver),arguments,declaration);
         if(index==723u)return OriginalLastRenderedNative(Object(receiver),arguments,declaration);
         if(index==3970u)return ActorSetPhysicsNative(Object(receiver),arguments,declaration,execution);
         if(index==266u||index==299u)return MoveNative(index,Object(receiver),arguments,declaration,execution);

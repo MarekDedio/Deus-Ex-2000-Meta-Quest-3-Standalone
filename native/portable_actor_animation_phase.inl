@@ -126,11 +126,13 @@
         // Projectile10428850/Pawn10426994/Weapon104287A4 use10302D74 and
         // 10302167. Exact GameInfo10427AE0 and Mutator10427B8C match those
         // same slots; canonical native rule-class/Info/Actor is required.
+        // Exact Decal10426F74 also matches +10/+2C, with its own canonical
+        // Decal/Actor proof (not an Info chain or a generic descendant test).
         // DeusExDecoration10027744/DeusExPlayer10027568/
         // ScriptedPawn10027624 use1001AF98/1001AF7A import thunks to the same
         // AActor methods. This list does not authorize other native classes.
         static constexpr const char* audited[]{"engine.actor","engine.decoration","engine.inventory",
-            "engine.projectile","engine.pawn","engine.weapon","engine.gameinfo","engine.mutator","deusex.deusexdecoration",
+            "engine.projectile","engine.pawn","engine.weapon","engine.gameinfo","engine.mutator","engine.decal","deusex.deusexdecoration",
             "deusex.deusexplayer","deusex.scriptedpawn"};
         std::array<RuntimeObject*,128u> visited{};std::size_t depth{};
         RuntimeObject* selected{};bool actualActor{};
@@ -145,6 +147,7 @@
             if(!selected&&(cls->reflection.flags&0x04000000u)!=0u) {
                 if(path=="engine.gameinfo")RequireOriginalGameInfoAncestry(cls);
                 if(path=="engine.mutator")RequireOriginalMutatorAncestry(cls);
+                if(path=="engine.decal")RequireOriginalDecalAncestry(cls);
                 if(std::find(std::begin(audited),std::end(audited),path)==std::end(audited))
                     throw std::runtime_error("Original animation nearest native ProcessEvent/IsPendingKill virtuals are not audited");
                 selected=cls;
