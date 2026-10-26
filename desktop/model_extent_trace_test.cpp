@@ -425,6 +425,78 @@ void Safety() {
     dag.nodes[1].collisionBound=0;dag=Decoded(dag);Compare(dag,{10,0,0},{-20,0,0},{1,1,1});
 }
 
+void WorkBudgetDiagnostics() {
+    // Real decoded nonempty geometry reaches both whole-Model validation and
+    // the original hull sweep. No fake provider or guessed global work count
+    // decides which independent per-call limit is reported.
+    const auto model=Decoded(Box());const auto before=Encode(model);
+    const QuestVr::OriginalModelCoords identity{{},{1,0,0},{0,1,0},{0,0,1}};
+    const auto run=[&](const Model& geometry,bool owned,const Limits& limits) {
+        return owned?QuestVr::TraceOriginalOwnedModelExtent(geometry,identity,{10,0,0},{-20,0,0},{1,1,1},limits):
+            Trace(geometry,{10,0,0},{-20,0,0},{1,1,1},limits);
+    };
+    const auto budgetRefuses=[&](bool owned,const Limits& limits,bool validation,std::size_t cut,
+        const std::string& label) {
+        bool refused{};
+        try {static_cast<void>(run(model,owned,limits));}
+        catch(const QuestVr::ModelExtentTraceWorkExhausted& failure) {
+            refused=true;
+            const std::exception& base=failure;
+            Require(std::string(base.what())=="Original model extent trace: work budget exhausted",
+                "Budget telemetry changed the compatible extent failure message: "+label);
+            Require(failure.Validation()==validation,"Extent budget telemetry reported the wrong phase: "+label);
+            Require(failure.Used()==cut&&failure.Limit()==cut,
+                "Extent budget telemetry lost the exact pre-increment used/limit boundary: "+label);
+        }
+        Require(refused,"Extent work refusal lost its typed budget diagnostic: "+label);++refusals;
+        if(validation) {
+            // Occupancy's box path shares this validation entry without
+            // entering Trace; it must receive the same accurate phase tag.
+            QuestVr::ModelExtentTraceStats stats;bool sharedRefusal{};
+            try {QuestVr::ModelExtentTraceDetail::Validate(model,limits,stats,owned);}
+            catch(const QuestVr::ModelExtentTraceWorkExhausted& failure) {
+                sharedRefusal=failure.Validation()&&failure.Used()==cut&&failure.Limit()==cut;
+            }
+            Require(sharedRefusal,"Shared box validation mislabelled its budget phase: "+label);++refusals;
+        }
+    };
+    for(const bool owned:{false,true}) {
+        const auto label=owned?std::string("owner"):std::string("null-owner");
+        const auto baseline=run(model,owned,Limits{});
+        Require(baseline.hit&&!baseline.clear&&baseline.stats.validationSteps>2u&&baseline.stats.querySteps>2u,
+            "Extent telemetry fixture failed to reach genuine validation and hull-query work: "+label);
+        for(const auto cut:{std::size_t{1u},baseline.stats.validationSteps/2u,baseline.stats.validationSteps-1u}) {
+            auto tight=Limits{};tight.validationSteps=cut;
+            budgetRefuses(owned,tight,true,cut,label+" validation "+std::to_string(cut));
+        }
+        for(const auto cut:{std::size_t{1u},baseline.stats.querySteps/2u,baseline.stats.querySteps-1u}) {
+            auto tight=Limits{};tight.querySteps=cut;
+            budgetRefuses(owned,tight,false,cut,label+" query "+std::to_string(cut));
+        }
+        auto exact=Limits{};exact.validationSteps=baseline.stats.validationSteps;exact.querySteps=baseline.stats.querySteps;
+        const auto sufficient=run(model,owned,exact);
+        Require(sufficient.clear==baseline.clear&&sufficient.hit==baseline.hit&&sufficient.node==baseline.node&&
+            Bits(sufficient.time,baseline.time),"Typed diagnostics changed the exact-budget extent result: "+label);
+        Same(sufficient.location,baseline.location,"Typed diagnostics changed exact-budget Location: "+label);
+        Same(sufficient.normal,baseline.normal,"Typed diagnostics changed exact-budget Normal: "+label);
+        const auto& actual=sufficient.stats;const auto& expected=baseline.stats;
+        Require(actual.validationSteps==expected.validationSteps&&actual.querySteps==expected.querySteps&&
+            actual.nodeVisits==expected.nodeVisits&&actual.leafVisits==expected.leafVisits&&actual.hullVisits==expected.hullVisits&&
+            actual.planeTests==expected.planeTests&&actual.bevelPairs==expected.bevelPairs&&actual.bevelTests==expected.bevelTests,
+            "Typed diagnostics changed successful extent work accounting: "+label);
+        auto malformed=model;malformed.nodes.back().front=static_cast<std::int32_t>(malformed.nodes.size());
+        bool structuralRefusal{},mislabelledBudget{};
+        try {static_cast<void>(run(malformed,owned,Limits{}));}
+        catch(const QuestVr::ModelExtentTraceWorkExhausted&) {mislabelledBudget=true;}
+        catch(const std::exception& failure) {
+            structuralRefusal=std::string(failure.what()).find("invalid BSP child index")!=std::string::npos;
+        }
+        Require(structuralRefusal&&!mislabelledBudget,
+            "Malformed geometry was suppressed or relabelled as a work-budget refusal: "+label);++refusals;
+    }
+    Require(Encode(model)==before,"Refused extent diagnostics mutated the decoded source geometry");
+}
+
 Bytes ReadBytes(const std::filesystem::path& path) {
     const auto size=std::filesystem::file_size(path);
     Require(size<=256u*1024u*1024u,"Owned map exceeds bounded test file capture");
@@ -542,7 +614,7 @@ int main(int argc,char** argv) {
 #if (defined(__i386__) || defined(__x86_64__)) && defined(__GNUC__)
         Precision precision;
 #endif
-        Basics();CsgAndTraversal();CompactWorkspaceTraversal();SlantedAndBevels();Safety();
+        Basics();CsgAndTraversal();CompactWorkspaceTraversal();SlantedAndBevels();Safety();WorkBudgetDiagnostics();
 #if (defined(__i386__) || defined(__x86_64__)) && defined(__GNUC__)
         RandomOracle();
 #endif

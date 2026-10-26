@@ -722,6 +722,7 @@ int Run(const fs::path& root,const std::optional<std::string>& expected,unsigned
     std::optional<std::vector<PortableStartupMoverObservation>> moverObservations;
     std::optional<PortableLevelPlayerDistanceObservation> distanceObservation;
     std::optional<PortableActorTickBoundaryObservation> nativeTickBoundary;
+    std::optional<PortableModelTraceWorkObservation> modelTraceWork;
     for(unsigned attempt=1u;attempt<=repeats;++attempt){
         const auto start=std::chrono::steady_clock::now();
         PortableRetailCollisionStartupResult result;std::vector<PortableStartupWeaponFireObservation> fireRows;
@@ -741,6 +742,24 @@ int Run(const fs::path& root,const std::optional<std::string>& expected,unsigned
         const auto usage=*world.execution.nativeWork;
         Require(usage.limit==nativeWork&&usage.used<=usage.limit,"Startup reported an invalid or different native-work allowance");
         std::cout<<"FINAL ROOT NATIVE WORK used="<<usage.used<<" limit="<<usage.limit<<" exhausted="<<usage.exhausted<<'\n';
+        Require(world.execution.error!="Original model extent trace: work budget exhausted"||world.modelTraceWork.has_value(),
+            "Reached extent work refusal omitted its actual Model/phase/allowance snapshot");
+        if(world.modelTraceWork) {
+            const auto& row=*world.modelTraceWork;
+            Require(!row.modelPath.empty()&&row.modelPath.size()<=1024u&&row.ownerPath.size()<=1024u&&
+                row.priorValidation<8'000'000u&&row.priorQuery<16'000'000u&&
+                row.validationAllowance>0u&&row.validationAllowance<=8'000'000u-row.priorValidation&&
+                row.queryAllowance>0u&&row.queryAllowance<=16'000'000u-row.priorQuery&&
+                row.used==row.limit&&row.limit==(row.validation?row.validationAllowance:row.queryAllowance)&&
+                world.execution.error=="Original model extent trace: work budget exhausted",
+                "Extent work observation is not the actual reached independent collision refusal");
+            std::cout<<"MODEL EXTENT WORK model="<<std::quoted(row.modelPath)<<" owner="<<std::quoted(row.ownerPath)
+                <<" phase="<<(row.validation?"validation":"query")<<" priorValidation="<<row.priorValidation
+                <<" priorQuery="<<row.priorQuery<<" validationAllowance="<<row.validationAllowance
+                <<" queryAllowance="<<row.queryAllowance<<" used="<<row.used<<" limit="<<row.limit<<'\n';
+            if(modelTraceWork)Require(*modelTraceWork==row,"Repeated extent work refusal changed its actual Model/ledger snapshot");
+            else modelTraceWork=row;
+        }
         std::cout<<"EARLY HASH PREFIX (NOT final root usage) initialized="<<result.collision.initialized<<" enabled="<<result.collision.enabled
             <<" actors="<<result.collision.actors.size()<<" links="<<result.collision.activeLinks
             <<" seed="<<result.collision.seed<<" tag="<<result.collision.tag

@@ -20,6 +20,21 @@ struct ModelExtentTraceLimits {
 struct ModelExtentTraceStats {
     std::size_t validationSteps{},querySteps{},nodeVisits{},leafVisits{},hullVisits{},planeTests{},bevelPairs{},bevelTests{};
 };
+// Detached failure metadata only. The original refusal text and all work
+// accounting are unchanged; this does not provide a fresh allowance or let a
+// caller bypass validation. Native adapters can attribute the reached cap.
+class ModelExtentTraceWorkExhausted final : public std::runtime_error {
+public:
+    ModelExtentTraceWorkExhausted(std::size_t used,std::size_t limit,bool validation=false)
+        :std::runtime_error("Original model extent trace: work budget exhausted"),
+         used_(used),limit_(limit),validation_(validation){}
+    std::size_t Used()const noexcept{return used_;}
+    std::size_t Limit()const noexcept{return limit_;}
+    bool Validation()const noexcept{return validation_;}
+private:
+    std::size_t used_,limit_;
+    bool validation_;
+};
 struct ModelExtentTraceResult {
     bool clear{true},hit{};
     float time{1.0f};
@@ -36,7 +51,10 @@ using ScriptRandom::VectorDetail::DecodeDouble;
 using ScriptRandom::VectorDetail::StoreDouble;
 using ScriptRandom::VectorDetail::SqrtStoredDouble64;
 [[noreturn]] inline void Fail(const char* reason) {throw std::runtime_error(std::string("Original model extent trace: ")+reason);}
-inline void Step(std::size_t& used,std::size_t maximum) {if(used>=maximum) Fail("work budget exhausted");++used;}
+inline void Step(std::size_t& used,std::size_t maximum) {
+    if(used>=maximum) throw ModelExtentTraceWorkExhausted(used,maximum);
+    ++used;
+}
 inline void Limits(const ModelExtentTraceLimits& value) {
     const ModelExtentTraceLimits maximum;
     if(!value.nodes||value.nodes>maximum.nodes||!value.hullWords||value.hullWords>maximum.hullWords||
@@ -84,8 +102,8 @@ inline Hull ReadHull(const PortableModelGeometry& model,std::int32_t offset,std:
         Fail("reversed leaf-hull bounds");
     return hull;
 }
-inline void Validate(const PortableModelGeometry& model,const ModelExtentTraceLimits& limits,ModelExtentTraceStats& stats,
-    bool owned=false) {
+inline void ValidateGeometry(const PortableModelGeometry& model,const ModelExtentTraceLimits& limits,ModelExtentTraceStats& stats,
+    bool owned) {
     if(model.version!=68u||model.licenseeMode!=0u) Fail("unsupported serialized Model layout");
     if(model.rootOutside!=0&&model.rootOutside!=1) Fail("invalid root-outside value");
     if(model.nodes.size()>limits.nodes||model.leafHulls.size()>limits.hullWords) Fail("Model array budget exceeded");
@@ -122,6 +140,15 @@ inline void Validate(const PortableModelGeometry& model,const ModelExtentTraceLi
             if(colors[childIndex]==1) Fail("cyclic BSP front/back graph");
             if(!colors[childIndex]) {colors[childIndex]=1;push(childIndex);}
         }
+    }
+}
+inline void Validate(const PortableModelGeometry& model,const ModelExtentTraceLimits& limits,ModelExtentTraceStats& stats,
+    bool owned=false) {
+    // Also used by box occupancy validation, outside Trace. Tag at this
+    // shared entry so that route cannot mislabel validation as traversal.
+    try {ValidateGeometry(model,limits,stats,owned);}
+    catch(const ModelExtentTraceWorkExhausted& fault) {
+        throw ModelExtentTraceWorkExhausted(fault.Used(),fault.Limit(),true);
     }
 }
 inline PortableModelVec3 Delta(const PortableModelVec3& start,const PortableModelVec3& end) {

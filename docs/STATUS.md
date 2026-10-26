@@ -1,5 +1,38 @@
 # Port status
 
+## First Training collision limit is measured validation work (2026-10-26)
+
+Bounded extent-work telemetry now distinguishes validation from traversal,
+retaining actual Model/owner, prequery aggregate counters, admitted remaining
+allowances and exact pre-increment used/limit. The legacy error text, hit
+publication, numerical work and safety limits are unchanged. Shared validation
+also tags box-occupancy validation correctly, but current native snapshots
+cover direct extent LineCheck only; uninstrumented occupancy is not accepted
+as an attributed failure. No validation cache or physics fix is added here.
+
+Real Training repeat2 identifies null-owner00_Training.Model36 validation:
+prior validation7,937,992/query8,344, remaining validation62,008/query15,991,656,
+then validation used=limit62,008. Both runs retain233,606 instructions/18,817
+writes,113 slots/calls and full save/state/revision/hash/RNG/client/lookup/
+Actor/GC undo. Thus the measured blocker is validation, not traversal or the
+shared native-work allowance. See ORIGINAL-TRAINING-COLLISION-WORK-GAP.md for
+the secure immutable-source/proof implementation route; do not raise/reset
+caps, skip the NPC or claim a complete frame.
+
+Kernel/owned map60,055 checks/64 deliberate refusals pass, including96 real
+Training contacts and direct/shared phase cuts. Full desktop rebuild, Android
+native link and strict ARM64 pass. CTest216 executed/255 registered/39 explicit
+owned-data skips/zero failures76.64s; production driver8,825/163 before final
+malformed-schema control, owned crate415/5, deferred429/21 and animation588/24
+all exit0. Paired-door repeat2 keeps both56-unit moves/2 completion callbacks
+at233,942/18,885 before the same validation cap (remaining61,934). Two-Fire
+repeat2 retains228,837/26,047,48 rows/2 cycles/2 notifies/4 traces/2 crate changes/
+9 births before later FExec. All45 original baseline files and7 frozen compiler
+inputs retain exact size/timestamp/SHA256; all build/test/probe jobs terminal.
+
+No new APK, headset claim, account/character UI or other-map integration.
+Live published startup, collectible loot and automatic gravity remain unfinished.
+
 ## Original Weapon updates pass the former Training gate (2026-10-26)
 
 Exact native Engine.Weapon now uses its independently proven inherited

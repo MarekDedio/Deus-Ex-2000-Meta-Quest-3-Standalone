@@ -414,6 +414,12 @@ struct PortableActorTickBoundaryObservation {
     std::optional<bool> pawnFlag,alwaysTick,simulatedPawn,stasis;
     bool operator==(const PortableActorTickBoundaryObservation&) const = default;
 };
+struct PortableModelTraceWorkObservation {
+    std::string modelPath,ownerPath;
+    bool validation{};
+    std::size_t priorValidation{},priorQuery{},validationAllowance{},queryAllowance{},used{},limit{};
+    bool operator==(const PortableModelTraceWorkObservation&) const = default;
+};
 struct PortableLevelDynamicTickResult {
     QuestVr::Vm::Result execution;
     bool completed{};
@@ -426,6 +432,7 @@ struct PortableLevelDynamicTickResult {
     std::optional<bool> lastMovingBrushClass,lastMovingBrushInterpolating;
     std::optional<unsigned> lastMovingBrushKey;
     std::optional<PortableActorTickBoundaryObservation> nativeBoundary;
+    std::optional<PortableModelTraceWorkObservation> modelTraceWork;
 };
 // Actual native distance prepass only. Missing active native client/viewport
 // services refuse; a genuine unpossessed viewport skips without any store.
@@ -577,6 +584,9 @@ struct PortableWorldStartupProbeResult {
     std::vector<PortableActorStasisObservation> stasisObservations;
     std::optional<PortableLevelPlayerDistanceObservation> playerDistance;
     std::optional<PortableLevelDynamicTickResult> dynamicActors;
+    // First already-reached extent work refusal, detached before undo. This
+    // measures the independent collision ledger, not successful simulation.
+    std::optional<PortableModelTraceWorkObservation> modelTraceWork;
     std::vector<PortableStartupMoverObservation> movers;
 };
 const char* PortableWorldStartupPhaseName(PortableWorldStartupPhase phase);

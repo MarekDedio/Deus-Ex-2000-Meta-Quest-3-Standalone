@@ -5099,6 +5099,25 @@ public:
         const auto cylinder=NativePrimitiveOwnerCylinder(owner);
         return QuestVr::OriginalPrimitiveCollisionBounds(cylinder.location,cylinder.radius,cylinder.height);
     }
+    void ObserveModelExtentWork(RuntimeObject* model,RuntimeObject* owner,
+        const QuestVr::ModelExtentTraceLimits& limits,const QuestVr::ModelExtentTraceWorkExhausted& fault) {
+        auto* output=worldStartupResult_?&worldStartupResult_->modelTraceWork:
+            activeTickStats_?&activeTickStats_->modelTraceWork:nullptr;
+        if(!output||*output)return;
+        const auto& modelPath=model->reflection.objectPath;
+        const auto ownerBytes=owner?owner->reflection.objectPath.size():0u;
+        if(modelPath.size()>1024u||ownerBytes>1024u)
+            throw std::runtime_error("Model trace work observation identity exceeds its bound");
+        const auto bytes=sizeof(PortableModelTraceWorkObservation)+2u*(modelPath.size()+ownerBytes+2u);
+        ValidateStateBudget(bytes);
+        nativeActorOrderObservationBytes_=QuestVr::DecalStateDetail::Add(nativeActorOrderObservationBytes_,bytes);
+        output->emplace();auto& row=**output;
+        row.modelPath=modelPath;if(owner)row.ownerPath=owner->reflection.objectPath;
+        row.validation=fault.Validation();row.used=fault.Used();row.limit=fault.Limit();
+        row.priorValidation=fastTraceValidationWork_;row.priorQuery=fastTraceQueryWork_;
+        row.validationAllowance=limits.validationSteps;row.queryAllowance=limits.querySteps;
+        ValidateStateBudget();
+    }
     bool NativeActorPrimitiveLineCheck(RuntimeObject* owner,QuestVr::OriginalActorLineHit& hit,
         const PortableModelVec3& end,const PortableModelVec3& start,const PortableModelVec3& extent,
         const std::uint32_t flags=0u) {
@@ -5136,8 +5155,13 @@ public:
             std::optional<NativeActorCoords> coords;
             if(!model.nodes.empty()) coords=NativeActorToWorld(owner);
             QuestVr::ModelExtentTraceStats stats;
-            const auto clear=QuestVr::CheckOriginalModelExtent(hit,model,reinterpret_cast<std::uintptr_t>(selected.object),
-                reinterpret_cast<std::uintptr_t>(owner),coords?&coords->coords:nullptr,end,start,extent,limits,&stats);
+            bool clear;
+            try {
+                clear=QuestVr::CheckOriginalModelExtent(hit,model,reinterpret_cast<std::uintptr_t>(selected.object),
+                    reinterpret_cast<std::uintptr_t>(owner),coords?&coords->coords:nullptr,end,start,extent,limits,&stats);
+            }catch(const QuestVr::ModelExtentTraceWorkExhausted& fault) {
+                ObserveModelExtentWork(selected.object,owner,limits,fault);throw;
+            }
             fastTraceValidationWork_+=stats.validationSteps;fastTraceQueryWork_+=stats.querySteps;
             return clear;
         }

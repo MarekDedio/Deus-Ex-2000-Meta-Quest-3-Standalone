@@ -1,5 +1,25 @@
 # Immediate milestone: complete the first Training map
 
+Latest2026-10-26: direct extent-work telemetry proves the first Training
+failure is validation of null-owner00_Training.Model36: prior validation
+7,937,992/query8,344; remaining validation62,008/query15,991,656; exact failure
+at validation62,008. Repeat2 retains233,606 instructions/18,817 writes and113
+slots/calls with full undo. The kernel/hit/budget behavior is unchanged; no
+validation cache, cap increase, NPC skip or published partial frame is added.
+Next is secure lazy reuse of validation on authenticated immutable geometry,
+shared by the exact compatible world extent/box paths. See
+ORIGINAL-TRAINING-COLLISION-WORK-GAP.md for implementation and test requirements.
+
+Kernel/owned map60,055/64 including96 real Training contacts, full desktop/
+Android-native/strict ARM64 and CTest216 executed/255 registered/39 skips/zero
+failures76.64s pass. Production8,825/163 before final malformed-schema control,
+owned crate415/5, deferred429/21 and animation588/24 pass. Paired-door repeat2
+retains233,942/18,885, both56-unit moves/2 ends and remaining validation61,934;
+two-Fire repeat2 retains228,837/26,047 with48 rows/2 cycles/2 notifies/4 traces/
+2 crate changes/9 births before later FExec. Full undo/all45 originals/7 frozen
+compiler inputs unchanged; all jobs terminal. First Training only, no APK;
+live committed destruction/collectible loot/automatic gravity still unfinished.
+
 Latest2026-10-26: exact native Weapon now enters its proven inherited
 Actor Tick/state/physics implementations with canonical native Inventory
 ancestry. Unknown nearer native classes still refuse; actual weapon script,

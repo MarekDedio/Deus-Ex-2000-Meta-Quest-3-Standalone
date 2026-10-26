@@ -112,8 +112,12 @@
                     limits.validationSteps=std::min(limits.validationSteps,MaximumNativeModelValidationWork-fastTraceValidationWork_);
                     limits.querySteps=std::min(limits.querySteps,MaximumNativeModelQueryWork-fastTraceQueryWork_);
                     QuestVr::ModelExtentTraceStats stats;
-                    reply.clear=QuestVr::CheckOriginalModelExtent(reply.hit,model,reinterpret_cast<std::uintptr_t>(nativeModel),
-                        0u,nullptr,worldEnd,worldStart,worldExtent,limits,&stats);
+                    try {
+                        reply.clear=QuestVr::CheckOriginalModelExtent(reply.hit,model,reinterpret_cast<std::uintptr_t>(nativeModel),
+                            0u,nullptr,worldEnd,worldStart,worldExtent,limits,&stats);
+                    }catch(const QuestVr::ModelExtentTraceWorkExhausted& fault) {
+                        ObserveModelExtentWork(nativeModel,nullptr,limits,fault);throw;
+                    }
                     fastTraceValidationWork_+=stats.validationSteps;fastTraceQueryWork_+=stats.querySteps;
                     if(!reply.clear) {
                         if(model.nodes.empty())
