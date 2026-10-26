@@ -265,19 +265,25 @@ enum class DeusExLevelInfoControlKind {None,Exact,Parent};
 enum class WeaponControlKind {None,Exact,NonNativeInventory,DirectActor};
 enum class GameInfoControlKind {None,Exact,NonNativeInfo,DirectActor,Parent};
 enum class DecalControlKind {None,Exact,WrongNativeBase,WrongScriptBase};
+enum class GameReplicationInfoControlKind {
+    None,Exact,NonNativeReplicationInfo,NonNativeInfo,NonNativeActor,DirectInfo,ReplicationInfoDirectActor,
+    ParentReplicationInfo,ParentInfo
+};
 Tables Build(Fixture& fixture,bool moverControl=false,std::uint32_t oldLocationFlags=2u,
     TriggerControlKind triggerControl=TriggerControlKind::None,
     DeusExLevelInfoControlKind levelInfoControl=DeusExLevelInfoControlKind::None,bool lightControl=false,
     bool scalarLightControl=false,bool scriptedPawnBoundary=false,bool omitScriptedPawnAlarm=false,
     std::uint32_t lastRenderedReturnFlags=0x580u,WeaponControlKind weaponControl=WeaponControlKind::None,
     GameInfoControlKind gameInfoControl=GameInfoControlKind::None,bool mutatorControl=false,
-    DecalControlKind decalControl=DecalControlKind::None,std::uint32_t inStasisReturnFlags=0x580u) {
+    DecalControlKind decalControl=DecalControlKind::None,std::uint32_t inStasisReturnFlags=0x580u,
+    GameReplicationInfoControlKind replicationControl=GameReplicationInfoControlKind::None) {
     Require(!scalarLightControl||lightControl,"Scalar-Light fixture must retain its genuine native Light ancestry");
     if(mutatorControl)Require(gameInfoControl!=GameInfoControlKind::None,
         "Mutator fixture mode requires its explicit rules-control ancestry");
     Require(unsigned(triggerControl!=TriggerControlKind::None)+unsigned(levelInfoControl!=DeusExLevelInfoControlKind::None)+
         unsigned(lightControl)+unsigned(scriptedPawnBoundary)+unsigned(weaponControl!=WeaponControlKind::None)+
-        unsigned(gameInfoControl!=GameInfoControlKind::None)+unsigned(decalControl!=DecalControlKind::None)<=1u,
+        unsigned(gameInfoControl!=GameInfoControlKind::None)+unsigned(decalControl!=DecalControlKind::None)+
+        unsigned(replicationControl!=GameReplicationInfoControlKind::None)<=1u,
         "Fixture native-boundary controls must retain distinct ancestry proofs");
     const std::string ini="[Engine.Engine]\nGameEngine=Engine.GameEngine\n";
     const auto iniPath=fixture.directory/"System"/"DeusEx.ini";
@@ -322,10 +328,12 @@ Tables Build(Fixture& fixture,bool moverControl=false,std::uint32_t oldLocationF
     }
     std::int32_t nativeInfo{};
     if(levelInfoControl!=DeusExLevelInfoControlKind::None||gameInfoControl!=GameInfoControlKind::None||
-        decalControl==DecalControlKind::WrongNativeBase||decalControl==DecalControlKind::WrongScriptBase) {
+        decalControl==DecalControlKind::WrongNativeBase||decalControl==DecalControlKind::WrongScriptBase||
+        replicationControl!=GameReplicationInfoControlKind::None) {
         nativeInfo=engine.Export("Info",0,actor);
         engine.exports.at(static_cast<std::size_t>(nativeInfo-1)).ObjFlags=static_cast<ObjectFlags>(
-            gameInfoControl==GameInfoControlKind::NonNativeInfo||decalControl==DecalControlKind::WrongScriptBase?
+            gameInfoControl==GameInfoControlKind::NonNativeInfo||decalControl==DecalControlKind::WrongScriptBase||
+                replicationControl==GameReplicationInfoControlKind::NonNativeInfo?
                 0x000f0004u:0x040f0004u);
         engine.ClassBody(nativeInfo);
         if(gameInfoControl!=GameInfoControlKind::None) {
@@ -334,6 +342,19 @@ Tables Build(Fixture& fixture,bool moverControl=false,std::uint32_t oldLocationF
             engine.exports.at(static_cast<std::size_t>(nativeRules-1)).ObjFlags=static_cast<ObjectFlags>(0x040f0004u);
             engine.ClassBody(nativeRules);
         }
+    }
+    if(replicationControl!=GameReplicationInfoControlKind::None) {
+        // Owned Engine.u refs108 -> 805 -> 91 -> 2: the additional native
+        // ReplicationInfo link cannot be substituted with GameInfo's chain.
+        const auto replication=engine.Export("ReplicationInfo",0,
+            replicationControl==GameReplicationInfoControlKind::ReplicationInfoDirectActor?actor:nativeInfo);
+        engine.exports.at(static_cast<std::size_t>(replication-1)).ObjFlags=static_cast<ObjectFlags>(
+            replicationControl==GameReplicationInfoControlKind::NonNativeReplicationInfo?0x000f0004u:0x040f0004u);
+        engine.ClassBody(replication);
+        const auto gameReplication=engine.Export("GameReplicationInfo",0,
+            replicationControl==GameReplicationInfoControlKind::DirectInfo?nativeInfo:replication);
+        engine.exports.at(static_cast<std::size_t>(gameReplication-1)).ObjFlags=static_cast<ObjectFlags>(0x040f0004u);
+        engine.ClassBody(gameReplication);
     }
     if(decalControl!=DecalControlKind::None) {
         // Actual Engine.u ref809 has immediate Actor, not an Info/rules chain.
@@ -347,7 +368,9 @@ Tables Build(Fixture& fixture,bool moverControl=false,std::uint32_t oldLocationF
         engine.ClassBody(light);
     }
     const auto level=engine.Export("Level",0,eo),model=engine.Export("Model",0,eo);
-    engine.exports.at(static_cast<std::size_t>(actor-1)).ObjFlags=static_cast<ObjectFlags>(0x04000000u);
+    engine.exports.at(static_cast<std::size_t>(actor-1)).ObjFlags=static_cast<ObjectFlags>(
+        replicationControl==GameReplicationInfoControlKind::None?0x04000000u:
+            replicationControl==GameReplicationInfoControlKind::NonNativeActor?0x000f0004u:0x040f0004u);
     const auto enumeration=[&](const std::string& name,std::vector<std::string> values,std::int32_t owner) {
         const auto ref=engine.Export(name,engine.Import("Enum",ec),0,owner,true);
         engine.builders.at(static_cast<std::size_t>(ref-1))=[&,values](std::int32_t next,std::int32_t){
@@ -603,7 +626,10 @@ Tables Build(Fixture& fixture,bool moverControl=false,std::uint32_t oldLocationF
     }
     Package classes;classes.stem="TickClasses";const auto cc=classes.ImportPackage("Core"),ce=classes.ImportPackage("Engine");
     const auto ca=classes.Import("Actor",ce),ci=classes.Import("LevelInfo",ce);
-    const auto testBase=decalControl!=DecalControlKind::None?classes.Import("Decal",ce):
+    const auto testBase=replicationControl!=GameReplicationInfoControlKind::None?
+        classes.Import(replicationControl==GameReplicationInfoControlKind::ParentReplicationInfo?"ReplicationInfo":
+            replicationControl==GameReplicationInfoControlKind::ParentInfo?"Info":"GameReplicationInfo",ce):
+        decalControl!=DecalControlKind::None?classes.Import("Decal",ce):
         gameInfoControl!=GameInfoControlKind::None?
         classes.Import(gameInfoControl==GameInfoControlKind::Parent?"Info":mutatorControl?"Mutator":"GameInfo",ce):
         weaponControl!=WeaponControlKind::None?classes.Import("Weapon",ce):
@@ -621,7 +647,8 @@ Tables Build(Fixture& fixture,bool moverControl=false,std::uint32_t oldLocationF
     const auto atLedger=[&]{return Context(Ref(0x01u,lv),Ref(0x01u,counter));};
     Flow body;body.Add(Assign(Ref(0x01u,count),Native(146u,{Ref(0x01u,count),Int(1)})));
     body.Add(Assign(atLedger(),Native(146u,{atLedger(),Int(1)})));body.Add(Assign(Ref(0x01u,stamp),atLedger()));
-    if(weaponControl!=WeaponControlKind::None||gameInfoControl!=GameInfoControlKind::None||decalControl!=DecalControlKind::None) {
+    if(weaponControl!=WeaponControlKind::None||gameInfoControl!=GameInfoControlKind::None||decalControl!=DecalControlKind::None||
+        replicationControl!=GameReplicationInfoControlKind::None) {
         const auto observedDelta=classes.Property("ObservedDelta","FloatProperty",test,cc);
         body.Add(Assign(Ref(0x01u,observedDelta),Ref(0x00u,delta)));
     }
@@ -645,13 +672,33 @@ Tables Build(Fixture& fixture,bool moverControl=false,std::uint32_t oldLocationF
     }
     body.IfNot(Native(154u,{Ref(0x01u,mode),Int(2)}),"no-fault");body.Add(Native(999u));body.Label("no-fault");
     body.Add(Return());classes.FunctionCode(tick,body.Finish(),0u,0x800u);
-    if(gameInfoControl!=GameInfoControlKind::None||decalControl!=DecalControlKind::None) {
-        classes.Name(decalControl!=DecalControlKind::None?"DecalTween":mutatorControl?"MutatorTween":"GameInfoTween");
+    if(gameInfoControl!=GameInfoControlKind::None||decalControl!=DecalControlKind::None||
+        replicationControl!=GameReplicationInfoControlKind::None) {
+        classes.Name(replicationControl!=GameReplicationInfoControlKind::None?"GameReplicationInfoTween":
+            decalControl!=DecalControlKind::None?"DecalTween":mutatorControl?"MutatorTween":"GameInfoTween");
         const auto animEnds=classes.Property("AnimEnds","IntProperty",test,cc);
         Flow end;end.Add(Assign(Ref(0x01u,animEnds),Native(146u,{Ref(0x01u,animEnds),Int(1)})));
         end.IfNot(Native(154u,{Ref(0x01u,mode),Int(2)}),"anim-pass");
         end.Add(Native(999u));end.Label("anim-pass");end.Add(Return());
         classes.Function("AnimEnd",test,cc,end.Finish(),0u,0x800u);
+    }
+    if(replicationControl!=GameReplicationInfoControlKind::None) {
+        // Generated selected Timer observes the real inherited Actor timer
+        // service. It is not a substitute for original GameReplicationInfo.Timer.
+        const auto timerCount=classes.Property("TimerCount","IntProperty",test,cc),
+            timerMode=classes.Property("TimerMode","IntProperty",test,cc),
+            timerTickCount=classes.Property("TimerTickCount","IntProperty",test,cc),
+            observedRate=classes.Property("ObservedTimerRate","FloatProperty",test,cc),
+            observedCounter=classes.Property("ObservedTimerCounter","FloatProperty",test,cc);
+        const auto rate=classes.Import("TimerRate",ca,"FloatProperty"),
+            timerCounter=classes.Import("TimerCounter",ca,"FloatProperty");
+        Flow timer;timer.Add(Assign(Ref(0x01u,timerCount),Native(146u,{Ref(0x01u,timerCount),Int(1)})));
+        timer.Add(Assign(Ref(0x01u,timerTickCount),Ref(0x01u,count)));
+        timer.Add(Assign(Ref(0x01u,observedRate),Ref(0x01u,rate)));
+        timer.Add(Assign(Ref(0x01u,observedCounter),Ref(0x01u,timerCounter)));
+        timer.IfNot(Native(154u,{Ref(0x01u,timerMode),Int(2)}),"timer-pass");
+        timer.Add(Native(999u));timer.Label("timer-pass");timer.Add(Return());
+        classes.Function("Timer",test,cc,timer.Finish(),0u,0x800u);
     }
     const auto setOwner=classes.Function("SetFixtureOwner",test,cc);const auto input=classes.Property("Input","ObjectProperty",setOwner,cc,ca,0x80u);
     classes.FunctionCode(setOwner,Join({Assign(Ref(0x01u,own),Ref(0x00u,input)),Return()}));
@@ -1682,15 +1729,17 @@ void WeaponControl() {
           "owner-deferred LIFO/checkpoint continuation, late/write/work whole-root undo and nearer-native/malformed-base refusal. "
           "NOT blanket Inventory descendants, active weapon physics, original Training completion or headset acceptance.\n";
 }
-void RulesControl(bool mutatorControl,bool decalControl=false) {
-    const std::string rulesClass=decalControl?"Decal":mutatorControl?"Mutator":"GameInfo";
-    const auto build=[mutatorControl,decalControl](Fixture& fixture,GameInfoControlKind kind) {
+void RulesControl(bool mutatorControl,bool decalControl=false,bool replicationControl=false) {
+    const std::string rulesClass=replicationControl?"GameReplicationInfo":decalControl?"Decal":mutatorControl?"Mutator":"GameInfo";
+    const auto build=[mutatorControl,decalControl,replicationControl](Fixture& fixture,GameInfoControlKind kind,
+        GameReplicationInfoControlKind replicationKind=GameReplicationInfoControlKind::Exact) {
         const auto decalKind=!decalControl?DecalControlKind::None:
             kind==GameInfoControlKind::Exact?DecalControlKind::Exact:
             kind==GameInfoControlKind::NonNativeInfo?DecalControlKind::WrongScriptBase:DecalControlKind::WrongNativeBase;
         return Build(fixture,false,2u,TriggerControlKind::None,DeusExLevelInfoControlKind::None,
             false,false,false,false,0x580u,WeaponControlKind::None,
-            decalControl?GameInfoControlKind::None:kind,mutatorControl,decalKind);
+            decalControl||replicationControl?GameInfoControlKind::None:kind,mutatorControl,decalKind,0x580u,
+            replicationControl?replicationKind:GameReplicationInfoControlKind::None);
     };
     const auto initialize=[&](const Tables& tables) {
         Require(InitializePortableRuntime(tables.packages).passed,rulesClass+" package initialization failed");
@@ -1710,7 +1759,10 @@ void RulesControl(bool mutatorControl,bool decalControl=false) {
         const auto& engine=tables.packages.at(1u);const auto& classes=tables.packages.back();
         const auto actor=FindPortableExport(engine,"Actor"),info=decalControl?actor:FindPortableExport(engine,"Info"),
             game=FindPortableExport(engine,rulesClass),test=FindPortableExport(classes,"TestActor");
-        const auto ancestry=decalControl?std::vector<std::pair<std::size_t,std::size_t>>{{game,actor}}:
+        const auto replication=replicationControl?FindPortableExport(engine,"ReplicationInfo"):info;
+        const auto ancestry=replicationControl?
+            std::vector<std::pair<std::size_t,std::size_t>>{{info,actor},{replication,info},{game,replication}}:
+            decalControl?std::vector<std::pair<std::size_t,std::size_t>>{{game,actor}}:
             std::vector<std::pair<std::size_t,std::size_t>>{{info,actor},{game,info}};
         for(const auto& [child,parent]:ancestry) {
             const auto& entry=engine.exports.at(child);
@@ -1718,6 +1770,13 @@ void RulesControl(bool mutatorControl,bool decalControl=false) {
                 entry.ObjBase==static_cast<std::int32_t>(parent+1u)&&
                 LoadPortableClassDescriptor(engine,child).state.baseField==entry.ObjBase,
                 rulesClass+" fixture lost its actual serialized immediate native ancestry");
+        }
+        if(replicationControl) {
+            const auto& entry=engine.exports.at(actor);
+            Require(entry.ObjClass==0&&entry.ObjOuter==0&&static_cast<std::uint32_t>(entry.ObjFlags)==0x040f0004u&&
+                entry.ObjBase<0&&GetPortableObjectPath(engine,entry.ObjBase)=="Core.Object"&&
+                LoadPortableClassDescriptor(engine,actor).state.baseField==entry.ObjBase,
+                "GameReplicationInfo fixture lost its canonical native Actor metadata");
         }
         const auto& testEntry=classes.exports.at(test);
         Require(testEntry.ObjClass==0&&testEntry.ObjOuter==0&&testEntry.ObjBase<0&&
@@ -1732,7 +1791,9 @@ void RulesControl(bool mutatorControl,bool decalControl=false) {
             rulesClass+" superclass is not a real serialized Core.Class import owned by Engine");
         initialize(tables);
         Require(ReadPortableRuntimeDispatchClass("TickClasses.TestActor").parentPath=="Engine."+rulesClass&&
-            ReadPortableRuntimeDispatchClass("Engine."+rulesClass).parentPath==(decalControl?"Engine.Actor":"Engine.Info")&&
+            ReadPortableRuntimeDispatchClass("Engine."+rulesClass).parentPath==
+                (replicationControl?"Engine.ReplicationInfo":decalControl?"Engine.Actor":"Engine.Info")&&
+            (!replicationControl||ReadPortableRuntimeDispatchClass("Engine.ReplicationInfo").parentPath=="Engine.Info")&&
             (decalControl||ReadPortableRuntimeDispatchClass("Engine.Info").parentPath=="Engine.Actor"),
             "Production dispatch changed the actual immediate "+rulesClass+" native ancestry");
         const auto legacy=fixture.Save(rulesClass+"Legacy");
@@ -1787,6 +1848,66 @@ void RulesControl(bool mutatorControl,bool decalControl=false) {
                 GetPortableRuntimeWorldRevision()==revision&&afterGc.numObjects==gc.numObjects&&afterGc.memoryUsage==gc.memoryUsage,
                 rulesClass+" refusal retained partial save/revision/parity/GC state: "+label);++refusals;return failed;
         };
+        if(replicationControl) {
+            const auto timerSeed=[&](float counter) {
+                auto timed=makeSeed(tables);
+                Property(timed,"A","Engine.Actor.TimerRate",Value::Float(0.03125f));
+                Property(timed,"A","Engine.Actor.TimerCounter",Value::Float(counter));
+                Property(timed,"A","Engine.Actor.bTimerLoop",Value::Bool(true));
+                return timed;
+            };
+            const auto timerFloat=[&](const char* property,float expected) {
+                const auto value=ReadPortableActorScriptProperty(Path("A"),property);
+                Require(value.kind==Kind::Float&&std::bit_cast<std::uint32_t>(value.floating)==std::bit_cast<std::uint32_t>(expected),
+                    std::string("GameReplicationInfo looping Timer lost stored ")+property);
+            };
+            const auto timed=timerSeed(0.0234375f);seed(timed);
+            const auto timerSuccessful=AdvancePortableLevelDynamicActors(0.015625f,0);RequirePass(timerSuccessful);
+            Require(timerSuccessful.actorCalls==3u&&Count("A")==1&&Count("A","TimerCount")==1&&
+                Count("A","TimerTickCount")==1&&Count("B","TimerCount")==0&&Count("C","TimerCount")==0,
+                "GameReplicationInfo did not select exactly one genuine Timer after its Tick");
+            timerFloat("TimerRate",0.03125f);timerFloat("TimerCounter",0.0078125f);
+            timerFloat("ObservedTimerRate",0.03125f);timerFloat("ObservedTimerCounter",0.0078125f);
+            const auto timerCheckpoint=fixture.Save("GameReplicationInfoTimerCheckpoint");
+            fixture.Restore(legacy);fixture.Restore(timerCheckpoint);
+            Require(ReadPortableRuntimeLevelTickParity()==1&&Count("A","TimerCount")==1,
+                "GameReplicationInfo looping Timer checkpoint lost committed callback/parity state");
+            const auto timerContinued=AdvancePortableLevelDynamicActors(0.015625f,0);RequirePass(timerContinued);
+            Require(timerContinued.parityBefore==1&&timerContinued.parityAfter==0&&Count("A")==2&&
+                Count("A","TimerCount")==1&&Count("A","TimerTickCount")==1,
+                "Reloaded GameReplicationInfo timer replayed its earlier expiration before the next period");
+            timerFloat("TimerRate",0.03125f);timerFloat("TimerCounter",0.0234375f);
+            RequirePass(AdvancePortableLevelDynamicActors(0.015625f,0));
+            Require(Count("A")==3&&Count("A","TimerCount")==2&&Count("A","TimerTickCount")==3,
+                "GameReplicationInfo looping Timer failed to expire again after checkpoint continuation");
+            timerFloat("TimerCounter",0.0078125f);timerFloat("ObservedTimerCounter",0.0078125f);
+            // Equality expires, and multiple missed periods coalesce into a
+            // single selected callback with the original stored residual.
+            for(const auto& [counter,residual]:std::vector<std::pair<float,float>>{{0.015625f,0.0f},{0.1171875f,0.0078125f}}) {
+                seed(timerSeed(counter));RequirePass(AdvancePortableLevelDynamicActors(0.015625f,0));
+                Require(Count("A","TimerCount")==1&&Count("A","TimerTickCount")==1,
+                    "GameReplicationInfo looping Timer missed equality or replayed coalesced periods");
+                timerFloat("TimerRate",0.03125f);timerFloat("TimerCounter",residual);
+                timerFloat("ObservedTimerRate",0.03125f);timerFloat("ObservedTimerCounter",residual);
+            }
+            auto timerFailureSeed=timed;Property(timerFailureSeed,"A","TickClasses.TestActor.TimerMode",Value::Integer(2));
+            const auto timerFailure=refusal(timerFailureSeed,{},"selected Timer native999 callback","999");
+            Require(timerFailure.execution.status==Status::Unsupported&&timerFailure.execution.writes>0u&&
+                timerFailure.execution.function=="TickClasses.TestActor.Timer",
+                "GameReplicationInfo Timer refusal did not reach its actual selected callback/stored residual");
+            auto timerLate=timed;Property(timerLate,"C","TickClasses.TestActor.Mode",Value::Integer(2));
+            const auto timerLateFailure=refusal(timerLate,{},"late Tick after looping Timer","999");
+            Require(timerLateFailure.execution.status==Status::Unsupported&&timerLateFailure.execution.writes>=timerSuccessful.execution.writes,
+                "Late GameReplicationInfo callback failure did not follow the earlier real looping Timer effects");
+            Require(timerSuccessful.execution.writes>0u&&timerSuccessful.execution.nativeWork&&timerSuccessful.execution.nativeWork->used>0u,
+                "GameReplicationInfo looping Timer lacks shared write/work accounting");
+            for(std::size_t cut=0u;cut<timerSuccessful.execution.writes;++cut) {
+                QuestVr::Vm::Limits limits;limits.writes=cut;refusal(timed,limits,"looping Timer write prefix "+std::to_string(cut));
+            }
+            for(const auto cut:{std::size_t{0u},timerSuccessful.execution.nativeWork->used/2u,timerSuccessful.execution.nativeWork->used-1u}) {
+                QuestVr::Vm::Limits limits;limits.nativeWork=cut;refusal(timed,limits,"looping Timer native-work prefix");
+            }
+        }
         const auto makeAnimated=[&] {
             auto animated=makeSeed(tables);
             Property(animated,"A","Engine.Actor.AnimSequence",Value::Text(Kind::Name,rulesClass+"Tween"));
@@ -1850,6 +1971,7 @@ void RulesControl(bool mutatorControl,bool decalControl=false) {
         fixture.Unchanged();
     }
     for(const auto kind:{GameInfoControlKind::NonNativeInfo,GameInfoControlKind::DirectActor,GameInfoControlKind::Parent}) {
+        if(replicationControl)continue;
         if(decalControl&&kind==GameInfoControlKind::Parent)continue;
         Fixture fixture;const auto tables=build(fixture,kind);initialize(tables);
         const auto legacy=fixture.Save("Malformed"+rulesClass+"Legacy");fixture.Restore(Envelope(legacy,makeSeed(tables)));
@@ -1868,15 +1990,41 @@ void RulesControl(bool mutatorControl,bool decalControl=false) {
             "Parent native Info refusal lost its actual identity");
         fixture.Unchanged();
     }
+    if(replicationControl) {
+        for(const auto kind:{GameReplicationInfoControlKind::NonNativeReplicationInfo,GameReplicationInfoControlKind::NonNativeInfo,
+            GameReplicationInfoControlKind::NonNativeActor,GameReplicationInfoControlKind::DirectInfo,
+            GameReplicationInfoControlKind::ReplicationInfoDirectActor,GameReplicationInfoControlKind::ParentReplicationInfo,
+            GameReplicationInfoControlKind::ParentInfo}) {
+            Fixture fixture;const auto tables=build(fixture,GameInfoControlKind::Exact,kind);initialize(tables);
+            const auto legacy=fixture.Save("MalformedGameReplicationInfoLegacy");fixture.Restore(Envelope(legacy,makeSeed(tables)));
+            const auto before=fixture.Save("MalformedGameReplicationInfoBefore");const auto revision=GetPortableRuntimeWorldRevision();
+            const auto gc=GC::GetStats();const auto failed=AdvancePortableLevelDynamicActors(0.015625f,0);const auto afterGc=GC::GetStats();
+            const std::string parent=kind==GameReplicationInfoControlKind::ParentReplicationInfo?"Engine.ReplicationInfo":
+                kind==GameReplicationInfoControlKind::ParentInfo?"Engine.Info":"";
+            const std::string expected=parent.empty()?
+                "Original GameReplicationInfo Tick lost its actual native GameReplicationInfo/ReplicationInfo/Info/Actor ancestry":
+                "Original Actor Tick reached an unimplemented native virtual override: "+parent;
+            Require(!failed.execution.passed()&&!failed.execution.committed&&!failed.completed&&failed.execution.error==expected,
+                "GameReplicationInfo admitted a malformed native chain or unproven parent: "+failed.execution.error);
+            Require(fixture.Save("MalformedGameReplicationInfoAfter")==before&&ReadPortableRuntimeLevelTickParity()==0&&
+                GetPortableRuntimeWorldRevision()==revision&&afterGc.numObjects==gc.numObjects&&afterGc.memoryUsage==gc.memoryUsage,
+                "Malformed/parent GameReplicationInfo refusal retained partial save/revision/parity/GC state");++refusals;
+            if(!parent.empty())Require(failed.nativeBoundary&&failed.nativeBoundary->nativeClassPath==parent,
+                "GameReplicationInfo parent refusal lost its selected native identity");
+            fixture.Unchanged();
+        }
+    }
     std::cout<<"PASS exact Engine."+rulesClass+" native admission: "<<checks<<" cumulative checks / "<<refusals
-        <<" refusals; serialized cross-package "<<(decalControl?"direct Actor":"native Info")
+        <<" refusals; serialized cross-package "<<(replicationControl?"native ReplicationInfo/Info":decalControl?"direct Actor":"native Info")
         <<" ancestry, selected Tick/Float delta/Physics0, "
           "real MAIN tween/checked ProcessEvent/IsPendingKill/selected AnimEnd, owner-deferred LIFO/checkpoint continuation, "
           "late/write/work shared-root undo and malformed/nearer-native refusals. "
-          "NOT blanket native subclasses, active physics, completed original Shadow/Training startup or headset acceptance.\n";
+        <<(replicationControl?"Generated selected looping Timer/threshold/coalescing/checkpoint non-replay; NOT proof of original GRI.Timer. ":"")
+        <<"NOT blanket native subclasses, active physics, completed original Shadow/Training startup or headset acceptance.\n";
 }
 void GameInfoControl() {RulesControl(false);RulesControl(true);}
 void DecalControl() {RulesControl(false,true);}
+void GameReplicationInfoControl() {RulesControl(false,false,true);}
 void TriggerControl() {
     for(const auto kind:{TriggerControlKind::Exact,TriggerControlKind::Parent}) {
         Fixture fixture;const auto tables=Build(fixture,false,2u,kind);
@@ -2435,6 +2583,6 @@ void MovingBrushSchemaRefusal() {
 }
 } // namespace
 int main() {
-    try {Synthetic();ScriptedPawnBoundaryControl();WeaponControl();GameInfoControl();DecalControl();TriggerControl();DeusExLevelInfoControl();LightControl();ScalarLightControl();MoverControl();MovingBrushPhysics();MovingBrushSchemaRefusal();return 0;}catch(const std::exception& error){std::cerr<<"FAIL "<<error.what()<<'\n';ShutdownPortableRuntime();return 1;}
+    try {Synthetic();ScriptedPawnBoundaryControl();WeaponControl();GameInfoControl();DecalControl();GameReplicationInfoControl();TriggerControl();DeusExLevelInfoControl();LightControl();ScalarLightControl();MoverControl();MovingBrushPhysics();MovingBrushSchemaRefusal();return 0;}catch(const std::exception& error){std::cerr<<"FAIL "<<error.what()<<'\n';ShutdownPortableRuntime();return 1;}
 }
 

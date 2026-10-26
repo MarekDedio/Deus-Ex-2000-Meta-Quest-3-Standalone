@@ -1,5 +1,36 @@
 # Port status
 
+## Original Training GameReplicationInfo update verified (2026-10-26)
+
+Exact native GRI -> ReplicationInfo -> Info -> Actor ancestry now admits its
+independently proven inherited state/Tick/physics and animation callbacks.
+All four canonical native Class packets are checked. Selected script/timer/
+lifespan/physics remain unchanged; no standalone skip or class-default change.
+Base Info/ReplicationInfo and unknown nearer native children remain closed in
+this checkpoint. Actual Mission000 now reaches the next Engine.Info guard.
+
+Generated ordinary/animated/looping-Timer/owner/checkpoint/whole-root undo and
+seven malformed/base controls add3,102 checks/67 refusals. Full production
+18,747/362 before final schema control exits0. Full desktop/Android-native/
+strict GNU+ARM64 pass; CTest217 executed/256 registered/39 explicit skips/
+zero failures106.72s. Separate crate415/5, deferred429/21, animation588/24
+and FastTrace252/0 pass.
+
+Actual cold/warm Training repeat2 passes GRI and reaches Mission000/Info at
+239,200 instructions/19,363 writes,142 slots/141 calls. Paired doors retain
+both56-unit moves/two ends at239,536/19,431. Two-Fire repeat2 retains228,837/
+26,047,48 rows/two cycles/two returned notifies/four traces/two crate changes/
+nine births before later bound ConsoleCommand FExec. Whole-root undo, Model
+proof cold0->1/warm1->1 and generation1->2 cold replacement all pass. All45
+original files and6 frozen compiler inputs are unchanged; all jobs terminal.
+
+See ORIGINAL-TRAINING-GRI-TICK-GAP.md and next ORIGINAL-TRAINING-INFO-TICK-GAP.md.
+The latter mission object owns original crate-progress Timer checks. The live
+Quest trigger still uses the legacy Pawn-only damage route; genuine player/
+weapon/inventory/frame/publication bridging remains required, as documented in
+TRAINING-FIRST-PRIORITY.md. Live destruction/collectible loot/automatic gravity
+are not finished. First Training only; no replacement APK at this checkpoint.
+
 ## Training shadow update and script InStasis adapter verified (2026-10-26)
 
 Exact native Decal -> Actor admission now preserves the selected original

@@ -1,5 +1,42 @@
 # Immediate milestone: complete the first Training map
 
+## Required live crate bridge (current-source audit, 2026-10-26)
+
+Passing rollback diagnostics is not completion of this milestone. Quest's
+FireTargetedActor still calls DamagePortableRuntimeActor, which accepts only
+Pawn targets; it cannot damage a crate. UseTargetedActor still reaches the
+presentation Inventory branch, and quickbelt equip is not JC's actual Weapon.
+Do not call more native-class admissions a finished live interaction fix.
+
+The faithful remaining route is genuine bound player/input/HUD initialization
+(including the reached key-query FExec dependency and post-Possess continuation),
+an explicitly committing startup entry owned by the runtime worker, VR aim/
+equip/Fire and ParseRightClick bridges to that actual JC, and the complete
+clock/distance/actor frame schedule. Publish committed births/deaths/poses/
+colliders through the existing actor-publication path. Verify destruction,
+falling upper crate, collectible loot and save/load in the actual headset.
+Quest currently calls neither the startup probe nor the original dynamic-actor
+phase. Preserve the first-map-only scope; no accounts or character-creation UI.
+
+Latest2026-10-26: exact canonical native GameReplicationInfo/ReplicationInfo/
+Info/Actor update and animation callback admission now passes the actual GRI
+object without changing its selected timer or any phase. Generated matrix
+adds3,102/67, including looping Timer/checkpoint/undo and seven malformed/base
+controls; full production18,747/362 before final schema control exits0.
+Full desktop/Android-native/strict GNU+ARM64 and CTest217 executed/256
+registered/39 explicit skips/zero failures106.72s pass, as do separate owned
+crate415/5, deferred429/21, animation588/24 and FastTrace252/0.
+
+Cold/warm actual Training repeat2 now reaches Mission000/Engine.Info at239,200/
+19,363,142 slots/141 calls. Doors retain both56-unit moves/two ends at239,536/
+19,431; two-Fire repeat2 retains228,837/26,047,48 rows/two cycles/two notifies/
+four traces/two crate changes/nine births before later FExec. Full undo,
+cold/warm Model proof, cold same-filename replacement, all45 originals and6
+frozen compiler inputs pass; all jobs terminal. Next is the actual mission
+object in ORIGINAL-TRAINING-INFO-TICK-GAP.md, whose original Timer detects crate
+destruction/tutorial progression. No other map or APK; live bridging remains
+unfinished as above.
+
 Latest2026-10-26: exact native Decal/Actor update and checked animation
 callbacks now enter actual Shadow.Tick; original script-native721 is bound to
 the existing fully authenticated InStasis query. No actor skip or forced

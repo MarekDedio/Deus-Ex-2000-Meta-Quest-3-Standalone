@@ -78,6 +78,24 @@
             !(selected->reflection.flags&0x04000000u)||selected->base!=Object("Engine.Actor"))
             throw std::runtime_error("Original Decal Tick lost its actual native Decal/Actor ancestry");
     }
+    void RequireOriginalGameReplicationInfoAncestry(RuntimeObject* selected) {
+        LifecycleStep();auto* replication=Object("Engine.ReplicationInfo");auto* info=Object("Engine.Info");
+        auto* actor=Object("Engine.Actor");
+        // Owned Engine.u refs108 ->805 ->91 ->2. Exact native GRI10427428
+        // inherits Actor state/Tick/physics and both animation callback slots.
+        // Its extra native ReplicationInfo link cannot borrow the rules guard.
+        constexpr const char* refusal=
+            "Original GameReplicationInfo Tick lost its actual native GameReplicationInfo/ReplicationInfo/Info/Actor ancestry";
+        if(selected!=Object("Engine.GameReplicationInfo")||selected->base!=replication||
+            replication->base!=info||info->base!=actor)
+            throw std::runtime_error(refusal);
+        for(auto* cls:{selected,replication,info,actor}) {
+            LifecycleStep();
+            if(!cls->classDescriptor||cls->defaultOwner||!cls->classFieldLinksValid||
+                cls->reflection.metaClass!="Class"||!(cls->reflection.flags&0x04000000u))
+                throw std::runtime_error(refusal);
+        }
+    }
     void RequireOriginalActorTickPhysicsImplementation(RuntimeObject* actor) {
         auto* selected=OriginalActorTickNativeClass(actor);const auto& path=selected->reflection.objectPath;
         // Owned native vtables/IAT, ORIGINAL-ACTOR-TICK-PHYSICS-PHASE.md
@@ -92,6 +110,12 @@
             // Preserve actual selected Shadow script and later dependencies;
             // this is not permission for arbitrary native Decal descendants.
             RequireOriginalDecalAncestry(selected);return;
+        }
+        if(path=="Engine.GameReplicationInfo") {
+            // GRI10427428 +14/+64/+8C are the original Actor methods.
+            // Preserve its actual selected Timer and every normal phase;
+            // standalone is not permission to skip replication-info actors.
+            RequireOriginalGameReplicationInfoAncestry(selected);return;
         }
         if(path=="Engine.GameInfo") {
             // GameInfo10427AE0 slots+14/+64/+8C are the original Actor
