@@ -1,5 +1,48 @@
 # Port status
 
+## Pawn falling setup now passes in the first Training frame (2026-10-26)
+
+The shared falling method now retains actual Pawn context, implements the
+authenticated negative PlayerPawn preprocessor, runs original air-control/
+AccelRate/GroundSpeed setup and carries the original horizontal speed cap
+through substeps. Predictive collision uses the real flags6 cylinder query;
+normalized/scaled acceleration stores and fresh raw Velocity.Z are preserved.
+A captured Pawn entering fresh Physics3 takes its original swimming handoff;
+that missing service remains explicit instead of falling through into landing.
+Active nonfinite Core.SafeNormal, PlayerPawn preprocessing, swimming, Pawn
+landing/Walking and wall/slide work remain unfinished, not fabricated success.
+
+Entry/class reads now retain authentic Actor/Level identity without eagerly
+demanding collision preparation before a query/sweep. Real geometry services
+retain unchanged admission. The generated zero-time Physics2 control proves
+typed setup, unconditional Z/restore stores, checkpoint and late full-root
+work/write undo without fake collision success providers.
+
+Setup/cap101,371 checks/79 refusals/9,344 independent x87 cases and shared
+Actor/Pawn falling60,161/980 pass. Generated ScriptedPawn section2,765
+cumulative/46 and complete driver7,637/142 plus final malformed-schema control
+pass. Full desktop, Android native and strict ARM64 checks pass. CTest254
+registered/215 executed/39 explicit owned-data skips/zero failures68.04s.
+Separate owned first-Training crate415/5, deferred429/21 and animation588/24
+regressions pass.
+
+Actual first Training repeat2 now passes the falling work and reaches
+`Original Pawn physicsRotation is not implemented`, identically at206,922
+instructions/15,829 writes with full undo. Pair-door repeat2 retains
+207,258/15,897 with both56-unit panel moves/2 completion callbacks before
+the same next gate. Separate two-Fire repeat2 remains228,837/26,047 with48
+rows/2 cycles/2 notifies/4 traces/2 crate changes/9 births and complete undo
+at later PlayerPawn FExec. Expected-error checks do NOT publish a playable
+startup, surviving usable loot or controller attack results.
+
+All45 original files and7 final compiler inputs retain exact SHA256/length/
+UTC-mtime; all build/test/probe jobs are terminal. No Quest detected/new APK,
+account/character-creation UI or other-map integration. Full first-map live
+destruction, collectible loot and automatic stacked-crate gravity remain
+unfinished. Next is the actual complete Pawn rotation method, then landing/
+Walking and other services as reached. See ORIGINAL-PAWN-FALLING-SETUP.md,
+ORIGINAL-TRAINING-PAWN-PHYSICS-GAP.md and ORIGINAL-PAWN-ROTATION-GAP.md.
+
 ## Original APawn physics coordinator bound to Training (2026-10-26)
 
 The Pawn Tick suffix now calls the separate original APawn performPhysics

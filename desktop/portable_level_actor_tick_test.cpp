@@ -352,6 +352,7 @@ Tables Build(Fixture& fixture,bool moverControl=false,std::uint32_t oldLocationF
         engine.Property("Health","IntProperty",nativePawn,ec,0,0x10021u);
         engine.Property("MoveTimer","FloatProperty",nativePawn,ec);
         engine.Property("AvgPhysicsTime","FloatProperty",nativePawn,ec,0,2u);
+        for(const auto* name:{"AirControl","AccelRate","GroundSpeed"})engine.Property(name,"FloatProperty",nativePawn,ec,0,0x21u);
         engine.Property("bAdvancedTactics","BoolProperty",nativePawn,ec);
         engine.Property("bOnFire","BoolProperty",nativePawn,ec,0,0x20u);
         engine.Property("bIsPlayer","BoolProperty",nativePawn,ec,0,0x20u);
@@ -360,6 +361,11 @@ Tables Build(Fixture& fixture,bool moverControl=false,std::uint32_t oldLocationF
         engine.Property("PrePivot","StructProperty",actor,ec,ev,0x20u);
         engine.Property("Acceleration","StructProperty",actor,ec,ev,0x20u);
         engine.Property("DesiredRotation","StructProperty",actor,ec,er,0x21u);
+        const auto pointRegion=engine.Export("PointRegion",engine.Import("Struct",ec),0,actor,true);
+        engine.Property("Zone","ObjectProperty",pointRegion,ec,zone);
+        engine.Property("iLeaf","IntProperty",pointRegion,ec);
+        engine.Property("ZoneNumber","ByteProperty",pointRegion,ec);engine.StructBody(pointRegion);
+        engine.Property("Region","StructProperty",actor,ec,pointRegion,2u);
     }
     engine.Property("Role","ByteProperty",actor,ec,roleEnum,0x20u);
     engine.Property("RemoteRole","ByteProperty",actor,ec,roleEnum,0x21u);
@@ -1111,6 +1117,41 @@ void ScriptedPawnBoundaryControl() {
     Require(outerCommit.execution.nativeWork&&outerCommit.execution.nativeWork->used>0u,"Pawn outer escaped shared native work");
     QuestVr::Vm::Limits outerWork;outerWork.nativeWork=outerCommit.execution.nativeWork->used-1u;
     suffixRefusal(pawnOuter,outerWork,"late Pawn outer work",Status::Budget,{});
+
+    // Genuine zero-time falling still runs Pawn setup and restores the raw
+    // original Acceleration, but does not invent a sweep/landing authority.
+    // The nonzero-time original Training probe remains a separate requirement.
+    auto fallingZero=pawnOuter;Property(fallingZero,"Bad0","Engine.Actor.Physics",Value::Byte(2u));
+    Property(fallingZero,"Bad0","Engine.Actor.Acceleration",Value::Vector({5.0f,6.0f,7.0f}));
+    Property(fallingZero,"Bad0","Engine.Pawn.AirControl",Value::Float(0.05f));
+    Property(fallingZero,"Bad0","Engine.Pawn.AccelRate",Value::Float(2048.0f));
+    Property(fallingZero,"Bad0","Engine.Pawn.GroundSpeed",Value::Float(320.0f));
+    Value storedRegion;storedRegion.kind=Kind::Struct;
+    storedRegion.fields.emplace("zone",Value::Text(Kind::Object,Path("Level0")));
+    storedRegion.fields.emplace("ileaf",Value::Integer(0));storedRegion.fields.emplace("zonenumber",Value::Byte(1u));
+    Property(fallingZero,"Bad0","Engine.Actor.Region",storedRegion);
+    auto inactiveZero=fallingZero;Property(inactiveZero,"Bad0","Engine.Actor.Physics",Value::Byte(5u));
+    fixture.Restore(Envelope(legacy,inactiveZero));const auto outerZero=AdvancePortableLevelDynamicActors(0.0f,0);RequirePass(outerZero);
+    fixture.Restore(Envelope(legacy,fallingZero));const auto fallingCommit=AdvancePortableLevelDynamicActors(0.0f,0);RequirePass(fallingCommit);
+    Require(fallingCommit.execution.writes==outerZero.execution.writes+4u&&
+        ReadPortableActorScriptProperty(Path("Bad0"),"Acceleration").vector==std::array<float,3u>{5,6,7}&&
+        ReadPortableActorScriptProperty(Path("Bad0"),"Velocity").vector==std::array<float,3u>{7,-8,9}&&
+        readFloat("MoveTimer")==2.0f&&readFloat("AvgPhysicsTime")==0.4f&&Count("Bad0","PostTouchCount")==1,
+        "Bound Pawn setup skipped its native Z/restore stores or fabricated zero-time movement");
+    const auto fallingSaved=fixture.Save("PawnFallingZeroCommitted");fixture.Restore(legacy);fixture.Restore(fallingSaved);
+    Require(fixture.Save("PawnFallingZeroReloaded")==fallingSaved&&
+        ReadPortableActorScriptProperty(Path("Bad0"),"Acceleration").vector==std::array<float,3u>{5,6,7},
+        "Bound zero-time Pawn falling stores/edge continuation lost checkpoint identity");
+    for(bool workCut:{false,true}) {
+        fixture.Restore(Envelope(legacy,fallingZero));const auto before=fixture.Save("PawnFallingZeroBefore");
+        const auto revision=GetPortableRuntimeWorldRevision();const auto gc=GC::GetStats();
+        QuestVr::Vm::Limits limits;if(workCut)limits.nativeWork=fallingCommit.execution.nativeWork->used-1u;
+        else limits.writes=fallingCommit.execution.writes-1u;
+        const auto failure=AdvancePortableLevelDynamicActors(0.0f,0,limits);
+        Require(!failure.execution.passed()&&!failure.execution.committed&&!failure.completed&&failure.execution.status==Status::Budget,
+            "Bound Pawn falling late shared budget failure was swallowed");
+        undo(before,revision,gc,"zero-time Pawn falling late budget");++refusals;
+    }
 
     // Actual bound native723, entered by decoded generated UE1 bytecode, not
     // by its pure arithmetic helper. Deliberately unrelated Float mirror time

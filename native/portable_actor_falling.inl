@@ -1,5 +1,20 @@
 // Explicit original physFalling on the caller's actual world/VM transaction.
 // This is not performPhysics (rotation/PendingTouch) or a world scheduler.
+    bool FallingNativeClass(RuntimeObject* actor,const char* path) {
+        actor=LifecycleActor(reinterpret_cast<std::uintptr_t>(actor));auto* target=Object(path);
+        if(!target->classDescriptor||target->defaultOwner||!target->classFieldLinksValid||
+            target->reflection.metaClass!="Class"||!(target->reflection.flags&0x04000000u))
+            throw std::runtime_error("Original falling class target lacks its genuine native UClass identity");
+        std::array<RuntimeObject*,128u> visited{};std::size_t depth{};
+        for(auto* cls=actor->cls;cls;cls=cls->base) {
+            LifecycleStep();
+            if(depth==visited.size()||std::find(visited.begin(),visited.begin()+depth,cls)!=visited.begin()+depth||
+                !cls->classDescriptor||cls->defaultOwner||!cls->classFieldLinksValid)
+                throw std::runtime_error("Original falling Class/Super walk is malformed or cyclic");
+            visited[depth++]=cls;if(cls==target)return true;
+        }
+        return false;
+    }
     Property FallingOldLocationProperty(RuntimeObject* actor) {
         RequireMapActor(actor);
         const auto field=NativeCoordsProperty(actor,"Engine.Actor.OldLocation",Kind::Vector,0x2u);
@@ -66,7 +81,9 @@
     QuestVr::OriginalActorFallingStats RetailStepActorFalling(RuntimeObject* actor,float deltaSeconds,
         QuestVr::Vm::Execution& execution,PortableStartupFallingObservation* observation=nullptr) {
         if(!transaction_)throw std::runtime_error("Original falling requires its caller VM root");
-        actor=RetailCollisionActor(reinterpret_cast<std::uintptr_t>(actor));
+        // Original entry/class/field reads do not call a collision service.
+        // Keep real Engine/Cylinder admission at reached sweep/query providers.
+        actor=LifecycleActor(reinterpret_cast<std::uintptr_t>(actor));
         auto* level=ZoneLevel(reinterpret_cast<std::uintptr_t>(actor->nativeXLevel));
         QuestVr::NativeScratchScope scratch(nativeQueryScratchBytes_,32u<<10u,
             [this](auto bytes){ValidateStateBudget(bytes);});
@@ -110,9 +127,50 @@
             destination.assign(value);
         };
         QuestVr::OriginalActorFallingQueries q;q.work=[this]{LifecycleStep();};
-        q.isPawnClass=[&](auto a){requireSource(a);return RetailTouchClass(a,"Engine.Pawn");};
-        q.isPlayerPawnClass=[&](auto a){ZoneActor(a,level);return RetailTouchClass(a,"Engine.PlayerPawn");};
-        q.isDecorationClass=[&](auto a){requireSource(a);return RetailTouchClass(a,"Engine.Decoration");};
+        QuestVr::OriginalPawnFallingSetupQueries pawnQueries;pawnQueries.work=q.work;
+        const auto pawnScalar=[&](auto a,const char* name) {
+            auto* r=requireSource(a);
+            return OriginalAnimationRead(r,OriginalAnimationField(r,"Engine.Pawn",name,Kind::Float,0x21u,"FloatProperty"),Kind::Float).floating;
+        };
+        pawnQueries.airControl=[&](auto a){return pawnScalar(a,"AirControl");};
+        pawnQueries.accelRate=[&](auto a){return pawnScalar(a,"AccelRate");};
+        pawnQueries.groundSpeed=[&](auto a){return pawnScalar(a,"GroundSpeed");};
+        pawnQueries.radius=[&](auto a){return RetailFindBaseDimension(requireSource(a),"Engine.Actor.CollisionRadius");};
+        pawnQueries.height=[&](auto a){return RetailFindBaseDimension(requireSource(a),"Engine.Actor.CollisionHeight");};
+        pawnQueries.acceleration=[&](auto a,unsigned c){return readVector(a,c,"Engine.Actor.Acceleration");};
+        pawnQueries.velocity=[&](auto a,unsigned c){return readVector(a,c,"Engine.Actor.Velocity");};
+        pawnQueries.location=[&](auto a,unsigned c){requireSource(a);return MoveLocation(a,c);};
+        pawnQueries.level=[&](auto a){requireSource(a);return reinterpret_cast<std::uintptr_t>(level);};
+        pawnQueries.safeNormal=[](auto value){return QuestVr::ActorLineTraceDetail::Normal(value,true);};
+        pawnQueries.writeAccelerationWord=[&](auto a,unsigned c,std::uint32_t bits) {
+            requireSource(a);const auto field=vectorField("Engine.Actor.Acceleration");
+            // Setup begins with one Z store, then may write two XYZ groups.
+            // Admit each real reference rather than assuming channel0 first.
+            ReserveActorPhysicsReferences(field,1u);WriteFallingVectorWord(actor,field,c,bits,execution);
+        };
+        pawnQueries.writeVelocityWord=[&](auto a,unsigned c,std::uint32_t bits){writeVector(a,c,bits,"Engine.Actor.Velocity");};
+        pawnQueries.singleLineCheck=[&](auto l,QuestVr::OriginalActorLineHit& hit,auto a,auto end,auto start,
+            std::uint32_t flags,auto extent,std::int32_t extra) {
+            requireSource(a);
+            if(l!=reinterpret_cast<std::uintptr_t>(level)||flags!=6u||extra)
+                throw std::runtime_error("Original Pawn falling changed its predictive native Level trace packet");
+            return RetailSingleLineLevel(level,actor,hit,end,start,extent,static_cast<std::uint8_t>(flags),0u).clear?1:0;
+        };
+        q.pawnPreprocess=[&](auto a,float,std::int32_t) {
+            if(OriginalPawnPlayerCast(requireSource(a)))
+                throw std::runtime_error("Original PlayerPawn physFalling preprocessing is not implemented");
+            // Complete original103CC450 negative PlayerPawn cast arm returns
+            // AL0 without world stores/callbacks, not an empty Pawn override.
+            return false;
+        };
+        q.pawnSetup=[&](auto a,float dt){requireSource(a);return QuestVr::SetupOriginalPawnFalling(a,dt,pawnQueries);};
+        q.pawnVelocityCap=[&](auto a,float cap){requireSource(a);return QuestVr::CapOriginalPawnFallingVelocity(a,cap,pawnQueries);};
+        q.startSwimming=[&](auto a,auto,float,float,std::int32_t) {
+            requireSource(a);throw std::runtime_error("Original Pawn startSwimming is not implemented");
+        };
+        q.isPawnClass=[&](auto a){return FallingNativeClass(requireSource(a),"Engine.Pawn");};
+        q.isPlayerPawnClass=[&](auto a){return FallingNativeClass(ZoneActor(a,level),"Engine.PlayerPawn");};
+        q.isDecorationClass=[&](auto a){return FallingNativeClass(requireSource(a),"Engine.Decoration");};
         q.pawnFlag=[&](auto a){requireSource(a);return flag(a,"Engine.Actor.bIsPawn","Engine.Actor",0x2u);};
         q.bounce=[&](auto a){requireSource(a);return flag(a,"Engine.Actor.bBounce","Engine.Actor",0x21u);};
         q.justTeleported=[&](auto a){requireSource(a);return flag(a,"Engine.Actor.bJustTeleported","Engine.Actor",0x2u);};
@@ -131,7 +189,7 @@
         q.acceleration=[&](auto a,unsigned c){return readVector(a,c,"Engine.Actor.Acceleration");};
         q.zoneGravity=[&](auto z,unsigned c) {
             auto* zone=ZoneActor(z,level);if(c>=3u)throw std::runtime_error("Original falling gravity channel is out of bounds");
-            if(!RetailTouchClass(z,"Engine.ZoneInfo"))throw std::runtime_error("Original falling gravity receiver is not ZoneInfo");
+            if(!FallingNativeClass(zone,"Engine.ZoneInfo"))throw std::runtime_error("Original falling gravity receiver is not ZoneInfo");
             const auto field=NativeCoordsProperty(zone,"Engine.ZoneInfo.ZoneGravity",Kind::Vector,0x21u);
             auto* node=Object(field.key);
             if(node->outer!=Object("Engine.ZoneInfo") || !node->property || node->property->baseField ||
@@ -145,7 +203,7 @@
         };
         q.terminal=[&](auto z) {
             auto* zone=ZoneActor(z,level);
-            if(!RetailTouchClass(z,"Engine.ZoneInfo"))throw std::runtime_error("Original falling terminal receiver is not ZoneInfo");
+            if(!FallingNativeClass(zone,"Engine.ZoneInfo"))throw std::runtime_error("Original falling terminal receiver is not ZoneInfo");
             const auto field=NoiseProperty(zone,"Engine.ZoneInfo.ZoneTerminalVelocity",Kind::Float,0x1u);
             auto* node=Object(field.key);
             if(node->outer!=Object("Engine.ZoneInfo") || !node->property || node->property->baseField || node->property->referencedType ||

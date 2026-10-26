@@ -1,5 +1,29 @@
 # Immediate milestone: complete the first Training map
 
+Latest2026-10-26: real Pawn falling setup/cap now runs in the shared original
+method: captured Pawn context, authenticated non-PlayerPawn preprocessing,
+actual AirControl/AccelRate/GroundSpeed math, flags6 predictive cylinder trace,
+normalized/scaled stores, retained horizontal cap and fresh raw Z. Fresh
+Physics3 swimming handoff stays explicit until implemented. No NPC skips,
+fake floors or Actor/Decoration physics aliases were added.
+
+Setup101,371/79/9,344 independent x87 cases and shared falling60,161/980 pass.
+Production ScriptedPawn2,765 cumulative/46 and full driver7,637/142 plus final
+malformed-schema control pass, including typed zero-time Physics2 setup/
+restore/checkpoint/late undo. Full desktop/Android-native/strict ARM64 checks
+and CTest215 executed/254 registered/39 explicit skips/zero failures68.04s
+pass. Separate owned crate415/5, deferred429/21 and animation588/24 pass.
+
+Actual Training repeat2 now reaches Pawn physicsRotation at206,922 script
+instructions/15,829 writes with complete undo; paired doors retain207,258/
+15,897 and both56-unit moves/2 completion callbacks before the same new gate.
+Two-Fire repeat2 remains228,837/26,047 with actual crate/loot/debris observations
+and full undo at later FExec. All45 originals and7 compiler inputs unchanged;
+all jobs terminal. No Quest/new APK, account/player-creation UI or other-map
+integration. Live first-map destruction, surviving collectible loot and gravity
+are still unfinished. Next actual Pawn rotation is independently audited in
+ORIGINAL-PAWN-ROTATION-GAP.md; falling scope is in ORIGINAL-PAWN-FALLING-SETUP.md.
+
 Latest2026-10-26: real APawn outer physics now binds from the Pawn suffix:
 entry raw Velocity, actual dispatch table, fresh Pawn-specific rotation gate,
 MoveTimer/AvgPhysicsTime PC64 stores and native PendingTouch/PostTouch with

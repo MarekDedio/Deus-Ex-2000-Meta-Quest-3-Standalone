@@ -1,6 +1,7 @@
 #pragma once
 
 #include "quest_actor_line_trace.h"
+#include "quest_pawn_falling_setup.h"
 
 #include <array>
 #include <bit>
@@ -16,6 +17,10 @@ namespace QuestVr {
 // identities are opaque Actor/Level/Zone handles, not detached map presets.
 struct OriginalActorFallingQueries {
     std::function<bool(std::uintptr_t)> isPawnClass,isPlayerPawnClass,isDecorationClass;
+    std::function<bool(std::uintptr_t,float,std::int32_t)> pawnPreprocess;
+    std::function<OriginalPawnFallingSetupStats(std::uintptr_t,float)> pawnSetup;
+    std::function<OriginalPawnFallingVelocityCapStats(std::uintptr_t,float)> pawnVelocityCap;
+    std::function<void(std::uintptr_t,PortableModelVec3,float,float,std::int32_t)> startSwimming;
     std::function<bool(std::uintptr_t)> pawnFlag,bounce,justTeleported,deleted,bobbing,zoneWater;
     std::function<std::uint8_t(std::uintptr_t)> zoneNumber;
     std::function<std::uintptr_t(std::uintptr_t)> zone,level;
@@ -40,7 +45,8 @@ struct OriginalActorFallingQueries {
 struct OriginalActorFallingStats {
     std::size_t steps{},substeps{},apexSplits{},moveCalls{},oldLocationWords{},velocityWords{},
         accelerationWords{},teleportWrites{},counterWrites{},landedCalls{},hitWallCalls{},outOfWorldCalls{};
-    bool landed{},deleted{},outOfWorld{},stoppedByBounce{};
+    bool landed{},deleted{},outOfWorld{},stoppedByBounce{},capturedPawn{},pawnPreprocessed{},swimming{};
+    float pawnSpeedCap{};
     float remaining{};
     std::int32_t iterations{};
 };
@@ -78,14 +84,15 @@ inline void Channel(PortableModelVec3& value,unsigned channel,float scalar) {
 } // namespace ActorFallingDetail
 
 // Owned GOTY AActor::physFalling103D0A50..103D248E. This coordinator implements
-// the finite dry non-Pawn/non-bobbing branch, including adaptive subdivision,
+// the finite dry/non-bobbing branch, including authenticated Pawn setup,
+// retained horizontal speed cap, adaptive subdivision,
 // apex resplitting, actual swept movement, Decoration collision-counter edits,
 // selected bounce HitWall, ordinary landing and final velocity/terminal-speed
 // correction. Core PC64
 // arithmetic and EVERY original Float spill are retained. Active nonfinite
 // arithmetic/Float overflow explicitly refuses through the caller's root.
 //
-// The reached Pawn, water, bobbing and non-bounce wall/slide branches
+// Reached missing Pawn setup/landing/swimming providers, water, bobbing and wall/slide branches
 // explicitly refuse; they are not empty implementations. There is no forced
 // floor, local transaction/rollback, world scheduler, performPhysics rotation
 // or PendingTouch epilogue here. Selected callbacks may mutate/delete/reenter
@@ -115,7 +122,10 @@ inline OriginalActorFallingStats StepOriginalActorFalling(std::uintptr_t actor,f
         return result;
     };
     // Actual ancestry cast and Pawn preprocessing precede the ZoneNumber test.
-    if(read(queries.isPawnClass,actor))throw std::invalid_argument("Original Pawn physFalling preprocessing is not implemented");
+    stats.capturedPawn=read(queries.isPawnClass,actor);
+    if(stats.capturedPawn&&read(queries.pawnPreprocess,actor,suppliedDelta,suppliedIterations)) {
+        stats.pawnPreprocessed=true;return stats;
+    }
     if(read(queries.zoneNumber,actor)==0u) {
         ++stats.outOfWorldCalls;Call(queries,stats,queries.fellOutOfWorld,actor);
         stats.outOfWorld=true;return stats;
@@ -123,6 +133,10 @@ inline OriginalActorFallingStats StepOriginalActorFalling(std::uintptr_t actor,f
     // Raw capture: a nonfinite Acceleration can remain inactive on a zero-time
     // step, and the final stores must preserve all original words exactly.
     const auto originalAcceleration=readVector(queries.acceleration,actor,false);
+    if(stats.capturedPawn) {
+        const auto setup=read(queries.pawnSetup,actor,suppliedDelta);
+        stats.pawnSpeedCap=setup.horizontalSpeedCap;stats.accelerationWords+=setup.accelerationWords;
+    }
     OriginalActorLineHit hit;
     bool apexFlag{};
     std::int32_t bounceCount{};
@@ -196,6 +210,10 @@ inline OriginalActorFallingStats StepOriginalActorFalling(std::uintptr_t actor,f
             }
         } else apexFlag=false;
 
+        if(stats.capturedPawn) {
+            const auto capped=read(queries.pawnVelocityCap,actor,stats.pawnSpeedCap);
+            stats.velocityWords+=capped.velocityWords;
+        }
         PortableModelVec3 drift{};
         bool includeDrift=!read(queries.pawnFlag,actor);
         if(!includeDrift) {
@@ -216,6 +234,11 @@ inline OriginalActorFallingStats StepOriginalActorFalling(std::uintptr_t actor,f
         ++stats.moveCalls;
         static_cast<void>(Call(queries,stats,queries.moveActor,level,actor,move,rotation,hit,std::array<std::int32_t,4u>{}));
         if(read(queries.deleted,actor)){stats.deleted=true;return stats;}
+        if(stats.capturedPawn&&read(queries.physics,actor)==3u) {
+            stats.remaining=Store32(Add64(Multiply64(Sub(DecodeDouble(1.0),Load(hit.time)),Load(delta)),Load(stats.remaining)));
+            Call(queries,stats,queries.startSwimming,actor,oldVelocity,delta,stats.remaining,stats.iterations);
+            stats.swimming=true;return stats;
+        }
 
         const bool collided=Compare64(Load(hit.time),DecodeDouble(1.0))<0;
         if(collided) {

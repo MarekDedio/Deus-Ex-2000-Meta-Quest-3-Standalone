@@ -135,3 +135,9 @@ that same boundary; separate two-Fire repeat2 retains228,837/26,047 and its
 real crate/loot/debris observations before full undo at later FExec. None of
 these expected-error checks is a committed startup, live controller melee,
 surviving usable loot, automatic stacked-crate gravity or headset acceptance.
+
+Subsequent falling setup/cap integration now lets the first real Training
+frame pass that preprocessing gap and reach the separate actual Pawn rotation
+service, at206,922 instructions/15,829 writes with full rollback. This does not
+complete rotation or landing/Walking. See ORIGINAL-PAWN-FALLING-SETUP.md and
+ORIGINAL-PAWN-ROTATION-GAP.md for current scope and next source authority.

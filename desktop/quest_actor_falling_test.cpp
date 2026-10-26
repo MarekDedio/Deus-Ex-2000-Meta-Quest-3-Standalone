@@ -537,12 +537,63 @@ void ActiveBranchesAndRootContracts() {
         Require(refused&&f.work==0u&&f.writes==0u,"Null falling Actor reached actual native providers");++refusals;
     }
 }
+void PawnSharedContracts() {
+    {
+        Fixture f;f.pawnClass=true;auto q=f.Queries();
+        q.pawnPreprocess=[&](Id a,float dt,std::int32_t it){f.Actor(a);Require(dt==0.0625f&&it==3,"Pawn preprocessor lost whole delta/iterations");
+            f.order.emplace_back("pawn-preprocess");return true;};
+        q.zoneNumber={};const auto before=f.state;const auto result=f.RunWith(0.0625f,3,q);
+        Require(result.capturedPawn&&result.pawnPreprocessed&&f.state==before&&f.order==std::vector<std::string>{"pawn-class","pawn-preprocess"},
+            "Handled Pawn preprocessing read Zone/captured acceleration or fell through");
+    }
+    const auto bind=[](Fixture& f,OriginalActorFallingQueries& q,QuestVr::OriginalPawnFallingSetupQueries& setup) {
+        f.pawnClass=true;f.state.pawnFlag=true;
+        setup.work=q.work;setup.acceleration=q.acceleration;setup.velocity=q.velocity;
+        setup.writeAccelerationWord=q.writeAccelerationWord;setup.writeVelocityWord=q.writeVelocityWord;
+        setup.airControl=[](Id){return 0.05f;};setup.accelRate=[](Id){return 128.0f;};setup.groundSpeed=[](Id){return 1000.0f;};
+        setup.safeNormal=[](Vec v){return QuestVr::ActorLineTraceDetail::Normal(v,true);};
+        q.pawnPreprocess=[&f](Id,float,std::int32_t){f.order.emplace_back("pawn-preprocess");return false;};
+        q.pawnSetup=[&setup,&f](Id a,float dt){f.order.emplace_back("pawn-setup");return QuestVr::SetupOriginalPawnFalling(a,dt,setup);};
+        q.pawnVelocityCap=[&setup,&f](Id a,float cap){f.order.emplace_back("pawn-cap");return QuestVr::CapOriginalPawnFallingVelocity(a,cap,setup);};
+    };
+    {
+        Fixture f;f.state.velocity={10,0,-16};f.state.acceleration={8,0,7};const auto before=f.state.acceleration;
+        auto q=f.Queries();QuestVr::OriginalPawnFallingSetupQueries setup;bind(f,q,setup);
+        const auto result=f.RunWith(0.0625f,0,q);
+        const auto setupAt=std::find(f.order.begin(),f.order.end(),"pawn-setup"),capAt=std::find(f.order.begin(),f.order.end(),"pawn-cap");
+        Require(result.capturedPawn&&!result.pawnPreprocessed&&result.moveCalls==1u&&result.accelerationWords==10u&&
+            Equal(f.state.acceleration,before)&&setupAt!=f.order.end()&&capAt!=f.order.end(),
+            "Shared Pawn falling did not run real setup, count stores and restore captured acceleration");
+        Require(f.moves[0].acceleration.z==0.0f&&Bits(f.moves[0].acceleration.x)==Bits(6.4f)&&
+            std::find(f.order.begin(),setupAt,"acceleration-2")!=setupAt&&
+            std::find(capAt,f.order.end(),"move")!=f.order.end(),
+            "Pawn setup/cap ran before acceleration capture or after movement");
+    }
+    {
+        Fixture f;f.state.acceleration={0,0,7};f.state.velocity={10,0,-16};f.onMove=[&](std::size_t,OriginalActorLineHit&){f.state.physics=3u;};
+        auto q=f.Queries();QuestVr::OriginalPawnFallingSetupQueries setup;bind(f,q,setup);
+        bool swimming{};q.startSwimming=[&](Id a,Vec old,float dt,float remaining,std::int32_t iterations) {
+            f.Actor(a);Require(Equal(old,{10,0,-16})&&dt==0.0625f&&remaining==0.0f&&iterations==1,"Swimming handoff lost old Velocity/time/iterations");
+            swimming=true;
+        };
+        const auto result=f.RunWith(0.0625f,0,q);
+        Require(result.swimming&&swimming&&!result.landed&&f.landings.empty()&&f.state.acceleration.z==0.0f&&result.accelerationWords==1u,
+            "Pawn swimming handoff fell through into collision/tail or restored original acceleration");
+    }
+    {
+        Fixture f;f.state.acceleration={0,0,7};f.state.velocity={10,0,-16};f.hitTime=0.5f;
+        f.onMove=[&](std::size_t,OriginalActorLineHit&){f.state.physics=3u;};
+        auto q=f.Queries();QuestVr::OriginalPawnFallingSetupQueries setup;bind(f,q,setup); // no swimming provider
+        const auto before=f.state;bool refused{};try{f.RunWith(0.0625f,0,q);}catch(const std::invalid_argument&){refused=true;}
+        Require(refused&&f.state==before&&f.landings.empty(),"Missing reached Pawn swimming silently used landing or escaped caller undo");++refusals;
+    }
+}
 } // namespace
 
 int main() {
     try {
-        DryArithmeticContracts();AdaptiveAndApexContracts();LandingAndFreshReadContracts();BounceContracts();ActiveBranchesAndRootContracts();
-        std::cout<<"Original dry non-Pawn falling coordinator: "<<checks<<" checks, "<<refusals
+        DryArithmeticContracts();AdaptiveAndApexContracts();LandingAndFreshReadContracts();BounceContracts();ActiveBranchesAndRootContracts();PawnSharedContracts();
+        std::cout<<"Original dry Actor/Pawn falling coordinator: "<<checks<<" checks, "<<refusals
             <<" refusal controls. Synthetic native providers; NOT a world Tick or on-headset gravity acceptance.\n";return 0;
     }catch(const std::exception& e){std::cerr<<e.what()<<'\n';return 1;}
 }

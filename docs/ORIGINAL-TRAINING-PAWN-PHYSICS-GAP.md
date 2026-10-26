@@ -6,8 +6,11 @@ proves neither a committed Training frame nor completed crate destruction,
 collectible loot, automatic stacked-crate gravity or headset gameplay.
 Current `portable_actor_pawn_tick.inl` calls the separate original APawn outer
 coordinator in `portable_pawn_perform_physics.inl`. It now reaches the actual
-falling method, whose Pawn preprocessing/setup remains explicitly unfinished;
-the crate helper is not a replacement for that branch.
+falling method. Authenticated non-PlayerPawn preprocessing, actual Pawn setup
+and retained horizontal cap are now bound. The first real Training frame
+passes that dry falling work and reaches the separate Pawn rotation gap.
+PlayerPawn preprocessing, swimming and landing/Walking remain unfinished;
+the crate helper is not a replacement for these branches.
 
 ## Owned-source authority
 
@@ -27,11 +30,12 @@ portable object offsets. Existing native virtual identity proof is in
 `APawn.performPhysics`, thunk10302860 to body103C9A70. It is different from
 `AActor.performPhysics`103C9770. Current actual first-Training repeat2 passes
 the guarded selected Tick/state/native-timer/LifeSpan suffix and the separate
-APawn outer dispatch, then reaches `Original Pawn physFalling preprocessing
-is not implemented` at206,922 instructions/15,797 writes, with full undo.
-The outer's additional native reads/work do not add script instructions/stores
-before this next boundary. This proves the reached method, not completed Pawn
-movement or startup.
+APawn outer dispatch and first dry falling work, then reaches
+`Original Pawn physicsRotation is not implemented` at206,922 instructions/
+15,829 writes, with full undo. The earlier preprocessing gate was at15,797
+writes; the32 additional native stores now precede the real rotation service.
+This proves the reached methods, not a committed Training frame or completed
+Pawn movement/startup.
 
 ## The first falling preprocessor is not all Pawn falling work
 
@@ -60,8 +64,9 @@ the second Pawn-specific section later in physFalling.
 
 After ZoneNumber handling, original Acceleration.X/Y/Z is raw-captured at
 103D0B9F..103D0BC4. Non-Pawn jumps to103D0E0C; a retained Pawn instead enters
-103D0BD0..103D0E0C. This is missing from `quest_actor_falling.h`, which currently
-refuses Pawn at entry rather than silently skipping it.
+103D0BD0..103D0E0C. This is now implemented in
+`quest_pawn_falling_setup.h` and integrated through the captured Pawn hooks in
+`quest_actor_falling.h`, not silently omitted.
 
 The native operands include Pawn Float words+390 and+384. The owned metadata
 independently confirms real `Engine.Pawn.AirControl` and `AccelRate`, both
@@ -69,7 +74,9 @@ scalar FloatProperty/flags21/base0/no subtype. The prior complete linked Pawn
 layout methodology and native size5D4 anchors are documented in
 `ORIGINAL-SCRIPTEDPAWN-TICK-PREREQUISITES.md`; the new binding must establish
 these particular field/offset correspondences with that layout, not only
-reuse matching pinned-engine member names.
+reuse matching pinned-engine member names. The fresh complete owned prefix
+walk now confirms GroundSpeed378/ref302, AccelRate384/ref4030 and
+AirControl390/ref3979; see ORIGINAL-PAWN-FALLING-SETUP.md.
 
 At103D0BD9..0BE7 the first word is compared with Float0.15 (bytes9A99193E at
 1042ABF4). Only the ordered-greater arm performs the predictive horizontal
@@ -145,10 +152,13 @@ entry Velocity capture, actual Physics2 service, rotation gate, MoveTimer/
 average stores and the distinct callback-mutated-null touch path. Focused
 helper and generated production callback/checkpoint/undo controls pass; see
 ORIGINAL-PAWN-PERFORM-PHYSICS.md. Active missing movement/rotation services stay
-explicit, so this is not finished NPC physics. Next extend the shared falling contract with authenticated
-non-PlayerPawn preprocessing and actual Pawn air-control setup, followed by
-the real Pawn processLanded/Walking continuation and Pawn rotation as reached
-by the first Training NPCs. Keep other unvisited modes closed, not no-op.
+explicit, so this is not finished NPC physics. Authenticated non-PlayerPawn
+preprocessing, actual air-control setup, retained cap and the fresh Physics3
+swimming handoff/refusal are now integrated. Next implement actual Pawn
+rotation, which the first Training NPC now reaches, then the real Pawn
+processLanded/Walking and other services as reached. Keep unvisited modes
+closed, not no-op. See ORIGINAL-PAWN-FALLING-SETUP.md and
+ORIGINAL-PAWN-ROTATION-GAP.md.
 
 Reusable existing pieces are `NativeScalar` PC64 arithmetic/sqrt/Float spills,
 raw `WriteFallingVectorWord`/`WriteFallingScalar`, `OriginalAnimationField`

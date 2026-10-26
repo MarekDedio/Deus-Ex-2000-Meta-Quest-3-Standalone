@@ -1186,7 +1186,7 @@ if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
 endif()
 add_test(NAME quest_scalar_float COMMAND quest_scalar_float_test)
 
-foreach(SCRIPTED_PAWN_TEST native_scalar scripted_pawn_decay scripted_pawn_tick actor_pawn_tick actor_timer_phase actor_last_rendered pawn_perform_physics)
+foreach(SCRIPTED_PAWN_TEST native_scalar scripted_pawn_decay scripted_pawn_tick actor_pawn_tick actor_timer_phase actor_last_rendered pawn_perform_physics pawn_falling_setup)
     add_executable(quest_${SCRIPTED_PAWN_TEST}_test quest_${SCRIPTED_PAWN_TEST}_test.cpp)
     target_compile_features(quest_${SCRIPTED_PAWN_TEST}_test PRIVATE cxx_std_20)
     target_include_directories(quest_${SCRIPTED_PAWN_TEST}_test PRIVATE "${PORT_NATIVE}")
