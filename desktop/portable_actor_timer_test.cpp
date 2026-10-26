@@ -419,7 +419,13 @@ void Synthetic() {
     Refusal(fixture,"nonactor advance receiver",[&]{return AdvancePortableActorTimer(Path("Object0"),1.0f);});
     Refusal(fixture,"unavailable advance receiver",[&]{return AdvancePortableActorTimer(Path("Missing"),1.0f);});
     for(const auto elapsed:{-1.0f,std::numeric_limits<float>::infinity(),std::numeric_limits<float>::quiet_NaN()}) Refusal(fixture,"invalid elapsed",[&]{return AdvancePortableActorTimer(Path("Driver"),elapsed);},Status::Invalid);
-    for(const auto rate:{std::numeric_limits<float>::infinity(),std::numeric_limits<float>::quiet_NaN()}) Refusal(fixture,"nonfinite public native input",[&]{return ExecutePortableActorFunction(Path("Driver"),"SetTimer",{Number(rate),Boolean(true)});},Status::Invalid);
+    // These are now legitimate scalar words and reach the actual native
+    // timer's separate unsupported-exceptional-packet guard, not VM ingress.
+    for(const auto rate:{std::numeric_limits<float>::infinity(),std::numeric_limits<float>::quiet_NaN()}) {
+        const auto rejected=Refusal(fixture,"nonfinite public native input",[&]{return ExecutePortableActorFunction(Path("Driver"),"SetTimer",{Number(rate),Boolean(true)});},Status::Unsupported);
+        Require(rejected.error.find("SetTimer requires a finite Float rate")!=std::string::npos&&rejected.writes==0u,
+            "Exceptional scalar timer input missed the native finite-rate guard or attempted a partial store");
+    }
     for(const auto mode:{6,7,8}) { fixture.Reset(); Call("Driver","GotoState",{Name("First")}); arm(1,false); Call("Driver","SetMode",{{Value::Integer(mode),{}}}); QuestVr::Vm::Limits limits; if(mode==8) limits.callDepth=4u; Refusal(fixture,"callback rollback mode "+std::to_string(mode),[&]{return AdvancePortableActorTimer(Path("Driver"),1.25f,limits);},mode==8 ? Status::Budget : mode==7 ? Status::Invalid : Status::Unsupported); }
     fixture.Reset(); Call("Driver","GotoState",{Name("First")}); arm(1,false);
     for(unsigned kind=0u;kind<4u;++kind) { QuestVr::Vm::Limits limit; if(kind==0u) limit.instructions=0u; if(kind==1u) limit.writes=2u; if(kind==2u) limit.callDepth=1u; if(kind==3u) limit.retainedBytes=0u; Refusal(fixture,"shared timer callback budget "+std::to_string(kind),[&]{return AdvancePortableActorTimer(Path("Driver"),1.25f,limit);},Status::Budget); }

@@ -149,6 +149,9 @@ inline constexpr std::uint8_t DecalStateVersion=10u;
 inline constexpr std::uint8_t LevelClockVersion=11u;
 inline constexpr std::uint8_t NativeActorOrderVersion=12u;
 inline constexpr std::uint8_t LevelTickParityVersion=13u;
+// Opt-in by active scalar payload: older versions remain finite-only. Vector,
+// native timer/clock, geometry and AI Float channels retain their own guards.
+inline constexpr std::uint8_t ScalarFloatBitsVersion=14u;
 inline constexpr std::uint32_t MaximumWorldActorSlots=1'000'000u;
 inline constexpr std::size_t MaximumIntArrayElements=262'144u;
 // Stable serialized tags deliberately do not depend on Vm::Kind ordinals.
@@ -369,15 +372,25 @@ private:
 };
 
 // Pre-emission feature scan: only active value payloads are encoded. Bound the
-// complete walk before recursion; arrays in nested structs, frozen defaults or
-// state locals must select codec10 even when no native geometry is present.
-inline bool HasIntArrays(const ScriptSavedState& state, const ScriptStateLimits& limits = {}) {
+// complete walk before recursion. Arrays and raw scalar IEEE words in nested
+// structs, frozen defaults or state locals must select their opt-in codec,
+// even when no native geometry/parity record is present. Inactive payloads
+// (including a Float member of a non-Float Value) do not authorize an upgrade.
+struct ValueFeatures { bool intArrays{},scalarFloatBits{}; };
+inline std::uint32_t FloatWord(const float& value) {
+    std::uint32_t word{};std::memcpy(&word,&value,sizeof(word));return word;
+}
+inline bool NonfiniteFloatWord(std::uint32_t word) {return (word&0x7f800000u)==0x7f800000u;}
+inline ValueFeatures ScanValueFeatures(const ScriptSavedState& state, const ScriptStateLimits& limits = {}) {
     Budget measured{limits};
-    bool present{};
+    ValueFeatures features;
     const auto visit = [&](const auto& self, const Vm::Value& value, std::size_t depth) -> void {
         measured.Node(depth);
         if (value.kind == Vm::Kind::IntArray) {
-            measured.IntArrayElements(value.intArray.size()); present = true;
+            measured.IntArrayElements(value.intArray.size()); features.intArrays = true;
+        } else if (value.kind == Vm::Kind::Float) {
+            // Classify raw words without doing arithmetic on signaling NaNs.
+            features.scalarFloatBits|=NonfiniteFloatWord(FloatWord(value.floating));
         } else if (value.kind == Vm::Kind::Struct) {
             if (value.fields.size() > limits.totalValueNodes - measured.nodes)
                 Fail("feature scan struct count exceeds value-node budget");
@@ -404,7 +417,13 @@ inline bool HasIntArrays(const ScriptSavedState& state, const ScriptStateLimits&
     }
     for (const auto& defaults : state.classDefaults) properties(defaults.properties);
     for (const auto& birth : state.births) properties(birth.frozenDefaults);
-    return present;
+    return features;
+}
+inline bool HasIntArrays(const ScriptSavedState& state, const ScriptStateLimits& limits = {}) {
+    return ScanValueFeatures(state,limits).intArrays;
+}
+inline bool HasScalarFloatBits(const ScriptSavedState& state, const ScriptStateLimits& limits = {}) {
+    return ScanValueFeatures(state,limits).scalarFloatBits;
 }
 
 template<typename Item,typename Name>
@@ -440,7 +459,10 @@ public:
     // This method is deliberately unavailable on an emitting writer.
     void MeasureStateObject(const StateObject& state) {
         if (output_) Fail("state-only measurement requires a non-emitting writer");
-        version_=DecalStateVersion;
+        // Live scalar locals may already contain original IEEE results. This
+        // emits no header and performs no format selection; the same bounded
+        // ObjectState/Value walk still validates every other active payload.
+        version_=ScalarFloatBitsVersion;
         budget_.Retain(sizeof(StateObject));
         ObjectState(state,state.frame && state.frame->control.has_value());
     }
@@ -474,8 +496,8 @@ public:
         const bool withLevelClock=state.nativeLevelClock.has_value();
         const bool withNativeActorOrder=state.nativeActorOrder.has_value();
         const bool withLevelTickParity=state.nativeLevelTickParity.has_value();
-        const bool withIntArrays=HasIntArrays(state,limits_);
-        const auto version=withLevelTickParity ? LevelTickParityVersion : withNativeActorOrder ? NativeActorOrderVersion : withLevelClock ? LevelClockVersion : withDecals || withIntArrays ? DecalStateVersion : withControl ? StateControlVersion : withSleep ? SleepStateVersion : withRandom ? RandomStateVersion : withAi ? AiManagerVersion : withBirths ? BirthManifestVersion : withLifecycle ? ActorLifecycleVersion : withDefaults ? ClassDefaultsVersion : withFrames ? StateFrameVersion : Magic[6u];
+        const auto features=ScanValueFeatures(state,limits_);
+        const auto version=features.scalarFloatBits ? ScalarFloatBitsVersion : withLevelTickParity ? LevelTickParityVersion : withNativeActorOrder ? NativeActorOrderVersion : withLevelClock ? LevelClockVersion : withDecals || features.intArrays ? DecalStateVersion : withControl ? StateControlVersion : withSleep ? SleepStateVersion : withRandom ? RandomStateVersion : withAi ? AiManagerVersion : withBirths ? BirthManifestVersion : withLifecycle ? ActorLifecycleVersion : withDefaults ? ClassDefaultsVersion : withFrames ? StateFrameVersion : Magic[6u];
         version_=version;
         for (std::size_t i=0; i<Magic.size(); ++i) Byte(i==6u ? version : Magic[i]);
         String(state.mapName,true,false,128u);
@@ -599,6 +621,9 @@ public:
             for (const auto& birth:birthIdentities) indices.push_back(birth.worldActorIndex);
             BirthIndices(indices);
         }
+        // Codec13's parity remains mandatory and byte-identical. Codec14 can
+        // carry scalar IEEE data without inventing a native frame counter.
+        if (version>=ScalarFloatBitsVersion) Byte(withLevelTickParity ? 1u : 0u);
         if (withLevelTickParity) {
             const auto& tick=*state.nativeLevelTickParity;
             budget_.Retain(sizeof(ScriptSavedLevelTickParity));
@@ -620,6 +645,12 @@ private:
     void U32(std::uint32_t value) { for (unsigned i=0; i<4u; ++i) Byte(static_cast<std::uint8_t>(value>>(8u*i))); }
     void U64(std::uint64_t value) { for (unsigned i=0; i<8u; ++i) Byte(static_cast<std::uint8_t>(value>>(8u*i))); }
     void F32(float value) { Finite(value); std::uint32_t bits; std::memcpy(&bits,&value,4u); U32(bits); }
+    void ScalarF32(const float& value) {
+        const auto bits=FloatWord(value);
+        if(version_<ScalarFloatBitsVersion && NonfiniteFloatWord(bits))
+            Fail("nonfinite scalar Float requires codec14");
+        U32(bits);
+    }
     void Count(std::size_t count) {
         if (count>std::numeric_limits<std::uint32_t>::max()) Fail("serialized count exceeds uint32");
         U32(static_cast<std::uint32_t>(count));
@@ -787,7 +818,7 @@ private:
             Byte(static_cast<std::uint8_t>(Tag::Byte)); Byte(static_cast<std::uint8_t>(value.integer)); break;
         case Vm::Kind::Int: Byte(static_cast<std::uint8_t>(Tag::Int)); U32(static_cast<std::uint32_t>(value.integer)); break;
         case Vm::Kind::Bool: Byte(static_cast<std::uint8_t>(Tag::Bool)); Byte(value.boolean ? 1u : 0u); break;
-        case Vm::Kind::Float: Byte(static_cast<std::uint8_t>(Tag::Float)); F32(value.floating); break;
+        case Vm::Kind::Float: Byte(static_cast<std::uint8_t>(Tag::Float)); ScalarF32(value.floating); break;
         case Vm::Kind::Name: Byte(static_cast<std::uint8_t>(Tag::Name)); String(value.text,true,true); break;
         case Vm::Kind::Object: Byte(static_cast<std::uint8_t>(Tag::Object)); String(value.text,true,true); break;
         case Vm::Kind::String: Byte(static_cast<std::uint8_t>(Tag::String)); String(value.text,false,true); break;
@@ -929,7 +960,7 @@ public:
                     version!=ActorLifecycleVersion && version!=BirthManifestVersion && version!=AiManagerVersion &&
                     version!=RandomStateVersion && version!=SleepStateVersion && version!=StateControlVersion &&
                     version!=DecalStateVersion && version!=LevelClockVersion && version!=NativeActorOrderVersion &&
-                    version!=LevelTickParityVersion)
+                    version!=LevelTickParityVersion && version!=ScalarFloatBitsVersion)
                     Fail("bad magic or unsupported codec version");
             } else if (byte!=Magic[i]) Fail("bad magic or unsupported codec version");
         }
@@ -1081,12 +1112,15 @@ public:
             for (const auto& birth:birthIdentities) indices.push_back(birth.worldActorIndex);
             BirthIndices(indices);
         }
-        if (version>=LevelTickParityVersion) {
+        const bool withLevelTickParity=version>=ScalarFloatBitsVersion ? Boolean() : version>=LevelTickParityVersion;
+        if (withLevelTickParity) {
             budget_.Retain(sizeof(ScriptSavedLevelTickParity));
             const auto level=String(true);LevelClockIdentity(level,map);
             const auto parity=I32();LevelTickParity(parity);
             if constexpr(Materialize) state.nativeLevelTickParity=ScriptSavedLevelTickParity{std::string(level),parity};
         }
+        if (version==ScalarFloatBitsVersion && !hasScalarFloatBits_)
+            Fail("scalar-Float-bits codec has no nonfinite scalar Float payload");
         if (Remaining()!=0u) Fail("trailing encoded-state bytes");
         return state;
     }
@@ -1098,6 +1132,7 @@ private:
     std::size_t aiWork_{};
     std::uint8_t version_{Magic[6u]};
     bool hasIntArrays_{};
+    bool hasScalarFloatBits_{};
     std::string_view lastAiOwner_;
     std::size_t Remaining() const { return bytes_.size()-cursor_; }
     std::uint8_t Byte() { if (Remaining()==0u) Fail("truncated encoded-state payload"); return bytes_[cursor_++]; }
@@ -1105,6 +1140,14 @@ private:
     std::uint64_t U64() { std::uint64_t value{}; for (unsigned i=0; i<8u; ++i) value|=std::uint64_t(Byte())<<(8u*i); return value; }
     bool Boolean() { const auto value=Byte(); if (value>1u) Fail("invalid boolean encoding"); return value!=0u; }
     float F32() { const auto bits=U32(); float value; std::memcpy(&value,&bits,4u); Finite(value); return value; }
+    void ScalarF32(float& value) {
+        const auto bits=U32();
+        if(NonfiniteFloatWord(bits)) {
+            if(version_<ScalarFloatBitsVersion)Fail("nonfinite scalar Float requires codec14");
+            hasScalarFloatBits_=true;
+        }
+        std::memcpy(&value,&bits,sizeof(bits));
+    }
     std::int32_t I32() { const auto bits=U32(); std::int32_t value; std::memcpy(&value,&bits,4u); return value; }
     std::string_view String(bool identity,bool empty=false,std::size_t cap=0) {
         const auto size=U32(); if (size>Remaining()) Fail("truncated encoded-state string");
@@ -1312,7 +1355,7 @@ private:
         case Tag::Byte: value.kind=Vm::Kind::Byte; value.integer=Byte(); break;
         case Tag::Int: value.kind=Vm::Kind::Int; value.integer=I32(); break;
         case Tag::Bool: value.kind=Vm::Kind::Bool; value.boolean=Boolean(); break;
-        case Tag::Float: value.kind=Vm::Kind::Float; value.floating=F32(); break;
+        case Tag::Float: value.kind=Vm::Kind::Float; ScalarF32(value.floating); break;
         case Tag::Name: case Tag::Object: case Tag::String: {
             value.kind=tag==Tag::Name ? Vm::Kind::Name : tag==Tag::Object ? Vm::Kind::Object : Vm::Kind::String;
             const auto text=String(tag!=Tag::String,true); if constexpr(Materialize) value.text=text;

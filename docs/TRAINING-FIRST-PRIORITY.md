@@ -1,5 +1,30 @@
 # Immediate milestone: complete the first Training map
 
+Latest2026-10-26: shared scalar IEEE Float arithmetic/storage now lets original
+TriggerLight.Tick recover its own intermediate infinity, with no ChangeTime
+override or skipped actor. PC64/Float spills, NaN loading/payloads, compound
+argument timing and actual C0/C3 comparisons have an independent303367-check
+x87 oracle. Scalar saves use opt-in codec14/envelope19; finite legacy bytes and
+separate non-scalar/native finite guards remain. VM696190/900, codec9460/7601,
+frame codec1770/911 and production scalar-Light4273 cumulative/87 controls pass;
+complete production driver exits0 after5384/113 and its malformed-schema case.
+Full desktop/Android-native/strict ARM64 builds and final CTest206 executed/
+245 registered/39 explicit skips/zero failures35.01s pass. Owned crate415/5,
+deferred429/21 and animation588/24 pass; two-Fire repeat2 retains228837/26047,
+real removal/loot/debris observations and full undo at later FExec.
+
+Actual Training repeat2 now reaches54 slots/53 calls,205999/15731 and full
+undo at the genuine DeusEx.ScriptedPawn native Tick boundary. Paired original
+doors retain2 moves/2 completion callbacks and repeat2 identical206335/15799
+before that same later boundary. All41 directly consumed original files remain
+unchanged; all build/test/probe/audit jobs are terminal. ScriptedPawn's native
+Tick and Pawn physics are NOT Actor aliases and cannot be admitted or skipped
+as an empty update. Full NPC/Pawn/world update, startup publication and live
+crate destruction, usable surviving loot and gravity remain unfinished.
+No account/player-creation UI, other-map gameplay work or new APK. No Quest
+detected. See TRAINING-TRIGGER-LIGHT-TICK-GAP.md and
+ORIGINAL-SCRIPTEDPAWN-TICK-PREREQUISITES.md.
+
 Latest2026-10-26: exact native DeusExLevelInfo and Light now join the genuine
 actor phase through independently proven original slots, not generic native
 allowances. Serialized ancestry/selected Tick/Physics0, late/write/work full

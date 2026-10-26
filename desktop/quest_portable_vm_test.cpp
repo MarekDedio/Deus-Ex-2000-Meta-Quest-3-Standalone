@@ -1340,7 +1340,7 @@ void IntegerToStringContracts() {
     for(const auto value:{std::numeric_limits<float>::infinity(),-std::numeric_limits<float>::infinity(),std::numeric_limits<float>::quiet_NaN()}) {
         TestHost host;
         const auto function=Function("IntegerTextNonFinite",Join({Native(1000u),Return(conversion(Real(value)))}));
-        const auto result=Vm::Execute(host,function,"Self");Failed(result,Vm::Status::Invalid,host,"IntToString rejects non-finite operand before coercion");
+        const auto result=Vm::Execute(host,function,"Self");Failed(result,Vm::Status::Unsupported,host,"IntToString refuses unsupported non-finite numeric conversion");
         Require(host.effects==0u && host.rng==12345u,"Non-finite integer text operand escaped rollback");
     }
     for(const bool enough:{false,true}) {
@@ -2754,7 +2754,7 @@ void DirectNativeInitializedArgumentContracts() {
         alias->read=[&] {read=true;return Value::Float(99);};
         if(mode!=5u) host.argumentSeed=[&](std::uint16_t,const std::string&,std::size_t,const Vm::Function*)->std::optional<Value> {
             if(mode==0u) throw std::runtime_error("Direct seed hook failed before alias read");
-            if(mode==1u) return Value::Float(std::numeric_limits<float>::quiet_NaN());
+            if(mode==1u) return Value::Vector({std::numeric_limits<float>::quiet_NaN(),0.0f,0.0f});
             if(mode==2u) {Value value=Value::Float(1);value.text.reserve(200000u);return value;}
             return mode==3u?Value::Bool(true):Value::Float(-1);
         };
@@ -3075,7 +3075,7 @@ void NativeArgumentSeedContracts() {
     refuse(structure,1u,Vm::Status::Unsupported,"Partial Struct native seed remains unsupported");
     refuse(Value::Text(Vm::Kind::Object,"Some.Object"),1u,Vm::Status::Unsupported,"Partial Object native seed remains unsupported");
     refuse(Value::Float(-1.0f),5u,Vm::Status::Unsupported,"Native seed zero fill cannot overrun destination");
-    refuse(Value::Float(std::numeric_limits<float>::quiet_NaN()),0u,Vm::Status::Invalid,"Nonfinite native seed rejected before argument evaluation");
+    refuse(Value::Vector({std::numeric_limits<float>::quiet_NaN(),0.0f,0.0f}),0u,Vm::Status::Invalid,"Nonfinite Vector native seed rejected before argument evaluation");
     auto stringLimit=Vm::Limits{};stringLimit.stringBytes=64u;
     refuse(Value::Text(Vm::Kind::String,std::string(65u,'x')),0u,Vm::Status::Budget,"Native seed text storage is bounded",stringLimit);
     Value retained;retained.kind=Vm::Kind::String;retained.text="x";retained.text.reserve(200000u);
@@ -3299,7 +3299,7 @@ void SequentialNativeArgumentSeedContracts() {
         Require(std::count(host.observations.begin(),host.observations.end(),"effect")==1,
             label+": failing seed evaluated its own/later argument");
     };
-    refuse(Value::Float(std::numeric_limits<float>::quiet_NaN()),Vm::Status::Invalid,"Nonfinite sequential seed poisons shared execution");
+    refuse(Value::Vector({std::numeric_limits<float>::quiet_NaN(),0.0f,0.0f}),Vm::Status::Invalid,"Nonfinite Vector sequential seed poisons shared execution");
     refuse(Value::Float(-1.0f),Vm::Status::Unsupported,"Sequential seed zero fill cannot exceed destination",Vm::Limits{},5u);
     refuse(Value::Bool(true),Vm::Status::Unsupported,"Sequential partial Bool seed remains unsupported",Vm::Limits{},1u);
     auto stringLimit=Vm::Limits{};stringLimit.stringBytes=64u;
@@ -4928,7 +4928,9 @@ void ControlAndFailureContracts() {
     }
     {
         TestHost host;const auto r=Vm::Execute(host,Function("NonFiniteConstant",Join({Native(1000),Return(Real(std::numeric_limits<float>::infinity()))})),"Self");
-        Failed(r,Vm::Status::Invalid,host,"Non-finite float constant");Require(host.effects==0,"Non-finite constant retained earlier native effect");
+        Returned(r,"Original infinity FloatConst");
+        Require(r.value.kind==Vm::Kind::Float&&std::bit_cast<std::uint32_t>(r.value.floating)==0x7f800000u&&host.effects==1,
+            "Original infinity FloatConst was rejected/normalized or rolled back a successful effect");
     }
     {
         TestHost host;auto latent=Function("LatentNative",{},"NativeSource");latent.flags=0x408;latent.nativeIndex=1000;
@@ -6200,14 +6202,14 @@ void TransactionContracts() {
         if(invalid!=0u) callback=[invalid](Vm::Execution&) -> Value {
             if(invalid==1u) throw std::runtime_error("Coordinator failure");
             if(invalid==2u) throw 42;
-            if(invalid==3u) return Value::Float(std::numeric_limits<float>::infinity());
+            if(invalid==3u) return Value::Vector({std::numeric_limits<float>::infinity(),0.0f,0.0f});
             return Value::Text(Vm::Kind::String,std::string(8193u,'x'));
         };
         const auto result=Vm::ExecuteTransaction(host,callback);
         const auto status=invalid==1u ? Vm::Status::Unsupported : invalid==4u ? Vm::Status::Budget : Vm::Status::Invalid;
         Failed(result,status,host,"Coordinator failure/return validation uses ordinary transaction policy");
         const std::array<std::string,5> errors{"Missing VM transaction callback","Coordinator failure","Unknown VM transaction failure",
-            "Non-finite VM float","VM value storage limit"};
+            "Non-finite VM vector","VM value storage limit"};
         Require(result.error==errors[invalid] && !result.committed && result.value.kind==Vm::Kind::Nothing,
             "Coordinator failure produced an incorrect status/error or return value");
     }
@@ -6558,6 +6560,77 @@ void FinishAnimDeclarationContracts() {
     std::cout<<"FinishAnim declaration admission: "<<checks-initialChecks<<" checks / "
         <<rejections-initialRejections<<" refusal controls.\n";
 }
+void ScalarFloatContracts() {
+    const auto initialChecks=checks,initialRejections=rejections;
+    const auto word=[](float value){return std::bit_cast<std::uint32_t>(value);};
+    const auto real=[](std::uint32_t bits){return Real(std::bit_cast<float>(bits));};
+    const auto evaluate=[&](const Bytes& expression) {
+        TestHost host;const auto result=Vm::Execute(host,Function("ScalarFloat",Return(expression)),"Self");
+        Returned(result,"Original scalar Float expression");return result.value;
+    };
+    for(const auto& [expression,expected]:std::vector<std::pair<Bytes,std::uint32_t>>{
+        {Native(172u,{Real(-1),Real(0)}),0xff800000u},
+        {Native(172u,{Real(0),Real(0)}),0xffc00000u},
+        {Native(171u,{real(0x7f7fffffu),real(0x7f7fffffu)}),0x7f800000u},
+        {Native(174u,{real(0x7f800000u),real(0xff800000u)}),0xffc00000u},
+        {Native(175u,{real(0x7f800000u),real(0x7f800000u)}),0xffc00000u},
+        {Native(184u,{Real(2),Real(3)}),0x40a00000u},
+        {Native(184u,{Context({0x2a},Native(4095u),4u),Real(2)}),0x40000000u},
+        {real(0xff800001u),0xffc00001u},{Native(169u,{real(0x7f800001u)}),0xffc00001u}}) {
+        const auto value=evaluate(expression);
+        Require(value.kind==Vm::Kind::Float&&word(value.floating)==expected,"VM scalar arithmetic/constant lost IEEE bits");
+    }
+    for(std::uint16_t index=176u;index<=181u;++index) {
+        const auto value=evaluate(Native(index,{real(0x7fc12345u),Real(1)}));
+        Require(value.kind==Vm::Kind::Bool&&value.boolean==(index==176u||index==178u||index==180u),
+            "VM scalar comparison used C++ NaN predicates instead of original C0/C3");
+    }
+    for(const auto bits:{0x7f800000u,0xff800000u,0x7fc12345u,0xffc12345u,0x7f812345u,0xff812345u}) {
+        TestHost host;auto function=Function("ScalarRawCopy",Join({Let(Ref(0x01,2),Ref(0x01,1)),Return(Ref(0x01,2))}));
+        const auto source=host.Property(function,1,"Source",Value::Float(0)),destination=host.Property(function,2,"Destination",Value::Float(0));
+        host.Store("Self",source,{Value::Float(std::bit_cast<float>(bits))});host.Store("Self",destination,{Value::Float(7)});
+        const auto result=Vm::Execute(host,function,"Self");Returned(result,"Raw scalar property copy");
+        Require(word(result.value.floating)==bits&&word(host.Load("Self",destination).floating)==bits&&result.writes==1u,
+            "Property copying quieted/normalized an IEEE scalar word");
+    }
+    // Pure wrappers copy lhs before RHS callbacks. Compounds instead retain
+    // its address and use the freshly mutated lhs after the copied RHS Step.
+    for(const auto& [index,expected]:std::vector<std::pair<std::uint16_t,float>>{
+        {171u,14},{172u,3.5f},{174u,9},{175u,5},{182u,200},{183u,50},{184u,102},{185u,98}}) {
+        TestHost host;const auto mutator=Native(1060u,{Ref(0x01,1),Real(100),Real(2)});
+        auto function=Function("ScalarInputs",Return(Native(index,{Ref(0x01,1),mutator})));
+        const auto property=host.Property(function,1,"Number",Value::Float(0));host.Store("Self",property,{Value::Float(7)});
+        const auto result=Vm::Execute(host,function,"Self");Returned(result,"Original scalar argument copy/reference order");
+        Require(result.value.kind==Vm::Kind::Float&&result.value.floating==expected,
+            "Pure scalar reloaded lhs or compound reused obsolete lhs");
+        Require(host.Load("Self",property).floating==(index>=182u?expected:100.0f),"Scalar input snapshot lost actual OUT write");
+    }
+    for(std::size_t budget=0u;budget<=3u;++budget) {
+        TestHost host;
+        auto function=Function("ScalarRecovery",Join({Native(184u,{Ref(0x01,1),Native(172u,{Real(-1),Real(0)})}),
+            Let(Ref(0x01,2),Ref(0x01,1)),Let(Ref(0x01,1),Real(0)),Return(Ref(0x01,1))}));
+        const auto alpha=host.Property(function,1,"Alpha",Value::Float(0)),observed=host.Property(function,2,"Observed",Value::Float(0));
+        host.Store("Self",alpha,{Value::Float(0)});host.Store("Self",observed,{Value::Float(7)});
+        auto limits=Vm::Limits{};limits.writes=budget;
+        const auto result=Vm::Execute(host,function,"Self",{},limits);
+        if(budget==3u) {
+            Returned(result,"Original intermediate infinity/recovery");
+            Require(word(host.Load("Self",observed).floating)==0xff800000u&&host.Load("Self",alpha).floating==0,
+                "VM did not store the infinity before script recovery");
+        } else {
+            Failed(result,Vm::Status::Budget,host,"Scalar infinity/recovery write prefix");
+            Require(host.Load("Self",alpha).floating==0&&host.Load("Self",observed).floating==7,
+                "Scalar exceptional value escaped whole-root write undo");
+        }
+    }
+    {
+        TestHost host;const auto result=Vm::Execute(host,Function("VectorStillFinite",Return(Vector({
+            std::numeric_limits<float>::infinity(),0,0}))),"Self");
+        Failed(result,Vm::Status::Invalid,host,"Scalar Float capability does not relax Vector validation");
+    }
+    std::cout<<"Original scalar Float storage/arithmetic/argument order/IEEE recovery: "<<checks-initialChecks
+        <<" checks / "<<rejections-initialRejections<<" refusal controls.\n";
+}
 void ProgramAndEligibilityContracts() {
     TestHost host;
     host.names[{"Fixture",0}] = "None";
@@ -6622,6 +6695,7 @@ int main() {
         NormalizedSerializedContracts();
         IntegerToStringContracts();
         ExecutionContracts();
+        ScalarFloatContracts();
         TransactionContracts();
         StatePhaseContracts();
         FinishAnimDeclarationContracts();

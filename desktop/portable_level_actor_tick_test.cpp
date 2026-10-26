@@ -4,6 +4,7 @@
 #include "portable_object_lookup.h"
 #include "quest_script_state.h"
 #include "quest_save_bundle.h"
+#include "quest_quick_belt.h"
 
 #include <algorithm>
 #include <chrono>
@@ -220,7 +221,7 @@ std::uint32_t Word(const Bytes& bytes,std::size_t& cursor) {
 std::size_t Prefix(const Bytes& bytes) {
     std::size_t cursor{};Require(Word(bytes,cursor)==0x53515844u,"Level Tick checkpoint magic mismatch");
     const auto version=Word(bytes,cursor);
-    Require(version>=3u&&version<=18u&&version!=14u&&version!=15u,"Unexpected fixture checkpoint wrapper");
+    Require(version>=3u&&version<=19u&&version!=14u&&version!=15u,"Unexpected fixture checkpoint wrapper");
     const auto text=[&]{const auto size=Word(bytes,cursor);Require(cursor<=bytes.size()&&size<=bytes.size()-cursor,"Checkpoint text truncated");cursor+=size;};
     const auto list=[&]{const auto count=Word(bytes,cursor);Require(count<100000u,"Checkpoint list bound");for(std::uint32_t i=0u;i<count;++i)text();};
     list();list();list();static_cast<void>(Word(bytes,cursor));const auto damaged=Word(bytes,cursor);
@@ -238,7 +239,7 @@ QuestVr::ScriptSavedState Decode(const Bytes& bytes) {
 Bytes Envelope(const Bytes& prefix,const QuestVr::ScriptSavedState& state) {
     const auto count=Prefix(prefix);Bytes result(prefix.begin(),prefix.begin()+static_cast<std::ptrdiff_t>(count));
     const auto blob=QuestVr::EncodeScriptSavedState(state);const auto codec=blob.at(6u);
-    const auto version=codec==13u?18u:codec==12u?17u:codec==11u?16u:3u+codec;
+    const auto version=codec==14u?19u:codec==13u?18u:codec==12u?17u:codec==11u?16u:3u+codec;
     Replace32(result,4u,version);U32(result,static_cast<std::uint32_t>(blob.size()));Append(result,blob);return result;
 }
 std::string Path(const std::string& name){return "LevelTickFixture."+name;}
@@ -261,7 +262,9 @@ enum class TriggerControlKind {None,Exact,Parent};
 enum class DeusExLevelInfoControlKind {None,Exact,Parent};
 Tables Build(Fixture& fixture,bool moverControl=false,std::uint32_t oldLocationFlags=2u,
     TriggerControlKind triggerControl=TriggerControlKind::None,
-    DeusExLevelInfoControlKind levelInfoControl=DeusExLevelInfoControlKind::None,bool lightControl=false) {
+    DeusExLevelInfoControlKind levelInfoControl=DeusExLevelInfoControlKind::None,bool lightControl=false,
+    bool scalarLightControl=false) {
+    Require(!scalarLightControl||lightControl,"Scalar-Light fixture must retain its genuine native Light ancestry");
     Require(unsigned(triggerControl!=TriggerControlKind::None)+unsigned(levelInfoControl!=DeusExLevelInfoControlKind::None)+
         unsigned(lightControl)<=1u,
         "Fixture native-boundary controls must retain distinct ancestry proofs");
@@ -405,10 +408,29 @@ Tables Build(Fixture& fixture,bool moverControl=false,std::uint32_t oldLocationF
     const auto mode=classes.Property("Mode","IntProperty",test,cc);
     const auto own=classes.Import("Owner",ca,"ObjectProperty"),lv=classes.Import("Level",ca,"ObjectProperty");
     const auto counter=classes.Import("Ledger",ci,"IntProperty");
-    const auto tick=classes.Function("Tick",test,cc,{},0u,0x800u);classes.Property("DeltaTime","FloatProperty",tick,cc,0,0x80u);
+    const auto tick=classes.Function("Tick",test,cc,{},0u,0x800u);
+    const auto delta=classes.Property("DeltaTime","FloatProperty",tick,cc,0,0x80u);
     const auto atLedger=[&]{return Context(Ref(0x01u,lv),Ref(0x01u,counter));};
     Flow body;body.Add(Assign(Ref(0x01u,count),Native(146u,{Ref(0x01u,count),Int(1)})));
     body.Add(Assign(atLedger(),Native(146u,{atLedger(),Int(1)})));body.Add(Assign(Ref(0x01u,stamp),atLedger()));
+    if(scalarLightControl) {
+        const auto alpha=classes.Property("Alpha","FloatProperty",test,cc),
+            direction=classes.Property("Direction","FloatProperty",test,cc),
+            changeTime=classes.Property("ChangeTime","FloatProperty",test,cc),
+            observedAlpha=classes.Property("ObservedAlpha","FloatProperty",test,cc);
+        // The reached original TriggerLight arithmetic and recovery branch,
+        // with one explicit observation copy of the freshly STORED Alpha.
+        // No finite replacement, helper provider or host-side clamp is used.
+        body.Add(Native(184u,{Ref(0x01u,alpha),Native(172u,{
+            Native(171u,{Ref(0x01u,direction),Ref(0x00u,delta)}),Ref(0x01u,changeTime)})}));
+        body.Add(Assign(Ref(0x01u,observedAlpha),Ref(0x01u,alpha)));
+        body.IfNot(Native(154u,{Ref(0x01u,mode),Int(1)}),"scalar-clamp");
+        body.Add(Return());body.Label("scalar-clamp");
+        body.IfNot(Native(177u,{Ref(0x01u,alpha),Real(1.0f)}),"scalar-not-above");
+        body.Add(Assign(Ref(0x01u,alpha),Real(1.0f)));body.Label("scalar-not-above");
+        body.IfNot(Native(176u,{Ref(0x01u,alpha),Real(0.0f)}),"scalar-not-below");
+        body.Add(Assign(Ref(0x01u,alpha),Real(0.0f)));body.Label("scalar-not-below");
+    }
     body.IfNot(Native(154u,{Ref(0x01u,mode),Int(2)}),"no-fault");body.Add(Native(999u));body.Label("no-fault");
     body.Add(Return());classes.FunctionCode(tick,body.Finish(),0u,0x800u);
     const auto setOwner=classes.Function("SetFixtureOwner",test,cc);const auto input=classes.Property("Input","ObjectProperty",setOwner,cc,ca,0x80u);
@@ -852,6 +874,170 @@ void LightControl() {
           "and unknown-nearer-native refusal. NOT lighting rendering, brightness, teardown, active physics, "
           "original Training completion or headset acceptance.\n";
 }
+void ScalarLightControl() {
+    Fixture fixture;
+    const auto tables=Build(fixture,false,2u,TriggerControlKind::None,DeusExLevelInfoControlKind::None,true,true);
+    Require(InitializePortableRuntime(tables.packages).passed,"Scalar-Light package initialization failed");
+    Require(PreparePortableRuntimeNativeEngineClasses().prepared&&PreparePortableRuntimeNativeMetadataClasses().prepared&&
+        PreparePortableRuntimeNativePackages().prepared,"Scalar-Light native metadata preparation failed");
+    Require(LoadPortableRuntimeMap(tables.map).passed&&PreparePortableRuntimeObjectLookup().prepared,
+        "Scalar-Light fixture lacks the genuine native Level and lookup");
+    Require(ReadPortableRuntimeDispatchClass("TickClasses.TestActor").parentPath=="Engine.Light"&&
+        ReadPortableRuntimeDispatchClass("Engine.Light").parentPath=="Engine.Actor",
+        "Scalar-Light fixture replaced its genuine selected Light ancestry");
+    const auto legacy=fixture.Save("ScalarLightLegacy");
+    const auto bits=[](float number){std::uint32_t word{};std::memcpy(&word,&number,4u);return word;};
+    const auto fromBits=[](std::uint32_t word){float number{};std::memcpy(&number,&word,4u);return number;};
+    const auto scalar=[&](const std::string& actor,const std::string& field) {
+        const auto value=ReadPortableActorScriptProperty(Path(actor),field);
+        Require(value.kind==Kind::Float,"Scalar-Light field lost its declared Float kind: "+field);
+        return value.floating;
+    };
+    const auto makeSeed=[&](std::int32_t mode=0,float direction=-1.0f) {
+        auto state=Seed(tables);
+        for(const auto* name:{"A","B","C"}) {
+            Property(state,name,"Engine.Actor.Physics",Value::Byte(0));
+            Property(state,name,"Engine.Actor.bTicked",Value::Bool(true));
+            Property(state,name,"TickClasses.TestActor.Direction",Value::Float(direction));
+            Property(state,name,"TickClasses.TestActor.Mode",Value::Integer(mode));
+        }
+        // Alpha and ChangeTime deliberately retain their real omitted scalar
+        // Float0 defaults, as on the reached original Training lights.
+        return state;
+    };
+    const auto seed=[&](const QuestVr::ScriptSavedState& state){fixture.Restore(Envelope(legacy,state));};
+    const auto verify=[&](std::uint32_t observed,std::uint32_t alpha) {
+        for(const auto* name:{"A","B","C"}) {
+            Require(bits(scalar(name,"ObservedAlpha"))==observed,
+                "Scalar-Light did not copy its genuine stored intermediate infinity");
+            Require(bits(scalar(name,"Alpha"))==alpha,"Scalar-Light original recovery branch changed the result");
+            Require(bits(scalar(name,"ChangeTime"))==0u,"Scalar-Light replaced its authored zero transition time");
+            Require(Count(name)==1,"Scalar-Light skipped its selected original script Tick");
+            const auto physics=ReadPortableActorScriptProperty(Path(name),"Physics");
+            Require(physics.kind==Kind::Byte&&physics.integer==0,"Scalar-Light invented active physics");
+        }
+        Require(Count("A","Stamp")==1&&Count("B","Stamp")==2&&Count("C","Stamp")==3&&
+            Count("Level0","Ledger")==3&&Count("Static0")==0,
+            "Scalar-Light changed native live order or ticked its static prefix");
+    };
+    PortableLevelDynamicTickResult successful;
+    for(const auto direction:{-1.0f,1.0f}) {
+        seed(makeSeed(0,direction));
+        Require(bits(scalar("A","Alpha"))==0u&&bits(scalar("A","ChangeTime"))==0u,
+            "Scalar-Light seed invented nonzero Alpha/ChangeTime defaults");
+        successful=AdvancePortableLevelDynamicActors(0.01f,0);RequirePass(successful);
+        Require(successful.actorCalls==3u&&successful.slotsVisited==3u&&successful.movingBrushCalls==0u&&
+            successful.parityBefore==0&&successful.parityAfter==1&&ReadPortableRuntimeLevelTickParity()==1,
+            "Scalar-Light failed the actual shared native actor phase/parity");
+        verify(direction<0.0f?0xff800000u:0x7f800000u,direction<0.0f?0u:0x3f800000u);
+        const auto saved=fixture.Save("ScalarLightRecovered");std::size_t versionOffset=4u;
+        Require(Word(saved,versionOffset)==19u,"Retained intermediate infinity did not select runtime envelope19");
+        const auto decoded=Decode(saved);const auto blob=QuestVr::EncodeScriptSavedState(decoded);
+        Require(blob.at(6u)==14u&&decoded.nativeLevelTickParity&&decoded.nativeLevelTickParity->parity==1,
+            "Scalar-Light checkpoint omitted raw-scalar codec14 or native parity continuation");
+        fixture.Restore(legacy);Require(ReadPortableRuntimeLevelTickParity()==0,"Scalar-Light legacy reset retained frame parity");
+        fixture.Restore(saved);Require(ReadPortableRuntimeLevelTickParity()==1,"Scalar-Light checkpoint lost frame parity");
+        verify(direction<0.0f?0xff800000u:0x7f800000u,direction<0.0f?0u:0x3f800000u);
+        Require(fixture.Save("ScalarLightRecoveredAgain")==saved,"Scalar-Light raw-scalar checkpoint is not byte-deterministic");
+    }
+    // A separate selected mode leaves the actual compound-assignment result
+    // in Alpha. The host must retain it, not secretly normalize before save.
+    seed(makeSeed(1));const auto retained=AdvancePortableLevelDynamicActors(0.01f,0);RequirePass(retained);
+    verify(0xff800000u,0xff800000u);const auto retainedSave=fixture.Save("ScalarLightRetainedInfinity");
+    fixture.Restore(legacy);fixture.Restore(retainedSave);verify(0xff800000u,0xff800000u);
+    Require(fixture.Save("ScalarLightRetainedInfinityAgain")==retainedSave,
+        "Scalar-Light retained infinity failed exact production save/reload");
+    // These are raw Float-property checkpoint copies, not arithmetic/FloatConst
+    // claims. Both quiet and signaling NaN payloads must survive unchanged.
+    for(const auto word:{0x7f800000u,0xff800000u,0x7fc12345u,0xffc54321u,0x7f812345u,0xff854321u}) {
+        auto state=makeSeed();Property(state,"A","TickClasses.TestActor.ObservedAlpha",Value::Float(fromBits(word)));
+        seed(state);Require(bits(scalar("A","ObservedAlpha"))==word,"Raw scalar restore changed IEEE payload bits");
+        const auto saved=fixture.Save("ScalarLightRawBits");fixture.Restore(legacy);fixture.Restore(saved);
+        Require(bits(scalar("A","ObservedAlpha"))==word&&fixture.Save("ScalarLightRawBitsAgain")==saved,
+            "Production raw scalar save/reload changed NaN sign/payload or infinity");
+    }
+    const auto refusal=[&](const QuestVr::ScriptSavedState& state,const QuestVr::Vm::Limits& limits,
+        const std::string& label,bool late=false) {
+        seed(state);const auto before=fixture.Save("ScalarLightBefore");const auto revision=GetPortableRuntimeWorldRevision();
+        const auto gc=GC::GetStats();const auto result=AdvancePortableLevelDynamicActors(0.01f,0,limits);
+        Require(!result.execution.passed()&&!result.execution.committed&&!result.completed,
+            "Scalar-Light admitted "+label);
+        if(late)Require(result.actorCalls==3u&&result.execution.function=="TickClasses.TestActor.Tick",
+            "Scalar-Light late selected failure happened before its genuine callback");
+        Require(fixture.Save("ScalarLightAfter")==before&&GetPortableRuntimeWorldRevision()==revision&&
+            ReadPortableRuntimeLevelTickParity()==0,"Scalar-Light failure retained a partial native/script root: "+label);
+        const auto afterGc=GC::GetStats();Require(afterGc.numObjects==gc.numObjects&&afterGc.memoryUsage==gc.memoryUsage,
+            "Scalar-Light failure retained UObject allocations: "+label);++refusals;
+    };
+    auto late=makeSeed();Property(late,"C","TickClasses.TestActor.Mode",Value::Integer(2));
+    refusal(late,{},"late selected failure after transient infinity/recovery",true);
+    seed(makeSeed());successful=AdvancePortableLevelDynamicActors(0.01f,0);RequirePass(successful);
+    Require(successful.execution.writes>0u&&successful.execution.nativeWork&&successful.execution.nativeWork->used>0u,
+        "Scalar-Light phase lacks shared write/work accounting");
+    for(std::size_t cut=0u;cut<successful.execution.writes;++cut) {
+        QuestVr::Vm::Limits limits;limits.writes=cut;
+        refusal(makeSeed(),limits,"write prefix "+std::to_string(cut));
+    }
+    for(const auto cut:{std::size_t{0u},successful.execution.nativeWork->used/2u,successful.execution.nativeWork->used-1u}) {
+        QuestVr::Vm::Limits limits;limits.nativeWork=cut;refusal(makeSeed(),limits,"native-work prefix");
+    }
+    // A genuine codec14 payload cannot be relabeled with old envelope18, and
+    // a finite codec13 payload cannot acquire raw-scalar authority from19.
+    auto finiteSeed=makeSeed();
+    // Capture intentionally omits parity0 (the exact legacy reset baseline).
+    // Use real retained frame history1 so this MUST remain finite codec13.
+    finiteSeed.nativeLevelTickParity=QuestVr::ScriptSavedLevelTickParity{Path("MyLevel"),1};
+    seed(finiteSeed);
+    for(const auto* name:{"A","B","C"})
+        Require(bits(scalar(name,"Alpha"))==0u&&bits(scalar(name,"ObservedAlpha"))==0u,
+            "Finite Scalar-Light restore retained a previous nonfinite property overlay");
+    const auto finiteSave=fixture.Save("ScalarLightFiniteEnvelope");
+    const auto finiteCodec=QuestVr::EncodeScriptSavedState(Decode(finiteSave)).at(6u);
+    Require(finiteCodec==13u,"Finite Scalar-Light boundary selected codec"+std::to_string(finiteCodec)+" instead of13");
+    const auto rejectEnvelope=[&](Bytes invalid,const std::string& label) {
+        const auto path=fixture.directory/(label+".sav");WriteBytes(path,invalid);
+        const auto before=fixture.Save("ScalarLightEnvelopeBefore");const auto revision=GetPortableRuntimeWorldRevision();
+        const auto parity=ReadPortableRuntimeLevelTickParity();const auto gc=GC::GetStats();
+        const auto unchanged=[&] {
+            Require(fixture.Save("ScalarLightEnvelopeAfter")==before&&GetPortableRuntimeWorldRevision()==revision&&
+                ReadPortableRuntimeLevelTickParity()==parity,"Scalar-Light envelope rejection changed native/script state: "+label);
+            const auto afterGc=GC::GetStats();Require(afterGc.numObjects==gc.numObjects&&afterGc.memoryUsage==gc.memoryUsage,
+                "Scalar-Light envelope rejection retained UObject allocations: "+label);
+        };
+        Require(!ValidatePortableRuntimeState(path.string()),"Scalar-Light preflight admitted "+label);unchanged();
+        Require(!LoadPortableRuntimeState(path.string()),"Scalar-Light restore admitted "+label);unchanged();++refusals;
+    };
+    auto oldEnvelope=retainedSave;Replace32(oldEnvelope,4u,18u);
+    rejectEnvelope(std::move(oldEnvelope),"Codec14WithEnvelope18");
+    auto falseAuthority=finiteSave;Replace32(falseAuthority,4u,19u);
+    rejectEnvelope(std::move(falseAuthority),"Codec13WithEnvelope19");
+    // Exercise the real outer equipment wrapper around this genuine captured
+    // envelope19. Its functional starter ring is port equipment state, not an
+    // invented original Pawn/ring UObject or native Mover service.
+    QuestVr::QuickBeltModel belt;belt.Reconcile({{QuestVr::kQuickBeltKeyRingIdentity,true,true}});
+    const auto beltBytes=QuestVr::EncodeQuickBeltState(belt.State());
+    Bytes wrapped;U32(wrapped,0x53515844u);U32(wrapped,15u);U32(wrapped,static_cast<std::uint32_t>(beltBytes.size()));
+    Append(wrapped,beltBytes);U32(wrapped,static_cast<std::uint32_t>(retainedSave.size()));Append(wrapped,retainedSave);
+    fixture.Restore(wrapped);verify(0xff800000u,0xff800000u);
+    const auto wrappedAgain=fixture.Save("ScalarLightEquipmentWrapper");
+    Require(wrappedAgain==wrapped,"QuickBelt wrapper15 failed exact capture of genuine scalar envelope19");
+    std::size_t wrapperOffset=4u;Require(Word(wrappedAgain,wrapperOffset)==15u,"Scalar wrapper capture lost equipment envelope15");
+    const auto beltLength=Word(wrappedAgain,wrapperOffset);wrapperOffset+=beltLength;
+    const auto innerLength=Word(wrappedAgain,wrapperOffset);
+    Require(innerLength==wrappedAgain.size()-wrapperOffset&&
+        Bytes(wrappedAgain.begin()+static_cast<std::ptrdiff_t>(wrapperOffset),wrappedAgain.end())==retainedSave,
+        "Equipment wrapper changed its exact scalar envelope19 payload");
+    fixture.Restore(legacy);fixture.Restore(wrappedAgain);verify(0xff800000u,0xff800000u);
+    Require(fixture.Save("ScalarLightEquipmentWrapperAgain")==wrappedAgain,
+        "Repeated equipment/scalar checkpoint restore is not byte-deterministic");
+    fixture.Restore(legacy); // Leave this distinct native-wrapper fixture reset.
+    fixture.Unchanged();
+    std::cout<<"PASS generated production scalar-Light Tick: "<<checks<<" cumulative checks / "<<refusals
+        <<" refusals; actual native184/172/171 stored infinities and script recovery, unchanged ChangeTime0, "
+          "retained scalar/NaN payload checkpoint19/codec14, exact envelope-pair rejection, equipment wrapper15, "
+          "native parity/order and full late/write/work undo. NOT native Mover wrapper, TriggerLight BeginPlay/Disable, "
+          "original-map completion, live lighting or headset acceptance.\n";
+}
 void MoverControl() {
     Fixture fixture;const auto tables=Build(fixture,true);
     Require(InitializePortableRuntime(tables.packages).passed,"Mover control package initialization failed");
@@ -998,6 +1184,6 @@ void MovingBrushSchemaRefusal() {
 }
 } // namespace
 int main() {
-    try {Synthetic();TriggerControl();DeusExLevelInfoControl();LightControl();MoverControl();MovingBrushPhysics();MovingBrushSchemaRefusal();return 0;}catch(const std::exception& error){std::cerr<<"FAIL "<<error.what()<<'\n';ShutdownPortableRuntime();return 1;}
+    try {Synthetic();TriggerControl();DeusExLevelInfoControl();LightControl();ScalarLightControl();MoverControl();MovingBrushPhysics();MovingBrushSchemaRefusal();return 0;}catch(const std::exception& error){std::cerr<<"FAIL "<<error.what()<<'\n';ShutdownPortableRuntime();return 1;}
 }
 

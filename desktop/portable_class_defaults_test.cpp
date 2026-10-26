@@ -255,7 +255,8 @@ std::uint32_t Read32(const Bytes& bytes,std::size_t& cursor) {
 }
 std::size_t PrefixSize(const Bytes& bytes) {
     std::size_t cursor{}; Require(Read32(bytes,cursor)==0x53515844u,"Independent runtime magic mismatch");
-    const auto version=Read32(bytes,cursor); Require(version>=1u && version<=6u,"Independent runtime version mismatch");
+    const auto version=Read32(bytes,cursor);
+    Require((version>=1u && version<=6u)||version==19u,"Independent runtime version mismatch");
     const auto skipString=[&]() {
         const auto length=Read32(bytes,cursor); Require(cursor<=bytes.size() && length<=bytes.size()-cursor,"Independent checkpoint string exceeds input"); cursor+=length;
     };
@@ -273,8 +274,10 @@ QuestVr::ScriptSavedState SavedScript(const Bytes& bytes) {
 Bytes Envelope(const Bytes& prefixSource,const QuestVr::ScriptSavedState& script,std::uint32_t version=0u) {
     const auto prefix=PrefixSize(prefixSource); Bytes bytes(prefixSource.begin(),prefixSource.begin()+static_cast<std::ptrdiff_t>(prefix));
     const bool states=std::any_of(script.objects.begin(),script.objects.end(),[](const auto& object) { return object.state.has_value(); });
-    Replace32(bytes,4u,version ? version : !script.classDefaults.empty() ? 6u : states ? 5u : 4u);
-    const auto blob=QuestVr::EncodeScriptSavedState(script); U32(bytes,static_cast<std::uint32_t>(blob.size())); Append(bytes,blob); return bytes;
+    const auto blob=QuestVr::EncodeScriptSavedState(script);
+    Replace32(bytes,4u,version ? version : blob[6u]==QuestVr::ScriptStateDetail::ScalarFloatBitsVersion ? 19u :
+        !script.classDefaults.empty() ? 6u : states ? 5u : 4u);
+    U32(bytes,static_cast<std::uint32_t>(blob.size())); Append(bytes,blob); return bytes;
 }
 Bytes LegacyEnvelope(std::uint32_t version) {
     Bytes bytes; U32(bytes,0x53515844u); U32(bytes,version); for(unsigned i=0u;i<3u;++i) U32(bytes,0u);
@@ -811,7 +814,42 @@ void Synthetic() {
     RefusedCodec([&] { auto bad=canonical; bad.classDefaults.front().properties.clear(); static_cast<void>(QuestVr::EncodeScriptSavedState(bad)); },"EmptyClassRecord");
     RefusedCodec([&] { auto bad=canonical; auto alias=bad.classDefaults.front().properties.front(); alias.key="DefaultClasses.Forged.Counter";
         bad.classDefaults.front().properties.push_back(alias); static_cast<void>(QuestVr::EncodeScriptSavedState(bad)); },"DuplicatePropertyAlias");
-    RefusedCodec([&] { auto bad=canonical; DefaultProperty(bad,"Derived","Ratio").value=Value::Float(std::numeric_limits<float>::infinity()); static_cast<void>(QuestVr::EncodeScriptSavedState(bad)); },"NonFiniteDefault");
+    // Active scalar Float values now opt into codec14/envelope19. Preserve
+    // infinity and NaN payload words; this is not permission for nonfinite
+    // Vector/native collision data or for relabeling an old finite format.
+    for(const auto word:{0x7f800000u,0xff800000u,0x7fc12345u,0xff812345u}) {
+        float raw{};std::memcpy(&raw,&word,sizeof(word));auto ieee=canonical;
+        DefaultProperty(ieee,"Derived","Ratio").value=Value::Float(raw);
+        const auto encoded=QuestVr::EncodeScriptSavedState(ieee);
+        auto decoded=QuestVr::DecodeScriptSavedState(encoded);
+        const auto& value=DefaultProperty(decoded,"Derived","Ratio").value;
+        std::uint32_t restored{};std::memcpy(&restored,&value.floating,sizeof(restored));
+        Require(encoded[6u]==14u&&value.kind==Kind::Float&&restored==word&&
+            QuestVr::EncodeScriptSavedState(decoded)==encoded,
+            "Scalar IEEE CDO codec14 lost infinity/NaN sign/payload or canonical roundtrip");
+        DefaultProperty(ieee,"Derived","Ratio").value=Value::Float(2.5f);
+        Require(QuestVr::EncodeScriptSavedState(ieee)==blob,
+            "Removing scalar IEEE CDO data failed to restore exact finite codec3 bytes");
+    }
+    auto ieee=canonical;DefaultProperty(ieee,"Derived","Ratio").value=Value::Float(std::numeric_limits<float>::infinity());
+    const auto ieeeBytes=Envelope(current,ieee);const auto ieeePath=fixture.directory/"IeeeDefaults.sav";WriteBytes(ieeePath,ieeeBytes);
+    Require(ieeeBytes[4u]==19u&&ValidatePortableRuntimeState(ieeePath.string(),"DefaultFixture"),
+        "Scalar infinity CDO codec14/envelope19 did not pass typed nonmutating validation");
+    Require(fixture.Snapshot("AfterIeeeValidation")==current,"Scalar IEEE checkpoint validation published CDO changes");
+    RefusedCheckpoint(fixture,Envelope(current,ieee,6u),"ScalarIeeeCodec14UnderV6");
+    Require(LoadPortableRuntimeState(ieeePath.string()),"Scalar infinity CDO envelope19 failed actual runtime restore");
+    const auto restoredIeee=Cdo("Derived","Ratio");std::uint32_t restoredIeeeWord{};
+    std::memcpy(&restoredIeeeWord,&restoredIeee.floating,sizeof(restoredIeeeWord));
+    Require(restoredIeee.kind==Kind::Float&&restoredIeeeWord==0x7f800000u&&
+        fixture.Snapshot("IeeeDefaultsRoundTrip")==ieeeBytes,
+        "Actual CDO infinity restore/save lost exact word, codec14 or envelope19");
+    Same(Instance("Derived1","Ratio"),Value::Float(1.25f),"Restoring IEEE CDO changed an existing instance's frozen inherited Float");
+    Require(LoadPortableRuntimeState((fixture.directory/"Current.sav").string())&&
+        fixture.Snapshot("FiniteDefaultsAfterIeee")==current,
+        "Finite CDO replacement retained IEEE values or changed legacy codec3/v6 bytes");
+    RefusedCodec([&] {auto bad=canonical;auto vector=Value::Vector({0.0f,0.0f,0.0f});
+        vector.vector[0]=std::numeric_limits<float>::infinity();DefaultProperty(bad,"Derived","Ratio").value=vector;
+        static_cast<void>(QuestVr::EncodeScriptSavedState(bad));},"NonFiniteDefaultVector");
     RefusedCodec([&] { QuestVr::ScriptStateLimits limits; limits.maxObjects=canonical.objects.size()+canonical.classDefaults.size()-1u; static_cast<void>(QuestVr::EncodeScriptSavedState(canonical,limits)); },"AggregateActorClassBudget");
     RefusedCodec([&] { auto bad=blob; bad[6u]=4u; static_cast<void>(QuestVr::DecodeScriptSavedState(bad)); },"UnsupportedCodecVersion");
     RefusedCodec([&] { auto bad=blob; bad.pop_back(); static_cast<void>(QuestVr::DecodeScriptSavedState(bad)); },"TruncatedCodec3");

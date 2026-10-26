@@ -10457,8 +10457,9 @@ private:
             defaults.Retain(QuestVr::DecalStateDetail::Multiply(value.intArray.capacity(), sizeof(std::int32_t)));
             QuestVr::ScriptStateDetail::Text(value.text, limits, false, true);
             defaults.Retain(value.text.size() + 1u);
-            if (value.kind == Kind::Float && !std::isfinite(value.floating))
-                throw std::runtime_error("Persistent class-default float is not finite");
+            // Original scalar Float storage preserves every IEEE word. Its
+            // typed live/property/checkpoint paths must not reject a genuine
+            // intermediate infinity (for example TriggerLight.Alpha).
             if (value.kind == Kind::Vector)
                 for (const auto component : value.vector) if (!std::isfinite(component))
                     throw std::runtime_error("Persistent class-default vector is not finite");
@@ -16814,6 +16815,7 @@ bool SavePortableRuntimeState(const std::string& path) {
         const bool hasLevelClock=scriptState.nativeLevelClock.has_value();
         const bool hasActorOrder=scriptState.nativeActorOrder.has_value();
         const bool hasLevelTickParity=scriptState.nativeLevelTickParity.has_value();
+        const bool hasScalarFloatBits=QuestVr::ScriptStateDetail::HasScalarFloatBits(scriptState);
         const bool hasScript = !scriptState.objects.empty() || hasDefaults || hasBirths || hasAiManagers || hasRandom || hasDecals || hasLevelClock || hasActorOrder || hasLevelTickParity;
         const bool hasState = std::any_of(scriptState.objects.begin(), scriptState.objects.end(),
             [](const auto& object) { return object.state.has_value(); });
@@ -16874,9 +16876,9 @@ bool SavePortableRuntimeState(const std::string& path) {
             persistentCredits < 0 || persistentSkillPoints < 0 || damaged.size() > 100'000u)
             throw std::runtime_error("Runtime checkpoint gameplay values are outside their valid ranges");
         // This is exactly the v3 prefix, including list order and field widths.
-        // Only the version word and appended trailer differ for v4-v13/v16-v18. Pure
+        // Only the version word and appended trailer differ for v4-v13/v16-v19. Pure
         // property/clock captures retain the byte-exact original v4 format.
-        const auto scriptVersion = hasLevelTickParity ? 18u : hasActorOrder ? 17u : hasLevelClock ? 16u : hasDecals ? 13u : hasControl ? 12u : hasSleep ? 11u : hasRandom ? 10u : hasAiManagers ? 9u : hasBirths ? 8u : hasLifecycle ? 7u : hasDefaults ? 6u : hasState ? 5u : hasScript ? 4u : 3u;
+        const auto scriptVersion = hasScalarFloatBits ? 19u : hasLevelTickParity ? 18u : hasActorOrder ? 17u : hasLevelClock ? 16u : hasDecals ? 13u : hasControl ? 12u : hasSleep ? 11u : hasRandom ? 10u : hasAiManagers ? 9u : hasBirths ? 8u : hasLifecycle ? 7u : hasDefaults ? 6u : hasState ? 5u : hasScript ? 4u : 3u;
         write32(0x53515844u); write32(movers.empty() ? scriptVersion : 14u);
         if (!movers.empty()) write32(scriptVersion);
         writeStrings(persistentInventory); writeStrings(inactive); writeStrings(activated); writeFloat(persistentPlayerHealth);
@@ -16972,7 +16974,7 @@ static bool ReadPortableRuntimeState(const std::string& path, const bool apply, 
             savedQuickBelt=QuestVr::DecodeQuickBeltState({bytes.begin()+12,bytes.begin()+12+length});
             const auto innerLength=headerWord(12u+length);
             if(innerLength!=bytes.size()-16u-length || innerLength<8u ||
-                headerWord(16u+length)!=0x53515844u || headerWord(20u+length)>18u || headerWord(20u+length)==15u)
+                headerWord(16u+length)!=0x53515844u || headerWord(20u+length)>19u || headerWord(20u+length)==15u)
                 throw std::runtime_error("Quick inventory checkpoint nested payload is invalid");
             std::vector<std::uint8_t> inner(bytes.begin()+16+length,bytes.end());bytes.swap(inner);
         }
@@ -17009,7 +17011,7 @@ static bool ReadPortableRuntimeState(const std::string& path, const bool apply, 
         if (read32() != 0x53515844u) throw std::runtime_error("Runtime checkpoint magic is invalid");
         const auto formatVersion = read32();
         const auto version = formatVersion == 14u ? read32() : formatVersion;
-        const bool scriptEnvelope=(version>=1u && version<=13u) || version==16u || version==17u || version==18u;
+        const bool scriptEnvelope=(version>=1u && version<=13u) || version==16u || version==17u || version==18u || version==19u;
         if ((formatVersion!=14u && !scriptEnvelope) || !scriptEnvelope ||
             (formatVersion == 14u && version < 3u)) throw std::runtime_error("Runtime checkpoint version is unsupported");
         auto inventory = readStrings(); auto inactive = readStrings(); auto activated = readStrings();
@@ -17106,6 +17108,7 @@ static bool ReadPortableRuntimeState(const std::string& path, const bool apply, 
             const bool hasLevelClock=scriptState.nativeLevelClock.has_value();
             const bool hasActorOrder=scriptState.nativeActorOrder.has_value();
             const bool hasLevelTickParity=scriptState.nativeLevelTickParity.has_value();
+            const bool hasScalarFloatBits=QuestVr::ScriptStateDetail::HasScalarFloatBits(scriptState,limits);
             restoredRandomSeed = scriptState.randomSeed;
             for (const auto& birth : scriptState.births) savedBirthKeys.emplace(LowerAscii(birth.path));
             const bool hasLifecycle = std::any_of(scriptState.objects.begin(), scriptState.objects.end(),
@@ -17122,7 +17125,8 @@ static bool ReadPortableRuntimeState(const std::string& path, const bool apply, 
                 (version == 13u && (blob.at(6u) != QuestVr::ScriptStateDetail::DecalStateVersion || !hasDecals)) ||
                 (version == 16u && (blob.at(6u) != QuestVr::ScriptStateDetail::LevelClockVersion || !hasLevelClock)) ||
                 (version == 17u && (blob.at(6u) != QuestVr::ScriptStateDetail::NativeActorOrderVersion || !hasActorOrder)) ||
-                (version == 18u && (blob.at(6u) != QuestVr::ScriptStateDetail::LevelTickParityVersion || !hasLevelTickParity)))
+                (version == 18u && (blob.at(6u) != QuestVr::ScriptStateDetail::LevelTickParityVersion || !hasLevelTickParity)) ||
+                (version == 19u && (blob.at(6u) != QuestVr::ScriptStateDetail::ScalarFloatBitsVersion || !hasScalarFloatBits)))
                 throw std::runtime_error("Runtime checkpoint state trailer does not match its envelope version");
             if (!expectedMapName.empty() && LowerAscii(expectedMapName) != LowerAscii(scriptState.mapName))
                 throw std::runtime_error("Runtime checkpoint script map does not match save metadata");

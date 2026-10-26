@@ -414,8 +414,8 @@ void InvalidInputsAndBudgets() {
     broken=saved; broken.objects[0].state->frame->codePath="Bad\nCode"; encodeReject(broken,"Invalid code identity accepted");
     broken=saved; broken.objects[0].state->frame->localsCodePath=std::string("Bad\0Code",8);
     encodeReject(broken,"Invalid local declaration identity accepted");
-    broken=saved; broken.objects[0].state->frame->locals[0].values[4].floating=std::numeric_limits<float>::infinity();
-    encodeReject(broken,"Non-finite local accepted");
+    broken=saved; broken.objects[0].state->frame->locals[0].values[8].vector[0]=std::numeric_limits<float>::infinity();
+    encodeReject(broken,"Non-finite local Vector accepted");
     broken=saved; broken.objects[0].state->disabled[""]={}; encodeReject(broken,"Empty disabled-state identity accepted");
     broken=saved; broken.objects[0].state->disabled["None"].insert(""); encodeReject(broken,"Empty disabled-name identity accepted");
     for (std::size_t mode=0; mode<9u; ++mode) {
@@ -487,12 +487,45 @@ void StandaloneMeasurement() {
     Reject([&] { emitting.MeasureStateObject(state); },"Emitting writer accepted state-only measurement");
     Require(emitting.size()==0u && emitted==Bytes({17,23}),"Rejected measurement modified emitting writer or output");
 }
+void RawScalarLocals() {
+    for(const auto bits:{0x7f800000u,0xff800000u,0x7fc12345u,0xffc54321u,0x7f800001u,0xff812345u}) {
+        float value{};std::memcpy(&value,&bits,sizeof(bits));
+        auto saved=ModernSaved();auto& frame=*saved.objects[0].state->frame;
+        frame.localsCodePath="Fixture.Base.Running";
+        auto nested=Scalar(Vm::Kind::Struct);nested.fields["Raw"]=Floating(value);
+        frame.locals={{"Fixture.Base.Running.Raw",{Floating(value),nested}}};
+        const auto bytes=EncodeScriptSavedState(saved);const auto restored=DecodeScriptSavedState(bytes);
+        Require(bytes[6u]==14u&&EncodeScriptSavedState(restored)==bytes,"Raw scalar locals did not select canonical codec14");
+        SameState(*saved.objects[0].state,*restored.objects[0].state);
+        ScriptStateLimits limits;ScriptStateDetail::Writer measured(limits,nullptr);
+        measured.MeasureStateObject(*saved.objects[0].state);
+        const auto first=measured.size();Require(first>0u,"Raw local standalone measurement omitted frame data");
+        measured.MeasureStateObject(*saved.objects[0].state);
+        Require(measured.size()==2u*first,"Raw scalar locals lost cumulative standalone measurement");
+        auto invalid=*saved.objects[0].state;auto vector=Scalar(Vm::Kind::Vector);vector.vector[0]=value;
+        invalid.frame->locals[0].values.push_back(vector);
+        ScriptStateDetail::Writer guarded(limits,nullptr);
+        Reject([&]{guarded.MeasureStateObject(invalid);},"Scalar local admission leaked into nonfinite Vector measurement");
+        for(unsigned mode=0u;mode<4u;++mode) {
+            auto tight=limits;
+            if(mode==0u)tight.maxStateLocals=0u;
+            if(mode==1u)tight.maxLocalElements=1u;
+            if(mode==2u)tight.totalValueNodes=1u;
+            if(mode==3u)tight.maxDepth=1u;
+            Reject([&]{EncodeScriptSavedState(saved,tight);},"Raw scalar locals bypassed encode depth/count limits");
+            Reject([&]{DecodeScriptSavedState(bytes,tight);},"Raw scalar locals bypassed decode depth/count limits");
+            ScriptStateDetail::Writer bounded(tight,nullptr);
+            Reject([&]{bounded.MeasureStateObject(*saved.objects[0].state);},"Raw scalar locals bypassed standalone limits");
+        }
+    }
+}
 } // namespace
 
 int main() {
     try {
         LegacyIdentity(); Roundtrips(); MalformedStreams(); InvalidInputsAndBudgets(); StandaloneMeasurement();
         ModernControlRoundtrips(); InvalidModernControl();
+        RawScalarLocals();
         std::cout<<"PASS state-frame codec controls="<<checks<<" rejection controls="<<rejections
             <<"; structural continuation data only, no runtime schema/state scheduler implied\n";
         return 0;

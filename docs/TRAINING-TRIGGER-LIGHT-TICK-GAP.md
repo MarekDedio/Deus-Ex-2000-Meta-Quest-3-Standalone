@@ -189,3 +189,145 @@ not authorize indiscriminately admitting malformed composite values or
 publishing an unsupported frame. Actual Training retries, deterministic
 repeats, failure-prefix rollback, static-source immutability and Quest
 acceptance remain separate work.
+
+## Scalar arithmetic operand order and IEEE follow-up
+
+Read-only follow-up,2026-10-26. The same owned Core.dll hash above was
+inspected with external objdump; no commercial binary was loaded/executed and
+no compiler input/build was changed by this audit. Actual zero-based name/EAT
+indexes, direct JMP thunks, bodies and final arithmetic order are:
+
+| Native | Name index / thunk / body | Actual register-load and memory operation |
+| --- | --- | --- |
+|169 unary negation|1676 /101014D3 /10134CF0|FLD operand10134D20; FCHS10134D25; FSTP Float10134D27|
+|171 Multiply|1605 /10101EFB /10134E80|FLD RHS10134ECC; FMUL LHS10134ED7; FSTP Float10134EE0|
+|172 Divide|1493 /10102C0C /10134F50|FLD LHS10134F9C; FDIV RHS10134FA0; FSTP Float10134FB0|
+|174 Add|1447 /101020CC /10135100|FLD RHS1013514C; FADD LHS10135157; FSTP Float10135160|
+|175 Subtract|1674 /1010265D /101351D0|FLD LHS1013521C; FSUB RHS10135227; FSTP Float10135230|
+|182 MultiplyEqual|1599 /101021F3 /101358E0|FLD RHS10135945; FMUL fresh LHS10135949; FST LHS10135956; FSTP Result10135958|
+|183 DivideEqual|1489 /101010B4 /101359C0|FLD fresh LHS10135A25; FDIV RHS10135A27; FST LHS10135A36; FSTP Result10135A38|
+|184 AddEqual|1442 /101024DC /10135AA0|FLD RHS10135B05; FADD fresh LHS10135B09; FST LHS10135B16; FSTP Result10135B18|
+|185 SubtractEqual|1666 /10101645 /10135B80|FLD fresh LHS10135BE5; FSUB RHS10135BE7; FST LHS10135BF6; FSTP Result10135BF8|
+
+Each ordinary binary wrapper initializes/copies its first Float temporary,
+then initializes/copies its second Float temporary, before arithmetic. Later
+RHS callbacks cannot retroactively alter the already copied ordinary LHS.
+Compound wrappers instead capture the actual LHS address first (falling back
+to the Step temporary if no lvalue), finish/copy RHS, then dereference the
+fresh LHS for arithmetic. Their FST of LHS does not pop/reload ST0: the result
+store consumes the same retained arithmetic value, not a callback-mutated
+reference re-read. There is no finite/zero/result admission test in these
+native bodies. This does not authenticate every unrelated scalar math native.
+
+Intel's primary [SDM Volume1](https://cdrdv2-public.intel.com/874241/253665-090-sdm-vol-1.pdf),
+section4.8.3.5/Table4-8, documents masked x87 NaN propagation: a quiet NaN wins
+against a signaling NaN; two NaNs of the same kind choose the larger
+significand; quieting sets the highest fraction bit. Tables4-3 and8-10 give
+Float indefinite `FFC00000` for invalid0/0, infinity/infinity, infinity*0,
+opposite-infinity addition and same-infinity subtraction. This is distinct
+from SSE's operand-selection rule. The manual does not specify the opposite-
+sign/equal-significand tie in that table; a positive-sign tie policy requires
+the separate hardware-x87 oracle/profile evidence, not an invented SDM claim.
+
+The explicit FLD precedes the binary operation and can already quiet its
+signaling-NaN input. Therefore the helper must distinguish the loaded register
+operand from the still-raw memory operand, including RHS-first Add/Multiply/
+AddEqual/MultiplyEqual. It must not apply a commutative raw-input NaN chooser
+or flip a NaN's sign merely by implementing finite subtraction as addition of
+a negated RHS. FloatConst's FLD/FSTP quieting is likewise separate from raw
+UFloatProperty copies; unary169 quiets through FLD before changing sign.
+
+Ordinary PC64 precision is supported by owned appEnableFastMath
+10102ECD to1016E050, which calls actual imported `_controlfp` through
+102AB4A4 with precision mask30000. The initialization path calls its false
+form at1016DEFA, selecting64-bit significand precision. These calls change
+precision only; nearest-even rounding and masked exceptions are the explicit
+ordinary portable/oracle profile unless separately established for the actual
+CRT/launcher environment. No literal037F control word is written by those calls.
+
+Finite Float operands' product/quotient exponent range fits the extended
+register format. Float overflow or gradual underflow can occur at the final
+FST/FSTP, which must produce the profile's signed infinity/subnormal/zero
+rather than reuse an existing geometry-only Store32 that refuses overflow.
+Existing finite PC64 Add/Multiply/Divide primitives can supply the retained
+finite operation; scalar storage needs its own IEEE spill policy. Geometry,
+unsafe Float-to-integer conversion, scheduling delta and native-layout
+boundaries remain separately guarded. No arithmetic helper, payload oracle,
+successful Training frame, checkpoint migration or headset acceptance is
+claimed by this doc-only follow-up.
+
+## Subsequent scalar implementation (2026-10-26)
+
+The shared VM now uses quest_scalar_float.h for native169,171,172,174,175,
+176..181 and182..185. These are explicit original scalar services, not a
+TriggerLight-specific arithmetic override. Finite arithmetic uses integer
+dyadics and explicit PC64/binary32 round-to-nearest-even spills, including
+gradual underflow and signed infinity overflow. Raw-word classification,
+FLD quieting, actual register/memory operand order, masked-invalid indefinite
+and literal C0/C3 predicates avoid Android/SSE NaN-policy differences. The
+opposite-sign equal-payload tie policy is separately checked by an independent
+hardware-x87 corpus, not attributed to an unspecified Intel manual rule.
+
+Original FloatConst quiets through its own FLD-equivalent load; property copies
+retain signaling bits unchanged. Ordinary scalar arguments are detached by
+their actual expression Step. Compounds retain the left address, copy the
+right input, then read fresh left storage; the return is the arithmetic result,
+not a later reread of the destination. An absent left lvalue uses the original
+private temporary fallback; malformed writable non-Float aliases still fail.
+
+The generic scalar finite ban is removed from VM value validation and runtime
+state-budget measurement. Vector/CoreVector12, unsafe Float-to-Int/Byte,
+frame deltas, native animation/timers/geometry/window services keep their
+separate guards. Exceptional packets for unauthenticated transcendental/
+selection natives still fail explicitly; this increment does not claim all
+original Float math services are complete.
+
+Scalar payloads also have a real typed checkpoint path: codec14 is selected
+only when an active scalar Float is nonfinite. It preserves raw32 bits across
+properties, nested Struct scalar fields, mutable defaults, frozen birth
+defaults and state locals. Codec14 has an explicit parity-presence Boolean;
+codec13's mandatory parity wire remains unchanged. The matching runtime
+envelope is19, including the equipment wrapper's nested-version admission.
+Legacy codecs1..13 retain their byte format and reject nonfinite scalar words;
+native Vector/geometry/clock/AI/timer Float payloads remain separately finite.
+Both codec passes reject a noncanonical14 without an active nonfinite scalar.
+
+Initial direct verification: the independent owned-code x87 test passed303367
+arithmetic/comparison controls; script-state codec9460 checks/7601 rejections
+and state-frame codec1770/911 passed. The first production Scalar-Light run
+passed arithmetic, stored intermediate observation, script recovery, raw NaN
+save/reload and rollback controls before exposing an incorrect test-only finite
+checkpoint version assumption. The finite fixture now explicitly supplies
+native parity0, and obsolete VM finite-only scalar expectations were updated.
+These test edits require the final build/retest; no finished Training frame,
+live crate/loot/gravity or headset acceptance follows from initial results.
+
+Final targeted verification passed303367 independent x87 arithmetic/comparison
+controls,696190 VM checks/900 rejections (including107 new scalar checks/4
+write-prefix refusals),9460 script-codec checks/7601 rejections and1770
+state-frame-codec checks/911 rejections. Generated production scalar-Light
+controls log4273 cumulative checks/87 refusals; the full driver exits0 after
+Physics95384/113 and the final malformed-schema case. Real CDO integration
+also verifies raw IEEE codec14/envelope19 and restores the exact old finite
+codec3/envelope6 bytes. Equipment-wrapper15 and mismatched-envelope rejection
+are tested; a native Mover-wrapper19 runtime result is not claimed.
+
+Full desktop, Android-native and strict ARM64 syntax builds pass. The later
+full-suite run exposed four old scalar-ingress expectations (two invocations
+of one CDO test, a packet-seed negative test, and timer failure status). These
+were updated with positive IEEE CDO coverage, a malformed nonfinite Vector
+seed and an explicit assertion that nonfinite timer input reaches the native
+finite-rate guard with zero writes. All four targeted regressions now pass.
+VSize's separate finite-result boundary is also retained. The final whole
+suite result is recorded in STATUS.md, not inferred from those targeted runs.
+
+The actual first Training phase now gets past the reached TriggerLight.Tick
+and stops at the genuine DeusEx.ScriptedPawn native override. Ordinary repeat2
+is identical205999 instructions/15731 writes,54 slots/53 admitted calls/8 stasis
+returns and14 Physics9 blocks. Paired original doors retain two56-unit moves
+and2 completion callbacks, repeat2 identical206335/15799 before the same later
+Pawn boundary. All roots verify full save/state/revision/hash/RNG/client/
+lookup/Actor/GC undo and41 directly consumed original files unchanged.
+No actor is filtered, no authored ChangeTime or probe mask is rewritten, and
+no frame is published. See ORIGINAL-SCRIPTEDPAWN-TICK-PREREQUISITES.md for the
+next real override and the separate still-missing Pawn/base/physics paths.

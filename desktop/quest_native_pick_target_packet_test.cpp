@@ -112,7 +112,11 @@ struct Host final:Vm::Host {
         if(n!=531u)return std::nullopt;
         events.push_back("seed"+std::to_string(slot));
         if(hookWrite&&current){try{current->WriteReference(Address("Self.A"),Value::Float(99));}catch(...) {}}
-        return slot<2u?std::optional{Value::Float(badSeed?std::numeric_limits<float>::quiet_NaN():0.0f)}:std::nullopt;
+        if(slot>=2u)return std::nullopt;
+        // Scalar IEEE words are valid VM storage. This negative capability
+        // control supplies a malformed nonfinite Vector, not a valid Float
+        // that the old global scalar finite policy happened to reject.
+        return badSeed?Value::Vector({std::numeric_limits<float>::quiet_NaN(),0.0f,0.0f}):Value::Float(0.0f);
     }
     bool MaterializeNativeArgumentOmission(std::uint16_t n,const std::string&,std::size_t slot,const Vm::Function*)override{
         return n==531u&&slot<2u;

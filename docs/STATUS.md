@@ -1,5 +1,56 @@
 # Port status
 
+## Original scalar IEEE behavior unblocks Training lights (2026-10-26)
+
+The shared VM now preserves scalar IEEE Float words and implements the reached
+original basic arithmetic/compound/comparison services with actual x87 operand
+order, explicit PC64/binary32 rounding, FLD quieting, masked-invalid words and
+original unordered C0/C3 predicates. Property copies retain raw payload bits;
+compound operators read fresh left storage after right-expression effects.
+This is not a TriggerLight exception, clamped ChangeTime or skipped actor.
+
+Scalar checkpoint data has opt-in codec14 and matching runtime envelope19,
+including nested scalar fields, state locals, mutable CDOs and frozen birth
+defaults. Finite legacy bytes remain unchanged; old codecs reject nonfinite
+scalar packets. Codec14 does not invent parity0: its parity is explicitly
+optional while codec13 retains its mandatory original wire. Equipment-wrapper
+roundtrips, wrong-envelope rejection and real CDO replacement are tested.
+Vector/native geometry, unsafe conversion, animation/timer/window and VSize
+finite boundaries remain separate. Other unauthenticated exceptional scalar
+natives still refuse explicitly; not all Float math services are complete.
+
+Independent owned-code x87 oracle303367 checks, VM696190/900 refusals,
+script codec9460/7601 and state-frame codec1770/911 pass. Generated production
+scalar-Light controls log4273 cumulative checks/87 refusals; the complete
+driver exits0 after Physics95384/113 and its final malformed-schema check.
+Full desktop, Android-native and strict ARM64 syntax builds pass. Final full
+CTest206 executed/245 registered/39 explicit owned-data skips/zero failures
+35.01s passes. Separate actual crate415/5, deferred429/21 and animation588/24
+regressions pass; two-crowbar-Fire repeat2 retains228837 instructions/26047
+writes,48 rows/2 attack cycles/4 traces/2 crate changes/9 births and full undo
+at the known later FExec refusal.
+
+Actual unfiltered first Training repeat2 now passes the reached TriggerLight
+script and stops at the genuine native DeusEx.ScriptedPawn Tick boundary:
+54 slots/53 actor calls/8 stasis returns/14 Physics9 blocks,205999/15731 and
+full enclosing rollback. Both original door panels still move56 units and
+dispatch2 completion events before that same later boundary, repeat2 identical
+206335/15799 with complete undo. The probes verify41 directly consumed original
+files unchanged. All build/test/probe/audit jobs are terminal.
+
+ScriptedPawn is independently proven to own a real native Tick override and
+Pawn-specific physics, not an AActor alias. Its own work precedes the base
+Actor path, so existing native/Pawn guards are retained. This is the next
+implementation prerequisite, not permission to skip NPCs. See
+TRAINING-TRIGGER-LIGHT-TICK-GAP.md and
+ORIGINAL-SCRIPTEDPAWN-TICK-PREREQUISITES.md.
+
+Only first Training gameplay integration is currently prioritized. No account/
+player-creation UI or other-map gameplay work is added. No Quest is detected
+and no APK is packaged by this backend increment. Full NPC/Pawn/world update,
+startup publication, live equipped crate destruction, collectible surviving
+loot, automatic gravity and headset acceptance remain unfinished.
+
 ## Exact LevelInfo/Light admission and the real Training light boundary (2026-10-26)
 
 Exact native DeusEx.DeusExLevelInfo and Engine.Light now enter the existing

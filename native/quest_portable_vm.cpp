@@ -2,6 +2,7 @@
 #include "quest_state_frame.h"
 #include "quest_unreal_string.h"
 #include "quest_vector_to_rotator.h"
+#include "quest_scalar_float.h"
 
 #include <algorithm>
 #include <bit>
@@ -50,6 +51,9 @@ bool SnapshotNativeInput(const std::uint16_t index, const Function* declaration 
     case 280: return true; // SetTimer copies rate before evaluating bLoop.
     case 262: case 283: return true; // Collision setters consume each Bool/Float before the next Step.
     case 316: return true; // Original Core copies Rotator A before evaluating B.
+    case 169: case 171: case 172: case 174: case 175:
+    case 176: case 177: case 178: case 179: case 180: case 181:
+        return true; // Original Core scalar operands are copied by each Step.
     case 1410: case 1415: case 1416: case 1420: case 1421: case 1422: case 1430: case 1431: case 1432: case 1433: case 1438: case 1454: case 1461: case 1463: case 1464: case 1467:
     case 1475: case 1477: case 1510: case 1511: case 1535: case 1538: case 1539: case 1540:
     case 1541: case 1544: case 1545:
@@ -683,6 +687,7 @@ public:
             // next argument. Ordinary native OUT arguments retain aliases.
             if (copiedOutTemporary) args.push_back({value,input->reference,input->disposition,input->zeroFillBytes});
             else if ((fn.flags & 0x400u) && (SnapshotNativeInput(fn.nativeIndex, &fn) ||
+                (fn.nativeIndex>=182u&&fn.nativeIndex<=185u&&slot==1u) ||
                 (directSequentialSeeds && !addressLayouts.empty())) &&
                 input->disposition==ResultDisposition::Written) args.push_back({value,{}});
             else args.push_back(*input);
@@ -1393,7 +1398,9 @@ private:
         if (++nodes > limits_.localElements || bytes > limits_.retainedBytes - ownBytes)
             Fail(Status::Budget, "VM aggregate value limit");
         bytes += ownBytes;
-        if (v.kind == Kind::Float && !std::isfinite(v.floating)) Fail(Status::Invalid, "Non-finite VM float");
+        // An original scalar Float is an IEEE word, not a finite geometry
+        // coordinate. TriggerLight.Tick legitimately stores an infinity and
+        // recovers through the following comparison/assignment in this root.
         if (v.kind == Kind::Vector)
             for (float f : v.vector) if (!std::isfinite(f)) Fail(Status::Invalid, "Non-finite VM vector");
         for (const auto& [key, field] : v.fields) {
@@ -1878,9 +1885,13 @@ private:
                 // ordinary validation followed by a snapshot reload would
                 // observe a different value from a live native result alias.
                 const bool copiedAxisQuery=nativeCall&&(index==1463u||index==1464u);
+                const bool scalarCompound=nativeCall&&index>=182u&&index<=185u;
+                const bool copiedScalar=nativeCall&&(index==169u||index==171u||index==172u||index==174u||index==175u||
+                    (index>=176u&&index<=181u)||
+                    (scalarCompound&&i==1u));
                 auto argument = Eval(frame, n.children[i], frame.self,
                     addressOnly?EvalRead::Address:capturedOut?EvalRead::Capture:
-                    (copiedInput || copiedAxisQuery || (sequentialSeeds && !addressLayouts.empty()))?
+                    (copiedInput || copiedAxisQuery || copiedScalar || (sequentialSeeds && !addressLayouts.empty()))?
                         EvalRead::Copy:EvalRead::Validate);
                 if(addressOnly) {
                     args.push_back(AddressOnlyNativeArgument(argument,*addressLayouts[i]));
@@ -1909,7 +1920,7 @@ private:
                     } else if (argument.disposition==ResultDisposition::ZeroFill && argument.zeroFillBytes!=0u)
                         Fail(Status::Unsupported,"VM context argument result destination layout is unavailable");
                 }
-                const bool snapshotInput = nativeCall && (SnapshotNativeInput(index, fn.get()) ||
+                const bool snapshotInput = nativeCall && (SnapshotNativeInput(index,fn.get()) || copiedScalar ||
                     (sequentialSeeds && !addressLayouts.empty()));
                 const bool copiedOutTemporary = nativeCall && CopyNativeOutTemporary(index);
                 if (snapshotInput || sequentialSeeds || copiedOutTemporary) {
@@ -2147,7 +2158,8 @@ private:
                     static_cast<std::int64_t>(array.reference->dimension - 1)));
                 result.reference = BindResultLayout(array.reference->element(clamped),array.reference->resultLayout); break;
             }
-            case 0x1d: case 0x1e: case 0x1f: case 0x22: case 0x23: case 0x24: case 0x2c: case 0x34:
+            case 0x1e: result.value=Value::Float(ScalarFloat::Load(n.constant.floating));break;
+            case 0x1d: case 0x1f: case 0x22: case 0x23: case 0x24: case 0x2c: case 0x34:
                 result.value = n.constant; break;
             case 0x20: result.value = Value::Text(Kind::Object, host_.ResolveObject(frame.function, n.reference)); break;
             case 0x21: result.value = Value::Text(Kind::Name, host_.ResolveName(frame.function, n.reference)); break;
@@ -2244,12 +2256,24 @@ private:
         const auto binaryInt = [&](auto op) { count(2); return Evaluation{Value::Integer(op(ToInt(a(0)), ToInt(a(1)))), {}}; };
         const auto binaryFloat = [&](auto op) { count(2); return Evaluation{Value::Float(op(ToFloat(a(0)), ToFloat(a(1)))), {}}; };
         const auto compareInt = [&](auto op) { count(2); return Evaluation{Value::Bool(op(ToInt(a(0)), ToInt(a(1)))), {}}; };
-        const auto compareFloat = [&](auto op) { count(2); return Evaluation{Value::Bool(op(ToFloat(a(0)), ToFloat(a(1)))), {}}; };
         const auto vector = [&](std::size_t i) {
             auto v = a(i); if (v.kind == Kind::Nothing) return std::array<float, 3>{};
             if (v.kind != Kind::Vector) TypeError();
             return v.vector;
         };
+        switch (index) {
+        case 170: case 173: case 186: case 187: case 189: case 244: case 245: case 246:
+            // These separate transcendental/selection native exceptional
+            // packets have not all been authenticated. Keep their existing
+            // explicit boundary, not a blanket ban on valid scalar storage.
+            for(const auto& argument:args) {
+                const auto value=argument.Load();
+                if(value.kind==Kind::Float&&!std::isfinite(value.floating))
+                    Fail(Status::Invalid,"Exceptional scalar packet for this native is not implemented");
+            }
+            break;
+        default:break;
+        }
         switch (index) {
         case 316: {
             // Core.dll10139AD0..10139B43: two copied, fully written Rotators;
@@ -2308,19 +2332,15 @@ private:
             Write(reference, next);
             return {index == 163 || index == 164 ? next : previous, {}};
         }
-        case 169: count(1); return {Value::Float(-ToFloat(a(0))), {}};
+        case 169: count(1); return {Value::Float(ScalarFloat::Negate(ToFloat(a(0)))), {}};
         case 170: return binaryFloat([](auto x, auto y) { return std::pow(x, y); });
-        case 171: return binaryFloat([](auto x, auto y) { return x * y; });
-        case 172: return binaryFloat([](auto x, auto y) { return x / y; });
+        case 171: return binaryFloat([](auto x, auto y) { return ScalarFloat::Binary(ScalarFloat::Operation::Multiply,x,y); });
+        case 172: return binaryFloat([](auto x, auto y) { return ScalarFloat::Binary(ScalarFloat::Operation::Divide,x,y); });
         case 173: return binaryFloat([](auto x, auto y) { return std::fmod(x, y); });
-        case 174: return binaryFloat([](auto x, auto y) { return x + y; });
-        case 175: return binaryFloat([](auto x, auto y) { return x - y; });
-        case 176: return compareFloat([](auto x, auto y) { return x < y; });
-        case 177: return compareFloat([](auto x, auto y) { return x > y; });
-        case 178: return compareFloat([](auto x, auto y) { return x <= y; });
-        case 179: return compareFloat([](auto x, auto y) { return x >= y; });
-        case 180: return compareFloat([](auto x, auto y) { return x == y; });
-        case 181: return compareFloat([](auto x, auto y) { return x != y; });
+        case 174: return binaryFloat([](auto x, auto y) { return ScalarFloat::Binary(ScalarFloat::Operation::Add,x,y); });
+        case 175: return binaryFloat([](auto x, auto y) { return ScalarFloat::Binary(ScalarFloat::Operation::Subtract,x,y); });
+        case 176: case 177: case 178: case 179: case 180: case 181:
+            count(2);return {Value::Bool(ScalarFloat::Compare(index,ToFloat(a(0)),ToFloat(a(1)))),{}};
         case 212: case 213: case 214: {
             count(2); const auto v = vector(index == 213 ? 1 : 0);
             const float f = ToFloat(a(index == 213 ? 0 : 1)); std::array<float, 3> out{};
@@ -2354,7 +2374,9 @@ private:
             count(1); const auto v = vector(0u);
             // NObject::VSize uses the pinned binary32 dot/length operations,
             // not a double hypot that would silently change overflow behavior.
-            return {Value::Float(length(vec3(v[0], v[1], v[2]))), {}};
+            const auto result=length(vec3(v[0],v[1],v[2]));
+            if(!std::isfinite(result))Fail(Status::Invalid,"Non-finite VSize result");
+            return {Value::Float(result), {}};
         }
         case 186: {
             // Retail execAbs10135c60 compares with Float+0 and conditionally
@@ -2469,9 +2491,22 @@ private:
             x+=UnrealString::CString(y);
             return {Value::Text(Kind::String, UnrealString::Encode(x)), {}};
         }
-        case 161: case 162: case 182: case 183: case 184: case 185: case 223: case 224: {
-            count(2); const auto op = index == 161 ? 146 : index == 162 ? 147 :
-                index == 182 ? 171 : index == 183 ? 172 : index == 184 ? 174 : index == 185 ? 175 : index == 223 ? 215 : 216;
+        case 182: case 183: case 184: case 185: {
+            count(2);
+            // RHS is already the copied Step temporary. Read the actual LHS
+            // after RHS side effects, as the owned compound wrappers do.
+            const auto op=index==182u?ScalarFloat::Operation::Multiply:index==183u?ScalarFloat::Operation::Divide:
+                index==184u?ScalarFloat::Operation::Add:ScalarFloat::Operation::Subtract;
+            const auto rhs=a(1u);const auto lhs=a(0u);
+            const auto value=Value::Float(ScalarFloat::Binary(op,ToFloat(lhs),ToFloat(rhs)));
+            if(args[0].reference) {
+                if(args[0].reference->zero.kind!=Kind::Float)TypeError();
+                Write(args[0].reference,value);
+            } // No lvalue: the original wrapper uses its private Step temporary.
+            return {value,{}};
+        }
+        case 161: case 162: case 223: case 224: {
+            count(2); const auto op = index == 161 ? 146 : index == 162 ? 147 : index == 223 ? 215 : 216;
             auto value = Native(static_cast<std::uint16_t>(op), self, args, nullptr).Load();
             Write(args[0].reference, value); return {args[0].Load(), {}};
         }

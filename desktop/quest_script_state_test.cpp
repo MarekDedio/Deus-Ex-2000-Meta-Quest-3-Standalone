@@ -202,8 +202,8 @@ void InvalidStateAndBudgets() {
     broken=state;broken.objects[0].properties[7].value=Text(Vm::Kind::String,std::string("bad\0text",8));
     rejection(broken,"NUL value string accepted");
     broken=state;broken.objects[0].properties[1].value.integer=256;rejection(broken,"Byte outside retained type range accepted");
-    broken=state;broken.objects[0].properties[4].value=Floating(std::numeric_limits<float>::quiet_NaN());
-    rejection(broken,"Non-finite typed value accepted");
+    broken=state;broken.objects[0].properties[8].value.vector[1]=std::numeric_limits<float>::quiet_NaN();
+    rejection(broken,"Non-finite Vector channel accepted");
     for(std::size_t mode=0;mode<6;++mode) {
         ScriptStateLimits limits;
         if(mode==0) limits.maxBytes=valid.size()-1;
@@ -408,8 +408,9 @@ void InvalidDefaultsAndBudgets() {
         broken.classDefaults[1].properties.push_back(std::move(duplicate));
         rejection(broken,"Input default property key/alias/index collision accepted");
     }
-    broken=saved;broken.classDefaults[1].properties[0].value=Floating(std::numeric_limits<float>::infinity());
-    rejection(broken,"Nonfinite input CDO value accepted");
+    broken=saved;broken.classDefaults[1].properties[0].value=Scalar(Vm::Kind::Vector);
+    broken.classDefaults[1].properties[0].value.vector[0]=std::numeric_limits<float>::infinity();
+    rejection(broken,"Nonfinite input CDO Vector accepted");
     broken=saved;broken.classDefaults[1].properties[0].value=Text(Vm::Kind::String,std::string("a\0b",3));
     rejection(broken,"NUL input CDO value accepted");
     for (std::size_t mode=0u;mode<6u;++mode) {
@@ -1869,6 +1870,163 @@ void NativeOrderMalformedAndBudgets() {
     Reject([&] {EncodeScriptSavedState(noClock,limit);},"Compact null wire bypassed retained slot-array admission");
     RejectNativeOrderBytes(longBytes,"Compact null wire bypassed retained decode admission",limit);
 }
+float ScalarBitsFloat(std::uint32_t bits) {float value{};std::memcpy(&value,&bits,sizeof(bits));return value;}
+ScriptSavedState ScalarBitsState(std::uint32_t word) {
+    ScriptSavedState state;state.mapName="Map";
+    state.objects.push_back({"Map.A","Fixture.Actor",{{"Fixture.Actor.Value","Value",0u,Floating(ScalarBitsFloat(word))}},{}});
+    return state;
+}
+Bytes ScalarBitsLiteral(std::uint32_t word,bool parity=false,std::uint8_t tag=4u) {
+    // Independent v14 wire: no implicit native geometry/order/parity is added.
+    auto bytes=Prefix(1u);bytes[6u]=14u;Object(bytes,"Map.A",1u);Property(bytes,"Fixture.Actor.Value","Value",0u);
+    bytes.push_back(tag);U32(bytes,word);
+    bytes.insert(bytes.end(),{0u,0u,0u,0u}); // No animation/state/lifecycle/timer.
+    for(unsigned i=0u;i<3u;++i)U32(bytes,0u); // No defaults/births/AI managers.
+    bytes.insert(bytes.end(),{0u,0u,0u,0u}); // No random/decal/clock/actor order.
+    bytes.push_back(parity?1u:0u);
+    if(parity){String(bytes,"Map.MyLevel");U32(bytes,1u);}
+    return bytes;
+}
+void ScalarFloatBitsRoundtripAndWire() {
+    for(const auto word:{0x7f800000u,0xff800000u,0x7fc12345u,0xffc54321u,0x7f800001u,0xff812345u}) {
+        for(const bool parity:{false,true}) {
+            auto state=ScalarBitsState(word);
+            if(parity)state.nativeLevelTickParity=ScriptSavedLevelTickParity{"Map.MyLevel",1};
+            const auto literal=ScalarBitsLiteral(word,parity),encoded=EncodeScriptSavedState(state);
+            const auto decoded=DecodeScriptSavedState(literal);
+            Require(encoded==literal&&encoded[6u]==14u&&SameValue(state.objects[0].properties[0].value,decoded.objects[0].properties[0].value),
+                "Codec14 changed scalar infinity/NaN sign/payload/quiet bit or independent wire");
+            Require(decoded.nativeLevelTickParity.has_value()==parity&&
+                (!parity||(decoded.nativeLevelTickParity->levelPath=="Map.MyLevel"&&decoded.nativeLevelTickParity->parity==1)),
+                "Codec14 fabricated/lost its optional native parity record");
+            for(unsigned repeat=0u;repeat<3u;++repeat)
+                Require(EncodeScriptSavedState(DecodeScriptSavedState(encoded))==literal,"Codec14 repeated raw Float roundtrip changed bits");
+        }
+    }
+    for(const auto word:{0u,0x80000000u,1u,0x007fffffu,0x7f7fffffu,0xff7fffffu}) {
+        const auto state=ScalarBitsState(word);const auto encoded=EncodeScriptSavedState(state);
+        Bytes value{4u};U32(value,word);
+        Require(encoded==OneValue(value)&&encoded[6u]==1u&&!ScriptStateDetail::HasScalarFloatBits(state),
+            "Finite Float/signed zero/subnormal unexpectedly opted into codec14 or changed old bytes");
+    }
+    auto inactive=ScalarBitsState(0u);inactive.objects[0].properties[0].value=Integer(8);
+    inactive.objects[0].properties[0].value.floating=ScalarBitsFloat(0x7fc12345u);
+    inactive.objects[0].properties[0].value.fields["Inactive"]=Floating(ScalarBitsFloat(0x7f800000u));
+    auto plain=inactive;plain.objects[0].properties[0].value=Integer(8);
+    Require(!ScriptStateDetail::HasScalarFloatBits(inactive)&&EncodeScriptSavedState(inactive)==EncodeScriptSavedState(plain),
+        "Inactive Float/Struct payload selected codec14 or changed encoded active data");
+    // Independently retain codec13's mandatory parity packet without a marker.
+    ScriptSavedState parity;parity.mapName="Map";parity.nativeLevelTickParity=ScriptSavedLevelTickParity{"Map.MyLevel",1};
+    auto literal=Prefix(0u);literal[6u]=13u;for(unsigned i=0u;i<3u;++i)U32(literal,0u);
+    literal.insert(literal.end(),{0u,0u,0u,0u});String(literal,"Map.MyLevel");U32(literal,1u);
+    Require(EncodeScriptSavedState(parity)==literal&&EncodeScriptSavedState(DecodeScriptSavedState(literal))==literal,
+        "Codec14 changed mandatory codec13 parity wire bytes");
+    auto noParity=literal;noParity.resize(noParity.size()-19u);
+    RejectNativeOrderBytes(noParity,"Codec13 parity became optional");
+}
+void ScalarFloatBitsLocationsAndComposition() {
+    for(unsigned location=0u;location<4u;++location) {
+        ScriptSavedState state;state.mapName="Map";
+        auto nested=Scalar(Vm::Kind::Struct);auto inner=Scalar(Vm::Kind::Struct);
+        inner.fields["Raw"]=Floating(ScalarBitsFloat(0xff812345u));nested.fields["Child"]=inner;
+        const ScriptSavedProperty property{"Fixture.Actor.Value","Value",0u,nested};
+        if(location==0u)state.objects.push_back({"Map.A","Fixture.Actor",{property},{}});
+        if(location==1u)state.classDefaults.push_back({"Fixture.Actor",{property}});
+        if(location==2u)state.births.push_back({"Map.Born","Fixture.Actor",7u,{property}});
+        if(location==3u) {
+            StateObject saved;saved.hasStack=saved.frameOverride=true;saved.frame.emplace();
+            saved.frame->codePath="Fixture.Actor.Active";saved.frame->localsCodePath="Fixture.Actor.Active";
+            saved.frame->locals.push_back({"Fixture.Actor.Active.Raw",{nested}});
+            state.objects.push_back({"Map.A","Fixture.Actor",{},{},saved});
+        }
+        Require(ScriptStateDetail::HasScalarFloatBits(state),"Bounded feature scan missed nested object/CDO/birth/local scalar");
+        const auto encoded=EncodeScriptSavedState(state);const auto decoded=DecodeScriptSavedState(encoded);
+        Require(encoded[6u]==14u&&EncodeScriptSavedState(decoded)==encoded,"Nested raw scalar Float payload lost codec14 composition");
+        if(location==0u)Require(SameValue(nested,decoded.objects[0].properties[0].value),"Nested object IEEE bits changed");
+        if(location==1u)Require(SameValue(nested,decoded.classDefaults[0].properties[0].value),"Nested CDO IEEE bits changed");
+        if(location==2u)Require(SameValue(nested,decoded.births[0].frozenDefaults[0].value),"Nested frozen-birth IEEE bits changed");
+        if(location==3u)Require(SameValue(nested,decoded.objects[0].state->frame->locals[0].values[0]),"Nested local IEEE bits changed");
+    }
+    auto composed=NativeOrderState();composed.nativeLevelTickParity=ScriptSavedLevelTickParity{"Map.MyLevel",1};
+    composed.objects=ScalarBitsState(0xff800000u).objects;auto& actor=composed.objects[0];actor.clock=Clock();
+    actor.lifecycle=ScriptSavedActorLifecycle{{"Map.Live"},{"Map.A"},{true,false,true,false},false};
+    actor.latentTimeLeft=-0.25f;actor.state.emplace();actor.state->hasStack=actor.state->frameOverride=true;
+    actor.state->frame.emplace();actor.state->frame->codePath="Fixture.Actor";
+    actor.state->frame->control=StateControl{"Fixture.Actor",false,0x8000000000000001ull};
+    composed.classDefaults.push_back({"Fixture.Actor",{{"Fixture.Actor.Value","Value",0u,Floating(ScalarBitsFloat(0x7fc12345u))}}});
+    composed.births[0].frozenDefaults.push_back({"Fixture.Actor.Value","Value",0u,Floating(ScalarBitsFloat(0xff812345u))});
+    actor.properties.push_back({"Fixture.Actor.Array","Array",0u,IntArray({1,-2,3})});
+    composed.randomSeed=0x12345678u;composed.aiManagers.push_back(AiManager());composed.nativeDecals=DecalGraph();
+    const auto encoded=EncodeScriptSavedState(composed);const auto decoded=DecodeScriptSavedState(encoded);
+    Require(encoded[6u]==14u&&EncodeScriptSavedState(decoded)==encoded&&decoded.objects[0].clock&&
+        decoded.objects[0].state&&decoded.objects[0].state->frame->control&&decoded.objects[0].lifecycle&&
+        decoded.objects[0].latentTimeLeft==-0.25f&&decoded.classDefaults.size()==1u&&decoded.births.size()==2u&&
+        decoded.randomSeed==composed.randomSeed&&decoded.nativeDecals&&decoded.nativeLevelClock&&
+        decoded.nativeActorOrder&&decoded.nativeLevelTickParity&&decoded.nativeLevelTickParity->parity==1,
+        "Codec14 lost a composed legacy optional feature or native parity");
+    SameClock(*actor.clock,*decoded.objects[0].clock);SameAi(composed.aiManagers[0],decoded.aiManagers[0]);
+    SameDecalGraph(*composed.nativeDecals,*decoded.nativeDecals);SameNativeOrder(*composed.nativeActorOrder,*decoded.nativeActorOrder);
+    auto reordered=composed;std::reverse(reordered.objects[0].properties.begin(),reordered.objects[0].properties.end());
+    std::reverse(reordered.births.begin(),reordered.births.end());
+    Require(EncodeScriptSavedState(reordered)==encoded,"Codec14 changed canonical sorting or native slot order");
+}
+void ScalarFloatBitsRefusalsAndLimits() {
+    const auto literal=ScalarBitsLiteral(0x7fc12345u);
+    for(std::uint8_t version=1u;version<=13u;++version) {
+        auto old=literal;old[6u]=version;RejectNativeOrderBytes(old,"Old codec accepted nonfinite scalar Float");
+    }
+    for(const auto finite:{0u,0x80000000u,0x7f7fffffu})
+        RejectNativeOrderBytes(ScalarBitsLiteral(finite),"Codec14 without any nonfinite scalar was accepted");
+    for(std::size_t length=0u;length<literal.size();++length)
+        RejectNativeOrderBytes(Bytes(literal.begin(),literal.begin()+static_cast<std::ptrdiff_t>(length)),"Truncated codec14 accepted");
+    auto broken=literal;broken.push_back(0u);RejectNativeOrderBytes(broken,"Trailing codec14 bytes accepted");
+    broken=literal;broken.back()=2u;RejectNativeOrderBytes(broken,"Codec14 parity presence is not a bounded Boolean");
+    broken=literal;broken.back()=1u;RejectNativeOrderBytes(broken,"Codec14 accepted absent required parity payload");
+    broken=ScalarBitsLiteral(0x7fc12345u,true);NativeOrderPut32(broken,broken.size()-4u,2u);
+    RejectNativeOrderBytes(broken,"Codec14 accepted invalid native parity");
+    RejectNativeOrderBytes(ScalarBitsLiteral(0x7f800000u,false,8u),"Codec14 raw scalar permission leaked into Vector Float channel");
+    auto state=ScalarBitsState(0x7f800000u);
+    const auto refuses=[&](const std::function<void(ScriptSavedState&)>& mutate,const char* reason) {
+        auto invalid=state;mutate(invalid);Reject([&]{EncodeScriptSavedState(invalid);},reason);
+    };
+    refuses([](auto& s){auto v=Scalar(Vm::Kind::Vector);v.vector[2]=ScalarBitsFloat(0x7f800000u);
+        s.objects[0].properties.push_back({"Fixture.Actor.Vector","Vector",0u,v});},"Codec14 admitted nonfinite Vector");
+    refuses([](auto& s){s.objects[0].latentTimeLeft=ScalarBitsFloat(0x7fc12345u);},"Codec14 admitted nonfinite native latent timer");
+    refuses([](auto& s){s.objects[0].clock=Clock();s.objects[0].clock->main.rate=ScalarBitsFloat(0x7f800000u);},
+        "Codec14 admitted nonfinite native animation channel");
+    refuses([](auto& s){s.nativeLevelClock=ScriptSavedLevelClock{"Map.MyLevel",std::numeric_limits<double>::infinity()};},
+        "Codec14 admitted nonfinite native Level clock");
+    refuses([](auto& s){s.nativeDecals=DecalGraph();s.nativeDecals->state.surfaces[0][0].relativeCorners[0].x=ScalarBitsFloat(0x7fc12345u);},
+        "Codec14 admitted nonfinite native geometry");
+    refuses([](auto& s){s.aiManagers.push_back(AiManager());s.aiManagers[0].senders[0].score=ScalarBitsFloat(0x7f800000u);},
+        "Codec14 admitted nonfinite AI scalar");
+    auto inactive=ScalarBitsState(0u);inactive.objects[0].properties[0].value=Scalar(Vm::Kind::Vector);
+    inactive.objects[0].properties[0].value.vector[0]=ScalarBitsFloat(0x7f800000u);
+    Require(!ScriptStateDetail::HasScalarFloatBits(inactive),"Feature scan treated Vector infinity as scalar codec14 admission");
+    Reject([&]{EncodeScriptSavedState(inactive);},"Vector infinity alone selected a permissive codec");
+    auto duplicateBirth=state;duplicateBirth.births={{"Map.AA","Fixture.Actor",7u,{}},{"Map.BB","Fixture.Actor",7u,{}}};
+    Reject([&]{EncodeScriptSavedState(duplicateBirth);},"Codec14 bypassed unique birth indices without a native order");
+    duplicateBirth.births.resize(1u);duplicateBirth.births[0].worldActorIndex=0xffffffffu;
+    Reject([&]{EncodeScriptSavedState(duplicateBirth);},"Codec14 invented detached-birth permission without a native order");
+    ScriptStateLimits limits;ScriptStateDetail::Writer measured(limits,nullptr);measured.State(state);
+    auto exact=limits;exact.maxBytes=measured.measuredBudget().retained;exact.maxObjects=1u;exact.maxProperties=1u;exact.totalValueNodes=1u;
+    Require(EncodeScriptSavedState(state,exact)==ScalarBitsLiteral(0x7f800000u)&&
+        EncodeScriptSavedState(DecodeScriptSavedState(ScalarBitsLiteral(0x7f800000u),exact),exact)==ScalarBitsLiteral(0x7f800000u),
+        "Codec14 exact aggregate budgets disagreed between passes");
+    for(unsigned mode=0u;mode<4u;++mode) {
+        auto small=exact;
+        if(mode==0u)--small.maxBytes;
+        if(mode==1u)small.maxObjects=0u;
+        if(mode==2u)small.maxProperties=0u;
+        if(mode==3u)small.totalValueNodes=0u;
+        Reject([&]{EncodeScriptSavedState(state,small);},"Codec14 encode bypassed aggregate budget");
+        RejectNativeOrderBytes(ScalarBitsLiteral(0x7f800000u),"Codec14 decode bypassed aggregate budget",small);
+    }
+    // The bounded feature scan must fail BEFORE emitting even the magic.
+    Bytes untouched{7u,11u};limits.totalValueNodes=0u;ScriptStateDetail::Writer emitting(limits,&untouched);
+    Reject([&]{emitting.State(state);},"Unbounded scalar feature scan emitted partial bytes");
+    Require(emitting.size()==0u&&untouched==Bytes({7u,11u}),"Feature scan failure modified the output before admission");
+}
 }
 
 int main() {
@@ -1882,7 +2040,9 @@ int main() {
         SleepRoundtripAndLegacy();LandingSharedTimerWire();InvalidSleepStateAndBudgets();
         IntArrayAndDecalRoundtrip();InvalidIntArrayAndDecalData();IntArrayAndDecalBudgets();DecalSnapshotImportAndCapacity();
         NativeOrderRoundtripAndLegacy();NativeOrderMalformedAndBudgets();
+        ScalarFloatBitsRoundtripAndWire();ScalarFloatBitsLocationsAndComposition();ScalarFloatBitsRefusalsAndLimits();
         std::cout<<"PASS script-state codec controls="<<checks<<" rejection controls="<<rejections
-            <<"; legacy bytes, signed timers, codec10 native decals/Tag11 integer arrays, codec12 native actor order, structural codec only\n";return 0;
+            <<"; legacy bytes, signed timers, codec10 native decals/Tag11 integer arrays, codec12 native actor order, "
+              "codec14 raw scalar IEEE words/optional parity, structural codec only\n";return 0;
     }catch(const std::exception& error) {std::cerr<<"FAIL script-state codec: "<<error.what()<<" after "<<checks<<" controls\n";return 1;}
 }
