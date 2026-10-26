@@ -1,5 +1,23 @@
 # Immediate milestone: complete the first Training map
 
+Latest2026-10-26: both original native GameInfo and Mutator updates now run
+through their proven inherited Actor methods. Canonical native rule/Info/Actor
+ancestry and matching animation callbacks are checked; unknown children/base
+Info/malformed chains still refuse. No object skip or new UI. Both generated
+matrices include real tween/AnimEnd, selected Float Tick, owner/LIFO/checkpoint
+and ordinary/animated whole-root rollback. Added3,630/82; complete production
+12,455/245 before final malformed-schema control exits0. Full desktop/Android
+native/strict GNU+ARM64 and CTest217 executed/256 registered/39 skips/zero
+failures71.62s pass; crate415/5, deferred429/21, animation588/24, FastTrace252/0.
+
+Actual cold/warm Training repeat2 now reaches Shadow0's Engine.Decal gate at
+237,922/19,290,123 slots/122 calls. Doors retain both56-unit moves/two ends at
+238,258/19,358; two-Fire repeat2 retains228,837/26,047,48 rows/two cycles/two
+notifies/four traces/two crate changes/nine births before later FExec. Full
+undo/model-proof lifetime/same-filename cold replacement/all45 originals/
+5 frozen compiler inputs pass; all jobs terminal. No APK or other maps.
+Next: ORIGINAL-TRAINING-DECAL-TICK-GAP.md. Live loot/gravity still unfinished.
+
 Latest2026-10-26: secure lazy immutable-world validation reuse now passes the
 measured Model36 validation cap. World extent/box queries share the exact
 compatible successful proof on private actual-const loader geometry. Cold work

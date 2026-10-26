@@ -45,6 +45,29 @@
         if(selected&&actualActor&&!CastObjectIdentity(actor->reflection.objectPath).classObject)return selected;
         throw std::runtime_error("Original Actor Tick has no authenticated native implementation");
     }
+    void RequireOriginalInfoRulesAncestry(RuntimeObject* selected,const char* canonicalClass,const char* refusal) {
+        LifecycleStep();auto* info=Object("Engine.Info");
+        // Owned GameInfo ref13 / Mutator ref46 -> Info ref91 -> Actor ref2,
+        // including actual UClass export/payload immediate superclass links.
+        // Only the two separately audited wrappers below call this helper.
+        // No other native Info descendant or same-name noncanonical class
+        // may borrow this proof.
+        if(selected!=Object(canonicalClass)||!selected->classDescriptor||selected->defaultOwner||
+            !selected->classFieldLinksValid||selected->reflection.metaClass!="Class"||
+            !(selected->reflection.flags&0x04000000u)||selected->base!=info||
+            !info->classDescriptor||info->defaultOwner||!info->classFieldLinksValid||
+            info->reflection.metaClass!="Class"||!(info->reflection.flags&0x04000000u)||
+            info->base!=Object("Engine.Actor"))
+            throw std::runtime_error(refusal);
+    }
+    void RequireOriginalGameInfoAncestry(RuntimeObject* selected) {
+        RequireOriginalInfoRulesAncestry(selected,"Engine.GameInfo",
+            "Original GameInfo Tick lost its actual native GameInfo/Info/Actor ancestry");
+    }
+    void RequireOriginalMutatorAncestry(RuntimeObject* selected) {
+        RequireOriginalInfoRulesAncestry(selected,"Engine.Mutator",
+            "Original Mutator Tick lost its actual native Mutator/Info/Actor ancestry");
+    }
     void RequireOriginalActorTickPhysicsImplementation(RuntimeObject* actor) {
         auto* selected=OriginalActorTickNativeClass(actor);const auto& path=selected->reflection.objectPath;
         // Owned native vtables/IAT, ORIGINAL-ACTOR-TICK-PHYSICS-PHASE.md
@@ -54,6 +77,19 @@
         // boundaries only: neither parent Info/Triggers, unknown nearer
         // native children nor scalar teardown are authorized here. Native
         // ScriptedPawn Tick's separate wrapper does NOT admit Pawn physics.
+        if(path=="Engine.GameInfo") {
+            // GameInfo10427AE0 slots+14/+64/+8C are the original Actor
+            // ProcessState/Tick/performPhysics, not a new guessed override.
+            // See ORIGINAL-TRAINING-GAMEINFO-TICK-GAP.md. No scalar teardown
+            // or blanket native Info permission follows from these slots.
+            RequireOriginalGameInfoAncestry(selected);return;
+        }
+        if(path=="Engine.Mutator") {
+            // Mutator10427B8C has the same audited +14/+64/+8C Actor slots.
+            // This actual next Training object is admitted independently of
+            // GameInfo; neither base Info nor arbitrary native children are.
+            RequireOriginalMutatorAncestry(selected);return;
+        }
         if(path=="Engine.Weapon") {
             // Exact original Weapon104287A4 slots+14/+64/+8C inherit
             // Actor.ProcessState/Tick/performPhysics. This is NOT permission

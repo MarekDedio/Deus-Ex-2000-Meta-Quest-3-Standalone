@@ -1,5 +1,34 @@
 # Port status
 
+## Original GameInfo and Mutator updates run in Training (2026-10-26)
+
+Exact canonical native GameInfo/Mutator -> native Info -> Actor ancestry now
+admits their independently verified inherited Actor Tick/ProcessState/physics
+and matching ProcessEvent/IsPendingKill callbacks. Base Info, malformed chains
+and unknown nearer native children still refuse. Selected script events and
+all normal owner/parity/animation/state/timer/lifespan/physics remain intact.
+No object skip, forced Physics0 or new account/character-creation UI was added.
+
+Both generated rule-object matrices pass, including real MAIN tween/AnimEnd,
+checked native callbacks, selected Float Tick, owner/deferred LIFO, checkpoint
+non-replay and ordinary/animated late/write/work whole-root undo. Added3,630
+checks/82 refusals; full driver12,455/245 before final malformed-schema control
+exits0. Full desktop/Android-native/strict GNU+ARM64 pass; CTest217 executed /
+256 registered /39 explicit skips /zero failures71.62s. Owned crate415/5,
+deferred429/21, animation588/24 and FastTrace252/0 pass.
+
+Actual cold/warm Training repeat2 passes both rule objects and reaches Shadow0
+at exact Engine.Decal native gate:237,922 instructions/19,290 writes,123 slots /
+122 calls. Paired doors retain both56-unit moves/two ends at238,258/19,358;
+two-Fire repeat2 stays228,837/26,047 with48 rows/two cycles/two notifies/four
+traces/two crate changes/nine births before later FExec. Full gameplay undo,
+immutable proof0->1/1->1 and same-filename replacement starting cold pass.
+
+All45 original files/5 frozen compiler inputs unchanged; all jobs terminal.
+See ORIGINAL-TRAINING-GAMEINFO-TICK-GAP.md and the reached next
+ORIGINAL-TRAINING-DECAL-TICK-GAP.md. Live published gameplay, collectible loot
+and stacked-crate gravity remain unfinished. First Training only; no new APK.
+
 ## Immutable validation reuse passes Training's collision cap (2026-10-26)
 
 The measured null-owner world-Model validation blocker is now passed. A
