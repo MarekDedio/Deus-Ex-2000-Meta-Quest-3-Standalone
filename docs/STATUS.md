@@ -1,5 +1,50 @@
 # Port status
 
+## Ordinary Pawn update reaches actual physics in Training (2026-10-26)
+
+The original post-animation Pawn continuation now executes selected Tick,
+ProcessState, native Timer and LifeSpan in the existing Level Execution root.
+Checked callback selection and original ProcessEvent gates are shared with the
+ScriptedPawn wrapper. The short retained-Pawn tail binds actual qualified
+view/weapon fields and XLevel FarMove; equipped-weapon and player-eye/view
+production success controls remain deferred. Local-player input, simulated
+movement, network work, tickType2 perception and APawn physics remain explicit
+reached errors, not generic Actor aliases or empty success providers.
+
+LastRendered723 now authenticates its authored no-input Float declaration,
+accepts genuine numeric-native/lazy-identity calls and reads the initialized
+native timestamp plus native ULevel Double clock. The native timer preserves
+fresh operands, retained PC64 comparisons, unconditional Float stores and
+checked callbacks. Unsupported exceptional/wider CRT _ftol conversions remain
+explicitly refused rather than guessed.
+
+Verification: Pawn suffix82,749 checks/28 refusals; timer89,052/32 including
+9,088 independent x87 cases; LastRendered167,096/14 including33,394 oracle
+cases. Generated production ScriptedPawn controls reach2,374 cumulative/40;
+the complete driver exits0 after7,246/136 and its final malformed-schema
+control. Full desktop, Android native and strict ARM64 checks pass. CTest252
+registered/213 executed/39 explicit owned-data skips/zero failures in91.30s.
+Separate owned first-Training crate415/5, deferred429/21 and animation588/24
+regressions pass.
+
+Actual first Training repeat2 now passes the previous continuation gate and
+reaches `Original Pawn performPhysics is not implemented`, identically at
+206,922 instructions/15,797 writes after54 calls with full undo. Pair-door
+repeat2 retains207,258/15,865, both56-unit panel moves and2 completion events
+before that same boundary. Separate two-crowbar-Fire repeat2 remains
+228,837/26,047 with48 rows/2 cycles/2 notifies/4 traces/2 crate changes/9 births
+and full undo at later unimplemented PlayerPawn FExec. Expected-error probes
+exit0 only for matching errors and rollback, NOT completed startup/gameplay.
+
+All45 checked originals retain exact SHA256/length/UTC-mtime; all14 verified
+compiler inputs remain unchanged. All build/test/probe jobs are terminal.
+No Quest is detected and no APK was packaged. No account or character-creation
+UI or other-map gameplay integration was added. Full first-map live crate
+destruction, surviving collectible loot and automatic stacked-crate gravity
+remain unfinished. Next is actual APawn physics/falling/landing, with specific
+differences audited in ORIGINAL-TRAINING-PAWN-PHYSICS-GAP.md; see also
+ORIGINAL-PAWN-TICK-CONTINUATION.md and ORIGINAL-LAST-RENDERED.md.
+
 ## Original ScriptedPawn custom update connected to Training (2026-10-26)
 
 The actual nearest-native ScriptedPawn Tick now runs its original custom

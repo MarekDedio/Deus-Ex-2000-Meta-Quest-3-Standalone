@@ -138,7 +138,7 @@
         const auto main=AdvanceOriginalMainAnimation(actor,elapsed,pawn.suppressAnimEnd,execution);
         static_cast<void>(AdvanceOriginalBlendAnimation(actor,main,execution));
         if(pawn.pawn||IsDerivedFromPath(actor->cls,"Engine.Pawn"))
-            throw std::runtime_error("Original Actor Tick Pawn continuation is not implemented");
+            return AdvanceOriginalPawnTickContinuation(actor,pawn,elapsed,tickType,execution);
         static_cast<void>(AdvanceOriginalTickTail(actor,elapsed,tickType,execution));
         return 1;
     }

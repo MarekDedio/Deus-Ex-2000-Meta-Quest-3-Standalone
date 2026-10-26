@@ -40,6 +40,9 @@
 #include "quest_actor_physics_phase.h"
 #include "quest_actor_tick_tail.h"
 #include "quest_actor_pawn_context.h"
+#include "quest_actor_pawn_tick.h"
+#include "quest_actor_timer_phase.h"
+#include "quest_actor_last_rendered.h"
 #include "quest_scripted_pawn_tick.h"
 #include "quest_scripted_pawn_decay.h"
 #include "quest_actor_stasis.h"
@@ -3763,6 +3766,7 @@ public:
         if (Object(receiver)->defaultOwner)
             throw std::runtime_error("Native execution on a class-default object requires its audited handler");
         if(index==267u)return FarMoveNative(Object(receiver),arguments,declaration,execution);
+        if(index==723u)return OriginalLastRenderedNative(Object(receiver),arguments,declaration);
         if(index==3970u)return ActorSetPhysicsNative(Object(receiver),arguments,declaration,execution);
         if(index==266u||index==299u)return MoveNative(index,Object(receiver),arguments,declaration,execution);
         if((index==262u || index==283u) && persistentRetailCollision)
@@ -8641,7 +8645,10 @@ private:
 #include "portable_object_destroy.inl"
 #include "portable_deferred_actors.inl"
 #include "portable_level_cleanup.inl"
+#include "portable_actor_native_event.inl"
+#include "portable_actor_last_rendered.inl"
 #include "portable_scripted_pawn_tick.inl"
+#include "portable_actor_pawn_tick.inl"
 #include "portable_level_actor_tick.inl"
     void SetOwner(RuntimeObject* actor, RuntimeObject* newOwner, QuestVr::Vm::Execution& execution) {
         LifecycleActor(reinterpret_cast<std::uintptr_t>(actor));

@@ -1,5 +1,28 @@
 # Immediate milestone: complete the first Training map
 
+Latest2026-10-26: ordinary Pawn post-animation Tick/state/native-timer/LifeSpan
+and the short retained tail now bind in the enclosing Level root. Native723
+LastRendered uses the authenticated actual declaration/native Double clock,
+including numeric-native and lazy-identity calls. No player/account UI,
+Pawn-physics alias, skipped NPC or other-map integration was added.
+
+Suffix82,749/28, timer89,052/32 and LastRendered167,096/14 helper checks pass;
+independent timer/LastRendered x87 cases9,088/33,394 pass. Production
+ScriptedPawn2,374 cumulative/40 and full driver7,246/136 plus final malformed
+schema control pass. Full desktop/Android-native/strict ARM64 checks and final
+CTest213 executed/252 registered/39 explicit skips/zero failures91.30s pass.
+Owned crate415/5, deferred429/21 and animation588/24 remain passing.
+
+Actual Training repeat2 reaches the new genuine APawn performPhysics boundary
+at206,922 instructions/15,797 writes with full undo. Paired doors repeat
+207,258/15,865 with both56-unit moves/2 completion callbacks before the same
+gate. Separate two-Fire repeat2 stays228,837/26,047 with real crate/loot/debris
+observations and full undo at later FExec. All45 originals and14 compiler
+inputs are unchanged; all jobs are terminal. No Quest/new APK. Live first-map
+crate destruction, collectible surviving loot and automatic gravity are still
+unfinished. Next actual APawn falling/landing/rotation work is documented in
+ORIGINAL-TRAINING-PAWN-PHYSICS-GAP.md, not silently bypassed.
+
 Latest2026-10-26: actual native ScriptedPawn custom Tick is now connected before
 the qualified base Actor body. Timed PrePivot, fear/agitation and the actual
 four-member AlliancesEx[16] stores, timers, selected callbacks, tactics and

@@ -7,6 +7,7 @@
 #include "quest_quick_belt.h"
 
 #include <algorithm>
+#include <bit>
 #include <chrono>
 #include <cmath>
 #include <cstring>
@@ -124,12 +125,13 @@ struct Package {
             Bytes body{0u}; Index(body, 0); Index(body, next); Index(body, 0); Index(body, first); Index(body, exports.at(static_cast<std::size_t>(reference - 1)).ObjName); U32(body, 0); U32(body, 0); U32(body, 0); return body;
         };
     }
-    std::int32_t State(const std::string& name, std::int32_t owner, std::int32_t core) {
+    std::int32_t State(const std::string& name, std::int32_t owner, std::int32_t core,Code code=Token(0x08u)) {
         const auto reference = Export(name, Import("State", core), 0, owner, true);
-        builders.at(static_cast<std::size_t>(reference - 1)) = [this, reference](std::int32_t next, std::int32_t first) {
-            Bytes body{0u}; Index(body, 0); Index(body, next); Index(body, 0); Index(body, first); Index(body, exports.at(static_cast<std::size_t>(reference - 1)).ObjName); U32(body, 0); U32(body, 0); U32(body, 18u); body.push_back(0x08u); body.push_back(0x0cu);
+        builders.at(static_cast<std::size_t>(reference - 1)) = [this, reference,code=std::move(code)](std::int32_t next, std::int32_t first) {
+            Bytes body{0u}; Index(body, 0); Index(body, next); Index(body, 0); Index(body, first); Index(body, exports.at(static_cast<std::size_t>(reference - 1)).ObjName); U32(body, 0); U32(body, 0); U32(body, static_cast<std::uint32_t>(code.logical+17u)); Append(body,code.raw);body.push_back(0x0cu);
             Index(body,Name("Begin"));U32(body,0u);Index(body,0);U32(body,0xffffffffu);
-            U64(body, ~std::uint64_t{}); U64(body, ~std::uint64_t{}); U16(body, 2u); U32(body, 0); return body;
+            Require(code.logical<65535u,"Fixture state label offset overflow");
+            U64(body, ~std::uint64_t{}); U64(body, ~std::uint64_t{}); U16(body, static_cast<std::uint16_t>(code.logical+1u)); U32(body, 0); return body;
         }; return reference;
     }
     std::int32_t Property(const std::string& name, const std::string& type, std::int32_t owner, std::int32_t core, std::int32_t target = 0, std::uint32_t flags = 0u, std::uint32_t dimension = 1u) {
@@ -263,7 +265,8 @@ enum class DeusExLevelInfoControlKind {None,Exact,Parent};
 Tables Build(Fixture& fixture,bool moverControl=false,std::uint32_t oldLocationFlags=2u,
     TriggerControlKind triggerControl=TriggerControlKind::None,
     DeusExLevelInfoControlKind levelInfoControl=DeusExLevelInfoControlKind::None,bool lightControl=false,
-    bool scalarLightControl=false,bool scriptedPawnBoundary=false,bool omitScriptedPawnAlarm=false) {
+    bool scalarLightControl=false,bool scriptedPawnBoundary=false,bool omitScriptedPawnAlarm=false,
+    std::uint32_t lastRenderedReturnFlags=0x580u) {
     Require(!scalarLightControl||lightControl,"Scalar-Light fixture must retain its genuine native Light ancestry");
     Require(unsigned(triggerControl!=TriggerControlKind::None)+unsigned(levelInfoControl!=DeusExLevelInfoControlKind::None)+
         unsigned(lightControl)+unsigned(scriptedPawnBoundary)<=1u,
@@ -350,6 +353,8 @@ Tables Build(Fixture& fixture,bool moverControl=false,std::uint32_t oldLocationF
         engine.Property("MoveTimer","FloatProperty",nativePawn,ec);
         engine.Property("bAdvancedTactics","BoolProperty",nativePawn,ec);
         engine.Property("bOnFire","BoolProperty",nativePawn,ec,0,0x20u);
+        engine.Property("bIsPlayer","BoolProperty",nativePawn,ec,0,0x20u);
+        engine.Property("bViewTarget","BoolProperty",nativePawn,ec);
         engine.Property("burnTimer","FloatProperty",nativePawn,ec,0,0x20u);
         engine.Property("PrePivot","StructProperty",actor,ec,ev,0x20u);
         engine.Property("Acceleration","StructProperty",actor,ec,ev,0x20u);
@@ -404,6 +409,11 @@ Tables Build(Fixture& fixture,bool moverControl=false,std::uint32_t oldLocationF
     const auto baseTick=engine.Function("Tick",actor,ec,Return(),0u,0x800u);
     engine.Property("DeltaTime","FloatProperty",baseTick,ec,0,0x80u);
     engine.Function("Timer",actor,ec,Return(),0u,0x800u);
+    if(scriptedPawnBoundary) {
+        engine.Function("Expired",actor,ec,Return(),0u,0x800u);
+        const auto lastRendered=engine.Function("LastRendered",actor,ec,{},723u,0x401u);
+        engine.Property("ReturnValue","FloatProperty",lastRendered,ec,0,lastRenderedReturnFlags);
+    }
     const auto interpolateEnd=engine.Function("InterpolateEnd",actor,ec,Return(),0u,0x800u);
     engine.Property("Other","ObjectProperty",interpolateEnd,ec,actor,0x80u);
     Bytes actorDefaults;engine.Tag(actorDefaults,"Role",1u,Bytes{4u});
@@ -465,6 +475,51 @@ Tables Build(Fixture& fixture,bool moverControl=false,std::uint32_t oldLocationF
         const auto enableInput=deusex.Property("bEnable","BoolProperty",enableCloak,dc,0,0x80u);
         deusex.FunctionCode(enableCloak,Join({Assign(Ref(0x01u,clearedObstacle),Ref(0x00u,enableInput)),
             Assign(Ref(0x01u,cloakThreshold),Native(146u,{Ref(0x01u,cloakThreshold),Int(1)})),Return()}),0u,2u);
+        // Observable bodies are actual generated UE1 bytecode, not host Tick,
+        // Timer/Expired/state fakes. Each original service must select and run
+        // them inside its genuine shared-root continuation.
+        const auto tickCount=deusex.Property("TickCount","IntProperty",pawn,dc),
+            stateCount=deusex.Property("StateCount","IntProperty",pawn,dc),
+            timerCount=deusex.Property("TimerCount","IntProperty",pawn,dc),
+            expiredCount=deusex.Property("ExpiredCount","IntProperty",pawn,dc),
+            suffixOrder=deusex.Property("SuffixOrder","IntProperty",pawn,dc),
+            suffixMode=deusex.Property("SuffixMode","IntProperty",pawn,dc);
+        const auto tickDelta=deusex.Property("TickDelta","FloatProperty",pawn,dc),
+            observedRate=deusex.Property("ObservedTimerRate","FloatProperty",pawn,dc),
+            observedCounter=deusex.Property("ObservedTimerCounter","FloatProperty",pawn,dc),
+            observedAge=deusex.Property("ObservedAge","FloatProperty",pawn,dc);
+        const auto appendStage=[&](std::int32_t digit) {
+            return Assign(Ref(0x01u,suffixOrder),Native(146u,{
+                Native(144u,{Ref(0x01u,suffixOrder),Int(10)}),Int(digit)}));
+        };
+        const auto increment=[&](std::int32_t field) {
+            return Assign(Ref(0x01u,field),Native(146u,{Ref(0x01u,field),Int(1)}));
+        };
+        const auto selectedTick=deusex.Function("Tick",pawn,dc,{},0u,2u);
+        const auto selectedDelta=deusex.Property("DeltaTime","FloatProperty",selectedTick,dc,0,0x80u);
+        Flow selectedTickCode;selectedTickCode.Add(increment(tickCount));selectedTickCode.Add(appendStage(1));
+        selectedTickCode.Add(Assign(Ref(0x01u,tickDelta),Ref(0x00u,selectedDelta)));
+        selectedTickCode.IfNot(Native(154u,{Ref(0x01u,suffixMode),Int(1)}),"tick-pass");
+        selectedTickCode.Add(Native(999u));selectedTickCode.Label("tick-pass");selectedTickCode.Add(Return());
+        deusex.FunctionCode(selectedTick,selectedTickCode.Finish(),0u,2u);
+        deusex.State("NativeTickState",pawn,dc,Join({increment(stateCount),appendStage(2),Token(0x08u)}));
+        const auto actorImport=deusex.Import("Actor",de);
+        const auto rateImport=deusex.Import("TimerRate",actorImport,"FloatProperty"),
+            counterImport=deusex.Import("TimerCounter",actorImport,"FloatProperty");
+        Flow timerCode;timerCode.Add(increment(timerCount));timerCode.Add(appendStage(3));
+        timerCode.Add(Assign(Ref(0x01u,observedRate),Ref(0x01u,rateImport)));
+        timerCode.Add(Assign(Ref(0x01u,observedCounter),Ref(0x01u,counterImport)));
+        timerCode.IfNot(Native(154u,{Ref(0x01u,suffixMode),Int(2)}),"timer-pass");
+        timerCode.Add(Native(999u));timerCode.Label("timer-pass");timerCode.Add(Return());
+        deusex.Function("Timer",pawn,dc,timerCode.Finish(),0u,2u);
+        Flow expiredCode;expiredCode.Add(increment(expiredCount));expiredCode.Add(appendStage(4));
+        expiredCode.IfNot(Native(154u,{Ref(0x01u,suffixMode),Int(3)}),"expired-pass");
+        expiredCode.Add(Native(999u));expiredCode.Label("expired-pass");expiredCode.Add(Return());
+        deusex.Function("Expired",pawn,dc,expiredCode.Finish(),0u,2u);
+        const auto captureAge=deusex.Function("CaptureLastRendered",pawn,dc,Join({
+            Assign(Ref(0x01u,observedAge),Native(723u)),Return(Ref(0x01u,observedAge))}));
+        deusex.Property("ReturnValue","FloatProperty",captureAge,dc,0,0x580u);
+        deusex.Function("MalformedLastRendered",pawn,dc,Join({increment(tickCount),Native(723u,{Real(1.0f)}),Return()}));
         deusex.ClassBody(pawn);deusExTable=fixture.Write(deusex);
     }
     Package classes;classes.stem="TickClasses";const auto cc=classes.ImportPackage("Core"),ce=classes.ImportPackage("Engine");
@@ -893,9 +948,157 @@ void ScriptedPawnBoundaryControl() {
         "All-inactive native alliance loop wrote protected entries or omitted its initial flag clear");
     checkAlliances(inactiveAlliances,false);
 
-    // With no owner cycle, the same prefix reaches the still-unimplemented
-    // genuine Pawn continuation. It is not generic non-Pawn Tick or physics.
-    const std::string expected="Original Actor Tick Pawn continuation is not implemented";
+    // Physics0 now admits the genuine ordinary Pawn suffix: actual selected
+    // Tick, retained state code, timer stores/callback, LifeSpan and short
+    // captured-Pawn tail. No substitute non-Pawn tail is used.
+    const auto ordinaryPawn=[&] {
+        auto ordinary=state;
+        Property(ordinary,"Bad0","Engine.Actor.Physics",Value::Byte(0u));
+        Property(ordinary,"Bad0","Engine.Pawn.bIsPlayer",Value::Bool(false));
+        Property(ordinary,"Bad0","Engine.Pawn.bViewTarget",Value::Bool(false));
+        Property(ordinary,"Bad0","Engine.Actor.TimerRate",Value::Float(0.5f));
+        Property(ordinary,"Bad0","Engine.Actor.TimerCounter",Value::Float(0.375f));
+        Property(ordinary,"Bad0","Engine.Actor.bTimerLoop",Value::Bool(false));
+        Property(ordinary,"Bad0","Engine.Actor.LifeSpan",Value::Float(2.0f));
+        auto& frameObject=Object(ordinary,"Bad0");frameObject.state=QuestVr::StateObject{};
+        frameObject.state->hasStack=true;frameObject.state->frameOverride=true;
+        QuestVr::StateFrame frame;frame.codePath="DeusEx.ScriptedPawn.NativeTickState";
+        frame.control=QuestVr::StateControl{frame.codePath,true,~std::uint64_t{}};
+        frameObject.state->frame=std::move(frame);
+        return ordinary;
+    };
+    const auto ordinarySeed=ordinaryPawn();fixture.Restore(Envelope(legacy,ordinarySeed));
+    const auto ordinaryCommit=AdvancePortableLevelDynamicActors(0.25f,0);RequirePass(ordinaryCommit);
+    Require(ordinaryCommit.actorCalls==4u&&ordinaryCommit.slotsVisited==4u&&!ordinaryCommit.deferredPushes&&
+        ordinaryCommit.parityAfter==1&&Count("A")==1&&Count("B")==1&&Count("C")==1&&
+        Count("Bad0","TickCount")==1&&Count("Bad0","StateCount")==1&&Count("Bad0","TimerCount")==1&&
+        Count("Bad0","ExpiredCount")==0&&Count("Bad0","SuffixOrder")==123,
+        "Physics0 Pawn did not commit actual selected Tick/state/Timer in native order");
+    Require(readFloat("TickDelta")==0.25f&&readFloat("TimerRate")==0.0f&&readFloat("TimerCounter")==0.125f&&
+        readFloat("ObservedTimerRate")==0.0f&&readFloat("ObservedTimerCounter")==0.125f&&readFloat("LifeSpan")==1.75f,
+        "Pawn suffix changed Float packet, pre-callback timer stores or native LifeSpan countdown");
+    const auto stoppedState=ReadPortableActorStateObject(Path("Bad0"));
+    Require(stoppedState&&stoppedState->hasStack&&stoppedState->frameOverride&&stoppedState->frame&&
+        stoppedState->frame->control&&!stoppedState->frame->control->codePresent&&
+        stoppedState->frame->codePath=="DeusEx.ScriptedPawn.NativeTickState",
+        "Pawn ProcessState did not execute/stop the actual retained state program");
+    const auto ordinarySaved=fixture.Save("OrdinaryPawnCommitted");
+    fixture.Restore(legacy);fixture.Restore(ordinarySaved);
+    Require(fixture.Save("OrdinaryPawnReloaded")==ordinarySaved&&Count("Bad0","SuffixOrder")==123&&
+        ReadPortableRuntimeLevelTickParity()==1,"Committed Pawn suffix lost native/state/timer continuation through checkpoint");
+    auto looping=ordinarySeed;Property(looping,"Bad0","Engine.Actor.bTimerLoop",Value::Bool(true));
+    fixture.Restore(Envelope(legacy,looping));const auto loopingCommit=AdvancePortableLevelDynamicActors(0.25f,0);RequirePass(loopingCommit);
+    Require(Count("Bad0","TimerCount")==1&&Count("Bad0","SuffixOrder")==123&&
+        readFloat("TimerRate")==0.5f&&readFloat("TimerCounter")==0.125f&&
+        readFloat("ObservedTimerRate")==0.5f&&readFloat("ObservedTimerCounter")==0.125f,
+        "Pawn looping timer did not coalesce once after the actual retained remainder stores");
+    // A positive native timer stores its counter even when delta0 leaves its
+    // Float bits unchanged. Compare otherwise identical genuine suffix runs.
+    auto inactiveTimer=ordinarySeed;Property(inactiveTimer,"Bad0","Engine.Actor.TimerRate",Value::Float(0.0f));
+    Property(inactiveTimer,"Bad0","Engine.Actor.TimerCounter",Value::Float(0.0f));
+    fixture.Restore(Envelope(legacy,inactiveTimer));const auto inactiveTimerCommit=AdvancePortableLevelDynamicActors(0.0f,0);RequirePass(inactiveTimerCommit);
+    auto unchangedTimer=inactiveTimer;Property(unchangedTimer,"Bad0","Engine.Actor.TimerRate",Value::Float(1.0f));
+    fixture.Restore(Envelope(legacy,unchangedTimer));const auto unchangedTimerCommit=AdvancePortableLevelDynamicActors(0.0f,0);RequirePass(unchangedTimerCommit);
+    Require(unchangedTimerCommit.execution.writes==inactiveTimerCommit.execution.writes+1u&&
+        Count("Bad0","TimerCount")==0&&readFloat("TimerCounter")==0.0f&&readFloat("TimerRate")==1.0f,
+        "Pawn timer suppressed an unconditional native counter store because its Float bits were unchanged");
+    fixture.Restore(Envelope(legacy,ordinarySeed));const auto typeOne=AdvancePortableLevelDynamicActors(0.25f,1);RequirePass(typeOne);
+    const auto unrunState=ReadPortableActorStateObject(Path("Bad0"));
+    Require(Count("Bad0","TickCount")==0&&Count("Bad0","StateCount")==0&&Count("Bad0","TimerCount")==0&&
+        readFloat("TimerRate")==0.5f&&readFloat("TimerCounter")==0.375f&&readFloat("LifeSpan")==2.0f&&
+        readFloat("AlarmTimer")==0.75f&&unrunState&&unrunState->frame&&unrunState->frame->control&&
+        unrunState->frame->control->codePresent,"Literal Pawn tickType1 skipped its native prefix or ran the ordinary suffix");
+    const auto suffixRefusal=[&](const QuestVr::ScriptSavedState& input,const QuestVr::Vm::Limits& limits,
+        const std::string& label,Status status,const std::string& error) {
+        fixture.Restore(Envelope(legacy,input));const auto before=fixture.Save("PawnSuffixBefore");
+        const auto revision=GetPortableRuntimeWorldRevision();const auto gc=GC::GetStats();
+        const auto result=AdvancePortableLevelDynamicActors(0.25f,0,limits);
+        Require(!result.execution.passed()&&!result.execution.committed&&!result.completed&&result.execution.status==status,
+            "Pawn suffix did not refuse actual "+label+": "+result.execution.error);
+        if(!error.empty())Require(result.execution.error.find(error)!=std::string::npos,
+            "Pawn suffix stopped before actual "+label+": "+result.execution.error);
+        undo(before,revision,gc,label);
+        Require(Count("Bad0","TickCount")==0&&Count("Bad0","StateCount")==0&&Count("Bad0","TimerCount")==0&&
+            Count("Bad0","ExpiredCount")==0&&Count("Bad0","SuffixOrder")==0,
+            "Pawn suffix retained actual selected callback/state observations after "+label);
+        ++refusals;return result;
+    };
+    for(const auto mode:{1,2,3}) {
+        auto failed=ordinarySeed;Property(failed,"Bad0","DeusEx.ScriptedPawn.SuffixMode",Value::Integer(mode));
+        if(mode==3)Property(failed,"Bad0","Engine.Actor.LifeSpan",Value::Float(0.125f));
+        const auto result=suffixRefusal(failed,{},mode==1?"selected Tick":mode==2?"selected Timer":"selected Expired",
+            Status::Unsupported,"999");
+        Require(result.execution.writes>=customWrites+12u,"Pawn callback refusal occurred before the real custom/script suffix effects");
+        if(mode==3)Require(result.execution.writes>=ordinaryCommit.execution.writes+2u,
+            "Expired callback failure did not follow native timer and LifeSpan stores");
+    }
+    auto expires=ordinarySeed;Property(expires,"Bad0","Engine.Actor.LifeSpan",Value::Float(0.125f));
+    const auto destroyFailure=suffixRefusal(expires,{},"genuine DestroyActor metadata boundary after Expired",Status::Unsupported,"bNetTemporary");
+    Require(destroyFailure.execution.writes>=ordinaryCommit.execution.writes+2u,
+        "Genuine destroy boundary was reached before the actual Expired body wrote its observations");
+    // The generated cohort intentionally lacks complete destruction/primitive
+    // authority. Its real DestroyActor boundary is not a fake delete/success,
+    // and an equipped-Weapon FarMove control is explicitly deferred.
+    Require(ordinaryCommit.execution.nativeWork&&ordinaryCommit.execution.nativeWork->used>0u&&ordinaryCommit.execution.writes>0u,
+        "Committed Pawn suffix has no shared root accounting");
+    for(const auto cut:{std::size_t{0u},ordinaryCommit.execution.writes/2u,ordinaryCommit.execution.writes-1u}) {
+        QuestVr::Vm::Limits limits;limits.writes=cut;
+        const auto refused=suffixRefusal(ordinarySeed,limits,"write prefix "+std::to_string(cut),Status::Budget,{});
+        if(cut==ordinaryCommit.execution.writes-1u)Require(refused.execution.writes>=cut,
+            "Late Pawn write cutoff did not reach real selected Tick/state/timer effects");
+    }
+    for(const auto cut:{std::size_t{0u},ordinaryCommit.execution.nativeWork->used/2u,ordinaryCommit.execution.nativeWork->used-1u}) {
+        QuestVr::Vm::Limits limits;limits.nativeWork=cut;
+        const auto refused=suffixRefusal(ordinarySeed,limits,"native-work prefix "+std::to_string(cut),Status::Budget,{});
+        if(cut==ordinaryCommit.execution.nativeWork->used-1u)Require(refused.execution.writes>=ordinaryCommit.execution.writes-1u,
+            "Late Pawn work cutoff did not follow real selected Tick/state/timer stores");
+    }
+
+    // Actual bound native723, entered by decoded generated UE1 bytecode, not
+    // by its pure arithmetic helper. Deliberately unrelated Float mirror time
+    // proves that the query retains the genuine native ULevel Double clock.
+    struct RenderCase {double now;float last;std::uint32_t expected;};
+    const std::array<RenderCase,5u> renderCases{{{0.0,-10.0f,0x41200000u},
+        {1.0+0x1p-24,-0x1p-63f,0x3f800001u},{1.0,2.0f,0u},
+        {0.0,std::bit_cast<float>(0x7fc12345u),0u},{0.0,std::bit_cast<float>(0x7f812345u),0u}}};
+    for(const auto& test:renderCases) {
+        auto rendered=state;rendered.nativeLevelClock=QuestVr::ScriptSavedLevelClock{Path("MyLevel"),test.now};
+        Property(rendered,"Bad0","Engine.Actor.LastRenderTime",Value::Float(test.last));
+        Property(rendered,"Level0","Engine.LevelInfo.TimeSeconds",Value::Float(99.0f));
+        fixture.Restore(Envelope(legacy,rendered));const auto beforeClock=ReadPortableRuntimeLevelTime();
+        const auto result=ExecutePortableActorFunction(Path("Bad0"),"CaptureLastRendered");
+        Require(result.passed()&&result.committed&&result.value.kind==Kind::Float&&
+            std::bit_cast<std::uint32_t>(result.value.floating)==test.expected&&
+            std::bit_cast<std::uint32_t>(readFloat("ObservedAge"))==test.expected,
+            "Bound native723 did not return/store the original Float age from actual native clock/timestamp: "+result.error);
+        Require(ReadPortableRuntimeLevelTime()==beforeClock&&std::bit_cast<std::uint32_t>(readFloat("LastRenderTime"))==
+            std::bit_cast<std::uint32_t>(test.last),"LastRendered advanced the native clock or marked the actor rendered");
+        Require(ReadPortableActorScriptProperty(Path("Level0"),"TimeSeconds").floating==99.0f&&
+            result.nativeWork&&result.nativeWork->used>0u,"LastRendered used/replaced the Float mirror or skipped caller work");
+    }
+    fixture.Restore(Envelope(legacy,state));
+    const auto malformedBefore=fixture.Save("LastRenderedPacketBefore");const auto malformedRevision=GetPortableRuntimeWorldRevision();
+    const auto malformedGc=GC::GetStats();const auto malformedPacket=ExecutePortableActorFunction(Path("Bad0"),"MalformedLastRendered");
+    Require(!malformedPacket.passed()&&!malformedPacket.committed&&malformedPacket.status==Status::Unsupported&&
+        malformedPacket.error=="Original LastRendered takes no input parameters"&&malformedPacket.writes>=1u,
+        "Native723 admitted an extra input or failed before the real preceding observation write: "+malformedPacket.error);
+    undo(malformedBefore,malformedRevision,malformedGc,"malformed actual native723 packet");
+    Require(Count("Bad0","TickCount")==0,"Malformed LastRendered packet retained its prior selected script write");++refusals;
+    auto uninitializedRender=state;auto& renderProperties=Object(uninitializedRender,"Bad0").properties;
+    renderProperties.erase(std::remove_if(renderProperties.begin(),renderProperties.end(),[](const auto& property) {
+        return property.key=="Engine.Actor.LastRenderTime";
+    }),renderProperties.end());
+    fixture.Restore(Envelope(legacy,uninitializedRender));const auto noRenderBefore=fixture.Save("LastRenderedUninitializedBefore");
+    const auto noRenderRevision=GetPortableRuntimeWorldRevision();const auto noRenderGc=GC::GetStats();
+    const auto absentRender=ExecutePortableActorFunction(Path("Bad0"),"CaptureLastRendered");
+    Require(!absentRender.passed()&&!absentRender.committed&&absentRender.status==Status::Unsupported&&
+        absentRender.error.find("LastRenderTime")!=std::string::npos,
+        "Native723 silently read a default/synthetic timestamp instead of refusing absent native history: "+absentRender.error);
+    undo(noRenderBefore,noRenderRevision,noRenderGc,"uninitialized actual LastRenderTime");++refusals;
+
+    // With no owner cycle and Physics1, actual selected Tick/timer/LifeSpan
+    // now precede the still-unimplemented real Pawn virtual physics service.
+    const std::string expected="Original Pawn performPhysics is not implemented";
     fixture.Restore(Envelope(legacy,withAlliances(state,originalAlliances)));
     const auto arrayBefore=fixture.Save("ScriptedPawnAllianceBefore");
     const auto arrayRevision=GetPortableRuntimeWorldRevision();const auto arrayGc=GC::GetStats();
@@ -987,9 +1190,32 @@ void ScriptedPawnBoundaryControl() {
             "Wrapper bypass eagerly demanded custom fields, mutated timers, redispatched, or fabricated a base return1");
         missing.Unchanged();
     }
+    {
+        Fixture malformed;
+        const auto badReturn=Build(malformed,false,2u,TriggerControlKind::None,DeusExLevelInfoControlKind::None,
+            false,false,true,false,0x80u);
+        Require(InitializePortableRuntime(badReturn.packages).passed&&PreparePortableRuntimeNativeEngineClasses().prepared&&
+            PreparePortableRuntimeNativeMetadataClasses().prepared&&PreparePortableRuntimeNativePackages().prepared&&
+            LoadPortableRuntimeMap(badReturn.map).passed&&PreparePortableRuntimeObjectLookup().prepared,
+            "Malformed actual LastRendered return schema fixture could not initialize");
+        const auto malformedLegacy=malformed.Save("LastRenderedSchemaLegacy");
+        malformed.Restore(Envelope(malformedLegacy,state));const auto before=malformed.Save("LastRenderedSchemaBefore");
+        const auto revision=GetPortableRuntimeWorldRevision();const auto gc=GC::GetStats();
+        const auto result=ExecutePortableActorFunction(Path("Bad0"),"CaptureLastRendered");
+        Require(!result.passed()&&!result.committed&&result.status==Status::Unsupported&&
+            result.error.find("LastRendered")!=std::string::npos,
+            "Native723 accepted changed actual ReturnValue flags/schema: "+result.error);
+        Require(malformed.Save("LastRenderedSchemaAfter")==before&&GetPortableRuntimeWorldRevision()==revision,
+            "Malformed native723 return declaration retained a partial root");
+        const auto afterGc=GC::GetStats();Require(afterGc.numObjects==gc.numObjects&&afterGc.memoryUsage==gc.memoryUsage,
+            "Malformed native723 declaration retained allocations");
+        malformed.Unchanged();++refusals;
+    }
     std::cout<<"PASS generated production ScriptedPawn native prefix: "<<checks<<" cumulative checks / "<<refusals
         <<" refusals; actual typed cross-package wrapper/decay/vector/Name stores, live fixed alliance-array decay/clamp/protected siblings/flag-clear/rollback, selected EnableCloak true/false Bool packets, genuine base return0 owner-cycle control, "
-          "missing reached typed-property refusal, later real Pawn continuation, repeat identity and shared-root work/write/save/revision/parity/GC undo. "
+          "Physics0 actual selected Tick/ProcessState/Timer/LifeSpan/short-Pawn continuation, unconditional timer stores, "
+          "bound native723 Float/PC64/native-clock/malformed-schema/packet controls, genuine late Pawn physics/destroy refusals, "
+          "repeat identity and shared-root work/write/save/revision/parity/GC undo. Equipped-Weapon FarMove coverage deferred; "
           "NOT NPC movement/Pawn physics, original Training completion or headset acceptance.\n";
 }
 void TriggerControl() {
