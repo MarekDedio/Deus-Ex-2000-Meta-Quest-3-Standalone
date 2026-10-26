@@ -1,5 +1,14 @@
 # First Training: collision work after Weapon updates
 
+Update2026-10-26: the measured validation blocker below is now passed by
+[lazy immutable-source validation reuse](IMMUTABLE-MODEL-VALIDATION.md).
+Actual cold/warm Training repeat2 advances to Engine.GameInfo after121 slots /
+120 calls at237,922 instructions /19,289 writes, with full undo and fresh
+proof state after same-filename map replacement. No work cap was raised or
+reset; no collision/NPC was skipped. The remaining game-rules native gate is
+recorded in ORIGINAL-TRAINING-GAMEINFO-TICK-GAP.md. The measured sections below
+are historical motivation, not a claim that the old cap is still reached.
+
 Reached on 2026-10-26 after exact native `Engine.Weapon` Tick/physics admission.
 Only the actual first `Maps/00_Training.dx` is loaded. This is a rollback-only
 startup/world-update diagnostic, not published gameplay, an APK or Quest acceptance.
@@ -43,7 +52,8 @@ The grounded next optimization is secure reuse of successful validation of
 loader-owned immutable geometry. Keep mutable helper inputs fully validating,
 authenticate map/Model/cache lifetime, distinguish graph-only/owned-hull/
 null-owner-hull proofs, and preserve all real traversal and collision outputs.
-No validation cache or physics fix is implemented by these diagnostics.
+No validation cache or physics fix was implemented by those diagnostics;
+the later immutable-source implementation is linked in the update above.
 
 Both actual Training repeats retain that exact snapshot and the previous
 233,606 instructions / 18,817 writes / 113 slots / 113 calls. Paired-door

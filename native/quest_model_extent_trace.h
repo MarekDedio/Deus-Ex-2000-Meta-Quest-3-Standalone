@@ -3,6 +3,7 @@
 #include "quest_model_extent_bevel.h"
 #include "quest_model_owner_coords.h"
 #include "quest_model_line_scratch.h"
+#include "quest_immutable_collision_model.h"
 
 #include <memory>
 #include <vector>
@@ -195,10 +196,9 @@ inline void Finalize(ModelExtentTraceResult& result,const PortableModelVec3& sta
     result.location={component(start.x,delta.x),component(start.y,delta.y),component(start.z,delta.z)};
     result.clear=result.time==1.0f;
 }
-inline ModelExtentTraceResult Trace(const PortableModelGeometry& model,
+inline ModelExtentTraceResult Query(const PortableModelGeometry& model,
     const PortableModelVec3& start,const PortableModelVec3& end,const PortableModelVec3& extent,
-    const ModelExtentTraceLimits& limits,const OriginalModelCoords* coords) {
-    Limits(limits);ModelExtentTraceResult result;Validate(model,limits,result.stats,coords!=nullptr);
+    const ModelExtentTraceLimits& limits,const OriginalModelCoords* coords,ModelExtentTraceResult result) {
     // Empty UModel returns RootOutside before it reads endpoints, Extent,
     // Owner or coordinates. The result Time1 is an abstract default, NOT a
     // native Hit write; a caller-packet adapter must preserve that packet.
@@ -264,7 +264,38 @@ inline ModelExtentTraceResult Trace(const PortableModelGeometry& model,
     if(result.hit) Finalize(result,start,delta,size);
     return result;
 }
+inline ModelExtentTraceResult Trace(const PortableModelGeometry& model,
+    const PortableModelVec3& start,const PortableModelVec3& end,const PortableModelVec3& extent,
+    const ModelExtentTraceLimits& limits,const OriginalModelCoords* coords) {
+    Limits(limits);ModelExtentTraceResult result;Validate(model,limits,result.stats,coords!=nullptr);
+    return Query(model,start,end,extent,limits,coords,result);
+}
 } // namespace ModelExtentTraceDetail
+
+inline void OriginalImmutableCollisionModel::ValidateNullHull(
+    const ModelExtentTraceLimits& limits,ModelExtentTraceStats& stats)const {
+    const ModelExtentTraceLimits maximum;
+    // Unlike raw input admission, a warm immutable proof needs no new
+    // validation allowance. Every other cap remains positive and bounded.
+    if(!limits.nodes||limits.nodes>maximum.nodes||!limits.hullWords||limits.hullWords>maximum.hullWords||
+        limits.validationSteps>maximum.validationSteps||!limits.querySteps||limits.querySteps>maximum.querySteps||
+        !limits.pending||limits.pending>maximum.pending)
+        ModelExtentTraceDetail::Fail("immutable callers may only tighten limits");
+    if(geometry_->nodes.size()>limits.nodes||geometry_->leafHulls.size()>limits.hullWords)
+        ModelExtentTraceDetail::Fail("Model array budget exceeded");
+    if(HasNullHullValidation())return;
+    if(!limits.validationSteps)throw ModelExtentTraceWorkExhausted(0u,0u,true);
+    ModelExtentTraceDetail::Validate(*geometry_,limits,stats,false);
+    // Concurrent cold callers may duplicate validation, never skip an
+    // unfinished validation. Failed validation cannot publish a proof.
+    nullHullValidated_.store(true,std::memory_order_release);
+}
+inline ModelExtentTraceResult TraceOriginalModelExtent(const OriginalImmutableCollisionModel& source,
+    const PortableModelVec3& start,const PortableModelVec3& end,const PortableModelVec3& extent,
+    const ModelExtentTraceLimits& limits={}) {
+    ModelExtentTraceResult result;source.ValidateNullHull(limits,result.stats);
+    return ModelExtentTraceDetail::Query(source.Geometry(),start,end,extent,limits,nullptr,result);
+}
 
 inline ModelExtentTraceResult TraceOriginalModelExtent(const PortableModelGeometry& model,
     const PortableModelVec3& start,const PortableModelVec3& end,const PortableModelVec3& extent,

@@ -37,4 +37,24 @@ inline bool CheckOriginalModelExtent(OriginalActorLineHit& caller,const Portable
     caller=prepared;if(stats) *stats=result.stats;return result.clear;
 }
 
+// Immutable-source overload is deliberately world/null-owner only. An owned
+// brush has a different inactive-bound contract and cannot borrow this proof.
+inline bool CheckOriginalModelExtent(OriginalActorLineHit& caller,const OriginalImmutableCollisionModel& source,
+    std::uintptr_t modelIdentity,const PortableModelVec3& end,const PortableModelVec3& start,
+    const PortableModelVec3& extent,const ModelExtentTraceLimits& limits={},ModelExtentTraceStats* stats=nullptr) {
+    if(!source.Geometry().nodes.empty()&&!modelIdentity)
+        throw std::invalid_argument("Original Model extent adapter requires actual Model/Owner coordinate identity");
+    const auto result=TraceOriginalModelExtent(source,start,end,extent,limits);
+    if(!source.Geometry().nodes.empty()) {
+        auto prepared=caller;prepared.time=result.time;
+        if(result.hit) {
+            prepared.location=result.location;prepared.normal=result.normal;
+            prepared.actor=0u;prepared.primitive=modelIdentity;
+        }
+        caller=prepared;
+    }
+    if(stats)*stats=result.stats;
+    return result.clear;
+}
+
 } // namespace QuestVr

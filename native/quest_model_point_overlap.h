@@ -2,6 +2,7 @@
 
 #include "quest_model_point_overlap_types.h"
 #include "quest_model_point_overlap_hull.h"
+#include <utility>
 
 namespace QuestVr {
 namespace ModelPointOverlapDetail {
@@ -133,18 +134,12 @@ inline bool Box(Context& context,std::uint32_t flags) {
 }
 } // namespace ModelPointOverlapDetail
 
-// Complete caller-seeded Model occupancy service. It is neither LineCheck nor
-// an original native-level/hash identity provider. Packets/stats publish only
-// after supported-domain success, including native clear returns with writes.
+namespace ModelPointOverlapDetail {
 template<class Capture>
-bool CheckOriginalModelPointOverlap(OriginalActorLineHit& caller,const PortableModelGeometry& model,
+bool Query(OriginalActorLineHit& caller,const PortableModelGeometry& model,
     std::uintptr_t modelIdentity,std::uintptr_t ownerIdentity,const PortableModelVec3& location,
     const PortableModelVec3& extent,std::uint32_t flags,Capture&& capture,
-    const ModelPointOverlapLimits& limits={},ModelPointOverlapStats* stats=nullptr) {
-    using namespace ModelPointOverlapDetail;
-    Limits(limits);if(!modelIdentity)Fail("actual Model identity is null");
-    const bool box=!model.nodes.empty()&&!(ZeroOrUnordered(extent.x)&&ZeroOrUnordered(extent.y)&&ZeroOrUnordered(extent.z));
-    ModelPointOverlapStats completed;Validate(model,limits,completed,box,ownerIdentity!=0u);
+    const ModelPointOverlapLimits& limits,ModelPointOverlapStats completed,bool box,ModelPointOverlapStats* stats) {
     auto prepared=caller;prepared.actor=ownerIdentity;prepared.primitive=modelIdentity;
     prepared.location=location;prepared.normal={};prepared.time=0.0f;
     bool clear=model.rootOutside!=0;
@@ -161,5 +156,46 @@ bool CheckOriginalModelPointOverlap(OriginalActorLineHit& caller,const PortableM
         }
     }
     caller=prepared;if(stats)*stats=completed;return clear;
+}
+} // namespace ModelPointOverlapDetail
+
+// Complete caller-seeded Model occupancy service. It is neither LineCheck nor
+// an original native-level/hash identity provider. Packets/stats publish only
+// after supported-domain success, including native clear returns with writes.
+template<class Capture>
+bool CheckOriginalModelPointOverlap(OriginalActorLineHit& caller,const PortableModelGeometry& model,
+    std::uintptr_t modelIdentity,std::uintptr_t ownerIdentity,const PortableModelVec3& location,
+    const PortableModelVec3& extent,std::uint32_t flags,Capture&& capture,
+    const ModelPointOverlapLimits& limits={},ModelPointOverlapStats* stats=nullptr) {
+    using namespace ModelPointOverlapDetail;
+    Limits(limits);if(!modelIdentity)Fail("actual Model identity is null");
+    const bool box=!model.nodes.empty()&&!(ZeroOrUnordered(extent.x)&&ZeroOrUnordered(extent.y)&&ZeroOrUnordered(extent.z));
+    ModelPointOverlapStats completed;Validate(model,limits,completed,box,ownerIdentity!=0u);
+    return Query(caller,model,modelIdentity,ownerIdentity,location,extent,flags,std::forward<Capture>(capture),limits,completed,box,stats);
+}
+template<class Capture>
+bool CheckOriginalModelPointOverlap(OriginalActorLineHit& caller,const OriginalImmutableCollisionModel& source,
+    std::uintptr_t modelIdentity,std::uintptr_t ownerIdentity,const PortableModelVec3& location,
+    const PortableModelVec3& extent,std::uint32_t flags,Capture&& capture,
+    const ModelPointOverlapLimits& limits,ModelPointOverlapStats* stats) {
+    using namespace ModelPointOverlapDetail;
+    const auto& model=source.Geometry();
+    const bool box=!model.nodes.empty()&&!(ZeroOrUnordered(extent.x)&&ZeroOrUnordered(extent.y)&&ZeroOrUnordered(extent.z));
+    // Zero/empty and owned paths retain the full raw contract; a world proof
+    // never activates inactive hulls or stands in for owned validation.
+    if(!box||ownerIdentity)
+        return CheckOriginalModelPointOverlap(caller,model,modelIdentity,ownerIdentity,location,extent,flags,
+            std::forward<Capture>(capture),limits,stats);
+    const ModelPointOverlapLimits maximum;
+    if(!limits.nodes||limits.nodes>maximum.nodes||!limits.hullWords||limits.hullWords>maximum.hullWords||
+        limits.validationSteps>maximum.validationSteps||!limits.querySteps||limits.querySteps>maximum.querySteps||
+        !limits.pending||limits.pending>maximum.pending)Fail("immutable callers may only tighten limits");
+    if(!modelIdentity)Fail("actual Model identity is null");
+    ModelExtentTraceLimits admitted;
+    admitted.nodes=limits.nodes;admitted.hullWords=limits.hullWords;admitted.validationSteps=limits.validationSteps;
+    admitted.querySteps=limits.querySteps;admitted.pending=limits.pending;
+    ModelExtentTraceStats checked;source.ValidateNullHull(admitted,checked);
+    ModelPointOverlapStats completed;completed.validationSteps=checked.validationSteps;
+    return Query(caller,model,modelIdentity,ownerIdentity,location,extent,flags,std::forward<Capture>(capture),limits,completed,true,stats);
 }
 } // namespace QuestVr

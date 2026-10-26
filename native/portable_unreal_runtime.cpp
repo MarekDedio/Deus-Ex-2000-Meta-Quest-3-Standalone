@@ -993,6 +993,7 @@ struct RuntimeNativeModelCache {
     std::string sourcePath, objectPath;
     std::size_t exportIndex{};
     std::shared_ptr<const PortableModelGeometry> geometry;
+    std::shared_ptr<const QuestVr::OriginalImmutableCollisionModel> collisionSource;
 };
 std::optional<RuntimeNativeModelCache> persistentNativeModelCache;
 // Selected Brush Models are not ULevel.Model. This separate, bounded immutable
@@ -5319,7 +5320,8 @@ public:
             const auto& cache=*persistentNativeModelCache;
             if(cache.generation!=level->nativeMapGeneration || cache.level!=level || cache.model!=model ||
                 cache.sourcePath!=model->sourcePath || cache.exportIndex!=model->exportIndex ||
-                cache.objectPath!=model->reflection.objectPath || !cache.geometry)
+                cache.objectPath!=model->reflection.objectPath || !cache.geometry || !cache.collisionSource ||
+                &cache.collisionSource->Geometry()!=cache.geometry.get())
                 throw std::runtime_error("FastTrace immutable Model cache belongs to another native map identity");
             return *cache.geometry;
         }
@@ -5333,14 +5335,22 @@ public:
         const auto bytes=map.exports.at(index).ObjSize;
         if (bytes<=0 || QuestVr::DecalStateDetail::Multiply(static_cast<std::size_t>(bytes),16u)>scratch-1024u)
             throw std::runtime_error("FastTrace Model scratch budget exceeded");
-        auto geometry=std::make_shared<const PortableModelGeometry>(LoadPortableModel68(map,index,scratch));
+        auto collisionSource=QuestVr::OriginalImmutableCollisionModel::LoadWorld(map,index,scratch);
+        auto geometry=collisionSource->GeometryLease();
         if(geometry->exportIndex!=index || LowerAscii(geometry->objectPath)!=
             LowerAscii(GetPortableObjectPath(map,static_cast<std::int32_t>(index+1u))))
             throw std::runtime_error("FastTrace decoded Model is not the loader-owned native Model");
         RuntimeNativeModelCache prepared{level->nativeMapGeneration,level,model,model->sourcePath,
-            model->reflection.objectPath,index,std::move(geometry)};
+            model->reflection.objectPath,index,std::move(geometry),std::move(collisionSource)};
         persistentNativeModelCache.emplace(std::move(prepared));
         return *persistentNativeModelCache->geometry;
+    }
+    const QuestVr::OriginalImmutableCollisionModel& NativeWorldCollisionSource(RuntimeObject* level) {
+        const auto& geometry=NativeLevelTraceModel(level);
+        if(!persistentNativeModelCache||!persistentNativeModelCache->collisionSource||
+            &persistentNativeModelCache->collisionSource->Geometry()!=&geometry)
+            throw std::runtime_error("Native world collision proof lost its immutable loader geometry");
+        return *persistentNativeModelCache->collisionSource;
     }
     Evaluation FastTraceNative(RuntimeObject* actor,const std::vector<Evaluation>& arguments,
         const Function* declaration) {
@@ -10410,6 +10420,8 @@ private:
         defaults.Retain(nativePhysicsReferenceBytes_);
         defaults.Retain(nativeTileReferenceBytes_);
         defaults.Retain(nativeActorOrderObservationBytes_);
+        if(persistentNativeModelCache&&persistentNativeModelCache->collisionSource)
+            defaults.Retain(sizeof(QuestVr::OriginalImmutableCollisionModel)+4u*sizeof(void*));
         defaults.Retain(sizeof(nativeStartupOut_)+nativeStartupOut_.capacity()*sizeof(StartupOutStorage));
         for(const auto& cell:nativeStartupOut_) {
             // OUT references are also retained by the outer VM undo journal.
@@ -14851,9 +14863,11 @@ PortableNativeModelSnapshot ReadPortableRuntimeNativeModel() {
         const auto& cache=*persistentNativeModelCache;
         if(cache.generation!=result.mapGeneration || cache.level!=level || cache.model!=model ||
             cache.sourcePath!=model->sourcePath || cache.objectPath!=result.modelPath ||
-            cache.exportIndex!=result.modelExportIndex || !cache.geometry)
+            cache.exportIndex!=result.modelExportIndex || !cache.geometry || !cache.collisionSource ||
+            &cache.collisionSource->Geometry()!=cache.geometry.get())
             throw std::runtime_error("Native Model diagnostic encountered a stale geometry cache");
         result.geometryCached=true;result.cachedNodes=cache.geometry->nodes.size();
+        result.nullHullValidated=cache.collisionSource->HasNullHullValidation();
     }
     return result;
 }

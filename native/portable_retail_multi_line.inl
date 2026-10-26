@@ -76,6 +76,7 @@
                 level!=RetailCollisionLevel())
                 throw std::runtime_error("Retail MultiLineCheck supplied native world identity changed");
             const auto& model=NativeTraceModel(suppliedLevelInfo);
+            const auto& collisionSource=NativeWorldCollisionSource(level);
             auto* nativeModel=level->nativeLevelModel;
             if(!nativeModel)
                 throw std::runtime_error("Retail MultiLineCheck native Level.Model disappeared");
@@ -89,7 +90,8 @@
             const auto workspace=QuestVr::OriginalModelLineScratchBytes(model.nodes.size(),point);
             QuestVr::NativeScratchScope workspaceReservation(nativeQueryScratchBytes_,workspace,
                 [this](std::size_t extra){ValidateStateBudget(extra);});
-            if(fastTraceValidationWork_>=MaximumNativeModelValidationWork || fastTraceQueryWork_>=MaximumNativeModelQueryWork)
+            if((fastTraceValidationWork_>=MaximumNativeModelValidationWork &&
+                (point||!collisionSource.HasNullHullValidation())) || fastTraceQueryWork_>=MaximumNativeModelQueryWork)
                 throw std::runtime_error("Retail MultiLineCheck shared Model query budget exhausted");
             QuestVr::OriginalWorldLineReply reply;
             // This deterministic initialization is a portable undefined-field
@@ -113,8 +115,8 @@
                     limits.querySteps=std::min(limits.querySteps,MaximumNativeModelQueryWork-fastTraceQueryWork_);
                     QuestVr::ModelExtentTraceStats stats;
                     try {
-                        reply.clear=QuestVr::CheckOriginalModelExtent(reply.hit,model,reinterpret_cast<std::uintptr_t>(nativeModel),
-                            0u,nullptr,worldEnd,worldStart,worldExtent,limits,&stats);
+                        reply.clear=QuestVr::CheckOriginalModelExtent(reply.hit,collisionSource,reinterpret_cast<std::uintptr_t>(nativeModel),
+                            worldEnd,worldStart,worldExtent,limits,&stats);
                     }catch(const QuestVr::ModelExtentTraceWorkExhausted& fault) {
                         ObserveModelExtentWork(nativeModel,nullptr,limits,fault);throw;
                     }

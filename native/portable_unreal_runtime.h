@@ -1063,6 +1063,7 @@ std::uint64_t GetPortableRuntimeWorldRevision();
 // A new map load receives a non-reused generation even at the same filename;
 // warm checkpoint replacement retains its original native Level/Model binding.
 struct PortableNativeModelSnapshot {
+    bool nullHullValidated{}; // Immutable asset proof, not saved gameplay state.
     bool available{}, geometryCached{};
     std::uint64_t mapGeneration{};
     std::string levelPath,modelPath;

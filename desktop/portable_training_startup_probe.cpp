@@ -724,6 +724,7 @@ int Run(const fs::path& root,const std::optional<std::string>& expected,unsigned
     std::optional<PortableActorTickBoundaryObservation> nativeTickBoundary;
     std::optional<PortableModelTraceWorkObservation> modelTraceWork;
     for(unsigned attempt=1u;attempt<=repeats;++attempt){
+        const auto modelBefore=ReadPortableRuntimeNativeModel();
         const auto start=std::chrono::steady_clock::now();
         PortableRetailCollisionStartupResult result;std::vector<PortableStartupWeaponFireObservation> fireRows;
         if(fire) {
@@ -731,6 +732,12 @@ int Run(const fs::path& root,const std::optional<std::string>& expected,unsigned
             result=std::move(fired.startup);fireRows=std::move(fired.observations);
         }else result=ProbePortableRuntimeRetailCollisionStartup(options,limits);
         const auto& world=result.world;
+        const auto modelAfter=ReadPortableRuntimeNativeModel();
+        Require(modelAfter.available&&modelAfter.mapGeneration==modelBefore.mapGeneration&&modelAfter.modelPath==modelBefore.modelPath&&
+            (!modelBefore.nullHullValidated||modelAfter.nullHullValidated),"Rollback changed immutable Model/proof identity");
+        std::cout<<"IMMUTABLE MODEL generation="<<modelAfter.mapGeneration<<" model="<<std::quoted(modelAfter.modelPath)
+            <<" proofBefore="<<modelBefore.nullHullValidated<<" proofAfter="<<modelAfter.nullHullValidated
+            <<"; immutable asset state only, NOT saved gameplay\n";
         const auto seconds=std::chrono::duration<double>(std::chrono::steady_clock::now()-start).count();
         std::cout<<"OBSERVED first Training startup attempt="<<attempt<<" seconds="<<seconds
             <<" status="<<StatusName(world.execution.status)<<" phase="<<PortableWorldStartupPhaseName(world.phase)
@@ -898,6 +905,18 @@ int Run(const fs::path& root,const std::optional<std::string>& expected,unsigned
     ClearPortableRuntimeClient();
     Require(ReadPortableRuntimeDeclaredScriptProperty(engine.enginePath,"Engine.Engine.Client").text.empty(),
         "Client teardown retained an Engine.Client GC edge");
+    const auto retiredModel=ReadPortableRuntimeNativeModel();
+    static_cast<void>(UnloadPortableRuntimeMap());
+    Require(!ReadPortableRuntimeNativeModel().available&&!ReadPortableRuntimeNativeModel().nullHullValidated,
+        "Map unload retained immutable Model proof authority");
+    Require(LoadPortableRuntimeMap(map).passed,"Same-filename original Training reload failed");
+    const auto replacedModel=ReadPortableRuntimeNativeModel();
+    Require(replacedModel.available&&replacedModel.mapGeneration!=retiredModel.mapGeneration&&
+        replacedModel.modelPath==retiredModel.modelPath&&!replacedModel.geometryCached&&!replacedModel.nullHullValidated,
+        "Same-filename map replacement borrowed the previous generation's collision proof");
+    static_cast<void>(UnloadPortableRuntimeMap());
+    std::cout<<"IMMUTABLE MODEL LIFETIME oldGeneration="<<retiredModel.mapGeneration<<" newGeneration="<<replacedModel.mapGeneration
+        <<"; unload/replacement starts cold, no retired proof authority\n";
     if(expected){std::cout<<"EXPECTED-BOUNDARY DIAGNOSTIC ONLY: exact error matched; NOT successful or playable startup.\n";return 0;}
     if(completed){std::cout<<"COMPLETED ROLLBACK-ONLY STARTUP DIAGNOSTIC: NOT published world/gameplay/headset acceptance.\n";return 0;}
     std::cout<<"OBSERVED UNSUPPORTED/REFUSED STARTUP BOUNDARY: rollback/source checks passed, startup did NOT complete.\n";return 2;

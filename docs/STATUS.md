@@ -1,5 +1,41 @@
 # Port status
 
+## Immutable validation reuse passes Training's collision cap (2026-10-26)
+
+The measured null-owner world-Model validation blocker is now passed. A
+privately constructed immutable source shares successful null-owner hull
+validation between world extent LineCheck and box PointCheck. Actual const
+fresh-loader/deep-copy geometry prevents mutable aliases from forging a proof.
+Cold validation is fully charged; warm validation charges zero, even with no
+remaining validation allowance. Array/current-query limits and all real query
+work stay enforced. Raw/owned/zero/point-line/FastLine paths keep their existing
+full validation contracts. No cap is increased/reset and no actor/trace is
+skipped. Details and ownership/security contracts: IMMUTABLE-MODEL-VALIDATION.md.
+
+Actual cold/warm Training repeat2 now reaches DeusExGameInfo0's exact native
+Engine.GameInfo gate after121 slots/120 calls,237,922 instructions/19,289
+writes,13 stasis returns/12 deferred entries. This is beyond the previous
+validation refusal at113/113 and233,606/18,817. Proof0->1/1->1, whole gameplay
+undo and same-filename unload/replacement generation1->2 starting cold pass.
+The frame still does not complete. Next actual native proof/required tests:
+ORIGINAL-TRAINING-GAMEINFO-TICK-GAP.md, not account/player-creation UI.
+
+New helper74 generated/36 refusals,77 owned/36; original extent60,055/64
+including96 real Training contacts pass. Full desktop rebuild, final Android
+native link, strict GNU helper and ARM64 helper/runtime syntax pass. CTest217
+executed/256 registered/39 explicit owned-data skips/zero failures75.39s;
+production8,825/163 before final malformed-schema control, owned crate415/5,
+deferred429/21, animation588/24 and original FastTrace252/0 pass. FastTrace
+retains16 clear/32 blocked supplied Training rays.
+
+Paired-door repeat2 keeps both56-unit moves/2 completion callbacks and now
+reaches GameInfo at238,258/19,357. Two actual crowbar Fire cycles repeat2 retain
+228,837/26,047 with48 rows/2 cycles/2 notifies/4 traces/2 crate changes/9 births
+before later FExec. Full undo/all45 original baseline files/11 frozen compiler
+inputs exact size/timestamp/SHA256 pass; all jobs terminal. No APK, headset
+performance claim or other-map integration. Live collectible loot, automatic
+stacked-crate gravity and published original gameplay remain unfinished.
+
 ## First Training collision limit is measured validation work (2026-10-26)
 
 Bounded extent-work telemetry now distinguishes validation from traversal,

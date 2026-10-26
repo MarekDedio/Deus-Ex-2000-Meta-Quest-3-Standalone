@@ -1,5 +1,27 @@
 # Immediate milestone: complete the first Training map
 
+Latest2026-10-26: secure lazy immutable-world validation reuse now passes the
+measured Model36 validation cap. World extent/box queries share the exact
+compatible successful proof on private actual-const loader geometry. Cold work
+is charged, warm validation0 is valid, and actual query/cardinality caps remain.
+Raw/owned/zero/FastLine paths retain full validation. No cap reset/increase,
+skipped NPC, trace stub, account UI or other-map integration was added.
+
+Actual first Training repeat2 cold/warm now reaches Engine.GameInfo after121
+slots/120 calls,237,922 instructions/19,289 writes, with full undo. Actual
+unload/same-filename generation replacement starts cold. New helper74/36 and
+owned77/36, original extent60,055/64 with96 real contacts, full desktop/Android
+native/strict GNU+ARM64 pass. CTest217 executed/256 registered/39 skips/zero
+failures75.39s; production8,825/163 before final malformed-schema control,
+owned crate415/5, deferred429/21, animation588/24 and FastTrace252/0 pass.
+
+Paired doors retain both56-unit moves/2 ends at238,258/19,357 before the new
+GameInfo gate; two-Fire repeat2 remains228,837/26,047,48 rows/2 cycles/2 notifies/
+4 traces/2 crate changes/9 births before later FExec. All45 originals/11 frozen
+compiler inputs unchanged/all jobs terminal. No APK. Live committed loot and
+automatic gravity remain unfinished. See IMMUTABLE-MODEL-VALIDATION.md and
+ORIGINAL-TRAINING-GAMEINFO-TICK-GAP.md for the reached next integration work.
+
 Latest2026-10-26: direct extent-work telemetry proves the first Training
 failure is validation of null-owner00_Training.Model36: prior validation
 7,937,992/query8,344; remaining validation62,008/query15,991,656; exact failure
