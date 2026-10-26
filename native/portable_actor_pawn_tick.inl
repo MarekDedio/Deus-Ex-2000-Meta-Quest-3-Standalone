@@ -106,10 +106,13 @@
         };
         q.tick=[&](auto a,float delta){OriginalNativeActorCallback(require(a),"Tick",Value::Float(delta),execution);};
         q.processState=[&](auto a,float delta) {
-            auto* r=require(a);const auto& native=OriginalActorTickNativeClass(r)->reflection.objectPath;
+            auto* r=require(a);auto* selected=OriginalActorTickNativeClass(r);const auto& native=selected->reflection.objectPath;
             // Independently authenticated +14: ScriptedPawn1001AF92 imports
             // AActor.ProcessState; native Pawn inherits that same slot.
-            if(native!="DeusEx.ScriptedPawn"&&native!="Engine.Pawn")
+            // Exact DeusExPlayer1002757C uses the same imported1001AF92 slot,
+            // authenticated through its own complete native class chain.
+            if(native=="DeusEx.DeusExPlayer")RequireOriginalDeusExPlayerAncestry(selected);
+            else if(native!="DeusEx.ScriptedPawn"&&native!="Engine.Pawn")
                 throw std::runtime_error("Original Pawn ProcessState native virtual is not audited");
             static_cast<void>(execution.RunStatePhase(r->reflection.objectPath,delta));
         };

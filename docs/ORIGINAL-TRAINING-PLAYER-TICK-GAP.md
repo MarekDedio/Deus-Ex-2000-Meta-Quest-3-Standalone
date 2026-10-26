@@ -1,8 +1,10 @@
 # First Training: reached original player Tick boundary
 
-Read-only next-step evidence,2026-10-26. No DeusExPlayer native Tick admission
-is implemented in this checkpoint. Scope is only Maps/00_Training.dx. This
+Implementation and independent source evidence,2026-10-26. Scope is only
+Maps/00_Training.dx. This
 is JC's original engine update, not an account/login or character-creation UI.
+
+## Historical reached boundary before this increment
 
 After exact Info admission, cold/warm Training repeat2 reaches actual
 00_Training.JCDentonMale0, class DeusEx.JCDentonMale, nearest native
@@ -51,7 +53,7 @@ The two script-only JC/Human links are not native overrides. The full five-node
 native chain includes Extension.PlayerPawnExt; skipping that class or treating
 DeusExPlayer as an immediate Engine.PlayerPawn child is incorrect.
 
-## Implementation requirements, not completed support
+## Exact implementation and remaining services
 
 Authenticate every canonical native node/link/type/native flag/default-owner
 condition and keep actual nearest-native selection. Reuse genuine Actor base
@@ -59,6 +61,14 @@ Tick only for the exact independently proven DeusExPlayer boundary. Its
 ProcessState and APawn physics need their own matching permissions at existing
 guards, not a generic native-player or Actor-physics alias. Existing checked
 animation callbacks are independent proof, not permission for complete Tick.
+
+The implementation now checks all five canonical native Class nodes and their
+immediate links in one dedicated guard, with genuine metadata, RF_Native and
+no default-owner receivers. Tick enters the existing Actor base path, without
+ScriptedPawn's NPC prefix. The independently proven ProcessState and APawn
+performPhysics entries authenticate the same exact player chain at their own
+call sites. Animation's previously audited player callbacks now also require
+the complete chain. No other native parent/child is admitted by this proof.
 
 Current portable_actor_pawn_tick.inl still explicitly refuses local Player
 input/PlayerTick and remote view-copy continuations. PlayerPawn falling
@@ -71,6 +81,64 @@ Use generated full-chain/selected-event/owner/animation/timer/checkpoint and
 whole-root rollback controls, then unfiltered actual Training, paired doors
 and original weapon regressions. Even completing this permission alone would
 not publish startup, VR controller input, collectible loot, gravity or an APK.
+
+## Generated production verification
+
+The independent player fixture serializes the full five-node canonical native
+chain across Engine.u, Extension.u and DeusEx.u, including actual Class export/
+payload superclass links. Shared generic Pawn declarations and observable
+selected script bodies are reused, but the player class has no ScriptedPawn
+wrapper-only fields. Test bIsPawn/bIsPlayer remain true and Player naturally
+None; these are not bound-input success fixtures or changes to owned defaults.
+
+Selected Tick/state/native looping Timer run in order with exact stored
+residual/rate/LifeSpan, raw signed Rotation->ViewRotation, stopped-state and
+timer checkpoint non-replay, next expiration, MAIN tween/checked AnimEnd and
+idle APawn outer/rotation/timer stores. Physics9/roll0 proves that inactive
+APawn route only, NOT walking/falling. Each selected Tick/Timer/Expired fault,
+every ordinary/animated/outer write cutoff and early/middle/final work cut fully
+undo save/state/revision/parity/GC. Genuine simulated/remote-player continuations
+still refuse. No fake local input callback is supplied.
+
+Ten independent negative fixtures cover missing native flags on Extension,
+PlayerPawn, Pawn and Actor, skipped/rewired intermediate links, unaudited
+Extension/PlayerPawn parents and an unknown nearer native player child. The
+nonnative Actor fixture puts the player first so the precise player guard is
+reached, not Core.Object through an earlier ordinary Actor. The deliberately
+rewired PlayerPawn->Actor fixture omits nonexistent Pawn field ownership so
+save preflight does not mask the intended ancestry refusal.
+
+The new matrix adds4,511 checks/102 refusals. Full production27,971/584 before
+its final malformed-schema control exits0. Full desktop/Android-native/strict
+GNU test and strict ARM64 runtime checks pass. CTest217 executed/256 registered/
+39 explicit owned-data skips/zero failures72.41s. Separately owned crate415/5,
+deferred429/21, animation588/24 and FastTrace252/0 pass. Final source/compile
+evidence is in artifacts/player-tick-final-*.log.
+
+## Actual first Training outcome
+
+Cold/warm unfiltered Training repeat2 now passes the native player guard and
+reaches `Original local Player input/PlayerTick continuation is not implemented`
+at239,200 instructions/19,364 writes,144 slots/144 calls,13 stasis returns/
+12 deferred entries. Both original door panels retain56-unit moves/two ends
+at239,536/19,432 before that same refusal. The existing NATIVE TICK BOUNDARY
+row retains a previous UNATCOTroop3 observation; it is not the later throwing
+local-player call. Next: ORIGINAL-TRAINING-LOCAL-PLAYER-TICK-GAP.md.
+
+Two actual crowbar Fire calls retain228,837/26,047,48 rows/two cycles/two
+returned notifies/four actual traces, lower-crate HP10->4->-2/removal and nine
+births (six WoodFragments, surviving Lockpick and two impact spawners), before
+the unchanged later bound ConsoleCommand FExec refusal. Whole-root save/state/
+revision/hash/RNG/client/lookup/Actor/GC undo, immutable Model cold0->1/warm1->1
+proof and generation1->2 cold same-filename replacement pass. This is still a
+nonpublishing diagnostic, not completed player input, startup, live controller
+crate destruction, collectible loot, automatic gravity or headset acceptance.
+Only first Training is loaded; no original executable code or new APK is run.
+
+Final audit confirms exact length/mtime/SHA256 for all45 checked original
+files and all7 frozen compiler inputs, with every build/test/probe terminal.
+The source freeze was lifted only after prior jobs ended for test-fixture
+repairs, then reestablished before recompilation and final verification.
 
 ## Unchanged owned identities
 

@@ -20,8 +20,11 @@
         QuestVr::Vm::Execution& execution) {
         if(!transaction_)throw std::runtime_error("Original Pawn performPhysics lacks its caller root");
         const auto source=reinterpret_cast<std::uintptr_t>(actor);actor=LifecycleActor(source);
-        const auto& native=OriginalActorTickNativeClass(actor)->reflection.objectPath;
-        if(native!="DeusEx.ScriptedPawn"&&native!="Engine.Pawn")
+        auto* selected=OriginalActorTickNativeClass(actor);const auto& native=selected->reflection.objectPath;
+        // Exact DeusExPlayer100275F4 ->1001AF14 ->IAT10027210 imports the
+        // actual APawn.performPhysics10302860, never Actor's outer method.
+        if(native=="DeusEx.DeusExPlayer")RequireOriginalDeusExPlayerAncestry(selected);
+        else if(native!="DeusEx.ScriptedPawn"&&native!="Engine.Pawn")
             throw std::runtime_error("Original Pawn performPhysics virtual identity is not audited");
         auto* level=ZoneLevel(reinterpret_cast<std::uintptr_t>(actor->nativeXLevel));
         const auto require=[&](auto identity) {

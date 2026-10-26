@@ -270,6 +270,8 @@ enum class GameReplicationInfoControlKind {
     ParentReplicationInfo,ParentInfo
 };
 enum class InfoControlKind {None,Exact,NonNativeActor,WrongNativeBase,WrongScriptBase};
+enum class PlayerControlKind {None,Exact,NonNativeExtension,NonNativePlayerPawn,NonNativePawn,NonNativeActor,
+    SkipExtension,ExtensionDirectPawn,PlayerPawnDirectActor,ParentExtension,ParentPlayerPawn,UnknownNative};
 Tables Build(Fixture& fixture,bool moverControl=false,std::uint32_t oldLocationFlags=2u,
     TriggerControlKind triggerControl=TriggerControlKind::None,
     DeusExLevelInfoControlKind levelInfoControl=DeusExLevelInfoControlKind::None,bool lightControl=false,
@@ -278,14 +280,17 @@ Tables Build(Fixture& fixture,bool moverControl=false,std::uint32_t oldLocationF
     GameInfoControlKind gameInfoControl=GameInfoControlKind::None,bool mutatorControl=false,
     DecalControlKind decalControl=DecalControlKind::None,std::uint32_t inStasisReturnFlags=0x580u,
     GameReplicationInfoControlKind replicationControl=GameReplicationInfoControlKind::None,
-    InfoControlKind infoControl=InfoControlKind::None) {
+    InfoControlKind infoControl=InfoControlKind::None,PlayerControlKind playerControl=PlayerControlKind::None) {
+    const bool playerBoundary=playerControl!=PlayerControlKind::None;
+    const bool pawnFixture=scriptedPawnBoundary||playerBoundary;
     Require(!scalarLightControl||lightControl,"Scalar-Light fixture must retain its genuine native Light ancestry");
     if(mutatorControl)Require(gameInfoControl!=GameInfoControlKind::None,
         "Mutator fixture mode requires its explicit rules-control ancestry");
     Require(unsigned(triggerControl!=TriggerControlKind::None)+unsigned(levelInfoControl!=DeusExLevelInfoControlKind::None)+
         unsigned(lightControl)+unsigned(scriptedPawnBoundary)+unsigned(weaponControl!=WeaponControlKind::None)+
         unsigned(gameInfoControl!=GameInfoControlKind::None)+unsigned(decalControl!=DecalControlKind::None)+
-        unsigned(replicationControl!=GameReplicationInfoControlKind::None)+unsigned(infoControl!=InfoControlKind::None)<=1u,
+        unsigned(replicationControl!=GameReplicationInfoControlKind::None)+unsigned(infoControl!=InfoControlKind::None)+
+        unsigned(playerBoundary)<=1u,
         "Fixture native-boundary controls must retain distinct ancestry proofs");
     const std::string ini="[Engine.Engine]\nGameEngine=Engine.GameEngine\n";
     const auto iniPath=fixture.directory/"System"/"DeusEx.ini";
@@ -381,8 +386,11 @@ Tables Build(Fixture& fixture,bool moverControl=false,std::uint32_t oldLocationF
     const auto level=engine.Export("Level",0,eo),model=engine.Export("Model",0,eo);
     engine.exports.at(static_cast<std::size_t>(actor-1)).ObjFlags=static_cast<ObjectFlags>(
         replicationControl==GameReplicationInfoControlKind::None&&infoControl==InfoControlKind::None?0x04000000u:
-            replicationControl==GameReplicationInfoControlKind::NonNativeActor||infoControl==InfoControlKind::NonNativeActor?
+            replicationControl==GameReplicationInfoControlKind::NonNativeActor||infoControl==InfoControlKind::NonNativeActor||
+                playerControl==PlayerControlKind::NonNativeActor?
                 0x000f0004u:0x040f0004u);
+    if(playerBoundary)engine.exports.at(static_cast<std::size_t>(actor-1)).ObjFlags=static_cast<ObjectFlags>(
+        playerControl==PlayerControlKind::NonNativeActor?0x000f0004u:0x040f0004u);
     const auto enumeration=[&](const std::string& name,std::vector<std::string> values,std::int32_t owner) {
         const auto ref=engine.Export(name,engine.Import("Enum",ec),0,owner,true);
         engine.builders.at(static_cast<std::size_t>(ref-1))=[&,values](std::int32_t next,std::int32_t){
@@ -397,10 +405,13 @@ Tables Build(Fixture& fixture,bool moverControl=false,std::uint32_t oldLocationF
     // does not authorize Pawn Tick/physics or create a Pawn instance here.
     const auto nativePawn=engine.Export("Pawn",0,actor);
     engine.exports.at(static_cast<std::size_t>(nativePawn-1)).ObjFlags=static_cast<ObjectFlags>(0x040f0004u);
+    if(playerControl==PlayerControlKind::NonNativePawn)
+        engine.exports.at(static_cast<std::size_t>(nativePawn-1)).ObjFlags=static_cast<ObjectFlags>(0x000f0004u);
     engine.ClassBody(nativePawn);
-    const auto playerPawn=scriptedPawnBoundary?engine.Export("PlayerPawn",0,nativePawn):0;
+    const auto playerPawn=pawnFixture?engine.Export("PlayerPawn",0,
+        playerControl==PlayerControlKind::PlayerPawnDirectActor?actor:nativePawn):0;
     std::int32_t inventory{},weapon{};
-    if(scriptedPawnBoundary||weaponControl!=WeaponControlKind::None) {
+    if(pawnFixture||weaponControl!=WeaponControlKind::None) {
         // Owned Engine.u uses Weapon -> native Inventory -> Actor. The two
         // malformed negative controls must never stand in for this contract.
         inventory=engine.Export("Inventory",0,actor);
@@ -411,10 +422,11 @@ Tables Build(Fixture& fixture,bool moverControl=false,std::uint32_t oldLocationF
             engine.ClassBody(ref);
         }
     }
-    if(scriptedPawnBoundary) {
+    if(pawnFixture) {
         // Genuine sibling cast target for the wrapper's readonly class walk,
         // not a fixture-only assertion that every Pawn is a PlayerPawn.
-        engine.exports.at(static_cast<std::size_t>(playerPawn-1)).ObjFlags=static_cast<ObjectFlags>(0x040f0004u);
+        engine.exports.at(static_cast<std::size_t>(playerPawn-1)).ObjFlags=static_cast<ObjectFlags>(
+            playerControl==PlayerControlKind::NonNativePlayerPawn?0x000f0004u:0x040f0004u);
         engine.ClassBody(playerPawn);
         engine.Property("Weapon","ObjectProperty",nativePawn,ec,weapon,0x10020u);
         engine.Property("Health","IntProperty",nativePawn,ec,0,0x10021u);
@@ -436,6 +448,13 @@ Tables Build(Fixture& fixture,bool moverControl=false,std::uint32_t oldLocationF
         engine.Property("iLeaf","IntProperty",pointRegion,ec);
         engine.Property("ZoneNumber","ByteProperty",pointRegion,ec);engine.StructBody(pointRegion);
         engine.Property("Region","StructProperty",actor,ec,pointRegion,2u);
+        if(playerBoundary) {
+            const auto player=engine.Export("Player",0,eo);
+            engine.exports.at(static_cast<std::size_t>(player-1)).ObjFlags=static_cast<ObjectFlags>(0x040f0004u);
+            engine.ClassBody(player);
+            engine.Property("Player","ObjectProperty",playerPawn,ec,player,2u);
+            engine.Property("ViewRotation","StructProperty",nativePawn,ec,er,0x20u);
+        }
     }
     engine.Property("Role","ByteProperty",actor,ec,roleEnum,0x20u);
     engine.Property("RemoteRole","ByteProperty",actor,ec,roleEnum,0x21u);
@@ -487,7 +506,7 @@ Tables Build(Fixture& fixture,bool moverControl=false,std::uint32_t oldLocationF
     const auto baseTick=engine.Function("Tick",actor,ec,Return(),0u,0x800u);
     engine.Property("DeltaTime","FloatProperty",baseTick,ec,0,0x80u);
     engine.Function("Timer",actor,ec,Return(),0u,0x800u);
-    if(scriptedPawnBoundary) {
+    if(pawnFixture) {
         engine.Function("Expired",actor,ec,Return(),0u,0x800u);
         const auto postTouch=engine.Function("PostTouch",actor,ec,Return(),0u,0x800u);
         engine.Property("Other","ObjectProperty",postTouch,ec,actor,0x80u);
@@ -505,7 +524,15 @@ Tables Build(Fixture& fixture,bool moverControl=false,std::uint32_t oldLocationF
     for(const auto ref:{zone,info,brush,level,model,engineClass})engine.ClassBody(ref);
     static_cast<void>(ledger);
     const auto engineTable=fixture.Write(engine);
-    std::optional<PortablePackageTables> deusExTable;
+    std::optional<PortablePackageTables> deusExTable,extensionTable;
+    if(playerBoundary) {
+        Package extension;extension.stem="Extension";const auto ee=extension.ImportPackage("Engine");
+        const auto ext=extension.Export("PlayerPawnExt",0,extension.Import(
+            playerControl==PlayerControlKind::ExtensionDirectPawn?"Pawn":"PlayerPawn",ee));
+        extension.exports.at(static_cast<std::size_t>(ext-1)).ObjFlags=static_cast<ObjectFlags>(
+            playerControl==PlayerControlKind::NonNativeExtension?0x000f0004u:0x040f0004u);
+        extension.ClassBody(ext);extensionTable=fixture.Write(extension);
+    }
     if(levelInfoControl!=DeusExLevelInfoControlKind::None) {
         // The owned native class crosses packages and extends Engine.Info,
         // not Engine.LevelInfo. Keep that real nearest-native boundary.
@@ -514,12 +541,15 @@ Tables Build(Fixture& fixture,bool moverControl=false,std::uint32_t oldLocationF
         deusex.exports.at(static_cast<std::size_t>(dxInfo-1)).ObjFlags=static_cast<ObjectFlags>(0x040f0004u);
         deusex.ClassBody(dxInfo);deusExTable=fixture.Write(deusex);
     }
-    if(scriptedPawnBoundary) {
+    if(pawnFixture) {
         // The actual native wrapper crosses packages. Preserve its concrete
         // declaring fields, rather than admitting it as a bare Actor alias.
         Package deusex;deusex.stem="DeusEx";const auto de=deusex.ImportPackage("Engine"),dc=deusex.ImportPackage("Core");
-        const auto pawn=deusex.Export("ScriptedPawn",0,deusex.Import("Pawn",de));
+        const auto pawn=deusex.Export(playerBoundary?"DeusExPlayer":"ScriptedPawn",0,
+            playerBoundary?(playerControl==PlayerControlKind::SkipExtension?deusex.Import("PlayerPawn",de):
+                deusex.Import("PlayerPawnExt",deusex.ImportPackage("Extension"))):deusex.Import("Pawn",de));
         deusex.exports.at(static_cast<std::size_t>(pawn-1)).ObjFlags=static_cast<ObjectFlags>(0x040f0004u);
+        if(!playerBoundary) {
         const auto dv=deusex.Import("Vector",deusex.Import("Object",dc),"Struct");
         deusex.Property("DesiredPrePivot","StructProperty",pawn,dc,dv);
         for(const auto* name:{"PrePivotTime","AgitationCheckTimer","AgitationTimer","AgitationDecayRate","PlayerAgitationTimer",
@@ -559,6 +589,7 @@ Tables Build(Fixture& fixture,bool moverControl=false,std::uint32_t oldLocationF
         const auto enableInput=deusex.Property("bEnable","BoolProperty",enableCloak,dc,0,0x80u);
         deusex.FunctionCode(enableCloak,Join({Assign(Ref(0x01u,clearedObstacle),Ref(0x00u,enableInput)),
             Assign(Ref(0x01u,cloakThreshold),Native(146u,{Ref(0x01u,cloakThreshold),Int(1)})),Return()}),0u,2u);
+        }
         // Observable bodies are actual generated UE1 bytecode, not host Tick,
         // Timer/Expired/state fakes. Each original service must select and run
         // them inside its genuine shared-root continuation.
@@ -623,6 +654,11 @@ Tables Build(Fixture& fixture,bool moverControl=false,std::uint32_t oldLocationF
         deusex.Property("ReturnValue","FloatProperty",captureAge,dc,0,0x580u);
         deusex.Function("MalformedLastRendered",pawn,dc,Join({increment(tickCount),Native(723u,{Real(1.0f)}),Return()}));
         const auto observedStasis=deusex.Property("ObservedStasis","BoolProperty",pawn,dc);
+        if(playerBoundary) {
+            deusex.Name("PlayerTween");
+            const auto ends=deusex.Property("AnimEnds","IntProperty",pawn,dc);
+            deusex.Function("AnimEnd",pawn,dc,Join({increment(ends),Return()}),0u,2u);
+        }
         const auto captureStasis=deusex.Function("CaptureInStasis",pawn,dc,Join({
             Assign(Ref(0x01u,observedStasis),Native(721u)),Return(Ref(0x01u,observedStasis))}));
         deusex.Property("ReturnValue","BoolProperty",captureStasis,dc,0,0x580u);
@@ -649,7 +685,8 @@ Tables Build(Fixture& fixture,bool moverControl=false,std::uint32_t oldLocationF
         lightControl?classes.Import("Light",ce):levelInfoControl!=DeusExLevelInfoControlKind::None?
         classes.Import("DeusExLevelInfo",classes.ImportPackage("DeusEx")):
         triggerControl==TriggerControlKind::None?ca:classes.Import("Trigger",ce);
-    const auto test=classes.Export("TestActor",0,testBase),bad=classes.Export("BadNative",0,testBase);
+    const auto test=classes.Export("TestActor",0,testBase),bad=classes.Export("BadNative",0,
+        playerBoundary?classes.Import("DeusExPlayer",classes.ImportPackage("DeusEx")):testBase);
     classes.exports.at(static_cast<std::size_t>(bad-1)).ObjFlags=static_cast<ObjectFlags>(0x04000000u);
     const auto count=classes.Property("Count","IntProperty",test,cc),stamp=classes.Property("Stamp","IntProperty",test,cc);
     const auto mode=classes.Property("Mode","IntProperty",test,cc);
@@ -722,7 +759,12 @@ Tables Build(Fixture& fixture,bool moverControl=false,std::uint32_t oldLocationF
     std::map<std::string,std::int32_t> actors;
     actors["Level0"]=map.Export("Level0",map.Import("LevelInfo",me));
     actors["Brush0"]=map.Export("Brush0",map.Import("Brush",me));
-    actors["Bad0"]=map.Export("Bad0",scriptedPawnBoundary?map.Import("ScriptedPawn",map.ImportPackage("DeusEx")):
+    actors["Bad0"]=map.Export("Bad0",playerBoundary?
+        playerControl==PlayerControlKind::ParentExtension?map.Import("PlayerPawnExt",map.ImportPackage("Extension")):
+        playerControl==PlayerControlKind::ParentPlayerPawn?map.Import("PlayerPawn",me):
+        playerControl==PlayerControlKind::UnknownNative?map.Import("BadNative",mt):
+            map.Import("DeusExPlayer",map.ImportPackage("DeusEx")):
+        scriptedPawnBoundary?map.Import("ScriptedPawn",map.ImportPackage("DeusEx")):
         moverControl?map.Import("Mover",me):
         levelInfoControl==DeusExLevelInfoControlKind::Parent?map.Import("Info",me):
         triggerControl==TriggerControlKind::Parent?map.Import("Triggers",me):map.Import("BadNative",mt));
@@ -747,6 +789,7 @@ Tables Build(Fixture& fixture,bool moverControl=false,std::uint32_t oldLocationF
     for(unsigned i=0u;i<7u;++i) {Index(modelBytes,0);}
     U32(modelBytes,1u);U32(modelBytes,0u);map.Body(worldModel,std::move(modelBytes));
     Tables result{{coreTable,engineTable},fixture.Write(map,true),{}};
+    if(extensionTable)result.packages.push_back(*extensionTable);
     if(deusExTable)result.packages.push_back(*deusExTable);
     result.packages.push_back(classTable);
     for(const auto& [name,ref]:actors)result.actorExports.emplace(name,static_cast<std::uint32_t>(ref-1));
@@ -1595,6 +1638,173 @@ void ScriptedPawnBoundaryControl() {
           "bound native723 Float/PC64/native-clock/malformed-schema/packet controls, bound native721 numeric/named/final Bool/clock/flags/physics/zone/distance/net-mode/schema/packet and whole-root undo controls, actual APawn timers/PostTouch and Pawn rotation delta0/single-word/sibling/same-bit/checkpoint/late undo controls, genuine later movement/destroy refusals, "
           "repeat identity and shared-root work/write/save/revision/parity/GC undo. Equipped-Weapon FarMove coverage deferred; "
           "NOT NPC movement/Pawn physics, original Training completion or headset acceptance.\n";
+}
+void DeusExPlayerControl() {
+    const auto build=[](Fixture& fixture,PlayerControlKind kind) {
+        return Build(fixture,false,2u,TriggerControlKind::None,DeusExLevelInfoControlKind::None,
+            false,false,false,false,0x580u,WeaponControlKind::None,GameInfoControlKind::None,false,
+            DecalControlKind::None,0x580u,GameReplicationInfoControlKind::None,InfoControlKind::None,kind);
+    };
+    const auto initialize=[](const Tables& tables) {
+        Require(InitializePortableRuntime(tables.packages).passed,"Player package initialization failed");
+        Require(PreparePortableRuntimeNativeEngineClasses().prepared&&PreparePortableRuntimeNativeMetadataClasses().prepared&&
+            PreparePortableRuntimeNativePackages().prepared,"Player native metadata preparation failed");
+        Require(LoadPortableRuntimeMap(tables.map).passed&&PreparePortableRuntimeObjectLookup().prepared,
+            "Player fixture lacks native Level/lookup ownership");
+    };
+    const auto makeSeed=[](const Tables& tables,PlayerControlKind kind=PlayerControlKind::Exact) {
+        auto state=Seed(tables);auto& slots=state.nativeActorOrder->slots;const auto bad=slots.at(2u);
+        slots.erase(slots.begin()+2);slots.push_back(bad);state.nativeActorOrder->firstDynamic=3u;
+        // A nonnative canonical Actor also invalidates preceding ordinary
+        // actors. Put the real player first to exercise its own exact guard.
+        if(kind==PlayerControlKind::NonNativeActor)std::rotate(slots.begin()+3,slots.end()-1,slots.end());
+        const std::string cls=kind==PlayerControlKind::ParentExtension?"Extension.PlayerPawnExt":
+            kind==PlayerControlKind::ParentPlayerPawn?"Engine.PlayerPawn":
+            kind==PlayerControlKind::UnknownNative?"TickClasses.BadNative":"DeusEx.DeusExPlayer";
+        state.objects.push_back({Path("Bad0"),cls,{},{},{},{}});
+        for(const auto* name:{"A","B","C"}) {
+            Property(state,name,"Engine.Actor.Physics",Value::Byte(0));
+            Property(state,name,"Engine.Actor.bTicked",Value::Bool(true));
+        }
+        Property(state,"Bad0","Engine.Actor.LastRenderTime",Value::Float(0));
+        Property(state,"Bad0","Engine.Actor.bStatic",Value::Bool(false));
+        Property(state,"Bad0","Engine.Actor.bTicked",Value::Bool(true));
+        Property(state,"Bad0","Engine.Actor.Role",Value::Byte(4));
+        Property(state,"Bad0","Engine.Actor.RemoteRole",Value::Byte(2));
+        Property(state,"Bad0","Engine.Actor.Physics",Value::Byte(0));
+        Property(state,"Bad0","Engine.Actor.bIsPawn",Value::Bool(true));
+        Property(state,"Bad0","Engine.Actor.bSimulatedPawn",Value::Bool(false));
+        // The deliberately rewired PlayerPawn->Actor negative has no Pawn
+        // field ownership; do not fail checkpoint preflight before its guard.
+        if(kind!=PlayerControlKind::PlayerPawnDirectActor)
+            Property(state,"Bad0","Engine.Pawn.bIsPlayer",Value::Bool(true));
+        Property(state,"Bad0","Engine.Actor.Rotation",Value::Rotator({12345,-34567,0}));
+        Property(state,"Bad0","Engine.Actor.TimerRate",Value::Float(0.5f));
+        Property(state,"Bad0","Engine.Actor.TimerCounter",Value::Float(0.375f));
+        Property(state,"Bad0","Engine.Actor.bTimerLoop",Value::Bool(true));
+        Property(state,"Bad0","Engine.Actor.LifeSpan",Value::Float(2.0f));
+        if(kind==PlayerControlKind::Exact) {
+            auto& object=Object(state,"Bad0");object.state=QuestVr::StateObject{};
+            object.state->hasStack=true;object.state->frameOverride=true;
+            QuestVr::StateFrame frame;frame.codePath="DeusEx.DeusExPlayer.NativeTickState";
+            frame.control=QuestVr::StateControl{frame.codePath,true,~std::uint64_t{}};
+            object.state->frame=std::move(frame);
+        }
+        return state;
+    };
+    {
+        Fixture fixture;const auto tables=build(fixture,PlayerControlKind::Exact);
+        for(const auto& [packageIndex,childName,parentPath]:std::vector<std::tuple<std::size_t,std::string,std::string>>{
+            {1u,"Actor","Core.Object"},{1u,"Pawn","Engine.Actor"},{1u,"PlayerPawn","Engine.Pawn"},
+            {2u,"PlayerPawnExt","Engine.PlayerPawn"},{3u,"DeusExPlayer","Extension.PlayerPawnExt"}}) {
+            const auto& package=tables.packages.at(packageIndex);const auto index=FindPortableExport(package,childName);
+            const auto& entry=package.exports.at(index);
+            const auto serializedParent=entry.ObjBase>0?parentPath.substr(parentPath.find('.')+1u):parentPath;
+            Require(entry.ObjClass==0&&entry.ObjOuter==0&&static_cast<std::uint32_t>(entry.ObjFlags)==0x040f0004u&&
+                GetPortableObjectPath(package,entry.ObjBase)==serializedParent&&
+                LoadPortableClassDescriptor(package,index).state.baseField==entry.ObjBase,
+                "Player fixture flattened a canonical native link: "+childName);
+        }
+        initialize(tables);const auto legacy=fixture.Save("PlayerLegacy");const auto state=makeSeed(tables);
+        const auto seed=[&](const QuestVr::ScriptSavedState& value){fixture.Restore(Envelope(legacy,value));};
+        const auto floating=[](const char* field){const auto value=ReadPortableActorScriptProperty(Path("Bad0"),field);
+            Require(value.kind==Kind::Float,"Player observation changed Float kind");return value.floating;};
+        seed(state);const auto successful=AdvancePortableLevelDynamicActors(0.25f,0);RequirePass(successful);
+        Require(successful.actorCalls==4u&&successful.slotsVisited==4u&&!successful.deferredPushes&&
+            Count("A")==1&&Count("B")==1&&Count("C")==1&&Count("Bad0","TickCount")==1&&
+            Count("Bad0","StateCount")==1&&Count("Bad0","TimerCount")==1&&Count("Bad0","SuffixOrder")==123,
+            "Unbound generated Player lost genuine selected Tick/state/native Timer order");
+        Require(floating("TickDelta")==0.25f&&floating("TimerRate")==0.5f&&floating("TimerCounter")==0.125f&&
+            floating("ObservedTimerRate")==0.5f&&floating("ObservedTimerCounter")==0.125f&&floating("LifeSpan")==1.75f&&
+            ReadPortableActorScriptProperty(Path("Bad0"),"ViewRotation").rotation==std::array<std::int32_t,3u>{12345,-34567,0}&&
+            ReadPortableActorScriptProperty(Path("Bad0"),"bIsPawn").boolean&&
+            ReadPortableActorScriptProperty(Path("Bad0"),"bIsPlayer").boolean&&
+            ReadPortableActorScriptProperty(Path("Bad0"),"Player").text.empty(),
+            "Player suffix changed actual Pawn flags, raw view words or timer stores");
+        const auto checkpoint=fixture.Save("PlayerCommitted");fixture.Restore(legacy);fixture.Restore(checkpoint);
+        Require(fixture.Save("PlayerReloaded")==checkpoint&&ReadPortableRuntimeLevelTickParity()==1,
+            "Player checkpoint lost committed native/state/clock ownership");
+        const auto continued=AdvancePortableLevelDynamicActors(0.25f,0);RequirePass(continued);
+        Require(continued.parityBefore==1&&continued.parityAfter==0&&Count("Bad0","TickCount")==2&&
+            Count("Bad0","StateCount")==1&&Count("Bad0","TimerCount")==1&&floating("TimerCounter")==0.375f,
+            "Player checkpoint replayed stopped state or early timer expiration");
+        RequirePass(AdvancePortableLevelDynamicActors(0.25f,0));
+        Require(Count("Bad0","TimerCount")==2&&floating("TimerCounter")==0.125f,
+            "Player looping native Timer failed after saved continuation");
+        const auto refusal=[&](const QuestVr::ScriptSavedState& value,const QuestVr::Vm::Limits& limits,
+            const std::string& label,const std::string& expected={}) {
+            seed(value);const auto before=fixture.Save("PlayerBefore");const auto revision=GetPortableRuntimeWorldRevision();
+            const auto gc=GC::GetStats();const auto failed=AdvancePortableLevelDynamicActors(0.25f,0,limits);const auto afterGc=GC::GetStats();
+            Require(!failed.execution.passed()&&!failed.execution.committed&&!failed.completed,"Player admitted "+label);
+            if(!expected.empty())Require(failed.execution.error.find(expected)!=std::string::npos,
+                "Player "+label+" stopped before its real boundary: "+failed.execution.error);
+            Require(fixture.Save("PlayerAfter")==before&&GetPortableRuntimeWorldRevision()==revision&&
+                ReadPortableRuntimeLevelTickParity()==0&&afterGc.numObjects==gc.numObjects&&afterGc.memoryUsage==gc.memoryUsage,
+                "Player refusal retained partial save/revision/parity/GC root: "+label);++refusals;return failed;
+        };
+        const auto cuts=[&](const QuestVr::ScriptSavedState& value,const PortableLevelDynamicTickResult& pass) {
+            Require(pass.execution.writes>0u&&pass.execution.nativeWork&&pass.execution.nativeWork->used>0u,
+                "Player success has no shared accounting");
+            for(std::size_t cut=0u;cut<pass.execution.writes;++cut) {
+                QuestVr::Vm::Limits limits;limits.writes=cut;refusal(value,limits,"write prefix");
+            }
+            for(const auto cut:{std::size_t{0u},pass.execution.nativeWork->used/2u,pass.execution.nativeWork->used-1u}) {
+                QuestVr::Vm::Limits limits;limits.nativeWork=cut;refusal(value,limits,"native-work prefix");
+            }
+        };
+        cuts(state,successful);
+        for(const auto mode:{1,2,3}) {
+            auto bad=state;Property(bad,"Bad0","DeusEx.DeusExPlayer.SuffixMode",Value::Integer(mode));
+            if(mode==3)Property(bad,"Bad0","Engine.Actor.LifeSpan",Value::Float(0.125f));
+            refusal(bad,{},"selected Tick/Timer/Expired failure","999");
+        }
+        auto remote=state;Property(remote,"Bad0","Engine.Actor.RemoteRole",Value::Byte(3));
+        refusal(remote,{},"remote Player view","Original remote PlayerPawn view-copy continuation is not implemented");
+        auto simulated=state;Property(simulated,"Bad0","Engine.Actor.Role",Value::Byte(2));
+        Property(simulated,"Bad0","Engine.Actor.bSimulatedPawn",Value::Bool(true));
+        refusal(simulated,{},"simulated Pawn movement","Original simulated Pawn gravity/moveSmooth continuation is not implemented");
+        auto animated=state;
+        Property(animated,"Bad0","Engine.Actor.AnimSequence",Value::Text(Kind::Name,"PlayerTween"));
+        Property(animated,"Bad0","Engine.Actor.AnimFrame",Value::Float(-0.125f));
+        Property(animated,"Bad0","Engine.Actor.TweenRate",Value::Float(1.0f));
+        seed(animated);const auto animation=AdvancePortableLevelDynamicActors(0.25f,0);RequirePass(animation);
+        Require(Count("Bad0","AnimEnds")==1&&floating("AnimFrame")==0.0f,
+            "Player MAIN tween failed to run checked native AnimEnd callback");
+        cuts(animated,animation);
+        auto outer=state;Property(outer,"Bad0","Engine.Actor.Physics",Value::Byte(9));
+        Property(outer,"Bad0","Engine.Actor.DesiredRotation",Value::Rotator({12345,-34567,0}));
+        Property(outer,"Bad0","Engine.Pawn.MoveTimer",Value::Float(2.0f));
+        Property(outer,"Bad0","Engine.Pawn.AvgPhysicsTime",Value::Float(0.5f));
+        seed(outer);const auto physics=AdvancePortableLevelDynamicActors(0.25f,0);RequirePass(physics);
+        Require(floating("MoveTimer")==1.75f&&floating("AvgPhysicsTime")==0.45f&&
+            ReadPortableActorScriptProperty(Path("Bad0"),"Rotation").rotation==std::array<std::int32_t,3u>{12345,-34567,0},
+            "Player idle APawn outer used generic Actor physics or lost rotation gate");
+        cuts(outer,physics);fixture.Unchanged();
+    }
+    for(const auto kind:{PlayerControlKind::NonNativeExtension,PlayerControlKind::NonNativePlayerPawn,
+        PlayerControlKind::NonNativePawn,PlayerControlKind::NonNativeActor,PlayerControlKind::SkipExtension,
+        PlayerControlKind::ExtensionDirectPawn,PlayerControlKind::PlayerPawnDirectActor,
+        PlayerControlKind::ParentExtension,PlayerControlKind::ParentPlayerPawn,PlayerControlKind::UnknownNative}) {
+        Fixture fixture;const auto tables=build(fixture,kind);initialize(tables);const auto legacy=fixture.Save("MalformedPlayerLegacy");
+        fixture.Restore(Envelope(legacy,makeSeed(tables,kind)));const auto before=fixture.Save("MalformedPlayerBefore");
+        const auto revision=GetPortableRuntimeWorldRevision();const auto gc=GC::GetStats();
+        const auto failed=AdvancePortableLevelDynamicActors(0.25f,0);const auto afterGc=GC::GetStats();
+        const std::string parent=kind==PlayerControlKind::ParentExtension?"Extension.PlayerPawnExt":
+            kind==PlayerControlKind::ParentPlayerPawn?"Engine.PlayerPawn":
+            kind==PlayerControlKind::UnknownNative?"TickClasses.BadNative":"";
+        const auto expected=parent.empty()?
+            "Original DeusExPlayer Tick lost its actual native DeusExPlayer/PlayerPawnExt/PlayerPawn/Pawn/Actor ancestry":
+            "Original Actor Tick reached an unimplemented native virtual override: "+parent;
+        Require(!failed.execution.passed()&&!failed.execution.committed&&!failed.completed&&failed.execution.error==expected,
+            "Player admitted malformed native chain or unaudited parent "+std::to_string(static_cast<unsigned>(kind))+": "+failed.execution.error);
+        Require(fixture.Save("MalformedPlayerAfter")==before&&GetPortableRuntimeWorldRevision()==revision&&
+            ReadPortableRuntimeLevelTickParity()==0&&afterGc.numObjects==gc.numObjects&&afterGc.memoryUsage==gc.memoryUsage,
+            "Malformed player refusal retained partial save/revision/parity/GC state");++refusals;fixture.Unchanged();
+    }
+    std::cout<<"PASS exact DeusExPlayer native five-link update: "<<checks<<" cumulative checks / "<<refusals
+        <<" refusals; actual selected Pawn Tick/state/native timer, raw view copy, animation, idle APawn outer, "
+          "checkpoint and whole-root late/write/work undo. Generated Player=None only; NOT bound input, "
+          "walking/falling success, completed Training, live crate gameplay or headset acceptance.\n";
 }
 void WeaponControl() {
     {
@@ -2681,6 +2891,6 @@ void MovingBrushSchemaRefusal() {
 }
 } // namespace
 int main() {
-    try {Synthetic();ScriptedPawnBoundaryControl();WeaponControl();GameInfoControl();DecalControl();GameReplicationInfoControl();InfoControl();TriggerControl();DeusExLevelInfoControl();LightControl();ScalarLightControl();MoverControl();MovingBrushPhysics();MovingBrushSchemaRefusal();return 0;}catch(const std::exception& error){std::cerr<<"FAIL "<<error.what()<<'\n';ShutdownPortableRuntime();return 1;}
+    try {Synthetic();ScriptedPawnBoundaryControl();DeusExPlayerControl();WeaponControl();GameInfoControl();DecalControl();GameReplicationInfoControl();InfoControl();TriggerControl();DeusExLevelInfoControl();LightControl();ScalarLightControl();MoverControl();MovingBrushPhysics();MovingBrushSchemaRefusal();return 0;}catch(const std::exception& error){std::cerr<<"FAIL "<<error.what()<<'\n';ShutdownPortableRuntime();return 1;}
 }
 

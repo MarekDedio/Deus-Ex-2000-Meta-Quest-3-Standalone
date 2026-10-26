@@ -135,6 +135,8 @@
         // DeusExDecoration10027744/DeusExPlayer10027568/
         // ScriptedPawn10027624 use1001AF98/1001AF7A import thunks to the same
         // AActor methods. This list does not authorize other native classes.
+        // DeusExPlayer additionally requires its exact five-node native chain,
+        // including Extension.PlayerPawnExt, independently of NPC ancestry.
         static constexpr const char* audited[]{"engine.actor","engine.decoration","engine.inventory",
             "engine.projectile","engine.pawn","engine.weapon","engine.gameinfo","engine.mutator","engine.decal",
             "engine.gamereplicationinfo","engine.info","deusex.deusexdecoration",
@@ -155,6 +157,7 @@
                 if(path=="engine.decal")RequireOriginalDecalAncestry(cls);
                 if(path=="engine.gamereplicationinfo")RequireOriginalGameReplicationInfoAncestry(cls);
                 if(path=="engine.info")RequireOriginalInfoAncestry(cls);
+                if(path=="deusex.deusexplayer")RequireOriginalDeusExPlayerAncestry(cls);
                 if(std::find(std::begin(audited),std::end(audited),path)==std::end(audited))
                     throw std::runtime_error("Original animation nearest native ProcessEvent/IsPendingKill virtuals are not audited");
                 selected=cls;

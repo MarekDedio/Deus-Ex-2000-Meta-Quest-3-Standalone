@@ -1,5 +1,36 @@
 # Port status
 
+## Original first-Training DeusExPlayer update admission verified (2026-10-26)
+
+Exact native DeusExPlayer -> Extension.PlayerPawnExt -> PlayerPawn -> Pawn ->
+Actor ancestry now admits the proven inherited Actor Tick/state and APawn
+physics at their separate call sites. All five canonical native Class nodes
+and immediate links are checked; animation callbacks require the same chain.
+No NPC wrapper, generic Actor physics, player-flag/Physics change or input skip.
+Unknown nearer natives and unaudited native parents still refuse.
+
+Generated true-Pawn/true-player, naturally unbound Player=None controls run
+actual selected Tick/state/native Timer, raw Rotation->ViewRotation, MAIN
+tween/checked AnimEnd, idle APawn outer/rotation and checkpoint non-replay.
+Selected callback failures and every ordinary/animation/outer write cutoff plus
+early/mid/late work cuts fully undo. Ten independent malformed/parent/unknown
+native cases refuse, as do reached remote/simulated continuations. Adds4,511
+checks/102 refusals; full production27,971/584 before final schema control
+exits0. Full desktop/Android-native/strict GNU+ARM64 pass. CTest217 executed /
+256 registered /39 explicit skips /zero failures72.41s. Separate owned crate
+415/5, deferred429/21, animation588/24 and FastTrace252/0 pass.
+
+Actual cold/warm Training repeat2 now reaches the real local Player input/
+PlayerTick refusal, not the former native-class guard:239,200 instructions/
+19,364 writes,144 slots/144 calls. Doors retain both56-unit moves/two ends
+at239,536/19,432. Two-Fire repeat2 retains228,837/26,047,48 rows/two cycles/
+two notifies/four traces/two crate changes/nine births before later FExec.
+Whole-root undo, Model cold/warm proof and cold generation replacement pass.
+See ORIGINAL-TRAINING-PLAYER-TICK-GAP.md and next
+ORIGINAL-TRAINING-LOCAL-PLAYER-TICK-GAP.md. Live player/weapon/inventory/frame/
+publication bridging, destruction/collectible loot/automatic gravity remain
+unfinished. First Training only; no new APK or headset acceptance claim.
+
 ## Original Training mission Info update verified (2026-10-26)
 
 Exact canonical native Info -> Actor admission now runs the inherited update

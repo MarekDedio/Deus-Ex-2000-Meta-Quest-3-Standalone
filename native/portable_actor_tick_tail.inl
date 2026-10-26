@@ -111,6 +111,24 @@
                 throw std::runtime_error(refusal);
         }
     }
+    void RequireOriginalDeusExPlayerAncestry(RuntimeObject* selected) {
+        LifecycleStep();auto* extension=Object("Extension.PlayerPawnExt");
+        auto* player=Object("Engine.PlayerPawn");auto* pawn=Object("Engine.Pawn");auto* actor=Object("Engine.Actor");
+        // Owned DeusExPlayer1 -> Extension.PlayerPawnExt70 -> Engine.PlayerPawn5
+        // -> Pawn1 -> Actor2. Vtable10027568 imports Actor.Tick/ProcessState,
+        // but APawn.performPhysics. This is not ScriptedPawn's NPC wrapper.
+        constexpr const char* refusal=
+            "Original DeusExPlayer Tick lost its actual native DeusExPlayer/PlayerPawnExt/PlayerPawn/Pawn/Actor ancestry";
+        if(selected!=Object("DeusEx.DeusExPlayer")||selected->base!=extension||extension->base!=player||
+            player->base!=pawn||pawn->base!=actor)
+            throw std::runtime_error(refusal);
+        for(auto* cls:{selected,extension,player,pawn,actor}) {
+            LifecycleStep();
+            if(!cls->classDescriptor||cls->defaultOwner||!cls->classFieldLinksValid||
+                cls->reflection.metaClass!="Class"||!(cls->reflection.flags&0x04000000u))
+                throw std::runtime_error(refusal);
+        }
+    }
     void RequireOriginalActorTickPhysicsImplementation(RuntimeObject* actor) {
         auto* selected=OriginalActorTickNativeClass(actor);const auto& path=selected->reflection.objectPath;
         // Owned native vtables/IAT, ORIGINAL-ACTOR-TICK-PHYSICS-PHASE.md
@@ -120,6 +138,12 @@
         // boundaries only: neither unlisted parents/Triggers, unknown nearer
         // native children nor scalar teardown are authorized here. Native
         // ScriptedPawn Tick's separate wrapper does NOT admit Pawn physics.
+        if(path=="DeusEx.DeusExPlayer") {
+            // Exact +64/+14 inherit Actor Tick/state. Its +8C dispatch is
+            // independently checked at the actual APawn physics entry below;
+            // preserve real captured Pawn/player context and reached services.
+            RequireOriginalDeusExPlayerAncestry(selected);return;
+        }
         if(path=="Engine.Decal") {
             // Exact native Decal +14/+64/+8C are Actor state/Tick/physics.
             // Preserve actual selected Shadow script and later dependencies;

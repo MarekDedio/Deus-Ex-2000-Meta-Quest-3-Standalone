@@ -18,6 +18,26 @@ falling upper crate, collectible loot and save/load in the actual headset.
 Quest currently calls neither the startup probe nor the original dynamic-actor
 phase. Preserve the first-map-only scope; no accounts or character-creation UI.
 
+Latest2026-10-26: exact five-node native DeusExPlayer/PlayerPawnExt/PlayerPawn/
+Pawn/Actor update is admitted at the proven Actor Tick/state and separate
+APawn physics/callback entry points. No ScriptedPawn NPC wrapper, forced
+player flags/Physics or empty input service. Generated naturally-unbound
+true-Pawn/player controls cover selected Tick/state/native Timer, raw view
+copy, animation, idle APawn outer, checkpoint and full write/work undo, with
+ten malformed/parent/unknown-native cases. Adds4,511/102; full production
+27,971/584 before final schema control exits0. Full desktop/Android-native/
+strict GNU+ARM64 and CTest217 executed/256 registered/39 explicit skips/zero
+failures72.41s pass; owned crate415/5, deferred429/21, animation588/24,
+FastTrace252/0 remain green.
+
+Actual cold/warm Training repeat2 now reaches original local Player input/
+PlayerTick refusal at239,200/19,364,144 slots/144 calls. Doors retain both
+56-unit moves/two ends at239,536/19,432. Two-Fire repeat2 retains228,837/
+26,047,48 rows/two cycles/two notifies/four traces/two crate changes/nine
+births before later FExec. Whole-root undo/cold-warm proof/cold replacement
+pass. Next: ORIGINAL-TRAINING-LOCAL-PLAYER-TICK-GAP.md. No other map or new
+APK; the genuine live bridge described above remains unfinished.
+
 Latest2026-10-26: exact canonical native Info/Actor update and checked animation
 callbacks now pass the actual Mission000 object, preserving its selected Timer
 and all phases. Generated full Info/timer/animation/owner/checkpoint/undo plus
