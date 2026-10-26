@@ -1,5 +1,30 @@
 # Immediate milestone: complete the first Training map
 
+Latest2026-10-26: exact native Weapon now enters its proven inherited
+Actor Tick/state/physics implementations with canonical native Inventory
+ancestry. Unknown nearer native classes still refuse; actual weapon script,
+owner order and all normal phases remain. No skipped actors, forced Physics0,
+new UI or guessed collision success. New generated production controls add989
+checks/19 refusals; complete driver8,825/163 before final malformed-schema
+control exits0. Desktop/Android-native/strict ARM64 and CTest216 executed/
+255 registered/39 skips/zero failures102.63s pass; owned crate415/5,
+deferred429/21 and animation588/24 pass.
+
+Actual first Training repeat2 now reaches UNATCOTroop0 after113 slots/113 calls,
+233,606 instructions/18,817 writes, beyond the former WeaponCombatKnife0 gate.
+The next refusal is independent collision Model extent-trace work, NOT
+exhausted shared native-work or an unimplemented Weapon body. Validation versus
+traversal needs measurement; do not raise/reset caps or skip the NPC as a fix.
+See ORIGINAL-TRAINING-WEAPON-TICK-GAP.md and
+ORIGINAL-TRAINING-COLLISION-WORK-GAP.md. Live committed destruction/collectible
+loot/automatic gravity still unfinished; first Training only, no new APK.
+
+Paired-door repeat2 retains233,942/18,885, both56-unit moves/2 completion
+callbacks before that collision cap; two actual crowbar Fire cycles repeat2
+retain228,837/26,047 with48 rows/2 notifies/4 traces/2 crate changes/9 births
+before later FExec. Full undo/all45 original baseline files/4 frozen compiler
+inputs unchanged; all build/test/probe jobs terminal.
+
 Latest2026-10-26: full bounded original APawn rotation now binds, including
 actual PlayerPawn/nonplayer branches, single unconditional flag-word lens
 store, exact yaw/pitch conversion/fixedTurn/clamps, Roll0 and genuine native

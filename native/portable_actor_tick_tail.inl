@@ -46,7 +46,7 @@
         throw std::runtime_error("Original Actor Tick has no authenticated native implementation");
     }
     void RequireOriginalActorTickPhysicsImplementation(RuntimeObject* actor) {
-        const auto& path=OriginalActorTickNativeClass(actor)->reflection.objectPath;
+        auto* selected=OriginalActorTickNativeClass(actor);const auto& path=selected->reflection.objectPath;
         // Owned native vtables/IAT, ORIGINAL-ACTOR-TICK-PHYSICS-PHASE.md
         // plus ORIGINAL-TRIGGER-TICK-PREREQUISITES.md and
         // ORIGINAL-DEUSEX-LEVELINFO-TICK-PREREQUISITES.md and
@@ -54,6 +54,19 @@
         // boundaries only: neither parent Info/Triggers, unknown nearer
         // native children nor scalar teardown are authorized here. Native
         // ScriptedPawn Tick's separate wrapper does NOT admit Pawn physics.
+        if(path=="Engine.Weapon") {
+            // Exact original Weapon104287A4 slots+14/+64/+8C inherit
+            // Actor.ProcessState/Tick/performPhysics. This is NOT permission
+            // to admit an arbitrary nearer native Inventory/Weapon child.
+            // See ORIGINAL-TRAINING-WEAPON-TICK-GAP.md for independent bytes.
+            LifecycleStep();auto* inventory=Object("Engine.Inventory");
+            if(selected!=Object("Engine.Weapon")||selected->base!=inventory||
+                !inventory->classDescriptor||inventory->defaultOwner||!inventory->classFieldLinksValid||
+                inventory->reflection.metaClass!="Class"||!(inventory->reflection.flags&0x04000000u)||
+                inventory->base!=Object("Engine.Actor"))
+                throw std::runtime_error("Original Weapon Tick lost its actual native Weapon/Inventory/Actor ancestry");
+            return;
+        }
         if(path=="DeusEx.DeusExDecoration"||path=="DeusEx.DeusExLevelInfo"||path=="Engine.Projectile"||path=="Engine.Inventory"||
             path=="Engine.Actor"||path=="Engine.Decoration"||path=="Engine.Mover"||path=="Engine.Trigger"||path=="Engine.Light")return;
         ObserveOriginalActorTickBoundary(actor,path);

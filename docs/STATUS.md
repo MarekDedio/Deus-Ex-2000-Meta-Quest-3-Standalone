@@ -1,5 +1,43 @@
 # Port status
 
+## Original Weapon updates pass the former Training gate (2026-10-26)
+
+Exact native Engine.Weapon now uses its independently proven inherited
+Actor.ProcessState/Tick/performPhysics slots. Canonical native Weapon ->
+Inventory -> Actor ancestry is required; unknown nearer native children and
+malformed Inventory bases still refuse. The actual selected weapon script,
+owner/deferred order, animation/state/timer/lifespan/physics remain intact.
+No NPC/weapon slot skip, Physics0 forcing or synthetic collision success was
+added. Static source proof and controls: ORIGINAL-TRAINING-WEAPON-TICK-GAP.md.
+
+New generated production controls add989 checks/19 refusals, including actual
+cross-package metadata and selected Float Tick, owner-first/deferred LIFO,
+checkpoint/parity continuation, intended late native999 and whole-root
+write/work/save/revision/GC undo. Complete driver8,825 cumulative/163 before
+its final malformed-schema control exits0. Full desktop rebuild, Android
+native link and strict ARM64 checks pass. CTest216 executed/255 registered/
+39 explicit owned-data skips/zero failures102.63s; separately owned crate415/5,
+deferred429/21 and animation588/24 pass.
+
+Actual first Training repeat2 passes WeaponCombatKnife0 and reaches
+UNATCOTroop0 after113 slots/113 calls,233,606 instructions/18,817 writes.
+It refuses an independent Model extent-trace work cap, with whole undo.
+The shared native-work ledger is NOT exhausted; increasing its CLI allowance
+cannot fix the collision cap. Validation versus traversal is not yet identified.
+See ORIGINAL-TRAINING-COLLISION-WORK-GAP.md for evidence and measured next work.
+
+Paired-door repeat2 retains233,942 instructions/18,885 writes, both56-unit
+panel moves and2 completion callbacks before that same collision cap.
+Two original crowbar Fire cycles repeat2 retain228,837/26,047,48 observation
+rows/2 returned notifies/4 actual traces/2 crate changes/9 births, before the
+later original FExec refusal; full root undo still passes. All45 original
+baseline files and4 frozen compiler inputs retain exact size/timestamp/SHA256.
+Every build/test/probe job is terminal; no compiled input changed mid-build.
+
+Live published startup, automatic stacked-crate gravity and collectible loot
+remain unfinished. This backend checkpoint is not a new APK, headset
+acceptance, account/player-creation UI or other-map integration.
+
 ## Complete original Pawn rotation now runs in Training (2026-10-26)
 
 The separate APawn.physicsRotation body is implemented and bound: raw entry

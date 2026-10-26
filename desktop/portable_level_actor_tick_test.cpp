@@ -262,14 +262,15 @@ void Property(QuestVr::ScriptSavedState& state,const std::string& actor,const st
 struct Tables {std::vector<PortablePackageTables> packages;PortablePackageTables map;std::map<std::string,std::uint32_t> actorExports;};
 enum class TriggerControlKind {None,Exact,Parent};
 enum class DeusExLevelInfoControlKind {None,Exact,Parent};
+enum class WeaponControlKind {None,Exact,NonNativeInventory,DirectActor};
 Tables Build(Fixture& fixture,bool moverControl=false,std::uint32_t oldLocationFlags=2u,
     TriggerControlKind triggerControl=TriggerControlKind::None,
     DeusExLevelInfoControlKind levelInfoControl=DeusExLevelInfoControlKind::None,bool lightControl=false,
     bool scalarLightControl=false,bool scriptedPawnBoundary=false,bool omitScriptedPawnAlarm=false,
-    std::uint32_t lastRenderedReturnFlags=0x580u) {
+    std::uint32_t lastRenderedReturnFlags=0x580u,WeaponControlKind weaponControl=WeaponControlKind::None) {
     Require(!scalarLightControl||lightControl,"Scalar-Light fixture must retain its genuine native Light ancestry");
     Require(unsigned(triggerControl!=TriggerControlKind::None)+unsigned(levelInfoControl!=DeusExLevelInfoControlKind::None)+
-        unsigned(lightControl)+unsigned(scriptedPawnBoundary)<=1u,
+        unsigned(lightControl)+unsigned(scriptedPawnBoundary)+unsigned(weaponControl!=WeaponControlKind::None)<=1u,
         "Fixture native-boundary controls must retain distinct ancestry proofs");
     const std::string ini="[Engine.Engine]\nGameEngine=Engine.GameEngine\n";
     const auto iniPath=fixture.directory/"System"/"DeusEx.ini";
@@ -339,15 +340,24 @@ Tables Build(Fixture& fixture,bool moverControl=false,std::uint32_t oldLocationF
     const auto nativePawn=engine.Export("Pawn",0,actor);
     engine.exports.at(static_cast<std::size_t>(nativePawn-1)).ObjFlags=static_cast<ObjectFlags>(0x040f0004u);
     engine.ClassBody(nativePawn);
+    const auto playerPawn=scriptedPawnBoundary?engine.Export("PlayerPawn",0,nativePawn):0;
+    std::int32_t inventory{},weapon{};
+    if(scriptedPawnBoundary||weaponControl!=WeaponControlKind::None) {
+        // Owned Engine.u uses Weapon -> native Inventory -> Actor. The two
+        // malformed negative controls must never stand in for this contract.
+        inventory=engine.Export("Inventory",0,actor);
+        weapon=engine.Export("Weapon",0,weaponControl==WeaponControlKind::DirectActor?actor:inventory);
+        for(const auto ref:{inventory,weapon}) {
+            engine.exports.at(static_cast<std::size_t>(ref-1)).ObjFlags=static_cast<ObjectFlags>(
+                ref==inventory&&weaponControl==WeaponControlKind::NonNativeInventory?0x000f0004u:0x040f0004u);
+            engine.ClassBody(ref);
+        }
+    }
     if(scriptedPawnBoundary) {
         // Genuine sibling cast target for the wrapper's readonly class walk,
         // not a fixture-only assertion that every Pawn is a PlayerPawn.
-        const auto playerPawn=engine.Export("PlayerPawn",0,nativePawn);
-        const auto inventory=engine.Export("Inventory",0,actor),weapon=engine.Export("Weapon",0,inventory);
-        for(const auto ref:{playerPawn,inventory,weapon}) {
-            engine.exports.at(static_cast<std::size_t>(ref-1)).ObjFlags=static_cast<ObjectFlags>(0x040f0004u);
-            engine.ClassBody(ref);
-        }
+        engine.exports.at(static_cast<std::size_t>(playerPawn-1)).ObjFlags=static_cast<ObjectFlags>(0x040f0004u);
+        engine.ClassBody(playerPawn);
         engine.Property("Weapon","ObjectProperty",nativePawn,ec,weapon,0x10020u);
         engine.Property("Health","IntProperty",nativePawn,ec,0,0x10021u);
         engine.Property("MoveTimer","FloatProperty",nativePawn,ec);
@@ -554,7 +564,8 @@ Tables Build(Fixture& fixture,bool moverControl=false,std::uint32_t oldLocationF
     }
     Package classes;classes.stem="TickClasses";const auto cc=classes.ImportPackage("Core"),ce=classes.ImportPackage("Engine");
     const auto ca=classes.Import("Actor",ce),ci=classes.Import("LevelInfo",ce);
-    const auto testBase=lightControl?classes.Import("Light",ce):levelInfoControl!=DeusExLevelInfoControlKind::None?
+    const auto testBase=weaponControl!=WeaponControlKind::None?classes.Import("Weapon",ce):
+        lightControl?classes.Import("Light",ce):levelInfoControl!=DeusExLevelInfoControlKind::None?
         classes.Import("DeusExLevelInfo",classes.ImportPackage("DeusEx")):
         triggerControl==TriggerControlKind::None?ca:classes.Import("Trigger",ce);
     const auto test=classes.Export("TestActor",0,testBase),bad=classes.Export("BadNative",0,testBase);
@@ -568,6 +579,10 @@ Tables Build(Fixture& fixture,bool moverControl=false,std::uint32_t oldLocationF
     const auto atLedger=[&]{return Context(Ref(0x01u,lv),Ref(0x01u,counter));};
     Flow body;body.Add(Assign(Ref(0x01u,count),Native(146u,{Ref(0x01u,count),Int(1)})));
     body.Add(Assign(atLedger(),Native(146u,{atLedger(),Int(1)})));body.Add(Assign(Ref(0x01u,stamp),atLedger()));
+    if(weaponControl!=WeaponControlKind::None) {
+        const auto observedDelta=classes.Property("ObservedDelta","FloatProperty",test,cc);
+        body.Add(Assign(Ref(0x01u,observedDelta),Ref(0x00u,delta)));
+    }
     if(scalarLightControl) {
         const auto alpha=classes.Property("Alpha","FloatProperty",test,cc),
             direction=classes.Property("Direction","FloatProperty",test,cc),
@@ -1354,6 +1369,153 @@ void ScriptedPawnBoundaryControl() {
           "repeat identity and shared-root work/write/save/revision/parity/GC undo. Equipped-Weapon FarMove coverage deferred; "
           "NOT NPC movement/Pawn physics, original Training completion or headset acceptance.\n";
 }
+void WeaponControl() {
+    {
+        Fixture fixture;const auto tables=Build(fixture,false,2u,TriggerControlKind::None,
+            DeusExLevelInfoControlKind::None,false,false,false,false,0x580u,WeaponControlKind::Exact);
+        const auto& engine=tables.packages.at(1u);const auto& classes=tables.packages.back();
+        const auto actor=FindPortableExport(engine,"Actor"),inventory=FindPortableExport(engine,"Inventory"),
+            weapon=FindPortableExport(engine,"Weapon"),test=FindPortableExport(classes,"TestActor");
+        for(const auto& [child,parent]:{std::pair{inventory,actor},std::pair{weapon,inventory}}) {
+            const auto& entry=engine.exports.at(child);
+            Require(entry.ObjClass==0&&entry.ObjOuter==0&&static_cast<std::uint32_t>(entry.ObjFlags)==0x040f0004u&&
+                entry.ObjBase==static_cast<std::int32_t>(parent+1u)&&
+                LoadPortableClassDescriptor(engine,child).state.baseField==entry.ObjBase,
+                "Weapon fixture lost actual serialized native Weapon -> Inventory -> Actor ancestry");
+        }
+        const auto& testEntry=classes.exports.at(test);
+        Require(testEntry.ObjClass==0&&testEntry.ObjOuter==0&&testEntry.ObjBase<0&&
+            GetPortableObjectPath(classes,testEntry.ObjBase)=="Engine.Weapon"&&
+            LoadPortableClassDescriptor(classes,test).state.baseField==testEntry.ObjBase,
+            "Weapon selected script class lost its genuine cross-package superclass import");
+        const auto& imported=classes.imports.at(static_cast<std::size_t>(-testEntry.ObjBase-1));
+        Require(classes.names.at(static_cast<std::size_t>(imported.ClassPackage)).Name=="Core"&&
+            classes.names.at(static_cast<std::size_t>(imported.ClassName)).Name=="Class"&&imported.ObjOuter<0&&
+            classes.names.at(static_cast<std::size_t>(classes.imports.at(
+                static_cast<std::size_t>(-imported.ObjOuter-1)).ObjName)).Name=="Engine",
+            "Weapon superclass is not an actual serialized Core.Class import owned by Engine");
+        Require(InitializePortableRuntime(tables.packages).passed,"Weapon control package initialization failed");
+        Require(PreparePortableRuntimeNativeEngineClasses().prepared&&PreparePortableRuntimeNativeMetadataClasses().prepared&&
+            PreparePortableRuntimeNativePackages().prepared,"Weapon control native metadata preparation failed");
+        Require(LoadPortableRuntimeMap(tables.map).passed&&PreparePortableRuntimeObjectLookup().prepared,
+            "Weapon control lacks native map/lookup ownership");
+        Require(ReadPortableRuntimeDispatchClass("TickClasses.TestActor").parentPath=="Engine.Weapon"&&
+            ReadPortableRuntimeDispatchClass("Engine.Weapon").parentPath=="Engine.Inventory"&&
+            ReadPortableRuntimeDispatchClass("Engine.Inventory").parentPath=="Engine.Actor",
+            "Production dispatch flattened or replaced genuine cross-package Weapon ancestry");
+        const auto legacy=fixture.Save("WeaponLegacy");
+        const auto makeSeed=[&] {
+            auto state=Seed(tables);for(const auto* name:{"A","B","C"}) {
+                Property(state,name,"Engine.Actor.Physics",Value::Byte(0));
+                Property(state,name,"Engine.Actor.bTicked",Value::Bool(true));
+            }return state;
+        };
+        const auto seed=[&](const QuestVr::ScriptSavedState& state){fixture.Restore(Envelope(legacy,state));};
+        const auto verifyDelta=[&](float delta) {
+            for(const auto* name:{"A","B","C"}) {
+                const auto observed=ReadPortableActorScriptProperty(Path(name),"ObservedDelta");
+                const auto physics=ReadPortableActorScriptProperty(Path(name),"Physics");
+                Require(observed.kind==Kind::Float&&observed.floating==delta,
+                    "Weapon selected bytecode Tick did not receive the actual Float delta");
+                Require(physics.kind==Kind::Byte&&physics.integer==0,"Weapon admission invented active physics");
+            }
+        };
+        const auto state=makeSeed();seed(state);
+        const auto successful=AdvancePortableLevelDynamicActors(0.015625f,0);RequirePass(successful);
+        Require(successful.actorCalls==3u&&successful.slotsVisited==3u&&successful.movingBrushCalls==0u&&
+            successful.parityBefore==0&&successful.parityAfter==1&&ReadPortableRuntimeLevelTickParity()==1&&
+            Count("A")==1&&Count("B")==1&&Count("C")==1&&Count("Static0")==0&&
+            Count("A","Stamp")==1&&Count("B","Stamp")==2&&Count("C","Stamp")==3&&Count("Level0","Ledger")==3,
+            "Exact native Weapon did not run its real selected script Tick/Physics0 in live order");
+        verifyDelta(0.015625f);
+        Require(successful.execution.writes>0u&&successful.execution.nativeWork&&successful.execution.nativeWork->used>0u,
+            "Weapon phase lacks shared write/work accounting");
+        auto ordered=makeSeed();
+        Property(ordered,"A","Engine.Actor.Owner",Value::Text(Kind::Object,Path("C")));
+        Property(ordered,"B","Engine.Actor.Owner",Value::Text(Kind::Object,Path("C")));
+        seed(ordered);const auto deferred=AdvancePortableLevelDynamicActors(0.015625f,0);RequirePass(deferred);
+        Require(deferred.slotsVisited==3u&&deferred.actorCalls==5u&&deferred.deferredPushes==2u&&deferred.pendingPasses==1u&&
+            Count("C","Stamp")==1&&Count("B","Stamp")==2&&Count("A","Stamp")==3&&Count("Level0","Ledger")==3,
+            "Weapon native owner-first/deferred LIFO execution is not C,B,A");
+        verifyDelta(0.015625f);
+        const auto checkpoint=fixture.Save("WeaponOwnerCheckpoint");const auto decoded=Decode(checkpoint);
+        Require(decoded.nativeLevelTickParity&&decoded.nativeLevelTickParity->parity==1&&decoded.nativeActorOrder,
+            "Weapon checkpoint omitted actual native parity/order continuation");
+        fixture.Restore(legacy);Require(ReadPortableRuntimeLevelTickParity()==0,"Weapon legacy reload retained parity history");
+        fixture.Restore(checkpoint);Require(ReadPortableRuntimeLevelTickParity()==1,"Weapon checkpoint did not restore parity");
+        const auto continued=AdvancePortableLevelDynamicActors(0.03125f,0);RequirePass(continued);
+        Require(continued.parityBefore==1&&continued.parityAfter==0&&ReadPortableRuntimeLevelTickParity()==0&&
+            continued.actorCalls==5u&&continued.deferredPushes==2u&&continued.pendingPasses==1u&&
+            Count("A")==2&&Count("B")==2&&Count("C")==2&&Count("Static0")==0&&
+            Count("C","Stamp")==4&&Count("B","Stamp")==5&&Count("A","Stamp")==6&&Count("Level0","Ledger")==6,
+            "Weapon checkpoint continuation lost owner/script ordering or ticked an actor twice");
+        verifyDelta(0.03125f);
+        const auto refusal=[&](const QuestVr::ScriptSavedState& input,const QuestVr::Vm::Limits& limits,
+            const std::string& label,const std::string& reached={}) {
+            seed(input);const auto before=fixture.Save("WeaponBefore");const auto revision=GetPortableRuntimeWorldRevision();
+            const auto gc=GC::GetStats();const auto failed=AdvancePortableLevelDynamicActors(0.015625f,0,limits);
+            Require(!failed.execution.passed()&&!failed.execution.committed&&!failed.completed,"Weapon admitted "+label);
+            if(!reached.empty())Require(failed.execution.error.find(reached)!=std::string::npos,
+                "Weapon "+label+" failed before its genuine boundary: "+failed.execution.error);
+            Require(fixture.Save("WeaponAfter")==before&&ReadPortableRuntimeLevelTickParity()==0&&
+                GetPortableRuntimeWorldRevision()==revision,"Weapon failure retained a partial shared root: "+label);
+            const auto afterGc=GC::GetStats();Require(afterGc.numObjects==gc.numObjects&&afterGc.memoryUsage==gc.memoryUsage,
+                "Weapon failure retained UObject allocations: "+label);++refusals;return failed;
+        };
+        auto late=makeSeed();Property(late,"C","TickClasses.TestActor.Mode",Value::Integer(2));
+        const auto lateResult=refusal(late,{},"late selected script Tick failure","999");
+        Require(lateResult.execution.status==Status::Unsupported&&
+            lateResult.execution.instructions>0u&&lateResult.execution.writes>0u,
+            "Weapon late callback refusal never reached real script effects to roll back");
+        auto boundary=makeSeed();auto& slots=boundary.nativeActorOrder->slots;const auto bad=slots.at(2u);
+        slots.erase(slots.begin()+2);slots.push_back(bad);boundary.nativeActorOrder->firstDynamic=3u;
+        boundary.objects.push_back({Path("Bad0"),"TickClasses.BadNative",{},{},{},{}});
+        Property(boundary,"Bad0","Engine.Actor.LastRenderTime",Value::Float(0));
+        Property(boundary,"Bad0","Engine.Actor.bStatic",Value::Bool(false));
+        Property(boundary,"Bad0","Engine.Actor.Physics",Value::Byte(0));
+        const auto nearest=refusal(boundary,{},"unknown nearer native Weapon child",
+            "unimplemented native virtual override: TickClasses.BadNative");
+        Require(nearest.nativeBoundary&&nearest.nativeBoundary->actorPath==Path("Bad0")&&
+            nearest.nativeBoundary->nativeClassPath=="TickClasses.BadNative",
+            "Weapon child refusal lost its actual nearest-native identity");
+        for(std::size_t cut=0u;cut<successful.execution.writes;++cut) {
+            QuestVr::Vm::Limits limits;limits.writes=cut;refusal(state,limits,"write prefix "+std::to_string(cut));
+        }
+        for(const auto cut:{std::size_t{0u},successful.execution.nativeWork->used/2u,successful.execution.nativeWork->used-1u}) {
+            QuestVr::Vm::Limits limits;limits.nativeWork=cut;refusal(state,limits,"native-work prefix");
+        }
+        fixture.Unchanged();
+    }
+    for(const auto kind:{WeaponControlKind::NonNativeInventory,WeaponControlKind::DirectActor}) {
+        Fixture fixture;const auto tables=Build(fixture,false,2u,TriggerControlKind::None,
+            DeusExLevelInfoControlKind::None,false,false,false,false,0x580u,kind);
+        Require(InitializePortableRuntime(tables.packages).passed,"Malformed Weapon package initialization failed");
+        Require(PreparePortableRuntimeNativeEngineClasses().prepared&&PreparePortableRuntimeNativeMetadataClasses().prepared&&
+            PreparePortableRuntimeNativePackages().prepared,"Malformed Weapon native metadata preparation failed");
+        Require(LoadPortableRuntimeMap(tables.map).passed&&PreparePortableRuntimeObjectLookup().prepared,
+            "Malformed Weapon fixture lacks native map/lookup ownership");
+        const auto legacy=fixture.Save("MalformedWeaponLegacy");auto state=Seed(tables);
+        for(const auto* name:{"A","B","C"}) {
+            Property(state,name,"Engine.Actor.Physics",Value::Byte(0));
+            Property(state,name,"Engine.Actor.bTicked",Value::Bool(true));
+        }
+        fixture.Restore(Envelope(legacy,state));const auto before=fixture.Save("MalformedWeaponBefore");
+        const auto revision=GetPortableRuntimeWorldRevision();const auto gc=GC::GetStats();
+        const auto failed=AdvancePortableLevelDynamicActors(0.015625f,0);
+        Require(!failed.execution.passed()&&!failed.execution.committed&&!failed.completed&&
+            failed.execution.error.find("Original Weapon Tick lost its actual native Weapon/Inventory/Actor ancestry")!=std::string::npos,
+            "Weapon admitted a non-native/missing Inventory base: "+failed.execution.error);
+        const auto afterGc=GC::GetStats();
+        Require(fixture.Save("MalformedWeaponAfter")==before&&ReadPortableRuntimeLevelTickParity()==0&&
+            GetPortableRuntimeWorldRevision()==revision&&afterGc.numObjects==gc.numObjects&&afterGc.memoryUsage==gc.memoryUsage,
+            "Malformed Weapon ancestry refusal retained partial root state or UObject allocations");++refusals;
+        fixture.Unchanged();
+    }
+    std::cout<<"PASS exact Engine.Weapon native admission: "<<checks<<" cumulative checks / "<<refusals
+        <<" refusals; actual cross-package native Inventory ancestry, selected bytecode Tick/Float delta/Physics0, "
+          "owner-deferred LIFO/checkpoint continuation, late/write/work whole-root undo and nearer-native/malformed-base refusal. "
+          "NOT blanket Inventory descendants, active weapon physics, original Training completion or headset acceptance.\n";
+}
 void TriggerControl() {
     for(const auto kind:{TriggerControlKind::Exact,TriggerControlKind::Parent}) {
         Fixture fixture;const auto tables=Build(fixture,false,2u,kind);
@@ -1912,6 +2074,6 @@ void MovingBrushSchemaRefusal() {
 }
 } // namespace
 int main() {
-    try {Synthetic();ScriptedPawnBoundaryControl();TriggerControl();DeusExLevelInfoControl();LightControl();ScalarLightControl();MoverControl();MovingBrushPhysics();MovingBrushSchemaRefusal();return 0;}catch(const std::exception& error){std::cerr<<"FAIL "<<error.what()<<'\n';ShutdownPortableRuntime();return 1;}
+    try {Synthetic();ScriptedPawnBoundaryControl();WeaponControl();TriggerControl();DeusExLevelInfoControl();LightControl();ScalarLightControl();MoverControl();MovingBrushPhysics();MovingBrushSchemaRefusal();return 0;}catch(const std::exception& error){std::cerr<<"FAIL "<<error.what()<<'\n';ShutdownPortableRuntime();return 1;}
 }
 
