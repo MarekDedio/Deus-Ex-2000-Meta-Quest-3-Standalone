@@ -18,6 +18,24 @@ falling upper crate, collectible loot and save/load in the actual headset.
 Quest currently calls neither the startup probe nor the original dynamic-actor
 phase. Preserve the first-map-only scope; no accounts or character-creation UI.
 
+Latest2026-10-26: exact canonical native Info/Actor update and checked animation
+callbacks now pass the actual Mission000 object, preserving its selected Timer
+and all phases. Generated full Info/timer/animation/owner/checkpoint/undo plus
+four positive parent-Info transitions add4,713/120 net; malformed/unknown-native
+controls and base ReplicationInfo refusal remain. Full production23,460/482
+before final schema control exits0. Full desktop/Android-native/strict GNU+
+ARM64 and CTest217 executed/256 registered/39 explicit skips/zero failures
+105.45s pass; owned crate415/5, deferred429/21, animation588/24, FastTrace252/0.
+
+Cold/warm actual Training repeat2 now reaches JCDentonMale0's nearest native
+DeusEx.DeusExPlayer at239,200/19,364,144 slots/143 calls. Doors retain both
+56-unit moves/two ends at239,536/19,432. Two-Fire repeat2 retains228,837/26,047,
+48 rows/two cycles/two notifies/four traces/two crate changes/nine births before
+later FExec. Whole-root undo, cold/warm Model proof, cold same-filename
+replacement, all45 originals/6 frozen inputs pass; all jobs terminal. Next:
+ORIGINAL-TRAINING-PLAYER-TICK-GAP.md. No other map or new APK. The required
+live bridge above remains unfinished; this is not headset gameplay acceptance.
+
 Latest2026-10-26: exact canonical native GameReplicationInfo/ReplicationInfo/
 Info/Actor update and animation callback admission now passes the actual GRI
 object without changing its selected timer or any phase. Generated matrix

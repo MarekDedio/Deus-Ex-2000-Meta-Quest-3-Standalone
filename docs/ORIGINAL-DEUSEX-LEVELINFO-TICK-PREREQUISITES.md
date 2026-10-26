@@ -158,6 +158,14 @@ Trigger controls retain their separate native ancestry proof. These are added
 implementation/test controls, not a claim that their build/tests have passed;
 the root's final verification records actual results separately.
 
+Following independent Info audit,2026-10-26: the explicit parent-Info refusal
+above is historical. Exact Info/Actor now has its own canonical native guard
+and matching callback proof, rather than borrowing the LevelInfo permission.
+The appended actual Info actor is now a fourth positive dynamic call, placed
+before late-failing C with checkpoint and full write/work/revision/parity/GC
+undo controls. Unknown nearer native children remain refused. See
+ORIGINAL-TRAINING-INFO-TICK-GAP.md for the final verified checkpoint.
+
 Intermediate exact-DeusExLevelInfo-only verification passed full desktop,
 strict ARM64 syntax and Android-native builds. Its generated controls logged
 2053 cumulative checks/49 refusals; the subsequent complete driver exited0

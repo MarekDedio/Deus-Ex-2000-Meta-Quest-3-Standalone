@@ -78,6 +78,21 @@
             !(selected->reflection.flags&0x04000000u)||selected->base!=Object("Engine.Actor"))
             throw std::runtime_error("Original Decal Tick lost its actual native Decal/Actor ancestry");
     }
+    void RequireOriginalInfoAncestry(RuntimeObject* selected) {
+        LifecycleStep();auto* actor=Object("Engine.Actor");
+        // Owned Engine.u native Info ref91 -> Actor ref2. Info104272D0
+        // independently inherits the five audited Actor methods; neither
+        // a rule-class nor a replication-class proof admits this boundary.
+        constexpr const char* refusal="Original Info Tick lost its actual native Info/Actor ancestry";
+        if(selected!=Object("Engine.Info")||selected->base!=actor)
+            throw std::runtime_error(refusal);
+        for(auto* cls:{selected,actor}) {
+            LifecycleStep();
+            if(!cls->classDescriptor||cls->defaultOwner||!cls->classFieldLinksValid||
+                cls->reflection.metaClass!="Class"||!(cls->reflection.flags&0x04000000u))
+                throw std::runtime_error(refusal);
+        }
+    }
     void RequireOriginalGameReplicationInfoAncestry(RuntimeObject* selected) {
         LifecycleStep();auto* replication=Object("Engine.ReplicationInfo");auto* info=Object("Engine.Info");
         auto* actor=Object("Engine.Actor");
@@ -102,7 +117,7 @@
         // plus ORIGINAL-TRIGGER-TICK-PREREQUISITES.md and
         // ORIGINAL-DEUSEX-LEVELINFO-TICK-PREREQUISITES.md and
         // ORIGINAL-LIGHT-TICK-PREREQUISITES.md. Exact nearest native
-        // boundaries only: neither parent Info/Triggers, unknown nearer
+        // boundaries only: neither unlisted parents/Triggers, unknown nearer
         // native children nor scalar teardown are authorized here. Native
         // ScriptedPawn Tick's separate wrapper does NOT admit Pawn physics.
         if(path=="Engine.Decal") {
@@ -117,6 +132,12 @@
             // standalone is not permission to skip replication-info actors.
             RequireOriginalGameReplicationInfoAncestry(selected);return;
         }
+        if(path=="Engine.Info") {
+            // Info104272D0 +14/+64/+8C are the actual Actor methods.
+            // Training Mission00/MissionScript are script-only children;
+            // preserve their inherited Tick and selected original Timer.
+            RequireOriginalInfoAncestry(selected);return;
+        }
         if(path=="Engine.GameInfo") {
             // GameInfo10427AE0 slots+14/+64/+8C are the original Actor
             // ProcessState/Tick/performPhysics, not a new guessed override.
@@ -127,7 +148,7 @@
         if(path=="Engine.Mutator") {
             // Mutator10427B8C has the same audited +14/+64/+8C Actor slots.
             // This actual next Training object is admitted independently of
-            // GameInfo; neither base Info nor arbitrary native children are.
+            // GameInfo; arbitrary native children cannot borrow its proof.
             RequireOriginalMutatorAncestry(selected);return;
         }
         if(path=="Engine.Weapon") {

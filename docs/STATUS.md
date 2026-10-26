@@ -1,5 +1,36 @@
 # Port status
 
+## Original Training mission Info update verified (2026-10-26)
+
+Exact canonical native Info -> Actor admission now runs the inherited update
+and independently checked animation callbacks. Both nodes require actual
+native Class metadata/links and no default-owner receiver. Script-only
+Mission00/MissionScript retain selected timers and all normal phases; no
+mission actor skip or physics/default change. Unknown nearer native children
+and base ReplicationInfo remain closed.
+
+The complete Info/ordinary/animation/looping-Timer/owner/checkpoint/undo matrix
+and four now-positive parent-Info controls add4,713 checks/120 refusals net.
+Three malformed Info chains and unknown-nearer-native controls still refuse.
+Full production23,460/482 before final schema control exits0. Full desktop/
+Android-native/strict GNU+ARM64 pass; CTest217 executed/256 registered/39
+explicit skips/zero failures105.45s. Separate crate415/5, deferred429/21,
+animation588/24 and FastTrace252/0 remain green.
+
+Cold/warm actual Training repeat2 passes Mission000/Info and reaches actual
+JCDentonMale0's nearest native DeusEx.DeusExPlayer at239,200 instructions/
+19,364 writes,144 slots/143 calls. Doors retain both56-unit moves/two ends at
+239,536/19,432. Two-Fire repeat2 retains228,837/26,047,48 rows/two cycles/two
+notifies/four traces/two crate changes/nine births before later FExec. Whole
+root undo, Model proof cold0->1/warm1->1 and cold generation1->2 replacement
+pass. All45 originals/6 frozen compiler inputs unchanged; all jobs terminal.
+
+See ORIGINAL-TRAINING-INFO-TICK-GAP.md and next
+ORIGINAL-TRAINING-PLAYER-TICK-GAP.md. No account or character-creation UI.
+The live Quest player/weapon/inventory/frame/publication bridges described in
+TRAINING-FIRST-PRIORITY.md remain unfinished. These are not finished live
+destruction/collectible loot/automatic gravity. First Training only; no new APK.
+
 ## Original Training GameReplicationInfo update verified (2026-10-26)
 
 Exact native GRI -> ReplicationInfo -> Info -> Actor ancestry now admits its
