@@ -1,5 +1,29 @@
 # Immediate milestone: complete the first Training map
 
+Latest2026-10-26: full bounded original APawn rotation now binds, including
+actual PlayerPawn/nonplayer branches, single unconditional flag-word lens
+store, exact yaw/pitch conversion/fixedTurn/clamps, Roll0 and genuine native
+movement. No Actor rotation alias, direct pose assignment, EndedRotation,
+NPC skip, other-map integration or fake collision success was added.
+
+Helper652,096/32 with32,768 independent x87/integer cases and generated
+production ScriptedPawn2,964 cumulative/48 controls pass; complete driver
+7,836/144 plus final malformed-schema control exits0. One native write for
+the two Bools, same-bit stores, sibling preservation, checkpoint and late
+whole-root undo pass. Full desktop/Android-native/strict ARM64 checks and
+CTest216 executed/255 registered/39 explicit skips/zero failures76.76s pass;
+owned crate415/5, deferred429/21 and animation588/24 pass.
+
+Actual Training repeat2 now reaches WeaponCombatKnife0's exact Engine.Weapon
+admission gate at219,208 instructions/17,062 writes,66 slots/65 calls/6 deferred
+entries with full undo. Paired doors retain219,544/17,130 and both56-unit moves/
+2 completion callbacks before that gate; two-Fire repeat2 stays228,837/26,047
+with original crate/loot/debris observations and full undo at later FExec.
+All45 originals and7 compiler inputs unchanged; all jobs terminal. No Quest/
+new APK, account/player-creation UI or other-map integration. Live destruction,
+surviving collectible loot and gravity remain unfinished. Next narrow Weapon
+class/virtual proof and required controls: ORIGINAL-TRAINING-WEAPON-TICK-GAP.md.
+
 Latest2026-10-26: real Pawn falling setup/cap now runs in the shared original
 method: captured Pawn context, authenticated non-PlayerPawn preprocessing,
 actual AirControl/AccelRate/GroundSpeed math, flags6 predictive cylinder trace,

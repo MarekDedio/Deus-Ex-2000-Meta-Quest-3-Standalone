@@ -51,8 +51,8 @@
         q.rotation=[&](auto a,unsigned axis){return PhysicsRotatorChannel(require(a),"Engine.Actor.Rotation",0x23u,axis);};
         q.desiredRotation=[&](auto a,unsigned axis){return PhysicsRotatorChannel(require(a),"Engine.Actor.DesiredRotation",0x21u,axis);};
         q.rotationRateRoll=[&](auto a){return PhysicsRotatorChannel(require(a),"Engine.Actor.RotationRate",0x21u,2u);};
-        q.physicsRotation=[&](auto a,float,std::array<float,3u>) {
-            static_cast<void>(require(a));throw std::runtime_error("Original Pawn physicsRotation is not implemented");
+        q.physicsRotation=[&](auto a,float delta,std::array<float,3u> oldVelocity) {
+            static_cast<void>(RetailPawnPhysicsRotation(require(a),delta,oldVelocity,execution));
         };
         q.moveTimer=[&](auto a){auto* r=require(a);return OriginalAnimationRead(r,scalar(r,"MoveTimer",0u),Kind::Float).floating;};
         q.averagePhysicsTime=[&](auto a){auto* r=require(a);return OriginalAnimationRead(r,scalar(r,"AvgPhysicsTime",2u),Kind::Float).floating;};

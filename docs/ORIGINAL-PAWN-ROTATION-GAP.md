@@ -1,11 +1,12 @@
-# First-Training APawn physicsRotation: next verified boundary
+# Original APawn physicsRotation: implementation and acceptance scope
 
 Read-only static audit, 2026-10-26. Immediate scope is the first
-`Maps/00_Training.dx`, not other campaign maps. This document implements no
-rotation code and proves no completed Training frame, crate/loot/gravity
-milestone or headset acceptance. After the current falling work the real
-Training diagnostic reaches `Original Pawn physicsRotation is not implemented`;
-that reached-call observation belongs to the root's separate verification.
+`Maps/00_Training.dx`, not other campaign maps. The complete bounded method
+below is now implemented in `quest_pawn_rotation.h` and bound through
+`portable_pawn_rotation.inl`; current verification is reported at the end.
+This does not by itself prove a completed Training frame, crate/loot/gravity
+milestone or headset acceptance. The prior falling checkpoint reached
+`Original Pawn physicsRotation is not implemented` before this implementation.
 
 ## Original source authority
 
@@ -121,7 +122,7 @@ enclosing Level Execution/write journal. Preserve other packed flags when
 editing the two rotation Bools; there are no actor callbacks between these
 native stores, but work/write failure prefixes must still unwind the whole root.
 
-## Meaningful next implementation slice
+## Original implementation requirements (now bound)
 
 Implement a separate Pawn rotation coordinator and runtime binding for the
 whole bounded body above, including the genuine PlayerPawn negative/positive
@@ -135,3 +136,71 @@ metadata/script/checkpoint/work/write rollback controls. Then repeat actual
 first Training with door and crowbar/crate regressions to identify the next
 real update or landing/Walking dependency. This audit alone runs no new build
 or test and does not claim any of those acceptance conditions.
+
+## Runtime binding and current verification scope
+
+The coordinator now covers that entire bounded body; it does not call
+RotateOriginalActor, dispatch EndedRotation or use the ignored old-Velocity
+argument. OriginalActorFixedTurn and OriginalActorRotationDelta are shared
+only for the identical source subroutines. Exceptional/out-of-signed64 CRT
+conversions remain explicit errors, not guessed indefinite values.
+
+The runtime represents the one native flag-word mutation with a relevant-bit
+lens. It authenticates exactly Engine.Actor.bFixedRotationDir and
+bRotateToDesired as scalar BoolProperty/flags21/base0/no subtype with genuine
+declaring owner/metaclass. Reads project only masks20/40. ONE Int Reference
+journals ONE unconditional native write and updates those two typed storage
+slots. Every other Bool remains untouched, preserving unrelated bits without
+inventing a full native DWORD. Closure/property payloads are admitted before
+reference allocation, mutation calls Touch once, and no animation rebuild is
+triggered. Caller rollback restores the projection and original before-image.
+
+The helper tests cover raw capture/fresh reads, both actual Class branches,
+zero-step fixedTurn normalization, unconditional same-bit flags, signed pitch
+clamps, captured versus fresh targets, PlayerPawn Roll0 and lazy services,
+false MoveActor result/ignored hit and unused signaling-NaN old Velocity.
+Independent own-code x87 conversion and integer-turn oracles plus shared work/
+write/late-provider failure prefixes are separate from runtime evidence.
+
+Current focused helper verification passes652,096 checks/32 refusal controls
+and32,768 independent x87/integer cases. The numeric oracle executes only its
+own FILD/FMUL/truncating FIST64 and independent bounded nearest-turn arithmetic,
+never a commercial module or production conversion/turn helper for expected
+values. PlayerPawn tests deliberately supply exceptional unused dt/oldVelocity;
+nonplayer reached exceptional conversion still refuses before the flag store.
+
+Generated production controls use actual Physics5 with a needed outer
+rotation gate but zero yaw rate. The original method legitimately selects no
+movement; it still writes its two Bools through one native journal slot and
+continues outer timers/PostTouch. Controls require sibling bJustTeleported
+preservation, checkpoint identity, already-correct flags still writing, equal
+angles reached through the original Roll-rate outer gate, late work/write
+undo and a movement-needed variant reaching unchanged real Engine/Cylinder
+authority rather than synthetic pose success. Actual first-Training execution
+and the door/crowbar regressions remain separate acceptance requirements.
+
+The current generated production run passes2,964 cumulative checks/48 refusal
+controls in the ScriptedPawn section. Its complete driver exits0 after7,836/
+144 and the final malformed-schema control. Actual delta0 turning commits
+one unconditional relevant-bit write, preserves bJustTeleported, continues
+PostTouch/timers and round-trips its checkpoint; already-correct flags and
+equal-angle Roll-rate entry retain that one write. A required nonzero turn
+reaches unchanged real Engine/Cylinder movement admission, with earlier flags
+and all world effects restored on failure. Late work/write controls pass.
+
+Final current validation: full desktop and Android native builds plus strict
+ARM64 helper/runtime syntax pass. CTest255 registered/216 executed/39 explicit
+owned-data skips/zero failures76.76s passes; separate original first-Training
+crate415/5, deferred429/21 and animation588/24 pass. Actual first Training
+repeat2 passes this method and reaches the Engine.Weapon class gate on
+WeaponCombatKnife0 at219,208 instructions/17,062 writes,66 slots/65 calls/
+6 deferred entries, with full enclosing-world undo. Paired original doors
+repeat219,544/17,130 with two56-unit panel moves/two completion callbacks before
+the same next gate. Separate two-Fire repeat2 retains228,837/26,047 and its
+original crate/loot/debris observations before complete undo at later FExec.
+
+All45 original sources and7 final compiler inputs are unchanged; all jobs
+are terminal. These results do not establish a complete/published Level.Tick,
+surviving collectible loot, live VR melee/gravity, remaining Pawn movement/
+landing/Walking/swimming/player services or headset acceptance. Next exact
+Weapon class admission/source evidence is in ORIGINAL-TRAINING-WEAPON-TICK-GAP.md.

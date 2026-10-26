@@ -361,6 +361,8 @@ Tables Build(Fixture& fixture,bool moverControl=false,std::uint32_t oldLocationF
         engine.Property("PrePivot","StructProperty",actor,ec,ev,0x20u);
         engine.Property("Acceleration","StructProperty",actor,ec,ev,0x20u);
         engine.Property("DesiredRotation","StructProperty",actor,ec,er,0x21u);
+        for(const auto* name:{"bFixedRotationDir","bRotateToDesired"})engine.Property(name,"BoolProperty",actor,ec,0,0x21u);
+        engine.Property("bJustTeleported","BoolProperty",actor,ec,0,2u);
         const auto pointRegion=engine.Export("PointRegion",engine.Import("Struct",ec),0,actor,true);
         engine.Property("Zone","ObjectProperty",pointRegion,ec,zone);
         engine.Property("iLeaf","IntProperty",pointRegion,ec);
@@ -1109,7 +1111,42 @@ void ScriptedPawnBoundaryControl() {
         "PostTouch failure did not follow real Pawn timer and observation writes");
     auto rotationNeeded=pawnOuter;
     Property(rotationNeeded,"Bad0","Engine.Actor.DesiredRotation",Value::Rotator({0,1,0}));
-    suffixRefusal(rotationNeeded,{},"actual separate Pawn rotation",Status::Unsupported,"Original Pawn physicsRotation is not implemented");
+    Property(rotationNeeded,"Bad0","Engine.Actor.bFixedRotationDir",Value::Bool(true));
+    Property(rotationNeeded,"Bad0","Engine.Actor.bRotateToDesired",Value::Bool(false));
+    Property(rotationNeeded,"Bad0","Engine.Actor.bJustTeleported",Value::Bool(true));
+    fixture.Restore(Envelope(legacy,rotationNeeded));
+    const auto rotationCommit=AdvancePortableLevelDynamicActors(0.25f,0);RequirePass(rotationCommit);
+    const auto readBool=[&](const char* name){const auto value=ReadPortableActorScriptProperty(Path("Bad0"),name);
+        Require(value.kind==Kind::Bool,"Pawn rotation flag is not typed Bool");return value.boolean;};
+    Require(rotationCommit.execution.writes==outerCommit.execution.writes+1u&&!readBool("bFixedRotationDir")&&
+        readBool("bRotateToDesired")&&readBool("bJustTeleported")&&
+        ReadPortableActorScriptProperty(Path("Bad0"),"Rotation").rotation==std::array<std::int32_t,3u>{0,0,0}&&
+        Count("Bad0","PostTouchCount")==1&&readFloat("MoveTimer")==1.75f,
+        "Actual Pawn delta0 turn skipped one native word store, changed sibling flag/pose or failed outer continuation");
+    const auto rotationSaved=fixture.Save("PawnRotationCommitted");fixture.Restore(legacy);fixture.Restore(rotationSaved);
+    Require(fixture.Save("PawnRotationReloaded")==rotationSaved&&!readBool("bFixedRotationDir")&&readBool("bRotateToDesired")&&
+        readBool("bJustTeleported"),"Pawn rotation relevant-bit store/checkpoint lost typed state or sibling preservation");
+    auto sameFlags=rotationNeeded;Property(sameFlags,"Bad0","Engine.Actor.bFixedRotationDir",Value::Bool(false));
+    Property(sameFlags,"Bad0","Engine.Actor.bRotateToDesired",Value::Bool(true));
+    fixture.Restore(Envelope(legacy,sameFlags));const auto sameFlagCommit=AdvancePortableLevelDynamicActors(0.25f,0);RequirePass(sameFlagCommit);
+    Require(sameFlagCommit.execution.writes==rotationCommit.execution.writes&&readBool("bJustTeleported"),
+        "Already-correct Pawn rotation Bools optimized away the unconditional native DWORD store");
+    auto rollGate=sameFlags;Property(rollGate,"Bad0","Engine.Actor.DesiredRotation",Value::Rotator({0,0,0}));
+    Property(rollGate,"Bad0","Engine.Actor.RotationRate",Value::Rotator({0,0,1}));
+    fixture.Restore(Envelope(legacy,rollGate));const auto equalRotation=AdvancePortableLevelDynamicActors(0.25f,0);RequirePass(equalRotation);
+    Require(equalRotation.execution.writes==rotationCommit.execution.writes&&readBool("bJustTeleported"),
+        "Pawn outer Roll-rate gate skipped genuine equal-angle rotation/unconditional flags");
+    auto rotationMove=rotationNeeded;Property(rotationMove,"Bad0","Engine.Actor.DesiredRotation",Value::Rotator({0,1000,0}));
+    Property(rotationMove,"Bad0","Engine.Actor.RotationRate",Value::Rotator({0,128,0}));
+    const auto moveRefusal=suffixRefusal(rotationMove,{},"actual Pawn rotation MoveActor authority",Status::Unsupported,
+        "Retail collision requires actual current Level/Engine/Cylinder preparation");
+    Require(moveRefusal.execution.writes>ordinaryCommit.execution.writes&&readBool("bFixedRotationDir")&&
+        !readBool("bRotateToDesired")&&readBool("bJustTeleported"),
+        "Real Pawn movement failure bypassed earlier flag write or failed full sibling/flag rollback");
+    QuestVr::Vm::Limits rotationWork;rotationWork.nativeWork=rotationCommit.execution.nativeWork->used-1u;
+    suffixRefusal(rotationNeeded,rotationWork,"late actual Pawn rotation work",Status::Budget,{});
+    QuestVr::Vm::Limits rotationWrites;rotationWrites.writes=rotationCommit.execution.writes-1u;
+    suffixRefusal(rotationNeeded,rotationWrites,"late actual Pawn rotation write",Status::Budget,{});
     for(const auto cut:{outerCommit.execution.writes-1u}) {
         QuestVr::Vm::Limits limits;limits.writes=cut;
         suffixRefusal(pawnOuter,limits,"late Pawn outer write",Status::Budget,{});
@@ -1313,7 +1350,7 @@ void ScriptedPawnBoundaryControl() {
     std::cout<<"PASS generated production ScriptedPawn native prefix: "<<checks<<" cumulative checks / "<<refusals
         <<" refusals; actual typed cross-package wrapper/decay/vector/Name stores, live fixed alliance-array decay/clamp/protected siblings/flag-clear/rollback, selected EnableCloak true/false Bool packets, genuine base return0 owner-cycle control, "
           "Physics0 actual selected Tick/ProcessState/Timer/LifeSpan/short-Pawn continuation, unconditional timer stores, "
-          "bound native723 Float/PC64/native-clock/malformed-schema/packet controls, actual APawn timers/PostTouch Actor packet/callback-null/checkpoint and late full-root undo, genuine late Pawn movement/rotation/destroy refusals, "
+          "bound native723 Float/PC64/native-clock/malformed-schema/packet controls, actual APawn timers/PostTouch and Pawn rotation delta0/single-word/sibling/same-bit/checkpoint/late undo controls, genuine later movement/destroy refusals, "
           "repeat identity and shared-root work/write/save/revision/parity/GC undo. Equipped-Weapon FarMove coverage deferred; "
           "NOT NPC movement/Pawn physics, original Training completion or headset acceptance.\n";
 }

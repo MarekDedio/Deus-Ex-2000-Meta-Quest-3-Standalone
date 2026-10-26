@@ -8,7 +8,8 @@ Current `portable_actor_pawn_tick.inl` calls the separate original APawn outer
 coordinator in `portable_pawn_perform_physics.inl`. It now reaches the actual
 falling method. Authenticated non-PlayerPawn preprocessing, actual Pawn setup
 and retained horizontal cap are now bound. The first real Training frame
-passes that dry falling work and reaches the separate Pawn rotation gap.
+passes that dry falling work and the separately implemented Pawn rotation.
+It now reaches the exact Engine.Weapon native-class admission gate.
 PlayerPawn preprocessing, swimming and landing/Walking remain unfinished;
 the crate helper is not a replacement for these branches.
 
@@ -154,11 +155,12 @@ helper and generated production callback/checkpoint/undo controls pass; see
 ORIGINAL-PAWN-PERFORM-PHYSICS.md. Active missing movement/rotation services stay
 explicit, so this is not finished NPC physics. Authenticated non-PlayerPawn
 preprocessing, actual air-control setup, retained cap and the fresh Physics3
-swimming handoff/refusal are now integrated. Next implement actual Pawn
-rotation, which the first Training NPC now reaches, then the real Pawn
-processLanded/Walking and other services as reached. Keep unvisited modes
-closed, not no-op. See ORIGINAL-PAWN-FALLING-SETUP.md and
-ORIGINAL-PAWN-ROTATION-GAP.md.
+swimming handoff/refusal are now integrated. The entire bounded Pawn rotation
+method is now implemented and verified; actual Training reaches Engine.Weapon's
+class gate next. Pawn processLanded/Walking and other services remain unfinished
+as reached. Keep unvisited modes closed, not no-op. See
+ORIGINAL-PAWN-FALLING-SETUP.md, ORIGINAL-PAWN-ROTATION-GAP.md and
+ORIGINAL-TRAINING-WEAPON-TICK-GAP.md.
 
 Reusable existing pieces are `NativeScalar` PC64 arithmetic/sqrt/Float spills,
 raw `WriteFallingVectorWord`/`WriteFallingScalar`, `OriginalAnimationField`

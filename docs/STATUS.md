@@ -1,5 +1,51 @@
 # Port status
 
+## Complete original Pawn rotation now runs in Training (2026-10-26)
+
+The separate APawn.physicsRotation body is implemented and bound: raw entry
+Rotation, actual PlayerPawn branch, nonplayer yaw conversion, unconditional
+packed-flag edit, zero-step fixedTurn calls, Pitch32768 conversion/mode-aware
+target/signed clamps, Roll0 and fresh final comparison. Actual movement uses
+the original collision-aware MoveLevelActor; its result/hit are ignored as in
+the source. No Actor rotation alias, direct pose update, EndedRotation event,
+skipped NPC or synthetic successful collision was added.
+
+One Int reference journals the original single word store through an
+authenticated20/40-bit lens, updating only bFixedRotationDir/bRotateToDesired
+while preserving every unrelated Bool. Same-bit writes remain unconditional;
+typed sibling bJustTeleported, checkpoint/rebind and full late-failure rollback
+are verified. Exceptional/out-of-signed64 CRT conversions remain explicit
+unsupported cases, not guessed native results.
+
+Helper652,096 checks/32 refusals/32,768 independent x87/integer cases pass.
+Generated production ScriptedPawn section2,964 cumulative/48 and complete
+driver7,836/144 plus final malformed-schema control pass. Full desktop,
+Android native and strict ARM64 checks pass. CTest255 registered/216 executed/
+39 explicit owned-data skips/zero failures76.76s; separate owned first-Training
+crate415/5, deferred429/21 and animation588/24 regressions pass.
+
+Actual first Training repeat2 passes the former rotation gate and now reaches
+the exact nearest-native Engine.Weapon gate on WeaponCombatKnife0 after66
+slots/65 calls/6 deferred entries,219,208 instructions/17,062 writes, with full
+undo. Paired doors repeat219,544/17,130, both56-unit moves/2 completion events
+before the same next gate. Separate two-Fire repeat2 stays228,837/26,047 with48
+rows/2 cycles/2 notifies/4 traces/2 crate changes/9 births and complete undo at
+later PlayerPawn FExec. Expected-error checks do NOT commit playable startup,
+surviving collectible loot or controller attack results.
+
+The Weapon gate's generic error says unimplemented native override; static
+original evidence instead shows that Weapon's relevant Tick/physics slots
+inherit Actor's bodies. Exact native-class admission and generated controls
+are still required; no broad Inventory-descendant allowance was added here.
+See ORIGINAL-TRAINING-WEAPON-TICK-GAP.md for the next specific step and
+ORIGINAL-PAWN-ROTATION-GAP.md for the completed bounded rotation method.
+
+All45 original files and7 final compiler inputs retain exact SHA256/length/
+UTC-mtime; all build/test/probe jobs are terminal. No Quest/new APK, account/
+character-creation UI or other-map integration. Full live first-map destruction,
+collectible loot, automatic stacked-crate gravity, remaining Pawn landing/
+Walking/swimming/player branches and playable startup are still unfinished.
+
 ## Pawn falling setup now passes in the first Training frame (2026-10-26)
 
 The shared falling method now retains actual Pawn context, implements the

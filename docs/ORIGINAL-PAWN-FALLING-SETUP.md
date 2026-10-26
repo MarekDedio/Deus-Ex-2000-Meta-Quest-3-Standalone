@@ -158,3 +158,10 @@ originals and7 final compiler inputs are unchanged; all jobs are terminal.
 None of these expected-error tests proves a committed Training startup, live
 controller melee, surviving collectible loot, automatic gravity or headset
 acceptance. Next actual Pawn rotation is recorded in ORIGINAL-PAWN-ROTATION-GAP.md.
+
+The subsequent rotation checkpoint implements that complete bounded method:
+actual first Training now passes it and reaches WeaponCombatKnife0's exact
+Engine.Weapon admission gate at219,208 instructions/17,062 writes, with full
+undo. This does not complete Pawn landing/Walking/swimming or a whole live
+world frame. See ORIGINAL-PAWN-ROTATION-GAP.md and
+ORIGINAL-TRAINING-WEAPON-TICK-GAP.md for current evidence and next narrow work.
