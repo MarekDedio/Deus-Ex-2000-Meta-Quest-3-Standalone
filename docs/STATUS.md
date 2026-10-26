@@ -1,5 +1,48 @@
 # Port status
 
+## Original ScriptedPawn custom update connected to Training (2026-10-26)
+
+The actual nearest-native ScriptedPawn Tick now runs its original custom
+prefix before qualified AActor::Tick in the same Level frame root. Typed
+providers cover PrePivot, agitation/fear and fixed AlliancesEx[16] decay,
+countdowns, selected cloak/fire/blood callbacks, tactics and bleeding. Actual
+base return0 and full late-failure rollback are preserved; neither NPC skips
+nor generic Actor/Pawn physics aliases were added. Retained PC64 arithmetic
+and explicit Float/Double spills are independently checked. A static review
+also corrected the second compatibility cast target to DeusExPlayer at
+1003AAD8, not ScriptedPawn at1003C020.
+
+Verification passes1,371,464 scalar checks,426,756 decay checks/103 refusal
+controls/35,840 independent full-helper oracle cases, and145,883 Tick-helper
+checks/7 refusals. The production driver proves real metadata/typed writes,
+EnableCloak true/false Bool packets, alliance eligibility/clamping/sibling
+preservation, flag clearing, base-return0 and shared-root undo:1371 cumulative
+checks/27 refusals at the ScriptedPawn section and6243/123 plus its final
+malformed-schema control for the complete driver. Full desktop, Android native
+and strict ARM64 helper/runtime checks pass. Final CTest has249 registered,
+210 executed,39 explicit owned-data skips,zero failures in130.72s. Separate
+owned first-Training crate415/5, deferred429/21 and animation588/24 regressions
+pass.
+
+Actual first Training repeat2 now passes the custom wrapper and reaches
+`Original Actor Tick Pawn continuation is not implemented` after54 actor
+calls, retaining205999 instructions/15734 writes and full undo. Paired original
+doors repeat206335/15802; both panels still move56 units and emit2 completion
+callbacks before the same next boundary. The separate two-original-crowbar-
+attack repeat stays228837/26047,48 rows,2 cycles,4 traces,2 crate changes and
+9 births, with full undo at the later explicit FExec boundary. All45 checked
+original files retain exact SHA256/length/UTC-mtime; all14 verified compiler
+inputs remain unchanged across final verification. All build/test/probe jobs
+are terminal. No Quest was detected and no APK was packaged.
+
+This is real first-map world-update progress, NOT completed Pawn/NPC movement,
+committed startup, live destructible crates, collectible surviving loot,
+automatic gravity or headset acceptance. No account/player-creation UI or
+other-map gameplay integration was added. Next is the actual selected Pawn
+Tick/state/timer/lifespan suffix and genuine Pawn falling/physics, not a bypass.
+See ORIGINAL-SCRIPTEDPAWN-TICK.md for implementation scope and exact next-route
+findings, and the native binding/decay audits for source authority.
+
 ## Original Pawn context and the exact Jaime boundary (2026-10-26)
 
 The normal base Actor prefix now performs the original bIsPawn-gated actual

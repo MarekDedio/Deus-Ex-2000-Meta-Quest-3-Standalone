@@ -217,7 +217,7 @@ returns nonzero or the captured Float render age is strictly greater than
 Double5 at10028388. It calls DestroyActor(force0) and returns1 immediately,
 without reaching the base Actor.Tick tail. The original class walks at
 1001960E..1001964C read the actual imported APlayerPawn Class, field+5D4 and
-ScriptedPawn Class1003AAD8; this bounded body contains no store or callback
+DeusExPlayer Class1003AAD8; this bounded body contains no store or callback
 in those walks. They do not justify a name-based class test.
 
 When lifetime removal is not selected, remaining time+6A8 controls the
@@ -248,7 +248,7 @@ a negative result. It computes a decay amount as follows:
 
 If DWORD+650 bit8 is set and decay is positive, clear that bit and visit
 exactly16 entries descending from address actor+8E4 at stride10 hex. Each
-entry's pointer at-8 must be nonnull, packed flag at+4 bit1 must be clear,
+entry's FName at-8 must not be None, packed flag at+4 bit1 must be clear,
 and its Float at+0 must be positive. For each eligible entry, freshly set
 actor+650 bit8, subtract the retained decay from the entry Float, Float-store,
 then compare the retained subtraction and zero-clamp a negative result.
@@ -307,13 +307,15 @@ Bleeding requires the captured distance-related local flag, positive Float+6BC
 and byte+6B8 bit1. The original interval is Float-spilled after computing:
 
 ```
-(Double1 - clamp(Float+6BC,Float0,Float1) + Double0.1)
+Float(Double1 - clamp(Float+6BC,Float0,Float1) + Double0.1)
   / clamp(appSqrt(Double(Velocity.X^2 + Velocity.Y^2 + Velocity.Z^2))
           * Double(1/512), Float0.05, Float1)
 ```
 
-The squared sum and clamp arithmetic have their actual retained x87 order;
-the Double argument to appSqrt is explicitly spilled. The velocity channels
+The numerator is Float-spilled before the velocity loads. The squared sum
+and clamp arithmetic have their actual retained x87 order; the Double argument
+to appSqrt is explicitly spilled. appSqrt's dead Double return spill does not
+replace its retained x87 result in the subsequent multiply. The velocity channels
 are native+144/+148/+14C. Float+6C0 adds delta and is stored. While its fresh
 value is at least the captured Float interval, invoke selected SpurtBlood,
 then reread/subtract the interval from+6C0, Float-store and repeat. This is a
@@ -322,8 +324,9 @@ a stale callback-mutated counter. Existing work/state budgets must bound it
 and roll back the whole caller root on failure. SpurtBlood's owned script
 spawns an actual BloodDrop via original Spawn and vector arithmetic.
 
-After that loop Float+6BC subtracts `delta / Float+6C4` and Float-stores. On
-all paths, a final nonpositive/unordered+6BC clears both+6C0 and+6BC. The
+After that loop Float+6BC subtracts `delta / Float+6C4` and Float-stores. Within
+the captured visibility gate, a final nonpositive/unordered+6BC clears both
++6C0 and+6BC. A false visibility gate skips that cleanup as well. The
 common tail then calls actual AActor.Tick with the original delta/tick type.
 
 These findings establish no new ScriptedPawn, Pawn-physics or callback

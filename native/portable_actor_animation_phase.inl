@@ -15,7 +15,7 @@
             LowerAscii(Qualified(Table(field->sourcePath),Table(field->sourcePath).exports.at(field->exportIndex).ObjClass))!=
                 std::string("core.")+LowerAscii(type))
             throw std::runtime_error("Original main animation lacks its actual scalar declaring field: "+key);
-        if((kind==Kind::Float||kind==Kind::Bool||kind==Kind::Name)&&field->property->referencedType)
+        if((kind==Kind::Float||kind==Kind::Bool||kind==Kind::Name||kind==Kind::Int)&&field->property->referencedType)
             throw std::runtime_error("Original main animation scalar field has an unexpected referenced subtype: "+key);
         return property;
     }

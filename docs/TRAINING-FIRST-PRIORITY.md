@@ -1,5 +1,33 @@
 # Immediate milestone: complete the first Training map
 
+Latest2026-10-26: actual native ScriptedPawn custom Tick is now connected before
+the qualified base Actor body. Timed PrePivot, fear/agitation and the actual
+four-member AlliancesEx[16] stores, timers, selected callbacks, tactics and
+bleeding share the original caller root and retained PC64 arithmetic. Genuine
+base return0 is preserved; Pawn continuation/physics remain explicit, not
+silently skipped. Independent review corrected the second compatibility Class
+to DeusExPlayer1003AAD8, not ScriptedPawn1003C020.
+
+Final scalar1371464, decay426756/103 with35840 independent oracle cases and
+Tick145883/7 pass. Production ScriptedPawn1371 cumulative/27 and full driver
+6243/123 plus final malformed-schema control pass, including real selected
+EnableCloak true/false packets, alliance decay/clamp/protected sibling values,
+flag clear and complete late-Pawn/work/write rollback. Full desktop, Android
+native and strict ARM64 checks pass. CTest210 executed/249 registered/39 explicit
+skips/zero failures130.72s; separate original crate415/5, deferred429/21 and
+animation588/24 pass.
+
+Actual Training repeat2 passes the custom wrapper and now reaches the genuine
+unimplemented Pawn continuation after54 calls with205999 instructions/15734
+writes and full undo. Pair-door repeat206335/15802 preserves both56-unit moves
+and2 completion events at that same next boundary. Separate two-Fire repeat2
+remains228837/26047 with actual crate/loot/debris observations and complete
+undo at later FExec. All45 checked originals and14 final compiler inputs are
+unchanged; all build/test/probe jobs are terminal. No Quest detected/new APK,
+account/character-creation UI or other-map integration. Full first-map live
+crate destruction, surviving collectible loot and automatic gravity are still
+unfinished. See ORIGINAL-SCRIPTEDPAWN-TICK.md for current scope/next real path.
+
 Latest2026-10-26: original base Pawn context now captures the exact
 bIsPawn/Class/Super/native-APawn/Role packet and fixed animation gate.
 Flag-set actual non-Pawns correctly keep null context; real Pawn continuation

@@ -263,7 +263,7 @@ enum class DeusExLevelInfoControlKind {None,Exact,Parent};
 Tables Build(Fixture& fixture,bool moverControl=false,std::uint32_t oldLocationFlags=2u,
     TriggerControlKind triggerControl=TriggerControlKind::None,
     DeusExLevelInfoControlKind levelInfoControl=DeusExLevelInfoControlKind::None,bool lightControl=false,
-    bool scalarLightControl=false,bool scriptedPawnBoundary=false) {
+    bool scalarLightControl=false,bool scriptedPawnBoundary=false,bool omitScriptedPawnAlarm=false) {
     Require(!scalarLightControl||lightControl,"Scalar-Light fixture must retain its genuine native Light ancestry");
     Require(unsigned(triggerControl!=TriggerControlKind::None)+unsigned(levelInfoControl!=DeusExLevelInfoControlKind::None)+
         unsigned(lightControl)+unsigned(scriptedPawnBoundary)<=1u,
@@ -336,6 +336,24 @@ Tables Build(Fixture& fixture,bool moverControl=false,std::uint32_t oldLocationF
     const auto nativePawn=engine.Export("Pawn",0,actor);
     engine.exports.at(static_cast<std::size_t>(nativePawn-1)).ObjFlags=static_cast<ObjectFlags>(0x040f0004u);
     engine.ClassBody(nativePawn);
+    if(scriptedPawnBoundary) {
+        // Genuine sibling cast target for the wrapper's readonly class walk,
+        // not a fixture-only assertion that every Pawn is a PlayerPawn.
+        const auto playerPawn=engine.Export("PlayerPawn",0,nativePawn);
+        const auto inventory=engine.Export("Inventory",0,actor),weapon=engine.Export("Weapon",0,inventory);
+        for(const auto ref:{playerPawn,inventory,weapon}) {
+            engine.exports.at(static_cast<std::size_t>(ref-1)).ObjFlags=static_cast<ObjectFlags>(0x040f0004u);
+            engine.ClassBody(ref);
+        }
+        engine.Property("Weapon","ObjectProperty",nativePawn,ec,weapon,0x10020u);
+        engine.Property("Health","IntProperty",nativePawn,ec,0,0x10021u);
+        engine.Property("MoveTimer","FloatProperty",nativePawn,ec);
+        engine.Property("bAdvancedTactics","BoolProperty",nativePawn,ec);
+        engine.Property("bOnFire","BoolProperty",nativePawn,ec,0,0x20u);
+        engine.Property("burnTimer","FloatProperty",nativePawn,ec,0,0x20u);
+        engine.Property("PrePivot","StructProperty",actor,ec,ev,0x20u);
+        engine.Property("Acceleration","StructProperty",actor,ec,ev,0x20u);
+    }
     engine.Property("Role","ByteProperty",actor,ec,roleEnum,0x20u);
     engine.Property("RemoteRole","ByteProperty",actor,ec,roleEnum,0x21u);
     engine.Property("Physics","ByteProperty",actor,ec,physicsEnum,0x23u);
@@ -403,11 +421,50 @@ Tables Build(Fixture& fixture,bool moverControl=false,std::uint32_t oldLocationF
         deusex.ClassBody(dxInfo);deusExTable=fixture.Write(deusex);
     }
     if(scriptedPawnBoundary) {
-        // The reached native boundary crosses packages. Its nearest native
-        // Class is ScriptedPawn, not Actor, and must remain unadmitted.
-        Package deusex;deusex.stem="DeusEx";const auto de=deusex.ImportPackage("Engine");
+        // The actual native wrapper crosses packages. Preserve its concrete
+        // declaring fields, rather than admitting it as a bare Actor alias.
+        Package deusex;deusex.stem="DeusEx";const auto de=deusex.ImportPackage("Engine"),dc=deusex.ImportPackage("Core");
         const auto pawn=deusex.Export("ScriptedPawn",0,deusex.Import("Pawn",de));
         deusex.exports.at(static_cast<std::size_t>(pawn-1)).ObjFlags=static_cast<ObjectFlags>(0x040f0004u);
+        const auto dv=deusex.Import("Vector",deusex.Import("Object",dc),"Struct");
+        deusex.Property("DesiredPrePivot","StructProperty",pawn,dc,dv);
+        for(const auto* name:{"PrePivotTime","AgitationCheckTimer","AgitationTimer","AgitationDecayRate","PlayerAgitationTimer",
+            "AgitationSustainTime","FearTimer","FearDecayRate","FearLevel","FearSustainTime","AlarmTimer","WeaponTimer",
+            "FireTimer","SpecialTimer","ReloadTimer","AvoidWallTimer","AvoidBumpTimer","ObstacleTimer","CloakEMPTimer",
+            "TakeHitTimer","CarcassCheckTimer","PotentialEnemyTimer","BeamCheckTimer","FutzTimer","DistressTimer",
+            "BurnPeriod","BleedRate","DropCounter"})
+            if(!omitScriptedPawnAlarm||std::string(name)!="AlarmTimer")deusex.Property(name,"FloatProperty",pawn,dc);
+        deusex.Property("ClotPeriod","FloatProperty",pawn,dc,0,1u);
+        std::int32_t clearedObstacle{};
+        for(const auto* name:{"bDisappear","bAlliancesChanged","bHasCloak","bCanBleed","bClearedObstacle"}) {
+            const auto field=deusex.Property(name,"BoolProperty",pawn,dc);
+            if(std::string(name)=="bClearedObstacle")clearedObstacle=field;
+        }
+        deusex.Property("bTickVisibleOnly","BoolProperty",pawn,dc,0,1u);
+        const auto cloakThreshold=deusex.Property("CloakThreshold","IntProperty",pawn,dc);
+        deusex.Property("PotentialEnemyAlliance","NameProperty",pawn,dc);
+        deusex.Property("ActorAvoiding","ObjectProperty",pawn,dc,deusex.Import("Actor",de));
+        const auto turning=deusex.Export("ETurning",deusex.Import("Enum",dc),0,pawn,true);
+        deusex.builders.at(static_cast<std::size_t>(turning-1))=[&deusex](std::int32_t next,std::int32_t) {
+            Bytes bytes{0u};Index(bytes,0);Index(bytes,next);Index(bytes,3);
+            for(const auto* name:{"TURNING_None","TURNING_Left","TURNING_Right"})Index(bytes,deusex.Name(name));
+            return bytes;
+        };
+        deusex.Property("TurnDirection","ByteProperty",pawn,dc,turning);
+        deusex.Property("NextDirection","ByteProperty",pawn,dc,turning);
+        const auto alliance=deusex.Export("AllianceInfoEx",deusex.Import("Struct",dc),0,pawn,true);
+        deusex.Property("AllianceName","NameProperty",alliance,dc);
+        deusex.Property("AllianceLevel","FloatProperty",alliance,dc);
+        deusex.Property("AgitationLevel","FloatProperty",alliance,dc);
+        deusex.Property("bPermanent","BoolProperty",alliance,dc);deusex.StructBody(alliance);
+        deusex.Property("AlliancesEx","StructProperty",pawn,dc,alliance,0u,16u);
+        // A real selected script declaration with the audited native Bool
+        // packet. Its explicit observation body uses authentic typed fields,
+        // not a host callback, fake native return or synthetic UI command.
+        const auto enableCloak=deusex.Function("EnableCloak",pawn,dc,{},0u,2u);
+        const auto enableInput=deusex.Property("bEnable","BoolProperty",enableCloak,dc,0,0x80u);
+        deusex.FunctionCode(enableCloak,Join({Assign(Ref(0x01u,clearedObstacle),Ref(0x00u,enableInput)),
+            Assign(Ref(0x01u,cloakThreshold),Native(146u,{Ref(0x01u,cloakThreshold),Int(1)})),Return()}),0u,2u);
         deusex.ClassBody(pawn);deusExTable=fixture.Write(deusex);
     }
     Package classes;classes.stem="TickClasses";const auto cc=classes.ImportPackage("Core"),ce=classes.ImportPackage("Engine");
@@ -700,11 +757,32 @@ void ScriptedPawnBoundaryControl() {
     Property(state,"Bad0","Engine.Actor.bAlwaysTick",Value::Bool(false));
     Property(state,"Bad0","Engine.Actor.bSimulatedPawn",Value::Bool(true));
     Property(state,"Bad0","Engine.Actor.bStasis",Value::Bool(false));
+    Property(state,"Bad0","Engine.Actor.bTicked",Value::Bool(true));
+    Property(state,"Bad0","Engine.Actor.PrePivot",Value::Vector({0,0,0}));
+    Property(state,"Bad0","DeusEx.ScriptedPawn.DesiredPrePivot",Value::Vector({8,4,2}));
+    Property(state,"Bad0","DeusEx.ScriptedPawn.PrePivotTime",Value::Float(0.5f));
+    for(const auto* name:{"AlarmTimer","WeaponTimer","FireTimer","SpecialTimer","ReloadTimer","AvoidWallTimer",
+        "AvoidBumpTimer","ObstacleTimer","CloakEMPTimer","TakeHitTimer","CarcassCheckTimer","BeamCheckTimer",
+        "FutzTimer","PlayerAgitationTimer","FearSustainTime"})
+        Property(state,"Bad0",std::string("DeusEx.ScriptedPawn.")+name,Value::Float(1.0f));
+    Property(state,"Bad0","DeusEx.ScriptedPawn.PotentialEnemyTimer",Value::Float(0.25f));
+    Property(state,"Bad0","DeusEx.ScriptedPawn.PotentialEnemyAlliance",Value::Text(Kind::Name,"Enemy"));
+    Property(state,"Bad0","DeusEx.ScriptedPawn.AgitationCheckTimer",Value::Float(0.125f));
+    Property(state,"Bad0","DeusEx.ScriptedPawn.AgitationTimer",Value::Float(0.125f));
+    Property(state,"Bad0","DeusEx.ScriptedPawn.AgitationDecayRate",Value::Float(2.0f));
+    Property(state,"Bad0","DeusEx.ScriptedPawn.FearTimer",Value::Float(0.125f));
+    Property(state,"Bad0","DeusEx.ScriptedPawn.FearDecayRate",Value::Float(2.0f));
+    Property(state,"Bad0","DeusEx.ScriptedPawn.FearLevel",Value::Float(1.0f));
+    Property(state,"Bad0","DeusEx.ScriptedPawn.DistressTimer",Value::Float(0.0f));
+    Property(state,"Bad0","DeusEx.ScriptedPawn.DropCounter",Value::Float(3.0f));
+    Property(state,"Bad0","DeusEx.ScriptedPawn.bHasCloak",Value::Bool(true));
+    Property(state,"Bad0","Engine.Pawn.Health",Value::Integer(25));
+    Property(state,"Bad0","DeusEx.ScriptedPawn.CloakThreshold",Value::Integer(25));
     const auto seed=[&]{fixture.Restore(Envelope(legacy,state));};
     const auto identity=[&](const PortableActorTickBoundaryObservation& observed) {
         Require(observed.actorPath==Path("Bad0")&&observed.classPath=="DeusEx.ScriptedPawn"&&
             observed.nativeClassPath=="DeusEx.ScriptedPawn",
-            "ScriptedPawn refusal diagnostic replaced the real Actor/Class/nearest-native identity");
+            "ScriptedPawn diagnostic replaced the real Actor/Class/nearest-native identity");
     };
     const auto undo=[&](const Bytes& before,std::uint64_t revision,const auto& gc,const std::string& label) {
         Require(fixture.Save("ScriptedPawnBoundaryAfter")==before&&GetPortableRuntimeWorldRevision()==revision&&
@@ -714,16 +792,129 @@ void ScriptedPawnBoundaryControl() {
         const auto afterGc=GC::GetStats();Require(afterGc.numObjects==gc.numObjects&&afterGc.memoryUsage==gc.memoryUsage,
             "ScriptedPawn boundary retained UObject allocations: "+label);
     };
-    const std::string expected="Original Actor Tick reached an unimplemented native virtual override: DeusEx.ScriptedPawn";
+    // All four real base bodies return0 on their genuine owner cycle. The
+    // ScriptedPawn custom prefix MUST run/commit before its own deferral;
+    // its returned0 must not be replaced with1 and drain the pending cycle.
+    auto deferred=state;
+    Property(deferred,"A","Engine.Actor.Owner",Value::Text(Kind::Object,Path("Bad0")));
+    Property(deferred,"B","Engine.Actor.Owner",Value::Text(Kind::Object,Path("Bad0")));
+    Property(deferred,"C","Engine.Actor.Owner",Value::Text(Kind::Object,Path("Bad0")));
+    Property(deferred,"Bad0","Engine.Actor.Owner",Value::Text(Kind::Object,Path("A")));
+    fixture.Restore(Envelope(legacy,deferred));
+    const auto committed=AdvancePortableLevelDynamicActors(0.25f,0);RequirePass(committed);
+    Require(committed.actorCalls==4u&&committed.slotsVisited==4u&&committed.deferredPushes==4u&&committed.pendingPasses==0u&&
+        Count("A")==0&&Count("B")==0&&Count("C")==0&&Count("Level0","Ledger")==0,
+        "ScriptedPawn wrapper skipped its base, fabricated success, recursively redispatched, or drained an all-deferred cycle");
+    const auto readFloat=[&](const char* name) {
+        const auto value=ReadPortableActorScriptProperty(Path("Bad0"),name);
+        Require(value.kind==Kind::Float,"ScriptedPawn committed native timer is not Float");return value.floating;
+    };
+    Require(readFloat("AlarmTimer")==0.75f&&readFloat("FireTimer")==0.75f&&readFloat("SpecialTimer")==0.75f&&
+        readFloat("WeaponTimer")==0.0f&&readFloat("ReloadTimer")==0.0f&&readFloat("PotentialEnemyTimer")==0.0f&&
+        readFloat("AgitationCheckTimer")==0.0f&&readFloat("AgitationTimer")==0.0f&&readFloat("FearTimer")==0.0f&&
+        readFloat("FearLevel")==0.75f&&readFloat("DistressTimer")==0.25f&&readFloat("DropCounter")==0.0f,
+        "Real ScriptedPawn custom countdown/decay fields did not commit before qualified base return0");
+    const auto pivot=ReadPortableActorScriptProperty(Path("Bad0"),"PrePivot");
+    Require(pivot.kind==Kind::Vector&&pivot.vector==std::array<float,3u>{4,2,1}&&readFloat("PrePivotTime")==0.25f,
+        "Real ScriptedPawn timed PrePivot did not publish through typed same-root vector fields");
+    const auto alliance=ReadPortableActorScriptProperty(Path("Bad0"),"PotentialEnemyAlliance");
+    Require(alliance.kind==Kind::Name&&(alliance.text.empty()||alliance.text=="None"),"Expired native potential-enemy timer did not clear actual Name");
+    const auto cloak=ReadPortableActorScriptProperty(Path("Bad0"),"bClearedObstacle");
+    Require(cloak.kind==Kind::Bool&&cloak.boolean&&Count("Bad0","CloakThreshold")==26,
+        "Real selected EnableCloak Bool packet/script did not execute before qualified base deferral");
+    Require(committed.nativeBoundary.has_value(),"Admitted ScriptedPawn wrapper lost its nearest-native identity observation");
+    identity(*committed.nativeBoundary);
+    const auto customWrites=committed.execution.writes;
+    Require(customWrites>=24u&&committed.execution.nativeWork&&committed.execution.nativeWork->used>6u,
+        "ScriptedPawn committed prefix has no substantive same-root native writes/work");
+    auto cloakOff=deferred;Property(cloakOff,"Bad0","Engine.Pawn.Health",Value::Integer(26));
+    fixture.Restore(Envelope(legacy,cloakOff));
+    const auto falsePacket=AdvancePortableLevelDynamicActors(0.25f,0);RequirePass(falsePacket);
+    const auto disabled=ReadPortableActorScriptProperty(Path("Bad0"),"bClearedObstacle");
+    Require(disabled.kind==Kind::Bool&&!disabled.boolean&&Count("Bad0","CloakThreshold")==26&&
+        falsePacket.actorCalls==4u&&falsePacket.pendingPasses==0u,
+        "Selected EnableCloak received a constant true/missing Bool packet instead of actual Health<=CloakThreshold");
+
+    // Exercise the actual fixed native array binding, not just its declaration.
+    // The native short-delay path gives (.25*2)*(1-.125/.25)=.25 decay.
+    const auto makeAllianceEntry=[](const std::string& name,float level,float agitation,bool permanent) {
+        Value value;value.kind=Kind::Struct;
+        value.fields.emplace("alliancename",Value::Text(Kind::Name,name));
+        value.fields.emplace("alliancelevel",Value::Float(level));
+        value.fields.emplace("agitationlevel",Value::Float(agitation));
+        value.fields.emplace("bpermanent",Value::Bool(permanent));
+        return value;
+    };
+    std::array<Value,16u> originalAlliances;
+    for(std::uint32_t i=0u;i<originalAlliances.size();++i)
+        originalAlliances[i]=makeAllianceEntry("None",i?static_cast<float>(i)+0.5f:-0.0f,0.0f,false);
+    originalAlliances[15u]=makeAllianceEntry("NamedLive",17.5f,1.0f,false);
+    originalAlliances[14u]=makeAllianceEntry("None",-8.25f,7.0f,false);
+    originalAlliances[13u]=makeAllianceEntry("NamedClamp",3.5f,0.125f,false);
+    originalAlliances[12u]=makeAllianceEntry("NamedPermanent",11.25f,2.0f,true);
+    originalAlliances[11u]=makeAllianceEntry("NamedZero",19.25f,0.0f,false);
+    originalAlliances[10u]=makeAllianceEntry("NamedNegative",-15.5f,-1.0f,false);
+    const auto withAlliances=[&](QuestVr::ScriptSavedState copy,const std::array<Value,16u>& entries) {
+        Property(copy,"Bad0","DeusEx.ScriptedPawn.bAlliancesChanged",Value::Bool(true));
+        for(std::uint32_t i=0u;i<entries.size();++i)
+            Property(copy,"Bad0","DeusEx.ScriptedPawn.AlliancesEx",entries[i],i);
+        return copy;
+    };
+    const auto checkAlliances=[&](const std::array<Value,16u>& expectedEntries,bool changed) {
+        for(std::uint32_t i=0u;i<expectedEntries.size();++i) {
+            const auto actual=ReadPortableActorDeclaredScriptProperty(Path("Bad0"),"DeusEx.ScriptedPawn.AlliancesEx",i);
+            Require(QuestVr::Vm::Equal(actual,expectedEntries[i]),
+                "Native alliance store changed the wrong entry, skipped decay/clamp, or lost Name/level/permanent siblings");
+            const float actualLevel=actual.fields.at("alliancelevel").floating;
+            const float expectedLevel=expectedEntries[i].fields.at("alliancelevel").floating;
+            Require(std::memcmp(&actualLevel,&expectedLevel,sizeof(float))==0,
+                "Native alliance store changed raw AllianceLevel sibling bits");
+        }
+        const auto flag=ReadPortableActorDeclaredScriptProperty(Path("Bad0"),"DeusEx.ScriptedPawn.bAlliancesChanged");
+        Require(flag.kind==Kind::Bool&&flag.boolean==changed,"Native alliance loop retained the wrong bAlliancesChanged result");
+    };
+    const auto activeAlliances=withAlliances(deferred,originalAlliances);
+    auto decayedAlliances=originalAlliances;
+    decayedAlliances[15u].fields.at("agitationlevel")=Value::Float(0.75f);
+    decayedAlliances[13u].fields.at("agitationlevel")=Value::Float(0.0f);
+    fixture.Restore(Envelope(legacy,activeAlliances));
+    const auto arrayCommit=AdvancePortableLevelDynamicActors(0.25f,0);RequirePass(arrayCommit);
+    Require(arrayCommit.actorCalls==4u&&arrayCommit.deferredPushes==4u&&arrayCommit.pendingPasses==0u&&
+        arrayCommit.execution.writes==customWrites+6u,
+        "Real alliance loop skipped flag/entry/negative-clamp stores or fabricated the qualified base return");
+    checkAlliances(decayedAlliances,true);
+    auto inactiveAlliances=originalAlliances;
+    inactiveAlliances[15u]=makeAllianceEntry("None",17.5f,1.0f,false);
+    inactiveAlliances[13u]=makeAllianceEntry("NamedZeroToo",3.5f,0.0f,false);
+    fixture.Restore(Envelope(legacy,withAlliances(deferred,inactiveAlliances)));
+    const auto inactiveCommit=AdvancePortableLevelDynamicActors(0.25f,0);RequirePass(inactiveCommit);
+    Require(inactiveCommit.actorCalls==4u&&inactiveCommit.deferredPushes==4u&&inactiveCommit.pendingPasses==0u&&
+        inactiveCommit.execution.writes==customWrites+1u,
+        "All-inactive native alliance loop wrote protected entries or omitted its initial flag clear");
+    checkAlliances(inactiveAlliances,false);
+
+    // With no owner cycle, the same prefix reaches the still-unimplemented
+    // genuine Pawn continuation. It is not generic non-Pawn Tick or physics.
+    const std::string expected="Original Actor Tick Pawn continuation is not implemented";
+    fixture.Restore(Envelope(legacy,withAlliances(state,originalAlliances)));
+    const auto arrayBefore=fixture.Save("ScriptedPawnAllianceBefore");
+    const auto arrayRevision=GetPortableRuntimeWorldRevision();const auto arrayGc=GC::GetStats();
+    const auto arrayFailure=AdvancePortableLevelDynamicActors(0.25f,0);
+    Require(!arrayFailure.execution.passed()&&!arrayFailure.execution.committed&&!arrayFailure.completed&&
+        arrayFailure.execution.status==Status::Unsupported&&arrayFailure.execution.error==expected&&
+        arrayFailure.actorCalls==4u&&arrayFailure.execution.writes>=arrayCommit.execution.writes+9u,
+        "Real alliance stores did not precede the genuine late Pawn-continuation refusal");
+    undo(arrayBefore,arrayRevision,arrayGc,"native alliance entries and selected callback before real Pawn continuation");
+    checkAlliances(originalAlliances,true);++refusals;
     std::optional<PortableActorTickBoundaryObservation> firstObservation;
     std::size_t firstInstructions{},firstWrites{},firstWork{};
     for(unsigned repeat=0u;repeat<2u;++repeat) {
         seed();const auto before=fixture.Save("ScriptedPawnBoundaryBefore");const auto revision=GetPortableRuntimeWorldRevision();
-        const auto gc=GC::GetStats();const auto result=AdvancePortableLevelDynamicActors(0.01f,0);
+        const auto gc=GC::GetStats();const auto result=AdvancePortableLevelDynamicActors(0.25f,0);
         Require(!result.execution.passed()&&!result.execution.committed&&!result.completed&&
             result.execution.status==Status::Unsupported&&result.execution.error==expected&&
-            result.actorCalls==3u&&result.slotsVisited==4u&&result.execution.writes>=9u,
-            "ScriptedPawn was skipped, admitted as Actor/Pawn, or its genuine late native error was replaced");
+            result.actorCalls==4u&&result.slotsVisited==4u&&result.execution.writes>=customWrites+9u,
+            "ScriptedPawn custom prefix was skipped or its real later Pawn continuation was replaced");
         Require(result.nativeBoundary.has_value(),"Reached ScriptedPawn native boundary did not retain a typed observation");
         const auto& observed=*result.nativeBoundary;identity(observed);
         Require(observed.role==4u&&observed.remoteRole==2u&&observed.physics==1u&&
@@ -737,11 +928,11 @@ void ScriptedPawnBoundaryControl() {
         } else Require(result.nativeBoundary==firstObservation&&result.execution.instructions==firstInstructions&&
             result.execution.writes==firstWrites&&result.execution.nativeWork->used==firstWork,
             "ScriptedPawn native-boundary repeat changed exact diagnostic or instruction/write/work prefix");
-        undo(before,revision,gc,"closed native gate");++refusals;
+        undo(before,revision,gc,"real Pawn continuation after native prefix");++refusals;
     }
     const auto budgetRefusal=[&](const QuestVr::Vm::Limits& limits,const std::string& label) {
         seed();const auto before=fixture.Save("ScriptedPawnBudgetBefore");const auto revision=GetPortableRuntimeWorldRevision();
-        const auto gc=GC::GetStats();const auto result=AdvancePortableLevelDynamicActors(0.01f,0,limits);
+        const auto gc=GC::GetStats();const auto result=AdvancePortableLevelDynamicActors(0.25f,0,limits);
         Require(!result.execution.passed()&&!result.execution.committed&&!result.completed&&result.execution.status==Status::Budget,
             "ScriptedPawn diagnostic replaced a real shared-root budget failure with native admission/refusal: "+label);
         if(result.nativeBoundary)identity(*result.nativeBoundary); // Partial typed reads may legitimately be absent.
@@ -754,10 +945,52 @@ void ScriptedPawnBoundaryControl() {
         QuestVr::Vm::Limits limits;limits.writes=cut;budgetRefusal(limits,"write prefix "+std::to_string(cut));
     }
     fixture.Unchanged();
-    std::cout<<"PASS generated production ScriptedPawn native boundary: "<<checks<<" cumulative checks / "<<refusals
-        <<" refusals; real cross-package native ancestry, earlier three selected Actor Ticks, exact typed snapshot/error, "
-          "repeat identity and full shared-root native-work/write/save/revision/parity/GC undo. "
-          "NOT native ScriptedPawn Tick admission, NPC movement/physics, original Training completion or headset acceptance.\n";
+    ShutdownPortableRuntime();
+    {
+        Fixture missing;
+        const auto absent=Build(missing,false,2u,TriggerControlKind::None,DeusExLevelInfoControlKind::None,false,false,true,true);
+        Require(InitializePortableRuntime(absent.packages).passed&&PreparePortableRuntimeNativeEngineClasses().prepared&&
+            PreparePortableRuntimeNativeMetadataClasses().prepared&&PreparePortableRuntimeNativePackages().prepared&&
+            LoadPortableRuntimeMap(absent.map).passed&&PreparePortableRuntimeObjectLookup().prepared,
+            "Missing typed ScriptedPawn field control could not initialize genuine metadata");
+        const auto original=missing.Save("MissingScriptedPawnLegacy");
+        auto noAlarm=state;
+        auto& properties=Object(noAlarm,"Bad0").properties;
+        properties.erase(std::remove_if(properties.begin(),properties.end(),[](const auto& p){return p.key=="DeusEx.ScriptedPawn.AlarmTimer";}),properties.end());
+        missing.Restore(Envelope(original,noAlarm));const auto before=missing.Save("MissingScriptedPawnBefore");
+        const auto revision=GetPortableRuntimeWorldRevision();const auto gc=GC::GetStats();
+        const auto result=AdvancePortableLevelDynamicActors(0.25f,0);
+        Require(!result.execution.passed()&&!result.execution.committed&&!result.completed&&result.execution.status==Status::Unsupported&&
+            result.execution.error=="Portable actor VM object is unavailable: DeusEx.ScriptedPawn.AlarmTimer"&&
+            result.actorCalls==4u&&result.execution.writes>9u,
+            "Reached missing typed AlarmTimer became a default field, closed class gate, or later Pawn error: "+result.execution.error+
+                " calls="+std::to_string(result.actorCalls)+" writes="+std::to_string(result.execution.writes));
+        Require(missing.Save("MissingScriptedPawnAfter")==before&&GetPortableRuntimeWorldRevision()==revision&&
+            ReadPortableRuntimeLevelTickParity()==0&&Count("A")==0&&Count("B")==0&&Count("C")==0&&Count("Level0","Ledger")==0,
+            "Missing typed ScriptedPawn field retained prior custom/script/root effects");
+        const auto afterGc=GC::GetStats();Require(afterGc.numObjects==gc.numObjects&&afterGc.memoryUsage==gc.memoryUsage,
+            "Missing typed ScriptedPawn field retained UObject allocations");
+        Require(result.nativeBoundary.has_value(),"Missing typed ScriptedPawn field lost actual boundary identity");identity(*result.nativeBoundary);
+        ++refusals;
+        // The same genuinely missing field must remain lazy when the literal
+        // RemoteRole3/non-simulated entry selects only its original base body.
+        auto bypass=noAlarm;
+        for(const auto* name:{"A","B","C"})Property(bypass,name,"Engine.Actor.Owner",Value::Text(Kind::Object,Path("Bad0")));
+        Property(bypass,"Bad0","Engine.Actor.Owner",Value::Text(Kind::Object,Path("A")));
+        Property(bypass,"Bad0","Engine.Actor.RemoteRole",Value::Byte(3u));
+        Property(bypass,"Bad0","Engine.Actor.bSimulatedPawn",Value::Bool(false));
+        missing.Restore(Envelope(original,bypass));
+        const auto returned=AdvancePortableLevelDynamicActors(0.25f,0);RequirePass(returned);
+        Require(returned.actorCalls==4u&&returned.deferredPushes==4u&&returned.pendingPasses==0u&&
+            ReadPortableActorScriptProperty(Path("Bad0"),"PrePivotTime").floating==0.5f&&
+            ReadPortableActorScriptProperty(Path("Bad0"),"FearTimer").floating==0.125f,
+            "Wrapper bypass eagerly demanded custom fields, mutated timers, redispatched, or fabricated a base return1");
+        missing.Unchanged();
+    }
+    std::cout<<"PASS generated production ScriptedPawn native prefix: "<<checks<<" cumulative checks / "<<refusals
+        <<" refusals; actual typed cross-package wrapper/decay/vector/Name stores, live fixed alliance-array decay/clamp/protected siblings/flag-clear/rollback, selected EnableCloak true/false Bool packets, genuine base return0 owner-cycle control, "
+          "missing reached typed-property refusal, later real Pawn continuation, repeat identity and shared-root work/write/save/revision/parity/GC undo. "
+          "NOT NPC movement/Pawn physics, original Training completion or headset acceptance.\n";
 }
 void TriggerControl() {
     for(const auto kind:{TriggerControlKind::Exact,TriggerControlKind::Parent}) {

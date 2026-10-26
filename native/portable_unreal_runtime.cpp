@@ -40,6 +40,8 @@
 #include "quest_actor_physics_phase.h"
 #include "quest_actor_tick_tail.h"
 #include "quest_actor_pawn_context.h"
+#include "quest_scripted_pawn_tick.h"
+#include "quest_scripted_pawn_decay.h"
 #include "quest_actor_stasis.h"
 #include "quest_level_player_distance.h"
 #include "quest_native_window_location.h"
@@ -7463,7 +7465,7 @@ public:
         const bool defaults = false, const bool immutable = false,NativeAuthoredReadOrigin* origin=nullptr,
         const bool nativeRegionStorage=false,const bool nativePhysicsVectorStorage=false,
         const bool nativeLandingZoneVelocityStorage=false,const bool nativeFallingOldLocationStorage=false,
-        const bool nativeMovingBrushVectorStorage=false) {
+        const bool nativeMovingBrushVectorStorage=false,const bool nativeScriptedPawnVectorStorage=false) {
         if(nativePhysicsVectorStorage) {
             if(defaults || immutable || index || ActorPhysicsVectorProperty(object,property.key.c_str()).key!=property.key)
                 throw std::runtime_error("Raw physics Vector read has no actual native field authority");
@@ -7483,6 +7485,11 @@ public:
                 nativeFallingOldLocationStorage || defaults || immutable ||
                 MovingBrushVectorField(object,property.key.c_str()).key!=property.key||index>=property.arrayDimension)
                 throw std::runtime_error("Raw MovingBrush Vector read has no actual native field authority");
+        }
+        if(nativeScriptedPawnVectorStorage) {
+            if(nativePhysicsVectorStorage||nativeLandingZoneVelocityStorage||nativeRegionStorage||nativeFallingOldLocationStorage||
+                nativeMovingBrushVectorStorage||defaults||immutable||index||ScriptedPawnVectorField(object,property.key.c_str()).key!=property.key)
+                throw std::runtime_error("Raw ScriptedPawn Vector read has no actual native field authority");
         }
         if(origin) *origin={};
         if(object->nativeDump && !defaults && !immutable)return ReadDumpLocationValue(object,property,index);
@@ -7698,6 +7705,7 @@ public:
                     if(nativeLandingZoneVelocityStorage)return DecodeLandingZoneVelocity(*tag,property);
                     if(nativeFallingOldLocationStorage)return DecodeActorPhysicsVector(*tag,property);
                     if(nativeMovingBrushVectorStorage)return DecodeMovingBrushVector(*tag,property,index);
+                    if(nativeScriptedPawnVectorStorage)return DecodeActorPhysicsVector(*tag,property);
                     return Decode(*source, *tag, property);
                 }
             source = !classDefaults && source == object ? object->cls : source->base;
@@ -8633,6 +8641,7 @@ private:
 #include "portable_object_destroy.inl"
 #include "portable_deferred_actors.inl"
 #include "portable_level_cleanup.inl"
+#include "portable_scripted_pawn_tick.inl"
 #include "portable_level_actor_tick.inl"
     void SetOwner(RuntimeObject* actor, RuntimeObject* newOwner, QuestVr::Vm::Execution& execution) {
         LifecycleActor(reinterpret_cast<std::uintptr_t>(actor));

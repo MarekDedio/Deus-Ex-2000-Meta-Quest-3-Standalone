@@ -806,7 +806,7 @@ int Run(const fs::path& root,const std::optional<std::string>& expected,unsigned
                         <<" remoteRole="<<byte(entry.remoteRole)<<" physics="<<byte(entry.physics)
                         <<" isPawn="<<byte(entry.pawnFlag)<<" alwaysTick="<<byte(entry.alwaysTick)
                         <<" simulatedPawn="<<byte(entry.simulatedPawn)
-                        <<" stasis="<<byte(entry.stasis)<<"; typed diagnostic snapshot, NOT native Tick execution\n";
+                        <<" stasis="<<byte(entry.stasis)<<"; typed snapshot alone does NOT prove completed native/world Tick\n";
                     if(nativeTickBoundary)Require(*nativeTickBoundary==entry,"Repeated original native Tick boundary changed its live actor snapshot");
                     else nativeTickBoundary=entry;
                 }

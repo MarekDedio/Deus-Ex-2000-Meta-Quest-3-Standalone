@@ -95,10 +95,26 @@
         actor=LifecycleActor(reinterpret_cast<std::uintptr_t>(actor));
         if(!activeTickLevel_||actor->nativeXLevel!=activeTickLevel_||!activeTickStats_)
             throw std::runtime_error("Original Actor Tick has no enclosing native Level phase");
-        // This authenticates the selected native virtual BEFORE entering its
-        // AActor body. An unsupported Pawn/override must not be run as Actor.
+        // Select the real virtual BEFORE base stasis, owner or parity work.
+        // ScriptedPawn owns a custom prefix; its qualified AActor call below
+        // is not a new virtual dispatch and does not authorize Pawn physics.
+        auto* selected=OriginalActorTickNativeClass(actor);
+        if(selected->reflection.objectPath=="DeusEx.ScriptedPawn") {
+            ObserveOriginalActorTickBoundary(actor,selected->reflection.objectPath);
+            ++activeTickStats_->actorCalls;
+            return AdvanceOriginalScriptedPawnTick(actor,elapsed,tickType,execution);
+        }
         RequireOriginalActorTickPhysicsImplementation(actor);
         ++activeTickStats_->actorCalls;
+        return AdvanceOriginalActorBaseTick(actor,elapsed,tickType,execution);
+    }
+    std::int32_t AdvanceOriginalActorBaseTick(RuntimeObject* actor,float elapsed,std::int32_t tickType,
+        QuestVr::Vm::Execution& execution) {
+        // Private qualified AActor::Tick entry, used ONLY by the authenticated
+        // native dispatcher and ScriptedPawn wrapper in the same Level root.
+        actor=LifecycleActor(reinterpret_cast<std::uintptr_t>(actor));
+        if(!transaction_||!activeTickLevel_||actor->nativeXLevel!=activeTickLevel_||!activeTickStats_)
+            throw std::runtime_error("Qualified original Actor Tick lost its enclosing native Level phase");
         if(OriginalActorStasis(actor).inStasis) {
             const bool transient=OriginalAnimationRead(actor,OriginalAnimationField(actor,
                 "Engine.Actor","bTransient",Kind::Bool,1u,"BoolProperty"),Kind::Bool).boolean;

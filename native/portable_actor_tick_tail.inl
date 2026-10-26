@@ -29,25 +29,35 @@
         }
         ValidateStateBudget();
     }
-    void RequireOriginalActorTickPhysicsImplementation(RuntimeObject* actor) {
-        std::size_t depth{};
-        for(auto* cls=actor->cls;cls&&depth++<64u;cls=cls->base) {
+    RuntimeObject* OriginalActorTickNativeClass(RuntimeObject* actor) {
+        std::array<RuntimeObject*,64u> visited{};std::size_t depth{};
+        RuntimeObject* selected{};bool actualActor{};
+        for(auto* cls=actor->cls;cls;cls=cls->base) {
             LifecycleStep();
-            if(!cls->classDescriptor)throw std::runtime_error("Original Actor Tick native ancestry lacks authored Class metadata");
-            if(!(cls->reflection.flags&0x04000000u))continue;
-            const auto& path=cls->reflection.objectPath;
-            // Owned native vtables/IAT, ORIGINAL-ACTOR-TICK-PHYSICS-PHASE.md
-            // plus ORIGINAL-TRIGGER-TICK-PREREQUISITES.md and
-            // ORIGINAL-DEUSEX-LEVELINFO-TICK-PREREQUISITES.md and
-            // ORIGINAL-LIGHT-TICK-PREREQUISITES.md. Exact nearest native
-            // boundaries only: neither parent Info/Triggers, unknown nearer
-            // native children nor scalar teardown are authorized here.
-            if(path=="DeusEx.DeusExDecoration"||path=="DeusEx.DeusExLevelInfo"||path=="Engine.Projectile"||path=="Engine.Inventory"||
-                path=="Engine.Actor"||path=="Engine.Decoration"||path=="Engine.Mover"||path=="Engine.Trigger"||path=="Engine.Light")return;
-            ObserveOriginalActorTickBoundary(actor,path);
-            throw std::runtime_error("Original Actor Tick reached an unimplemented native virtual override: "+path);
+            if(depth==visited.size()||std::find(visited.begin(),visited.begin()+depth,cls)!=visited.begin()+depth||
+                !cls->classDescriptor||cls->defaultOwner||!cls->classFieldLinksValid||cls->reflection.metaClass!="Class")
+                throw std::runtime_error("Original Actor Tick native ancestry is malformed, cyclic or unbounded");
+            visited[depth++]=cls;
+            const auto identity=CastClassIdentity(cls->reflection.objectPath);
+            actualActor=actualActor||(LowerAscii(identity.path)=="engine.actor"&&cls==Object("Engine.Actor"));
+            if(!selected&&(cls->reflection.flags&0x04000000u))selected=cls;
         }
+        if(selected&&actualActor&&!CastObjectIdentity(actor->reflection.objectPath).classObject)return selected;
         throw std::runtime_error("Original Actor Tick has no authenticated native implementation");
+    }
+    void RequireOriginalActorTickPhysicsImplementation(RuntimeObject* actor) {
+        const auto& path=OriginalActorTickNativeClass(actor)->reflection.objectPath;
+        // Owned native vtables/IAT, ORIGINAL-ACTOR-TICK-PHYSICS-PHASE.md
+        // plus ORIGINAL-TRIGGER-TICK-PREREQUISITES.md and
+        // ORIGINAL-DEUSEX-LEVELINFO-TICK-PREREQUISITES.md and
+        // ORIGINAL-LIGHT-TICK-PREREQUISITES.md. Exact nearest native
+        // boundaries only: neither parent Info/Triggers, unknown nearer
+        // native children nor scalar teardown are authorized here. Native
+        // ScriptedPawn Tick's separate wrapper does NOT admit Pawn physics.
+        if(path=="DeusEx.DeusExDecoration"||path=="DeusEx.DeusExLevelInfo"||path=="Engine.Projectile"||path=="Engine.Inventory"||
+            path=="Engine.Actor"||path=="Engine.Decoration"||path=="Engine.Mover"||path=="Engine.Trigger"||path=="Engine.Light")return;
+        ObserveOriginalActorTickBoundary(actor,path);
+        throw std::runtime_error("Original Actor Tick reached an unimplemented native virtual override: "+path);
     }
     void OriginalTickEventDeclaration(RuntimeObject* actor,const Function& function,bool base) {
         auto* method=Object(function.path);auto* owner=method->outer;
