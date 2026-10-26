@@ -1,6 +1,34 @@
 // Included inside PortableActorVmHost. This is a committing per-Actor native
 // phase service, like AdvanceTimer/RunStatePhase, NOT an automatic world Tick.
 // No startup/animation/parity/owner prefix is fabricated by this adapter.
+    void ObserveOriginalActorTickBoundary(RuntimeObject* actor,const std::string& nativeClassPath) {
+        if(!activeTickStats_)return;
+        const auto& name=actor->reflection.objectPath;
+        const auto& cls=actor->cls->reflection.objectPath;
+        if(name.size()>1024u||cls.size()>1024u||nativeClassPath.size()>1024u)
+            throw std::runtime_error("Original Tick boundary diagnostic identity exceeds its bound");
+        const auto bytes=2u*(name.size()+cls.size()+nativeClassPath.size()+3u);
+        ValidateStateBudget(bytes);
+        nativeActorOrderObservationBytes_=QuestVr::DecalStateDetail::Add(nativeActorOrderObservationBytes_,bytes);
+        activeTickStats_->nativeBoundary.emplace();auto& out=*activeTickStats_->nativeBoundary;
+        out.actorPath=name;out.classPath=cls;out.nativeClassPath=nativeClassPath;
+        if(nativeClassPath=="DeusEx.ScriptedPawn") {
+            const auto scalar=[&](const char* field,Kind kind,std::uint32_t flags,const char* type) {
+                LifecycleStep();return OriginalAnimationRead(actor,
+                    OriginalAnimationField(actor,"Engine.Actor",field,kind,flags,type),kind);
+            };
+            out.remoteRole=static_cast<std::uint8_t>(scalar("RemoteRole",Kind::Byte,0x21u,"ByteProperty").integer);
+            out.role=static_cast<std::uint8_t>(scalar("Role",Kind::Byte,0x20u,"ByteProperty").integer);
+            LifecycleStep();const auto physics=Read(actor,ActorPhysicsProperty(actor),0u);
+            if(physics.kind!=Kind::Byte)throw std::runtime_error("Original Tick boundary Physics snapshot changed its declared Byte kind");
+            out.physics=static_cast<std::uint8_t>(physics.integer);
+            out.pawnFlag=scalar("bIsPawn",Kind::Bool,2u,"BoolProperty").boolean;
+            out.alwaysTick=scalar("bAlwaysTick",Kind::Bool,2u,"BoolProperty").boolean;
+            out.simulatedPawn=scalar("bSimulatedPawn",Kind::Bool,2u,"BoolProperty").boolean;
+            out.stasis=scalar("bStasis",Kind::Bool,1u,"BoolProperty").boolean;
+        }
+        ValidateStateBudget();
+    }
     void RequireOriginalActorTickPhysicsImplementation(RuntimeObject* actor) {
         std::size_t depth{};
         for(auto* cls=actor->cls;cls&&depth++<64u;cls=cls->base) {
@@ -16,6 +44,7 @@
             // native children nor scalar teardown are authorized here.
             if(path=="DeusEx.DeusExDecoration"||path=="DeusEx.DeusExLevelInfo"||path=="Engine.Projectile"||path=="Engine.Inventory"||
                 path=="Engine.Actor"||path=="Engine.Decoration"||path=="Engine.Mover"||path=="Engine.Trigger"||path=="Engine.Light")return;
+            ObserveOriginalActorTickBoundary(actor,path);
             throw std::runtime_error("Original Actor Tick reached an unimplemented native virtual override: "+path);
         }
         throw std::runtime_error("Original Actor Tick has no authenticated native implementation");

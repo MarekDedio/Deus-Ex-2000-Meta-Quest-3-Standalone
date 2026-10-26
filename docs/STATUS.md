@@ -1,5 +1,59 @@
 # Port status
 
+## Original Pawn context and the exact Jaime boundary (2026-10-26)
+
+The normal base Actor prefix now performs the original bIsPawn-gated actual
+Class/Super/native-APawn cast and captures the entry Role2 animation flag.
+MAIN/BLEND use that fixed context rather than refreshing it after callbacks.
+A set bIsPawn flag on an actual non-Pawn class correctly retains null Pawn
+context and can execute ordinary selected Tick; the former flag-or-class
+refusal was broader than the original. Actual Pawn continuations, native
+ScriptedPawn Tick and Pawn physics are still explicit unsupported paths, not
+empty providers or generic Actor substitutions.
+
+A budgeted typed diagnostic now records actual actor/Class/nearest-native
+identity at the closed gate, plus reached ScriptedPawn entry fields. The
+Physics observation has its own shared-work charge and Byte-kind guard.
+Synthetic genuine cross-package ScriptedPawn->Pawn->Actor controls verify the
+unchanged native error, earlier three real selected Ticks, repeat identity,
+partial work/write failures and complete save/revision/parity/GC undo.
+
+Helper1106 checks/15 refusals pass; production boundary controls log945
+cumulative checks/25 refusals. The complete generated driver exits0 after
+Physics95817/121 and its final malformed-schema case. Final desktop,
+Android-native and strict ARM64 syntax builds pass. Final CTest207 executed/
+246 registered/39 explicit owned-data skips/zero failures176.80s passes.
+Separate owned crate415/5, deferred ownership429/21 and animation588/24 pass.
+Two-crowbar-Fire repeat2 retains228837 instructions/26047 writes,48 rows/
+2 cycles/4 traces/2 crate changes/9 births and full undo at the later FExec
+refusal. These are not published usable loot or controller attack results.
+
+Actual ordinary Training repeat2 retains205999/15731,54 slots/53 admitted
+calls/8 stasis returns/14 Physics9 blocks. Both door panels still move56 units
+and dispatch2 original completion events before the same later boundary,
+repeat2 identical206335/15799. Both capture actual00_Training.JaimeReyes0,
+concrete DeusEx.JaimeReyes, nearest native DeusEx.ScriptedPawn: Role4,
+RemoteRole2, Physics2, bIsPawntrue, bAlwaysTickfalse, bSimulatedPawnfalse,
+bStasisfalse. This packet requires the real custom NPC prefix, not a direct
+base/no-op branch. All roots verify full undo and41 directly consumed owned
+files unchanged. Independent45-file SHA256/length/UTC-mtime comparison also
+remains identical across this increment. All build/test/probe/audit jobs are
+terminal; the source-freeze discipline was maintained throughout compilation.
+
+The next implementation has a bounded original custom-Tick service/operation
+schedule and independently linked property layout, with native-copy anchors.
+Actor+30C bit40 is bSimulatedPawn, NOT bAlwaysTick; the fear/countdown fields
+and DesiredPrePivot/PrePivotTime are mapped without guessed SDK headers.
+This is prerequisite evidence, not a completed NPC update. See
+ORIGINAL-PAWN-TICK-PREPROCESSING.md and
+ORIGINAL-SCRIPTEDPAWN-TICK-PREREQUISITES.md.
+
+Only the first Training map is prioritized. No account/player-creation UI,
+other-map gameplay integration or new APK is added; no Quest is detected.
+Full NPC/Pawn/world Tick, startup publication, live crate destruction,
+collectible surviving loot, automatic gravity and headset acceptance remain
+unfinished.
+
 ## Original scalar IEEE behavior unblocks Training lights (2026-10-26)
 
 The shared VM now preserves scalar IEEE Float words and implements the reached

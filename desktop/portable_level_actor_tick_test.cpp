@@ -263,10 +263,10 @@ enum class DeusExLevelInfoControlKind {None,Exact,Parent};
 Tables Build(Fixture& fixture,bool moverControl=false,std::uint32_t oldLocationFlags=2u,
     TriggerControlKind triggerControl=TriggerControlKind::None,
     DeusExLevelInfoControlKind levelInfoControl=DeusExLevelInfoControlKind::None,bool lightControl=false,
-    bool scalarLightControl=false) {
+    bool scalarLightControl=false,bool scriptedPawnBoundary=false) {
     Require(!scalarLightControl||lightControl,"Scalar-Light fixture must retain its genuine native Light ancestry");
     Require(unsigned(triggerControl!=TriggerControlKind::None)+unsigned(levelInfoControl!=DeusExLevelInfoControlKind::None)+
-        unsigned(lightControl)<=1u,
+        unsigned(lightControl)+unsigned(scriptedPawnBoundary)<=1u,
         "Fixture native-boundary controls must retain distinct ancestry proofs");
     const std::string ini="[Engine.Engine]\nGameEngine=Engine.GameEngine\n";
     const auto iniPath=fixture.directory/"System"/"DeusEx.ini";
@@ -331,11 +331,16 @@ Tables Build(Fixture& fixture,bool moverControl=false,std::uint32_t oldLocationF
     };
     const auto roleEnum=enumeration("ENetRole",{"ROLE_None","ROLE_DumbProxy","ROLE_SimulatedProxy","ROLE_AutonomousProxy","ROLE_Authority","ROLE_MAX"},actor);
     const auto physicsEnum=enumeration("EPhysics",{"PHYS_None","PHYS_Walking","PHYS_Falling","PHYS_Swimming","PHYS_Flying","PHYS_Rotating","PHYS_Projectile","PHYS_Rolling","PHYS_Interpolating","PHYS_MovingBrush","PHYS_Spider","PHYS_Trailer","PHYS_MAX"},actor);
+    // Authentic target Class for the original bIsPawn-gated native cast. It
+    // does not authorize Pawn Tick/physics or create a Pawn instance here.
+    const auto nativePawn=engine.Export("Pawn",0,actor);
+    engine.exports.at(static_cast<std::size_t>(nativePawn-1)).ObjFlags=static_cast<ObjectFlags>(0x040f0004u);
+    engine.ClassBody(nativePawn);
     engine.Property("Role","ByteProperty",actor,ec,roleEnum,0x20u);
     engine.Property("RemoteRole","ByteProperty",actor,ec,roleEnum,0x21u);
     engine.Property("Physics","ByteProperty",actor,ec,physicsEnum,0x23u);
     for(const auto& [name,flags]:std::vector<std::pair<std::string,std::uint32_t>>{
-        {"bTicked",0x2002u},{"bDeleteMe",2u},{"bStatic",3u},{"bNoDelete",3u},{"bIsPawn",2u},
+        {"bTicked",0x2002u},{"bDeleteMe",2u},{"bStatic",3u},{"bNoDelete",3u},{"bIsPawn",2u},{"bAlwaysTick",2u},{"bSimulatedPawn",2u},
         {"bTransient",1u},{"bStasis",1u},{"bForceStasis",1u},{"bCollideActors",0x23u},
         {"bCollideWorld",0u},{"bBlockActors",0u},{"bBlockPlayers",0u},{"bHidden",0u},{"bTimerLoop",0u}})
         engine.Property(name,"BoolProperty",actor,ec,0,flags);
@@ -397,6 +402,14 @@ Tables Build(Fixture& fixture,bool moverControl=false,std::uint32_t oldLocationF
         deusex.exports.at(static_cast<std::size_t>(dxInfo-1)).ObjFlags=static_cast<ObjectFlags>(0x040f0004u);
         deusex.ClassBody(dxInfo);deusExTable=fixture.Write(deusex);
     }
+    if(scriptedPawnBoundary) {
+        // The reached native boundary crosses packages. Its nearest native
+        // Class is ScriptedPawn, not Actor, and must remain unadmitted.
+        Package deusex;deusex.stem="DeusEx";const auto de=deusex.ImportPackage("Engine");
+        const auto pawn=deusex.Export("ScriptedPawn",0,deusex.Import("Pawn",de));
+        deusex.exports.at(static_cast<std::size_t>(pawn-1)).ObjFlags=static_cast<ObjectFlags>(0x040f0004u);
+        deusex.ClassBody(pawn);deusExTable=fixture.Write(deusex);
+    }
     Package classes;classes.stem="TickClasses";const auto cc=classes.ImportPackage("Core"),ce=classes.ImportPackage("Engine");
     const auto ca=classes.Import("Actor",ce),ci=classes.Import("LevelInfo",ce);
     const auto testBase=lightControl?classes.Import("Light",ce):levelInfoControl!=DeusExLevelInfoControlKind::None?
@@ -441,7 +454,8 @@ Tables Build(Fixture& fixture,bool moverControl=false,std::uint32_t oldLocationF
     std::map<std::string,std::int32_t> actors;
     actors["Level0"]=map.Export("Level0",map.Import("LevelInfo",me));
     actors["Brush0"]=map.Export("Brush0",map.Import("Brush",me));
-    actors["Bad0"]=map.Export("Bad0",moverControl?map.Import("Mover",me):
+    actors["Bad0"]=map.Export("Bad0",scriptedPawnBoundary?map.Import("ScriptedPawn",map.ImportPackage("DeusEx")):
+        moverControl?map.Import("Mover",me):
         levelInfoControl==DeusExLevelInfoControlKind::Parent?map.Import("Info",me):
         triggerControl==TriggerControlKind::Parent?map.Import("Triggers",me):map.Import("BadNative",mt));
     for(const auto* name:{"Static0","A","B","C"})actors[name]=map.Export(name,map.Import("TestActor",mt));
@@ -522,6 +536,14 @@ void Synthetic() {
     tick=AdvancePortableLevelDynamicActors(0.01f,0);RequirePass(tick);
     Require(tick.parityBefore==1&&tick.parityAfter==0&&Count("A")==2&&Count("B")==2&&Count("C")==2,
         "Reloaded parity1 frame did not schedule all owners/children exactly once");
+    // The original prefix uses bIsPawn AND an actual native APawn cast, not
+    // either condition alone. A set bit on this non-Pawn script class must
+    // retain a null Pawn context and run its ordinary selected Tick.
+    state=Seed(tables);
+    Property(state,"A","Engine.Actor.bIsPawn",Value::Bool(true));
+    seed(state);tick=AdvancePortableLevelDynamicActors(0.01f,0);RequirePass(tick);
+    Require(Count("A")==1&&Count("B")==1&&Count("C")==1&&tick.actorCalls==3u,
+        "bIsPawn flag alone was mistaken for a successful actual native Pawn cast");
     // Captured batch A,B: A defers into the new LIVE head while B can tick.
     state=Seed(tables,{"B","A","C"});
     for(const auto* name:{"A","B","C"})Property(state,name,"Engine.Actor.bTicked",Value::Bool(true));
@@ -591,6 +613,11 @@ void Synthetic() {
     Require(!tick.execution.passed()&&!tick.execution.committed&&!tick.completed&&tick.actorCalls==3u&&
         tick.execution.error.find("unimplemented native virtual override")!=std::string::npos,
         "Unknown native class was skipped or executed as the base Actor implementation");
+    Require(tick.nativeBoundary&&tick.nativeBoundary->actorPath==Path("Bad0")&&
+        tick.nativeBoundary->classPath=="TickClasses.BadNative"&&tick.nativeBoundary->nativeClassPath=="TickClasses.BadNative"&&
+        !tick.nativeBoundary->role&&!tick.nativeBoundary->remoteRole&&!tick.nativeBoundary->physics&&
+        !tick.nativeBoundary->pawnFlag&&!tick.nativeBoundary->alwaysTick&&!tick.nativeBoundary->simulatedPawn&&!tick.nativeBoundary->stasis,
+        "Unknown native boundary lost its actual actor/Class identity or invented unread Pawn fields");
     Require(fixture.Save("NativeBoundaryAfter")==nativeBase&&GetPortableRuntimeWorldRevision()==nativeRevision&&
         ReadPortableRuntimeLevelTickParity()==0,"Unknown-native late boundary retained a partial frame");++refusals;
     // A late selected callback failure restores marker/context/queue/slots and
@@ -625,6 +652,112 @@ void Synthetic() {
         <<" refusal controls; owner-first/LIFO/detached batches/cycles, inactive animation, selected Tick, parity save/reset,"
           " dynamic-only compaction and shared-root late/write/work rollback. NOT active Spawn/GC callbacks,"
           " active animation/physics, full paused/network/Pawn Level.Tick, original Training gameplay or headset acceptance.\n";
+}
+void ScriptedPawnBoundaryControl() {
+    Fixture fixture;
+    const auto tables=Build(fixture,false,2u,TriggerControlKind::None,DeusExLevelInfoControlKind::None,false,false,true);
+    Require(tables.packages.size()==4u,"ScriptedPawn boundary lost its actual separate DeusEx package");
+    const auto& engine=tables.packages.at(1u);const auto& deusex=tables.packages.at(2u);
+    const auto pawn=FindPortableExport(engine,"Pawn"),actor=FindPortableExport(engine,"Actor"),
+        scriptedPawn=FindPortableExport(deusex,"ScriptedPawn");
+    const auto& entry=deusex.exports.at(scriptedPawn);
+    Require(entry.ObjClass==0&&entry.ObjOuter==0&&static_cast<std::uint32_t>(entry.ObjFlags)==0x040f0004u&&
+        entry.ObjBase<0&&LoadPortableClassDescriptor(deusex,scriptedPawn).state.baseField==entry.ObjBase&&
+        GetPortableObjectPath(deusex,entry.ObjBase)=="Engine.Pawn"&&
+        engine.exports.at(pawn).ObjClass==0&&engine.exports.at(pawn).ObjOuter==0&&
+        static_cast<std::uint32_t>(engine.exports.at(pawn).ObjFlags)==0x040f0004u&&
+        engine.exports.at(pawn).ObjBase==static_cast<std::int32_t>(actor+1u)&&
+        LoadPortableClassDescriptor(engine,pawn).state.baseField==static_cast<std::int32_t>(actor+1u),
+        "ScriptedPawn boundary fixture lost actual native cross-package ScriptedPawn -> Pawn -> Actor ancestry");
+    const auto& imported=deusex.imports.at(static_cast<std::size_t>(-entry.ObjBase-1));
+    Require(deusex.names.at(static_cast<std::size_t>(imported.ClassPackage)).Name=="Core"&&
+        deusex.names.at(static_cast<std::size_t>(imported.ClassName)).Name=="Class"&&imported.ObjOuter<0&&
+        deusex.names.at(static_cast<std::size_t>(deusex.imports.at(static_cast<std::size_t>(-imported.ObjOuter-1)).ObjName)).Name=="Engine",
+        "ScriptedPawn superclass is not an actual serialized Core.Class import owned by Engine");
+    Require(InitializePortableRuntime(tables.packages).passed,"ScriptedPawn boundary package initialization failed");
+    Require(PreparePortableRuntimeNativeEngineClasses().prepared&&PreparePortableRuntimeNativeMetadataClasses().prepared&&
+        PreparePortableRuntimeNativePackages().prepared,"ScriptedPawn boundary native preparation failed");
+    Require(LoadPortableRuntimeMap(tables.map).passed&&PreparePortableRuntimeObjectLookup().prepared,
+        "ScriptedPawn boundary fixture lacks actual native Level and lookup ownership");
+    Require(ReadPortableRuntimeDispatchClass("DeusEx.ScriptedPawn").parentPath=="Engine.Pawn"&&
+        ReadPortableRuntimeDispatchClass("Engine.Pawn").parentPath=="Engine.Actor"&&
+        ReadPortableRuntimeDispatchClass("TickClasses.TestActor").parentPath=="Engine.Actor",
+        "Boundary fixture flattened genuine Pawn ancestry or changed its preceding ordinary actors");
+    const auto legacy=fixture.Save("ScriptedPawnBoundaryLegacy");auto state=Seed(tables);
+    auto& slots=state.nativeActorOrder->slots;const auto bad=slots.at(2u);
+    slots.erase(slots.begin()+2);slots.push_back(bad);state.nativeActorOrder->firstDynamic=3u;
+    state.objects.push_back({Path("Bad0"),"DeusEx.ScriptedPawn",{},{},{},{}});
+    for(const auto* name:{"A","B","C"}) {
+        Property(state,name,"Engine.Actor.Physics",Value::Byte(0));
+        Property(state,name,"Engine.Actor.bTicked",Value::Bool(true));
+    }
+    Property(state,"Bad0","Engine.Actor.LastRenderTime",Value::Float(0));
+    Property(state,"Bad0","Engine.Actor.bStatic",Value::Bool(false));
+    Property(state,"Bad0","Engine.Actor.Role",Value::Byte(4));
+    Property(state,"Bad0","Engine.Actor.RemoteRole",Value::Byte(2));
+    Property(state,"Bad0","Engine.Actor.Physics",Value::Byte(1));
+    Property(state,"Bad0","Engine.Actor.bIsPawn",Value::Bool(true));
+    Property(state,"Bad0","Engine.Actor.bAlwaysTick",Value::Bool(false));
+    Property(state,"Bad0","Engine.Actor.bSimulatedPawn",Value::Bool(true));
+    Property(state,"Bad0","Engine.Actor.bStasis",Value::Bool(false));
+    const auto seed=[&]{fixture.Restore(Envelope(legacy,state));};
+    const auto identity=[&](const PortableActorTickBoundaryObservation& observed) {
+        Require(observed.actorPath==Path("Bad0")&&observed.classPath=="DeusEx.ScriptedPawn"&&
+            observed.nativeClassPath=="DeusEx.ScriptedPawn",
+            "ScriptedPawn refusal diagnostic replaced the real Actor/Class/nearest-native identity");
+    };
+    const auto undo=[&](const Bytes& before,std::uint64_t revision,const auto& gc,const std::string& label) {
+        Require(fixture.Save("ScriptedPawnBoundaryAfter")==before&&GetPortableRuntimeWorldRevision()==revision&&
+            ReadPortableRuntimeLevelTickParity()==0,"ScriptedPawn boundary retained a partial native/script root: "+label);
+        Require(Count("A")==0&&Count("B")==0&&Count("C")==0&&Count("Level0","Ledger")==0,
+            "ScriptedPawn boundary did not undo its earlier three ordinary selected Ticks: "+label);
+        const auto afterGc=GC::GetStats();Require(afterGc.numObjects==gc.numObjects&&afterGc.memoryUsage==gc.memoryUsage,
+            "ScriptedPawn boundary retained UObject allocations: "+label);
+    };
+    const std::string expected="Original Actor Tick reached an unimplemented native virtual override: DeusEx.ScriptedPawn";
+    std::optional<PortableActorTickBoundaryObservation> firstObservation;
+    std::size_t firstInstructions{},firstWrites{},firstWork{};
+    for(unsigned repeat=0u;repeat<2u;++repeat) {
+        seed();const auto before=fixture.Save("ScriptedPawnBoundaryBefore");const auto revision=GetPortableRuntimeWorldRevision();
+        const auto gc=GC::GetStats();const auto result=AdvancePortableLevelDynamicActors(0.01f,0);
+        Require(!result.execution.passed()&&!result.execution.committed&&!result.completed&&
+            result.execution.status==Status::Unsupported&&result.execution.error==expected&&
+            result.actorCalls==3u&&result.slotsVisited==4u&&result.execution.writes>=9u,
+            "ScriptedPawn was skipped, admitted as Actor/Pawn, or its genuine late native error was replaced");
+        Require(result.nativeBoundary.has_value(),"Reached ScriptedPawn native boundary did not retain a typed observation");
+        const auto& observed=*result.nativeBoundary;identity(observed);
+        Require(observed.role==4u&&observed.remoteRole==2u&&observed.physics==1u&&
+            observed.pawnFlag==true&&observed.alwaysTick==false&&observed.simulatedPawn==true&&observed.stasis==false,
+            "ScriptedPawn boundary snapshot changed or omitted an actual typed Role/Physics/packed-flag field");
+        Require(result.execution.nativeWork&&result.execution.nativeWork->used>6u,
+            "ScriptedPawn diagnostic did not share the enclosing native-work budget");
+        if(!repeat) {
+            firstObservation=observed;firstInstructions=result.execution.instructions;
+            firstWrites=result.execution.writes;firstWork=result.execution.nativeWork->used;
+        } else Require(result.nativeBoundary==firstObservation&&result.execution.instructions==firstInstructions&&
+            result.execution.writes==firstWrites&&result.execution.nativeWork->used==firstWork,
+            "ScriptedPawn native-boundary repeat changed exact diagnostic or instruction/write/work prefix");
+        undo(before,revision,gc,"closed native gate");++refusals;
+    }
+    const auto budgetRefusal=[&](const QuestVr::Vm::Limits& limits,const std::string& label) {
+        seed();const auto before=fixture.Save("ScriptedPawnBudgetBefore");const auto revision=GetPortableRuntimeWorldRevision();
+        const auto gc=GC::GetStats();const auto result=AdvancePortableLevelDynamicActors(0.01f,0,limits);
+        Require(!result.execution.passed()&&!result.execution.committed&&!result.completed&&result.execution.status==Status::Budget,
+            "ScriptedPawn diagnostic replaced a real shared-root budget failure with native admission/refusal: "+label);
+        if(result.nativeBoundary)identity(*result.nativeBoundary); // Partial typed reads may legitimately be absent.
+        undo(before,revision,gc,label);++refusals;
+    };
+    for(const auto cut:{std::size_t{0u},firstWork/2u,firstWork-1u}) {
+        QuestVr::Vm::Limits limits;limits.nativeWork=cut;budgetRefusal(limits,"native-work prefix "+std::to_string(cut));
+    }
+    for(const auto cut:{std::size_t{0u},firstWrites/2u,firstWrites-1u}) {
+        QuestVr::Vm::Limits limits;limits.writes=cut;budgetRefusal(limits,"write prefix "+std::to_string(cut));
+    }
+    fixture.Unchanged();
+    std::cout<<"PASS generated production ScriptedPawn native boundary: "<<checks<<" cumulative checks / "<<refusals
+        <<" refusals; real cross-package native ancestry, earlier three selected Actor Ticks, exact typed snapshot/error, "
+          "repeat identity and full shared-root native-work/write/save/revision/parity/GC undo. "
+          "NOT native ScriptedPawn Tick admission, NPC movement/physics, original Training completion or headset acceptance.\n";
 }
 void TriggerControl() {
     for(const auto kind:{TriggerControlKind::Exact,TriggerControlKind::Parent}) {
@@ -1184,6 +1317,6 @@ void MovingBrushSchemaRefusal() {
 }
 } // namespace
 int main() {
-    try {Synthetic();TriggerControl();DeusExLevelInfoControl();LightControl();ScalarLightControl();MoverControl();MovingBrushPhysics();MovingBrushSchemaRefusal();return 0;}catch(const std::exception& error){std::cerr<<"FAIL "<<error.what()<<'\n';ShutdownPortableRuntime();return 1;}
+    try {Synthetic();ScriptedPawnBoundaryControl();TriggerControl();DeusExLevelInfoControl();LightControl();ScalarLightControl();MoverControl();MovingBrushPhysics();MovingBrushSchemaRefusal();return 0;}catch(const std::exception& error){std::cerr<<"FAIL "<<error.what()<<'\n';ShutdownPortableRuntime();return 1;}
 }
 

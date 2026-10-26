@@ -721,6 +721,7 @@ int Run(const fs::path& root,const std::optional<std::string>& expected,unsigned
     std::optional<std::vector<PortableActorStasisObservation>> stasisObservations;
     std::optional<std::vector<PortableStartupMoverObservation>> moverObservations;
     std::optional<PortableLevelPlayerDistanceObservation> distanceObservation;
+    std::optional<PortableActorTickBoundaryObservation> nativeTickBoundary;
     for(unsigned attempt=1u;attempt<=repeats;++attempt){
         const auto start=std::chrono::steady_clock::now();
         PortableRetailCollisionStartupResult result;std::vector<PortableStartupWeaponFireObservation> fireRows;
@@ -796,6 +797,18 @@ int Run(const fs::path& root,const std::optional<std::string>& expected,unsigned
                         <<" interpolating="<<(tick.lastMovingBrushInterpolating?(*tick.lastMovingBrushInterpolating?"yes":"no"):"unread")
                         <<" key="<<(tick.lastMovingBrushKey?std::to_string(*tick.lastMovingBrushKey):"unread")
                         <<" moves="<<tick.movingBrushMoves<<" ends="<<tick.movingBrushEnds<<'\n';
+                }
+                if(tick.nativeBoundary) {
+                    const auto& entry=*tick.nativeBoundary;
+                    const auto byte=[](const auto& value){return value?std::to_string(*value):"unread";};
+                    std::cout<<"NATIVE TICK BOUNDARY actor="<<std::quoted(entry.actorPath)<<" class="<<std::quoted(entry.classPath)
+                        <<" native="<<std::quoted(entry.nativeClassPath)<<" role="<<byte(entry.role)
+                        <<" remoteRole="<<byte(entry.remoteRole)<<" physics="<<byte(entry.physics)
+                        <<" isPawn="<<byte(entry.pawnFlag)<<" alwaysTick="<<byte(entry.alwaysTick)
+                        <<" simulatedPawn="<<byte(entry.simulatedPawn)
+                        <<" stasis="<<byte(entry.stasis)<<"; typed diagnostic snapshot, NOT native Tick execution\n";
+                    if(nativeTickBoundary)Require(*nativeTickBoundary==entry,"Repeated original native Tick boundary changed its live actor snapshot");
+                    else nativeTickBoundary=entry;
                 }
                 Require(ReadPortableRuntimeLevelTickParity()==0,"Failed startup retained native frame parity");
             }

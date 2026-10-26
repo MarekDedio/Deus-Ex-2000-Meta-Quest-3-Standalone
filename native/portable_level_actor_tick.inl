@@ -57,6 +57,38 @@
         const auto property=OriginalAnimationField(actor,"Engine.Actor","bTicked",Kind::Bool,0x2002u,"BoolProperty");
         return OriginalAnimationRead(actor,property,Kind::Bool).boolean;
     }
+    QuestVr::OriginalActorPawnContext OriginalTickPawnContext(RuntimeObject* actor) {
+        const auto source=reinterpret_cast<std::uintptr_t>(actor);
+        const auto require=[&](std::uintptr_t identity) {
+            if(identity!=source)throw std::runtime_error("Original Tick Pawn context changed its retained Actor");
+            return LifecycleActor(identity);
+        };
+        QuestVr::OriginalActorPawnContextQueries q;q.work=[this]{LifecycleStep();};
+        q.pawnFlag=[&](auto a) {
+            auto* receiver=require(a);return OriginalAnimationRead(receiver,OriginalAnimationField(receiver,
+                "Engine.Actor","bIsPawn",Kind::Bool,2u,"BoolProperty"),Kind::Bool).boolean;
+        };
+        q.actorClass=[&](auto a){return reinterpret_cast<std::uintptr_t>(require(a)->cls);};
+        q.nativePawnClass=[&] {
+            auto* target=Object("Engine.Pawn");
+            if(!target->classDescriptor||target->defaultOwner||!(target->reflection.flags&0x04000000u)||
+                target->base!=Object("Engine.Actor"))
+                throw std::runtime_error("Original Tick Pawn cast lost its actual native Class ancestry");
+            return reinterpret_cast<std::uintptr_t>(target);
+        };
+        q.superClass=[&](auto identity) {
+            auto* cls=reinterpret_cast<RuntimeObject*>(identity);
+            if(!cls||!cls->classDescriptor||cls->defaultOwner)
+                throw std::runtime_error("Original Tick Pawn cast lacks actual Class/Super metadata");
+            return reinterpret_cast<std::uintptr_t>(cls->base);
+        };
+        q.role=[&](auto a) {
+            auto* receiver=require(a);const auto field=NoiseProperty(receiver,"Engine.Actor.Role",Kind::Byte,
+                0x20u,"Engine.Actor.ENetRole");
+            return static_cast<std::uint8_t>(OriginalAnimationRead(receiver,field,Kind::Byte).integer);
+        };
+        return QuestVr::CaptureOriginalActorPawnContext(source,q);
+    }
     std::int32_t AdvanceOriginalActorTick(RuntimeObject* actor,float elapsed,std::int32_t tickType,
         QuestVr::Vm::Execution& execution) {
         LifecycleStep();
@@ -86,12 +118,11 @@
         }
         const auto marker=OriginalAnimationField(actor,"Engine.Actor","bTicked",Kind::Bool,0x2002u,"BoolProperty");
         ReferenceFor(actor,marker,0u,false)->write(Value::Bool(activeTickLevel_->nativeLevelTickContext->parity!=0));
-        const bool pawnFlag=OriginalAnimationRead(actor,OriginalAnimationField(actor,
-            "Engine.Actor","bIsPawn",Kind::Bool,2u,"BoolProperty"),Kind::Bool).boolean;
-        if(pawnFlag||IsDerivedFromPath(actor->cls,"Engine.Pawn"))
-            throw std::runtime_error("Original Actor Tick Pawn preprocessing is not implemented");
-        const auto main=AdvanceOriginalMainAnimation(actor,elapsed,false,execution);
+        const auto pawn=OriginalTickPawnContext(actor);
+        const auto main=AdvanceOriginalMainAnimation(actor,elapsed,pawn.suppressAnimEnd,execution);
         static_cast<void>(AdvanceOriginalBlendAnimation(actor,main,execution));
+        if(pawn.pawn||IsDerivedFromPath(actor->cls,"Engine.Pawn"))
+            throw std::runtime_error("Original Actor Tick Pawn continuation is not implemented");
         static_cast<void>(AdvanceOriginalTickTail(actor,elapsed,tickType,execution));
         return 1;
     }

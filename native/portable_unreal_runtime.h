@@ -406,6 +406,14 @@ struct PortableLevelPlayerDistanceResult {
     QuestVr::Vm::Result execution;
     PortableLevelPlayerDistanceObservation pass;
 };
+struct PortableActorTickBoundaryObservation {
+    std::string actorPath,classPath,nativeClassPath;
+    // Additional typed snapshot ONLY at a reached ScriptedPawn boundary.
+    // Diagnostic reads do not implement its native Tick or packed flags.
+    std::optional<std::uint8_t> role,remoteRole,physics;
+    std::optional<bool> pawnFlag,alwaysTick,simulatedPawn,stasis;
+    bool operator==(const PortableActorTickBoundaryObservation&) const = default;
+};
 struct PortableLevelDynamicTickResult {
     QuestVr::Vm::Result execution;
     bool completed{};
@@ -417,6 +425,7 @@ struct PortableLevelDynamicTickResult {
     std::size_t movingBrushCalls{},movingBrushMoves{},movingBrushEnds{};
     std::optional<bool> lastMovingBrushClass,lastMovingBrushInterpolating;
     std::optional<unsigned> lastMovingBrushKey;
+    std::optional<PortableActorTickBoundaryObservation> nativeBoundary;
 };
 // Actual native distance prepass only. Missing active native client/viewport
 // services refuse; a genuine unpossessed viewport skips without any store.

@@ -1,5 +1,30 @@
 # Immediate milestone: complete the first Training map
 
+Latest2026-10-26: original base Pawn context now captures the exact
+bIsPawn/Class/Super/native-APawn/Role packet and fixed animation gate.
+Flag-set actual non-Pawns correctly keep null context; real Pawn continuation
+and ScriptedPawn Tick/physics remain unadmitted. New budgeted typed boundary
+diagnostics preserve the actual error and complete root undo. Helper1106/15,
+production boundary945 cumulative/25 and complete driver5817/121 plus final
+malformed-schema controls pass. Desktop/Android-native/strict ARM64 builds
+and final CTest207 executed/246 registered/39 explicit skips/zero failures
+176.80s pass. Owned crate415/5, deferred429/21 and animation588/24 pass;
+two-Fire repeat2 retains228837/26047, real crate/loot/debris observations and
+full undo at later FExec. All45 checked original files retain exact SHA256,
+length and UTC-mtime; all build/test/probe/audit jobs are terminal.
+
+Final actual Training repeat2 and paired doors identify JaimeReyes0 as the
+next closed native boundary: concrete JaimeReyes->native ScriptedPawn, Role4,
+RemoteRole2, Physics2, bIsPawntrue, bAlwaysTickfalse, bSimulatedPawnfalse and
+bStasisfalse. Ordinary205999/15731 and paired206335/15799 repeat with full
+undo; paired panels still move56 units and dispatch2 completion events. Jaime
+requires the real custom prefix, not an Actor alias or skipped NPC. Bounded
+custom-Tick services/arithmetic and typed property/native-layout proof are
+documented for the next step. No live crate/usable loot/gravity completion,
+new APK, account/player-creation UI or other-map gameplay integration. No
+Quest detected. See ORIGINAL-PAWN-TICK-PREPROCESSING.md and
+ORIGINAL-SCRIPTEDPAWN-TICK-PREREQUISITES.md.
+
 Latest2026-10-26: shared scalar IEEE Float arithmetic/storage now lets original
 TriggerLight.Tick recover its own intermediate infinity, with no ChangeTime
 override or skipped actor. PC64/Float spills, NaN loading/payloads, compound

@@ -39,6 +39,7 @@
 #include "quest_actor_mover_interpolation.h"
 #include "quest_actor_physics_phase.h"
 #include "quest_actor_tick_tail.h"
+#include "quest_actor_pawn_context.h"
 #include "quest_actor_stasis.h"
 #include "quest_level_player_distance.h"
 #include "quest_native_window_location.h"
