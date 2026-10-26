@@ -18,6 +18,23 @@ falling upper crate, collectible loot and save/load in the actual headset.
 Quest currently calls neither the startup probe nor the original dynamic-actor
 phase. Preserve the first-map-only scope; no accounts or character-creation UI.
 
+Latest2026-10-27: actual local-player native sequence is coordinated and bound:
+Camera ShowFlags0800, fresh Player pre/post, raw delta/checked PlayerInput/
+PlayerTick/raw-1 post, and authenticated standalone tail. It validates actual
+viewport/session/backedge then refuses the missing configured Input service,
+not empty input or ordinary Tick. New helper374/34 and full production27,971/
+584 before final schema control exit0. Full desktop/Android-native/strict GNU+
+ARM64 pass; CTest218 executed/257 registered/39 skips/zero failures138.01s,
+owned crate415/5, deferred429/21, animation588/24 and FastTrace252/0 pass.
+
+Cold/warm actual Training repeat2 reaches the configured Input preparation
+dependency at239,200/19,364,144 slots/144 calls. Doors retain both56-unit moves/
+two ends at239,536/19,432; two-Fire repeat2 retains228,837/26,047,48 rows/two
+cycles/two notifies/four traces/two crate changes/nine births before later
+FExec. Full undo/proof lifetime/cold replacement/all45 originals/9 frozen
+inputs pass; all jobs terminal. Next: ORIGINAL-TRAINING-CONFIGURED-INPUT-GAP.md.
+No other maps or new APK; the required genuine live bridge remains unfinished.
+
 Latest2026-10-26: exact five-node native DeusExPlayer/PlayerPawnExt/PlayerPawn/
 Pawn/Actor update is admitted at the proven Actor Tick/state and separate
 APawn physics/callback entry points. No ScriptedPawn NPC wrapper, forced

@@ -96,9 +96,61 @@
             static_cast<void>(require(a));static_cast<void>(require(playerPawn));
             throw std::runtime_error("Original remote PlayerPawn view-copy continuation is not implemented");
         };
-        q.localPlayerTick=[&](auto a,auto playerPawn,auto,float,std::int32_t)->QuestVr::OriginalPawnLocalTickResult {
+        q.localPlayerTick=[&](auto a,auto playerPawn,auto initialPlayer,float delta,std::int32_t)->QuestVr::OriginalPawnLocalTickResult {
             static_cast<void>(require(a));static_cast<void>(require(playerPawn));
-            throw std::runtime_error("Original local Player input/PlayerTick continuation is not implemented");
+            QuestVr::OriginalPlayerLocalTickQueries local;local.work=[this]{LifecycleStep();};
+            local.cameraCast=[&](auto identity) {
+                auto* receiver=require(identity);auto* camera=Object("Engine.Camera");
+                // Actual ACamera Class1057B510, native Engine.u ref5595 ->
+                // canonical PlayerPawn5. Neither name similarity nor a Bool
+                // bUpdatePosition field proves the native +5FC ShowFlags gate.
+                if(!camera->classDescriptor||camera->defaultOwner||!camera->classFieldLinksValid||
+                    camera->reflection.metaClass!="Class"||!(camera->reflection.flags&0x04000000u)||
+                    camera->base!=Object("Engine.PlayerPawn"))
+                    throw std::runtime_error("Original local Player Tick lost its actual native Camera cast target");
+                return !CastObject("Engine.Camera",Value::Text(Kind::Object,receiver->reflection.objectPath),false).text.empty();
+            };
+            local.cameraShowFlags=[&](auto identity) {
+                auto* receiver=require(identity);
+                const auto flags=OriginalAnimationRead(receiver,OriginalAnimationField(receiver,
+                    "Engine.PlayerPawn","ShowFlags",Kind::Int,0u,"IntProperty"),Kind::Int);
+                return static_cast<std::uint32_t>(flags.integer);
+            };
+            // The original rereads Player+5D4 before BOTH virtual calls.
+            // Callbacks may replace the pointer; never reuse initialPlayer.
+            local.player=[&](auto identity){static_cast<void>(require(identity));return q.player(identity);};
+            local.readInput=[&](auto player,float) {
+                auto* receiver=require(a);
+                if(!receiver->nativePlayerBinding||!receiver->nativePlayer||
+                    player!=reinterpret_cast<std::uintptr_t>(receiver->nativePlayer))
+                    throw std::runtime_error("Original local Player ReadInput lacks its actual native player binding");
+                auto* viewport=receiver->nativePlayer;
+                clientDependent_=true;
+                if(!viewport->nativeViewportIdentity||NativeSessionViewport(viewport->nativeViewportIdentity)!=viewport||
+                    viewport->nativeViewportActor!=receiver)
+                    throw std::runtime_error("Original local Player ReadInput has a revoked, stale or unpaired viewport");
+                // Actual UViewport+54 requires an owned configured Input at+60
+                // before UpdateInput/Input.ReadInput. The wrapper registry is
+                // not that native Input instance, and is not a no-op input hook.
+                throw std::runtime_error("Original viewport ReadInput configured Input service is not prepared");
+            };
+            local.playerInput=[&](auto identity,float elapsedInput) {
+                OriginalNativeActorCallback(require(identity),"PlayerInput",Value::Float(elapsedInput),execution);
+            };
+            local.playerTick=[&](auto identity,float elapsedTick) {
+                OriginalNativeActorCallback(require(identity),"PlayerTick",Value::Float(elapsedTick),execution);
+            };
+            local.hasNetDriver=[&](auto identity) {
+                auto* receiver=require(identity);
+                if(!receiver->nativeXLevel->nativeStandaloneLevelServices)
+                    throw std::runtime_error("Original local Player Tick has no authenticated native NetDriver identity");
+                return false; // Loader-owned actual absent standalone NetDriver.
+            };
+            local.networkTail=[&](auto identity) {
+                static_cast<void>(require(identity));
+                throw std::runtime_error("Original local Player network-copy continuation is not implemented");
+            };
+            return QuestVr::AdvanceOriginalPlayerLocalTick(a,playerPawn,initialPlayer,delta,local).result;
         };
         q.isProbingTick=[&](auto a) {
             const auto context=CurrentDispatchContext(require(a),true);

@@ -1,5 +1,36 @@
 # Port status
 
+## Original local-player update sequence verified (2026-10-27)
+
+The native local-player coordinator now preserves the real Camera ShowFlags
+0800 early return, fresh Player reads before both native input calls, raw
+delta/pre-input -> checked PlayerInput -> checked PlayerTick -> raw-1/post-input,
+then genuine standalone network absence and ProcessState/timer continuation.
+It never substitutes ordinary Tick/type1 or empty input providers. The runtime
+validates actual Camera/ShowFlags and bound viewport/session/backedge authority
+before explicitly refusing missing configured Input preparation.
+
+New helper374 checks/34 refusals pass, including lazy/raw packets, Player
+replacement/null, callback faults/missing providers and all shared-work cuts.
+Full production27,971/584 before final schema control still exits0. Desktop/
+Android-native/strict GNU+ARM64 pass; CTest218 executed/257 registered/39
+explicit skips/zero failures138.01s. Separate owned crate415/5, deferred429/21,
+animation588/24 and FastTrace252/0 pass.
+
+Cold/warm actual Training repeat2 now reaches the precise configured Input
+service-not-prepared refusal at239,200 instructions/19,364 writes,144 slots/
+144 calls. Doors retain both56-unit moves/two ends at239,536/19,432; two-Fire
+repeat2 retains228,837/26,047,48 rows/two cycles/two notifies/four traces/two
+crate changes/nine births before later FExec. Whole-root undo, immutable Model
+cold/warm proof and cold generation replacement pass. Final audit confirms
+all45 original files/9 frozen compiler inputs unchanged; all jobs terminal.
+
+See ORIGINAL-TRAINING-LOCAL-PLAYER-TICK-GAP.md and next
+ORIGINAL-TRAINING-CONFIGURED-INPUT-GAP.md. Input/InputExt construction/config/
+ReadInput and the live weapon/inventory/frame/publication bridges are not
+implemented by this coordinator. First Training only; live crate destruction,
+collectible loot, automatic gravity and replacement APK remain unfinished.
+
 ## Original first-Training DeusExPlayer update admission verified (2026-10-26)
 
 Exact native DeusExPlayer -> Extension.PlayerPawnExt -> PlayerPawn -> Pawn ->

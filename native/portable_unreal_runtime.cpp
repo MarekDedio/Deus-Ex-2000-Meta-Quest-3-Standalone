@@ -43,6 +43,7 @@
 #include "quest_actor_tick_tail.h"
 #include "quest_actor_pawn_context.h"
 #include "quest_actor_pawn_tick.h"
+#include "quest_player_local_tick.h"
 #include "quest_actor_timer_phase.h"
 #include "quest_actor_last_rendered.h"
 #include "quest_scripted_pawn_tick.h"
