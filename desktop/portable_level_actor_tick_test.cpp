@@ -351,6 +351,7 @@ Tables Build(Fixture& fixture,bool moverControl=false,std::uint32_t oldLocationF
         engine.Property("Weapon","ObjectProperty",nativePawn,ec,weapon,0x10020u);
         engine.Property("Health","IntProperty",nativePawn,ec,0,0x10021u);
         engine.Property("MoveTimer","FloatProperty",nativePawn,ec);
+        engine.Property("AvgPhysicsTime","FloatProperty",nativePawn,ec,0,2u);
         engine.Property("bAdvancedTactics","BoolProperty",nativePawn,ec);
         engine.Property("bOnFire","BoolProperty",nativePawn,ec,0,0x20u);
         engine.Property("bIsPlayer","BoolProperty",nativePawn,ec,0,0x20u);
@@ -358,6 +359,7 @@ Tables Build(Fixture& fixture,bool moverControl=false,std::uint32_t oldLocationF
         engine.Property("burnTimer","FloatProperty",nativePawn,ec,0,0x20u);
         engine.Property("PrePivot","StructProperty",actor,ec,ev,0x20u);
         engine.Property("Acceleration","StructProperty",actor,ec,ev,0x20u);
+        engine.Property("DesiredRotation","StructProperty",actor,ec,er,0x21u);
     }
     engine.Property("Role","ByteProperty",actor,ec,roleEnum,0x20u);
     engine.Property("RemoteRole","ByteProperty",actor,ec,roleEnum,0x21u);
@@ -411,6 +413,8 @@ Tables Build(Fixture& fixture,bool moverControl=false,std::uint32_t oldLocationF
     engine.Function("Timer",actor,ec,Return(),0u,0x800u);
     if(scriptedPawnBoundary) {
         engine.Function("Expired",actor,ec,Return(),0u,0x800u);
+        const auto postTouch=engine.Function("PostTouch",actor,ec,Return(),0u,0x800u);
+        engine.Property("Other","ObjectProperty",postTouch,ec,actor,0x80u);
         const auto lastRendered=engine.Function("LastRendered",actor,ec,{},723u,0x401u);
         engine.Property("ReturnValue","FloatProperty",lastRendered,ec,0,lastRenderedReturnFlags);
     }
@@ -516,6 +520,24 @@ Tables Build(Fixture& fixture,bool moverControl=false,std::uint32_t oldLocationF
         expiredCode.IfNot(Native(154u,{Ref(0x01u,suffixMode),Int(3)}),"expired-pass");
         expiredCode.Add(Native(999u));expiredCode.Label("expired-pass");expiredCode.Add(Return());
         deusex.Function("Expired",pawn,dc,expiredCode.Finish(),0u,2u);
+        const auto postCount=deusex.Property("PostTouchCount","IntProperty",pawn,dc);
+        const auto postTimer=deusex.Property("PostTouchTimer","FloatProperty",pawn,dc),
+            postAverage=deusex.Property("PostTouchAverage","FloatProperty",pawn,dc);
+        const auto postOther=deusex.Property("PostTouchOther","ObjectProperty",pawn,dc,actorImport);
+        const auto postTouch=deusex.Function("PostTouch",pawn,dc,{},0u,2u);
+        const auto postInput=deusex.Property("Other","ObjectProperty",postTouch,dc,actorImport,0x80u);
+        const auto pendingImport=deusex.Import("PendingTouch",actorImport,"ObjectProperty");
+        const auto enginePawnImport=deusex.Import("Pawn",de);
+        const auto moveTimerImport=deusex.Import("MoveTimer",enginePawnImport,"FloatProperty"),
+            averageImport=deusex.Import("AvgPhysicsTime",enginePawnImport,"FloatProperty");
+        Flow postCode;postCode.Add(increment(postCount));
+        postCode.Add(Assign(Ref(0x01u,postTimer),Ref(0x01u,moveTimerImport)));
+        postCode.Add(Assign(Ref(0x01u,postAverage),Ref(0x01u,averageImport)));
+        postCode.Add(Assign(Ref(0x01u,postOther),Ref(0x00u,postInput)));
+        postCode.IfNot(Native(154u,{Ref(0x01u,suffixMode),Int(4)}),"post-pass");
+        postCode.Add(Native(999u));postCode.Label("post-pass");
+        postCode.Add(Assign(Ref(0x01u,pendingImport),Token(0x2au)));postCode.Add(Return());
+        deusex.FunctionCode(postTouch,postCode.Finish(),0u,2u);
         const auto captureAge=deusex.Function("CaptureLastRendered",pawn,dc,Join({
             Assign(Ref(0x01u,observedAge),Native(723u)),Return(Ref(0x01u,observedAge))}));
         deusex.Property("ReturnValue","FloatProperty",captureAge,dc,0,0x580u);
@@ -1019,7 +1041,7 @@ void ScriptedPawnBoundaryControl() {
             "Pawn suffix stopped before actual "+label+": "+result.execution.error);
         undo(before,revision,gc,label);
         Require(Count("Bad0","TickCount")==0&&Count("Bad0","StateCount")==0&&Count("Bad0","TimerCount")==0&&
-            Count("Bad0","ExpiredCount")==0&&Count("Bad0","SuffixOrder")==0,
+            Count("Bad0","ExpiredCount")==0&&Count("Bad0","SuffixOrder")==0&&Count("Bad0","PostTouchCount")==0,
             "Pawn suffix retained actual selected callback/state observations after "+label);
         ++refusals;return result;
     };
@@ -1053,6 +1075,42 @@ void ScriptedPawnBoundaryControl() {
         if(cut==ordinaryCommit.execution.nativeWork->used-1u)Require(refused.execution.writes>=ordinaryCommit.execution.writes-1u,
             "Late Pawn work cutoff did not follow real selected Tick/state/timer stores");
     }
+
+    // Physics5 has no APawn movement dispatch, but MUST execute the authentic
+    // fresh rotation gate and timer/PendingTouch epilogue. No movement service
+    // is replaced with an empty callback to obtain this success control.
+    auto pawnOuter=ordinarySeed;Property(pawnOuter,"Bad0","Engine.Actor.Physics",Value::Byte(5u));
+    Property(pawnOuter,"Bad0","Engine.Actor.Velocity",Value::Vector({7.0f,-8.0f,9.0f}));
+    Property(pawnOuter,"Bad0","Engine.Pawn.MoveTimer",Value::Float(2.0f));
+    Property(pawnOuter,"Bad0","Engine.Pawn.AvgPhysicsTime",Value::Float(0.5f));
+    Property(pawnOuter,"Bad0","Engine.Actor.PendingTouch",Value::Text(Kind::Object,Path("Bad0")));
+    fixture.Restore(Envelope(legacy,pawnOuter));
+    const auto outerCommit=AdvancePortableLevelDynamicActors(0.25f,0);RequirePass(outerCommit);
+    Require(readFloat("MoveTimer")==1.75f&&readFloat("AvgPhysicsTime")==0.45f&&
+        Count("Bad0","PostTouchCount")==1&&readFloat("PostTouchTimer")==1.75f&&readFloat("PostTouchAverage")==0.45f,
+        "APawn outer timers were skipped, reordered after PostTouch or used Actor physics");
+    Require(ReadPortableActorScriptProperty(Path("Bad0"),"PostTouchOther").text==Path("Bad0")&&
+        ReadPortableActorScriptProperty(Path("Bad0"),"PendingTouch").text.empty()&&
+        ReadPortableActorScriptProperty(Path("Bad0"),"Velocity").vector==std::array<float,3u>{7,-8,9},
+        "Original Pawn PostTouch Actor packet/callback-null semantics or inactive Velocity changed");
+    const auto outerSaved=fixture.Save("PawnOuterCommitted");fixture.Restore(legacy);fixture.Restore(outerSaved);
+    Require(fixture.Save("PawnOuterReloaded")==outerSaved&&readFloat("MoveTimer")==1.75f&&
+        ReadPortableActorScriptProperty(Path("Bad0"),"PendingTouch").text.empty(),
+        "Committed Pawn outer timer/native edge did not survive checkpoint/rebind");
+    auto latePost=pawnOuter;Property(latePost,"Bad0","DeusEx.ScriptedPawn.SuffixMode",Value::Integer(4));
+    const auto postFailure=suffixRefusal(latePost,{},"actual PostTouch callback after Pawn timers",Status::Unsupported,"999");
+    Require(postFailure.execution.writes>=ordinaryCommit.execution.writes+6u,
+        "PostTouch failure did not follow real Pawn timer and observation writes");
+    auto rotationNeeded=pawnOuter;
+    Property(rotationNeeded,"Bad0","Engine.Actor.DesiredRotation",Value::Rotator({0,1,0}));
+    suffixRefusal(rotationNeeded,{},"actual separate Pawn rotation",Status::Unsupported,"Original Pawn physicsRotation is not implemented");
+    for(const auto cut:{outerCommit.execution.writes-1u}) {
+        QuestVr::Vm::Limits limits;limits.writes=cut;
+        suffixRefusal(pawnOuter,limits,"late Pawn outer write",Status::Budget,{});
+    }
+    Require(outerCommit.execution.nativeWork&&outerCommit.execution.nativeWork->used>0u,"Pawn outer escaped shared native work");
+    QuestVr::Vm::Limits outerWork;outerWork.nativeWork=outerCommit.execution.nativeWork->used-1u;
+    suffixRefusal(pawnOuter,outerWork,"late Pawn outer work",Status::Budget,{});
 
     // Actual bound native723, entered by decoded generated UE1 bytecode, not
     // by its pure arithmetic helper. Deliberately unrelated Float mirror time
@@ -1098,7 +1156,7 @@ void ScriptedPawnBoundaryControl() {
 
     // With no owner cycle and Physics1, actual selected Tick/timer/LifeSpan
     // now precede the still-unimplemented real Pawn virtual physics service.
-    const std::string expected="Original Pawn performPhysics is not implemented";
+    const std::string expected="Original Pawn performPhysics mode 1 is not implemented";
     fixture.Restore(Envelope(legacy,withAlliances(state,originalAlliances)));
     const auto arrayBefore=fixture.Save("ScriptedPawnAllianceBefore");
     const auto arrayRevision=GetPortableRuntimeWorldRevision();const auto arrayGc=GC::GetStats();
@@ -1214,7 +1272,7 @@ void ScriptedPawnBoundaryControl() {
     std::cout<<"PASS generated production ScriptedPawn native prefix: "<<checks<<" cumulative checks / "<<refusals
         <<" refusals; actual typed cross-package wrapper/decay/vector/Name stores, live fixed alliance-array decay/clamp/protected siblings/flag-clear/rollback, selected EnableCloak true/false Bool packets, genuine base return0 owner-cycle control, "
           "Physics0 actual selected Tick/ProcessState/Timer/LifeSpan/short-Pawn continuation, unconditional timer stores, "
-          "bound native723 Float/PC64/native-clock/malformed-schema/packet controls, genuine late Pawn physics/destroy refusals, "
+          "bound native723 Float/PC64/native-clock/malformed-schema/packet controls, actual APawn timers/PostTouch Actor packet/callback-null/checkpoint and late full-root undo, genuine late Pawn movement/rotation/destroy refusals, "
           "repeat identity and shared-root work/write/save/revision/parity/GC undo. Equipped-Weapon FarMove coverage deferred; "
           "NOT NPC movement/Pawn physics, original Training completion or headset acceptance.\n";
 }

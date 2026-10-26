@@ -4,8 +4,10 @@ Read-only static audit, 2026-10-26. Integration remains the first
 `Maps/00_Training.dx`, not other maps. This document adds no physics code and
 proves neither a committed Training frame nor completed crate destruction,
 collectible loot, automatic stacked-crate gravity or headset gameplay.
-Current `portable_actor_pawn_tick.inl` deliberately refuses the reached
-`APawn.performPhysics` service; the existing crate helper is not its alias.
+Current `portable_actor_pawn_tick.inl` calls the separate original APawn outer
+coordinator in `portable_pawn_perform_physics.inl`. It now reaches the actual
+falling method, whose Pawn preprocessing/setup remains explicitly unfinished;
+the crate helper is not a replacement for that branch.
 
 ## Owned-source authority
 
@@ -23,11 +25,13 @@ Addresses below are the original preferred-image PE32 addresses, never
 portable object offsets. Existing native virtual identity proof is in
 `ORIGINAL-SCRIPTEDPAWN-TICK-PREREQUISITES.md`: ScriptedPawn physics+8C imports
 `APawn.performPhysics`, thunk10302860 to body103C9A70. It is different from
-`AActor.performPhysics`103C9770. Current actual first-Training repeat2 now
-passes the guarded selected Tick/state/native-timer/LifeSpan suffix and reaches
-`Original Pawn performPhysics is not implemented` at206,922 instructions/
-15,797 writes, with full undo. This proves the reached boundary, not completed
-Pawn movement or startup.
+`AActor.performPhysics`103C9770. Current actual first-Training repeat2 passes
+the guarded selected Tick/state/native-timer/LifeSpan suffix and the separate
+APawn outer dispatch, then reaches `Original Pawn physFalling preprocessing
+is not implemented` at206,922 instructions/15,797 writes, with full undo.
+The outer's additional native reads/work do not add script instructions/stores
+before this next boundary. This proves the reached method, not completed Pawn
+movement or startup.
 
 ## The first falling preprocessor is not all Pawn falling work
 
@@ -136,11 +140,12 @@ budget. There is no inner commit/undo or synthesized null PendingTouch.
 
 ## Actionable implementation slice
 
-Implement a separate original Pawn outer coordinator and tests, preserving
-the entry Velocity capture, the actual Physics2 service, rotation gate,
-MoveTimer/average stores and the distinct callback-mutated-null touch path.
-Reachable missing services must remain explicit; this alone is not finished
-NPC physics. Then extend the shared falling contract with authenticated
+The separate original Pawn outer coordinator is now implemented, preserving
+entry Velocity capture, actual Physics2 service, rotation gate, MoveTimer/
+average stores and the distinct callback-mutated-null touch path. Focused
+helper and generated production callback/checkpoint/undo controls pass; see
+ORIGINAL-PAWN-PERFORM-PHYSICS.md. Active missing movement/rotation services stay
+explicit, so this is not finished NPC physics. Next extend the shared falling contract with authenticated
 non-PlayerPawn preprocessing and actual Pawn air-control setup, followed by
 the real Pawn processLanded/Walking continuation and Pawn rotation as reached
 by the first Training NPCs. Keep other unvisited modes closed, not no-op.

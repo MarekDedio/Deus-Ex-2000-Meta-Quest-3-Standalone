@@ -1,12 +1,13 @@
 // Native FindFunctionChecked + AActor::ProcessEvent, on the caller's existing
 // root. Input packets are deliberately limited to the authenticated scalar
-// Float/Bool or no-parameter forms reached by these original native phases.
+// Float/Bool/Actor or no-parameter forms reached by these native phases.
     void OriginalNativeActorCallback(RuntimeObject* actor,const char* name,std::optional<Value> input,
         QuestVr::Vm::Execution& execution) {
         if(!transaction_)throw std::runtime_error("Original native Actor callback lacks its caller root");
         actor=LifecycleActor(reinterpret_cast<std::uintptr_t>(actor));
-        if(input&&input->kind!=Kind::Bool&&input->kind!=Kind::Float)
+        if(input&&input->kind!=Kind::Bool&&input->kind!=Kind::Float&&input->kind!=Kind::Object)
             throw std::runtime_error("Original native Actor callback received an unaudited input packet");
+        if(input&&input->kind==Kind::Object)ValidateObjectValue(*input,"Engine.Actor",false);
         QuestVr::NativeScratchScope scratch(nativeQueryScratchBytes_,4096u,
             [this](std::size_t bytes){ValidateStateBudget(bytes);});
         std::shared_ptr<const Function> function;
@@ -46,15 +47,18 @@
         for(const auto& field:declaration->variables) {
             LifecycleStep();if(!(field.flags&0x80u))continue;
             auto* parameter=Object(field.key);
-            const auto type=input&&input->kind==Kind::Bool?"BoolProperty":"FloatProperty";
+            const bool actorInput=input&&input->kind==Kind::Object;
+            const auto type=actorInput?"ObjectProperty":input&&input->kind==Kind::Bool?"BoolProperty":"FloatProperty";
             if(!input||parameters++||field.zero.kind!=input->kind||field.arrayDimension!=1u||field.flags!=0x80u||
                 parameter->outer!=method||!parameter->property||parameter->property->type!=type||
-                parameter->property->baseField||parameter->property->referencedType||
+                parameter->property->baseField||
+                (actorInput?LowerAscii(Qualified(Table(parameter->sourcePath),parameter->property->referencedType))!="engine.actor":
+                    parameter->property->referencedType!=0)||
                 LowerAscii(Qualified(Table(parameter->sourcePath),Table(parameter->sourcePath).exports.at(parameter->exportIndex).ObjClass))!=
                     std::string("core.")+LowerAscii(type))
                 throw std::runtime_error("Original native Actor callback has a different native parameter/result packet");
             arguments.push_back({*input,{}});
         }
-        if(parameters!=(input?1u:0u))throw std::runtime_error("Original native Actor callback is missing its actual scalar packet");
+        if(parameters!=(input?1u:0u))throw std::runtime_error("Original native Actor callback is missing its actual input packet");
         static_cast<void>(execution.CallFunction(*function,actor->reflection.objectPath,arguments));
     }

@@ -80,20 +80,7 @@
         q.remoteRole=[&](auto a){return role(a,true);};q.role=[&](auto a){return role(a,false);};
         q.physics=[&](auto a){auto* r=require(a);return static_cast<std::uint8_t>(OriginalAnimationRead(r,ActorPhysicsProperty(r),Kind::Byte).integer);};
         q.playerPawnCast=[&](auto a) {
-            auto* r=require(a);auto* target=Object("Engine.PlayerPawn");
-            if(!target->classDescriptor||target->defaultOwner||!target->classFieldLinksValid||target->reflection.metaClass!="Class"||
-                !(target->reflection.flags&0x04000000u)||target->base!=Object("Engine.Pawn"))
-                throw std::runtime_error("Original Pawn Tick lost its actual native PlayerPawn cast target");
-            std::array<RuntimeObject*,128u> visited{};std::size_t depth{};
-            for(auto* cls=r->cls;cls;cls=cls->base) {
-                LifecycleStep();
-                if(depth==visited.size()||std::find(visited.begin(),visited.begin()+depth,cls)!=visited.begin()+depth||
-                    !cls->classDescriptor||cls->defaultOwner||!cls->classFieldLinksValid)
-                    throw std::runtime_error("Original Pawn Tick PlayerPawn ancestry is malformed or cyclic");
-                visited[depth++]=cls;
-                if(cls==target)return a;
-            }
-            return std::uintptr_t{};
+            return OriginalPawnPlayerCast(require(a));
         };
         q.player=[&](auto a) {
             auto* r=require(a);const auto field=RetailPredicatePointerField(r,"Engine.PlayerPawn.Player","Engine.PlayerPawn","Engine.Player",2u);
@@ -132,9 +119,8 @@
         q.writeLifeSpan=[&](auto a,float v){auto* r=require(a);WriteFallingScalar(r,life(r),Value::Float(v),execution);};
         q.expired=[&](auto a){OriginalNativeActorCallback(require(a),"Expired",{},execution);};
         q.destroy=[&](auto a,std::int32_t force){auto* r=require(a);static_cast<void>(DestroyNativeActor(r->nativeXLevel,r,force,execution));};
-        q.performPhysics=[&](auto a,float) {
-            static_cast<void>(require(a));
-            throw std::runtime_error("Original Pawn performPhysics is not implemented");
+        q.performPhysics=[&](auto a,float delta) {
+            static_cast<void>(RetailPerformPawnPhysics(require(a),delta,execution));
         };
         q.networkTail=[&](auto a,auto pawn) {
             auto* r=require(a);if(pawn)static_cast<void>(require(pawn));

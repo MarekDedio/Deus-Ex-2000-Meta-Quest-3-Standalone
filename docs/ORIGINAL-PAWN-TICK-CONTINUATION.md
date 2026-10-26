@@ -1,7 +1,7 @@
 # Original ordinary Pawn Tick continuation and short retained tail
 
 Owned GOTY static audit, 2026-10-26. Scope: the first `00_Training.JaimeReyes0`
-boundary after genuine MAIN/BLEND. This does not implement or admit APawn
+boundary after genuine MAIN/BLEND. This does not complete APawn movement/
 physics, the simulated-Pawn branch, player input, network execution or the
 tickType2 perception tail. It does not establish playable Training.
 
@@ -34,9 +34,13 @@ driver exits0 after7,246/136 and its final malformed-schema control.
 
 Actual first Training repeat2 now passes the former continuation gate and
 reaches `Original Pawn performPhysics is not implemented`, identically at
-206,922 instructions/15,797 writes with full root undo. This is a new reached
-boundary, not completed startup or NPC physics. The APawn/falling/landing
-differences are recorded in `ORIGINAL-TRAINING-PAWN-PHYSICS-GAP.md`.
+206,922 instructions/15,797 writes with full root undo at that checkpoint.
+The subsequent APawn outer implementation now calls the actual falling
+method and reaches its explicit Pawn-preprocessing gap with the same script
+instruction/write counts. Neither result is completed startup or NPC physics.
+The current APawn outer and remaining falling/landing differences are recorded
+in `ORIGINAL-PAWN-PERFORM-PHYSICS.md` and
+`ORIGINAL-TRAINING-PAWN-PHYSICS-GAP.md`.
 
 The actual reached entry has captured Pawn=source and simulatedPawn=false
 (entry Role4), fresh Role4, RemoteRole2, Physics2, tickType0. The captured Pawn

@@ -1,5 +1,27 @@
 # Immediate milestone: complete the first Training map
 
+Latest2026-10-26: real APawn outer physics now binds from the Pawn suffix:
+entry raw Velocity, actual dispatch table, fresh Pawn-specific rotation gate,
+MoveTimer/AvgPhysicsTime PC64 stores and native PendingTouch/PostTouch with
+the real Actor input packet and legitimate callback-null behavior. No generic
+Actor physics alias, missing-service success or skipped NPC was introduced.
+
+Helper717,838/46 with35,512 independent x87 cases and generated production
+ScriptedPawn2,620 cumulative/44 controls pass; complete driver7,492/140 plus
+final malformed-schema control exits0. Full desktop/Android-native/strict
+ARM64 checks pass. CTest214 executed/253 registered/39 explicit skips/zero
+failures62.79s; owned crate415/5, deferred429/21 and animation588/24 pass.
+
+Actual Training repeat2 reaches the new real falling-preprocessing gap at
+206,922 instructions/15,797 writes with full undo. Pair-door repeat2 stays
+207,258/15,865 with both56-unit moves/2 completion callbacks; two-Fire repeat2
+stays228,837/26,047 with real crate/loot/debris observations and full undo at
+later FExec. All45 originals and8 compiler inputs are unchanged; all jobs
+are terminal. No APK, account/player-creation UI or other-map integration.
+Live first-map destruction, surviving collectible loot and gravity remain
+unfinished. Next is actual Pawn falling setup/landing/Walking, not a bypass;
+see ORIGINAL-PAWN-PERFORM-PHYSICS.md and ORIGINAL-TRAINING-PAWN-PHYSICS-GAP.md.
+
 Latest2026-10-26: ordinary Pawn post-animation Tick/state/native-timer/LifeSpan
 and the short retained tail now bind in the enclosing Level root. Native723
 LastRendered uses the authenticated actual declaration/native Double clock,

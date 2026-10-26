@@ -1,5 +1,45 @@
 # Port status
 
+## Original APawn physics coordinator bound to Training (2026-10-26)
+
+The Pawn Tick suffix now calls the separate original APawn performPhysics
+outer coordinator, not Actor's dispatch/rotation implementation. It captures
+raw entry Velocity, preserves the actual Pawn dispatch table and fresh
+rotation gate, updates MoveTimer/AvgPhysicsTime in retained PC64 with exact
+Float spills, and implements Pawn's callback-mutated-null PendingTouch path.
+The shared native callback adapter authenticates the original Actor parameter
+packet for PostTouch alongside existing Float/Bool/none packets. The original
+bounded PlayerPawn cast is shared without changing its source read order.
+Active missing movement/rotation services still refuse, never silently succeed.
+
+Helper717,838 checks/46 refusal controls/35,512 independent x87 arithmetic
+cases pass. Generated production scripts observe the new native timer values,
+receive the real Actor Other packet and clear the actual pending pointer;
+checkpoint/rebind and late callback/work/write whole-root rollback pass.
+ScriptedPawn section2,620 cumulative/44 and complete driver7,492/140 plus final
+malformed-schema control pass. Full desktop, Android native and strict ARM64
+checks pass. CTest253 registered/214 executed/39 explicit owned-data skips/
+zero failures62.79s; separate owned crate415/5, deferred429/21 and animation
+588/24 regressions pass.
+
+Actual first Training repeat2 now enters the correct falling method and
+reaches `Original Pawn physFalling preprocessing is not implemented`, retaining
+206,922 instructions/15,797 writes/54 calls and full undo. Paired doors repeat
+207,258/15,865 with both56-unit moves/2 completion callbacks before the same
+new boundary. Two-crowbar-Fire repeat2 remains228,837/26,047 with48 rows/
+2 cycles/2 notifies/4 traces/2 crate changes/9 births and complete undo at
+later unimplemented PlayerPawn FExec. These expected-error diagnostics do not
+commit a playable startup or publish surviving loot.
+
+All45 checked original files and8 final compiler inputs are unchanged in
+SHA256/length/UTC-mtime. All build/test/probe jobs are terminal. No APK was
+packaged; no account/character-creation UI or other-map integration was added.
+Full first-map live destruction, collectible loot and automatic stacked-crate
+gravity remain unfinished. Next is actual Pawn falling preprocessing/air
+control and landing/Walking, then Pawn rotation as reached, with no skipped
+NPCs or fabricated floors. See ORIGINAL-PAWN-PERFORM-PHYSICS.md and
+ORIGINAL-TRAINING-PAWN-PHYSICS-GAP.md.
+
 ## Ordinary Pawn update reaches actual physics in Training (2026-10-26)
 
 The original post-animation Pawn continuation now executes selected Tick,
