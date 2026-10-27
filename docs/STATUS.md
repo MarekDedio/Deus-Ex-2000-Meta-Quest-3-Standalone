@@ -1,5 +1,29 @@
 # Port status
 
+## Latest: original text translucency and longer HUD initialization (2026-10-27)
+
+Window.EnableTranslucentText1483 now follows the original optional-true argument,
+equal-input no-op and Window/drawing-GC store order. No layout or general-GC
+effects were invented. Original mission-start text and bark-display construction
+now finish; startup next reaches HUDReceivedDisplay.CreateReceivedLabel PC54,
+native1550. Owned HUD9679 controls and VM696501/920 pass; GC155/16 covers43
+Window cases plus cold/warm/write/work/save/GC/counter undo. All193 native
+objects are captured within the unchanged4MiB diagnostic cap by removing a
+provable short-string inline-storage double charge, not omitting fields.
+
+Full desktop build, current Android-native link and strict ARM64 pass. CTest:
+269 registered,225 executed,44 explicit skips,zero failures138.06s. All eight
+rebuilt owned first-Training regressions pass. All45 originals/20 frozen compiler
+inputs match length/mtime/SHA256 baselines; all jobs are terminal. Two-Fire
+repeat2 reaches1550 at254194/30860, preserving both crate changes/nine births
+and whole-root undo. Doors retain both56-unit moves and exact ReadInput refusal.
+
+This remains backend startup progress, NOT live VR crates, surviving loot,
+gravity or a new APK. Next:SetText1550 with original conversion/virtual/accelerator
+semantics, remaining input/startup services, then committing VR weapon/frame/
+publication. No account/character-creation UI or other-map integration. See
+ORIGINAL-TEXT-TRANSLUCENCY.md for evidence and the next audited boundary.
+
 ## Latest: original GC context and native text sizing (2026-10-27)
 
 Original CopyGC/PushGC/PopGC1270-72 and Window.GetGC/ReleaseGC1485-86 now use

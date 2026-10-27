@@ -1,5 +1,20 @@
 # Immediate milestone: complete the first Training map
 
+Latest2026-10-27: original Window.EnableTranslucentText1483 is implemented with
+the exact optional-true/equality/Window/drawing-GC protocol and no layout effect.
+The full193-object HUD prefix is captured within the unchanged4MiB limit after
+removing a provable short-string inline-storage double charge. Owned HUD9679,
+VM696501/920 and GC155/16 pass. Desktop/Android-native/strict ARM64 pass;
+CTest225 executed/269 registered/44 skips/zero failures138.06s. All eight rebuilt
+owned first-Training regressions and45-original/20-input fingerprint audits pass;
+all jobs are terminal. Original two-Fire repeat2 now reaches actual SetText1550
+at254194/30860, preserving two attack notifies/four traces/two crate changes/
+nine births/full undo. Door repeat2 retains both56-unit moves/two endpoints and
+the exact missing ReadInput service. Next:SetText1550/remaining genuine startup,
+then the committing VR weapon/frame/publication bridge below. No completed live
+crate/loot/gravity claim or new APK; accepted VR layout unchanged, first map only.
+See ORIGINAL-TEXT-TRANSLUCENCY.md.
+
 Latest2026-10-27: actual GC context1270-72/1485-86 and TextWindow preferred
 sizing now use original context graphs, bounded original Font metrics and the
 audited text line/extent algorithm. Owned HUD9389 controls, GC155/16, font

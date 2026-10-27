@@ -4089,6 +4089,7 @@ public:
         if(index==1430u) return WindowConfigurationNative(Object(receiver),arguments,declaration,execution);
         if(index==1432u) return WindowPositionNative(Object(receiver),arguments,declaration,execution);
         if(index==1475u || index==1476u) return WindowColorNative(index,Object(receiver),arguments,declaration,execution);
+        if(index==1483u) return WindowTextTranslucencyNative(Object(receiver),arguments,declaration,execution);
         if(index==1556u || index==1557u || index==1558u)
             return TextWindowSetterNative(index,Object(receiver),arguments,declaration,execution);
         if(index==1572u || index==1573u)
@@ -4343,6 +4344,8 @@ public:
             parameters={{"NewColor",Kind::Struct,0x80u,"StructProperty","Core.Object.Color"}};break;
         case 1476u:path="Extension.Window.SetTextColor";
             parameters={{"NewColor",Kind::Struct,0x80u,"StructProperty","Core.Object.Color"}};break;
+        case 1483u:path="Extension.Window.EnableTranslucentText";
+            parameters={{"bEnable",Kind::Bool,0x90u,"BoolProperty",""}};break;
         case 1454u:path="Extension.Window.SetDefaultCursor";
             parameters={{"tX",Kind::Object,0x80u,"ObjectProperty","Engine.Texture"},
                 {"shadowTexture",Kind::Object,0x90u,"ObjectProperty","Engine.Texture"},
@@ -5757,7 +5760,7 @@ public:
             return authored->variables[slot].zero;
         }
         if(index!=1410u && index!=1415u && index!=1416u && index!=1420u && index!=1421u && index!=1422u && index!=1430u && index!=1431u && index!=1432u && index!=1433u &&
-            index!=1454u && index!=1461u && index!=1463u && index!=1464u && index!=1465u && index!=1467u && index!=1477u && index!=1510u && index!=1511u &&
+            index!=1454u && index!=1461u && index!=1463u && index!=1464u && index!=1465u && index!=1467u && index!=1477u && index!=1483u && index!=1510u && index!=1511u &&
             index!=1535u && index!=1538u && index!=1539u && index!=1540u && index!=1541u && index!=1544u && index!=1545u && index!=1611u)
             return std::nullopt;
         auto* window=Object(receiver);
@@ -5774,6 +5777,10 @@ public:
         if(index==1415u) {
             if(slot!=0u) throw std::runtime_error("IsVisible has only one optional input slot");
             return Value::Bool(true); // Native wrapper default, not declaration zero.
+        }
+        if(index==1483u) {
+            if(slot!=0u) throw std::runtime_error("EnableTranslucentText has only one optional input slot");
+            return Value::Bool(true); // Original exec10053F10 seeds INT1 before Step.
         }
         if(index==1463u || index==1464u) {
             if(slot!=0u) throw std::runtime_error("Preferred-axis query has only one required input slot");
@@ -5901,6 +5908,11 @@ public:
     }
     bool MaterializeNativeArgumentOmission(const std::uint16_t index,const std::string& receiver,
         const std::size_t slot,const Function* declaration) override {
+        if(index==1483u) {
+            RequireNativeWindow(Object(receiver));static_cast<void>(WindowNativeDeclaration(index,declaration));
+            if(slot)throw std::runtime_error("EnableTranslucentText omission exceeds its original input slot");
+            return true;
+        }
         if(index==1272u) {
             static_cast<void>(NativeGcDeclaration(index,declaration));ValidateNativeGcContextFields(Object(receiver));
             if(slot)throw std::runtime_error("GC.PopGC omission exceeds its original input slot");
@@ -6575,6 +6587,32 @@ public:
             set(gc,"Extension.GC");
         }
         return {}; // No general GC, callbacks, style or reconfiguration effects.
+    }
+    Evaluation WindowTextTranslucencyNative(RuntimeObject* window,const std::vector<Evaluation>& arguments,
+        const Function* declaration,QuestVr::Vm::Execution& execution) {
+        RequireNativeWindow(window);
+        static_cast<void>(WindowNativeDeclaration(1483u,declaration));
+        if(arguments.size()>1u)throw std::runtime_error("EnableTranslucentText accepts one optional Bool");
+        auto enabled=arguments.empty()?Value::Bool(true):arguments[0u].Load();
+        if(enabled.kind==Kind::Nothing)enabled=Value::Bool(true);
+        if(enabled.kind!=Kind::Bool)throw std::runtime_error("EnableTranslucentText requires its original Bool input");
+        ValidateNativeWindowScalar(window,"Extension.Window.bTextTranslucent",Kind::Bool,"BoolProperty","",2u);
+        const auto previous=Read(window,DescribeProperty("Extension.Window.bTextTranslucent"),0u);
+        if(previous.kind!=Kind::Bool)throw std::runtime_error("Window text translucency lost its Bool storage");
+        //1004DC90 compares the canonical Window bit before looking at wGc.
+        // An equal request must NOT repair an inconsistent drawing GC.
+        if(previous.boolean==enabled.boolean)return {};
+        NativeWindowWrite(window,"Extension.Window.bTextTranslucent",enabled,execution);
+        ValidateNativeWindowScalar(window,"Extension.Window.wGc",Kind::Object,"ObjectProperty","Extension.GC");
+        if(auto* gc=WindowLink(window,"wGc")) {
+            RequireNativeGcContext(gc);
+            ValidateNativeWindowScalar(gc,"Extension.GC.bTextTranslucent",Kind::Bool,"BoolProperty");
+            ValidateNativeWindowScalar(gc,"Extension.GC.textPolyFlags",Kind::Int,"IntProperty");
+            // GC10027610 always stores the bit and the complete flags word.
+            NativeGcWrite(gc,"bTextTranslucent",enabled,execution);
+            NativeGcWrite(gc,"textPolyFlags",Value::Integer(enabled.boolean?0x804:0x802),execution);
+        }
+        return {}; // No general GC, layout, style, font or color callback.
     }
     Evaluation WindowLowerNative(RuntimeObject* window,const std::vector<Evaluation>& arguments,
         const Function* declaration,QuestVr::Vm::Execution& execution) {
@@ -14477,8 +14515,31 @@ PortableRootWindowProbeResult ProbePortableRootWindowInitialization(
                     const auto property=host.DescribeProperty(key);
                     if(index>=property.arrayDimension) throw std::runtime_error("Native window probe array slot exceeds its declaration");
                     auto value=host.Read(object,property,index);
-                    QuestVr::AuthoredStructDetail::RetainedValue(value,retained);
-                    retained.retained-=sizeof(QuestVr::Vm::Value); // Already inside admitted field capacity.
+                    // The generic conservative Value budget also charges a
+                    // string's capacity when its characters live INSIDE the
+                    // already-counted std::string object (SSO). Remove only
+                    // that provable double charge; keep conservative map-node
+                    // overhead and every node/depth guard. External character
+                    // buffers additionally own their trailing NUL byte.
+                    QuestVr::AuthoredStructDetail::Budget payload{bounds};payload.nodes=retained.nodes;
+                    QuestVr::AuthoredStructDetail::RetainedValue(value,payload);
+                    std::size_t inlineCharacters{},externalTerminators{};
+                    const auto textStorage=[&](const std::string& text) {
+                        const auto objectAddress=reinterpret_cast<std::uintptr_t>(&text);
+                        const auto characterAddress=reinterpret_cast<std::uintptr_t>(text.data());
+                        if(characterAddress>=objectAddress&&characterAddress-objectAddress<sizeof(text))
+                            inlineCharacters+=text.capacity();
+                        else ++externalTerminators;
+                    };
+                    const auto strings=[&](const auto& self,const QuestVr::Vm::Value& member)->void {
+                        textStorage(member.text);
+                        for(const auto& [name,child]:member.fields) {textStorage(name);self(self,child);}
+                    };
+                    strings(strings,value);
+                    const auto ownedPayload=payload.retained-sizeof(QuestVr::Vm::Value);
+                    if(inlineCharacters>ownedPayload)throw std::runtime_error("Native snapshot inline-text accounting is inconsistent");
+                    retained.Retain(ownedPayload-inlineCharacters+externalTerminators);
+                    retained.nodes=payload.nodes;
                     PortableNativeWindowFieldSnapshot entry{key,std::move(value),{},index};
                     retained.Retain(entry.declaration.capacity()+1u);
                     const auto roots=object->nativeWindowPropertyRoots.find(LowerAscii(key));

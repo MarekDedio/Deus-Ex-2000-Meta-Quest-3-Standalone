@@ -275,6 +275,83 @@
         for(auto* object:{general,first,second})for(const auto* name:{"gcStack","gcFree","gcOwner"})verifyReference(object,name);
         expect(persistentWindowDomain->get()->objects.size()==result.nestedObjects,
             "Native context reuse or Window acquisition created an additional GC identity");
+        // Actual1483 ingress: Window equality is authoritative, including an
+        // inconsistent drawing GC. No general-context or layout repair.
+        const auto translucent=WindowNativeDeclaration(1483u,nullptr);
+        const auto setTranslucent=[&](const std::vector<Evaluation>& arguments) {
+            return execution.CallFunction(*translucent,root->reflection.objectPath,arguments);
+        };
+        const auto windowTextBefore=Read(root,DescribeProperty("Extension.Window.bTextTranslucent"),0u);
+        std::array<Value,27u> drawBefore,generalBefore;std::size_t contextIndex{};
+        for(const auto* name:QuestVr::NativeGcContext::ContextFields) {
+            drawBefore[contextIndex]=NativeGcRead(drawing,name);
+            generalBefore[contextIndex++]=NativeGcRead(general,name);
+        }
+        const auto guarded=[&](const auto& call) {
+            const auto writes=execution.WriteCount();bool rejected{};
+            try {call();} catch(const std::exception&) {rejected=true;}
+            expect(rejected&&execution.WriteCount()==writes,
+                "Text-translucency precondition guard accepted invalid ingress or wrote a prefix");
+            ++result.windowCases;
+        };
+        // Direct precondition controls are NOT claimed as independent failed
+        // VM roots; the existing whole-root budget cuts below cover rollback.
+        guarded([&]{static_cast<void>(WindowTextTranslucencyNative(pawn,{},translucent.get(),execution));});
+        guarded([&]{static_cast<void>(WindowTextTranslucencyNative(root,{{Value::Integer(1),{}}},translucent.get(),execution));});
+        guarded([&]{static_cast<void>(WindowTextTranslucencyNative(root,
+            {{Value::Bool(true),{}},{Value::Bool(false),{}}},translucent.get(),execution));});
+        auto wrongTranslucent=*translucent;wrongTranslucent.flags=0u;
+        guarded([&]{static_cast<void>(WindowTextTranslucencyNative(root,{},&wrongTranslucent,execution));});
+        for(const bool present:{false,true})for(const bool old:{false,true})
+            for(const bool requested:{false,true})for(const bool oldContext:{false,true}) {
+            NativeWindowWrite(root,"Extension.Window.wGc",Value::Text(Kind::Object,
+                present?drawing->reflection.objectPath:std::string{}),execution);
+            NativeWindowWrite(root,"Extension.Window.bTextTranslucent",Value::Bool(old),execution);
+            NativeGcWrite(drawing,"bTextTranslucent",Value::Bool(oldContext),execution);
+            NativeGcWrite(drawing,"textPolyFlags",Value::Integer(0x5a5a5a5a),execution);
+            const auto writes=execution.WriteCount();
+            static_cast<void>(setTranslucent({{Value::Bool(requested),{}}}));
+            const bool changed=old!=requested,changedContext=changed&&present;
+            expect(execution.WriteCount()-writes==(changed?(present?3u:1u):0u),
+                "Text translucency lost its equal/None/three-store protocol");
+            expect(Read(root,DescribeProperty("Extension.Window.bTextTranslucent"),0u).boolean==requested,
+                "Text translucency did not retain the actual Window bit");
+            std::size_t slot{};
+            for(const auto* name:QuestVr::NativeGcContext::ContextFields) {
+                const std::string_view field=name;
+                const auto expectedDrawing=field=="bTextTranslucent"?Value::Bool(changedContext?requested:oldContext):
+                    field=="textPolyFlags"?Value::Integer(changedContext?(requested?0x804:0x802):0x5a5a5a5a):drawBefore[slot];
+                expect(NativeGcProbeSameValue(NativeGcRead(drawing,name),expectedDrawing),
+                    "Text translucency changed an unrelated drawing field or repaired equal input");
+                expect(NativeGcProbeSameValue(NativeGcRead(general,name),generalBefore[slot++]),
+                    "Text translucency changed the independent general GC");
+            }
+            ++result.windowCases;
+            before=execution.WriteCount();static_cast<void>(setTranslucent({{Value::Bool(requested),{}}}));
+            expect(execution.WriteCount()==before,"Repeated text translucency was not a true no-op");++result.windowCases;
+        }
+        NativeWindowWrite(root,"Extension.Window.wGc",Value::Text(Kind::Object,drawing->reflection.objectPath),execution);
+        for(const unsigned omitted:{0u,1u,2u}) {
+            NativeWindowWrite(root,"Extension.Window.bTextTranslucent",Value::Bool(false),execution);
+            before=execution.WriteCount();
+            if(!omitted)static_cast<void>(setTranslucent({}));
+            else {
+                Evaluation argument{omitted==1u?Value{}:Value::Bool(false),{}};
+                if(omitted==2u)argument.disposition=QuestVr::Vm::ResultDisposition::NoWrite;
+                static_cast<void>(setTranslucent({argument}));
+            }
+            expect(execution.WriteCount()==before+3u&&
+                Read(root,DescribeProperty("Extension.Window.bTextTranslucent"),0u).boolean&&
+                NativeGcRead(drawing,"bTextTranslucent").boolean&&NativeGcRead(drawing,"textPolyFlags").integer==0x804,
+                "Omitted/Nothing/NoWrite text translucency lost its native INT1 seed");++result.windowCases;
+        }
+        NativeWindowWrite(root,"Extension.Window.bTextTranslucent",windowTextBefore,execution);
+        contextIndex=0u;
+        for(const auto* name:QuestVr::NativeGcContext::ContextFields) {
+            if(std::string_view(name)=="bTextTranslucent"||std::string_view(name)=="textPolyFlags")
+                NativeGcWrite(drawing,name,drawBefore[contextIndex],execution);
+            ++contextIndex;
+        }
         // Nonempty real-font integration, not only the startup log's empty
         // text branch. Set the explicit base fixture's actual inherited Font,
         // construct original TextWindow and call genuine query wrappers.

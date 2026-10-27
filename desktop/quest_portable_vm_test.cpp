@@ -508,7 +508,7 @@ struct TestHost final:Vm::Host {
         if((index==261u || index==262u || index==283u || index==264u || index==548u || index==1008u || index==0u || index==1410u || index==1415u || index==1416u || index==1420u || index==1421u || index==1422u ||
             index==1430u || index==1431u || index==1432u || index==1433u || index==1438u || index==1454u || index==1461u || index==1465u || index==1467u || index==1475u || index==1476u ||
             index==1556u || index==1557u || index==1558u || index==1572u || index==1573u ||
-            index==1270u || index==1272u || index==1486u ||
+            index==1270u || index==1272u || index==1486u || index==1483u ||
             index==1535u || index==1538u || index==1539u || index==1540u ||
             index==1541u || index==1544u || index==1545u) && executionNative) {
             std::vector<Value> values;for(const auto& argument:arguments) values.push_back(index==1465u?argument.value:argument.Load());
@@ -4141,7 +4141,7 @@ void TextWindowInputSnapshotContracts() {
             {"b",Value::Byte(91u)},{"a",Value::Byte(203u)}};return result;
     };
     for(const auto index:{std::uint16_t{1476u},std::uint16_t{1572u},std::uint16_t{1573u},
-        std::uint16_t{1270u},std::uint16_t{1272u},std::uint16_t{1486u}})
+        std::uint16_t{1270u},std::uint16_t{1272u},std::uint16_t{1486u},std::uint16_t{1483u}})
         for(const bool declared:{false,true}) {
         TestHost host;
         const bool gcObject=index==1270u||index==1486u;
@@ -4155,10 +4155,10 @@ void TextWindowInputSnapshotContracts() {
             gcObject?Value::Text(Vm::Kind::Object,"OtherContext"):Value::Bool(false);
         const auto layout=index==1476u?Vm::ResultLayout::CoreColor4:Vm::ResultLayout::Unknown;
         auto native=Function(index==1476u?"SetTextColor":index==1572u?"SetTextTimeout":index==1270u?"CopyGC":
-            index==1272u?"PopGC":index==1486u?"ReleaseGC":"PauseLog",{},
-            index==1476u||index==1486u?"Extension.Window":index==1270u||index==1272u?"Extension.GC":"Extension.TextLogWindow");
+            index==1272u?"PopGC":index==1486u?"ReleaseGC":index==1483u?"EnableTranslucentText":"PauseLog",{},
+            index==1476u||index==1486u||index==1483u?"Extension.Window":index==1270u||index==1272u?"Extension.GC":"Extension.TextLogWindow");
         native.flags=0x401u;native.nativeIndex=index;
-        native.variables={{native.path+".Input","Input",zero,0x80u,1u,layout}};
+        native.variables={{native.path+".Input","Input",zero,index==1483u?0x90u:0x80u,1u,layout}};
         if(declared) host.finals[{"Fixture",7}]=std::make_shared<Vm::Function>(native);
         if(index==1476u) {
             host.suppliedReferenceLayout=layout;
@@ -4170,7 +4170,8 @@ void TextWindowInputSnapshotContracts() {
         } else host.argumentSeed=[index,zero](std::uint16_t actual,const std::string&,std::size_t slot,
             const Vm::Function*)->std::optional<Value> {
             if(actual!=index) return std::nullopt;
-            Require(slot==0u,"TextLog scalar copy requested an extra initialized slot");return zero;
+            Require(slot==0u,"TextLog scalar copy requested an extra initialized slot");
+            return index==1483u?Value::Bool(true):zero;
         };
         const auto call=declared?Call(0x1cu,7,{Ref(0x01u,1)}):Native(index,{Ref(0x01u,1)});
         const auto expression=Context(Ref(0x20u,9),call);

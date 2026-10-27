@@ -221,9 +221,9 @@ int main(int argc,char** argv) {
             " opcode="<<unsigned(pending.execution.opcode)<<" objects="<<pending.objects.size()<<
             " writes="<<pending.execution.writes<<" "<<pending.execution.error<<"; inspection="<<pending.inspectionError<<std::endl;
         Require(!pending.execution.passed() && !pending.execution.committed && pending.inspectionError.empty() &&
-            pending.execution.function=="DeusEx.HUDMissionStartTextDisplay.InitWindow" && pending.execution.offset==159u &&
-            pending.execution.opcode==101u && pending.execution.error=="Unsupported runtime native 1483" &&
-            pending.execution.writes==13211u && pending.objects.size()==178u &&
+            pending.execution.function=="DeusEx.HUDReceivedDisplay.CreateReceivedLabel" && pending.execution.offset==54u &&
+            pending.execution.opcode==102u && pending.execution.error=="Unsupported runtime native 1550" &&
+            pending.execution.writes==14091u && pending.objects.size()==193u &&
             pending.rootedWindows==std::vector<std::string>{pending.pawnRootPath},
             "Original root prefix probe did not capture the actual pending native graph: "+pending.inspectionError);
         const auto object=[&](const std::string& path)->const PortableNativeWindowObjectSnapshot& {
@@ -331,6 +331,8 @@ int main(int argc,char** argv) {
         const auto& frobDisplay=classView("DeusEx.FrobDisplayWindow");
         const auto& augmentationDisplay=classView("DeusEx.AugmentationDisplayWindow");
         const auto& missionStart=classView("DeusEx.HUDMissionStartTextDisplay");
+        const auto& barkDisplay=classView("DeusEx.HUDBarkDisplay");
+        const auto& receivedDisplay=classView("DeusEx.HUDReceivedDisplay");
         const auto& textLog=classView("Extension.TextLogWindow");
         Require(std::count_if(pending.objects.begin(),pending.objects.end(),[](const auto& view) {
                 return view.classPath=="Extension.TextLogWindow";
@@ -670,8 +672,8 @@ int main(int argc,char** argv) {
         // The original Tile callbacks have now returned. Damage, compass,
         // multi-skills and information children completed construction. The
         // Hidden HUDLogDisplay/TextLog sizing now returns through genuine
-        // GetGC/Copy/Pop. Frob and augmentation children finish; mission-start
-        // text initialization next refuses1483 before its outer assignment.
+        // GetGC/Copy/Pop. Mission-start text and the bark display now finish;
+        // received-item label creation next refuses1550 before outer assignment.
         // The later Root.hud assignment is still pending.
         edge(rootView,"DeusEx.DeusExRootWindow.hud",{});
         edge(hudView,"DeusEx.DeusExHUD.Ammo",ammoView.path);edge(hudView,"DeusEx.DeusExHUD.hit",hitView.path);
@@ -688,8 +690,9 @@ int main(int argc,char** argv) {
         edge(hudView,"DeusEx.DeusExHUD.msgLog",logDisplay.path);
         edge(hudView,"DeusEx.DeusExHUD.frobDisplay",frobDisplay.path);
         edge(hudView,"DeusEx.DeusExHUD.augDisplay",augmentationDisplay.path);
-        for(const auto* name:{"startDisplay","barkDisplay","receivedItems"})
-            edge(hudView,"DeusEx.DeusExHUD."+std::string(name),{});
+        edge(hudView,"DeusEx.DeusExHUD.startDisplay",missionStart.path);
+        edge(hudView,"DeusEx.DeusExHUD.barkDisplay",barkDisplay.path);
+        edge(hudView,"DeusEx.DeusExHUD.receivedItems",{});
         edge(damage,"DeusEx.DamageHUDDisplay.Player",player);
         // Original DamageHUDDisplay.InitWindow PC29..848 assigns each of the
         // seven sIconInfo records, including every authored DamageType[3]
@@ -750,7 +753,7 @@ int main(int argc,char** argv) {
             }
         }
         std::cout<<"ORIGINAL DamageHUDDisplay: all7 iconInfo records, all21 typed DamageType slots, six nested texture GC edges and colors verified\n";
-        edge(hudView,"Extension.Window.firstChild",augmentationDisplay.path);edge(hudView,"Extension.Window.lastChild",missionStart.path);
+        edge(hudView,"Extension.Window.firstChild",augmentationDisplay.path);edge(hudView,"Extension.Window.lastChild",receivedDisplay.path);
         // Original AugmentationDisplayWindow.InitWindow calls Lower1412;
         // traversal order is not construction order after that real prepend.
         edge(augmentationDisplay,"Extension.Window.winParent",hudView.path);
@@ -765,15 +768,15 @@ int main(int argc,char** argv) {
         edge(activeItems,"Extension.Window.prevSibling",beltView.path);edge(activeItems,"Extension.Window.nextSibling",damage.path);
         edge(damage,"Extension.Window.winParent",hudView.path);edge(damage,"Extension.Window.parentOwner",hudView.path);
         edge(damage,"Extension.Window.prevSibling",activeItems.path);edge(damage,"Extension.Window.nextSibling",compass.path);
-        const std::array<const PortableNativeWindowObjectSnapshot*,7u> laterChildren{
-            &damage,&compass,&multiSkills,&information,&logDisplay,&frobDisplay,&missionStart};
+        const std::array<const PortableNativeWindowObjectSnapshot*,9u> laterChildren{
+            &damage,&compass,&multiSkills,&information,&logDisplay,&frobDisplay,&missionStart,&barkDisplay,&receivedDisplay};
         for(std::size_t index=1u;index<laterChildren.size();++index) {
             const auto& view=*laterChildren[index];
             Require(view.outerPath==hudView.path,"Original later HUD child lost its actual Outer");
             edge(view,"Extension.Window.winParent",hudView.path);edge(view,"Extension.Window.parentOwner",hudView.path);
             edge(view,"Extension.Window.prevSibling",laterChildren[index-1u]->path);
             edge(view,"Extension.Window.nextSibling",index+1u==laterChildren.size()?std::string{}:laterChildren[index+1u]->path);
-            Require(field(view,"Extension.Window.lockCount").value.integer==(index==6u?1:0) &&
+            Require(field(view,"Extension.Window.lockCount").value.integer==(index==8u?1:0) &&
                 field(view,"Extension.Window.bIsVisible").value.boolean==(index<3u || index==5u),
                 "Original later HUD NewChild visibility/lock prefix differs");
         }
@@ -815,8 +818,30 @@ int main(int argc,char** argv) {
             edge(*view,"Extension.Window."+std::string(name),missionFont.text);
         for(const auto* name:{"hMargin","vMargin"}) {
             Require(field(shadow,"Extension.TextWindow."+std::string(name)).value.floating==0.0f&&
-                field(foreground,"Extension.TextWindow."+std::string(name)).value.floating==3.0f,
-                "Mission-start exact1483 prefix advanced past foreground margins or lost completed shadow setters");
+                field(foreground,"Extension.TextWindow."+std::string(name)).value.floating==0.0f,
+                "Completed mission-start text lost its shadow/foreground zero margins");
+        }
+        const auto& foregroundGC=object(field(foreground,"Extension.Window.wGc").value.text);
+        Require(field(foreground,"Extension.Window.bTextTranslucent").value.boolean&&
+            field(foregroundGC,"Extension.GC.bTextTranslucent").value.boolean&&
+            field(foregroundGC,"Extension.GC.textPolyFlags").value.integer==0x804,
+            "Original mission-start1483 did not update the actual Window/drawing-context text flags");
+        for(const auto* view:{&barkDisplay,&receivedDisplay}) {
+            const auto& tile=object(field(*view,"Extension.Window.firstChild").value.text);
+            Require(tile.classPath=="Extension.TileWindow"&&tile.outerPath==view->path,
+                "Original later display lost its native Tile child");
+            edge(*view,"Extension.Window.lastChild",tile.path);
+            edge(tile,"Extension.Window.winParent",view->path);edge(tile,"Extension.Window.parentOwner",view->path);
+            if(view==&barkDisplay)edge(tile,"Extension.Window.firstChild",{});
+            else {
+                const auto& label=object(field(tile,"Extension.Window.firstChild").value.text);
+                Require(label.classPath=="Extension.TextWindow"&&label.outerPath==tile.path&&
+                    field(label,"Extension.TextWindow.Text").value.kind==Kind::String&&
+                    field(label,"Extension.TextWindow.Text").value.text.empty(),
+                    "Pending1550 label was omitted or its unexecuted Text setter fabricated content");
+                edge(tile,"Extension.Window.lastChild",label.path);
+                edge(label,"Extension.Window.winParent",tile.path);edge(label,"Extension.Window.parentOwner",tile.path);
+            }
         }
         Require(hudView.outerPath==rootView.path && ammoView.outerPath==hudView.path &&
             hitView.outerPath==hudView.path && crossView.outerPath==hudView.path && beltView.outerPath==hudView.path &&
@@ -1522,9 +1547,9 @@ int main(int argc,char** argv) {
         const auto rootAttempt=ExecutePortableActorFunction(player,"Extension.PlayerPawnExt.InitRootWindow");
         std::cout<<"ORIGINAL unbound root initialization boundary: "<<rootAttempt.function<<':'<<rootAttempt.offset<<
             " opcode="<<unsigned(rootAttempt.opcode)<<" "<<rootAttempt.error<<std::endl;
-        Require(!rootAttempt.passed() && !rootAttempt.committed && rootAttempt.function=="DeusEx.HUDMissionStartTextDisplay.InitWindow" &&
-            rootAttempt.offset==159u && rootAttempt.opcode==101u && rootAttempt.writes==13211u &&
-            rootAttempt.error=="Unsupported runtime native 1483" &&
+        Require(!rootAttempt.passed() && !rootAttempt.committed && rootAttempt.function=="DeusEx.HUDReceivedDisplay.CreateReceivedLabel" &&
+            rootAttempt.offset==54u && rootAttempt.opcode==102u && rootAttempt.writes==14091u &&
+            rootAttempt.error=="Unsupported runtime native 1550" &&
             std::find(rootAttempt.callStack.begin(),rootAttempt.callStack.end(),"DeusEx.DeusExRootWindow.InitWindow")!=rootAttempt.callStack.end(),
             "Native1052 did not construct/dispatch original root without a fabricated client prerequisite");
         const auto windowsAfter=ReadPortableRuntimeNativeWindowSummary();
