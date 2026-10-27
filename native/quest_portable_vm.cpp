@@ -42,7 +42,8 @@ bool SnapshotNativeInput(const std::uint16_t index, const Function* declaration 
         // copies its FString. Native-zero dispatch must use its actual
         // declaration; unknown native-zero/OUT calls retain guarded aliases.
         return declaration && (Lower(declaration->path) == "engine.decal.attachdecal" ||
-            Lower(declaration->path) == "engine.playerpawn.consolecommand");
+            Lower(declaration->path) == "engine.playerpawn.consolecommand" ||
+            Lower(declaration->path) == "core.object.getenum");
     case 112: case 113: case 124: case 125: case 126: case 127: case 128:
     case 168: case 186: case 187: case 189: case 231: case 234: case 235: case 244: case 245: case 246: case 249: case 250: case 251: case 278:
     case 264: return true; // PlaySound copies each initialized input before the next Step.
@@ -1895,6 +1896,7 @@ private:
                 const bool copiedScalar=nativeCall&&(index==169u||index==171u||index==172u||index==174u||index==175u||
                     (index>=176u&&index<=181u)||
                     index==1242u||index==1281u||index==1469u||(index==1280u&&(i==0u||i==3u))||
+                    (index==0u&&fn&&Lower(fn->path)=="core.object.getenum")||
                     (scalarCompound&&i==1u));
                 auto argument = Eval(frame, n.children[i], frame.self,
                     addressOnly?EvalRead::Address:capturedOut?EvalRead::Capture:

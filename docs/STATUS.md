@@ -1,5 +1,37 @@
 # Port status
 
+## Latest: original Core.GetEnum and completed root script callback (2026-10-27)
+
+Declaration-specific native0 GetEnum now copies None/INT0 inputs once,authenticates
+the original Core UFunction/NativeParm packet,tests actual current Enum Class,
+borrows immutable indexed metadata and returns the real source Name or None for
+signed bounds/non-Enum inputs. No global native-zero defaults or fabricated key
+list. A late-linker fixture caught and corrected an old-table export lookup.
+
+Owned metadata13896/125 includes1128 native queries across159 actual Enum
+descriptors;VM701113/1024 includes1101/26 new copy/default/refusal controls.
+Owned HUD10175 verifies the198-object graph,complete original script InitWindow
+return,and native activation guard atPC196/op11/15491 writes. Owned GC155/16 and
+all eight rebuilt owned first-Training regressions pass. Full desktop build,
+current Android-native link and strict ARM64 pass;CTest225 executed/269 registered/
+44 explicit skips/zero failures145.49s. All45 originals/26 frozen compiler inputs
+match length/mtime/SHA256;all jobs terminal. No budget,save format or VR-layout change.
+
+Bound original two-Fire repeat2 independently reaches actual FExec SET InputExt T
+Talk at271677/32553,retaining two attack notifies/four traces/two crate changes/
+nine births/full undo. Doors retain both56-unit moves/exact ReadInput refusal.
+SET includes global instance/CDO mutation and config flush,not one binding write;
+an app-owned persistence backend is required without modifying Steam files.
+Static audit corrects WindowReady to Root.PreRender,not activation/Tick,and the
+viewport+64 provider to RenDev,not Console. These next contracts are documented,
+not implemented or claimed as successful startup/live crate/loot/gravity.
+
+Next:actual FExec/config persistence,root activation/input services,then the
+committing VR weapon/frame/publication bridge. First Training integration only;
+no account/character-creation UI,other-map integration or new APK. See
+ORIGINAL-CORE-GETENUM.md,ORIGINAL-INPUT-FEXEC-SET-GAP.md and
+ORIGINAL-ROOT-ACTIVATION-GAP.md.
+
 ## Latest: original GC font/text packets and hidden layout request (2026-10-27)
 
 GC.SetFont1242,GetTextExtent1280,GetFontHeight1281 and Window.ConvertScriptString

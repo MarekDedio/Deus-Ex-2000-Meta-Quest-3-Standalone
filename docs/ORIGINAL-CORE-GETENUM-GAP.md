@@ -1,5 +1,10 @@
 # Next original startup dependency: Core.Object.GetEnum
 
+Follow-up2026-10-27:implemented and verified in ORIGINAL-CORE-GETENUM.md. This
+file preserves the original pre-implementation contract. Bound startup now
+reaches real FExec SET (ORIGINAL-INPUT-FEXEC-SET-GAP.md);unbound startup reaches
+root activation (ORIGINAL-ROOT-ACTIVATION-GAP.md). Neither is completed gameplay.
+
 Observed2026-10-27 after the original GC font/text packets and Window1460:
 the dormant first-Training root reaches Core.Object.GetEnum PC0/opcode0,
 `Unsupported runtime native 0 (Core.Object.GetEnum)`,15477 writes and198 native

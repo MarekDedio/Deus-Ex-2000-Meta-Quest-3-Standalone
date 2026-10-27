@@ -30,8 +30,10 @@ The real HUD script constructs its health/belt/compass and other child graph.
 After successful InitWindow, native SetVisibility(true) at10037f0a is required.
 It is not a single Bool store: SetVisibility1004c7d0/internal1004ee20 recomputes
 the init tree, invokes most-derived VisibilityChanged, plays optional sound,
-reconfigures and negotiates focus. WindowReady/init completion belong to later
-Tick. The current bridge explicitly refuses this phase until implemented;
+reconfigures and negotiates focus. WindowReady/init completion belongs to later
+Root.PreRender, NOT activation or Root.Tick (2026-10-27 static audit:
+1003A760 ->1003A9E0 ->InitializeWindows1003BC80 ->InvokeWindowReady1003BD20).
+The current bridge explicitly refuses this phase until implemented;
 the callback now completes ActorDisplayWindow and ammo construction, then enters
 the health display's first body-part window. It refuses native1475 at original
 Extension.Window.SetTileColorRGB PC51. No partial root or

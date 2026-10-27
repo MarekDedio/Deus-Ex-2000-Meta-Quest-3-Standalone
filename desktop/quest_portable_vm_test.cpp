@@ -1436,6 +1436,208 @@ void ParametersAndReturns() {
     r=Vm::Execute(host,native,"Self");Returned(r,"Native out alias");
     Require(host.Load("Self",actor).integer==9,"Native argument lost writable alias");
 }
+void CoreGetEnumInputContracts() {
+    const auto initialChecks=checks,initialRejections=rejections;
+    const auto configure=[](TestHost& host,const std::string& path="Core.Object.GetEnum") {
+        auto native=Function("GetEnum",{},"Core");native.path=path;native.nativeIndex=0u;native.flags=0x2401u;
+        native.variables={{path+".E","E",Value::Text(Vm::Kind::Object,{}),0x80u,1u},
+            {path+".i","i",Value::Integer(0),0x80u,1u},
+            {path+".ReturnValue","ReturnValue",Value::Text(Vm::Kind::Name,{}),0x580u,1u}};
+        host.finals[{"Fixture",7}]=std::make_shared<Vm::Function>(native);
+        host.argumentSeed=[native,&host](std::uint16_t index,const std::string& receiver,std::size_t slot,
+            const Vm::Function* declaration)->std::optional<Value> {
+            // A raw numeric zero or another native-zero declaration has no
+            // GetEnum initialized-temporary authority.
+            if(index!=0u||!declaration||TestHost::Fold(declaration->path)!="core.object.getenum")return std::nullopt;
+            Require(TestHost::Fold(declaration->path)==TestHost::Fold(native.path)&&declaration->source==native.source&&
+                declaration->nativeIndex==0u&&declaration->flags==0x2401u&&declaration->variables.size()==3u&&slot<2u&&
+                (receiver=="Self"||receiver=="Other"),"GetEnum seed lost its original declaration/receiver/parameter count");
+            for(std::size_t i=0u;i<3u;++i) {
+                const auto& actual=declaration->variables[i];const auto& expected=native.variables[i];
+                Require(actual.key==expected.key&&actual.name==expected.name&&actual.flags==expected.flags&&
+                    actual.arrayDimension==1u&&actual.zero.kind==expected.zero.kind,
+                    "GetEnum seed accepted a changed native-zero parameter schema");
+            }
+            host.observations.push_back("getenum-seed"+std::to_string(slot));return native.variables[slot].zero;
+        };
+        return native;
+    };
+    const auto install=[](TestHost& host,const Vm::Function& native,const Vm::Function& caller,unsigned route,
+        const std::string& receiver) {
+        if(route==0u)host.finals[{caller.source,7}]=std::make_shared<Vm::Function>(native);
+        else if(route<3u) {
+            host.names[{caller.source,7}]="GetEnum";
+            host.named[{receiver,route==1u?Vm::CallKind::Virtual:Vm::CallKind::Global,"GetEnum"}]=
+                std::make_shared<Vm::Function>(native);
+        }
+    };
+    const auto opcode=[](unsigned route){return route==0u?std::uint8_t{0x1cu}:route==1u?std::uint8_t{0x1bu}:std::uint8_t{0x38u};};
+    for(const auto& path:{std::string("Core.Object.GetEnum"),std::string("cOrE.oBjEcT.gEtEnUm")})
+        for(unsigned route=0u;route<4u;++route)for(const bool lateFailure:{false,true}) {
+        TestHost host;const auto native=configure(host,path);
+        const auto caller=Function("GetEnumCopiedCallerFrame",Return(Context(Ref(0x20u,9),
+            Call(opcode(route),7,{Ref(0x01u,1),Ref(0x01u,2)}))));
+        const auto object=host.Property(caller,1,"EnumInput",Value::Text(Vm::Kind::Object,{}));
+        const auto index=host.Property(caller,2,"EnumIndex",Value::Integer(0));
+        host.Store("Self",object,{Value::Text(Vm::Kind::Object,"Engine.Actor.EInputKey")});host.Store("Self",index,{Value::Integer(7)});
+        host.Store("Other",object,{Value::Text(Vm::Kind::Object,"Other.Enum")});host.Store("Other",index,{Value::Integer(-3)});
+        host.objects[{caller.source,9}]="Other";install(host,native,caller,route,"Other");bool entered{};
+        host.executionNative=[&](const std::string& receiver,const std::vector<Vm::Evaluation>& args,
+            const Vm::Function* actual,Vm::Execution& execution) {
+            entered=true;
+            Require(receiver=="Other"&&actual&&actual->path==path&&actual->flags==0x2401u&&args.size()==2u&&
+                !args[0].reference&&!args[1].reference&&args[0].value.kind==Vm::Kind::Object&&
+                args[0].value.text=="Engine.Actor.EInputKey"&&args[1].value.kind==Vm::Kind::Int&&args[1].value.integer==7&&
+                host.referenceReads==2u,"GetEnum copied inputs were reread, kept aliases or used the opcode receiver frame");
+            execution.WriteReference(host.Reference({"Self",Vm::Scope::Instance,object.key},object),Value::Text(Vm::Kind::Object,"Changed.Enum"));
+            execution.WriteReference(host.Reference({"Self",Vm::Scope::Instance,index.key},index),Value::Integer(99));
+            Require(args[0].Load().text=="Engine.Actor.EInputKey"&&args[1].Load().integer==7,
+                "GetEnum ordinary temporary changed when its original property was written");
+            return Vm::Evaluation{Value::Text(Vm::Kind::Name,"IK_Fixture"),{}};
+        };
+        const auto result=Vm::ExecuteTransaction(host,[&](Vm::Execution& execution) {
+            execution.CallFunction(Function("GetEnumPrefixEffect",Join({Native(1000u),Return()})),"Self");
+            const auto value=route==3u?execution.CallFunction(native,"Other",{
+                {{},host.Reference({"Self",Vm::Scope::Instance,object.key},object)},
+                {{},host.Reference({"Self",Vm::Scope::Instance,index.key},index)}}):execution.CallFunction(caller,"Self");
+            if(lateFailure)execution.CallFunction(Function("GetEnumLaterFailure",Return(Native(4095u))),"Self");
+            return value;
+        });
+        if(lateFailure) {
+            Failed(result,Vm::Status::Unsupported,host,"GetEnum native-zero copies preserve enclosing rollback");
+            Require(entered&&host.Load("Self",object).text=="Engine.Actor.EInputKey"&&host.Load("Self",index).integer==7&&
+                host.effects==0u&&host.rng==12345u,"GetEnum late failure retained copied-input changes or prefix effects");
+        } else {
+            Returned(result,"GetEnum direct/final/named static native-zero inputs use one caller-frame copy");
+            Require(entered&&result.value.kind==Vm::Kind::Name&&result.value.text=="IK_Fixture"&&result.writes==2u&&
+                host.Load("Self",object).text=="Changed.Enum"&&host.Load("Self",index).integer==99&&
+                host.Load("Other",object).text=="Other.Enum"&&host.Load("Other",index).integer==-3,
+                "GetEnum native Name return or committed source-frame writes changed");
+        }
+        Require(std::count(host.observations.begin(),host.observations.end(),"getenum-seed0")==1&&
+            std::count(host.observations.begin(),host.observations.end(),"getenum-seed1")==1,
+            "GetEnum declaration-specific initialized seeds repeated at internal native entry");
+    }
+    for(unsigned route=0u;route<3u;++route) {
+        TestHost host;const auto native=configure(host);
+        const auto caller=Function("GetEnumLaterIndexMutatesObject",Return(Call(opcode(route),7,{Ref(0x01u,1),
+            Native(1060u,{Ref(0x01u,1),Ref(0x20u,2),Int(11)})})));
+        const auto property=host.Property(caller,1,"EnumInput",Value::Text(Vm::Kind::Object,{}));
+        host.Store("Self",property,{Value::Text(Vm::Kind::Object,"Original.Enum")});host.objects[{caller.source,2}]="Changed.Enum";
+        install(host,native,caller,route,"Self");
+        host.executionNative=[&](const std::string&,const std::vector<Vm::Evaluation>& args,const Vm::Function*,Vm::Execution&) {
+            Require(args.size()==2u&&!args[0].reference&&!args[1].reference&&args[0].value.text=="Original.Enum"&&
+                args[1].value.integer==11&&host.Load("Self",property).text=="Changed.Enum",
+                "GetEnum E was copied after the later i expression mutated its source");
+            return Vm::Evaluation{Value::Text(Vm::Kind::Name,{}),{}};
+        };
+        const auto result=Vm::Execute(host,caller,"Self");Returned(result,"GetEnum copies E before evaluating i");
+        Require(result.writes==1u&&host.Load("Self",property).text=="Changed.Enum","GetEnum suppressed later argument's real mutation");
+    }
+    {
+        TestHost host;const auto native=configure(host);std::string object="Original.Enum";std::vector<unsigned> reads;
+        auto e=std::make_shared<Vm::Reference>(),i=std::make_shared<Vm::Reference>();e->zero=Value::Text(Vm::Kind::Object,{});i->zero=Value::Integer(0);
+        e->read=[&]{reads.push_back(0u);return Value::Text(Vm::Kind::Object,object);};
+        i->read=[&]{reads.push_back(1u);object="Changed.Enum";return Value::Integer(13);};
+        host.executionNative=[](const std::string&,const std::vector<Vm::Evaluation>& args,const Vm::Function*,Vm::Execution&) {
+            Require(!args[0].reference&&!args[1].reference&&args[0].value.text=="Original.Enum"&&args[1].value.integer==13,
+                "Direct GetEnum lost independently copied E/i inputs");return Vm::Evaluation{Value::Text(Vm::Kind::Name,"Value13"),{}};
+        };
+        const auto result=Vm::Execute(host,native,"Self",{{{},e},{{},i}});Returned(result,"Direct GetEnum copies each incoming reference once before the next");
+        Require(reads==std::vector<unsigned>{0u,1u}&&object=="Changed.Enum"&&result.value.text=="Value13",
+            "Direct GetEnum input read order/count changed");
+    }
+    for(unsigned route=0u;route<4u;++route)for(unsigned selected=0u;selected<2u;++selected)
+        for(const auto disposition:{Vm::ResultDisposition::NoWrite,Vm::ResultDisposition::ZeroFill})for(const auto bytes:{0u,1u,2u,3u,4u}) {
+        if(selected==0u&&bytes>0u&&bytes<4u)continue; // Packed Object has no partial-clear authority.
+        TestHost host;const auto native=configure(host);bool read{},entered{};
+        auto stale=std::make_shared<Vm::Reference>();stale->zero=native.variables[selected].zero;
+        stale->read=[&]() ->Value {read=true;throw std::runtime_error("GetEnum unwritten input read stale alias");};
+        const auto absent=Context({0x2au},Native(4095u),static_cast<std::uint8_t>(disposition==Vm::ResultDisposition::NoWrite?0u:bytes));
+        const auto caller=Function("GetEnumInitializedDefaults",Return(Call(opcode(route),7,
+            {selected==0u?absent:Bytes{0x2au},selected==1u?absent:Int(0)})));
+        install(host,native,caller,route,"Self");
+        host.executionNative=[&](const std::string&,const std::vector<Vm::Evaluation>& args,const Vm::Function*,Vm::Execution&) {
+            entered=true;Require(args.size()==2u&&!args[0].reference&&!args[1].reference&&
+                args[0].value.kind==Vm::Kind::Object&&args[0].value.text.empty()&&args[1].value.kind==Vm::Kind::Int&&args[1].value.integer==0,
+                "GetEnum lost the declaration-authorized None/INT0 initialized input");return Vm::Evaluation{Value::Text(Vm::Kind::Name,{}),{}};
+        };
+        std::vector<Vm::Evaluation> inputs={{Value::Text(Vm::Kind::Object,{}),{}},{Value::Integer(0),{}}};
+        inputs[selected]={Value::Text(Vm::Kind::String,"stale"),stale,disposition,static_cast<std::uint8_t>(bytes)};
+        const auto result=route==3u?Vm::Execute(host,native,"Self",inputs):Vm::Execute(host,caller,"Self");
+        Returned(result,"GetEnum NoWrite and bounded native zero-fill preserve None/INT0 defaults");
+        Require(entered&&!read&&result.value.kind==Vm::Kind::Name&&result.value.text.empty()&&result.writes==0u,
+            "GetEnum absent input retained stale references or changed native Name None result");
+    }
+    for(const bool direct:{false,true})for(unsigned selected=0u;selected<2u;++selected)for(const auto bytes:{1u,3u,5u}) {
+        if(selected==1u&&bytes<4u)continue; // Initialized INT0 allows bounded prefix clears.
+        TestHost host;const auto native=configure(host);bool entered{},read{};
+        auto stale=std::make_shared<Vm::Reference>();stale->zero=native.variables[selected].zero;
+        stale->read=[&]() ->Value {read=true;throw std::runtime_error("Invalid GetEnum clear read stale storage");};
+        const auto invalid=Context({0x2au},Native(4095u),static_cast<std::uint8_t>(bytes));
+        const auto caller=Function("GetEnumInvalidClear",Return(Call(0x1cu,7,{selected==0u?invalid:Bytes{0x2au},selected==1u?invalid:Int(0)})));
+        host.executionNative=[&](const std::string&,const std::vector<Vm::Evaluation>&,const Vm::Function*,Vm::Execution&) {entered=true;return Vm::Evaluation{};};
+        std::vector<Vm::Evaluation> inputs={{Value::Text(Vm::Kind::Object,{}),{}},{Value::Integer(0),{}}};
+        inputs[selected]={native.variables[selected].zero,stale,Vm::ResultDisposition::ZeroFill,static_cast<std::uint8_t>(bytes)};
+        const auto result=Vm::ExecuteTransaction(host,[&](Vm::Execution& execution) {
+            execution.CallFunction(Function("GetEnumClearPrefix",Join({Native(1000u),Return()})),"Self");
+            try{if(direct)execution.CallFunction(native,"Self",inputs);else execution.CallFunction(caller,"Self");}catch(const std::exception&){}return Value{};
+        });
+        Failed(result,Vm::Status::Unsupported,host,"GetEnum invalid Object prefix/overflow poisons caller transaction");
+        Require(!entered&&!read&&host.effects==0u&&host.rng==12345u,"GetEnum invalid clear invoked native, read stale alias or retained effects");
+    }
+    for(const bool direct:{false,true}) {
+        TestHost host;const auto native=configure(host);const auto realSeed=host.argumentSeed;
+        host.argumentSeed=[&](std::uint16_t index,const std::string& receiver,std::size_t slot,const Vm::Function* actual)->std::optional<Value> {
+            const auto value=realSeed(index,receiver,slot,actual);if(actual&&slot==1u)throw std::runtime_error("GetEnum second seed refused");return value;
+        };
+        const auto caller=Function("GetEnumSeedFailureBeforeArguments",Return(Call(0x1cu,7,{Native(1000u),Native(1000u)})));
+        const auto result=Vm::ExecuteTransaction(host,[&](Vm::Execution& execution) {
+            execution.CallFunction(Function("GetEnumSeedPrefix",Join({Native(1000u),Return()})),"Self");
+            try{if(direct)execution.CallFunction(native,"Self",{{Value::Text(Vm::Kind::Object,{}),{}},{Value::Integer(0),{}}});
+                else execution.CallFunction(caller,"Self");}catch(const std::exception&){}return Value{};
+        });
+        Failed(result,Vm::Status::Unsupported,host,"GetEnum declaration seed failure happens before arguments and poisons root");
+        Require(host.effects==0u&&host.rng==12345u&&host.observations==std::vector<std::string>{"effect","getenum-seed0","getenum-seed1"}&&
+            host.nativeArguments.size()==1u,"GetEnum seed failure evaluated arguments or retained prefix effects");
+    }
+    for(const bool direct:{false,true})for(unsigned altered=0u;altered<4u;++altered) {
+        TestHost host;auto native=configure(host);
+        if(altered==0u)native.flags=0x401u;
+        else if(altered==1u)native.variables[0].flags=0x180u;
+        else if(altered==2u)native.variables[1].arrayDimension=2u;
+        else native.variables[2].zero=Value::Text(Vm::Kind::String,{});
+        host.finals[{"Fixture",7}]=std::make_shared<Vm::Function>(native);
+        const auto caller=Function("GetEnumMalformedDeclaration",Return(Call(0x1cu,7,{Native(1000u),Native(1000u)})));
+        const auto result=Vm::ExecuteTransaction(host,[&](Vm::Execution& execution) {
+            execution.CallFunction(Function("GetEnumMalformedPrefix",Join({Native(1000u),Return()})),"Self");
+            try{if(direct)execution.CallFunction(native,"Self",{{Value::Text(Vm::Kind::Object,{}),{}},{Value::Integer(0),{}}});
+                else execution.CallFunction(caller,"Self");}catch(const std::exception&){}return Value{};
+        });
+        Failed(result,Vm::Status::Unsupported,host,"GetEnum exact declaration authority rejects changed flags/OUT/dimension/return schema");
+        Require(host.observations==std::vector<std::string>{"effect"}&&host.nativeArguments.size()==1u&&host.effects==0u&&host.rng==12345u,
+            "Malformed GetEnum declaration captured defaults, evaluated pending inputs or retained root effects");
+    }
+    for(const auto& foreign:{std::string{},std::string("Fixture.Object.GetEnum"),std::string("Core.Object.GetEnumSuffix")}) {
+        TestHost host;auto native=configure(host);native.path=foreign;
+        const auto expression=foreign.empty()?Native(0u,{Ref(0x01u,1),Int(0)}):Call(0x1cu,7,{Ref(0x01u,1),Int(0)});
+        const auto caller=Function("GenericNativeZeroKeepsAlias",Return(expression));
+        const auto property=host.Property(caller,1,"ObjectInput",Value::Text(Vm::Kind::Object,{}));
+        host.Store("Self",property,{Value::Text(Vm::Kind::Object,"Original.Object")});
+        if(!foreign.empty())host.finals[{caller.source,7}]=std::make_shared<Vm::Function>(native);
+        host.executionNative=[&](const std::string&,const std::vector<Vm::Evaluation>& args,const Vm::Function* actual,Vm::Execution&) {
+            Require(static_cast<bool>(actual)==!foreign.empty()&&args.size()==2u&&args[0].reference&&args[0].Load().text=="Original.Object",
+                "Raw/foreign native zero inherited GetEnum ordinary-input copy semantics");
+            args[0].reference->write(Value::Text(Vm::Kind::Object,"Changed.Object"));return Vm::Evaluation{Value::Integer(17),{}};
+        };
+        const auto result=Vm::Execute(host,caller,"Self");Returned(result,"Raw numeric zero/foreign declaration do not gain GetEnum semantics");
+        Require(result.value.integer==17&&result.writes==1u&&host.Load("Self",property).text=="Changed.Object"&&
+            std::none_of(host.observations.begin(),host.observations.end(),[](const std::string& value){return value.starts_with("getenum-seed");}),
+            "Generic native-zero behavior lost its real alias or acquired GetEnum defaults");
+    }
+    std::cout<<"Original Core.GetEnum declaration-specific native-zero input copies/defaults: "<<checks-initialChecks
+        <<" checks and "<<rejections-initialRejections<<" refusal controls.\n";
+}
 void DecalNativeInputContracts() {
     const auto initialChecks=checks;
     const auto declaration=[](TestHost& host,const std::string& path,bool out=false) {
@@ -7165,6 +7367,7 @@ int main() {
         FinishAnimDeclarationContracts();
         ProgramAndEligibilityContracts();
         NativeArgumentSeedContracts();
+        CoreGetEnumInputContracts();
         CoreColorResultLayoutContracts();
         UninitializedNativeArgumentContracts();
         DirectNativeInitializedArgumentContracts();

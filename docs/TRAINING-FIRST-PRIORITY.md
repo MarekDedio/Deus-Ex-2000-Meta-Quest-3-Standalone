@@ -1,5 +1,24 @@
 # Immediate milestone: complete the first Training map
 
+Latest2026-10-27:original GetEnum native0 now uses authenticated declaration-
+specific None/INT0 input copies,actual current Class/immutable Enum data and
+signed Name/None lookup. Metadata13896/125 (1128 queries/159 enums),VM701113/1024,
+HUD10175,GC155/16 and all eight rebuilt owned first-map regressions pass. The
+unbound root finishes original script InitWindow before native activation at
+15491 writes/198 objects. Bound two-Fire repeat2 reaches actual FExec SET at
+271677/32553,retaining two notifies/four traces/two crate changes/nine births/
+full undo. Doors retain both56-unit moves and exact ReadInput refusal.
+
+Desktop/Android-native/strict ARM64 pass;CTest225 executed/269 registered/44
+explicit skips/zero failures145.49s. All45 originals/26 frozen compiler inputs
+match length/mtime/SHA256;all jobs terminal. No budget,save format or accepted
+VR-layout change. SET requires actual global mutation/config flush into a port-
+owned backend,not installation User.ini changes or fake one-binding success.
+Next:FExec/config,root activation/input,then the live bridge below. No new APK,
+completed live crates/loot/gravity,account UI or other-map integration. See
+ORIGINAL-CORE-GETENUM.md,ORIGINAL-INPUT-FEXEC-SET-GAP.md and
+ORIGINAL-ROOT-ACTIVATION-GAP.md.
+
 Latest2026-10-27: original GC font/text1242/1280/1281/1469 packets now preserve
 copied inputs, authenticated defaults, actual Font metrics and X-then-Y live OUT
 stores. Native Window1460 now reuses the existing genuine hidden-layout request.

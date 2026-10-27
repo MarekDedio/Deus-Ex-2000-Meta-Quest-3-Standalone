@@ -222,11 +222,10 @@ int main(int argc,char** argv) {
             " opcode="<<unsigned(pending.execution.opcode)<<" objects="<<pending.objects.size()<<
             " writes="<<pending.execution.writes<<" "<<pending.execution.error<<"; inspection="<<pending.inspectionError<<std::endl;
         Require(!pending.execution.passed() && !pending.execution.committed && pending.inspectionError.empty() &&
-            pending.execution.function=="Core.Object.GetEnum" && pending.execution.offset==0u &&
-            pending.execution.opcode==0u && pending.execution.error=="Unsupported runtime native 0 (Core.Object.GetEnum)" &&
-            pending.execution.writes==15477u && pending.objects.size()==198u &&
-            std::find(pending.execution.callStack.begin(),pending.execution.callStack.end(),
-                "DeusEx.DeusExRootWindow.ConditionalBindMultiplayerKeys")!=pending.execution.callStack.end() &&
+            pending.execution.function=="DeusEx.DeusExRootWindow.InitWindow" && pending.execution.offset==196u &&
+            pending.execution.opcode==11u && pending.execution.error=="RootWindow native SetVisibility/init-tree/reconfiguration is not implemented" &&
+            pending.execution.writes==15491u && pending.objects.size()==198u &&
+            pending.execution.callStack==std::vector<std::string>{"Extension.PlayerPawnExt.InitRootWindow"} &&
             pending.rootedWindows==std::vector<std::string>{pending.pawnRootPath},
             "Original root prefix probe did not capture the actual pending native graph: "+pending.inspectionError);
         const auto object=[&](const std::string& path)->const PortableNativeWindowObjectSnapshot& {
@@ -1598,12 +1597,13 @@ int main(int argc,char** argv) {
             "reentrant empty HUD slot, initialized-false no-result, malformed ingress and late whole-root rollback\n";
         const auto rootAttempt=ExecutePortableActorFunction(player,"Extension.PlayerPawnExt.InitRootWindow");
         std::cout<<"ORIGINAL unbound root initialization boundary: "<<rootAttempt.function<<':'<<rootAttempt.offset<<
-            " opcode="<<unsigned(rootAttempt.opcode)<<" "<<rootAttempt.error<<std::endl;
-        Require(!rootAttempt.passed() && !rootAttempt.committed && rootAttempt.function=="Core.Object.GetEnum" &&
-            rootAttempt.offset==0u && rootAttempt.opcode==0u && rootAttempt.writes==15477u &&
-            rootAttempt.error=="Unsupported runtime native 0 (Core.Object.GetEnum)" &&
-            std::find(rootAttempt.callStack.begin(),rootAttempt.callStack.end(),"DeusEx.DeusExRootWindow.InitWindow")!=rootAttempt.callStack.end(),
-            "Native1052 did not construct/dispatch original root without a fabricated client prerequisite");
+            " opcode="<<unsigned(rootAttempt.opcode)<<" writes="<<rootAttempt.writes<<" "<<rootAttempt.error<<std::endl;
+        for(const auto& frame:rootAttempt.callStack)std::cout<<"ORIGINAL root boundary active frame: "<<frame<<'\n';
+        Require(!rootAttempt.passed() && !rootAttempt.committed && rootAttempt.function=="DeusEx.DeusExRootWindow.InitWindow" &&
+            rootAttempt.offset==196u && rootAttempt.opcode==11u && rootAttempt.writes==15491u &&
+            rootAttempt.error=="RootWindow native SetVisibility/init-tree/reconfiguration is not implemented" &&
+            rootAttempt.callStack==std::vector<std::string>{"Extension.PlayerPawnExt.InitRootWindow"},
+            "Native1052 did not complete original script InitWindow before its genuine activation boundary");
         const auto windowsAfter=ReadPortableRuntimeNativeWindowSummary();
         Require(windowsAfter.objects==0u && windowsAfter.roots==0u &&
             windowsAfter.configuredRootNameCounter==windowBaseline.configuredRootNameCounter &&

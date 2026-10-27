@@ -10,6 +10,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <limits>
 #include <set>
 #include <stdexcept>
 #include <string>
@@ -204,8 +205,15 @@ void SameAuthoredState(const PortableStateDescriptor& a,const PortableStateDescr
         a.rawBytes==b.rawBytes&&a.bytecode==b.bytecode&&a.probeMask==b.probeMask&&a.ignoreMask==b.ignoreMask&&
         a.labelTableOffset==b.labelTableOffset&&a.stateFlags==b.stateFlags,"Metadata binding changed actual serialized UClass state/Children/Next");
 }
+std::string NativeEnumName(const std::string& path,std::int32_t index) {
+    const auto queried=ExecutePortableActorFunction("00_Training.LevelInfo0","Core.Object.GetEnum",
+        {{Value::Text(Kind::Object,path),{}},{Value::Integer(index),{}}});
+    Require(queried.passed()&&queried.committed&&queried.writes==0u&&queried.value.kind==Kind::Name,
+        "Original GetEnum failed or mutated state: "+queried.error);
+    return queried.value.text;
+}
 void Enums(const std::vector<PortablePackageTables>& packages,const PortableNativeMetadataClassesSnapshot& metadata) {
-    std::size_t count{};
+    std::size_t count{},nativeQueries{};
     for(const auto& package:packages)for(std::size_t index=0;index<package.exports.size();++index) {
         const auto reference=package.exports[index].ObjClass;if(!reference)continue;
         auto cls=GetPortableObjectPath(package,reference);
@@ -221,6 +229,17 @@ void Enums(const std::vector<PortablePackageTables>& packages,const PortableNati
             actual.classIndex==metadata.classes[12u].objectIndex&&actual.classIndex==ownership.classIndex&&
             actual.objectIndex!=actual.classIndex&&!actual.outerPath.empty(),
             "Enum identity/Class/UStruct Outer is not the actual indexed object graph");
+        for(const auto selected:{std::int32_t{0},static_cast<std::int32_t>(actual.names.size()/2u),
+            static_cast<std::int32_t>(actual.names.size())-1}) {
+            const auto expected=selected<0||static_cast<std::size_t>(selected)>=actual.names.size()?
+                std::string("None"):actual.names[static_cast<std::size_t>(selected)].ToString();
+            Require(NativeEnumName(path,selected)==expected,"Original GetEnum did not use the actual source Enum's ordered name");
+            ++nativeQueries;
+        }
+        for(const auto selected:{std::int32_t{-1},static_cast<std::int32_t>(actual.names.size()),
+            std::numeric_limits<std::int32_t>::min(),std::numeric_limits<std::int32_t>::max()}) {
+            Require(NativeEnumName(path,selected)=="None","Original GetEnum wrapped/clamped an out-of-range signed index");++nativeQueries;
+        }
         ++count;
     }
     Require(count>100u,"Owned metadata fixture did not verify substantial actual Enum population");
@@ -234,7 +253,36 @@ void Enums(const std::vector<PortablePackageTables>& packages,const PortableNati
     Require(ReadPortableRuntimeEnum(actor.objectPath)==actor,"Detached Enum snapshot mutated live cached metadata");
     for(const auto* path:{"Engine.Actor","Core.Enum","Engine.Actor.Tag","00_Training.LevelInfo0","Engine.EInputKey"})
         Refused([&]{(void)ReadPortableRuntimeEnum(path);},"Non-Enum or basename acquired native Enum authority");
+    for(const auto* path:{"","Engine.Actor","Core.Enum","Engine.Actor.Tag","00_Training.LevelInfo0"})
+        for(const auto selected:{std::int32_t{-1},std::int32_t{0},std::numeric_limits<std::int32_t>::max()}) {
+            Require(NativeEnumName(path,selected)=="None","GetEnum did not return Name None for a real None/non-Enum Object");++nativeQueries;
+        }
+    const auto input=Value::Text(Kind::Object,actor.objectPath);
+    for(const bool objectInput:{false,true}) {
+        QuestVr::Vm::Evaluation noWrite{objectInput?input:Value::Integer(99),{}};
+        noWrite.disposition=QuestVr::Vm::ResultDisposition::NoWrite;
+        const auto queried=ExecutePortableActorFunction("00_Training.LevelInfo0","Core.Object.GetEnum",
+            {objectInput?noWrite:QuestVr::Vm::Evaluation{input,{}},
+                objectInput?QuestVr::Vm::Evaluation{Value::Integer(65),{}}:noWrite});
+        Require(queried.passed()&&queried.committed&&queried.writes==0u&&queried.value.kind==Kind::Name&&
+            queried.value.text==(objectInput?"None":"IK_None"),"GetEnum lost the actual initialized None/INT0 Step temporary");
+    }
+    for(const auto& invalid:std::vector<std::vector<QuestVr::Vm::Evaluation>>{
+        {},{{input,{}}},{{Value::Integer(0),{}},{Value::Integer(0),{}}},
+        {{input,{}},{Value::Float(0.0f),{}}},{{input,{}},{Value::Integer(0),{}},{Value::Integer(0),{}}}}) {
+        const auto refused=ExecutePortableActorFunction("00_Training.LevelInfo0","Core.Object.GetEnum",invalid);
+        Require(!refused.passed()&&!refused.committed&&refused.writes==0u&&!refused.error.empty(),
+            "GetEnum accepted missing/excess/wrong-kind native inputs");++refusals;
+    }
+    for(const bool work:{false,true}) {
+        QuestVr::Vm::Limits limits;if(work)limits.nativeWork=0u;else limits.retainedBytes=1u;
+        const auto refused=ExecutePortableActorFunction("00_Training.LevelInfo0","Core.Object.GetEnum",
+            {{input,{}},{Value::Integer(65),{}}},limits);
+        Require(refused.status==QuestVr::Vm::Status::Budget&&!refused.committed&&refused.writes==0u,
+            "Original GetEnum ignored the caller's shared work/storage budget");++refusals;
+    }
     std::cout<<"ORIGINAL indexed Enum cache: "<<count<<" exact descriptors; distinct Actor/Console255 keys, actual Core.Enum/UStruct identities, detached immutable query\n";
+    std::cout<<"ORIGINAL GetEnum native-zero: "<<nativeQueries<<" actual-source name/signed-bounds/None/non-Enum queries, initialized inputs and bounded refusal controls\n";
 }
 PortablePackageTables WithGeneratedMapEnum(PortablePackageTables map,Temporary& temporary) {
     const auto backing=temporary.Track(temporary.directory/"00_Training.dx");
@@ -277,6 +325,14 @@ void Original(const std::vector<PortablePackageTables>& packages,const PortableP
     Require(PreparePortableRuntimeNativeEngineClasses().prepared,"Cannot prepare required existing native Engine class phase");
     const auto scriptGc=GC::GetStats();Require(LoadPortableRuntimeMap(map).passed,"Cannot load dormant original Training fixture");
     Dormant();const auto before=temporary.Snapshot("OwnedBefore");const auto world=WorldPaths();const auto revision=GetPortableRuntimeWorldRevision();
+    const auto unpreparedEnum=ExecutePortableActorFunction("00_Training.LevelInfo0","Core.Object.GetEnum",
+        {{Value::Text(Kind::Object,"Engine.Actor.EInputKey"),{}},{Value::Integer(65),{}}});
+    Require(!unpreparedEnum.passed()&&!unpreparedEnum.committed&&unpreparedEnum.writes==0u&&
+        !ReadPortableRuntimeNativeMetadataClasses().prepared,
+        "GetEnum lazily constructed native Enum metadata instead of refusing the unprepared service");++refusals;
+    Require(NativeEnumName("",0)=="None"&&NativeEnumName("Engine.Actor",0)=="None"&&
+        NativeEnumName("Engine.Actor.EInputKey",-1)=="None",
+        "Original None/non-Enum GetEnum query acquired unrelated metadata preparation requirements");
     const auto gc=GC::GetStats();const auto model=ReadPortableRuntimeNativeModel();
     const auto cache=ReadPortableClassDefault("Engine.Engine","CacheSizeMegs"),sound=ReadPortableClassDefault("Engine.Engine","UseSound");
     const std::array<const char*,3u> originalPaths{"Core.Object","Core.Subsystem","Engine.Engine"};
@@ -339,11 +395,15 @@ void Original(const std::vector<PortablePackageTables>& packages,const PortableP
     Require(lateEnum.outerPath=="00_Training.MetadataLateMapClass"&&lateEnum.classIndex==inputEnum.classIndex&&
         lateEnum.names==std::vector<NameString>{NameString("IK_A"),NameString("None"),NameString("IK_F1")},
         "Later map Enum did not bind actual Core.Enum/UStruct or lost ordered names/None");
+    Require(NativeEnumName(lateEnum.objectPath,0)=="IK_A"&&NativeEnumName(lateEnum.objectPath,1)=="None"&&
+        NativeEnumName(lateEnum.objectPath,2)=="IK_F1"&&NativeEnumName(lateEnum.objectPath,3)=="None",
+        "GetEnum lost the genuine first-map-generated Enum names or embedded Name None");
     Require(UnloadPortableRuntimeMap()>0u,"Cannot retire late map metadata fixture");
     Refused([&]{(void)ReadPortableRuntimeEnum(lateEnum.objectPath);},"Retired map Enum retained live lookup authority");
     Require(ReadPortableRuntimeEnum(inputEnum.objectPath)==inputEnum,"Map Enum retirement changed static input Enum authority");
     Require(LoadPortableRuntimeMap(lateMap).passed,"Cannot reload generated first-map Enum fixture");
     Require(ReadPortableRuntimeEnum(lateEnum.objectPath).names==lateEnum.names,"Map Enum cache retirement prevented exact reload");
+    Require(NativeEnumName(lateEnum.objectPath,2)=="IK_F1","Native GetEnum retained a retired first-map Enum descriptor instead of the reloaded source");
     Require(UnloadPortableRuntimeMap()>0u,"Cannot retire reloaded map Enum fixture");
     SameSnapshot(prepared,ReadPortableRuntimeNativeMetadataClasses());
     ShutdownPortableRuntime();SnapshotIs(ReadPortableRuntimeNativeMetadataClasses(),false);

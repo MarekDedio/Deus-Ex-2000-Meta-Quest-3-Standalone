@@ -103,12 +103,19 @@ at viewport+2C. Its leading dispatch is:
 - Assert the actual Player.Actor pointer (viewport+30) is nonnull.
 - If actual Input (viewport+60) is nonnull, call Input+28's FExec slot0 at
   10373AAF..3AC9. A true result returns immediately through10373B0C.
-- Only if unhandled, try actual Console (viewport+64), FExec+28, at
+- Only if unhandled, try actual RenDev (viewport+64), FExec+28, at
   10373ACE..3AE5. Then proceed to viewport-specific commands beginning GETPING.
 
 Both reached key commands return true from UInput even when their result is
-empty. Thus they stop before Console/viewport/UPlayer fallback. The rest of the
+empty. Thus they stop before RenDev/viewport/UPlayer fallback. The rest of the
 viewport command body was not exhaustively certified by this audit.
+
+2026-10-27 correction:the old Console label at+64 was wrong. The literal
+1047BFE0="RenDev" is used for that actual slot at10373775/10373973. Canvas is
+at+5C; actual Console is+34,constructed from UConsole105823E0 at103896D5..10389702.
+Later viewport fallback10374267 offers Console.ProcessConsoleExec+48,then
+UPlayer. The complete reached SET route/persistence contract is recorded in
+ORIGINAL-INPUT-FEXEC-SET-GAP.md; it is not an implemented fallback chain.
 
 `UPlayer::Exec` thunk10302CB6 ->103D7ED0..103D8098 is not a replacement for the
 viewport's Input-first override. Its observed fallback provider order is actual

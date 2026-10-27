@@ -3569,6 +3569,8 @@ public:
         // retained removed Actor. It does not require a started world, player,
         // collision or presentation-active receiver.
         if (index==1013u) return MeshTextureNative(object,arguments,declaration);
+        if(index==0u&&declaration&&LowerAscii(declaration->path)=="core.object.getenum")
+            return CoreGetEnumNative(arguments,declaration);
         if (object->defaultOwner)
             throw std::runtime_error("Native execution on a class-default object requires its audited handler");
         if (index==264u) throw std::runtime_error("PlaySound requires its captured VM call-site context");
@@ -4016,6 +4018,8 @@ public:
         const std::vector<Evaluation>& arguments, const Function* declaration, QuestVr::Vm::Execution& execution,
         const std::optional<Value>& context) override {
         if (index==229u) return CoreGetAxesNative(arguments,declaration);
+        if(index==0u&&declaration&&LowerAscii(declaration->path)=="core.object.getenum")
+            return CoreGetEnumNative(arguments,declaration);
         if (index==1013u) return Native(index,receiver,arguments,declaration);
         if (Object(receiver)->defaultOwner)
             throw std::runtime_error("Native execution on a class-default object requires its audited handler");
@@ -4051,6 +4055,8 @@ public:
     Evaluation NativeWithExecution(const std::uint16_t index, const std::string& receiver,
         const std::vector<Evaluation>& arguments, const Function* declaration, QuestVr::Vm::Execution& execution) override {
         if(index==229u) return CoreGetAxesNative(arguments,declaration);
+        if(index==0u&&declaration&&LowerAscii(declaration->path)=="core.object.getenum")
+            return CoreGetEnumNative(arguments,declaration);
         if(index==277u) return ActorTraceNative(receiver,arguments,declaration,execution);
         if(index==531u) return PawnPickTargetNative(receiver,arguments,declaration,execution);
         if(index==261u) {
@@ -5555,6 +5561,7 @@ public:
     #include "portable_actor_move_probe.inl"
     #include "portable_core_rotator_add.inl"
     #include "portable_core_get_axes.inl"
+    #include "portable_core_get_enum.inl"
     #include "portable_actor_trace.inl"
     #include "portable_pawn_line_of_sight.inl"
     #include "portable_pawn_pick_target.inl"
@@ -5724,6 +5731,11 @@ public:
     }
     std::optional<Value> NativeArgumentSeed(const std::uint16_t index,const std::string& receiver,
         const std::size_t slot,const Function* declaration) override {
+        if(index==0u&&declaration&&LowerAscii(declaration->path)=="core.object.getenum") {
+            static_cast<void>(CoreGetEnumDeclaration(declaration));static_cast<void>(Object(receiver));
+            if(slot>=2u)throw std::runtime_error("GetEnum seed exceeds its original two input slots");
+            return slot==0u?Value::Text(Kind::Object,{}):Value::Integer(0);
+        }
         if(index==1242u || index==1280u || index==1281u || index==1469u) {
             static_cast<void>(NativeGcTextDeclaration(index,declaration));
             if(index==1469u)RequireNativeWindow(Object(receiver));else ValidateNativeGcContextFields(Object(receiver));
@@ -13852,21 +13864,11 @@ PortableNativeMetadataClassesSnapshot PreparePortableRuntimeNativeMetadataClasse
 PortableRuntimeEnumSnapshot ReadPortableRuntimeEnum(const std::string& objectPath) {
     if(!persistentRuntime || !persistentMetadataClasses)
         throw std::runtime_error("Runtime Enum query requires the actual registered Core.Enum class");
-    PortableActorVmHost host;auto* object=host.Object(objectPath);auto* cls=host.Object("Core.Enum");
-    auto* within=host.Object("Core.Struct");
-    const auto imported=object->nativeMetadataClassImport;
-    if(!imported || imported>QuestVr::NativeMetadataClasses.size() ||
-        QuestVr::NativeMetadataClasses[imported-1u].path!="Core.Enum" ||
-        cls->nativeMetadataClass!=&QuestVr::NativeMetadataClasses[imported-1u] ||
-        object->cls!=cls || cls->nativeClassWithin!=within ||
-        !object->inventoryTableMetadata || !object->inventoryClassReferenceValid ||
-        object->defaultOwner || object->runtimeBirth || !object->enumDescriptor ||
-        !object->outer || !IsDerivedFromPath(object->outer->cls,"Core.Struct") ||
-        !object->objectIndex || !object->outer->objectIndex || !cls->objectIndex)
-        throw std::runtime_error("Runtime Enum query lacks genuine source/Class/UStruct Outer authority");
+    PortableActorVmHost host;auto* object=host.Object(objectPath);const auto& descriptor=host.BorrowNativeEnum(object);
+    auto* cls=object->cls;
     return {object->reflection.objectPath,object->outer->reflection.objectPath,cls->reflection.objectPath,
         object->objectIndex.Index(),object->outer->objectIndex.Index(),cls->objectIndex.Index(),
-        object->enumDescriptor->names};
+        descriptor.names};
 }
 
 static RuntimeObject* NativeConfigConsole(PortableActorVmHost& host,const bool requireBoundWithin) {
