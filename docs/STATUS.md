@@ -1,5 +1,34 @@
 # Port status
 
+## Latest: original GC font/text packets and hidden layout request (2026-10-27)
+
+GC.SetFont1242,GetTextExtent1280,GetFontHeight1281 and Window.ConvertScriptString
+1469 now use authenticated original declarations, per-Step input copies/defaults,
+real Font metrics and live X-then-Y OUT stores in the caller's transaction.
+Window.AskParentForReconfigure1460 reuses actual hidden-ancestor dirty/defer rules;
+visible layout/root activation remain explicitly unsupported. No accepted VR
+HUD-layout, memory budget, save format or original-data change was made.
+
+Owned HUD10175 controls,VM700012/998,measurement171650/259 and owned GC155/16
+with68 Window/43 text cases pass. The198-object root graph now completes HUD
+settings and scope creation/Lower/final cursor selection before the actual
+Core.Object.GetEnum key-binding dependency at15477 writes. All three saved text
+contexts are released; actual scope Player/Color fields are captured within the
+unchanged4MiB snapshot cap. This is still rollback-only startup evidence.
+
+Full desktop build,current Android-native link and strict ARM64 pass. CTest:
+269 registered,225 executed,44 explicit owned-data skips,zero failures164.27s.
+All eight rebuilt owned first-Training regressions pass. All45 originals/24
+frozen compiler inputs match length/mtime/SHA256; all jobs are terminal.
+Original two-Fire repeat2 reaches271515/32539,retaining two notifies/four traces/
+two crate changes/nine births/full undo. Doors retain both56-unit moves and the
+exact unprepared ReadInput refusal. No new APK or live crate/loot/gravity claim.
+
+Next:authenticated Core.Object.GetEnum,remaining original input/startup services,
+then the committing VR weapon/frame/publication bridge. First Training only;
+no account/character-creation UI or other-map integration. See
+ORIGINAL-GC-TEXT-NATIVE-PACKETS.md and ORIGINAL-CORE-GETENUM-GAP.md.
+
 ## Latest: original optional Window.Show/parent visibility (2026-10-27)
 
 Show1413 now follows its real optional-true Bool packet, copied inputs, equality

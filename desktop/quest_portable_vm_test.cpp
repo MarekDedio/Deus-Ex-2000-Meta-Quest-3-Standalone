@@ -509,9 +509,10 @@ struct TestHost final:Vm::Host {
             index==1430u || index==1431u || index==1432u || index==1433u || index==1438u || index==1454u || index==1461u || index==1465u || index==1467u || index==1475u || index==1476u ||
             index==1556u || index==1557u || index==1558u || index==1572u || index==1573u ||
             index==1270u || index==1272u || index==1486u || index==1483u || index==1550u ||
+            index==1242u || index==1280u || index==1281u || index==1469u ||
             index==1535u || index==1538u || index==1539u || index==1540u ||
             index==1541u || index==1544u || index==1545u) && executionNative) {
-            std::vector<Value> values;for(const auto& argument:arguments) values.push_back(index==1465u?argument.value:argument.Load());
+            std::vector<Value> values;for(const auto& argument:arguments) values.push_back(index==1465u||index==1280u?argument.value:argument.Load());
             nativeArguments.push_back(std::move(values));nativeReceivers.push_back(receiver);nativeIndices.push_back(index);
             nativeDeclarations.push_back(declaration ? declaration->path : "");
             return executionNative(receiver,arguments,declaration,execution);
@@ -4732,6 +4733,283 @@ void WindowPreferredSizeOutContracts() {
     std::cout<<"Preferred-size native copied OUT temporaries/references: "<<checks-initialChecks<<" checks and "
         <<rejections-initialRejections<<" refusal controls.\n";
 }
+void GcTextNativeInputContracts() {
+    const auto initialChecks=checks,initialRejections=rejections;
+    // These fixtures reproduce the audited Extension.u declarations. The host
+    // grants initialized temporary authority only after matching that identity;
+    // the VM native number itself is never a source of these defaults.
+    const auto configure=[](TestHost& host,std::uint16_t index) {
+        auto native=Function(index==1242u?"SetFont":index==1280u?"GetTextExtent":
+            index==1281u?"GetFontHeight":"ConvertScriptString",{},index==1469u?"Extension.Window":"Extension.GC");
+        native.nativeIndex=index;native.flags=0x401u;
+        const auto parameter=[&](const std::string& name,Value zero,std::uint32_t flags) {
+            native.variables.push_back({native.path+"."+name,name,std::move(zero),flags,1u});
+        };
+        if(index==1242u) parameter("NewFont",Value::Text(Vm::Kind::Object,{}),0x80u);
+        else if(index==1280u) {
+            parameter("destWidth",Value::Float(0.0f),0x80u);
+            parameter("xExtent",Value::Float(0.0f),0x180u);
+            parameter("yExtent",Value::Float(0.0f),0x180u);
+            parameter("textStr",Value::Text(Vm::Kind::String,{}),0x400880u);
+        } else if(index==1281u) {
+            parameter("bIncludeSpace",Value::Bool(false),0x90u);
+            parameter("ReturnValue",Value::Float(0.0f),0x580u);
+        } else {
+            parameter("oldStr",Value::Text(Vm::Kind::String,{}),0x400080u);
+            parameter("ReturnValue",Value::Text(Vm::Kind::String,{}),0x400580u);
+        }
+        host.finals[{"Fixture",7}]=std::make_shared<Vm::Function>(native);
+        host.argumentSeed=[native](std::uint16_t actual,const std::string& receiver,std::size_t slot,
+            const Vm::Function* declaration)->std::optional<Value> {
+            if(actual!=native.nativeIndex) return std::nullopt;
+            Require(receiver=="Self"||receiver=="Other","GC text seed changed its receiver identity");
+            if(declaration) {
+                Require(declaration->path==native.path && declaration->source==native.source &&
+                    declaration->nativeIndex==native.nativeIndex && declaration->flags==native.flags &&
+                    declaration->variables.size()==native.variables.size(),"GC text seed accepted a foreign declaration");
+                for(std::size_t i=0;i<native.variables.size();++i) {
+                    const auto& supplied=declaration->variables[i];const auto& expected=native.variables[i];
+                    Require(supplied.key==expected.key && supplied.name==expected.name && supplied.flags==expected.flags &&
+                        supplied.arrayDimension==1u && supplied.zero.kind==expected.zero.kind,
+                        "GC text seed accepted a changed parameter identity/layout");
+                }
+            }
+            const auto count=native.nativeIndex==1280u?4u:1u;
+            Require(slot<count,"GC text seed requested a return/excess parameter");
+            return native.variables[slot].zero;
+        };
+        return native;
+    };
+    const auto call=[](std::uint16_t index,bool declared,const std::vector<Bytes>& inputs) {
+        auto expression=declared?Call(0x1cu,7):Native(index);expression.pop_back();
+        for(const auto& input:inputs) Append(expression,input);
+        expression.push_back(0x16u);return expression;
+    };
+    for(const auto index:{std::uint16_t{1242u},std::uint16_t{1281u},std::uint16_t{1469u}})
+        for(unsigned route=0u;route<3u;++route) for(const bool lateFailure:{false,true}) {
+        TestHost host;const auto native=configure(host,index);
+        const auto original=index==1242u?Value::Text(Vm::Kind::Object,"OriginalFont"):
+            index==1281u?Value::Bool(true):Value::Text(Vm::Kind::String,"Original|nText");
+        const auto replacement=index==1242u?Value::Text(Vm::Kind::Object,"OtherFont"):
+            index==1281u?Value::Bool(false):Value::Text(Vm::Kind::String,"Changed");
+        const auto expression=Context(Ref(0x20u,9),call(index,route==1u,{Ref(0x01u,1)}));
+        const auto caller=Function("GcTextSingleCopiedSourceFrame",Return(expression));
+        const auto property=host.Property(caller,1,"SourceInput",native.variables[0].zero);
+        host.Store("Self",property,{original});host.Store("Other",property,{replacement});
+        host.objects[{caller.source,9}]="Other";
+        bool entered{};
+        host.executionNative=[&](const std::string& receiver,const std::vector<Vm::Evaluation>& args,
+            const Vm::Function* actual,Vm::Execution& execution) {
+            entered=true;
+            Require(receiver=="Other" && static_cast<bool>(actual)==(route!=0u) && args.size()==1u && !args[0].reference &&
+                Vm::Equal(args[0].value,original) && host.referenceReads==1u,
+                "GC text ordinary Step lost its one-read copied source or receiver/declaration");
+            execution.WriteReference(host.Reference({"Self",Vm::Scope::Instance,property.key},property),replacement);
+            Require(Vm::Equal(args[0].Load(),original),"GC text copied input changed after its source was written");
+            return Vm::Evaluation{args[0].value,{}};
+        };
+        const auto result=Vm::ExecuteTransaction(host,[&](Vm::Execution& execution) {
+            execution.CallFunction(Function("EarlierGcTextEffect",Join({Native(1000u),Return()})),"Self");
+            const auto value=route==2u?execution.CallFunction(native,"Other",
+                {{{},host.Reference({"Self",Vm::Scope::Instance,property.key},property)}}):execution.CallFunction(caller,"Self");
+            if(lateFailure) execution.CallFunction(Function("LaterGcTextFailure",Return(Native(4095u))),"Self");
+            return value;
+        });
+        if(lateFailure) {
+            Failed(result,Vm::Status::Unsupported,host,"GC text input copy rolls back a later failure");
+            Require(entered && Vm::Equal(host.Load("Self",property),original) && host.effects==0u && host.rng==12345u,
+                "GC text late failure retained copied-input mutation or prefix effect/RNG");
+        } else {
+            Returned(result,"GC text raw/resolved/direct wrappers copy each ordinary input once");
+            Require(entered && Vm::Equal(result.value,original) && Vm::Equal(host.Load("Self",property),replacement) &&
+                Vm::Equal(host.Load("Other",property),replacement) && result.writes==1u && host.effects==1u,
+                "GC text ordinary copied input lost its committed native write");
+        }
+    }
+    for(const bool declared:{false,true}) {
+        TestHost host;configure(host,1280u);
+        const auto mutateWidth=Native(1060u,{Ref(0x01u,1),Real(99.0f),Real(12.0f)});
+        const auto mutateX=Native(1060u,{Ref(0x01u,2),Real(88.0f),String("A|nB")});
+        const auto caller=Function("GcExtentSequentialSteps",Return(Context(Ref(0x20u,9),
+            call(1280u,declared,{Ref(0x01u,1),mutateWidth,Ref(0x01u,2),mutateX}))));
+        const auto width=host.Property(caller,1,"Width",Value::Float(0.0f));
+        const auto output=host.Property(caller,2,"Output",Value::Float(0.0f));
+        host.Store("Self",width,{Value::Float(40.0f)});host.Store("Self",output,{Value::Float(17.0f)});
+        host.Store("Other",width,{Value::Float(3.0f)});host.Store("Other",output,{Value::Float(4.0f)});
+        host.objects[{caller.source,9}]="Other";
+        host.executionNative=[&](const std::string& receiver,const std::vector<Vm::Evaluation>& args,
+            const Vm::Function* actual,Vm::Execution&) {
+            Require(receiver=="Other" && static_cast<bool>(actual)==declared && args.size()==4u &&
+                !args[0].reference && !args[1].reference && args[2].reference && !args[3].reference &&
+                args[0].value.floating==40.0f && args[1].value.floating==12.0f && args[2].value.floating==17.0f &&
+                args[3].value.kind==Vm::Kind::String && args[3].value.text=="A|nB" && host.Load("Self",width).floating==99.0f &&
+                host.Load("Self",output).floating==88.0f,
+                "GC extent later Steps reloaded prior width/OUT copies or changed caller-frame writes");
+            args[2].reference->write(Value::Float(64.0f));return Vm::Evaluation{};
+        };
+        const auto result=Vm::Execute(host,caller,"Self");Returned(result,"GC extent snapshots each Step before evaluating later inputs");
+        Require(host.Load("Self",output).floating==64.0f && host.Load("Other",output).floating==4.0f && result.writes==3u,
+            "GC extent captured OUT pointer wrote receiver storage or lost earlier real effects");
+    }
+    for(unsigned outputForm=0u;outputForm<5u;++outputForm) for(const bool lateFailure:{false,true}) {
+        TestHost host;const auto native=configure(host,1280u);
+        float width=40.0f,x=12.0f,y=23.0f;std::string text="A|nB";
+        unsigned widthReads{},xReads{},yReads{},textReads{};std::vector<unsigned> stores;
+        auto w=std::make_shared<Vm::Reference>(),xr=std::make_shared<Vm::Reference>(),
+            yr=std::make_shared<Vm::Reference>(),str=std::make_shared<Vm::Reference>();
+        w->zero=xr->zero=yr->zero=Value::Float(0.0f);str->zero=Value::Text(Vm::Kind::String,{});
+        w->read=[&] {++widthReads;return Value::Float(width);};
+        xr->read=[&] {++xReads;width=99.0f;return Value::Float(x);};
+        yr->read=[&] {++yReads;return Value::Float(y);};
+        str->read=[&] {++textReads;return Value::Text(Vm::Kind::String,text);};
+        xr->write=[&](const Value& v) {stores.push_back(1u);x=v.floating;};
+        yr->write=[&](const Value& v) {stores.push_back(2u);y=v.floating;};
+        const auto first=outputForm==2u||outputForm==4u?std::shared_ptr<Vm::Reference>{}:xr;
+        const auto second=outputForm==3u||outputForm==4u?std::shared_ptr<Vm::Reference>{}:outputForm==1u?xr:yr;
+        std::shared_ptr<Vm::Reference> retained;
+        host.executionNative=[&](const std::string&,const std::vector<Vm::Evaluation>& args,const Vm::Function*,Vm::Execution&) {
+            Require(args.size()==4u && !args[0].reference && !args[3].reference &&
+                static_cast<bool>(args[1].reference)==static_cast<bool>(first) &&
+                static_cast<bool>(args[2].reference)==static_cast<bool>(second) &&
+                args[0].value.floating==40.0f && args[3].value.text=="A|nB" && widthReads==1u && textReads==1u &&
+                xReads==(static_cast<unsigned>(static_cast<bool>(first))+static_cast<unsigned>(second==xr)) &&
+                yReads==static_cast<unsigned>(second==yr),
+                "Direct GC extent copies/OUT aliases performed duplicate loads or retained ordinary aliases");
+            text="changed after Step";
+            Require(args[3].value.text=="A|nB","GC extent String was not an independent caller-frame copy");
+            if(args[1].reference) {retained=args[1].reference;args[1].reference->write(Value::Float(32.0f));}
+            if(args[2].reference) {if(!retained) retained=args[2].reference;args[2].reference->write(Value::Float(16.0f));}
+            return Vm::Evaluation{};
+        };
+        const auto result=Vm::ExecuteTransaction(host,[&](Vm::Execution& execution) {
+            execution.CallFunction(native,"Self",{{{},w},{Value::Float(12.0f),first},
+                {Value::Float(23.0f),second},{{},str}});
+            if(lateFailure) execution.CallFunction(Function("GcExtentLateFailure",Return(Native(4095u))),"Self");
+            return Value{};
+        });
+        if(lateFailure) {
+            Failed(result,Vm::Status::Unsupported,host,"GC extent OUT aliases roll back late failure");
+            Require(x==12.0f && y==23.0f,"GC extent shared/distinct OUT changes escaped rollback");
+        } else {
+            Returned(result,"GC extent direct outputs preserve ordered shared/distinct/discarded references");
+            const std::vector<unsigned> expected=outputForm==0u?std::vector<unsigned>{1u,2u}:
+                outputForm==1u?std::vector<unsigned>{1u,1u}:outputForm==2u?std::vector<unsigned>{2u}:
+                outputForm==3u?std::vector<unsigned>{1u}:std::vector<unsigned>{};
+            Require(stores==expected && result.writes==expected.size() &&
+                x==(outputForm==1u?16.0f:first?32.0f:12.0f) && y==(second==yr?16.0f:23.0f),
+                "GC extent OUT stores lost X-before-Y order, shared-alias last write or discarded output independence");
+        }
+        if(retained) {
+            const auto before=x;bool expired{};try {retained->write(Value::Float(88.0f));}catch(const std::exception&) {expired=true;}
+            Require(expired && x==before,"GC extent retained a writable OUT guard after its execution expired");
+        }
+    }
+    for(const auto index:{std::uint16_t{1242u},std::uint16_t{1280u},std::uint16_t{1281u},std::uint16_t{1469u}})
+        for(unsigned route=0u;route<3u;++route) for(unsigned selected=0u;selected<(index==1280u?4u:1u);++selected)
+        for(const bool noWrite:{false,true}) {
+        TestHost host;const auto native=configure(host,index);bool read{},entered{};
+        auto stale=std::make_shared<Vm::Reference>();stale->zero=native.variables[selected].zero;
+        stale->read=[&]() ->Value {read=true;throw std::runtime_error("GC text absent input read stale alias");};
+        std::vector<Vm::Evaluation> inputs;std::vector<Bytes> expressions;
+        const auto count=index==1280u?4u:1u;
+        for(unsigned slot=0u;slot<count;++slot) {
+            const auto zero=native.variables[slot].zero;
+            inputs.push_back({zero,{}});
+            expressions.push_back(zero.kind==Vm::Kind::String?String("A|nB"):zero.kind==Vm::Kind::Object?Bytes{0x2au}:
+                zero.kind==Vm::Kind::Bool?Bytes{0x27u}:Real(17.0f));
+        }
+        inputs[selected]={Value::Text(Vm::Kind::String,"stale"),stale,
+            noWrite?Vm::ResultDisposition::NoWrite:Vm::ResultDisposition::ZeroFill,0u};
+        expressions[selected]=Context({0x2au},Native(4095u),0u);
+        host.executionNative=[&](const std::string&,const std::vector<Vm::Evaluation>& args,const Vm::Function*,Vm::Execution&) {
+            entered=true;
+            Require(args.size()==count && !args[selected].reference &&
+                Vm::Equal(args[selected].value,native.variables[selected].zero),
+                "GC text initialized temporary lost its authenticated default or kept an unwritten OUT alias");
+            return Vm::Evaluation{};
+        };
+        const auto caller=Function("GcTextInitializedNoWrite",Return(call(index,route==1u,expressions)));
+        const auto result=route==2u?Vm::Execute(host,native,"Self",inputs):Vm::Execute(host,caller,"Self");
+        Returned(result,"GC text NoWrite/zero-byte result uses its authenticated initialized temporary");
+        Require(entered && !read && result.writes==0u,"GC text absence read stale input, invented OUT stores or skipped native body");
+    }
+    for(unsigned route=0u;route<3u;++route) for(const bool explicitNothing:{false,true}) {
+        TestHost host;const auto native=configure(host,1281u);bool entered{};
+        host.executionNative=[&](const std::string&,const std::vector<Vm::Evaluation>& args,const Vm::Function*,Vm::Execution&) {
+            entered=true;
+            Require(args.empty()||(args.size()==1u&&!args.front().reference&&args.front().value.kind==Vm::Kind::Nothing),
+                "Optional GetFontHeight input invented a true default or an input alias");
+            return Vm::Evaluation{Value::Float(13.0f),{}};
+        };
+        const auto caller=Function("GcFontHeightOptionalFalse",Return(call(1281u,route==1u,
+            explicitNothing?std::vector<Bytes>{Bytes{0x0bu}}:std::vector<Bytes>{})));
+        const auto result=route==2u?Vm::Execute(host,native,"Self",explicitNothing?
+            std::vector<Vm::Evaluation>{Vm::Evaluation{}}:std::vector<Vm::Evaluation>{}):Vm::Execute(host,caller,"Self");
+        Returned(result,"GetFontHeight accepts genuinely omitted/default-false optional input");
+        Require(entered&&result.value.floating==13.0f&&result.writes==0u,"Optional font height bypassed its body or mutated state");
+    }
+    for(const bool direct:{false,true}) for(const auto selected:{0u,1u,2u,3u}) for(const auto bytes:{1u,2u,3u,4u,5u,12u,13u,255u}) {
+        TestHost host;const auto native=configure(host,1280u);bool read{},entered{};
+        auto stale=std::make_shared<Vm::Reference>();stale->zero=native.variables[selected].zero;
+        stale->read=[&]() ->Value {read=true;throw std::runtime_error("GC text zero-fill read a stale alias");};
+        std::vector<Vm::Evaluation> inputs={{Value::Float(40.0f),{}},{Value::Float(0.0f),{}},
+            {Value::Float(0.0f),{}},{Value::Text(Vm::Kind::String,"A"),{}}};
+        inputs[selected]={native.variables[selected].zero,stale,Vm::ResultDisposition::ZeroFill,static_cast<std::uint8_t>(bytes)};
+        std::vector<Bytes> expressions={Real(40.0f),Real(0.0f),Real(0.0f),String("A")};
+        expressions[selected]=Context({0x2au},Native(4095u),static_cast<std::uint8_t>(bytes));
+        host.executionNative=[&](const std::string&,const std::vector<Vm::Evaluation>& args,const Vm::Function*,Vm::Execution&) {
+            entered=true;
+            Require(!args[selected].reference&&Vm::Equal(args[selected].value,native.variables[selected].zero),
+                "GC extent initialized clear did not retain its actual zero temporary");return Vm::Evaluation{};
+        };
+        const auto caller=Function("GcExtentInitializedClearBounds",Return(call(1280u,!direct,expressions)));
+        const auto result=direct?Vm::Execute(host,native,"Self",inputs):Vm::Execute(host,caller,"Self");
+        const bool accepted=selected==3u?bytes==12u:bytes<=4u;
+        if(accepted)Returned(result,"GC extent partial Float/full FString result clear uses authenticated initialized storage");
+        else Failed(result,Vm::Status::Unsupported,host,"GC extent refuses partial FString and overflowing result clears");
+        Require(!read&&entered==accepted&&result.writes==0u,"GC extent invalid result clear read stale state or entered native body");
+    }
+    for(const bool direct:{false,true}) for(const auto selected:{0u,1u,2u,3u}) {
+        TestHost host;const auto native=configure(host,1280u);host.argumentSeed={};bool read{};
+        auto stale=std::make_shared<Vm::Reference>();stale->zero=native.variables[selected].zero;
+        stale->read=[&] {read=true;return native.variables[selected].zero;};
+        const auto bytes=selected==3u?1u:3u;
+        std::vector<Vm::Evaluation> inputs={{Value::Float(40.0f),{}},{Value::Float(0.0f),{}},
+            {Value::Float(0.0f),{}},{Value::Text(Vm::Kind::String,"A"),{}}};
+        inputs[selected]={native.variables[selected].zero,stale,Vm::ResultDisposition::ZeroFill,static_cast<std::uint8_t>(bytes)};
+        std::vector<Bytes> expressions={Real(40.0f),Real(0.0f),Real(0.0f),String("A")};
+        expressions[selected]=Context({0x2au},Native(4095u),static_cast<std::uint8_t>(bytes));
+        const auto caller=Function("GcExtentNoGlobalSeed",Return(call(1280u,!direct,expressions)));
+        const auto result=direct?Vm::Execute(host,native,"Self",inputs):Vm::Execute(host,caller,"Self");
+        Failed(result,Vm::Status::Unsupported,host,"GC extent declaration/native index alone cannot grant initialized partial-write authority");
+        Require(!read && host.nativeIndices.empty(),"GC extent inferred a global native seed or entered its body after unsupported partial result");
+    }
+    for(const bool direct:{false,true}) for(unsigned failedSlot=0u;failedSlot<4u;++failedSlot) {
+        TestHost host;const auto native=configure(host,1280u);const auto authenticatedSeed=host.argumentSeed;bool read{};
+        host.argumentSeed=[&](std::uint16_t index,const std::string& receiver,std::size_t slot,
+            const Vm::Function* declaration)->std::optional<Value> {
+            if(index==1280u && slot==failedSlot) throw std::runtime_error("GC extent authenticated seed lookup failed");
+            return authenticatedSeed(index,receiver,slot,declaration);
+        };
+        auto stale=std::make_shared<Vm::Reference>();stale->zero=Value::Float(0.0f);
+        stale->read=[&] {read=true;return Value::Float(99.0f);};
+        const auto caller=Function("GcExtentSeedBeforeEffects",Return(call(1280u,false,
+            {Native(1000u),Real(0.0f),Real(0.0f),String("A")})));
+        const auto result=Vm::ExecuteTransaction(host,[&](Vm::Execution& execution) {
+            execution.CallFunction(Function("EarlierGcExtentSeedEffect",Join({Native(1000u),Return()})),"Self");
+            try {
+                if(direct) execution.CallFunction(native,"Self",{{{},stale},{Value::Float(0.0f),{}},
+                    {Value::Float(0.0f),{}},{Value::Text(Vm::Kind::String,"A"),{}}});
+                else execution.CallFunction(caller,"Self");
+            }catch(const std::exception&) {}return Value{};
+        });
+        Failed(result,Vm::Status::Unsupported,host,"GC extent seed failure precedes all input reads/effects and poisons caught outer root");
+        Require(!read && host.effects==0u && host.rng==12345u && host.nativeIndices==std::vector<std::uint16_t>{1000u},
+            "GC extent failed seed allowed pending inputs or prefix effects to commit");
+    }
+    std::cout<<"GC font/text native copied inputs and captured extent outputs: "<<checks-initialChecks<<" checks and "
+        <<rejections-initialRejections<<" refusal controls.\n";
+}
 void WindowWidthInputContracts() {
     const auto initialChecks=checks,initialRejections=rejections;
     const auto configure=[](TestHost& host) {
@@ -6902,6 +7180,7 @@ int main() {
         TileNativeInputContracts();
         WindowConfigureChildInputContracts();
         WindowPreferredSizeOutContracts();
+        GcTextNativeInputContracts();
         WindowWidthInputContracts();
         WindowSelectabilityInputContracts();
         WindowVisibilityInputContracts();

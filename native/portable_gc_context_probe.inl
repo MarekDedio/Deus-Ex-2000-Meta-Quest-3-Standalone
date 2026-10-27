@@ -486,6 +486,148 @@
         static_cast<void>(execution.CallFunction(*content,text->reflection.objectPath,{noText}));
         expect(Read(text,DescribeProperty("Extension.TextWindow.Text"),0u).text.empty(),
             "NoWrite SetText retained a stale String instead of its empty native temporary");++result.textCases;
+        const auto reconfigureDeclaration=WindowNativeDeclaration(1460u,nullptr);
+        const auto reconfigureVisible=Read(text,DescribeProperty("Extension.Window.bIsVisible"),0u);
+        for(const bool visible:{false,true})for(unsigned flags=0u;flags<4u;++flags) {
+            NativeWindowWrite(text,"Extension.Window.bIsVisible",Value::Bool(visible),execution);
+            NativeWindowWrite(text,"Extension.Window.bNeedsReconfigure",Value::Bool((flags&1u)!=0u),execution);
+            NativeWindowWrite(text,"Extension.Window.bNeedsQuery",Value::Bool((flags&2u)!=0u),execution);
+            const auto parentReconfigure=Read(root,DescribeProperty("Extension.Window.bNeedsReconfigure"),0u);
+            const auto parentQuery=Read(root,DescribeProperty("Extension.Window.bNeedsQuery"),0u);
+            before=execution.WriteCount();
+            static_cast<void>(execution.CallFunction(*reconfigureDeclaration,text->reflection.objectPath,{}));
+            expect(execution.WriteCount()==before+2u&&NativeWindowBool(text,"bNeedsReconfigure")&&NativeWindowBool(text,"bNeedsQuery"),
+                "Native1460 skipped repeated dirty stores or entered layout below its hidden ancestor");
+            expect(QuestVr::Vm::Equal(Read(root,DescribeProperty("Extension.Window.bNeedsReconfigure"),0u),parentReconfigure)&&
+                QuestVr::Vm::Equal(Read(root,DescribeProperty("Extension.Window.bNeedsQuery"),0u),parentQuery),
+                "Hidden native1460 dirtied its parent or invoked an unrelated layout callback");++result.windowCases;
+        }
+        NativeWindowWrite(text,"Extension.Window.bIsVisible",reconfigureVisible,execution);
+        contentGuard([&]{static_cast<void>(WindowAskParentForReconfigureNative(drawing,{},reconfigureDeclaration.get(),execution));});
+        contentGuard([&]{static_cast<void>(WindowAskParentForReconfigureNative(text,{{Value::Bool(false),{}}},
+            reconfigureDeclaration.get(),execution));});
+        auto forgedReconfigure=*reconfigureDeclaration;forgedReconfigure.flags^=0x10u;
+        contentGuard([&]{static_cast<void>(WindowAskParentForReconfigureNative(text,{},&forgedReconfigure,execution));});
+        // Original GC/font/string native packets, through the actual caller
+        // Execution. Output aliases below are real reflected Float storage.
+        auto* measured=Object(Read(text,DescribeProperty("Extension.Window.wGc"),0u).text);
+        ValidateNativeGcContextFields(measured);
+        const auto textNative=[&](std::uint16_t index,RuntimeObject* receiver,const std::vector<Evaluation>& inputs={}) {
+            const auto function=NativeGcTextDeclaration(index,nullptr);
+            return execution.CallFunction(*function,receiver->reflection.objectPath,inputs);
+        };
+        for(const unsigned form:{0u,1u,2u,3u}) {
+            Evaluation font{Value::Text(Kind::Object,form==2u?std::string{}:"Extension.TechMedium"),{}};
+            if(form==3u)font.disposition=QuestVr::Vm::ResultDisposition::NoWrite;
+            before=execution.WriteCount();static_cast<void>(textNative(1242u,measured,{font}));
+            const auto expected=form>=2u?std::string{}:"Extension.TechMedium";
+            expect(execution.WriteCount()==before+2u&&NativeGcRead(measured,"normalFont").text==expected&&
+                NativeGcRead(measured,"boldFont").text==expected,"GC.SetFont omitted duplicate/None stores or lost its Object seed");
+            ++result.textCases;
+        }
+        NativeGcWrite(measured,"textVSpacing",Value::Float(1.0f),execution);
+        for(const bool spacing:{false,true}) {
+            const auto height=textNative(1281u,measured,{{Value::Bool(spacing),{}}});
+            expect(height.kind==Kind::Float&&height.floating==(spacing?1.0f:0.0f),
+                "GC.GetFontHeight fabricated glyph metrics for actual None fonts");++result.textCases;
+        }
+        const auto hMargin=DescribeProperty("Extension.TextWindow.hMargin"),vMargin=DescribeProperty("Extension.TextWindow.vMargin");
+        const auto spacingProperty=DescribeProperty("Extension.GC.textVSpacing");
+        auto xOutput=ReferenceFor(text,hMargin,0u,false),yOutput=ReferenceFor(text,vMargin,0u,false);
+        auto sharedOutput=ReferenceFor(measured,spacingProperty,0u,false);
+        before=execution.WriteCount();
+        static_cast<void>(textNative(1280u,measured,{{Value::Float(1024.0f),{}},{Value::Float(0.0f),xOutput},
+            {Value::Float(0.0f),yOutput},{Value::Text(Kind::String,"A B"),{}}}));
+        expect(execution.WriteCount()==before+2u&&Read(text,hMargin,0u).floating==0.0f&&Read(text,vMargin,0u).floating==1.0f,
+            "GC.GetTextExtent invented a fallback font or lost genuine no-font line spacing");++result.textCases;
+        static_cast<void>(textNative(1242u,measured,{{Value::Text(Kind::Object,"Extension.TechMedium"),{}}}));
+        for(const unsigned form:{0u,1u,2u,3u}) {
+            std::vector<Evaluation> inputs;
+            if(form<2u)inputs.push_back({Value::Bool(form==1u),{}});
+            if(form==3u) {Evaluation input{Value::Bool(true),{}};input.disposition=QuestVr::Vm::ResultDisposition::NoWrite;inputs.push_back(input);}
+            before=execution.WriteCount();const auto height=textNative(1281u,measured,inputs);
+            expect(height.kind==Kind::Float&&height.floating==static_cast<float>(space.height+(form==1u?1:0))&&
+                execution.WriteCount()==before,"GC.GetFontHeight changed its optional-false/space metric protocol");++result.textCases;
+        }
+        struct ConversionCase {const char* input;const char* expected;};
+        for(const auto& item:std::array<ConversionCase,6u>{ConversionCase{"A|nB","A\nB"},ConversionCase{"||n","||n"},
+            ConversionCase{"|N","|N"},ConversionCase{"tail|","tail|"},
+            ConversionCase{"\xce\xa9|n\xf0\x9f\x98\x80","\xce\xa9\n\xf0\x9f\x98\x80"},ConversionCase{"",""}}) {
+            before=execution.WriteCount();const auto converted=textNative(1469u,text,{{Value::Text(Kind::String,item.input),{}}});
+            expect(converted.kind==Kind::String&&converted.text==item.expected&&execution.WriteCount()==before,
+                "Native1469 conversion lost CString/bar/UTF16 ownership or mutated Window state");++result.textCases;
+        }
+        NativeWindowWrite(text,"Extension.TextWindow.Text",Value::Text(Kind::String,"One|nTwo"),execution);
+        const auto privateText=DescribeProperty("Extension.TextWindow.Text");
+        before=execution.WriteCount();const auto firstConversion=textNative(1469u,text,{{{},ReferenceFor(text,privateText,0u,false)}});
+        static_cast<void>(textNative(1469u,text,{{Value::Text(Kind::String,"other"),{}}}));
+        expect(firstConversion.text=="One\nTwo"&&Read(text,privateText,0u).text=="One|nTwo"&&execution.WriteCount()==before,
+            "Native1469 returned mutable global storage or changed its caller input alias");++result.textCases;
+        Evaluation noString{Value::Text(Kind::String,"stale"),{}};noString.disposition=QuestVr::Vm::ResultDisposition::NoWrite;
+        const auto emptyConversion=textNative(1469u,text,{noString});
+        expect(emptyConversion.kind==Kind::String&&emptyConversion.text.empty(),"Native1469 lost its initialized empty String");++result.textCases;
+        const auto expectedX=static_cast<float>(a.width+space.width+b.width),expectedY=static_cast<float>(std::max({a.height,space.height,b.height})+1);
+        for(const unsigned form:{0u,1u,2u,3u,4u}) {
+            NativeGcWrite(measured,"textVSpacing",Value::Float(1.0f),execution);
+            NativeWindowWrite(text,hMargin.key.c_str(),Value::Float(-11.0f),execution);
+            NativeWindowWrite(text,vMargin.key.c_str(),Value::Float(-22.0f),execution);
+            const auto x=form==1u?sharedOutput:form==2u||form==4u?nullptr:xOutput;
+            const auto y=form==1u?sharedOutput:form==3u||form==4u?nullptr:yOutput;
+            before=execution.WriteCount();static_cast<void>(textNative(1280u,measured,{{Value::Float(1024.0f),{}},
+                {Value::Float(-91.0f),x},{Value::Float(-92.0f),y},{Value::Text(Kind::String,"A B"),{}}}));
+            expect(execution.WriteCount()-before==static_cast<std::size_t>(!!x)+static_cast<std::size_t>(!!y),
+                "GC text outputs were double-journaled or wrote discarded native temporaries");
+            if(form==1u)expect(NativeGcRead(measured,"textVSpacing").floating==expectedY,
+                "Aliased native GC outputs lost Y's last store or reread spacing after X");
+            else {
+                expect(Read(text,hMargin,0u).floating==(x?expectedX:-11.0f)&&Read(text,vMargin,0u).floating==(y?expectedY:-22.0f),
+                    "GC.GetTextExtent lost real Font metrics, output aliases or discarded-result independence");
+            }
+            ++result.textCases;
+        }
+        NativeGcWrite(measured,"textVSpacing",Value::Float(1.0f),execution);
+        static_cast<void>(textNative(1280u,measured,{{Value::Float(100.0f),{}},{Value::Float(1.0f),xOutput},
+            {Value::Float(2.0f),yOutput},noString}));
+        expect(Read(text,hMargin,0u).floating==0.0f&&Read(text,vMargin,0u).floating==0.0f,
+            "GC.GetTextExtent read stale input after the empty FString seed");++result.textCases;
+        for(const auto index:{1242u,1280u,1281u,1469u}) {
+            const auto declaration=NativeGcTextDeclaration(static_cast<std::uint16_t>(index),nullptr);
+            contentGuard([&]{static_cast<void>(NativeGcTextMethod(static_cast<std::uint16_t>(index),
+                index==1469u?measured:root,{},declaration.get(),execution));});
+            const auto receiver=index==1469u?text:measured;
+            std::vector<Evaluation> valid;
+            if(index==1242u)valid={{Value::Text(Kind::Object,"Extension.TechMedium"),{}}};
+            else if(index==1281u)valid={{Value::Bool(false),{}}};
+            else if(index==1469u)valid={{Value::Text(Kind::String,"A|nB"),{}}};
+            else valid={{Value::Float(1024.0f),{}},{Value::Float(0.0f),xOutput},
+                {Value::Float(0.0f),yOutput},{Value::Text(Kind::String,"A B"),{}}};
+            auto forged=*declaration;forged.variables.front().flags^=0x10u;
+            contentGuard([&]{static_cast<void>(NativeGcTextMethod(static_cast<std::uint16_t>(index),
+                receiver,valid,&forged,execution));});
+            auto wrongKind=valid;wrongKind.front()={Value::Integer(7),{}};
+            contentGuard([&]{static_cast<void>(NativeGcTextMethod(static_cast<std::uint16_t>(index),
+                receiver,wrongKind,declaration.get(),execution));});
+            auto noWrite=valid;noWrite.front().disposition=QuestVr::Vm::ResultDisposition::NoWrite;
+            contentGuard([&]{static_cast<void>(NativeGcTextMethod(static_cast<std::uint16_t>(index),
+                receiver,noWrite,declaration.get(),execution));});
+            auto excess=valid;excess.push_back({Value::Integer(0),{}});
+            contentGuard([&]{static_cast<void>(NativeGcTextMethod(static_cast<std::uint16_t>(index),
+                receiver,excess,declaration.get(),execution));});
+            if(index!=1281u)contentGuard([&]{static_cast<void>(NativeGcTextMethod(static_cast<std::uint16_t>(index),
+                receiver,{},declaration.get(),execution));});
+        }
+        const auto fontDeclaration=NativeGcTextDeclaration(1242u,nullptr);
+        contentGuard([&]{static_cast<void>(NativeGcTextMethod(1242u,measured,
+            {{Value::Text(Kind::Object,"Extension.Solid"),{}}},fontDeclaration.get(),execution));});
+        const auto extentDeclaration=NativeGcTextDeclaration(1280u,nullptr);
+        for(const auto slot:{1u,2u}) {
+            std::vector<Evaluation> wrongOutput{{Value::Float(10.0f),{}},{Value::Float(0.0f),xOutput},
+                {Value::Float(0.0f),yOutput},{Value::Text(Kind::String,"A"),{}}};
+            wrongOutput[slot]={Value::Integer(0),{}};
+            contentGuard([&]{static_cast<void>(NativeGcTextMethod(1280u,measured,wrongOutput,extentDeclaration.get(),execution));});
+            wrongOutput[slot]={Value::Float(0.0f),ReferenceFor(text,privateText,0u,false)};
+            contentGuard([&]{static_cast<void>(NativeGcTextMethod(1280u,measured,wrongOutput,extentDeclaration.get(),execution));});
+        }
         if(mode==PortableGcContextProbeMode::LateFailure)
             throw std::runtime_error("Native GC context diagnostic forced late failure");
         throw std::runtime_error("Native GC context diagnostic complete; rollback required");

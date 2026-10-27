@@ -219,9 +219,9 @@ std::size_t CStringEnd(Operations& operations,const std::u16string_view text) {
     return text.size();
 }
 
-template<class Operations>
-void GetTextExtent(Operations& operations,const std::u16string_view text,const float destinationWidth,
-    float& xExtent,float& yExtent) {
+template<class Operations,class WriteX,class WriteY>
+void GetTextExtentTo(Operations& operations,const std::u16string_view text,const float destinationWidth,
+    WriteX&& writeX,WriteY&& writeY) {
     const auto end=CStringEnd(operations,text);
     State state{};
     operations.Step();auto selectedFont=operations.NormalFont();
@@ -254,8 +254,14 @@ void GetTextExtent(Operations& operations,const std::u16string_view text,const f
         lineHeight=0.0f;
         totalHeight=Detail::Store(NativeScalar::Add(lineAndSpacing,NativeScalar::Load(totalHeight)));
     }
-    operations.Step();xExtent=maximumWidth;
-    operations.Step();yExtent=Detail::Store(NativeScalar::Add(NativeScalar::Load(lineHeight),NativeScalar::Load(totalHeight)));
+    operations.Step();writeX(maximumWidth);
+    operations.Step();writeY(Detail::Store(NativeScalar::Add(NativeScalar::Load(lineHeight),NativeScalar::Load(totalHeight))));
+}
+
+template<class Operations>
+void GetTextExtent(Operations& operations,const std::u16string_view text,const float destinationWidth,
+    float& xExtent,float& yExtent) {
+    GetTextExtentTo(operations,text,destinationWidth,[&](float value){xExtent=value;},[&](float value){yExtent=value;});
 }
 
 template<class Operations>

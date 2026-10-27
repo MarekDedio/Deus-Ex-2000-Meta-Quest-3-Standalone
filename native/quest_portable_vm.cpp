@@ -55,6 +55,7 @@ bool SnapshotNativeInput(const std::uint16_t index, const Function* declaration 
     case 176: case 177: case 178: case 179: case 180: case 181:
         return true; // Original Core scalar operands are copied by each Step.
     case 1270: case 1272: case 1486: // GC wrappers copy initialized input temporaries.
+    case 1242: case 1281: case 1469: // Font selection/height and copied script FString conversion.
     case 1410: case 1413: case 1415: case 1416: case 1420: case 1421: case 1422: case 1430: case 1431: case 1432: case 1433: case 1438: case 1454: case 1461: case 1463: case 1464: case 1467:
     case 1475: case 1476: case 1477: case 1483: case 1510: case 1511: case 1535: case 1538: case 1539: case 1540:
     case 1541: case 1544: case 1545: case 1550: case 1556: case 1557: case 1558: case 1572: case 1573:
@@ -71,7 +72,7 @@ bool CopyNativeOutTemporary(const std::uint16_t index) {
     // unlike QueryPreferredSize, it subsequently rereads a live bestAim alias
     // for candidate thresholds and publishes aim then distance immediately.
     // The host, not this argument capture, owns those later live accesses.
-    return index == 1465u || index == 531u;
+    return index == 1465u || index == 531u || index == 1280u;
 }
 std::int32_t ParseInteger(const std::string& text) {
     // Match atoi's decimal prefix semantics on defined inputs; fail closed
@@ -686,7 +687,8 @@ public:
             if (directSequentialSeeds) CaptureNativeInput(directPrefix,value,directPrefixBytes,directPrefixNodes);
             // execGotoState consumes each input value before evaluating the
             // next argument. Ordinary native OUT arguments retain aliases.
-            if (copiedOutTemporary) args.push_back({value,input->reference,input->disposition,input->zeroFillBytes});
+            if (copiedOutTemporary) args.push_back({value,
+                fn.nativeIndex==1280u&&slot!=1u&&slot!=2u?nullptr:input->reference,input->disposition,input->zeroFillBytes});
             else if ((fn.flags & 0x400u) && (SnapshotNativeInput(fn.nativeIndex, &fn) ||
                 (fn.nativeIndex>=182u&&fn.nativeIndex<=185u&&slot==1u) ||
                 (directSequentialSeeds && !addressLayouts.empty())) &&
@@ -1883,7 +1885,7 @@ private:
                 }
                 const bool addressOnly=!addressLayouts.empty()&&addressLayouts[i].has_value();
                 const bool copiedInput=!uninitializedLayouts.empty()&&uninitializedLayouts[i].has_value();
-                const bool capturedOut=nativeCall&&index==531u&&i<2u;
+                const bool capturedOut=nativeCall&&((index==531u&&i<2u)||(index==1280u&&(i==1u||i==2u)));
                 // These original scalar query wrappers Step into one local
                 // Float, not an OUT pointer. Detach the operand exactly once;
                 // ordinary validation followed by a snapshot reload would
@@ -1892,6 +1894,7 @@ private:
                 const bool scalarCompound=nativeCall&&index>=182u&&index<=185u;
                 const bool copiedScalar=nativeCall&&(index==169u||index==171u||index==172u||index==174u||index==175u||
                     (index>=176u&&index<=181u)||
+                    index==1242u||index==1281u||index==1469u||(index==1280u&&(i==0u||i==3u))||
                     (scalarCompound&&i==1u));
                 auto argument = Eval(frame, n.children[i], frame.self,
                     addressOnly?EvalRead::Address:capturedOut?EvalRead::Capture:

@@ -1,5 +1,24 @@
 # Immediate milestone: complete the first Training map
 
+Latest2026-10-27: original GC font/text1242/1280/1281/1469 packets now preserve
+copied inputs, authenticated defaults, actual Font metrics and X-then-Y live OUT
+stores. Native Window1460 now reuses the existing genuine hidden-layout request.
+Owned HUD10175,VM700012/998,measurement171650/259 and GC155/16 with68 Window/
+43 text cases pass. All198 original native objects,three released text contexts
+and new scope Player/Color state fit the unchanged4MiB snapshot cap. HUD settings,
+scope creation/Lower and final cursor selection now precede the actual GetEnum
+key-binding dependency at15477 writes. Accepted VR presentation is unchanged.
+
+Desktop/Android-native/strict ARM64 pass; CTest225 executed/269 registered/44
+explicit skips/zero failures164.27s. All eight rebuilt owned first-map regressions
+and45-original/24-input fingerprint audits pass; all jobs terminal. Two-Fire
+repeat2 reaches271515/32539,retaining two notifies/four traces/two crate changes/
+nine births/full undo. Doors retain both56-unit moves/exact ReadInput refusal.
+Next:Core.Object.GetEnum,remaining genuine input/startup,then the live bridge
+below. No new APK,live crate/loot/gravity completion,account/character-creation
+UI or other-map integration. See ORIGINAL-GC-TEXT-NATIVE-PACKETS.md and
+ORIGINAL-CORE-GETENUM-GAP.md.
+
 Latest2026-10-27: original optional Window.Show1413 now preserves true defaults,
 copied Bool inputs, equality no-op and real parent callbacks. The dormant false
 quickbar setting invokes genuine HUD size queries;195 native objects/all27 GC

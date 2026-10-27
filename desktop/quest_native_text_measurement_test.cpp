@@ -311,11 +311,40 @@ void Generated() {
         combinations*=alphabet.size();
     }
 }
+void OutputWriters() {
+    for(const auto input:{u"",u"ABC",u"a b c",u"a\nb",u"|bAB|!b C"})for(const auto width:{0.0f,5.0f,20.0f}) {
+        Operations reference;float expectedX{},expectedY{};Text::GetTextExtent(reference,input,width,expectedX,expectedY);
+        Operations actual;float x{99},y{-99};std::vector<unsigned> outputs;
+        Text::GetTextExtentTo(actual,input,width,[&](float value){outputs.push_back(1u);x=value;},
+            [&](float value){Require(outputs==std::vector<unsigned>{1u},"Native Y output ran before X");outputs.push_back(2u);y=value;});
+        Require(Word(x)==Word(expectedX)&&Word(y)==Word(expectedY)&&actual.work==reference.work&&
+            outputs==std::vector<unsigned>{1u,2u},"Live-output writer path changed native extent values/work/order");
+        Operations alias;float shared{101};
+        Text::GetTextExtentTo(alias,input,width,[&](float value){shared=value;},[&](float value){shared=value;});
+        Require(Word(shared)==Word(expectedY),"Shared text extent output did not retain Y's final store");
+        for(const std::size_t cut:{reference.work-2u,reference.work-1u}) {
+            Operations fault;fault.limit=cut;float first{99},second{-99};unsigned writes{};
+            Refuses([&]{Text::GetTextExtentTo(fault,input,width,[&](float value){first=value;++writes;},
+                [&](float value){second=value;++writes;});},"Native output work boundary was swallowed");
+            Require(writes==(cut==reference.work-1u?1u:0u)&&second==-99&&
+                (writes?Word(first)==Word(expectedX):first==99),"Native output work failure reordered or deferred X's actual store");
+        }
+    }
+    Operations callback;unsigned writes{};
+    Refuses([&]{Text::GetTextExtentTo(callback,u"ABC",100.0f,[&](float){++writes;throw std::runtime_error("Output target failed");},
+        [&](float){++writes;});},"Native output target failure was swallowed");
+    Require(writes==1u,"Native extent continued to Y after its X target failed");
+    Operations secondCallback;float publishedX{-1.0f};writes=0u;
+    Refuses([&]{Text::GetTextExtentTo(secondCallback,u"ABC",100.0f,[&](float value){publishedX=value;++writes;},
+        [&](float){++writes;throw std::runtime_error("Y output target failed");});},
+        "Native Y output target failure was swallowed");
+    Require(writes==2u&&publishedX>=0.0f,"Y target failure deferred or erased the actual preceding X store");
+}
 } // namespace
 
 int main() {
     try {
-        Scanner();Lines();Extents();BoundsAndFailures();Generated();
+        Scanner();Lines();Extents();BoundsAndFailures();Generated();OutputWriters();
         std::cout<<"PASS original native GC text measurement: "<<checks<<" checks / "<<refusals
             <<" refusal controls; bounded UTF16/control/partial-RGB/word-wrap/ending-state/space-font/PC64/output-order policy. "
             "Explicit mock context/fonts only; not genuine Font provider, GC lifetime, original HUD startup or headset acceptance.\n";

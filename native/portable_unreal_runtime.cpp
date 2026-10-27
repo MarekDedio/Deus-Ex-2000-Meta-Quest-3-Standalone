@@ -4077,6 +4077,7 @@ public:
         if(index==1438u) return WindowAlignmentsNative(Object(receiver),arguments,declaration,execution);
         if(index==1425u) return WindowRootGetterNative(Object(receiver),arguments,declaration);
         if(index==1415u) return WindowVisibilityGetterNative(Object(receiver),arguments,declaration);
+        if(index==1460u) return WindowAskParentForReconfigureNative(Object(receiver),arguments,declaration,execution);
         if(index==1413u) return WindowShowNative(Object(receiver),arguments,declaration,execution);
         if(index==1463u || index==1464u)
             return WindowPreferredAxisNative(index,Object(receiver),arguments,declaration,execution);
@@ -4093,6 +4094,8 @@ public:
         if(index==1475u || index==1476u) return WindowColorNative(index,Object(receiver),arguments,declaration,execution);
         if(index==1483u) return WindowTextTranslucencyNative(Object(receiver),arguments,declaration,execution);
         if(index==1550u) return NativeTextContentMethod(Object(receiver),arguments,declaration,execution);
+        if(index==1242u || index==1280u || index==1281u || index==1469u)
+            return NativeGcTextMethod(index,Object(receiver),arguments,declaration,execution);
         if(index==1556u || index==1557u || index==1558u)
             return TextWindowSetterNative(index,Object(receiver),arguments,declaration,execution);
         if(index==1572u || index==1573u)
@@ -4292,6 +4295,7 @@ public:
         const char* path{};std::vector<Parameter> parameters;
         switch(index) {
         case 1412u:path="Extension.Window.Lower";break;
+        case 1460u:path="Extension.Window.AskParentForReconfigure";break;
         case 1414u:path="Extension.Window.Hide";break;
         case 1413u:path="Extension.Window.Show";
             parameters={{"bShow",Kind::Bool,0x90u,"BoolProperty",""}};break;
@@ -5720,6 +5724,14 @@ public:
     }
     std::optional<Value> NativeArgumentSeed(const std::uint16_t index,const std::string& receiver,
         const std::size_t slot,const Function* declaration) override {
+        if(index==1242u || index==1280u || index==1281u || index==1469u) {
+            static_cast<void>(NativeGcTextDeclaration(index,declaration));
+            if(index==1469u)RequireNativeWindow(Object(receiver));else ValidateNativeGcContextFields(Object(receiver));
+            if(slot>=(index==1280u?4u:1u))throw std::runtime_error("GC/text seed exceeds its original input slots");
+            if(index==1242u)return Value::Text(Kind::Object,{});
+            if(index==1281u)return Value::Bool(false);
+            return index==1280u&&slot<3u?Value::Float(0.0f):Value::Text(Kind::String,{});
+        }
         if(index==531u) {
             static_cast<void>(PawnPickTargetDeclaration(declaration));static_cast<void>(PawnPickTargetSource(receiver));
             if(slot>=4u)throw std::runtime_error("PickTarget531 input exceeds its original four slots");
@@ -7001,6 +7013,15 @@ public:
         }
         throw std::runtime_error("Visible native Window reconfiguration is not implemented");
     }
+    Evaluation WindowAskParentForReconfigureNative(RuntimeObject* window,const std::vector<Evaluation>& arguments,
+        const Function* declaration,QuestVr::Vm::Execution& execution) {
+        RequireNativeWindow(window);static_cast<void>(WindowNativeDeclaration(1460u,declaration));
+        if(!arguments.empty())throw std::runtime_error("AskParentForReconfigure takes no arguments");
+        // Original exec10052F30 advances EndFunctionParms and calls1004E060.
+        // Reuse its real hidden-ancestry implementation, including unconditional
+        // dirty stores. Visible layout remains an explicit unsupported service.
+        AskHiddenWindowForReconfigure(window,execution);return {};
+    }
     Evaluation WindowPropertyNative(const std::uint16_t index,RuntimeObject* window,
         const std::vector<Evaluation>& arguments,const Function* declaration,QuestVr::Vm::Execution& execution) {
         const auto authored=WindowNativeDeclaration(index,declaration);
@@ -7717,6 +7738,7 @@ public:
 #include "portable_gc_context.inl"
 #include "portable_gc_context_probe.inl"
 #include "portable_text_preferred_size.inl"
+#include "portable_gc_text_natives.inl"
 #include "portable_window_axis_probe.inl"
 #include "portable_window_tile_layout.inl"
 #include "portable_window_tile_probe.inl"
@@ -14671,6 +14693,9 @@ PortableRootWindowProbeResult ProbePortableRootWindowInitialization(
                     if(IsDerivedFromPath(object->cls,"DeusEx.DeusExRootWindow"))
                         for(const auto* name:{"actorDisplay","hud","scopeView","winCount"})
                             field((std::string("DeusEx.DeusExRootWindow.")+name).c_str());
+                    if(IsDerivedFromPath(object->cls,"DeusEx.DeusExScopeView"))
+                        for(const auto* name:{"Player","colLines"})
+                            field((std::string("DeusEx.DeusExScopeView.")+name).c_str());
                     if(IsDerivedFromPath(object->cls,"DeusEx.ActorDisplayWindow")) {
                         field("DeusEx.ActorDisplayWindow.maxPoints");
                         for(std::uint32_t slot=0u;slot<16u;++slot) field("DeusEx.ActorDisplayWindow.sinTable",slot);
