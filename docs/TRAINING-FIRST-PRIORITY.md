@@ -1,5 +1,28 @@
 # Immediate milestone: complete the first Training map
 
+Latest2026-10-27: actual GC context1270-72/1485-86 and TextWindow preferred
+sizing now use original context graphs, bounded original Font metrics and the
+audited text line/extent algorithm. Owned HUD9389 controls, GC155/16, font
+132810/79, VM696473/918 and generated policy suites pass. Full desktop build,
+current Android-native link and strict ARM64 pass. CTest225 executed/269
+registered/44 explicit skips/zero failures144.57s and a separate post-build
+actor-update repeat pass. All eight rebuilt owned first-Training regressions
+pass, including crate415/5,deferred429/21,animation588/24,FastTrace252/0,Input
+classes10413/38,viewport10310/20,materials and1232 interaction/save-route checks.
+All45 originals/20 frozen compiler inputs match length/mtime/SHA256 baselines;
+all jobs are terminal. Memory fixes retain the existing32MiB/snapshot caps and
+save format. The accepted VR HUD layout remains unchanged.
+
+Actual two-Fire repeat2 now reaches HUDMissionStartTextDisplay.InitWindow PC159,
+native1483 at253048 instructions/29924 writes, preserving two attack notifies,
+four traces,two crate changes,nine births and full undo. Door repeat2 preserves
+both original56-unit moves/two endpoints and the precise ReadInput refusal.
+These are NOT published startup, live VR crates or completed loot/gravity.
+Implement the reached text-translucency call, remaining original Input/startup
+services, then the committing VR weapon/frame/publication bridge below. No new
+APK, account/character-creation UI or other-map integration. See
+ORIGINAL-GC-TEXT-SIZING-IMPLEMENTATION.md for accepted evidence and next contract.
+
 Latest2026-10-27: genuine TextLog construction/owned Lines, TextWindow1556-58,
 SetTextColor1476 and timeout/pause1572/73 now pass the prior HUD boundary. Owned
 HUD9128 controls,VM696389/912,storage580/1,setters467200/19,full desktop build,

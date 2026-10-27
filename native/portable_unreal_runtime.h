@@ -890,6 +890,20 @@ struct PortableTextLogProbeResult {
 // HUD startup, extra callbacks after failure, live log Tick/Draw or gameplay.
 PortableTextLogProbeResult ProbePortableNativeTextLogWindow(const std::string& playerActorPath,
     PortableTextLogProbeMode mode,const QuestVr::Vm::Limits& limits = {});
+enum class PortableGcContextProbeMode {
+    RoundTrip,NoneCopy,WrongReceiver,WrongArgument,MissingArgument,CyclicGraph,NoWriteCopy,LateFailure
+};
+struct PortableGcContextProbeResult {
+    QuestVr::Vm::Result execution;
+    std::string rootPath,drawingPath,generalPath,firstSavedPath,secondSavedPath;
+    std::size_t contextCases{},rawCases{},stackCases{},windowCases{},referenceCases{},textCases{};
+    std::size_t freshPushWrites{},reusedPushWrites{},nestedObjects{};
+};
+// Isolated actual base Root/GC constructors and authentic1270/71/72/1485/86
+// calls. Explicit raw-context fixtures, ALWAYS rolled back. Not configured HUD
+// startup, a Canvas/render backend, or additional calls after a poisoned root.
+PortableGcContextProbeResult ProbePortableNativeGcContext(const std::string& playerActorPath,
+    PortableGcContextProbeMode mode,const QuestVr::Vm::Limits& limits = {});
 enum class PortableToggleProbeMode { RoundTrip, OneCheck, EmptySlot, NoResult, WrongReceiver, WrongArgument };
 struct PortableToggleProbeStage {
     std::string name;

@@ -59,6 +59,10 @@
 #include "quest_native_window_toggle.h"
 #include "quest_native_text_window_setters.h"
 #include "quest_native_text_log_storage.h"
+#include "quest_native_gc_context.h"
+#include "quest_native_font_metrics.h"
+#include "quest_native_text_measurement.h"
+#include "quest_native_text_preferred_size.h"
 #include "quest_native_tile_layout.h"
 #include "quest_quick_belt.h"
 #include "quest_actor_state_control.h"
@@ -3224,6 +3228,7 @@ public:
         beforePendingTouch_.clear();
         beforeActorOrder_.reset();
         nativeActorOrderObservationBytes_=0u;
+        std::vector<NativeFontCacheEntry>{}.swap(nativeFontMetrics_);nativeFontMetricsBytes_=0u;
         startupMoverPreview_=false;
         nativeStartupOut_.clear();
         nativeDestroyReferenceBytes_=0u;
@@ -3319,6 +3324,7 @@ public:
         nativeActorOrderObservationBytes_=0u;
         nativeStartupOut_.clear();
         ClearMoveHits();nativeDurableMoved_.clear();
+        std::vector<NativeFontCacheEntry>{}.swap(nativeFontMetrics_);nativeFontMetricsBytes_=0u;
         saved_.clear(); savedAi_.clear(); provisionalAi_.clear(); provisionalWindows_.clear(); beforeDecals_.reset(); beforeLevelClock_.reset(); beforeLevelTickContext_.reset(); beforeWorldSlotItems_.clear(); nativeDestroyReferenceBytes_=0u; nativePhysicsReferenceBytes_=0u; nativeTileReferenceBytes_=0u; transaction_ = false;
     }
     void Rollback() noexcept override {
@@ -3390,6 +3396,7 @@ public:
         for(const auto& row:beforePendingTouch_)row.actor.get()->nativePendingTouch=row.value.get();
         beforePendingTouch_.clear();
         nativeActorOrderObservationBytes_=0u;
+        std::vector<NativeFontCacheEntry>{}.swap(nativeFontMetrics_);nativeFontMetricsBytes_=0u;
         nativeStartupOut_.clear();
         for (auto& entry : saved_) {
             entry.first->scriptValues.swap(entry.second.values);
@@ -4086,6 +4093,8 @@ public:
             return TextWindowSetterNative(index,Object(receiver),arguments,declaration,execution);
         if(index==1572u || index==1573u)
             return TextLogScalarNative(index,Object(receiver),arguments,declaration,execution);
+        if(index==1270u || index==1271u || index==1272u || index==1485u || index==1486u)
+            return NativeGcContextMethod(index,Object(receiver),arguments,declaration,execution);
         if(index==1412u) return WindowLowerNative(Object(receiver),arguments,declaration,execution);
         if(index==1535u || index==1538u || index==1539u || index==1540u || index==1541u || index==1544u || index==1545u)
             return TileWindowPropertyNative(index,Object(receiver),arguments,declaration,execution);
@@ -5734,6 +5743,13 @@ public:
             if(slot) throw std::runtime_error("TextLog scalar seed exceeds its original input slot");
             return authored->variables[slot].zero;
         }
+        if(index==1270u || index==1272u || index==1486u) {
+            static_cast<void>(NativeGcDeclaration(index,declaration));
+            if(slot)throw std::runtime_error("GC native argument exceeds its one original input slot");
+            if(index==1486u)RequireNativeWindow(Object(receiver));
+            else ValidateNativeGcContextFields(Object(receiver));
+            return index==1272u?Value::Integer(-1):Value::Text(Kind::Object,{});
+        }
         if(index==1556u || index==1557u || index==1558u) {
             RequireNativeTextWindowSetters(Object(receiver));
             const auto authored=TextWindowSetterDeclaration(index,declaration);
@@ -5885,6 +5901,11 @@ public:
     }
     bool MaterializeNativeArgumentOmission(const std::uint16_t index,const std::string& receiver,
         const std::size_t slot,const Function* declaration) override {
+        if(index==1272u) {
+            static_cast<void>(NativeGcDeclaration(index,declaration));ValidateNativeGcContextFields(Object(receiver));
+            if(slot)throw std::runtime_error("GC.PopGC omission exceeds its original input slot");
+            return true;
+        }
         if(index==531u) {
             static_cast<void>(PawnPickTargetDeclaration(declaration));static_cast<void>(PawnPickTargetSource(receiver));
             if(slot>=4u)throw std::runtime_error("PickTarget531 omission exceeds original four slots");
@@ -5931,8 +5952,15 @@ public:
         if(native=="extension.tilewindow") {
             NativeWindowTileSize(window,widthSpecified,width,heightSpecified,height,execution);return;
         }
+        if(native=="extension.textwindow" || native=="extension.textlogwindow") {
+            NativeTextWindowPreferredSize(window,widthSpecified,width,heightSpecified,height,execution);return;
+        }
         if(native!="extension.window")
             throw std::runtime_error("Native preferred-size virtual override is not implemented");
+        NativeBaseWindowPreferredSize(window,widthSpecified,width,heightSpecified,height,execution);
+    }
+    void NativeBaseWindowPreferredSize(RuntimeObject* window,bool widthSpecified,float& width,
+        bool heightSpecified,float& height,QuestVr::Vm::Execution& execution) {
         const auto identity=OptionalNativeWindowEvent(window,"ParentRequestedPreferredSize");
         if(!identity) return; // Actual ProcessScript(...,checked=false).
         const auto callback=FunctionFor(Object(identity->path));
@@ -5965,6 +5993,9 @@ public:
         };
         // OUT references can survive in the transaction's undo journal after
         // this callback returns. Never capture stack-local float addresses.
+        // Retail100503C9/EC copies both inputs to distinct script packet
+        // cells, then10050403/08 writes width before height. Even aliased
+        // native outputs do NOT make the callback's two parameters alias.
         auto widthStorage=std::make_shared<float>(width),heightStorage=std::make_shared<float>(height);
         auto widthOutput=output(widthStorage),heightOutput=output(heightStorage);
         static_cast<void>(execution.CallFunction(*callback,window->reflection.objectPath,
@@ -7616,6 +7647,9 @@ public:
 #include "portable_window_toggle.inl"
 #include "portable_text_window_setters.inl"
 #include "portable_text_log_window.inl"
+#include "portable_gc_context.inl"
+#include "portable_gc_context_probe.inl"
+#include "portable_text_preferred_size.inl"
 #include "portable_window_axis_probe.inl"
 #include "portable_window_tile_layout.inl"
 #include "portable_window_tile_probe.inl"
@@ -10301,8 +10335,21 @@ private:
             if (target->classDescriptor) {
                 target->classDefaultValues[LowerAscii(property.name)][index] = std::move(normalized);
             } else {
-                if(target->nativeWindowObject)
-                    target->nativeWindowPropertyRoots[LowerAscii(property.key)][index]=std::move(windowRoots);
+                if(target->nativeWindowObject) {
+                    const auto key=LowerAscii(property.key);
+                    if(!windowRoots.empty())target->nativeWindowPropertyRoots[key][index]=std::move(windowRoots);
+                    else {
+                        // This index is a reachability graph, not reflected
+                        // property storage. Empty edges need no map/vector
+                        // nodes; the actual typed None/scalar value below is
+                        // unchanged and the owning before-image still swaps.
+                        const auto roots=target->nativeWindowPropertyRoots.find(key);
+                        if(roots!=target->nativeWindowPropertyRoots.end()) {
+                            roots->second.erase(index);
+                            if(roots->second.empty())target->nativeWindowPropertyRoots.erase(roots);
+                        }
+                    }
+                }
                 target->scriptValues[shadowed?LowerAscii(property.key):LowerAscii(property.name)][index] = std::move(normalized);
                 target->committedScriptState = true;
                 // Actor timer fields are independent native storage. Updating
@@ -10820,6 +10867,7 @@ private:
         try {
         defaults.Retain(extraRetained);
         defaults.Retain(nativeQueryScratchBytes_);
+        defaults.Retain(nativeFontMetricsBytes_);
         defaults.Retain(sizeof(nativeActorPoses_)+sizeof(nativeMoveUnitCoords_));
         defaults.Retain(QuestVr::DecalStateDetail::Multiply(nativeDurableMoved_.capacity(),sizeof(RuntimeObject*)));
         if(nativeMoveHits_)defaults.Retain(nativeMoveHits_->RetainedBytes());
@@ -14402,26 +14450,47 @@ PortableRootWindowProbeResult ProbePortableRootWindowInitialization(
                 throw std::runtime_error("Native window initialization probe exceeds its snapshot bound");
             QuestVr::AuthoredStructLimits bounds;bounds.retainedBytes=4u<<20u;
             QuestVr::AuthoredStructDetail::Budget retained{bounds};
+            retained.Retain(domain->objects.size()*sizeof(PortableNativeWindowObjectSnapshot));
+            result.objects.reserve(domain->objects.size());
+            if(result.objects.capacity()!=domain->objects.size())
+                throw std::runtime_error("Native window snapshot library cannot retain its admitted object capacity");
             result.pawnRootPath=pawn->nativeRootWindow?pawn->nativeRootWindow->reflection.objectPath:std::string{};
             for(const auto* root:domain->roots) result.rootedWindows.push_back(root->reflection.objectPath);
             for(auto* object:domain->objects) {
                 PortableNativeWindowObjectSnapshot view;
                 view.path=object->reflection.objectPath;view.classPath=object->cls->reflection.objectPath;
                 view.outerPath=object->outer->reflection.objectPath;
-                retained.Retain(sizeof(view)+view.path.capacity()+view.classPath.capacity()+view.outerPath.capacity());
+                retained.Retain(view.path.capacity()+view.classPath.capacity()+view.outerPath.capacity()+3u);
                 const auto field=[&](const char* key,const std::uint32_t index=0u) {
+                    // Charge the actual field-vector capacity/overlapping
+                    // reallocation. RetainedValue includes its root Value;
+                    // counting the full enclosing field AGAIN previously
+                    // double-counted every inline Value and exhausted4MiB.
+                    if(view.fields.size()==view.fields.capacity()) {
+                        const auto oldCapacity=view.fields.capacity(),requested=view.fields.size()+1u;
+                        retained.Retain(requested*sizeof(PortableNativeWindowFieldSnapshot));
+                        view.fields.reserve(requested);
+                        if(view.fields.capacity()!=requested)
+                            throw std::runtime_error("Native window snapshot library cannot retain its admitted field capacity");
+                        retained.retained-=oldCapacity*sizeof(PortableNativeWindowFieldSnapshot);
+                    }
                     const auto property=host.DescribeProperty(key);
                     if(index>=property.arrayDimension) throw std::runtime_error("Native window probe array slot exceeds its declaration");
                     auto value=host.Read(object,property,index);
-                    retained.Retain(sizeof(PortableNativeWindowFieldSnapshot)+std::strlen(key));
                     QuestVr::AuthoredStructDetail::RetainedValue(value,retained);
+                    retained.retained-=sizeof(QuestVr::Vm::Value); // Already inside admitted field capacity.
                     PortableNativeWindowFieldSnapshot entry{key,std::move(value),{},index};
+                    retained.Retain(entry.declaration.capacity()+1u);
                     const auto roots=object->nativeWindowPropertyRoots.find(LowerAscii(key));
                     if(roots!=object->nativeWindowPropertyRoots.end()) {
                         const auto slot=roots->second.find(index);
-                        if(slot!=roots->second.end()) for(const auto* root:slot->second) {
-                            retained.Retain(sizeof(std::string)+root->reflection.objectPath.size());
-                            entry.propertyRoots.push_back(root->reflection.objectPath);
+                        if(slot!=roots->second.end()) {
+                            retained.Retain(slot->second.size()*sizeof(std::string));
+                            entry.propertyRoots.reserve(slot->second.size());
+                            for(const auto* root:slot->second) {
+                                retained.Retain(root->reflection.objectPath.size()+1u);
+                                entry.propertyRoots.push_back(root->reflection.objectPath);
+                            }
                         }
                     }
                     view.fields.push_back(std::move(entry));
@@ -14560,17 +14629,18 @@ PortableRootWindowProbeResult ProbePortableRootWindowInitialization(
                     if(IsDerivedFromPath(object->cls,"DeusEx.HUDActiveItemsDisplay"))
                         for(const auto* name:{"winAugsContainer","winItemsContainer","editMode","itemAugsOffsetX","itemAugsOffsetY"})
                             field((std::string("DeusEx.HUDActiveItemsDisplay.")+name).c_str());
+                    if(IsDerivedFromPath(object->cls,"DeusEx.HUDMissionStartTextDisplay"))
+                        for(const auto* name:{"fontText","winTextShadow","winText"})
+                            field((std::string("DeusEx.HUDMissionStartTextDisplay.")+name).c_str());
                     if(IsDerivedFromPath(object->cls,"DeusEx.DamageHUDDisplay")) {
                         field("DeusEx.DamageHUDDisplay.Player");
                         for(std::uint32_t slot=0u;slot<7u;++slot) field("DeusEx.DamageHUDDisplay.iconInfo",slot);
                     }
                 } else if(IsDerivedFromPath(object->cls,"Extension.GC")) {
-                    for(const auto* name:{"Canvas","normalFont","boldFont","gcOwner","Style","PolyFlags","textPolyFlags",
-                        "bDrawEnabled","bSmoothed","bMasked","bTranslucent","bModulated","tileColor","tilePlane","gcClipRect"})
+                    for(const auto* name:QuestVr::NativeGcContext::ContextFields)
                         field((std::string("Extension.GC.")+name).c_str());
-                    if(object->outer && IsDerivedFromPath(object->outer->cls,"Extension.TextLogWindow")) {
-                        field("Extension.GC.TextColor");field("Extension.GC.textPlane");
-                    }
+                    for(const auto* name:{"gcOwner","gcStack","gcFree","gcCount","bFree"})
+                        field((std::string("Extension.GC.")+name).c_str());
                 }
                 result.objects.push_back(std::move(view));
             }
@@ -14599,6 +14669,21 @@ PortableTextLogProbeResult ProbePortableNativeTextLogWindow(const std::string& p
         PortableActorVmHost host;
         result.execution=QuestVr::Vm::ExecuteTransaction(host,[&](QuestVr::Vm::Execution& execution) {
             return host.ProbeNativeTextLogWindow(playerActorPath,mode,result,execution);
+        },limits);
+    } catch(const std::exception& error) {
+        result.execution.status=QuestVr::Vm::Status::Unsupported;result.execution.error=error.what();
+    }
+    return result;
+}
+
+PortableGcContextProbeResult ProbePortableNativeGcContext(const std::string& playerActorPath,
+    PortableGcContextProbeMode mode,const QuestVr::Vm::Limits& limits) {
+    CollectBirthGarbageAtBoundary collect;
+    PortableGcContextProbeResult result;
+    try {
+        PortableActorVmHost host;
+        result.execution=QuestVr::Vm::ExecuteTransaction(host,[&](QuestVr::Vm::Execution& execution) {
+            return host.ProbeNativeGcContext(playerActorPath,mode,result,execution);
         },limits);
     } catch(const std::exception& error) {
         result.execution.status=QuestVr::Vm::Status::Unsupported;result.execution.error=error.what();

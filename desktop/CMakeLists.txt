@@ -93,6 +93,7 @@ add_library(quest_portable_host STATIC
     "${SURREAL_ENGINE_ROOT}/Math/mat.cpp"
     "${PORT_NATIVE}/surreal_package_stream_reader.cpp"
     "${PORT_NATIVE}/surreal_portable_package_tables.cpp"
+    "${PORT_NATIVE}/quest_native_font_metrics.cpp"
     "${PORT_NATIVE}/portable_unreal_runtime.cpp"
     "${PORT_NATIVE}/surreal_gc_probe.cpp"
     "${PORT_NATIVE}/surreal_android_exception.cpp"
@@ -1455,3 +1456,29 @@ if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
     target_link_options(quest_text_log_storage_test PRIVATE -static -static-libgcc -static-libstdc++)
 endif()
 add_test(NAME quest_text_log_storage COMMAND quest_text_log_storage_test)
+
+# Original GC state and exact text metrics dependencies; no guessed renderer.
+foreach(TEXT_NATIVE_TEST quest_native_gc_context quest_native_text_measurement quest_native_text_preferred_size)
+    add_executable(${TEXT_NATIVE_TEST}_test ${TEXT_NATIVE_TEST}_test.cpp)
+    target_compile_features(${TEXT_NATIVE_TEST}_test PRIVATE cxx_std_20)
+    target_include_directories(${TEXT_NATIVE_TEST}_test PRIVATE "${PORT_NATIVE}")
+    if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+        target_compile_options(${TEXT_NATIVE_TEST}_test PRIVATE -Wall -Wextra -Werror)
+        target_link_options(${TEXT_NATIVE_TEST}_test PRIVATE -static -static-libgcc -static-libstdc++)
+    endif()
+    add_test(NAME ${TEXT_NATIVE_TEST} COMMAND ${TEXT_NATIVE_TEST}_test)
+endforeach()
+foreach(TEXT_HOST_TEST quest_native_font_metrics portable_gc_context)
+    add_executable(${TEXT_HOST_TEST}_test ${TEXT_HOST_TEST}_test.cpp)
+    target_compile_features(${TEXT_HOST_TEST}_test PRIVATE cxx_std_20)
+    target_link_libraries(${TEXT_HOST_TEST}_test PRIVATE quest_portable_host)
+    if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+        target_compile_options(${TEXT_HOST_TEST}_test PRIVATE -Wall -Wextra -Werror)
+        target_link_options(${TEXT_HOST_TEST}_test PRIVATE -static -static-libgcc -static-libstdc++)
+    endif()
+endforeach()
+add_test(NAME quest_native_font_metrics COMMAND quest_native_font_metrics_test)
+add_test(NAME quest_native_font_metrics_original COMMAND quest_native_font_metrics_test --owned-only)
+set_tests_properties(quest_native_font_metrics_original PROPERTIES SKIP_RETURN_CODE 77)
+add_test(NAME portable_gc_context COMMAND portable_gc_context_test)
+set_tests_properties(portable_gc_context PROPERTIES SKIP_RETURN_CODE 77)

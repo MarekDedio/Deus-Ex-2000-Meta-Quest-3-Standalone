@@ -1,5 +1,38 @@
 # Port status
 
+## Latest: original GC context and native text sizing (2026-10-27)
+
+Original CopyGC/PushGC/PopGC1270-72 and Window.GetGC/ReleaseGC1485-86 now use
+actual constructor-owned contexts, original stack/free-list semantics, typed
+reference edges and the caller's transaction. TextWindow preferred sizing uses
+bounded original Font metrics and the audited UTF16 text scanner/line/extent
+algorithm, including actual nonempty font queries. No replacement Canvas,
+guessed glyph metrics or accepted VR HUD-layout changes were introduced.
+
+The larger original HUD exposed two genuine memory issues. Snapshot accounting
+now counts inline Values once and admits actual vector-capacity overlap. Empty
+reachability records no longer allocate map/vector nodes, while scalar/None
+property values and beforeimage undo remain intact. GC-list validation uses
+constant scratch. No32MiB/snapshot cap or save format was changed.
+
+Owned HUD9389 controls, GC155/16, font132810/79, VM696473/918 and the three
+generated GC/text/sizing suites pass. Full desktop build, current Android-native
+link and strict ARM64 pass. CTest:269 registered,225 executed,44 explicit skips,
+zero failures144.57s; separate post-build actor-update repeat passes. All eight
+rebuilt owned first-Training regressions pass. All45 originals/20 frozen compiler
+inputs match length/mtime/SHA256 baselines, and all jobs are terminal.
+
+Actual two-Fire repeat2 advances to HUDMissionStartTextDisplay.InitWindow PC159,
+native1483 at253048 instructions/29924 writes. Both preserve two notifies/four
+traces/two crate changes/nine births and full undo. Door repeat2 preserves both
+56-unit moves/two endpoints and the exact unprepared ReadInput boundary. These
+remain rollback-only diagnostics, NOT live crate/loot/gravity acceptance.
+
+Next are the actually reached text-translucency call, remaining original input/
+startup services and the committing VR weapon/frame/publication bridge. First
+Training only; no account or character-creation UI, other-map integration,
+commercial-code execution or new APK. See ORIGINAL-GC-TEXT-SIZING-IMPLEMENTATION.md.
+
 ## Latest: original TextLog construction and text setters (2026-10-27)
 
 The genuine native TextLog Lines container is now constructed before callbacks,

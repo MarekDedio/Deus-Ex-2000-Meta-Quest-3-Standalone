@@ -221,9 +221,9 @@ int main(int argc,char** argv) {
             " opcode="<<unsigned(pending.execution.opcode)<<" objects="<<pending.objects.size()<<
             " writes="<<pending.execution.writes<<" "<<pending.execution.error<<"; inspection="<<pending.inspectionError<<std::endl;
         Require(!pending.execution.passed() && !pending.execution.committed && pending.inspectionError.empty() &&
-            pending.execution.function=="DeusEx.HUDLogDisplay.ParentRequestedPreferredSize" && pending.execution.offset==129u &&
-            pending.execution.opcode==101u && pending.execution.error=="Native preferred-size virtual override is not implemented" &&
-            pending.execution.writes==11767u && pending.objects.size()==165u &&
+            pending.execution.function=="DeusEx.HUDMissionStartTextDisplay.InitWindow" && pending.execution.offset==159u &&
+            pending.execution.opcode==101u && pending.execution.error=="Unsupported runtime native 1483" &&
+            pending.execution.writes==13211u && pending.objects.size()==178u &&
             pending.rootedWindows==std::vector<std::string>{pending.pawnRootPath},
             "Original root prefix probe did not capture the actual pending native graph: "+pending.inspectionError);
         const auto object=[&](const std::string& path)->const PortableNativeWindowObjectSnapshot& {
@@ -329,6 +329,8 @@ int main(int argc,char** argv) {
         const auto& information=classView("DeusEx.HUDInformationDisplay");
         const auto& logDisplay=classView("DeusEx.HUDLogDisplay");
         const auto& frobDisplay=classView("DeusEx.FrobDisplayWindow");
+        const auto& augmentationDisplay=classView("DeusEx.AugmentationDisplayWindow");
+        const auto& missionStart=classView("DeusEx.HUDMissionStartTextDisplay");
         const auto& textLog=classView("Extension.TextLogWindow");
         Require(std::count_if(pending.objects.begin(),pending.objects.end(),[](const auto& view) {
                 return view.classPath=="Extension.TextLogWindow";
@@ -440,6 +442,19 @@ int main(int argc,char** argv) {
             "Later HUD negative clip derivation differs from independent literal intersections");
         for(const auto& view:pending.objects) if(view.classPath=="Extension.GC" && view.path!=crossGC.path) {
             const auto& owner=object(view.outerPath);
+            if(owner.classPath=="Extension.GC") {
+                Require(view.outerPath==textLogGeneralGC.path &&
+                    field(view,"Extension.GC.bFree").value.boolean &&
+                    field(view,"Extension.GC.gcCount").value.integer==1 &&
+                    field(owner,"Extension.GC.gcCount").value.integer==1,
+                    "Text preferred-size query did not retain its real reusable saved GC node");
+                edge(view,"Extension.GC.gcOwner",owner.path);edge(view,"Extension.GC.gcStack",{});edge(view,"Extension.GC.gcFree",{});
+                edge(owner,"Extension.GC.gcFree",view.path);edge(owner,"Extension.GC.gcStack",{});
+                for(const auto* name:{"normalFont","boldFont","gcClipRect","tileColor","tilePlane","TextColor","textPlane"})
+                    Require(QuestVr::Vm::Equal(field(view,"Extension.GC."+std::string(name)).value,
+                        field(owner,"Extension.GC."+std::string(name)).value),"Released GC lost its saved original context");
+                continue;
+            }
             const bool drawing=field(owner,"Extension.Window.wGc").value.text==view.path;
             const bool beltDrawing=drawing && (owner.path==beltView.path || owner.path.rfind(beltView.path+'.',0u)==0u);
             const bool activeDrawing=drawing && (owner.path==activeItems.path || owner.path.rfind(activeItems.path+'.',0u)==0u);
@@ -654,10 +669,10 @@ int main(int argc,char** argv) {
         edge(rootView,"Extension.Window.firstChild",display.path);edge(rootView,"Extension.Window.lastChild",hudView.path);
         // The original Tile callbacks have now returned. Damage, compass,
         // multi-skills and information children completed construction. The
-        // hidden HUDLogDisplay completed its actual TextLog construction and
-        // original SetLogTimeout. Frob's Show callback has entered HUD layout
-        // and reached TextLog preferred sizing before Frob's NewChild returns.
-        // Its outer assignment and the later Root.hud assignment remain pending.
+        // Hidden HUDLogDisplay/TextLog sizing now returns through genuine
+        // GetGC/Copy/Pop. Frob and augmentation children finish; mission-start
+        // text initialization next refuses1483 before its outer assignment.
+        // The later Root.hud assignment is still pending.
         edge(rootView,"DeusEx.DeusExRootWindow.hud",{});
         edge(hudView,"DeusEx.DeusExHUD.Ammo",ammoView.path);edge(hudView,"DeusEx.DeusExHUD.hit",hitView.path);
         edge(hudView,"DeusEx.DeusExHUD.Cross",crossView.path);edge(hudView,"DeusEx.DeusExHUD.belt",beltView.path);
@@ -671,7 +686,9 @@ int main(int argc,char** argv) {
         edge(hudView,"DeusEx.DeusExHUD.hms",multiSkills.path);
         edge(hudView,"DeusEx.DeusExHUD.Info",information.path);
         edge(hudView,"DeusEx.DeusExHUD.msgLog",logDisplay.path);
-        for(const auto* name:{"frobDisplay","augDisplay","startDisplay","barkDisplay","receivedItems"})
+        edge(hudView,"DeusEx.DeusExHUD.frobDisplay",frobDisplay.path);
+        edge(hudView,"DeusEx.DeusExHUD.augDisplay",augmentationDisplay.path);
+        for(const auto* name:{"startDisplay","barkDisplay","receivedItems"})
             edge(hudView,"DeusEx.DeusExHUD."+std::string(name),{});
         edge(damage,"DeusEx.DamageHUDDisplay.Player",player);
         // Original DamageHUDDisplay.InitWindow PC29..848 assigns each of the
@@ -733,20 +750,30 @@ int main(int argc,char** argv) {
             }
         }
         std::cout<<"ORIGINAL DamageHUDDisplay: all7 iconInfo records, all21 typed DamageType slots, six nested texture GC edges and colors verified\n";
-        edge(hudView,"Extension.Window.firstChild",ammoView.path);edge(hudView,"Extension.Window.lastChild",frobDisplay.path);
+        edge(hudView,"Extension.Window.firstChild",augmentationDisplay.path);edge(hudView,"Extension.Window.lastChild",missionStart.path);
+        // Original AugmentationDisplayWindow.InitWindow calls Lower1412;
+        // traversal order is not construction order after that real prepend.
+        edge(augmentationDisplay,"Extension.Window.winParent",hudView.path);
+        edge(augmentationDisplay,"Extension.Window.parentOwner",hudView.path);
+        edge(augmentationDisplay,"Extension.Window.prevSibling",{});
+        edge(augmentationDisplay,"Extension.Window.nextSibling",ammoView.path);
+        Require(field(augmentationDisplay,"Extension.Window.bTickEnabled").value.boolean&&
+            field(augmentationDisplay,"Extension.Window.bIsVisible").value.boolean&&
+            field(augmentationDisplay,"Extension.Window.lockCount").value.integer==0,
+            "Original augmentation display did not finish Tick/Lower/visibility initialization");
         edge(activeItems,"Extension.Window.winParent",hudView.path);edge(activeItems,"Extension.Window.parentOwner",hudView.path);
         edge(activeItems,"Extension.Window.prevSibling",beltView.path);edge(activeItems,"Extension.Window.nextSibling",damage.path);
         edge(damage,"Extension.Window.winParent",hudView.path);edge(damage,"Extension.Window.parentOwner",hudView.path);
         edge(damage,"Extension.Window.prevSibling",activeItems.path);edge(damage,"Extension.Window.nextSibling",compass.path);
-        const std::array<const PortableNativeWindowObjectSnapshot*,6u> laterChildren{
-            &damage,&compass,&multiSkills,&information,&logDisplay,&frobDisplay};
+        const std::array<const PortableNativeWindowObjectSnapshot*,7u> laterChildren{
+            &damage,&compass,&multiSkills,&information,&logDisplay,&frobDisplay,&missionStart};
         for(std::size_t index=1u;index<laterChildren.size();++index) {
             const auto& view=*laterChildren[index];
             Require(view.outerPath==hudView.path,"Original later HUD child lost its actual Outer");
             edge(view,"Extension.Window.winParent",hudView.path);edge(view,"Extension.Window.parentOwner",hudView.path);
             edge(view,"Extension.Window.prevSibling",laterChildren[index-1u]->path);
             edge(view,"Extension.Window.nextSibling",index+1u==laterChildren.size()?std::string{}:laterChildren[index+1u]->path);
-            Require(field(view,"Extension.Window.lockCount").value.integer==(index==5u?1:0) &&
+            Require(field(view,"Extension.Window.lockCount").value.integer==(index==6u?1:0) &&
                 field(view,"Extension.Window.bIsVisible").value.boolean==(index<3u || index==5u),
                 "Original later HUD NewChild visibility/lock prefix differs");
         }
@@ -760,7 +787,7 @@ int main(int argc,char** argv) {
         edge(frobDisplay,"Extension.Window.wGc",frobGC.path);
         edge(frobDisplay,"Extension.Window.gGc",frobGeneralGC.path);
         edge(ammoView,"Extension.Window.parentOwner",hudView.path);edge(ammoView,"Extension.Window.winParent",hudView.path);
-        edge(ammoView,"Extension.Window.prevSibling",{});edge(ammoView,"Extension.Window.nextSibling",hitView.path);
+        edge(ammoView,"Extension.Window.prevSibling",augmentationDisplay.path);edge(ammoView,"Extension.Window.nextSibling",hitView.path);
         edge(ammoView,"DeusEx.HUDBaseWindow.Player",player);
         edge(ammoView,"DeusEx.HUDAmmoDisplay.Player",player);
         edge(hitView,"DeusEx.HUDBaseWindow.Player",player);edge(hitView,"DeusEx.HUDHitDisplay.Player",player);
@@ -771,6 +798,26 @@ int main(int argc,char** argv) {
         edge(beltView,"Extension.Window.parentOwner",hudView.path);edge(beltView,"Extension.Window.winParent",hudView.path);
         edge(beltView,"Extension.Window.prevSibling",crossView.path);edge(beltView,"Extension.Window.nextSibling",activeItems.path);
         edge(beltView,"Extension.Window.firstChild",radioView.path);edge(beltView,"Extension.Window.lastChild",radioView.path);
+        const auto& shadow=object(field(missionStart,"DeusEx.HUDMissionStartTextDisplay.winTextShadow").value.text);
+        const auto& foreground=object(field(missionStart,"DeusEx.HUDMissionStartTextDisplay.winText").value.text);
+        edge(missionStart,"Extension.Window.firstChild",shadow.path);edge(missionStart,"Extension.Window.lastChild",foreground.path);
+        Require(shadow.path!=foreground.path&&shadow.classPath=="Extension.TextWindow"&&foreground.classPath=="Extension.TextWindow"&&
+            shadow.outerPath==missionStart.path&&foreground.outerPath==missionStart.path,
+            "Original mission-start initialization lost its actual shadow/foreground TextWindows");
+        edge(shadow,"Extension.Window.prevSibling",{});edge(shadow,"Extension.Window.nextSibling",foreground.path);
+        edge(foreground,"Extension.Window.prevSibling",shadow.path);edge(foreground,"Extension.Window.nextSibling",{});
+        const auto missionFont=ReadPortableClassDefault("DeusEx.HUDMissionStartTextDisplay","fontText");
+        Require(missionFont.kind==Kind::Object&&!missionFont.text.empty(),"Original mission-start CDO font missing");
+        const auto& copiedMissionFont=field(missionStart,"DeusEx.HUDMissionStartTextDisplay.fontText");
+        Require(QuestVr::Vm::Equal(copiedMissionFont.value,missionFont)&&copiedMissionFont.propertyRoots.empty(),
+            "Mission-start font lost its unchanged copied CDO value or fabricated an instance native write");
+        for(const auto* view:{&shadow,&foreground})for(const auto* name:{"normalFont","boldFont"})
+            edge(*view,"Extension.Window."+std::string(name),missionFont.text);
+        for(const auto* name:{"hMargin","vMargin"}) {
+            Require(field(shadow,"Extension.TextWindow."+std::string(name)).value.floating==0.0f&&
+                field(foreground,"Extension.TextWindow."+std::string(name)).value.floating==3.0f,
+                "Mission-start exact1483 prefix advanced past foreground margins or lost completed shadow setters");
+        }
         Require(hudView.outerPath==rootView.path && ammoView.outerPath==hudView.path &&
             hitView.outerPath==hudView.path && crossView.outerPath==hudView.path && beltView.outerPath==hudView.path &&
             !field(hudView,"Extension.Window.bIsVisible").value.boolean &&
@@ -1475,9 +1522,9 @@ int main(int argc,char** argv) {
         const auto rootAttempt=ExecutePortableActorFunction(player,"Extension.PlayerPawnExt.InitRootWindow");
         std::cout<<"ORIGINAL unbound root initialization boundary: "<<rootAttempt.function<<':'<<rootAttempt.offset<<
             " opcode="<<unsigned(rootAttempt.opcode)<<" "<<rootAttempt.error<<std::endl;
-        Require(!rootAttempt.passed() && !rootAttempt.committed && rootAttempt.function=="DeusEx.HUDLogDisplay.ParentRequestedPreferredSize" &&
-            rootAttempt.offset==129u && rootAttempt.opcode==101u && rootAttempt.writes==11767u &&
-            rootAttempt.error=="Native preferred-size virtual override is not implemented" &&
+        Require(!rootAttempt.passed() && !rootAttempt.committed && rootAttempt.function=="DeusEx.HUDMissionStartTextDisplay.InitWindow" &&
+            rootAttempt.offset==159u && rootAttempt.opcode==101u && rootAttempt.writes==13211u &&
+            rootAttempt.error=="Unsupported runtime native 1483" &&
             std::find(rootAttempt.callStack.begin(),rootAttempt.callStack.end(),"DeusEx.DeusExRootWindow.InitWindow")!=rootAttempt.callStack.end(),
             "Native1052 did not construct/dispatch original root without a fabricated client prerequisite");
         const auto windowsAfter=ReadPortableRuntimeNativeWindowSummary();
