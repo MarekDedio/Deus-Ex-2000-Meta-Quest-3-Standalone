@@ -5631,6 +5631,58 @@ void DynamicIntArrayContracts() {
         payload.intArray[0]==std::numeric_limits<std::int32_t>::min() && payload.intArray[1]==payload.intArray[2] &&
         payload.intArray[3]==std::numeric_limits<std::int32_t>::max(),
         "Native INT-array factory lost ordered duplicate/full-width elements");
+    Require(sizeof(payload.intArray)==sizeof(void*)&&zero.intArray.empty()&&!zero.intArray.capacity()&&
+        !zero.intArray.ContainerBytes()&&zero.intArray.begin()==zero.intArray.end(),
+        "Empty native INT-array storage retained an eager vector container or invalid empty range");
+    for(const auto& scalar:std::vector<Value>{Value{},Value::Integer(1),Value::Byte(1),Value::Bool(true),Value::Float(1),
+        Value::Text(Vm::Kind::String,"text"),Value::Text(Vm::Kind::Name,"Name"),Value::Text(Vm::Kind::Object,"Map.Actor"),
+        Value::Vector({}),Value::Rotator({})})
+        Require(scalar.intArray.empty()&&!scalar.intArray.capacity()&&!scalar.intArray.ContainerBytes()&&
+            scalar.intArray.begin()==scalar.intArray.end(),"Scalar Value eagerly allocated native INT-array storage");
+    {
+        Value array=zero;array.intArray.reserve(0u);array.intArray.clear();
+        Require(!array.intArray.ContainerBytes(),"Zero reserve/clear allocated an absent native INT-array container");
+        array.intArray.reserve(64u);const auto capacity=array.intArray.capacity();
+        Require(array.intArray.empty()&&capacity>=64u&&array.intArray.ContainerBytes()==sizeof(std::vector<std::int32_t>),
+            "Reserved empty native INT array lost its real vector container/allocation");
+        const auto emptyCopy=array;const std::vector<std::int32_t> baselineEmptyCopy(static_cast<const std::vector<std::int32_t>&>(array.intArray));
+        Require(emptyCopy.intArray.empty()&&emptyCopy.intArray.capacity()==baselineEmptyCopy.capacity(),
+            "Copying a reserved empty INT array preserved spare capacity unlike std::vector copy construction");
+        array.intArray.push_back(7);array.intArray.push_back(-3);
+        auto copied=array;const std::vector<std::int32_t> expectedCopy(static_cast<const std::vector<std::int32_t>&>(array.intArray));
+        Require(copied.intArray==expectedCopy&&expectedCopy==copied.intArray&&
+            copied.intArray.capacity()==expectedCopy.capacity()&&copied.intArray.ContainerBytes()==sizeof(expectedCopy),
+            "INT-array deep copy changed vector copy capacity, container accounting or raw-vector equality");
+        copied.intArray[0]=99;
+        Require(array.intArray[0]==7&&copied.intArray[0]==99,"Copied native INT arrays share mutable element storage");
+        auto assigned=payload;assigned=array;assigned.intArray[1]=81;
+        Require(array.intArray[1]==-3&&assigned.intArray[1]==81,"INT-array copy assignment aliases source payload");
+        const auto* selfAlias=&assigned;assigned=*selfAlias;
+        Require(assigned.intArray[0]==7&&assigned.intArray[1]==81,"INT-array self-copy assignment changed values");
+        array.intArray.clear();
+        Require(array.intArray.empty()&&array.intArray.capacity()==capacity&&array.intArray.ContainerBytes()==sizeof(expectedCopy),
+            "Clearing native INT-array values discarded retained capacity/container storage");
+        auto moved=std::move(array);
+        Require(moved.intArray.empty()&&moved.intArray.capacity()==capacity&&moved.intArray.ContainerBytes()==sizeof(expectedCopy)&&
+            array.intArray.empty()&&!array.intArray.capacity()&&!array.intArray.ContainerBytes(),
+            "Native INT-array move construction lost reserved-empty allocation ownership");
+        copied=std::move(moved);
+        Require(copied.intArray.empty()&&copied.intArray.capacity()==capacity&&copied.intArray.ContainerBytes()==sizeof(expectedCopy)&&
+            moved.intArray.empty()&&!moved.intArray.ContainerBytes(),"INT-array move assignment copied or lost retained capacity");
+        auto extracted=std::move(copied.intArray).Take();
+        Require(extracted.empty()&&extracted.capacity()==capacity&&copied.intArray.empty()&&!copied.intArray.capacity()&&
+            !copied.intArray.ContainerBytes(),"Native INT-array vector extraction copied or retained the moved allocation");
+        copied=Value::IntArray(std::move(extracted));
+        Require(copied.intArray.empty()&&copied.intArray.capacity()==capacity&&copied.intArray.ContainerBytes()==sizeof(expectedCopy),
+            "Native INT-array factory discarded extracted reserved-empty vector capacity");
+        auto fullWidth=payload;
+        auto extractedValues=std::move(fullWidth.intArray).Take();
+        const auto reconstructed=Value::IntArray(std::move(extractedValues));
+        Require(Vm::Equal(reconstructed,payload)&&fullWidth.intArray.empty()&&!fullWidth.intArray.ContainerBytes(),
+            "Native INT-array extraction/factory round trip changed full-width ordered duplicate values");
+        copied=zero;Require(copied.intArray.empty()&&!copied.intArray.capacity()&&!copied.intArray.ContainerBytes(),
+            "Assigning absent native INT-array storage retained a stale container");
+    }
     Require(Vm::Equal(Vm::Coerce(payload,zero),payload) && Vm::Equal(Vm::Coerce({},zero),zero) &&
         Vm::Equal(Vm::Coerce({},payload),payload),"INT-array exact coercion or typed Nothing default changed values");
     Require(!Vm::Equal(payload,Value::Integer(17)) && !Vm::Equal(payload,Value::IntArray({17,17})) &&
@@ -5743,7 +5795,7 @@ void DynamicIntArrayContracts() {
     }
     for(const bool excess:{false,true}) {
         TestHost host;auto array=reserved(64u);const auto capacity=array.intArray.capacity();
-        Vm::Limits limits;limits.retainedBytes=sizeof(Value)+capacity*sizeof(std::int32_t)-(excess ? 1u : 0u);
+        Vm::Limits limits;limits.retainedBytes=sizeof(Value)+array.intArray.ContainerBytes()+capacity*sizeof(std::int32_t)-(excess ? 1u : 0u);
         const auto result=Vm::ExecuteTransaction(host,[&](Vm::Execution&) {return std::move(array);},limits);
         if(excess) Failed(result,Vm::Status::Budget,host,"INT-array spare allocation contributes retained bytes");
         else Returned(result,"INT-array exact retained byte boundary");
@@ -5751,7 +5803,8 @@ void DynamicIntArrayContracts() {
     for(const bool excess:{false,true}) {
         TestHost host;Value structure;structure.kind=Vm::Kind::Struct;
         structure.fields["first"]=reserved(32u);structure.fields["second"]=reserved(48u);
-        const auto allocation=(structure.fields.at("first").intArray.capacity()+structure.fields.at("second").intArray.capacity())*sizeof(std::int32_t);
+        const auto allocation=(structure.fields.at("first").intArray.capacity()+structure.fields.at("second").intArray.capacity())*sizeof(std::int32_t)+
+            structure.fields.at("first").intArray.ContainerBytes()+structure.fields.at("second").intArray.ContainerBytes();
         Vm::Limits limits;limits.localElements=3u;limits.retainedBytes=3u*sizeof(Value)+11u+allocation-(excess ? 1u : 0u);
         const auto result=Vm::ExecuteTransaction(host,[&](Vm::Execution&) {return std::move(structure);},limits);
         if(excess) Failed(result,Vm::Status::Budget,host,"Nested INT-array allocations share aggregate value budget");

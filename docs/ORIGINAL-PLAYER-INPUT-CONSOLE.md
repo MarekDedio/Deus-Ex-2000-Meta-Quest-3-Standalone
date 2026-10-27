@@ -1,5 +1,10 @@
 # Original bound player input console dependency (2026-10-25)
 
+Follow-up2026-10-27: authentic configured Input construction and bound viewport
+KEYNAME/KEYBINDING are now implemented. See ORIGINAL-VIEWPORT-INPUT.md. The
+historical discovery boundary below is superseded; the rest of FExec fallback
+and actual ReadInput remain unimplemented. No absent-Player shortcut was used.
+
 This is a static dependency audit, not an implementation or gameplay acceptance
 claim. Actual bound Training startup now reaches
 `DeusEx.HUDMultiSkills.RefreshKey` and refuses with

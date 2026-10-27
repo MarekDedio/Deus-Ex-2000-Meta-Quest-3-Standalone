@@ -1,6 +1,43 @@
 # Port status
 
-## Latest: original User.ini input defaults configured (2026-10-27)
+## Latest: real viewport Input construction and key queries (2026-10-27)
+
+The configured native Input/InputExt now has its real Class/Transient/unique
+identity, Actor.EInputKey and FExec, configured copied defaults, original CDO/
+instance reloads and52 ordered Extension names. A live viewport owns its Input;
+native Init/Viewport assignment is deliberately not fabricated. Current client/
+lookup/owner authority, weak inventory/GC retirement and service-save exclusions
+are enforced. Bound original ConsoleCommand now executes real KEYNAME/KEYBINDING
+queries, retaining the distinction between handled-empty and unsupported fallback.
+
+Original HUD growth exposed memory pressure. Lazy Window state/before-images and
+pointer-owned native INT-array containers reduce actual scalar Value storage
+without raising the32MiB limit or changing save wire formats. Allocated array
+containers remain charged, and deep-copy/move/reserved-capacity ownership is tested.
+One generated decal refusal fixture was corrected from a stale128-byte constant
+to sizeof(Value)-1, preserving its below-one-value budget and rollback assertion.
+
+Owned viewport integration10310 checks/20 refusals, schema/config34355/1357,
+native classes10413/38 and VM696215/900 pass. Full desktop build, Android-native
+link and strict GNU/ARM64 checks pass. Final CTest registers261:219 executed,
+42 explicit owned-data skips,zero failures73.06s. Separate first-Training crate
+415/5,deferred429/21,animation588/24,FastTrace252/0,materials and1232 door/save
+route checks pass. All45 original files and21 frozen compiler inputs match their
+length/mtime/SHA256 baselines; all compiler/test/probe jobs are terminal.
+
+Actual cold/warm two-Fire repeats now pass the old key-query/memory boundary and
+reach original HUDLogDisplay.CreateControls/TextLogWindow.Init at239566
+instructions/27664 writes. They retain two attack notifies,four traces,two crate
+changes,nine births and full rollback. Normal and door repeats retain their exact
+ReadInput refusal; both original door moves/endpoints are preserved.
+
+This remains rollback-only backend progress, NOT live crate/loot/gravity or a
+finished original player. TextLog startup, remaining input/reset/FExec and
+post-Possess services, then the committing VR weapon/frame/publication bridge
+remain required. First Training only; no accounts/character-creation UI, other-map
+integration, commercial-code execution or new APK. See ORIGINAL-VIEWPORT-INPUT.md.
+
+## Original User.ini input defaults configured (2026-10-27)
 
 The real native Input/InputExt CDOs now import an explicit immutable User.ini:
 actual Config links, parent-first same-receiver propagation, configured parent

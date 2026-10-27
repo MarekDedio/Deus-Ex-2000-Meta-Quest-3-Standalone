@@ -4,12 +4,15 @@ Updated2026-10-27. Explicit native Input/InputExt classes/configured-class
 selection, complete native Alias/key field/default graph and explicit immutable
 User.ini config import are implemented. The combined owned integration passes
 34355 checks/1357 refusals; after the explicit config phase defaultsPrepared and
-configApplied are true. See ORIGINAL-INPUT-CONFIG-DEFAULTS.md. Actual constructors
-and ReadInput services remain unimplemented. The
-actual first-map discovery now reaches `Original viewport ReadInput configured
-Input service is not prepared` after the local-player camera/fresh-Player and
-actual viewport/session/backedge checks. The coordinator is documented in
-ORIGINAL-TRAINING-LOCAL-PLAYER-TICK-GAP.md; it is not a completed input pipeline.
+configApplied are true. See ORIGINAL-INPUT-CONFIG-DEFAULTS.md. Constructor-only
+Input/InputExt, viewport ownership and KEYNAME/KEYBINDING are now implemented;
+see ORIGINAL-VIEWPORT-INPUT.md. Init/reset, platform updates and ReadInput remain
+unimplemented. The normal first-map diagnostic still reaches `Original viewport
+ReadInput configured Input service is not prepared` after the camera/fresh-Player
+and viewport/session/backedge checks. The two-Fire diagnostic now advances through
+key queries to the explicit TextLogWindow.Init boundary. These are rollback-only
+observations, not completed startup or a live controller pipeline. The frame
+coordinator is documented in ORIGINAL-TRAINING-LOCAL-PLAYER-TICK-GAP.md.
 
 ## Actual native ReadInput chain
 

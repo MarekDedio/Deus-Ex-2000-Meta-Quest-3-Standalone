@@ -1,16 +1,23 @@
 # Immediate milestone: complete the first Training map
 
-Latest2026-10-27: explicit immutable User.ini now configures the real Input and
-InputExt defaults through actual Config links and native typed Alias/key imports.
-Owned combined schema/config34355 checks/1357 refusals, class10413/38, desktop/
-Android-native/strict checks and CTest219 executed/260 registered/41 skips/zero
-failures82.60s pass. Owned crate415/5,deferred429/21,animation588/24,FastTrace252/0,
-Training materials and1232 door/save route checks remain green. Normal/doors/
-two-Fire repeat2 preserve exact unsupported boundaries and full undo after404
-real config imports without failures/warnings. Constructor/viewport Input,
-FExec/ReadInput and the live committing weapon/frame bridge remain pending.
-No account/character-creation UI, other-map integration or new APK. See
-ORIGINAL-INPUT-CONFIG-DEFAULTS.md for implementation and verification evidence.
+Latest2026-10-27: configured native viewport Input/InputExt construction,
+ownership/lifetime and real KEYNAME/KEYBINDING are implemented. Owned viewport
+10310 checks/20 refusals,schema/config34355/1357,class10413/38,VM696215/900,
+desktop/Android-native/strict checks pass. Final CTest219 executed/261 registered/
+42 explicit skips/zero failures73.06s; owned crate415/5,deferred429/21,
+animation588/24,FastTrace252/0,Training materials and1232 door/save route checks
+also pass. All45 originals/21 frozen compiler inputs are unchanged, all jobs
+terminal. Scalar Value/native Window storage is reduced without increasing the
+32MiB cap or changing save wire formats.
+
+Cold/warm two-Fire reaches the next genuine HUD TextLogWindow.Init boundary at
+239566/27664, retaining two attack notifies/four traces/two crate changes/nine
+births and whole-root undo. Normal/doors retain the exact ReadInput boundary and
+both door moves. None is published live gameplay. TextLog startup, actual
+Input Init/reset/platform/ReadInput and remaining FExec/post-Possess services,
+then the committing VR weapon/frame/publication bridge remain required. No
+account/character-creation UI, other-map integration or new APK. See
+ORIGINAL-VIEWPORT-INPUT.md for implementation and final verification evidence.
 
 ## Required live crate bridge (current-source audit, 2026-10-26)
 

@@ -5,6 +5,7 @@
         QuestVr::AuthoredStructLimits limits;QuestVr::AuthoredStructDetail::Budget budget{limits};
         QuestVr::AuthoredStructDetail::RetainedValue(value,budget);
         const auto arrays=[&](const auto& self,const Value& current)->void {
+            budget.Retain(current.intArray.ContainerBytes());
             budget.Retain(QuestVr::DecalStateDetail::Multiply(current.intArray.capacity(),sizeof(std::int32_t)));
             for(const auto& [name,member]:current.fields){static_cast<void>(name);self(self,member);}
         };

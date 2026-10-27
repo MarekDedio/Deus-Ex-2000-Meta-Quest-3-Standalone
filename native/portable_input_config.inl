@@ -86,7 +86,9 @@ struct InputAliasConfigImport {
 // InputExt inherits Input's Config list; ordinary Config uses each supplied
 // class's section, while GlobalConfig uses the actual declaring class.
 void LoadInputDefaultConfig(const RuntimeNativeInputDomain& domain,RuntimeNativeInputConfig& config,
-    RuntimeObject* suppliedClass,RuntimeNativeInputValues& destination,const std::size_t depth=0u) {
+    RuntimeObject* suppliedClass,RuntimeNativeInputValues& destination,const std::size_t depth=0u,
+    const QuestVr::NativeConfig::OrderedIni* suppliedDocument=nullptr) {
+    const auto& document=suppliedDocument?*suppliedDocument:config.document;
     InputConfigStep(config);
     if(!suppliedClass||depth>=128u)
         throw std::runtime_error("Native Input config lacks bounded actual Class/Super authority");
@@ -97,7 +99,7 @@ void LoadInputDefaultConfig(const RuntimeNativeInputDomain& domain,RuntimeNative
     if(!(flags&4u))return;
     if(suppliedClass!=domain.inputClass&&suppliedClass!=domain.inputExtClass)
         throw std::runtime_error("Native Input config encountered an unaudited Config-class ancestor");
-    LoadInputDefaultConfig(domain,config,suppliedClass->base,destination,depth+1u);
+    LoadInputDefaultConfig(domain,config,suppliedClass->base,destination,depth+1u,&document);
     if(!suppliedClass->nativeConstructorLinksPrepared)
         throw std::runtime_error("Native Input config requires actual linked Config properties");
     ++config.passes;std::size_t fields{};
@@ -111,10 +113,10 @@ void LoadInputDefaultConfig(const RuntimeNativeInputDomain& domain,RuntimeNative
             throw std::runtime_error("Native Input Config property lost its declaring Class/list authority");
         const auto* section=(property.flags&0x40000u)?field->outer:suppliedClass;
         for(std::size_t index=0u;index<property.dimension;++index) {
-            InputConfigStep(config,config.document.EntryCount()+config.document.SectionCount()+1u);
+            InputConfigStep(config,document.EntryCount()+document.SectionCount()+1u);
             auto key=field->lookupName->ToString();
             if(property.dimension>1u)key+='['+std::to_string(index)+']';
-            const auto value=config.document.PropertyScalar(section->reflection.objectPath,key);
+            const auto value=document.PropertyScalar(section->reflection.objectPath,key);
             if(!value)continue;
             const auto units=QuestVr::UnrealString::Decode(*value);InputConfigStep(config,units.size());++config.imports;
             QuestVr::NativeConfigImport::Result imported;

@@ -82,7 +82,8 @@ template<class Ops> std::optional<std::size_t> FindKeyName(Ops& operations,std::
     key=Detail::Input(key);operations.Step();
     // Original appSprintf target is256 UTF16 units including NUL and IK_.
     if(key.size()>252u)throw std::runtime_error("Native Input FindKeyName format buffer limit exceeded");
-    std::u16string formatted=u"IK_";formatted.append(key);
+    std::u16string formatted;formatted.reserve(3u+key.size());
+    formatted.push_back(u'I');formatted.push_back(u'K');formatted.push_back(u'_');formatted.append(key);
     const auto name=operations.FindName(formatted);
     if(name==typename Ops::Name{})return std::nullopt;
     for(std::size_t index=0u;index<operations.EnumSize();++index) {

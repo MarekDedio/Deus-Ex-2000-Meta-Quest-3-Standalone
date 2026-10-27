@@ -80,6 +80,7 @@
 #include "quest_native_config.h"
 #include "quest_native_config_import.h"
 #include "quest_native_struct_import.h"
+#include "quest_input_key_queries.h"
 #include "quest_static_find_object.h"
 #include "quest_collision_hash_math.h"
 #include "quest_collision_hash.h"
@@ -157,6 +158,14 @@ struct RuntimeNativeInputValues {
     RuntimeObject *viewport{},*keyEnum{};
     bool execInstalled{};
 };
+struct RuntimeNativeInputInstance {
+    RuntimeNativeInputValues values;
+    RuntimeObject* ownerViewport{}; // Constructor lifetime bookkeeping, NOT Init's native Viewport.
+    std::uint64_t clientIdentity{},viewportIdentity{},lookupGeneration{};
+    PortableInputLoggingProfile logging{PortableInputLoggingProfile::Ordinary};
+    std::size_t configReloads{},configPasses{},configImports{},configFailures{},configWarnings{},configWork{};
+    bool initialized{},retired{};
+};
 struct RuntimeNativeStruct {
     NameString friendlyName{"None"};
     std::uint32_t propertiesSize{};
@@ -215,6 +224,7 @@ struct RuntimeObjectLookupControl {
     RuntimeObject* metaClass{};
 };
 void RetireRuntimeLookupObject(RuntimeObject*) noexcept;
+void RetireRuntimeInputObject(RuntimeObject*) noexcept;
 struct RuntimeNativePackageIndex;
 void RetireRuntimeNativePackage(RuntimeObject*) noexcept;
 class RuntimeAIManager;
@@ -348,13 +358,17 @@ public:
     std::uint64_t nativeClientIdentity{}, nativeViewportIdentity{};
     RuntimeObject* nativePlayer{};
     RuntimeObject* nativeViewportActor{};
+    RuntimeObject* nativeViewportInput{};
+    std::unique_ptr<RuntimeNativeInputInstance> nativeInputInstance;
     bool nativePlayerBinding{};
     // Native Extension window-domain objects are neither Actor births nor
     // package exports. RootWindow is a transient native player edge; its
     // AddToRoot never changes flags; Core still applies CLASS_Transient.
     bool nativeWindowObject{}, nativeRootWindowObject{};
     RuntimeObject* nativeRootWindow{};
-    std::optional<RuntimeNativeWindowState> nativeWindowState;
+    // Most metadata/default/Actor objects never own native Window tables.
+    // Allocate only at the actual constructor, not inline in every UObject.
+    std::unique_ptr<RuntimeNativeWindowState> nativeWindowState;
     // Exact reflected slot ownership, including nested Struct Object fields.
     // Replaceable window edges must not accumulate in immutable references.
     std::unordered_map<std::string,
@@ -493,6 +507,7 @@ public:
 protected:
     ~RuntimeObject() override {
         RetireRuntimeLookupObject(this);
+        if(nativeInputInstance)RetireRuntimeInputObject(this);
         if(nativeConversation && nativeConversation->node) RetireRuntimeConversationObject(this);
         if(nativeDump)RetireRuntimeDumpObject(this);
         if(nativePackageInstance) RetireRuntimeNativePackage(this);
@@ -594,6 +609,12 @@ GCAllocation* RuntimeObject::Mark(GCAllocation* marklist) {
     marklist = GC::MarkObject(marklist, defaultOwner);
     marklist = GC::MarkObject(marklist, nativePlayer);
     marklist = GC::MarkObject(marklist, nativeViewportActor);
+    marklist = GC::MarkObject(marklist, nativeViewportInput);
+    if(nativeInputInstance) {
+        marklist=GC::MarkObject(marklist,nativeInputInstance->ownerViewport);
+        marklist=GC::MarkObject(marklist,nativeInputInstance->values.viewport);
+        marklist=GC::MarkObject(marklist,nativeInputInstance->values.keyEnum);
+    }
     marklist = GC::MarkObject(marklist, nativeRootWindow);
     marklist = GC::MarkObject(marklist, nativeLevelModel);
     // Level.Engine is a current-generation native binding, not an archived
@@ -736,6 +757,7 @@ struct RuntimeNativeInputConfig {
     QuestVr::NativeConfig::OrderedIni document;
     std::size_t passes{},imports{},failures{},warnings{},work{};
 };
+struct RuntimeExtensionInputNames {std::array<NameString,52u> names;};
 std::size_t NativeInputValuesBytes(const RuntimeNativeInputValues& input) {
     using QuestVr::DecalStateDetail::Add;
     auto bytes=sizeof(RuntimeNativeInputValues);
@@ -754,6 +776,7 @@ struct RuntimeNativeInputDomain final : GCObject {
     // actual StructProperty.Struct edge, not an inventory root masking it.
     std::vector<RuntimeObject*> defaultClasses,defaults,fields;
     std::unique_ptr<const RuntimeNativeInputConfig> config;
+    std::unique_ptr<const RuntimeExtensionInputNames> extensionNames;
 protected:
     GCAllocation* Mark(GCAllocation* marklist) override {
         for(auto* cls:defaultClasses)marklist=GC::MarkObject(marklist,cls);
@@ -763,6 +786,9 @@ protected:
 std::unique_ptr<GCRoot<RuntimeNativeInputDomain>> persistentInputSchema;
 bool InputSchemaDefaultValid(const RuntimeObject* cls);
 bool ActualNativeInputSchemaObjectValid(const RuntimeObject* object);
+bool ActualNativeInputInstanceValid(const RuntimeObject* object);
+PortableInputQueryResult ExecuteNativeInputQuery(RuntimeObject*,const std::string&,
+    const std::function<void()>&,const std::function<void(std::size_t)>&);
 std::size_t InputSchemaRetainedBytes(const RuntimeNativeInputDomain& domain,
     const InputConfigPayloads* stagedPayloads=nullptr,const RuntimeNativeInputConfig* stagedConfig=nullptr) {
     using QuestVr::DecalStateDetail::Add;
@@ -772,6 +798,7 @@ std::size_t InputSchemaRetainedBytes(const RuntimeNativeInputDomain& domain,
     auto bytes=sizeof(RuntimeNativeInputDomain)+sizeof(GCAllocation)+sizeof(GCRoot<RuntimeNativeInputDomain>)+sizeof(GCRootNode);
     const auto* config=stagedConfig?stagedConfig:domain.config.get();
     if(config)bytes=Add(bytes,NativeInputConfigBytes(*config));
+    if(domain.extensionNames)bytes=Add(bytes,sizeof(RuntimeExtensionInputNames));
     bytes=Add(bytes,Multiply(domain.defaults.capacity()+domain.defaultClasses.capacity()+domain.fields.capacity(),sizeof(RuntimeObject*)));
     const auto object=[&](const RuntimeObject* value,const bool published) {
         if(!value)throw std::runtime_error("Native Input retained graph contains null");
@@ -854,6 +881,52 @@ protected:
     }
 };
 std::unique_ptr<GCRoot<RuntimePlayerSession>> persistentPlayerSession;
+// Weak inventory for validation/accounting, NEVER a GC root. A viewport's
+// actual native Input edge owns each instance. Retained retired instances are
+// still metered until their real last script/native root is collected.
+std::vector<RuntimeObject*> persistentNativeInputs;
+std::size_t NativeSessionObjectBytes(const RuntimeObject* object) {
+    using QuestVr::DecalStateDetail::Add;
+    if(!object)throw std::runtime_error("Native session accounting contains null");
+    auto bytes=sizeof(RuntimeObject)+sizeof(GCAllocation)+object->references.capacity()*sizeof(RuntimeObject*);
+    for(const auto* text:{&object->reflection.objectPath,&object->reflection.metaClass,&object->reflection.outerPath,
+        &object->reflection.basePath,&object->sourcePath,&object->nativePackageKey,&object->birthVmKey})bytes=Add(bytes,text->capacity()+1u);
+    std::size_t nodes{};
+    const auto value=[&](const auto& self,const QuestVr::Vm::Value& v,const std::size_t depth)->void {
+        if(++nodes>65536u||depth>128u)throw std::runtime_error("Native session value accounting exceeds bounds");
+        bytes=Add(bytes,sizeof(v)+v.text.capacity()+1u+v.intArray.ContainerBytes()+v.intArray.capacity()*sizeof(std::int32_t));
+        for(const auto& [key,child]:v.fields) {bytes=Add(bytes,key.capacity()+1u+sizeof(std::string)+5u*sizeof(void*));self(self,child,depth+1u);}
+    };
+    for(const auto* properties:{&object->scriptValues,&object->classDefaultValues,&object->frozenBirthDefaults}) {
+        bytes=Add(bytes,properties->bucket_count()*sizeof(void*));
+        for(const auto& [key,slots]:*properties) {
+            bytes=Add(bytes,sizeof(std::string)+key.capacity()+1u+5u*sizeof(void*)+slots.bucket_count()*sizeof(void*));
+            for(const auto& [index,v]:slots) {static_cast<void>(index);bytes=Add(bytes,sizeof(std::uint32_t)+5u*sizeof(void*));value(value,v,0u);}
+        }
+    }
+    if(const auto* input=object->nativeInputInstance.get()) {
+        bytes=Add(bytes,sizeof(RuntimeNativeInputInstance)+NativeInputValuesBytes(input->values)-sizeof(RuntimeNativeInputValues));
+    }
+    return Add(bytes,2u*(sizeof(std::string)+6u*sizeof(void*)+object->reflection.objectPath.capacity()+1u));
+}
+std::size_t NativePlayerSessionBytes() {
+    if(!persistentPlayerSession||!persistentPlayerSession->get())return 0u;
+    using QuestVr::DecalStateDetail::Add;const auto& session=*persistentPlayerSession->get();
+    auto bytes=sizeof(RuntimePlayerSession)+sizeof(GCAllocation)+sizeof(GCRoot<RuntimePlayerSession>)+sizeof(GCRootNode)+
+        (session.classes.capacity()+session.viewports.capacity())*sizeof(RuntimeObject*);
+    if(session.client)bytes=Add(bytes,NativeSessionObjectBytes(session.client));
+    for(auto* object:session.classes)bytes=Add(bytes,NativeSessionObjectBytes(object));
+    for(auto* object:session.viewports)bytes=Add(bytes,NativeSessionObjectBytes(object));
+    return bytes;
+}
+std::size_t NativeInputInventoryBytes() {
+    using QuestVr::DecalStateDetail::Add;auto bytes=persistentNativeInputs.capacity()*sizeof(RuntimeObject*);
+    for(auto* object:persistentNativeInputs) {
+        if(!object||!object->nativeInputInstance)throw std::runtime_error("Native Input weak inventory is invalid");
+        bytes=Add(bytes,NativeSessionObjectBytes(object));
+    }
+    return bytes;
+}
 struct RuntimeEngineClassDomain final : GCObject {
     std::vector<RuntimeObject*> classes;
 protected:
@@ -1376,6 +1449,7 @@ void ClearNativePlayerObjects() noexcept {
     if(!persistentPlayerSession || !persistentPlayerSession->get()) return;
     const auto unindex=[](RuntimeObject* object) {
         if(!object) return;
+        RetireRuntimeLookupObject(object);
         for(auto it=persistentVmObjects.begin();it!=persistentVmObjects.end();)
             if(it->second==object) it=persistentVmObjects.erase(it); else ++it;
         for(auto it=persistentQualifiedObjects.begin();it!=persistentQualifiedObjects.end();)
@@ -1383,7 +1457,16 @@ void ClearNativePlayerObjects() noexcept {
     };
     auto* session=persistentPlayerSession->get();
     unindex(session->client);
-    for(auto* viewport:session->viewports) unindex(viewport);
+    for(auto* viewport:session->viewports) {
+        if(auto* input=viewport->nativeViewportInput) {
+            if(input->nativeInputInstance) {
+                input->nativeInputInstance->retired=true;input->nativeInputInstance->ownerViewport=nullptr;
+                input->nativeInputInstance->values.viewport=nullptr;
+            }
+            viewport->nativeViewportInput=nullptr;unindex(input);
+        }
+        unindex(viewport);
+    }
     session->client=nullptr;session->viewports.clear();
     // Registered native UClasses outlive every particular renderer client.
     // Keep their engine-owned roots and indexes until engine shutdown, including
@@ -2167,6 +2250,32 @@ bool ActualNativeInputSchemaObjectValid(const RuntimeObject* object) {
     return !property.referencedStruct&&!property.inner&&
         (object->cls->reflection.objectPath=="Core.NameProperty"||object->cls->reflection.objectPath=="Core.StrProperty");
 }
+bool ActualNativeInputInstanceValid(const RuntimeObject* object) {
+    if(!object||!object->nativeInputInstance||!persistentInputSchema||!persistentInputSchema->get()||
+        !persistentInputSchema->get()->config||!persistentInputClass||!persistentEngineCollision||
+        !persistentPlayerSession||!persistentPlayerSession->get()||!persistentObjectLookup||!persistentObjectLookup->active||
+        object->lookupControl!=persistentObjectLookup||!persistentNativeClient.HasClient()||!object->objectIndex||
+        object->defaultOwner||object->runtimeBirth||object->classDescriptor||object->nativeProperty||object->nativeStruct||
+        !object->sourcePath.empty()||object->exportIndex!=std::numeric_limits<std::size_t>::max()||!object->lookupName||
+        object->reflection.flags!=0x4000u||!object->cls||!InputSchemaDefaultValid(object->cls)||
+        object->cls->reflection.objectPath!=*persistentInputClass||object->outer!=persistentEngineCollision->get()->transient)return false;
+    const auto& input=*object->nativeInputInstance;const auto& domain=*persistentInputSchema->get();
+    const auto registered=persistentNativeClient.ReadOnlyView();
+    if(input.retired||input.initialized||input.values.viewport||!input.values.execInstalled||input.values.keyEnum!=domain.keyEnum||
+        input.lookupGeneration!=persistentObjectLookup->generation||input.clientIdentity!=persistentNativeClient.ClientIdentity()||
+        object->nativeClientIdentity!=input.clientIdentity||input.logging!=PortableInputLoggingProfile::Ordinary||
+        !input.ownerViewport||input.ownerViewport->nativeViewportInput!=object||
+        input.ownerViewport->nativeClientIdentity!=input.clientIdentity||input.ownerViewport->nativeViewportIdentity!=input.viewportIdentity||
+        std::find(persistentPlayerSession->get()->viewports.begin(),persistentPlayerSession->get()->viewports.end(),input.ownerViewport)==
+            persistentPlayerSession->get()->viewports.end()||
+        std::none_of(registered.begin(),registered.end(),
+            [&](const auto& viewport){return viewport.identity==input.viewportIdentity;}))return false;
+    const auto canonical=persistentQualifiedObjects.find(object->reflection.objectPath);
+    const auto folded=persistentVmObjects.find(LowerAscii(object->reflection.objectPath));
+    return canonical!=persistentQualifiedObjects.end()&&canonical->second==object&&
+        folded!=persistentVmObjects.end()&&folded->second==object&&domain.keyEnum&&domain.keyEnum->enumDescriptor&&
+        domain.keyEnum->enumDescriptor->names.size()==255u&&persistentNativeClient.HasClient();
+}
 bool ActualNativeCollisionObjectValid(const RuntimeObject* object) {
     if(!persistentEngineCollision || !object || object->defaultOwner || object->runtimeBirth ||
         !object->sourcePath.empty() || !object->cls || !object->lookupControl ||
@@ -2750,6 +2859,8 @@ public:
         if(found->second->nativeClientIdentity &&
             found->second->nativeClientIdentity!=persistentNativeClient.ClientIdentity())
             throw std::runtime_error("Portable native session UObject is revoked or stale");
+        if(found->second->nativeInputInstance&&!ActualNativeInputInstanceValid(found->second))
+            throw std::runtime_error("Portable native Input ownership is revoked, stale or unprepared");
         return found->second;
     }
     RuntimeObject* RequireNativeLevelInfo(RuntimeObject* actor) { return NativeLevelInfo(actor); }
@@ -3359,8 +3470,8 @@ public:
         // Original initialized default blocks have Name None and Outer null.
         // This display spelling does not replace their distinct nonnull handle.
         if (object->defaultOwner) return "None";
-        if(object->nativeEngineInstance || object->nativePrimitiveInstance || object->nativeProperty || object->nativeStruct) {
-            if(!ActualNativeCollisionObjectValid(object)&&!ActualNativeInputSchemaObjectValid(object))
+        if(object->nativeEngineInstance || object->nativePrimitiveInstance || object->nativeProperty || object->nativeStruct||object->nativeInputInstance) {
+            if(!ActualNativeCollisionObjectValid(object)&&!ActualNativeInputSchemaObjectValid(object)&&!ActualNativeInputInstanceValid(object))
                 throw std::runtime_error("Constructed native UObject identity is invalid");
             return object->reflection.objectPath;
         }
@@ -4140,10 +4251,19 @@ public:
         const auto player=Read(pawn,property,0u);
         if(player.kind!=Kind::Object) throw std::runtime_error("PlayerPawn ConsoleCommand Player is not an Object");
         if(player.text.empty()) return {Value::Text(Kind::String,{}),{}};
-        static_cast<void>(Object(player.text));
-        // Real bound FExec includes KEYNAME/KEYBINDING/config commands used by
-        // root initialization. No invented ping/key list or catch-all success.
-        throw std::runtime_error("Bound PlayerPawn ConsoleCommand native FExec is not implemented");
+        auto* viewport=Object(player.text);
+        if(!viewport->nativeViewportIdentity||NativeSessionViewport(viewport->nativeViewportIdentity)!=viewport||
+            viewport->nativeViewportActor!=pawn||!pawn->nativePlayerBinding||pawn->nativePlayer!=viewport)
+            throw std::runtime_error("PlayerPawn ConsoleCommand lacks an authentic current viewport/Actor backedge");
+        if(!viewport->nativeViewportInput||!viewport->nativeViewportInput->nativeInputInstance||
+            viewport->nativeViewportInput->nativeInputInstance->ownerViewport!=viewport)
+            throw std::runtime_error("Bound PlayerPawn ConsoleCommand requires its actual constructed Input");
+        const auto command=arguments.front().Load().text;
+        const auto queried=ExecuteNativeInputQuery(viewport->nativeViewportInput,command,
+            [this]{LifecycleStep();},[this](std::size_t bytes){ValidateStateBudget(bytes);});
+        if(!queried.handled)
+            throw std::runtime_error("Original viewport FExec fallback is not implemented: "+command);
+        return {Value::Text(Kind::String,queried.output),{}};
     }
     std::shared_ptr<const Function> WindowNativeDeclaration(const std::uint16_t index,const Function* declaration) {
         struct Parameter { const char* name;Kind kind;std::uint32_t flags;const char* type;const char* constraint; };
@@ -7256,7 +7376,8 @@ public:
             ValidateNativeWindowList(window,"Extension.RadioBoxWindow.toggleButtons");
         } else if(native=="extension.tilewindow") ValidateNativeTileFields(window);
         else throw std::runtime_error("Native child constructor storage is not registered");
-        Touch(window);window->nativeWindowState.emplace();
+        Touch(window);ValidateStateBudget(sizeof(RuntimeNativeWindowState));
+        window->nativeWindowState=std::make_unique<RuntimeNativeWindowState>();
         window->nativeWindowState->tileRowsInitialized=native=="extension.tilewindow";
         ValidateStateBudget();
     }
@@ -7519,7 +7640,8 @@ public:
         ValidateNativeWindowList(window,"Extension.TabGroupWindow.rowMajorWindowList");
         ValidateNativeWindowList(window,"Extension.TabGroupWindow.colMajorWindowList");
         ValidateNativeWindowList(window,"Extension.ModalWindow.tabGroupWindowList");
-        Touch(window);window->nativeWindowState.emplace();window->nativeWindowState->dirtyTabOrder=true;
+        Touch(window);ValidateStateBudget(sizeof(RuntimeNativeWindowState));
+        window->nativeWindowState=std::make_unique<RuntimeNativeWindowState>();window->nativeWindowState->dirtyTabOrder=true;
         NativeWindowWrite(window,"Extension.Window.windowType",Value::Byte(1u),execution);
         NativeWindowWrite(window,"Extension.TabGroupWindow.bSizeChildrenToParent",Value::Bool(false),execution);
         NativeWindowWrite(window,"Extension.TabGroupWindow.bSizeParentToChildren",Value::Bool(true),execution);
@@ -7723,8 +7845,8 @@ public:
                 key=="extension.tilewindow.rowarray")
                 throw std::runtime_error("Native Window private pointer-array storage is not a script-visible value");
         }
-        if(object->nativeEngineInstance || object->nativePrimitiveInstance || object->nativeProperty || object->nativeStruct) {
-            if(!ActualNativeCollisionObjectValid(object)&&!ActualNativeInputSchemaObjectValid(object))
+        if(object->nativeEngineInstance || object->nativePrimitiveInstance || object->nativeProperty || object->nativeStruct||object->nativeInputInstance) {
+            if(!ActualNativeCollisionObjectValid(object)&&!ActualNativeInputSchemaObjectValid(object)&&!ActualNativeInputInstanceValid(object))
                 throw std::runtime_error("Native UObject reflected read lost its actual identity");
             const auto key=LowerAscii(property.key);
             if(key.rfind("core.object.",0u)==0u) {
@@ -7755,14 +7877,18 @@ public:
         }
         const auto* nativeDefaults=object->preparedNativeDefaults?object->preparedNativeDefaults.get():
             object->classDescriptor && object->defaultObject?object->defaultObject->preparedNativeDefaults.get():nullptr;
-        if(nativeDefaults&&nativeDefaults->input) {
-            if(!object->defaultOwner||!InputSchemaDefaultValid(object->defaultOwner)||
-                !OwnsProperty(object->defaultOwner,property)||index>=property.arrayDimension)
+        const auto* nativeInputValues=object->nativeInputInstance?&object->nativeInputInstance->values:
+            nativeDefaults?nativeDefaults->input.get():nullptr;
+        if(nativeInputValues) {
+            auto* owner=object->defaultOwner?object->defaultOwner:object->cls;
+            if(!owner||!InputSchemaDefaultValid(owner)||
+                (object->nativeInputInstance&&!ActualNativeInputInstanceValid(object))||
+                (!object->nativeInputInstance&&!object->defaultOwner)||!OwnsProperty(owner,property)||index>=property.arrayDimension)
                 throw std::runtime_error("Native Input default read lacks its actual field/default authority");
             auto* field=Object(property.key);
             if(!ActualNativeInputSchemaObjectValid(field)||!field->nativeProperty)
                 throw std::runtime_error("Native Input default field is not in its authenticated schema");
-            const auto& payload=*nativeDefaults->input;const auto& schema=*field->nativeProperty;
+            const auto& payload=*nativeInputValues;const auto& schema=*field->nativeProperty;
             if(field->cls->reflection.objectPath=="Core.StructProperty"&&schema.offset==0x2cu&&
                 schema.dimension==40u&&schema.elementSize==0x10u&&schema.referencedStruct==persistentInputSchema->get()->aliasStruct) {
                 const auto& alias=payload.aliases[index];Value result;result.kind=Kind::Struct;
@@ -9061,7 +9187,7 @@ private:
         RuntimeObject* rootWindow{};
         std::int32_t uniqueCounter{};
         decltype(RuntimeObject::nativeWindowPropertyRoots) windowPropertyRoots;
-        std::optional<RuntimeNativeWindowState> windowState;
+        std::unique_ptr<RuntimeNativeWindowState> windowState;
         std::uint64_t retailHash{};
         std::optional<RuntimeNativeConversationState> conversation;
         std::uint32_t objectFlags{};
@@ -10041,7 +10167,7 @@ private:
             if(WriteNativeConversationValue(object,property,index,defaults,value)) return;
             auto* nativeOwner=object->defaultOwner?object->defaultOwner:
                 (object->classDescriptor||object->nativeEngineClass||object->nativeMetadataClass)?object:nullptr;
-            if(object->nativeEngineInstance || object->nativePrimitiveInstance || object->nativeProperty || object->nativeStruct ||
+            if(object->nativeEngineInstance || object->nativePrimitiveInstance || object->nativeProperty || object->nativeStruct ||object->nativeInputInstance||
                 (nativeOwner&&InputSchemaDefaultValid(nativeOwner))||
                 (nativeOwner && PreparedNativeClassDefaultValid(nativeOwner) &&
                     LowerAscii(property.key).rfind("engine.engine.",0u)==0u))
@@ -10154,9 +10280,9 @@ private:
         if (saved_.find(object) == saved_.end()) {
             if (saved_.size() >= 4096u) throw std::runtime_error("VM touched actor budget exceeded");
             // Admit the native Window before-image BEFORE copying its vectors.
-            // Rollback uses optional/vector swaps and never allocates.
+            // Rollback swaps owning pointers and never allocates.
             const auto windowBytes=object->nativeWindowState?
-                NativeWindowStorageBytes(*object->nativeWindowState,false):0u;
+                sizeof(RuntimeNativeWindowState)+NativeWindowStorageBytes(*object->nativeWindowState,false):0u;
             ValidateStateBudget(windowBytes);
             saved_.emplace(object, Before{object->scriptValues, object->classDefaultValues,
                 object->animationClock?std::make_unique<QuestVr::ActorAnimationClock>(*object->animationClock):nullptr,
@@ -10165,7 +10291,8 @@ private:
                 object->stateLocalsRevision, object->stateTransitionFlags, object->committedScriptState, object->childActors,
                 object->touchEventSent, object->committedLifecycle, object->worldRemoved,
                 object->nativePlayer, object->nativeViewportActor, object->nativePlayerBinding,
-                object->nativeRootWindow,object->uniqueObjectCounter,object->nativeWindowPropertyRoots,object->nativeWindowState,
+                object->nativeRootWindow,object->uniqueObjectCounter,object->nativeWindowPropertyRoots,
+                object->nativeWindowState?std::make_unique<RuntimeNativeWindowState>(*object->nativeWindowState):nullptr,
                 object->nativeRetailHash,object->nativeConversation?
                     std::optional<RuntimeNativeConversationState>{*object->nativeConversation}:std::nullopt,
                 object->reflection.flags});
@@ -10366,7 +10493,7 @@ private:
         const auto begun = graph->state.BeginPrimary(primary.surface, actor->reflection.objectPath,
             texture->reflection.objectPath, resolveTexture, moverRotation);
         list.push_back(primary.surface);
-        ReferenceFor(actor, surfProperty, 0u, false)->write(Value::IntArray(std::move(list)));
+        ReferenceFor(actor, surfProperty, 0u, false)->write(Value::IntArray(std::move(list).Take()));
         RefreshDecalRoots(graph); // The provisional owner is rooted before script.
         if (mover) SetBase(actor, ActorLink(actor, "Owner"), true, execution);
         if (persistentRuntime->get()->nativeDecals != graph)
@@ -10406,7 +10533,7 @@ private:
                 graph->state.AttachPrimary(surface.surface, recordFor(surface.relativeCorners, surface.nodeMembership),
                     texture->reflection.objectPath, resolveTexture);
                 currentList.push_back(surface.surface);
-                ReferenceFor(actor, surfProperty, 0u, false)->write(Value::IntArray(std::move(currentList)));
+                ReferenceFor(actor, surfProperty, 0u, false)->write(Value::IntArray(std::move(currentList).Take()));
             }
         PrechargeDecalMutation(graph, projected.nodeMembership.capacity() * sizeof(std::int32_t));
         graph->state.CompletePrimary(begun.token, recordFor(quad.relativeCorners, projected.nodeMembership));
@@ -10697,6 +10824,8 @@ private:
         if(persistentNativePackages) defaults.Retain(NativePackageRetainedBytes(*persistentNativePackages));
         if(persistentEngineCollision) defaults.Retain(EngineCollisionRetainedBytes(*persistentEngineCollision->get()));
         if(persistentInputSchema)defaults.Retain(InputSchemaRetainedBytes(*persistentInputSchema->get()));
+        defaults.Retain(NativePlayerSessionBytes());
+        defaults.Retain(NativeInputInventoryBytes());
         if(persistentRetailCollision) defaults.Retain(persistentRetailCollision->RetainedBytes());
         if(!persistentWorldActors.empty()&&persistentWorldActors.front()&&persistentWorldActors.front()->nativeXLevel) {
             auto* model=persistentWorldActors.front()->nativeXLevel->nativeLevelModel;
@@ -10747,11 +10876,12 @@ private:
             }
             if(before.state)measured.MeasureStateObject(*before.state);
             if(before.conversation) defaults.Retain(sizeof(RuntimeNativeConversationState));
-            if(before.windowState) defaults.Retain(NativeWindowStorageBytes(*before.windowState,true));
+            if(before.windowState) defaults.Retain(sizeof(RuntimeNativeWindowState)+NativeWindowStorageBytes(*before.windowState,true));
         }
         const auto valueBudget = [&](const auto& self, const Value& value, const std::size_t depth) -> void {
             defaults.Node(depth); defaults.Retain(sizeof(value));
             defaults.IntArrayElements(value.intArray.size());
+            defaults.Retain(value.intArray.ContainerBytes());
             defaults.Retain(QuestVr::DecalStateDetail::Multiply(value.intArray.capacity(), sizeof(std::int32_t)));
             QuestVr::ScriptStateDetail::Text(value.text, limits, false, true);
             defaults.Retain(value.text.size() + 1u);
@@ -10808,7 +10938,7 @@ private:
             if(object->nativeWindowObject) defaults.Retain(sizeof(RuntimeObject)+sizeof(GCAllocation)+
                 object->reflection.objectPath.size()+object->references.capacity()*sizeof(RuntimeObject*));
             if(object->nativeWindowState) {
-                defaults.Retain(NativeWindowStorageBytes(*object->nativeWindowState,true));
+                defaults.Retain(sizeof(RuntimeNativeWindowState)+NativeWindowStorageBytes(*object->nativeWindowState,true));
             }
             for(const auto& [key,slots]:object->nativeWindowPropertyRoots) {
                 defaults.Retain(sizeof(std::string)+5u*sizeof(void*)+key.capacity());
@@ -11321,6 +11451,7 @@ QuestVr::ScriptSavedState CollectScriptSavedState() {
     const auto measure = [&](const auto& self, const QuestVr::Vm::Value& value, const std::size_t depth) -> void {
         capture.Node(depth); capture.Retain(sizeof(value));
         capture.IntArrayElements(value.intArray.size());
+        capture.Retain(value.intArray.ContainerBytes());
         capture.Retain(QuestVr::DecalStateDetail::Multiply(value.intArray.capacity(), sizeof(std::int32_t)));
         if (value.text.size() > limits.maxStringBytes)
             throw std::runtime_error("Script save live string budget exceeded");
@@ -12056,6 +12187,8 @@ private:
         if (found != persistentVmObjects.end() && found->second &&
             LowerAscii(std::filesystem::path(found->second->sourcePath).extension().string()) != ".dx") {
             auto* object = found->second;
+            if(object->nativeInputInstance||object->nativeClientIdentity)
+                throw std::runtime_error("Script save cannot retain transient Input/client/viewport identities");
             if (object->cls) return object->cls->reflection.objectPath;
             if (object->reflection.metaClass == "Class") return "Core.Class";
             const auto& table = Table(object->sourcePath);
@@ -14061,9 +14194,14 @@ PortablePlayerSessionSnapshot PreparePortableRuntimePlayerObjects(const std::uin
     pendingBirthGarbage=true;
     GCRoot<RuntimePlayerSession> staged(persistentPlayerSession ? persistentPlayerSession->get() : GC::Alloc<RuntimePlayerSession>());
     auto* session=staged.get();
-    auto nextQualified=persistentQualifiedObjects;auto nextVm=persistentVmObjects;
+    decltype(persistentQualifiedObjects) nextQualified;decltype(persistentVmObjects) nextVm;
+    const auto indexed=[&](const std::string& key)->RuntimeObject* {
+        const auto local=nextVm.find(key);if(local!=nextVm.end())return local->second;
+        const auto live=persistentVmObjects.find(key);return live==persistentVmObjects.end()?nullptr:live->second;
+    };
     const auto index=[&](RuntimeObject* object) {
-        if(!nextQualified.emplace(object->reflection.objectPath,object).second ||
+        if(persistentQualifiedObjects.count(object->reflection.objectPath)||indexed(LowerAscii(object->reflection.objectPath))||
+            !nextQualified.emplace(object->reflection.objectPath,object).second ||
             !nextVm.emplace(LowerAscii(object->reflection.objectPath),object).second)
             throw std::runtime_error("Native player/session UObject identity collision");
     };
@@ -14084,9 +14222,7 @@ PortablePlayerSessionSnapshot PreparePortableRuntimePlayerObjects(const std::uin
     const auto nativeClass=[&](const char* path,RuntimeObject* base) {
         if(IsContextExcludedPath(path))
             throw std::runtime_error("Native player registration cannot replace a context-excluded source UClass");
-        const auto found=nextVm.find(LowerAscii(path));
-        if(found!=nextVm.end()) {
-            auto* cls=found->second;
+        if(auto* cls=indexed(LowerAscii(path))) {
             if(!cls->classDescriptor && !cls->nativeClientClass)
                 throw std::runtime_error("Native player class registration collides with a non-UClass");
             if(!IsDerivedFromPath(cls,base->reflection.objectPath))
@@ -14130,7 +14266,20 @@ PortablePlayerSessionSnapshot PreparePortableRuntimePlayerObjects(const std::uin
     std::vector<RuntimeObject*> lookupObjects;
     for(const auto& object:allocations) lookupObjects.push_back(object.get());
     auto lookup=StageRuntimeLookupObjects(lookupObjects);
-    if(lookup) host.ValidateLookupStagingBudget(*lookup);
+    decltype(persistentQualifiedObjects) replacementQualified;decltype(persistentVmObjects) replacementVm;
+    replacementQualified.max_load_factor(persistentQualifiedObjects.max_load_factor());
+    replacementVm.max_load_factor(persistentVmObjects.max_load_factor());
+    replacementQualified.reserve(persistentQualifiedObjects.size()+nextQualified.size());
+    replacementVm.reserve(persistentVmObjects.size()+nextVm.size());
+    using QuestVr::DecalStateDetail::Add;
+    std::size_t extra=(classes.capacity()+viewports.capacity()+lookupObjects.capacity())*sizeof(RuntimeObject*)+
+        allocations.capacity()*sizeof(GCRoot<RuntimeObject>)+allocations.size()*sizeof(GCRootNode)+sizeof(GCRootNode);
+    if(!persistentPlayerSession)extra=Add(extra,sizeof(RuntimePlayerSession)+sizeof(GCAllocation)+sizeof(GCRoot<RuntimePlayerSession>)+sizeof(GCRootNode));
+    for(const auto& object:allocations)extra=Add(extra,NativeSessionObjectBytes(object.get()));
+    if(lookup)extra=Add(extra,lookup->RetainedBytes());
+    extra=Add(extra,(persistentQualifiedObjects.bucket_count()+persistentVmObjects.bucket_count()+nextQualified.bucket_count()+
+        nextVm.bucket_count()+replacementQualified.bucket_count()+replacementVm.bucket_count())*sizeof(void*));
+    host.ValidateAdditionalPackageBudget(extra);
     RuntimeObject* engineClientOwner{};
     if(persistentEngineCollision) {
         engineClientOwner=persistentEngineCollision->get()->engine;
@@ -14141,12 +14290,17 @@ PortablePlayerSessionSnapshot PreparePortableRuntimePlayerObjects(const std::uin
     }
     // All allocations/index copies complete before this publication interval.
     PublishRuntimeLookupObjects(lookup,lookupObjects);
-    persistentQualifiedObjects.swap(nextQualified);persistentVmObjects.swap(nextVm);
+    replacementQualified.merge(persistentQualifiedObjects);replacementQualified.merge(nextQualified);
+    replacementVm.merge(persistentVmObjects);replacementVm.merge(nextVm);
+    if(!persistentQualifiedObjects.empty()||!persistentVmObjects.empty()||!nextQualified.empty()||!nextVm.empty())std::terminate();
+    persistentQualifiedObjects.swap(replacementQualified);persistentVmObjects.swap(replacementVm);
     session->classes.swap(classes);session->viewports.swap(viewports);session->client=client;
     if(newOwner) persistentPlayerSession=std::move(newOwner);
     if(engineClientOwner)engineClientOwner->nativeEngineInstance->values.client=client;
     return ReadPortableRuntimePlayerSession(viewportIdentity);
 }
+
+#include "portable_viewport_input.inl"
 
 QuestVr::Vm::Result SetPortableRuntimePlayer(const std::uint64_t viewportIdentity,
     const std::string& actorPath,const QuestVr::Vm::Limits& limits) {

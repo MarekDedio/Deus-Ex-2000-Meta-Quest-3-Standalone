@@ -831,6 +831,7 @@ private:
         case Vm::Kind::IntArray:
             if (version_<DecalStateVersion) Fail("dynamic integer array requires codec10");
             budget_.IntArrayElements(value.intArray.size());
+            budget_.Retain(value.intArray.ContainerBytes());
             budget_.Array(value.intArray.size(),sizeof(std::int32_t));
             Byte(static_cast<std::uint8_t>(Tag::IntArray)); Count(value.intArray.size());
             for (const auto element : value.intArray) U32(static_cast<std::uint32_t>(element));
@@ -1368,6 +1369,7 @@ private:
             hasIntArrays_=true; value.kind=Vm::Kind::IntArray;
             const auto count=U32(); budget_.IntArrayElements(count);
             if (count>Remaining()/4u) Fail("dynamic integer-array count exceeds encoded payload");
+            if(count)budget_.Retain(sizeof(Vm::IntArrayStorage::Storage));
             budget_.Array(count,sizeof(std::int32_t));
             if constexpr(Materialize) value.intArray.reserve(count);
             for (std::uint32_t i=0u;i<count;++i) {

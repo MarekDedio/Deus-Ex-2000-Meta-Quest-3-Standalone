@@ -11,6 +11,7 @@
 #include "portable_startup_weapon_types.h"
 #include "quest_native_tile_layout.h"
 #include "portable_input_schema.h"
+#include "portable_viewport_input.h"
 
 #include <cstddef>
 #include <cstdint>

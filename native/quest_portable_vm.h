@@ -1,6 +1,7 @@
 #pragma once
 
 #include "quest_native_work.h"
+#include "quest_vm_int_array_storage.h"
 
 // Bounded execution of the loader's fixed-width UE1 bytecode. This is not a
 // replacement script language: unsupported opcodes/natives fail transactionally.
@@ -28,7 +29,7 @@ struct Value {
     std::array<std::int32_t, 3> rotation{};
     // Whole native INT-array values only. This does not establish script
     // dynamic indexing or support arrays with any other element type.
-    std::vector<std::int32_t> intArray;
+    IntArrayStorage intArray;
     std::map<std::string, Value> fields;
     static Value Integer(std::int32_t n);
     static Value Byte(std::uint8_t n);

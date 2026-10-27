@@ -600,6 +600,9 @@ int Run(const fs::path& root,const std::optional<std::string>& expected,unsigned
     auto lifetime=std::make_shared<QuestVr::NativeClientLifetime>();BindPortableRuntimeClient(lifetime,Client);
     RegisterPortableRuntimeViewport(Client,{Viewport,1024u,1152u,3u,2u});
     Require(!PreparePortableRuntimePlayerObjects(Viewport).bound,"Startup diagnostic forced player possession");
+    const auto input=PreparePortableRuntimeViewportInput(Viewport,PortableInputLoggingProfile::Ordinary);
+    Require(input.constructed&&input.execInstalled&&!input.initialized&&!input.nativeViewportIndex,
+        "Cannot construct the real configured viewport Input without prematurely executing Init");
     const auto loaded=LoadPortableRuntimeMap(map);
     Require(loaded.passed,"Cannot load actual first Training map");
     Require(loaded.exports==1356u&&loaded.contextExcludedExports==1991u&&loaded.actors==312u,

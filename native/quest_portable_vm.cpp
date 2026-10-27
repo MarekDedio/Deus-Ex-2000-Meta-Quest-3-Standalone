@@ -1356,7 +1356,10 @@ private:
         if (v.intArray.size() > limits_.intArrayElements || v.intArray.capacity() > limits_.intArrayElements ||
             v.intArray.capacity() > limits_.retainedBytes / sizeof(std::int32_t))
             Fail(Status::Budget, "VM dynamic INT-array storage limit");
-        return v.intArray.capacity() * sizeof(std::int32_t);
+        const auto bytes=v.intArray.capacity()*sizeof(std::int32_t);
+        if(v.intArray.ContainerBytes()>limits_.retainedBytes-bytes)
+            Fail(Status::Budget,"VM dynamic INT-array container byte limit");
+        return bytes+v.intArray.ContainerBytes();
     }
     std::size_t ValueOwnBytes(const Value& v) {
         const auto arrayBytes = IntArrayBytes(v);

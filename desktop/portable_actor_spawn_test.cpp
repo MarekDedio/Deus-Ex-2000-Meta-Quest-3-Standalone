@@ -3055,7 +3055,8 @@ void DecalNativeSynthetic() {
         refusedNative(fixture,"Positive floor attachment followed by unsupported instruction","AttachThenFail");
         QuestVr::Vm::Limits tight; tight.writes=1u;
         refusedNative(fixture,"Positive floor attachment followed by script write budget","AttachThenWrites",{},tight);
-        tight={}; tight.retainedBytes=128u;
+        // Remain below one VM Value even when scalar payload storage shrinks.
+        tight={}; tight.retainedBytes=sizeof(Value)-1u;
         refusedNative(fixture,"Positive floor attachment retained byte budget","AttachDecal",{{Value::Float(100.0f),{}}},tight);
         const auto beforeRevoke=fixture.Snapshot("BeforePositiveNativeRevoke");
         const auto revokeRevision=GetPortableRuntimeWorldRevision(); const auto revokeGc=GC::GetStats();

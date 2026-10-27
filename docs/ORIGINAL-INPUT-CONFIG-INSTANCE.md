@@ -2,8 +2,9 @@
 
 The explicit immutable User.ini/default-import portion is now implemented in
 portable_input_config.inl; owned integration passes34355 checks/1357 refusals. See
-ORIGINAL-INPUT-CONFIG-DEFAULTS.md. The constructor, FExec and ReadInput portions
-below remain read-only next-step evidence, not implemented acceptance. First
+ORIGINAL-INPUT-CONFIG-DEFAULTS.md. Constructor-only Input/InputExt, viewport owning
+edges and key-query FExec are now implemented in ORIGINAL-VIEWPORT-INPUT.md.
+Init/reset, remaining FExec and ReadInput below remain next-step evidence. First
 Training is the integration target; no account or character-creation screen is needed.
 
 Owned Core/Extension hashes are recorded in ORIGINAL-PLAYER-INPUT-CONSOLE.md.
