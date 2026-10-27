@@ -1,5 +1,9 @@
 # Original Input field/default phase (2026-10-27)
 
+Follow-up: explicit User.ini configuration of these real defaults is now
+implemented and separately tested in ORIGINAL-INPUT-CONFIG-DEFAULTS.md. The
+pre-config statements below describe this earlier field/default phase alone.
+
 First Training only. The genuine native field/link/pre-config-default graph is
 implemented and verified against the read-only owned evidence below. It is
 NOT configured Input, an instance, FExec or ReadInput. The preceding two-UClass

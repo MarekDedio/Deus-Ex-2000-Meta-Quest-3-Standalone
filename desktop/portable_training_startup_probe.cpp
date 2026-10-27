@@ -591,6 +591,12 @@ int Run(const fs::path& root,const std::optional<std::string>& expected,unsigned
         PreparePortableRuntimeObjectLookup().prepared&&PreparePortableRuntimeEngineCollision(ini).prepared&&
         PreparePortableRuntimeInputSchema().prepared,
         "Cannot prepare genuine Engine/metadata/config/Package/Input/lookup/Cylinder/Input-schema prerequisites");
+    const auto inputConfig=PreparePortableRuntimeInputConfig(userIni.string());
+    Require(inputConfig.configApplied&&inputConfig.configPasses==3u,
+        "Cannot configure actual Input/InputExt defaults from the explicit owned User.ini");
+    std::cout<<"INPUT CONFIG parent-first passes="<<inputConfig.configPasses<<" imports="<<inputConfig.configImports
+        <<" failures="<<inputConfig.configFailures<<" warnings="<<inputConfig.configWarnings
+        <<"; real native CDO payloads, NOT an Input instance or live controller acceptance\n";
     auto lifetime=std::make_shared<QuestVr::NativeClientLifetime>();BindPortableRuntimeClient(lifetime,Client);
     RegisterPortableRuntimeViewport(Client,{Viewport,1024u,1152u,3u,2u});
     Require(!PreparePortableRuntimePlayerObjects(Viewport).bound,"Startup diagnostic forced player possession");

@@ -1,5 +1,35 @@
 # Port status
 
+## Latest: original User.ini input defaults configured (2026-10-27)
+
+The real native Input/InputExt CDOs now import an explicit immutable User.ini:
+actual Config links, parent-first same-receiver propagation, configured parent
+copy,40 typed Alias records and255 genuine raw-key properties. Original malformed
+struct prefix-write/continuation, native GetString truncation, empty/whitespace
+values and FName identity rules are retained. Publication preserves existing
+default-object/index/lookup identities, actor state and save formats. The retained
+document and old-plus-staged payload/snapshot peak stay within existing budgets.
+
+Owned combined schema/config34355 checks/1357 refusals and Input-class10413/38
+pass. Desktop full build, Android native link and strict GNU/ARM64 pass. CTest
+registers260:219 executed,41 explicit owned-data skips,zero failures82.60s.
+Separate owned crate415/5, deferred429/21, animation588/24, FastTrace252/0,
+first-Training materials and1232 door/save route checks pass.
+Final audit confirms all45 original files and10 frozen compiler inputs unchanged
+by length/mtime/SHA256, with all compiler/test/probe jobs terminal.
+
+Actual first-Training normal, door and two-crowbar cold/warm repeat2 diagnostics
+now load404 binding entries without failures/warnings. They retain their previous
+precise unsupported Input/FExec boundary, original two crate changes/nine births,
+both original door moves and whole-root rollback. No partial player/world is
+published. No other map or commercial executable was run; no new APK was packaged.
+
+This is a required input dependency, NOT completed live crate gameplay. Actual
+Input construction/viewport ownership and key-query FExec are next, followed by
+the remaining startup/input services and committing VR weapon/frame publication.
+No account login or character-creation UI is being added. See
+ORIGINAL-INPUT-CONFIG-DEFAULTS.md and TRAINING-FIRST-PRIORITY.md.
+
 ## Original Input field/default graph verified (2026-10-27)
 
 The real native Alias Struct,258 properties (including all255 raw-key fields),

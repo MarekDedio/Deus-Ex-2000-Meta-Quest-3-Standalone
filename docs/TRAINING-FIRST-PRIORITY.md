@@ -1,8 +1,20 @@
 # Immediate milestone: complete the first Training map
 
+Latest2026-10-27: explicit immutable User.ini now configures the real Input and
+InputExt defaults through actual Config links and native typed Alias/key imports.
+Owned combined schema/config34355 checks/1357 refusals, class10413/38, desktop/
+Android-native/strict checks and CTest219 executed/260 registered/41 skips/zero
+failures82.60s pass. Owned crate415/5,deferred429/21,animation588/24,FastTrace252/0,
+Training materials and1232 door/save route checks remain green. Normal/doors/
+two-Fire repeat2 preserve exact unsupported boundaries and full undo after404
+real config imports without failures/warnings. Constructor/viewport Input,
+FExec/ReadInput and the live committing weapon/frame bridge remain pending.
+No account/character-creation UI, other-map integration or new APK. See
+ORIGINAL-INPUT-CONFIG-DEFAULTS.md for implementation and verification evidence.
+
 ## Required live crate bridge (current-source audit, 2026-10-26)
 
-Latest2026-10-27: real native Input Alias/255-key fields/five defaults/links
+Earlier field-only stage2026-10-27: real native Input Alias/255-key fields/five defaults/links
 now pass26262 owned checks/1342 refusals with configApplied=false. Lazy native
 payload storage resolves joint schema/HUD32MiB pressure without raising the
 cap; original cold/warm two-Fire again reaches its prior FExec boundary with

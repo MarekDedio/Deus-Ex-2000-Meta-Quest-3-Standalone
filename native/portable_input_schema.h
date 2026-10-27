@@ -39,6 +39,8 @@ struct PortableInputNativeStructSnapshot {
 };
 struct PortableInputSchemaSnapshot {
     bool prepared{},defaultsPrepared{},configApplied{};
+    std::string configSourcePath;
+    std::size_t configPasses{},configImports{},configFailures{},configWarnings{},configWork{};
     std::string keyEnumPath;
     std::uint32_t keyEnumIndex{};
     std::size_t retainedBytes{};
@@ -55,3 +57,10 @@ struct PortableInputSchemaSnapshot {
 // FExec/ReadInput, world startup or gameplay success is implied.
 PortableInputSchemaSnapshot PreparePortableRuntimeInputSchema();
 PortableInputSchemaSnapshot ReadPortableRuntimeInputSchema();
+
+// Explicit immutable User.ini binding to the real Input/InputExt defaults.
+// Imports parent-first through their genuine native Config links; keeps CDO
+// identities and malformed-struct prefix writes. Same-source calls use the
+// committed document, not fresh disk reads. Does not construct/Init Input or
+// claim ReadInput, startup or live weapon/physics support.
+PortableInputSchemaSnapshot PreparePortableRuntimeInputConfig(const std::string& userIniPath);

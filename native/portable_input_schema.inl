@@ -24,7 +24,8 @@ using InputSchemaLinkPlans=std::array<InputSchemaLinkPlan,3u>;
 // only Class.defaultObject/Children/heads and the unique-name counter need a
 // staged view. Nothing calls a retail DLL or an instance InternalConstructor.
 PortableInputSchemaSnapshot InputSchemaSnapshot(const RuntimeNativeInputDomain& domain,
-    const InputSchemaLinkPlans* staged=nullptr,const std::int32_t* stagedCounter=nullptr) {
+    const InputSchemaLinkPlans* staged=nullptr,const std::int32_t* stagedCounter=nullptr,
+    const InputConfigPayloads* stagedPayloads=nullptr,const RuntimeNativeInputConfig* stagedConfig=nullptr) {
     if(domain.defaults.size()!=5u||domain.defaultClasses.size()!=5u||domain.fields.size()!=258u||
         !domain.inputClass||!domain.inputExtClass||!domain.keyEnum||!domain.aliasStruct||
         domain.defaultClasses[3u]!=domain.inputClass||domain.defaultClasses[4u]!=domain.inputExtClass)
@@ -45,9 +46,16 @@ PortableInputSchemaSnapshot InputSchemaSnapshot(const RuntimeNativeInputDomain& 
     std::set<std::uint32_t> indices;
     indices.insert(alias->objectIndex.Index());
     PortableInputSchemaSnapshot result;
-    result.prepared=true;result.defaultsPrepared=true;result.configApplied=false;
+    const auto* config=stagedConfig?stagedConfig:domain.config.get();
+    result.prepared=true;result.defaultsPrepared=true;result.configApplied=config!=nullptr;
+    if(config) {
+        if(config->sourcePath.empty()||config->passes!=3u||!config->work||config->failures>config->imports)
+            throw std::runtime_error("Native Input config lost its explicit document/import authority");
+        result.configSourcePath=config->sourcePath;result.configPasses=config->passes;result.configImports=config->imports;
+        result.configFailures=config->failures;result.configWarnings=config->warnings;result.configWork=config->work;
+    }
     result.keyEnumPath=enumeration.objectPath;result.keyEnumIndex=enumeration.objectIndex;
-    result.retainedBytes=InputSchemaRetainedBytes(domain);
+    result.retainedBytes=InputSchemaRetainedBytes(domain,stagedPayloads,stagedConfig);
     auto* stringClass=host.Object("Core.StrProperty");
     result.strPropertyUniqueCounter=stagedCounter?*stagedCounter:stringClass->uniqueObjectCounter;
     result.aliasStruct={alias->reflection.objectPath,alias->cls->reflection.objectPath,alias->outer->reflection.objectPath,
@@ -67,7 +75,10 @@ PortableInputSchemaSnapshot InputSchemaSnapshot(const RuntimeNativeInputDomain& 
             !indices.insert(object->objectIndex.Index()).second||(!staged&&cls->defaultObject!=object)||
             (staged&&cls->defaultObject))
             throw std::runtime_error("Native Input pre-config default Class/header authority is invalid");
-        const auto& payload=*object->preparedNativeDefaults;
+        const auto* selected=object->preparedNativeDefaults.get();
+        if(stagedPayloads&&i>=3u)selected=(*stagedPayloads)[i-3u];
+        if(!selected)throw std::runtime_error("Native Input config lacks its staged typed default payload");
+        const auto& payload=*selected;
         if(payload.kind!=profile.kind||payload.owner!=cls||payload.superDefault!=superDefault||!superDefault||
             payload.nativeSize!=profile.size||payload.classFlags!=profile.flags||payload.propertyDimension||payload.propertyElementSize||
             payload.propertyFlags||payload.propertyOffset||payload.structPropertiesSize||!payload.structFriendlyName.IsNone()||
@@ -85,16 +96,16 @@ PortableInputSchemaSnapshot InputSchemaSnapshot(const RuntimeNativeInputDomain& 
         if(payload.input) {
             const auto& input=*payload.input;
             if(input.viewport||input.keyEnum||input.execInstalled)
-                throw std::runtime_error("Pre-config Input defaults contain invented instance Enum/Viewport/FExec state");
+                throw std::runtime_error("Input defaults contain invented instance Enum/Viewport/FExec state");
             snapshot.execInstalled=input.execInstalled;snapshot.viewportIndex=input.viewport?input.viewport->objectIndex.Index():0u;
             snapshot.enumIndex=input.keyEnum?input.keyEnum->objectIndex.Index():0u;
             for(std::size_t slot=0u;slot<input.aliases.size();++slot) {
                 const auto& value=input.aliases[slot];
-                if(!value.alias.IsNone()||!value.command.empty())throw std::runtime_error("Pre-config Alias defaults were changed or imported");
+                if(!config&&(!value.alias.IsNone()||!value.command.empty()))throw std::runtime_error("Pre-config Alias defaults were changed or imported");
                 snapshot.aliases[slot]={value.alias.ToString(),value.command,value.alias.GetCompareIndex()};
             }
             for(std::size_t slot=0u;slot<input.bindings.size();++slot) {
-                if(!input.bindings[slot].empty())throw std::runtime_error("Pre-config Input bindings were changed or imported");
+                if(!config&&!input.bindings[slot].empty())throw std::runtime_error("Pre-config Input bindings were changed or imported");
                 snapshot.bindings[slot]=input.bindings[slot];
             }
         }
@@ -199,6 +210,7 @@ std::size_t InputSchemaSnapshotBytes(const PortableInputSchemaSnapshot& value) {
         for(const auto& alias:row.aliases) {text(alias.alias);text(alias.command);}for(const auto& binding:row.bindings)text(binding);
     }
     for(const auto& row:value.links) {text(row.ownerPath);text(row.childrenPath);for(const auto& head:row.heads)text(head);}
+    text(value.configSourcePath);
     return bytes;
 }
 } // namespace

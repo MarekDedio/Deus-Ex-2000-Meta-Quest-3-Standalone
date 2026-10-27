@@ -1,9 +1,10 @@
 # Remaining configured Input and InputExt instance contract (2026-10-27)
 
-Read-only owned evidence for the next input phase, not implemented constructor,
-configuration, FExec or ReadInput acceptance. The preceding native schema/default
-phase remains explicitly pre-config. First Training is the integration target;
-no account or character-creation screen is needed.
+The explicit immutable User.ini/default-import portion is now implemented in
+portable_input_config.inl; owned integration passes34355 checks/1357 refusals. See
+ORIGINAL-INPUT-CONFIG-DEFAULTS.md. The constructor, FExec and ReadInput portions
+below remain read-only next-step evidence, not implemented acceptance. First
+Training is the integration target; no account or character-creation screen is needed.
 
 Owned Core/Extension hashes are recorded in ORIGINAL-PLAYER-INPUT-CONSOLE.md.
 Only static PE/package inspection was used; never load or execute commercial

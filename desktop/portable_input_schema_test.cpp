@@ -21,7 +21,7 @@
 #include <vector>
 
 // Owned source is read as data only. This proves the native Input schema and
-// pre-config defaults, not User.ini import, Input instances, viewport Init,
+// pre-config defaults and explicit User.ini import, not Input instances, viewport Init,
 // ResetInput, ReadInput, begun Training or live VR weapon/physics behavior.
 namespace {
 namespace fs=std::filesystem;
@@ -86,6 +86,17 @@ struct Temporary {
         Require(SavePortableRuntimeState(path.string()),"Cannot save Input schema checkpoint");
         Bytes bytes;Require(QuestVr::ReadBoundedSaveFile(path.string(),QuestVr::kMaximumSaveRuntimeBytes,bytes),"Cannot read Input schema checkpoint");return bytes;
     }
+    fs::path Write(const std::string& leaf,const std::string& text) {
+        Require(!leaf.empty()&&leaf.find_first_of("/\\:")==std::string::npos,"Invalid isolated Input config leaf");
+        const auto path=directory/leaf;Require(path.parent_path()==directory,"Input config write escaped its isolated directory");
+        if(std::find(files.begin(),files.end(),path)==files.end())files.push_back(path);
+        std::ofstream file(path,std::ios::binary|std::ios::trunc);Require(bool(file),"Cannot write isolated Input config");
+        file.write(text.data(),static_cast<std::streamsize>(text.size()));file.close();Require(bool(file),"Cannot finish isolated Input config");return path;
+    }
+    void Remove(const fs::path& path) {
+        Require(path.parent_path()==directory&&std::find(files.begin(),files.end(),path)!=files.end(),"Input config removal escaped tracked isolated files");
+        Require(fs::remove(path),"Cannot remove tracked isolated Input config");
+    }
 };
 void SameGc(const GCStats& expected,const std::string& why) {
     const auto actual=GC::GetStats();Require(actual.numObjects==expected.numObjects&&actual.memoryUsage==expected.memoryUsage,why);
@@ -95,7 +106,8 @@ bool SameLookup(const PortableObjectLookupState& a,const PortableObjectLookupSta
 }
 void Empty(const PortableInputSchemaSnapshot& value) {
     Require(!value.prepared&&!value.defaultsPrepared&&!value.configApplied&&value.fields.empty()&&value.defaults.empty()&&value.links.empty()&&
-        value.aliasStruct.objectPath.empty()&&!value.aliasStruct.objectIndex&&value.keyEnumPath.empty()&&!value.keyEnumIndex&&!value.retainedBytes,
+        value.aliasStruct.objectPath.empty()&&!value.aliasStruct.objectIndex&&value.keyEnumPath.empty()&&!value.keyEnumIndex&&!value.retainedBytes&&
+        value.configSourcePath.empty()&&!value.configPasses&&!value.configImports&&!value.configFailures&&!value.configWarnings&&!value.configWork,
         "Unprepared Input schema exposed a partial native graph/default/config state");
 }
 void SameField(const PortableInputSchemaFieldSnapshot& a,const PortableInputSchemaFieldSnapshot& b) {
@@ -118,6 +130,8 @@ void SameDefault(const PortableInputDefaultSnapshot& a,const PortableInputDefaul
 }
 void SameSnapshot(const PortableInputSchemaSnapshot& a,const PortableInputSchemaSnapshot& b) {
     Require(a.prepared==b.prepared&&a.defaultsPrepared==b.defaultsPrepared&&a.configApplied==b.configApplied&&
+        a.configSourcePath==b.configSourcePath&&a.configPasses==b.configPasses&&a.configImports==b.configImports&&
+        a.configFailures==b.configFailures&&a.configWarnings==b.configWarnings&&a.configWork==b.configWork&&
         a.keyEnumPath==b.keyEnumPath&&a.keyEnumIndex==b.keyEnumIndex&&a.retainedBytes==b.retainedBytes&&
         a.strPropertyUniqueCounter==b.strPropertyUniqueCounter&&a.fields.size()==b.fields.size()&&a.defaults.size()==b.defaults.size()&&
         a.links.size()==b.links.size(),"Input schema state, retained accounting, counter or graph counts changed");
@@ -422,6 +436,8 @@ void MissingPhases(const std::vector<PortablePackageTables>& packages,const std:
         const auto collision=ReadPortableRuntimeEngineCollision();const auto packageState=ReadPortableRuntimeNativePackages();
         const auto schema=ReadPortableRuntimeInputSchema();Empty(schema);
         Refused([&]{(void)PreparePortableRuntimeInputSchema();},"Input schema silently prepared a missing explicit native prerequisite");
+        Refused([&]{(void)PreparePortableRuntimeInputConfig((fs::path(ini).parent_path()/"User.ini").string());},
+            "Input config silently constructed its missing actual schema/default prerequisite");
         SameSnapshot(schema,ReadPortableRuntimeInputSchema());
         Require(!ReadPortableRuntimeEngineCollision().prepared&&SameLookup(lookup,ReadPortableRuntimeObjectLookup()),
             "Missing-phase Input refusal changed collision/lookup publication");
@@ -433,6 +449,139 @@ void MissingPhases(const std::vector<PortablePackageTables>& packages,const std:
             "Missing-phase Input refusal changed checkpoint/revision/world");
     }
     Require(PreparePortableRuntimeEngineCollision(ini).prepared,"Cannot prepare explicit genuine collision/default prerequisite");
+}
+void SameConfigGraph(const PortableInputSchemaSnapshot& before,const PortableInputSchemaSnapshot& configured) {
+    auto graph=configured;
+    graph.configApplied=before.configApplied;graph.configSourcePath=before.configSourcePath;
+    graph.configPasses=before.configPasses;graph.configImports=before.configImports;graph.configFailures=before.configFailures;
+    graph.configWarnings=before.configWarnings;graph.configWork=before.configWork;graph.retainedBytes=before.retainedBytes;
+    Require(graph.defaults.size()==before.defaults.size(),"Config replaced native default graph cardinality");
+    for(std::size_t i=0u;i<graph.defaults.size();++i) {
+        graph.defaults[i].aliases=before.defaults[i].aliases;graph.defaults[i].bindings=before.defaults[i].bindings;
+    }
+    SameSnapshot(before,graph);
+}
+void ConfigState(const PortableInputSchemaSnapshot& value,const fs::path& path,bool ordinaryFailure=false) {
+    Require(value.prepared&&value.defaultsPrepared&&value.configApplied&&
+        value.configSourcePath==fs::absolute(path).lexically_normal().string()&&value.configPasses>=3u&&
+        value.configImports>0u&&value.configWork>0u,"Input config is not a committed explicit-source parent-first native CDO service");
+    if(!ordinaryFailure)Require(!value.configFailures&&!value.configWarnings,"Valid owned Input configuration produced native import failures/warnings");
+    for(const auto* cls:{"Engine.Input","Extension.InputExt"}) {
+        const auto& row=Default(value,cls);
+        Require(row.hasInputValues&&!row.enumIndex&&!row.viewportIndex&&!row.execInstalled,
+            "Config import manufactured Input-instance Enum/Viewport/FExec state in CDOs");
+        for(std::uint32_t slot=0u;slot<40u;++slot) {
+            const auto actual=ReadPortableClassDefault(cls,"Aliases",slot);const auto& expected=row.aliases[slot];
+            const auto alias=actual.fields.find("alias"),command=actual.fields.find("command");
+            Require(actual.kind==Kind::Struct&&actual.fields.size()==2u&&alias!=actual.fields.end()&&command!=actual.fields.end()&&
+                alias->second.kind==Kind::Name&&alias->second.text==expected.alias&&command->second.kind==Kind::String&&
+                command->second.text==expected.command&&NameString::FindCompareIndex(expected.alias)==std::optional<int>{expected.aliasCompareIndex},
+                "Configured native Alias snapshot does not match genuine typed default/FName storage");
+        }
+        for(std::size_t key=0u;key<255u;++key) {
+            const auto& field=value.fields[key+3u].field;const auto leaf=field.objectPath.substr(field.objectPath.rfind('.')+1u);
+            const auto actual=ReadPortableClassDefault(cls,leaf);
+            Require(actual.kind==Kind::String&&actual.text==row.bindings[key],"Configured raw binding differs from actual typed native default storage");
+        }
+    }
+}
+void ConfigTests(const fs::path& root,const PortablePackageTables& map,Temporary& temporary) {
+    const auto before=ReadPortableRuntimeInputSchema();Require(before.prepared&&!before.configApplied,"Owned config fixture did not start pre-config");
+    const auto checkpoint=temporary.Snapshot("ConfigOwnedBefore");const auto world=WorldPaths();const auto revision=GetPortableRuntimeWorldRevision();
+    const auto lookup=ReadPortableRuntimeObjectLookup();const auto gc=GC::GetStats();
+    const std::array<std::string,5u> invalid{"",temporary.directory.string(),(temporary.directory/"MissingUser.ini").string(),
+        std::string("invalid\0User.ini",16u),std::string(8193u,'x')};
+    for(std::size_t i=0u;i<invalid.size();++i) {
+        Refused([&]{(void)PreparePortableRuntimeInputConfig(invalid[i]);},"Missing/invalid explicit User.ini path was silently accepted");
+        SameSnapshot(before,ReadPortableRuntimeInputSchema());
+        Require(SameLookup(lookup,ReadPortableRuntimeObjectLookup())&&GetPortableRuntimeWorldRevision()==revision&&WorldPaths()==world,
+            "Refused explicit Input config changed schema lookup/world/revision");
+        GC::Collect();SameGc(gc,"Refused Input config leaked native objects/default identities");
+        Require(temporary.Snapshot("ConfigPathAfter"+std::to_string(i))==checkpoint,"Refused User.ini path changed whole dormant checkpoint");
+    }
+    const auto user=root/"System"/"User.ini";const auto configured=PreparePortableRuntimeInputConfig(user.string());
+    ConfigState(configured,user);SameConfigGraph(before,configured);
+    const auto& input=Default(configured,"Engine.Input");const auto& extension=Default(configured,"Extension.InputExt");
+    Require(input.aliases[0u].alias=="Fire"&&input.aliases[0u].command=="Button bFire | Fire"&&
+        input.aliases[1u].alias=="MoveForward"&&input.aliases[1u].command=="Axis aBaseY  Speed=+300.0"&&
+        input.aliases[39u].alias=="None"&&input.aliases[39u].command.empty(),"Owned forty-record Alias config did not populate original Fire/Forward/None values");
+    Require(input.bindings[1u]=="ParseLeftClick|Fire"&&input.bindings[38u]=="MoveForward"&&input.bindings[87u]=="MoveForward"&&
+        input.bindings[112u]=="ShowInventoryWindow","Owned LeftMouse/Up/W/F1 binding config did not reach genuine native CDO storage");
+    Require(extension.aliases==input.aliases&&extension.bindings==input.bindings,
+        "Owned InputExt parent-first LoadConfig or configured-parent default copy discarded Engine.Input values");
+    for(unsigned repeat=0u;repeat<3u;++repeat) {
+        SameSnapshot(configured,PreparePortableRuntimeInputConfig((root/"System"/"."/"User.ini").string()));
+        SameSnapshot(configured,ReadPortableRuntimeInputSchema());GC::Collect();SameGc(gc,"Repeated Input config/read changed genuine native object graph");
+    }
+    Refused([&]{(void)PreparePortableRuntimeInputConfig((temporary.directory/"DifferentUser.ini").string());},"Prepared config rebound silently to another explicit path");
+    SameSnapshot(configured,ReadPortableRuntimeInputSchema());
+    auto detached=configured;detached.configSourcePath="Detached";detached.configWork=0u;
+    detached.defaults[3u].aliases[0u].command="Detached";detached.defaults[4u].bindings[1u]="Detached";
+    SameSnapshot(configured,ReadPortableRuntimeInputSchema());
+    Require(SameLookup(lookup,ReadPortableRuntimeObjectLookup())&&GetPortableRuntimeWorldRevision()==revision&&WorldPaths()==world&&
+        temporary.Snapshot("ConfigOwnedAfter")==checkpoint&&ReadPortableRuntimeLevelTime()==0.0&&!GetPortableRuntimeUnsavedScriptState(),
+        "Input config changed dormant actor/save/lookup/clock/dirty/revision state");Dormant();
+    Require(LoadPortableRuntimeState((temporary.directory/"ConfigOwnedBefore.sav").string()),"Cannot warm-restore checkpoint with configured Input CDOs");
+    SameSnapshot(configured,ReadPortableRuntimeInputSchema());GC::Collect();SameGc(gc,"Warm restore lost or duplicated configured Input graph");
+    Require(temporary.Snapshot("ConfigOwnedWarm")==checkpoint,"Warm restore serialized or overwrote native User.ini defaults");Dormant();
+    Require(UnloadPortableRuntimeMap()>0u,"Cannot unload configured first Training map");GC::Collect();
+    SameSnapshot(configured,ReadPortableRuntimeInputSchema());
+    Require(LoadPortableRuntimeMap(map).passed,"Cannot reload first Training with configured Input CDOs");
+    SameSnapshot(configured,ReadPortableRuntimeInputSchema());ConfigState(configured,user);
+    Require(temporary.Snapshot("ConfigOwnedReload")==checkpoint&&WorldPaths()==world,"Configured Input CDO lifetime contaminated reloaded Training state");Dormant();
+}
+void ConfigFixtures(const fs::path& root,const std::vector<PortablePackageTables>& packages,const PortablePackageTables& map,Temporary& temporary) {
+    Require(InitializePortableRuntime(packages).passed&&PreparePortableRuntimeNativeEngineClasses().prepared&&
+        PreparePortableRuntimeNativeMetadataClasses().prepared&&PreparePortableRuntimeNativeConfigClasses().prepared&&
+        PreparePortableRuntimeNativePackages().prepared&&PreparePortableRuntimeNativeInputClasses().prepared&&
+        PreparePortableRuntimeObjectLookup().prepared&&PreparePortableRuntimeEngineCollision((root/"System"/"DeusEx.ini").string()).prepared&&
+        PreparePortableRuntimeInputSchema().prepared,"Cannot prepare actual Input config fixture graph");
+    Require(LoadPortableRuntimeMap(map).passed,"Cannot load first Training for isolated Input config fixture");Dormant();
+    const auto before=ReadPortableRuntimeInputSchema();const auto checkpoint=temporary.Snapshot("ConfigFixtureBefore");
+    const auto lookup=ReadPortableRuntimeObjectLookup();const auto gc=GC::GetStats();const auto revision=GetPortableRuntimeWorldRevision();
+    const auto zeroPath=before.fields[3u].field.objectPath;const auto zeroKey=zeroPath.substr(zeroPath.rfind('.')+1u);
+    const std::string unknownMember="QuestConfigUnknownMemberNoIntern_20261027";
+    Require(!NameString::FindCompareIndex(unknownMember),"Unknown config-member fixture was already interned");
+    const auto user=temporary.Write("FixtureUser.ini",std::string("[Engine.Input]\n")+
+        "Aliases[0]=(Command=\"Prefix survives\",Alias[0]=Bad)\n"+
+        "Aliases[1]=(Command=\"Parent forward\",Alias=ParentForward)\n"+
+        "Aliases[2]=("+unknownMember+"=123,Command=\"After unknown\",Alias=AfterUnknown)\n"+
+        "Aliases[39]=(Command=\"\",Alias=None)\n"+
+        "LeftMouse=parent-old\nLeftMouse=parent-new\nW=parent-forward\nUnknown10F=owned-key239\n"+
+        "None=must-not-select-key-zero\n"+zeroKey+"=generated-zero-slot\n"+
+        "F1="+std::string(1100u,'x')+"\nF2=  spaces retained  | command  \nF3=parent-nonempty\n"+
+        "[Extension.InputExt]\nAliases[1]=(Command=\"Extension forward\",Alias=ExtensionForward)\nLeftMouse=extension-fire\nF3=\n");
+    const auto configured=PreparePortableRuntimeInputConfig(user.string());ConfigState(configured,user,true);SameConfigGraph(before,configured);
+    Require(configured.configFailures>0u&&configured.configWarnings>0u,"Malformed Alias did not preserve ordinary import failure/warning diagnostics");
+    const auto& input=Default(configured,"Engine.Input");const auto& extension=Default(configured,"Extension.InputExt");
+    for(const auto* values:{&input,&extension}) {
+        Require(values->aliases[0u].command=="Prefix survives"&&values->aliases[0u].alias=="None"&&values->aliases[0u].aliasCompareIndex==0,
+            "Malformed Alias erased an earlier member write or wrote its failed Name member");
+        Require(values->aliases[2u].command=="After unknown"&&values->aliases[2u].alias=="AfterUnknown",
+            "Unknown Alias member prevented continued actual native member traversal/import");
+        Require(values->bindings[0u]=="generated-zero-slot"&&values->bindings[87u]=="parent-forward"&&
+            values->bindings[239u]=="owned-key239"&&values->bindings[112u]==std::string(1023u,'x')&&
+            values->bindings[113u]=="  spaces retained  | command  ",
+            "Native config lost generated key0/name239, scalar truncation, raw whitespace or later-property continuation");
+    }
+    Require(input.aliases[1u].alias=="ParentForward"&&input.aliases[1u].command=="Parent forward"&&input.bindings[1u]=="parent-new"&&
+        input.bindings[114u]=="parent-nonempty","Input config did not keep latest scalar/parent-only values");
+    Require(extension.aliases[1u].alias=="ExtensionForward"&&extension.aliases[1u].command=="Extension forward"&&
+        extension.bindings[1u]=="extension-fire"&&extension.bindings[114u].empty(),
+        "InputExt did not load parent first into the same receiver, then apply explicit empty/current-section overrides");
+    Require(!NameString::FindCompareIndex(unknownMember),"FNAME_Find of unknown Alias member interned an unrecognized field");
+    Require(SameLookup(lookup,ReadPortableRuntimeObjectLookup())&&GetPortableRuntimeWorldRevision()==revision&&
+        temporary.Snapshot("ConfigFixtureAfter")==checkpoint,"Isolated Input config changed actor/save/lookup/revision state");
+    GC::Collect();SameGc(gc,"Config import allocated/replaced genuine schema/default UObject identities");
+    temporary.Write("FixtureUser.ini","[Engine.Input]\nAliases[0]=(Command=\"Changed file\",Alias=ChangedFile)\nLeftMouse=changed-file\n");
+    SameSnapshot(configured,PreparePortableRuntimeInputConfig(user.string()));SameSnapshot(configured,ReadPortableRuntimeInputSchema());
+    temporary.Remove(user);SameSnapshot(configured,ReadPortableRuntimeInputSchema());
+    SameSnapshot(configured,PreparePortableRuntimeInputConfig((temporary.directory/"."/"FixtureUser.ini").string()));
+    const auto incompatible=temporary.Write("OtherUser.ini","[Engine.Input]\nLeftMouse=other\n");
+    Refused([&]{(void)PreparePortableRuntimeInputConfig(incompatible.string());},"Committed Input config accepted an incompatible supplied path");
+    SameSnapshot(configured,ReadPortableRuntimeInputSchema());GC::Collect();SameGc(gc,"Cached config read/reprepare/path refusal changed actual native graph");
+    Require(temporary.Snapshot("ConfigFixtureCached")==checkpoint,"Cached configured Input defaults leaked into actor checkpoint");Dormant();
+    ShutdownPortableRuntime();Empty(ReadPortableRuntimeInputSchema());
 }
 void Original(const fs::path& root,const std::vector<PortablePackageTables>& packages,const PortablePackageTables& map,Temporary& temporary) {
     MissingPhases(packages,(root/"System"/"DeusEx.ini").string(),temporary);
@@ -492,6 +641,7 @@ void Original(const fs::path& root,const std::vector<PortablePackageTables>& pac
     SamePrerequisites(engine,metadata,config,inputClasses,collision);SamePackages(reloadedPackages,ReadPortableRuntimeNativePackages());
     GC::Collect();SameGc(reloadedGc,"Training reload lost/duplicated native Input schema/default roots");
     Require(temporary.Snapshot("OwnedReload")==checkpoint&&WorldPaths()==world&&ReadPortableRuntimeLevelTime()==0.0,"Training reload changed original dormant checkpoint");Dormant();
+    ConfigTests(root,map,temporary);
     ShutdownPortableRuntime();Empty(ReadPortableRuntimeInputSchema());
     for(const auto& row:prepared.fields)Refused([&]{(void)ReadPortableRuntimeObjectOwnership(row.field.objectPath);},"Shutdown retained a native Input schema identity");
     Refused([&]{(void)ReadPortableRuntimeObjectOwnership(prepared.aliasStruct.objectPath);},"Shutdown retained native Alias UStruct");
@@ -508,21 +658,24 @@ int main(int argc,char** argv) {
         if(root.empty()) {std::cout<<"SKIP owned native Input schema integration: use --game-root or DEUSEX_GAME_ROOT.\n";return 77;}
         root=fs::canonical(root);ShutdownPortableRuntime();GC::Collect();const auto baseline=GC::GetStats();Temporary temporary(root);
         Empty(ReadPortableRuntimeInputSchema());Refused([&]{(void)PreparePortableRuntimeInputSchema();},"Input schema accepted uninitialized runtime");
+        Refused([&]{(void)PreparePortableRuntimeInputConfig((root/"System"/"User.ini").string());},"Input config accepted uninitialized runtime");
         GC::Collect();SameGc(baseline,"No-runtime Input schema refusal leaked native objects");
         std::vector<Source> sources;std::vector<PortablePackageTables> packages;sources.emplace_back(root/"System"/"DeusEx.ini");
+        sources.emplace_back(root/"System"/"User.ini");
         for(const char* name:{"Core","Engine","DeusEx","Extension","ConSys","IpDrv","IpServer","UBrowser","UWindow",
             "Editor","Fire","MPCharacters","DeusExSounds","DeusExDeco","DeusExItems","DeusExCharacters"}) {
             sources.emplace_back(root/"System"/(std::string(name)+".u"));packages.push_back(LoadPortablePackageTables(sources.back().path.string()));
         }
         sources.emplace_back(root/"Maps"/"00_Training.dx");const auto map=LoadPortablePackageTables(sources.back().path.string());
-        Original(root,packages,map,temporary);ShutdownPortableRuntime();GC::Collect();
+        Original(root,packages,map,temporary);ConfigFixtures(root,packages,map,temporary);ShutdownPortableRuntime();GC::Collect();
         SameGc(baseline,"Input schema/default domain roots or allocation-index leases survived runtime shutdown");
         Empty(ReadPortableRuntimeInputSchema());Require(!ReadPortableRuntimeObjectLookup().prepared,"Shutdown retained Input-bearing object lookup");
         for(const auto& source:sources)source.Unchanged();
         std::cout<<"PASS owned native Input schema integration: "<<checks<<" checks, "<<refusals
             <<" refusals; actual Actor255-key Enum, native Alias UStruct/258 properties/+259 lookup/+265 GC graph, exact declared layout/list order, "
               "five pre-config defaults, actual header/default/property visibility, detached typed aliases/bindings, atomic missing-phase refusals, "
-              "first Training dormant checkpoint/warm restore/map/GC/shutdown lifetime. configApplied=false; NOT User.ini import, Input instances, "
+              "explicit owned User.ini and isolated parent-first/malformed-prefix/truncation/name-identity config, cached source binding, "
+              "first Training dormant checkpoint/warm restore/map/GC/shutdown lifetime. NOT Input instances, "
               "viewport Init/ResetInput, native ReadInput, world startup, VR rendering or live crate gameplay.\n";return 0;
     }catch(const std::exception& error) {std::cerr<<"FAIL: "<<error.what()<<'\n';ShutdownPortableRuntime();return 1;}
 }

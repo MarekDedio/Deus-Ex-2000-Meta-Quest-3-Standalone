@@ -79,6 +79,7 @@
 #include "quest_native_package.h"
 #include "quest_native_config.h"
 #include "quest_native_config_import.h"
+#include "quest_native_struct_import.h"
 #include "quest_static_find_object.h"
 #include "quest_collision_hash_math.h"
 #include "quest_collision_hash.h"
@@ -730,11 +731,29 @@ protected:
     }
 };
 std::unique_ptr<GCRoot<RuntimeEngineCollisionDomain>> persistentEngineCollision;
+struct RuntimeNativeInputConfig {
+    std::string sourcePath;
+    QuestVr::NativeConfig::OrderedIni document;
+    std::size_t passes{},imports{},failures{},warnings{},work{};
+};
+std::size_t NativeInputValuesBytes(const RuntimeNativeInputValues& input) {
+    using QuestVr::DecalStateDetail::Add;
+    auto bytes=sizeof(RuntimeNativeInputValues);
+    for(const auto& alias:input.aliases)bytes=Add(bytes,alias.command.capacity()+1u);
+    for(const auto& binding:input.bindings)bytes=Add(bytes,binding.capacity()+1u);
+    return bytes;
+}
+std::size_t NativeInputConfigBytes(const RuntimeNativeInputConfig& config) {
+    return QuestVr::DecalStateDetail::Add(sizeof(config)+config.sourcePath.capacity()+1u,
+        config.document.RetainedBytes()-sizeof(QuestVr::NativeConfig::OrderedIni));
+}
+using InputConfigPayloads=std::array<const RuntimePreparedNativeDefaults*,2u>;
 struct RuntimeNativeInputDomain final : GCObject {
     RuntimeObject *inputClass{},*inputExtClass{},*keyEnum{},*aliasStruct{};
     // Default classes own their CDOs/Children. Alias is retained through the
     // actual StructProperty.Struct edge, not an inventory root masking it.
     std::vector<RuntimeObject*> defaultClasses,defaults,fields;
+    std::unique_ptr<const RuntimeNativeInputConfig> config;
 protected:
     GCAllocation* Mark(GCAllocation* marklist) override {
         for(auto* cls:defaultClasses)marklist=GC::MarkObject(marklist,cls);
@@ -744,12 +763,15 @@ protected:
 std::unique_ptr<GCRoot<RuntimeNativeInputDomain>> persistentInputSchema;
 bool InputSchemaDefaultValid(const RuntimeObject* cls);
 bool ActualNativeInputSchemaObjectValid(const RuntimeObject* object);
-std::size_t InputSchemaRetainedBytes(const RuntimeNativeInputDomain& domain) {
+std::size_t InputSchemaRetainedBytes(const RuntimeNativeInputDomain& domain,
+    const InputConfigPayloads* stagedPayloads=nullptr,const RuntimeNativeInputConfig* stagedConfig=nullptr) {
     using QuestVr::DecalStateDetail::Add;
     using QuestVr::DecalStateDetail::Multiply;
     if(domain.defaults.size()!=5u||domain.defaultClasses.size()!=5u||domain.fields.size()!=258u||!domain.aliasStruct)
         throw std::runtime_error("Native Input schema retained graph is incomplete");
     auto bytes=sizeof(RuntimeNativeInputDomain)+sizeof(GCAllocation)+sizeof(GCRoot<RuntimeNativeInputDomain>)+sizeof(GCRootNode);
+    const auto* config=stagedConfig?stagedConfig:domain.config.get();
+    if(config)bytes=Add(bytes,NativeInputConfigBytes(*config));
     bytes=Add(bytes,Multiply(domain.defaults.capacity()+domain.defaultClasses.capacity()+domain.fields.capacity(),sizeof(RuntimeObject*)));
     const auto object=[&](const RuntimeObject* value,const bool published) {
         if(!value)throw std::runtime_error("Native Input retained graph contains null");
@@ -761,11 +783,11 @@ std::size_t InputSchemaRetainedBytes(const RuntimeNativeInputDomain& domain) {
         if(value->nativeStruct)bytes=Add(bytes,sizeof(RuntimeNativeStruct));
         if(value->preparedNativeDefaults) {
             bytes=Add(bytes,sizeof(RuntimePreparedNativeDefaults));
-            if(const auto* input=value->preparedNativeDefaults->input.get()) {
-                bytes=Add(bytes,sizeof(RuntimeNativeInputValues));
-                for(const auto& alias:input->aliases)bytes=Add(bytes,alias.command.capacity()+1u);
-                for(const auto& binding:input->bindings)bytes=Add(bytes,binding.capacity()+1u);
-            }
+            const auto* payload=value->preparedNativeDefaults.get();
+            if(stagedPayloads&&value==domain.defaults[3u])payload=(*stagedPayloads)[0u];
+            if(stagedPayloads&&value==domain.defaults[4u])payload=(*stagedPayloads)[1u];
+            if(!payload)throw std::runtime_error("Native Input retained graph lost a staged default payload");
+            if(const auto* input=payload->input.get())bytes=Add(bytes,NativeInputValuesBytes(*input));
         }
         if(published)bytes=Add(bytes,2u*(sizeof(std::string)+6u*sizeof(void*)+value->reflection.objectPath.capacity()+1u));
     };
@@ -13946,6 +13968,7 @@ std::optional<PortableObjectLookupResult> FindPortableRuntimeObject(const Portab
 
 #include "portable_engine_collision.inl"
 #include "portable_input_schema.inl"
+#include "portable_input_config.inl"
 
 void BindPortableRuntimeClient(std::shared_ptr<QuestVr::NativeClientLifetime> lifetime,
     const std::uint64_t clientIdentity) {
