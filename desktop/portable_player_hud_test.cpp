@@ -221,9 +221,9 @@ int main(int argc,char** argv) {
             " opcode="<<unsigned(pending.execution.opcode)<<" objects="<<pending.objects.size()<<
             " writes="<<pending.execution.writes<<" "<<pending.execution.error<<"; inspection="<<pending.inspectionError<<std::endl;
         Require(!pending.execution.passed() && !pending.execution.committed && pending.inspectionError.empty() &&
-            pending.execution.function=="DeusEx.HUDLogDisplay.CreateControls" && pending.execution.offset==110u &&
-            pending.execution.opcode==101u && pending.execution.error=="NewChild native subclass Init is not implemented: extension.textlogwindow" &&
-            pending.execution.writes==11280u && pending.objects.size()==159u &&
+            pending.execution.function=="DeusEx.HUDLogDisplay.ParentRequestedPreferredSize" && pending.execution.offset==129u &&
+            pending.execution.opcode==101u && pending.execution.error=="Native preferred-size virtual override is not implemented" &&
+            pending.execution.writes==11767u && pending.objects.size()==165u &&
             pending.rootedWindows==std::vector<std::string>{pending.pawnRootPath},
             "Original root prefix probe did not capture the actual pending native graph: "+pending.inspectionError);
         const auto object=[&](const std::string& path)->const PortableNativeWindowObjectSnapshot& {
@@ -328,6 +328,51 @@ int main(int argc,char** argv) {
         const auto& multiSkills=classView("DeusEx.HUDMultiSkills");
         const auto& information=classView("DeusEx.HUDInformationDisplay");
         const auto& logDisplay=classView("DeusEx.HUDLogDisplay");
+        const auto& frobDisplay=classView("DeusEx.FrobDisplayWindow");
+        const auto& textLog=classView("Extension.TextLogWindow");
+        Require(std::count_if(pending.objects.begin(),pending.objects.end(),[](const auto& view) {
+                return view.classPath=="Extension.TextLogWindow";
+            })==1 && textLog.outerPath==logDisplay.path,
+            "Original HUD log did not construct its one actual TextLog child with the correct Outer");
+        edge(textLog,"Extension.Window.parentOwner",logDisplay.path);
+        edge(textLog,"Extension.Window.winParent",logDisplay.path);
+        edge(logDisplay,"DeusEx.HUDLogDisplay.winLog",textLog.path);
+        edge(logDisplay,"Extension.Window.firstChild",field(logDisplay,"DeusEx.HUDLogDisplay.winIcon").value.text);
+        edge(logDisplay,"Extension.Window.lastChild",textLog.path);
+        edge(textLog,"Extension.Window.prevSibling",field(logDisplay,"DeusEx.HUDLogDisplay.winIcon").value.text);
+        edge(textLog,"Extension.Window.nextSibling",{});
+        Require(textLog.textLogLinesInitialized && textLog.textLogLines.empty() && textLog.textLogLineCapacity==0u,
+            "Original TextLog constructor/Init did not retain constructed-empty, freed native Lines storage");
+        for(const auto& view:pending.objects) if(view.classPath!="Extension.TextLogWindow")
+            Require(!view.textLogLinesInitialized && view.textLogLines.empty() && view.textLogLineCapacity==0u,
+                "Native Lines storage was fabricated for a non-TextLog object");
+        for(const auto* name:{"HAlign","VAlign"}) {
+            const auto& value=field(textLog,"Extension.TextWindow."+std::string(name)).value;
+            Require(value.kind==Kind::Byte && value.integer==0,
+                "Original TextLog Init did not replace the inherited alignment with raw byte zero");
+        }
+        const auto& logTimeout=field(textLog,"Extension.TextLogWindow.textTimeout").value;
+        const auto& logTooTall=field(textLog,"Extension.TextLogWindow.bTooTall").value;
+        const auto& logPaused=field(textLog,"Extension.TextLogWindow.bPaused").value;
+        const auto pausedDefault=ReadPortableClassDefault("Extension.TextLogWindow","bPaused");
+        const auto playerLogTimeout=Declared(player,"DeusEx.DeusExPlayer.logTimeout",Kind::Float);
+        std::cout<<"ORIGINAL pending TextLog scalars: paused="<<logPaused.boolean<<" timeout="<<logTimeout.floating<<
+            " playerTimeout="<<playerLogTimeout.floating<<std::endl;
+        Require(Declared(level,"Engine.LevelInfo.NetMode",Kind::Byte).integer==0 &&
+            logTimeout.kind==Kind::Float && QuestVr::Vm::Equal(logTimeout,playerLogTimeout) &&
+            logTooTall.kind==Kind::Bool && !logTooTall.boolean && logPaused.kind==Kind::Bool &&
+            pausedDefault.kind==Kind::Bool && QuestVr::Vm::Equal(logPaused,pausedDefault),
+            "Original standalone SetLogTimeout lost the actual player's value or changed untouched TextLog flags");
+        const auto& textLogGC=object(field(textLog,"Extension.Window.wGc").value.text);
+        const auto& textLogGeneralGC=object(field(textLog,"Extension.Window.gGc").value.text);
+        Require(textLogGC.path!=textLogGeneralGC.path && textLogGC.classPath=="Extension.GC" &&
+            textLogGeneralGC.classPath=="Extension.GC" && textLogGC.outerPath==textLog.path &&
+            textLogGeneralGC.outerPath==textLog.path,
+            "Native TextLog did not own two actual distinct inherited graphics contexts");
+        edge(textLog,"Extension.Window.wGc",textLogGC.path);
+        edge(textLog,"Extension.Window.gGc",textLogGeneralGC.path);
+        std::cout<<"ORIGINAL TextLog pending child: actual parent/GC graph, constructed-empty native Lines, "
+            "zero alignments, real standalone player timeout and retained CDO pause value; rollback-only prefix\n";
         for(const auto& view:pending.objects) {
             if(view.classPath=="Extension.GC") continue;
             std::cout<<"PENDING layout "<<view.classPath<<" "<<view.path;
@@ -372,7 +417,8 @@ int main(int argc,char** argv) {
         const auto& crossGC=object(field(crossView,"Extension.Window.wGc").value.text);
         Require(QuestVr::Vm::Equal(field(crossGC,"Extension.GC.gcClipRect").value,crossClip),
             "Original ClipTree did not copy all six channels to the drawing GC");
-        // These exact dimensions were captured at the new TextLog refusal.
+        // These exact dimensions were captured at the earlier TextLog
+        // constructor refusal and remain checked at the later size boundary.
         // Retain independent literal negative intersections as well as using
         // the separately x87-audited clip helper for the native propagation.
         const QuestVr::NativeWindowClip hudClip{0,0,0,0,10,10};
@@ -608,9 +654,10 @@ int main(int argc,char** argv) {
         edge(rootView,"Extension.Window.firstChild",display.path);edge(rootView,"Extension.Window.lastChild",hudView.path);
         // The original Tile callbacks have now returned. Damage, compass,
         // multi-skills and information children completed construction. The
-        // later hidden HUDLogDisplay is locked inside CreateControls before
-        // TextLogWindow's unsupported native constructor. Its msgLog and the
-        // later Root.hud assignment are consequently still unexecuted.
+        // hidden HUDLogDisplay completed its actual TextLog construction and
+        // original SetLogTimeout. Frob's Show callback has entered HUD layout
+        // and reached TextLog preferred sizing before Frob's NewChild returns.
+        // Its outer assignment and the later Root.hud assignment remain pending.
         edge(rootView,"DeusEx.DeusExRootWindow.hud",{});
         edge(hudView,"DeusEx.DeusExHUD.Ammo",ammoView.path);edge(hudView,"DeusEx.DeusExHUD.hit",hitView.path);
         edge(hudView,"DeusEx.DeusExHUD.Cross",crossView.path);edge(hudView,"DeusEx.DeusExHUD.belt",beltView.path);
@@ -623,7 +670,7 @@ int main(int argc,char** argv) {
         edge(hudView,"DeusEx.DeusExHUD.compass",compass.path);
         edge(hudView,"DeusEx.DeusExHUD.hms",multiSkills.path);
         edge(hudView,"DeusEx.DeusExHUD.Info",information.path);
-        edge(hudView,"DeusEx.DeusExHUD.msgLog",{});
+        edge(hudView,"DeusEx.DeusExHUD.msgLog",logDisplay.path);
         for(const auto* name:{"frobDisplay","augDisplay","startDisplay","barkDisplay","receivedItems"})
             edge(hudView,"DeusEx.DeusExHUD."+std::string(name),{});
         edge(damage,"DeusEx.DamageHUDDisplay.Player",player);
@@ -686,23 +733,32 @@ int main(int argc,char** argv) {
             }
         }
         std::cout<<"ORIGINAL DamageHUDDisplay: all7 iconInfo records, all21 typed DamageType slots, six nested texture GC edges and colors verified\n";
-        edge(hudView,"Extension.Window.firstChild",ammoView.path);edge(hudView,"Extension.Window.lastChild",logDisplay.path);
+        edge(hudView,"Extension.Window.firstChild",ammoView.path);edge(hudView,"Extension.Window.lastChild",frobDisplay.path);
         edge(activeItems,"Extension.Window.winParent",hudView.path);edge(activeItems,"Extension.Window.parentOwner",hudView.path);
         edge(activeItems,"Extension.Window.prevSibling",beltView.path);edge(activeItems,"Extension.Window.nextSibling",damage.path);
         edge(damage,"Extension.Window.winParent",hudView.path);edge(damage,"Extension.Window.parentOwner",hudView.path);
         edge(damage,"Extension.Window.prevSibling",activeItems.path);edge(damage,"Extension.Window.nextSibling",compass.path);
-        const std::array<const PortableNativeWindowObjectSnapshot*,5u> laterChildren{
-            &damage,&compass,&multiSkills,&information,&logDisplay};
+        const std::array<const PortableNativeWindowObjectSnapshot*,6u> laterChildren{
+            &damage,&compass,&multiSkills,&information,&logDisplay,&frobDisplay};
         for(std::size_t index=1u;index<laterChildren.size();++index) {
             const auto& view=*laterChildren[index];
             Require(view.outerPath==hudView.path,"Original later HUD child lost its actual Outer");
             edge(view,"Extension.Window.winParent",hudView.path);edge(view,"Extension.Window.parentOwner",hudView.path);
             edge(view,"Extension.Window.prevSibling",laterChildren[index-1u]->path);
             edge(view,"Extension.Window.nextSibling",index+1u==laterChildren.size()?std::string{}:laterChildren[index+1u]->path);
-            Require(field(view,"Extension.Window.lockCount").value.integer==(index==4u?1:0) &&
-                field(view,"Extension.Window.bIsVisible").value.boolean==(index<3u),
+            Require(field(view,"Extension.Window.lockCount").value.integer==(index==5u?1:0) &&
+                field(view,"Extension.Window.bIsVisible").value.boolean==(index<3u || index==5u),
                 "Original later HUD NewChild visibility/lock prefix differs");
         }
+        edge(frobDisplay,"Extension.Window.firstChild",{});edge(frobDisplay,"Extension.Window.lastChild",{});
+        const auto& frobGC=object(field(frobDisplay,"Extension.Window.wGc").value.text);
+        const auto& frobGeneralGC=object(field(frobDisplay,"Extension.Window.gGc").value.text);
+        Require(frobGC.path!=frobGeneralGC.path && frobGC.classPath=="Extension.GC" &&
+            frobGeneralGC.classPath=="Extension.GC" && frobGC.outerPath==frobDisplay.path &&
+            frobGeneralGC.outerPath==frobDisplay.path,
+            "In-flight original Frob child did not own its two distinct native graphics contexts");
+        edge(frobDisplay,"Extension.Window.wGc",frobGC.path);
+        edge(frobDisplay,"Extension.Window.gGc",frobGeneralGC.path);
         edge(ammoView,"Extension.Window.parentOwner",hudView.path);edge(ammoView,"Extension.Window.winParent",hudView.path);
         edge(ammoView,"Extension.Window.prevSibling",{});edge(ammoView,"Extension.Window.nextSibling",hitView.path);
         edge(ammoView,"DeusEx.HUDBaseWindow.Player",player);
@@ -1081,6 +1137,213 @@ int main(int argc,char** argv) {
             GC::GetStats().numObjects==windowStats.numObjects && GC::GetStats().memoryUsage==windowStats.memoryUsage &&
             SavePortableRuntimeState(inspectPath.string()) && Bytes(inspectPath)==baseline,
             "Original root prefix probe published its pending root/GC state");
+        // A separate genuine base-Root/TextLog graph exercises the native
+        // ownership and setter contracts without resuming the failed HUD root.
+        // Explicit fixture lines are not AddLog, Tick, Draw or usable gameplay.
+        const auto textLogStats=GC::GetStats();
+        const auto textLogRollback=[&] {
+            const auto summary=ReadPortableRuntimeNativeWindowSummary();
+            Require(summary.objects==0u && summary.roots==0u &&
+                summary.configuredRootNameCounter==windowBaseline.configuredRootNameCounter &&
+                summary.graphicsContextNameCounter==windowBaseline.graphicsContextNameCounter &&
+                Declared(player,"Extension.PlayerPawnExt.RootWindow",Kind::Object).text.empty() &&
+                GetPortableRuntimeWorldRevision()==windowRevision && GetPortableRuntimeMapActors(true).size()==count &&
+                GC::GetStats().numObjects==textLogStats.numObjects && GC::GetStats().memoryUsage==textLogStats.memoryUsage &&
+                SavePortableRuntimeState(inspectPath.string()) && Bytes(inspectPath)==baseline,
+                "TextLog rejection retained native strings/arrays, roots, names, GC, player/map state or save bytes");
+        };
+        const auto verifyTextLog=[&](const PortableTextLogProbeResult& result) {
+            Require(!result.rootPath.empty() && !result.logPath.empty() && result.rootPath!=result.logPath &&
+                result.constructorStorageObserved && result.constructorLinesInitialized &&
+                result.constructorLineCount==0u && result.constructorLineCapacity==0u,
+                "TextLog native Lines were not observed constructed-empty before inherited Init callbacks");
+            const std::vector<std::string> stages{"constructed","fixture-populated","reinitialized","aligned",
+                "equal-alignment","margins","equal-margins","nan-margins","negative-lines","clamped-lines",
+                "equal-lines","no-result","color-initial","color-changed","equal-color","color-none"};
+            Require(result.stages.size()==stages.size(),"TextLog diagnostic omitted an actual lifecycle/setter observation");
+            for(std::size_t index=0u;index<stages.size();++index) {
+                const auto& stage=result.stages[index];
+                Require(stage.name==stages[index] && stage.linesInitialized,
+                    "TextLog native lifecycle/setter order or constructed-state differs");
+                if(index) Require(stage.writes>=result.stages[index-1u].writes,
+                    "TextLog native callback/setter reset the caller write ledger");
+                if(index!=1u) Require(stage.lines.empty() && stage.lineCapacity==0u,
+                    "TextLog Init suffix retained a fixture FString or native array capacity");
+                if(index>=2u) Require(stage.paused && !stage.tooTall && stage.timeout==5.0f,
+                    "TextLog Init/setter lost preserved pause state, too-tall clearing or timeout");
+            }
+            const auto& constructed=result.stages[0u];const auto& populated=result.stages[1u];
+            const auto& reinitialized=result.stages[2u];const auto& aligned=result.stages[3u];
+            const auto& equalAlignment=result.stages[4u];const auto& margins=result.stages[5u];
+            const auto& equalMargins=result.stages[6u];const auto& nanMargins=result.stages[7u];
+            const auto& negativeLines=result.stages[8u];const auto& clampedLines=result.stages[9u];
+            const auto& equalLines=result.stages[10u];const auto& noResult=result.stages[11u];
+            Require(constructed.hAlign==0u && constructed.vAlign==0u && constructed.timeout==5.0f &&
+                !constructed.tooTall && constructed.paused==pausedDefault.boolean &&
+                constructed.hMargin==3.0f && constructed.vMargin==3.0f &&
+                constructed.minLines==-1 && constructed.maxLines==-1,
+                "TextLog constructor/Init replaced actual inherited defaults or copied CDO pause state");
+            Require(populated.paused && populated.tooTall && populated.lines.size()==1u && populated.lineCapacity>=37u,
+                "TextLog explicit ownership fixture did not retain its populated flags/native capacity");
+            const auto& line=populated.lines.front();
+            Require(line.expiry==0.0f && std::signbit(line.expiry) && line.text==std::string("owned\0log",9u) &&
+                line.color==std::array<std::uint8_t,4u>{7u,11u,19u,0u},
+                "Native TextLog detached line lost raw expiry, owning embedded-NUL text or all four color bytes");
+            Require(reinitialized.hAlign==0u && reinitialized.vAlign==0u &&
+                reinitialized.writes>populated.writes,
+                "TextLog genuine re-Init did not run its scalar/freeing suffix in the same root");
+            Require(!reinitialized.needsQuery && !reinitialized.needsReconfigure &&
+                !aligned.needsQuery && !aligned.needsReconfigure &&
+                !equalAlignment.needsQuery && !equalAlignment.needsReconfigure,
+                "Native1556 fabricated a layout request after the explicit clean-flag fixture");
+            Require(aligned.hAlign==255u && aligned.vAlign==254u && aligned.writes==reinitialized.writes+2u &&
+                equalAlignment.hAlign==255u && equalAlignment.vAlign==254u &&
+                equalAlignment.writes==aligned.writes+2u,
+                "Native1556 clamped full-range bytes or fabricated an equality no-op");
+            Require(margins.hMargin==1.25f && margins.vMargin==-2.5f && margins.writes==equalAlignment.writes+4u &&
+                margins.needsQuery && margins.needsReconfigure &&
+                equalMargins.hMargin==margins.hMargin && equalMargins.vMargin==margins.vMargin &&
+                equalMargins.writes==margins.writes && equalMargins.needsQuery && equalMargins.needsReconfigure &&
+                nanMargins.hMargin==margins.hMargin && nanMargins.vMargin==margins.vMargin &&
+                nanMargins.writes==margins.writes && nanMargins.needsQuery && nanMargins.needsReconfigure,
+                "Native1557 lost raw margins or changed storage/callback state on equal/unordered x87 comparisons");
+            Require(negativeLines.minLines==0 && negativeLines.maxLines==0 && negativeLines.writes==nanMargins.writes+4u &&
+                negativeLines.needsQuery && negativeLines.needsReconfigure &&
+                clampedLines.minLines==3 && clampedLines.maxLines==3 && clampedLines.writes==negativeLines.writes+4u &&
+                clampedLines.needsQuery && clampedLines.needsReconfigure &&
+                equalLines.minLines==3 && equalLines.maxLines==3 && equalLines.writes==clampedLines.writes &&
+                equalLines.needsQuery && equalLines.needsReconfigure,
+                "Native1558 lost signed nonnegative/min<=max clamping or effective-value equality no-op");
+            Require(noResult.hAlign==0u && noResult.vAlign==0u && noResult.writes==equalLines.writes+2u,
+                "Native1556 no-result operands did not preserve both original zero-byte seeds");
+            const auto& colorInitial=result.stages[12u];const auto& colorChanged=result.stages[13u];
+            const auto& equalColor=result.stages[14u];const auto& colorNone=result.stages[15u];
+            Require(result.colorCasesVerified==256u && colorInitial.writes==noResult.writes,
+                "Native1476 diagnostic omitted256 channel cases or changed storage before its first color call");
+            Require(result.scalarCasesVerified==20u,
+                "Native1572/1573 diagnostic omitted raw Float, duplicate-store, preserved flag or no-result cases");
+            const auto verifyColor=[&](const Value& color,const Value& plane,
+                const std::array<std::uint8_t,4u>& bytes) {
+                Require(color.kind==Kind::Struct && color.fields.size()==4u &&
+                    plane.kind==Kind::Struct && plane.fields.size()==4u,
+                    "Native1476 lost the canonical four-Byte Color/four-Float Plane shape");
+                const std::array<const char*,4u> channels{"r","g","b","a"};
+                for(std::size_t index=0u;index<channels.size();++index) {
+                    const auto& channel=color.fields.at(channels[index]);
+                    Require(channel.kind==Kind::Byte && channel.integer==bytes[index],
+                        "Native1476 changed a raw Color byte, including alpha");
+                }
+                const std::array<const char*,3u> axes{"x","y","z"};
+                for(std::size_t index=0u;index<axes.size();++index) {
+                    const auto& component=plane.fields.at(axes[index]);
+                    Require(component.kind==Kind::Float &&
+                        component.floating==static_cast<float>(static_cast<double>(bytes[index])*(1.0/255.0)),
+                        "Native1476 did not use the original binary64 reciprocal before Float rounding");
+                }
+                const auto& w=plane.fields.at("w");
+                Require(w.kind==Kind::Float && w.floating==0.0f && !std::signbit(w.floating),
+                    "Native1476 plane W lost its positive-zero storage");
+            };
+            for(const auto* stage:{&colorChanged,&equalColor}) {
+                verifyColor(stage->textColor,stage->textPlane,{17u,101u,239u,7u});
+                verifyColor(stage->windowGCTextColor,stage->windowGCTextPlane,{17u,101u,239u,7u});
+                Require(QuestVr::Vm::Equal(stage->textColor,stage->windowGCTextColor) &&
+                    QuestVr::Vm::Equal(stage->textPlane,stage->windowGCTextPlane),
+                    "Native1476 did not update the actual own drawing GC coherently");
+            }
+            Require(colorChanged.writes==colorInitial.writes+4u && equalColor.writes==colorChanged.writes+4u,
+                "Native1476 omitted original Color/Plane stores or fabricated an equal-color shortcut");
+            verifyColor(colorNone.textColor,colorNone.textPlane,{255u,0u,128u,255u});
+            Require(result.colorNoneFixtureWrites==1u &&
+                colorNone.writes==equalColor.writes+result.colorNoneFixtureWrites+2u &&
+                QuestVr::Vm::Equal(colorNone.windowGCTextColor,equalColor.windowGCTextColor) &&
+                QuestVr::Vm::Equal(colorNone.windowGCTextPlane,equalColor.windowGCTextPlane),
+                "Native1476 wGc=None branch mutated the detached GC or skipped either actual Window store");
+            for(const auto* stage:{&colorInitial,&colorChanged,&equalColor,&colorNone}) {
+                Require(QuestVr::Vm::Equal(stage->generalGCTextColor,colorInitial.generalGCTextColor) &&
+                    QuestVr::Vm::Equal(stage->generalGCTextPlane,colorInitial.generalGCTextPlane),
+                    "Native1476 incorrectly propagated text color into the independent general GC");
+                Require(stage->needsQuery==noResult.needsQuery && stage->needsReconfigure==noResult.needsReconfigure &&
+                    stage->hAlign==noResult.hAlign && stage->vAlign==noResult.vAlign &&
+                    stage->hMargin==noResult.hMargin && stage->vMargin==noResult.vMargin &&
+                    stage->minLines==noResult.minLines && stage->maxLines==noResult.maxLines,
+                    "Native1476 fabricated layout requests or changed unrelated text sizing/alignment storage");
+            }
+        };
+        const auto runTextLog=[&](const PortableTextLogProbeMode mode) {
+            auto result=ProbePortableNativeTextLogWindow(player,mode);
+            Require(!result.execution.passed() && !result.execution.committed &&
+                result.execution.error=="Native TextLog diagnostic complete; rollback required" &&
+                result.execution.nativeWork && result.execution.nativeWork->used>0u &&
+                !result.execution.nativeWork->exhausted,
+                "TextLog diagnostic failed before its exact final rollback: "+result.execution.function+':'+
+                std::to_string(result.execution.offset)+" "+result.execution.error);
+            verifyTextLog(result);textLogRollback();return result;
+        };
+        const auto textLogCold=runTextLog(PortableTextLogProbeMode::RoundTrip);
+        const auto textLogWarm=runTextLog(PortableTextLogProbeMode::RoundTrip);
+        Require(textLogCold.rootPath==textLogWarm.rootPath && textLogCold.logPath==textLogWarm.logPath &&
+            textLogCold.execution.writes==textLogWarm.execution.writes,
+            "TextLog rollback retained native root/child names or changed the repeated setter write sequence");
+        for(const auto& [mode,error]:{
+            std::pair{PortableTextLogProbeMode::PrivateRead,
+                "Native TextLog Lines is owned native storage, not a script-visible DynamicArray"},
+            std::pair{PortableTextLogProbeMode::PrivateWrite,
+                "Native TextLog Lines mutation requires its typed journaled storage service"}}) {
+            const auto invalid=ProbePortableNativeTextLogWindow(player,mode);
+            Require(!invalid.execution.passed() && !invalid.execution.committed && invalid.execution.error==error,
+                "TextLog exposed its private native Lines through a fabricated script DynamicArray: "+invalid.execution.error);
+            textLogRollback();
+        }
+        for(const auto& [mode,error]:{
+            std::pair{PortableTextLogProbeMode::WrongReceiver,
+                "TextWindow setter requires its actual constructed native superclass"},
+            std::pair{PortableTextLogProbeMode::WrongArgument,
+                "TextWindow setter argument changed its original scalar type"},
+            std::pair{PortableTextLogProbeMode::MissingArgument,
+                "Missing required VM parameter newVAlign"},
+            std::pair{PortableTextLogProbeMode::WrongColor,
+                "VM CoreColor4 destination has malformed Byte channels"},
+            std::pair{PortableTextLogProbeMode::NoColorResult,
+                "VM uninitialized native argument requires a complete result write"}}) {
+            const auto invalid=ProbePortableNativeTextLogWindow(player,mode);
+            Require(!invalid.execution.passed() && !invalid.execution.committed && invalid.execution.error==error,
+                "Window/text setter ingress did not refuse at its exact receiver/type/arity/result guard: "+invalid.execution.error);
+            textLogRollback();
+        }
+        const auto textLogLate=ProbePortableNativeTextLogWindow(player,PortableTextLogProbeMode::LateFailure);
+        Require(!textLogLate.execution.passed() && !textLogLate.execution.committed &&
+            textLogLate.execution.error=="Native TextLog diagnostic forced late failure",
+            "TextLog late failure did not occur after the authentic ownership/setter sequence");
+        verifyTextLog(textLogLate);textLogRollback();
+        for(const auto prefix:std::vector<std::size_t>{0u,1u,textLogWarm.stages[1u].writes+1u,
+            textLogWarm.stages[2u].writes+1u,textLogWarm.stages[4u].writes-1u,
+            textLogWarm.stages[13u].writes-1u,textLogWarm.stages[14u].writes-1u,textLogWarm.execution.writes-1u}) {
+            QuestVr::Vm::Limits bounded;bounded.writes=prefix;
+            const auto partial=ProbePortableNativeTextLogWindow(player,PortableTextLogProbeMode::RoundTrip,bounded);
+            Require(partial.execution.status==QuestVr::Vm::Status::Budget && !partial.execution.committed,
+                "TextLog constructor/freeing/setter reset the caller write budget: "+std::to_string(prefix)+" "+
+                partial.execution.error);
+            textLogRollback();
+        }
+        for(const auto prefix:{std::size_t{0u},textLogWarm.execution.nativeWork->used/2u,
+            textLogWarm.execution.nativeWork->used-1u}) {
+            QuestVr::Vm::Limits bounded;bounded.nativeWork=prefix;
+            const auto partial=ProbePortableNativeTextLogWindow(player,PortableTextLogProbeMode::RoundTrip,bounded);
+            Require(!partial.execution.passed() && !partial.execution.committed && partial.execution.nativeWork &&
+                partial.execution.nativeWork->exhausted,
+                "TextLog lifecycle/setters reset or ignored the shared native-work budget: "+std::to_string(prefix));
+            textLogRollback();
+        }
+        QuestVr::Vm::Limits noTextLogStorage;noTextLogStorage.retainedBytes=0u;
+        const auto textLogStorageRefused=ProbePortableNativeTextLogWindow(player,
+            PortableTextLogProbeMode::RoundTrip,noTextLogStorage);
+        Require(textLogStorageRefused.execution.status==QuestVr::Vm::Status::Budget &&
+            !textLogStorageRefused.execution.committed,"TextLog constructor ignored the caller retained-byte budget");
+        textLogRollback();
+        std::cout<<"ORIGINAL TextLog native controls: constructor-before-callback storage, owned populated Lines freeing, "
+            "pause preservation, raw byte/margin/line setters, all256 native1476 colors/planes/own-GC stores, "
+            "private-array refusal and whole-root rollback\n";
         // These controls construct a separate actual native Root/Radio/Toggle
         // graph in one rollback-only VM transaction. They NEVER resume the
         // poisoned HUD layout callback above, patch owned scripts, or establish
@@ -1212,9 +1475,9 @@ int main(int argc,char** argv) {
         const auto rootAttempt=ExecutePortableActorFunction(player,"Extension.PlayerPawnExt.InitRootWindow");
         std::cout<<"ORIGINAL unbound root initialization boundary: "<<rootAttempt.function<<':'<<rootAttempt.offset<<
             " opcode="<<unsigned(rootAttempt.opcode)<<" "<<rootAttempt.error<<std::endl;
-        Require(!rootAttempt.passed() && !rootAttempt.committed && rootAttempt.function=="DeusEx.HUDLogDisplay.CreateControls" &&
-            rootAttempt.offset==110u && rootAttempt.opcode==101u && rootAttempt.writes==11280u &&
-            rootAttempt.error=="NewChild native subclass Init is not implemented: extension.textlogwindow" &&
+        Require(!rootAttempt.passed() && !rootAttempt.committed && rootAttempt.function=="DeusEx.HUDLogDisplay.ParentRequestedPreferredSize" &&
+            rootAttempt.offset==129u && rootAttempt.opcode==101u && rootAttempt.writes==11767u &&
+            rootAttempt.error=="Native preferred-size virtual override is not implemented" &&
             std::find(rootAttempt.callStack.begin(),rootAttempt.callStack.end(),"DeusEx.DeusExRootWindow.InitWindow")!=rootAttempt.callStack.end(),
             "Native1052 did not construct/dispatch original root without a fabricated client prerequisite");
         const auto windowsAfter=ReadPortableRuntimeNativeWindowSummary();

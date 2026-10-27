@@ -1,5 +1,36 @@
 # Port status
 
+## Latest: original TextLog construction and text setters (2026-10-27)
+
+The genuine native TextLog Lines container is now constructed before callbacks,
+owns its records/strings/capacity and participates in bounded beforeimages/undo.
+Original Text.Init/TextLog.Init, setters1556-58, SetTextColor1476 and raw timeout/
+pause1572/73 run through authenticated declarations and the caller's VM root.
+Ordinary-input snapshots preserve each argument before later argument mutation;
+private Lines remain inaccessible as a fabricated script array. No retained cap,
+save format or accepted VR HUD layout was changed.
+
+Owned HUD9128 controls, VM696389/912, storage580/1 and setters467200/19 pass.
+Full desktop build, Android-native link and strict ARM64 pass. Final CTest:
+263 registered,221 executed,42 explicit owned-data skips,zero failures266.93s.
+Separate rebuilt first-Training crate415/5,deferred429/21,animation588/24,
+FastTrace252/0,native Input classes10413/38,viewport10310/20,materials and1232
+door/save route checks pass. All45 originals/12 frozen compiler inputs match
+length/mtime/SHA256 baselines; all compiler/test/probe jobs are terminal.
+
+Actual original two-Fire cold/warm repeat2 advances to HUDLogDisplay's genuine
+TextWindow preferred-size dependency at240624 instructions/28196 writes. It
+retains two attack notifies,four traces,two crate changes,nine births and full
+rollback. Door repeat2 retains the exact missing-ReadInput refusal and both
+original56-unit moves/two endpoints. Neither publishes live gameplay.
+
+This is NOT a new playable APK or completed crate/loot/gravity acceptance.
+The next native text sizing/GC dependency, remaining Input/reset/FExec and
+post-Possess services, then the committing VR weapon/frame/publication bridge
+remain necessary. First Training only; no account/character-creation UI, other-
+map integration or commercial-code execution. See ORIGINAL-TEXTLOG-IMPLEMENTATION.md
+and ORIGINAL-TEXTWINDOW-PREFERRED-SIZE.md for verification and next contracts.
+
 ## Latest: real viewport Input construction and key queries (2026-10-27)
 
 The configured native Input/InputExt now has its real Class/Transient/unique

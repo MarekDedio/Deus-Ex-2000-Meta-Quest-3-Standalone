@@ -506,7 +506,8 @@ struct TestHost final:Vm::Host {
         // 1008 belongs only to this generated fixture. Native zero is keyed by
         // its declaration; individual tests provide the host-side observation.
         if((index==261u || index==262u || index==283u || index==264u || index==548u || index==1008u || index==0u || index==1410u || index==1415u || index==1416u || index==1420u || index==1421u || index==1422u ||
-            index==1430u || index==1431u || index==1432u || index==1433u || index==1438u || index==1454u || index==1461u || index==1465u || index==1467u || index==1475u ||
+            index==1430u || index==1431u || index==1432u || index==1433u || index==1438u || index==1454u || index==1461u || index==1465u || index==1467u || index==1475u || index==1476u ||
+            index==1556u || index==1557u || index==1558u || index==1572u || index==1573u ||
             index==1535u || index==1538u || index==1539u || index==1540u ||
             index==1541u || index==1544u || index==1545u) && executionNative) {
             std::vector<Value> values;for(const auto& argument:arguments) values.push_back(index==1465u?argument.value:argument.Load());
@@ -4082,6 +4083,123 @@ void FastTraceNativeInputContracts() {
     std::cout<<"FastTrace548 native argument temporaries: "<<checks-initialChecks<<" checks and "
         <<rejections-initialRejections<<" refusal controls.\n";
 }
+void TextWindowInputSnapshotContracts() {
+    const auto initialChecks=checks,initialRejections=rejections;
+    const auto byte=[](std::uint8_t value) {return Bytes{0x24u,value};};
+    for(const auto index:{std::uint16_t{1556u},std::uint16_t{1557u},std::uint16_t{1558u}})
+        for(const bool declared:{false,true}) for(const bool lateFailure:{false,true}) {
+        TestHost host;
+        const auto zero=index==1556u?Value::Byte(0u):index==1557u?Value::Float(0.0f):Value::Integer(0);
+        const auto original=index==1556u?Value::Byte(17u):index==1557u?Value::Float(1.25f):Value::Integer(2);
+        const auto replacement=index==1556u?Value::Byte(99u):index==1557u?Value::Float(99.0f):Value::Integer(99);
+        const auto second=index==1556u?Value::Byte(23u):index==1557u?Value::Float(-2.5f):Value::Integer(4);
+        const auto changed=index==1556u?byte(99u):index==1557u?Real(99.0f):Int(99);
+        const auto returned=index==1556u?byte(23u):index==1557u?Real(-2.5f):Int(4);
+        const auto mutation=Native(1060u,{Ref(0x01u,1),changed,returned});
+        auto native=Function(index==1556u?"SetTextAlignments":index==1557u?"SetTextMargins":"SetLines",{},"Extension.TextWindow");
+        native.flags=0x401u;native.nativeIndex=index;
+        native.variables={{native.path+".First","First",zero,0x80u,1u},
+            {native.path+".Second","Second",zero,0x80u,1u}};
+        if(declared) host.finals[{"Fixture",7}]=std::make_shared<Vm::Function>(native);
+        const auto call=declared?Call(0x1cu,7,{Ref(0x01u,1),mutation}):Native(index,{Ref(0x01u,1),mutation});
+        const auto expression=Context(Ref(0x20u,9),call);
+        const auto caller=Function("TextSetterStepSnapshots",lateFailure?
+            Join({Native(1000u),expression,Native(4095u),Return()}):Join({Native(1000u),Return(expression)}));
+        const auto source=host.Property(caller,1,"SourceInput",zero);
+        host.Store("Self",source,{original});host.Store("Other",source,{second});
+        host.objects[{caller.source,9}]="Other";
+        bool entered{};
+        host.executionNative=[&](const std::string& receiver,const std::vector<Vm::Evaluation>& arguments,
+            const Vm::Function* actual,Vm::Execution&) {
+            entered=true;
+            Require(receiver=="Other" && static_cast<bool>(actual)==declared && arguments.size()==2u,
+                "Text setter copy changed native receiver, declaration or arity");
+            Require(!arguments[0u].reference && !arguments[1u].reference &&
+                Vm::Equal(arguments[0u].Load(),original) && Vm::Equal(arguments[1u].Load(),second),
+                "Text setter reloaded its first Step after the second Step mutated its source");
+            Require(Vm::Equal(host.Load("Self",source),replacement) && Vm::Equal(host.Load("Other",source),second),
+                "Text setter snapshot suppressed the genuine OUT mutation or evaluated it on the native receiver");
+            return Vm::Evaluation{arguments[0u].Load(),{}};
+        };
+        const auto result=Vm::Execute(host,caller,"Self");
+        if(lateFailure) {
+            Failed(result,Vm::Status::Unsupported,host,"Late Text setter failure rolls back genuine argument mutation");
+            Require(entered && Vm::Equal(host.Load("Self",source),original) &&
+                Vm::Equal(host.Load("Other",source),second) && host.effects==0u && host.rng==12345u,
+                "Late Text setter failure retained OUT mutation, prefix effect/RNG or changed receiver state");
+        } else {
+            Returned(result,"Each Text setter Step copies its input before evaluating the next expression");
+            Require(entered && Vm::Equal(result.value,original) && Vm::Equal(host.Load("Self",source),replacement) &&
+                Vm::Equal(host.Load("Other",source),second) && result.writes==1u && host.effects==1u,
+                "Text setter copied input lost its committed OUT mutation or returned the changed source");
+        }
+    }
+    const auto color=[](std::uint8_t value) {
+        Value result;result.kind=Vm::Kind::Struct;
+        result.fields={{"r",Value::Byte(value)},{"g",Value::Byte(37u)},
+            {"b",Value::Byte(91u)},{"a",Value::Byte(203u)}};return result;
+    };
+    for(const auto index:{std::uint16_t{1476u},std::uint16_t{1572u},std::uint16_t{1573u}})
+        for(const bool declared:{false,true}) {
+        TestHost host;
+        const auto zero=index==1476u?color(0u):index==1572u?Value::Float(0.0f):Value::Bool(false);
+        const auto original=index==1476u?color(11u):index==1572u?Value::Float(-0.0f):Value::Bool(true);
+        const auto replacement=index==1476u?color(99u):index==1572u?Value::Float(99.0f):Value::Bool(false);
+        const auto other=index==1476u?color(23u):index==1572u?Value::Float(23.0f):Value::Bool(false);
+        const auto layout=index==1476u?Vm::ResultLayout::CoreColor4:Vm::ResultLayout::Unknown;
+        auto native=Function(index==1476u?"SetTextColor":index==1572u?"SetTextTimeout":"PauseLog",{},
+            index==1476u?"Extension.Window":"Extension.TextLogWindow");
+        native.flags=0x401u;native.nativeIndex=index;
+        native.variables={{native.path+".Input","Input",zero,0x80u,1u,layout}};
+        if(declared) host.finals[{"Fixture",7}]=std::make_shared<Vm::Function>(native);
+        if(index==1476u) {
+            host.suppliedReferenceLayout=layout;
+            host.uninitializedArgumentLayout=[layout](std::uint16_t actual,const std::string&,std::size_t slot,
+                const Vm::Function*)->std::optional<Vm::ResultLayout> {
+                if(actual!=1476u) return std::nullopt;
+                Require(slot==0u,"Text color copy requested an extra uninitialized slot");return layout;
+            };
+        } else host.argumentSeed=[index,zero](std::uint16_t actual,const std::string&,std::size_t slot,
+            const Vm::Function*)->std::optional<Value> {
+            if(actual!=index) return std::nullopt;
+            Require(slot==0u,"TextLog scalar copy requested an extra initialized slot");return zero;
+        };
+        const auto call=declared?Call(0x1cu,7,{Ref(0x01u,1)}):Native(index,{Ref(0x01u,1)});
+        const auto expression=Context(Ref(0x20u,9),call);
+        const auto caller=Function("TextSingleInputSourceFrame",Join({Native(1000u),Return(expression)}));
+        const auto source=host.Property(caller,1,"SourceInput",zero,0u,1u,false,layout);
+        host.Store("Self",source,{original});host.Store("Other",source,{other});host.objects[{caller.source,9}]="Other";
+        unsigned entered{};
+        host.executionNative=[&](const std::string& receiver,const std::vector<Vm::Evaluation>& arguments,
+            const Vm::Function* actual,Vm::Execution& execution) {
+            ++entered;
+            Require(receiver=="Other" && static_cast<bool>(actual)==declared && arguments.size()==1u && !arguments[0u].reference,
+                "Single Text native retained an ordinary input alias or changed source/receiver identity");
+            const auto copied=arguments[0u].Load();
+            Require(Vm::Equal(copied,original) && (index!=1572u ||
+                std::bit_cast<std::uint32_t>(copied.floating)==0x80000000u),
+                "Single Text native changed its source-frame copied value/raw signed-zero Float");
+            execution.WriteReference(host.Reference({"Self",Vm::Scope::Instance,source.key},source),replacement);
+            Require(Vm::Equal(arguments[0u].Load(),original),"Single Text native reread its source after host mutation");
+            return Vm::Evaluation{copied,{}};
+        };
+        const auto result=Vm::Execute(host,caller,"Self");Returned(result,"Single Text native copies source-frame argument before native entry");
+        Require(entered==1u && Vm::Equal(result.value,original) && Vm::Equal(host.Load("Self",source),replacement) &&
+            Vm::Equal(host.Load("Other",source),other) && result.writes==1u && host.effects==1u,
+            "Single Text input copy lost its real native write, changed source frame or suppressed prefix effects");
+        host.Store("Self",source,{original});
+        const auto previousRng=host.rng;const auto previousEffects=host.effects;
+        const auto failing=Function("TextSingleInputLateRollback",Join({Native(1000u),expression,Native(4095u),Return()}));
+        const auto rejected=Vm::Execute(host,failing,"Self");
+        Require(rejected.status==Vm::Status::Unsupported && host.rollbackCount==1u && host.commitCount==1u &&
+            entered==2u && Vm::Equal(host.Load("Self",source),original) && Vm::Equal(host.Load("Other",source),other) &&
+            host.effects==previousEffects && host.rng==previousRng,
+            "Late single Text input failure retained its real source write or prefix effects");
+        ++rejections;
+    }
+    std::cout<<"TextWindow/TextLog native Step snapshots: "<<checks-initialChecks<<" checks and "
+        <<rejections-initialRejections<<" refusal controls.\n";
+}
 void WindowInputSnapshotContracts() {
     const auto initialChecks=checks;
     const auto expression=[](std::uint16_t index,bool declared,const std::vector<Bytes>& inputs) {
@@ -6764,6 +6882,7 @@ int main() {
         MaterializedNativeOmissionContracts();
         NativeCallSiteContextContracts();
         FastTraceNativeInputContracts();
+        TextWindowInputSnapshotContracts();
         WindowInputSnapshotContracts();
         TileNativeInputContracts();
         WindowConfigureChildInputContracts();

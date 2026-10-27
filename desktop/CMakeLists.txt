@@ -1435,3 +1435,23 @@ if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
     target_link_options(quest_actor_mover_interpolation_test PRIVATE -static -static-libgcc -static-libstdc++)
 endif()
 add_test(NAME quest_actor_mover_interpolation COMMAND quest_actor_mover_interpolation_test)
+
+# Genuine TextWindow1556-58 setter protocol; explicit mock storage/layout provider.
+add_executable(quest_text_window_setters_test quest_text_window_setters_test.cpp)
+target_compile_features(quest_text_window_setters_test PRIVATE cxx_std_20)
+target_include_directories(quest_text_window_setters_test PRIVATE "${PORT_NATIVE}")
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+    target_compile_options(quest_text_window_setters_test PRIVATE -Wall -Wextra -Werror)
+    target_link_options(quest_text_window_setters_test PRIVATE -static -static-libgcc -static-libstdc++)
+endif()
+add_test(NAME quest_text_window_setters COMMAND quest_text_window_setters_test)
+
+# Owned native TextLog Lines storage, independent of renderer/script startup.
+add_executable(quest_text_log_storage_test quest_text_log_storage_test.cpp)
+target_compile_features(quest_text_log_storage_test PRIVATE cxx_std_20)
+target_include_directories(quest_text_log_storage_test PRIVATE "${PORT_NATIVE}")
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+    target_compile_options(quest_text_log_storage_test PRIVATE -Wall -Wextra -Werror)
+    target_link_options(quest_text_log_storage_test PRIVATE -static -static-libgcc -static-libstdc++)
+endif()
+add_test(NAME quest_text_log_storage COMMAND quest_text_log_storage_test)

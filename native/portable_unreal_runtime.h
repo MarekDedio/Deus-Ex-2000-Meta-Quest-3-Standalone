@@ -833,6 +833,11 @@ struct PortableNativeWindowFieldSnapshot {
     std::vector<std::string> propertyRoots;
     std::uint32_t arrayIndex{};
 };
+struct PortableNativeTextLogLineSnapshot {
+    float expiry{};
+    std::string text;
+    std::array<std::uint8_t,4u> color{};
+};
 struct PortableNativeWindowObjectSnapshot {
     std::string path,classPath,outerPath;
     std::vector<PortableNativeWindowFieldSnapshot> fields;
@@ -841,6 +846,9 @@ struct PortableNativeWindowObjectSnapshot {
     bool emptyTileRows{};
     bool tileRowsInitialized{};
     std::vector<QuestVr::NativeTileRow> tileRows;
+    bool textLogLinesInitialized{};
+    std::size_t textLogLineCapacity{};
+    std::vector<PortableNativeTextLogLineSnapshot> textLogLines;
 };
 struct PortableRootWindowProbeResult {
     QuestVr::Vm::Result execution;
@@ -854,6 +862,34 @@ struct PortableRootWindowProbeResult {
 // substitutes an InitWindow script or runs extra callbacks after a failure.
 PortableRootWindowProbeResult ProbePortableRootWindowInitialization(
     const std::string& playerActorPath,const QuestVr::Vm::Limits& limits = {});
+enum class PortableTextLogProbeMode {
+    RoundTrip,PrivateRead,PrivateWrite,WrongReceiver,WrongArgument,MissingArgument,LateFailure,
+    WrongColor,NoColorResult
+};
+struct PortableTextLogProbeStage {
+    std::string name;
+    std::size_t writes{},lineCapacity{};
+    bool linesInitialized{},paused{},tooTall{},needsQuery{},needsReconfigure{};
+    std::uint8_t hAlign{},vAlign{};
+    float timeout{},hMargin{},vMargin{};
+    std::int32_t minLines{},maxLines{};
+    std::vector<PortableNativeTextLogLineSnapshot> lines;
+    QuestVr::Vm::Value textColor,textPlane,windowGCTextColor,windowGCTextPlane,generalGCTextColor,generalGCTextPlane;
+};
+struct PortableTextLogProbeResult {
+    QuestVr::Vm::Result execution;
+    std::string rootPath,logPath;
+    bool constructorStorageObserved{},constructorLinesInitialized{};
+    std::size_t constructorLineCount{},constructorLineCapacity{};
+    std::size_t colorCasesVerified{},colorNoneFixtureWrites{};
+    std::size_t scalarCasesVerified{};
+    std::vector<PortableTextLogProbeStage> stages;
+};
+// Isolated genuine base Root/TextLog constructors and original native setters.
+// Explicit fixture population/re-Init suffix, ALWAYS rolled back; not configured
+// HUD startup, extra callbacks after failure, live log Tick/Draw or gameplay.
+PortableTextLogProbeResult ProbePortableNativeTextLogWindow(const std::string& playerActorPath,
+    PortableTextLogProbeMode mode,const QuestVr::Vm::Limits& limits = {});
 enum class PortableToggleProbeMode { RoundTrip, OneCheck, EmptySlot, NoResult, WrongReceiver, WrongArgument };
 struct PortableToggleProbeStage {
     std::string name;

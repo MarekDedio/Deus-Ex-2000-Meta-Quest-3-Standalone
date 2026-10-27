@@ -1,5 +1,10 @@
 # Original TextLogWindow startup contract (2026-10-27)
 
+Historical entry-stage audit: the constructor/setter/scalar work now described
+in ORIGINAL-TEXTLOG-IMPLEMENTATION.md passes this boundary and reaches the
+distinct TextWindow preferred-size dependency. The original contract and
+addresses below are preserved as source evidence, not current failure sites.
+
 This is a read-only original-code audit and next implementation contract, not an
 implemented service or a playable-APK claim. First `Maps/00_Training.dx` remains
 the only map target. No account login or character-creation interface is involved.

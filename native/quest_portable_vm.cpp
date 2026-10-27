@@ -55,8 +55,8 @@ bool SnapshotNativeInput(const std::uint16_t index, const Function* declaration 
     case 176: case 177: case 178: case 179: case 180: case 181:
         return true; // Original Core scalar operands are copied by each Step.
     case 1410: case 1415: case 1416: case 1420: case 1421: case 1422: case 1430: case 1431: case 1432: case 1433: case 1438: case 1454: case 1461: case 1463: case 1464: case 1467:
-    case 1475: case 1477: case 1510: case 1511: case 1535: case 1538: case 1539: case 1540:
-    case 1541: case 1544: case 1545:
+    case 1475: case 1476: case 1477: case 1510: case 1511: case 1535: case 1538: case 1539: case 1540:
+    case 1541: case 1544: case 1545: case 1556: case 1557: case 1558: case 1572: case 1573:
         return true; // Retail window wrappers have no OUT parameters.
     default: return false;
     }

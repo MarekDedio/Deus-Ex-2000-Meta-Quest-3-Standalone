@@ -57,6 +57,8 @@
 #include "quest_native_window_resize.h"
 #include "quest_native_window_configure.h"
 #include "quest_native_window_toggle.h"
+#include "quest_native_text_window_setters.h"
+#include "quest_native_text_log_storage.h"
 #include "quest_native_tile_layout.h"
 #include "quest_quick_belt.h"
 #include "quest_actor_state_control.h"
@@ -261,6 +263,8 @@ struct RuntimeNativeWindowState {
     // an explicitly empty opaque rowArray, never reflected pointer-shaped data.
     std::vector<QuestVr::NativeTileRow> tileRows;
     bool tileRowsInitialized{};
+    // TextLog owns FString/Float/Color records, not script DynamicArray bytes.
+    QuestVr::NativeTextLogStorage textLog;
 };
 std::size_t NativeWindowStorageBytes(const RuntimeNativeWindowState& state,bool capacity) {
     std::size_t bytes{};
@@ -271,7 +275,8 @@ std::size_t NativeWindowStorageBytes(const RuntimeNativeWindowState& state,bool 
     if(state.tileRows.size()>4096u)throw std::runtime_error("Native Tile rows exceed their bound");
     bytes+=QuestVr::DecalStateDetail::Multiply(capacity?state.tileRows.capacity():state.tileRows.size(),
         sizeof(QuestVr::NativeTileRow));
-    return bytes;
+    // TextLog's deep before-image preserves actual native array/string capacity.
+    return QuestVr::DecalStateDetail::Add(bytes,state.textLog.RetainedBytes());
 }
 // Native conversation links are physical mutable UObject edges, not string
 // overlays or Actor/Window births. A retired node is a transaction before-image
@@ -4076,7 +4081,11 @@ public:
         if(index==1433u) return WindowWidthNative(Object(receiver),arguments,declaration,execution);
         if(index==1430u) return WindowConfigurationNative(Object(receiver),arguments,declaration,execution);
         if(index==1432u) return WindowPositionNative(Object(receiver),arguments,declaration,execution);
-        if(index==1475u) return WindowTileColorNative(Object(receiver),arguments,declaration,execution);
+        if(index==1475u || index==1476u) return WindowColorNative(index,Object(receiver),arguments,declaration,execution);
+        if(index==1556u || index==1557u || index==1558u)
+            return TextWindowSetterNative(index,Object(receiver),arguments,declaration,execution);
+        if(index==1572u || index==1573u)
+            return TextLogScalarNative(index,Object(receiver),arguments,declaration,execution);
         if(index==1412u) return WindowLowerNative(Object(receiver),arguments,declaration,execution);
         if(index==1535u || index==1538u || index==1539u || index==1540u || index==1541u || index==1544u || index==1545u)
             return TileWindowPropertyNative(index,Object(receiver),arguments,declaration,execution);
@@ -4322,6 +4331,8 @@ public:
         case 1477u:path="Extension.Window.SetFont";
             parameters={{"fn",Kind::Object,0x80u,"ObjectProperty","Engine.Font"}};break;
         case 1475u:path="Extension.Window.SetTileColor";
+            parameters={{"NewColor",Kind::Struct,0x80u,"StructProperty","Core.Object.Color"}};break;
+        case 1476u:path="Extension.Window.SetTextColor";
             parameters={{"NewColor",Kind::Struct,0x80u,"StructProperty","Core.Object.Color"}};break;
         case 1454u:path="Extension.Window.SetDefaultCursor";
             parameters={{"tX",Kind::Object,0x80u,"ObjectProperty","Engine.Texture"},
@@ -5717,6 +5728,18 @@ public:
             if (slot!=0u) throw std::runtime_error("GetMeshTexture has only one optional input slot");
             return Value::Integer(0);
         }
+        if(index==1572u || index==1573u) {
+            ValidateNativeTextLogFields(Object(receiver));
+            const auto authored=TextLogScalarDeclaration(index,declaration);
+            if(slot) throw std::runtime_error("TextLog scalar seed exceeds its original input slot");
+            return authored->variables[slot].zero;
+        }
+        if(index==1556u || index==1557u || index==1558u) {
+            RequireNativeTextWindowSetters(Object(receiver));
+            const auto authored=TextWindowSetterDeclaration(index,declaration);
+            if(slot>=2u) throw std::runtime_error("Text setter seed exceeds its original two input slots");
+            return authored->variables[slot].zero;
+        }
         if(index!=1410u && index!=1415u && index!=1416u && index!=1420u && index!=1421u && index!=1422u && index!=1430u && index!=1431u && index!=1432u && index!=1433u &&
             index!=1454u && index!=1461u && index!=1463u && index!=1464u && index!=1465u && index!=1467u && index!=1477u && index!=1510u && index!=1511u &&
             index!=1535u && index!=1538u && index!=1539u && index!=1540u && index!=1541u && index!=1544u && index!=1545u && index!=1611u)
@@ -5774,12 +5797,13 @@ public:
             if (slot>1u) throw std::runtime_error("FastTrace input exceeds its original schema");
             return slot==0u?std::optional{QuestVr::Vm::ResultLayout::CoreVector12}:std::nullopt;
         }
-        if(index!=1475u) return std::nullopt;
+        if(index!=1475u && index!=1476u) return std::nullopt;
         RequireNativeWindow(Object(receiver));
         const auto authored=WindowNativeDeclaration(index,declaration);
         if(slot!=0u || authored->variables[0u].resultLayout!=QuestVr::Vm::ResultLayout::CoreColor4)
-            throw std::runtime_error("SetTileColor requires its actual canonical Color result destination");
-        // Retail10053ad0 does not initialize this stack temporary. Do not
+            throw std::runtime_error(std::string(index==1475u?"SetTileColor":"SetTextColor")+
+                " requires its actual canonical Color result destination");
+        // Retail10053ad0/10053b30 do not initialize their stack temporary. Do not
         // register a zero/white argument seed or infer identity from a Value.
         return QuestVr::Vm::ResultLayout::CoreColor4;
     }
@@ -6459,26 +6483,32 @@ public:
         AskHiddenWindowForReconfigure(window,execution);
         return {};
     }
-    Evaluation WindowTileColorNative(RuntimeObject* window,const std::vector<Evaluation>& arguments,
+    Evaluation WindowColorNative(const std::uint16_t index,RuntimeObject* window,const std::vector<Evaluation>& arguments,
         const Function* declaration,QuestVr::Vm::Execution& execution) {
         RequireNativeWindow(window);
-        const auto authored=WindowNativeDeclaration(1475u,declaration);
+        const auto authored=WindowNativeDeclaration(index,declaration);
+        const std::string method=index==1475u?"SetTileColor":"SetTextColor";
         if(arguments.size()!=1u || arguments[0u].disposition!=QuestVr::Vm::ResultDisposition::Written ||
             authored->variables[0u].resultLayout!=QuestVr::Vm::ResultLayout::CoreColor4)
-            throw std::runtime_error("SetTileColor requires a fully materialized canonical Color input");
+            throw std::runtime_error(method+" requires a fully materialized canonical Color input");
         const auto value=arguments[0u].Load();
         if(value.kind!=Kind::Struct || value.fields.size()!=4u)
-            throw std::runtime_error("SetTileColor input lacks four Byte channels");
+            throw std::runtime_error(method+" input lacks four Byte channels");
         for(const auto* name:{"r","g","b","a"}) {
             const auto member=value.fields.find(name);
             if(member==value.fields.end() || member->second.kind!=Kind::Byte ||
                 member->second.integer<0 || member->second.integer>255)
-                throw std::runtime_error("SetTileColor input has a malformed Byte channel");
+                throw std::runtime_error(method+" input has a malformed Byte channel");
         }
         const auto color=TypedLiveValue(authored->variables[0u],value);
         const auto set=[&](RuntimeObject* target,const char* base) {
-            const auto colorKey=std::string(base)+".tileColor";
-            const auto planeKey=std::string(base)+".tilePlane";
+            const auto colorKey=std::string(base)+(index==1475u?".tileColor":".TextColor");
+            const auto planeKey=std::string(base)+(index==1475u?".tilePlane":".textPlane");
+            if(index==1476u) {
+                const auto flags=target==window?2u:0u;
+                ValidateNativeWindowScalar(target,colorKey.c_str(),Kind::Struct,"StructProperty","Core.Object.Color",flags);
+                ValidateNativeWindowScalar(target,planeKey.c_str(),Kind::Struct,"StructProperty","Core.Object.Plane",flags);
+            }
             const auto colorProperty=DescribeProperty(colorKey);
             const auto planeProperty=DescribeProperty(planeKey);
             if(colorProperty.resultLayout!=QuestVr::Vm::ResultLayout::CoreColor4 ||
@@ -6503,6 +6533,8 @@ public:
             NativeWindowWrite(target,planeKey.c_str(),plane,execution);
         };
         set(window,"Extension.Window"); // Always writes all RGBA, no equality shortcut.
+        if(index==1476u)
+            ValidateNativeWindowScalar(window,"Extension.Window.wGc",Kind::Object,"ObjectProperty","Extension.GC");
         const auto context=Read(window,DescribeProperty("Extension.Window.wGc"),0u);
         if(context.kind!=Kind::Object) throw std::runtime_error("Native tile color wGc is not Object");
         if(!context.text.empty()) {
@@ -6772,7 +6804,8 @@ public:
         if(native!="extension.window" && native!="extension.tabgroupwindow" &&
             native!="extension.modalwindow" && native!="extension.rootwindow" &&
             native!="extension.radioboxwindow" && native!="extension.tilewindow" &&
-            native!="extension.textwindow" && native!="extension.buttonwindow" && native!="extension.togglewindow")
+            native!="extension.textwindow" && native!="extension.textlogwindow" &&
+            native!="extension.buttonwindow" && native!="extension.togglewindow")
             throw std::runtime_error("Native Window event override is not implemented: "+native);
         const auto context=CurrentDispatchContext(receiver);
         const auto selected=context.exactSelected?
@@ -7048,7 +7081,8 @@ public:
         // Admit only audited actual native constructor registrations. Script
         // subclasses still use their most-derived authored InitWindow callback.
         if(native!="extension.window" && native!="extension.radioboxwindow" && native!="extension.tilewindow" &&
-            native!="extension.textwindow" && native!="extension.buttonwindow" && native!="extension.togglewindow")
+            native!="extension.textwindow" && native!="extension.textlogwindow" &&
+            native!="extension.buttonwindow" && native!="extension.togglewindow")
             throw std::runtime_error("NewChild native subclass Init is not implemented: "+native);
         auto* child=ConstructWindowObject(cls,parent,execution);
         InitializeChildNativeWindowStorage(child,native);
@@ -7056,6 +7090,7 @@ public:
         if(native=="extension.radioboxwindow") InitializeChildRadioBox(child,execution);
         else if(native=="extension.tilewindow") InitializeChildTileWindow(child,execution);
         else if(native=="extension.textwindow") InitializeChildTextWindow(child,execution);
+        else if(native=="extension.textlogwindow") InitializeChildTextLogWindow(child,execution);
         else if(native=="extension.buttonwindow" || native=="extension.togglewindow") {
             InitializeChildTextWindow(child,execution);
             InitializeChildButtonWindow(child,execution);
@@ -7140,7 +7175,7 @@ public:
         auto* parent=WindowLink(window,"winParent");
         if(!parent) {SetHiddenChildVisibilityDirect(window,visible,execution);return;}
         const auto native=NativeWindowAncestor(parent->cls);
-        if(native=="extension.window" || native=="extension.textwindow" ||
+        if(native=="extension.window" || native=="extension.textwindow" || native=="extension.textlogwindow" ||
             native=="extension.buttonwindow" || native=="extension.togglewindow") {
             // XWindow vtable+84 dispatches the optional most-derived script
             // callback. DeusExHUD's override also runs ConfigurationChanged,
@@ -7200,7 +7235,8 @@ public:
             if(native!="extension.window" && native!="extension.tabgroupwindow" &&
                 native!="extension.modalwindow" && native!="extension.rootwindow" &&
                 native!="extension.radioboxwindow" && native!="extension.tilewindow" &&
-                native!="extension.textwindow" && native!="extension.buttonwindow" && native!="extension.togglewindow")
+                native!="extension.textwindow" && native!="extension.textlogwindow" &&
+                native!="extension.buttonwindow" && native!="extension.togglewindow")
                 throw std::runtime_error("Native child notification override is not implemented: "+native);
             // Retail ProcessScript(...,checked=false) does optional lookup on
             // dynamic Self. It does not require a newly fabricated base event.
@@ -7375,10 +7411,20 @@ public:
             ValidateNativeWindowList(window,"Extension.TabGroupWindow.colMajorWindowList");
             ValidateNativeWindowList(window,"Extension.RadioBoxWindow.toggleButtons");
         } else if(native=="extension.tilewindow") ValidateNativeTileFields(window);
+        else if(native=="extension.textlogwindow") ValidateNativeTextLogFields(window);
         else throw std::runtime_error("Native child constructor storage is not registered");
         Touch(window);ValidateStateBudget(sizeof(RuntimeNativeWindowState));
         window->nativeWindowState=std::make_unique<RuntimeNativeWindowState>();
         window->nativeWindowState->tileRowsInitialized=native=="extension.tilewindow";
+        if(native=="extension.textlogwindow") {
+            window->nativeWindowState->textLog.Construct();
+            if(nativeTextLogProbe_) {
+                nativeTextLogProbe_->constructorStorageObserved=true;
+                nativeTextLogProbe_->constructorLinesInitialized=window->nativeWindowState->textLog.initialized;
+                nativeTextLogProbe_->constructorLineCount=window->nativeWindowState->textLog.lines.size();
+                nativeTextLogProbe_->constructorLineCapacity=window->nativeWindowState->textLog.lines.capacity();
+            }
+        }
         ValidateStateBudget();
     }
     void AppendNativeWindowList(RuntimeObject* owner,std::vector<RuntimeObject*>& list,RuntimeObject* window) {
@@ -7568,6 +7614,8 @@ public:
         NativeWindowWrite(window,"Extension.ButtonWindow.curTileColor",selected.fields.at("tlcolor"),execution);
     }
 #include "portable_window_toggle.inl"
+#include "portable_text_window_setters.inl"
+#include "portable_text_log_window.inl"
 #include "portable_window_axis_probe.inl"
 #include "portable_window_tile_layout.inl"
 #include "portable_window_tile_probe.inl"
@@ -7840,6 +7888,8 @@ public:
         }
         if(object->nativeWindowObject && !defaults && !immutable) {
             const auto key=LowerAscii(property.key);
+            if(key=="extension.textlogwindow.lines")
+                throw std::runtime_error("Native TextLog Lines is owned native storage, not a script-visible DynamicArray");
             if(key=="extension.tabgroupwindow.rowmajorwindowlist" || key=="extension.tabgroupwindow.colmajorwindowlist" ||
                 key=="extension.modalwindow.tabgroupwindowlist" || key=="extension.radioboxwindow.togglebuttons" ||
                 key=="extension.tilewindow.rowarray")
@@ -10157,6 +10207,8 @@ private:
         result->resultLayout = property.resultLayout;
         result->read = [this, object, property, index, defaults]() { return Read(object, property, index, defaults); };
         result->write = [this, object, property, index, defaults](const Value& value) {
+            if(object->nativeWindowObject && LowerAscii(property.key)=="extension.textlogwindow.lines")
+                throw std::runtime_error("Native TextLog Lines mutation requires its typed journaled storage service");
             if(object->nativeDump) {
                 if(defaults || index || LowerAscii(property.key)!="deusex.dumplocation.currentdumplocation")
                     throw std::runtime_error("DumpLocation field write needs its typed native service");
@@ -14380,6 +14432,14 @@ PortableRootWindowProbeResult ProbePortableRootWindowInitialization(
                     view.emptyTileRows=view.tileRowsInitialized && object->nativeWindowState->tileRows.empty();
                     retained.Retain(object->nativeWindowState->tileRows.size()*sizeof(QuestVr::NativeTileRow));
                     view.tileRows=object->nativeWindowState->tileRows;
+                    view.textLogLinesInitialized=object->nativeWindowState->textLog.initialized;
+                    view.textLogLineCapacity=object->nativeWindowState->textLog.lines.capacity();
+                    retained.Retain(object->nativeWindowState->textLog.lines.size()*sizeof(PortableNativeTextLogLineSnapshot));
+                    view.textLogLines.reserve(object->nativeWindowState->textLog.lines.size());
+                    for(const auto& line:object->nativeWindowState->textLog.lines) {
+                        retained.Retain(line.text.capacity()+1u);
+                        view.textLogLines.push_back({line.expiry,line.text,line.color});
+                    }
                     for(const auto& [source,target]:{
                         std::pair{&object->nativeWindowState->rowMajor,&view.rowMajorWindows},
                         std::pair{&object->nativeWindowState->colMajor,&view.colMajorWindows},
@@ -14417,6 +14477,11 @@ PortableRootWindowProbeResult ProbePortableRootWindowInitialization(
                         for(const auto* name:{"HAlign","VAlign","hMargin","vMargin","bWordWrap","bTextIsAccelerator",
                             "MinWidth","minLines","MaxLines","Text"})
                             field((std::string("Extension.TextWindow.")+name).c_str());
+                    if(IsDerivedFromPath(object->cls,"Extension.TextLogWindow")) {
+                        for(const auto* name:{"bPaused","bTooTall","textTimeout"})
+                            field((std::string("Extension.TextLogWindow.")+name).c_str());
+                        field("Extension.Window.TextColor");field("Extension.Window.textPlane");
+                    }
                     if(IsDerivedFromPath(object->cls,"Extension.ButtonWindow")) {
                         for(const auto* name:{"bButtonPressed","bMousePressed","bAutoRepeat","bEnableRightMouseClick",
                             "activateDelay","initialDelay","repeatRate","curTexture","curTileColor","curTextColor",
@@ -14457,6 +14522,9 @@ PortableRootWindowProbeResult ProbePortableRootWindowInitialization(
                             field((std::string("DeusEx.DeusExHUD.")+name).c_str());
                     if(IsDerivedFromPath(object->cls,"DeusEx.HUDAmmoDisplay"))
                         field("DeusEx.HUDAmmoDisplay.Player");
+                    if(IsDerivedFromPath(object->cls,"DeusEx.HUDLogDisplay"))
+                        for(const auto* name:{"winLog","winIcon","MinLogLines","maxLogLines","fontLog"})
+                            field((std::string("DeusEx.HUDLogDisplay.")+name).c_str());
                     if(IsDerivedFromPath(object->cls,"DeusEx.HUDObjectBelt")) {
                         field("DeusEx.HUDObjectBelt.winSlots"); // winRadio is a CreateSlots local, not instance storage.
                         field("DeusEx.HUDObjectBelt.KeyRingSlot");
@@ -14500,6 +14568,9 @@ PortableRootWindowProbeResult ProbePortableRootWindowInitialization(
                     for(const auto* name:{"Canvas","normalFont","boldFont","gcOwner","Style","PolyFlags","textPolyFlags",
                         "bDrawEnabled","bSmoothed","bMasked","bTranslucent","bModulated","tileColor","tilePlane","gcClipRect"})
                         field((std::string("Extension.GC.")+name).c_str());
+                    if(object->outer && IsDerivedFromPath(object->outer->cls,"Extension.TextLogWindow")) {
+                        field("Extension.GC.TextColor");field("Extension.GC.textPlane");
+                    }
                 }
                 result.objects.push_back(std::move(view));
             }
@@ -14513,6 +14584,21 @@ PortableRootWindowProbeResult ProbePortableRootWindowInitialization(
             }
             capture();
             throw std::runtime_error("Non-publishing native root initialization probe completed; rollback required");
+        },limits);
+    } catch(const std::exception& error) {
+        result.execution.status=QuestVr::Vm::Status::Unsupported;result.execution.error=error.what();
+    }
+    return result;
+}
+
+PortableTextLogProbeResult ProbePortableNativeTextLogWindow(const std::string& playerActorPath,
+    PortableTextLogProbeMode mode,const QuestVr::Vm::Limits& limits) {
+    CollectBirthGarbageAtBoundary collect;
+    PortableTextLogProbeResult result;
+    try {
+        PortableActorVmHost host;
+        result.execution=QuestVr::Vm::ExecuteTransaction(host,[&](QuestVr::Vm::Execution& execution) {
+            return host.ProbeNativeTextLogWindow(playerActorPath,mode,result,execution);
         },limits);
     } catch(const std::exception& error) {
         result.execution.status=QuestVr::Vm::Status::Unsupported;result.execution.error=error.what();
